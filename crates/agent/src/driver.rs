@@ -453,15 +453,39 @@ async fn run_step(
     if calls.is_empty() {
         return Ok(StepEnd::Completed);
     }
-    // 骨架阶段只跑工具；tool/call、tool/result 的日志和顺序提交在实现提交里补（测试会红）。
+    // 先把 tool/call 作为持久事实写进日志，再派发（T004.4 的修复要靠它）。
+    let mut call_events = Vec::with_capacity(calls.len());
+    for call in &calls {
+        call_events.push(EventKind::ToolCall {
+            turn,
+            step,
+            call_id: call.id.clone(),
+            name: call.name.clone(),
+            arguments: call.arguments.clone(),
+        });
+    }
+    inner.append(&call_events)?;
     let context = ToolContext::new(inner.cwd.clone());
-    let _ = execute_batch(
+    let results = execute_batch(
         &inner.tools,
         &calls,
         inner.max_parallel_tool_calls,
         &context,
     )
     .await;
+    for result in &results {
+        let message = Message::tool_result(
+            result.call_id.clone(),
+            result.content.clone(),
+            result.is_error,
+        );
+        inner.append(&[EventKind::ToolResult {
+            turn,
+            step,
+            message,
+            error_code: result.error_code.clone(),
+        }])?;
+    }
     Ok(StepEnd::Continue)
 }
 
