@@ -11,6 +11,8 @@ use super::transport::provider_error;
 struct BlockState {
     content: ContentBlock,
     closed: bool,
+    /// tool_use 块累计的 input JSON（input_json_delta 拼接）。
+    json: String,
 }
 
 /// 一次响应的翻译状态机：保留块顺序，累计用量，产出一个最终结束原因。
@@ -73,10 +75,39 @@ impl Translator {
                     .get("type")
                     .and_then(Value::as_str)
                     .ok_or_else(|| malformed("内容块缺少 type"))?;
-                let content = match native_type {
-                    "text" => ContentBlock::Text {
-                        text: required_string(native, "text")?,
-                    },
+                let (content, block_type, initial_delta) = match native_type {
+                    "text" => {
+                        let text = required_string(native, "text")?;
+                        let initial = if text.is_empty() {
+                            None
+                        } else {
+                            Some(text.clone())
+                        };
+                        (ContentBlock::Text { text }, BlockType::Text, initial)
+                    }
+                    "tool_use" => {
+                        let id = required_string(native, "id")?;
+                        let name = required_string(native, "name")?;
+                        if id.is_empty() || name.is_empty() {
+                            return Err(malformed("空的工具调用身份"));
+                        }
+                        let input = native
+                            .get("input")
+                            .filter(|value| value.is_object())
+                            .cloned()
+                            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+                        let arguments = serde_json::to_string(&input)
+                            .map_err(|_| malformed("工具调用的 input 不能序列化"))?;
+                        (
+                            ContentBlock::ToolCall {
+                                id,
+                                name,
+                                arguments,
+                            },
+                            BlockType::ToolCall,
+                            None,
+                        )
+                    }
                     other => {
                         return Err(ModelError::new(
                             ErrorCode::UnsupportedContent,
@@ -84,22 +115,16 @@ impl Translator {
                         ));
                     }
                 };
-                let initial = content
-                    .as_text()
-                    .filter(|text| !text.is_empty())
-                    .map(str::to_owned);
                 self.blocks.insert(
                     index,
                     BlockState {
                         content,
                         closed: false,
+                        json: String::new(),
                     },
                 );
-                chunks.push(StreamChunk::BlockStart {
-                    index,
-                    block_type: BlockType::Text,
-                });
-                if let Some(text) = initial {
+                chunks.push(StreamChunk::BlockStart { index, block_type });
+                if let Some(text) = initial_delta {
                     chunks.push(StreamChunk::TextDelta { index, text });
                 }
             }
@@ -126,6 +151,11 @@ impl Translator {
                         text.push_str(&piece);
                         chunks.push(StreamChunk::TextDelta { index, text: piece });
                     }
+                    ("input_json_delta", ContentBlock::ToolCall { .. }) => {
+                        block
+                            .json
+                            .push_str(&required_string(delta, "partial_json")?);
+                    }
                     (other, _) => return Err(malformed(&format!("不支持的内容增量 {other}"))),
                 }
             }
@@ -140,6 +170,11 @@ impl Translator {
                     return Err(malformed("内容块重复关闭"));
                 }
                 block.closed = true;
+                if let ContentBlock::ToolCall { arguments, .. } = &mut block.content
+                    && !block.json.is_empty()
+                {
+                    *arguments = std::mem::take(&mut block.json);
+                }
                 let block = block.content.clone();
                 chunks.push(StreamChunk::BlockEnd { index, block });
             }
@@ -166,6 +201,19 @@ impl Translator {
                         ErrorCode::EmptyResponse,
                         "DeepSeek Messages 返回了空响应",
                     ));
+                }
+                // max-tokens 截断时工具参数可能不完整，由调用方丢弃；其余情况要求合法 JSON 对象。
+                if finish != FinishReason::MaxTokens {
+                    for block in self.blocks.values() {
+                        let ContentBlock::ToolCall { arguments, .. } = &block.content else {
+                            continue;
+                        };
+                        let parsed: Value = serde_json::from_str(arguments)
+                            .map_err(|_| malformed("工具输入的 JSON 非法"))?;
+                        if !parsed.is_object() {
+                            return Err(malformed("工具输入不是 JSON 对象"));
+                        }
+                    }
                 }
                 self.finished = true;
                 chunks.push(StreamChunk::Usage(self.usage.clone()));

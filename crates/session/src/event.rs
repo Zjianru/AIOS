@@ -88,6 +88,24 @@ pub enum EventKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         interrupted: Option<bool>,
     },
+    /// 模型请求的一次工具调用（持久化事实；assistant/message 里也有同一调用块）。
+    #[serde(rename = "tool/call")]
+    ToolCall {
+        turn: u64,
+        step: u64,
+        call_id: String,
+        name: String,
+        arguments: String,
+    },
+    /// 一次工具调用的结果，按模型给出的顺序提交。
+    #[serde(rename = "tool/result")]
+    ToolResult {
+        turn: u64,
+        step: u64,
+        message: Message,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error_code: Option<String>,
+    },
 }
 
 impl EventKind {
@@ -101,6 +119,8 @@ impl EventKind {
             Self::SystemMessage { .. } => "system/message",
             Self::UserMessage { .. } => "user/message",
             Self::AssistantMessage { .. } => "assistant/message",
+            Self::ToolCall { .. } => "tool/call",
+            Self::ToolResult { .. } => "tool/result",
         }
     }
 }

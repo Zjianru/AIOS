@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use agent::{Agent, AgentEvent, Delivery, Deps, TurnOutcome};
+use agent::{Agent, AgentConfig, AgentEvent, Delivery, Deps, TurnOutcome};
 use clap::{Args, Parser, Subcommand};
 use model::{DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS, DeepSeek, DeepSeekConfig, Effort, UserMessage};
 use session::{SessionId, SessionStore};
@@ -117,13 +117,15 @@ async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
         effort,
     };
     let model = DeepSeek::new(config)?;
-    let tools = ToolSet::empty();
+    let tools = ToolSet::builtin();
+    let config = AgentConfig::default();
     match &common.resume {
         Some(raw) => {
             let id = SessionId::parse(raw)?;
             let store = SessionStore::open(&data_dir, &id)?;
             Ok(Agent::resume(
                 id,
+                config,
                 Deps {
                     model,
                     tools,
@@ -134,11 +136,14 @@ async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
         }
         None => {
             let store = SessionStore::create(&data_dir, &cwd)?;
-            Ok(Agent::create(Deps {
-                model,
-                tools,
-                store,
-            })
+            Ok(Agent::create(
+                config,
+                Deps {
+                    model,
+                    tools,
+                    store,
+                },
+            )
             .await?)
         }
     }

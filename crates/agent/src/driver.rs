@@ -11,10 +11,11 @@ use model::{
 use session::{EventKind, SessionId, SessionStore, TurnEndReason};
 use tokio::sync::Notify;
 use tokio::sync::broadcast;
+use tools::{ToolCall, ToolContext, ToolSet, execute_batch};
 
 use crate::error::AgentError;
 use crate::inbox::{Delivery, Inbox, InboxTarget};
-use crate::{AgentEvent, Deps, TurnOutcome};
+use crate::{AgentConfig, AgentEvent, Deps, TurnOutcome};
 
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
@@ -36,6 +37,8 @@ struct RunState {
 
 /// 一个 step 的结束方式。
 enum StepEnd {
+    /// 这一步执行了工具，turn 还没结束；继续开下一步。
+    Continue,
     Completed,
     MaxTokens,
     Aborted,
@@ -45,7 +48,10 @@ enum StepEnd {
 pub(crate) struct Inner {
     id: SessionId,
     log_path: PathBuf,
+    cwd: PathBuf,
     model: DeepSeek,
+    tools: ToolSet,
+    max_parallel_tool_calls: usize,
     store: Mutex<SessionStore>,
     inbox: Mutex<Inbox>,
     state: Mutex<RunState>,
@@ -54,19 +60,27 @@ pub(crate) struct Inner {
 }
 
 impl Inner {
-    pub(crate) fn start(deps: Deps, last_turn: u64) -> Result<Arc<Self>, AgentError> {
+    pub(crate) fn start(
+        config: AgentConfig,
+        deps: Deps,
+        last_turn: u64,
+    ) -> Result<Arc<Self>, AgentError> {
         let Deps {
             model,
-            tools: _,
+            tools,
             store,
         } = deps;
         let id = store.id().clone();
         let log_path = store.path().to_path_buf();
+        let cwd = PathBuf::from(store.cwd());
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         Ok(Arc::new(Self {
             id,
             log_path,
+            cwd,
             model,
+            tools,
+            max_parallel_tool_calls: config.max_parallel_tool_calls,
             store: Mutex::new(store),
             inbox: Mutex::new(Inbox::default()),
             state: Mutex::new(RunState {
@@ -265,7 +279,7 @@ async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
 }
 
 /// 一轮里不断开 step：turn 开始时领取一条 follow-up，加上全部 next-step；
-/// 之后的 step 只领取 next-step。
+/// 之后的 step 只领取 next-step。执行了工具、轮次还没结束时继续开下一步。
 async fn run_turn_steps(
     inner: &Arc<Inner>,
     turn: u64,
@@ -317,13 +331,21 @@ async fn run_turn_steps(
             turn,
             step: step_number,
         }])?;
-        // max-tokens 一旦出现就是这一轮的结果，后面的 step 不能把它降级。
-        if !matches!(turn_end.as_ref(), Some(TurnEndReason::MaxTokens)) {
-            *turn_end = Some(match end {
-                StepEnd::Completed => TurnEndReason::Completed,
-                StepEnd::MaxTokens => TurnEndReason::MaxTokens,
-                StepEnd::Aborted => TurnEndReason::Aborted,
-            });
+        match end {
+            StepEnd::Continue => {}
+            StepEnd::Completed => {
+                if !matches!(turn_end.as_ref(), Some(TurnEndReason::MaxTokens)) {
+                    *turn_end = Some(TurnEndReason::Completed);
+                }
+            }
+            StepEnd::MaxTokens => {
+                if !matches!(turn_end.as_ref(), Some(TurnEndReason::MaxTokens)) {
+                    *turn_end = Some(TurnEndReason::MaxTokens);
+                }
+            }
+            StepEnd::Aborted => {
+                *turn_end = Some(TurnEndReason::Aborted);
+            }
         }
         if turn_end.is_some()
             && inner
@@ -338,7 +360,8 @@ async fn run_turn_steps(
     }
 }
 
-/// 一个 step：写 system/user 事件，从日志派生请求，流式收模型输出，写 assistant 事件。
+/// 一个 step：写 system/user 事件，从日志派生请求，流式收模型输出，
+/// 有工具调用就派发批执行并写 tool/call、tool/result，否则收尾这一轮。
 async fn run_step(
     inner: &Arc<Inner>,
     turn: u64,
@@ -349,12 +372,14 @@ async fn run_step(
     if abort.load(Ordering::SeqCst) {
         return Ok(StepEnd::Aborted);
     }
-    let (has_system, cwd) = {
-        let store = inner.store.lock().expect("agent 会话锁被毒化");
-        (store.has_system_message(), store.cwd().to_owned())
-    };
+    let has_system = inner
+        .store
+        .lock()
+        .expect("agent 会话锁被毒化")
+        .has_system_message();
     if !has_system {
-        let message = Message::text(Role::System, system_prompt(&cwd));
+        let has_read = inner.tools.get("read").is_some();
+        let message = Message::text(Role::System, system_prompt(&inner.cwd, has_read));
         inner.append(&[EventKind::SystemMessage {
             turn,
             step,
@@ -374,7 +399,8 @@ async fn run_step(
         .lock()
         .expect("agent 会话锁被毒化")
         .derive_messages();
-    let mut stream = inner.model.stream(&messages).await?;
+    let tool_schemas = inner.tools.definitions();
+    let mut stream = inner.model.stream(&messages, &tool_schemas).await?;
     let mut blocks: Vec<ContentBlock> = Vec::new();
     let mut usage: Option<Usage> = None;
     let mut finish: Option<FinishReason> = None;
@@ -402,7 +428,7 @@ async fn run_step(
         )));
     };
     if !blocks.is_empty() {
-        let message = Message::new(Role::Assistant, blocks);
+        let message = Message::new(Role::Assistant, blocks.clone());
         inner.append(&[EventKind::AssistantMessage {
             turn,
             step,
@@ -411,13 +437,44 @@ async fn run_step(
             interrupted: None,
         }])?;
     }
-    Ok(match finish {
-        FinishReason::MaxTokens => StepEnd::MaxTokens,
-        FinishReason::Stop | FinishReason::ToolCalls => StepEnd::Completed,
-    })
+    if finish == FinishReason::MaxTokens {
+        // 被截断的输出里可能有不完整的工具调用：这一轮直接以 max-tokens 收尾，不执行工具。
+        return Ok(StepEnd::MaxTokens);
+    }
+    let calls: Vec<ToolCall> = blocks
+        .iter()
+        .filter_map(ContentBlock::as_tool_call)
+        .map(|(id, name, arguments)| ToolCall {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            arguments: arguments.to_owned(),
+        })
+        .collect();
+    if calls.is_empty() {
+        return Ok(StepEnd::Completed);
+    }
+    // 骨架阶段只跑工具；tool/call、tool/result 的日志和顺序提交在实现提交里补（测试会红）。
+    let context = ToolContext::new(inner.cwd.clone());
+    let _ = execute_batch(
+        &inner.tools,
+        &calls,
+        inner.max_parallel_tool_calls,
+        &context,
+    )
+    .await;
+    Ok(StepEnd::Continue)
 }
 
-/// 系统提示：固定文字 + 会话的工作目录（read 的指导句在 T004.2 跟 read 工具一起加）。
-fn system_prompt(cwd: &str) -> String {
-    format!("You are AIOS, a coding agent. Your working directory is {cwd}.")
+/// 系统提示：固定文字 + 会话的工作目录；read 工具可见时补 DSH 原文的 read 指导句。
+fn system_prompt(cwd: &Path, has_read: bool) -> String {
+    let mut prompt = format!(
+        "You are AIOS, a coding agent. Your working directory is {}.",
+        cwd.display()
+    );
+    if has_read {
+        prompt.push_str(
+            "\n\nUse the read tool — not shell commands like cat — to inspect text files. Use offset and limit to continue reading large files.",
+        );
+    }
+    prompt
 }

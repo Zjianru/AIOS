@@ -5,7 +5,16 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+model = { path = "../model" }
+globset.workspace = true
+grep-regex.workspace = true
+grep-searcher.workspace = true
+ignore.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true

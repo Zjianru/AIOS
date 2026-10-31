@@ -16,6 +16,21 @@ use tools::ToolSet;
 pub use error::AgentError;
 pub use inbox::Delivery;
 
+/// agent 的运行配置。
+#[derive(Debug, Clone, Copy)]
+pub struct AgentConfig {
+    /// 一次 step 里并行安全工具调用的并发上限；设成 1 就是串行。
+    pub max_parallel_tool_calls: usize,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            max_parallel_tool_calls: 10,
+        }
+    }
+}
+
 /// 一轮的结束结果（订阅者看到的形式）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnOutcome {
@@ -63,14 +78,18 @@ pub struct Agent {
 
 impl Agent {
     /// 新会话上启动 agent（会话日志由 store 建好，尚无事件）。
-    pub async fn create(deps: Deps) -> Result<Self, AgentError> {
+    pub async fn create(config: AgentConfig, deps: Deps) -> Result<Self, AgentError> {
         Ok(Self {
-            inner: driver::Inner::start(deps, 0)?,
+            inner: driver::Inner::start(config, deps, 0)?,
         })
     }
 
     /// 在已有会话上报文续接；从日志里最后一个 turn 编号之后继续。
-    pub async fn resume(id: SessionId, deps: Deps) -> Result<Self, AgentError> {
+    pub async fn resume(
+        id: SessionId,
+        config: AgentConfig,
+        deps: Deps,
+    ) -> Result<Self, AgentError> {
         if deps.store.id() != &id {
             return Err(AgentError::ResumeIdMismatch {
                 requested: id.as_str().to_owned(),
@@ -88,7 +107,7 @@ impl Agent {
             .max()
             .unwrap_or(0);
         Ok(Self {
-            inner: driver::Inner::start(deps, last_turn)?,
+            inner: driver::Inner::start(config, deps, last_turn)?,
         })
     }
 

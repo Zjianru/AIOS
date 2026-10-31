@@ -11,7 +11,8 @@ pub(crate) fn derive_messages(events: &[Event]) -> Vec<Message> {
         .filter_map(|event| match &event.kind {
             EventKind::SystemMessage { message, .. }
             | EventKind::UserMessage { message, .. }
-            | EventKind::AssistantMessage { message, .. } => {
+            | EventKind::AssistantMessage { message, .. }
+            | EventKind::ToolResult { message, .. } => {
                 if message.is_empty() {
                     None
                 } else {
@@ -21,7 +22,8 @@ pub(crate) fn derive_messages(events: &[Event]) -> Vec<Message> {
             EventKind::TurnStart { .. }
             | EventKind::TurnEnd { .. }
             | EventKind::StepStart { .. }
-            | EventKind::StepEnd { .. } => None,
+            | EventKind::StepEnd { .. }
+            | EventKind::ToolCall { .. } => None,
         })
         .collect()
 }

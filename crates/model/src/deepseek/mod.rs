@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 
 pub use config::{DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS, DeepSeekConfig};
 
-use crate::{ErrorCode, Message, ModelError, StreamChunk};
+use crate::{ErrorCode, Message, ModelError, StreamChunk, ToolSchema};
 use sse::SseParser;
 use translate::Translator;
 
@@ -44,9 +44,13 @@ impl DeepSeek {
         &self.config
     }
 
-    /// 发一次流式请求。消息按 Messages 协议序列化（system 单独成字段）。
-    pub async fn stream(&self, messages: &[Message]) -> Result<ChunkStream, ModelError> {
-        let body = serialize::request_body(&self.config, messages)?;
+    /// 发一次流式请求。消息和工具定义按 Messages 协议序列化（system 单独成字段）。
+    pub async fn stream(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSchema],
+    ) -> Result<ChunkStream, ModelError> {
+        let body = serialize::request_body(&self.config, messages, tools)?;
         let response = self
             .http
             .post(self.url.clone())

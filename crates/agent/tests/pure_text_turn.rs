@@ -1,6 +1,6 @@
 //! 接缝 1：通过 Agent 的 6 个入口驱动一轮纯文本对话（测试清单第 1 条）。
 
-use agent::{Agent, AgentEvent, Delivery, Deps, TurnOutcome};
+use agent::{Agent, AgentConfig, AgentEvent, Delivery, Deps, TurnOutcome};
 use model::{DeepSeek, DeepSeekConfig, Effort, Role, UserMessage};
 use session::{EventKind, SessionStore};
 use tools::ToolSet;
@@ -55,11 +55,14 @@ async fn pure_text_turn() {
         max_tokens: 2048,
         effort: Effort::High,
     };
-    let agent = Agent::create(Deps {
-        model: DeepSeek::new(config).unwrap(),
-        tools: ToolSet::empty(),
-        store,
-    })
+    let agent = Agent::create(
+        AgentConfig::default(),
+        Deps {
+            model: DeepSeek::new(config).unwrap(),
+            tools: ToolSet::empty(),
+            store,
+        },
+    )
     .await
     .unwrap();
     let mut events = agent.subscribe();

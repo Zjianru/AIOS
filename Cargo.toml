@@ -15,6 +15,10 @@ serde_json = "1.0"
 clap = { version = "4.5", features = ["derive"] }
 uuid = { version = "1.26", features = ["v4"] }
 thiserror = "2.0"
+ignore = "0.4"
+globset = "0.4"
+grep-regex = "0.1"
+grep-searcher = "0.1"
 wiremock = "0.6"
 insta = { version = "1.49", features = ["json"] }
 tempfile = "3.27"

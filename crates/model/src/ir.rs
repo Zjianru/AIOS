@@ -1,6 +1,7 @@
 //! provider 无关的消息、用量和流事件。
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// 一条消息的角色。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -9,13 +10,29 @@ pub enum Role {
     System,
     User,
     Assistant,
+    /// 工具结果消息（wire 上是 user 角色 + tool_result 块）。
+    Tool,
 }
 
-/// 消息内容块。T004.1 只有文本；推理块和工具块在后续票加入。
+/// 消息内容块。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
-    Text { text: String },
+    Text {
+        text: String,
+    },
+    /// 模型请求的一次工具调用；arguments 是模型给出的原始 JSON 字符串。
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: String,
+    },
+    /// 一次工具调用的结果，放在 tool/result 事件的消息里。
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        is_error: bool,
+    },
 }
 
 impl ContentBlock {
@@ -23,10 +40,23 @@ impl ContentBlock {
         Self::Text { text: text.into() }
     }
 
-    /// 文本块的内容；非文本块返回 `None`。
+    /// 文本块的内容；非文本块返回 None。
     pub fn as_text(&self) -> Option<&str> {
         match self {
             Self::Text { text } => Some(text),
+            Self::ToolCall { .. } | Self::ToolResult { .. } => None,
+        }
+    }
+
+    /// 工具调用块的 (id, name, arguments)；非工具调用块返回 None。
+    pub fn as_tool_call(&self) -> Option<(&str, &str, &str)> {
+        match self {
+            Self::ToolCall {
+                id,
+                name,
+                arguments,
+            } => Some((id, name, arguments)),
+            Self::Text { .. } | Self::ToolResult { .. } => None,
         }
     }
 }
@@ -50,12 +80,28 @@ impl Message {
         }
     }
 
+    /// 一条工具结果消息。
+    pub fn tool_result(
+        tool_use_id: impl Into<String>,
+        content: impl Into<String>,
+        is_error: bool,
+    ) -> Self {
+        Self {
+            role: Role::Tool,
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id: tool_use_id.into(),
+                content: content.into(),
+                is_error,
+            }],
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.content.is_empty()
     }
 }
 
-/// 用户消息：角色固定在 `Role::User` 的消息。
+/// 用户消息：角色固定在 Role::User 的消息。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UserMessage(Message);
 
@@ -77,7 +123,15 @@ impl UserMessage {
     }
 }
 
-/// 一次请求的用量；厂商没给的项保持 `None`（显示为「未知」，不是 0）。
+/// 一次请求可用的工具定义（模型可见的 schema）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolSchema {
+    pub name: String,
+    pub description: String,
+    pub parameters: Value,
+}
+
+/// 一次请求的用量；厂商没给的项保持 None（显示为「未知」，不是 0）。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -100,7 +154,7 @@ impl Usage {
     }
 }
 
-/// 推理强度。默认 `High`（spec 实现决定）。
+/// 推理强度。默认 High（spec 实现决定）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Effort {
     Off,
@@ -111,7 +165,7 @@ pub enum Effort {
 }
 
 impl Effort {
-    /// wire 上的取值（`off`、`low`、`high`、`max`）。
+    /// wire 上的取值（off、low、high、max）。
     pub fn as_wire(self) -> &'static str {
         match self {
             Self::Off => "off",
@@ -121,7 +175,7 @@ impl Effort {
         }
     }
 
-    /// 解析 CLI 传入的取值；非法值返回 `None`。
+    /// 解析 CLI 传入的取值；非法值返回 None。
     pub fn parse(raw: &str) -> Option<Self> {
         match raw {
             "off" => Some(Self::Off),
@@ -136,7 +190,7 @@ impl Effort {
 /// 流的结束原因。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FinishReason {
-    /// 模型正常说完（`end_turn` / `stop_sequence`）。
+    /// 模型正常说完（end_turn / stop_sequence）。
     Stop,
     /// 模型要调工具。
     ToolCalls,
@@ -148,6 +202,7 @@ pub enum FinishReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockType {
     Text,
+    ToolCall,
 }
 
 /// provider 无关的流事件。

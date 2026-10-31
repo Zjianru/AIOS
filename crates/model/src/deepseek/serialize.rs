@@ -1,8 +1,9 @@
 //! 把 provider 无关的消息序列化成 Messages 协议的请求体。
 
 use serde::Serialize;
+use serde_json::Value;
 
-use crate::{ContentBlock, ErrorCode, Message, ModelError, Role};
+use crate::{ContentBlock, ErrorCode, Message, ModelError, Role, ToolSchema};
 
 use super::config::DeepSeekConfig;
 
@@ -17,6 +18,8 @@ struct WireRequest {
     output_config: Option<WireOutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<WireTool>>,
 }
 
 #[derive(Serialize)]
@@ -31,9 +34,23 @@ struct WireOutputConfig {
 }
 
 #[derive(Serialize)]
+struct WireTool {
+    name: String,
+    description: String,
+    input_schema: Value,
+}
+
+#[derive(Serialize)]
 struct WireMessage {
     role: &'static str,
     content: Vec<WireBlock>,
+}
+
+#[derive(Serialize)]
+struct WireText {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    text: String,
 }
 
 #[derive(Serialize)]
@@ -41,15 +58,30 @@ struct WireMessage {
 enum WireBlock {
     #[serde(rename = "text")]
     Text { text: String },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        tool_use_id: String,
+        content: Vec<WireText>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+    },
 }
 
 /// 序列化一次请求。
 ///
-/// 系统消息合并成 `system` 字段；用户和助手消息按角色合并相邻项（照 DSH 的
-/// `serialize`）；空文本块和空消息跳过。
+/// 系统消息合并成 system 字段；tool_call / tool_result 分别走 wire 的 tool_use /
+/// tool_result 块；用户、助手、工具消息按 wire 角色合并相邻项（照 DSH 的 serialize）；
+/// 空文本块和空消息跳过。
 pub(super) fn request_body(
     config: &DeepSeekConfig,
     messages: &[Message],
+    tools: &[ToolSchema],
 ) -> Result<Vec<u8>, ModelError> {
     let mut system = String::new();
     let mut wire_messages: Vec<WireMessage> = Vec::new();
@@ -60,6 +92,9 @@ pub(super) fn request_body(
                 for block in &message.content {
                     match block {
                         ContentBlock::Text { text: piece } => text.push_str(piece),
+                        ContentBlock::ToolCall { .. } | ContentBlock::ToolResult { .. } => {
+                            return Err(unsupported("system 消息只能包含文本块"));
+                        }
                     }
                 }
                 if text.is_empty() {
@@ -74,7 +109,7 @@ pub(super) fn request_body(
                 let role = match message.role {
                     Role::User => "user",
                     Role::Assistant => "assistant",
-                    Role::System => unreachable!("上面已单独处理"),
+                    Role::System | Role::Tool => unreachable!("上面已单独处理"),
                 };
                 let content: Vec<WireBlock> = message
                     .content
@@ -84,23 +119,80 @@ pub(super) fn request_body(
                             Some(WireBlock::Text { text: text.clone() })
                         }
                         ContentBlock::Text { .. } => None,
+                        ContentBlock::ToolCall {
+                            id,
+                            name,
+                            arguments,
+                        } if message.role == Role::Assistant => {
+                            let input = serde_json::from_str::<Value>(arguments)
+                                .ok()
+                                .filter(Value::is_object)
+                                .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+                            Some(WireBlock::ToolUse {
+                                id: id.clone(),
+                                name: name.clone(),
+                                input,
+                            })
+                        }
+                        ContentBlock::ToolCall { .. } | ContentBlock::ToolResult { .. } => None,
                     })
                     .collect();
                 if content.is_empty() {
                     continue;
                 }
-                if let Some(previous) = wire_messages.last_mut()
-                    && previous.role == role
-                {
-                    previous.content.extend(content);
+                push_or_merge(&mut wire_messages, role, content);
+            }
+            Role::Tool => {
+                let mut content = Vec::new();
+                for block in &message.content {
+                    match block {
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            content: text,
+                            is_error,
+                        } => {
+                            let wire_content = if text.is_empty() {
+                                Vec::new()
+                            } else {
+                                vec![WireText {
+                                    kind: "text",
+                                    text: text.clone(),
+                                }]
+                            };
+                            content.push(WireBlock::ToolResult {
+                                tool_use_id: tool_use_id.clone(),
+                                content: wire_content,
+                                is_error: if *is_error { Some(true) } else { None },
+                            });
+                        }
+                        ContentBlock::Text { .. } | ContentBlock::ToolCall { .. } => {
+                            return Err(unsupported("tool 消息只能包含 tool_result 块"));
+                        }
+                    }
+                }
+                if content.is_empty() {
                     continue;
                 }
-                wire_messages.push(WireMessage { role, content });
+                push_or_merge(&mut wire_messages, "user", content);
             }
         }
     }
 
     let effort = config.effort;
+    let wire_tools = if tools.is_empty() {
+        None
+    } else {
+        Some(
+            tools
+                .iter()
+                .map(|tool| WireTool {
+                    name: tool.name.clone(),
+                    description: tool.description.clone(),
+                    input_schema: tool.parameters.clone(),
+                })
+                .collect(),
+        )
+    };
     let body = WireRequest {
         model: config.model.clone(),
         stream: true,
@@ -125,6 +217,7 @@ pub(super) fn request_body(
         } else {
             Some(system)
         },
+        tools: wire_tools,
     };
     serde_json::to_vec(&body).map_err(|error| {
         ModelError::new(
@@ -132,4 +225,18 @@ pub(super) fn request_body(
             format!("请求序列化失败: {error}"),
         )
     })
+}
+
+fn push_or_merge(messages: &mut Vec<WireMessage>, role: &'static str, content: Vec<WireBlock>) {
+    if let Some(previous) = messages.last_mut()
+        && previous.role == role
+    {
+        previous.content.extend(content);
+        return;
+    }
+    messages.push(WireMessage { role, content });
+}
+
+fn unsupported(message: &str) -> ModelError {
+    ModelError::new(ErrorCode::UnsupportedContent, message.to_owned())
 }
