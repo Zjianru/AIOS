@@ -1,11 +1,12 @@
 //! agent 的驱动循环与共享状态。
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use model::{
-    ContentBlock, DeepSeek, FinishReason, Message, ModelError, Role, StreamChunk, Usage,
+    BlockType, ContentBlock, DeepSeek, FinishReason, Message, ModelError, Role, StreamChunk, Usage,
     UserMessage,
 };
 use session::{EventKind, SessionId, SessionStore, TurnEndReason};
@@ -57,6 +58,8 @@ pub(crate) struct Inner {
     state: Mutex<RunState>,
     events: broadcast::Sender<AgentEvent>,
     idle_notify: Notify,
+    /// 取消时唤醒正在等模型流的 step（让流读取立刻停下）。
+    cancel_notify: Notify,
 }
 
 impl Inner {
@@ -96,6 +99,7 @@ impl Inner {
             }),
             events,
             idle_notify: Notify::new(),
+            cancel_notify: Notify::new(),
         }))
     }
 
@@ -112,26 +116,25 @@ impl Inner {
     }
 
     pub(crate) fn send(self: &Arc<Self>, message: UserMessage, delivery: Delivery) {
-        let (aborting, target) = {
+        let target = {
             let state = self.state.lock().expect("agent 状态锁被毒化");
             let aborting = match &state.phase {
                 Phase::Running { abort, .. } => abort.load(Ordering::SeqCst),
                 Phase::Idle => false,
             };
             // 已经取消的活动收不下会唤醒的输入：改投下一轮（照 DSH 的 send）。
-            let target = if aborting && delivery.wakes() {
+            if aborting && delivery.wakes() {
                 InboxTarget::NextTurn
             } else {
                 delivery.target()
-            };
-            (aborting, target)
+            }
         };
         self.inbox
             .lock()
             .expect("agent 收件箱锁被毒化")
             .push(target, message);
         if delivery.wakes() {
-            self.wake_driver(aborting);
+            self.wake_driver();
         }
     }
 
@@ -141,10 +144,16 @@ impl Inner {
         state.wake_requested = false;
         if let Phase::Running { abort, .. } = &state.phase {
             abort.store(true, Ordering::SeqCst);
+            // 让正在等模型流的 step 立刻醒来、走 interrupted 收尾。
+            self.cancel_notify.notify_waiters();
         }
     }
 
-    fn wake_driver(self: &Arc<Self>, wake_after_abort: bool) {
+    /// 起驱动或在 Running 时置 latch。
+    ///
+    /// T004.1 审计 known-weakness 3：收尾检查与 settle 快照之间来的 FollowUp/Steer
+    /// 过去会被丢掉。Running 时无条件 latch，settle 看到 wake && pending 会重开驱动。
+    fn wake_driver(self: &Arc<Self>) {
         let mut state = self.state.lock().expect("agent 状态锁被毒化");
         match &state.phase {
             Phase::Idle => {
@@ -157,10 +166,8 @@ impl Inner {
                 drop(state);
                 tokio::spawn(kick(Arc::clone(self)));
             }
-            Phase::Running { abort, .. } => {
-                if wake_after_abort || abort.load(Ordering::SeqCst) {
-                    state.wake_requested = true;
-                }
+            Phase::Running { .. } => {
+                state.wake_requested = true;
             }
         }
     }
@@ -274,14 +281,19 @@ async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
     let appended = inner.append(&[EventKind::TurnEnd { turn, reason }]);
     let _ = inner.events.send(AgentEvent::TurnEnded { turn, outcome });
     appended?;
-    match steps {
+    let result = match steps {
         Ok(()) => Ok(inner
             .inbox
             .lock()
             .expect("agent 收件箱锁被毒化")
             .has_pending()),
         Err(error) => Err(error),
-    }
+    };
+    // 收尾检查与 settle_idle 的 wake_requested 快照之间没有别的 await：显式让出
+    // 一次调度，让排队中的 FollowUp/Steer 能在 settle 之前落地（fail-fast 的
+    // 确定性回归靠这个点，不靠 sleep）。
+    tokio::task::yield_now().await;
+    result
 }
 
 /// 一轮里不断开 step：turn 开始时领取一条 follow-up，加上全部 next-step；
@@ -407,25 +419,73 @@ async fn run_step(
         .derive_messages();
     let tool_schemas = inner.tools.definitions();
     let mut stream = inner.model.stream(&messages, &tool_schemas).await?;
-    let mut blocks: Vec<ContentBlock> = Vec::new();
+    // 已完成的块按 index 存；打开中的 text 块用累计增量，取消时按 DSH
+    // interruptedBlocks 的规则拼出可安全收尾的前缀（text 块、去空白非空、tool-call 丢弃）。
+    let mut blocks: BTreeMap<usize, ContentBlock> = BTreeMap::new();
+    let mut open_text: BTreeMap<usize, String> = BTreeMap::new();
     let mut usage: Option<Usage> = None;
     let mut finish: Option<FinishReason> = None;
+    let mut aborted = false;
     loop {
         if abort.load(Ordering::SeqCst) {
-            return Ok(StepEnd::Aborted);
-        }
-        let Some(chunk) = stream.next().await else {
+            aborted = true;
             break;
-        };
-        match chunk? {
-            StreamChunk::BlockStart { .. } => {}
-            StreamChunk::TextDelta { text, .. } => {
-                let _ = inner.events.send(AgentEvent::AssistantTextDelta { text });
-            }
-            StreamChunk::BlockEnd { block, .. } => blocks.push(block),
-            StreamChunk::Usage(reported) => usage = Some(reported),
-            StreamChunk::Finish(reason) => finish = Some(reason),
         }
+        let notified = inner.cancel_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if abort.load(Ordering::SeqCst) {
+            aborted = true;
+            break;
+        }
+        tokio::select! {
+            chunk = stream.next() => {
+                let Some(chunk) = chunk else {
+                    break;
+                };
+                match chunk? {
+                    StreamChunk::BlockStart { index, block_type } => {
+                        if block_type == BlockType::Text {
+                            open_text.insert(index, String::new());
+                        }
+                    }
+                    StreamChunk::TextDelta { index, text } => {
+                        if let Some(buffer) = open_text.get_mut(&index) {
+                            buffer.push_str(&text);
+                        }
+                        let _ = inner.events.send(AgentEvent::AssistantTextDelta { text });
+                    }
+                    StreamChunk::BlockEnd { index, block } => {
+                        open_text.remove(&index);
+                        blocks.insert(index, block);
+                    }
+                    StreamChunk::Usage(reported) => usage = Some(reported),
+                    StreamChunk::Finish(reason) => finish = Some(reason),
+                }
+                if abort.load(Ordering::SeqCst) {
+                    aborted = true;
+                    break;
+                }
+            }
+            _ = &mut notified => {
+                aborted = true;
+                break;
+            }
+        }
+    }
+    if aborted {
+        let content = interrupted_content(&blocks, &open_text);
+        if !content.is_empty() {
+            let message = Message::new(Role::Assistant, content);
+            inner.append(&[EventKind::AssistantMessage {
+                turn,
+                step,
+                message,
+                usage,
+                interrupted: Some(true),
+            }])?;
+        }
+        return Ok(StepEnd::Aborted);
     }
     let Some(finish) = finish else {
         return Err(AgentError::Model(ModelError::new(
@@ -433,8 +493,9 @@ async fn run_step(
             "模型流没有给出结束原因",
         )));
     };
-    if !blocks.is_empty() {
-        let message = Message::new(Role::Assistant, blocks.clone());
+    let content: Vec<ContentBlock> = blocks.values().cloned().collect();
+    if !content.is_empty() {
+        let message = Message::new(Role::Assistant, content.clone());
         inner.append(&[EventKind::AssistantMessage {
             turn,
             step,
@@ -447,7 +508,7 @@ async fn run_step(
         // 被截断的输出里可能有不完整的工具调用：这一轮直接以 max-tokens 收尾，不执行工具。
         return Ok(StepEnd::MaxTokens);
     }
-    let calls: Vec<ToolCall> = blocks
+    let calls: Vec<ToolCall> = content
         .iter()
         .filter_map(ContentBlock::as_tool_call)
         .map(|(id, name, arguments)| ToolCall {
@@ -472,14 +533,15 @@ async fn run_step(
     }
     inner.append(&call_events)?;
     let context = ToolContext::new(inner.cwd.clone());
-    let results = execute_batch(
+    let outcome = execute_batch(
         &inner.tools,
         &calls,
         inner.max_parallel_tool_calls,
         &context,
+        abort,
     )
     .await;
-    for result in &results {
+    for result in &outcome.results {
         let message = Message::tool_result(
             result.call_id.clone(),
             result.content.clone(),
@@ -492,7 +554,40 @@ async fn run_step(
             error_code: result.error_code.clone(),
         }])?;
     }
+    if aborted || abort.load(Ordering::SeqCst) || outcome.cancelled {
+        return Ok(StepEnd::Aborted);
+    }
     Ok(StepEnd::Continue)
+}
+
+/// 取消时保留的可安全收尾前缀（照 DSH assembler.interruptedBlocks）：
+/// 只看 text 块；关闭的块用完整内容、打开中的块用已收到的增量；去空白后为空则丢弃。
+fn interrupted_content(
+    blocks: &BTreeMap<usize, ContentBlock>,
+    open_text: &BTreeMap<usize, String>,
+) -> Vec<ContentBlock> {
+    let mut indexes: Vec<usize> = blocks.keys().chain(open_text.keys()).copied().collect();
+    indexes.sort_unstable();
+    indexes.dedup();
+    let mut content = Vec::new();
+    for index in indexes {
+        match blocks.get(&index) {
+            Some(ContentBlock::Text { text }) => {
+                if !text.trim().is_empty() {
+                    content.push(ContentBlock::Text { text: text.clone() });
+                }
+            }
+            Some(_) => {}
+            None => {
+                if let Some(text) = open_text.get(&index)
+                    && !text.trim().is_empty()
+                {
+                    content.push(ContentBlock::Text { text: text.clone() });
+                }
+            }
+        }
+    }
+    content
 }
 
 /// 系统提示：固定文字 + 会话的工作目录；read 工具可见时补 DSH 原文的 read 指导句。

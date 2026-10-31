@@ -13,7 +13,7 @@ use std::pin::Pin;
 use model::ToolSchema;
 use serde_json::Value;
 
-pub use batch::execute_batch;
+pub use batch::{BatchOutcome, execute_batch};
 pub use builtin::{GlobTool, GrepTool, ReadTool};
 
 /// 一个异步结果的 boxed future。Tool 必须能放进 dyn 的工具集，所以用 boxed

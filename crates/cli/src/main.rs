@@ -20,7 +20,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// 交互式会话：空闲时打一行开新一轮；/exit 或 Ctrl-D 退出
+    /// 交互式会话：空闲时打一行开新一轮；运行中打一行是 steer；/queue <文字> 排 follow-up；Ctrl-C 取消
     Chat(CommonArgs),
     /// 跑一条消息，空闲后退出；completed 退出码 0，其余非 0
     Run(RunArgs),
@@ -160,24 +160,69 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
     println!("session: {}", agent.id());
     println!("log: {}", agent.log_path().display());
     let mut events = agent.subscribe();
-    let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    // stdin 读取放到独立任务里，主循环用可取消的 channel 接收行；
+    // 否则 select 里反复丢弃 next_line 的未来有丢半行的风险。
+    let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    tokio::spawn(async move {
+        let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if line_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut running = false;
+    let mut last_outcome = None;
     loop {
-        print!("> ");
-        io::stdout().flush()?;
-        let Some(line) = lines.next_line().await? else {
-            println!();
-            break;
-        };
-        let line = line.trim().to_owned();
-        if line.is_empty() {
-            continue;
+        if !running {
+            print!("> ");
+            io::stdout().flush()?;
         }
-        if line == "/exit" {
-            break;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                // 清空收件箱并中止当前一轮；已流出的文字按 interrupted 收尾。
+                agent.cancel();
+                println!();
+            }
+            line = line_rx.recv() => {
+                let Some(line) = line else {
+                    println!();
+                    break;
+                };
+                let line = line.trim().to_owned();
+                if line.is_empty() {
+                    continue;
+                }
+                if line == "/exit" {
+                    break;
+                }
+                if let Some(queued) = line.strip_prefix("/queue ") {
+                    let queued = queued.trim();
+                    if queued.is_empty() {
+                        continue;
+                    }
+                    agent.send(UserMessage::text(queued), Delivery::FollowUp);
+                    running = true;
+                } else if running {
+                    agent.send(UserMessage::text(line), Delivery::Steer);
+                } else {
+                    agent.send(UserMessage::text(line), Delivery::FollowUp);
+                    running = true;
+                }
+            }
+            received = events.recv() => match received {
+                Ok(event) => handle_event(event, &mut last_outcome),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            },
+            _ = agent.idle(), if running => {
+                running = false;
+            }
         }
-        agent.send(UserMessage::text(line), Delivery::FollowUp);
-        pump_until_idle(&agent, &mut events).await;
     }
+    // Ctrl-D / /exit：把还没收尾的一轮取消掉，等 idle 再退出。
+    agent.cancel();
+    agent.idle().await;
     Ok(())
 }
 

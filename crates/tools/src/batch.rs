@@ -1,13 +1,34 @@
 //! 一次 step 的工具批执行：独占调用是屏障，并行调用进有界滚动池，结果按模型顺序。
 //!
 //! 机制照 DSH 的 packages/core/tools/src/batch.ts（strategy 第 1 节）。
-//! T004.2 先不带取消路径（取消在 T004.3 补）。
+//! 取消语义（T004.3）：观察到取消后不再派发新调用，等已开始的调用结束并按模型顺序
+//! 提交结果，未派发的调用补 `ABORTED_BEFORE_DISPATCH`。
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::Poll;
 
 use crate::{Tool, ToolCall, ToolConcurrency, ToolContext, ToolResult, ToolSet};
+
+/// 一次批执行的结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchOutcome {
+    /// 按模型顺序的结果；取消时未派发的调用带 `ABORTED_BEFORE_DISPATCH`。
+    pub results: Vec<ToolResult>,
+    /// 是否观察到取消（至少有一个调用没能派发）。
+    pub cancelled: bool,
+}
+
+/// 未派发调用的合成结果（文案和错误码照 DSH 的 batch.ts skip()）。
+fn aborted_result(call: &ToolCall) -> ToolResult {
+    ToolResult {
+        call_id: call.id.clone(),
+        content: "Error: tool call aborted before dispatch".to_owned(),
+        is_error: true,
+        error_code: Some("ABORTED_BEFORE_DISPATCH".to_owned()),
+    }
+}
 
 /// 一个待执行的调用（已按工具分类）。
 struct Planned<'a> {
@@ -44,15 +65,18 @@ async fn next_finished<'a, T>(futures: &mut Vec<PendingFuture<'a, T>>) -> (usize
     .await
 }
 
+/// 跑一段连续的并行安全调用：上限内滚动补位；观察到取消后不再补位，等已开始的结束。
 async fn run_parallel<'a>(
     plans: &'a [Planned<'_>],
     max_parallel: usize,
     context: &'a ToolContext,
-) -> Vec<ToolResult> {
+    cancel: &AtomicBool,
+) -> (Vec<Option<ToolResult>>, bool) {
     let mut results: Vec<Option<ToolResult>> = plans.iter().map(|_| None).collect();
     let mut futures: Vec<PendingFuture<'a, ToolResult>> = Vec::new();
     let mut next = 0;
-    while next < plans.len() && futures.len() < max_parallel {
+    let mut cancelled = false;
+    while next < plans.len() && futures.len() < max_parallel && !cancel.load(Ordering::SeqCst) {
         futures.push((next, Box::pin(invoke(&plans[next], context))));
         next += 1;
     }
@@ -60,27 +84,31 @@ async fn run_parallel<'a>(
         let (position, result) = next_finished(&mut futures).await;
         let (index, _) = futures.remove(position);
         results[index] = Some(result);
-        if next < plans.len() {
+        if cancel.load(Ordering::SeqCst) {
+            cancelled = true;
+        } else if next < plans.len() {
             futures.push((next, Box::pin(invoke(&plans[next], context))));
             next += 1;
         }
     }
-    results
-        .into_iter()
-        .map(|result| result.expect("并行池没有漏收结果"))
-        .collect()
+    if next < plans.len() {
+        cancelled = true;
+    }
+    (results, cancelled)
 }
 
 /// 执行一次 step 的全部工具调用，结果按模型给出的顺序返回。
 ///
 /// 独占调用单独成立并形成屏障；连续的并行安全调用进上限为 max_parallel 的
-/// 滚动池。模型顺序即结果顺序，与完成顺序无关。
+/// 滚动池。模型顺序即结果顺序，与完成顺序无关。取消信号置位后：已开始的调用
+/// 等结束并保留结果，未开始的补 `ABORTED_BEFORE_DISPATCH`。
 pub async fn execute_batch(
     tools: &ToolSet,
     calls: &[ToolCall],
     max_parallel: usize,
     context: &ToolContext,
-) -> Vec<ToolResult> {
+    cancel: &AtomicBool,
+) -> BatchOutcome {
     assert!(max_parallel >= 1, "max_parallel_tool_calls 必须是正整数");
     let plans: Vec<Planned<'_>> = calls
         .iter()
@@ -89,15 +117,20 @@ pub async fn execute_batch(
             tool: tools.get(&call.name),
         })
         .collect();
-    let mut results = Vec::with_capacity(plans.len());
+    let mut results: Vec<Option<ToolResult>> = plans.iter().map(|_| None).collect();
     let mut index = 0;
+    let mut cancelled = false;
     while index < plans.len() {
+        if cancel.load(Ordering::SeqCst) {
+            cancelled = true;
+            break;
+        }
         let mode = plans[index]
             .tool
             .map_or(ToolConcurrency::Exclusive, Tool::concurrency);
         match mode {
             ToolConcurrency::Exclusive => {
-                results.push(invoke(&plans[index], context).await);
+                results[index] = Some(invoke(&plans[index], context).await);
                 index += 1;
             }
             ToolConcurrency::Parallel => {
@@ -109,10 +142,27 @@ pub async fn execute_batch(
                 {
                     end += 1;
                 }
-                results.extend(run_parallel(&plans[index..end], max_parallel, context).await);
+                let (group_results, group_cancelled) =
+                    run_parallel(&plans[index..end], max_parallel, context, cancel).await;
+                for (offset, result) in group_results.into_iter().enumerate() {
+                    results[index + offset] = result;
+                }
+                cancelled |= group_cancelled;
                 index = end;
             }
         }
     }
-    results
+    if results.iter().any(Option::is_none) {
+        cancelled = true;
+    }
+    let results = plans
+        .iter()
+        .enumerate()
+        .map(|(position, plan)| {
+            results[position]
+                .take()
+                .unwrap_or_else(|| aborted_result(plan.call))
+        })
+        .collect();
+    BatchOutcome { results, cancelled }
 }
