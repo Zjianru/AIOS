@@ -1,0 +1,27 @@
+---
+source: crates/agent/tests/pure_text_turn.rs
+expression: body
+---
+{
+  "max_tokens": 2048,
+  "messages": [
+    {
+      "content": [
+        {
+          "text": "你好",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "deepseek-flash",
+  "output_config": {
+    "effort": "high"
+  },
+  "stream": true,
+  "system": "You are AIOS, a coding agent. Your working directory is <CWD>.",
+  "thinking": {
+    "type": "enabled"
+  }
+}

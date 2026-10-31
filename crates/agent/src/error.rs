@@ -14,3 +14,14 @@ pub enum AgentError {
     #[error("step 失败且收尾也失败: first={first}, second={second}")]
     StepCleanup { first: String, second: String },
 }
+
+impl AgentError {
+    /// 写进 turn/end 的稳定错误码。
+    pub(crate) fn code(&self) -> String {
+        match self {
+            Self::Store(_) => "STORE".to_owned(),
+            Self::Model(error) => error.code.as_str(),
+            Self::ResumeIdMismatch { .. } | Self::StepCleanup { .. } => "AGENT".to_owned(),
+        }
+    }
+}

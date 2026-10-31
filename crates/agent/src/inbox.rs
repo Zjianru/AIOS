@@ -14,6 +14,11 @@ pub enum Delivery {
 }
 
 impl Delivery {
+    /// 这条投递会不会唤醒空闲的 loop。
+    pub(crate) fn wakes(self) -> bool {
+        !matches!(self, Self::Inject)
+    }
+
     pub(crate) fn target(self) -> InboxTarget {
         match self {
             Self::FollowUp => InboxTarget::NextTurn,
@@ -42,6 +47,23 @@ impl Inbox {
             InboxTarget::NextTurn => self.next_turn.push(message.into_message()),
             InboxTarget::NextStep => self.next_step.push(message.into_message()),
         }
+    }
+
+    /// 领取一个 step 的输入：全部 next-step，外加（请求时）一条 next-turn。
+    pub(crate) fn claim(&mut self, target: InboxTarget) -> Vec<Message> {
+        let mut claimed = std::mem::take(&mut self.next_step);
+        if target == InboxTarget::NextTurn && !self.next_turn.is_empty() {
+            claimed.push(self.next_turn.remove(0));
+        }
+        claimed
+    }
+
+    pub(crate) fn has_pending(&self) -> bool {
+        !self.next_turn.is_empty() || !self.next_step.is_empty()
+    }
+
+    pub(crate) fn next_step_is_empty(&self) -> bool {
+        self.next_step.is_empty()
     }
 
     pub(crate) fn clear(&mut self) {
