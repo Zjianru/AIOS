@@ -134,10 +134,17 @@ fn read(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
     let bytes = fs::read(&canonical).map_err(|error| {
         ToolFailure::coded("FS_IO_ERROR", format!("cannot read \"{display}\": {error}"))
     })?;
+    // 照 DSH fs-local 的 readWholeText：前 8192 字节含 NUL 就是二进制文件。
+    if bytes[..bytes.len().min(8192)].contains(&0) {
+        return Err(ToolFailure::coded(
+            "FS_NOT_TEXT",
+            format!("cannot read \"{display}\": binary file"),
+        ));
+    }
     let content = String::from_utf8(bytes).map_err(|_| {
         ToolFailure::coded(
-            "FS_IO_ERROR",
-            format!("cannot read \"{display}\": the file content is not valid UTF-8"),
+            "FS_NOT_TEXT",
+            format!("cannot read \"{display}\": invalid UTF-8 text"),
         )
     })?;
     window(&content, &display, offset, limit)
@@ -175,6 +182,8 @@ fn window(
         if truncated_by_bytes || number < offset || selected.len() >= limit {
             continue;
         }
+        // 照 DSH read-render 的 stripCarriageReturn：每行剥掉一个行尾 CR。
+        let raw_line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
         let text = truncate_line(raw_line, READ_MAX_LINE_LENGTH);
         let bytes = text.len() + usize::from(!selected.is_empty());
         if output_bytes + bytes > READ_MAX_BYTES {

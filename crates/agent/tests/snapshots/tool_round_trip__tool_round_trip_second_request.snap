@@ -82,7 +82,7 @@ expression: body
       "name": "read"
     },
     {
-      "description": "Find files, not directories, whose paths match a glob pattern, including hidden and ignored files. Returns up to 100 paths in modification-time order; a larger result keeps the first paths and reports where the complete list was saved.",
+      "description": "Find files, not directories, whose paths match a glob pattern, including hidden and ignored files. Returns up to 100 paths in modification-time order; a larger result keeps the first paths.",
       "input_schema": {
         "properties": {
           "path": {
@@ -102,7 +102,7 @@ expression: body
       "name": "glob"
     },
     {
-      "description": "Search file contents with a ripgrep regular expression. Returns matching lines with line numbers, grouped by file. Returns up to 250 matches; a larger result reports where the complete match list was saved.",
+      "description": "Search file contents with a ripgrep regular expression. Returns matching lines with line numbers, grouped by file. Returns up to 250 matches.",
       "input_schema": {
         "properties": {
           "include": {

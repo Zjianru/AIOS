@@ -338,6 +338,36 @@ async fn batch_limits_ordering_and_exclusive_barrier() {
 }
 
 #[tokio::test]
+async fn agent_config_rejects_zero_parallelism() {
+    // 协调线加账：非法配置要返回 AgentError，不能 panic 在驱动任务里、把 idle() 挂死。
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::create(data_dir.path(), cwd.path()).unwrap();
+    let config = DeepSeekConfig {
+        base_url: "http://127.0.0.1:1".to_owned(),
+        api_key: "test-key".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        max_tokens: 2048,
+        effort: Effort::High,
+    };
+    let created = Agent::create(
+        AgentConfig {
+            max_parallel_tool_calls: 0,
+        },
+        Deps {
+            model: DeepSeek::new(config).unwrap(),
+            tools: ToolSet::empty(),
+            store,
+        },
+    )
+    .await;
+    assert!(
+        matches!(created, Err(agent::AgentError::InvalidConfig { .. })),
+        "max_parallel_tool_calls 为 0 时要返回 AgentError::InvalidConfig"
+    );
+}
+
+#[tokio::test]
 async fn batch_limit_one_serializes() {
     let (mut fixture, _server) = setup(
         &[

@@ -116,6 +116,44 @@ async fn read_tool_limits_and_errors() {
             .contains("(Output capped. Showing lines 1-25. Use offset=26 to continue.)")
     );
 
+    // 正常：CRLF 行尾剥掉（照 DSH read-render 的 stripCarriageReturn）
+    let crlf = dir.path().join("crlf.txt");
+    std::fs::write(&crlf, b"one\r\ntwo\r\n").unwrap();
+    let result = run(&tool, &context, json!({"file_path": "crlf.txt"})).await;
+    assert!(!result.is_error);
+    assert_eq!(
+        result.content,
+        format!(
+            "<path>{}</path>\n<type>file</type>\n<content>\n1: one\n2: two\n\n(End of file - total 2 lines)\n</content>",
+            canonical(&crlf)
+        )
+    );
+
+    // 错误码：二进制文件（前 8192 字节含 NUL）→ FS_NOT_TEXT
+    let binary = dir.path().join("bin.dat");
+    std::fs::write(&binary, b"abc\0def\n").unwrap();
+    let result = run(&tool, &context, json!({"file_path": "bin.dat"})).await;
+    assert!(result.is_error);
+    assert_eq!(result.error_code.as_deref(), Some("FS_NOT_TEXT"));
+    assert_eq!(
+        result.content,
+        format!("Error: cannot read \"{}\": binary file", canonical(&binary))
+    );
+
+    // 错误码：非法 UTF-8 → FS_NOT_TEXT（不是 FS_IO_ERROR）
+    let invalid = dir.path().join("bad.txt");
+    std::fs::write(&invalid, [0xFF_u8, 0xFE]).unwrap();
+    let result = run(&tool, &context, json!({"file_path": "bad.txt"})).await;
+    assert!(result.is_error);
+    assert_eq!(result.error_code.as_deref(), Some("FS_NOT_TEXT"));
+    assert_eq!(
+        result.content,
+        format!(
+            "Error: cannot read \"{}\": invalid UTF-8 text",
+            canonical(&invalid)
+        )
+    );
+
     // 错误码：找不到、不是普通文件、offset 越界
     let result = run(&tool, &context, json!({"file_path": "missing.txt"})).await;
     assert!(result.is_error);
@@ -164,14 +202,19 @@ async fn glob_tool_limits_and_errors() {
     set_modified(&dir.path().join(".git/config.ts"), 4_000);
     let tool = GlobTool::new();
 
-    // 正常：修改时间降序、包含隐藏文件、排除 VCS 元数据
+    // 正常：修改时间升序（ripgrep --sort=modified；最旧在前）、包含隐藏文件、排除 VCS 元数据
     let result = run(&tool, &context, json!({"pattern": "**/*.ts"})).await;
     assert!(!result.is_error, "{}", result.content);
-    assert_eq!(result.content, ".hidden.ts\nsrc/beta.ts\nsrc/alpha.ts");
+    assert_eq!(result.content, "src/alpha.ts\nsrc/beta.ts\n.hidden.ts");
 
     // 正常：path 收窄搜索根
     let result = run(&tool, &context, json!({"pattern": "*.ts", "path": "src"})).await;
-    assert_eq!(result.content, "src/beta.ts\nsrc/alpha.ts");
+    assert_eq!(result.content, "src/alpha.ts\nsrc/beta.ts");
+
+    // 正常：path "." + 带 / 的模式——匹配用未加 ./ 的 cwd 相对路径，输出仍加 ./ 前缀
+    let result = run(&tool, &context, json!({"pattern": "src/*.ts", "path": "."})).await;
+    assert!(!result.is_error, "{}", result.content);
+    assert_eq!(result.content, "./src/alpha.ts\n./src/beta.ts");
 
     // 无匹配
     let result = run(&tool, &context, json!({"pattern": "*.rs"})).await;

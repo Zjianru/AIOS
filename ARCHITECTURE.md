@@ -13,7 +13,7 @@ AIOS 是一个本地 agent 内核：每次模型请求从会话日志派生，�
 - crates/model：provider 无关的消息 IR（Message / ContentBlock / Usage / FinishReason / StreamChunk），DeepSeek 的 Messages 适配器（请求序列化、SSE 解码、流事件翻译、错误码）。
 - crates/session：会话事件（turn/step/消息），只追加的 JSONL 存储（SessionStore），以及从日志派生请求消息。
 - crates/tools：Tool 接口、ToolCall/ToolResult、ToolSet、工具批执行（独占屏障、有界并行池、按模型顺序提交），以及内置只读工具 read / glob / grep（进程内搜索，不起 rg 子进程）。
-- crates/agent：一轮多步的驱动、收件箱（follow-up / steer / inject）、工具调用的派发与结果回写、Agent 的 6 个驱动入口（create / resume / send / cancel / subscribe / idle）；另有 id / log_path 两个只读元数据访问器，不属于驱动入口。
+- crates/agent：一轮多步的驱动、收件箱（follow-up / steer / inject）、工具调用的派发与结果回写、Agent 的 6 个驱动入口（create / resume / send / cancel / subscribe / idle）、公开配置 `AgentConfig`（`max_parallel_tool_calls`，默认 10，必须 ≥1）；另有 id / log_path 两个只读元数据访问器，不属于驱动入口。
 - crates/cli：开发用 CLI `aios-dev`（`chat` / `run`）。
 
 ## 依赖方向
@@ -34,6 +34,6 @@ AIOS 是一个本地 agent 内核：每次模型请求从会话日志派生，�
 
 ## 接缝
 
-- 测试接缝 1：`Agent` 的 6 个入口（create / resume / send / cancel / subscribe / idle）。
+- 测试接缝 1：`Agent` 的 6 个入口（create / resume / send / cancel / subscribe / idle）；`Agent::create` / `resume` 的 `AgentConfig` 是公开参数，非法值返回 `AgentError`。
 - 测试接缝 2：内置工具的 `Tool::execute`，在临时目录上跑；工具批执行的并行上限、屏障和顺序用可控的测试 Tool（延迟、独占、失败、挂起）测，不靠 sleep。
 - 模型 provider 在 HTTP 层替换（真 DeepSeek 适配器指向本地 mock）。

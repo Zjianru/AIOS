@@ -57,7 +57,7 @@ impl Tool for GlobTool {
     }
 
     fn description(&self) -> &str {
-        "Find files, not directories, whose paths match a glob pattern, including hidden and ignored files. Returns up to 100 paths in modification-time order; a larger result keeps the first paths and reports where the complete list was saved."
+        "Find files, not directories, whose paths match a glob pattern, including hidden and ignored files. Returns up to 100 paths in modification-time order; a larger result keeps the first paths."
     }
 
     fn parameters(&self) -> &Value {
@@ -156,18 +156,22 @@ fn glob(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
             continue;
         }
         let path = entry.path();
-        let mut display = display_path(&cwd, path);
-        if requested_path.as_deref() == Some(".") && display != "." {
-            display = format!("./{display}");
-        }
+        // 匹配用未加 ./ 前缀的 cwd 相对路径（照 DSH：rg 的 --glob 匹配搜索根相对路径）。
+        let plain = display_path(&cwd, path);
         let matched = if pattern.contains('/') {
-            matcher.is_match(display.as_str())
+            matcher.is_match(plain.as_str())
         } else {
             matcher.is_match(entry.file_name())
         };
         if !matched {
             continue;
         }
+        // 输出照 rg：显式 path="." 时路径带 ./ 前缀。
+        let display = if requested_path.as_deref() == Some(".") && plain != "." {
+            format!("./{plain}")
+        } else {
+            plain
+        };
         let modified = entry
             .metadata()
             .ok()
@@ -175,10 +179,10 @@ fn glob(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
             .unwrap_or(SystemTime::UNIX_EPOCH);
         files.push((display, modified));
     }
-    // 修改时间降序（最新在前）；同一时间按路径排序，保证可复现。
+    // 修改时间升序（ripgrep --sort=modified 是升序，最旧在前）；同一时间按路径排序，保证可复现。
     files.sort_by(|(left_path, left_time), (right_path, right_time)| {
-        right_time
-            .cmp(left_time)
+        left_time
+            .cmp(right_time)
             .then_with(|| left_path.cmp(right_path))
     });
     Ok(format_paths(files))

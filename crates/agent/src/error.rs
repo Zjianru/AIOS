@@ -13,6 +13,8 @@ pub enum AgentError {
     ResumeIdMismatch { requested: String, store: String },
     #[error("step 失败且收尾也失败: first={first}, second={second}")]
     StepCleanup { first: String, second: String },
+    #[error("AgentConfig.max_parallel_tool_calls 必须是正整数，读到 {value}")]
+    InvalidConfig { value: usize },
 }
 
 impl AgentError {
@@ -21,7 +23,9 @@ impl AgentError {
         match self {
             Self::Store(_) => "STORE".to_owned(),
             Self::Model(error) => error.code.as_str(),
-            Self::ResumeIdMismatch { .. } | Self::StepCleanup { .. } => "AGENT".to_owned(),
+            Self::ResumeIdMismatch { .. }
+            | Self::StepCleanup { .. }
+            | Self::InvalidConfig { .. } => "AGENT".to_owned(),
         }
     }
 }

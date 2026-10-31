@@ -65,6 +65,12 @@ impl Inner {
         deps: Deps,
         last_turn: u64,
     ) -> Result<Arc<Self>, AgentError> {
+        // 协调线加账：非法并发上限要在建 agent 时返回错误，不能等到驱动任务里 panic。
+        if config.max_parallel_tool_calls == 0 {
+            return Err(AgentError::InvalidConfig {
+                value: config.max_parallel_tool_calls,
+            });
+        }
         let Deps {
             model,
             tools,
