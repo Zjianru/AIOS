@@ -5,123 +5,13 @@ mod common;
 use std::sync::Arc;
 
 use agent::{Agent, AgentConfig, Delivery, Deps};
-use common::{SequenceResponder, sse};
+use common::{FINAL_TEXT_SSE, SequenceResponder, ToolEvent, gated, sse, tool_calls_sse};
 use model::{DeepSeek, DeepSeekConfig, Effort, UserMessage};
-use serde_json::{Value, json};
 use session::SessionStore;
 use tokio::sync::{Semaphore, mpsc};
-use tools::{Tool, ToolCall, ToolConcurrency, ToolContext, ToolFuture, ToolResult, ToolSet};
+use tools::{Tool, ToolConcurrency, ToolSet};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ToolEvent {
-    Started(String),
-    Finished(String),
-}
-
-/// 可控的测试工具：通知开始，等 harness 放行，再通知结束。
-struct GatedTool {
-    name: &'static str,
-    mode: ToolConcurrency,
-    parameters: Value,
-    started: mpsc::UnboundedSender<ToolEvent>,
-    permits: Arc<Semaphore>,
-}
-
-impl Tool for GatedTool {
-    fn name(&self) -> &str {
-        self.name
-    }
-
-    fn description(&self) -> &str {
-        "test-only gated tool"
-    }
-
-    fn parameters(&self) -> &Value {
-        &self.parameters
-    }
-
-    fn concurrency(&self) -> ToolConcurrency {
-        self.mode
-    }
-
-    fn execute<'a>(
-        &'a self,
-        call: ToolCall,
-        _context: &'a ToolContext,
-    ) -> ToolFuture<'a, ToolResult> {
-        Box::pin(async move {
-            let _ = self.started.send(ToolEvent::Started(self.name.to_owned()));
-            let permit = Arc::clone(&self.permits)
-                .acquire_owned()
-                .await
-                .expect("测试工具的信号量被关闭");
-            let _ = self.started.send(ToolEvent::Finished(self.name.to_owned()));
-            drop(permit);
-            ToolResult::success(call.id, format!("ok:{}", self.name))
-        })
-    }
-}
-
-fn gated(
-    name: &'static str,
-    mode: ToolConcurrency,
-    started: &mpsc::UnboundedSender<ToolEvent>,
-    permits: &mut Vec<(&'static str, Arc<Semaphore>)>,
-) -> Box<dyn Tool> {
-    let semaphore = Arc::new(Semaphore::new(0));
-    permits.push((name, Arc::clone(&semaphore)));
-    Box::new(GatedTool {
-        name,
-        mode,
-        parameters: json!({"type": "object", "properties": {}}),
-        started: started.clone(),
-        permits: semaphore,
-    })
-}
-
-fn tool_calls_sse(calls: &[(&str, &str)]) -> String {
-    let mut body = String::from(
-        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_tools\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"deepseek-flash\",\"content\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n",
-    );
-    for (index, (id, name)) in calls.iter().enumerate() {
-        body.push_str(&format!(
-            "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":{index},\"content_block\":{{\"type\":\"tool_use\",\"id\":\"{id}\",\"name\":\"{name}\",\"input\":{{}}}}}}\n\n"
-        ));
-        body.push_str(&format!(
-            "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":{index},\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":\"{{}}\"}}}}\n\n"
-        ));
-        body.push_str(&format!(
-            "event: content_block_stop\ndata: {{\"type\":\"content_block_stop\",\"index\":{index}}}\n\n"
-        ));
-    }
-    body.push_str(
-        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":2}}\n\n",
-    );
-    body.push_str("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
-    body
-}
-
-const FINAL_TEXT_SSE: &str = r#"event: message_start
-data: {"type":"message_start","message":{"id":"msg_final","type":"message","role":"assistant","model":"deepseek-flash","content":[],"usage":{"input_tokens":50,"output_tokens":1}}}
-
-event: content_block_start
-data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
-
-event: content_block_delta
-data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"工具都跑完了。"}}
-
-event: content_block_stop
-data: {"type":"content_block_stop","index":0}
-
-event: message_delta
-data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}
-
-event: message_stop
-data: {"type":"message_stop"}
-
-"#;
 
 struct Fixture {
     agent: Agent,
