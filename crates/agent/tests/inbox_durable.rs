@@ -484,3 +484,43 @@ async fn invalid_persisted_inbox_is_reported_on_resume() {
         "要报 CorruptInbox：{error}"
     );
 }
+
+#[tokio::test]
+async fn overflowing_removed_count_is_reported_as_corrupt_not_panic() {
+    let server = MockServer::start().await;
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let (agent, id) = create_agent(data_dir.path(), cwd.path(), &server.uri()).await;
+    drop(agent);
+    {
+        let mut store = SessionStore::open(data_dir.path(), &id).unwrap();
+        // 先放一条待处理消息让队列长度=1；再写 start=1、removedCount=u64::MAX 的损坏
+        // splice：start + removedCount 在 u64 上溢出，必须报 CorruptInbox，不能 panic。
+        store
+            .append(&[
+                EventKind::InboxSpliced {
+                    target: InboxTarget::NextTurn,
+                    start: 0,
+                    removed_count: None,
+                    inserted: vec![Message::text(Role::User, "在队列里")],
+                    outcome: None,
+                },
+                EventKind::InboxSpliced {
+                    target: InboxTarget::NextTurn,
+                    start: 1,
+                    removed_count: Some(u64::MAX),
+                    inserted: Vec::new(),
+                    outcome: None,
+                },
+            ])
+            .unwrap();
+    }
+    let error = match resume_agent(data_dir.path(), &id, &server.uri()).await {
+        Ok(_) => panic!("坐标溢出的坏 splice 要让 resume 报错，不能 panic 或静默丢"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(&error, AgentError::CorruptInbox(detail) if detail.contains("inbox")),
+        "要报 CorruptInbox：{error}"
+    );
+}
