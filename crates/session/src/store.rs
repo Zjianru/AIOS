@@ -1,8 +1,8 @@
 //! 会话日志的 JSONL 存储：一个会话一个只追加的文件。
 //!
 //! 机制照 DSH 的 session-persistence-jsonl（strategy 第 1 节），格式是本仓库
-//! 自己的 v1：首行 header；每批事件先写入再 fsync，写失败回滚到写之前的长度；
-//! 读的时候丢掉不完整的最后一行。
+//! 自己的 v2：首行 header；事件记录是 `{type, seq, time, data}`；每批事件先写入再
+//! fsync，写失败回滚到写之前的长度；读的时候丢掉不完整的最后一行。
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;

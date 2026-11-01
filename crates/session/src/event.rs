@@ -6,7 +6,12 @@ use serde::{Deserialize, Serialize};
 use crate::SessionId;
 
 /// 会话日志的格式版本；读到不认识的版本就拒绝，不做迁移。
-pub const FORMAT_VERSION: u64 = 1;
+///
+/// v2：事件记录照 DSH 的 SessionEvent：`{type, seq, time, data}`，事件自己的字段放进
+/// data（DSH `packages/core/session/src/index.ts:826-836`、
+/// `packages/session/session-format-v1-to-v2/src/codec.ts:21`）。v1 的日志直接拒绝，
+/// 不做迁移（spec 实现决定：现在没有产品数据）。
+pub const FORMAT_VERSION: u64 = 2;
 
 /// JSONL 第一行的会话 header。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,11 +257,64 @@ pub fn last_todos(events: &[Event]) -> Option<Vec<TodoItem>> {
     })
 }
 
-/// 日志里的一条事件：seq 从 1 开始连续，time 是 unix 毫秒。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// 日志里的一条事件：`{type, seq, time, data}`（照 DSH 的 SessionEvent）。
+///
+/// seq 从 1 开始连续，time 是 unix 毫秒；事件自己的字段放在 data 里。
+#[derive(Debug, Clone, PartialEq)]
 pub struct Event {
     pub seq: u64,
     pub time: u64,
-    #[serde(flatten)]
     pub kind: EventKind,
+}
+
+impl Serialize for Event {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::{Error as _, SerializeMap as _};
+        let serde_json::Value::Object(mut data) =
+            serde_json::to_value(&self.kind).map_err(S::Error::custom)?
+        else {
+            return Err(S::Error::custom("事件字段不是 JSON 对象"));
+        };
+        let kind = data
+            .remove("type")
+            .ok_or_else(|| S::Error::custom("事件字段缺少 type"))?;
+        let mut map = serializer.serialize_map(Some(4))?;
+        map.serialize_entry("type", &kind)?;
+        map.serialize_entry("seq", &self.seq)?;
+        map.serialize_entry("time", &self.time)?;
+        map.serialize_entry("data", &serde_json::Value::Object(data))?;
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for Event {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+        #[derive(Deserialize)]
+        struct WireEvent {
+            #[serde(rename = "type")]
+            kind: String,
+            seq: u64,
+            time: u64,
+            data: serde_json::Value,
+        }
+        let wire = WireEvent::deserialize(deserializer)?;
+        let serde_json::Value::Object(mut data) = wire.data else {
+            return Err(D::Error::custom("事件的 data 必须是 JSON 对象"));
+        };
+        data.insert("type".to_owned(), serde_json::Value::String(wire.kind));
+        let kind =
+            serde_json::from_value(serde_json::Value::Object(data)).map_err(D::Error::custom)?;
+        Ok(Self {
+            seq: wire.seq,
+            time: wire.time,
+            kind,
+        })
+    }
 }
