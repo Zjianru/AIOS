@@ -1,12 +1,28 @@
-//! 内置只读工具：read、glob、grep。
+//! 内置工具：只读的 read / glob / grep，和写类 write / edit / apply_patch。
 
+mod apply_patch;
+mod ask_user;
+mod bash;
+mod edit;
 mod glob;
 mod grep;
+mod jobs;
 mod read;
+mod skill;
+mod todo;
+mod write;
 
+pub use apply_patch::ApplyPatchTool;
+pub use ask_user::AskUserQuestionTool;
+pub use bash::{BashTool, foreground_bytes_read};
+pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
+pub use jobs::{JobKillTool, JobListTool, JobOutputTool};
 pub use read::ReadTool;
+pub use skill::SkillTool;
+pub use todo::TodoWriteTool;
+pub use write::WriteTool;
 
 use std::path::{Component, Path, PathBuf};
 

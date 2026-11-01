@@ -7,6 +7,8 @@ pub const DEFAULT_BASE_URL: &str = "https://api.deepseek.com/anthropic";
 
 /// 默认单次请求输出上限（spec 实现决定）。
 pub const DEFAULT_MAX_TOKENS: u32 = 256_000;
+/// 默认上下文窗口（T005.8a）：DSH 的容量来自模型表；AIOS 先固定一个保守值，测试可覆盖。
+pub const DEFAULT_CONTEXT_WINDOW: u64 = 1_000_000;
 
 /// 流读取的空闲超时（spec 实现决定：300 秒）。
 pub(crate) const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
@@ -22,6 +24,8 @@ pub struct DeepSeekConfig {
     pub model: String,
     /// 单次请求输出上限。
     pub max_tokens: u32,
+    /// 模型上下文窗口（token）；压缩阈值用（T005.8a）。AIOS 的模型表只有这一处容量来源。
+    pub context_window: u64,
     /// 推理强度。
     pub effort: Effort,
 }
@@ -33,6 +37,7 @@ impl Default for DeepSeekConfig {
             api_key: String::new(),
             model: "deepseek-flash".to_owned(),
             max_tokens: DEFAULT_MAX_TOKENS,
+            context_window: DEFAULT_CONTEXT_WINDOW,
             effort: Effort::High,
         }
     }

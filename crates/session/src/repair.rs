@@ -53,6 +53,7 @@ pub fn interrupted_turn_closers(events: &[Event]) -> Vec<EventKind> {
                 open_step = None;
                 pending.clear();
             }
+            EventKind::QuestionAsked { .. } | EventKind::QuestionCancelled { .. } => {}
             EventKind::AssistantMessage {
                 turn,
                 step,
@@ -95,7 +96,13 @@ pub fn interrupted_turn_closers(events: &[Event]) -> Vec<EventKind> {
                     pending.remove(position);
                 }
             }
-            EventKind::SystemMessage { .. } | EventKind::UserMessage { .. } => {}
+            EventKind::SystemMessage { .. }
+            | EventKind::UserMessage { .. }
+            | EventKind::CompactionPrune { .. }
+            | EventKind::TodoWrite { .. }
+            | EventKind::CompactionStart { .. }
+            | EventKind::CompactionSummary { .. }
+            | EventKind::CompactionEnd { .. } => {}
         }
     }
     let Some(turn) = open_turn else {

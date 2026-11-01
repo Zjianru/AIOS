@@ -13,8 +13,11 @@ pub enum AgentError {
     ResumeIdMismatch { requested: String, store: String },
     #[error("step 失败且收尾也失败: first={first}, second={second}")]
     StepCleanup { first: String, second: String },
-    #[error("AgentConfig.max_parallel_tool_calls 必须是正整数，读到 {value}")]
-    InvalidConfig { value: usize },
+    #[error("AgentConfig 非法：{field}（{message}）")]
+    InvalidConfig {
+        field: &'static str,
+        message: String,
+    },
 }
 
 impl AgentError {

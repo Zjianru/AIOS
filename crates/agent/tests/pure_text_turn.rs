@@ -1,7 +1,10 @@
 //! 接缝 1：通过 Agent 的 6 个入口驱动一轮纯文本对话（测试清单第 1 条）。
 
-use agent::{Agent, AgentConfig, AgentEvent, Delivery, Deps, TurnOutcome};
-use model::{DeepSeek, DeepSeekConfig, Effort, Role, UserMessage};
+mod common;
+
+use agent::{AgentEvent, Delivery, TurnOutcome};
+use common::setup_agent;
+use model::{Role, UserMessage};
 use session::{EventKind, SessionStore};
 use tools::ToolSet;
 use wiremock::matchers::{method, path};
@@ -43,28 +46,8 @@ async fn pure_text_turn() {
         .mount(&server)
         .await;
 
-    let data_dir = tempfile::tempdir().unwrap();
-    let cwd = tempfile::tempdir().unwrap();
+    let (agent, data_dir, cwd, session_id) = setup_agent(&server.uri(), ToolSet::empty()).await;
     let canonical_cwd = std::fs::canonicalize(cwd.path()).unwrap();
-    let store = SessionStore::create(data_dir.path(), cwd.path()).unwrap();
-    let session_id = store.id().clone();
-    let config = DeepSeekConfig {
-        base_url: server.uri(),
-        api_key: "test-key".to_owned(),
-        model: "deepseek-flash".to_owned(),
-        max_tokens: 2048,
-        effort: Effort::High,
-    };
-    let agent = Agent::create(
-        AgentConfig::default(),
-        Deps {
-            model: DeepSeek::new(config).unwrap(),
-            tools: ToolSet::empty(),
-            store,
-        },
-    )
-    .await
-    .unwrap();
     let mut events = agent.subscribe();
     agent.send(UserMessage::text("你好"), Delivery::FollowUp);
     agent.idle().await;

@@ -5,62 +5,17 @@
 
 mod common;
 
-use std::time::Duration;
-
-use agent::{Agent, AgentConfig, Delivery, Deps};
-use common::{FINAL_TEXT_SSE, SequenceResponder, ToolEvent, gated, sse, tool_calls_sse};
-use model::{DeepSeek, DeepSeekConfig, Effort, UserMessage};
-use session::{EventKind, SessionId, SessionStore};
+use agent::Delivery;
+use common::{
+    FINAL_TEXT_SSE, SequenceResponder, ToolEvent, gated, setup_agent, sse, tool_calls_sse,
+    wait_idle,
+};
+use model::UserMessage;
+use session::{EventKind, SessionStore};
 use tokio::sync::mpsc;
 use tools::{ToolConcurrency, ToolSet};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer};
-
-fn model_config(base_url: &str) -> DeepSeekConfig {
-    DeepSeekConfig {
-        base_url: base_url.to_owned(),
-        api_key: "test-key".to_owned(),
-        model: "deepseek-flash".to_owned(),
-        max_tokens: 2048,
-        effort: Effort::High,
-    }
-}
-
-async fn setup(
-    base_url: &str,
-) -> (
-    Agent,
-    tempfile::TempDir,
-    tempfile::TempDir,
-    SessionId,
-    mpsc::UnboundedReceiver<ToolEvent>,
-    Vec<std::sync::Arc<tokio::sync::Semaphore>>,
-) {
-    let data_dir = tempfile::tempdir().unwrap();
-    let cwd = tempfile::tempdir().unwrap();
-    let store = SessionStore::create(data_dir.path(), cwd.path()).unwrap();
-    let id = store.id().clone();
-    let (started_tx, started) = mpsc::unbounded_channel();
-    let mut permits = Vec::new();
-    let tools = ToolSet::new(vec![gated(
-        "gate",
-        ToolConcurrency::Parallel,
-        &started_tx,
-        &mut permits,
-    )]);
-    let permits: Vec<_> = permits.into_iter().map(|(_, permit)| permit).collect();
-    let agent = Agent::create(
-        AgentConfig::default(),
-        Deps {
-            model: DeepSeek::new(model_config(base_url)).unwrap(),
-            tools,
-            store,
-        },
-    )
-    .await
-    .unwrap();
-    (agent, data_dir, cwd, id, started, permits)
-}
 
 async fn next_started(started: &mut mpsc::UnboundedReceiver<ToolEvent>) -> String {
     loop {
@@ -69,12 +24,6 @@ async fn next_started(started: &mut mpsc::UnboundedReceiver<ToolEvent>) -> Strin
             ToolEvent::Finished(_) => {}
         }
     }
-}
-
-async fn wait_idle(agent: &Agent) {
-    tokio::time::timeout(Duration::from_secs(10), agent.idle())
-        .await
-        .expect("idle() 超时");
 }
 
 fn step_numbers(store: &SessionStore) -> Vec<(u64, u64)> {
@@ -113,7 +62,16 @@ async fn each_turn_starts_step_numbering_at_one() {
         ]))
         .mount(&server)
         .await;
-    let (agent, data_dir, _cwd, id, mut started, permits) = setup(&server.uri()).await;
+    let (started_tx, mut started) = mpsc::unbounded_channel();
+    let mut permits = Vec::new();
+    let tools = ToolSet::new(vec![gated(
+        "gate",
+        ToolConcurrency::Parallel,
+        &started_tx,
+        &mut permits,
+    )]);
+    let permits: Vec<_> = permits.into_iter().map(|(_, permit)| permit).collect();
+    let (agent, data_dir, _cwd, id) = setup_agent(&server.uri(), tools).await;
 
     agent.send(UserMessage::text("第一轮"), Delivery::FollowUp);
     assert_eq!(next_started(&mut started).await, "gate");
@@ -124,7 +82,7 @@ async fn each_turn_starts_step_numbering_at_one() {
     // 第二轮照样排第三轮的 follow-up。
     agent.send(UserMessage::text("第三轮"), Delivery::FollowUp);
     permits[0].add_permits(1);
-    wait_idle(&agent).await;
+    wait_idle(&agent, 10).await;
 
     let store = SessionStore::open(data_dir.path(), &id).unwrap();
     assert_eq!(

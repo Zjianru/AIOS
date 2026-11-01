@@ -52,7 +52,7 @@ expression: body
     "effort": "high"
   },
   "stream": true,
-  "system": "You are AIOS, a coding agent. Your working directory is <CWD>.\n\nUse the read tool — not shell commands like cat — to inspect text files. Use offset and limit to continue reading large files.",
+  "system": "You are AIOS, a coding agent. Your working directory is <CWD>.\n\nUse the read tool — not shell commands like cat — to inspect text files. Use offset and limit to continue reading large files.\n\nCheck the [exit code: N] marker on every bash result; investigate failures before moving on.\n\nTrack every background job id you start. You are notified in-session when a job finishes — do not busy-poll or sleep on one; keep working on independent steps and do not duplicate a running job's work. Before giving a final answer, collect every still-relevant job with job_output (set wait: true only when you are genuinely blocked on it), and job_kill jobs that stopped mattering.\n\nRead an existing file before overwriting it with write; prefer edit for targeted changes.\n\nRead a file before editing it, unless you just created or edited it in this session.\n\nPrefer apply_patch over separate edit calls for changes across files or separated regions. Read a file before updating, deleting, or moving it, unless you just created or edited it in this session. The whole patch is checked first and a rejected patch changes nothing; once applying starts, operations run in order, stop at the first failure, and are not rolled back, so re-read affected files before retrying when needed.",
   "thinking": {
     "type": "enabled"
   },
@@ -124,6 +124,265 @@ expression: body
         "type": "object"
       },
       "name": "grep"
+    },
+    {
+      "description": "Create or fully replace a UTF-8 text file.",
+      "input_schema": {
+        "properties": {
+          "content": {
+            "description": "Full UTF-8 text content to write.",
+            "type": "string"
+          },
+          "file_path": {
+            "description": "Path to write, resolved by the filesystem backend. Provide `file_path` before `content` in the arguments.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_path",
+          "content"
+        ],
+        "type": "object"
+      },
+      "name": "write"
+    },
+    {
+      "description": "Edit an existing UTF-8 text file by replacing literal text.",
+      "input_schema": {
+        "properties": {
+          "file_path": {
+            "description": "Path to edit, resolved by the filesystem backend. Provide `file_path` before `old_string` and `new_string` in the arguments.",
+            "type": "string"
+          },
+          "new_string": {
+            "description": "Literal replacement text. Use an empty string to delete the match.",
+            "type": "string"
+          },
+          "old_string": {
+            "description": "Literal text to replace.",
+            "type": "string"
+          },
+          "replace_all": {
+            "description": "Replace all matches. Defaults to false; when false, old_string must appear exactly once.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "file_path",
+          "old_string",
+          "new_string"
+        ],
+        "type": "object"
+      },
+      "name": "edit"
+    },
+    {
+      "description": "Create, update, delete, or move UTF-8 text files with one Codex-style patch; prefer it over multiple edit calls when a change spans several files or separated regions.",
+      "input_schema": {
+        "properties": {
+          "input": {
+            "description": "Codex patch text: start with *** Begin Patch and end with *** End Patch. Use *** Add File: path with + lines; *** Update File: path, optionally followed by *** Move to: path, with @@ or @@ context and space-prefixed context, + added, or - removed lines; *** End of File anchors the last hunk to the file end. Use *** Delete File: path to delete. Paths are relative to the Session working directory. Read existing files before updating, deleting, or moving them.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "input"
+        ],
+        "type": "object"
+      },
+      "name": "apply_patch"
+    },
+    {
+      "description": "Execute a bash command (bash -c) and return its stdout/stderr. Each call runs in a fresh shell; pass workdir instead of using cd. Long output is truncated to its tail; the full output is saved to a file whose path is reported when available. An unset variable expands to an empty string, so guard variables in such paths with ${VAR:?}. A foreground command that reaches its timeout keeps running as a background job instead of being killed.",
+      "input_schema": {
+        "properties": {
+          "command": {
+            "description": "The bash command to execute.",
+            "type": "string"
+          },
+          "run_in_background": {
+            "description": "Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies.",
+            "type": "boolean"
+          },
+          "timeoutMs": {
+            "description": "Timeout in milliseconds. On expiry the command moves to the background as a job instead of being killed. Defaults to 120000; capped at 600000.",
+            "type": "number"
+          },
+          "workdir": {
+            "description": "Working directory for this command. Defaults to the session workspace; a relative path is resolved against it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      },
+      "name": "bash"
+    },
+    {
+      "description": "Read a background job's output (optionally wait for it to finish).",
+      "input_schema": {
+        "properties": {
+          "job_id": {
+            "description": "Background job id.",
+            "type": "string"
+          },
+          "timeout_ms": {
+            "description": "Wait timeout in milliseconds; capped at 600000.",
+            "type": "number"
+          },
+          "wait": {
+            "description": "Wait for settlement (default false).",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "type": "object"
+      },
+      "name": "job_output"
+    },
+    {
+      "description": "List this session's background jobs.",
+      "input_schema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "job_list"
+    },
+    {
+      "description": "Request cancellation of a background job.",
+      "input_schema": {
+        "properties": {
+          "job_id": {
+            "description": "Background job id.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Optional reason recorded on the job.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "type": "object"
+      },
+      "name": "job_kill"
+    },
+    {
+      "description": "Load the full instructions for a skill. Call it before acting on a task that names or clearly matches a skill in the session skill catalog.",
+      "input_schema": {
+        "properties": {
+          "name": {
+            "description": "The exact skill name from the available skills list.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "skill"
+    },
+    {
+      "description": "Record and update a task list to plan multi-step work and show progress; skip it for trivial single-step tasks. Add one todo per concrete step before you start. While work remains, keep the todos being worked on `in_progress`, several only when work runs in parallel. Mark each todo `completed` as soon as it is done.",
+      "input_schema": {
+        "properties": {
+          "todos": {
+            "description": "The COMPLETE task list, replacing any previous list.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "content": {
+                  "description": "What the task is — a short imperative line.",
+                  "type": "string"
+                },
+                "status": {
+                  "description": "pending (not started) | in_progress (now) | completed (done).",
+                  "enum": [
+                    "pending",
+                    "in_progress",
+                    "completed"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "content",
+                "status"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "todos"
+        ],
+        "type": "object"
+      },
+      "name": "todo_write"
+    },
+    {
+      "description": "Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding.",
+      "input_schema": {
+        "properties": {
+          "questions": {
+            "description": "Questions to ask the user before continuing.",
+            "items": {
+              "properties": {
+                "header": {
+                  "description": "Optional short heading.",
+                  "type": "string"
+                },
+                "id": {
+                  "description": "Stable id for this question; echoed in the answer.",
+                  "type": "string"
+                },
+                "multi_select": {
+                  "type": "boolean"
+                },
+                "options": {
+                  "items": {
+                    "properties": {
+                      "description": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "question": {
+                  "description": "The specific question to ask the user.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "question"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "questions"
+        ],
+        "type": "object"
+      },
+      "name": "ask_user_question"
     }
   ]
 }

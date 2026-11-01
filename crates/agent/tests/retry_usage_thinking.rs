@@ -5,43 +5,16 @@ mod common;
 
 use std::time::Duration;
 
-use agent::{Agent, AgentConfig, AgentEvent, Delivery, Deps, TurnOutcome};
+use agent::{AgentEvent, Delivery, TurnOutcome};
 use common::{
-    FINAL_TEXT_SSE, HeadersGatedServer, ScriptedSseServer, SequenceResponder, SseScript, sse,
+    FINAL_TEXT_SSE, HeadersGatedServer, ScriptedSseServer, SequenceResponder, SseScript,
+    setup_agent, sse, wait_idle,
 };
-use model::{ContentBlock, DeepSeek, DeepSeekConfig, Effort, UserMessage};
-use session::{EventKind, SessionId, SessionStore, TurnEndReason};
+use model::{ContentBlock, UserMessage};
+use session::{EventKind, SessionStore, TurnEndReason};
 use tools::ToolSet;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
-
-fn model_config(base_url: &str) -> DeepSeekConfig {
-    DeepSeekConfig {
-        base_url: base_url.to_owned(),
-        api_key: "test-key".to_owned(),
-        model: "deepseek-flash".to_owned(),
-        max_tokens: 2048,
-        effort: Effort::High,
-    }
-}
-
-async fn setup(base_url: &str) -> (Agent, tempfile::TempDir, tempfile::TempDir, SessionId) {
-    let data_dir = tempfile::tempdir().unwrap();
-    let cwd = tempfile::tempdir().unwrap();
-    let store = SessionStore::create(data_dir.path(), cwd.path()).unwrap();
-    let id = store.id().clone();
-    let agent = Agent::create(
-        AgentConfig::default(),
-        Deps {
-            model: DeepSeek::new(model_config(base_url)).unwrap(),
-            tools: ToolSet::empty(),
-            store,
-        },
-    )
-    .await
-    .unwrap();
-    (agent, data_dir, cwd, id)
-}
 
 async fn mount_responses(server: &MockServer, responses: Vec<ResponseTemplate>) {
     Mock::given(method("POST"))
@@ -55,12 +28,6 @@ fn http_error(status: u16, error_type: &str) -> ResponseTemplate {
     ResponseTemplate::new(status).set_body_json(serde_json::json!({
         "error": { "type": error_type, "message": "测试错误" }
     }))
-}
-
-async fn wait_idle(agent: &Agent, seconds: u64) {
-    tokio::time::timeout(Duration::from_secs(seconds), agent.idle())
-        .await
-        .expect("idle() 超时");
 }
 
 fn drain_events(events: &mut tokio::sync::broadcast::Receiver<AgentEvent>) -> Vec<AgentEvent> {
@@ -178,7 +145,7 @@ async fn rate_limit_retries_then_succeeds() {
         ],
     )
     .await;
-    let (agent, data_dir, _cwd, id) = setup(&server.uri()).await;
+    let (agent, data_dir, _cwd, id) = setup_agent(&server.uri(), ToolSet::empty()).await;
     let mut events = agent.subscribe();
     agent.send(UserMessage::text("重试一下"), Delivery::FollowUp);
     wait_idle(&agent, 15).await;
@@ -222,7 +189,7 @@ async fn rate_limit_retries_then_succeeds() {
 async fn auth_error_does_not_retry() {
     let server = MockServer::start().await;
     mount_responses(&server, vec![http_error(401, "authentication_error")]).await;
-    let (agent, data_dir, _cwd, id) = setup(&server.uri()).await;
+    let (agent, data_dir, _cwd, id) = setup_agent(&server.uri(), ToolSet::empty()).await;
     let mut events = agent.subscribe();
     agent.send(UserMessage::text("认证失败"), Delivery::FollowUp);
     wait_idle(&agent, 10).await;
@@ -263,7 +230,7 @@ async fn failure_after_streamed_content_is_not_retried() {
         frames: MIDSTREAM_ERROR_SSE.to_owned(),
         hold: false,
     }]);
-    let (agent, data_dir, _cwd, id) = setup(&server.base_url()).await;
+    let (agent, data_dir, _cwd, id) = setup_agent(&server.base_url(), ToolSet::empty()).await;
     let mut events = agent.subscribe();
     agent.send(UserMessage::text("流到一半失败"), Delivery::FollowUp);
     wait_idle(&agent, 10).await;
@@ -295,7 +262,7 @@ async fn failure_after_streamed_content_is_not_retried() {
 async fn usage_event_marks_missing_fields_unknown() {
     let server = MockServer::start().await;
     mount_responses(&server, vec![sse(PARTIAL_USAGE_SSE.to_owned())]).await;
-    let (agent, _data_dir, _cwd, _id) = setup(&server.uri()).await;
+    let (agent, _data_dir, _cwd, _id) = setup_agent(&server.uri(), ToolSet::empty()).await;
     let mut events = agent.subscribe();
     agent.send(UserMessage::text("报用量"), Delivery::FollowUp);
     wait_idle(&agent, 10).await;
@@ -325,7 +292,7 @@ async fn thinking_round_trips_with_signature() {
         vec![sse(THINKING_SSE.to_owned()), sse(FINAL_TEXT_SSE.to_owned())],
     )
     .await;
-    let (agent, data_dir, cwd, id) = setup(&server.uri()).await;
+    let (agent, data_dir, cwd, id) = setup_agent(&server.uri(), ToolSet::empty()).await;
     let canonical_cwd = std::fs::canonicalize(cwd.path()).unwrap();
     agent.send(UserMessage::text("想一想"), Delivery::FollowUp);
     wait_idle(&agent, 10).await;
@@ -372,7 +339,7 @@ async fn thinking_round_trips_with_signature() {
 #[tokio::test]
 async fn cancel_while_waiting_headers_aborts_promptly() {
     let mut server = HeadersGatedServer::start();
-    let (agent, data_dir, _cwd, id) = setup(&server.base_url()).await;
+    let (agent, data_dir, _cwd, id) = setup_agent(&server.base_url(), ToolSet::empty()).await;
     let mut events = agent.subscribe();
     agent.send(UserMessage::text("等响应头"), Delivery::FollowUp);
     // 请求已经收到、响应头还没写：此时取消必须立刻生效。
@@ -436,7 +403,7 @@ async fn cancel_keeps_interrupted_thinking_without_signature() {
         frames: PARTIAL_THINKING_SSE.to_owned(),
         hold: true,
     }]);
-    let (agent, data_dir, _cwd, id) = setup(&server.base_url()).await;
+    let (agent, data_dir, _cwd, id) = setup_agent(&server.base_url(), ToolSet::empty()).await;
     let mut events = agent.subscribe();
     agent.send(UserMessage::text("边想边说"), Delivery::FollowUp);
     server.wait_ready().await;

@@ -2,47 +2,15 @@
 
 mod common;
 
-use std::time::Duration;
-
-use agent::{Agent, AgentConfig, Delivery, Deps};
+use agent::Delivery;
 use common::{
     FINAL_TEXT_SSE, PhaseScript, PhaseSseServer, ScriptedSseServer, SseScript, ToolEvent, gated,
+    setup_agent, wait_idle,
 };
-use model::{ContentBlock, DeepSeek, DeepSeekConfig, Effort, UserMessage};
-use session::{EventKind, SessionId, SessionStore, TurnEndReason};
+use model::{ContentBlock, UserMessage};
+use session::{EventKind, SessionStore, TurnEndReason};
 use tokio::sync::mpsc;
 use tools::{ToolConcurrency, ToolSet};
-
-fn model_config(base_url: &str) -> DeepSeekConfig {
-    DeepSeekConfig {
-        base_url: base_url.to_owned(),
-        api_key: "test-key".to_owned(),
-        model: "deepseek-flash".to_owned(),
-        max_tokens: 2048,
-        effort: Effort::High,
-    }
-}
-
-async fn setup(
-    base_url: &str,
-    tools: ToolSet,
-) -> (Agent, tempfile::TempDir, tempfile::TempDir, SessionId) {
-    let data_dir = tempfile::tempdir().unwrap();
-    let cwd = tempfile::tempdir().unwrap();
-    let store = SessionStore::create(data_dir.path(), cwd.path()).unwrap();
-    let id = store.id().clone();
-    let agent = Agent::create(
-        AgentConfig::default(),
-        Deps {
-            model: DeepSeek::new(model_config(base_url)).unwrap(),
-            tools,
-            store,
-        },
-    )
-    .await
-    .unwrap();
-    (agent, data_dir, cwd, id)
-}
 
 type ToolPermits = Vec<(&'static str, std::sync::Arc<tokio::sync::Semaphore>)>;
 
@@ -56,12 +24,6 @@ fn gated_tools() -> (ToolSet, mpsc::UnboundedReceiver<ToolEvent>, ToolPermits) {
         &mut permits,
     )]);
     (tools, started, permits)
-}
-
-async fn wait_idle(agent: &Agent, seconds: u64) {
-    tokio::time::timeout(Duration::from_secs(seconds), agent.idle())
-        .await
-        .expect("idle() 超时");
 }
 
 fn count_turns(store: &SessionStore) -> usize {
@@ -180,7 +142,7 @@ async fn max_tokens_does_not_execute_or_log_truncated_tool_call() {
         },
     ]);
     let (tools, mut started, _permits) = gated_tools();
-    let (agent, data_dir, _cwd, id) = setup(&server.base_url(), tools).await;
+    let (agent, data_dir, _cwd, id) = setup_agent(&server.base_url(), tools).await;
     agent.send(UserMessage::text("截断一个工具调用"), Delivery::FollowUp);
     wait_idle(&agent, 5).await;
 
@@ -233,7 +195,7 @@ async fn max_tokens_keeps_text_but_drops_truncated_tool_call() {
         },
     ]);
     let (tools, mut started, _permits) = gated_tools();
-    let (agent, data_dir, _cwd, id) = setup(&server.base_url(), tools).await;
+    let (agent, data_dir, _cwd, id) = setup_agent(&server.base_url(), tools).await;
     agent.send(UserMessage::text("先说半截再截断工具"), Delivery::FollowUp);
     wait_idle(&agent, 5).await;
 
@@ -295,7 +257,7 @@ async fn max_tokens_stays_sticky_across_later_step() {
         },
     ]);
     let (tools, mut started, _permits) = gated_tools();
-    let (agent, data_dir, _cwd, id) = setup(&server.base_url(), tools).await;
+    let (agent, data_dir, _cwd, id) = setup_agent(&server.base_url(), tools).await;
     agent.send(UserMessage::text("截断这一轮"), Delivery::FollowUp);
     // Step1 已经把前缀写出来、还没结算；此时插一句 steer，进 next-step。
     server.wait_ready().await;

@@ -13,11 +13,16 @@ use model::{
 use session::{EventKind, SessionId, SessionStore, TurnEndReason};
 use tokio::sync::Notify;
 use tokio::sync::broadcast;
-use tools::{ToolCall, ToolContext, ToolSet, execute_batch};
+use tools::{ToolCall, ToolContext, ToolSessionState, ToolSet, execute_batch};
 
+use crate::compaction;
 use crate::error::AgentError;
 use crate::inbox::{Delivery, Inbox, InboxTarget};
-use crate::{AgentConfig, AgentEvent, Deps, TurnOutcome};
+use crate::instructions::InstructionState;
+use crate::prune;
+use crate::skill_catalog::SkillCatalogState;
+use crate::{AgentConfig, AgentEvent, CompactionTrigger, Deps, JobStatus, TurnOutcome};
+use crate::{Question, QuestionOption};
 
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
@@ -43,20 +48,61 @@ enum StepEnd {
 }
 
 /// agent 的共享状态；驱动任务和 6 个入口方法都通过它交互。
+/// 正在等待用户回答的问题（T005.10）；answer 入口按 question_id 绑定。
+struct PendingQuestion {
+    questions: Vec<Question>,
+    answers: std::collections::BTreeMap<String, String>,
+    deliver: Option<tokio::sync::oneshot::Sender<Vec<(String, String)>>>,
+}
+
 pub(crate) struct Inner {
     id: SessionId,
     log_path: PathBuf,
     cwd: PathBuf,
-    model: DeepSeek,
-    tools: ToolSet,
+    /// 会话数据目录；也是固定的用户级指令根（T005.5）。
+    data_dir: PathBuf,
+    /// 用户级指令根（AgentConfig::instruction_roots）。
+    instruction_roots: Vec<PathBuf>,
+    /// 配置的 skill 根（AgentConfig::skill_roots；T005.6）。
+    skill_roots: Vec<PathBuf>,
+    /// 指令注入状态：已注入的文件与是否见过基线（T005.5）。
+    instructions: Mutex<InstructionState>,
+    /// skill 目录注入状态（T005.6）。
+    skill_catalog: Mutex<SkillCatalogState>,
+    pub(crate) model: DeepSeek,
+    pub(crate) tools: ToolSet,
+    /// 会话级工具状态（观察表/spill/任务注册表）；续接时新建，不继承上一次。
+    tool_session: Arc<ToolSessionState>,
     max_parallel_tool_calls: usize,
-    store: Mutex<SessionStore>,
+    /// 单个工具结果内联进上下文的 token 预算；0 表示禁用 spill（AgentConfig 同名）。
+    spill_max_inline_tokens: usize,
+    /// 压缩阈值比例（T005.8a）。
+    pub(crate) compaction_threshold_ratio: f64,
+    /// 压缩后保留的近期上下文比例（T005.8a）。
+    pub(crate) compaction_retain_ratio: f64,
+    /// 压缩阈值公式里的预留输出 token（T005.8a）。
+    pub(crate) compaction_headroom_tokens: u64,
+    pub(crate) store: Mutex<SessionStore>,
     inbox: Mutex<Inbox>,
     state: Mutex<RunState>,
-    events: broadcast::Sender<AgentEvent>,
+    pub(crate) events: broadcast::Sender<AgentEvent>,
     idle_notify: Notify,
     /// 取消时唤醒正在等模型流的 step（让流读取立刻停下）。
     cancel_notify: Arc<Notify>,
+    /// 手动 compact 请求的等待者（T005.8b；kick 在轮次结束后处理并通知）。
+    compact_queue: Mutex<Vec<tokio::sync::oneshot::Sender<()>>>,
+    /// 连续重复工具调用的链（工具名 + 规范化参数，计数）；新用户消息清零（T005.9）。
+    repeat_chain: Mutex<Option<(String, usize)>>,
+    /// 正在等答案的问题（T005.10）。
+    pending_question: Mutex<Option<PendingQuestion>>,
+    /// 等待问题答案期间取消的唤醒（cancel 置 abort 后 notify，loop 不空转）。
+    question_cancel_notify: Notify,
+    /// 仅测试可见：wait_question_answer 注册 notify 之前的同步缝（T005.10 边界单测）。
+    #[cfg(test)]
+    question_wait_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// 仅测试可见：settle_idle 预检之后、最终临界区之前的同步缝（T005.8b 边界单测）。
+    #[cfg(test)]
+    settle_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Inner {
@@ -65,12 +111,8 @@ impl Inner {
         deps: Deps,
         last_turn: u64,
     ) -> Result<Arc<Self>, AgentError> {
-        // 协调线加账：非法并发上限要在建 agent 时返回错误，不能等到驱动任务里 panic。
-        if config.max_parallel_tool_calls == 0 {
-            return Err(AgentError::InvalidConfig {
-                value: config.max_parallel_tool_calls,
-            });
-        }
+        // 协调线加账：非法配置要在建 agent 时返回错误，不能等到驱动任务里 panic。
+        config.validate()?;
         let Deps {
             model,
             tools,
@@ -79,14 +121,40 @@ impl Inner {
         let id = store.id().clone();
         let log_path = store.path().to_path_buf();
         let cwd = PathBuf::from(store.cwd());
+        // 日志路径固定是 <data-dir>/sessions/<id>.jsonl；spill 根按会话分目录。
+        let data_dir = log_path
+            .parent()
+            .and_then(Path::parent)
+            .map_or_else(|| cwd.clone(), Path::to_path_buf);
+        let tool_session = Arc::new(ToolSessionState::new(&data_dir, id.as_str()));
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
-        Ok(Arc::new(Self {
+        let instruction_roots = config.instruction_roots.clone();
+        let skill_roots = config.skill_roots.clone();
+        tool_session.set_skill_roots(skill_roots.clone());
+        let mut instruction_state = InstructionState::default();
+        instruction_state.rehydrate(&store.derive_messages());
+        let mut skill_catalog = SkillCatalogState::default();
+        skill_catalog.rehydrate(&store.derive_messages());
+        if let Some(todos) = session::last_todos(store.events()) {
+            tool_session.set_todos(todos);
+        }
+        let inner = Arc::new(Self {
             id,
             log_path,
             cwd,
+            data_dir,
+            instruction_roots,
+            skill_roots,
+            instructions: Mutex::new(instruction_state),
+            skill_catalog: Mutex::new(skill_catalog),
             model,
             tools,
+            tool_session,
             max_parallel_tool_calls: config.max_parallel_tool_calls,
+            spill_max_inline_tokens: config.spill_max_inline_tokens,
+            compaction_threshold_ratio: config.compaction_threshold_ratio,
+            compaction_retain_ratio: config.compaction_retain_ratio,
+            compaction_headroom_tokens: config.compaction_headroom_tokens,
             store: Mutex::new(store),
             inbox: Mutex::new(Inbox::default()),
             state: Mutex::new(RunState {
@@ -97,7 +165,35 @@ impl Inner {
             events,
             idle_notify: Notify::new(),
             cancel_notify: Arc::new(Notify::new()),
-        }))
+            compact_queue: Mutex::new(Vec::new()),
+            repeat_chain: Mutex::new(None),
+            #[cfg(test)]
+            settle_hook: Mutex::new(None),
+            pending_question: Mutex::new(None),
+            question_cancel_notify: Notify::new(),
+            #[cfg(test)]
+            question_wait_hook: Mutex::new(None),
+        });
+        // T005.4：后台任务结算后，由 agent 把完成通知送进会话（事件 + 下一步输入）。
+        // 用 Weak 避免 tool_session → 回调 → Inner 的循环引用。
+        {
+            let handle = tokio::runtime::Handle::current();
+            let weak = Arc::downgrade(&inner);
+            inner.tool_session.tasks().set_on_settled(Arc::new(
+                move |job_id: &str, status: tools::JobStatus| {
+                    let Some(inner) = weak.upgrade() else {
+                        return;
+                    };
+                    // 结算线程上同步决定目标队列（忙碌/空闲按结算瞬间的 phase），
+                    // 只有 wake 需要回到 runtime 上下文。
+                    inner.deliver_job_completion(job_id, status);
+                    handle.spawn(async move {
+                        inner.wake_driver();
+                    });
+                },
+            ));
+        }
+        Ok(inner)
     }
 
     pub(crate) fn id(&self) -> &SessionId {
@@ -113,6 +209,8 @@ impl Inner {
     }
 
     pub(crate) fn send(self: &Arc<Self>, message: UserMessage, delivery: Delivery) {
+        // 新的用户消息清零重复调用链（照 DSH repeat-tool-reminder）。
+        *self.repeat_chain.lock().expect("agent 重复链锁被毒化") = None;
         let target = {
             let state = self.state.lock().expect("agent 状态锁被毒化");
             let aborting = match &state.phase {
@@ -143,7 +241,119 @@ impl Inner {
             abort.store(true, Ordering::SeqCst);
             // 让正在等模型流的 step 立刻醒来、走 interrupted 收尾。
             self.cancel_notify.notify_waiters();
+            // T005.10：让正在等用户回答的 loop 醒来，撤销问题并 aborted 收尾。
+            self.question_cancel_notify.notify_waiters();
         }
+    }
+
+    /// T005.4：后台任务结算通知——发 JobCompleted 事件，并把完成通知投进下一步输入。
+    /// 忙碌时进 NextStep（下一个 step 的请求带上），空闲时进 NextTurn 并唤醒新的一轮。
+    fn deliver_job_completion(self: &Arc<Self>, job_id: &str, status: tools::JobStatus) {
+        let read = self.tool_session.tasks().output(job_id).ok();
+        let label = read
+            .as_ref()
+            .map_or_else(String::new, |read| read.view.label.clone());
+        let mut text = format!(
+            "background job {job_id} (bash: {label}) finished [status: {}].",
+            status.as_str()
+        );
+        if let Some(read) = &read {
+            if read.stdout.len() <= 2048 && read.stderr.is_empty() {
+                text.push_str("\nOutput:\n");
+                text.push_str(&read.stdout);
+            } else {
+                text.push_str("\nRead its output with job_output.");
+            }
+        }
+        let agent_status = match status {
+            tools::JobStatus::Completed => JobStatus::Completed,
+            tools::JobStatus::Failed => JobStatus::Failed,
+            tools::JobStatus::Killed | tools::JobStatus::Running => JobStatus::Killed,
+        };
+        let _ = self.events.send(AgentEvent::JobCompleted {
+            job_id: job_id.to_owned(),
+            status: agent_status,
+            detail: Some(label),
+        });
+        let target = {
+            let state = self.state.lock().expect("agent 状态锁被毒化");
+            match state.phase {
+                Phase::Idle => InboxTarget::NextTurn,
+                Phase::Running { .. } => InboxTarget::NextStep,
+            }
+        };
+        self.inbox
+            .lock()
+            .expect("agent 收件箱锁被毒化")
+            .push(target, UserMessage::text(text));
+    }
+
+    /// 一次 step 的工具批之后推进重复链，命中阈值（3/5/8，照 DSH）返回一条提醒文本。
+    /// todo_write 不跟踪（DSH 基础组合包默认排除）；每步最多一条提醒。
+    fn repeat_reminder(&self, calls: &[ToolCall]) -> Option<String> {
+        const THRESHOLDS: [usize; 3] = [3, 5, 8];
+        let mut reminder: Option<String> = None;
+        for call in calls {
+            if call.name == "todo_write" {
+                continue;
+            }
+            let key = format!(
+                "{}\0{}",
+                call.name,
+                tools::canonical_arguments(&call.arguments)
+            );
+            let count = {
+                let mut chain = self.repeat_chain.lock().expect("agent 重复链锁被毒化");
+                let count = match chain.as_ref() {
+                    Some((previous, count)) if *previous == key => count + 1,
+                    _ => 1,
+                };
+                *chain = Some((key, count));
+                count
+            };
+            if THRESHOLDS.contains(&count) && reminder.is_none() {
+                reminder = Some(if count == THRESHOLDS[0] {
+                    "You are repeating the exact same tool call with identical arguments. Carefully analyze the previous result before calling again: if the task is not complete, try a different approach or different arguments instead of repeating the call.".to_owned()
+                } else {
+                    format!(
+                        "Repeated tool call detected:\n- tool: {}\n- consecutive_calls: {count}\n- arguments: {}\nThe repeated calls are not making progress. Do not call this tool with these exact arguments again. Inspect the latest result and choose a different action, different arguments, or finish the task if enough evidence has been gathered.",
+                        call.name,
+                        truncate_preview(&tools::canonical_arguments(&call.arguments), 500)
+                    )
+                });
+            }
+        }
+        reminder
+    }
+
+    /// T005.10：回答问题。question_id 必须与当前等待的问题一致；
+    /// 等待中的 run_step 收到答案后把它作为 ask 调用的 tool/result 续上。
+    pub(crate) fn answer(&self, question_id: &str, text: &str) -> bool {
+        let mut pending = self.pending_question.lock().expect("agent 问题锁被毒化");
+        let Some(current) = pending.as_mut() else {
+            return false;
+        };
+        if !current.questions.iter().any(|q| q.id == question_id) {
+            return false;
+        }
+        if current.answers.contains_key(question_id) {
+            return false;
+        }
+        current
+            .answers
+            .insert(question_id.to_owned(), text.to_owned());
+        if current.answers.len() < current.questions.len() {
+            return true;
+        }
+        let Some(sender) = current.deliver.take() else {
+            return false;
+        };
+        let ordered: Vec<(String, String)> = current
+            .questions
+            .iter()
+            .map(|question| (question.id.clone(), current.answers[&question.id].clone()))
+            .collect();
+        sender.send(ordered).is_ok()
     }
 
     /// 起驱动或在 Running 时置 latch。
@@ -183,18 +393,82 @@ impl Inner {
         }
     }
 
-    fn append(&self, kinds: &[EventKind]) -> Result<(), AgentError> {
+    pub(crate) fn append(&self, kinds: &[EventKind]) -> Result<(), AgentError> {
         self.store
             .lock()
             .expect("agent 会话锁被毒化")
             .append(kinds)?;
         Ok(())
     }
+
+    /// 请求一次手动压缩（T005.8b）：排队并唤醒驱动；返回的接收者在该次压缩结束时收到通知。
+    pub(crate) fn queue_compaction(self: &Arc<Self>) -> tokio::sync::oneshot::Receiver<()> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        self.compact_queue
+            .lock()
+            .expect("agent compact 队列锁被毒化")
+            .push(sender);
+        self.wake_driver();
+        receiver
+    }
+
+    /// 队列里还有没有等待手动压缩的请求。
+    fn has_queued_compaction(&self) -> bool {
+        !self
+            .compact_queue
+            .lock()
+            .expect("agent compact 队列锁被毒化")
+            .is_empty()
+    }
+
+    /// kick 在轮次结束后处理排队的手动压缩；空闲时也会被 wake 进来处理。
+    /// 语义：同一批排队的请求合并成一次压缩（所有等待者一起唤醒）；压缩进行中新到的
+    /// 请求会进入下一轮 drain，再做一次压缩。循环 drain 保证不会丢等待者。
+    async fn run_queued_compaction(self: &Arc<Self>) {
+        loop {
+            let waiters: Vec<tokio::sync::oneshot::Sender<()>> = {
+                let mut queue = self
+                    .compact_queue
+                    .lock()
+                    .expect("agent compact 队列锁被毒化");
+                std::mem::take(&mut *queue)
+            };
+            if waiters.is_empty() {
+                return;
+            }
+            let turn = {
+                let state = self.state.lock().expect("agent 状态锁被毒化");
+                state.last_turn
+            };
+            let _ =
+                compaction::compact_if_needed(self, turn, CompactionTrigger::Manual, true).await;
+            for waiter in waiters {
+                let _ = waiter.send(());
+            }
+        }
+    }
 }
 
 /// 驱动任务：连续跑若干轮，直到收件箱里没有会唤醒的输入。
 async fn kick(inner: Arc<Inner>) {
-    while let Ok(true) = run_turn(&inner).await {}
+    loop {
+        // T005.8b：手动压缩排在当前轮之后；空闲时先处理队列，避免为它造空 turn。
+        if inner.has_queued_compaction() {
+            inner.run_queued_compaction().await;
+            continue;
+        }
+        let has_input = inner
+            .inbox
+            .lock()
+            .expect("agent 收件箱锁被毒化")
+            .has_pending();
+        if !has_input {
+            break;
+        }
+        if !matches!(run_turn(&inner).await, Ok(true)) {
+            break;
+        }
+    }
     settle_idle(&inner);
 }
 
@@ -210,23 +484,52 @@ fn settle_idle(inner: &Arc<Inner>) {
         let wake = std::mem::take(&mut state.wake_requested);
         (turn, wake)
     };
+    let has_queued = inner.has_queued_compaction();
     let has_pending = inner
         .inbox
         .lock()
         .expect("agent 收件箱锁被毒化")
         .has_pending();
-    if wake && has_pending {
-        let mut state = inner.state.lock().expect("agent 状态锁被毒化");
-        state.phase = Phase::Running {
-            abort: Arc::new(AtomicBool::new(false)),
-            turn,
-        };
-        drop(state);
-        tokio::spawn(kick(Arc::clone(inner)));
+    if has_queued || (wake && has_pending) {
+        restart_kick(inner, turn);
         return;
     }
-    inner.state.lock().expect("agent 状态锁被毒化").phase = Phase::Idle;
+    // 仅测试可见的同步缝：让边界单测能精确停在「预检完成、最终临界区之前」。
+    #[cfg(test)]
+    {
+        let hook = inner
+            .settle_hook
+            .lock()
+            .expect("settle hook 锁被毒化")
+            .clone();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+    // 收尾临界区：在同一把 state 锁里重查一次 wake/队列再转 Idle。
+    // 否则 compact 可能在 has_queued 之后、Idle 之前入队：queue_compaction 的
+    // wake_driver 看到 Running 只置 wake_requested，settle 随后设 Idle 就丢了 waiter。
+    let mut state = inner.state.lock().expect("agent 状态锁被毒化");
+    let wake_now = std::mem::take(&mut state.wake_requested);
+    let queued_now = inner.has_queued_compaction();
+    if wake_now || queued_now {
+        drop(state);
+        restart_kick(inner, turn);
+        return;
+    }
+    state.phase = Phase::Idle;
+    drop(state);
     inner.idle_notify.notify_waiters();
+}
+
+fn restart_kick(inner: &Arc<Inner>, turn: u64) {
+    let mut state = inner.state.lock().expect("agent 状态锁被毒化");
+    state.phase = Phase::Running {
+        abort: Arc::new(AtomicBool::new(false)),
+        turn,
+    };
+    drop(state);
+    tokio::spawn(kick(Arc::clone(inner)));
 }
 
 async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
@@ -394,8 +697,7 @@ async fn run_step(
         .expect("agent 会话锁被毒化")
         .has_system_message();
     if !has_system {
-        let has_read = inner.tools.get("read").is_some();
-        let message = Message::text(Role::System, system_prompt(&inner.cwd, has_read));
+        let message = Message::text(Role::System, system_prompt(&inner.cwd, &inner.tools));
         inner.append(&[EventKind::SystemMessage {
             turn,
             step,
@@ -410,7 +712,51 @@ async fn run_step(
         }])?;
     }
 
-    let messages = inner
+    // T005.5：把适用的 AGENTS.md / CLAUDE.md 注入成普通 user/message。
+    // 第一次请求带基线；读到更深目录（T005.1 路径观察）或文件变化时补刷新消息。
+    {
+        let observed: Vec<PathBuf> = inner.tool_session.observations().paths().cloned().collect();
+        let injection = inner
+            .instructions
+            .lock()
+            .expect("agent 指令锁被毒化")
+            .prepare(
+                &inner.cwd,
+                &inner.data_dir,
+                &inner.instruction_roots,
+                observed.into_iter(),
+            );
+        if let Some(text) = injection {
+            inner.append(&[EventKind::UserMessage {
+                turn,
+                step,
+                message: Message::text(Role::User, text),
+            }])?;
+        }
+    }
+
+    // T005.6：可用 skill 目录（名字 + description）作为独立上下文块注入；有变化才追加。
+    {
+        let catalog = inner
+            .skill_catalog
+            .lock()
+            .expect("agent skill 目录锁被毒化")
+            .prepare(&inner.cwd, &inner.data_dir, &inner.skill_roots);
+        if let Some(text) = catalog {
+            inner.append(&[EventKind::UserMessage {
+                turn,
+                step,
+                message: Message::text(Role::User, text),
+            }])?;
+        }
+    }
+
+    // T005.2：派生请求之前，把「旧」超大工具结果换成 head+marker+tail 的修剪视图
+    // （追加 compaction/prune 事件，原始 tool/result 保留在日志里可回放）。
+    prune_old_tool_results(inner, turn)?;
+    // T005.8a：请求前检查 token 压力；越过阈值就压缩较早历史（失败不打断本轮，事件已记录）。
+    let _ = compaction::compact_if_needed(inner, turn, CompactionTrigger::Auto, false).await;
+    let mut messages = inner
         .store
         .lock()
         .expect("agent 会话锁被毒化")
@@ -427,6 +773,7 @@ async fn run_step(
     let mut finish: Option<FinishReason> = None;
     let mut content_emitted = false;
     let mut attempt: u32 = 0;
+    let mut overflow_retries = 0_u32;
     'attempts: loop {
         if abort.load(Ordering::SeqCst) {
             return Ok(StepEnd::Aborted);
@@ -436,6 +783,25 @@ async fn run_step(
             Err(error) => {
                 if abort.load(Ordering::SeqCst) || error.code == ErrorCode::Aborted {
                     return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
+                }
+                // T005.8a：上下文溢出先压缩再重试一次；压缩不了或第二次溢出按正常错误收尾。
+                if error.code == ErrorCode::ContextWindowExceeded && overflow_retries == 0 {
+                    overflow_retries = 1;
+                    let compacted =
+                        compaction::compact_if_needed(inner, turn, CompactionTrigger::Auto, true)
+                            .await?;
+                    if !compacted {
+                        return Err(AgentError::Model(error));
+                    }
+                    messages = inner
+                        .store
+                        .lock()
+                        .expect("agent 会话锁被毒化")
+                        .derive_messages();
+                    continue 'attempts;
+                }
+                if error.code == ErrorCode::ContextWindowExceeded {
+                    return Err(AgentError::Model(error));
                 }
                 match decide_retry(inner, &cancel, &error, &mut attempt, content_emitted).await {
                     RetryDecision::Retry => {
@@ -573,7 +939,86 @@ async fn run_step(
         });
     }
     inner.append(&call_events)?;
-    let context = ToolContext::new(inner.cwd.clone());
+    // T005.12：ask_user_question 由 loop 处理——发全部问题的事件、停住等全部 answer；
+    // invalid 参数整单拒绝，结果走统一 tool/result 提交路径（不绕过 todo/repeat/abort）。
+    let mut ask_override: Option<(usize, tools::ToolResult)> = None;
+    if let Some(index) = calls
+        .iter()
+        .position(|call| call.name == "ask_user_question")
+    {
+        match questions_from_call(&calls[index]) {
+            None => {
+                ask_override = Some((
+                    index,
+                    tools::ToolResult {
+                        call_id: calls[index].id.clone(),
+                        content: "Error: invalid ask_user_question arguments (each question needs non-empty id and question)".to_owned(),
+                        is_error: true,
+                        error_code: Some("ASK_USER_INVALID".to_owned()),
+                    },
+                ));
+            }
+            Some(questions) => {
+                let (sender, receiver) = tokio::sync::oneshot::channel::<Vec<(String, String)>>();
+                *inner.pending_question.lock().expect("agent 问题锁被毒化") =
+                    Some(PendingQuestion {
+                        questions: questions.clone(),
+                        answers: std::collections::BTreeMap::new(),
+                        deliver: Some(sender),
+                    });
+                for question in &questions {
+                    inner.append(&[EventKind::QuestionAsked {
+                        turn,
+                        step,
+                        question_id: question.id.clone(),
+                        question: question.question.clone(),
+                        header: question.header.clone(),
+                        options: question
+                            .options
+                            .iter()
+                            .map(|option| option.label.clone())
+                            .collect(),
+                        multi_select: question.multi_select,
+                    }])?;
+                }
+                let _ = inner.events.send(crate::AgentEvent::QuestionAsked {
+                    questions: questions.clone(),
+                });
+                let answered = wait_question_answer(inner, receiver, abort).await;
+                let partial_answers = inner
+                    .pending_question
+                    .lock()
+                    .expect("agent 问题锁被毒化")
+                    .take()
+                    .map(|pending| pending.answers)
+                    .unwrap_or_default();
+                match answered {
+                    Some(answers) => {
+                        ask_override = Some((
+                            index,
+                            tools::ToolResult::success(
+                                calls[index].id.clone(),
+                                answers_json(&answers),
+                            ),
+                        ));
+                    }
+                    None => {
+                        for question in &questions {
+                            if !partial_answers.contains_key(&question.id) {
+                                inner.append(&[EventKind::QuestionCancelled {
+                                    turn,
+                                    step,
+                                    question_id: question.id.clone(),
+                                }])?;
+                            }
+                        }
+                        return Ok(StepEnd::Aborted);
+                    }
+                }
+            }
+        }
+    }
+    let context = ToolContext::with_session(inner.cwd.clone(), Arc::clone(&inner.tool_session));
     let outcome = execute_batch(
         &inner.tools,
         &calls,
@@ -582,12 +1027,26 @@ async fn run_step(
         abort.as_ref(),
     )
     .await;
+    let mut outcome = outcome;
+    if let Some((index, result)) = ask_override {
+        outcome.results[index] = result;
+    }
     for result in &outcome.results {
-        let message = Message::tool_result(
-            result.call_id.clone(),
-            result.content.clone(),
-            result.is_error,
-        );
+        // T005.2：超大结果落 spill（按会话目录），进日志/上下文的是 preview + locator；
+        // read 有自己的分页上限，不在此列（照 DSH spill-policy）。
+        let tool_name = calls
+            .iter()
+            .find(|call| call.id == result.call_id)
+            .map_or("", |call| call.name.as_str());
+        let content = tools::bound_result(
+            inner.tool_session.spill(),
+            tool_name,
+            &result.call_id,
+            &result.content,
+            inner.spill_max_inline_tokens,
+        )
+        .unwrap_or_else(|| result.content.clone());
+        let message = Message::tool_result(result.call_id.clone(), content, result.is_error);
         inner.append(&[EventKind::ToolResult {
             turn,
             step,
@@ -595,10 +1054,78 @@ async fn run_step(
             error_code: result.error_code.clone(),
         }])?;
     }
+    // T005.7：成功的 todo_write 把整表快照落成一条 todo/write 事件（工具只写状态，
+    // 日志由 agent 负责；回放时后写覆盖先写）。
+    let todo_write_succeeded = calls.iter().any(|call| {
+        call.name == "todo_write"
+            && outcome
+                .results
+                .iter()
+                .any(|result| result.call_id == call.id && !result.is_error)
+    });
+    if todo_write_succeeded && let Some(todos) = inner.tool_session.take_todos() {
+        inner.append(&[EventKind::TodoWrite { turn, step, todos }])?;
+    }
+    // T005.9：重复调用提醒（每 step 最多一条，作为工具结果之后的 user 上下文消息）。
+    if !outcome.cancelled
+        && let Some(reminder) = inner.repeat_reminder(&calls)
+    {
+        inner.append(&[EventKind::UserMessage {
+            turn,
+            step,
+            message: Message::text(Role::User, reminder),
+        }])?;
+    }
     if abort.load(Ordering::SeqCst) || outcome.cancelled {
         return Ok(StepEnd::Aborted);
     }
     Ok(StepEnd::Continue)
+}
+
+/// T005.2 修剪：只修剪「旧 turn」的 tool/result（当前 turn 刚拿到的结果保留原样），
+/// 已经修剪过的 call_id 不再重复追加；一批 append 落日志。
+fn prune_old_tool_results(inner: &Arc<Inner>, current_turn: u64) -> Result<(), AgentError> {
+    let mut additions: Vec<EventKind> = Vec::new();
+    {
+        let store = inner.store.lock().expect("agent 会话锁被毒化");
+        let events = store.events();
+        let already: std::collections::HashSet<&str> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::CompactionPrune { call_id, .. } => Some(call_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        for event in events {
+            let EventKind::ToolResult { turn, message, .. } = &event.kind else {
+                continue;
+            };
+            if *turn >= current_turn {
+                continue;
+            }
+            let Some(ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            }) = message.content.first()
+            else {
+                continue;
+            };
+            if already.contains(tool_use_id.as_str()) {
+                continue;
+            }
+            if let Some(pruned) = prune::prune_text(content) {
+                additions.push(EventKind::CompactionPrune {
+                    call_id: tool_use_id.clone(),
+                    content: pruned,
+                });
+            }
+        }
+    }
+    if !additions.is_empty() {
+        inner.append(&additions)?;
+    }
+    Ok(())
 }
 
 /// 请求层重试：最多 5 次、500ms 起指数退避、上限 10s、±10% 抖动（std 派生，不加依赖）。
@@ -765,16 +1292,318 @@ fn interrupted_content(
     content
 }
 
-/// 系统提示：固定文字 + 会话的工作目录；read 工具可见时补 DSH 原文的 read 指导句。
-fn system_prompt(cwd: &Path, has_read: bool) -> String {
+/// 系统提示：固定文字 + 会话的工作目录；按可见工具补指导句（照 DSH 的 tool-fs 各工具
+/// 系统提示段，插件名换成 AIOS 的规则表述）。
+fn system_prompt(cwd: &Path, tools: &ToolSet) -> String {
     let mut prompt = format!(
         "You are AIOS, a coding agent. Your working directory is {}.",
         cwd.display()
     );
-    if has_read {
+    if tools.get("read").is_some() {
         prompt.push_str(
             "\n\nUse the read tool — not shell commands like cat — to inspect text files. Use offset and limit to continue reading large files.",
         );
     }
+    if tools.get("bash").is_some() {
+        prompt.push_str(
+            "\n\nCheck the [exit code: N] marker on every bash result; investigate failures before moving on.",
+        );
+    }
+    if tools.get("job_output").is_some() {
+        prompt.push_str(
+            "\n\nTrack every background job id you start. You are notified in-session when a job finishes — do not busy-poll or sleep on one; keep working on independent steps and do not duplicate a running job's work. Before giving a final answer, collect every still-relevant job with job_output (set wait: true only when you are genuinely blocked on it), and job_kill jobs that stopped mattering.",
+        );
+    }
+    if tools.get("write").is_some() {
+        prompt.push_str("\n\nRead an existing file before overwriting it with write");
+        if tools.get("edit").is_some() {
+            prompt.push_str("; prefer edit for targeted changes");
+        }
+        prompt.push('.');
+    }
+    if tools.get("edit").is_some() {
+        prompt.push_str(
+            "\n\nRead a file before editing it, unless you just created or edited it in this session.",
+        );
+    }
+    if tools.get("apply_patch").is_some() {
+        prompt.push_str(
+            "\n\nPrefer apply_patch over separate edit calls for changes across files or separated regions. Read a file before updating, deleting, or moving it, unless you just created or edited it in this session. The whole patch is checked first and a rejected patch changes nothing; once applying starts, operations run in order, stop at the first failure, and are not rolled back, so re-read affected files before retrying when needed.",
+        );
+    }
     prompt
+}
+
+/// 从 ask_user_question 的调用参数里取全部问题（字段照 DSH tool-ask-user）。
+/// 任一问题缺 id 或 question 文本：整单拒绝（返回 None），不静默丢弃。
+fn questions_from_call(call: &ToolCall) -> Option<Vec<Question>> {
+    let value: serde_json::Value = serde_json::from_str(&call.arguments).ok()?;
+    let items = value.get("questions")?.as_array()?;
+    if items.is_empty() {
+        return None;
+    }
+    let mut questions = Vec::with_capacity(items.len());
+    let mut seen_ids = std::collections::BTreeSet::new();
+    for item in items {
+        let id = item.get("id").and_then(|value| value.as_str())?;
+        let question = item.get("question").and_then(|value| value.as_str())?;
+        if id.is_empty() || question.is_empty() || !seen_ids.insert(id) {
+            return None;
+        }
+        let options = item
+            .get("options")
+            .and_then(|value| value.as_array())
+            .map(|options| {
+                options
+                    .iter()
+                    .filter_map(|option| {
+                        let label = option.get("label")?.as_str()?;
+                        Some(QuestionOption {
+                            label: label.to_owned(),
+                            description: option
+                                .get("description")
+                                .and_then(|value| value.as_str())
+                                .map(str::to_owned),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        questions.push(Question {
+            id: id.to_owned(),
+            question: question.to_owned(),
+            header: item
+                .get("header")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned),
+            options,
+            multi_select: item
+                .get("multi_select")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+        });
+    }
+    Some(questions)
+}
+
+/// 工具结果内容：DSH 形态 answers[{id, answer}]（按问题顺序）。
+fn answers_json(answers: &[(String, String)]) -> String {
+    let answers: Vec<serde_json::Value> = answers
+        .iter()
+        .map(|(id, answer)| serde_json::json!({"id": id, "answer": answer}))
+        .collect();
+    serde_json::json!({"answers": answers}).to_string()
+}
+
+/// 等答案；cancel 时 abort 置位并通过 question_cancel_notify 唤醒，返回 None。
+async fn wait_question_answer(
+    inner: &Arc<Inner>,
+    mut receiver: tokio::sync::oneshot::Receiver<Vec<(String, String)>>,
+    abort: &Arc<AtomicBool>,
+) -> Option<Vec<(String, String)>> {
+    // 仅测试可见的同步缝：让边界单测把 cancel 精确插在注册 notify 之前。
+    #[cfg(test)]
+    {
+        let hook = inner
+            .question_wait_hook
+            .lock()
+            .expect("question wait hook 锁被毒化")
+            .clone();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
+    // 先注册并 enable cancellation，再检查 abort：否则 cancel 在「检查 abort」与
+    // 「注册 notified」之间调用 notify_waiters（Notify 不存 permit），通知会丢。
+    let cancelled = inner.question_cancel_notify.notified();
+    tokio::pin!(cancelled);
+    cancelled.as_mut().enable();
+    if abort.load(Ordering::SeqCst) {
+        return None;
+    }
+    loop {
+        tokio::select! {
+            result = &mut receiver => return result.ok(),
+            () = &mut cancelled => {
+                if abort.load(Ordering::SeqCst) {
+                    return None;
+                }
+                cancelled.set(inner.question_cancel_notify.notified());
+            }
+        }
+    }
+}
+
+/// 参数预览截断（字符安全，照 DSH argumentsPreviewChars 上限）。
+fn truncate_preview(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_owned();
+    }
+    format!("{}…", text.chars().take(max_chars).collect::<String>())
+}
+
+#[cfg(test)]
+mod settle_tests {
+    use super::*;
+
+    /// settle 边界确定性测试：用 test-only hook 把 settle 卡在「预检完成、
+    /// 最终临界区之前」，窗口内入队 compact 并模拟 wake_driver 只看到 Running，
+    /// 然后断言 Agent::compact 的 oneshot 在超时内收到通知（不看 phase、不 sleep）。
+    #[tokio::test]
+    async fn settle_requeues_waiter_arriving_at_boundary() {
+        let data = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let store = SessionStore::create(data.path(), cwd.path()).unwrap();
+        let model = model::DeepSeek::new(model::DeepSeekConfig {
+            api_key: "test-key".to_owned(),
+            base_url: "http://127.0.0.1:1".to_owned(),
+            ..model::DeepSeekConfig::default()
+        })
+        .unwrap();
+        let inner = Inner::start(
+            crate::AgentConfig::default(),
+            Deps {
+                model,
+                tools: ToolSet::empty(),
+                store,
+            },
+            0,
+        )
+        .unwrap();
+        {
+            let mut state = inner.state.lock().unwrap();
+            state.phase = Phase::Running {
+                abort: Arc::new(AtomicBool::new(false)),
+                turn: 0,
+            };
+        }
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let release_rx = std::sync::Arc::new(release_rx);
+        let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let mut hook = inner.settle_hook.lock().unwrap();
+            *hook = Some(Arc::new(move || {
+                // 只卡第一次 settle（被测窗口）；后续 kick 里的 settle 直接放行，
+                // 否则会在 async worker 上阻塞标准库 recv、饿死运行时。
+                if fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+                let _ = entered_tx.send(());
+                let _ = release_rx.lock().unwrap().recv();
+            }));
+        }
+        let arc = Arc::clone(&inner);
+        let settle = tokio::task::spawn_blocking(move || settle_idle(&arc));
+        // 等 settle 停在临界区之前（确定性，不靠 sleep）。
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        // 窗口内：入队 waiter，并模拟 wake_driver 只看到 Running（只置 latch）。
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        inner.compact_queue.lock().unwrap().push(sender);
+        inner.wake_driver();
+        let _ = release_tx.send(());
+        settle.await.unwrap();
+        let served = tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
+            .await
+            .is_ok();
+        // 清理：避免随后 kick 真的尝试压缩。
+        inner.compact_queue.lock().unwrap().clear();
+        inner.state.lock().unwrap().phase = Phase::Idle;
+        assert!(served, "边界入队的 compact waiter 必须在超时内收到通知");
+    }
+}
+
+#[cfg(test)]
+mod ask_tests {
+    use super::*;
+
+    fn test_inner() -> Arc<Inner> {
+        let data = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let store = SessionStore::create(data.path(), cwd.path()).unwrap();
+        let model = model::DeepSeek::new(model::DeepSeekConfig {
+            api_key: "test-key".to_owned(),
+            base_url: "http://127.0.0.1:1".to_owned(),
+            ..model::DeepSeekConfig::default()
+        })
+        .unwrap();
+        Inner::start(
+            crate::AgentConfig::default(),
+            Deps {
+                model,
+                tools: ToolSet::empty(),
+                store,
+            },
+            0,
+        )
+        .unwrap()
+    }
+
+    /// 边界确定性测试：cancel 正好落在「检查 abort」与「注册 notified」之间时不能丢。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_before_notify_registration_is_not_lost() {
+        let inner = test_inner();
+        let abort = Arc::new(AtomicBool::new(false));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let release_rx = Arc::new(release_rx);
+        {
+            let mut hook = inner.question_wait_hook.lock().unwrap();
+            *hook = Some(Arc::new(move || {
+                let _ = entered_tx.send(());
+                let _ = release_rx.lock().unwrap().recv();
+            }));
+        }
+        let (_sender, receiver) = tokio::sync::oneshot::channel::<Vec<(String, String)>>();
+        let arc = Arc::clone(&inner);
+        let abort_task = Arc::clone(&abort);
+        let task =
+            tokio::spawn(async move { wait_question_answer(&arc, receiver, &abort_task).await });
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        // 窗口内取消：此时还没有注册 notified。
+        abort.store(true, Ordering::SeqCst);
+        inner.question_cancel_notify.notify_waiters();
+        let _ = release_tx.send(());
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .expect("cancel 在注册前发生也不能挂住");
+        assert_eq!(answer.unwrap(), None);
+    }
+
+    #[test]
+    fn questions_from_call_requires_all_questions_valid() {
+        let call = |arguments: &str| ToolCall {
+            id: "call-1".to_owned(),
+            name: "ask_user_question".to_owned(),
+            arguments: arguments.to_owned(),
+        };
+        assert!(super::questions_from_call(&call("not json")).is_none());
+        assert!(super::questions_from_call(&call(r#"{}"#)).is_none());
+        assert!(super::questions_from_call(&call(r#"{"questions": []}"#)).is_none());
+        assert!(super::questions_from_call(&call(r#"{"questions": [{"id": "q"}]}"#)).is_none());
+        assert!(
+            super::questions_from_call(&call(r#"{"questions": [{"id": "", "question": "P?"}]}"#))
+                .is_none()
+        );
+        assert!(
+            super::questions_from_call(&call(
+                r#"{"questions": [{"id": "dup", "question": "P1?"}, {"id": "dup", "question": "P2?"}]}"#
+            ))
+            .is_none(),
+            "重复 question id 必须整单拒绝"
+        );
+        let questions = super::questions_from_call(&call(
+            r#"{"questions": [{"id": "q1", "question": "P1?"}, {"id": "q2", "question": "P2?"}]}"#,
+        ))
+        .unwrap();
+        assert_eq!(questions.len(), 2);
+        assert_eq!(questions[1].id, "q2");
+        assert_eq!(questions[1].question, "P2?");
+    }
 }

@@ -2,9 +2,9 @@
 
 mod common;
 
-use agent::{Agent, AgentConfig, AgentEvent, Delivery, Deps, TurnOutcome};
-use common::{SequenceResponder, sse};
-use model::{ContentBlock, DeepSeek, DeepSeekConfig, Effort, Role, UserMessage};
+use agent::{AgentEvent, Delivery, TurnOutcome};
+use common::{SequenceResponder, setup_agent, sse};
+use model::{ContentBlock, Role, UserMessage};
 use session::{EventKind, SessionStore};
 use tools::ToolSet;
 use wiremock::matchers::{method, path};
@@ -71,29 +71,9 @@ async fn tool_round_trip() {
         .mount(&server)
         .await;
 
-    let data_dir = tempfile::tempdir().unwrap();
-    let cwd = tempfile::tempdir().unwrap();
+    let (agent, data_dir, cwd, session_id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
     std::fs::write(cwd.path().join("note.txt"), "hello\n").unwrap();
     let canonical_cwd = std::fs::canonicalize(cwd.path()).unwrap();
-    let store = SessionStore::create(data_dir.path(), cwd.path()).unwrap();
-    let session_id = store.id().clone();
-    let config = DeepSeekConfig {
-        base_url: server.uri(),
-        api_key: "test-key".to_owned(),
-        model: "deepseek-flash".to_owned(),
-        max_tokens: 2048,
-        effort: Effort::High,
-    };
-    let agent = Agent::create(
-        AgentConfig::default(),
-        Deps {
-            model: DeepSeek::new(config).unwrap(),
-            tools: ToolSet::builtin(),
-            store,
-        },
-    )
-    .await
-    .unwrap();
     let mut events = agent.subscribe();
     agent.send(UserMessage::text("请读一下 note.txt"), Delivery::FollowUp);
     agent.idle().await;

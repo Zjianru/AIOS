@@ -5,16 +5,61 @@
 
 mod batch;
 mod builtin;
+mod fs;
+mod jobs;
+mod session;
+mod skills;
+mod spill;
 
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use model::ToolSchema;
 use serde_json::Value;
 
 pub use batch::{BatchOutcome, execute_batch};
-pub use builtin::{GlobTool, GrepTool, ReadTool};
+pub use builtin::{
+    ApplyPatchTool, AskUserQuestionTool, BashTool, EditTool, GlobTool, GrepTool, JobKillTool,
+    JobListTool, JobOutputTool, ReadTool, SkillTool, TodoWriteTool, WriteTool,
+    foreground_bytes_read,
+};
+pub use jobs::{
+    JobRead, JobSettledCallback, JobSpec, JobStatus, JobView, MAX_WAIT_MS, TaskRegistry,
+};
+pub use session::{
+    FileVersion, ObservationStore, ObservedFile, SharedToolSession, SpillStore, ToolSessionState,
+};
+pub use skills::{
+    SKILL_FILE, SkillContent, SkillSummary, catalog_description, discover_skills, is_skill_name,
+    load_skill, render_skill_content, skill_roots,
+};
+pub use spill::{SpillRef, bound_result, estimate_text_tokens};
+
+/// 工具调用的规范化参数：JSON 深度 key 排序后序列化，属性顺序不同也视为同一调用。
+/// 重复调用提醒（T005.9）用它构造身份键；解析失败的原始字符串直接参与比较。
+pub fn canonical_arguments(arguments: &str) -> String {
+    fn sort(value: serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(map) => {
+                let sorted: std::collections::BTreeMap<String, serde_json::Value> = map
+                    .into_iter()
+                    .map(|(key, value)| (key, sort(value)))
+                    .collect();
+                serde_json::Value::Object(sorted.into_iter().collect())
+            }
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.into_iter().map(sort).collect())
+            }
+            other => other,
+        }
+    }
+    match serde_json::from_str::<serde_json::Value>(arguments) {
+        Ok(value) => serde_json::to_string(&sort(value)).unwrap_or_else(|_| arguments.to_owned()),
+        Err(_) => arguments.to_owned(),
+    }
+}
 
 /// 一个异步结果的 boxed future。Tool 必须能放进 dyn 的工具集，所以用 boxed
 /// future，而不是返回位置的 impl Future（后者不能让 trait 成为 dyn 兼容）。
@@ -25,11 +70,33 @@ pub type ToolFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub struct ToolContext {
     /// 会话的工作目录；相对路径都相对它解析。
     pub cwd: PathBuf,
+    /// 会话级工具状态（观察表 / 任务注册表 / spill）；由 Agent 建、跨调用共享。
+    session: Arc<ToolSessionState>,
 }
 
 impl ToolContext {
+    /// 独立工具测试用：空观察表、空任务表、禁用 spill。
     pub fn new(cwd: impl Into<PathBuf>) -> Self {
-        Self { cwd: cwd.into() }
+        Self {
+            cwd: cwd.into(),
+            session: Arc::new(ToolSessionState::detached()),
+        }
+    }
+
+    /// Agent 的批执行用：带会话级状态。
+    pub fn with_session(cwd: impl Into<PathBuf>, session: Arc<ToolSessionState>) -> Self {
+        Self {
+            cwd: cwd.into(),
+            session,
+        }
+    }
+
+    pub fn session(&self) -> &ToolSessionState {
+        &self.session
+    }
+
+    pub fn shared_session(&self) -> Arc<ToolSessionState> {
+        Arc::clone(&self.session)
     }
 }
 
@@ -113,6 +180,12 @@ pub trait Tool: Send + Sync {
     /// JSON Schema 形式的参数定义。
     fn parameters(&self) -> &Value;
 
+    /// 工具声明自己的单次调用时间上限（毫秒）；None 表示不限时（照 DSH ToolDefinition.timeoutMs）。
+    /// 默认 None：现有工具行为不变；批执行在超时后返回 TOOL_TIMEOUT 错误结果。
+    fn timeout_ms(&self) -> Option<u64> {
+        None
+    }
+
     /// 并发类别；默认独占（保守，进屏障）。
     fn concurrency(&self) -> ToolConcurrency {
         ToolConcurrency::Exclusive
@@ -141,12 +214,22 @@ impl ToolSet {
         Self { tools }
     }
 
-    /// 开发用的内置只读工具集：read、glob、grep。
+    /// 开发用的内置工具集：read、glob、grep，写类 write、edit、apply_patch，bash，和后台任务三件。
     pub fn builtin() -> Self {
         Self::new(vec![
             Box::new(ReadTool::new()),
             Box::new(GlobTool::new()),
             Box::new(GrepTool::new()),
+            Box::new(WriteTool::new()),
+            Box::new(EditTool::new()),
+            Box::new(ApplyPatchTool::new()),
+            Box::new(BashTool::new()),
+            Box::new(JobOutputTool::new()),
+            Box::new(JobListTool::new()),
+            Box::new(JobKillTool::new()),
+            Box::new(SkillTool::new()),
+            Box::new(TodoWriteTool::new()),
+            Box::new(AskUserQuestionTool::new()),
         ])
     }
 

@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use model::Message;
 
-use crate::derive::derive_messages;
+use crate::derive::{derive_messages, derive_messages_with_seqs};
 use crate::error::SessionError;
 use crate::event::{Event, EventKind, FORMAT_VERSION, SessionHeader};
 use crate::id::SessionId;
@@ -126,6 +126,11 @@ impl SessionStore {
     /// 从日志派生一次请求要带的消息。
     pub fn derive_messages(&self) -> Vec<Message> {
         derive_messages(&self.events)
+    }
+
+    /// 派生消息并带来源事件 seq（T005.8a 压缩选区间用）。
+    pub fn derive_messages_with_seqs(&self) -> Vec<(u64, Message)> {
+        derive_messages_with_seqs(&self.events)
     }
 
     /// 日志里是否已经有系统提示（一个会话只写一次）。
@@ -249,6 +254,7 @@ fn parse_log(bytes: &[u8]) -> Result<(SessionHeader, Vec<Event>, u64), SessionEr
 
 #[cfg(test)]
 mod tests {
+    use model::Role;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -320,5 +326,79 @@ mod tests {
         let reopened = SessionStore::open(data_dir.path(), &id).unwrap();
         assert_eq!(reopened.events().len(), 2);
         assert_eq!(reopened.events()[1].seq, 2);
+    }
+
+    #[test]
+    fn question_events_are_ignored_by_derive_and_repair() {
+        let at = |seq: u64, kind: EventKind| Event { seq, time: 0, kind };
+        let message = Message::text(Role::User, "go");
+        let events = vec![
+            at(1, EventKind::TurnStart { turn: 1 }),
+            at(
+                2,
+                EventKind::UserMessage {
+                    turn: 1,
+                    step: 1,
+                    message: message.clone(),
+                },
+            ),
+            at(
+                3,
+                EventKind::QuestionAsked {
+                    turn: 1,
+                    step: 1,
+                    question_id: "q1".to_owned(),
+                    question: "Proceed?".to_owned(),
+                    header: Some("Confirm".to_owned()),
+                    options: vec!["Yes".to_owned()],
+                    multi_select: false,
+                },
+            ),
+            at(
+                4,
+                EventKind::QuestionCancelled {
+                    turn: 1,
+                    step: 1,
+                    question_id: "q1".to_owned(),
+                },
+            ),
+        ];
+        // derive：question 事件不进派生请求（只有那条 user/message）。
+        let derived = crate::derive::derive_messages(&events);
+        assert_eq!(derived.len(), 1, "question 事件不能变成请求消息");
+        // repair：忽略 question 事件，收尾 closers 与没有它们时完全一致。
+        let base = vec![
+            at(1, EventKind::TurnStart { turn: 1 }),
+            at(2, EventKind::StepStart { turn: 1, step: 1 }),
+        ];
+        let with_questions = vec![
+            at(1, EventKind::TurnStart { turn: 1 }),
+            at(2, EventKind::StepStart { turn: 1, step: 1 }),
+            at(
+                3,
+                EventKind::QuestionAsked {
+                    turn: 1,
+                    step: 1,
+                    question_id: "q1".to_owned(),
+                    question: "Proceed?".to_owned(),
+                    header: None,
+                    options: Vec::new(),
+                    multi_select: false,
+                },
+            ),
+            at(
+                4,
+                EventKind::QuestionCancelled {
+                    turn: 1,
+                    step: 1,
+                    question_id: "q1".to_owned(),
+                },
+            ),
+        ];
+        assert_eq!(
+            crate::repair::interrupted_turn_closers(&with_questions),
+            crate::repair::interrupted_turn_closers(&base),
+            "repair 必须忽略 question 事件"
+        );
     }
 }

@@ -8,7 +8,7 @@ mod transport;
 
 use std::collections::VecDeque;
 
-pub use config::{DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS, DeepSeekConfig};
+pub use config::{DEFAULT_BASE_URL, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DeepSeekConfig};
 
 use crate::{CancelToken, ErrorCode, Message, ModelError, StreamChunk, ToolSchema};
 use sse::SseParser;

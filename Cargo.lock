@@ -1528,6 +1528,7 @@ dependencies = [
  "ignore",
  "model",
  "serde_json",
+ "session",
  "tempfile",
  "tokio",
 ]
