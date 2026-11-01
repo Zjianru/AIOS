@@ -179,7 +179,10 @@ async fn inject_send_is_durable_and_notifies_inserted() {
             inserted.push(message);
         }
     }
-    assert_eq!(inserted, vec![Message::text(Role::User, "后台通知")]);
+    // 消息 id 是新 uuid（不进日志的 dispatch 通知也带 id），按内容断言；id 用下一条 splice 校验。
+    assert_eq!(inserted.len(), 1);
+    assert_eq!(message_text(&inserted[0]), "后台通知");
+    assert_eq!(inserted[0].role, Role::User);
     assert!(
         server.received_requests().await.unwrap().is_empty(),
         "inject 不唤醒空闲的 loop"
@@ -204,7 +207,9 @@ async fn inject_send_is_durable_and_notifies_inserted() {
     assert_eq!(*target, InboxTarget::NextStep);
     assert_eq!(*start, 0);
     assert_eq!(*removed_count, None);
-    assert_eq!(*inserted, vec![Message::text(Role::User, "后台通知")]);
+    assert_eq!(inserted.len(), 1);
+    assert_eq!(message_text(&inserted[0]), "后台通知");
+    assert_eq!(inserted[0].source, model::MessageSource::User);
     assert_eq!(*outcome, None);
 
     // wire 形状照 DSH：data 里 target/start/inserted；可选字段省略。
@@ -413,10 +418,8 @@ async fn cancel_clears_pending_input_durably() {
     let splices = splices(&snapshot);
     assert_eq!(splices.len(), 2, "插入 + 取消各一条 splice：{splices:?}");
     assert_eq!(splices[0].target, InboxTarget::NextStep);
-    assert_eq!(
-        splices[0].inserted,
-        vec![Message::text(Role::User, "要取消的")]
-    );
+    assert_eq!(splices[0].inserted.len(), 1);
+    assert_eq!(message_text(&splices[0].inserted[0]), "要取消的");
     let canceled = &splices[1];
     assert_eq!(canceled.target, InboxTarget::NextStep);
     assert_eq!(canceled.start, 0);

@@ -164,18 +164,30 @@ fn tool_result_error_uses_dsh_identity() {
         .unwrap();
 
     let (_header, rows) = log_rows(&store);
-    // DSH 的 tool/result.error：{name, code}（packages/core/session/src/types.ts:383-393）。
+    // DSH 的 tool/result.error：{name, code}（packages/core/session/src/types.ts:383-393）；
+    // 消息本身照 DSH ToolResultMessage（id/source/toolCallId/isError 在消息级）。
+    let message = &rows[0]["data"]["message"];
     assert_eq!(
-        rows[0]["data"],
-        json!({
-            "turn": 1,
-            "step": 1,
-            "message": {
-                "role": "tool",
-                "content": [{"type": "tool_result", "tool_use_id": "call_0", "content": "Error: tool failed", "is_error": true}],
-            },
-            "error": {"name": "ToolOutcomeUnknownError", "code": "TOOL_OUTCOME_UNKNOWN"},
-        })
+        message["source"],
+        json!({"kind": "tool", "callId": "call_0"}),
+        "tool 消息 source 带 callId"
+    );
+    assert_eq!(message["toolCallId"], "call_0");
+    assert_eq!(message["isError"], true);
+    assert_eq!(
+        message["content"],
+        json!([{"type": "text", "text": "Error: tool failed"}]),
+        "消息 content 是结果内容块"
+    );
+    assert!(
+        message["id"]
+            .as_str()
+            .is_some_and(|id| id.split('-').count() == 5),
+        "tool 消息带 uuid 形状的 id：{message}"
+    );
+    assert_eq!(
+        rows[0]["data"]["error"],
+        json!({"name": "ToolOutcomeUnknownError", "code": "TOOL_OUTCOME_UNKNOWN"})
     );
     assert!(
         rows[0]["data"].get("error_code").is_none(),
@@ -314,6 +326,19 @@ fn all_event_kinds_round_trip_under_dsh_envelope() {
     for row in &rows {
         assert_envelope(row);
     }
+    // 消息 id/source 跟着事件过 JSON：派生/续接看到的是同一个 id。
+    let user = &rows[3]["data"]["message"];
+    assert_eq!(user["role"], "user");
+    assert_eq!(user["source"], json!({"kind": "user"}));
+    assert!(
+        user["id"]
+            .as_str()
+            .is_some_and(|id| id.split('-').collect::<Vec<_>>().len() == 5),
+        "user/message 的 JSON 带 uuid 形状 id：{user}"
+    );
+    let assistant = &rows[7]["data"]["message"];
+    assert_eq!(assistant["role"], "assistant");
+    assert_eq!(assistant["source"]["kind"], "model");
     drop(store);
 
     let reopened = SessionStore::open(data_dir.path(), &id).unwrap();

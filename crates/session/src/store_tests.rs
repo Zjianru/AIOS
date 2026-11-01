@@ -30,63 +30,65 @@ fn append_torn_line(store: &SessionStore) {
 }
 
 #[test]
-fn written_header_uses_format_version_2() {
+fn written_header_uses_format_version_3() {
     let (_data_dir, _cwd, store) = create_store();
     let text = fs::read_to_string(store.path()).unwrap();
     let header: Value =
         serde_json::from_str(text.lines().next().expect("日志有 header 行")).unwrap();
     assert_eq!(
-        header["version"], 2,
-        "事件字段照 DSH 改形后 FORMAT_VERSION 升到 2"
+        header["version"], 3,
+        "消息 IR 改形（id/source + tool 消息形状）后 FORMAT_VERSION 升到 3"
     );
 }
 
 #[test]
-fn v1_log_is_rejected_without_migration() {
+fn previous_format_versions_are_rejected_without_migration() {
     let (data_dir, _cwd, store) = create_store();
     let id = store.id().clone();
     let path = store.path().to_path_buf();
     drop(store);
 
-    // 手写一份 v1 日志：header version 1 + 旧格式（扁平字段）事件。
-    let legacy = format!(
-        "{{\"type\":\"session\",\"version\":1,\"id\":\"{id}\",\"createdAt\":1,\"cwd\":\"/tmp\"}}\n\
-         {{\"seq\":1,\"time\":1,\"type\":\"turn/start\",\"turn\":1}}\n"
-    );
-    fs::write(&path, legacy.as_bytes()).unwrap();
-    let before = fs::read(&path).unwrap();
+    // 手写 v1 / v2 日志：header 版本不对 + 旧格式（扁平字段）事件；读取一律直接拒绝。
+    for version in [1, 2] {
+        let legacy = format!(
+            "{{\"type\":\"session\",\"version\":{version},\"id\":\"{id}\",\"createdAt\":1,\"cwd\":\"/tmp\"}}\n\
+             {{\"seq\":1,\"time\":1,\"type\":\"turn/start\",\"turn\":1}}\n"
+        );
+        fs::write(&path, legacy.as_bytes()).unwrap();
+        let before = fs::read(&path).unwrap();
 
-    let error = match SessionStore::open(data_dir.path(), &id) {
-        Ok(_) => panic!("旧版本日志不能被接受"),
-        Err(error) => error,
-    };
-    assert!(
-        matches!(
-            error,
-            SessionError::UnsupportedVersion {
-                version: 1,
-                supported: 2
-            }
-        ),
-        "旧版本日志要直接拒绝，实际 {error}"
-    );
-    assert_eq!(
-        fs::read(&path).unwrap(),
-        before,
-        "拒绝旧版本不能迁移或改写它"
-    );
+        let error = match SessionStore::open(data_dir.path(), &id) {
+            Ok(_) => panic!("旧版本日志不能被接受"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                error,
+                SessionError::UnsupportedVersion {
+                    version: got,
+                    supported: 3
+                } if got == version
+            ),
+            "v{version} 日志要直接拒绝，实际 {error}"
+        );
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            before,
+            "拒绝旧版本不能迁移或改写它"
+        );
 
-    let read_error = SessionStore::open_read_only(data_dir.path(), &id).unwrap_err();
-    assert!(
-        matches!(
-            read_error,
-            SessionError::UnsupportedVersion {
-                version: 1,
-                supported: 2
-            }
-        ),
-        "只读路径同样拒绝旧版本，实际 {read_error}"
-    );
+        let read_error = SessionStore::open_read_only(data_dir.path(), &id).unwrap_err();
+        assert!(
+            matches!(
+                read_error,
+                SessionError::UnsupportedVersion {
+                    version: got,
+                    supported: 3
+                } if got == version
+            ),
+            "只读路径同样拒绝 v{version}，实际 {read_error}"
+        );
+    }
 }
 
 #[test]

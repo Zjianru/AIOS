@@ -3,7 +3,7 @@
 //! 收尾事件顺序 tool/result → step/end → turn/end；turn/end 原因是 interrupted；
 //! 合成事件复用最后一个真实事件的时间；错误身份是 {name, code}。
 
-use model::{ContentBlock, Message, Role};
+use model::{ContentBlock, Message};
 
 use crate::{Event, EventKind, SessionStore, ToolError, TurnEndReason, interrupted_turn_closers};
 
@@ -18,13 +18,14 @@ fn assistant_tool_call(time: u64) -> Event {
         EventKind::AssistantMessage {
             turn: 1,
             step: 1,
-            message: Message::new(
-                Role::Assistant,
+            message: Message::assistant(
                 vec![ContentBlock::ToolCall {
                     id: "call_0".to_owned(),
                     name: "read".to_owned(),
                     arguments: "{}".to_owned(),
                 }],
+                "deepseek",
+                "deepseek-flash",
             ),
             usage: None,
             interrupted: None,
@@ -43,7 +44,7 @@ fn started_call_events() -> Vec<Event> {
             EventKind::UserMessage {
                 turn: 1,
                 step: 1,
-                message: Message::text(Role::User, "跑工具"),
+                message: Message::user_text("跑工具"),
             },
         ),
         assistant_tool_call(1_300),
@@ -160,20 +161,16 @@ fn outcome_unknown_closer_carries_dsh_identity() {
             code: "TOOL_OUTCOME_UNKNOWN".to_owned(),
         })
     );
-    let ContentBlock::ToolResult {
-        tool_use_id,
-        content,
-        is_error,
-    } = &message.content[0]
-    else {
-        panic!("tool/result 消息里应是 ToolResult 块");
-    };
-    assert_eq!(tool_use_id, "call_0");
-    assert!(*is_error);
+    // 消息照 DSH ToolResultMessage：callId/isError 在消息级，content 是结果文本块。
+    assert_eq!(message.tool_call_id.as_deref(), Some("call_0"));
+    assert_eq!(message.is_error, Some(true));
+    let text = message.content.first().and_then(ContentBlock::as_text);
     // 模型可见文案逐字照 DSH repair.ts:34。
     assert_eq!(
-        content,
-        "The tool call was interrupted after it was recorded, but no result was durably recorded. Its outcome is unknown. Decide whether to retry from the tool semantics: retry only if the operation is read-only or idempotent; if it may have side effects, first verify external state or ask the user. Do not retry blindly."
+        text,
+        Some(
+            "The tool call was interrupted after it was recorded, but no result was durably recorded. Its outcome is unknown. Decide whether to retry from the tool semantics: retry only if the operation is read-only or idempotent; if it may have side effects, first verify external state or ask the user. Do not retry blindly."
+        )
     );
 }
 
@@ -190,11 +187,76 @@ fn not_started_closer_carries_dsh_identity() {
             code: "TOOL_NOT_STARTED".to_owned(),
         })
     );
-    let ContentBlock::ToolResult { content, .. } = &message.content[0] else {
-        panic!("tool/result 消息里应是 ToolResult 块");
-    };
+    assert_eq!(message.tool_call_id.as_deref(), Some("call_0"));
+    assert_eq!(message.is_error, Some(true));
     assert_eq!(
-        content,
-        "The tool call was interrupted before the Harness recorded it as started. Retry it if it is still needed."
+        message.content.first().and_then(ContentBlock::as_text),
+        Some(
+            "The tool call was interrupted before the Harness recorded it as started. Retry it if it is still needed."
+        )
     );
+}
+
+/// 两个调用都只写了 assistant 的调用块、tool/call 还没落盘的日志前缀。
+fn two_pending_calls_events() -> Vec<Event> {
+    vec![
+        at(1, 1_000, EventKind::TurnStart { turn: 1 }),
+        at(2, 1_100, EventKind::StepStart { turn: 1, step: 1 }),
+        at(
+            3,
+            1_200,
+            EventKind::AssistantMessage {
+                turn: 1,
+                step: 1,
+                message: Message::assistant(
+                    vec![
+                        ContentBlock::ToolCall {
+                            id: "call_0".to_owned(),
+                            name: "read".to_owned(),
+                            arguments: "{}".to_owned(),
+                        },
+                        ContentBlock::ToolCall {
+                            id: "call_1".to_owned(),
+                            name: "read".to_owned(),
+                            arguments: "{}".to_owned(),
+                        },
+                    ],
+                    "deepseek",
+                    "deepseek-flash",
+                ),
+                usage: None,
+                interrupted: None,
+            },
+        ),
+    ]
+}
+
+fn tool_result_ids(closers: &crate::TurnClosers) -> Vec<String> {
+    closers
+        .events
+        .iter()
+        .filter_map(|kind| match kind {
+            EventKind::ToolResult { message, .. } => Some(message.id.as_str().to_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn closer_tool_result_ids_are_stable_and_unique() {
+    // DSH repair 的合成 tool/result 用确定性 message id；AIOS 在分配 seq 前造事件，
+    // 改用 cause+callId 的确定性 id（handback known）。重复修复必须稳定。
+    let events = started_call_events();
+    let first = interrupted_turn_closers(&events).expect("要补收尾");
+    let second = interrupted_turn_closers(&events).expect("要补收尾");
+    let ids = tool_result_ids(&first);
+    assert_eq!(ids.len(), 1);
+    assert!(!ids[0].is_empty(), "合成 tool/result 要有确定性 id");
+    assert_eq!(ids, tool_result_ids(&second), "重复修复的 id 稳定");
+
+    // 不同调用的修复结果 id 不同（确定性里带 callId）。
+    let closers = interrupted_turn_closers(&two_pending_calls_events()).expect("要补收尾");
+    let ids = tool_result_ids(&closers);
+    assert_eq!(ids.len(), 2, "两个未答复调用各补一条结果");
+    assert_ne!(ids[0], ids[1], "不同调用的修复结果 id 不同");
 }

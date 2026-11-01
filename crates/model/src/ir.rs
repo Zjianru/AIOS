@@ -347,3 +347,7 @@ pub enum StreamChunk {
     Usage(Usage),
     Finish(FinishReason),
 }
+
+#[cfg(test)]
+#[path = "ir_tests.rs"]
+mod tests;
