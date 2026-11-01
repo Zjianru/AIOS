@@ -2,11 +2,15 @@
 //!
 //! 照抄来源：DSH 的 packages/llm 与 packages/llm/llm-deepseek（strategy 第 1 节）。
 
+mod assistant_stream;
 mod cancel;
 mod deepseek;
 mod error;
 mod ir;
 
+pub use assistant_stream::{
+    AssistantStreamAccumulator, AssistantStreamRecord, TimedStreamChunk, expand_assistant_stream,
+};
 pub use cancel::CancelToken;
 pub use deepseek::{
     ChunkStream, DEFAULT_BASE_URL, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DeepSeek,

@@ -1,6 +1,6 @@
 //! 会话事件与 header。
 
-use model::{Message, Usage};
+use model::{AssistantStreamRecord, Message, Usage};
 use serde::{Deserialize, Serialize};
 
 use crate::SessionId;
@@ -206,15 +206,28 @@ pub enum EventKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         outcome: Option<InboxOutcome>,
     },
+    /// 一个 step 组装出来的助手消息（派生历史用它）。usage 是这次调用报的用量；
+    /// 取消中途收尾时记被保留的 text/reasoning 前缀并带 interrupted=true；
+    /// stream 是这次尝试的精确流记录（DSH assistant-stream 的紧凑形状，逐帧边界不合并）。
     #[serde(rename = "assistant/message")]
     AssistantMessage {
         turn: u64,
         step: u64,
         message: Message,
+        /// 骨架期先不写进 JSON（旧测试保持绿）；实现时改成必填 stream。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        stream: Vec<AssistantStreamRecord>,
         #[serde(skip_serializing_if = "Option::is_none")]
         usage: Option<Usage>,
         #[serde(skip_serializing_if = "Option::is_none")]
         interrupted: Option<bool>,
+    },
+    /// 一次没有产出可见消息的模型尝试（重试/取消/流错误）。stream 保留帧，不进派生历史。
+    #[serde(rename = "assistant/attempt")]
+    AssistantAttempt {
+        turn: u64,
+        step: u64,
+        stream: Vec<AssistantStreamRecord>,
     },
     /// 模型请求的一次工具调用（持久化事实；assistant/message 里也有同一调用块）。
     #[serde(rename = "tool/call")]
@@ -279,6 +292,7 @@ impl EventKind {
             Self::QuestionCancelled { .. } => "question/cancelled",
             Self::InboxSpliced { .. } => "agent/inbox/spliced",
             Self::AssistantMessage { .. } => "assistant/message",
+            Self::AssistantAttempt { .. } => "assistant/attempt",
             Self::ToolCall { .. } => "tool/call",
             Self::ToolResult { .. } => "tool/result",
             Self::CompactionPrune { .. } => "compaction/prune",

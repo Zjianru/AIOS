@@ -267,6 +267,7 @@ fn all_event_kinds_round_trip_under_dsh_envelope() {
             turn: 1,
             step: 1,
             message: Message::text(Role::Assistant, "好的"),
+            stream: Vec::new(),
             usage: Some(Usage {
                 input_tokens: Some(3),
                 output_tokens: Some(2),

@@ -446,6 +446,7 @@ pub(crate) fn event_context(kind: &EventKind) -> Option<(u64, u64)> {
         | EventKind::SystemMessage { turn, step, .. }
         | EventKind::UserMessage { turn, step, .. }
         | EventKind::AssistantMessage { turn, step, .. }
+        | EventKind::AssistantAttempt { turn, step, .. }
         | EventKind::ToolCall { turn, step, .. }
         | EventKind::ToolResult { turn, step, .. }
         | EventKind::QuestionAsked { turn, step, .. }

@@ -961,8 +961,8 @@ async fn run_step(
                     open.remove(&index);
                     blocks.insert(index, block);
                 }
-                Ok(StreamChunk::Usage(reported)) => usage = Some(reported),
-                Ok(StreamChunk::Finish(reason)) => finish = Some(reason),
+                Ok(StreamChunk::Usage { usage: reported }) => usage = Some(reported),
+                Ok(StreamChunk::Finish { reason }) => finish = Some(reason),
                 Err(error) => {
                     if abort.load(Ordering::SeqCst) || error.code == ErrorCode::Aborted {
                         return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
@@ -1010,6 +1010,7 @@ async fn run_step(
                 turn,
                 step,
                 message,
+                stream: Vec::new(),
                 usage: usage.clone(),
                 interrupted: None,
             }])
@@ -1313,6 +1314,7 @@ async fn interrupted_step(
                 turn,
                 step,
                 message,
+                stream: Vec::new(),
                 usage: usage.clone(),
                 interrupted: Some(true),
             }])

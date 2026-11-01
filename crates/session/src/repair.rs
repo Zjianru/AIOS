@@ -105,6 +105,7 @@ pub fn interrupted_turn_closers(events: &[Event]) -> Option<TurnClosers> {
             }
             EventKind::SystemMessage { .. }
             | EventKind::UserMessage { .. }
+            | EventKind::AssistantAttempt { .. }
             | EventKind::CompactionPrune { .. }
             | EventKind::TodoWrite { .. }
             | EventKind::CompactionStart { .. }

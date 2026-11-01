@@ -72,7 +72,7 @@ pub enum Role {
 
 /// 消息内容块。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "type", rename_all = "kebab-case")]
 pub enum ContentBlock {
     Text {
         text: String,
@@ -297,13 +297,14 @@ pub struct ToolSchema {
 /// 一次请求的用量；厂商没给的项保持 None（显示为「未知」，不是 0）。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    // 字段名照 DSH TokenUsage（packages/llm/llm/src/types.ts:182-196）。
+    #[serde(rename = "inputTokens", skip_serializing_if = "Option::is_none")]
     pub input_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "outputTokens", skip_serializing_if = "Option::is_none")]
     pub output_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "cacheReadTokens", skip_serializing_if = "Option::is_none")]
     pub cache_read_input_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "cacheWriteTokens", skip_serializing_if = "Option::is_none")]
     pub cache_creation_input_tokens: Option<u64>,
 }
 
@@ -365,8 +366,9 @@ impl Effort {
     }
 }
 
-/// 流的结束原因。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 流的结束原因；JSON 照 DSH FinishReasonMap（`{"kind":"stop"}` 等，types.ts:159-172）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum FinishReason {
     /// 模型正常说完（end_turn / stop_sequence）。
     Stop,
@@ -376,23 +378,42 @@ pub enum FinishReason {
     MaxTokens,
 }
 
-/// 内容块类型（流事件里只带类型，不带内容）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 内容块类型（流事件里只带类型，不带内容）；JSON 是 DSH 的块类型名（`tool-call`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum BlockType {
     Text,
     Reasoning,
     ToolCall,
 }
 
-/// provider 无关的流事件。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// provider 无关的流事件；JSON 照 DSH StreamChunk（types.ts:496-508）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
 pub enum StreamChunk {
-    BlockStart { index: usize, block_type: BlockType },
-    TextDelta { index: usize, text: String },
-    ReasoningDelta { index: usize, text: String },
-    BlockEnd { index: usize, block: ContentBlock },
-    Usage(Usage),
-    Finish(FinishReason),
+    BlockStart {
+        index: usize,
+        #[serde(rename = "blockType")]
+        block_type: BlockType,
+    },
+    TextDelta {
+        index: usize,
+        text: String,
+    },
+    ReasoningDelta {
+        index: usize,
+        text: String,
+    },
+    BlockEnd {
+        index: usize,
+        block: ContentBlock,
+    },
+    Usage {
+        usage: Usage,
+    },
+    Finish {
+        reason: FinishReason,
+    },
 }
 
 // 测试直接展开在 ir 模块里：票面 C5 的测试名是 model::ir::<test>（不加 tests 子模块）。

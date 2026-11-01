@@ -274,8 +274,10 @@ impl Translator {
                     }
                 }
                 self.finished = true;
-                chunks.push(StreamChunk::Usage(self.usage.clone()));
-                chunks.push(StreamChunk::Finish(finish));
+                chunks.push(StreamChunk::Usage {
+                    usage: self.usage.clone(),
+                });
+                chunks.push(StreamChunk::Finish { reason: finish });
             }
             // Anthropic 允许其他事件类型（如 ping）：忽略。
             _ => {}
