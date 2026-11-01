@@ -265,8 +265,8 @@ async fn pending_inject_survives_resume_and_is_claimed_once() {
     let after_turn = read_snapshot(data_dir.path(), &id);
     assert_eq!(
         after_turn.events().len(),
-        after_resume + 7,
-        "一轮事件：insert + turn/start + 两条 claim + step/start + user/message×2 + assistant/message + step/end + turn/end"
+        after_resume + 11,
+        "一轮事件：insert、turn/start、两条 claim、step/start、system/message、user/message×2、assistant/message、step/end、turn/end"
     );
     let texts = logged_user_texts(&after_turn);
     assert_eq!(count_text(&texts, "后台通知"), 1);
@@ -351,8 +351,8 @@ async fn crash_window_message_is_claimed_once_after_restart() {
     let first: Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert_eq!(
         request_user_texts(&first),
-        vec!["崩溃前收下的".to_owned()],
-        "先领崩溃前收下的那条"
+        vec!["第一轮".to_owned(), "崩溃前收下的".to_owned()],
+        "第一个请求 = 历史的一轮 + 刚从队列领取的那条"
     );
     let second: Value = serde_json::from_slice(&requests[1].body).unwrap();
     let second_texts = request_user_texts(&second);

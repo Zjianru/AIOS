@@ -72,6 +72,8 @@ pub(crate) struct Inner {
     pub(crate) capabilities: CapabilityRegistry,
     pub(crate) store: Mutex<SessionStore>,
     inbox: Mutex<Inbox>,
+    /// 串行化 inbox 变更：保证日志里的 splice 顺序 = 内存队列的应用顺序（T006.2a）。
+    inbox_mutations: tokio::sync::Mutex<()>,
     state: Mutex<RunState>,
     pub(crate) events: broadcast::Sender<AgentEvent>,
     idle_notify: Notify,
@@ -156,10 +158,9 @@ impl LoopAccess for Inner {
                     Phase::Running { .. } => InboxTarget::NextStep,
                 }
             };
-            self.inbox
-                .lock()
-                .expect("agent 收件箱锁被毒化")
-                .push(target, UserMessage::text(text));
+            let message = UserMessage::text(text).into_message();
+            self.inbox_mutation(target, i64::MAX, 0, vec![message], false)
+                .await?;
             Ok(())
         })
     }
@@ -202,6 +203,8 @@ impl Inner {
         let compaction_waiters: Arc<Mutex<Vec<tokio::sync::oneshot::Sender<()>>>> =
             Arc::new(Mutex::new(Vec::new()));
         let ask_state = crate::ask_capability::new_state();
+        // T006.2a：续接/新建时从日志折叠输入队列；坏掉的 splice 让 resume 报错，不静默丢。
+        let inbox = Inbox::restore(store.events())?;
         let inner = Arc::new(Self {
             id,
             log_path,
@@ -215,7 +218,8 @@ impl Inner {
             compaction_retain_ratio: config.compaction_retain_ratio,
             compaction_headroom_tokens: config.compaction_headroom_tokens,
             store: Mutex::new(store),
-            inbox: Mutex::new(Inbox::default()),
+            inbox: Mutex::new(inbox),
+            inbox_mutations: tokio::sync::Mutex::new(()),
             state: Mutex::new(RunState {
                 phase: Phase::Idle,
                 wake_requested: false,
@@ -275,10 +279,8 @@ impl Inner {
                 delivery.target()
             }
         };
-        self.inbox
-            .lock()
-            .expect("agent 收件箱锁被毒化")
-            .push(target, message);
+        self.inbox_mutation(target, i64::MAX, 0, vec![message.into_message()], false)
+            .await?;
         if delivery.wakes() {
             self.wake_driver();
         }
@@ -286,21 +288,43 @@ impl Inner {
     }
 
     /// 领取一个 step 的输入（T006.2a：从日志恢复的队列上领取，领取也落日志）。
+    ///
+    /// 照 DSH claim（inbox.ts:108-113）：先领全部 next-step，target=next-turn 时再领
+    /// 一条 next-turn；claimed 通知带 owning turn。
     pub(crate) async fn claim_input(
         &self,
         target: InboxTarget,
-        _turn: u64,
+        turn: u64,
     ) -> Result<Vec<Message>, AgentError> {
-        Ok(self
-            .inbox
-            .lock()
-            .expect("agent 收件箱锁被毒化")
-            .claim(target))
+        let _gate = self.inbox_mutations.lock().await;
+        let mut claimed = self
+            .inbox_splice(InboxTarget::NextStep, 0, i64::MAX, Vec::new(), false)
+            .await?;
+        if target == InboxTarget::NextTurn {
+            claimed.extend(
+                self.inbox_splice(InboxTarget::NextTurn, 0, 1, Vec::new(), false)
+                    .await?,
+            );
+        }
+        for message in &claimed {
+            let _ = self.events.send(AgentEvent::InboxClaimed {
+                message: message.clone(),
+                turn,
+            });
+        }
+        Ok(claimed)
     }
 
     /// 取消：清空输入队列并中止正在跑的一轮（T006.2a 起取消也落日志）。
     pub(crate) async fn cancel(&self) -> Result<(), AgentError> {
-        self.inbox.lock().expect("agent 收件箱锁被毒化").clear();
+        // 照 DSH clear（inbox.ts:96-100）：先清 next-step、再清 next-turn，普通删除带 canceled。
+        {
+            let _gate = self.inbox_mutations.lock().await;
+            self.inbox_splice(InboxTarget::NextStep, 0, i64::MAX, Vec::new(), true)
+                .await?;
+            self.inbox_splice(InboxTarget::NextTurn, 0, i64::MAX, Vec::new(), true)
+                .await?;
+        }
         let mut state = self.state.lock().expect("agent 状态锁被毒化");
         state.wake_requested = false;
         if let Phase::Running { abort, .. } = &state.phase {
@@ -311,6 +335,57 @@ impl Inner {
             self.capabilities.cancel_questions();
         }
         Ok(())
+    }
+
+    /// 规范化 + 落日志 + 应用 + 发通知；调用方必须持有 `inbox_mutations` 锁。
+    async fn inbox_splice(
+        &self,
+        target: InboxTarget,
+        start: i64,
+        delete_count: i64,
+        inserted: Vec<Message>,
+        discard_removed: bool,
+    ) -> Result<Vec<Message>, AgentError> {
+        let splice = {
+            let inbox = self.inbox.lock().expect("agent 收件箱锁被毒化");
+            inbox.splice(target, start, delete_count, inserted, discard_removed)
+        };
+        if splice.is_empty() {
+            return Ok(Vec::new());
+        }
+        // 先落盘再改内存：日志里的 splice 顺序就是队列的应用顺序；写失败时队列不动。
+        self.append(&[splice.event_kind()]).await?;
+        self.inbox
+            .lock()
+            .expect("agent 收件箱锁被毒化")
+            .apply(&splice);
+        if splice.discard_removed() {
+            for message in splice.removed() {
+                let _ = self.events.send(AgentEvent::InboxDiscarded {
+                    message: message.clone(),
+                });
+            }
+        }
+        for message in splice.inserted() {
+            let _ = self.events.send(AgentEvent::InboxInserted {
+                message: message.clone(),
+            });
+        }
+        Ok(splice.removed().to_vec())
+    }
+
+    /// inbox 变更入口：持 `inbox_mutations` 锁串行化（send / cancel / enqueue_context）。
+    async fn inbox_mutation(
+        &self,
+        target: InboxTarget,
+        start: i64,
+        delete_count: i64,
+        inserted: Vec<Message>,
+        discard_removed: bool,
+    ) -> Result<Vec<Message>, AgentError> {
+        let _gate = self.inbox_mutations.lock().await;
+        self.inbox_splice(target, start, delete_count, inserted, discard_removed)
+            .await
     }
 
     /// 一次 step 的工具批之后推进重复链，命中阈值（3/5/8，照 DSH）返回一条提醒文本。
