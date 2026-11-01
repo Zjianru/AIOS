@@ -30,8 +30,8 @@ AIOS 是一个本地 agent 内核：每次模型请求从会话日志派生，�
 - **公开接口上只有 `tools::Tool` 是 trait**：其他公开接缝用具体类型（`agent::Deps { model, tools, store }`）。`session` 的文件写入接缝 `LogWriter` 是内部接缝（生产用 `std::fs::File`，测试用它注入 fsync 失败），不暴露在公开接口上。测试替身放在 HTTP 层（wiremock）和临时目录上，不越过公开接口去 mock 内部类型。
 - **工具批执行按模型顺序提交**：独占调用是屏障；连续的并行安全调用进有界滚动池（`max_parallel_tool_calls`，默认 10，设成 1 就是串行）；结果和 `tool/result` 事件都按模型给出的顺序，与完成顺序无关。
 - **工具调用先记日志再派发**：`tool/call` 在工具执行前写入；`tool/result` 按模型顺序写入。取消与中断修复（T004.3 / T004.4）依赖这个顺序。
-- **唤醒不丢**：轮次收尾检查与 `settle_idle` 的快照之间没有别的 await；收尾处显式让出一次调度，且 `wake_driver` 在 Running 时无条件置 `wake_requested`。收尾窗口里到达的 FollowUp/Steer 不会滞留，`idle()` 不会带着待处理输入返回。
-- **取消**：流中断时按 DSH `interruptedBlocks` 规则保留已流出的 text 前缀（去空白后非空，tool-call 块丢弃）并写成 `interrupted: true` 的 assistant 消息；批执行取消时已开始的调用等结束并按模型顺序提交，未开始的补 `ABORTED_BEFORE_DISPATCH`。取消后会话可以继续。
+- **唤醒不丢**：轮次收尾检查与 `settle_idle` 的快照之间只有一个显式让出点（`tokio::task::yield_now`），除此之外没有别的 await；且 `wake_driver` 在 Running 时无条件置 `wake_requested`。收尾窗口里到达的 FollowUp/Steer 不会滞留，`idle()` 不会带着待处理输入返回。
+- **取消**：流中断时按 DSH `interruptedBlocks` 规则保留已流出的 text 前缀（去空白后非空，tool-call 块丢弃）并写成 `interrupted: true` 的 assistant 消息；批执行取消时已开始的调用等结束并按模型顺序提交，未开始的补 `ABORTED_BEFORE_DISPATCH`。取消后会话可以继续：收尾时 abort 置位的轮次返回无 pending、收敛到 `settle_idle`，再由 settle 用新 Phase 重开驱动处理取消后投递的输入（不空转）。
 - 一个会话一个 JSONL 文件，路径是 `<data-dir>/sessions/<id>.jsonl`；首行是 header（格式版本、id、cwd、创建时间）。
 
 ## 接缝
