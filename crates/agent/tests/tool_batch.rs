@@ -5,8 +5,10 @@ mod common;
 use std::sync::Arc;
 
 use agent::{Agent, AgentConfig, Delivery, Deps};
-use common::{FINAL_TEXT_SSE, SequenceResponder, ToolEvent, gated, sse, tool_calls_sse};
-use model::{DeepSeek, DeepSeekConfig, Effort, UserMessage};
+use common::{
+    FINAL_TEXT_SSE, SequenceResponder, ToolEvent, gated, model_config, sse, tool_calls_sse,
+};
+use model::{DeepSeek, UserMessage};
 use session::SessionStore;
 use tokio::sync::{Semaphore, mpsc};
 use tools::{Tool, ToolConcurrency, ToolSet};
@@ -53,20 +55,13 @@ async fn setup(
         .iter()
         .map(|(name, mode)| gated(name, *mode, &started_tx, &mut permits))
         .collect();
-    let config = DeepSeekConfig {
-        base_url: server.uri(),
-        api_key: "test-key".to_owned(),
-        model: "deepseek-flash".to_owned(),
-        max_tokens: 2048,
-        effort: Effort::High,
-    };
     let agent = Agent::create(
         AgentConfig {
             max_parallel_tool_calls,
             ..AgentConfig::default()
         },
         Deps {
-            model: DeepSeek::new(config).unwrap(),
+            model: DeepSeek::new(model_config(&server.uri())).unwrap(),
             tools: ToolSet::new(tools),
             store,
         },
@@ -234,20 +229,13 @@ async fn agent_config_rejects_zero_parallelism() {
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let store = SessionStore::create(data_dir.path(), cwd.path()).unwrap();
-    let config = DeepSeekConfig {
-        base_url: "http://127.0.0.1:1".to_owned(),
-        api_key: "test-key".to_owned(),
-        model: "deepseek-flash".to_owned(),
-        max_tokens: 2048,
-        effort: Effort::High,
-    };
     let created = Agent::create(
         AgentConfig {
             max_parallel_tool_calls: 0,
             ..AgentConfig::default()
         },
         Deps {
-            model: DeepSeek::new(config).unwrap(),
+            model: DeepSeek::new(model_config("http://127.0.0.1:1")).unwrap(),
             tools: ToolSet::empty(),
             store,
         },

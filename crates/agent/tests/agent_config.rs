@@ -5,19 +5,10 @@ mod common;
 use std::path::PathBuf;
 
 use agent::{Agent, AgentConfig, AgentError, Deps};
-use model::{DeepSeek, DeepSeekConfig, Effort};
+use common::model_config;
+use model::DeepSeek;
 use session::SessionStore;
 use tools::ToolSet;
-
-fn model_config(base_url: &str) -> DeepSeekConfig {
-    DeepSeekConfig {
-        base_url: base_url.to_owned(),
-        api_key: "test-key".to_owned(),
-        model: "deepseek-flash".to_owned(),
-        max_tokens: 2048,
-        effort: Effort::High,
-    }
-}
 
 fn home_agents() -> PathBuf {
     std::env::var_os("HOME")

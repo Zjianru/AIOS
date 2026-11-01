@@ -5,23 +5,16 @@ mod common;
 use std::path::{Path, PathBuf};
 
 use agent::{Agent, AgentConfig, Delivery, Deps};
-use common::{FINAL_TEXT_SSE, SequenceResponder, ToolEvent, gated, sse, tool_calls_sse};
-use model::{ContentBlock, DeepSeek, DeepSeekConfig, Effort, UserMessage};
+use common::{
+    FINAL_TEXT_SSE, SequenceResponder, ToolEvent, gated, model_config, sse, tool_calls_sse,
+    wait_idle,
+};
+use model::{ContentBlock, DeepSeek, UserMessage};
 use session::{EventKind, SessionId, SessionStore, TurnEndReason};
 use tokio::sync::mpsc;
 use tools::{ToolConcurrency, ToolSet};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer};
-
-fn model_config(base_url: &str) -> DeepSeekConfig {
-    DeepSeekConfig {
-        base_url: base_url.to_owned(),
-        api_key: "test-key".to_owned(),
-        model: "deepseek-flash".to_owned(),
-        max_tokens: 2048,
-        effort: Effort::High,
-    }
-}
 
 fn log_path(data_dir: &Path, id: &SessionId) -> PathBuf {
     data_dir.join("sessions").join(format!("{id}.jsonl"))
@@ -71,12 +64,6 @@ async fn resume_agent(data_dir: &Path, id: &SessionId, base_url: &str, tools: To
     )
     .await
     .unwrap()
-}
-
-async fn wait_idle(agent: &Agent) {
-    tokio::time::timeout(std::time::Duration::from_secs(3), agent.idle())
-        .await
-        .expect("idle() 超时");
 }
 
 fn count_turns(events: &[session::Event]) -> usize {
@@ -213,7 +200,7 @@ async fn resume_after_balanced_turn_sees_full_history() {
         Some(ToolEvent::Started("gate".to_owned()))
     );
     permits[0].1.add_permits(1);
-    wait_idle(&agent).await;
+    wait_idle(&agent, 3).await;
     drop(agent);
 
     // 平衡日志：续接不应追加任何修复事件。
@@ -245,7 +232,7 @@ async fn resume_after_balanced_turn_sees_full_history() {
 
     let resumed = resume_agent(data_dir.path(), &id, &server.uri(), ToolSet::empty()).await;
     resumed.send(UserMessage::text("续接后第一句"), Delivery::FollowUp);
-    wait_idle(&resumed).await;
+    wait_idle(&resumed, 3).await;
 
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 3, "续接后只该发起一次新请求");
@@ -360,7 +347,7 @@ async fn resume_repairs_unknown_call_from_torn_tail() {
 
     // 修复后能继续，请求里带合成结果和新输入。
     resumed.send(UserMessage::text("修复后继续"), Delivery::FollowUp);
-    wait_idle(&resumed).await;
+    wait_idle(&resumed, 3).await;
     let requests = resumed_server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
     let body = request_body(&requests[0]);
@@ -400,7 +387,7 @@ async fn resume_repairs_not_started_call_after_assistant_message() {
         Some(ToolEvent::Started("gate".to_owned()))
     );
     permits[0].1.add_permits(1);
-    wait_idle(&agent).await;
+    wait_idle(&agent, 3).await;
     drop(agent);
 
     // 崩溃点 = assistant/message 写完、tool/call 还没写；截到 assistant 那一行为止，再补半行。
@@ -456,7 +443,7 @@ async fn resume_repairs_not_started_call_after_assistant_message() {
     drop(repaired);
 
     resumed.send(UserMessage::text("修复后继续"), Delivery::FollowUp);
-    wait_idle(&resumed).await;
+    wait_idle(&resumed, 3).await;
     let requests = resumed_server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
     assert!(has_tool_result(

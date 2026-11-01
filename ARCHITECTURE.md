@@ -12,8 +12,8 @@ AIOS 是一个本地 agent 内核：每次模型请求从会话日志派生，�
 
 - crates/model：provider 无关的消息 IR（Message / ContentBlock / Usage / FinishReason / StreamChunk；assistant 的 reasoning 块带 signature），DeepSeek 的 Messages 适配器（请求序列化、SSE 解码、流事件翻译、错误码、retry-after），以及具体类型 `CancelToken`（Arc<AtomicBool>+Notify，供 LLM 层打断请求）。
 - crates/session：会话事件（turn/step/消息），只追加的 JSONL 存储（SessionStore），从日志派生请求消息，以及续接时的中断修复（`repair`：崩溃/被杀后给没收尾的 turn 补收尾事件）。
-- crates/tools：Tool 接口、ToolCall/ToolResult、ToolSet、工具批执行（独占屏障、有界并行池、按模型顺序提交），以及内置只读工具 read / glob / grep（进程内搜索，不起 rg 子进程）。
-- crates/agent：一轮多步的驱动、收件箱（follow-up / steer / inject）、工具调用的派发与结果回写、Agent 的 6 个驱动入口（create / resume / send / cancel / subscribe / idle）、公开配置 `AgentConfig`（`max_parallel_tool_calls`，默认 10，必须 ≥1）；另有 id / log_path 两个只读元数据访问器，不属于驱动入口。
+- crates/tools：Tool 接口、ToolCall/ToolResult、ToolSet、工具批执行（独占屏障、有界并行池、按模型顺序提交），内置只读工具 read / glob / grep（进程内搜索，不起 rg 子进程），以及工具用的会话上下文 `ToolContext`（cwd + 观察表 / 任务注册表 / spill，见「T005 接口地基」）。
+- crates/agent：一轮多步的驱动、收件箱（follow-up / steer / inject）、工具调用的派发与结果回写、Agent 的 6 个驱动入口（create / resume / send / cancel / subscribe / idle）、公开配置 `AgentConfig`、订阅者事件 `AgentEvent`；另有 id / log_path 两个只读元数据访问器，不属于驱动入口。集成测试的 mock 响应器、可控测试工具和公共 setup 在 `crates/agent/tests/common`。
 - crates/cli：开发用 CLI `aios-dev`（`chat` / `run`）。
 
 ## 依赖方向
@@ -38,6 +38,15 @@ AIOS 是一个本地 agent 内核：每次模型请求从会话日志派生，�
 - **取消**：流中断时按 DSH `interruptedBlocks` 规则保留已流出的 text/reasoning 前缀（去空白后非空，tool-call 块丢弃）并写成 `interrupted: true` 的 assistant 消息；取消令牌传进 LLM 层，能打断「等响应头」阶段；批执行取消时已开始的调用等结束并按模型顺序提交，未开始的补 `ABORTED_BEFORE_DISPATCH`。取消后会话可以继续：收尾时 abort 置位的轮次返回无 pending、收敛到 `settle_idle`，再由 settle 用新 Phase 重开驱动处理取消后投递的输入（不空转）。
 - **续接先修复再接受输入**：`Agent::resume` 先扫描日志，给最后一个没收尾的 turn 补 `tool/result`（已记录 `tool/call` 的调用 → `TOOL_OUTCOME_UNKNOWN`；只有 assistant 调用块、没记录开始的 → `TOOL_NOT_STARTED`）、`step/end`、`turn/end`（用 `Aborted`，不加 DSH 的 `interrupted` 变体），一次批 append 后才起驱动；修复只读日志、不重跑工具，崩溃也不补 `interrupted` assistant 消息（没落盘的流式文本不存在）。
 - 一个会话一个 JSONL 文件，路径是 `<data-dir>/sessions/<id>.jsonl`；首行是 header（格式版本、id、cwd、创建时间）。
+
+## T005 接口地基
+
+T005 各票共用这几处接口和约定；字段与签名看代码，这里只记后续票要遵守的部分。
+
+- **AgentConfig**（`crates/agent/src/lib.rs`）：`max_parallel_tool_calls`、`compaction_threshold_ratio`、`compaction_retain_ratio`、`compaction_headroom_tokens`、`spill_max_inline_tokens`、`instruction_roots`、`skill_roots`。默认值照 DSH：10 / 0.8 / 0.16 / 65536 / 12500 / `~/.agents` / `~/.agents/skills`（DSH 出处：`agent-loop/src/constants.ts:6`、`compaction-basic/src/config.ts:20,23,75`、`bundle/base/cordis.patch.yml:416`、`skill/skill-filesystem/README.zh.md:54,72`）。`Agent::create` / `resume` 建 agent 时校验一次，非法值返回 `AgentError::InvalidConfig { field, message }`，不等到驱动任务里 panic。T005.0 只做比例式保留（`retainRatio`），不做 DSH 的 `retainTokens` 二选一。
+- **AgentEvent**（同上）：已有 `AssistantTextDelta` / `Retrying` / `UsageReported` / `TurnEnded` 不改名、不改字段；T005 新增 `QuestionAsked`（T005.10）、`CompactionStarted` / `CompactionEnded`（T005.8a/.8b）、`JobCompleted`（T005.4）。发出方是各票，CLI 展示约定在 `crates/cli/src/main.rs` 的 `handle_event`。
+- **会话日志事件与版本**：T005 计划新增的 `EventKind` 是 `todo/write`（T005.7）、`compaction/start` / `compaction/summary` / `compaction/end`（T005.8a/.8b）、`compaction/prune`（T005.2，记录被修剪的 tool/result，让续接后的派生请求可复现）；其他票不加新类型。加类型时在 `crates/session/src/event.rs` 登记，并同步 `derive.rs`（进不进请求）和 `repair.rs`（收尾分类）的 match。`FORMAT_VERSION` 保持 1：新增事件类型是增补，不升；只有改变已提交事件的字段含义或类型、或删除事件时才升。读到不认识的版本直接拒绝，不做就地迁移。
+- **ToolContext**（`crates/tools/src/lib.rs`、`crates/tools/src/session.rs`）：`cwd` + `Arc<ToolSessionState>`（`ObservationStore` 文件观察表、`TaskRegistry` 后台任务、`SpillStore`）。`Agent` 在 create/resume 时建一份、每次工具批传入；续接新建空观察表，不继承上一次。工具单元测试用 `ToolContext::new`（空状态、禁用 spill）。
 
 ## 接缝
 

@@ -5,24 +5,14 @@ mod common;
 use agent::{Agent, AgentConfig, AgentEvent, Delivery, Deps, TurnOutcome};
 use common::{
     FINAL_TEXT_SSE, PARTIAL_TEXT_SSE, ScriptedSseServer, SequenceResponder, SseScript, ToolEvent,
-    gated, sse, tool_calls_sse,
+    gated, model_config, sse, tool_calls_sse,
 };
-use model::{ContentBlock, DeepSeek, DeepSeekConfig, Effort, UserMessage};
+use model::{ContentBlock, DeepSeek, UserMessage};
 use session::{EventKind, SessionStore, TurnEndReason};
 use tokio::sync::mpsc;
 use tools::{ToolConcurrency, ToolSet};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer};
-
-fn model_config(base_url: &str) -> DeepSeekConfig {
-    DeepSeekConfig {
-        base_url: base_url.to_owned(),
-        api_key: "test-key".to_owned(),
-        model: "deepseek-flash".to_owned(),
-        max_tokens: 2048,
-        effort: Effort::High,
-    }
-}
 
 async fn new_agent(
     base_url: &str,
