@@ -385,25 +385,40 @@ fn settle_idle(inner: &Arc<Inner>) {
         let wake = std::mem::take(&mut state.wake_requested);
         (turn, wake)
     };
+    let has_queued = inner.has_queued_compaction();
     let has_pending = inner
         .inbox
         .lock()
         .expect("agent 收件箱锁被毒化")
         .has_pending();
-    // 压缩队列也要算 pending：否则在 settle 前入队的 compact 等待者会没人唤醒。
-    let has_queued = inner.has_queued_compaction();
     if has_queued || (wake && has_pending) {
-        let mut state = inner.state.lock().expect("agent 状态锁被毒化");
-        state.phase = Phase::Running {
-            abort: Arc::new(AtomicBool::new(false)),
-            turn,
-        };
-        drop(state);
-        tokio::spawn(kick(Arc::clone(inner)));
+        restart_kick(inner, turn);
         return;
     }
-    inner.state.lock().expect("agent 状态锁被毒化").phase = Phase::Idle;
+    // 收尾临界区：在同一把 state 锁里重查一次 wake/队列再转 Idle。
+    // 否则 compact 可能在 has_queued 之后、Idle 之前入队：queue_compaction 的
+    // wake_driver 看到 Running 只置 wake_requested，settle 随后设 Idle 就丢了 waiter。
+    let mut state = inner.state.lock().expect("agent 状态锁被毒化");
+    let wake_now = std::mem::take(&mut state.wake_requested);
+    let queued_now = inner.has_queued_compaction();
+    if wake_now || queued_now {
+        drop(state);
+        restart_kick(inner, turn);
+        return;
+    }
+    state.phase = Phase::Idle;
+    drop(state);
     inner.idle_notify.notify_waiters();
+}
+
+fn restart_kick(inner: &Arc<Inner>, turn: u64) {
+    let mut state = inner.state.lock().expect("agent 状态锁被毒化");
+    state.phase = Phase::Running {
+        abort: Arc::new(AtomicBool::new(false)),
+        turn,
+    };
+    drop(state);
+    tokio::spawn(kick(Arc::clone(inner)));
 }
 
 async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
@@ -1113,4 +1128,59 @@ fn system_prompt(cwd: &Path, tools: &ToolSet) -> String {
         );
     }
     prompt
+}
+
+#[cfg(test)]
+mod settle_tests {
+    use super::*;
+
+    /// settle 边界确定性测试：compact 在 settle 的「预检之后、Idle 之前」入队时
+    /// 不能被丢。用 inbox 锁把 settle 卡在预检与临界区之间，再入队并模拟
+    /// wake_driver 只看到 Running 置 latch 的情形。
+    #[tokio::test]
+    async fn settle_requeues_waiter_arriving_at_boundary() {
+        let data = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let store = SessionStore::create(data.path(), cwd.path()).unwrap();
+        let config = crate::AgentConfig::default();
+        let model = model::DeepSeek::new(model::DeepSeekConfig {
+            api_key: "test-key".to_owned(),
+            base_url: "http://127.0.0.1:1".to_owned(),
+            ..model::DeepSeekConfig::default()
+        })
+        .unwrap();
+        let inner = Inner::start(
+            config,
+            Deps {
+                model,
+                tools: ToolSet::empty(),
+                store,
+            },
+            0,
+        )
+        .unwrap();
+        {
+            let mut state = inner.state.lock().unwrap();
+            state.phase = Phase::Running {
+                abort: Arc::new(AtomicBool::new(false)),
+                turn: 0,
+            };
+        }
+        let inbox_guard = inner.inbox.lock().unwrap();
+        let arc = Arc::clone(&inner);
+        // 用 spawn_blocking 让 settle 在 Tokio 上下文里跑（restart_kick 会 tokio::spawn）。
+        let settle = tokio::task::spawn_blocking(move || settle_idle(&arc));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        // 窗口内：入队 waiter，并模拟 wake_driver 只看到 Running。
+        let (sender, _receiver) = tokio::sync::oneshot::channel();
+        inner.compact_queue.lock().unwrap().push(sender);
+        inner.wake_driver();
+        drop(inbox_guard);
+        settle.await.unwrap();
+        let running = matches!(inner.state.lock().unwrap().phase, Phase::Running { .. });
+        // 清理：别让 kick 真去压缩。
+        inner.compact_queue.lock().unwrap().clear();
+        inner.state.lock().unwrap().phase = Phase::Idle;
+        assert!(running, "settle 必须重新拉起 kick 来服务边界入队的 compact");
+    }
 }
