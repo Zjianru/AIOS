@@ -626,17 +626,43 @@ mod tests {
     }
 
     #[test]
-    fn config_from_args_rejects_invalid_compaction_values() {
-        let bad_threshold = CommonArgs {
-            compaction_threshold: Some(0.0),
-            ..dev_common()
-        };
-        assert!(config_from_args(&bad_threshold, "http://x".to_owned(), "k".to_owned()).is_err());
-        let bad_retain = CommonArgs {
-            compaction_threshold: Some(0.2),
-            compaction_retain: Some(0.2),
-            ..dev_common()
-        };
-        assert!(config_from_args(&bad_retain, "http://x".to_owned(), "k".to_owned()).is_err());
+    fn config_from_args_rejects_invalid_values() {
+        let cases = vec![
+            CommonArgs {
+                max_tokens: Some(0),
+                ..dev_common()
+            },
+            CommonArgs {
+                max_tokens: Some(u64::from(u32::MAX) + 1),
+                ..dev_common()
+            },
+            CommonArgs {
+                context_window: Some(0),
+                ..dev_common()
+            },
+            CommonArgs {
+                compaction_threshold: Some(0.0),
+                ..dev_common()
+            },
+            CommonArgs {
+                compaction_threshold: Some(1.5),
+                ..dev_common()
+            },
+            CommonArgs {
+                compaction_retain: Some(-0.1),
+                ..dev_common()
+            },
+            CommonArgs {
+                compaction_threshold: Some(0.2),
+                compaction_retain: Some(0.2),
+                ..dev_common()
+            },
+        ];
+        for common in cases {
+            assert!(
+                config_from_args(&common, "http://x".to_owned(), "k".to_owned()).is_err(),
+                "非法值必须报错"
+            );
+        }
     }
 }
