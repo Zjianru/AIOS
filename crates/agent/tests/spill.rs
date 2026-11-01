@@ -253,9 +253,10 @@ async fn zero_spill_threshold_disables_spill() {
         "禁用 spill 时不应建 spill 目录"
     );
 }
-
+/// T005.2 旧行为是每请求前剪；T006.4 照 DSH 改成只在压缩时剪（压力/溢出两路），
+/// 手动 /compact 不剪（DSH compactNow 不调 pruner）。
 #[tokio::test]
-async fn tool_result_pruned_only_at_compaction_and_not_per_request() {
+async fn tool_result_not_pruned_without_compaction_and_manual_compact_does_not_prune() {
     let server = MockServer::start().await;
     // 10,000 个码点：超过修剪阈值 8192，但不到 spill 阈值 12500 token。
     let lines: Vec<String> = (1..=500)
@@ -290,7 +291,7 @@ async fn tool_result_pruned_only_at_compaction_and_not_per_request() {
         .await
         .unwrap();
     agent.idle().await;
-    // T006.4：修剪只在压缩触发时发生——同一轮第二步、下一轮请求都还是全文。
+    // 没压缩就不剪：同一轮第二步、下一轮请求都还是全文。
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 2);
     assert!(
@@ -312,7 +313,7 @@ async fn tool_result_pruned_only_at_compaction_and_not_per_request() {
     );
     assert!(third.contains("row0001"), "没压缩时仍是完整结果");
 
-    // 手动 /compact：真实压缩事务里剪枝（摘要请求带修剪视图，不带完整旧结果）。
+    // 手动 /compact 照 DSH compactNow：不调 pruner，不产生 compaction/prune、不剪 tool/result。
     let outcome = agent
         .compact(Some("cmd-1".to_owned()))
         .await
@@ -321,61 +322,49 @@ async fn tool_result_pruned_only_at_compaction_and_not_per_request() {
     assert!(outcome.shadowed_items > 0);
     let store = SessionStore::open(data_dir.path(), agent.id()).unwrap();
     let events = store.events();
-    let start_index = events
-        .iter()
-        .position(|event| matches!(event.kind, EventKind::CompactionStart { .. }))
-        .expect("压缩事务应写 compaction/start");
-    let prune_index = events
-        .iter()
-        .position(|event| {
-            matches!(&event.kind, EventKind::CompactionPrune { shadowed_seqs, .. } if !shadowed_seqs.is_empty())
-        })
-        .expect("压缩事务里应写 compaction/prune");
     assert!(
-        prune_index < start_index,
-        "prune 在压缩事务开头、compaction/start 之前（DSH compactRegion 之前跑 model-free pass）"
+        events
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::CompactionStart { .. })),
+        "手动压缩本身要写 compaction/start"
     );
-    // 原始 tool/result 仍在日志里可回放；替换事件带 surfaceOp/sourceEventSeqs。
-    let original = events
-        .iter()
-        .find(|event| {
-            matches!(&event.kind, EventKind::ToolResult { message, .. }
-                if message.tool_call_id.as_deref() == Some("call_0")
-                    && message.content.iter().any(|block| block.as_text() == Some(content.as_str())))
-        })
-        .expect("原始 tool/result 仍在日志里");
-    let replacement = events
-        .iter()
-        .find(|event| {
-            matches!(&event.kind, EventKind::ToolResult { message, .. }
-                if message.content.iter().any(|block| block.as_text().is_some_and(|text| text.contains("[... tool result middle pruned ...]"))))
-        })
-        .expect("替换 tool/result 落日志");
-    assert_eq!(
-        replacement.surface_op,
-        Some(session::SurfaceOp::Replace {
-            start_seq: original.seq,
-            end_seq: original.seq
-        })
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::CompactionPrune { .. })),
+        "手动 /compact 不剪（DSH compactNow 不调 pruner）"
     );
-    assert_eq!(replacement.source_event_seqs, Some(vec![original.seq]));
-    // 派生视图里的同一条 tool 结果是修剪视图（原始事件被 surface replace 藏掉）。
-    let derived = store.derive_messages();
-    let derived_tool = derived
+    // 原始 tool/result 未被替换：日志里只有这一条 tool/result 且内容完整。
+    let tool_results: Vec<&session::Event> = events
         .iter()
-        .find(|message| message.tool_call_id.as_deref() == Some("call_0"))
-        .expect("派生 tool 结果");
-    let derived_text: String = derived_tool
+        .filter(|event| matches!(event.kind, EventKind::ToolResult { .. }))
+        .collect();
+    assert_eq!(tool_results.len(), 1, "手动压缩不写替换事件");
+    let EventKind::ToolResult { message, .. } = &tool_results[0].kind else {
+        unreachable!("上面刚筛过 ToolResult");
+    };
+    let original_text: String = message
         .content
         .iter()
         .filter_map(model::ContentBlock::as_text)
         .collect();
+    assert_eq!(original_text, content, "原始 tool/result 内容完整");
+    let derived_text: String = store
+        .derive_messages()
+        .iter()
+        .flat_map(|message| {
+            message
+                .content
+                .iter()
+                .filter_map(model::ContentBlock::as_text)
+        })
+        .collect();
     assert!(
-        derived_text.contains("[... tool result middle pruned ...]"),
-        "派生视图应读修剪后的替换消息"
+        !derived_text.contains("[... tool result middle pruned ...]"),
+        "手动 /compact 不剪，派生视图没有修剪占位"
     );
 
-    // 压缩后的下一轮请求照常工作（被压缩区间由 checkpoint 承接）。
+    // 手动压缩后的下一轮请求照常工作，且仍不带修剪占位。
     agent
         .send(UserMessage::text("第三轮：看修剪"), Delivery::FollowUp)
         .await
@@ -388,15 +377,11 @@ async fn tool_result_pruned_only_at_compaction_and_not_per_request() {
         summary.contains("compaction engine"),
         "第 4 个请求是 /compact 的摘要请求"
     );
-    // 修剪替换事件 seq 更大 → 在 surface 末尾；摘要前缀可能不含它。
-    // 压缩后的普通请求（第 5 个）能看到修剪视图。
     let after = String::from_utf8(requests[4].body.clone()).unwrap();
     assert!(
-        after.contains("[... tool result middle pruned ...]"),
-        "压缩后的请求带修剪视图"
+        !after.contains("[... tool result middle pruned ...]"),
+        "手动 /compact 不剪，后续请求也没有修剪占位"
     );
-    assert!(after.contains("row0001"), "修剪保留头部");
-    assert!(!after.contains("row0300"), "中间段已被剪掉");
 }
 
 fn overflow_response() -> ResponseTemplate {

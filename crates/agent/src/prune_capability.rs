@@ -6,14 +6,16 @@
 //! config.ts:7-14（默认 thresholdChars 8192 / headChars 4096 / tailChars 1024、PRUNE_MARKER）。
 //!
 //! 触发：挂 HookPoint::Compaction，只在真实压缩事务里由压缩实现派发（T006.3 fix 之后），
-//! loop 不再每个请求前剪。替换写进日志（原始 tool/result 保留可回放），派生 fold 只认
-//! surfaceOp replace 区间。
+//! loop 不再每个请求前剪。照 DSH 只跑压力/溢出两路：`compaction-basic/src/index.ts:292-347`
+//! 的 pressure 与 context-overflow 才调 pruneSession；手动 `/compact`（compactNow:407）不调
+//! pruner，所以 `PruneCapability` 跳过 trigger=Manual。替换写进日志（原始 tool/result 保留
+//! 可回放），派生 fold 只认 surfaceOp replace 区间。
 
 use model::ContentBlock;
 use session::{Event, EventKind, ShadowedRange, SurfaceOp};
 
-use crate::AgentError;
 use crate::capabilities::{Capability, HookEvent, HookFuture, HookOutcome, HookPoint, LoopAccess};
+use crate::{AgentError, CompactionTrigger};
 
 /// 超过这个码点数才修剪（DSH DEFAULTS.thresholdChars）。
 pub(crate) const PRUNE_THRESHOLD_CHARS: usize = 8192;
@@ -176,10 +178,13 @@ impl Capability for PruneCapability {
     }
     fn on_hook<'a>(&'a self, event: &'a HookEvent<'a>) -> HookFuture<'a> {
         Box::pin(async move {
-            if let HookEvent::Compaction { host, .. } = event {
-                // 修剪失败不打断压缩事务（DSH 也是尽力而为的 model-free pass；
-                // 压缩自己的错误仍按原路径上报）。
-                let _ = prune_session(*host, None).await;
+            if let HookEvent::Compaction { host, trigger, .. } = event {
+                // 照 DSH：只有压力/溢出两路跑 pruner；手动 /compact（compactNow）跳过。
+                if *trigger != CompactionTrigger::Manual {
+                    // 修剪失败不打断压缩事务（DSH 也是尽力而为的 model-free pass；
+                    // 压缩自己的错误仍按原路径上报）。
+                    let _ = prune_session(*host, None).await;
+                }
             }
             Ok(HookOutcome::Continue)
         })
