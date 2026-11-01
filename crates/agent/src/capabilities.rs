@@ -14,6 +14,7 @@ use session::{EventKind, SessionStore};
 use tokio::sync::broadcast;
 use tools::{ToolCall, ToolResult, ToolSessionState, ToolSet};
 
+use crate::compaction_capability::CompactionCapability;
 use crate::error::AgentError;
 use crate::{AgentEvent, CompactionTrigger};
 
@@ -223,12 +224,6 @@ impl Capability for Placeholder {
     }
 }
 
-const COMPACTION_HOOKS: &[HookPoint] = &[
-    HookPoint::PreStep,
-    HookPoint::Request,
-    HookPoint::RequestError,
-    HookPoint::Compaction,
-];
 const PRUNE_HOOKS: &[HookPoint] = &[HookPoint::Compaction];
 const INSTRUCTIONS_HOOKS: &[HookPoint] = &[
     HookPoint::PreStep,
@@ -241,10 +236,7 @@ const SPILL_HOOKS: &[HookPoint] = &[HookPoint::ToolResult, HookPoint::ToolAfter]
 const REMINDER_HOOKS: &[HookPoint] = &[HookPoint::ToolAfter];
 const JOBS_HOOKS: &[HookPoint] = &[HookPoint::Status];
 
-static COMPACTION: Placeholder = Placeholder {
-    name: "compaction",
-    hooks: COMPACTION_HOOKS,
-};
+static COMPACTION_CAP: CompactionCapability = CompactionCapability;
 static PRUNE: Placeholder = Placeholder {
     name: "prune",
     hooks: PRUNE_HOOKS,
@@ -287,7 +279,7 @@ impl CapabilityRegistry {
     pub(crate) fn production() -> Self {
         Self {
             capabilities: vec![
-                &COMPACTION,
+                &COMPACTION_CAP,
                 &PRUNE,
                 &INSTRUCTIONS,
                 &SKILL,

@@ -16,7 +16,6 @@ use tokio::sync::broadcast;
 use tools::{ToolCall, ToolContext, ToolSessionState, ToolSet, execute_batch};
 
 use crate::capabilities::{CapabilityRegistry, CompactionConfig, HookEvent, LoopAccess};
-use crate::compaction;
 use crate::error::AgentError;
 use crate::inbox::{Delivery, Inbox, InboxTarget};
 use crate::instructions::InstructionState;
@@ -500,8 +499,16 @@ impl Inner {
                 let state = self.state.lock().expect("agent 状态锁被毒化");
                 state.last_turn
             };
-            let _ =
-                compaction::compact_if_needed(self, turn, 0, CompactionTrigger::Manual, true).await;
+            // 行为同旧路径：手动压缩失败不打断队列，等待者照常释放。
+            let _ = self
+                .capabilities
+                .dispatch(&HookEvent::Compaction {
+                    turn,
+                    step: 0,
+                    host: self.as_ref(),
+                    trigger: CompactionTrigger::Manual,
+                })
+                .await;
             for waiter in waiters {
                 let _ = waiter.send(());
             }
@@ -776,14 +783,6 @@ async fn run_step(
     if abort.load(Ordering::SeqCst) {
         return Ok(StepEnd::Aborted);
     }
-    inner
-        .capabilities
-        .dispatch(&HookEvent::PreStep {
-            turn,
-            step,
-            host: inner.as_ref(),
-        })
-        .await?;
     let has_system = inner
         .store
         .lock()
@@ -856,7 +855,16 @@ async fn run_step(
     // （追加 compaction/prune 事件，原始 tool/result 保留在日志里可回放）。
     prune_old_tool_results(inner, turn).await?;
     // T005.8a：请求前检查 token 压力；越过阈值就压缩较早历史（失败不打断本轮，事件已记录）。
-    let _ = compaction::compact_if_needed(inner, turn, step, CompactionTrigger::Auto, false).await;
+    // T006.1b：压缩实现已移出 loop，这里只派发固定挂点；压缩能力在 should_trigger/
+    // select_split 确认后才会真正压缩，否则 no-op。
+    inner
+        .capabilities
+        .dispatch(&HookEvent::PreStep {
+            turn,
+            step,
+            host: inner.as_ref(),
+        })
+        .await?;
     let mut messages = inner
         .store
         .lock()
@@ -891,6 +899,35 @@ async fn run_step(
         let mut stream = match inner.model.stream(&messages, &tool_schemas, &cancel).await {
             Ok(stream) => stream,
             Err(error) => {
+                if abort.load(Ordering::SeqCst) || error.code == ErrorCode::Aborted {
+                    return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
+                }
+                // T005.8a：上下文溢出先压缩再重试一次；压缩不了或第二次溢出按正常错误收尾。
+                // T006.1b：压缩由 RequestError 挂点里的压缩能力执行；它压缩不了时返回
+                // 原始错误，这里 `?` 直接收尾（行为与旧路径一致）。
+                if error.code == ErrorCode::ContextWindowExceeded {
+                    // 第一次溢出：交给 RequestError 挂点里的压缩能力，压缩不了它返回原始错误。
+                    // 第二次溢出：直接致命，不再派发/压缩（行为同旧路径，防无限循环）。
+                    if overflow_retries == 0 {
+                        overflow_retries = 1;
+                        inner
+                            .capabilities
+                            .dispatch(&HookEvent::RequestError {
+                                turn,
+                                step,
+                                host: inner.as_ref(),
+                                error: &error,
+                            })
+                            .await?;
+                        messages = inner
+                            .store
+                            .lock()
+                            .expect("agent 会话锁被毒化")
+                            .derive_messages();
+                        continue 'attempts;
+                    }
+                    return Err(AgentError::Model(error));
+                }
                 inner
                     .capabilities
                     .dispatch(&HookEvent::RequestError {
@@ -900,33 +937,6 @@ async fn run_step(
                         error: &error,
                     })
                     .await?;
-                if abort.load(Ordering::SeqCst) || error.code == ErrorCode::Aborted {
-                    return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
-                }
-                // T005.8a：上下文溢出先压缩再重试一次；压缩不了或第二次溢出按正常错误收尾。
-                if error.code == ErrorCode::ContextWindowExceeded && overflow_retries == 0 {
-                    overflow_retries = 1;
-                    let compacted = compaction::compact_if_needed(
-                        inner,
-                        turn,
-                        step,
-                        CompactionTrigger::Auto,
-                        true,
-                    )
-                    .await?;
-                    if !compacted {
-                        return Err(AgentError::Model(error));
-                    }
-                    messages = inner
-                        .store
-                        .lock()
-                        .expect("agent 会话锁被毒化")
-                        .derive_messages();
-                    continue 'attempts;
-                }
-                if error.code == ErrorCode::ContextWindowExceeded {
-                    return Err(AgentError::Model(error));
-                }
                 match decide_retry(inner, &cancel, &error, &mut attempt, content_emitted).await {
                     RetryDecision::Retry => {
                         reset_attempt(&mut blocks, &mut open, &mut usage, &mut finish);

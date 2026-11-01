@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use model::{ContentBlock, ErrorCode, Message, Role, StreamChunk};
 use session::EventKind;
 
-use crate::driver::Inner;
+use crate::capabilities::LoopAccess;
 use crate::{AgentError, AgentEvent, CompactionTrigger};
 
 static COMPACTION_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -29,13 +29,14 @@ impl Budget {
     /// 用模型表窗口、输出预留、headroom 和 AgentConfig 比例算阈值/保留预算。
     /// AIOS 偏离：窗口/输出/headroom 放不下时（W−O−B≤0）DSH 会在加载时报错，
     /// AIOS 退回 floor(W×thresholdRatio) 保证默认配置可用（handback 记偏离）。
-    pub(crate) fn resolve(inner: &Inner) -> Self {
-        let config = inner.model.config();
+    pub(crate) fn resolve(host: &dyn LoopAccess) -> Self {
+        let config = host.model().config();
         let window = config.context_window;
         let output = u64::from(config.max_tokens);
-        let headroom = inner.compaction_headroom_tokens;
+        let host_config = host.compaction_config();
+        let headroom = host_config.headroom_tokens;
         let message_budget = window.saturating_sub(output);
-        let ratio_threshold = ((window as f64) * inner.compaction_threshold_ratio) as u64;
+        let ratio_threshold = ((window as f64) * host_config.threshold_ratio) as u64;
         let threshold_tokens = if message_budget > headroom {
             ratio_threshold.min(message_budget - headroom)
         } else {
@@ -47,7 +48,7 @@ impl Budget {
         } else {
             window / 2
         };
-        let retain_tokens = (((retain_base as f64) * inner.compaction_retain_ratio) as u64)
+        let retain_tokens = (((retain_base as f64) * host_config.retain_ratio) as u64)
             .max(1)
             .min(threshold_tokens.saturating_sub(1).max(1));
         Self {
@@ -84,8 +85,8 @@ fn estimate_messages(messages: &[Message]) -> u64 {
     messages.iter().map(estimate_message).sum()
 }
 
-fn estimate_schemas(inner: &Inner) -> u64 {
-    let schemas = inner.tools.definitions();
+fn estimate_schemas(host: &dyn LoopAccess) -> u64 {
+    let schemas = host.tools().definitions();
     let mut total = 0_usize;
     for schema in &schemas {
         total += schema.name.chars().count();
@@ -125,44 +126,35 @@ pub(crate) fn select_split(messages: &[Message], retain_tokens: u64) -> Option<u
     if split > 1 { Some(split) } else { None }
 }
 
-fn should_trigger(inner: &Inner, messages: &[Message], budget: Budget) -> bool {
-    let total = estimate_messages(messages) + estimate_schemas(inner);
+fn should_trigger(host: &dyn LoopAccess, messages: &[Message], budget: Budget) -> bool {
+    let total = estimate_messages(messages) + estimate_schemas(host);
     total >= budget.threshold_tokens
 }
 
 /// 请求前的自动压缩：越过阈值（force=false）或溢出恢复（force=true）时压缩一次。
 /// 返回是否真的压缩（None 变化 / 失败时调用方决定是否继续）。
 pub(crate) async fn compact_if_needed(
-    inner: &std::sync::Arc<Inner>,
+    host: &dyn LoopAccess,
     turn: u64,
-    step: u64,
+    _step: u64,
     trigger: CompactionTrigger,
     force: bool,
 ) -> Result<bool, AgentError> {
-    let budget = Budget::resolve(inner);
+    let budget = Budget::resolve(host);
     let (derived, selected) = {
-        let store = inner.store.lock().expect("agent 会话锁被毒化");
+        let store = host.session().lock().expect("agent 会话锁被毒化");
         let derived = store.derive_messages_with_seqs();
         let messages: Vec<Message> = derived.iter().map(|(_, message)| message.clone()).collect();
         (derived, messages)
     };
-    if !force && !should_trigger(inner, &selected, budget) {
+    if !force && !should_trigger(host, &selected, budget) {
         return Ok(false);
     }
     let Some(split) = select_split(&selected, budget.retain_tokens) else {
         return Ok(false);
     };
-    // T006.1a 修正：只有确认真的要压缩（should_trigger/select_split 之后）才派发 Compaction；
-    // 自动（threshold）、溢出恢复、手动（force）三路共用这个点，prune 也在这里被带出。
-    inner
-        .capabilities
-        .dispatch(&crate::capabilities::HookEvent::Compaction {
-            turn,
-            step,
-            host: inner.as_ref(),
-            trigger,
-        })
-        .await?;
+    // T006.1b：压缩能力自己就是确认点（should_trigger/select_split 之后才走到这里）；
+    // prune 的搬迁/触发归 T006.4。
     // 系统消息永远保留；被摘要的是 prefix 去掉系统后的部分。
     let shadowed_start = derived[1].0;
     let shadowed_end = derived[split - 1].0;
@@ -178,29 +170,27 @@ pub(crate) async fn compact_if_needed(
         COMPACTION_COUNTER.fetch_add(1, Ordering::Relaxed)
     );
 
-    let _ = inner.events.send(AgentEvent::CompactionStarted {
+    let _ = host.events().send(AgentEvent::CompactionStarted {
         compaction_id: compaction_id.clone(),
         trigger,
     });
-    inner
-        .append(&[EventKind::CompactionStart {
-            compaction_id: compaction_id.clone(),
-            turn,
-        }])
-        .await?;
+    host.append(&[EventKind::CompactionStart {
+        compaction_id: compaction_id.clone(),
+        turn,
+    }])
+    .await?;
 
-    let summary = match summarize(inner, &prefix).await {
+    let summary = match summarize(host, &prefix).await {
         Ok(summary) => summary,
         Err(error) => {
             let message = error.to_string();
-            inner
-                .append(&[EventKind::CompactionEnd {
-                    compaction_id: compaction_id.clone(),
-                    turn,
-                    error: Some(message.clone()),
-                }])
-                .await?;
-            let _ = inner.events.send(AgentEvent::CompactionEnded {
+            host.append(&[EventKind::CompactionEnd {
+                compaction_id: compaction_id.clone(),
+                turn,
+                error: Some(message.clone()),
+            }])
+            .await?;
+            let _ = host.events().send(AgentEvent::CompactionEnded {
                 compaction_id,
                 error: Some(message),
             });
@@ -208,23 +198,22 @@ pub(crate) async fn compact_if_needed(
         }
     };
 
-    inner
-        .append(&[
-            EventKind::CompactionSummary {
-                compaction_id: compaction_id.clone(),
-                summary,
-                shadowed_start,
-                shadowed_end,
-                shadowed_token_count,
-            },
-            EventKind::CompactionEnd {
-                compaction_id: compaction_id.clone(),
-                turn,
-                error: None,
-            },
-        ])
-        .await?;
-    let _ = inner.events.send(AgentEvent::CompactionEnded {
+    host.append(&[
+        EventKind::CompactionSummary {
+            compaction_id: compaction_id.clone(),
+            summary,
+            shadowed_start,
+            shadowed_end,
+            shadowed_token_count,
+        },
+        EventKind::CompactionEnd {
+            compaction_id: compaction_id.clone(),
+            turn,
+            error: None,
+        },
+    ])
+    .await?;
+    let _ = host.events().send(AgentEvent::CompactionEnded {
         compaction_id,
         error: None,
     });
@@ -232,14 +221,14 @@ pub(crate) async fn compact_if_needed(
 }
 
 /// 一次摘要请求：回放被压缩的较早历史 + 摘要指令，收集文本输出。
-async fn summarize(inner: &Inner, prefix: &[Message]) -> Result<String, AgentError> {
+async fn summarize(host: &dyn LoopAccess, prefix: &[Message]) -> Result<String, AgentError> {
     let mut input = prefix.to_vec();
     input.push(Message::text(Role::User, COMPACTION_INSTRUCTION));
     let cancel = model::CancelToken::new(
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         std::sync::Arc::new(tokio::sync::Notify::new()),
     );
-    let mut stream = inner.model.stream(&input, &[], &cancel).await?;
+    let mut stream = host.model().stream(&input, &[], &cancel).await?;
     let mut summary = String::new();
     while let Some(chunk) = stream.next().await {
         match chunk {

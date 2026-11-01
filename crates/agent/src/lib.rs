@@ -4,6 +4,7 @@
 
 mod capabilities;
 mod compaction;
+mod compaction_capability;
 mod driver;
 mod error;
 mod inbox;
