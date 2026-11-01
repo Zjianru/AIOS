@@ -278,6 +278,7 @@ fn handle_event(event: AgentEvent, outcome: &mut Option<TurnOutcome>) {
             println!("[正在重试 {attempt}/{max_attempts}：{code}，约 {delay_ms}ms 后]");
         }
         AgentEvent::UsageReported { usage } => {
+            println!();
             println!("用量: {}", usage.summary());
         }
         AgentEvent::TurnEnded { outcome: ended, .. } => {

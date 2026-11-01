@@ -72,7 +72,14 @@ impl DeepSeek {
         let status = response.status();
         if !status.is_success() {
             let headers = response.headers().clone();
-            let text = response.text().await.unwrap_or_default();
+            // 错误体读取也接取消：极端慢的错误体不能让 Ctrl-C 挂住。
+            let text = tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
+                    return Err(aborted("DeepSeek Messages 请求被取消"));
+                }
+                text = response.text() => text.unwrap_or_default(),
+            };
             let raw = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
             return Err(transport::provider_error(
                 &raw,

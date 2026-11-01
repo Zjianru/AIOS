@@ -535,7 +535,15 @@ async fn run_step(
             "模型流没有给出结束原因",
         )));
     };
-    let content: Vec<ContentBlock> = blocks.values().cloned().collect();
+    // max-tokens 时裁掉被截断的 tool-call 块（照 DSH assembler）：日志里不能留没有
+    // 配对 tool/result 的 tool_use；text/reasoning 保留。裁完为空就不写 assistant 消息（D1）。
+    let content: Vec<ContentBlock> = blocks
+        .values()
+        .filter(|block| {
+            !(finish == FinishReason::MaxTokens && matches!(block, ContentBlock::ToolCall { .. }))
+        })
+        .cloned()
+        .collect();
     if !content.is_empty() {
         let message = Message::new(Role::Assistant, content.clone());
         inner.append(&[EventKind::AssistantMessage {
@@ -634,7 +642,7 @@ async fn decide_retry(
     attempt: &mut u32,
     content_emitted: bool,
 ) -> RetryDecision {
-    // 已经流出内容 delta 的请求不重试：避免把重复文本再打一遍（spec 裁定，偏离 DSH）。
+    // 已经流出内容 delta 的请求不重试：避免把重复文本再打一遍（协调线裁定；spec 没规定，偏离 DSH）。
     if content_emitted || !is_retryable(error.code) || *attempt >= MAX_RETRIES {
         return RetryDecision::Fatal;
     }
