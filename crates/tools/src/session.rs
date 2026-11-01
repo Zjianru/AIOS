@@ -103,6 +103,8 @@ pub struct ToolSessionState {
     session_id: Option<String>,
     /// 会话 data-dir；受管环境变量 AIOS_HOME 用（T005.3）。
     data_dir: Option<PathBuf>,
+    /// 配置的 skill 根（AgentConfig::skill_roots；T005.6）。
+    skill_roots: Mutex<Vec<PathBuf>>,
 }
 
 impl ToolSessionState {
@@ -114,6 +116,7 @@ impl ToolSessionState {
             spill: SpillStore::new(data_dir.join("spill").join(format!("session-{session_id}"))),
             session_id: Some(session_id.to_owned()),
             data_dir: Some(data_dir.to_path_buf()),
+            skill_roots: Mutex::new(Vec::new()),
         }
     }
 
@@ -125,6 +128,7 @@ impl ToolSessionState {
             spill: SpillStore::disabled(),
             session_id: None,
             data_dir: None,
+            skill_roots: Mutex::new(Vec::new()),
         }
     }
 
@@ -138,6 +142,16 @@ impl ToolSessionState {
 
     pub fn spill(&self) -> &SpillStore {
         &self.spill
+    }
+
+    /// Agent 建/续接会话时写入配置的 skill 根（T005.6）。
+    pub fn set_skill_roots(&self, roots: Vec<PathBuf>) {
+        *self.skill_roots.lock().expect("skill 根锁被毒化") = roots;
+    }
+
+    /// 配置的 skill 根（skill 工具用）。
+    pub(crate) fn skill_roots(&self) -> Vec<PathBuf> {
+        self.skill_roots.lock().expect("skill 根锁被毒化").clone()
     }
 
     /// 会话 id（bash 受管环境变量用；detached 时 None）。

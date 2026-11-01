@@ -271,6 +271,22 @@ expression: body
         "type": "object"
       },
       "name": "job_kill"
+    },
+    {
+      "description": "Load the full instructions for a skill. Call it before acting on a task that names or clearly matches a skill in the session skill catalog.",
+      "input_schema": {
+        "properties": {
+          "name": {
+            "description": "The exact skill name from the available skills list.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "skill"
     }
   ]
 }

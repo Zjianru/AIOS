@@ -630,6 +630,33 @@ pub async fn setup_agent_custom(
     (agent, data_dir, id)
 }
 
+/// 自定义工作目录、指令根与 skill 根的测试会话（T005.6 skill 目录用）。
+pub async fn setup_agent_with_roots(
+    base_url: &str,
+    tools: tools::ToolSet,
+    cwd: &std::path::Path,
+    skill_roots: Vec<std::path::PathBuf>,
+) -> (agent::Agent, tempfile::TempDir, session::SessionId) {
+    let data_dir = tempfile::tempdir().unwrap();
+    let store = session::SessionStore::create(data_dir.path(), cwd).unwrap();
+    let id = store.id().clone();
+    let config = agent::AgentConfig {
+        skill_roots,
+        ..isolated_config(data_dir.path())
+    };
+    let agent = agent::Agent::create(
+        config,
+        agent::Deps {
+            model: model::DeepSeek::new(model_config(base_url)).unwrap(),
+            tools,
+            store,
+        },
+    )
+    .await
+    .unwrap();
+    (agent, data_dir, id)
+}
+
 /// 测试共用：等 idle；超时按秒数。
 pub async fn wait_idle(agent: &agent::Agent, seconds: u64) {
     tokio::time::timeout(std::time::Duration::from_secs(seconds), agent.idle())

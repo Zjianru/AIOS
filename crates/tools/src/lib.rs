@@ -8,6 +8,7 @@ mod builtin;
 mod fs;
 mod jobs;
 mod session;
+mod skills;
 mod spill;
 
 use std::future::Future;
@@ -21,13 +22,17 @@ use serde_json::Value;
 pub use batch::{BatchOutcome, execute_batch};
 pub use builtin::{
     ApplyPatchTool, BashTool, EditTool, GlobTool, GrepTool, JobKillTool, JobListTool,
-    JobOutputTool, ReadTool, WriteTool, foreground_bytes_read,
+    JobOutputTool, ReadTool, SkillTool, WriteTool, foreground_bytes_read,
 };
 pub use jobs::{
     JobRead, JobSettledCallback, JobSpec, JobStatus, JobView, MAX_WAIT_MS, TaskRegistry,
 };
 pub use session::{
     FileVersion, ObservationStore, ObservedFile, SharedToolSession, SpillStore, ToolSessionState,
+};
+pub use skills::{
+    SKILL_FILE, SkillContent, SkillSummary, catalog_description, discover_skills, is_skill_name,
+    load_skill, render_skill_content, skill_roots,
 };
 pub use spill::{SpillRef, bound_result, estimate_text_tokens};
 
@@ -191,6 +196,7 @@ impl ToolSet {
             Box::new(JobOutputTool::new()),
             Box::new(JobListTool::new()),
             Box::new(JobKillTool::new()),
+            Box::new(SkillTool::new()),
         ])
     }
 

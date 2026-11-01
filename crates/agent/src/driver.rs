@@ -19,6 +19,7 @@ use crate::error::AgentError;
 use crate::inbox::{Delivery, Inbox, InboxTarget};
 use crate::instructions::InstructionState;
 use crate::prune;
+use crate::skill_catalog::SkillCatalogState;
 use crate::{AgentConfig, AgentEvent, Deps, JobStatus, TurnOutcome};
 
 const EVENT_CHANNEL_CAPACITY: usize = 256;
@@ -53,8 +54,12 @@ pub(crate) struct Inner {
     data_dir: PathBuf,
     /// 用户级指令根（AgentConfig::instruction_roots）。
     instruction_roots: Vec<PathBuf>,
+    /// 配置的 skill 根（AgentConfig::skill_roots；T005.6）。
+    skill_roots: Vec<PathBuf>,
     /// 指令注入状态：已注入的文件与是否见过基线（T005.5）。
     instructions: Mutex<InstructionState>,
+    /// skill 目录注入状态（T005.6）。
+    skill_catalog: Mutex<SkillCatalogState>,
     model: DeepSeek,
     tools: ToolSet,
     /// 会话级工具状态（观察表/spill/任务注册表）；续接时新建，不继承上一次。
@@ -95,15 +100,21 @@ impl Inner {
         let tool_session = Arc::new(ToolSessionState::new(&data_dir, id.as_str()));
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let instruction_roots = config.instruction_roots.clone();
+        let skill_roots = config.skill_roots.clone();
+        tool_session.set_skill_roots(skill_roots.clone());
         let mut instruction_state = InstructionState::default();
         instruction_state.rehydrate(&store.derive_messages());
+        let mut skill_catalog = SkillCatalogState::default();
+        skill_catalog.rehydrate(&store.derive_messages());
         let inner = Arc::new(Self {
             id,
             log_path,
             cwd,
             data_dir,
             instruction_roots,
+            skill_roots,
             instructions: Mutex::new(instruction_state),
+            skill_catalog: Mutex::new(skill_catalog),
             model,
             tools,
             tool_session,
@@ -508,6 +519,22 @@ async fn run_step(
                 observed.into_iter(),
             );
         if let Some(text) = injection {
+            inner.append(&[EventKind::UserMessage {
+                turn,
+                step,
+                message: Message::text(Role::User, text),
+            }])?;
+        }
+    }
+
+    // T005.6：可用 skill 目录（名字 + description）作为独立上下文块注入；有变化才追加。
+    {
+        let catalog = inner
+            .skill_catalog
+            .lock()
+            .expect("agent skill 目录锁被毒化")
+            .prepare(&inner.cwd, &inner.data_dir, &inner.skill_roots);
+        if let Some(text) = catalog {
             inner.append(&[EventKind::UserMessage {
                 turn,
                 step,

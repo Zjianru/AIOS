@@ -7,6 +7,7 @@ mod error;
 mod inbox;
 mod instructions;
 mod prune;
+mod skill_catalog;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
