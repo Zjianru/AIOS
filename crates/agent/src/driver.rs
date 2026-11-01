@@ -1343,10 +1343,11 @@ fn questions_from_call(call: &ToolCall) -> Option<Vec<Question>> {
         return None;
     }
     let mut questions = Vec::with_capacity(items.len());
+    let mut seen_ids = std::collections::BTreeSet::new();
     for item in items {
         let id = item.get("id").and_then(|value| value.as_str())?;
         let question = item.get("question").and_then(|value| value.as_str())?;
-        if id.is_empty() || question.is_empty() {
+        if id.is_empty() || question.is_empty() || !seen_ids.insert(id) {
             return None;
         }
         let options = item
@@ -1589,6 +1590,13 @@ mod ask_tests {
         assert!(
             super::questions_from_call(&call(r#"{"questions": [{"id": "", "question": "P?"}]}"#))
                 .is_none()
+        );
+        assert!(
+            super::questions_from_call(&call(
+                r#"{"questions": [{"id": "dup", "question": "P1?"}, {"id": "dup", "question": "P2?"}]}"#
+            ))
+            .is_none(),
+            "重复 question id 必须整单拒绝"
         );
         let questions = super::questions_from_call(&call(
             r#"{"questions": [{"id": "q1", "question": "P1?"}, {"id": "q2", "question": "P2?"}]}"#,

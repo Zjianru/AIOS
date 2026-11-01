@@ -220,13 +220,13 @@ async fn two_questions_are_all_delivered_and_answered() {
     wait_idle(&agent, 20).await;
     let bodies = bodies(&server).await;
     assert_eq!(bodies.len(), 2, "全部答完后继续跑");
-    assert!(
-        bodies[1].contains("answers"),
-        "工具结果要有 answers: {}",
-        bodies[1]
-    );
-    assert!(bodies[1].contains("ANSWER-ONE") && bodies[1].contains("ANSWER-TWO"));
-    assert!(bodies[1].contains("q1") && bodies[1].contains("q2"));
+    let payload = tool_result_payload(&bodies[1], "call_ask");
+    let answers = payload["answers"].as_array().expect("answers 数组");
+    assert_eq!(answers.len(), 2, "两个答案都要回到工具结果");
+    assert_eq!(answers[0]["id"].as_str(), Some("q1"));
+    assert_eq!(answers[0]["answer"].as_str(), Some("ANSWER-ONE"));
+    assert_eq!(answers[1]["id"].as_str(), Some("q2"));
+    assert_eq!(answers[1]["answer"].as_str(), Some("ANSWER-TWO"));
     let store = session::SessionStore::open(data_dir.path(), &id).unwrap();
     assert_eq!(
         store
@@ -285,4 +285,87 @@ async fn invalid_ask_goes_through_unified_tool_result_path() {
         }
     }
     assert_eq!(ended, Some(TurnOutcome::Completed));
+}
+
+fn tool_result_payload(body: &str, call_id: &str) -> serde_json::Value {
+    let request: serde_json::Value = serde_json::from_str(body).expect("请求 body 是 JSON");
+    for message in request["messages"].as_array().expect("messages") {
+        let Some(content) = message["content"].as_array() else {
+            continue;
+        };
+        for block in content {
+            if block["type"] == "tool_result" && block["tool_use_id"] == call_id {
+                let text = block["content"][0]["text"]
+                    .as_str()
+                    .expect("tool_result text");
+                return serde_json::from_str(text).expect("tool_result 内容是 JSON");
+            }
+        }
+    }
+    panic!("找不到 {call_id} 的 tool_result");
+}
+
+#[tokio::test]
+async fn duplicate_question_ids_reject_whole_call() {
+    let server = MockServer::start().await;
+    let response = tool_calls_with_inputs_sse(&[(
+        "call_ask",
+        "ask_user_question",
+        json!({"questions": [{"id": "dup", "question": "A?"}, {"id": "dup", "question": "B?"}]}),
+    )]);
+    mount(&server, vec![response, FINAL_TEXT_SSE.to_owned()]).await;
+    let (agent, data_dir, id) = setup(&server).await;
+    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    wait_idle(&agent, 20).await;
+    let bodies = bodies(&server).await;
+    assert_eq!(bodies.len(), 2, "重复 id 应整单拒绝并继续本轮，不悬挂");
+    assert!(
+        bodies[1].contains("ASK_USER_INVALID") || bodies[1].contains("invalid ask_user_question")
+    );
+    let store = session::SessionStore::open(data_dir.path(), &id).unwrap();
+    assert!(
+        !store
+            .events()
+            .iter()
+            .any(|event| matches!(event.kind, session::EventKind::QuestionAsked { .. })),
+        "整单拒绝时不应发问题事件"
+    );
+}
+
+#[tokio::test]
+async fn cancel_after_partial_answers_does_not_hang() {
+    let server = MockServer::start().await;
+    mount(
+        &server,
+        vec![ask_call_multi(&["q1", "q2"]), FINAL_TEXT_SSE.to_owned()],
+    )
+    .await;
+    let (agent, data_dir, id) = setup(&server).await;
+    let mut events = agent.subscribe();
+    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    let AgentEvent::QuestionAsked { questions } = next_question(&mut events).await else {
+        unreachable!()
+    };
+    assert_eq!(questions.len(), 2);
+    assert!(agent.answer("q1", "ONLY-ONE").await);
+    agent.cancel();
+    wait_idle(&agent, 20).await;
+    assert_eq!(bodies(&server).await.len(), 1, "取消后不再发请求");
+    let store = session::SessionStore::open(data_dir.path(), &id).unwrap();
+    let events = store.events();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, session::EventKind::QuestionAsked { .. }))
+            .count(),
+        2
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, session::EventKind::QuestionCancelled { .. }))
+            .count(),
+        1,
+        "只撤销未答的那一题"
+    );
 }

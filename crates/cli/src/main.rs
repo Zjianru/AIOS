@@ -628,6 +628,29 @@ mod tests {
     }
 
     #[test]
+    fn multi_question_chat_flow_answers_sequentially() {
+        let question = |id: &str| agent::Question {
+            id: id.to_owned(),
+            question: format!("Q {id}"),
+            header: None,
+            options: Vec::new(),
+            multi_select: false,
+        };
+        let mut queue: std::collections::VecDeque<agent::Question> =
+            vec![question("q1"), question("q2")].into();
+        assert_eq!(
+            dispatch_chat_input("A1", true, queue.front()),
+            ChatInput::Answer("A1".to_owned())
+        );
+        queue.pop_front();
+        assert_eq!(queue.front().map(|q| q.id.as_str()), Some("q2"));
+        assert_eq!(
+            dispatch_chat_input("A2", true, queue.front()),
+            ChatInput::Answer("A2".to_owned())
+        );
+    }
+
+    #[test]
     fn questions_asked_text_renders_all_questions() {
         let question = |id: &str, text: &str| agent::Question {
             id: id.to_owned(),
