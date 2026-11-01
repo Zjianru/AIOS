@@ -78,8 +78,58 @@ impl SpillStore {
     }
 }
 
-/// 目录 0700：spill 内容只属主可读（照 DSH spill-local）。
-fn create_private_dir(root: &Path) -> std::io::Result<()> {
+impl SpillStore {
+    /// 把一个大文件流式复制进 spill 目录（8KB 缓冲，不把全文读进内存），返回 locator/字节数。
+    /// 用于 bash 前台超大输出：完整流已经在 jobs 目录落盘，这里只做流式搬运。
+    pub fn save_file(&self, name: &str, source: &Path) -> Result<SpillRef, ToolFailure> {
+        let Some(root) = self.root() else {
+            return Err(ToolFailure::plain(
+                "spill is disabled: no session data directory",
+            ));
+        };
+        if let Err(error) = create_private_dir(root) {
+            return Err(ToolFailure::plain(format!(
+                "cannot create spill directory {}: {error}",
+                root.display()
+            )));
+        }
+        let locator = root.join(format!(
+            "{}-{}.txt",
+            safe_segment(name),
+            SPILL_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let copy = (|| -> std::io::Result<u64> {
+            let mut input = fs::File::open(source)?;
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut output = options.open(&locator)?;
+            let bytes = std::io::copy(&mut input, &mut output)?;
+            output.sync_all()?;
+            Ok(bytes)
+        })();
+        match copy {
+            Ok(bytes) => Ok(SpillRef {
+                locator,
+                bytes: bytes as usize,
+            }),
+            Err(error) => {
+                let _ = fs::remove_file(&locator);
+                Err(ToolFailure::plain(format!(
+                    "cannot spill file {}: {error}",
+                    locator.display()
+                )))
+            }
+        }
+    }
+}
+
+/// 目录 0700：spill 内容只属主可读（照 DSH spill-local）。jobs 目录复用这个 helper。
+pub(crate) fn create_private_dir(root: &Path) -> std::io::Result<()> {
     if root.is_dir() {
         return Ok(());
     }

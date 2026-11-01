@@ -115,22 +115,26 @@ fn bash(arguments: &str, call_id: &str, context: &ToolContext) -> Result<String,
 
     let registry = context.session().tasks();
     let label = first_line(command, 120);
-    let job_id = registry.start(JobSpec {
-        command: command.to_owned(),
-        cwd: workdir,
-        env: jobs::child_env(context),
-        label,
-    })?;
+    let job_id = registry.start(
+        JobSpec {
+            command: command.to_owned(),
+            cwd: workdir,
+            env: jobs::child_env(context),
+            label,
+        },
+        !background,
+    )?;
     if background {
         return Ok(format!("started background job {job_id}"));
     }
 
     let read = registry.wait(&job_id, std::time::Duration::from_millis(timeout_ms))?;
     if read.view.status.is_terminal() {
+        let rendered = render_final(context, call_id, &read);
         registry.remove(&job_id);
-        return Ok(render_final(context, call_id, &read));
+        return Ok(rendered);
     }
-    registry.unawait(&job_id);
+    registry.promote(&job_id);
     Ok(render_promoted(&read, timeout_ms))
 }
 
@@ -188,36 +192,56 @@ fn stream_from_job(
     fallback: &str,
     dropped: bool,
 ) -> StreamOutput {
-    match std::fs::read(path) {
-        Ok(bytes) if bytes.len() <= MAX_OUTPUT_BYTES => StreamOutput {
+    use std::io::{Read as _, Seek as _, SeekFrom};
+
+    let fallback_stream = || StreamOutput {
+        text: fallback.to_owned(),
+        truncated: dropped,
+        spill_path: None,
+    };
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return fallback_stream();
+    };
+    let Ok(size) = file.metadata().map(|metadata| metadata.len()) else {
+        return fallback_stream();
+    };
+    if size <= MAX_OUTPUT_BYTES as u64 {
+        let mut bytes = Vec::new();
+        if file.read_to_end(&mut bytes).is_err() {
+            return fallback_stream();
+        }
+        return StreamOutput {
             text: String::from_utf8_lossy(&bytes).into_owned(),
             truncated: false,
             spill_path: None,
-        },
-        Ok(bytes) => {
-            let text = String::from_utf8_lossy(tail_bytes(&bytes, MAX_OUTPUT_BYTES)).into_owned();
-            let spill_path = if bytes.len() <= MAX_SPILL_BYTES {
-                let full = String::from_utf8_lossy(&bytes).into_owned();
-                context
-                    .session()
-                    .spill()
-                    .save_text(&format!("bash-{call_id}-{label}"), &full)
-                    .ok()
-                    .map(|saved| saved.locator)
-            } else {
-                None
-            };
-            StreamOutput {
-                text,
-                truncated: true,
-                spill_path,
-            }
-        }
-        Err(_) => StreamOutput {
-            text: fallback.to_owned(),
-            truncated: dropped,
-            spill_path: None,
-        },
+        };
+    }
+    // 只读尾部 64,000 字节；完整流不整文件进内存（大文件流式复制到 spill）。
+    if file
+        .seek(SeekFrom::Start(size - MAX_OUTPUT_BYTES as u64))
+        .is_err()
+    {
+        return fallback_stream();
+    }
+    let mut tail = Vec::with_capacity(MAX_OUTPUT_BYTES);
+    if file.read_to_end(&mut tail).is_err() {
+        return fallback_stream();
+    }
+    let text = String::from_utf8_lossy(tail_bytes(&tail, MAX_OUTPUT_BYTES)).into_owned();
+    let spill_path = if size <= MAX_SPILL_BYTES as u64 {
+        context
+            .session()
+            .spill()
+            .save_file(&format!("bash-{call_id}-{label}"), path)
+            .ok()
+            .map(|saved| saved.locator)
+    } else {
+        None
+    };
+    StreamOutput {
+        text,
+        truncated: true,
+        spill_path,
     }
 }
 

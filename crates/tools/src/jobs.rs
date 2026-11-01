@@ -98,8 +98,10 @@ struct JobState {
     stdout_dropped: bool,
     stderr_dropped: bool,
     kill_requested: bool,
-    /// 前台 bash 正在 wait：结算时不再发完成通知（照 DSH awaited）。
+    /// 前台 bash 在 start 时标记：结算时不再发完成通知（照 DSH awaited）。
     awaited: bool,
+    /// 完成通知已发出（或已补发）；保证最多一次。
+    notified: bool,
 }
 
 struct JobRecord {
@@ -159,7 +161,7 @@ impl TaskRegistry {
     }
 
     /// 起一个后台任务，返回 job id。
-    pub fn start(&self, spec: JobSpec) -> Result<String, ToolFailure> {
+    pub fn start(&self, spec: JobSpec, foreground: bool) -> Result<String, ToolFailure> {
         let Some(root) = &self.root else {
             return Err(ToolFailure::plain(
                 "background jobs are unavailable in this tool context",
@@ -183,13 +185,20 @@ impl TaskRegistry {
                 "cannot start background job: {MAX_RUNNING_JOBS} jobs already running"
             )));
         }
-        std::fs::create_dir_all(root).map_err(|error| {
+        crate::spill::create_private_dir(root).map_err(|error| {
             ToolFailure::plain(format!(
                 "cannot create jobs directory {}: {error}",
                 root.display()
             ))
         })?;
-        let id = format!("bash-{}", JOB_COUNTER.fetch_add(1, Ordering::Relaxed));
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.subsec_nanos());
+        let id = format!(
+            "bash-{}-{nanos}-{}",
+            std::process::id(),
+            JOB_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
         let stdout_path = root.join(format!("{id}.out"));
         let stderr_path = root.join(format!("{id}.err"));
         let mut process = Command::new("bash");
@@ -229,7 +238,8 @@ impl TaskRegistry {
                 stdout_dropped: false,
                 stderr_dropped: false,
                 kill_requested: false,
-                awaited: false,
+                awaited: foreground,
+                notified: false,
             }),
             cond: Condvar::new(),
             stdout_path: stdout_path.clone(),
@@ -267,7 +277,7 @@ impl TaskRegistry {
                     Err(_) => break,
                 }
             }
-            let awaited = {
+            let should_notify = {
                 let mut state = monitored.state.lock().expect("job 状态锁被毒化");
                 if state.kill_requested {
                     status = JobStatus::Killed;
@@ -276,12 +286,15 @@ impl TaskRegistry {
                 state.exit_code = exit_code;
                 state.signal = signal;
                 state.finished_at = Some(now_millis());
-                let awaited = state.awaited;
+                let should_notify = !state.awaited && !state.notified;
+                if should_notify {
+                    state.notified = true;
+                }
                 drop(state);
                 monitored.cond.notify_all();
-                awaited
+                should_notify
             };
-            if !awaited && let Some(callback) = callback {
+            if should_notify && let Some(callback) = callback {
                 callback(&monitored.id, status);
             }
         });
@@ -311,7 +324,6 @@ impl TaskRegistry {
         let record = self.record(id)?;
         let deadline = Instant::now() + timeout;
         let mut state = record.state.lock().expect("job 状态锁被毒化");
-        state.awaited = true;
         while !state.status.is_terminal() {
             let now = Instant::now();
             if now >= deadline {
@@ -327,10 +339,25 @@ impl TaskRegistry {
         Ok(read_of(&record))
     }
 
-    /// 前台 bash 超时转后台后调用：之后的结算要发通知。
-    pub fn unawait(&self, id: &str) {
-        if let Ok(record) = self.record(id) {
-            record.state.lock().expect("job 状态锁被毒化").awaited = false;
+    /// 前台 bash 超时转后台：原子地清掉 awaited；若在超时与这里之间已经结算且还没通知，
+    /// 立即补发一次完成通知。
+    pub fn promote(&self, id: &str) {
+        let Ok(record) = self.record(id) else {
+            return;
+        };
+        let callback = self.callback();
+        let settled_status = {
+            let mut state = record.state.lock().expect("job 状态锁被毒化");
+            state.awaited = false;
+            if state.status.is_terminal() && !state.notified {
+                state.notified = true;
+                Some(state.status)
+            } else {
+                None
+            }
+        };
+        if let (Some(status), Some(callback)) = (settled_status, callback) {
+            callback(id, status);
         }
     }
 
@@ -365,9 +392,13 @@ impl TaskRegistry {
         Ok(read_of(&record))
     }
 
-    /// 前台已收走结果的任务从表里删掉（不再出现在 job_list）。
+    /// 前台已收走结果的任务从表里删掉（不再出现在 job_list），并清掉输出文件。
     pub fn remove(&self, id: &str) {
-        self.jobs.lock().expect("jobs 表锁被毒化").remove(id);
+        let removed = self.jobs.lock().expect("jobs 表锁被毒化").remove(id);
+        if let Some(record) = removed {
+            let _ = std::fs::remove_file(&record.stdout_path);
+            let _ = std::fs::remove_file(&record.stderr_path);
+        }
     }
 
     fn record(&self, id: &str) -> Result<Arc<JobRecord>, ToolFailure> {
@@ -392,11 +423,20 @@ fn spawn_reader(
         } else {
             record.stderr_path.clone()
         };
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .ok();
+        // 每个 job 的输出文件唯一：create/truncate + 0600，绝不 append 旧文件。
+        let mut options = OpenOptions::new();
+        options.create(true).truncate(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&path).ok();
+        #[cfg(unix)]
+        if let Some(file) = file.as_ref() {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+        }
         let mut buffer = [0_u8; 8192];
         loop {
             match reader.read(&mut buffer) {
