@@ -19,3 +19,13 @@ pub use event::{
 pub use id::SessionId;
 pub use repair::{TurnClosers, interrupted_turn_closers};
 pub use store::{SessionSnapshot, SessionStore};
+
+#[cfg(test)]
+#[path = "format_tests.rs"]
+mod format_tests;
+#[cfg(test)]
+#[path = "repair_tests.rs"]
+mod repair_tests;
+#[cfg(test)]
+#[path = "store_tests.rs"]
+mod store_tests;
