@@ -175,9 +175,28 @@ async fn rate_limit_retries_then_succeeds() {
         "重试成功后这一轮 completed"
     );
 
-    // 重试不写日志：正常一轮 7 个事件 + T006.2a 的 2 条 inbox splice（收下、领取），一个不多。
+    // T006.2b：重试写日志（llm/retry + llm/retry-started）。正常一轮 7 个事件 + 2 条 inbox
+    // splice（收下、领取）+ 2 次重试 × 2 条 = 13。
     let store = SessionStore::open(data_dir.path(), &id).unwrap();
-    assert_eq!(store.events().len(), 9);
+    assert_eq!(store.events().len(), 13);
+    assert_eq!(
+        store
+            .events()
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::LlmRetry { .. }))
+            .count(),
+        2,
+        "两次排定的重试都落 llm/retry"
+    );
+    assert_eq!(
+        store
+            .events()
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::LlmRetryStarted { .. }))
+            .count(),
+        2,
+        "两次等待完成后都落 llm/retry-started"
+    );
     assert_eq!(
         store
             .events()
@@ -233,12 +252,19 @@ async fn auth_error_does_not_retry() {
 }
 
 #[tokio::test]
-async fn failure_after_streamed_content_is_not_retried() {
-    let server = ScriptedSseServer::start(vec![SseScript {
-        frames: MIDSTREAM_ERROR_SSE.to_owned(),
-        hold: false,
-    }]);
-    let (agent, data_dir, _cwd, id) = setup_agent(&server.base_url(), ToolSet::empty()).await;
+async fn failure_after_streamed_content_is_retried_like_dsh() {
+    // T006.2b 改回 DSH：已流出可见内容的重试没有额外门槛（agent.ts:544-564）。半截内容
+    // 只留在第一次 assistant/attempt 的 stream 里，不进消息、不进下一次请求。
+    let server = MockServer::start().await;
+    mount_responses(
+        &server,
+        vec![
+            sse(MIDSTREAM_ERROR_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ],
+    )
+    .await;
+    let (agent, data_dir, _cwd, id) = setup_agent(&server.uri(), ToolSet::empty()).await;
     let mut events = agent.subscribe();
     agent
         .send(UserMessage::text("流到一半失败"), Delivery::FollowUp)
@@ -247,25 +273,34 @@ async fn failure_after_streamed_content_is_not_retried() {
     wait_idle(&agent, 10).await;
 
     let collected = drain_events(&mut events);
-    assert!(
-        retries(&collected).is_empty(),
-        "已经流出内容 delta 的请求不再重试"
-    );
-    assert_eq!(server.request_bodies().len(), 1, "只发了一次请求");
+    let retries = retries(&collected);
+    assert_eq!(retries.len(), 1, "已流出内容也重试（DSH）：{retries:?}");
+    assert_eq!(retries[0].3, "RATE_LIMIT");
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
     assert!(
         collected.iter().any(|event| matches!(
             event,
             AgentEvent::TurnEnded {
-                outcome: TurnOutcome::Error { code, .. },
+                outcome: TurnOutcome::Completed,
                 ..
-            } if code == "RATE_LIMIT"
+            }
         )),
-        "失败按 error 结束本轮"
+        "重试成功后这一轮 completed"
     );
     let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    assert_eq!(
+        assistant_blocks(&store),
+        vec![vec![ContentBlock::Text {
+            text: "工具都跑完了。".to_owned()
+        }]],
+        "只有重试成功的那条 assistant 消息"
+    );
     assert!(
-        assistant_blocks(&store).is_empty(),
-        "中途失败的请求不写 assistant 消息"
+        store
+            .events()
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::AssistantAttempt { .. })),
+        "第一次失败尝试落 assistant/attempt"
     );
 }
 

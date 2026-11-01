@@ -13,8 +13,8 @@ mod store;
 pub use derive::{COMPACTION_PREAMBLE, SUMMARY_CLOSE_TAG, SUMMARY_OPEN_TAG};
 pub use error::SessionError;
 pub use event::{
-    AbortCause, Event, EventKind, InboxOutcome, InboxTarget, LlmFailure, SessionHeader, TodoItem,
-    TodoStatus, ToolError, TurnEndReason, last_todos,
+    AbortCause, Event, EventKind, InboxOutcome, InboxTarget, LlmFailure, RetryId, RetryMode,
+    SessionHeader, TodoItem, TodoStatus, ToolError, TurnEndReason, last_todos,
 };
 pub use id::SessionId;
 pub use repair::{TurnClosers, interrupted_turn_closers};

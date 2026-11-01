@@ -10,8 +10,8 @@ use model::{AssistantStreamRecord, ContentBlock, Message, Role, StreamChunk, Usa
 use serde_json::{Value, json};
 
 use crate::{
-    AbortCause, EventKind, InboxOutcome, InboxTarget, LlmFailure, SessionStore, TodoItem,
-    TodoStatus, ToolError, TurnEndReason,
+    AbortCause, EventKind, InboxOutcome, InboxTarget, LlmFailure, RetryId, RetryMode, SessionStore,
+    TodoItem, TodoStatus, ToolError, TurnEndReason,
 };
 
 fn create_store() -> (tempfile::TempDir, tempfile::TempDir, SessionStore) {
@@ -321,6 +321,73 @@ fn assistant_settlement_shapes_match_dsh() {
         json!([{"type": "text", "text": "半截"}])
     );
 }
+/// DSH 的 llm/retry 与 llm/retry-started（llm-retry/src/types.ts:9-40）：前者在等待前落盘、
+/// 带 retryId/turn/step/provider/mode/policyKey/retry/maxRetries/delayMs/failure；后者只带
+/// retryId/turn/step/retry。两者都是 log-only（派生历史只认消息事件）。
+#[test]
+fn retry_events_match_dsh() {
+    let (_data_dir, _cwd, mut store) = create_store();
+    store
+        .append(&[
+            EventKind::UserMessage {
+                turn: 1,
+                step: 1,
+                message: Message::text(Role::User, "重试"),
+            },
+            EventKind::LlmRetry {
+                retry_id: RetryId::from("retry-1"),
+                turn: 1,
+                step: 1,
+                provider: "deepseek".to_owned(),
+                mode: RetryMode::Normal,
+                policy_key: "[\"normal\"]".to_owned(),
+                retry: 1,
+                max_retries: Some(5),
+                delay_ms: 500,
+                failure: LlmFailure {
+                    message: "boom".to_owned(),
+                    code: "SERVER".to_owned(),
+                },
+            },
+            EventKind::LlmRetryStarted {
+                retry_id: RetryId::from("retry-1"),
+                turn: 1,
+                step: 1,
+                retry: 1,
+            },
+        ])
+        .unwrap();
+
+    let (_header, rows) = log_rows(&store);
+    assert_eq!(rows[1]["type"], "llm/retry");
+    assert_eq!(
+        rows[1]["data"],
+        json!({
+            "retryId": "retry-1",
+            "turn": 1,
+            "step": 1,
+            "provider": "deepseek",
+            "mode": "normal",
+            "policyKey": "[\"normal\"]",
+            "retry": 1,
+            "maxRetries": 5,
+            "delayMs": 500,
+            "failure": {"message": "boom", "code": "SERVER"},
+        }),
+        "llm/retry 字段照 DSH"
+    );
+    assert_eq!(rows[2]["type"], "llm/retry-started");
+    assert_eq!(
+        rows[2]["data"],
+        json!({"retryId": "retry-1", "turn": 1, "step": 1, "retry": 1}),
+        "llm/retry-started 字段照 DSH"
+    );
+
+    // log-only：派生历史只看到 user 消息，不把重试记录当消息。
+    let derived = crate::derive::derive_messages(store.events());
+    assert_eq!(derived.len(), 1);
+    assert_eq!(derived[0].role, Role::User);
+}
 #[test]
 fn all_event_kinds_round_trip_under_dsh_envelope() {
     let (data_dir, _cwd, mut store) = create_store();
@@ -425,6 +492,27 @@ fn all_event_kinds_round_trip_under_dsh_envelope() {
             compaction_id: "c1".to_owned(),
             turn: 1,
             error: None,
+        },
+        EventKind::LlmRetry {
+            retry_id: RetryId::from("retry-1"),
+            turn: 1,
+            step: 1,
+            provider: "deepseek".to_owned(),
+            mode: RetryMode::Normal,
+            policy_key: "policy".to_owned(),
+            retry: 1,
+            max_retries: Some(5),
+            delay_ms: 500,
+            failure: LlmFailure {
+                message: "boom".to_owned(),
+                code: "SERVER".to_owned(),
+            },
+        },
+        EventKind::LlmRetryStarted {
+            retry_id: RetryId::from("retry-1"),
+            turn: 1,
+            step: 1,
+            retry: 1,
         },
         EventKind::StepEnd { turn: 1, step: 1 },
         EventKind::TurnEnd {

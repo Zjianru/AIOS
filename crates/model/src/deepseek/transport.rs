@@ -98,3 +98,54 @@ pub(super) fn transport_error(source: reqwest::Error) -> ModelError {
     error.status = status;
     error
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    /// 传输超时归 TIMEOUT（K10 点名项）。
+    #[tokio::test]
+    async fn timeout_maps_to_timeout_code() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // 收下请求但永不写响应；客户端 100ms 超时。
+        let _server = std::thread::spawn(move || {
+            use std::io::Read;
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buffer = [0u8; 1024];
+                let _ = stream.read(&mut buffer);
+                std::thread::sleep(Duration::from_secs(3));
+            }
+        });
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(100))
+            .build()
+            .unwrap();
+        let error = client
+            .get(format!("http://127.0.0.1:{port}/v1/messages"))
+            .send()
+            .await
+            .expect_err("永不响应的服务应超时");
+        let mapped = transport_error(error);
+        assert_eq!(mapped.code, ErrorCode::Timeout);
+    }
+
+    /// 连不上归 TRANSPORT（K10 点名项）。
+    #[tokio::test]
+    async fn connection_error_maps_to_transport_code() {
+        // 绑一个端口再关掉，保证这个端口上没有服务。
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let client = reqwest::Client::new();
+        let error = client
+            .get(format!("http://127.0.0.1:{port}/v1/messages"))
+            .send()
+            .await
+            .expect_err("没有服务时应连接失败");
+        let mapped = transport_error(error);
+        assert_eq!(mapped.code, ErrorCode::Transport);
+    }
+}

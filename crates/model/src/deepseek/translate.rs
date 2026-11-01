@@ -358,3 +358,65 @@ fn update_usage(usage: &mut Usage, raw: Option<&Value>) -> Result<(), ModelError
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn push(translator: &mut Translator, event: Value) -> Vec<StreamChunk> {
+        translator.push(event).expect("合法 wire 事件")
+    }
+
+    /// 空响应归 EMPTY_RESPONSE（K10 点名项）。
+    #[test]
+    fn empty_stream_maps_to_empty_response() {
+        let mut translator = Translator::new();
+        push(
+            &mut translator,
+            json!({"type": "message_start", "message": {"usage": {"input_tokens": 1}}}),
+        );
+        push(
+            &mut translator,
+            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}}),
+        );
+        let error = translator
+            .push(json!({"type": "message_stop"}))
+            .expect_err("没有内容块应报错");
+        assert_eq!(error.code, ErrorCode::EmptyResponse);
+    }
+
+    /// K10：整段 usage 缺失时不产生 usage 帧（不伪造 0/空用量）。
+    #[test]
+    fn usage_missing_produces_no_usage_chunk() {
+        let mut translator = Translator::new();
+        let mut chunks = push(
+            &mut translator,
+            json!({"type": "message_start", "message": {"content": []}}),
+        );
+        chunks.extend(push(
+            &mut translator,
+            json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+        ));
+        chunks.extend(push(
+            &mut translator,
+            json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "好"}}),
+        ));
+        chunks.extend(push(
+            &mut translator,
+            json!({"type": "content_block_stop", "index": 0}),
+        ));
+        chunks.extend(push(
+            &mut translator,
+            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}}),
+        ));
+        chunks.extend(push(&mut translator, json!({"type": "message_stop"})));
+        assert!(
+            !chunks
+                .iter()
+                .any(|chunk| matches!(chunk, StreamChunk::Usage { .. })),
+            "usage 整段缺失时不能伪造 usage 帧：{chunks:?}"
+        );
+    }
+}
