@@ -71,6 +71,13 @@ pub(crate) trait LoopAccess: Send + Sync {
     /// 写日志入口：内部走 `Inner::append`（落盘后逐事件派发 SessionEvent）；禁止直接锁
     /// `session()` 后 append 绕过 SessionEvent。
     fn append<'a>(&'a self, kinds: &'a [EventKind]) -> HookFuture<'a>;
+    /// 压缩确认后统一派发 `HookEvent::Compaction`（供 prune 等；自动/溢出/手动三路共用）。
+    fn dispatch_compaction<'a>(
+        &'a self,
+        turn: u64,
+        step: u64,
+        trigger: CompactionTrigger,
+    ) -> HookFuture<'a>;
 }
 
 /// 每个挂点一份 typed 事件：host 访问面 + 该挂点可用的运行态数据。
@@ -80,6 +87,8 @@ pub(crate) enum HookEvent<'a> {
         turn: u64,
         step: u64,
         host: &'a dyn LoopAccess,
+        /// None = 每步自动检查；Some(Manual) = 手动 /compact 入口（强制压缩）。
+        trigger: Option<CompactionTrigger>,
     },
     Request {
         turn: u64,

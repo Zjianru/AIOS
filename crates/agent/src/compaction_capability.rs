@@ -22,22 +22,26 @@ impl Capability for CompactionCapability {
             HookPoint::PreStep,
             HookPoint::Request,
             HookPoint::RequestError,
-            HookPoint::Compaction,
         ]
     }
 
     fn on_hook<'a>(&'a self, event: &'a HookEvent<'a>) -> HookFuture<'a> {
         Box::pin(async move {
             match event {
-                // 每步之前：越过阈值就压缩较早历史；不越过则 no-op。
-                HookEvent::PreStep { .. } => {
-                    // 行为同旧路径：自动压缩失败不打断本轮（事件已记录），调用方只推进。
+                // 每步之前：trigger=None 是自动检查（越过阈值才压）；
+                // Some(Manual) 是手动 /compact 入口（强制压）。两路失败都不打断本轮（同旧路径）。
+                HookEvent::PreStep { trigger, .. } => {
+                    let (force, trigger) = match trigger {
+                        Some(trigger) => (true, *trigger),
+                        None => (false, CompactionTrigger::Auto),
+                    };
                     let _ = compaction::compact_if_needed(
                         event.host(),
                         event.turn(),
                         event.step(),
-                        CompactionTrigger::Auto,
-                        false,
+                        trigger,
+                        force,
+                        true,
                     )
                     .await;
                 }
@@ -52,6 +56,7 @@ impl Capability for CompactionCapability {
                             event.step(),
                             CompactionTrigger::Auto,
                             true,
+                            true,
                         )
                         .await?;
                         if !compacted {
@@ -63,17 +68,6 @@ impl Capability for CompactionCapability {
                             }));
                         }
                     }
-                }
-                // 已确认的压缩执行入口（手动 /compact）：强制压缩一次。
-                HookEvent::Compaction { trigger, .. } => {
-                    compaction::compact_if_needed(
-                        event.host(),
-                        event.turn(),
-                        event.step(),
-                        *trigger,
-                        true,
-                    )
-                    .await?;
                 }
                 _ => {}
             }

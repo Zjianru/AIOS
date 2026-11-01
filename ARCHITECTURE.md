@@ -71,31 +71,31 @@ T006.1a 接挂点与注册表；1b 起 **compaction 是真实 Capability**（`co
 - 输入面按 1b–1e 的需要定：`Capability::on_hook` 是异步、返回 `Result<(), AgentError>`，参数是 typed `HookEvent<'a>`（每个挂点带该点可用的运行态数据 + `host: &dyn LoopAccess` 访问面）；dyn 兼容用 `HookFuture<'a> = Pin<Box<dyn Future<Output = Result<(), AgentError>> + Send + 'a>>`，不新增 async-trait 依赖。
 - 访问面 `LoopAccess`：session（`Mutex<SessionStore>`）、events、tools、tool_session（观察表/spill/任务注册表）、model、cwd/data_dir/log_path、instruction_roots/skill_roots、compaction_config、spill_max_inline_tokens，以及 **`append` 写日志入口**（async，内部走 `Inner::append`：落盘后逐事件派发 SessionEvent，不重复派发）；由 driver 的 `Inner` 实现，capabilities 不反向依赖 driver 私有字段/CLI。
 - loop 只在固定位置 dispatch，不 import 功能内部类型；1b–1e 搬实现时只换 Capability 实现（必要时按 ARCH 记录扩 HookContext 字段），挂点集合与调用点顺序不变——1a 不再声称「只换实现」是无条件成立。
-- 执行顺序与错误：同一挂点按注册顺序执行；首个 Err 短路返回，之前的功能副作用已发生且不回滚；SessionEvent 在日志 append 成功后逐事件派发（日志已提交）；自动压缩由压缩能力在 PreStep 内自己确认（should_trigger/select_split）后执行，失败不打断本轮（行为同旧路径）；溢出压缩由 RequestError 挂点执行，压缩不成就把原始错误返回；第二次溢出直接致命、不再派发（防无限循环）；手动压缩经 Compaction 挂点执行，失败不打断队列；Status 在 kick 收敛前派发，错误不阻断收敛（1a no-op，服务接入时再定上报）。
+- 执行顺序与错误：同一挂点按注册顺序执行；首个 Err 短路返回，之前的功能副作用已发生且不回滚；SessionEvent 在日志 append 成功后逐事件派发（日志已提交）；压缩执行与「已确认」通知拆开：`CompactionCapability` 只挂 PreStep/Request/RequestError（不消费 Compaction），三路（PreStep 自动、RequestError 溢出、PreStep trigger=Manual 手动）都经 `compact_if_needed`，其在 should_trigger/select_split 确认后统一派发 `HookEvent::Compaction`（供 prune 等，T006.4）；自动/手动压缩失败不打断本轮/队列，溢出压缩失败时 `compact_if_needed` 返回 Err（摘要失败等）或 Ok(false)（无前缀可压，返回原始 model 错误），第二次溢出直接致命不再派发；Status 在 kick 收敛前派发，错误不阻断收敛（1a no-op，服务接入时再定上报）。
 - 依赖方向：`cli → agent → tools → session → model`；agent 内部 `driver → capabilities` 单向。
 
 **挂点表（HookPoint → 派发位置 → typed 数据 → 注册功能）**
 
 | 挂点 | 派发位置（agent/src/driver.rs） | HookEvent 携带 | 注册功能（1a） |
 |---|---|---|---|
-| PreStep | `run_step` 内、追加本 step 输入消息与 prune 之后、derive 之前 | turn/step/host | compaction（自动检查+压缩）、instructions、skill |
+| PreStep | `run_step` 内、追加本 step 输入消息与 prune 之后、derive 之前（自动：trigger=None；手动 /compact：driver 队列 dispatch trigger=Some(Manual)） | turn/step/host/trigger | compaction（自动检查/手动强制压缩）、instructions、skill |
 | Request | `model.stream` 之前 | turn/step/host/messages | compaction（token 记账占位） |
 | RequestError | `Err(error)` 分支、abort 检查之后（第二次溢出不再派发） | turn/step/host/error | compaction（溢出强制压缩） |
 | SessionEvent | `Inner::append` 成功后逐事件 | host/event | instructions（对账；对外推送后续票） |
 | ToolBefore | `execute_batch` 之前 | turn/step/host/calls | instructions、skill |
 | ToolResult | 每个 tool/result 落日志前 | turn/step/host/call/result | spill |
 | ToolAfter | tool/result 落日志后、todo 事件前 | turn/step/host/calls/results/cancelled | todo、spill、reminder |
-| Compaction | driver 处理手动 `/compact` 队列时（已确认的压缩执行入口） | turn/step/host/trigger | compaction（手动执行）、prune（T006.4 迁入） |
+| Compaction | `compaction.rs` 的 `compact_if_needed` 内、should_trigger/select_split 确认之后（自动/溢出/手动三路统一派发） | turn/step/host/trigger | prune（T006.4 迁入）；`CompactionCapability` 不消费此挂点（防自递归） |
 | Status | `kick` 收敛到 Idle 之前 | turn/host | jobs（服务推送后续票） |
 | TurnStopping | `run_turn` 写 `turn/end` 之前 | turn/host | （保留，服务接入后使用） |
 
-**prune（T006.4 才搬）**：1b 不动 prune 实现与触发（`driver.rs` 每请求调用保留，T005 的 `tool_result_pruned_before_next_request` 语义不变）；注册表里 prune 仍登记在 `Compaction`（no-op 占位）。T006.4 把实现搬进能力、改成只在压缩确认后执行（并改该测试期望），届时删掉 driver 的每请求调用。
+**prune（T006.4 才搬）**：1b 不动 prune 实现与触发（`driver.rs` 每请求调用保留，T005 的 `tool_result_pruned_before_next_request` 语义不变）；注册表里 prune 仍登记在 `Compaction`（no-op 占位）。`compact_if_needed` 现在在确认后统一派发 Compaction（自动/溢出/手动三路共用），T006.4 把 prune 实现搬进能力后三路都会剪；届时删掉 driver 的每请求调用并改该测试期望。
 
 **功能注册表与 1b–1e 访问面（固定顺序；已迁移/待迁移位置）**
 
 | # | 功能 | 挂点 | 从 HookEvent/ho​st 拿什么 | 1a 现实现位置 | 迁移票 |
 |---|---|---|---|---|---|
-| 1 | compaction | PreStep / Request / RequestError / Compaction | messages、host.model/session/compaction_config、error、trigger | **已迁**：`agent/src/compaction_capability.rs` + `agent/src/compaction.rs` | 1b（完成） |
+| 1 | compaction | PreStep（自动 / 手动 trigger）/ Request / RequestError | messages、host.model/session/compaction_config、error、trigger | **已迁**：`agent/src/compaction_capability.rs` + `agent/src/compaction.rs` | 1b（完成） |
 | 2 | prune | Compaction | host.session（日志事件）、trigger | `agent/src/prune.rs`（现路径，driver 每请求调用保留） | T006.4 |
 | 3 | instructions | PreStep / SessionEvent / ToolBefore | host.session/instruction_roots/data_dir/events、event、calls | `agent/src/instructions.rs` | 1c |
 | 4 | skill | PreStep / ToolBefore | host.skill_roots、calls | `agent/src/skill_catalog.rs`、`tools/src/skills.rs` | 1c |
@@ -107,7 +107,7 @@ T006.1a 接挂点与注册表；1b 起 **compaction 是真实 Capability**（`co
 
 **修改规则**：挂点集合与注册顺序固定；新增数据在 typed `HookEvent` 上加字段/变体并在本表记录；不得新增运行时加载。 **写日志入口约束**：写日志必须走 `LoopAccess::append`（它内部走 `Inner::append`，落盘后逐事件派发 SessionEvent，不重复派发）；直接锁 `LoopAccess::session` 后 append 不会触发 SessionEvent，1c/1d 禁止这样绕过。
 
-**验收与证据**：1a 证据见 `T006/evidence/T006.1a-hook-grep.log`；1b 证据见 `T006/evidence/T006.1b-grep.log`（driver 无压缩旧路径、prune 每请求调用保留、真实 compaction 注册、199 绿灯）。
+**验收与证据**：1a 证据见 `T006/evidence/T006.1a-hook-grep.log`；1b 证据见 `T006/evidence/T006.1b-grep.log`（driver 无压缩旧路径、prune 每请求调用保留、真实 compaction 注册、三路 Compaction 派发行、199 绿灯）。
 
 ## 接缝
 

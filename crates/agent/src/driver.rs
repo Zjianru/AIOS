@@ -151,6 +151,23 @@ impl LoopAccess for Inner {
     fn append<'a>(&'a self, kinds: &'a [EventKind]) -> crate::capabilities::HookFuture<'a> {
         Box::pin(Inner::append(self, kinds))
     }
+    fn dispatch_compaction<'a>(
+        &'a self,
+        turn: u64,
+        step: u64,
+        trigger: CompactionTrigger,
+    ) -> crate::capabilities::HookFuture<'a> {
+        Box::pin(async move {
+            self.capabilities
+                .dispatch(&HookEvent::Compaction {
+                    turn,
+                    step,
+                    host: self,
+                    trigger,
+                })
+                .await
+        })
+    }
 }
 
 impl Inner {
@@ -500,13 +517,14 @@ impl Inner {
                 state.last_turn
             };
             // 行为同旧路径：手动压缩失败不打断队列，等待者照常释放。
+            // 手动 /compact 走 PreStep 挂点的 manual 入口；能力内部确认后统一派发 Compaction。
             let _ = self
                 .capabilities
-                .dispatch(&HookEvent::Compaction {
+                .dispatch(&HookEvent::PreStep {
                     turn,
                     step: 0,
                     host: self.as_ref(),
-                    trigger: CompactionTrigger::Manual,
+                    trigger: Some(CompactionTrigger::Manual),
                 })
                 .await;
             for waiter in waiters {
@@ -863,6 +881,7 @@ async fn run_step(
             turn,
             step,
             host: inner.as_ref(),
+            trigger: None,
         })
         .await?;
     let mut messages = inner

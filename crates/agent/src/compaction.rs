@@ -136,9 +136,10 @@ fn should_trigger(host: &dyn LoopAccess, messages: &[Message], budget: Budget) -
 pub(crate) async fn compact_if_needed(
     host: &dyn LoopAccess,
     turn: u64,
-    _step: u64,
+    step: u64,
     trigger: CompactionTrigger,
     force: bool,
+    notify_compaction: bool,
 ) -> Result<bool, AgentError> {
     let budget = Budget::resolve(host);
     let (derived, selected) = {
@@ -153,8 +154,11 @@ pub(crate) async fn compact_if_needed(
     let Some(split) = select_split(&selected, budget.retain_tokens) else {
         return Ok(false);
     };
-    // T006.1b：压缩能力自己就是确认点（should_trigger/select_split 之后才走到这里）；
-    // prune 的搬迁/触发归 T006.4。
+    // T006.1b：确认真的要压缩后，统一派发 Compaction 挂点（自动/溢出/手动三路共用）；
+    // prune 等后续功能挂在这里，T006.4 搬入；CompactionCapability 自己不消费这个挂点，避免递归。
+    if notify_compaction {
+        host.dispatch_compaction(turn, step, trigger).await?;
+    }
     // 系统消息永远保留；被摘要的是 prefix 去掉系统后的部分。
     let shadowed_start = derived[1].0;
     let shadowed_end = derived[split - 1].0;
