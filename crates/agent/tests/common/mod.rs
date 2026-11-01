@@ -412,3 +412,120 @@ impl Drop for HeadersGatedServer {
         }
     }
 }
+
+/// 两阶段 SSE 脚本：先写 prefix，可选 hold 等测试放行，再写 suffix。
+pub struct PhaseScript {
+    pub prefix: String,
+    pub suffix: String,
+    pub hold: bool,
+}
+
+/// 支持「先写一半、按住、再写剩下」的 SSE 服务器：给 max-tokens 后还有后续 step 的测试用。
+pub struct PhaseSseServer {
+    port: u16,
+    ready: Option<tokio::sync::oneshot::Receiver<()>>,
+    control: Option<std::sync::mpsc::Sender<()>>,
+    bodies: Arc<Mutex<Vec<Vec<u8>>>>,
+    stopped: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl PhaseSseServer {
+    pub fn start(scripts: Vec<PhaseScript>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("绑定测试 SSE 端口");
+        listener
+            .set_nonblocking(true)
+            .expect("测试 SSE 端口设成非阻塞");
+        let port = listener.local_addr().expect("读取测试端口").port();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (control_tx, control_rx) = std::sync::mpsc::channel::<()>();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped_in_thread = Arc::clone(&stopped);
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let bodies_in_thread = Arc::clone(&bodies);
+        let mut ready_tx = Some(ready_tx);
+        let handle = std::thread::spawn(move || {
+            for script in scripts {
+                let Some(mut stream) = accept_while_running(&listener, &stopped_in_thread) else {
+                    return;
+                };
+                let _ = stream.set_nonblocking(false);
+                if let Some(body) = read_request(&mut stream) {
+                    bodies_in_thread
+                        .lock()
+                        .expect("测试 SSE 请求记录锁被毒化")
+                        .push(body);
+                }
+                let header = "HTTP/1.1 200 OK
+content-type: text/event-stream
+connection: close
+
+";
+                if stream.write_all(header.as_bytes()).is_err() {
+                    continue;
+                }
+                if stream.write_all(script.prefix.as_bytes()).is_err() {
+                    continue;
+                }
+                if stream.flush().is_err() {
+                    continue;
+                }
+                if script.hold {
+                    if let Some(sender) = ready_tx.take() {
+                        let _ = sender.send(());
+                    }
+                    let _ = control_rx.recv();
+                }
+                if stream.write_all(script.suffix.as_bytes()).is_err() {
+                    continue;
+                }
+                let _ = stream.flush();
+            }
+        });
+        Self {
+            port,
+            ready: Some(ready_rx),
+            control: Some(control_tx),
+            bodies,
+            stopped,
+            handle: Some(handle),
+        }
+    }
+
+    pub fn base_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// 等到 prefix 已经写出、suffix 还没写。
+    pub async fn wait_ready(&mut self) {
+        if let Some(receiver) = self.ready.take() {
+            let _ = receiver.await;
+        }
+    }
+
+    /// 放行第一个 hold 的脚本（写 suffix）。
+    pub fn release(&mut self) {
+        if let Some(sender) = self.control.take() {
+            let _ = sender.send(());
+        }
+    }
+
+    pub fn request_bodies(&self) -> Vec<Vec<u8>> {
+        self.bodies
+            .lock()
+            .expect("测试 SSE 请求记录锁被毒化")
+            .clone()
+    }
+}
+
+impl Drop for PhaseSseServer {
+    fn drop(&mut self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        if let Some(sender) = self.control.take() {
+            let _ = sender.send(());
+        }
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
