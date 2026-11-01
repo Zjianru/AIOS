@@ -24,11 +24,7 @@ const EVENT_CHANNEL_CAPACITY: usize = 256;
 /// 驱动阶段。
 enum Phase {
     Idle,
-    Running {
-        abort: Arc<AtomicBool>,
-        turn: u64,
-        step: u64,
-    },
+    Running { abort: Arc<AtomicBool>, turn: u64 },
 }
 
 struct RunState {
@@ -162,7 +158,6 @@ impl Inner {
                 state.phase = Phase::Running {
                     abort: Arc::new(AtomicBool::new(false)),
                     turn,
-                    step: 0,
                 };
                 drop(state);
                 tokio::spawn(kick(Arc::clone(self)));
@@ -225,7 +220,6 @@ fn settle_idle(inner: &Arc<Inner>) {
         state.phase = Phase::Running {
             abort: Arc::new(AtomicBool::new(false)),
             turn,
-            step: 0,
         };
         drop(state);
         tokio::spawn(kick(Arc::clone(inner)));
@@ -236,13 +230,15 @@ fn settle_idle(inner: &Arc<Inner>) {
 }
 
 async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
-    let (current_turn, mut step, abort) = {
+    let (current_turn, abort) = {
         let state = inner.state.lock().expect("agent 状态锁被毒化");
         match &state.phase {
-            Phase::Running { abort, turn, step } => (*turn, *step, Arc::clone(abort)),
+            Phase::Running { abort, turn } => (*turn, Arc::clone(abort)),
             Phase::Idle => return Ok(false),
         }
     };
+    // step 是这一轮内的局部计数：每轮从 1 开始，不跨 turn 携带（T004 审 K1）。
+    let mut step = 0u64;
     let turn = current_turn + 1;
     inner.append(&[EventKind::TurnStart { turn }])?;
     {
@@ -254,12 +250,6 @@ async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
 
     let mut turn_end: Option<TurnEndReason> = None;
     let steps = run_turn_steps(inner, turn, &mut step, &abort, &mut turn_end).await;
-    {
-        let mut state = inner.state.lock().expect("agent 状态锁被毒化");
-        if let Phase::Running { step: current, .. } = &mut state.phase {
-            *current = step;
-        }
-    }
 
     let (reason, outcome) = match &steps {
         Ok(()) => {

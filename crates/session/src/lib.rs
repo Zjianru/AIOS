@@ -7,10 +7,11 @@ mod derive;
 mod error;
 mod event;
 mod id;
-pub mod repair;
+mod repair;
 mod store;
 
 pub use error::SessionError;
 pub use event::{Event, EventKind, SessionHeader, TurnEndReason};
 pub use id::SessionId;
+pub use repair::interrupted_turn_closers;
 pub use store::SessionStore;

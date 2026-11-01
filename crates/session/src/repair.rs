@@ -9,9 +9,9 @@ use model::{ContentBlock, Message};
 use crate::{Event, EventKind, TurnEndReason};
 
 /// 已记录开始、但结果没有落盘的调用：结果未知，重试前先核实外部状态。
-pub const TOOL_OUTCOME_UNKNOWN: &str = "TOOL_OUTCOME_UNKNOWN";
+const TOOL_OUTCOME_UNKNOWN: &str = "TOOL_OUTCOME_UNKNOWN";
 /// assistant 请求过、但 Harness 还没记录开始的调用：需要时可以重试。
-pub const TOOL_NOT_STARTED: &str = "TOOL_NOT_STARTED";
+const TOOL_NOT_STARTED: &str = "TOOL_NOT_STARTED";
 
 /// 模型可见文案逐字照抄 DSH 的 repair.ts:32-41；不改写、不翻译。
 const OUTCOME_UNKNOWN_TEXT: &str = "The tool call was interrupted after it was recorded, but no result was durably recorded. Its outcome is unknown. Decide whether to retry from the tool semantics: retry only if the operation is read-only or idempotent; if it may have side effects, first verify external state or ask the user. Do not retry blindly.";
