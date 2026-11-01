@@ -168,6 +168,12 @@ impl LoopAccess for Inner {
                 .await
         })
     }
+    fn instructions_state(&self) -> &Mutex<InstructionState> {
+        &self.instructions
+    }
+    fn skill_catalog_state(&self) -> &Mutex<SkillCatalogState> {
+        &self.skill_catalog
+    }
 }
 
 impl Inner {
@@ -824,49 +830,6 @@ async fn run_step(
                 message,
             }])
             .await?;
-    }
-
-    // T005.5：把适用的 AGENTS.md / CLAUDE.md 注入成普通 user/message。
-    // 第一次请求带基线；读到更深目录（T005.1 路径观察）或文件变化时补刷新消息。
-    {
-        let observed: Vec<PathBuf> = inner.tool_session.observations().paths().cloned().collect();
-        let injection = inner
-            .instructions
-            .lock()
-            .expect("agent 指令锁被毒化")
-            .prepare(
-                &inner.cwd,
-                &inner.data_dir,
-                &inner.instruction_roots,
-                observed.into_iter(),
-            );
-        if let Some(text) = injection {
-            inner
-                .append(&[EventKind::UserMessage {
-                    turn,
-                    step,
-                    message: Message::text(Role::User, text),
-                }])
-                .await?;
-        }
-    }
-
-    // T005.6：可用 skill 目录（名字 + description）作为独立上下文块注入；有变化才追加。
-    {
-        let catalog = inner
-            .skill_catalog
-            .lock()
-            .expect("agent skill 目录锁被毒化")
-            .prepare(&inner.cwd, &inner.data_dir, &inner.skill_roots);
-        if let Some(text) = catalog {
-            inner
-                .append(&[EventKind::UserMessage {
-                    turn,
-                    step,
-                    message: Message::text(Role::User, text),
-                }])
-                .await?;
-        }
     }
 
     // T005.2：派生请求之前，把「旧」超大工具结果换成 head+marker+tail 的修剪视图

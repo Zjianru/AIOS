@@ -9,7 +9,9 @@ mod driver;
 mod error;
 mod inbox;
 mod instructions;
+mod instructions_capability;
 mod prune;
+mod skill_capability;
 mod skill_catalog;
 
 use std::path::{Path, PathBuf};

@@ -16,6 +16,10 @@ use tools::{ToolCall, ToolResult, ToolSessionState, ToolSet};
 
 use crate::compaction_capability::CompactionCapability;
 use crate::error::AgentError;
+use crate::instructions::InstructionState;
+use crate::instructions_capability::InstructionsCapability;
+use crate::skill_capability::SkillCapability;
+use crate::skill_catalog::SkillCatalogState;
 use crate::{AgentEvent, CompactionTrigger};
 
 /// loop 的固定挂点（strategy §1 六点位；工具拆三阶段；压缩触发单列）。
@@ -78,6 +82,10 @@ pub(crate) trait LoopAccess: Send + Sync {
         step: u64,
         trigger: CompactionTrigger,
     ) -> HookFuture<'a>;
+    /// 指令注入状态（T005.5；指令能力在 PreStep 里读写）。
+    fn instructions_state(&self) -> &Mutex<InstructionState>;
+    /// skill 目录注入状态（T005.6；skill 能力在 PreStep 里读写）。
+    fn skill_catalog_state(&self) -> &Mutex<SkillCatalogState>;
 }
 
 /// 每个挂点一份 typed 事件：host 访问面 + 该挂点可用的运行态数据。
@@ -234,12 +242,6 @@ impl Capability for Placeholder {
 }
 
 const PRUNE_HOOKS: &[HookPoint] = &[HookPoint::Compaction];
-const INSTRUCTIONS_HOOKS: &[HookPoint] = &[
-    HookPoint::PreStep,
-    HookPoint::SessionEvent,
-    HookPoint::ToolBefore,
-];
-const SKILL_HOOKS: &[HookPoint] = &[HookPoint::PreStep, HookPoint::ToolBefore];
 const TODO_HOOKS: &[HookPoint] = &[HookPoint::ToolAfter];
 const SPILL_HOOKS: &[HookPoint] = &[HookPoint::ToolResult, HookPoint::ToolAfter];
 const REMINDER_HOOKS: &[HookPoint] = &[HookPoint::ToolAfter];
@@ -250,14 +252,8 @@ static PRUNE: Placeholder = Placeholder {
     name: "prune",
     hooks: PRUNE_HOOKS,
 };
-static INSTRUCTIONS: Placeholder = Placeholder {
-    name: "instructions",
-    hooks: INSTRUCTIONS_HOOKS,
-};
-static SKILL: Placeholder = Placeholder {
-    name: "skill",
-    hooks: SKILL_HOOKS,
-};
+static INSTRUCTIONS_CAP: InstructionsCapability = InstructionsCapability;
+static SKILL_CAP: SkillCapability = SkillCapability;
 static TODO: Placeholder = Placeholder {
     name: "todo",
     hooks: TODO_HOOKS,
@@ -290,8 +286,8 @@ impl CapabilityRegistry {
             capabilities: vec![
                 &COMPACTION_CAP,
                 &PRUNE,
-                &INSTRUCTIONS,
-                &SKILL,
+                &INSTRUCTIONS_CAP,
+                &SKILL_CAP,
                 &TODO,
                 &ASK,
                 &SPILL,
