@@ -113,6 +113,25 @@ pub enum EventKind {
         step: u64,
         message: Message,
     },
+    /// 模型向用户提问（T005.10；派生请求不出现，只用于日志回放/CLI 展示）。
+    #[serde(rename = "question/asked")]
+    QuestionAsked {
+        turn: u64,
+        step: u64,
+        question_id: String,
+        question: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        header: Option<String>,
+        options: Vec<String>,
+        multi_select: bool,
+    },
+    /// 等待中被取消，问题撤销（T005.10）。
+    #[serde(rename = "question/cancelled")]
+    QuestionCancelled {
+        turn: u64,
+        step: u64,
+        question_id: String,
+    },
     #[serde(rename = "assistant/message")]
     AssistantMessage {
         turn: u64,
@@ -185,6 +204,8 @@ impl EventKind {
             Self::StepEnd { .. } => "step/end",
             Self::SystemMessage { .. } => "system/message",
             Self::UserMessage { .. } => "user/message",
+            Self::QuestionAsked { .. } => "question/asked",
+            Self::QuestionCancelled { .. } => "question/cancelled",
             Self::AssistantMessage { .. } => "assistant/message",
             Self::ToolCall { .. } => "tool/call",
             Self::ToolResult { .. } => "tool/result",

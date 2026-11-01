@@ -276,6 +276,11 @@ impl Agent {
         self.inner.cancel();
     }
 
+    /// T005.10：回答问题。question_id 必须是当前等待的问题；返回是否送达。
+    pub async fn answer(&self, question_id: &str, answer: &str) -> bool {
+        self.inner.answer(question_id, answer)
+    }
+
     /// 订阅 agent 事件。
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<AgentEvent> {
         self.inner.subscribe()

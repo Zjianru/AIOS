@@ -99,7 +99,9 @@ pub(crate) fn derive_messages_with_seqs(events: &[Event]) -> Vec<(u64, Message)>
             | EventKind::CompactionStart { .. }
             | EventKind::CompactionSummary { .. }
             | EventKind::CompactionEnd { .. }
-            | EventKind::TodoWrite { .. } => None,
+            | EventKind::TodoWrite { .. }
+            | EventKind::QuestionAsked { .. }
+            | EventKind::QuestionCancelled { .. } => None,
         };
         if let Some(message) = message {
             derived.push((event.seq, message));

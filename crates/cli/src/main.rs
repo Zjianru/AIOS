@@ -220,7 +220,17 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
                 }
             }
             received = events.recv() => match received {
-                Ok(event) => handle_event(event, &mut last_outcome),
+                Ok(event) => {
+                    let question = match &event {
+                        AgentEvent::QuestionAsked { question } => Some(question.clone()),
+                        _ => None,
+                    };
+                    handle_event(event, &mut last_outcome);
+                    // T005.10 交互路径：打出问题、读一行作答，loop 接着跑。
+                    if let Some(question) = question && let Some(line) = read_stdin_line().await {
+                        agent.answer(&question.id, line.trim()).await;
+                    }
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             },
@@ -259,7 +269,15 @@ async fn pump_until_idle(
         tokio::select! {
             () = &mut idle => break,
             received = events.recv() => match received {
-                Ok(event) => handle_event(event, &mut outcome),
+                Ok(event) => {
+                    let asked = matches!(event, AgentEvent::QuestionAsked { .. });
+                    handle_event(event, &mut outcome);
+                    // T005.10 非交互 run：不能静默卡死；打印问题并撤销这一轮。
+                    if asked {
+                        eprintln!("[非交互模式无法回答问题，已取消本轮]");
+                        agent.cancel();
+                    }
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             },
@@ -292,18 +310,7 @@ fn handle_event(event: AgentEvent, outcome: &mut Option<TurnOutcome>) {
         }
         AgentEvent::QuestionAsked { question } => {
             println!();
-            println!("[问题：{}]", question.question);
-            for (index, option) in question.options.iter().enumerate() {
-                match &option.description {
-                    Some(description) => {
-                        println!("  {}. {}（{}）", index + 1, option.label, description);
-                    }
-                    None => println!("  {}. {}", index + 1, option.label),
-                }
-            }
-            if question.multi_select {
-                println!("  （可多选）");
-            }
+            println!("{}", question_asked_text(&question));
         }
         AgentEvent::CompactionStarted {
             compaction_id,
@@ -338,6 +345,43 @@ fn handle_event(event: AgentEvent, outcome: &mut Option<TurnOutcome>) {
             *outcome = Some(ended);
         }
     }
+}
+
+/// 读一行 stdin（问题回答用；不阻塞异步 worker）。
+async fn read_stdin_line() -> Option<String> {
+    tokio::task::spawn_blocking(|| {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).ok()?;
+        Some(line)
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// 问题展示文本（纯函数便于单测；测试清单第 14 条）。
+fn question_asked_text(question: &agent::Question) -> String {
+    let mut text = format!("[问题：{}]", question.question);
+    if let Some(header) = &question.header {
+        text = format!("[问题：{header} / {}]", question.question);
+    }
+    for (index, option) in question.options.iter().enumerate() {
+        match &option.description {
+            Some(description) => {
+                text.push_str(&format!(
+                    "\n  {}. {}（{}）",
+                    index + 1,
+                    option.label,
+                    description
+                ));
+            }
+            None => text.push_str(&format!("\n  {}. {}", index + 1, option.label)),
+        }
+    }
+    if question.multi_select {
+        text.push_str("\n  （可多选）");
+    }
+    text
 }
 
 /// chat 的手动压缩命令（T005.8b）：/compact。
@@ -425,4 +469,29 @@ mod tests {
             "[压缩失败：compaction-1：boom]"
         );
     }
+}
+
+#[test]
+fn question_text_renders_header_and_options() {
+    let question = agent::Question {
+        id: "q1".to_owned(),
+        question: "Proceed?".to_owned(),
+        header: Some("Confirm".to_owned()),
+        options: vec![
+            agent::QuestionOption {
+                label: "Yes".to_owned(),
+                description: Some("go".to_owned()),
+            },
+            agent::QuestionOption {
+                label: "No".to_owned(),
+                description: None,
+            },
+        ],
+        multi_select: false,
+    };
+    let text = question_asked_text(&question);
+    assert!(text.contains("Confirm"));
+    assert!(text.contains("Proceed?"));
+    assert!(text.contains("1. Yes（go）"));
+    assert!(text.contains("2. No"));
 }

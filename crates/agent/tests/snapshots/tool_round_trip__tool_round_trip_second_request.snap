@@ -326,6 +326,63 @@ expression: body
         "type": "object"
       },
       "name": "todo_write"
+    },
+    {
+      "description": "Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding.",
+      "input_schema": {
+        "properties": {
+          "questions": {
+            "description": "Questions to ask the user before continuing.",
+            "items": {
+              "properties": {
+                "header": {
+                  "description": "Optional short heading.",
+                  "type": "string"
+                },
+                "id": {
+                  "description": "Stable id for this question; echoed in the answer.",
+                  "type": "string"
+                },
+                "multi_select": {
+                  "type": "boolean"
+                },
+                "options": {
+                  "items": {
+                    "properties": {
+                      "description": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
+                "question": {
+                  "description": "The specific question to ask the user.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "question"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "questions"
+        ],
+        "type": "object"
+      },
+      "name": "ask_user_question"
     }
   ]
 }

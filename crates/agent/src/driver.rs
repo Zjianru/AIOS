@@ -22,6 +22,7 @@ use crate::instructions::InstructionState;
 use crate::prune;
 use crate::skill_catalog::SkillCatalogState;
 use crate::{AgentConfig, AgentEvent, CompactionTrigger, Deps, JobStatus, TurnOutcome};
+use crate::{Question, QuestionOption};
 
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
@@ -47,6 +48,12 @@ enum StepEnd {
 }
 
 /// agent 的共享状态；驱动任务和 6 个入口方法都通过它交互。
+/// 正在等待用户回答的问题（T005.10）；answer 入口按 question_id 绑定。
+struct PendingQuestion {
+    question_id: String,
+    answer: Option<tokio::sync::oneshot::Sender<String>>,
+}
+
 pub(crate) struct Inner {
     id: SessionId,
     log_path: PathBuf,
@@ -85,6 +92,10 @@ pub(crate) struct Inner {
     compact_queue: Mutex<Vec<tokio::sync::oneshot::Sender<()>>>,
     /// 连续重复工具调用的链（工具名 + 规范化参数，计数）；新用户消息清零（T005.9）。
     repeat_chain: Mutex<Option<(String, usize)>>,
+    /// 正在等答案的问题（T005.10）。
+    pending_question: Mutex<Option<PendingQuestion>>,
+    /// 等待问题答案期间取消的唤醒（cancel 置 abort 后 notify，loop 不空转）。
+    question_cancel_notify: Notify,
     /// 仅测试可见：settle_idle 预检之后、最终临界区之前的同步缝（T005.8b 边界单测）。
     #[cfg(test)]
     settle_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -154,6 +165,8 @@ impl Inner {
             repeat_chain: Mutex::new(None),
             #[cfg(test)]
             settle_hook: Mutex::new(None),
+            pending_question: Mutex::new(None),
+            question_cancel_notify: Notify::new(),
         });
         // T005.4：后台任务结算后，由 agent 把完成通知送进会话（事件 + 下一步输入）。
         // 用 Weak 避免 tool_session → 回调 → Inner 的循环引用。
@@ -222,6 +235,8 @@ impl Inner {
             abort.store(true, Ordering::SeqCst);
             // 让正在等模型流的 step 立刻醒来、走 interrupted 收尾。
             self.cancel_notify.notify_waiters();
+            // T005.10：让正在等用户回答的 loop 醒来，撤销问题并 aborted 收尾。
+            self.question_cancel_notify.notify_waiters();
         }
     }
 
@@ -303,6 +318,22 @@ impl Inner {
             }
         }
         reminder
+    }
+
+    /// T005.10：回答问题。question_id 必须与当前等待的问题一致；
+    /// 等待中的 run_step 收到答案后把它作为 ask 调用的 tool/result 续上。
+    pub(crate) fn answer(&self, question_id: &str, text: &str) -> bool {
+        let mut pending = self.pending_question.lock().expect("agent 问题锁被毒化");
+        let Some(current) = pending.as_mut() else {
+            return false;
+        };
+        if current.question_id != question_id {
+            return false;
+        }
+        let Some(sender) = current.answer.take() else {
+            return false;
+        };
+        sender.send(text.to_owned()).is_ok()
     }
 
     /// 起驱动或在 Running 时置 latch。
@@ -888,6 +919,53 @@ async fn run_step(
         });
     }
     inner.append(&call_events)?;
+    // T005.10：ask_user_question 由 loop 处理——发问题事件、停住等 answer；
+    // 等待中 cancel 撤销问题并 aborted 收尾。答案随后作为该调用的 tool/result 续上。
+    let mut ask_answer: Option<(usize, String)> = None;
+    if let Some(index) = calls
+        .iter()
+        .position(|call| call.name == "ask_user_question")
+    {
+        let question = question_from_call(&calls[index]);
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        *inner.pending_question.lock().expect("agent 问题锁被毒化") = Some(PendingQuestion {
+            question_id: question.id.clone(),
+            answer: Some(sender),
+        });
+        inner.append(&[EventKind::QuestionAsked {
+            turn,
+            step,
+            question_id: question.id.clone(),
+            question: question.question.clone(),
+            header: question.header.clone(),
+            options: question
+                .options
+                .iter()
+                .map(|option| option.label.clone())
+                .collect(),
+            multi_select: question.multi_select,
+        }])?;
+        let _ = inner.events.send(crate::AgentEvent::QuestionAsked {
+            question: question.clone(),
+        });
+        let answered = wait_question_answer(inner, receiver, abort).await;
+        inner
+            .pending_question
+            .lock()
+            .expect("agent 问题锁被毒化")
+            .take();
+        match answered {
+            Some(text) => ask_answer = Some((index, text)),
+            None => {
+                inner.append(&[EventKind::QuestionCancelled {
+                    turn,
+                    step,
+                    question_id: question.id.clone(),
+                }])?;
+                return Ok(StepEnd::Aborted);
+            }
+        }
+    }
     let context = ToolContext::with_session(inner.cwd.clone(), Arc::clone(&inner.tool_session));
     let outcome = execute_batch(
         &inner.tools,
@@ -897,6 +975,10 @@ async fn run_step(
         abort.as_ref(),
     )
     .await;
+    let mut outcome = outcome;
+    if let Some((index, answer)) = ask_answer {
+        outcome.results[index] = tools::ToolResult::success(calls[index].id.clone(), answer);
+    }
     for result in &outcome.results {
         // T005.2：超大结果落 spill（按会话目录），进日志/上下文的是 preview + locator；
         // read 有自己的分页上限，不在此列（照 DSH spill-policy）。
@@ -1198,6 +1280,75 @@ fn system_prompt(cwd: &Path, tools: &ToolSet) -> String {
         );
     }
     prompt
+}
+
+/// 从 ask_user_question 的调用参数里取第一条问题（字段照 DSH tool-ask-user）。
+fn question_from_call(call: &ToolCall) -> Question {
+    let value: serde_json::Value =
+        serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
+    let first = value
+        .get("questions")
+        .and_then(|questions| questions.as_array())
+        .and_then(|questions| questions.first())
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let text = |key: &str| {
+        first
+            .get(key)
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_owned()
+    };
+    let id = text("id");
+    Question {
+        id: if id.is_empty() { call.id.clone() } else { id },
+        question: text("question"),
+        header: first
+            .get("header")
+            .and_then(|value| value.as_str())
+            .map(str::to_owned),
+        options: first
+            .get("options")
+            .and_then(|value| value.as_array())
+            .map(|options| {
+                options
+                    .iter()
+                    .map(|option| QuestionOption {
+                        label: option
+                            .get("label")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("")
+                            .to_owned(),
+                        description: option
+                            .get("description")
+                            .and_then(|value| value.as_str())
+                            .map(str::to_owned),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        multi_select: first
+            .get("multi_select")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+    }
+}
+
+/// 等答案；cancel 时 abort 置位并通过 question_cancel_notify 唤醒，返回 None。
+async fn wait_question_answer(
+    inner: &Arc<Inner>,
+    mut receiver: tokio::sync::oneshot::Receiver<String>,
+    abort: &Arc<AtomicBool>,
+) -> Option<String> {
+    loop {
+        if abort.load(Ordering::SeqCst) {
+            return None;
+        }
+        tokio::select! {
+            result = &mut receiver => return result.ok(),
+            _ = inner.question_cancel_notify.notified() => continue,
+        }
+    }
 }
 
 /// 参数预览截断（字符安全，照 DSH argumentsPreviewChars 上限）。

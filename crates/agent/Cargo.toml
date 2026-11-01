@@ -10,10 +10,10 @@ session = { path = "../session" }
 tools = { path = "../tools" }
 tokio.workspace = true
 thiserror.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
-serde_json.workspace = true
 tempfile.workspace = true
 wiremock.workspace = true
 

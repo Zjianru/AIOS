@@ -1,6 +1,7 @@
 //! 内置工具：只读的 read / glob / grep，和写类 write / edit / apply_patch。
 
 mod apply_patch;
+mod ask_user;
 mod bash;
 mod edit;
 mod glob;
@@ -12,6 +13,7 @@ mod todo;
 mod write;
 
 pub use apply_patch::ApplyPatchTool;
+pub use ask_user::AskUserQuestionTool;
 pub use bash::{BashTool, foreground_bytes_read};
 pub use edit::EditTool;
 pub use glob::GlobTool;

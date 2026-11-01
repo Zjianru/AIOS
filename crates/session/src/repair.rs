@@ -53,6 +53,7 @@ pub fn interrupted_turn_closers(events: &[Event]) -> Vec<EventKind> {
                 open_step = None;
                 pending.clear();
             }
+            EventKind::QuestionAsked { .. } | EventKind::QuestionCancelled { .. } => {}
             EventKind::AssistantMessage {
                 turn,
                 step,
