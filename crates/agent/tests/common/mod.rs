@@ -347,3 +347,68 @@ fn read_request(stream: &mut std::net::TcpStream) -> Option<Vec<u8>> {
     }
     Some(buffer[header_end..].to_vec())
 }
+
+/// 只接一个请求、读完请求后**先不写响应头**的服务器：给「取消打断等响应头」测试用。
+/// 测试等 wait_request()，取消后由 Drop 放行线程（不写响应、直接关连接）。
+pub struct HeadersGatedServer {
+    port: u16,
+    ready: Option<tokio::sync::oneshot::Receiver<()>>,
+    release: Option<std::sync::mpsc::Sender<()>>,
+    stopped: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl HeadersGatedServer {
+    pub fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("绑定测试端口");
+        listener.set_nonblocking(true).expect("测试端口设成非阻塞");
+        let port = listener.local_addr().expect("读取测试端口").port();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped_in_thread = Arc::clone(&stopped);
+        let mut ready_tx = Some(ready_tx);
+        let handle = std::thread::spawn(move || {
+            let Some(mut stream) = accept_while_running(&listener, &stopped_in_thread) else {
+                return;
+            };
+            let _ = stream.set_nonblocking(false);
+            let _ = read_request(&mut stream);
+            if let Some(sender) = ready_tx.take() {
+                let _ = sender.send(());
+            }
+            let _ = release_rx.recv();
+            // 取消后客户端已经断开；不再写响应，直接关连接。
+        });
+        Self {
+            port,
+            ready: Some(ready_rx),
+            release: Some(release_tx),
+            stopped,
+            handle: Some(handle),
+        }
+    }
+
+    pub fn base_url(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port)
+    }
+
+    /// 等到请求已经收到、响应头还没写。
+    pub async fn wait_request(&mut self) {
+        if let Some(receiver) = self.ready.take() {
+            let _ = receiver.await;
+        }
+    }
+}
+
+impl Drop for HeadersGatedServer {
+    fn drop(&mut self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        if let Some(sender) = self.release.take() {
+            let _ = sender.send(());
+        }
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
