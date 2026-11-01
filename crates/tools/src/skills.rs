@@ -207,6 +207,11 @@ fn parse_skill(raw: &str) -> Result<ParsedSkill, String> {
         .get("description")
         .cloned()
         .ok_or("missing description")?;
+    for (field, value) in [("name", &name), ("description", &description)] {
+        if value.starts_with('[') || value.starts_with('{') {
+            return Err(format!("frontmatter field {field} must be a scalar string"));
+        }
+    }
     if !is_skill_name(&name) {
         return Err(format!("invalid skill name \"{name}\""));
     }
@@ -218,6 +223,34 @@ fn parse_skill(raw: &str) -> Result<ParsedSkill, String> {
         description: description.trim().to_owned(),
         body: body_lines.join("\n").trim().to_owned(),
     })
+}
+
+/// 块标量记号（允许 YAML 的 chomping/indent 修饰：|-、>+、|2 等）。
+fn block_scalar_marker(value: &str) -> Option<char> {
+    let trimmed =
+        value.trim_end_matches(|character: char| matches!(character, '+' | '-' | '0'..='9'));
+    match trimmed {
+        "|" => Some('|'),
+        ">" => Some('>'),
+        _ => None,
+    }
+}
+
+/// 双引号标量内不能有未转义的引号。
+fn has_unescaped_double_quote(inner: &str) -> bool {
+    let mut escaped = false;
+    for character in inner.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match character {
+            '\\' => escaped = true,
+            '"' => return true,
+            _ => {}
+        }
+    }
+    escaped
 }
 
 fn parse_simple_yaml(lines: &[&str]) -> Result<BTreeMap<String, String>, String> {
@@ -235,8 +268,8 @@ fn parse_simple_yaml(lines: &[&str]) -> Result<BTreeMap<String, String>, String>
         };
         let key = key.trim().to_owned();
         let value = value.trim();
-        let parsed = if value == "|" || value == ">" {
-            let folded = value == ">";
+        let parsed = if let Some(marker) = block_scalar_marker(value) {
+            let folded = marker == '>';
             let mut block: Vec<&str> = Vec::new();
             while index < lines.len() {
                 let candidate = lines[index];
@@ -252,10 +285,27 @@ fn parse_simple_yaml(lines: &[&str]) -> Result<BTreeMap<String, String>, String>
             } else {
                 block.join("\n")
             }
-        } else if (value.starts_with('\"') && value.ends_with('\"') && value.len() >= 2)
-            || (value.starts_with('\'') && value.ends_with('\'') && value.len() >= 2)
-        {
-            value[1..value.len() - 1].to_owned()
+        } else if value.starts_with('"') || value.starts_with('\'') {
+            let quote = value.chars().next().expect("quote");
+            if value.len() < 2 || !value.ends_with(quote) {
+                return Err(format!("unterminated quoted scalar: {value}"));
+            }
+            let inner = &value[1..value.len() - 1];
+            if quote == '"' {
+                if has_unescaped_double_quote(inner) {
+                    return Err(format!("unescaped quote in scalar: {value}"));
+                }
+            } else if inner.contains('\'') {
+                return Err(format!("unsupported single-quote escape: {value}"));
+            }
+            inner.to_owned()
+        } else if value.starts_with('[') || value.starts_with('{') {
+            let closing = if value.starts_with('[') { ']' } else { '}' };
+            if !value.ends_with(closing) {
+                return Err(format!("unterminated flow collection: {value}"));
+            }
+            // 闭合的 flow 集合不是字符串标量：保留原文，由消费字段的类型检查拒绝。
+            value.to_owned()
         } else {
             value.to_owned()
         };
@@ -312,6 +362,9 @@ mod tests {
             "---\nname: x\n",
             "---\nname: Bad_X\ndescription: d\n---\nbody",
             "---\ndescription: no name\n---\nbody",
+            "---\nname: good\ndescription: \"unclosed\n---\nbody",
+            "---\nname: good\ndescription: [unclosed\n---\nbody",
+            "---\nname: good\ndescription: [a, b]\n---\nbody",
         ] {
             assert!(parse_skill(raw).is_err(), "应拒绝：{raw}");
         }

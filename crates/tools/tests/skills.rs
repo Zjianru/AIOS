@@ -178,11 +178,9 @@ async fn project_skill_shadows_user_skill_with_same_name() {
         "---\nname: dup\ndescription: From user.\n---\nUser body.\n",
     );
     let discovered = discover_skills(cwd, data_dir.path(), &[]);
-    let dup = discovered
-        .iter()
-        .find(|skill| skill.name == "dup")
-        .expect("dup 应被发现");
-    assert_eq!(dup.description, "From project.", "项目根优先");
+    let dup = discovered.iter().find(|skill| skill.name == "dup");
+    assert!(dup.is_some(), "dup 应被发现");
+    assert_eq!(dup.unwrap().description, "From project.", "项目根优先");
 }
 
 #[tokio::test]
@@ -221,4 +219,40 @@ fn skill_roots_never_include_dsh_home() {
     }
     assert!(roots[1].starts_with(data_dir.path()));
     assert!(roots[2].starts_with(configured.path()));
+}
+
+#[tokio::test]
+async fn malformed_quotes_and_flow_frontmatter_are_discarded() {
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join(".git")).unwrap();
+    let skills = project.path().join(".agents/skills");
+    write(
+        &skills.join("good/SKILL.md"),
+        "---\nname: good\ndescription: Good skill.\n---\nGood body.\n",
+    );
+    // 引号不闭合：不是合法 YAML，整个 skill 丢弃。
+    write(
+        &skills.join("badquote/SKILL.md"),
+        "---\nname: badquote\ndescription: \"unterminated\n---\nBody.\n",
+    );
+    // flow 序列不闭合：同样丢弃。
+    write(
+        &skills.join("badflow/SKILL.md"),
+        "---\nname: badflow\ndescription: [unclosed\n---\nBody.\n",
+    );
+    let data_dir = tempfile::tempdir().unwrap();
+    let discovered = discover_skills(project.path(), data_dir.path(), &[]);
+    let names: Vec<&str> = discovered.iter().map(|skill| skill.name.as_str()).collect();
+    assert_eq!(names, vec!["good"], "坏引号/坏 flow 的 skill 不应进目录");
+
+    let context = session_context(project.path(), data_dir.path());
+    for name in ["badquote", "badflow"] {
+        let result = load_skill(name, &context).await;
+        assert!(result.is_error, "{name} 不应能加载");
+        assert!(
+            result.content.contains("unknown or no longer available"),
+            "{}",
+            result.content
+        );
+    }
 }
