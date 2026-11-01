@@ -8,6 +8,7 @@ mod grep;
 mod jobs;
 mod read;
 mod skill;
+mod todo;
 mod write;
 
 pub use apply_patch::ApplyPatchTool;
@@ -18,6 +19,7 @@ pub use grep::GrepTool;
 pub use jobs::{JobKillTool, JobListTool, JobOutputTool};
 pub use read::ReadTool;
 pub use skill::SkillTool;
+pub use todo::TodoWriteTool;
 pub use write::WriteTool;
 
 use std::path::{Component, Path, PathBuf};

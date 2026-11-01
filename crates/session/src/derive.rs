@@ -43,7 +43,8 @@ pub(crate) fn derive_messages(events: &[Event]) -> Vec<Message> {
             | EventKind::StepStart { .. }
             | EventKind::StepEnd { .. }
             | EventKind::ToolCall { .. }
-            | EventKind::CompactionPrune { .. } => None,
+            | EventKind::CompactionPrune { .. }
+            | EventKind::TodoWrite { .. } => None,
         })
         .collect()
 }

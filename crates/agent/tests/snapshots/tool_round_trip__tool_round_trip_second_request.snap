@@ -287,6 +287,45 @@ expression: body
         "type": "object"
       },
       "name": "skill"
+    },
+    {
+      "description": "Record and update a task list to plan multi-step work and show progress; skip it for trivial single-step tasks. Add one todo per concrete step before you start. While work remains, keep the todos being worked on `in_progress`, several only when work runs in parallel. Mark each todo `completed` as soon as it is done.",
+      "input_schema": {
+        "properties": {
+          "todos": {
+            "description": "The COMPLETE task list, replacing any previous list.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "content": {
+                  "description": "What the task is — a short imperative line.",
+                  "type": "string"
+                },
+                "status": {
+                  "description": "pending (not started) | in_progress (now) | completed (done).",
+                  "enum": [
+                    "pending",
+                    "in_progress",
+                    "completed"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "content",
+                "status"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "todos"
+        ],
+        "type": "object"
+      },
+      "name": "todo_write"
     }
   ]
 }

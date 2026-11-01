@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 model = { path = "../model" }
+session = { path = "../session" }
 globset.workspace = true
 grep-regex.workspace = true
 grep-searcher.workspace = true

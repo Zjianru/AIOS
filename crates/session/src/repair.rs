@@ -97,7 +97,8 @@ pub fn interrupted_turn_closers(events: &[Event]) -> Vec<EventKind> {
             }
             EventKind::SystemMessage { .. }
             | EventKind::UserMessage { .. }
-            | EventKind::CompactionPrune { .. } => {}
+            | EventKind::CompactionPrune { .. }
+            | EventKind::TodoWrite { .. } => {}
         }
     }
     let Some(turn) = open_turn else {

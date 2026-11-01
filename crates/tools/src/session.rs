@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use session::TodoItem;
+
 /// 文件版本 token（T005.1 从 metadata 生成；这里只保存不透明字符串）。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct FileVersion(String);
@@ -105,6 +107,8 @@ pub struct ToolSessionState {
     data_dir: Option<PathBuf>,
     /// 配置的 skill 根（AgentConfig::skill_roots；T005.6）。
     skill_roots: Mutex<Vec<PathBuf>>,
+    /// 工具刚写入的 todo 列表快照（T005.7；driver 追加 todo/write 事件后取走）。
+    todos: Mutex<Option<Vec<TodoItem>>>,
 }
 
 impl ToolSessionState {
@@ -117,6 +121,7 @@ impl ToolSessionState {
             session_id: Some(session_id.to_owned()),
             data_dir: Some(data_dir.to_path_buf()),
             skill_roots: Mutex::new(Vec::new()),
+            todos: Mutex::new(None),
         }
     }
 
@@ -129,6 +134,7 @@ impl ToolSessionState {
             session_id: None,
             data_dir: None,
             skill_roots: Mutex::new(Vec::new()),
+            todos: Mutex::new(None),
         }
     }
 
@@ -142,6 +148,21 @@ impl ToolSessionState {
 
     pub fn spill(&self) -> &SpillStore {
         &self.spill
+    }
+
+    /// todo_write 工具写入最新整表快照（T005.7）。
+    pub fn set_todos(&self, todos: Vec<TodoItem>) {
+        *self.todos.lock().expect("todo 状态锁被毒化") = Some(todos);
+    }
+
+    /// driver 取走待落日志的 todo 快照（成功追加事件后调用）。
+    pub fn take_todos(&self) -> Option<Vec<TodoItem>> {
+        self.todos.lock().expect("todo 状态锁被毒化").take()
+    }
+
+    /// 当前 todo 列表（续接恢复/测试用）。
+    pub fn todos(&self) -> Option<Vec<TodoItem>> {
+        self.todos.lock().expect("todo 状态锁被毒化").clone()
     }
 
     /// Agent 建/续接会话时写入配置的 skill 根（T005.6）。

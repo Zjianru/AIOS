@@ -106,6 +106,9 @@ impl Inner {
         instruction_state.rehydrate(&store.derive_messages());
         let mut skill_catalog = SkillCatalogState::default();
         skill_catalog.rehydrate(&store.derive_messages());
+        if let Some(todos) = session::last_todos(store.events()) {
+            tool_session.set_todos(todos);
+        }
         let inner = Arc::new(Self {
             id,
             log_path,
@@ -740,6 +743,18 @@ async fn run_step(
             message,
             error_code: result.error_code.clone(),
         }])?;
+    }
+    // T005.7：成功的 todo_write 把整表快照落成一条 todo/write 事件（工具只写状态，
+    // 日志由 agent 负责；回放时后写覆盖先写）。
+    let todo_write_succeeded = calls.iter().any(|call| {
+        call.name == "todo_write"
+            && outcome
+                .results
+                .iter()
+                .any(|result| result.call_id == call.id && !result.is_error)
+    });
+    if todo_write_succeeded && let Some(todos) = inner.tool_session.take_todos() {
+        inner.append(&[EventKind::TodoWrite { turn, step, todos }])?;
     }
     if abort.load(Ordering::SeqCst) || outcome.cancelled {
         return Ok(StepEnd::Aborted);

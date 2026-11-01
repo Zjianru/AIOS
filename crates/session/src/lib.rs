@@ -11,7 +11,7 @@ mod repair;
 mod store;
 
 pub use error::SessionError;
-pub use event::{Event, EventKind, SessionHeader, TurnEndReason};
+pub use event::{Event, EventKind, SessionHeader, TodoItem, TodoStatus, TurnEndReason, last_todos};
 pub use id::SessionId;
 pub use repair::interrupted_turn_closers;
 pub use store::SessionStore;

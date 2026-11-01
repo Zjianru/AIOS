@@ -54,6 +54,41 @@ pub enum TurnEndReason {
     Error { code: String, message: String },
 }
 
+/// todo 条目的状态（wire 名照 DSH：pending / in_progress / completed）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+impl TodoStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::InProgress => "in_progress",
+            Self::Completed => "completed",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "pending" => Some(Self::Pending),
+            "in_progress" => Some(Self::InProgress),
+            "completed" => Some(Self::Completed),
+            _ => None,
+        }
+    }
+}
+
+/// 一个 todo 条目（整表替换的最小形状，照 DSH todo_write：content + 三态 status）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodoItem {
+    pub content: String,
+    pub status: TodoStatus,
+}
+
 /// 会话事件。类型集合照 spec「实现决定·会话日志」。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -110,6 +145,13 @@ pub enum EventKind {
     /// 原始 tool/result 事件保留在日志里（可回放），这条只记替换视图（T005.2）。
     #[serde(rename = "compaction/prune")]
     CompactionPrune { call_id: String, content: String },
+    /// 模型提交的整份 todo 列表快照；回放时后写覆盖先写（T005.7，类型名照 DSH todo/write）。
+    #[serde(rename = "todo/write")]
+    TodoWrite {
+        turn: u64,
+        step: u64,
+        todos: Vec<TodoItem>,
+    },
 }
 
 impl EventKind {
@@ -126,8 +168,17 @@ impl EventKind {
             Self::ToolCall { .. } => "tool/call",
             Self::ToolResult { .. } => "tool/result",
             Self::CompactionPrune { .. } => "compaction/prune",
+            Self::TodoWrite { .. } => "todo/write",
         }
     }
+}
+
+/// 从日志回放当前 todo 列表：最近一次 todo/write 胜出（T005.7 续接恢复用）。
+pub fn last_todos(events: &[Event]) -> Option<Vec<TodoItem>> {
+    events.iter().rev().find_map(|event| match &event.kind {
+        EventKind::TodoWrite { todos, .. } => Some(todos.clone()),
+        _ => None,
+    })
 }
 
 /// 日志里的一条事件：seq 从 1 开始连续，time 是 unix 毫秒。
