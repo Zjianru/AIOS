@@ -1,0 +1,17 @@
+# 提交范围：源码与构建配置（crates/、Cargo.*、ARCHITECTURE.md、README/LICENSE、rust-toolchain、.cargo）；
+# 本地工作材料（docs/、internal/、AGENTS.md、HANDOVER.md、adapted-skills/、.claude/）不入库；构建产物忽略。
+# 构建与系统产物
+target/
+node_modules/
+.DS_Store
+
+# 本地工作材料（不公开）
+docs/
+internal/
+AGENTS.md
+HANDOVER.md
+adapted-skills/
+.claude/
+
+# 参考资料（在项目外；如误放进项目则忽略）
+aios-reference/

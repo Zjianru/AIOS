@@ -1,0 +1,135 @@
+//! 会话事件与 header。
+
+use model::{Message, Usage};
+use serde::{Deserialize, Serialize};
+
+use crate::SessionId;
+
+/// 会话日志的格式版本；读到不认识的版本就拒绝。
+pub const FORMAT_VERSION: u64 = 1;
+
+/// JSONL 第一行的会话 header。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionHeader {
+    #[serde(rename = "type")]
+    kind: String,
+    pub version: u64,
+    pub id: SessionId,
+    #[serde(rename = "createdAt")]
+    pub created_at: u64,
+    pub cwd: String,
+}
+
+impl SessionHeader {
+    pub(crate) fn new(id: SessionId, cwd: String, created_at: u64) -> Self {
+        Self {
+            kind: "session".to_owned(),
+            version: FORMAT_VERSION,
+            id,
+            created_at,
+            cwd,
+        }
+    }
+
+    /// 校验 header 的 type 标记。
+    pub(crate) fn validate(&self) -> Result<(), crate::SessionError> {
+        if self.kind == "session" {
+            Ok(())
+        } else {
+            Err(crate::SessionError::CorruptHeader(format!(
+                "第一行的 type 是 {}，不是 session",
+                self.kind
+            )))
+        }
+    }
+}
+
+/// 一轮结束的原因。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum TurnEndReason {
+    Completed,
+    MaxTokens,
+    Aborted,
+    Error { code: String, message: String },
+}
+
+/// 会话事件。类型集合照 spec「实现决定·会话日志」。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum EventKind {
+    #[serde(rename = "turn/start")]
+    TurnStart { turn: u64 },
+    #[serde(rename = "turn/end")]
+    TurnEnd { turn: u64, reason: TurnEndReason },
+    #[serde(rename = "step/start")]
+    StepStart { turn: u64, step: u64 },
+    #[serde(rename = "step/end")]
+    StepEnd { turn: u64, step: u64 },
+    #[serde(rename = "system/message")]
+    SystemMessage {
+        turn: u64,
+        step: u64,
+        message: Message,
+    },
+    #[serde(rename = "user/message")]
+    UserMessage {
+        turn: u64,
+        step: u64,
+        message: Message,
+    },
+    #[serde(rename = "assistant/message")]
+    AssistantMessage {
+        turn: u64,
+        step: u64,
+        message: Message,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        interrupted: Option<bool>,
+    },
+    /// 模型请求的一次工具调用（持久化事实；assistant/message 里也有同一调用块）。
+    #[serde(rename = "tool/call")]
+    ToolCall {
+        turn: u64,
+        step: u64,
+        call_id: String,
+        name: String,
+        arguments: String,
+    },
+    /// 一次工具调用的结果，按模型给出的顺序提交。
+    #[serde(rename = "tool/result")]
+    ToolResult {
+        turn: u64,
+        step: u64,
+        message: Message,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        error_code: Option<String>,
+    },
+}
+
+impl EventKind {
+    /// 事件的 wire 类型名（测试与日志诊断用）。
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Self::TurnStart { .. } => "turn/start",
+            Self::TurnEnd { .. } => "turn/end",
+            Self::StepStart { .. } => "step/start",
+            Self::StepEnd { .. } => "step/end",
+            Self::SystemMessage { .. } => "system/message",
+            Self::UserMessage { .. } => "user/message",
+            Self::AssistantMessage { .. } => "assistant/message",
+            Self::ToolCall { .. } => "tool/call",
+            Self::ToolResult { .. } => "tool/result",
+        }
+    }
+}
+
+/// 日志里的一条事件：seq 从 1 开始连续，time 是 unix 毫秒。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Event {
+    pub seq: u64,
+    pub time: u64,
+    #[serde(flatten)]
+    pub kind: EventKind,
+}

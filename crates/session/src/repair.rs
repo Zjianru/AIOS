@@ -1,0 +1,126 @@
+//! 续接时的中断修复：给最后一个没收尾的 turn 补收尾事件。
+//!
+//! 机制照 DSH 的 packages/core/session/src/repair.ts（strategy 第 1 节）：
+//! 扫描日志边界，给 assistant 已请求、但结果没有落盘的工具调用补保守的错误结果
+//! （结果未知 / 还没开始），再补 step/end 和 turn/end。只读日志，不重跑工具。
+
+use model::{ContentBlock, Message};
+
+use crate::{Event, EventKind, TurnEndReason};
+
+/// 已记录开始、但结果没有落盘的调用：结果未知，重试前先核实外部状态。
+const TOOL_OUTCOME_UNKNOWN: &str = "TOOL_OUTCOME_UNKNOWN";
+/// assistant 请求过、但 Harness 还没记录开始的调用：需要时可以重试。
+const TOOL_NOT_STARTED: &str = "TOOL_NOT_STARTED";
+
+/// 模型可见文案逐字照抄 DSH 的 repair.ts:32-41；不改写、不翻译。
+const OUTCOME_UNKNOWN_TEXT: &str = "The tool call was interrupted after it was recorded, but no result was durably recorded. Its outcome is unknown. Decide whether to retry from the tool semantics: retry only if the operation is read-only or idempotent; if it may have side effects, first verify external state or ask the user. Do not retry blindly.";
+const NOT_STARTED_TEXT: &str = "The tool call was interrupted before the Harness recorded it as started. Retry it if it is still needed.";
+
+/// 一个 assistant 请求过、但日志里还没有结果的调用。
+struct PendingCall {
+    call_id: String,
+    turn: u64,
+    step: u64,
+    /// 日志里出现过对应的 tool/call（Harness 记录过"开始"）。
+    started: bool,
+}
+
+/// 崩溃/被杀之后续接时，给最后一个没收尾的 turn 造收尾事件（照 DSH 的
+/// interruptedTurnClosers）：按 assistant 顺序补 tool/result，再补 step/end
+/// （如果开着）和 turn/end（Aborted）。平衡日志或空日志返回空数组。
+///
+/// 事件本身不带 seq/time：由 SessionStore::append 作为一批分配，保持 seq 连续、
+/// 一次 fsync、失败回滚（spec 的存储决定）。
+pub fn interrupted_turn_closers(events: &[Event]) -> Vec<EventKind> {
+    let mut open_turn: Option<u64> = None;
+    let mut open_step: Option<u64> = None;
+    let mut pending: Vec<PendingCall> = Vec::new();
+    for event in events {
+        match &event.kind {
+            EventKind::TurnStart { turn } => {
+                open_turn = Some(*turn);
+                open_step = None;
+                pending.clear();
+            }
+            EventKind::TurnEnd { .. } => {
+                open_turn = None;
+                open_step = None;
+                pending.clear();
+            }
+            EventKind::StepStart { step, .. } => open_step = Some(*step),
+            EventKind::StepEnd { .. } => {
+                open_step = None;
+                pending.clear();
+            }
+            EventKind::AssistantMessage {
+                turn,
+                step,
+                message,
+                ..
+            } => {
+                for block in &message.content {
+                    if let Some((call_id, _, _)) = block.as_tool_call() {
+                        pending.push(PendingCall {
+                            call_id: call_id.to_owned(),
+                            turn: *turn,
+                            step: *step,
+                            started: false,
+                        });
+                    }
+                }
+            }
+            EventKind::ToolCall { call_id, .. } => {
+                if let Some(call) = pending.iter_mut().find(|call| call.call_id == *call_id) {
+                    call.started = true;
+                }
+            }
+            EventKind::ToolResult {
+                turn,
+                step,
+                message,
+                ..
+            } => {
+                let call_id = message.content.first().and_then(|block| match block {
+                    ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                    ContentBlock::Text { .. }
+                    | ContentBlock::Reasoning { .. }
+                    | ContentBlock::ToolCall { .. } => None,
+                });
+                if let Some(call_id) = call_id
+                    && let Some(position) = pending.iter().position(|call| {
+                        call.call_id == call_id && call.turn == *turn && call.step == *step
+                    })
+                {
+                    pending.remove(position);
+                }
+            }
+            EventKind::SystemMessage { .. } | EventKind::UserMessage { .. } => {}
+        }
+    }
+    let Some(turn) = open_turn else {
+        return Vec::new();
+    };
+    let mut closers = Vec::with_capacity(pending.len() + 2);
+    for call in pending {
+        let (code, text) = if call.started {
+            (TOOL_OUTCOME_UNKNOWN, OUTCOME_UNKNOWN_TEXT)
+        } else {
+            (TOOL_NOT_STARTED, NOT_STARTED_TEXT)
+        };
+        closers.push(EventKind::ToolResult {
+            turn: call.turn,
+            step: call.step,
+            message: Message::tool_result(call.call_id, text, true),
+            error_code: Some(code.to_owned()),
+        });
+    }
+    if let Some(step) = open_step {
+        closers.push(EventKind::StepEnd { turn, step });
+    }
+    closers.push(EventKind::TurnEnd {
+        turn,
+        reason: TurnEndReason::Aborted,
+    });
+    closers
+}
