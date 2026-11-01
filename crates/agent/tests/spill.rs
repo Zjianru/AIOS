@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use session::{EventKind, SessionStore};
 use tools::{Tool, ToolCall, ToolContext, ToolFuture, ToolResult, ToolSet, estimate_text_tokens};
 use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// 每次调用返回同一段大文本的测试工具（模拟 bash / 抓取的超大输出）。
 struct BigTool {
@@ -255,7 +255,7 @@ async fn zero_spill_threshold_disables_spill() {
 }
 
 #[tokio::test]
-async fn tool_result_pruned_before_next_request() {
+async fn tool_result_pruned_only_at_compaction_and_not_per_request() {
     let server = MockServer::start().await;
     // 10,000 个码点：超过修剪阈值 8192，但不到 spill 阈值 12500 token。
     let lines: Vec<String> = (1..=500)
@@ -268,6 +268,8 @@ async fn tool_result_pruned_before_next_request() {
         &server,
         vec![
             tool_calls_with_inputs_sse(&[("call_0", "big", json!({}))]),
+            FINAL_TEXT_SSE.to_owned(),
+            FINAL_TEXT_SSE.to_owned(),
             FINAL_TEXT_SSE.to_owned(),
             FINAL_TEXT_SSE.to_owned(),
         ],
@@ -288,12 +290,14 @@ async fn tool_result_pruned_before_next_request() {
         .await
         .unwrap();
     agent.idle().await;
-    // 同一轮第二步的请求里还是全文（只修剪「旧」结果）。
+    // T006.4：修剪只在压缩触发时发生——同一轮第二步、下一轮请求都还是全文。
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 2);
-    let second = String::from_utf8(requests[1].body.clone()).unwrap();
-    assert!(!second.contains("[... tool result middle pruned ...]"));
-
+    assert!(
+        !String::from_utf8(requests[1].body.clone())
+            .unwrap()
+            .contains("[... tool result middle pruned ...]")
+    );
     agent
         .send(UserMessage::text("第二轮：再来"), Delivery::FollowUp)
         .await
@@ -303,24 +307,237 @@ async fn tool_result_pruned_before_next_request() {
     assert_eq!(requests.len(), 3);
     let third = String::from_utf8(requests[2].body.clone()).unwrap();
     assert!(
-        third.contains("[... tool result middle pruned ...]"),
-        "下一请求应带修剪后的占位"
+        !third.contains("[... tool result middle pruned ...]"),
+        "没压缩就不修剪"
     );
-    assert!(!third.contains(&content), "下一请求不应带完整旧结果");
+    assert!(third.contains("row0001"), "没压缩时仍是完整结果");
 
-    // 原始 tool/result 仍在日志里（可回放），另有 compaction/prune 事件记录替换。
-    let content_expected = content.clone();
+    // 手动 /compact：真实压缩事务里剪枝（摘要请求带修剪视图，不带完整旧结果）。
+    let outcome = agent
+        .compact(Some("cmd-1".to_owned()))
+        .await
+        .unwrap()
+        .expect("有可压缩历史");
+    assert!(outcome.shadowed_items > 0);
     let store = SessionStore::open(data_dir.path(), agent.id()).unwrap();
-    // 原始 tool/result 的 content 仍是完整文本（修剪只写替换事件，不改原事件）。
-    assert!(store.events().iter().any(|event| match &event.kind {
-        EventKind::ToolResult { message, .. } => {
-            message.tool_call_id.as_deref() == Some("call_0")
-                && message
-                    .content
-                    .iter()
-                    .any(|block| block.as_text() == Some(content_expected.as_str()))
-        }
-        _ => false,
-    }));
-    assert!(store.events().iter().any(|event| matches!(&event.kind, EventKind::CompactionPrune { shadowed_seqs, .. } if !shadowed_seqs.is_empty())));
+    let events = store.events();
+    let start_index = events
+        .iter()
+        .position(|event| matches!(event.kind, EventKind::CompactionStart { .. }))
+        .expect("压缩事务应写 compaction/start");
+    let prune_index = events
+        .iter()
+        .position(|event| {
+            matches!(&event.kind, EventKind::CompactionPrune { shadowed_seqs, .. } if !shadowed_seqs.is_empty())
+        })
+        .expect("压缩事务里应写 compaction/prune");
+    assert!(
+        prune_index < start_index,
+        "prune 在压缩事务开头、compaction/start 之前（DSH compactRegion 之前跑 model-free pass）"
+    );
+    // 原始 tool/result 仍在日志里可回放；替换事件带 surfaceOp/sourceEventSeqs。
+    let original = events
+        .iter()
+        .find(|event| {
+            matches!(&event.kind, EventKind::ToolResult { message, .. }
+                if message.tool_call_id.as_deref() == Some("call_0")
+                    && message.content.iter().any(|block| block.as_text() == Some(content.as_str())))
+        })
+        .expect("原始 tool/result 仍在日志里");
+    let replacement = events
+        .iter()
+        .find(|event| {
+            matches!(&event.kind, EventKind::ToolResult { message, .. }
+                if message.content.iter().any(|block| block.as_text().is_some_and(|text| text.contains("[... tool result middle pruned ...]"))))
+        })
+        .expect("替换 tool/result 落日志");
+    assert_eq!(
+        replacement.surface_op,
+        Some(session::SurfaceOp::Replace {
+            start_seq: original.seq,
+            end_seq: original.seq
+        })
+    );
+    assert_eq!(replacement.source_event_seqs, Some(vec![original.seq]));
+    // 派生视图里的同一条 tool 结果是修剪视图（原始事件被 surface replace 藏掉）。
+    let derived = store.derive_messages();
+    let derived_tool = derived
+        .iter()
+        .find(|message| message.tool_call_id.as_deref() == Some("call_0"))
+        .expect("派生 tool 结果");
+    let derived_text: String = derived_tool
+        .content
+        .iter()
+        .filter_map(model::ContentBlock::as_text)
+        .collect();
+    assert!(
+        derived_text.contains("[... tool result middle pruned ...]"),
+        "派生视图应读修剪后的替换消息"
+    );
+
+    // 压缩后的下一轮请求照常工作（被压缩区间由 checkpoint 承接）。
+    agent
+        .send(UserMessage::text("第三轮：看修剪"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 5);
+    let summary = String::from_utf8(requests[3].body.clone()).unwrap();
+    assert!(
+        summary.contains("compaction engine"),
+        "第 4 个请求是 /compact 的摘要请求"
+    );
+    // 修剪替换事件 seq 更大 → 在 surface 末尾；摘要前缀可能不含它。
+    // 压缩后的普通请求（第 5 个）能看到修剪视图。
+    let after = String::from_utf8(requests[4].body.clone()).unwrap();
+    assert!(
+        after.contains("[... tool result middle pruned ...]"),
+        "压缩后的请求带修剪视图"
+    );
+    assert!(after.contains("row0001"), "修剪保留头部");
+    assert!(!after.contains("row0300"), "中间段已被剪掉");
+}
+
+fn overflow_response() -> ResponseTemplate {
+    ResponseTemplate::new(400).set_body_json(json!({
+        "error": {"type": "invalid_request_error", "message": "This model's maximum context length is 128000 tokens, you requested 200000"}
+    }))
+}
+#[tokio::test]
+async fn auto_pressure_compaction_prunes_tool_results() {
+    let server = MockServer::start().await;
+    let lines: Vec<String> = (1..=500)
+        .map(|number| format!("row{number:04} {}", "z".repeat(10)))
+        .collect();
+    let content = format!("{}\n", lines.join("\n"));
+    // 窗口调小：工具结果一落地就压过阈值，下一步请求前触发压缩事务（含 prune）。
+    mount(
+        &server,
+        vec![
+            tool_calls_with_inputs_sse(&[("call_0", "big", json!({}))]),
+            FINAL_TEXT_SSE.to_owned(),
+            FINAL_TEXT_SSE.to_owned(),
+        ],
+    )
+    .await;
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::create(data_dir.path(), cwd.path()).unwrap();
+    let config = AgentConfig {
+        compaction_headroom_tokens: 1,
+        compaction_retain_ratio: 0.000001,
+        compaction_retries: 0,
+        ..common::isolated_config(data_dir.path())
+    };
+    let model_config = model::DeepSeekConfig {
+        context_window: 1000,
+        max_tokens: 100,
+        ..common::model_config(&server.uri())
+    };
+    let agent = Agent::create(
+        config,
+        Deps {
+            model: model::DeepSeek::new(model_config).unwrap(),
+            tools: ToolSet::new(vec![Box::new(BigTool::new(content.clone()))]),
+            store,
+        },
+    )
+    .await
+    .unwrap();
+    agent
+        .send(UserMessage::text("第一轮：跑大工具"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+
+    let store = SessionStore::open(data_dir.path(), agent.id()).unwrap();
+    let events = store.events();
+    let start_index = events
+        .iter()
+        .position(|event| matches!(event.kind, EventKind::CompactionStart { .. }))
+        .expect("自动压力压缩写 compaction/start");
+    let prune_index = events
+        .iter()
+        .position(|event| matches!(event.kind, EventKind::CompactionPrune { .. }))
+        .expect("自动压缩事务也应触发 prune");
+    assert!(prune_index < start_index, "prune 在压缩事务开头");
+    // 压缩后的请求带修剪视图（tail 里仍可见的 tool 结果是替换消息）。
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 3, "tool call + 摘要 + 压缩后的请求");
+    let body = String::from_utf8(requests[2].body.clone()).unwrap();
+    assert!(
+        body.contains("[... tool result middle pruned ...]"),
+        "压缩后请求带修剪视图"
+    );
+    assert!(!body.contains(&content), "压缩后请求不带完整旧结果");
+}
+
+/// 溢出恢复（RequestError 强制压缩）也触发 prune，并保留原始请求错误语义。
+#[tokio::test]
+async fn overflow_recovery_prunes_tool_results() {
+    let server = MockServer::start().await;
+    let lines: Vec<String> = (1..=500)
+        .map(|number| format!("row{number:04} {}", "z".repeat(10)))
+        .collect();
+    let content = format!("{}\n", lines.join("\n"));
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(tool_calls_with_inputs_sse(&[("call_0", "big", json!({}))])),
+            sse(FINAL_TEXT_SSE.to_owned()),
+            overflow_response(),
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let agent = setup(
+        data_dir.path(),
+        cwd.path(),
+        &server,
+        ToolSet::new(vec![Box::new(BigTool::new(content.clone()))]),
+        common::isolated_config(data_dir.path()),
+    )
+    .await;
+    agent
+        .send(UserMessage::text("第一轮：跑大工具"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+    agent
+        .send(UserMessage::text("第二轮：触发溢出"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+
+    let store = SessionStore::open(data_dir.path(), agent.id()).unwrap();
+    let events = store.events();
+    let start_index = events
+        .iter()
+        .position(|event| matches!(event.kind, EventKind::CompactionStart { .. }))
+        .expect("溢出恢复写 compaction/start");
+    let prune_index = events
+        .iter()
+        .position(|event| matches!(event.kind, EventKind::CompactionPrune { .. }))
+        .expect("溢出恢复也触发 prune");
+    assert!(prune_index < start_index, "prune 在摘要压缩事务之前");
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(
+        requests.len(),
+        5,
+        "tool call + 轮内请求 + 溢出 + 摘要 + 重试"
+    );
+    let summary = String::from_utf8(requests[3].body.clone()).unwrap();
+    assert!(summary.contains("compaction engine"));
+    // 修剪替换事件 seq 更大 → 在 surface 末尾；重试请求带修剪视图、不带完整旧结果。
+    let retry = String::from_utf8(requests[4].body.clone()).unwrap();
+    assert!(
+        retry.contains("[... tool result middle pruned ...]"),
+        "重试请求带修剪视图"
+    );
+    assert!(retry.contains("row0001"), "修剪保留头部");
+    assert!(!retry.contains("row0300"), "中间段已被剪掉");
 }

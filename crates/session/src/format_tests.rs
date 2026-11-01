@@ -759,3 +759,78 @@ fn compaction_replacement_is_logged_message_with_surface_op() {
         "被替换的早期消息不能出现在派生视图里"
     );
 }
+
+/// T006.4：compaction/prune 照 DSH shadow-price 形状（区间/seqs/估算 token）；修剪替换是
+/// 一条带 surfaceOp replace 的 tool/result，派生只读替换消息。
+#[test]
+fn compaction_prune_matches_dsh() {
+    let (_data_dir, _cwd, mut store) = create_store();
+    let original = Message::tool_result("call_0", "原始内容", false);
+    store
+        .append(&[
+            EventKind::TurnStart { turn: 1 },
+            EventKind::ToolResult {
+                turn: 1,
+                step: 1,
+                message: original.clone(),
+                error: None,
+            },
+        ])
+        .unwrap();
+    let original_seq = store.events()[1].seq;
+    store
+        .append(&[EventKind::CompactionPrune {
+            shadowed_range: ShadowedRange {
+                start: original_seq,
+                end: original_seq,
+            },
+            shadowed_seqs: vec![original_seq],
+            shadowed_token_count: 5,
+        }])
+        .unwrap();
+    let mut replacement = original;
+    replacement.content = vec![ContentBlock::text("修剪后")];
+    store
+        .append_surface(
+            EventKind::ToolResult {
+                turn: 1,
+                step: 1,
+                message: replacement,
+                error: None,
+            },
+            crate::SurfaceOp::Replace {
+                start_seq: original_seq,
+                end_seq: original_seq,
+            },
+            vec![original_seq],
+        )
+        .unwrap();
+
+    let (_header, rows) = log_rows(&store);
+    assert_eq!(
+        rows[2]["data"],
+        json!({
+            "shadowedRange": {"start": original_seq, "end": original_seq},
+            "shadowedSeqs": [original_seq],
+            "shadowedTokenCount": 5,
+        }),
+        "compaction/prune data 照 DSH"
+    );
+    assert_eq!(rows[3]["type"], "tool/result");
+    assert_eq!(
+        rows[3]["surfaceOp"],
+        json!({"op": "replace", "startSeq": original_seq, "endSeq": original_seq})
+    );
+    assert_eq!(rows[3]["sourceEventSeqs"], json!([original_seq]));
+
+    let derived = crate::derive::derive_messages(store.events());
+    assert_eq!(derived.len(), 1, "原始 tool/result 被 surface replace 藏掉");
+    assert!(
+        derived[0]
+            .content
+            .iter()
+            .filter_map(ContentBlock::as_text)
+            .any(|text| text == "修剪后"),
+        "派生读替换消息"
+    );
+}
