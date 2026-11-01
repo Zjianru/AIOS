@@ -157,6 +157,48 @@ impl LoopAccess for Inner {
                 .map(|()| crate::capabilities::HookOutcome::Continue)
         })
     }
+    fn append_with_seqs<'a>(
+        &'a self,
+        kinds: &'a [EventKind],
+    ) -> crate::capabilities::BoxedFuture<'a, Vec<u64>> {
+        Box::pin(async move {
+            let seqs = self
+                .store
+                .lock()
+                .expect("agent 会话锁被毒化")
+                .append(kinds)?;
+            for kind in kinds {
+                self.capabilities
+                    .dispatch(&HookEvent::SessionEvent {
+                        host: self,
+                        event: kind,
+                    })
+                    .await?;
+            }
+            Ok(seqs)
+        })
+    }
+    fn append_surface<'a>(
+        &'a self,
+        kind: EventKind,
+        surface_op: session::SurfaceOp,
+        source_event_seqs: Vec<u64>,
+    ) -> crate::capabilities::HookFuture<'a> {
+        Box::pin(async move {
+            let dispatch_kind = kind.clone();
+            self.store
+                .lock()
+                .expect("agent 会话锁被毒化")
+                .append_surface(kind, surface_op, source_event_seqs)?;
+            self.capabilities
+                .dispatch(&HookEvent::SessionEvent {
+                    host: self,
+                    event: &dispatch_kind,
+                })
+                .await?;
+            Ok(crate::capabilities::HookOutcome::Continue)
+        })
+    }
     fn dispatch_compaction<'a>(
         &'a self,
         turn: u64,
@@ -538,21 +580,20 @@ impl Inner {
                 let state = self.state.lock().expect("agent 状态锁被毒化");
                 state.last_turn
             };
-            // 行为同旧路径：手动压缩失败不打断队列，等待者照常释放。
-            // 手动 /compact 走 PreStep 挂点的 manual 入口；能力内部确认后统一派发 Compaction。
-            let _ = self
-                .capabilities
-                .dispatch(&HookEvent::PreStep {
-                    turn,
-                    step: 0,
-                    host: self.as_ref(),
-                    trigger: Some(CompactionTrigger::Manual),
-                    phase: crate::capabilities::PreStepPhase::Compact,
-                })
-                .await;
+            // T006.3：手动 /compact 直接走 compact_now（两次 turn 之间独立压缩，不带
+            // PreStep 的注入路径）；同一批等待的请求合并成一次压缩，结果广播给每个等待者。
+            // 合并时只保留第一个 sourceCommandId（事件字段只能带一个发起命令）。
+            let source_command_id = waiters
+                .iter()
+                .find_map(|request| request.source_command_id.clone());
+            let result =
+                crate::compaction::compact_now(self.as_ref(), turn, source_command_id).await;
+            let reply = match &result {
+                Ok(outcome) => Ok(*outcome),
+                Err(error) => Err(error.to_string()),
+            };
             for request in waiters {
-                // skeleton：结果计数在实现期补；先按旧行为回「压缩已执行」。
-                let _ = request.reply.send(Ok(None));
+                let _ = request.reply.send(reply.clone());
             }
         }
     }
@@ -928,10 +969,11 @@ async fn run_step(
                 // T006.1b：压缩由 RequestError 挂点里的压缩能力执行；它压缩不了时返回
                 // 原始错误，这里 `?` 直接收尾（行为与旧路径一致）。
                 if error.code == ErrorCode::ContextWindowExceeded {
-                    // 第一次溢出：交给 RequestError 挂点里的压缩能力，压缩不了它返回原始错误。
-                    // 第二次溢出：直接致命，不再派发/压缩（行为同旧路径，防无限循环）。
-                    if overflow_retries == 0 {
-                        overflow_retries = 1;
+                    // DSH maxOverflowRetries（默认 1）：每次溢出前压缩恢复；次数用尽后
+                    // 按原错误收尾，不再派发/压缩（防无限循环）。
+                    let max_overflow_retries = inner.compaction_policy().max_overflow_retries;
+                    if overflow_retries < max_overflow_retries {
+                        overflow_retries += 1;
                         inner
                             .capabilities
                             .dispatch(&HookEvent::RequestError {

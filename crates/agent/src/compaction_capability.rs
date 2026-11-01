@@ -62,19 +62,19 @@ impl Capability for CompactionCapability {
     fn on_hook<'a>(&'a self, event: &'a HookEvent<'a>) -> HookFuture<'a> {
         Box::pin(async move {
             match event {
-                // 每步之前：trigger=None 是自动检查（越过阈值才压）；
-                // Some(Manual) 是手动 /compact 入口（强制压）。两路失败都不打断本轮（同旧路径）。
-                HookEvent::PreStep { trigger, phase, .. } if *phase == PreStepPhase::Compact => {
-                    let (force, trigger) = match trigger {
-                        Some(trigger) => (true, *trigger),
-                        None => (false, CompactionTrigger::Auto),
-                    };
+                // 每步之前：自动检查（越过阈值才压）；手动 /compact 由 driver 直接走 compact_now，
+                // 不经过 PreStep（避免顺带注入指令/skill）。自动失败不打断本轮（事件已记录）。
+                HookEvent::PreStep {
+                    trigger: None,
+                    phase,
+                    ..
+                } if *phase == PreStepPhase::Compact => {
                     let _ = compaction::compact_if_needed(
                         event.host(),
                         event.turn(),
                         event.step(),
-                        trigger,
-                        force,
+                        CompactionTrigger::Auto,
+                        false,
                         true,
                     )
                     .await;
@@ -87,7 +87,17 @@ impl Capability for CompactionCapability {
                 HookEvent::RequestError { error, .. }
                     if error.code == ErrorCode::ContextWindowExceeded =>
                 {
-                    let compacted = compaction::compact_if_needed(
+                    // DSH：溢出恢复失败/没有可压缩历史时保留原始请求错误（不把压缩错误
+                    // 当成请求错误），压缩尝试自己的失败已经写进 compaction/end。
+                    let original_error = || {
+                        AgentError::Model(model::ModelError {
+                            code: error.code,
+                            message: error.message.clone(),
+                            status: error.status,
+                            retry_after_ms: error.retry_after_ms,
+                        })
+                    };
+                    match compaction::compact_if_needed(
                         event.host(),
                         event.turn(),
                         event.step(),
@@ -95,14 +105,11 @@ impl Capability for CompactionCapability {
                         true,
                         true,
                     )
-                    .await?;
-                    if !compacted {
-                        return Err(AgentError::Model(model::ModelError {
-                            code: error.code,
-                            message: error.message.clone(),
-                            status: error.status,
-                            retry_after_ms: error.retry_after_ms,
-                        }));
+                    .await
+                    {
+                        Ok(Some(_)) => {}
+                        Ok(None) => return Err(original_error()),
+                        Err(_) => return Err(original_error()),
                     }
                 }
                 _ => {}

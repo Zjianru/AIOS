@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use agent::{
-    Agent, AgentConfig, AgentEvent, CompactionTrigger, Delivery, Deps, JobStatus, TurnOutcome,
+    Agent, AgentConfig, AgentEvent, CompactionOutcome, Delivery, Deps, JobStatus, TurnOutcome,
 };
 use clap::{Args, Parser, Subcommand};
 use model::{DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS, DeepSeek, DeepSeekConfig, Effort, UserMessage};
@@ -221,6 +221,8 @@ enum ChatInput {
     Answer(String),
     Exit,
     Compact,
+    /// /compact 带了参数：照 DSH 只打 usage，不当成普通消息。
+    CompactUsage,
     Queue(String),
     FollowUp(String),
     Steer(String),
@@ -246,6 +248,11 @@ fn dispatch_chat_input(
     }
     if is_compact_command(line) {
         return ChatInput::Compact;
+    }
+    if let Some(rest) = line.strip_prefix("/compact")
+        && !rest.trim().is_empty()
+    {
+        return ChatInput::CompactUsage;
     }
     if let Some(queued) = line.strip_prefix("/queue ") {
         let queued = queued.trim();
@@ -325,9 +332,20 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
                     }
                     ChatInput::Exit => break,
                     ChatInput::Compact => {
-                        // 空闲时立刻压缩；运行中排到当前轮之后（事件照常打印）。
+                        // 空闲时立刻压缩；运行中排到当前轮之后。结果照 DSH command-compact
+                        // 打一行计数（自动压缩不再往 CLI 打 start/end 行）。
                         let agent = agent.clone();
-                        tokio::spawn(async move { let _ = agent.compact(None).await; });
+                        let command_id = new_command_id();
+                        tokio::spawn(async move {
+                            match agent.compact(Some(command_id)).await {
+                                Ok(outcome) => println!("{}", compact_result_text(outcome)),
+                                Err(error) => println!("Compaction failed: {error}."),
+                            }
+                        });
+                    }
+                    ChatInput::CompactUsage => {
+                        println!();
+                        println!("{}", COMPACT_USAGE);
                     }
                     ChatInput::Queue(queued) => {
                         agent.send(UserMessage::text(queued), Delivery::FollowUp).await?;
@@ -441,20 +459,9 @@ fn handle_event(event: AgentEvent, outcome: &mut Option<TurnOutcome>) {
             println!();
             println!("{}", questions_asked_text(&questions));
         }
-        AgentEvent::CompactionStarted {
-            compaction_id,
-            trigger,
-        } => {
-            println!();
-            println!("{}", compaction_started_text(&compaction_id, trigger));
-        }
-        AgentEvent::CompactionEnded {
-            compaction_id,
-            error,
-        } => println!(
-            "{}",
-            compaction_ended_text(&compaction_id, error.as_deref())
-        ),
+        // T006.3：压缩是日志侧/命令侧行为（DSH command-compact 只打结果行），
+        // 自动压缩不往 CLI 打 start/end 行；这些事件留给服务/界面层消费。
+        AgentEvent::CompactionStarted { .. } | AgentEvent::CompactionEnded { .. } => {}
         AgentEvent::JobCompleted {
             job_id,
             status,
@@ -527,20 +534,27 @@ fn is_compact_command(line: &str) -> bool {
     line.trim() == "/compact"
 }
 
-/// T005.8a 票面：压缩开始/结束事件在 CLI 的展示文本（纯函数便于单测）。
-fn compaction_started_text(compaction_id: &str, trigger: CompactionTrigger) -> String {
-    let kind = match trigger {
-        CompactionTrigger::Auto => "自动",
-        CompactionTrigger::Manual => "手动",
-    };
-    format!("[压缩开始：{compaction_id}（{kind}）]")
+/// /compact 的用法提示（照 DSH command-compact 的 USAGE）。
+const COMPACT_USAGE: &str = "Usage: /compact (no arguments)";
+
+/// /compact 的结果文本（照 DSH command-compact：成功带替换节点数与估算 token，
+/// 没有可压缩历史时给一句明确的话）。
+fn compact_result_text(outcome: Option<CompactionOutcome>) -> String {
+    match outcome {
+        Some(outcome) => format!(
+            "Compacted {} history items (~{} tokens).",
+            outcome.shadowed_items, outcome.shadowed_tokens
+        ),
+        None => "No compactable history yet.".to_owned(),
+    }
 }
 
-fn compaction_ended_text(compaction_id: &str, error: Option<&str>) -> String {
-    match error {
-        Some(error) => format!("[压缩失败：{compaction_id}：{error}]"),
-        None => format!("[压缩完成：{compaction_id}]"),
-    }
+/// 为一次手动 /compact 生成发起命令 id（写进 compaction/* 的 sourceCommandId）。
+fn new_command_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.subsec_nanos());
+    format!("command-{}-{nanos}", std::process::id())
 }
 
 /// T005.4 票面：后台任务完成事件在 CLI 的展示文本（纯函数便于单测）。
@@ -558,13 +572,13 @@ fn job_completed_text(job_id: &str, status: JobStatus, detail: Option<&str>) -> 
 
 #[cfg(test)]
 mod tests {
-    use agent::{AgentConfig, AgentEvent, CompactionTrigger, JobStatus};
+    use agent::{AgentConfig, AgentEvent, CompactionOutcome, JobStatus};
     use model::DEFAULT_MAX_TOKENS;
 
     use super::{
-        ChatInput, CommonArgs, compaction_ended_text, compaction_started_text, config_from_args,
-        dispatch_chat_input, is_compact_command, job_completed_text, pending_questions_after_event,
-        question_asked_text, questions_asked_text, run_should_cancel_for_question,
+        ChatInput, CommonArgs, compact_result_text, config_from_args, dispatch_chat_input,
+        is_compact_command, job_completed_text, pending_questions_after_event, question_asked_text,
+        questions_asked_text, run_should_cancel_for_question,
     };
 
     #[test]
@@ -592,23 +606,16 @@ mod tests {
     }
 
     #[test]
-    fn compaction_lines_are_rendered() {
+    fn compact_result_lines_follow_dsh_command() {
+        // DSH command-compact：成功打替换节点数与估算 token；没有历史给明确一句。
         assert_eq!(
-            compaction_started_text("compaction-1", CompactionTrigger::Auto),
-            "[压缩开始：compaction-1（自动）]"
+            compact_result_text(Some(CompactionOutcome {
+                shadowed_items: 3,
+                shadowed_tokens: 1200,
+            })),
+            "Compacted 3 history items (~1200 tokens)."
         );
-        assert_eq!(
-            compaction_started_text("compaction-2", CompactionTrigger::Manual),
-            "[压缩开始：compaction-2（手动）]"
-        );
-        assert_eq!(
-            compaction_ended_text("compaction-1", None),
-            "[压缩完成：compaction-1]"
-        );
-        assert_eq!(
-            compaction_ended_text("compaction-1", Some("boom")),
-            "[压缩失败：compaction-1：boom]"
-        );
+        assert_eq!(compact_result_text(None), "No compactable history yet.");
     }
     #[test]
     fn question_text_renders_header_and_options() {
@@ -697,6 +704,11 @@ mod tests {
         assert_eq!(
             dispatch_chat_input("  /compact ", true, None),
             ChatInput::Compact
+        );
+        assert_eq!(
+            dispatch_chat_input("/compact now", true, None),
+            ChatInput::CompactUsage,
+            "/compact 带参数只打 usage（DSH 行为），不当普通消息"
         );
         assert_eq!(
             dispatch_chat_input("/queue 做别的", true, None),

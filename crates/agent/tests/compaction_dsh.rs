@@ -115,7 +115,11 @@ async fn run_pressure(server: &MockServer, harness: &Harness) {
 async fn compaction_events_carry_dsh_fields_and_replacement() {
     let server = MockServer::start().await;
     let data_dir = tempfile::tempdir().unwrap();
-    let config = pressure_config(data_dir.path());
+    let config = AgentConfig {
+        // 只压一次，方便断言一次事务的字段与替换消息（重试行为有单独测试）。
+        compaction_retries: 0,
+        ..pressure_config(data_dir.path())
+    };
     let harness = setup(&server, 1000, 100, config, 3).await;
     run_pressure(&server, &harness).await;
 
@@ -129,7 +133,7 @@ async fn compaction_events_carry_dsh_fields_and_replacement() {
     let start = starts[0];
     let summary = summaries[0];
     let end = ends[0];
-    assert_eq!(start["turn"], 1, "自动压缩在 turn 内进行");
+    assert_eq!(start["turn"], 2, "自动压缩在触发它的那个 turn 内进行");
     assert!(start.get("sourceCommandId").is_none());
     assert_eq!(start["compactionId"], summary["compactionId"]);
     assert_eq!(end["compactionId"], summary["compactionId"]);
@@ -232,6 +236,7 @@ async fn summary_request_reuses_system_tools_and_prefix_cap() {
     let data_dir = tempfile::tempdir().unwrap();
     let config = AgentConfig {
         compaction_summary_max_tokens: Some(321),
+        compaction_retries: 0,
         ..pressure_config(data_dir.path())
     };
     let harness = setup(&server, 1000, 100, config, 3).await;
@@ -299,9 +304,10 @@ async fn compaction_retries_until_below_threshold_or_error() {
     );
     let ends = data_of(&rows, "compaction/end");
     assert_eq!(ends.len(), 3);
+    // 每次压缩事务自身都成功提交（DSH 的压缩循环在循环外抛「仍超阈值」错误，不再追加事件）。
     assert!(
-        ends.last().unwrap().get("error").is_some(),
-        "最后一次仍超阈值要记错误：{ends:?}"
+        ends.iter().all(|end| end.get("error").is_none()),
+        "单次事务成功：{ends:?}"
     );
     // 自动压缩失败不打断本轮：turn2 仍正常完成。
     let store = SessionStore::open(harness.data_dir.path(), &harness.id).unwrap();

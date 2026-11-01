@@ -94,6 +94,15 @@ pub(crate) trait LoopAccess: Send + Sync {
     /// 写日志入口：内部走 `Inner::append`（落盘后逐事件派发 SessionEvent）；禁止直接锁
     /// `session()` 后 append 绕过 SessionEvent。
     fn append<'a>(&'a self, kinds: &'a [EventKind]) -> HookFuture<'a>;
+    /// 追加一批事件并返回分配的 seq（T006.3：压缩要拿 start/summary 的 seq 拼 sourceEventSeqs）。
+    fn append_with_seqs<'a>(&'a self, kinds: &'a [EventKind]) -> BoxedFuture<'a, Vec<u64>>;
+    /// 追加一条 message-producing 事件并带上 envelope 的 surfaceOp/sourceEventSeqs（压缩替换）。
+    fn append_surface<'a>(
+        &'a self,
+        kind: EventKind,
+        surface_op: session::SurfaceOp,
+        source_event_seqs: Vec<u64>,
+    ) -> HookFuture<'a>;
     /// 压缩确认后统一派发 `HookEvent::Compaction`（供 prune 等；自动/溢出/手动三路共用）。
     fn dispatch_compaction<'a>(
         &'a self,
@@ -514,6 +523,17 @@ mod dispatch_contract_tests {
             unimplemented!()
         }
         fn append<'a>(&'a self, _kinds: &'a [EventKind]) -> HookFuture<'a> {
+            unimplemented!()
+        }
+        fn append_with_seqs<'a>(&'a self, _kinds: &'a [EventKind]) -> BoxedFuture<'a, Vec<u64>> {
+            unimplemented!()
+        }
+        fn append_surface<'a>(
+            &'a self,
+            _kind: EventKind,
+            _surface_op: session::SurfaceOp,
+            _source_event_seqs: Vec<u64>,
+        ) -> HookFuture<'a> {
             unimplemented!()
         }
         fn dispatch_compaction<'a>(

@@ -1,19 +1,26 @@
-//! 自动压缩与上下文溢出恢复（照 DSH compaction-basic 的可观察语义做最小实现）。
+//! 自动压缩与上下文溢出恢复（T006.3 照 DSH compaction-basic 改回）。
 //!
-//! 触发：请求前用 token 估算检查是否越过预算阈值；模型报 CONTEXT_WINDOW_EXCEEDED 时强制压缩后重试一次。
-//! 压缩：选一段较早历史（保留近期 tail），用一次额外模型请求生成摘要，把
-//! compaction/start + compaction/summary + compaction/end 写进日志（只追加）；派生请求由
-//! derive 用一条 checkpoint 消息替换被压缩的 seq 区间。原始日志保留、可回放。
+//! 触发：请求前用 token 估算检查是否越过预算阈值；模型报 CONTEXT_WINDOW_EXCEEDED 时强制
+//! 压缩后重试；手动 /compact 在两次 turn 之间独立压缩。
+//! 压缩：选一段较早历史（保留近期 tail；手动压全部可压历史），用一次额外模型请求生成
+//! 摘要（复用 system+tools+前缀缓存、带输出上限），把 compaction/start + compaction/summary
+//! 写进日志，再把替换写成一条带 surfaceOp replace 的 user/message（source=compact-checkpoint），
+//! 最后 compaction/end；派生请求读日志消息，prompt 前缀天然命中缓存。
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use model::{ContentBlock, ErrorCode, Message, Role, StreamChunk};
-use session::EventKind;
+use model::{ContentBlock, ErrorCode, Message, MessageId, MessageSource, Role, StreamChunk, Usage};
+use session::{EventKind, ShadowedRange, SurfaceOp};
 
-use crate::capabilities::LoopAccess;
-use crate::{AgentError, AgentEvent, CompactionTrigger};
+use crate::capabilities::{CompactionPolicy, LoopAccess};
+use crate::{AgentError, AgentEvent, CompactionOutcome, CompactionTrigger};
 
 static COMPACTION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// 压缩 checkpoint 的开头（照 DSH compaction-basic 的 checkpoint preamble）。
+pub(crate) const COMPACTION_PREAMBLE: &str = "This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.";
+pub(crate) const SUMMARY_OPEN_TAG: &str = "<compacted-summary>";
+pub(crate) const SUMMARY_CLOSE_TAG: &str = "</compacted-summary>";
 
 /// DSH compaction-basic 的摘要指令（原样照抄；作为追加在回放历史后的最后一条 user 消息）。
 const COMPACTION_INSTRUCTION: &str = "You are now acting as a compaction engine for this AI coding assistant. Condense the conversation ABOVE into a structured checkpoint that lets another model resume the work with no loss of essential context.\n\nOutput EXACTLY the Markdown structure below: keep every section, in order. Use terse bullets, not prose paragraphs. Write \"(none)\" for an empty section — never drop a section.\n\n## Primary Request and Intent\n- [the user's original and evolving goals; quote verbatim where the exact wording matters]\n\n## Key Technical Concepts\n- [technologies, frameworks, patterns, and conventions in play]\n\n## Files and Code\n- [exact path: why it matters, key changes or snippets]\n\n## Errors and Fixes\n- [error: how it was resolved, plus any related user feedback]\n\n## Pending Jobs\n- [explicitly requested work not yet completed]\n\n## Current Work\n- [precisely what was in progress at this checkpoint]\n\n## Next Step\n- [the single next action, directly in line with the most recent request, or \"(none)\"]\n\n## Critical Context\n- [decisions and their rationale, constraints, user preferences, open questions, data needed to continue]\n\nRules:\n- Write concise English engineering prose. Preserve exact file paths, commands, error strings, identifiers, numeric values, function signatures, and syntax fragments.\n- Capture user feedback and explicit instructions faithfully, especially corrections.\n- Do NOT mention this summarization request or that the context was compacted.\n- Output only the checkpoint text: do not call any tool or take any other action.\n- If the conversation already contains a <compacted-summary> block, it is a PRIOR checkpoint. Do not copy it forward verbatim: preserve still-true facts, drop stale ones, and merge newer information into a single consolidated summary under the same structure.";
@@ -26,9 +33,7 @@ pub(crate) struct Budget {
 }
 
 impl Budget {
-    /// 用模型表窗口、输出预留、headroom 和 AgentConfig 比例算阈值/保留预算。
-    /// AIOS 偏离：窗口/输出/headroom 放不下时（W−O−B≤0）DSH 会在加载时报错，
-    /// AIOS 退回 floor(W×thresholdRatio) 保证默认配置可用（handback 记偏离）。
+    /// 用解析后的策略、模型窗口和输出预留算阈值/保留预算。
     pub(crate) fn resolve(host: &dyn LoopAccess) -> Self {
         let config = host.model().config();
         let window = config.context_window;
@@ -93,6 +98,11 @@ fn estimate_schemas(host: &dyn LoopAccess) -> u64 {
     (total.div_ceil(4) + 4) as u64
 }
 
+fn measure(host: &dyn LoopAccess) -> u64 {
+    let messages = derive_messages(host);
+    estimate_messages(&messages) + estimate_schemas(host)
+}
+
 /// 选保留 tail 的起点（消息下标，>=1）：从末尾按 retain 预算回退，且不把 tool/result
 /// 与其前面的 assistant tool-call 拆开。返回 None 表示没有可压缩的较早历史。
 pub(crate) fn select_split(messages: &[Message], retain_tokens: u64) -> Option<usize> {
@@ -118,13 +128,17 @@ pub(crate) fn select_split(messages: &[Message], retain_tokens: u64) -> Option<u
     if split > 1 { Some(split) } else { None }
 }
 
-fn should_trigger(host: &dyn LoopAccess, messages: &[Message], budget: Budget) -> bool {
-    let total = estimate_messages(messages) + estimate_schemas(host);
-    total >= budget.threshold_tokens
+/// 摘要请求的产物：安全文本摘要、模型原始输出块、用量。
+struct SummaryOutcome {
+    raw_output: Vec<ContentBlock>,
+    summary: Vec<ContentBlock>,
+    usage: Option<Usage>,
 }
 
-/// 请求前的自动压缩：越过阈值（force=false）或溢出恢复（force=true）时压缩一次。
-/// 返回是否真的压缩（None 变化 / 失败时调用方决定是否继续）。
+/// 请求前的自动压缩：越过阈值（force=false）或溢出恢复（force=true）。
+///
+/// DSH 语义：压力压缩在仍超阈值时最多再压 compactionRetries 次，仍不降就记错误；
+/// 溢出恢复只做一次（之后服务端还报溢出就按原错误收尾）。自动失败不打断本轮。
 pub(crate) async fn compact_if_needed(
     host: &dyn LoopAccess,
     turn: u64,
@@ -132,36 +146,105 @@ pub(crate) async fn compact_if_needed(
     trigger: CompactionTrigger,
     force: bool,
     notify_compaction: bool,
-) -> Result<bool, AgentError> {
+) -> Result<Option<CompactionOutcome>, AgentError> {
+    let policy = host.compaction_policy();
     let budget = Budget::resolve(host);
-    let (derived, selected) = {
-        let store = host.session().lock().expect("agent 会话锁被毒化");
-        let derived = store.derive_messages_with_seqs();
-        let messages: Vec<Message> = derived.iter().map(|(_, message)| message.clone()).collect();
-        (derived, messages)
-    };
-    if !force && !should_trigger(host, &selected, budget) {
-        return Ok(false);
+    if !force && measure(host) < budget.threshold_tokens {
+        return Ok(None);
     }
-    let Some(split) = select_split(&selected, budget.retain_tokens) else {
-        return Ok(false);
-    };
-    // T006.1b：确认真的要压缩后，统一派发 Compaction 挂点（自动/溢出/手动三路共用）；
-    // prune 等后续功能挂在这里，T006.4 搬入；CompactionCapability 自己不消费这个挂点，避免递归。
+    // 确认真的要压缩后，统一派发 Compaction 挂点（自动/溢出/手动三路共用；prune 等挂这里）。
     if notify_compaction {
         host.dispatch_compaction(turn, step, trigger).await?;
     }
-    // 系统消息永远保留；被摘要的是 prefix 去掉系统后的部分。
-    let shadowed_range = session::ShadowedRange {
+    let attempts = if force {
+        1
+    } else {
+        (policy.compaction_retries as usize).saturating_add(1)
+    };
+    let mut outcome = None;
+    for _ in 0..attempts {
+        let messages = derive_messages(host);
+        let Some(split) = select_split(&messages, budget.retain_tokens) else {
+            if outcome.is_some() {
+                return Err(AgentError::Compaction(
+                    "no safe compaction range can reduce context below threshold".to_owned(),
+                ));
+            }
+            return Ok(None);
+        };
+        let result = compact_once(host, Some(turn), None, trigger, split, &policy).await?;
+        outcome = Some(result);
+        if force || measure(host) < budget.threshold_tokens {
+            return Ok(outcome);
+        }
+    }
+    let remaining = measure(host);
+    Err(AgentError::Compaction(format!(
+        "compaction still above threshold after {attempts} compaction attempts ({remaining} estimated tokens >= threshold {})",
+        budget.threshold_tokens
+    )))
+}
+
+/// 手动 /compact（照 DSH command-compact 的 compactNow）：两次 turn 之间独立压缩，
+/// 尽量压掉可压缩历史（retain=0），返回替换计数；没有可压缩历史返回 None。
+pub(crate) async fn compact_now(
+    host: &dyn LoopAccess,
+    hook_turn: u64,
+    source_command_id: Option<String>,
+) -> Result<Option<CompactionOutcome>, AgentError> {
+    let policy = host.compaction_policy();
+    let messages = derive_messages(host);
+    let Some(split) = select_split(&messages, 0) else {
+        return Ok(None);
+    };
+    host.dispatch_compaction(hook_turn, 0, CompactionTrigger::Manual)
+        .await?;
+    let outcome = compact_once(
+        host,
+        None,
+        source_command_id,
+        CompactionTrigger::Manual,
+        split,
+        &policy,
+    )
+    .await?;
+    Ok(Some(outcome))
+}
+
+fn derive_messages(host: &dyn LoopAccess) -> Vec<Message> {
+    let store = host.session().lock().expect("agent 会话锁被毒化");
+    store.derive_messages()
+}
+
+/// 执行一次完整压缩事务：start → 摘要请求 → summary → 替换消息 → end。
+async fn compact_once(
+    host: &dyn LoopAccess,
+    turn: Option<u64>,
+    source_command_id: Option<String>,
+    trigger: CompactionTrigger,
+    split: usize,
+    policy: &CompactionPolicy,
+) -> Result<CompactionOutcome, AgentError> {
+    let (derived, selected) = {
+        let store = host.session().lock().expect("agent 会话锁被毒化");
+        let derived = store.derive_messages_with_seqs();
+        let selected: Vec<Message> = derived.iter().map(|(_, message)| message.clone()).collect();
+        (derived, selected)
+    };
+    if split < 2 || split > selected.len() {
+        return Err(AgentError::Compaction(
+            "invalid compaction split".to_owned(),
+        ));
+    }
+    let shadowed_range = ShadowedRange {
         start: derived[1].0,
         end: derived[split - 1].0,
     };
     let shadowed_seqs: Vec<u64> = derived[1..split].iter().map(|(seq, _)| *seq).collect();
     let prefix: Vec<Message> = selected[..split].to_vec();
     let shadowed_token_count = estimate_messages(&prefix);
-    let provider = host.model().provider().to_owned();
-    let model = host.model().config().model.clone();
-    // T005.8b：id 带进程/纳秒成分，续接或新进程都不会和旧 compaction-1 撞车。
+
+    // id 带进程/纳秒成分：续接或新进程都不会和旧 id 撞车（T005.8b）。
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.subsec_nanos());
@@ -170,29 +253,35 @@ pub(crate) async fn compact_if_needed(
         std::process::id(),
         COMPACTION_COUNTER.fetch_add(1, Ordering::Relaxed)
     );
+    let provider = host.model().provider().to_owned();
+    let model = host.model().config().model.clone();
 
     let _ = host.events().send(AgentEvent::CompactionStarted {
         compaction_id: compaction_id.clone(),
         trigger,
     });
-    host.append(&[EventKind::CompactionStart {
-        compaction_id: compaction_id.clone(),
-        source_command_id: None,
-        turn: Some(turn),
-    }])
-    .await?;
+    // compaction/start 先落盘；拿它的 seq 拼 sourceEventSeqs。
+    let start_seqs = host
+        .append_with_seqs(&[EventKind::CompactionStart {
+            compaction_id: compaction_id.clone(),
+            source_command_id: source_command_id.clone(),
+            turn,
+        }])
+        .await?;
+    let start_seq = start_seqs[0];
 
-    let summary = match summarize(host, &prefix).await {
+    let summary = match summarize(host, &prefix, policy.summary_max_tokens).await {
         Ok(summary) => summary,
         Err(error) => {
             let message = error.to_string();
-            host.append(&[EventKind::CompactionEnd {
-                compaction_id: compaction_id.clone(),
-                source_command_id: None,
-                turn: Some(turn),
-                error: Some(message.clone()),
-            }])
-            .await?;
+            let _ = host
+                .append(&[EventKind::CompactionEnd {
+                    compaction_id: compaction_id.clone(),
+                    source_command_id: source_command_id.clone(),
+                    turn,
+                    error: Some(message.clone()),
+                }])
+                .await;
             let _ = host.events().send(AgentEvent::CompactionEnded {
                 compaction_id,
                 error: Some(message),
@@ -200,63 +289,148 @@ pub(crate) async fn compact_if_needed(
             return Err(error);
         }
     };
+    let raw_output = summary.raw_output.clone();
+    let summary_blocks = summary.summary.clone();
+    let usage = summary.usage.clone();
 
-    let summary_blocks = vec![ContentBlock::text(summary)];
-    host.append(&[
-        EventKind::CompactionSummary {
+    let summary_seqs = host
+        .append_with_seqs(&[EventKind::CompactionSummary {
             compaction_id: compaction_id.clone(),
-            source_command_id: None,
+            source_command_id: source_command_id.clone(),
             summary: summary_blocks.clone(),
-            raw_output: summary_blocks.clone(),
+            raw_output,
             llm_stream_call: true,
             shadowed_range,
-            shadowed_seqs,
+            shadowed_seqs: shadowed_seqs.clone(),
             shadowed_token_count,
             provider,
             model,
-            max_tokens: None,
-            usage: None,
+            max_tokens: Some(policy.summary_max_tokens),
+            usage,
+        }])
+        .await?;
+    let summary_seq = summary_seqs[0];
+
+    // 替换写成日志里的 user/message：内容 = checkpoint 框架 + 摘要块；envelope 带
+    // surfaceOp replace 与 sourceEventSeqs（start、summary、被替换节点）。
+    let checkpoint = checkpoint_message(
+        &compaction_id,
+        source_command_id.as_deref(),
+        &summary_blocks,
+    );
+    let mut source_event_seqs = vec![start_seq, summary_seq];
+    source_event_seqs.extend(shadowed_seqs.iter().copied());
+    host.append_surface(
+        EventKind::UserMessage {
+            turn: turn.unwrap_or(0),
+            step: 0,
+            message: checkpoint,
         },
-        EventKind::CompactionEnd {
-            compaction_id: compaction_id.clone(),
-            source_command_id: None,
-            turn: Some(turn),
-            error: None,
+        SurfaceOp::Replace {
+            start_seq: shadowed_range.start,
+            end_seq: shadowed_range.end,
         },
-    ])
+        source_event_seqs,
+    )
+    .await?;
+
+    host.append(&[EventKind::CompactionEnd {
+        compaction_id: compaction_id.clone(),
+        source_command_id,
+        turn,
+        error: None,
+    }])
     .await?;
     let _ = host.events().send(AgentEvent::CompactionEnded {
         compaction_id,
         error: None,
     });
-    Ok(true)
+    Ok(CompactionOutcome {
+        shadowed_items: shadowed_seqs.len(),
+        shadowed_tokens: shadowed_token_count,
+    })
 }
 
-/// 一次摘要请求：回放被压缩的较早历史 + 摘要指令，收集文本输出。
-async fn summarize(host: &dyn LoopAccess, prefix: &[Message]) -> Result<String, AgentError> {
+/// checkpoint user 消息：DSH frameSummary 的三段（preamble+open tag / 摘要块 / close tag），
+/// source 是 compact-checkpoint（与 compaction id、发起命令关联）。
+fn checkpoint_message(
+    compaction_id: &str,
+    source_command_id: Option<&str>,
+    summary: &[ContentBlock],
+) -> Message {
+    let mut content = vec![ContentBlock::text(format!(
+        "{COMPACTION_PREAMBLE}\n\n{SUMMARY_OPEN_TAG}"
+    ))];
+    content.extend(summary.iter().cloned());
+    content.push(ContentBlock::text(SUMMARY_CLOSE_TAG));
+    Message::with_source(
+        MessageId::generate(),
+        Role::User,
+        content,
+        MessageSource::CompactCheckpoint {
+            compaction_id: compaction_id.to_owned(),
+            source_command_id: source_command_id.map(str::to_owned),
+        },
+    )
+}
+
+/// 一次摘要请求：回放被压缩的较早历史（含 system），带工具定义与输出上限，
+/// 末尾追加摘要指令——system/tools/前缀与上次请求一致，命中 provider 前缀缓存。
+async fn summarize(
+    host: &dyn LoopAccess,
+    prefix: &[Message],
+    max_tokens: u32,
+) -> Result<SummaryOutcome, AgentError> {
     let mut input = prefix.to_vec();
     input.push(Message::user_text(COMPACTION_INSTRUCTION));
+    let tools = host.tools().definitions();
     let cancel = model::CancelToken::new(
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         std::sync::Arc::new(tokio::sync::Notify::new()),
     );
-    let mut stream = host.model().stream(&input, &[], &cancel).await?;
-    let mut summary = String::new();
+    let mut stream = host
+        .model()
+        .stream_with_max_tokens(&input, &tools, &cancel, Some(max_tokens))
+        .await?;
+    let mut text = String::new();
+    let mut usage: Option<Usage> = None;
+    let mut finish = None;
     while let Some(chunk) = stream.next().await {
         match chunk {
-            Ok(StreamChunk::TextDelta { text, .. }) => summary.push_str(&text),
-            Ok(_) => {}
+            Ok(StreamChunk::TextDelta { text: delta, .. }) => text.push_str(&delta),
+            Ok(StreamChunk::Usage { usage: reported }) => {
+                if !reported.is_empty() {
+                    usage = Some(reported);
+                }
+            }
+            Ok(StreamChunk::Finish { reason }) => finish = Some(reason),
+            Ok(StreamChunk::BlockStart { .. })
+            | Ok(StreamChunk::ReasoningDelta { .. })
+            | Ok(StreamChunk::BlockEnd { .. }) => {}
             Err(error) => return Err(AgentError::Model(error)),
         }
     }
-    let summary = summary.trim().to_owned();
-    if summary.is_empty() {
+    if let Some(reason) = finish
+        && reason == model::FinishReason::MaxTokens
+    {
+        return Err(AgentError::Model(model::ModelError::new(
+            ErrorCode::InvalidRequest,
+            "summarization truncated at the token cap (incomplete checkpoint)".to_owned(),
+        )));
+    }
+    let text = text.trim().to_owned();
+    if text.is_empty() {
         return Err(AgentError::Model(model::ModelError::new(
             ErrorCode::EmptyResponse,
             "压缩请求没有返回摘要文本".to_owned(),
         )));
     }
-    Ok(summary)
+    let block = ContentBlock::text(text);
+    Ok(SummaryOutcome {
+        raw_output: vec![block.clone()],
+        summary: vec![block],
+        usage,
+    })
 }
 
 #[cfg(test)]

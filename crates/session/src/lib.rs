@@ -10,7 +10,6 @@ mod id;
 mod repair;
 mod store;
 
-pub use derive::{COMPACTION_PREAMBLE, SUMMARY_CLOSE_TAG, SUMMARY_OPEN_TAG};
 pub use error::SessionError;
 pub use event::{
     AbortCause, Event, EventKind, InboxOutcome, InboxTarget, LlmFailure, RetryId, RetryMode,

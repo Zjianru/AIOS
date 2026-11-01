@@ -13,9 +13,11 @@ use crate::SessionId;
 /// v3：消息 IR 照 DSH（T006.5c1）：每条消息带必填 `id`（uuid）与 `source`；tool 角色的
 /// 消息改成 DSH ToolResultMessage 形状（`toolCallId`/`isError` 在消息级，content 是结果
 /// 内容块）。
-/// v4：assistant/message 带必填 `stream`（精确帧记录），新增 `assistant/attempt` 事件；
-/// 旧 v3 日志的 assistant/message 没有 stream，读不回来，直接拒绝（spec：旧版本不迁移）。
-pub const FORMAT_VERSION: u64 = 4;
+/// v4：assistant/message 带必填 `stream`（精确帧记录），新增 `assistant/attempt` 事件。
+/// v5：compaction/* 事件改 DSH 形状（start/end 的 turn 可为 null、summary 带内容块/调用事实/
+/// shadowed 区间与 seqs），压缩替换写成带 envelope `surfaceOp`/`sourceEventSeqs` 的日志消息；
+/// v4 的压缩事件字段读不回来，直接拒绝（spec：旧版本不迁移）。
+pub const FORMAT_VERSION: u64 = 5;
 
 /// JSONL 第一行的会话 header。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
