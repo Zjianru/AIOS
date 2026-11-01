@@ -36,6 +36,30 @@ pub use skills::{
 };
 pub use spill::{SpillRef, bound_result, estimate_text_tokens};
 
+/// 工具调用的规范化参数：JSON 深度 key 排序后序列化，属性顺序不同也视为同一调用。
+/// 重复调用提醒（T005.9）用它构造身份键；解析失败的原始字符串直接参与比较。
+pub fn canonical_arguments(arguments: &str) -> String {
+    fn sort(value: serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(map) => {
+                let sorted: std::collections::BTreeMap<String, serde_json::Value> = map
+                    .into_iter()
+                    .map(|(key, value)| (key, sort(value)))
+                    .collect();
+                serde_json::Value::Object(sorted.into_iter().collect())
+            }
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.into_iter().map(sort).collect())
+            }
+            other => other,
+        }
+    }
+    match serde_json::from_str::<serde_json::Value>(arguments) {
+        Ok(value) => serde_json::to_string(&sort(value)).unwrap_or_else(|_| arguments.to_owned()),
+        Err(_) => arguments.to_owned(),
+    }
+}
+
 /// 一个异步结果的 boxed future。Tool 必须能放进 dyn 的工具集，所以用 boxed
 /// future，而不是返回位置的 impl Future（后者不能让 trait 成为 dyn 兼容）。
 pub type ToolFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -154,6 +178,12 @@ pub trait Tool: Send + Sync {
 
     /// JSON Schema 形式的参数定义。
     fn parameters(&self) -> &Value;
+
+    /// 工具声明自己的单次调用时间上限（毫秒）；None 表示不限时（照 DSH ToolDefinition.timeoutMs）。
+    /// 默认 None：现有工具行为不变；批执行在超时后返回 TOOL_TIMEOUT 错误结果。
+    fn timeout_ms(&self) -> Option<u64> {
+        None
+    }
 
     /// 并发类别；默认独占（保守，进屏障）。
     fn concurrency(&self) -> ToolConcurrency {

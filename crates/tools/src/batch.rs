@@ -42,7 +42,27 @@ type PendingFuture<'a, T> = (usize, Pin<Box<dyn Future<Output = T> + Send + 'a>>
 
 async fn invoke<'a>(plan: &'a Planned<'_>, context: &'a ToolContext) -> ToolResult {
     match plan.tool {
-        Some(tool) => tool.execute(plan.call.clone(), context).await,
+        Some(tool) => {
+            // T005.9：工具自己声明了单次调用时间上限时，超时返回 TOOL_TIMEOUT 错误结果
+            // （照 DSH timeout-policy）。超时的是这一次工具调用，不影响本轮后续请求。
+            let Some(timeout_ms) = tool.timeout_ms() else {
+                return tool.execute(plan.call.clone(), context).await;
+            };
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(timeout_ms),
+                tool.execute(plan.call.clone(), context),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => ToolResult {
+                    call_id: plan.call.id.clone(),
+                    content: format!("Error: tool call timed out after {timeout_ms}ms"),
+                    is_error: true,
+                    error_code: Some("TOOL_TIMEOUT".to_owned()),
+                },
+            }
+        }
         None => ToolResult::error(
             plan.call.id.clone(),
             crate::ToolFailure::coded(

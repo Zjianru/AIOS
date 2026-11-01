@@ -83,6 +83,8 @@ pub(crate) struct Inner {
     cancel_notify: Arc<Notify>,
     /// 手动 compact 请求的等待者（T005.8b；kick 在轮次结束后处理并通知）。
     compact_queue: Mutex<Vec<tokio::sync::oneshot::Sender<()>>>,
+    /// 连续重复工具调用的链（工具名 + 规范化参数，计数）；新用户消息清零（T005.9）。
+    repeat_chain: Mutex<Option<(String, usize)>>,
     /// 仅测试可见：settle_idle 预检之后、最终临界区之前的同步缝（T005.8b 边界单测）。
     #[cfg(test)]
     settle_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -149,6 +151,7 @@ impl Inner {
             idle_notify: Notify::new(),
             cancel_notify: Arc::new(Notify::new()),
             compact_queue: Mutex::new(Vec::new()),
+            repeat_chain: Mutex::new(None),
             #[cfg(test)]
             settle_hook: Mutex::new(None),
         });
@@ -187,6 +190,8 @@ impl Inner {
     }
 
     pub(crate) fn send(self: &Arc<Self>, message: UserMessage, delivery: Delivery) {
+        // 新的用户消息清零重复调用链（照 DSH repeat-tool-reminder）。
+        *self.repeat_chain.lock().expect("agent 重复链锁被毒化") = None;
         let target = {
             let state = self.state.lock().expect("agent 状态锁被毒化");
             let aborting = match &state.phase {
@@ -260,6 +265,44 @@ impl Inner {
             .lock()
             .expect("agent 收件箱锁被毒化")
             .push(target, UserMessage::text(text));
+    }
+
+    /// 一次 step 的工具批之后推进重复链，命中阈值（3/5/8，照 DSH）返回一条提醒文本。
+    /// todo_write 不跟踪（DSH 基础组合包默认排除）；每步最多一条提醒。
+    fn repeat_reminder(&self, calls: &[ToolCall]) -> Option<String> {
+        const THRESHOLDS: [usize; 3] = [3, 5, 8];
+        let mut reminder: Option<String> = None;
+        for call in calls {
+            if call.name == "todo_write" {
+                continue;
+            }
+            let key = format!(
+                "{}\0{}",
+                call.name,
+                tools::canonical_arguments(&call.arguments)
+            );
+            let count = {
+                let mut chain = self.repeat_chain.lock().expect("agent 重复链锁被毒化");
+                let count = match chain.as_ref() {
+                    Some((previous, count)) if *previous == key => count + 1,
+                    _ => 1,
+                };
+                *chain = Some((key, count));
+                count
+            };
+            if THRESHOLDS.contains(&count) && reminder.is_none() {
+                reminder = Some(if count == THRESHOLDS[0] {
+                    "You are repeating the exact same tool call with identical arguments. Carefully analyze the previous result before calling again: if the task is not complete, try a different approach or different arguments instead of repeating the call.".to_owned()
+                } else {
+                    format!(
+                        "Repeated tool call detected:\n- tool: {}\n- consecutive_calls: {count}\n- arguments: {}\nThe repeated calls are not making progress. Do not call this tool with these exact arguments again. Inspect the latest result and choose a different action, different arguments, or finish the task if enough evidence has been gathered.",
+                        call.name,
+                        truncate_preview(&tools::canonical_arguments(&call.arguments), 500)
+                    )
+                });
+            }
+        }
+        reminder
     }
 
     /// 起驱动或在 Running 时置 latch。
@@ -889,6 +932,16 @@ async fn run_step(
     if todo_write_succeeded && let Some(todos) = inner.tool_session.take_todos() {
         inner.append(&[EventKind::TodoWrite { turn, step, todos }])?;
     }
+    // T005.9：重复调用提醒（每 step 最多一条，作为工具结果之后的 user 上下文消息）。
+    if !outcome.cancelled
+        && let Some(reminder) = inner.repeat_reminder(&calls)
+    {
+        inner.append(&[EventKind::UserMessage {
+            turn,
+            step,
+            message: Message::text(Role::User, reminder),
+        }])?;
+    }
     if abort.load(Ordering::SeqCst) || outcome.cancelled {
         return Ok(StepEnd::Aborted);
     }
@@ -1145,6 +1198,14 @@ fn system_prompt(cwd: &Path, tools: &ToolSet) -> String {
         );
     }
     prompt
+}
+
+/// 参数预览截断（字符安全，照 DSH argumentsPreviewChars 上限）。
+fn truncate_preview(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_owned();
+    }
+    format!("{}…", text.chars().take(max_chars).collect::<String>())
 }
 
 #[cfg(test)]
