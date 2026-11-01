@@ -7,6 +7,7 @@ mod derive;
 mod error;
 mod event;
 mod id;
+pub mod repair;
 mod store;
 
 pub use error::SessionError;

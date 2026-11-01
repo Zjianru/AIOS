@@ -88,13 +88,19 @@ impl Agent {
     pub async fn resume(
         id: SessionId,
         config: AgentConfig,
-        deps: Deps,
+        mut deps: Deps,
     ) -> Result<Self, AgentError> {
         if deps.store.id() != &id {
             return Err(AgentError::ResumeIdMismatch {
                 requested: id.as_str().to_owned(),
                 store: deps.store.id().as_str().to_owned(),
             });
+        }
+        // 续接先修复：给最后一个没收尾的 turn 补收尾（照 DSH 的 core/session/repair.ts）。
+        // 只读日志扫描 + 一次批 append（seq 连续、fsync、失败回滚由 store 负责）；不重跑工具。
+        let closers = session::repair::interrupted_turn_closers(deps.store.events());
+        if !closers.is_empty() {
+            deps.store.append(&closers)?;
         }
         let last_turn = deps
             .store
