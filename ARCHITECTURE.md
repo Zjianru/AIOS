@@ -72,14 +72,14 @@ T006.1a 接挂点与注册表；1b 起 **compaction 是真实 Capability**（`co
 - 访问面 `LoopAccess`：session（`Mutex<SessionStore>`）、events、tools、tool_session（观察表/spill/任务注册表）、model、cwd/data_dir/log_path、instruction_roots/skill_roots、compaction_config、spill_max_inline_tokens，以及 **`append` 写日志入口**（async，内部走 `Inner::append`：落盘后逐事件派发 SessionEvent，不重复派发）；由 driver 的 `Inner` 实现，capabilities 不反向依赖 driver 私有字段/CLI。
 - loop 只在固定位置 dispatch，不 import 功能内部类型；1b–1e 搬实现时只换 Capability 实现（必要时按 ARCH 记录扩 HookContext 字段），挂点集合与调用点顺序不变——1a 不再声称「只换实现」是无条件成立。
 - 执行顺序与错误：同一挂点按注册顺序执行；首个 Err 短路返回，之前的功能副作用已发生且不回滚；SessionEvent 在日志 append 成功后逐事件派发（日志已提交）；压缩执行与「已确认」通知拆开：`CompactionCapability` 只挂 PreStep/Request/RequestError（不消费 Compaction），三路（PreStep 自动、RequestError 溢出、PreStep trigger=Manual 手动）都经 `compact_if_needed`，其在 should_trigger/select_split 确认后统一派发 `HookEvent::Compaction`（供 prune 等，T006.4）；自动/手动压缩失败不打断本轮/队列，溢出压缩失败时 `compact_if_needed` 返回 Err（摘要失败等）或 Ok(false)（无前缀可压，返回原始 model 错误），第二次溢出直接致命不再派发；Status 在 kick 收敛前派发，错误不阻断收敛（1a no-op，服务接入时再定上报）。
-- PreStep 执行顺序：按注册表顺序 compaction（自动检查）→ prune（占位）→ instructions → skill；手动 /compact 走 PreStep `trigger: Some(Manual)`，instructions/skill 收到 manual 触发直接跳过（只有 compaction 能力处理 manual），所以手动压缩不会顺带注入指令/skill（回归测试 `agent::manual_compact_no_injection::manual_compact_does_not_inject_instructions_or_skills`）。
+- PreStep 分两阶段（`HookEvent::PreStep { phase }`，不是新挂点）：Inject 在 prune 之前（instructions、skill；按注册表相对顺序），Compact 在 prune 之后（compaction 自动检查）。旧顺序保持为 system/user → Inject（instructions → skill）→ prune → Compact（压缩检查）→ derive；手动 /compact 只走 Compact（trigger=Some(Manual)），instructions/skill 跳过，所以手动压缩不会顺带注入指令/skill。回归断言：`pre_step_phase_order::injection_happens_before_compaction_in_same_turn`（同 turn 压缩时注入先于 compaction/start）与 `manual_compact_no_injection::manual_compact_does_not_inject_instructions_or_skills`。
 - 依赖方向：`cli → agent → tools → session → model`；agent 内部 `driver → capabilities` 单向。
 
 **挂点表（HookPoint → 派发位置 → typed 数据 → 注册功能）**
 
 | 挂点 | 派发位置（agent/src/driver.rs） | HookEvent 携带 | 注册功能（1a） |
 |---|---|---|---|
-| PreStep | `run_step` 内、追加本 step 输入消息与 prune 之后、derive 之前（自动：trigger=None；手动 /compact：driver 队列 dispatch trigger=Some(Manual)） | turn/step/host/trigger | compaction（自动检查/手动强制压缩）、instructions、skill（manual 时后两者跳过） |
+| PreStep | 两阶段：Inject = 追加本 step 输入消息之后、prune 之前；Compact = prune 之后、derive 之前（手动 /compact：driver 队列 dispatch Compact + trigger=Some(Manual)） | turn/step/host/trigger/phase | Inject：instructions、skill；Compact：compaction（自动检查/手动强制压缩） |
 | Request | `model.stream` 之前 | turn/step/host/messages | compaction（token 记账占位） |
 | RequestError | `Err(error)` 分支、abort 检查之后（第二次溢出不再派发） | turn/step/host/error | compaction（溢出强制压缩） |
 | SessionEvent | `Inner::append` 成功后逐事件 | host/event | instructions（对账；对外推送后续票） |
@@ -96,10 +96,10 @@ T006.1a 接挂点与注册表；1b 起 **compaction 是真实 Capability**（`co
 
 | # | 功能 | 挂点 | 从 HookEvent/ho​st 拿什么 | 1a 现实现位置 | 迁移票 |
 |---|---|---|---|---|---|
-| 1 | compaction | PreStep（自动 / 手动 trigger）/ Request / RequestError | messages、host.model/session/compaction_config、error、trigger | **已迁**：`agent/src/compaction_capability.rs` + `agent/src/compaction.rs` | 1b（完成） |
+| 1 | compaction | PreStep(Compact)（自动 / 手动 trigger）/ Request / RequestError | messages、host.model/session/compaction_config、error、trigger | **已迁**：`agent/src/compaction_capability.rs` + `agent/src/compaction.rs` | 1b（完成） |
 | 2 | prune | Compaction | host.session（日志事件）、trigger | `agent/src/prune.rs`（现路径，driver 每请求调用保留） | T006.4 |
-| 3 | instructions | PreStep（manual 跳过；SessionEvent/ToolBefore 后续票） | host.instructions_state/session/instruction_roots/data_dir/events | **已迁**：`agent/src/instructions_capability.rs` + `agent/src/instructions.rs` | 1c（完成） |
-| 4 | skill | PreStep（manual 跳过；ToolBefore 后续票） | host.skill_catalog_state/skill_roots、host.session/events | **已迁**：`agent/src/skill_capability.rs` + `agent/src/skill_catalog.rs` + `tools/src/skills.rs` 的 discover | 1c（完成） |
+| 3 | instructions | PreStep(Inject)（manual 跳过；SessionEvent/ToolBefore 后续票） | host.instructions_state/session/instruction_roots/data_dir/events | **已迁**：`agent/src/instructions_capability.rs` + `agent/src/instructions.rs` | 1c（完成） |
+| 4 | skill | PreStep(Inject)（manual 跳过；ToolBefore 后续票） | host.skill_catalog_state/skill_roots、host.session/events | **已迁**：`agent/src/skill_capability.rs` + `agent/src/skill_catalog.rs` + `tools/src/skills.rs` 的 discover | 1c（完成） |
 | 5 | todo | ToolAfter | calls/results、host.session/events | `tools` + driver 事件 | 1d |
 | 6 | ask | （无 loop 挂点；工具路径处理） | —（回答整批在 T006.13） | driver 的 ask 分支 | 1d |
 | 7 | spill | ToolResult / ToolAfter | call/result、host.tool_session.spill | `tools/src/spill.rs` + driver | 1d |
@@ -108,7 +108,7 @@ T006.1a 接挂点与注册表；1b 起 **compaction 是真实 Capability**（`co
 
 **修改规则**：挂点集合与注册顺序固定；新增数据在 typed `HookEvent` 上加字段/变体并在本表记录；不得新增运行时加载。 **写日志入口约束**：写日志必须走 `LoopAccess::append`（它内部走 `Inner::append`，落盘后逐事件派发 SessionEvent，不重复派发）；直接锁 `LoopAccess::session` 后 append 不会触发 SessionEvent，1c/1d 禁止这样绕过。
 
-**验收与证据**：1a 证据见 `T006/evidence/T006.1a-hook-grep.log`；1b 见 `T006/evidence/T006.1b-grep.log`；1c 见 `T006/evidence/T006.1c-grep.log`（driver 无指令/skill 注入旧路径、真实 instructions/skill 注册、manual 跳过、200 绿）。
+**验收与证据**：1a 证据见 `T006/evidence/T006.1a-hook-grep.log`；1b 见 `T006/evidence/T006.1b-grep.log`；1c 见 `T006/evidence/T006.1c-grep.log`（driver 无指令/skill 注入旧路径、真实 instructions/skill 注册、PreStep 两阶段、manual 跳过、201 绿）。注：1a 日志的「PreStep 精确计数 1」是当时快照；1c 起拆分两阶段后 PreStep 构造点为 3 处（自动 Inject/自动 Compact/手动 Compact），HookPoint 集合未变。
 
 ## 接缝
 

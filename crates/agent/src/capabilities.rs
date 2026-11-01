@@ -22,6 +22,14 @@ use crate::skill_capability::SkillCapability;
 use crate::skill_catalog::SkillCatalogState;
 use crate::{AgentEvent, CompactionTrigger};
 
+/// PreStep 的两阶段：Inject = 注入指令/skill（在 prune 之前）；Compact = 压缩自动检查（在 prune 之后）。
+/// 拆分是为了保持 T005 的旧顺序：注入 → prune → 压缩，同时不新增挂点。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PreStepPhase {
+    Inject,
+    Compact,
+}
+
 /// loop 的固定挂点（strategy §1 六点位；工具拆三阶段；压缩触发单列）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HookPoint {
@@ -97,6 +105,8 @@ pub(crate) enum HookEvent<'a> {
         host: &'a dyn LoopAccess,
         /// None = 每步自动检查；Some(Manual) = 手动 /compact 入口（强制压缩）。
         trigger: Option<CompactionTrigger>,
+        /// 1c：PreStep 拆两阶段（Inject 在 prune 前；Compact 在 prune 后）。
+        phase: PreStepPhase,
     },
     Request {
         turn: u64,

@@ -7,7 +7,7 @@
 
 use model::ErrorCode;
 
-use crate::capabilities::{Capability, HookEvent, HookFuture, HookPoint};
+use crate::capabilities::{Capability, HookEvent, HookFuture, HookPoint, PreStepPhase};
 use crate::compaction;
 use crate::{AgentError, CompactionTrigger};
 
@@ -31,7 +31,7 @@ impl Capability for CompactionCapability {
             match event {
                 // 每步之前：trigger=None 是自动检查（越过阈值才压）；
                 // Some(Manual) 是手动 /compact 入口（强制压）。两路失败都不打断本轮（同旧路径）。
-                HookEvent::PreStep { trigger, .. } => {
+                HookEvent::PreStep { trigger, phase, .. } if *phase == PreStepPhase::Compact => {
                     let (force, trigger) = match trigger {
                         Some(trigger) => (true, *trigger),
                         None => (false, CompactionTrigger::Auto),

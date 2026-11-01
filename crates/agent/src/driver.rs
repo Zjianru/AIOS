@@ -531,6 +531,7 @@ impl Inner {
                     step: 0,
                     host: self.as_ref(),
                     trigger: Some(CompactionTrigger::Manual),
+                    phase: crate::capabilities::PreStepPhase::Compact,
                 })
                 .await;
             for waiter in waiters {
@@ -832,6 +833,18 @@ async fn run_step(
             .await?;
     }
 
+    // T006.1c：PreStep 两阶段——先在旧位置派发 Inject（instructions/skill 注入，prune 之前），
+    // 再 prune，最后派发 Compact（压缩自动检查），保持 T005 的「注入 → prune → 压缩」顺序。
+    inner
+        .capabilities
+        .dispatch(&HookEvent::PreStep {
+            turn,
+            step,
+            host: inner.as_ref(),
+            trigger: None,
+            phase: crate::capabilities::PreStepPhase::Inject,
+        })
+        .await?;
     // T005.2：派生请求之前，把「旧」超大工具结果换成 head+marker+tail 的修剪视图
     // （追加 compaction/prune 事件，原始 tool/result 保留在日志里可回放）。
     prune_old_tool_results(inner, turn).await?;
@@ -845,6 +858,7 @@ async fn run_step(
             step,
             host: inner.as_ref(),
             trigger: None,
+            phase: crate::capabilities::PreStepPhase::Compact,
         })
         .await?;
     let mut messages = inner
