@@ -97,7 +97,7 @@ T006.1a 接挂点与注册表；1b 起 **compaction 是真实 Capability**；1c 
 | Status | `kick` 收敛到 Idle 之前 | turn/host | jobs（服务推送后续票） |
 | TurnStopping | `run_turn` 写 `turn/end` 之前 | turn/host | （保留，服务接入后使用） |
 
-**prune（T006.4）**：`prune_capability.rs` 的 `PruneCapability` 挂 `Compaction`；`compact_if_needed` 在 select_split 成功、派发挂点后先剪（`compaction/prune` + 带 surfaceOp 的 tool/result 替换），压力路径再重测阈值。`PruneCapability` 按 trigger 过滤：只有压力/溢出两路运行，Manual 跳过（DSH `compactNow` 不调 pruner）；手动 /compact 仍派发 Compaction 但 prune 不跑。`tool_result_pruned_only_at_compaction_and_not_per_request` 固定「没压缩不修剪」；三路断言在 `spill::{auto_pressure_compaction_prunes_tool_results, overflow_recovery_prunes_tool_results, tool_result_pruned_only_at_compaction_and_not_per_request}`。
+**prune（T006.4）**：`prune_capability.rs` 的 `PruneCapability` 挂 `Compaction`；`compact_if_needed` 在 select_split 成功、派发挂点后先剪（`compaction/prune` + 带 surfaceOp 的 tool/result 替换），压力路径再重测阈值。`PruneCapability` 按 trigger 过滤：只有压力/溢出两路运行，Manual 跳过（DSH `compactNow` 不调 pruner）；手动 /compact 仍派发 Compaction 但 prune 不跑。`tool_result_not_pruned_without_compaction_and_manual_compact_does_not_prune` 固定「没压缩不修剪、手动 /compact 不剪」；压力/溢出断言在 `spill::{auto_pressure_compaction_prunes_tool_results, overflow_recovery_prunes_tool_results}`。
 
 **功能注册表与 1b–1e 访问面（固定顺序；已迁移/待迁移位置）**
 
