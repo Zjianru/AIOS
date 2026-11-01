@@ -9,7 +9,7 @@ use std::io::Write;
 
 use serde_json::Value;
 
-use crate::{EventKind, SessionError, SessionStore, TurnEndReason};
+use crate::{EventKind, SessionError, SessionId, SessionStore, TurnEndReason};
 
 fn create_store() -> (tempfile::TempDir, tempfile::TempDir, SessionStore) {
     let data_dir = tempfile::tempdir().unwrap();
@@ -144,4 +144,146 @@ fn write_open_defers_torn_tail_truncation_until_first_append() {
     );
     assert_eq!(reopened.events().len(), 2);
     assert_eq!(reopened.events()[1].seq, 2, "截尾后 seq 仍连续");
+}
+
+// ---------------------------------------------------------------------------
+// T006.5b：单写者锁（<data-dir>/sessions/<id>.lock，非阻塞排他 flock）
+// ---------------------------------------------------------------------------
+
+const LOCK_CHILD_DATA: &str = "AIOS_LOCK_CHILD_DATA";
+const LOCK_CHILD_ID: &str = "AIOS_LOCK_CHILD_ID";
+const LOCK_CHILD_MARKER: &str = "AIOS_LOCK_CHILD_MARKER";
+const LOCK_CHILD_MODE: &str = "AIOS_LOCK_CHILD_MODE";
+const LOCK_CHILD_TEST: &str = "store_tests::writer_lock_child_helper";
+
+/// 子进程侧（由父测试用 --exact 拉起）：取写锁、写 marker，然后按 mode 持有或崩溃退出。
+#[test]
+fn writer_lock_child_helper() {
+    let Ok(data) = std::env::var(LOCK_CHILD_DATA) else {
+        return; // 正常测试进程里是 no-op
+    };
+    let id = SessionId::parse(&std::env::var(LOCK_CHILD_ID).unwrap()).unwrap();
+    let marker = std::env::var(LOCK_CHILD_MARKER).unwrap();
+    let mode = std::env::var(LOCK_CHILD_MODE).unwrap_or_default();
+    let store = SessionStore::open(std::path::Path::new(&data), &id).expect("子进程取写锁");
+    fs::write(&marker, b"locked").unwrap();
+    if mode == "abort" {
+        // 模拟崩溃：进程直接死，内核随进程释放 flock（DSH：崩溃持有者立即让出）。
+        std::process::abort();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+    drop(store);
+}
+
+fn lock_path_of(store: &SessionStore) -> std::path::PathBuf {
+    std::path::Path::new(store.path()).with_extension("lock")
+}
+
+fn spawn_lock_child(
+    data: &std::path::Path,
+    id: &crate::SessionId,
+    marker: &std::path::Path,
+    mode: &str,
+) -> std::process::Child {
+    std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", LOCK_CHILD_TEST, "--nocapture"])
+        .env(LOCK_CHILD_DATA, data)
+        .env(LOCK_CHILD_ID, id.as_str())
+        .env(LOCK_CHILD_MARKER, marker)
+        .env(LOCK_CHILD_MODE, mode)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn 子进程")
+}
+
+fn wait_for_file(path: &std::path::Path) {
+    for _ in 0..400 {
+        if path.exists() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    panic!("子进程没有在超时内写出 marker");
+}
+
+fn wait_until_writable(data: &std::path::Path, id: &crate::SessionId) -> SessionStore {
+    for _ in 0..200 {
+        if let Ok(store) = SessionStore::open(data, id) {
+            return store;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    panic!("持锁进程退出后仍拿不到写锁");
+}
+
+#[test]
+fn write_lock_is_exclusive_and_released_on_drop() {
+    let (data_dir, _cwd, store) = create_store();
+    let id = store.id().clone();
+    let lock_path = lock_path_of(&store);
+    assert!(
+        lock_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with(".lock"),
+        "锁文件名照 DSH：<id>.lock"
+    );
+    assert!(
+        lock_path.exists(),
+        "写打开要创建 <data-dir>/sessions/<id>.lock"
+    );
+    let error = match SessionStore::open(data_dir.path(), &id) {
+        Ok(_) => panic!("第二个写者必须被拒"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, SessionError::AlreadyOwned { .. }),
+        "被占用要可识别（照 DSH SessionAlreadyOwnedError）：{error}"
+    );
+    // 只读打开不受写锁限制（DSH 只有 writer lock）。
+    let snapshot = SessionStore::open_read_only(data_dir.path(), &id).expect("只读打开允许");
+    assert_eq!(snapshot.id(), &id);
+    drop(store);
+    let reopened = SessionStore::open(data_dir.path(), &id).expect("释放后可以重新取锁");
+    assert_eq!(reopened.id(), &id);
+    drop(reopened);
+    assert!(lock_path.exists(), "释放不删锁文件（照 DSH lease 语义）");
+}
+
+#[test]
+fn two_process_writers_conflict_and_release_on_exit() {
+    let (data_dir, _cwd, store) = create_store();
+    let id = store.id().clone();
+    drop(store); // 只保留物化好的会话文件
+    let marker = data_dir.path().join("lock-child-holding");
+    let mut child = spawn_lock_child(data_dir.path(), &id, &marker, "hold");
+    wait_for_file(&marker);
+    let error = match SessionStore::open(data_dir.path(), &id) {
+        Ok(_) => panic!("跨进程写锁必须互斥"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(error, SessionError::AlreadyOwned { .. }),
+        "跨进程被占用也要可识别：{error}"
+    );
+    assert!(child.wait().unwrap().success(), "子进程正常退出");
+    let reopened = wait_until_writable(data_dir.path(), &id);
+    drop(reopened);
+}
+
+#[test]
+fn crashed_writer_lock_is_released_with_process() {
+    let (data_dir, _cwd, store) = create_store();
+    let id = store.id().clone();
+    drop(store);
+    let marker = data_dir.path().join("lock-child-aborted");
+    let mut child = spawn_lock_child(data_dir.path(), &id, &marker, "abort");
+    wait_for_file(&marker);
+    let status = child.wait().unwrap();
+    assert!(!status.success(), "子进程崩溃退出（abort）");
+    // 崩溃的持有者不应留下死锁：内核随进程释放 flock。
+    let reopened = wait_until_writable(data_dir.path(), &id);
+    drop(reopened);
 }
