@@ -67,6 +67,9 @@ pub(crate) trait LoopAccess: Send + Sync {
     fn skill_roots(&self) -> &[PathBuf];
     fn compaction_config(&self) -> CompactionConfig;
     fn spill_max_inline_tokens(&self) -> usize;
+    /// 写日志入口：内部走 `Inner::append`（落盘后逐事件派发 SessionEvent）；禁止直接锁
+    /// `session()` 后 append 绕过 SessionEvent。
+    fn append<'a>(&'a self, kinds: &'a [EventKind]) -> HookFuture<'a>;
 }
 
 /// 每个挂点一份 typed 事件：host 访问面 + 该挂点可用的运行态数据。

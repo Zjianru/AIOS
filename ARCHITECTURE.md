@@ -69,7 +69,7 @@ T006.1a 接挂点与注册表，**行为不变**：压缩、剪枝、指令、sk
 
 - 编译期固定：`HookPoint` 枚举固定 10 个（strategy §1 六点位 + 工具三阶段拆开 + 压缩触发单列），功能用 `Capability` trait 的固定顺序数组注册（`CapabilityRegistry::production`），没有运行时加载/插件发现（strategy §3、K2）。
 - 输入面按 1b–1e 的需要定：`Capability::on_hook` 是异步、返回 `Result<(), AgentError>`，参数是 typed `HookEvent<'a>`（每个挂点带该点可用的运行态数据 + `host: &dyn LoopAccess` 访问面）；dyn 兼容用 `HookFuture<'a> = Pin<Box<dyn Future<Output = Result<(), AgentError>> + Send + 'a>>`，不新增 async-trait 依赖。
-- 访问面 `LoopAccess`：session（`Mutex<SessionStore>`）、events、tools、tool_session（观察表/spill/任务注册表）、model、cwd/data_dir/log_path、instruction_roots/skill_roots、compaction_config、spill_max_inline_tokens；由 driver 的 `Inner` 实现，capabilities 不反向依赖 driver 私有字段/CLI。
+- 访问面 `LoopAccess`：session（`Mutex<SessionStore>`）、events、tools、tool_session（观察表/spill/任务注册表）、model、cwd/data_dir/log_path、instruction_roots/skill_roots、compaction_config、spill_max_inline_tokens，以及 **`append` 写日志入口**（async，内部走 `Inner::append`：落盘后逐事件派发 SessionEvent，不重复派发）；由 driver 的 `Inner` 实现，capabilities 不反向依赖 driver 私有字段/CLI。
 - loop 只在固定位置 dispatch，不 import 功能内部类型；1b–1e 搬实现时只换 Capability 实现（必要时按 ARCH 记录扩 HookContext 字段），挂点集合与调用点顺序不变——1a 不再声称「只换实现」是无条件成立。
 - 执行顺序与错误：同一挂点按注册顺序执行；首个 Err 短路返回，之前的功能副作用已发生且不回滚；SessionEvent 在日志 append 成功后逐事件派发（日志已提交）；Compaction 只在 `compact_if_needed` 确认要压缩后派发；Status 在 kick 收敛前派发，错误不阻断收敛（1a no-op，服务接入时再定上报）。
 - 依赖方向：`cli → agent → tools → session → model`；agent 内部 `driver → capabilities` 单向。
@@ -105,7 +105,7 @@ T006.1a 接挂点与注册表，**行为不变**：压缩、剪枝、指令、sk
 | 8 | reminder | ToolAfter | calls/results | driver 的 repeat_reminder | 1d |
 | 9 | jobs | Status | host.tool_session（任务注册表）、host.events | `tools/src/jobs.rs` + driver 回调 | 1e |
 
-**修改规则**：挂点集合与注册顺序固定；新增数据在 typed `HookEvent` 上加字段/变体并在本表记录；不得新增运行时加载。 **写日志入口约束**：`LoopAccess::session` 暴露的是 `Mutex<SessionStore>`，直接 `append` 不会触发 SessionEvent 钩子；1c/1d 搬功能后写日志必须走 `Inner::append`（async，日志落盘后逐事件派发钩子）或后续同语义入口，不允许绕过 SessionEvent。
+**修改规则**：挂点集合与注册顺序固定；新增数据在 typed `HookEvent` 上加字段/变体并在本表记录；不得新增运行时加载。 **写日志入口约束**：写日志必须走 `LoopAccess::append`（它内部走 `Inner::append`，落盘后逐事件派发 SessionEvent，不重复派发）；直接锁 `LoopAccess::session` 后 append 不会触发 SessionEvent，1c/1d 禁止这样绕过。
 
 **验收与证据**：`T006/evidence/T006.1a-hook-grep.log` 记录可复现命令与输出（10 个 dispatch 精确计数、注册表顺序、枚举）；`dispatch_compaction` 3 处触发点单独 grep。
 

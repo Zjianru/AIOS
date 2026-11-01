@@ -149,6 +149,9 @@ impl LoopAccess for Inner {
     fn spill_max_inline_tokens(&self) -> usize {
         self.spill_max_inline_tokens
     }
+    fn append<'a>(&'a self, kinds: &'a [EventKind]) -> crate::capabilities::HookFuture<'a> {
+        Box::pin(Inner::append(self, kinds))
+    }
 }
 
 impl Inner {
