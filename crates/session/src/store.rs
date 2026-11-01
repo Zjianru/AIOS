@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use model::Message;
 
-use crate::derive::derive_messages;
+use crate::derive::{derive_messages, derive_messages_with_seqs};
 use crate::error::SessionError;
 use crate::event::{Event, EventKind, FORMAT_VERSION, SessionHeader};
 use crate::id::SessionId;
@@ -126,6 +126,11 @@ impl SessionStore {
     /// 从日志派生一次请求要带的消息。
     pub fn derive_messages(&self) -> Vec<Message> {
         derive_messages(&self.events)
+    }
+
+    /// 派生消息并带来源事件 seq（T005.8a 压缩选区间用）。
+    pub fn derive_messages_with_seqs(&self) -> Vec<(u64, Message)> {
+        derive_messages_with_seqs(&self.events)
     }
 
     /// 日志里是否已经有系统提示（一个会话只写一次）。

@@ -152,6 +152,27 @@ pub enum EventKind {
         step: u64,
         todos: Vec<TodoItem>,
     },
+    /// 一次压缩开始（T005.8a；类型名照 DSH known-event-types）。锁语义简化：AIOS 单写者，
+    /// start 先落、end 收尾，失败时 end 带 error。
+    #[serde(rename = "compaction/start")]
+    CompactionStart { compaction_id: String, turn: u64 },
+    /// 一次压缩完成：摘要文本 + 被替换事件的 seq 区间 + 被替换内容的估算 token 数。
+    /// 原始事件保留在日志里；派生请求用一条 checkpoint 消息替换该区间。
+    #[serde(rename = "compaction/summary")]
+    CompactionSummary {
+        compaction_id: String,
+        summary: String,
+        shadowed_start: u64,
+        shadowed_end: u64,
+        shadowed_token_count: u64,
+    },
+    /// 一次压缩结束；error 为 Some 表示失败（日志仍只追加）。
+    #[serde(rename = "compaction/end")]
+    CompactionEnd {
+        compaction_id: String,
+        turn: u64,
+        error: Option<String>,
+    },
 }
 
 impl EventKind {
@@ -169,6 +190,9 @@ impl EventKind {
             Self::ToolResult { .. } => "tool/result",
             Self::CompactionPrune { .. } => "compaction/prune",
             Self::TodoWrite { .. } => "todo/write",
+            Self::CompactionStart { .. } => "compaction/start",
+            Self::CompactionSummary { .. } => "compaction/summary",
+            Self::CompactionEnd { .. } => "compaction/end",
         }
     }
 }

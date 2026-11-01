@@ -8,7 +8,10 @@ mod error;
 mod ir;
 
 pub use cancel::CancelToken;
-pub use deepseek::{ChunkStream, DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS, DeepSeek, DeepSeekConfig};
+pub use deepseek::{
+    ChunkStream, DEFAULT_BASE_URL, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DeepSeek,
+    DeepSeekConfig,
+};
 pub use error::{ErrorCode, ModelError};
 pub use ir::{
     BlockType, ContentBlock, Effort, FinishReason, Message, Role, StreamChunk, ToolSchema, Usage,

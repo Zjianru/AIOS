@@ -31,7 +31,13 @@ pub(super) fn provider_error(
         Some(401 | 403) => ErrorCode::Auth,
         Some(402) => ErrorCode::Quota,
         Some(429) => ErrorCode::RateLimit,
-        Some(400 | 413) => ErrorCode::InvalidRequest,
+        Some(400 | 413) => {
+            if is_context_overflow(&message, error_type) {
+                ErrorCode::ContextWindowExceeded
+            } else {
+                ErrorCode::InvalidRequest
+            }
+        }
         Some(code) if code >= 500 => ErrorCode::Server,
         Some(code) => ErrorCode::Http(code),
         None => match error_type {
@@ -46,6 +52,26 @@ pub(super) fn provider_error(
     error.status = status;
     error.retry_after_ms = retry_after_ms(headers);
     error
+}
+
+/// 上下文溢出识别（照 DSH 的 provider 错误归一）：状态 400/413 且错误类型/文案符合时
+/// 归到 `CONTEXT_WINDOW_EXCEEDED`，驱动层据此先压缩再重试一次。
+fn is_context_overflow(message: &str, error_type: &str) -> bool {
+    if matches!(error_type, "context_length_exceeded" | "request_too_large") {
+        return true;
+    }
+    let haystack = message.to_ascii_lowercase();
+    haystack.contains("context")
+        && [
+            "length",
+            "window",
+            "exceed",
+            "too long",
+            "too large",
+            "maximum",
+        ]
+        .iter()
+        .any(|pattern| haystack.contains(pattern))
 }
 
 /// 读 retry-after（只认数字秒；非正数或 HTTP 日期返回 None）。

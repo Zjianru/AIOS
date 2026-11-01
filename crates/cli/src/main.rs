@@ -116,6 +116,7 @@ async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
             .clone()
             .unwrap_or_else(|| "deepseek-flash".to_owned()),
         max_tokens: DEFAULT_MAX_TOKENS,
+        context_window: model::DEFAULT_CONTEXT_WINDOW,
         effort,
     };
     let model = DeepSeek::new(config)?;
@@ -303,19 +304,15 @@ fn handle_event(event: AgentEvent, outcome: &mut Option<TurnOutcome>) {
             trigger,
         } => {
             println!();
-            let kind = match trigger {
-                CompactionTrigger::Auto => "自动",
-                CompactionTrigger::Manual => "手动",
-            };
-            println!("[压缩开始：{compaction_id}（{kind}）]");
+            println!("{}", compaction_started_text(&compaction_id, trigger));
         }
         AgentEvent::CompactionEnded {
             compaction_id,
             error,
-        } => match error {
-            Some(error) => println!("[压缩失败：{compaction_id}：{error}]"),
-            None => println!("[压缩完成：{compaction_id}]"),
-        },
+        } => println!(
+            "{}",
+            compaction_ended_text(&compaction_id, error.as_deref())
+        ),
         AgentEvent::JobCompleted {
             job_id,
             status,
@@ -337,6 +334,22 @@ fn handle_event(event: AgentEvent, outcome: &mut Option<TurnOutcome>) {
     }
 }
 
+/// T005.8a 票面：压缩开始/结束事件在 CLI 的展示文本（纯函数便于单测）。
+fn compaction_started_text(compaction_id: &str, trigger: CompactionTrigger) -> String {
+    let kind = match trigger {
+        CompactionTrigger::Auto => "自动",
+        CompactionTrigger::Manual => "手动",
+    };
+    format!("[压缩开始：{compaction_id}（{kind}）]")
+}
+
+fn compaction_ended_text(compaction_id: &str, error: Option<&str>) -> String {
+    match error {
+        Some(error) => format!("[压缩失败：{compaction_id}：{error}]"),
+        None => format!("[压缩完成：{compaction_id}]"),
+    }
+}
+
 /// T005.4 票面：后台任务完成事件在 CLI 的展示文本（纯函数便于单测）。
 fn job_completed_text(job_id: &str, status: JobStatus, detail: Option<&str>) -> String {
     let status = match status {
@@ -352,9 +365,9 @@ fn job_completed_text(job_id: &str, status: JobStatus, detail: Option<&str>) -> 
 
 #[cfg(test)]
 mod tests {
-    use agent::JobStatus;
+    use agent::{CompactionTrigger, JobStatus};
 
-    use super::job_completed_text;
+    use super::{compaction_ended_text, compaction_started_text, job_completed_text};
 
     #[test]
     fn job_completed_line_is_rendered() {
@@ -369,6 +382,26 @@ mod tests {
         assert_eq!(
             job_completed_text("bash-3", JobStatus::Failed, None),
             "[任务完成：bash-3（failed）]"
+        );
+    }
+
+    #[test]
+    fn compaction_lines_are_rendered() {
+        assert_eq!(
+            compaction_started_text("compaction-1", CompactionTrigger::Auto),
+            "[压缩开始：compaction-1（自动）]"
+        );
+        assert_eq!(
+            compaction_started_text("compaction-2", CompactionTrigger::Manual),
+            "[压缩开始：compaction-2（手动）]"
+        );
+        assert_eq!(
+            compaction_ended_text("compaction-1", None),
+            "[压缩完成：compaction-1]"
+        );
+        assert_eq!(
+            compaction_ended_text("compaction-1", Some("boom")),
+            "[压缩失败：compaction-1：boom]"
         );
     }
 }

@@ -10,6 +10,7 @@ mod id;
 mod repair;
 mod store;
 
+pub use derive::{COMPACTION_PREAMBLE, SUMMARY_CLOSE_TAG, SUMMARY_OPEN_TAG};
 pub use error::SessionError;
 pub use event::{Event, EventKind, SessionHeader, TodoItem, TodoStatus, TurnEndReason, last_todos};
 pub use id::SessionId;

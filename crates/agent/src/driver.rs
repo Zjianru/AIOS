@@ -15,12 +15,13 @@ use tokio::sync::Notify;
 use tokio::sync::broadcast;
 use tools::{ToolCall, ToolContext, ToolSessionState, ToolSet, execute_batch};
 
+use crate::compaction;
 use crate::error::AgentError;
 use crate::inbox::{Delivery, Inbox, InboxTarget};
 use crate::instructions::InstructionState;
 use crate::prune;
 use crate::skill_catalog::SkillCatalogState;
-use crate::{AgentConfig, AgentEvent, Deps, JobStatus, TurnOutcome};
+use crate::{AgentConfig, AgentEvent, CompactionTrigger, Deps, JobStatus, TurnOutcome};
 
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
@@ -60,17 +61,23 @@ pub(crate) struct Inner {
     instructions: Mutex<InstructionState>,
     /// skill 目录注入状态（T005.6）。
     skill_catalog: Mutex<SkillCatalogState>,
-    model: DeepSeek,
-    tools: ToolSet,
+    pub(crate) model: DeepSeek,
+    pub(crate) tools: ToolSet,
     /// 会话级工具状态（观察表/spill/任务注册表）；续接时新建，不继承上一次。
     tool_session: Arc<ToolSessionState>,
     max_parallel_tool_calls: usize,
     /// 单个工具结果内联进上下文的 token 预算；0 表示禁用 spill（AgentConfig 同名）。
     spill_max_inline_tokens: usize,
-    store: Mutex<SessionStore>,
+    /// 压缩阈值比例（T005.8a）。
+    pub(crate) compaction_threshold_ratio: f64,
+    /// 压缩后保留的近期上下文比例（T005.8a）。
+    pub(crate) compaction_retain_ratio: f64,
+    /// 压缩阈值公式里的预留输出 token（T005.8a）。
+    pub(crate) compaction_headroom_tokens: u64,
+    pub(crate) store: Mutex<SessionStore>,
     inbox: Mutex<Inbox>,
     state: Mutex<RunState>,
-    events: broadcast::Sender<AgentEvent>,
+    pub(crate) events: broadcast::Sender<AgentEvent>,
     idle_notify: Notify,
     /// 取消时唤醒正在等模型流的 step（让流读取立刻停下）。
     cancel_notify: Arc<Notify>,
@@ -123,6 +130,9 @@ impl Inner {
             tool_session,
             max_parallel_tool_calls: config.max_parallel_tool_calls,
             spill_max_inline_tokens: config.spill_max_inline_tokens,
+            compaction_threshold_ratio: config.compaction_threshold_ratio,
+            compaction_retain_ratio: config.compaction_retain_ratio,
+            compaction_headroom_tokens: config.compaction_headroom_tokens,
             store: Mutex::new(store),
             inbox: Mutex::new(Inbox::default()),
             state: Mutex::new(RunState {
@@ -281,7 +291,7 @@ impl Inner {
         }
     }
 
-    fn append(&self, kinds: &[EventKind]) -> Result<(), AgentError> {
+    pub(crate) fn append(&self, kinds: &[EventKind]) -> Result<(), AgentError> {
         self.store
             .lock()
             .expect("agent 会话锁被毒化")
@@ -549,7 +559,9 @@ async fn run_step(
     // T005.2：派生请求之前，把「旧」超大工具结果换成 head+marker+tail 的修剪视图
     // （追加 compaction/prune 事件，原始 tool/result 保留在日志里可回放）。
     prune_old_tool_results(inner, turn)?;
-    let messages = inner
+    // T005.8a：请求前检查 token 压力；越过阈值就压缩较早历史（失败不打断本轮，事件已记录）。
+    let _ = compaction::compact_if_needed(inner, turn, CompactionTrigger::Auto, false).await;
+    let mut messages = inner
         .store
         .lock()
         .expect("agent 会话锁被毒化")
@@ -566,6 +578,7 @@ async fn run_step(
     let mut finish: Option<FinishReason> = None;
     let mut content_emitted = false;
     let mut attempt: u32 = 0;
+    let mut overflow_retries = 0_u32;
     'attempts: loop {
         if abort.load(Ordering::SeqCst) {
             return Ok(StepEnd::Aborted);
@@ -575,6 +588,25 @@ async fn run_step(
             Err(error) => {
                 if abort.load(Ordering::SeqCst) || error.code == ErrorCode::Aborted {
                     return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
+                }
+                // T005.8a：上下文溢出先压缩再重试一次；压缩不了或第二次溢出按正常错误收尾。
+                if error.code == ErrorCode::ContextWindowExceeded && overflow_retries == 0 {
+                    overflow_retries = 1;
+                    let compacted =
+                        compaction::compact_if_needed(inner, turn, CompactionTrigger::Auto, true)
+                            .await?;
+                    if !compacted {
+                        return Err(AgentError::Model(error));
+                    }
+                    messages = inner
+                        .store
+                        .lock()
+                        .expect("agent 会话锁被毒化")
+                        .derive_messages();
+                    continue 'attempts;
+                }
+                if error.code == ErrorCode::ContextWindowExceeded {
+                    return Err(AgentError::Model(error));
                 }
                 match decide_retry(inner, &cancel, &error, &mut attempt, content_emitted).await {
                     RetryDecision::Retry => {
