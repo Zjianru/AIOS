@@ -7,6 +7,7 @@ mod derive;
 mod error;
 mod event;
 mod id;
+mod lock;
 mod repair;
 mod store;
 
