@@ -208,6 +208,9 @@ impl ScriptedSseServer {
                 let Some(mut stream) = accept_while_running(&listener, &stopped_in_thread) else {
                     return;
                 };
+                // macOS 上 accept 出来的 socket 可能继承 listener 的非阻塞标志；
+                // 这里显式恢复阻塞，否则请求体还没到时 read 会 WouldBlock、记录不到。
+                let _ = stream.set_nonblocking(false);
                 if let Some(body) = read_request(&mut stream) {
                     bodies_in_thread
                         .lock()
