@@ -6,12 +6,16 @@
 
 use model::{ContentBlock, Message};
 
-use crate::{AbortCause, Event, EventKind, ToolError, TurnEndReason};
+use crate::{Event, EventKind, ToolError, TurnEndReason};
 
 /// 已记录开始、但结果没有落盘的调用：结果未知，重试前先核实外部状态。
 const TOOL_OUTCOME_UNKNOWN: &str = "TOOL_OUTCOME_UNKNOWN";
 /// assistant 请求过、但 Harness 还没记录开始的调用：需要时可以重试。
 const TOOL_NOT_STARTED: &str = "TOOL_NOT_STARTED";
+
+/// 错误身份名照 DSH repair.ts:187-190。
+const OUTCOME_UNKNOWN_ERROR: &str = "ToolOutcomeUnknownError";
+const NOT_STARTED_ERROR: &str = "ToolNotStartedError";
 
 /// 模型可见文案逐字照抄 DSH 的 repair.ts:32-41；不改写、不翻译。
 const OUTCOME_UNKNOWN_TEXT: &str = "The tool call was interrupted after it was recorded, but no result was durably recorded. Its outcome is unknown. Decide whether to retry from the tool semantics: retry only if the operation is read-only or idempotent; if it may have side effects, first verify external state or ask the user. Do not retry blindly.";
@@ -115,19 +119,25 @@ pub fn interrupted_turn_closers(events: &[Event]) -> Option<TurnClosers> {
         }
     }
     let turn = open_turn?;
+    // 最后一个真实事件给合成事件提供时间基准（DSH repair.ts:88-96：确定性，不发明未来时间）。
+    let time = events.last().map_or(0, |event| event.time);
     let mut closers = Vec::with_capacity(pending.len() + 2);
     for call in pending {
-        let (code, text) = if call.started {
-            (TOOL_OUTCOME_UNKNOWN, OUTCOME_UNKNOWN_TEXT)
+        let (name, code, text) = if call.started {
+            (
+                OUTCOME_UNKNOWN_ERROR,
+                TOOL_OUTCOME_UNKNOWN,
+                OUTCOME_UNKNOWN_TEXT,
+            )
         } else {
-            (TOOL_NOT_STARTED, NOT_STARTED_TEXT)
+            (NOT_STARTED_ERROR, TOOL_NOT_STARTED, NOT_STARTED_TEXT)
         };
         closers.push(EventKind::ToolResult {
             turn: call.turn,
             step: call.step,
             message: Message::tool_result(call.call_id, text, true),
             error: Some(ToolError {
-                name: "HarnessError".to_owned(),
+                name: name.to_owned(),
                 code: code.to_owned(),
             }),
         });
@@ -137,12 +147,10 @@ pub fn interrupted_turn_closers(events: &[Event]) -> Option<TurnClosers> {
     }
     closers.push(EventKind::TurnEnd {
         turn,
-        reason: TurnEndReason::Aborted {
-            reason: AbortCause::User,
-        },
+        reason: TurnEndReason::Interrupted,
     });
     Some(TurnClosers {
         events: closers,
-        time: 0,
+        time,
     })
 }

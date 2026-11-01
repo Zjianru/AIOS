@@ -201,17 +201,15 @@ impl SessionStore {
     /// 按给定的 time 追加一批事件（seq 仍由 store 连续分配）。
     ///
     /// 中断修复的事件复用最后一个真实事件的时间（照 DSH repair.ts:88-96）。
-    /// skeleton：时间参数暂未使用，实现补上。
     pub fn append_with_time(
         &mut self,
         kinds: &[EventKind],
-        _time: u64,
+        time: u64,
     ) -> Result<Vec<u64>, SessionError> {
         if kinds.is_empty() {
             return Ok(Vec::new());
         }
         let first_seq = self.events.len() as u64 + 1;
-        let time = now_ms();
         let mut batch = Vec::with_capacity(kinds.len());
         let mut buffer = String::new();
         for (offset, kind) in kinds.iter().enumerate() {
