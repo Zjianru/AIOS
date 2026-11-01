@@ -1,6 +1,7 @@
 //! agent 收件箱：follow-up 进下一轮，steer/inject 进下一步。
 
 use model::{Message, UserMessage};
+use session::InboxTarget;
 
 /// 消息投递方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,13 +26,6 @@ impl Delivery {
             Self::Steer | Self::Inject => InboxTarget::NextStep,
         }
     }
-}
-
-/// 待领取的两条队列。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum InboxTarget {
-    NextTurn,
-    NextStep,
 }
 
 /// 待领取的用户消息。

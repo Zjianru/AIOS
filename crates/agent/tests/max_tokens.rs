@@ -143,7 +143,10 @@ async fn max_tokens_does_not_execute_or_log_truncated_tool_call() {
     ]);
     let (tools, mut started, _permits) = gated_tools();
     let (agent, data_dir, _cwd, id) = setup_agent(&server.base_url(), tools).await;
-    agent.send(UserMessage::text("截断一个工具调用"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("截断一个工具调用"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 5).await;
 
     assert!(started.try_recv().is_err(), "被截断的工具调用不能执行");
@@ -165,7 +168,10 @@ async fn max_tokens_does_not_execute_or_log_truncated_tool_call() {
     assert_eq!(server.request_bodies().len(), 1);
 
     // 下一轮请求里不能出现不配对的 tool_use（协议安全）。
-    agent.send(UserMessage::text("继续"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("继续"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 5).await;
     let store = SessionStore::open(data_dir.path(), &id).unwrap();
     assert_eq!(count_turns(&store), 2);
@@ -196,7 +202,10 @@ async fn max_tokens_keeps_text_but_drops_truncated_tool_call() {
     ]);
     let (tools, mut started, _permits) = gated_tools();
     let (agent, data_dir, _cwd, id) = setup_agent(&server.base_url(), tools).await;
-    agent.send(UserMessage::text("先说半截再截断工具"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("先说半截再截断工具"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 5).await;
 
     assert!(started.try_recv().is_err(), "工具不能执行");
@@ -211,7 +220,10 @@ async fn max_tokens_keeps_text_but_drops_truncated_tool_call() {
         "text 保留、截断的 tool-call 块丢弃"
     );
 
-    agent.send(UserMessage::text("继续"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("继续"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 5).await;
     let bodies = server.request_bodies();
     assert_eq!(bodies.len(), 2);
@@ -258,10 +270,16 @@ async fn max_tokens_stays_sticky_across_later_step() {
     ]);
     let (tools, mut started, _permits) = gated_tools();
     let (agent, data_dir, _cwd, id) = setup_agent(&server.base_url(), tools).await;
-    agent.send(UserMessage::text("截断这一轮"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("截断这一轮"), Delivery::FollowUp)
+        .await
+        .unwrap();
     // Step1 已经把前缀写出来、还没结算；此时插一句 steer，进 next-step。
     server.wait_ready().await;
-    agent.send(UserMessage::text("再补一句"), Delivery::Steer);
+    agent
+        .send(UserMessage::text("再补一句"), Delivery::Steer)
+        .await
+        .unwrap();
     server.release();
     wait_idle(&agent, 10).await;
 

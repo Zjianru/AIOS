@@ -41,7 +41,10 @@ async fn first_request_includes_root_to_cwd_chain() {
     // 用户级根还包括 <data-dir>（由 agent 固定加入）。
     std::fs::write(data_dir.path().join("AGENTS.md"), "DATA-INSTRUCTION\n").unwrap();
 
-    agent.send(UserMessage::text("看一下指令"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("看一下指令"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let requests = server.received_requests().await.unwrap();
@@ -94,7 +97,10 @@ async fn deeper_directory_instructions_added_on_next_request() {
     )
     .await;
 
-    agent.send(UserMessage::text("读一下深目录"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("读一下深目录"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let requests = server.received_requests().await.unwrap();
@@ -134,7 +140,10 @@ async fn duplicate_instruction_content_rendered_once() {
     )
     .await;
 
-    agent.send(UserMessage::text("看指令"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("看指令"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let requests = server.received_requests().await.unwrap();

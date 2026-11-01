@@ -49,7 +49,10 @@ async fn pure_text_turn() {
     let (agent, data_dir, cwd, session_id) = setup_agent(&server.uri(), ToolSet::empty()).await;
     let canonical_cwd = std::fs::canonicalize(cwd.path()).unwrap();
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("你好"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("你好"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let mut streamed = String::new();

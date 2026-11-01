@@ -68,7 +68,10 @@ async fn injection_happens_before_compaction_in_same_turn() {
     )
     .await
     .unwrap();
-    agent.send(UserMessage::text("第一轮"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("第一轮"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let store = SessionStore::open(data_dir.path(), &id).unwrap();

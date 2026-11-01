@@ -35,7 +35,10 @@ async fn todo_write_appends_event_and_stays_in_history() {
         .await;
     let (agent, data_dir, _cwd, id) = common::setup_agent(&server.uri(), ToolSet::builtin()).await;
 
-    agent.send(UserMessage::text("plan it"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("plan it"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let store = SessionStore::open(data_dir.path(), &id).unwrap();
@@ -78,7 +81,10 @@ async fn resume_restores_todo_list_and_replacement_wins() {
         .mount(&server)
         .await;
     let (agent, data_dir, _cwd, id) = common::setup_agent(&server.uri(), ToolSet::builtin()).await;
-    agent.send(UserMessage::text("first"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("first"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
     drop(agent);
 
@@ -104,7 +110,10 @@ async fn resume_restores_todo_list_and_replacement_wins() {
     )
     .await
     .expect("续接应成功");
-    resumed.send(UserMessage::text("second"), Delivery::FollowUp);
+    resumed
+        .send(UserMessage::text("second"), Delivery::FollowUp)
+        .await
+        .unwrap();
     resumed.idle().await;
 
     let requests = server.received_requests().await.unwrap();

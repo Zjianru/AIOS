@@ -10,7 +10,8 @@ use model::{Message, Role, Usage};
 use serde_json::{Value, json};
 
 use crate::{
-    AbortCause, EventKind, LlmFailure, SessionStore, TodoItem, TodoStatus, ToolError, TurnEndReason,
+    AbortCause, EventKind, InboxOutcome, InboxTarget, LlmFailure, SessionStore, TodoItem,
+    TodoStatus, ToolError, TurnEndReason,
 };
 
 fn create_store() -> (tempfile::TempDir, tempfile::TempDir, SessionStore) {
@@ -242,6 +243,13 @@ fn all_event_kinds_round_trip_under_dsh_envelope() {
             turn: 1,
             step: 1,
             question_id: "q1".to_owned(),
+        },
+        EventKind::InboxSpliced {
+            target: InboxTarget::NextTurn,
+            start: 0,
+            removed_count: None,
+            inserted: vec![Message::text(Role::User, "排队")],
+            outcome: Some(InboxOutcome::Canceled),
         },
         EventKind::AssistantMessage {
             turn: 1,

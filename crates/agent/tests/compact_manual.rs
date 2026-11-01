@@ -97,7 +97,9 @@ async fn manual_compact_while_idle_compresses_immediately() {
     let mut events = harness.agent.subscribe();
     harness
         .agent
-        .send(UserMessage::text("TEXT-OLD manual"), Delivery::FollowUp);
+        .send(UserMessage::text("TEXT-OLD manual"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&harness.agent, 20).await;
 
     let done = tokio::time::timeout(std::time::Duration::from_secs(10), harness.agent.compact())
@@ -167,7 +169,9 @@ async fn manual_compact_queues_until_turn_end() {
 
     harness
         .agent
-        .send(UserMessage::text("run gated"), Delivery::FollowUp);
+        .send(UserMessage::text("run gated"), Delivery::FollowUp)
+        .await
+        .unwrap();
     let started = started_rx.recv().await.expect("工具应收到调用");
     assert!(matches!(started, ToolEvent::Started(name) if name == "gated"));
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
@@ -228,7 +232,9 @@ async fn resume_after_compaction_derives_same_messages() {
     let harness = setup(&server, ToolSet::builtin(), 0.000001).await;
     harness
         .agent
-        .send(UserMessage::text("TEXT-OLD resume"), Delivery::FollowUp);
+        .send(UserMessage::text("TEXT-OLD resume"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&harness.agent, 20).await;
     harness.agent.compact().await;
     let store = SessionStore::open(harness.data_dir.path(), &harness.id).unwrap();
@@ -268,7 +274,10 @@ async fn resume_after_compaction_derives_same_messages() {
         "续接后的派生请求应与退出前一致"
     );
 
-    resumed.send(UserMessage::text("TEXT-NEW resume"), Delivery::FollowUp);
+    resumed
+        .send(UserMessage::text("TEXT-NEW resume"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&resumed, 20).await;
     let requests = server.received_requests().await.unwrap();
     let bodies = bodies(&requests);
@@ -297,7 +306,9 @@ async fn compaction_ids_are_unique_across_resume() {
     let harness = setup(&server, ToolSet::builtin(), 0.000001).await;
     harness
         .agent
-        .send(UserMessage::text("ID-ONE history"), Delivery::FollowUp);
+        .send(UserMessage::text("ID-ONE history"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&harness.agent, 20).await;
     harness.agent.compact().await;
     drop(harness.agent);
@@ -356,7 +367,9 @@ async fn compact_and_get_id() -> String {
     let harness = setup(&server, ToolSet::builtin(), 0.000001).await;
     harness
         .agent
-        .send(UserMessage::text("TEXT-PROCESS id"), Delivery::FollowUp);
+        .send(UserMessage::text("TEXT-PROCESS id"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&harness.agent, 20).await;
     harness.agent.compact().await;
     let store = SessionStore::open(harness.data_dir.path(), &harness.id).unwrap();
@@ -420,7 +433,9 @@ async fn idle_compact_does_not_create_empty_turn() {
     let harness = setup(&server, ToolSet::builtin(), 0.000001).await;
     harness
         .agent
-        .send(UserMessage::text("TEXT-EMPTY turn"), Delivery::FollowUp);
+        .send(UserMessage::text("TEXT-EMPTY turn"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&harness.agent, 20).await;
     let turn_starts = |data_dir: &std::path::Path| {
         SessionStore::open(data_dir, &harness.id)
@@ -454,7 +469,9 @@ async fn two_compacts_in_same_batch_coalesce_into_one() {
     let harness = setup(&server, ToolSet::builtin(), 0.000001).await;
     harness
         .agent
-        .send(UserMessage::text("TEXT-BATCH batch"), Delivery::FollowUp);
+        .send(UserMessage::text("TEXT-BATCH batch"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&harness.agent, 20).await;
     let both = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         tokio::join!(harness.agent.compact(), harness.agent.compact())
@@ -494,7 +511,9 @@ async fn second_compact_during_compaction_completes() {
     let harness = setup(&server, ToolSet::builtin(), 0.000001).await;
     harness
         .agent
-        .send(UserMessage::text("TEXT-DURING during"), Delivery::FollowUp);
+        .send(UserMessage::text("TEXT-DURING during"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&harness.agent, 20).await;
     let mut events = harness.agent.subscribe();
 

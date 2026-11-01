@@ -18,13 +18,15 @@ pub enum AgentError {
         field: &'static str,
         message: String,
     },
+    #[error("会话日志里的输入队列损坏: {0}")]
+    CorruptInbox(String),
 }
 
 impl AgentError {
     /// 写进 turn/end 的稳定错误码。
     pub(crate) fn code(&self) -> String {
         match self {
-            Self::Store(_) => "STORE".to_owned(),
+            Self::Store(_) | Self::CorruptInbox(_) => "STORE".to_owned(),
             Self::Model(error) => error.code.as_str(),
             Self::ResumeIdMismatch { .. }
             | Self::StepCleanup { .. }

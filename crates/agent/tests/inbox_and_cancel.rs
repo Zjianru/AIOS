@@ -134,14 +134,20 @@ async fn steer_enters_next_step_while_running() {
     )]);
     let (agent, data_dir, _cwd, session_id) = new_agent(&server.uri(), tools, 10).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("开始"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("开始"), Delivery::FollowUp)
+        .await
+        .unwrap();
     assert_eq!(
         started.recv().await,
         Some(ToolEvent::Started("gate".to_owned())),
         "工具先跑起来，这一轮还没结束"
     );
     // 模型这一轮还在跑，插一句 steer：它要进下一步的请求。
-    agent.send(UserMessage::text("插一句"), Delivery::Steer);
+    agent
+        .send(UserMessage::text("插一句"), Delivery::Steer)
+        .await
+        .unwrap();
     permits[0].1.add_permits(1);
     agent.idle().await;
 
@@ -197,7 +203,10 @@ async fn inject_enters_next_step_without_waking_idle_loop() {
     mount_sequence(&server, vec![FINAL_TEXT_SSE.to_owned()]).await;
     let (agent, data_dir, _cwd, session_id) = new_agent(&server.uri(), ToolSet::empty(), 10).await;
     // 空闲时 inject：下一步的请求要带上它，但不唤醒 loop、不产生 turn。
-    agent.send(UserMessage::text("注入"), Delivery::Inject);
+    agent
+        .send(UserMessage::text("注入"), Delivery::Inject)
+        .await
+        .unwrap();
     agent.idle().await;
     let after_inject = SessionStore::open(data_dir.path(), &session_id).unwrap();
     assert_eq!(
@@ -207,7 +216,10 @@ async fn inject_enters_next_step_without_waking_idle_loop() {
     );
     drop(after_inject);
 
-    agent.send(UserMessage::text("继续"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("继续"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
     let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
     assert_eq!(count_turns(reopened.events()), 1);
@@ -248,12 +260,18 @@ async fn follow_up_opens_next_turn() {
         &mut permits,
     )]);
     let (agent, data_dir, _cwd, session_id) = new_agent(&server.uri(), tools, 10).await;
-    agent.send(UserMessage::text("第一句"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("第一句"), Delivery::FollowUp)
+        .await
+        .unwrap();
     assert_eq!(
         started.recv().await,
         Some(ToolEvent::Started("gate".to_owned()))
     );
-    agent.send(UserMessage::text("下一轮"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("下一轮"), Delivery::FollowUp)
+        .await
+        .unwrap();
     permits[0].1.add_permits(1);
     agent.idle().await;
 
@@ -288,7 +306,10 @@ async fn cancel_mid_stream_keeps_interrupted_text() {
     let (agent, data_dir, _cwd, session_id) =
         new_agent(&server.base_url(), ToolSet::empty(), 10).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("开始流"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("开始流"), Delivery::FollowUp)
+        .await
+        .unwrap();
     server.wait_ready().await;
     // 先确认订阅者真的收到了已流出的文本（driver 已处理完这部分帧，而服务端
     // 还 hold 着连接），再取消；否则取消可能赶在第一个帧被读到之前。
@@ -300,7 +321,7 @@ async fn cancel_mid_stream_keeps_interrupted_text() {
             Err(error) => panic!("事件通道关闭: {error}"),
         }
     }
-    agent.cancel();
+    agent.cancel().await.unwrap();
     agent.idle().await;
     let mut outcome = None;
     while let Ok(event) = events.try_recv() {
@@ -327,7 +348,10 @@ async fn cancel_mid_stream_keeps_interrupted_text() {
 
     // 取消之后会话还能接着用。
     server.release();
-    agent.send(UserMessage::text("再来"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("再来"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
     let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
     assert_eq!(count_turns(reopened.events()), 2);
@@ -366,12 +390,15 @@ async fn cancel_batch_skips_unstarted_calls() {
     ]);
     // 上限 1：gate 跑起来时 gate2 还在排队，取消时它应当被跳过。
     let (agent, data_dir, _cwd, session_id) = new_agent(&server.uri(), tools, 1).await;
-    agent.send(UserMessage::text("跑工具"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("跑工具"), Delivery::FollowUp)
+        .await
+        .unwrap();
     assert_eq!(
         started.recv().await,
         Some(ToolEvent::Started("gate".to_owned()))
     );
-    agent.cancel();
+    agent.cancel().await.unwrap();
     permits[0].1.add_permits(1);
     agent.idle().await;
 
@@ -415,7 +442,10 @@ async fn cancel_batch_skips_unstarted_calls() {
     );
 
     // 取消之后会话还能接着用。
-    agent.send(UserMessage::text("继续"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("继续"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
     let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
     assert_eq!(count_turns(reopened.events()), 2);
@@ -439,7 +469,10 @@ async fn lost_wake_case(delivery: Delivery) {
     .await;
     let (agent, data_dir, _cwd, session_id) = new_agent(&server.uri(), ToolSet::empty(), 10).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("第一轮"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("第一轮"), Delivery::FollowUp)
+        .await
+        .unwrap();
     // driver 在收尾检查之后会显式让出一次调度；这里收到 TurnEnded 就投递，
     // 正好落在「收尾检查 → settle 快照」的窗口里（不靠 sleep）。
     loop {
@@ -449,7 +482,10 @@ async fn lost_wake_case(delivery: Delivery) {
             Err(error) => panic!("事件通道关闭: {error}"),
         }
     }
-    agent.send(UserMessage::text("窗口消息"), delivery);
+    agent
+        .send(UserMessage::text("窗口消息"), delivery)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
@@ -522,7 +558,10 @@ async fn cancel_mid_stream_then_send_makes_exactly_one_more_turn() {
     let (agent, data_dir, _cwd, session_id) =
         new_agent(&server.base_url(), ToolSet::empty(), 10).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("开始"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("开始"), Delivery::FollowUp)
+        .await
+        .unwrap();
     server.wait_ready().await;
     let mut streamed = String::new();
     while streamed != "已经流出来的部分文字。" {
@@ -534,8 +573,11 @@ async fn cancel_mid_stream_then_send_makes_exactly_one_more_turn() {
     }
     // 取消后、这一轮收尾前立刻投递：修复前这里会让 agent 用同一个已 abort 的
     // Phase 空转（idle 不返回、日志无界增长）。
-    agent.cancel();
-    agent.send(UserMessage::text("取消后再来一句"), Delivery::FollowUp);
+    agent.cancel().await.unwrap();
+    agent
+        .send(UserMessage::text("取消后再来一句"), Delivery::FollowUp)
+        .await
+        .unwrap();
     server.release();
     assert!(
         tokio::time::timeout(std::time::Duration::from_secs(3), agent.idle())
@@ -593,14 +635,20 @@ async fn cancel_during_tool_then_send_makes_exactly_one_more_turn() {
         &mut permits,
     )]);
     let (agent, data_dir, _cwd, session_id) = new_agent(&server.uri(), tools, 10).await;
-    agent.send(UserMessage::text("跑工具"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("跑工具"), Delivery::FollowUp)
+        .await
+        .unwrap();
     assert_eq!(
         started.recv().await,
         Some(ToolEvent::Started("gate".to_owned()))
     );
     // 取消要等已开始的工具结束，这个窗口里立刻投递 steer。
-    agent.cancel();
-    agent.send(UserMessage::text("工具窗口里插话"), Delivery::Steer);
+    agent.cancel().await.unwrap();
+    agent
+        .send(UserMessage::text("工具窗口里插话"), Delivery::Steer)
+        .await
+        .unwrap();
     permits[0].1.add_permits(1);
     assert!(
         tokio::time::timeout(std::time::Duration::from_secs(3), agent.idle())
@@ -650,7 +698,10 @@ async fn cancel_keeps_only_safe_interrupted_blocks() {
     let (agent, data_dir, _cwd, session_id) =
         new_agent(&server.base_url(), ToolSet::empty(), 10).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("开始"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("开始"), Delivery::FollowUp)
+        .await
+        .unwrap();
     server.wait_ready().await;
     let mut streamed = String::new();
     while !streamed.ends_with("开着的块") {
@@ -660,7 +711,7 @@ async fn cancel_keeps_only_safe_interrupted_blocks() {
             Err(error) => panic!("事件通道关闭: {error}"),
         }
     }
-    agent.cancel();
+    agent.cancel().await.unwrap();
     server.release();
     agent.idle().await;
 
@@ -706,7 +757,10 @@ async fn steer_wakes_idle_loop() {
     mount_sequence(&server, vec![FINAL_TEXT_SSE.to_owned()]).await;
     let (agent, data_dir, _cwd, session_id) = new_agent(&server.uri(), ToolSet::empty(), 10).await;
     // 空闲时投递 steer：要唤醒 loop、开一轮，并进入下一步的请求。
-    agent.send(UserMessage::text("插一句"), Delivery::Steer);
+    agent
+        .send(UserMessage::text("插一句"), Delivery::Steer)
+        .await
+        .unwrap();
     assert!(
         tokio::time::timeout(std::time::Duration::from_secs(3), agent.idle())
             .await

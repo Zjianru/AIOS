@@ -167,7 +167,10 @@ async fn oversized_tool_result_becomes_preview_with_locator() {
         common::isolated_config(data_dir.path()),
     )
     .await;
-    agent.send(UserMessage::text("跑个大工具"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("跑个大工具"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let stored = tool_result_text(
@@ -238,7 +241,10 @@ async fn zero_spill_threshold_disables_spill() {
         config,
     )
     .await;
-    agent.send(UserMessage::text("跑个大工具"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("跑个大工具"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let stored = tool_result_text(
@@ -281,7 +287,10 @@ async fn tool_result_pruned_before_next_request() {
         common::isolated_config(data_dir.path()),
     )
     .await;
-    agent.send(UserMessage::text("第一轮：跑大工具"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("第一轮：跑大工具"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
     // 同一轮第二步的请求里还是全文（只修剪「旧」结果）。
     let requests = server.received_requests().await.unwrap();
@@ -289,7 +298,10 @@ async fn tool_result_pruned_before_next_request() {
     let second = String::from_utf8(requests[1].body.clone()).unwrap();
     assert!(!second.contains("[... tool result middle pruned ...]"));
 
-    agent.send(UserMessage::text("第二轮：再来"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("第二轮：再来"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 3);

@@ -22,7 +22,7 @@ mod todo_capability;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use model::{DeepSeek, Usage, UserMessage};
+use model::{DeepSeek, Message, Usage, UserMessage};
 use session::{SessionId, SessionStore, TurnEndReason};
 use tools::ToolSet;
 
@@ -219,6 +219,12 @@ pub enum AgentEvent {
         status: JobStatus,
         detail: Option<String>,
     },
+    /// 输入队列：一条消息被插进待处理列表（DSH agent/inbox/inserted；只是通知，不落日志）。
+    InboxInserted { message: Message },
+    /// 输入队列：一条消息被领进某一步（DSH agent/inbox/claimed；只是通知，不落日志）。
+    InboxClaimed { message: Message, turn: u64 },
+    /// 输入队列：一条待处理消息被取消丢掉（DSH agent/inbox/discarded；只是通知，不落日志）。
+    InboxDiscarded { message: Message },
     /// 一轮结束；idle() 返回之前一定已经发出。
     TurnEnded { turn: u64, outcome: TurnOutcome },
 }
@@ -277,13 +283,14 @@ impl Agent {
     }
 
     /// 投递一条用户消息。delivery 决定它进入下一轮还是下一步。
-    pub fn send(&self, message: UserMessage, delivery: Delivery) {
-        self.inner.send(message, delivery);
+    /// T006.2a：返回时消息已经写进会话日志（重启后队列还在）。
+    pub async fn send(&self, message: UserMessage, delivery: Delivery) -> Result<(), AgentError> {
+        self.inner.send(message, delivery).await
     }
 
-    /// 取消：清空收件箱；正在跑的一轮在下一次检查点停下。
-    pub fn cancel(&self) {
-        self.inner.cancel();
+    /// 取消：清空收件箱并中止正在跑的一轮；清空也写进会话日志（T006.2a）。
+    pub async fn cancel(&self) -> Result<(), AgentError> {
+        self.inner.cancel().await
     }
 
     /// T005.10：回答问题。question_id 必须是当前等待的问题；返回是否送达。

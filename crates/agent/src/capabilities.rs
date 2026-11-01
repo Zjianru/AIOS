@@ -95,7 +95,8 @@ pub(crate) trait LoopAccess: Send + Sync {
     /// 当前轮次的 abort 标志（ask 能力等待答案时要检查取消；Running 时总有）。
     fn current_abort(&self) -> Option<Arc<AtomicBool>>;
     /// 把一段上下文消息投进会话（后台任务结算通知用；按 phase 选 NextStep/NextTurn）。
-    fn enqueue_context(&self, text: String);
+    /// T006.2a 起走同一条 durable splice（返回 future，调用方 await 落盘后再 wake）。
+    fn enqueue_context<'a>(&'a self, text: String) -> BoxedFuture<'a, ()>;
 }
 
 /// 每个挂点一份 typed 事件：host 访问面 + 该挂点可用的运行态数据。
@@ -244,6 +245,10 @@ pub(crate) enum HookOutcome {
 /// dyn 兼容的异步返回；不加 async-trait 依赖。
 pub(crate) type HookFuture<'a> =
     Pin<Box<dyn Future<Output = Result<HookOutcome, AgentError>> + Send + 'a>>;
+
+/// 非挂点异步入口的返回（输入队列写入等要 await 落盘 + 钩子）。
+pub(crate) type BoxedFuture<'a, T> =
+    Pin<Box<dyn Future<Output = Result<T, AgentError>> + Send + 'a>>;
 
 /// dispatch 聚合结果：overrides（同 index 后写胜出）、最后非 None 的 content、abort 优先。
 #[derive(Default)]
@@ -449,6 +454,7 @@ pub(crate) fn event_context(kind: &EventKind) -> Option<(u64, u64)> {
             (*turn, 0)
         }
         EventKind::TodoWrite { .. }
+        | EventKind::InboxSpliced { .. }
         | EventKind::CompactionSummary { .. }
         | EventKind::CompactionPrune { .. } => return None,
     };
@@ -505,7 +511,7 @@ mod dispatch_contract_tests {
         fn current_abort(&self) -> Option<Arc<AtomicBool>> {
             unimplemented!()
         }
-        fn enqueue_context(&self, _text: String) {
+        fn enqueue_context<'a>(&'a self, _text: String) -> BoxedFuture<'a, ()> {
             unimplemented!()
         }
     }

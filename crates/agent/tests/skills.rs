@@ -40,7 +40,10 @@ async fn first_request_contains_skill_catalog() {
     )
     .await;
 
-    agent.send(UserMessage::text("看看 skill"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("看看 skill"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let requests = server.received_requests().await.unwrap();
@@ -101,7 +104,10 @@ async fn catalog_lists_user_and_configured_roots_with_project_shadowing() {
         "---\nname: bar\ndescription: BAR-DESC.\n---\nBar body.\n",
     );
 
-    agent.send(UserMessage::text("看目录"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("看目录"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let requests = server.received_requests().await.unwrap();
@@ -119,7 +125,10 @@ async fn no_skills_means_no_catalog_message() {
     let cwd = tempfile::tempdir().unwrap();
     let (agent, _data_dir, _id) =
         setup_agent_custom(&server.uri(), ToolSet::builtin(), cwd.path(), Vec::new()).await;
-    agent.send(UserMessage::text("没有 skill"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("没有 skill"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
     let requests = server.received_requests().await.unwrap();
     let first = String::from_utf8(requests[0].body.clone()).unwrap();

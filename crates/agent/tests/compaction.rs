@@ -81,15 +81,23 @@ async fn pressure_triggers_compaction_and_next_request_uses_summary() {
     let harness = setup(&server, 1000, 100, 1, 0.16).await;
     let mut events = harness.agent.subscribe();
 
-    harness.agent.send(
-        UserMessage::text("TEXT-ONE early request"),
-        Delivery::FollowUp,
-    );
+    harness
+        .agent
+        .send(
+            UserMessage::text("TEXT-ONE early request"),
+            Delivery::FollowUp,
+        )
+        .await
+        .unwrap();
     harness.agent.idle().await;
-    harness.agent.send(
-        UserMessage::text(format!("TEXT-TWO {}", "y".repeat(3000))),
-        Delivery::FollowUp,
-    );
+    harness
+        .agent
+        .send(
+            UserMessage::text(format!("TEXT-TWO {}", "y".repeat(3000))),
+            Delivery::FollowUp,
+        )
+        .await
+        .unwrap();
     wait_idle(&harness.agent, 20).await;
 
     let requests = server.received_requests().await.unwrap();
@@ -166,11 +174,15 @@ async fn overflow_compacts_then_retries_once() {
     let harness = setup(&server, 1_000_000, 2048, 65_536, 0.000001).await;
     harness
         .agent
-        .send(UserMessage::text("OVERFLOW-ONE early"), Delivery::FollowUp);
+        .send(UserMessage::text("OVERFLOW-ONE early"), Delivery::FollowUp)
+        .await
+        .unwrap();
     harness.agent.idle().await;
     harness
         .agent
-        .send(UserMessage::text("OVERFLOW-TWO big"), Delivery::FollowUp);
+        .send(UserMessage::text("OVERFLOW-TWO big"), Delivery::FollowUp)
+        .await
+        .unwrap();
     harness.agent.idle().await;
 
     let requests = server.received_requests().await.unwrap();
@@ -214,11 +226,15 @@ async fn second_overflow_after_compaction_is_fatal() {
     let mut events = harness.agent.subscribe();
     harness
         .agent
-        .send(UserMessage::text("FATAL-ONE early"), Delivery::FollowUp);
+        .send(UserMessage::text("FATAL-ONE early"), Delivery::FollowUp)
+        .await
+        .unwrap();
     harness.agent.idle().await;
     harness
         .agent
-        .send(UserMessage::text("FATAL-TWO big"), Delivery::FollowUp);
+        .send(UserMessage::text("FATAL-TWO big"), Delivery::FollowUp)
+        .await
+        .unwrap();
     harness.agent.idle().await;
 
     let requests = server.received_requests().await.unwrap();

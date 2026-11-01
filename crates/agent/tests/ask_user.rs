@@ -90,7 +90,10 @@ async fn question_event_stops_loop_until_answer_then_resumes() {
     mount(&server, vec![ask_call("q1"), FINAL_TEXT_SSE.to_owned()]).await;
     let (agent, _data, _id) = setup(&server).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
     let AgentEvent::QuestionAsked { questions } = next_question(&mut events).await else {
         unreachable!()
     };
@@ -120,7 +123,10 @@ async fn answer_continues_same_turn_and_logs_question() {
     mount(&server, vec![ask_call("q2"), FINAL_TEXT_SSE.to_owned()]).await;
     let (agent, data_dir, id) = setup(&server).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
     let AgentEvent::QuestionAsked { questions } = next_question(&mut events).await else {
         unreachable!()
     };
@@ -149,11 +155,14 @@ async fn cancel_while_waiting_revokes_question_and_aborts_turn() {
     mount(&server, vec![ask_call("q3"), FINAL_TEXT_SSE.to_owned()]).await;
     let (agent, data_dir, id) = setup(&server).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
     let AgentEvent::QuestionAsked { questions } = next_question(&mut events).await else {
         unreachable!()
     };
-    agent.cancel();
+    agent.cancel().await.unwrap();
     wait_idle(&agent, 20).await;
     assert_eq!(bodies(&server).await.len(), 1, "取消后不再发请求");
     assert!(
@@ -212,7 +221,10 @@ async fn two_questions_are_all_delivered_and_answered() {
     .await;
     let (agent, data_dir, id) = setup(&server).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
     let AgentEvent::QuestionAsked { questions } = next_question(&mut events).await else {
         unreachable!()
     };
@@ -262,7 +274,10 @@ async fn invalid_ask_goes_through_unified_tool_result_path() {
     mount(&server, vec![response, FINAL_TEXT_SSE.to_owned()]).await;
     let (agent, data_dir, id) = setup(&server).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 20).await;
     let bodies = bodies(&server).await;
     assert_eq!(bodies.len(), 2);
@@ -320,7 +335,10 @@ async fn duplicate_question_ids_reject_whole_call() {
     )]);
     mount(&server, vec![response, FINAL_TEXT_SSE.to_owned()]).await;
     let (agent, data_dir, id) = setup(&server).await;
-    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 20).await;
     let bodies = bodies(&server).await;
     assert_eq!(bodies.len(), 2, "重复 id 应整单拒绝并继续本轮，不悬挂");
@@ -347,13 +365,16 @@ async fn cancel_after_partial_answers_does_not_hang() {
     .await;
     let (agent, data_dir, id) = setup(&server).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
     let AgentEvent::QuestionAsked { questions } = next_question(&mut events).await else {
         unreachable!()
     };
     assert_eq!(questions.len(), 2);
     assert!(agent.answer("q1", "ONLY-ONE").await);
-    agent.cancel();
+    agent.cancel().await.unwrap();
     wait_idle(&agent, 20).await;
     assert_eq!(bodies(&server).await.len(), 1, "取消后不再发请求");
     let store = session::SessionStore::open(data_dir.path(), &id).unwrap();
@@ -381,11 +402,14 @@ async fn cancel_turn_ends_aborted_not_error() {
     mount(&server, vec![ask_call("q5"), FINAL_TEXT_SSE.to_owned()]).await;
     let (agent, _data_dir, _id) = setup(&server).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
     let AgentEvent::QuestionAsked { .. } = next_question(&mut events).await else {
         unreachable!()
     };
-    agent.cancel();
+    agent.cancel().await.unwrap();
     wait_idle(&agent, 20).await;
     let mut outcome: Option<TurnOutcome> = None;
     while let Ok(event) = events.try_recv() {

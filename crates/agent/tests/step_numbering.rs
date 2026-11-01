@@ -73,14 +73,23 @@ async fn each_turn_starts_step_numbering_at_one() {
     let permits: Vec<_> = permits.into_iter().map(|(_, permit)| permit).collect();
     let (agent, data_dir, _cwd, id) = setup_agent(&server.uri(), tools).await;
 
-    agent.send(UserMessage::text("第一轮"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("第一轮"), Delivery::FollowUp)
+        .await
+        .unwrap();
     assert_eq!(next_started(&mut started).await, "gate");
     // 第一轮跑工具时排一条 follow-up：轮末已有 pending，kick 直接开第二轮。
-    agent.send(UserMessage::text("第二轮"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("第二轮"), Delivery::FollowUp)
+        .await
+        .unwrap();
     permits[0].add_permits(1);
     assert_eq!(next_started(&mut started).await, "gate");
     // 第二轮照样排第三轮的 follow-up。
-    agent.send(UserMessage::text("第三轮"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("第三轮"), Delivery::FollowUp)
+        .await
+        .unwrap();
     permits[0].add_permits(1);
     wait_idle(&agent, 10).await;
 

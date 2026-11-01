@@ -101,7 +101,8 @@ pub(crate) fn derive_messages_with_seqs(events: &[Event]) -> Vec<(u64, Message)>
             | EventKind::CompactionEnd { .. }
             | EventKind::TodoWrite { .. }
             | EventKind::QuestionAsked { .. }
-            | EventKind::QuestionCancelled { .. } => None,
+            | EventKind::QuestionCancelled { .. }
+            | EventKind::InboxSpliced { .. } => None,
         };
         if let Some(message) = message {
             derived.push((event.seq, message));

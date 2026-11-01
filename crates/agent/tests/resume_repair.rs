@@ -189,7 +189,10 @@ async fn resume_after_balanced_turn_sees_full_history() {
         &mut permits,
     )]);
     let (agent, id) = create_agent(data_dir.path(), cwd.path(), &server.uri(), tools).await;
-    agent.send(UserMessage::text("跑一个工具"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("跑一个工具"), Delivery::FollowUp)
+        .await
+        .unwrap();
     assert_eq!(
         started.recv().await,
         Some(ToolEvent::Started("gate".to_owned()))
@@ -226,7 +229,10 @@ async fn resume_after_balanced_turn_sees_full_history() {
     drop(balanced);
 
     let resumed = resume_agent(data_dir.path(), &id, &server.uri(), ToolSet::empty()).await;
-    resumed.send(UserMessage::text("续接后第一句"), Delivery::FollowUp);
+    resumed
+        .send(UserMessage::text("续接后第一句"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&resumed, 3).await;
 
     let requests = server.received_requests().await.unwrap();
@@ -281,7 +287,10 @@ async fn resume_repairs_unknown_call_from_torn_tail() {
         &mut permits,
     )]);
     let (agent, id) = create_agent(data_dir.path(), cwd.path(), &server.uri(), tools).await;
-    agent.send(UserMessage::text("跑工具"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("跑工具"), Delivery::FollowUp)
+        .await
+        .unwrap();
     assert_eq!(
         started.recv().await,
         Some(ToolEvent::Started("gate".to_owned()))
@@ -354,7 +363,10 @@ async fn resume_repairs_unknown_call_from_torn_tail() {
     assert!(started.try_recv().is_err(), "工具不能被重跑");
 
     // 修复后能继续，请求里带合成结果和新输入。
-    resumed.send(UserMessage::text("修复后继续"), Delivery::FollowUp);
+    resumed
+        .send(UserMessage::text("修复后继续"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&resumed, 3).await;
     let requests = resumed_server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
@@ -389,7 +401,10 @@ async fn resume_repairs_not_started_call_after_assistant_message() {
         &mut permits,
     )]);
     let (agent, id) = create_agent(data_dir.path(), cwd.path(), &server.uri(), tools).await;
-    agent.send(UserMessage::text("跑工具"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("跑工具"), Delivery::FollowUp)
+        .await
+        .unwrap();
     assert_eq!(
         started.recv().await,
         Some(ToolEvent::Started("gate".to_owned()))
@@ -463,7 +478,10 @@ async fn resume_repairs_not_started_call_after_assistant_message() {
     );
     drop(repaired);
 
-    resumed.send(UserMessage::text("修复后继续"), Delivery::FollowUp);
+    resumed
+        .send(UserMessage::text("修复后继续"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&resumed, 3).await;
     let requests = resumed_server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);

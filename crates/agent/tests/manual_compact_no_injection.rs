@@ -58,7 +58,10 @@ async fn manual_compact_does_not_inject_instructions_or_skills() {
         Vec::new(),
     )
     .await;
-    agent.send(UserMessage::text("第一轮"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("第一轮"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let first =

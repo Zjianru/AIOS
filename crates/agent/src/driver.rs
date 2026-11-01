@@ -11,15 +11,18 @@ use model::{
     Role, StreamChunk, Usage, UserMessage,
 };
 use session::{
-    AbortCause, EventKind, LlmFailure, SessionId, SessionStore, ToolError, TurnEndReason,
+    AbortCause, EventKind, InboxTarget, LlmFailure, SessionId, SessionStore, ToolError,
+    TurnEndReason,
 };
 use tokio::sync::Notify;
 use tokio::sync::broadcast;
 use tools::{ToolCall, ToolContext, ToolSessionState, ToolSet, execute_batch};
 
-use crate::capabilities::{CapabilityRegistry, CompactionConfig, HookEvent, LoopAccess};
+use crate::capabilities::{
+    BoxedFuture, CapabilityRegistry, CompactionConfig, HookEvent, LoopAccess,
+};
 use crate::error::AgentError;
-use crate::inbox::{Delivery, Inbox, InboxTarget};
+use crate::inbox::{Delivery, Inbox};
 use crate::prune;
 use crate::{AgentConfig, AgentEvent, CompactionTrigger, Deps, TurnOutcome};
 
@@ -144,18 +147,21 @@ impl LoopAccess for Inner {
             Phase::Idle => None,
         }
     }
-    fn enqueue_context(&self, text: String) {
-        let target = {
-            let state = self.state.lock().expect("agent 状态锁被毒化");
-            match state.phase {
-                Phase::Idle => InboxTarget::NextTurn,
-                Phase::Running { .. } => InboxTarget::NextStep,
-            }
-        };
-        self.inbox
-            .lock()
-            .expect("agent 收件箱锁被毒化")
-            .push(target, UserMessage::text(text));
+    fn enqueue_context<'a>(&'a self, text: String) -> BoxedFuture<'a, ()> {
+        Box::pin(async move {
+            let target = {
+                let state = self.state.lock().expect("agent 状态锁被毒化");
+                match state.phase {
+                    Phase::Idle => InboxTarget::NextTurn,
+                    Phase::Running { .. } => InboxTarget::NextStep,
+                }
+            };
+            self.inbox
+                .lock()
+                .expect("agent 收件箱锁被毒化")
+                .push(target, UserMessage::text(text));
+            Ok(())
+        })
     }
 }
 
@@ -248,7 +254,12 @@ impl Inner {
         self.events.subscribe()
     }
 
-    pub(crate) fn send(self: &Arc<Self>, message: UserMessage, delivery: Delivery) {
+    /// 投递一条消息到输入队列（T006.2a 起落日志：发送返回即已收下）。
+    pub(crate) async fn send(
+        self: &Arc<Self>,
+        message: UserMessage,
+        delivery: Delivery,
+    ) -> Result<(), AgentError> {
         // 新的用户消息清零重复调用链（照 DSH repeat-tool-reminder；状态在提醒能力里）。
         self.capabilities.reset_repeat_chain();
         let target = {
@@ -271,9 +282,24 @@ impl Inner {
         if delivery.wakes() {
             self.wake_driver();
         }
+        Ok(())
     }
 
-    pub(crate) fn cancel(&self) {
+    /// 领取一个 step 的输入（T006.2a：从日志恢复的队列上领取，领取也落日志）。
+    pub(crate) async fn claim_input(
+        &self,
+        target: InboxTarget,
+        _turn: u64,
+    ) -> Result<Vec<Message>, AgentError> {
+        Ok(self
+            .inbox
+            .lock()
+            .expect("agent 收件箱锁被毒化")
+            .claim(target))
+    }
+
+    /// 取消：清空输入队列并中止正在跑的一轮（T006.2a 起取消也落日志）。
+    pub(crate) async fn cancel(&self) -> Result<(), AgentError> {
         self.inbox.lock().expect("agent 收件箱锁被毒化").clear();
         let mut state = self.state.lock().expect("agent 状态锁被毒化");
         state.wake_requested = false;
@@ -284,6 +310,7 @@ impl Inner {
             // T006.1d2：让正在等用户回答的 ask 能力醒来，撤销问题并 aborted 收尾。
             self.capabilities.cancel_questions();
         }
+        Ok(())
     }
 
     /// 一次 step 的工具批之后推进重复链，命中阈值（3/5/8，照 DSH）返回一条提醒文本。
@@ -589,11 +616,7 @@ async fn run_turn_steps(
             });
             return Ok(());
         }
-        let claimed = inner
-            .inbox
-            .lock()
-            .expect("agent 收件箱锁被毒化")
-            .claim(target);
+        let claimed = inner.claim_input(target, turn).await?;
         if turn_end.is_some() && claimed.is_empty() {
             return Ok(());
         }

@@ -75,7 +75,10 @@ async fn tool_round_trip() {
     std::fs::write(cwd.path().join("note.txt"), "hello\n").unwrap();
     let canonical_cwd = std::fs::canonicalize(cwd.path()).unwrap();
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("请读一下 note.txt"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("请读一下 note.txt"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let mut text = String::new();

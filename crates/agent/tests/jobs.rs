@@ -34,7 +34,10 @@ async fn background_job_completion_notifies_next_request() {
         .await;
     let (agent, _data_dir, cwd, _id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
 
-    agent.send(UserMessage::text("后台跑一下"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("后台跑一下"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
     assert_eq!(
         server.received_requests().await.unwrap().len(),
@@ -145,7 +148,10 @@ async fn job_completion_during_turn_arrives_as_next_step() {
     std::fs::write(cwd.path().join("go"), "").unwrap();
     notifier.abort();
 
-    agent.send(UserMessage::text("一边跑后台一边干活"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("一边跑后台一边干活"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let requests = server.received_requests().await.unwrap();

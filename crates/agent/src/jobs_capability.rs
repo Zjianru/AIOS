@@ -1,13 +1,13 @@
 //! 后台任务结算能力（T006.1e）：把结算回调与完成通知投递从 loop 移出。
 //!
-//! 注册表仍在 tools/jobs.rs；这里只负责：结算线程上格式化通知 -> 投下一步/下一轮输入，
-//! 发 AgentEvent::JobCompleted，并回到 runtime 上下文唤醒驱动。
+//! 注册表仍在 tools/jobs.rs；这里只负责：结算线程上发 JobCompleted，回到 runtime
+//! 上下文把完成通知写成 durable inbox 输入（T006.2a），再唤醒驱动。
 
 use std::sync::Arc;
 
 use crate::capabilities::LoopAccess;
 use crate::driver::Inner;
-use crate::{AgentEvent, JobStatus};
+use crate::{AgentError, AgentEvent, JobStatus};
 
 /// 结算回调安装（Agent::start 调用一次；用 Weak 避免循环引用）。
 pub(crate) fn install(inner: &Arc<Inner>) {
@@ -18,17 +18,26 @@ pub(crate) fn install(inner: &Arc<Inner>) {
             let Some(inner) = weak.upgrade() else {
                 return;
             };
-            // 结算线程上同步决定目标队列（忙碌/空闲按结算瞬间的 phase），
-            // 只有 wake 需要回到 runtime 上下文。
-            deliver(inner.as_ref(), job_id, status);
+            let job_id = job_id.to_owned();
+            let handle = handle.clone();
             handle.spawn(async move {
+                if let Err(error) = deliver(inner.as_ref(), &job_id, status).await {
+                    // 结算线程是后台边界：没有调用方接错误；与 Status 派发一致，
+                    // 写日志失败不打断唤醒（T006.2a known：通知丢失，进程继续）。
+                    let _ = error;
+                }
                 inner.wake();
             });
         },
     ));
 }
 
-fn deliver(host: &dyn LoopAccess, job_id: &str, status: tools::JobStatus) {
+/// 格式化完成通知、发 JobCompleted、把通知写成 durable 的下一步输入。
+async fn deliver(
+    host: &dyn LoopAccess,
+    job_id: &str,
+    status: tools::JobStatus,
+) -> Result<(), AgentError> {
     let read = host.tool_session().tasks().output(job_id).ok();
     let label = read
         .as_ref()
@@ -55,5 +64,5 @@ fn deliver(host: &dyn LoopAccess, job_id: &str, status: tools::JobStatus) {
         status: agent_status,
         detail: Some(label),
     });
-    host.enqueue_context(text);
+    host.enqueue_context(text).await
 }

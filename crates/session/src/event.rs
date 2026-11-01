@@ -88,6 +88,30 @@ pub struct ToolError {
     pub code: String,
 }
 
+/// 输入队列的两条待领取列表（wire 名照 DSH：next-turn / next-step）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InboxTarget {
+    NextTurn,
+    NextStep,
+}
+
+impl InboxTarget {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NextTurn => "next-turn",
+            Self::NextStep => "next-step",
+        }
+    }
+}
+
+/// 普通删除（不是领取）的 outcome；DSH 用 `canceled`（agent-loop/src/inbox.ts:214-221）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InboxOutcome {
+    Canceled,
+}
+
 /// todo 条目的状态（wire 名照 DSH：pending / in_progress / completed）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -166,6 +190,20 @@ pub enum EventKind {
         step: u64,
         question_id: String,
     },
+    /// 输入队列的一次规范化变更（DSH agent/inbox/spliced，agent-loop/src/inbox.ts:215-223）。
+    ///
+    /// 插入、领取、取消都写成同一种 splice 坐标；没删东西时 removedCount 省略，
+    /// outcome=canceled 只用于普通删除（取消），领取不带 outcome。
+    #[serde(rename = "agent/inbox/spliced")]
+    InboxSpliced {
+        target: InboxTarget,
+        start: u64,
+        #[serde(rename = "removedCount", skip_serializing_if = "Option::is_none")]
+        removed_count: Option<u64>,
+        inserted: Vec<Message>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        outcome: Option<InboxOutcome>,
+    },
     #[serde(rename = "assistant/message")]
     AssistantMessage {
         turn: u64,
@@ -237,6 +275,7 @@ impl EventKind {
             Self::UserMessage { .. } => "user/message",
             Self::QuestionAsked { .. } => "question/asked",
             Self::QuestionCancelled { .. } => "question/cancelled",
+            Self::InboxSpliced { .. } => "agent/inbox/spliced",
             Self::AssistantMessage { .. } => "assistant/message",
             Self::ToolCall { .. } => "tool/call",
             Self::ToolResult { .. } => "tool/result",

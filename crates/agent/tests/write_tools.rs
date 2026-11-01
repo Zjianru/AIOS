@@ -63,7 +63,10 @@ async fn read_then_write_across_steps_succeeds() {
     let (agent, data_dir, cwd, id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
     fs::write(cwd.path().join("a.txt"), "old\n").unwrap();
 
-    agent.send(UserMessage::text("先读再写"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("先读再写"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let requests = server.received_requests().await.unwrap();
@@ -105,7 +108,10 @@ async fn batch_write_before_read_is_rejected() {
     let (agent, data_dir, cwd, id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
     fs::write(cwd.path().join("a.txt"), "old\n").unwrap();
 
-    agent.send(UserMessage::text("写再读"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("写再读"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let store = SessionStore::open(data_dir.path(), &id).unwrap();
@@ -127,7 +133,10 @@ async fn write_only_system_prompt_has_no_edit_advice() {
     let tools = ToolSet::new(vec![Box::new(tools::WriteTool::new())]);
     let (agent, _data_dir, _cwd, _id) = setup_agent(&server.uri(), tools).await;
 
-    agent.send(UserMessage::text("hi"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("hi"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let requests = server.received_requests().await.unwrap();
@@ -170,7 +179,10 @@ async fn edit_after_read_across_steps_succeeds() {
     let (agent, data_dir, cwd, id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
     fs::write(cwd.path().join("a.txt"), "old\n").unwrap();
 
-    agent.send(UserMessage::text("先读再改"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("先读再改"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let store = SessionStore::open(data_dir.path(), &id).unwrap();
@@ -201,7 +213,10 @@ async fn patch_after_read_across_steps_succeeds() {
     let (agent, data_dir, cwd, id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
     fs::write(cwd.path().join("a.txt"), "one\n").unwrap();
 
-    agent.send(UserMessage::text("先读再打补丁"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("先读再打补丁"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let store = SessionStore::open(data_dir.path(), &id).unwrap();

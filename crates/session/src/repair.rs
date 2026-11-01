@@ -115,7 +115,8 @@ pub fn interrupted_turn_closers(events: &[Event]) -> Option<TurnClosers> {
             | EventKind::TodoWrite { .. }
             | EventKind::CompactionStart { .. }
             | EventKind::CompactionSummary { .. }
-            | EventKind::CompactionEnd { .. } => {}
+            | EventKind::CompactionEnd { .. }
+            | EventKind::InboxSpliced { .. } => {}
         }
     }
     let turn = open_turn?;

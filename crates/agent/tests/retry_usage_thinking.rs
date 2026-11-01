@@ -147,7 +147,10 @@ async fn rate_limit_retries_then_succeeds() {
     .await;
     let (agent, data_dir, _cwd, id) = setup_agent(&server.uri(), ToolSet::empty()).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("重试一下"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("重试一下"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 15).await;
 
     let collected = drain_events(&mut events);
@@ -191,7 +194,10 @@ async fn auth_error_does_not_retry() {
     mount_responses(&server, vec![http_error(401, "authentication_error")]).await;
     let (agent, data_dir, _cwd, id) = setup_agent(&server.uri(), ToolSet::empty()).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("认证失败"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("认证失败"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 10).await;
 
     let collected = drain_events(&mut events);
@@ -234,7 +240,10 @@ async fn failure_after_streamed_content_is_not_retried() {
     }]);
     let (agent, data_dir, _cwd, id) = setup_agent(&server.base_url(), ToolSet::empty()).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("流到一半失败"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("流到一半失败"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 10).await;
 
     let collected = drain_events(&mut events);
@@ -266,7 +275,10 @@ async fn usage_event_marks_missing_fields_unknown() {
     mount_responses(&server, vec![sse(PARTIAL_USAGE_SSE.to_owned())]).await;
     let (agent, _data_dir, _cwd, _id) = setup_agent(&server.uri(), ToolSet::empty()).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("报用量"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("报用量"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 10).await;
 
     let collected = drain_events(&mut events);
@@ -296,7 +308,10 @@ async fn thinking_round_trips_with_signature() {
     .await;
     let (agent, data_dir, cwd, id) = setup_agent(&server.uri(), ToolSet::empty()).await;
     let canonical_cwd = std::fs::canonicalize(cwd.path()).unwrap();
-    agent.send(UserMessage::text("想一想"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("想一想"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 10).await;
 
     let store = SessionStore::open(data_dir.path(), &id).unwrap();
@@ -316,7 +331,10 @@ async fn thinking_round_trips_with_signature() {
     );
 
     // 下一次请求要按协议把 thinking 回放回去（带 signature）。
-    agent.send(UserMessage::text("继续"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("继续"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 10).await;
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 2);
@@ -343,10 +361,13 @@ async fn cancel_while_waiting_headers_aborts_promptly() {
     let mut server = HeadersGatedServer::start();
     let (agent, data_dir, _cwd, id) = setup_agent(&server.base_url(), ToolSet::empty()).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("等响应头"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("等响应头"), Delivery::FollowUp)
+        .await
+        .unwrap();
     // 请求已经收到、响应头还没写：此时取消必须立刻生效。
     server.wait_request().await;
-    agent.cancel();
+    agent.cancel().await.unwrap();
     assert!(
         tokio::time::timeout(Duration::from_secs(2), agent.idle())
             .await
@@ -409,7 +430,10 @@ async fn cancel_keeps_interrupted_thinking_without_signature() {
     }]);
     let (agent, data_dir, _cwd, id) = setup_agent(&server.base_url(), ToolSet::empty()).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("边想边说"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("边想边说"), Delivery::FollowUp)
+        .await
+        .unwrap();
     server.wait_ready().await;
     let mut visible = String::new();
     while visible != "可见" {
@@ -419,7 +443,7 @@ async fn cancel_keeps_interrupted_thinking_without_signature() {
             Err(error) => panic!("事件通道关闭: {error}"),
         }
     }
-    agent.cancel();
+    agent.cancel().await.unwrap();
     server.release();
     wait_idle(&agent, 5).await;
 

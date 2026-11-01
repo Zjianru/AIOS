@@ -149,7 +149,10 @@ async fn batch_limits_ordering_and_exclusive_barrier() {
     .await;
     let agent = fixture.agent.clone();
     let task = tokio::spawn(async move {
-        agent.send(UserMessage::text("跑工具"), Delivery::FollowUp);
+        agent
+            .send(UserMessage::text("跑工具"), Delivery::FollowUp)
+            .await
+            .unwrap();
         agent.idle().await;
     });
 
@@ -259,7 +262,10 @@ async fn batch_limit_one_serializes() {
     .await;
     let agent = fixture.agent.clone();
     let task = tokio::spawn(async move {
-        agent.send(UserMessage::text("跑工具"), Delivery::FollowUp);
+        agent
+            .send(UserMessage::text("跑工具"), Delivery::FollowUp)
+            .await
+            .unwrap();
         agent.idle().await;
     });
 

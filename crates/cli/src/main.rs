@@ -300,7 +300,7 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 // 清空收件箱并中止当前一轮；已流出的文字按 interrupted 收尾。
-                agent.cancel();
+                agent.cancel().await?;
                 pending_questions.clear();
                 println!();
             }
@@ -330,15 +330,15 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
                         tokio::spawn(async move { agent.compact().await; });
                     }
                     ChatInput::Queue(queued) => {
-                        agent.send(UserMessage::text(queued), Delivery::FollowUp);
+                        agent.send(UserMessage::text(queued), Delivery::FollowUp).await?;
                         running = true;
                     }
                     ChatInput::FollowUp(text) => {
-                        agent.send(UserMessage::text(text), Delivery::FollowUp);
+                        agent.send(UserMessage::text(text), Delivery::FollowUp).await?;
                         running = true;
                     }
                     ChatInput::Steer(text) => {
-                        agent.send(UserMessage::text(text), Delivery::Steer);
+                        agent.send(UserMessage::text(text), Delivery::Steer).await?;
                     }
                 }
             }
@@ -365,7 +365,7 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
         }
     }
     // Ctrl-D / /exit：把还没收尾的一轮取消掉，等 idle 再退出。
-    agent.cancel();
+    agent.cancel().await?;
     agent.idle().await;
     Ok(())
 }
@@ -375,7 +375,9 @@ async fn run(args: RunArgs) -> Result<u8, CliError> {
     println!("session: {}", agent.id());
     println!("log: {}", agent.log_path().display());
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text(args.prompt), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text(args.prompt), Delivery::FollowUp)
+        .await?;
     match pump_until_idle(&agent, &mut events).await {
         Some(TurnOutcome::Completed) => Ok(0),
         _ => Ok(1),
@@ -400,7 +402,9 @@ async fn pump_until_idle(
                     // T005.10 非交互 run：不能静默卡死；打印问题并撤销这一轮。
                     if asked {
                         eprintln!("[非交互模式无法回答问题，已取消本轮]");
-                        agent.cancel();
+                        if let Err(error) = agent.cancel().await {
+                            eprintln!("aios-dev: {error}");
+                        }
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
@@ -459,6 +463,10 @@ fn handle_event(event: AgentEvent, outcome: &mut Option<TurnOutcome>) {
             println!();
             println!("{}", job_completed_text(&job_id, status, detail.as_deref()));
         }
+        // T006.2a：输入队列通知只给界面/服务用；开发 CLI 不显示。
+        AgentEvent::InboxInserted { .. }
+        | AgentEvent::InboxClaimed { .. }
+        | AgentEvent::InboxDiscarded { .. } => {}
         AgentEvent::TurnEnded { outcome: ended, .. } => {
             println!();
             match &ended {
