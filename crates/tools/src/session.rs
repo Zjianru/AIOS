@@ -63,9 +63,7 @@ impl ObservationStore {
     }
 }
 
-/// 会话后台任务注册表。T005.0 只占位；T005.4 在这个容器里放具体任务记录。
-#[derive(Debug, Default)]
-pub struct TaskRegistry;
+pub use crate::jobs::TaskRegistry;
 
 /// spill 存储句柄：根目录固定为 data-dir/spill/session-<id>；None 表示禁用。
 #[derive(Debug, Clone)]
@@ -94,7 +92,7 @@ impl SpillStore {
 #[derive(Debug)]
 pub struct ToolSessionState {
     observations: Mutex<ObservationStore>,
-    tasks: Mutex<TaskRegistry>,
+    tasks: TaskRegistry,
     spill: SpillStore,
     /// 会话 id；受管环境变量 AIOS_SESSION_ID 用（T005.3）。
     session_id: Option<String>,
@@ -107,7 +105,7 @@ impl ToolSessionState {
     pub fn new(data_dir: &Path, session_id: &str) -> Self {
         Self {
             observations: Mutex::new(ObservationStore::default()),
-            tasks: Mutex::new(TaskRegistry),
+            tasks: TaskRegistry::new(data_dir, session_id),
             spill: SpillStore::new(data_dir.join("spill").join(format!("session-{session_id}"))),
             session_id: Some(session_id.to_owned()),
             data_dir: Some(data_dir.to_path_buf()),
@@ -118,7 +116,7 @@ impl ToolSessionState {
     pub fn detached() -> Self {
         Self {
             observations: Mutex::new(ObservationStore::default()),
-            tasks: Mutex::new(TaskRegistry),
+            tasks: TaskRegistry::detached(),
             spill: SpillStore::disabled(),
             session_id: None,
             data_dir: None,
@@ -129,8 +127,8 @@ impl ToolSessionState {
         self.observations.lock().expect("工具观察状态锁被毒化")
     }
 
-    pub fn tasks(&self) -> MutexGuard<'_, TaskRegistry> {
-        self.tasks.lock().expect("工具任务注册表锁被毒化")
+    pub fn tasks(&self) -> &TaskRegistry {
+        &self.tasks
     }
 
     pub fn spill(&self) -> &SpillStore {

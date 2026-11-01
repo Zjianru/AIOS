@@ -1,29 +1,23 @@
-//! 内置 bash 工具：每次新起 bash -c，返回 stdout/stderr/退出码。
+//! 内置 bash 工具：每次新起 bash -c，支持超时转后台与 run_in_background。
 //!
-//! 输出截断、渲染、受管环境变量照 DSH 的 packages/shell/tool-bash、bash-local、
-//! shell-env；不做沙箱（D38），不提权、不宣称受限。
+//! 语义照 DSH packages/shell/tool-bash、bash-local、shell-env：前台等结算、超时转后台、
+//! 输出截尾 + 全文路径、受管 AIOS_* 环境变量、父环境凭据 scrub；不做沙箱（D38）。
 
-use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 
 use serde_json::{Value, json};
 
+use crate::jobs::{self, JobRead, JobSpec};
 use crate::{Tool, ToolCall, ToolContext, ToolFailure, ToolFuture, ToolResult};
 
-/// 每个输出流的内存上限（照 DSH bash-local 的 maxOutputBytes 默认 64,000 字节）。
+/// 前台 bash 默认超时（照 DSH tool-bash 的 timeoutMs 默认 120s）。
+pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+/// 前台 bash 超时上限（照 DSH tool-bash 的 maxTimeoutMs 600s）。
+pub const MAX_TIMEOUT_MS: u64 = 600_000;
+/// 前台结果每个流的内存上限（T005.3 契约：64,000 字节，超出留尾部 + 全文路径）。
 pub const MAX_OUTPUT_BYTES: usize = 64_000;
-/// spill 文件的单流上限（照 DSH bash-local 的 maxSpillBytes 默认 64 MiB）。
+/// 前景结果全文 spill 的单流上限（照 DSH bash-local maxSpillBytes 64 MiB）。
 pub const MAX_SPILL_BYTES: usize = 64 * 1024 * 1024;
-/// 受管环境变量前缀（照 DSH shell-env，前缀换成 AIOS_）。
-const ENV_PREFIX: &str = "AIOS_";
-/// 终端友好覆盖：关颜色/分页器/交互特性（照 DSH bash-local ENV_OVERRIDES）。
-const ENV_OVERRIDES: [(&str, &str); 4] = [
-    ("NO_COLOR", "1"),
-    ("TERM", "dumb"),
-    ("PAGER", "cat"),
-    ("GIT_PAGER", "cat"),
-];
 
 /// 内置 bash 工具。
 pub struct BashTool {
@@ -37,7 +31,9 @@ impl BashTool {
                 "type": "object",
                 "properties": {
                     "command": {"type": "string", "description": "The bash command to execute."},
-                    "workdir": {"type": "string", "description": "Working directory for this command. Defaults to the session workspace; a relative path is resolved against it."}
+                    "timeoutMs": {"type": "number", "description": "Timeout in milliseconds. On expiry the command moves to the background as a job instead of being killed. Defaults to 120000; capped at 600000."},
+                    "workdir": {"type": "string", "description": "Working directory for this command. Defaults to the session workspace; a relative path is resolved against it."},
+                    "run_in_background": {"type": "boolean", "description": "Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies."}
                 },
                 "required": ["command"]
             }),
@@ -57,7 +53,7 @@ impl Tool for BashTool {
     }
 
     fn description(&self) -> &str {
-        "Execute a bash command (bash -c) and return its stdout/stderr. Each call runs in a fresh shell; pass workdir instead of using cd. Managed $AIOS_* variables expose current harness environment facts. Long output is truncated to its tail; the full output is saved to a file whose path is reported when available. An unset variable expands to an empty string, so guard variables in such paths with ${VAR:?}."
+        "Execute a bash command (bash -c) and return its stdout/stderr. Each call runs in a fresh shell; pass workdir instead of using cd. Long output is truncated to its tail; the full output is saved to a file whose path is reported when available. An unset variable expands to an empty string, so guard variables in such paths with ${VAR:?}. A foreground command that reaches its timeout keeps running as a background job instead of being killed."
     }
 
     fn parameters(&self) -> &Value {
@@ -76,13 +72,6 @@ impl Tool for BashTool {
             }
         })
     }
-}
-
-/// 一个输出流：模型看到的文本、是否被截断、完整内容落盘路径。
-struct StreamOutput {
-    text: String,
-    truncated: bool,
-    spill_path: Option<PathBuf>,
 }
 
 fn bash(arguments: &str, call_id: &str, context: &ToolContext) -> Result<String, ToolFailure> {
@@ -105,18 +94,44 @@ fn bash(arguments: &str, call_id: &str, context: &ToolContext) -> Result<String,
         .and_then(Value::as_str)
         .map(|workdir| resolve_workdir(context, workdir))
         .unwrap_or_else(|| context.cwd.clone());
+    let background = match object.get("run_in_background") {
+        None => false,
+        Some(value) => value
+            .as_bool()
+            .ok_or_else(|| ToolFailure::plain("run_in_background must be a boolean"))?,
+    };
+    let timeout_ms = match object.get("timeoutMs") {
+        None => DEFAULT_TIMEOUT_MS,
+        Some(value) => {
+            let timeout = value
+                .as_f64()
+                .ok_or_else(|| ToolFailure::plain("timeoutMs must be a positive number"))?;
+            if !timeout.is_finite() || timeout <= 0.0 {
+                return Err(ToolFailure::plain("timeoutMs must be a positive number"));
+            }
+            (timeout as u64).min(MAX_TIMEOUT_MS)
+        }
+    };
 
-    let output = spawn(command, &workdir, context).map_err(|error| {
-        ToolFailure::plain(format!("cannot run bash in {}: {error}", workdir.display()))
+    let registry = context.session().tasks();
+    let label = first_line(command, 120);
+    let job_id = registry.start(JobSpec {
+        command: command.to_owned(),
+        cwd: workdir,
+        env: jobs::child_env(context),
+        label,
     })?;
-    let stdout = collect_stream(context, &output.stdout, call_id, "stdout");
-    let stderr = collect_stream(context, &output.stderr, call_id, "stderr");
-    Ok(render_result(
-        &stdout,
-        &stderr,
-        output.status.code(),
-        output.status.signal(),
-    ))
+    if background {
+        return Ok(format!("started background job {job_id}"));
+    }
+
+    let read = registry.wait(&job_id, std::time::Duration::from_millis(timeout_ms))?;
+    if read.view.status.is_terminal() {
+        registry.remove(&job_id);
+        return Ok(render_final(context, call_id, &read));
+    }
+    registry.unawait(&job_id);
+    Ok(render_promoted(&read, timeout_ms))
 }
 
 fn resolve_workdir(context: &ToolContext, workdir: &str) -> PathBuf {
@@ -128,99 +143,115 @@ fn resolve_workdir(context: &ToolContext, workdir: &str) -> PathBuf {
     }
 }
 
-/// 起一个新的 bash -c：不持久化、stdin 关闭；环境 = 继承（去掉 AIOS_*）+ 终端覆盖 + 受管变量。
-fn spawn(command: &str, workdir: &Path, context: &ToolContext) -> io::Result<std::process::Output> {
-    let mut process = Command::new("bash");
-    process
-        .arg("-c")
-        .arg(command)
-        .current_dir(workdir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    process.env_clear();
-    for (key, value) in std::env::vars() {
-        // AIOS_* 由受管注入接管；敏感名（KEY/PASSWORD/SECRET/TOKEN/DSH_）不隐式传给
-        // 模型 shell，挡凭据泄漏（照 DSH subprocess scrubbedParentEnv）。
-        if key.starts_with(ENV_PREFIX) || is_sensitive_env_var(&key) {
-            continue;
-        }
-        process.env(key, value);
+fn first_line(command: &str, max_chars: usize) -> String {
+    let line = command.lines().next().unwrap_or("").trim();
+    let characters: Vec<char> = line.chars().take(max_chars).collect();
+    if characters.is_empty() {
+        "(empty command)".to_owned()
+    } else {
+        characters.iter().collect()
     }
-    for (key, value) in ENV_OVERRIDES {
-        process.env(key, value);
-    }
-    for (key, value) in managed_env(context) {
-        process.env(key, value);
-    }
-    process.output()
 }
 
-/// 父环境里哪些变量不能隐式传给模型 shell：大小写不敏感的
-/// KEY/PASSWORD/SECRET/TOKEN 子串，以及 DSH_ 前缀。
-/// 照 DSH packages/subprocess/subprocess/src/index.ts:42-69 的 scrubbedParentEnv；
-/// AIOS_* 由调用方先过滤（受管注入接管）。
-fn is_sensitive_env_var(name: &str) -> bool {
-    let upper = name.to_ascii_uppercase();
-    upper.starts_with("DSH_")
-        || ["KEY", "PASSWORD", "SECRET", "TOKEN"]
-            .iter()
-            .any(|pattern| upper.contains(pattern))
+/// 前台结算的渲染：优先用 jobs 目录里的完整流（保留 T005.3 的 64,000 字节尾部 + spill 契约）。
+fn render_final(context: &ToolContext, call_id: &str, read: &JobRead) -> String {
+    let stdout = stream_from_job(
+        context,
+        call_id,
+        "stdout",
+        &read.stdout_path,
+        &read.stdout,
+        read.stdout_dropped,
+    );
+    let stderr = stream_from_job(
+        context,
+        call_id,
+        "stderr",
+        &read.stderr_path,
+        &read.stderr,
+        read.stderr_dropped,
+    );
+    render_body(&stdout, &stderr, read.view.exit_code, read.view.signal)
 }
 
-/// 受管 AIOS_* 变量（照 DSH shell-env 的 built-ins，挑本任务需要的）：
-/// AIOS_SHELL=1、AIOS_SESSION_ID=<会话 id>、AIOS_HOME=<data-dir>。
-fn managed_env(context: &ToolContext) -> Vec<(String, String)> {
-    let mut variables = vec![("AIOS_SHELL".to_owned(), "1".to_owned())];
-    if let Some(session_id) = context.session().session_id() {
-        variables.push(("AIOS_SESSION_ID".to_owned(), session_id.to_owned()));
-    }
-    if let Some(data_dir) = context.session().data_dir() {
-        variables.push(("AIOS_HOME".to_owned(), data_dir.display().to_string()));
-    }
-    variables
+struct StreamOutput {
+    text: String,
+    truncated: bool,
+    spill_path: Option<PathBuf>,
 }
 
-/// 收一个流：超过上限只留尾部，完整内容 spill 到会话目录并把路径写进通知。
-fn collect_stream(context: &ToolContext, bytes: &[u8], call_id: &str, label: &str) -> StreamOutput {
-    if bytes.len() <= MAX_OUTPUT_BYTES {
-        return StreamOutput {
-            text: String::from_utf8_lossy(bytes).into_owned(),
+fn stream_from_job(
+    context: &ToolContext,
+    call_id: &str,
+    label: &str,
+    path: &Path,
+    fallback: &str,
+    dropped: bool,
+) -> StreamOutput {
+    match std::fs::read(path) {
+        Ok(bytes) if bytes.len() <= MAX_OUTPUT_BYTES => StreamOutput {
+            text: String::from_utf8_lossy(&bytes).into_owned(),
             truncated: false,
             spill_path: None,
-        };
-    }
-    let text = String::from_utf8_lossy(tail_bytes(bytes, MAX_OUTPUT_BYTES)).into_owned();
-    let spill_path = if bytes.len() <= MAX_SPILL_BYTES {
-        let full = String::from_utf8_lossy(bytes).into_owned();
-        context
-            .session()
-            .spill()
-            .save_text(&format!("bash-{call_id}-{label}"), &full)
-            .ok()
-            .map(|saved| saved.locator)
-    } else {
-        // 超过 spill 上限（DSH 同语义）：只在内存里留尾部，路径报 (unavailable)。
-        None
-    };
-    StreamOutput {
-        text,
-        truncated: true,
-        spill_path,
+        },
+        Ok(bytes) => {
+            let text = String::from_utf8_lossy(tail_bytes(&bytes, MAX_OUTPUT_BYTES)).into_owned();
+            let spill_path = if bytes.len() <= MAX_SPILL_BYTES {
+                let full = String::from_utf8_lossy(&bytes).into_owned();
+                context
+                    .session()
+                    .spill()
+                    .save_text(&format!("bash-{call_id}-{label}"), &full)
+                    .ok()
+                    .map(|saved| saved.locator)
+            } else {
+                None
+            };
+            StreamOutput {
+                text,
+                truncated: true,
+                spill_path,
+            }
+        }
+        Err(_) => StreamOutput {
+            text: fallback.to_owned(),
+            truncated: dropped,
+            spill_path: None,
+        },
     }
 }
 
-/// 取字节串的尾部 max 字节，起点对齐 UTF-8 字符边界。
-fn tail_bytes(bytes: &[u8], max: usize) -> &[u8] {
-    let mut start = bytes.len().saturating_sub(max);
-    while start < bytes.len() && (bytes[start] & 0xC0) == 0x80 {
-        start += 1;
+fn render_promoted(read: &JobRead, timeout_ms: u64) -> String {
+    let out = memory_stream(&read.stdout, read.stdout_dropped, &read.stdout_path);
+    let err = memory_stream(&read.stderr, read.stderr_dropped, &read.stderr_path);
+    let mut body = out;
+    if !err.is_empty() {
+        if !body.is_empty() && !body.ends_with('\n') {
+            body.push('\n');
+        }
+        body.push_str("[stderr]\n");
+        body.push_str(&err);
     }
-    &bytes[start..]
+    if !body.is_empty() && !body.ends_with('\n') {
+        body.push('\n');
+    }
+    format!(
+        "{body}[still running after {timeout_ms}ms; moved to background job {}]",
+        read.view.id
+    )
 }
 
-/// 照 DSH bash-local/tool-bash 的 renderResult：stdout、[stderr] 段、退出状态 marker。
-fn render_result(
+fn memory_stream(text: &str, dropped: bool, path: &Path) -> String {
+    if !dropped {
+        return text.to_owned();
+    }
+    format!(
+        "{text}\n[some output was dropped from memory; full output: {}]",
+        path.display()
+    )
+}
+
+fn render_body(
     stdout: &StreamOutput,
     stderr: &StreamOutput,
     exit_code: Option<i32>,
@@ -264,7 +295,14 @@ fn stream_text(stream: &StreamOutput) -> String {
     format!("{}\n[output truncated; full output: {path}]", stream.text)
 }
 
-/// 信号名；常见信号用 DSH/Node 的写法，其余退回编号。
+fn tail_bytes(bytes: &[u8], max: usize) -> &[u8] {
+    let mut start = bytes.len().saturating_sub(max);
+    while start < bytes.len() && (bytes[start] & 0xC0) == 0x80 {
+        start += 1;
+    }
+    &bytes[start..]
+}
+
 fn signal_name(signal: i32) -> String {
     match signal {
         1 => "SIGHUP".to_owned(),
@@ -277,66 +315,5 @@ fn signal_name(signal: i32) -> String {
         14 => "SIGALRM".to_owned(),
         15 => "SIGTERM".to_owned(),
         other => other.to_string(),
-    }
-}
-
-#[cfg(unix)]
-trait ExitSignal {
-    fn signal(&self) -> Option<i32>;
-}
-
-#[cfg(unix)]
-impl ExitSignal for std::process::ExitStatus {
-    fn signal(&self) -> Option<i32> {
-        use std::os::unix::process::ExitStatusExt;
-        ExitStatusExt::signal(self)
-    }
-}
-
-#[cfg(not(unix))]
-trait ExitSignal {
-    fn signal(&self) -> Option<i32>;
-}
-
-#[cfg(not(unix))]
-impl ExitSignal for std::process::ExitStatus {
-    fn signal(&self) -> Option<i32> {
-        None
-    }
-}
-#[cfg(test)]
-mod tests {
-    use super::is_sensitive_env_var;
-
-    #[test]
-    fn credential_names_are_sensitive() {
-        for name in [
-            "DEEPSEEK_API_KEY",
-            "deepseek_api_key",
-            "GITHUB_TOKEN",
-            "db_password",
-            "MY_SECRET",
-            "DSH_HOME",
-            "HOMEBREW_GITHUB_API_TOKEN",
-        ] {
-            assert!(is_sensitive_env_var(name), "{name} 应被 scrub");
-        }
-    }
-
-    #[test]
-    fn normal_names_are_kept() {
-        for name in [
-            "PATH",
-            "HOME",
-            "HTTPS_PROXY",
-            "NO_PROXY",
-            "NO_COLOR",
-            "TERM",
-            "PAGER",
-            "GIT_PAGER",
-            "LANG",
-        ] {
-            assert!(!is_sensitive_env_var(name), "{name} 不应被 scrub");
-        }
     }
 }

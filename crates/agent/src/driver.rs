@@ -18,7 +18,7 @@ use tools::{ToolCall, ToolContext, ToolSessionState, ToolSet, execute_batch};
 use crate::error::AgentError;
 use crate::inbox::{Delivery, Inbox, InboxTarget};
 use crate::prune;
-use crate::{AgentConfig, AgentEvent, Deps, TurnOutcome};
+use crate::{AgentConfig, AgentEvent, Deps, JobStatus, TurnOutcome};
 
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
@@ -87,7 +87,7 @@ impl Inner {
             .map_or_else(|| cwd.clone(), Path::to_path_buf);
         let tool_session = Arc::new(ToolSessionState::new(&data_dir, id.as_str()));
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
-        Ok(Arc::new(Self {
+        let inner = Arc::new(Self {
             id,
             log_path,
             cwd,
@@ -106,7 +106,26 @@ impl Inner {
             events,
             idle_notify: Notify::new(),
             cancel_notify: Arc::new(Notify::new()),
-        }))
+        });
+        // T005.4：后台任务结算后，由 agent 把完成通知送进会话（事件 + 下一步输入）。
+        // 用 Weak 避免 tool_session → 回调 → Inner 的循环引用。
+        {
+            let handle = tokio::runtime::Handle::current();
+            let weak = Arc::downgrade(&inner);
+            inner.tool_session.tasks().set_on_settled(Arc::new(
+                move |job_id: &str, status: tools::JobStatus| {
+                    let Some(inner) = weak.upgrade() else {
+                        return;
+                    };
+                    let handle = handle.clone();
+                    let job_id = job_id.to_owned();
+                    handle.spawn(async move {
+                        inner.deliver_job_completion(&job_id, status);
+                    });
+                },
+            ));
+        }
+        Ok(inner)
     }
 
     pub(crate) fn id(&self) -> &SessionId {
@@ -153,6 +172,49 @@ impl Inner {
             // 让正在等模型流的 step 立刻醒来、走 interrupted 收尾。
             self.cancel_notify.notify_waiters();
         }
+    }
+
+    /// T005.4：后台任务结算通知——发 JobCompleted 事件，并把完成通知投进下一步输入。
+    /// 忙碌时进 NextStep（下一个 step 的请求带上），空闲时进 NextTurn 并唤醒新的一轮。
+    fn deliver_job_completion(self: &Arc<Self>, job_id: &str, status: tools::JobStatus) {
+        let read = self.tool_session.tasks().output(job_id).ok();
+        let label = read
+            .as_ref()
+            .map_or_else(String::new, |read| read.view.label.clone());
+        let mut text = format!(
+            "background job {job_id} (bash: {label}) finished [status: {}].",
+            status.as_str()
+        );
+        if let Some(read) = &read {
+            if read.stdout.len() <= 2048 && read.stderr.is_empty() {
+                text.push_str("\nOutput:\n");
+                text.push_str(&read.stdout);
+            } else {
+                text.push_str("\nRead its output with job_output.");
+            }
+        }
+        let agent_status = match status {
+            tools::JobStatus::Completed => JobStatus::Completed,
+            tools::JobStatus::Failed => JobStatus::Failed,
+            tools::JobStatus::Killed | tools::JobStatus::Running => JobStatus::Killed,
+        };
+        let _ = self.events.send(AgentEvent::JobCompleted {
+            job_id: job_id.to_owned(),
+            status: agent_status,
+            detail: Some(label),
+        });
+        let target = {
+            let state = self.state.lock().expect("agent 状态锁被毒化");
+            match state.phase {
+                Phase::Idle => InboxTarget::NextTurn,
+                Phase::Running { .. } => InboxTarget::NextStep,
+            }
+        };
+        self.inbox
+            .lock()
+            .expect("agent 收件箱锁被毒化")
+            .push(target, UserMessage::text(text));
+        self.wake_driver();
     }
 
     /// 起驱动或在 Running 时置 latch。
@@ -847,6 +909,11 @@ fn system_prompt(cwd: &Path, tools: &ToolSet) -> String {
     if tools.get("bash").is_some() {
         prompt.push_str(
             "\n\nCheck the [exit code: N] marker on every bash result; investigate failures before moving on.",
+        );
+    }
+    if tools.get("job_output").is_some() {
+        prompt.push_str(
+            "\n\nTrack every background job id you start. You are notified in-session when a job finishes — do not busy-poll or sleep on one; keep working on independent steps and do not duplicate a running job's work. Before giving a final answer, collect every still-relevant job with job_output (set wait: true only when you are genuinely blocked on it), and job_kill jobs that stopped mattering.",
         );
     }
     if tools.get("write").is_some() {

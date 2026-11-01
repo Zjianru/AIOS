@@ -6,6 +6,7 @@
 mod batch;
 mod builtin;
 mod fs;
+mod jobs;
 mod session;
 mod spill;
 
@@ -18,10 +19,15 @@ use model::ToolSchema;
 use serde_json::Value;
 
 pub use batch::{BatchOutcome, execute_batch};
-pub use builtin::{ApplyPatchTool, BashTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
+pub use builtin::{
+    ApplyPatchTool, BashTool, EditTool, GlobTool, GrepTool, JobKillTool, JobListTool,
+    JobOutputTool, ReadTool, WriteTool,
+};
+pub use jobs::{
+    JobRead, JobSettledCallback, JobSpec, JobStatus, JobView, MAX_WAIT_MS, TaskRegistry,
+};
 pub use session::{
-    FileVersion, ObservationStore, ObservedFile, SharedToolSession, SpillStore, TaskRegistry,
-    ToolSessionState,
+    FileVersion, ObservationStore, ObservedFile, SharedToolSession, SpillStore, ToolSessionState,
 };
 pub use spill::{SpillRef, bound_result, estimate_text_tokens};
 
@@ -172,7 +178,7 @@ impl ToolSet {
         Self { tools }
     }
 
-    /// 开发用的内置工具集：read、glob、grep，写类 write、edit、apply_patch，和 bash。
+    /// 开发用的内置工具集：read、glob、grep，写类 write、edit、apply_patch，bash，和后台任务三件。
     pub fn builtin() -> Self {
         Self::new(vec![
             Box::new(ReadTool::new()),
@@ -182,6 +188,9 @@ impl ToolSet {
             Box::new(EditTool::new()),
             Box::new(ApplyPatchTool::new()),
             Box::new(BashTool::new()),
+            Box::new(JobOutputTool::new()),
+            Box::new(JobListTool::new()),
+            Box::new(JobKillTool::new()),
         ])
     }
 

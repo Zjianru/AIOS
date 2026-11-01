@@ -322,15 +322,7 @@ fn handle_event(event: AgentEvent, outcome: &mut Option<TurnOutcome>) {
             detail,
         } => {
             println!();
-            let status = match status {
-                JobStatus::Completed => "completed",
-                JobStatus::Failed => "failed",
-                JobStatus::Killed => "killed",
-            };
-            match detail {
-                Some(detail) => println!("[任务完成：{job_id}（{status}）：{detail}]"),
-                None => println!("[任务完成：{job_id}（{status}）]"),
-            }
+            println!("{}", job_completed_text(&job_id, status, detail.as_deref()));
         }
         AgentEvent::TurnEnded { outcome: ended, .. } => {
             println!();
@@ -342,5 +334,41 @@ fn handle_event(event: AgentEvent, outcome: &mut Option<TurnOutcome>) {
             }
             *outcome = Some(ended);
         }
+    }
+}
+
+/// T005.4 票面：后台任务完成事件在 CLI 的展示文本（纯函数便于单测）。
+fn job_completed_text(job_id: &str, status: JobStatus, detail: Option<&str>) -> String {
+    let status = match status {
+        JobStatus::Completed => "completed",
+        JobStatus::Failed => "failed",
+        JobStatus::Killed => "killed",
+    };
+    match detail {
+        Some(detail) => format!("[任务完成：{job_id}（{status}）：{detail}]"),
+        None => format!("[任务完成：{job_id}（{status}）]"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use agent::JobStatus;
+
+    use super::job_completed_text;
+
+    #[test]
+    fn job_completed_line_is_rendered() {
+        assert_eq!(
+            job_completed_text("bash-1", JobStatus::Completed, Some("echo hi")),
+            "[任务完成：bash-1（completed）：echo hi]"
+        );
+        assert_eq!(
+            job_completed_text("bash-2", JobStatus::Killed, None),
+            "[任务完成：bash-2（killed）]"
+        );
+        assert_eq!(
+            job_completed_text("bash-3", JobStatus::Failed, None),
+            "[任务完成：bash-3（failed）]"
+        );
     }
 }
