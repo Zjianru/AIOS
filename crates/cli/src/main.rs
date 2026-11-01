@@ -270,7 +270,7 @@ async fn pump_until_idle(
             () = &mut idle => break,
             received = events.recv() => match received {
                 Ok(event) => {
-                    let asked = matches!(event, AgentEvent::QuestionAsked { .. });
+                    let asked = run_should_cancel_for_question(&event);
                     handle_event(event, &mut outcome);
                     // T005.10 非交互 run：不能静默卡死；打印问题并撤销这一轮。
                     if asked {
@@ -359,6 +359,11 @@ async fn read_stdin_line() -> Option<String> {
     .flatten()
 }
 
+/// 非交互 run 收到问题时的决策：打印提示并取消本轮（不静默卡死；测试清单第 14 条）。
+fn run_should_cancel_for_question(event: &AgentEvent) -> bool {
+    matches!(event, AgentEvent::QuestionAsked { .. })
+}
+
 /// 问题展示文本（纯函数便于单测；测试清单第 14 条）。
 fn question_asked_text(question: &agent::Question) -> String {
     let mut text = format!("[问题：{}]", question.question);
@@ -420,10 +425,11 @@ fn job_completed_text(job_id: &str, status: JobStatus, detail: Option<&str>) -> 
 
 #[cfg(test)]
 mod tests {
-    use agent::{CompactionTrigger, JobStatus};
+    use agent::{AgentEvent, CompactionTrigger, JobStatus};
 
     use super::{
         compaction_ended_text, compaction_started_text, is_compact_command, job_completed_text,
+        question_asked_text, run_should_cancel_for_question,
     };
 
     #[test]
@@ -469,29 +475,47 @@ mod tests {
             "[压缩失败：compaction-1：boom]"
         );
     }
-}
+    #[test]
+    fn question_text_renders_header_and_options() {
+        let question = agent::Question {
+            id: "q1".to_owned(),
+            question: "Proceed?".to_owned(),
+            header: Some("Confirm".to_owned()),
+            options: vec![
+                agent::QuestionOption {
+                    label: "Yes".to_owned(),
+                    description: Some("go".to_owned()),
+                },
+                agent::QuestionOption {
+                    label: "No".to_owned(),
+                    description: None,
+                },
+            ],
+            multi_select: false,
+        };
+        let text = question_asked_text(&question);
+        assert!(text.contains("Confirm"));
+        assert!(text.contains("Proceed?"));
+        assert!(text.contains("1. Yes（go）"));
+        assert!(text.contains("2. No"));
+    }
 
-#[test]
-fn question_text_renders_header_and_options() {
-    let question = agent::Question {
-        id: "q1".to_owned(),
-        question: "Proceed?".to_owned(),
-        header: Some("Confirm".to_owned()),
-        options: vec![
-            agent::QuestionOption {
-                label: "Yes".to_owned(),
-                description: Some("go".to_owned()),
-            },
-            agent::QuestionOption {
-                label: "No".to_owned(),
-                description: None,
-            },
-        ],
-        multi_select: false,
-    };
-    let text = question_asked_text(&question);
-    assert!(text.contains("Confirm"));
-    assert!(text.contains("Proceed?"));
-    assert!(text.contains("1. Yes（go）"));
-    assert!(text.contains("2. No"));
+    #[test]
+    fn non_interactive_question_decision_cancels_turn() {
+        let question = agent::Question {
+            id: "q1".to_owned(),
+            question: "Proceed?".to_owned(),
+            header: None,
+            options: Vec::new(),
+            multi_select: false,
+        };
+        assert!(run_should_cancel_for_question(&AgentEvent::QuestionAsked {
+            question
+        }));
+        assert!(!run_should_cancel_for_question(
+            &AgentEvent::AssistantTextDelta {
+                text: "x".to_owned()
+            }
+        ));
+    }
 }
