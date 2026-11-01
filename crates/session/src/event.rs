@@ -151,6 +151,43 @@ pub struct TodoItem {
     pub status: TodoStatus,
 }
 
+/// 一次重试链的稳定 id（DSH RetryId brand，llm-retry/src/brand.ts：同一 step 的多次
+/// 重试共用一个 id；step/start 与 turn/end 之后重新生成）。
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RetryId(String);
+
+impl RetryId {
+    pub fn generate() -> Self {
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for RetryId {
+    fn from(raw: &str) -> Self {
+        Self(raw.to_owned())
+    }
+}
+
+/// 重试策略模式（DSH llm-retry 的 normal / always；AIOS 只有 normal 固定策略）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RetryMode {
+    Normal,
+}
+
+impl RetryMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+        }
+    }
+}
+
 /// 会话事件。类型集合照 spec「实现决定·会话日志」。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -229,6 +266,33 @@ pub enum EventKind {
         step: u64,
         stream: Vec<AssistantStreamRecord>,
     },
+    /// 一次已排定的重试（log-only；DSH llm/retry，durable before the cancellable wait）。
+    #[serde(rename = "llm/retry")]
+    LlmRetry {
+        #[serde(rename = "retryId")]
+        retry_id: RetryId,
+        turn: u64,
+        step: u64,
+        provider: String,
+        mode: RetryMode,
+        #[serde(rename = "policyKey")]
+        policy_key: String,
+        retry: u32,
+        #[serde(rename = "maxRetries", skip_serializing_if = "Option::is_none")]
+        max_retries: Option<u32>,
+        #[serde(rename = "delayMs")]
+        delay_ms: u64,
+        failure: LlmFailure,
+    },
+    /// 重试等待结束、下一次请求尝试开始前的持久转移（DSH llm/retry-started）。
+    #[serde(rename = "llm/retry-started")]
+    LlmRetryStarted {
+        #[serde(rename = "retryId")]
+        retry_id: RetryId,
+        turn: u64,
+        step: u64,
+        retry: u32,
+    },
     /// 模型请求的一次工具调用（持久化事实；assistant/message 里也有同一调用块）。
     #[serde(rename = "tool/call")]
     ToolCall {
@@ -293,6 +357,8 @@ impl EventKind {
             Self::InboxSpliced { .. } => "agent/inbox/spliced",
             Self::AssistantMessage { .. } => "assistant/message",
             Self::AssistantAttempt { .. } => "assistant/attempt",
+            Self::LlmRetry { .. } => "llm/retry",
+            Self::LlmRetryStarted { .. } => "llm/retry-started",
             Self::ToolCall { .. } => "tool/call",
             Self::ToolResult { .. } => "tool/result",
             Self::CompactionPrune { .. } => "compaction/prune",

@@ -110,6 +110,8 @@ pub(crate) fn derive_messages_with_seqs(events: &[Event]) -> Vec<(u64, Message)>
             | EventKind::QuestionAsked { .. }
             | EventKind::QuestionCancelled { .. }
             | EventKind::AssistantAttempt { .. }
+            | EventKind::LlmRetry { .. }
+            | EventKind::LlmRetryStarted { .. }
             | EventKind::InboxSpliced { .. } => None,
         };
         if let Some(message) = message {
