@@ -1,7 +1,8 @@
 //! 压缩能力：把 compaction.rs 的实现挂到 loop 的固定挂点上（T006.1b）。
 //!
-//! 挂点语义：PreStep = 每步请求前的自动检查（should_trigger/select_split 确认后才真正压缩）；
-//! RequestError = 溢出后强制压缩重试一次；Compaction = 已确认的压缩执行入口（手动 /compact）。
+//! 挂点语义：PreStep = 每步自动检查（trigger=None）或手动 /compact（trigger=Some(Manual)）；
+//! RequestError = 溢出后强制压缩重试一次；Compaction 由 compaction::compact_if_needed
+//! 在确认后统一派发（供 prune 等，本能力不消费，避免自递归）。
 //! 日志与事件全部走 LoopAccess::append / events（SessionEvent 由 append 派发）。
 
 use model::ErrorCode;
