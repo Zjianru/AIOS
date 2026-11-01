@@ -76,7 +76,7 @@ async fn manual_compact_does_not_inject_instructions_or_skills() {
         "---\nname: pdf-tools\ndescription: UPDATED-SKILL-DESCRIPTION\n---\n# PDF tools\n",
     )
     .unwrap();
-    let done = tokio::time::timeout(std::time::Duration::from_secs(10), agent.compact())
+    let done = tokio::time::timeout(std::time::Duration::from_secs(10), agent.compact(None))
         .await
         .is_ok();
     assert!(done, "/compact 不能挂住");

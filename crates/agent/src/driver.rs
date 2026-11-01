@@ -19,7 +19,7 @@ use tokio::sync::broadcast;
 use tools::{ToolCall, ToolContext, ToolSessionState, ToolSet, execute_batch};
 
 use crate::capabilities::{
-    BoxedFuture, CapabilityRegistry, CompactionConfig, HookEvent, LoopAccess,
+    BoxedFuture, CapabilityRegistry, CompactionPolicy, HookEvent, LoopAccess,
 };
 use crate::error::AgentError;
 use crate::inbox::{Delivery, Inbox};
@@ -68,6 +68,14 @@ pub(crate) struct Inner {
     pub(crate) compaction_retain_ratio: f64,
     /// 压缩阈值公式里的预留输出 token（T005.8a）。
     pub(crate) compaction_headroom_tokens: u64,
+    /// 摘要输出 token 上限；None 时按 DSH 默认取 headroom（T006.3）。
+    compaction_summary_max_tokens: Option<u32>,
+    /// 仍超阈值时最多再压几次（T006.3，DSH compactionRetries）。
+    compaction_retries: u32,
+    /// 上下文溢出恢复最多重试几次（T006.3，DSH maxOverflowRetries）。
+    compaction_max_overflow_retries: u32,
+    /// 按 provider/model 覆盖压缩策略（T006.3，DSH modelPolicies）。
+    compaction_model_policies: Vec<crate::CompactionModelPolicy>,
     /// 固定挂点与功能注册表（T006.1a；能力状态 per-Agent 在能力里，T006.1e）。
     pub(crate) capabilities: CapabilityRegistry,
     pub(crate) store: Mutex<SessionStore>,
@@ -109,11 +117,37 @@ impl LoopAccess for Inner {
     fn log_path(&self) -> &Path {
         &self.log_path
     }
-    fn compaction_config(&self) -> CompactionConfig {
-        CompactionConfig {
-            threshold_ratio: self.compaction_threshold_ratio,
-            retain_ratio: self.compaction_retain_ratio,
-            headroom_tokens: self.compaction_headroom_tokens,
+    fn compaction_policy(&self) -> CompactionPolicy {
+        let provider = self.model.provider();
+        let model = self.model.config().model.as_str();
+        let override_policy = self
+            .compaction_model_policies
+            .iter()
+            .find(|policy| policy.provider == provider && policy.model == model);
+        let threshold_ratio = override_policy
+            .and_then(|policy| policy.threshold_ratio)
+            .unwrap_or(self.compaction_threshold_ratio);
+        let retain_ratio = override_policy
+            .and_then(|policy| policy.retain_ratio)
+            .unwrap_or(self.compaction_retain_ratio);
+        let headroom_tokens = override_policy
+            .and_then(|policy| policy.headroom_tokens)
+            .unwrap_or(self.compaction_headroom_tokens);
+        let summary_max_tokens = override_policy
+            .and_then(|policy| policy.summary_max_tokens)
+            .or(self.compaction_summary_max_tokens)
+            .unwrap_or(u32::try_from(headroom_tokens).unwrap_or(u32::MAX));
+        CompactionPolicy {
+            threshold_ratio,
+            retain_ratio,
+            headroom_tokens,
+            summary_max_tokens,
+            compaction_retries: override_policy
+                .and_then(|policy| policy.compaction_retries)
+                .unwrap_or(self.compaction_retries),
+            max_overflow_retries: override_policy
+                .and_then(|policy| policy.max_overflow_retries)
+                .unwrap_or(self.compaction_max_overflow_retries),
         }
     }
     fn append<'a>(&'a self, kinds: &'a [EventKind]) -> crate::capabilities::HookFuture<'a> {
@@ -200,7 +234,7 @@ impl Inner {
             crate::skill_capability::SkillCapability::load(&store, skill_roots);
         crate::todo_capability::TodoCapability::rehydrate(&tool_session, store.events());
         let reminder_chain: Arc<Mutex<Option<(String, usize)>>> = Arc::new(Mutex::new(None));
-        let compaction_waiters: Arc<Mutex<Vec<tokio::sync::oneshot::Sender<()>>>> =
+        let compaction_waiters: Arc<Mutex<Vec<crate::capabilities::ManualCompaction>>> =
             Arc::new(Mutex::new(Vec::new()));
         let ask_state = crate::ask_capability::new_state();
         // T006.2a：续接/新建时从日志折叠输入队列；坏掉的 splice 让 resume 报错，不静默丢。
@@ -217,6 +251,10 @@ impl Inner {
             compaction_threshold_ratio: config.compaction_threshold_ratio,
             compaction_retain_ratio: config.compaction_retain_ratio,
             compaction_headroom_tokens: config.compaction_headroom_tokens,
+            compaction_summary_max_tokens: config.compaction_summary_max_tokens,
+            compaction_retries: config.compaction_retries,
+            compaction_max_overflow_retries: config.compaction_max_overflow_retries,
+            compaction_model_policies: config.compaction_model_policies.clone(),
             store: Mutex::new(store),
             inbox: Mutex::new(inbox),
             inbox_mutations: tokio::sync::Mutex::new(()),
@@ -465,10 +503,19 @@ impl Inner {
         Ok(())
     }
 
-    /// 请求一次手动压缩（T005.8b）：排队并唤醒驱动；返回的接收者在该次压缩结束时收到通知。
-    pub(crate) fn queue_compaction(self: &Arc<Self>) -> tokio::sync::oneshot::Receiver<()> {
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        self.capabilities.push_compaction_waiter(sender);
+    /// 请求一次手动压缩（T005.8b/T006.3）：排队并唤醒驱动；接收者拿到结果计数。
+    pub(crate) fn queue_compaction(
+        self: &Arc<Self>,
+        source_command_id: Option<String>,
+    ) -> tokio::sync::oneshot::Receiver<Result<Option<crate::CompactionOutcome>, String>> {
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        let request = crate::capabilities::ManualCompaction {
+            source_command_id,
+            reply,
+        };
+        if self.capabilities.push_compaction_waiter(request).is_err() {
+            // 没有能力接收：接收端会立刻拿到 RecvError，Agent::compact 转成错误。
+        }
         self.wake_driver();
         receiver
     }
@@ -503,8 +550,9 @@ impl Inner {
                     phase: crate::capabilities::PreStepPhase::Compact,
                 })
                 .await;
-            for waiter in waiters {
-                let _ = waiter.send(());
+            for request in waiters {
+                // skeleton：结果计数在实现期补；先按旧行为回「压缩已执行」。
+                let _ = request.reply.send(Ok(None));
             }
         }
     }
@@ -1636,8 +1684,12 @@ mod settle_tests {
             .recv_timeout(std::time::Duration::from_secs(5))
             .unwrap();
         // 窗口内：入队 waiter，并模拟 wake_driver 只看到 Running（只置 latch）。
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        inner.capabilities.push_compaction_waiter(sender);
+        let (reply, receiver) = tokio::sync::oneshot::channel();
+        let request = crate::capabilities::ManualCompaction {
+            source_command_id: None,
+            reply,
+        };
+        let _ = inner.capabilities.push_compaction_waiter(request);
         inner.wake_driver();
         let _ = release_tx.send(());
         settle.await.unwrap();

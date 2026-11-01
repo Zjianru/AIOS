@@ -20,6 +20,8 @@ pub enum AgentError {
     },
     #[error("会话日志里的输入队列损坏: {0}")]
     CorruptInbox(String),
+    #[error("压缩失败: {0}")]
+    Compaction(String),
 }
 
 impl AgentError {
@@ -30,7 +32,8 @@ impl AgentError {
             Self::Model(error) => error.code.as_str(),
             Self::ResumeIdMismatch { .. }
             | Self::StepCleanup { .. }
-            | Self::InvalidConfig { .. } => "AGENT".to_owned(),
+            | Self::InvalidConfig { .. }
+            | Self::Compaction(_) => "AGENT".to_owned(),
         }
     }
 }

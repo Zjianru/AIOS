@@ -8,7 +8,7 @@ use model::{ContentBlock, Message};
 use crate::{Event, EventKind, SessionStore, ToolError, TurnEndReason, interrupted_turn_closers};
 
 fn at(seq: u64, time: u64, kind: EventKind) -> Event {
-    Event { seq, time, kind }
+    Event::new(seq, time, kind)
 }
 
 fn assistant_tool_call(time: u64) -> Event {

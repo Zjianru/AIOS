@@ -266,17 +266,17 @@ mod tests {
     use super::*;
 
     fn splice_event(seq: u64, target: InboxTarget, start: u64, inserted: Vec<Message>) -> Event {
-        Event {
+        Event::new(
             seq,
-            time: seq,
-            kind: EventKind::InboxSpliced {
+            seq,
+            EventKind::InboxSpliced {
                 target,
                 start,
                 removed_count: None,
                 inserted,
                 outcome: None,
             },
-        }
+        )
     }
 
     #[test]

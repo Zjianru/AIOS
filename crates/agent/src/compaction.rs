@@ -33,10 +33,10 @@ impl Budget {
         let config = host.model().config();
         let window = config.context_window;
         let output = u64::from(config.max_tokens);
-        let host_config = host.compaction_config();
-        let headroom = host_config.headroom_tokens;
+        let policy = host.compaction_policy();
+        let headroom = policy.headroom_tokens;
         let message_budget = window.saturating_sub(output);
-        let ratio_threshold = ((window as f64) * host_config.threshold_ratio) as u64;
+        let ratio_threshold = ((window as f64) * policy.threshold_ratio) as u64;
         let threshold_tokens = if message_budget > headroom {
             ratio_threshold.min(message_budget - headroom)
         } else {
@@ -48,7 +48,7 @@ impl Budget {
         } else {
             window / 2
         };
-        let retain_tokens = (((retain_base as f64) * host_config.retain_ratio) as u64)
+        let retain_tokens = (((retain_base as f64) * policy.retain_ratio) as u64)
             .max(1)
             .min(threshold_tokens.saturating_sub(1).max(1));
         Self {
@@ -152,10 +152,15 @@ pub(crate) async fn compact_if_needed(
         host.dispatch_compaction(turn, step, trigger).await?;
     }
     // 系统消息永远保留；被摘要的是 prefix 去掉系统后的部分。
-    let shadowed_start = derived[1].0;
-    let shadowed_end = derived[split - 1].0;
+    let shadowed_range = session::ShadowedRange {
+        start: derived[1].0,
+        end: derived[split - 1].0,
+    };
+    let shadowed_seqs: Vec<u64> = derived[1..split].iter().map(|(seq, _)| *seq).collect();
     let prefix: Vec<Message> = selected[..split].to_vec();
     let shadowed_token_count = estimate_messages(&prefix);
+    let provider = host.model().provider().to_owned();
+    let model = host.model().config().model.clone();
     // T005.8b：id 带进程/纳秒成分，续接或新进程都不会和旧 compaction-1 撞车。
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -172,7 +177,8 @@ pub(crate) async fn compact_if_needed(
     });
     host.append(&[EventKind::CompactionStart {
         compaction_id: compaction_id.clone(),
-        turn,
+        source_command_id: None,
+        turn: Some(turn),
     }])
     .await?;
 
@@ -182,7 +188,8 @@ pub(crate) async fn compact_if_needed(
             let message = error.to_string();
             host.append(&[EventKind::CompactionEnd {
                 compaction_id: compaction_id.clone(),
-                turn,
+                source_command_id: None,
+                turn: Some(turn),
                 error: Some(message.clone()),
             }])
             .await?;
@@ -194,17 +201,26 @@ pub(crate) async fn compact_if_needed(
         }
     };
 
+    let summary_blocks = vec![ContentBlock::text(summary)];
     host.append(&[
         EventKind::CompactionSummary {
             compaction_id: compaction_id.clone(),
-            summary,
-            shadowed_start,
-            shadowed_end,
+            source_command_id: None,
+            summary: summary_blocks.clone(),
+            raw_output: summary_blocks.clone(),
+            llm_stream_call: true,
+            shadowed_range,
+            shadowed_seqs,
             shadowed_token_count,
+            provider,
+            model,
+            max_tokens: None,
+            usage: None,
         },
         EventKind::CompactionEnd {
             compaction_id: compaction_id.clone(),
-            turn,
+            source_command_id: None,
+            turn: Some(turn),
             error: None,
         },
     ])

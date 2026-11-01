@@ -14,12 +14,12 @@ use crate::compaction;
 use crate::{AgentError, CompactionTrigger};
 
 pub(crate) struct CompactionCapability {
-    waiters: std::sync::Arc<std::sync::Mutex<Vec<tokio::sync::oneshot::Sender<()>>>>,
+    waiters: std::sync::Arc<std::sync::Mutex<Vec<crate::capabilities::ManualCompaction>>>,
 }
 
 impl CompactionCapability {
     pub(crate) fn new(
-        waiters: std::sync::Arc<std::sync::Mutex<Vec<tokio::sync::oneshot::Sender<()>>>>,
+        waiters: std::sync::Arc<std::sync::Mutex<Vec<crate::capabilities::ManualCompaction>>>,
     ) -> Self {
         Self { waiters }
     }
@@ -38,11 +38,11 @@ impl Capability for CompactionCapability {
         ]
     }
 
-    fn push_compaction_waiter(&self, sender: tokio::sync::oneshot::Sender<()>) -> bool {
+    fn push_compaction_waiter(&self, request: crate::capabilities::ManualCompaction) -> bool {
         self.waiters
             .lock()
             .expect("agent compact 队列锁被毒化")
-            .push(sender);
+            .push(request);
         true
     }
 
@@ -54,7 +54,7 @@ impl Capability for CompactionCapability {
             .is_empty()
     }
 
-    fn take_compaction_waiters(&self) -> Vec<tokio::sync::oneshot::Sender<()>> {
+    fn take_compaction_waiters(&self) -> Vec<crate::capabilities::ManualCompaction> {
         let mut waiters = self.waiters.lock().expect("agent compact 队列锁被毒化");
         std::mem::take(&mut *waiters)
     }

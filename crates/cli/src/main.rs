@@ -327,7 +327,7 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
                     ChatInput::Compact => {
                         // 空闲时立刻压缩；运行中排到当前轮之后（事件照常打印）。
                         let agent = agent.clone();
-                        tokio::spawn(async move { agent.compact().await; });
+                        tokio::spawn(async move { let _ = agent.compact(None).await; });
                     }
                     ChatInput::Queue(queued) => {
                         agent.send(UserMessage::text(queued), Delivery::FollowUp).await?;

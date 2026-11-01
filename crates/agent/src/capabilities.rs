@@ -60,13 +60,22 @@ pub(crate) enum HookPoint {
     TurnStopping,
 }
 
-/// 压缩相关配置的只读快照（1b 的压缩实现从这里取值）。
-#[allow(dead_code)] // 1a 先定输入面，1b 起由功能实现读取
+/// 一次排队的手动 /compact：发起命令 id + 结果回执（T006.3 起 Agent::compact 返回计数）。
+pub(crate) struct ManualCompaction {
+    #[allow(dead_code)] // 实现期写进 compaction/* 事件（skeleton 先占位）
+    pub source_command_id: Option<String>,
+    pub reply: tokio::sync::oneshot::Sender<Result<Option<crate::CompactionOutcome>, String>>,
+}
+
+/// 解析后的压缩策略（DSH ResolvedTargetPolicy 的 AIOS 子集；T006.3）。
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct CompactionConfig {
+pub(crate) struct CompactionPolicy {
     pub threshold_ratio: f64,
     pub retain_ratio: f64,
     pub headroom_tokens: u64,
+    pub summary_max_tokens: u32,
+    pub compaction_retries: u32,
+    pub max_overflow_retries: u32,
 }
 
 /// loop 对 Capability 暴露的访问面；由 driver 的 Inner 实现。
@@ -81,7 +90,7 @@ pub(crate) trait LoopAccess: Send + Sync {
     fn cwd(&self) -> &Path;
     fn data_dir(&self) -> &Path;
     fn log_path(&self) -> &Path;
-    fn compaction_config(&self) -> CompactionConfig;
+    fn compaction_policy(&self) -> CompactionPolicy;
     /// 写日志入口：内部走 `Inner::append`（落盘后逐事件派发 SessionEvent）；禁止直接锁
     /// `session()` 后 append 绕过 SessionEvent。
     fn append<'a>(&'a self, kinds: &'a [EventKind]) -> HookFuture<'a>;
@@ -269,13 +278,13 @@ pub(crate) trait Capability: Send + Sync {
     }
     fn cancel_questions(&self) {}
     fn reset_repeat_chain(&self) {}
-    fn push_compaction_waiter(&self, _sender: tokio::sync::oneshot::Sender<()>) -> bool {
+    fn push_compaction_waiter(&self, _request: ManualCompaction) -> bool {
         false
     }
     fn has_compaction_waiters(&self) -> bool {
         false
     }
-    fn take_compaction_waiters(&self) -> Vec<tokio::sync::oneshot::Sender<()>> {
+    fn take_compaction_waiters(&self) -> Vec<ManualCompaction> {
         Vec::new()
     }
 }
@@ -307,7 +316,7 @@ pub(crate) struct CapabilityStates {
     pub instructions: Arc<Mutex<InstructionState>>,
     pub skill_catalog: Arc<Mutex<SkillCatalogState>>,
     pub reminder_chain: Arc<Mutex<Option<(String, usize)>>>,
-    pub compaction_waiters: Arc<Mutex<Vec<tokio::sync::oneshot::Sender<()>>>>,
+    pub compaction_waiters: Arc<Mutex<Vec<ManualCompaction>>>,
     pub instruction_roots: Vec<PathBuf>,
     pub skill_roots: Vec<PathBuf>,
     pub spill_max_inline_tokens: usize,
@@ -365,17 +374,20 @@ impl CapabilityRegistry {
         }
     }
 
-    pub(crate) fn push_compaction_waiter(&self, sender: tokio::sync::oneshot::Sender<()>) -> bool {
-        let mut sender = Some(sender);
+    pub(crate) fn push_compaction_waiter(
+        &self,
+        request: ManualCompaction,
+    ) -> Result<(), ManualCompaction> {
+        let mut request = Some(request);
         for capability in &self.capabilities {
-            let Some(current) = sender.take() else {
-                return true;
+            let Some(current) = request.take() else {
+                return Ok(());
             };
             if capability.push_compaction_waiter(current) {
-                return true;
+                return Ok(());
             }
         }
-        false
+        Err(request.expect("没有能力接收时 request 仍在"))
     }
 
     pub(crate) fn has_compaction_waiters(&self) -> bool {
@@ -384,7 +396,7 @@ impl CapabilityRegistry {
             .any(|capability| capability.has_compaction_waiters())
     }
 
-    pub(crate) fn take_compaction_waiters(&self) -> Vec<tokio::sync::oneshot::Sender<()>> {
+    pub(crate) fn take_compaction_waiters(&self) -> Vec<ManualCompaction> {
         let mut waiters = Vec::new();
         for capability in &self.capabilities {
             waiters.extend(capability.take_compaction_waiters());
@@ -454,7 +466,8 @@ pub(crate) fn event_context(kind: &EventKind) -> Option<(u64, u64)> {
         | EventKind::QuestionAsked { turn, step, .. }
         | EventKind::QuestionCancelled { turn, step, .. } => (*turn, *step),
         EventKind::CompactionStart { turn, .. } | EventKind::CompactionEnd { turn, .. } => {
-            (*turn, 0)
+            // 手动压缩在两次 turn 之间进行（DSH turn: null），没有 turn 上下文。
+            ((*turn)?, 0)
         }
         EventKind::TodoWrite { .. }
         | EventKind::InboxSpliced { .. }
@@ -497,7 +510,7 @@ mod dispatch_contract_tests {
         fn log_path(&self) -> &Path {
             unimplemented!()
         }
-        fn compaction_config(&self) -> CompactionConfig {
+        fn compaction_policy(&self) -> CompactionPolicy {
             unimplemented!()
         }
         fn append<'a>(&'a self, _kinds: &'a [EventKind]) -> HookFuture<'a> {

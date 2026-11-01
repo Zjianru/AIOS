@@ -57,7 +57,19 @@ impl DeepSeek {
         tools: &[ToolSchema],
         cancel: &CancelToken,
     ) -> Result<ChunkStream, ModelError> {
-        let body = serialize::request_body(&self.config, messages, tools)?;
+        self.stream_with_max_tokens(messages, tools, cancel, None)
+            .await
+    }
+
+    /// 同 `stream`，但这一次请求覆盖输出上限（T006.3：摘要请求的 maxTokens 上限；DSH GenerateOptions.maxTokens）。
+    pub async fn stream_with_max_tokens(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSchema],
+        cancel: &CancelToken,
+        max_tokens: Option<u32>,
+    ) -> Result<ChunkStream, ModelError> {
+        let body = serialize::request_body(&self.config, messages, tools, max_tokens)?;
         let request = self
             .http
             .post(self.url.clone())

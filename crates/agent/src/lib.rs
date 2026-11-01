@@ -29,6 +29,22 @@ use tools::ToolSet;
 pub use error::AgentError;
 pub use inbox::Delivery;
 
+/// 按 provider/model 覆盖压缩策略（DSH compaction-basic 的 modelPolicies；只覆盖显式给出的字段）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompactionModelPolicy {
+    pub provider: String,
+    pub model: String,
+    pub threshold_ratio: Option<f64>,
+    pub retain_ratio: Option<f64>,
+    pub headroom_tokens: Option<u64>,
+    /// 摘要输出上限（DSH policy maxTokens）。
+    pub summary_max_tokens: Option<u32>,
+    /// 仍超阈值时最多再压几次（DSH compactionRetries）。
+    pub compaction_retries: Option<u32>,
+    /// 上下文溢出恢复最多重试几次（DSH maxOverflowRetries）。
+    pub max_overflow_retries: Option<u32>,
+}
+
 /// agent 的运行配置。默认值照 DSH 默认组合：agent-loop 的并发上限、
 /// compaction-basic 的阈值/保留/预留 token、bundle/base 的 spill 预算。
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +57,14 @@ pub struct AgentConfig {
     pub compaction_retain_ratio: f64,
     /// 压缩阈值公式里的预留输出 token；DSH 默认 65536（headroomTokens）。
     pub compaction_headroom_tokens: u64,
+    /// 摘要输出的 token 上限；None 时照 DSH 取 headroomTokens。
+    pub compaction_summary_max_tokens: Option<u32>,
+    /// 首次压缩后仍超阈值时最多再压几次；DSH 默认 1（compactionRetries）。
+    pub compaction_retries: u32,
+    /// 上下文溢出恢复最多重试几次；DSH 默认 1（maxOverflowRetries）。
+    pub compaction_max_overflow_retries: u32,
+    /// 按 provider/model 的压缩策略覆盖表（DSH modelPolicies；重复 target 非法）。
+    pub compaction_model_policies: Vec<CompactionModelPolicy>,
     /// 单个工具结果内联进上下文的 token 预算；0 表示禁用 spill（DSH 省略 maxInlineTokens 即禁用）。
     /// DSH 默认组合是 12500（bundle/base 的 spill-policy: maxInlineTokens）。
     pub spill_max_inline_tokens: usize,
@@ -59,6 +83,10 @@ impl Default for AgentConfig {
             compaction_threshold_ratio: 0.8,
             compaction_retain_ratio: 0.16,
             compaction_headroom_tokens: 65_536,
+            compaction_summary_max_tokens: None,
+            compaction_retries: 1,
+            compaction_max_overflow_retries: 1,
+            compaction_model_policies: Vec::new(),
             spill_max_inline_tokens: 12_500,
             skill_roots: home
                 .as_ref()
@@ -101,6 +129,62 @@ impl AgentConfig {
                 field: "compaction_headroom_tokens",
                 message: "必须是正整数".to_owned(),
             });
+        }
+        if let Some(max_tokens) = self.compaction_summary_max_tokens
+            && max_tokens == 0
+        {
+            return Err(AgentError::InvalidConfig {
+                field: "compaction_summary_max_tokens",
+                message: "必须是正整数".to_owned(),
+            });
+        }
+        for (index, policy) in self.compaction_model_policies.iter().enumerate() {
+            if policy.provider.trim().is_empty() || policy.model.trim().is_empty() {
+                return Err(AgentError::InvalidConfig {
+                    field: "compaction_model_policies",
+                    message: format!("第 {index} 项 provider/model 不能为空"),
+                });
+            }
+            if self.compaction_model_policies[..index]
+                .iter()
+                .any(|existing| {
+                    existing.provider == policy.provider && existing.model == policy.model
+                })
+            {
+                return Err(AgentError::InvalidConfig {
+                    field: "compaction_model_policies",
+                    message: format!(
+                        "重复的 provider/model：{}/{}",
+                        policy.provider, policy.model
+                    ),
+                });
+            }
+            if let Some(ratio) = policy.threshold_ratio
+                && (!ratio.is_finite() || ratio <= 0.0 || ratio > 1.0)
+            {
+                return Err(AgentError::InvalidConfig {
+                    field: "compaction_model_policies",
+                    message: format!("第 {index} 项 threshold_ratio 必须在 (0, 1] 之间"),
+                });
+            }
+            if let Some(max_tokens) = policy.summary_max_tokens
+                && max_tokens == 0
+            {
+                return Err(AgentError::InvalidConfig {
+                    field: "compaction_model_policies",
+                    message: format!("第 {index} 项 summary_max_tokens 必须是正整数"),
+                });
+            }
+            let threshold = policy
+                .threshold_ratio
+                .unwrap_or(self.compaction_threshold_ratio);
+            let retain = policy.retain_ratio.unwrap_or(self.compaction_retain_ratio);
+            if !retain.is_finite() || retain < 0.0 || retain >= threshold {
+                return Err(AgentError::InvalidConfig {
+                    field: "compaction_model_policies",
+                    message: format!("第 {index} 项 retain_ratio 必须 >= 0 且小于 threshold_ratio"),
+                });
+            }
         }
         validate_roots("instruction_roots", &self.instruction_roots)?;
         validate_roots("skill_roots", &self.skill_roots)?;
@@ -185,6 +269,15 @@ pub enum JobStatus {
     Completed,
     Failed,
     Killed,
+}
+
+/// 一次成功压缩的可观察结果（DSH command-compact 的 CompactionResult 计数部分）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompactionOutcome {
+    /// 被替换的 surface 节点数（DSH shadowedSeqs.length）。
+    pub shadowed_items: usize,
+    /// 被替换内容的估算 token 数（DSH shadowedTokenCount）。
+    pub shadowed_tokens: u64,
 }
 
 /// 订阅者收到的 agent 事件。
@@ -308,10 +401,19 @@ impl Agent {
         self.inner.idle().await;
     }
 
-    /// 手动压缩（chat 的 /compact）：空闲时立刻执行，运行中排到当前轮之后。
-    pub async fn compact(&self) {
-        let receiver = self.inner.queue_compaction();
-        let _ = receiver.await;
+    /// 手动压缩（chat 的 /compact，照 DSH command-compact）：空闲时立刻执行，运行中排到
+    /// 当前轮之后；`source_command_id` 会写进 compaction/* 事件。返回压缩结果计数，
+    /// 没有可压缩历史时返回 None。
+    pub async fn compact(
+        &self,
+        source_command_id: Option<String>,
+    ) -> Result<Option<CompactionOutcome>, AgentError> {
+        let receiver = self.inner.queue_compaction(source_command_id);
+        match receiver.await {
+            Ok(Ok(outcome)) => Ok(outcome),
+            Ok(Err(message)) => Err(AgentError::Compaction(message)),
+            Err(_) => Err(AgentError::Compaction("压缩队列被丢弃".to_owned())),
+        }
     }
 
     pub fn id(&self) -> &SessionId {

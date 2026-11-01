@@ -102,9 +102,12 @@ async fn manual_compact_while_idle_compresses_immediately() {
         .unwrap();
     wait_idle(&harness.agent, 20).await;
 
-    let done = tokio::time::timeout(std::time::Duration::from_secs(10), harness.agent.compact())
-        .await
-        .is_ok();
+    let done = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        harness.agent.compact(None),
+    )
+    .await
+    .is_ok();
     assert!(done, "/compact 不能挂住");
 
     let requests = server.received_requests().await.unwrap();
@@ -179,7 +182,7 @@ async fn manual_compact_queues_until_turn_end() {
     // 轮次还在跑时请求 compact：应先排队，不能立刻发摘要请求。
     let agent = harness.agent.clone();
     let compact = tokio::spawn(async move {
-        agent.compact().await;
+        let _ = agent.compact(None).await;
     });
     tokio::task::yield_now().await;
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
@@ -236,7 +239,7 @@ async fn resume_after_compaction_derives_same_messages() {
         .await
         .unwrap();
     wait_idle(&harness.agent, 20).await;
-    harness.agent.compact().await;
+    let _ = harness.agent.compact(None).await;
     let store = SessionStore::open(harness.data_dir.path(), &harness.id).unwrap();
     let before = store.derive_messages();
     assert!(
@@ -310,7 +313,7 @@ async fn compaction_ids_are_unique_across_resume() {
         .await
         .unwrap();
     wait_idle(&harness.agent, 20).await;
-    harness.agent.compact().await;
+    let _ = harness.agent.compact(None).await;
     drop(harness.agent);
 
     let config = AgentConfig {
@@ -333,7 +336,7 @@ async fn compaction_ids_are_unique_across_resume() {
     )
     .await
     .expect("续接应成功");
-    resumed.compact().await;
+    let _ = resumed.compact(None).await;
 
     let store = SessionStore::open(harness.data_dir.path(), &harness.id).unwrap();
     let ids: Vec<String> = store
@@ -371,7 +374,7 @@ async fn compact_and_get_id() -> String {
         .await
         .unwrap();
     wait_idle(&harness.agent, 20).await;
-    harness.agent.compact().await;
+    let _ = harness.agent.compact(None).await;
     let store = SessionStore::open(harness.data_dir.path(), &harness.id).unwrap();
     store
         .events()
@@ -447,9 +450,12 @@ async fn idle_compact_does_not_create_empty_turn() {
     };
     let before = turn_starts(harness.data_dir.path());
     assert_eq!(before, 1);
-    let done = tokio::time::timeout(std::time::Duration::from_secs(10), harness.agent.compact())
-        .await
-        .is_ok();
+    let done = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        harness.agent.compact(None),
+    )
+    .await
+    .is_ok();
     assert!(done, "空闲 compact 不能丢等待者");
     let after = turn_starts(harness.data_dir.path());
     assert_eq!(after, before, "空闲 compact 不应为空 turn 写 turn/start");
@@ -474,7 +480,7 @@ async fn two_compacts_in_same_batch_coalesce_into_one() {
         .unwrap();
     wait_idle(&harness.agent, 20).await;
     let both = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        tokio::join!(harness.agent.compact(), harness.agent.compact())
+        tokio::join!(harness.agent.compact(None), harness.agent.compact(None))
     })
     .await
     .is_ok();
@@ -519,7 +525,7 @@ async fn second_compact_during_compaction_completes() {
 
     let agent = harness.agent.clone();
     let first = tokio::spawn(async move {
-        agent.compact().await;
+        let _ = agent.compact(None).await;
     });
     // 等第一次压缩真的开始（summary 响应有延迟，窗口内再请求一次）。
     loop {
@@ -530,7 +536,7 @@ async fn second_compact_during_compaction_completes() {
     }
     let agent = harness.agent.clone();
     let second = tokio::spawn(async move {
-        agent.compact().await;
+        let _ = agent.compact(None).await;
     });
     let finished = tokio::time::timeout(std::time::Duration::from_secs(15), async {
         first.await.unwrap();

@@ -88,6 +88,7 @@ pub(super) fn request_body(
     config: &DeepSeekConfig,
     messages: &[Message],
     tools: &[ToolSchema],
+    max_tokens: Option<u32>,
 ) -> Result<Vec<u8>, ModelError> {
     let mut system = String::new();
     let mut wire_messages: Vec<WireMessage> = Vec::new();
@@ -219,7 +220,7 @@ pub(super) fn request_body(
         model: config.model.clone(),
         stream: true,
         messages: wire_messages,
-        max_tokens: config.max_tokens,
+        max_tokens: max_tokens.unwrap_or(config.max_tokens),
         thinking: WireThinking {
             kind: if effort == crate::Effort::Off {
                 "disabled"

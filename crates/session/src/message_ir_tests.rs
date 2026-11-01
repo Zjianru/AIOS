@@ -100,40 +100,43 @@ fn user_and_tool_result_json_carry_id_source() {
 fn derived_checkpoint_message_id_is_stable() {
     // 同一条日志派生两次：checkpoint 消息的 id 必须相同（确定性来自压缩区间起点 seq）。
     let events = vec![
-        Event {
-            seq: 1,
-            time: 1,
-            kind: EventKind::TurnStart { turn: 1 },
-        },
-        Event {
-            seq: 2,
-            time: 2,
-            kind: EventKind::UserMessage {
+        Event::new(1, 1, EventKind::TurnStart { turn: 1 }),
+        Event::new(
+            2,
+            2,
+            EventKind::UserMessage {
                 turn: 1,
                 step: 1,
                 message: Message::user_text("早先的话"),
             },
-        },
-        Event {
-            seq: 3,
-            time: 3,
-            kind: EventKind::CompactionSummary {
+        ),
+        Event::new(
+            3,
+            3,
+            EventKind::CompactionSummary {
                 compaction_id: "c1".to_owned(),
-                summary: "摘要".to_owned(),
-                shadowed_start: 2,
-                shadowed_end: 3,
+                source_command_id: None,
+                summary: vec![ContentBlock::text("摘要")],
+                raw_output: vec![ContentBlock::text("摘要")],
+                llm_stream_call: true,
+                shadowed_range: crate::ShadowedRange { start: 2, end: 3 },
+                shadowed_seqs: vec![2, 3],
                 shadowed_token_count: 5,
+                provider: "deepseek".to_owned(),
+                model: "deepseek-flash".to_owned(),
+                max_tokens: None,
+                usage: None,
             },
-        },
-        Event {
-            seq: 4,
-            time: 4,
-            kind: EventKind::UserMessage {
+        ),
+        Event::new(
+            4,
+            4,
+            EventKind::UserMessage {
                 turn: 1,
                 step: 1,
                 message: Message::user_text("之后的话"),
             },
-        },
+        ),
     ];
 
     let checkpoint_id = |events: &[Event]| {
@@ -160,24 +163,15 @@ fn derived_checkpoint_message_id_is_stable() {
     let mut other = events.clone();
     other.insert(
         1,
-        Event {
-            seq: 2,
-            time: 2,
-            kind: EventKind::StepStart { turn: 1, step: 1 },
-        },
+        Event::new(2, 2, EventKind::StepStart { turn: 1, step: 1 }),
     );
     for (offset, event) in other.iter_mut().enumerate() {
         event.seq = offset as u64 + 1;
     }
     // 压缩区间也跟着挪：起点是 UserMessage 的新 seq。
-    if let EventKind::CompactionSummary {
-        shadowed_start,
-        shadowed_end,
-        ..
-    } = &mut other[3].kind
-    {
-        *shadowed_start = 3;
-        *shadowed_end = 4;
+    if let EventKind::CompactionSummary { shadowed_range, .. } = &mut other[3].kind {
+        shadowed_range.start = 3;
+        shadowed_range.end = 4;
     }
     let other_id = checkpoint_id(&other);
     assert_ne!(first, other_id, "不同压缩区间的 checkpoint id 不同");

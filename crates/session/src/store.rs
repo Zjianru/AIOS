@@ -14,7 +14,7 @@ use model::Message;
 
 use crate::derive::{derive_messages, derive_messages_with_seqs};
 use crate::error::SessionError;
-use crate::event::{Event, EventKind, FORMAT_VERSION, SessionHeader};
+use crate::event::{Event, EventKind, FORMAT_VERSION, SessionHeader, SurfaceOp};
 use crate::id::SessionId;
 
 /// 追加写日志的底层文件接缝。生产实现是 std::fs::File；单元测试用第二个
@@ -202,7 +202,33 @@ impl SessionStore {
         kinds: &[EventKind],
         time: u64,
     ) -> Result<Vec<u64>, SessionError> {
-        if kinds.is_empty() {
+        let entries: Vec<(EventKind, Option<SurfaceOp>, Option<Vec<u64>>)> = kinds
+            .iter()
+            .map(|kind| (kind.clone(), None, None))
+            .collect();
+        self.append_entries(entries, time)
+    }
+
+    /// 追加一条 message-producing 事件并带上 surface 放置信息（T006.3 压缩 checkpoint 的
+    /// `surfaceOp: replace` + `sourceEventSeqs`，照 DSH SessionEvent）。
+    pub fn append_surface(
+        &mut self,
+        kind: EventKind,
+        surface_op: SurfaceOp,
+        source_event_seqs: Vec<u64>,
+    ) -> Result<Vec<u64>, SessionError> {
+        self.append_entries(
+            vec![(kind, Some(surface_op), Some(source_event_seqs))],
+            now_ms(),
+        )
+    }
+
+    fn append_entries(
+        &mut self,
+        entries: Vec<(EventKind, Option<SurfaceOp>, Option<Vec<u64>>)>,
+        time: u64,
+    ) -> Result<Vec<u64>, SessionError> {
+        if entries.is_empty() {
             return Ok(Vec::new());
         }
         // 写句柄的第一次 append 之前，先把上次没提交的尾部截掉（DSH storage.ts:317-334）。
@@ -213,13 +239,15 @@ impl SessionStore {
             self.pending_truncate = false;
         }
         let first_seq = self.events.len() as u64 + 1;
-        let mut batch = Vec::with_capacity(kinds.len());
+        let mut batch = Vec::with_capacity(entries.len());
         let mut buffer = String::new();
-        for (offset, kind) in kinds.iter().enumerate() {
+        for (offset, (kind, surface_op, source_event_seqs)) in entries.into_iter().enumerate() {
             let event = Event {
                 seq: first_seq + offset as u64,
                 time,
-                kind: kind.clone(),
+                kind,
+                surface_op,
+                source_event_seqs,
             };
             buffer.push_str(&serde_json::to_string(&event)?);
             buffer.push('\n');
@@ -396,7 +424,7 @@ mod tests {
 
     #[test]
     fn question_events_are_ignored_by_derive_and_repair() {
-        let at = |seq: u64, kind: EventKind| Event { seq, time: 0, kind };
+        let at = |seq: u64, kind: EventKind| Event::new(seq, 0, kind);
         let message = Message::text(Role::User, "go");
         let events = vec![
             at(1, EventKind::TurnStart { turn: 1 }),

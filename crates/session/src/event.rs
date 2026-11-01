@@ -1,6 +1,6 @@
 //! 会话事件与 header。
 
-use model::{AssistantStreamRecord, Message, Usage};
+use model::{AssistantStreamRecord, ContentBlock, Message, Usage};
 use serde::{Deserialize, Serialize};
 
 use crate::SessionId;
@@ -188,6 +188,26 @@ impl RetryMode {
     }
 }
 
+/// 被替换的 surface 区间（DSH shadowedRange：闭区间 surface 位置 seq）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShadowedRange {
+    pub start: u64,
+    pub end: u64,
+}
+
+/// 一条消息在 surface 上的放置方式（DSH SurfaceOp 的 AIOS 子集：缺省=append）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "kebab-case")]
+pub enum SurfaceOp {
+    /// 用它自己替换 [startSeq, endSeq] 区间内的 surface 节点（T006.3 压缩 checkpoint 用）。
+    Replace {
+        #[serde(rename = "startSeq")]
+        start_seq: u64,
+        #[serde(rename = "endSeq")]
+        end_seq: u64,
+    },
+}
+
 /// 会话事件。类型集合照 spec「实现决定·会话日志」。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -319,25 +339,52 @@ pub enum EventKind {
     /// 模型提交的整份 todo 列表快照；回放时后写覆盖先写（T005.7，类型名照 DSH todo/write）。
     #[serde(rename = "todo/write")]
     TodoWrite { todos: Vec<TodoItem> },
-    /// 一次压缩开始（T005.8a；类型名照 DSH known-event-types）。锁语义简化：AIOS 单写者，
-    /// start 先落、end 收尾，失败时 end 带 error。
+    /// 一次压缩开始（T006.3：字段照 DSH compaction/start，types.ts:24）。log-only，持有压缩锁；
+    /// `turn` 为 None 表示两次 turn 之间的独立手动压缩（DSH turn: number|null）。
     #[serde(rename = "compaction/start")]
-    CompactionStart { compaction_id: String, turn: u64 },
-    /// 一次压缩完成：摘要文本 + 被替换事件的 seq 区间 + 被替换内容的估算 token 数。
-    /// 原始事件保留在日志里；派生请求用一条 checkpoint 消息替换该区间。
+    CompactionStart {
+        #[serde(rename = "compactionId")]
+        compaction_id: String,
+        #[serde(rename = "sourceCommandId", skip_serializing_if = "Option::is_none")]
+        source_command_id: Option<String>,
+        turn: Option<u64>,
+    },
+    /// 一次压缩完成：摘要内容、调用事实（provider/model/maxTokens/usage/rawOutput）、
+    /// 被替换的 surface 区间与逐节点 seq（TSH compaction/summary，compaction/types.ts:34-70）。
+    /// 真正的替换由紧随其后、带 surfaceOp replace 的 user/message 完成。
     #[serde(rename = "compaction/summary")]
     CompactionSummary {
+        #[serde(rename = "compactionId")]
         compaction_id: String,
-        summary: String,
-        shadowed_start: u64,
-        shadowed_end: u64,
+        #[serde(rename = "sourceCommandId", skip_serializing_if = "Option::is_none")]
+        source_command_id: Option<String>,
+        summary: Vec<ContentBlock>,
+        #[serde(rename = "rawOutput")]
+        raw_output: Vec<ContentBlock>,
+        #[serde(rename = "llmStreamCall")]
+        llm_stream_call: bool,
+        #[serde(rename = "shadowedRange")]
+        shadowed_range: ShadowedRange,
+        #[serde(rename = "shadowedSeqs")]
+        shadowed_seqs: Vec<u64>,
+        #[serde(rename = "shadowedTokenCount")]
         shadowed_token_count: u64,
+        provider: String,
+        model: String,
+        #[serde(rename = "maxTokens", skip_serializing_if = "Option::is_none")]
+        max_tokens: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
     },
-    /// 一次压缩结束；error 为 Some 表示失败（日志仍只追加）。
+    /// 一次压缩结束；error 为 Some 表示失败（日志仍只追加；DSH compaction/end）。
     #[serde(rename = "compaction/end")]
     CompactionEnd {
+        #[serde(rename = "compactionId")]
         compaction_id: String,
-        turn: u64,
+        #[serde(rename = "sourceCommandId", skip_serializing_if = "Option::is_none")]
+        source_command_id: Option<String>,
+        turn: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
 }
@@ -386,6 +433,23 @@ pub struct Event {
     pub seq: u64,
     pub time: u64,
     pub kind: EventKind,
+    /// 只在 message-producing surface 事件上出现（DSH SessionEvent.surfaceOp）。
+    pub surface_op: Option<SurfaceOp>,
+    /// 这次 surface 变更引用的源事件 seq（DSH sourceEventSeqs）。
+    pub source_event_seqs: Option<Vec<u64>>,
+}
+
+impl Event {
+    /// 普通 append 的事件（没有 surface 替换信息）。
+    pub fn new(seq: u64, time: u64, kind: EventKind) -> Self {
+        Self {
+            seq,
+            time,
+            kind,
+            surface_op: None,
+            source_event_seqs: None,
+        }
+    }
 }
 
 impl Serialize for Event {
@@ -402,11 +466,17 @@ impl Serialize for Event {
         let kind = data
             .remove("type")
             .ok_or_else(|| S::Error::custom("事件字段缺少 type"))?;
-        let mut map = serializer.serialize_map(Some(4))?;
+        let mut map = serializer.serialize_map(Some(6))?;
         map.serialize_entry("type", &kind)?;
         map.serialize_entry("seq", &self.seq)?;
         map.serialize_entry("time", &self.time)?;
         map.serialize_entry("data", &serde_json::Value::Object(data))?;
+        if let Some(surface_op) = &self.surface_op {
+            map.serialize_entry("surfaceOp", surface_op)?;
+        }
+        if let Some(source_event_seqs) = &self.source_event_seqs {
+            map.serialize_entry("sourceEventSeqs", source_event_seqs)?;
+        }
         map.end()
     }
 }
@@ -424,6 +494,10 @@ impl<'de> Deserialize<'de> for Event {
             seq: u64,
             time: u64,
             data: serde_json::Value,
+            #[serde(rename = "surfaceOp", default)]
+            surface_op: Option<SurfaceOp>,
+            #[serde(rename = "sourceEventSeqs", default)]
+            source_event_seqs: Option<Vec<u64>>,
         }
         let wire = WireEvent::deserialize(deserializer)?;
         let serde_json::Value::Object(mut data) = wire.data else {
@@ -436,6 +510,8 @@ impl<'de> Deserialize<'de> for Event {
             seq: wire.seq,
             time: wire.time,
             kind,
+            surface_op: wire.surface_op,
+            source_event_seqs: wire.source_event_seqs,
         })
     }
 }

@@ -56,6 +56,17 @@ pub enum MessageSource {
     },
     /// 渲染后的系统提示。
     SystemPrompt,
+    /// 压缩 checkpoint 的 user 消息（DSH compaction 的 compact-checkpoint 来源）。
+    CompactCheckpoint {
+        #[serde(rename = "compactionId")]
+        compaction_id: String,
+        #[serde(
+            rename = "sourceCommandId",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        source_command_id: Option<String>,
+    },
 }
 
 /// 一条消息的角色（五种角色照 DSH MessageRoleMap）。

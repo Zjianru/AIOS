@@ -35,14 +35,13 @@ pub(crate) fn derive_messages_with_seqs(events: &[Event]) -> Vec<(u64, Message)>
             EventKind::CompactionSummary {
                 compaction_id,
                 summary,
-                shadowed_start,
-                shadowed_end,
+                shadowed_range,
                 ..
             } => compactions.push((
                 compaction_id.clone(),
-                *shadowed_start,
-                *shadowed_end,
-                summary.clone(),
+                shadowed_range.start,
+                shadowed_range.end,
+                summary_text(summary),
             )),
             _ => {}
         }
@@ -127,4 +126,13 @@ fn message_or_skip(message: &Message) -> Option<Message> {
     } else {
         Some(message.clone())
     }
+}
+
+/// 摘要内容块里的可见文本（skeleton 期 derive 仍按旧方式拼 checkpoint；T006.3 实现改成读日志消息）。
+fn summary_text(summary: &[ContentBlock]) -> String {
+    summary
+        .iter()
+        .filter_map(ContentBlock::as_text)
+        .collect::<Vec<_>>()
+        .join("")
 }
