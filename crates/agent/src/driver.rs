@@ -15,6 +15,7 @@ use tokio::sync::Notify;
 use tokio::sync::broadcast;
 use tools::{ToolCall, ToolContext, ToolSessionState, ToolSet, execute_batch};
 
+use crate::capabilities::{CapabilityRegistry, HookContext, HookPoint};
 use crate::compaction;
 use crate::error::AgentError;
 use crate::inbox::{Delivery, Inbox, InboxTarget};
@@ -82,6 +83,8 @@ pub(crate) struct Inner {
     pub(crate) compaction_retain_ratio: f64,
     /// 压缩阈值公式里的预留输出 token（T005.8a）。
     pub(crate) compaction_headroom_tokens: u64,
+    /// 固定挂点与功能注册表（T006.1a）。
+    capabilities: CapabilityRegistry,
     pub(crate) store: Mutex<SessionStore>,
     inbox: Mutex<Inbox>,
     state: Mutex<RunState>,
@@ -165,6 +168,7 @@ impl Inner {
             events,
             idle_notify: Notify::new(),
             cancel_notify: Arc::new(Notify::new()),
+            capabilities: CapabilityRegistry::production(),
             compact_queue: Mutex::new(Vec::new()),
             repeat_chain: Mutex::new(None),
             #[cfg(test)]
@@ -398,6 +402,12 @@ impl Inner {
             .lock()
             .expect("agent 会话锁被毒化")
             .append(kinds)?;
+        // T006.1a：写日志事件后的固定挂点；1a 的注册表全是 no-op。
+        for kind in kinds {
+            if let Some(context) = crate::capabilities::event_context(kind) {
+                self.capabilities.dispatch(HookPoint::SessionEvent, context);
+            }
+        }
         Ok(())
     }
 
@@ -517,6 +527,9 @@ fn settle_idle(inner: &Arc<Inner>) {
         restart_kick(inner, turn);
         return;
     }
+    inner
+        .capabilities
+        .dispatch(HookPoint::Status, HookContext::new(turn, 0));
     state.phase = Phase::Idle;
     drop(state);
     inner.idle_notify.notify_waiters();
@@ -572,6 +585,9 @@ async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
             (reason, outcome)
         }
     };
+    inner
+        .capabilities
+        .dispatch(HookPoint::TurnStopping, HookContext::new(turn, 0));
     let appended = inner.append(&[EventKind::TurnEnd { turn, reason }]);
     let _ = inner.events.send(AgentEvent::TurnEnded { turn, outcome });
     appended?;
@@ -691,6 +707,9 @@ async fn run_step(
     if abort.load(Ordering::SeqCst) {
         return Ok(StepEnd::Aborted);
     }
+    inner
+        .capabilities
+        .dispatch(HookPoint::PreStep, HookContext::new(turn, step));
     let has_system = inner
         .store
         .lock()
@@ -778,9 +797,15 @@ async fn run_step(
         if abort.load(Ordering::SeqCst) {
             return Ok(StepEnd::Aborted);
         }
+        inner
+            .capabilities
+            .dispatch(HookPoint::Request, HookContext::new(turn, step));
         let mut stream = match inner.model.stream(&messages, &tool_schemas, &cancel).await {
             Ok(stream) => stream,
             Err(error) => {
+                inner
+                    .capabilities
+                    .dispatch(HookPoint::RequestError, HookContext::new(turn, step));
                 if abort.load(Ordering::SeqCst) || error.code == ErrorCode::Aborted {
                     return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
                 }
@@ -1018,6 +1043,9 @@ async fn run_step(
             }
         }
     }
+    inner
+        .capabilities
+        .dispatch(HookPoint::ToolBefore, HookContext::new(turn, step));
     let context = ToolContext::with_session(inner.cwd.clone(), Arc::clone(&inner.tool_session));
     let outcome = execute_batch(
         &inner.tools,
@@ -1031,6 +1059,9 @@ async fn run_step(
     if let Some((index, result)) = ask_override {
         outcome.results[index] = result;
     }
+    inner
+        .capabilities
+        .dispatch(HookPoint::ToolResult, HookContext::new(turn, step));
     for result in &outcome.results {
         // T005.2：超大结果落 spill（按会话目录），进日志/上下文的是 preview + locator；
         // read 有自己的分页上限，不在此列（照 DSH spill-policy）。
@@ -1054,6 +1085,9 @@ async fn run_step(
             error_code: result.error_code.clone(),
         }])?;
     }
+    inner
+        .capabilities
+        .dispatch(HookPoint::ToolAfter, HookContext::new(turn, step));
     // T005.7：成功的 todo_write 把整表快照落成一条 todo/write 事件（工具只写状态，
     // 日志由 agent 负责；回放时后写覆盖先写）。
     let todo_write_succeeded = calls.iter().any(|call| {

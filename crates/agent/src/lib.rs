@@ -2,6 +2,7 @@
 //!
 //! 机制照 DSH 的 packages/core/agent-loop（strategy 第 1 节）。
 
+mod capabilities;
 mod compaction;
 mod driver;
 mod error;

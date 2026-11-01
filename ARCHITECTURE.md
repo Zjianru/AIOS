@@ -13,7 +13,7 @@ AIOS 是一个本地 agent 内核：每次模型请求从会话日志派生，�
 - crates/model：provider 无关的消息 IR（Message / ContentBlock / Usage / FinishReason / StreamChunk；assistant 的 reasoning 块带 signature），DeepSeek 的 Messages 适配器（请求序列化、SSE 解码、流事件翻译、错误码、retry-after），以及具体类型 `CancelToken`（Arc<AtomicBool>+Notify，供 LLM 层打断请求）。
 - crates/session：会话事件（turn/step/消息 + `compaction/prune` 的修剪视图事件 + `todo/write` 的整表 todo 快照事件 + `compaction/start` / `compaction/summary` / `compaction/end` 的压缩事件），只追加的 JSONL 存储（SessionStore），从日志派生请求消息（应用修剪替换视图），以及续接时的中断修复（`repair`：崩溃/被杀后给没收尾的 turn 补收尾事件）。
 - crates/tools：Tool 接口、ToolCall/ToolResult、ToolSet、工具批执行（独占屏障、有界并行池、按模型顺序提交），内置工具：只读 read / glob / grep（进程内搜索，不起 rg 子进程）和写类 write / edit / apply_patch（整文件写、字面替换、Codex 风格补丁；文件系统语义在 `crates/tools/src/fs`），大工具结果的 spill 存储与保留（`spill`：按会话目录落盘、头/尾 preview + locator），通用 bash 工具（每次新 `bash -c`、超时转后台、输出尾部截断 + 全文 spill 路径、受管 `AIOS_*` 环境变量），后台任务三件 job_output / job_list / job_kill 与按会话隔离的任务注册表（`jobs`：子进程流式收集、超时转后台、结算回调），skill 发现与 `skill` 加载工具（`skills`：项目根/.agents/skills、<data-dir>/skills、配置根；最小 YAML frontmatter 解析），todo 工具 `todo_write`（整表替换 + 校验 + 计数回执；落日志由 agent 负责），工具级限时超时（`batch`：`Tool::timeout_ms()` 声明，超时回 `TOOL_TIMEOUT` 错误结果）、tools 为此新增 workspace tokio 生产依赖，只用于 `tokio::time::timeout`（不创建 runtime、不 spawn）、以及工具用的会话上下文 `ToolContext`（cwd + 观察表 / 任务注册表 / spill，见「T005 接口地基」）。
-- crates/agent：一轮多步的驱动、收件箱（follow-up / steer / inject）、工具调用的派发与结果回写、Agent 的 6 个驱动入口（create / resume / send / cancel / subscribe / idle）、公开配置 `AgentConfig`、订阅者事件 `AgentEvent`、后台任务完成投递（结算时发 `JobCompleted` 并把完成通知投进下一步输入）、重复工具调用提醒（同工具+规范化参数连续 3/5/8 次按 DSH 文案提醒）、指令文件注入（`instructions`：AGENTS.md / CLAUDE.md 的发现、按步注入与刷新）、skill 目录注入（`skill_catalog`：名字 + description 的目录块，按步追加）、自动压缩与溢出恢复与手动 `compact()` 入口（`compaction`：token 阈值检查、摘要请求、压缩事件、重试一次；空闲立刻压缩、运行中排到本轮之后）；另有 id / log_path 两个只读元数据访问器，不属于驱动入口。集成测试的 mock 响应器、可控测试工具和公共 setup 在 `crates/agent/tests/common`。
+- crates/agent：一轮多步的驱动、收件箱（follow-up / steer / inject）、工具调用的派发与结果回写、Agent 的 6 个驱动入口（create / resume / send / cancel / subscribe / idle）、公开配置 `AgentConfig`、订阅者事件 `AgentEvent`、后台任务完成投递（结算时发 `JobCompleted` 并把完成通知投进下一步输入）、重复工具调用提醒（同工具+规范化参数连续 3/5/8 次按 DSH 文案提醒）、指令文件注入（`instructions`：AGENTS.md / CLAUDE.md 的发现、按步注入与刷新）、skill 目录注入（`skill_catalog`：名字 + description 的目录块，按步追加）、自动压缩与溢出恢复与手动 `compact()` 入口（`compaction`：token 阈值检查、摘要请求、压缩事件、重试一次；空闲立刻压缩、运行中排到本轮之后）；另有 id / log_path 两个只读元数据访问器，不属于驱动入口。集成测试的 mock 响应器、可控测试工具和公共 setup 在 `crates/agent/tests/common`。loop 的固定挂点与功能注册表在 `crates/agent/src/capabilities.rs`（T006.1a：编译期 trait + 固定顺序表，无运行时加载）。
 - crates/cli：开发用 CLI `aios-dev`（`chat` / `run`）；dev 覆盖参数（--context-window/--max-tokens/--compaction-threshold/--compaction-retain）仅开发用、生产默认不变。
 
 ## 依赖方向
@@ -60,6 +60,48 @@ T005 各票共用这几处接口和约定；字段与签名看代码，这里只
 - **会话日志事件与版本**：T005 新增的 `EventKind` 是 `todo/write`（T005.7 已实现：整表快照、derive 不进请求、repair 忽略、回放后写覆盖先写）、`compaction/start` / `compaction/summary` / `compaction/end`（T005.8a 已实现：摘要进事件、derive 用 checkpoint 替换被 shadowed 的 seq 区间、repair 忽略；T005.8b 补 /compact 与一致性）、`compaction/prune`（T005.2 已实现：追加替换视图、原始事件保留，让续接后的派生请求可复现）；其他票不加新类型。这些都是增补事件类型，`FORMAT_VERSION` 保持 1（T005.0 策略）。加类型时在 `crates/session/src/event.rs` 登记，并同步 `derive.rs`（进不进请求）和 `repair.rs`（收尾分类）的 match。`FORMAT_VERSION` 保持 1：新增事件类型是增补，不升；只有改变已提交事件的字段含义或类型、或删除事件时才升。读到不认识的版本直接拒绝，不做就地迁移。
 - **ToolContext**（`crates/tools/src/lib.rs`、`crates/tools/src/session.rs`）：`cwd` + `Arc<ToolSessionState>`（`ObservationStore` 文件观察表、`TaskRegistry` 后台任务（T005.4 起实现：`<data-dir>/jobs/session-<id>/`）、`SpillStore`（`<data-dir>/spill/session-<id>/`，T005.2 起可 `save_text`）、`session_id` / `data_dir`（T005.3 给 bash 受管变量用）、`skill_roots`（T005.6 由 Agent 从 AgentConfig 写入，skill 工具用））。`Agent` 在 create/resume 时建一份、每次工具批传入；续接新建空观察表，不继承上一次。工具单元测试用 `ToolContext::new`（空状态、禁用 spill）。
 - **shell 受管环境**：`AIOS_*` 是受管命名空间（`AIOS_SHELL=1`、`AIOS_SESSION_ID`、`AIOS_HOME=<data-dir>`，T005.3）；子进程继承的 `AIOS_*` 先清掉再注入（照 DSH `shell-env`）。
+
+## T006 loop 挂点与功能注册表（T006.1a 骨架）
+
+T006.1a 只接挂点与注册表，**行为不变**：压缩、剪枝、指令、skill、待办、提问、spill、提醒、jobs 的实现仍在原模块，1b–1e 才搬；1a 注册表里的功能是 no-op 占位，只声明它关心哪些挂点。
+
+**设计说明（为什么这样接）**
+
+- 编译期固定：挂点用 `HookPoint` 枚举固定，功能用 `Capability` trait 的固定顺序数组注册（`CapabilityRegistry::production`），没有运行时加载/插件发现（strategy §3、K2）。
+- loop 不依赖功能实现：`run_step` / `run_turn` / `settle_idle` / `Inner::append` 只在固定位置调 `capabilities.dispatch(hook, context)`，不 import 压缩/剪枝/指令/skill/todo/ask/spill/提醒/jobs 的内部类型；后续把实现搬到独立模块时只换 Capability 的实现，挂点集合、注册顺序与调用点不动。
+- 顺序固定：注册顺序 = strategy §2 功能表对应的拆票顺序（compaction → prune → instructions → skill → todo → ask → spill → reminder → jobs）；同一挂点上多个功能按注册顺序执行，改顺序要改这里并写进 ARCH。
+- 上下文最小：`HookContext { turn, step }`；日志事件挂点用 `capabilities::event_context(kind)` 从事件取 turn/step。后续票只允许扩字段，不改挂点集合。
+- 分工边界：`capabilities.rs` 不反向依赖 driver/CLI/服务；依赖方向仍是 `cli → agent → tools → session → model`，agent 内部 `driver → capabilities` 一层单向调用。
+
+**挂点表（HookPoint → 派发位置 → 注册功能）**
+
+| 挂点 | 派发位置（agent/src/driver.rs） | 注册功能（1a） |
+|---|---|---|
+| PreStep | `run_step` 开头（abort 检查之后） | compaction、prune、instructions、skill |
+| Request | `run_step` 发请求前（`model.stream` 之前） | compaction |
+| RequestError | `run_step` 的 `Err(error)` 分支开头 | compaction（溢出重试） |
+| SessionEvent | `Inner::append` 成功写日志后（逐事件） | instructions（对账；对外推送后续票） |
+| ToolBefore | `run_step` 调 `execute_batch` 之前 | instructions、skill（文件观察/指令发现后续票） |
+| ToolResult | `execute_batch` 返回后、append tool/result 之前 | spill |
+| ToolAfter | tool/result / todo 落日志之前（统一后处理点） | todo、spill、reminder |
+| Status | `settle_idle` 收敛到 Idle 之前 | jobs（服务推送后续票） |
+| TurnStopping | `run_turn` 写 `turn/end` 之前 | （保留，服务接入后使用） |
+
+**功能注册表（固定顺序；现实现位置到 1b–1e 再搬）**
+
+| # | 功能 | 挂点 | 1a 现实现位置 | 迁移票 |
+|---|---|---|---|---|
+| 1 | compaction | PreStep / Request / RequestError | `agent/src/compaction.rs` + driver 调用点 | 1b |
+| 2 | prune | PreStep | `agent/src/prune.rs` | 1b |
+| 3 | instructions | PreStep / SessionEvent / ToolBefore | `agent/src/instructions.rs` + driver | 1c |
+| 4 | skill | PreStep / ToolBefore | `agent/src/skill_catalog.rs`、`tools/src/skills.rs` | 1c |
+| 5 | todo | ToolAfter | `tools` + driver 追加事件 | 1d |
+| 6 | ask | （无 loop 挂点；工具路径处理，登记在册） | driver 的 ask 分支 | 1d |
+| 7 | spill | ToolResult / ToolAfter | `tools/src/spill.rs` + driver bound_result | 1d |
+| 8 | reminder | ToolAfter | driver 的 repeat_reminder | 1d |
+| 9 | jobs | Status | `tools/src/jobs.rs` + driver 结算回调 | 1e |
+
+**验收与证据**：挂点调用点用 `grep -n "dispatch(HookPoint::" crates/agent/src/driver.rs` 核对（每个 HookPoint 至少一处）；注册表顺序用 `grep -n "&COMPACTION\|&PRUNE\|..." crates/agent/src/capabilities.rs` 核对。证据在 `WORK/T006/evidence/T006.1a-hook-grep.log`。
 
 ## 接缝
 
