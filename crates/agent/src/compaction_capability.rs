@@ -47,26 +47,28 @@ impl Capability for CompactionCapability {
                 }
                 // 发请求时：token 记账留给后续票（现在只占位，不改变行为）。
                 HookEvent::Request { .. } => {}
-                // 请求报错：溢出时强制压缩；压缩不了把原始错误还回去（行为同旧路径）。
-                HookEvent::RequestError { error, .. } => {
-                    if error.code == ErrorCode::ContextWindowExceeded {
-                        let compacted = compaction::compact_if_needed(
-                            event.host(),
-                            event.turn(),
-                            event.step(),
-                            CompactionTrigger::Auto,
-                            true,
-                            true,
-                        )
-                        .await?;
-                        if !compacted {
-                            return Err(AgentError::Model(model::ModelError {
-                                code: error.code,
-                                message: error.message.clone(),
-                                status: error.status,
-                                retry_after_ms: error.retry_after_ms,
-                            }));
-                        }
+                // 请求报错：溢出时强制压缩。
+                // 语义：compact_if_needed 返回 Err（如摘要失败）时原样向上返回压缩错误；
+                // 只有 Ok(false)（无前缀可压）才返回原始 model 错误（行为同旧路径）。
+                HookEvent::RequestError { error, .. }
+                    if error.code == ErrorCode::ContextWindowExceeded =>
+                {
+                    let compacted = compaction::compact_if_needed(
+                        event.host(),
+                        event.turn(),
+                        event.step(),
+                        CompactionTrigger::Auto,
+                        true,
+                        true,
+                    )
+                    .await?;
+                    if !compacted {
+                        return Err(AgentError::Model(model::ModelError {
+                            code: error.code,
+                            message: error.message.clone(),
+                            status: error.status,
+                            retry_after_ms: error.retry_after_ms,
+                        }));
                     }
                 }
                 _ => {}
