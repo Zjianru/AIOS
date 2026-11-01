@@ -568,6 +568,15 @@ pub fn model_config(base_url: &str) -> model::DeepSeekConfig {
 }
 
 /// 测试共用：建一个临时目录上的 agent，工具集合由调用方给。
+/// 测试默认配置：指令/skill 根落在数据目录下，避免读到本机 ~/.agents。
+pub fn isolated_config(data_dir: &std::path::Path) -> agent::AgentConfig {
+    agent::AgentConfig {
+        instruction_roots: vec![data_dir.join("agents-home")],
+        skill_roots: vec![data_dir.join("skills-home")],
+        ..agent::AgentConfig::default()
+    }
+}
+
 pub async fn setup_agent(
     base_url: &str,
     tools: tools::ToolSet,
@@ -582,7 +591,7 @@ pub async fn setup_agent(
     let store = session::SessionStore::create(data_dir.path(), cwd.path()).unwrap();
     let id = store.id().clone();
     let agent = agent::Agent::create(
-        agent::AgentConfig::default(),
+        isolated_config(data_dir.path()),
         agent::Deps {
             model: model::DeepSeek::new(model_config(base_url)).unwrap(),
             tools,
@@ -592,6 +601,33 @@ pub async fn setup_agent(
     .await
     .unwrap();
     (agent, data_dir, cwd, id)
+}
+
+/// 自定义工作目录与指令根的测试会话（T005.5 指令文件用）。
+pub async fn setup_agent_custom(
+    base_url: &str,
+    tools: tools::ToolSet,
+    cwd: &std::path::Path,
+    instruction_roots: Vec<std::path::PathBuf>,
+) -> (agent::Agent, tempfile::TempDir, session::SessionId) {
+    let data_dir = tempfile::tempdir().unwrap();
+    let store = session::SessionStore::create(data_dir.path(), cwd).unwrap();
+    let id = store.id().clone();
+    let config = agent::AgentConfig {
+        instruction_roots,
+        ..isolated_config(data_dir.path())
+    };
+    let agent = agent::Agent::create(
+        config,
+        agent::Deps {
+            model: model::DeepSeek::new(model_config(base_url)).unwrap(),
+            tools,
+            store,
+        },
+    )
+    .await
+    .unwrap();
+    (agent, data_dir, id)
 }
 
 /// 测试共用：等 idle；超时按秒数。

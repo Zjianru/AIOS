@@ -54,6 +54,11 @@ impl ObservationStore {
         self.files.clear();
     }
 
+    /// 已观察的文件路径（T005.5 指令刷新用：读到更深目录时补指令）。
+    pub fn paths(&self) -> impl Iterator<Item = &PathBuf> {
+        self.files.keys()
+    }
+
     pub fn len(&self) -> usize {
         self.files.len()
     }

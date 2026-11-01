@@ -17,6 +17,7 @@ use tools::{ToolCall, ToolContext, ToolSessionState, ToolSet, execute_batch};
 
 use crate::error::AgentError;
 use crate::inbox::{Delivery, Inbox, InboxTarget};
+use crate::instructions::InstructionState;
 use crate::prune;
 use crate::{AgentConfig, AgentEvent, Deps, JobStatus, TurnOutcome};
 
@@ -48,6 +49,12 @@ pub(crate) struct Inner {
     id: SessionId,
     log_path: PathBuf,
     cwd: PathBuf,
+    /// 会话数据目录；也是固定的用户级指令根（T005.5）。
+    data_dir: PathBuf,
+    /// 用户级指令根（AgentConfig::instruction_roots）。
+    instruction_roots: Vec<PathBuf>,
+    /// 指令注入状态：已注入的文件与是否见过基线（T005.5）。
+    instructions: Mutex<InstructionState>,
     model: DeepSeek,
     tools: ToolSet,
     /// 会话级工具状态（观察表/spill/任务注册表）；续接时新建，不继承上一次。
@@ -87,10 +94,16 @@ impl Inner {
             .map_or_else(|| cwd.clone(), Path::to_path_buf);
         let tool_session = Arc::new(ToolSessionState::new(&data_dir, id.as_str()));
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
+        let instruction_roots = config.instruction_roots.clone();
+        let mut instruction_state = InstructionState::default();
+        instruction_state.rehydrate(&store.derive_messages());
         let inner = Arc::new(Self {
             id,
             log_path,
             cwd,
+            data_dir,
+            instruction_roots,
+            instructions: Mutex::new(instruction_state),
             model,
             tools,
             tool_session,
@@ -478,6 +491,29 @@ async fn run_step(
             step,
             message,
         }])?;
+    }
+
+    // T005.5：把适用的 AGENTS.md / CLAUDE.md 注入成普通 user/message。
+    // 第一次请求带基线；读到更深目录（T005.1 路径观察）或文件变化时补刷新消息。
+    {
+        let observed: Vec<PathBuf> = inner.tool_session.observations().paths().cloned().collect();
+        let injection = inner
+            .instructions
+            .lock()
+            .expect("agent 指令锁被毒化")
+            .prepare(
+                &inner.cwd,
+                &inner.data_dir,
+                &inner.instruction_roots,
+                observed.into_iter(),
+            );
+        if let Some(text) = injection {
+            inner.append(&[EventKind::UserMessage {
+                turn,
+                step,
+                message: Message::text(Role::User, text),
+            }])?;
+        }
     }
 
     // T005.2：派生请求之前，把「旧」超大工具结果换成 head+marker+tail 的修剪视图

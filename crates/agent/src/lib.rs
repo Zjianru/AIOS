@@ -5,6 +5,7 @@
 mod driver;
 mod error;
 mod inbox;
+mod instructions;
 mod prune;
 
 use std::path::{Path, PathBuf};
@@ -40,15 +41,19 @@ pub struct AgentConfig {
 
 impl Default for AgentConfig {
     fn default() -> Self {
-        let home = home_dir().join(".agents");
+        // 没有 HOME（或不是绝对路径）时用户级根为空：不能把相对路径交给 validate。
+        let home = home_dir().map(|home| home.join(".agents"));
         Self {
             max_parallel_tool_calls: 10,
             compaction_threshold_ratio: 0.8,
             compaction_retain_ratio: 0.16,
             compaction_headroom_tokens: 65_536,
             spill_max_inline_tokens: 12_500,
-            skill_roots: vec![home.join("skills")],
-            instruction_roots: vec![home],
+            skill_roots: home
+                .as_ref()
+                .map(|home| vec![home.join("skills")])
+                .unwrap_or_default(),
+            instruction_roots: home.map(|home| vec![home]).unwrap_or_default(),
         }
     }
 }
@@ -105,11 +110,11 @@ fn validate_roots(field: &'static str, roots: &[PathBuf]) -> Result<(), AgentErr
     Ok(())
 }
 
-/// 用户主目录；没有 HOME 时退回当前目录（只在默认配置里用，测试会显式覆盖根目录）。
-fn home_dir() -> PathBuf {
+/// 用户主目录；没有 HOME 或它不是绝对路径时返回 None（默认配置退化为空根）。
+fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
+        .filter(|home| home.is_absolute())
 }
 
 /// 一轮的结束结果（订阅者看到的形式）。
