@@ -260,14 +260,14 @@ fn dispatch_chat_input(
     }
 }
 
-/// 事件如何改变 pending question 状态（T005.11）：QuestionAsked 进入、TurnEnded 退出。
-fn pending_question_after_event(
-    current: Option<agent::Question>,
+/// 事件如何改变待答问题队列（T005.12）：QuestionAsked 入队、TurnEnded 清空。
+fn pending_questions_after_event(
+    current: std::collections::VecDeque<agent::Question>,
     event: &AgentEvent,
-) -> Option<agent::Question> {
+) -> std::collections::VecDeque<agent::Question> {
     match event {
-        AgentEvent::QuestionAsked { question } => Some(question.clone()),
-        AgentEvent::TurnEnded { .. } => None,
+        AgentEvent::QuestionAsked { questions } => questions.iter().cloned().collect(),
+        AgentEvent::TurnEnded { .. } => std::collections::VecDeque::new(),
         _ => current,
     }
 }
@@ -290,7 +290,8 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
     });
     let mut running = false;
     let mut last_outcome = None;
-    let mut pending_question: Option<agent::Question> = None;
+    let mut pending_questions: std::collections::VecDeque<agent::Question> =
+        std::collections::VecDeque::new();
     loop {
         if !running {
             print!("> ");
@@ -300,7 +301,7 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
             _ = tokio::signal::ctrl_c() => {
                 // 清空收件箱并中止当前一轮；已流出的文字按 interrupted 收尾。
                 agent.cancel();
-                pending_question = None;
+                pending_questions.clear();
                 println!();
             }
             line = line_rx.recv() => {
@@ -308,13 +309,18 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
                     println!();
                     break;
                 };
-                match dispatch_chat_input(&line, running, pending_question.as_ref()) {
+                match dispatch_chat_input(&line, running, pending_questions.front()) {
                     ChatInput::Ignore => continue,
                     ChatInput::Answer(answer) => {
-                        if let Some(question) = pending_question.take()
-                            && !agent.answer(&question.id, &answer).await
-                        {
-                            pending_question = Some(question);
+                        if let Some(question) = pending_questions.pop_front() {
+                            if agent.answer(&question.id, &answer).await {
+                                if let Some(next) = pending_questions.front() {
+                                    println!();
+                                    println!("{}", question_asked_text(next));
+                                }
+                            } else {
+                                pending_questions.push_front(question);
+                            }
                         }
                     }
                     ChatInput::Exit => break,
@@ -338,9 +344,17 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
             }
             received = events.recv() => match received {
                 Ok(event) => {
-                    let state = std::mem::take(&mut pending_question);
-                    handle_event(event.clone(), &mut last_outcome);
-                    pending_question = pending_question_after_event(state, &event);
+                    if let AgentEvent::QuestionAsked { questions } = &event {
+                        pending_questions = questions.iter().cloned().collect();
+                        if let Some(first) = pending_questions.front() {
+                            println!();
+                            println!("{}", question_asked_text(first));
+                        }
+                    } else {
+                        let state = std::mem::take(&mut pending_questions);
+                        handle_event(event.clone(), &mut last_outcome);
+                        pending_questions = pending_questions_after_event(state, &event);
+                    }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -419,9 +433,9 @@ fn handle_event(event: AgentEvent, outcome: &mut Option<TurnOutcome>) {
             println!();
             println!("用量: {}", usage.summary());
         }
-        AgentEvent::QuestionAsked { question } => {
+        AgentEvent::QuestionAsked { questions } => {
             println!();
-            println!("{}", question_asked_text(&question));
+            println!("{}", questions_asked_text(&questions));
         }
         AgentEvent::CompactionStarted {
             compaction_id,
@@ -464,6 +478,18 @@ fn run_should_cancel_for_question(event: &AgentEvent) -> bool {
 }
 
 /// 问题展示文本（纯函数便于单测；测试清单第 14 条）。
+/// 一次事件里全部问题的展示文本（run 非交互路径用；chat 逐题打印）。
+fn questions_asked_text(questions: &[agent::Question]) -> String {
+    questions
+        .iter()
+        .map(question_asked_text)
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        )
+}
+
 fn question_asked_text(question: &agent::Question) -> String {
     let mut text = format!("[问题：{}]", question.question);
     if let Some(header) = &question.header {
@@ -529,8 +555,8 @@ mod tests {
 
     use super::{
         ChatInput, CommonArgs, compaction_ended_text, compaction_started_text, config_from_args,
-        dispatch_chat_input, is_compact_command, job_completed_text, pending_question_after_event,
-        question_asked_text, run_should_cancel_for_question,
+        dispatch_chat_input, is_compact_command, job_completed_text, pending_questions_after_event,
+        question_asked_text, questions_asked_text, run_should_cancel_for_question,
     };
 
     #[test]
@@ -602,6 +628,20 @@ mod tests {
     }
 
     #[test]
+    fn questions_asked_text_renders_all_questions() {
+        let question = |id: &str, text: &str| agent::Question {
+            id: id.to_owned(),
+            question: text.to_owned(),
+            header: None,
+            options: Vec::new(),
+            multi_select: false,
+        };
+        let text = questions_asked_text(&[question("q1", "First?"), question("q2", "Second?")]);
+        assert!(text.contains("First?"));
+        assert!(text.contains("Second?"));
+    }
+
+    #[test]
     fn dispatch_chat_input_routes_pending_question_to_answer() {
         let question = agent::Question {
             id: "q1".to_owned(),
@@ -662,42 +702,35 @@ mod tests {
     }
 
     #[test]
-    fn pending_question_clears_on_turn_end() {
-        let question = agent::Question {
-            id: "q1".to_owned(),
+    fn pending_questions_queue_holds_all_and_clears_on_turn_end() {
+        let q = |id: &str| agent::Question {
+            id: id.to_owned(),
             question: "Proceed?".to_owned(),
             header: None,
             options: Vec::new(),
             multi_select: false,
         };
-        assert_eq!(
-            pending_question_after_event(
-                None,
-                &AgentEvent::QuestionAsked {
-                    question: question.clone()
-                }
-            ),
-            Some(question.clone())
+        let queue = pending_questions_after_event(
+            std::collections::VecDeque::new(),
+            &AgentEvent::QuestionAsked {
+                questions: vec![q("q1"), q("q2")],
+            },
         );
-        // Ctrl-C/取消后 turn 以 Aborted 收尾，pending 必须清掉，无悬挂。
+        assert_eq!(queue.len(), 2, "多问题都要进队列");
         assert_eq!(
-            pending_question_after_event(
-                Some(question.clone()),
+            queue.front().map(|question| question.id.as_str()),
+            Some("q1")
+        );
+        assert_eq!(
+            pending_questions_after_event(
+                queue,
                 &AgentEvent::TurnEnded {
                     turn: 1,
                     outcome: agent::TurnOutcome::Aborted
                 }
-            ),
-            None
-        );
-        assert_eq!(
-            pending_question_after_event(
-                Some(question.clone()),
-                &AgentEvent::AssistantTextDelta {
-                    text: "x".to_owned()
-                }
-            ),
-            Some(question)
+            )
+            .len(),
+            0
         );
     }
 
@@ -711,7 +744,7 @@ mod tests {
             multi_select: false,
         };
         assert!(run_should_cancel_for_question(&AgentEvent::QuestionAsked {
-            question
+            questions: vec![question]
         }));
         assert!(!run_should_cancel_for_question(
             &AgentEvent::AssistantTextDelta {

@@ -91,9 +91,10 @@ async fn question_event_stops_loop_until_answer_then_resumes() {
     let (agent, _data, _id) = setup(&server).await;
     let mut events = agent.subscribe();
     agent.send(UserMessage::text("go"), Delivery::FollowUp);
-    let AgentEvent::QuestionAsked { question } = next_question(&mut events).await else {
+    let AgentEvent::QuestionAsked { questions } = next_question(&mut events).await else {
         unreachable!()
     };
+    let question = &questions[0];
     assert_eq!(question.id, "q1");
     assert_eq!(question.header.as_deref(), Some("Confirm"));
     assert_eq!(question.options.len(), 2);
@@ -120,10 +121,10 @@ async fn answer_continues_same_turn_and_logs_question() {
     let (agent, data_dir, id) = setup(&server).await;
     let mut events = agent.subscribe();
     agent.send(UserMessage::text("go"), Delivery::FollowUp);
-    let AgentEvent::QuestionAsked { question } = next_question(&mut events).await else {
+    let AgentEvent::QuestionAsked { questions } = next_question(&mut events).await else {
         unreachable!()
     };
-    assert!(agent.answer(&question.id, "Yes").await);
+    assert!(agent.answer(&questions[0].id, "Yes").await);
     wait_idle(&agent, 20).await;
     let store = session::SessionStore::open(data_dir.path(), &id).unwrap();
     let events = store.events();
@@ -149,14 +150,14 @@ async fn cancel_while_waiting_revokes_question_and_aborts_turn() {
     let (agent, data_dir, id) = setup(&server).await;
     let mut events = agent.subscribe();
     agent.send(UserMessage::text("go"), Delivery::FollowUp);
-    let AgentEvent::QuestionAsked { question } = next_question(&mut events).await else {
+    let AgentEvent::QuestionAsked { questions } = next_question(&mut events).await else {
         unreachable!()
     };
     agent.cancel();
     wait_idle(&agent, 20).await;
     assert_eq!(bodies(&server).await.len(), 1, "取消后不再发请求");
     assert!(
-        !agent.answer(&question.id, "Yes").await,
+        !agent.answer(&questions[0].id, "Yes").await,
         "撤销后答案不再接收"
     );
     let store = session::SessionStore::open(data_dir.path(), &id).unwrap();
@@ -174,4 +175,114 @@ async fn cancel_while_waiting_revokes_question_and_aborts_turn() {
         })
         .expect("应有 turn/end");
     assert_eq!(ended, session::TurnEndReason::Aborted);
+}
+
+fn ask_call_multi(ids: &[&str]) -> String {
+    let questions: Vec<serde_json::Value> = ids
+        .iter()
+        .enumerate()
+        .map(|(index, id)| {
+            json!({
+                "id": id,
+                "question": format!("Question {index}?"),
+                "header": format!("H{index}"),
+                "options": [{"label": "Yes"}, {"label": "No"}]
+            })
+        })
+        .collect();
+    tool_calls_with_inputs_sse(&[(
+        "call_ask",
+        "ask_user_question",
+        json!({"questions": questions}),
+    )])
+}
+
+#[tokio::test]
+async fn two_questions_are_all_delivered_and_answered() {
+    let server = MockServer::start().await;
+    mount(
+        &server,
+        vec![ask_call_multi(&["q1", "q2"]), FINAL_TEXT_SSE.to_owned()],
+    )
+    .await;
+    let (agent, data_dir, id) = setup(&server).await;
+    let mut events = agent.subscribe();
+    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    let AgentEvent::QuestionAsked { questions } = next_question(&mut events).await else {
+        unreachable!()
+    };
+    assert_eq!(questions.len(), 2, "两个问题都要送达：{questions:?}");
+    assert_eq!(questions[0].id, "q1");
+    assert_eq!(questions[1].id, "q2");
+    assert!(agent.answer("q1", "ANSWER-ONE").await);
+    assert_eq!(bodies(&server).await.len(), 1, "未答完不应生成 tool/result");
+    assert!(agent.answer("q2", "ANSWER-TWO").await);
+    wait_idle(&agent, 20).await;
+    let bodies = bodies(&server).await;
+    assert_eq!(bodies.len(), 2, "全部答完后继续跑");
+    assert!(
+        bodies[1].contains("answers"),
+        "工具结果要有 answers: {}",
+        bodies[1]
+    );
+    assert!(bodies[1].contains("ANSWER-ONE") && bodies[1].contains("ANSWER-TWO"));
+    assert!(bodies[1].contains("q1") && bodies[1].contains("q2"));
+    let store = session::SessionStore::open(data_dir.path(), &id).unwrap();
+    assert_eq!(
+        store
+            .events()
+            .iter()
+            .filter(|event| matches!(event.kind, session::EventKind::QuestionAsked { .. }))
+            .count(),
+        2,
+        "两个问题各一条 question/asked"
+    );
+}
+
+#[tokio::test]
+async fn invalid_ask_goes_through_unified_tool_result_path() {
+    let server = MockServer::start().await;
+    let response = tool_calls_with_inputs_sse(&[
+        (
+            "call_todo",
+            "todo_write",
+            json!({"todos": [{"content": "step", "status": "pending"}]}),
+        ),
+        (
+            "call_ask",
+            "ask_user_question",
+            json!({"questions": [{"id": "q-bad"}]}),
+        ),
+    ]);
+    mount(&server, vec![response, FINAL_TEXT_SSE.to_owned()]).await;
+    let (agent, data_dir, id) = setup(&server).await;
+    let mut events = agent.subscribe();
+    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    wait_idle(&agent, 20).await;
+    let bodies = bodies(&server).await;
+    assert_eq!(bodies.len(), 2);
+    assert!(
+        bodies[1].contains("ASK_USER_INVALID") || bodies[1].contains("invalid ask_user_question")
+    );
+    let store = session::SessionStore::open(data_dir.path(), &id).unwrap();
+    assert!(
+        store
+            .events()
+            .iter()
+            .any(|event| matches!(event.kind, session::EventKind::TodoWrite { .. })),
+        "invalid ask 也要走统一 post-batch：同批 todo/write 不能丢"
+    );
+    assert!(
+        !store
+            .events()
+            .iter()
+            .any(|event| matches!(event.kind, session::EventKind::QuestionAsked { .. }))
+    );
+    let mut ended = None;
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::TurnEnded { outcome, .. } = event {
+            ended = Some(outcome);
+        }
+    }
+    assert_eq!(ended, Some(TurnOutcome::Completed));
 }

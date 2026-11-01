@@ -50,8 +50,9 @@ enum StepEnd {
 /// agent 的共享状态；驱动任务和 6 个入口方法都通过它交互。
 /// 正在等待用户回答的问题（T005.10）；answer 入口按 question_id 绑定。
 struct PendingQuestion {
-    question_id: String,
-    answer: Option<tokio::sync::oneshot::Sender<String>>,
+    questions: Vec<Question>,
+    answers: std::collections::BTreeMap<String, String>,
+    deliver: Option<tokio::sync::oneshot::Sender<Vec<(String, String)>>>,
 }
 
 pub(crate) struct Inner {
@@ -332,13 +333,27 @@ impl Inner {
         let Some(current) = pending.as_mut() else {
             return false;
         };
-        if current.question_id != question_id {
+        if !current.questions.iter().any(|q| q.id == question_id) {
             return false;
         }
-        let Some(sender) = current.answer.take() else {
+        if current.answers.contains_key(question_id) {
+            return false;
+        }
+        current
+            .answers
+            .insert(question_id.to_owned(), text.to_owned());
+        if current.answers.len() < current.questions.len() {
+            return true;
+        }
+        let Some(sender) = current.deliver.take() else {
             return false;
         };
-        sender.send(text.to_owned()).is_ok()
+        let ordered: Vec<(String, String)> = current
+            .questions
+            .iter()
+            .map(|question| (question.id.clone(), current.answers[&question.id].clone()))
+            .collect();
+        sender.send(ordered).is_ok()
     }
 
     /// 起驱动或在 Running 时置 latch。
@@ -924,92 +939,82 @@ async fn run_step(
         });
     }
     inner.append(&call_events)?;
-    // T005.10：ask_user_question 由 loop 处理——发问题事件、停住等 answer；
-    // 等待中 cancel 撤销问题并 aborted 收尾。答案随后作为该调用的 tool/result 续上。
-    let mut ask_answer: Option<(usize, String)> = None;
+    // T005.12：ask_user_question 由 loop 处理——发全部问题的事件、停住等全部 answer；
+    // invalid 参数整单拒绝，结果走统一 tool/result 提交路径（不绕过 todo/repeat/abort）。
+    let mut ask_override: Option<(usize, tools::ToolResult)> = None;
     if let Some(index) = calls
         .iter()
         .position(|call| call.name == "ask_user_question")
     {
-        let Some(question) = question_from_call(&calls[index]) else {
-            let error = tools::ToolResult {
-                call_id: calls[index].id.clone(),
-                content: "Error: invalid ask_user_question arguments (questions[0].id and .question are required)".to_owned(),
-                is_error: true,
-                error_code: Some("ASK_USER_INVALID".to_owned()),
-            };
-            // 直接继续执行本批（ask 工具本身会返回占位错误，稍后覆盖为参数错误）。
-            let context =
-                ToolContext::with_session(inner.cwd.clone(), Arc::clone(&inner.tool_session));
-            let mut outcome = execute_batch(
-                &inner.tools,
-                &calls,
-                inner.max_parallel_tool_calls,
-                &context,
-                abort.as_ref(),
-            )
-            .await;
-            outcome.results[index] = error;
-            for result in &outcome.results {
-                let tool_name = calls
-                    .iter()
-                    .find(|call| call.id == result.call_id)
-                    .map_or("", |call| call.name.as_str());
-                let content = tools::bound_result(
-                    inner.tool_session.spill(),
-                    tool_name,
-                    &result.call_id,
-                    &result.content,
-                    inner.spill_max_inline_tokens,
-                )
-                .unwrap_or_else(|| result.content.clone());
-                let message =
-                    Message::tool_result(result.call_id.clone(), content, result.is_error);
-                inner.append(&[EventKind::ToolResult {
-                    turn,
-                    step,
-                    message,
-                    error_code: result.error_code.clone(),
-                }])?;
-            }
-            return Ok(StepEnd::Continue);
-        };
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        *inner.pending_question.lock().expect("agent 问题锁被毒化") = Some(PendingQuestion {
-            question_id: question.id.clone(),
-            answer: Some(sender),
-        });
-        inner.append(&[EventKind::QuestionAsked {
-            turn,
-            step,
-            question_id: question.id.clone(),
-            question: question.question.clone(),
-            header: question.header.clone(),
-            options: question
-                .options
-                .iter()
-                .map(|option| option.label.clone())
-                .collect(),
-            multi_select: question.multi_select,
-        }])?;
-        let _ = inner.events.send(crate::AgentEvent::QuestionAsked {
-            question: question.clone(),
-        });
-        let answered = wait_question_answer(inner, receiver, abort).await;
-        inner
-            .pending_question
-            .lock()
-            .expect("agent 问题锁被毒化")
-            .take();
-        match answered {
-            Some(text) => ask_answer = Some((index, text)),
+        match questions_from_call(&calls[index]) {
             None => {
-                inner.append(&[EventKind::QuestionCancelled {
-                    turn,
-                    step,
-                    question_id: question.id.clone(),
-                }])?;
-                return Ok(StepEnd::Aborted);
+                ask_override = Some((
+                    index,
+                    tools::ToolResult {
+                        call_id: calls[index].id.clone(),
+                        content: "Error: invalid ask_user_question arguments (each question needs non-empty id and question)".to_owned(),
+                        is_error: true,
+                        error_code: Some("ASK_USER_INVALID".to_owned()),
+                    },
+                ));
+            }
+            Some(questions) => {
+                let (sender, receiver) = tokio::sync::oneshot::channel::<Vec<(String, String)>>();
+                *inner.pending_question.lock().expect("agent 问题锁被毒化") =
+                    Some(PendingQuestion {
+                        questions: questions.clone(),
+                        answers: std::collections::BTreeMap::new(),
+                        deliver: Some(sender),
+                    });
+                for question in &questions {
+                    inner.append(&[EventKind::QuestionAsked {
+                        turn,
+                        step,
+                        question_id: question.id.clone(),
+                        question: question.question.clone(),
+                        header: question.header.clone(),
+                        options: question
+                            .options
+                            .iter()
+                            .map(|option| option.label.clone())
+                            .collect(),
+                        multi_select: question.multi_select,
+                    }])?;
+                }
+                let _ = inner.events.send(crate::AgentEvent::QuestionAsked {
+                    questions: questions.clone(),
+                });
+                let answered = wait_question_answer(inner, receiver, abort).await;
+                let partial_answers = inner
+                    .pending_question
+                    .lock()
+                    .expect("agent 问题锁被毒化")
+                    .take()
+                    .map(|pending| pending.answers)
+                    .unwrap_or_default();
+                match answered {
+                    Some(answers) => {
+                        ask_override = Some((
+                            index,
+                            tools::ToolResult::success(
+                                calls[index].id.clone(),
+                                answers_json(&answers),
+                            ),
+                        ));
+                    }
+                    None => {
+                        for question in &questions {
+                            if !partial_answers.contains_key(&question.id) {
+                                inner.append(&[EventKind::QuestionCancelled {
+                                    turn,
+                                    step,
+                                    question_id: question.id.clone(),
+                                }])?;
+                            }
+                        }
+                        return Ok(StepEnd::Aborted);
+                    }
+                }
             }
         }
     }
@@ -1023,8 +1028,8 @@ async fn run_step(
     )
     .await;
     let mut outcome = outcome;
-    if let Some((index, answer)) = ask_answer {
-        outcome.results[index] = tools::ToolResult::success(calls[index].id.clone(), answer);
+    if let Some((index, result)) = ask_override {
+        outcome.results[index] = result;
     }
     for result in &outcome.results {
         // T005.2：超大结果落 spill（按会话目录），进日志/上下文的是 preview + locator；
@@ -1329,68 +1334,72 @@ fn system_prompt(cwd: &Path, tools: &ToolSet) -> String {
     prompt
 }
 
-/// 从 ask_user_question 的调用参数里取第一条问题（字段照 DSH tool-ask-user）。
-fn question_from_call(call: &ToolCall) -> Option<Question> {
-    let value: serde_json::Value =
-        serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
-    let first = value
-        .get("questions")
-        .and_then(|questions| questions.as_array())
-        .and_then(|questions| questions.first())
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
-    let text = |key: &str| {
-        first
-            .get(key)
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-            .to_owned()
-    };
-    let id = text("id");
-    let question_text = text("question");
-    if question_text.is_empty() {
+/// 从 ask_user_question 的调用参数里取全部问题（字段照 DSH tool-ask-user）。
+/// 任一问题缺 id 或 question 文本：整单拒绝（返回 None），不静默丢弃。
+fn questions_from_call(call: &ToolCall) -> Option<Vec<Question>> {
+    let value: serde_json::Value = serde_json::from_str(&call.arguments).ok()?;
+    let items = value.get("questions")?.as_array()?;
+    if items.is_empty() {
         return None;
     }
-    Some(Question {
-        id: if id.is_empty() { call.id.clone() } else { id },
-        question: question_text,
-        header: first
-            .get("header")
-            .and_then(|value| value.as_str())
-            .map(str::to_owned),
-        options: first
+    let mut questions = Vec::with_capacity(items.len());
+    for item in items {
+        let id = item.get("id").and_then(|value| value.as_str())?;
+        let question = item.get("question").and_then(|value| value.as_str())?;
+        if id.is_empty() || question.is_empty() {
+            return None;
+        }
+        let options = item
             .get("options")
             .and_then(|value| value.as_array())
             .map(|options| {
                 options
                     .iter()
-                    .map(|option| QuestionOption {
-                        label: option
-                            .get("label")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or("")
-                            .to_owned(),
-                        description: option
-                            .get("description")
-                            .and_then(|value| value.as_str())
-                            .map(str::to_owned),
+                    .filter_map(|option| {
+                        let label = option.get("label")?.as_str()?;
+                        Some(QuestionOption {
+                            label: label.to_owned(),
+                            description: option
+                                .get("description")
+                                .and_then(|value| value.as_str())
+                                .map(str::to_owned),
+                        })
                     })
                     .collect()
             })
-            .unwrap_or_default(),
-        multi_select: first
-            .get("multi_select")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false),
-    })
+            .unwrap_or_default();
+        questions.push(Question {
+            id: id.to_owned(),
+            question: question.to_owned(),
+            header: item
+                .get("header")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned),
+            options,
+            multi_select: item
+                .get("multi_select")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+        });
+    }
+    Some(questions)
+}
+
+/// 工具结果内容：DSH 形态 answers[{id, answer}]（按问题顺序）。
+fn answers_json(answers: &[(String, String)]) -> String {
+    let answers: Vec<serde_json::Value> = answers
+        .iter()
+        .map(|(id, answer)| serde_json::json!({"id": id, "answer": answer}))
+        .collect();
+    serde_json::json!({"answers": answers}).to_string()
 }
 
 /// 等答案；cancel 时 abort 置位并通过 question_cancel_notify 唤醒，返回 None。
 async fn wait_question_answer(
     inner: &Arc<Inner>,
-    mut receiver: tokio::sync::oneshot::Receiver<String>,
+    mut receiver: tokio::sync::oneshot::Receiver<Vec<(String, String)>>,
     abort: &Arc<AtomicBool>,
-) -> Option<String> {
+) -> Option<Vec<(String, String)>> {
     // 仅测试可见的同步缝：让边界单测把 cancel 精确插在注册 notify 之前。
     #[cfg(test)]
     {
@@ -1548,7 +1557,7 @@ mod ask_tests {
                 let _ = release_rx.lock().unwrap().recv();
             }));
         }
-        let (_sender, receiver) = tokio::sync::oneshot::channel::<String>();
+        let (_sender, receiver) = tokio::sync::oneshot::channel::<Vec<(String, String)>>();
         let arc = Arc::clone(&inner);
         let abort_task = Arc::clone(&abort);
         let task =
@@ -1567,20 +1576,26 @@ mod ask_tests {
     }
 
     #[test]
-    fn question_from_call_rejects_missing_questions() {
+    fn questions_from_call_requires_all_questions_valid() {
         let call = |arguments: &str| ToolCall {
             id: "call-1".to_owned(),
             name: "ask_user_question".to_owned(),
             arguments: arguments.to_owned(),
         };
-        assert!(super::question_from_call(&call("not json")).is_none());
-        assert!(super::question_from_call(&call(r#"{}"#)).is_none());
-        assert!(super::question_from_call(&call(r#"{"questions": []}"#)).is_none());
-        assert!(super::question_from_call(&call(r#"{"questions": [{"id": "q"}]}"#)).is_none());
-        let question =
-            super::question_from_call(&call(r#"{"questions": [{"id": "q", "question": "P?"}]}"#))
-                .unwrap();
-        assert_eq!(question.id, "q");
-        assert_eq!(question.question, "P?");
+        assert!(super::questions_from_call(&call("not json")).is_none());
+        assert!(super::questions_from_call(&call(r#"{}"#)).is_none());
+        assert!(super::questions_from_call(&call(r#"{"questions": []}"#)).is_none());
+        assert!(super::questions_from_call(&call(r#"{"questions": [{"id": "q"}]}"#)).is_none());
+        assert!(
+            super::questions_from_call(&call(r#"{"questions": [{"id": "", "question": "P?"}]}"#))
+                .is_none()
+        );
+        let questions = super::questions_from_call(&call(
+            r#"{"questions": [{"id": "q1", "question": "P1?"}, {"id": "q2", "question": "P2?"}]}"#,
+        ))
+        .unwrap();
+        assert_eq!(questions.len(), 2);
+        assert_eq!(questions[1].id, "q2");
+        assert_eq!(questions[1].question, "P2?");
     }
 }

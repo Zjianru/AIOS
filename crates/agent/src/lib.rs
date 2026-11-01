@@ -190,8 +190,8 @@ pub enum AgentEvent {
     },
     /// 一次回答的用量（厂商没给的项是 None，显示「未知」）。
     UsageReported { usage: Usage },
-    /// 模型需要用户回答一个问题（T005.10 发；CLI 打出来并读一行作答）。
-    QuestionAsked { question: Question },
+    /// 模型需要用户回答一组问题（T005.10 引入，T005.12 起携带全部问题；CLI 逐个问）。
+    QuestionAsked { questions: Vec<Question> },
     /// 一次压缩开始（T005.8a/T005.8b 发）。
     CompactionStarted {
         compaction_id: String,
