@@ -274,9 +274,13 @@ impl Translator {
                     }
                 }
                 self.finished = true;
-                chunks.push(StreamChunk::Usage {
-                    usage: self.usage.clone(),
-                });
+                // K10：整段 usage 缺失时不出 usage 帧（不伪造 0/空用量；DSH 的适配器只在
+                // 真的报过用量时才带 usage）。
+                if !self.usage.is_empty() {
+                    chunks.push(StreamChunk::Usage {
+                        usage: self.usage.clone(),
+                    });
+                }
                 chunks.push(StreamChunk::Finish { reason: finish });
             }
             // Anthropic 允许其他事件类型（如 ping）：忽略。

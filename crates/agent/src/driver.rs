@@ -11,8 +11,8 @@ use model::{
     FinishReason, Message, ModelError, StreamChunk, TimedStreamChunk, Usage, UserMessage,
 };
 use session::{
-    AbortCause, EventKind, InboxTarget, LlmFailure, SessionId, SessionStore, ToolError,
-    TurnEndReason,
+    AbortCause, EventKind, InboxTarget, LlmFailure, RetryId, RetryMode, SessionId, SessionStore,
+    ToolError, TurnEndReason,
 };
 use tokio::sync::Notify;
 use tokio::sync::broadcast;
@@ -849,7 +849,8 @@ async fn run_step(
     let mut open: BTreeMap<usize, (BlockType, String)> = BTreeMap::new();
     let mut usage: Option<Usage> = None;
     let mut finish: Option<FinishReason> = None;
-    let mut content_emitted = false;
+    // 同一 step 的重试链 id（首个 llm/retry 生成，之后复用；DSH 投影在 step/start、turn/end 后重置）。
+    let mut retry_id: Option<RetryId> = None;
     // 每次模型尝试的精确帧记录（成功写进 assistant/message，失败写进 assistant/attempt；
     // DSH 的 AssistantStreamAttempt，agent-loop/src/assistant-stream.ts:18-43）。
     let mut attempt_stream = AssistantStreamAccumulator::new();
@@ -912,7 +913,17 @@ async fn run_step(
                         error: &error,
                     })
                     .await?;
-                match decide_retry(inner, &cancel, &error, &mut attempt, content_emitted).await {
+                match decide_retry(
+                    inner,
+                    &cancel,
+                    &error,
+                    turn,
+                    step,
+                    &mut attempt,
+                    &mut retry_id,
+                )
+                .await?
+                {
                     RetryDecision::Retry => {
                         reset_attempt(
                             &mut blocks,
@@ -921,7 +932,6 @@ async fn run_step(
                             &mut finish,
                             &mut attempt_stream,
                         );
-                        content_emitted = false;
                         continue 'attempts;
                     }
                     RetryDecision::Cancel => return Ok(StepEnd::Aborted),
@@ -991,20 +1001,23 @@ async fn run_step(
                     if let Some((_, buffer)) = open.get_mut(&index) {
                         buffer.push_str(&text);
                     }
-                    content_emitted = true;
                     let _ = inner.events.send(AgentEvent::AssistantTextDelta { text });
                 }
                 Ok(StreamChunk::ReasoningDelta { index, text }) => {
                     if let Some((_, buffer)) = open.get_mut(&index) {
                         buffer.push_str(&text);
                     }
-                    content_emitted = true;
                 }
                 Ok(StreamChunk::BlockEnd { index, block }) => {
                     open.remove(&index);
                     blocks.insert(index, block);
                 }
-                Ok(StreamChunk::Usage { usage: reported }) => usage = Some(reported),
+                // K10：适配器报的整段用量为空时当作没报（不伪造空 usage）。
+                Ok(StreamChunk::Usage { usage: reported }) => {
+                    if !reported.is_empty() {
+                        usage = Some(reported);
+                    }
+                }
                 Ok(StreamChunk::Finish { reason }) => finish = Some(reason),
                 Err(error) => {
                     if abort.load(Ordering::SeqCst) || error.code == ErrorCode::Aborted {
@@ -1022,7 +1035,16 @@ async fn run_step(
                     // 流已经开过：这次尝试没有可见消息，照 DSH agent.ts:567-580 先落
                     // assistant/attempt（帧保留），再决定重试/收尾。
                     append_attempt(inner, turn, step, &attempt_stream).await?;
-                    match decide_retry(inner, &cancel, &error, &mut attempt, content_emitted).await
+                    match decide_retry(
+                        inner,
+                        &cancel,
+                        &error,
+                        turn,
+                        step,
+                        &mut attempt,
+                        &mut retry_id,
+                    )
+                    .await?
                     {
                         RetryDecision::Retry => {
                             reset_attempt(
@@ -1032,7 +1054,6 @@ async fn run_step(
                                 &mut finish,
                                 &mut attempt_stream,
                             );
-                            content_emitted = false;
                             continue 'attempts;
                         }
                         RetryDecision::Cancel => return Ok(StepEnd::Aborted),
@@ -1270,6 +1291,31 @@ async fn prune_old_tool_results(inner: &Arc<Inner>, current_turn: u64) -> Result
 const MAX_RETRIES: u32 = 5;
 const INITIAL_RETRY_DELAY_MS: u64 = 500;
 const MAX_RETRY_DELAY_MS: u64 = 10_000;
+const RETRY_JITTER_RATIO: f64 = 0.1;
+
+/// spec 定的 5 个可重试码（排序后写进 policyKey，照 DSH retryPolicyKey）。
+const RETRYABLE_CODES: [ErrorCode; 5] = [
+    ErrorCode::EmptyResponse,
+    ErrorCode::RateLimit,
+    ErrorCode::Server,
+    ErrorCode::Timeout,
+    ErrorCode::Transport,
+];
+
+/// 固定重试策略的稳定标识（DSH llm-retry/src/index.ts:70-80 的 retryPolicyKey）。
+fn retry_policy_key() -> String {
+    let mut codes: Vec<String> = RETRYABLE_CODES.iter().map(|code| code.as_str()).collect();
+    codes.sort();
+    serde_json::json!([
+        "normal",
+        MAX_RETRIES,
+        codes,
+        INITIAL_RETRY_DELAY_MS,
+        MAX_RETRY_DELAY_MS,
+        RETRY_JITTER_RATIO,
+    ])
+    .to_string()
+}
 
 enum RetryDecision {
     Retry,
@@ -1279,32 +1325,50 @@ enum RetryDecision {
 
 /// 只认 spec 定的 5 个可重试码。
 fn is_retryable(code: ErrorCode) -> bool {
-    matches!(
-        code,
-        ErrorCode::EmptyResponse
-            | ErrorCode::RateLimit
-            | ErrorCode::Server
-            | ErrorCode::Timeout
-            | ErrorCode::Transport
-    )
+    RETRYABLE_CODES.contains(&code)
 }
 
 /// 这次失败要不要重试；要的话等完（可取消）再回 Retry。
+///
+/// T006.2b 照 DSH：已流出可见内容也重试（半截内容只留在 assistant/attempt 的 stream 里）；
+/// 排定的重试先持久化 `llm/retry` 再做可取消等待，等待结束后、下一次尝试前落
+/// `llm/retry-started`（DSH llm-retry/src/index.ts:166-186）。
 async fn decide_retry(
     inner: &Arc<Inner>,
     cancel: &CancelToken,
     error: &ModelError,
+    turn: u64,
+    step: u64,
     attempt: &mut u32,
-    content_emitted: bool,
-) -> RetryDecision {
-    // 已经流出内容 delta 的请求不重试：避免把重复文本再打一遍（协调线裁定；spec 没规定，偏离 DSH）。
-    if content_emitted || !is_retryable(error.code) || *attempt >= MAX_RETRIES {
-        return RetryDecision::Fatal;
+    retry_id: &mut Option<RetryId>,
+) -> Result<RetryDecision, AgentError> {
+    if !is_retryable(error.code) || *attempt >= MAX_RETRIES {
+        return Ok(RetryDecision::Fatal);
     }
     let Some(delay_ms) = retry_delay_ms(error, *attempt + 1) else {
-        return RetryDecision::Fatal;
+        return Ok(RetryDecision::Fatal);
     };
     *attempt += 1;
+    // 同一条重试链共用一个 retryId（DSH 投影在 step/start、turn/end 后重置）。
+    let retry_id = retry_id.get_or_insert_with(RetryId::generate).clone();
+    // durable before the cancellable wait。
+    inner
+        .append(&[EventKind::LlmRetry {
+            retry_id: retry_id.clone(),
+            turn,
+            step,
+            provider: inner.model.provider().to_owned(),
+            mode: RetryMode::Normal,
+            policy_key: retry_policy_key(),
+            retry: *attempt,
+            max_retries: Some(MAX_RETRIES),
+            delay_ms,
+            failure: LlmFailure {
+                message: error.message.clone(),
+                code: error.code.as_str(),
+            },
+        }])
+        .await?;
     let _ = inner.events.send(AgentEvent::Retrying {
         attempt: *attempt,
         max_attempts: MAX_RETRIES,
@@ -1317,10 +1381,18 @@ async fn decide_retry(
         () = tokio::time::sleep(Duration::from_millis(delay_ms)) => false,
     };
     if cancelled {
-        RetryDecision::Cancel
-    } else {
-        RetryDecision::Retry
+        return Ok(RetryDecision::Cancel);
     }
+    // 等待结束、下一次尝试开始前：llm/retry-started（DSH index.ts:184-186）。
+    inner
+        .append(&[EventKind::LlmRetryStarted {
+            retry_id,
+            turn,
+            step,
+            retry: *attempt,
+        }])
+        .await?;
+    Ok(RetryDecision::Retry)
 }
 
 /// 服务端 retry-after 优先；超过上限就不重试（照 DSH normal 模式）；否则本地退避。
