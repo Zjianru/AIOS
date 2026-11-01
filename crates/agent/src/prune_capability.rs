@@ -167,7 +167,6 @@ pub(crate) async fn prune_session(
 }
 
 /// 修剪能力：挂 HookPoint::Compaction，随真实压缩事务（自动/溢出/手动三路）触发。
-#[allow(dead_code)] // 骨架期先不注册，实现期换成注册表里的 prune 能力
 pub(crate) struct PruneCapability;
 
 impl Capability for PruneCapability {

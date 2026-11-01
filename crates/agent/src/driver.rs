@@ -894,9 +894,9 @@ async fn run_step(
             .await?;
     }
 
-    // T006.1c：PreStep 两阶段——先在旧位置派发 Inject（instructions/skill 注入），
-    // 再派发 Compact（压缩自动检查）；prune 已挂到 Compaction 挂点（T006.4 实现期删掉这里的
-    // 每请求调用），不再参与 PreStep 顺序。
+    // T006.1c：PreStep 两阶段——Inject（instructions/skill 注入）在旧位置，再派发 Compact
+    // （压缩自动检查）。prune 已挂到 Compaction 挂点（T006.4），不再每请求剪、也不参与
+    // PreStep 顺序；真正的修剪只发生在压缩事务里。
     inner
         .capabilities
         .dispatch(&HookEvent::PreStep {
@@ -907,9 +907,6 @@ async fn run_step(
             phase: crate::capabilities::PreStepPhase::Inject,
         })
         .await?;
-    // T005.2：派生请求之前，把「旧」超大工具结果换成 head+marker+tail 的修剪视图
-    // （追加 compaction/prune 事件，原始 tool/result 保留在日志里可回放）。
-    prune_old_tool_results(inner, turn).await?;
     // T005.8a：请求前检查 token 压力；越过阈值就压缩较早历史（失败不打断本轮，事件已记录）。
     // T006.1b：压缩实现已移出 loop，这里只派发固定挂点；压缩能力在 should_trigger/
     // select_split 确认后才会真正压缩，否则 no-op。
@@ -1329,14 +1326,6 @@ fn assistant_message(inner: &Arc<Inner>, content: Vec<ContentBlock>) -> Message 
         inner.model.provider(),
         inner.model.config().model.clone(),
     )
-}
-
-/// T005.2/T006.4 过渡：旧的每请求修剪入口，先改成 DSH 形状写日志（compaction/prune +
-/// 带 surfaceOp replace 的 tool/result）；实现期把调用整个移进 PruneCapability（挂
-/// HookPoint::Compaction），这个函数和 PreStep 里的调用一起删掉。
-async fn prune_old_tool_results(inner: &Arc<Inner>, current_turn: u64) -> Result<(), AgentError> {
-    crate::prune_capability::prune_session(inner.as_ref(), Some(current_turn)).await?;
-    Ok(())
 }
 
 /// 请求层重试：最多 5 次、500ms 起指数退避、上限 10s、±10% 抖动（std 派生，不加依赖）。

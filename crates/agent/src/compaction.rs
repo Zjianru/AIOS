@@ -152,6 +152,8 @@ pub(crate) async fn compact_if_needed(
     if !force && measure(host) < budget.threshold_tokens {
         return Ok(None);
     }
+    // DSH：溢出恢复的区间选择用 retain 0（强制一段有用的删除），压力路径用 policy 的保留预算。
+    let retain_tokens = if force { 0 } else { budget.retain_tokens };
     let attempts = if force {
         1
     } else {
@@ -160,7 +162,7 @@ pub(crate) async fn compact_if_needed(
     let mut outcome = None;
     for _ in 0..attempts {
         let messages = derive_messages(host);
-        let Some(split) = select_split(&messages, budget.retain_tokens) else {
+        let Some(pre_split) = select_split(&messages, retain_tokens) else {
             if outcome.is_some() {
                 return Err(AgentError::Compaction(
                     "no safe compaction range can reduce context below threshold".to_owned(),
@@ -173,6 +175,14 @@ pub(crate) async fn compact_if_needed(
         if notify_compaction {
             host.dispatch_compaction(turn, step, trigger).await?;
         }
+        // prune 挂点可能已经把上下文压到阈值以下（DSH 在 pressure 路径剪枝后重测）：
+        // 那么这次就不摘要，修剪本身已经落日志。溢出路径仍强制走一次压缩。
+        if !force && measure(host) < budget.threshold_tokens {
+            return Ok(outcome);
+        }
+        // prune 只换 tool/result 内容、不改派生节点数；按修剪后的内容重新选区间。
+        let messages = derive_messages(host);
+        let split = select_split(&messages, retain_tokens).unwrap_or(pre_split);
         let result = compact_once(host, Some(turn), None, trigger, split, &policy).await?;
         outcome = Some(result);
         if force || measure(host) < budget.threshold_tokens {

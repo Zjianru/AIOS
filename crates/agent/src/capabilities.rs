@@ -20,6 +20,7 @@ use crate::compaction_capability::CompactionCapability;
 use crate::error::AgentError;
 use crate::instructions::InstructionState;
 use crate::instructions_capability::InstructionsCapability;
+use crate::prune_capability::PruneCapability;
 use crate::reminder_capability::ReminderCapability;
 use crate::skill_capability::SkillCapability;
 use crate::skill_catalog::SkillCatalogState;
@@ -316,7 +317,6 @@ impl Capability for Placeholder {
     }
 }
 
-const PRUNE_HOOKS: &[HookPoint] = &[HookPoint::Compaction];
 const JOBS_HOOKS: &[HookPoint] = &[HookPoint::Status];
 
 /// per-Agent 能力状态包（T006.1e：状态由能力模块持有，driver 只装配一次）。
@@ -341,10 +341,7 @@ impl CapabilityRegistry {
         Self {
             capabilities: vec![
                 Box::new(CompactionCapability::new(states.compaction_waiters)),
-                Box::new(Placeholder {
-                    name: "prune",
-                    hooks: PRUNE_HOOKS,
-                }),
+                Box::new(PruneCapability),
                 Box::new(InstructionsCapability::new((
                     states.instructions,
                     states.instruction_roots,
