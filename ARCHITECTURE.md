@@ -11,7 +11,7 @@ AIOS 是一个本地 agent 内核：每次模型请求从会话日志派生，�
 ## 代码地图
 
 - crates/model：provider 无关的消息 IR（Message / ContentBlock / Usage / FinishReason / StreamChunk），DeepSeek 的 Messages 适配器（请求序列化、SSE 解码、流事件翻译、错误码）。
-- crates/session：会话事件（turn/step/消息），只追加的 JSONL 存储（SessionStore），以及从日志派生请求消息。
+- crates/session：会话事件（turn/step/消息），只追加的 JSONL 存储（SessionStore），从日志派生请求消息，以及续接时的中断修复（`repair`：崩溃/被杀后给没收尾的 turn 补收尾事件）。
 - crates/tools：Tool 接口、ToolCall/ToolResult、ToolSet、工具批执行（独占屏障、有界并行池、按模型顺序提交），以及内置只读工具 read / glob / grep（进程内搜索，不起 rg 子进程）。
 - crates/agent：一轮多步的驱动、收件箱（follow-up / steer / inject）、工具调用的派发与结果回写、Agent 的 6 个驱动入口（create / resume / send / cancel / subscribe / idle）、公开配置 `AgentConfig`（`max_parallel_tool_calls`，默认 10，必须 ≥1）；另有 id / log_path 两个只读元数据访问器，不属于驱动入口。
 - crates/cli：开发用 CLI `aios-dev`（`chat` / `run`）。
@@ -32,6 +32,7 @@ AIOS 是一个本地 agent 内核：每次模型请求从会话日志派生，�
 - **工具调用先记日志再派发**：`tool/call` 在工具执行前写入；`tool/result` 按模型顺序写入。取消与中断修复（T004.3 / T004.4）依赖这个顺序。
 - **唤醒不丢**：轮次收尾检查与 `settle_idle` 的快照之间只有一个显式让出点（`tokio::task::yield_now`），除此之外没有别的 await；且 `wake_driver` 在 Running 时无条件置 `wake_requested`。收尾窗口里到达的 FollowUp/Steer 不会滞留，`idle()` 不会带着待处理输入返回。
 - **取消**：流中断时按 DSH `interruptedBlocks` 规则保留已流出的 text 前缀（去空白后非空，tool-call 块丢弃）并写成 `interrupted: true` 的 assistant 消息；批执行取消时已开始的调用等结束并按模型顺序提交，未开始的补 `ABORTED_BEFORE_DISPATCH`。取消后会话可以继续：收尾时 abort 置位的轮次返回无 pending、收敛到 `settle_idle`，再由 settle 用新 Phase 重开驱动处理取消后投递的输入（不空转）。
+- **续接先修复再接受输入**：`Agent::resume` 先扫描日志，给最后一个没收尾的 turn 补 `tool/result`（已记录 `tool/call` 的调用 → `TOOL_OUTCOME_UNKNOWN`；只有 assistant 调用块、没记录开始的 → `TOOL_NOT_STARTED`）、`step/end`、`turn/end`（用 `Aborted`，不加 DSH 的 `interrupted` 变体），一次批 append 后才起驱动；修复只读日志、不重跑工具，崩溃也不补 `interrupted` assistant 消息（没落盘的流式文本不存在）。
 - 一个会话一个 JSONL 文件，路径是 `<data-dir>/sessions/<id>.jsonl`；首行是 header（格式版本、id、cwd、创建时间）。
 
 ## 接缝
