@@ -474,3 +474,236 @@ async fn lost_wake_window_keeps_follow_up() {
 async fn lost_wake_window_keeps_steer() {
     lost_wake_case(Delivery::Steer).await;
 }
+
+/// 造一段「空白关闭块 + 非空关闭块 + 开着的 text 块 + 开着的 tool_use 块」的 SSE。
+fn interrupted_blocks_sse() -> String {
+    let mut body = String::from(
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_blocks\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"deepseek-flash\",\"content\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n",
+    );
+    // 关闭的空白块：取消时丢弃。
+    body.push_str("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n");
+    body.push_str("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"\\n  \"}}\n\n");
+    body.push_str(
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+    );
+    // 关闭的非空块：保留。
+    body.push_str("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n");
+    body.push_str("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"保留的旧块\"}}\n\n");
+    body.push_str(
+        "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+    );
+    // 还开着的 text 块：用已收到的增量保留。
+    body.push_str("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n");
+    body.push_str("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"text_delta\",\"text\":\"开着的块\"}}\n\n");
+    // 还开着的 tool_use 块：取消时整个丢弃。
+    body.push_str("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":3,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_x\",\"name\":\"read\",\"input\":{}}}\n\n");
+    body.push_str("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":3,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{}\"}}\n\n");
+    body
+}
+
+#[tokio::test]
+async fn cancel_mid_stream_then_send_makes_exactly_one_more_turn() {
+    let mut server = ScriptedSseServer::start(vec![
+        SseScript {
+            frames: PARTIAL_TEXT_SSE.to_owned(),
+            hold: true,
+        },
+        SseScript {
+            frames: FINAL_TEXT_SSE.to_owned(),
+            hold: false,
+        },
+    ]);
+    let (agent, data_dir, _cwd, session_id) =
+        new_agent(&server.base_url(), ToolSet::empty(), 10).await;
+    let mut events = agent.subscribe();
+    agent.send(UserMessage::text("开始"), Delivery::FollowUp);
+    server.wait_ready().await;
+    let mut streamed = String::new();
+    while streamed != "已经流出来的部分文字。" {
+        match events.recv().await {
+            Ok(AgentEvent::AssistantTextDelta { text }) => streamed.push_str(&text),
+            Ok(_) => {}
+            Err(error) => panic!("事件通道关闭: {error}"),
+        }
+    }
+    // 取消后、这一轮收尾前立刻投递：修复前这里会让 agent 用同一个已 abort 的
+    // Phase 空转（idle 不返回、日志无界增长）。
+    agent.cancel();
+    agent.send(UserMessage::text("取消后再来一句"), Delivery::FollowUp);
+    server.release();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(3), agent.idle())
+            .await
+            .is_ok(),
+        "取消后立刻投递时 idle() 必须返回（不能空转）"
+    );
+
+    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    assert_eq!(
+        count_turns(reopened.events()),
+        2,
+        "只允许 aborted + completed 两轮，不能有空的轮次"
+    );
+    assert_eq!(
+        turn_reasons(reopened.events()),
+        vec![TurnEndReason::Aborted, TurnEndReason::Completed]
+    );
+    assert_eq!(
+        assistant_text_of(reopened.events(), true),
+        vec!["已经流出来的部分文字。".to_owned()],
+        "第一轮的 interrupted 消息保留"
+    );
+    let bodies = server.request_bodies();
+    assert_eq!(bodies.len(), 2);
+    let body: serde_json::Value = serde_json::from_slice(&bodies[1]).unwrap();
+    assert!(
+        user_texts(&body).contains(&"取消后再来一句".to_owned()),
+        "第二轮请求要带取消后投递的消息"
+    );
+}
+
+#[tokio::test]
+async fn cancel_during_tool_then_send_makes_exactly_one_more_turn() {
+    let server = MockServer::start().await;
+    mount_sequence(
+        &server,
+        vec![
+            tool_calls_sse(&[("call_0", "gate")]),
+            FINAL_TEXT_SSE.to_owned(),
+        ],
+    )
+    .await;
+    let (started_tx, mut started) = mpsc::unbounded_channel();
+    let mut permits = Vec::new();
+    let tools = ToolSet::new(vec![gated(
+        "gate",
+        ToolConcurrency::Parallel,
+        &started_tx,
+        &mut permits,
+    )]);
+    let (agent, data_dir, _cwd, session_id) = new_agent(&server.uri(), tools, 10).await;
+    agent.send(UserMessage::text("跑工具"), Delivery::FollowUp);
+    assert_eq!(
+        started.recv().await,
+        Some(ToolEvent::Started("gate".to_owned()))
+    );
+    // 取消要等已开始的工具结束，这个窗口里立刻投递 steer。
+    agent.cancel();
+    agent.send(UserMessage::text("工具窗口里插话"), Delivery::Steer);
+    permits[0].1.add_permits(1);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(3), agent.idle())
+            .await
+            .is_ok(),
+        "取消后立刻投递时 idle() 必须返回（不能空转）"
+    );
+
+    let mut starts = 1;
+    while let Ok(event) = started.try_recv() {
+        if let ToolEvent::Started(_) = event {
+            starts += 1;
+        }
+    }
+    assert_eq!(starts, 1, "工具不能被重跑");
+
+    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    assert_eq!(
+        count_turns(reopened.events()),
+        2,
+        "只允许 aborted + completed 两轮，不能有空的轮次"
+    );
+    assert_eq!(
+        turn_reasons(reopened.events()),
+        vec![TurnEndReason::Aborted, TurnEndReason::Completed]
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    let body = parse_body(&requests[1]);
+    assert!(
+        user_texts(&body).contains(&"工具窗口里插话".to_owned()),
+        "第二轮请求要带取消后投递的 steer"
+    );
+}
+
+#[tokio::test]
+async fn cancel_keeps_only_safe_interrupted_blocks() {
+    let mut server = ScriptedSseServer::start(vec![SseScript {
+        frames: interrupted_blocks_sse(),
+        hold: true,
+    }]);
+    let (agent, data_dir, _cwd, session_id) =
+        new_agent(&server.base_url(), ToolSet::empty(), 10).await;
+    let mut events = agent.subscribe();
+    agent.send(UserMessage::text("开始"), Delivery::FollowUp);
+    server.wait_ready().await;
+    let mut streamed = String::new();
+    while !streamed.ends_with("开着的块") {
+        match events.recv().await {
+            Ok(AgentEvent::AssistantTextDelta { text }) => streamed.push_str(&text),
+            Ok(_) => {}
+            Err(error) => panic!("事件通道关闭: {error}"),
+        }
+    }
+    agent.cancel();
+    server.release();
+    agent.idle().await;
+
+    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let mut interrupted = None;
+    for event in reopened.events() {
+        if let EventKind::AssistantMessage {
+            message,
+            interrupted: flag,
+            ..
+        } = &event.kind
+            && flag == &Some(true)
+        {
+            interrupted = Some(message.clone());
+        }
+    }
+    let message = interrupted.expect("取消时应有 interrupted 消息");
+    assert_eq!(
+        message
+            .content
+            .iter()
+            .filter_map(ContentBlock::as_text)
+            .collect::<Vec<_>>(),
+        vec!["保留的旧块", "开着的块"],
+        "空白块丢弃、关闭块保留、打开块用增量保留"
+    );
+    assert_eq!(
+        message.content.len(),
+        2,
+        "tool-call 块不能进 interrupted 消息"
+    );
+    assert!(
+        message
+            .content
+            .iter()
+            .all(|block| matches!(block, ContentBlock::Text { .. }))
+    );
+}
+
+#[tokio::test]
+async fn steer_wakes_idle_loop() {
+    let server = MockServer::start().await;
+    mount_sequence(&server, vec![FINAL_TEXT_SSE.to_owned()]).await;
+    let (agent, data_dir, _cwd, session_id) = new_agent(&server.uri(), ToolSet::empty(), 10).await;
+    // 空闲时投递 steer：要唤醒 loop、开一轮，并进入下一步的请求。
+    agent.send(UserMessage::text("插一句"), Delivery::Steer);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(3), agent.idle())
+            .await
+            .is_ok(),
+        "steer 要唤醒空闲的 loop"
+    );
+    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    assert_eq!(count_turns(reopened.events()), 1);
+    assert_eq!(
+        turn_reasons(reopened.events()),
+        vec![TurnEndReason::Completed]
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(user_texts(&parse_body(&requests[0])).contains(&"插一句".to_owned()));
+}

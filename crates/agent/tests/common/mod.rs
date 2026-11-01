@@ -4,8 +4,8 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use serde_json::{Value, json};
@@ -178,28 +178,42 @@ pub struct SseScript {
     pub hold: bool,
 }
 
-/// 一个最小的、可控制节奏的 SSE 服务器：按脚本依次服务请求。
-/// 只给 T004.3 的「流中途取消」测试用；不是产品代码。
+/// 一个最小的、可控制节奏的 SSE 服务器：按脚本依次服务请求，并记录请求体。
+/// 只给取消 / 中断相关的集成测试用；不是产品代码。
 pub struct ScriptedSseServer {
     port: u16,
     ready: Option<tokio::sync::oneshot::Receiver<()>>,
     control: Option<std::sync::mpsc::Sender<()>>,
+    stopped: Arc<AtomicBool>,
+    bodies: Arc<Mutex<Vec<Vec<u8>>>>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl ScriptedSseServer {
     pub fn start(scripts: Vec<SseScript>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("绑定测试 SSE 端口");
+        listener
+            .set_nonblocking(true)
+            .expect("测试 SSE 端口设成非阻塞");
         let port = listener.local_addr().expect("读取测试端口").port();
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         let (control_tx, control_rx) = std::sync::mpsc::channel::<()>();
+        let stopped = Arc::new(AtomicBool::new(false));
+        let stopped_in_thread = Arc::clone(&stopped);
+        let bodies = Arc::new(Mutex::new(Vec::new()));
+        let bodies_in_thread = Arc::clone(&bodies);
         let mut ready_tx = Some(ready_tx);
         let handle = std::thread::spawn(move || {
             for script in scripts {
-                let Ok((mut stream, _)) = listener.accept() else {
-                    break;
+                let Some(mut stream) = accept_while_running(&listener, &stopped_in_thread) else {
+                    return;
                 };
-                read_request(&mut stream);
+                if let Some(body) = read_request(&mut stream) {
+                    bodies_in_thread
+                        .lock()
+                        .expect("测试 SSE 请求记录锁被毒化")
+                        .push(body);
+                }
                 let header = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
                 if stream.write_all(header.as_bytes()).is_err() {
                     continue;
@@ -223,6 +237,8 @@ impl ScriptedSseServer {
             port,
             ready: Some(ready_rx),
             control: Some(control_tx),
+            stopped,
+            bodies,
             handle: Some(handle),
         }
     }
@@ -244,10 +260,19 @@ impl ScriptedSseServer {
             let _ = sender.send(());
         }
     }
+
+    /// 已收到的请求体，按请求顺序（断言「第二个请求带了取消后投递的消息」用）。
+    pub fn request_bodies(&self) -> Vec<Vec<u8>> {
+        self.bodies
+            .lock()
+            .expect("测试 SSE 请求记录锁被毒化")
+            .clone()
+    }
 }
 
 impl Drop for ScriptedSseServer {
     fn drop(&mut self) {
+        self.stopped.store(true, Ordering::SeqCst);
         if let Some(sender) = self.control.take() {
             let _ = sender.send(());
         }
@@ -257,12 +282,35 @@ impl Drop for ScriptedSseServer {
     }
 }
 
-fn read_request(stream: &mut std::net::TcpStream) {
+/// 非阻塞 accept：测试失败/提前结束时 Drop 能很快把线程收回来。
+fn accept_while_running(
+    listener: &TcpListener,
+    stopped: &AtomicBool,
+) -> Option<std::net::TcpStream> {
+    loop {
+        if stopped.load(Ordering::SeqCst) {
+            return None;
+        }
+        match listener.accept() {
+            Ok((stream, _)) => return Some(stream),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// 读一个 HTTP 请求（头 + content-length 指定的体），返回请求体字节。
+fn read_request(stream: &mut std::net::TcpStream) -> Option<Vec<u8>> {
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .ok()?;
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 1024];
     loop {
         match stream.read(&mut chunk) {
-            Ok(0) | Err(_) => return,
+            Ok(0) | Err(_) => return None,
             Ok(read) => {
                 buffer.extend_from_slice(&chunk[..read]);
                 if buffer.windows(4).any(|window| window == b"\r\n\r\n") {
@@ -282,11 +330,17 @@ fn read_request(stream: &mut std::net::TcpStream) {
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
         .map_or(buffer.len(), |position| position + 4);
-    let mut remaining = content_length.saturating_sub(buffer.len().saturating_sub(header_end));
+    let body_have = buffer.len().saturating_sub(header_end);
+    let mut remaining = content_length.saturating_sub(body_have);
     while remaining > 0 {
         match stream.read(&mut chunk) {
             Ok(0) | Err(_) => break,
-            Ok(read) => remaining = remaining.saturating_sub(read),
+            Ok(read) => {
+                let take = read.min(remaining);
+                buffer.extend_from_slice(&chunk[..take]);
+                remaining -= take;
+            }
         }
     }
+    Some(buffer[header_end..].to_vec())
 }
