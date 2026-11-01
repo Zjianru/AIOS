@@ -6,7 +6,7 @@ use std::fs;
 
 use agent::Delivery;
 use common::{FINAL_TEXT_SSE, SequenceResponder, setup_agent, sse, tool_calls_with_inputs_sse};
-use model::{ContentBlock, UserMessage};
+use model::UserMessage;
 use serde_json::json;
 use session::{EventKind, SessionStore};
 use tools::ToolSet;
@@ -29,16 +29,11 @@ fn tool_result(store: &SessionStore, call_id: &str) -> (bool, Option<String>) {
         let EventKind::ToolResult { message, error, .. } = &event.kind else {
             continue;
         };
-        let Some(ContentBlock::ToolResult {
-            tool_use_id,
-            is_error,
-            ..
-        }) = message.content.first()
-        else {
-            continue;
-        };
-        if tool_use_id == call_id {
-            return (*is_error, error.as_ref().map(|error| error.code.clone()));
+        if message.tool_call_id.as_deref() == Some(call_id) {
+            return (
+                message.is_error.unwrap_or(false),
+                error.as_ref().map(|error| error.code.clone()),
+            );
         }
     }
     panic!("日志里没有 call_id {call_id} 的 tool/result");

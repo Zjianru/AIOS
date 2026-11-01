@@ -11,6 +11,11 @@ use serde_json::Value;
 pub struct MessageId(String);
 
 impl MessageId {
+    /// 新建消息的 id：uuid v4（照 DSH createMessage 的 randomUUID）。
+    pub fn generate() -> Self {
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -84,12 +89,6 @@ pub enum ContentBlock {
         name: String,
         arguments: String,
     },
-    /// 一次工具调用的结果，放在 tool/result 事件的消息里。
-    ToolResult {
-        tool_use_id: String,
-        content: String,
-        is_error: bool,
-    },
 }
 
 impl ContentBlock {
@@ -101,7 +100,7 @@ impl ContentBlock {
     pub fn as_text(&self) -> Option<&str> {
         match self {
             Self::Text { text } => Some(text),
-            Self::Reasoning { .. } | Self::ToolCall { .. } | Self::ToolResult { .. } => None,
+            Self::Reasoning { .. } | Self::ToolCall { .. } => None,
         }
     }
 
@@ -113,7 +112,7 @@ impl ContentBlock {
                 name,
                 arguments,
             } => Some((id, name, arguments)),
-            Self::Text { .. } | Self::Reasoning { .. } | Self::ToolResult { .. } => None,
+            Self::Text { .. } | Self::Reasoning { .. } => None,
         }
     }
 }
@@ -122,18 +121,20 @@ impl ContentBlock {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
     /// 稳定 id；序列化/续接/派生都保持不变。
-    #[serde(skip)]
     pub id: MessageId,
     pub role: Role,
     pub content: Vec<ContentBlock>,
     /// 生产者声明的来源。
-    #[serde(skip)]
     pub source: MessageSource,
     /// 仅 tool 角色：这条结果回答的调用 id（DSH ToolResultMessage.toolCallId）。
-    #[serde(skip)]
+    #[serde(
+        rename = "toolCallId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub tool_call_id: Option<String>,
     /// 仅 tool 角色：工具调用是否失败（DSH isError，缺省 false）。
-    #[serde(skip)]
+    #[serde(rename = "isError", default, skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
 }
 
@@ -155,61 +156,107 @@ impl Message {
         }
     }
 
+    /// 通用构造（测试/派生用）：生成新 id，source 按角色推断；
+    /// 生产消息用下面的角色构造器（assistant 要带真实路由）。
     pub fn new(role: Role, content: Vec<ContentBlock>) -> Self {
-        Self::with_source(
-            MessageId::default(),
-            role,
-            content,
-            MessageSource::default(),
-        )
+        let source = match role {
+            Role::System => MessageSource::SystemPrompt,
+            Role::Developer | Role::User => MessageSource::User,
+            Role::Assistant => MessageSource::Model {
+                provider: "deepseek".to_owned(),
+                model: "deepseek-flash".to_owned(),
+                replay_state: None,
+            },
+            Role::Tool => MessageSource::Tool {
+                call_id: String::new(),
+            },
+        };
+        Self::with_source(MessageId::generate(), role, content, source)
     }
 
     pub fn text(role: Role, text: impl Into<String>) -> Self {
         Self::new(role, vec![ContentBlock::text(text)])
     }
 
-    /// 系统提示消息（source=system-prompt）。
+    /// 系统提示消息（source=system-prompt；空文本表示没有系统提示）。
     pub fn system_prompt(text: impl Into<String>) -> Self {
-        Self::new(Role::System, vec![ContentBlock::text(text)])
+        Self::with_source(
+            MessageId::generate(),
+            Role::System,
+            vec![ContentBlock::text(text)],
+            MessageSource::SystemPrompt,
+        )
     }
 
-    /// 用户消息（source=user）。
+    /// 用户消息（source=user；注入类上下文也走这里，AIOS 暂无插件来源种类）。
     pub fn user(content: Vec<ContentBlock>) -> Self {
-        Self::new(Role::User, content)
+        Self::with_source(
+            MessageId::generate(),
+            Role::User,
+            content,
+            MessageSource::User,
+        )
     }
 
     pub fn user_text(text: impl Into<String>) -> Self {
         Self::user(vec![ContentBlock::text(text)])
     }
 
-    /// developer 消息（log-only 的工具增删记录；生产者来源由调用方给）。
+    /// developer 消息（log-only 的工具增删记录；AIOS 还没有生产者）。
     pub fn developer(content: Vec<ContentBlock>) -> Self {
-        Self::new(Role::Developer, content)
+        Self::with_source(
+            MessageId::generate(),
+            Role::Developer,
+            content,
+            MessageSource::User,
+        )
     }
 
     /// 助手消息（source=model，provider/model 是产出路由）。
     pub fn assistant(
         content: Vec<ContentBlock>,
-        _provider: impl Into<String>,
-        _model: impl Into<String>,
+        provider: impl Into<String>,
+        model: impl Into<String>,
     ) -> Self {
-        Self::new(Role::Assistant, content)
+        Self::with_source(
+            MessageId::generate(),
+            Role::Assistant,
+            content,
+            MessageSource::Model {
+                provider: provider.into(),
+                model: model.into(),
+                replay_state: None,
+            },
+        )
     }
 
-    /// 一条工具结果消息。
+    /// 一条工具结果消息（DSH ToolResultMessage：callId/isError 在消息级，content 是结果块）。
     pub fn tool_result(
         tool_use_id: impl Into<String>,
         content: impl Into<String>,
         is_error: bool,
     ) -> Self {
-        Self::new(
-            Role::Tool,
-            vec![ContentBlock::ToolResult {
-                tool_use_id: tool_use_id.into(),
-                content: content.into(),
-                is_error,
-            }],
-        )
+        Self::tool_result_with_id(MessageId::generate(), tool_use_id, content, is_error)
+    }
+
+    /// 带指定 id 的工具结果消息（修复/日志回放用；id 必须由调用方确定）。
+    pub fn tool_result_with_id(
+        id: MessageId,
+        tool_use_id: impl Into<String>,
+        content: impl Into<String>,
+        is_error: bool,
+    ) -> Self {
+        let tool_use_id = tool_use_id.into();
+        Self {
+            id,
+            role: Role::Tool,
+            content: vec![ContentBlock::text(content)],
+            source: MessageSource::Tool {
+                call_id: tool_use_id.clone(),
+            },
+            tool_call_id: Some(tool_use_id),
+            is_error: if is_error { Some(true) } else { None },
+        }
     }
 
     pub fn is_empty(&self) -> bool {

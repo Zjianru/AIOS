@@ -416,19 +416,17 @@ async fn cancel_batch_skips_unstarted_calls() {
         .iter()
         .filter_map(|event| match &event.kind {
             EventKind::ToolResult { message, error, .. } => {
-                let block = message.content.first()?;
-                match block {
-                    ContentBlock::ToolResult {
-                        tool_use_id,
-                        content,
-                        ..
-                    } => Some((
-                        tool_use_id.clone(),
-                        content.clone(),
-                        error.as_ref().map(|error| error.code.clone()),
-                    )),
-                    _ => None,
-                }
+                let tool_use_id = message.tool_call_id.clone()?;
+                let content: String = message
+                    .content
+                    .iter()
+                    .filter_map(ContentBlock::as_text)
+                    .collect();
+                Some((
+                    tool_use_id,
+                    content,
+                    error.as_ref().map(|error| error.code.clone()),
+                ))
             }
             _ => None,
         })

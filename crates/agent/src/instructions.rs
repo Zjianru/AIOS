@@ -553,7 +553,7 @@ mod tests {
         let baseline = first
             .prepare(project.path(), project.path(), &[], std::iter::empty())
             .unwrap();
-        let message = model::Message::text(model::Role::User, baseline);
+        let message = model::Message::user_text(baseline);
         let mut resumed = InstructionState::default();
         resumed.rehydrate(&[message]);
         assert!(

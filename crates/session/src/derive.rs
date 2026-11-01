@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use model::{ContentBlock, Message, Role};
+use model::{ContentBlock, Message, MessageId, MessageSource, Role};
 
 use crate::{Event, EventKind};
 
@@ -63,7 +63,18 @@ pub(crate) fn derive_messages_with_seqs(events: &[Event]) -> Vec<(u64, Message)>
                 "{COMPACTION_PREAMBLE}\n\n{SUMMARY_OPEN_TAG}\n{}\n{SUMMARY_CLOSE_TAG}",
                 summary.trim()
             );
-            derived.push((event.seq, Message::text(Role::User, text)));
+            // checkpoint 没有对应的日志消息可复用 id（AIOS 压缩行不写 user/message，见 T006.3）；
+            // 用压缩区间起点 seq 造确定性 id，保证同一条日志多次派生 id 不变。
+            let id = MessageId::parse(format!("compaction-checkpoint-{start}"));
+            derived.push((
+                event.seq,
+                Message::with_source(
+                    id,
+                    Role::User,
+                    vec![ContentBlock::text(text)],
+                    MessageSource::User,
+                ),
+            ));
             continue;
         }
         if hidden(event.seq) {
@@ -77,16 +88,12 @@ pub(crate) fn derive_messages_with_seqs(events: &[Event]) -> Vec<(u64, Message)>
                 let Some(mut result_message) = message_or_skip(message) else {
                     continue;
                 };
-                for block in &mut result_message.content {
-                    if let ContentBlock::ToolResult {
-                        tool_use_id,
-                        content,
-                        ..
-                    } = block
-                        && let Some(replacement) = replacements.get(tool_use_id.as_str())
-                    {
-                        *content = (*replacement).to_owned();
-                    }
+                // 修剪替换：按消息级 toolCallId 找到同一次调用，content 换成修剪视图。
+                // 消息 id 不变（续接/派生看到同一个 id）。
+                if let Some(call_id) = result_message.tool_call_id.clone()
+                    && let Some(replacement) = replacements.get(call_id.as_str())
+                {
+                    result_message.content = vec![ContentBlock::text(*replacement)];
                 }
                 Some(result_message)
             }

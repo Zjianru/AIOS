@@ -160,16 +160,15 @@ async fn tool_round_trip() {
         .expect("日志里有 tool/result");
     assert_eq!(tool_result.0.role, Role::Tool);
     assert_eq!(tool_result.1, &None);
-    let ContentBlock::ToolResult {
-        tool_use_id,
-        content,
-        is_error,
-    } = &tool_result.0.content[0]
-    else {
-        panic!("tool/result 消息里应当是 ToolResult 块");
-    };
-    assert_eq!(tool_use_id, "call_1");
-    assert!(!is_error);
+    // DSH ToolResultMessage：callId/isError 在消息级，content 是结果内容块。
+    assert_eq!(tool_result.0.tool_call_id.as_deref(), Some("call_1"));
+    assert_eq!(tool_result.0.is_error, None);
+    let content = tool_result
+        .0
+        .content
+        .first()
+        .and_then(ContentBlock::as_text)
+        .expect("tool/result 消息里是文本内容块");
     assert!(content.contains("<path>"));
     assert!(content.contains("1: hello"));
     assert!(content.contains("(End of file - total 1 lines)"));

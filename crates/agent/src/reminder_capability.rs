@@ -1,6 +1,6 @@
 //! 重复调用提醒能力（T006.1d）：挂 ToolAfter，文案与 T005.9 完全一致。
 
-use model::{Message, Role};
+use model::Message;
 use session::EventKind;
 
 use crate::capabilities::{Capability, HookEvent, HookFuture, HookOutcome, HookPoint};
@@ -97,7 +97,7 @@ impl Capability for ReminderCapability {
                 host.append(&[EventKind::UserMessage {
                     turn: *turn,
                     step: *step,
-                    message: Message::text(Role::User, reminder),
+                    message: Message::user_text(reminder),
                 }])
                 .await?;
             }

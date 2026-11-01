@@ -9,9 +9,11 @@ use crate::SessionId;
 ///
 /// v2：事件记录照 DSH 的 SessionEvent：`{type, seq, time, data}`，事件自己的字段放进
 /// data（DSH `packages/core/session/src/index.ts:826-836`、
-/// `packages/session/session-format-v1-to-v2/src/codec.ts:21`）。v1 的日志直接拒绝，
-/// 不做迁移（spec 实现决定：现在没有产品数据）。
-pub const FORMAT_VERSION: u64 = 2;
+/// `packages/session/session-format-v1-to-v2/src/codec.ts:21`）。
+/// v3：消息 IR 照 DSH（T006.5c1）：每条消息带必填 `id`（uuid）与 `source`；tool 角色的
+/// 消息改成 DSH ToolResultMessage 形状（`toolCallId`/`isError` 在消息级，content 是结果
+/// 内容块）。v2 的消息没有 id/source，读不回来，直接拒绝（spec：旧版本不迁移）。
+pub const FORMAT_VERSION: u64 = 3;
 
 /// JSONL 第一行的会话 header。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

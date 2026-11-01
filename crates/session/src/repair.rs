@@ -4,7 +4,7 @@
 //! 扫描日志边界，给 assistant 已请求、但结果没有落盘的工具调用补保守的错误结果
 //! （结果未知 / 还没开始），再补 step/end 和 turn/end。只读日志，不重跑工具。
 
-use model::{ContentBlock, Message};
+use model::{Message, MessageId};
 
 use crate::{Event, EventKind, ToolError, TurnEndReason};
 
@@ -95,13 +95,7 @@ pub fn interrupted_turn_closers(events: &[Event]) -> Option<TurnClosers> {
                 message,
                 ..
             } => {
-                let call_id = message.content.first().and_then(|block| match block {
-                    ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
-                    ContentBlock::Text { .. }
-                    | ContentBlock::Reasoning { .. }
-                    | ContentBlock::ToolCall { .. } => None,
-                });
-                if let Some(call_id) = call_id
+                if let Some(call_id) = message.tool_call_id.as_deref()
                     && let Some(position) = pending.iter().position(|call| {
                         call.call_id == call_id && call.turn == *turn && call.step == *step
                     })
@@ -133,10 +127,13 @@ pub fn interrupted_turn_closers(events: &[Event]) -> Option<TurnClosers> {
         } else {
             (NOT_STARTED_ERROR, TOOL_NOT_STARTED, NOT_STARTED_TEXT)
         };
+        // 确定性 message id：AIOS 的修复在分配 seq 前造事件，用 cause+callId 代替 DSH 的
+        // `${cause}-tool-result-${callId}-${seq}`（handback known）。
+        let message_id = MessageId::parse(format!("interrupted-tool-result-{}", call.call_id));
         closers.push(EventKind::ToolResult {
             turn: call.turn,
             step: call.step,
-            message: Message::tool_result(call.call_id, text, true),
+            message: Message::tool_result_with_id(message_id, call.call_id, text, true),
             error: Some(ToolError {
                 name: name.to_owned(),
                 code: code.to_owned(),

@@ -87,16 +87,12 @@ fn tool_result_text(store: &SessionStore, call_id: &str) -> String {
         let EventKind::ToolResult { message, .. } = &event.kind else {
             continue;
         };
-        let Some(model::ContentBlock::ToolResult {
-            tool_use_id,
-            content,
-            ..
-        }) = message.content.first()
-        else {
-            continue;
-        };
-        if tool_use_id == call_id {
-            return content.clone();
+        if message.tool_call_id.as_deref() == Some(call_id) {
+            return message
+                .content
+                .iter()
+                .filter_map(model::ContentBlock::as_text)
+                .collect();
         }
     }
     panic!("日志里没有 call_id {call_id} 的 tool/result");
@@ -315,6 +311,16 @@ async fn tool_result_pruned_before_next_request() {
     // 原始 tool/result 仍在日志里（可回放），另有 compaction/prune 事件记录替换。
     let content_expected = content.clone();
     let store = SessionStore::open(data_dir.path(), agent.id()).unwrap();
-    assert!(store.events().iter().any(|event| matches!(&event.kind, EventKind::ToolResult { message, .. } if message.content.iter().any(|block| matches!(block, model::ContentBlock::ToolResult { content, .. } if content.as_str() == content_expected.as_str())))));
+    // 原始 tool/result 的 content 仍是完整文本（修剪只写替换事件，不改原事件）。
+    assert!(store.events().iter().any(|event| match &event.kind {
+        EventKind::ToolResult { message, .. } => {
+            message.tool_call_id.as_deref() == Some("call_0")
+                && message
+                    .content
+                    .iter()
+                    .any(|block| block.as_text() == Some(content_expected.as_str()))
+        }
+        _ => false,
+    }));
     assert!(store.events().iter().any(|event| matches!(&event.kind, EventKind::CompactionPrune { call_id, .. } if call_id == "call_0")));
 }

@@ -111,14 +111,7 @@ fn result_order(events: &[session::Event]) -> Vec<String> {
     events
         .iter()
         .filter_map(|event| match &event.kind {
-            session::EventKind::ToolResult { message, .. } => {
-                message.content.first().and_then(|block| match block {
-                    model::ContentBlock::ToolResult { tool_use_id, .. } => {
-                        Some(tool_use_id.clone())
-                    }
-                    _ => None,
-                })
-            }
+            session::EventKind::ToolResult { message, .. } => message.tool_call_id.clone(),
             _ => None,
         })
         .collect()

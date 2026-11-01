@@ -169,6 +169,16 @@ fn derived_checkpoint_message_id_is_stable() {
     for (offset, event) in other.iter_mut().enumerate() {
         event.seq = offset as u64 + 1;
     }
+    // 压缩区间也跟着挪：起点是 UserMessage 的新 seq。
+    if let EventKind::CompactionSummary {
+        shadowed_start,
+        shadowed_end,
+        ..
+    } = &mut other[3].kind
+    {
+        *shadowed_start = 3;
+        *shadowed_end = 4;
+    }
     let other_id = checkpoint_id(&other);
     assert_ne!(first, other_id, "不同压缩区间的 checkpoint id 不同");
 

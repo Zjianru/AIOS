@@ -44,6 +44,11 @@ impl DeepSeek {
         &self.config
     }
 
+    /// provider 路由 id（DSH 的 provider 名；AIOS 只接 DeepSeek）。
+    pub fn provider(&self) -> &'static str {
+        "deepseek"
+    }
+
     /// 发一次流式请求。消息和工具定义按 Messages 协议序列化（system 单独成字段）。
     /// 取消令牌能在「等响应头」阶段打断请求（对应 DSH 把 AbortSignal 传进 LLM 层）。
     pub async fn stream(

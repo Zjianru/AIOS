@@ -149,18 +149,11 @@ fn find_tool_result<'a>(
     call_id: &str,
 ) -> Option<(&'a str, Option<&'a session::ToolError>)> {
     for event in events {
-        if let EventKind::ToolResult { message, error, .. } = &event.kind {
-            for block in &message.content {
-                if let ContentBlock::ToolResult {
-                    tool_use_id,
-                    content,
-                    ..
-                } = block
-                    && tool_use_id == call_id
-                {
-                    return Some((content, error.as_ref()));
-                }
-            }
+        if let EventKind::ToolResult { message, error, .. } = &event.kind
+            && message.tool_call_id.as_deref() == Some(call_id)
+        {
+            let content = message.content.first().and_then(ContentBlock::as_text)?;
+            return Some((content, error.as_ref()));
         }
     }
     None

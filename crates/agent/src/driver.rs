@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use model::{
     BlockType, CancelToken, ContentBlock, DeepSeek, ErrorCode, FinishReason, Message, ModelError,
-    Role, StreamChunk, Usage, UserMessage,
+    StreamChunk, Usage, UserMessage,
 };
 use session::{
     AbortCause, EventKind, InboxTarget, LlmFailure, SessionId, SessionStore, ToolError,
@@ -781,7 +781,7 @@ async fn run_step(
         .expect("agent 会话锁被毒化")
         .has_system_message();
     if !has_system {
-        let message = Message::text(Role::System, system_prompt(&inner.cwd, &inner.tools));
+        let message = Message::system_prompt(system_prompt(&inner.cwd, &inner.tools));
         inner
             .append(&[EventKind::SystemMessage {
                 turn,
@@ -998,7 +998,7 @@ async fn run_step(
         .cloned()
         .collect();
     if !content.is_empty() {
-        let message = Message::new(Role::Assistant, content.clone());
+        let message = assistant_message(inner, content.clone());
         inner
             .append(&[EventKind::AssistantMessage {
                 turn,
@@ -1133,6 +1133,15 @@ async fn run_step(
     Ok(StepEnd::Continue)
 }
 
+/// 一条助手消息：source 是本次产出它的模型路由（DSH AssistantMessage 的 source=model）。
+fn assistant_message(inner: &Arc<Inner>, content: Vec<ContentBlock>) -> Message {
+    Message::assistant(
+        content,
+        inner.model.provider(),
+        inner.model.config().model.clone(),
+    )
+}
+
 /// T005.2 修剪：只修剪「旧 turn」的 tool/result（当前 turn 刚拿到的结果保留原样），
 /// 已经修剪过的 call_id 不再重复追加；一批 append 落日志。
 async fn prune_old_tool_results(inner: &Arc<Inner>, current_turn: u64) -> Result<(), AgentError> {
@@ -1154,20 +1163,20 @@ async fn prune_old_tool_results(inner: &Arc<Inner>, current_turn: u64) -> Result
             if *turn >= current_turn {
                 continue;
             }
-            let Some(ContentBlock::ToolResult {
-                tool_use_id,
-                content,
-                ..
-            }) = message.content.first()
-            else {
+            let Some(tool_use_id) = message.tool_call_id.as_deref() else {
                 continue;
             };
-            if already.contains(tool_use_id.as_str()) {
+            if already.contains(tool_use_id) {
                 continue;
             }
-            if let Some(pruned) = prune::prune_text(content) {
+            let text: String = message
+                .content
+                .iter()
+                .filter_map(ContentBlock::as_text)
+                .collect();
+            if let Some(pruned) = prune::prune_text(&text) {
                 additions.push(EventKind::CompactionPrune {
-                    call_id: tool_use_id.clone(),
+                    call_id: tool_use_id.to_owned(),
                     content: pruned,
                 });
             }
@@ -1292,7 +1301,7 @@ async fn interrupted_step(
 ) -> Result<StepEnd, AgentError> {
     let content = interrupted_content(blocks, open);
     if !content.is_empty() {
-        let message = Message::new(Role::Assistant, content);
+        let message = assistant_message(inner, content);
         inner
             .append(&[EventKind::AssistantMessage {
                 turn,

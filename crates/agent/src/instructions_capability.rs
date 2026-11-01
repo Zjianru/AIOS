@@ -10,7 +10,7 @@ use crate::capabilities::{
 };
 use crate::instructions::InstructionState;
 
-use model::{Message, Role};
+use model::Message;
 use session::EventKind;
 
 pub(crate) struct InstructionsCapability {
@@ -70,7 +70,7 @@ impl Capability for InstructionsCapability {
                 host.append(&[EventKind::UserMessage {
                     turn: event.turn(),
                     step: event.step(),
-                    message: Message::text(Role::User, text),
+                    message: Message::user_text(text),
                 }])
                 .await?;
             }

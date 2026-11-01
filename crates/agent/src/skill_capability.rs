@@ -10,7 +10,7 @@ use crate::capabilities::{
 };
 use crate::skill_catalog::SkillCatalogState;
 
-use model::{Message, Role};
+use model::Message;
 use session::EventKind;
 
 pub(crate) struct SkillCapability {
@@ -63,7 +63,7 @@ impl Capability for SkillCapability {
                 host.append(&[EventKind::UserMessage {
                     turn: event.turn(),
                     step: event.step(),
-                    message: Message::text(Role::User, text),
+                    message: Message::user_text(text),
                 }])
                 .await?;
             }

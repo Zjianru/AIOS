@@ -98,9 +98,7 @@ pub(super) fn request_body(
                 for block in &message.content {
                     match block {
                         ContentBlock::Text { text: piece } => text.push_str(piece),
-                        ContentBlock::Reasoning { .. }
-                        | ContentBlock::ToolCall { .. }
-                        | ContentBlock::ToolResult { .. } => {
+                        ContentBlock::Reasoning { .. } | ContentBlock::ToolCall { .. } => {
                             return Err(unsupported("system 消息只能包含文本块"));
                         }
                     }
@@ -156,7 +154,7 @@ pub(super) fn request_body(
                                 input,
                             })
                         }
-                        ContentBlock::ToolCall { .. } | ContentBlock::ToolResult { .. } => None,
+                        ContentBlock::ToolCall { .. } => None,
                     })
                     .collect();
                 if content.is_empty() {
@@ -164,40 +162,40 @@ pub(super) fn request_body(
                 }
                 push_or_merge(&mut wire_messages, role, content);
             }
+            // DSH ToolResultMessage：toolCallId/isError 在消息级，content 是结果内容块；
+            // wire 上是一条 user 消息里的 tool_result 块。
             Role::Tool => {
+                let Some(tool_use_id) = message.tool_call_id.as_ref() else {
+                    return Err(unsupported("tool 消息缺少 toolCallId"));
+                };
                 let mut content = Vec::new();
                 for block in &message.content {
                     match block {
-                        ContentBlock::ToolResult {
-                            tool_use_id,
-                            content: text,
-                            is_error,
-                        } => {
-                            let wire_content = if text.is_empty() {
-                                Vec::new()
-                            } else {
-                                vec![WireText {
-                                    kind: "text",
-                                    text: text.clone(),
-                                }]
-                            };
-                            content.push(WireBlock::ToolResult {
-                                tool_use_id: tool_use_id.clone(),
-                                content: wire_content,
-                                is_error: if *is_error { Some(true) } else { None },
+                        ContentBlock::Text { text } if !text.is_empty() => {
+                            content.push(WireText {
+                                kind: "text",
+                                text: text.clone(),
                             });
                         }
-                        ContentBlock::Text { .. }
-                        | ContentBlock::Reasoning { .. }
-                        | ContentBlock::ToolCall { .. } => {
-                            return Err(unsupported("tool 消息只能包含 tool_result 块"));
+                        ContentBlock::Text { .. } => {}
+                        ContentBlock::Reasoning { .. } | ContentBlock::ToolCall { .. } => {
+                            return Err(unsupported("tool 消息只能包含文本内容块"));
                         }
                     }
                 }
-                if content.is_empty() {
-                    continue;
-                }
-                push_or_merge(&mut wire_messages, "user", content);
+                push_or_merge(
+                    &mut wire_messages,
+                    "user",
+                    vec![WireBlock::ToolResult {
+                        tool_use_id: tool_use_id.clone(),
+                        content,
+                        is_error: if message.is_error.unwrap_or(false) {
+                            Some(true)
+                        } else {
+                            None
+                        },
+                    }],
+                );
             }
         }
     }

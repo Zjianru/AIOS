@@ -72,9 +72,6 @@ fn estimate_message(message: &Message) -> u64 {
                 total += tools::estimate_text_tokens(name) as u64;
                 total += tools::estimate_text_tokens(arguments) as u64;
             }
-            ContentBlock::ToolResult { content, .. } => {
-                total += tools::estimate_text_tokens(content) as u64;
-            }
         }
     }
     total
@@ -115,12 +112,7 @@ pub(crate) fn select_split(messages: &[Message], retain_tokens: u64) -> Option<u
     // 至少保留最后一条消息。
     let mut split = index.min(messages.len() - 1);
     // 保留 tail 不能以 tool/result 开头：把结果并进摘要侧。
-    while split > 1
-        && messages[split]
-            .content
-            .iter()
-            .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
-    {
+    while split > 1 && messages[split].role == Role::Tool {
         split -= 1;
     }
     if split > 1 { Some(split) } else { None }
@@ -227,7 +219,7 @@ pub(crate) async fn compact_if_needed(
 /// 一次摘要请求：回放被压缩的较早历史 + 摘要指令，收集文本输出。
 async fn summarize(host: &dyn LoopAccess, prefix: &[Message]) -> Result<String, AgentError> {
     let mut input = prefix.to_vec();
-    input.push(Message::text(Role::User, COMPACTION_INSTRUCTION));
+    input.push(Message::user_text(COMPACTION_INSTRUCTION));
     let cancel = model::CancelToken::new(
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         std::sync::Arc::new(tokio::sync::Notify::new()),
@@ -256,7 +248,7 @@ mod tests {
     use super::*;
 
     fn message(text: &str) -> Message {
-        Message::text(Role::User, text)
+        Message::user_text(text)
     }
 
     #[test]
@@ -268,7 +260,7 @@ mod tests {
     #[test]
     fn split_keeps_recent_tail_and_requires_prefix() {
         let messages = vec![
-            Message::text(Role::System, "system"),
+            Message::system_prompt("system"),
             message(&"a".repeat(400)),
             message(&"b".repeat(400)),
             message(&"c".repeat(400)),
