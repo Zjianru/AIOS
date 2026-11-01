@@ -113,11 +113,16 @@ pub(super) fn request_body(
                 }
                 system.push_str(&text);
             }
+            // DSH 的 developer 消息目前是 log-only（工具增删记录），AIOS 还没有生产者；
+            // 真出现也不进请求，按不支持内容报错。
+            Role::Developer => return Err(unsupported("developer 消息不进请求")),
             Role::User | Role::Assistant => {
                 let role = match message.role {
                     Role::User => "user",
                     Role::Assistant => "assistant",
-                    Role::System | Role::Tool => unreachable!("上面已单独处理"),
+                    Role::System | Role::Tool | Role::Developer => {
+                        unreachable!("上面已单独处理")
+                    }
                 };
                 let content: Vec<WireBlock> = message
                     .content

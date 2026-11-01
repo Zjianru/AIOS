@@ -3,11 +3,62 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// 一条消息的角色。
+/// 一条消息的稳定 id（DSH MessageId：uuid v4 字符串）。
+///
+/// 新建时生成；写进会话日志后，序列化、续接、派生都保持同一个值。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct MessageId(String);
+
+impl MessageId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn parse(raw: impl Into<String>) -> Self {
+        Self(raw.into())
+    }
+}
+
+impl From<&str> for MessageId {
+    fn from(raw: &str) -> Self {
+        Self(raw.to_owned())
+    }
+}
+
+/// 一条消息的来源（DSH MessageSourceMap 的四个 kind）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum MessageSource {
+    /// 用户输入或注入的上下文。
+    #[default]
+    User,
+    /// 模型产出；provider/model 是产出该消息的路由，replayState 是 adapter 回放用的原生状态。
+    Model {
+        provider: String,
+        model: String,
+        #[serde(
+            rename = "replayState",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        replay_state: Option<Value>,
+    },
+    /// 工具结果；callId 指向对应的工具调用。
+    Tool {
+        #[serde(rename = "callId")]
+        call_id: String,
+    },
+    /// 渲染后的系统提示。
+    SystemPrompt,
+}
+
+/// 一条消息的角色（五种角色照 DSH MessageRoleMap）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
     System,
+    Developer,
     User,
     Assistant,
     /// 工具结果消息（wire 上是 user 角色 + tool_result 块）。
@@ -67,23 +118,82 @@ impl ContentBlock {
     }
 }
 
-/// 一条 provider 无关的消息。
+/// 一条 provider 无关的消息（DSH MessageBase + 角色字段）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
+    /// 稳定 id；序列化/续接/派生都保持不变。
+    #[serde(skip)]
+    pub id: MessageId,
     pub role: Role,
     pub content: Vec<ContentBlock>,
+    /// 生产者声明的来源。
+    #[serde(skip)]
+    pub source: MessageSource,
+    /// 仅 tool 角色：这条结果回答的调用 id（DSH ToolResultMessage.toolCallId）。
+    #[serde(skip)]
+    pub tool_call_id: Option<String>,
+    /// 仅 tool 角色：工具调用是否失败（DSH isError，缺省 false）。
+    #[serde(skip)]
+    pub is_error: Option<bool>,
 }
 
 impl Message {
+    /// 通用构造（新消息；id/source 由具体构造器给）。
+    pub fn with_source(
+        id: MessageId,
+        role: Role,
+        content: Vec<ContentBlock>,
+        source: MessageSource,
+    ) -> Self {
+        Self {
+            id,
+            role,
+            content,
+            source,
+            tool_call_id: None,
+            is_error: None,
+        }
+    }
+
     pub fn new(role: Role, content: Vec<ContentBlock>) -> Self {
-        Self { role, content }
+        Self::with_source(
+            MessageId::default(),
+            role,
+            content,
+            MessageSource::default(),
+        )
     }
 
     pub fn text(role: Role, text: impl Into<String>) -> Self {
-        Self {
-            role,
-            content: vec![ContentBlock::text(text)],
-        }
+        Self::new(role, vec![ContentBlock::text(text)])
+    }
+
+    /// 系统提示消息（source=system-prompt）。
+    pub fn system_prompt(text: impl Into<String>) -> Self {
+        Self::new(Role::System, vec![ContentBlock::text(text)])
+    }
+
+    /// 用户消息（source=user）。
+    pub fn user(content: Vec<ContentBlock>) -> Self {
+        Self::new(Role::User, content)
+    }
+
+    pub fn user_text(text: impl Into<String>) -> Self {
+        Self::user(vec![ContentBlock::text(text)])
+    }
+
+    /// developer 消息（log-only 的工具增删记录；生产者来源由调用方给）。
+    pub fn developer(content: Vec<ContentBlock>) -> Self {
+        Self::new(Role::Developer, content)
+    }
+
+    /// 助手消息（source=model，provider/model 是产出路由）。
+    pub fn assistant(
+        content: Vec<ContentBlock>,
+        _provider: impl Into<String>,
+        _model: impl Into<String>,
+    ) -> Self {
+        Self::new(Role::Assistant, content)
     }
 
     /// 一条工具结果消息。
@@ -92,14 +202,14 @@ impl Message {
         content: impl Into<String>,
         is_error: bool,
     ) -> Self {
-        Self {
-            role: Role::Tool,
-            content: vec![ContentBlock::ToolResult {
+        Self::new(
+            Role::Tool,
+            vec![ContentBlock::ToolResult {
                 tool_use_id: tool_use_id.into(),
                 content: content.into(),
                 is_error,
             }],
-        }
+        )
     }
 
     pub fn is_empty(&self) -> bool {
@@ -113,11 +223,11 @@ pub struct UserMessage(Message);
 
 impl UserMessage {
     pub fn text(text: impl Into<String>) -> Self {
-        Self(Message::text(Role::User, text))
+        Self(Message::user_text(text))
     }
 
     pub fn new(content: Vec<ContentBlock>) -> Self {
-        Self(Message::new(Role::User, content))
+        Self(Message::user(content))
     }
 
     pub fn as_message(&self) -> &Message {
