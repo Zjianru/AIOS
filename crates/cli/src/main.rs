@@ -199,6 +199,12 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
                 if line == "/exit" {
                     break;
                 }
+                if is_compact_command(&line) {
+                    // 空闲时立刻压缩；运行中排到当前轮之后（compress 在后台跑，事件照常打印）。
+                    let agent = agent.clone();
+                    tokio::spawn(async move { agent.compact().await; });
+                    continue;
+                }
                 if let Some(queued) = line.strip_prefix("/queue ") {
                     let queued = queued.trim();
                     if queued.is_empty() {
@@ -334,6 +340,11 @@ fn handle_event(event: AgentEvent, outcome: &mut Option<TurnOutcome>) {
     }
 }
 
+/// chat 的手动压缩命令（T005.8b）：/compact。
+fn is_compact_command(line: &str) -> bool {
+    line.trim() == "/compact"
+}
+
 /// T005.8a 票面：压缩开始/结束事件在 CLI 的展示文本（纯函数便于单测）。
 fn compaction_started_text(compaction_id: &str, trigger: CompactionTrigger) -> String {
     let kind = match trigger {
@@ -367,7 +378,9 @@ fn job_completed_text(job_id: &str, status: JobStatus, detail: Option<&str>) -> 
 mod tests {
     use agent::{CompactionTrigger, JobStatus};
 
-    use super::{compaction_ended_text, compaction_started_text, job_completed_text};
+    use super::{
+        compaction_ended_text, compaction_started_text, is_compact_command, job_completed_text,
+    };
 
     #[test]
     fn job_completed_line_is_rendered() {
@@ -383,6 +396,14 @@ mod tests {
             job_completed_text("bash-3", JobStatus::Failed, None),
             "[任务完成：bash-3（failed）]"
         );
+    }
+
+    #[test]
+    fn compact_command_is_recognized() {
+        assert!(is_compact_command("/compact"));
+        assert!(is_compact_command("  /compact  "));
+        assert!(!is_compact_command("/compact now"));
+        assert!(!is_compact_command("compact"));
     }
 
     #[test]

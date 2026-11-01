@@ -81,6 +81,8 @@ pub(crate) struct Inner {
     idle_notify: Notify,
     /// 取消时唤醒正在等模型流的 step（让流读取立刻停下）。
     cancel_notify: Arc<Notify>,
+    /// 手动 compact 请求的等待者（T005.8b；kick 在轮次结束后处理并通知）。
+    compact_queue: Mutex<Vec<tokio::sync::oneshot::Sender<()>>>,
 }
 
 impl Inner {
@@ -143,6 +145,7 @@ impl Inner {
             events,
             idle_notify: Notify::new(),
             cancel_notify: Arc::new(Notify::new()),
+            compact_queue: Mutex::new(Vec::new()),
         });
         // T005.4：后台任务结算后，由 agent 把完成通知送进会话（事件 + 下一步输入）。
         // 用 Weak 避免 tool_session → 回调 → Inner 的循环引用。
@@ -298,11 +301,46 @@ impl Inner {
             .append(kinds)?;
         Ok(())
     }
+
+    /// 请求一次手动压缩（T005.8b）：排队并唤醒驱动；返回的接收者在该次压缩结束时收到通知。
+    pub(crate) fn queue_compaction(self: &Arc<Self>) -> tokio::sync::oneshot::Receiver<()> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        self.compact_queue
+            .lock()
+            .expect("agent compact 队列锁被毒化")
+            .push(sender);
+        self.wake_driver();
+        receiver
+    }
+
+    /// kick 在轮次结束后处理排队的手动压缩；空闲时也会被 wake 进来处理。
+    async fn run_queued_compaction(self: &Arc<Self>) {
+        let waiters: Vec<tokio::sync::oneshot::Sender<()>> = {
+            let mut queue = self
+                .compact_queue
+                .lock()
+                .expect("agent compact 队列锁被毒化");
+            std::mem::take(&mut *queue)
+        };
+        if waiters.is_empty() {
+            return;
+        }
+        let turn = {
+            let state = self.state.lock().expect("agent 状态锁被毒化");
+            state.last_turn
+        };
+        let _ = compaction::compact_if_needed(self, turn, CompactionTrigger::Manual, true).await;
+        for waiter in waiters {
+            let _ = waiter.send(());
+        }
+    }
 }
 
 /// 驱动任务：连续跑若干轮，直到收件箱里没有会唤醒的输入。
 async fn kick(inner: Arc<Inner>) {
     while let Ok(true) = run_turn(&inner).await {}
+    // T005.8b：运行中的 /compact 排在这一轮之后，等 kick 回到这里再执行。
+    inner.run_queued_compaction().await;
     settle_idle(&inner);
 }
 

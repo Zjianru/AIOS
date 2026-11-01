@@ -286,6 +286,12 @@ impl Agent {
         self.inner.idle().await;
     }
 
+    /// 手动压缩（chat 的 /compact）：空闲时立刻执行，运行中排到当前轮之后。
+    pub async fn compact(&self) {
+        let receiver = self.inner.queue_compaction();
+        let _ = receiver.await;
+    }
+
     pub fn id(&self) -> &SessionId {
         self.inner.id()
     }
