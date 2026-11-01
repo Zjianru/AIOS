@@ -6,7 +6,7 @@
 
 use std::fs;
 
-use model::{Message, Role, Usage};
+use model::{AssistantStreamRecord, ContentBlock, Message, Role, StreamChunk, Usage};
 use serde_json::{Value, json};
 
 use crate::{
@@ -225,6 +225,102 @@ fn todo_write_matches_dsh_payload() {
     );
 }
 
+/// DSH 的 assistant 结算事件（types.ts:349-363）：message 带必填 stream；usage 是
+/// TokenUsage camelCase；interrupted 只在取消收尾时写 true；assistant/attempt 只带流。
+#[test]
+fn assistant_settlement_shapes_match_dsh() {
+    let (_data_dir, _cwd, mut store) = create_store();
+    store
+        .append(&[
+            EventKind::AssistantMessage {
+                turn: 1,
+                step: 1,
+                message: Message::assistant(
+                    vec![ContentBlock::text("回答")],
+                    "deepseek",
+                    "deepseek-flash",
+                ),
+                // 合成事件：即使 stream 为空也要序列化成数组（DSH 的 data 必填 stream）。
+                stream: Vec::new(),
+                usage: Some(Usage {
+                    input_tokens: Some(7),
+                    output_tokens: Some(2),
+                    ..Usage::default()
+                }),
+                interrupted: None,
+            },
+            EventKind::AssistantAttempt {
+                turn: 1,
+                step: 1,
+                stream: vec![AssistantStreamRecord::Chunk {
+                    time: 90,
+                    chunk: StreamChunk::BlockStart {
+                        index: 0,
+                        block_type: model::BlockType::Text,
+                    },
+                }],
+            },
+            EventKind::AssistantMessage {
+                turn: 1,
+                step: 1,
+                message: Message::assistant(
+                    vec![ContentBlock::text("半截")],
+                    "deepseek",
+                    "deepseek-flash",
+                ),
+                stream: Vec::new(),
+                usage: None,
+                interrupted: Some(true),
+            },
+        ])
+        .unwrap();
+
+    let (_header, rows) = log_rows(&store);
+    let message = &rows[0]["data"];
+    assert_eq!(rows[0]["type"], "assistant/message");
+    assert_eq!(message["turn"], 1);
+    assert_eq!(message["step"], 1);
+    assert_eq!(message["stream"], json!([]), "stream 是必填数组，空也要写");
+    assert_eq!(
+        message["usage"],
+        json!({"inputTokens": 7, "outputTokens": 2}),
+        "usage 字段照 DSH TokenUsage"
+    );
+    assert!(
+        message.get("interrupted").is_none(),
+        "正常完成省略 interrupted"
+    );
+    assert_eq!(
+        message["message"]["content"],
+        json!([{"type": "text", "text": "回答"}])
+    );
+
+    let attempt = &rows[1]["data"];
+    assert_eq!(rows[1]["type"], "assistant/attempt");
+    assert_eq!(
+        attempt,
+        &json!({
+            "turn": 1,
+            "step": 1,
+            "stream": [{
+                "type": "chunk",
+                "time": 90,
+                "chunk": {"type": "block-start", "index": 0, "blockType": "text"}
+            }]
+        }),
+        "assistant/attempt 只带 turn/step/stream"
+    );
+
+    let interrupted = &rows[2]["data"];
+    assert_eq!(
+        interrupted["interrupted"], true,
+        "取消收尾写 interrupted=true"
+    );
+    assert_eq!(
+        interrupted["message"]["content"],
+        json!([{"type": "text", "text": "半截"}])
+    );
+}
 #[test]
 fn all_event_kinds_round_trip_under_dsh_envelope() {
     let (data_dir, _cwd, mut store) = create_store();
@@ -267,13 +363,29 @@ fn all_event_kinds_round_trip_under_dsh_envelope() {
             turn: 1,
             step: 1,
             message: Message::text(Role::Assistant, "好的"),
-            stream: Vec::new(),
+            stream: vec![AssistantStreamRecord::TextChunks {
+                time0: 100,
+                index: 0,
+                dt: Vec::new(),
+                texts: vec!["好的".to_owned()],
+            }],
             usage: Some(Usage {
                 input_tokens: Some(3),
                 output_tokens: Some(2),
                 ..Usage::default()
             }),
             interrupted: Some(true),
+        },
+        EventKind::AssistantAttempt {
+            turn: 1,
+            step: 1,
+            stream: vec![AssistantStreamRecord::Chunk {
+                time: 90,
+                chunk: StreamChunk::BlockStart {
+                    index: 0,
+                    block_type: model::BlockType::Text,
+                },
+            }],
         },
         EventKind::ToolCall {
             turn: 1,

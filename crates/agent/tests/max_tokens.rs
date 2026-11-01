@@ -161,9 +161,12 @@ async fn max_tokens_does_not_execute_or_log_truncated_tool_call() {
         !has_tool_use_block(&store),
         "assistant/message 里不能有截断的 tool_use"
     );
-    assert!(
-        assistant_blocks(&store).is_empty(),
-        "裁完为空不写 assistant/message（D1）"
+    // T004 K9 / DSH agent.ts:580-584：整轮被截断也要写一条空 content 的 assistant/message，
+    // 把 usage 留下来（D1 的「裁完为空不写」已改回）。
+    assert_eq!(
+        assistant_blocks(&store),
+        vec![Vec::new()],
+        "截断轮写空 assistant/message 保住 usage"
     );
     assert_eq!(server.request_bodies().len(), 1);
 
