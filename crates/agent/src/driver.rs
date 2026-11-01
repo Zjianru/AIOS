@@ -313,34 +313,63 @@ impl Inner {
         receiver
     }
 
+    /// 队列里还有没有等待手动压缩的请求。
+    fn has_queued_compaction(&self) -> bool {
+        !self
+            .compact_queue
+            .lock()
+            .expect("agent compact 队列锁被毒化")
+            .is_empty()
+    }
+
     /// kick 在轮次结束后处理排队的手动压缩；空闲时也会被 wake 进来处理。
+    /// 语义：同一批排队的请求合并成一次压缩（所有等待者一起唤醒）；压缩进行中新到的
+    /// 请求会进入下一轮 drain，再做一次压缩。循环 drain 保证不会丢等待者。
     async fn run_queued_compaction(self: &Arc<Self>) {
-        let waiters: Vec<tokio::sync::oneshot::Sender<()>> = {
-            let mut queue = self
-                .compact_queue
-                .lock()
-                .expect("agent compact 队列锁被毒化");
-            std::mem::take(&mut *queue)
-        };
-        if waiters.is_empty() {
-            return;
-        }
-        let turn = {
-            let state = self.state.lock().expect("agent 状态锁被毒化");
-            state.last_turn
-        };
-        let _ = compaction::compact_if_needed(self, turn, CompactionTrigger::Manual, true).await;
-        for waiter in waiters {
-            let _ = waiter.send(());
+        loop {
+            let waiters: Vec<tokio::sync::oneshot::Sender<()>> = {
+                let mut queue = self
+                    .compact_queue
+                    .lock()
+                    .expect("agent compact 队列锁被毒化");
+                std::mem::take(&mut *queue)
+            };
+            if waiters.is_empty() {
+                return;
+            }
+            let turn = {
+                let state = self.state.lock().expect("agent 状态锁被毒化");
+                state.last_turn
+            };
+            let _ =
+                compaction::compact_if_needed(self, turn, CompactionTrigger::Manual, true).await;
+            for waiter in waiters {
+                let _ = waiter.send(());
+            }
         }
     }
 }
 
 /// 驱动任务：连续跑若干轮，直到收件箱里没有会唤醒的输入。
 async fn kick(inner: Arc<Inner>) {
-    while let Ok(true) = run_turn(&inner).await {}
-    // T005.8b：运行中的 /compact 排在这一轮之后，等 kick 回到这里再执行。
-    inner.run_queued_compaction().await;
+    loop {
+        // T005.8b：手动压缩排在当前轮之后；空闲时先处理队列，避免为它造空 turn。
+        if inner.has_queued_compaction() {
+            inner.run_queued_compaction().await;
+            continue;
+        }
+        let has_input = inner
+            .inbox
+            .lock()
+            .expect("agent 收件箱锁被毒化")
+            .has_pending();
+        if !has_input {
+            break;
+        }
+        if !matches!(run_turn(&inner).await, Ok(true)) {
+            break;
+        }
+    }
     settle_idle(&inner);
 }
 
@@ -361,7 +390,9 @@ fn settle_idle(inner: &Arc<Inner>) {
         .lock()
         .expect("agent 收件箱锁被毒化")
         .has_pending();
-    if wake && has_pending {
+    // 压缩队列也要算 pending：否则在 settle 前入队的 compact 等待者会没人唤醒。
+    let has_queued = inner.has_queued_compaction();
+    if has_queued || (wake && has_pending) {
         let mut state = inner.state.lock().expect("agent 状态锁被毒化");
         state.phase = Phase::Running {
             abort: Arc::new(AtomicBool::new(false)),

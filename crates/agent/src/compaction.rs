@@ -156,8 +156,13 @@ pub(crate) async fn compact_if_needed(
     let shadowed_end = derived[split - 1].0;
     let prefix: Vec<Message> = selected[..split].to_vec();
     let shadowed_token_count = estimate_messages(&prefix);
+    // T005.8b：id 带进程/纳秒成分，续接或新进程都不会和旧 compaction-1 撞车。
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.subsec_nanos());
     let compaction_id = format!(
-        "compaction-{}",
+        "compaction-{}-{nanos}-{}",
+        std::process::id(),
         COMPACTION_COUNTER.fetch_add(1, Ordering::Relaxed)
     );
 

@@ -100,7 +100,10 @@ async fn manual_compact_while_idle_compresses_immediately() {
         .send(UserMessage::text("TEXT-OLD manual"), Delivery::FollowUp);
     wait_idle(&harness.agent, 20).await;
 
-    harness.agent.compact().await;
+    let done = tokio::time::timeout(std::time::Duration::from_secs(10), harness.agent.compact())
+        .await
+        .is_ok();
+    assert!(done, "/compact 不能挂住");
 
     let requests = server.received_requests().await.unwrap();
     let bodies = bodies(&requests);
@@ -178,7 +181,11 @@ async fn manual_compact_queues_until_turn_end() {
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
 
     permits[0].1.add_permits(1);
-    compact.await.unwrap();
+    let done = tokio::time::timeout(std::time::Duration::from_secs(10), compact)
+        .await
+        .is_ok();
+    assert!(done, "运行中排队的 compact 不能挂住");
+    let _ = done;
     wait_idle(&harness.agent, 20).await;
 
     let requests = server.received_requests().await.unwrap();
@@ -330,4 +337,194 @@ async fn compaction_ids_are_unique_across_resume() {
         .collect();
     assert_eq!(ids.len(), 2, "两次压缩都进日志：{ids:?}");
     assert_ne!(ids[0], ids[1], "续接后的 compaction_id 不能和旧 id 重复");
+}
+
+fn delayed_sse(body: String) -> ResponseTemplate {
+    sse(body).set_delay(std::time::Duration::from_millis(500))
+}
+
+async fn compact_and_get_id() -> String {
+    let server = MockServer::start().await;
+    mount(
+        &server,
+        vec![
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ],
+    )
+    .await;
+    let harness = setup(&server, ToolSet::builtin(), 0.000001).await;
+    harness
+        .agent
+        .send(UserMessage::text("TEXT-PROCESS id"), Delivery::FollowUp);
+    wait_idle(&harness.agent, 20).await;
+    harness.agent.compact().await;
+    let store = SessionStore::open(harness.data_dir.path(), &harness.id).unwrap();
+    store
+        .events()
+        .iter()
+        .find_map(|event| match &event.kind {
+            session::EventKind::CompactionStart { compaction_id, .. } => {
+                Some(compaction_id.clone())
+            }
+            _ => None,
+        })
+        .expect("应有 compaction/start")
+}
+
+const ID_CHILD_ENV: &str = "AIOS_TEST_COMPACTION_ID_CHILD";
+const ID_FILE_ENV: &str = "AIOS_TEST_COMPACTION_ID_FILE";
+
+#[tokio::test]
+async fn compaction_ids_differ_across_processes() {
+    let id = compact_and_get_id().await;
+    if std::env::var_os(ID_CHILD_ENV).is_some() {
+        std::fs::write(std::env::var(ID_FILE_ENV).unwrap(), id).unwrap();
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("child-id.txt");
+    let exe = std::env::current_exe().unwrap();
+    let output = std::process::Command::new(&exe)
+        .arg("compaction_ids_differ_across_processes")
+        .arg("--exact")
+        .arg("--nocapture")
+        .env(ID_CHILD_ENV, "1")
+        .env(ID_FILE_ENV, &file)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "子进程失败：{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let child_id = std::fs::read_to_string(&file).unwrap();
+    assert_ne!(
+        id.trim(),
+        child_id.trim(),
+        "新进程的 compaction_id 不能和父进程重复"
+    );
+}
+
+#[tokio::test]
+async fn idle_compact_does_not_create_empty_turn() {
+    let server = MockServer::start().await;
+    mount(
+        &server,
+        vec![
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ],
+    )
+    .await;
+    let harness = setup(&server, ToolSet::builtin(), 0.000001).await;
+    harness
+        .agent
+        .send(UserMessage::text("TEXT-EMPTY turn"), Delivery::FollowUp);
+    wait_idle(&harness.agent, 20).await;
+    let turn_starts = |data_dir: &std::path::Path| {
+        SessionStore::open(data_dir, &harness.id)
+            .unwrap()
+            .events()
+            .iter()
+            .filter(|event| matches!(event.kind, session::EventKind::TurnStart { .. }))
+            .count()
+    };
+    let before = turn_starts(harness.data_dir.path());
+    assert_eq!(before, 1);
+    let done = tokio::time::timeout(std::time::Duration::from_secs(10), harness.agent.compact())
+        .await
+        .is_ok();
+    assert!(done, "空闲 compact 不能丢等待者");
+    let after = turn_starts(harness.data_dir.path());
+    assert_eq!(after, before, "空闲 compact 不应为空 turn 写 turn/start");
+}
+
+#[tokio::test]
+async fn two_compacts_in_same_batch_coalesce_into_one() {
+    let server = MockServer::start().await;
+    mount(
+        &server,
+        vec![
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ],
+    )
+    .await;
+    let harness = setup(&server, ToolSet::builtin(), 0.000001).await;
+    harness
+        .agent
+        .send(UserMessage::text("TEXT-BATCH batch"), Delivery::FollowUp);
+    wait_idle(&harness.agent, 20).await;
+    let both = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(harness.agent.compact(), harness.agent.compact())
+    })
+    .await
+    .is_ok();
+    assert!(both, "同批两个 compact 都不能挂住");
+    let requests = server.received_requests().await.unwrap();
+    let bodies = bodies(&requests);
+    let summaries = bodies
+        .iter()
+        .filter(|body| body.contains("compaction engine"))
+        .count();
+    assert_eq!(summaries, 1, "同一批排队的 compact 应合并成一次压缩");
+    let store = SessionStore::open(harness.data_dir.path(), &harness.id).unwrap();
+    let starts = store
+        .events()
+        .iter()
+        .filter(|event| matches!(event.kind, session::EventKind::CompactionStart { .. }))
+        .count();
+    assert_eq!(starts, 1);
+}
+
+#[tokio::test]
+async fn second_compact_during_compaction_completes() {
+    let server = MockServer::start().await;
+    mount(
+        &server,
+        vec![
+            sse(FINAL_TEXT_SSE.to_owned()),
+            delayed_sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ],
+    )
+    .await;
+    let harness = setup(&server, ToolSet::builtin(), 0.000001).await;
+    harness
+        .agent
+        .send(UserMessage::text("TEXT-DURING during"), Delivery::FollowUp);
+    wait_idle(&harness.agent, 20).await;
+    let mut events = harness.agent.subscribe();
+
+    let agent = harness.agent.clone();
+    let first = tokio::spawn(async move {
+        agent.compact().await;
+    });
+    // 等第一次压缩真的开始（summary 响应有延迟，窗口内再请求一次）。
+    loop {
+        match events.recv().await.expect("事件流不应关闭") {
+            AgentEvent::CompactionStarted { .. } => break,
+            _ => continue,
+        }
+    }
+    let agent = harness.agent.clone();
+    let second = tokio::spawn(async move {
+        agent.compact().await;
+    });
+    let finished = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        first.await.unwrap();
+        second.await.unwrap();
+    })
+    .await
+    .is_ok();
+    assert!(finished, "压缩进行中的第二个 compact 不能挂住");
+    let store = SessionStore::open(harness.data_dir.path(), &harness.id).unwrap();
+    let starts = store
+        .events()
+        .iter()
+        .filter(|event| matches!(event.kind, session::EventKind::CompactionStart { .. }))
+        .count();
+    assert_eq!(starts, 2, "第二个请求应在下一轮 drain 再压缩一次");
 }
