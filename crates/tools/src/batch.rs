@@ -16,7 +16,8 @@ use crate::{Tool, ToolCall, ToolConcurrency, ToolContext, ToolResult, ToolSet};
 pub struct BatchOutcome {
     /// 按模型顺序的结果；取消时未派发的调用带 `ABORTED_BEFORE_DISPATCH`。
     pub results: Vec<ToolResult>,
-    /// 是否观察到取消（至少有一个调用没能派发）。
+    /// 是否观察到取消；包括所有调用都已派发/结束后才看到取消的情况（此时可能没有
+    /// `ABORTED_BEFORE_DISPATCH` 结果）。
     pub cancelled: bool,
 }
 

@@ -281,7 +281,7 @@ async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
     let appended = inner.append(&[EventKind::TurnEnd { turn, reason }]);
     let _ = inner.events.send(AgentEvent::TurnEnded { turn, outcome });
     appended?;
-    let result = match steps {
+    let mut result = match steps {
         Ok(()) => Ok(inner
             .inbox
             .lock()
@@ -289,9 +289,16 @@ async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
             .has_pending()),
         Err(error) => Err(error),
     };
-    // 收尾检查与 settle_idle 的 wake_requested 快照之间没有别的 await：显式让出
-    // 一次调度，让排队中的 FollowUp/Steer 能在 settle 之前落地（fail-fast 的
-    // 确定性回归靠这个点，不靠 sleep）。
+    // T004.3 审计 fix-now 1：取消之后、收尾之前投递的消息会被 latch；若把
+    // has_pending 带回 kick，就会用同一个已 abort 的 Phase 空转。按「abort 置位」
+    // （不看 reason：cancel 也可能落在正常完成之后）收敛到 settle_idle；settle 会
+    // 用新 Phase（新 abort）重开驱动，领取取消后投递的输入。
+    if abort.load(Ordering::SeqCst) {
+        result = Ok(false);
+    }
+    // 收尾检查与 settle_idle 的 wake_requested 快照之间只有一个显式让出点
+    // （tokio::task::yield_now），除此之外没有别的 await；让排队中的
+    // FollowUp/Steer 能在 settle 之前落地（确定性回归靠这个点，不靠 sleep）。
     tokio::task::yield_now().await;
     result
 }
