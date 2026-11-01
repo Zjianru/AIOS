@@ -345,7 +345,7 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
                     }
                     ChatInput::CompactUsage => {
                         println!();
-                        println!("{}", COMPACT_USAGE);
+                        println!("{COMPACT_USAGE}");
                     }
                     ChatInput::Queue(queued) => {
                         agent.send(UserMessage::text(queued), Delivery::FollowUp).await?;
