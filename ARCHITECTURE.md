@@ -68,12 +68,12 @@ T006.1a 接挂点与注册表；1b 起 **compaction 是真实 Capability**；1c 
 **设计说明（为什么这样接）**
 
 - 编译期固定：`HookPoint` 枚举固定 10 个（strategy §1 六点位 + 工具三阶段拆开 + 压缩触发单列），功能用 `Capability` trait 的固定顺序数组注册（`CapabilityRegistry::production`），没有运行时加载/插件发现（strategy §3、K2）。
-- 输入面按 1b–1e 的需要定：`Capability::on_hook` 是异步、返回 `Result<(), AgentError>`，参数是 typed `HookEvent<'a>`（每个挂点带该点可用的运行态数据 + `host: &dyn LoopAccess` 访问面）；dyn 兼容用 `HookFuture<'a> = Pin<Box<dyn Future<Output = Result<(), AgentError>> + Send + 'a>>`，不新增 async-trait 依赖。
+- 输入面按 1b–1e 的需要定：`Capability::on_hook` 是异步、返回 `Result<HookOutcome, AgentError>`，参数是 typed `HookEvent<'a>`（每个挂点带该点可用的运行态数据 + `host: &dyn LoopAccess` 访问面）；dyn 兼容用 `HookFuture<'a> = Pin<Box<dyn Future<Output = Result<HookOutcome, AgentError>> + Send + 'a>>`，不新增 async-trait 依赖。
 - 访问面 `LoopAccess`：session（`Mutex<SessionStore>`）、events、tools、tool_session（观察表/spill/任务注册表）、model、cwd/data_dir/log_path、instruction_roots/skill_roots、compaction_config、spill_max_inline_tokens，以及 **`append` 写日志入口**（async，内部走 `Inner::append`：落盘后逐事件派发 SessionEvent，不重复派发）；由 driver 的 `Inner` 实现，capabilities 不反向依赖 driver 私有字段/CLI。
 - loop 只在固定位置 dispatch，不 import 功能内部类型；1b–1e 搬实现时只换 Capability 实现（必要时按 ARCH 记录扩 HookContext 字段），挂点集合与调用点顺序不变——1a 不再声称「只换实现」是无条件成立。
 - 执行顺序与错误：同一挂点按注册顺序执行；首个 Err 短路返回，之前的功能副作用已发生且不回滚；SessionEvent 在日志 append 成功后逐事件派发（日志已提交）；压缩执行与「已确认」通知拆开：`CompactionCapability` 只挂 PreStep/Request/RequestError（不消费 Compaction），三路（PreStep 自动、RequestError 溢出、PreStep trigger=Manual 手动）都经 `compact_if_needed`，其在 should_trigger/select_split 确认后统一派发 `HookEvent::Compaction`（供 prune 等，T006.4）；自动/手动压缩失败不打断本轮/队列，溢出压缩失败时 `compact_if_needed` 返回 Err（摘要失败等）或 Ok(false)（无前缀可压，返回原始 model 错误），第二次溢出直接致命不再派发；Status 在 kick 收敛前派发，错误不阻断收敛（1a no-op，服务接入时再定上报）。
 - PreStep 分两阶段（`HookEvent::PreStep { phase }`，不是新挂点）：Inject 在 prune 之前（instructions、skill；按注册表相对顺序），Compact 在 prune 之后（compaction 自动检查）。旧顺序保持为 system/user → Inject（instructions → skill）→ prune → Compact（压缩检查）→ derive；手动 /compact 只走 Compact（trigger=Some(Manual)），instructions/skill 跳过，所以手动压缩不会顺带注入指令/skill。回归断言：`pre_step_phase_order::injection_happens_before_compaction_in_same_turn`（同 turn 压缩时注入先于 compaction/start）与 `manual_compact_no_injection::manual_compact_does_not_inject_instructions_or_skills`。
-- 挂点返回值（T006.1d2 四变体）：`HookOutcome { Continue, ToolResultContent(String), ToolResultOverride { index, result }, AbortStep }`；`CapabilityRegistry::dispatch` 返回 `DispatchOutcome { overrides, content, abort }`：按注册顺序收集、同 index 后写胜出、content 取最后非 None、AbortStep 置 abort 优先。Content 只允许 ToolResult 阶段，Override 只允许 ToolBefore 阶段（阶段不匹配忽略）；AbortStep 让 run_step 返回 `StepEnd::Aborted`（不是 error）。
+- 挂点返回值（T006.1d2 四变体）：`HookOutcome { Continue, ToolResultContent(String), ToolResultOverride { index, result }, AbortStep }`；`CapabilityRegistry::dispatch` 返回 `DispatchOutcome { overrides, content, abort }`：按注册顺序收集、同 index 后写胜出、content 取最后非 None、AbortStep 置 abort 优先且**立即停止**（后续能力不再执行）。Content 只允许 ToolResult 阶段，Override 只允许 ToolBefore 阶段（阶段不匹配忽略）；AbortStep 让 run_step 返回 `StepEnd::Aborted`（不是 error）。
 - 注册表 per-Agent（T006.1d2）：`production(ask: Arc<AskState>)` 返回 `Vec<Box<dyn Capability>>`；ZST 能力每 Agent Box 一份，顺序不变；AskCapability 持有该 Agent 的 AskState（pending/answers/取消唤醒），`Agent::answer` 继续委托 Inner 再路由到 AskState（签名/CLI 不变）。
 - ask 所有权：AskCapability 只写 `question/asked`、`question/cancelled`（走 LoopAccess::append）；answers 的 tool/result 由 driver 在 ToolResult 阶段统一写一条。本票只拦批内第一条 ask 调用（批内后续 ask 仍走占位工具）；answers 形状/多问题语义照 T005.12 不改。
 - ToolBefore override：index 对应调用不执行（占位 ask 工具不跑），结果按 calls 顺序对齐后并回；多 index 由 dispatch 聚合（每能力每事件最多一条 override）。
@@ -89,7 +89,7 @@ T006.1a 接挂点与注册表；1b 起 **compaction 是真实 Capability**；1c 
 | SessionEvent | `Inner::append` 成功后逐事件 | host/event | instructions（对账；对外推送后续票） |
 | ToolBefore | `execute_batch` 之前 | turn/step/host/calls | instructions、skill、ask（ToolResultOverride/AbortStep） |
 | ToolResult | 每个 tool/result 落日志前 | turn/step/host/call/result（返回 ToolResultContent；ask 的 answers 也在此由 driver 统一写） | spill |
-| ToolAfter | tool/result 落日志后 | turn/step/host/calls/results/cancelled | todo、reminder（spill 也挂 ToolAfter 但 no-op） |
+| ToolAfter | tool/result 落日志后 | turn/step/host/calls/results/cancelled | todo、reminder |
 | Compaction | `compaction.rs` 的 `compact_if_needed` 内、should_trigger/select_split 确认之后（自动/溢出/手动三路统一派发） | turn/step/host/trigger | prune（T006.4 迁入）；`CompactionCapability` 不消费此挂点（防自递归） |
 | Status | `kick` 收敛到 Idle 之前 | turn/host | jobs（服务推送后续票） |
 | TurnStopping | `run_turn` 写 `turn/end` 之前 | turn/host | （保留，服务接入后使用） |

@@ -333,7 +333,12 @@ impl CapabilityRegistry {
             debug_assert!(!capability.name().is_empty());
             if capability.hooks().contains(&event.hook()) {
                 let next = capability.on_hook(event).await?;
+                let is_abort = matches!(next, HookOutcome::AbortStep);
                 Self::merge(&mut outcome, event.hook(), next);
+                // AbortStep 优先且立即停止：后续能力不再执行（不会 append/override/Err）。
+                if is_abort {
+                    break;
+                }
             }
         }
         Ok(outcome)
@@ -542,6 +547,49 @@ mod dispatch_contract_tests {
         assert_eq!(outcome.overrides[0].1.content, "B", "同 index 后写胜出");
         assert_eq!(outcome.overrides[1].0, 1);
         assert_eq!(outcome.overrides[1].1.content, "C");
+    }
+
+    struct Recorder {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Capability for Recorder {
+        fn name(&self) -> &'static str {
+            "test-recorder"
+        }
+        fn hooks(&self) -> &'static [HookPoint] {
+            &[HookPoint::ToolBefore]
+        }
+        fn on_hook<'a>(&'a self, _event: &'a HookEvent<'a>) -> HookFuture<'a> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Ok(HookOutcome::Continue) })
+        }
+    }
+
+    #[tokio::test]
+    async fn abort_stops_dispatch_immediately_without_error() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let registry = CapabilityRegistry::from_capabilities(vec![
+            fixed(
+                "test-abort",
+                &[HookPoint::ToolBefore],
+                HookOutcome::AbortStep,
+            ),
+            Box::new(Recorder {
+                calls: Arc::clone(&calls),
+            }),
+        ]);
+        let host = NoopHost;
+        let outcome = registry
+            .dispatch(&tool_before_event(&host, &[]))
+            .await
+            .expect("AbortStep 不应返回 Err");
+        assert!(outcome.abort);
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "abort 之后的能力不得被调用"
+        );
     }
 
     #[tokio::test]
