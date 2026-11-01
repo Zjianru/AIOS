@@ -131,6 +131,12 @@ impl SpillStore {
 /// 目录 0700：spill 内容只属主可读（照 DSH spill-local）。jobs 目录复用这个 helper。
 pub(crate) fn create_private_dir(root: &Path) -> std::io::Result<()> {
     if root.is_dir() {
+        // 已存在目录（升级/续接的旧 data-dir）也修正成 0700。
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700))?;
+        }
         return Ok(());
     }
     let mut builder = fs::DirBuilder::new();

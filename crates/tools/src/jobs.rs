@@ -132,9 +132,13 @@ impl std::fmt::Debug for TaskRegistry {
 
 impl TaskRegistry {
     pub fn new(data_dir: &Path, session_id: &str) -> Self {
+        let root = data_dir.join("jobs").join(format!("session-{session_id}"));
+        // 旧 data-dir 里的 jobs 目录/文件可能是 0755/0644：启动时修正权限；
+        // 旧输出文件保留为历史归档（新 job id 唯一，不会 append 到它们）。
+        prepare_jobs_root(&root);
         Self {
             jobs: Mutex::new(HashMap::new()),
-            root: Some(data_dir.join("jobs").join(format!("session-{session_id}"))),
+            root: Some(root),
             on_settled: Mutex::new(None),
         }
     }
@@ -408,6 +412,29 @@ impl TaskRegistry {
             .get(id)
             .cloned()
             .ok_or_else(|| ToolFailure::plain(format!("job not found: {id}")))
+    }
+}
+
+/// 建/修 jobs 目录：目录 0700、文件 0600；旧文件只修权限不删（归档策略）。
+fn prepare_jobs_root(root: &Path) {
+    if crate::spill::create_private_dir(root).is_err() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = if metadata.is_dir() { 0o700 } else { 0o600 };
+            let _ = std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(mode));
+        }
+        #[cfg(not(unix))]
+        let _ = metadata;
     }
 }
 

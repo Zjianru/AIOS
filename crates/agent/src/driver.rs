@@ -117,10 +117,11 @@ impl Inner {
                     let Some(inner) = weak.upgrade() else {
                         return;
                     };
-                    let handle = handle.clone();
-                    let job_id = job_id.to_owned();
+                    // 结算线程上同步决定目标队列（忙碌/空闲按结算瞬间的 phase），
+                    // 只有 wake 需要回到 runtime 上下文。
+                    inner.deliver_job_completion(job_id, status);
                     handle.spawn(async move {
-                        inner.deliver_job_completion(&job_id, status);
+                        inner.wake_driver();
                     });
                 },
             ));
@@ -214,7 +215,6 @@ impl Inner {
             .lock()
             .expect("agent 收件箱锁被毒化")
             .push(target, UserMessage::text(text));
-        self.wake_driver();
     }
 
     /// 起驱动或在 Running 时置 latch。

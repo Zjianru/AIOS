@@ -21,7 +21,7 @@ use serde_json::Value;
 pub use batch::{BatchOutcome, execute_batch};
 pub use builtin::{
     ApplyPatchTool, BashTool, EditTool, GlobTool, GrepTool, JobKillTool, JobListTool,
-    JobOutputTool, ReadTool, WriteTool,
+    JobOutputTool, ReadTool, WriteTool, foreground_bytes_read,
 };
 pub use jobs::{
     JobRead, JobSettledCallback, JobSpec, JobStatus, JobView, MAX_WAIT_MS, TaskRegistry,

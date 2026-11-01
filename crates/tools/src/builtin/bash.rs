@@ -4,6 +4,7 @@
 //! 输出截尾 + 全文路径、受管 AIOS_* 环境变量、父环境凭据 scrub；不做沙箱（D38）。
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{Value, json};
 
@@ -18,6 +19,14 @@ pub const MAX_TIMEOUT_MS: u64 = 600_000;
 pub const MAX_OUTPUT_BYTES: usize = 64_000;
 /// 前景结果全文 spill 的单流上限（照 DSH bash-local maxSpillBytes 64 MiB）。
 pub const MAX_SPILL_BYTES: usize = 64 * 1024 * 1024;
+
+static FOREGROUND_READ_BYTES: AtomicU64 = AtomicU64::new(0);
+
+/// 诊断计数：前台结果渲染时从 jobs 文件读进内存的累计字节数。
+/// T005.4 回归用——大输出必须只读尾部，不能把整文件读进内存。
+pub fn foreground_bytes_read() -> u64 {
+    FOREGROUND_READ_BYTES.load(Ordering::Relaxed)
+}
 
 /// 内置 bash 工具。
 pub struct BashTool {
@@ -210,6 +219,7 @@ fn stream_from_job(
         if file.read_to_end(&mut bytes).is_err() {
             return fallback_stream();
         }
+        FOREGROUND_READ_BYTES.fetch_add(bytes.len() as u64, Ordering::Relaxed);
         return StreamOutput {
             text: String::from_utf8_lossy(&bytes).into_owned(),
             truncated: false,
@@ -227,6 +237,7 @@ fn stream_from_job(
     if file.read_to_end(&mut tail).is_err() {
         return fallback_stream();
     }
+    FOREGROUND_READ_BYTES.fetch_add(tail.len() as u64, Ordering::Relaxed);
     let text = String::from_utf8_lossy(tail_bytes(&tail, MAX_OUTPUT_BYTES)).into_owned();
     let spill_path = if size <= MAX_SPILL_BYTES as u64 {
         context

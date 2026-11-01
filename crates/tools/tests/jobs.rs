@@ -5,8 +5,8 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use tools::{
-    BashTool, JobKillTool, JobListTool, JobOutputTool, Tool, ToolCall, ToolContext, ToolResult,
-    ToolSessionState,
+    BashTool, JobKillTool, JobListTool, JobOutputTool, JobSpec, Tool, ToolCall, ToolContext,
+    ToolResult, ToolSessionState,
 };
 
 fn session_context(cwd: &Path, data_dir: &Path, session_id: &str) -> ToolContext {
@@ -401,6 +401,7 @@ async fn foreground_large_output_reads_only_tail() {
     let data_dir = tempfile::tempdir().unwrap();
     let context = session_context(dir.path(), data_dir.path(), "sess-1");
     // 5 MiB 输出（远超前台 64,000 字节上限）。
+    let bytes_before = tools::foreground_bytes_read();
     let result = bash(
         json!({"command": "dd if=/dev/zero bs=1048576 count=5 2>/dev/null | tr '\\0' 'a'"}),
         &context,
@@ -420,6 +421,12 @@ async fn foreground_large_output_reads_only_tail() {
         result.content.len() < 70_000,
         "结果不应含全文：{} 字节",
         result.content.len()
+    );
+    // 可观测计数：渲染时读进内存的字节数只应约等于尾部，不能是整文件。
+    let read_delta = tools::foreground_bytes_read() - bytes_before;
+    assert!(
+        read_delta <= 70_000,
+        "前台渲染读进内存 {read_delta} 字节（应只读尾部 64,000）"
     );
 }
 
@@ -447,4 +454,121 @@ async fn foreground_output_over_spill_cap_reports_unavailable() {
         "{:.160}",
         result.content
     );
+}
+
+/// 轮询到任务结算（受控 gate 用；不靠 sleep，靠 yield + 截止时间兜底）。
+async fn wait_until_terminal(context: &ToolContext, job_id: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let read = context.session().tasks().output(job_id).expect("任务存在");
+        if read.view.status.is_terminal() {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "任务没有在 5s 内结算");
+        tokio::task::yield_now().await;
+    }
+}
+
+#[tokio::test]
+async fn foreground_fast_settlement_without_wait_does_not_notify() {
+    // 旧语义：awaited 只在 wait 里置位，所以 start 后立刻结算会先发完成通知。
+    // 新语义：start(foreground) 时就标记 awaited，不调用 wait 也不发通知。
+    use std::sync::mpsc;
+    use std::time::Duration as StdDuration;
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path(), "sess-1");
+    let (sender, receiver) = mpsc::channel::<String>();
+    context
+        .session()
+        .tasks()
+        .set_on_settled(std::sync::Arc::new(move |job_id: &str, _status| {
+            let _ = sender.send(job_id.to_owned());
+        }));
+
+    let job_id = context
+        .session()
+        .tasks()
+        .start(
+            JobSpec {
+                command: "printf 'hi\n'".to_owned(),
+                cwd: dir.path().to_path_buf(),
+                env: Vec::new(),
+                label: "fast".to_owned(),
+            },
+            true,
+        )
+        .unwrap();
+    // 不调用 wait：直接等结算。旧实现会在这里发通知。
+    wait_until_terminal(&context, &job_id).await;
+    assert!(
+        receiver
+            .recv_timeout(StdDuration::from_millis(300))
+            .is_err(),
+        "前台 start 后结算不应发完成通知"
+    );
+}
+
+#[tokio::test]
+async fn promote_after_settlement_still_notifies() {
+    // 构造 fix-now 1 的竞态：wait 超时返回 running 之后、promote 之前任务已结算。
+    // 旧语义：wait 置 awaited=true，unawait 只清零不补发 → 通知永久丢。
+    use std::sync::mpsc;
+    use std::time::Duration as StdDuration;
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path(), "sess-1");
+    let (sender, receiver) = mpsc::channel::<String>();
+    context
+        .session()
+        .tasks()
+        .set_on_settled(std::sync::Arc::new(move |job_id: &str, _status| {
+            let _ = sender.send(job_id.to_owned());
+        }));
+
+    let job_id = context
+        .session()
+        .tasks()
+        .start(
+            JobSpec {
+                command: "while [ ! -f go ]; do :; done; printf 'done\n'".to_owned(),
+                cwd: dir.path().to_path_buf(),
+                env: Vec::new(),
+                label: "gated".to_owned(),
+            },
+            true,
+        )
+        .unwrap();
+    let waited = context
+        .session()
+        .tasks()
+        .wait(&job_id, StdDuration::from_millis(50))
+        .unwrap();
+    assert!(!waited.view.status.is_terminal(), "gate 没起作用");
+    std::fs::write(dir.path().join("go"), "").unwrap();
+    wait_until_terminal(&context, &job_id).await;
+    // 结算发生在 promote 之前：promote 必须补发一次通知。
+    context.session().tasks().promote(&job_id);
+    let fired = receiver.recv_timeout(StdDuration::from_secs(1));
+    assert!(fired.is_ok(), "结算与 promote 之间的完成通知被吞掉了");
+}
+
+#[tokio::test]
+async fn existing_jobs_dir_permissions_are_fixed_on_start() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let jobs_dir = data_dir.path().join("jobs").join("session-sess-1");
+    std::fs::create_dir_all(&jobs_dir).unwrap();
+    std::fs::set_permissions(&jobs_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let old_file = jobs_dir.join("bash-old.out");
+    std::fs::write(&old_file, "old\n").unwrap();
+    std::fs::set_permissions(&old_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    // 建会话（ToolSessionState::new）应把旧目录/旧文件权限修正。
+    let _context = session_context(dir.path(), data_dir.path(), "sess-1");
+    let dir_mode = std::fs::metadata(&jobs_dir).unwrap().permissions().mode() & 0o777;
+    assert_eq!(dir_mode, 0o700, "已存在的 jobs 目录应被 chmod 0700");
+    let file_mode = std::fs::metadata(&old_file).unwrap().permissions().mode() & 0o777;
+    assert_eq!(file_mode, 0o600, "旧输出文件应被 chmod 0600（保留归档）");
 }
