@@ -111,8 +111,12 @@ impl InstructionState {
         let cwd = canonical(cwd);
         let project_root = find_project_root(&cwd);
         let mut dirs = ancestor_chain(&project_root, &cwd);
+        // 多个观察路径来自 HashMap，先按路径排序保证确定性；目录按下标深度、再按路径排序，
+        // 追加在 cwd 之后，整体保持 root→cwd→更深目录 的单调顺序。
+        let mut observed: Vec<PathBuf> = observed.map(|path| canonical(&path)).collect();
+        observed.sort();
+        let mut extra: Vec<PathBuf> = Vec::new();
         for path in observed {
-            let path = canonical(&path);
             let Some(parent) = path.parent() else {
                 continue;
             };
@@ -120,11 +124,18 @@ impl InstructionState {
                 continue;
             }
             for dir in ancestor_chain(&cwd, parent).into_iter().skip(1) {
-                if !dirs.contains(&dir) {
-                    dirs.push(dir);
+                if !extra.contains(&dir) {
+                    extra.push(dir);
                 }
             }
         }
+        extra.sort_by(|left, right| {
+            left.components()
+                .count()
+                .cmp(&right.components().count())
+                .then_with(|| left.cmp(right))
+        });
+        dirs.extend(extra);
 
         let applicable = discover(&project_root, &dirs, data_dir, instruction_roots);
         let mut changed: Vec<InstructionFile> = Vec::new();
@@ -150,7 +161,7 @@ impl InstructionState {
         if changed.is_empty() && removed.is_empty() {
             return None;
         }
-        Some(render(&changed, &removed, baseline))
+        Some(render(&changed, &removed, &applicable, baseline))
     }
 }
 
@@ -280,20 +291,128 @@ fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-fn render(changed: &[InstructionFile], removed: &[String], baseline: bool) -> String {
-    let global_files: Vec<&InstructionFile> = changed
+struct ChainBudget<'a> {
+    /// 放进预算的文件（宽泛→具体）；被截断的文件带替换后的内容。
+    included: Vec<(&'a InstructionFile, Option<String>)>,
+    /// 整份省略的文件 display（最宽泛的在前）。
+    omitted: Vec<String>,
+    /// 被截断的最具体文件 display。
+    truncated: Option<String>,
+}
+
+/// 按 DSH 语义做每链预算：放不下时先整份省略最宽泛的文件，保留更具体的；
+/// 只剩最具体的一个还放不下时，按 UTF-8 边界安全地按字节截断它并加 [truncated]。
+fn budget_chain<'a>(files: &[&'a InstructionFile]) -> ChainBudget<'a> {
+    let section_len = |file: &InstructionFile| {
+        format!("{SECTION_PREFIX}{}\n\n{}", file.display, file.content).len()
+    };
+    let total: usize = files.iter().map(|file| section_len(file)).sum();
+    if total <= MAX_CHAIN_BYTES {
+        return ChainBudget {
+            included: files.iter().map(|file| (*file, None)).collect(),
+            omitted: Vec::new(),
+            truncated: None,
+        };
+    }
+    let mut start = 0;
+    while start + 1 < files.len() {
+        let remaining: usize = files[start..].iter().map(|file| section_len(file)).sum();
+        if remaining <= MAX_CHAIN_BYTES {
+            break;
+        }
+        start += 1;
+    }
+    let omitted: Vec<String> = files[..start]
         .iter()
-        .filter(|file| file.chain == Chain::UserGlobal)
+        .map(|file| file.display.clone())
         .collect();
-    let project_files: Vec<&InstructionFile> = changed
-        .iter()
-        .filter(|file| file.chain == Chain::Project)
-        .collect();
+    let kept = &files[start..];
+    if kept.len() == 1 {
+        let only = kept[0];
+        if section_len(only) > MAX_CHAIN_BYTES {
+            let overhead = SECTION_PREFIX.len() + only.display.len() + "\n\n".len();
+            let marker = "\n\n[truncated]";
+            let remaining = MAX_CHAIN_BYTES.saturating_sub(overhead + marker.len());
+            let truncated_content = truncate_bytes(&only.content, remaining);
+            return ChainBudget {
+                included: vec![(only, Some(format!("{truncated_content}{marker}")))],
+                omitted,
+                truncated: Some(only.display.clone()),
+            };
+        }
+    }
+    ChainBudget {
+        included: kept.iter().map(|file| (*file, None)).collect(),
+        omitted,
+        truncated: None,
+    }
+}
+
+/// 按 UTF-8 字符边界截到不超过 max_bytes 字节的前缀（CJK 不会超预算、也不会切坏字符）。
+fn truncate_bytes(content: &str, max_bytes: usize) -> String {
+    let mut end = 0;
+    for (index, character) in content.char_indices() {
+        let next = index + character.len_utf8();
+        if next > max_bytes {
+            break;
+        }
+        end = next;
+    }
+    content[..end].to_owned()
+}
+
+fn chain_name(chain: Chain) -> &'static str {
+    match chain {
+        Chain::UserGlobal => "user",
+        Chain::Project => "project",
+    }
+}
+
+fn render(
+    changed: &[InstructionFile],
+    removed: &[String],
+    applicable: &[InstructionFile],
+    baseline: bool,
+) -> String {
+    let changed_displays: std::collections::BTreeSet<&str> =
+        changed.iter().map(|file| file.display.as_str()).collect();
     let mut sections = Vec::new();
     let mut notices = Vec::new();
-    for (chain, files) in [("user", global_files), ("project", project_files)] {
-        let rendered = budget_chain(chain, &files, &mut notices);
-        sections.extend(rendered);
+    for chain in [Chain::UserGlobal, Chain::Project] {
+        let chain_files: Vec<&InstructionFile> = applicable
+            .iter()
+            .filter(|file| file.chain == chain)
+            .collect();
+        let budgeted = budget_chain(&chain_files);
+        for (file, content_override) in &budgeted.included {
+            if !changed_displays.contains(file.display.as_str()) {
+                continue;
+            }
+            let content = content_override.as_deref().unwrap_or(&file.content);
+            sections.push(format!("{SECTION_PREFIX}{}\n\n{content}", file.display));
+        }
+        let mut parts = Vec::new();
+        let omitted_changed: Vec<&str> = budgeted
+            .omitted
+            .iter()
+            .filter(|display| changed_displays.contains(display.as_str()))
+            .map(String::as_str)
+            .collect();
+        if !omitted_changed.is_empty() {
+            parts.push(format!("omitted {}", omitted_changed.join(", ")));
+        }
+        if let Some(truncated) = &budgeted.truncated
+            && changed_displays.contains(truncated.as_str())
+        {
+            parts.push(format!("truncated {truncated}"));
+        }
+        if !parts.is_empty() {
+            notices.push(format!(
+                "Workspace instruction budget {MAX_CHAIN_BYTES} bytes ({}): {}",
+                chain_name(chain),
+                parts.join("; ")
+            ));
+        }
     }
     for display in removed {
         sections.push(format!("Removed: {display}"));
@@ -315,39 +434,6 @@ fn render(changed: &[InstructionFile], removed: &[String], baseline: bool) -> St
         body.push('\n');
     }
     format!("{FRAME_OPEN}\n{body}{FRAME_CLOSE}")
-}
-
-fn budget_chain(chain: &str, files: &[&InstructionFile], notices: &mut Vec<String>) -> Vec<String> {
-    let mut sections = Vec::new();
-    let mut used = 0_usize;
-    let mut omitted = Vec::new();
-    for file in files {
-        let section = format!("{SECTION_PREFIX}{}\n\n{}", file.display, file.content);
-        if used + section.len() <= MAX_CHAIN_BYTES {
-            used += section.len();
-            sections.push(section);
-            continue;
-        }
-        // 放不下：这条链更宽泛的文件先省略；还没有任何 section 时截断这个文件。
-        if sections.is_empty() {
-            let remaining =
-                MAX_CHAIN_BYTES.saturating_sub(SECTION_PREFIX.len() + file.display.len() + 4);
-            let mut truncated: String = file.content.chars().take(remaining).collect();
-            truncated.push_str("\n\n[truncated]");
-            used += SECTION_PREFIX.len() + file.display.len() + truncated.len();
-            sections.push(format!("{SECTION_PREFIX}{}\n\n{truncated}", file.display));
-        } else {
-            omitted.push(file.display.clone());
-        }
-        let _ = used;
-    }
-    if !omitted.is_empty() {
-        notices.push(format!(
-            "Workspace instruction budget {MAX_CHAIN_BYTES} bytes ({chain}): omitted {}",
-            omitted.join(", ")
-        ));
-    }
-    sections
 }
 
 fn escape(text: &str) -> String {
@@ -476,5 +562,120 @@ mod tests {
                 .is_none(),
             "续接后不重复注入同一基线"
         );
+    }
+
+    fn file(display: &str, content: &str) -> InstructionFile {
+        InstructionFile {
+            path: PathBuf::from(display),
+            display: display.to_owned(),
+            content: content.to_owned(),
+            chain: Chain::Project,
+        }
+    }
+
+    #[test]
+    fn budget_omits_broadest_and_keeps_specific() {
+        let broad = file("AGENTS.md", &"a".repeat(70_000));
+        let specific = file("sub/AGENTS.md", "SPECIFIC");
+        let files = [&broad, &specific];
+        let budgeted = budget_chain(&files);
+        assert_eq!(
+            budgeted.omitted,
+            vec!["AGENTS.md".to_owned()],
+            "先整份省略最宽泛的"
+        );
+        assert_eq!(budgeted.included.len(), 1);
+        assert_eq!(budgeted.included[0].0.display, "sub/AGENTS.md");
+        assert!(budgeted.truncated.is_none(), "剩下的放得下就不截断");
+    }
+
+    #[test]
+    fn budget_truncates_most_specific_only_when_still_over() {
+        let huge = file("AGENTS.md", &"a".repeat(80_000));
+        let files = [&huge];
+        let budgeted = budget_chain(&files);
+        assert_eq!(budgeted.omitted, Vec::<String>::new());
+        assert_eq!(budgeted.truncated.as_deref(), Some("AGENTS.md"));
+        let content = budgeted.included[0].1.as_deref().unwrap();
+        let section_len = SECTION_PREFIX.len() + "AGENTS.md".len() + "\n\n".len() + content.len();
+        assert!(
+            section_len <= MAX_CHAIN_BYTES,
+            "section {section_len} > 预算"
+        );
+        assert!(content.ends_with("[truncated]"));
+    }
+
+    #[test]
+    fn budget_truncation_is_byte_safe_for_cjk() {
+        // 40,000 个 CJK 字符 = 120,000 字节，超过 65,536 字节预算。
+        let huge = file("AGENTS.md", &"中".repeat(40_000));
+        let files = [&huge];
+        let budgeted = budget_chain(&files);
+        let content = budgeted.included[0].1.as_deref().unwrap();
+        let body = content.strip_suffix("\n\n[truncated]").unwrap();
+        assert!(body.is_char_boundary(body.len()));
+        assert_eq!(body.chars().count(), body.len() / 3, "CJK 截断不能切坏字符");
+        let section_len = SECTION_PREFIX.len() + "AGENTS.md".len() + "\n\n".len() + content.len();
+        assert!(
+            section_len <= MAX_CHAIN_BYTES,
+            "按字节不能超预算：{section_len}"
+        );
+    }
+
+    #[test]
+    fn budget_notice_is_rendered() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        write(&project.path().join(".git").join("HEAD"), "");
+        write(&project.path().join("AGENTS.md"), &"a".repeat(70_000));
+        let sub = project.path().join("sub");
+        write(&sub.join("AGENTS.md"), "SPECIFIC\n");
+        let mut state = InstructionState::default();
+        let text = state
+            .prepare(&sub, data_dir.path(), &[], std::iter::empty())
+            .unwrap();
+        assert!(text.contains("SPECIFIC"), "具体文件要保留");
+        assert!(
+            !text.contains(&"a".repeat(100)),
+            "宽泛文件被省略：{}",
+            &text[..text.len().min(400)]
+        );
+        assert!(
+            text.contains("Workspace instruction budget"),
+            "要有预算 notice"
+        );
+        assert!(text.contains("omitted"), "notice 说明省略了哪些");
+        assert!(text.contains("AGENTS.md"));
+    }
+
+    #[test]
+    fn multiple_observed_dirs_extend_chain_in_stable_order() {
+        let project = tempfile::tempdir().unwrap();
+        write(&project.path().join(".git").join("HEAD"), "");
+        write(&project.path().join("AGENTS.md"), "ROOT\n");
+        let a = project.path().join("a");
+        write(&a.join("AGENTS.md"), "AAA\n");
+        write(&a.join("x.txt"), "x\n");
+        let b = project.path().join("b");
+        let deep = b.join("deep");
+        write(&deep.join("AGENTS.md"), "DEEP\n");
+        write(&deep.join("y.txt"), "y\n");
+        let mut state = InstructionState::default();
+        state
+            .prepare(project.path(), project.path(), &[], std::iter::empty())
+            .unwrap();
+        // 观察顺序故意反过来（HashMap 迭代顺序不确定），渲染顺序必须仍稳定。
+        let refresh = state
+            .prepare(
+                project.path(),
+                project.path(),
+                &[],
+                vec![deep.join("y.txt"), a.join("x.txt")].into_iter(),
+            )
+            .unwrap();
+        let aaa = refresh.find("AAA").unwrap();
+        let deep_at = refresh.find("DEEP").unwrap();
+        assert!(aaa < deep_at, "宽泛→具体：a 在 b/deep 前");
+        assert!(!refresh.contains("ROOT"), "已有基线不重复");
     }
 }

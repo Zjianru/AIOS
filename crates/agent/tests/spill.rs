@@ -164,7 +164,7 @@ async fn oversized_tool_result_becomes_preview_with_locator() {
         cwd.path(),
         &server,
         ToolSet::new(vec![Box::new(BigTool::new(content.clone()))]),
-        AgentConfig::default(),
+        common::isolated_config(data_dir.path()),
     )
     .await;
     agent.send(UserMessage::text("跑个大工具"), Delivery::FollowUp);
@@ -228,7 +228,7 @@ async fn zero_spill_threshold_disables_spill() {
     let (content, _) = big_content();
     let config = AgentConfig {
         spill_max_inline_tokens: 0,
-        ..AgentConfig::default()
+        ..common::isolated_config(data_dir.path())
     };
     let agent = setup(
         data_dir.path(),
@@ -278,7 +278,7 @@ async fn tool_result_pruned_before_next_request() {
         cwd.path(),
         &server,
         ToolSet::new(vec![Box::new(BigTool::new(content.clone()))]),
-        AgentConfig::default(),
+        common::isolated_config(data_dir.path()),
     )
     .await;
     agent.send(UserMessage::text("第一轮：跑大工具"), Delivery::FollowUp);
