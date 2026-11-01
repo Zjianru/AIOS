@@ -223,7 +223,8 @@ impl<'a> Preflight<'a> {
 
     fn check_source(&mut self, planned: &Planned, verb: &str) -> Result<(), ToolFailure> {
         let target = &planned.target;
-        if planned.operation_is_move() && crate::fs::is_symlink(&planned.raw) {
+        // DSH preflight.ts:93-97：delete 和 move 都拒绝符号链接源（edit 不移动/删除路径本身）。
+        if verb != "edit" && crate::fs::is_symlink(&planned.raw) {
             return Err(ToolFailure::coded(
                 "PATCH_SYMLINK_SOURCE",
                 format!(
@@ -288,6 +289,15 @@ impl<'a> Preflight<'a> {
                 Ok(())
             }
             PatchOp::Update { hunks, .. } => {
+                // DSH preflight.ts:90-92：move 的源和目的地是同一个 targetKey 时直接拒。
+                if let Some(destination) = &planned.move_target
+                    && destination.key == planned.target.key
+                {
+                    return Err(ToolFailure::coded(
+                        "FS_SAME_TARGET",
+                        format!("cannot move \"{}\" to itself", target.display()),
+                    ));
+                }
                 let verb = if planned.operation_is_move() {
                     "move"
                 } else {
@@ -379,6 +389,23 @@ struct Outcome {
     record: OperationRecord,
     status: Status,
     failure: Option<ToolFailure>,
+    /// 失败前是否已经产生可观察的部分效果（目前只有 move 的「目的地已写入」）。
+    partial: bool,
+}
+
+/// 一次操作失败：partial 决定能不能说「什么都没改」。
+struct OperationFailure {
+    failure: ToolFailure,
+    partial: bool,
+}
+
+impl OperationFailure {
+    fn clean(failure: ToolFailure) -> Self {
+        Self {
+            failure,
+            partial: false,
+        }
+    }
 }
 
 fn commit(context: &ToolContext, planned: &[Planned]) -> Result<String, ToolFailure> {
@@ -388,6 +415,7 @@ fn commit(context: &ToolContext, planned: &[Planned]) -> Result<String, ToolFail
             record: planned.record.clone(),
             status: Status::Skipped,
             failure: None,
+            partial: false,
         })
         .collect();
     for (index, planned) in planned.iter().enumerate() {
@@ -395,13 +423,16 @@ fn commit(context: &ToolContext, planned: &[Planned]) -> Result<String, ToolFail
             Ok(()) => outcomes[index].status = Status::Completed,
             Err(failure) => {
                 outcomes[index].status = Status::Failed;
-                outcomes[index].failure = Some(failure);
+                outcomes[index].partial = failure.partial;
+                outcomes[index].failure = Some(failure.failure);
                 break;
             }
         }
     }
+    // 只有「首个操作失败且确实什么都没改」才按整包拒绝报；有部分效果的走 stopped 文本。
     if let Some(first) = outcomes.first()
         && first.status == Status::Failed
+        && !first.partial
         && outcomes[1..]
             .iter()
             .all(|outcome| outcome.status == Status::Skipped)
@@ -415,13 +446,13 @@ fn commit(context: &ToolContext, planned: &[Planned]) -> Result<String, ToolFail
     Ok(render(&outcomes))
 }
 
-fn execute_operation(context: &ToolContext, planned: &Planned) -> Result<(), ToolFailure> {
+fn execute_operation(context: &ToolContext, planned: &Planned) -> Result<(), OperationFailure> {
     match &planned.operation {
-        PatchOp::Add { content, .. } => {
-            crate::fs::write_file(context, &planned.target, content)?;
-            Ok(())
-        }
-        PatchOp::Delete { .. } => crate::fs::delete_file(context, &planned.target, "delete"),
+        PatchOp::Add { content, .. } => crate::fs::write_file(context, &planned.target, content)
+            .map(|_| ())
+            .map_err(OperationFailure::clean),
+        PatchOp::Delete { .. } => crate::fs::delete_file(context, &planned.target, "delete")
+            .map_err(OperationFailure::clean),
         PatchOp::Update {
             move_to: Some(_),
             hunks,
@@ -429,8 +460,14 @@ fn execute_operation(context: &ToolContext, planned: &Planned) -> Result<(), Too
         } => {
             let destination = planned.move_target.as_ref().expect("move 计划有目的地");
             crate::fs::move_patched_file(context, &planned.target, destination, Some(hunks))
+                .map_err(|failure| OperationFailure {
+                    failure: failure.failure,
+                    partial: failure.destination_written,
+                })
         }
-        PatchOp::Update { hunks, .. } => crate::fs::patch_file(context, &planned.target, hunks),
+        PatchOp::Update { hunks, .. } => {
+            crate::fs::patch_file(context, &planned.target, hunks).map_err(OperationFailure::clean)
+        }
     }
 }
 

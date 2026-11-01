@@ -782,9 +782,11 @@ fn system_prompt(cwd: &Path, tools: &ToolSet) -> String {
         );
     }
     if tools.get("write").is_some() {
-        prompt.push_str(
-            "\n\nRead an existing file before overwriting it with write; prefer edit for targeted changes.",
-        );
+        prompt.push_str("\n\nRead an existing file before overwriting it with write");
+        if tools.get("edit").is_some() {
+            prompt.push_str("; prefer edit for targeted changes");
+        }
+        prompt.push('.');
     }
     if tools.get("edit").is_some() {
         prompt.push_str(
@@ -793,7 +795,7 @@ fn system_prompt(cwd: &Path, tools: &ToolSet) -> String {
     }
     if tools.get("apply_patch").is_some() {
         prompt.push_str(
-            "\n\nPrefer apply_patch over separate edit calls for changes across files or separated regions. Read a file before updating, deleting, or moving it, unless you just created or edited it in this session. The whole patch is checked first and a rejected patch changes nothing; once applying starts, operations run in order, stop at the first failure, and are not rolled back.",
+            "\n\nPrefer apply_patch over separate edit calls for changes across files or separated regions. Read a file before updating, deleting, or moving it, unless you just created or edited it in this session. The whole patch is checked first and a rejected patch changes nothing; once applying starts, operations run in order, stop at the first failure, and are not rolled back, so re-read affected files before retrying when needed.",
         );
     }
     prompt

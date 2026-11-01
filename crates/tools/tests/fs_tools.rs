@@ -496,3 +496,321 @@ fn write_tools_are_exclusive() {
         ToolConcurrency::Parallel
     );
 }
+
+#[tokio::test]
+async fn patch_delete_symlink_source_is_rejected() {
+    use std::os::unix::fs::symlink;
+    let dir = tempfile::tempdir().unwrap();
+    let context = ToolContext::new(dir.path());
+    let real = dir.path().join("a.txt");
+    fs::write(&real, "one\n").unwrap();
+    let link = dir.path().join("link.txt");
+    symlink(&real, &link).unwrap();
+    let display = canonical(&real);
+
+    let patch = "*** Begin Patch\n*** Delete File: link.txt\n*** End Patch";
+    let result = patch_run(json!({"input": patch}), &context).await;
+    assert!(result.is_error);
+    assert_eq!(result.error_code.as_deref(), Some("PATCH_SYMLINK_SOURCE"));
+    assert_eq!(
+        result.content,
+        format!(
+            "Error: Patch rejected before any change (1 problems):\n- operation 1 (delete {display}, patch line 2): cannot delete \"{display}\": path is a symbolic link — operate on its target path instead"
+        )
+    );
+    assert!(real.exists());
+    assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+}
+
+#[tokio::test]
+async fn patch_move_to_same_path_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let context = ToolContext::new(dir.path());
+    let file = dir.path().join("a.txt");
+    fs::write(&file, "one\n").unwrap();
+    let read = run(
+        &tools::ReadTool::new(),
+        &context,
+        json!({"file_path": "a.txt"}),
+    )
+    .await;
+    assert!(!read.is_error, "{}", read.content);
+    let a = canonical(&file);
+
+    let patch = "*** Begin Patch\n*** Update File: a.txt\n*** Move to: a.txt\n@@\n-one\n+two\n*** End Patch";
+    let result = patch_run(json!({"input": patch}), &context).await;
+    assert!(result.is_error);
+    assert_eq!(result.error_code.as_deref(), Some("FS_SAME_TARGET"));
+    assert_eq!(
+        result.content,
+        format!(
+            "Error: Patch rejected before any change (1 problems):\n- operation 1 (move {a}, patch line 2): cannot move \"{a}\" to itself"
+        )
+    );
+    assert_eq!(fs::read_to_string(&file).unwrap(), "one\n");
+}
+
+#[tokio::test]
+async fn patch_move_to_symlink_alias_is_rejected() {
+    use std::os::unix::fs::symlink;
+    let dir = tempfile::tempdir().unwrap();
+    let context = ToolContext::new(dir.path());
+    let file = dir.path().join("a.txt");
+    fs::write(&file, "one\n").unwrap();
+    let link = dir.path().join("link.txt");
+    symlink(&file, &link).unwrap();
+    let read = run(
+        &tools::ReadTool::new(),
+        &context,
+        json!({"file_path": "a.txt"}),
+    )
+    .await;
+    assert!(!read.is_error, "{}", read.content);
+    let a = canonical(&file);
+
+    let patch = "*** Begin Patch\n*** Update File: a.txt\n*** Move to: link.txt\n@@\n-one\n+two\n*** End Patch";
+    let result = patch_run(json!({"input": patch}), &context).await;
+    assert!(result.is_error);
+    assert_eq!(result.error_code.as_deref(), Some("FS_SAME_TARGET"));
+    assert_eq!(
+        result.content,
+        format!(
+            "Error: Patch rejected before any change (1 problems):\n- operation 1 (move {a}, patch line 2): cannot move \"{a}\" to itself"
+        )
+    );
+    assert_eq!(fs::read_to_string(&file).unwrap(), "one\n");
+}
+
+#[tokio::test]
+async fn patch_move_partial_failure_reports_destination_written() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let src_dir = dir.path().join("src");
+    let dst_dir = dir.path().join("dst");
+    fs::create_dir_all(&src_dir).unwrap();
+    fs::create_dir_all(&dst_dir).unwrap();
+    let src = src_dir.join("a.txt");
+    fs::write(&src, "one\n").unwrap();
+    let context = ToolContext::new(dir.path());
+    let read = run(
+        &tools::ReadTool::new(),
+        &context,
+        json!({"file_path": "src/a.txt"}),
+    )
+    .await;
+    assert!(!read.is_error, "{}", read.content);
+    let src_display = canonical(&src);
+    let dst_display = canonical(&dst_dir).trim_end_matches('/').to_owned() + "/a.txt";
+
+    // 源目录去掉写权限：目的地写入成功、删源失败（确定性部分失败）。
+    fs::set_permissions(&src_dir, fs::Permissions::from_mode(0o555)).unwrap();
+    let patch = "*** Begin Patch\n*** Update File: src/a.txt\n*** Move to: dst/a.txt\n@@\n-one\n+two\n*** End Patch";
+    let result = patch_run(json!({"input": patch}), &context).await;
+    fs::set_permissions(&src_dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(!result.is_error, "{}", result.content);
+    assert!(
+        result
+            .content
+            .starts_with("Patch stopped after 0 of 1 operations."),
+        "{}",
+        result.content
+    );
+    assert!(result.content.contains("Failed:"), "{}", result.content);
+    assert!(
+        result.content.contains("was written; source"),
+        "{}",
+        result.content
+    );
+    assert!(result.content.contains(&dst_display), "{}", result.content);
+    assert!(result.content.contains(&src_display), "{}", result.content);
+    assert_eq!(fs::read_to_string(dst_dir.join("a.txt")).unwrap(), "two\n");
+    assert_eq!(fs::read_to_string(&src).unwrap(), "one\n");
+}
+
+#[tokio::test]
+async fn patch_deletes_read_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let context = ToolContext::new(dir.path());
+    let file = dir.path().join("a.txt");
+    fs::write(&file, "one\n").unwrap();
+    let read = run(
+        &tools::ReadTool::new(),
+        &context,
+        json!({"file_path": "a.txt"}),
+    )
+    .await;
+    assert!(!read.is_error, "{}", read.content);
+    let a = canonical(&file);
+
+    let patch = "*** Begin Patch\n*** Delete File: a.txt\n*** End Patch";
+    let result = patch_run(json!({"input": patch}), &context).await;
+    assert!(!result.is_error, "{}", result.content);
+    assert_eq!(
+        result.content,
+        format!("Success. Updated the following files:\nD {a}")
+    );
+    assert!(!file.exists());
+}
+
+#[tokio::test]
+async fn patch_moves_file_with_update() {
+    let dir = tempfile::tempdir().unwrap();
+    let context = ToolContext::new(dir.path());
+    let file = dir.path().join("a.txt");
+    fs::write(&file, "one\n").unwrap();
+    let read = run(
+        &tools::ReadTool::new(),
+        &context,
+        json!({"file_path": "a.txt"}),
+    )
+    .await;
+    assert!(!read.is_error, "{}", read.content);
+
+    let patch = "*** Begin Patch\n*** Update File: a.txt\n*** Move to: b.txt\n@@\n-one\n+two\n*** End Patch";
+    let result = patch_run(json!({"input": patch}), &context).await;
+    assert!(!result.is_error, "{}", result.content);
+    let b = canonical(&dir.path().join("b.txt"));
+    assert_eq!(
+        result.content,
+        format!("Success. Updated the following files:\nM {b}")
+    );
+    assert!(!file.exists());
+    assert_eq!(
+        fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+        "two\n"
+    );
+}
+
+#[tokio::test]
+async fn patch_after_external_change_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let context = ToolContext::new(dir.path());
+    let file = dir.path().join("a.txt");
+    fs::write(&file, "one\n").unwrap();
+    let read = run(
+        &tools::ReadTool::new(),
+        &context,
+        json!({"file_path": "a.txt"}),
+    )
+    .await;
+    assert!(!read.is_error, "{}", read.content);
+    let a = canonical(&file);
+    fs::write(&file, "external\n").unwrap();
+
+    let patch = "*** Begin Patch\n*** Update File: a.txt\n@@\n-one\n+two\n*** End Patch";
+    let result = patch_run(json!({"input": patch}), &context).await;
+    assert!(result.is_error);
+    assert_eq!(result.error_code.as_deref(), Some("FS_STALE_VERSION"));
+    assert_eq!(
+        result.content,
+        format!(
+            "Error: Patch rejected before any change (1 problems):\n- operation 1 (update {a}, patch line 2): cannot edit \"{a}\": file changed since it was read — re-read the file, then retry"
+        )
+    );
+    assert_eq!(fs::read_to_string(&file).unwrap(), "external\n");
+}
+
+struct BlockingTool {
+    started: tokio::sync::mpsc::UnboundedSender<()>,
+    release: std::sync::Arc<tokio::sync::Semaphore>,
+    parameters: Value,
+}
+
+impl BlockingTool {
+    fn new(
+        started: tokio::sync::mpsc::UnboundedSender<()>,
+        release: std::sync::Arc<tokio::sync::Semaphore>,
+    ) -> Self {
+        Self {
+            started,
+            release,
+            parameters: json!({"type": "object", "properties": {}}),
+        }
+    }
+}
+
+impl Tool for BlockingTool {
+    fn name(&self) -> &str {
+        "block"
+    }
+
+    fn description(&self) -> &str {
+        "test-only blocking tool"
+    }
+
+    fn parameters(&self) -> &Value {
+        &self.parameters
+    }
+
+    fn concurrency(&self) -> tools::ToolConcurrency {
+        tools::ToolConcurrency::Parallel
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: ToolCall,
+        _context: &'a ToolContext,
+    ) -> tools::ToolFuture<'a, ToolResult> {
+        Box::pin(async move {
+            let _ = self.started.send(());
+            let permit = self
+                .release
+                .clone()
+                .acquire_owned()
+                .await
+                .expect("测试信号量被关闭");
+            drop(permit);
+            ToolResult::success(call.id, "ok")
+        })
+    }
+}
+
+#[tokio::test]
+async fn write_tool_forms_real_batch_barrier() {
+    // 真屏障：并行工具还没结束时，独占的 write 不能执行。
+    let dir = tempfile::tempdir().unwrap();
+    let (started_tx, mut started) = tokio::sync::mpsc::unbounded_channel();
+    let release = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+    let tools = ToolSet::new(vec![
+        Box::new(BlockingTool::new(started_tx, release.clone())),
+        Box::new(WriteTool::new()),
+    ]);
+    let context = ToolContext::new(dir.path());
+    let calls = vec![
+        ToolCall {
+            id: "call_0".to_owned(),
+            name: "block".to_owned(),
+            arguments: "{}".to_owned(),
+        },
+        ToolCall {
+            id: "call_1".to_owned(),
+            name: "write".to_owned(),
+            arguments: json!({"file_path": "a.txt", "content": "hello\n"}).to_string(),
+        },
+    ];
+    let handle = tokio::spawn(async move {
+        execute_batch(&tools, &calls, 10, &context, &AtomicBool::new(false)).await
+    });
+    started.recv().await.expect("block 工具没开始");
+    assert!(
+        !dir.path().join("a.txt").exists(),
+        "write 在并行工具结束前就跑了：没进独占屏障"
+    );
+    release.add_permits(1);
+    let outcome = handle.await.unwrap();
+    assert!(
+        !outcome.results[0].is_error,
+        "{}",
+        outcome.results[0].content
+    );
+    assert!(
+        !outcome.results[1].is_error,
+        "{}",
+        outcome.results[1].content
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "hello\n"
+    );
+}

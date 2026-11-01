@@ -277,14 +277,28 @@ fn atomic_write(
         return Err(io_failure("cannot create parent of", &target.key, &error));
     }
     let temp = parent.join(temp_name(key));
-    let mut file = match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
     {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = match options.open(&temp) {
         Ok(file) => file,
         Err(error) => return Err(io_failure("cannot write", &target.key, &error)),
     };
+    // temp 显式 0600（DSH fsio.ts:652-653 的语义；没有私有 staging 目录也保持只属主可读）。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(error) = fs::set_permissions(&temp, fs::Permissions::from_mode(0o600)) {
+            return Err(cleanup_failure(
+                io_failure("cannot write", &target.key, &error),
+                &temp,
+            ));
+        }
+    }
     let written = (|| -> std::io::Result<()> {
         file.write_all(content.as_bytes())?;
         file.sync_all()?;
@@ -311,13 +325,22 @@ fn atomic_write(
         match fs::hard_link(&temp, key) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                Err(ToolFailure::coded(
-                    "FS_NOT_OBSERVED",
-                    format!(
-                        "cannot overwrite existing \"{}\" without reading it first",
-                        target.display()
-                    ),
-                ))
+                // 并发创建者赢了：区分目录/其他（不能写）与普通文件（未读不能覆盖）。
+                let existing = probe(target)?;
+                if existing.as_ref().is_some_and(|info| !info.is_file) {
+                    Err(ToolFailure::coded(
+                        "FS_NOT_REGULAR_FILE",
+                        format!("cannot write \"{}\": not a regular file", target.display()),
+                    ))
+                } else {
+                    Err(ToolFailure::coded(
+                        "FS_NOT_OBSERVED",
+                        format!(
+                            "cannot overwrite existing \"{}\" without reading it first",
+                            target.display()
+                        ),
+                    ))
+                }
             }
             Err(error) => Err(io_failure("cannot write", &target.key, &error)),
         }
@@ -723,38 +746,56 @@ fn delete_file_raw(context: &ToolContext, target: &Target, verb: &str) -> Result
     Ok(())
 }
 
+/// move 的失败：destination_written 区分「什么都没改」和「目的地已写入、源还在」。
+pub(crate) struct MoveFailure {
+    pub failure: ToolFailure,
+    pub destination_written: bool,
+}
+
+impl MoveFailure {
+    fn before_destination(failure: ToolFailure) -> Self {
+        Self {
+            failure,
+            destination_written: false,
+        }
+    }
+}
+
 /// move：读源（可带 hunk 改写）-> 写目的地 -> 删源；删源失败时目的地保留（不回滚，照 DSH）。
 pub(crate) fn move_patched_file(
     context: &ToolContext,
     source: &Target,
     destination: &Target,
     hunks: Option<&[patch::Hunk]>,
-) -> Result<(), ToolFailure> {
-    let (text, _info) =
-        read_guarded_text(context, source, "move").map_err(|failure| remediate(failure, source))?;
+) -> Result<(), MoveFailure> {
+    let (text, _info) = read_guarded_text(context, source, "move")
+        .map_err(|failure| MoveFailure::before_destination(remediate(failure, source)))?;
     let content = match hunks {
         Some(hunks) => {
             let after = patch::apply_hunks(&text.content, hunks).map_err(|failure| {
-                ToolFailure::coded(
+                MoveFailure::before_destination(ToolFailure::coded(
                     "FS_PATCH_MISMATCH",
                     patch_mismatch_message(source, &failure),
-                )
+                ))
             })?;
             restore_line_endings(&after, text.line_endings)
         }
         None => restore_line_endings(&text.content, text.line_endings),
     };
-    write_file(context, destination, &content)?;
+    write_file(context, destination, &content).map_err(MoveFailure::before_destination)?;
     if let Err(failure) = delete_file(context, source, "move") {
         // 部分效果如实上报（docs/05 第 8 节）：目的地已写入、源还在。
-        return Err(ToolFailure {
-            code: failure.code.clone(),
-            message: format!(
-                "{} — destination {} was written; source {} remains",
-                failure.message,
-                destination.display(),
-                source.display()
-            ),
+        return Err(MoveFailure {
+            failure: ToolFailure {
+                code: failure.code.clone(),
+                message: format!(
+                    "{} — destination {} was written; source {} remains",
+                    failure.message,
+                    destination.display(),
+                    source.display()
+                ),
+            },
+            destination_written: true,
         });
     }
     Ok(())
