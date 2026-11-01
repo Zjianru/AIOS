@@ -96,6 +96,9 @@ pub(crate) struct Inner {
     pending_question: Mutex<Option<PendingQuestion>>,
     /// 等待问题答案期间取消的唤醒（cancel 置 abort 后 notify，loop 不空转）。
     question_cancel_notify: Notify,
+    /// 仅测试可见：wait_question_answer 注册 notify 之前的同步缝（T005.10 边界单测）。
+    #[cfg(test)]
+    question_wait_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// 仅测试可见：settle_idle 预检之后、最终临界区之前的同步缝（T005.8b 边界单测）。
     #[cfg(test)]
     settle_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -167,6 +170,8 @@ impl Inner {
             settle_hook: Mutex::new(None),
             pending_question: Mutex::new(None),
             question_cancel_notify: Notify::new(),
+            #[cfg(test)]
+            question_wait_hook: Mutex::new(None),
         });
         // T005.4：后台任务结算后，由 agent 把完成通知送进会话（事件 + 下一步输入）。
         // 用 Weak 避免 tool_session → 回调 → Inner 的循环引用。
@@ -926,7 +931,49 @@ async fn run_step(
         .iter()
         .position(|call| call.name == "ask_user_question")
     {
-        let question = question_from_call(&calls[index]);
+        let Some(question) = question_from_call(&calls[index]) else {
+            let error = tools::ToolResult {
+                call_id: calls[index].id.clone(),
+                content: "Error: invalid ask_user_question arguments (questions[0].id and .question are required)".to_owned(),
+                is_error: true,
+                error_code: Some("ASK_USER_INVALID".to_owned()),
+            };
+            // 直接继续执行本批（ask 工具本身会返回占位错误，稍后覆盖为参数错误）。
+            let context =
+                ToolContext::with_session(inner.cwd.clone(), Arc::clone(&inner.tool_session));
+            let mut outcome = execute_batch(
+                &inner.tools,
+                &calls,
+                inner.max_parallel_tool_calls,
+                &context,
+                abort.as_ref(),
+            )
+            .await;
+            outcome.results[index] = error;
+            for result in &outcome.results {
+                let tool_name = calls
+                    .iter()
+                    .find(|call| call.id == result.call_id)
+                    .map_or("", |call| call.name.as_str());
+                let content = tools::bound_result(
+                    inner.tool_session.spill(),
+                    tool_name,
+                    &result.call_id,
+                    &result.content,
+                    inner.spill_max_inline_tokens,
+                )
+                .unwrap_or_else(|| result.content.clone());
+                let message =
+                    Message::tool_result(result.call_id.clone(), content, result.is_error);
+                inner.append(&[EventKind::ToolResult {
+                    turn,
+                    step,
+                    message,
+                    error_code: result.error_code.clone(),
+                }])?;
+            }
+            return Ok(StepEnd::Continue);
+        };
         let (sender, receiver) = tokio::sync::oneshot::channel();
         *inner.pending_question.lock().expect("agent 问题锁被毒化") = Some(PendingQuestion {
             question_id: question.id.clone(),
@@ -1283,7 +1330,7 @@ fn system_prompt(cwd: &Path, tools: &ToolSet) -> String {
 }
 
 /// 从 ask_user_question 的调用参数里取第一条问题（字段照 DSH tool-ask-user）。
-fn question_from_call(call: &ToolCall) -> Question {
+fn question_from_call(call: &ToolCall) -> Option<Question> {
     let value: serde_json::Value =
         serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
     let first = value
@@ -1300,9 +1347,13 @@ fn question_from_call(call: &ToolCall) -> Question {
             .to_owned()
     };
     let id = text("id");
-    Question {
+    let question_text = text("question");
+    if question_text.is_empty() {
+        return None;
+    }
+    Some(Question {
         id: if id.is_empty() { call.id.clone() } else { id },
-        question: text("question"),
+        question: question_text,
         header: first
             .get("header")
             .and_then(|value| value.as_str())
@@ -1331,7 +1382,7 @@ fn question_from_call(call: &ToolCall) -> Question {
             .get("multi_select")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false),
-    }
+    })
 }
 
 /// 等答案；cancel 时 abort 置位并通过 question_cancel_notify 唤醒，返回 None。
@@ -1340,13 +1391,35 @@ async fn wait_question_answer(
     mut receiver: tokio::sync::oneshot::Receiver<String>,
     abort: &Arc<AtomicBool>,
 ) -> Option<String> {
-    loop {
-        if abort.load(Ordering::SeqCst) {
-            return None;
+    // 仅测试可见的同步缝：让边界单测把 cancel 精确插在注册 notify 之前。
+    #[cfg(test)]
+    {
+        let hook = inner
+            .question_wait_hook
+            .lock()
+            .expect("question wait hook 锁被毒化")
+            .clone();
+        if let Some(hook) = hook {
+            hook();
         }
+    }
+    // 先注册并 enable cancellation，再检查 abort：否则 cancel 在「检查 abort」与
+    // 「注册 notified」之间调用 notify_waiters（Notify 不存 permit），通知会丢。
+    let cancelled = inner.question_cancel_notify.notified();
+    tokio::pin!(cancelled);
+    cancelled.as_mut().enable();
+    if abort.load(Ordering::SeqCst) {
+        return None;
+    }
+    loop {
         tokio::select! {
             result = &mut receiver => return result.ok(),
-            _ = inner.question_cancel_notify.notified() => continue,
+            () = &mut cancelled => {
+                if abort.load(Ordering::SeqCst) {
+                    return None;
+                }
+                cancelled.set(inner.question_cancel_notify.notified());
+            }
         }
     }
 }
@@ -1430,5 +1503,84 @@ mod settle_tests {
         inner.compact_queue.lock().unwrap().clear();
         inner.state.lock().unwrap().phase = Phase::Idle;
         assert!(served, "边界入队的 compact waiter 必须在超时内收到通知");
+    }
+}
+
+#[cfg(test)]
+mod ask_tests {
+    use super::*;
+
+    fn test_inner() -> Arc<Inner> {
+        let data = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let store = SessionStore::create(data.path(), cwd.path()).unwrap();
+        let model = model::DeepSeek::new(model::DeepSeekConfig {
+            api_key: "test-key".to_owned(),
+            base_url: "http://127.0.0.1:1".to_owned(),
+            ..model::DeepSeekConfig::default()
+        })
+        .unwrap();
+        Inner::start(
+            crate::AgentConfig::default(),
+            Deps {
+                model,
+                tools: ToolSet::empty(),
+                store,
+            },
+            0,
+        )
+        .unwrap()
+    }
+
+    /// 边界确定性测试：cancel 正好落在「检查 abort」与「注册 notified」之间时不能丢。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_before_notify_registration_is_not_lost() {
+        let inner = test_inner();
+        let abort = Arc::new(AtomicBool::new(false));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let release_rx = Arc::new(release_rx);
+        {
+            let mut hook = inner.question_wait_hook.lock().unwrap();
+            *hook = Some(Arc::new(move || {
+                let _ = entered_tx.send(());
+                let _ = release_rx.lock().unwrap().recv();
+            }));
+        }
+        let (_sender, receiver) = tokio::sync::oneshot::channel::<String>();
+        let arc = Arc::clone(&inner);
+        let abort_task = Arc::clone(&abort);
+        let task =
+            tokio::spawn(async move { wait_question_answer(&arc, receiver, &abort_task).await });
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        // 窗口内取消：此时还没有注册 notified。
+        abort.store(true, Ordering::SeqCst);
+        inner.question_cancel_notify.notify_waiters();
+        let _ = release_tx.send(());
+        let answer = tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .expect("cancel 在注册前发生也不能挂住");
+        assert_eq!(answer.unwrap(), None);
+    }
+
+    #[test]
+    fn question_from_call_rejects_missing_questions() {
+        let call = |arguments: &str| ToolCall {
+            id: "call-1".to_owned(),
+            name: "ask_user_question".to_owned(),
+            arguments: arguments.to_owned(),
+        };
+        assert!(super::question_from_call(&call("not json")).is_none());
+        assert!(super::question_from_call(&call(r#"{}"#)).is_none());
+        assert!(super::question_from_call(&call(r#"{"questions": []}"#)).is_none());
+        assert!(super::question_from_call(&call(r#"{"questions": [{"id": "q"}]}"#)).is_none());
+        let question =
+            super::question_from_call(&call(r#"{"questions": [{"id": "q", "question": "P?"}]}"#))
+                .unwrap();
+        assert_eq!(question.id, "q");
+        assert_eq!(question.question, "P?");
     }
 }
