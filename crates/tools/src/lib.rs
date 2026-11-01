@@ -18,7 +18,7 @@ use model::ToolSchema;
 use serde_json::Value;
 
 pub use batch::{BatchOutcome, execute_batch};
-pub use builtin::{ApplyPatchTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
+pub use builtin::{ApplyPatchTool, BashTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 pub use session::{
     FileVersion, ObservationStore, ObservedFile, SharedToolSession, SpillStore, TaskRegistry,
     ToolSessionState,
@@ -172,7 +172,7 @@ impl ToolSet {
         Self { tools }
     }
 
-    /// 开发用的内置工具集：read、glob、grep，和写类 write、edit、apply_patch。
+    /// 开发用的内置工具集：read、glob、grep，写类 write、edit、apply_patch，和 bash。
     pub fn builtin() -> Self {
         Self::new(vec![
             Box::new(ReadTool::new()),
@@ -181,6 +181,7 @@ impl ToolSet {
             Box::new(WriteTool::new()),
             Box::new(EditTool::new()),
             Box::new(ApplyPatchTool::new()),
+            Box::new(BashTool::new()),
         ])
     }
 

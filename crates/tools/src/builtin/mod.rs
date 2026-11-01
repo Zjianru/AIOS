@@ -1,6 +1,7 @@
 //! 内置工具：只读的 read / glob / grep，和写类 write / edit / apply_patch。
 
 mod apply_patch;
+mod bash;
 mod edit;
 mod glob;
 mod grep;
@@ -8,6 +9,7 @@ mod read;
 mod write;
 
 pub use apply_patch::ApplyPatchTool;
+pub use bash::BashTool;
 pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;

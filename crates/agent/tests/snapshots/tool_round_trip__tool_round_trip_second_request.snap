@@ -52,7 +52,7 @@ expression: body
     "effort": "high"
   },
   "stream": true,
-  "system": "You are AIOS, a coding agent. Your working directory is <CWD>.\n\nUse the read tool — not shell commands like cat — to inspect text files. Use offset and limit to continue reading large files.\n\nRead an existing file before overwriting it with write; prefer edit for targeted changes.\n\nRead a file before editing it, unless you just created or edited it in this session.\n\nPrefer apply_patch over separate edit calls for changes across files or separated regions. Read a file before updating, deleting, or moving it, unless you just created or edited it in this session. The whole patch is checked first and a rejected patch changes nothing; once applying starts, operations run in order, stop at the first failure, and are not rolled back, so re-read affected files before retrying when needed.",
+  "system": "You are AIOS, a coding agent. Your working directory is <CWD>.\n\nUse the read tool — not shell commands like cat — to inspect text files. Use offset and limit to continue reading large files.\n\nCheck the [exit code: N] marker on every bash result; investigate failures before moving on.\n\nRead an existing file before overwriting it with write; prefer edit for targeted changes.\n\nRead a file before editing it, unless you just created or edited it in this session.\n\nPrefer apply_patch over separate edit calls for changes across files or separated regions. Read a file before updating, deleting, or moving it, unless you just created or edited it in this session. The whole patch is checked first and a rejected patch changes nothing; once applying starts, operations run in order, stop at the first failure, and are not rolled back, so re-read affected files before retrying when needed.",
   "thinking": {
     "type": "enabled"
   },
@@ -191,6 +191,26 @@ expression: body
         "type": "object"
       },
       "name": "apply_patch"
+    },
+    {
+      "description": "Execute a bash command (bash -c) and return its stdout/stderr. Each call runs in a fresh shell; pass workdir instead of using cd. Managed $AIOS_* variables expose current harness environment facts. Long output is truncated to its tail; the full output is saved to a file whose path is reported when available. An unset variable expands to an empty string, so guard variables in such paths with ${VAR:?}.",
+      "input_schema": {
+        "properties": {
+          "command": {
+            "description": "The bash command to execute.",
+            "type": "string"
+          },
+          "workdir": {
+            "description": "Working directory for this command. Defaults to the session workspace; a relative path is resolved against it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
+      },
+      "name": "bash"
     }
   ]
 }

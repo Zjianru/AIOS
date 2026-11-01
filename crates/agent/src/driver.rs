@@ -844,6 +844,11 @@ fn system_prompt(cwd: &Path, tools: &ToolSet) -> String {
             "\n\nUse the read tool — not shell commands like cat — to inspect text files. Use offset and limit to continue reading large files.",
         );
     }
+    if tools.get("bash").is_some() {
+        prompt.push_str(
+            "\n\nCheck the [exit code: N] marker on every bash result; investigate failures before moving on.",
+        );
+    }
     if tools.get("write").is_some() {
         prompt.push_str("\n\nRead an existing file before overwriting it with write");
         if tools.get("edit").is_some() {

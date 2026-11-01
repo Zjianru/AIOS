@@ -96,6 +96,10 @@ pub struct ToolSessionState {
     observations: Mutex<ObservationStore>,
     tasks: Mutex<TaskRegistry>,
     spill: SpillStore,
+    /// 会话 id；受管环境变量 AIOS_SESSION_ID 用（T005.3）。
+    session_id: Option<String>,
+    /// 会话 data-dir；受管环境变量 AIOS_HOME 用（T005.3）。
+    data_dir: Option<PathBuf>,
 }
 
 impl ToolSessionState {
@@ -105,6 +109,8 @@ impl ToolSessionState {
             observations: Mutex::new(ObservationStore::default()),
             tasks: Mutex::new(TaskRegistry),
             spill: SpillStore::new(data_dir.join("spill").join(format!("session-{session_id}"))),
+            session_id: Some(session_id.to_owned()),
+            data_dir: Some(data_dir.to_path_buf()),
         }
     }
 
@@ -114,6 +120,8 @@ impl ToolSessionState {
             observations: Mutex::new(ObservationStore::default()),
             tasks: Mutex::new(TaskRegistry),
             spill: SpillStore::disabled(),
+            session_id: None,
+            data_dir: None,
         }
     }
 
@@ -127,6 +135,16 @@ impl ToolSessionState {
 
     pub fn spill(&self) -> &SpillStore {
         &self.spill
+    }
+
+    /// 会话 id（bash 受管环境变量用；detached 时 None）。
+    pub(crate) fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+
+    /// 会话 data-dir（bash 受管环境变量用；detached 时 None）。
+    pub(crate) fn data_dir(&self) -> Option<&Path> {
+        self.data_dir.as_deref()
     }
 }
 
