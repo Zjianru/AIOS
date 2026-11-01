@@ -170,20 +170,24 @@ pub(crate) async fn compact_if_needed(
         compaction_id: compaction_id.clone(),
         trigger,
     });
-    inner.append(&[EventKind::CompactionStart {
-        compaction_id: compaction_id.clone(),
-        turn,
-    }])?;
+    inner
+        .append(&[EventKind::CompactionStart {
+            compaction_id: compaction_id.clone(),
+            turn,
+        }])
+        .await?;
 
     let summary = match summarize(inner, &prefix).await {
         Ok(summary) => summary,
         Err(error) => {
             let message = error.to_string();
-            inner.append(&[EventKind::CompactionEnd {
-                compaction_id: compaction_id.clone(),
-                turn,
-                error: Some(message.clone()),
-            }])?;
+            inner
+                .append(&[EventKind::CompactionEnd {
+                    compaction_id: compaction_id.clone(),
+                    turn,
+                    error: Some(message.clone()),
+                }])
+                .await?;
             let _ = inner.events.send(AgentEvent::CompactionEnded {
                 compaction_id,
                 error: Some(message),
@@ -192,20 +196,22 @@ pub(crate) async fn compact_if_needed(
         }
     };
 
-    inner.append(&[
-        EventKind::CompactionSummary {
-            compaction_id: compaction_id.clone(),
-            summary,
-            shadowed_start,
-            shadowed_end,
-            shadowed_token_count,
-        },
-        EventKind::CompactionEnd {
-            compaction_id: compaction_id.clone(),
-            turn,
-            error: None,
-        },
-    ])?;
+    inner
+        .append(&[
+            EventKind::CompactionSummary {
+                compaction_id: compaction_id.clone(),
+                summary,
+                shadowed_start,
+                shadowed_end,
+                shadowed_token_count,
+            },
+            EventKind::CompactionEnd {
+                compaction_id: compaction_id.clone(),
+                turn,
+                error: None,
+            },
+        ])
+        .await?;
     let _ = inner.events.send(AgentEvent::CompactionEnded {
         compaction_id,
         error: None,

@@ -15,7 +15,7 @@ use tokio::sync::Notify;
 use tokio::sync::broadcast;
 use tools::{ToolCall, ToolContext, ToolSessionState, ToolSet, execute_batch};
 
-use crate::capabilities::{CapabilityRegistry, HookContext, HookPoint};
+use crate::capabilities::{CapabilityRegistry, CompactionConfig, HookEvent, LoopAccess};
 use crate::compaction;
 use crate::error::AgentError;
 use crate::inbox::{Delivery, Inbox, InboxTarget};
@@ -106,6 +106,49 @@ pub(crate) struct Inner {
     /// 仅测试可见：settle_idle 预检之后、最终临界区之前的同步缝（T005.8b 边界单测）。
     #[cfg(test)]
     settle_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+}
+
+impl LoopAccess for Inner {
+    fn session(&self) -> &Mutex<SessionStore> {
+        &self.store
+    }
+    fn events(&self) -> &broadcast::Sender<AgentEvent> {
+        &self.events
+    }
+    fn tools(&self) -> &ToolSet {
+        &self.tools
+    }
+    fn tool_session(&self) -> &Arc<ToolSessionState> {
+        &self.tool_session
+    }
+    fn model(&self) -> &DeepSeek {
+        &self.model
+    }
+    fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+    fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+    fn log_path(&self) -> &Path {
+        &self.log_path
+    }
+    fn instruction_roots(&self) -> &[PathBuf] {
+        &self.instruction_roots
+    }
+    fn skill_roots(&self) -> &[PathBuf] {
+        &self.skill_roots
+    }
+    fn compaction_config(&self) -> CompactionConfig {
+        CompactionConfig {
+            threshold_ratio: self.compaction_threshold_ratio,
+            retain_ratio: self.compaction_retain_ratio,
+            headroom_tokens: self.compaction_headroom_tokens,
+        }
+    }
+    fn spill_max_inline_tokens(&self) -> usize {
+        self.spill_max_inline_tokens
+    }
 }
 
 impl Inner {
@@ -397,16 +440,20 @@ impl Inner {
         }
     }
 
-    pub(crate) fn append(&self, kinds: &[EventKind]) -> Result<(), AgentError> {
+    /// 写日志并派发 SessionEvent 挂点（T006.1a：日志先落盘，钩子随后执行；
+    /// 钩子返回 Err 时日志已提交，调用方按错误收尾）。
+    pub(crate) async fn append(&self, kinds: &[EventKind]) -> Result<(), AgentError> {
         self.store
             .lock()
             .expect("agent 会话锁被毒化")
             .append(kinds)?;
-        // T006.1a：写日志事件后的固定挂点；1a 的注册表全是 no-op。
         for kind in kinds {
-            if let Some(context) = crate::capabilities::event_context(kind) {
-                self.capabilities.dispatch(HookPoint::SessionEvent, context);
-            }
+            self.capabilities
+                .dispatch(&HookEvent::SessionEvent {
+                    host: self,
+                    event: kind,
+                })
+                .await?;
         }
         Ok(())
     }
@@ -434,7 +481,7 @@ impl Inner {
     /// kick 在轮次结束后处理排队的手动压缩；空闲时也会被 wake 进来处理。
     /// 语义：同一批排队的请求合并成一次压缩（所有等待者一起唤醒）；压缩进行中新到的
     /// 请求会进入下一轮 drain，再做一次压缩。循环 drain 保证不会丢等待者。
-    async fn run_queued_compaction(self: &Arc<Self>) {
+    async fn run_queued_compaction(self: &Arc<Self>) -> Result<(), AgentError> {
         loop {
             let waiters: Vec<tokio::sync::oneshot::Sender<()>> = {
                 let mut queue = self
@@ -444,12 +491,13 @@ impl Inner {
                 std::mem::take(&mut *queue)
             };
             if waiters.is_empty() {
-                return;
+                return Ok(());
             }
             let turn = {
                 let state = self.state.lock().expect("agent 状态锁被毒化");
                 state.last_turn
             };
+            dispatch_compaction(self, turn, 0, CompactionTrigger::Manual).await?;
             let _ =
                 compaction::compact_if_needed(self, turn, CompactionTrigger::Manual, true).await;
             for waiter in waiters {
@@ -464,7 +512,7 @@ async fn kick(inner: Arc<Inner>) {
     loop {
         // T005.8b：手动压缩排在当前轮之后；空闲时先处理队列，避免为它造空 turn。
         if inner.has_queued_compaction() {
-            inner.run_queued_compaction().await;
+            let _ = inner.run_queued_compaction().await;
             continue;
         }
         let has_input = inner
@@ -478,6 +526,17 @@ async fn kick(inner: Arc<Inner>) {
         if !matches!(run_turn(&inner).await, Ok(true)) {
             break;
         }
+    }
+    let status_turn = inner.state.lock().expect("agent 状态锁被毒化").last_turn;
+    if let Err(error) = inner
+        .capabilities
+        .dispatch(&HookEvent::Status {
+            turn: status_turn,
+            host: inner.as_ref(),
+        })
+        .await
+    {
+        let _ = error;
     }
     settle_idle(&inner);
 }
@@ -527,9 +586,6 @@ fn settle_idle(inner: &Arc<Inner>) {
         restart_kick(inner, turn);
         return;
     }
-    inner
-        .capabilities
-        .dispatch(HookPoint::Status, HookContext::new(turn, 0));
     state.phase = Phase::Idle;
     drop(state);
     inner.idle_notify.notify_waiters();
@@ -556,7 +612,7 @@ async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
     // step 是这一轮内的局部计数：每轮从 1 开始，不跨 turn 携带（T004 审 K1）。
     let mut step = 0u64;
     let turn = current_turn + 1;
-    inner.append(&[EventKind::TurnStart { turn }])?;
+    inner.append(&[EventKind::TurnStart { turn }]).await?;
     {
         let mut state = inner.state.lock().expect("agent 状态锁被毒化");
         if let Phase::Running { turn: current, .. } = &mut state.phase {
@@ -587,8 +643,12 @@ async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
     };
     inner
         .capabilities
-        .dispatch(HookPoint::TurnStopping, HookContext::new(turn, 0));
-    let appended = inner.append(&[EventKind::TurnEnd { turn, reason }]);
+        .dispatch(&HookEvent::TurnStopping {
+            turn,
+            host: inner.as_ref(),
+        })
+        .await?;
+    let appended = inner.append(&[EventKind::TurnEnd { turn, reason }]).await;
     let _ = inner.events.send(AgentEvent::TurnEnded { turn, outcome });
     appended?;
     let mut result = match steps {
@@ -642,18 +702,23 @@ async fn run_turn_steps(
         }
         *step += 1;
         let step_number = *step;
-        inner.append(&[EventKind::StepStart {
-            turn,
-            step: step_number,
-        }])?;
+        inner
+            .append(&[EventKind::StepStart {
+                turn,
+                step: step_number,
+            }])
+            .await?;
         let outcome = run_step(inner, turn, step_number, claimed, abort).await;
         let end = match outcome {
             Ok(end) => end,
             Err(error) => {
-                if let Err(cleanup_error) = inner.append(&[EventKind::StepEnd {
-                    turn,
-                    step: step_number,
-                }]) {
+                if let Err(cleanup_error) = inner
+                    .append(&[EventKind::StepEnd {
+                        turn,
+                        step: step_number,
+                    }])
+                    .await
+                {
                     return Err(AgentError::StepCleanup {
                         first: error.to_string(),
                         second: cleanup_error.to_string(),
@@ -662,10 +727,12 @@ async fn run_turn_steps(
                 return Err(error);
             }
         };
-        inner.append(&[EventKind::StepEnd {
-            turn,
-            step: step_number,
-        }])?;
+        inner
+            .append(&[EventKind::StepEnd {
+                turn,
+                step: step_number,
+            }])
+            .await?;
         match end {
             StepEnd::Continue => {}
             StepEnd::Completed => {
@@ -697,6 +764,23 @@ async fn run_turn_steps(
 
 /// 一个 step：写 system/user 事件，从日志派生请求，流式收模型输出，
 /// 有工具调用就派发批执行并写 tool/call、tool/result，否则收尾这一轮。
+async fn dispatch_compaction(
+    inner: &Arc<Inner>,
+    turn: u64,
+    step: u64,
+    trigger: CompactionTrigger,
+) -> Result<(), AgentError> {
+    inner
+        .capabilities
+        .dispatch(&HookEvent::Compaction {
+            turn,
+            step,
+            host: inner.as_ref(),
+            trigger,
+        })
+        .await
+}
+
 async fn run_step(
     inner: &Arc<Inner>,
     turn: u64,
@@ -709,7 +793,12 @@ async fn run_step(
     }
     inner
         .capabilities
-        .dispatch(HookPoint::PreStep, HookContext::new(turn, step));
+        .dispatch(&HookEvent::PreStep {
+            turn,
+            step,
+            host: inner.as_ref(),
+        })
+        .await?;
     let has_system = inner
         .store
         .lock()
@@ -717,18 +806,22 @@ async fn run_step(
         .has_system_message();
     if !has_system {
         let message = Message::text(Role::System, system_prompt(&inner.cwd, &inner.tools));
-        inner.append(&[EventKind::SystemMessage {
-            turn,
-            step,
-            message,
-        }])?;
+        inner
+            .append(&[EventKind::SystemMessage {
+                turn,
+                step,
+                message,
+            }])
+            .await?;
     }
     for message in claimed {
-        inner.append(&[EventKind::UserMessage {
-            turn,
-            step,
-            message,
-        }])?;
+        inner
+            .append(&[EventKind::UserMessage {
+                turn,
+                step,
+                message,
+            }])
+            .await?;
     }
 
     // T005.5：把适用的 AGENTS.md / CLAUDE.md 注入成普通 user/message。
@@ -746,11 +839,13 @@ async fn run_step(
                 observed.into_iter(),
             );
         if let Some(text) = injection {
-            inner.append(&[EventKind::UserMessage {
-                turn,
-                step,
-                message: Message::text(Role::User, text),
-            }])?;
+            inner
+                .append(&[EventKind::UserMessage {
+                    turn,
+                    step,
+                    message: Message::text(Role::User, text),
+                }])
+                .await?;
         }
     }
 
@@ -762,18 +857,21 @@ async fn run_step(
             .expect("agent skill 目录锁被毒化")
             .prepare(&inner.cwd, &inner.data_dir, &inner.skill_roots);
         if let Some(text) = catalog {
-            inner.append(&[EventKind::UserMessage {
-                turn,
-                step,
-                message: Message::text(Role::User, text),
-            }])?;
+            inner
+                .append(&[EventKind::UserMessage {
+                    turn,
+                    step,
+                    message: Message::text(Role::User, text),
+                }])
+                .await?;
         }
     }
 
     // T005.2：派生请求之前，把「旧」超大工具结果换成 head+marker+tail 的修剪视图
     // （追加 compaction/prune 事件，原始 tool/result 保留在日志里可回放）。
-    prune_old_tool_results(inner, turn)?;
+    prune_old_tool_results(inner, turn).await?;
     // T005.8a：请求前检查 token 压力；越过阈值就压缩较早历史（失败不打断本轮，事件已记录）。
+    dispatch_compaction(inner, turn, step, CompactionTrigger::Auto).await?;
     let _ = compaction::compact_if_needed(inner, turn, CompactionTrigger::Auto, false).await;
     let mut messages = inner
         .store
@@ -799,19 +897,32 @@ async fn run_step(
         }
         inner
             .capabilities
-            .dispatch(HookPoint::Request, HookContext::new(turn, step));
+            .dispatch(&HookEvent::Request {
+                turn,
+                step,
+                host: inner.as_ref(),
+                messages: &messages,
+            })
+            .await?;
         let mut stream = match inner.model.stream(&messages, &tool_schemas, &cancel).await {
             Ok(stream) => stream,
             Err(error) => {
                 inner
                     .capabilities
-                    .dispatch(HookPoint::RequestError, HookContext::new(turn, step));
+                    .dispatch(&HookEvent::RequestError {
+                        turn,
+                        step,
+                        host: inner.as_ref(),
+                        error: &error,
+                    })
+                    .await?;
                 if abort.load(Ordering::SeqCst) || error.code == ErrorCode::Aborted {
                     return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
                 }
                 // T005.8a：上下文溢出先压缩再重试一次；压缩不了或第二次溢出按正常错误收尾。
                 if error.code == ErrorCode::ContextWindowExceeded && overflow_retries == 0 {
                     overflow_retries = 1;
+                    dispatch_compaction(inner, turn, step, CompactionTrigger::Auto).await?;
                     let compacted =
                         compaction::compact_if_needed(inner, turn, CompactionTrigger::Auto, true)
                             .await?;
@@ -927,13 +1038,15 @@ async fn run_step(
         .collect();
     if !content.is_empty() {
         let message = Message::new(Role::Assistant, content.clone());
-        inner.append(&[EventKind::AssistantMessage {
-            turn,
-            step,
-            message,
-            usage: usage.clone(),
-            interrupted: None,
-        }])?;
+        inner
+            .append(&[EventKind::AssistantMessage {
+                turn,
+                step,
+                message,
+                usage: usage.clone(),
+                interrupted: None,
+            }])
+            .await?;
         emit_usage(inner, &usage);
     }
     if finish == FinishReason::MaxTokens {
@@ -963,7 +1076,7 @@ async fn run_step(
             arguments: call.arguments.clone(),
         });
     }
-    inner.append(&call_events)?;
+    inner.append(&call_events).await?;
     // T005.12：ask_user_question 由 loop 处理——发全部问题的事件、停住等全部 answer；
     // invalid 参数整单拒绝，结果走统一 tool/result 提交路径（不绕过 todo/repeat/abort）。
     let mut ask_override: Option<(usize, tools::ToolResult)> = None;
@@ -992,19 +1105,21 @@ async fn run_step(
                         deliver: Some(sender),
                     });
                 for question in &questions {
-                    inner.append(&[EventKind::QuestionAsked {
-                        turn,
-                        step,
-                        question_id: question.id.clone(),
-                        question: question.question.clone(),
-                        header: question.header.clone(),
-                        options: question
-                            .options
-                            .iter()
-                            .map(|option| option.label.clone())
-                            .collect(),
-                        multi_select: question.multi_select,
-                    }])?;
+                    inner
+                        .append(&[EventKind::QuestionAsked {
+                            turn,
+                            step,
+                            question_id: question.id.clone(),
+                            question: question.question.clone(),
+                            header: question.header.clone(),
+                            options: question
+                                .options
+                                .iter()
+                                .map(|option| option.label.clone())
+                                .collect(),
+                            multi_select: question.multi_select,
+                        }])
+                        .await?;
                 }
                 let _ = inner.events.send(crate::AgentEvent::QuestionAsked {
                     questions: questions.clone(),
@@ -1030,11 +1145,13 @@ async fn run_step(
                     None => {
                         for question in &questions {
                             if !partial_answers.contains_key(&question.id) {
-                                inner.append(&[EventKind::QuestionCancelled {
-                                    turn,
-                                    step,
-                                    question_id: question.id.clone(),
-                                }])?;
+                                inner
+                                    .append(&[EventKind::QuestionCancelled {
+                                        turn,
+                                        step,
+                                        question_id: question.id.clone(),
+                                    }])
+                                    .await?;
                             }
                         }
                         return Ok(StepEnd::Aborted);
@@ -1045,7 +1162,13 @@ async fn run_step(
     }
     inner
         .capabilities
-        .dispatch(HookPoint::ToolBefore, HookContext::new(turn, step));
+        .dispatch(&HookEvent::ToolBefore {
+            turn,
+            step,
+            host: inner.as_ref(),
+            calls: &calls,
+        })
+        .await?;
     let context = ToolContext::with_session(inner.cwd.clone(), Arc::clone(&inner.tool_session));
     let outcome = execute_batch(
         &inner.tools,
@@ -1059,9 +1182,6 @@ async fn run_step(
     if let Some((index, result)) = ask_override {
         outcome.results[index] = result;
     }
-    inner
-        .capabilities
-        .dispatch(HookPoint::ToolResult, HookContext::new(turn, step));
     for result in &outcome.results {
         // T005.2：超大结果落 spill（按会话目录），进日志/上下文的是 preview + locator；
         // read 有自己的分页上限，不在此列（照 DSH spill-policy）。
@@ -1077,17 +1197,39 @@ async fn run_step(
             inner.spill_max_inline_tokens,
         )
         .unwrap_or_else(|| result.content.clone());
+        if let Some(call) = calls.iter().find(|call| call.id == result.call_id) {
+            inner
+                .capabilities
+                .dispatch(&HookEvent::ToolResult {
+                    turn,
+                    step,
+                    host: inner.as_ref(),
+                    call,
+                    result,
+                })
+                .await?;
+        }
         let message = Message::tool_result(result.call_id.clone(), content, result.is_error);
-        inner.append(&[EventKind::ToolResult {
-            turn,
-            step,
-            message,
-            error_code: result.error_code.clone(),
-        }])?;
+        inner
+            .append(&[EventKind::ToolResult {
+                turn,
+                step,
+                message,
+                error_code: result.error_code.clone(),
+            }])
+            .await?;
     }
     inner
         .capabilities
-        .dispatch(HookPoint::ToolAfter, HookContext::new(turn, step));
+        .dispatch(&HookEvent::ToolAfter {
+            turn,
+            step,
+            host: inner.as_ref(),
+            calls: &calls,
+            results: &outcome.results,
+            cancelled: outcome.cancelled,
+        })
+        .await?;
     // T005.7：成功的 todo_write 把整表快照落成一条 todo/write 事件（工具只写状态，
     // 日志由 agent 负责；回放时后写覆盖先写）。
     let todo_write_succeeded = calls.iter().any(|call| {
@@ -1098,17 +1240,21 @@ async fn run_step(
                 .any(|result| result.call_id == call.id && !result.is_error)
     });
     if todo_write_succeeded && let Some(todos) = inner.tool_session.take_todos() {
-        inner.append(&[EventKind::TodoWrite { turn, step, todos }])?;
+        inner
+            .append(&[EventKind::TodoWrite { turn, step, todos }])
+            .await?;
     }
     // T005.9：重复调用提醒（每 step 最多一条，作为工具结果之后的 user 上下文消息）。
     if !outcome.cancelled
         && let Some(reminder) = inner.repeat_reminder(&calls)
     {
-        inner.append(&[EventKind::UserMessage {
-            turn,
-            step,
-            message: Message::text(Role::User, reminder),
-        }])?;
+        inner
+            .append(&[EventKind::UserMessage {
+                turn,
+                step,
+                message: Message::text(Role::User, reminder),
+            }])
+            .await?;
     }
     if abort.load(Ordering::SeqCst) || outcome.cancelled {
         return Ok(StepEnd::Aborted);
@@ -1118,7 +1264,7 @@ async fn run_step(
 
 /// T005.2 修剪：只修剪「旧 turn」的 tool/result（当前 turn 刚拿到的结果保留原样），
 /// 已经修剪过的 call_id 不再重复追加；一批 append 落日志。
-fn prune_old_tool_results(inner: &Arc<Inner>, current_turn: u64) -> Result<(), AgentError> {
+async fn prune_old_tool_results(inner: &Arc<Inner>, current_turn: u64) -> Result<(), AgentError> {
     let mut additions: Vec<EventKind> = Vec::new();
     {
         let store = inner.store.lock().expect("agent 会话锁被毒化");
@@ -1157,7 +1303,7 @@ fn prune_old_tool_results(inner: &Arc<Inner>, current_turn: u64) -> Result<(), A
         }
     }
     if !additions.is_empty() {
-        inner.append(&additions)?;
+        inner.append(&additions).await?;
     }
     Ok(())
 }
@@ -1276,13 +1422,15 @@ async fn interrupted_step(
     let content = interrupted_content(blocks, open);
     if !content.is_empty() {
         let message = Message::new(Role::Assistant, content);
-        inner.append(&[EventKind::AssistantMessage {
-            turn,
-            step,
-            message,
-            usage: usage.clone(),
-            interrupted: Some(true),
-        }])?;
+        inner
+            .append(&[EventKind::AssistantMessage {
+                turn,
+                step,
+                message,
+                usage: usage.clone(),
+                interrupted: Some(true),
+            }])
+            .await?;
         emit_usage(inner, usage);
     }
     Ok(StepEnd::Aborted)
