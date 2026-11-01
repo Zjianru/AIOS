@@ -77,7 +77,9 @@ async fn pure_text_turn() {
     assert_eq!(
         kinds,
         vec![
+            "agent/inbox/spliced",
             "turn/start",
+            "agent/inbox/spliced",
             "step/start",
             "system/message",
             "user/message",
@@ -85,7 +87,7 @@ async fn pure_text_turn() {
             "step/end",
             "turn/end"
         ],
-        "一轮纯文本的事件顺序"
+        "一轮纯文本的事件顺序（T006.2a：收下与领取各一条 inbox splice）"
     );
 
     let assistant = reopened

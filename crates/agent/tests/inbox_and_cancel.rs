@@ -172,21 +172,25 @@ async fn steer_enters_next_step_while_running() {
     assert_eq!(
         kinds,
         vec![
+            "agent/inbox/spliced",
             "turn/start",
+            "agent/inbox/spliced",
             "step/start",
             "system/message",
             "user/message",
             "assistant/message",
             "tool/call",
+            "agent/inbox/spliced",
             "tool/result",
             "step/end",
+            "agent/inbox/spliced",
             "step/start",
             "user/message",
             "assistant/message",
             "step/end",
             "turn/end"
         ],
-        "steer 在第二个 step 的 user/message 进入请求"
+        "steer 在第二个 step 的 user/message 进入请求（T006.2a：inbox splice 按发生位置落日志）"
     );
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 2);
@@ -211,8 +215,12 @@ async fn inject_enters_next_step_without_waking_idle_loop() {
     let after_inject = SessionStore::open(data_dir.path(), &session_id).unwrap();
     assert_eq!(
         after_inject.events().len(),
-        0,
-        "inject 不唤醒空闲的 loop，不应产生任何日志事件"
+        1,
+        "inject 不唤醒空闲的 loop：只落一条 durable 的 inbox 事件，不开 turn"
+    );
+    assert_eq!(
+        after_inject.events()[0].kind.type_name(),
+        "agent/inbox/spliced"
     );
     drop(after_inject);
 

@@ -175,9 +175,9 @@ async fn rate_limit_retries_then_succeeds() {
         "重试成功后这一轮 completed"
     );
 
-    // 重试不写日志：正常一轮的 7 个事件，一个不多。
+    // 重试不写日志：正常一轮 7 个事件 + T006.2a 的 2 条 inbox splice（收下、领取），一个不多。
     let store = SessionStore::open(data_dir.path(), &id).unwrap();
-    assert_eq!(store.events().len(), 7);
+    assert_eq!(store.events().len(), 9);
     assert_eq!(
         store
             .events()

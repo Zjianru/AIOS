@@ -266,8 +266,8 @@ async fn resume_after_balanced_turn_sees_full_history() {
     assert_eq!(count_turns(reopened.events()), 2);
     assert_eq!(
         reopened.events().len(),
-        balanced_events + 6,
-        "平衡日志续接只多一轮的 6 个事件（step/start、user/message、assistant/message、step/end、turn/end + turn/start）"
+        balanced_events + 8,
+        "平衡日志续接只多一轮的 8 个事件（inbox 收下、turn/start、inbox 领取、step/start、user/message、assistant/message、step/end、turn/end）"
     );
 }
 

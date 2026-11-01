@@ -103,7 +103,9 @@ async fn tool_round_trip() {
     assert_eq!(
         kinds,
         vec![
+            "agent/inbox/spliced",
             "turn/start",
+            "agent/inbox/spliced",
             "step/start",
             "system/message",
             "user/message",
@@ -116,7 +118,7 @@ async fn tool_round_trip() {
             "step/end",
             "turn/end"
         ],
-        "工具调用一轮的事件顺序"
+        "工具调用一轮的事件顺序（T006.2a：收下与领取各一条 inbox splice）"
     );
 
     // 第一次 assistant 消息里有文本块和工具调用块
