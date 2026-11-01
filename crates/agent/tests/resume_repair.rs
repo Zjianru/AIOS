@@ -215,13 +215,13 @@ async fn resume_after_balanced_turn_sees_full_history() {
             .filter(|event| matches!(
                 event.kind,
                 EventKind::TurnEnd {
-                    reason: TurnEndReason::Aborted { .. },
+                    reason: TurnEndReason::Interrupted,
                     ..
                 }
             ))
             .count(),
         0,
-        "平衡日志不该有 aborted 收尾"
+        "平衡日志不该有 interrupted 收尾"
     );
     drop(balanced);
 
@@ -307,16 +307,26 @@ async fn resume_repairs_unknown_call_from_torn_tail() {
     )
     .await;
 
-    // 修复事件：tool/result（UNKNOWN）+ step/end + turn/end（Aborted）。
+    // 修复事件：tool/result（UNKNOWN）+ step/end + turn/end（interrupted）。
     let repaired = SessionStore::open(crashed_dir.path(), &id).unwrap();
+    let repaired_events = repaired.events();
     assert_eq!(
-        repair_tail(repaired.events()),
+        repair_tail(repaired_events),
         vec!["tool/result", "step/end", "turn/end"]
     );
-    let (text, code) = find_tool_result(repaired.events(), "call_0").expect("要补出 call_0 的结果");
+    // 合成事件复用最后一个真实事件的时间（DSH repair.ts:88-90）。
+    let tail_len = repair_tail(repaired_events).len();
+    let last_real = &repaired_events[repaired_events.len() - tail_len - 1];
+    assert!(
+        repaired_events[repaired_events.len() - tail_len..]
+            .iter()
+            .all(|event| event.time == last_real.time),
+        "修复事件要复用最后一个真实事件的时间"
+    );
+    let (text, code) = find_tool_result(repaired_events, "call_0").expect("要补出 call_0 的结果");
     assert_eq!(
-        code.map(|error| error.code.as_str()),
-        Some("TOOL_OUTCOME_UNKNOWN")
+        code.map(|error| (error.name.as_str(), error.code.as_str())),
+        Some(("ToolOutcomeUnknownError", "TOOL_OUTCOME_UNKNOWN"))
     );
     assert!(
         text.contains("outcome is unknown"),
@@ -329,13 +339,13 @@ async fn resume_repairs_unknown_call_from_torn_tail() {
             .filter(|event| matches!(
                 event.kind,
                 EventKind::TurnEnd {
-                    reason: TurnEndReason::Aborted { .. },
+                    reason: TurnEndReason::Interrupted,
                     ..
                 }
             ))
             .count(),
         1,
-        "崩溃收尾的 turn/end 用 Aborted"
+        "崩溃收尾的 turn/end 用 interrupted（DSH repair.ts:96）"
     );
     assert_eq!(count_turns(repaired.events()), 1, "修复不应重开一轮");
     drop(repaired);
@@ -418,10 +428,19 @@ async fn resume_repairs_not_started_call_after_assistant_message() {
         repair_tail(repaired.events()),
         vec!["tool/result", "step/end", "turn/end"]
     );
-    let (text, code) = find_tool_result(repaired.events(), "call_0").expect("要补出 call_0 的结果");
+    let repaired_events = repaired.events();
+    let tail_len = repair_tail(repaired_events).len();
+    let last_real = &repaired_events[repaired_events.len() - tail_len - 1];
+    assert!(
+        repaired_events[repaired_events.len() - tail_len..]
+            .iter()
+            .all(|event| event.time == last_real.time),
+        "修复事件要复用最后一个真实事件的时间"
+    );
+    let (text, code) = find_tool_result(repaired_events, "call_0").expect("要补出 call_0 的结果");
     assert_eq!(
-        code.map(|error| error.code.as_str()),
-        Some("TOOL_NOT_STARTED")
+        code.map(|error| (error.name.as_str(), error.code.as_str())),
+        Some(("ToolNotStartedError", "TOOL_NOT_STARTED"))
     );
     assert!(
         text.contains("Retry it if it is still needed."),
@@ -434,12 +453,13 @@ async fn resume_repairs_not_started_call_after_assistant_message() {
             .filter(|event| matches!(
                 event.kind,
                 EventKind::TurnEnd {
-                    reason: TurnEndReason::Aborted { .. },
+                    reason: TurnEndReason::Interrupted,
                     ..
                 }
             ))
             .count(),
-        1
+        1,
+        "崩溃收尾的 turn/end 用 interrupted（DSH repair.ts:96）"
     );
     drop(repaired);
 
