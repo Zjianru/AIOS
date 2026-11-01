@@ -83,6 +83,9 @@ pub(crate) struct Inner {
     cancel_notify: Arc<Notify>,
     /// 手动 compact 请求的等待者（T005.8b；kick 在轮次结束后处理并通知）。
     compact_queue: Mutex<Vec<tokio::sync::oneshot::Sender<()>>>,
+    /// 仅测试可见：settle_idle 预检之后、最终临界区之前的同步缝（T005.8b 边界单测）。
+    #[cfg(test)]
+    settle_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Inner {
@@ -146,6 +149,8 @@ impl Inner {
             idle_notify: Notify::new(),
             cancel_notify: Arc::new(Notify::new()),
             compact_queue: Mutex::new(Vec::new()),
+            #[cfg(test)]
+            settle_hook: Mutex::new(None),
         });
         // T005.4：后台任务结算后，由 agent 把完成通知送进会话（事件 + 下一步输入）。
         // 用 Weak 避免 tool_session → 回调 → Inner 的循环引用。
@@ -394,6 +399,18 @@ fn settle_idle(inner: &Arc<Inner>) {
     if has_queued || (wake && has_pending) {
         restart_kick(inner, turn);
         return;
+    }
+    // 仅测试可见的同步缝：让边界单测能精确停在「预检完成、最终临界区之前」。
+    #[cfg(test)]
+    {
+        let hook = inner
+            .settle_hook
+            .lock()
+            .expect("settle hook 锁被毒化")
+            .clone();
+        if let Some(hook) = hook {
+            hook();
+        }
     }
     // 收尾临界区：在同一把 state 锁里重查一次 wake/队列再转 Idle。
     // 否则 compact 可能在 has_queued 之后、Idle 之前入队：queue_compaction 的
@@ -1134,15 +1151,14 @@ fn system_prompt(cwd: &Path, tools: &ToolSet) -> String {
 mod settle_tests {
     use super::*;
 
-    /// settle 边界确定性测试：compact 在 settle 的「预检之后、Idle 之前」入队时
-    /// 不能被丢。用 inbox 锁把 settle 卡在预检与临界区之间，再入队并模拟
-    /// wake_driver 只看到 Running 置 latch 的情形。
+    /// settle 边界确定性测试：用 test-only hook 把 settle 卡在「预检完成、
+    /// 最终临界区之前」，窗口内入队 compact 并模拟 wake_driver 只看到 Running，
+    /// 然后断言 Agent::compact 的 oneshot 在超时内收到通知（不看 phase、不 sleep）。
     #[tokio::test]
     async fn settle_requeues_waiter_arriving_at_boundary() {
         let data = tempfile::tempdir().unwrap();
         let cwd = tempfile::tempdir().unwrap();
         let store = SessionStore::create(data.path(), cwd.path()).unwrap();
-        let config = crate::AgentConfig::default();
         let model = model::DeepSeek::new(model::DeepSeekConfig {
             api_key: "test-key".to_owned(),
             base_url: "http://127.0.0.1:1".to_owned(),
@@ -1150,7 +1166,7 @@ mod settle_tests {
         })
         .unwrap();
         let inner = Inner::start(
-            config,
+            crate::AgentConfig::default(),
             Deps {
                 model,
                 tools: ToolSet::empty(),
@@ -1166,21 +1182,41 @@ mod settle_tests {
                 turn: 0,
             };
         }
-        let inbox_guard = inner.inbox.lock().unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let release_rx = std::sync::Arc::new(release_rx);
+        let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        {
+            let mut hook = inner.settle_hook.lock().unwrap();
+            *hook = Some(Arc::new(move || {
+                // 只卡第一次 settle（被测窗口）；后续 kick 里的 settle 直接放行，
+                // 否则会在 async worker 上阻塞标准库 recv、饿死运行时。
+                if fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+                let _ = entered_tx.send(());
+                let _ = release_rx.lock().unwrap().recv();
+            }));
+        }
         let arc = Arc::clone(&inner);
-        // 用 spawn_blocking 让 settle 在 Tokio 上下文里跑（restart_kick 会 tokio::spawn）。
         let settle = tokio::task::spawn_blocking(move || settle_idle(&arc));
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        // 窗口内：入队 waiter，并模拟 wake_driver 只看到 Running。
-        let (sender, _receiver) = tokio::sync::oneshot::channel();
+        // 等 settle 停在临界区之前（确定性，不靠 sleep）。
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        // 窗口内：入队 waiter，并模拟 wake_driver 只看到 Running（只置 latch）。
+        let (sender, receiver) = tokio::sync::oneshot::channel();
         inner.compact_queue.lock().unwrap().push(sender);
         inner.wake_driver();
-        drop(inbox_guard);
+        let _ = release_tx.send(());
         settle.await.unwrap();
-        let running = matches!(inner.state.lock().unwrap().phase, Phase::Running { .. });
-        // 清理：别让 kick 真去压缩。
+        let served = tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
+            .await
+            .is_ok();
+        // 清理：避免随后 kick 真的尝试压缩。
         inner.compact_queue.lock().unwrap().clear();
         inner.state.lock().unwrap().phase = Phase::Idle;
-        assert!(running, "settle 必须重新拉起 kick 来服务边界入队的 compact");
+        assert!(served, "边界入队的 compact waiter 必须在超时内收到通知");
     }
 }
