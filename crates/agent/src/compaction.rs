@@ -152,10 +152,6 @@ pub(crate) async fn compact_if_needed(
     if !force && measure(host) < budget.threshold_tokens {
         return Ok(None);
     }
-    // 确认真的要压缩后，统一派发 Compaction 挂点（自动/溢出/手动三路共用；prune 等挂这里）。
-    if notify_compaction {
-        host.dispatch_compaction(turn, step, trigger).await?;
-    }
     let attempts = if force {
         1
     } else {
@@ -172,6 +168,11 @@ pub(crate) async fn compact_if_needed(
             }
             return Ok(None);
         };
+        // 只在 select_split 成功（真的有一个事务要提交）之后派发 Compaction 挂点：
+        // T006.4 的 prune 必须只在真实压缩事务里跑；每次真实事务派发一次（重试事务也算）。
+        if notify_compaction {
+            host.dispatch_compaction(turn, step, trigger).await?;
+        }
         let result = compact_once(host, Some(turn), None, trigger, split, &policy).await?;
         outcome = Some(result);
         if force || measure(host) < budget.threshold_tokens {
@@ -461,6 +462,233 @@ mod tests {
             select_split(&messages[..2], 150),
             None,
             "只有系统+一条时不压"
+        );
+    }
+
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use tokio::sync::broadcast;
+
+    use crate::AgentEvent;
+    use crate::capabilities::{BoxedFuture, HookFuture, HookOutcome};
+
+    /// 只给压缩单测用的 LoopAccess 替身：记录 Compaction 挂点派发次数，模型指向
+    /// 一个必然连不上的地址（摘要请求会快速失败，不进网络等待）。
+    struct RecordingHost {
+        store: Mutex<session::SessionStore>,
+        events: broadcast::Sender<AgentEvent>,
+        tools: tools::ToolSet,
+        model: model::DeepSeek,
+        tool_session: Arc<tools::ToolSessionState>,
+        data_dir: PathBuf,
+        policy: CompactionPolicy,
+        compaction_dispatches: AtomicU32,
+        _data: tempfile::TempDir,
+        _cwd: tempfile::TempDir,
+    }
+
+    fn recording_host(policy: CompactionPolicy) -> RecordingHost {
+        let data = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let store = session::SessionStore::create(data.path(), cwd.path()).unwrap();
+        let (events, _receiver) = broadcast::channel(16);
+        let model = model::DeepSeek::new(model::DeepSeekConfig {
+            base_url: "http://127.0.0.1:1".to_owned(),
+            api_key: "test-key".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            max_tokens: 16,
+            context_window: 1000,
+            effort: model::Effort::High,
+        })
+        .unwrap();
+        RecordingHost {
+            store: Mutex::new(store),
+            events,
+            tools: tools::ToolSet::empty(),
+            model,
+            tool_session: Arc::new(tools::ToolSessionState::detached()),
+            data_dir: data.path().to_path_buf(),
+            policy,
+            compaction_dispatches: AtomicU32::new(0),
+            _data: data,
+            _cwd: cwd,
+        }
+    }
+
+    impl LoopAccess for RecordingHost {
+        fn session(&self) -> &Mutex<session::SessionStore> {
+            &self.store
+        }
+        fn events(&self) -> &broadcast::Sender<AgentEvent> {
+            &self.events
+        }
+        fn tools(&self) -> &tools::ToolSet {
+            &self.tools
+        }
+        fn tool_session(&self) -> &Arc<tools::ToolSessionState> {
+            &self.tool_session
+        }
+        fn model(&self) -> &model::DeepSeek {
+            &self.model
+        }
+        fn cwd(&self) -> &Path {
+            Path::new("/tmp/aios-test-cwd")
+        }
+        fn data_dir(&self) -> &Path {
+            &self.data_dir
+        }
+        fn log_path(&self) -> &Path {
+            Path::new("/tmp/aios-test.log")
+        }
+        fn compaction_policy(&self) -> CompactionPolicy {
+            self.policy
+        }
+        fn append<'a>(&'a self, kinds: &'a [EventKind]) -> HookFuture<'a> {
+            Box::pin(async move {
+                self.store
+                    .lock()
+                    .expect("测试 host 会话锁被毒化")
+                    .append(kinds)?;
+                Ok(HookOutcome::Continue)
+            })
+        }
+        fn append_with_seqs<'a>(&'a self, kinds: &'a [EventKind]) -> BoxedFuture<'a, Vec<u64>> {
+            Box::pin(async move {
+                Ok(self
+                    .store
+                    .lock()
+                    .expect("测试 host 会话锁被毒化")
+                    .append(kinds)?)
+            })
+        }
+        fn append_surface<'a>(
+            &'a self,
+            kind: EventKind,
+            surface_op: SurfaceOp,
+            source_event_seqs: Vec<u64>,
+        ) -> HookFuture<'a> {
+            Box::pin(async move {
+                self.store
+                    .lock()
+                    .expect("测试 host 会话锁被毒化")
+                    .append_surface(kind, surface_op, source_event_seqs)?;
+                Ok(HookOutcome::Continue)
+            })
+        }
+        fn dispatch_compaction<'a>(
+            &'a self,
+            _turn: u64,
+            _step: u64,
+            _trigger: CompactionTrigger,
+        ) -> HookFuture<'a> {
+            self.compaction_dispatches.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move { Ok(HookOutcome::Continue) })
+        }
+        fn current_abort(&self) -> Option<Arc<AtomicBool>> {
+            None
+        }
+        fn enqueue_context<'a>(&'a self, _text: String) -> BoxedFuture<'a, ()> {
+            Box::pin(async move { Ok(()) })
+        }
+    }
+
+    fn test_policy() -> CompactionPolicy {
+        CompactionPolicy {
+            // 阈值压到 1 token：只要 measure 有任何内容就算「越过阈值」。
+            threshold_ratio: 0.000001,
+            retain_ratio: 0.000001,
+            headroom_tokens: 1,
+            summary_max_tokens: 16,
+            compaction_retries: 0,
+            max_overflow_retries: 0,
+        }
+    }
+
+    /// 阈值过但没有可压缩前缀（messages<3）：不能派发 Compaction 挂点（T006.4 的 prune
+    /// 只能跑在真实压缩事务里），也不写 compaction/* 事件。
+    #[tokio::test]
+    async fn threshold_over_without_compactable_prefix_does_not_dispatch_compaction() {
+        let host = recording_host(test_policy());
+        {
+            let mut store = host.store.lock().expect("测试 host 会话锁被毒化");
+            store
+                .append(&[EventKind::SystemMessage {
+                    turn: 1,
+                    step: 1,
+                    message: Message::system_prompt("only system prompt"),
+                }])
+                .unwrap();
+        }
+        let outcome = compact_if_needed(&host, 1, 1, CompactionTrigger::Auto, false, true)
+            .await
+            .expect("没有可压前缀不是错误");
+        assert!(outcome.is_none(), "没有可压缩历史");
+        assert_eq!(
+            host.compaction_dispatches.load(Ordering::SeqCst),
+            0,
+            "没有真实事务就不能派发 Compaction 挂点"
+        );
+        let store = host.store.lock().expect("测试 host 会话锁被毒化");
+        assert!(
+            store
+                .events()
+                .iter()
+                .all(|event| !event.kind.type_name().starts_with("compaction/")),
+            "没有真实事务就不写 compaction 事件"
+        );
+    }
+
+    /// 真的选出可压前缀后，每个真实事务派发一次 Compaction 挂点（本测试用必然失败的
+    /// 摘要请求，验证派发发生在事务提交前、且只发生一次）。
+    #[tokio::test]
+    async fn real_compaction_transaction_dispatches_hook_once() {
+        let host = recording_host(test_policy());
+        {
+            let mut store = host.store.lock().expect("测试 host 会话锁被毒化");
+            store
+                .append(&[
+                    EventKind::TurnStart { turn: 1 },
+                    EventKind::SystemMessage {
+                        turn: 1,
+                        step: 1,
+                        message: Message::system_prompt("system prompt"),
+                    },
+                    EventKind::UserMessage {
+                        turn: 1,
+                        step: 1,
+                        message: Message::user_text("a".repeat(400)),
+                    },
+                    EventKind::AssistantMessage {
+                        turn: 1,
+                        step: 1,
+                        message: Message::assistant(
+                            vec![ContentBlock::text("answer")],
+                            "deepseek",
+                            "deepseek-flash",
+                        ),
+                        stream: Vec::new(),
+                        usage: None,
+                        interrupted: None,
+                    },
+                ])
+                .unwrap();
+        }
+        let result = compact_if_needed(&host, 1, 1, CompactionTrigger::Auto, false, true).await;
+        assert!(result.is_err(), "摘要请求连不上应失败");
+        assert_eq!(
+            host.compaction_dispatches.load(Ordering::SeqCst),
+            1,
+            "一个真实事务派发一次 Compaction 挂点"
+        );
+        let store = host.store.lock().expect("测试 host 会话锁被毒化");
+        assert!(
+            store
+                .events()
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::CompactionEnd { error: Some(_), .. })),
+            "事务失败也写 compaction/end（带 error）"
         );
     }
 }
