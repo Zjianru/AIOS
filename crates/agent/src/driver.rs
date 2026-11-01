@@ -399,8 +399,7 @@ async fn run_step(
         .expect("agent 会话锁被毒化")
         .has_system_message();
     if !has_system {
-        let has_read = inner.tools.get("read").is_some();
-        let message = Message::text(Role::System, system_prompt(&inner.cwd, has_read));
+        let message = Message::text(Role::System, system_prompt(&inner.cwd, &inner.tools));
         inner.append(&[EventKind::SystemMessage {
             turn,
             step,
@@ -770,15 +769,31 @@ fn interrupted_content(
     content
 }
 
-/// 系统提示：固定文字 + 会话的工作目录；read 工具可见时补 DSH 原文的 read 指导句。
-fn system_prompt(cwd: &Path, has_read: bool) -> String {
+/// 系统提示：固定文字 + 会话的工作目录；按可见工具补指导句（照 DSH 的 tool-fs 各工具
+/// 系统提示段，插件名换成 AIOS 的规则表述）。
+fn system_prompt(cwd: &Path, tools: &ToolSet) -> String {
     let mut prompt = format!(
         "You are AIOS, a coding agent. Your working directory is {}.",
         cwd.display()
     );
-    if has_read {
+    if tools.get("read").is_some() {
         prompt.push_str(
             "\n\nUse the read tool — not shell commands like cat — to inspect text files. Use offset and limit to continue reading large files.",
+        );
+    }
+    if tools.get("write").is_some() {
+        prompt.push_str(
+            "\n\nRead an existing file before overwriting it with write; prefer edit for targeted changes.",
+        );
+    }
+    if tools.get("edit").is_some() {
+        prompt.push_str(
+            "\n\nRead a file before editing it, unless you just created or edited it in this session.",
+        );
+    }
+    if tools.get("apply_patch").is_some() {
+        prompt.push_str(
+            "\n\nPrefer apply_patch over separate edit calls for changes across files or separated regions. Read a file before updating, deleting, or moving it, unless you just created or edited it in this session. The whole patch is checked first and a rejected patch changes nothing; once applying starts, operations run in order, stop at the first failure, and are not rolled back.",
         );
     }
     prompt

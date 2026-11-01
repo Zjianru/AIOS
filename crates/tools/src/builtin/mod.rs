@@ -1,12 +1,18 @@
-//! 内置只读工具：read、glob、grep。
+//! 内置工具：只读的 read / glob / grep，和写类 write / edit / apply_patch。
 
+mod apply_patch;
+mod edit;
 mod glob;
 mod grep;
 mod read;
+mod write;
 
+pub use apply_patch::ApplyPatchTool;
+pub use edit::EditTool;
 pub use glob::GlobTool;
 pub use grep::GrepTool;
 pub use read::ReadTool;
+pub use write::WriteTool;
 
 use std::path::{Component, Path, PathBuf};
 

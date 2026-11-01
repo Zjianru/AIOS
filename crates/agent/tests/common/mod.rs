@@ -530,6 +530,32 @@ impl Drop for PhaseSseServer {
     }
 }
 
+/// 回放一组带输入的 tool_use 调用 SSE（写类工具的参数要真实输入）。
+pub fn tool_calls_with_inputs_sse(calls: &[(&str, &str, serde_json::Value)]) -> String {
+    let mut body = String::from(
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_tools\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"deepseek-flash\",\"content\":[],\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n",
+    );
+    for (index, (id, name, input)) in calls.iter().enumerate() {
+        let id = serde_json::json!(id).to_string();
+        let name = serde_json::json!(name).to_string();
+        body.push_str(&format!(
+            "event: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":{index},\"content_block\":{{\"type\":\"tool_use\",\"id\":{id},\"name\":{name},\"input\":{{}}}}}}\n\n"
+        ));
+        let partial = serde_json::json!(input.to_string()).to_string();
+        body.push_str(&format!(
+            "event: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":{index},\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":{partial}}}}}\n\n"
+        ));
+        body.push_str(&format!(
+            "event: content_block_stop\ndata: {{\"type\":\"content_block_stop\",\"index\":{index}}}\n\n"
+        ));
+    }
+    body.push_str(
+        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":2}}\n\n",
+    );
+    body.push_str("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
+    body
+}
+
 /// 测试共用：指向 mock 服务的模型配置（5 个测试文件原来各写一遍）。
 pub fn model_config(base_url: &str) -> model::DeepSeekConfig {
     model::DeepSeekConfig {

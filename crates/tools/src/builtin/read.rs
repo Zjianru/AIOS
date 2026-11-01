@@ -3,7 +3,6 @@
 //! 参数、上限、输出格式和错误文字照 DSH 的 packages/fs/tool-fs/src/read*.ts。
 
 use std::fs;
-use std::path::Path;
 
 use serde_json::{Value, json};
 
@@ -102,36 +101,22 @@ fn read(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
         )));
     }
 
-    let requested = Path::new(&file_path);
-    let absolute = if requested.is_absolute() {
-        requested.to_path_buf()
-    } else {
-        context.cwd.join(requested)
+    let target = crate::fs::resolve(context, &file_path)?;
+    let display = target.display();
+    let Some(info) = crate::fs::probe(&target)? else {
+        crate::fs::record_absent(context, &target);
+        return Err(ToolFailure::coded(
+            "FS_NOT_FOUND",
+            format!("cannot read \"{display}\": not found"),
+        ));
     };
-    let metadata = match fs::metadata(&absolute) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(ToolFailure::coded(
-                "FS_NOT_FOUND",
-                format!("cannot read \"{}\": not found", absolute.display()),
-            ));
-        }
-        Err(error) => {
-            return Err(ToolFailure::coded(
-                "FS_IO_ERROR",
-                format!("cannot read \"{}\": {error}", absolute.display()),
-            ));
-        }
-    };
-    let canonical = fs::canonicalize(&absolute).unwrap_or_else(|_| absolute.clone());
-    let display = canonical.to_string_lossy().into_owned();
-    if !metadata.is_file() {
+    if !info.is_file {
         return Err(ToolFailure::coded(
             "FS_NOT_REGULAR_FILE",
             format!("cannot read \"{display}\": not a regular file"),
         ));
     }
-    let bytes = fs::read(&canonical).map_err(|error| {
+    let bytes = fs::read(&target.key).map_err(|error| {
         ToolFailure::coded("FS_IO_ERROR", format!("cannot read \"{display}\": {error}"))
     })?;
     // 照 DSH fs-local 的 readWholeText：前 8192 字节含 NUL 就是二进制文件。
@@ -147,7 +132,10 @@ fn read(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
             format!("cannot read \"{display}\": invalid UTF-8 text"),
         )
     })?;
-    window(&content, &display, offset, limit)
+    let rendered = window(&content, &display, offset, limit)?;
+    // T005.1：读成功才登记 present；缺失在上面的 probe 分支先登记 absent（照 DSH）。
+    crate::fs::record_present(context, &target, info.version);
+    Ok(rendered)
 }
 
 fn positive_integer(value: &Value, name: &str) -> Result<usize, ToolFailure> {

@@ -5,6 +5,7 @@
 
 mod batch;
 mod builtin;
+mod fs;
 mod session;
 
 use std::future::Future;
@@ -16,7 +17,7 @@ use model::ToolSchema;
 use serde_json::Value;
 
 pub use batch::{BatchOutcome, execute_batch};
-pub use builtin::{GlobTool, GrepTool, ReadTool};
+pub use builtin::{ApplyPatchTool, EditTool, GlobTool, GrepTool, ReadTool, WriteTool};
 pub use session::{
     FileVersion, ObservationStore, ObservedFile, SharedToolSession, SpillStore, TaskRegistry,
     ToolSessionState,
@@ -169,12 +170,15 @@ impl ToolSet {
         Self { tools }
     }
 
-    /// 开发用的内置只读工具集：read、glob、grep。
+    /// 开发用的内置工具集：read、glob、grep，和写类 write、edit、apply_patch。
     pub fn builtin() -> Self {
         Self::new(vec![
             Box::new(ReadTool::new()),
             Box::new(GlobTool::new()),
             Box::new(GrepTool::new()),
+            Box::new(WriteTool::new()),
+            Box::new(EditTool::new()),
+            Box::new(ApplyPatchTool::new()),
         ])
     }
 
