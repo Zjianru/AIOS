@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use model::{
-    BlockType, CancelToken, ContentBlock, DeepSeek, ErrorCode, FinishReason, Message, ModelError,
-    StreamChunk, Usage, UserMessage,
+    AssistantStreamAccumulator, BlockType, CancelToken, ContentBlock, DeepSeek, ErrorCode,
+    FinishReason, Message, ModelError, StreamChunk, TimedStreamChunk, Usage, UserMessage,
 };
 use session::{
     AbortCause, EventKind, InboxTarget, LlmFailure, SessionId, SessionStore, ToolError,
@@ -850,6 +850,9 @@ async fn run_step(
     let mut usage: Option<Usage> = None;
     let mut finish: Option<FinishReason> = None;
     let mut content_emitted = false;
+    // 每次模型尝试的精确帧记录（成功写进 assistant/message，失败写进 assistant/attempt；
+    // DSH 的 AssistantStreamAttempt，agent-loop/src/assistant-stream.ts:18-43）。
+    let mut attempt_stream = AssistantStreamAccumulator::new();
     let mut attempt: u32 = 0;
     let mut overflow_retries = 0_u32;
     'attempts: loop {
@@ -869,7 +872,8 @@ async fn run_step(
             Ok(stream) => stream,
             Err(error) => {
                 if abort.load(Ordering::SeqCst) || error.code == ErrorCode::Aborted {
-                    return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
+                    // 请求还没开始流出（DSH agent.ts:488-500：started=false 不落 attempt）。
+                    return Ok(StepEnd::Aborted);
                 }
                 // T005.8a：上下文溢出先压缩再重试一次；压缩不了或第二次溢出按正常错误收尾。
                 // T006.1b：压缩由 RequestError 挂点里的压缩能力执行；它压缩不了时返回
@@ -888,6 +892,7 @@ async fn run_step(
                                 error: &error,
                             })
                             .await?;
+                        attempt_stream = AssistantStreamAccumulator::new();
                         messages = inner
                             .store
                             .lock()
@@ -897,6 +902,7 @@ async fn run_step(
                     }
                     return Err(AgentError::Model(error));
                 }
+                // 请求还没流出（DSH started=false），这次不算 attempt：不落 assistant/attempt。
                 inner
                     .capabilities
                     .dispatch(&HookEvent::RequestError {
@@ -908,36 +914,73 @@ async fn run_step(
                     .await?;
                 match decide_retry(inner, &cancel, &error, &mut attempt, content_emitted).await {
                     RetryDecision::Retry => {
-                        reset_attempt(&mut blocks, &mut open, &mut usage, &mut finish);
+                        reset_attempt(
+                            &mut blocks,
+                            &mut open,
+                            &mut usage,
+                            &mut finish,
+                            &mut attempt_stream,
+                        );
                         content_emitted = false;
                         continue 'attempts;
                     }
-                    RetryDecision::Cancel => {
-                        return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
-                    }
+                    RetryDecision::Cancel => return Ok(StepEnd::Aborted),
                     RetryDecision::Fatal => return Err(AgentError::Model(error)),
                 }
             }
         };
         loop {
             if abort.load(Ordering::SeqCst) {
-                return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
+                return interrupted_step(
+                    inner,
+                    turn,
+                    step,
+                    &blocks,
+                    &open,
+                    &usage,
+                    &attempt_stream,
+                )
+                .await;
             }
             let notified = inner.cancel_notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
             if abort.load(Ordering::SeqCst) {
-                return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
+                return interrupted_step(
+                    inner,
+                    turn,
+                    step,
+                    &blocks,
+                    &open,
+                    &usage,
+                    &attempt_stream,
+                )
+                .await;
             }
             let chunk = tokio::select! {
                 chunk = stream.next() => chunk,
                 () = &mut notified => {
-                    return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
+                    return interrupted_step(
+                    inner,
+                    turn,
+                    step,
+                    &blocks,
+                    &open,
+                    &usage,
+                    &attempt_stream,
+                )
+                .await;
                 }
             };
             let Some(chunk) = chunk else {
                 break;
             };
+            if let Ok(chunk) = &chunk {
+                attempt_stream.push(TimedStreamChunk {
+                    time: now_ms(),
+                    chunk: chunk.clone(),
+                });
+            }
             match chunk {
                 Ok(StreamChunk::BlockStart { index, block_type }) => {
                     if matches!(block_type, BlockType::Text | BlockType::Reasoning) {
@@ -965,28 +1008,56 @@ async fn run_step(
                 Ok(StreamChunk::Finish { reason }) => finish = Some(reason),
                 Err(error) => {
                     if abort.load(Ordering::SeqCst) || error.code == ErrorCode::Aborted {
-                        return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
+                        return interrupted_step(
+                            inner,
+                            turn,
+                            step,
+                            &blocks,
+                            &open,
+                            &usage,
+                            &attempt_stream,
+                        )
+                        .await;
                     }
+                    // 流已经开过：这次尝试没有可见消息，照 DSH agent.ts:567-580 先落
+                    // assistant/attempt（帧保留），再决定重试/收尾。
+                    append_attempt(inner, turn, step, &attempt_stream).await?;
                     match decide_retry(inner, &cancel, &error, &mut attempt, content_emitted).await
                     {
                         RetryDecision::Retry => {
-                            reset_attempt(&mut blocks, &mut open, &mut usage, &mut finish);
+                            reset_attempt(
+                                &mut blocks,
+                                &mut open,
+                                &mut usage,
+                                &mut finish,
+                                &mut attempt_stream,
+                            );
                             content_emitted = false;
                             continue 'attempts;
                         }
-                        RetryDecision::Cancel => {
-                            return interrupted_step(inner, turn, step, &blocks, &open, &usage)
-                                .await;
-                        }
+                        RetryDecision::Cancel => return Ok(StepEnd::Aborted),
                         RetryDecision::Fatal => return Err(AgentError::Model(error)),
                     }
                 }
             }
             if abort.load(Ordering::SeqCst) {
-                return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
+                return interrupted_step(
+                    inner,
+                    turn,
+                    step,
+                    &blocks,
+                    &open,
+                    &usage,
+                    &attempt_stream,
+                )
+                .await;
             }
         }
         break 'attempts;
+    }
+    // 流已收完但取消在结算前到了：照 DSH 的 for-await 后 throwIfAborted 走中断前缀。
+    if abort.load(Ordering::SeqCst) {
+        return interrupted_step(inner, turn, step, &blocks, &open, &usage, &attempt_stream).await;
     }
     let Some(finish) = finish else {
         return Err(AgentError::Model(ModelError::new(
@@ -995,7 +1066,7 @@ async fn run_step(
         )));
     };
     // max-tokens 时裁掉被截断的 tool-call 块（照 DSH assembler）：日志里不能留没有
-    // 配对 tool/result 的 tool_use；text/reasoning 保留。裁完为空就不写 assistant 消息（D1）。
+    // 配对 tool/result 的 tool_use；text/reasoning 保留。
     let content: Vec<ContentBlock> = blocks
         .values()
         .filter(|block| {
@@ -1003,20 +1074,20 @@ async fn run_step(
         })
         .cloned()
         .collect();
-    if !content.is_empty() {
-        let message = assistant_message(inner, content.clone());
-        inner
-            .append(&[EventKind::AssistantMessage {
-                turn,
-                step,
-                message,
-                stream: Vec::new(),
-                usage: usage.clone(),
-                interrupted: None,
-            }])
-            .await?;
-        emit_usage(inner, &usage);
-    }
+    // 成功结算一律写 assistant/message（DSH agent.ts:566-584）：content 裁空也要写，
+    // 让 usage 落日志（T004 K9）；派生历史会跳过空消息（session/surface.ts:140）。
+    let message = assistant_message(inner, content.clone());
+    inner
+        .append(&[EventKind::AssistantMessage {
+            turn,
+            step,
+            message,
+            stream: attempt_stream.snapshot(),
+            usage: usage.clone(),
+            interrupted: None,
+        }])
+        .await?;
+    emit_usage(inner, &usage);
     if finish == FinishReason::MaxTokens {
         // 被截断的输出里可能有不完整的工具调用：这一轮直接以 max-tokens 收尾，不执行工具。
         return Ok(StepEnd::MaxTokens);
@@ -1283,11 +1354,13 @@ fn reset_attempt(
     open: &mut BTreeMap<usize, (BlockType, String)>,
     usage: &mut Option<Usage>,
     finish: &mut Option<FinishReason>,
+    stream: &mut AssistantStreamAccumulator,
 ) {
     blocks.clear();
     open.clear();
     *usage = None;
     *finish = None;
+    *stream = AssistantStreamAccumulator::new();
 }
 
 fn emit_usage(inner: &Arc<Inner>, usage: &Option<Usage>) {
@@ -1298,6 +1371,8 @@ fn emit_usage(inner: &Arc<Inner>, usage: &Option<Usage>) {
     }
 }
 
+/// 取消时收尾一次已开始的尝试（DSH agent.ts:499-533）：有可见前缀写 interrupted 的
+/// assistant/message；没有可见内容写 assistant/attempt（帧保留，不留空消息）。
 async fn interrupted_step(
     inner: &Arc<Inner>,
     turn: u64,
@@ -1305,16 +1380,19 @@ async fn interrupted_step(
     blocks: &BTreeMap<usize, ContentBlock>,
     open: &BTreeMap<usize, (BlockType, String)>,
     usage: &Option<Usage>,
+    stream: &AssistantStreamAccumulator,
 ) -> Result<StepEnd, AgentError> {
     let content = interrupted_content(blocks, open);
-    if !content.is_empty() {
+    if content.is_empty() {
+        append_attempt(inner, turn, step, stream).await?;
+    } else {
         let message = assistant_message(inner, content);
         inner
             .append(&[EventKind::AssistantMessage {
                 turn,
                 step,
                 message,
-                stream: Vec::new(),
+                stream: stream.snapshot(),
                 usage: usage.clone(),
                 interrupted: Some(true),
             }])
@@ -1322,6 +1400,29 @@ async fn interrupted_step(
         emit_usage(inner, usage);
     }
     Ok(StepEnd::Aborted)
+}
+
+/// 把一次没有产出可见消息的尝试落成 assistant/attempt（DSH agent.ts:567-580）。
+async fn append_attempt(
+    inner: &Arc<Inner>,
+    turn: u64,
+    step: u64,
+    stream: &AssistantStreamAccumulator,
+) -> Result<(), AgentError> {
+    inner
+        .append(&[EventKind::AssistantAttempt {
+            turn,
+            step,
+            stream: stream.snapshot(),
+        }])
+        .await
+}
+
+/// 当前 Unix 毫秒时间（会话事件/流帧共用；系统时钟倒退时取 0）。
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }
 
 /// 取消时保留的可安全收尾前缀（照 DSH assembler.interruptedBlocks）：

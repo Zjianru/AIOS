@@ -12,8 +12,10 @@ use crate::SessionId;
 /// `packages/session/session-format-v1-to-v2/src/codec.ts:21`）。
 /// v3：消息 IR 照 DSH（T006.5c1）：每条消息带必填 `id`（uuid）与 `source`；tool 角色的
 /// 消息改成 DSH ToolResultMessage 形状（`toolCallId`/`isError` 在消息级，content 是结果
-/// 内容块）。v2 的消息没有 id/source，读不回来，直接拒绝（spec：旧版本不迁移）。
-pub const FORMAT_VERSION: u64 = 3;
+/// 内容块）。
+/// v4：assistant/message 带必填 `stream`（精确帧记录），新增 `assistant/attempt` 事件；
+/// 旧 v3 日志的 assistant/message 没有 stream，读不回来，直接拒绝（spec：旧版本不迁移）。
+pub const FORMAT_VERSION: u64 = 4;
 
 /// JSONL 第一行的会话 header。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,8 +216,6 @@ pub enum EventKind {
         turn: u64,
         step: u64,
         message: Message,
-        /// 骨架期先不写进 JSON（旧测试保持绿）；实现时改成必填 stream。
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
         stream: Vec<AssistantStreamRecord>,
         #[serde(skip_serializing_if = "Option::is_none")]
         usage: Option<Usage>,

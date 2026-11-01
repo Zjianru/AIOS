@@ -262,10 +262,11 @@ async fn assistant_message_usage_and_interrupted() {
         .expect("取消中途要写 interrupted=true 的 assistant/message");
     assert_eq!(interrupted["interrupted"], true);
     assert_eq!(text_of(&interrupted["message"]), "已经流出来的部分文字。");
-    assert_eq!(
-        interrupted["usage"],
-        json!({"inputTokens": 10, "outputTokens": 1}),
-        "interrupted 消息也带已报告的 usage"
+    // usage 只在流结束时由适配器报一次（DSH deepseek/translate.ts:160）；取消发生在
+    // 结束帧之前，所以中断消息没有 usage（DSH types.ts:349-352 的「适配器没报就没有」）。
+    assert!(
+        interrupted.get("usage").is_none(),
+        "取消早于结束帧时不写 usage"
     );
     let stream = interrupted["stream"]
         .as_array()
@@ -337,6 +338,9 @@ async fn attempt_without_surface_goes_to_assistant_attempt() {
         .await
         .unwrap();
     server.wait_ready().await;
+    // 等 driver 真的从流里读第一轮（和上面 cancel_mid_stream 用事件同步不同，这里
+    // 没有可见 delta 可等；hold 住连接后 driver 会停在 select 上等下一帧）。
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     agent.cancel().await.unwrap();
     agent.idle().await;
     let rows = log_rows(data_dir.path(), &id);
