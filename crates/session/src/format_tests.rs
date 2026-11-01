@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use crate::{
     AbortCause, EventKind, InboxOutcome, InboxTarget, LlmFailure, RetryId, RetryMode, SessionStore,
-    TodoItem, TodoStatus, ToolError, TurnEndReason,
+    ShadowedRange, TodoItem, TodoStatus, ToolError, TurnEndReason,
 };
 
 fn create_store() -> (tempfile::TempDir, tempfile::TempDir, SessionStore) {
@@ -556,4 +556,205 @@ fn all_event_kinds_round_trip_under_dsh_envelope() {
     for (event, kind) in reopened.events().iter().zip(&kinds) {
         assert_eq!(&event.kind, kind, "信封改形后事件仍能原样读回");
     }
+}
+
+/// DSH 的 compaction/* 事件（packages/compaction/compaction/src/types.ts:24-70）：
+/// start/end 带 sourceCommandId?、turn 可为 null（两次 turn 之间的手动压缩）；summary 带
+/// 摘要内容块、调用事实（provider/model/maxTokens/usage/rawOutput）与 shadowed 区间/seqs。
+#[test]
+fn compaction_events_match_dsh() {
+    let (_data_dir, _cwd, mut store) = create_store();
+    store
+        .append(&[
+            EventKind::CompactionStart {
+                compaction_id: "c1".to_owned(),
+                source_command_id: Some("cmd-1".to_owned()),
+                turn: None,
+            },
+            EventKind::CompactionSummary {
+                compaction_id: "c1".to_owned(),
+                source_command_id: Some("cmd-1".to_owned()),
+                summary: vec![ContentBlock::text("摘要")],
+                raw_output: vec![ContentBlock::text("摘要")],
+                llm_stream_call: true,
+                shadowed_range: ShadowedRange { start: 2, end: 3 },
+                shadowed_seqs: vec![2, 3],
+                shadowed_token_count: 5,
+                provider: "deepseek".to_owned(),
+                model: "deepseek-flash".to_owned(),
+                max_tokens: Some(321),
+                usage: Some(Usage {
+                    input_tokens: Some(7),
+                    output_tokens: Some(2),
+                    ..Usage::default()
+                }),
+            },
+            EventKind::CompactionEnd {
+                compaction_id: "c1".to_owned(),
+                source_command_id: Some("cmd-1".to_owned()),
+                turn: None,
+                error: None,
+            },
+        ])
+        .unwrap();
+
+    let (_header, rows) = log_rows(&store);
+    assert_eq!(
+        rows[0]["data"],
+        json!({
+            "compactionId": "c1",
+            "sourceCommandId": "cmd-1",
+            "turn": null,
+        }),
+        "compaction/start 照 DSH"
+    );
+    assert_eq!(
+        rows[1]["data"],
+        json!({
+            "compactionId": "c1",
+            "sourceCommandId": "cmd-1",
+            "summary": [{"type": "text", "text": "摘要"}],
+            "rawOutput": [{"type": "text", "text": "摘要"}],
+            "llmStreamCall": true,
+            "shadowedRange": {"start": 2, "end": 3},
+            "shadowedSeqs": [2, 3],
+            "shadowedTokenCount": 5,
+            "provider": "deepseek",
+            "model": "deepseek-flash",
+            "maxTokens": 321,
+            "usage": {"inputTokens": 7, "outputTokens": 2},
+        }),
+        "compaction/summary 照 DSH"
+    );
+    assert_eq!(
+        rows[2]["data"],
+        json!({
+            "compactionId": "c1",
+            "sourceCommandId": "cmd-1",
+            "turn": null,
+        }),
+        "compaction/end 照 DSH（成功的 end 省略 error）"
+    );
+
+    // 自动压缩（turn 号、无 sourceCommandId、失败 end 带 error）。
+    store
+        .append(&[
+            EventKind::CompactionStart {
+                compaction_id: "c2".to_owned(),
+                source_command_id: None,
+                turn: Some(1),
+            },
+            EventKind::CompactionEnd {
+                compaction_id: "c2".to_owned(),
+                source_command_id: None,
+                turn: Some(1),
+                error: Some("boom".to_owned()),
+            },
+        ])
+        .unwrap();
+    let (_header, rows) = log_rows(&store);
+    assert_eq!(
+        rows[3]["data"],
+        json!({"compactionId": "c2", "turn": 1}),
+        "自动压缩的 start 省略 sourceCommandId"
+    );
+    assert_eq!(
+        rows[4]["data"],
+        json!({"compactionId": "c2", "turn": 1, "error": "boom"}),
+        "失败的 end 带 error"
+    );
+}
+
+/// 压缩替换写成日志里的 user/message + envelope 的 surfaceOp/sourceEventSeqs（DSH
+/// compaction/region.ts:491-509）：派生视图读这条消息，不再自己合成 checkpoint。
+#[test]
+fn compaction_replacement_is_logged_message_with_surface_op() {
+    let (_data_dir, _cwd, mut store) = create_store();
+    let early = Message::text(Role::User, "早先的话");
+    let checkpoint = Message::with_source(
+        model::MessageId::parse("checkpoint-1"),
+        Role::User,
+        vec![ContentBlock::text("checkpoint 内容")],
+        model::MessageSource::CompactCheckpoint {
+            compaction_id: "c1".to_owned(),
+            source_command_id: None,
+        },
+    );
+    store
+        .append(&[
+            EventKind::TurnStart { turn: 1 },
+            EventKind::UserMessage {
+                turn: 1,
+                step: 1,
+                message: early.clone(),
+            },
+            EventKind::CompactionStart {
+                compaction_id: "c1".to_owned(),
+                source_command_id: None,
+                turn: Some(1),
+            },
+            EventKind::CompactionSummary {
+                compaction_id: "c1".to_owned(),
+                source_command_id: None,
+                summary: vec![ContentBlock::text("摘要")],
+                raw_output: vec![ContentBlock::text("摘要")],
+                llm_stream_call: true,
+                shadowed_range: ShadowedRange { start: 2, end: 2 },
+                shadowed_seqs: vec![2],
+                shadowed_token_count: 3,
+                provider: "deepseek".to_owned(),
+                model: "deepseek-flash".to_owned(),
+                max_tokens: None,
+                usage: None,
+            },
+        ])
+        .unwrap();
+    let start_seq = store.events()[2].seq;
+    let summary_seq = store.events()[3].seq;
+    store
+        .append_surface(
+            EventKind::UserMessage {
+                turn: 1,
+                step: 1,
+                message: checkpoint.clone(),
+            },
+            crate::SurfaceOp::Replace {
+                start_seq: 2,
+                end_seq: 2,
+            },
+            vec![start_seq, summary_seq, 2],
+        )
+        .unwrap();
+
+    let (_header, rows) = log_rows(&store);
+    let replacement = rows
+        .iter()
+        .find(|row| row["data"]["message"]["id"] == "checkpoint-1")
+        .expect("替换消息在日志里");
+    assert_eq!(replacement["type"], "user/message");
+    assert_eq!(
+        replacement["surfaceOp"],
+        json!({"op": "replace", "startSeq": 2, "endSeq": 2}),
+        "surfaceOp 在事件信封上"
+    );
+    assert_eq!(
+        replacement["sourceEventSeqs"],
+        json!([start_seq, summary_seq, 2]),
+        "sourceEventSeqs 列出被替换与引用的事件"
+    );
+
+    // 派生视图：被替换区间隐藏，替换消息本身照常派生（且就是日志里的同一条，id 不变）。
+    let derived = crate::derive::derive_messages(store.events());
+    assert_eq!(derived.len(), 1, "只剩一条 checkpoint：{derived:?}");
+    assert_eq!(
+        derived[0].id, checkpoint.id,
+        "checkpoint 用日志消息的稳定 id"
+    );
+    assert_eq!(derived[0].role, Role::User);
+    assert!(
+        !derived
+            .iter()
+            .any(|message| format!("{message:?}").contains("早先的话")),
+        "被替换的早期消息不能出现在派生视图里"
+    );
 }

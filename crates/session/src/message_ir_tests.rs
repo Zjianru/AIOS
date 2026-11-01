@@ -5,10 +5,10 @@
 
 use std::fs;
 
-use model::{ContentBlock, Message, Role};
+use model::{ContentBlock, Message, MessageId, MessageSource, Role};
 use serde_json::{Value, json};
 
-use crate::{COMPACTION_PREAMBLE, Event, EventKind, SessionStore};
+use crate::{Event, EventKind, SessionStore};
 
 fn log_rows(store: &SessionStore) -> Vec<Value> {
     let text = fs::read_to_string(store.path()).unwrap();
@@ -97,9 +97,20 @@ fn user_and_tool_result_json_carry_id_source() {
 }
 
 #[test]
-fn derived_checkpoint_message_id_is_stable() {
-    // 同一条日志派生两次：checkpoint 消息的 id 必须相同（确定性来自压缩区间起点 seq）。
-    let events = vec![
+fn compaction_checkpoint_message_id_comes_from_log() {
+    // T006.3：压缩替换是日志里的 user/message（envelope 带 surfaceOp replace）；派生只读这条
+    // 消息，不再自己合成 checkpoint，id 也保持日志里的稳定 id。
+    let early = Message::user_text("早先的话");
+    let checkpoint = Message::with_source(
+        MessageId::parse("checkpoint-1"),
+        Role::User,
+        vec![ContentBlock::text("checkpoint 内容")],
+        MessageSource::CompactCheckpoint {
+            compaction_id: "c1".to_owned(),
+            source_command_id: None,
+        },
+    );
+    let mut events = vec![
         Event::new(1, 1, EventKind::TurnStart { turn: 1 }),
         Event::new(
             2,
@@ -107,21 +118,30 @@ fn derived_checkpoint_message_id_is_stable() {
             EventKind::UserMessage {
                 turn: 1,
                 step: 1,
-                message: Message::user_text("早先的话"),
+                message: early,
             },
         ),
         Event::new(
             3,
             3,
+            EventKind::CompactionStart {
+                compaction_id: "c1".to_owned(),
+                source_command_id: None,
+                turn: Some(1),
+            },
+        ),
+        Event::new(
+            4,
+            4,
             EventKind::CompactionSummary {
                 compaction_id: "c1".to_owned(),
                 source_command_id: None,
                 summary: vec![ContentBlock::text("摘要")],
                 raw_output: vec![ContentBlock::text("摘要")],
                 llm_stream_call: true,
-                shadowed_range: crate::ShadowedRange { start: 2, end: 3 },
-                shadowed_seqs: vec![2, 3],
-                shadowed_token_count: 5,
+                shadowed_range: crate::ShadowedRange { start: 2, end: 2 },
+                shadowed_seqs: vec![2],
+                shadowed_token_count: 3,
                 provider: "deepseek".to_owned(),
                 model: "deepseek-flash".to_owned(),
                 max_tokens: None,
@@ -129,65 +149,46 @@ fn derived_checkpoint_message_id_is_stable() {
             },
         ),
         Event::new(
-            4,
-            4,
+            5,
+            5,
             EventKind::UserMessage {
                 turn: 1,
                 step: 1,
-                message: Message::user_text("之后的话"),
+                message: checkpoint.clone(),
+            },
+        ),
+        Event::new(
+            6,
+            6,
+            EventKind::CompactionEnd {
+                compaction_id: "c1".to_owned(),
+                source_command_id: None,
+                turn: Some(1),
+                error: None,
             },
         ),
     ];
+    // 替换消息的 envelope：surfaceOp replace + 引用压缩事件与被替换节点。
+    events[4].surface_op = Some(crate::SurfaceOp::Replace {
+        start_seq: 2,
+        end_seq: 2,
+    });
+    events[4].source_event_seqs = Some(vec![3, 4, 2]);
 
-    let checkpoint_id = |events: &[Event]| {
-        let derived = crate::derive::derive_messages(events);
-        let checkpoint = derived
-            .iter()
-            .find(|message| {
-                message
-                    .content
-                    .iter()
-                    .filter_map(ContentBlock::as_text)
-                    .any(|text| text.starts_with(COMPACTION_PREAMBLE))
-            })
-            .expect("派生视图里有 checkpoint 消息");
-        assert!(!checkpoint.id.as_str().is_empty(), "checkpoint 消息要有 id");
-        checkpoint.id.clone()
-    };
-
-    let first = checkpoint_id(&events);
-    let second = checkpoint_id(&events);
-    assert_eq!(first, second, "同一条日志多次派生，checkpoint id 不变");
-
-    // 起点 seq 不同 → 是另一条 checkpoint，id 也不同。
-    let mut other = events.clone();
-    other.insert(
-        1,
-        Event::new(2, 2, EventKind::StepStart { turn: 1, step: 1 }),
-    );
-    for (offset, event) in other.iter_mut().enumerate() {
-        event.seq = offset as u64 + 1;
-    }
-    // 压缩区间也跟着挪：起点是 UserMessage 的新 seq。
-    if let EventKind::CompactionSummary { shadowed_range, .. } = &mut other[3].kind {
-        shadowed_range.start = 3;
-        shadowed_range.end = 4;
-    }
-    let other_id = checkpoint_id(&other);
-    assert_ne!(first, other_id, "不同压缩区间的 checkpoint id 不同");
-
-    // 普通日志消息派生后 id 保持原值。
     let derived = crate::derive::derive_messages(&events);
-    let kept = derived
-        .iter()
-        .find(|message| {
-            message
-                .content
-                .iter()
-                .filter_map(ContentBlock::as_text)
-                .any(|text| text == "之后的话")
-        })
-        .expect("正常消息仍在派生视图里");
-    assert_eq!(kept.role, Role::User);
-    assert!(!kept.id.as_str().is_empty());
+    assert_eq!(derived.len(), 1, "只留日志里的 checkpoint：{derived:?}");
+    assert_eq!(derived[0].id, checkpoint.id, "checkpoint 用日志消息的 id");
+    assert!(
+        derived[0]
+            .content
+            .iter()
+            .filter_map(ContentBlock::as_text)
+            .any(|text| text.contains("checkpoint 内容")),
+        "checkpoint 内容来自日志消息"
+    );
+    assert_eq!(
+        crate::derive::derive_messages(&events)[0].id,
+        derived[0].id,
+        "多次派生 checkpoint id 不变"
+    );
 }
