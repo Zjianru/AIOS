@@ -4,6 +4,8 @@
 //! :96-122、:158-231），进程重启时从日志折叠恢复；claimed/discarded/inserted 只是 dispatch
 //! 通知、不落日志（DSH README.zh.md:71）。
 
+use std::collections::HashSet;
+
 use model::Message;
 use session::{Event, EventKind, InboxOutcome, InboxTarget};
 
@@ -128,9 +130,6 @@ impl Inbox {
     }
 
     /// 折叠一条已提交的 splice（DSH 的 inboxProjectionDefinition.apply，inbox.ts:30-55）。
-    ///
-    /// AIOS 的 Message 还没有稳定 id（T006.5c1 才有），这里只校验坐标边界；
-    /// DSH 的重复 MessageId 校验随 5c1 补（handback known）。
     fn apply_persisted(
         &mut self,
         seq: u64,
@@ -151,11 +150,63 @@ impl Inbox {
                 target.as_str()
             )));
         };
-        // 只有 canceled 一种 outcome；折叠时不影响队列状态。
-        let _ = outcome;
-        self.list_mut(target)
-            .splice(start as usize..end as usize, inserted.iter().cloned());
+        let splice = Splice {
+            target,
+            start: start as usize,
+            removed: self.list(target)[start as usize..end as usize].to_vec(),
+            inserted: inserted.to_vec(),
+            discard_removed: outcome == Some(InboxOutcome::Canceled),
+        };
+        // 照 DSH inbox.ts:41-48：应用后两个 pending 队列合起来的 MessageId 必须唯一。
+        // 伪造/损坏的 spliced 把同一条消息插两遍，会让 resume/claim 重复投递；
+        // 按损坏日志拒绝（CorruptInbox，带 seq/target/message id），不静默收下。
+        if let Some(duplicate) = self.duplicate_message_id(&splice) {
+            return Err(AgentError::CorruptInbox(format!(
+                "duplicate message id {duplicate} in persisted inbox splice at session seq {seq}: target={}, start={start}, removedCount={removed_count}",
+                target.as_str()
+            )));
+        }
+        self.apply(&splice);
         Ok(())
+    }
+
+    /// 校验一条待应用的 splice：应用后两个 pending 队列的 MessageId 必须唯一
+    /// （DSH inbox.ts:41-48）。live 路径在落盘前调用，损坏的 splice 不写日志、不改内存。
+    pub(crate) fn validate(&self, splice: &Splice) -> Result<(), AgentError> {
+        match self.duplicate_message_id(splice) {
+            Some(duplicate) => Err(AgentError::CorruptInbox(format!(
+                "duplicate message id {duplicate} in inbox splice: target={}, start={}",
+                splice.target.as_str(),
+                splice.start
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    /// 应用一条 splice 后第一条重复的 MessageId（没有返回 None）。
+    ///
+    /// 照 DSH 的折叠校验：把「目标队列应用 splice 后的视图」和「另一个队列」合起来查重，
+    /// 所以 inserted 内重复、与目标队列已有消息重复、跨队列重复都能抓到。
+    fn duplicate_message_id(&self, splice: &Splice) -> Option<String> {
+        let list = self.list(splice.target);
+        let before = list.get(..splice.start)?;
+        let after = list.get(splice.start + splice.removed.len()..)?;
+        let other = match splice.target {
+            InboxTarget::NextTurn => &self.next_step,
+            InboxTarget::NextStep => &self.next_turn,
+        };
+        let mut ids = HashSet::new();
+        for message in before
+            .iter()
+            .chain(splice.inserted.iter())
+            .chain(after)
+            .chain(other)
+        {
+            if !ids.insert(message.id.as_str()) {
+                return Some(message.id.as_str().to_owned());
+            }
+        }
+        None
     }
 
     /// 计算一次规范化 splice（不应用）；坐标语义照 DSH mutate（inbox.ts:195-221）：
@@ -207,5 +258,85 @@ impl Inbox {
             InboxTarget::NextTurn => &mut self.next_turn,
             InboxTarget::NextStep => &mut self.next_step,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn splice_event(seq: u64, target: InboxTarget, start: u64, inserted: Vec<Message>) -> Event {
+        Event {
+            seq,
+            time: seq,
+            kind: EventKind::InboxSpliced {
+                target,
+                start,
+                removed_count: None,
+                inserted,
+                outcome: None,
+            },
+        }
+    }
+
+    #[test]
+    fn restore_rejects_duplicate_message_id() {
+        // 照 DSH inbox.ts:41-48：折叠后两个 pending 队列的 MessageId 必须唯一；
+        // 伪造/损坏的 spliced 把同一条消息插两遍 → CorruptInbox，不静默收下。
+        let pending = Message::user_text("排队中");
+        let events = vec![
+            splice_event(1, InboxTarget::NextTurn, 0, vec![pending.clone()]),
+            splice_event(2, InboxTarget::NextTurn, 1, vec![pending.clone()]),
+        ];
+        let error = Inbox::restore(&events).expect_err("重复 MessageId 是损坏日志");
+        assert!(
+            matches!(&error, AgentError::CorruptInbox(detail)
+                if detail.contains(pending.id.as_str()) && detail.contains("seq 2")),
+            "要报 CorruptInbox 且带 seq/message id：{error}"
+        );
+    }
+
+    #[test]
+    fn live_splice_rejects_duplicate_message_id() {
+        // live 路径：send/context 每次都生成新 uuid，重复 MessageId 只能来自损坏的调用方；
+        // 落盘前的共用校验必须拒绝（不写坏日志、不改内存）。
+        let pending = Message::user_text("在队列里");
+        let mut inbox = Inbox::default();
+        let seed = inbox.splice(InboxTarget::NextTurn, 0, 0, vec![pending.clone()], false);
+        inbox.apply(&seed);
+
+        // 同一队列再插一次同 id。
+        let duplicate = inbox.splice(
+            InboxTarget::NextTurn,
+            i64::MAX,
+            0,
+            vec![pending.clone()],
+            false,
+        );
+        let error = inbox
+            .validate(&duplicate)
+            .expect_err("live splice 的重复 MessageId 要拒绝");
+        assert!(
+            matches!(&error, AgentError::CorruptInbox(detail)
+                if detail.contains(pending.id.as_str())),
+            "要报 CorruptInbox 且带 message id：{error}"
+        );
+
+        // 跨队列（next-turn 已有，next-step 再插同 id）也拒绝：DSH 查两个队列的并集。
+        let across = inbox.splice(
+            InboxTarget::NextStep,
+            i64::MAX,
+            0,
+            vec![pending.clone()],
+            false,
+        );
+        let error = inbox
+            .validate(&across)
+            .expect_err("跨队列重复 MessageId 要拒绝");
+        assert!(
+            matches!(&error, AgentError::CorruptInbox(detail)
+                if detail.contains(pending.id.as_str())),
+            "要报 CorruptInbox 且带 message id：{error}"
+        );
     }
 }

@@ -353,6 +353,12 @@ impl Inner {
         if splice.is_empty() {
             return Ok(Vec::new());
         }
+        // 重复 MessageId 的 splice 不落盘、不改内存（DSH inbox.ts:41-48；live 路径共用
+        // resume 的同一查重逻辑，防止损坏的调用方把同一条消息插两遍）。
+        self.inbox
+            .lock()
+            .expect("agent 收件箱锁被毒化")
+            .validate(&splice)?;
         // 先落盘再改内存：日志里的 splice 顺序就是队列的应用顺序；写失败时队列不动。
         self.append(&[splice.event_kind()]).await?;
         self.inbox

@@ -527,3 +527,45 @@ async fn overflowing_removed_count_is_reported_as_corrupt_not_panic() {
         "要报 CorruptInbox：{error}"
     );
 }
+
+#[tokio::test]
+async fn duplicate_message_id_in_corrupt_inbox_is_reported_on_resume() {
+    let server = MockServer::start().await;
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let (agent, id) = create_agent(data_dir.path(), cwd.path(), &server.uri()).await;
+    drop(agent);
+    let pending = Message::user_text("排队中");
+    let pending_id = pending.id.clone();
+    {
+        let mut store = SessionStore::open(data_dir.path(), &id).unwrap();
+        // 先合法插入；再伪造一条插入同一 MessageId 的 splice（损坏/伪造日志）。
+        store
+            .append(&[
+                EventKind::InboxSpliced {
+                    target: InboxTarget::NextTurn,
+                    start: 0,
+                    removed_count: None,
+                    inserted: vec![pending.clone()],
+                    outcome: None,
+                },
+                EventKind::InboxSpliced {
+                    target: InboxTarget::NextTurn,
+                    start: 1,
+                    removed_count: None,
+                    inserted: vec![pending.clone()],
+                    outcome: None,
+                },
+            ])
+            .unwrap();
+    }
+    let error = match resume_agent(data_dir.path(), &id, &server.uri()).await {
+        Ok(_) => panic!("同一 MessageId 插两遍要让 resume 报 CorruptInbox，不能静默收下"),
+        Err(error) => error,
+    };
+    assert!(
+        matches!(&error, AgentError::CorruptInbox(detail)
+            if detail.contains(pending_id.as_str()) && detail.contains("inbox")),
+        "要报 CorruptInbox 且带 seq/message id：{error}"
+    );
+}
