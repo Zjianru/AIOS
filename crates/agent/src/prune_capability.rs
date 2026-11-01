@@ -103,9 +103,7 @@ fn prunable_tool_results(events: &[Event], current_turn: Option<u64>) -> Vec<(u6
             if current_turn.is_some_and(|current| *turn >= current) {
                 return None;
             }
-            if prune_content(&message.content).is_none() {
-                return None;
-            }
+            prune_content(&message.content)?;
             Some((event.seq, event.kind.clone()))
         })
         .collect()
