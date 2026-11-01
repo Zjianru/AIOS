@@ -135,6 +135,7 @@ fn should_trigger(inner: &Inner, messages: &[Message], budget: Budget) -> bool {
 pub(crate) async fn compact_if_needed(
     inner: &std::sync::Arc<Inner>,
     turn: u64,
+    step: u64,
     trigger: CompactionTrigger,
     force: bool,
 ) -> Result<bool, AgentError> {
@@ -151,6 +152,17 @@ pub(crate) async fn compact_if_needed(
     let Some(split) = select_split(&selected, budget.retain_tokens) else {
         return Ok(false);
     };
+    // T006.1a 修正：只有确认真的要压缩（should_trigger/select_split 之后）才派发 Compaction；
+    // 自动（threshold）、溢出恢复、手动（force）三路共用这个点，prune 也在这里被带出。
+    inner
+        .capabilities
+        .dispatch(&crate::capabilities::HookEvent::Compaction {
+            turn,
+            step,
+            host: inner.as_ref(),
+            trigger,
+        })
+        .await?;
     // 系统消息永远保留；被摘要的是 prefix 去掉系统后的部分。
     let shadowed_start = derived[1].0;
     let shadowed_end = derived[split - 1].0;

@@ -84,7 +84,7 @@ pub(crate) struct Inner {
     /// 压缩阈值公式里的预留输出 token（T005.8a）。
     pub(crate) compaction_headroom_tokens: u64,
     /// 固定挂点与功能注册表（T006.1a）。
-    capabilities: CapabilityRegistry,
+    pub(crate) capabilities: CapabilityRegistry,
     pub(crate) store: Mutex<SessionStore>,
     inbox: Mutex<Inbox>,
     state: Mutex<RunState>,
@@ -497,9 +497,8 @@ impl Inner {
                 let state = self.state.lock().expect("agent 状态锁被毒化");
                 state.last_turn
             };
-            dispatch_compaction(self, turn, 0, CompactionTrigger::Manual).await?;
             let _ =
-                compaction::compact_if_needed(self, turn, CompactionTrigger::Manual, true).await;
+                compaction::compact_if_needed(self, turn, 0, CompactionTrigger::Manual, true).await;
             for waiter in waiters {
                 let _ = waiter.send(());
             }
@@ -764,23 +763,6 @@ async fn run_turn_steps(
 
 /// 一个 step：写 system/user 事件，从日志派生请求，流式收模型输出，
 /// 有工具调用就派发批执行并写 tool/call、tool/result，否则收尾这一轮。
-async fn dispatch_compaction(
-    inner: &Arc<Inner>,
-    turn: u64,
-    step: u64,
-    trigger: CompactionTrigger,
-) -> Result<(), AgentError> {
-    inner
-        .capabilities
-        .dispatch(&HookEvent::Compaction {
-            turn,
-            step,
-            host: inner.as_ref(),
-            trigger,
-        })
-        .await
-}
-
 async fn run_step(
     inner: &Arc<Inner>,
     turn: u64,
@@ -871,8 +853,7 @@ async fn run_step(
     // （追加 compaction/prune 事件，原始 tool/result 保留在日志里可回放）。
     prune_old_tool_results(inner, turn).await?;
     // T005.8a：请求前检查 token 压力；越过阈值就压缩较早历史（失败不打断本轮，事件已记录）。
-    dispatch_compaction(inner, turn, step, CompactionTrigger::Auto).await?;
-    let _ = compaction::compact_if_needed(inner, turn, CompactionTrigger::Auto, false).await;
+    let _ = compaction::compact_if_needed(inner, turn, step, CompactionTrigger::Auto, false).await;
     let mut messages = inner
         .store
         .lock()
@@ -922,10 +903,14 @@ async fn run_step(
                 // T005.8a：上下文溢出先压缩再重试一次；压缩不了或第二次溢出按正常错误收尾。
                 if error.code == ErrorCode::ContextWindowExceeded && overflow_retries == 0 {
                     overflow_retries = 1;
-                    dispatch_compaction(inner, turn, step, CompactionTrigger::Auto).await?;
-                    let compacted =
-                        compaction::compact_if_needed(inner, turn, CompactionTrigger::Auto, true)
-                            .await?;
+                    let compacted = compaction::compact_if_needed(
+                        inner,
+                        turn,
+                        step,
+                        CompactionTrigger::Auto,
+                        true,
+                    )
+                    .await?;
                     if !compacted {
                         return Err(AgentError::Model(error));
                     }
