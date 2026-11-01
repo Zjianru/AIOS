@@ -1,8 +1,6 @@
-//! T006.5c1：消息 IR 的 id/source 与五角色 JSON 形状（照 DSH llm/llm/src/message.ts:139-180、:206-260）。
+// T006.5c1：消息 IR 的 id/source 与五角色 JSON 形状（照 DSH llm/llm/src/message.ts:139-180、:206-260）。
 
 use serde_json::json;
-
-use crate::{ContentBlock, Message, MessageId, MessageSource, Role};
 
 /// uuid v4 形状：8-4-4-4-12 十六进制，版本位 4、变体位 8/9/a/b。
 fn assert_uuid_v4(raw: &str) {

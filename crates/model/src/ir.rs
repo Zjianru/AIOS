@@ -395,6 +395,6 @@ pub enum StreamChunk {
     Finish(FinishReason),
 }
 
+// 测试直接展开在 ir 模块里：票面 C5 的测试名是 model::ir::<test>（不加 tests 子模块）。
 #[cfg(test)]
-#[path = "ir_tests.rs"]
-mod tests;
+include!("ir_tests.rs");

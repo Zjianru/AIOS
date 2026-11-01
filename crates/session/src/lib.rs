@@ -25,7 +25,7 @@ pub use store::{SessionSnapshot, SessionStore};
 mod format_tests;
 #[cfg(test)]
 #[path = "message_ir_tests.rs"]
-mod message_ir_tests;
+mod message_ir;
 #[cfg(test)]
 #[path = "repair_tests.rs"]
 mod repair_tests;
