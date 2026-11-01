@@ -13,7 +13,17 @@ use crate::capabilities::{
 use crate::compaction;
 use crate::{AgentError, CompactionTrigger};
 
-pub(crate) struct CompactionCapability;
+pub(crate) struct CompactionCapability {
+    waiters: std::sync::Arc<std::sync::Mutex<Vec<tokio::sync::oneshot::Sender<()>>>>,
+}
+
+impl CompactionCapability {
+    pub(crate) fn new(
+        waiters: std::sync::Arc<std::sync::Mutex<Vec<tokio::sync::oneshot::Sender<()>>>>,
+    ) -> Self {
+        Self { waiters }
+    }
+}
 
 impl Capability for CompactionCapability {
     fn name(&self) -> &'static str {
@@ -26,6 +36,27 @@ impl Capability for CompactionCapability {
             HookPoint::Request,
             HookPoint::RequestError,
         ]
+    }
+
+    fn push_compaction_waiter(&self, sender: tokio::sync::oneshot::Sender<()>) -> bool {
+        self.waiters
+            .lock()
+            .expect("agent compact 队列锁被毒化")
+            .push(sender);
+        true
+    }
+
+    fn has_compaction_waiters(&self) -> bool {
+        !self
+            .waiters
+            .lock()
+            .expect("agent compact 队列锁被毒化")
+            .is_empty()
+    }
+
+    fn take_compaction_waiters(&self) -> Vec<tokio::sync::oneshot::Sender<()>> {
+        let mut waiters = self.waiters.lock().expect("agent compact 队列锁被毒化");
+        std::mem::take(&mut *waiters)
     }
 
     fn on_hook<'a>(&'a self, event: &'a HookEvent<'a>) -> HookFuture<'a> {

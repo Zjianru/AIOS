@@ -133,6 +133,10 @@ impl AskState {
     }
 }
 
+pub(crate) fn new_state() -> Arc<AskState> {
+    AskState::new()
+}
+
 pub(crate) struct AskCapability {
     state: Arc<AskState>,
 }
@@ -150,6 +154,14 @@ impl Capability for AskCapability {
 
     fn hooks(&self) -> &'static [HookPoint] {
         &[HookPoint::ToolBefore]
+    }
+
+    fn answer_question(&self, question_id: &str, answer: &str) -> bool {
+        self.state.answer(question_id, answer)
+    }
+
+    fn cancel_questions(&self) {
+        self.state.cancel_waiters();
     }
 
     fn on_hook<'a>(&'a self, event: &'a HookEvent<'a>) -> HookFuture<'a> {

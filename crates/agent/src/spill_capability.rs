@@ -3,7 +3,15 @@
 
 use crate::capabilities::{Capability, HookEvent, HookFuture, HookOutcome, HookPoint};
 
-pub(crate) struct SpillCapability;
+pub(crate) struct SpillCapability {
+    max_inline_tokens: usize,
+}
+
+impl SpillCapability {
+    pub(crate) fn new(max_inline_tokens: usize) -> Self {
+        Self { max_inline_tokens }
+    }
+}
 
 impl Capability for SpillCapability {
     fn name(&self) -> &'static str {
@@ -25,7 +33,7 @@ impl Capability for SpillCapability {
                 &call.name,
                 &result.call_id,
                 &result.content,
-                host.spill_max_inline_tokens(),
+                self.max_inline_tokens,
             )
             .unwrap_or_else(|| result.content.clone());
             Ok(HookOutcome::ToolResultContent(content))

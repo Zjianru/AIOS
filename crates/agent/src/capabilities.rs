@@ -81,10 +81,7 @@ pub(crate) trait LoopAccess: Send + Sync {
     fn cwd(&self) -> &Path;
     fn data_dir(&self) -> &Path;
     fn log_path(&self) -> &Path;
-    fn instruction_roots(&self) -> &[PathBuf];
-    fn skill_roots(&self) -> &[PathBuf];
     fn compaction_config(&self) -> CompactionConfig;
-    fn spill_max_inline_tokens(&self) -> usize;
     /// 写日志入口：内部走 `Inner::append`（落盘后逐事件派发 SessionEvent）；禁止直接锁
     /// `session()` 后 append 绕过 SessionEvent。
     fn append<'a>(&'a self, kinds: &'a [EventKind]) -> HookFuture<'a>;
@@ -95,14 +92,10 @@ pub(crate) trait LoopAccess: Send + Sync {
         step: u64,
         trigger: CompactionTrigger,
     ) -> HookFuture<'a>;
-    /// 指令注入状态（T005.5；指令能力在 PreStep 里读写）。
-    fn instructions_state(&self) -> &Mutex<InstructionState>;
-    /// skill 目录注入状态（T005.6；skill 能力在 PreStep 里读写）。
-    fn skill_catalog_state(&self) -> &Mutex<SkillCatalogState>;
-    /// 重复调用链（T005.9；提醒能力在 ToolAfter 里读写，新用户消息由 driver 清零）。
-    fn repeat_chain(&self) -> &Mutex<Option<(String, usize)>>;
     /// 当前轮次的 abort 标志（ask 能力等待答案时要检查取消；Running 时总有）。
     fn current_abort(&self) -> Option<Arc<AtomicBool>>;
+    /// 把一段上下文消息投进会话（后台任务结算通知用；按 phase 选 NextStep/NextTurn）。
+    fn enqueue_context(&self, text: String);
 }
 
 /// 每个挂点一份 typed 事件：host 访问面 + 该挂点可用的运行态数据。
@@ -265,6 +258,21 @@ pub(crate) trait Capability: Send + Sync {
     fn name(&self) -> &'static str;
     fn hooks(&self) -> &'static [HookPoint];
     fn on_hook<'a>(&'a self, event: &'a HookEvent<'a>) -> HookFuture<'a>;
+    // 以下为 loop 少量非挂点入口（默认 no-op，由对应能力实现；T006.1e 把状态收回能力）。
+    fn answer_question(&self, _question_id: &str, _answer: &str) -> bool {
+        false
+    }
+    fn cancel_questions(&self) {}
+    fn reset_repeat_chain(&self) {}
+    fn push_compaction_waiter(&self, _sender: tokio::sync::oneshot::Sender<()>) -> bool {
+        false
+    }
+    fn has_compaction_waiters(&self) -> bool {
+        false
+    }
+    fn take_compaction_waiters(&self) -> Vec<tokio::sync::oneshot::Sender<()>> {
+        Vec::new()
+    }
 }
 
 /// 占位登记：只声明功能与它关心的挂点，不接管行为。
@@ -288,6 +296,17 @@ impl Capability for Placeholder {
 const PRUNE_HOOKS: &[HookPoint] = &[HookPoint::Compaction];
 const JOBS_HOOKS: &[HookPoint] = &[HookPoint::Status];
 
+/// per-Agent 能力状态包（T006.1e：状态由能力模块持有，driver 只装配一次）。
+pub(crate) struct CapabilityStates {
+    pub ask: Arc<AskState>,
+    pub instructions: Arc<Mutex<InstructionState>>,
+    pub skill_catalog: Arc<Mutex<SkillCatalogState>>,
+    pub reminder_chain: Arc<Mutex<Option<(String, usize)>>>,
+    pub compaction_waiters: Arc<Mutex<Vec<tokio::sync::oneshot::Sender<()>>>>,
+    pub instruction_roots: Vec<PathBuf>,
+    pub skill_roots: Vec<PathBuf>,
+    pub spill_max_inline_tokens: usize,
+}
 /// 固定顺序的功能注册表；顺序=strategy §2 功能表的拆票顺序（compaction→…→jobs）。
 /// per-Agent 构造（T006.1d2）：ZST 能力每 Agent Box 一份，ask 能力持有该 Agent 的 AskState。
 pub(crate) struct CapabilityRegistry {
@@ -295,26 +314,77 @@ pub(crate) struct CapabilityRegistry {
 }
 
 impl CapabilityRegistry {
-    pub(crate) fn production(ask: Arc<AskState>) -> Self {
+    pub(crate) fn production(states: CapabilityStates) -> Self {
         Self {
             capabilities: vec![
-                Box::new(CompactionCapability),
+                Box::new(CompactionCapability::new(states.compaction_waiters)),
                 Box::new(Placeholder {
                     name: "prune",
                     hooks: PRUNE_HOOKS,
                 }),
-                Box::new(InstructionsCapability),
-                Box::new(SkillCapability),
+                Box::new(InstructionsCapability::new((
+                    states.instructions,
+                    states.instruction_roots,
+                ))),
+                Box::new(SkillCapability::new((
+                    states.skill_catalog,
+                    states.skill_roots,
+                ))),
                 Box::new(TodoCapability),
-                Box::new(AskCapability::new(ask)),
-                Box::new(SpillCapability),
-                Box::new(ReminderCapability),
+                Box::new(AskCapability::new(states.ask)),
+                Box::new(SpillCapability::new(states.spill_max_inline_tokens)),
+                Box::new(ReminderCapability::new(states.reminder_chain)),
                 Box::new(Placeholder {
                     name: "jobs",
                     hooks: JOBS_HOOKS,
                 }),
             ],
         }
+    }
+
+    pub(crate) fn answer_question(&self, question_id: &str, answer: &str) -> bool {
+        self.capabilities
+            .iter()
+            .any(|capability| capability.answer_question(question_id, answer))
+    }
+
+    pub(crate) fn cancel_questions(&self) {
+        for capability in &self.capabilities {
+            capability.cancel_questions();
+        }
+    }
+
+    pub(crate) fn reset_repeat_chain(&self) {
+        for capability in &self.capabilities {
+            capability.reset_repeat_chain();
+        }
+    }
+
+    pub(crate) fn push_compaction_waiter(&self, sender: tokio::sync::oneshot::Sender<()>) -> bool {
+        let mut sender = Some(sender);
+        for capability in &self.capabilities {
+            let Some(current) = sender.take() else {
+                return true;
+            };
+            if capability.push_compaction_waiter(current) {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub(crate) fn has_compaction_waiters(&self) -> bool {
+        self.capabilities
+            .iter()
+            .any(|capability| capability.has_compaction_waiters())
+    }
+
+    pub(crate) fn take_compaction_waiters(&self) -> Vec<tokio::sync::oneshot::Sender<()>> {
+        let mut waiters = Vec::new();
+        for capability in &self.capabilities {
+            waiters.extend(capability.take_compaction_waiters());
+        }
+        waiters
     }
 
     #[cfg(test)]
@@ -417,16 +487,7 @@ mod dispatch_contract_tests {
         fn log_path(&self) -> &Path {
             unimplemented!()
         }
-        fn instruction_roots(&self) -> &[PathBuf] {
-            unimplemented!()
-        }
-        fn skill_roots(&self) -> &[PathBuf] {
-            unimplemented!()
-        }
         fn compaction_config(&self) -> CompactionConfig {
-            unimplemented!()
-        }
-        fn spill_max_inline_tokens(&self) -> usize {
             unimplemented!()
         }
         fn append<'a>(&'a self, _kinds: &'a [EventKind]) -> HookFuture<'a> {
@@ -440,16 +501,10 @@ mod dispatch_contract_tests {
         ) -> HookFuture<'a> {
             unimplemented!()
         }
-        fn instructions_state(&self) -> &Mutex<InstructionState> {
-            unimplemented!()
-        }
-        fn skill_catalog_state(&self) -> &Mutex<SkillCatalogState> {
-            unimplemented!()
-        }
-        fn repeat_chain(&self) -> &Mutex<Option<(String, usize)>> {
-            unimplemented!()
-        }
         fn current_abort(&self) -> Option<Arc<AtomicBool>> {
+            unimplemented!()
+        }
+        fn enqueue_context(&self, _text: String) {
             unimplemented!()
         }
     }

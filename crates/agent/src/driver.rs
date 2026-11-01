@@ -15,14 +15,11 @@ use tokio::sync::Notify;
 use tokio::sync::broadcast;
 use tools::{ToolCall, ToolContext, ToolSessionState, ToolSet, execute_batch};
 
-use crate::ask_capability::AskState;
 use crate::capabilities::{CapabilityRegistry, CompactionConfig, HookEvent, LoopAccess};
 use crate::error::AgentError;
 use crate::inbox::{Delivery, Inbox, InboxTarget};
-use crate::instructions::InstructionState;
 use crate::prune;
-use crate::skill_catalog::SkillCatalogState;
-use crate::{AgentConfig, AgentEvent, CompactionTrigger, Deps, JobStatus, TurnOutcome};
+use crate::{AgentConfig, AgentEvent, CompactionTrigger, Deps, TurnOutcome};
 
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
@@ -54,28 +51,19 @@ pub(crate) struct Inner {
     cwd: PathBuf,
     /// 会话数据目录；也是固定的用户级指令根（T005.5）。
     data_dir: PathBuf,
-    /// 用户级指令根（AgentConfig::instruction_roots）。
-    instruction_roots: Vec<PathBuf>,
-    /// 配置的 skill 根（AgentConfig::skill_roots；T005.6）。
-    skill_roots: Vec<PathBuf>,
-    /// 指令注入状态：已注入的文件与是否见过基线（T005.5）。
-    instructions: Mutex<InstructionState>,
-    /// skill 目录注入状态（T005.6）。
-    skill_catalog: Mutex<SkillCatalogState>,
+
     pub(crate) model: DeepSeek,
     pub(crate) tools: ToolSet,
     /// 会话级工具状态（观察表/spill/任务注册表）；续接时新建，不继承上一次。
     tool_session: Arc<ToolSessionState>,
     max_parallel_tool_calls: usize,
-    /// 单个工具结果内联进上下文的 token 预算；0 表示禁用 spill（AgentConfig 同名）。
-    spill_max_inline_tokens: usize,
     /// 压缩阈值比例（T005.8a）。
     pub(crate) compaction_threshold_ratio: f64,
     /// 压缩后保留的近期上下文比例（T005.8a）。
     pub(crate) compaction_retain_ratio: f64,
     /// 压缩阈值公式里的预留输出 token（T005.8a）。
     pub(crate) compaction_headroom_tokens: u64,
-    /// 固定挂点与功能注册表（T006.1a）。
+    /// 固定挂点与功能注册表（T006.1a；能力状态 per-Agent 在能力里，T006.1e）。
     pub(crate) capabilities: CapabilityRegistry,
     pub(crate) store: Mutex<SessionStore>,
     inbox: Mutex<Inbox>,
@@ -84,12 +72,6 @@ pub(crate) struct Inner {
     idle_notify: Notify,
     /// 取消时唤醒正在等模型流的 step（让流读取立刻停下）。
     cancel_notify: Arc<Notify>,
-    /// 手动 compact 请求的等待者（T005.8b；kick 在轮次结束后处理并通知）。
-    compact_queue: Mutex<Vec<tokio::sync::oneshot::Sender<()>>>,
-    /// 连续重复工具调用的链（工具名 + 规范化参数，计数）；新用户消息清零（T005.9）。
-    repeat_chain: Mutex<Option<(String, usize)>>,
-    /// ask 能力的 per-Agent 状态（T006.1d2）：待答问题/答案/取消唤醒。
-    pub(crate) ask_state: Arc<AskState>,
     /// 仅测试可见：settle_idle 预检之后、最终临界区之前的同步缝（T005.8b 边界单测）。
     #[cfg(test)]
     settle_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -120,21 +102,12 @@ impl LoopAccess for Inner {
     fn log_path(&self) -> &Path {
         &self.log_path
     }
-    fn instruction_roots(&self) -> &[PathBuf] {
-        &self.instruction_roots
-    }
-    fn skill_roots(&self) -> &[PathBuf] {
-        &self.skill_roots
-    }
     fn compaction_config(&self) -> CompactionConfig {
         CompactionConfig {
             threshold_ratio: self.compaction_threshold_ratio,
             retain_ratio: self.compaction_retain_ratio,
             headroom_tokens: self.compaction_headroom_tokens,
         }
-    }
-    fn spill_max_inline_tokens(&self) -> usize {
-        self.spill_max_inline_tokens
     }
     fn append<'a>(&'a self, kinds: &'a [EventKind]) -> crate::capabilities::HookFuture<'a> {
         Box::pin(async move {
@@ -161,21 +134,26 @@ impl LoopAccess for Inner {
                 .map(|_| crate::capabilities::HookOutcome::Continue)
         })
     }
-    fn instructions_state(&self) -> &Mutex<InstructionState> {
-        &self.instructions
-    }
-    fn skill_catalog_state(&self) -> &Mutex<SkillCatalogState> {
-        &self.skill_catalog
-    }
-    fn repeat_chain(&self) -> &Mutex<Option<(String, usize)>> {
-        &self.repeat_chain
-    }
+
     fn current_abort(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
         let state = self.state.lock().expect("agent 状态锁被毒化");
         match &state.phase {
             Phase::Running { abort, .. } => Some(Arc::clone(abort)),
             Phase::Idle => None,
         }
+    }
+    fn enqueue_context(&self, text: String) {
+        let target = {
+            let state = self.state.lock().expect("agent 状态锁被毒化");
+            match state.phase {
+                Phase::Idle => InboxTarget::NextTurn,
+                Phase::Running { .. } => InboxTarget::NextStep,
+            }
+        };
+        self.inbox
+            .lock()
+            .expect("agent 收件箱锁被毒化")
+            .push(target, UserMessage::text(text));
     }
 }
 
@@ -204,29 +182,27 @@ impl Inner {
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let instruction_roots = config.instruction_roots.clone();
         let skill_roots = config.skill_roots.clone();
+        let spill_max_inline_tokens = config.spill_max_inline_tokens;
         tool_session.set_skill_roots(skill_roots.clone());
-        let mut instruction_state = InstructionState::default();
-        instruction_state.rehydrate(&store.derive_messages());
-        let mut skill_catalog = SkillCatalogState::default();
-        skill_catalog.rehydrate(&store.derive_messages());
-        if let Some(todos) = session::last_todos(store.events()) {
-            tool_session.set_todos(todos);
-        }
-        let ask_state = AskState::new();
+        // T006.1e：能力状态由能力模块装载/持有；driver 只做装配。
+        let (instruction_state, instruction_roots) =
+            crate::instructions_capability::InstructionsCapability::load(&store, instruction_roots);
+        let (skill_catalog, skill_roots) =
+            crate::skill_capability::SkillCapability::load(&store, skill_roots);
+        crate::todo_capability::TodoCapability::rehydrate(&tool_session, store.events());
+        let reminder_chain: Arc<Mutex<Option<(String, usize)>>> = Arc::new(Mutex::new(None));
+        let compaction_waiters: Arc<Mutex<Vec<tokio::sync::oneshot::Sender<()>>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let ask_state = crate::ask_capability::new_state();
         let inner = Arc::new(Self {
             id,
             log_path,
             cwd,
             data_dir,
-            instruction_roots,
-            skill_roots,
-            instructions: Mutex::new(instruction_state),
-            skill_catalog: Mutex::new(skill_catalog),
             model,
             tools,
             tool_session,
             max_parallel_tool_calls: config.max_parallel_tool_calls,
-            spill_max_inline_tokens: config.spill_max_inline_tokens,
             compaction_threshold_ratio: config.compaction_threshold_ratio,
             compaction_retain_ratio: config.compaction_retain_ratio,
             compaction_headroom_tokens: config.compaction_headroom_tokens,
@@ -240,32 +216,21 @@ impl Inner {
             events,
             idle_notify: Notify::new(),
             cancel_notify: Arc::new(Notify::new()),
-            capabilities: CapabilityRegistry::production(Arc::clone(&ask_state)),
-            ask_state,
-            compact_queue: Mutex::new(Vec::new()),
-            repeat_chain: Mutex::new(None),
+            capabilities: CapabilityRegistry::production(crate::capabilities::CapabilityStates {
+                ask: Arc::clone(&ask_state),
+                instructions: Arc::clone(&instruction_state),
+                skill_catalog: Arc::clone(&skill_catalog),
+                reminder_chain: Arc::clone(&reminder_chain),
+                compaction_waiters: Arc::clone(&compaction_waiters),
+                instruction_roots,
+                skill_roots,
+                spill_max_inline_tokens,
+            }),
             #[cfg(test)]
             settle_hook: Mutex::new(None),
         });
-        // T005.4：后台任务结算后，由 agent 把完成通知送进会话（事件 + 下一步输入）。
-        // 用 Weak 避免 tool_session → 回调 → Inner 的循环引用。
-        {
-            let handle = tokio::runtime::Handle::current();
-            let weak = Arc::downgrade(&inner);
-            inner.tool_session.tasks().set_on_settled(Arc::new(
-                move |job_id: &str, status: tools::JobStatus| {
-                    let Some(inner) = weak.upgrade() else {
-                        return;
-                    };
-                    // 结算线程上同步决定目标队列（忙碌/空闲按结算瞬间的 phase），
-                    // 只有 wake 需要回到 runtime 上下文。
-                    inner.deliver_job_completion(job_id, status);
-                    handle.spawn(async move {
-                        inner.wake_driver();
-                    });
-                },
-            ));
-        }
+        // T006.1e：结算回调与完成通知投递移入 jobs_capability 模块。
+        crate::jobs_capability::install(&inner);
         Ok(inner)
     }
 
@@ -282,8 +247,8 @@ impl Inner {
     }
 
     pub(crate) fn send(self: &Arc<Self>, message: UserMessage, delivery: Delivery) {
-        // 新的用户消息清零重复调用链（照 DSH repeat-tool-reminder）。
-        *self.repeat_chain.lock().expect("agent 重复链锁被毒化") = None;
+        // 新的用户消息清零重复调用链（照 DSH repeat-tool-reminder；状态在提醒能力里）。
+        self.capabilities.reset_repeat_chain();
         let target = {
             let state = self.state.lock().expect("agent 状态锁被毒化");
             let aborting = match &state.phase {
@@ -315,57 +280,25 @@ impl Inner {
             // 让正在等模型流的 step 立刻醒来、走 interrupted 收尾。
             self.cancel_notify.notify_waiters();
             // T006.1d2：让正在等用户回答的 ask 能力醒来，撤销问题并 aborted 收尾。
-            self.ask_state.cancel_waiters();
+            self.capabilities.cancel_questions();
         }
-    }
-
-    /// T005.4：后台任务结算通知——发 JobCompleted 事件，并把完成通知投进下一步输入。
-    /// 忙碌时进 NextStep（下一个 step 的请求带上），空闲时进 NextTurn 并唤醒新的一轮。
-    fn deliver_job_completion(self: &Arc<Self>, job_id: &str, status: tools::JobStatus) {
-        let read = self.tool_session.tasks().output(job_id).ok();
-        let label = read
-            .as_ref()
-            .map_or_else(String::new, |read| read.view.label.clone());
-        let mut text = format!(
-            "background job {job_id} (bash: {label}) finished [status: {}].",
-            status.as_str()
-        );
-        if let Some(read) = &read {
-            if read.stdout.len() <= 2048 && read.stderr.is_empty() {
-                text.push_str("\nOutput:\n");
-                text.push_str(&read.stdout);
-            } else {
-                text.push_str("\nRead its output with job_output.");
-            }
-        }
-        let agent_status = match status {
-            tools::JobStatus::Completed => JobStatus::Completed,
-            tools::JobStatus::Failed => JobStatus::Failed,
-            tools::JobStatus::Killed | tools::JobStatus::Running => JobStatus::Killed,
-        };
-        let _ = self.events.send(AgentEvent::JobCompleted {
-            job_id: job_id.to_owned(),
-            status: agent_status,
-            detail: Some(label),
-        });
-        let target = {
-            let state = self.state.lock().expect("agent 状态锁被毒化");
-            match state.phase {
-                Phase::Idle => InboxTarget::NextTurn,
-                Phase::Running { .. } => InboxTarget::NextStep,
-            }
-        };
-        self.inbox
-            .lock()
-            .expect("agent 收件箱锁被毒化")
-            .push(target, UserMessage::text(text));
     }
 
     /// 一次 step 的工具批之后推进重复链，命中阈值（3/5/8，照 DSH）返回一条提醒文本。
     /// todo_write 不跟踪（DSH 基础组合包默认排除）；每步最多一条提醒。
     /// T005.10/T006.1d2：回答问题；question_id 必须匹配当前等待的问题且未答过。
     pub(crate) fn answer(&self, question_id: &str, text: &str) -> bool {
-        self.ask_state.answer(question_id, text)
+        self.capabilities.answer_question(question_id, text)
+    }
+
+    /// T006.1e：jobs_capability 安装结算回调用（任务注册表在 tools 层）。
+    pub(crate) fn job_session(&self) -> &Arc<ToolSessionState> {
+        &self.tool_session
+    }
+
+    /// T006.1e：结算回调回到 runtime 上下文后唤醒驱动。
+    pub(crate) fn wake(self: &Arc<Self>) {
+        self.wake_driver();
     }
     /// 起驱动或在 Running 时置 latch。
     ///
@@ -425,21 +358,14 @@ impl Inner {
     /// 请求一次手动压缩（T005.8b）：排队并唤醒驱动；返回的接收者在该次压缩结束时收到通知。
     pub(crate) fn queue_compaction(self: &Arc<Self>) -> tokio::sync::oneshot::Receiver<()> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        self.compact_queue
-            .lock()
-            .expect("agent compact 队列锁被毒化")
-            .push(sender);
+        self.capabilities.push_compaction_waiter(sender);
         self.wake_driver();
         receiver
     }
 
     /// 队列里还有没有等待手动压缩的请求。
     fn has_queued_compaction(&self) -> bool {
-        !self
-            .compact_queue
-            .lock()
-            .expect("agent compact 队列锁被毒化")
-            .is_empty()
+        self.capabilities.has_compaction_waiters()
     }
 
     /// kick 在轮次结束后处理排队的手动压缩；空闲时也会被 wake 进来处理。
@@ -447,13 +373,7 @@ impl Inner {
     /// 请求会进入下一轮 drain，再做一次压缩。循环 drain 保证不会丢等待者。
     async fn run_queued_compaction(self: &Arc<Self>) -> Result<(), AgentError> {
         loop {
-            let waiters: Vec<tokio::sync::oneshot::Sender<()>> = {
-                let mut queue = self
-                    .compact_queue
-                    .lock()
-                    .expect("agent compact 队列锁被毒化");
-                std::mem::take(&mut *queue)
-            };
+            let waiters = self.capabilities.take_compaction_waiters();
             if waiters.is_empty() {
                 return Ok(());
             }
@@ -1415,7 +1335,7 @@ mod settle_tests {
             .unwrap();
         // 窗口内：入队 waiter，并模拟 wake_driver 只看到 Running（只置 latch）。
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        inner.compact_queue.lock().unwrap().push(sender);
+        inner.capabilities.push_compaction_waiter(sender);
         inner.wake_driver();
         let _ = release_tx.send(());
         settle.await.unwrap();
@@ -1423,7 +1343,7 @@ mod settle_tests {
             .await
             .is_ok();
         // 清理：避免随后 kick 真的尝试压缩。
-        inner.compact_queue.lock().unwrap().clear();
+        let _ = inner.capabilities.take_compaction_waiters();
         inner.state.lock().unwrap().phase = Phase::Idle;
         assert!(served, "边界入队的 compact waiter 必须在超时内收到通知");
     }

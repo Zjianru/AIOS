@@ -5,7 +5,15 @@ use session::EventKind;
 
 use crate::capabilities::{Capability, HookEvent, HookFuture, HookOutcome, HookPoint};
 
-pub(crate) struct ReminderCapability;
+pub(crate) struct ReminderCapability {
+    chain: std::sync::Arc<std::sync::Mutex<Option<(String, usize)>>>,
+}
+
+impl ReminderCapability {
+    pub(crate) fn new(chain: std::sync::Arc<std::sync::Mutex<Option<(String, usize)>>>) -> Self {
+        Self { chain }
+    }
+}
 
 const THRESHOLDS: [usize; 3] = [3, 5, 8];
 
@@ -65,6 +73,10 @@ impl Capability for ReminderCapability {
         &[HookPoint::ToolAfter]
     }
 
+    fn reset_repeat_chain(&self) {
+        *self.chain.lock().expect("agent 重复链锁被毒化") = None;
+    }
+
     fn on_hook<'a>(&'a self, event: &'a HookEvent<'a>) -> HookFuture<'a> {
         Box::pin(async move {
             let HookEvent::ToolAfter {
@@ -81,7 +93,7 @@ impl Capability for ReminderCapability {
                 return Ok(HookOutcome::Continue);
             }
             let host = event.host();
-            if let Some(reminder) = Self::repeat_reminder(host.repeat_chain(), calls) {
+            if let Some(reminder) = Self::repeat_reminder(&self.chain, calls) {
                 host.append(&[EventKind::UserMessage {
                     turn: *turn,
                     step: *step,

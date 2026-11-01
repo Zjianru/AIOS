@@ -6,6 +6,18 @@ use crate::capabilities::{Capability, HookEvent, HookFuture, HookOutcome, HookPo
 
 pub(crate) struct TodoCapability;
 
+impl TodoCapability {
+    /// T006.1e：续接时从日志恢复 todo 列表到工具会话状态（状态迁移从 driver 移出）。
+    pub(crate) fn rehydrate(
+        tool_session: &std::sync::Arc<tools::ToolSessionState>,
+        events: &[session::Event],
+    ) {
+        if let Some(todos) = session::last_todos(events) {
+            tool_session.set_todos(todos);
+        }
+    }
+}
+
 impl Capability for TodoCapability {
     fn name(&self) -> &'static str {
         "todo"

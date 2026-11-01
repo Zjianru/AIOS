@@ -61,9 +61,9 @@ T005 各票共用这几处接口和约定；字段与签名看代码，这里只
 - **ToolContext**（`crates/tools/src/lib.rs`、`crates/tools/src/session.rs`）：`cwd` + `Arc<ToolSessionState>`（`ObservationStore` 文件观察表、`TaskRegistry` 后台任务（T005.4 起实现：`<data-dir>/jobs/session-<id>/`）、`SpillStore`（`<data-dir>/spill/session-<id>/`，T005.2 起可 `save_text`）、`session_id` / `data_dir`（T005.3 给 bash 受管变量用）、`skill_roots`（T005.6 由 Agent 从 AgentConfig 写入，skill 工具用））。`Agent` 在 create/resume 时建一份、每次工具批传入；续接新建空观察表，不继承上一次。工具单元测试用 `ToolContext::new`（空状态、禁用 spill）。
 - **shell 受管环境**：`AIOS_*` 是受管命名空间（`AIOS_SHELL=1`、`AIOS_SESSION_ID`、`AIOS_HOME=<data-dir>`，T005.3）；子进程继承的 `AIOS_*` 先清掉再注入（照 DSH `shell-env`）。
 
-## T006 loop 挂点与功能注册表（1a 骨架 + 1b 压缩 + 1c 指令/skill + 1d todo/spill/提醒 + 1d2 ask）
+## T006 loop 挂点与功能注册表（T006.1a–1e 收口）
 
-T006.1a 接挂点与注册表；1b 起 **compaction 是真实 Capability**；1c 起 **instructions / skill**；1d 起 **todo / spill / reminder**；1d2 起 **ask 是真实 Capability**（`ask_capability.rs`，per-Agent AskState）。driver 不再持有这些逻辑；prune（T006.4）、jobs（1e）仍是 no-op 占位。
+T006.1a 接挂点与注册表；1b 起 **compaction 是真实 Capability**；1c 起 **instructions / skill**；1d 起 **todo / spill / reminder**；1d2 起 **ask 是真实 Capability**（`ask_capability.rs`，per-Agent AskState）；1e 把 jobs 结算回调移入 `jobs_capability.rs`（模块服务，不挂 loop 挂点），并把 capability 状态收进 `CapabilityStates`（driver 只装配）。loop 现在只剩 turn/step/输入队列/工具批/重试；prune 是唯一过渡态（driver 每请求调用 + `agent/prune.rs`，T006.4 搬）。
 
 **设计说明（为什么这样接）**
 
@@ -108,11 +108,11 @@ T006.1a 接挂点与注册表；1b 起 **compaction 是真实 Capability**；1c 
 | 6 | ask | ToolBefore（只拦批内第一条 ask） | calls、host.events/append、AskState、host.current_abort | **已迁**：`agent/src/ask_capability.rs`（AskState per-Agent） | 1d2（完成） |
 | 7 | spill | ToolResult | call/result、host.tool_session.spill、host.spill_max_inline_tokens | **已迁**：`agent/src/spill_capability.rs` | 1d（完成） |
 | 8 | reminder | ToolAfter | calls/results、host.repeat_chain | **已迁**：`agent/src/reminder_capability.rs` | 1d（完成） |
-| 9 | jobs | Status | host.tool_session（任务注册表）、host.events | `tools/src/jobs.rs` + driver 回调 | 1e |
+| 9 | jobs | Status（占位；结算不走挂点） | host.tool_session（任务注册表）、host.events、host.enqueue_context | **已迁**：`agent/src/jobs_capability.rs`（结算回调/通知投递）+ `tools/src/jobs.rs`（注册表） | 1e（完成） |
 
 **修改规则**：挂点集合与注册顺序固定；新增数据在 typed `HookEvent` 上加字段/变体并在本表记录；不得新增运行时加载。 **写日志入口约束**：写日志必须走 `LoopAccess::append`（它内部走 `Inner::append`，落盘后逐事件派发 SessionEvent，不重复派发）；直接锁 `LoopAccess::session` 后 append 不会触发 SessionEvent，1c/1d 禁止这样绕过。
 
-**验收与证据**：1a 证据见 `T006/evidence/T006.1a-hook-grep.log`；1b 见 `T006/evidence/T006.1b-grep.log`；1c 见 `T006/evidence/T006.1c-grep.log`；1d 见 `T006/evidence/T006.1d-grep.log`；1d2 见 `T006/evidence/T006.1d2-grep.log`（ask 已迁、driver 旧拦截/parser 删除、四变体/DispatchOutcome/Registry per-Agent、override 跳过执行、取消→Aborted、205 绿）。注：1a 日志的「PreStep 精确计数 1」是当时快照；1c 起拆分两阶段后 PreStep 构造点为 3 处（自动 Inject/自动 Compact/手动 Compact），HookPoint 集合未变。
+**验收与证据**：1a 证据见 `T006/evidence/T006.1a-hook-grep.log`；1b 见 `T006/evidence/T006.1b-grep.log`；1c 见 `T006/evidence/T006.1c-grep.log`；1d 见 `T006/evidence/T006.1d-grep.log`；1d2 见 `T006/evidence/T006.1d2-grep.log`；1e 见 `T006/evidence/T006.1e-grep.log`（DoD1：loop 除 prune 外无功能代码、jobs 回调移入 jobs_capability、能力状态 CapabilityStates、prune 过渡态记录、206 绿）。注：1a 日志的「PreStep 精确计数 1」是当时快照；1c 起拆分两阶段后 PreStep 构造点为 3 处（自动 Inject/自动 Compact/手动 Compact），HookPoint 集合未变。
 
 ## 接缝
 
