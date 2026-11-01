@@ -13,7 +13,7 @@ use model::{
 use session::{EventKind, SessionId, SessionStore, TurnEndReason};
 use tokio::sync::Notify;
 use tokio::sync::broadcast;
-use tools::{ToolCall, ToolContext, ToolSet, execute_batch};
+use tools::{ToolCall, ToolContext, ToolSessionState, ToolSet, execute_batch};
 
 use crate::error::AgentError;
 use crate::inbox::{Delivery, Inbox, InboxTarget};
@@ -49,6 +49,8 @@ pub(crate) struct Inner {
     cwd: PathBuf,
     model: DeepSeek,
     tools: ToolSet,
+    /// 会话级工具状态（观察表/spill/任务注册表）；续接时新建，不继承上一次。
+    tool_session: Arc<ToolSessionState>,
     max_parallel_tool_calls: usize,
     store: Mutex<SessionStore>,
     inbox: Mutex<Inbox>,
@@ -65,12 +67,8 @@ impl Inner {
         deps: Deps,
         last_turn: u64,
     ) -> Result<Arc<Self>, AgentError> {
-        // 协调线加账：非法并发上限要在建 agent 时返回错误，不能等到驱动任务里 panic。
-        if config.max_parallel_tool_calls == 0 {
-            return Err(AgentError::InvalidConfig {
-                value: config.max_parallel_tool_calls,
-            });
-        }
+        // 协调线加账：非法配置要在建 agent 时返回错误，不能等到驱动任务里 panic。
+        config.validate()?;
         let Deps {
             model,
             tools,
@@ -79,6 +77,12 @@ impl Inner {
         let id = store.id().clone();
         let log_path = store.path().to_path_buf();
         let cwd = PathBuf::from(store.cwd());
+        // 日志路径固定是 <data-dir>/sessions/<id>.jsonl；spill 根按会话分目录。
+        let data_dir = log_path
+            .parent()
+            .and_then(Path::parent)
+            .map_or_else(|| cwd.clone(), Path::to_path_buf);
+        let tool_session = Arc::new(ToolSessionState::new(&data_dir, id.as_str()));
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         Ok(Arc::new(Self {
             id,
@@ -86,6 +90,7 @@ impl Inner {
             cwd,
             model,
             tools,
+            tool_session,
             max_parallel_tool_calls: config.max_parallel_tool_calls,
             store: Mutex::new(store),
             inbox: Mutex::new(Inbox::default()),
@@ -573,7 +578,7 @@ async fn run_step(
         });
     }
     inner.append(&call_events)?;
-    let context = ToolContext::new(inner.cwd.clone());
+    let context = ToolContext::with_session(inner.cwd.clone(), Arc::clone(&inner.tool_session));
     let outcome = execute_batch(
         &inner.tools,
         &calls,

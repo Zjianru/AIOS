@@ -41,6 +41,7 @@ async fn new_agent(
     let agent = Agent::create(
         AgentConfig {
             max_parallel_tool_calls,
+            ..AgentConfig::default()
         },
         Deps {
             model: DeepSeek::new(model_config(base_url)).unwrap(),

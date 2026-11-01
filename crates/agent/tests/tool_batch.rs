@@ -63,6 +63,7 @@ async fn setup(
     let agent = Agent::create(
         AgentConfig {
             max_parallel_tool_calls,
+            ..AgentConfig::default()
         },
         Deps {
             model: DeepSeek::new(config).unwrap(),
@@ -243,6 +244,7 @@ async fn agent_config_rejects_zero_parallelism() {
     let created = Agent::create(
         AgentConfig {
             max_parallel_tool_calls: 0,
+            ..AgentConfig::default()
         },
         Deps {
             model: DeepSeek::new(config).unwrap(),

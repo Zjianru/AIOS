@@ -5,16 +5,22 @@
 
 mod batch;
 mod builtin;
+mod session;
 
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use model::ToolSchema;
 use serde_json::Value;
 
 pub use batch::{BatchOutcome, execute_batch};
 pub use builtin::{GlobTool, GrepTool, ReadTool};
+pub use session::{
+    FileVersion, ObservationStore, ObservedFile, SharedToolSession, SpillStore, TaskRegistry,
+    ToolSessionState,
+};
 
 /// 一个异步结果的 boxed future。Tool 必须能放进 dyn 的工具集，所以用 boxed
 /// future，而不是返回位置的 impl Future（后者不能让 trait 成为 dyn 兼容）。
@@ -25,11 +31,33 @@ pub type ToolFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub struct ToolContext {
     /// 会话的工作目录；相对路径都相对它解析。
     pub cwd: PathBuf,
+    /// 会话级工具状态（观察表 / 任务注册表 / spill）；由 Agent 建、跨调用共享。
+    session: Arc<ToolSessionState>,
 }
 
 impl ToolContext {
+    /// 独立工具测试用：空观察表、空任务表、禁用 spill。
     pub fn new(cwd: impl Into<PathBuf>) -> Self {
-        Self { cwd: cwd.into() }
+        Self {
+            cwd: cwd.into(),
+            session: Arc::new(ToolSessionState::detached()),
+        }
+    }
+
+    /// Agent 的批执行用：带会话级状态。
+    pub fn with_session(cwd: impl Into<PathBuf>, session: Arc<ToolSessionState>) -> Self {
+        Self {
+            cwd: cwd.into(),
+            session,
+        }
+    }
+
+    pub fn session(&self) -> &ToolSessionState {
+        &self.session
+    }
+
+    pub fn shared_session(&self) -> Arc<ToolSessionState> {
+        Arc::clone(&self.session)
     }
 }
 

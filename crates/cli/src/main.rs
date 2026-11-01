@@ -4,7 +4,9 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use agent::{Agent, AgentConfig, AgentEvent, Delivery, Deps, TurnOutcome};
+use agent::{
+    Agent, AgentConfig, AgentEvent, CompactionTrigger, Delivery, Deps, JobStatus, TurnOutcome,
+};
 use clap::{Args, Parser, Subcommand};
 use model::{DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS, DeepSeek, DeepSeekConfig, Effort, UserMessage};
 use session::{SessionId, SessionStore};
@@ -280,6 +282,55 @@ fn handle_event(event: AgentEvent, outcome: &mut Option<TurnOutcome>) {
         AgentEvent::UsageReported { usage } => {
             println!();
             println!("用量: {}", usage.summary());
+        }
+        AgentEvent::QuestionAsked { question } => {
+            println!();
+            println!("[问题：{}]", question.question);
+            for (index, option) in question.options.iter().enumerate() {
+                match &option.description {
+                    Some(description) => {
+                        println!("  {}. {}（{}）", index + 1, option.label, description);
+                    }
+                    None => println!("  {}. {}", index + 1, option.label),
+                }
+            }
+            if question.multi_select {
+                println!("  （可多选）");
+            }
+        }
+        AgentEvent::CompactionStarted {
+            compaction_id,
+            trigger,
+        } => {
+            println!();
+            let kind = match trigger {
+                CompactionTrigger::Auto => "自动",
+                CompactionTrigger::Manual => "手动",
+            };
+            println!("[压缩开始：{compaction_id}（{kind}）]");
+        }
+        AgentEvent::CompactionEnded {
+            compaction_id,
+            error,
+        } => match error {
+            Some(error) => println!("[压缩失败：{compaction_id}：{error}]"),
+            None => println!("[压缩完成：{compaction_id}]"),
+        },
+        AgentEvent::JobCompleted {
+            job_id,
+            status,
+            detail,
+        } => {
+            println!();
+            let status = match status {
+                JobStatus::Completed => "completed",
+                JobStatus::Failed => "failed",
+                JobStatus::Killed => "killed",
+            };
+            match detail {
+                Some(detail) => println!("[任务完成：{job_id}（{status}）：{detail}]"),
+                None => println!("[任务完成：{job_id}（{status}）]"),
+            }
         }
         AgentEvent::TurnEnded { outcome: ended, .. } => {
             println!();

@@ -1,0 +1,134 @@
+//! 工具用的会话上下文：文件观察状态、任务注册表、spill 存储。
+//!
+//! T005.0 只定形状；读写能力由 T005.1（观察）、T005.2（spill）、T005.4（任务）填。
+//! 这些状态挂在一次会话上：Agent::create/resume 各建一份，续接不继承上一次的观察。
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
+
+/// 文件版本 token（T005.1 从 metadata 生成；这里只保存不透明字符串）。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FileVersion(String);
+
+impl FileVersion {
+    pub fn new(token: impl Into<String>) -> Self {
+        Self(token.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// 一个文件在本会话里的观察结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObservedFile {
+    /// 读过，且读到这个版本。
+    Present(FileVersion),
+    /// 读过，确认当时不存在（之后 write 可以走 createIfAbsent）。
+    Absent,
+}
+
+/// 会话内的文件观察表：canonical target key -> 观察结果。
+#[derive(Debug, Default)]
+pub struct ObservationStore {
+    files: HashMap<PathBuf, ObservedFile>,
+}
+
+impl ObservationStore {
+    pub fn get(&self, path: impl AsRef<Path>) -> Option<&ObservedFile> {
+        self.files.get(path.as_ref())
+    }
+
+    pub fn record_present(&mut self, path: impl Into<PathBuf>, version: FileVersion) {
+        self.files
+            .insert(path.into(), ObservedFile::Present(version));
+    }
+
+    pub fn record_absent(&mut self, path: impl Into<PathBuf>) {
+        self.files.insert(path.into(), ObservedFile::Absent);
+    }
+
+    pub fn clear(&mut self) {
+        self.files.clear();
+    }
+
+    pub fn len(&self) -> usize {
+        self.files.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+}
+
+/// 会话后台任务注册表。T005.0 只占位；T005.4 在这个容器里放具体任务记录。
+#[derive(Debug, Default)]
+pub struct TaskRegistry;
+
+/// spill 存储句柄：根目录固定为 data-dir/spill/session-<id>；None 表示禁用。
+#[derive(Debug, Clone)]
+pub struct SpillStore {
+    root: Option<PathBuf>,
+}
+
+impl SpillStore {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self {
+            root: Some(root.into()),
+        }
+    }
+
+    /// 单元测试/纯工具场景：没有会话数据目录，spill 不可用。
+    pub fn disabled() -> Self {
+        Self { root: None }
+    }
+
+    pub fn root(&self) -> Option<&Path> {
+        self.root.as_deref()
+    }
+}
+
+/// 一次会话共享的工具上下文状态；ToolContext::new 的测试路径用 detached 空状态。
+#[derive(Debug)]
+pub struct ToolSessionState {
+    observations: Mutex<ObservationStore>,
+    tasks: Mutex<TaskRegistry>,
+    spill: SpillStore,
+}
+
+impl ToolSessionState {
+    /// Agent 建会话时用：spill 根固定为 data-dir 下按会话分的目录。
+    pub fn new(data_dir: &Path, session_id: &str) -> Self {
+        Self {
+            observations: Mutex::new(ObservationStore::default()),
+            tasks: Mutex::new(TaskRegistry),
+            spill: SpillStore::new(data_dir.join("spill").join(format!("session-{session_id}"))),
+        }
+    }
+
+    /// 与真实会话无关的工具测试：空观察表、空任务表、禁用 spill。
+    pub fn detached() -> Self {
+        Self {
+            observations: Mutex::new(ObservationStore::default()),
+            tasks: Mutex::new(TaskRegistry),
+            spill: SpillStore::disabled(),
+        }
+    }
+
+    pub fn observations(&self) -> MutexGuard<'_, ObservationStore> {
+        self.observations.lock().expect("工具观察状态锁被毒化")
+    }
+
+    pub fn tasks(&self) -> MutexGuard<'_, TaskRegistry> {
+        self.tasks.lock().expect("工具任务注册表锁被毒化")
+    }
+
+    pub fn spill(&self) -> &SpillStore {
+        &self.spill
+    }
+}
+
+/// 会话级状态的共享句柄；ToolContext 与 Agent 各持一份 Arc。
+pub type SharedToolSession = Arc<ToolSessionState>;

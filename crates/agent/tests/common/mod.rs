@@ -529,3 +529,48 @@ impl Drop for PhaseSseServer {
         }
     }
 }
+
+/// 测试共用：指向 mock 服务的模型配置（5 个测试文件原来各写一遍）。
+pub fn model_config(base_url: &str) -> model::DeepSeekConfig {
+    model::DeepSeekConfig {
+        base_url: base_url.to_owned(),
+        api_key: "test-key".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        max_tokens: 2048,
+        effort: model::Effort::High,
+    }
+}
+
+/// 测试共用：建一个临时目录上的 agent，工具集合由调用方给。
+pub async fn setup_agent(
+    base_url: &str,
+    tools: tools::ToolSet,
+) -> (
+    agent::Agent,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    session::SessionId,
+) {
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = session::SessionStore::create(data_dir.path(), cwd.path()).unwrap();
+    let id = store.id().clone();
+    let agent = agent::Agent::create(
+        agent::AgentConfig::default(),
+        agent::Deps {
+            model: model::DeepSeek::new(model_config(base_url)).unwrap(),
+            tools,
+            store,
+        },
+    )
+    .await
+    .unwrap();
+    (agent, data_dir, cwd, id)
+}
+
+/// 测试共用：等 idle；超时按秒数。
+pub async fn wait_idle(agent: &agent::Agent, seconds: u64) {
+    tokio::time::timeout(std::time::Duration::from_secs(seconds), agent.idle())
+        .await
+        .expect("idle() 超时");
+}
