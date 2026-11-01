@@ -61,9 +61,9 @@ T005 各票共用这几处接口和约定；字段与签名看代码，这里只
 - **ToolContext**（`crates/tools/src/lib.rs`、`crates/tools/src/session.rs`）：`cwd` + `Arc<ToolSessionState>`（`ObservationStore` 文件观察表、`TaskRegistry` 后台任务（T005.4 起实现：`<data-dir>/jobs/session-<id>/`）、`SpillStore`（`<data-dir>/spill/session-<id>/`，T005.2 起可 `save_text`）、`session_id` / `data_dir`（T005.3 给 bash 受管变量用）、`skill_roots`（T005.6 由 Agent 从 AgentConfig 写入，skill 工具用））。`Agent` 在 create/resume 时建一份、每次工具批传入；续接新建空观察表，不继承上一次。工具单元测试用 `ToolContext::new`（空状态、禁用 spill）。
 - **shell 受管环境**：`AIOS_*` 是受管命名空间（`AIOS_SHELL=1`、`AIOS_SESSION_ID`、`AIOS_HOME=<data-dir>`，T005.3）；子进程继承的 `AIOS_*` 先清掉再注入（照 DSH `shell-env`）。
 
-## T006 loop 挂点与功能注册表（1a 骨架 + 1b 压缩 + 1c 指令/skill + 1d todo/spill/提醒）
+## T006 loop 挂点与功能注册表（1a 骨架 + 1b 压缩 + 1c 指令/skill + 1d todo/spill/提醒 + 1d2 ask）
 
-T006.1a 接挂点与注册表；1b 起 **compaction 是真实 Capability**；1c 起 **instructions / skill 是真实 Capability**；1d 起 **todo / spill / reminder 是真实 Capability**（`todo_capability.rs`、`spill_capability.rs`、`reminder_capability.rs`），driver 不再持有这些逻辑。prune（T006.4）、ask（评估后拆 T006.1d2）、jobs（1e）仍未搬，注册表里仍是 no-op 占位。
+T006.1a 接挂点与注册表；1b 起 **compaction 是真实 Capability**；1c 起 **instructions / skill**；1d 起 **todo / spill / reminder**；1d2 起 **ask 是真实 Capability**（`ask_capability.rs`，per-Agent AskState）。driver 不再持有这些逻辑；prune（T006.4）、jobs（1e）仍是 no-op 占位。
 
 **设计说明（为什么这样接）**
 
@@ -73,7 +73,10 @@ T006.1a 接挂点与注册表；1b 起 **compaction 是真实 Capability**；1c 
 - loop 只在固定位置 dispatch，不 import 功能内部类型；1b–1e 搬实现时只换 Capability 实现（必要时按 ARCH 记录扩 HookContext 字段），挂点集合与调用点顺序不变——1a 不再声称「只换实现」是无条件成立。
 - 执行顺序与错误：同一挂点按注册顺序执行；首个 Err 短路返回，之前的功能副作用已发生且不回滚；SessionEvent 在日志 append 成功后逐事件派发（日志已提交）；压缩执行与「已确认」通知拆开：`CompactionCapability` 只挂 PreStep/Request/RequestError（不消费 Compaction），三路（PreStep 自动、RequestError 溢出、PreStep trigger=Manual 手动）都经 `compact_if_needed`，其在 should_trigger/select_split 确认后统一派发 `HookEvent::Compaction`（供 prune 等，T006.4）；自动/手动压缩失败不打断本轮/队列，溢出压缩失败时 `compact_if_needed` 返回 Err（摘要失败等）或 Ok(false)（无前缀可压，返回原始 model 错误），第二次溢出直接致命不再派发；Status 在 kick 收敛前派发，错误不阻断收敛（1a no-op，服务接入时再定上报）。
 - PreStep 分两阶段（`HookEvent::PreStep { phase }`，不是新挂点）：Inject 在 prune 之前（instructions、skill；按注册表相对顺序），Compact 在 prune 之后（compaction 自动检查）。旧顺序保持为 system/user → Inject（instructions → skill）→ prune → Compact（压缩检查）→ derive；手动 /compact 只走 Compact（trigger=Some(Manual)），instructions/skill 跳过，所以手动压缩不会顺带注入指令/skill。回归断言：`pre_step_phase_order::injection_happens_before_compaction_in_same_turn`（同 turn 压缩时注入先于 compaction/start）与 `manual_compact_no_injection::manual_compact_does_not_inject_instructions_or_skills`。
-- 挂点返回值（T006.1d）：`HookOutcome { Continue, ToolResultContent(String) }`；dispatch 返回最后一条非 Continue。ToolResult 挂点（spill）用 `ToolResultContent` 把 preview+locator 交给 driver 写日志；其余能力返回 Continue。
+- 挂点返回值（T006.1d2 四变体）：`HookOutcome { Continue, ToolResultContent(String), ToolResultOverride { index, result }, AbortStep }`；`CapabilityRegistry::dispatch` 返回 `DispatchOutcome { overrides, content, abort }`：按注册顺序收集、同 index 后写胜出、content 取最后非 None、AbortStep 置 abort 优先。Content 只允许 ToolResult 阶段，Override 只允许 ToolBefore 阶段（阶段不匹配忽略）；AbortStep 让 run_step 返回 `StepEnd::Aborted`（不是 error）。
+- 注册表 per-Agent（T006.1d2）：`production(ask: Arc<AskState>)` 返回 `Vec<Box<dyn Capability>>`；ZST 能力每 Agent Box 一份，顺序不变；AskCapability 持有该 Agent 的 AskState（pending/answers/取消唤醒），`Agent::answer` 继续委托 Inner 再路由到 AskState（签名/CLI 不变）。
+- ask 所有权：AskCapability 只写 `question/asked`、`question/cancelled`（走 LoopAccess::append）；answers 的 tool/result 由 driver 在 ToolResult 阶段统一写一条。本票只拦批内第一条 ask 调用（批内后续 ask 仍走占位工具）；answers 形状/多问题语义照 T005.12 不改。
+- ToolBefore override：index 对应调用不执行（占位 ask 工具不跑），结果按 calls 顺序对齐后并回；多 index 由 dispatch 聚合（每能力每事件最多一条 override）。
 - 依赖方向：`cli → agent → tools → session → model`；agent 内部 `driver → capabilities` 单向。
 
 **挂点表（HookPoint → 派发位置 → typed 数据 → 注册功能）**
@@ -84,8 +87,8 @@ T006.1a 接挂点与注册表；1b 起 **compaction 是真实 Capability**；1c 
 | Request | `model.stream` 之前 | turn/step/host/messages | compaction（token 记账占位） |
 | RequestError | `Err(error)` 分支、abort 检查之后（第二次溢出不再派发） | turn/step/host/error | compaction（溢出强制压缩） |
 | SessionEvent | `Inner::append` 成功后逐事件 | host/event | instructions（对账；对外推送后续票） |
-| ToolBefore | `execute_batch` 之前 | turn/step/host/calls | instructions、skill |
-| ToolResult | 每个 tool/result 落日志前 | turn/step/host/call/result（返回 HookOutcome::ToolResultContent） | spill |
+| ToolBefore | `execute_batch` 之前 | turn/step/host/calls | instructions、skill、ask（ToolResultOverride/AbortStep） |
+| ToolResult | 每个 tool/result 落日志前 | turn/step/host/call/result（返回 ToolResultContent；ask 的 answers 也在此由 driver 统一写） | spill |
 | ToolAfter | tool/result 落日志后 | turn/step/host/calls/results/cancelled | todo、reminder（spill 也挂 ToolAfter 但 no-op） |
 | Compaction | `compaction.rs` 的 `compact_if_needed` 内、should_trigger/select_split 确认之后（自动/溢出/手动三路统一派发） | turn/step/host/trigger | prune（T006.4 迁入）；`CompactionCapability` 不消费此挂点（防自递归） |
 | Status | `kick` 收敛到 Idle 之前 | turn/host | jobs（服务推送后续票） |
@@ -102,14 +105,14 @@ T006.1a 接挂点与注册表；1b 起 **compaction 是真实 Capability**；1c 
 | 3 | instructions | PreStep(Inject)（manual 跳过；SessionEvent/ToolBefore 后续票） | host.instructions_state/session/instruction_roots/data_dir/events | **已迁**：`agent/src/instructions_capability.rs` + `agent/src/instructions.rs` | 1c（完成） |
 | 4 | skill | PreStep(Inject)（manual 跳过；ToolBefore 后续票） | host.skill_catalog_state/skill_roots、host.session/events | **已迁**：`agent/src/skill_capability.rs` + `agent/src/skill_catalog.rs` + `tools/src/skills.rs` 的 discover | 1c（完成） |
 | 5 | todo | ToolAfter | calls/results、host.session/events | **已迁**：`agent/src/todo_capability.rs` | 1d（完成） |
-| 6 | ask | （无 loop 挂点；需拦截工具调用并替换结果 + 问/答状态） | 待 1d2 评估 | driver 的 ask 分支 | **拆 T006.1d2**（1d 评估：超出最小 hook 扩展） |
+| 6 | ask | ToolBefore（只拦批内第一条 ask） | calls、host.events/append、AskState、host.current_abort | **已迁**：`agent/src/ask_capability.rs`（AskState per-Agent） | 1d2（完成） |
 | 7 | spill | ToolResult | call/result、host.tool_session.spill、host.spill_max_inline_tokens | **已迁**：`agent/src/spill_capability.rs` | 1d（完成） |
 | 8 | reminder | ToolAfter | calls/results、host.repeat_chain | **已迁**：`agent/src/reminder_capability.rs` | 1d（完成） |
 | 9 | jobs | Status | host.tool_session（任务注册表）、host.events | `tools/src/jobs.rs` + driver 回调 | 1e |
 
 **修改规则**：挂点集合与注册顺序固定；新增数据在 typed `HookEvent` 上加字段/变体并在本表记录；不得新增运行时加载。 **写日志入口约束**：写日志必须走 `LoopAccess::append`（它内部走 `Inner::append`，落盘后逐事件派发 SessionEvent，不重复派发）；直接锁 `LoopAccess::session` 后 append 不会触发 SessionEvent，1c/1d 禁止这样绕过。
 
-**验收与证据**：1a 证据见 `T006/evidence/T006.1a-hook-grep.log`；1b 见 `T006/evidence/T006.1b-grep.log`；1c 见 `T006/evidence/T006.1c-grep.log`；1d 见 `T006/evidence/T006.1d-grep.log`（todo/spill/reminder 已迁、driver 无旧逻辑、HookOutcome 只影响 hook 层、201 绿；ask 拆 1d2 的评估记录）。注：1a 日志的「PreStep 精确计数 1」是当时快照；1c 起拆分两阶段后 PreStep 构造点为 3 处（自动 Inject/自动 Compact/手动 Compact），HookPoint 集合未变。
+**验收与证据**：1a 证据见 `T006/evidence/T006.1a-hook-grep.log`；1b 见 `T006/evidence/T006.1b-grep.log`；1c 见 `T006/evidence/T006.1c-grep.log`；1d 见 `T006/evidence/T006.1d-grep.log`；1d2 见 `T006/evidence/T006.1d2-grep.log`（ask 已迁、driver 旧拦截/parser 删除、四变体/DispatchOutcome/Registry per-Agent、override 跳过执行、取消→Aborted、205 绿）。注：1a 日志的「PreStep 精确计数 1」是当时快照；1c 起拆分两阶段后 PreStep 构造点为 3 处（自动 Inject/自动 Compact/手动 Compact），HookPoint 集合未变。
 
 ## 接缝
 

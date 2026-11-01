@@ -7,6 +7,7 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use model::{DeepSeek, Message, ModelError};
@@ -14,6 +15,7 @@ use session::{EventKind, SessionStore};
 use tokio::sync::broadcast;
 use tools::{ToolCall, ToolResult, ToolSessionState, ToolSet};
 
+use crate::ask_capability::{AskCapability, AskState};
 use crate::compaction_capability::CompactionCapability;
 use crate::error::AgentError;
 use crate::instructions::InstructionState;
@@ -99,6 +101,8 @@ pub(crate) trait LoopAccess: Send + Sync {
     fn skill_catalog_state(&self) -> &Mutex<SkillCatalogState>;
     /// 重复调用链（T005.9；提醒能力在 ToolAfter 里读写，新用户消息由 driver 清零）。
     fn repeat_chain(&self) -> &Mutex<Option<(String, usize)>>;
+    /// 当前轮次的 abort 标志（ask 能力等待答案时要检查取消；Running 时总有）。
+    fn current_abort(&self) -> Option<Arc<AtomicBool>>;
 }
 
 /// 每个挂点一份 typed 事件：host 访问面 + 该挂点可用的运行态数据。
@@ -228,17 +232,33 @@ impl HookEvent<'_> {
     }
 }
 
-/// dyn 兼容的异步返回；不加 async-trait 依赖。
-/// 挂点返回值：多数能力 Continue；T006.1d 起 ToolResult 挂点可提供落盘后的内容。
+/// 挂点返回值（四变体，T006.1d2）：Content 只允许 ToolResult 阶段，Override 只允许
+/// ToolBefore 阶段；AbortStep 表示本 step 应 aborted 收尾（不是 error）。
+#[derive(Clone)]
 pub(crate) enum HookOutcome {
     Continue,
     /// ToolResult 挂点用：用落盘后的 preview+locator 替换内联 content。
     ToolResultContent(String),
+    /// ToolBefore 挂点用：第 index 个调用不执行，直接用给定结果（批内顺序不变）。
+    ToolResultOverride {
+        index: usize,
+        result: ToolResult,
+    },
+    /// 本 step 取消（ask 等待中被 cancel）；run_step 返回 StepEnd::Aborted。
+    AbortStep,
 }
 
 /// dyn 兼容的异步返回；不加 async-trait 依赖。
 pub(crate) type HookFuture<'a> =
     Pin<Box<dyn Future<Output = Result<HookOutcome, AgentError>> + Send + 'a>>;
+
+/// dispatch 聚合结果：overrides（同 index 后写胜出）、最后非 None 的 content、abort 优先。
+#[derive(Default)]
+pub(crate) struct DispatchOutcome {
+    pub overrides: Vec<(usize, ToolResult)>,
+    pub content: Option<String>,
+    pub abort: bool,
+}
 
 /// 一个可挂到 loop 挂点上的功能（编译期 trait，不做运行时加载）。
 pub(crate) trait Capability: Send + Sync {
@@ -247,7 +267,7 @@ pub(crate) trait Capability: Send + Sync {
     fn on_hook<'a>(&'a self, event: &'a HookEvent<'a>) -> HookFuture<'a>;
 }
 
-/// 1a 的占位登记：只声明功能与它关心的挂点，不接管行为（行为仍在原模块）。
+/// 占位登记：只声明功能与它关心的挂点，不接管行为。
 struct Placeholder {
     name: &'static str,
     hooks: &'static [HookPoint],
@@ -268,64 +288,75 @@ impl Capability for Placeholder {
 const PRUNE_HOOKS: &[HookPoint] = &[HookPoint::Compaction];
 const JOBS_HOOKS: &[HookPoint] = &[HookPoint::Status];
 
-static COMPACTION_CAP: CompactionCapability = CompactionCapability;
-static PRUNE: Placeholder = Placeholder {
-    name: "prune",
-    hooks: PRUNE_HOOKS,
-};
-static INSTRUCTIONS_CAP: InstructionsCapability = InstructionsCapability;
-static SKILL_CAP: SkillCapability = SkillCapability;
-static TODO_CAP: TodoCapability = TodoCapability;
-static ASK: Placeholder = Placeholder {
-    name: "ask",
-    hooks: &[],
-};
-static SPILL_CAP: SpillCapability = SpillCapability;
-static REMINDER_CAP: ReminderCapability = ReminderCapability;
-static JOBS: Placeholder = Placeholder {
-    name: "jobs",
-    hooks: JOBS_HOOKS,
-};
-
 /// 固定顺序的功能注册表；顺序=strategy §2 功能表的拆票顺序（compaction→…→jobs）。
+/// per-Agent 构造（T006.1d2）：ZST 能力每 Agent Box 一份，ask 能力持有该 Agent 的 AskState。
 pub(crate) struct CapabilityRegistry {
-    capabilities: Vec<&'static dyn Capability>,
+    capabilities: Vec<Box<dyn Capability>>,
 }
 
 impl CapabilityRegistry {
-    pub(crate) fn production() -> Self {
+    pub(crate) fn production(ask: Arc<AskState>) -> Self {
         Self {
             capabilities: vec![
-                &COMPACTION_CAP,
-                &PRUNE,
-                &INSTRUCTIONS_CAP,
-                &SKILL_CAP,
-                &TODO_CAP,
-                &ASK,
-                &SPILL_CAP,
-                &REMINDER_CAP,
-                &JOBS,
+                Box::new(CompactionCapability),
+                Box::new(Placeholder {
+                    name: "prune",
+                    hooks: PRUNE_HOOKS,
+                }),
+                Box::new(InstructionsCapability),
+                Box::new(SkillCapability),
+                Box::new(TodoCapability),
+                Box::new(AskCapability::new(ask)),
+                Box::new(SpillCapability),
+                Box::new(ReminderCapability),
+                Box::new(Placeholder {
+                    name: "jobs",
+                    hooks: JOBS_HOOKS,
+                }),
             ],
         }
     }
 
+    #[cfg(test)]
+    fn from_capabilities(capabilities: Vec<Box<dyn Capability>>) -> Self {
+        Self { capabilities }
+    }
+
     /// 按注册顺序派发；首个 Err 短路（之前的功能已执行完，不回滚）。
-    /// 返回最后一条非 Continue 的 outcome（ToolResult 落盘内容等）。
-    pub(crate) async fn dispatch(&self, event: &HookEvent<'_>) -> Result<HookOutcome, AgentError> {
-        let mut outcome = HookOutcome::Continue;
+    /// 阶段不匹配的 outcome 被忽略（Content 只 ToolResult、Override 只 ToolBefore）。
+    pub(crate) async fn dispatch(
+        &self,
+        event: &HookEvent<'_>,
+    ) -> Result<DispatchOutcome, AgentError> {
+        let mut outcome = DispatchOutcome::default();
         for capability in &self.capabilities {
             debug_assert!(!capability.name().is_empty());
             if capability.hooks().contains(&event.hook()) {
                 let next = capability.on_hook(event).await?;
-                if !matches!(next, HookOutcome::Continue) {
-                    outcome = next;
-                }
+                Self::merge(&mut outcome, event.hook(), next);
             }
         }
         Ok(outcome)
     }
-}
 
+    fn merge(outcome: &mut DispatchOutcome, hook: HookPoint, next: HookOutcome) {
+        match next {
+            HookOutcome::Continue => {}
+            HookOutcome::ToolResultContent(content) => {
+                if hook == HookPoint::ToolResult {
+                    outcome.content = Some(content);
+                }
+            }
+            HookOutcome::ToolResultOverride { index, result } => {
+                if hook == HookPoint::ToolBefore {
+                    outcome.overrides.retain(|(existing, _)| *existing != index);
+                    outcome.overrides.push((index, result));
+                }
+            }
+            HookOutcome::AbortStep => outcome.abort = true,
+        }
+    }
+}
 /// 从一条日志事件取（turn, step）；没有 turn/step 的事件返回 None。
 pub(crate) fn event_context(kind: &EventKind) -> Option<(u64, u64)> {
     let pair = match kind {
@@ -346,4 +377,240 @@ pub(crate) fn event_context(kind: &EventKind) -> Option<(u64, u64)> {
         EventKind::CompactionSummary { .. } | EventKind::CompactionPrune { .. } => return None,
     };
     Some(pair)
+}
+
+#[cfg(test)]
+mod dispatch_contract_tests {
+    use super::*;
+    use std::path::Path;
+    use tools::{ToolCall, ToolSet};
+
+    struct NoopHost;
+
+    impl LoopAccess for NoopHost {
+        fn session(&self) -> &Mutex<SessionStore> {
+            unimplemented!()
+        }
+        fn events(&self) -> &broadcast::Sender<AgentEvent> {
+            unimplemented!()
+        }
+        fn tools(&self) -> &ToolSet {
+            unimplemented!()
+        }
+        fn tool_session(&self) -> &Arc<ToolSessionState> {
+            unimplemented!()
+        }
+        fn model(&self) -> &DeepSeek {
+            unimplemented!()
+        }
+        fn cwd(&self) -> &Path {
+            unimplemented!()
+        }
+        fn data_dir(&self) -> &Path {
+            unimplemented!()
+        }
+        fn log_path(&self) -> &Path {
+            unimplemented!()
+        }
+        fn instruction_roots(&self) -> &[PathBuf] {
+            unimplemented!()
+        }
+        fn skill_roots(&self) -> &[PathBuf] {
+            unimplemented!()
+        }
+        fn compaction_config(&self) -> CompactionConfig {
+            unimplemented!()
+        }
+        fn spill_max_inline_tokens(&self) -> usize {
+            unimplemented!()
+        }
+        fn append<'a>(&'a self, _kinds: &'a [EventKind]) -> HookFuture<'a> {
+            unimplemented!()
+        }
+        fn dispatch_compaction<'a>(
+            &'a self,
+            _turn: u64,
+            _step: u64,
+            _trigger: crate::CompactionTrigger,
+        ) -> HookFuture<'a> {
+            unimplemented!()
+        }
+        fn instructions_state(&self) -> &Mutex<InstructionState> {
+            unimplemented!()
+        }
+        fn skill_catalog_state(&self) -> &Mutex<SkillCatalogState> {
+            unimplemented!()
+        }
+        fn repeat_chain(&self) -> &Mutex<Option<(String, usize)>> {
+            unimplemented!()
+        }
+        fn current_abort(&self) -> Option<Arc<AtomicBool>> {
+            unimplemented!()
+        }
+    }
+
+    struct Fixed {
+        name: &'static str,
+        hooks: &'static [HookPoint],
+        outcome: HookOutcome,
+    }
+
+    impl Capability for Fixed {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn hooks(&self) -> &'static [HookPoint] {
+            self.hooks
+        }
+        fn on_hook<'a>(&'a self, _event: &'a HookEvent<'a>) -> HookFuture<'a> {
+            let outcome = self.outcome.clone();
+            Box::pin(async move { Ok(outcome) })
+        }
+    }
+
+    fn fixed(
+        name: &'static str,
+        hooks: &'static [HookPoint],
+        outcome: HookOutcome,
+    ) -> Box<dyn Capability> {
+        Box::new(Fixed {
+            name,
+            hooks,
+            outcome,
+        })
+    }
+
+    fn tool_before_event<'a>(host: &'a NoopHost, calls: &'a [ToolCall]) -> HookEvent<'a> {
+        HookEvent::ToolBefore {
+            turn: 1,
+            step: 1,
+            host,
+            calls,
+        }
+    }
+
+    fn tool_result_event<'a>(
+        host: &'a NoopHost,
+        call: &'a ToolCall,
+        result: &'a ToolResult,
+    ) -> HookEvent<'a> {
+        HookEvent::ToolResult {
+            turn: 1,
+            step: 1,
+            host,
+            call,
+            result,
+        }
+    }
+
+    #[tokio::test]
+    async fn overrides_are_collected_by_registration_order_and_last_write_wins() {
+        let registry = CapabilityRegistry::from_capabilities(vec![
+            fixed(
+                "test-a",
+                &[HookPoint::ToolBefore],
+                HookOutcome::ToolResultOverride {
+                    index: 0,
+                    result: ToolResult::success("call-0", "A"),
+                },
+            ),
+            fixed(
+                "test-b",
+                &[HookPoint::ToolBefore],
+                HookOutcome::ToolResultOverride {
+                    index: 0,
+                    result: ToolResult::success("call-0", "B"),
+                },
+            ),
+            fixed(
+                "test-c",
+                &[HookPoint::ToolBefore],
+                HookOutcome::ToolResultOverride {
+                    index: 1,
+                    result: ToolResult::success("call-1", "C"),
+                },
+            ),
+        ]);
+        let host = NoopHost;
+        let outcome = registry
+            .dispatch(&tool_before_event(&host, &[]))
+            .await
+            .unwrap();
+        assert!(!outcome.abort);
+        assert_eq!(outcome.overrides.len(), 2);
+        assert_eq!(outcome.overrides[0].0, 0);
+        assert_eq!(outcome.overrides[0].1.content, "B", "同 index 后写胜出");
+        assert_eq!(outcome.overrides[1].0, 1);
+        assert_eq!(outcome.overrides[1].1.content, "C");
+    }
+
+    #[tokio::test]
+    async fn abort_takes_priority_over_overrides() {
+        let registry = CapabilityRegistry::from_capabilities(vec![
+            fixed(
+                "test-override",
+                &[HookPoint::ToolBefore],
+                HookOutcome::ToolResultOverride {
+                    index: 0,
+                    result: ToolResult::success("call-0", "X"),
+                },
+            ),
+            fixed(
+                "test-abort",
+                &[HookPoint::ToolBefore],
+                HookOutcome::AbortStep,
+            ),
+        ]);
+        let host = NoopHost;
+        let outcome = registry
+            .dispatch(&tool_before_event(&host, &[]))
+            .await
+            .unwrap();
+        assert!(outcome.abort, "AbortStep 优先");
+        assert_eq!(outcome.overrides.len(), 1, "override 仍被收集");
+    }
+
+    #[tokio::test]
+    async fn content_is_last_non_none_and_only_on_tool_result() {
+        let registry = CapabilityRegistry::from_capabilities(vec![
+            fixed(
+                "test-content-a",
+                &[HookPoint::ToolResult],
+                HookOutcome::ToolResultContent("A".to_owned()),
+            ),
+            fixed(
+                "test-content-b",
+                &[HookPoint::ToolResult],
+                HookOutcome::ToolResultContent("B".to_owned()),
+            ),
+        ]);
+        let host = NoopHost;
+        let call = ToolCall {
+            id: "call-0".to_owned(),
+            name: "read".to_owned(),
+            arguments: "{}".to_owned(),
+        };
+        let result = ToolResult::success("call-0", "raw");
+        let outcome = registry
+            .dispatch(&tool_result_event(&host, &call, &result))
+            .await
+            .unwrap();
+        assert_eq!(outcome.content.as_deref(), Some("B"));
+
+        // 阶段不匹配：Override 在 ToolResult 阶段被忽略。
+        let registry = CapabilityRegistry::from_capabilities(vec![fixed(
+            "test-wrong-stage",
+            &[HookPoint::ToolResult],
+            HookOutcome::ToolResultOverride {
+                index: 0,
+                result: ToolResult::success("call-0", "bad"),
+            },
+        )]);
+        let outcome = registry
+            .dispatch(&tool_result_event(&host, &call, &result))
+            .await
+            .unwrap();
+        assert!(outcome.overrides.is_empty());
+        assert!(outcome.content.is_none());
+    }
 }

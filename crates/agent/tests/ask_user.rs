@@ -369,3 +369,27 @@ async fn cancel_after_partial_answers_does_not_hang() {
         "只撤销未答的那一题"
     );
 }
+
+#[tokio::test]
+async fn cancel_turn_ends_aborted_not_error() {
+    let server = MockServer::start().await;
+    mount(&server, vec![ask_call("q5"), FINAL_TEXT_SSE.to_owned()]).await;
+    let (agent, _data_dir, _id) = setup(&server).await;
+    let mut events = agent.subscribe();
+    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    let AgentEvent::QuestionAsked { .. } = next_question(&mut events).await else {
+        unreachable!()
+    };
+    agent.cancel();
+    wait_idle(&agent, 20).await;
+    let mut outcome: Option<TurnOutcome> = None;
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::TurnEnded { outcome: ended, .. } = event {
+            outcome = Some(ended);
+        }
+    }
+    assert!(
+        matches!(outcome, Some(TurnOutcome::Aborted)),
+        "取消应由 StepEnd::Aborted 收尾，不是 error：{outcome:?}"
+    );
+}

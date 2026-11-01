@@ -15,6 +15,7 @@ use tokio::sync::Notify;
 use tokio::sync::broadcast;
 use tools::{ToolCall, ToolContext, ToolSessionState, ToolSet, execute_batch};
 
+use crate::ask_capability::AskState;
 use crate::capabilities::{CapabilityRegistry, CompactionConfig, HookEvent, LoopAccess};
 use crate::error::AgentError;
 use crate::inbox::{Delivery, Inbox, InboxTarget};
@@ -22,7 +23,6 @@ use crate::instructions::InstructionState;
 use crate::prune;
 use crate::skill_catalog::SkillCatalogState;
 use crate::{AgentConfig, AgentEvent, CompactionTrigger, Deps, JobStatus, TurnOutcome};
-use crate::{Question, QuestionOption};
 
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
@@ -48,13 +48,6 @@ enum StepEnd {
 }
 
 /// agent 的共享状态；驱动任务和 6 个入口方法都通过它交互。
-/// 正在等待用户回答的问题（T005.10）；answer 入口按 question_id 绑定。
-struct PendingQuestion {
-    questions: Vec<Question>,
-    answers: std::collections::BTreeMap<String, String>,
-    deliver: Option<tokio::sync::oneshot::Sender<Vec<(String, String)>>>,
-}
-
 pub(crate) struct Inner {
     id: SessionId,
     log_path: PathBuf,
@@ -95,13 +88,8 @@ pub(crate) struct Inner {
     compact_queue: Mutex<Vec<tokio::sync::oneshot::Sender<()>>>,
     /// 连续重复工具调用的链（工具名 + 规范化参数，计数）；新用户消息清零（T005.9）。
     repeat_chain: Mutex<Option<(String, usize)>>,
-    /// 正在等答案的问题（T005.10）。
-    pending_question: Mutex<Option<PendingQuestion>>,
-    /// 等待问题答案期间取消的唤醒（cancel 置 abort 后 notify，loop 不空转）。
-    question_cancel_notify: Notify,
-    /// 仅测试可见：wait_question_answer 注册 notify 之前的同步缝（T005.10 边界单测）。
-    #[cfg(test)]
-    question_wait_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// ask 能力的 per-Agent 状态（T006.1d2）：待答问题/答案/取消唤醒。
+    pub(crate) ask_state: Arc<AskState>,
     /// 仅测试可见：settle_idle 预检之后、最终临界区之前的同步缝（T005.8b 边界单测）。
     #[cfg(test)]
     settle_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -170,6 +158,7 @@ impl LoopAccess for Inner {
                     trigger,
                 })
                 .await
+                .map(|_| crate::capabilities::HookOutcome::Continue)
         })
     }
     fn instructions_state(&self) -> &Mutex<InstructionState> {
@@ -180,6 +169,13 @@ impl LoopAccess for Inner {
     }
     fn repeat_chain(&self) -> &Mutex<Option<(String, usize)>> {
         &self.repeat_chain
+    }
+    fn current_abort(&self) -> Option<Arc<std::sync::atomic::AtomicBool>> {
+        let state = self.state.lock().expect("agent 状态锁被毒化");
+        match &state.phase {
+            Phase::Running { abort, .. } => Some(Arc::clone(abort)),
+            Phase::Idle => None,
+        }
     }
 }
 
@@ -216,6 +212,7 @@ impl Inner {
         if let Some(todos) = session::last_todos(store.events()) {
             tool_session.set_todos(todos);
         }
+        let ask_state = AskState::new();
         let inner = Arc::new(Self {
             id,
             log_path,
@@ -243,15 +240,12 @@ impl Inner {
             events,
             idle_notify: Notify::new(),
             cancel_notify: Arc::new(Notify::new()),
-            capabilities: CapabilityRegistry::production(),
+            capabilities: CapabilityRegistry::production(Arc::clone(&ask_state)),
+            ask_state,
             compact_queue: Mutex::new(Vec::new()),
             repeat_chain: Mutex::new(None),
             #[cfg(test)]
             settle_hook: Mutex::new(None),
-            pending_question: Mutex::new(None),
-            question_cancel_notify: Notify::new(),
-            #[cfg(test)]
-            question_wait_hook: Mutex::new(None),
         });
         // T005.4：后台任务结算后，由 agent 把完成通知送进会话（事件 + 下一步输入）。
         // 用 Weak 避免 tool_session → 回调 → Inner 的循环引用。
@@ -320,8 +314,8 @@ impl Inner {
             abort.store(true, Ordering::SeqCst);
             // 让正在等模型流的 step 立刻醒来、走 interrupted 收尾。
             self.cancel_notify.notify_waiters();
-            // T005.10：让正在等用户回答的 loop 醒来，撤销问题并 aborted 收尾。
-            self.question_cancel_notify.notify_waiters();
+            // T006.1d2：让正在等用户回答的 ask 能力醒来，撤销问题并 aborted 收尾。
+            self.ask_state.cancel_waiters();
         }
     }
 
@@ -369,36 +363,10 @@ impl Inner {
 
     /// 一次 step 的工具批之后推进重复链，命中阈值（3/5/8，照 DSH）返回一条提醒文本。
     /// todo_write 不跟踪（DSH 基础组合包默认排除）；每步最多一条提醒。
-    /// T005.10：回答问题。question_id 必须与当前等待的问题一致；
-    /// 等待中的 run_step 收到答案后把它作为 ask 调用的 tool/result 续上。
+    /// T005.10/T006.1d2：回答问题；question_id 必须匹配当前等待的问题且未答过。
     pub(crate) fn answer(&self, question_id: &str, text: &str) -> bool {
-        let mut pending = self.pending_question.lock().expect("agent 问题锁被毒化");
-        let Some(current) = pending.as_mut() else {
-            return false;
-        };
-        if !current.questions.iter().any(|q| q.id == question_id) {
-            return false;
-        }
-        if current.answers.contains_key(question_id) {
-            return false;
-        }
-        current
-            .answers
-            .insert(question_id.to_owned(), text.to_owned());
-        if current.answers.len() < current.questions.len() {
-            return true;
-        }
-        let Some(sender) = current.deliver.take() else {
-            return false;
-        };
-        let ordered: Vec<(String, String)> = current
-            .questions
-            .iter()
-            .map(|question| (question.id.clone(), current.answers[&question.id].clone()))
-            .collect();
-        sender.send(ordered).is_ok()
+        self.ask_state.answer(question_id, text)
     }
-
     /// 起驱动或在 Running 时置 latch。
     ///
     /// T004.1 审计 known-weakness 3：收尾检查与 settle 快照之间来的 FollowUp/Steer
@@ -1042,90 +1010,9 @@ async fn run_step(
         });
     }
     inner.append(&call_events).await?;
-    // T005.12：ask_user_question 由 loop 处理——发全部问题的事件、停住等全部 answer；
-    // invalid 参数整单拒绝，结果走统一 tool/result 提交路径（不绕过 todo/repeat/abort）。
-    let mut ask_override: Option<(usize, tools::ToolResult)> = None;
-    if let Some(index) = calls
-        .iter()
-        .position(|call| call.name == "ask_user_question")
-    {
-        match questions_from_call(&calls[index]) {
-            None => {
-                ask_override = Some((
-                    index,
-                    tools::ToolResult {
-                        call_id: calls[index].id.clone(),
-                        content: "Error: invalid ask_user_question arguments (each question needs non-empty id and question)".to_owned(),
-                        is_error: true,
-                        error_code: Some("ASK_USER_INVALID".to_owned()),
-                    },
-                ));
-            }
-            Some(questions) => {
-                let (sender, receiver) = tokio::sync::oneshot::channel::<Vec<(String, String)>>();
-                *inner.pending_question.lock().expect("agent 问题锁被毒化") =
-                    Some(PendingQuestion {
-                        questions: questions.clone(),
-                        answers: std::collections::BTreeMap::new(),
-                        deliver: Some(sender),
-                    });
-                for question in &questions {
-                    inner
-                        .append(&[EventKind::QuestionAsked {
-                            turn,
-                            step,
-                            question_id: question.id.clone(),
-                            question: question.question.clone(),
-                            header: question.header.clone(),
-                            options: question
-                                .options
-                                .iter()
-                                .map(|option| option.label.clone())
-                                .collect(),
-                            multi_select: question.multi_select,
-                        }])
-                        .await?;
-                }
-                let _ = inner.events.send(crate::AgentEvent::QuestionAsked {
-                    questions: questions.clone(),
-                });
-                let answered = wait_question_answer(inner, receiver, abort).await;
-                let partial_answers = inner
-                    .pending_question
-                    .lock()
-                    .expect("agent 问题锁被毒化")
-                    .take()
-                    .map(|pending| pending.answers)
-                    .unwrap_or_default();
-                match answered {
-                    Some(answers) => {
-                        ask_override = Some((
-                            index,
-                            tools::ToolResult::success(
-                                calls[index].id.clone(),
-                                answers_json(&answers),
-                            ),
-                        ));
-                    }
-                    None => {
-                        for question in &questions {
-                            if !partial_answers.contains_key(&question.id) {
-                                inner
-                                    .append(&[EventKind::QuestionCancelled {
-                                        turn,
-                                        step,
-                                        question_id: question.id.clone(),
-                                    }])
-                                    .await?;
-                            }
-                        }
-                        return Ok(StepEnd::Aborted);
-                    }
-                }
-            }
-        }
-    }
-    inner
+    // T006.1d2：ToolBefore 挂点可返回 ToolResultOverride（ask 拦截）或 AbortStep（取消）。
+    // override 的 index 对应调用跳过实际执行，结果按 calls 顺序并回。
+    let dispatch = inner
         .capabilities
         .dispatch(&HookEvent::ToolBefore {
             turn,
@@ -1134,25 +1021,48 @@ async fn run_step(
             calls: &calls,
         })
         .await?;
+    if dispatch.abort {
+        return Ok(StepEnd::Aborted);
+    }
+    let overrides = dispatch.overrides;
+    let mut exec_calls: Vec<ToolCall> = Vec::new();
+    let mut exec_indices: Vec<usize> = Vec::new();
+    for (index, call) in calls.iter().enumerate() {
+        if !overrides.iter().any(|(existing, _)| *existing == index) {
+            exec_calls.push(call.clone());
+            exec_indices.push(index);
+        }
+    }
     let context = ToolContext::with_session(inner.cwd.clone(), Arc::clone(&inner.tool_session));
-    let outcome = execute_batch(
+    let mut outcome = execute_batch(
         &inner.tools,
-        &calls,
+        &exec_calls,
         inner.max_parallel_tool_calls,
         &context,
         abort.as_ref(),
     )
     .await;
-    let mut outcome = outcome;
-    if let Some((index, result)) = ask_override {
-        outcome.results[index] = result;
+    let mut merged: Vec<Option<tools::ToolResult>> = (0..calls.len()).map(|_| None).collect();
+    for (position, result) in outcome.results.into_iter().enumerate() {
+        if let Some(original) = exec_indices.get(position) {
+            merged[*original] = Some(result);
+        }
     }
+    for (index, result) in overrides {
+        if let Some(slot) = merged.get_mut(index) {
+            *slot = Some(result);
+        }
+    }
+    outcome.results = merged
+        .into_iter()
+        .map(|result| result.expect("每个调用都有结果（执行或 override）"))
+        .collect();
     for result in &outcome.results {
         let Some(call) = calls.iter().find(|call| call.id == result.call_id) else {
             continue;
         };
         // T006.1d：落盘/内容变换由 ToolResult 挂点（spill 能力）决定；Continue 时用原文。
-        let hook_outcome = inner
+        let dispatch = inner
             .capabilities
             .dispatch(&HookEvent::ToolResult {
                 turn,
@@ -1162,10 +1072,7 @@ async fn run_step(
                 result,
             })
             .await?;
-        let content = match hook_outcome {
-            crate::capabilities::HookOutcome::ToolResultContent(content) => content,
-            crate::capabilities::HookOutcome::Continue => result.content.clone(),
-        };
+        let content = dispatch.content.unwrap_or_else(|| result.content.clone());
         let message = Message::tool_result(result.call_id.clone(), content, result.is_error);
         inner
             .append(&[EventKind::ToolResult {
@@ -1448,107 +1355,6 @@ fn system_prompt(cwd: &Path, tools: &ToolSet) -> String {
     prompt
 }
 
-/// 从 ask_user_question 的调用参数里取全部问题（字段照 DSH tool-ask-user）。
-/// 任一问题缺 id 或 question 文本：整单拒绝（返回 None），不静默丢弃。
-fn questions_from_call(call: &ToolCall) -> Option<Vec<Question>> {
-    let value: serde_json::Value = serde_json::from_str(&call.arguments).ok()?;
-    let items = value.get("questions")?.as_array()?;
-    if items.is_empty() {
-        return None;
-    }
-    let mut questions = Vec::with_capacity(items.len());
-    let mut seen_ids = std::collections::BTreeSet::new();
-    for item in items {
-        let id = item.get("id").and_then(|value| value.as_str())?;
-        let question = item.get("question").and_then(|value| value.as_str())?;
-        if id.is_empty() || question.is_empty() || !seen_ids.insert(id) {
-            return None;
-        }
-        let options = item
-            .get("options")
-            .and_then(|value| value.as_array())
-            .map(|options| {
-                options
-                    .iter()
-                    .filter_map(|option| {
-                        let label = option.get("label")?.as_str()?;
-                        Some(QuestionOption {
-                            label: label.to_owned(),
-                            description: option
-                                .get("description")
-                                .and_then(|value| value.as_str())
-                                .map(str::to_owned),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        questions.push(Question {
-            id: id.to_owned(),
-            question: question.to_owned(),
-            header: item
-                .get("header")
-                .and_then(|value| value.as_str())
-                .map(str::to_owned),
-            options,
-            multi_select: item
-                .get("multi_select")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false),
-        });
-    }
-    Some(questions)
-}
-
-/// 工具结果内容：DSH 形态 answers[{id, answer}]（按问题顺序）。
-fn answers_json(answers: &[(String, String)]) -> String {
-    let answers: Vec<serde_json::Value> = answers
-        .iter()
-        .map(|(id, answer)| serde_json::json!({"id": id, "answer": answer}))
-        .collect();
-    serde_json::json!({"answers": answers}).to_string()
-}
-
-/// 等答案；cancel 时 abort 置位并通过 question_cancel_notify 唤醒，返回 None。
-async fn wait_question_answer(
-    inner: &Arc<Inner>,
-    mut receiver: tokio::sync::oneshot::Receiver<Vec<(String, String)>>,
-    abort: &Arc<AtomicBool>,
-) -> Option<Vec<(String, String)>> {
-    // 仅测试可见的同步缝：让边界单测把 cancel 精确插在注册 notify 之前。
-    #[cfg(test)]
-    {
-        let hook = inner
-            .question_wait_hook
-            .lock()
-            .expect("question wait hook 锁被毒化")
-            .clone();
-        if let Some(hook) = hook {
-            hook();
-        }
-    }
-    // 先注册并 enable cancellation，再检查 abort：否则 cancel 在「检查 abort」与
-    // 「注册 notified」之间调用 notify_waiters（Notify 不存 permit），通知会丢。
-    let cancelled = inner.question_cancel_notify.notified();
-    tokio::pin!(cancelled);
-    cancelled.as_mut().enable();
-    if abort.load(Ordering::SeqCst) {
-        return None;
-    }
-    loop {
-        tokio::select! {
-            result = &mut receiver => return result.ok(),
-            () = &mut cancelled => {
-                if abort.load(Ordering::SeqCst) {
-                    return None;
-                }
-                cancelled.set(inner.question_cancel_notify.notified());
-            }
-        }
-    }
-}
-
-/// 参数预览截断（字符安全，照 DSH argumentsPreviewChars 上限）。
 #[cfg(test)]
 mod settle_tests {
     use super::*;
@@ -1620,97 +1426,5 @@ mod settle_tests {
         inner.compact_queue.lock().unwrap().clear();
         inner.state.lock().unwrap().phase = Phase::Idle;
         assert!(served, "边界入队的 compact waiter 必须在超时内收到通知");
-    }
-}
-
-#[cfg(test)]
-mod ask_tests {
-    use super::*;
-
-    fn test_inner() -> Arc<Inner> {
-        let data = tempfile::tempdir().unwrap();
-        let cwd = tempfile::tempdir().unwrap();
-        let store = SessionStore::create(data.path(), cwd.path()).unwrap();
-        let model = model::DeepSeek::new(model::DeepSeekConfig {
-            api_key: "test-key".to_owned(),
-            base_url: "http://127.0.0.1:1".to_owned(),
-            ..model::DeepSeekConfig::default()
-        })
-        .unwrap();
-        Inner::start(
-            crate::AgentConfig::default(),
-            Deps {
-                model,
-                tools: ToolSet::empty(),
-                store,
-            },
-            0,
-        )
-        .unwrap()
-    }
-
-    /// 边界确定性测试：cancel 正好落在「检查 abort」与「注册 notified」之间时不能丢。
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancel_before_notify_registration_is_not_lost() {
-        let inner = test_inner();
-        let abort = Arc::new(AtomicBool::new(false));
-        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
-        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-        let release_rx = std::sync::Mutex::new(release_rx);
-        let release_rx = Arc::new(release_rx);
-        {
-            let mut hook = inner.question_wait_hook.lock().unwrap();
-            *hook = Some(Arc::new(move || {
-                let _ = entered_tx.send(());
-                let _ = release_rx.lock().unwrap().recv();
-            }));
-        }
-        let (_sender, receiver) = tokio::sync::oneshot::channel::<Vec<(String, String)>>();
-        let arc = Arc::clone(&inner);
-        let abort_task = Arc::clone(&abort);
-        let task =
-            tokio::spawn(async move { wait_question_answer(&arc, receiver, &abort_task).await });
-        entered_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
-        // 窗口内取消：此时还没有注册 notified。
-        abort.store(true, Ordering::SeqCst);
-        inner.question_cancel_notify.notify_waiters();
-        let _ = release_tx.send(());
-        let answer = tokio::time::timeout(std::time::Duration::from_secs(5), task)
-            .await
-            .expect("cancel 在注册前发生也不能挂住");
-        assert_eq!(answer.unwrap(), None);
-    }
-
-    #[test]
-    fn questions_from_call_requires_all_questions_valid() {
-        let call = |arguments: &str| ToolCall {
-            id: "call-1".to_owned(),
-            name: "ask_user_question".to_owned(),
-            arguments: arguments.to_owned(),
-        };
-        assert!(super::questions_from_call(&call("not json")).is_none());
-        assert!(super::questions_from_call(&call(r#"{}"#)).is_none());
-        assert!(super::questions_from_call(&call(r#"{"questions": []}"#)).is_none());
-        assert!(super::questions_from_call(&call(r#"{"questions": [{"id": "q"}]}"#)).is_none());
-        assert!(
-            super::questions_from_call(&call(r#"{"questions": [{"id": "", "question": "P?"}]}"#))
-                .is_none()
-        );
-        assert!(
-            super::questions_from_call(&call(
-                r#"{"questions": [{"id": "dup", "question": "P1?"}, {"id": "dup", "question": "P2?"}]}"#
-            ))
-            .is_none(),
-            "重复 question id 必须整单拒绝"
-        );
-        let questions = super::questions_from_call(&call(
-            r#"{"questions": [{"id": "q1", "question": "P1?"}, {"id": "q2", "question": "P2?"}]}"#,
-        ))
-        .unwrap();
-        assert_eq!(questions.len(), 2);
-        assert_eq!(questions[1].id, "q2");
-        assert_eq!(questions[1].question, "P2?");
     }
 }
