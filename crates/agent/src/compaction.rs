@@ -64,7 +64,7 @@ impl Budget {
 }
 
 /// 估算一条消息的 token（照 T005.2/DSH token-meter 的 chars/4+4 近似）。
-fn estimate_message(message: &Message) -> u64 {
+pub(crate) fn estimate_message(message: &Message) -> u64 {
     let mut total = 4_u64;
     for block in &message.content {
         match block {

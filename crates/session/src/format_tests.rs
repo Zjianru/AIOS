@@ -468,8 +468,9 @@ fn all_event_kinds_round_trip_under_dsh_envelope() {
             error: None,
         },
         EventKind::CompactionPrune {
-            call_id: "call_0".to_owned(),
-            content: "修剪后".to_owned(),
+            shadowed_range: ShadowedRange { start: 2, end: 2 },
+            shadowed_seqs: vec![2],
+            shadowed_token_count: 5,
         },
         EventKind::TodoWrite {
             todos: vec![TodoItem {

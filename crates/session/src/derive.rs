@@ -1,7 +1,5 @@
 //! 从会话日志派生一次请求要带的消息。
 
-use std::collections::HashMap;
-
 use model::Message;
 
 use crate::{Event, EventKind, SurfaceOp};
@@ -10,7 +8,8 @@ use crate::{Event, EventKind, SurfaceOp};
 ///
 /// surface 模型照 DSH：带 `surfaceOp: replace` 的消息替换 [startSeq, endSeq] 区间里的
 /// 派生节点（T006.3 压缩 checkpoint 用；T006.4 pruner 复用），替换消息本身照常派生。
-/// compaction/prune 事件仍记录某个 call_id 的 tool/result 修剪视图（T005.2，T006.4 改形）。
+/// `compaction/prune` 是 shadow-price 记录（T006.4），修剪替换同样走 surface replace；派生只认
+/// surfaceOp，不再维护 call_id 到 content 的替换表。
 pub(crate) fn derive_messages(events: &[Event]) -> Vec<Message> {
     derive_messages_with_seqs(events)
         .into_iter()
@@ -20,12 +19,8 @@ pub(crate) fn derive_messages(events: &[Event]) -> Vec<Message> {
 
 /// 派生消息并带上来源事件 seq（压缩选区间/替换消息定位用）。
 pub(crate) fn derive_messages_with_seqs(events: &[Event]) -> Vec<(u64, Message)> {
-    let mut replacements: HashMap<&str, &str> = HashMap::new();
     let mut shadowed: Vec<(u64, u64)> = Vec::new();
     for event in events {
-        if let EventKind::CompactionPrune { call_id, content } = &event.kind {
-            replacements.insert(call_id.as_str(), content.as_str());
-        }
         if let Some(SurfaceOp::Replace { start_seq, end_seq }) = event.surface_op {
             shadowed.push((start_seq, end_seq));
         }
@@ -45,19 +40,7 @@ pub(crate) fn derive_messages_with_seqs(events: &[Event]) -> Vec<(u64, Message)>
             EventKind::SystemMessage { message, .. }
             | EventKind::UserMessage { message, .. }
             | EventKind::AssistantMessage { message, .. } => message_or_skip(message),
-            EventKind::ToolResult { message, .. } => {
-                let Some(mut result_message) = message_or_skip(message) else {
-                    continue;
-                };
-                // 修剪替换：按消息级 toolCallId 找到同一次调用，content 换成修剪视图。
-                // 消息 id 不变（续接/派生看到同一个 id）。
-                if let Some(call_id) = result_message.tool_call_id.clone()
-                    && let Some(replacement) = replacements.get(call_id.as_str())
-                {
-                    result_message.content = vec![model::ContentBlock::text(*replacement)];
-                }
-                Some(result_message)
-            }
+            EventKind::ToolResult { message, .. } => message_or_skip(message),
             EventKind::TurnStart { .. }
             | EventKind::TurnEnd { .. }
             | EventKind::StepStart { .. }

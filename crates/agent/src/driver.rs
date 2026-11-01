@@ -23,7 +23,6 @@ use crate::capabilities::{
 };
 use crate::error::AgentError;
 use crate::inbox::{Delivery, Inbox};
-use crate::prune;
 use crate::{AgentConfig, AgentEvent, CompactionTrigger, Deps, TurnOutcome};
 
 const EVENT_CHANNEL_CAPACITY: usize = 256;
@@ -895,8 +894,9 @@ async fn run_step(
             .await?;
     }
 
-    // T006.1c：PreStep 两阶段——先在旧位置派发 Inject（instructions/skill 注入，prune 之前），
-    // 再 prune，最后派发 Compact（压缩自动检查），保持 T005 的「注入 → prune → 压缩」顺序。
+    // T006.1c：PreStep 两阶段——先在旧位置派发 Inject（instructions/skill 注入），
+    // 再派发 Compact（压缩自动检查）；prune 已挂到 Compaction 挂点（T006.4 实现期删掉这里的
+    // 每请求调用），不再参与 PreStep 顺序。
     inner
         .capabilities
         .dispatch(&HookEvent::PreStep {
@@ -1331,49 +1331,11 @@ fn assistant_message(inner: &Arc<Inner>, content: Vec<ContentBlock>) -> Message 
     )
 }
 
-/// T005.2 修剪：只修剪「旧 turn」的 tool/result（当前 turn 刚拿到的结果保留原样），
-/// 已经修剪过的 call_id 不再重复追加；一批 append 落日志。
+/// T005.2/T006.4 过渡：旧的每请求修剪入口，先改成 DSH 形状写日志（compaction/prune +
+/// 带 surfaceOp replace 的 tool/result）；实现期把调用整个移进 PruneCapability（挂
+/// HookPoint::Compaction），这个函数和 PreStep 里的调用一起删掉。
 async fn prune_old_tool_results(inner: &Arc<Inner>, current_turn: u64) -> Result<(), AgentError> {
-    let mut additions: Vec<EventKind> = Vec::new();
-    {
-        let store = inner.store.lock().expect("agent 会话锁被毒化");
-        let events = store.events();
-        let already: std::collections::HashSet<&str> = events
-            .iter()
-            .filter_map(|event| match &event.kind {
-                EventKind::CompactionPrune { call_id, .. } => Some(call_id.as_str()),
-                _ => None,
-            })
-            .collect();
-        for event in events {
-            let EventKind::ToolResult { turn, message, .. } = &event.kind else {
-                continue;
-            };
-            if *turn >= current_turn {
-                continue;
-            }
-            let Some(tool_use_id) = message.tool_call_id.as_deref() else {
-                continue;
-            };
-            if already.contains(tool_use_id) {
-                continue;
-            }
-            let text: String = message
-                .content
-                .iter()
-                .filter_map(ContentBlock::as_text)
-                .collect();
-            if let Some(pruned) = prune::prune_text(&text) {
-                additions.push(EventKind::CompactionPrune {
-                    call_id: tool_use_id.to_owned(),
-                    content: pruned,
-                });
-            }
-        }
-    }
-    if !additions.is_empty() {
-        inner.append(&additions).await?;
-    }
+    crate::prune_capability::prune_session(inner.as_ref(), Some(current_turn)).await?;
     Ok(())
 }
 

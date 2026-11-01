@@ -12,7 +12,7 @@ mod inbox;
 mod instructions;
 mod instructions_capability;
 mod jobs_capability;
-mod prune;
+mod prune_capability;
 mod reminder_capability;
 mod skill_capability;
 mod skill_catalog;

@@ -322,5 +322,5 @@ async fn tool_result_pruned_before_next_request() {
         }
         _ => false,
     }));
-    assert!(store.events().iter().any(|event| matches!(&event.kind, EventKind::CompactionPrune { call_id, .. } if call_id == "call_0")));
+    assert!(store.events().iter().any(|event| matches!(&event.kind, EventKind::CompactionPrune { shadowed_seqs, .. } if !shadowed_seqs.is_empty())));
 }

@@ -15,9 +15,11 @@ use crate::SessionId;
 /// 内容块）。
 /// v4：assistant/message 带必填 `stream`（精确帧记录），新增 `assistant/attempt` 事件。
 /// v5：compaction/* 事件改 DSH 形状（start/end 的 turn 可为 null、summary 带内容块/调用事实/
-/// shadowed 区间与 seqs），压缩替换写成带 envelope `surfaceOp`/`sourceEventSeqs` 的日志消息；
-/// v4 的压缩事件字段读不回来，直接拒绝（spec：旧版本不迁移）。
-pub const FORMAT_VERSION: u64 = 5;
+/// shadowed 区间与 seqs），压缩替换写成带 envelope `surfaceOp`/`sourceEventSeqs` 的日志消息。
+/// v6：`compaction/prune` 改 DSH shadow-price 形状（shadowedRange/shadowedSeqs/
+/// shadowedTokenCount，T006.4），修剪替换改写成带 surfaceOp replace 的 tool/result；
+/// v5 的 prune 字段（callId/content）读不回来，直接拒绝（spec：旧版本不迁移）。
+pub const FORMAT_VERSION: u64 = 6;
 
 /// JSONL 第一行的会话 header。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -334,10 +336,18 @@ pub enum EventKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<ToolError>,
     },
-    /// 一个旧工具结果被修剪：派生请求里同 call_id 的 tool/result 用 content 替换。
-    /// 原始 tool/result 事件保留在日志里（可回放），这条只记替换视图（T005.2）。
+    /// 一个旧工具结果被修剪的 shadow-price 事件（T006.4，照 DSH
+    /// compaction-tool-result-pruner/src/index.ts:164-169）：记录被替换节点的区间/seq 与
+    /// 估算 token；真正的替换是紧随其后、带 envelope surfaceOp replace 的 tool/result 事件。
     #[serde(rename = "compaction/prune")]
-    CompactionPrune { call_id: String, content: String },
+    CompactionPrune {
+        #[serde(rename = "shadowedRange")]
+        shadowed_range: ShadowedRange,
+        #[serde(rename = "shadowedSeqs")]
+        shadowed_seqs: Vec<u64>,
+        #[serde(rename = "shadowedTokenCount")]
+        shadowed_token_count: u64,
+    },
     /// 模型提交的整份 todo 列表快照；回放时后写覆盖先写（T005.7，类型名照 DSH todo/write）。
     #[serde(rename = "todo/write")]
     TodoWrite { todos: Vec<TodoItem> },
