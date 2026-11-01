@@ -2,7 +2,8 @@
 //!
 //! 机制照 DSH 的 session-persistence-jsonl（strategy 第 1 节），格式是本仓库
 //! 自己的 v2：首行 header；事件记录是 `{type, seq, time, data}`；每批事件先写入再
-//! fsync，写失败回滚到写之前的长度；读的时候丢掉不完整的最后一行。
+//! fsync，写失败回滚到写之前的长度。尾行不完整时只从读到的视图里丢掉：只读打开
+//! 不改文件，写句柄在第一次 append 之前才把未提交的尾部截掉（照 DSH）。
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -44,6 +45,8 @@ pub struct SessionStore {
     path: PathBuf,
     events: Vec<Event>,
     bytes: u64,
+    /// 文件里还有未提交的尾部；第一次 append 之前先截到 bytes（照 DSH 的写句柄语义）。
+    pending_truncate: bool,
     writer: Box<dyn LogWriter>,
 }
 
@@ -98,11 +101,13 @@ impl SessionStore {
             path,
             events: Vec::new(),
             bytes: header_line.len() as u64,
+            pending_truncate: false,
             writer: Box::new(file),
         })
     }
 
-    /// 打开已有会话；最后一行不完整就丢掉（并把文件截回完整前缀）。
+    /// 打开已有会话准备写。尾行不完整时只从读到的视图里丢掉，文件要等到第一次
+    /// append 之前才截（照 DSH：读打开不改文件，写句柄在首次追加前修掉 torn tail）。
     pub fn open(data_dir: &Path, id: &SessionId) -> Result<Self, SessionError> {
         let path = log_path(data_dir, id);
         let bytes = fs::read(&path).map_err(|error| {
@@ -113,17 +118,14 @@ impl SessionStore {
             }
         })?;
         let (header, events, committed) = parse_log(&bytes)?;
-        if committed < bytes.len() as u64 {
-            let file = OpenOptions::new().write(true).open(&path)?;
-            file.set_len(committed)?;
-            file.sync_data()?;
-        }
+        let pending_truncate = committed < bytes.len() as u64;
         let file = OpenOptions::new().append(true).open(&path)?;
         Ok(Self {
             header,
             path,
             events,
             bytes: committed,
+            pending_truncate,
             writer: Box::new(file),
         })
     }
@@ -144,13 +146,7 @@ impl SessionStore {
                 SessionError::Io(error)
             }
         })?;
-        let (header, events, committed) = parse_log(&bytes)?;
-        // skeleton：暂时沿用写路径的「打开就截尾」，实现改为不写文件。
-        if committed < bytes.len() as u64 {
-            let file = OpenOptions::new().write(true).open(&path)?;
-            file.set_len(committed)?;
-            file.sync_data()?;
-        }
+        let (header, events, _committed) = parse_log(&bytes)?;
         Ok(SessionSnapshot {
             id: header.id,
             path,
@@ -208,6 +204,13 @@ impl SessionStore {
     ) -> Result<Vec<u64>, SessionError> {
         if kinds.is_empty() {
             return Ok(Vec::new());
+        }
+        // 写句柄的第一次 append 之前，先把上次没提交的尾部截掉（DSH storage.ts:317-334）。
+        if self.pending_truncate {
+            self.writer
+                .set_len(self.bytes)
+                .map_err(|source| SessionError::Truncate { source })?;
+            self.pending_truncate = false;
         }
         let first_seq = self.events.len() as u64 + 1;
         let mut batch = Vec::with_capacity(kinds.len());

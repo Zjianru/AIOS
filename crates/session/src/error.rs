@@ -23,6 +23,11 @@ pub enum SessionError {
     Io(#[from] std::io::Error),
     #[error("会话日志 JSON 错误: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("丢弃未提交的日志尾部失败: {source}")]
+    Truncate {
+        #[source]
+        source: std::io::Error,
+    },
     #[error("写入会话日志失败（已回滚到写之前的长度）: {source}")]
     Write {
         #[source]
