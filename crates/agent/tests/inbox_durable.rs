@@ -127,15 +127,17 @@ fn count_text(texts: &[String], needle: &str) -> usize {
     texts.iter().filter(|text| text.as_str() == needle).count()
 }
 
-fn splices(
-    snapshot: &SessionSnapshot,
-) -> Vec<(
-    InboxTarget,
-    u64,
-    Option<u64>,
-    Vec<Message>,
-    Option<InboxOutcome>,
-)> {
+/// 日志里的一条 `agent/inbox/spliced`。
+#[derive(Debug, Clone, PartialEq)]
+struct LoggedSplice {
+    target: InboxTarget,
+    start: u64,
+    removed_count: Option<u64>,
+    inserted: Vec<Message>,
+    outcome: Option<InboxOutcome>,
+}
+
+fn splices(snapshot: &SessionSnapshot) -> Vec<LoggedSplice> {
     snapshot
         .events()
         .iter()
@@ -146,7 +148,13 @@ fn splices(
                 removed_count,
                 inserted,
                 outcome,
-            } => Some((*target, *start, *removed_count, inserted.clone(), *outcome)),
+            } => Some(LoggedSplice {
+                target: *target,
+                start: *start,
+                removed_count: *removed_count,
+                inserted: inserted.clone(),
+                outcome: *outcome,
+            }),
             _ => None,
         })
         .collect()
@@ -273,7 +281,7 @@ async fn pending_inject_survives_resume_and_is_claimed_once() {
     assert_eq!(count_text(&texts, "继续"), 1);
     let claims: Vec<_> = splices(&after_turn)
         .into_iter()
-        .filter(|(_, _, removed, _, outcome)| removed.is_some() && outcome.is_none())
+        .filter(|splice| splice.removed_count.is_some() && splice.outcome.is_none())
         .collect();
     assert_eq!(
         claims.len(),
@@ -404,14 +412,17 @@ async fn cancel_clears_pending_input_durably() {
     let snapshot = read_snapshot(data_dir.path(), &id);
     let splices = splices(&snapshot);
     assert_eq!(splices.len(), 2, "插入 + 取消各一条 splice：{splices:?}");
-    assert_eq!(splices[0].0, InboxTarget::NextStep);
-    assert_eq!(splices[0].3, vec![Message::text(Role::User, "要取消的")]);
-    let (target, start, removed_count, inserted, outcome) = &splices[1];
-    assert_eq!(*target, InboxTarget::NextStep);
-    assert_eq!(*start, 0);
-    assert_eq!(*removed_count, Some(1));
-    assert!(inserted.is_empty());
-    assert_eq!(*outcome, Some(InboxOutcome::Canceled));
+    assert_eq!(splices[0].target, InboxTarget::NextStep);
+    assert_eq!(
+        splices[0].inserted,
+        vec![Message::text(Role::User, "要取消的")]
+    );
+    let canceled = &splices[1];
+    assert_eq!(canceled.target, InboxTarget::NextStep);
+    assert_eq!(canceled.start, 0);
+    assert_eq!(canceled.removed_count, Some(1));
+    assert!(canceled.inserted.is_empty());
+    assert_eq!(canceled.outcome, Some(InboxOutcome::Canceled));
     // wire：普通删除带 removedCount + outcome: canceled（inbox.ts:214-221）。
     let rows = log_rows(data_dir.path(), &id);
     assert_eq!(rows[1]["data"]["removedCount"], 1);
