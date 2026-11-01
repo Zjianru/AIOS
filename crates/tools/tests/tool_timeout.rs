@@ -9,6 +9,7 @@ use tools::{
 };
 
 struct SlowTool {
+    name: &'static str,
     wait_ms: u64,
     timeout: Option<u64>,
     mode: ToolConcurrency,
@@ -16,7 +17,7 @@ struct SlowTool {
 
 impl Tool for SlowTool {
     fn name(&self) -> &str {
-        "slow"
+        self.name
     }
     fn description(&self) -> &str {
         "test slow tool"
@@ -62,6 +63,7 @@ fn calls(names: &[(&str, &str)]) -> Vec<ToolCall> {
 #[tokio::test]
 async fn timed_out_tool_returns_timeout_error() {
     let tool: Box<dyn Tool> = Box::new(SlowTool {
+        name: "slow",
         wait_ms: 200,
         timeout: Some(20),
         mode: ToolConcurrency::Exclusive,
@@ -83,11 +85,13 @@ async fn timed_out_tool_returns_timeout_error() {
 #[tokio::test]
 async fn exclusive_timed_out_tool_does_not_block_batch() {
     let slow: Box<dyn Tool> = Box::new(SlowTool {
+        name: "slow",
         wait_ms: 200,
         timeout: Some(20),
         mode: ToolConcurrency::Exclusive,
     });
     let fast: Box<dyn Tool> = Box::new(SlowTool {
+        name: "fast",
         wait_ms: 0,
         timeout: None,
         mode: ToolConcurrency::Parallel,
@@ -119,6 +123,7 @@ async fn exclusive_timed_out_tool_does_not_block_batch() {
 #[tokio::test]
 async fn tool_without_timeout_is_unchanged() {
     let tool: Box<dyn Tool> = Box::new(SlowTool {
+        name: "slow",
         wait_ms: 30,
         timeout: None,
         mode: ToolConcurrency::Exclusive,
@@ -128,4 +133,78 @@ async fn tool_without_timeout_is_unchanged() {
     let outcome = execute_batch(&set, &calls(&[("call_1", "slow")]), 4, &context(), &cancel).await;
     assert!(!outcome.results[0].is_error);
     assert_eq!(outcome.results[0].content, "slow done");
+}
+
+#[tokio::test]
+async fn parallel_pool_timeout_returns_error_while_others_succeed() {
+    let slow: Box<dyn Tool> = Box::new(SlowTool {
+        name: "slow",
+        wait_ms: 200,
+        timeout: Some(20),
+        mode: ToolConcurrency::Parallel,
+    });
+    let fast: Box<dyn Tool> = Box::new(SlowTool {
+        name: "fast",
+        wait_ms: 0,
+        timeout: None,
+        mode: ToolConcurrency::Parallel,
+    });
+    let set = ToolSet::new(vec![slow, fast]);
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let outcome = execute_batch(
+        &set,
+        &calls(&[("call_1", "slow"), ("call_2", "fast")]),
+        4,
+        &context(),
+        &cancel,
+    )
+    .await;
+    assert_eq!(outcome.results.len(), 2);
+    assert!(outcome.results[0].is_error);
+    assert_eq!(
+        outcome.results[0].error_code.as_deref(),
+        Some("TOOL_TIMEOUT")
+    );
+    assert!(!outcome.results[1].is_error);
+    assert_eq!(outcome.results[1].content, "slow done");
+}
+
+struct NoDeclareTool;
+impl Tool for NoDeclareTool {
+    fn name(&self) -> &str {
+        "nodeclare"
+    }
+    fn description(&self) -> &str {
+        "no timeout declaration"
+    }
+    fn parameters(&self) -> &Value {
+        static P: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+        P.get_or_init(|| json!({"type": "object", "properties": {}}))
+    }
+    fn execute<'a>(&'a self, call: ToolCall, _c: &'a ToolContext) -> ToolFuture<'a, ToolResult> {
+        Box::pin(async move { ToolResult::success(call.id, "ok") })
+    }
+}
+
+#[test]
+fn canonical_arguments_ignore_object_key_order() {
+    assert_eq!(
+        tools::canonical_arguments("{\"b\":1,\"a\":2}"),
+        tools::canonical_arguments("{\"a\":2,\"b\":1}")
+    );
+    assert_eq!(
+        tools::canonical_arguments("{\"outer\":{\"y\":[1,2],\"x\":1}}"),
+        tools::canonical_arguments("{\"outer\":{\"x\":1,\"y\":[1,2]}}")
+    );
+}
+
+#[test]
+fn timeout_default_is_none_and_bash_is_command_level_only() {
+    let nodeclare = NoDeclareTool;
+    assert_eq!(nodeclare.timeout_ms(), None, "默认 None 兼容");
+    assert_eq!(
+        tools::BashTool::new().timeout_ms(),
+        None,
+        "bash 不声明工具级限时（命令级转后台在 T005.4）"
+    );
 }

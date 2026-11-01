@@ -236,3 +236,118 @@ async fn timed_out_tool_returns_error_and_turn_continues() {
     }
     assert!(completed, "超时是工具结果错误，这一轮应正常完成");
 }
+
+fn repeated_calls(n: usize, pattern: &str) -> Vec<String> {
+    (0..n).map(|_| glob_call(pattern)).collect()
+}
+
+fn raw_tool_call_sse(id: &str, name: &str, input_json: &str) -> String {
+    let message_start = serde_json::json!({"type": "message_start", "message": {"id": "msg_raw", "type": "message", "role": "assistant", "model": "deepseek-flash", "content": [], "usage": {"input_tokens": 1, "output_tokens": 1}}}).to_string();
+    let input: Value = serde_json::from_str(input_json).unwrap();
+    let block_start = serde_json::json!({"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": id, "name": name, "input": input}}).to_string();
+    let message_delta = serde_json::json!({"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 2}}).to_string();
+    let block_stop = serde_json::json!({"type": "content_block_stop", "index": 0}).to_string();
+    let message_stop = serde_json::json!({"type": "message_stop"}).to_string();
+    format!(
+        "event: message_start\ndata: {message_start}\n\nevent: content_block_start\ndata: {block_start}\n\nevent: content_block_stop\ndata: {block_stop}\n\nevent: message_delta\ndata: {message_delta}\n\nevent: message_stop\ndata: {message_stop}\n\n"
+    )
+}
+
+#[tokio::test]
+async fn fifth_and_eighth_repeats_send_detailed_reminders() {
+    let server = MockServer::start().await;
+    let mut responses = repeated_calls(8, "*.rs");
+    responses.push(FINAL_TEXT_SSE.to_owned());
+    mount(&server, responses).await;
+    let (agent, _data, _id) = setup(&server, None).await;
+    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    wait_idle(&agent, 20).await;
+    let bodies = bodies(&server).await;
+    assert!(
+        bodies[5].contains("Repeated tool call detected:"),
+        "第 5 次应触发详细提醒"
+    );
+    assert!(bodies[5].contains("consecutive_calls: 5"));
+    assert!(
+        bodies[8].contains("consecutive_calls: 8"),
+        "第 8 次应触发详细提醒"
+    );
+}
+
+#[tokio::test]
+async fn detailed_reminder_truncates_arguments_preview_at_500() {
+    let server = MockServer::start().await;
+    let long = "x".repeat(700);
+    let mut responses = repeated_calls(5, &long);
+    responses.push(FINAL_TEXT_SSE.to_owned());
+    mount(&server, responses).await;
+    let (agent, _data, _id) = setup(&server, None).await;
+    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    wait_idle(&agent, 20).await;
+    let bodies = bodies(&server).await;
+    let detailed = &bodies[5];
+    assert!(detailed.contains("Repeated tool call detected:"));
+    assert!(detailed.contains("…"), "参数预览应被截断加省略号");
+}
+
+#[tokio::test]
+async fn todo_write_is_not_tracked_by_repeat_guard() {
+    let server = MockServer::start().await;
+    let call = || {
+        tool_calls_with_inputs_sse(&[(
+            "call_1",
+            "todo_write",
+            json!({"todos": [{"content": "x", "status": "pending"}]}),
+        )])
+    };
+    mount(
+        &server,
+        vec![call(), call(), call(), FINAL_TEXT_SSE.to_owned()],
+    )
+    .await;
+    let (agent, _data, _id) = setup(&server, None).await;
+    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    wait_idle(&agent, 20).await;
+    for body in bodies(&server).await {
+        assert!(!body.contains(GENTLE), "todo_write 不跟踪");
+    }
+}
+
+#[tokio::test]
+async fn error_results_also_count_towards_repeats() {
+    let server = MockServer::start().await;
+    let call = || {
+        tool_calls_with_inputs_sse(&[(
+            "call_1",
+            "read",
+            json!({"file_path": "/no/such/guard-file.txt"}),
+        )])
+    };
+    mount(
+        &server,
+        vec![call(), call(), call(), FINAL_TEXT_SSE.to_owned()],
+    )
+    .await;
+    let (agent, _data, _id) = setup(&server, None).await;
+    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    wait_idle(&agent, 20).await;
+    let bodies = bodies(&server).await;
+    assert!(bodies[3].contains(GENTLE), "错误结果也计数：{}", bodies[3]);
+}
+
+#[tokio::test]
+async fn canonical_key_ignores_argument_key_order() {
+    let server = MockServer::start().await;
+    let a = raw_tool_call_sse("c1", "read", "{\"file_path\":\"/no/such/x\",\"offset\":0}");
+    let b = raw_tool_call_sse("c2", "read", "{\"offset\":0,\"file_path\":\"/no/such/x\"}");
+    mount(&server, vec![a, b.clone(), b, FINAL_TEXT_SSE.to_owned()]).await;
+    let (agent, _data, _id) = setup(&server, None).await;
+    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    wait_idle(&agent, 20).await;
+    let bodies = bodies(&server).await;
+    assert!(
+        bodies[3].contains(GENTLE),
+        "属性顺序不同也算同一调用：{}",
+        bodies[3]
+    );
+}
