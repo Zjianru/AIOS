@@ -75,6 +75,7 @@ async fn pure_text_turn() {
         match event {
             AgentEvent::AssistantTextDelta { text } => streamed.push_str(&text),
             AgentEvent::TurnEnded { outcome: ended, .. } => outcome = Some(ended),
+            _ => {}
         }
     }
     assert_eq!(streamed, "你好，世界", "流式文本按增量送到订阅者");

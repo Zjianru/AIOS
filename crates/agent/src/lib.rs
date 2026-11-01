@@ -9,7 +9,7 @@ mod inbox;
 use std::path::Path;
 use std::sync::Arc;
 
-use model::{DeepSeek, UserMessage};
+use model::{DeepSeek, Usage, UserMessage};
 use session::{SessionId, SessionStore, TurnEndReason};
 use tools::ToolSet;
 
@@ -59,6 +59,15 @@ impl From<&TurnEndReason> for TurnOutcome {
 pub enum AgentEvent {
     /// 一段模型流出的文本（CLI 据此显示）。
     AssistantTextDelta { text: String },
+    /// 一次请求失败后准备重试（CLI 显示「正在重试」；重试不写日志）。
+    Retrying {
+        attempt: u32,
+        max_attempts: u32,
+        delay_ms: u64,
+        code: String,
+    },
+    /// 一次回答的用量（厂商没给的项是 None，显示「未知」）。
+    UsageReported { usage: Usage },
     /// 一轮结束；idle() 返回之前一定已经发出。
     TurnEnded { turn: u64, outcome: TurnOutcome },
 }

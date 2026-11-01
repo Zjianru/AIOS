@@ -97,10 +97,6 @@ fn assistant_blocks(store: &SessionStore) -> Vec<Vec<ContentBlock>> {
         .collect()
 }
 
-fn request_body(request: &wiremock::Request) -> serde_json::Value {
-    serde_json::from_slice(&request.body).expect("请求体是 JSON")
-}
-
 const THINKING_SSE: &str = r#"event: message_start
 data: {"type":"message_start","message":{"id":"m_think","type":"message","role":"assistant","model":"deepseek-flash","content":[],"usage":{"input_tokens":10,"output_tokens":1}}}
 
@@ -256,14 +252,14 @@ async fn auth_error_does_not_retry() {
             .collect::<Vec<_>>(),
         vec![TurnEndReason::Error {
             code: "AUTH".to_owned(),
-            message: "测试错误".to_owned(),
+            message: "模型请求失败: AUTH: 测试错误".to_owned(),
         }]
     );
 }
 
 #[tokio::test]
 async fn failure_after_streamed_content_is_not_retried() {
-    let mut server = ScriptedSseServer::start(vec![SseScript {
+    let server = ScriptedSseServer::start(vec![SseScript {
         frames: MIDSTREAM_ERROR_SSE.to_owned(),
         hold: false,
     }]);
@@ -329,7 +325,8 @@ async fn thinking_round_trips_with_signature() {
         vec![sse(THINKING_SSE.to_owned()), sse(FINAL_TEXT_SSE.to_owned())],
     )
     .await;
-    let (agent, data_dir, _cwd, id) = setup(&server.uri()).await;
+    let (agent, data_dir, cwd, id) = setup(&server.uri()).await;
+    let canonical_cwd = std::fs::canonicalize(cwd.path()).unwrap();
     agent.send(UserMessage::text("想一想"), Delivery::FollowUp);
     wait_idle(&agent, 10).await;
 
@@ -354,7 +351,9 @@ async fn thinking_round_trips_with_signature() {
     wait_idle(&agent, 10).await;
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 2);
-    let body = request_body(&requests[1]);
+    let body_text = String::from_utf8(requests[1].body.clone()).unwrap();
+    let body_text = body_text.replace(canonical_cwd.to_str().unwrap(), "<CWD>");
+    let body: serde_json::Value = serde_json::from_str(&body_text).unwrap();
     let messages = body["messages"].as_array().unwrap();
     let assistant = messages
         .iter()

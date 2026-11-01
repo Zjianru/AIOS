@@ -5,7 +5,12 @@ use serde_json::Value;
 use crate::{ErrorCode, ModelError};
 
 /// 把 HTTP 状态和响应体里的错误归类成稳定的 provider 无关错误。
-pub(super) fn provider_error(raw: &Value, status: Option<u16>) -> ModelError {
+/// retry-after 只认数字秒；HTTP 日期形态暂不支持（重试层回退本地退避，handback 记偏离）。
+pub(super) fn provider_error(
+    raw: &Value,
+    status: Option<u16>,
+    headers: Option<&reqwest::header::HeaderMap>,
+) -> ModelError {
     let envelope = raw.as_object();
     let error = envelope
         .and_then(|object| object.get("error"))
@@ -37,15 +42,33 @@ pub(super) fn provider_error(raw: &Value, status: Option<u16>) -> ModelError {
             _ => ErrorCode::Server,
         },
     };
-    ModelError::new(code, message)
+    let mut error = ModelError::new(code, message);
+    error.status = status;
+    error.retry_after_ms = retry_after_ms(headers);
+    error
+}
+
+/// 读 retry-after（只认数字秒；非正数或 HTTP 日期返回 None）。
+fn retry_after_ms(headers: Option<&reqwest::header::HeaderMap>) -> Option<u64> {
+    let value = headers?.get(reqwest::header::RETRY_AFTER)?;
+    let text = value.to_str().ok()?;
+    let seconds: f64 = text.trim().parse().ok()?;
+    if seconds.is_finite() && seconds > 0.0 {
+        Some((seconds * 1000.0).round() as u64)
+    } else {
+        None
+    }
 }
 
 /// 把 reqwest 的传输错误归类。
-pub(super) fn transport_error(error: reqwest::Error) -> ModelError {
-    let code = if error.is_timeout() {
+pub(super) fn transport_error(source: reqwest::Error) -> ModelError {
+    let code = if source.is_timeout() {
         ErrorCode::Timeout
     } else {
         ErrorCode::Transport
     };
-    ModelError::new(code, format!("DeepSeek Messages 传输失败: {error}"))
+    let status = source.status().map(|status| status.as_u16());
+    let mut error = ModelError::new(code, format!("DeepSeek Messages 传输失败: {source}"));
+    error.status = status;
+    error
 }

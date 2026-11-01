@@ -4,10 +4,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use model::{
-    BlockType, ContentBlock, DeepSeek, FinishReason, Message, ModelError, Role, StreamChunk, Usage,
-    UserMessage,
+    BlockType, CancelToken, ContentBlock, DeepSeek, ErrorCode, FinishReason, Message, ModelError,
+    Role, StreamChunk, Usage, UserMessage,
 };
 use session::{EventKind, SessionId, SessionStore, TurnEndReason};
 use tokio::sync::Notify;
@@ -59,7 +60,7 @@ pub(crate) struct Inner {
     events: broadcast::Sender<AgentEvent>,
     idle_notify: Notify,
     /// 取消时唤醒正在等模型流的 step（让流读取立刻停下）。
-    cancel_notify: Notify,
+    cancel_notify: Arc<Notify>,
 }
 
 impl Inner {
@@ -99,7 +100,7 @@ impl Inner {
             }),
             events,
             idle_notify: Notify::new(),
-            cancel_notify: Notify::new(),
+            cancel_notify: Arc::new(Notify::new()),
         }))
     }
 
@@ -252,7 +253,7 @@ async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
     }
 
     let mut turn_end: Option<TurnEndReason> = None;
-    let steps = run_turn_steps(inner, turn, &mut step, abort.as_ref(), &mut turn_end).await;
+    let steps = run_turn_steps(inner, turn, &mut step, &abort, &mut turn_end).await;
     {
         let mut state = inner.state.lock().expect("agent 状态锁被毒化");
         if let Phase::Running { step: current, .. } = &mut state.phase {
@@ -309,7 +310,7 @@ async fn run_turn_steps(
     inner: &Arc<Inner>,
     turn: u64,
     step: &mut u64,
-    abort: &AtomicBool,
+    abort: &Arc<AtomicBool>,
     turn_end: &mut Option<TurnEndReason>,
 ) -> Result<(), AgentError> {
     let mut target = InboxTarget::NextTurn;
@@ -392,7 +393,7 @@ async fn run_step(
     turn: u64,
     step: u64,
     claimed: Vec<Message>,
-    abort: &AtomicBool,
+    abort: &Arc<AtomicBool>,
 ) -> Result<StepEnd, AgentError> {
     if abort.load(Ordering::SeqCst) {
         return Ok(StepEnd::Aborted);
@@ -425,74 +426,108 @@ async fn run_step(
         .expect("agent 会话锁被毒化")
         .derive_messages();
     let tool_schemas = inner.tools.definitions();
-    let mut stream = inner.model.stream(&messages, &tool_schemas).await?;
-    // 已完成的块按 index 存；打开中的 text 块用累计增量，取消时按 DSH
-    // interruptedBlocks 的规则拼出可安全收尾的前缀（text 块、去空白非空、tool-call 丢弃）。
+    // 取消令牌共用 agent 的 abort 标志 + Notify：等响应头阶段也能被打断。
+    let cancel = CancelToken::new(Arc::clone(abort), Arc::clone(&inner.cancel_notify));
+    // 已完成的块按 index 存；打开中的 text/reasoning 块累计增量，取消时按 DSH
+    // interruptedBlocks 的规则拼出可安全收尾的前缀（text/reasoning、去空白非空、
+    // tool-call 丢弃）。
     let mut blocks: BTreeMap<usize, ContentBlock> = BTreeMap::new();
-    let mut open_text: BTreeMap<usize, String> = BTreeMap::new();
+    let mut open: BTreeMap<usize, (BlockType, String)> = BTreeMap::new();
     let mut usage: Option<Usage> = None;
     let mut finish: Option<FinishReason> = None;
-    let mut aborted = false;
-    loop {
+    let mut content_emitted = false;
+    let mut attempt: u32 = 0;
+    'attempts: loop {
         if abort.load(Ordering::SeqCst) {
-            aborted = true;
-            break;
+            return Ok(StepEnd::Aborted);
         }
-        let notified = inner.cancel_notify.notified();
-        tokio::pin!(notified);
-        notified.as_mut().enable();
-        if abort.load(Ordering::SeqCst) {
-            aborted = true;
-            break;
-        }
-        tokio::select! {
-            chunk = stream.next() => {
-                let Some(chunk) = chunk else {
-                    break;
-                };
-                match chunk? {
-                    StreamChunk::BlockStart { index, block_type } => {
-                        if block_type == BlockType::Text {
-                            open_text.insert(index, String::new());
-                        }
-                    }
-                    StreamChunk::TextDelta { index, text } => {
-                        if let Some(buffer) = open_text.get_mut(&index) {
-                            buffer.push_str(&text);
-                        }
-                        let _ = inner.events.send(AgentEvent::AssistantTextDelta { text });
-                    }
-                    StreamChunk::BlockEnd { index, block } => {
-                        open_text.remove(&index);
-                        blocks.insert(index, block);
-                    }
-                    StreamChunk::Usage(reported) => usage = Some(reported),
-                    StreamChunk::Finish(reason) => finish = Some(reason),
+        let mut stream = match inner.model.stream(&messages, &tool_schemas, &cancel).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                if abort.load(Ordering::SeqCst) || error.code == ErrorCode::Aborted {
+                    return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
                 }
-                if abort.load(Ordering::SeqCst) {
-                    aborted = true;
-                    break;
+                match decide_retry(inner, &cancel, &error, &mut attempt, content_emitted).await {
+                    RetryDecision::Retry => {
+                        reset_attempt(&mut blocks, &mut open, &mut usage, &mut finish);
+                        content_emitted = false;
+                        continue 'attempts;
+                    }
+                    RetryDecision::Cancel => {
+                        return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
+                    }
+                    RetryDecision::Fatal => return Err(AgentError::Model(error)),
                 }
             }
-            _ = &mut notified => {
-                aborted = true;
+        };
+        loop {
+            if abort.load(Ordering::SeqCst) {
+                return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
+            }
+            let notified = inner.cancel_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if abort.load(Ordering::SeqCst) {
+                return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
+            }
+            let chunk = tokio::select! {
+                chunk = stream.next() => chunk,
+                () = &mut notified => {
+                    return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
+                }
+            };
+            let Some(chunk) = chunk else {
                 break;
+            };
+            match chunk {
+                Ok(StreamChunk::BlockStart { index, block_type }) => {
+                    if matches!(block_type, BlockType::Text | BlockType::Reasoning) {
+                        open.insert(index, (block_type, String::new()));
+                    }
+                }
+                Ok(StreamChunk::TextDelta { index, text }) => {
+                    if let Some((_, buffer)) = open.get_mut(&index) {
+                        buffer.push_str(&text);
+                    }
+                    content_emitted = true;
+                    let _ = inner.events.send(AgentEvent::AssistantTextDelta { text });
+                }
+                Ok(StreamChunk::ReasoningDelta { index, text }) => {
+                    if let Some((_, buffer)) = open.get_mut(&index) {
+                        buffer.push_str(&text);
+                    }
+                    content_emitted = true;
+                }
+                Ok(StreamChunk::BlockEnd { index, block }) => {
+                    open.remove(&index);
+                    blocks.insert(index, block);
+                }
+                Ok(StreamChunk::Usage(reported)) => usage = Some(reported),
+                Ok(StreamChunk::Finish(reason)) => finish = Some(reason),
+                Err(error) => {
+                    if abort.load(Ordering::SeqCst) || error.code == ErrorCode::Aborted {
+                        return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
+                    }
+                    match decide_retry(inner, &cancel, &error, &mut attempt, content_emitted).await
+                    {
+                        RetryDecision::Retry => {
+                            reset_attempt(&mut blocks, &mut open, &mut usage, &mut finish);
+                            content_emitted = false;
+                            continue 'attempts;
+                        }
+                        RetryDecision::Cancel => {
+                            return interrupted_step(inner, turn, step, &blocks, &open, &usage)
+                                .await;
+                        }
+                        RetryDecision::Fatal => return Err(AgentError::Model(error)),
+                    }
+                }
+            }
+            if abort.load(Ordering::SeqCst) {
+                return interrupted_step(inner, turn, step, &blocks, &open, &usage).await;
             }
         }
-    }
-    if aborted {
-        let content = interrupted_content(&blocks, &open_text);
-        if !content.is_empty() {
-            let message = Message::new(Role::Assistant, content);
-            inner.append(&[EventKind::AssistantMessage {
-                turn,
-                step,
-                message,
-                usage,
-                interrupted: Some(true),
-            }])?;
-        }
-        return Ok(StepEnd::Aborted);
+        break 'attempts;
     }
     let Some(finish) = finish else {
         return Err(AgentError::Model(ModelError::new(
@@ -507,9 +542,10 @@ async fn run_step(
             turn,
             step,
             message,
-            usage,
+            usage: usage.clone(),
             interrupted: None,
         }])?;
+        emit_usage(inner, &usage);
     }
     if finish == FinishReason::MaxTokens {
         // 被截断的输出里可能有不完整的工具调用：这一轮直接以 max-tokens 收尾，不执行工具。
@@ -545,7 +581,7 @@ async fn run_step(
         &calls,
         inner.max_parallel_tool_calls,
         &context,
-        abort,
+        abort.as_ref(),
     )
     .await;
     for result in &outcome.results {
@@ -561,37 +597,171 @@ async fn run_step(
             error_code: result.error_code.clone(),
         }])?;
     }
-    if aborted || abort.load(Ordering::SeqCst) || outcome.cancelled {
+    if abort.load(Ordering::SeqCst) || outcome.cancelled {
         return Ok(StepEnd::Aborted);
     }
     Ok(StepEnd::Continue)
 }
 
+/// 请求层重试：最多 5 次、500ms 起指数退避、上限 10s、±10% 抖动（std 派生，不加依赖）。
+const MAX_RETRIES: u32 = 5;
+const INITIAL_RETRY_DELAY_MS: u64 = 500;
+const MAX_RETRY_DELAY_MS: u64 = 10_000;
+
+enum RetryDecision {
+    Retry,
+    Cancel,
+    Fatal,
+}
+
+/// 只认 spec 定的 5 个可重试码。
+fn is_retryable(code: ErrorCode) -> bool {
+    matches!(
+        code,
+        ErrorCode::EmptyResponse
+            | ErrorCode::RateLimit
+            | ErrorCode::Server
+            | ErrorCode::Timeout
+            | ErrorCode::Transport
+    )
+}
+
+/// 这次失败要不要重试；要的话等完（可取消）再回 Retry。
+async fn decide_retry(
+    inner: &Arc<Inner>,
+    cancel: &CancelToken,
+    error: &ModelError,
+    attempt: &mut u32,
+    content_emitted: bool,
+) -> RetryDecision {
+    // 已经流出内容 delta 的请求不重试：避免把重复文本再打一遍（spec 裁定，偏离 DSH）。
+    if content_emitted || !is_retryable(error.code) || *attempt >= MAX_RETRIES {
+        return RetryDecision::Fatal;
+    }
+    let Some(delay_ms) = retry_delay_ms(error, *attempt + 1) else {
+        return RetryDecision::Fatal;
+    };
+    *attempt += 1;
+    let _ = inner.events.send(AgentEvent::Retrying {
+        attempt: *attempt,
+        max_attempts: MAX_RETRIES,
+        delay_ms,
+        code: error.code.as_str(),
+    });
+    let cancelled = tokio::select! {
+        biased;
+        () = cancel.cancelled() => true,
+        () = tokio::time::sleep(Duration::from_millis(delay_ms)) => false,
+    };
+    if cancelled {
+        RetryDecision::Cancel
+    } else {
+        RetryDecision::Retry
+    }
+}
+
+/// 服务端 retry-after 优先；超过上限就不重试（照 DSH normal 模式）；否则本地退避。
+fn retry_delay_ms(error: &ModelError, retry: u32) -> Option<u64> {
+    if let Some(after) = error.retry_after_ms {
+        if after > MAX_RETRY_DELAY_MS {
+            return None;
+        }
+        return Some(after.max(1));
+    }
+    let exponent = retry.saturating_sub(1).min(10);
+    let exponential = INITIAL_RETRY_DELAY_MS
+        .saturating_mul(1u64 << exponent)
+        .min(MAX_RETRY_DELAY_MS);
+    let factor = jitter_factor(retry);
+    Some(((exponential as f64 * factor).round() as u64).clamp(1, MAX_RETRY_DELAY_MS))
+}
+
+/// std 派生伪随机抖动（SystemTime 纳秒 + 重试序号混合），不引 rand。
+fn jitter_factor(retry: u32) -> f64 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.subsec_nanos() as u64);
+    let mixed = nanos ^ u64::from(retry).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    let unit = (mixed >> 11) as f64 / (1u64 << 53) as f64;
+    1.0 + 0.1 * (2.0 * unit - 1.0)
+}
+
+fn reset_attempt(
+    blocks: &mut BTreeMap<usize, ContentBlock>,
+    open: &mut BTreeMap<usize, (BlockType, String)>,
+    usage: &mut Option<Usage>,
+    finish: &mut Option<FinishReason>,
+) {
+    blocks.clear();
+    open.clear();
+    *usage = None;
+    *finish = None;
+}
+
+fn emit_usage(inner: &Arc<Inner>, usage: &Option<Usage>) {
+    if let Some(usage) = usage {
+        let _ = inner.events.send(AgentEvent::UsageReported {
+            usage: usage.clone(),
+        });
+    }
+}
+
+async fn interrupted_step(
+    inner: &Arc<Inner>,
+    turn: u64,
+    step: u64,
+    blocks: &BTreeMap<usize, ContentBlock>,
+    open: &BTreeMap<usize, (BlockType, String)>,
+    usage: &Option<Usage>,
+) -> Result<StepEnd, AgentError> {
+    let content = interrupted_content(blocks, open);
+    if !content.is_empty() {
+        let message = Message::new(Role::Assistant, content);
+        inner.append(&[EventKind::AssistantMessage {
+            turn,
+            step,
+            message,
+            usage: usage.clone(),
+            interrupted: Some(true),
+        }])?;
+        emit_usage(inner, usage);
+    }
+    Ok(StepEnd::Aborted)
+}
+
 /// 取消时保留的可安全收尾前缀（照 DSH assembler.interruptedBlocks）：
-/// 只看 text 块；关闭的块用完整内容、打开中的块用已收到的增量；去空白后为空则丢弃。
+/// 已关闭/打开中的 text 和 reasoning 块、去空白非空、按流顺序；tool-call 丢弃。
+/// interrupted 的 thinking 不写 signature（照 DSH，handback 记）。
 fn interrupted_content(
     blocks: &BTreeMap<usize, ContentBlock>,
-    open_text: &BTreeMap<usize, String>,
+    open: &BTreeMap<usize, (BlockType, String)>,
 ) -> Vec<ContentBlock> {
-    let mut indexes: Vec<usize> = blocks.keys().chain(open_text.keys()).copied().collect();
+    let mut indexes: Vec<usize> = blocks.keys().chain(open.keys()).copied().collect();
     indexes.sort_unstable();
     indexes.dedup();
     let mut content = Vec::new();
     for index in indexes {
-        match blocks.get(&index) {
-            Some(ContentBlock::Text { text }) => {
-                if !text.trim().is_empty() {
-                    content.push(ContentBlock::Text { text: text.clone() });
-                }
+        let block = blocks.get(&index).cloned().or_else(|| {
+            open.get(&index).map(|(block_type, text)| match block_type {
+                BlockType::Text => ContentBlock::Text { text: text.clone() },
+                BlockType::Reasoning => ContentBlock::Reasoning {
+                    text: text.clone(),
+                    signature: None,
+                },
+                BlockType::ToolCall => ContentBlock::Text { text: text.clone() },
+            })
+        });
+        match block {
+            Some(ContentBlock::Text { text }) if !text.trim().is_empty() => {
+                content.push(ContentBlock::Text { text });
             }
-            Some(_) => {}
-            None => {
-                if let Some(text) = open_text.get(&index)
-                    && !text.trim().is_empty()
-                {
-                    content.push(ContentBlock::Text { text: text.clone() });
-                }
+            Some(ContentBlock::Reasoning { text, .. }) if !text.trim().is_empty() => {
+                content.push(ContentBlock::Reasoning {
+                    text,
+                    signature: None,
+                });
             }
+            _ => {}
         }
     }
     content

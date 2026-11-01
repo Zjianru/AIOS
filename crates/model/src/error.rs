@@ -67,6 +67,10 @@ impl std::fmt::Display for ErrorCode {
 pub struct ModelError {
     pub code: ErrorCode,
     pub message: String,
+    /// HTTP 状态（拿到才有）。
+    pub status: Option<u16>,
+    /// 服务端 retry-after（毫秒，拿到才 >0）；重试层优先用它。
+    pub retry_after_ms: Option<u64>,
 }
 
 impl ModelError {
@@ -74,6 +78,8 @@ impl ModelError {
         Self {
             code,
             message: message.into(),
+            status: None,
+            retry_after_ms: None,
         }
     }
 }

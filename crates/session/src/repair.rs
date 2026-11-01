@@ -83,7 +83,9 @@ pub fn interrupted_turn_closers(events: &[Event]) -> Vec<EventKind> {
             } => {
                 let call_id = message.content.first().and_then(|block| match block {
                     ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
-                    ContentBlock::Text { .. } | ContentBlock::ToolCall { .. } => None,
+                    ContentBlock::Text { .. }
+                    | ContentBlock::Reasoning { .. }
+                    | ContentBlock::ToolCall { .. } => None,
                 });
                 if let Some(call_id) = call_id
                     && let Some(position) = pending.iter().position(|call| {

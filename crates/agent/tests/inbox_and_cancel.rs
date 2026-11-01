@@ -160,6 +160,7 @@ async fn steer_enters_next_step_while_running() {
         match event {
             AgentEvent::AssistantTextDelta { text } => streamed.push_str(&text),
             AgentEvent::TurnEnded { outcome: ended, .. } => outcome = Some(ended),
+            _ => {}
         }
     }
     assert_eq!(outcome, Some(TurnOutcome::Completed));

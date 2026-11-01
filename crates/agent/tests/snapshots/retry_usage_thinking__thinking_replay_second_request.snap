@@ -1,0 +1,50 @@
+---
+source: crates/agent/tests/retry_usage_thinking.rs
+expression: body
+---
+{
+  "max_tokens": 2048,
+  "messages": [
+    {
+      "content": [
+        {
+          "text": "想一想",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "signature": "sig-abc",
+          "thinking": "先想一下",
+          "type": "thinking"
+        },
+        {
+          "text": "答案",
+          "type": "text"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "content": [
+        {
+          "text": "继续",
+          "type": "text"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "model": "deepseek-flash",
+  "output_config": {
+    "effort": "high"
+  },
+  "stream": true,
+  "system": "You are AIOS, a coding agent. Your working directory is <CWD>.",
+  "thinking": {
+    "type": "enabled"
+  }
+}

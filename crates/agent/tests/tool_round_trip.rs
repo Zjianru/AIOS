@@ -104,6 +104,7 @@ async fn tool_round_trip() {
         match event {
             AgentEvent::AssistantTextDelta { text: delta } => text.push_str(&delta),
             AgentEvent::TurnEnded { outcome: ended, .. } => outcome = Some(ended),
+            _ => {}
         }
     }
     assert_eq!(text, "我先读一下文件。文件里写着 hello。");

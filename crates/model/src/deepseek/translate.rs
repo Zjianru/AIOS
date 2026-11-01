@@ -13,6 +13,8 @@ struct BlockState {
     closed: bool,
     /// tool_use 块累计的 input JSON（input_json_delta 拼接）。
     json: String,
+    /// thinking 块累计的 signature（signature_delta 拼接，块结束时放进 Reasoning）。
+    signature: Option<String>,
 }
 
 /// 一次响应的翻译状态机：保留块顺序，累计用量，产出一个最终结束原因。
@@ -52,7 +54,7 @@ impl Translator {
             .ok_or_else(|| malformed("事件缺少 type"))?
             .to_owned();
         match kind.as_str() {
-            "error" => return Err(provider_error(&event, None)),
+            "error" => return Err(provider_error(&event, None, None)),
             "message_start" => {
                 if self.started {
                     return Err(malformed("重复的 message_start"));
@@ -76,6 +78,22 @@ impl Translator {
                     .and_then(Value::as_str)
                     .ok_or_else(|| malformed("内容块缺少 type"))?;
                 let (content, block_type, initial_delta) = match native_type {
+                    "thinking" => {
+                        let text = required_string(native, "thinking")?;
+                        let initial = if text.is_empty() {
+                            None
+                        } else {
+                            Some(text.clone())
+                        };
+                        (
+                            ContentBlock::Reasoning {
+                                text,
+                                signature: None,
+                            },
+                            BlockType::Reasoning,
+                            initial,
+                        )
+                    }
                     "text" => {
                         let text = required_string(native, "text")?;
                         let initial = if text.is_empty() {
@@ -121,11 +139,18 @@ impl Translator {
                         content,
                         closed: false,
                         json: String::new(),
+                        signature: None,
                     },
                 );
                 chunks.push(StreamChunk::BlockStart { index, block_type });
                 if let Some(text) = initial_delta {
-                    chunks.push(StreamChunk::TextDelta { index, text });
+                    match block_type {
+                        BlockType::Text => chunks.push(StreamChunk::TextDelta { index, text }),
+                        BlockType::Reasoning => {
+                            chunks.push(StreamChunk::ReasoningDelta { index, text });
+                        }
+                        BlockType::ToolCall => {}
+                    }
                 }
             }
             "content_block_delta" => {
@@ -145,18 +170,46 @@ impl Translator {
                     .get("type")
                     .and_then(Value::as_str)
                     .ok_or_else(|| malformed("delta 缺少 type"))?;
-                match (delta_type, &mut block.content) {
-                    ("text_delta", ContentBlock::Text { text }) => {
-                        let piece = required_string(delta, "text")?;
-                        text.push_str(&piece);
-                        chunks.push(StreamChunk::TextDelta { index, text: piece });
+                match delta_type {
+                    "text_delta" => {
+                        if let ContentBlock::Text { text } = &mut block.content {
+                            let piece = required_string(delta, "text")?;
+                            text.push_str(&piece);
+                            chunks.push(StreamChunk::TextDelta { index, text: piece });
+                        } else {
+                            return Err(malformed("text_delta 指向非文本块"));
+                        }
                     }
-                    ("input_json_delta", ContentBlock::ToolCall { .. }) => {
-                        block
-                            .json
-                            .push_str(&required_string(delta, "partial_json")?);
+                    "thinking_delta" => {
+                        if let ContentBlock::Reasoning { text, .. } = &mut block.content {
+                            let piece = required_string(delta, "thinking")?;
+                            text.push_str(&piece);
+                            chunks.push(StreamChunk::ReasoningDelta { index, text: piece });
+                        } else {
+                            return Err(malformed("thinking_delta 指向非 thinking 块"));
+                        }
                     }
-                    (other, _) => return Err(malformed(&format!("不支持的内容增量 {other}"))),
+                    "signature_delta" => {
+                        if let ContentBlock::Reasoning { .. } = &block.content {
+                            let piece = required_string(delta, "signature")?;
+                            block
+                                .signature
+                                .get_or_insert_with(String::new)
+                                .push_str(&piece);
+                        } else {
+                            return Err(malformed("signature_delta 指向非 thinking 块"));
+                        }
+                    }
+                    "input_json_delta" => {
+                        if let ContentBlock::ToolCall { .. } = &mut block.content {
+                            block
+                                .json
+                                .push_str(&required_string(delta, "partial_json")?);
+                        } else {
+                            return Err(malformed("input_json_delta 指向非工具调用块"));
+                        }
+                    }
+                    other => return Err(malformed(&format!("不支持的内容增量 {other}"))),
                 }
             }
             "content_block_stop" => {
@@ -174,6 +227,11 @@ impl Translator {
                     && !block.json.is_empty()
                 {
                     *arguments = std::mem::take(&mut block.json);
+                }
+                if let ContentBlock::Reasoning { signature, .. } = &mut block.content
+                    && block.signature.is_some()
+                {
+                    *signature = block.signature.clone();
                 }
                 let block = block.content.clone();
                 chunks.push(StreamChunk::BlockEnd { index, block });

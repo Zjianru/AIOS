@@ -21,6 +21,12 @@ pub enum ContentBlock {
     Text {
         text: String,
     },
+    /// 模型的思考内容（thinking）；signature 是回放用的原生元数据（块级，照 DSH）。
+    Reasoning {
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
     /// 模型请求的一次工具调用；arguments 是模型给出的原始 JSON 字符串。
     ToolCall {
         id: String,
@@ -44,7 +50,7 @@ impl ContentBlock {
     pub fn as_text(&self) -> Option<&str> {
         match self {
             Self::Text { text } => Some(text),
-            Self::ToolCall { .. } | Self::ToolResult { .. } => None,
+            Self::Reasoning { .. } | Self::ToolCall { .. } | Self::ToolResult { .. } => None,
         }
     }
 
@@ -56,7 +62,7 @@ impl ContentBlock {
                 name,
                 arguments,
             } => Some((id, name, arguments)),
-            Self::Text { .. } | Self::ToolResult { .. } => None,
+            Self::Text { .. } | Self::Reasoning { .. } | Self::ToolResult { .. } => None,
         }
     }
 }
@@ -152,6 +158,21 @@ impl Usage {
             && self.cache_read_input_tokens.is_none()
             && self.cache_creation_input_tokens.is_none()
     }
+
+    /// 给人看的单行用量；厂商没给的项写「未知」，不写 0。
+    pub fn summary(&self) -> String {
+        let render = |label: &str, value: Option<u64>| match value {
+            Some(tokens) => format!("{label} {tokens}"),
+            None => format!("{label} 未知"),
+        };
+        [
+            render("输入", self.input_tokens),
+            render("输出", self.output_tokens),
+            render("缓存读", self.cache_read_input_tokens),
+            render("缓存写", self.cache_creation_input_tokens),
+        ]
+        .join(" · ")
+    }
 }
 
 /// 推理强度。默认 High（spec 实现决定）。
@@ -202,6 +223,7 @@ pub enum FinishReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockType {
     Text,
+    Reasoning,
     ToolCall,
 }
 
@@ -210,6 +232,7 @@ pub enum BlockType {
 pub enum StreamChunk {
     BlockStart { index: usize, block_type: BlockType },
     TextDelta { index: usize, text: String },
+    ReasoningDelta { index: usize, text: String },
     BlockEnd { index: usize, block: ContentBlock },
     Usage(Usage),
     Finish(FinishReason),

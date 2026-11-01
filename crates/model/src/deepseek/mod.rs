@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 
 pub use config::{DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS, DeepSeekConfig};
 
-use crate::{ErrorCode, Message, ModelError, StreamChunk, ToolSchema};
+use crate::{CancelToken, ErrorCode, Message, ModelError, StreamChunk, ToolSchema};
 use sse::SseParser;
 use translate::Translator;
 
@@ -45,31 +45,48 @@ impl DeepSeek {
     }
 
     /// 发一次流式请求。消息和工具定义按 Messages 协议序列化（system 单独成字段）。
+    /// 取消令牌能在「等响应头」阶段打断请求（对应 DSH 把 AbortSignal 传进 LLM 层）。
     pub async fn stream(
         &self,
         messages: &[Message],
         tools: &[ToolSchema],
+        cancel: &CancelToken,
     ) -> Result<ChunkStream, ModelError> {
         let body = serialize::request_body(&self.config, messages, tools)?;
-        let response = self
+        let request = self
             .http
             .post(self.url.clone())
             .header("content-type", "application/json")
             .header("accept", "text/event-stream")
             .header("x-api-key", &self.config.api_key)
             .header("anthropic-version", "2023-06-01")
-            .body(body)
-            .send()
-            .await
-            .map_err(transport::transport_error)?;
+            .body(body);
+        let response = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(aborted("DeepSeek Messages 请求被取消")),
+            response = request.send() => response.map_err(transport::transport_error)?,
+        };
+        if cancel.is_cancelled() {
+            return Err(aborted("DeepSeek Messages 请求被取消"));
+        }
         let status = response.status();
         if !status.is_success() {
+            let headers = response.headers().clone();
             let text = response.text().await.unwrap_or_default();
             let raw = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
-            return Err(transport::provider_error(&raw, Some(status.as_u16())));
+            return Err(transport::provider_error(
+                &raw,
+                Some(status.as_u16()),
+                Some(&headers),
+            ));
         }
-        Ok(ChunkStream::new(response))
+        Ok(ChunkStream::new(response, cancel.clone()))
     }
+}
+
+/// 取消造成的错误（调用方按「取消」收尾，不当作 turn error）。
+fn aborted(message: &str) -> ModelError {
+    ModelError::new(ErrorCode::Aborted, message.to_owned())
 }
 
 /// 把 base URL 规范化成 Messages 端点：`.../anthropic` -> `.../anthropic/v1/messages`。
@@ -94,17 +111,22 @@ pub struct ChunkStream {
     parser: SseParser,
     translator: Translator,
     pending: VecDeque<StreamChunk>,
+    /// 翻译时出错但还有已排队的 chunk：先把 chunk 吐完，再报这个错。
+    pending_error: Option<ModelError>,
     done: bool,
+    cancel: CancelToken,
 }
 
 impl ChunkStream {
-    fn new(response: reqwest::Response) -> Self {
+    fn new(response: reqwest::Response, cancel: CancelToken) -> Self {
         Self {
             response,
             parser: SseParser::default(),
             translator: Translator::new(),
             pending: VecDeque::new(),
+            pending_error: None,
             done: false,
+            cancel,
         }
     }
 
@@ -114,10 +136,18 @@ impl ChunkStream {
             if let Some(chunk) = self.pending.pop_front() {
                 return Some(Ok(chunk));
             }
+            if let Some(error) = self.pending_error.take() {
+                self.done = true;
+                return Some(Err(error));
+            }
             if self.done {
                 return None;
             }
             if let Err(error) = self.pump_frames() {
+                if let Some(chunk) = self.pending.pop_front() {
+                    self.pending_error = Some(error);
+                    return Some(Ok(chunk));
+                }
                 self.done = true;
                 return Some(Err(error));
             }
@@ -127,28 +157,38 @@ impl ChunkStream {
             if self.done {
                 return None;
             }
-            match tokio::time::timeout(STREAM_IDLE_TIMEOUT, self.response.chunk()).await {
-                Err(_) => {
+            let cancel = self.cancel.clone();
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => {
                     self.done = true;
-                    return Some(Err(ModelError::new(
-                        ErrorCode::Timeout,
-                        "DeepSeek Messages 流空闲超时（300 秒）",
-                    )));
+                    return Some(Err(aborted("DeepSeek Messages 请求被取消")));
                 }
-                Ok(Err(error)) => {
-                    self.done = true;
-                    return Some(Err(transport::transport_error(error)));
-                }
-                Ok(Ok(Some(bytes))) => self.parser.push(&bytes),
-                Ok(Ok(None)) => {
-                    self.done = true;
-                    if !self.translator.is_finished() {
-                        return Some(Err(ModelError::new(
-                            ErrorCode::StreamClosed,
-                            "DeepSeek Messages 在 message_stop 之前关闭了流",
-                        )));
+                result = tokio::time::timeout(STREAM_IDLE_TIMEOUT, self.response.chunk()) => {
+                    match result {
+                        Err(_) => {
+                            self.done = true;
+                            return Some(Err(ModelError::new(
+                                ErrorCode::Timeout,
+                                "DeepSeek Messages 流空闲超时（300 秒）",
+                            )));
+                        }
+                        Ok(Err(error)) => {
+                            self.done = true;
+                            return Some(Err(transport::transport_error(error)));
+                        }
+                        Ok(Ok(Some(bytes))) => self.parser.push(&bytes),
+                        Ok(Ok(None)) => {
+                            self.done = true;
+                            if !self.translator.is_finished() {
+                                return Some(Err(ModelError::new(
+                                    ErrorCode::StreamClosed,
+                                    "DeepSeek Messages 在 message_stop 之前关闭了流",
+                                )));
+                            }
+                            return None;
+                        }
                     }
-                    return None;
                 }
             }
         }

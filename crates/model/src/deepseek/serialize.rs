@@ -58,6 +58,12 @@ struct WireText {
 enum WireBlock {
     #[serde(rename = "text")]
     Text { text: String },
+    #[serde(rename = "thinking")]
+    Thinking {
+        thinking: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -92,7 +98,9 @@ pub(super) fn request_body(
                 for block in &message.content {
                     match block {
                         ContentBlock::Text { text: piece } => text.push_str(piece),
-                        ContentBlock::ToolCall { .. } | ContentBlock::ToolResult { .. } => {
+                        ContentBlock::Reasoning { .. }
+                        | ContentBlock::ToolCall { .. }
+                        | ContentBlock::ToolResult { .. } => {
                             return Err(unsupported("system 消息只能包含文本块"));
                         }
                     }
@@ -119,6 +127,15 @@ pub(super) fn request_body(
                             Some(WireBlock::Text { text: text.clone() })
                         }
                         ContentBlock::Text { .. } => None,
+                        ContentBlock::Reasoning { text, signature }
+                            if message.role == Role::Assistant =>
+                        {
+                            Some(WireBlock::Thinking {
+                                thinking: text.clone(),
+                                signature: signature.clone(),
+                            })
+                        }
+                        ContentBlock::Reasoning { .. } => None,
                         ContentBlock::ToolCall {
                             id,
                             name,
@@ -165,7 +182,9 @@ pub(super) fn request_body(
                                 is_error: if *is_error { Some(true) } else { None },
                             });
                         }
-                        ContentBlock::Text { .. } | ContentBlock::ToolCall { .. } => {
+                        ContentBlock::Text { .. }
+                        | ContentBlock::Reasoning { .. }
+                        | ContentBlock::ToolCall { .. } => {
                             return Err(unsupported("tool 消息只能包含 tool_result 块"));
                         }
                     }
