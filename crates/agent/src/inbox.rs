@@ -142,19 +142,19 @@ impl Inbox {
     ) -> Result<(), AgentError> {
         let len = self.list(target).len() as u64;
         let removed_count = removed_count.unwrap_or(0);
-        if start > len || start + removed_count > len {
+        // 坐标要落在 [0, len] 内。start + removedCount 必须 checked_add：removedCount 来自
+        // 日志里的 u64，直接相加会溢出 panic（debug）或绕出非法 slice range（release）；
+        // 溢出按损坏日志返回 CorruptInbox。
+        let Some(end) = start.checked_add(removed_count).filter(|end| *end <= len) else {
             return Err(AgentError::CorruptInbox(format!(
                 "invalid persisted inbox splice at session seq {seq}: target={}, start={start}, removedCount={removed_count}, len={len}",
                 target.as_str()
             )));
-        }
+        };
         // 只有 canceled 一种 outcome；折叠时不影响队列状态。
         let _ = outcome;
-        let start = start as usize;
-        self.list_mut(target).splice(
-            start..start + removed_count as usize,
-            inserted.iter().cloned(),
-        );
+        self.list_mut(target)
+            .splice(start as usize..end as usize, inserted.iter().cloned());
         Ok(())
     }
 
