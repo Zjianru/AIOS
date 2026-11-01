@@ -45,6 +45,18 @@ struct CommonArgs {
     /// 推理强度：off、low、high、max（默认 high）
     #[arg(long)]
     effort: Option<String>,
+    /// 仅开发/DoD 用：覆盖模型 context window（默认 1_000_000）
+    #[arg(long)]
+    context_window: Option<u64>,
+    /// 仅开发/DoD 用：覆盖输出 token 上限（默认模型默认值）
+    #[arg(long)]
+    max_tokens: Option<u64>,
+    /// 仅开发/DoD 用：覆盖自动压缩阈值比例（默认 0.8）
+    #[arg(long)]
+    compaction_threshold: Option<f64>,
+    /// 仅开发/DoD 用：覆盖压缩保留比例（默认 0.16，必须小于阈值）
+    #[arg(long)]
+    compaction_retain: Option<f64>,
 }
 
 #[derive(Args)]
@@ -86,6 +98,68 @@ async fn main() -> ExitCode {
     }
 }
 
+/// 仅开发/DoD 用：把 dev 覆盖参数映射到 DeepSeekConfig/AgentConfig（纯函数便于单测）。
+fn config_from_args(
+    common: &CommonArgs,
+    base_url: String,
+    api_key: String,
+) -> Result<(DeepSeekConfig, AgentConfig), CliError> {
+    let effort = match common.effort.as_deref() {
+        None => Effort::High,
+        Some(raw) => Effort::parse(raw).ok_or_else(|| {
+            CliError::Message(format!("非法推理强度 {raw}（只接受 off、low、high、max）"))
+        })?,
+    };
+    let max_tokens = match common.max_tokens {
+        None => DEFAULT_MAX_TOKENS,
+        Some(raw) => u32::try_from(raw)
+            .map_err(|_| CliError::Message(format!("--max-tokens {raw} 超出 u32 范围")))?,
+    };
+    if max_tokens == 0 {
+        return Err(CliError::Message("--max-tokens 必须大于 0".to_owned()));
+    }
+    let context_window = match common.context_window {
+        None => model::DEFAULT_CONTEXT_WINDOW,
+        Some(0) => return Err(CliError::Message("--context-window 必须大于 0".to_owned())),
+        Some(raw) => raw,
+    };
+    let mut agent = AgentConfig::default();
+    if let Some(threshold) = common.compaction_threshold {
+        agent.compaction_threshold_ratio = threshold;
+    }
+    if let Some(retain) = common.compaction_retain {
+        agent.compaction_retain_ratio = retain;
+    }
+    if !agent.compaction_threshold_ratio.is_finite()
+        || agent.compaction_threshold_ratio <= 0.0
+        || agent.compaction_threshold_ratio > 1.0
+    {
+        return Err(CliError::Message(
+            "--compaction-threshold 必须在 (0, 1] 之间".to_owned(),
+        ));
+    }
+    if !agent.compaction_retain_ratio.is_finite()
+        || agent.compaction_retain_ratio < 0.0
+        || agent.compaction_retain_ratio >= agent.compaction_threshold_ratio
+    {
+        return Err(CliError::Message(
+            "--compaction-retain 必须 >= 0 且小于阈值".to_owned(),
+        ));
+    }
+    let config = DeepSeekConfig {
+        base_url,
+        api_key,
+        model: common
+            .model
+            .clone()
+            .unwrap_or_else(|| "deepseek-flash".to_owned()),
+        max_tokens,
+        context_window,
+        effort,
+    };
+    Ok((config, agent))
+}
+
 async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
     let data_dir = match &common.data_dir {
         Some(path) => path.clone(),
@@ -102,26 +176,9 @@ async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
     })?;
     let base_url =
         std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_owned());
-    let effort = match common.effort.as_deref() {
-        None => Effort::High,
-        Some(raw) => Effort::parse(raw).ok_or_else(|| {
-            CliError::Message(format!("非法推理强度 {raw}（只接受 off、low、high、max）"))
-        })?,
-    };
-    let config = DeepSeekConfig {
-        base_url,
-        api_key,
-        model: common
-            .model
-            .clone()
-            .unwrap_or_else(|| "deepseek-flash".to_owned()),
-        max_tokens: DEFAULT_MAX_TOKENS,
-        context_window: model::DEFAULT_CONTEXT_WINDOW,
-        effort,
-    };
-    let model = DeepSeek::new(config)?;
+    let (deepseek_config, config) = config_from_args(common, base_url, api_key)?;
+    let model = DeepSeek::new(deepseek_config)?;
     let tools = ToolSet::builtin();
-    let config = AgentConfig::default();
     match &common.resume {
         Some(raw) => {
             let id = SessionId::parse(raw)?;
@@ -425,11 +482,13 @@ fn job_completed_text(job_id: &str, status: JobStatus, detail: Option<&str>) -> 
 
 #[cfg(test)]
 mod tests {
-    use agent::{AgentEvent, CompactionTrigger, JobStatus};
+    use agent::{AgentConfig, AgentEvent, CompactionTrigger, JobStatus};
+    use model::DEFAULT_MAX_TOKENS;
 
     use super::{
-        compaction_ended_text, compaction_started_text, is_compact_command, job_completed_text,
-        question_asked_text, run_should_cancel_for_question,
+        CommonArgs, compaction_ended_text, compaction_started_text, config_from_args,
+        is_compact_command, job_completed_text, question_asked_text,
+        run_should_cancel_for_question,
     };
 
     #[test]
@@ -517,5 +576,67 @@ mod tests {
                 text: "x".to_owned()
             }
         ));
+    }
+
+    fn dev_common() -> CommonArgs {
+        CommonArgs {
+            resume: None,
+            data_dir: None,
+            cwd: None,
+            model: None,
+            effort: None,
+            context_window: None,
+            max_tokens: None,
+            compaction_threshold: None,
+            compaction_retain: None,
+        }
+    }
+
+    #[test]
+    fn config_from_args_defaults_match_production_defaults() {
+        let (deepseek, agent) =
+            config_from_args(&dev_common(), "http://x".to_owned(), "k".to_owned()).unwrap();
+        assert_eq!(deepseek.max_tokens, DEFAULT_MAX_TOKENS);
+        assert_eq!(deepseek.context_window, model::DEFAULT_CONTEXT_WINDOW);
+        assert_eq!(
+            agent.compaction_threshold_ratio,
+            AgentConfig::default().compaction_threshold_ratio
+        );
+        assert_eq!(
+            agent.compaction_retain_ratio,
+            AgentConfig::default().compaction_retain_ratio
+        );
+    }
+
+    #[test]
+    fn config_from_args_applies_dev_overrides() {
+        let common = CommonArgs {
+            context_window: Some(24_000),
+            max_tokens: Some(1024),
+            compaction_threshold: Some(0.2),
+            compaction_retain: Some(0.1),
+            ..dev_common()
+        };
+        let (deepseek, agent) =
+            config_from_args(&common, "http://x".to_owned(), "k".to_owned()).unwrap();
+        assert_eq!(deepseek.context_window, 24_000);
+        assert_eq!(deepseek.max_tokens, 1024);
+        assert_eq!(agent.compaction_threshold_ratio, 0.2);
+        assert_eq!(agent.compaction_retain_ratio, 0.1);
+    }
+
+    #[test]
+    fn config_from_args_rejects_invalid_compaction_values() {
+        let bad_threshold = CommonArgs {
+            compaction_threshold: Some(0.0),
+            ..dev_common()
+        };
+        assert!(config_from_args(&bad_threshold, "http://x".to_owned(), "k".to_owned()).is_err());
+        let bad_retain = CommonArgs {
+            compaction_threshold: Some(0.2),
+            compaction_retain: Some(0.2),
+            ..dev_common()
+        };
+        assert!(config_from_args(&bad_retain, "http://x".to_owned(), "k".to_owned()).is_err());
     }
 }
