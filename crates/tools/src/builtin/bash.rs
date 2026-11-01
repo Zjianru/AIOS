@@ -140,9 +140,12 @@ fn spawn(command: &str, workdir: &Path, context: &ToolContext) -> io::Result<std
         .stderr(Stdio::piped());
     process.env_clear();
     for (key, value) in std::env::vars() {
-        if !key.starts_with(ENV_PREFIX) {
-            process.env(key, value);
+        // AIOS_* 由受管注入接管；敏感名（KEY/PASSWORD/SECRET/TOKEN/DSH_）不隐式传给
+        // 模型 shell，挡凭据泄漏（照 DSH subprocess scrubbedParentEnv）。
+        if key.starts_with(ENV_PREFIX) || is_sensitive_env_var(&key) {
+            continue;
         }
+        process.env(key, value);
     }
     for (key, value) in ENV_OVERRIDES {
         process.env(key, value);
@@ -151,6 +154,18 @@ fn spawn(command: &str, workdir: &Path, context: &ToolContext) -> io::Result<std
         process.env(key, value);
     }
     process.output()
+}
+
+/// 父环境里哪些变量不能隐式传给模型 shell：大小写不敏感的
+/// KEY/PASSWORD/SECRET/TOKEN 子串，以及 DSH_ 前缀。
+/// 照 DSH packages/subprocess/subprocess/src/index.ts:42-69 的 scrubbedParentEnv；
+/// AIOS_* 由调用方先过滤（受管注入接管）。
+fn is_sensitive_env_var(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    upper.starts_with("DSH_")
+        || ["KEY", "PASSWORD", "SECRET", "TOKEN"]
+            .iter()
+            .any(|pattern| upper.contains(pattern))
 }
 
 /// 受管 AIOS_* 变量（照 DSH shell-env 的 built-ins，挑本任务需要的）：
@@ -287,5 +302,41 @@ trait ExitSignal {
 impl ExitSignal for std::process::ExitStatus {
     fn signal(&self) -> Option<i32> {
         None
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::is_sensitive_env_var;
+
+    #[test]
+    fn credential_names_are_sensitive() {
+        for name in [
+            "DEEPSEEK_API_KEY",
+            "deepseek_api_key",
+            "GITHUB_TOKEN",
+            "db_password",
+            "MY_SECRET",
+            "DSH_HOME",
+            "HOMEBREW_GITHUB_API_TOKEN",
+        ] {
+            assert!(is_sensitive_env_var(name), "{name} 应被 scrub");
+        }
+    }
+
+    #[test]
+    fn normal_names_are_kept() {
+        for name in [
+            "PATH",
+            "HOME",
+            "HTTPS_PROXY",
+            "NO_PROXY",
+            "NO_COLOR",
+            "TERM",
+            "PAGER",
+            "GIT_PAGER",
+            "LANG",
+        ] {
+            assert!(!is_sensitive_env_var(name), "{name} 不应被 scrub");
+        }
     }
 }

@@ -34,7 +34,7 @@ AIOS 是一个本地 agent 内核：每次模型请求从会话日志派生，�
 - **写类工具独占**：write / edit / apply_patch 的并发类别是 `Exclusive`，在批执行里形成屏障；文件写入走同目录 temp → fsync → rename（createIfAbsent 用 temp + hard-link no-replace），失败清理 temp。
 - **大工具结果先 spill 再进上下文**：工具结果估计 token 超过 `AgentConfig.spill_max_inline_tokens`（默认 12500；0 = 禁用）时，完整文本写进 `<data-dir>/spill/session-<id>/`，日志与派生请求只放头/尾 preview + locator（按会话隔离）；read 工具不参与（自带分页上限，照 DSH `spill-policy`）。写 spill 失败时保守保留原文。
 - **旧大结果在派生请求里修剪**：派生之前，上一个 turn 及更早的、超过 8192 码点的 tool/result 换成 head 4096 + `[... tool result middle pruned ...]` + tail 1024 的视图，并追加 `compaction/prune` 事件；原始 tool/result 保留在日志里可回放，同一 call_id 只修剪一次（T005.2；修剪触发与 T005.8a 的摘要压缩无关）。
-- **bash 每次新进程**：每次调用起新的 `bash -c`（不持久化）；stdout/stderr 超过 64,000 字节只留尾部、完整流写进会话 spill 目录并在结果里给路径；非零退出是结果（`[exit code: N]` marker），不是错误；不做沙箱（D38），工具描述不宣称受限（T005.3）。
+- **bash 每次新进程**：每次调用起新的 `bash -c`（不持久化）；stdout/stderr 超过 64,000 字节只留尾部、完整流写进会话 spill 目录并在结果里给路径；非零退出是结果（`[exit code: N]` marker），不是错误；父环境的 KEY/PASSWORD/SECRET/TOKEN（大小写不敏感）与 DSH_*/AIOS_* 变量不传给子进程、再注入受管 AIOS_*（挡凭据泄漏，照 DSH scrubbedParentEnv）；不做沙箱（D38），工具描述不宣称受限（T005.3）。
 - **唤醒不丢**：轮次收尾检查与 `settle_idle` 的快照之间只有一个显式让出点（`tokio::task::yield_now`），除此之外没有别的 await；且 `wake_driver` 在 Running 时无条件置 `wake_requested`。收尾窗口里到达的 FollowUp/Steer 不会滞留，`idle()` 不会带着待处理输入返回。
 - **step 编号**：每轮从 1 开始、在轮内递增；`Phase::Running` 不保存 step，不存在跨 turn 携带（T004 审 K1）。
 - **请求层重试**：step 内只对 `EMPTY_RESPONSE` / `RATE_LIMIT` / `SERVER` / `TIMEOUT` / `TRANSPORT` 重试，最多 5 次；延迟 500ms 起指数退避、上限 10s、±10% 抖动（std 派生，不引依赖），服务端 retry-after 优先、超过上限不重试；只对「尚未流出 content delta」的失败重试（避免重复文本），每次重试发 `AgentEvent::Retrying`、不写日志。

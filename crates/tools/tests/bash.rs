@@ -131,3 +131,189 @@ fn bash_tool_is_registered_and_exclusive() {
     assert!(!bash.description().to_lowercase().contains("sandbox"));
     assert!(!bash.description().to_lowercase().contains("permission"));
 }
+const SCRUB_CHILD_ENV: &str = "AIOS_TEST_SCRUB_CHILD";
+
+#[tokio::test]
+async fn bash_does_not_leak_credential_env() {
+    // 父进程环境里有假 DEEPSEEK_API_KEY / AIOS_LEAK_VALUE 时，子进程不能看到。
+    // nextest 每个测试独立进程；这里通过 re-exec 当前测试二进制注入父环境。
+    if std::env::var_os(SCRUB_CHILD_ENV).is_none() {
+        let exe = std::env::current_exe().unwrap();
+        let output = std::process::Command::new(&exe)
+            .arg("bash_does_not_leak_credential_env")
+            .arg("--exact")
+            .arg("--nocapture")
+            .env(SCRUB_CHILD_ENV, "1")
+            .env("DEEPSEEK_API_KEY", "fake-key-not-real")
+            .env("AIOS_LEAK_VALUE", "leak-not-allowed")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "子进程失败\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), dir.path());
+    let result = run(
+        json!({"command": "printf 'key=[%s] aios_leak=[%s] no_color=[%s] home=[%s]\\n' \"$DEEPSEEK_API_KEY\" \"$AIOS_LEAK_VALUE\" \"$NO_COLOR\" \"$HOME\"; printf 'path=[%s]\\n' \"${PATH:+set}\""}),
+        &context,
+    )
+    .await;
+    assert!(!result.is_error, "{}", result.content);
+    assert!(
+        !result.content.contains("fake-key-not-real"),
+        "凭据泄漏到工具输出: {}",
+        result.content
+    );
+    assert!(
+        !result.content.contains("leak-not-allowed"),
+        "AIOS_* 继承未清: {}",
+        result.content
+    );
+    assert!(
+        result
+            .content
+            .starts_with("key=[] aios_leak=[] no_color=[1] home=["),
+        "{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("path=[set]"),
+        "PATH 应保留: {}",
+        result.content
+    );
+}
+#[tokio::test]
+async fn bash_stdin_is_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), dir.path());
+    // stdin 是 null：cat 立刻 EOF，不会挂住。
+    let result = run(json!({"command": "cat; echo done"}), &context).await;
+    assert!(!result.is_error, "{}", result.content);
+    assert_eq!(result.content, "done\n");
+}
+
+#[tokio::test]
+async fn bash_spawn_failure_is_tool_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), dir.path());
+    let result = run(
+        json!({"command": "true", "workdir": "/definitely/not/a/dir"}),
+        &context,
+    )
+    .await;
+    assert!(result.is_error);
+    assert!(
+        result.content.starts_with("Error: cannot run bash in "),
+        "{}",
+        result.content
+    );
+}
+
+#[tokio::test]
+async fn bash_workdir_override() {
+    let dir = tempfile::tempdir().unwrap();
+    let sub = dir.path().join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(sub.join("note.txt"), "hello\n").unwrap();
+    let context = session_context(dir.path(), dir.path());
+    let result = run(
+        json!({"command": "cat note.txt", "workdir": "sub"}),
+        &context,
+    )
+    .await;
+    assert!(!result.is_error, "{}", result.content);
+    assert_eq!(result.content, "hello\n");
+}
+
+#[tokio::test]
+async fn bash_signal_is_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), dir.path());
+    let result = run(json!({"command": "kill -TERM $$"}), &context).await;
+    assert!(!result.is_error, "{}", result.content);
+    assert!(
+        result.content.contains("[killed by signal: SIGTERM]"),
+        "{}",
+        result.content
+    );
+}
+
+fn big_err_command() -> &'static str {
+    "i=0; while [ $i -lt 4000 ]; do printf 'err%04d 0123456789abcdefghij\\n' \"$i\" >&2; i=$((i+1)); done"
+}
+
+fn big_out_command() -> &'static str {
+    "i=0; while [ $i -lt 4000 ]; do printf 'out%04d 0123456789abcdefghij\\n' \"$i\"; i=$((i+1)); done"
+}
+
+fn truncated_path(content: &str, nth: usize) -> String {
+    let marker = "[output truncated; full output: ";
+    let mut start = 0;
+    for _ in 0..=nth {
+        let found = content[start..].find(marker).expect("有截断通知");
+        start += found + marker.len();
+    }
+    let rest = &content[start..];
+    rest[..rest.find(']').unwrap()].to_owned()
+}
+
+#[tokio::test]
+async fn bash_stderr_over_limit_keeps_tail() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path());
+    let result = run(json!({"command": big_err_command()}), &context).await;
+    assert!(!result.is_error, "{}", result.content);
+    assert!(
+        result.content.starts_with("[stderr]\n"),
+        "{:.80}",
+        result.content
+    );
+    assert!(
+        result.content.contains("err3999"),
+        "{:.200}",
+        result.content
+    );
+    assert!(!result.content.contains("err0000"), "只留尾部");
+    let path = truncated_path(&result.content, 0);
+    let full = fs::read_to_string(path).unwrap();
+    assert!(full.starts_with("err0000 "));
+    assert_eq!(full.lines().count(), 4000);
+}
+
+#[tokio::test]
+async fn bash_both_streams_over_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path());
+    let command = format!("{}; {}", big_out_command(), big_err_command());
+    let result = run(json!({"command": command}), &context).await;
+    assert!(!result.is_error, "{}", result.content);
+    assert_eq!(
+        result
+            .content
+            .matches("[output truncated; full output: ")
+            .count(),
+        2,
+        "stdout 和 stderr 各一条截断通知: {:.300}",
+        result.content
+    );
+    let stdout_path = truncated_path(&result.content, 0);
+    let stderr_path = truncated_path(&result.content, 1);
+    assert_ne!(stdout_path, stderr_path);
+    assert!(
+        fs::read_to_string(stdout_path)
+            .unwrap()
+            .starts_with("out0000 ")
+    );
+    assert!(
+        fs::read_to_string(stderr_path)
+            .unwrap()
+            .starts_with("err0000 ")
+    );
+}
