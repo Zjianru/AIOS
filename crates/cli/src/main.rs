@@ -215,6 +215,63 @@ fn default_data_dir() -> Result<PathBuf, CliError> {
     Ok(PathBuf::from(home).join(".aios-dev"))
 }
 
+/// chat 一行输入如何分派（T005.11：pending question 时下一行是答案）。
+#[derive(Debug, PartialEq, Eq)]
+enum ChatInput {
+    Answer(String),
+    Exit,
+    Compact,
+    Queue(String),
+    FollowUp(String),
+    Steer(String),
+    Ignore,
+}
+
+fn dispatch_chat_input(
+    line: &str,
+    running: bool,
+    pending_question: Option<&agent::Question>,
+) -> ChatInput {
+    let line = line.trim();
+    if line.is_empty() {
+        return ChatInput::Ignore;
+    }
+    // T005.11：等待问题时，下一行输入就是答案（包括 /compact、/queue、普通文本），
+    // 不再产生新消息/steer/queue，避免与后台 stdin 读者抢行。
+    if pending_question.is_some() {
+        return ChatInput::Answer(line.to_owned());
+    }
+    if line == "/exit" {
+        return ChatInput::Exit;
+    }
+    if is_compact_command(line) {
+        return ChatInput::Compact;
+    }
+    if let Some(queued) = line.strip_prefix("/queue ") {
+        let queued = queued.trim();
+        if !queued.is_empty() {
+            return ChatInput::Queue(queued.to_owned());
+        }
+    }
+    if running {
+        ChatInput::Steer(line.to_owned())
+    } else {
+        ChatInput::FollowUp(line.to_owned())
+    }
+}
+
+/// 事件如何改变 pending question 状态（T005.11）：QuestionAsked 进入、TurnEnded 退出。
+fn pending_question_after_event(
+    current: Option<agent::Question>,
+    event: &AgentEvent,
+) -> Option<agent::Question> {
+    match event {
+        AgentEvent::QuestionAsked { question } => Some(question.clone()),
+        AgentEvent::TurnEnded { .. } => None,
+        _ => current,
+    }
+}
+
 async fn chat(args: CommonArgs) -> Result<(), CliError> {
     let agent = open_agent(&args).await?;
     println!("session: {}", agent.id());
@@ -233,6 +290,7 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
     });
     let mut running = false;
     let mut last_outcome = None;
+    let mut pending_question: Option<agent::Question> = None;
     loop {
         if !running {
             print!("> ");
@@ -242,6 +300,7 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
             _ = tokio::signal::ctrl_c() => {
                 // 清空收件箱并中止当前一轮；已流出的文字按 interrupted 收尾。
                 agent.cancel();
+                pending_question = None;
                 println!();
             }
             line = line_rx.recv() => {
@@ -249,44 +308,39 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
                     println!();
                     break;
                 };
-                let line = line.trim().to_owned();
-                if line.is_empty() {
-                    continue;
-                }
-                if line == "/exit" {
-                    break;
-                }
-                if is_compact_command(&line) {
-                    // 空闲时立刻压缩；运行中排到当前轮之后（compress 在后台跑，事件照常打印）。
-                    let agent = agent.clone();
-                    tokio::spawn(async move { agent.compact().await; });
-                    continue;
-                }
-                if let Some(queued) = line.strip_prefix("/queue ") {
-                    let queued = queued.trim();
-                    if queued.is_empty() {
-                        continue;
+                match dispatch_chat_input(&line, running, pending_question.as_ref()) {
+                    ChatInput::Ignore => continue,
+                    ChatInput::Answer(answer) => {
+                        if let Some(question) = pending_question.take()
+                            && !agent.answer(&question.id, &answer).await
+                        {
+                            pending_question = Some(question);
+                        }
                     }
-                    agent.send(UserMessage::text(queued), Delivery::FollowUp);
-                    running = true;
-                } else if running {
-                    agent.send(UserMessage::text(line), Delivery::Steer);
-                } else {
-                    agent.send(UserMessage::text(line), Delivery::FollowUp);
-                    running = true;
+                    ChatInput::Exit => break,
+                    ChatInput::Compact => {
+                        // 空闲时立刻压缩；运行中排到当前轮之后（事件照常打印）。
+                        let agent = agent.clone();
+                        tokio::spawn(async move { agent.compact().await; });
+                    }
+                    ChatInput::Queue(queued) => {
+                        agent.send(UserMessage::text(queued), Delivery::FollowUp);
+                        running = true;
+                    }
+                    ChatInput::FollowUp(text) => {
+                        agent.send(UserMessage::text(text), Delivery::FollowUp);
+                        running = true;
+                    }
+                    ChatInput::Steer(text) => {
+                        agent.send(UserMessage::text(text), Delivery::Steer);
+                    }
                 }
             }
             received = events.recv() => match received {
                 Ok(event) => {
-                    let question = match &event {
-                        AgentEvent::QuestionAsked { question } => Some(question.clone()),
-                        _ => None,
-                    };
-                    handle_event(event, &mut last_outcome);
-                    // T005.10 交互路径：打出问题、读一行作答，loop 接着跑。
-                    if let Some(question) = question && let Some(line) = read_stdin_line().await {
-                        agent.answer(&question.id, line.trim()).await;
-                    }
+                    let state = std::mem::take(&mut pending_question);
+                    handle_event(event.clone(), &mut last_outcome);
+                    pending_question = pending_question_after_event(state, &event);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -404,18 +458,6 @@ fn handle_event(event: AgentEvent, outcome: &mut Option<TurnOutcome>) {
     }
 }
 
-/// 读一行 stdin（问题回答用；不阻塞异步 worker）。
-async fn read_stdin_line() -> Option<String> {
-    tokio::task::spawn_blocking(|| {
-        let mut line = String::new();
-        std::io::stdin().read_line(&mut line).ok()?;
-        Some(line)
-    })
-    .await
-    .ok()
-    .flatten()
-}
-
 /// 非交互 run 收到问题时的决策：打印提示并取消本轮（不静默卡死；测试清单第 14 条）。
 fn run_should_cancel_for_question(event: &AgentEvent) -> bool {
     matches!(event, AgentEvent::QuestionAsked { .. })
@@ -486,9 +528,9 @@ mod tests {
     use model::DEFAULT_MAX_TOKENS;
 
     use super::{
-        CommonArgs, compaction_ended_text, compaction_started_text, config_from_args,
-        is_compact_command, job_completed_text, question_asked_text,
-        run_should_cancel_for_question,
+        ChatInput, CommonArgs, compaction_ended_text, compaction_started_text, config_from_args,
+        dispatch_chat_input, is_compact_command, job_completed_text, pending_question_after_event,
+        question_asked_text, run_should_cancel_for_question,
     };
 
     #[test]
@@ -557,6 +599,106 @@ mod tests {
         assert!(text.contains("Proceed?"));
         assert!(text.contains("1. Yes（go）"));
         assert!(text.contains("2. No"));
+    }
+
+    #[test]
+    fn dispatch_chat_input_routes_pending_question_to_answer() {
+        let question = agent::Question {
+            id: "q1".to_owned(),
+            question: "Proceed?".to_owned(),
+            header: None,
+            options: Vec::new(),
+            multi_select: false,
+        };
+        for line in ["选 B", "/queue 普通", "/compact", "普通消息"] {
+            assert_eq!(
+                dispatch_chat_input(line, true, Some(&question)),
+                ChatInput::Answer(line.trim().to_owned()),
+                "pending question 时任何输入都作为答案: {line}"
+            );
+        }
+    }
+
+    #[test]
+    fn dispatch_chat_input_without_question_is_unchanged() {
+        assert_eq!(dispatch_chat_input("  ", true, None), ChatInput::Ignore);
+        assert_eq!(dispatch_chat_input("/exit", true, None), ChatInput::Exit);
+        assert_eq!(
+            dispatch_chat_input("  /compact ", true, None),
+            ChatInput::Compact
+        );
+        assert_eq!(
+            dispatch_chat_input("/queue 做别的", true, None),
+            ChatInput::Queue("做别的".to_owned())
+        );
+        assert_eq!(
+            dispatch_chat_input("继续", true, None),
+            ChatInput::Steer("继续".to_owned())
+        );
+        assert_eq!(
+            dispatch_chat_input("新任务", false, None),
+            ChatInput::FollowUp("新任务".to_owned())
+        );
+    }
+
+    #[test]
+    fn dispatch_chat_input_resumes_normal_after_question() {
+        let question = agent::Question {
+            id: "q1".to_owned(),
+            question: "Proceed?".to_owned(),
+            header: None,
+            options: Vec::new(),
+            multi_select: false,
+        };
+        assert_eq!(
+            dispatch_chat_input("选 B", true, Some(&question)),
+            ChatInput::Answer("选 B".to_owned())
+        );
+        assert_eq!(
+            dispatch_chat_input("继续", true, None),
+            ChatInput::Steer("继续".to_owned()),
+            "问题结束后恢复普通输入"
+        );
+    }
+
+    #[test]
+    fn pending_question_clears_on_turn_end() {
+        let question = agent::Question {
+            id: "q1".to_owned(),
+            question: "Proceed?".to_owned(),
+            header: None,
+            options: Vec::new(),
+            multi_select: false,
+        };
+        assert_eq!(
+            pending_question_after_event(
+                None,
+                &AgentEvent::QuestionAsked {
+                    question: question.clone()
+                }
+            ),
+            Some(question.clone())
+        );
+        // Ctrl-C/取消后 turn 以 Aborted 收尾，pending 必须清掉，无悬挂。
+        assert_eq!(
+            pending_question_after_event(
+                Some(question.clone()),
+                &AgentEvent::TurnEnded {
+                    turn: 1,
+                    outcome: agent::TurnOutcome::Aborted
+                }
+            ),
+            None
+        );
+        assert_eq!(
+            pending_question_after_event(
+                Some(question.clone()),
+                &AgentEvent::AssistantTextDelta {
+                    text: "x".to_owned()
+                }
+            ),
+            Some(question)
+        );
     }
 
     #[test]
