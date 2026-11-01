@@ -18,8 +18,11 @@ use crate::compaction_capability::CompactionCapability;
 use crate::error::AgentError;
 use crate::instructions::InstructionState;
 use crate::instructions_capability::InstructionsCapability;
+use crate::reminder_capability::ReminderCapability;
 use crate::skill_capability::SkillCapability;
 use crate::skill_catalog::SkillCatalogState;
+use crate::spill_capability::SpillCapability;
+use crate::todo_capability::TodoCapability;
 use crate::{AgentEvent, CompactionTrigger};
 
 /// PreStep 的两阶段：Inject = 注入指令/skill（在 prune 之前）；Compact = 压缩自动检查（在 prune 之后）。
@@ -94,6 +97,8 @@ pub(crate) trait LoopAccess: Send + Sync {
     fn instructions_state(&self) -> &Mutex<InstructionState>;
     /// skill 目录注入状态（T005.6；skill 能力在 PreStep 里读写）。
     fn skill_catalog_state(&self) -> &Mutex<SkillCatalogState>;
+    /// 重复调用链（T005.9；提醒能力在 ToolAfter 里读写，新用户消息由 driver 清零）。
+    fn repeat_chain(&self) -> &Mutex<Option<(String, usize)>>;
 }
 
 /// 每个挂点一份 typed 事件：host 访问面 + 该挂点可用的运行态数据。
@@ -224,7 +229,16 @@ impl HookEvent<'_> {
 }
 
 /// dyn 兼容的异步返回；不加 async-trait 依赖。
-pub(crate) type HookFuture<'a> = Pin<Box<dyn Future<Output = Result<(), AgentError>> + Send + 'a>>;
+/// 挂点返回值：多数能力 Continue；T006.1d 起 ToolResult 挂点可提供落盘后的内容。
+pub(crate) enum HookOutcome {
+    Continue,
+    /// ToolResult 挂点用：用落盘后的 preview+locator 替换内联 content。
+    ToolResultContent(String),
+}
+
+/// dyn 兼容的异步返回；不加 async-trait 依赖。
+pub(crate) type HookFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<HookOutcome, AgentError>> + Send + 'a>>;
 
 /// 一个可挂到 loop 挂点上的功能（编译期 trait，不做运行时加载）。
 pub(crate) trait Capability: Send + Sync {
@@ -247,14 +261,11 @@ impl Capability for Placeholder {
         self.hooks
     }
     fn on_hook<'a>(&'a self, _event: &'a HookEvent<'a>) -> HookFuture<'a> {
-        Box::pin(async { Ok(()) })
+        Box::pin(async { Ok(HookOutcome::Continue) })
     }
 }
 
 const PRUNE_HOOKS: &[HookPoint] = &[HookPoint::Compaction];
-const TODO_HOOKS: &[HookPoint] = &[HookPoint::ToolAfter];
-const SPILL_HOOKS: &[HookPoint] = &[HookPoint::ToolResult, HookPoint::ToolAfter];
-const REMINDER_HOOKS: &[HookPoint] = &[HookPoint::ToolAfter];
 const JOBS_HOOKS: &[HookPoint] = &[HookPoint::Status];
 
 static COMPACTION_CAP: CompactionCapability = CompactionCapability;
@@ -264,22 +275,13 @@ static PRUNE: Placeholder = Placeholder {
 };
 static INSTRUCTIONS_CAP: InstructionsCapability = InstructionsCapability;
 static SKILL_CAP: SkillCapability = SkillCapability;
-static TODO: Placeholder = Placeholder {
-    name: "todo",
-    hooks: TODO_HOOKS,
-};
+static TODO_CAP: TodoCapability = TodoCapability;
 static ASK: Placeholder = Placeholder {
     name: "ask",
     hooks: &[],
 };
-static SPILL: Placeholder = Placeholder {
-    name: "spill",
-    hooks: SPILL_HOOKS,
-};
-static REMINDER: Placeholder = Placeholder {
-    name: "reminder",
-    hooks: REMINDER_HOOKS,
-};
+static SPILL_CAP: SpillCapability = SpillCapability;
+static REMINDER_CAP: ReminderCapability = ReminderCapability;
 static JOBS: Placeholder = Placeholder {
     name: "jobs",
     hooks: JOBS_HOOKS,
@@ -298,24 +300,29 @@ impl CapabilityRegistry {
                 &PRUNE,
                 &INSTRUCTIONS_CAP,
                 &SKILL_CAP,
-                &TODO,
+                &TODO_CAP,
                 &ASK,
-                &SPILL,
-                &REMINDER,
+                &SPILL_CAP,
+                &REMINDER_CAP,
                 &JOBS,
             ],
         }
     }
 
     /// 按注册顺序派发；首个 Err 短路（之前的功能已执行完，不回滚）。
-    pub(crate) async fn dispatch(&self, event: &HookEvent<'_>) -> Result<(), AgentError> {
+    /// 返回最后一条非 Continue 的 outcome（ToolResult 落盘内容等）。
+    pub(crate) async fn dispatch(&self, event: &HookEvent<'_>) -> Result<HookOutcome, AgentError> {
+        let mut outcome = HookOutcome::Continue;
         for capability in &self.capabilities {
             debug_assert!(!capability.name().is_empty());
             if capability.hooks().contains(&event.hook()) {
-                capability.on_hook(event).await?;
+                let next = capability.on_hook(event).await?;
+                if !matches!(next, HookOutcome::Continue) {
+                    outcome = next;
+                }
             }
         }
-        Ok(())
+        Ok(outcome)
     }
 }
 

@@ -6,7 +6,9 @@
 use model::{Message, Role};
 use session::EventKind;
 
-use crate::capabilities::{Capability, HookEvent, HookFuture, HookPoint, PreStepPhase};
+use crate::capabilities::{
+    Capability, HookEvent, HookFuture, HookOutcome, HookPoint, PreStepPhase,
+};
 
 pub(crate) struct SkillCapability;
 
@@ -22,10 +24,10 @@ impl Capability for SkillCapability {
     fn on_hook<'a>(&'a self, event: &'a HookEvent<'a>) -> HookFuture<'a> {
         Box::pin(async move {
             let HookEvent::PreStep { trigger, phase, .. } = event else {
-                return Ok(());
+                return Ok(HookOutcome::Continue);
             };
             if *phase != PreStepPhase::Inject || trigger.is_some() {
-                return Ok(());
+                return Ok(HookOutcome::Continue);
             }
             let host = event.host();
             let catalog = host
@@ -41,7 +43,7 @@ impl Capability for SkillCapability {
                 }])
                 .await?;
             }
-            Ok(())
+            Ok(HookOutcome::Continue)
         })
     }
 }

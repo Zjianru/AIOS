@@ -149,7 +149,11 @@ impl LoopAccess for Inner {
         self.spill_max_inline_tokens
     }
     fn append<'a>(&'a self, kinds: &'a [EventKind]) -> crate::capabilities::HookFuture<'a> {
-        Box::pin(Inner::append(self, kinds))
+        Box::pin(async move {
+            Inner::append(self, kinds)
+                .await
+                .map(|()| crate::capabilities::HookOutcome::Continue)
+        })
     }
     fn dispatch_compaction<'a>(
         &'a self,
@@ -173,6 +177,9 @@ impl LoopAccess for Inner {
     }
     fn skill_catalog_state(&self) -> &Mutex<SkillCatalogState> {
         &self.skill_catalog
+    }
+    fn repeat_chain(&self) -> &Mutex<Option<(String, usize)>> {
+        &self.repeat_chain
     }
 }
 
@@ -362,42 +369,6 @@ impl Inner {
 
     /// 一次 step 的工具批之后推进重复链，命中阈值（3/5/8，照 DSH）返回一条提醒文本。
     /// todo_write 不跟踪（DSH 基础组合包默认排除）；每步最多一条提醒。
-    fn repeat_reminder(&self, calls: &[ToolCall]) -> Option<String> {
-        const THRESHOLDS: [usize; 3] = [3, 5, 8];
-        let mut reminder: Option<String> = None;
-        for call in calls {
-            if call.name == "todo_write" {
-                continue;
-            }
-            let key = format!(
-                "{}\0{}",
-                call.name,
-                tools::canonical_arguments(&call.arguments)
-            );
-            let count = {
-                let mut chain = self.repeat_chain.lock().expect("agent 重复链锁被毒化");
-                let count = match chain.as_ref() {
-                    Some((previous, count)) if *previous == key => count + 1,
-                    _ => 1,
-                };
-                *chain = Some((key, count));
-                count
-            };
-            if THRESHOLDS.contains(&count) && reminder.is_none() {
-                reminder = Some(if count == THRESHOLDS[0] {
-                    "You are repeating the exact same tool call with identical arguments. Carefully analyze the previous result before calling again: if the task is not complete, try a different approach or different arguments instead of repeating the call.".to_owned()
-                } else {
-                    format!(
-                        "Repeated tool call detected:\n- tool: {}\n- consecutive_calls: {count}\n- arguments: {}\nThe repeated calls are not making progress. Do not call this tool with these exact arguments again. Inspect the latest result and choose a different action, different arguments, or finish the task if enough evidence has been gathered.",
-                        call.name,
-                        truncate_preview(&tools::canonical_arguments(&call.arguments), 500)
-                    )
-                });
-            }
-        }
-        reminder
-    }
-
     /// T005.10：回答问题。question_id 必须与当前等待的问题一致；
     /// 等待中的 run_step 收到答案后把它作为 ask 调用的 tool/result 续上。
     pub(crate) fn answer(&self, question_id: &str, text: &str) -> bool {
@@ -1177,32 +1148,24 @@ async fn run_step(
         outcome.results[index] = result;
     }
     for result in &outcome.results {
-        // T005.2：超大结果落 spill（按会话目录），进日志/上下文的是 preview + locator；
-        // read 有自己的分页上限，不在此列（照 DSH spill-policy）。
-        let tool_name = calls
-            .iter()
-            .find(|call| call.id == result.call_id)
-            .map_or("", |call| call.name.as_str());
-        let content = tools::bound_result(
-            inner.tool_session.spill(),
-            tool_name,
-            &result.call_id,
-            &result.content,
-            inner.spill_max_inline_tokens,
-        )
-        .unwrap_or_else(|| result.content.clone());
-        if let Some(call) = calls.iter().find(|call| call.id == result.call_id) {
-            inner
-                .capabilities
-                .dispatch(&HookEvent::ToolResult {
-                    turn,
-                    step,
-                    host: inner.as_ref(),
-                    call,
-                    result,
-                })
-                .await?;
-        }
+        let Some(call) = calls.iter().find(|call| call.id == result.call_id) else {
+            continue;
+        };
+        // T006.1d：落盘/内容变换由 ToolResult 挂点（spill 能力）决定；Continue 时用原文。
+        let hook_outcome = inner
+            .capabilities
+            .dispatch(&HookEvent::ToolResult {
+                turn,
+                step,
+                host: inner.as_ref(),
+                call,
+                result,
+            })
+            .await?;
+        let content = match hook_outcome {
+            crate::capabilities::HookOutcome::ToolResultContent(content) => content,
+            crate::capabilities::HookOutcome::Continue => result.content.clone(),
+        };
         let message = Message::tool_result(result.call_id.clone(), content, result.is_error);
         inner
             .append(&[EventKind::ToolResult {
@@ -1224,32 +1187,7 @@ async fn run_step(
             cancelled: outcome.cancelled,
         })
         .await?;
-    // T005.7：成功的 todo_write 把整表快照落成一条 todo/write 事件（工具只写状态，
-    // 日志由 agent 负责；回放时后写覆盖先写）。
-    let todo_write_succeeded = calls.iter().any(|call| {
-        call.name == "todo_write"
-            && outcome
-                .results
-                .iter()
-                .any(|result| result.call_id == call.id && !result.is_error)
-    });
-    if todo_write_succeeded && let Some(todos) = inner.tool_session.take_todos() {
-        inner
-            .append(&[EventKind::TodoWrite { turn, step, todos }])
-            .await?;
-    }
-    // T005.9：重复调用提醒（每 step 最多一条，作为工具结果之后的 user 上下文消息）。
-    if !outcome.cancelled
-        && let Some(reminder) = inner.repeat_reminder(&calls)
-    {
-        inner
-            .append(&[EventKind::UserMessage {
-                turn,
-                step,
-                message: Message::text(Role::User, reminder),
-            }])
-            .await?;
-    }
+
     if abort.load(Ordering::SeqCst) || outcome.cancelled {
         return Ok(StepEnd::Aborted);
     }
@@ -1611,13 +1549,6 @@ async fn wait_question_answer(
 }
 
 /// 参数预览截断（字符安全，照 DSH argumentsPreviewChars 上限）。
-fn truncate_preview(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_owned();
-    }
-    format!("{}…", text.chars().take(max_chars).collect::<String>())
-}
-
 #[cfg(test)]
 mod settle_tests {
     use super::*;

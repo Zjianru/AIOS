@@ -7,7 +7,9 @@
 
 use model::ErrorCode;
 
-use crate::capabilities::{Capability, HookEvent, HookFuture, HookPoint, PreStepPhase};
+use crate::capabilities::{
+    Capability, HookEvent, HookFuture, HookOutcome, HookPoint, PreStepPhase,
+};
 use crate::compaction;
 use crate::{AgentError, CompactionTrigger};
 
@@ -74,7 +76,7 @@ impl Capability for CompactionCapability {
                 }
                 _ => {}
             }
-            Ok(())
+            Ok(HookOutcome::Continue)
         })
     }
 }

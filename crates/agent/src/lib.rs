@@ -11,8 +11,11 @@ mod inbox;
 mod instructions;
 mod instructions_capability;
 mod prune;
+mod reminder_capability;
 mod skill_capability;
 mod skill_catalog;
+mod spill_capability;
+mod todo_capability;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
