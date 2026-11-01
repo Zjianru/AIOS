@@ -48,6 +48,8 @@ pub struct SessionStore {
     /// 文件里还有未提交的尾部；第一次 append 之前先截到 bytes（照 DSH 的写句柄语义）。
     pending_truncate: bool,
     writer: Box<dyn LogWriter>,
+    /// 单写者锁（T006.5b）：跟随本 store 的生命周期；drop 即释放。
+    _writer_lock: crate::lock::WriterLock,
 }
 
 /// 只读打开得到的会话日志视图：读到最后一个完整事件为止，不改文件。
@@ -88,6 +90,8 @@ impl SessionStore {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
+        // T006.5b：创建会话就等于物化写句柄，先取单写者锁再落文件。
+        let writer_lock = crate::lock::WriterLock::acquire(data_dir, &id)?;
         let header = SessionHeader::new(id, cwd_text.to_owned(), now_ms());
         let header_line = format!("{}\n", serde_json::to_string(&header)?);
         let mut file = OpenOptions::new()
@@ -103,12 +107,15 @@ impl SessionStore {
             bytes: header_line.len() as u64,
             pending_truncate: false,
             writer: Box::new(file),
+            _writer_lock: writer_lock,
         })
     }
 
     /// 打开已有会话准备写。尾行不完整时只从读到的视图里丢掉，文件要等到第一次
     /// append 之前才截（照 DSH：读打开不改文件，写句柄在首次追加前修掉 torn tail）。
     pub fn open(data_dir: &Path, id: &SessionId) -> Result<Self, SessionError> {
+        // T006.5b：写打开先取非阻塞排他锁；被活写者占用立即报 AlreadyOwned（照 DSH）。
+        let writer_lock = crate::lock::WriterLock::acquire(data_dir, id)?;
         let path = log_path(data_dir, id);
         let bytes = fs::read(&path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
@@ -127,6 +134,7 @@ impl SessionStore {
             bytes: committed,
             pending_truncate,
             writer: Box::new(file),
+            _writer_lock: writer_lock,
         })
     }
 
