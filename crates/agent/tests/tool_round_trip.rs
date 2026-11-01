@@ -149,11 +149,7 @@ async fn tool_round_trip() {
         .events()
         .iter()
         .find_map(|event| match &event.kind {
-            EventKind::ToolResult {
-                message,
-                error_code,
-                ..
-            } => Some((message, error_code)),
+            EventKind::ToolResult { message, error, .. } => Some((message, error)),
             _ => None,
         })
         .expect("日志里有 tool/result");

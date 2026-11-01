@@ -174,7 +174,12 @@ async fn cancel_while_waiting_revokes_question_and_aborts_turn() {
             _ => None,
         })
         .expect("应有 turn/end");
-    assert_eq!(ended, session::TurnEndReason::Aborted);
+    assert_eq!(
+        ended,
+        session::TurnEndReason::Aborted {
+            reason: session::AbortCause::User
+        }
+    );
 }
 
 fn ask_call_multi(ids: &[&str]) -> String {

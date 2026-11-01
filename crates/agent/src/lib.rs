@@ -142,10 +142,12 @@ impl From<&TurnEndReason> for TurnOutcome {
         match reason {
             TurnEndReason::Completed => Self::Completed,
             TurnEndReason::MaxTokens => Self::MaxTokens,
-            TurnEndReason::Aborted => Self::Aborted,
-            TurnEndReason::Error { code, message } => Self::Error {
-                code: code.clone(),
-                message: message.clone(),
+            TurnEndReason::Aborted { .. } => Self::Aborted,
+            // 续接修复补的收尾不是一次实时跑完的轮次，订阅者事件里没有它（T006.5a）。
+            TurnEndReason::Interrupted => Self::Aborted,
+            TurnEndReason::Error { error } => Self::Error {
+                code: error.code.clone(),
+                message: error.message.clone(),
             },
         }
     }
@@ -256,9 +258,8 @@ impl Agent {
         }
         // 续接先修复：给最后一个没收尾的 turn 补收尾（照 DSH 的 core/session/repair.ts）。
         // 只读日志扫描 + 一次批 append（seq 连续、fsync、失败回滚由 store 负责）；不重跑工具。
-        let closers = session::interrupted_turn_closers(deps.store.events());
-        if !closers.is_empty() {
-            deps.store.append(&closers)?;
+        if let Some(closers) = session::interrupted_turn_closers(deps.store.events()) {
+            deps.store.append_with_time(&closers.events, closers.time)?;
         }
         let last_turn = deps
             .store

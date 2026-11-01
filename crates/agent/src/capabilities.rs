@@ -443,13 +443,14 @@ pub(crate) fn event_context(kind: &EventKind) -> Option<(u64, u64)> {
         | EventKind::AssistantMessage { turn, step, .. }
         | EventKind::ToolCall { turn, step, .. }
         | EventKind::ToolResult { turn, step, .. }
-        | EventKind::TodoWrite { turn, step, .. }
         | EventKind::QuestionAsked { turn, step, .. }
         | EventKind::QuestionCancelled { turn, step, .. } => (*turn, *step),
         EventKind::CompactionStart { turn, .. } | EventKind::CompactionEnd { turn, .. } => {
             (*turn, 0)
         }
-        EventKind::CompactionSummary { .. } | EventKind::CompactionPrune { .. } => return None,
+        EventKind::TodoWrite { .. }
+        | EventKind::CompactionSummary { .. }
+        | EventKind::CompactionPrune { .. } => return None,
     };
     Some(pair)
 }

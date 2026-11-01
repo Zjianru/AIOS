@@ -320,7 +320,9 @@ async fn cancel_mid_stream_keeps_interrupted_text() {
     );
     assert_eq!(
         turn_reasons(reopened.events()),
-        vec![TurnEndReason::Aborted]
+        vec![TurnEndReason::Aborted {
+            reason: session::AbortCause::User
+        }]
     );
 
     // 取消之后会话还能接着用。
@@ -331,7 +333,12 @@ async fn cancel_mid_stream_keeps_interrupted_text() {
     assert_eq!(count_turns(reopened.events()), 2);
     assert_eq!(
         turn_reasons(reopened.events()),
-        vec![TurnEndReason::Aborted, TurnEndReason::Completed]
+        vec![
+            TurnEndReason::Aborted {
+                reason: session::AbortCause::User
+            },
+            TurnEndReason::Completed
+        ]
     );
 }
 
@@ -373,18 +380,18 @@ async fn cancel_batch_skips_unstarted_calls() {
         .events()
         .iter()
         .filter_map(|event| match &event.kind {
-            EventKind::ToolResult {
-                message,
-                error_code,
-                ..
-            } => {
+            EventKind::ToolResult { message, error, .. } => {
                 let block = message.content.first()?;
                 match block {
                     ContentBlock::ToolResult {
                         tool_use_id,
                         content,
                         ..
-                    } => Some((tool_use_id.clone(), content.clone(), error_code.clone())),
+                    } => Some((
+                        tool_use_id.clone(),
+                        content.clone(),
+                        error.as_ref().map(|error| error.code.clone()),
+                    )),
                     _ => None,
                 }
             }
@@ -402,7 +409,9 @@ async fn cancel_batch_skips_unstarted_calls() {
     assert_eq!(results[1].2.as_deref(), Some("ABORTED_BEFORE_DISPATCH"));
     assert_eq!(
         turn_reasons(reopened.events()),
-        vec![TurnEndReason::Aborted]
+        vec![TurnEndReason::Aborted {
+            reason: session::AbortCause::User
+        }]
     );
 
     // 取消之后会话还能接着用。
@@ -412,7 +421,12 @@ async fn cancel_batch_skips_unstarted_calls() {
     assert_eq!(count_turns(reopened.events()), 2);
     assert_eq!(
         turn_reasons(reopened.events()),
-        vec![TurnEndReason::Aborted, TurnEndReason::Completed]
+        vec![
+            TurnEndReason::Aborted {
+                reason: session::AbortCause::User
+            },
+            TurnEndReason::Completed
+        ]
     );
 }
 
@@ -538,7 +552,12 @@ async fn cancel_mid_stream_then_send_makes_exactly_one_more_turn() {
     );
     assert_eq!(
         turn_reasons(reopened.events()),
-        vec![TurnEndReason::Aborted, TurnEndReason::Completed]
+        vec![
+            TurnEndReason::Aborted {
+                reason: session::AbortCause::User
+            },
+            TurnEndReason::Completed
+        ]
     );
     assert_eq!(
         assistant_text_of(reopened.events(), true),
@@ -606,7 +625,12 @@ async fn cancel_during_tool_then_send_makes_exactly_one_more_turn() {
     );
     assert_eq!(
         turn_reasons(reopened.events()),
-        vec![TurnEndReason::Aborted, TurnEndReason::Completed]
+        vec![
+            TurnEndReason::Aborted {
+                reason: session::AbortCause::User
+            },
+            TurnEndReason::Completed
+        ]
     );
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 2);

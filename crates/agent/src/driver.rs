@@ -10,7 +10,9 @@ use model::{
     BlockType, CancelToken, ContentBlock, DeepSeek, ErrorCode, FinishReason, Message, ModelError,
     Role, StreamChunk, Usage, UserMessage,
 };
-use session::{EventKind, SessionId, SessionStore, TurnEndReason};
+use session::{
+    AbortCause, EventKind, LlmFailure, SessionId, SessionStore, ToolError, TurnEndReason,
+};
 use tokio::sync::Notify;
 use tokio::sync::broadcast;
 use tools::{ToolCall, ToolContext, ToolSessionState, ToolSet, execute_batch};
@@ -519,16 +521,20 @@ async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
     let (reason, outcome) = match &steps {
         Ok(()) => {
             let reason = turn_end.unwrap_or_else(|| TurnEndReason::Error {
-                code: "UNKNOWN".to_owned(),
-                message: "turn ended without a reason".to_owned(),
+                error: LlmFailure {
+                    code: "UNKNOWN".to_owned(),
+                    message: "turn ended without a reason".to_owned(),
+                },
             });
             let outcome = TurnOutcome::from(&reason);
             (reason, outcome)
         }
         Err(error) => {
             let reason = TurnEndReason::Error {
-                code: error.code(),
-                message: error.to_string(),
+                error: LlmFailure {
+                    code: error.code(),
+                    message: error.to_string(),
+                },
             };
             let outcome = TurnOutcome::from(&reason);
             (reason, outcome)
@@ -578,7 +584,9 @@ async fn run_turn_steps(
     let mut target = InboxTarget::NextTurn;
     loop {
         if abort.load(Ordering::SeqCst) {
-            *turn_end = Some(TurnEndReason::Aborted);
+            *turn_end = Some(TurnEndReason::Aborted {
+                reason: AbortCause::User,
+            });
             return Ok(());
         }
         let claimed = inner
@@ -639,7 +647,9 @@ async fn run_turn_steps(
                 }
             }
             StepEnd::Aborted => {
-                *turn_end = Some(TurnEndReason::Aborted);
+                *turn_end = Some(TurnEndReason::Aborted {
+                    reason: AbortCause::User,
+                });
             }
         }
         if turn_end.is_some()
@@ -999,7 +1009,11 @@ async fn run_step(
                 turn,
                 step,
                 message,
-                error_code: result.error_code.clone(),
+                // 工具失败的身份照 DSH：name + code；普通参数错误没有结构化码，不写 error。
+                error: result.error_code.as_ref().map(|code| ToolError {
+                    name: "HarnessError".to_owned(),
+                    code: code.clone(),
+                }),
             }])
             .await?;
     }

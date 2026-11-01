@@ -47,6 +47,29 @@ pub struct SessionStore {
     writer: Box<dyn LogWriter>,
 }
 
+/// 只读打开得到的会话日志视图：读到最后一个完整事件为止，不改文件。
+#[derive(Debug, Clone)]
+pub struct SessionSnapshot {
+    id: crate::SessionId,
+    path: PathBuf,
+    events: Vec<Event>,
+}
+
+impl SessionSnapshot {
+    pub fn id(&self) -> &crate::SessionId {
+        &self.id
+    }
+
+    /// 这个会话的 JSONL 文件路径。
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn events(&self) -> &[Event] {
+        &self.events
+    }
+}
+
 impl SessionStore {
     /// 新建会话：生成 id、写 header（首行）并 fsync。
     pub fn create(data_dir: &Path, cwd: &Path) -> Result<Self, SessionError> {
@@ -105,6 +128,36 @@ impl SessionStore {
         })
     }
 
+    /// 只读打开一个已有会话：读到最后一个完整事件为止，不改文件。
+    ///
+    /// 尾行不完整时只从视图里丢掉，不截文件；要写的话另开 write 句柄（照 DSH
+    /// 的 open(id, 'read'|'write')，persistence-jsonl README:77,87）。
+    pub fn open_read_only(
+        data_dir: &Path,
+        id: &SessionId,
+    ) -> Result<SessionSnapshot, SessionError> {
+        let path = log_path(data_dir, id);
+        let bytes = fs::read(&path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                SessionError::NotFound(path.display().to_string())
+            } else {
+                SessionError::Io(error)
+            }
+        })?;
+        let (header, events, committed) = parse_log(&bytes)?;
+        // skeleton：暂时沿用写路径的「打开就截尾」，实现改为不写文件。
+        if committed < bytes.len() as u64 {
+            let file = OpenOptions::new().write(true).open(&path)?;
+            file.set_len(committed)?;
+            file.sync_data()?;
+        }
+        Ok(SessionSnapshot {
+            id: header.id,
+            path,
+            events,
+        })
+    }
+
     pub fn id(&self) -> &SessionId {
         &self.header.id
     }
@@ -142,6 +195,18 @@ impl SessionStore {
 
     /// 追加一批事件：先写入、再 fsync；任何一步失败都回滚到写之前的长度。
     pub fn append(&mut self, kinds: &[EventKind]) -> Result<Vec<u64>, SessionError> {
+        self.append_with_time(kinds, now_ms())
+    }
+
+    /// 按给定的 time 追加一批事件（seq 仍由 store 连续分配）。
+    ///
+    /// 中断修复的事件复用最后一个真实事件的时间（照 DSH repair.ts:88-96）。
+    /// skeleton：时间参数暂未使用，实现补上。
+    pub fn append_with_time(
+        &mut self,
+        kinds: &[EventKind],
+        _time: u64,
+    ) -> Result<Vec<u64>, SessionError> {
         if kinds.is_empty() {
             return Ok(Vec::new());
         }
@@ -396,8 +461,8 @@ mod tests {
             ),
         ];
         assert_eq!(
-            crate::repair::interrupted_turn_closers(&with_questions),
-            crate::repair::interrupted_turn_closers(&base),
+            crate::repair::interrupted_turn_closers(&with_questions).map(|closers| closers.events),
+            crate::repair::interrupted_turn_closers(&base).map(|closers| closers.events),
             "repair 必须忽略 question 事件"
         );
     }

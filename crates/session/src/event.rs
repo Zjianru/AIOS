@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::SessionId;
 
-/// 会话日志的格式版本；读到不认识的版本就拒绝。
+/// 会话日志的格式版本；读到不认识的版本就拒绝，不做迁移。
 pub const FORMAT_VERSION: u64 = 1;
 
 /// JSONL 第一行的会话 header。
@@ -44,14 +44,43 @@ impl SessionHeader {
     }
 }
 
-/// 一轮结束的原因。
+/// 一轮被取消的原因（DSH 的 TurnEndCancelCause 子集；AIOS 目前只有用户/调用方取消）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum AbortCause {
+    User,
+}
+
+/// turn/end 的 error 原因（DSH 的 LlmFailure 子集：AIOS 只记 message 和 code）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LlmFailure {
+    pub message: String,
+    pub code: String,
+}
+
+/// 一轮结束的原因（DSH TurnEndReasonMap 的子集：只列 AIOS 会产生的几类）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum TurnEndReason {
     Completed,
     MaxTokens,
-    Aborted,
-    Error { code: String, message: String },
+    /// 调用方/用户取消。
+    Aborted {
+        reason: AbortCause,
+    },
+    /// 崩溃/被杀后由续接修复补的收尾（照 DSH repair.ts:96）。
+    Interrupted,
+    /// 一轮以错误收尾；error 是 DSH LlmFailure 的子集。
+    Error {
+        error: LlmFailure,
+    },
+}
+
+/// 一次工具失败的身份（DSH 的 tool/result.error：name + code）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolError {
+    pub name: String,
+    pub code: String,
 }
 
 /// todo 条目的状态（wire 名照 DSH：pending / in_progress / completed）。
@@ -147,18 +176,19 @@ pub enum EventKind {
     ToolCall {
         turn: u64,
         step: u64,
+        #[serde(rename = "callId")]
         call_id: String,
         name: String,
         arguments: String,
     },
-    /// 一次工具调用的结果，按模型给出的顺序提交。
+    /// 一次工具调用的结果，按模型给出的顺序提交。error 照 DSH：失败身份在模型可见内容之外。
     #[serde(rename = "tool/result")]
     ToolResult {
         turn: u64,
         step: u64,
         message: Message,
         #[serde(skip_serializing_if = "Option::is_none")]
-        error_code: Option<String>,
+        error: Option<ToolError>,
     },
     /// 一个旧工具结果被修剪：派生请求里同 call_id 的 tool/result 用 content 替换。
     /// 原始 tool/result 事件保留在日志里（可回放），这条只记替换视图（T005.2）。
@@ -166,11 +196,7 @@ pub enum EventKind {
     CompactionPrune { call_id: String, content: String },
     /// 模型提交的整份 todo 列表快照；回放时后写覆盖先写（T005.7，类型名照 DSH todo/write）。
     #[serde(rename = "todo/write")]
-    TodoWrite {
-        turn: u64,
-        step: u64,
-        todos: Vec<TodoItem>,
-    },
+    TodoWrite { todos: Vec<TodoItem> },
     /// 一次压缩开始（T005.8a；类型名照 DSH known-event-types）。锁语义简化：AIOS 单写者，
     /// start 先落、end 收尾，失败时 end 带 error。
     #[serde(rename = "compaction/start")]
@@ -221,7 +247,7 @@ impl EventKind {
 /// 从日志回放当前 todo 列表：最近一次 todo/write 胜出（T005.7 续接恢复用）。
 pub fn last_todos(events: &[Event]) -> Option<Vec<TodoItem>> {
     events.iter().rev().find_map(|event| match &event.kind {
-        EventKind::TodoWrite { todos, .. } => Some(todos.clone()),
+        EventKind::TodoWrite { todos } => Some(todos.clone()),
         _ => None,
     })
 }

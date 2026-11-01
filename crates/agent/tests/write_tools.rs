@@ -23,15 +23,10 @@ async fn mount(server: &MockServer, bodies: Vec<String>) {
         .await;
 }
 
-/// 会话日志里某个 call_id 的 tool/result：(is_error, error_code)。
+/// 会话日志里某个 call_id 的 tool/result：(is_error, error code)。
 fn tool_result(store: &SessionStore, call_id: &str) -> (bool, Option<String>) {
     for event in store.events() {
-        let EventKind::ToolResult {
-            message,
-            error_code,
-            ..
-        } = &event.kind
-        else {
+        let EventKind::ToolResult { message, error, .. } = &event.kind else {
             continue;
         };
         let Some(ContentBlock::ToolResult {
@@ -43,7 +38,7 @@ fn tool_result(store: &SessionStore, call_id: &str) -> (bool, Option<String>) {
             continue;
         };
         if tool_use_id == call_id {
-            return (*is_error, error_code.clone());
+            return (*is_error, error.as_ref().map(|error| error.code.clone()));
         }
     }
     panic!("日志里没有 call_id {call_id} 的 tool/result");

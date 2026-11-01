@@ -6,7 +6,7 @@
 
 use model::{ContentBlock, Message};
 
-use crate::{Event, EventKind, TurnEndReason};
+use crate::{AbortCause, Event, EventKind, ToolError, TurnEndReason};
 
 /// 已记录开始、但结果没有落盘的调用：结果未知，重试前先核实外部状态。
 const TOOL_OUTCOME_UNKNOWN: &str = "TOOL_OUTCOME_UNKNOWN";
@@ -26,13 +26,22 @@ struct PendingCall {
     started: bool,
 }
 
+/// 修复要给开着的 turn 补的一批收尾事件，以及这批事件共用的时间。
+///
+/// time 复用最后一个真实事件的时间（照 DSH repair.ts:88-96：确定性，不发明未来时间）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct TurnClosers {
+    pub events: Vec<EventKind>,
+    pub time: u64,
+}
+
 /// 崩溃/被杀之后续接时，给最后一个没收尾的 turn 造收尾事件（照 DSH 的
 /// interruptedTurnClosers）：按 assistant 顺序补 tool/result，再补 step/end
-/// （如果开着）和 turn/end（Aborted）。平衡日志或空日志返回空数组。
+/// （如果开着）和 turn/end（Interrupted）。平衡日志或空日志返回 None。
 ///
-/// 事件本身不带 seq/time：由 SessionStore::append 作为一批分配，保持 seq 连续、
-/// 一次 fsync、失败回滚（spec 的存储决定）。
-pub fn interrupted_turn_closers(events: &[Event]) -> Vec<EventKind> {
+/// 事件本身不带 seq：由 SessionStore 作为一批分配，保持 seq 连续、一次 fsync、
+/// 失败回滚（spec 的存储决定）。
+pub fn interrupted_turn_closers(events: &[Event]) -> Option<TurnClosers> {
     let mut open_turn: Option<u64> = None;
     let mut open_step: Option<u64> = None;
     let mut pending: Vec<PendingCall> = Vec::new();
@@ -105,9 +114,7 @@ pub fn interrupted_turn_closers(events: &[Event]) -> Vec<EventKind> {
             | EventKind::CompactionEnd { .. } => {}
         }
     }
-    let Some(turn) = open_turn else {
-        return Vec::new();
-    };
+    let turn = open_turn?;
     let mut closers = Vec::with_capacity(pending.len() + 2);
     for call in pending {
         let (code, text) = if call.started {
@@ -119,7 +126,10 @@ pub fn interrupted_turn_closers(events: &[Event]) -> Vec<EventKind> {
             turn: call.turn,
             step: call.step,
             message: Message::tool_result(call.call_id, text, true),
-            error_code: Some(code.to_owned()),
+            error: Some(ToolError {
+                name: "HarnessError".to_owned(),
+                code: code.to_owned(),
+            }),
         });
     }
     if let Some(step) = open_step {
@@ -127,7 +137,12 @@ pub fn interrupted_turn_closers(events: &[Event]) -> Vec<EventKind> {
     }
     closers.push(EventKind::TurnEnd {
         turn,
-        reason: TurnEndReason::Aborted,
+        reason: TurnEndReason::Aborted {
+            reason: AbortCause::User,
+        },
     });
-    closers
+    Some(TurnClosers {
+        events: closers,
+        time: 0,
+    })
 }

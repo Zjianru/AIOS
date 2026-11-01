@@ -147,14 +147,9 @@ fn repair_tail(events: &[session::Event]) -> Vec<&str> {
 fn find_tool_result<'a>(
     events: &'a [session::Event],
     call_id: &str,
-) -> Option<(&'a str, Option<&'a str>)> {
+) -> Option<(&'a str, Option<&'a session::ToolError>)> {
     for event in events {
-        if let EventKind::ToolResult {
-            message,
-            error_code,
-            ..
-        } = &event.kind
-        {
+        if let EventKind::ToolResult { message, error, .. } = &event.kind {
             for block in &message.content {
                 if let ContentBlock::ToolResult {
                     tool_use_id,
@@ -163,7 +158,7 @@ fn find_tool_result<'a>(
                 } = block
                     && tool_use_id == call_id
                 {
-                    return Some((content, error_code.as_deref()));
+                    return Some((content, error.as_ref()));
                 }
             }
         }
@@ -220,7 +215,7 @@ async fn resume_after_balanced_turn_sees_full_history() {
             .filter(|event| matches!(
                 event.kind,
                 EventKind::TurnEnd {
-                    reason: TurnEndReason::Aborted,
+                    reason: TurnEndReason::Aborted { .. },
                     ..
                 }
             ))
@@ -319,7 +314,10 @@ async fn resume_repairs_unknown_call_from_torn_tail() {
         vec!["tool/result", "step/end", "turn/end"]
     );
     let (text, code) = find_tool_result(repaired.events(), "call_0").expect("要补出 call_0 的结果");
-    assert_eq!(code, Some("TOOL_OUTCOME_UNKNOWN"));
+    assert_eq!(
+        code.map(|error| error.code.as_str()),
+        Some("TOOL_OUTCOME_UNKNOWN")
+    );
     assert!(
         text.contains("outcome is unknown"),
         "模型可见文案要说明结果未知：{text}"
@@ -331,7 +329,7 @@ async fn resume_repairs_unknown_call_from_torn_tail() {
             .filter(|event| matches!(
                 event.kind,
                 EventKind::TurnEnd {
-                    reason: TurnEndReason::Aborted,
+                    reason: TurnEndReason::Aborted { .. },
                     ..
                 }
             ))
@@ -421,7 +419,10 @@ async fn resume_repairs_not_started_call_after_assistant_message() {
         vec!["tool/result", "step/end", "turn/end"]
     );
     let (text, code) = find_tool_result(repaired.events(), "call_0").expect("要补出 call_0 的结果");
-    assert_eq!(code, Some("TOOL_NOT_STARTED"));
+    assert_eq!(
+        code.map(|error| error.code.as_str()),
+        Some("TOOL_NOT_STARTED")
+    );
     assert!(
         text.contains("Retry it if it is still needed."),
         "模型可见文案要说明可以重试：{text}"
@@ -433,7 +434,7 @@ async fn resume_repairs_not_started_call_after_assistant_message() {
             .filter(|event| matches!(
                 event.kind,
                 EventKind::TurnEnd {
-                    reason: TurnEndReason::Aborted,
+                    reason: TurnEndReason::Aborted { .. },
                     ..
                 }
             ))

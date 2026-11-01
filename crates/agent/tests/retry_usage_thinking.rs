@@ -218,8 +218,10 @@ async fn auth_error_does_not_retry() {
             })
             .collect::<Vec<_>>(),
         vec![TurnEndReason::Error {
-            code: "AUTH".to_owned(),
-            message: "模型请求失败: AUTH: 测试错误".to_owned(),
+            error: session::LlmFailure {
+                code: "AUTH".to_owned(),
+                message: "模型请求失败: AUTH: 测试错误".to_owned(),
+            },
         }]
     );
 }
@@ -375,7 +377,9 @@ async fn cancel_while_waiting_headers_aborts_promptly() {
                 _ => None,
             })
             .collect::<Vec<_>>(),
-        vec![TurnEndReason::Aborted]
+        vec![TurnEndReason::Aborted {
+            reason: session::AbortCause::User
+        }]
     );
     drop(server);
 }

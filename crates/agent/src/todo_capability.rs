@@ -29,14 +29,7 @@ impl Capability for TodoCapability {
 
     fn on_hook<'a>(&'a self, event: &'a HookEvent<'a>) -> HookFuture<'a> {
         Box::pin(async move {
-            let HookEvent::ToolAfter {
-                turn,
-                step,
-                calls,
-                results,
-                ..
-            } = event
-            else {
+            let HookEvent::ToolAfter { calls, results, .. } = event else {
                 return Ok(HookOutcome::Continue);
             };
             let succeeded = calls.iter().any(|call| {
@@ -48,11 +41,7 @@ impl Capability for TodoCapability {
             if succeeded && let Some(todos) = event.host().tool_session().take_todos() {
                 event
                     .host()
-                    .append(&[EventKind::TodoWrite {
-                        turn: *turn,
-                        step: *step,
-                        todos,
-                    }])
+                    .append(&[EventKind::TodoWrite { todos }])
                     .await?;
             }
             Ok(HookOutcome::Continue)
