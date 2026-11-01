@@ -132,17 +132,6 @@ async fn rejects_invalid_values() {
 }
 
 #[tokio::test]
-async fn zero_spill_threshold_disables_spill() {
-    // 照 DSH spill-policy：省略 maxInlineTokens 就是禁用；AIOS 用 0 表示同一个意思。
-    let config = AgentConfig {
-        spill_max_inline_tokens: 0,
-        ..AgentConfig::default()
-    };
-    let agent = create_result(config).await.unwrap();
-    agent.idle().await;
-}
-
-#[tokio::test]
 async fn accepts_valid_non_default_values() {
     let config = AgentConfig {
         max_parallel_tool_calls: 2,

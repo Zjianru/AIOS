@@ -17,6 +17,7 @@ use tools::{ToolCall, ToolContext, ToolSessionState, ToolSet, execute_batch};
 
 use crate::error::AgentError;
 use crate::inbox::{Delivery, Inbox, InboxTarget};
+use crate::prune;
 use crate::{AgentConfig, AgentEvent, Deps, TurnOutcome};
 
 const EVENT_CHANNEL_CAPACITY: usize = 256;
@@ -52,6 +53,8 @@ pub(crate) struct Inner {
     /// 会话级工具状态（观察表/spill/任务注册表）；续接时新建，不继承上一次。
     tool_session: Arc<ToolSessionState>,
     max_parallel_tool_calls: usize,
+    /// 单个工具结果内联进上下文的 token 预算；0 表示禁用 spill（AgentConfig 同名）。
+    spill_max_inline_tokens: usize,
     store: Mutex<SessionStore>,
     inbox: Mutex<Inbox>,
     state: Mutex<RunState>,
@@ -92,6 +95,7 @@ impl Inner {
             tools,
             tool_session,
             max_parallel_tool_calls: config.max_parallel_tool_calls,
+            spill_max_inline_tokens: config.spill_max_inline_tokens,
             store: Mutex::new(store),
             inbox: Mutex::new(Inbox::default()),
             state: Mutex::new(RunState {
@@ -414,6 +418,9 @@ async fn run_step(
         }])?;
     }
 
+    // T005.2：派生请求之前，把「旧」超大工具结果换成 head+marker+tail 的修剪视图
+    // （追加 compaction/prune 事件，原始 tool/result 保留在日志里可回放）。
+    prune_old_tool_results(inner, turn)?;
     let messages = inner
         .store
         .lock()
@@ -587,11 +594,21 @@ async fn run_step(
     )
     .await;
     for result in &outcome.results {
-        let message = Message::tool_result(
-            result.call_id.clone(),
-            result.content.clone(),
-            result.is_error,
-        );
+        // T005.2：超大结果落 spill（按会话目录），进日志/上下文的是 preview + locator；
+        // read 有自己的分页上限，不在此列（照 DSH spill-policy）。
+        let tool_name = calls
+            .iter()
+            .find(|call| call.id == result.call_id)
+            .map_or("", |call| call.name.as_str());
+        let content = tools::bound_result(
+            inner.tool_session.spill(),
+            tool_name,
+            &result.call_id,
+            &result.content,
+            inner.spill_max_inline_tokens,
+        )
+        .unwrap_or_else(|| result.content.clone());
+        let message = Message::tool_result(result.call_id.clone(), content, result.is_error);
         inner.append(&[EventKind::ToolResult {
             turn,
             step,
@@ -603,6 +620,52 @@ async fn run_step(
         return Ok(StepEnd::Aborted);
     }
     Ok(StepEnd::Continue)
+}
+
+/// T005.2 修剪：只修剪「旧 turn」的 tool/result（当前 turn 刚拿到的结果保留原样），
+/// 已经修剪过的 call_id 不再重复追加；一批 append 落日志。
+fn prune_old_tool_results(inner: &Arc<Inner>, current_turn: u64) -> Result<(), AgentError> {
+    let mut additions: Vec<EventKind> = Vec::new();
+    {
+        let store = inner.store.lock().expect("agent 会话锁被毒化");
+        let events = store.events();
+        let already: std::collections::HashSet<&str> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::CompactionPrune { call_id, .. } => Some(call_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        for event in events {
+            let EventKind::ToolResult { turn, message, .. } = &event.kind else {
+                continue;
+            };
+            if *turn >= current_turn {
+                continue;
+            }
+            let Some(ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                ..
+            }) = message.content.first()
+            else {
+                continue;
+            };
+            if already.contains(tool_use_id.as_str()) {
+                continue;
+            }
+            if let Some(pruned) = prune::prune_text(content) {
+                additions.push(EventKind::CompactionPrune {
+                    call_id: tool_use_id.clone(),
+                    content: pruned,
+                });
+            }
+        }
+    }
+    if !additions.is_empty() {
+        inner.append(&additions)?;
+    }
+    Ok(())
 }
 
 /// 请求层重试：最多 5 次、500ms 起指数退避、上限 10s、±10% 抖动（std 派生，不加依赖）。

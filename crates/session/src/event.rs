@@ -106,6 +106,10 @@ pub enum EventKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         error_code: Option<String>,
     },
+    /// 一个旧工具结果被修剪：派生请求里同 call_id 的 tool/result 用 content 替换。
+    /// 原始 tool/result 事件保留在日志里（可回放），这条只记替换视图（T005.2）。
+    #[serde(rename = "compaction/prune")]
+    CompactionPrune { call_id: String, content: String },
 }
 
 impl EventKind {
@@ -121,6 +125,7 @@ impl EventKind {
             Self::AssistantMessage { .. } => "assistant/message",
             Self::ToolCall { .. } => "tool/call",
             Self::ToolResult { .. } => "tool/result",
+            Self::CompactionPrune { .. } => "compaction/prune",
         }
     }
 }

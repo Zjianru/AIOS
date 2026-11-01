@@ -5,6 +5,7 @@
 mod driver;
 mod error;
 mod inbox;
+mod prune;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

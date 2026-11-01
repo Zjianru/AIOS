@@ -95,7 +95,9 @@ pub fn interrupted_turn_closers(events: &[Event]) -> Vec<EventKind> {
                     pending.remove(position);
                 }
             }
-            EventKind::SystemMessage { .. } | EventKind::UserMessage { .. } => {}
+            EventKind::SystemMessage { .. }
+            | EventKind::UserMessage { .. }
+            | EventKind::CompactionPrune { .. } => {}
         }
     }
     let Some(turn) = open_turn else {

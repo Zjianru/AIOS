@@ -7,6 +7,7 @@ mod batch;
 mod builtin;
 mod fs;
 mod session;
+mod spill;
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -22,6 +23,7 @@ pub use session::{
     FileVersion, ObservationStore, ObservedFile, SharedToolSession, SpillStore, TaskRegistry,
     ToolSessionState,
 };
+pub use spill::{SpillRef, bound_result, estimate_text_tokens};
 
 /// 一个异步结果的 boxed future。Tool 必须能放进 dyn 的工具集，所以用 boxed
 /// future，而不是返回位置的 impl Future（后者不能让 trait 成为 dyn 兼容）。
