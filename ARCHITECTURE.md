@@ -96,7 +96,7 @@ T006.1a 接挂点与注册表，**行为不变**：压缩、剪枝、指令、sk
 | # | 功能 | 挂点 | 从 HookEvent/ho​st 拿什么 | 1a 现实现位置 | 迁移票 |
 |---|---|---|---|---|---|
 | 1 | compaction | PreStep / Request / RequestError / Compaction | messages、host.model/session/compaction_config、error、trigger | `agent/src/compaction.rs` + driver | 1b |
-| 2 | prune | Compaction | host.session（日志事件）、trigger | `agent/src/prune.rs` | 1b |
+| 2 | prune | Compaction | host.session（日志事件）、trigger | `agent/src/prune.rs`（现路径，每请求调用留 1b） | T006.4 |
 | 3 | instructions | PreStep / SessionEvent / ToolBefore | host.session/instruction_roots/data_dir/events、event、calls | `agent/src/instructions.rs` | 1c |
 | 4 | skill | PreStep / ToolBefore | host.skill_roots、calls | `agent/src/skill_catalog.rs`、`tools/src/skills.rs` | 1c |
 | 5 | todo | ToolAfter | calls/results、host.session/events | `tools` + driver 事件 | 1d |
