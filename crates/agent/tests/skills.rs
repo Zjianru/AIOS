@@ -3,8 +3,12 @@
 mod common;
 
 use agent::Delivery;
-use common::{FINAL_TEXT_SSE, SequenceResponder, setup_agent_custom, setup_agent_with_roots, sse};
+use common::{
+    FINAL_TEXT_SSE, SequenceResponder, setup_agent_custom, setup_agent_with_roots, sse,
+    tool_calls_with_inputs_sse,
+};
 use model::UserMessage;
+use serde_json::json;
 use tools::ToolSet;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer};
@@ -135,5 +139,164 @@ async fn no_skills_means_no_catalog_message() {
     assert!(
         !first.contains("<available_skills>"),
         "没有 skill 时不应注入目录"
+    );
+}
+
+fn typed_catalog_messages(events: &[session::Event]) -> Vec<model::Message> {
+    events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            session::EventKind::UserMessage { message, .. }
+                if matches!(message.source, model::MessageSource::SkillCatalog { .. }) =>
+            {
+                Some(message.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// T006.11：目录消息带 DSH 类型来源（skill-catalog：form/update/entries），第二次发布是
+/// 「替换目录」协议（update=true + 完整新条目 + DSH replacement 文案）。
+#[tokio::test]
+async fn catalog_message_has_typed_source_and_replacement_protocol() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join(".git")).unwrap();
+    write(
+        &project.path().join(".agents/skills/alpha/SKILL.md"),
+        "---\nname: alpha\ndescription: Alpha desc.\n---\nAlpha body.\n",
+    );
+    let (agent, data_dir, session_id) = setup_agent_custom(
+        &server.uri(),
+        ToolSet::builtin(),
+        project.path(),
+        Vec::new(),
+    )
+    .await;
+    agent
+        .send(UserMessage::text("one"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+
+    write(
+        &project.path().join(".agents/skills/beta/SKILL.md"),
+        "---\nname: beta\ndescription: Beta desc.\n---\nBeta body.\n",
+    );
+    agent
+        .send(UserMessage::text("two"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+
+    let store = session::SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
+    let messages = typed_catalog_messages(store.events());
+    assert_eq!(messages.len(), 2, "首次发布 + 替换目录各一条");
+    let model::MessageSource::SkillCatalog {
+        form,
+        update,
+        incomplete,
+        entries,
+    } = &messages[0].source
+    else {
+        panic!("source 应是 skill-catalog");
+    };
+    assert_eq!(form, "catalog");
+    assert!(
+        !update && !incomplete,
+        "首次发布：update=false/incomplete=false"
+    );
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].name, "alpha");
+    assert_eq!(entries[0].description, "Alpha desc.");
+    let model::MessageSource::SkillCatalog { update, entries, .. } = &messages[1].source else {
+        panic!("source 应是 skill-catalog");
+    };
+    assert!(update, "第二次发布是替换目录");
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["alpha", "beta"]
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    let bodies: Vec<String> = requests
+        .iter()
+        .map(|request| String::from_utf8(request.body.clone()).unwrap())
+        .collect();
+    assert!(
+        bodies[1].contains(
+            "The available skill catalog changed. This complete catalog replaces every earlier available-skills list in this session:"
+        ),
+        "替换目录文案照 DSH：{}",
+        bodies[1]
+    );
+    assert!(
+        !bodies[0].contains("The available skill catalog changed."),
+        "首次发布不是替换文案"
+    );
+}
+
+/// T006.11：disable-model-invocation: true 的 skill 不进目录，skill 工具也拒绝加载
+/// （DSH 的 modelInvocable=false 语义）；非法 frontmatter 不再静默丢（warning 由 tools 单测钉）。
+#[tokio::test]
+async fn disable_model_invocation_skill_is_hidden_and_tool_rejects() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(tool_calls_with_inputs_sse(&[(
+                "call_0",
+                "skill",
+                json!({"name": "hidden"}),
+            )])),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join(".git")).unwrap();
+    write(
+        &project.path().join(".agents/skills/hidden/SKILL.md"),
+        "---\nname: hidden\ndescription: Hidden desc.\ndisable-model-invocation: true\n---\nHidden body.\n",
+    );
+    let (agent, _data_dir, _id) = setup_agent_custom(
+        &server.uri(),
+        ToolSet::builtin(),
+        project.path(),
+        Vec::new(),
+    )
+    .await;
+    agent
+        .send(UserMessage::text("试试隐藏 skill"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+
+    let requests = server.received_requests().await.unwrap();
+    let bodies: Vec<String> = requests
+        .iter()
+        .map(|request| String::from_utf8(request.body.clone()).unwrap())
+        .collect();
+    assert!(
+        !bodies[0].contains("Hidden desc."),
+        "模型不可调用的 skill 不进目录：{}",
+        bodies[0]
+    );
+    assert!(
+        bodies[1].contains("not available for model invocation"),
+        "skill 工具应拒绝模型不可调用的 skill：{}",
+        bodies[1]
     );
 }

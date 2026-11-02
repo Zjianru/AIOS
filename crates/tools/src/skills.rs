@@ -430,4 +430,127 @@ mod tests {
             assert!(parse_skill(raw).is_err(), "应拒绝：{raw}");
         }
     }
+
+    // ---- T006.11 红：完整 YAML / DSH 字段 / 警告（skeleton 上这些断言应失败）----
+
+    fn full_yaml_doc() -> &'static str {
+        "---\nname: pdf-tools\ndescription: |\n  Multi\n  line\nwhenToUse: >\n  Use when\n  needed\nmetadata:\n  owner: aios\n  tags:\n    - one\n    - two\ndisable-model-invocation: yes\nuser-invocable: 'false'\n---\n# Body\n"
+    }
+
+    #[test]
+    fn full_yaml_frontmatter_parses_dsh_fields() {
+        let parsed = parse_skill_frontmatter(full_yaml_doc()).unwrap();
+        assert_eq!(parsed.name, "pdf-tools");
+        assert_eq!(parsed.description, "Multi\nline");
+        assert_eq!(parsed.when_to_use.as_deref(), Some("Use when needed"));
+        let metadata = parsed.metadata.expect("metadata 是映射");
+        assert_eq!(metadata["owner"], "aios");
+        assert_eq!(metadata["tags"][1], "two");
+        assert!(!parsed.invocation.model_invocable, "DSH 宽松 bool：yes");
+        assert!(!parsed.invocation.user_invocable, "DSH 宽松 bool：'false'");
+    }
+
+    #[test]
+    fn yaml_anchors_and_aliases_are_resolved() {
+        let raw = "---\nname: anchor-skill\ndescription: &desc \"shared text\"\nwhenToUse: *desc\n---\nBody\n";
+        let parsed = parse_skill_frontmatter(raw).unwrap();
+        assert_eq!(parsed.description, "shared text");
+        assert_eq!(parsed.when_to_use.as_deref(), Some("shared text"));
+    }
+
+    #[test]
+    fn invocation_booleans_follow_dsh_leniency_and_legacy_keys_fail() {
+        for (value, model_invocable) in [
+            ("yes", false),
+            ("no", true),
+            ("1", false),
+            ("0", true),
+            ("off", true),
+            ("on", false),
+            ("'true'", false),
+        ] {
+            let raw = format!(
+                "---\nname: lenient\ndescription: d\ndisable-model-invocation: {value}\n---\nBody\n"
+            );
+            let parsed = parse_skill_frontmatter(&raw).unwrap();
+            assert_eq!(parsed.invocation.model_invocable, model_invocable, "{value}");
+        }
+        let invalid =
+            "---\nname: bad\ndescription: d\nuser-invocable: maybe\n---\nBody\n";
+        assert!(
+            parse_skill_frontmatter(invalid).is_err(),
+            "非布尔要报错（不能静默）"
+        );
+        for legacy in [
+            "disableModelInvocation: true",
+            "modelInvocable: false",
+            "userInvocable: false",
+        ] {
+            let raw = format!("---\nname: legacy\ndescription: d\n{legacy}\n---\nBody\n");
+            let error = parse_skill_frontmatter(&raw).unwrap_err();
+            assert!(error.contains("unsupported"), "旧键名要报错：{error}");
+        }
+    }
+
+    #[test]
+    fn invalid_skills_are_reported_as_warnings() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("skills");
+        std::fs::create_dir_all(root.join("good")).unwrap();
+        std::fs::write(
+            root.join("good/SKILL.md"),
+            "---\nname: good\ndescription: Good skill.\n---\nBody\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("bad-yaml")).unwrap();
+        std::fs::write(
+            root.join("bad-yaml/SKILL.md"),
+            "---\nname: bad-yaml\ndescription: [unclosed\n---\nBody\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("missing-desc")).unwrap();
+        std::fs::write(
+            root.join("missing-desc/SKILL.md"),
+            "---\nname: missing-desc\n---\nBody\n",
+        )
+        .unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let discovery = discover_skill_catalog(
+            dir.path(),
+            data.path(),
+            std::slice::from_ref(&root),
+        );
+        assert!(
+            discovery.skills.iter().any(|skill| skill.name == "good"),
+            "合法 skill 仍可用"
+        );
+        assert_eq!(
+            discovery.warnings.len(),
+            2,
+            "非法 skill 各记一条警告：{:?}",
+            discovery.warnings
+        );
+        assert!(discovery
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("invalid YAML frontmatter")));
+        assert!(discovery
+            .warnings
+            .iter()
+            .any(|warning| warning.message.contains("requires name and description")));
+    }
+
+    #[test]
+    fn catalog_description_matches_dsh_normalization() {
+        let long = format!("{}word", "a ".repeat(400));
+        let rendered = catalog_description(&long);
+        assert!(
+            rendered.chars().count() <= CATALOG_DESCRIPTION_MAX,
+            "预算内：{}",
+            rendered.chars().count()
+        );
+        assert!(rendered.ends_with("..."), "DSH 截断用三个点：{rendered}");
+        let multiline = catalog_description("  line one\n line two\t ");
+        assert_eq!(multiline, "line one line two");
+    }
 }
