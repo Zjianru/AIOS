@@ -55,7 +55,8 @@ async fn read_then_write_across_steps_succeeds() {
         ],
     )
     .await;
-    let (agent, data_dir, cwd, id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
+    let (agent, data_dir, cwd, id) =
+        setup_agent(&server.uri(), ToolSet::builtin_with_patch()).await;
     fs::write(cwd.path().join("a.txt"), "old\n").unwrap();
 
     agent
@@ -205,7 +206,8 @@ async fn patch_after_read_across_steps_succeeds() {
         ],
     )
     .await;
-    let (agent, data_dir, cwd, id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
+    let (agent, data_dir, cwd, id) =
+        setup_agent(&server.uri(), ToolSet::builtin_with_patch()).await;
     fs::write(cwd.path().join("a.txt"), "one\n").unwrap();
 
     agent

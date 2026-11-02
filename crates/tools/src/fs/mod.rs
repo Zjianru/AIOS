@@ -8,9 +8,11 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub(crate) mod observation;
 pub(crate) mod patch;
 
-use crate::session::{FileVersion, ObservedFile};
+use crate::fs::observation::WriteIntent;
+use crate::session::FileVersion;
 use crate::{ToolContext, ToolFailure};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -125,25 +127,17 @@ pub(crate) fn probe(target: &Target) -> Result<Option<FileInfo>, ToolFailure> {
     }
 }
 
-/// 登记一次「读过、且是这个版本」的观察。
+/// 登记一次「读过、且是这个版本」的观察（观察策略模块，T006.6）。
 pub(crate) fn record_present(context: &ToolContext, target: &Target, version: FileVersion) {
     context
         .session()
         .observations()
-        .record_present(target.key.clone(), version);
+        .observe_present(target.key.clone(), version);
 }
 
 /// 写策略：未见或已确认缺失 -> createIfAbsent；见过 present -> replaceIfVersion。
-pub(crate) enum WriteIntent {
-    CreateIfAbsent,
-    ReplaceIfVersion(FileVersion),
-}
-
 pub(crate) fn write_intent(context: &ToolContext, target: &Target) -> WriteIntent {
-    match context.session().observations().get(&target.key) {
-        Some(ObservedFile::Present(version)) => WriteIntent::ReplaceIfVersion(version.clone()),
-        Some(ObservedFile::Absent) | None => WriteIntent::CreateIfAbsent,
-    }
+    context.session().observations().write_intent(&target.key)
 }
 
 /// edit/delete 的版本护栏：没见过 -> FS_NOT_OBSERVED；确认缺失 -> FS_NOT_FOUND。
@@ -152,17 +146,10 @@ pub(crate) fn edit_version(
     target: &Target,
     verb: &str,
 ) -> Result<FileVersion, ToolFailure> {
-    match context.session().observations().get(&target.key) {
-        Some(ObservedFile::Present(version)) => Ok(version.clone()),
-        Some(ObservedFile::Absent) => Err(ToolFailure::coded(
-            "FS_NOT_FOUND",
-            format!("cannot {verb} \"{}\": not found", target.display()),
-        )),
-        None => Err(ToolFailure::coded(
-            "FS_NOT_OBSERVED",
-            format!("{verb} requires reading \"{}\" first", target.display()),
-        )),
-    }
+    context
+        .session()
+        .observations()
+        .edit_intent(&target.key, &target.display(), verb)
 }
 
 /// 登记一次「确认不存在」的观察（read 找不到时）。
@@ -170,7 +157,7 @@ pub(crate) fn record_absent(context: &ToolContext, target: &Target) {
     context
         .session()
         .observations()
-        .record_absent(target.key.clone());
+        .observe_absent(target.key.clone());
 }
 
 /// DSH 的稳定模型可见文案：FS_NOT_OBSERVED 换成通用「先读」原因，

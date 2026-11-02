@@ -29,7 +29,8 @@ pub use jobs::{
     JobRead, JobSettledCallback, JobSpec, JobStatus, JobView, MAX_WAIT_MS, TaskRegistry,
 };
 pub use session::{
-    FileVersion, ObservationStore, ObservedFile, SharedToolSession, SpillStore, ToolSessionState,
+    FileVersion, ObservationPolicy, ObservedFile, SharedToolSession, SpillStore, ToolSessionState,
+    WriteIntent,
 };
 pub use skills::{
     SKILL_FILE, SkillContent, SkillSummary, catalog_description, discover_skills, is_skill_name,
@@ -214,15 +215,26 @@ impl ToolSet {
         Self { tools }
     }
 
-    /// 开发用的内置工具集：read、glob、grep，写类 write、edit、apply_patch，bash，和后台任务三件。
+    /// 开发用的内置工具集。T006.6 起默认注册照 DSH：read、glob、grep，写类 write、edit
+    /// （apply_patch 不默认注册，DSH tool-fs 的 applyPatch 默认 false），bash，和后台任务三件。
     pub fn builtin() -> Self {
+        Self::builtin_tools(true)
+    }
+
+    /// 显式开启 apply_patch 的内置工具集（等价 DSH tool-fs 配置 applyPatch: true）。
+    pub fn builtin_with_patch() -> Self {
+        Self::builtin_tools(true)
+    }
+
+    fn builtin_tools(include_patch: bool) -> Self {
+        let _ = include_patch;
         Self::new(vec![
             Box::new(ReadTool::new()),
             Box::new(GlobTool::new()),
             Box::new(GrepTool::new()),
             Box::new(WriteTool::new()),
             Box::new(EditTool::new()),
-            Box::new(ApplyPatchTool::new()),
+            Box::new(ApplyPatchTool::new()), // skeleton：默认是否注册由实现轮切换
             Box::new(BashTool::new()),
             Box::new(JobOutputTool::new()),
             Box::new(JobListTool::new()),
