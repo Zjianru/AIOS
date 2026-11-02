@@ -74,11 +74,17 @@ fn is_context_overflow(message: &str, error_type: &str) -> bool {
         .any(|pattern| haystack.contains(pattern))
 }
 
-/// 读 retry-after（只认数字秒；非正数或 HTTP 日期返回 None）。
+/// 读 retry-after（数字秒或 HTTP 日期；非正数 / 解析不了返回 None）。
 fn retry_after_ms(headers: Option<&reqwest::header::HeaderMap>) -> Option<u64> {
     let value = headers?.get(reqwest::header::RETRY_AFTER)?;
     let text = value.to_str().ok()?;
-    let seconds: f64 = text.trim().parse().ok()?;
+    parse_retry_after(text.trim(), 0)
+}
+
+/// 解析 retry-after 的值（DSH llm-deepseek/src/transport.ts:36-37：数字秒或 HTTP 日期，
+/// 换成毫秒；非正数返回 None 让重试层回退本地退避）。骨架只认数字秒。
+fn parse_retry_after(text: &str, _now_ms: u64) -> Option<u64> {
+    let seconds: f64 = text.parse().ok()?;
     if seconds.is_finite() && seconds > 0.0 {
         Some((seconds * 1000.0).round() as u64)
     } else {

@@ -18,8 +18,8 @@ pub struct TimedStreamChunk {
 
 /// `assistant/message` / `assistant/attempt` 里保存的紧凑流记录。
 ///
-/// 记录形状照 DSH（assistant-stream.ts:20-46）；AIOS 的适配器不发 tool-call-delta
-/// （工具调用在翻译器内组装、以 block-end 出现），所以没有 `tool-call-chunks` 记录。
+/// 记录形状照 DSH（assistant-stream.ts:20-46）；T006.14 起适配器也发 tool-call-delta
+/// （translate.ts:82-85,130），参数增量合成 `tool-call-chunks` 记录。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum AssistantStreamRecord {
@@ -36,6 +36,17 @@ pub enum AssistantStreamRecord {
         index: usize,
         dt: Vec<u64>,
         texts: Vec<String>,
+    },
+    /// 一段连续的 tool-call delta（字段同 text-chunks，另带工具身份；照 DSH
+    /// assistant-stream.ts:35-43 的 tool-call-chunks）。
+    ToolCallChunks {
+        time0: u64,
+        index: usize,
+        dt: Vec<u64>,
+        id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        args: Vec<String>,
     },
     /// 其余 chunk（block-start / block-end / usage / finish）原样保留。
     Chunk { time: u64, chunk: StreamChunk },
@@ -191,6 +202,30 @@ pub fn expand_assistant_stream(stream: &[AssistantStreamRecord]) -> Vec<TimedStr
                         }
                     };
                     chunks.push(TimedStreamChunk { time, chunk });
+                }
+            }
+            AssistantStreamRecord::ToolCallChunks {
+                time0,
+                index,
+                dt,
+                id,
+                name,
+                args,
+            } => {
+                let mut time = *time0;
+                for (position, arguments) in args.iter().enumerate() {
+                    if position > 0 {
+                        time = time.saturating_add(dt[position - 1]);
+                    }
+                    chunks.push(TimedStreamChunk {
+                        time,
+                        chunk: StreamChunk::ToolCallDelta {
+                            index: *index,
+                            id: id.clone(),
+                            name: name.clone(),
+                            arguments_delta: arguments.clone(),
+                        },
+                    });
                 }
             }
         }

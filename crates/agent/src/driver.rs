@@ -1180,6 +1180,9 @@ async fn run_step(
                         buffer.push_str(&text);
                     }
                 }
+                // 工具参数增量只进 stream 记录（T006.14 照 DSH tool-call-delta）；
+                // 完整参数在 block-end 的 block 里，不需要额外状态。
+                Ok(StreamChunk::ToolCallDelta { .. }) => {}
                 Ok(StreamChunk::BlockEnd { index, block }) => {
                     open.remove(&index);
                     blocks.insert(index, block);

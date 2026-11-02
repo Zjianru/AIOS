@@ -526,6 +526,16 @@ pub enum StreamChunk {
         index: usize,
         text: String,
     },
+    /// 工具调用参数的增量（DSH tool-call-delta：block-start 时带 id/name、
+    /// argumentsDelta 为空，之后每个 input_json_delta 一帧；translate.ts:82-85,130）。
+    ToolCallDelta {
+        index: usize,
+        id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(rename = "argumentsDelta")]
+        arguments_delta: String,
+    },
     BlockEnd {
         index: usize,
         block: ContentBlock,

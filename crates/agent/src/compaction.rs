@@ -417,6 +417,7 @@ async fn summarize(
             Ok(StreamChunk::Finish { reason }) => finish = Some(reason),
             Ok(StreamChunk::BlockStart { .. })
             | Ok(StreamChunk::ReasoningDelta { .. })
+            | Ok(StreamChunk::ToolCallDelta { .. })
             | Ok(StreamChunk::BlockEnd { .. }) => {}
             Err(error) => return Err(AgentError::Model(error)),
         }
