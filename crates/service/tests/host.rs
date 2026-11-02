@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use agent::{Agent, AgentConfig};
 use model::{DeepSeek, DeepSeekConfig, Effort};
+use serde_json::json;
 use service::{
     AnswerRequest, CancelRequest, CompactRequest, DeliveryMode, SendRequest, ServiceAnswer,
     ServiceEvent, ServiceHost, StatusRequest,
@@ -144,6 +145,25 @@ async fn next_event(events: &mut broadcast::Receiver<ServiceEvent>) -> ServiceEv
 }
 
 /// 收到 turn/end 或超时就返回（不 panic，便于红期做断言）。
+async fn wait_for(
+    events: &mut broadcast::Receiver<ServiceEvent>,
+    event_type: &str,
+    count: usize,
+) -> Vec<ServiceEvent> {
+    let mut seen = Vec::new();
+    let mut matching = 0;
+    loop {
+        let event = next_event(events).await;
+        if event.event_type == event_type {
+            matching += 1;
+        }
+        seen.push(event);
+        if matching >= count {
+            return seen;
+        }
+    }
+}
+
 async fn collect_turn_events(events: &mut broadcast::Receiver<ServiceEvent>) -> Vec<ServiceEvent> {
     let mut collected = Vec::new();
     loop {
@@ -226,8 +246,7 @@ async fn cancel_interrupts_active_turn() {
 
     let started = service.send(send_request("req-cancel", "跑一轮")).await;
     assert!(started.is_ok(), "send 应成功：{started:?}");
-    let turn_start = next_event(&mut events).await;
-    assert_eq!(turn_start.event_type, "turn/start", "先看到 turn/start");
+    wait_for(&mut events, "turn/start", 1).await;
 
     let cancelled = service.cancel(CancelRequest {}).await;
     assert!(cancelled.is_ok(), "cancel 应成功：{cancelled:?}");
@@ -254,14 +273,8 @@ async fn answer_applies_whole_batch_with_selected_and_custom() {
         .send(send_request("req-answer", "要问两个问题"))
         .await;
     assert!(started.is_ok(), "send 应成功：{started:?}");
-    // 等到两个 question/asked 都已落日志。
-    loop {
-        let event = next_event(&mut events).await;
-        if event.event_type == "question/asked" {
-            break;
-        }
-    }
-    next_event(&mut events).await;
+    // 等到两个 question/asked 都已落日志（前面还会有 agent/inbox/spliced 等事件）。
+    wait_for(&mut events, "question/asked", 2).await;
 
     let answered = service
         .answer(AnswerRequest {
@@ -286,10 +299,34 @@ async fn answer_applies_whole_batch_with_selected_and_custom() {
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 2, "回答后续上同一轮");
     let second = String::from_utf8(requests[1].body.clone()).unwrap();
-    assert!(
-        second.contains("\"selected\":[\"Yes\"]") && second.contains("\"custom\":\"我自己的答案\""),
-        "tool/result 要带 T006.13 的 selected/custom：{second}"
+    let payload = tool_result_payload(&second, "call_ask");
+    assert_eq!(
+        payload,
+        json!({"answers": [
+            {"id": "q1", "selected": ["Yes"]},
+            {"id": "q2", "selected": [], "custom": "我自己的答案"}
+        ]}),
+        "tool/result 要带 T006.13 的 selected/custom 批形状"
     );
+}
+
+/// 从请求体里取某个 tool_use_id 的 tool_result 内容（T006.13 形状）。
+fn tool_result_payload(body: &str, call_id: &str) -> serde_json::Value {
+    let request: serde_json::Value = serde_json::from_str(body).expect("请求体是 JSON");
+    for message in request["messages"].as_array().expect("messages") {
+        let Some(content) = message["content"].as_array() else {
+            continue;
+        };
+        for block in content {
+            if block["type"] == "tool_result" && block["tool_use_id"] == call_id {
+                let text = block["content"][0]["text"]
+                    .as_str()
+                    .expect("tool_result text");
+                return serde_json::from_str(text).expect("tool_result 内容是 JSON");
+            }
+        }
+    }
+    panic!("找不到 {call_id} 的 tool_result");
 }
 
 #[tokio::test]
@@ -327,8 +364,7 @@ async fn status_reports_object_phase_and_pending_questions() {
 
     let mut events = service.events();
     assert!(service.send(send_request("req-status", "跑")).await.is_ok());
-    let started = next_event(&mut events).await;
-    assert_eq!(started.event_type, "turn/start");
+    wait_for(&mut events, "turn/start", 1).await;
     let running = service.status(StatusRequest {}).await;
     assert!(running.is_ok(), "运行中 status 也要成功：{running:?}");
     assert!(running.unwrap().running, "运行中 running=true");
@@ -361,12 +397,14 @@ async fn events_carry_contiguous_seq_type_and_data() {
     for expected in ["user/message", "assistant/message", "turn/end"] {
         assert!(types.contains(&expected), "事件面缺 {expected}：{types:?}");
     }
-    let first = &observed[0];
-    assert_eq!(first.event_type, "turn/start", "第一个事件应是 turn/start");
-    assert_eq!(first.seq, 1, "日志 seq 从 1 开始");
+    assert_eq!(observed[0].seq, 1, "服务事件从日志 seq=1 开始");
+    let turn_start = observed
+        .iter()
+        .find(|event| event.event_type == "turn/start")
+        .expect("事件面要有 turn/start");
     assert_eq!(
-        first.data["turn"], 1,
-        "data 是事件字段（不含 type）：{first:?}"
+        turn_start.data["turn"], 1,
+        "data 是事件字段（不含 type）：{turn_start:?}"
     );
     for pair in observed.windows(2) {
         assert_eq!(pair[1].seq, pair[0].seq + 1, "服务事件 seq 必须连续");
