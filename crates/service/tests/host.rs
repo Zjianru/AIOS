@@ -9,8 +9,8 @@ use agent::{Agent, AgentConfig};
 use model::{DeepSeek, DeepSeekConfig, Effort};
 use serde_json::json;
 use service::{
-    AnswerRequest, CancelRequest, CompactRequest, DeliveryMode, SendRequest, ServiceAnswer,
-    ServiceEvent, ServiceHost, StatusRequest,
+    AnswerRequest, CancelRequest, CompactRequest, DeliveryMode, EventsRequest, FollowRequest,
+    SendRequest, ServiceAnswer, ServiceEvent, ServiceHost, StatusRequest,
 };
 use session::{SessionId, SessionStore};
 use tokio::sync::broadcast;
@@ -422,4 +422,151 @@ async fn events_carry_contiguous_seq_type_and_data() {
         .map(|event| (event.seq, event.event_type.as_str()))
         .collect();
     assert_eq!(seen, logged, "服务事件必须与日志事件一致");
+}
+
+#[tokio::test]
+async fn follow_fills_from_last_seq_contiguously() {
+    let server = MockServer::start().await;
+    mount(&server, vec![sse(FINAL_TEXT_SSE), sse(FINAL_TEXT_SSE)]).await;
+    let (agent, _data_dir, _id) = setup(&server).await;
+    let service = ServiceHost::new(agent.clone());
+
+    // 两轮事件。
+    assert!(service.send(send_request("req-f1", "一")).await.is_ok());
+    agent.idle().await;
+    assert!(service.send(send_request("req-f2", "二")).await.is_ok());
+    agent.idle().await;
+    let all = agent.session_events_from(0);
+    assert!(all.len() > 2);
+
+    // 从头补：全部事件、seq 连续、最后序号一致。
+    let opening = service.follow(FollowRequest { last_seq: 0 }).await;
+    assert!(opening.is_ok(), "follow 应成功：{opening:?}");
+    let opening = opening.unwrap();
+    assert_eq!(opening.last_seq, agent.last_seq());
+    let seqs: Vec<u64> = opening.events.iter().map(|event| event.seq).collect();
+    assert_eq!(
+        seqs,
+        (1..=opening.last_seq).collect::<Vec<_>>(),
+        "follow 要连续补齐"
+    );
+    assert_eq!(opening.events.len(), all.len());
+
+    // 从中途补：只给 lastSeq 之后的事件，不重复。
+    let middle = all.len() / 2;
+    let middle_seq = all[middle].seq;
+    let tail = service
+        .follow(FollowRequest {
+            last_seq: middle_seq,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        tail.events.first().map(|event| event.seq),
+        Some(middle_seq + 1),
+        "补齐要从 lastSeq 的下一条开始"
+    );
+    assert_eq!(tail.events.len(), all.len() - middle - 1);
+
+    // 已是最新：空补齐、序号保持。
+    let none = service
+        .follow(FollowRequest {
+            last_seq: opening.last_seq,
+        })
+        .await
+        .unwrap();
+    assert!(none.events.is_empty(), "已经跟到最后没有新事件");
+    assert_eq!(none.last_seq, opening.last_seq, "空补齐保持最后序号");
+}
+
+#[tokio::test]
+async fn events_page_is_turn_aligned_and_budgeted() {
+    let server = MockServer::start().await;
+    mount(&server, vec![sse(FINAL_TEXT_SSE), sse(FINAL_TEXT_SSE)]).await;
+    let (agent, _data_dir, _id) = setup(&server).await;
+    let service = ServiceHost::new(agent.clone());
+
+    for (index, request_id) in ["req-e1", "req-e2"].iter().enumerate() {
+        assert!(service.send(send_request(request_id, "页")).await.is_ok());
+        agent.idle().await;
+        let _ = index;
+    }
+    let all = agent.session_events_from(0);
+    let turn_starts: Vec<u64> = all
+        .iter()
+        .filter(|event| event.kind.type_name() == "turn/start")
+        .map(|event| event.seq)
+        .collect();
+    assert_eq!(turn_starts.len(), 2, "两轮数据");
+
+    // 默认预算（50/2/500）在只有两轮时：日志耗尽，整段返回、没有更多。
+    let whole = service.events(EventsRequest::default()).await;
+    assert!(whole.is_ok(), "events 应成功：{whole:?}");
+    let whole = whole.unwrap();
+    assert_eq!(whole.events.len(), all.len(), "日志耗尽时返回整段");
+    assert!(!whole.has_more, "没有更早的页");
+    assert_eq!(
+        whole.events[0].event_type, "turn/start",
+        "页首是轮起点（对齐）"
+    );
+
+    // 收紧轮预算（minMessages=1/minTurns=1）：页首对齐到最近一轮的 turn/start。
+    let budget = EventsRequest {
+        min_messages: Some(1),
+        min_turns: Some(1),
+        ..EventsRequest::default()
+    };
+    let last_turn = service.events(budget.clone()).await;
+    assert!(last_turn.is_ok(), "收紧预算的 events 应成功：{last_turn:?}");
+    let last_turn = last_turn.unwrap();
+    assert!(last_turn.has_more, "只翻最近一轮时还有更早的");
+    assert_eq!(
+        last_turn.events[0].event_type, "turn/start",
+        "页首要落在轮起点"
+    );
+    assert_eq!(last_turn.events[0].seq, turn_starts[1]);
+
+    // 用 beforeSeq 往回翻：与上一页首尾相接、不重叠。
+    let earlier = service
+        .events(EventsRequest {
+            before_seq: Some(last_turn.events[0].seq - 1),
+            min_messages: Some(1),
+            min_turns: Some(1),
+            ..EventsRequest::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(earlier.events[0].seq, 1, "第一轮从 seq 1 开始");
+    assert_eq!(
+        earlier.events.last().map(|event| event.seq),
+        Some(last_turn.events[0].seq - 1),
+        "两页首尾相接"
+    );
+    assert!(!earlier.has_more, "再往前没有了");
+
+    // maxMessages=1：预算先到，页可能不在轮起点（DSH：预算或耗尽赢过轮对齐）。
+    let capped = service
+        .events(EventsRequest {
+            max_messages: Some(1),
+            min_messages: Some(1),
+            min_turns: Some(1),
+            ..EventsRequest::default()
+        })
+        .await
+        .unwrap();
+    assert!(capped.has_more);
+    assert_eq!(
+        capped
+            .events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.event_type.as_str(),
+                    "user/message" | "assistant/message"
+                )
+            })
+            .count(),
+        1,
+        "maxMessages=1 只允许一条消息"
+    );
 }
