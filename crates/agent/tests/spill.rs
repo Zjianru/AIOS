@@ -189,9 +189,9 @@ async fn oversized_tool_result_becomes_preview_with_locator() {
             data_dir
                 .path()
                 .join("spill")
-                .join(format!("session-{}", agent.id()))
+                .join(tools::spill::session_dir_name(agent.id().as_str()))
         ),
-        "{locator}"
+        "会话目录照 DSH spill-local：root/session-<hash>：{locator}"
     );
     assert_eq!(fs::read_to_string(&locator).unwrap(), content);
 
@@ -525,4 +525,47 @@ async fn overflow_recovery_prunes_tool_results() {
     );
     assert!(retry.contains("row0001"), "修剪保留头部");
     assert!(!retry.contains("row0300"), "中间段已被剪掉");
+}
+
+/// T006.7：Agent 启动时照 DSH spill-local cleanupPeriodDays 扫一遍旧 spill 文件。
+#[tokio::test]
+async fn old_spill_files_are_cleaned_on_agent_start() {
+    use std::time::{Duration, SystemTime};
+
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let old_dir = data_dir
+        .path()
+        .join("spill")
+        .join(tools::spill::session_dir_name("old-session"));
+    std::fs::create_dir_all(&old_dir).unwrap();
+    let old_file = old_dir.join("0123456789ab-old.txt");
+    std::fs::write(&old_file, "old").unwrap();
+    let modified = SystemTime::now() - Duration::from_secs(31 * 24 * 60 * 60);
+    std::fs::File::options()
+        .write(true)
+        .open(&old_file)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    let fresh_file = old_dir.join("0123456789ac-fresh.txt");
+    std::fs::write(&fresh_file, "fresh").unwrap();
+
+    let store = SessionStore::create(data_dir.path(), cwd.path()).unwrap();
+    let agent = Agent::create(
+        common::isolated_config(data_dir.path()),
+        agent::Deps {
+            model: model::DeepSeek::new(common::model_config("http://127.0.0.1:1")).unwrap(),
+            tools: ToolSet::new(Vec::new()),
+            store,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        !old_file.exists(),
+        "超过 cleanupPeriodDays 的 spill 文件应清掉"
+    );
+    assert!(fresh_file.exists(), "新 spill 文件保留");
+    agent.idle().await;
 }

@@ -90,7 +90,7 @@ async fn bash_long_output_keeps_tail_and_full_path() {
             &data_dir
                 .path()
                 .join("spill")
-                .join("session-sess-1")
+                .join(tools::spill::session_dir_name("sess-1"))
                 .to_string_lossy()
                 .into_owned()
         ),
