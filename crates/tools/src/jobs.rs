@@ -15,6 +15,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::ToolContext;
 use crate::ToolFailure;
+use crate::session::SpillStore;
+use crate::spill::SpillFile;
+use tokio::sync::Notify;
 
 static JOB_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -24,6 +27,10 @@ pub const MAX_RUNNING_JOBS: usize = 10;
 pub const RETAIN_BYTES: usize = 262_144;
 /// job_output/job_kill 等待结算的上限（毫秒）。
 pub const MAX_WAIT_MS: u64 = 600_000;
+/// 前台流式 spill 的单流上限（照 DSH bash-local maxSpillBytes 64 MiB）。
+pub const MAX_SPILL_BYTES: usize = 64 * 1024 * 1024;
+/// 结束任务的 SIGTERM→SIGKILL grace（照 DSH bash-local graceMs 默认 3s）。
+pub const KILL_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// 任务状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +83,8 @@ pub struct JobRead {
     pub stderr_dropped: bool,
     pub stdout_path: PathBuf,
     pub stderr_path: PathBuf,
+    pub stdout_spill: Option<PathBuf>,
+    pub stderr_spill: Option<PathBuf>,
 }
 
 /// 启动一个后台任务的输入。
@@ -84,6 +93,13 @@ pub struct JobSpec {
     pub cwd: PathBuf,
     pub env: Vec<(String, String)>,
     pub label: String,
+}
+
+/// 前台 bash 的流式 spill 目标（T006.8 照 DSH subprocess spill：完整流边收边写）。
+pub struct JobSpill {
+    pub store: SpillStore,
+    pub stdout_name: String,
+    pub stderr_name: String,
 }
 
 struct JobState {
@@ -102,6 +118,9 @@ struct JobState {
     awaited: bool,
     /// 完成通知已发出（或已补发）；保证最多一次。
     notified: bool,
+    /// 前台 spill 文件的 locator（未开 spill 或超过整流体上限时为 None）。
+    stdout_spill: Option<PathBuf>,
+    stderr_spill: Option<PathBuf>,
 }
 
 struct JobRecord {
@@ -111,6 +130,8 @@ struct JobRecord {
     child: Mutex<Child>,
     state: Mutex<JobState>,
     cond: Condvar,
+    /// settle 线程唤醒异步等待者（T006.8：wait_async 不阻塞 runtime）。
+    notify: Notify,
     stdout_path: PathBuf,
     stderr_path: PathBuf,
 }
@@ -166,6 +187,28 @@ impl TaskRegistry {
 
     /// 起一个后台任务，返回 job id。
     pub fn start(&self, spec: JobSpec, foreground: bool) -> Result<String, ToolFailure> {
+        self.start_inner(spec, foreground, None, RETAIN_BYTES)
+    }
+
+    /// T006.8：前台 bash 用流式 spill。每个流内存只留 retain_bytes 尾部，完整流边收边写进
+    /// <data-dir>/spill/session-<hash>/ 的 spill 文件（照 DSH subprocess collect + bash-local）。
+    pub fn start_with_spill(
+        &self,
+        spec: JobSpec,
+        foreground: bool,
+        spill: JobSpill,
+        retain_bytes: usize,
+    ) -> Result<String, ToolFailure> {
+        self.start_inner(spec, foreground, Some(spill), retain_bytes)
+    }
+
+    fn start_inner(
+        &self,
+        spec: JobSpec,
+        foreground: bool,
+        spill: Option<JobSpill>,
+        retain_bytes: usize,
+    ) -> Result<String, ToolFailure> {
         let Some(root) = &self.root else {
             return Err(ToolFailure::plain(
                 "background jobs are unavailable in this tool context",
@@ -213,6 +256,12 @@ impl TaskRegistry {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // T006.8：子进程自成一个进程组，SIGTERM/SIGKILL 能连子孙一起收（照 DSH subprocess 的 range kill）。
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            process.process_group(0);
+        }
         process.env_clear();
         for (key, value) in &spec.env {
             process.env(key, value);
@@ -225,6 +274,13 @@ impl TaskRegistry {
         })?;
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
+        let (stdout_spill, stderr_spill) = match &spill {
+            Some(target) => (
+                SpillFile::create(&target.store, &target.stdout_name, MAX_SPILL_BYTES).ok(),
+                SpillFile::create(&target.store, &target.stderr_name, MAX_SPILL_BYTES).ok(),
+            ),
+            None => (None, None),
+        };
         let record = Arc::new(JobRecord {
             id: id.clone(),
             kind: "bash",
@@ -244,8 +300,11 @@ impl TaskRegistry {
                 kill_requested: false,
                 awaited: foreground,
                 notified: false,
+                stdout_spill: None,
+                stderr_spill: None,
             }),
             cond: Condvar::new(),
+            notify: Notify::new(),
             stdout_path: stdout_path.clone(),
             stderr_path: stderr_path.clone(),
         });
@@ -254,15 +313,37 @@ impl TaskRegistry {
             .expect("jobs 表锁被毒化")
             .insert(id.clone(), Arc::clone(&record));
 
-        let (sender, receiver) = std::sync::mpsc::channel::<()>();
-        spawn_reader(stdout, Arc::clone(&record), true, sender.clone());
-        spawn_reader(stderr, Arc::clone(&record), false, sender);
+        let (sender, receiver) = std::sync::mpsc::channel::<ReaderDone>();
+        spawn_reader(
+            stdout,
+            Arc::clone(&record),
+            true,
+            sender.clone(),
+            stdout_spill,
+            retain_bytes,
+        );
+        spawn_reader(
+            stderr,
+            Arc::clone(&record),
+            false,
+            sender,
+            stderr_spill,
+            retain_bytes,
+        );
         let callback = self.callback();
         let monitored = Arc::clone(&record);
         std::thread::spawn(move || {
-            // 两个读线程都结束（完整流已落盘）后再结算。
-            let _ = receiver.recv();
-            let _ = receiver.recv();
+            // 两个读线程都结束（完整流已落盘/spill）后再结算。
+            let mut spills: [Option<PathBuf>; 2] = [None, None];
+            for _ in 0..2 {
+                match receiver.recv() {
+                    Ok(done) => {
+                        spills[usize::from(!done.is_stdout)] =
+                            done.spill.map(|saved| saved.locator);
+                    }
+                    Err(_) => break,
+                }
+            }
             let (mut status, mut exit_code, mut signal) = (JobStatus::Failed, None, None);
             loop {
                 let mut child = monitored.child.lock().expect("job 子进程锁被毒化");
@@ -290,14 +371,16 @@ impl TaskRegistry {
                 state.exit_code = exit_code;
                 state.signal = signal;
                 state.finished_at = Some(now_millis());
+                state.stdout_spill = spills[0].take();
+                state.stderr_spill = spills[1].take();
                 let should_notify = !state.awaited && !state.notified;
                 if should_notify {
                     state.notified = true;
                 }
-                drop(state);
-                monitored.cond.notify_all();
                 should_notify
             };
+            monitored.cond.notify_all();
+            monitored.notify.notify_waiters();
             if should_notify && let Some(callback) = callback {
                 callback(&monitored.id, status);
             }
@@ -340,6 +423,68 @@ impl TaskRegistry {
             state = next;
         }
         drop(state);
+        Ok(read_of(&record))
+    }
+
+    /// T006.8：异步等结算（tokio Notify；不阻塞 runtime）。
+    pub async fn wait_async(&self, id: &str, timeout: Duration) -> Result<JobRead, ToolFailure> {
+        let record = self.record(id)?;
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if self.settled(&record) {
+                return Ok(read_of(&record));
+            }
+            let notified = record.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.settled(&record) {
+                return Ok(read_of(&record));
+            }
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            if tokio::time::timeout(remaining, notified).await.is_err() {
+                break;
+            }
+        }
+        Ok(read_of(&record))
+    }
+
+    fn settled(&self, record: &Arc<JobRecord>) -> bool {
+        record
+            .state
+            .lock()
+            .expect("job 状态锁被毒化")
+            .status
+            .is_terminal()
+    }
+
+    /// T006.8：结束任务照 DSH——先 SIGTERM，等 grace（默认 3s）仍不退再 SIGKILL；
+    /// grace 期间读线程继续收输出，退出信号按进程实际终止信号记录。
+    pub async fn terminate(
+        &self,
+        id: &str,
+        reason: Option<String>,
+        grace: Duration,
+    ) -> Result<JobRead, ToolFailure> {
+        let record = self.record(id)?;
+        {
+            let mut state = record.state.lock().expect("job 状态锁被毒化");
+            if state.status.is_terminal() {
+                drop(state);
+                return Ok(read_of(&record));
+            }
+            state.kill_requested = true;
+            if let Some(reason) = reason {
+                state.detail = Some(reason);
+            }
+        }
+        Self::signal_group(&record, "-TERM");
+        if !Self::wait_terminal(&record, grace).await {
+            Self::signal_group(&record, "-KILL");
+            let _ = Self::wait_terminal(&record, Duration::from_secs(5)).await;
+        }
         Ok(read_of(&record))
     }
 
@@ -405,6 +550,44 @@ impl TaskRegistry {
         }
     }
 
+    /// 等任务进入终态（tokio Notify；返回 true=已终态）。
+    async fn wait_terminal(record: &Arc<JobRecord>, timeout: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if record
+                .state
+                .lock()
+                .expect("job 状态锁被毒化")
+                .status
+                .is_terminal()
+            {
+                return true;
+            }
+            let notified = record.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            if tokio::time::timeout(remaining, notified).await.is_err() {
+                return false;
+            }
+        }
+    }
+
+    /// 给整个进程组发信号（/bin/kill 的负 pid；子进程 start 时 process_group(0)）。
+    #[cfg(unix)]
+    fn signal_group(record: &Arc<JobRecord>, signal: &str) {
+        let pid = record.child.lock().expect("job 子进程锁被毒化").id();
+        let _ = std::process::Command::new("/bin/kill")
+            .args([signal, "--", &format!("-{pid}")])
+            .status();
+    }
+
+    #[cfg(not(unix))]
+    fn signal_group(_record: &Arc<JobRecord>, _signal: &str) {}
+
     fn record(&self, id: &str) -> Result<Arc<JobRecord>, ToolFailure> {
         self.jobs
             .lock()
@@ -438,11 +621,19 @@ fn prepare_jobs_root(root: &Path) {
     }
 }
 
+/// 读线程结束时的 spill 结果（T006.8）。
+struct ReaderDone {
+    is_stdout: bool,
+    spill: Option<crate::spill::SpillRef>,
+}
+
 fn spawn_reader(
     mut reader: impl Read + Send + 'static,
     record: Arc<JobRecord>,
     is_stdout: bool,
-    done: std::sync::mpsc::Sender<()>,
+    done: std::sync::mpsc::Sender<ReaderDone>,
+    mut spill: Option<SpillFile>,
+    retain_bytes: usize,
 ) {
     std::thread::spawn(move || {
         let path = if is_stdout {
@@ -472,6 +663,9 @@ fn spawn_reader(
                     if let Some(file) = file.as_mut() {
                         let _ = file.write_all(&buffer[..read]);
                     }
+                    if let Some(spill) = spill.as_mut() {
+                        spill.write(&buffer[..read]);
+                    }
                     let mut state = record.state.lock().expect("job 状态锁被毒化");
                     let target = if is_stdout {
                         &mut state.stdout
@@ -479,8 +673,8 @@ fn spawn_reader(
                         &mut state.stderr
                     };
                     target.extend_from_slice(&buffer[..read]);
-                    if target.len() > RETAIN_BYTES {
-                        let overflow = target.len() - RETAIN_BYTES;
+                    if target.len() > retain_bytes {
+                        let overflow = target.len() - retain_bytes;
                         target.drain(..overflow);
                         if is_stdout {
                             state.stdout_dropped = true;
@@ -492,7 +686,8 @@ fn spawn_reader(
                 Err(_) => break,
             }
         }
-        let _ = done.send(());
+        let spill = spill.and_then(SpillFile::finish);
+        let _ = done.send(ReaderDone { is_stdout, spill });
     });
 }
 
@@ -546,6 +741,8 @@ fn read_of(record: &JobRecord) -> JobRead {
         stderr_dropped: state.stderr_dropped,
         stdout_path: record.stdout_path.clone(),
         stderr_path: record.stderr_path.clone(),
+        stdout_spill: state.stdout_spill.clone(),
+        stderr_spill: state.stderr_spill.clone(),
     }
 }
 

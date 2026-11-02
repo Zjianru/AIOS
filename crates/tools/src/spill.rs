@@ -209,6 +209,92 @@ pub fn encode_spill_segment(raw: &str) -> String {
     out
 }
 
+/// 流式 spill 文件：收集子进程输出时边收边写；单流超过整流体上限（DSH maxSpillBytes）
+/// 就丢弃不完整文件并返回 None（照 DSH subprocess：larger stream discards its now-incomplete spill）。
+pub struct SpillFile {
+    file: Option<std::fs::File>,
+    locator: PathBuf,
+    bytes: usize,
+    cap: usize,
+    broken: bool,
+}
+
+impl SpillFile {
+    /// 在会话 spill 目录里新建一个私有 spill 文件（0700 目录、0600 文件、create_new）。
+    pub fn create(store: &SpillStore, name: &str, cap: usize) -> Result<Self, ToolFailure> {
+        let Some(directory) = store.session_dir() else {
+            return Err(ToolFailure::plain(
+                "spill is disabled: no session data directory",
+            ));
+        };
+        if let Err(error) = create_private_dir(&directory) {
+            return Err(ToolFailure::plain(format!(
+                "cannot create spill directory {}: {error}",
+                directory.display()
+            )));
+        }
+        let locator = directory.join(format!(
+            "{}-{}",
+            random_prefix(),
+            encode_spill_segment(name)
+        ));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&locator).map_err(|error| {
+            ToolFailure::plain(format!(
+                "cannot create spill file {}: {error}",
+                locator.display()
+            ))
+        })?;
+        Ok(Self {
+            file: Some(file),
+            locator,
+            bytes: 0,
+            cap,
+            broken: false,
+        })
+    }
+
+    /// 写一段输出；超过整流体上限时丢弃文件（之后不再写）。
+    pub fn write(&mut self, chunk: &[u8]) {
+        if self.broken {
+            return;
+        }
+        if self.bytes + chunk.len() > self.cap {
+            self.broken = true;
+            self.file = None;
+            let _ = fs::remove_file(&self.locator);
+            self.bytes = 0;
+            return;
+        }
+        if let Some(file) = self.file.as_mut() {
+            let _ = file.write_all(chunk);
+            self.bytes += chunk.len();
+        }
+    }
+
+    /// 结束写入：fsync 后返回 locator/字节数；被上限丢弃时返回 None。
+    pub fn finish(mut self) -> Option<SpillRef> {
+        if self.broken {
+            return None;
+        }
+        let file = self.file.take()?;
+        if file.sync_all().is_err() {
+            let _ = fs::remove_file(&self.locator);
+            return None;
+        }
+        Some(SpillRef {
+            locator: self.locator,
+            bytes: self.bytes,
+        })
+    }
+}
+
 /// 一次性清理某个 spill 根下过期的会话文件（照 DSH spill-local cleanup：启动时扫一遍）。
 /// 只处理 session-* 普通目录里的普通文件：mtime 早于 cutoff 的删除，空会话目录删除；
 /// 符号链接、其他目录/文件原样保留；任何 IO 失败都忽略（best-effort）。返回删除的文件数。
