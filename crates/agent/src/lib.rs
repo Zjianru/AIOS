@@ -3,6 +3,7 @@
 //! 机制照 DSH 的 packages/core/agent-loop（strategy 第 1 节）。
 
 mod ask_capability;
+mod assembly;
 mod capabilities;
 mod compaction;
 mod compaction_capability;
@@ -26,6 +27,7 @@ use model::{DeepSeek, Message, Usage, UserMessage};
 use session::{SessionId, SessionStore, TurnEndReason};
 use tools::ToolSet;
 
+pub use assembly::AgentOpenOptions;
 pub use error::AgentError;
 pub use inbox::Delivery;
 pub use instructions::{MAX_CHAIN_BYTES, MAX_SOURCE_BYTES};
