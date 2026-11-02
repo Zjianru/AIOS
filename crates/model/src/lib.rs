@@ -18,6 +18,6 @@ pub use deepseek::{
 };
 pub use error::{ErrorCode, ModelError};
 pub use ir::{
-    BlockType, ContentBlock, Effort, FinishReason, Message, MessageId, MessageSource, Role,
-    StreamChunk, ToolSchema, Usage, UserMessage,
+    BlockType, ContentBlock, Effort, FinishReason, InstructionChange, InstructionChangeAction,
+    Message, MessageId, MessageSource, Role, StreamChunk, ToolSchema, Usage, UserMessage,
 };

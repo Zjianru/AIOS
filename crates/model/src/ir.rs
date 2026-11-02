@@ -67,6 +67,43 @@ pub enum MessageSource {
         )]
         source_command_id: Option<String>,
     },
+    /// 工作区指令注入的 user 消息（DSH agent-instructions 的来源，T006.10）：带类型来源、
+    /// 完整基线 identity 与逐 scope 的 set/replace/remove 变更对象（内容不进 source）。
+    AgentInstructions {
+        form: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        baseline: bool,
+        #[serde(
+            rename = "baselineIdentity",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        baseline_identity: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        changes: Vec<InstructionChange>,
+    },
+}
+
+/// 指令状态的变更动作（DSH AgentInstructionChange.action）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InstructionChangeAction {
+    /// 新加载的文件（基线或更深目录）。
+    Set,
+    /// 文件内容变化后的替换。
+    Replace,
+    /// 文件消失/不再适用后的移除。
+    Remove,
+}
+
+/// 一条指令变更对象（DSH AgentInstructionChange）：逻辑 scope + 展示路径 + 内容 digest。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstructionChange {
+    pub action: InstructionChangeAction,
+    pub scope: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub digest: Option<String>,
 }
 
 /// 一条消息的角色（五种角色照 DSH MessageRoleMap）。
@@ -211,6 +248,26 @@ impl Message {
 
     pub fn user_text(text: impl Into<String>) -> Self {
         Self::user(vec![ContentBlock::text(text)])
+    }
+
+    /// 工作区指令注入消息（source=agent-instructions，T006.10 照 DSH）。
+    pub fn agent_instructions(
+        text: impl Into<String>,
+        baseline: bool,
+        baseline_identity: Option<String>,
+        changes: Vec<InstructionChange>,
+    ) -> Self {
+        Self::with_source(
+            MessageId::generate(),
+            Role::User,
+            vec![ContentBlock::text(text)],
+            MessageSource::AgentInstructions {
+                form: "instructions".to_owned(),
+                baseline,
+                baseline_identity,
+                changes,
+            },
+        )
     }
 
     /// developer 消息（log-only 的工具增删记录；AIOS 还没有生产者）。

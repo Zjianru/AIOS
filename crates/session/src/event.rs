@@ -22,7 +22,9 @@ use crate::SessionId;
 /// v7：新增 job/registered、job/settled 生命周期事件（DSH jobs 的 durable session 记录，
 /// 形状照 docs/subsystems/jobs.zh.md 的 JobRegisteredData/JobSettledData）。旧版本读不了新事件，
 /// 按 spec 升版本、旧版本仍然拒绝（不迁移）。
-pub const FORMAT_VERSION: u64 = 7;
+/// v8：message source 新增 agent-instructions（T006.10 照 DSH：带类型来源、baseline identity、
+/// set/replace/remove 变更对象）；旧版本读不了新 source，按 spec 升版本、旧版本仍拒绝。
+pub const FORMAT_VERSION: u64 = 8;
 
 /// JSONL 第一行的会话 header。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

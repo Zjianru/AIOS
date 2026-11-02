@@ -871,7 +871,11 @@ fn job_lifecycle_events_match_dsh() {
         .unwrap();
 
     let (header, rows) = log_rows(&store);
-    assert_eq!(header["version"], 7, "新事件加入后 FORMAT_VERSION 升到 7");
+    assert_eq!(
+        header["version"],
+        crate::FORMAT_VERSION,
+        "版本断言跟 FORMAT_VERSION 常量（T006.10 后为 8）"
+    );
     assert_eq!(rows.len(), 2);
     assert_envelope(&rows[0]);
     assert_envelope(&rows[1]);

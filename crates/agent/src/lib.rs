@@ -28,6 +28,7 @@ use tools::ToolSet;
 
 pub use error::AgentError;
 pub use inbox::Delivery;
+pub use instructions::{MAX_CHAIN_BYTES, MAX_SOURCE_BYTES};
 
 /// 按 provider/model 覆盖压缩策略（DSH compaction-basic 的 modelPolicies；只覆盖显式给出的字段）。
 #[derive(Debug, Clone, PartialEq)]
