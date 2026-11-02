@@ -376,3 +376,49 @@ async fn usage_absent_is_not_fabricated() {
     );
     assert_eq!(message["message"]["content"][0]["text"], "没有用量");
 }
+
+/// T006.14（DSH llm-deepseek/src/transport.ts:36-37 认 HTTP-date；llm-retry/src/index.ts:224-229
+/// 超过 maxDelay 的 normal 模式不重试）：日期形式的上限也生效。
+#[tokio::test]
+async fn retry_after_http_date_over_cap_is_fatal() {
+    let server = MockServer::start().await;
+    mount_responses(
+        &server,
+        vec![
+            http_error_after(429, "rate_limit_error", "Tue, 01 Jan 2030 00:00:00 GMT"),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ],
+    )
+    .await;
+    let (agent, data_dir, _cwd, id) = setup_agent(&server.uri(), ToolSet::empty()).await;
+    agent
+        .send(
+            UserMessage::text("日期形式的 retry-after"),
+            Delivery::FollowUp,
+        )
+        .await
+        .unwrap();
+    wait_idle(&agent, 10).await;
+
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        1,
+        "HTTP-date 超过 10s 上限：normal 策略不能重试"
+    );
+    let rows = log_rows(data_dir.path(), &id);
+    assert!(events_of(&rows, "llm/retry").is_empty(), "没有排定的重试");
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    let reasons: Vec<TurnEndReason> = store
+        .events()
+        .iter()
+        .filter_map(|event| match &event.kind {
+            session::EventKind::TurnEnd { reason, .. } => Some(reason.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reasons.len(), 1);
+    assert!(
+        matches!(&reasons[0], TurnEndReason::Error { error } if error.code == "RATE_LIMIT"),
+        "本轮以 RATE_LIMIT 收尾：{reasons:?}"
+    );
+}

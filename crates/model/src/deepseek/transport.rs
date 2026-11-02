@@ -154,4 +154,40 @@ mod tests {
         let mapped = transport_error(error);
         assert_eq!(mapped.code, ErrorCode::Transport);
     }
+
+    /// retry-after 数字秒照旧（DSH transport.ts:36-37 的数值分支，允许小数）。
+    #[test]
+    fn retry_after_accepts_numeric_seconds() {
+        assert_eq!(parse_retry_after("2", 0), Some(2_000));
+        assert_eq!(parse_retry_after("0.5", 0), Some(500));
+        assert_eq!(parse_retry_after("60", 0), Some(60_000));
+        assert_eq!(parse_retry_after("0", 0), None, "非正数交回本地退避");
+        assert_eq!(parse_retry_after("-1", 0), None);
+        assert_eq!(parse_retry_after("bogus", 0), None);
+    }
+
+    /// T006.14（DSH transport.ts:36-37 用 Date.parse）：retry-after 也接受 HTTP-date
+    /// 三种形式（RFC 9110 §5.6.7），换算成相对 now 的毫秒；过去时间返回 None。
+    #[test]
+    fn retry_after_accepts_http_date_forms() {
+        // 1994-11-06T08:49:37Z 是 RFC 9110 的示例日期。
+        let epoch_ms = 784_111_777_000u64;
+        let now_ms = epoch_ms - 60_000;
+        for value in [
+            "Sun, 06 Nov 1994 08:49:37 GMT",
+            "Sunday, 06-Nov-94 08:49:37 GMT",
+            "Sun Nov  6 08:49:37 1994",
+        ] {
+            assert_eq!(
+                parse_retry_after(value, now_ms),
+                Some(60_000),
+                "HTTP-date {value} 应换算成 60s"
+            );
+        }
+        assert_eq!(
+            parse_retry_after("Sun, 06 Nov 1994 08:49:37 GMT", epoch_ms + 1_000),
+            None,
+            "过去的日期交回本地退避（DSH 只认 >0 的 provider 延迟）"
+        );
+    }
 }

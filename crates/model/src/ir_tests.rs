@@ -228,3 +228,43 @@ fn five_role_json_shapes() {
     let ok = Message::tool_result("call_0", "ok", false);
     assert!(serde_json::to_value(&ok).unwrap().get("isError").is_none());
 }
+
+/// T006.14：tool-call-delta 的 JSON 照 DSH StreamChunk（types.ts:500）：name 可选、
+/// 参数增量字段名 argumentsDelta。
+#[test]
+fn tool_call_delta_chunk_json_matches_dsh() {
+    let with_name = serde_json::to_value(crate::StreamChunk::ToolCallDelta {
+        index: 2,
+        id: "call_0".to_owned(),
+        name: Some("read".to_owned()),
+        arguments_delta: String::new(),
+    })
+    .unwrap();
+    assert_eq!(
+        with_name,
+        json!({
+            "type": "tool-call-delta",
+            "index": 2,
+            "id": "call_0",
+            "name": "read",
+            "argumentsDelta": ""
+        })
+    );
+    let without_name = serde_json::to_value(crate::StreamChunk::ToolCallDelta {
+        index: 2,
+        id: "call_0".to_owned(),
+        name: None,
+        arguments_delta: "{\"a\":".to_owned(),
+    })
+    .unwrap();
+    assert_eq!(
+        without_name,
+        json!({
+            "type": "tool-call-delta",
+            "index": 2,
+            "id": "call_0",
+            "argumentsDelta": "{\"a\":"
+        }),
+        "没有 name 时不写 name 键"
+    );
+}

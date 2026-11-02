@@ -423,4 +423,66 @@ mod tests {
             "usage 整段缺失时不能伪造 usage 帧：{chunks:?}"
         );
     }
+
+    /// T006.14（DSH translate.ts:82-85,130）：工具参数增量逐帧发 tool-call-delta；
+    /// block-start 时带 id/name、argumentsDelta 为空，之后每段 input_json_delta 一帧。
+    #[test]
+    fn tool_call_deltas_match_dsh() {
+        let mut translator = Translator::new();
+        let mut chunks = push(
+            &mut translator,
+            json!({"type": "message_start", "message": {"usage": {"input_tokens": 1}}}),
+        );
+        chunks.extend(push(
+            &mut translator,
+            json!({"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "call_0", "name": "read", "input": {}}}),
+        ));
+        chunks.extend(push(
+            &mut translator,
+            json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"file\""}}),
+        ));
+        chunks.extend(push(
+            &mut translator,
+            json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "_path\":\"a\"}"}}),
+        ));
+        chunks.extend(push(
+            &mut translator,
+            json!({"type": "content_block_stop", "index": 0}),
+        ));
+        assert_eq!(
+            chunks,
+            vec![
+                StreamChunk::BlockStart {
+                    index: 0,
+                    block_type: BlockType::ToolCall,
+                },
+                StreamChunk::ToolCallDelta {
+                    index: 0,
+                    id: "call_0".to_owned(),
+                    name: Some("read".to_owned()),
+                    arguments_delta: String::new(),
+                },
+                StreamChunk::ToolCallDelta {
+                    index: 0,
+                    id: "call_0".to_owned(),
+                    name: None,
+                    arguments_delta: "{\"file\"".to_owned(),
+                },
+                StreamChunk::ToolCallDelta {
+                    index: 0,
+                    id: "call_0".to_owned(),
+                    name: None,
+                    arguments_delta: "_path\":\"a\"}".to_owned(),
+                },
+                StreamChunk::BlockEnd {
+                    index: 0,
+                    block: ContentBlock::ToolCall {
+                        id: "call_0".to_owned(),
+                        name: "read".to_owned(),
+                        arguments: "{\"file_path\":\"a\"}".to_owned(),
+                    },
+                },
+            ]
+        );
+    }
 }

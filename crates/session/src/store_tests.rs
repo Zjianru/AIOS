@@ -30,15 +30,14 @@ fn append_torn_line(store: &SessionStore) {
 }
 
 #[test]
-fn written_header_uses_format_version_10() {
+fn written_header_uses_format_version_11() {
     let (_data_dir, _cwd, store) = create_store();
     let text = fs::read_to_string(store.path()).unwrap();
     let header: Value =
         serde_json::from_str(text.lines().next().expect("日志有 header 行")).unwrap();
     assert_eq!(
-        header["version"], 10,
-        "question/asked 加 callId、新增 question/answered 与 user-question-reply source 后 \
-         FORMAT_VERSION 升到 10（T006.13）"
+        header["version"], 11,
+        "stream 新增 tool-call-delta 帧与 tool-call-chunks 记录后 FORMAT_VERSION 升到 11（T006.14）"
     );
 }
 
@@ -49,8 +48,8 @@ fn previous_format_versions_are_rejected_without_migration() {
     let path = store.path().to_path_buf();
     drop(store);
 
-    // 手写 v1–v9 日志：header 版本不对 + 旧格式事件；读取一律直接拒绝。
-    for version in [1, 2, 3, 4, 5, 6, 7, 8, 9] {
+    // 手写 v1–v10 日志：header 版本不对 + 旧格式事件；读取一律直接拒绝。
+    for version in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] {
         let legacy = format!(
             "{{\"type\":\"session\",\"version\":{version},\"id\":\"{id}\",\"createdAt\":1,\"cwd\":\"/tmp\"}}\n\
              {{\"seq\":1,\"time\":1,\"type\":\"turn/start\",\"turn\":1}}\n"
@@ -67,7 +66,7 @@ fn previous_format_versions_are_rejected_without_migration() {
                 error,
                 SessionError::UnsupportedVersion {
                     version: got,
-                    supported: 10
+                    supported: 11
                 } if got == version
             ),
             "v{version} 日志要直接拒绝，实际 {error}"
@@ -84,7 +83,7 @@ fn previous_format_versions_are_rejected_without_migration() {
                 read_error,
                 SessionError::UnsupportedVersion {
                     version: got,
-                    supported: 10
+                    supported: 11
                 } if got == version
             ),
             "只读路径同样拒绝 v{version}，实际 {read_error}"

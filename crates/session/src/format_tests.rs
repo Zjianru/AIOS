@@ -980,3 +980,71 @@ fn job_lifecycle_events_match_dsh() {
         "重开日志能读回 job 生命周期事件"
     );
 }
+
+/// T006.14：assistant stream 的 tool-call-delta 帧与 tool-call-chunks 记录照 DSH
+/// （StreamChunk types.ts:500；assistant-stream.ts:35-43）。
+#[test]
+fn tool_call_stream_records_match_dsh() {
+    let (data_dir, _cwd, mut store) = create_store();
+    store
+        .append(&[EventKind::AssistantAttempt {
+            turn: 1,
+            step: 1,
+            stream: vec![
+                AssistantStreamRecord::Chunk {
+                    time: 10,
+                    chunk: StreamChunk::ToolCallDelta {
+                        index: 0,
+                        id: "call_0".to_owned(),
+                        name: Some("read".to_owned()),
+                        arguments_delta: String::new(),
+                    },
+                },
+                AssistantStreamRecord::ToolCallChunks {
+                    time0: 20,
+                    index: 0,
+                    dt: vec![3],
+                    id: "call_0".to_owned(),
+                    name: None,
+                    args: vec!["{\"a\":".to_owned(), "1}".to_owned()],
+                },
+            ],
+        }])
+        .unwrap();
+    let (_header, rows) = log_rows(&store);
+    let stream = rows[0]["data"]["stream"].as_array().expect("stream 数组");
+    assert_eq!(
+        stream[0],
+        json!({
+            "type": "chunk",
+            "time": 10,
+            "chunk": {
+                "type": "tool-call-delta",
+                "index": 0,
+                "id": "call_0",
+                "name": "read",
+                "argumentsDelta": ""
+            }
+        })
+    );
+    assert_eq!(
+        stream[1],
+        json!({
+            "type": "tool-call-chunks",
+            "time0": 20,
+            "index": 0,
+            "dt": [3],
+            "id": "call_0",
+            "args": ["{\"a\":", "1}"]
+        }),
+        "记录形状照 DSH（没有 name 时不写 name 键）"
+    );
+    // 重新打开能读回同样的帧记录。
+    let reopened = SessionStore::open_read_only(data_dir.path(), store.id()).expect("日志可读回");
+    assert_eq!(reopened.events().len(), 1);
+    assert!(matches!(
+        &reopened.events()[0].kind,
+        EventKind::AssistantAttempt { stream, .. }
+            if matches!(stream[1], AssistantStreamRecord::ToolCallChunks { .. })
+    ));
+}

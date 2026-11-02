@@ -10,7 +10,7 @@ use std::path::Path;
 use agent::Delivery;
 use common::{
     FINAL_TEXT_SSE, PARTIAL_TEXT_SSE, ScriptedSseServer, SequenceResponder, SseScript, setup_agent,
-    sse, wait_idle,
+    sse, tool_calls_with_inputs_sse, wait_idle,
 };
 use model::{AssistantStreamRecord, UserMessage, expand_assistant_stream};
 use serde_json::{Value, json};
@@ -403,5 +403,98 @@ async fn truncated_turn_keeps_usage() {
             .as_array()
             .is_some_and(|stream| !stream.is_empty()),
         "截断尝试的流帧也要留下"
+    );
+}
+
+/// T006.14（DSH assistant-stream.ts:35-43,129-166；deepseek/translate.ts:82-85,130）：
+/// 工具参数增量记成 tool-call-chunks run（id/name 从 block-start 带下来），展开后逐帧还原。
+#[tokio::test]
+async fn assistant_message_records_tool_call_delta_chunks() {
+    let server = MockServer::start().await;
+    let tool_call = tool_calls_with_inputs_sse(&[(
+        "call_0",
+        "read",
+        json!({"file_path": "/nonexistent/t006-14"}),
+    )]);
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(tool_call),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+    let (agent, data_dir, _cwd, id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
+    agent
+        .send(UserMessage::text("读一个文件"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    wait_idle(&agent, 10).await;
+
+    let rows = log_rows(data_dir.path(), &id);
+    let first = event_data(&rows, "assistant/message")
+        .into_iter()
+        .find(|data| {
+            data["message"]["content"]
+                .as_array()
+                .is_some_and(|content| {
+                    content
+                        .iter()
+                        .any(|block| block["type"] == "tool-call" && block["id"] == "call_0")
+                })
+        })
+        .expect("第一次尝试的 assistant/message 带 tool_use");
+    let stream = first["stream"].as_array().expect("stream 数组");
+    let runs: Vec<&Value> = stream
+        .iter()
+        .filter(|record| record["type"] == "tool-call-chunks")
+        .collect();
+    assert!(
+        !runs.is_empty(),
+        "工具参数增量要有 tool-call-chunks 记录：{stream:?}"
+    );
+    assert!(
+        runs.iter().all(|run| run["id"] == "call_0"),
+        "run 的 id 是 tool_use 的 id：{runs:?}"
+    );
+    assert_eq!(runs[0]["name"], "read", "首帧带 name（DSH 的起始帧）");
+    let args: String = runs
+        .iter()
+        .flat_map(|run| {
+            run["args"]
+                .as_array()
+                .expect("args 数组")
+                .iter()
+                .map(|arg| arg.as_str().expect("args 是字符串"))
+        })
+        .collect();
+    assert_eq!(
+        args, "{\"file_path\":\"/nonexistent/t006-14\"}",
+        "参数增量拼起来就是 block-end 的完整参数"
+    );
+
+    // 展开记录后逐帧还原 tool-call-delta（首帧 name + 空参数，之后纯增量）。
+    let records: Vec<AssistantStreamRecord> =
+        serde_json::from_value(first["stream"].clone()).expect("stream 可反序列化");
+    let deltas: Vec<(String, Option<String>, String)> = expand_assistant_stream(&records)
+        .into_iter()
+        .filter_map(|timed| match timed.chunk {
+            model::StreamChunk::ToolCallDelta {
+                id,
+                name,
+                arguments_delta,
+                ..
+            } => Some((id, name, arguments_delta)),
+            _ => None,
+        })
+        .collect();
+    assert!(!deltas.is_empty(), "展开要有 tool-call-delta 帧");
+    assert_eq!(deltas[0].1.as_deref(), Some("read"), "起始帧带 name");
+    assert_eq!(
+        deltas
+            .iter()
+            .map(|(_, _, arguments)| arguments.as_str())
+            .collect::<String>(),
+        "{\"file_path\":\"/nonexistent/t006-14\"}"
     );
 }
