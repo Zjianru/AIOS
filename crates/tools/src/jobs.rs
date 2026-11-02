@@ -1,16 +1,17 @@
 //! 后台任务注册表：进程内、按会话隔离（照 DSH jobs/jobs-local 与 jobs/tool-jobs 的最小语义）。
 //!
 //! 每个任务是独立的 bash 子进程：stdout/stderr 由线程流式收集（内存保留尾部 + 完整流落
-//! <data-dir>/jobs/session-<id>/<job>.{out,err}）。T006.9 骨架先定生命周期回调与结算
-//! payload（JobRegistered / JobSettled / JobCause / JobNotifyCallback）的形状；id、游标读、
-//! 完成通知的 DSH 行为在实现提交里改。
+//! <data-dir>/jobs/session-<id>/<job>.{out,err}）。T006.9 照 DSH：
+//! - id 是 `<kind>-<16 位小写十六进制 uuid>`（jobs/jobs/README.zh.md:32）；
+//! - 注册/结算各通知一次生命周期回调（agent 写 job/registered、job/settled 会话事件）；
+//! - 模型读输出按游标推进（DSH registry read），重复读不重复返回；
+//! - 结算额外通知一次"完成通知"回调（await/first-delivery 语义，DSH tool-jobs 的 settled 投递）。
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{Read, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -19,8 +20,6 @@ use crate::ToolFailure;
 use crate::session::SpillStore;
 use crate::spill::SpillFile;
 use tokio::sync::Notify;
-
-static JOB_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 /// 同一会话同时运行的后台任务上限（照 DSH jobs-local 的并发约束；AIOS 先取 10）。
 pub const MAX_RUNNING_JOBS: usize = 10;
@@ -154,6 +153,17 @@ pub struct JobSettled {
     pub detail: Option<String>,
 }
 
+/// 模型游标读的结果（DSH registry read：只返回上次读之后的新输出）。
+#[derive(Debug, Clone)]
+pub struct JobOutputRead {
+    pub view: JobView,
+    pub stdout: String,
+    pub stderr: String,
+    pub lossy: bool,
+    pub stdout_path: PathBuf,
+    pub stderr_path: PathBuf,
+}
+
 /// 前台 bash 的流式 spill 目标（T006.8 照 DSH subprocess spill：完整流边收边写）。
 pub struct JobSpill {
     pub store: SpillStore,
@@ -180,6 +190,11 @@ struct JobState {
     /// 前台 spill 文件的 locator（未开 spill 或超过整流体上限时为 None）。
     stdout_spill: Option<PathBuf>,
     stderr_spill: Option<PathBuf>,
+    /// 绝对总字节数与模型游标（DSH read 语义：只返回上次读之后的新输出）。
+    stdout_total: usize,
+    stderr_total: usize,
+    read_stdout: usize,
+    read_stderr: usize,
 }
 
 struct JobRecord {
@@ -204,8 +219,6 @@ pub struct TaskRegistry {
     session_id: Option<String>,
     on_registered: Mutex<Option<JobRegisteredCallback>>,
     on_settled: Mutex<Option<JobSettledCallback>>,
-    // 骨架只定安装面；完成通知的投递在实现提交里接（当前旧路径仍走 on_settled）。
-    #[allow(dead_code)]
     on_notify: Mutex<Option<JobNotifyCallback>>,
 }
 
@@ -263,6 +276,10 @@ impl TaskRegistry {
 
     fn settled_callback(&self) -> Option<JobSettledCallback> {
         self.on_settled.lock().expect("jobs 回调锁被毒化").clone()
+    }
+
+    fn notify_callback(&self) -> Option<JobNotifyCallback> {
+        self.on_notify.lock().expect("jobs 回调锁被毒化").clone()
     }
 
     fn registered_callback(&self) -> Option<JobRegisteredCallback> {
@@ -325,14 +342,7 @@ impl TaskRegistry {
                 root.display()
             ))
         })?;
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.subsec_nanos());
-        let id = format!(
-            "bash-{}-{nanos}-{}",
-            std::process::id(),
-            JOB_COUNTER.fetch_add(1, Ordering::Relaxed)
-        );
+        let id = format!("bash-{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
         let stdout_path = root.join(format!("{id}.out"));
         let stderr_path = root.join(format!("{id}.err"));
         let mut process = Command::new("bash");
@@ -389,6 +399,10 @@ impl TaskRegistry {
                 notified: false,
                 stdout_spill: None,
                 stderr_spill: None,
+                stdout_total: 0,
+                stderr_total: 0,
+                read_stdout: 0,
+                read_stderr: 0,
             }),
             cond: Condvar::new(),
             tool_call: spec.tool_call.clone(),
@@ -433,6 +447,7 @@ impl TaskRegistry {
             retain_bytes,
         );
         let settled_callback = self.settled_callback();
+        let notify_callback = self.notify_callback();
         let owner = self.session_id.clone();
         let tool_call = spec.tool_call.clone();
         let monitored = Arc::clone(&record);
@@ -468,15 +483,29 @@ impl TaskRegistry {
             }
             let (settled, should_notify) = {
                 let mut state = monitored.state.lock().expect("job 状态锁被毒化");
-                if state.kill_requested {
-                    status = JobStatus::Killed;
-                }
                 state.status = status;
                 state.exit_code = exit_code;
                 state.signal = signal;
                 state.finished_at = Some(now_millis());
                 state.stdout_spill = spills[0].take();
                 state.stderr_spill = spills[1].take();
+                // DSH jobs-local settle：producer 事实在前（exit code / signal），killed 结算再追加
+                // kill reason；已结算出正常状态的任务保留 producer 事实（reason 描述的是没落地的 kill）。
+                let producer_detail = if status == JobStatus::Killed {
+                    signal.map_or_else(
+                        || "killed before exit".to_owned(),
+                        |signal| format!("signal: {signal}"),
+                    )
+                } else {
+                    format!("exit code: {}", exit_code.unwrap_or(0))
+                };
+                let detail = match (status, state.detail.take()) {
+                    (JobStatus::Killed, Some(reason)) => {
+                        format!("{producer_detail}; {reason}")
+                    }
+                    _ => producer_detail,
+                };
+                state.detail = Some(detail.clone());
                 let settled = JobSettled {
                     id: monitored.id.clone(),
                     owner: owner.clone(),
@@ -486,13 +515,13 @@ impl TaskRegistry {
                     tool_call: tool_call.clone(),
                     finished_at: state.finished_at.unwrap_or_else(now_millis),
                     status,
-                    cause: if state.kill_requested {
+                    cause: if status == JobStatus::Killed && state.kill_requested {
                         JobCause::Kill
                     } else {
                         JobCause::Producer
                     },
                     producer_reported: true,
-                    detail: state.detail.clone(),
+                    detail: Some(detail),
                 };
                 let should_notify = !state.awaited && !state.notified;
                 if should_notify {
@@ -502,8 +531,13 @@ impl TaskRegistry {
             };
             monitored.cond.notify_all();
             monitored.notify.notify_waiters();
-            if should_notify && let Some(callback) = &settled_callback {
+            if let Some(callback) = &settled_callback {
                 callback(&settled);
+            }
+            if should_notify {
+                if let Some(callback) = &notify_callback {
+                    callback(&settled);
+                }
             }
         });
         Ok(id)
@@ -615,7 +649,7 @@ impl TaskRegistry {
         let Ok(record) = self.record(id) else {
             return;
         };
-        let settled_callback = self.settled_callback();
+        let notify_callback = self.notify_callback();
         let settled = {
             let mut state = record.state.lock().expect("job 状态锁被毒化");
             state.awaited = false;
@@ -630,7 +664,7 @@ impl TaskRegistry {
                     tool_call: record.tool_call.clone(),
                     finished_at: state.finished_at.unwrap_or_else(now_millis),
                     status: state.status,
-                    cause: if state.kill_requested {
+                    cause: if state.status == JobStatus::Killed && state.kill_requested {
                         JobCause::Kill
                     } else {
                         JobCause::Producer
@@ -642,7 +676,7 @@ impl TaskRegistry {
                 None
             }
         };
-        if let (Some(settled), Some(callback)) = (settled, settled_callback) {
+        if let (Some(settled), Some(callback)) = (settled, notify_callback) {
             callback(&settled);
         }
     }
@@ -693,6 +727,25 @@ impl TaskRegistry {
 
     #[cfg(not(unix))]
     fn signal_group(_record: &Arc<JobRecord>, _signal: &str) {}
+
+    /// 模型游标读（DSH registry read）：只返回上次读之后的新输出并推进游标；落后于环形保留
+    /// 窗口时标记 lossy（调用方提示完整流文件），重复读不会重复返回。
+    pub fn read_output(&self, id: &str) -> Result<JobOutputRead, ToolFailure> {
+        let record = self.record(id)?;
+        let mut state = record.state.lock().expect("job 状态锁被毒化");
+        let read = cursor_read(&record, &state);
+        state.read_stdout = state.stdout_total;
+        state.read_stderr = state.stderr_total;
+        Ok(read)
+    }
+
+    /// 同 `read_output` 但不推进游标：完成通知先看装不装得下，装得下才消耗这次读
+    /// （DSH tool-jobs 的 held read：不内联就不吃掉 job_output 要读的数据）。
+    pub fn peek_output(&self, id: &str) -> Result<JobOutputRead, ToolFailure> {
+        let record = self.record(id)?;
+        let state = record.state.lock().expect("job 状态锁被毒化");
+        Ok(cursor_read(&record, &state))
+    }
 
     fn record(&self, id: &str) -> Result<Arc<JobRecord>, ToolFailure> {
         self.jobs
@@ -773,6 +826,11 @@ fn spawn_reader(
                         spill.write(&buffer[..read]);
                     }
                     let mut state = record.state.lock().expect("job 状态锁被毒化");
+                    if is_stdout {
+                        state.stdout_total += read;
+                    } else {
+                        state.stderr_total += read;
+                    }
                     let target = if is_stdout {
                         &mut state.stdout
                     } else {
@@ -797,6 +855,8 @@ fn spawn_reader(
     });
 }
 
+/// bash 结算照 DSH shell/tool-bash background.ts 的 processOutcome：只有 killed 与 completed 两类
+/// （命令跑了非零退出仍是 completed，退出码进 detail）；没有退出码也没有信号才是基础设施失败。
 fn classify(exit: ExitStatus) -> (JobStatus, Option<i32>, Option<i32>) {
     #[cfg(unix)]
     {
@@ -806,14 +866,17 @@ fn classify(exit: ExitStatus) -> (JobStatus, Option<i32>, Option<i32>) {
         }
     }
     match exit.code() {
-        Some(0) => (JobStatus::Completed, Some(0), None),
-        Some(code) => (JobStatus::Failed, Some(code), None),
+        Some(code) => (JobStatus::Completed, Some(code), None),
         None => (JobStatus::Failed, None, None),
     }
 }
 
 fn view_of(record: &JobRecord) -> JobView {
     let state = record.state.lock().expect("job 状态锁被毒化");
+    view_locked(record, &state)
+}
+
+fn view_locked(record: &JobRecord, state: &JobState) -> JobView {
     JobView {
         id: record.id.clone(),
         kind: record.kind,
@@ -825,6 +888,56 @@ fn view_of(record: &JobRecord) -> JobView {
         finished_at: state.finished_at,
         detail: state.detail.clone(),
     }
+}
+
+/// 从模型游标取一次增量（不推进游标；`read_output` 负责推进，`peek_output` 只看）。
+fn cursor_read(record: &JobRecord, state: &JobState) -> JobOutputRead {
+    let stdout_start = state.stdout_total.saturating_sub(state.stdout.len());
+    let stderr_start = state.stderr_total.saturating_sub(state.stderr.len());
+    // 游标落后于内存保留窗口：前面的字节已被淘汰，这次读从窗口起点开始并标记 lossy。
+    let lossy = state.read_stdout < stdout_start || state.read_stderr < stderr_start;
+    let stdout_from = state.read_stdout.max(stdout_start);
+    let stderr_from = state.read_stderr.max(stderr_start);
+    let stdout = String::from_utf8_lossy(
+        &state.stdout[stdout_from - stdout_start..state.stdout_total - stdout_start],
+    )
+    .into_owned();
+    let stderr = String::from_utf8_lossy(
+        &state.stderr[stderr_from - stderr_start..state.stderr_total - stderr_start],
+    )
+    .into_owned();
+    JobOutputRead {
+        view: view_locked(record, state),
+        stdout,
+        stderr,
+        lossy,
+        stdout_path: record.stdout_path.clone(),
+        stderr_path: record.stderr_path.clone(),
+    }
+}
+
+/// 把一次游标读渲染成模型可见增量（照 DSH tool-jobs renderModelDelta）：stdout 与无标记块按序，
+/// 然后 stderr 收进一个 `[stderr]` 段；游标落后被淘汰时以丢输出提示收尾并给出完整流文件。
+pub fn render_model_delta(read: &JobOutputRead) -> String {
+    let mut body = read.stdout.clone();
+    if !read.stderr.is_empty() {
+        if !body.is_empty() && !body.ends_with('\n') {
+            body.push('\n');
+        }
+        body.push_str("[stderr]\n");
+        body.push_str(&read.stderr);
+    }
+    if read.lossy {
+        if !body.is_empty() && !body.ends_with('\n') {
+            body.push('\n');
+        }
+        body.push_str(&format!(
+            "[some output was dropped from memory; full output: {}, {}]",
+            read.stdout_path.display(),
+            read.stderr_path.display()
+        ));
+    }
+    body
 }
 
 fn read_of(record: &JobRecord) -> JobRead {

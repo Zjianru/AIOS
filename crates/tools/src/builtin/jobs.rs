@@ -63,6 +63,13 @@ fn stream_text(text: &str, dropped: bool, path: impl std::fmt::Display) -> Strin
     format!("{text}\n[some output was dropped from memory; full output: {path}]")
 }
 
+fn status_line_detail(view: &crate::jobs::JobView) -> String {
+    view.detail.as_ref().map_or_else(
+        || status_line(view.status),
+        |detail| format!("[status: {}, {detail}]", view.status.as_str()),
+    )
+}
+
 fn status_line(status: JobStatus) -> String {
     format!("[status: {}]", status.as_str())
 }
@@ -144,18 +151,18 @@ async fn job_output(arguments: &str, context: &ToolContext) -> Result<String, To
             (timeout as u64).min(MAX_WAIT_MS)
         }
     };
-    let read = if wait {
-        registry(context)
+    let registry = registry(context);
+    if wait {
+        registry
             .wait_async(id, Duration::from_millis(timeout_ms))
-            .await?
-    } else {
-        registry(context).output(id)?
-    };
-    Ok(format!(
-        "{}\n{}",
-        body_of(&read),
-        status_line(read.view.status)
-    ))
+            .await?;
+    }
+    let read = registry.read_output(id)?;
+    let mut body = crate::render_model_delta(&read);
+    if body.is_empty() {
+        body = "(no new output)".to_owned();
+    }
+    Ok(format!("{body}\n{}", status_line_detail(&read.view)))
 }
 
 /// job_list：列出本会话的后台任务。
