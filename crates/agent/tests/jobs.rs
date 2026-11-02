@@ -309,7 +309,10 @@ async fn foreground_bash_records_job_lifecycle_events() {
         );
         tokio::task::yield_now().await;
     };
-    assert!(registered.seq < settled.seq, "job/registered 先于 job/settled");
+    assert!(
+        registered.seq < settled.seq,
+        "job/registered 先于 job/settled"
+    );
     let session::EventKind::JobRegistered {
         job_id,
         owner,
@@ -483,5 +486,8 @@ async fn background_job_completion_notice_reports_no_new_output() {
     let expected = format!(
         "background job {job_id} (bash: while [ ! -f go ]; do :; done) finished [status: completed, exit code: 0]. No new output."
     );
-    assert!(last.contains(&expected), "空输出通知缺 {expected:?} 在 {last}");
+    assert!(
+        last.contains(&expected),
+        "空输出通知缺 {expected:?} 在 {last}"
+    );
 }

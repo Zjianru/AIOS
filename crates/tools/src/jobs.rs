@@ -534,10 +534,8 @@ impl TaskRegistry {
             if let Some(callback) = &settled_callback {
                 callback(&settled);
             }
-            if should_notify {
-                if let Some(callback) = &notify_callback {
-                    callback(&settled);
-                }
+            if should_notify && let Some(callback) = &notify_callback {
+                callback(&settled);
             }
         });
         Ok(id)

@@ -286,12 +286,11 @@ async fn job_output_wait_timeout_does_not_suppress_completion_notification() {
     let data_dir = tempfile::tempdir().unwrap();
     let context = session_context(dir.path(), data_dir.path(), "sess-1");
     let (sender, receiver) = mpsc::channel::<String>();
-    context
-        .session()
-        .tasks()
-        .set_on_notify(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+    context.session().tasks().set_on_notify(std::sync::Arc::new(
+        move |settled: &tools::JobSettled| {
             let _ = sender.send(settled.id.clone());
-        }));
+        },
+    ));
 
     let started = bash(
         json!({"description": "test command", "command": "while [ ! -f go ]; do :; done; printf 'done\n'", "run_in_background": true}),
@@ -331,12 +330,11 @@ async fn foreground_fast_command_does_not_notify() {
     let data_dir = tempfile::tempdir().unwrap();
     let context = session_context(dir.path(), data_dir.path(), "sess-1");
     let (sender, receiver) = mpsc::channel::<String>();
-    context
-        .session()
-        .tasks()
-        .set_on_notify(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+    context.session().tasks().set_on_notify(std::sync::Arc::new(
+        move |settled: &tools::JobSettled| {
             let _ = sender.send(settled.id.clone());
-        }));
+        },
+    ));
 
     let result = bash(
         json!({"description": "test command", "command": "printf 'fast\n'"}),
@@ -361,12 +359,11 @@ async fn promoted_timeout_job_completion_notifies() {
     let data_dir = tempfile::tempdir().unwrap();
     let context = session_context(dir.path(), data_dir.path(), "sess-1");
     let (sender, receiver) = mpsc::channel::<String>();
-    context
-        .session()
-        .tasks()
-        .set_on_notify(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+    context.session().tasks().set_on_notify(std::sync::Arc::new(
+        move |settled: &tools::JobSettled| {
             let _ = sender.send(settled.id.clone());
-        }));
+        },
+    ));
 
     let result = bash(
         json!({"description": "test command", "command": "while [ ! -f go ]; do :; done; printf 'done\n'", "timeoutMs": 100}),
@@ -495,12 +492,11 @@ async fn foreground_fast_settlement_without_wait_does_not_notify() {
     let data_dir = tempfile::tempdir().unwrap();
     let context = session_context(dir.path(), data_dir.path(), "sess-1");
     let (sender, receiver) = mpsc::channel::<String>();
-    context
-        .session()
-        .tasks()
-        .set_on_notify(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+    context.session().tasks().set_on_notify(std::sync::Arc::new(
+        move |settled: &tools::JobSettled| {
             let _ = sender.send(settled.id.clone());
-        }));
+        },
+    ));
 
     let job_id = context
         .session()
@@ -549,12 +545,11 @@ async fn promote_after_settlement_still_notifies() {
                 .expect("结算记录锁被毒化")
                 .push(settled.id.clone());
         }));
-    context
-        .session()
-        .tasks()
-        .set_on_notify(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+    context.session().tasks().set_on_notify(std::sync::Arc::new(
+        move |settled: &tools::JobSettled| {
             let _ = sender.send(settled.id.clone());
-        }));
+        },
+    ));
 
     let job_id = context
         .session()
@@ -779,10 +774,7 @@ async fn job_output_reads_model_cursor_once() {
 async fn wait_until(mut predicate: impl FnMut() -> bool) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !predicate() {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "条件没有在 5s 内成立"
-        );
+        assert!(std::time::Instant::now() < deadline, "条件没有在 5s 内成立");
         tokio::task::yield_now().await;
     }
 }
@@ -800,11 +792,13 @@ async fn registered_callback_reports_dsh_registration() {
     context
         .session()
         .tasks()
-        .set_on_registered(std::sync::Arc::new(move |registered: &tools::JobRegistered| {
-            sink.lock()
-                .expect("注册记录锁被毒化")
-                .push(registered.clone());
-        }));
+        .set_on_registered(std::sync::Arc::new(
+            move |registered: &tools::JobRegistered| {
+                sink.lock()
+                    .expect("注册记录锁被毒化")
+                    .push(registered.clone());
+            },
+        ));
 
     let started = bash(
         json!({"description": "id check", "command": "printf x", "run_in_background": true}),
@@ -823,7 +817,10 @@ async fn registered_callback_reports_dsh_registration() {
     assert_eq!(record.kind, "bash");
     assert_eq!(record.label, "printf x", "label 是命令首行");
     assert!(record.started_at > 0);
-    let tool_call = record.tool_call.as_ref().expect("DSH job/registered 的 toolCall");
+    let tool_call = record
+        .tool_call
+        .as_ref()
+        .expect("DSH job/registered 的 toolCall");
     assert_eq!(tool_call.call_id, "call_1");
     assert_eq!(tool_call.root_call_id, "call_1");
 
@@ -852,17 +849,14 @@ async fn settled_callback_records_foreground_settlement_without_notice() {
         .session()
         .tasks()
         .set_on_settled(std::sync::Arc::new(move |settled: &tools::JobSettled| {
-            sink.lock()
-                .expect("结算记录锁被毒化")
-                .push(settled.clone());
+            sink.lock().expect("结算记录锁被毒化").push(settled.clone());
         }));
     let (notified_sender, notified_receiver) = std::sync::mpsc::channel::<String>();
-    context
-        .session()
-        .tasks()
-        .set_on_notify(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+    context.session().tasks().set_on_notify(std::sync::Arc::new(
+        move |settled: &tools::JobSettled| {
             let _ = notified_sender.send(settled.id.clone());
-        }));
+        },
+    ));
 
     let result = bash(
         json!({"description": "test command", "command": "printf 'fast\n'"}),
@@ -901,36 +895,34 @@ async fn background_settlement_records_then_notifies_in_order() {
     context
         .session()
         .tasks()
-        .set_on_registered(std::sync::Arc::new(move |registered: &tools::JobRegistered| {
-            registered_sink
-                .lock()
-                .expect("生命周期锁被毒化")
-                .push(format!("registered:{}", registered.id));
-        }));
+        .set_on_registered(std::sync::Arc::new(
+            move |registered: &tools::JobRegistered| {
+                registered_sink
+                    .lock()
+                    .expect("生命周期锁被毒化")
+                    .push(format!("registered:{}", registered.id));
+            },
+        ));
     let settled_sink = std::sync::Arc::clone(&events);
     context
         .session()
         .tasks()
         .set_on_settled(std::sync::Arc::new(move |settled: &tools::JobSettled| {
-            settled_sink
-                .lock()
-                .expect("生命周期锁被毒化")
-                .push(format!(
-                    "settled:{}:{}",
-                    settled.id,
-                    settled.status.as_str()
-                ));
+            settled_sink.lock().expect("生命周期锁被毒化").push(format!(
+                "settled:{}:{}",
+                settled.id,
+                settled.status.as_str()
+            ));
         }));
     let notify_sink = std::sync::Arc::clone(&events);
-    context
-        .session()
-        .tasks()
-        .set_on_notify(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+    context.session().tasks().set_on_notify(std::sync::Arc::new(
+        move |settled: &tools::JobSettled| {
             notify_sink
                 .lock()
                 .expect("生命周期锁被毒化")
                 .push(format!("notify:{}", settled.id));
-        }));
+        },
+    ));
 
     let started = bash(
         json!({"description": "quick", "command": "printf 'bye\n'", "run_in_background": true}),
@@ -1005,4 +997,3 @@ async fn non_zero_exit_is_completed_with_exit_code_detail() {
         output.content
     );
 }
-

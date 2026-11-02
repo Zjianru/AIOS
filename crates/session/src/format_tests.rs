@@ -914,7 +914,11 @@ fn job_lifecycle_events_match_dsh() {
     );
     // 重新打开校验：新版本事件可读回。
     let reopened = SessionStore::open_read_only(
-        store.path().parent().and_then(|path| path.parent()).unwrap(),
+        store
+            .path()
+            .parent()
+            .and_then(|path| path.parent())
+            .unwrap(),
         store.id(),
     )
     .unwrap();
@@ -931,4 +935,3 @@ fn job_lifecycle_events_match_dsh() {
         "重开日志能读回 job 生命周期事件"
     );
 }
-
