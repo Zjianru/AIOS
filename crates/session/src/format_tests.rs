@@ -10,8 +10,8 @@ use model::{AssistantStreamRecord, ContentBlock, Message, Role, StreamChunk, Usa
 use serde_json::{Value, json};
 
 use crate::{
-    AbortCause, EventKind, InboxOutcome, InboxTarget, LlmFailure, RetryId, RetryMode, SessionStore,
-    ShadowedRange, TodoItem, TodoStatus, ToolError, TurnEndReason,
+    AbortCause, EventKind, InboxOutcome, InboxTarget, JobToolCallData, LlmFailure, RetryId,
+    RetryMode, SessionStore, ShadowedRange, TodoItem, TodoStatus, ToolError, TurnEndReason,
 };
 
 fn create_store() -> (tempfile::TempDir, tempfile::TempDir, SessionStore) {
@@ -834,3 +834,101 @@ fn compaction_prune_matches_dsh() {
         "派生读替换消息"
     );
 }
+
+/// T006.9：job/registered、job/settled 照 DSH SessionEventMap 的 JobRegisteredData /
+/// JobSettledData（docs/subsystems/jobs.zh.md），FORMAT_VERSION 升到 7；派生视图忽略它们。
+#[test]
+fn job_lifecycle_events_match_dsh() {
+    let (_data_dir, _cwd, mut store) = create_store();
+    let tool_call = JobToolCallData {
+        call_id: "call_0".to_owned(),
+        root_call_id: "call_0".to_owned(),
+    };
+    store
+        .append(&[
+            EventKind::JobRegistered {
+                job_id: "bash-0123456789abcdef".to_owned(),
+                owner: Some("sess-1".to_owned()),
+                kind: "bash".to_owned(),
+                label: "echo hi".to_owned(),
+                started_at: 100,
+                tool_call: Some(tool_call.clone()),
+            },
+            EventKind::JobSettled {
+                job_id: "bash-0123456789abcdef".to_owned(),
+                owner: Some("sess-1".to_owned()),
+                kind: "bash".to_owned(),
+                label: "echo hi".to_owned(),
+                started_at: 100,
+                tool_call: Some(tool_call),
+                finished_at: 200,
+                status: "completed".to_owned(),
+                cause: "producer".to_owned(),
+                producer_reported: true,
+                detail: Some("exit code: 0".to_owned()),
+            },
+        ])
+        .unwrap();
+
+    let (header, rows) = log_rows(&store);
+    assert_eq!(header["version"], 7, "新事件加入后 FORMAT_VERSION 升到 7");
+    assert_eq!(rows.len(), 2);
+    assert_envelope(&rows[0]);
+    assert_envelope(&rows[1]);
+    assert_eq!(rows[0]["type"], "job/registered");
+    assert_eq!(
+        rows[0]["data"],
+        json!({
+            "jobId": "bash-0123456789abcdef",
+            "owner": "sess-1",
+            "kind": "bash",
+            "label": "echo hi",
+            "startedAt": 100,
+            "toolCall": {"callId": "call_0", "rootCallId": "call_0"},
+        }),
+        "job/registered data 照 DSH JobRegisteredData"
+    );
+    assert_eq!(rows[1]["type"], "job/settled");
+    assert_eq!(
+        rows[1]["data"],
+        json!({
+            "jobId": "bash-0123456789abcdef",
+            "owner": "sess-1",
+            "kind": "bash",
+            "label": "echo hi",
+            "startedAt": 100,
+            "toolCall": {"callId": "call_0", "rootCallId": "call_0"},
+            "finishedAt": 200,
+            "status": "completed",
+            "cause": "producer",
+            "producerReported": true,
+            "detail": "exit code: 0",
+        }),
+        "job/settled data = 注册字段 + 结算字段（DSH JobSettledData）"
+    );
+
+    // 生命周期事件只是日志记录，不进派生消息（DSH：recordSessionEvent 不改对话）。
+    assert!(
+        crate::derive::derive_messages(store.events()).is_empty(),
+        "job 生命周期事件不进派生视图"
+    );
+    // 重新打开校验：新版本事件可读回。
+    let reopened = SessionStore::open_read_only(
+        store.path().parent().and_then(|path| path.parent()).unwrap(),
+        store.id(),
+    )
+    .unwrap();
+    assert_eq!(
+        reopened
+            .events()
+            .iter()
+            .filter(|event| matches!(
+                event.kind,
+                EventKind::JobRegistered { .. } | EventKind::JobSettled { .. }
+            ))
+            .count(),
+        2,
+        "重开日志能读回 job 生命周期事件"
+    );
+}
+

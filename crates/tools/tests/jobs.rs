@@ -86,7 +86,7 @@ async fn bash_run_in_background_returns_job_id_and_output_is_readable() {
     assert!(output.content.contains("hello"), "{}", output.content);
     assert!(output.content.contains("bye"), "{}", output.content);
     assert!(
-        output.content.contains("[status: completed]"),
+        output.content.contains("[status: completed, exit code: 0]"),
         "{}",
         output.content
     );
@@ -289,7 +289,7 @@ async fn job_output_wait_timeout_does_not_suppress_completion_notification() {
     context
         .session()
         .tasks()
-        .set_on_settled(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+        .set_on_notify(std::sync::Arc::new(move |settled: &tools::JobSettled| {
             let _ = sender.send(settled.id.clone());
         }));
 
@@ -334,7 +334,7 @@ async fn foreground_fast_command_does_not_notify() {
     context
         .session()
         .tasks()
-        .set_on_settled(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+        .set_on_notify(std::sync::Arc::new(move |settled: &tools::JobSettled| {
             let _ = sender.send(settled.id.clone());
         }));
 
@@ -364,7 +364,7 @@ async fn promoted_timeout_job_completion_notifies() {
     context
         .session()
         .tasks()
-        .set_on_settled(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+        .set_on_notify(std::sync::Arc::new(move |settled: &tools::JobSettled| {
             let _ = sender.send(settled.id.clone());
         }));
 
@@ -498,7 +498,7 @@ async fn foreground_fast_settlement_without_wait_does_not_notify() {
     context
         .session()
         .tasks()
-        .set_on_settled(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+        .set_on_notify(std::sync::Arc::new(move |settled: &tools::JobSettled| {
             let _ = sender.send(settled.id.clone());
         }));
 
@@ -530,16 +530,29 @@ async fn foreground_fast_settlement_without_wait_does_not_notify() {
 async fn promote_after_settlement_still_notifies() {
     // 构造 fix-now 1 的竞态：wait 超时返回 running 之后、promote 之前任务已结算。
     // 旧语义：wait 置 awaited=true，unawait 只清零不补发 → 通知永久丢。
+    // T006.9：结算照旧写生命周期回调一次；promote 只补完成通知，不重复结算。
+    use std::sync::Mutex;
     use std::sync::mpsc;
     use std::time::Duration as StdDuration;
     let dir = tempfile::tempdir().unwrap();
     let data_dir = tempfile::tempdir().unwrap();
     let context = session_context(dir.path(), data_dir.path(), "sess-1");
     let (sender, receiver) = mpsc::channel::<String>();
+    let settled_records = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+    let settled_sink = std::sync::Arc::clone(&settled_records);
     context
         .session()
         .tasks()
         .set_on_settled(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+            settled_sink
+                .lock()
+                .expect("结算记录锁被毒化")
+                .push(settled.id.clone());
+        }));
+    context
+        .session()
+        .tasks()
+        .set_on_notify(std::sync::Arc::new(move |settled: &tools::JobSettled| {
             let _ = sender.send(settled.id.clone());
         }));
 
@@ -569,6 +582,11 @@ async fn promote_after_settlement_still_notifies() {
     context.session().tasks().promote(&job_id);
     let fired = receiver.recv_timeout(StdDuration::from_secs(1));
     assert!(fired.is_ok(), "结算与 promote 之间的完成通知被吞掉了");
+    assert_eq!(
+        settled_records.lock().expect("结算记录锁被毒化").len(),
+        1,
+        "promote 只补通知，不重复写结算生命周期记录"
+    );
 }
 
 #[tokio::test]
@@ -673,11 +691,318 @@ async fn job_kill_grace_lets_sigterm_handler_run() {
         elapsed < Duration::from_millis(2_500),
         "SIGTERM handler 正常退出，不该等满 grace：{elapsed:?}"
     );
+    // 照 DSH shell/tool-bash 的 processOutcome：SIGTERM handler 自己 exit 0 就是 completed
+    // （kill 没落地，detail 记 producer 的 exit code）；grace 期间输出照样收。
     let read = registry.output(&job_id).unwrap();
-    assert_eq!(read.view.status, tools::JobStatus::Killed, "{read:?}");
+    assert_eq!(read.view.status, tools::JobStatus::Completed, "{read:?}");
+    assert_eq!(read.view.detail.as_deref(), Some("exit code: 0"));
     assert!(
         read.stdout.contains("got-term"),
         "SIGTERM handler 的 grace 输出应被收：{}",
         read.stdout
     );
 }
+
+#[tokio::test]
+async fn job_id_matches_dsh_kind_short_uuid() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path(), "sess-1");
+    let started = bash(
+        json!({"description": "id check", "command": "printf x", "run_in_background": true}),
+        &context,
+    )
+    .await;
+    let id = extract_job_id(&started.content);
+    let suffix = id.strip_prefix("bash-").expect("bash- 前缀（kind）");
+    assert_eq!(suffix.len(), 16, "DSH 用 UUID 的 16 位小写十六进制：{id}");
+    assert!(
+        suffix
+            .chars()
+            .all(|character| character.is_ascii_digit() || ('a'..='f').contains(&character)),
+        "{id}"
+    );
+    let _ = run(&JobKillTool::new(), json!({"job_id": id}), &context).await;
+}
+
+#[tokio::test]
+async fn job_output_reads_model_cursor_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path(), "sess-1");
+    let started = bash(
+        json!({
+            "description": "two bursts",
+            "command": "printf 'first\n'; while [ ! -f go ]; do sleep 0.01; done; printf 'second\n'",
+            "run_in_background": true
+        }),
+        &context,
+    )
+    .await;
+    let job_id = extract_job_id(&started.content);
+    let mut first = String::new();
+    for _ in 0..100 {
+        let out = run(&JobOutputTool::new(), json!({"job_id": job_id}), &context).await;
+        if out.content.contains("first") {
+            first = out.content;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(first.contains("first"), "第一次游标读拿到 first：{first}");
+    std::fs::write(dir.path().join("go"), "go").unwrap();
+    let out = run(
+        &JobOutputTool::new(),
+        json!({"job_id": job_id, "wait": true, "timeout_ms": 5000}),
+        &context,
+    )
+    .await;
+    assert!(
+        out.content.contains("second"),
+        "续读拿到 second：{}",
+        out.content
+    );
+    assert!(
+        !out.content.contains("first"),
+        "游标读不重复返回旧输出：{}",
+        out.content
+    );
+    let out = run(&JobOutputTool::new(), json!({"job_id": job_id}), &context).await;
+    assert!(
+        out.content.contains("(no new output)"),
+        "再读没有新输出：{}",
+        out.content
+    );
+}
+
+/// 轮询直到条件成立（受控时序用；不靠固定 sleep）。
+async fn wait_until(mut predicate: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !predicate() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "条件没有在 5s 内成立"
+        );
+        tokio::task::yield_now().await;
+    }
+}
+
+/// T006.9 照 DSH jobs-local：注册回调带 jobId/owner/kind/label/startedAt/toolCall，
+/// 前台命令（有 registry 时也注册）同样记一条。
+#[tokio::test]
+async fn registered_callback_reports_dsh_registration() {
+    use std::sync::Mutex;
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path(), "sess-1");
+    let records = std::sync::Arc::new(Mutex::new(Vec::<tools::JobRegistered>::new()));
+    let sink = std::sync::Arc::clone(&records);
+    context
+        .session()
+        .tasks()
+        .set_on_registered(std::sync::Arc::new(move |registered: &tools::JobRegistered| {
+            sink.lock()
+                .expect("注册记录锁被毒化")
+                .push(registered.clone());
+        }));
+
+    let started = bash(
+        json!({"description": "id check", "command": "printf x", "run_in_background": true}),
+        &context,
+    )
+    .await;
+    assert!(!started.is_error, "{}", started.content);
+    let job_id = extract_job_id(&started.content);
+    wait_until(|| records.lock().expect("注册记录锁被毒化").len() == 1).await;
+    let record = {
+        let records = records.lock().expect("注册记录锁被毒化");
+        records[0].clone()
+    };
+    assert_eq!(record.id, job_id);
+    assert_eq!(record.owner.as_deref(), Some("sess-1"), "owner 是会话 id");
+    assert_eq!(record.kind, "bash");
+    assert_eq!(record.label, "printf x", "label 是命令首行");
+    assert!(record.started_at > 0);
+    let tool_call = record.tool_call.as_ref().expect("DSH job/registered 的 toolCall");
+    assert_eq!(tool_call.call_id, "call_1");
+    assert_eq!(tool_call.root_call_id, "call_1");
+
+    // 前台命令在 registry 组合下也注册（照 DSH tool-bash：每次调用都登记）。
+    let foreground = bash(
+        json!({"description": "fg check", "command": "printf y"}),
+        &context,
+    )
+    .await;
+    assert!(!foreground.is_error, "{}", foreground.content);
+    wait_until(|| records.lock().expect("注册记录锁被毒化").len() == 2).await;
+}
+
+/// T006.9 照 DSH jobs-local：结算回调每次结算都记一条（前台被等到的结算也记），
+/// 完成通知只发给没有被调用方收走的结算。
+#[tokio::test]
+async fn settled_callback_records_foreground_settlement_without_notice() {
+    use std::sync::Mutex;
+    use std::time::Duration as StdDuration;
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path(), "sess-1");
+    let records = std::sync::Arc::new(Mutex::new(Vec::<tools::JobSettled>::new()));
+    let sink = std::sync::Arc::clone(&records);
+    context
+        .session()
+        .tasks()
+        .set_on_settled(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+            sink.lock()
+                .expect("结算记录锁被毒化")
+                .push(settled.clone());
+        }));
+    let (notified_sender, notified_receiver) = std::sync::mpsc::channel::<String>();
+    context
+        .session()
+        .tasks()
+        .set_on_notify(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+            let _ = notified_sender.send(settled.id.clone());
+        }));
+
+    let result = bash(
+        json!({"description": "test command", "command": "printf 'fast\n'"}),
+        &context,
+    )
+    .await;
+    assert!(!result.is_error, "{}", result.content);
+    assert_eq!(result.content, "fast\n");
+    wait_until(|| records.lock().expect("结算记录锁被毒化").len() == 1).await;
+    let settled = { records.lock().expect("结算记录锁被毒化")[0].clone() };
+    assert_eq!(settled.status, tools::JobStatus::Completed);
+    assert_eq!(settled.cause, tools::JobCause::Producer);
+    assert!(settled.producer_reported, "bash 进程退出就是 producer 报告");
+    assert_eq!(
+        settled.detail.as_deref(),
+        Some("exit code: 0"),
+        "DSH processOutcome 的 completed detail"
+    );
+    assert!(
+        notified_receiver
+            .recv_timeout(StdDuration::from_millis(200))
+            .is_err(),
+        "前台已被等到的结算不发完成通知"
+    );
+}
+
+/// T006.9：后台结算按「注册 → 结算 → 通知」各一次，顺序由同一条回调链保证。
+#[tokio::test]
+async fn background_settlement_records_then_notifies_in_order() {
+    use std::sync::Mutex;
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path(), "sess-1");
+    let events = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
+    let registered_sink = std::sync::Arc::clone(&events);
+    context
+        .session()
+        .tasks()
+        .set_on_registered(std::sync::Arc::new(move |registered: &tools::JobRegistered| {
+            registered_sink
+                .lock()
+                .expect("生命周期锁被毒化")
+                .push(format!("registered:{}", registered.id));
+        }));
+    let settled_sink = std::sync::Arc::clone(&events);
+    context
+        .session()
+        .tasks()
+        .set_on_settled(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+            settled_sink
+                .lock()
+                .expect("生命周期锁被毒化")
+                .push(format!(
+                    "settled:{}:{}",
+                    settled.id,
+                    settled.status.as_str()
+                ));
+        }));
+    let notify_sink = std::sync::Arc::clone(&events);
+    context
+        .session()
+        .tasks()
+        .set_on_notify(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+            notify_sink
+                .lock()
+                .expect("生命周期锁被毒化")
+                .push(format!("notify:{}", settled.id));
+        }));
+
+    let started = bash(
+        json!({"description": "quick", "command": "printf 'bye\n'", "run_in_background": true}),
+        &context,
+    )
+    .await;
+    let job_id = extract_job_id(&started.content);
+    wait_until(|| events.lock().expect("生命周期锁被毒化").len() == 3).await;
+    let events = events.lock().expect("生命周期锁被毒化").clone();
+    assert_eq!(
+        events,
+        vec![
+            format!("registered:{job_id}"),
+            format!("settled:{job_id}:completed"),
+            format!("notify:{job_id}"),
+        ],
+        "注册/结算/通知各一次且按序"
+    );
+}
+
+/// T006.9：job_output 按 DSH renderModelDelta 渲染 stderr 段，状态行带 detail。
+#[tokio::test]
+async fn job_output_renders_stderr_section_and_status_detail() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path(), "sess-1");
+    let started = bash(
+        json!({
+            "description": "two streams",
+            "command": "printf 'out'; printf 'err' >&2",
+            "run_in_background": true
+        }),
+        &context,
+    )
+    .await;
+    let job_id = extract_job_id(&started.content);
+    let output = run(
+        &JobOutputTool::new(),
+        json!({"job_id": job_id, "wait": true, "timeout_ms": 5000}),
+        &context,
+    )
+    .await;
+    assert!(!output.is_error, "{}", output.content);
+    assert_eq!(
+        output.content, "out\n[stderr]\nerr\n[status: completed, exit code: 0]",
+        "stdout 后一个 [stderr] 段（DSH renderModelDelta）"
+    );
+}
+
+/// T006.9：bash 非零退出照 DSH processOutcome 仍是 completed，退出码进 detail。
+#[tokio::test]
+async fn non_zero_exit_is_completed_with_exit_code_detail() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path(), "sess-1");
+    let started = bash(
+        json!({"description": "fails", "command": "exit 3", "run_in_background": true}),
+        &context,
+    )
+    .await;
+    let job_id = extract_job_id(&started.content);
+    let output = run(
+        &JobOutputTool::new(),
+        json!({"job_id": job_id, "wait": true, "timeout_ms": 5000}),
+        &context,
+    )
+    .await;
+    assert!(!output.is_error, "{}", output.content);
+    assert!(
+        output.content.contains("[status: completed, exit code: 3]"),
+        "DSH 把命令退出码记在 completed 的 detail 里：{}",
+        output.content
+    );
+}
+
