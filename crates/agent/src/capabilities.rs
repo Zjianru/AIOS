@@ -322,7 +322,8 @@ const JOBS_HOOKS: &[HookPoint] = &[HookPoint::Status];
 /// per-Agent 能力状态包（T006.1e：状态由能力模块持有，driver 只装配一次）。
 pub(crate) struct CapabilityStates {
     pub ask: Arc<AskState>,
-    pub instructions: Arc<Mutex<InstructionState>>,
+    /// T006.10：prepare 异步读指令文件，状态用 tokio Mutex 以便持锁跨 await。
+    pub instructions: Arc<tokio::sync::Mutex<InstructionState>>,
     pub skill_catalog: Arc<Mutex<SkillCatalogState>>,
     pub reminder_chain: Arc<Mutex<Option<(String, usize)>>>,
     pub compaction_waiters: Arc<Mutex<Vec<ManualCompaction>>>,

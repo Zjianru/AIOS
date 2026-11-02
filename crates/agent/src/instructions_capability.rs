@@ -1,16 +1,18 @@
-//! 指令能力（T006.1c）：AGENTS.md / CLAUDE.md 注入挂 PreStep。
+//! 指令能力（T006.1c/T006.10）：AGENTS.md / CLAUDE.md 注入挂 PreStep。
 //!
-//! 行为照 T005.5：第一次请求带基线；之后仅在发现更深目录或文件变化时追加刷新消息。
+//! 行为照 DSH context/agent-instructions：第一次请求带完整基线（带类型来源 + baseline
+//! identity）；之后对账出 set/replace/remove 变更再追加；文件读取异步（tokio::fs）。
 //! 手动 /compact 的 PreStep（trigger=Some(Manual)）跳过，避免手动压缩顺带注入指令。
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use tokio::sync::Mutex;
 
 use crate::capabilities::{
     Capability, HookEvent, HookFuture, HookOutcome, HookPoint, PreStepPhase,
 };
 use crate::instructions::InstructionState;
 
-use model::Message;
 use session::EventKind;
 
 pub(crate) struct InstructionsCapability {
@@ -60,17 +62,17 @@ impl Capability for InstructionsCapability {
                 .paths()
                 .cloned()
                 .collect();
-            let injection = self.state.lock().expect("agent 指令锁被毒化").prepare(
-                host.cwd(),
-                host.data_dir(),
-                &self.roots,
-                observed.into_iter(),
-            );
-            if let Some(text) = injection {
+            let injection = self
+                .state
+                .lock()
+                .await
+                .prepare(host.cwd(), host.data_dir(), &self.roots, observed)
+                .await;
+            if let Some(message) = injection {
                 host.append(&[EventKind::UserMessage {
                     turn: event.turn(),
                     step: event.step(),
-                    message: Message::user_text(text),
+                    message,
                 }])
                 .await?;
             }
