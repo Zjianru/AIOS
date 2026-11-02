@@ -374,9 +374,7 @@ fn yaml_to_json(yaml: &Yaml) -> serde_json::Value {
         Yaml::Integer(integer) => serde_json::Value::Number((*integer).into()),
         Yaml::String(string) => serde_json::Value::String(string.clone()),
         Yaml::Boolean(boolean) => serde_json::Value::Bool(*boolean),
-        Yaml::Array(array) => {
-            serde_json::Value::Array(array.iter().map(yaml_to_json).collect())
-        }
+        Yaml::Array(array) => serde_json::Value::Array(array.iter().map(yaml_to_json).collect()),
         Yaml::Hash(mapping) => {
             let mut object = serde_json::Map::new();
             for (key, value) in mapping {
@@ -555,10 +553,12 @@ mod tests {
                 "---\nname: lenient\ndescription: d\ndisable-model-invocation: {value}\n---\nBody\n"
             );
             let parsed = parse_skill_frontmatter(&raw).unwrap();
-            assert_eq!(parsed.invocation.model_invocable, model_invocable, "{value}");
+            assert_eq!(
+                parsed.invocation.model_invocable, model_invocable,
+                "{value}"
+            );
         }
-        let invalid =
-            "---\nname: bad\ndescription: d\nuser-invocable: maybe\n---\nBody\n";
+        let invalid = "---\nname: bad\ndescription: d\nuser-invocable: maybe\n---\nBody\n";
         assert!(
             parse_skill_frontmatter(invalid).is_err(),
             "非布尔要报错（不能静默）"
@@ -597,11 +597,8 @@ mod tests {
         )
         .unwrap();
         let data = tempfile::tempdir().unwrap();
-        let discovery = discover_skill_catalog(
-            dir.path(),
-            data.path(),
-            std::slice::from_ref(&root),
-        );
+        let discovery =
+            discover_skill_catalog(dir.path(), data.path(), std::slice::from_ref(&root));
         assert!(
             discovery.skills.iter().any(|skill| skill.name == "good"),
             "合法 skill 仍可用"
@@ -612,14 +609,18 @@ mod tests {
             "非法 skill 各记一条警告：{:?}",
             discovery.warnings
         );
-        assert!(discovery
-            .warnings
-            .iter()
-            .any(|warning| warning.message.contains("invalid YAML frontmatter")));
-        assert!(discovery
-            .warnings
-            .iter()
-            .any(|warning| warning.message.contains("requires name and description")));
+        assert!(
+            discovery
+                .warnings
+                .iter()
+                .any(|warning| warning.message.contains("invalid YAML frontmatter"))
+        );
+        assert!(
+            discovery
+                .warnings
+                .iter()
+                .any(|warning| warning.message.contains("requires name and description"))
+        );
     }
 
     #[test]

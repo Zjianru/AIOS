@@ -218,7 +218,10 @@ async fn catalog_message_has_typed_source_and_replacement_protocol() {
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].name, "alpha");
     assert_eq!(entries[0].description, "Alpha desc.");
-    let model::MessageSource::SkillCatalog { update, entries, .. } = &messages[1].source else {
+    let model::MessageSource::SkillCatalog {
+        update, entries, ..
+    } = &messages[1].source
+    else {
         panic!("source 应是 skill-catalog");
     };
     assert!(update, "第二次发布是替换目录");

@@ -90,7 +90,13 @@ fn escape_text(text: &str) -> String {
 fn entry_lines(entries: &[SkillCatalogEntry]) -> Vec<String> {
     entries
         .iter()
-        .map(|entry| format!("- \u{60}{}\u{60}: {}", entry.name, escape_text(&entry.description)))
+        .map(|entry| {
+            format!(
+                "- \u{60}{}\u{60}: {}",
+                entry.name,
+                escape_text(&entry.description)
+            )
+        })
         .collect()
 }
 
@@ -177,11 +183,10 @@ fn digest_entries(entries: &[SkillCatalogEntry], incomplete: bool) -> String {
         canonical.push_str("incomplete\n");
     }
     for entry in entries {
-        canonical.push_str(&serde_json::to_string(&(
-            entry.name.clone(),
-            entry.description.clone(),
-        ))
-        .unwrap_or_default());
+        canonical.push_str(
+            &serde_json::to_string(&(entry.name.clone(), entry.description.clone()))
+                .unwrap_or_default(),
+        );
         canonical.push('\n');
     }
     fnv_hex(&canonical)
