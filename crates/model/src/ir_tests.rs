@@ -50,7 +50,7 @@ fn message_has_stable_unique_id() {
 
 #[test]
 fn source_kind_and_fields_match_dsh() {
-    // 四个 source kind 的字段照 DSH MessageSourceMap。
+    // source kind 的字段照 DSH MessageSourceMap（T006.10 加 agent-instructions）。
     let user = Message::user_text("你好");
     assert_eq!(user.source, MessageSource::User);
     let system = Message::system_prompt("系统提示");
@@ -96,6 +96,28 @@ fn source_kind_and_fields_match_dsh() {
     assert_eq!(
         tool_json["source"],
         json!({"kind": "tool", "callId": "call_0"})
+    );
+
+    // T006.10 照 DSH agent-instructions 来源：带类型 form、baseline identity 与变更对象。
+    let instructions = Message::agent_instructions(
+        "body",
+        true,
+        Some("identity".to_owned()),
+        vec![crate::InstructionChange {
+            action: crate::InstructionChangeAction::Set,
+            scope: "user-global\u{0}AGENTS.md".to_owned(),
+            path: "$AIOS_HOME/AGENTS.md".to_owned(),
+            digest: Some("digest".to_owned()),
+        }],
+    );
+    let instructions_json = serde_json::to_value(&instructions).unwrap();
+    assert_eq!(instructions_json["source"]["kind"], "agent-instructions");
+    assert_eq!(instructions_json["source"]["form"], "instructions");
+    assert_eq!(instructions_json["source"]["baseline"], true);
+    assert_eq!(instructions_json["source"]["baselineIdentity"], "identity");
+    assert_eq!(
+        instructions_json["source"]["changes"],
+        json!([{"action": "set", "scope": "user-global\u{0}AGENTS.md", "path": "$AIOS_HOME/AGENTS.md", "digest": "digest"}])
     );
 }
 
