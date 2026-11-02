@@ -7,7 +7,7 @@
 //! - 模型读输出按游标推进（DSH registry read），重复读不重复返回；
 //! - 结算额外通知一次"完成通知"回调（await/first-delivery 语义，DSH tool-jobs 的 settled 投递）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::{Read, Write as _};
 use std::path::{Path, PathBuf};
@@ -220,6 +220,8 @@ pub struct TaskRegistry {
     on_registered: Mutex<Option<JobRegisteredCallback>>,
     on_settled: Mutex<Option<JobSettledCallback>>,
     on_notify: Mutex<Option<JobNotifyCallback>>,
+    /// DSH tool-jobs 的 killedByModel 集合（跨层共享；判定在通知投递方，不进 session 事件）。
+    killed_by_model: Mutex<HashSet<String>>,
 }
 
 impl std::fmt::Debug for TaskRegistry {
@@ -243,6 +245,7 @@ impl TaskRegistry {
             on_registered: Mutex::new(None),
             on_settled: Mutex::new(None),
             on_notify: Mutex::new(None),
+            killed_by_model: Mutex::new(HashSet::new()),
         }
     }
 
@@ -255,6 +258,7 @@ impl TaskRegistry {
             on_registered: Mutex::new(None),
             on_settled: Mutex::new(None),
             on_notify: Mutex::new(None),
+            killed_by_model: Mutex::new(HashSet::new()),
         }
     }
 
@@ -272,6 +276,23 @@ impl TaskRegistry {
 
     pub fn set_on_notify(&self, callback: JobNotifyCallback) {
         *self.on_notify.lock().expect("jobs 回调锁被毒化") = Some(callback);
+    }
+
+    /// 标记「模型自己 job_kill 了这条」（DSH tool-jobs 的 killedByModel）：判定在 tool-jobs 层，
+    /// 这里只做跨层共享存储；session 的 job/settled 事件里不出现该标记（照 DSH）。
+    pub fn mark_killed_by_model(&self, id: &str) {
+        self.killed_by_model
+            .lock()
+            .expect("jobs killedByModel 锁被毒化")
+            .insert(id.to_owned());
+    }
+
+    /// 取走并清除标记（DSH 在结算事件处理时 `killedByModel.delete(id)`）。
+    pub fn take_killed_by_model(&self, id: &str) -> bool {
+        self.killed_by_model
+            .lock()
+            .expect("jobs killedByModel 锁被毒化")
+            .remove(id)
     }
 
     fn settled_callback(&self) -> Option<JobSettledCallback> {
@@ -613,25 +634,32 @@ impl TaskRegistry {
             .is_terminal()
     }
 
-    /// T006.8：结束任务照 DSH——先 SIGTERM，等 grace（默认 3s）仍不退再 SIGKILL；
+    /// 请求取消（DSH registry.kill 的同步前半）：已终态返回 false（already-finished），
+    /// 否则置 kill_requested/detail 并返回 true（requested）。模型自己 kill 的标记由调用方
+    /// 在拿到 true 后打上（DSH tool-jobs 在 `result === requested` 时 add）。
+    pub fn request_kill(&self, id: &str, reason: Option<String>) -> Result<bool, ToolFailure> {
+        let record = self.record(id)?;
+        let mut state = record.state.lock().expect("job 状态锁被毒化");
+        if state.status.is_terminal() {
+            return Ok(false);
+        }
+        state.kill_requested = true;
+        if let Some(reason) = reason {
+            state.detail = Some(reason);
+        }
+        Ok(true)
+    }
+
+    /// 等任务结束（DSH kill 的异步后半）：先 SIGTERM，等 grace（默认 3s）仍不退再 SIGKILL；
     /// grace 期间读线程继续收输出，退出信号按进程实际终止信号记录。
-    pub async fn terminate(
+    pub async fn await_termination(
         &self,
         id: &str,
-        reason: Option<String>,
         grace: Duration,
     ) -> Result<JobRead, ToolFailure> {
         let record = self.record(id)?;
-        {
-            let mut state = record.state.lock().expect("job 状态锁被毒化");
-            if state.status.is_terminal() {
-                drop(state);
-                return Ok(read_of(&record));
-            }
-            state.kill_requested = true;
-            if let Some(reason) = reason {
-                state.detail = Some(reason);
-            }
+        if self.settled(&record) {
+            return Ok(read_of(&record));
         }
         Self::signal_group(&record, "-TERM");
         if !Self::wait_terminal(&record, grace).await {
@@ -639,6 +667,21 @@ impl TaskRegistry {
             let _ = Self::wait_terminal(&record, Duration::from_secs(5)).await;
         }
         Ok(read_of(&record))
+    }
+
+    /// 结束任务（请求取消 + 等终止的组合；T006.8 起的旧入口保留，行为不变）。
+    /// grace 期间读线程继续收输出，退出信号按进程实际终止信号记录。
+    pub async fn terminate(
+        &self,
+        id: &str,
+        reason: Option<String>,
+        grace: Duration,
+    ) -> Result<JobRead, ToolFailure> {
+        if !self.request_kill(id, reason)? {
+            let record = self.record(id)?;
+            return Ok(read_of(&record));
+        }
+        self.await_termination(id, grace).await
     }
 
     /// 前台 bash 超时转后台：原子地清掉 awaited；若在超时与这里之间已经结算且还没通知，
@@ -679,8 +722,10 @@ impl TaskRegistry {
         }
     }
 
-    /// 前台已收走结果的任务从表里删掉（不再出现在 job_list），并清掉输出文件。
+    /// 前台已收走结果的任务从表里删掉（不再出现在 job_list），并清掉输出文件；
+    /// 同时清 killedByModel 标记（DSH 的 removed 事件里 delete）。
     pub fn remove(&self, id: &str) {
+        let _ = self.take_killed_by_model(id);
         let removed = self.jobs.lock().expect("jobs 表锁被毒化").remove(id);
         if let Some(record) = removed {
             let _ = std::fs::remove_file(&record.stdout_path);
