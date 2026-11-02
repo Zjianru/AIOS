@@ -102,8 +102,14 @@ fn projection_folds_latest_and_clears_on_next_turn_start() {
 #[test]
 fn projection_metadata_and_wire_shape() {
     assert_eq!(TODOS_PROJECTION_KEY, "todos");
-    assert_eq!(TODOS_PROJECTION_STATE_VERSION, 2, "DSH tool-todo stateVersion: 2");
-    assert!(!TODOS_PROJECTION_IN_SUMMARY, "DSH wire.summary: false");
+    assert_eq!(
+        TODOS_PROJECTION_STATE_VERSION, 2,
+        "DSH tool-todo stateVersion: 2"
+    );
+    assert_eq!(
+        TODOS_PROJECTION_IN_SUMMARY, false,
+        "DSH wire.summary: false"
+    );
     let empty = TodosProjection {
         key: TODOS_PROJECTION_KEY.to_owned(),
         state_version: TODOS_PROJECTION_STATE_VERSION,

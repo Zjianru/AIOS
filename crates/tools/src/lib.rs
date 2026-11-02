@@ -267,9 +267,8 @@ impl ToolSet {
             .iter()
             .position(|tool| tool.is_builtin_todo_write())
         {
-            self.tools[index] = Box::new(TodoWriteTool::new_with_parallel(
-                allow_parallel_in_progress,
-            ));
+            self.tools[index] =
+                Box::new(TodoWriteTool::new_with_parallel(allow_parallel_in_progress));
         }
     }
 

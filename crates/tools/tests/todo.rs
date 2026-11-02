@@ -177,7 +177,9 @@ async fn single_active_policy_rejects_two_in_progress() {
 #[test]
 fn description_reflects_parallel_policy() {
     let parallel = TodoWriteTool::new().description().to_owned();
-    let single = TodoWriteTool::new_with_parallel(false).description().to_owned();
+    let single = TodoWriteTool::new_with_parallel(false)
+        .description()
+        .to_owned();
     assert!(
         parallel.contains("several only when work runs in parallel"),
         "{parallel}"
