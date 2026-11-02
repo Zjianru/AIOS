@@ -1333,6 +1333,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "service"
+version = "0.0.0"
+dependencies = [
+ "agent",
+ "model",
+ "serde",
+ "serde_json",
+ "session",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tools",
+ "wiremock",
+]
+
+[[package]]
 name = "session"
 version = "0.0.0"
 dependencies = [

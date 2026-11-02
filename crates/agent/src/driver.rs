@@ -27,6 +27,8 @@ use crate::inbox::{Delivery, Inbox};
 use crate::{AgentConfig, AgentEvent, CompactionTrigger, Deps, TurnOutcome};
 
 const EVENT_CHANNEL_CAPACITY: usize = 256;
+/// 服务事件面（T006.16a）：会话事件的 live 广播；容量照订阅者可能落后的距离取 1024。
+const SESSION_EVENT_CHANNEL_CAPACITY: usize = 1024;
 
 /// 驱动阶段。
 enum Phase {
@@ -84,6 +86,8 @@ pub(crate) struct Inner {
     inbox_mutations: tokio::sync::Mutex<()>,
     state: Mutex<RunState>,
     pub(crate) events: broadcast::Sender<AgentEvent>,
+    /// T006.16a：日志事件的 live 广播（服务事件面；seq/type/data 直接来自日志事实）。
+    session_events: broadcast::Sender<session::Event>,
     idle_notify: Notify,
     /// 取消时唤醒正在等模型流的 step（让流读取立刻停下）。
     cancel_notify: Arc<Notify>,
@@ -162,11 +166,13 @@ impl LoopAccess for Inner {
         kinds: &'a [EventKind],
     ) -> crate::capabilities::BoxedFuture<'a, Vec<u64>> {
         Box::pin(async move {
-            let seqs = self
-                .store
-                .lock()
-                .expect("agent 会话锁被毒化")
-                .append(kinds)?;
+            let (seqs, before) = {
+                let mut store = self.store.lock().expect("agent 会话锁被毒化");
+                let before = store.events().len();
+                let seqs = store.append(kinds)?;
+                (seqs, before)
+            };
+            self.publish_appended_session_events(before);
             for kind in kinds {
                 self.capabilities
                     .dispatch(&HookEvent::SessionEvent {
@@ -186,10 +192,13 @@ impl LoopAccess for Inner {
     ) -> crate::capabilities::HookFuture<'a> {
         Box::pin(async move {
             let dispatch_kind = kind.clone();
-            self.store
-                .lock()
-                .expect("agent 会话锁被毒化")
-                .append_surface(kind, surface_op, source_event_seqs)?;
+            let before = {
+                let mut store = self.store.lock().expect("agent 会话锁被毒化");
+                let before = store.events().len();
+                store.append_surface(kind, surface_op, source_event_seqs)?;
+                before
+            };
+            self.publish_appended_session_events(before);
             self.capabilities
                 .dispatch(&HookEvent::SessionEvent {
                     host: self,
@@ -265,6 +274,7 @@ impl Inner {
             .map_or_else(|| cwd.clone(), Path::to_path_buf);
         let tool_session = Arc::new(ToolSessionState::new(&data_dir, id.as_str()));
         let (events, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
+        let (session_events, _) = broadcast::channel(SESSION_EVENT_CHANNEL_CAPACITY);
         let instruction_roots = config.instruction_roots.clone();
         let skill_roots = config.skill_roots.clone();
         let spill_max_inline_tokens = config.spill_max_inline_tokens;
@@ -308,6 +318,7 @@ impl Inner {
                 last_turn,
             }),
             events,
+            session_events,
             idle_notify: Notify::new(),
             cancel_notify: Arc::new(Notify::new()),
             capabilities: CapabilityRegistry::production(crate::capabilities::CapabilityStates {
@@ -614,10 +625,13 @@ impl Inner {
     /// 写日志并派发 SessionEvent 挂点（T006.1a：日志先落盘，钩子随后执行；
     /// 钩子返回 Err 时日志已提交，调用方按错误收尾）。
     pub(crate) async fn append(&self, kinds: &[EventKind]) -> Result<(), AgentError> {
-        self.store
-            .lock()
-            .expect("agent 会话锁被毒化")
-            .append(kinds)?;
+        let before = {
+            let mut store = self.store.lock().expect("agent 会话锁被毒化");
+            let before = store.events().len();
+            store.append(kinds)?;
+            before
+        };
+        self.publish_appended_session_events(before);
         for kind in kinds {
             self.capabilities
                 .dispatch(&HookEvent::SessionEvent {
@@ -627,6 +641,30 @@ impl Inner {
                 .await?;
         }
         Ok(())
+    }
+
+    /// T006.16a：把 [before] 之后新落的日志事件广播到服务事件面（seq/type/data 都来自日志事实）。
+    ///
+    /// 订阅者落后由容量兜底（Lagged 时按 DSH 的 follow 语义重新跟随，见 T006.16b）。
+    fn publish_appended_session_events(&self, before: usize) {
+        let store = self.store.lock().expect("agent 会话锁被毒化");
+        let events = store.events();
+        for event in events.iter().skip(before.min(events.len())) {
+            let _ = self.session_events.send(event.clone());
+        }
+    }
+
+    /// T006.16a：服务事件面的订阅端（服务宿主转发给载体）。
+    pub(crate) fn subscribe_session_events(&self) -> broadcast::Receiver<session::Event> {
+        self.session_events.subscribe()
+    }
+
+    /// T006.16a：被动状态用的运行态（有正在跑的轮次）。
+    pub(crate) fn is_running(&self) -> bool {
+        matches!(
+            self.state.lock().expect("agent 状态锁被毒化").phase,
+            Phase::Running { .. }
+        )
     }
 
     /// 请求一次手动压缩（T005.8b/T006.3）：排队并唤醒驱动；接收者拿到结果计数。

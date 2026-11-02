@@ -455,6 +455,17 @@ impl Agent {
         self.inner.subscribe()
     }
 
+    /// T006.16a：日志事件的 live 订阅（服务事件面）：每条带日志 seq/type/data，
+    /// 由服务宿主转发给载体；容量兜底用 Lagged（重新跟随在 T006.16b）。
+    pub fn subscribe_session_events(&self) -> tokio::sync::broadcast::Receiver<session::Event> {
+        self.inner.subscribe_session_events()
+    }
+
+    /// T006.16a：被动状态用的运行态（有一轮在跑）。
+    pub fn is_running(&self) -> bool {
+        self.inner.is_running()
+    }
+
     /// 等到 agent 空闲（没有正在跑的轮次，也没有会唤醒它的排队输入）。
     pub async fn idle(&self) {
         self.inner.idle().await;
