@@ -278,15 +278,6 @@ impl TaskRegistry {
         *self.on_notify.lock().expect("jobs 回调锁被毒化") = Some(callback);
     }
 
-    /// 标记「模型自己 job_kill 了这条」（DSH tool-jobs 的 killedByModel）：判定在 tool-jobs 层，
-    /// 这里只做跨层共享存储；session 的 job/settled 事件里不出现该标记（照 DSH）。
-    pub fn mark_killed_by_model(&self, id: &str) {
-        self.killed_by_model
-            .lock()
-            .expect("jobs killedByModel 锁被毒化")
-            .insert(id.to_owned());
-    }
-
     /// 取走并清除标记（DSH 在结算事件处理时 `killedByModel.delete(id)`）。
     pub fn take_killed_by_model(&self, id: &str) -> bool {
         self.killed_by_model
@@ -536,7 +527,8 @@ impl TaskRegistry {
                     tool_call: tool_call.clone(),
                     finished_at: state.finished_at.unwrap_or_else(now_millis),
                     status,
-                    cause: if status == JobStatus::Killed && state.kill_requested {
+                    // DSH jobs-local：settleCause 由 kill 请求置位，结算时照抄（请求后自然完成仍是 kill）。
+                    cause: if state.kill_requested {
                         JobCause::Kill
                     } else {
                         JobCause::Producer
@@ -635,9 +627,15 @@ impl TaskRegistry {
     }
 
     /// 请求取消（DSH registry.kill 的同步前半）：已终态返回 false（already-finished），
-    /// 否则置 kill_requested/detail 并返回 true（requested）。模型自己 kill 的标记由调用方
-    /// 在拿到 true 后打上（DSH tool-jobs 在 `result === requested` 时 add）。
-    pub fn request_kill(&self, id: &str, reason: Option<String>) -> Result<bool, ToolFailure> {
+    /// 否则置 kill_requested/detail 并返回 true（requested）。`by_model` 时在**同一个 state 锁内**
+    /// 置 killedByModel 标记（DSH tool-jobs 在 `result === requested` 后 add）：标记必须早于
+    /// 任何可能的结算回调可见，否则“请求后立刻自然完成”的窗口里会漏掉抑制。
+    pub fn request_kill(
+        &self,
+        id: &str,
+        reason: Option<String>,
+        by_model: bool,
+    ) -> Result<bool, ToolFailure> {
         let record = self.record(id)?;
         let mut state = record.state.lock().expect("job 状态锁被毒化");
         if state.status.is_terminal() {
@@ -646,6 +644,13 @@ impl TaskRegistry {
         state.kill_requested = true;
         if let Some(reason) = reason {
             state.detail = Some(reason);
+        }
+        // 锁顺序固定 state → killed_by_model；settle 线程先拿 state 锁，故标记一定先于结算可见。
+        if by_model {
+            self.killed_by_model
+                .lock()
+                .expect("jobs killedByModel 锁被毒化")
+                .insert(id.to_owned());
         }
         Ok(true)
     }
@@ -677,7 +682,7 @@ impl TaskRegistry {
         reason: Option<String>,
         grace: Duration,
     ) -> Result<JobRead, ToolFailure> {
-        if !self.request_kill(id, reason)? {
+        if !self.request_kill(id, reason, false)? {
             let record = self.record(id)?;
             return Ok(read_of(&record));
         }
@@ -705,7 +710,7 @@ impl TaskRegistry {
                     tool_call: record.tool_call.clone(),
                     finished_at: state.finished_at.unwrap_or_else(now_millis),
                     status: state.status,
-                    cause: if state.status == JobStatus::Killed && state.kill_requested {
+                    cause: if state.kill_requested {
                         JobCause::Kill
                     } else {
                         JobCause::Producer

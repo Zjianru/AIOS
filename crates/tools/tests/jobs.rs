@@ -672,6 +672,77 @@ async fn job_kill_of_finished_job_does_not_mark_killed_by_model() {
     );
 }
 
+/// T006.9b fix-now：request_kill(by_model=true) 在同一个 state 锁内置 kill_requested 与
+/// killedByModel 标记；任务在 kill 请求后**立刻自然完成**（不等 SIGTERM 生效）时，结算回调
+/// 也必须看得到标记（没有“两把锁之间”的窗口），通知投递方才能抑制重复通知。
+#[tokio::test]
+async fn request_kill_marks_killed_by_model_atomically_on_fast_natural_finish() {
+    use std::sync::Mutex;
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path(), "sess-1");
+    let shared = context.shared_session();
+    let records = std::sync::Arc::new(Mutex::new(
+        Vec::<(tools::JobStatus, tools::JobCause, bool)>::new(),
+    ));
+    let sink = std::sync::Arc::clone(&records);
+    context
+        .session()
+        .tasks()
+        .set_on_settled(std::sync::Arc::new(move |record: &tools::JobSettled| {
+            // 模拟通知投递方：结算回调里立刻 take 标记（DSH 在 settled 事件处理时 delete）。
+            let suppressed = shared.tasks().take_killed_by_model(&record.id);
+            sink.lock()
+                .expect("竞态记录锁被毒化")
+                .push((record.status, record.cause, suppressed));
+        }));
+    let started = bash(
+        json!({
+            "description": "gated natural finish",
+            "command": "trap '' TERM; printf 'ready\\n'; while [ ! -f go ]; do :; done; printf 'done'",
+            "run_in_background": true
+        }),
+        &context,
+    )
+    .await;
+    let job_id = extract_job_id(&started.content);
+    // 先等 trap 装好（否则 SIGTERM 可能先到、bash 被信号杀掉而非自然完成）。
+    let registry = context.session().tasks();
+    wait_until(|| {
+        registry
+            .output(&job_id)
+            .is_ok_and(|read| read.stdout.contains("ready"))
+    })
+    .await;
+    let requested = registry.request_kill(&job_id, None, true).unwrap();
+    assert!(requested, "任务在跑时应是 requested");
+    // kill 请求之后立刻自然完成：命令自己看到 go 后 exit 0（不依赖 SIGTERM 生效）。
+    std::fs::write(dir.path().join("go"), "").unwrap();
+    let read = context
+        .session()
+        .tasks()
+        .await_termination(&job_id, std::time::Duration::from_secs(3))
+        .await
+        .unwrap();
+    assert_eq!(
+        read.view.status,
+        tools::JobStatus::Completed,
+        "自然完成照 producer 事实：{read:?}"
+    );
+    wait_until(|| !records.lock().expect("竞态记录锁被毒化").is_empty()).await;
+    let (status, cause, suppressed) = records.lock().expect("竞态记录锁被毒化")[0];
+    assert_eq!(status, tools::JobStatus::Completed);
+    assert_eq!(
+        cause,
+        tools::JobCause::Kill,
+        "kill 请求后自然完成，DSH settleCause 仍是 kill"
+    );
+    assert!(
+        suppressed,
+        "标记必须在结算回调可见前就位（同一 state 锁内原子置位）"
+    );
+}
+
 /// T006.9b：非模型发起的 kill（直接走注册表 terminate，模拟用户/操作方取消）照旧投完成通知；
 /// DSH 只对 tool-jobs 的 killedByModel 标记抑制。
 #[tokio::test]
