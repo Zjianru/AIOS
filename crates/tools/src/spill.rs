@@ -26,10 +26,7 @@ fn random_prefix() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.subsec_nanos() as u64);
     let counter = SPILL_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "{:012x}",
-        (u64::from(nanos) ^ (counter << 8)) & 0x0000_ffff_ffff_ffff
-    )
+    format!("{:012x}", (nanos ^ (counter << 8)) & 0x0000_ffff_ffff_ffff)
 }
 
 /// 一次 spill 的结果：模型可读的绝对路径 + 完整文本的 UTF-8 字节数。
