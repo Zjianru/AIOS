@@ -772,15 +772,12 @@ pub(crate) fn move_patched_file(
     write_file(context, destination, &content).map_err(MoveFailure::before_destination)?;
     if let Err(failure) = delete_file(context, source, "move") {
         // 部分效果如实上报（docs/05 第 8 节）：目的地已写入、源还在。
+        // 部分效果如实上报（照 DSH execute.ts:97-105）：失败消息只保留源删除错误，
+        // 「目的地已写、源还在」由 apply_patch 的 render 按 DSH 格式单独成行。
         return Err(MoveFailure {
             failure: ToolFailure {
                 code: failure.code.clone(),
-                message: format!(
-                    "{} — destination {} was written; source {} remains",
-                    failure.message,
-                    destination.display(),
-                    source.display()
-                ),
+                message: failure.message,
             },
             destination_written: true,
         });

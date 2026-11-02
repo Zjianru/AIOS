@@ -76,8 +76,11 @@ fn apply_patch(arguments: &str, context: &ToolContext) -> Result<String, ToolFai
         .ok_or_else(|| ToolFailure::plain("input must be a string"))?;
     let operations =
         patch::parse(input).map_err(|error| ToolFailure::coded("PATCH_SYNTAX", error.message()))?;
-    let planned = plan(operations, context)?;
-    let refusals = preflight(context, &planned);
+    // T006.6：解析/预检的所有拒绝都汇总进同一条 Patch rejected（DSH patch/index.ts:31-38：
+    // plan refusals 与 preflight refusals 合并后按操作序号排序）。
+    let (planned, mut refusals) = plan(operations, context);
+    refusals.extend(preflight(context, &planned));
+    refusals.sort_by_key(|refusal| refusal.record.index);
     if !refusals.is_empty() {
         return Err(refusal_error(&refusals));
     }
@@ -107,8 +110,9 @@ struct Refusal {
     failure: ToolFailure,
 }
 
-fn plan(operations: Vec<PatchOp>, context: &ToolContext) -> Result<Vec<Planned>, ToolFailure> {
+fn plan(operations: Vec<PatchOp>, context: &ToolContext) -> (Vec<Planned>, Vec<Refusal>) {
     let mut planned = Vec::new();
+    let mut refusals = Vec::new();
     for (index, operation) in operations.into_iter().enumerate() {
         let (kind, path, patch_line, move_to) = match &operation {
             PatchOp::Add { path, line, .. } => ("add", path.clone(), *line, None),
@@ -120,14 +124,35 @@ fn plan(operations: Vec<PatchOp>, context: &ToolContext) -> Result<Vec<Planned>,
                 ..
             } => ("update", path.clone(), *line, move_to.clone()),
         };
-        let target = crate::fs::resolve(context, &path)?;
-        let move_target = match &move_to {
-            Some(destination) => Some(crate::fs::resolve(context, destination)?),
-            None => None,
+        let mut record = OperationRecord {
+            index,
+            kind,
+            path: path.clone(),
+            destination: None,
+            patch_line,
         };
-        let (record_kind, destination) = match &move_target {
-            Some(destination) => ("move", Some(destination.display())),
-            None => (kind, None),
+        let target = match crate::fs::resolve(context, &path) {
+            Ok(target) => target,
+            Err(failure) => {
+                refusals.push(Refusal { record, failure });
+                continue;
+            }
+        };
+        record.path = target.display();
+        let move_target = match &move_to {
+            Some(destination) => match crate::fs::resolve(context, destination) {
+                Ok(destination) => {
+                    record.kind = "move";
+                    record.destination = Some(destination.display());
+                    Some(destination)
+                }
+                Err(failure) => {
+                    record.kind = "move";
+                    refusals.push(Refusal { record, failure });
+                    continue;
+                }
+            },
+            None => None,
         };
         let raw = if std::path::Path::new(&path).is_absolute() {
             PathBuf::from(&path)
@@ -135,20 +160,14 @@ fn plan(operations: Vec<PatchOp>, context: &ToolContext) -> Result<Vec<Planned>,
             context.cwd.join(&path)
         };
         planned.push(Planned {
-            record: OperationRecord {
-                index,
-                kind: record_kind,
-                path: target.display(),
-                destination,
-                patch_line,
-            },
+            record,
             operation,
             target,
             move_target,
             raw,
         });
     }
-    Ok(planned)
+    (planned, refusals)
 }
 
 struct SimulatedFile {
@@ -529,6 +548,14 @@ fn render(outcomes: &[Outcome]) -> String {
                 "{label}{destination}, patch line {}): {}",
                 outcome.record.patch_line, failure.message
             ));
+            // DSH apply-patch-output.ts:122-123：部分 move 单独一行说明目的地已写、源还在。
+            if outcome.partial && outcome.record.destination.is_some() {
+                lines.push(format!(
+                    "  destination {} was written; source {} remains",
+                    outcome.record.destination.as_deref().unwrap_or_default(),
+                    outcome.record.path
+                ));
+            }
         }
     }
     lines.join("\n")
