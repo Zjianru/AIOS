@@ -604,6 +604,114 @@ async fn existing_jobs_dir_permissions_are_fixed_on_start() {
     assert_eq!(file_mode, 0o600, "旧输出文件应被 chmod 0600（保留归档）");
 }
 
+/// T006.9b 照 DSH tool-jobs 的 killedByModel：模型自己经 job_kill 请求取消（requested）时
+/// 打 killedByModel 标记；抑制完成通知的判定在通知投递方（agent::jobs 的集成测试），
+/// 这里测注册表层的 requested 判定与标记；job/settled 生命周期记录照写（status=killed/cause=kill）。
+#[tokio::test]
+async fn job_kill_marks_killed_by_model_for_requested_kill() {
+    use std::sync::Mutex;
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path(), "sess-1");
+    let settled = std::sync::Arc::new(Mutex::new(Vec::<tools::JobSettled>::new()));
+    let settled_sink = std::sync::Arc::clone(&settled);
+    context
+        .session()
+        .tasks()
+        .set_on_settled(std::sync::Arc::new(move |record: &tools::JobSettled| {
+            settled_sink
+                .lock()
+                .expect("结算记录锁被毒化")
+                .push(record.clone());
+        }));
+    let started = bash(
+        json!({"description": "long", "command": "sleep 30", "run_in_background": true}),
+        &context,
+    )
+    .await;
+    let job_id = extract_job_id(&started.content);
+    let kill = run(&JobKillTool::new(), json!({"job_id": job_id}), &context).await;
+    assert!(!kill.is_error, "{}", kill.content);
+    assert!(
+        kill.content.contains("requested cancellation of job"),
+        "{}",
+        kill.content
+    );
+    wait_until(|| !settled.lock().expect("结算记录锁被毒化").is_empty()).await;
+    let record = settled.lock().expect("结算记录锁被毒化")[0].clone();
+    assert_eq!(record.status, tools::JobStatus::Killed);
+    assert_eq!(record.cause, tools::JobCause::Kill);
+    assert!(
+        context.session().tasks().take_killed_by_model(&job_id),
+        "requested kill 要打 killedByModel 标记（DSH tool-jobs 在 result=requested 时 add）"
+    );
+    assert!(
+        !context.session().tasks().take_killed_by_model(&job_id),
+        "标记取走一次就清（DSH 在结算事件处理时 delete）"
+    );
+}
+
+/// DSH 的 already-finished：任务已经结算时 kill 返回 already-finished，不打 killedByModel。
+#[tokio::test]
+async fn job_kill_of_finished_job_does_not_mark_killed_by_model() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path(), "sess-1");
+    let started = bash(
+        json!({"description": "fast", "command": "printf 'fast\n'", "run_in_background": true}),
+        &context,
+    )
+    .await;
+    let job_id = extract_job_id(&started.content);
+    wait_until_terminal(&context, &job_id).await;
+    let kill = run(&JobKillTool::new(), json!({"job_id": job_id}), &context).await;
+    assert!(!kill.is_error, "{}", kill.content);
+    assert!(
+        !context.session().tasks().take_killed_by_model(&job_id),
+        "已结束的任务不算模型 kill，不打标记"
+    );
+}
+
+/// T006.9b：非模型发起的 kill（直接走注册表 terminate，模拟用户/操作方取消）照旧投完成通知；
+/// DSH 只对 tool-jobs 的 killedByModel 标记抑制。
+#[tokio::test]
+async fn operator_kill_still_notifies() {
+    use std::sync::mpsc;
+    use std::time::Duration as StdDuration;
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path(), "sess-1");
+    let (sender, receiver) = mpsc::channel::<String>();
+    context.session().tasks().set_on_notify(std::sync::Arc::new(
+        move |settled: &tools::JobSettled| {
+            let _ = sender.send(settled.id.clone());
+        },
+    ));
+    let started = bash(
+        json!({"description": "long", "command": "sleep 30", "run_in_background": true}),
+        &context,
+    )
+    .await;
+    let job_id = extract_job_id(&started.content);
+    let read = context
+        .session()
+        .tasks()
+        .terminate(
+            &job_id,
+            Some("user stop".to_owned()),
+            std::time::Duration::from_secs(3),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read.view.status, tools::JobStatus::Killed, "{read:?}");
+    let fired = receiver.recv_timeout(StdDuration::from_secs(5));
+    assert_eq!(
+        fired.ok().as_deref(),
+        Some(job_id.as_str()),
+        "非模型 kill 的结算仍应投完成通知"
+    );
+}
+
 #[tokio::test]
 async fn job_kill_uses_sigterm_grace_then_sigkill() {
     use std::time::{Duration, Instant};

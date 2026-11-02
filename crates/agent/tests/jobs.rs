@@ -491,3 +491,106 @@ async fn background_job_completion_notice_reports_no_new_output() {
         "空输出通知缺 {expected:?} 在 {last}"
     );
 }
+/// T006.9b（DSH killedByModel）：模型自己 job_kill 后，结算不再投完成通知（不会多开一轮）；
+/// job/settled 仍写，status=killed / cause=kill。
+#[tokio::test]
+async fn model_job_kill_suppresses_completion_notice() {
+    /// step0 起后台任务；step1 取 job id 回 job_kill；其后回 FINAL。
+    struct KillThenFinishResponder {
+        step: std::sync::Mutex<usize>,
+    }
+
+    impl wiremock::Respond for KillThenFinishResponder {
+        fn respond(&self, request: &wiremock::Request) -> wiremock::ResponseTemplate {
+            let mut step = self.step.lock().expect("KillThenFinish 锁被毒化");
+            let current = *step;
+            *step += 1;
+            drop(step);
+            match current {
+                0 => sse(tool_calls_with_inputs_sse(&[(
+                    "call_0",
+                    "bash",
+                    json!({
+                        "description": "test command", "command": "sleep 30", "run_in_background": true
+                    }),
+                )])),
+                1 => {
+                    let body = String::from_utf8_lossy(&request.body);
+                    let job_id = started_job_id(&body);
+                    sse(tool_calls_with_inputs_sse(&[(
+                        "call_1",
+                        "job_kill",
+                        json!({"job_id": job_id}),
+                    )]))
+                }
+                _ => sse(FINAL_TEXT_SSE.to_owned()),
+            }
+        }
+    }
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(KillThenFinishResponder {
+            step: std::sync::Mutex::new(0),
+        })
+        .mount(&server)
+        .await;
+    let (agent, data_dir, _cwd, session_id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
+    agent
+        .send(UserMessage::text("后台跑一下再停掉"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+    wait_requests(&server, 3).await;
+    agent.idle().await;
+
+    // job/settled 仍写：status=killed、cause=kill（可与自然结束区分）。
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let settled = loop {
+        let store = session::SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
+        let settled = store.events().iter().find_map(|event| match &event.kind {
+            session::EventKind::JobSettled {
+                job_id,
+                status,
+                cause,
+                ..
+            } => Some((job_id.clone(), status.clone(), cause.clone())),
+            _ => None,
+        });
+        if let Some(settled) = settled {
+            break settled;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "5s 内没有写 job/settled"
+        );
+        tokio::task::yield_now().await;
+    };
+    assert_eq!(settled.1, "killed");
+    assert_eq!(settled.2, "kill");
+
+    // 若错误地投递完成通知，会唤醒新一轮（第 4 次请求）；1s 内不应出现。
+    let extra = tokio::time::timeout(Duration::from_secs(1), wait_requests(&server, 4)).await;
+    assert!(
+        extra.is_err(),
+        "模型自己 job_kill 后不应再投完成通知（不应多开一轮）"
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    let bodies: Vec<String> = requests
+        .iter()
+        .map(|request| String::from_utf8_lossy(&request.body).into_owned())
+        .collect();
+    let job_id = started_job_id(&bodies[1]);
+    let notice = format!("background job {job_id} (bash:");
+    assert!(
+        !bodies.iter().any(|body| body.contains(&notice)),
+        "模型自己 job_kill 后不应有重复完成通知：{job_id}"
+    );
+    assert!(
+        bodies[2].contains("requested cancellation of job"),
+        "job_kill 的工具结果本身就是交付：{}",
+        bodies[2]
+    );
+}
