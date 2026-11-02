@@ -9,7 +9,7 @@ mod fs;
 mod jobs;
 mod session;
 mod skills;
-mod spill;
+pub mod spill;
 
 use std::future::Future;
 use std::path::PathBuf;
