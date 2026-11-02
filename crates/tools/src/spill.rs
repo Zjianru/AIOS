@@ -19,6 +19,19 @@ pub const SPILL_RETRIEVAL_HINT: &str =
 /// 保留头/尾之间插的间隔（照 DSH spill-policy 的 GAP）。
 const GAP: &str = "\n\n[...]\n\n";
 
+/// spill 文件名的随机前缀（DSH spill-local 用 randomBytes(6).hex；AIOS 不新增依赖，
+/// 用时间纳秒与进程内 counter 混合出 12 个十六进制字符；目录 0700、文件 0600 已限制访问）。
+fn random_prefix() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.subsec_nanos() as u64);
+    let counter = SPILL_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "{:012x}",
+        (u64::from(nanos) ^ (counter << 8)) & 0x0000_ffff_ffff_ffff
+    )
+}
+
 /// 一次 spill 的结果：模型可读的绝对路径 + 完整文本的 UTF-8 字节数。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpillRef {
@@ -35,23 +48,19 @@ impl SpillStore {
     /// 把完整文本写进会话自己的 spill 目录（目录 0700、文件 0600、fsync），
     /// 返回 locator 和字节数。会话目录由 SpillStore 的根固定，天然按会话隔离。
     pub fn save_text(&self, name: &str, content: &str) -> Result<SpillRef, ToolFailure> {
-        let Some(root) = self.root() else {
+        let Some(directory) = self.session_dir() else {
             return Err(ToolFailure::plain(
                 "spill is disabled: no session data directory",
             ));
         };
-        if let Err(error) = create_private_dir(root) {
+        if let Err(error) = create_private_dir(&directory) {
             return Err(ToolFailure::plain(format!(
                 "cannot create spill directory {}: {error}",
-                root.display()
+                directory.display()
             )));
         }
-        let file_name = format!(
-            "{}-{}.txt",
-            safe_segment(name),
-            SPILL_COUNTER.fetch_add(1, Ordering::Relaxed)
-        );
-        let locator = root.join(file_name);
+        let file_name = format!("{}-{}", random_prefix(), encode_spill_segment(name));
+        let locator = directory.join(file_name);
         let write = (|| -> std::io::Result<()> {
             let mut options = fs::OpenOptions::new();
             options.write(true).create_new(true);
@@ -82,21 +91,21 @@ impl SpillStore {
     /// 把一个大文件流式复制进 spill 目录（8KB 缓冲，不把全文读进内存），返回 locator/字节数。
     /// 用于 bash 前台超大输出：完整流已经在 jobs 目录落盘，这里只做流式搬运。
     pub fn save_file(&self, name: &str, source: &Path) -> Result<SpillRef, ToolFailure> {
-        let Some(root) = self.root() else {
+        let Some(directory) = self.session_dir() else {
             return Err(ToolFailure::plain(
                 "spill is disabled: no session data directory",
             ));
         };
-        if let Err(error) = create_private_dir(root) {
+        if let Err(error) = create_private_dir(&directory) {
             return Err(ToolFailure::plain(format!(
                 "cannot create spill directory {}: {error}",
-                root.display()
+                directory.display()
             )));
         }
-        let locator = root.join(format!(
-            "{}-{}.txt",
-            safe_segment(name),
-            SPILL_COUNTER.fetch_add(1, Ordering::Relaxed)
+        let locator = directory.join(format!(
+            "{}-{}",
+            random_prefix(),
+            encode_spill_segment(name)
         ));
         let copy = (|| -> std::io::Result<u64> {
             let mut input = fs::File::open(source)?;
@@ -149,35 +158,36 @@ pub(crate) fn create_private_dir(root: &Path) -> std::io::Result<()> {
     builder.create(root)
 }
 
-/// 文件名只保留单段安全字符；其余替换成下划线（session 目录之外没有路径语义）。
-fn safe_segment(name: &str) -> String {
-    let mut segment: String = name
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '-') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .take(80)
-        .collect();
-    if segment.is_empty() || segment == "." || segment == ".." {
-        segment = "spill".to_owned();
+impl SpillStore {
+    /// 启动时一次性清理过期 spill 文件（照 DSH spill-local cleanupPeriodDays；0 = 关闭）。
+    /// best-effort：失败静默，不影响会话启动。返回删除的文件数。
+    pub fn cleanup(&self, period_days: u64) -> usize {
+        if period_days == 0 {
+            return 0;
+        }
+        let Some(root) = self.root() else {
+            return 0;
+        };
+        let cutoff = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(
+                period_days.saturating_mul(86_400),
+            ))
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        sweep_spill_root(root, cutoff)
     }
-    segment
 }
 
-/// 会话 spill 子目录名（DSH spill-local/src/store.ts:108-121：root/session-<hash>，hash 取 12 个十六进制字符）。
-/// DSH 用 sha256(sessionId).hex[..12]；AIOS 不新增依赖（D22），用 FNV-1a 64 的前 12 个十六进制字符，
-/// session id 已经过 SessionId::parse 的 uuid 校验（无路径注入面），这里只取稳定的会话隔离名。
+/// 会话 spill 子目录名（DSH spill-local/src/store.ts:108-121：root/session-<hash>）。
+/// DSH 用 sha256(sessionId).hex[..12]；AIOS 不新增依赖（D22），用 FNV-1a 64 的前 12 个十六进制
+/// 字符；session id 已经过 SessionId::parse 的 uuid 校验（无路径注入面），这里只取稳定的会话隔离名。
 pub fn session_dir_name(session_id: &str) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in session_id.as_bytes() {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
     }
-    format!("session-{:016x}", hash)[.."session-".len() + 12].to_owned()
+    let hex = format!("{hash:016x}");
+    format!("session-{}", &hex[..12])
 }
 
 /// 单段安全路径片段（照 DSH spill-local/src/store.ts encodeSegment）：[A-Za-z0-9._-] 原样保留
@@ -275,7 +285,7 @@ pub fn format_spill_notice(omitted_bytes: usize, locator: &Path) -> String {
 pub fn bound_result(
     store: &SpillStore,
     tool_name: &str,
-    call_id: &str,
+    _call_id: &str,
     content: &str,
     max_inline_tokens: usize,
 ) -> Option<String> {
@@ -289,9 +299,7 @@ pub fn bound_result(
     if estimate_text_tokens(content) <= max_inline_tokens {
         return None;
     }
-    let saved = store
-        .save_text(&format!("{tool_name}-{call_id}"), content)
-        .ok()?;
+    let saved = store.save_text(&format!("{tool_name}.txt"), content).ok()?;
     let worst_notice = format_spill_notice(content.len(), &saved.locator);
     if estimate_text_tokens(&worst_notice) > max_inline_tokens {
         return None;

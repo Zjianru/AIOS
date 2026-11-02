@@ -40,6 +40,7 @@ fn defaults_match_dsh() {
     assert!((config.compaction_retain_ratio - 0.16).abs() < f64::EPSILON);
     assert_eq!(config.compaction_headroom_tokens, 65_536);
     assert_eq!(config.spill_max_inline_tokens, 12_500);
+    assert_eq!(config.spill_cleanup_period_days, 30);
     assert_eq!(config.instruction_roots, vec![home_agents()]);
     assert_eq!(config.skill_roots, vec![home_agents().join("skills")]);
 }
@@ -143,6 +144,7 @@ async fn accepts_valid_non_default_values() {
         compaction_max_overflow_retries: 1,
         compaction_model_policies: Vec::new(),
         spill_max_inline_tokens: 100,
+        spill_cleanup_period_days: 30,
         instruction_roots: vec![PathBuf::from("/tmp/aios-agents")],
         skill_roots: vec![PathBuf::from("/tmp/aios-agents/skills")],
     };

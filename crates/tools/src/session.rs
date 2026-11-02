@@ -30,22 +30,35 @@ pub use crate::jobs::TaskRegistry;
 #[derive(Debug, Clone)]
 pub struct SpillStore {
     root: Option<PathBuf>,
+    session_id: Option<String>,
 }
 
 impl SpillStore {
-    pub fn new(root: impl Into<PathBuf>) -> Self {
+    /// Agent 建会话时用：root = <data-dir>/spill；文件落在 root/session-<hash>/（照 DSH spill-local）。
+    pub fn new(root: impl Into<PathBuf>, session_id: impl Into<String>) -> Self {
         Self {
             root: Some(root.into()),
+            session_id: Some(session_id.into()),
         }
     }
 
     /// 单元测试/纯工具场景：没有会话数据目录，spill 不可用。
     pub fn disabled() -> Self {
-        Self { root: None }
+        Self {
+            root: None,
+            session_id: None,
+        }
     }
 
     pub fn root(&self) -> Option<&Path> {
         self.root.as_deref()
+    }
+
+    /// 本会话的 spill 子目录（DSH spill-local sessionDir：root/session-<hash>）。
+    pub fn session_dir(&self) -> Option<PathBuf> {
+        let root = self.root.as_deref()?;
+        let session_id = self.session_id.as_deref()?;
+        Some(root.join(crate::spill::session_dir_name(session_id)))
     }
 }
 
@@ -71,7 +84,7 @@ impl ToolSessionState {
         Self {
             observations: Mutex::new(ObservationPolicy::default()),
             tasks: TaskRegistry::new(data_dir, session_id),
-            spill: SpillStore::new(data_dir.join("spill").join(format!("session-{session_id}"))),
+            spill: SpillStore::new(data_dir.join("spill"), session_id),
             session_id: Some(session_id.to_owned()),
             data_dir: Some(data_dir.to_path_buf()),
             skill_roots: Mutex::new(Vec::new()),

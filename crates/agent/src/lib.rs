@@ -68,6 +68,8 @@ pub struct AgentConfig {
     /// 单个工具结果内联进上下文的 token 预算；0 表示禁用 spill（DSH 省略 maxInlineTokens 即禁用）。
     /// DSH 默认组合是 12500（bundle/base 的 spill-policy: maxInlineTokens）。
     pub spill_max_inline_tokens: usize,
+    /// 启动时清理多少天前的 spill 文件（照 DSH spill-local 的 cleanupPeriodDays；默认 30，0 = 不清理）。
+    pub spill_cleanup_period_days: u64,
     /// 用户级指令文件根目录；Agent 还会固定加入 <data-dir>。默认 ~/.agents（DSH 的 agents home）。
     pub instruction_roots: Vec<PathBuf>,
     /// 用户级 skill 根目录；Agent 还会固定加入 <data-dir>/skills。默认 ~/.agents/skills。
@@ -88,6 +90,7 @@ impl Default for AgentConfig {
             compaction_max_overflow_retries: 1,
             compaction_model_policies: Vec::new(),
             spill_max_inline_tokens: 12_500,
+            spill_cleanup_period_days: 30,
             skill_roots: home
                 .as_ref()
                 .map(|home| vec![home.join("skills")])
@@ -329,6 +332,23 @@ pub struct Deps {
     pub store: SessionStore,
 }
 
+/// T006.7：Agent 启动时照 DSH spill-local 的 cleanupPeriodDays 一次性清理过期 spill 文件。
+/// best-effort（DSH 也是启动时异步 sweep、失败只 warn）：不阻塞/不打断会话启动。
+fn cleanup_spill_files(store: &SessionStore, period_days: u64) {
+    if period_days == 0 {
+        return;
+    }
+    let Some(data_dir) = store.path().parent().and_then(std::path::Path::parent) else {
+        return;
+    };
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(
+            period_days.saturating_mul(86_400),
+        ))
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    let _ = tools::spill::sweep_spill_root(&data_dir.join("spill"), cutoff);
+}
+
 /// T004 的 agent：create/resume/send/cancel/subscribe/idle 是唯一入口。
 #[derive(Clone)]
 pub struct Agent {
@@ -338,6 +358,7 @@ pub struct Agent {
 impl Agent {
     /// 新会话上启动 agent（会话日志由 store 建好，尚无事件）。
     pub async fn create(config: AgentConfig, deps: Deps) -> Result<Self, AgentError> {
+        cleanup_spill_files(&deps.store, config.spill_cleanup_period_days);
         Ok(Self {
             inner: driver::Inner::start(config, deps, 0)?,
         })
@@ -355,6 +376,7 @@ impl Agent {
                 store: deps.store.id().as_str().to_owned(),
             });
         }
+        cleanup_spill_files(&deps.store, config.spill_cleanup_period_days);
         // 续接先修复：给最后一个没收尾的 turn 补收尾（照 DSH 的 core/session/repair.ts）。
         // 只读日志扫描 + 一次批 append（seq 连续、fsync、失败回滚由 store 负责）；不重跑工具。
         if let Some(closers) = session::interrupted_turn_closers(deps.store.events()) {
