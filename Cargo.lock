@@ -283,6 +283,7 @@ dependencies = [
  "agent",
  "clap",
  "model",
+ "service",
  "session",
  "thiserror",
  "tokio",

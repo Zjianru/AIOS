@@ -10,6 +10,7 @@ use agent::{
 };
 use clap::{Args, Parser, Subcommand};
 use model::{DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS, DeepSeekConfig, Effort, UserMessage};
+use service::{RootSessionOptions, ServiceHost};
 use session::SessionId;
 use tokio::io::AsyncBufReadExt;
 
@@ -26,6 +27,20 @@ enum Command {
     Chat(CommonArgs),
     /// 跑一条消息，空闲后退出；completed 退出码 0，其余非 0
     Run(RunArgs),
+    /// 起 Web 服务（HTTP POST /api + WebSocket /ws，只绑本机，带启动令牌）
+    Serve(ServeArgs),
+}
+
+#[derive(Args)]
+struct ServeArgs {
+    #[command(flatten)]
+    common: CommonArgs,
+    /// 绑定地址（只允许本机回环；默认 127.0.0.1）
+    #[arg(long, default_value = web::DEFAULT_HOST)]
+    host: String,
+    /// 端口（默认 0 = 系统分配）
+    #[arg(long, default_value_t = web::DEFAULT_PORT)]
+    port: u16,
 }
 
 #[derive(Args)]
@@ -80,6 +95,10 @@ enum CliError {
     Model(#[from] model::ModelError),
     #[error(transparent)]
     Agent(#[from] agent::AgentError),
+    #[error(transparent)]
+    Root(#[from] service::RootError),
+    #[error(transparent)]
+    Web(#[from] web::ServeError),
 }
 
 #[tokio::main]
@@ -88,6 +107,7 @@ async fn main() -> ExitCode {
     let result = match cli.command {
         Command::Chat(args) => chat(args).await.map(|()| 0_u8),
         Command::Run(args) => run(args).await,
+        Command::Serve(args) => serve(args).await,
     };
     match result {
         Ok(code) => ExitCode::from(code),
@@ -191,6 +211,54 @@ async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
         config,
     })
     .await?)
+}
+
+/// 起 Web 服务（T006.17）：找回/新建 Kind 根会话，起只绑本机的 HTTP+WS 载体。
+/// 启动令牌只在本进程内生成并打印带令牌的 URL；不写日志/证据，不读环境变量。
+async fn serve(args: ServeArgs) -> Result<u8, CliError> {
+    let data_dir = match &args.common.data_dir {
+        Some(path) => path.clone(),
+        None => default_data_dir()?,
+    };
+    let cwd = match &args.common.cwd {
+        Some(path) => path.clone(),
+        None => std::env::current_dir()?,
+    };
+    let api_key = std::env::var("DEEPSEEK_API_KEY").map_err(|_| {
+        CliError::Message(
+            "缺少 DEEPSEEK_API_KEY 环境变量（D34：开发期从环境变量读 key）".to_owned(),
+        )
+    })?;
+    let base_url =
+        std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_owned());
+    let (deepseek_config, agent_config) = config_from_args(&args.common, base_url, api_key)?;
+    let root = service::open_root_session(RootSessionOptions {
+        data_dir,
+        cwd,
+        model: deepseek_config,
+        config: agent_config,
+    })
+    .await?;
+    let host = ServiceHost::new(root.agent.clone());
+    let token = web::launch_token();
+    let handle = web::serve(
+        web::ServeOptions {
+            host: args.host.clone(),
+            port: args.port,
+            token: token.clone(),
+        },
+        host,
+    )
+    .await?;
+    println!(
+        "aios-dev serve: http://{}:{}?token={}",
+        args.host,
+        handle.addr.port(),
+        handle.token
+    );
+    tokio::signal::ctrl_c().await?;
+    handle.abort();
+    Ok(0)
 }
 
 fn default_data_dir() -> Result<PathBuf, CliError> {
