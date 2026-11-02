@@ -32,10 +32,12 @@ pub struct TodosProjection {
 pub fn todos_projection(events: &[Event]) -> TodosProjection {
     let mut view: TodosProjectionView = None;
     for event in events {
-        // skeleton：先只做 last-write-wins；turn/start 清空语义在 T006.12 实现（红测断言）。
-        if let EventKind::TodoWrite { todos } = &event.kind {
-            view = Some(todos.clone());
-        }
+        // 照 DSH tool-todo 的 fold：最新整表；下一个 turn/start 清回 null；其它事件保持。
+        view = match &event.kind {
+            EventKind::TodoWrite { todos } => Some(todos.clone()),
+            EventKind::TurnStart { .. } => None,
+            _ => view,
+        };
     }
     TodosProjection {
         key: TODOS_PROJECTION_KEY.to_owned(),
