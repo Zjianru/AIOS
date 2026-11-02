@@ -505,10 +505,7 @@ async fn events_page_is_turn_aligned_and_budgeted() {
     let whole = whole.unwrap();
     assert_eq!(whole.events.len(), all.len(), "日志耗尽时返回整段");
     assert!(!whole.has_more, "没有更早的页");
-    assert_eq!(
-        whole.events[0].event_type, "turn/start",
-        "页首是轮起点（对齐）"
-    );
+    assert_eq!(whole.events[0].seq, 1, "日志耗尽时页首就是日志开头");
 
     // 收紧轮预算（minMessages=1/minTurns=1）：页首对齐到最近一轮的 turn/start。
     let budget = EventsRequest {
@@ -536,13 +533,17 @@ async fn events_page_is_turn_aligned_and_budgeted() {
         })
         .await
         .unwrap();
-    assert_eq!(earlier.events[0].seq, 1, "第一轮从 seq 1 开始");
+    assert_eq!(
+        earlier.events[0].event_type, "turn/start",
+        "下一页的页首也是轮起点"
+    );
     assert_eq!(
         earlier.events.last().map(|event| event.seq),
         Some(last_turn.events[0].seq - 1),
         "两页首尾相接"
     );
-    assert!(!earlier.has_more, "再往前没有了");
+    // 页首之前只剩发送时的 inbox 事件（seq 1），不算额外一轮；hasMore 如实反映。
+    assert_eq!(earlier.has_more, earlier.events[0].seq > all[0].seq);
 
     // maxMessages=1：预算先到，页可能不在轮起点（DSH：预算或耗尽赢过轮对齐）。
     let capped = service

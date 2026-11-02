@@ -49,6 +49,29 @@ fn message_has_stable_unique_id() {
 }
 
 #[test]
+fn user_source_rpc_id_matches_dsh_wire_shape() {
+    // T006.16b：prompt 的 requestId 写进 user/message source.rpcId（DSH types.ts:397/589）；
+    // 没有 rpcId 时字段省略（旧日志 v<=11 没有这个字段，v12 才接受新的带字段消息）。
+    let plain = Message::user_text("你好");
+    let plain_json = serde_json::to_value(&plain).unwrap();
+    assert_eq!(plain_json["source"], serde_json::json!({"kind": "user"}));
+
+    let with_id = Message::user_text_with_request_id("你好", "req-1");
+    let with_id_json = serde_json::to_value(&with_id).unwrap();
+    assert_eq!(
+        with_id_json["source"],
+        serde_json::json!({"kind": "user", "rpcId": "req-1"})
+    );
+    let restored: Message = serde_json::from_value(with_id_json).unwrap();
+    assert_eq!(
+        restored.source,
+        MessageSource::User {
+            rpc_id: Some("req-1".to_owned())
+        }
+    );
+}
+
+#[test]
 fn source_kind_and_fields_match_dsh() {
     // source kind 的字段照 DSH MessageSourceMap（T006.10 加 agent-instructions）。
     let user = Message::user_text("你好");

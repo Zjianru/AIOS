@@ -8,16 +8,15 @@
 
 mod root;
 
-use std::collections::HashMap;
 use std::sync::Mutex;
 
-use agent::Agent;
+use agent::{Agent, SendAdmission};
 use model::UserMessage;
 pub use root::{
     ROOT_STATE_FILE, RootError, RootSession, RootSessionOptions, RootStatus, open_root_session,
 };
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::broadcast;
 
 /// 服务事件流容量（订阅者落后时用 Lagged；重新跟随在 T006.16b）。
 const SERVICE_EVENT_CHANNEL_CAPACITY: usize = 1024;
@@ -231,24 +230,14 @@ pub enum ServiceError {
     Agent(#[from] agent::AgentError),
     #[error("回答被拒绝的问题：{0}")]
     AnswerRejected(String),
-    #[error("发送失败：{0}")]
-    SendFailed(String),
-    #[error("服务方法尚未实现（骨架）")]
-    NotImplemented,
-}
-
-/// 幂等表：同一 requestId 的并发/重试共享一次受理。
-enum SendEntry {
-    InFlight(Vec<oneshot::Sender<Result<SendResponse, String>>>),
-    Done(SendResponse),
 }
 
 /// 与载体无关的服务宿主：绑定一个 Agent/会话，调用经 dispatch 进入，事件从广播流出。
 pub struct ServiceHost {
     agent: Agent,
     events: broadcast::Sender<ServiceEvent>,
-    /// 同一 requestId 只进一次：并发时后到者等同一次的结果。
-    sent: tokio::sync::Mutex<HashMap<String, SendEntry>>,
+    /// 串行化发送受理：并发同 requestId 时一次进、其余拿到 durable 判重（T006.16b）。
+    send_lock: tokio::sync::Mutex<()>,
     forward: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
@@ -273,7 +262,7 @@ impl ServiceHost {
         Self {
             agent,
             events,
-            sent: tokio::sync::Mutex::new(HashMap::new()),
+            send_lock: tokio::sync::Mutex::new(()),
             forward: Mutex::new(Some(forward)),
         }
     }
@@ -303,69 +292,24 @@ impl ServiceHost {
         }
     }
 
-    /// 发消息：requestId 幂等（DSH prompt 的 requestId：已受理的重试返回原始受理，不重复插入）。
+    /// 发消息：requestId 幂等（DSH prompt 的 requestId；判定在 Agent 的 durable rpcId 上：
+    /// 同一 id 已进 inbox 或已落日志就不再插入，重启后仍然有效，T006.16b）。
     pub async fn send(&self, request: SendRequest) -> Result<SendResponse, ServiceError> {
-        let mut waiter = None;
-        {
-            let mut sent = self.sent.lock().await;
-            match sent.get_mut(&request.request_id) {
-                Some(SendEntry::Done(response)) => {
-                    return Ok(SendResponse {
-                        duplicate: true,
-                        ..response.clone()
-                    });
-                }
-                Some(SendEntry::InFlight(waiters)) => {
-                    let (tx, rx) = oneshot::channel();
-                    waiters.push(tx);
-                    waiter = Some(rx);
-                }
-                None => {
-                    sent.insert(request.request_id.clone(), SendEntry::InFlight(Vec::new()));
-                }
-            }
-        }
-        if let Some(waiter) = waiter {
-            return match waiter.await {
-                Ok(Ok(response)) => Ok(SendResponse {
-                    duplicate: true,
-                    ..response
-                }),
-                Ok(Err(message)) => Err(ServiceError::SendFailed(message)),
-                Err(_) => Err(ServiceError::SendFailed("等待原始受理失败".to_owned())),
-            };
-        }
-
-        let result = self
+        // 串行受理：并发同 id 时第一个进，其余在 Agent 的 durable 判重里变成 Duplicate。
+        let _serialized = self.send_lock.lock().await;
+        let admission = self
             .agent
-            .send(UserMessage::text(request.content), request.delivery.into())
-            .await;
-        let response = SendResponse {
-            request_id: request.request_id.clone(),
-            accepted: result.is_ok(),
-            duplicate: false,
-        };
-        {
-            let mut sent = self.sent.lock().await;
-            if let Some(SendEntry::InFlight(waiters)) = sent.remove(&request.request_id) {
-                for waiter in waiters {
-                    let _ = waiter.send(
-                        result
-                            .as_ref()
-                            .map(|()| response.clone())
-                            .map_err(ToString::to_string),
-                    );
-                }
-            }
-            // 失败不占幂等键：同一个 id 可以重试；成功则归档原始受理。
-            if result.is_ok() {
-                sent.insert(
-                    request.request_id.clone(),
-                    SendEntry::Done(response.clone()),
-                );
-            }
-        }
-        result.map(|()| response).map_err(ServiceError::Agent)
+            .send_with_request_id(
+                &request.request_id,
+                UserMessage::text(request.content),
+                request.delivery.into(),
+            )
+            .await?;
+        Ok(SendResponse {
+            request_id: request.request_id,
+            accepted: true,
+            duplicate: matches!(admission, SendAdmission::Duplicate),
+        })
     }
 
     /// 取消当前轮（清空 pending inbox + 中止正在跑的轮，照 T006.2a）。
@@ -410,14 +354,65 @@ impl ServiceHost {
         })
     }
 
-    /// follow（DSH :607）：按调用方最后的序号补齐日志事件（连续、不重复）。
-    pub async fn follow(&self, _request: FollowRequest) -> Result<FollowResponse, ServiceError> {
-        Err(ServiceError::NotImplemented)
+    /// follow（DSH :607）：按调用方最后的序号补齐日志事件（连续、不重复；重连带 lastSeq 即可）。
+    pub async fn follow(&self, request: FollowRequest) -> Result<FollowResponse, ServiceError> {
+        let events = self.agent.session_events_from(request.last_seq);
+        let last_seq = events
+            .last()
+            .map(|event| event.seq)
+            .unwrap_or(request.last_seq);
+        Ok(FollowResponse {
+            events: events.iter().map(service_event).collect(),
+            last_seq,
+        })
     }
 
-    /// events（DSH :540）：按轮对齐、带预算的日志页（默认 50/2/500）。
-    pub async fn events(&self, _request: EventsRequest) -> Result<EventsResponse, ServiceError> {
-        Err(ServiceError::NotImplemented)
+    /// events（DSH :540）：往回翻一页日志。默认预算 50/2/500（minMessages/minTurns/maxMessages：
+    /// 从页尾往回数，走到**轮起点**且两条下限都满足时停；预算或日志耗尽先到就按先到的停）。
+    pub async fn events(&self, request: EventsRequest) -> Result<EventsResponse, ServiceError> {
+        let all = self.agent.session_events_from(0);
+        if all.is_empty() {
+            return Ok(EventsResponse {
+                events: Vec::new(),
+                has_more: false,
+            });
+        }
+        let end_seq = request
+            .before_seq
+            .unwrap_or(u64::MAX)
+            .min(all.last().map(|event| event.seq).unwrap_or(0));
+        let max_messages = request.max_messages.unwrap_or(500).max(1);
+        let min_messages = request.min_messages.unwrap_or(50).min(max_messages);
+        let min_turns = request.min_turns.unwrap_or(2).max(1);
+
+        let mut selected: Vec<&session::Event> = Vec::new();
+        let mut messages = 0_usize;
+        let mut turns = 0_usize;
+        for event in all.iter().filter(|event| event.seq <= end_seq).rev() {
+            selected.push(event);
+            match &event.kind {
+                session::EventKind::UserMessage { .. }
+                | session::EventKind::AssistantMessage { .. } => messages += 1,
+                session::EventKind::TurnStart { .. } => turns += 1,
+                _ => {}
+            }
+            if messages >= max_messages {
+                break;
+            }
+            if matches!(event.kind, session::EventKind::TurnStart { .. })
+                && messages >= min_messages
+                && turns >= min_turns
+            {
+                break;
+            }
+        }
+        selected.reverse();
+        let first_seq = selected.first().map(|event| event.seq).unwrap_or(0);
+        let has_more = first_seq > all[0].seq;
+        Ok(EventsResponse {
+            events: selected.iter().map(|event| service_event(event)).collect(),
+            has_more,
+        })
     }
 }
 

@@ -33,7 +33,10 @@ use crate::SessionId;
 /// v11：assistant stream 帧新增 tool-call-delta，紧凑记录新增 tool-call-chunks（T006.14 照
 /// DSH llm/types.ts:496-508 与 assistant-stream.ts:20-46）；旧版本读不了新帧/新记录，按 spec
 /// 升版本、旧版本仍拒绝（不迁移）。
-pub const FORMAT_VERSION: u64 = 11;
+/// v12：message source 新增 user.rpcId（T006.16b 照 DSH types.ts:397/589 的 durable rpcId：
+/// 发消息的 requestId 写进 user/message source，重启后仍能判重）；旧版本读不了一条带 rpcId 的
+/// user/message（unit variant 不认新字段），按 spec 升版本、旧版本仍拒绝（不迁移）。
+pub const FORMAT_VERSION: u64 = 12;
 
 /// JSONL 第一行的会话 header。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
