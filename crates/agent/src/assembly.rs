@@ -40,6 +40,9 @@ impl Agent {
     /// 失败语义照 DSH：返回 Err 时不留下已启动的驱动任务、不唤醒排队输入、不把
     /// 半装配状态交给调用方（初始化失败由 create/resume 的 Err 承担）。
     pub async fn open(options: AgentOpenOptions) -> Result<Self, AgentError> {
+        // 配置在装载时先失败（DSH docs/user/develop/basic/config.md「Fail loudly on invalid
+        // configuration」）：不先物化会话文件，也不把半装配状态交给调用方。
+        options.config.validate()?;
         let model = DeepSeek::new(options.model)?;
         let tools = ToolSet::builtin();
         match options.resume {

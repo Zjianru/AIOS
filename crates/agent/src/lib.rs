@@ -357,7 +357,8 @@ fn cleanup_spill_files(store: &SessionStore, period_days: u64) {
     let _ = tools::spill::sweep_spill_root(&data_dir.join("spill"), cutoff);
 }
 
-/// T004 的 agent：create/resume/send/cancel/subscribe/idle 是唯一入口。
+/// T004 的 agent。产品组装入口是 Agent::open（crates/agent/src/assembly.rs）；
+/// create/resume 是 deps 注入的低层构造，留给测试/定制工具集或已有 Store 的调用方。
 #[derive(Clone)]
 pub struct Agent {
     inner: Arc<driver::Inner>,
@@ -365,7 +366,10 @@ pub struct Agent {
 
 impl Agent {
     /// 新会话上启动 agent（会话日志由 store 建好，尚无事件）。
+    ///
+    /// 配置非法时在建之前返回 Err（不清理 spill、不动工具集、不留下驱动任务）。
     pub async fn create(config: AgentConfig, mut deps: Deps) -> Result<Self, AgentError> {
+        config.validate()?;
         cleanup_spill_files(&deps.store, config.spill_cleanup_period_days);
         deps.tools
             .set_todo_parallel(config.allow_parallel_in_progress);
@@ -386,6 +390,8 @@ impl Agent {
                 store: deps.store.id().as_str().to_owned(),
             });
         }
+        // 配置校验先于任何副作用（spill 清理/修复 append）。
+        config.validate()?;
         cleanup_spill_files(&deps.store, config.spill_cleanup_period_days);
         deps.tools
             .set_todo_parallel(config.allow_parallel_in_progress);

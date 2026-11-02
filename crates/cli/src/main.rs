@@ -5,13 +5,13 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use agent::{
-    Agent, AgentConfig, AgentEvent, CompactionOutcome, Delivery, Deps, JobStatus, TurnOutcome,
+    Agent, AgentConfig, AgentEvent, AgentOpenOptions, CompactionOutcome, Delivery, JobStatus,
+    TurnOutcome,
 };
 use clap::{Args, Parser, Subcommand};
-use model::{DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS, DeepSeek, DeepSeekConfig, Effort, UserMessage};
-use session::{SessionId, SessionStore};
+use model::{DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS, DeepSeekConfig, Effort, UserMessage};
+use session::SessionId;
 use tokio::io::AsyncBufReadExt;
-use tools::ToolSet;
 
 #[derive(Parser)]
 #[command(name = "aios-dev", about = "AIOS 开发用 CLI（内核 agent loop）")]
@@ -160,6 +160,8 @@ fn config_from_args(
     Ok((config, agent))
 }
 
+/// 唯一组装入口（T006.15）：这里只把 CLI 参数/env 变成普通配置数据；模型、工具集、
+/// 会话存储的构造由 agent::Agent::open 一处完成（chat/run 共用，后续服务同样走它）。
 async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
     let data_dir = match &common.data_dir {
         Some(path) => path.clone(),
@@ -177,36 +179,18 @@ async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
     let base_url =
         std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_owned());
     let (deepseek_config, config) = config_from_args(common, base_url, api_key)?;
-    let model = DeepSeek::new(deepseek_config)?;
-    let tools = ToolSet::builtin();
-    match &common.resume {
-        Some(raw) => {
-            let id = SessionId::parse(raw)?;
-            let store = SessionStore::open(&data_dir, &id)?;
-            Ok(Agent::resume(
-                id,
-                config,
-                Deps {
-                    model,
-                    tools,
-                    store,
-                },
-            )
-            .await?)
-        }
-        None => {
-            let store = SessionStore::create(&data_dir, &cwd)?;
-            Ok(Agent::create(
-                config,
-                Deps {
-                    model,
-                    tools,
-                    store,
-                },
-            )
-            .await?)
-        }
-    }
+    let resume = match &common.resume {
+        Some(raw) => Some(SessionId::parse(raw)?),
+        None => None,
+    };
+    Ok(Agent::open(AgentOpenOptions {
+        data_dir,
+        cwd,
+        resume,
+        model: deepseek_config,
+        config,
+    })
+    .await?)
 }
 
 fn default_data_dir() -> Result<PathBuf, CliError> {
