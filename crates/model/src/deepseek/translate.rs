@@ -143,6 +143,15 @@ impl Translator {
                     },
                 );
                 chunks.push(StreamChunk::BlockStart { index, block_type });
+                // DSH translate.ts:130：tool_use 块的起始帧带 id/name、参数增量为空。
+                if let ContentBlock::ToolCall { id, name, .. } = &self.blocks[&index].content {
+                    chunks.push(StreamChunk::ToolCallDelta {
+                        index,
+                        id: id.clone(),
+                        name: Some(name.clone()),
+                        arguments_delta: String::new(),
+                    });
+                }
                 if let Some(text) = initial_delta {
                     match block_type {
                         BlockType::Text => chunks.push(StreamChunk::TextDelta { index, text }),
@@ -201,13 +210,19 @@ impl Translator {
                         }
                     }
                     "input_json_delta" => {
-                        if let ContentBlock::ToolCall { .. } = &mut block.content {
-                            block
-                                .json
-                                .push_str(&required_string(delta, "partial_json")?);
-                        } else {
+                        // DSH translate.ts:82-85：每段参数增量发一帧 tool-call-delta。
+                        let piece = required_string(delta, "partial_json")?;
+                        let ContentBlock::ToolCall { id, .. } = &block.content else {
                             return Err(malformed("input_json_delta 指向非工具调用块"));
-                        }
+                        };
+                        let id = id.clone();
+                        block.json.push_str(&piece);
+                        chunks.push(StreamChunk::ToolCallDelta {
+                            index,
+                            id,
+                            name: None,
+                            arguments_delta: piece,
+                        });
                     }
                     other => return Err(malformed(&format!("不支持的内容增量 {other}"))),
                 }
@@ -439,7 +454,7 @@ mod tests {
         ));
         chunks.extend(push(
             &mut translator,
-            json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"file\""}}),
+            json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"file"}}),
         ));
         chunks.extend(push(
             &mut translator,
@@ -466,7 +481,7 @@ mod tests {
                     index: 0,
                     id: "call_0".to_owned(),
                     name: None,
-                    arguments_delta: "{\"file\"".to_owned(),
+                    arguments_delta: "{\"file".to_owned(),
                 },
                 StreamChunk::ToolCallDelta {
                     index: 0,

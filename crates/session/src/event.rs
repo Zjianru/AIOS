@@ -30,7 +30,10 @@ use crate::SessionId;
 /// 稳定身份）、question/cancelled 同；新增 question/answered（答案项 {id, selected[], custom?}）；
 /// message source 新增 user-question-reply（重启后续答的迟到回答）。旧版本读不了新事件/新
 /// source/新字段，按 spec 升版本、旧版本仍拒绝（不迁移）。
-pub const FORMAT_VERSION: u64 = 10;
+/// v11：assistant stream 帧新增 tool-call-delta，紧凑记录新增 tool-call-chunks（T006.14 照
+/// DSH llm/types.ts:496-508 与 assistant-stream.ts:20-46）；旧版本读不了新帧/新记录，按 spec
+/// 升版本、旧版本仍拒绝（不迁移）。
+pub const FORMAT_VERSION: u64 = 11;
 
 /// JSONL 第一行的会话 header。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

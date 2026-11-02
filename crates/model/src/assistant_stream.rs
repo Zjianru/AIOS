@@ -57,14 +57,23 @@ pub enum AssistantStreamRecord {
 enum RunKind {
     Text,
     Reasoning,
+    ToolCall,
+}
+
+/// tool-call run 的工具身份：id 必填、name 只在起始帧带（DSH 的 sameName 判定）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ToolIdentity {
+    id: String,
+    name: Option<String>,
 }
 
 /// 当前还能继续追加的 run。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct OpenRun {
     kind: RunKind,
     index: usize,
     last_time: u64,
+    tool: Option<ToolIdentity>,
 }
 
 /// 把一帧帧流压成 `AssistantStreamRecord`；`snapshot` 是写进日志的稳定值。
@@ -88,6 +97,12 @@ impl AssistantStreamAccumulator {
             StreamChunk::ReasoningDelta { index, text } => {
                 self.push_delta(RunKind::Reasoning, *index, text, timed.time)
             }
+            StreamChunk::ToolCallDelta {
+                index,
+                id,
+                name,
+                arguments_delta,
+            } => self.push_tool_delta(*index, id, name.as_deref(), arguments_delta, timed.time),
             _ => {
                 self.open = None;
                 self.records.push(AssistantStreamRecord::Chunk {
@@ -109,7 +124,7 @@ impl AssistantStreamAccumulator {
 
     /// 连续同类型同 index 且时间不倒退的 delta 追加进最后一条 run，否则新开一条。
     fn push_delta(&mut self, kind: RunKind, index: usize, text: &str, time: u64) {
-        if let Some(open) = self.open
+        if let Some(open) = self.open.clone()
             && open.kind == kind
             && open.index == index
             && time >= open.last_time
@@ -151,12 +166,78 @@ impl AssistantStreamAccumulator {
                 dt: Vec::new(),
                 texts: vec![text.to_owned()],
             },
+            // tool-call delta 只走 push_tool_delta（调用点已分派）。
+            RunKind::ToolCall => return,
         };
         self.records.push(record);
         self.open = Some(OpenRun {
             kind,
             index,
             last_time: time,
+            tool: None,
+        });
+    }
+
+    /// tool-call delta 的压缩（照 DSH assistant-stream.ts:129-166）：同一工具、同 index、
+    /// 时间不倒退且 name 的带/不带状态一致才追加；起始终止帧（带 name）之后是纯参数增量。
+    /// 空 id 或空 name 的帧按 DSH 不压缩、原样落 chunk。
+    fn push_tool_delta(
+        &mut self,
+        index: usize,
+        id: &str,
+        name: Option<&str>,
+        args: &str,
+        time: u64,
+    ) {
+        if id.is_empty() || name == Some("") {
+            self.open = None;
+            self.records.push(AssistantStreamRecord::Chunk {
+                time,
+                chunk: StreamChunk::ToolCallDelta {
+                    index,
+                    id: id.to_owned(),
+                    name: name.map(str::to_owned),
+                    arguments_delta: args.to_owned(),
+                },
+            });
+            return;
+        }
+        let identity = ToolIdentity {
+            id: id.to_owned(),
+            name: name.map(str::to_owned),
+        };
+        if let Some(open) = self.open.clone()
+            && open.kind == RunKind::ToolCall
+            && open.index == index
+            && time >= open.last_time
+            && open.tool.as_ref() == Some(&identity)
+            && let Some(AssistantStreamRecord::ToolCallChunks {
+                dt,
+                args: fragments,
+                ..
+            }) = self.records.last_mut()
+        {
+            dt.push(time - open.last_time);
+            fragments.push(args.to_owned());
+            self.open = Some(OpenRun {
+                last_time: time,
+                ..open
+            });
+            return;
+        }
+        self.records.push(AssistantStreamRecord::ToolCallChunks {
+            time0: time,
+            index,
+            dt: Vec::new(),
+            id: identity.id.clone(),
+            name: identity.name.clone(),
+            args: vec![args.to_owned()],
+        });
+        self.open = Some(OpenRun {
+            kind: RunKind::ToolCall,
+            index,
+            last_time: time,
+            tool: Some(identity),
         });
     }
 }

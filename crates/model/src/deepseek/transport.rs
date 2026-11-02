@@ -78,18 +78,169 @@ fn is_context_overflow(message: &str, error_type: &str) -> bool {
 fn retry_after_ms(headers: Option<&reqwest::header::HeaderMap>) -> Option<u64> {
     let value = headers?.get(reqwest::header::RETRY_AFTER)?;
     let text = value.to_str().ok()?;
-    parse_retry_after(text.trim(), 0)
+    parse_retry_after(text.trim(), now_ms())
+}
+
+/// 当前 unix 毫秒（HTTP 日期换成相对延迟用）。
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            elapsed.as_millis().try_into().unwrap_or(u64::MAX)
+        })
 }
 
 /// 解析 retry-after 的值（DSH llm-deepseek/src/transport.ts:36-37：数字秒或 HTTP 日期，
-/// 换成毫秒；非正数返回 None 让重试层回退本地退避）。骨架只认数字秒。
-fn parse_retry_after(text: &str, _now_ms: u64) -> Option<u64> {
-    let seconds: f64 = text.parse().ok()?;
-    if seconds.is_finite() && seconds > 0.0 {
-        Some((seconds * 1000.0).round() as u64)
-    } else {
-        None
+/// 换成毫秒；非正数返回 None 让重试层回退本地退避）。
+fn parse_retry_after(text: &str, now_ms: u64) -> Option<u64> {
+    if let Ok(seconds) = text.parse::<f64>() {
+        return (seconds.is_finite() && seconds > 0.0).then(|| (seconds * 1000.0).round() as u64);
     }
+    let epoch_ms = parse_http_date_ms(text)?;
+    let delay = epoch_ms.checked_sub(now_ms)?;
+    (delay > 0).then_some(delay)
+}
+
+/// 解析 HTTP-date（RFC 9110 §5.6.7 的三种形式，和 DSH 用 Date.parse 接受的范围对齐）：
+/// IMF-fixdate（Sun, 06 Nov 1994 08:49:37 GMT）、RFC 850（Sunday, 06-Nov-94 08:49:37 GMT）、
+/// asctime（Sun Nov  6 08:49:37 1994）。返回 unix 毫秒。
+fn parse_http_date_ms(text: &str) -> Option<u64> {
+    let (weekday, rest) = match text.split_once(", ") {
+        Some((weekday, rest)) if !weekday.is_empty() => (weekday, rest),
+        _ => ("", text),
+    };
+    let _ = weekday;
+    if let Some(rest) = rest.strip_suffix(" GMT") {
+        let fields: Vec<&str> = rest.split_whitespace().collect();
+        return match fields.as_slice() {
+            // IMF-fixdate：06 Nov 1994 08:49:37
+            [day, month, year, time] if !year.contains('-') && !year.contains(':') => {
+                let (hour, minute, second) = parse_hms(time)?;
+                date_time_ms(
+                    parse_u32(day)?,
+                    month_number(month)?,
+                    year.parse().ok()?,
+                    hour,
+                    minute,
+                    second,
+                )
+            }
+            // RFC 850：06-Nov-94 08:49:37
+            [date, time] => {
+                let mut parts = date.split('-');
+                let day = parts.next()?;
+                let month = parts.next()?;
+                let year = two_digit_year(parts.next()?)?;
+                if parts.next().is_some() {
+                    return None;
+                }
+                let (hour, minute, second) = parse_hms(time)?;
+                date_time_ms(
+                    parse_u32(day)?,
+                    month_number(month)?,
+                    year,
+                    hour,
+                    minute,
+                    second,
+                )
+            }
+            _ => None,
+        };
+    }
+    // asctime：Sun Nov  6 08:49:37 1994
+    let fields: Vec<&str> = text.split_whitespace().collect();
+    let [_, month, day, time, year] = fields.as_slice() else {
+        return None;
+    };
+    let (hour, minute, second) = parse_hms(time)?;
+    date_time_ms(
+        parse_u32(day)?,
+        month_number(month)?,
+        year.parse().ok()?,
+        hour,
+        minute,
+        second,
+    )
+}
+
+fn parse_u32(text: &str) -> Option<u32> {
+    text.parse().ok()
+}
+
+/// RFC 9110 §5.6.7：两位年份 70–99 是 19xx，00–69 是 20xx（同 JS Date.parse 的取舍）。
+fn two_digit_year(text: &str) -> Option<i32> {
+    let year: i32 = text.parse().ok()?;
+    if !(0..=99).contains(&year) {
+        return None;
+    }
+    Some(if year >= 70 { 1900 + year } else { 2000 + year })
+}
+
+fn month_number(month: &str) -> Option<u32> {
+    Some(match month {
+        "Jan" => 1,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12,
+        _ => return None,
+    })
+}
+
+fn parse_hms(text: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = text.split(':');
+    let hour: u32 = parts.next()?.parse().ok()?;
+    let minute: u32 = parts.next()?.parse().ok()?;
+    let second: u32 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    Some((hour, minute, second))
+}
+
+/// (day, month, year, h, m, s) → unix 毫秒；日期非法返回 None。
+fn date_time_ms(
+    day: u32,
+    month: u32,
+    year: i32,
+    hour: u32,
+    minute: u32,
+    second: u32,
+) -> Option<u64> {
+    let days = days_from_civil(year, month, day)?;
+    let seconds = days
+        .checked_mul(86_400)?
+        .checked_add(i64::from(hour) * 3_600 + i64::from(minute) * 60 + i64::from(second))?;
+    u64::try_from(seconds).ok().map(|seconds| seconds * 1_000)
+}
+
+/// Howard Hinnant 的 days_from_civil：公历日期 → 1970-01-01 起的天数（含闰年校验）。
+fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let max_day = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    if day == 0 || day > max_day {
+        return None;
+    }
+    let month = i64::from(month);
+    let year = i64::from(year) - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + i64::from(day) - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Some(era * 146_097 + day_of_era - 719_468)
 }
 
 /// 把 reqwest 的传输错误归类。
