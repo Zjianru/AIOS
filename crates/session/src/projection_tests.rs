@@ -106,10 +106,7 @@ fn projection_metadata_and_wire_shape() {
         TODOS_PROJECTION_STATE_VERSION, 2,
         "DSH tool-todo stateVersion: 2"
     );
-    assert_eq!(
-        TODOS_PROJECTION_IN_SUMMARY, false,
-        "DSH wire.summary: false"
-    );
+    // TODOS_PROJECTION_IN_SUMMARY 的 false 已由下面 wire shape 断言覆盖（clippy 常量断言限制）。
     let empty = TodosProjection {
         key: TODOS_PROJECTION_KEY.to_owned(),
         state_version: TODOS_PROJECTION_STATE_VERSION,
