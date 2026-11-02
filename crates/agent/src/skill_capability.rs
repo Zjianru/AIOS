@@ -10,7 +10,6 @@ use crate::capabilities::{
 };
 use crate::skill_catalog::SkillCatalogState;
 
-use model::Message;
 use session::EventKind;
 
 pub(crate) struct SkillCapability {
@@ -59,11 +58,11 @@ impl Capability for SkillCapability {
                 .lock()
                 .expect("agent skill 目录锁被毒化")
                 .prepare(host.cwd(), host.data_dir(), &self.roots);
-            if let Some(text) = catalog {
+            if let Some(message) = catalog {
                 host.append(&[EventKind::UserMessage {
                     turn: event.turn(),
                     step: event.step(),
-                    message: Message::user_text(text),
+                    message,
                 }])
                 .await?;
             }

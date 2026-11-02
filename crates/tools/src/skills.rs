@@ -1,12 +1,16 @@
-//! skill 发现、frontmatter 解析与加载（照 DSH skill/skill-filesystem 的可观察语义做最小实现）。
+//! skill 发现、frontmatter 解析与加载（T006.11 照 DSH skill/skill-filesystem 改回）。
 //!
-//! 根优先级（后者被前者遮蔽）：项目根 `/.agents/skills`、`<data-dir>/skills`、配置的 skill_roots。
-//! 每个根只看顶层：目录 bundle `<name>/SKILL.md` 或平铺 `<name>.md`；frontmatter 必填 name/description，
-//! 名字必须是 kebab-case；解析失败或不合法的 skill 直接丢弃（工具也拒绝加载）。
-//! 不读 `~/.dsh`：根只来自项目根、data-dir 和配置。
+//! 根优先级（后者被前者遮蔽）：项目根 /.agents/skills、<data-dir>/skills、配置的 skill_roots；
+//! 不读 ~/.dsh。完整 YAML frontmatter（yaml-rust2 0.13，default-features=false：skill 文件按 UTF-8
+//! 读，不需要 encoding 特性）照 DSH 逐字段校验：name/description 必需非空、whenToUse 可选字符串、
+//! metadata 可选映射、disable-model-invocation/user-invocable 宽松布尔（bool、1/0、'1'/'0'、
+//! true/yes/on/false/no/off），旧键名直接报错；非法 skill 记警告（不再静默丢）。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+use yaml_rust2::yaml::Hash;
+use yaml_rust2::{Yaml, YamlLoader};
 
 use crate::ToolFailure;
 
@@ -19,309 +23,25 @@ pub const PROJECT_ROOT_MARKER: &str = ".git";
 /// 目录里渲染的 description 上限（照 DSH catalogDescriptionMaxLength 默认 500）。
 pub const CATALOG_DESCRIPTION_MAX: usize = 500;
 
-/// 一条可用 skill 的目录摘要。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 一条可用 skill 的目录摘要（DSH SkillSummary 的子集 + AIOS 的 path/base_dir）。
+#[derive(Debug, Clone, PartialEq)]
 pub struct SkillSummary {
     pub name: String,
     pub description: String,
+    /// 可选路由提示；照 DSH 不渲染进目录/工具结果，只供消费者读取。
+    pub when_to_use: Option<String>,
+    pub invocation: SkillInvocation,
+    /// 可选 frontmatter metadata 映射；照 DSH 只供消费者读取。
+    pub metadata: Option<serde_json::Value>,
     pub path: PathBuf,
     pub base_dir: PathBuf,
 }
 
 /// 加载后的 skill：摘要 + 全文 + 来源目录。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SkillContent {
     pub summary: SkillSummary,
     pub body: String,
-}
-
-struct Discovered {
-    summary: SkillSummary,
-    body: String,
-}
-
-/// 会话可用的 skill 根：项目根/.agents/skills、<data-dir>/skills、配置根（去重、保序）。
-pub fn skill_roots(cwd: &Path, data_dir: &Path, configured: &[PathBuf]) -> Vec<PathBuf> {
-    let project_root = find_project_root(cwd);
-    let mut roots = vec![project_root.join(PROJECT_SKILLS), data_dir.join("skills")];
-    for root in configured {
-        if !roots.contains(root) {
-            roots.push(root.clone());
-        }
-    }
-    roots
-}
-
-/// 发现所有可用 skill：按根顺序扫描，同名（先出现者胜）只保留一个。
-pub fn discover_skills(cwd: &Path, data_dir: &Path, configured: &[PathBuf]) -> Vec<SkillSummary> {
-    discover(cwd, data_dir, configured)
-        .into_iter()
-        .map(|found| found.summary)
-        .collect()
-}
-
-/// 按名字加载 skill 全文；名字非法或找不到返回错误。
-pub fn load_skill(
-    cwd: &Path,
-    data_dir: &Path,
-    configured: &[PathBuf],
-    name: &str,
-) -> Result<SkillContent, ToolFailure> {
-    if !is_skill_name(name) {
-        return Err(ToolFailure::plain(format!("invalid skill name \"{name}\"")));
-    }
-    discover(cwd, data_dir, configured)
-        .into_iter()
-        .find(|found| found.summary.name == name)
-        .map(|found| SkillContent {
-            summary: found.summary,
-            body: found.body,
-        })
-        .ok_or_else(|| {
-            ToolFailure::plain(format!(
-                "skill \"{name}\" is unknown or no longer available"
-            ))
-        })
-}
-
-/// skill 名是否合法：kebab-case（`[a-z0-9]+(-[a-z0-9]+)*`）。
-pub fn is_skill_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.split('-').all(|segment| {
-            !segment.is_empty()
-                && segment
-                    .chars()
-                    .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit())
-        })
-}
-
-/// 渲染 `<skill_content>` 块（加载工具返回给模型的正文 + 来源目录）。
-pub fn render_skill_content(skill: &SkillContent) -> String {
-    format!(
-        "<skill_content name=\"{}\">\n<skill_resources>\nBase directory for this skill: {}\nResolve relative paths mentioned by this skill against the base directory before using them. Load referenced resources only as needed.\n</skill_resources>\n\n<skill_instructions>\n{}\n</skill_instructions>\n</skill_content>",
-        skill.summary.name,
-        skill.summary.base_dir.display(),
-        skill.body.trim_end()
-    )
-}
-
-/// 目录里的一行描述：压成单行、限制长度（超长加省略号），并转义 system-reminder 结束标签。
-pub fn catalog_description(description: &str) -> String {
-    let single_line: String = description
-        .split_whitespace()
-        .collect::<Vec<&str>>()
-        .join(" ");
-    let truncated: String = single_line.chars().take(CATALOG_DESCRIPTION_MAX).collect();
-    let mut rendered = if single_line.chars().count() > CATALOG_DESCRIPTION_MAX {
-        format!("{truncated}…")
-    } else {
-        truncated
-    };
-    rendered = rendered.replace("</system-reminder>", "<\\/system-reminder>");
-    rendered
-}
-
-fn discover(cwd: &Path, data_dir: &Path, configured: &[PathBuf]) -> Vec<Discovered> {
-    let mut found: BTreeMap<String, Discovered> = BTreeMap::new();
-    for root in skill_roots(cwd, data_dir, configured) {
-        let Ok(entries) = std::fs::read_dir(&root) else {
-            continue;
-        };
-        let mut entries: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
-        entries.sort();
-        for entry in entries {
-            let name = entry
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or_default();
-            if name.starts_with('.') {
-                continue;
-            }
-            let (skill_file, base_dir) = if entry.is_dir() {
-                (entry.join(SKILL_FILE), entry.clone())
-            } else if name.ends_with(".md") {
-                (entry.clone(), root.clone())
-            } else {
-                continue;
-            };
-            let Ok(raw) = std::fs::read_to_string(&skill_file) else {
-                continue;
-            };
-            let Ok(parsed) = parse_skill(&raw) else {
-                continue;
-            };
-            if found.contains_key(&parsed.name) {
-                continue;
-            }
-            found.insert(
-                parsed.name.clone(),
-                Discovered {
-                    summary: SkillSummary {
-                        name: parsed.name,
-                        description: parsed.description,
-                        path: skill_file,
-                        base_dir,
-                    },
-                    body: parsed.body,
-                },
-            );
-        }
-    }
-    found.into_values().collect()
-}
-
-struct ParsedSkill {
-    name: String,
-    description: String,
-    body: String,
-}
-
-/// 解析 SKILL.md 的 YAML frontmatter：只支持 name/description（普通标量、引号、`|`/`>` 块标量），
-/// 其余键忽略；缺分隔线、缺字段、名字不合法都算解析失败。
-fn parse_skill(raw: &str) -> Result<ParsedSkill, String> {
-    let mut lines = raw.lines();
-    let first = lines.next().ok_or("missing YAML frontmatter")?;
-    if first.trim() != "---" {
-        return Err("missing YAML frontmatter".to_owned());
-    }
-    let mut frontmatter: Vec<&str> = Vec::new();
-    let mut body_lines: Vec<&str> = Vec::new();
-    let mut closed = false;
-    for line in lines {
-        if !closed {
-            if line.trim() == "---" {
-                closed = true;
-            } else {
-                frontmatter.push(line);
-            }
-        } else {
-            body_lines.push(line);
-        }
-    }
-    if !closed {
-        return Err("unterminated YAML frontmatter".to_owned());
-    }
-    let fields = parse_simple_yaml(&frontmatter)?;
-    let name = fields.get("name").cloned().ok_or("missing name")?;
-    let description = fields
-        .get("description")
-        .cloned()
-        .ok_or("missing description")?;
-    for (field, value) in [("name", &name), ("description", &description)] {
-        if value.starts_with('[') || value.starts_with('{') {
-            return Err(format!("frontmatter field {field} must be a scalar string"));
-        }
-    }
-    if !is_skill_name(&name) {
-        return Err(format!("invalid skill name \"{name}\""));
-    }
-    if description.trim().is_empty() {
-        return Err("empty description".to_owned());
-    }
-    Ok(ParsedSkill {
-        name,
-        description: description.trim().to_owned(),
-        body: body_lines.join("\n").trim().to_owned(),
-    })
-}
-
-/// 块标量记号（允许 YAML 的 chomping/indent 修饰：|-、>+、|2 等）。
-fn block_scalar_marker(value: &str) -> Option<char> {
-    let trimmed =
-        value.trim_end_matches(|character: char| matches!(character, '+' | '-' | '0'..='9'));
-    match trimmed {
-        "|" => Some('|'),
-        ">" => Some('>'),
-        _ => None,
-    }
-}
-
-/// 双引号标量内不能有未转义的引号。
-fn has_unescaped_double_quote(inner: &str) -> bool {
-    let mut escaped = false;
-    for character in inner.chars() {
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        match character {
-            '\\' => escaped = true,
-            '"' => return true,
-            _ => {}
-        }
-    }
-    escaped
-}
-
-fn parse_simple_yaml(lines: &[&str]) -> Result<BTreeMap<String, String>, String> {
-    let mut fields = BTreeMap::new();
-    let mut index = 0;
-    while index < lines.len() {
-        let line = lines[index];
-        index += 1;
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let Some((key, value)) = trimmed.split_once(':') else {
-            return Err(format!("invalid frontmatter line: {trimmed}"));
-        };
-        let key = key.trim().to_owned();
-        let value = value.trim();
-        let parsed = if let Some(marker) = block_scalar_marker(value) {
-            let folded = marker == '>';
-            let mut block: Vec<&str> = Vec::new();
-            while index < lines.len() {
-                let candidate = lines[index];
-                let indented = candidate.starts_with(' ') || candidate.starts_with('\t');
-                if !indented && !candidate.trim().is_empty() {
-                    break;
-                }
-                block.push(candidate.trim());
-                index += 1;
-            }
-            if folded {
-                block.join(" ")
-            } else {
-                block.join("\n")
-            }
-        } else if value.starts_with('"') || value.starts_with('\'') {
-            let quote = value.chars().next().expect("quote");
-            if value.len() < 2 || !value.ends_with(quote) {
-                return Err(format!("unterminated quoted scalar: {value}"));
-            }
-            let inner = &value[1..value.len() - 1];
-            if quote == '"' {
-                if has_unescaped_double_quote(inner) {
-                    return Err(format!("unescaped quote in scalar: {value}"));
-                }
-            } else if inner.contains('\'') {
-                return Err(format!("unsupported single-quote escape: {value}"));
-            }
-            inner.to_owned()
-        } else if value.starts_with('[') || value.starts_with('{') {
-            let closing = if value.starts_with('[') { ']' } else { '}' };
-            if !value.ends_with(closing) {
-                return Err(format!("unterminated flow collection: {value}"));
-            }
-            // 闭合的 flow 集合不是字符串标量：保留原文，由消费字段的类型检查拒绝。
-            value.to_owned()
-        } else {
-            value.to_owned()
-        };
-        fields.insert(key, parsed);
-    }
-    Ok(fields)
-}
-
-/// skill frontmatter 的完整字段（DSH skill-filesystem 的 ParsedSkill）。
-#[derive(Debug, Clone, PartialEq)]
-pub struct SkillFrontmatter {
-    pub name: String,
-    pub description: String,
-    pub when_to_use: Option<String>,
-    pub metadata: Option<serde_json::Value>,
-    pub invocation: SkillInvocation,
 }
 
 /// 模型/用户两侧调用策略（DSH SkillInvocationPolicy 的子集：AIOS 没有用户显式 /name 通道）。
@@ -347,32 +67,389 @@ pub struct SkillWarning {
     pub message: String,
 }
 
-/// 一次发现的完整结果：可用 skill + 警告（DSH candidates/incomplete 的 AIOS 形状）。
+/// 一次发现的完整结果：可用 skill（仅 model-invocable）+ 警告 + 是否不完整。
 #[derive(Debug, Default)]
 pub struct SkillDiscovery {
     pub skills: Vec<SkillSummary>,
     pub warnings: Vec<SkillWarning>,
+    pub incomplete: bool,
 }
 
-/// 解析 frontmatter 为完整字段。骨架阶段先沿用最小解析（只 name/description），
-/// 完整 YAML/字段/调用策略在 T006.11 实现。
-pub fn parse_skill_frontmatter(raw: &str) -> Result<SkillFrontmatter, String> {
-    let parsed = parse_skill(raw)?;
-    Ok(SkillFrontmatter {
-        name: parsed.name,
-        description: parsed.description,
-        when_to_use: None,
-        metadata: None,
-        invocation: SkillInvocation::default(),
+/// skill frontmatter 的完整字段（DSH skill-filesystem 的 ParsedSkill）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkillFrontmatter {
+    pub name: String,
+    pub description: String,
+    pub when_to_use: Option<String>,
+    pub metadata: Option<serde_json::Value>,
+    pub invocation: SkillInvocation,
+}
+
+struct Discovered {
+    summary: SkillSummary,
+    body: String,
+}
+
+/// 会话可用的 skill 根：项目根/.agents/skills、<data-dir>/skills、配置根（去重、保序）。
+pub fn skill_roots(cwd: &Path, data_dir: &Path, configured: &[PathBuf]) -> Vec<PathBuf> {
+    let project_root = find_project_root(cwd);
+    let mut roots = vec![project_root.join(PROJECT_SKILLS), data_dir.join("skills")];
+    for root in configured {
+        if !roots.contains(root) {
+            roots.push(root.clone());
+        }
+    }
+    roots
+}
+
+/// 发现所有可用 skill（仅 model-invocable，供目录注入）。
+pub fn discover_skills(cwd: &Path, data_dir: &Path, configured: &[PathBuf]) -> Vec<SkillSummary> {
+    discover_skill_catalog(cwd, data_dir, configured).skills
+}
+
+/// 发现 skill + 警告 + 完整性（T006.11：非法 skill 不再静默丢）。
+pub fn discover_skill_catalog(
+    cwd: &Path,
+    data_dir: &Path,
+    configured: &[PathBuf],
+) -> SkillDiscovery {
+    let (found, warnings, incomplete) = discover(cwd, data_dir, configured);
+    SkillDiscovery {
+        skills: found
+            .into_iter()
+            .filter(|found| found.summary.invocation.model_invocable)
+            .map(|found| found.summary)
+            .collect(),
+        warnings,
+        incomplete,
+    }
+}
+
+/// 按名字加载 skill 全文；名字非法、找不到、或模型不可调用都返回错误。
+pub fn load_skill(
+    cwd: &Path,
+    data_dir: &Path,
+    configured: &[PathBuf],
+    name: &str,
+) -> Result<SkillContent, ToolFailure> {
+    if !is_skill_name(name) {
+        return Err(ToolFailure::plain(format!("invalid skill name \"{name}\"")));
+    }
+    let (found, _warnings, _incomplete) = discover(cwd, data_dir, configured);
+    let Some(found) = found.into_iter().find(|found| found.summary.name == name) else {
+        return Err(ToolFailure::plain(format!(
+            "skill \"{name}\" is unknown or no longer available"
+        )));
+    };
+    if !found.summary.invocation.model_invocable {
+        return Err(ToolFailure::plain(format!(
+            "skill \"{name}\" is not available for model invocation"
+        )));
+    }
+    Ok(SkillContent {
+        summary: found.summary,
+        body: found.body,
     })
 }
 
-/// 发现 skill + 警告（骨架阶段行为同 discover_skills，warnings 恒空）。
-pub fn discover_skill_catalog(cwd: &Path, data_dir: &Path, configured: &[PathBuf]) -> SkillDiscovery {
-    SkillDiscovery {
-        skills: discover_skills(cwd, data_dir, configured),
-        warnings: Vec::new(),
+/// skill 名是否合法：kebab-case，即 [a-z0-9]+(-[a-z0-9]+)*。
+pub fn is_skill_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.split('-').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .chars()
+                    .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit())
+        })
+}
+
+/// 渲染 <skill_content> 块（加载工具返回给模型的正文 + 来源目录）。
+pub fn render_skill_content(skill: &SkillContent) -> String {
+    format!(
+        "<skill_content name=\"{}\">\n<skill_resources>\nBase directory for this skill: {}\nResolve relative paths mentioned by this skill against the base directory before using them. Load referenced resources only as needed.\n</skill_resources>\n\n<skill_instructions>\n{}\n</skill_instructions>\n</skill_content>",
+        skill.summary.name,
+        skill.summary.base_dir.display(),
+        skill.body.trim_end()
+    )
+}
+
+/// 目录里的一行描述：压成单行、按 DSH catalogDescription 截断（超长留 max-3 字符 + 三个点）；
+/// 转义属于渲染框架，不在这里做（typed source 存原文）。
+pub fn catalog_description(description: &str) -> String {
+    let normalized = description.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= CATALOG_DESCRIPTION_MAX {
+        return normalized;
     }
+    let truncated: String = normalized
+        .chars()
+        .take(CATALOG_DESCRIPTION_MAX - 3)
+        .collect();
+    format!("{truncated}...")
+}
+
+/// 解析 SKILL.md 的 YAML frontmatter 为 DSH 完整字段；错误消息照 DSH skill-filesystem 的 warn 文案。
+pub fn parse_skill_frontmatter(raw: &str) -> Result<SkillFrontmatter, String> {
+    let (yaml_text, _body) = split_frontmatter(raw)?;
+    let documents = YamlLoader::load_from_str(yaml_text)
+        .map_err(|error| format!("invalid YAML frontmatter: {error}"))?;
+    let Some(document) = documents.first() else {
+        return Err("missing YAML frontmatter".to_owned());
+    };
+    let Yaml::Hash(mapping) = document else {
+        return Err("missing YAML frontmatter".to_owned());
+    };
+    let name = string_field(mapping, "name");
+    let description = string_field(mapping, "description");
+    let (Some(name), Some(description)) = (name, description) else {
+        return Err("frontmatter requires name and description".to_owned());
+    };
+    if !is_skill_name(&name) {
+        return Err(format!("invalid skill name \"{name}\""));
+    }
+    let when_to_use = optional_string(mapping, "whenToUse");
+    let metadata = optional_metadata(mapping);
+    let invocation = parse_invocation_policy(mapping)
+        .map_err(|error| format!("invalid invocation frontmatter: {error}"))?;
+    Ok(SkillFrontmatter {
+        name,
+        description,
+        when_to_use,
+        metadata,
+        invocation,
+    })
+}
+
+fn discover(
+    cwd: &Path,
+    data_dir: &Path,
+    configured: &[PathBuf],
+) -> (Vec<Discovered>, Vec<SkillWarning>, bool) {
+    let mut found: BTreeMap<String, Discovered> = BTreeMap::new();
+    let mut warnings: Vec<SkillWarning> = Vec::new();
+    let mut incomplete = false;
+    for root in skill_roots(cwd, data_dir, configured) {
+        let entries = match std::fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(error) => {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    continue;
+                }
+                incomplete = true;
+                warnings.push(SkillWarning {
+                    path: root.clone(),
+                    message: format!(
+                        "skill root \"{}\" skipped: {error}. Other roots remain available; check this directory's permissions and symlinks. Discovery retries on the next lookup.",
+                        root.display()
+                    ),
+                });
+                continue;
+            }
+        };
+        let mut entries: Vec<PathBuf> = entries.flatten().map(|entry| entry.path()).collect();
+        entries.sort();
+        for entry in entries {
+            let entry_name = entry
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or_default();
+            if entry_name.starts_with('.') {
+                continue;
+            }
+            let (skill_file, base_dir) = if entry.is_dir() {
+                (entry.join(SKILL_FILE), entry.clone())
+            } else if entry_name.ends_with(".md") {
+                (entry.clone(), root.clone())
+            } else {
+                continue;
+            };
+            let raw = match std::fs::read_to_string(&skill_file) {
+                Ok(raw) => raw,
+                Err(error) => {
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        continue;
+                    }
+                    incomplete = true;
+                    warnings.push(SkillWarning {
+                        path: skill_file.clone(),
+                        message: format!(
+                            "skill file {} ignored: failed to read text file: {error}",
+                            skill_file.display()
+                        ),
+                    });
+                    continue;
+                }
+            };
+            match parse_skill_frontmatter(&raw) {
+                Ok(frontmatter) => {
+                    if found.contains_key(&frontmatter.name) {
+                        continue;
+                    }
+                    let body = split_frontmatter(&raw)
+                        .map(|(_, body)| body.trim().to_owned())
+                        .unwrap_or_default();
+                    found.insert(
+                        frontmatter.name.clone(),
+                        Discovered {
+                            summary: SkillSummary {
+                                name: frontmatter.name,
+                                description: frontmatter.description,
+                                when_to_use: frontmatter.when_to_use,
+                                invocation: frontmatter.invocation,
+                                metadata: frontmatter.metadata,
+                                path: skill_file,
+                                base_dir,
+                            },
+                            body,
+                        },
+                    );
+                }
+                Err(message) => warnings.push(SkillWarning {
+                    path: skill_file,
+                    message,
+                }),
+            }
+        }
+    }
+    (found.into_values().collect(), warnings, incomplete)
+}
+
+fn split_frontmatter(raw: &str) -> Result<(&str, &str), String> {
+    let Some(first_end) = raw.find('\n') else {
+        return Err("missing YAML frontmatter".to_owned());
+    };
+    if raw[..first_end].trim_end_matches('\r') != "---" {
+        return Err("missing YAML frontmatter".to_owned());
+    }
+    let start = first_end + 1;
+    let mut line_start = start;
+    loop {
+        match raw[line_start..].find('\n') {
+            Some(relative) => {
+                let line_end = line_start + relative;
+                if raw[line_start..line_end].trim_end_matches('\r') == "---" {
+                    return Ok((&raw[start..line_start], &raw[line_end + 1..]));
+                }
+                line_start = line_end + 1;
+            }
+            None => {
+                if raw[line_start..].trim_end_matches('\r') == "---" {
+                    return Ok((&raw[start..line_start], ""));
+                }
+                return Err("missing YAML frontmatter".to_owned());
+            }
+        }
+    }
+}
+
+fn hash_get<'a>(mapping: &'a Hash, key: &str) -> Option<&'a Yaml> {
+    mapping.get(&Yaml::String(key.to_owned()))
+}
+
+fn string_field(mapping: &Hash, key: &str) -> Option<String> {
+    match hash_get(mapping, key) {
+        Some(Yaml::String(value)) if !value.is_empty() => Some(value.clone()),
+        _ => None,
+    }
+}
+
+fn optional_string(mapping: &Hash, key: &str) -> Option<String> {
+    string_field(mapping, key)
+}
+
+fn optional_metadata(mapping: &Hash) -> Option<serde_json::Value> {
+    match hash_get(mapping, "metadata") {
+        Some(Yaml::Hash(metadata)) => Some(yaml_to_json(&Yaml::Hash(metadata.clone()))),
+        _ => None,
+    }
+}
+
+fn yaml_to_json(yaml: &Yaml) -> serde_json::Value {
+    match yaml {
+        Yaml::Real(real) => real
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(serde_json::Value::Number)
+            .unwrap_or_else(|| serde_json::Value::String(real.clone())),
+        Yaml::Integer(integer) => serde_json::Value::Number((*integer).into()),
+        Yaml::String(string) => serde_json::Value::String(string.clone()),
+        Yaml::Boolean(boolean) => serde_json::Value::Bool(*boolean),
+        Yaml::Array(array) => {
+            serde_json::Value::Array(array.iter().map(yaml_to_json).collect())
+        }
+        Yaml::Hash(mapping) => {
+            let mut object = serde_json::Map::new();
+            for (key, value) in mapping {
+                let key = match key {
+                    Yaml::String(key) => key.clone(),
+                    other => format!("{other:?}"),
+                };
+                object.insert(key, yaml_to_json(value));
+            }
+            serde_json::Value::Object(object)
+        }
+        Yaml::Alias(_) | Yaml::Null | Yaml::BadValue => serde_json::Value::Null,
+    }
+}
+
+fn frontmatter_boolean(mapping: &Hash, key: &str) -> Result<Option<bool>, String> {
+    let Some(value) = hash_get(mapping, key) else {
+        return Ok(None);
+    };
+    match value {
+        Yaml::Boolean(boolean) => Ok(Some(*boolean)),
+        Yaml::Integer(1) => Ok(Some(true)),
+        Yaml::Integer(0) => Ok(Some(false)),
+        Yaml::String(text) => match text.as_str() {
+            "1" => Ok(Some(true)),
+            "0" => Ok(Some(false)),
+            _ => match text.to_ascii_lowercase().as_str() {
+                "true" | "yes" | "on" => Ok(Some(true)),
+                "false" | "no" | "off" => Ok(Some(false)),
+                _ => Err(format!("frontmatter field \"{key}\" must be a boolean")),
+            },
+        },
+        _ => Err(format!("frontmatter field \"{key}\" must be a boolean")),
+    }
+}
+
+fn parse_invocation_policy(mapping: &Hash) -> Result<SkillInvocation, String> {
+    for (legacy, canonical) in [
+        ("disableModelInvocation", "disable-model-invocation"),
+        ("modelInvocable", "disable-model-invocation"),
+        ("userInvocable", "user-invocable"),
+    ] {
+        if hash_get(mapping, legacy).is_some() {
+            return Err(format!(
+                "frontmatter field \"{legacy}\" is unsupported; use \"{canonical}\""
+            ));
+        }
+    }
+    let disable_model_invocation = frontmatter_boolean(mapping, "disable-model-invocation")?;
+    let user_invocable = frontmatter_boolean(mapping, "user-invocable")?;
+    Ok(SkillInvocation {
+        model_invocable: disable_model_invocation != Some(true),
+        user_invocable: user_invocable != Some(false),
+    })
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct ParsedSkill {
+    name: String,
+    description: String,
+    body: String,
+}
+
+#[cfg(test)]
+fn parse_skill(raw: &str) -> Result<ParsedSkill, String> {
+    let frontmatter = parse_skill_frontmatter(raw)?;
+    let body = split_frontmatter(raw)?.1.trim().to_owned();
+    Ok(ParsedSkill {
+        name: frontmatter.name,
+        description: frontmatter.description,
+        body,
+    })
 }
 
 fn find_project_root(cwd: &Path) -> PathBuf {
@@ -410,7 +487,8 @@ mod tests {
         let raw = "---\nname: demo\ndescription: |\n  line one\n  line two\n---\nBody.\n";
         let parsed = parse_skill(raw).unwrap();
         assert_eq!(parsed.name, "demo");
-        assert_eq!(parsed.description, "line one\nline two");
+        // 完整 YAML 1.2：| 块标量保留 clip 末尾换行（DSH yaml.parse 同）。
+        assert_eq!(parsed.description, "line one\nline two\n");
         assert_eq!(parsed.body, "Body.");
         let quoted = "---\nname: 'quoted-skill'\ndescription: \"Desc.\"\n---\nBody\n";
         assert_eq!(parse_skill(quoted).unwrap().description, "Desc.");
@@ -441,8 +519,12 @@ mod tests {
     fn full_yaml_frontmatter_parses_dsh_fields() {
         let parsed = parse_skill_frontmatter(full_yaml_doc()).unwrap();
         assert_eq!(parsed.name, "pdf-tools");
-        assert_eq!(parsed.description, "Multi\nline");
-        assert_eq!(parsed.when_to_use.as_deref(), Some("Use when needed"));
+        assert_eq!(parsed.description, "Multi\nline\n");
+        assert_eq!(
+            parsed.when_to_use.as_deref(),
+            Some("Use when needed\n"),
+            "> 折叠块标量同样保留 clip 末尾换行"
+        );
         let metadata = parsed.metadata.expect("metadata 是映射");
         assert_eq!(metadata["owner"], "aios");
         assert_eq!(metadata["tags"][1], "two");
