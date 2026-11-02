@@ -65,7 +65,7 @@ async fn mount(server: &MockServer, responses: Vec<ResponseTemplate>) {
         .await;
 }
 
-fn compact_events(store: &SessionStore) -> Vec<(String, &'static str)> {
+fn compact_events(store: &session::SessionSnapshot) -> Vec<(String, &'static str)> {
     store
         .events()
         .iter()
@@ -117,7 +117,7 @@ async fn manual_compact_while_idle_compresses_immediately() {
         bodies[1].contains("compaction engine"),
         "第二次请求是摘要请求"
     );
-    let store = SessionStore::open(harness.data_dir.path(), &harness.id).unwrap();
+    let store = SessionStore::open_read_only(harness.data_dir.path(), &harness.id).unwrap();
     let events_in_log = compact_events(&store);
     assert_eq!(
         events_in_log
@@ -240,7 +240,7 @@ async fn resume_after_compaction_derives_same_messages() {
         .unwrap();
     wait_idle(&harness.agent, 20).await;
     let _ = harness.agent.compact(None).await;
-    let store = SessionStore::open(harness.data_dir.path(), &harness.id).unwrap();
+    let store = SessionStore::open_read_only(harness.data_dir.path(), &harness.id).unwrap();
     let before = store.derive_messages();
     assert!(
         before
@@ -270,7 +270,7 @@ async fn resume_after_compaction_derives_same_messages() {
     )
     .await
     .expect("续接应成功");
-    let store = SessionStore::open(harness.data_dir.path(), &harness.id).unwrap();
+    let store = SessionStore::open_read_only(harness.data_dir.path(), &harness.id).unwrap();
     assert_eq!(
         store.derive_messages(),
         before,
@@ -338,7 +338,7 @@ async fn compaction_ids_are_unique_across_resume() {
     .expect("续接应成功");
     let _ = resumed.compact(None).await;
 
-    let store = SessionStore::open(harness.data_dir.path(), &harness.id).unwrap();
+    let store = SessionStore::open_read_only(harness.data_dir.path(), &harness.id).unwrap();
     let ids: Vec<String> = store
         .events()
         .iter()
@@ -375,7 +375,7 @@ async fn compact_and_get_id() -> String {
         .unwrap();
     wait_idle(&harness.agent, 20).await;
     let _ = harness.agent.compact(None).await;
-    let store = SessionStore::open(harness.data_dir.path(), &harness.id).unwrap();
+    let store = SessionStore::open_read_only(harness.data_dir.path(), &harness.id).unwrap();
     store
         .events()
         .iter()
@@ -441,7 +441,7 @@ async fn idle_compact_does_not_create_empty_turn() {
         .unwrap();
     wait_idle(&harness.agent, 20).await;
     let turn_starts = |data_dir: &std::path::Path| {
-        SessionStore::open(data_dir, &harness.id)
+        SessionStore::open_read_only(data_dir, &harness.id)
             .unwrap()
             .events()
             .iter()
@@ -492,7 +492,7 @@ async fn two_compacts_in_same_batch_coalesce_into_one() {
         .filter(|body| body.contains("compaction engine"))
         .count();
     assert_eq!(summaries, 1, "同一批排队的 compact 应合并成一次压缩");
-    let store = SessionStore::open(harness.data_dir.path(), &harness.id).unwrap();
+    let store = SessionStore::open_read_only(harness.data_dir.path(), &harness.id).unwrap();
     let starts = store
         .events()
         .iter()
@@ -545,7 +545,7 @@ async fn second_compact_during_compaction_completes() {
     .await
     .is_ok();
     assert!(finished, "压缩进行中的第二个 compact 不能挂住");
-    let store = SessionStore::open(harness.data_dir.path(), &harness.id).unwrap();
+    let store = SessionStore::open_read_only(harness.data_dir.path(), &harness.id).unwrap();
     let starts = store
         .events()
         .iter()

@@ -163,7 +163,7 @@ async fn steer_enters_next_step_while_running() {
     assert_eq!(outcome, Some(TurnOutcome::Completed));
     assert!(streamed.contains("工具都跑完了。"));
 
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     let kinds: Vec<&str> = reopened
         .events()
         .iter()
@@ -212,7 +212,7 @@ async fn inject_enters_next_step_without_waking_idle_loop() {
         .await
         .unwrap();
     agent.idle().await;
-    let after_inject = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let after_inject = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     assert_eq!(
         after_inject.events().len(),
         1,
@@ -229,7 +229,7 @@ async fn inject_enters_next_step_without_waking_idle_loop() {
         .await
         .unwrap();
     agent.idle().await;
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     assert_eq!(count_turns(reopened.events()), 1);
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
@@ -283,7 +283,7 @@ async fn follow_up_opens_next_turn() {
     permits[0].1.add_permits(1);
     agent.idle().await;
 
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     assert_eq!(
         count_turns(reopened.events()),
         2,
@@ -340,7 +340,7 @@ async fn cancel_mid_stream_keeps_interrupted_text() {
     assert_eq!(streamed, "已经流出来的部分文字。");
     assert_eq!(outcome, Some(TurnOutcome::Aborted));
 
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     let interrupted = assistant_text_of(reopened.events(), true);
     assert_eq!(
         interrupted,
@@ -361,7 +361,7 @@ async fn cancel_mid_stream_keeps_interrupted_text() {
         .await
         .unwrap();
     agent.idle().await;
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     assert_eq!(count_turns(reopened.events()), 2);
     assert_eq!(
         turn_reasons(reopened.events()),
@@ -410,7 +410,7 @@ async fn cancel_batch_skips_unstarted_calls() {
     permits[0].1.add_permits(1);
     agent.idle().await;
 
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     let results: Vec<(String, String, Option<String>)> = reopened
         .events()
         .iter()
@@ -453,7 +453,7 @@ async fn cancel_batch_skips_unstarted_calls() {
         .await
         .unwrap();
     agent.idle().await;
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     assert_eq!(count_turns(reopened.events()), 2);
     assert_eq!(
         turn_reasons(reopened.events()),
@@ -494,7 +494,7 @@ async fn lost_wake_case(delivery: Delivery) {
         .unwrap();
     agent.idle().await;
 
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     assert_eq!(
         count_turns(reopened.events()),
         2,
@@ -592,7 +592,7 @@ async fn cancel_mid_stream_then_send_makes_exactly_one_more_turn() {
         "取消后立刻投递时 idle() 必须返回（不能空转）"
     );
 
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     assert_eq!(
         count_turns(reopened.events()),
         2,
@@ -671,7 +671,7 @@ async fn cancel_during_tool_then_send_makes_exactly_one_more_turn() {
     }
     assert_eq!(starts, 1, "工具不能被重跑");
 
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     assert_eq!(
         count_turns(reopened.events()),
         2,
@@ -721,7 +721,7 @@ async fn cancel_keeps_only_safe_interrupted_blocks() {
     server.release();
     agent.idle().await;
 
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     let mut interrupted = None;
     for event in reopened.events() {
         if let EventKind::AssistantMessage {
@@ -773,7 +773,7 @@ async fn steer_wakes_idle_loop() {
             .is_ok(),
         "steer 要唤醒空闲的 loop"
     );
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     assert_eq!(count_turns(reopened.events()), 1);
     assert_eq!(
         turn_reasons(reopened.events()),

@@ -74,7 +74,7 @@ async fn injection_happens_before_compaction_in_same_turn() {
         .unwrap();
     agent.idle().await;
 
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     let events = store.events();
     let instr = events
         .iter()

@@ -124,7 +124,7 @@ async fn pressure_triggers_compaction_and_next_request_uses_summary() {
         "较早历史应被摘要替换"
     );
 
-    let store = SessionStore::open(harness.data_dir.path(), &harness.id).unwrap();
+    let store = SessionStore::open_read_only(harness.data_dir.path(), &harness.id).unwrap();
     let kinds: Vec<&str> = store
         .events()
         .iter()
@@ -208,7 +208,7 @@ async fn overflow_compacts_then_retries_once() {
         body(&requests, 3).contains("<compacted-summary>"),
         "重试请求用压缩后的派生视图"
     );
-    let store = SessionStore::open(harness.data_dir.path(), &harness.id).unwrap();
+    let store = SessionStore::open_read_only(harness.data_dir.path(), &harness.id).unwrap();
     assert!(
         store
             .events()

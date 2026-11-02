@@ -433,6 +433,7 @@ async fn cancel_clears_pending_input_durably() {
     drop(snapshot);
 
     // 重启后队列为空：新消息的请求里没有已取消的那条。
+    drop(agent); // 单写者锁：模拟重启前先释放旧写者
     let server2 = MockServer::start().await;
     mount_responses(&server2, vec![FINAL_TEXT_SSE.to_owned()]).await;
     let resumed = resume_agent(data_dir.path(), &id, &server2.uri())

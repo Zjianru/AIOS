@@ -26,7 +26,7 @@ async fn next_started(started: &mut mpsc::UnboundedReceiver<ToolEvent>) -> Strin
     }
 }
 
-fn step_numbers(store: &SessionStore) -> Vec<(u64, u64)> {
+fn step_numbers(store: &session::SessionSnapshot) -> Vec<(u64, u64)> {
     store
         .events()
         .iter()
@@ -37,7 +37,7 @@ fn step_numbers(store: &SessionStore) -> Vec<(u64, u64)> {
         .collect()
 }
 
-fn turn_reasons(store: &SessionStore) -> Vec<session::TurnEndReason> {
+fn turn_reasons(store: &session::SessionSnapshot) -> Vec<session::TurnEndReason> {
     store
         .events()
         .iter()
@@ -93,7 +93,7 @@ async fn each_turn_starts_step_numbering_at_one() {
     permits[0].add_permits(1);
     wait_idle(&agent, 10).await;
 
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(
         step_numbers(&store),
         vec![(1, 1), (1, 2), (2, 1), (2, 2), (3, 1)],

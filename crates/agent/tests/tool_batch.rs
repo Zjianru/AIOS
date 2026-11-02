@@ -205,7 +205,8 @@ async fn batch_limits_ordering_and_exclusive_barrier() {
     assert_eq!(max_concurrency, 2, "同时在跑的工具不超过上限 2");
 
     task.await.expect("agent 驱动任务失败");
-    let reopened = SessionStore::open(fixture.data_dir.path(), &fixture.session_id).unwrap();
+    let reopened =
+        SessionStore::open_read_only(fixture.data_dir.path(), &fixture.session_id).unwrap();
     let events = reopened.events();
     assert_eq!(
         call_order(events),

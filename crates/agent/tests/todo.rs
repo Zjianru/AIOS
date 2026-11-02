@@ -41,7 +41,7 @@ async fn todo_write_appends_event_and_stays_in_history() {
         .unwrap();
     agent.idle().await;
 
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     let writes: Vec<&str> = store
         .events()
         .iter()
@@ -88,7 +88,7 @@ async fn resume_restores_todo_list_and_replacement_wins() {
     agent.idle().await;
     drop(agent);
 
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(
         last_todos(store.events()),
         Some(vec![session::TodoItem {
@@ -124,7 +124,7 @@ async fn resume_restores_todo_list_and_replacement_wins() {
         "续接后的请求历史里应还有原 todo 列表"
     );
 
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     let writes: Vec<&session::TodoItem> = store
         .events()
         .iter()

@@ -82,7 +82,7 @@ async fn mount(server: &MockServer, bodies: Vec<String>) {
 }
 
 /// 会话日志里某个 call_id 的 tool/result 文本。
-fn tool_result_text(store: &SessionStore, call_id: &str) -> String {
+fn tool_result_text(store: &session::SessionSnapshot, call_id: &str) -> String {
     for event in store.events() {
         let EventKind::ToolResult { message, .. } = &event.kind else {
             continue;
@@ -170,7 +170,7 @@ async fn oversized_tool_result_becomes_preview_with_locator() {
     agent.idle().await;
 
     let stored = tool_result_text(
-        &SessionStore::open(data_dir.path(), agent.id()).unwrap(),
+        &session::SessionStore::open_read_only(data_dir.path(), agent.id()).unwrap(),
         "call_0",
     );
     assert!(
@@ -244,7 +244,7 @@ async fn zero_spill_threshold_disables_spill() {
     agent.idle().await;
 
     let stored = tool_result_text(
-        &SessionStore::open(data_dir.path(), agent.id()).unwrap(),
+        &session::SessionStore::open_read_only(data_dir.path(), agent.id()).unwrap(),
         "call_0",
     );
     assert_eq!(stored, content, "禁用 spill 时全文留在上下文");
@@ -320,7 +320,7 @@ async fn tool_result_not_pruned_without_compaction_and_manual_compact_does_not_p
         .unwrap()
         .expect("有可压缩历史");
     assert!(outcome.shadowed_items > 0);
-    let store = SessionStore::open(data_dir.path(), agent.id()).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), agent.id()).unwrap();
     let events = store.events();
     assert!(
         events
@@ -436,7 +436,7 @@ async fn auto_pressure_compaction_prunes_tool_results() {
         .unwrap();
     agent.idle().await;
 
-    let store = SessionStore::open(data_dir.path(), agent.id()).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), agent.id()).unwrap();
     let events = store.events();
     let start_index = events
         .iter()
@@ -498,7 +498,7 @@ async fn overflow_recovery_prunes_tool_results() {
         .unwrap();
     agent.idle().await;
 
-    let store = SessionStore::open(data_dir.path(), agent.id()).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), agent.id()).unwrap();
     let events = store.events();
     let start_index = events
         .iter()

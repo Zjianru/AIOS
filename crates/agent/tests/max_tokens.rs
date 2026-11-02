@@ -26,7 +26,7 @@ fn gated_tools() -> (ToolSet, mpsc::UnboundedReceiver<ToolEvent>, ToolPermits) {
     (tools, started, permits)
 }
 
-fn count_turns(store: &SessionStore) -> usize {
+fn count_turns(store: &session::SessionSnapshot) -> usize {
     store
         .events()
         .iter()
@@ -34,7 +34,7 @@ fn count_turns(store: &SessionStore) -> usize {
         .count()
 }
 
-fn count_steps(store: &SessionStore) -> usize {
+fn count_steps(store: &session::SessionSnapshot) -> usize {
     store
         .events()
         .iter()
@@ -42,7 +42,7 @@ fn count_steps(store: &SessionStore) -> usize {
         .count()
 }
 
-fn turn_reasons(store: &SessionStore) -> Vec<TurnEndReason> {
+fn turn_reasons(store: &session::SessionSnapshot) -> Vec<TurnEndReason> {
     store
         .events()
         .iter()
@@ -53,7 +53,7 @@ fn turn_reasons(store: &SessionStore) -> Vec<TurnEndReason> {
         .collect()
 }
 
-fn assistant_blocks(store: &SessionStore) -> Vec<Vec<ContentBlock>> {
+fn assistant_blocks(store: &session::SessionSnapshot) -> Vec<Vec<ContentBlock>> {
     store
         .events()
         .iter()
@@ -64,7 +64,7 @@ fn assistant_blocks(store: &SessionStore) -> Vec<Vec<ContentBlock>> {
         .collect()
 }
 
-fn has_tool_events(store: &SessionStore) -> bool {
+fn has_tool_events(store: &session::SessionSnapshot) -> bool {
     store.events().iter().any(|event| {
         matches!(
             event.kind,
@@ -73,7 +73,7 @@ fn has_tool_events(store: &SessionStore) -> bool {
     })
 }
 
-fn has_tool_use_block(store: &SessionStore) -> bool {
+fn has_tool_use_block(store: &session::SessionSnapshot) -> bool {
     assistant_blocks(store)
         .iter()
         .flatten()
@@ -150,7 +150,7 @@ async fn max_tokens_does_not_execute_or_log_truncated_tool_call() {
     wait_idle(&agent, 5).await;
 
     assert!(started.try_recv().is_err(), "被截断的工具调用不能执行");
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(count_turns(&store), 1);
     assert_eq!(turn_reasons(&store), vec![TurnEndReason::MaxTokens]);
     assert!(
@@ -176,7 +176,7 @@ async fn max_tokens_does_not_execute_or_log_truncated_tool_call() {
         .await
         .unwrap();
     wait_idle(&agent, 5).await;
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(count_turns(&store), 2);
     assert_eq!(
         turn_reasons(&store),
@@ -212,7 +212,7 @@ async fn max_tokens_keeps_text_but_drops_truncated_tool_call() {
     wait_idle(&agent, 5).await;
 
     assert!(started.try_recv().is_err(), "工具不能执行");
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(turn_reasons(&store), vec![TurnEndReason::MaxTokens]);
     assert!(!has_tool_events(&store));
     assert_eq!(
@@ -287,7 +287,7 @@ async fn max_tokens_stays_sticky_across_later_step() {
     wait_idle(&agent, 10).await;
 
     assert!(started.try_recv().is_err(), "工具不能执行");
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(count_turns(&store), 1, "steer 不另开一轮");
     assert_eq!(
         turn_reasons(&store),

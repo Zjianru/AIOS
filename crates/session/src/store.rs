@@ -73,6 +73,11 @@ impl SessionSnapshot {
     pub fn events(&self) -> &[Event] {
         &self.events
     }
+
+    /// 只读派生请求消息（检查/测试用；与写 store 的派生一致，不改文件）。
+    pub fn derive_messages(&self) -> Vec<Message> {
+        derive_messages(&self.events)
+    }
 }
 
 impl SessionStore {

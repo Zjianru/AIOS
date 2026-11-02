@@ -221,7 +221,7 @@ async fn max_retries_exhausted_after_five_retries() {
         6,
         "首发 + 5 次重试"
     );
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(
         store
             .events()
@@ -273,7 +273,7 @@ async fn retryable_codes_are_retried_by_code() {
         "按码记录失败身份"
     );
     assert_eq!(server.received_requests().await.unwrap().len(), 4);
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(
         store
             .events()
@@ -334,7 +334,7 @@ async fn retry_after_streamed_content_matches_dsh() {
         !second.contains("半截"),
         "半截文本不进派生历史（下一次请求）：{second}"
     );
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(
         store
             .events()

@@ -215,7 +215,7 @@ async fn compaction_events_carry_dsh_fields_and_replacement() {
     assert!(replacement_seq < end_seq, "替换消息先于 end");
 
     // 派生历史读日志里的 checkpoint，不再自己合成第二条。
-    let store = SessionStore::open(harness.data_dir.path(), &harness.id).unwrap();
+    let store = SessionStore::open_read_only(harness.data_dir.path(), &harness.id).unwrap();
     let derived = store.derive_messages();
     let checkpoints = derived
         .iter()
@@ -310,7 +310,7 @@ async fn compaction_retries_until_below_threshold_or_error() {
         "单次事务成功：{ends:?}"
     );
     // 自动压缩失败不打断本轮：turn2 仍正常完成。
-    let store = SessionStore::open(harness.data_dir.path(), &harness.id).unwrap();
+    let store = SessionStore::open_read_only(harness.data_dir.path(), &harness.id).unwrap();
     let turn_ends = store
         .events()
         .iter()

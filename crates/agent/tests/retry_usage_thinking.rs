@@ -53,7 +53,7 @@ fn retries(events: &[AgentEvent]) -> Vec<(u32, u32, u64, String)> {
         .collect()
 }
 
-fn assistant_blocks(store: &SessionStore) -> Vec<Vec<ContentBlock>> {
+fn assistant_blocks(store: &session::SessionSnapshot) -> Vec<Vec<ContentBlock>> {
     store
         .events()
         .iter()
@@ -177,7 +177,7 @@ async fn rate_limit_retries_then_succeeds() {
 
     // T006.2b：重试写日志（llm/retry + llm/retry-started）。正常一轮 7 个事件 + 2 条 inbox
     // splice（收下、领取）+ 2 次重试 × 2 条 = 13。
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(store.events().len(), 13);
     assert_eq!(
         store
@@ -232,7 +232,7 @@ async fn auth_error_does_not_retry() {
         )),
         "401 以 AUTH error 结束"
     );
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(
         store
             .events()
@@ -287,7 +287,7 @@ async fn failure_after_streamed_content_is_retried_like_dsh() {
         )),
         "重试成功后这一轮 completed"
     );
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(
         assistant_blocks(&store),
         vec![vec![ContentBlock::Text {
@@ -349,7 +349,7 @@ async fn thinking_round_trips_with_signature() {
         .unwrap();
     wait_idle(&agent, 10).await;
 
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     let blocks = &assistant_blocks(&store)[0];
     assert_eq!(
         blocks,
@@ -423,7 +423,7 @@ async fn cancel_while_waiting_headers_aborts_promptly() {
             ..
         }
     )));
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(
         store
             .events()
@@ -482,7 +482,7 @@ async fn cancel_keeps_interrupted_thinking_without_signature() {
     server.release();
     wait_idle(&agent, 5).await;
 
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     let mut interrupted = None;
     for event in store.events() {
         if let EventKind::AssistantMessage {

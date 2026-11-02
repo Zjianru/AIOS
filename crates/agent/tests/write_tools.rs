@@ -24,7 +24,7 @@ async fn mount(server: &MockServer, bodies: Vec<String>) {
 }
 
 /// 会话日志里某个 call_id 的 tool/result：(is_error, error code)。
-fn tool_result(store: &SessionStore, call_id: &str) -> (bool, Option<String>) {
+fn tool_result(store: &session::SessionSnapshot, call_id: &str) -> (bool, Option<String>) {
     for event in store.events() {
         let EventKind::ToolResult { message, error, .. } = &event.kind else {
             continue;
@@ -72,7 +72,7 @@ async fn read_then_write_across_steps_succeeds() {
         "apply_patch 指导句缺重试建议：{system}"
     );
 
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(tool_result(&store, "call_0"), (false, None));
     assert_eq!(tool_result(&store, "call_1"), (false, None));
     assert_eq!(
@@ -109,7 +109,7 @@ async fn batch_write_before_read_is_rejected() {
         .unwrap();
     agent.idle().await;
 
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(
         tool_result(&store, "call_0"),
         (true, Some("FS_NOT_OBSERVED".to_owned()))
@@ -180,7 +180,7 @@ async fn edit_after_read_across_steps_succeeds() {
         .unwrap();
     agent.idle().await;
 
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(tool_result(&store, "call_0"), (false, None));
     assert_eq!(tool_result(&store, "call_1"), (false, None));
     assert_eq!(
@@ -214,7 +214,7 @@ async fn patch_after_read_across_steps_succeeds() {
         .unwrap();
     agent.idle().await;
 
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(tool_result(&store, "call_0"), (false, None));
     assert_eq!(tool_result(&store, "call_1"), (false, None));
     assert_eq!(

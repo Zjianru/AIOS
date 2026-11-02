@@ -170,7 +170,7 @@ async fn job_completion_during_turn_arrives_as_next_step() {
     assert!(bodies[1..].iter().any(|body| body.contains("finished")));
 
     // 同一轮内送达：日志里只有 1 个 turn/start，没有因通知另开一轮。
-    let store = session::SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let store = session::SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     let turns = store
         .events()
         .iter()

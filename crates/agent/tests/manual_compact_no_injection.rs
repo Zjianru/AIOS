@@ -10,7 +10,7 @@ use tools::ToolSet;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer};
 
-fn user_message_count(store: &SessionStore, marker: &str) -> usize {
+fn user_message_count(store: &session::SessionSnapshot, marker: &str) -> usize {
     store
         .events()
         .iter()
@@ -81,7 +81,7 @@ async fn manual_compact_does_not_inject_instructions_or_skills() {
         .is_ok();
     assert!(done, "/compact 不能挂住");
 
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(
         user_message_count(&store, "ROOT-UPDATED"),
         0,

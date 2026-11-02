@@ -132,7 +132,7 @@ async fn answer_continues_same_turn_and_logs_question() {
     };
     assert!(agent.answer(&questions[0].id, "Yes").await);
     wait_idle(&agent, 20).await;
-    let store = session::SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = session::SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     let events = store.events();
     assert_eq!(
         events
@@ -169,7 +169,7 @@ async fn cancel_while_waiting_revokes_question_and_aborts_turn() {
         !agent.answer(&questions[0].id, "Yes").await,
         "撤销后答案不再接收"
     );
-    let store = session::SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = session::SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     let events = store.events();
     assert!(
         events
@@ -244,7 +244,7 @@ async fn two_questions_are_all_delivered_and_answered() {
     assert_eq!(answers[0]["answer"].as_str(), Some("ANSWER-ONE"));
     assert_eq!(answers[1]["id"].as_str(), Some("q2"));
     assert_eq!(answers[1]["answer"].as_str(), Some("ANSWER-TWO"));
-    let store = session::SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = session::SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(
         store
             .events()
@@ -284,7 +284,7 @@ async fn invalid_ask_goes_through_unified_tool_result_path() {
     assert!(
         bodies[1].contains("ASK_USER_INVALID") || bodies[1].contains("invalid ask_user_question")
     );
-    let store = session::SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = session::SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert!(
         store
             .events()
@@ -345,7 +345,7 @@ async fn duplicate_question_ids_reject_whole_call() {
     assert!(
         bodies[1].contains("ASK_USER_INVALID") || bodies[1].contains("invalid ask_user_question")
     );
-    let store = session::SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = session::SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert!(
         !store
             .events()
@@ -377,7 +377,7 @@ async fn cancel_after_partial_answers_does_not_hang() {
     agent.cancel().await.unwrap();
     wait_idle(&agent, 20).await;
     assert_eq!(bodies(&server).await.len(), 1, "取消后不再发请求");
-    let store = session::SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = session::SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     let events = store.events();
     assert_eq!(
         events

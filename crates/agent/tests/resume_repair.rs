@@ -195,7 +195,7 @@ async fn resume_after_balanced_turn_sees_full_history() {
     drop(agent);
 
     // 平衡日志：续接不应追加任何修复事件。
-    let balanced = SessionStore::open(data_dir.path(), &id).unwrap();
+    let balanced = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     let balanced_events = balanced.events().len();
     assert!(
         balanced
@@ -255,7 +255,7 @@ async fn resume_after_balanced_turn_sees_full_history() {
         "续接后的请求要带新输入"
     );
 
-    let reopened = SessionStore::open(data_dir.path(), &id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(count_turns(reopened.events()), 2);
     assert_eq!(
         reopened.events().len(),
@@ -310,7 +310,7 @@ async fn resume_repairs_unknown_call_from_torn_tail() {
     .await;
 
     // 修复事件：tool/result（UNKNOWN）+ step/end + turn/end（interrupted）。
-    let repaired = SessionStore::open(crashed_dir.path(), &id).unwrap();
+    let repaired = SessionStore::open_read_only(crashed_dir.path(), &id).unwrap();
     let repaired_events = repaired.events();
     assert_eq!(
         repair_tail(repaired_events),
@@ -431,7 +431,7 @@ async fn resume_repairs_not_started_call_after_assistant_message() {
     )
     .await;
 
-    let repaired = SessionStore::open(crashed_dir.path(), &id).unwrap();
+    let repaired = SessionStore::open_read_only(crashed_dir.path(), &id).unwrap();
     assert_eq!(
         repair_tail(repaired.events()),
         vec!["tool/result", "step/end", "turn/end"]

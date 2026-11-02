@@ -94,7 +94,7 @@ async fn tool_round_trip() {
     assert_eq!(outcome, Some(TurnOutcome::Completed));
     drop(agent);
 
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     let kinds: Vec<&str> = reopened
         .events()
         .iter()
