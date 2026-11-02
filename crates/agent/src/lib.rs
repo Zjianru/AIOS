@@ -75,6 +75,10 @@ pub struct AgentConfig {
     pub instruction_roots: Vec<PathBuf>,
     /// 用户级 skill 根目录；Agent 还会固定加入 <data-dir>/skills。默认 ~/.agents/skills。
     pub skill_roots: Vec<PathBuf>,
+    /// todo_write 是否允许多个 in_progress（照 DSH tool-todo 的 allowParallelInProgress；
+    /// DSH bundle/base 设为 true）。false 时工具描述改成「只留一个」，多于一个 in_progress 的
+    /// 调用被拒。Agent 在 create/resume 时用它替换内置 todo_write（T006.12）。
+    pub allow_parallel_in_progress: bool,
 }
 
 impl Default for AgentConfig {
@@ -97,6 +101,7 @@ impl Default for AgentConfig {
                 .map(|home| vec![home.join("skills")])
                 .unwrap_or_default(),
             instruction_roots: home.map(|home| vec![home]).unwrap_or_default(),
+            allow_parallel_in_progress: true,
         }
     }
 }
@@ -358,8 +363,10 @@ pub struct Agent {
 
 impl Agent {
     /// 新会话上启动 agent（会话日志由 store 建好，尚无事件）。
-    pub async fn create(config: AgentConfig, deps: Deps) -> Result<Self, AgentError> {
+    pub async fn create(config: AgentConfig, mut deps: Deps) -> Result<Self, AgentError> {
         cleanup_spill_files(&deps.store, config.spill_cleanup_period_days);
+        deps.tools
+            .set_todo_parallel(config.allow_parallel_in_progress);
         Ok(Self {
             inner: driver::Inner::start(config, deps, 0)?,
         })
@@ -378,6 +385,8 @@ impl Agent {
             });
         }
         cleanup_spill_files(&deps.store, config.spill_cleanup_period_days);
+        deps.tools
+            .set_todo_parallel(config.allow_parallel_in_progress);
         // 续接先修复：给最后一个没收尾的 turn 补收尾（照 DSH 的 core/session/repair.ts）。
         // 只读日志扫描 + 一次批 append（seq 连续、fsync、失败回滚由 store 负责）；不重跑工具。
         if let Some(closers) = session::interrupted_turn_closers(deps.store.events()) {

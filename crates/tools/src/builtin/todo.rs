@@ -10,11 +10,21 @@ use crate::{Tool, ToolCall, ToolContext, ToolFailure, ToolFuture, ToolResult};
 /// todo 列表维护工具。
 pub struct TodoWriteTool {
     parameters: Value,
+    /// T006.12 照 DSH tool-todo 的 allowParallelInProgress：false 时只允许一个 in_progress。
+    /// 描述与校验都在装配时按策略定（Agent 在 create/resume 用 ToolSet::set_todo_parallel 替换）。
+    allow_parallel_in_progress: bool,
 }
 
 impl TodoWriteTool {
+    /// 默认策略：允许多个 in_progress（照 DSH bundle/base 的 allowParallelInProgress: true）。
     pub fn new() -> Self {
+        Self::new_with_parallel(true)
+    }
+
+    /// 按部署策略构造（DSH tool-todo Config.allowParallelInProgress）。
+    pub fn new_with_parallel(allow_parallel_in_progress: bool) -> Self {
         Self {
+            allow_parallel_in_progress,
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -38,6 +48,13 @@ impl TodoWriteTool {
     }
 }
 
+/// 照 DSH tool-todo 的 describe(allowParallel)：并行策略只改「in_progress 几个」这一句。
+fn describe(allow_parallel: bool) -> &'static str {
+    // skeleton：策略尚未生效，先保持现有（并行）描述，行为不变。
+    let _ = allow_parallel;
+    "Record and update a task list to plan multi-step work and show progress; skip it for trivial single-step tasks. Add one todo per concrete step before you start. While work remains, keep the todos being worked on `in_progress`, several only when work runs in parallel. Mark each todo `completed` as soon as it is done."
+}
+
 impl Default for TodoWriteTool {
     fn default() -> Self {
         Self::new()
@@ -50,7 +67,11 @@ impl Tool for TodoWriteTool {
     }
 
     fn description(&self) -> &str {
-        "Record and update a task list to plan multi-step work and show progress; skip it for trivial single-step tasks. Add one todo per concrete step before you start. While work remains, keep the todos being worked on `in_progress`, several only when work runs in parallel. Mark each todo `completed` as soon as it is done."
+        describe(self.allow_parallel_in_progress)
+    }
+
+    fn is_builtin_todo_write(&self) -> bool {
+        true
     }
 
     fn parameters(&self) -> &Value {

@@ -147,6 +147,7 @@ async fn accepts_valid_non_default_values() {
         spill_cleanup_period_days: 30,
         instruction_roots: vec![PathBuf::from("/tmp/aios-agents")],
         skill_roots: vec![PathBuf::from("/tmp/aios-agents/skills")],
+        allow_parallel_in_progress: true,
     };
     let agent = create_result(config).await.unwrap();
     agent.idle().await;

@@ -195,6 +195,12 @@ pub trait Tool: Send + Sync {
         ToolConcurrency::Exclusive
     }
 
+    /// 是否为内置 todo_write（T006.12：Agent 按 AgentConfig.allow_parallel_in_progress
+    /// 在装配时替换它的描述与校验策略；自定义同名工具默认 false，不被替换）。
+    fn is_builtin_todo_write(&self) -> bool {
+        false
+    }
+
     /// 执行一次调用。实现方不 panic；失败用 is_error 表达。
     fn execute<'a>(
         &'a self,
@@ -251,6 +257,20 @@ impl ToolSet {
             Box::new(AskUserQuestionTool::new()),
         ]);
         Self::new(tools)
+    }
+
+    /// T006.12：按部署配置替换内置 todo_write 的并行策略（Agent 在 create/resume 时按
+    /// AgentConfig.allow_parallel_in_progress 调；自定义 todo 工具不受影响）。
+    pub fn set_todo_parallel(&mut self, allow_parallel_in_progress: bool) {
+        if let Some(index) = self
+            .tools
+            .iter()
+            .position(|tool| tool.is_builtin_todo_write())
+        {
+            self.tools[index] = Box::new(TodoWriteTool::new_with_parallel(
+                allow_parallel_in_progress,
+            ));
+        }
     }
 
     pub fn is_empty(&self) -> bool {

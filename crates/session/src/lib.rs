@@ -8,6 +8,7 @@ mod error;
 mod event;
 mod id;
 mod lock;
+mod projection;
 mod repair;
 mod store;
 
@@ -18,6 +19,10 @@ pub use event::{
     ToolError, TurnEndReason, last_todos,
 };
 pub use id::SessionId;
+pub use projection::{
+    TODOS_PROJECTION_IN_SUMMARY, TODOS_PROJECTION_KEY, TODOS_PROJECTION_STATE_VERSION,
+    TodosProjection, TodosProjectionView, todos_projection,
+};
 pub use repair::{TurnClosers, interrupted_turn_closers};
 pub use store::{SessionSnapshot, SessionStore};
 
