@@ -113,7 +113,7 @@ impl Tool for JobOutputTool {
         context: &'a ToolContext,
     ) -> ToolFuture<'a, ToolResult> {
         Box::pin(async move {
-            match job_output(&call.arguments, context) {
+            match job_output(&call.arguments, context).await {
                 Ok(content) => ToolResult::success(call.id, content),
                 Err(failure) => ToolResult::error(call.id, failure),
             }
@@ -121,7 +121,7 @@ impl Tool for JobOutputTool {
     }
 }
 
-fn job_output(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
+async fn job_output(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
     let args = parse_object(arguments)?;
     let id = job_id(&args, "job_output")?;
     let wait = match args.get("wait") {
@@ -145,7 +145,9 @@ fn job_output(arguments: &str, context: &ToolContext) -> Result<String, ToolFail
         }
     };
     let read = if wait {
-        registry(context).wait(id, Duration::from_millis(timeout_ms))?
+        registry(context)
+            .wait_async(id, Duration::from_millis(timeout_ms))
+            .await?
     } else {
         registry(context).output(id)?
     };
@@ -261,7 +263,7 @@ impl Tool for JobKillTool {
         context: &'a ToolContext,
     ) -> ToolFuture<'a, ToolResult> {
         Box::pin(async move {
-            match job_kill(&call.arguments, context) {
+            match job_kill(&call.arguments, context).await {
                 Ok(content) => ToolResult::success(call.id, content),
                 Err(failure) => ToolResult::error(call.id, failure),
             }
@@ -269,14 +271,16 @@ impl Tool for JobKillTool {
     }
 }
 
-fn job_kill(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
+async fn job_kill(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
     let args = parse_object(arguments)?;
     let id = job_id(&args, "job_kill")?;
     let reason = args
         .get("reason")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let read = registry(context).kill(id, reason)?;
+    let read = registry(context)
+        .terminate(id, reason, crate::jobs::KILL_GRACE)
+        .await?;
     let body = body_of(&read);
     let body = if body == "(no output)" {
         String::new()
