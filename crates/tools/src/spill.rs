@@ -5,12 +5,9 @@
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::ToolFailure;
 use crate::session::SpillStore;
-
-static SPILL_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// 取回指引：模型用已有工具按路径取全文（照 DSH spill-local 的 retrievalHint）。
 pub const SPILL_RETRIEVAL_HINT: &str =
@@ -19,14 +16,11 @@ pub const SPILL_RETRIEVAL_HINT: &str =
 /// 保留头/尾之间插的间隔（照 DSH spill-policy 的 GAP）。
 const GAP: &str = "\n\n[...]\n\n";
 
-/// spill 文件名的随机前缀（DSH spill-local 用 randomBytes(6).hex；AIOS 不新增依赖，
-/// 用时间纳秒与进程内 counter 混合出 12 个十六进制字符；目录 0700、文件 0600 已限制访问）。
+/// spill 文件名的随机前缀（DSH spill-local 用 randomBytes(6).hex）：uuid v4 的 6 字节，
+/// 12 个十六进制字符；uuid 是既有 workspace 依赖（v4 走 OS entropy），不引新外部 crate。
 fn random_prefix() -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| duration.subsec_nanos() as u64);
-    let counter = SPILL_COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{:012x}", (nanos ^ (counter << 8)) & 0x0000_ffff_ffff_ffff)
+    let raw = uuid::Uuid::new_v4().simple().to_string();
+    raw[..12].to_owned()
 }
 
 /// 一次 spill 的结果：模型可读的绝对路径 + 完整文本的 UTF-8 字节数。

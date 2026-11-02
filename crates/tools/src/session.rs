@@ -36,8 +36,11 @@ pub struct SpillStore {
 impl SpillStore {
     /// Agent 建会话时用：root = <data-dir>/spill；文件落在 root/session-<hash>/（照 DSH spill-local）。
     pub fn new(root: impl Into<PathBuf>, session_id: impl Into<String>) -> Self {
+        let root = root.into();
+        // T006.7 fix：data-dir 可能是相对路径，spill 根绝对化后 locator 才是模型可读的绝对路径。
+        let root = std::path::absolute(&root).unwrap_or(root);
         Self {
-            root: Some(root.into()),
+            root: Some(root),
             session_id: Some(session_id.into()),
         }
     }

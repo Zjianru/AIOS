@@ -83,6 +83,9 @@ impl SessionSnapshot {
 impl SessionStore {
     /// 新建会话：生成 id、写 header（首行）并 fsync。
     pub fn create(data_dir: &Path, cwd: &Path) -> Result<Self, SessionError> {
+        // T006.7 fix：data-dir 可能是相对路径；日志/spill locator 等对外路径一律绝对化。
+        let data_dir = absolute_data_dir(data_dir)?;
+        let data_dir = data_dir.as_path();
         let cwd = fs::canonicalize(cwd)?;
         let cwd_text = cwd.to_str().ok_or_else(|| {
             SessionError::Io(std::io::Error::new(
@@ -119,6 +122,8 @@ impl SessionStore {
     /// 打开已有会话准备写。尾行不完整时只从读到的视图里丢掉，文件要等到第一次
     /// append 之前才截（照 DSH：读打开不改文件，写句柄在首次追加前修掉 torn tail）。
     pub fn open(data_dir: &Path, id: &SessionId) -> Result<Self, SessionError> {
+        let data_dir = absolute_data_dir(data_dir)?;
+        let data_dir = data_dir.as_path();
         // T006.5b：写打开先取非阻塞排他锁；被活写者占用立即报 AlreadyOwned（照 DSH）。
         let writer_lock = crate::lock::WriterLock::acquire(data_dir, id)?;
         let path = log_path(data_dir, id);
@@ -287,6 +292,11 @@ impl SessionStore {
         self.events.extend(batch);
         Ok(seqs)
     }
+}
+
+/// data-dir 绝对化（相对路径按进程 cwd 解析；不要求目录已存在）。T006.7 fix。
+fn absolute_data_dir(data_dir: &Path) -> Result<PathBuf, SessionError> {
+    std::path::absolute(data_dir).map_err(SessionError::Io)
 }
 
 fn log_path(data_dir: &Path, id: &SessionId) -> PathBuf {

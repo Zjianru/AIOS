@@ -287,3 +287,23 @@ fn crashed_writer_lock_is_released_with_process() {
     let reopened = wait_until_writable(data_dir.path(), &id);
     drop(reopened);
 }
+
+/// T006.7 fix：相对 data-dir 打开/创建时也把对外路径绝对化（spill locator/日志路径）。
+#[test]
+fn store_absolutizes_relative_data_dir() {
+    let cwd = std::env::current_dir().unwrap();
+    let dir = tempfile::tempdir_in(&cwd).unwrap();
+    let relative = dir.path().strip_prefix(&cwd).unwrap().to_path_buf();
+    let work = tempfile::tempdir().unwrap();
+    let store = SessionStore::create(&relative, work.path()).unwrap();
+    assert!(
+        store.path().is_absolute(),
+        "相对 data-dir 的日志路径也要绝对：{:?}",
+        store.path()
+    );
+    let id = store.id().clone();
+    assert!(id.as_str().len() > 0);
+    drop(store);
+    let reopened = SessionStore::open(&relative, &id).unwrap();
+    assert!(reopened.path().is_absolute(), "写打开同样绝对化");
+}

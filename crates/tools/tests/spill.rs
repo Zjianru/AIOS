@@ -154,3 +154,48 @@ fn bound_result_keeps_head_tail_and_notice() {
     assert!(bound_result(&store, "big_tool", "call_3", &content, 0).is_none());
     assert!(bound_result(&store, "read", "call_4", &content, 12_500).is_none());
 }
+
+#[test]
+fn random_prefix_is_12_hex_and_varies() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = ToolSessionState::new(dir.path(), "s1");
+    let prefix = |saved: &tools::SpillRef| {
+        saved
+            .locator
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split_once('-')
+            .unwrap()
+            .0
+            .to_owned()
+    };
+    let first = prefix(&state.spill().save_text("big.txt", "a").unwrap());
+    let second = prefix(&state.spill().save_text("big.txt", "b").unwrap());
+    for random in [&first, &second] {
+        assert_eq!(random.len(), 12, "uuid v4 前 6 字节 -> 12 hex：{random}");
+        assert!(
+            random
+                .chars()
+                .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase()),
+            "{random}"
+        );
+    }
+    assert_ne!(first, second, "uuid v4 entropy：两次落盘前缀应不同");
+}
+
+#[test]
+fn relative_data_dir_still_yields_absolute_locator() {
+    let cwd = std::env::current_dir().unwrap();
+    let dir = tempfile::tempdir_in(&cwd).unwrap();
+    let relative = dir.path().strip_prefix(&cwd).unwrap();
+    let state = ToolSessionState::new(relative, "s-rel");
+    let saved = state.spill().save_text("big.txt", "x").unwrap();
+    assert!(
+        saved.locator.is_absolute(),
+        "相对 data-dir 也要给绝对 locator：{:?}",
+        saved.locator
+    );
+    assert_eq!(fs::read_to_string(&saved.locator).unwrap(), "x");
+}
