@@ -289,7 +289,7 @@ impl ServiceHost {
                         result
                             .as_ref()
                             .map(|()| response.clone())
-                            .map_err(|error| error.to_string()),
+                            .map_err(ToString::to_string),
                     );
                 }
             }
