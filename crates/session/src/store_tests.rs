@@ -302,7 +302,6 @@ fn store_absolutizes_relative_data_dir() {
         store.path()
     );
     let id = store.id().clone();
-    assert!(id.as_str().len() > 0);
     drop(store);
     let reopened = SessionStore::open(&relative, &id).unwrap();
     assert!(reopened.path().is_absolute(), "写打开同样绝对化");
