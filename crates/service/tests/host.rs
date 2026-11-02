@@ -1,0 +1,387 @@
+//! T006.16a：载体无关服务宿主的红测试（调用面 / requestId 幂等 / 事件面）。
+//!
+//! DSH 对照：packages/api/session-controller/src/index.ts 的 prompt/cancel/events/state 方法面；
+//! requestId 幂等对应 DSH prompt 的 requestId（:465 起的 prompt 方法，重复受理不重复插入）。
+
+use std::time::Duration;
+
+use agent::{Agent, AgentConfig};
+use model::{DeepSeek, DeepSeekConfig, Effort};
+use service::{
+    AnswerRequest, CancelRequest, CompactRequest, DeliveryMode, SendRequest, ServiceAnswer,
+    ServiceEvent, ServiceHost, StatusRequest,
+};
+use session::{SessionId, SessionStore};
+use tokio::sync::broadcast;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+const FINAL_TEXT_SSE: &str = r#"event: message_start
+data: {"type":"message_start","message":{"id":"m_final","type":"message","role":"assistant","model":"deepseek-flash","content":[],"usage":{"input_tokens":9,"output_tokens":2}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"完成。"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#;
+
+/// 一次 ask_user_question（两个问题：q1 选项、q2 自定义）。
+const ASK_TWO_SSE: &str = r#"event: message_start
+data: {"type":"message_start","message":{"id":"m_ask","type":"message","role":"assistant","model":"deepseek-flash","content":[],"usage":{"input_tokens":10,"output_tokens":1}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_ask","name":"ask_user_question","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"questions\":[{\"id\":\"q1\",\"question\":\"P1?\",\"options\":[{\"label\":\"Yes\"},{\"label\":\"No\"}]},{\"id\":\"q2\",\"question\":\"P2?\"}]}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":2}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#;
+
+fn sse(body: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_string(body.to_owned())
+}
+
+async fn mount(server: &MockServer, responses: Vec<ResponseTemplate>) {
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(service_sequence(responses))
+        .mount(server)
+        .await;
+}
+
+/// 顺序回放（wiremock 的 Respond 实现；与 agent 测试的 SequenceResponder 同形）。
+fn service_sequence(responses: Vec<ResponseTemplate>) -> Sequence {
+    Sequence {
+        responses: std::sync::Mutex::new(responses),
+    }
+}
+
+struct Sequence {
+    responses: std::sync::Mutex<Vec<ResponseTemplate>>,
+}
+
+impl wiremock::Respond for Sequence {
+    fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
+        let mut responses = self.responses.lock().unwrap();
+        if responses.len() > 1 {
+            responses.remove(0)
+        } else {
+            responses
+                .first()
+                .cloned()
+                .unwrap_or_else(|| ResponseTemplate::new(500))
+        }
+    }
+}
+
+async fn setup(server: &MockServer) -> (Agent, tempfile::TempDir, SessionId) {
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::create(data_dir.path(), cwd.path()).unwrap();
+    let id = store.id().clone();
+    let config = AgentConfig {
+        instruction_roots: vec![data_dir.path().join("agents-home")],
+        skill_roots: vec![data_dir.path().join("skills-home")],
+        ..AgentConfig::default()
+    };
+    let model = DeepSeek::new(DeepSeekConfig {
+        base_url: server.uri(),
+        api_key: "test-key".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        max_tokens: 2048,
+        context_window: model::DEFAULT_CONTEXT_WINDOW,
+        effort: Effort::High,
+    })
+    .unwrap();
+    let agent = Agent::create(
+        config,
+        agent::Deps {
+            model,
+            tools: tools::ToolSet::builtin(),
+            store,
+        },
+    )
+    .await
+    .unwrap();
+    (agent, data_dir, id)
+}
+
+fn send_request(request_id: &str, text: &str) -> SendRequest {
+    SendRequest {
+        request_id: request_id.to_owned(),
+        content: text.to_owned(),
+        delivery: DeliveryMode::FollowUp,
+    }
+}
+
+async fn next_event(events: &mut broadcast::Receiver<ServiceEvent>) -> ServiceEvent {
+    tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .expect("服务事件超时")
+        .expect("服务事件流不应关闭")
+}
+
+/// 收到 turn/end 或超时就返回（不 panic，便于红期做断言）。
+async fn collect_turn_events(events: &mut broadcast::Receiver<ServiceEvent>) -> Vec<ServiceEvent> {
+    let mut collected = Vec::new();
+    loop {
+        let next = tokio::time::timeout(Duration::from_millis(800), events.recv()).await;
+        match next {
+            Ok(Ok(event)) => {
+                let done = event.event_type == "turn/end";
+                collected.push(event);
+                if done {
+                    break;
+                }
+            }
+            _ => break,
+        }
+    }
+    collected
+}
+
+fn turn_ends(data_dir: &std::path::Path, id: &SessionId) -> Vec<session::TurnEndReason> {
+    SessionStore::open_read_only(data_dir, id)
+        .unwrap()
+        .events()
+        .iter()
+        .filter_map(|event| match &event.kind {
+            session::EventKind::TurnEnd { reason, .. } => Some(reason.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn send_with_same_request_id_enters_once() {
+    let server = MockServer::start().await;
+    mount(&server, vec![sse(FINAL_TEXT_SSE)]).await;
+    let (agent, data_dir, id) = setup(&server).await;
+    let service = ServiceHost::new(agent.clone());
+
+    let first = service.send(send_request("req-1", "你好")).await;
+    assert!(first.is_ok(), "第一次 send 应成功：{first:?}");
+    let first = first.unwrap();
+    assert!(first.accepted, "第一次要受理");
+    assert!(!first.duplicate, "第一次不是重复");
+
+    let second = service.send(send_request("req-1", "你好")).await;
+    assert!(
+        second.is_ok(),
+        "重复 requestId 也要返回原始受理：{second:?}"
+    );
+    let second = second.unwrap();
+    assert!(second.duplicate, "同 requestId 第二次要标 duplicate");
+    assert!(second.accepted, "重复请求返回原始受理（accepted=true）");
+
+    agent.idle().await;
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        1,
+        "同一个 requestId 只能触发一次模型请求"
+    );
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    let user_messages = store
+        .events()
+        .iter()
+        .filter(|event| matches!(event.kind, session::EventKind::UserMessage { .. }))
+        .count();
+    assert_eq!(user_messages, 1, "同 requestId 只进一次会话日志");
+}
+
+#[tokio::test]
+async fn cancel_interrupts_active_turn() {
+    let server = MockServer::start().await;
+    // 延迟 10s 的响应：send 之后模型请求停在等待里，用于取消。
+    mount(
+        &server,
+        vec![sse(FINAL_TEXT_SSE).set_delay(Duration::from_secs(10))],
+    )
+    .await;
+    let (agent, data_dir, id) = setup(&server).await;
+    let service = ServiceHost::new(agent.clone());
+    let mut events = service.events();
+
+    let started = service.send(send_request("req-cancel", "跑一轮")).await;
+    assert!(started.is_ok(), "send 应成功：{started:?}");
+    let turn_start = next_event(&mut events).await;
+    assert_eq!(turn_start.event_type, "turn/start", "先看到 turn/start");
+
+    let cancelled = service.cancel(CancelRequest {}).await;
+    assert!(cancelled.is_ok(), "cancel 应成功：{cancelled:?}");
+    assert!(cancelled.unwrap().cancelled, "cancel 要报告已请求取消");
+    agent.idle().await;
+    assert_eq!(
+        turn_ends(data_dir.path(), &id),
+        vec![session::TurnEndReason::Aborted {
+            reason: session::AbortCause::User
+        }],
+        "取消后这一轮以 aborted 收尾"
+    );
+}
+
+#[tokio::test]
+async fn answer_applies_whole_batch_with_selected_and_custom() {
+    let server = MockServer::start().await;
+    mount(&server, vec![sse(ASK_TWO_SSE), sse(FINAL_TEXT_SSE)]).await;
+    let (agent, _data_dir, _id) = setup(&server).await;
+    let service = ServiceHost::new(agent.clone());
+    let mut events = service.events();
+
+    let started = service
+        .send(send_request("req-answer", "要问两个问题"))
+        .await;
+    assert!(started.is_ok(), "send 应成功：{started:?}");
+    // 等到两个 question/asked 都已落日志。
+    loop {
+        let event = next_event(&mut events).await;
+        if event.event_type == "question/asked" {
+            break;
+        }
+    }
+    next_event(&mut events).await;
+
+    let answered = service
+        .answer(AnswerRequest {
+            answers: vec![
+                ServiceAnswer {
+                    question_id: "q1".to_owned(),
+                    selected: vec!["Yes".to_owned()],
+                    custom: None,
+                },
+                ServiceAnswer {
+                    question_id: "q2".to_owned(),
+                    selected: Vec::new(),
+                    custom: Some("我自己的答案".to_owned()),
+                },
+            ],
+        })
+        .await;
+    assert!(answered.is_ok(), "整批回答应成功：{answered:?}");
+    assert_eq!(answered.unwrap().applied, 2, "整批两条都要被接受");
+    agent.idle().await;
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2, "回答后续上同一轮");
+    let second = String::from_utf8(requests[1].body.clone()).unwrap();
+    assert!(
+        second.contains("\"selected\":[\"Yes\"]") && second.contains("\"custom\":\"我自己的答案\""),
+        "tool/result 要带 T006.13 的 selected/custom：{second}"
+    );
+}
+
+#[tokio::test]
+async fn compact_returns_first_version_shape() {
+    let server = MockServer::start().await;
+    mount(&server, vec![sse(FINAL_TEXT_SSE)]).await;
+    let (agent, _data_dir, _id) = setup(&server).await;
+    let service = ServiceHost::new(agent.clone());
+    // 没有任何可压缩历史：方法要通、结果形状是 Option（None）。
+    let response = service.compact(CompactRequest::default()).await;
+    assert!(response.is_ok(), "compact 应成功：{response:?}");
+    assert!(
+        response.unwrap().compacted.is_none(),
+        "没有可压缩历史时 compacted=None"
+    );
+}
+
+#[tokio::test]
+async fn status_reports_object_phase_and_pending_questions() {
+    let server = MockServer::start().await;
+    mount(
+        &server,
+        vec![sse(FINAL_TEXT_SSE).set_delay(Duration::from_secs(10))],
+    )
+    .await;
+    let (agent, _data_dir, id) = setup(&server).await;
+    let service = ServiceHost::new(agent.clone());
+
+    let idle = service.status(StatusRequest {}).await;
+    assert!(idle.is_ok(), "status 应成功：{idle:?}");
+    let idle = idle.unwrap();
+    assert_eq!(idle.object.session_id, id.as_str());
+    assert!(!idle.running, "空闲时 running=false");
+    assert_eq!(idle.pending_questions, 0);
+
+    let mut events = service.events();
+    assert!(service.send(send_request("req-status", "跑")).await.is_ok());
+    let started = next_event(&mut events).await;
+    assert_eq!(started.event_type, "turn/start");
+    let running = service.status(StatusRequest {}).await;
+    assert!(running.is_ok(), "运行中 status 也要成功：{running:?}");
+    assert!(running.unwrap().running, "运行中 running=true");
+    assert!(service.cancel(CancelRequest {}).await.is_ok());
+    agent.idle().await;
+}
+
+#[tokio::test]
+async fn events_carry_contiguous_seq_type_and_data() {
+    let server = MockServer::start().await;
+    mount(&server, vec![sse(FINAL_TEXT_SSE)]).await;
+    let (agent, data_dir, id) = setup(&server).await;
+    let service = ServiceHost::new(agent.clone());
+    let mut events = service.events();
+
+    assert!(
+        service
+            .send(send_request("req-events", "事件面"))
+            .await
+            .is_ok()
+    );
+    agent.idle().await;
+    let observed = collect_turn_events(&mut events).await;
+    assert!(!observed.is_empty(), "服务事件面要能收到日志事件");
+
+    let types: Vec<&str> = observed
+        .iter()
+        .map(|event| event.event_type.as_str())
+        .collect();
+    for expected in ["user/message", "assistant/message", "turn/end"] {
+        assert!(types.contains(&expected), "事件面缺 {expected}：{types:?}");
+    }
+    let first = &observed[0];
+    assert_eq!(first.event_type, "turn/start", "第一个事件应是 turn/start");
+    assert_eq!(first.seq, 1, "日志 seq 从 1 开始");
+    assert_eq!(
+        first.data["turn"], 1,
+        "data 是事件字段（不含 type）：{first:?}"
+    );
+    for pair in observed.windows(2) {
+        assert_eq!(pair[1].seq, pair[0].seq + 1, "服务事件 seq 必须连续");
+    }
+
+    // 与日志事实逐条对齐（seq/type）。
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    let logged: Vec<(u64, &str)> = store
+        .events()
+        .iter()
+        .map(|event| (event.seq, event.kind.type_name()))
+        .collect();
+    let seen: Vec<(u64, &str)> = observed
+        .iter()
+        .map(|event| (event.seq, event.event_type.as_str()))
+        .collect();
+    assert_eq!(seen, logged, "服务事件必须与日志事件一致");
+}
