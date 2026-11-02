@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 agent = { path = "../agent" }
+web = { path = "../web" }
 model = { path = "../model" }
 session = { path = "../session" }
 tools = { path = "../tools" }

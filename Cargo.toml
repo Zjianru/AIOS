@@ -17,6 +17,7 @@ uuid = { version = "1.26", features = ["v4"] }
 thiserror = "2.0"
 ignore = "0.4"
 globset = "0.4"
+axum = { version = "0.8.9", features = ["ws"] }
 grep-regex = "0.1"
 grep-searcher = "0.1"
 wiremock = "0.6"
