@@ -156,8 +156,15 @@ impl Capability for AskCapability {
         &[HookPoint::ToolBefore]
     }
 
-    fn answer_question(&self, question_id: &str, answer: &str) -> bool {
-        self.state.answer(question_id, answer)
+    fn answer_question(
+        &self,
+        question_id: &str,
+        selected: Vec<String>,
+        custom: Option<String>,
+    ) -> bool {
+        // 骨架：先把 DSH 形状折算成旧的单文本答案，行为不变；实现提交改成 selected/custom。
+        let text = custom.unwrap_or_else(|| selected.join(","));
+        self.state.answer(question_id, &text)
     }
 
     fn cancel_questions(&self) {
@@ -199,6 +206,7 @@ impl Capability for AskCapability {
                     .append(&[EventKind::QuestionAsked {
                         turn: *turn,
                         step: *step,
+                        call_id: call.id.clone(),
                         question_id: question.id.clone(),
                         question: question.question.clone(),
                         header: question.header.clone(),

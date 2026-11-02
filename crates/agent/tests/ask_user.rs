@@ -102,8 +102,13 @@ async fn question_event_stops_loop_until_answer_then_resumes() {
     assert_eq!(question.header.as_deref(), Some("Confirm"));
     assert_eq!(question.options.len(), 2);
     assert_eq!(bodies(&server).await.len(), 1, "等待时不应再发模型请求");
-    assert!(!agent.answer("wrong-id", "x").await, "id 不绑定不可答");
-    assert!(agent.answer("q1", "Yes").await);
+    assert!(
+        !agent
+            .answer("wrong-id", Vec::new(), Some("x".to_owned()))
+            .await,
+        "id 不绑定不可答"
+    );
+    assert!(agent.answer("q1", Vec::new(), Some("Yes".to_owned())).await);
     wait_idle(&agent, 20).await;
     let bodies = bodies(&server).await;
     assert_eq!(bodies.len(), 2, "answer 后 loop 接着跑");
@@ -130,7 +135,11 @@ async fn answer_continues_same_turn_and_logs_question() {
     let AgentEvent::QuestionAsked { questions } = next_question(&mut events).await else {
         unreachable!()
     };
-    assert!(agent.answer(&questions[0].id, "Yes").await);
+    assert!(
+        agent
+            .answer(&questions[0].id, Vec::new(), Some("Yes".to_owned()))
+            .await
+    );
     wait_idle(&agent, 20).await;
     let store = session::SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     let events = store.events();
@@ -166,7 +175,9 @@ async fn cancel_while_waiting_revokes_question_and_aborts_turn() {
     wait_idle(&agent, 20).await;
     assert_eq!(bodies(&server).await.len(), 1, "取消后不再发请求");
     assert!(
-        !agent.answer(&questions[0].id, "Yes").await,
+        !agent
+            .answer(&questions[0].id, Vec::new(), Some("Yes".to_owned()))
+            .await,
         "撤销后答案不再接收"
     );
     let store = session::SessionStore::open_read_only(data_dir.path(), &id).unwrap();
@@ -231,9 +242,17 @@ async fn two_questions_are_all_delivered_and_answered() {
     assert_eq!(questions.len(), 2, "两个问题都要送达：{questions:?}");
     assert_eq!(questions[0].id, "q1");
     assert_eq!(questions[1].id, "q2");
-    assert!(agent.answer("q1", "ANSWER-ONE").await);
+    assert!(
+        agent
+            .answer("q1", Vec::new(), Some("ANSWER-ONE".to_owned()))
+            .await
+    );
     assert_eq!(bodies(&server).await.len(), 1, "未答完不应生成 tool/result");
-    assert!(agent.answer("q2", "ANSWER-TWO").await);
+    assert!(
+        agent
+            .answer("q2", Vec::new(), Some("ANSWER-TWO".to_owned()))
+            .await
+    );
     wait_idle(&agent, 20).await;
     let bodies = bodies(&server).await;
     assert_eq!(bodies.len(), 2, "全部答完后继续跑");
@@ -373,7 +392,11 @@ async fn cancel_after_partial_answers_does_not_hang() {
         unreachable!()
     };
     assert_eq!(questions.len(), 2);
-    assert!(agent.answer("q1", "ONLY-ONE").await);
+    assert!(
+        agent
+            .answer("q1", Vec::new(), Some("ONLY-ONE".to_owned()))
+            .await
+    );
     agent.cancel().await.unwrap();
     wait_idle(&agent, 20).await;
     assert_eq!(bodies(&server).await.len(), 1, "取消后不再发请求");

@@ -408,11 +408,20 @@ fn all_event_kinds_round_trip_under_dsh_envelope() {
         EventKind::QuestionAsked {
             turn: 1,
             step: 1,
+            call_id: "call_ask".to_owned(),
             question_id: "q1".to_owned(),
             question: "继续？".to_owned(),
             header: Some("确认".to_owned()),
             options: vec!["是".to_owned()],
             multi_select: false,
+        },
+        EventKind::QuestionAnswered {
+            turn: 1,
+            step: 1,
+            call_id: "call_ask".to_owned(),
+            question_id: "q1".to_owned(),
+            selected: vec!["是".to_owned()],
+            custom: None,
         },
         EventKind::QuestionCancelled {
             turn: 1,
@@ -547,7 +556,7 @@ fn all_event_kinds_round_trip_under_dsh_envelope() {
             .is_some_and(|id| id.split('-').collect::<Vec<_>>().len() == 5),
         "user/message 的 JSON 带 uuid 形状 id：{user}"
     );
-    let assistant = &rows[7]["data"]["message"];
+    let assistant = &rows[8]["data"]["message"];
     assert_eq!(assistant["role"], "assistant");
     assert_eq!(assistant["source"]["kind"], "model");
     drop(store);

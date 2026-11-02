@@ -464,6 +464,7 @@ mod tests {
                 EventKind::QuestionAsked {
                     turn: 1,
                     step: 1,
+                    call_id: "call_ask".to_owned(),
                     question_id: "q1".to_owned(),
                     question: "Proceed?".to_owned(),
                     header: Some("Confirm".to_owned()),
@@ -496,6 +497,7 @@ mod tests {
                 EventKind::QuestionAsked {
                     turn: 1,
                     step: 1,
+                    call_id: "call_ask".to_owned(),
                     question_id: "q1".to_owned(),
                     question: "Proceed?".to_owned(),
                     header: None,

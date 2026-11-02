@@ -267,6 +267,13 @@ fn dispatch_chat_input(
     }
 }
 
+/// 一行输入如何变成 DSH 答案（T006.13）：输入恰好是某个选项标签时当作选项
+/// （selected=[label]），否则当作自定义文本（custom）。骨架先一律当自由文本（旧行为）。
+fn classify_answer(answer: &str, question: &agent::Question) -> (Vec<String>, Option<String>) {
+    let _ = question;
+    (Vec::new(), Some(answer.to_owned()))
+}
+
 /// 事件如何改变待答问题队列（T005.12）：QuestionAsked 入队、TurnEnded 清空。
 fn pending_questions_after_event(
     current: std::collections::VecDeque<agent::Question>,
@@ -320,7 +327,8 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
                     ChatInput::Ignore => continue,
                     ChatInput::Answer(answer) => {
                         if let Some(question) = pending_questions.pop_front() {
-                            if agent.answer(&question.id, &answer).await {
+                            let (selected, custom) = classify_answer(&answer, &question);
+                            if agent.answer(&question.id, selected, custom).await {
                                 if let Some(next) = pending_questions.front() {
                                     println!();
                                     println!("{}", question_asked_text(next));

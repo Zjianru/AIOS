@@ -283,8 +283,22 @@ pub(crate) trait Capability: Send + Sync {
     fn hooks(&self) -> &'static [HookPoint];
     fn on_hook<'a>(&'a self, event: &'a HookEvent<'a>) -> HookFuture<'a>;
     // 以下为 loop 少量非挂点入口（默认 no-op，由对应能力实现；T006.1e 把状态收回能力）。
-    fn answer_question(&self, _question_id: &str, _answer: &str) -> bool {
+    /// 回答一条待答问题（T006.13，DSH 形状：selected 选项标签 + 可选 custom 文本）。
+    fn answer_question(
+        &self,
+        _question_id: &str,
+        _selected: Vec<String>,
+        _custom: Option<String>,
+    ) -> bool {
         false
+    }
+    /// 撤销一条待答问题（T006.13，提问服务路径）；返回是否确实撤销了待答问题。
+    fn cancel_question(&self, _question_id: &str) -> bool {
+        false
+    }
+    /// 当前待答问题（T006.13，含重启恢复；UI 服务 T006.16a 用）。
+    fn pending_questions(&self) -> Vec<crate::Question> {
+        Vec::new()
     }
     fn cancel_questions(&self) {}
     fn reset_repeat_chain(&self) {}
@@ -363,10 +377,29 @@ impl CapabilityRegistry {
         }
     }
 
-    pub(crate) fn answer_question(&self, question_id: &str, answer: &str) -> bool {
+    pub(crate) fn answer_question(
+        &self,
+        question_id: &str,
+        selected: Vec<String>,
+        custom: Option<String>,
+    ) -> bool {
+        self.capabilities.iter().any(|capability| {
+            capability.answer_question(question_id, selected.clone(), custom.clone())
+        })
+    }
+
+    pub(crate) fn pending_questions(&self) -> Vec<crate::Question> {
+        let mut questions = Vec::new();
+        for capability in &self.capabilities {
+            questions.extend(capability.pending_questions());
+        }
+        questions
+    }
+
+    pub(crate) fn cancel_question(&self, question_id: &str) -> bool {
         self.capabilities
             .iter()
-            .any(|capability| capability.answer_question(question_id, answer))
+            .any(|capability| capability.cancel_question(question_id))
     }
 
     pub(crate) fn cancel_questions(&self) {
@@ -471,6 +504,7 @@ pub(crate) fn event_context(kind: &EventKind) -> Option<(u64, u64)> {
         | EventKind::ToolCall { turn, step, .. }
         | EventKind::ToolResult { turn, step, .. }
         | EventKind::QuestionAsked { turn, step, .. }
+        | EventKind::QuestionAnswered { turn, step, .. }
         | EventKind::QuestionCancelled { turn, step, .. } => (*turn, *step),
         EventKind::CompactionStart { turn, .. } | EventKind::CompactionEnd { turn, .. } => {
             // 手动压缩在两次 turn 之间进行（DSH turn: null），没有 turn 上下文。

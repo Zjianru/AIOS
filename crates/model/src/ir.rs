@@ -82,6 +82,12 @@ pub enum MessageSource {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         changes: Vec<InstructionChange>,
     },
+    /// 重启后回答已恢复问题的 user 消息（DSH user-questions 的 user-question-reply 来源，
+    /// T006.13）：callId 指向那次 ask_user_question 调用。关闭不答不落回复，所以没有别的 outcome。
+    UserQuestionReply {
+        #[serde(rename = "callId")]
+        call_id: String,
+    },
     /// skill 目录注入的 user 消息（DSH tool-skill 的 skill-catalog 来源，T006.11）：
     /// 带类型目录（entries 是消息实际发布的摘要条目）；update=true 表示替换目录。
     SkillCatalog {
@@ -284,6 +290,17 @@ impl Message {
                 incomplete,
                 entries,
             },
+        )
+    }
+
+    /// 重启后续答已恢复问题的 user 消息（source=user-question-reply，T006.13 照 DSH
+    /// user-questions）：内容是一批答案的 JSON，callId 指向那次 ask_user_question 调用。
+    pub fn user_question_reply(text: impl Into<String>, call_id: String) -> Self {
+        Self::with_source(
+            MessageId::generate(),
+            Role::User,
+            vec![ContentBlock::text(text)],
+            MessageSource::UserQuestionReply { call_id },
         )
     }
 

@@ -419,8 +419,27 @@ impl Agent {
     }
 
     /// T005.10：回答问题。question_id 必须是当前等待的问题；返回是否送达。
-    pub async fn answer(&self, question_id: &str, answer: &str) -> bool {
-        self.inner.answer(question_id, answer)
+    /// T006.13 起答案照 DSH 形状：selected 是选中的选项标签（可多个），custom 是自由文本
+    /// （K14；DSH `tool-ask-user/src/index.ts:111-116`）。
+    pub async fn answer(
+        &self,
+        question_id: &str,
+        selected: Vec<String>,
+        custom: Option<String>,
+    ) -> bool {
+        self.inner.answer(question_id, selected, custom).await
+    }
+
+    /// T006.13：撤销一条待答问题（提问服务路径）。等待中的问题让这一批以 DSH 的
+    /// ASK_ABORTED 工具错误收尾、本轮继续；重启恢复的问题写 question/cancelled 后移除。
+    /// 返回是否确实撤销了待答问题。
+    pub async fn cancel_question(&self, question_id: &str) -> bool {
+        self.inner.cancel_question(question_id).await
+    }
+
+    /// T006.13：当前待答问题（等待中 + 重启恢复）；界面服务 T006.16a 从这里接。
+    pub fn pending_questions(&self) -> Vec<Question> {
+        self.inner.pending_questions()
     }
 
     /// 订阅 agent 事件。

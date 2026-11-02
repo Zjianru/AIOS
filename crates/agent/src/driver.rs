@@ -476,8 +476,25 @@ impl Inner {
     /// 一次 step 的工具批之后推进重复链，命中阈值（3/5/8，照 DSH）返回一条提醒文本。
     /// todo_write 不跟踪（DSH 基础组合包默认排除）；每步最多一条提醒。
     /// T005.10/T006.1d2：回答问题；question_id 必须匹配当前等待的问题且未答过。
-    pub(crate) fn answer(&self, question_id: &str, text: &str) -> bool {
-        self.capabilities.answer_question(question_id, text)
+    /// T006.13：答案照 DSH 形状（selected 选项标签 + 可选 custom 文本）。
+    pub(crate) async fn answer(
+        &self,
+        question_id: &str,
+        selected: Vec<String>,
+        custom: Option<String>,
+    ) -> bool {
+        self.capabilities
+            .answer_question(question_id, selected, custom)
+    }
+
+    /// T006.13：撤销一条待答问题（提问服务路径）；骨架只占位，实现提交接 AskState。
+    pub(crate) async fn cancel_question(&self, _question_id: &str) -> bool {
+        self.capabilities.cancel_question(_question_id)
+    }
+
+    /// T006.13：当前待答问题（含重启恢复）。
+    pub(crate) fn pending_questions(&self) -> Vec<crate::Question> {
+        self.capabilities.pending_questions()
     }
 
     /// T006.1e：jobs_capability 安装结算回调用（任务注册表在 tools 层）。

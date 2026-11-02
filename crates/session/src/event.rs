@@ -253,16 +253,32 @@ pub enum EventKind {
         message: Message,
     },
     /// 模型向用户提问（T005.10；派生请求不出现，只用于日志回放/CLI 展示）。
+    ///
+    /// T006.13 起带 callId：一次 ask_user_question 调用（一批问题）的稳定身份，
+    /// 供重启后折叠待答问题、以及迟到回答消息的 source 指向。
     #[serde(rename = "question/asked")]
     QuestionAsked {
         turn: u64,
         step: u64,
+        call_id: String,
         question_id: String,
         question: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         header: Option<String>,
         options: Vec<String>,
         multi_select: bool,
+    },
+    /// 用户回答了一条问题（T006.13；答案形状照 DSH tool-ask-user 的
+    /// AskUserQuestionAnswerItem：selected 是选项标签，custom 是自由文本）。
+    #[serde(rename = "question/answered")]
+    QuestionAnswered {
+        turn: u64,
+        step: u64,
+        call_id: String,
+        question_id: String,
+        selected: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        custom: Option<String>,
     },
     /// 后台任务注册（T006.9；DSH job/registered 的 durable session 记录）。
     #[serde(rename = "job/registered")]
@@ -464,6 +480,7 @@ impl EventKind {
             Self::SystemMessage { .. } => "system/message",
             Self::UserMessage { .. } => "user/message",
             Self::QuestionAsked { .. } => "question/asked",
+            Self::QuestionAnswered { .. } => "question/answered",
             Self::QuestionCancelled { .. } => "question/cancelled",
             Self::InboxSpliced { .. } => "agent/inbox/spliced",
             Self::AssistantMessage { .. } => "assistant/message",
