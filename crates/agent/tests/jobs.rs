@@ -23,7 +23,7 @@ async fn background_job_completion_notifies_next_request() {
                 "call_0",
                 "bash",
                 json!({
-                    "command": "while [ ! -f go ]; do :; done; printf 'done\n'",
+                    "description": "test command", "command": "while [ ! -f go ]; do :; done; printf 'done\n'",
                     "run_in_background": true
                 }),
             )])),
@@ -92,7 +92,7 @@ impl wiremock::Respond for BusyScriptResponder {
                 "call_0",
                 "bash",
                 json!({
-                    "command": "while [ ! -f go ]; do :; done; printf 'job done\n'",
+                    "description": "test command", "command": "while [ ! -f go ]; do :; done; printf 'job done\n'",
                     "run_in_background": true
                 }),
             )])),

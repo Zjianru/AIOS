@@ -57,7 +57,7 @@ async fn bash_run_in_background_returns_job_id_and_output_is_readable() {
 
     let started = bash(
         json!({
-            "command": "printf 'hello\n'; sleep 1; printf 'bye\n'",
+            "description": "test command", "command": "printf 'hello\n'; sleep 1; printf 'bye\n'",
             "run_in_background": true
         }),
         &context,
@@ -109,7 +109,11 @@ async fn bash_timeout_promotes_to_background_job() {
     let data_dir = tempfile::tempdir().unwrap();
     let context = session_context(dir.path(), data_dir.path(), "sess-1");
 
-    let result = bash(json!({"command": "sleep 30", "timeoutMs": 100}), &context).await;
+    let result = bash(
+        json!({"description": "test command", "command": "sleep 30", "timeoutMs": 100}),
+        &context,
+    )
+    .await;
     assert!(!result.is_error, "{}", result.content);
     assert!(
         result
@@ -143,7 +147,7 @@ async fn job_kill_stops_running_job() {
     let context = session_context(dir.path(), data_dir.path(), "sess-1");
 
     let started = bash(
-        json!({"command": "sleep 30", "run_in_background": true}),
+        json!({"description": "test command", "command": "sleep 30", "run_in_background": true}),
         &context,
     )
     .await;
@@ -165,7 +169,7 @@ async fn jobs_are_session_scoped() {
     let b = session_context(dir.path(), data_dir.path(), "sess-b");
 
     let started = bash(
-        json!({"command": "sleep 30", "run_in_background": true}),
+        json!({"description": "test command", "command": "sleep 30", "run_in_background": true}),
         &a,
     )
     .await;
@@ -210,7 +214,11 @@ async fn non_utf8_env_var_does_not_panic() {
     }
     let dir = tempfile::tempdir().unwrap();
     let context = session_context(dir.path(), dir.path(), "sess-1");
-    let result = bash(json!({"command": "printf 'ok\n'"}), &context).await;
+    let result = bash(
+        json!({"description": "test command", "command": "printf 'ok\n'"}),
+        &context,
+    )
+    .await;
     assert!(!result.is_error, "{}", result.content);
     assert!(result.content.contains("ok"));
 }
@@ -225,7 +233,11 @@ async fn stale_job_output_files_do_not_pollute_new_jobs() {
     std::fs::write(jobs_dir.join("bash-1.out"), "STALE-OUTPUT-MUST-NOT-LEAK\n").unwrap();
     let context = session_context(dir.path(), data_dir.path(), "sess-1");
 
-    let result = bash(json!({"command": "printf 'hello\n'"}), &context).await;
+    let result = bash(
+        json!({"description": "test command", "command": "printf 'hello\n'"}),
+        &context,
+    )
+    .await;
     assert!(!result.is_error, "{}", result.content);
     assert_eq!(result.content, "hello\n");
     assert!(
@@ -248,7 +260,7 @@ async fn job_files_and_dirs_are_private() {
     let context = session_context(dir.path(), data_dir.path(), "sess-1");
 
     let started = bash(
-        json!({"command": "sleep 30", "run_in_background": true}),
+        json!({"description": "test command", "command": "sleep 30", "run_in_background": true}),
         &context,
     )
     .await;
@@ -282,7 +294,7 @@ async fn job_output_wait_timeout_does_not_suppress_completion_notification() {
         }));
 
     let started = bash(
-        json!({"command": "while [ ! -f go ]; do :; done; printf 'done\n'", "run_in_background": true}),
+        json!({"description": "test command", "command": "while [ ! -f go ]; do :; done; printf 'done\n'", "run_in_background": true}),
         &context,
     )
     .await;
@@ -326,7 +338,11 @@ async fn foreground_fast_command_does_not_notify() {
             let _ = sender.send(job_id.to_owned());
         }));
 
-    let result = bash(json!({"command": "printf 'fast\n'"}), &context).await;
+    let result = bash(
+        json!({"description": "test command", "command": "printf 'fast\n'"}),
+        &context,
+    )
+    .await;
     assert!(!result.is_error, "{}", result.content);
     assert_eq!(result.content, "fast\n");
     assert!(
@@ -353,7 +369,7 @@ async fn promoted_timeout_job_completion_notifies() {
         }));
 
     let result = bash(
-        json!({"command": "while [ ! -f go ]; do :; done; printf 'done\n'", "timeoutMs": 100}),
+        json!({"description": "test command", "command": "while [ ! -f go ]; do :; done; printf 'done\n'", "timeoutMs": 100}),
         &context,
     )
     .await;
@@ -375,7 +391,7 @@ async fn cross_session_kill_is_rejected() {
     let a = session_context(dir.path(), data_dir.path(), "sess-a");
     let b = session_context(dir.path(), data_dir.path(), "sess-b");
     let started = bash(
-        json!({"command": "sleep 30", "run_in_background": true}),
+        json!({"description": "test command", "command": "sleep 30", "run_in_background": true}),
         &a,
     )
     .await;
@@ -403,7 +419,7 @@ async fn foreground_large_output_reads_only_tail() {
     // 5 MiB 输出（远超前台 64,000 字节上限）。
     let bytes_before = tools::foreground_bytes_read();
     let result = bash(
-        json!({"command": "dd if=/dev/zero bs=1048576 count=5 2>/dev/null | tr '\\0' 'a'"}),
+        json!({"description": "test command", "command": "dd if=/dev/zero bs=1048576 count=5 2>/dev/null | tr '\\0' 'a'"}),
         &context,
     )
     .await;
@@ -442,7 +458,7 @@ async fn foreground_output_over_spill_cap_reports_unavailable() {
     let context = session_context(dir.path(), data_dir.path(), "sess-1");
     // 70 MiB > 前台 spill 上限 64 MiB：全文路径报 (unavailable)。
     let result = bash(
-        json!({"command": "dd if=/dev/zero bs=1048576 count=70 2>/dev/null | tr '\\0' 'b'"}),
+        json!({"description": "test command", "command": "dd if=/dev/zero bs=1048576 count=70 2>/dev/null | tr '\\0' 'b'"}),
         &context,
     )
     .await;
@@ -571,4 +587,95 @@ async fn existing_jobs_dir_permissions_are_fixed_on_start() {
     assert_eq!(dir_mode, 0o700, "已存在的 jobs 目录应被 chmod 0700");
     let file_mode = std::fs::metadata(&old_file).unwrap().permissions().mode() & 0o777;
     assert_eq!(file_mode, 0o600, "旧输出文件应被 chmod 0600（保留归档）");
+}
+
+#[tokio::test]
+async fn job_kill_uses_sigterm_grace_then_sigkill() {
+    use std::time::{Duration, Instant};
+
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path(), "sess-1");
+    // 忽略 SIGTERM 的进程组：grace 期间必须先收到 SIGTERM、输出继续被收，3s 后才 SIGKILL。
+    let started = bash(
+        json!({
+            "description": "ignore term",
+            "command": "trap '' TERM; printf 'ready\n'; sleep 10 & wait",
+            "run_in_background": true
+        }),
+        &context,
+    )
+    .await;
+    let job_id = extract_job_id(&started.content);
+    let registry = context.session().tasks();
+    let mut ready = false;
+    for _ in 0..100 {
+        if registry.output(&job_id).unwrap().stdout.contains("ready") {
+            ready = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(ready, "先等子进程输出 ready");
+    let began = Instant::now();
+    let kill = run(&JobKillTool::new(), json!({"job_id": job_id}), &context).await;
+    let elapsed = began.elapsed();
+    assert!(!kill.is_error, "{}", kill.content);
+    assert!(
+        elapsed >= Duration::from_millis(2_500),
+        "SIGTERM 后应等 grace（约 3s）再 SIGKILL，实际 {elapsed:?}"
+    );
+    let read = registry.output(&job_id).unwrap();
+    assert_eq!(read.view.status, tools::JobStatus::Killed, "{read:?}");
+    assert_eq!(
+        read.view.signal,
+        Some(9),
+        "应记录 SIGKILL 终止信号：{read:?}"
+    );
+    assert!(
+        read.stdout.contains("ready"),
+        "grace 期间输出仍要收：{}",
+        read.stdout
+    );
+}
+
+#[tokio::test]
+async fn job_kill_grace_lets_sigterm_handler_run() {
+    use std::time::{Duration, Instant};
+
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path(), "sess-1");
+    let started = bash(
+        json!({
+            "description": "handle term",
+            "command": "trap 'echo got-term; exit 0' TERM; printf 'ready\n'; sleep 30",
+            "run_in_background": true
+        }),
+        &context,
+    )
+    .await;
+    let job_id = extract_job_id(&started.content);
+    let registry = context.session().tasks();
+    for _ in 0..100 {
+        if registry.output(&job_id).unwrap().stdout.contains("ready") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let began = Instant::now();
+    let kill = run(&JobKillTool::new(), json!({"job_id": job_id}), &context).await;
+    let elapsed = began.elapsed();
+    assert!(!kill.is_error, "{}", kill.content);
+    assert!(
+        elapsed < Duration::from_millis(2_500),
+        "SIGTERM handler 正常退出，不该等满 grace：{elapsed:?}"
+    );
+    let read = registry.output(&job_id).unwrap();
+    assert_eq!(read.view.status, tools::JobStatus::Killed, "{read:?}");
+    assert!(
+        read.stdout.contains("got-term"),
+        "SIGTERM handler 的 grace 输出应被收：{}",
+        read.stdout
+    );
 }
