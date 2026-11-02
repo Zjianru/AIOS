@@ -33,6 +33,9 @@ mod format_tests;
 #[path = "message_ir_tests.rs"]
 mod message_ir;
 #[cfg(test)]
+#[path = "projection_tests.rs"]
+mod projection_tests;
+#[cfg(test)]
 #[path = "repair_tests.rs"]
 mod repair_tests;
 #[cfg(test)]

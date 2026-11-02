@@ -144,3 +144,66 @@ async fn resume_restores_todo_list_and_replacement_wins() {
         "回放时后写覆盖先写"
     );
 }
+
+/// T006.12：allowParallelInProgress=false 从 AgentConfig 透传到内置 todo_write：
+/// 工具描述改成「只留一个」，两个 in_progress 被拒，且不写 todo/write 事件。
+#[tokio::test]
+async fn single_active_policy_from_config_rejects_two_active() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(tool_calls_with_inputs_sse(&[(
+                "call_0",
+                "todo_write",
+                json!({"todos": [
+                    {"content": "a", "status": "in_progress"},
+                    {"content": "b", "status": "in_progress"}
+                ]}),
+            )])),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::create(data_dir.path(), cwd.path()).unwrap();
+    let id = store.id().clone();
+    let mut config = isolated_config(data_dir.path());
+    config.allow_parallel_in_progress = false;
+    let agent = Agent::create(
+        config,
+        agent::Deps {
+            model: model::DeepSeek::new(model_config(&server.uri())).unwrap(),
+            tools: ToolSet::builtin(),
+            store,
+        },
+    )
+    .await
+    .unwrap();
+    agent
+        .send(UserMessage::text("plan it"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+
+    let requests = server.received_requests().await.unwrap();
+    let first = String::from_utf8(requests[0].body.clone()).unwrap();
+    assert!(
+        first.contains("keep exactly one todo"),
+        "工具描述应改为单活跃策略：{first}"
+    );
+    let second = String::from_utf8(requests[1].body.clone()).unwrap();
+    assert!(
+        second.contains("at most one task may be in_progress (got 2)"),
+        "工具结果应是 DSH 错误：{second}"
+    );
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    assert!(
+        !store
+            .events()
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::TodoWrite { .. })),
+        "被拒的写入不应落 todo/write"
+    );
+}

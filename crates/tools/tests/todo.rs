@@ -133,3 +133,58 @@ async fn invalid_todo_entries_are_rejected() {
     }
     assert!(context.session().todos().is_none(), "失败调用不改列表状态");
 }
+
+// ---- T006.12 红：allowParallelInProgress=false 的单活跃策略（skeleton 上应失败）----
+
+#[tokio::test]
+async fn single_active_policy_rejects_two_in_progress() {
+    let dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path());
+    let tool = TodoWriteTool::new_with_parallel(false);
+    let rejected = call(
+        &tool,
+        json!({"todos": [
+            {"content": "a", "status": "in_progress"},
+            {"content": "b", "status": "in_progress"}
+        ]}),
+        &context,
+    )
+    .await;
+    assert!(rejected.is_error, "多 in_progress 应被拒");
+    assert_eq!(
+        rejected.content,
+        "Error: invalid todos: at most one task may be in_progress (got 2)"
+    );
+    let accepted = call(
+        &tool,
+        json!({"todos": [
+            {"content": "a", "status": "in_progress"},
+            {"content": "b", "status": "pending"}
+        ]}),
+        &context,
+    )
+    .await;
+    assert!(!accepted.is_error, "{}", accepted.content);
+    assert_eq!(
+        context.session().todos(),
+        Some(vec![
+            item("a", TodoStatus::InProgress),
+            item("b", TodoStatus::Pending)
+        ])
+    );
+}
+
+#[test]
+fn description_reflects_parallel_policy() {
+    let parallel = TodoWriteTool::new().description().to_owned();
+    let single = TodoWriteTool::new_with_parallel(false).description().to_owned();
+    assert!(
+        parallel.contains("several only when work runs in parallel"),
+        "{parallel}"
+    );
+    assert!(single.contains("keep exactly one todo"), "{single}");
+    assert!(
+        !single.contains("several only when work runs in parallel"),
+        "{single}"
+    );
+}
