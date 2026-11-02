@@ -477,6 +477,8 @@ pub(crate) fn event_context(kind: &EventKind) -> Option<(u64, u64)> {
         }
         EventKind::TodoWrite { .. }
         | EventKind::InboxSpliced { .. }
+        | EventKind::JobRegistered { .. }
+        | EventKind::JobSettled { .. }
         | EventKind::CompactionSummary { .. }
         | EventKind::CompactionPrune { .. } => return None,
     };

@@ -141,6 +141,10 @@ async fn bash(
         cwd: workdir,
         env: jobs::child_env(context),
         label,
+        tool_call: Some(jobs::JobToolCall {
+            call_id: call_id.to_owned(),
+            root_call_id: call_id.to_owned(),
+        }),
     };
     // T006.8：前台输出边收边写进会话 spill 目录（照 DSH bash-local + subprocess collect）。
     let job_id = if background {

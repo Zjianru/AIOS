@@ -67,6 +67,7 @@ pub fn interrupted_turn_closers(events: &[Event]) -> Option<TurnClosers> {
                 pending.clear();
             }
             EventKind::QuestionAsked { .. } | EventKind::QuestionCancelled { .. } => {}
+            EventKind::JobRegistered { .. } | EventKind::JobSettled { .. } => {}
             EventKind::AssistantMessage {
                 turn,
                 step,

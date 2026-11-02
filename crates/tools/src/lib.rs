@@ -26,7 +26,8 @@ pub use builtin::{
     foreground_bytes_read,
 };
 pub use jobs::{
-    JobRead, JobSettledCallback, JobSpec, JobStatus, JobView, MAX_WAIT_MS, TaskRegistry,
+    JobCause, JobNotifyCallback, JobRead, JobRegistered, JobRegisteredCallback, JobSettled,
+    JobSettledCallback, JobSpec, JobStatus, JobToolCall, JobView, MAX_WAIT_MS, TaskRegistry,
 };
 pub use session::{
     FileVersion, ObservationPolicy, ObservedFile, SharedToolSession, SpillStore, ToolSessionState,

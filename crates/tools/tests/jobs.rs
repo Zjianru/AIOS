@@ -289,8 +289,8 @@ async fn job_output_wait_timeout_does_not_suppress_completion_notification() {
     context
         .session()
         .tasks()
-        .set_on_settled(std::sync::Arc::new(move |job_id: &str, _status| {
-            let _ = sender.send(job_id.to_owned());
+        .set_on_settled(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+            let _ = sender.send(settled.id.clone());
         }));
 
     let started = bash(
@@ -334,8 +334,8 @@ async fn foreground_fast_command_does_not_notify() {
     context
         .session()
         .tasks()
-        .set_on_settled(std::sync::Arc::new(move |job_id: &str, _status| {
-            let _ = sender.send(job_id.to_owned());
+        .set_on_settled(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+            let _ = sender.send(settled.id.clone());
         }));
 
     let result = bash(
@@ -364,8 +364,8 @@ async fn promoted_timeout_job_completion_notifies() {
     context
         .session()
         .tasks()
-        .set_on_settled(std::sync::Arc::new(move |job_id: &str, _status| {
-            let _ = sender.send(job_id.to_owned());
+        .set_on_settled(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+            let _ = sender.send(settled.id.clone());
         }));
 
     let result = bash(
@@ -498,8 +498,8 @@ async fn foreground_fast_settlement_without_wait_does_not_notify() {
     context
         .session()
         .tasks()
-        .set_on_settled(std::sync::Arc::new(move |job_id: &str, _status| {
-            let _ = sender.send(job_id.to_owned());
+        .set_on_settled(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+            let _ = sender.send(settled.id.clone());
         }));
 
     let job_id = context
@@ -511,6 +511,7 @@ async fn foreground_fast_settlement_without_wait_does_not_notify() {
                 cwd: dir.path().to_path_buf(),
                 env: Vec::new(),
                 label: "fast".to_owned(),
+                tool_call: None,
             },
             true,
         )
@@ -538,8 +539,8 @@ async fn promote_after_settlement_still_notifies() {
     context
         .session()
         .tasks()
-        .set_on_settled(std::sync::Arc::new(move |job_id: &str, _status| {
-            let _ = sender.send(job_id.to_owned());
+        .set_on_settled(std::sync::Arc::new(move |settled: &tools::JobSettled| {
+            let _ = sender.send(settled.id.clone());
         }));
 
     let job_id = context
@@ -551,6 +552,7 @@ async fn promote_after_settlement_still_notifies() {
                 cwd: dir.path().to_path_buf(),
                 env: Vec::new(),
                 label: "gated".to_owned(),
+                tool_call: None,
             },
             true,
         )

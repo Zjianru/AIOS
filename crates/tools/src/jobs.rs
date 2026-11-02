@@ -1,8 +1,9 @@
 //! 后台任务注册表：进程内、按会话隔离（照 DSH jobs/jobs-local 与 jobs/tool-jobs 的最小语义）。
 //!
 //! 每个任务是独立的 bash 子进程：stdout/stderr 由线程流式收集（内存保留尾部 + 完整流落
-//! <data-dir>/jobs/session-<id>/<job>.{out,err}）；结算后通知注册回调（agent 用来发
-//! JobCompleted 事件与把完成通知送进下一步输入）。id 用 bash-<n> 递增（DSH 用短 uuid）。
+//! <data-dir>/jobs/session-<id>/<job>.{out,err}）。T006.9 骨架先定生命周期回调与结算
+//! payload（JobRegistered / JobSettled / JobCause / JobNotifyCallback）的形状；id、游标读、
+//! 完成通知的 DSH 行为在实现提交里改。
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
@@ -56,8 +57,12 @@ impl JobStatus {
     }
 }
 
-/// 一次结算通知的回调（agent 在收到时发事件并把通知投进会话）。
-pub type JobSettledCallback = Arc<dyn Fn(&str, JobStatus) + Send + Sync>;
+/// 注册回调（agent 用它写 job/registered 会话事件；照 DSH jobs-local 的 recordSessionEvent）。
+pub type JobRegisteredCallback = Arc<dyn Fn(&JobRegistered) + Send + Sync>;
+/// 结算回调（agent 用它写 job/settled 会话事件；每次结算恰一次，与 await/通知无关）。
+pub type JobSettledCallback = Arc<dyn Fn(&JobSettled) + Send + Sync>;
+/// 完成通知回调（模型可见投递；照 DSH tool-jobs 的 settled 投递：awaited / 已送过的不再发）。
+pub type JobNotifyCallback = Arc<dyn Fn(&JobSettled) + Send + Sync>;
 
 /// 任务对外投影。
 #[derive(Debug, Clone)]
@@ -87,12 +92,66 @@ pub struct JobRead {
     pub stderr_spill: Option<PathBuf>,
 }
 
+/// 创建 job 的工具调用（DSH jobs 的 JobToolCall：嵌套调用保留根调用 id）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobToolCall {
+    pub call_id: String,
+    pub root_call_id: String,
+}
+
 /// 启动一个后台任务的输入。
 pub struct JobSpec {
     pub command: String,
     pub cwd: PathBuf,
     pub env: Vec<(String, String)>,
     pub label: String,
+    /// 通过工具创建时带上（DSH job/registered 的 toolCall）。
+    pub tool_call: Option<JobToolCall>,
+}
+
+/// job 注册时刻的生命周期记录（DSH job/registered 的 data）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobRegistered {
+    pub id: String,
+    pub owner: Option<String>,
+    pub kind: &'static str,
+    pub label: String,
+    pub started_at: u64,
+    pub tool_call: Option<JobToolCall>,
+}
+
+/// 结算原因（DSH JobSettleCause）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobCause {
+    Producer,
+    Kill,
+    Teardown,
+}
+
+impl JobCause {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Producer => "producer",
+            Self::Kill => "kill",
+            Self::Teardown => "teardown",
+        }
+    }
+}
+
+/// job 结算时刻的生命周期记录（DSH job/settled 的 data）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobSettled {
+    pub id: String,
+    pub owner: Option<String>,
+    pub kind: &'static str,
+    pub label: String,
+    pub started_at: u64,
+    pub tool_call: Option<JobToolCall>,
+    pub finished_at: u64,
+    pub status: JobStatus,
+    pub cause: JobCause,
+    pub producer_reported: bool,
+    pub detail: Option<String>,
 }
 
 /// 前台 bash 的流式 spill 目标（T006.8 照 DSH subprocess spill：完整流边收边写）。
@@ -130,6 +189,8 @@ struct JobRecord {
     child: Mutex<Child>,
     state: Mutex<JobState>,
     cond: Condvar,
+    /// 创建 job 的工具调用（job/registered、job/settled 用）。
+    tool_call: Option<JobToolCall>,
     /// settle 线程唤醒异步等待者（T006.8：wait_async 不阻塞 runtime）。
     notify: Notify,
     stdout_path: PathBuf,
@@ -140,7 +201,12 @@ struct JobRecord {
 pub struct TaskRegistry {
     jobs: Mutex<HashMap<String, Arc<JobRecord>>>,
     root: Option<PathBuf>,
+    session_id: Option<String>,
+    on_registered: Mutex<Option<JobRegisteredCallback>>,
     on_settled: Mutex<Option<JobSettledCallback>>,
+    // 骨架只定安装面；完成通知的投递在实现提交里接（当前旧路径仍走 on_settled）。
+    #[allow(dead_code)]
+    on_notify: Mutex<Option<JobNotifyCallback>>,
 }
 
 impl std::fmt::Debug for TaskRegistry {
@@ -160,7 +226,10 @@ impl TaskRegistry {
         Self {
             jobs: Mutex::new(HashMap::new()),
             root: Some(root),
+            session_id: Some(session_id.to_owned()),
+            on_registered: Mutex::new(None),
             on_settled: Mutex::new(None),
+            on_notify: Mutex::new(None),
         }
     }
 
@@ -169,7 +238,10 @@ impl TaskRegistry {
         Self {
             jobs: Mutex::new(HashMap::new()),
             root: None,
+            session_id: None,
+            on_registered: Mutex::new(None),
             on_settled: Mutex::new(None),
+            on_notify: Mutex::new(None),
         }
     }
 
@@ -177,12 +249,27 @@ impl TaskRegistry {
         self.root.is_some()
     }
 
+    pub fn set_on_registered(&self, callback: JobRegisteredCallback) {
+        *self.on_registered.lock().expect("jobs 回调锁被毒化") = Some(callback);
+    }
+
     pub fn set_on_settled(&self, callback: JobSettledCallback) {
         *self.on_settled.lock().expect("jobs 回调锁被毒化") = Some(callback);
     }
 
-    fn callback(&self) -> Option<JobSettledCallback> {
+    pub fn set_on_notify(&self, callback: JobNotifyCallback) {
+        *self.on_notify.lock().expect("jobs 回调锁被毒化") = Some(callback);
+    }
+
+    fn settled_callback(&self) -> Option<JobSettledCallback> {
         self.on_settled.lock().expect("jobs 回调锁被毒化").clone()
+    }
+
+    fn registered_callback(&self) -> Option<JobRegisteredCallback> {
+        self.on_registered
+            .lock()
+            .expect("jobs 回调锁被毒化")
+            .clone()
     }
 
     /// 起一个后台任务，返回 job id。
@@ -304,6 +391,7 @@ impl TaskRegistry {
                 stderr_spill: None,
             }),
             cond: Condvar::new(),
+            tool_call: spec.tool_call.clone(),
             notify: Notify::new(),
             stdout_path: stdout_path.clone(),
             stderr_path: stderr_path.clone(),
@@ -312,6 +400,20 @@ impl TaskRegistry {
             .lock()
             .expect("jobs 表锁被毒化")
             .insert(id.clone(), Arc::clone(&record));
+        let registered = {
+            let state = record.state.lock().expect("job 状态锁被毒化");
+            JobRegistered {
+                id: id.clone(),
+                owner: self.session_id.clone(),
+                kind: record.kind,
+                label: record.label.clone(),
+                started_at: state.started_at,
+                tool_call: spec.tool_call.clone(),
+            }
+        };
+        if let Some(callback) = self.registered_callback() {
+            callback(&registered);
+        }
 
         let (sender, receiver) = std::sync::mpsc::channel::<ReaderDone>();
         spawn_reader(
@@ -330,7 +432,9 @@ impl TaskRegistry {
             stderr_spill,
             retain_bytes,
         );
-        let callback = self.callback();
+        let settled_callback = self.settled_callback();
+        let owner = self.session_id.clone();
+        let tool_call = spec.tool_call.clone();
         let monitored = Arc::clone(&record);
         std::thread::spawn(move || {
             // 两个读线程都结束（完整流已落盘/spill）后再结算。
@@ -362,7 +466,7 @@ impl TaskRegistry {
                     Err(_) => break,
                 }
             }
-            let should_notify = {
+            let (settled, should_notify) = {
                 let mut state = monitored.state.lock().expect("job 状态锁被毒化");
                 if state.kill_requested {
                     status = JobStatus::Killed;
@@ -373,16 +477,33 @@ impl TaskRegistry {
                 state.finished_at = Some(now_millis());
                 state.stdout_spill = spills[0].take();
                 state.stderr_spill = spills[1].take();
+                let settled = JobSettled {
+                    id: monitored.id.clone(),
+                    owner: owner.clone(),
+                    kind: monitored.kind,
+                    label: monitored.label.clone(),
+                    started_at: state.started_at,
+                    tool_call: tool_call.clone(),
+                    finished_at: state.finished_at.unwrap_or_else(now_millis),
+                    status,
+                    cause: if state.kill_requested {
+                        JobCause::Kill
+                    } else {
+                        JobCause::Producer
+                    },
+                    producer_reported: true,
+                    detail: state.detail.clone(),
+                };
                 let should_notify = !state.awaited && !state.notified;
                 if should_notify {
                     state.notified = true;
                 }
-                should_notify
+                (settled, should_notify)
             };
             monitored.cond.notify_all();
             monitored.notify.notify_waiters();
-            if should_notify && let Some(callback) = callback {
-                callback(&monitored.id, status);
+            if should_notify && let Some(callback) = &settled_callback {
+                callback(&settled);
             }
         });
         Ok(id)
@@ -489,56 +610,41 @@ impl TaskRegistry {
     }
 
     /// 前台 bash 超时转后台：原子地清掉 awaited；若在超时与这里之间已经结算且还没通知，
-    /// 立即补发一次完成通知。
+    /// 立即补发一次完成通知（生命周期事件在结算时已写过，这里不再重复写）。
     pub fn promote(&self, id: &str) {
         let Ok(record) = self.record(id) else {
             return;
         };
-        let callback = self.callback();
-        let settled_status = {
+        let settled_callback = self.settled_callback();
+        let settled = {
             let mut state = record.state.lock().expect("job 状态锁被毒化");
             state.awaited = false;
             if state.status.is_terminal() && !state.notified {
                 state.notified = true;
-                Some(state.status)
+                Some(JobSettled {
+                    id: record.id.clone(),
+                    owner: self.session_id.clone(),
+                    kind: record.kind,
+                    label: record.label.clone(),
+                    started_at: state.started_at,
+                    tool_call: record.tool_call.clone(),
+                    finished_at: state.finished_at.unwrap_or_else(now_millis),
+                    status: state.status,
+                    cause: if state.kill_requested {
+                        JobCause::Kill
+                    } else {
+                        JobCause::Producer
+                    },
+                    producer_reported: true,
+                    detail: state.detail.clone(),
+                })
             } else {
                 None
             }
         };
-        if let (Some(status), Some(callback)) = (settled_status, callback) {
-            callback(id, status);
+        if let (Some(settled), Some(callback)) = (settled, settled_callback) {
+            callback(&settled);
         }
-    }
-
-    /// 请求取消（SIGKILL，无 grace）并等结算；返回最新快照。
-    pub fn kill(&self, id: &str, reason: Option<String>) -> Result<JobRead, ToolFailure> {
-        let record = self.record(id)?;
-        {
-            let mut child = record.child.lock().expect("job 子进程锁被毒化");
-            let _ = child.kill();
-        }
-        {
-            let mut state = record.state.lock().expect("job 状态锁被毒化");
-            state.kill_requested = true;
-            if let Some(reason) = reason {
-                state.detail = Some(reason);
-            }
-        }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut state = record.state.lock().expect("job 状态锁被毒化");
-        while !state.status.is_terminal() {
-            let now = Instant::now();
-            if now >= deadline {
-                break;
-            }
-            let (next, _) = record
-                .cond
-                .wait_timeout(state, deadline - now)
-                .expect("job 条件变量等待失败");
-            state = next;
-        }
-        drop(state);
-        Ok(read_of(&record))
     }
 
     /// 前台已收走结果的任务从表里删掉（不再出现在 job_list），并清掉输出文件。

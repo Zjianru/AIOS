@@ -1,7 +1,9 @@
 //! 后台任务结算能力（T006.1e）：把结算回调与完成通知投递从 loop 移出。
 //!
-//! 注册表仍在 tools/jobs.rs；这里只负责：结算线程上发 JobCompleted，回到 runtime
-//! 上下文把完成通知写成 durable inbox 输入（T006.2a），再唤醒驱动。
+//! 注册表仍在 tools/jobs.rs；T006.9 骨架把回调 payload 换成 JobSettled（生命周期事实的
+//! 载体），这里先保持旧行为：结算线程上发 JobCompleted，回到 runtime 上下文把完成通知写成
+//! durable inbox 输入（T006.2a），再唤醒驱动。写 job/registered、job/settled 会话事件与
+//! DSH 通知文案在实现提交里改。
 
 use std::sync::Arc;
 
@@ -13,12 +15,15 @@ use crate::{AgentError, AgentEvent, JobStatus};
 pub(crate) fn install(inner: &Arc<Inner>) {
     let handle = tokio::runtime::Handle::current();
     let weak = Arc::downgrade(inner);
-    inner.job_session().tasks().set_on_settled(Arc::new(
-        move |job_id: &str, status: tools::JobStatus| {
+    inner
+        .job_session()
+        .tasks()
+        .set_on_settled(Arc::new(move |settled: &tools::JobSettled| {
             let Some(inner) = weak.upgrade() else {
                 return;
             };
-            let job_id = job_id.to_owned();
+            let job_id = settled.id.clone();
+            let status = settled.status;
             let handle = handle.clone();
             handle.spawn(async move {
                 if let Err(error) = deliver(inner.as_ref(), &job_id, status).await {
@@ -28,8 +33,7 @@ pub(crate) fn install(inner: &Arc<Inner>) {
                 }
                 inner.wake();
             });
-        },
-    ));
+        }));
 }
 
 /// 格式化完成通知、发 JobCompleted、把通知写成 durable 的下一步输入。

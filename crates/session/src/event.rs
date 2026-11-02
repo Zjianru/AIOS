@@ -212,6 +212,15 @@ pub enum SurfaceOp {
     },
 }
 
+/// 创建 job 的工具调用（DSH JobToolCall；嵌套调用保留根调用 id）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JobToolCallData {
+    #[serde(rename = "callId")]
+    pub call_id: String,
+    #[serde(rename = "rootCallId")]
+    pub root_call_id: String,
+}
+
 /// 会话事件。类型集合照 spec「实现决定·会话日志」。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -247,6 +256,42 @@ pub enum EventKind {
         header: Option<String>,
         options: Vec<String>,
         multi_select: bool,
+    },
+    /// 后台任务注册（T006.9；DSH job/registered 的 durable session 记录）。
+    #[serde(rename = "job/registered")]
+    JobRegistered {
+        #[serde(rename = "jobId")]
+        job_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        owner: Option<String>,
+        kind: String,
+        label: String,
+        #[serde(rename = "startedAt")]
+        started_at: u64,
+        #[serde(rename = "toolCall", skip_serializing_if = "Option::is_none")]
+        tool_call: Option<JobToolCallData>,
+    },
+    /// 后台任务结算（T006.9；DSH job/settled）。
+    #[serde(rename = "job/settled")]
+    JobSettled {
+        #[serde(rename = "jobId")]
+        job_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        owner: Option<String>,
+        kind: String,
+        label: String,
+        #[serde(rename = "startedAt")]
+        started_at: u64,
+        #[serde(rename = "toolCall", skip_serializing_if = "Option::is_none")]
+        tool_call: Option<JobToolCallData>,
+        #[serde(rename = "finishedAt")]
+        finished_at: u64,
+        status: String,
+        cause: String,
+        #[serde(rename = "producerReported")]
+        producer_reported: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
     },
     /// 等待中被取消，问题撤销（T005.10）。
     #[serde(rename = "question/cancelled")]
@@ -425,6 +470,8 @@ impl EventKind {
             Self::CompactionStart { .. } => "compaction/start",
             Self::CompactionSummary { .. } => "compaction/summary",
             Self::CompactionEnd { .. } => "compaction/end",
+            Self::JobRegistered { .. } => "job/registered",
+            Self::JobSettled { .. } => "job/settled",
         }
     }
 }
