@@ -122,6 +122,36 @@ fn source_kind_and_fields_match_dsh() {
 }
 
 #[test]
+fn skill_catalog_source_serializes_dsh_shape() {
+    let message = Message::skill_catalog(
+        "catalog body",
+        true,
+        false,
+        vec![crate::SkillCatalogEntry {
+            name: "pdf".to_owned(),
+            description: "PDF helper".to_owned(),
+        }],
+    );
+    let value = serde_json::to_value(&message).unwrap();
+    assert_eq!(
+        value["source"],
+        json!({
+            "kind": "skill-catalog",
+            "form": "catalog",
+            "update": true,
+            "entries": [{"name": "pdf", "description": "PDF helper"}],
+        })
+    );
+    assert_eq!(value["role"], "user");
+    // 首次发布不带 update。
+    let first = Message::skill_catalog("first", false, true, Vec::new());
+    assert_eq!(
+        serde_json::to_value(&first).unwrap()["source"],
+        json!({"kind": "skill-catalog", "form": "catalog", "incomplete": true, "entries": []})
+    );
+}
+
+#[test]
 fn five_role_json_shapes() {
     let system = Message::system_prompt("系统提示");
     let developer = Message::developer(vec![ContentBlock::text("tool-addition")]);

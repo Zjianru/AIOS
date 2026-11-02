@@ -24,7 +24,9 @@ use crate::SessionId;
 /// 按 spec 升版本、旧版本仍然拒绝（不迁移）。
 /// v8：message source 新增 agent-instructions（T006.10 照 DSH：带类型来源、baseline identity、
 /// set/replace/remove 变更对象）；旧版本读不了新 source，按 spec 升版本、旧版本仍拒绝。
-pub const FORMAT_VERSION: u64 = 8;
+/// v9：message source 新增 skill-catalog（T006.11 照 DSH tool-skill：form=catalog、
+/// update/incomplete 标记与 entries 持久目录）；旧版本读不了新 source，旧版本仍拒绝。
+pub const FORMAT_VERSION: u64 = 9;
 
 /// JSONL 第一行的会话 header。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -35,8 +35,9 @@ pub use session::{
     WriteIntent,
 };
 pub use skills::{
-    SKILL_FILE, SkillContent, SkillSummary, catalog_description, discover_skills, is_skill_name,
-    load_skill, render_skill_content, skill_roots,
+    SKILL_FILE, SkillContent, SkillDiscovery, SkillFrontmatter, SkillInvocation, SkillSummary,
+    SkillWarning, catalog_description, discover_skill_catalog, discover_skills, is_skill_name,
+    load_skill, parse_skill_frontmatter, render_skill_content, skill_roots,
 };
 pub use spill::{SpillRef, bound_result, estimate_text_tokens};
 

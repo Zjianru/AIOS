@@ -314,6 +314,67 @@ fn parse_simple_yaml(lines: &[&str]) -> Result<BTreeMap<String, String>, String>
     Ok(fields)
 }
 
+/// skill frontmatter 的完整字段（DSH skill-filesystem 的 ParsedSkill）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct SkillFrontmatter {
+    pub name: String,
+    pub description: String,
+    pub when_to_use: Option<String>,
+    pub metadata: Option<serde_json::Value>,
+    pub invocation: SkillInvocation,
+}
+
+/// 模型/用户两侧调用策略（DSH SkillInvocationPolicy 的子集：AIOS 没有用户显式 /name 通道）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkillInvocation {
+    pub model_invocable: bool,
+    pub user_invocable: bool,
+}
+
+impl Default for SkillInvocation {
+    fn default() -> Self {
+        Self {
+            model_invocable: true,
+            user_invocable: true,
+        }
+    }
+}
+
+/// 一条发现警告（DSH 对非法 skill 打 logger.warn，不静默丢）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillWarning {
+    pub path: PathBuf,
+    pub message: String,
+}
+
+/// 一次发现的完整结果：可用 skill + 警告（DSH candidates/incomplete 的 AIOS 形状）。
+#[derive(Debug, Default)]
+pub struct SkillDiscovery {
+    pub skills: Vec<SkillSummary>,
+    pub warnings: Vec<SkillWarning>,
+}
+
+/// 解析 frontmatter 为完整字段。骨架阶段先沿用最小解析（只 name/description），
+/// 完整 YAML/字段/调用策略在 T006.11 实现。
+pub fn parse_skill_frontmatter(raw: &str) -> Result<SkillFrontmatter, String> {
+    let parsed = parse_skill(raw)?;
+    Ok(SkillFrontmatter {
+        name: parsed.name,
+        description: parsed.description,
+        when_to_use: None,
+        metadata: None,
+        invocation: SkillInvocation::default(),
+    })
+}
+
+/// 发现 skill + 警告（骨架阶段行为同 discover_skills，warnings 恒空）。
+pub fn discover_skill_catalog(cwd: &Path, data_dir: &Path, configured: &[PathBuf]) -> SkillDiscovery {
+    SkillDiscovery {
+        skills: discover_skills(cwd, data_dir, configured),
+        warnings: Vec::new(),
+    }
+}
+
 fn find_project_root(cwd: &Path) -> PathBuf {
     let mut current = cwd.to_path_buf();
     loop {

@@ -82,6 +82,23 @@ pub enum MessageSource {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         changes: Vec<InstructionChange>,
     },
+    /// skill 目录注入的 user 消息（DSH tool-skill 的 skill-catalog 来源，T006.11）：
+    /// 带类型目录（entries 是消息实际发布的摘要条目）；update=true 表示替换目录。
+    SkillCatalog {
+        form: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        update: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        incomplete: bool,
+        entries: Vec<SkillCatalogEntry>,
+    },
+}
+
+/// skill 目录消息的一条持久条目（DSH SkillCatalogSource.entries 的 AIOS 形状）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillCatalogEntry {
+    pub name: String,
+    pub description: String,
 }
 
 /// 指令状态的变更动作（DSH AgentInstructionChange.action）。
@@ -248,6 +265,26 @@ impl Message {
 
     pub fn user_text(text: impl Into<String>) -> Self {
         Self::user(vec![ContentBlock::text(text)])
+    }
+
+    /// skill 目录注入消息（source=skill-catalog，T006.11 照 DSH tool-skill）。
+    pub fn skill_catalog(
+        text: impl Into<String>,
+        update: bool,
+        incomplete: bool,
+        entries: Vec<SkillCatalogEntry>,
+    ) -> Self {
+        Self::with_source(
+            MessageId::generate(),
+            Role::User,
+            vec![ContentBlock::text(text)],
+            MessageSource::SkillCatalog {
+                form: "catalog".to_owned(),
+                update,
+                incomplete,
+                entries,
+            },
+        )
     }
 
     /// 工作区指令注入消息（source=agent-instructions，T006.10 照 DSH）。
