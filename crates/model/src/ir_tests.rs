@@ -43,7 +43,7 @@ fn message_has_stable_unique_id() {
         MessageId::parse("11111111-1111-4111-8111-111111111111"),
         Role::User,
         vec![ContentBlock::text("恢复")],
-        MessageSource::User,
+        MessageSource::User { rpc_id: None },
     );
     assert_eq!(restored.id.as_str(), "11111111-1111-4111-8111-111111111111");
 }
@@ -52,7 +52,7 @@ fn message_has_stable_unique_id() {
 fn source_kind_and_fields_match_dsh() {
     // source kind 的字段照 DSH MessageSourceMap（T006.10 加 agent-instructions）。
     let user = Message::user_text("你好");
-    assert_eq!(user.source, MessageSource::User);
+    assert_eq!(user.source, MessageSource::User { rpc_id: None });
     let system = Message::system_prompt("系统提示");
     assert_eq!(system.source, MessageSource::SystemPrompt);
     let assistant = Message::assistant(

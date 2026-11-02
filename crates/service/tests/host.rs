@@ -242,7 +242,7 @@ async fn cancel_interrupts_active_turn() {
     .await;
     let (agent, data_dir, id) = setup(&server).await;
     let service = ServiceHost::new(agent.clone());
-    let mut events = service.events();
+    let mut events = service.subscribe_events();
 
     let started = service.send(send_request("req-cancel", "跑一轮")).await;
     assert!(started.is_ok(), "send 应成功：{started:?}");
@@ -267,7 +267,7 @@ async fn answer_applies_whole_batch_with_selected_and_custom() {
     mount(&server, vec![sse(ASK_TWO_SSE), sse(FINAL_TEXT_SSE)]).await;
     let (agent, _data_dir, _id) = setup(&server).await;
     let service = ServiceHost::new(agent.clone());
-    let mut events = service.events();
+    let mut events = service.subscribe_events();
 
     let started = service
         .send(send_request("req-answer", "要问两个问题"))
@@ -362,7 +362,7 @@ async fn status_reports_object_phase_and_pending_questions() {
     assert!(!idle.running, "空闲时 running=false");
     assert_eq!(idle.pending_questions, 0);
 
-    let mut events = service.events();
+    let mut events = service.subscribe_events();
     assert!(service.send(send_request("req-status", "跑")).await.is_ok());
     wait_for(&mut events, "turn/start", 1).await;
     let running = service.status(StatusRequest {}).await;
@@ -378,7 +378,7 @@ async fn events_carry_contiguous_seq_type_and_data() {
     mount(&server, vec![sse(FINAL_TEXT_SSE)]).await;
     let (agent, data_dir, id) = setup(&server).await;
     let service = ServiceHost::new(agent.clone());
-    let mut events = service.events();
+    let mut events = service.subscribe_events();
 
     assert!(
         service

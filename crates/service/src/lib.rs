@@ -6,11 +6,16 @@
 //!
 //! 对象固定 Kind 根会话：根会话实体在 T006.16b 落，本票宿主绑定一个会话、Object 用 session id。
 
+mod root;
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 
 use agent::Agent;
 use model::UserMessage;
+pub use root::{
+    ROOT_STATE_FILE, RootError, RootSession, RootSessionOptions, RootStatus, open_root_session,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, oneshot};
 
@@ -55,6 +60,8 @@ pub enum Call {
     Answer(AnswerRequest),
     Compact(CompactRequest),
     Status(StatusRequest),
+    Follow(FollowRequest),
+    Events(EventsRequest),
 }
 
 /// 调用的结果（与 Call 一一对应）。
@@ -66,6 +73,8 @@ pub enum Response {
     Answer(AnswerResponse),
     Compact(CompactResponse),
     Status(StatusResponse),
+    Follow(FollowResponse),
+    Events(EventsResponse),
 }
 
 /// 发消息（DSH session-controller 的 prompt）。requestId 是幂等键：同一 id 只进一次。
@@ -155,6 +164,57 @@ pub struct StatusResponse {
     pub pending_questions: usize,
 }
 
+/// follow（DSH :607）：带上调用方最后看到的日志序号，服务补齐之后的事件。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct FollowRequest {
+    /// 调用方已持有的最后序号（0 = 从头补齐）。
+    #[serde(default, rename = "lastSeq")]
+    pub last_seq: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FollowResponse {
+    /// seq > last_seq 的事件（按日志顺序、连续、不重复）。
+    pub events: Vec<ServiceEvent>,
+    /// 补齐后的最后序号（events 为空时等于请求的 last_seq）。
+    #[serde(rename = "lastSeq")]
+    pub last_seq: u64,
+}
+
+/// events（DSH :540）：往回翻一页日志，按轮对齐、有预算（默认 50/2/500）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct EventsRequest {
+    /// 页的末端（含）；省略 = 当前日志末端。
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "beforeSeq")]
+    pub before_seq: Option<u64>,
+    /// 消息条数上限（user/message + assistant/message），默认 500。
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "maxMessages"
+    )]
+    pub max_messages: Option<usize>,
+    /// 至少要有多少条消息（轮对齐下限），默认 50。
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "minMessages"
+    )]
+    pub min_messages: Option<usize>,
+    /// 至少跨过多少个轮起点（轮对齐下限），默认 2。
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "minTurns")]
+    pub min_turns: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventsResponse {
+    /// 这一页事件（按日志顺序；页首通常是 turn/start，除非预算或日志耗尽先到）。
+    pub events: Vec<ServiceEvent>,
+    /// 还有更早的事件（下一轮用 beforeSeq = 页首 seq - 1 往回翻）。
+    #[serde(rename = "hasMore")]
+    pub has_more: bool,
+}
+
 /// 服务事件：严格来自会话日志事实（seq 连续、type 是日志事件类型、data 是事件字段）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServiceEvent {
@@ -173,6 +233,8 @@ pub enum ServiceError {
     AnswerRejected(String),
     #[error("发送失败：{0}")]
     SendFailed(String),
+    #[error("服务方法尚未实现（骨架）")]
+    NotImplemented,
 }
 
 /// 幂等表：同一 requestId 的并发/重试共享一次受理。
@@ -223,8 +285,8 @@ impl ServiceHost {
         }
     }
 
-    /// 事件订阅端（载体每连接一个）。
-    pub fn events(&self) -> broadcast::Receiver<ServiceEvent> {
+    /// 事件订阅端（载体每连接一个）；协议方法 events 见下方同名 RPC。
+    pub fn subscribe_events(&self) -> broadcast::Receiver<ServiceEvent> {
         self.events.subscribe()
     }
 
@@ -236,6 +298,8 @@ impl ServiceHost {
             Call::Answer(request) => self.answer(request).await.map(Response::Answer),
             Call::Compact(request) => self.compact(request).await.map(Response::Compact),
             Call::Status(request) => self.status(request).await.map(Response::Status),
+            Call::Follow(request) => self.follow(request).await.map(Response::Follow),
+            Call::Events(request) => self.events(request).await.map(Response::Events),
         }
     }
 
@@ -344,6 +408,16 @@ impl ServiceHost {
             running: self.agent.is_running(),
             pending_questions: self.agent.pending_questions().len(),
         })
+    }
+
+    /// follow（DSH :607）：按调用方最后的序号补齐日志事件（连续、不重复）。
+    pub async fn follow(&self, _request: FollowRequest) -> Result<FollowResponse, ServiceError> {
+        Err(ServiceError::NotImplemented)
+    }
+
+    /// events（DSH :540）：按轮对齐、带预算的日志页（默认 50/2/500）。
+    pub async fn events(&self, _request: EventsRequest) -> Result<EventsResponse, ServiceError> {
+        Err(ServiceError::NotImplemented)
     }
 }
 

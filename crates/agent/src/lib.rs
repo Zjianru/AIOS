@@ -357,6 +357,15 @@ fn cleanup_spill_files(store: &SessionStore, period_days: u64) {
     let _ = tools::spill::sweep_spill_root(&data_dir.join("spill"), cutoff);
 }
 
+/// T006.16b：带 requestId 的发送受理结果（durable rpcId 幂等）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendAdmission {
+    /// 新消息已进收件箱并唤醒（或排队）。
+    Admitted,
+    /// 同一个 requestId 已经受理过（inbox 或日志里已有），没有重复插入。
+    Duplicate,
+}
+
 /// T004 的 agent。产品组装入口是 Agent::open（crates/agent/src/assembly.rs）；
 /// create/resume 是 deps 注入的低层构造，留给测试/定制工具集或已有 Store 的调用方。
 #[derive(Clone)]
@@ -419,6 +428,35 @@ impl Agent {
     /// T006.2a：返回时消息已经写进会话日志（重启后队列还在）。
     pub async fn send(&self, message: UserMessage, delivery: Delivery) -> Result<(), AgentError> {
         self.inner.send(message, delivery).await
+    }
+
+    /// T006.16b：带调用方 requestId 的发送（DSH prompt 的 requestId；durable 幂等）。
+    /// 同一个 id 已进 inbox 或已落日志时返回 Duplicate，不再插入、不再唤醒。
+    pub async fn send_with_request_id(
+        &self,
+        request_id: &str,
+        message: UserMessage,
+        delivery: Delivery,
+    ) -> Result<SendAdmission, AgentError> {
+        self.inner
+            .send_with_request_id(request_id, message, delivery)
+            .await
+    }
+
+    /// T006.16b：重启后领取 pending inbox（有排队输入就开一轮）；返回是否领取了东西。
+    /// 只由重启路径显式调用（2a 的 resume 只恢复、不唤醒）。
+    pub fn claim_pending(&self) -> bool {
+        self.inner.claim_pending()
+    }
+
+    /// T006.16b：follow/events 的日志读面（seq > after_seq，按日志顺序）。
+    pub fn session_events_from(&self, after_seq: u64) -> Vec<session::Event> {
+        self.inner.session_events_from(after_seq)
+    }
+
+    /// T006.16b：日志最后一条事件的 seq（空日志为 0）。
+    pub fn last_seq(&self) -> u64 {
+        self.inner.last_seq()
     }
 
     /// 取消：清空收件箱并中止正在跑的一轮；清空也写进会话日志（T006.2a）。

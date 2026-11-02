@@ -99,6 +99,17 @@ impl Inbox {
         !self.next_turn.is_empty() || !self.next_step.is_empty()
     }
 
+    /// T006.16b：待领取队列里有没有这个 rpcId 的消息（重启后的 durable 幂等去重）。
+    pub(crate) fn pending_has_rpc_id(&self, request_id: &str) -> bool {
+        let matches = |message: &Message| {
+            matches!(
+                &message.source,
+                model::MessageSource::User { rpc_id: Some(id) } if id == request_id
+            )
+        };
+        self.next_turn.iter().any(matches) || self.next_step.iter().any(matches)
+    }
+
     pub(crate) fn next_step_is_empty(&self) -> bool {
         self.next_step.is_empty()
     }

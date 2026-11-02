@@ -209,7 +209,10 @@ async fn inject_send_is_durable_and_notifies_inserted() {
     assert_eq!(*removed_count, None);
     assert_eq!(inserted.len(), 1);
     assert_eq!(message_text(&inserted[0]), "后台通知");
-    assert_eq!(inserted[0].source, model::MessageSource::User);
+    assert_eq!(
+        inserted[0].source,
+        model::MessageSource::User { rpc_id: None }
+    );
     assert_eq!(*outcome, None);
 
     // wire 形状照 DSH：data 里 target/start/inserted；可选字段省略。

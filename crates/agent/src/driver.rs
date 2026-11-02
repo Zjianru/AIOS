@@ -357,6 +357,92 @@ impl Inner {
         message: UserMessage,
         delivery: Delivery,
     ) -> Result<(), AgentError> {
+        self.send_message(message.into_message(), delivery).await
+    }
+
+    /// T006.16b：带 requestId 的发送；durable rpcId 幂等（inbox 或日志里已有同 id 就不再进）。
+    pub(crate) async fn send_with_request_id(
+        self: &Arc<Self>,
+        request_id: &str,
+        message: UserMessage,
+        delivery: Delivery,
+    ) -> Result<crate::SendAdmission, AgentError> {
+        if self.has_request_id(request_id) {
+            return Ok(crate::SendAdmission::Duplicate);
+        }
+        let mut message = message.into_message();
+        message.source = model::MessageSource::User {
+            rpc_id: Some(request_id.to_owned()),
+        };
+        self.send_message(message, delivery).await?;
+        Ok(crate::SendAdmission::Admitted)
+    }
+
+    /// T006.16b：inbox 或已落日志的 user/message 里有没有这个 rpcId（DSH hasPromptRequest）。
+    fn has_request_id(&self, request_id: &str) -> bool {
+        if self
+            .inbox
+            .lock()
+            .expect("agent 收件箱锁被毒化")
+            .pending_has_rpc_id(request_id)
+        {
+            return true;
+        }
+        let store = self.store.lock().expect("agent 会话锁被毒化");
+        store.events().iter().any(|event| {
+            matches!(
+                &event.kind,
+                EventKind::UserMessage { message, .. }
+                    if matches!(
+                        &message.source,
+                        model::MessageSource::User { rpc_id: Some(id) } if id == request_id
+                    )
+            )
+        })
+    }
+
+    /// T006.16b：重启后领取 pending inbox（把排队的输入转成 turn）；返回是否领取了东西。
+    pub(crate) fn claim_pending(self: &Arc<Self>) -> bool {
+        let pending = self
+            .inbox
+            .lock()
+            .expect("agent 收件箱锁被毒化")
+            .has_pending();
+        if pending {
+            self.wake_driver();
+        }
+        pending
+    }
+
+    /// T006.16b：follow/events 的日志读面（seq > after_seq，按日志顺序）。
+    pub(crate) fn session_events_from(&self, after_seq: u64) -> Vec<session::Event> {
+        self.store
+            .lock()
+            .expect("agent 会话锁被毒化")
+            .events()
+            .iter()
+            .filter(|event| event.seq > after_seq)
+            .cloned()
+            .collect()
+    }
+
+    /// T006.16b：日志最后一条事件的 seq（空日志为 0）。
+    pub(crate) fn last_seq(&self) -> u64 {
+        self.store
+            .lock()
+            .expect("agent 会话锁被毒化")
+            .events()
+            .last()
+            .map(|event| event.seq)
+            .unwrap_or(0)
+    }
+
+    /// 真正落日志的发送路径（T006.2a：先写 splice 再唤醒）。
+    async fn send_message(
+        self: &Arc<Self>,
+        message: model::Message,
+        delivery: Delivery,
+    ) -> Result<(), AgentError> {
         // 新的用户消息清零重复调用链（照 DSH repeat-tool-reminder；状态在提醒能力里）。
         self.capabilities.reset_repeat_chain();
         let target = {
@@ -372,7 +458,7 @@ impl Inner {
                 delivery.target()
             }
         };
-        self.inbox_mutation(target, i64::MAX, 0, vec![message.into_message()], false)
+        self.inbox_mutation(target, i64::MAX, 0, vec![message], false)
             .await?;
         if delivery.wakes() {
             self.wake_driver();

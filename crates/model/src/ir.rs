@@ -25,6 +25,12 @@ impl MessageId {
     }
 }
 
+impl Default for MessageSource {
+    fn default() -> Self {
+        Self::User { rpc_id: None }
+    }
+}
+
 impl From<&str> for MessageId {
     fn from(raw: &str) -> Self {
         Self(raw.to_owned())
@@ -32,12 +38,14 @@ impl From<&str> for MessageId {
 }
 
 /// 一条消息的来源（DSH MessageSourceMap 的四个 kind）。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum MessageSource {
-    /// 用户输入或注入的上下文。
-    #[default]
-    User,
+    /// 用户输入或注入的上下文。rpcId 是调用方的请求 id（T006.16b：重启后仍可按 id 去重）。
+    User {
+        #[serde(rename = "rpcId", default, skip_serializing_if = "Option::is_none")]
+        rpc_id: Option<String>,
+    },
     /// 模型产出；provider/model 是产出该消息的路由，replayState 是 adapter 回放用的原生状态。
     Model {
         provider: String,
@@ -232,7 +240,7 @@ impl Message {
     pub fn new(role: Role, content: Vec<ContentBlock>) -> Self {
         let source = match role {
             Role::System => MessageSource::SystemPrompt,
-            Role::Developer | Role::User => MessageSource::User,
+            Role::Developer | Role::User => MessageSource::User { rpc_id: None },
             Role::Assistant => MessageSource::Model {
                 provider: "deepseek".to_owned(),
                 model: "deepseek-flash".to_owned(),
@@ -265,12 +273,27 @@ impl Message {
             MessageId::generate(),
             Role::User,
             content,
-            MessageSource::User,
+            MessageSource::User { rpc_id: None },
         )
     }
 
     pub fn user_text(text: impl Into<String>) -> Self {
         Self::user(vec![ContentBlock::text(text)])
+    }
+
+    /// 带调用方请求 id 的用户消息（T006.16b 的 durable rpcId）。
+    pub fn user_text_with_request_id(
+        text: impl Into<String>,
+        request_id: impl Into<String>,
+    ) -> Self {
+        Self::with_source(
+            MessageId::generate(),
+            Role::User,
+            vec![ContentBlock::text(text)],
+            MessageSource::User {
+                rpc_id: Some(request_id.into()),
+            },
+        )
     }
 
     /// skill 目录注入消息（source=skill-catalog，T006.11 照 DSH tool-skill）。
@@ -330,7 +353,7 @@ impl Message {
             MessageId::generate(),
             Role::Developer,
             content,
-            MessageSource::User,
+            MessageSource::User { rpc_id: None },
         )
     }
 
@@ -393,6 +416,11 @@ pub struct UserMessage(Message);
 impl UserMessage {
     pub fn text(text: impl Into<String>) -> Self {
         Self(Message::user_text(text))
+    }
+
+    /// 带 requestId 的用户消息（T006.16b：服务发消息的 durable rpcId）。
+    pub fn text_with_request_id(text: impl Into<String>, request_id: impl Into<String>) -> Self {
+        Self(Message::user_text_with_request_id(text, request_id))
     }
 
     pub fn new(content: Vec<ContentBlock>) -> Self {
