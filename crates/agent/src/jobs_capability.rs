@@ -7,6 +7,7 @@
 //! 2. 结算没有被调用方收走时，投递一条模型可见的完成通知（下一步输入）并唤醒驱动；
 //! 3. 三种回调都送进同一条有序通道消费：注册 → 结算 → 通知，会话事件不会乱序。
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use session::{EventKind, JobToolCallData};
@@ -43,6 +44,10 @@ pub(crate) fn install(inner: &Arc<Inner>) {
         let _ = sender.send(Lifecycle::Notify(settled.clone()));
     }));
     tokio::spawn(async move {
+        // T006.9b 照 DSH tool-jobs 的 killedByModel：模型自己 job_kill 的结算只写会话事件，
+        // 不再投完成通知（工具结果就是交付）。标记在结算消息处理时取走（DSH 的
+        // killedByModel.delete），通知消息随后消费它决定是否抑制。
+        let mut model_killed_notices = HashSet::<String>::new();
         while let Some(message) = receiver.recv().await {
             let Some(inner) = weak.upgrade() else {
                 break;
@@ -53,8 +58,19 @@ pub(crate) fn install(inner: &Arc<Inner>) {
                 }
                 Lifecycle::Settled(settled) => {
                     let _ = inner.append(&[settled_event(&settled)]).await;
+                    if inner
+                        .tool_session()
+                        .tasks()
+                        .take_killed_by_model(&settled.id)
+                    {
+                        model_killed_notices.insert(settled.id.clone());
+                    }
                 }
                 Lifecycle::Notify(settled) => {
+                    if model_killed_notices.remove(&settled.id) {
+                        // 模型自己的 kill 结果已经交付：不重复投完成通知、也不唤醒新一轮。
+                        continue;
+                    }
                     if let Err(error) = deliver(inner.as_ref(), &settled).await {
                         // 后台边界：没有调用方接错误；写日志失败不打断唤醒（T006.2a known：通知丢失，进程继续）。
                         let _ = error;

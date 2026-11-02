@@ -285,8 +285,15 @@ async fn job_kill(arguments: &str, context: &ToolContext) -> Result<String, Tool
         .get("reason")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let read = registry(context)
-        .terminate(id, reason, crate::jobs::KILL_GRACE)
+    // 照 DSH tool-jobs：先同步请求取消并判 requested/already-finished；requested 才把这条记成
+    // killedByModel（结算不再投完成通知），再等 SIGTERM→grace→SIGKILL 收尾。
+    let registry = registry(context);
+    let requested = registry.request_kill(id, reason)?;
+    if requested {
+        registry.mark_killed_by_model(id);
+    }
+    let read = registry
+        .await_termination(id, crate::jobs::KILL_GRACE)
         .await?;
     let body = body_of(&read);
     let body = if body == "(no output)" {
