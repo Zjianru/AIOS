@@ -383,7 +383,7 @@ async fn bash_missing_description_is_invalid() {
     assert!(result.content.contains("description"), "{}", result.content);
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[tokio::test]
 async fn bash_does_not_block_runtime_while_command_runs() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -400,7 +400,7 @@ async fn bash_does_not_block_runtime_while_command_runs() {
             }
         })
     };
-    // 单 worker runtime：bash 若同步阻塞等待，heartbeat 一次都跑不了。
+    // current_thread runtime：bash 若同步阻塞等待，heartbeat 一次都跑不了。
     let marker = dir.path().join("go");
     let marker_thread = {
         let marker = marker.clone();
