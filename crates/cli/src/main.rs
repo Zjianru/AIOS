@@ -584,9 +584,9 @@ mod tests {
     use model::DEFAULT_MAX_TOKENS;
 
     use super::{
-        ChatInput, CommonArgs, compact_result_text, config_from_args, dispatch_chat_input,
-        is_compact_command, job_completed_text, pending_questions_after_event, question_asked_text,
-        questions_asked_text, run_should_cancel_for_question,
+        ChatInput, CommonArgs, classify_answer, compact_result_text, config_from_args,
+        dispatch_chat_input, is_compact_command, job_completed_text, pending_questions_after_event,
+        question_asked_text, questions_asked_text, run_should_cancel_for_question,
     };
 
     #[test]
@@ -749,6 +749,47 @@ mod tests {
             dispatch_chat_input("继续", true, None),
             ChatInput::Steer("继续".to_owned()),
             "问题结束后恢复普通输入"
+        );
+    }
+
+    #[test]
+    fn classify_answer_maps_option_labels_and_custom_text() {
+        // 照 DSH 答案项（K14）：标签是选项 → selected；其余文本 → custom；多选可逗号选多个。
+        let question = |multi_select: bool| agent::Question {
+            id: "q1".to_owned(),
+            question: "Pick".to_owned(),
+            header: None,
+            options: vec![
+                agent::QuestionOption {
+                    label: "Yes".to_owned(),
+                    description: None,
+                },
+                agent::QuestionOption {
+                    label: "No".to_owned(),
+                    description: None,
+                },
+            ],
+            multi_select,
+        };
+        assert_eq!(
+            classify_answer("Yes", &question(false)),
+            (vec!["Yes".to_owned()], None),
+            "输入恰好是选项标签 → selected"
+        );
+        assert_eq!(
+            classify_answer("我自己的答案", &question(false)),
+            (Vec::new(), Some("我自己的答案".to_owned())),
+            "不在选项里的输入 → custom"
+        );
+        assert_eq!(
+            classify_answer("Yes, No", &question(true)),
+            (vec!["Yes".to_owned(), "No".to_owned()], None),
+            "多选问题：逗号分隔且每项都是选项 → selected 多个"
+        );
+        assert_eq!(
+            classify_answer("Yes, maybe", &question(true)),
+            (Vec::new(), Some("Yes, maybe".to_owned())),
+            "有一项不是选项时整行当 custom"
         );
     }
 

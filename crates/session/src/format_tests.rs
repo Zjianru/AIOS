@@ -388,6 +388,37 @@ fn retry_events_match_dsh() {
     assert_eq!(derived.len(), 1);
     assert_eq!(derived[0].role, Role::User);
 }
+/// T006.13：question/answered 的 data 是一条 DSH 答案项（tool-ask-user 的
+/// AskUserQuestionAnswerItem：id + selected[] + 可选 custom），落日志时再带问题定位。
+#[test]
+fn question_answered_matches_dsh_answer_item() {
+    let (_data_dir, _cwd, mut store) = create_store();
+    store
+        .append(&[EventKind::QuestionAnswered {
+            turn: 1,
+            step: 2,
+            call_id: "call_ask".to_owned(),
+            question_id: "q2".to_owned(),
+            selected: vec!["No".to_owned()],
+            custom: Some("我自己的答案".to_owned()),
+        }])
+        .unwrap();
+    let (_header, rows) = log_rows(&store);
+    assert_eq!(rows[0]["type"], "question/answered");
+    assert_eq!(
+        rows[0]["data"],
+        json!({
+            "turn": 1,
+            "step": 2,
+            "call_id": "call_ask",
+            "question_id": "q2",
+            "selected": ["No"],
+            "custom": "我自己的答案"
+        }),
+        "答案项字段照 DSH（selected 是数组、custom 可选）"
+    );
+}
+
 #[test]
 fn all_event_kinds_round_trip_under_dsh_envelope() {
     let (data_dir, _cwd, mut store) = create_store();

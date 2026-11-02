@@ -151,6 +151,25 @@ fn skill_catalog_source_serializes_dsh_shape() {
     );
 }
 
+/// T006.13 照 DSH user-questions：重启后续答已恢复问题的 user 消息带
+/// user-question-reply source，callId 指回那次 ask_user_question 调用。
+#[test]
+fn user_question_reply_source_serializes_dsh_shape() {
+    let message = Message::user_question_reply("{}", "call_ask".to_owned());
+    assert_eq!(
+        message.source,
+        MessageSource::UserQuestionReply {
+            call_id: "call_ask".to_owned()
+        }
+    );
+    let value = serde_json::to_value(&message).unwrap();
+    assert_eq!(value["role"], "user");
+    assert_eq!(
+        value["source"],
+        json!({"kind": "user-question-reply", "callId": "call_ask"})
+    );
+}
+
 #[test]
 fn five_role_json_shapes() {
     let system = Message::system_prompt("系统提示");

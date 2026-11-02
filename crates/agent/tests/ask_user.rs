@@ -1,4 +1,11 @@
-//! T005.10：ask_user_question 问题事件、answer 续跑、等待中 cancel 撤销（测试清单第 14 条）。
+//! T006.13：ask_user_question 改回 DSH 语义——答案 `{id, selected[], custom?}`（K14）、
+//! 回答方接缝（`Agent::cancel_question`）、问题/答案的 durable 事件、等待中撤销，
+//! 以及待答问题跨重启保留后以迟到回答消息接续（D45）。
+//!
+//! DSH 依据：`packages/interaction/tool-ask-user/src/index.ts:78-118`（工具输出 schema 与
+//! execute 映射）、`user-questions/src/index.ts:162-210`（answer 只接受 continued 问题、
+//! 批必须每题恰好一次、迟到回答以 user-question-reply 消息 steer）、
+//! `user-questions/src/types.ts:72-122`（答案项与回复 source）。
 
 mod common;
 
@@ -11,13 +18,14 @@ use common::{
 };
 use model::UserMessage;
 use serde_json::json;
+use session::{EventKind, SessionId, SessionStore, TurnEndReason};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer};
 
-async fn setup(server: &MockServer) -> (Agent, tempfile::TempDir, session::SessionId) {
+async fn setup(server: &MockServer) -> (Agent, tempfile::TempDir, SessionId) {
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
-    let store = session::SessionStore::create(data_dir.path(), cwd.path()).unwrap();
+    let store = SessionStore::create(data_dir.path(), cwd.path()).unwrap();
     let id = store.id().clone();
     let agent = Agent::create(
         isolated_config(data_dir.path()),
@@ -60,6 +68,26 @@ fn ask_call(question_id: &str) -> String {
     )])
 }
 
+fn ask_call_multi(ids: &[&str]) -> String {
+    let questions: Vec<serde_json::Value> = ids
+        .iter()
+        .enumerate()
+        .map(|(index, id)| {
+            json!({
+                "id": id,
+                "question": format!("Question {index}?"),
+                "header": format!("H{index}"),
+                "options": [{"label": "Yes"}, {"label": "No"}]
+            })
+        })
+        .collect();
+    tool_calls_with_inputs_sse(&[(
+        "call_ask",
+        "ask_user_question",
+        json!({"questions": questions}),
+    )])
+}
+
 async fn next_question(events: &mut tokio::sync::broadcast::Receiver<AgentEvent>) -> AgentEvent {
     let received = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -84,11 +112,83 @@ async fn bodies(server: &MockServer) -> Vec<String> {
         .collect()
 }
 
+fn log_path(data_dir: &std::path::Path, id: &SessionId) -> std::path::PathBuf {
+    data_dir.join("sessions").join(format!("{id}.jsonl"))
+}
+
+fn logged_events(data_dir: &std::path::Path, id: &SessionId) -> Vec<session::Event> {
+    SessionStore::open_read_only(data_dir, id)
+        .unwrap()
+        .events()
+        .to_vec()
+}
+
+async fn resume_agent(data_dir: &std::path::Path, id: &SessionId, base_url: &str) -> Agent {
+    let store = SessionStore::open(data_dir, id).unwrap();
+    Agent::resume(
+        id.clone(),
+        isolated_config(data_dir),
+        agent::Deps {
+            model: model::DeepSeek::new(model_config(base_url)).unwrap(),
+            tools: tools::ToolSet::builtin(),
+            store,
+        },
+    )
+    .await
+    .unwrap()
+}
+
+/// 把崩溃前的日志前缀抄到新 data-dir（模拟内核被杀后重启：新进程从同一日志恢复）。
+fn copy_crashed_log(data_dir: &std::path::Path, id: &SessionId) -> tempfile::TempDir {
+    let crashed_prefix = std::fs::read(log_path(data_dir, id)).unwrap();
+    let crashed_dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(crashed_dir.path().join("sessions")).unwrap();
+    std::fs::write(log_path(crashed_dir.path(), id), crashed_prefix).unwrap();
+    crashed_dir
+}
+
+fn tool_result_payload(body: &str, call_id: &str) -> serde_json::Value {
+    let request: serde_json::Value = serde_json::from_str(body).expect("请求 body 是 JSON");
+    for message in request["messages"].as_array().expect("messages") {
+        let Some(content) = message["content"].as_array() else {
+            continue;
+        };
+        for block in content {
+            if block["type"] == "tool_result" && block["tool_use_id"] == call_id {
+                let text = block["content"][0]["text"]
+                    .as_str()
+                    .expect("tool_result text");
+                return serde_json::from_str(text).expect("tool_result 内容是 JSON");
+            }
+        }
+    }
+    panic!("找不到 {call_id} 的 tool_result");
+}
+
+/// 请求里的迟到回答文本（DSH 迟到回答是一条普通 user 消息，内容是 JSON 文本）。
+fn late_reply_text(body: &serde_json::Value) -> Option<String> {
+    for message in body["messages"].as_array()? {
+        if message["role"] != "user" {
+            continue;
+        }
+        for block in message["content"].as_array()? {
+            if block["type"] != "text" {
+                continue;
+            }
+            let text = block["text"].as_str()?;
+            if text.contains("answer_to_pending_question") {
+                return Some(text.to_owned());
+            }
+        }
+    }
+    None
+}
+
 #[tokio::test]
 async fn question_event_stops_loop_until_answer_then_resumes() {
     let server = MockServer::start().await;
     mount(&server, vec![ask_call("q1"), FINAL_TEXT_SSE.to_owned()]).await;
-    let (agent, _data, _id) = setup(&server).await;
+    let (agent, data_dir, id) = setup(&server).await;
     let mut events = agent.subscribe();
     agent
         .send(UserMessage::text("go"), Delivery::FollowUp)
@@ -108,11 +208,47 @@ async fn question_event_stops_loop_until_answer_then_resumes() {
             .await,
         "id 不绑定不可答"
     );
-    assert!(agent.answer("q1", Vec::new(), Some("Yes".to_owned())).await);
+    assert!(agent.answer("q1", vec!["Yes".to_owned()], None).await);
     wait_idle(&agent, 20).await;
     let bodies = bodies(&server).await;
     assert_eq!(bodies.len(), 2, "answer 后 loop 接着跑");
-    assert!(bodies[1].contains("Yes"), "答案作为工具结果进下一个请求");
+    let payload = tool_result_payload(&bodies[1], "call_ask");
+    assert_eq!(
+        payload,
+        json!({"answers": [{"id": "q1", "selected": ["Yes"]}]}),
+        "工具结果照 DSH：answers[]{{id, selected[], custom?}}（tool-ask-user/src/index.ts:111-116）"
+    );
+
+    // 问题与答案都有 durable 事件；question/asked 带 callId 指向这次调用。
+    let logged = logged_events(data_dir.path(), &id);
+    let asked = logged.iter().find_map(|event| match &event.kind {
+        EventKind::QuestionAsked {
+            call_id,
+            question_id,
+            ..
+        } => Some((call_id.clone(), question_id.clone())),
+        _ => None,
+    });
+    assert_eq!(
+        asked,
+        Some(("call_ask".to_owned(), "q1".to_owned())),
+        "question/asked 要带 callId（重启折叠用）"
+    );
+    let answered = logged.iter().find_map(|event| match &event.kind {
+        EventKind::QuestionAnswered {
+            question_id,
+            selected,
+            custom,
+            ..
+        } => Some((question_id.clone(), selected.clone(), custom.clone())),
+        _ => None,
+    });
+    assert_eq!(
+        answered,
+        Some(("q1".to_owned(), vec!["Yes".to_owned()], None)),
+        "回答也写 durable 的 question/answered（selected 保持标签、无 custom）"
+    );
+
     let mut ended = None;
     while let Ok(event) = events.try_recv() {
         if let AgentEvent::TurnEnded { outcome, .. } = event {
@@ -137,7 +273,7 @@ async fn answer_continues_same_turn_and_logs_question() {
     };
     assert!(
         agent
-            .answer(&questions[0].id, Vec::new(), Some("Yes".to_owned()))
+            .answer(&questions[0].id, vec!["No".to_owned()], None)
             .await
     );
     wait_idle(&agent, 20).await;
@@ -176,12 +312,11 @@ async fn cancel_while_waiting_revokes_question_and_aborts_turn() {
     assert_eq!(bodies(&server).await.len(), 1, "取消后不再发请求");
     assert!(
         !agent
-            .answer(&questions[0].id, Vec::new(), Some("Yes".to_owned()))
+            .answer(&questions[0].id, vec!["Yes".to_owned()], None)
             .await,
         "撤销后答案不再接收"
     );
-    let store = session::SessionStore::open_read_only(data_dir.path(), &id).unwrap();
-    let events = store.events();
+    let events = logged_events(data_dir.path(), &id);
     assert!(
         events
             .iter()
@@ -202,28 +337,8 @@ async fn cancel_while_waiting_revokes_question_and_aborts_turn() {
     );
 }
 
-fn ask_call_multi(ids: &[&str]) -> String {
-    let questions: Vec<serde_json::Value> = ids
-        .iter()
-        .enumerate()
-        .map(|(index, id)| {
-            json!({
-                "id": id,
-                "question": format!("Question {index}?"),
-                "header": format!("H{index}"),
-                "options": [{"label": "Yes"}, {"label": "No"}]
-            })
-        })
-        .collect();
-    tool_calls_with_inputs_sse(&[(
-        "call_ask",
-        "ask_user_question",
-        json!({"questions": questions}),
-    )])
-}
-
 #[tokio::test]
-async fn two_questions_are_all_delivered_and_answered() {
+async fn two_questions_answered_as_dsh_batch_option_and_custom() {
     let server = MockServer::start().await;
     mount(
         &server,
@@ -242,37 +357,279 @@ async fn two_questions_are_all_delivered_and_answered() {
     assert_eq!(questions.len(), 2, "两个问题都要送达：{questions:?}");
     assert_eq!(questions[0].id, "q1");
     assert_eq!(questions[1].id, "q2");
-    assert!(
-        agent
-            .answer("q1", Vec::new(), Some("ANSWER-ONE".to_owned()))
-            .await
-    );
+    assert!(agent.answer("q1", vec!["Yes".to_owned()], None).await);
     assert_eq!(bodies(&server).await.len(), 1, "未答完不应生成 tool/result");
     assert!(
         agent
-            .answer("q2", Vec::new(), Some("ANSWER-TWO".to_owned()))
+            .answer("q2", Vec::new(), Some("我自己的答案".to_owned()))
             .await
     );
     wait_idle(&agent, 20).await;
     let bodies = bodies(&server).await;
     assert_eq!(bodies.len(), 2, "全部答完后继续跑");
     let payload = tool_result_payload(&bodies[1], "call_ask");
-    let answers = payload["answers"].as_array().expect("answers 数组");
-    assert_eq!(answers.len(), 2, "两个答案都要回到工具结果");
-    assert_eq!(answers[0]["id"].as_str(), Some("q1"));
-    assert_eq!(answers[0]["answer"].as_str(), Some("ANSWER-ONE"));
-    assert_eq!(answers[1]["id"].as_str(), Some("q2"));
-    assert_eq!(answers[1]["answer"].as_str(), Some("ANSWER-TWO"));
-    let store = session::SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(
-        store
-            .events()
+        payload,
+        json!({"answers": [
+            {"id": "q1", "selected": ["Yes"]},
+            {"id": "q2", "selected": [], "custom": "我自己的答案"}
+        ]}),
+        "一题选项、一题自定义，批 shape 照 DSH（K14 / tool-ask-user/src/index.ts:111-116）"
+    );
+    let events = logged_events(data_dir.path(), &id);
+    assert_eq!(
+        events
             .iter()
             .filter(|event| matches!(event.kind, session::EventKind::QuestionAsked { .. }))
             .count(),
         2,
         "两个问题各一条 question/asked"
     );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, session::EventKind::QuestionAnswered { .. }))
+            .count(),
+        2,
+        "两个答案各一条 question/answered"
+    );
+}
+
+#[tokio::test]
+async fn dismiss_question_returns_ask_aborted_and_turn_continues() {
+    let server = MockServer::start().await;
+    mount(&server, vec![ask_call("q1"), FINAL_TEXT_SSE.to_owned()]).await;
+    let (agent, data_dir, id) = setup(&server).await;
+    let mut events = agent.subscribe();
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    let AgentEvent::QuestionAsked { .. } = next_question(&mut events).await else {
+        unreachable!()
+    };
+    assert!(
+        agent.cancel_question("q1").await,
+        "提问服务路径撤销应命中待答问题"
+    );
+    wait_idle(&agent, 20).await;
+    let bodies = bodies(&server).await;
+    assert_eq!(bodies.len(), 2, "撤销后这一步继续跑（不是整轮取消）");
+    assert!(
+        bodies[1].contains("ask_user_question was aborted before the user answered"),
+        "模型收到 DSH 的 ASK_ABORTED 文案（user-questions/src/index.ts:53-59）：{}",
+        bodies[1]
+    );
+    let mut ended = None;
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::TurnEnded { outcome, .. } = event {
+            ended = Some(outcome);
+        }
+    }
+    assert_eq!(
+        ended,
+        Some(TurnOutcome::Completed),
+        "撤销问题不是取消整轮（DSH：工具错误、本轮继续）"
+    );
+    let events = logged_events(data_dir.path(), &id);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, session::EventKind::QuestionCancelled { .. }))
+            .count(),
+        1,
+        "撤销写 question/cancelled"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event.kind, session::EventKind::QuestionAnswered { .. })),
+        "没有答案就不写 question/answered"
+    );
+    let error_code = events.iter().find_map(|event| match &event.kind {
+        EventKind::ToolResult {
+            message, error, ..
+        } if message.tool_call_id.as_deref() == Some("call_ask") => {
+            error.as_ref().map(|error| error.code.clone())
+        }
+        _ => None,
+    });
+    assert_eq!(
+        error_code.as_deref(),
+        Some("ASK_ABORTED"),
+        "工具结果错误码照 DSH HarnessError code"
+    );
+    assert!(
+        !agent
+            .answer("q1", vec!["Yes".to_owned()], None)
+            .await,
+        "撤销后答案不再接收"
+    );
+}
+
+#[tokio::test]
+async fn pending_questions_survive_restart_and_answer_continues_as_late_reply() {
+    let server = MockServer::start().await;
+    mount(&server, vec![ask_call("q1")]).await;
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::create(data_dir.path(), cwd.path()).unwrap();
+    let id = store.id().clone();
+    let agent = Agent::create(
+        isolated_config(data_dir.path()),
+        agent::Deps {
+            model: model::DeepSeek::new(model_config(&server.uri())).unwrap(),
+            tools: tools::ToolSet::builtin(),
+            store,
+        },
+    )
+    .await
+    .unwrap();
+    let mut events = agent.subscribe();
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    let AgentEvent::QuestionAsked { questions } = next_question(&mut events).await else {
+        unreachable!()
+    };
+    assert_eq!(questions[0].id, "q1");
+    // 杀掉进程：日志前缀拷到新 data-dir，旧 agent 的驱动任务留在旧目录上不再写。
+    let crashed_dir = copy_crashed_log(data_dir.path(), &id);
+    drop(agent);
+
+    let resumed_server = MockServer::start().await;
+    mount(&resumed_server, vec![FINAL_TEXT_SSE.to_owned()]).await;
+    let resumed = resume_agent(crashed_dir.path(), &id, &resumed_server.uri()).await;
+    assert_eq!(
+        resumed.pending_questions().len(),
+        1,
+        "D45：内核重启后待答问题照 DSH 保留"
+    );
+    assert_eq!(resumed.pending_questions()[0].id, "q1");
+    assert!(
+        resumed
+            .answer("q1", vec!["Yes".to_owned()], None)
+            .await,
+        "恢复的待答问题可以通过回答接缝接续"
+    );
+    assert!(
+        !resumed
+            .answer("q1", vec!["Yes".to_owned()], None)
+            .await,
+        "同一个问题不能答两次（DSH REPLY_QUEUED / 已结算即拒绝）"
+    );
+    wait_idle(&resumed, 20).await;
+    assert!(resumed.pending_questions().is_empty());
+
+    // 模型下一轮看到 DSH 的迟到回答消息（user-questions/src/index.ts:191-199）。
+    let requests = resumed_server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "回答恢复的问题要唤醒一轮");
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert!(
+        body["messages"].as_array().is_some_and(|messages| messages
+            .iter()
+            .any(|message| message["role"] == "assistant"
+                && message["content"].as_array().is_some_and(|content| content
+                    .iter()
+                    .any(|block| block["type"] == "tool_use" && block["id"] == "call_ask")))),
+        "历史里保留原 ask 调用：{body}"
+    );
+    let text = late_reply_text(&body).expect("请求里要有迟到回答消息");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&text).unwrap(),
+        json!({
+            "kind": "answer_to_pending_question",
+            "tool": "ask_user_question",
+            "callId": "call_ask",
+            "questions": [{
+                "id": "q1",
+                "question": "Proceed with cleanup?",
+                "header": "Confirm",
+                "options": [
+                    {"label": "Yes", "description": "go"},
+                    {"label": "No"}
+                ]
+            }],
+            "answers": [{"id": "q1", "selected": ["Yes"]}]
+        }),
+        "迟到回答 JSON 照 DSH（questions 用服务词汇；answers 用答案项）"
+    );
+
+    let events = logged_events(crashed_dir.path(), &id);
+    assert!(
+        events.iter().any(|event| matches!(
+            event.kind,
+            EventKind::TurnEnd {
+                reason: TurnEndReason::Interrupted,
+                ..
+            }
+        )),
+        "重启先做中断修复（T006.5a repair）"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::QuestionAnswered { question_id, .. } if question_id == "q1"
+        )),
+        "恢复后回答也写 question/answered"
+    );
+    let reply_source = events.iter().find_map(|event| match &event.kind {
+        EventKind::UserMessage { message, .. } => match &message.source {
+            model::MessageSource::UserQuestionReply { call_id } => Some(call_id.clone()),
+            _ => None,
+        },
+        _ => None,
+    });
+    assert_eq!(
+        reply_source.as_deref(),
+        Some("call_ask"),
+        "迟到回答的 user/message 带 user-question-reply source（DSH）"
+    );
+}
+
+#[tokio::test]
+async fn discarded_restored_question_is_not_asked_again_after_next_restart() {
+    let server = MockServer::start().await;
+    mount(&server, vec![ask_call("q1")]).await;
+    let (agent, data_dir, id) = setup(&server).await;
+    let mut events = agent.subscribe();
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    let AgentEvent::QuestionAsked { .. } = next_question(&mut events).await else {
+        unreachable!()
+    };
+    let crashed_dir = copy_crashed_log(data_dir.path(), &id);
+    drop(agent);
+
+    let resumed_server = MockServer::start().await;
+    let resumed = resume_agent(crashed_dir.path(), &id, &resumed_server.uri()).await;
+    assert_eq!(resumed.pending_questions().len(), 1);
+    assert!(
+        resumed.cancel_question("q1").await,
+        "重启后的待答问题也能走提问服务撤销"
+    );
+    assert!(resumed.pending_questions().is_empty());
+    assert!(
+        resumed_server.received_requests().await.unwrap().is_empty(),
+        "撤销不唤醒新请求"
+    );
+    let events = logged_events(crashed_dir.path(), &id);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::QuestionCancelled { .. }))
+            .count(),
+        1,
+        "撤销写 durable 的 question/cancelled"
+    );
+    drop(resumed);
+
+    // 再重启一次：撤销过的问题不能复活（D45 折叠语义）。
+    let again = resume_agent(crashed_dir.path(), &id, &resumed_server.uri()).await;
+    assert!(again.pending_questions().is_empty(), "撤销记录要跨重启生效");
 }
 
 #[tokio::test]
@@ -326,24 +683,6 @@ async fn invalid_ask_goes_through_unified_tool_result_path() {
     assert_eq!(ended, Some(TurnOutcome::Completed));
 }
 
-fn tool_result_payload(body: &str, call_id: &str) -> serde_json::Value {
-    let request: serde_json::Value = serde_json::from_str(body).expect("请求 body 是 JSON");
-    for message in request["messages"].as_array().expect("messages") {
-        let Some(content) = message["content"].as_array() else {
-            continue;
-        };
-        for block in content {
-            if block["type"] == "tool_result" && block["tool_use_id"] == call_id {
-                let text = block["content"][0]["text"]
-                    .as_str()
-                    .expect("tool_result text");
-                return serde_json::from_str(text).expect("tool_result 内容是 JSON");
-            }
-        }
-    }
-    panic!("找不到 {call_id} 的 tool_result");
-}
-
 #[tokio::test]
 async fn duplicate_question_ids_reject_whole_call() {
     let server = MockServer::start().await;
@@ -392,22 +731,25 @@ async fn cancel_after_partial_answers_does_not_hang() {
         unreachable!()
     };
     assert_eq!(questions.len(), 2);
-    assert!(
-        agent
-            .answer("q1", Vec::new(), Some("ONLY-ONE".to_owned()))
-            .await
-    );
+    assert!(agent.answer("q1", vec!["Yes".to_owned()], None).await);
     agent.cancel().await.unwrap();
     wait_idle(&agent, 20).await;
     assert_eq!(bodies(&server).await.len(), 1, "取消后不再发请求");
-    let store = session::SessionStore::open_read_only(data_dir.path(), &id).unwrap();
-    let events = store.events();
+    let events = logged_events(data_dir.path(), &id);
     assert_eq!(
         events
             .iter()
             .filter(|event| matches!(event.kind, session::EventKind::QuestionAsked { .. }))
             .count(),
         2
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, session::EventKind::QuestionAnswered { .. }))
+            .count(),
+        1,
+        "已答的那一题留下 durable 的 question/answered"
     );
     assert_eq!(
         events
