@@ -15,7 +15,7 @@ use session::{EventKind, SessionStore};
 use tokio::sync::broadcast;
 use tools::{ToolCall, ToolResult, ToolSessionState, ToolSet};
 
-use crate::ask_capability::{AskCapability, AskState};
+use crate::ask_capability::{AnswerOutcome, AskCapability, AskState, CancelOutcome};
 use crate::compaction_capability::CompactionCapability;
 use crate::error::AgentError;
 use crate::instructions::InstructionState;
@@ -289,12 +289,12 @@ pub(crate) trait Capability: Send + Sync {
         _question_id: &str,
         _selected: Vec<String>,
         _custom: Option<String>,
-    ) -> bool {
-        false
+    ) -> AnswerOutcome {
+        AnswerOutcome::Rejected
     }
-    /// 撤销一条待答问题（T006.13，提问服务路径）；返回是否确实撤销了待答问题。
-    fn cancel_question(&self, _question_id: &str) -> bool {
-        false
+    /// 撤销一条待答问题（T006.13，提问服务路径）。
+    fn cancel_question(&self, _question_id: &str) -> CancelOutcome {
+        CancelOutcome::Rejected
     }
     /// 当前待答问题（T006.13，含重启恢复；UI 服务 T006.16a 用）。
     fn pending_questions(&self) -> Vec<crate::Question> {
@@ -382,10 +382,14 @@ impl CapabilityRegistry {
         question_id: &str,
         selected: Vec<String>,
         custom: Option<String>,
-    ) -> bool {
-        self.capabilities.iter().any(|capability| {
-            capability.answer_question(question_id, selected.clone(), custom.clone())
-        })
+    ) -> AnswerOutcome {
+        for capability in &self.capabilities {
+            let outcome = capability.answer_question(question_id, selected.clone(), custom.clone());
+            if !matches!(outcome, AnswerOutcome::Rejected) {
+                return outcome;
+            }
+        }
+        AnswerOutcome::Rejected
     }
 
     pub(crate) fn pending_questions(&self) -> Vec<crate::Question> {
@@ -396,10 +400,14 @@ impl CapabilityRegistry {
         questions
     }
 
-    pub(crate) fn cancel_question(&self, question_id: &str) -> bool {
-        self.capabilities
-            .iter()
-            .any(|capability| capability.cancel_question(question_id))
+    pub(crate) fn cancel_question(&self, question_id: &str) -> CancelOutcome {
+        for capability in &self.capabilities {
+            let outcome = capability.cancel_question(question_id);
+            if !matches!(outcome, CancelOutcome::Rejected) {
+                return outcome;
+            }
+        }
+        CancelOutcome::Rejected
     }
 
     pub(crate) fn cancel_questions(&self) {

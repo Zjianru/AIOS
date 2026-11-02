@@ -18,6 +18,7 @@ use tokio::sync::Notify;
 use tokio::sync::broadcast;
 use tools::{ToolCall, ToolContext, ToolSessionState, ToolSet, execute_batch};
 
+use crate::ask_capability::{AnswerOutcome, CancelOutcome, RestoredReply};
 use crate::capabilities::{
     BoxedFuture, CapabilityRegistry, CompactionPolicy, HookEvent, LoopAccess,
 };
@@ -278,6 +279,8 @@ impl Inner {
         let compaction_waiters: Arc<Mutex<Vec<crate::capabilities::ManualCompaction>>> =
             Arc::new(Mutex::new(Vec::new()));
         let ask_state = crate::ask_capability::new_state();
+        // T006.13（D45）：从中断修复后的日志折出仍待答的问题；回答走 Agent::answer 的迟到回答。
+        crate::ask_capability::rehydrate(&ask_state, store.events());
         // T006.2a：续接/新建时从日志折叠输入队列；坏掉的 splice 让 resume 报错，不静默丢。
         let inbox = Inbox::restore(store.events())?;
         let inner = Arc::new(Self {
@@ -476,20 +479,85 @@ impl Inner {
     /// 一次 step 的工具批之后推进重复链，命中阈值（3/5/8，照 DSH）返回一条提醒文本。
     /// todo_write 不跟踪（DSH 基础组合包默认排除）；每步最多一条提醒。
     /// T005.10/T006.1d2：回答问题；question_id 必须匹配当前等待的问题且未答过。
-    /// T006.13：答案照 DSH 形状（selected 选项标签 + 可选 custom 文本）。
+    /// T006.13：答案照 DSH 形状（selected 选项标签 + 可选 custom 文本）。等待中的批由 hook
+    /// 收尾；重启恢复的批整批答完后写 question/answered 并投递 DSH 的迟到回答消息。
     pub(crate) async fn answer(
-        &self,
+        self: &Arc<Self>,
         question_id: &str,
         selected: Vec<String>,
         custom: Option<String>,
     ) -> bool {
-        self.capabilities
+        match self
+            .capabilities
             .answer_question(question_id, selected, custom)
+        {
+            AnswerOutcome::Rejected => false,
+            AnswerOutcome::Accepted => true,
+            AnswerOutcome::RestoredReply(reply) => self.deliver_restored_reply(reply).await,
+        }
     }
 
-    /// T006.13：撤销一条待答问题（提问服务路径）；骨架只占位，实现提交接 AskState。
-    pub(crate) async fn cancel_question(&self, _question_id: &str) -> bool {
-        self.capabilities.cancel_question(_question_id)
+    /// T006.13：把恢复问题的整批回答写成 durable 事实，再以 DSH 的迟到回答消息接续。
+    async fn deliver_restored_reply(self: &Arc<Self>, reply: RestoredReply) -> bool {
+        // 先落 question/answered 再投递：答案先成为日志事实，模型下一轮再从 user 消息看到它。
+        // 落盘失败返回 false（AskState 里该批已结算；已知边界见 handback §9）。
+        let events: Vec<EventKind> = reply
+            .answers
+            .iter()
+            .map(|(question_id, answer)| EventKind::QuestionAnswered {
+                turn: reply.turn,
+                step: reply.step,
+                call_id: reply.call_id.clone(),
+                question_id: question_id.clone(),
+                selected: answer.selected.clone(),
+                custom: answer.custom.clone(),
+            })
+            .collect();
+        if self.append(&events).await.is_err() {
+            return false;
+        }
+        let message = crate::ask_capability::late_reply_message(&reply);
+        if self
+            .inbox_mutation(InboxTarget::NextStep, i64::MAX, 0, vec![message], false)
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        self.wake_driver();
+        true
+    }
+
+    /// T006.13：撤销一条待答问题（提问服务路径）。等待中的批由 hook 以 ASK_ABORTED 收尾；
+    /// 恢复的批移除并写 question/cancelled（内存里已收的答案先补成 question/answered）。
+    pub(crate) async fn cancel_question(&self, question_id: &str) -> bool {
+        match self.capabilities.cancel_question(question_id) {
+            CancelOutcome::Rejected => false,
+            CancelOutcome::Live => true,
+            CancelOutcome::Restored(cancel) => {
+                let mut events: Vec<EventKind> = cancel
+                    .answered
+                    .iter()
+                    .map(|(question_id, answer)| EventKind::QuestionAnswered {
+                        turn: cancel.turn,
+                        step: cancel.step,
+                        call_id: cancel.call_id.clone(),
+                        question_id: question_id.clone(),
+                        selected: answer.selected.clone(),
+                        custom: answer.custom.clone(),
+                    })
+                    .collect();
+                events.extend(cancel.cancelled.iter().map(|question_id| {
+                    EventKind::QuestionCancelled {
+                        turn: cancel.turn,
+                        step: cancel.step,
+                        call_id: cancel.call_id.clone(),
+                        question_id: question_id.clone(),
+                    }
+                }));
+                self.append(&events).await.is_ok()
+            }
+        }
     }
 
     /// T006.13：当前待答问题（含重启恢复）。

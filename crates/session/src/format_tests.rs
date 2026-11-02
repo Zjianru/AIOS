@@ -457,6 +457,7 @@ fn all_event_kinds_round_trip_under_dsh_envelope() {
         EventKind::QuestionCancelled {
             turn: 1,
             step: 1,
+            call_id: "call_ask".to_owned(),
             question_id: "q1".to_owned(),
         },
         EventKind::InboxSpliced {

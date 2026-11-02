@@ -477,6 +477,7 @@ mod tests {
                 EventKind::QuestionCancelled {
                     turn: 1,
                     step: 1,
+                    call_id: "call_ask".to_owned(),
                     question_id: "q1".to_owned(),
                 },
             ),
@@ -510,6 +511,7 @@ mod tests {
                 EventKind::QuestionCancelled {
                     turn: 1,
                     step: 1,
+                    call_id: "call_ask".to_owned(),
                     question_id: "q1".to_owned(),
                 },
             ),

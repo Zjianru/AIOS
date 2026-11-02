@@ -26,7 +26,11 @@ use crate::SessionId;
 /// set/replace/remove 变更对象）；旧版本读不了新 source，按 spec 升版本、旧版本仍拒绝。
 /// v9：message source 新增 skill-catalog（T006.11 照 DSH tool-skill：form=catalog、
 /// update/incomplete 标记与 entries 持久目录）；旧版本读不了新 source，旧版本仍拒绝。
-pub const FORMAT_VERSION: u64 = 9;
+/// v10：提问照 DSH 改回（T006.13）——question/asked 带 callId（一次 ask_user_question 调用的
+/// 稳定身份）、question/cancelled 同；新增 question/answered（答案项 {id, selected[], custom?}）；
+/// message source 新增 user-question-reply（重启后续答的迟到回答）。旧版本读不了新事件/新
+/// source/新字段，按 spec 升版本、旧版本仍拒绝（不迁移）。
+pub const FORMAT_VERSION: u64 = 10;
 
 /// JSONL 第一行的会话 header。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -316,11 +320,12 @@ pub enum EventKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
     },
-    /// 等待中被取消，问题撤销（T005.10）。
+    /// 等待中被取消，问题撤销（T005.10；T006.13 起带 callId，同一次调用的身份）。
     #[serde(rename = "question/cancelled")]
     QuestionCancelled {
         turn: u64,
         step: u64,
+        call_id: String,
         question_id: String,
     },
     /// 输入队列的一次规范化变更（DSH agent/inbox/spliced，agent-loop/src/inbox.ts:215-223）。

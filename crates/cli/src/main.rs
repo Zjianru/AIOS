@@ -268,9 +268,32 @@ fn dispatch_chat_input(
 }
 
 /// 一行输入如何变成 DSH 答案（T006.13）：输入恰好是某个选项标签时当作选项
-/// （selected=[label]），否则当作自定义文本（custom）。骨架先一律当自由文本（旧行为）。
+/// （selected=[label]）；多选问题还接受逗号分隔的多个标签；其余一律当自定义文本（custom）。
+/// 这是开发 CLI 的交互适配（DSH 没有 CLI），界面走 T006.16a 的服务方法。
 fn classify_answer(answer: &str, question: &agent::Question) -> (Vec<String>, Option<String>) {
-    let _ = question;
+    let labels: Vec<&str> = question
+        .options
+        .iter()
+        .map(|option| option.label.as_str())
+        .collect();
+    if labels.contains(&answer) {
+        return (vec![answer.to_owned()], None);
+    }
+    if question.multi_select {
+        let selected: Vec<String> = answer
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if !selected.is_empty()
+            && selected
+                .iter()
+                .all(|label| labels.contains(&label.as_str()))
+        {
+            return (selected, None);
+        }
+    }
     (Vec::new(), Some(answer.to_owned()))
 }
 

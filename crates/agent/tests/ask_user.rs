@@ -447,9 +447,9 @@ async fn dismiss_question_returns_ask_aborted_and_turn_continues() {
         "没有答案就不写 question/answered"
     );
     let error_code = events.iter().find_map(|event| match &event.kind {
-        EventKind::ToolResult {
-            message, error, ..
-        } if message.tool_call_id.as_deref() == Some("call_ask") => {
+        EventKind::ToolResult { message, error, .. }
+            if message.tool_call_id.as_deref() == Some("call_ask") =>
+        {
             error.as_ref().map(|error| error.code.clone())
         }
         _ => None,
@@ -460,9 +460,7 @@ async fn dismiss_question_returns_ask_aborted_and_turn_continues() {
         "工具结果错误码照 DSH HarnessError code"
     );
     assert!(
-        !agent
-            .answer("q1", vec!["Yes".to_owned()], None)
-            .await,
+        !agent.answer("q1", vec!["Yes".to_owned()], None).await,
         "撤销后答案不再接收"
     );
 }
@@ -508,15 +506,11 @@ async fn pending_questions_survive_restart_and_answer_continues_as_late_reply() 
     );
     assert_eq!(resumed.pending_questions()[0].id, "q1");
     assert!(
-        resumed
-            .answer("q1", vec!["Yes".to_owned()], None)
-            .await,
+        resumed.answer("q1", vec!["Yes".to_owned()], None).await,
         "恢复的待答问题可以通过回答接缝接续"
     );
     assert!(
-        !resumed
-            .answer("q1", vec!["Yes".to_owned()], None)
-            .await,
+        !resumed.answer("q1", vec!["Yes".to_owned()], None).await,
         "同一个问题不能答两次（DSH REPLY_QUEUED / 已结算即拒绝）"
     );
     wait_idle(&resumed, 20).await;
@@ -527,12 +521,14 @@ async fn pending_questions_survive_restart_and_answer_continues_as_late_reply() 
     assert_eq!(requests.len(), 1, "回答恢复的问题要唤醒一轮");
     let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert!(
-        body["messages"].as_array().is_some_and(|messages| messages
-            .iter()
-            .any(|message| message["role"] == "assistant"
-                && message["content"].as_array().is_some_and(|content| content
-                    .iter()
-                    .any(|block| block["type"] == "tool_use" && block["id"] == "call_ask")))),
+        body["messages"]
+            .as_array()
+            .is_some_and(
+                |messages| messages.iter().any(|message| message["role"] == "assistant"
+                    && message["content"].as_array().is_some_and(|content| content
+                        .iter()
+                        .any(|block| block["type"] == "tool_use" && block["id"] == "call_ask")))
+            ),
         "历史里保留原 ask 调用：{body}"
     );
     let text = late_reply_text(&body).expect("请求里要有迟到回答消息");
