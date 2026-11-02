@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use serde_json::{Value, json};
-use tools::{GlobTool, GrepTool, ReadTool, Tool, ToolCall, ToolContext, ToolResult};
+use tools::{GlobTool, GrepTool, ReadTool, Tool, ToolCall, ToolContext, ToolResult, ToolSet};
 
 async fn run(tool: &dyn Tool, context: &ToolContext, arguments: Value) -> ToolResult {
     tool.execute(
@@ -346,4 +346,34 @@ async fn grep_tool_limits_and_errors() {
     let result = run(&tool, &context, json!({"pattern": "x", "include": "!*.ts"})).await;
     assert_eq!(result.error_code, None);
     assert!(result.content.contains("negated patterns"));
+}
+
+/// T006.6：默认注册照 DSH tool-fs（applyPatch 默认 false，显式开启才注册）。
+#[test]
+fn builtin_default_registration_matches_dsh_apply_patch_default() {
+    let default = ToolSet::builtin();
+    for name in ["read", "glob", "grep", "write", "edit", "bash"] {
+        assert!(default.get(name).is_some(), "默认工具集缺 {name}");
+    }
+    assert!(
+        default.get("apply_patch").is_none(),
+        "DSH tool-fs 的 applyPatch 默认 false：默认工具集不注册 apply_patch"
+    );
+    assert!(
+        !default
+            .definitions()
+            .iter()
+            .any(|schema| schema.name == "apply_patch"),
+        "默认请求的 tools 列表也不带 apply_patch"
+    );
+    let with_patch = ToolSet::builtin_with_patch();
+    assert!(
+        with_patch.get("apply_patch").is_some(),
+        "显式开启（等价 applyPatch: true）才注册 apply_patch"
+    );
+    assert_eq!(
+        with_patch.definitions().len(),
+        default.definitions().len() + 1,
+        "其余默认工具不变"
+    );
 }

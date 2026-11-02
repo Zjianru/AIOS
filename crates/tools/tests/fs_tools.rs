@@ -617,8 +617,10 @@ async fn patch_move_partial_failure_reports_destination_written() {
         result.content
     );
     assert!(result.content.contains("Failed:"), "{}", result.content);
+    // DSH apply-patch-output.ts:122-123：部分 move 单独一行报「目的地已写、源还在」。
     assert!(
-        result.content.contains("was written; source"),
+        result.content.lines().any(|line| line
+            == format!("  destination {dst_display} was written; source {src_display} remains")),
         "{}",
         result.content
     );
@@ -813,4 +815,63 @@ async fn write_tool_forms_real_batch_barrier() {
         fs::read_to_string(dir.path().join("a.txt")).unwrap(),
         "hello\n"
     );
+}
+
+/// T006.6：解析失败也汇总进同一条 Patch rejected（DSH patch/plan.ts:22-68 收集 refusals）。
+#[tokio::test]
+async fn patch_rejected_aggregates_resolution_and_preflight_problems() {
+    let dir = tempfile::tempdir().unwrap();
+    let context = ToolContext::new(dir.path());
+    // op1 解析失败（父路径是普通文件，ENOTDIR）；op2 预检失败（存在但没读过）。
+    fs::write(dir.path().join("blocker"), "x").unwrap();
+    fs::write(
+        dir.path().join("b.txt"),
+        "one
+",
+    )
+    .unwrap();
+    let patch = "*** Begin Patch
+*** Add File: blocker/nested.txt
++hello
+*** Update File: b.txt
+@@
+-one
++two
+*** End Patch";
+    let result = patch_run(json!({"input": patch}), &context).await;
+    assert!(result.is_error, "{}", result.content);
+    assert!(
+        result
+            .content
+            .contains("Patch rejected before any change (2 problems)"),
+        "解析失败与预检失败要合成一条：{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("- operation 1 (add "),
+        "{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("- operation 2 (update "),
+        "{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("cannot resolve"),
+        "{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("file has not been read"),
+        "{}",
+        result.content
+    );
+    // 整包拒绝：不落任何改动。
+    assert_eq!(
+        fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+        "one
+"
+    );
+    assert!(!dir.path().join("blocker").is_dir());
 }
