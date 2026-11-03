@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startRealKernelFixture } from './service-fixture';
@@ -77,19 +77,24 @@ test('DoD5 真 key：跑到工具时 Esc 停下', async ({ page }) => {
 
 /// DoD5：真 key 两题整批作答，然后整批不答。
 test('DoD5 真 key：两题整批作答 + 整批不答', async ({ page }) => {
+  await rm('/tmp/aios-t007-dod', { recursive: true, force: true });
   const fixture = await startRealKernelFixture();
   try {
+    page.on('pageerror', (error) => console.log('PAGEERROR ' + error.message));
+    page.on('console', (message) => { if (message.type() === 'error') console.log('CONSOLE ' + message.text()); });
     await mkdir(evidence, { recursive: true });
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     const input = page.getByPlaceholder('和 Kind 说…');
-    const prompt =
-      '必须调用 ask_user_question 工具；arguments 严格为：' +
-      '{"questions":[{"id":"q1","question":"继续吗？","options":[{"label":"是"},{"label":"否"}]},{"id":"q2","question":"你的名字？"}]}' +
-      '。调用后停下来等我回答，不要自己回答。';
+    const prompt = '调用 ask_user_question 工具，一次两题：q1 选项是/否问继续吗，q2 文本问名字。必须用工具，不要文字提问。调用后停下等我。';
     const pending = page.locator('[data-kind="question"]');
     await input.fill(prompt);
     await page.getByRole('button', { name: '发送' }).click();
-    await expect(pending.getByText('继续吗？', { exact: false })).toBeVisible({ timeout: 120_000 });
+    try {
+      await expect(pending.getByText('继续吗？', { exact: false })).toBeVisible({ timeout: 120_000 });
+    } catch (error) {
+      await page.screenshot({ path: path.join(evidence, 'dod5-ask-fail.png'), fullPage: true });
+      throw error;
+    }
     if ((await pending.getByRole('radio').count()) > 0) {
       await pending.getByRole('radio').first().click();
     }
@@ -134,7 +139,7 @@ test('DoD6 真 key 断线重连', async ({ page, request }) => {
     await page.waitForTimeout(9_000);
     await fixture.restoreProxy?.();
     await expect(banner).toHaveCount(0, { timeout: 60_000 });
-    await expect(page.getByText('断线后完成', { exact: false })).toBeVisible({ timeout: 180_000 });
+    await expect(page.getByText('断线后完成', { exact: true })).toBeVisible({ timeout: 180_000 });
     await page.screenshot({ path: path.join(evidence, 'dod6-reconnect.png'), fullPage: true });
     const response = await request.post(
       fixture.baseUrl + '/api?token=' + encodeURIComponent(fixture.token),
