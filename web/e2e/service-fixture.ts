@@ -1,0 +1,85 @@
+import { spawn } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { createServer, type Server } from 'node:http';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const FINAL_TEXT_SSE = [
+  'event: message_start',
+  'data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-flash","content":[],"usage":{"input_tokens":10,"output_tokens":1}}}',
+  '',
+  'event: content_block_start',
+  'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
+  '',
+  'event: content_block_delta',
+  'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"（T007 e2e 假回放）"}}',
+  '',
+  'event: content_block_stop',
+  'data: {"type":"content_block_stop","index":0}',
+  '',
+  'event: message_delta',
+  'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}',
+  '',
+  'event: message_stop',
+  'data: {"type":"message_stop"}',
+  '',
+  '',
+].join('\n');
+
+export interface KernelFixture {
+  baseUrl: string;
+  token: string;
+  close(): Promise<void>;
+}
+
+/** 接缝 5 骨架：假 DeepSeek 脚本回放 + 真 aios-dev serve（T007.1 只验服务活着，页面以后再接）。 */
+export async function startKernelFixture(): Promise<KernelFixture> {
+  const fake: Server = createServer((req, res) => {
+    if (req.method === 'POST' && req.url === '/v1/messages') {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(FINAL_TEXT_SSE);
+      return;
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise<void>((resolve) => fake.listen(0, '127.0.0.1', resolve));
+  const address = fake.address();
+  const fakePort = typeof address === 'object' && address !== null ? address.port : 0;
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'aios-t007-'));
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+  const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
+  const child = spawn(bin, ['serve', '--data-dir', dataDir, '--cwd', dataDir], {
+    env: {
+      ...process.env,
+      DEEPSEEK_API_KEY: 'test-key',
+      DEEPSEEK_BASE_URL: `http://127.0.0.1:${fakePort}`,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let output = '';
+  const parsed = await new Promise<{ baseUrl: string; token: string }>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`serve 启动超时: ${output}`)), 30_000);
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+      const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)\?token=([0-9a-f-]+)/);
+      if (match) {
+        clearTimeout(timer);
+        resolve({ baseUrl: `http://127.0.0.1:${match[1]}`, token: match[2] });
+      }
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      reject(new Error(`serve 退出（${code}）: ${output}`));
+    });
+  });
+  return {
+    ...parsed,
+    close: async () => {
+      child.kill('SIGTERM');
+      fake.close();
+      await rm(dataDir, { recursive: true, force: true });
+    },
+  };
+}
