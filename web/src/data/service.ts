@@ -87,6 +87,11 @@ export async function sendMessage(content: string, requestId: string): Promise<v
   await post({ method: 'send', requestId, content });
 }
 
+/** 取消当前轮（T007.5 停止按钮 / Esc；服务端取消正在跑的一轮并保留已做的）。 */
+export async function cancelTurn(): Promise<void> {
+  await post({ method: 'cancel' });
+}
+
 export interface EventsPage {
   events: ServiceEvent[];
   hasMore: boolean;
