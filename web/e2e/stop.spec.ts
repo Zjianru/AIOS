@@ -4,7 +4,7 @@ import { startKernelFixture, type KernelFixture } from './service-fixture';
 let fixture: KernelFixture;
 
 test.beforeAll(async () => {
-  fixture = await startKernelFixture({ slowMs: 900 });
+  fixture = await startKernelFixture({ slowMs: 3000 });
 });
 
 test.afterAll(async () => {
