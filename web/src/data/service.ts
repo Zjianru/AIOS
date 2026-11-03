@@ -108,6 +108,11 @@ export async function dismissQuestions(): Promise<void> {
   await post({ method: 'dismiss-questions' });
 }
 
+/** 手动压缩（T007.8）：把之前的对话换成一份摘要，原文留在日志里。 */
+export async function compactThread(commandId: string): Promise<void> {
+  await post({ method: 'compact', commandId });
+}
+
 export interface EventsPage {
   events: ServiceEvent[];
   hasMore: boolean;
