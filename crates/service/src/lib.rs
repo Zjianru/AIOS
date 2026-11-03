@@ -285,7 +285,6 @@ pub struct ServiceEvent {
     pub cause: Option<FailureCause>,
 }
 
-/// 服务协议版本（T007.2 起）：只增不改的对外面每次扩展都记在这里，Web ready 帧里带上。
 /// T008.3：设置页读模型连接（空请求体）。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelSettingsRequest {}
@@ -377,6 +376,7 @@ pub struct ConnectionVerifyResponse {
     pub connection: credentials::ConnectionInfo,
 }
 
+/// 服务协议版本（T007.2 起）：只增不改的对外面每次扩展都记在这里，Web ready 帧里带上。
 pub const PROTOCOL_VERSION: u64 = 3;
 
 /// 根会话不可用的种类（T007.2）：服务照常起，ready 报出来，方法一律拒绝。
@@ -928,6 +928,7 @@ impl RootHost {
                 endpoint: request.endpoint,
                 api_key: request.api_key,
             })?;
+        self.emit_settings_changed();
         Ok(ConnectionSaveResponse { connection })
     }
 
@@ -935,17 +936,71 @@ impl RootHost {
         &self,
         request: ConnectionDeleteRequest,
     ) -> Result<ConnectionDeleteResponse, ServiceError> {
-        Ok(ConnectionDeleteResponse {
-            deleted: self.keyring()?.delete_connection(&request.id)?,
-        })
+        let deleted = self.keyring()?.delete_connection(&request.id)?;
+        if deleted {
+            self.emit_settings_changed();
+        }
+        Ok(ConnectionDeleteResponse { deleted })
     }
 
-    /// T008.3：验证连接（骨架期未接）。
+    /// T008.3：验证连接：从 Keyring 取一次签发，发最小 Messages 请求，把结果写进注册器。
     pub async fn connection_verify(
         &self,
-        _request: ConnectionVerifyRequest,
+        request: ConnectionVerifyRequest,
     ) -> Result<ConnectionVerifyResponse, ServiceError> {
-        Err(ServiceError::SettingsOnBareHost)
+        let keyring = self.keyring()?;
+        let view = keyring.view();
+        let connection = view
+            .connections
+            .into_iter()
+            .find(|connection| connection.id == request.id)
+            .ok_or_else(|| {
+                ServiceError::Credentials(credentials::KeyringError::MissingConnection(
+                    request.id.clone(),
+                ))
+            })?;
+        let api_key = keyring
+            .issue(&request.id, "connection-verify", None)?
+            .secret;
+        let endpoint = connection.endpoint.trim_end_matches('/');
+        let body = serde_json::json!({
+            "model": connection.model,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ping"}],
+        });
+        let response = reqwest::Client::new()
+            .post(format!("{endpoint}/v1/messages"))
+            .header("content-type", "application/json")
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&body)
+            .send()
+            .await;
+        let at = now_seconds();
+        let result = match response {
+            Ok(response) if response.status().is_success() => credentials::CheckResult::Ok { at },
+            Ok(response) => credentials::CheckResult::Fail {
+                at,
+                reason: format!("HTTP {}", response.status().as_u16()),
+            },
+            Err(error) => credentials::CheckResult::Fail {
+                at,
+                reason: format!("连不上：{error}"),
+            },
+        };
+        keyring.record_check(&request.id, result)?;
+        self.emit_settings_changed();
+        let connection = keyring
+            .view()
+            .connections
+            .into_iter()
+            .find(|connection| connection.id == request.id)
+            .ok_or_else(|| {
+                ServiceError::Credentials(credentials::KeyringError::MissingConnection(
+                    request.id.clone(),
+                ))
+            })?;
+        Ok(ConnectionVerifyResponse { connection })
     }
 
     pub async fn keyring_relocate(
@@ -954,6 +1009,7 @@ impl RootHost {
     ) -> Result<KeyringRelocateResponse, ServiceError> {
         self.keyring()?
             .relocate_identity(std::path::Path::new(&request.to))?;
+        self.emit_settings_changed();
         Ok(KeyringRelocateResponse {})
     }
 
@@ -963,12 +1019,14 @@ impl RootHost {
     ) -> Result<KeyringReopenResponse, ServiceError> {
         self.keyring()?
             .repoint_identity(std::path::Path::new(&request.at))?;
+        self.emit_settings_changed();
         Ok(KeyringReopenResponse {})
     }
 
     pub async fn keyring_restart(&self) -> Result<KeyringRestartResponse, ServiceError> {
         let keyring = self.keyring()?;
         keyring.restart()?;
+        self.emit_settings_changed();
         Ok(KeyringRestartResponse {
             settings: keyring.view(),
         })
@@ -1049,6 +1107,27 @@ impl RootHost {
             host.shutdown().await;
         }
     }
+}
+
+impl RootHost {
+    /// T008.3：设置变化通知（seq=0 的合成事件；页面收到后重新拉设置）。
+    fn emit_settings_changed(&self) {
+        let event = ServiceEvent {
+            seq: 0,
+            event_type: "keyring/changed".to_owned(),
+            data: serde_json::json!({}),
+            cause: None,
+        };
+        // 没有订阅端是正常情况（服务刚起/页面没开）；不把广播失败当错误。
+        let _delivered = self.events.send(event).unwrap_or(0);
+    }
+}
+
+fn now_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
 }
 
 impl Drop for RootHost {
