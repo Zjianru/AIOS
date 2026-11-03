@@ -7,7 +7,7 @@
  * - 答过 / 不答 / 这一轮被停了：收成几行，不再能改。
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Check, CircleHelp } from 'lucide-react';
 import type { AskAnswer, AskQuestion } from '@/data/fixtures/kindLive';
 import type { QuestionView } from './kindStore';
@@ -116,12 +116,23 @@ function PendingCard({ turnId, questions }: { turnId: string; questions: AskQues
   const [draft, setDraft] = useState<Draft>(() =>
     Object.fromEntries(questions.map((question) => [question.id, { selected: [], custom: '' }])),
   );
+  // 问题卡可能分批到（question/asked 一条一题）：补齐新题的草稿，避免 undefined。
+  useEffect(() => {
+    setDraft((current) => {
+      const next = { ...current };
+      for (const question of questions) {
+        if (!next[question.id]) next[question.id] = { selected: [], custom: '' };
+      }
+      return next;
+    });
+  }, [questions]);
+
   const missing = useMemo(() => questions.filter((question) => !answered(question, draft)).length, [questions, draft]);
 
   const submit = () => {
     if (missing) return;
     const answers: AskAnswer[] = questions.map((question) => {
-      const entry = draft[question.id];
+      const entry = draft[question.id] ?? { selected: [], custom: '' };
       return { id: question.id, selected: entry.selected, ...(entry.custom.trim() ? { custom: entry.custom.trim() } : {}) };
     });
     answer(turnId, answers);
@@ -148,7 +159,7 @@ function PendingCard({ turnId, questions }: { turnId: string; questions: AskQues
           <QuestionBlock
             key={question.id}
             question={question}
-            entry={draft[question.id]}
+            entry={draft[question.id] ?? { selected: [], custom: '' }}
             index={index}
             total={questions.length}
             onChange={(entry) => setDraft((current) => ({ ...current, [question.id]: entry }))}
