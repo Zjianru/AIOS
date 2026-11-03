@@ -282,3 +282,59 @@ async fn 选模型下一轮生效() {
     assert!(json.contains("deepseek-pro"), "json={json}");
     no_key(&json);
 }
+
+#[tokio::test]
+async fn 编辑连接保留key且不换正文() {
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "deepseek".to_owned(),
+        name: "DeepSeek".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        endpoint: "https://api.deepseek.com/anthropic".to_owned(),
+        api_key: TEST_KEY.to_owned(),
+    }))
+    .await
+    .expect("save");
+    let updated = host
+        .dispatch(Call::ConnectionUpdate(ConnectionUpdateRequest {
+            id: "deepseek".to_owned(),
+            endpoint: "https://new.example/anthropic".to_owned(),
+            model: "deepseek-pro".to_owned(),
+        }))
+        .await;
+    assert!(updated.is_ok(), "connection-update 应成功：{updated:?}");
+    let json = serde_json::to_string(&updated.unwrap()).unwrap();
+    no_key(&json);
+    assert!(json.contains("https://new.example/anthropic"), "{json}");
+    assert!(json.contains("deepseek-pro"), "{json}");
+    assert!(json.contains("key_saved") && json.contains("true"), "{json}");
+    let keyring = credentials::Keyring::open(dir.path(), Some(&dir.path().join("identity.txt"))).unwrap();
+    assert_eq!(keyring.issue("deepseek", "test", None).unwrap().secret, TEST_KEY);
+}
+
+#[tokio::test]
+async fn 撤销key后连接还在但签发失败() {
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "deepseek".to_owned(),
+        name: "DeepSeek".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        endpoint: "https://api.deepseek.com/anthropic".to_owned(),
+        api_key: TEST_KEY.to_owned(),
+    }))
+    .await
+    .expect("save");
+    let revoked = host
+        .dispatch(Call::ConnectionRevoke(ConnectionRevokeRequest {
+            id: "deepseek".to_owned(),
+        }))
+        .await;
+    assert!(revoked.is_ok(), "connection-revoke 应成功：{revoked:?}");
+    let json = serde_json::to_string(&revoked.unwrap()).unwrap();
+    no_key(&json);
+    assert!(json.contains("key_saved") && json.contains("false"), "{json}");
+    let keyring = credentials::Keyring::open(dir.path(), Some(&dir.path().join("identity.txt"))).unwrap();
+    assert!(keyring.issue("deepseek", "test", None).is_err(), "撤销后签发应失败");
+}
