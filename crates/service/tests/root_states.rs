@@ -23,6 +23,7 @@ fn options(data_dir: &Path) -> RootSessionOptions {
         },
         config: AgentConfig::default(),
         credentials: None,
+        identity: None,
     }
 }
 

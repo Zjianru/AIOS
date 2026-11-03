@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 agent = { path = "../agent" }
+credentials = { path = "../credentials" }
 model = { path = "../model" }
 session = { path = "../session" }
 serde.workspace = true

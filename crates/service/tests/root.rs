@@ -73,6 +73,7 @@ fn options(
         },
         config,
         credentials: None,
+        identity: None,
     }
 }
 

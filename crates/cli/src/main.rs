@@ -356,6 +356,7 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             model: deepseek_config,
             config: agent_config,
             credentials: Some(credentials),
+            identity: args.common.identity.clone(),
         },
         window,
     )

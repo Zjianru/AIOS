@@ -2181,6 +2181,7 @@ name = "service"
 version = "0.0.0"
 dependencies = [
  "agent",
+ "credentials",
  "model",
  "serde",
  "serde_json",
