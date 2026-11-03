@@ -15,7 +15,7 @@ test('设置页撤销密钥：状态变没有密钥', async ({ page }) => {
     await expect(page.locator('[data-settings="editor"]')).toBeVisible();
     await page.getByRole('button', { name: '撤销密钥', exact: true }).click();
     await page.getByRole('button', { name: '撤销', exact: true }).click();
-    await expect(page.getByText('还没有密钥。填上才能用这个提供商。')).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText('还没有密钥。填上才能用这个提供商。').first()).toBeVisible({ timeout: 20_000 });
   } finally {
     await fixture.close();
   }

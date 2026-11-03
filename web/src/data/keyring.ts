@@ -2,6 +2,8 @@
 import {
   deleteConnection,
   fetchModelSettings,
+  revokeConnectionKey,
+  updateConnectionInfo,
   relocateKeyring,
   reopenKeyring,
   restartKeyring,
@@ -50,7 +52,7 @@ function mapConnection(info: ServiceConnectionInfo): ConnectionView {
     endpoint: info.endpoint,
     defaultEndpoint: CATALOG[0]?.defaultEndpoint ?? 'https://api.deepseek.com/anthropic',
     models: [],
-    key: { saved: true, savedAt: String(info.saved_at) },
+    key: info.key_saved ? { saved: true, savedAt: String(info.saved_at) } : { saved: false },
     check: mapCheck(info),
   };
 }
@@ -108,10 +110,13 @@ export async function updateConnection(
   connectionId: string,
   patch: { endpoint: string; models: { id: string; name?: string }[]; key: string },
 ): Promise<ModelSettingsView> {
-  if (!patch.key.trim()) return getModelSettings();
   const model = patch.models[0]?.id || 'deepseek-flash';
   const endpoint = patch.endpoint.trim() || CATALOG[0]?.defaultEndpoint || '';
-  await saveConnection({ id: connectionId, name: connectionId, model, endpoint, apiKey: patch.key });
+  if (patch.key.trim()) {
+    await saveConnection({ id: connectionId, name: connectionId, model, endpoint, apiKey: patch.key });
+  } else {
+    await updateConnectionInfo(connectionId, endpoint, model);
+  }
   return getModelSettings();
 }
 
@@ -120,8 +125,9 @@ export async function removeConnection(connectionId: string): Promise<ModelSetti
   return getModelSettings();
 }
 
-/** 撤销 key：服务还没有「只撤 key 保留连接」的方法（WIP）；先保持现状。 */
-export async function revokeKey(_connectionId: string): Promise<ModelSettingsView> {
+/** 撤销 key：连接保留，之后的签发失败。 */
+export async function revokeKey(connectionId: string): Promise<ModelSettingsView> {
+  await revokeConnectionKey(connectionId);
   return getModelSettings();
 }
 

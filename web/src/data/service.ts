@@ -161,6 +161,7 @@ export interface ServiceConnectionInfo {
   model: string;
   endpoint: string;
   saved_at: number;
+  key_saved: boolean;
   check: { kind: 'never' } | { kind: 'ok'; at: number } | { kind: 'fail'; at: number; reason: string };
 }
 
@@ -270,4 +271,28 @@ export function connectSession(
   socket.onclose = onClose;
   socket.onerror = onClose;
   return socket;
+}
+
+/** T008.3 增补：只改 endpoint/model，保留已存 key。 */
+export async function updateConnectionInfo(
+  id: string,
+  endpoint: string,
+  model: string,
+): Promise<ServiceConnectionInfo> {
+  const response = await post<{ connection: ServiceConnectionInfo }>({
+    method: 'connection-update',
+    id,
+    endpoint,
+    model,
+  });
+  return response.connection;
+}
+
+/** T008.3 增补：撤销 key（连接保留）。 */
+export async function revokeConnectionKey(id: string): Promise<ServiceConnectionInfo> {
+  const response = await post<{ connection: ServiceConnectionInfo }>({
+    method: 'connection-revoke',
+    id,
+  });
+  return response.connection;
 }
