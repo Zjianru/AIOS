@@ -516,3 +516,52 @@ export async function startRealKernelFixture(
   };
 }
 
+/** T008.5 真 key DoD：/tmp/aios-t008-dod，空 Keyring，页面自己填 key。 */
+export async function startRealDodFixture(): Promise<KernelFixture> {
+  const root = process.env.AIOS_DOD_ROOT ?? '/tmp/aios-t008-dod';
+  const workDir = path.join(root, 'work');
+  const dataDir = path.join(root, 'data');
+  await rm(root, { recursive: true, force: true });
+  await mkdir(workDir, { recursive: true });
+  await mkdir(dataDir, { recursive: true });
+  await writeFile(path.join(workDir, 'hello.txt'), 'DOD-T008-OK' + String.fromCharCode(10));
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+  const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
+  const identity = path.join(dataDir, 'identity.txt');
+  const serveEnv = { ...process.env };
+  delete serveEnv.DEEPSEEK_API_KEY;
+  delete serveEnv.DEEPSEEK_BASE_URL;
+  const child = spawn(
+    bin,
+    ['serve', '--data-dir', dataDir, '--identity', identity, '--cwd', workDir, '--web-dist', path.join(repoRoot, 'web/dist')],
+    { env: serveEnv, stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  let output = '';
+  const parsed = await new Promise<{ baseUrl: string; token: string }>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('T008 serve 启动超时: ' + output)), 60_000);
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+      const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)\?token=([0-9a-f-]+)/);
+      if (match) {
+        clearTimeout(timer);
+        resolve({ baseUrl: 'http://127.0.0.1:' + match[1], token: match[2] });
+      }
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      reject(new Error('T008 serve 退出: ' + String(code) + ' ' + output));
+    });
+  });
+  return {
+    ...parsed,
+    dataDir,
+    fakeEndpoint: '',
+    lastModel: () => null,
+    dropProxy: async () => {},
+    restoreProxy: async () => {},
+    close: async () => {
+      child.kill('SIGTERM');
+      await rm(root, { recursive: true, force: true });
+    },
+  };
+}
