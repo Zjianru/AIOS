@@ -255,10 +255,10 @@ pub(crate) enum HookOutcome {
     Continue,
     /// ToolResult 挂点用：用落盘后的 preview+locator 替换内联 content。
     ToolResultContent(String),
-    /// ToolBefore 挂点用：第 index 个调用不执行，直接用给定结果（批内顺序不变）。
-    ToolResultOverride {
-        index: usize,
-        result: ToolResult,
+    /// ToolBefore 挂点用：这些 index 的调用不执行，直接用给定结果（批内顺序不变；
+    /// T006.13b 起批量返回，批内多个 ask 依次拦截）。
+    ToolResultOverrides {
+        overrides: Vec<(usize, ToolResult)>,
     },
     /// 本 step 取消（ask 等待中被 cancel）；run_step 返回 StepEnd::Aborted。
     AbortStep,
@@ -490,10 +490,12 @@ impl CapabilityRegistry {
                     outcome.content = Some(content);
                 }
             }
-            HookOutcome::ToolResultOverride { index, result } => {
+            HookOutcome::ToolResultOverrides { overrides } => {
                 if hook == HookPoint::ToolBefore {
-                    outcome.overrides.retain(|(existing, _)| *existing != index);
-                    outcome.overrides.push((index, result));
+                    for (index, result) in overrides {
+                        outcome.overrides.retain(|(existing, _)| *existing != index);
+                        outcome.overrides.push((index, result));
+                    }
                 }
             }
             HookOutcome::AbortStep => outcome.abort = true,
@@ -657,25 +659,22 @@ mod dispatch_contract_tests {
             fixed(
                 "test-a",
                 &[HookPoint::ToolBefore],
-                HookOutcome::ToolResultOverride {
-                    index: 0,
-                    result: ToolResult::success("call-0", "A"),
+                HookOutcome::ToolResultOverrides {
+                    overrides: vec![(0, ToolResult::success("call-0", "A"))],
                 },
             ),
             fixed(
                 "test-b",
                 &[HookPoint::ToolBefore],
-                HookOutcome::ToolResultOverride {
-                    index: 0,
-                    result: ToolResult::success("call-0", "B"),
+                HookOutcome::ToolResultOverrides {
+                    overrides: vec![(0, ToolResult::success("call-0", "B"))],
                 },
             ),
             fixed(
                 "test-c",
                 &[HookPoint::ToolBefore],
-                HookOutcome::ToolResultOverride {
-                    index: 1,
-                    result: ToolResult::success("call-1", "C"),
+                HookOutcome::ToolResultOverrides {
+                    overrides: vec![(1, ToolResult::success("call-1", "C"))],
                 },
             ),
         ]);
@@ -741,9 +740,8 @@ mod dispatch_contract_tests {
             fixed(
                 "test-override",
                 &[HookPoint::ToolBefore],
-                HookOutcome::ToolResultOverride {
-                    index: 0,
-                    result: ToolResult::success("call-0", "X"),
+                HookOutcome::ToolResultOverrides {
+                    overrides: vec![(0, ToolResult::success("call-0", "X"))],
                 },
             ),
             fixed(
@@ -792,9 +790,8 @@ mod dispatch_contract_tests {
         let registry = CapabilityRegistry::from_capabilities(vec![fixed(
             "test-wrong-stage",
             &[HookPoint::ToolResult],
-            HookOutcome::ToolResultOverride {
-                index: 0,
-                result: ToolResult::success("call-0", "bad"),
+            HookOutcome::ToolResultOverrides {
+                overrides: vec![(0, ToolResult::success("call-0", "bad"))],
             },
         )]);
         let outcome = registry

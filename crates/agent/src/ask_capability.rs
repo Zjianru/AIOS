@@ -572,14 +572,13 @@ impl Capability for AskCapability {
             };
             let call = &calls[index];
             let Some(questions) = questions_from_call(call) else {
-                return Ok(HookOutcome::ToolResultOverride {
-                    index,
-                    result: ToolResult {
+                return Ok(HookOutcome::ToolResultOverrides {
+                    overrides: vec![(index, ToolResult {
                         call_id: call.id.clone(),
                         content: "Error: invalid ask_user_question arguments (each question needs non-empty id and question)".to_owned(),
                         is_error: true,
                         error_code: Some("ASK_USER_INVALID".to_owned()),
-                    },
+                    })],
                 });
             };
             let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
@@ -670,20 +669,25 @@ impl Capability for AskCapability {
                 return Ok(HookOutcome::AbortStep);
             }
             if settled.cancelled.is_empty() {
-                return Ok(HookOutcome::ToolResultOverride {
-                    index,
-                    result: ToolResult::success(call.id.clone(), answers_json(&settled.answers)),
+                return Ok(HookOutcome::ToolResultOverrides {
+                    overrides: vec![(
+                        index,
+                        ToolResult::success(call.id.clone(), answers_json(&settled.answers)),
+                    )],
                 });
             }
             // 撤销（提问服务路径）：模型收到 DSH 的 ASK_ABORTED 工具错误，本轮继续。
-            Ok(HookOutcome::ToolResultOverride {
-                index,
-                result: ToolResult {
-                    call_id: call.id.clone(),
-                    content: "ask_user_question was aborted before the user answered".to_owned(),
-                    is_error: true,
-                    error_code: Some("ASK_ABORTED".to_owned()),
-                },
+            Ok(HookOutcome::ToolResultOverrides {
+                overrides: vec![(
+                    index,
+                    ToolResult {
+                        call_id: call.id.clone(),
+                        content: "ask_user_question was aborted before the user answered"
+                            .to_owned(),
+                        is_error: true,
+                        error_code: Some("ASK_ABORTED".to_owned()),
+                    },
+                )],
             })
         })
     }
