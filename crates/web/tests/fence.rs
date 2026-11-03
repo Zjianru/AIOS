@@ -121,7 +121,7 @@ fn opening_sends_ready_before_events_in_order() {
         .iter()
         .filter_map(|frame| match frame {
             Frame::Event { event } => Some(event.seq),
-            Frame::Ready { .. } => None,
+            Frame::Ready { .. } | Frame::Agent { .. } => None,
         })
         .collect();
     assert_eq!(seqs, vec![3, 4], "事件按 seq 顺序、ready 之后");
@@ -132,7 +132,7 @@ fn opening_sends_ready_before_events_in_order() {
         serde_json::json!({
             "type": "ready",
             "sessionId": "sess-1",
-            "protocolVersion": 1,
+            "protocolVersion": 2,
             "root": {"state": "ok"},
             "context": {"used": 0, "window": 1000}
         })
@@ -167,7 +167,7 @@ fn reconnect_follows_from_last_seq_without_duplicates() {
         .iter()
         .filter_map(|frame| match frame {
             Frame::Event { event } => Some(event.seq),
-            Frame::Ready { .. } => None,
+            Frame::Ready { .. } | Frame::Agent { .. } => None,
         })
         .collect();
     assert_eq!(seqs, vec![5, 6], "重连补齐从 lastSeq 之后开始、不重复");

@@ -265,7 +265,7 @@ pub struct ServiceEvent {
 }
 
 /// 服务协议版本（T007.2 起）：只增不改的对外面每次扩展都记在这里，Web ready 帧里带上。
-pub const PROTOCOL_VERSION: u64 = 1;
+pub const PROTOCOL_VERSION: u64 = 2;
 
 /// 根会话不可用的种类（T007.2）：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -640,13 +640,16 @@ pub struct RootHost {
     options: RootSessionOptions,
     window: u64,
     events: broadcast::Sender<ServiceEvent>,
+    agent_events: broadcast::Sender<agent::AgentEvent>,
     forward: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    agent_forward: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl RootHost {
     /// 打开根会话；打不开也返回宿主（状态进 ready，方法拒绝），由页面显示说明页。
     pub async fn open(options: RootSessionOptions, window: u64) -> Self {
         let (events, _) = broadcast::channel(SERVICE_EVENT_CHANNEL_CAPACITY);
+        let (agent_events, _) = broadcast::channel(SERVICE_EVENT_CHANNEL_CAPACITY);
         let host = Self {
             inner: tokio::sync::Mutex::new(None),
             state: Mutex::new(RootState::Ok),
@@ -655,7 +658,9 @@ impl RootHost {
             options,
             window,
             events,
+            agent_events,
             forward: Mutex::new(None),
+            agent_forward: Mutex::new(None),
         };
         match open_root_session(host.options.clone()).await {
             Ok(root) => host.install(root.agent).await,
@@ -671,6 +676,28 @@ impl RootHost {
     /// 同时更新上下文占用（页面要的 context 只从日志事实算）。
     async fn install(&self, agent: Agent) {
         let session_id = agent.id().as_str().to_owned();
+        // T007.4：流式文本等 AgentEvent 不落日志，单独转发给载体（只增帧类型）。
+        let mut agent_source = agent.subscribe();
+        let agent_tx = self.agent_events.clone();
+        let agent_forward = tokio::spawn(async move {
+            loop {
+                match agent_source.recv().await {
+                    Ok(event) => {
+                        let _ = agent_tx.send(event);
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        if let Some(handle) = self
+            .agent_forward
+            .lock()
+            .expect("agent forward 锁被毒化")
+            .replace(agent_forward)
+        {
+            handle.abort();
+        }
         let service_host = ServiceHost::new(agent);
         let mut source = service_host.subscribe_events();
         let tx = self.events.clone();
@@ -721,6 +748,11 @@ impl RootHost {
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<ServiceEvent> {
         self.events.subscribe()
+    }
+
+    /// T007.4：AgentEvent 的 live 订阅（流式文本/用量等不落日志的观察面）。
+    pub fn subscribe_agent_events(&self) -> broadcast::Receiver<agent::AgentEvent> {
+        self.agent_events.subscribe()
     }
 
     /// 再检查一次：修好之后接管根会话并返回新状态；还是不行就返回当前状态。
