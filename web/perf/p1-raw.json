@@ -1,0 +1,97 @@
+{
+  "startedAt": "2026-10-27T18:13:23.683Z",
+  "base": "http://127.0.0.1:4184",
+  "metrics": {
+    "coldStartMs": 208.59999999403954,
+    "coldStartDomContentLoaded": 80.89999997615814,
+    "coldStartLoad": 81.89999997615814,
+    "firstScreen": {
+      "sidebar": true,
+      "toolbar": true,
+      "conversation": true
+    },
+    "kindFirstScreenMs": [
+      59.69999998807907,
+      61.400000005960464,
+      57.5,
+      66.40000000596046,
+      54.400000005960464
+    ],
+    "domNodes": 590,
+    "prependMs": [
+      76,
+      80.90000000596046,
+      84.5,
+      70.7000000178814,
+      76.19999998807907,
+      72.7000000178814,
+      73.7999999821186,
+      71.10000002384186,
+      74,
+      72.80000001192093
+    ],
+    "scrollFps": "58.2",
+    "scrollLongTasks": [],
+    "streamSeconds": 31.005,
+    "streamLongTasks": [],
+    "sceneSwitchMs": [
+      25.5,
+      22.200000017881393,
+      32.29999998211861
+    ],
+    "heapIdle": 11911944,
+    "loadAll": {
+      "total": 1996,
+      "ms": 4487,
+      "count": 2001
+    },
+    "heapAfterAll": 16397352,
+    "domNodesAfterAll": 615,
+    "flowCanvas": {
+      "nodes": 60,
+      "canvas": true
+    },
+    "flowLongTasks": [],
+    "bundle": {
+      "files": 9,
+      "totalBytes": 3326305,
+      "gzipBytes": 1046919,
+      "entryBytes": 1756945,
+      "entryGzipBytes": 471031,
+      "lazyBytes": 1569360,
+      "topJs": [
+        {
+          "name": "assets/index-Dt42qywv.js",
+          "bytes": 1522190,
+          "gzip": 443407,
+          "lazy": false
+        },
+        {
+          "name": "assets/elk.bundled-BgG4LqWf.js",
+          "bytes": 1430659,
+          "gzip": 437215,
+          "lazy": true
+        }
+      ]
+    },
+    "webkit": "WebKit 未测（本机 Playwright 没装 webkit；按需求不为此下载浏览器）"
+  },
+  "notes": [
+    "WebKit 未测（本机 Playwright 没装 webkit；按需求不为此下载浏览器）",
+    "流程画布按 brief §四.2 地铁线规则改过（线 4px / 间距 6px；站中性浅底深描边；换乘站跨线胶囊、门跨线菱形），本期这一项量的是改后版本。",
+    "地铁线「≥4 条线时点图例其余淡到 25%」本期未实现：现有流程最多 3 条线，没有触发场景，等第 2 期有 4 线数据再落（协调线 2026-10-28 同意先登记）。"
+  ],
+  "errors": [],
+  "browserVersion": "156.0.8078.48",
+  "machine": {
+    "model": "Mac16,10",
+    "chip": "Apple M4",
+    "memory": "17179869184",
+    "os": "26.6.2"
+  },
+  "top": {
+    "start": "Processes: 533 total, 2 running, 531 sleeping, 3172 threads \n2026/10/28 02:13:23\nLoad Avg: 4.20, 3.38, 3.18 \nCPU usage: 9.52% user, 10.58% sys, 79.89% idle \nSharedLibs: 734M resident, 140M data, 164M linkedit.\nMemRegions: 289090 total, 4600M resident, 159M private, 1067M shared.\nPhysMem: 14G used (1998M wired, 1923M compressor), 1058M unused.\nVM: 233T vsize, 6144M framework vsize, 1494015(0) swapins, 2071311(0) swapouts.\nNetworks: packets: 74069105/101G in, 51971241/75G out.\nDisks: 50597825/1142G read, 40978206/1424G written.\n\nPID    COMMAND          %CPU TIME     #TH #WQ #PORTS MEM   PURG CMPRS PGRP  PPID STATE    BOOSTS    %CPU_ME %CPU_OTHRS UID FAULTS COW MSGSENT MSGRECV SYSBSD SYSMACH CSW   PAGEINS IDLEW POWER INSTRS CYCLES JETPRI USER  #MREGS RPRVT VPRVT VSIZE KPRVT KSHRD\n98575  talagentd        0.0  00:01.04 2   1   142    8576K 0B   6848K 98575 1    sleeping *0[818]   0.00000 0.00000    501 30684  161 2832    2062    15848  10145   10646 108     1     0.0   0      0      0      codez N/A    N/A   N/A   N/A   N/A   N/A  \n98425  networkservicepr 0.0  00:00.95 2   1   101    9360K 0B   8656K 98425 1    sleeping *0[10]    0.00000 0.00000    501 19020  187 2196    998     18511  3684    7721  616     1     0.0   0      0      0      codez N/A    N/A   N/A   N/A   N/A   N/A  \n98409  intelligencecont 0.0  00:00.41 2   1   77     7969K 0B   5568K 98409 1    sleeping *0[469]   0.00000 0.00000    501 14276  234 1954    2234    13788  5125    6323  576     1     0.0   0      0      0      codez N/A    N/A   N/A   N/A   N/A   N/A  \n98348  contentlinkingd  0.0  00:00.35 2   1   57     3568K 0B   1776K 98348 1    sleeping *0[162]   0.00000 0.00000    501 14154  114 1286    1187    12012  7121    6738  77      13    0.0   0      0      0      codez N/A    N/A   N/A   N/A   N/A   N/A  \n98058  assistant_servic 0.0  00:03.54 2   1   162    10M   0B   9392K 98058 1    sleeping *0[12244] 0.00000 0.00000    501 34211  243 2694    15600   193458 21350   63513 940     5     0.0   0      0      0      codez N/A    N/A   N/A   N/A   N/A   N/A",
+    "end": "Processes: 525 total, 4 running, 521 sleeping, 3176 threads \n2026/10/28 02:14:19\nLoad Avg: 4.06, 3.48, 3.23 \nCPU usage: 12.16% user, 12.16% sys, 75.66% idle \nSharedLibs: 734M resident, 141M data, 164M linkedit.\nMemRegions: 288871 total, 4678M resident, 160M private, 1068M shared.\nPhysMem: 15G used (1978M wired, 1906M compressor), 990M unused.\nVM: 230T vsize, 6144M framework vsize, 1494021(0) swapins, 2071311(0) swapouts.\nNetworks: packets: 74105575/101G in, 52000473/75G out.\nDisks: 50607758/1142G read, 40982082/1424G written.\n\nPID    COMMAND          %CPU TIME     #TH #WQ #PORTS MEM   PURG CMPRS PGRP  PPID STATE    BOOSTS    %CPU_ME %CPU_OTHRS UID FAULTS COW MSGSENT MSGRECV SYSBSD SYSMACH CSW   PAGEINS IDLEW POWER INSTRS CYCLES JETPRI USER  #MREGS RPRVT VPRVT VSIZE KPRVT KSHRD\n98575  talagentd        0.0  00:01.04 2   1   142    8576K 0B   6848K 98575 1    sleeping *0[818]   0.00000 0.00000    501 30684  161 2832    2062    15848  10145   10646 108     1     0.0   0      0      0      codez N/A    N/A   N/A   N/A   N/A   N/A  \n98425  networkservicepr 0.0  00:00.95 2   1   101    9360K 0B   8656K 98425 1    sleeping *0[10]    0.00000 0.00000    501 19020  187 2196    998     18511  3684    7721  616     1     0.0   0      0      0      codez N/A    N/A   N/A   N/A   N/A   N/A  \n98409  intelligencecont 0.0  00:00.41 2   1   78     7969K 0B   5536K 98409 1    sleeping *0[470]   0.00000 0.00000    501 14281  234 1958    2239    13812  5136    6329  576     1     0.0   0      0      0      codez N/A    N/A   N/A   N/A   N/A   N/A  \n98348  contentlinkingd  0.0  00:00.35 3   2   58     3648K 0B   1728K 98348 1    sleeping *0[162]   0.00000 0.00000    501 14187  114 1290    1192    12075  7161    6766  77      13    0.0   0      0      0      codez N/A    N/A   N/A   N/A   N/A   N/A  \n98058  assistant_servic 0.0  00:03.54 2   1   162    10M   0B   9392K 98058 1    sleeping *0[12244] 0.00000 0.00000    501 34211  243 2694    15600   193458 21350   63513 940     5     0.0   0      0      0      codez N/A    N/A   N/A   N/A   N/A   N/A"
+  },
+  "finishedAt": "2026-10-27T18:14:19.185Z"
+}
