@@ -20,16 +20,12 @@ async function call(request: APIRequestContext, body: Record<string, unknown>) {
   return response.json();
 }
 
-/** 已有多少轮跑完（follow 从 0 拿全部事件）。 */
 async function finishedTurns(request: APIRequestContext): Promise<number> {
   const body = await call(request, { method: 'follow', lastSeq: 0 });
   return (body.events as { type: string }[]).filter((event) => event.type === 'turn/end')
     .length;
 }
 
-/// T007.3：打开地址回到同一条对话；往上翻按轮补齐。
-/// 先通过服务发 6 条（假 DeepSeek 回放），再打开页面看历史：首屏是最近 5 轮，
-/// 翻到顶加载更早 1 轮；刷新后仍是同一条对话。
 test('打开地址回到同一条对话；往上翻按轮补齐', async ({ request, page }) => {
   for (let index = 1; index <= 6; index += 1) {
     await call(request, {
@@ -49,11 +45,8 @@ test('打开地址回到同一条对话；往上翻按轮补齐', async ({ reque
   });
   await expect(page.getByText('历史消息 1', { exact: false })).toHaveCount(0);
 
-  const scroller = page.locator('[data-virtuoso-scroller="true"]');
-  await scroller.evaluate((element) => {
-    (element as HTMLElement).scrollTop = 0;
-    element.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
-  });
+  await page.locator('[data-pane="conversation"]').hover();
+  await page.mouse.wheel(0, -3000);
   await expect(page.getByText('历史消息 1', { exact: false })).toBeVisible({
     timeout: 15_000,
   });
@@ -62,4 +55,5 @@ test('打开地址回到同一条对话；往上翻按轮补齐', async ({ reque
   await expect(page.getByText('历史消息 6', { exact: false })).toBeVisible({
     timeout: 15_000,
   });
+  await expect(page.getByText('历史消息 1', { exact: false })).toHaveCount(0);
 });
