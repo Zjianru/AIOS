@@ -4,6 +4,7 @@
 
 mod assistant_stream;
 mod cancel;
+mod credential;
 mod deepseek;
 mod error;
 mod ir;
@@ -12,6 +13,7 @@ pub use assistant_stream::{
     AssistantStreamAccumulator, AssistantStreamRecord, TimedStreamChunk, expand_assistant_stream,
 };
 pub use cancel::CancelToken;
+pub use credential::CredentialSource;
 pub use deepseek::{
     ChunkStream, DEFAULT_BASE_URL, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DeepSeek,
     DeepSeekConfig,
