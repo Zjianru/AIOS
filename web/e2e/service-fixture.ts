@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -27,18 +27,54 @@ const FINAL_TEXT_SSE = [
   '',
 ].join('\n');
 
+const TOOL_CALL_SSE = [
+  'event: message_start',
+  'data: {"type":"message_start","message":{"id":"msg_tool","type":"message","role":"assistant","model":"deepseek-flash","content":[],"usage":{"input_tokens":10,"output_tokens":1}}}',
+  '',
+  'event: content_block_start',
+  'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool_read_1","name":"read","input":{}}}',
+  '',
+  'event: content_block_delta',
+  'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"hello.txt\"}"}}',
+  '',
+  'event: content_block_stop',
+  'data: {"type":"content_block_stop","index":0}',
+  '',
+  'event: message_delta',
+  'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}}',
+  '',
+  'event: message_stop',
+  'data: {"type":"message_stop"}',
+  '',
+  '',
+].join('\n');
+
 export interface KernelFixture {
   baseUrl: string;
   token: string;
   close(): Promise<void>;
 }
 
-/** 接缝 5 骨架：假 DeepSeek 脚本回放 + 真 aios-dev serve（T007.1 只验服务活着，页面以后再接）。 */
-export async function startKernelFixture(): Promise<KernelFixture> {
+export interface FixtureOptions {
+  /// first request 回一次工具调用（read hello.txt），拿到工具结果后再回最终文本。
+  toolTurn?: boolean;
+}
+
+/** 接缝 5：假 DeepSeek 脚本回放 + 真 aios-dev serve（页面也由它同源托管）。 */
+export async function startKernelFixture(
+  options: FixtureOptions = {},
+): Promise<KernelFixture> {
   const fake: Server = createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/v1/messages') {
-      res.writeHead(200, { 'content-type': 'text/event-stream' });
-      res.end(FINAL_TEXT_SSE);
+      let body = '';
+      req.on('data', (chunk: Buffer) => {
+        body += chunk.toString();
+      });
+      req.on('end', () => {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        const toolResult = body.includes('tool_result');
+        res.end(options.toolTurn && !toolResult ? TOOL_CALL_SSE : FINAL_TEXT_SSE);
+      });
       return;
     }
     res.writeHead(404);
@@ -48,16 +84,23 @@ export async function startKernelFixture(): Promise<KernelFixture> {
   const address = fake.address();
   const fakePort = typeof address === 'object' && address !== null ? address.port : 0;
   const dataDir = await mkdtemp(path.join(tmpdir(), 'aios-t007-'));
+  if (options.toolTurn) {
+    await writeFile(path.join(dataDir, 'hello.txt'), 'hello from fixture\n');
+  }
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
-  const child = spawn(bin, ['serve', '--data-dir', dataDir, '--cwd', dataDir, '--web-dist', path.join(repoRoot, 'web/dist')], {
-    env: {
-      ...process.env,
-      DEEPSEEK_API_KEY: 'test-key',
-      DEEPSEEK_BASE_URL: `http://127.0.0.1:${fakePort}`,
+  const child = spawn(
+    bin,
+    ['serve', '--data-dir', dataDir, '--cwd', dataDir, '--web-dist', path.join(repoRoot, 'web/dist')],
+    {
+      env: {
+        ...process.env,
+        DEEPSEEK_API_KEY: 'test-key',
+        DEEPSEEK_BASE_URL: `http://127.0.0.1:${fakePort}`,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  );
   let output = '';
   const parsed = await new Promise<{ baseUrl: string; token: string }>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`serve 启动超时: ${output}`)), 30_000);
