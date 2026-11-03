@@ -1084,8 +1084,7 @@ mod t006_19_compact_failure_tests {
             assert_eq!(
                 compact_failure_text(&error).as_deref(),
                 Some(text),
-                "code={:?}",
-                code
+                "code={code:?}"
             );
         }
         assert_eq!(
