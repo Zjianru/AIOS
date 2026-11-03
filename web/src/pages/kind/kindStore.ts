@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 import { toast } from 'sonner';
-import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchEventsPage, recheckRoot, sendMessage, ServiceHttpError } from '@/data/service';
+import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchEventsPage, fetchFirstUse, recheckRoot, sendMessage, ServiceHttpError } from '@/data/service';
 import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
 import type { GateDetail, GateState } from './KernelGate';
 import { reconnectDelayMs } from '@/data/reconnect';
@@ -223,6 +223,8 @@ interface KindState {
   /** 演示用：下一条消息送不到。 */
   /** 当前用的模型（底栏的模型选择，T008）。 */
   model: { connectionId: string; modelId: string; label: string };
+  /** T008.4：Kind 首屏引导：先看是不是空库（首次使用），否则加载对话。 */
+  bootstrap: () => Promise<void>;
   loadInitial: () => Promise<void>;
   loadOlder: () => Promise<void>;
   setAtBottom: (value: boolean) => void;
@@ -816,6 +818,19 @@ export const useKindStore = create<KindState>()((set, get) => ({
   usage: 46,
   compacting: false,
   model: DEMO_MODEL,
+
+  bootstrap: async () => {
+    try {
+      const first = await fetchFirstUse();
+      if (first.firstUse) {
+        set({ firstUse: true, initialLoading: false });
+        return;
+      }
+    } catch {
+      // 首次使用状态读不到时继续走对话加载；真正原因由 loadInitial 的 gate/横幅呈现。
+    }
+    await get().loadInitial();
+  },
 
   loadInitial: async () => {
     try {
