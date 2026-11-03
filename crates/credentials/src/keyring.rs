@@ -316,6 +316,11 @@ impl Keyring {
             .iter()
             .find(|item| item.info.id == connection)
             .ok_or_else(|| KeyringError::MissingConnection(connection.to_owned()))?;
+        if stored.api_key.trim().is_empty() {
+            return Err(KeyringError::MissingConnection(format!(
+                "{connection}（key 已撤销）"
+            )));
+        }
         let secret = stored.api_key.clone();
         store.next_issue = store.next_issue.saturating_add(1);
         let id = store.next_issue;
@@ -402,31 +407,47 @@ impl Keyring {
         Ok(())
     }
 
-    /// T008.3 增补：只改 endpoint/model，保留已存 key；骨架期先不改数据。
+    /// T008.3 增补：只改 endpoint/model，保留已存 key。
     pub fn update_connection(
         &self,
         id: &str,
-        _endpoint: String,
-        _model: String,
+        endpoint: String,
+        model: String,
     ) -> Result<ConnectionInfo, KeyringError> {
-        let store = self.load_store()?;
-        store
+        if endpoint.trim().is_empty() || model.trim().is_empty() {
+            return Err(KeyringError::InvalidConnection(
+                "endpoint/model 不能为空".to_owned(),
+            ));
+        }
+        let mut store = self.load_store()?;
+        let stored = store
             .connections
-            .iter()
+            .iter_mut()
             .find(|item| item.info.id == id)
-            .map(|item| item.info.clone())
-            .ok_or_else(|| KeyringError::MissingConnection(id.to_owned()))
+            .ok_or_else(|| KeyringError::MissingConnection(id.to_owned()))?;
+        stored.info.endpoint = endpoint;
+        stored.info.model = model;
+        let info = stored.info.clone();
+        self.save_store(&store)?;
+        self.notify();
+        Ok(info)
     }
 
-    /// T008.3 增补：撤销 key（连接保留）；骨架期先不改数据。
+    /// T008.3 增补：撤销 key（连接保留，之后的签发失败）。
     pub fn revoke_key(&self, id: &str) -> Result<ConnectionInfo, KeyringError> {
-        let store = self.load_store()?;
-        store
+        let mut store = self.load_store()?;
+        let stored = store
             .connections
-            .iter()
+            .iter_mut()
             .find(|item| item.info.id == id)
-            .map(|item| item.info.clone())
-            .ok_or_else(|| KeyringError::MissingConnection(id.to_owned()))
+            .ok_or_else(|| KeyringError::MissingConnection(id.to_owned()))?;
+        stored.api_key.clear();
+        stored.info.key_saved = false;
+        stored.info.check = CheckState::Never;
+        let info = stored.info.clone();
+        self.save_store(&store)?;
+        self.notify();
+        Ok(info)
     }
 
     /// 存储/钥匙文件变化通知（页面据此刷新）。

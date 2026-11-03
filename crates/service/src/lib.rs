@@ -1045,20 +1045,26 @@ impl RootHost {
         Ok(ConnectionDeleteResponse { deleted })
     }
 
-    /// T008.3 增补：编辑连接（只改 endpoint/model）。骨架期未接。
+    /// T008.3 增补：编辑连接（只改 endpoint/model，保留 key）。
     pub async fn connection_update(
         &self,
-        _request: ConnectionUpdateRequest,
+        request: ConnectionUpdateRequest,
     ) -> Result<ConnectionUpdateResponse, ServiceError> {
-        Err(ServiceError::SettingsOnBareHost)
+        let connection =
+            self.keyring()?
+                .update_connection(&request.id, request.endpoint, request.model)?;
+        self.emit_settings_changed();
+        Ok(ConnectionUpdateResponse { connection })
     }
 
-    /// T008.3 增补：撤销 key。骨架期未接。
+    /// T008.3 增补：撤销 key（连接保留）。
     pub async fn connection_revoke(
         &self,
-        _request: ConnectionRevokeRequest,
+        request: ConnectionRevokeRequest,
     ) -> Result<ConnectionRevokeResponse, ServiceError> {
-        Err(ServiceError::SettingsOnBareHost)
+        let connection = self.keyring()?.revoke_key(&request.id)?;
+        self.emit_settings_changed();
+        Ok(ConnectionRevokeResponse { connection })
     }
 
     /// T008.3：验证连接：从 Keyring 取一次签发，发最小 Messages 请求，把结果写进注册器。
