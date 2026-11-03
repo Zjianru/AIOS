@@ -374,6 +374,11 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// T008.3：选模型（下一轮请求生效；正在跑的请求不受影响，D26）。
+    pub fn select_model(&self, model: String) {
+        self.inner.model.set_model(model);
+    }
+
     /// 新会话上启动 agent（会话日志由 store 建好，尚无事件）。
     ///
     /// 配置非法时在建之前返回 Err（不清理 spill、不动工具集、不留下驱动任务）。

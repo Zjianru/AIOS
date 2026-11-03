@@ -523,6 +523,11 @@ impl ServiceHost {
         }
     }
 
+    /// T008.3：选模型（下一轮生效；正在跑的请求不受影响）。
+    pub fn select_model(&self, model: String) {
+        self.agent.select_model(model);
+    }
+
     /// 服务对象（第一版：会话 id；16b 换成 Kind 根会话实体）。
     pub fn object(&self) -> Object {
         Object {
@@ -1063,12 +1068,23 @@ impl RootHost {
         })
     }
 
-    /// T008.3：选模型（骨架期未接）。
+    /// T008.3：选模型（下一轮生效；当前轮已发出的请求不换，D26）。
     pub async fn session_model_select(
         &self,
-        _request: SessionModelSelectRequest,
+        request: SessionModelSelectRequest,
     ) -> Result<SessionModelSelectResponse, ServiceError> {
-        Err(ServiceError::SettingsOnBareHost)
+        let guard = self.inner.lock().await;
+        match guard.as_ref() {
+            Some(host) => {
+                host.select_model(request.model.clone());
+                Ok(SessionModelSelectResponse {
+                    model: request.model,
+                })
+            }
+            None => Err(ServiceError::RootUnavailable(
+                self.state.lock().expect("root state 锁被毒化").clone(),
+            )),
+        }
     }
 
     /// 唯一调用入口；根会话不可用时除 recheck 外一律拒绝。

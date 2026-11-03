@@ -273,7 +273,10 @@ async fn 选模型下一轮生效() {
             model: "deepseek-pro".to_owned(),
         }))
         .await;
-    assert!(response.is_ok(), "session-model-select 应成功：{response:?}");
+    assert!(
+        response.is_ok(),
+        "session-model-select 应成功：{response:?}"
+    );
     let json = serde_json::to_string(&response.unwrap()).unwrap();
     assert!(json.contains("deepseek-pro"), "json={json}");
     no_key(&json);
