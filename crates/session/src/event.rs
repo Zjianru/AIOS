@@ -36,7 +36,10 @@ use crate::SessionId;
 /// v12：message source 新增 user.rpcId（T006.16b 照 DSH types.ts:397/589 的 durable rpcId：
 /// 发消息的 requestId 写进 user/message source，重启后仍能判重）；旧版本读不了一条带 rpcId 的
 /// user/message（unit variant 不认新字段），按 spec 升版本、旧版本仍拒绝（不迁移）。
-pub const FORMAT_VERSION: u64 = 12;
+/// v13：message source 新增 skill-invocation（T006.11b 照 DSH tool-skill 的用户显式 /name
+/// 注入：source {kind, name, form: instructions}）；旧版本读不了新 source，按 spec 升版本、
+/// 旧版本仍拒绝（不迁移）。
+pub const FORMAT_VERSION: u64 = 13;
 
 /// JSONL 第一行的会话 header。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
