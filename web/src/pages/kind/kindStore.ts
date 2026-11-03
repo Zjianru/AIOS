@@ -8,7 +8,7 @@
 import { create } from 'zustand';
 import { toast } from 'sonner';
 import { compactionSummary, liveDemo } from '@/data/api';
-import { cancelTurn, connectSession, fetchEventsPage, sendMessage } from '@/data/service';
+import { answerQuestions, cancelTurn, connectSession, dismissQuestions, fetchEventsPage, sendMessage } from '@/data/service';
 import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
 import type { AskAnswer, AskQuestion, FailureCause, LiveDemo, LiveScript, LiveStep } from '@/data/fixtures/kindLive';
 import { mark } from '@/lib/perf';
@@ -266,6 +266,7 @@ let activeSocket: WebSocket | null = null;
 
 /** T007.3/4：本轮已收到的日志事件（首屏页 + live）；实时帧按轮重算 view。 */
 let liveEvents: ServiceEvent[] = [];
+(window as unknown as { __derive?: unknown }).__derive = (events: ServiceEvent[]) => deriveTurnViews(events);
 let liveTurn: number | null = null;
 let liveStream = '';
 
@@ -276,6 +277,12 @@ function refreshTurn(turn: number): void {
   );
   const view = deriveTurnViews(events)[0];
   if (!view) return;
+  (window as unknown as { __q?: unknown }).__q = {
+    turn,
+    questions: view.question && 'questions' in view.question ? view.question.questions.map((item) => item.question) : null,
+    status: view.question?.status,
+    asked: liveEvents.filter((item) => item.type === 'question/asked').map((item) => item.data.question),
+  };
   useKindStore.setState((state) => {
     const views = state.views.slice();
     const index = views.findIndex((item) => item.id === view.id);
@@ -348,6 +355,8 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     tokens: { input: number; output: number };
     failure: { cause: FailureCause; reason: string } | null;
     question: QuestionView | null;
+    answered: AskAnswer[];
+    cancelled: number;
     stoppedAt: string | null;
   }
   const turns = new Map<number, Raw>();
@@ -363,6 +372,8 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         tokens: { input: 0, output: 0 },
         failure: null,
         question: null,
+        answered: [],
+        cancelled: 0,
         stoppedAt: null,
       };
       turns.set(turn, raw);
@@ -448,7 +459,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       case 'tool/call': {
         const raw = ensure(turn);
         raw.tools.push({
-          id: String(data.callId ?? ''),
+          id: String(data.call_id ?? data.callId ?? ''),
           command: String(data.name ?? ''),
           output: '',
           exitCode: null,
@@ -479,6 +490,9 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
           case 'interrupted':
             raw.status = 'interrupted';
             raw.stoppedAt = clock();
+            if (raw.question && raw.question.status === 'pending') {
+              raw.question = { status: 'void', questions: raw.question.questions };
+            }
             break;
           case 'error':
             raw.status = 'failed';
@@ -494,28 +508,47 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       }
       case 'question/asked': {
         const raw = ensure(turn);
-        const questions = Array.isArray(data.questions) ? (data.questions as AskQuestion[]) : null;
-        const question = questions?.[0];
-        if (question) {
-          raw.question = {
-            status: 'pending',
-            questions: questions as AskQuestion[],
-          };
-        } else if (typeof data.question === 'string') {
-          raw.question = {
-            status: 'pending',
-            questions: [
-              {
-                id: String(data.questionId ?? ''),
-                question: data.question,
-                header: typeof data.header === 'string' ? data.header : undefined,
-                options: Array.isArray(data.options)
-                  ? (data.options as string[]).map((label) => ({ label }))
-                  : undefined,
-                multiSelect: Boolean(data.multiSelect),
-              },
-            ],
-          };
+        if (typeof data.question !== 'string') break;
+        const asked: AskQuestion = {
+          id: String(data.question_id ?? data.questionId ?? ''),
+          question: data.question,
+          header: typeof data.header === 'string' ? data.header : undefined,
+          options: Array.isArray(data.options)
+            ? (data.options as string[]).map((label) => ({ label }))
+            : undefined,
+          multiSelect: Boolean(data.multi_select ?? data.multiSelect),
+        };
+        const current = raw.question;
+        if (!current || current.status !== 'pending') {
+          raw.question = { status: 'pending', questions: [asked] };
+        } else if (!current.questions.some((question) => question.id === asked.id)) {
+          current.questions.push(asked);
+        }
+        break;
+      }
+      case 'question/answered': {
+        const raw = ensure(turn);
+        raw.answered.push({
+          id: String(data.question_id ?? data.questionId ?? ''),
+          selected: Array.isArray(data.selected) ? (data.selected as string[]) : [],
+          custom: typeof data.custom === 'string' ? data.custom : undefined,
+        });
+        const questions =
+          raw.question && raw.question.status !== 'dismissed' ? raw.question.questions : [];
+        if (questions.length > 0 && raw.answered.length >= questions.length) {
+          raw.question = { status: 'answered', questions, answers: raw.answered };
+        } else if (questions.length > 0) {
+          raw.question = { status: 'pending', questions };
+        }
+        break;
+      }
+      case 'question/cancelled': {
+        const raw = ensure(turn);
+        raw.cancelled += 1;
+        const questions =
+          raw.question && raw.question.status !== 'answered' ? raw.question.questions : [];
+        if (questions.length > 0 && raw.cancelled >= questions.length) {
+          raw.question = { status: 'dismissed', questions };
         }
         break;
       }
@@ -824,24 +857,24 @@ export const useKindStore = create<KindState>()((set, get) => ({
     });
   },
 
-  answer: (turnId, answers) => {
-    if (!run || run.turnId !== turnId || !run.waiting) return;
-    const step = run.steps[run.index - 1];
-    run.waiting = false;
-    patch(turnId, (view) =>
-      view.question ? { ...view, question: { status: 'answered', questions: view.question.questions, answers } } : view,
-    );
-    if (step?.kind === 'ask') run.steps.splice(run.index, 0, { kind: 'say', text: step.answered, ms: 2600 });
-    next();
+  answer: (_turnId, answers) => {
+    // T007.6：整批真实回答；问题卡状态由 question/answered 事件回填。
+    void answerQuestions(
+      answers.map((answer) => ({
+        questionId: answer.id,
+        selected: answer.selected,
+        custom: answer.custom,
+      })),
+    ).catch(() => {
+      toast('答案没送到内核', { description: '连上之后再试一次' });
+    });
   },
 
-  dismiss: (turnId) => {
-    if (!run || run.turnId !== turnId || !run.waiting) return;
-    const step = run.steps[run.index - 1];
-    run.waiting = false;
-    patch(turnId, (view) => (view.question ? { ...view, question: { status: 'dismissed', questions: view.question.questions } } : view));
-    if (step?.kind === 'ask') run.steps.splice(run.index, 0, { kind: 'say', text: step.dismissed, ms: 2200 });
-    next();
+  dismiss: () => {
+    // T007.6：整批不答；模型收到用户没答后照常收尾。
+    void dismissQuestions().catch(() => {
+      toast('没送达', { description: '连上之后再试一次' });
+    });
   },
 
   compact: () => {

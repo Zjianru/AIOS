@@ -117,6 +117,7 @@ export interface FixtureOptions {
 export async function startKernelFixture(
   options: FixtureOptions = {},
 ): Promise<KernelFixture> {
+  let askCount = 0;
   const fake: Server = createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/v1/messages') {
       let body = '';
@@ -126,8 +127,14 @@ export async function startKernelFixture(
       req.on('end', () => {
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         const toolResult = body.includes('tool_result');
-        const firstReply = options.askTurn ? ASK_CALL_SSE : TOOL_CALL_SSE;
-        const reply = (options.toolTurn || options.askTurn) && !toolResult ? firstReply : FINAL_TEXT_SSE;
+        let reply = FINAL_TEXT_SSE;
+        if (options.askTurn) {
+          // 奇数次请求 = 每轮首个请求：回 ask；偶数次 = 工具结果之后：回最终文本。
+          reply = askCount % 2 === 0 ? ASK_CALL_SSE : FINAL_TEXT_SSE;
+          askCount += 1;
+        } else if (options.toolTurn && !toolResult) {
+          reply = TOOL_CALL_SSE;
+        }
         if (options.slowMs) {
           setTimeout(() => res.end(reply), options.slowMs);
         } else {
