@@ -893,7 +893,7 @@ export function ModelSettings() {
       <KeyringSection view={view} onView={setView} />
 
       <p className="mt-10 border-t border-line pt-2 text-1 leading-4 text-ink-3">
-        AIOS 概念 · Keyring：AIOS 里所有凭证的唯一去处。页面只看得到「有没有、能不能用」，看不到密钥本身。
+        Keyring：AIOS 里所有凭证的唯一去处。页面只看得到「有没有、能不能用」，看不到密钥本身。
       </p>
     </div>
   );

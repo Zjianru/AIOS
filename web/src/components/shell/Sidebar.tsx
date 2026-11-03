@@ -3,7 +3,7 @@
  * 用 shadcn 的 Sidebar（collapsible="icon"），只改样式 token 与宽度变量，行为不动。
  */
 
-import { Clock3, FileText, FolderKanban, Layers2, Moon, Settings, Sparkles, Sun, Users } from 'lucide-react';
+import { Clock3, FileText, FolderKanban, Layers2, Moon, Sparkles, Sun, Users } from 'lucide-react';
 import {
   Sidebar as ShadcnSidebar,
   SidebarContent,
@@ -89,9 +89,9 @@ function SidebarInner({ route }: { route: ParsedRoute }) {
   const active = navOf(route);
   const theme = useAppStore((s) => s.theme);
   const toggleTheme = useAppStore((s) => s.toggleTheme);
+  const connectedOnly = true;
   // 只显示接上内核的部分（D46）：只有 Kind 和设置（外观是本地开关，留着）。
-  const connectedOnly = useAppStore((s) => s.connectedOnly);
-  const mainNav = connectedOnly ? MAIN_NAV.filter((item) => item.id === 'kind') : MAIN_NAV;
+  const mainNav = MAIN_NAV.filter((item) => item.id === 'kind');
 
   return (
     <ShadcnSidebar
@@ -101,24 +101,6 @@ function SidebarInner({ route }: { route: ParsedRoute }) {
     >
       <SidebarHeader className="gap-2 px-2.5 pt-3">
         <TrafficLights />
-        {connectedOnly ? null : (
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              tooltip="搜索（第 3 期）"
-              className="h-8 gap-2.5 rounded-btn border border-line bg-pane/60 px-2 text-3 text-ink-3"
-              aria-disabled
-            >
-              <svg viewBox="0 0 24 24" className="size-4 shrink-0" fill="none" stroke="currentColor" strokeWidth="1.8">
-                <circle cx="11" cy="11" r="7" />
-                <path d="M20 20l-4-4" />
-              </svg>
-              <span className="truncate group-data-[collapsible=icon]:hidden">搜索</span>
-              <kbd className="ml-auto brand-type text-1 text-ink-3 group-data-[collapsible=icon]:hidden">⌘K</kbd>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-        )}
       </SidebarHeader>
 
       <SidebarContent className="gap-0 px-2">
@@ -185,17 +167,6 @@ function SidebarInner({ route }: { route: ParsedRoute }) {
             >
               {theme === 'dark' ? <Moon className="size-4 shrink-0" /> : <Sun className="size-4 shrink-0" />}
               <span className="truncate group-data-[collapsible=icon]:hidden">外观</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              tooltip="设置"
-              isActive={active === 'settings'}
-              onClick={() => go(connectedOnly ? 'settings:model' : 'settings')}
-              className="h-8 gap-2.5 rounded-btn px-2 text-3 text-ink-2 hover:bg-hover hover:text-ink"
-            >
-              <Settings className="size-4 shrink-0" />
-              <span className="truncate group-data-[collapsible=icon]:hidden">设置</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

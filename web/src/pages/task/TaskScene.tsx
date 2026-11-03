@@ -298,7 +298,7 @@ export function TaskScene() {
         </div>
 
         <p className="mt-6 border-t border-line pt-2 text-1 leading-4 text-ink-3">
-          AIOS 概念 · 任务页：地铁线是任务图（点一站进下一层，看到的还是同样的地铁线）；右边是「这件事的账」和它自己的控制开关。
+          任务页：地铁线是任务图（点一站进下一层，看到的还是同样的地铁线）；右边是「这件事的账」和它自己的控制开关。
         </p>
       </div>
     </div>

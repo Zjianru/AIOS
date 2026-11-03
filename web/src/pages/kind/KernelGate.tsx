@@ -14,7 +14,6 @@ import { useEffect, useState } from 'react';
 import { CircleAlert, FileWarning, KeyRound, Lock, PlugZap, RotateCw } from 'lucide-react';
 import { toast } from 'sonner';
 import type { KernelDemo } from '@/app/store';
-import { useAppStore } from '@/app/store';
 
 type GateState = Exclude<KernelDemo, 'ok'>;
 
@@ -44,7 +43,6 @@ function useCountdown(active: boolean, every: number): number {
 }
 
 export function KernelGate({ state }: { state: GateState }) {
-  const setKernel = useAppStore((s) => s.setKernel);
   const left = useCountdown(state === 'unreachable', 5);
   const [checking, setChecking] = useState(false);
 
@@ -158,9 +156,6 @@ export function KernelGate({ state }: { state: GateState }) {
         <div className="mt-3 text-3 leading-6 text-ink-2">{view.body}</div>
         <div className="mt-5 flex items-center gap-3">
           {view.action}
-          <button type="button" onClick={() => setKernel('ok')} className="text-1 text-ink-3 hover:text-ink-2">
-            原型：回到正常状态
-          </button>
         </div>
       </div>
     </div>

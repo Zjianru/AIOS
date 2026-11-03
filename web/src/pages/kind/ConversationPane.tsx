@@ -16,7 +16,6 @@ import { TurnRow } from './TurnRow';
 import { useKindStore } from './kindStore';
 import { ModelPicker } from './ModelPicker';
 import { useAppStore } from '@/app/store';
-import { registerHook } from '@/app/testHooks';
 import { mark } from '@/lib/perf';
 import { cn } from '@/lib/utils';
 
@@ -172,52 +171,6 @@ export function ConversationPane() {
     listRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'smooth' });
   }, []);
 
-  useEffect(() => {
-    registerHook('scrollToTop', (() => {
-      const scroller = document.querySelector('[data-virtuoso-scroller="true"]');
-      if (scroller) scroller.scrollTop = 0;
-    }) as never);
-    registerHook('scrollToBottom', (() => {
-      listRef.current?.scrollToIndex({ index: 'LAST', align: 'end' });
-    }) as never);
-    registerHook('sendMessage', ((text: string, totalMs?: number) => {
-      useKindStore.getState().send(text, totalMs);
-    }) as never);
-    registerHook('cardIndexes', (() => {
-      const indexes: Record<string, number> = {};
-      useKindStore.getState().views.forEach((view, index) => {
-        for (const card of view.cards) {
-          if (indexes[card.type] === undefined) indexes[card.type] = index;
-        }
-      });
-      return indexes;
-    }) as never);
-    registerHook('scrollToFraction', ((fraction: number) => {
-      const scroller = document.querySelector<HTMLElement>('[data-pane="conversation"] [data-virtuoso-scroller="true"]');
-      if (!scroller) return false;
-      scroller.scrollTop = (scroller.scrollHeight - scroller.clientHeight) * Math.min(1, Math.max(0, fraction));
-      return true;
-    }) as never);
-    // 注意：Virtuoso 的 scrollToIndex 收的是 data 里的下标，不是 firstItemIndex 之后的绝对下标。
-    registerHook('scrollToDataIndex', ((index: number) => {
-      listRef.current?.scrollToIndex({ index, align: 'start' });
-    }) as never);
-    registerHook('loadAll', (async () => {
-      let loaded = 0;
-      for (;;) {
-        const state = useKindStore.getState();
-        if (!state.hasOlder) break;
-        const before = state.views.length;
-        await state.loadOlder();
-        loaded += useKindStore.getState().views.length - before;
-      }
-      return loaded;
-    }) as never);
-    registerHook('conversationState', (() => {
-      const state = useKindStore.getState();
-      return { count: state.views.length, atBottom: state.atBottom, streaming: state.streamingTurnId };
-    }) as never);
-  }, []);
 
   // 停止（D12）：运行中按 Esc 随时停；有弹层开着时让弹层先处理 Esc。
   useEffect(() => {
@@ -438,15 +391,8 @@ export function ConversationPane() {
                 <CircleHelp className="size-3" />
                 Kind 在等你回答
               </button>
-            ) : (
-              <span className="ml-auto opacity-70">原型：Kind 的回答是写好的样例</span>
-            )}
+            ) : null}
           </div>
-          <p className="mt-1 text-1 leading-4 text-ink-3">
-            {connectedOnly
-              ? 'AIOS 概念 · Kind：你和 AIOS 的一条长对话，一直留着；停止随时可用（Esc）。'
-              : 'AIOS 概念 · Kind：一个对话 + 一个右栏，不做页签；右栏上半是「要你看的和在动的」，下半是它现在带着的上下文。'}
-          </p>
         </div>
       </div>
     </div>
