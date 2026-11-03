@@ -10,6 +10,7 @@ import { toast } from 'sonner';
 import { compactionSummary, liveDemo } from '@/data/api';
 import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchEventsPage, sendMessage } from '@/data/service';
 import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
+import { reconnectDelayMs } from '@/data/reconnect';
 import type { AskAnswer, AskQuestion, FailureCause, LiveDemo, LiveScript, LiveStep } from '@/data/fixtures/kindLive';
 import { mark } from '@/lib/perf';
 import type { KindCard, TextElement, Turn, TurnStatus } from '@/data/types';
@@ -327,7 +328,7 @@ function openSocket(): void {
         connection: { state: 'reconnecting', attempt: reconnectAttempt },
       });
       if (reconnectTimer === null) {
-        const delay = Math.min(5_000, 300 * reconnectAttempt);
+        const delay = reconnectDelayMs(reconnectAttempt);
         reconnectTimer = setTimeout(() => {
           reconnectTimer = null;
           openSocket();
