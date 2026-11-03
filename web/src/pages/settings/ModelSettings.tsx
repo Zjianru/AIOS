@@ -16,10 +16,10 @@ import { ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, Plus, X } from 'lu
 import { toast } from 'sonner';
 import {
   addConnection, checkConnection, discoverModels, getModelSettings, moveKeyFile, relinkKeyFile, removeConnection,
-  KERNEL_PROVIDERS, resetKeyring, revokeKey, setKeyringProblem, updateConnection,
-} from '@/data/api';
-import type { ConnectionView, ModelRow, ModelSettingsView } from '@/data/fixtures/settings';
-import { PROTOCOL_LABEL } from '@/data/fixtures/settings';
+  KERNEL_PROVIDERS, resetKeyring, revokeKey, setKeyringProblem, syncKeyringEmpty, updateConnection,
+} from '@/data/keyring';
+import type { ConnectionView, ModelRow, ModelSettingsView, Protocol } from '@/data/fixtures/settings';
+import { PROTOCOL_ENDPOINT_HINT, PROTOCOL_LABEL } from '@/data/fixtures/settings';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
