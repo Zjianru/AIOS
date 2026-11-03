@@ -56,6 +56,14 @@ export interface AgentFrame {
 
 export type Frame = ReadyFrame | EventFrame | AgentFrame;
 
+export class ServiceHttpError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 export interface ServiceTarget {
   origin: string;
   token: string;
@@ -77,7 +85,7 @@ async function post<T>(body: Record<string, unknown>): Promise<T> {
     body: JSON.stringify(body),
   });
   if (!response.ok) {
-    throw new Error(`服务拒绝：${response.status}`);
+    throw new ServiceHttpError(response.status, `服务拒绝：${response.status}`);
   }
   return (await response.json()) as T;
 }
@@ -111,6 +119,11 @@ export async function dismissQuestions(): Promise<void> {
 /** 手动压缩（T007.8）：把之前的对话换成一份摘要，原文留在日志里。 */
 export async function compactThread(commandId: string): Promise<void> {
   await post({ method: 'compact', commandId });
+}
+
+export async function recheckRoot(): Promise<ServiceRootState> {
+  const response = await post<{ root: ServiceRootState }>({ method: 'recheck' });
+  return response.root;
 }
 
 export interface EventsPage {

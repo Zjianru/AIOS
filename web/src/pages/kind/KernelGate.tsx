@@ -1,23 +1,17 @@
 /**
- * 接不上内核时 Kind 页整页显示的状态（T007 的参照）。
- *
- * - 连不上服务：服务没起来或已经退出；页面自己隔几秒再试，也可以马上试。
- * - 令牌不对：地址里的启动令牌和这次服务的不一样（服务重启过）；用最新打印的地址重新打开。
- * - Kind 的对话不见了：状态文件指向的日志文件找不到。AIOS 不会悄悄建一条空的新对话。
- * - 日志读不懂：某一行坏了。不跳过、不重建，原样留着等你处理。
- * - 被占用：别的进程正在写这条对话（单写者）。关掉它再检查一次。
- *
- * 文案只说事实和能做的一步；路径、行号是假的样例，真的由服务报上来。
+ * 接不上内核时 Kind 页整页显示的状态（T007.10）：文案只说事实和能做的一步；
+ * 路径/行号来自服务 ready 的 root 状态，不在页面上编。
  */
 
 import { useEffect, useState } from 'react';
 import { CircleAlert, FileWarning, KeyRound, Lock, PlugZap, RotateCw } from 'lucide-react';
-import { toast } from 'sonner';
-import type { KernelDemo } from '@/app/store';
 
-type GateState = Exclude<KernelDemo, 'ok'>;
+export type GateState = 'unreachable' | 'token' | 'lost' | 'broken' | 'busy';
 
-const SESSION_PATH = '~/.aios/sessions/kind-01JC8M4Q.jsonl';
+export interface GateDetail {
+  path?: string;
+  line?: number;
+}
 
 function Code({ children }: { children: React.ReactNode }) {
   return <code className="brand-type rounded-[4px] bg-hover px-1 py-[1px] text-2 text-ink">{children}</code>;
@@ -42,18 +36,43 @@ function useCountdown(active: boolean, every: number): number {
   return left;
 }
 
-export function KernelGate({ state }: { state: GateState }) {
-  const left = useCountdown(state === 'unreachable', 5);
+function RetryButton({ onRecheck, label }: { onRecheck: () => Promise<void> | void; label: string }) {
   const [checking, setChecking] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        setChecking(true);
+        void Promise.resolve(onRecheck()).finally(() => setChecking(false));
+      }}
+      className={primary}
+    >
+      <RotateCw className={'size-3.5 ' + (checking ? 'animate-spin' : '')} />
+      {label}
+    </button>
+  );
+}
 
-  // 原型里「再检查一次」总是还失败；真的由服务决定。
-  const recheck = () => {
-    setChecking(true);
-    window.setTimeout(() => {
-      setChecking(false);
-      toast('还是一样', { description: '处理好之后再检查一次' });
-    }, 700);
-  };
+export function KernelGate({
+  state,
+  detail,
+  onRecheck,
+}: {
+  state: GateState;
+  detail?: GateDetail;
+  onRecheck: () => Promise<void> | void;
+}) {
+  const left = useCountdown(state === 'unreachable', 5);
+  const path = detail?.path;
+
+  // 「连不上服务」时页面每 5 秒自己再试一次。
+  useEffect(() => {
+    if (state !== 'unreachable') return;
+    const timer = window.setInterval(() => {
+      void onRecheck();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [state, onRecheck]);
 
   const content: Record<GateState, { icon: React.ReactNode; title: string; body: React.ReactNode; action?: React.ReactNode }> = {
     unreachable: {
@@ -68,12 +87,7 @@ export function KernelGate({ state }: { state: GateState }) {
           </p>
         </>
       ),
-      action: (
-        <button type="button" onClick={recheck} className={primary}>
-          <RotateCw className={'size-3.5 ' + (checking ? 'animate-spin' : '')} />
-          现在重试
-        </button>
-      ),
+      action: <RetryButton onRecheck={onRecheck} label="现在重试" />,
     },
     token: {
       icon: <KeyRound className="size-4" />,
@@ -81,8 +95,7 @@ export function KernelGate({ state }: { state: GateState }) {
       body: (
         <>
           <p>内核每次启动都会换一个令牌。这个页面用的还是上一次的，服务拒绝了它。</p>
-          <p className="mt-2">用终端里最新打印出来的地址重新打开这一页：</p>
-          <Block>{'AIOS 已启动：http://127.0.0.1:4417/#token=…'}</Block>
+          <p className="mt-2">用终端里最新打印出来的地址重新打开这一页。</p>
         </>
       ),
     },
@@ -92,19 +105,14 @@ export function KernelGate({ state }: { state: GateState }) {
       body: (
         <>
           <p>
-            这条对话应该在 <Code>{SESSION_PATH}</Code>，但文件不在那里。
+            这条对话应该在 <Code>{path ?? '服务没有给出日志路径'}</Code>，但文件不在那里。
           </p>
           <p className="mt-2">
             AIOS 没有替你建一条空的新对话：那样之前说过的话就悄悄没了。如果是你移走了它，把它放回原处再检查一次。
           </p>
         </>
       ),
-      action: (
-        <button type="button" onClick={recheck} className={primary}>
-          <RotateCw className={'size-3.5 ' + (checking ? 'animate-spin' : '')} />
-          再检查一次
-        </button>
-      ),
+      action: <RetryButton onRecheck={onRecheck} label="再检查一次" />,
     },
     broken: {
       icon: <FileWarning className="size-4" />,
@@ -112,18 +120,13 @@ export function KernelGate({ state }: { state: GateState }) {
       body: (
         <>
           <p>
-            <Code>{SESSION_PATH}</Code> 的第 <span className="brand-type">1284</span> 行不是一条完整的记录：
+            <Code>{path ?? '服务没有给出日志路径'}</Code> 的第{' '}
+            <span className="brand-type">{detail?.line ?? '?'}</span> 行不是一条完整的记录。
           </p>
-          <Block>{'{"seq":1284,"type":"message","role":"assi'}</Block>
           <p className="mt-3">AIOS 没有跳过这一行，也没有重建日志，文件原样留着。处理好之后再检查一次。</p>
         </>
       ),
-      action: (
-        <button type="button" onClick={recheck} className={primary}>
-          <RotateCw className={'size-3.5 ' + (checking ? 'animate-spin' : '')} />
-          再检查一次
-        </button>
-      ),
+      action: <RetryButton onRecheck={onRecheck} label="再检查一次" />,
     },
     busy: {
       icon: <Lock className="size-4" />,
@@ -136,12 +139,7 @@ export function KernelGate({ state }: { state: GateState }) {
           </p>
         </>
       ),
-      action: (
-        <button type="button" onClick={recheck} className={primary}>
-          <RotateCw className={'size-3.5 ' + (checking ? 'animate-spin' : '')} />
-          再检查一次
-        </button>
-      ),
+      action: <RetryButton onRecheck={onRecheck} label="再检查一次" />,
     },
   };
 
@@ -154,9 +152,7 @@ export function KernelGate({ state }: { state: GateState }) {
           {view.title}
         </div>
         <div className="mt-3 text-3 leading-6 text-ink-2">{view.body}</div>
-        <div className="mt-5 flex items-center gap-3">
-          {view.action}
-        </div>
+        <div className="mt-5 flex items-center gap-3">{view.action}</div>
       </div>
     </div>
   );
