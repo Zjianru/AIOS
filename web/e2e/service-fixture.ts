@@ -49,6 +49,55 @@ const TOOL_CALL_SSE = [
   '',
 ].join('\n');
 
+const ASK_QUESTIONS = [
+  { id: 'q1', question: '先选一个？', options: [{ label: 'Yes' }, { label: 'No' }] },
+  { id: 'q2', question: '再自己写一句？' },
+];
+
+const ASK_CALL_SSE = (() => {
+  const input = JSON.stringify({ questions: ASK_QUESTIONS });
+  const data = (value: unknown) => 'data: ' + JSON.stringify(value);
+  return [
+    'event: message_start',
+    data({
+      type: 'message_start',
+      message: {
+        id: 'msg_ask',
+        type: 'message',
+        role: 'assistant',
+        model: 'deepseek-flash',
+        content: [],
+        usage: { input_tokens: 10, output_tokens: 1 },
+      },
+    }),
+    '',
+    'event: content_block_start',
+    data({
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'tool_use', id: 'tool_ask_1', name: 'ask_user_question', input: {} },
+    }),
+    '',
+    'event: content_block_delta',
+    data({
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'input_json_delta', partial_json: input },
+    }),
+    '',
+    'event: content_block_stop',
+    data({ type: 'content_block_stop', index: 0 }),
+    '',
+    'event: message_delta',
+    data({ type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 3 } }),
+    '',
+    'event: message_stop',
+    data({ type: 'message_stop' }),
+    '',
+    '',
+  ].join('\n');
+})();
+
 export interface KernelFixture {
   baseUrl: string;
   token: string;
@@ -60,6 +109,8 @@ export interface FixtureOptions {
   toolTurn?: boolean;
   /// 每次模型回放延迟毫秒（T007.5 停止用例要在运行中按停止/Esc）。
   slowMs?: number;
+  /// first request 回一次 ask_user_question（两题：一题选项、一题自己写）。
+  askTurn?: boolean;
 }
 
 /** 接缝 5：假 DeepSeek 脚本回放 + 真 aios-dev serve（页面也由它同源托管）。 */
@@ -75,7 +126,8 @@ export async function startKernelFixture(
       req.on('end', () => {
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         const toolResult = body.includes('tool_result');
-        const reply = options.toolTurn && !toolResult ? TOOL_CALL_SSE : FINAL_TEXT_SSE;
+        const firstReply = options.askTurn ? ASK_CALL_SSE : TOOL_CALL_SSE;
+        const reply = (options.toolTurn || options.askTurn) && !toolResult ? firstReply : FINAL_TEXT_SSE;
         if (options.slowMs) {
           setTimeout(() => res.end(reply), options.slowMs);
         } else {
