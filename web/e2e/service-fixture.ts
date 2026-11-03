@@ -561,7 +561,9 @@ export async function startRealDodFixture(): Promise<KernelFixture> {
     restoreProxy: async () => {},
     close: async () => {
       child.kill('SIGTERM');
-      await rm(root, { recursive: true, force: true });
+      if (process.env.AIOS_DOD_KEEP !== '1') {
+        await rm(root, { recursive: true, force: true });
+      }
     },
   };
 }
