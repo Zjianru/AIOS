@@ -74,6 +74,8 @@ pub enum Call {
     KeyringRestart(KeyringRestartRequest),
     Issues(IssuesRequest),
     FirstUse(FirstUseRequest),
+    /// T008.3：选模型（下一轮生效，当前轮不换）。
+    SessionModelSelect(SessionModelSelectRequest),
 }
 
 /// 调用的结果（与 Call 一一对应）。
@@ -98,6 +100,7 @@ pub enum Response {
     KeyringRestart(KeyringRestartResponse),
     Issues(IssuesResponse),
     FirstUse(FirstUseResponse),
+    SessionModelSelect(SessionModelSelectResponse),
 }
 
 /// 发消息（DSH session-controller 的 prompt）。requestId 是幂等键：同一 id 只进一次。
@@ -376,6 +379,17 @@ pub struct ConnectionVerifyResponse {
     pub connection: credentials::ConnectionInfo,
 }
 
+/// T008.3：选模型；只影响下一轮（D26）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionModelSelectRequest {
+    pub model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionModelSelectResponse {
+    pub model: String,
+}
+
 /// 服务协议版本（T007.2 起）：只增不改的对外面每次扩展都记在这里，Web ready 帧里带上。
 pub const PROTOCOL_VERSION: u64 = 3;
 
@@ -548,7 +562,8 @@ impl ServiceHost {
             | Call::KeyringReopen(_)
             | Call::KeyringRestart(_)
             | Call::Issues(_)
-            | Call::FirstUse(_) => Err(ServiceError::SettingsOnBareHost),
+            | Call::FirstUse(_)
+            | Call::SessionModelSelect(_) => Err(ServiceError::SettingsOnBareHost),
         }
     }
 
@@ -1048,6 +1063,14 @@ impl RootHost {
         })
     }
 
+    /// T008.3：选模型（骨架期未接）。
+    pub async fn session_model_select(
+        &self,
+        _request: SessionModelSelectRequest,
+    ) -> Result<SessionModelSelectResponse, ServiceError> {
+        Err(ServiceError::SettingsOnBareHost)
+    }
+
     /// 唯一调用入口；根会话不可用时除 recheck 外一律拒绝。
     pub async fn dispatch(&self, call: Call) -> Result<Response, ServiceError> {
         if matches!(call, Call::Recheck(_)) {
@@ -1079,6 +1102,10 @@ impl RootHost {
             Call::KeyringRestart(_) => self.keyring_restart().await.map(Response::KeyringRestart),
             Call::Issues(_) => self.issues().await.map(Response::Issues),
             Call::FirstUse(_) => self.first_use().await.map(Response::FirstUse),
+            Call::SessionModelSelect(request) => self
+                .session_model_select(request)
+                .await
+                .map(Response::SessionModelSelect),
             other => {
                 let guard = self.inner.lock().await;
                 match guard.as_ref() {
