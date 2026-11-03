@@ -355,6 +355,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     tokens: { input: number; output: number };
     failure: { cause: FailureCause; reason: string } | null;
     question: QuestionView | null;
+    retry: TurnViewData['retry'];
     answered: AskAnswer[];
     cancelled: number;
     stoppedAt: string | null;
@@ -372,6 +373,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         tokens: { input: 0, output: 0 },
         failure: null,
         question: null,
+        retry: null,
         answered: [],
         cancelled: 0,
         stoppedAt: null,
@@ -454,6 +456,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         if (text) raw.answer = text;
         raw.tokens = usageOf(data);
         raw.status = 'inProgress';
+        raw.retry = null;
         break;
       }
       case 'tool/call': {
@@ -552,6 +555,21 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         }
         break;
       }
+      case 'llm/retry': {
+        const raw = ensure(turn);
+        const delayMs = typeof data.delay_ms === 'number' ? data.delay_ms : 0;
+        const failure = (data.failure ?? {}) as { message?: string; code?: string };
+        raw.retry = {
+          attempt: typeof data.retry === 'number' ? data.retry : 1,
+          reason: failure.message || failure.code || '模型请求失败',
+          inSeconds: Math.max(1, Math.round(delayMs / 1000)),
+        };
+        break;
+      }
+      case 'llm/retry-started': {
+        ensure(turn).retry = null;
+        break;
+      }
       case 'compaction/summary': {
         const raw = ensure(turn);
         raw.status = raw.status === 'inProgress' ? 'completed' : raw.status;
@@ -577,7 +595,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       tokens: raw.tokens,
       cost: null,
       model: DEMO_MODEL.label,
-      retry: null,
+      retry: raw.retry,
       failure: raw.failure,
       question: raw.question,
       compaction: null,
