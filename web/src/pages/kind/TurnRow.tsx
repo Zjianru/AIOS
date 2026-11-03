@@ -14,7 +14,6 @@ import { QuestionCard } from './QuestionCard';
 import { useKindStore, useStreamStore } from './kindStore';
 import type { CompactionView, TurnViewData } from './kindStore';
 import { useAppStore } from '@/app/store';
-import { go } from '@/app/navigate';
 import type { TextElement } from '@/data/types';
 import { cn } from '@/lib/utils';
 
@@ -200,7 +199,6 @@ function FailureBlock({ view }: { view: TurnViewData }) {
   const streaming = useKindStore((state) => state.streamingTurnId);
   const failure = view.failure;
   if (!failure) return null;
-  const toSettings = failure.cause === 'credential' || failure.cause === 'keyring';
   return (
     <div className="mt-2 flex items-start gap-2 rounded-card border border-fail/40 bg-fail-soft/50 px-3 py-2 text-2" data-kind="failure">
       <CircleAlert className="mt-[2px] size-3.5 shrink-0 text-fail" />
@@ -214,15 +212,7 @@ function FailureBlock({ view }: { view: TurnViewData }) {
               : '内核已经按规矩重试过了。过一会儿再发一次，或者换个模型。'}
         </div>
       </div>
-      {toSettings ? (
-        <button
-          type="button"
-          onClick={() => go('settings:model')}
-          className="shrink-0 rounded-btn border border-line-2 px-2.5 py-1 text-2 text-ink-2 transition-colors hover:bg-hover hover:text-ink"
-        >
-          去设置 ›
-        </button>
-      ) : view.user ? (
+      {view.user ? (
         <button
           type="button"
           disabled={Boolean(streaming)}
