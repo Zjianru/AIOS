@@ -1,5 +1,5 @@
-// T007.3：页面与 aios-dev serve 的线上客户端（只加页面要用的方法/帧）。
-// 协议事实：POST /api {method,...} → Response；WS /ws 先 ready 再事件（T006.17 / T007.2）。
+// T007.3/4：页面与 aios-dev serve 的线上客户端（只加页面要用的方法/帧）。
+// 协议事实：POST /api {method,...} → Response；WS /ws 先 ready 再事件/agent 帧。
 
 export interface ServiceEvent {
   seq: number;
@@ -36,7 +36,25 @@ export interface EventFrame {
   event: ServiceEvent;
 }
 
-export type Frame = ReadyFrame | EventFrame;
+export interface AgentWireEvent {
+  type: 'text-delta' | 'usage' | 'retrying';
+  text?: string;
+  attempt?: number;
+  maxAttempts?: number;
+  delayMs?: number;
+  code?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+}
+
+export interface AgentFrame {
+  type: 'agent';
+  event: AgentWireEvent;
+}
+
+export type Frame = ReadyFrame | EventFrame | AgentFrame;
 
 export interface ServiceTarget {
   origin: string;
@@ -53,18 +71,20 @@ export function serviceTarget(): ServiceTarget | null {
 async function post<T>(body: Record<string, unknown>): Promise<T> {
   const target = serviceTarget();
   if (!target) throw new Error('地址里没有启动令牌');
-  const response = await fetch(
-    `${target.origin}/api?token=${encodeURIComponent(target.token)}`,
-    {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    },
-  );
+  const response = await fetch(`${target.origin}/api?token=${encodeURIComponent(target.token)}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
   if (!response.ok) {
     throw new Error(`服务拒绝：${response.status}`);
   }
   return (await response.json()) as T;
+}
+
+/** 发消息（requestId 是幂等键：重发同一个 id 不会让 Kind 收到两次）。 */
+export async function sendMessage(content: string, requestId: string): Promise<void> {
+  await post({ method: 'send', requestId, content });
 }
 
 export interface EventsPage {
@@ -72,7 +92,7 @@ export interface EventsPage {
   hasMore: boolean;
 }
 
-/** events：往回翻一页日志（T006.16c 的轮对齐预算；T007.3 打开/往上翻用）。 */
+/** events：往回翻一页日志（T006.16c 的轮对齐预算；打开/往上翻用）。 */
 export async function fetchEventsPage(options: {
   beforeSeq?: number;
   maxMessages?: number;
@@ -86,7 +106,7 @@ export async function fetchEventsPage(options: {
   return { events: response.events, hasMore: response.hasMore };
 }
 
-/** 连 WS：ready 先到，再按 seq 补齐/直播；T007.3 只用 ready 的 context 和连接状态。 */
+/** 连 WS：ready → 补齐/直播的日志事件（event）与不落日志的 agent 帧（流式文本等）。 */
 export function connectSession(
   lastSeq: number,
   onFrame: (frame: Frame) => void,
