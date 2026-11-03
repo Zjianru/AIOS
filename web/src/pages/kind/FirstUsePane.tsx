@@ -13,8 +13,7 @@
 import { useEffect, useState } from 'react';
 import { Check, Eye, EyeOff, Loader2, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { addConnection, checkConnection, getFirstUse, getModelSettings, KERNEL_PROVIDERS, updateConnection } from '@/data/api';
-import type { FirstUseCard, FirstUseFixture } from '@/data/fixtures/firstUse';
+import { addConnection, checkConnection, getModelSettings, KERNEL_PROVIDERS } from '@/data/keyring';
 import type { CatalogProvider, ConnectionView } from '@/data/fixtures/settings';
 import { cn } from '@/lib/utils';
 
@@ -76,10 +75,15 @@ function ConnectForm({ onConnected }: { onConnected: () => void }) {
     if (!active || !key.trim()) return;
     setBusy(true);
     try {
-      const existing = (await getModelSettings()).connections.find((item) => item.id === active.id);
-      const saved = existing
-        ? await updateConnection(active.id, { endpoint: existing.endpoint, models: existing.models, key })
-        : await addConnection({ source: 'catalog', id: active.id, name: active.name, protocol: active.protocol, endpoint: '', models: [], key });
+      const saved = await addConnection({
+        source: 'catalog',
+        id: active.id,
+        name: active.name,
+        protocol: active.protocol,
+        endpoint: active.defaultEndpoint,
+        models: active.defaultModels,
+        key,
+      });
       setKey('');
       setShown(false);
       setConn(saved.connections.find((item) => item.id === active.id) ?? null);
@@ -202,167 +206,22 @@ function ConnectForm({ onConnected }: { onConnected: () => void }) {
                 {busy ? '正在接…' : failed ? '再试一次' : '接上'}
               </button>
             )}
-            
+
           </div>
         </div>
 
+        <p className="mt-4 text-1 leading-4 text-ink-3">
+          首次使用：没接模型之前，Kind 只能做这一件事——把模型接上。这里存的密钥和「设置 › 模型与连接」是同一份。
+        </p>
       </div>
     </div>
   );
 }
 
-function StarterCard({ card, onPick }: { card: FirstUseCard; onPick: (card: FirstUseCard) => void }) {
-  return (
-    <button
-      type="button"
-      onClick={() => onPick(card)}
-      className="flex h-full flex-col rounded-card border border-line bg-pane/60 p-3 text-left transition-colors hover:border-ink-3/60 hover:bg-raised"
-    >
-      <span className="text-1 text-ink-3">{card.ability}</span>
-      <span className="mt-1 text-3 font-medium leading-5 text-ink">{card.title}</span>
-      <span className="mt-1 flex-1 text-1 leading-4 text-ink-3">{card.prompt}</span>
-      <span className="mt-2 flex items-center gap-1">
-        <span className="rounded-full bg-hover px-2 py-[1px] text-1 text-ink-3">按 {card.tier} 做</span>
-        <span className="ml-auto text-1 text-ink-3">开始 ›</span>
-      </span>
-    </button>
-  );
-}
-
-function ReadyStep({ data }: { data: FirstUseFixture }) {
-  const [picked, setPicked] = useState<FirstUseCard | null>(null);
-  const [answer, setAnswer] = useState<string | null>(null);
-  const option = data.options.find((item) => item.id === answer) ?? null;
-
-  return (
-    <div className="mx-auto w-full max-w-[680px] py-8" data-first-use="ready">
-      <div className="flex items-start gap-2.5">
-        <KindOrb />
-        <div className="min-w-0">
-          <div className="text-1 text-ink-3">Kind</div>
-          <div className="mt-1 text-4 leading-6 text-ink">好，接上了，我是 Kind。你想让我先做什么？</div>
-          <p className="mt-1 text-2 leading-5 text-ink-2">下面是三件现在就能做的事。点一张，我就按那件事开始。</p>
-        </div>
-      </div>
-
-      <div className="mt-5 grid gap-2 sm:grid-cols-3">
-        {data.cards.map((card) => (
-          <StarterCard key={card.id} card={card} onPick={setPicked} />
-        ))}
-      </div>
-
-      {picked ? (
-        <div className="mt-4 flex items-start gap-2.5">
-          <KindOrb />
-          <div className="min-w-0">
-            <div className="text-1 text-ink-3">Kind</div>
-            <div className="mt-1 text-3 leading-5 text-ink">{picked.say}</div>
-            <div className="mt-1.5 flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => toast('（原型）这件事会开始；空库里先不起真任务')}
-                className="rounded-btn bg-ink px-2.5 py-1 text-2 text-content transition-opacity hover:opacity-90"
-              >
-                就这样开始
-              </button>
-              <span className="text-1 text-ink-3">按 {picked.tier} 做 · 也可以直接在下面输入框改</span>
-            </div>
-          </div>
-        </div>
-      ) : null}
-
-      <div className="mt-6 rounded-card border border-line bg-pane/40 p-3">
-        <div className="text-2 text-ink-2">{data.question}</div>
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {data.options.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => setAnswer(item.id === answer ? null : item.id)}
-              className={cn(
-                'rounded-full border px-2.5 py-1 text-2 transition-colors',
-                item.id === answer
-                  ? 'border-ink-3 bg-hover text-ink'
-                  : 'border-line-2 text-ink-2 hover:bg-hover hover:text-ink',
-              )}
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-
-        {option ? (
-          <div className="mt-3 border-t border-line pt-2.5" data-first-use="recommend">
-            <div className="text-2 text-ink">按「{option.label}」推荐：</div>
-            <ul className="mt-1 space-y-0.5 text-2 leading-5 text-ink-2">
-              {option.recommend.flows.map((flow) => (
-                <li key={flow.name}>
-                  内置流程 · <span className="text-ink">{flow.name}</span>（{flow.tier}）：{flow.desc}
-                </li>
-              ))}
-              {option.recommend.roles.map((role) => (
-                <li key={role.name}>
-                  角色 · <span className="text-ink">{role.name}</span>：{role.why}
-                </li>
-              ))}
-            </ul>
-            <div className="mt-2 flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => toast('（原型）已采用推荐；采用后能在「能力 → 流程」里看到')}
-                className="rounded-btn bg-ink px-2.5 py-1 text-2 text-content transition-opacity hover:opacity-90"
-              >
-                采用推荐
-              </button>
-              <button
-                type="button"
-                onClick={() => setAnswer(null)}
-                className="rounded-btn border border-line-2 px-2.5 py-1 text-2 text-ink-2 transition-colors hover:bg-hover"
-              >
-                先不用
-              </button>
-              <span className="text-1 text-ink-3">只推荐，不自动采用</span>
-            </div>
-          </div>
-        ) : (
-          <p className="mt-1.5 text-1 text-ink-3">只推荐，不自动采用；之后随时能在「能力 → 流程」里改。</p>
-        )}
-      </div>
-
-    </div>
-  );
-}
-
-export function FirstUsePane() {
-  const [data, setData] = useState<FirstUseFixture | null>(null);
-  const [connected, setConnected] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    void (async () => {
-      const next = await getFirstUse();
-      if (alive) setData(next);
-    })();
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  if (!data) {
-    return <div className="grid h-full place-items-center text-2 text-ink-3">正在准备首次使用…</div>;
-  }
-
+export function FirstUsePane({ onConnected }: { onConnected: () => void }) {
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto bg-content" data-pane="conversation">
-      {connected ? (
-        <ReadyStep data={data} />
-      ) : (
-        <ConnectForm
-          onConnected={() => {
-            setConnected(true);
-          }}
-        />
-      )}
+      <ConnectForm onConnected={onConnected} />
     </div>
   );
 }

@@ -128,6 +128,8 @@ export interface KernelFixture {
   baseUrl: string;
   token: string;
   dataDir: string;
+  /** T008.4：假 DeepSeek 的 endpoint（页面连接会被 e2e 改写到它）。 */
+  fakeEndpoint: string;
   dropProxy?: () => Promise<void>;
   restoreProxy?: () => Promise<void>;
   /// T007 #1：页面开着时重启同一个端口的服务（新进程=新 cookie 钥匙，旧页面会话失效）。
@@ -154,6 +156,8 @@ export interface FixtureOptions {
   rootFault?: 'lost' | 'corrupt';
   /// 先起一个 holder serve 占住写锁，测试 serve 起来会报 busy（说明页用例）。
   busyRoot?: boolean;
+  /// T008.4：不预置 Keyring 连接（首次使用用例）；serve 仍能起（T008.3b）。
+  emptyKeyring?: boolean;
 }
 
 /** 接缝 5：假 DeepSeek 脚本回放 + 真 aios-dev serve（页面也由它同源托管）。 */
@@ -163,6 +167,11 @@ export async function startKernelFixture(
   let askCount = 0;
   let modelCalls = 0;
   const fake: Server = createServer((req, res) => {
+    if (req.headers['x-api-key'] === 'bad-key') {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'invalid api key', type: 'authentication_error' } }));
+      return;
+    }
     if (req.method === 'POST' && req.url === '/v1/messages') {
       let body = '';
       req.on('data', (chunk: Buffer) => {
@@ -220,12 +229,14 @@ export async function startKernelFixture(
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
   const identityPath = path.join(dataDir, 'identity.txt');
-  const seed = spawnSync(
-    bin,
-    ['keyring', '--data-dir', dataDir, '--identity', identityPath, 'set', '--id', 'deepseek', '--name', 'DeepSeek', '--model', 'deepseek-flash', '--endpoint', 'http://127.0.0.1:' + String(fakePort)],
-    { input: 'test-key\n', encoding: 'utf8' },
-  );
-  if (seed.status !== 0) throw new Error('seed keyring failed: ' + String(seed.stderr));
+  if (!options.emptyKeyring) {
+    const seed = spawnSync(
+      bin,
+      ['keyring', '--data-dir', dataDir, '--identity', identityPath, 'set', '--id', 'deepseek', '--name', 'DeepSeek', '--model', 'deepseek-flash', '--endpoint', 'http://127.0.0.1:' + String(fakePort)],
+      { input: 'test-key' + String.fromCharCode(10), encoding: 'utf8' },
+    );
+    if (seed.status !== 0) throw new Error('seed keyring failed: ' + String(seed.stderr));
+  }
   const serveArgs = ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', dataDir, '--web-dist', path.join(repoRoot, 'web/dist')];
   if (options.contextWindow) {
     serveArgs.push('--context-window', String(options.contextWindow));
@@ -357,6 +368,7 @@ export async function startKernelFixture(
     baseUrl,
     token,
     dataDir,
+    fakeEndpoint: 'http://127.0.0.1:' + String(fakePort),
     dropProxy,
     restoreProxy,
     restart,
@@ -482,6 +494,7 @@ export async function startRealKernelFixture(
     ...parsed,
     baseUrl,
     dataDir,
+    fakeEndpoint: '',
     dropProxy: proxy.drop,
     restoreProxy: proxy.restore,
     close: async () => {

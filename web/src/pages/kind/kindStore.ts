@@ -209,6 +209,8 @@ interface KindState {
   dayLabels: Map<string, string>;
   lastSeenId: string | null;
   lastSeenCounts: { moved: number; waiting: number };
+  /** T008.4：还没有接模型（空库）；true 时 Kind 首屏是第一次填 key。 */
+  firstUse: boolean;
   /** 根会话不可用时的整页说明（T007.10）；ok = 正常对话。 */
   gate: GateState | 'ok';
   gateDetail: GateDetail | null;
@@ -807,6 +809,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   dayLabels: new Map(),
   lastSeenId: null,
   lastSeenCounts: { moved: 0, waiting: 0 },
+  firstUse: false,
   gate: 'ok',
   gateDetail: null,
   connection: { state: 'online' },
