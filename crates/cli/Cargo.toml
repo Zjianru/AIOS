@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 agent = { path = "../agent" }
+credentials = { path = "../credentials" }
 service = { path = "../service" }
 web = { path = "../web" }
 model = { path = "../model" }

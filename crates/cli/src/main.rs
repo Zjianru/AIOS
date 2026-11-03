@@ -29,6 +29,42 @@ enum Command {
     Run(RunArgs),
     /// 起 Web 服务（HTTP POST /api + WebSocket /ws，只绑本机，带启动令牌）
     Serve(ServeArgs),
+    /// 配置 Keyring（key 只从标准输入读；命令行给 key 会被 clap 拒绝）
+    Keyring(KeyringArgs),
+}
+
+#[derive(Args)]
+struct KeyringArgs {
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+    /// 钥匙文件位置（默认在数据目录之外的用户配置目录）
+    #[arg(long)]
+    identity: Option<PathBuf>,
+    #[command(subcommand)]
+    action: KeyringAction,
+}
+
+#[derive(Subcommand)]
+enum KeyringAction {
+    /// 存 key：从标准输入读，不接 --key 参数
+    Set {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        endpoint: String,
+    },
+    /// 列出连接（不含 key）
+    List,
+    /// 删除连接
+    Delete { id: String },
+    /// 换钥匙文件位置（旧位置不再留）
+    Relocate { to: PathBuf },
+    /// 看签发记录
+    Issues,
 }
 
 #[derive(Args)]
@@ -99,6 +135,8 @@ enum CliError {
     #[error(transparent)]
     Agent(#[from] agent::AgentError),
     #[error(transparent)]
+    Credentials(#[from] credentials::KeyringError),
+    #[error(transparent)]
     Root(#[from] service::RootError),
     #[error(transparent)]
     Web(#[from] web::ServeError),
@@ -114,6 +152,7 @@ async fn main() -> ExitCode {
         Command::Chat(args) => chat(args).await.map(|()| 0_u8),
         Command::Run(args) => run(args).await,
         Command::Serve(args) => serve(args).await,
+        Command::Keyring(args) => keyring(args),
     };
     match result {
         Ok(code) => ExitCode::from(code),
@@ -1109,5 +1148,19 @@ mod t006_19_compact_failure_tests {
             None,
             "非手动压缩错误不给逐码文案"
         );
+    }
+}
+
+fn keyring(args: KeyringArgs) -> Result<u8, CliError> {
+    let data_dir = args.data_dir.unwrap_or(default_data_dir()?);
+    let _keyring = credentials::Keyring::open(data_dir, args.identity.as_deref())?;
+    match args.action {
+        KeyringAction::Set { .. }
+        | KeyringAction::List
+        | KeyringAction::Delete { .. }
+        | KeyringAction::Relocate { .. }
+        | KeyringAction::Issues => Err(CliError::Message(
+            "Keyring CLI 还没实现（T008.1 骨架）".to_owned(),
+        )),
     }
 }

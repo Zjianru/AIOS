@@ -409,6 +409,7 @@ version = "0.0.0"
 dependencies = [
  "agent",
  "clap",
+ "credentials",
  "model",
  "service",
  "session",
