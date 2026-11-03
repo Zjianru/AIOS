@@ -1226,3 +1226,48 @@ mod tests {
 }
 
 // __END__
+
+/// T006.10b 红测试：①DSH renderInstructionChains 的合并 intro 选择；②项目根 marker 探测失败留痕。
+#[cfg(test)]
+mod t006_10b_tests {
+    use super::*;
+
+    #[test]
+    fn merged_intro_follows_dsh_chain_survival() {
+        let base = AGENT_INSTRUCTIONS_INTRO;
+        let compact = COMPACT_AGENT_INSTRUCTIONS_INTRO;
+        assert_eq!(
+            merged_intro(base, &[base, "marker only"]),
+            base.to_owned(),
+            "有链保留 full intro 时合并帧用 base intro"
+        );
+        assert_eq!(
+            merged_intro(base, &["marker only", compact]),
+            compact.to_owned(),
+            "两条链都丢了 full intro 时，用第一个幸存的 compact intro"
+        );
+        assert_eq!(
+            merged_intro(base, &["marker only", "marker only"]),
+            String::new(),
+            "都没有 intro 时合并帧不加 intro"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn project_root_probe_failure_degrades_with_warning() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().join("proj");
+        std::fs::create_dir_all(&cwd).unwrap();
+        // 自指符号链接：metadata 报 ELOOP（非 NotFound），照 DSH files.ts:224-249 应把探测错误交给调用方；
+        // AIOS 的适配是降级 cwd + 留痕。
+        std::os::unix::fs::symlink(".git", cwd.join(".git")).unwrap();
+        let (root, warning) = find_project_root(&cwd).await;
+        assert_eq!(root, cwd, "探测失败时降级 cwd");
+        let warning = warning.expect("非 NotFound 的探测失败要留痕");
+        assert!(
+            warning.contains("project root marker"),
+            "warning 文案：{warning}"
+        );
+    }
+}
