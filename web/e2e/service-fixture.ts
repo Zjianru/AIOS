@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, request as httpRequest, type Server } from 'node:http';
 import net from 'node:net';
@@ -107,6 +108,7 @@ const ASK_CALL_SSE = (() => {
 export interface KernelFixture {
   baseUrl: string;
   token: string;
+  dataDir: string;
   dropProxy?: () => Promise<void>;
   restoreProxy?: () => Promise<void>;
   close(): Promise<void>;
@@ -127,6 +129,10 @@ export interface FixtureOptions {
   contextWindow?: number;
   /// 在页面和服务之间加一层可断开/恢复的 HTTP+WS 代理（断线重连用例）。
   proxy?: boolean;
+  /// 启动前把根会话状态文件做成 lost / corrupt（说明页用例）。
+  rootFault?: 'lost' | 'corrupt';
+  /// 先起一个 holder serve 占住写锁，测试 serve 起来会报 busy（说明页用例）。
+  busyRoot?: boolean;
 }
 
 /** 接缝 5：假 DeepSeek 脚本回放 + 真 aios-dev serve（页面也由它同源托管）。 */
@@ -179,6 +185,14 @@ export async function startKernelFixture(
   const address = fake.address();
   const fakePort = typeof address === 'object' && address !== null ? address.port : 0;
   const dataDir = await mkdtemp(path.join(tmpdir(), 'aios-t007-'));
+  if (options.rootFault === 'corrupt') {
+    await writeFile(path.join(dataDir, 'kind-root.json'), '{"version":1, ');
+  } else if (options.rootFault === 'lost') {
+    await writeFile(
+      path.join(dataDir, 'kind-root.json'),
+      JSON.stringify({ version: 1, sessionId: randomUUID() }),
+    );
+  }
   if (options.toolTurn) {
     await writeFile(path.join(dataDir, 'hello.txt'), 'hello from fixture\n');
   }
@@ -188,18 +202,38 @@ export async function startKernelFixture(
   if (options.contextWindow) {
     serveArgs.push('--context-window', String(options.contextWindow));
   }
-  const child = spawn(
-    bin,
-    serveArgs,
-    {
-      env: {
-        ...process.env,
-        DEEPSEEK_API_KEY: 'test-key',
-        DEEPSEEK_BASE_URL: `http://127.0.0.1:${fakePort}`,
-      },
+  const serviceEnv = {
+    ...process.env,
+    DEEPSEEK_API_KEY: 'test-key',
+    DEEPSEEK_BASE_URL: 'http://127.0.0.1:' + String(fakePort),
+  };
+  let holder: ReturnType<typeof spawn> | null = null;
+  if (options.busyRoot) {
+    holder = spawn(bin, ['serve', '--data-dir', dataDir, '--cwd', dataDir], {
+      env: serviceEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
-    },
-  );
+    });
+    const holderChild = holder;
+    let holderOutput = '';
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('holder 启动超时: ' + holderOutput)), 30_000);
+      holderChild.stdout?.on('data', (chunk: Buffer) => {
+        holderOutput += chunk.toString();
+        if (holderOutput.includes('aios-dev serve:')) {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+      holderChild.on('exit', (code) => {
+        clearTimeout(timer);
+        reject(new Error('holder 退出: ' + String(code)));
+      });
+    });
+  }
+  const child = spawn(bin, serveArgs, {
+    env: serviceEnv,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
   let output = '';
   const parsed = await new Promise<{ baseUrl: string; token: string }>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`serve 启动超时: ${output}`)), 30_000);
@@ -280,10 +314,12 @@ export async function startKernelFixture(
   return {
     ...parsed,
     baseUrl,
+    dataDir,
     dropProxy,
     restoreProxy,
     close: async () => {
       await dropProxy();
+      holder?.kill('SIGTERM');
       child.kill('SIGTERM');
       fake.close();
       await rm(dataDir, { recursive: true, force: true });
