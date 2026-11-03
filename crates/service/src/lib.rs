@@ -355,12 +355,20 @@ impl ServiceHost {
     }
 
     /// 关掉不答（T006.16c）：撤掉当前全部待答问题（面板关掉的动作）。
-    /// 骨架先只落协议方法；撤销语义在红测试后接 T006.13 的 Agent::cancel_question。
+    /// 逐条映射 T006.13 的 Agent::cancel_question：等待中的批整批标记撤销，整批 settle 后
+    /// hook 以 ASK_ABORTED 工具错误收尾、本轮继续；重启恢复的批第一条就把整批移除，
+    /// 已收的答案补写 question/answered、未答的写 question/cancelled（不投迟到回答）。
     pub async fn dismiss_questions(
         &self,
         _request: DismissQuestionsRequest,
     ) -> Result<DismissQuestionsResponse, ServiceError> {
-        Ok(DismissQuestionsResponse { dismissed: false })
+        let mut dismissed = false;
+        for question in self.agent.pending_questions() {
+            if self.agent.cancel_question(&question.id).await {
+                dismissed = true;
+            }
+        }
+        Ok(DismissQuestionsResponse { dismissed })
     }
 
     /// 手动压缩（DSH command-compact）：返回替换计数，没有可压缩历史时 None。
