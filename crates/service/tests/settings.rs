@@ -4,9 +4,10 @@ use std::time::Duration;
 use agent::AgentConfig;
 use model::{DEFAULT_CONTEXT_WINDOW, DeepSeekConfig, Effort};
 use service::{
-    Call, ConnectionDeleteRequest, ConnectionSaveRequest, ConnectionVerifyRequest, FirstUseRequest,
-    IssuesRequest, KeyringRelocateRequest, KeyringReopenRequest, KeyringRestartRequest,
-    ModelSettingsRequest, RootHost, RootSessionOptions, SessionModelSelectRequest,
+    Call, ConnectionDeleteRequest, ConnectionRevokeRequest, ConnectionSaveRequest,
+    ConnectionUpdateRequest, ConnectionVerifyRequest, FirstUseRequest, IssuesRequest,
+    KeyringRelocateRequest, KeyringReopenRequest, KeyringRestartRequest, ModelSettingsRequest,
+    RootHost, RootSessionOptions, SessionModelSelectRequest,
 };
 use tempfile::tempdir;
 use wiremock::matchers::{method, path};
