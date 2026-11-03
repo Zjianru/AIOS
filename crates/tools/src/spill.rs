@@ -366,43 +366,58 @@ pub struct BoundResult {
     pub warning: Option<String>,
 }
 
-/// 同 `bound_result`，但把「该落盘却失败」的原因带回（T006.19）。
-pub fn bound_result_reporting(
-    store: &SpillStore,
-    tool_name: &str,
-    call_id: &str,
-    content: &str,
-    max_inline_tokens: usize,
-) -> BoundResult {
-    BoundResult {
-        content: bound_result(store, tool_name, call_id, content, max_inline_tokens),
-        warning: None,
-    }
-}
-
 /// 预算用启发式 token（每 4 字符 1 token + 4 块开销，照 DSH token-meter），
 /// 先给通知和 GAP 预留，再把剩余预算一分为二给头和尾。
 pub fn bound_result(
     store: &SpillStore,
     tool_name: &str,
-    _call_id: &str,
+    call_id: &str,
     content: &str,
     max_inline_tokens: usize,
 ) -> Option<String> {
+    bound_result_reporting(store, tool_name, call_id, content, max_inline_tokens).content
+}
+
+/// 同 `bound_result`，但把「该落盘却失败」的原因带回（T006.19：DSH spill-policy 的
+/// bound() catch 里 ctx.logger.warn 并保留 inline 内容，spill-policy/src/index.ts:91-130）。
+pub fn bound_result_reporting(
+    store: &SpillStore,
+    tool_name: &str,
+    _call_id: &str,
+    content: &str,
+    max_inline_tokens: usize,
+) -> BoundResult {
+    let unchanged = || BoundResult {
+        content: None,
+        warning: None,
+    };
     if max_inline_tokens == 0 || !store.is_enabled() {
-        return None;
+        return unchanged();
     }
     // 照 DSH spill-policy：read 有自己的分页上限，不再包一层 spill。
     if tool_name == "read" {
-        return None;
+        return unchanged();
     }
     if estimate_text_tokens(content) <= max_inline_tokens {
-        return None;
+        return unchanged();
     }
-    let saved = store.save_text(&format!("{tool_name}.txt"), content).ok()?;
+    let saved = match store.save_text(&format!("{tool_name}.txt"), content) {
+        Ok(saved) => saved,
+        Err(error) => {
+            return BoundResult {
+                content: None,
+                warning: Some(error.message),
+            };
+        }
+    };
     let worst_notice = format_spill_notice(content.len(), &saved.locator);
     if estimate_text_tokens(&worst_notice) > max_inline_tokens {
-        return None;
+        return BoundResult {
+            content: None,
+            warning: Some(format!(
+                "spill notice for {tool_name} exceeds maxInlineTokens"
+            )),
+        };
     }
     let reserved = estimate_text_tokens(GAP) + estimate_text_tokens(&format!("\n\n{worst_notice}"));
     let budget = max_inline_tokens.saturating_sub(reserved);
@@ -416,9 +431,17 @@ pub fn bound_result(
         format!("{head}{GAP}{tail}\n\n{notice}")
     };
     if estimate_text_tokens(&preview) > max_inline_tokens {
-        return None;
+        return BoundResult {
+            content: None,
+            warning: Some(format!(
+                "spill preview for {tool_name} exceeds maxInlineTokens"
+            )),
+        };
     }
-    Some(preview)
+    BoundResult {
+        content: Some(preview),
+        warning: None,
+    }
 }
 
 /// 从文本开头取尽量多的字符，使 token 估计不超过 budget。

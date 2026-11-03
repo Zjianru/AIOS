@@ -304,8 +304,8 @@ fn discover(
                     );
                 }
                 Err(message) => warnings.push(SkillWarning {
-                    path: skill_file,
-                    message,
+                    path: skill_file.clone(),
+                    message: format!("skill file {} ignored: {message}", skill_file.display()),
                 }),
             }
         }

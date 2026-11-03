@@ -907,7 +907,58 @@ fn spawn_reader(
 /// （命令跑了非零退出仍是 completed，退出码进 detail）；没有退出码也没有信号才是基础设施失败。
 /// 子进程信号名（DSH jobs-local 的 producer 事实写成 `signal: SIGTERM`，不是数字；T006.19）。
 pub fn signal_name(signal: i32) -> String {
-    signal.to_string()
+    let name = match signal {
+        1 => "SIGHUP",
+        2 => "SIGINT",
+        3 => "SIGQUIT",
+        4 => "SIGILL",
+        5 => "SIGTRAP",
+        6 => "SIGABRT",
+        9 => "SIGKILL",
+        11 => "SIGSEGV",
+        13 => "SIGPIPE",
+        14 => "SIGALRM",
+        15 => "SIGTERM",
+        17 => "SIGCHLD",
+        18 => "SIGCONT",
+        19 => "SIGSTOP",
+        20 => "SIGTSTP",
+        21 => "SIGTTIN",
+        22 => "SIGTTOU",
+        23 => "SIGURG",
+        24 => "SIGXCPU",
+        25 => "SIGXFSZ",
+        26 => "SIGVTALRM",
+        27 => "SIGPROF",
+        28 => "SIGWINCH",
+        29 => "SIGIO",
+        #[cfg(target_os = "macos")]
+        7 => "SIGEMT",
+        #[cfg(target_os = "macos")]
+        8 => "SIGFPE",
+        #[cfg(target_os = "macos")]
+        10 => "SIGBUS",
+        #[cfg(target_os = "macos")]
+        12 => "SIGSYS",
+        #[cfg(target_os = "macos")]
+        30 => "SIGUSR1",
+        #[cfg(target_os = "macos")]
+        31 => "SIGUSR2",
+        #[cfg(target_os = "linux")]
+        7 => "SIGBUS",
+        #[cfg(target_os = "linux")]
+        8 => "SIGFPE",
+        #[cfg(target_os = "linux")]
+        10 => "SIGUSR1",
+        #[cfg(target_os = "linux")]
+        12 => "SIGUSR2",
+        #[cfg(target_os = "linux")]
+        16 => "SIGSTKFLT",
+        #[cfg(target_os = "linux")]
+        31 => "SIGSYS",
+        _ => return format!("signal {signal}"),
+    };
+    name.to_owned()
 }
 
 fn classify(exit: ExitStatus) -> (JobStatus, Option<i32>, Option<i32>) {

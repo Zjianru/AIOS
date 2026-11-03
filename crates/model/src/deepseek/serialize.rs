@@ -89,8 +89,11 @@ pub(super) fn request_body(
     messages: &[Message],
     tools: &[ToolSchema],
     max_tokens: Option<u32>,
+    validate_pairing: bool,
 ) -> Result<Vec<u8>, ModelError> {
-    validate_tool_pairing(messages)?;
+    if validate_pairing {
+        validate_tool_pairing(messages)?;
+    }
     let mut system = String::new();
     let mut wire_messages: Vec<WireMessage> = Vec::new();
     for message in messages {
@@ -254,8 +257,61 @@ pub(super) fn request_body(
 /// DSH DeepSeek 序列化的三类防御校验（T006.19 照 llm-deepseek/src/serialize.ts:136-146）：
 /// 重复 tool call id、tool_result 没有匹配的调用、历史结束时仍有未决工具调用。
 fn validate_tool_pairing(messages: &[Message]) -> Result<(), ModelError> {
-    let _ = messages;
+    // 压缩 checkpoint 存在时，surface 的替换/重排语义会让配对检查不再可靠
+    // （见 unmatched result 分支的说明）；只对没有 checkpoint 的普通历史做完整防御。
+    let has_checkpoint = messages.iter().any(|message| {
+        matches!(
+            message.source,
+            crate::MessageSource::CompactCheckpoint { .. }
+        )
+    });
+    let mut pending: Vec<&str> = Vec::new();
+    for message in messages {
+        match message.role {
+            Role::Assistant => {
+                for block in &message.content {
+                    let ContentBlock::ToolCall { id, .. } = block else {
+                        continue;
+                    };
+                    if pending.contains(&id.as_str()) {
+                        return Err(invalid_request("DeepSeek Messages duplicate tool call id"));
+                    }
+                    pending.push(id.as_str());
+                }
+            }
+            Role::Tool => {
+                let Some(tool_use_id) = message.tool_call_id.as_deref() else {
+                    continue;
+                };
+                let Some(index) = pending.iter().position(|id| *id == tool_use_id) else {
+                    // AIOS 的压缩 checkpoint 会把旧区间从 surface 隐藏，而 pruner 替换节点
+                    // 按 append 顺序落在 surface 末尾；因此压缩过的历史里可能出现「结果还在、
+                    // 对应调用已被 checkpoint 隐藏」的合法形状（T006.19 适配）。
+                    if has_checkpoint {
+                        continue;
+                    }
+                    return Err(invalid_request(
+                        "DeepSeek Messages tool result has no matching call",
+                    ));
+                };
+                pending.remove(index);
+            }
+            Role::System | Role::User | Role::Developer => {}
+        }
+    }
+    if !pending.is_empty() {
+        if has_checkpoint {
+            return Ok(());
+        }
+        return Err(invalid_request(
+            "DeepSeek Messages history ends with unresolved tools",
+        ));
+    }
     Ok(())
+}
+
+fn invalid_request(message: &str) -> ModelError {
+    ModelError::new(ErrorCode::InvalidRequest, message.to_owned())
 }
 
 fn push_or_merge(messages: &mut Vec<WireMessage>, role: &'static str, content: Vec<WireBlock>) {

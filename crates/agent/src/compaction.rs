@@ -13,7 +13,51 @@ use model::{ContentBlock, ErrorCode, Message, MessageId, MessageSource, Role, St
 use session::{EventKind, ShadowedRange, SurfaceOp};
 
 use crate::capabilities::{CompactionPolicy, LoopAccess};
+use crate::error::ManualCompactionErrorCode;
 use crate::{AgentError, AgentEvent, CompactionOutcome, CompactionTrigger};
+
+/// 手动压缩失败（可跨多个等待者广播；Agent::compact 再转成 AgentError::ManualCompaction）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManualCompactionFailure {
+    pub(crate) code: ManualCompactionErrorCode,
+    pub(crate) message: String,
+}
+
+/// 把一次手动压缩错误归类成 DSH 的 ManualCompactionErrorCode
+/// （compaction/src/index.ts:35-46；文案映射在 command-compact expectedFailure）。
+pub(crate) fn manual_failure(error: AgentError) -> ManualCompactionFailure {
+    match error {
+        AgentError::ManualCompaction { code, message } => ManualCompactionFailure { code, message },
+        AgentError::Model(error) => ManualCompactionFailure {
+            code: ManualCompactionErrorCode::Summary,
+            message: error.to_string(),
+        },
+        AgentError::Store(error) => ManualCompactionFailure {
+            code: ManualCompactionErrorCode::Persistence,
+            message: error.to_string(),
+        },
+        other => ManualCompactionFailure {
+            code: ManualCompactionErrorCode::Commit,
+            message: other.to_string(),
+        },
+    }
+}
+
+/// 手动路径的错误包装：manual 时带 DSH 分类，自动路径保留原错误形状（不改变自动压缩行为）。
+fn manual_error(
+    trigger: CompactionTrigger,
+    code: ManualCompactionErrorCode,
+    error: AgentError,
+) -> AgentError {
+    if trigger == CompactionTrigger::Manual {
+        AgentError::ManualCompaction {
+            code,
+            message: error.to_string(),
+        }
+    } else {
+        error
+    }
+}
 
 static COMPACTION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -209,7 +253,14 @@ pub(crate) async fn compact_now(
         return Ok(None);
     };
     host.dispatch_compaction(hook_turn, 0, CompactionTrigger::Manual)
-        .await?;
+        .await
+        .map_err(|error| {
+            manual_error(
+                CompactionTrigger::Manual,
+                ManualCompactionErrorCode::Commit,
+                error,
+            )
+        })?;
     let outcome = compact_once(
         host,
         None,
@@ -243,8 +294,10 @@ async fn compact_once(
         (derived, selected)
     };
     if split < 2 || split > selected.len() {
-        return Err(AgentError::Compaction(
-            "invalid compaction split".to_owned(),
+        return Err(manual_error(
+            trigger,
+            ManualCompactionErrorCode::Commit,
+            AgentError::Compaction("invalid compaction split".to_owned()),
         ));
     }
     let shadowed_range = ShadowedRange {
@@ -278,7 +331,8 @@ async fn compact_once(
             source_command_id: source_command_id.clone(),
             turn,
         }])
-        .await?;
+        .await
+        .map_err(|error| manual_error(trigger, ManualCompactionErrorCode::Persistence, error))?;
     let start_seq = start_seqs[0];
 
     let summary = match summarize(host, &prefix, policy.summary_max_tokens).await {
@@ -297,7 +351,11 @@ async fn compact_once(
                 compaction_id,
                 error: Some(message),
             });
-            return Err(error);
+            return Err(manual_error(
+                trigger,
+                ManualCompactionErrorCode::Summary,
+                error,
+            ));
         }
     };
     let raw_output = summary.raw_output.clone();
@@ -319,8 +377,45 @@ async fn compact_once(
             max_tokens: Some(policy.summary_max_tokens),
             usage,
         }])
-        .await?;
+        .await
+        .map_err(|error| manual_error(trigger, ManualCompactionErrorCode::Persistence, error))?;
     let summary_seq = summary_seqs[0];
+
+    // DSH manual compaction 的 changed 复核（command-compact expectedFailure 的 changed）：
+    // 摘要请求期间历史可能被新消息改变；替换区间对不上就放弃替换、写 compaction/end(error)。
+    {
+        let current: Vec<u64> = {
+            let store = host.session().lock().expect("agent 会话锁被毒化");
+            store
+                .derive_messages_with_seqs()
+                .iter()
+                .map(|(seq, _)| *seq)
+                .collect()
+        };
+        let unchanged =
+            current.len() > split && current.get(1..split) == Some(shadowed_seqs.as_slice());
+        if !unchanged {
+            let message = "the history selected for compaction changed before it could be replaced"
+                .to_owned();
+            let _ = host
+                .append(&[EventKind::CompactionEnd {
+                    compaction_id: compaction_id.clone(),
+                    source_command_id: source_command_id.clone(),
+                    turn,
+                    error: Some(message.clone()),
+                }])
+                .await;
+            let _ = host.events().send(AgentEvent::CompactionEnded {
+                compaction_id,
+                error: Some(message.clone()),
+            });
+            return Err(manual_error(
+                trigger,
+                ManualCompactionErrorCode::Changed,
+                AgentError::Compaction(message),
+            ));
+        }
+    }
 
     // 替换写成日志里的 user/message：内容 = checkpoint 框架 + 摘要块；envelope 带
     // surfaceOp replace 与 sourceEventSeqs（start、summary、被替换节点）。
@@ -343,7 +438,8 @@ async fn compact_once(
         },
         source_event_seqs,
     )
-    .await?;
+    .await
+    .map_err(|error| manual_error(trigger, ManualCompactionErrorCode::Commit, error))?;
 
     host.append(&[EventKind::CompactionEnd {
         compaction_id: compaction_id.clone(),
@@ -351,7 +447,8 @@ async fn compact_once(
         turn,
         error: None,
     }])
-    .await?;
+    .await
+    .map_err(|error| manual_error(trigger, ManualCompactionErrorCode::Persistence, error))?;
     let _ = host.events().send(AgentEvent::CompactionEnded {
         compaction_id,
         error: None,

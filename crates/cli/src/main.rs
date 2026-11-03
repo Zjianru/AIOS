@@ -643,10 +643,13 @@ fn is_compact_command(line: &str) -> bool {
 /// /compact 的用法提示（照 DSH command-compact 的 USAGE）。
 const COMPACT_USAGE: &str = "Usage: /compact (no arguments)";
 
-/// /compact 失败的逐码文案（T006.19 照 DSH command-compact 的 expectedFailure）。
+/// /compact 失败的逐码文案（T006.19 照 DSH command-compact 的 expectedFailure：
+/// 六类 ManualCompactionErrorCode 各一句稳定文案；非手动压缩错误不接管）。
 fn compact_failure_text(error: &agent::AgentError) -> Option<String> {
-    let _ = error;
-    None
+    let agent::AgentError::ManualCompaction { code, .. } = error else {
+        return None;
+    };
+    Some(code.text().to_owned())
 }
 
 /// /compact 的结果文本（照 DSH command-compact：成功带替换节点数与估算 token，

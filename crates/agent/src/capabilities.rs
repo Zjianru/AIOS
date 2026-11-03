@@ -63,9 +63,10 @@ pub(crate) enum HookPoint {
 
 /// 一次排队的手动 /compact：发起命令 id + 结果回执（T006.3 起 Agent::compact 返回计数）。
 pub(crate) struct ManualCompaction {
-    #[allow(dead_code)] // 实现期写进 compaction/* 事件（skeleton 先占位）
     pub source_command_id: Option<String>,
-    pub reply: tokio::sync::oneshot::Sender<Result<Option<crate::CompactionOutcome>, String>>,
+    pub reply: tokio::sync::oneshot::Sender<
+        Result<Option<crate::CompactionOutcome>, crate::compaction::ManualCompactionFailure>,
+    >,
 }
 
 /// 解析后的压缩策略（DSH ResolvedTargetPolicy 的 AIOS 子集；T006.3）。

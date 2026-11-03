@@ -28,14 +28,19 @@ impl Capability for SpillCapability {
                 return Ok(HookOutcome::Continue);
             };
             let host = event.host();
-            let content = tools::bound_result(
+            let bounded = tools::spill::bound_result_reporting(
                 host.tool_session().spill(),
                 &call.name,
                 &result.call_id,
                 &result.content,
                 self.max_inline_tokens,
-            )
-            .unwrap_or_else(|| result.content.clone());
+            );
+            if let Some(warning) = bounded.warning {
+                // DSH spill-policy: `ctx.logger.warn(`spill-policy: ${error}; keeping the inline content`)`；
+                // AIOS 没有 logger 设施，按 skill warning 同样的约定落 stderr（T006.19）。
+                eprintln!("[spill-policy] {warning}; keeping the inline content");
+            }
+            let content = bounded.content.unwrap_or_else(|| result.content.clone());
             Ok(HookOutcome::ToolResultContent(content))
         })
     }

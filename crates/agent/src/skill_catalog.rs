@@ -43,7 +43,9 @@ impl SkillCatalogState {
     ) -> Option<Message> {
         let discovery = discover_skill_catalog(cwd, data_dir, skill_roots);
         for warning in &discovery.warnings {
-            let text = format!("{}: {}", warning.path.display(), warning.message);
+            // 警告文案在 tools 层已按 DSH skill-filesystem 的 logger.warn 形状生成
+            // （`skill file <path> ignored: <reason>` 等），这里只做去重与落 stderr。
+            let text = warning.message.clone();
             if self.logged_warnings.insert(text.clone()) {
                 // AIOS 没有 logger 设施（T006.17 日志面），先落 stderr，不静默吞。
                 eprintln!("[skill] {text}");

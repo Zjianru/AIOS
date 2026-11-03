@@ -757,7 +757,9 @@ impl Inner {
     pub(crate) fn queue_compaction(
         self: &Arc<Self>,
         source_command_id: Option<String>,
-    ) -> tokio::sync::oneshot::Receiver<Result<Option<crate::CompactionOutcome>, String>> {
+    ) -> tokio::sync::oneshot::Receiver<
+        Result<Option<crate::CompactionOutcome>, crate::compaction::ManualCompactionFailure>,
+    > {
         let (reply, receiver) = tokio::sync::oneshot::channel();
         let request = crate::capabilities::ManualCompaction {
             source_command_id,
@@ -796,9 +798,9 @@ impl Inner {
                 .find_map(|request| request.source_command_id.clone());
             let result =
                 crate::compaction::compact_now(self.as_ref(), turn, source_command_id).await;
-            let reply = match &result {
-                Ok(outcome) => Ok(*outcome),
-                Err(error) => Err(error.to_string()),
+            let reply = match result {
+                Ok(outcome) => Ok(outcome),
+                Err(error) => Err(crate::compaction::manual_failure(error)),
             };
             for request in waiters {
                 let _ = request.reply.send(reply.clone());
