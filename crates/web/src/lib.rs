@@ -162,6 +162,61 @@ pub enum Frame {
     },
     /// 日志事件帧（DSH 的 {type:'event', event: SessionWireEvent}）。
     Event { event: ServiceEvent },
+    /// T007.4：不落日志的 AgentEvent（流式文本/用量/重试提示等），页面单独消费。
+    Agent { event: AgentEventWire },
+}
+
+/// AgentEvent 的线上形状（只挑页面要的；只增不改）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum AgentEventWire {
+    TextDelta { text: String },
+    Usage {
+        #[serde(rename = "inputTokens", default, skip_serializing_if = "Option::is_none")]
+        input_tokens: Option<u64>,
+        #[serde(rename = "outputTokens", default, skip_serializing_if = "Option::is_none")]
+        output_tokens: Option<u64>,
+        #[serde(rename = "cacheReadTokens", default, skip_serializing_if = "Option::is_none")]
+        cache_read_tokens: Option<u64>,
+        #[serde(rename = "cacheWriteTokens", default, skip_serializing_if = "Option::is_none")]
+        cache_write_tokens: Option<u64>,
+    },
+    Retrying {
+        attempt: u32,
+        #[serde(rename = "maxAttempts")]
+        max_attempts: u32,
+        #[serde(rename = "delayMs")]
+        delay_ms: u64,
+        code: String,
+    },
+}
+
+impl AgentEventWire {
+    pub fn from_event(event: &agent::AgentEvent) -> Option<Self> {
+        match event {
+            agent::AgentEvent::AssistantTextDelta { text } => {
+                Some(Self::TextDelta { text: text.clone() })
+            }
+            agent::AgentEvent::UsageReported { usage } => Some(Self::Usage {
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cache_read_tokens: usage.cache_read_input_tokens,
+                cache_write_tokens: usage.cache_creation_input_tokens,
+            }),
+            agent::AgentEvent::Retrying {
+                attempt,
+                max_attempts,
+                delay_ms,
+                code,
+            } => Some(Self::Retrying {
+                attempt: *attempt,
+                max_attempts: *max_attempts,
+                delay_ms: *delay_ms,
+                code: code.clone(),
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// 本进程的启动令牌（每个进程一个；uuid v4，不落盘、不进日志）。
@@ -476,6 +531,7 @@ async fn send_frame(socket: &mut WebSocket, frame: &Frame) -> bool {
 async fn ws_session(mut socket: WebSocket, state: Arc<AppState>, last_seq: u64) {
     let info = state.host.info();
     let mut live = state.host.subscribe_events();
+    let mut agent_live = state.host.subscribe_agent_events();
     let root_available = info.root == RootState::Ok;
     let follow = if root_available {
         match state.host.follow(FollowRequest { last_seq }).await {
@@ -536,6 +592,17 @@ async fn ws_session(mut socket: WebSocket, state: Arc<AppState>, last_seq: u64) 
                         }
                     }
                 }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            },
+            agent_received = agent_live.recv() => match agent_received {
+                Ok(event) => {
+                    if let Some(event) = AgentEventWire::from_event(&event) {
+                        if !send_frame(&mut socket, &Frame::Agent { event }).await {
+                            return;
+                        }
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             },
             incoming = socket.recv() => match incoming {
