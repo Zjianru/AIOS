@@ -48,7 +48,7 @@ test('模型重试用完：失败块按模型原因、可再发一次', async ({
   }
 });
 
-/// T007.7 清单 5：401 凭证失败 → 失败块按凭证原因，不放「去设置」。
+/// T007.7 清单 5 + T008.4：401 凭证失败 → 失败块按凭证原因，并给「去设置」。
 test('凭证 401：失败块按凭证原因、不放去设置', async ({ page }) => {
   const fixture = await startKernelFixture({ failure: 'credential' });
   try {
@@ -58,7 +58,7 @@ test('凭证 401：失败块按凭证原因、不放去设置', async ({ page })
     });
     await expect(page.getByText('换一把密钥', { exact: false })).toBeVisible();
     await expect(page.getByRole('button', { name: '再发一次' })).toBeVisible();
-    await expect(page.getByRole('button', { name: /去设置/ })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /去设置/ })).toBeVisible();
   } finally {
     await fixture.close();
   }
