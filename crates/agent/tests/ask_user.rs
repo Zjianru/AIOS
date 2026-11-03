@@ -783,3 +783,169 @@ async fn cancel_turn_ends_aborted_not_error() {
         "取消应由 StepEnd::Aborted 收尾，不是 error：{outcome:?}"
     );
 }
+
+fn two_distinct_ask_calls() -> String {
+    tool_calls_with_inputs_sse(&[
+        (
+            "call_ask1",
+            "ask_user_question",
+            json!({"questions": [{"id": "qa", "question": "第一问？", "options": [{"label": "Yes"}, {"label": "No"}]}]}),
+        ),
+        (
+            "call_ask2",
+            "ask_user_question",
+            json!({"questions": [{"id": "qb", "question": "第二问？", "options": [{"label": "Yes"}, {"label": "No"}]}]}),
+        ),
+    ])
+}
+
+async fn next_question_in_batch(
+    events: &mut tokio::sync::broadcast::Receiver<AgentEvent>,
+) -> AgentEvent {
+    let received = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match events.recv().await.expect("事件流不应关闭") {
+                event @ AgentEvent::QuestionAsked { .. } => break event,
+                _ => continue,
+            }
+        }
+    })
+    .await;
+    received.expect("批内第二个 ask 也应依次拦截（T006.13b）")
+}
+
+/// T006.13b：一个 assistant batch 里的多个 ask_user_question 按模型顺序依次拦截：
+/// 先问 qa，答完再问 qb，最后两个 tool/result 按模型顺序回填、本轮 completed。
+/// DSH 依据：tool-ask-user 每个调用独立走 userQuestions.ask（tool-ask-user/src/index.ts:99-118），
+/// 批执行按调用顺序串行（独占工具），因此多 ask 是「依次提问/依次作答」，不是并行弹窗。
+#[tokio::test]
+async fn multiple_ask_calls_in_one_batch_are_intercepted_in_order() {
+    let server = MockServer::start().await;
+    mount(
+        &server,
+        vec![two_distinct_ask_calls(), FINAL_TEXT_SSE.to_owned()],
+    )
+    .await;
+    let (agent, data_dir, id) = setup(&server).await;
+    let mut events = agent.subscribe();
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    let AgentEvent::QuestionAsked { questions } = next_question(&mut events).await else {
+        unreachable!()
+    };
+    assert_eq!(questions[0].id, "qa", "先截获批内第一个 ask");
+    assert!(agent.answer("qa", vec!["Yes".to_owned()], None).await);
+    let AgentEvent::QuestionAsked { questions } = next_question_in_batch(&mut events).await else {
+        unreachable!()
+    };
+    assert_eq!(questions[0].id, "qb", "第一个答完再截获第二个 ask");
+    assert!(agent.answer("qb", vec!["No".to_owned()], None).await);
+    wait_idle(&agent, 20).await;
+
+    let bodies = bodies(&server).await;
+    assert_eq!(bodies.len(), 2, "两个 ask 都在同一个 step 内被拦截");
+    let body = &bodies[1];
+    let first = tool_result_payload(body, "call_ask1");
+    let second = tool_result_payload(body, "call_ask2");
+    assert_eq!(
+        first,
+        json!({"answers": [{"id": "qa", "selected": ["Yes"]}]})
+    );
+    assert_eq!(
+        second,
+        json!({"answers": [{"id": "qb", "selected": ["No"]}]})
+    );
+    let first_at = body.find("call_ask1").expect("第一个结果");
+    let second_at = body.find("call_ask2").expect("第二个结果");
+    assert!(first_at < second_at, "tool/result 按模型顺序");
+    assert!(
+        !body.contains("ASK_USER_LOOP_ONLY"),
+        "第二个 ask 不能再落到内置工具 stub：{body}"
+    );
+
+    let logged = logged_events(data_dir.path(), &id);
+    assert_eq!(
+        logged
+            .iter()
+            .filter(|event| matches!(event.kind, session::EventKind::QuestionAsked { .. }))
+            .count(),
+        2,
+        "两个 ask 各一条 question/asked"
+    );
+    assert_eq!(
+        logged
+            .iter()
+            .filter(|event| matches!(event.kind, session::EventKind::QuestionAnswered { .. }))
+            .count(),
+        2,
+        "两个答案各一条 question/answered"
+    );
+    let mut events = events;
+    let mut ended = None;
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::TurnEnded { outcome, .. } = event {
+            ended = Some(outcome);
+        }
+    }
+    assert_eq!(ended, Some(TurnOutcome::Completed), "多 ask 后本轮正常完成");
+}
+
+/// T006.13b：批内第二个 ask 被提问服务路径撤销时，第一个的答案保留、第二个回
+/// DSH ASK_ABORTED、本轮继续（不是整轮取消）。
+#[tokio::test]
+async fn dismiss_second_ask_mid_batch_returns_ask_aborted_and_turn_continues() {
+    let server = MockServer::start().await;
+    mount(
+        &server,
+        vec![two_distinct_ask_calls(), FINAL_TEXT_SSE.to_owned()],
+    )
+    .await;
+    let (agent, data_dir, id) = setup(&server).await;
+    let mut events = agent.subscribe();
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    let AgentEvent::QuestionAsked { questions } = next_question(&mut events).await else {
+        unreachable!()
+    };
+    assert_eq!(questions[0].id, "qa");
+    assert!(agent.answer("qa", vec!["Yes".to_owned()], None).await);
+    let AgentEvent::QuestionAsked { questions } = next_question_in_batch(&mut events).await else {
+        unreachable!()
+    };
+    assert_eq!(questions[0].id, "qb");
+    assert!(agent.cancel_question("qb").await, "撤销第二个 ask");
+    wait_idle(&agent, 20).await;
+
+    let bodies = bodies(&server).await;
+    assert_eq!(bodies.len(), 2, "撤销后本轮继续");
+    let body = &bodies[1];
+    let first = tool_result_payload(body, "call_ask1");
+    assert_eq!(
+        first,
+        json!({"answers": [{"id": "qa", "selected": ["Yes"]}]})
+    );
+    assert!(
+        body.contains("ask_user_question was aborted before the user answered"),
+        "第二个 ask 收到 DSH ASK_ABORTED：{body}"
+    );
+    let logged = logged_events(data_dir.path(), &id);
+    assert_eq!(
+        logged
+            .iter()
+            .filter(|event| matches!(event.kind, session::EventKind::QuestionCancelled { .. }))
+            .count(),
+        1,
+        "撤销写一条 question/cancelled"
+    );
+    let mut ended = None;
+    while let Ok(event) = events.try_recv() {
+        if let AgentEvent::TurnEnded { outcome, .. } = event {
+            ended = Some(outcome);
+        }
+    }
+    assert_eq!(ended, Some(TurnOutcome::Completed), "撤销问题不是取消整轮");
+}
