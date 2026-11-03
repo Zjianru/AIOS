@@ -1,6 +1,6 @@
 //! 开发用 CLI：aios-dev chat / aios-dev run。
 
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -1153,14 +1153,84 @@ mod t006_19_compact_failure_tests {
 
 fn keyring(args: KeyringArgs) -> Result<u8, CliError> {
     let data_dir = args.data_dir.unwrap_or(default_data_dir()?);
-    let _keyring = credentials::Keyring::open(data_dir, args.identity.as_deref())?;
+    let keyring = credentials::Keyring::open(data_dir, args.identity.as_deref())?;
     match args.action {
-        KeyringAction::Set { .. }
-        | KeyringAction::List
-        | KeyringAction::Delete { .. }
-        | KeyringAction::Relocate { .. }
-        | KeyringAction::Issues => Err(CliError::Message(
-            "Keyring CLI 还没实现（T008.1 骨架）".to_owned(),
-        )),
+        KeyringAction::Set {
+            id,
+            name,
+            model,
+            endpoint,
+        } => {
+            let mut input = String::new();
+            io::stdin().read_to_string(&mut input)?;
+            let api_key = input.trim().to_owned();
+            if api_key.is_empty() {
+                return Err(CliError::Message(
+                    "没有从标准输入读到 key（不接 --key 参数，避免进 shell 历史）".to_owned(),
+                ));
+            }
+            let info = keyring.save_connection(credentials::NewConnection {
+                id,
+                name,
+                model,
+                endpoint,
+                api_key,
+            })?;
+            println!("已保存 {}（{}）", info.name, info.id);
+            Ok(0)
+        }
+        KeyringAction::List => {
+            let view = keyring.view();
+            if let Some(problem) = &view.key_file.problem {
+                println!("Keyring 读不出来：{problem}");
+                println!("钥匙文件：{}", view.key_file.path.display());
+                return Ok(1);
+            }
+            if view.connections.is_empty() {
+                println!("还没有连接");
+                return Ok(0);
+            }
+            for connection in &view.connections {
+                let check = match &connection.check {
+                    credentials::CheckState::Never => "还没验证".to_owned(),
+                    credentials::CheckState::Ok { .. } => "连接可用".to_owned(),
+                    credentials::CheckState::Fail { reason, .. } => format!("验证失败：{reason}"),
+                };
+                println!(
+                    "{}（{}） · {} · {} · {check}",
+                    connection.name, connection.id, connection.model, connection.endpoint
+                );
+            }
+            Ok(0)
+        }
+        KeyringAction::Delete { id } => {
+            let deleted = keyring.delete_connection(&id)?;
+            if deleted {
+                println!("已删除 {id}");
+            } else {
+                println!("没有这个连接：{id}");
+            }
+            Ok(0)
+        }
+        KeyringAction::Relocate { to } => {
+            keyring.relocate_identity(&to)?;
+            println!("钥匙文件已换到 {}", to.display());
+            Ok(0)
+        }
+        KeyringAction::Issues => {
+            let issues = keyring.issues();
+            if issues.is_empty() {
+                println!("还没有签发记录");
+                return Ok(0);
+            }
+            for issue in issues {
+                let run = issue.run.as_deref().unwrap_or("-");
+                println!(
+                    "#{} · {} · {} · {run}",
+                    issue.id, issue.connection, issue.purpose
+                );
+            }
+            Ok(0)
+        }
     }
 }
