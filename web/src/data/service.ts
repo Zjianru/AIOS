@@ -7,7 +7,7 @@ export interface ServiceEvent {
   time: number;
   type: string;
   data: Record<string, unknown>;
-  cause?: 'credential' | 'model';
+  cause?: 'credential' | 'model' | 'keyring';
 }
 
 export type ServiceRootState =
