@@ -145,6 +145,111 @@ export async function fetchEventsPage(options: {
   return { events: response.events, hasMore: response.hasMore };
 }
 
+
+/* ───────────────────────── T008 设置 › 模型与连接（Keyring） ───────────────────────── */
+
+/** 与 service 协议 v3 对应的 Keyring 类型（响应里没有 key 正文）。 */
+export interface ServiceKeyFileInfo {
+  path: string;
+  since: number;
+  problem?: string;
+}
+
+export interface ServiceConnectionInfo {
+  id: string;
+  name: string;
+  model: string;
+  endpoint: string;
+  saved_at: number;
+  check: { kind: 'never' } | { kind: 'ok'; at: number } | { kind: 'fail'; at: number; reason: string };
+}
+
+export interface ServiceIssueRecord {
+  id: number;
+  at: number;
+  connection: string;
+  purpose: string;
+  run?: string;
+}
+
+export interface ServiceKeyringView {
+  connections: ServiceConnectionInfo[];
+  key_file: ServiceKeyFileInfo;
+  issued_today: number;
+  issues: ServiceIssueRecord[];
+  first_use: boolean;
+}
+
+export interface SaveConnectionInput {
+  id: string;
+  name: string;
+  model: string;
+  endpoint: string;
+  apiKey: string;
+}
+
+/** 设置页读取（不含 key 正文）。 */
+export async function fetchModelSettings(): Promise<ServiceKeyringView> {
+  const response = await post<{ settings: ServiceKeyringView }>({ method: 'model-settings' });
+  return response.settings;
+}
+
+/** 存/换连接；key 只在这一次请求体里。 */
+export async function saveConnection(input: SaveConnectionInput): Promise<ServiceConnectionInfo> {
+  const response = await post<{ connection: ServiceConnectionInfo }>({
+    method: 'connection-save',
+    ...input,
+  });
+  return response.connection;
+}
+
+export async function deleteConnection(id: string): Promise<boolean> {
+  const response = await post<{ deleted: boolean }>({ method: 'connection-delete', id });
+  return response.deleted;
+}
+
+/** 验证连接；结果落在注册器（响应不带 key）。 */
+export async function verifyConnection(id: string): Promise<ServiceConnectionInfo> {
+  const response = await post<{ connection: ServiceConnectionInfo }>({
+    method: 'connection-verify',
+    id,
+  });
+  return response.connection;
+}
+
+export async function relocateKeyring(to: string): Promise<void> {
+  await post({ method: 'keyring-relocate', to });
+}
+
+export async function reopenKeyring(at: string): Promise<void> {
+  await post({ method: 'keyring-reopen', at });
+}
+
+export async function restartKeyring(): Promise<ServiceKeyringView> {
+  const response = await post<{ settings: ServiceKeyringView }>({ method: 'keyring-restart' });
+  return response.settings;
+}
+
+export async function fetchIssues(): Promise<{ issuedToday: number; issues: ServiceIssueRecord[] }> {
+  const response = await post<{ issuedToday: number; issues: ServiceIssueRecord[] }>({
+    method: 'issues',
+  });
+  return response;
+}
+
+export async function fetchFirstUse(): Promise<{ firstUse: boolean; keyFile: ServiceKeyFileInfo }> {
+  const response = await post<{ firstUse: boolean; keyFile: ServiceKeyFileInfo }>({
+    method: 'first-use',
+  });
+  return response;
+}
+
+/** 选模型：下一轮生效，正在跑的轮不换（D26）。 */
+export async function selectSessionModel(model: string): Promise<string> {
+  const response = await post<{ model: string }>({ method: 'session-model-select', model });
+  return response.model;
+}
+
 /** 连 WS：ready → 补齐/直播的日志事件（event）与不落日志的 agent 帧（流式文本等）。 */
 export function connectSession(
   lastSeq: number,
