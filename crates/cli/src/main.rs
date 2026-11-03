@@ -211,14 +211,24 @@ async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
         Some(raw) => Some(SessionId::parse(raw)?),
         None => None,
     };
-    Ok(Agent::open(AgentOpenOptions {
+    let agent = Agent::open(AgentOpenOptions {
         data_dir,
         cwd,
         resume,
         model: deepseek_config,
         config,
     })
-    .await?)
+    .await
+    .map_err(open_error)?;
+    Ok(agent)
+}
+
+/// T006.18：把「写锁被别的写者持有」映射成可辨的占用错误（DSH 错误码 session/writer-held）。
+fn open_error(error: agent::AgentError) -> CliError {
+    if let agent::AgentError::Store(session::SessionError::AlreadyOwned { id, .. }) = &error {
+        return CliError::WriterHeld { id: id.clone() };
+    }
+    CliError::Agent(error)
 }
 
 /// 起 Web 服务（T006.17）：找回/新建 Kind 根会话，起只绑本机的 HTTP+WS 载体。

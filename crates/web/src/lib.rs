@@ -95,15 +95,20 @@ pub struct ServeHandle {
     pub addr: SocketAddr,
     pub token: String,
     task: tokio::task::JoinHandle<Result<(), std::io::Error>>,
+    /// T006.18：优雅关闭信号；服务任务在 axum 停止收连接后取消正在跑的一轮再收尾。
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
 impl ServeHandle {
-    /// 停服务（测试/CLI Ctrl-C）：骨架阶段直接 abort；实现阶段改为优雅关闭并取消正在跑的一轮。
-    pub async fn shutdown(self) {
-        self.task.abort();
+    /// 停服务（测试/CLI Ctrl-C）：先停收新连接，再取消正在跑的一轮、等日志收尾。
+    pub async fn shutdown(mut self) {
+        if let Some(signal) = self.shutdown.take() {
+            let _ = signal.send(());
+        }
+        let _ = self.task.await;
     }
 
-    /// 立刻停（测试用）。
+    /// 立刻停（测试用；不走取消收尾）。
     pub fn abort(self) {
         self.task.abort();
     }
@@ -367,10 +372,13 @@ async fn ws_session(mut socket: WebSocket, state: Arc<AppState>, last_seq: u64) 
 
 /// 由宿主和信任栅栏建 axum Router（HTTP /api + WS /ws）。
 pub fn router(host: ServiceHost, trust: Trust) -> Router {
-    let state = Arc::new(AppState {
+    router_with_state(Arc::new(AppState {
         host: Arc::new(host),
         trust,
-    });
+    }))
+}
+
+fn router_with_state(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api", post(api_handler))
         .route("/ws", get(ws_handler))
@@ -382,15 +390,26 @@ pub async fn serve(options: ServeOptions, host: ServiceHost) -> Result<ServeHand
     let ip = check_bind_host(&options.host)?;
     let listener = tokio::net::TcpListener::bind(SocketAddr::new(ip, options.port)).await?;
     let addr = listener.local_addr()?;
-    let app = router(host, Trust::new(ip, addr.port(), options.token.clone()));
+    let state = Arc::new(AppState {
+        host: Arc::new(host),
+        trust: Trust::new(ip, addr.port(), options.token.clone()),
+    });
+    let app = router_with_state(Arc::clone(&state));
+    let (shutdown, shutdown_signal) = tokio::sync::oneshot::channel::<()>();
     let task = tokio::spawn(async move {
-        axum::serve(listener, app)
-            .await
-            .map_err(|error| std::io::Error::other(error.to_string()))
+        let result = axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_signal.await;
+            })
+            .await;
+        // T006.18：停服务收尾——正在跑的一轮按取消收尾，日志完整（故事 13）。
+        state.host.shutdown().await;
+        result.map_err(|error| std::io::Error::other(error.to_string()))
     });
     Ok(ServeHandle {
         addr,
         token: options.token,
         task,
+        shutdown: Some(shutdown),
     })
 }

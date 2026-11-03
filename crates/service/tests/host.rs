@@ -571,3 +571,46 @@ async fn events_page_is_turn_aligned_and_budgeted() {
         "maxMessages=1 只允许一条消息"
     );
 }
+
+#[tokio::test]
+async fn shutdown_cancels_active_turn_and_keeps_log_resumable() {
+    let server = MockServer::start().await;
+    // 延迟响应：让轮子停在等模型上，用于验证停服务取消。
+    mount(
+        &server,
+        vec![sse(FINAL_TEXT_SSE).set_delay(Duration::from_secs(10))],
+    )
+    .await;
+    let (agent, data_dir, id) = setup(&server).await;
+    let service = ServiceHost::new(agent.clone());
+    let mut events = service.subscribe_events();
+
+    assert!(
+        service
+            .send(send_request("req-shutdown", "停服务"))
+            .await
+            .is_ok()
+    );
+    wait_for(&mut events, "turn/start", 1).await;
+    service.shutdown().await;
+    agent.idle().await;
+    assert_eq!(
+        turn_ends(data_dir.path(), &id),
+        vec![session::TurnEndReason::Aborted {
+            reason: session::AbortCause::User
+        }],
+        "停服务时正在跑的一轮要按取消收尾"
+    );
+
+    drop(service);
+    drop(agent);
+    // 日志完整、锁释放：下次能续接。
+    let store = SessionStore::open(data_dir.path(), &id).expect("停服务后应能续接（写锁已释放）");
+    assert!(
+        store
+            .events()
+            .iter()
+            .any(|event| matches!(event.kind, session::EventKind::TurnEnd { .. })),
+        "日志里要有 turn/end 收尾"
+    );
+}

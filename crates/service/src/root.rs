@@ -137,7 +137,16 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
                 model: options.model,
                 config: options.config,
             })
-            .await?;
+            .await
+            .map_err(|error| match &error {
+                // T006.18：服务/别的进程占着写锁时给稳定错误码语义（DSH session/writer-held）。
+                AgentError::Store(session::SessionError::AlreadyOwned { .. }) => {
+                    RootError::WriterHeld {
+                        session_id: id.as_str().to_owned(),
+                    }
+                }
+                _ => RootError::Agent(error),
+            })?;
             // DoD6：重启后 pending inbox 自动领取转 turn（2a 的 resume 只恢复、不唤醒）；
             // 领取恰好一次：队列消费后日志里就不会再有 pending。
             let claimed_pending = agent.claim_pending();
