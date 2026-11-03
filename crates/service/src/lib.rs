@@ -13,7 +13,8 @@ use std::sync::{Arc, Mutex};
 use agent::{Agent, SendAdmission};
 use model::UserMessage;
 pub use root::{
-    ROOT_STATE_FILE, RootError, RootSession, RootSessionOptions, RootStatus, open_root_session,
+    ModelFactory, ROOT_STATE_FILE, RootError, RootSession, RootSessionOptions, RootStatus,
+    open_root_session,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
