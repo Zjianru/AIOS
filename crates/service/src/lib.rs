@@ -57,6 +57,7 @@ pub enum Call {
     Send(SendRequest),
     Cancel(CancelRequest),
     Answer(AnswerRequest),
+    DismissQuestions(DismissQuestionsRequest),
     Compact(CompactRequest),
     Status(StatusRequest),
     Follow(FollowRequest),
@@ -70,6 +71,7 @@ pub enum Response {
     Send(SendResponse),
     Cancel(CancelResponse),
     Answer(AnswerResponse),
+    DismissQuestions(DismissQuestionsResponse),
     Compact(CompactResponse),
     Status(StatusResponse),
     Follow(FollowResponse),
@@ -127,6 +129,20 @@ pub struct AnswerRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnswerResponse {
     pub applied: usize,
+}
+
+/// 关掉/取消待答问题（T006.16c；DoD5 的「关掉不答」）。一次撤掉当前全部待答问题：
+/// 等待中的批以 DSH ASK_ABORTED 工具错误收尾、本轮继续；重启恢复的批先补写已收答案，
+/// 再写 question/cancelled 并移除。DSH 没有对应的 Remote 方法（关闭面板不发请求，靠
+/// timed wait 超时；见 user-questions README 第 35、40 行与 T006.16c-dsh-compare.log），
+/// 这里是按 T006.13 撤销语义的适配，不假装与 DSH 相同。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DismissQuestionsRequest {}
+
+/// 关掉不答的回执：是否确实有待答问题被撤掉（没有待答问题时 false）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DismissQuestionsResponse {
+    pub dismissed: bool,
 }
 
 /// 手动压缩（DSH command-compact）。
@@ -285,6 +301,10 @@ impl ServiceHost {
             Call::Send(request) => self.send(request).await.map(Response::Send),
             Call::Cancel(request) => self.cancel(request).await.map(Response::Cancel),
             Call::Answer(request) => self.answer(request).await.map(Response::Answer),
+            Call::DismissQuestions(request) => self
+                .dismiss_questions(request)
+                .await
+                .map(Response::DismissQuestions),
             Call::Compact(request) => self.compact(request).await.map(Response::Compact),
             Call::Status(request) => self.status(request).await.map(Response::Status),
             Call::Follow(request) => self.follow(request).await.map(Response::Follow),
@@ -332,6 +352,15 @@ impl ServiceHost {
             applied += 1;
         }
         Ok(AnswerResponse { applied })
+    }
+
+    /// 关掉不答（T006.16c）：撤掉当前全部待答问题（面板关掉的动作）。
+    /// 骨架先只落协议方法；撤销语义在红测试后接 T006.13 的 Agent::cancel_question。
+    pub async fn dismiss_questions(
+        &self,
+        _request: DismissQuestionsRequest,
+    ) -> Result<DismissQuestionsResponse, ServiceError> {
+        Ok(DismissQuestionsResponse { dismissed: false })
     }
 
     /// 手动压缩（DSH command-compact）：返回替换计数，没有可压缩历史时 None。
