@@ -309,9 +309,16 @@ async fn 编辑连接保留key且不换正文() {
     no_key(&json);
     assert!(json.contains("https://new.example/anthropic"), "{json}");
     assert!(json.contains("deepseek-pro"), "{json}");
-    assert!(json.contains("key_saved") && json.contains("true"), "{json}");
-    let keyring = credentials::Keyring::open(dir.path(), Some(&dir.path().join("identity.txt"))).unwrap();
-    assert_eq!(keyring.issue("deepseek", "test", None).unwrap().secret, TEST_KEY);
+    assert!(
+        json.contains("key_saved") && json.contains("true"),
+        "{json}"
+    );
+    let keyring =
+        credentials::Keyring::open(dir.path(), Some(&dir.path().join("identity.txt"))).unwrap();
+    assert_eq!(
+        keyring.issue("deepseek", "test", None).unwrap().secret,
+        TEST_KEY
+    );
 }
 
 #[tokio::test]
@@ -335,7 +342,14 @@ async fn 撤销key后连接还在但签发失败() {
     assert!(revoked.is_ok(), "connection-revoke 应成功：{revoked:?}");
     let json = serde_json::to_string(&revoked.unwrap()).unwrap();
     no_key(&json);
-    assert!(json.contains("key_saved") && json.contains("false"), "{json}");
-    let keyring = credentials::Keyring::open(dir.path(), Some(&dir.path().join("identity.txt"))).unwrap();
-    assert!(keyring.issue("deepseek", "test", None).is_err(), "撤销后签发应失败");
+    assert!(
+        json.contains("key_saved") && json.contains("false"),
+        "{json}"
+    );
+    let keyring =
+        credentials::Keyring::open(dir.path(), Some(&dir.path().join("identity.txt"))).unwrap();
+    assert!(
+        keyring.issue("deepseek", "test", None).is_err(),
+        "撤销后签发应失败"
+    );
 }
