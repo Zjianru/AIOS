@@ -98,7 +98,12 @@ pub struct ServeHandle {
 }
 
 impl ServeHandle {
-    /// 停服务（测试用；T006.18 会接上正在跑一轮的取消收尾）。
+    /// 停服务（测试/CLI Ctrl-C）：骨架阶段直接 abort；实现阶段改为优雅关闭并取消正在跑的一轮。
+    pub async fn shutdown(self) {
+        self.task.abort();
+    }
+
+    /// 立刻停（测试用）。
     pub fn abort(self) {
         self.task.abort();
     }

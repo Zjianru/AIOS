@@ -354,6 +354,9 @@ impl ServiceHost {
         })
     }
 
+    /// T006.18：停服务收尾——取消正在跑的一轮、等驱动空闲（日志收尾完整）；骨架阶段空实现。
+    pub async fn shutdown(&self) {}
+
     /// follow（DSH :607）：按调用方最后的序号补齐日志事件（连续、不重复；重连带 lastSeq 即可）。
     pub async fn follow(&self, request: FollowRequest) -> Result<FollowResponse, ServiceError> {
         let events = self.agent.session_events_from(request.last_seq);

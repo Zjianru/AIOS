@@ -99,6 +99,9 @@ enum CliError {
     Root(#[from] service::RootError),
     #[error(transparent)]
     Web(#[from] web::ServeError),
+    /// T006.18：另一个写者（服务/进程）持有会话写锁（DSH 错误码 session/writer-held）。
+    #[error("会话 {id} 已被其他写者占用（session/writer-held）")]
+    WriterHeld { id: String },
 }
 
 #[tokio::main]
@@ -111,6 +114,11 @@ async fn main() -> ExitCode {
     };
     match result {
         Ok(code) => ExitCode::from(code),
+        // T006.18：会话被别的写者占用是独立的退出码（2），便于脚本区分「忙」和一般失败。
+        Err(error @ CliError::WriterHeld { .. }) => {
+            eprintln!("aios-dev: {error}");
+            ExitCode::from(2)
+        }
         Err(error) => {
             eprintln!("aios-dev: {error}");
             ExitCode::FAILURE
@@ -257,7 +265,8 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         handle.token
     );
     tokio::signal::ctrl_c().await?;
-    handle.abort();
+    // T006.18：停服务收尾（取消正在跑的一轮、日志收尾完整）；骨架阶段等价 abort。
+    handle.shutdown().await;
     Ok(0)
 }
 

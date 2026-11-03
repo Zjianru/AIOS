@@ -47,6 +47,8 @@ pub enum RootError {
     StateCorrupt { path: String, reason: String },
     #[error("根会话记录为 {session_id}，但会话日志缺失：{path}")]
     RecordedSessionMissing { session_id: String, path: String },
+    #[error("根会话 {session_id} 已被其他写者占用（session/writer-held）")]
+    WriterHeld { session_id: String },
 }
 
 /// 打开/新建根会话的输入：与 Agent::open 一致，外加根会话状态文件所在的数据目录。
