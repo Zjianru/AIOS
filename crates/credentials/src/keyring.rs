@@ -496,7 +496,8 @@ fn default_identity_path(data_dir: &Path) -> PathBuf {
 
 fn create_identity(path: &Path) -> Result<(), KeyringError> {
     let identity = age::x25519::Identity::generate();
-    create_identity_at(path, &identity.to_string().expose_secret().to_owned())
+    let text = identity.to_string();
+    create_identity_at(path, text.expose_secret())
 }
 
 fn create_identity_at(path: &Path, identity_text: &str) -> Result<(), KeyringError> {
