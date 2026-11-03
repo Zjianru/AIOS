@@ -27,7 +27,6 @@ pub struct DeepSeek {
     http: reqwest::Client,
     config: DeepSeekConfig,
     url: reqwest::Url,
-    #[allow(dead_code)] // 骨架期；实现里 stream_inner 会用它申请签发。
     credentials: Arc<dyn CredentialSource>,
 }
 
@@ -66,7 +65,6 @@ impl DeepSeek {
     /// 用外部凭证来源构造（T008.2：每次出站前申请一次；config.api_key 不再需要）。
     pub fn with_credentials(
         config: DeepSeekConfig,
-        #[allow(dead_code)] // 骨架期；实现里 stream_inner 会用它申请签发。
         credentials: Arc<dyn CredentialSource>,
     ) -> Result<Self, ModelError> {
         let url = messages_url(&config.base_url)?;
@@ -125,6 +123,7 @@ impl DeepSeek {
         max_tokens: Option<u32>,
         validate_pairing: bool,
     ) -> Result<ChunkStream, ModelError> {
+        let api_key = self.credentials.issue("model-request")?;
         let body =
             serialize::request_body(&self.config, messages, tools, max_tokens, validate_pairing)?;
         let request = self
@@ -132,7 +131,7 @@ impl DeepSeek {
             .post(self.url.clone())
             .header("content-type", "application/json")
             .header("accept", "text/event-stream")
-            .header("x-api-key", &self.config.api_key)
+            .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
             .body(body);
         let response = tokio::select! {
