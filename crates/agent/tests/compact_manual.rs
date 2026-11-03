@@ -553,3 +553,32 @@ async fn second_compact_during_compaction_completes() {
         .count();
     assert_eq!(starts, 2, "第二个请求应在下一轮 drain 再压缩一次");
 }
+
+/// T006.19 红测试：手动压缩的摘要请求失败要归 DSH 的 summary 码（ManualCompactionError）。
+#[tokio::test]
+async fn manual_compact_summary_failure_is_classified() {
+    let server = MockServer::start().await;
+    mount(
+        &server,
+        vec![sse(FINAL_TEXT_SSE.to_owned()), ResponseTemplate::new(500)],
+    )
+    .await;
+    let harness = setup(&server, ToolSet::builtin(), 0.000001).await;
+    harness
+        .agent
+        .send(UserMessage::text("TEXT-OLD manual"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    wait_idle(&harness.agent, 20).await;
+    let outcome = harness.agent.compact(Some("cmd-classify".to_owned())).await;
+    match outcome {
+        Err(agent::AgentError::ManualCompaction { code, message }) => {
+            assert_eq!(
+                code,
+                agent::ManualCompactionErrorCode::Summary,
+                "摘要请求失败归 summary 码：{message}"
+            );
+        }
+        other => panic!("期望 ManualCompaction(Summary)，实际：{other:?}"),
+    }
+}

@@ -1037,3 +1037,58 @@ mod tests {
         }
     }
 }
+
+/// T006.19 红测试：/compact 失败文案逐码照 DSH command-compact 的 expectedFailure。
+#[cfg(test)]
+mod t006_19_compact_failure_tests {
+    use agent::{AgentError, ManualCompactionErrorCode};
+
+    use crate::compact_failure_text;
+
+    #[test]
+    fn compact_failure_texts_follow_dsh_command() {
+        let cases = [
+            (
+                ManualCompactionErrorCode::Busy,
+                "Compaction is unavailable because this process has an active compaction, or the agent is not idle.",
+            ),
+            (
+                ManualCompactionErrorCode::Cancelled,
+                "Compaction cancelled.",
+            ),
+            (
+                ManualCompactionErrorCode::Changed,
+                "The history selected for compaction changed before it could be replaced. The attempt is recorded in the session log.",
+            ),
+            (
+                ManualCompactionErrorCode::Summary,
+                "Compaction could not produce a useful summary. The attempt is recorded in the session log.",
+            ),
+            (
+                ManualCompactionErrorCode::Commit,
+                "Compaction did not finish cleanly; some session history may have changed. Inspect the current session state before retrying.",
+            ),
+            (
+                ManualCompactionErrorCode::Persistence,
+                "Compaction finished, but the session could not be saved.",
+            ),
+        ];
+        for (code, text) in cases {
+            let error = AgentError::ManualCompaction {
+                code,
+                message: "backend detail".to_owned(),
+            };
+            assert_eq!(
+                compact_failure_text(&error).as_deref(),
+                Some(text),
+                "code={:?}",
+                code
+            );
+        }
+        assert_eq!(
+            compact_failure_text(&AgentError::Compaction("boom".to_owned())),
+            None,
+            "非手动压缩错误不给逐码文案"
+        );
+    }
+}

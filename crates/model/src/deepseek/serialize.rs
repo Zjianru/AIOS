@@ -271,3 +271,72 @@ fn push_or_merge(messages: &mut Vec<WireMessage>, role: &'static str, content: V
 fn unsupported(message: &str) -> ModelError {
     ModelError::new(ErrorCode::UnsupportedContent, message.to_owned())
 }
+
+/// T006.19 红测试：DSH DeepSeek 序列化的三类防御校验
+/// （llm-deepseek/src/serialize.ts:136-146：重复 tool call id / tool_result 匹配 / 历史未决工具）。
+#[cfg(test)]
+mod t006_19_serialize_defense_tests {
+    use super::*;
+    use crate::{ContentBlock, ErrorCode, Message};
+
+    fn assistant(tool_call_ids: &[(&str, &str)]) -> Message {
+        let content: Vec<ContentBlock> = tool_call_ids
+            .iter()
+            .map(|(id, name)| ContentBlock::ToolCall {
+                id: (*id).to_owned(),
+                name: (*name).to_owned(),
+                arguments: "{}".to_owned(),
+            })
+            .collect();
+        Message::assistant(content, "deepseek", "deepseek-flash")
+    }
+
+    fn tool_result(id: &str) -> Message {
+        Message::tool_result(id, "ok", false)
+    }
+
+    #[test]
+    fn duplicate_tool_call_ids_are_rejected() {
+        let messages = vec![assistant(&[("call_dup", "bash"), ("call_dup", "read")])];
+        let error = validate_tool_pairing(&messages).expect_err("重复 callId 必须被拒");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(
+            error.message.contains("duplicate tool call id"),
+            "文案照 DSH：{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn tool_result_without_matching_call_is_rejected() {
+        let messages = vec![assistant(&[("call_ok", "bash")]), tool_result("call_other")];
+        let error = validate_tool_pairing(&messages).expect_err("孤儿 tool_result 必须被拒");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(
+            error.message.contains("tool result has no matching call"),
+            "文案照 DSH：{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn history_with_unresolved_tools_is_rejected() {
+        let messages = vec![assistant(&[("call_open", "bash")])];
+        let error = validate_tool_pairing(&messages).expect_err("历史末尾未决工具必须被拒");
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(
+            error.message.contains("history ends with unresolved tools"),
+            "文案照 DSH：{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn well_formed_tool_pairs_pass() {
+        let messages = vec![assistant(&[("call_ok", "bash")]), tool_result("call_ok")];
+        assert!(
+            validate_tool_pairing(&messages).is_ok(),
+            "成对的 tool_use/tool_result 不能被误拒"
+        );
+    }
+}

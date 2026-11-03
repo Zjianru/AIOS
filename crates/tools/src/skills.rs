@@ -637,3 +637,34 @@ mod tests {
         assert_eq!(multiline, "line one line two");
     }
 }
+
+/// T006.19 红测试：非法 skill 的警告文案照 DSH skill-filesystem 的 logger.warn 形状
+/// （`skill file <path> ignored: <reason>`，skill-filesystem/src/index.ts:904-926）。
+#[cfg(test)]
+mod t006_19_warning_format_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_skill_warning_is_prefixed_like_dsh_logger() {
+        let dir = tempfile::tempdir().unwrap();
+        let skills = dir.path().join("skills");
+        std::fs::create_dir_all(skills.join("bad")).unwrap();
+        std::fs::write(skills.join("bad").join(SKILL_FILE), "no frontmatter here").unwrap();
+        let discovery = discover_skill_catalog(dir.path(), dir.path(), &[skills]);
+        let warning = discovery
+            .warnings
+            .iter()
+            .find(|warning| warning.message.contains("frontmatter"))
+            .expect("非法 skill 必须有警告");
+        assert!(
+            warning.message.starts_with("skill file "),
+            "DSH 文案以 skill file 开头：{}",
+            warning.message
+        );
+        assert!(
+            warning.message.contains(" ignored: "),
+            "DSH 文案带 ignored 前缀：{}",
+            warning.message
+        );
+    }
+}

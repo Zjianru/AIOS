@@ -1097,3 +1097,17 @@ mod tests {
         }
     }
 }
+
+/// T006.19 红测试：job 结算 detail 的 signal 用名字（DSH jobs-local `signal: SIGTERM`）。
+#[cfg(test)]
+mod t006_19_signal_tests {
+    use super::*;
+
+    #[test]
+    fn signal_names_follow_dsh_producer_detail() {
+        assert_eq!(signal_name(9), "SIGKILL");
+        assert_eq!(signal_name(15), "SIGTERM");
+        assert_eq!(signal_name(2), "SIGINT");
+        assert_eq!(signal_name(9999), "signal 9999");
+    }
+}

@@ -199,3 +199,23 @@ fn relative_data_dir_still_yields_absolute_locator() {
     );
     assert_eq!(fs::read_to_string(&saved.locator).unwrap(), "x");
 }
+
+/// T006.19 红测试：spill 落盘失败要保留 inline 内容并带回告警（DSH spill-policy logger.warn）。
+#[test]
+fn spill_failure_reports_warning_and_keeps_inline_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("spill");
+    std::fs::write(&root, b"not a directory").unwrap();
+    let store = tools::SpillStore::new(root, "s1");
+    let big = "x".repeat(200_000);
+    let result = tools::spill::bound_result_reporting(&store, "bash", "call-1", &big, 100);
+    assert!(
+        result.content.is_none(),
+        "落盘失败时保持 inline 内容（None = 不替换原内容）"
+    );
+    let warning = result.warning.expect("落盘失败要带告警（DSH logger.warn）");
+    assert!(
+        warning.contains("cannot create spill directory"),
+        "告警要带原因：{warning}"
+    );
+}
