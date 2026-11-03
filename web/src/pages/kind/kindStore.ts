@@ -261,8 +261,82 @@ function emptyTurn(id: string, text: string): TurnViewData {
   };
 }
 
-/** 当前连接（T007.9 起处理重连）；T007.3 只保留一个。 */
+/** T007.9：当前连接 + 重连状态；lastSeq 是页面已处理到的日志序号（重连补齐去重用）。 */
 let activeSocket: WebSocket | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let reconnectAttempt = 0;
+let lastSeq = 0;
+/** 没送到内核的本地消息：viewId -> { requestId, text }；重发复用同一个 requestId。 */
+const unsentSends = new Map<string, { requestId: string; text: string }>();
+
+function removeView(viewId: string): void {
+  useKindStore.setState((state) => {
+    const views = state.views.filter((view) => view.id !== viewId);
+    return { views, byId: indexOf(views) };
+  });
+}
+
+/** 发不出去时在对话里留一条「没送到内核」的本地消息（重发成功后移除）。 */
+function addUnsentView(viewId: string, text: string): void {
+  useKindStore.setState((state) => {
+    if (state.views.some((view) => view.id === viewId)) return {};
+    const view: TurnViewData = {
+      id: viewId,
+      startedAt: null,
+      durationMs: null,
+      status: 'completed',
+      user: { text, elements: [] },
+      reasoning: null,
+      tools: [],
+      cards: [],
+      answer: null,
+      thinkingSeconds: 0,
+      tokens: { input: 0, output: 0 },
+      cost: null,
+      model: DEMO_MODEL.label,
+      retry: null,
+      failure: null,
+      question: null,
+      compaction: null,
+      delivery: 'unsent',
+      stoppedAt: null,
+    };
+    const views = state.views.concat(view).sort(
+      (left, right) => Number(left.id.split('-')[1]) - Number(right.id.split('-')[1]),
+    );
+    return { views, byId: indexOf(views) };
+  });
+}
+
+/** 按已处理到的 lastSeq 重连；失败后指数退避，横幅显示第几次。 */
+function openSocket(): void {
+  const socket = connectSession(
+    lastSeq,
+    (frame) => {
+      if (frame.type === 'ready') {
+        reconnectAttempt = 0;
+        useKindStore.setState({ connection: { state: 'online' } });
+      }
+      applyFrame(frame);
+    },
+    () => {
+      if (activeSocket !== socket) return;
+      activeSocket = null;
+      reconnectAttempt += 1;
+      useKindStore.setState({
+        connection: { state: 'reconnecting', attempt: reconnectAttempt },
+      });
+      if (reconnectTimer === null) {
+        const delay = Math.min(5_000, 300 * reconnectAttempt);
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          openSocket();
+        }, delay);
+      }
+    },
+  );
+  activeSocket = socket;
+}
 
 /** T007.3/4：本轮已收到的日志事件（首屏页 + live）；实时帧按轮重算 view。 */
 let liveEvents: ServiceEvent[] = [];
@@ -324,6 +398,8 @@ function compactionViewOf(data: Record<string, unknown>, auto: boolean) {
 
 /** 日志事件 live：追加进本轮事件，重建 view；turn/end 时收掉流式文本。 */
 function applyLiveEvent(event: ServiceEvent): void {
+  if (event.seq <= lastSeq) return;
+  lastSeq = event.seq;
   liveEvents.push(event);
   const turn = typeof event.data.turn === 'number' ? Number(event.data.turn) : null;
   if (event.type === 'compaction/start') {
@@ -864,7 +940,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
     try {
       const page = await fetchEventsPage({ maxMessages: 100, minMessages: 10, minTurns: 5 });
       const views = deriveTurnViews(page.events);
-      const lastSeq = page.events[page.events.length - 1]?.seq ?? 0;
+      const lastSeqOfPage = page.events[page.events.length - 1]?.seq ?? 0;
       const oldestSeq = page.events[0]?.seq ?? null;
       liveEvents = page.events.slice();
       liveTurn = null;
@@ -875,12 +951,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
       }
       liveStream = '';
       useStreamStore.setState({ turnId: null, itemId: null, text: '' });
-      activeSocket?.close();
-      activeSocket = connectSession(
-        lastSeq,
-        applyFrame,
-        () => set({ connection: { state: 'reconnecting', attempt: 1 } }),
-      );
+      lastSeq = lastSeqOfPage;
+      openSocket();
       mark('turns:loaded');
       set({
         views,
@@ -933,17 +1005,25 @@ export const useKindStore = create<KindState>()((set, get) => ({
   send: (text) => {
     // T007.4：真实发送；requestId 是幂等键（T007.9 的重发复用同一个）。
     const requestId = globalThis.crypto.randomUUID();
+    const viewId = 'turn-999-unsent-' + requestId;
     void sendMessage(text, requestId).catch(() => {
-      toast('没送到内核', { description: '再发一次；重发用同一个请求编号' });
+      unsentSends.set(viewId, { requestId, text });
+      addUnsentView(viewId, text);
     });
   },
 
   resend: (turnId) => {
-    const script = pendingScripts.get(turnId);
-    if (!script || run) return;
-    pendingScripts.delete(turnId);
-    patch(turnId, (view) => ({ ...view, delivery: 'sending', status: 'inProgress' }));
-    deliver(turnId, script);
+    const pending = unsentSends.get(turnId);
+    if (!pending) return;
+    const viewId = turnId;
+    void sendMessage(pending.text, pending.requestId)
+      .then(() => {
+        unsentSends.delete(viewId);
+        removeView(viewId);
+      })
+      .catch(() => {
+        toast('还是没送到', { description: '连上内核之后再试一次' });
+      });
   },
 
   stop: () => {
