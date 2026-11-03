@@ -1,5 +1,5 @@
 {
-  "name": "aios-app-v14",
+  "name": "aios-web",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -7,9 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc -b --noEmit false --emitDeclarationOnly false || tsc -b",
-    "perf": "node perf.mjs",
-    "shoot": "node shoot.mjs"
+    "typecheck": "tsc -b",
+    "e2e": "playwright test",
+    "check:markers": "node scripts/check-prototype-markers.mjs"
   },
   "dependencies": {
     "@fontsource-variable/overpass": "5.3.0",
@@ -45,5 +45,5 @@
     "typescript": "7.0.2",
     "vite": "8.3.4"
   },
-  "description": "AIOS 前端预演 v14（设计原型，不进仓库、不走单元门禁）"
+  "description": "AIOS Web：Kind 对话页面（T007 起进入仓库门禁）"
 }
