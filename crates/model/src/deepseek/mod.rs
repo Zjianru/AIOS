@@ -7,21 +7,38 @@ mod translate;
 mod transport;
 
 use std::collections::VecDeque;
+use std::fmt;
+use std::sync::Arc;
 
 pub use config::{DEFAULT_BASE_URL, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DeepSeekConfig};
 
-use crate::{CancelToken, ErrorCode, Message, ModelError, StreamChunk, ToolSchema};
+use crate::credential::StaticCredential;
+use crate::{
+    CancelToken, CredentialSource, ErrorCode, Message, ModelError, StreamChunk, ToolSchema,
+};
 use sse::SseParser;
 use translate::Translator;
 
 use config::STREAM_IDLE_TIMEOUT;
 
 /// DeepSeek 的 Messages 适配器。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DeepSeek {
     http: reqwest::Client,
     config: DeepSeekConfig,
     url: reqwest::Url,
+    #[allow(dead_code)] // 骨架期；实现里 stream_inner 会用它申请签发。
+    credentials: Arc<dyn CredentialSource>,
+}
+
+impl fmt::Debug for DeepSeek {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DeepSeek")
+            .field("config", &self.config)
+            .field("url", &self.url)
+            .finish_non_exhaustive()
+    }
 }
 
 impl DeepSeek {
@@ -37,7 +54,31 @@ impl DeepSeek {
         let http = reqwest::Client::builder()
             .build()
             .map_err(transport::transport_error)?;
-        Ok(Self { http, config, url })
+        let credentials = Arc::new(StaticCredential::new(config.api_key.clone()));
+        Ok(Self {
+            http,
+            config,
+            url,
+            credentials,
+        })
+    }
+
+    /// 用外部凭证来源构造（T008.2：每次出站前申请一次；config.api_key 不再需要）。
+    pub fn with_credentials(
+        config: DeepSeekConfig,
+        #[allow(dead_code)] // 骨架期；实现里 stream_inner 会用它申请签发。
+        credentials: Arc<dyn CredentialSource>,
+    ) -> Result<Self, ModelError> {
+        let url = messages_url(&config.base_url)?;
+        let http = reqwest::Client::builder()
+            .build()
+            .map_err(transport::transport_error)?;
+        Ok(Self {
+            http,
+            config,
+            url,
+            credentials,
+        })
     }
 
     pub fn config(&self) -> &DeepSeekConfig {
