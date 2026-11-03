@@ -6,7 +6,7 @@ use model::{DEFAULT_CONTEXT_WINDOW, DeepSeekConfig, Effort};
 use service::{
     Call, ConnectionDeleteRequest, ConnectionSaveRequest, ConnectionVerifyRequest, FirstUseRequest,
     IssuesRequest, KeyringRelocateRequest, KeyringReopenRequest, KeyringRestartRequest,
-    ModelSettingsRequest, RootHost, RootSessionOptions,
+    ModelSettingsRequest, RootHost, RootSessionOptions, SessionModelSelectRequest,
 };
 use tempfile::tempdir;
 use wiremock::matchers::{method, path};
@@ -262,4 +262,19 @@ async fn 设置变化会发事件且事件无正文() {
         .expect("事件通道不应关闭");
     assert_eq!(event.event_type, "keyring/changed", "event={event:?}");
     no_key(&serde_json::to_string(&event).unwrap());
+}
+
+#[tokio::test]
+async fn 选模型下一轮生效() {
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let response = host
+        .dispatch(Call::SessionModelSelect(SessionModelSelectRequest {
+            model: "deepseek-pro".to_owned(),
+        }))
+        .await;
+    assert!(response.is_ok(), "session-model-select 应成功：{response:?}");
+    let json = serde_json::to_string(&response.unwrap()).unwrap();
+    assert!(json.contains("deepseek-pro"), "json={json}");
+    no_key(&json);
 }
