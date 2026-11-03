@@ -4,7 +4,8 @@ use agent::AgentConfig;
 use model::{DEFAULT_CONTEXT_WINDOW, DeepSeekConfig, Effort};
 use service::{
     Call, ConnectionDeleteRequest, ConnectionSaveRequest, FirstUseRequest, IssuesRequest,
-    ModelSettingsRequest, RootHost, RootSessionOptions,
+    KeyringRelocateRequest, KeyringReopenRequest, KeyringRestartRequest, ModelSettingsRequest,
+    Response, RootHost, RootSessionOptions,
 };
 use tempfile::tempdir;
 
