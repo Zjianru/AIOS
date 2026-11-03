@@ -92,6 +92,22 @@ export async function cancelTurn(): Promise<void> {
   await post({ method: 'cancel' });
 }
 
+export interface ServiceAnswer {
+  questionId: string;
+  selected: string[];
+  custom?: string;
+}
+
+/** 整批回答（T007.6）：每题 {questionId, selected[], custom?}，一次调用覆盖一批。 */
+export async function answerQuestions(answers: ServiceAnswer[]): Promise<void> {
+  await post({ method: 'answer', answers });
+}
+
+/** 整批不答（T007.6）：撤掉当前全部待答问题，模型收到用户没答后照常收尾。 */
+export async function dismissQuestions(): Promise<void> {
+  await post({ method: 'dismiss-questions' });
+}
+
 export interface EventsPage {
   events: ServiceEvent[];
   hasMore: boolean;
