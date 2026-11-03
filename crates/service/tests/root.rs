@@ -74,6 +74,7 @@ fn options(
         config,
         credentials: None,
         identity: None,
+        model_factory: None,
     }
 }
 
