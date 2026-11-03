@@ -1,13 +1,16 @@
 use std::path::Path;
+use std::time::Duration;
 
 use agent::AgentConfig;
 use model::{DEFAULT_CONTEXT_WINDOW, DeepSeekConfig, Effort};
 use service::{
-    Call, ConnectionDeleteRequest, ConnectionSaveRequest, FirstUseRequest, IssuesRequest,
-    KeyringRelocateRequest, KeyringReopenRequest, KeyringRestartRequest, ModelSettingsRequest,
-    RootHost, RootSessionOptions,
+    Call, ConnectionDeleteRequest, ConnectionSaveRequest, ConnectionVerifyRequest, FirstUseRequest,
+    IssuesRequest, KeyringRelocateRequest, KeyringReopenRequest, KeyringRestartRequest,
+    ModelSettingsRequest, RootHost, RootSessionOptions,
 };
 use tempfile::tempdir;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const TEST_KEY: &str = "sk-t008-service-0123456789";
 
@@ -169,4 +172,94 @@ async fn 换位置指回重新开始() {
     assert!(restarted.is_ok(), "restart: {restarted:?}");
     let json = serde_json::to_string(&restarted.unwrap()).unwrap();
     no_key(&json);
+}
+
+#[tokio::test]
+async fn 验证成功写注册器且响应无正文() {
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+        .mount(&server)
+        .await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "deepseek".to_owned(),
+            name: "DeepSeek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+        }))
+        .await;
+    assert!(saved.is_ok(), "save: {saved:?}");
+    let verified = host
+        .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
+            id: "deepseek".to_owned(),
+        }))
+        .await;
+    assert!(
+        verified.is_ok(),
+        "verify 应返回结果而不是协议错误：{verified:?}"
+    );
+    let json = serde_json::to_string(&verified.unwrap()).unwrap();
+    no_key(&json);
+    assert!(json.contains("ok"), "验证成功应写进注册器：{json}");
+}
+
+#[tokio::test]
+async fn 验证失败写原因且响应无正文() {
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+            "error": {"message": "bad key", "type": "authentication_error"}
+        })))
+        .mount(&server)
+        .await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "deepseek".to_owned(),
+            name: "DeepSeek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+        }))
+        .await;
+    assert!(saved.is_ok(), "save: {saved:?}");
+    let verified = host
+        .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
+            id: "deepseek".to_owned(),
+        }))
+        .await;
+    assert!(verified.is_ok(), "verify 结果应返回：{verified:?}");
+    let json = serde_json::to_string(&verified.unwrap()).unwrap();
+    no_key(&json);
+    assert!(json.contains("fail"), "验证失败原因应写进注册器：{json}");
+}
+
+#[tokio::test]
+async fn 设置变化会发事件且事件无正文() {
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let mut events = host.subscribe_events();
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "deepseek".to_owned(),
+            name: "DeepSeek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: "https://api.deepseek.com/anthropic".to_owned(),
+            api_key: TEST_KEY.to_owned(),
+        }))
+        .await;
+    assert!(saved.is_ok(), "save: {saved:?}");
+    let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
+        .await
+        .expect("应收到设置变化事件")
+        .expect("事件通道不应关闭");
+    assert_eq!(event.event_type, "keyring/changed", "event={event:?}");
+    no_key(&serde_json::to_string(&event).unwrap());
 }
