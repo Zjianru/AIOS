@@ -16,7 +16,6 @@ import { toast } from 'sonner';
 import { go } from '@/app/navigate';
 import { useAppStore } from '@/app/store';
 import { addConnection, checkConnection, getFirstUse, getModelSettings, KERNEL_PROVIDERS, syncKeyringEmpty, updateConnection } from '@/data/api';
-import { useKindStore } from './kindStore';
 import type { FirstUseCard, FirstUseFixture } from '@/data/fixtures/firstUse';
 import type { CatalogProvider, ConnectionView } from '@/data/fixtures/settings';
 import { cn } from '@/lib/utils';
@@ -221,7 +220,7 @@ function ConnectForm({ onConnected }: { onConnected: () => void }) {
         </div>
 
         <p className="mt-4 text-1 leading-4 text-ink-3">
-          AIOS 概念 · 首次使用：没接模型之前，Kind 只能做这一件事——把模型接上。这里存的密钥和「设置 › 模型与连接」是同一份。
+          首次使用：没接模型之前，Kind 只能做这一件事——把模型接上。这里存的密钥和「设置 › 模型与连接」是同一份。
         </p>
       </div>
     </div>
@@ -347,7 +346,7 @@ function ReadyStep({ data }: { data: FirstUseFixture }) {
       </div>
 
       <p className="mt-8 border-t border-line pt-2 text-1 leading-4 text-ink-3">
-        AIOS 概念 · 首次使用：起手卡片对应真实能力，不做功能导览；推荐只是推荐，不自动改设置。
+        首次使用：起手卡片对应真实能力，不做功能导览；推荐只是推荐，不自动改设置。
       </p>
     </div>
   );
@@ -381,12 +380,6 @@ export function FirstUsePane() {
       ) : (
         <ConnectForm
           onConnected={() => {
-            // 只显示接上内核的部分：没有起手卡片（任务、流程还没接上），直接进空的 Kind 对话
-            if (useAppStore.getState().connectedOnly) {
-              useKindStore.getState().demo('empty');
-              useAppStore.getState().setFirstUse(false);
-              return;
-            }
             setConnected(true);
           }}
         />

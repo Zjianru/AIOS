@@ -166,7 +166,6 @@ function GridPreview({ doc }: { doc: ReadDoc }) {
       <div className="flex items-center gap-1 border-b border-line bg-pane px-1.5 py-1 text-1">
         <span className="rounded-badge bg-hover px-2 py-[1px] text-ink">Sheet1</span>
         <span className="rounded-badge px-2 py-[1px] text-ink-3">说明</span>
-        <span className="ml-auto text-ink-3">原型：只做 Sheet1</span>
       </div>
       {/* 公式栏（点哪个格就显示哪个格的值） */}
       <div className="flex items-center gap-2 border-b border-line bg-content px-2 py-1 text-1">
@@ -423,7 +422,6 @@ function ReadMainPane() {
                 <div className="mt-3" data-read-editor="true">
                   <div className="mb-1.5 flex items-center gap-2 text-1 text-ink-3">
                     <span>一起写 · 资料改的是修改稿，原件不动</span>
-                    <span className="ml-auto">原型：保存只给提示</span>
                   </div>
                   <textarea
                     value={draft}
@@ -461,7 +459,7 @@ function ReadMainPane() {
           </div>
 
           <p className="mt-6 border-t border-line pt-2 text-1 leading-4 text-ink-3">
-            AIOS 概念 · 阅读页：资料和成果共用同一页；右栏伴读收起后换成验收面板，验收永远对应具体一版。
+            阅读页：资料和成果共用同一页；右栏伴读收起后换成验收面板，验收永远对应具体一版。
           </p>
         </div>
       </div>

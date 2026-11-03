@@ -3,7 +3,7 @@
  * 窗口 12px 圆角、侧栏 220/56、工具栏 44、每个场景一个 dock 根。
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { useLocation } from 'react-router';
 import { SidebarProvider } from '@/components/ui/sidebar';
 import { Sidebar } from './Sidebar';
@@ -12,16 +12,11 @@ import { SceneDock } from './SceneDock';
 import { parseRoute, sceneOf } from '@/app/route';
 import { sceneDef } from '@/app/scenes';
 import { useAppStore } from '@/app/store';
-import type { KernelDemo } from '@/app/store';
-import { useKindStore } from '@/pages/kind/kindStore';
 import { useSystemReducedMotion } from '@/app/useSystemReducedMotion';
-import { registerHook, installTestHooks } from '@/app/testHooks';
 import { syncRoute } from '@/app/routeStore';
-import { currentRoute, go } from '@/app/navigate';
+import { go } from '@/app/navigate';
 import { markRoutePainted, markRouteStart } from '@/lib/perf';
-import { KEYRING_PROBLEM, setKeyringProblem, setMockLatency } from '@/data/api';
 
-type KindDemo = Parameters<ReturnType<typeof useKindStore.getState>['demo']>[0];
 import { KindScene } from '@/pages/kind/KindScene';
 import { AbilityScene } from '@/pages/ability/AbilityScene';
 import { NowScene } from '@/pages/now/NowScene';
@@ -42,23 +37,19 @@ export function AppShell() {
   );
   const scene = sceneOf(route);
   const def = sceneDef(scene);
-  const connectedOnly = useAppStore((s) => s.connectedOnly);
-  const kernel = useAppStore((s) => s.kernel);
   // 只显示接上内核的部分（D46）：Kind 只有对话一栏；接不上内核时也只留一栏放说明。
-  const soloKind = scene === 'kind' && (connectedOnly || kernel !== 'ok');
+  const soloKind = scene === 'kind';
   const panes = useMemo(
     () => (soloKind ? def.panes.filter((pane) => pane.id === 'conversation') : def.panes),
     [soloKind, def],
   );
   const dockKey = soloKind ? scene + ':solo' : scene;
   const theme = useAppStore((s) => s.theme);
-  const latency = useAppStore((s) => s.latency);
   const reducedPref = useAppStore((s) => s.reducedMotion);
   const sidebarCollapsed = useAppStore((s) => s.sidebarCollapsed);
   const setSidebarCollapsed = useAppStore((s) => s.setSidebarCollapsed);
   const systemReduced = useSystemReducedMotion();
   const reduced = reducedPref ?? systemReduced;
-  const [resetToken, setResetToken] = useState(0);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -68,13 +59,8 @@ export function AppShell() {
 
   // 只显示接上内核的部分：其他场景还没接上，回到 Kind。
   useEffect(() => {
-    if (connectedOnly && scene !== 'kind' && scene !== 'settings') go('kind');
-  }, [connectedOnly, scene]);
-
-  // 假数据层的延迟开关（设置里的开发开关）
-  useEffect(() => {
-    setMockLatency(latency);
-  }, [latency]);
+    if (scene !== 'kind') go('kind');
+  }, [scene]);
 
   // 路由切换：起点 mark + 画完 mark（Kind 页自己会再打细的 mark）
   useEffect(() => {
@@ -87,11 +73,6 @@ export function AppShell() {
       clearTimeout(paintTimer);
     };
   }, [route.raw]);
-
-  const resetLayout = useCallback(() => {
-    useAppStore.getState().resetLayout(scene);
-    setResetToken((n) => n + 1);
-  }, [scene]);
 
   // 面板内容自己从 store 取路由（dockview 面板不会跟着父组件重渲染）
   const renderPane = useCallback(
@@ -111,23 +92,6 @@ export function AppShell() {
     [scene, route.id],
   );
 
-  useEffect(() => {
-    installTestHooks();
-    registerHook('go', ((next: string) => go(next)) as never);
-    registerHook('currentRoute', (() => currentRoute()) as never);
-    registerHook('setTheme', ((theme: 'dark' | 'light') => useAppStore.getState().setTheme(theme)) as never);
-    registerHook('setReducedMotion', ((on: boolean | null) => useAppStore.getState().setReducedMotion(on)) as never);
-    registerHook('setSidebarCollapsed', ((collapsed: boolean) => useAppStore.getState().setSidebarCollapsed(collapsed)) as never);
-    registerHook('setDevStressFlow', ((on: boolean) => useAppStore.getState().setDevStressFlow(on)) as never);
-    registerHook('setFirstUse', ((on: boolean) => useAppStore.getState().setFirstUse(on)) as never);
-    registerHook('setConnectedOnly', ((on: boolean) => useAppStore.getState().setConnectedOnly(on)) as never);
-    registerHook('setKernel', ((state: KernelDemo) => useAppStore.getState().setKernel(state)) as never);
-    registerHook('kindDemo', ((name: KindDemo) => useKindStore.getState().demo(name)) as never);
-    registerHook('setKeyringBroken', ((on: boolean) => {
-      setKeyringProblem(on ? KEYRING_PROBLEM : null);
-      useAppStore.getState().setKeyringBroken(on);
-    }) as never);
-  }, []);
 
   return (
     <div className="h-full w-full p-3 sm:p-5">
@@ -146,14 +110,14 @@ export function AppShell() {
         >
           <Sidebar route={route} />
           <div className="flex min-w-0 flex-1 flex-col">
-            <Toolbar route={route} onResetLayout={resetLayout} />
+            <Toolbar route={route} />
             <main className="min-h-0 flex-1 overflow-hidden">
               <SceneDock
                 key={dockKey}
                 scene={dockKey}
                 panes={panes}
                 renderPane={renderPane}
-                resetToken={resetToken}
+                resetToken={0}
               />
             </main>
           </div>

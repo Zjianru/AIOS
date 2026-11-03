@@ -44,7 +44,6 @@ export interface AppState {
   setLatency: (value: MockLatency) => void;
   setDevStressFlow: (value: boolean) => void;
   setFirstUse: (value: boolean) => void;
-  setConnectedOnly: (value: boolean) => void;
   setKernel: (value: KernelDemo) => void;
   setKeyringBroken: (value: boolean) => void;
   saveLayout: (scene: string, layout: unknown) => void;
@@ -60,7 +59,7 @@ export const useAppStore = create<AppState>()(
       latency: 40,
       devStressFlow: false,
       firstUse: false,
-      connectedOnly: false,
+      connectedOnly: true,
       kernel: 'ok',
       keyringBroken: false,
       layouts: {},
@@ -72,7 +71,6 @@ export const useAppStore = create<AppState>()(
       setLatency: (latency) => set({ latency }),
       setDevStressFlow: (devStressFlow: boolean) => set({ devStressFlow }),
       setFirstUse: (firstUse: boolean) => set({ firstUse }),
-      setConnectedOnly: (connectedOnly: boolean) => set({ connectedOnly }),
       setKernel: (kernel: KernelDemo) => set({ kernel }),
       setKeyringBroken: (keyringBroken: boolean) => set({ keyringBroken }),
       saveLayout: (scene, layout) =>

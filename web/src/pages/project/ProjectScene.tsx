@@ -237,7 +237,7 @@ function ProjectMainPane() {
         </section>
 
         <p className="mt-6 border-t border-line pt-2 text-1 leading-4 text-ink-3">
-          AIOS 概念 · 项目页：里程碑把任务分段；里程碑没通过时后续任务停下，进了「等你决定」。
+          项目页：里程碑把任务分段；里程碑没通过时后续任务停下，进了「等你决定」。
         </p>
       </div>
       <StartThingDialog open={startOpen} onOpenChange={setStartOpen} />
@@ -321,7 +321,6 @@ function ProjectChatPane() {
               : '没有要你定的事；做完我会把结果放到成果里。'}
           </p>
         </div>
-        <p className="text-1 text-ink-3">原型：项目对话是样例，第 3 期接真实项目会话。</p>
       </div>
 
       <div className="shrink-0 border-t border-line px-3 py-2">

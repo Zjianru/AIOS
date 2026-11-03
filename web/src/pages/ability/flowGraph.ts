@@ -981,7 +981,6 @@ export function writePositions(flowId: string, nodes: FlowNode[]): void {
     for (const node of nodes) data[node.id] = { x: node.position.x, y: node.position.y };
     window.localStorage.setItem(positionsKey(flowId), JSON.stringify(data));
   } catch {
-    // 原型：存不进去就算了，下次打开用整理后的位置。
   }
 }
 
