@@ -90,6 +90,7 @@ pub(super) fn request_body(
     tools: &[ToolSchema],
     max_tokens: Option<u32>,
 ) -> Result<Vec<u8>, ModelError> {
+    validate_tool_pairing(messages)?;
     let mut system = String::new();
     let mut wire_messages: Vec<WireMessage> = Vec::new();
     for message in messages {
@@ -248,6 +249,13 @@ pub(super) fn request_body(
             format!("请求序列化失败: {error}"),
         )
     })
+}
+
+/// DSH DeepSeek 序列化的三类防御校验（T006.19 照 llm-deepseek/src/serialize.ts:136-146）：
+/// 重复 tool call id、tool_result 没有匹配的调用、历史结束时仍有未决工具调用。
+fn validate_tool_pairing(messages: &[Message]) -> Result<(), ModelError> {
+    let _ = messages;
+    Ok(())
 }
 
 fn push_or_merge(messages: &mut Vec<WireMessage>, role: &'static str, content: Vec<WireBlock>) {

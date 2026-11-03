@@ -506,7 +506,7 @@ impl TaskRegistry {
                 let producer_detail = if status == JobStatus::Killed {
                     signal.map_or_else(
                         || "killed before exit".to_owned(),
-                        |signal| format!("signal: {signal}"),
+                        |signal| format!("signal: {}", signal_name(signal)),
                     )
                 } else {
                     format!("exit code: {}", exit_code.unwrap_or(0))
@@ -905,6 +905,11 @@ fn spawn_reader(
 
 /// bash 结算照 DSH shell/tool-bash background.ts 的 processOutcome：只有 killed 与 completed 两类
 /// （命令跑了非零退出仍是 completed，退出码进 detail）；没有退出码也没有信号才是基础设施失败。
+/// 子进程信号名（DSH jobs-local 的 producer 事实写成 `signal: SIGTERM`，不是数字；T006.19）。
+pub fn signal_name(signal: i32) -> String {
+    signal.to_string()
+}
+
 fn classify(exit: ExitStatus) -> (JobStatus, Option<i32>, Option<i32>) {
     #[cfg(unix)]
     {

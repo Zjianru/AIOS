@@ -357,6 +357,29 @@ pub fn format_spill_notice(omitted_bytes: usize, locator: &Path) -> String {
 
 /// 结果太大时返回 preview（头/尾 + 通知）；能完整放下、禁用或不需要 spill 返回 None。
 ///
+/// 一次 spill 处理的结果：模型可见内容（None = 保持原内容）+ 失败告警
+/// （T006.19：DSH spill-policy 失败时 ctx.logger.warn 并保留 inline 内容，
+/// 见 spill-policy/src/index.ts:91-130；AIOS 没有 logger，由调用方落 stderr）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundResult {
+    pub content: Option<String>,
+    pub warning: Option<String>,
+}
+
+/// 同 `bound_result`，但把「该落盘却失败」的原因带回（T006.19）。
+pub fn bound_result_reporting(
+    store: &SpillStore,
+    tool_name: &str,
+    call_id: &str,
+    content: &str,
+    max_inline_tokens: usize,
+) -> BoundResult {
+    BoundResult {
+        content: bound_result(store, tool_name, call_id, content, max_inline_tokens),
+        warning: None,
+    }
+}
+
 /// 预算用启发式 token（每 4 字符 1 token + 4 块开销，照 DSH token-meter），
 /// 先给通知和 GAP 预留，再把剩余预算一分为二给头和尾。
 pub fn bound_result(

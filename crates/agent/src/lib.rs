@@ -28,7 +28,7 @@ use session::{SessionId, SessionStore, TurnEndReason};
 use tools::ToolSet;
 
 pub use assembly::AgentOpenOptions;
-pub use error::AgentError;
+pub use error::{AgentError, ManualCompactionErrorCode};
 pub use inbox::Delivery;
 pub use instructions::{MAX_CHAIN_BYTES, MAX_SOURCE_BYTES};
 

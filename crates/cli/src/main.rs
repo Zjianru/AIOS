@@ -441,7 +441,11 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
                         tokio::spawn(async move {
                             match agent.compact(Some(command_id)).await {
                                 Ok(outcome) => println!("{}", compact_result_text(outcome)),
-                                Err(error) => println!("Compaction failed: {error}."),
+                                Err(error) => println!(
+                                    "{}",
+                                    compact_failure_text(&error)
+                                        .unwrap_or_else(|| format!("Compaction failed: {error}."))
+                                ),
                             }
                         });
                     }
@@ -638,6 +642,12 @@ fn is_compact_command(line: &str) -> bool {
 
 /// /compact 的用法提示（照 DSH command-compact 的 USAGE）。
 const COMPACT_USAGE: &str = "Usage: /compact (no arguments)";
+
+/// /compact 失败的逐码文案（T006.19 照 DSH command-compact 的 expectedFailure）。
+fn compact_failure_text(error: &agent::AgentError) -> Option<String> {
+    let _ = error;
+    None
+}
 
 /// /compact 的结果文本（照 DSH command-compact：成功带替换节点数与估算 token，
 /// 没有可压缩历史时给一句明确的话）。
