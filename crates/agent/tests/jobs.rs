@@ -313,6 +313,20 @@ async fn foreground_bash_records_job_lifecycle_events() {
         registered.seq < settled.seq,
         "job/registered 先于 job/settled"
     );
+    // T006.9c（DSH registry.start）：job/registered 先于该工具自己的 tool/result 提交。
+    let store = session::SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
+    let events = store.events().to_vec();
+    let result_seq = events
+        .iter()
+        .find(|event| matches!(event.kind, session::EventKind::ToolResult { .. }))
+        .expect("有 tool/result")
+        .seq;
+    assert!(
+        registered.seq < result_seq,
+        "job/registered 先于 tool/result（registered={} result={}）",
+        registered.seq,
+        result_seq
+    );
     let session::EventKind::JobRegistered {
         job_id,
         owner,
@@ -708,5 +722,61 @@ async fn fast_natural_finish_after_model_kill_suppresses_completion_notice() {
     assert!(
         !bodies.iter().any(|body| body.contains(&notice)),
         "不应有重复完成通知：{job_id}"
+    );
+}
+
+/// T006.9c：job/settled 在结算时写；对后台任务允许晚于 turn/end（DSH jobs docs）。
+#[tokio::test]
+async fn settled_event_may_follow_turn_end_for_background_job() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(tool_calls_with_inputs_sse(&[(
+                "call_0",
+                "bash",
+                json!({
+                    "description": "slow background",
+                    "command": "sleep 1; printf done",
+                    "run_in_background": true
+                }),
+            )])),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+    let (agent, data_dir, _cwd, session_id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
+    agent
+        .send(UserMessage::text("后台跑一下"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let (turn_end, settled) = loop {
+        let store = session::SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
+        let events = store.events();
+        let turn_end = events
+            .iter()
+            .find(|event| matches!(event.kind, session::EventKind::TurnEnd { .. }))
+            .cloned();
+        let settled = events
+            .iter()
+            .find(|event| matches!(event.kind, session::EventKind::JobSettled { .. }))
+            .cloned();
+        if let (Some(turn_end), Some(settled)) = (turn_end, settled) {
+            break (turn_end, settled);
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "10s 内没有写齐 turn/end 与 job/settled"
+        );
+        tokio::task::yield_now().await;
+    };
+    assert!(
+        settled.seq > turn_end.seq,
+        "后台任务结算可以晚于 turn/end（DSH jobs docs）；实际 turn/end={} settled={}",
+        turn_end.seq,
+        settled.seq
     );
 }

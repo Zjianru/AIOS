@@ -1176,3 +1176,33 @@ async fn non_zero_exit_is_completed_with_exit_code_detail() {
         output.content
     );
 }
+
+/// T006.9c 红：注册要在工具执行内同步进入待提交队列（DSH registry.start 同步 append 的落点），
+/// 供 driver 在对应 tool/result 之前落 job/registered。
+#[tokio::test]
+async fn registration_is_queued_synchronously_for_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let state = Arc::new(ToolSessionState::new(dir.path(), "sess-9c"));
+    let context = ToolContext::with_session(cwd.path(), Arc::clone(&state));
+    let started = bash(
+        json!({"description": "queue check", "command": "printf q", "run_in_background": true}),
+        &context,
+    )
+    .await;
+    assert!(!started.is_error, "{}", started.content);
+    let pending = state.tasks().take_registered_pending();
+    assert_eq!(
+        pending.len(),
+        1,
+        "注册要同步入队（DSH registry.start 同步 append）"
+    );
+    assert_eq!(
+        pending[0]
+            .tool_call
+            .as_ref()
+            .expect("registration 带 toolCall")
+            .call_id,
+        "call_1"
+    );
+}
