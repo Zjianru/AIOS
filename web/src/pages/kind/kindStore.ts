@@ -8,8 +8,9 @@
 import { create } from 'zustand';
 import { toast } from 'sonner';
 import { compactionSummary, liveDemo } from '@/data/api';
-import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchEventsPage, sendMessage } from '@/data/service';
+import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchEventsPage, recheckRoot, sendMessage, ServiceHttpError } from '@/data/service';
 import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
+import type { GateDetail, GateState } from './KernelGate';
 import { reconnectDelayMs } from '@/data/reconnect';
 import type { AskAnswer, AskQuestion, FailureCause, LiveDemo, LiveScript, LiveStep } from '@/data/fixtures/kindLive';
 import { mark } from '@/lib/perf';
@@ -209,6 +210,10 @@ interface KindState {
   dayLabels: Map<string, string>;
   lastSeenId: string | null;
   lastSeenCounts: { moved: number; waiting: number };
+  /** 根会话不可用时的整页说明（T007.10）；ok = 正常对话。 */
+  gate: GateState | 'ok';
+  gateDetail: GateDetail | null;
+  recheck: () => Promise<void>;
   /** 和内核的连接：断了就自动重连，期间不能发。 */
   connection: { state: 'online' } | { state: 'reconnecting'; attempt: number };
   /** 上下文占用（%），底栏悬停可见。 */
@@ -260,6 +265,31 @@ function emptyTurn(id: string, text: string): TurnViewData {
     cost: null,
     thinkingSeconds: 0,
   };
+}
+
+/** root 状态 → 整页说明（T007.10）：路径/行号来自服务事实，不在页面上编。 */
+function applyRootState(root: {
+  state: string;
+  kind?: string;
+  path?: string;
+  line?: number;
+}): void {
+  if (root.state === 'ok') {
+    const gate = useKindStore.getState().gate;
+    if (gate !== 'unreachable' && gate !== 'token') {
+      useKindStore.setState({ gate: 'ok', gateDetail: null });
+    }
+    return;
+  }
+  const mapped: GateState =
+    root.kind === 'lost'
+      ? 'lost'
+      : root.kind === 'corrupt'
+        ? 'broken'
+        : root.kind === 'busy'
+          ? 'busy'
+          : 'unreachable';
+  useKindStore.setState({ gate: mapped, gateDetail: { path: root.path, line: root.line } });
 }
 
 /** T007.9：当前连接 + 重连状态；lastSeq 是页面已处理到的日志序号（重连补齐去重用）。 */
@@ -315,6 +345,7 @@ function openSocket(): void {
     lastSeq,
     (frame) => {
       if (frame.type === 'ready') {
+        applyRootState(frame.root);
         reconnectAttempt = 0;
         useKindStore.setState({ connection: { state: 'online' } });
       }
@@ -931,6 +962,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
   dayLabels: new Map(),
   lastSeenId: null,
   lastSeenCounts: { moved: 0, waiting: 0 },
+  gate: 'ok',
+  gateDetail: null,
   connection: { state: 'online' },
   usage: 46,
   compacting: false,
@@ -964,8 +997,10 @@ export const useKindStore = create<KindState>()((set, get) => ({
         hasOlder: page.hasMore,
         initialLoading: false,
       });
-    } catch {
-      set({ initialLoading: false });
+    } catch (error) {
+      const gate: GateState =
+        error instanceof ServiceHttpError && error.status === 401 ? 'token' : 'unreachable';
+      set({ initialLoading: false, gate, gateDetail: null });
     }
   },
 
@@ -1025,6 +1060,21 @@ export const useKindStore = create<KindState>()((set, get) => ({
       .catch(() => {
         toast('还是没送到', { description: '连上内核之后再试一次' });
       });
+  },
+
+  recheck: async () => {
+    try {
+      const root = await recheckRoot();
+      applyRootState(root);
+      if (root.state === 'ok') {
+        useKindStore.setState({ gate: 'ok', gateDetail: null });
+        await get().loadInitial();
+      }
+    } catch (error) {
+      const gate: GateState =
+        error instanceof ServiceHttpError && error.status === 401 ? 'token' : 'unreachable';
+      set({ gate, gateDetail: null });
+    }
   },
 
   stop: () => {
