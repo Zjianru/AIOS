@@ -67,6 +67,8 @@ pub enum Call {
     ModelSettings(ModelSettingsRequest),
     ConnectionSave(ConnectionSaveRequest),
     ConnectionDelete(ConnectionDeleteRequest),
+    /// T008.3：验证连接（最小请求）；结果写进注册器。
+    ConnectionVerify(ConnectionVerifyRequest),
     KeyringRelocate(KeyringRelocateRequest),
     KeyringReopen(KeyringReopenRequest),
     KeyringRestart(KeyringRestartRequest),
@@ -90,6 +92,7 @@ pub enum Response {
     ModelSettings(ModelSettingsResponse),
     ConnectionSave(ConnectionSaveResponse),
     ConnectionDelete(ConnectionDeleteResponse),
+    ConnectionVerify(ConnectionVerifyResponse),
     KeyringRelocate(KeyringRelocateResponse),
     KeyringReopen(KeyringReopenResponse),
     KeyringRestart(KeyringRestartResponse),
@@ -363,6 +366,17 @@ pub struct FirstUseResponse {
     pub key_file: credentials::KeyFileInfo,
 }
 
+/// T008.3：验证一个连接（空 = 用注册器里的 endpoint/key 发最小请求）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionVerifyRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionVerifyResponse {
+    pub connection: credentials::ConnectionInfo,
+}
+
 pub const PROTOCOL_VERSION: u64 = 3;
 
 /// 根会话不可用的种类（T007.2）：服务照常起，ready 报出来，方法一律拒绝。
@@ -529,6 +543,7 @@ impl ServiceHost {
             Call::ModelSettings(_)
             | Call::ConnectionSave(_)
             | Call::ConnectionDelete(_)
+            | Call::ConnectionVerify(_)
             | Call::KeyringRelocate(_)
             | Call::KeyringReopen(_)
             | Call::KeyringRestart(_)
@@ -925,6 +940,14 @@ impl RootHost {
         })
     }
 
+    /// T008.3：验证连接（骨架期未接）。
+    pub async fn connection_verify(
+        &self,
+        _request: ConnectionVerifyRequest,
+    ) -> Result<ConnectionVerifyResponse, ServiceError> {
+        Err(ServiceError::SettingsOnBareHost)
+    }
+
     pub async fn keyring_relocate(
         &self,
         request: KeyringRelocateRequest,
@@ -983,6 +1006,10 @@ impl RootHost {
                 .connection_delete(request)
                 .await
                 .map(Response::ConnectionDelete),
+            Call::ConnectionVerify(request) => self
+                .connection_verify(request)
+                .await
+                .map(Response::ConnectionVerify),
             Call::KeyringRelocate(request) => self
                 .keyring_relocate(request)
                 .await

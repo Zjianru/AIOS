@@ -2183,6 +2183,7 @@ dependencies = [
  "agent",
  "credentials",
  "model",
+ "reqwest",
  "serde",
  "serde_json",
  "session",
