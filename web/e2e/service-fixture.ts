@@ -111,6 +111,8 @@ export interface FixtureOptions {
   slowMs?: number;
   /// first request 回一次 ask_user_question（两题：一题选项、一题自己写）。
   askTurn?: boolean;
+  /// 模型失败脚本：前两次 500 后成功 / 一直 500 / 401 凭证错误。
+  failure?: 'retry-then-succeed' | 'model' | 'credential';
 }
 
 /** 接缝 5：假 DeepSeek 脚本回放 + 真 aios-dev serve（页面也由它同源托管）。 */
@@ -118,6 +120,7 @@ export async function startKernelFixture(
   options: FixtureOptions = {},
 ): Promise<KernelFixture> {
   let askCount = 0;
+  let modelCalls = 0;
   const fake: Server = createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/v1/messages') {
       let body = '';
@@ -125,6 +128,17 @@ export async function startKernelFixture(
         body += chunk.toString();
       });
       req.on('end', () => {
+        if (options.failure === 'credential') {
+          res.writeHead(401, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid api key' } }));
+          return;
+        }
+        modelCalls += 1;
+        if (options.failure === 'model' || (options.failure === 'retry-then-succeed' && modelCalls <= 2)) {
+          res.writeHead(500, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ type: 'error', error: { type: 'server_error', message: 'overloaded' } }));
+          return;
+        }
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         const toolResult = body.includes('tool_result');
         let reply = FINAL_TEXT_SSE;
