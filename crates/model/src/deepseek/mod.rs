@@ -134,8 +134,14 @@ impl DeepSeek {
         validate_pairing: bool,
     ) -> Result<ChunkStream, ModelError> {
         let api_key = self.credentials.issue("model-request")?;
+        let mut effective = self.config.clone();
+        if let Ok(current) = self.model_override.lock()
+            && let Some(model) = current.as_deref()
+        {
+            effective.model = model.to_owned();
+        }
         let body =
-            serialize::request_body(&self.config, messages, tools, max_tokens, validate_pairing)?;
+            serialize::request_body(&effective, messages, tools, max_tokens, validate_pairing)?;
         let request = self
             .http
             .post(self.url.clone())
