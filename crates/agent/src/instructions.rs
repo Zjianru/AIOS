@@ -141,7 +141,12 @@ impl InstructionState {
         observed: impl IntoIterator<Item = PathBuf> + Send,
     ) -> Option<Message> {
         let cwd = absolute(cwd);
-        let (project_root, _root_warning) = find_project_root(&cwd).await;
+        let (project_root, root_warning) = find_project_root(&cwd).await;
+        if let Some(warning) = root_warning {
+            // DSH 把 marker 探测错误交给调用方（files.ts:224-249 `@throws`）；AIOS 没有请求级
+            // 抛错接缝（P11 适配），选择降级 cwd + stderr 留痕（T006.10b）。
+            eprintln!("[instructions] {warning}; using cwd");
+        }
         let mut dirs = ancestor_chain(&project_root, &cwd);
         extend_with_observed(&mut dirs, &cwd, observed.into_iter());
         let identity = baseline_identity(&cwd, &project_root, data_dir, instruction_roots);
@@ -883,11 +888,20 @@ fn render_context(items: &[RenderItem], max_bytes: usize, intro: &str) -> Render
     }
 }
 
-/// DSH renderInstructionChains 的 intro 选择：有链保留 full-frame intro 就用 base intro，
-/// 否则用第一个幸存的（compact）intro，都没有就不加 intro。
-/// skeleton 先恒返回 base（行为不变），红测试后补选择逻辑。
-fn merged_intro(base_intro: &str, _chain_texts: &[&str]) -> String {
-    base_intro.to_owned()
+/// DSH renderInstructionChains 的 intro 选择：
+/// 「A chain that kept the full frame decides the intro; otherwise the first surviving
+/// (compact) intro applies; otherwise there is none.」（render.ts:474-477）
+fn merged_intro(base_intro: &str, chain_texts: &[&str]) -> String {
+    if chain_texts.iter().any(|text| text.contains(base_intro)) {
+        return base_intro.to_owned();
+    }
+    if chain_texts
+        .iter()
+        .any(|text| text.contains(COMPACT_AGENT_INSTRUCTIONS_INTRO))
+    {
+        return COMPACT_AGENT_INSTRUCTIONS_INTRO.to_owned();
+    }
+    String::new()
 }
 
 fn render_chains(items: &[RenderItem], max_bytes: usize, intro: &str) -> RenderedContext {
