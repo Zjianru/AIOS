@@ -46,7 +46,7 @@ impl DeepSeek {
         if config.api_key.trim().is_empty() {
             return Err(ModelError::new(
                 ErrorCode::MissingCredential,
-                "DEEPSEEK_API_KEY 为空",
+                "凭证为空（应由 Keyring 签发）",
             ));
         }
         let url = messages_url(&config.base_url)?;
