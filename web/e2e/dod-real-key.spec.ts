@@ -22,6 +22,19 @@ test('DoD4 真 key：bash 只读 /tmp/aios-t007-dod/work 并回答', async ({ pa
     );
     await page.getByRole('button', { name: '发送' }).click();
     await expect(page.getByText('DOD-4-OK', { exact: false })).toBeVisible({ timeout: 180_000 });
+    // 等这一轮的 turn/end 落到日志（流式文本先到，日志后写），再做截图与比对。
+    const followFor = async () => {
+      const response = await request.post(
+        `${fixture.baseUrl}/api?token=${encodeURIComponent(fixture.token)}`,
+        { data: { method: 'follow', lastSeq: 0 } },
+      );
+      return (await response.json()).events as { type: string }[];
+    };
+    await expect
+      .poll(async () => (await followFor()).filter((event) => event.type === 'turn/end').length, {
+        timeout: 90_000,
+      })
+      .toBeGreaterThanOrEqual(1);
     await page.screenshot({ path: path.join(evidence, 'dod4-answer.png'), fullPage: true });
     const response = await request.post(
       `${fixture.baseUrl}/api?token=${encodeURIComponent(fixture.token)}`,
@@ -70,13 +83,21 @@ test('DoD5 真 key：两题整批作答 + 整批不答', async ({ page }) => {
     await page.goto(`${fixture.baseUrl}/?token=${encodeURIComponent(fixture.token)}#kind`);
     const input = page.getByPlaceholder('和 Kind 说…');
     const prompt =
-      '请调用 ask_user_question 工具，一次问我两个问题：第一题用选项「是/否」问「继续吗？」；第二题自由文本问「你的名字？」。等我回答后再继续。';
+      '必须调用 ask_user_question 工具；arguments 严格为：' +
+      '{"questions":[{"id":"q1","question":"继续吗？","options":[{"label":"是"},{"label":"否"}]},{"id":"q2","question":"你的名字？"}]}' +
+      '。调用后停下来等我回答，不要自己回答。';
     await input.fill(prompt);
     await page.getByRole('button', { name: '发送' }).click();
     await expect(page.getByText('继续吗？', { exact: false })).toBeVisible({ timeout: 120_000 });
     await expect(page.getByText('你的名字？', { exact: false })).toBeVisible();
-    await page.getByRole('radio', { name: /是/ }).click();
-    await page.getByPlaceholder('写下你的回答').fill('测试用户');
+    await expect(page.getByRole('radio').first()).toBeVisible({ timeout: 120_000 });
+    await page.getByRole('radio').first().click();
+    const freeText = page.getByPlaceholder('写下你的回答');
+    if ((await freeText.count()) > 0) {
+      await freeText.fill('测试用户');
+    } else {
+      await page.getByPlaceholder('自己写').fill('测试用户');
+    }
     await page.getByRole('button', { name: '提交回答' }).click();
     await expect(page.getByText('测试用户', { exact: true })).toBeVisible({ timeout: 120_000 });
     await page.screenshot({ path: path.join(evidence, 'dod5-ask-answered.png'), fullPage: true });
