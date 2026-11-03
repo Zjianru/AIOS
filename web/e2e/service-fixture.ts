@@ -130,6 +130,8 @@ export interface KernelFixture {
   dataDir: string;
   /** T008.4：假 DeepSeek 的 endpoint（页面连接会被 e2e 改写到它）。 */
   fakeEndpoint: string;
+  /** T008.4：假 DeepSeek 最近一次请求体里的 model（下一轮生效断言用）。 */
+  lastModel: () => string | null;
   dropProxy?: () => Promise<void>;
   restoreProxy?: () => Promise<void>;
   /// T007 #1：页面开着时重启同一个端口的服务（新进程=新 cookie 钥匙，旧页面会话失效）。
@@ -166,6 +168,7 @@ export async function startKernelFixture(
 ): Promise<KernelFixture> {
   let askCount = 0;
   let modelCalls = 0;
+  let lastModel: string | null = null;
   const fake: Server = createServer((req, res) => {
     if (req.headers['x-api-key'] === 'bad-key') {
       res.writeHead(401, { 'content-type': 'application/json' });
@@ -178,6 +181,12 @@ export async function startKernelFixture(
         body += chunk.toString();
       });
       req.on('end', () => {
+        try {
+          const parsed = JSON.parse(body) as { model?: string };
+          if (typeof parsed.model === 'string') lastModel = parsed.model;
+        } catch {
+          // 非 JSON 请求不记 model。
+        }
         if (options.failure === 'credential') {
           res.writeHead(401, { 'content-type': 'application/json' });
           res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid api key' } }));
@@ -369,6 +378,7 @@ export async function startKernelFixture(
     token,
     dataDir,
     fakeEndpoint: 'http://127.0.0.1:' + String(fakePort),
+    lastModel: () => lastModel,
     dropProxy,
     restoreProxy,
     restart,
@@ -495,6 +505,7 @@ export async function startRealKernelFixture(
     baseUrl,
     dataDir,
     fakeEndpoint: '',
+    lastModel: () => null,
     dropProxy: proxy.drop,
     restoreProxy: proxy.restore,
     close: async () => {
