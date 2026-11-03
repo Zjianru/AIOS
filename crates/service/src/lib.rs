@@ -885,49 +885,86 @@ impl RootHost {
         }
     }
 
-    /// T008.3：设置页的 Keyring 视图（骨架期未接）。
+    /// T008.3：每次设置操作重新打开 Keyring（不缓存；换 key/换位置立即生效）。
+    fn keyring(&self) -> Result<credentials::Keyring, ServiceError> {
+        Ok(credentials::Keyring::open(
+            &self.options.data_dir,
+            self.options.identity.as_deref(),
+        )?)
+    }
+
+    /// T008.3：设置页的 Keyring 视图（响应不含 key 正文）。
     pub async fn model_settings(&self) -> Result<ModelSettingsResponse, ServiceError> {
-        Err(ServiceError::SettingsOnBareHost)
+        Ok(ModelSettingsResponse {
+            settings: self.keyring()?.view(),
+        })
     }
 
     pub async fn connection_save(
         &self,
-        _request: ConnectionSaveRequest,
+        request: ConnectionSaveRequest,
     ) -> Result<ConnectionSaveResponse, ServiceError> {
-        Err(ServiceError::SettingsOnBareHost)
+        let connection = self
+            .keyring()?
+            .save_connection(credentials::NewConnection {
+                id: request.id,
+                name: request.name,
+                model: request.model,
+                endpoint: request.endpoint,
+                api_key: request.api_key,
+            })?;
+        Ok(ConnectionSaveResponse { connection })
     }
 
     pub async fn connection_delete(
         &self,
-        _request: ConnectionDeleteRequest,
+        request: ConnectionDeleteRequest,
     ) -> Result<ConnectionDeleteResponse, ServiceError> {
-        Err(ServiceError::SettingsOnBareHost)
+        Ok(ConnectionDeleteResponse {
+            deleted: self.keyring()?.delete_connection(&request.id)?,
+        })
     }
 
     pub async fn keyring_relocate(
         &self,
-        _request: KeyringRelocateRequest,
+        request: KeyringRelocateRequest,
     ) -> Result<KeyringRelocateResponse, ServiceError> {
-        Err(ServiceError::SettingsOnBareHost)
+        self.keyring()?
+            .relocate_identity(std::path::Path::new(&request.to))?;
+        Ok(KeyringRelocateResponse {})
     }
 
     pub async fn keyring_reopen(
         &self,
-        _request: KeyringReopenRequest,
+        request: KeyringReopenRequest,
     ) -> Result<KeyringReopenResponse, ServiceError> {
-        Err(ServiceError::SettingsOnBareHost)
+        self.keyring()?
+            .repoint_identity(std::path::Path::new(&request.at))?;
+        Ok(KeyringReopenResponse {})
     }
 
     pub async fn keyring_restart(&self) -> Result<KeyringRestartResponse, ServiceError> {
-        Err(ServiceError::SettingsOnBareHost)
+        let keyring = self.keyring()?;
+        keyring.restart()?;
+        Ok(KeyringRestartResponse {
+            settings: keyring.view(),
+        })
     }
 
     pub async fn issues(&self) -> Result<IssuesResponse, ServiceError> {
-        Err(ServiceError::SettingsOnBareHost)
+        let view = self.keyring()?.view();
+        Ok(IssuesResponse {
+            issued_today: view.issued_today,
+            issues: view.issues,
+        })
     }
 
     pub async fn first_use(&self) -> Result<FirstUseResponse, ServiceError> {
-        Err(ServiceError::SettingsOnBareHost)
+        let view = self.keyring()?.view();
+        Ok(FirstUseResponse {
+            first_use: view.first_use,
+            key_file: view.key_file,
+        })
     }
 
     /// 唯一调用入口；根会话不可用时除 recheck 外一律拒绝。

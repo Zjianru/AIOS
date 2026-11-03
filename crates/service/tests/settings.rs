@@ -1,11 +1,11 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use agent::AgentConfig;
 use model::{DEFAULT_CONTEXT_WINDOW, DeepSeekConfig, Effort};
 use service::{
     Call, ConnectionDeleteRequest, ConnectionSaveRequest, FirstUseRequest, IssuesRequest,
     KeyringRelocateRequest, KeyringReopenRequest, KeyringRestartRequest, ModelSettingsRequest,
-    Response, RootHost, RootSessionOptions,
+    RootHost, RootSessionOptions,
 };
 use tempfile::tempdir;
 
@@ -133,4 +133,40 @@ async fn 根会话不可用时设置仍可用() {
         .dispatch(Call::ModelSettings(ModelSettingsRequest {}))
         .await;
     assert!(response.is_ok(), "根会话坏了设置也应可用：{response:?}");
+}
+
+#[tokio::test]
+async fn 换位置指回重新开始() {
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "deepseek".to_owned(),
+            name: "DeepSeek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: "https://api.deepseek.com/anthropic".to_owned(),
+            api_key: TEST_KEY.to_owned(),
+        }))
+        .await;
+    assert!(saved.is_ok(), "save: {saved:?}");
+    let moved = dir.path().join("moved-identity.txt");
+    let relocated = host
+        .dispatch(Call::KeyringRelocate(KeyringRelocateRequest {
+            to: moved.display().to_string(),
+        }))
+        .await;
+    assert!(relocated.is_ok(), "relocate: {relocated:?}");
+    assert!(moved.exists(), "新位置应有钥匙文件");
+    let reopened = host
+        .dispatch(Call::KeyringReopen(KeyringReopenRequest {
+            at: moved.display().to_string(),
+        }))
+        .await;
+    assert!(reopened.is_ok(), "reopen: {reopened:?}");
+    let restarted = host
+        .dispatch(Call::KeyringRestart(KeyringRestartRequest {}))
+        .await;
+    assert!(restarted.is_ok(), "restart: {restarted:?}");
+    let json = serde_json::to_string(&restarted.unwrap()).unwrap();
+    no_key(&json);
 }
