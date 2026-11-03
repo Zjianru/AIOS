@@ -11,22 +11,32 @@ async fn invalid_effort_is_rejected_before_request() {
         .respond_with(ResponseTemplate::new(200))
         .mount(&server)
         .await;
-    let data_dir = std::env::temp_dir().join(format!("aios-cli-effort-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&data_dir);
+    let data_dir = tempfile::tempdir().expect("tempdir");
+    let identity = data_dir.path().join("identity.txt");
+    let keyring = credentials::Keyring::open(data_dir.path(), Some(&identity)).expect("keyring");
+    keyring
+        .save_connection(credentials::NewConnection {
+            id: "deepseek".to_owned(),
+            name: "DeepSeek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: server.uri(),
+            api_key: "test-key".to_owned(),
+        })
+        .expect("save connection");
 
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_aios-dev"))
         .args([
             "run",
             "--data-dir",
-            data_dir.to_str().unwrap(),
+            data_dir.path().to_str().unwrap(),
+            "--identity",
+            identity.to_str().unwrap(),
             "--cwd",
             ".",
             "--effort",
             "bogus",
             "你好",
         ])
-        .env("DEEPSEEK_API_KEY", "test-key")
-        .env("DEEPSEEK_BASE_URL", server.uri())
         .output()
         .expect("运行 aios-dev");
     assert!(!output.status.success(), "非法推理强度必须非 0 退出");

@@ -10,7 +10,27 @@ fn aios_dev() -> &'static str {
     env!("CARGO_BIN_EXE_aios-dev")
 }
 
-fn run_resume(data_dir: &std::path::Path, cwd: &std::path::Path, id: &str) -> std::process::Output {
+fn seed_keyring(data_dir: &std::path::Path) -> std::path::PathBuf {
+    let identity = data_dir.join("identity.txt");
+    let keyring = credentials::Keyring::open(data_dir, Some(&identity)).expect("keyring");
+    keyring
+        .save_connection(credentials::NewConnection {
+            id: "deepseek".to_owned(),
+            name: "DeepSeek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: "http://127.0.0.1:1".to_owned(),
+            api_key: "test-key".to_owned(),
+        })
+        .expect("save connection");
+    identity
+}
+
+fn run_resume(
+    data_dir: &std::path::Path,
+    cwd: &std::path::Path,
+    id: &str,
+    identity: &std::path::Path,
+) -> std::process::Output {
     Command::new(aios_dev())
         .args([
             "run",
@@ -18,12 +38,12 @@ fn run_resume(data_dir: &std::path::Path, cwd: &std::path::Path, id: &str) -> st
             id,
             "--data-dir",
             data_dir.to_str().expect("data dir 是 UTF-8"),
+            "--identity",
+            identity.to_str().expect("identity 是 UTF-8"),
             "--cwd",
             cwd.to_str().expect("cwd 是 UTF-8"),
             "你好",
         ])
-        .env("DEEPSEEK_API_KEY", "test-key")
-        .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
         .stdin(Stdio::null())
         .output()
         .expect("aios-dev 子进程应能启动")
@@ -36,8 +56,9 @@ fn busy_session_is_rejected_with_writer_held_code() {
     // 测试进程先持有写锁，模拟「服务开着 Kind 会话」。
     let store = session::SessionStore::create(data_dir.path(), cwd.path()).unwrap();
     let id = store.id().clone();
+    let identity = seed_keyring(data_dir.path());
 
-    let output = run_resume(data_dir.path(), cwd.path(), id.as_str());
+    let output = run_resume(data_dir.path(), cwd.path(), id.as_str(), &identity);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(
         output.status.code(),
@@ -61,8 +82,9 @@ fn released_lock_allows_the_session_again() {
     let store = session::SessionStore::create(data_dir.path(), cwd.path()).unwrap();
     let id = store.id().clone();
     drop(store); // 锁释放：第二个进程应能打开（然后用假 base URL 失败在模型请求，而不是占用）。
+    let identity = seed_keyring(data_dir.path());
 
-    let output = run_resume(data_dir.path(), cwd.path(), id.as_str());
+    let output = run_resume(data_dir.path(), cwd.path(), id.as_str(), &identity);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_ne!(
         output.status.code(),
