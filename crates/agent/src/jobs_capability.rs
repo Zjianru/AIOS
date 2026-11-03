@@ -21,8 +21,10 @@ use crate::{AgentError, AgentEvent, JobStatus};
 const INLINE_OUTPUT_BYTES: usize = 2048;
 
 /// 注册表回调送来的一条生命周期消息；单消费者按发生顺序写日志/投递通知。
+/// T006.9c：job/registered 不再走这条异步通道——注册在工具执行内同步入队，
+/// 由 driver 在提交该批 tool/result 之前落日志（照 DSH registry.start 的同步 append）；
+/// 这里只保留结算事件与完成通知（settled 允许晚于 turn/end，DSH jobs docs）。
 enum Lifecycle {
-    Registered(tools::JobRegistered),
     Settled(tools::JobSettled),
     Notify(tools::JobSettled),
 }
@@ -32,10 +34,6 @@ pub(crate) fn install(inner: &Arc<Inner>) {
     let weak = Arc::downgrade(inner);
     let (sender, mut receiver) = mpsc::unbounded_channel::<Lifecycle>();
     let tasks = inner.job_session().tasks();
-    let registered_sender = sender.clone();
-    tasks.set_on_registered(Arc::new(move |registered: &tools::JobRegistered| {
-        let _ = registered_sender.send(Lifecycle::Registered(registered.clone()));
-    }));
     let settled_sender = sender.clone();
     tasks.set_on_settled(Arc::new(move |settled: &tools::JobSettled| {
         let _ = settled_sender.send(Lifecycle::Settled(settled.clone()));
@@ -53,13 +51,6 @@ pub(crate) fn install(inner: &Arc<Inner>) {
                 break;
             };
             match message {
-                Lifecycle::Registered(registered) => {
-                    // DSH jobs-local recordSessionEvent：try/catch + logger.warn——记录失败
-                    // 不能打断已启动的工作、也不能阻止等待者释放；AIOS 用 stderr 留痕。
-                    if let Err(error) = inner.append(&[registered_event(&registered)]).await {
-                        eprintln!("{}", lifecycle_record_warning(&registered.id, &error));
-                    }
-                }
                 Lifecycle::Settled(settled) => {
                     if let Err(error) = inner.append(&[settled_event(&settled)]).await {
                         eprintln!("{}", lifecycle_record_warning(&settled.id, &error));

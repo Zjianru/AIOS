@@ -452,6 +452,12 @@ impl TaskRegistry {
                 tool_call: spec.tool_call.clone(),
             }
         };
+        // T006.9c：先同步入队（driver 在 tool/result 提交前取走落日志，照 DSH
+        // registry.start 在工具执行内同步 session.append 的时点），再通知订阅回调。
+        self.registered_pending
+            .lock()
+            .expect("jobs registered 队列锁被毒化")
+            .push(registered.clone());
         if let Some(callback) = self.registered_callback() {
             callback(&registered);
         }

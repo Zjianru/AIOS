@@ -1485,6 +1485,15 @@ async fn run_step(
         .into_iter()
         .map(|result| result.expect("每个调用都有结果（执行或 override）"))
         .collect();
+    // T006.9c（照 DSH registry.start 的同步 append）：工具执行期间登记的后台任务先把
+    // job/registered 落日志，再提交本批 tool/result；job/settled 仍由异步通道结算时写
+    // （DSH jobs docs 允许晚于 turn/end）。
+    let registered = inner.tool_session().tasks().take_registered_pending();
+    if !registered.is_empty() {
+        inner
+            .append(&crate::jobs_capability::registered_events(&registered))
+            .await?;
+    }
     for result in &outcome.results {
         let Some(call) = calls.iter().find(|call| call.id == result.call_id) else {
             continue;
