@@ -54,10 +54,16 @@ pub(crate) fn install(inner: &Arc<Inner>) {
             };
             match message {
                 Lifecycle::Registered(registered) => {
-                    let _ = inner.append(&[registered_event(&registered)]).await;
+                    // DSH jobs-local recordSessionEvent：try/catch + logger.warn——记录失败
+                    // 不能打断已启动的工作、也不能阻止等待者释放；AIOS 用 stderr 留痕。
+                    if let Err(error) = inner.append(&[registered_event(&registered)]).await {
+                        eprintln!("{}", lifecycle_record_warning(&registered.id, &error));
+                    }
                 }
                 Lifecycle::Settled(settled) => {
-                    let _ = inner.append(&[settled_event(&settled)]).await;
+                    if let Err(error) = inner.append(&[settled_event(&settled)]).await {
+                        eprintln!("{}", lifecycle_record_warning(&settled.id, &error));
+                    }
                     if inner
                         .tool_session()
                         .tasks()
@@ -72,8 +78,9 @@ pub(crate) fn install(inner: &Arc<Inner>) {
                         continue;
                     }
                     if let Err(error) = deliver(inner.as_ref(), &settled).await {
-                        // 后台边界：没有调用方接错误；写日志失败不打断唤醒（T006.2a known：通知丢失，进程继续）。
-                        let _ = error;
+                        // 后台边界：没有同步调用方接错误；投递失败留痕但不打断唤醒
+                        // （T006.2a known：通知丢失，进程继续；T006.19 更正 ③）。
+                        eprintln!("{}", lifecycle_notify_warning(&settled.id, &error));
                     }
                     inner.wake();
                 }
@@ -174,14 +181,12 @@ async fn deliver(host: &dyn LoopAccess, settled: &tools::JobSettled) -> Result<(
 
 /// 生命周期写日志失败的留痕文案（照 DSH jobs-local recordSessionEvent 的 logger.warn：T006.19 更正项 ③）。
 pub(crate) fn lifecycle_record_warning(job_id: &str, error: &dyn std::fmt::Display) -> String {
-    let _ = (job_id, error);
-    String::new()
+    format!("[jobs] failed to record lifecycle for {job_id}: {error}")
 }
 
 /// 完成通知投递失败的留痕文案（AIOS 异步通道没有同步调用方，按同一 logger.warn 约定留痕；T006.19 更正项 ③）。
 pub(crate) fn lifecycle_notify_warning(job_id: &str, error: &dyn std::fmt::Display) -> String {
-    let _ = (job_id, error);
-    String::new()
+    format!("[jobs] failed to deliver completion notice for {job_id}: {error}")
 }
 
 /// T006.19 更正 ③ 的红测试：DSH jobs-local recordSessionEvent 是试/捕获 + logger.warn，
