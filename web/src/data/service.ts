@@ -151,5 +151,6 @@ export function connectSession(
     }
   };
   socket.onclose = onClose;
+  socket.onerror = onClose;
   return socket;
 }

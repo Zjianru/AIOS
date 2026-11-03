@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { createServer, type Server } from 'node:http';
+import { createServer, request as httpRequest, type Server } from 'node:http';
+import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -106,6 +107,8 @@ const ASK_CALL_SSE = (() => {
 export interface KernelFixture {
   baseUrl: string;
   token: string;
+  dropProxy?: () => Promise<void>;
+  restoreProxy?: () => Promise<void>;
   close(): Promise<void>;
 }
 
@@ -122,6 +125,8 @@ export interface FixtureOptions {
   highUsage?: boolean;
   /// serve 的 --context-window（自动压缩测试用 5000）。
   contextWindow?: number;
+  /// 在页面和服务之间加一层可断开/恢复的 HTTP+WS 代理（断线重连用例）。
+  proxy?: boolean;
 }
 
 /** 接缝 5：假 DeepSeek 脚本回放 + 真 aios-dev serve（页面也由它同源托管）。 */
@@ -211,9 +216,74 @@ export async function startKernelFixture(
       reject(new Error(`serve 退出（${code}）: ${output}`));
     });
   });
+  let baseUrl = parsed.baseUrl;
+  const proxyState: {
+    server: Server | null;
+    port: number;
+    sockets: Set<net.Socket>;
+  } = { server: null, port: 0, sockets: new Set() };
+  const crlf = String.fromCharCode(13, 10);
+  const targetPort = Number(new URL(parsed.baseUrl).port);
+  const startProxy = async (port: number): Promise<number> =>
+    new Promise((resolve) => {
+      const server = createServer((req, res) => {
+        const upstream = httpRequest(
+          { host: '127.0.0.1', port: targetPort, path: req.url, method: req.method, headers: req.headers },
+          (response) => {
+            res.writeHead(response.statusCode ?? 502, response.headers);
+            response.pipe(res);
+          },
+        );
+        upstream.on('error', () => {
+          if (!res.headersSent) res.writeHead(502);
+          res.end();
+        });
+        req.pipe(upstream);
+      });
+      server.on('upgrade', (req, socket, head) => {
+        const upstream = net.connect(targetPort, '127.0.0.1', () => {
+          const headerLines: string[] = [];
+          for (let index = 0; index < req.rawHeaders.length; index += 2) {
+            headerLines.push(req.rawHeaders[index] + ': ' + req.rawHeaders[index + 1]);
+          }
+          upstream.write(req.method + ' ' + req.url + ' HTTP/1.1' + crlf + headerLines.join(crlf) + crlf + crlf);
+          if (head.length > 0) upstream.write(head);
+          socket.pipe(upstream);
+          upstream.pipe(socket);
+        });
+        proxyState.sockets.add(socket);
+        socket.on('close', () => proxyState.sockets.delete(socket));
+        upstream.on('error', () => socket.destroy());
+        socket.on('error', () => upstream.destroy());
+      });
+      server.listen(port, '127.0.0.1', () => {
+        proxyState.server = server;
+        proxyState.port = (server.address() as net.AddressInfo).port;
+        resolve(proxyState.port);
+      });
+    });
+  const dropProxy = async (): Promise<void> => {
+    const server = proxyState.server;
+    proxyState.server = null;
+    if (server) {
+      server.close();
+    }
+    for (const socket of proxyState.sockets) socket.destroy();
+    proxyState.sockets.clear();
+  };
+  const restoreProxy = async (): Promise<void> => {
+    if (!proxyState.server) await startProxy(proxyState.port);
+  };
+  if (options.proxy) {
+    baseUrl = 'http://127.0.0.1:' + String(await startProxy(0));
+  }
   return {
     ...parsed,
+    baseUrl,
+    dropProxy,
+    restoreProxy,
     close: async () => {
+      await dropProxy();
       child.kill('SIGTERM');
       fake.close();
       await rm(dataDir, { recursive: true, force: true });
