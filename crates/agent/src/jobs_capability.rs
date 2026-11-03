@@ -171,3 +171,42 @@ async fn deliver(host: &dyn LoopAccess, settled: &tools::JobSettled) -> Result<(
     });
     host.enqueue_context(text).await
 }
+
+/// 生命周期写日志失败的留痕文案（照 DSH jobs-local recordSessionEvent 的 logger.warn：T006.19 更正项 ③）。
+pub(crate) fn lifecycle_record_warning(job_id: &str, error: &dyn std::fmt::Display) -> String {
+    let _ = (job_id, error);
+    String::new()
+}
+
+/// 完成通知投递失败的留痕文案（AIOS 异步通道没有同步调用方，按同一 logger.warn 约定留痕；T006.19 更正项 ③）。
+pub(crate) fn lifecycle_notify_warning(job_id: &str, error: &dyn std::fmt::Display) -> String {
+    let _ = (job_id, error);
+    String::new()
+}
+
+/// T006.19 更正 ③ 的红测试：DSH jobs-local recordSessionEvent 是试/捕获 + logger.warn，
+/// 不是把 append 失败抛给 producer；AIOS 用 stderr 留痕，不打断结算与唤醒。
+#[cfg(test)]
+mod t006_19_jobs_lifecycle_tests {
+    use super::{lifecycle_notify_warning, lifecycle_record_warning};
+
+    #[test]
+    fn lifecycle_record_failure_warns_like_dsh() {
+        let text = lifecycle_record_warning("bash-abc", &"disk full");
+        assert!(
+            text.starts_with("[jobs] failed to record lifecycle for bash-abc: "),
+            "DSH recordSessionEvent 文案：{text}"
+        );
+        assert!(text.contains("disk full"), "要带原因：{text}");
+    }
+
+    #[test]
+    fn lifecycle_notify_failure_warns() {
+        let text = lifecycle_notify_warning("bash-abc", &"inbox closed");
+        assert!(
+            text.contains("failed to deliver completion notice for bash-abc"),
+            "通知投递失败要留痕：{text}"
+        );
+        assert!(text.contains("inbox closed"), "要带原因：{text}");
+    }
+}
