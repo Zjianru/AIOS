@@ -563,132 +563,140 @@ impl Capability for AskCapability {
             else {
                 return Ok(HookOutcome::Continue);
             };
-            // 本票只拦批内第一条 ask 调用（T006.1d2 的边界；多 ask 行为留给后续票）。
-            let Some(index) = calls
+            // T006.13b：批内全部 ask_user_question 按模型顺序依次拦截；每个调用各自
+            // 等待回答/撤销（DSH tool-ask-user 每个调用独立走 userQuestions.ask），
+            // 结果先收集、最后一次性返回，driver 按 index 回填且批内顺序不变。
+            let ask_indices: Vec<usize> = calls
                 .iter()
-                .position(|call| call.name == "ask_user_question")
-            else {
+                .enumerate()
+                .filter(|(_, call)| call.name == "ask_user_question")
+                .map(|(index, _)| index)
+                .collect();
+            if ask_indices.is_empty() {
                 return Ok(HookOutcome::Continue);
-            };
-            let call = &calls[index];
-            let Some(questions) = questions_from_call(call) else {
-                return Ok(HookOutcome::ToolResultOverrides {
-                    overrides: vec![(index, ToolResult {
-                        call_id: call.id.clone(),
-                        content: "Error: invalid ask_user_question arguments (each question needs non-empty id and question)".to_owned(),
-                        is_error: true,
-                        error_code: Some("ASK_USER_INVALID".to_owned()),
-                    })],
-                });
-            };
-            let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
-            self.state
-                .set_pending(*turn, *step, call.id.clone(), questions.clone(), sender);
-            for question in &questions {
-                event
-                    .host()
-                    .append(&[EventKind::QuestionAsked {
-                        turn: *turn,
-                        step: *step,
-                        call_id: call.id.clone(),
-                        question_id: question.id.clone(),
-                        question: question.question.clone(),
-                        header: question.header.clone(),
-                        options: question
-                            .options
-                            .iter()
-                            .map(|option| option.label.clone())
-                            .collect(),
-                        multi_select: question.multi_select,
-                    }])
-                    .await?;
             }
-            let _ = event.host().events().send(AgentEvent::QuestionAsked {
-                questions: questions.clone(),
-            });
-            let abort = event
-                .host()
-                .current_abort()
-                .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
-            let batch_settled = self.state.wait(receiver, &abort).await;
-            let Some(settled) = self.state.take_settled() else {
-                // 状态被别处取走（理论上不会）；不作为 aborted 处理，免得吞掉本轮。
-                return Ok(HookOutcome::Continue);
-            };
-            if !settled.answers.is_empty() {
-                let events: Vec<EventKind> = settled
-                    .answers
-                    .iter()
-                    .map(|(question_id, answer)| EventKind::QuestionAnswered {
-                        turn: settled.turn,
-                        step: settled.step,
-                        call_id: settled.call_id.clone(),
-                        question_id: question_id.clone(),
-                        selected: answer.selected.clone(),
-                        custom: answer.custom.clone(),
-                    })
-                    .collect();
-                event.host().append(&events).await?;
-            }
-            if !settled.cancelled.is_empty() {
-                let events: Vec<EventKind> = settled
-                    .cancelled
-                    .iter()
-                    .map(|question_id| EventKind::QuestionCancelled {
-                        turn: settled.turn,
-                        step: settled.step,
-                        call_id: settled.call_id.clone(),
-                        question_id: question_id.clone(),
-                    })
-                    .collect();
-                event.host().append(&events).await?;
-            }
-            if !batch_settled {
-                // 整轮取消（Agent::cancel）：保留旧行为，按 aborted 收尾；未答的题写撤销。
-                let answered: BTreeSet<&String> = settled
-                    .answers
-                    .iter()
-                    .map(|(question_id, _)| question_id)
-                    .collect();
-                let mut undone: Vec<EventKind> = Vec::new();
+            let mut overrides: Vec<(usize, ToolResult)> = Vec::new();
+            for index in ask_indices {
+                let call = &calls[index];
+                let Some(questions) = questions_from_call(call) else {
+                    overrides.push((
+                        index,
+                        ToolResult {
+                            call_id: call.id.clone(),
+                            content: "Error: invalid ask_user_question arguments (each question needs non-empty id and question)".to_owned(),
+                            is_error: true,
+                            error_code: Some("ASK_USER_INVALID".to_owned()),
+                        },
+                    ));
+                    continue;
+                };
+                let (sender, receiver) = tokio::sync::oneshot::channel::<()>();
+                self.state
+                    .set_pending(*turn, *step, call.id.clone(), questions.clone(), sender);
                 for question in &questions {
-                    if !answered.contains(&question.id)
-                        && !settled.cancelled.iter().any(|id| id == &question.id)
-                    {
-                        undone.push(EventKind::QuestionCancelled {
+                    event
+                        .host()
+                        .append(&[EventKind::QuestionAsked {
+                            turn: *turn,
+                            step: *step,
+                            call_id: call.id.clone(),
+                            question_id: question.id.clone(),
+                            question: question.question.clone(),
+                            header: question.header.clone(),
+                            options: question
+                                .options
+                                .iter()
+                                .map(|option| option.label.clone())
+                                .collect(),
+                            multi_select: question.multi_select,
+                        }])
+                        .await?;
+                }
+                let _ = event.host().events().send(AgentEvent::QuestionAsked {
+                    questions: questions.clone(),
+                });
+                let abort = event
+                    .host()
+                    .current_abort()
+                    .unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+                let batch_settled = self.state.wait(receiver, &abort).await;
+                let Some(settled) = self.state.take_settled() else {
+                    // 状态被别处取走（理论上不会）；不作为 aborted 处理，免得吞掉本轮。
+                    return Ok(HookOutcome::Continue);
+                };
+                if !settled.answers.is_empty() {
+                    let events: Vec<EventKind> = settled
+                        .answers
+                        .iter()
+                        .map(|(question_id, answer)| EventKind::QuestionAnswered {
                             turn: settled.turn,
                             step: settled.step,
                             call_id: settled.call_id.clone(),
-                            question_id: question.id.clone(),
-                        });
+                            question_id: question_id.clone(),
+                            selected: answer.selected.clone(),
+                            custom: answer.custom.clone(),
+                        })
+                        .collect();
+                    event.host().append(&events).await?;
+                }
+                if !settled.cancelled.is_empty() {
+                    let events: Vec<EventKind> = settled
+                        .cancelled
+                        .iter()
+                        .map(|question_id| EventKind::QuestionCancelled {
+                            turn: settled.turn,
+                            step: settled.step,
+                            call_id: settled.call_id.clone(),
+                            question_id: question_id.clone(),
+                        })
+                        .collect();
+                    event.host().append(&events).await?;
+                }
+                if !batch_settled {
+                    // 整轮取消（Agent::cancel）：保留旧行为，按 aborted 收尾；未答的题写撤销。
+                    let answered: BTreeSet<&String> = settled
+                        .answers
+                        .iter()
+                        .map(|(question_id, _)| question_id)
+                        .collect();
+                    let mut undone: Vec<EventKind> = Vec::new();
+                    for question in &questions {
+                        if !answered.contains(&question.id)
+                            && !settled.cancelled.iter().any(|id| id == &question.id)
+                        {
+                            undone.push(EventKind::QuestionCancelled {
+                                turn: settled.turn,
+                                step: settled.step,
+                                call_id: settled.call_id.clone(),
+                                question_id: question.id.clone(),
+                            });
+                        }
                     }
+                    if !undone.is_empty() {
+                        event.host().append(&undone).await?;
+                    }
+                    return Ok(HookOutcome::AbortStep);
                 }
-                if !undone.is_empty() {
-                    event.host().append(&undone).await?;
-                }
-                return Ok(HookOutcome::AbortStep);
-            }
-            if settled.cancelled.is_empty() {
-                return Ok(HookOutcome::ToolResultOverrides {
-                    overrides: vec![(
+                if settled.cancelled.is_empty() {
+                    overrides.push((
                         index,
                         ToolResult::success(call.id.clone(), answers_json(&settled.answers)),
-                    )],
-                });
+                    ));
+                } else {
+                    // 撤销（提问服务路径）：模型收到 DSH 的 ASK_ABORTED 工具错误，本轮继续。
+                    overrides.push((
+                        index,
+                        ToolResult {
+                            call_id: call.id.clone(),
+                            content: "ask_user_question was aborted before the user answered"
+                                .to_owned(),
+                            is_error: true,
+                            error_code: Some("ASK_ABORTED".to_owned()),
+                        },
+                    ));
+                }
             }
-            // 撤销（提问服务路径）：模型收到 DSH 的 ASK_ABORTED 工具错误，本轮继续。
-            Ok(HookOutcome::ToolResultOverrides {
-                overrides: vec![(
-                    index,
-                    ToolResult {
-                        call_id: call.id.clone(),
-                        content: "ask_user_question was aborted before the user answered"
-                            .to_owned(),
-                        is_error: true,
-                        error_code: Some("ASK_ABORTED".to_owned()),
-                    },
-                )],
-            })
+            Ok(HookOutcome::ToolResultOverrides { overrides })
         })
     }
 }
