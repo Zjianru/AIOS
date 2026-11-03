@@ -170,15 +170,33 @@ pub enum Frame {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum AgentEventWire {
-    TextDelta { text: String },
+    TextDelta {
+        text: String,
+    },
     Usage {
-        #[serde(rename = "inputTokens", default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "inputTokens",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         input_tokens: Option<u64>,
-        #[serde(rename = "outputTokens", default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "outputTokens",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         output_tokens: Option<u64>,
-        #[serde(rename = "cacheReadTokens", default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "cacheReadTokens",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         cache_read_tokens: Option<u64>,
-        #[serde(rename = "cacheWriteTokens", default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "cacheWriteTokens",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         cache_write_tokens: Option<u64>,
     },
     Retrying {
@@ -596,10 +614,11 @@ async fn ws_session(mut socket: WebSocket, state: Arc<AppState>, last_seq: u64) 
             },
             agent_received = agent_live.recv() => match agent_received {
                 Ok(event) => {
-                    if let Some(event) = AgentEventWire::from_event(&event) {
-                        if !send_frame(&mut socket, &Frame::Agent { event }).await {
-                            return;
-                        }
+                    let Some(wire) = AgentEventWire::from_event(&event) else {
+                        continue;
+                    };
+                    if !send_frame(&mut socket, &Frame::Agent { event: wire }).await {
+                        return;
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,

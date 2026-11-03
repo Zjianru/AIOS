@@ -7,9 +7,9 @@
 
 import { create } from 'zustand';
 import { toast } from 'sonner';
-import { compactionSummary, liveDemo, liveScriptFor } from '@/data/api';
-import { connectSession, fetchEventsPage } from '@/data/service';
-import type { ServiceEvent } from '@/data/service';
+import { compactionSummary, liveDemo } from '@/data/api';
+import { connectSession, fetchEventsPage, sendMessage } from '@/data/service';
+import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
 import type { AskAnswer, AskQuestion, FailureCause, LiveDemo, LiveScript, LiveStep } from '@/data/fixtures/kindLive';
 import { mark } from '@/lib/perf';
 import type { KindCard, TextElement, Turn, TurnStatus } from '@/data/types';
@@ -264,6 +264,79 @@ function emptyTurn(id: string, text: string): TurnViewData {
 /** 当前连接（T007.9 起处理重连）；T007.3 只保留一个。 */
 let activeSocket: WebSocket | null = null;
 
+/** T007.3/4：本轮已收到的日志事件（首屏页 + live）；实时帧按轮重算 view。 */
+let liveEvents: ServiceEvent[] = [];
+let liveTurn: number | null = null;
+let liveStream = '';
+
+/** 一轮的最新日志事件 → 重建这一个 view（其它轮不动）。 */
+function refreshTurn(turn: number): void {
+  const events = liveEvents.filter(
+    (event) => typeof event.data.turn === 'number' && Number(event.data.turn) === turn,
+  );
+  const view = deriveTurnViews(events)[0];
+  if (!view) return;
+  useKindStore.setState((state) => {
+    const views = state.views.slice();
+    const index = views.findIndex((item) => item.id === view.id);
+    if (index >= 0) {
+      views[index] = view;
+    } else {
+      views.push(view);
+      views.sort((left, right) => Number(left.id.split('-')[1]) - Number(right.id.split('-')[1]));
+    }
+    return {
+      views,
+      byId: indexOf(views),
+      ...decorate(views),
+      streamingTurnId: view.status === 'inProgress' ? view.id : null,
+    };
+  });
+}
+
+/** 日志事件 live：追加进本轮事件，重建 view；turn/end 时收掉流式文本。 */
+function applyLiveEvent(event: ServiceEvent): void {
+  liveEvents.push(event);
+  const turn = typeof event.data.turn === 'number' ? Number(event.data.turn) : null;
+  if (turn === null) return;
+  if (event.type === 'turn/start') {
+    liveTurn = turn;
+  }
+  if (event.type === 'turn/end') {
+    liveStream = '';
+    useStreamStore.setState({ turnId: null, itemId: null, text: '' });
+  }
+  refreshTurn(turn);
+}
+
+/** agent 帧 live：流式文本先写进 useStreamStore（TurnRow 的 Answer 只重绘这一条）。 */
+function applyAgentEvent(event: AgentFrame['event']): void {
+  if (event.type !== 'text-delta' || typeof event.text !== 'string') return;
+  if (liveTurn === null) return;
+  liveStream += event.text;
+  const id = 'turn-' + String(liveTurn);
+  if (!useKindStore.getState().byId.has(id)) {
+    refreshTurn(liveTurn);
+  }
+  useStreamStore.setState({ turnId: id, itemId: null, text: liveStream });
+}
+
+function applyFrame(frame: Frame): void {
+  if (frame.type === 'ready') {
+    const usage =
+      frame.context.window > 0
+        ? Math.round((frame.context.used / frame.context.window) * 100)
+        : 0;
+    useKindStore.setState({ connection: { state: 'online' }, usage });
+    return;
+  }
+  if (frame.type === 'event') {
+    applyLiveEvent(frame.event);
+    return;
+  }
+  applyAgentEvent(frame.event);
+}
+
 /** 从日志事实派生界面的一轮（T007.3：打开/历史/往上翻；其余能力逐票补）。 */
 export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
   interface Raw {
@@ -306,6 +379,34 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       )
       .join('');
   };
+
+  const textOfToolResult = (message: unknown): string => {
+    if (!message || typeof message !== 'object') return '';
+    const content = (message as { content?: unknown }).content;
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content)) return '';
+    const parts: string[] = [];
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue;
+      const typed = block as { type?: string; text?: unknown; content?: unknown };
+      if (typed.type === 'text' && typeof typed.text === 'string') {
+        parts.push(typed.text);
+        continue;
+      }
+      if (typed.type === 'tool_result') {
+        if (typeof typed.content === 'string') parts.push(typed.content);
+        else if (Array.isArray(typed.content)) {
+          for (const inner of typed.content) {
+            if (inner && typeof inner === 'object' && (inner as { type?: string }).type === 'text') {
+              parts.push(String((inner as { text?: unknown }).text ?? ''));
+            }
+          }
+        }
+      }
+    }
+    return parts.join('');
+  };
+
   const usageOf = (data: Record<string, unknown>): { input: number; output: number } => {
     const usage = data.usage;
     if (!usage || typeof usage !== 'object') return { input: 0, output: 0 };
@@ -360,7 +461,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         if (step) {
           step.running = false;
           step.exitCode = data.error ? 1 : 0;
-          step.output = textOf(data.message);
+          step.output = textOf(data.message) || textOfToolResult(data.message);
           if (!step.output) step.output = String((data.error as { code?: string } | undefined)?.code ?? '');
         }
         break;
@@ -633,19 +734,19 @@ export const useKindStore = create<KindState>()((set, get) => ({
       const views = deriveTurnViews(page.events);
       const lastSeq = page.events[page.events.length - 1]?.seq ?? 0;
       const oldestSeq = page.events[0]?.seq ?? null;
+      liveEvents = page.events.slice();
+      liveTurn = null;
+      for (const event of page.events) {
+        if (event.type === 'turn/start' && typeof event.data.turn === 'number') {
+          liveTurn = Number(event.data.turn);
+        }
+      }
+      liveStream = '';
+      useStreamStore.setState({ turnId: null, itemId: null, text: '' });
       activeSocket?.close();
       activeSocket = connectSession(
         lastSeq,
-        (frame) => {
-          if (frame.type === 'ready') {
-            const usage =
-              frame.context.window > 0
-                ? Math.round((frame.context.used / frame.context.window) * 100)
-                : 0;
-            set({ connection: { state: 'online' }, usage });
-          }
-          // T007.4 起把实时事件接进列表；T007.3 只取 ready 的占用与连接状态。
-        },
+        applyFrame,
         () => set({ connection: { state: 'reconnecting', attempt: 1 } }),
       );
       mark('turns:loaded');
@@ -697,13 +798,12 @@ export const useKindStore = create<KindState>()((set, get) => ({
 
   setAtBottom: (value) => set({ atBottom: value }),
 
-  send: (text, totalMs) => {
-    const script = liveScriptFor(text);
-    if (totalMs !== undefined) {
-      // 测速钩子：只量流式回答，不走工具
-      script.steps = script.steps.filter((step) => step.kind === 'say').map((step) => ({ ...step, ms: totalMs }));
-    }
-    begin(script);
+  send: (text) => {
+    // T007.4：真实发送；requestId 是幂等键（T007.9 的重发复用同一个）。
+    const requestId = globalThis.crypto.randomUUID();
+    void sendMessage(text, requestId).catch(() => {
+      toast('没送到内核', { description: '再发一次；重发用同一个请求编号' });
+    });
   },
 
   resend: (turnId) => {

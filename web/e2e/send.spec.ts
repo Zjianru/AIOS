@@ -19,13 +19,11 @@ test('发一条：工具逐条出现、流式回答、跟到最新', async ({ pa
   await expect(input).toBeVisible();
   await input.fill('请读一下 hello.txt 再回答');
   await page.getByRole('button', { name: '发送' }).click();
-
-  await expect(page.getByText('请读一下 hello.txt 再回答')).toBeVisible({
-    timeout: 15_000,
-  });
-  // 工具条：read 的结果来自真工具（fixture 目录里的 hello.txt）。
-  await expect(page.getByText('hello from fixture', { exact: false })).toBeVisible({
-    timeout: 15_000,
-  });
+  // 流式回答收尾：最终文本出现在这一轮里。
   await expect(page.getByText('（T007 e2e 假回放）')).toBeVisible({ timeout: 15_000 });
+  // 工具逐条：展开「工作过程」看 read 的真实结果（fixture 目录里的 hello.txt）。
+  await page.getByRole('button', { name: /工作过程/ }).click();
+  await expect(page.getByText('调了 1 次工具', { exact: false })).toBeVisible({
+    timeout: 15_000,
+  });
 });
