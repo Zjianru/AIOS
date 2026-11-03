@@ -64,6 +64,8 @@ pub struct RootSessionOptions {
     pub config: AgentConfig,
     /// T008.2：凭证来源（服务传 Keyring 适配器）；None 用 DeepSeekConfig.api_key。
     pub credentials: Option<std::sync::Arc<dyn model::CredentialSource>>,
+    /// T008.3：钥匙文件位置；设置方法每次操作重新打开 Keyring。
+    pub identity: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for RootSessionOptions {

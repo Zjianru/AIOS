@@ -64,6 +64,14 @@ pub enum Call {
     Events(EventsRequest),
     /// T007.2：再检查一次根会话（修好 missing/corrupt/busy 之后回到对话）。
     Recheck(RecheckRequest),
+    ModelSettings(ModelSettingsRequest),
+    ConnectionSave(ConnectionSaveRequest),
+    ConnectionDelete(ConnectionDeleteRequest),
+    KeyringRelocate(KeyringRelocateRequest),
+    KeyringReopen(KeyringReopenRequest),
+    KeyringRestart(KeyringRestartRequest),
+    Issues(IssuesRequest),
+    FirstUse(FirstUseRequest),
 }
 
 /// 调用的结果（与 Call 一一对应）。
@@ -79,6 +87,14 @@ pub enum Response {
     Follow(FollowResponse),
     Events(EventsResponse),
     Recheck(RecheckResponse),
+    ModelSettings(ModelSettingsResponse),
+    ConnectionSave(ConnectionSaveResponse),
+    ConnectionDelete(ConnectionDeleteResponse),
+    KeyringRelocate(KeyringRelocateResponse),
+    KeyringReopen(KeyringReopenResponse),
+    KeyringRestart(KeyringRestartResponse),
+    Issues(IssuesResponse),
+    FirstUse(FirstUseResponse),
 }
 
 /// 发消息（DSH session-controller 的 prompt）。requestId 是幂等键：同一 id 只进一次。
@@ -267,7 +283,87 @@ pub struct ServiceEvent {
 }
 
 /// 服务协议版本（T007.2 起）：只增不改的对外面每次扩展都记在这里，Web ready 帧里带上。
-pub const PROTOCOL_VERSION: u64 = 2;
+/// T008.3：设置页读模型连接（空请求体）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelSettingsRequest {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelSettingsResponse {
+    pub settings: credentials::KeyringView,
+}
+
+/// T008.3：存/换连接；apiKey 只在请求体里，任何响应不带。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionSaveRequest {
+    pub id: String,
+    pub name: String,
+    pub model: String,
+    pub endpoint: String,
+    #[serde(rename = "apiKey")]
+    pub api_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionSaveResponse {
+    pub connection: credentials::ConnectionInfo,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionDeleteRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionDeleteResponse {
+    pub deleted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyringRelocateRequest {
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyringRelocateResponse {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyringReopenRequest {
+    pub at: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyringReopenResponse {}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyringRestartRequest {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyringRestartResponse {
+    pub settings: credentials::KeyringView,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssuesRequest {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IssuesResponse {
+    #[serde(rename = "issuedToday")]
+    pub issued_today: u64,
+    pub issues: Vec<credentials::IssueRecord>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FirstUseRequest {}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FirstUseResponse {
+    #[serde(rename = "firstUse")]
+    pub first_use: bool,
+    #[serde(rename = "keyFile")]
+    pub key_file: credentials::KeyFileInfo,
+}
+
+pub const PROTOCOL_VERSION: u64 = 3;
 
 /// 根会话不可用的种类（T007.2）：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -358,6 +454,10 @@ pub enum ServiceError {
     /// T007.2：根会话不可用，方法一律拒绝；页面用 ready 里的状态显示说明页。
     #[error("Kind 的根会话不可用")]
     RootUnavailable(RootState),
+    #[error(transparent)]
+    Credentials(#[from] credentials::KeyringError),
+    #[error("设置接口只能由根宿主提供")]
+    SettingsOnBareHost,
 }
 
 /// 与载体无关的服务宿主：绑定一个 Agent/会话，调用经 dispatch 进入，事件从广播流出。
@@ -425,6 +525,15 @@ impl ServiceHost {
             Call::Recheck(_) => Ok(Response::Recheck(RecheckResponse {
                 root: RootState::Ok,
             })),
+            // T008.3：设置接口由 RootHost 提供；裸宿主没有 Keyring。
+            Call::ModelSettings(_)
+            | Call::ConnectionSave(_)
+            | Call::ConnectionDelete(_)
+            | Call::KeyringRelocate(_)
+            | Call::KeyringReopen(_)
+            | Call::KeyringRestart(_)
+            | Call::Issues(_)
+            | Call::FirstUse(_) => Err(ServiceError::SettingsOnBareHost),
         }
     }
 
@@ -776,18 +885,87 @@ impl RootHost {
         }
     }
 
+    /// T008.3：设置页的 Keyring 视图（骨架期未接）。
+    pub async fn model_settings(&self) -> Result<ModelSettingsResponse, ServiceError> {
+        Err(ServiceError::SettingsOnBareHost)
+    }
+
+    pub async fn connection_save(
+        &self,
+        _request: ConnectionSaveRequest,
+    ) -> Result<ConnectionSaveResponse, ServiceError> {
+        Err(ServiceError::SettingsOnBareHost)
+    }
+
+    pub async fn connection_delete(
+        &self,
+        _request: ConnectionDeleteRequest,
+    ) -> Result<ConnectionDeleteResponse, ServiceError> {
+        Err(ServiceError::SettingsOnBareHost)
+    }
+
+    pub async fn keyring_relocate(
+        &self,
+        _request: KeyringRelocateRequest,
+    ) -> Result<KeyringRelocateResponse, ServiceError> {
+        Err(ServiceError::SettingsOnBareHost)
+    }
+
+    pub async fn keyring_reopen(
+        &self,
+        _request: KeyringReopenRequest,
+    ) -> Result<KeyringReopenResponse, ServiceError> {
+        Err(ServiceError::SettingsOnBareHost)
+    }
+
+    pub async fn keyring_restart(&self) -> Result<KeyringRestartResponse, ServiceError> {
+        Err(ServiceError::SettingsOnBareHost)
+    }
+
+    pub async fn issues(&self) -> Result<IssuesResponse, ServiceError> {
+        Err(ServiceError::SettingsOnBareHost)
+    }
+
+    pub async fn first_use(&self) -> Result<FirstUseResponse, ServiceError> {
+        Err(ServiceError::SettingsOnBareHost)
+    }
+
     /// 唯一调用入口；根会话不可用时除 recheck 外一律拒绝。
     pub async fn dispatch(&self, call: Call) -> Result<Response, ServiceError> {
         if matches!(call, Call::Recheck(_)) {
             let root = self.recheck().await;
             return Ok(Response::Recheck(RecheckResponse { root }));
         }
-        let guard = self.inner.lock().await;
-        match guard.as_ref() {
-            Some(host) => host.dispatch(call).await,
-            None => Err(ServiceError::RootUnavailable(
-                self.state.lock().expect("root state 锁被毒化").clone(),
-            )),
+        match call {
+            Call::ModelSettings(_) => self.model_settings().await.map(Response::ModelSettings),
+            Call::ConnectionSave(request) => self
+                .connection_save(request)
+                .await
+                .map(Response::ConnectionSave),
+            Call::ConnectionDelete(request) => self
+                .connection_delete(request)
+                .await
+                .map(Response::ConnectionDelete),
+            Call::KeyringRelocate(request) => self
+                .keyring_relocate(request)
+                .await
+                .map(Response::KeyringRelocate),
+            Call::KeyringReopen(request) => self
+                .keyring_reopen(request)
+                .await
+                .map(Response::KeyringReopen),
+            Call::KeyringRestart(_) => self.keyring_restart().await.map(Response::KeyringRestart),
+            Call::Issues(_) => self.issues().await.map(Response::Issues),
+            Call::FirstUse(_) => self.first_use().await.map(Response::FirstUse),
+            other => {
+                let guard = self.inner.lock().await;
+                match guard.as_ref() {
+                    Some(host) => host.dispatch(other).await,
+                    None => Err(ServiceError::RootUnavailable(
+                        self.state.lock().expect("root state 锁被毒化").clone(),
+                    )),
+                }
+            }
         }
     }
 
