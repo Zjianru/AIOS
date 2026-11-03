@@ -58,6 +58,8 @@ export interface KernelFixture {
 export interface FixtureOptions {
   /// first request 回一次工具调用（read hello.txt），拿到工具结果后再回最终文本。
   toolTurn?: boolean;
+  /// 每次模型回放延迟毫秒（T007.5 停止用例要在运行中按停止/Esc）。
+  slowMs?: number;
 }
 
 /** 接缝 5：假 DeepSeek 脚本回放 + 真 aios-dev serve（页面也由它同源托管）。 */
@@ -73,7 +75,12 @@ export async function startKernelFixture(
       req.on('end', () => {
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         const toolResult = body.includes('tool_result');
-        res.end(options.toolTurn && !toolResult ? TOOL_CALL_SSE : FINAL_TEXT_SSE);
+        const reply = options.toolTurn && !toolResult ? TOOL_CALL_SSE : FINAL_TEXT_SSE;
+        if (options.slowMs) {
+          setTimeout(() => res.end(reply), options.slowMs);
+        } else {
+          res.end(reply);
+        }
       });
       return;
     }
