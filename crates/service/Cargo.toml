@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 agent = { path = "../agent" }
 credentials = { path = "../credentials" }
-reqwest.workspace = true
+reqwest = { workspace = true, features = ["json"] }
 model = { path = "../model" }
 session = { path = "../session" }
 serde.workspace = true
