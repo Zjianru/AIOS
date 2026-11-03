@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, request as httpRequest, type Server } from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
@@ -326,3 +326,51 @@ export async function startKernelFixture(
     },
   };
 }
+
+
+/** T007.11 真 key DoD：真 DeepSeek + /tmp/aios-t007-dod/work；无 key 时调用方 skip。 */
+export async function startRealKernelFixture(): Promise<KernelFixture> {
+  const apiKey = process.env.DEEPSEEK_API_KEY;
+  if (!apiKey) throw new Error('缺少 DEEPSEEK_API_KEY（D34：开发期从环境变量读 key）');
+  const root = process.env.AIOS_DOD_ROOT ?? '/tmp/aios-t007-dod';
+  const workDir = path.join(root, 'work');
+  const dataDir = path.join(root, 'data');
+  await mkdir(workDir, { recursive: true });
+  await mkdir(dataDir, { recursive: true });
+  await writeFile(path.join(workDir, 'hello.txt'), 'DOD-4-OK
+');
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+  const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
+  const child = spawn(
+    bin,
+    ['serve', '--data-dir', dataDir, '--cwd', workDir, '--web-dist', path.join(repoRoot, 'web/dist')],
+    { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  let output = '';
+  const parsed = await new Promise<{ baseUrl: string; token: string }>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('真 key serve 启动超时: ' + output)), 60_000);
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+      const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)\?token=([0-9a-f-]+)/);
+      if (match) {
+        clearTimeout(timer);
+        resolve({ baseUrl: 'http://127.0.0.1:' + match[1], token: match[2] });
+      }
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      reject(new Error('真 key serve 退出: ' + String(code) + ' ' + output));
+    });
+  });
+  return {
+    ...parsed,
+    dataDir,
+    dropProxy: async () => {},
+    restoreProxy: async () => {},
+    close: async () => {
+      child.kill('SIGTERM');
+      await rm(root, { recursive: true, force: true });
+    },
+  };
+}
+
