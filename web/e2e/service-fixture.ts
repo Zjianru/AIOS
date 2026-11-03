@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, request as httpRequest, type Server } from 'node:http';
@@ -219,18 +219,21 @@ export async function startKernelFixture(
   }
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
-  const serveArgs = ['serve', '--data-dir', dataDir, '--cwd', dataDir, '--web-dist', path.join(repoRoot, 'web/dist')];
+  const identityPath = path.join(dataDir, 'identity.txt');
+  const seed = spawnSync(
+    bin,
+    ['keyring', '--data-dir', dataDir, '--identity', identityPath, 'set', '--id', 'deepseek', '--name', 'DeepSeek', '--model', 'deepseek-flash', '--endpoint', 'http://127.0.0.1:' + String(fakePort)],
+    { input: 'test-key\n', encoding: 'utf8' },
+  );
+  if (seed.status !== 0) throw new Error('seed keyring failed: ' + String(seed.stderr));
+  const serveArgs = ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', dataDir, '--web-dist', path.join(repoRoot, 'web/dist')];
   if (options.contextWindow) {
     serveArgs.push('--context-window', String(options.contextWindow));
   }
-  const serviceEnv = {
-    ...process.env,
-    DEEPSEEK_API_KEY: 'test-key',
-    DEEPSEEK_BASE_URL: 'http://127.0.0.1:' + String(fakePort),
-  };
+  const serviceEnv = { ...process.env };
   let holder: ReturnType<typeof spawn> | null = null;
   if (options.busyRoot) {
-    holder = spawn(bin, ['serve', '--data-dir', dataDir, '--cwd', dataDir], {
+    holder = spawn(bin, ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', dataDir], {
       env: serviceEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -442,9 +445,16 @@ export async function startRealKernelFixture(
   await writeFile(path.join(workDir, 'hello.txt'), 'DOD-4-OK' + String.fromCharCode(10));
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
+  const identityPath = path.join(dataDir, 'identity.txt');
+  const seed = spawnSync(
+    bin,
+    ['keyring', '--data-dir', dataDir, '--identity', identityPath, 'set', '--id', 'deepseek', '--name', 'DeepSeek', '--model', 'deepseek-flash', '--endpoint', 'https://api.deepseek.com/anthropic'],
+    { input: apiKey + '\n', encoding: 'utf8' },
+  );
+  if (seed.status !== 0) throw new Error('seed keyring failed: ' + String(seed.stderr));
   const child = spawn(
     bin,
-    ['serve', '--data-dir', dataDir, '--cwd', workDir, '--web-dist', path.join(repoRoot, 'web/dist')],
+    ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', workDir, '--web-dist', path.join(repoRoot, 'web/dist')],
     { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] },
   );
   let output = '';

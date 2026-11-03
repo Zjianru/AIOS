@@ -3,13 +3,14 @@
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use agent::{
     Agent, AgentConfig, AgentEvent, AgentOpenOptions, CompactionOutcome, Delivery, JobStatus,
     TurnOutcome,
 };
 use clap::{Args, Parser, Subcommand};
-use model::{DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS, DeepSeekConfig, Effort, UserMessage};
+use model::{DEFAULT_MAX_TOKENS, DeepSeekConfig, Effort, UserMessage};
 use service::{RootHost, RootSessionOptions};
 use session::SessionId;
 use tokio::io::AsyncBufReadExt;
@@ -90,6 +91,9 @@ struct CommonArgs {
     /// 数据目录（默认 ~/.aios-dev）
     #[arg(long)]
     data_dir: Option<PathBuf>,
+    /// Keyring 钥匙文件位置（默认在数据目录之外的用户配置目录）
+    #[arg(long)]
+    identity: Option<PathBuf>,
     /// 会话工作目录（默认当前目录）
     #[arg(long)]
     cwd: Option<PathBuf>,
@@ -230,6 +234,69 @@ fn config_from_args(
     Ok((config, agent))
 }
 
+/// T008.2：CLI 的凭证来源——每次请求向 Keyring 申请一次签发。
+struct KeyringCredentialSource {
+    keyring: Arc<credentials::Keyring>,
+    connection: String,
+}
+
+impl model::CredentialSource for KeyringCredentialSource {
+    fn issue(&self, purpose: &str) -> Result<String, model::ModelError> {
+        self.keyring
+            .issue(&self.connection, purpose, None)
+            .map(|issued| issued.secret)
+            .map_err(|error| {
+                model::ModelError::new(
+                    model::ErrorCode::MissingCredential,
+                    format!("Keyring 无法签发：{error}"),
+                )
+            })
+    }
+}
+
+/// 打开数据目录的 Keyring，并取 DeepSeek 连接的 endpoint/model。
+fn model_with_keyring(
+    common: &CommonArgs,
+    data_dir: &PathBuf,
+) -> Result<
+    (
+        DeepSeekConfig,
+        AgentConfig,
+        Arc<dyn model::CredentialSource>,
+    ),
+    CliError,
+> {
+    let keyring = Arc::new(credentials::Keyring::open(
+        data_dir,
+        common.identity.as_deref(),
+    )?);
+    let view = keyring.view();
+    if let Some(problem) = view.key_file.problem {
+        return Err(CliError::Message(format!("Keyring 读不出来：{problem}")));
+    }
+    let connection = view
+        .connections
+        .into_iter()
+        .find(|connection| connection.id == "deepseek")
+        .ok_or_else(|| {
+            CliError::Message(
+                "还没有接模型：先从页面接上，或运行 aios-dev keyring set（key 从标准输入读）"
+                    .to_owned(),
+            )
+        })?;
+    let (mut deepseek_config, agent_config) =
+        config_from_args(common, connection.endpoint.clone(), String::new())?;
+    deepseek_config.model = common
+        .model
+        .clone()
+        .unwrap_or_else(|| connection.model.clone());
+    let source = KeyringCredentialSource {
+        keyring,
+        connection: "deepseek".to_owned(),
+    };
+    Ok((deepseek_config, agent_config, Arc::new(source)))
+}
+
 /// 唯一组装入口（T006.15）：这里只把 CLI 参数/env 变成普通配置数据；模型、工具集、
 /// 会话存储的构造由 agent::Agent::open 一处完成（chat/run 共用，后续服务同样走它）。
 async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
@@ -241,14 +308,7 @@ async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
         Some(path) => path.clone(),
         None => std::env::current_dir()?,
     };
-    let api_key = std::env::var("DEEPSEEK_API_KEY").map_err(|_| {
-        CliError::Message(
-            "缺少 DEEPSEEK_API_KEY 环境变量（D34：开发期从环境变量读 key）".to_owned(),
-        )
-    })?;
-    let base_url =
-        std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_owned());
-    let (deepseek_config, config) = config_from_args(common, base_url, api_key)?;
+    let (deepseek_config, config, credentials) = model_with_keyring(common, &data_dir)?;
     let resume = match &common.resume {
         Some(raw) => Some(SessionId::parse(raw)?),
         None => None,
@@ -259,6 +319,7 @@ async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
         resume,
         model: deepseek_config,
         config,
+        credentials: Some(credentials),
     })
     .await
     .map_err(open_error)?;
@@ -284,14 +345,7 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         Some(path) => path.clone(),
         None => std::env::current_dir()?,
     };
-    let api_key = std::env::var("DEEPSEEK_API_KEY").map_err(|_| {
-        CliError::Message(
-            "缺少 DEEPSEEK_API_KEY 环境变量（D34：开发期从环境变量读 key）".to_owned(),
-        )
-    })?;
-    let base_url =
-        std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_owned());
-    let (deepseek_config, agent_config) = config_from_args(&args.common, base_url, api_key)?;
+    let (deepseek_config, agent_config, credentials) = model_with_keyring(&args.common, &data_dir)?;
     let window = deepseek_config.context_window;
     // T007.2：根会话打不开时服务照样起；ready 报状态（path/line），方法一律拒绝，
     // 页面对应五种说明页；修好后页面调 recheck 再检查一次。
@@ -301,6 +355,7 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             cwd,
             model: deepseek_config,
             config: agent_config,
+            credentials: Some(credentials),
         },
         window,
     )
@@ -1012,6 +1067,7 @@ mod tests {
         CommonArgs {
             resume: None,
             data_dir: None,
+            identity: None,
             cwd: None,
             model: None,
             effort: None,

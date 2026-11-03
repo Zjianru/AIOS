@@ -72,6 +72,7 @@ fn options(
             effort: Effort::High,
         },
         config,
+        credentials: None,
     }
 }
 
