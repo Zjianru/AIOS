@@ -1,8 +1,13 @@
+use std::fs;
+use std::io::{Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use age::secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 
 /// Keyring 的错误。错误文本里不带 key 正文。
@@ -20,8 +25,6 @@ pub enum KeyringError {
     MissingConnection(String),
     #[error("连接的内容不完整：{0}")]
     InvalidConnection(String),
-    #[error("Keyring 还没实现（T008.1 骨架）")]
-    NotImplemented,
 }
 
 /// 一次签发的凭证值。只在本次出站请求里用；Debug 不打印正文。
@@ -109,30 +112,75 @@ pub struct KeyringView {
     pub first_use: bool,
 }
 
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Store {
+    #[serde(default)]
+    connections: Vec<StoredConnection>,
+    #[serde(default)]
+    issues: Vec<IssueRecord>,
+    #[serde(default)]
+    next_issue: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct StoredConnection {
+    info: ConnectionInfo,
+    api_key: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Config {
+    version: u32,
+    identity_path: PathBuf,
+    since: u64,
+}
+
 /// Keyring 本体。一个数据目录一份存储，一把钥匙文件。
 pub struct Keyring {
     data_dir: PathBuf,
-    identity_path: PathBuf,
+    identity_path: Mutex<PathBuf>,
+    since: u64,
     changes: Mutex<Vec<Sender<()>>>,
 }
 
 impl Keyring {
     /// 打开（或初始化）数据目录的 Keyring。
     ///
-    /// identity_path 为 None 时用数据目录之外的用户配置目录（spec 默认位置）；
-    /// 测试和 DoD 都显式传临时目录里的路径。
+    /// 已有配置时以配置里的钥匙文件位置为准；没有配置时用传入位置（None 用默认用户配置目录）。
+    /// 钥匙文件不在时不在这里失败：描述会报读不出，签发失败（页面有两条出路）。
     pub fn open(
         data_dir: impl Into<PathBuf>,
         identity_path: Option<&Path>,
     ) -> Result<Self, KeyringError> {
         let data_dir = data_dir.into();
-        let identity_path = match identity_path {
-            Some(path) => path.to_path_buf(),
-            None => default_identity_path(&data_dir),
+        create_private_dir(&data_dir)?;
+        let config_path = data_dir.join("config.json");
+        let (identity_path, since) = if config_path.exists() {
+            let config = read_config(&config_path)?;
+            (config.identity_path, config.since)
+        } else {
+            let identity_path = match identity_path {
+                Some(path) => path.to_path_buf(),
+                None => default_identity_path(&data_dir),
+            };
+            let since = now_seconds();
+            if !identity_path.exists() {
+                create_identity(&identity_path)?;
+            }
+            write_config(
+                &config_path,
+                &Config {
+                    version: 1,
+                    identity_path: identity_path.clone(),
+                    since,
+                },
+            )?;
+            (identity_path, since)
         };
         Ok(Self {
             data_dir,
-            identity_path,
+            identity_path: Mutex::new(identity_path),
+            since,
             changes: Mutex::new(Vec::new()),
         })
     }
@@ -141,43 +189,109 @@ impl Keyring {
         &self.data_dir
     }
 
-    pub fn identity_path(&self) -> &Path {
-        &self.identity_path
+    /// 当前钥匙文件位置（换位置后跟着变）。
+    pub fn identity_path(&self) -> PathBuf {
+        self.identity_path
+            .lock()
+            .map(|path| path.clone())
+            .unwrap_or_default()
     }
 
-    /// 存/覆盖一个连接。
+    /// 存/覆盖一个连接；saved_at 更新，验证状态重置为 Never。
     pub fn save_connection(
         &self,
         connection: NewConnection,
     ) -> Result<ConnectionInfo, KeyringError> {
-        Ok(ConnectionInfo {
-            id: connection.id,
+        if connection.id.trim().is_empty()
+            || connection.name.trim().is_empty()
+            || connection.model.trim().is_empty()
+            || connection.endpoint.trim().is_empty()
+        {
+            return Err(KeyringError::InvalidConnection(
+                "id/name/model/endpoint 不能为空".to_owned(),
+            ));
+        }
+        if connection.api_key.trim().is_empty() {
+            return Err(KeyringError::InvalidConnection("key 不能为空".to_owned()));
+        }
+        let mut store = self.load_store()?;
+        let info = ConnectionInfo {
+            id: connection.id.clone(),
             name: connection.name,
             model: connection.model,
             endpoint: connection.endpoint,
             saved_at: now_seconds(),
             check: CheckState::Never,
-        })
+        };
+        let stored = StoredConnection {
+            info: info.clone(),
+            api_key: connection.api_key,
+        };
+        if let Some(existing) = store
+            .connections
+            .iter_mut()
+            .find(|item| item.info.id == info.id)
+        {
+            *existing = stored;
+        } else {
+            store.connections.push(stored);
+        }
+        self.save_store(&store)?;
+        self.notify();
+        Ok(info)
     }
 
     /// 删一个连接；返回是否真的存在过。
     pub fn delete_connection(&self, id: &str) -> Result<bool, KeyringError> {
-        let _ = id;
-        Ok(false)
+        let mut store = self.load_store()?;
+        let before = store.connections.len();
+        store.connections.retain(|item| item.info.id != id);
+        let deleted = before != store.connections.len();
+        if deleted {
+            self.save_store(&store)?;
+            self.notify();
+        }
+        Ok(deleted)
     }
 
     /// 设置页/CLI 的描述视图；不含任何 key 正文。
     pub fn view(&self) -> KeyringView {
+        let identity_path = self.identity_path();
+        let (connections, issues, issued_today, problem) = match self.load_store() {
+            Ok(store) => {
+                let now = now_seconds();
+                let today_start = now.saturating_sub(now % 86_400);
+                let issued_today = store
+                    .issues
+                    .iter()
+                    .filter(|issue| issue.at >= today_start)
+                    .count() as u64;
+                (
+                    store
+                        .connections
+                        .into_iter()
+                        .map(|item| item.info)
+                        .collect(),
+                    store.issues,
+                    issued_today,
+                    None,
+                )
+            }
+            Err(error) => (Vec::new(), Vec::new(), 0, Some(error.to_string())),
+        };
+        let first_use = problem.is_none() && connections.is_empty();
+        let mut issues = issues;
+        issues.reverse();
         KeyringView {
-            connections: Vec::new(),
+            connections,
             key_file: KeyFileInfo {
-                path: self.identity_path.clone(),
-                since: now_seconds(),
-                problem: Some("Keyring 还没实现（T008.1 骨架）".to_owned()),
+                path: identity_path,
+                since: self.since,
+                problem,
             },
-            issued_today: 0,
-            issues: Vec::new(),
-            first_use: true,
+            issued_today,
+            issues,
+            first_use,
         }
     }
 
@@ -188,39 +302,99 @@ impl Keyring {
         purpose: &str,
         run: Option<&str>,
     ) -> Result<IssuedSecret, KeyringError> {
-        let _ = (connection, purpose, run);
-        Err(KeyringError::NotImplemented)
+        let mut store = self.load_store()?;
+        let stored = store
+            .connections
+            .iter()
+            .find(|item| item.info.id == connection)
+            .ok_or_else(|| KeyringError::MissingConnection(connection.to_owned()))?;
+        let secret = stored.api_key.clone();
+        store.next_issue = store.next_issue.saturating_add(1);
+        let id = store.next_issue;
+        store.issues.push(IssueRecord {
+            id,
+            at: now_seconds(),
+            connection: connection.to_owned(),
+            purpose: purpose.to_owned(),
+            run: run.map(str::to_owned),
+        });
+        self.save_store(&store)?;
+        self.notify();
+        Ok(IssuedSecret {
+            connection: connection.to_owned(),
+            secret,
+        })
     }
 
     /// 签发记录（最近的在前）。
     pub fn issues(&self) -> Vec<IssueRecord> {
-        Vec::new()
+        match self.load_store() {
+            Ok(mut store) => {
+                store.issues.reverse();
+                store.issues
+            }
+            Err(_) => Vec::new(),
+        }
     }
 
     /// 验证之后写回注册器。
     pub fn record_check(&self, connection: &str, result: CheckResult) -> Result<(), KeyringError> {
-        let _ = (connection, result);
+        let mut store = self.load_store()?;
+        let stored = store
+            .connections
+            .iter_mut()
+            .find(|item| item.info.id == connection)
+            .ok_or_else(|| KeyringError::MissingConnection(connection.to_owned()))?;
+        stored.info.check = match result {
+            CheckResult::Ok { at } => CheckState::Ok { at },
+            CheckResult::Fail { at, reason } => CheckState::Fail { at, reason },
+        };
+        self.save_store(&store)?;
+        self.notify();
         Ok(())
     }
 
     /// 换钥匙文件的位置：复制到新位置、更新配置、删掉旧位置。
     pub fn relocate_identity(&self, new_path: &Path) -> Result<(), KeyringError> {
-        let _ = new_path;
+        let old_path = self.identity_path();
+        let text = fs::read_to_string(&old_path)?;
+        create_identity_at(new_path, &text)?;
+        self.write_config_for(new_path, self.since)?;
+        if let Ok(mut path) = self.identity_path.lock() {
+            *path = new_path.to_path_buf();
+        }
+        if old_path != new_path {
+            fs::remove_file(&old_path)?;
+        }
+        self.notify();
         Ok(())
     }
 
     /// 指到钥匙文件现在的位置（不复制）。
     pub fn repoint_identity(&self, path: &Path) -> Result<(), KeyringError> {
-        let _ = path;
+        self.load_identity(path)?;
+        self.write_config_for(path, self.since)?;
+        if let Ok(mut current) = self.identity_path.lock() {
+            *current = path.to_path_buf();
+        }
+        self.notify();
         Ok(())
     }
 
     /// 重新开始：清空 Keyring、生成新钥匙文件，回到第一次使用。
     pub fn restart(&self) -> Result<(), KeyringError> {
+        let identity_path = self.identity_path();
+        create_identity(&identity_path)?;
+        let store_path = self.data_dir.join("keyring.age");
+        if store_path.exists() {
+            fs::remove_file(&store_path)?;
+        }
+        self.write_config_for(&identity_path, now_seconds())?;
+        self.notify();
         Ok(())
     }
 
-    /// 存储/钥匙文件变化通知（页面据此刷新）；每个订阅者收到 ()。
+    /// 存储/钥匙文件变化通知（页面据此刷新）。
     pub fn subscribe(&self) -> Receiver<()> {
         let (sender, receiver) = mpsc::channel();
         if let Ok(mut changes) = self.changes.lock() {
@@ -229,18 +403,124 @@ impl Keyring {
         receiver
     }
 
-    #[allow(dead_code)] // 骨架期；实现里每个写操作都会调用。
     fn notify(&self) {
         if let Ok(mut changes) = self.changes.lock() {
             changes.retain(|sender| sender.send(()).is_ok());
         }
     }
+
+    fn load_identity(&self, path: &Path) -> Result<String, KeyringError> {
+        if !path.exists() {
+            return Err(KeyringError::KeyFileMissing(path.to_path_buf()));
+        }
+        let text = fs::read_to_string(path)?;
+        let identity: age::x25519::Identity = text
+            .trim()
+            .parse()
+            .map_err(|error| KeyringError::Crypto(format!("钥匙文件解不开：{error}")))?;
+        Ok(identity.to_string().expose_secret().to_owned())
+    }
+
+    fn load_store(&self) -> Result<Store, KeyringError> {
+        let identity_path = self.identity_path();
+        let identity_text = self.load_identity(&identity_path)?;
+        let identity: age::x25519::Identity = identity_text
+            .parse()
+            .map_err(|error| KeyringError::Crypto(format!("钥匙文件解不开：{error}")))?;
+        let store_path = self.data_dir.join("keyring.age");
+        if !store_path.exists() {
+            return Ok(Store::default());
+        }
+        let ciphertext = fs::read(&store_path)?;
+        let decryptor = age::Decryptor::new(&ciphertext[..])
+            .map_err(|error| KeyringError::Crypto(format!("存储解不开：{error}")))?;
+        let mut reader = decryptor
+            .decrypt(std::iter::once(&identity as &dyn age::Identity))
+            .map_err(|error| KeyringError::Crypto(format!("存储解不开：{error}")))?;
+        let mut plaintext = Vec::new();
+        reader.read_to_end(&mut plaintext)?;
+        serde_json::from_slice(&plaintext)
+            .map_err(|error| KeyringError::Corrupt(format!("存储格式不对：{error}")))
+    }
+
+    fn save_store(&self, store: &Store) -> Result<(), KeyringError> {
+        let identity_path = self.identity_path();
+        let identity_text = self.load_identity(&identity_path)?;
+        let identity: age::x25519::Identity = identity_text
+            .parse()
+            .map_err(|error| KeyringError::Crypto(format!("钥匙文件解不开：{error}")))?;
+        let recipient = identity.to_public();
+        let encryptor =
+            age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
+                .map_err(|error| KeyringError::Crypto(format!("加密失败：{error}")))?;
+        let mut writer = encryptor
+            .wrap_output(Vec::new())
+            .map_err(|error| KeyringError::Crypto(format!("加密失败：{error}")))?;
+        let plaintext =
+            serde_json::to_vec(store).map_err(|error| KeyringError::Corrupt(error.to_string()))?;
+        writer.write_all(&plaintext)?;
+        let ciphertext = writer
+            .finish()
+            .map_err(|error| KeyringError::Crypto(format!("加密失败：{error}")))?;
+        write_private_file(&self.data_dir.join("keyring.age"), &ciphertext)
+    }
+
+    fn write_config_for(&self, identity_path: &Path, since: u64) -> Result<(), KeyringError> {
+        write_config(
+            &self.data_dir.join("config.json"),
+            &Config {
+                version: 1,
+                identity_path: identity_path.to_path_buf(),
+                since,
+            },
+        )
+    }
 }
 
-/// 默认钥匙文件位置：数据目录之外的用户配置目录（测试/DoD 显式传路径）。
+fn read_config(path: &Path) -> Result<Config, KeyringError> {
+    let text = fs::read_to_string(path)?;
+    serde_json::from_str(&text)
+        .map_err(|error| KeyringError::Corrupt(format!("配置格式不对：{error}")))
+}
+
+fn write_config(path: &Path, config: &Config) -> Result<(), KeyringError> {
+    let json = serde_json::to_vec_pretty(config)
+        .map_err(|error| KeyringError::Corrupt(error.to_string()))?;
+    write_private_file(path, &json)
+}
+
 fn default_identity_path(data_dir: &Path) -> PathBuf {
     let parent = data_dir.parent().unwrap_or(data_dir);
     parent.join(".aios-keyring").join("identity.txt")
+}
+
+fn create_identity(path: &Path) -> Result<(), KeyringError> {
+    let identity = age::x25519::Identity::generate();
+    create_identity_at(path, &identity.to_string().expose_secret().to_owned())
+}
+
+fn create_identity_at(path: &Path, identity_text: &str) -> Result<(), KeyringError> {
+    write_private_file(path, identity_text.as_bytes())
+}
+
+fn create_private_dir(path: &Path) -> Result<(), KeyringError> {
+    fs::create_dir_all(path)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), KeyringError> {
+    if let Some(parent) = path.parent() {
+        create_private_dir(parent)?;
+    }
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temp_path = path.with_extension(format!("tmp-{}-{sequence}", std::process::id()));
+    fs::write(&temp_path, bytes)?;
+    fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o600))?;
+    fs::rename(&temp_path, path)?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    Ok(())
 }
 
 fn now_seconds() -> u64 {

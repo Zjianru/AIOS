@@ -1,9 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use credentials::{
-    CheckResult, CheckState, ConnectionInfo, Keyring, NewConnection,
-};
+use credentials::{CheckResult, CheckState, ConnectionInfo, Keyring, NewConnection};
 use tempfile::TempDir;
 
 const TEST_KEY: &str = "sk-test-0123456789abcdef";
@@ -19,7 +17,11 @@ impl Fixture {
         let dir = tempfile::tempdir().expect("tempdir");
         let data_dir = dir.path().join("data");
         let identity_path = dir.path().join("keyring/identity.txt");
-        Self { _dir: dir, data_dir, identity_path }
+        Self {
+            _dir: dir,
+            data_dir,
+            identity_path,
+        }
     }
 
     fn open(&self) -> Keyring {
@@ -67,11 +69,16 @@ fn 重开数据目录后仍能签发() {
     {
         let keyring = fixture.open();
         keyring.save_connection(connection()).expect("save");
-        keyring.record_check("deepseek", CheckResult::Ok { at: 10 }).expect("check");
+        keyring
+            .record_check("deepseek", CheckResult::Ok { at: 10 })
+            .expect("check");
     }
     let reopened = fixture.open();
     let view = reopened.view();
-    assert!(saved(&view).check == CheckState::Ok { at: 10 }, "验证状态要持久化：{view:?}");
+    assert!(
+        saved(&view).check == CheckState::Ok { at: 10 },
+        "验证状态要持久化：{view:?}"
+    );
 
     let issued = reopened.issue("deepseek", "kind-turn", Some("run-1"));
     assert!(issued.is_ok(), "签发应成功：{issued:?}");
@@ -95,7 +102,7 @@ fn 换钥匙位置后还能读且旧位置不在了() {
     assert!(!fixture.identity_path.exists(), "旧位置不应留着");
 
     let reopened = Keyring::open(&fixture.data_dir, None).expect("reopen from config");
-    assert_eq!(reopened.identity_path(), new_path.as_path());
+    assert_eq!(reopened.identity_path(), new_path);
     let issued = reopened.issue("deepseek", "kind-turn", None);
     assert!(issued.is_ok(), "换位置后应还能签发：{issued:?}");
 }
@@ -141,9 +148,15 @@ fn 指回新位置恢复重新开始清空() {
 
     reopened.restart().expect("restart");
     let view = reopened.view();
-    assert!(view.connections.is_empty(), "重新开始后连接应为空：{view:?}");
+    assert!(
+        view.connections.is_empty(),
+        "重新开始后连接应为空：{view:?}"
+    );
     assert!(view.first_use, "重新开始后回到第一次使用：{view:?}");
-    assert!(view.key_file.problem.is_none(), "重新开始后钥匙文件能读：{view:?}");
+    assert!(
+        view.key_file.problem.is_none(),
+        "重新开始后钥匙文件能读：{view:?}"
+    );
     let issued = reopened.issue("deepseek", "kind-turn", None);
     assert!(issued.is_err(), "重新开始后没有连接可签发");
 }
@@ -165,8 +178,16 @@ fn 每次签发一条记录且记录里没有正文() {
     let fixture = Fixture::new();
     let keyring = fixture.open();
     keyring.save_connection(connection()).expect("save");
-    assert!(keyring.issue("deepseek", "kind-turn", Some("run-1")).is_ok());
-    assert!(keyring.issue("deepseek", "compaction", Some("run-1")).is_ok());
+    assert!(
+        keyring
+            .issue("deepseek", "kind-turn", Some("run-1"))
+            .is_ok()
+    );
+    assert!(
+        keyring
+            .issue("deepseek", "compaction", Some("run-1"))
+            .is_ok()
+    );
 
     let issues = keyring.issues();
     assert_eq!(issues.len(), 2, "两次签发应有两条记录：{issues:?}");
