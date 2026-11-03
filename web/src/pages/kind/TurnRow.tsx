@@ -235,8 +235,13 @@ function CompactionDivider({ compaction }: { compaction: CompactionView }) {
         <span className="h-px flex-1 bg-line" />
         <button type="button" onClick={() => setOpen((value) => !value)} className="flex items-center gap-1.5 transition-colors hover:text-ink-2">
           <ChevronRight className={cn('size-3 transition-transform', open && 'rotate-90')} />
-          上下文已压缩 · {compaction.auto ? '快满了，自动' : '你手动'} · 占用{' '}
-          <span className="brand-type">{compaction.before}%</span> → <span className="brand-type">{compaction.after}%</span>
+          上下文已压缩 · {compaction.auto ? '快满了，自动' : '你手动'}
+          {compaction.before > 0 ? (
+            <>
+              {' '}· 占用 <span className="brand-type">{compaction.before}%</span> →{' '}
+              <span className="brand-type">{compaction.after}%</span>
+            </>
+          ) : null}
         </button>
         <span className="h-px flex-1 bg-line" />
       </div>
