@@ -68,6 +68,10 @@ pub enum Call {
     ModelSettings(ModelSettingsRequest),
     ConnectionSave(ConnectionSaveRequest),
     ConnectionDelete(ConnectionDeleteRequest),
+    /// T008.3 增补：只改 endpoint/model，保留 key。
+    ConnectionUpdate(ConnectionUpdateRequest),
+    /// T008.3 增补：撤销 key，连接保留。
+    ConnectionRevoke(ConnectionRevokeRequest),
     /// T008.3：验证连接（最小请求）；结果写进注册器。
     ConnectionVerify(ConnectionVerifyRequest),
     KeyringRelocate(KeyringRelocateRequest),
@@ -95,6 +99,8 @@ pub enum Response {
     ModelSettings(ModelSettingsResponse),
     ConnectionSave(ConnectionSaveResponse),
     ConnectionDelete(ConnectionDeleteResponse),
+    ConnectionUpdate(ConnectionUpdateResponse),
+    ConnectionRevoke(ConnectionRevokeResponse),
     ConnectionVerify(ConnectionVerifyResponse),
     KeyringRelocate(KeyringRelocateResponse),
     KeyringReopen(KeyringReopenResponse),
@@ -391,6 +397,30 @@ pub struct SessionModelSelectResponse {
     pub model: String,
 }
 
+/// T008.3 增补：编辑连接，只改 endpoint/model（不换 key）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionUpdateRequest {
+    pub id: String,
+    pub endpoint: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionUpdateResponse {
+    pub connection: credentials::ConnectionInfo,
+}
+
+/// T008.3 增补：撤销 key（连接保留，之后签发失败）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionRevokeRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionRevokeResponse {
+    pub connection: credentials::ConnectionInfo,
+}
+
 /// 服务协议版本（T007.2 起）：只增不改的对外面每次扩展都记在这里，Web ready 帧里带上。
 pub const PROTOCOL_VERSION: u64 = 3;
 
@@ -564,6 +594,8 @@ impl ServiceHost {
             | Call::ConnectionSave(_)
             | Call::ConnectionDelete(_)
             | Call::ConnectionVerify(_)
+            | Call::ConnectionUpdate(_)
+            | Call::ConnectionRevoke(_)
             | Call::KeyringRelocate(_)
             | Call::KeyringReopen(_)
             | Call::KeyringRestart(_)
@@ -1013,6 +1045,22 @@ impl RootHost {
         Ok(ConnectionDeleteResponse { deleted })
     }
 
+    /// T008.3 增补：编辑连接（只改 endpoint/model）。骨架期未接。
+    pub async fn connection_update(
+        &self,
+        _request: ConnectionUpdateRequest,
+    ) -> Result<ConnectionUpdateResponse, ServiceError> {
+        Err(ServiceError::SettingsOnBareHost)
+    }
+
+    /// T008.3 增补：撤销 key。骨架期未接。
+    pub async fn connection_revoke(
+        &self,
+        _request: ConnectionRevokeRequest,
+    ) -> Result<ConnectionRevokeResponse, ServiceError> {
+        Err(ServiceError::SettingsOnBareHost)
+    }
+
     /// T008.3：验证连接：从 Keyring 取一次签发，发最小 Messages 请求，把结果写进注册器。
     pub async fn connection_verify(
         &self,
@@ -1157,6 +1205,14 @@ impl RootHost {
                 .connection_verify(request)
                 .await
                 .map(Response::ConnectionVerify),
+            Call::ConnectionUpdate(request) => self
+                .connection_update(request)
+                .await
+                .map(Response::ConnectionUpdate),
+            Call::ConnectionRevoke(request) => self
+                .connection_revoke(request)
+                .await
+                .map(Response::ConnectionRevoke),
             Call::KeyringRelocate(request) => self
                 .keyring_relocate(request)
                 .await

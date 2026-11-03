@@ -63,6 +63,13 @@ pub struct ConnectionInfo {
     /// Unix 秒；界面自己格式化。
     pub saved_at: u64,
     pub check: CheckState,
+    /// Keyring 里有没有这把 key（撤销后连接还在，但不能签发）。
+    #[serde(default = "default_key_saved")]
+    pub key_saved: bool,
+}
+
+fn default_key_saved() -> bool {
+    true
 }
 
 /// 「连接可用」的验证状态；已保存和最近一次验证分开记。
@@ -222,6 +229,7 @@ impl Keyring {
             endpoint: connection.endpoint,
             saved_at: now_seconds(),
             check: CheckState::Never,
+            key_saved: true,
         };
         let stored = StoredConnection {
             info: info.clone(),
@@ -392,6 +400,33 @@ impl Keyring {
         self.write_config_for(&identity_path, now_seconds())?;
         self.notify();
         Ok(())
+    }
+
+    /// T008.3 增补：只改 endpoint/model，保留已存 key；骨架期先不改数据。
+    pub fn update_connection(
+        &self,
+        id: &str,
+        _endpoint: String,
+        _model: String,
+    ) -> Result<ConnectionInfo, KeyringError> {
+        let store = self.load_store()?;
+        store
+            .connections
+            .iter()
+            .find(|item| item.info.id == id)
+            .map(|item| item.info.clone())
+            .ok_or_else(|| KeyringError::MissingConnection(id.to_owned()))
+    }
+
+    /// T008.3 增补：撤销 key（连接保留）；骨架期先不改数据。
+    pub fn revoke_key(&self, id: &str) -> Result<ConnectionInfo, KeyringError> {
+        let store = self.load_store()?;
+        store
+            .connections
+            .iter()
+            .find(|item| item.info.id == id)
+            .map(|item| item.info.clone())
+            .ok_or_else(|| KeyringError::MissingConnection(id.to_owned()))
     }
 
     /// 存储/钥匙文件变化通知（页面据此刷新）。
