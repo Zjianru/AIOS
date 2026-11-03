@@ -29,6 +29,7 @@ fn options(data_dir: &Path, identity: &Path) -> RootSessionOptions {
         config: AgentConfig::default(),
         credentials: None,
         identity: Some(identity.to_path_buf()),
+        model_factory: None,
     }
 }
 

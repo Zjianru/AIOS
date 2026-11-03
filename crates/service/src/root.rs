@@ -66,7 +66,21 @@ pub struct RootSessionOptions {
     pub credentials: Option<std::sync::Arc<dyn model::CredentialSource>>,
     /// T008.3：钥匙文件位置；设置方法每次操作重新打开 Keyring。
     pub identity: Option<PathBuf>,
+    /// T008.3b：每次打开/recheck 根会话时重新解析模型配置（首次使用后 Keyring 才有连接）。
+    pub model_factory: Option<ModelFactory>,
 }
+
+/// T008.3b：从当前 Keyring 解析 (DeepSeekConfig, 凭证来源)；没有连接时返回 Err(说明)。
+pub type ModelFactory = std::sync::Arc<
+    dyn Fn() -> Result<
+            (
+                DeepSeekConfig,
+                Option<std::sync::Arc<dyn model::CredentialSource>>,
+            ),
+            String,
+        > + Send
+        + Sync,
+>;
 
 impl std::fmt::Debug for RootSessionOptions {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

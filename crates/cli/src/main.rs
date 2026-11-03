@@ -357,6 +357,7 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             config: agent_config,
             credentials: Some(credentials),
             identity: args.common.identity.clone(),
+            model_factory: None,
         },
         window,
     )
