@@ -263,7 +263,7 @@ async fn malformed_quotes_and_flow_frontmatter_are_discarded() {
 fn user_invocation_names_follow_dsh_gesture() {
     assert_eq!(tools::invoked_skill_names("/alpha 做事"), vec!["alpha"]);
     assert_eq!(
-        tools::invoked_skill_names("请用 /alpha 和 /beta，再 /alpha"),
+        tools::invoked_skill_names("请用 /alpha 和 /beta 再 /alpha"),
         vec!["alpha", "beta"]
     );
     assert!(

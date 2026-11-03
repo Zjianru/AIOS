@@ -356,7 +356,7 @@ Use the pdf command.
     let first = String::from_utf8(requests[0].body.clone()).unwrap();
     let catalog_at = first.find("<available_skills>").expect("目录应在请求里");
     let skill_at = first
-        .find("<skill_content name=\"pdf-tools\">")
+        .find("skill_content name=\\\"pdf-tools\\\"")
         .unwrap_or_else(|| panic!("显式 /name 应注入 skill 全文：{first}"));
     assert!(
         skill_at > catalog_at,
@@ -422,7 +422,7 @@ Hidden body.
         "模型不可见 skill 不发布目录：{first}"
     );
     assert!(
-        first.contains("<skill_content name=\"hidden\">") && first.contains("Hidden body."),
+        first.contains("skill_content name=\\\"hidden\\\"") && first.contains("Hidden body."),
         "用户显式 /name 应注入隐藏 skill 全文：{first}"
     );
     let store = session::SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
