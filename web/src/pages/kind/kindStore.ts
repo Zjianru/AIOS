@@ -557,7 +557,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       }
       case 'llm/retry': {
         const raw = ensure(turn);
-        const delayMs = typeof data.delay_ms === 'number' ? data.delay_ms : 0;
+        const delayMs = typeof data.delayMs === 'number' ? data.delayMs : typeof data.delay_ms === 'number' ? data.delay_ms : 0;
         const failure = (data.failure ?? {}) as { message?: string; code?: string };
         raw.retry = {
           attempt: typeof data.retry === 'number' ? data.retry : 1,

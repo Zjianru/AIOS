@@ -12,7 +12,7 @@ async function followEvents(request: APIRequestContext, fixture: KernelFixture) 
     `${fixture.baseUrl}/api?token=${encodeURIComponent(fixture.token)}`,
     { data: { method: 'follow', lastSeq: 0 } },
   );
-  return (await response.json()).events as { type: string }[];
+  return (await response.json()).events as { type: string; data?: { delayMs?: number } }[];
 }
 
 /// T007.7 清单 5：重试两次后成功 → 页面出现「第 N 次重试」；日志有 llm/retry。
@@ -21,9 +21,16 @@ test('重试两次后成功：页面显示第几次重试、为什么', async ({
   try {
     await open(page, fixture);
     await expect(page.getByText(/次重试/)).toBeVisible({ timeout: 30_000 });
+    // 第 3 次重试的退避是 2 秒：页面「X 秒后」必须等于 llm/retry.delayMs 折算值（camelCase）。
+    await expect(page.getByText('2 秒后', { exact: false })).toBeVisible({ timeout: 40_000 });
     await expect(page.getByText('（T007 e2e 假回放）')).toBeVisible({ timeout: 30_000 });
     const events = await followEvents(request, fixture);
-    expect(events.filter((event) => event.type === 'llm/retry').length).toBeGreaterThanOrEqual(2);
+    const retries = events.filter((event) => event.type === 'llm/retry');
+    expect(retries.length).toBeGreaterThanOrEqual(3);
+    expect(
+      retries.some((event) => Math.round((event.data?.delayMs ?? 0) / 1000) === 2),
+    ).toBeTruthy();
+    expect(retries.every((event) => typeof event.data?.delayMs === 'number')).toBeTruthy();
   } finally {
     await fixture.close();
   }

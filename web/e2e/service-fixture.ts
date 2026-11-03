@@ -141,7 +141,7 @@ export async function startKernelFixture(
           return;
         }
         modelCalls += 1;
-        if (options.failure === 'model' || (options.failure === 'retry-then-succeed' && modelCalls <= 2)) {
+        if (options.failure === 'model' || (options.failure === 'retry-then-succeed' && modelCalls <= 3)) {
           res.writeHead(500, { 'content-type': 'application/json' });
           res.end(JSON.stringify({ type: 'error', error: { type: 'server_error', message: 'overloaded' } }));
           return;
