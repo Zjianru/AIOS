@@ -278,6 +278,8 @@ pub enum FailureCause {
     Credential,
     /// 模型侧失败（重试用完/超时/服务错误等）。
     Model,
+    /// T008.4：Keyring 读不出/无法签发；页面失败块说 Keyring 原因、指去设置。
+    Keyring,
 }
 
 /// 服务事件：严格来自会话日志事实（seq 连续、type 是日志事件类型、data 是事件字段）。
@@ -790,6 +792,7 @@ fn failure_cause(kind: &session::EventKind) -> Option<FailureCause> {
         return None;
     };
     Some(match error.code.as_str() {
+        "MISSING_CREDENTIAL" if error.message.contains("Keyring") => FailureCause::Keyring,
         "AUTH" | "MISSING_CREDENTIAL" => FailureCause::Credential,
         _ => FailureCause::Model,
     })
@@ -1323,6 +1326,16 @@ mod t007_protocol_tests {
             failure_cause(&turn_end("SERVER")),
             Some(FailureCause::Model)
         );
+        let keyring = session::EventKind::TurnEnd {
+            turn: 1,
+            reason: session::TurnEndReason::Error {
+                error: session::LlmFailure {
+                    message: "Keyring 无法签发：钥匙文件不在".to_owned(),
+                    code: "MISSING_CREDENTIAL".to_owned(),
+                },
+            },
+        };
+        assert_eq!(failure_cause(&keyring), Some(FailureCause::Keyring));
         assert_eq!(
             failure_cause(&session::EventKind::StepStart { turn: 1, step: 1 }),
             None
