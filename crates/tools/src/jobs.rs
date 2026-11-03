@@ -220,6 +220,9 @@ pub struct TaskRegistry {
     on_registered: Mutex<Option<JobRegisteredCallback>>,
     on_settled: Mutex<Option<JobSettledCallback>>,
     on_notify: Mutex<Option<JobNotifyCallback>>,
+    /// T006.9c：注册时同步入队的 job/registered（driver 在 tool/result 提交前取走并落日志，
+    /// 照 DSH registry.start 在工具执行内同步 session.append 的提交时点）。
+    registered_pending: Mutex<Vec<JobRegistered>>,
     /// DSH tool-jobs 的 killedByModel 集合（跨层共享；判定在通知投递方，不进 session 事件）。
     killed_by_model: Mutex<HashSet<String>>,
 }
@@ -245,6 +248,7 @@ impl TaskRegistry {
             on_registered: Mutex::new(None),
             on_settled: Mutex::new(None),
             on_notify: Mutex::new(None),
+            registered_pending: Mutex::new(Vec::new()),
             killed_by_model: Mutex::new(HashSet::new()),
         }
     }
@@ -258,6 +262,7 @@ impl TaskRegistry {
             on_registered: Mutex::new(None),
             on_settled: Mutex::new(None),
             on_notify: Mutex::new(None),
+            registered_pending: Mutex::new(Vec::new()),
             killed_by_model: Mutex::new(HashSet::new()),
         }
     }
@@ -284,6 +289,16 @@ impl TaskRegistry {
             .lock()
             .expect("jobs killedByModel 锁被毒化")
             .remove(id)
+    }
+
+    /// T006.9c：取走工具执行期间同步登记的 job/registered（driver 在提交 tool/result 前落日志）。
+    pub fn take_registered_pending(&self) -> Vec<JobRegistered> {
+        std::mem::take(
+            &mut *self
+                .registered_pending
+                .lock()
+                .expect("jobs registered 队列锁被毒化"),
+        )
     }
 
     fn settled_callback(&self) -> Option<JobSettledCallback> {

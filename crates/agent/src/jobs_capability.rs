@@ -96,6 +96,11 @@ fn tool_call_data(tool_call: &Option<tools::JobToolCall>) -> Option<JobToolCallD
     })
 }
 
+/// T006.9c：把同步队列里的一批注册转成会话事件（driver 在 tool/result 提交前调用）。
+pub(crate) fn registered_events(registrations: &[tools::JobRegistered]) -> Vec<EventKind> {
+    registrations.iter().map(registered_event).collect()
+}
+
 /// `job/registered` 会话事件（DSH JobRegisteredData 字段）。
 fn registered_event(registered: &tools::JobRegistered) -> EventKind {
     EventKind::JobRegistered {
