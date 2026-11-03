@@ -37,6 +37,7 @@ fn options(
         resume,
         model: model_config(base_url),
         config: isolated_config(data_dir),
+        credentials: None,
     }
 }
 
@@ -127,6 +128,7 @@ async fn open_rejects_invalid_config_before_creating_session() {
         resume: None,
         model: model_config("http://127.0.0.1:1"),
         config,
+        credentials: None,
     })
     .await
     {

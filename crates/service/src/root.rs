@@ -56,12 +56,30 @@ pub enum RootError {
 }
 
 /// 打开/新建根会话的输入：与 Agent::open 一致，外加根会话状态文件所在的数据目录。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RootSessionOptions {
     pub data_dir: PathBuf,
     pub cwd: PathBuf,
     pub model: DeepSeekConfig,
     pub config: AgentConfig,
+    /// T008.2：凭证来源（服务传 Keyring 适配器）；None 用 DeepSeekConfig.api_key。
+    pub credentials: Option<std::sync::Arc<dyn model::CredentialSource>>,
+}
+
+impl std::fmt::Debug for RootSessionOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RootSessionOptions")
+            .field("data_dir", &self.data_dir)
+            .field("cwd", &self.cwd)
+            .field("model", &self.model)
+            .field("config", &self.config)
+            .field(
+                "credentials",
+                &self.credentials.as_ref().map(|_| "<source>"),
+            )
+            .finish()
+    }
 }
 
 /// 根会话打开结果。
@@ -92,6 +110,7 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
                 resume: None,
                 model: options.model,
                 config: options.config,
+                credentials: options.credentials.clone(),
             })
             .await?;
             let record = RootRecord {
@@ -143,6 +162,7 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
                 resume: Some(id.clone()),
                 model: options.model,
                 config: options.config,
+                credentials: options.credentials.clone(),
             })
             .await
             .map_err(|error| match &error {
