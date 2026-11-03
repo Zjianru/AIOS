@@ -3,7 +3,7 @@
  * 用 shadcn 的 Sidebar（collapsible="icon"），只改样式 token 与宽度变量，行为不动。
  */
 
-import { Clock3, FolderKanban, Moon, Sparkles, Sun } from 'lucide-react';
+import { Clock3, FolderKanban, Moon, Settings, Sparkles, Sun } from 'lucide-react';
 import {
   Sidebar as ShadcnSidebar,
   SidebarContent,
@@ -32,6 +32,7 @@ const MAIN_NAV: NavItem[] = [
   { id: 'now', label: '现在', route: 'now', icon: Clock3 },
   { id: 'kind', label: 'Kind', route: 'kind', icon: Sparkles },
   { id: 'work', label: '工作', route: 'work', icon: FolderKanban },
+  { id: 'settings', label: '设置', route: 'settings:model', icon: Settings },
 ];
 
 function TrafficLights() {
@@ -76,7 +77,7 @@ function SidebarInner({ route }: { route: ParsedRoute }) {
   const theme = useAppStore((s) => s.theme);
   const toggleTheme = useAppStore((s) => s.toggleTheme);
   // 只显示接上内核的部分（D46）：只有 Kind 和设置（外观是本地开关，留着）。
-  const mainNav = MAIN_NAV.filter((item) => item.id === 'kind');
+  const mainNav = MAIN_NAV.filter((item) => item.id === 'kind' || item.id === 'settings');
 
   return (
     <ShadcnSidebar
