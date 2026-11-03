@@ -16,7 +16,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { getModelSettings } from '@/data/api';
+import { getModelSettings } from '@/data/keyring';
+import { selectSessionModel } from '@/data/service';
 import type { ModelSettingsView } from '@/data/fixtures/settings';
 import { go } from '@/app/navigate';
 import { useKindStore } from './kindStore';
@@ -69,7 +70,11 @@ export function ModelPicker() {
                     <DropdownMenuItem
                       key={row.id}
                       disabled={!state.ok}
-                      onSelect={() => !on && setModel({ connectionId: conn.id, modelId: row.id, label: row.name ?? row.id })}
+                      onSelect={() => {
+                        if (on) return;
+                        setModel({ connectionId: conn.id, modelId: row.id, label: row.name ?? row.id });
+                        void selectSessionModel(row.id);
+                      }}
                       className="gap-2 text-2"
                     >
                       <span className="min-w-0 flex-1 truncate">{row.name ?? row.id}</span>

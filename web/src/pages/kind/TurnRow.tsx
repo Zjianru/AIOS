@@ -12,6 +12,7 @@ import { QuoteChip } from './QuoteChip';
 import { QuestionCard } from './QuestionCard';
 import { useKindStore, useStreamStore } from './kindStore';
 import type { CompactionView, TurnViewData } from './kindStore';
+import { go } from '@/app/navigate';
 import type { TextElement } from '@/data/types';
 import { cn } from '@/lib/utils';
 
@@ -201,6 +202,15 @@ function FailureBlock({ view }: { view: TurnViewData }) {
               : '内核已经按规矩重试过了。过一会儿再发一次，或者换个模型。'}
         </div>
       </div>
+      {failure.cause === 'keyring' || failure.cause === 'credential' ? (
+        <button
+          type="button"
+          onClick={() => go('settings:model')}
+          className="shrink-0 rounded-btn border border-line-2 px-2.5 py-1 text-2 text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+        >
+          去设置 ›
+        </button>
+      ) : null}
       {view.user ? (
         <button
           type="button"

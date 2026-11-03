@@ -49,7 +49,7 @@ function mapConnection(info: ServiceConnectionInfo): ConnectionView {
     protocol: 'anthropic-messages',
     endpoint: info.endpoint,
     defaultEndpoint: CATALOG[0]?.defaultEndpoint ?? 'https://api.deepseek.com/anthropic',
-    models: info.model ? [{ id: info.model }] : [],
+    models: [],
     key: { saved: true, savedAt: String(info.saved_at) },
     check: mapCheck(info),
   };
