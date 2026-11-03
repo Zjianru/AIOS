@@ -291,3 +291,16 @@ fn tool_call_delta_chunk_json_matches_dsh() {
         "没有 name 时不写 name 键"
     );
 }
+
+
+/// T006.11b：skill-invocation 来源的 wire 形状照 DSH
+/// SkillInvocationSource { kind, name, form: instructions }。
+#[test]
+fn skill_invocation_source_serializes_dsh_shape() {
+    let message = crate::Message::skill_invocation("body", "pdf-tools".to_owned());
+    let json = serde_json::to_value(&message.source).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({"kind": "skill-invocation", "name": "pdf-tools", "form": "instructions"})
+    );
+}
