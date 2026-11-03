@@ -1,11 +1,12 @@
 import { test, expect } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { startRealKernelFixture } from './service-fixture';
 
 const evidence =
   process.env.AIOS_DOD_EVIDENCE ??
-  path.resolve(__dirname, '../../../aios-work/T007/evidence/dod');
+  path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../aios-work/T007/evidence/dod');
 
 test.skip(!process.env.DEEPSEEK_API_KEY, '需要 DEEPSEEK_API_KEY（D34）');
 test.setTimeout(240_000);

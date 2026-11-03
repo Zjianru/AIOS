@@ -337,8 +337,7 @@ export async function startRealKernelFixture(): Promise<KernelFixture> {
   const dataDir = path.join(root, 'data');
   await mkdir(workDir, { recursive: true });
   await mkdir(dataDir, { recursive: true });
-  await writeFile(path.join(workDir, 'hello.txt'), 'DOD-4-OK
-');
+  await writeFile(path.join(workDir, 'hello.txt'), 'DOD-4-OK' + String.fromCharCode(10));
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
   const child = spawn(
