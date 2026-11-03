@@ -1,0 +1,408 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/overpass/wght.css";
+
+/* 深浅两套主题靠 html[data-theme] 切，不靠 media query（原型要能手动切） */
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+/* ── 原始 token：取自 visual-plan-v12.md 的配色表 + v13 的 v11 黑紫桌面 ──
+   深色背景按 visual-plan-v12.md 末节「用户反馈后的修正」退回 v11 黑紫光晕。 */
+:root {
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  --font-brand: "Overpass Variable", "Overpass", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, Menlo, monospace;
+
+  /* 形状 token（visual-plan-v12.md：圆角按层级分） */
+  --r-window: 12px;
+  --r-card: 10px;
+  --r-info: 8px;
+  --r-btn: 6px;
+  --r-badge: 4px;
+
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --t-fast: 120ms;
+  --t-base: 200ms;
+  --t-slow: 280ms;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  /* v11 黑紫：近黑底加紫蓝桌面光晕 */
+  --desk: radial-gradient(1200px 700px at 15% 10%, #2a2350 0%, transparent 60%),
+    radial-gradient(900px 600px at 90% 90%, #13324a 0%, transparent 60%), #0c0c10;
+  --side: rgba(28, 28, 34, 0.62);
+  --content: #141418;
+  --pane: #18181d;
+  --raised: #1f1f25;
+  --glass: rgba(34, 34, 42, 0.72);
+  --hover: rgba(255, 255, 255, 0.045);
+  --active: rgba(255, 255, 255, 0.075);
+  --line: rgba(255, 255, 255, 0.07);
+  --line-2: rgba(255, 255, 255, 0.12);
+  --ink: #ededf2;
+  --ink-2: #a5a5b2;
+  --ink-3: #6e6e7a;
+  /* 品牌紫只留在 Kind 的头像光球上 */
+  --brand: #8f87ff;
+  --brand-ink: #fff;
+  --brand-soft: rgba(143, 135, 255, 0.14);
+  /* 状态四色沿用 v13 */
+  --run: #6aa2ff;
+  --wait: #f2b25c;
+  --done: #5fcf8f;
+  --fail: #f07a7a;
+  --run-soft: rgba(106, 162, 255, 0.1);
+  --wait-soft: rgba(242, 178, 92, 0.09);
+  --done-soft: rgba(95, 207, 143, 0.09);
+  --fail-soft: rgba(240, 122, 122, 0.09);
+  /* 项目线色（visual-plan-v12.md 配色表；避开状态四色） */
+  --line-w: #8b6cff;
+  --line-n: #2bb8cf;
+  --line-d: #d08a5a;
+  /* 地铁线规则（brief §四.2）：站是中性——浅底深描边，线色只认路线 */
+  --stn-fill: #f4f4f7;
+  --stn-line: var(--content);
+  /* 「Kind 现在带着」八个块的颜色（沿用 v13 的 --kf-c1..8；每块一个色标 + 比例条分色） */
+  --kf-c1: #3987e5;
+  --kf-c2: #d95926;
+  --kf-c3: #199e70;
+  --kf-c4: #c98500;
+  --kf-c5: #d55181;
+  --kf-c6: #008300;
+  --kf-c7: #9085e9;
+  --kf-c8: #e66767;
+  --shadow-pop: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 24px 64px rgba(0, 0, 0, 0.55),
+    0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --desk: radial-gradient(1200px 700px at 15% 10%, #d9d4ff 0%, transparent 60%),
+    radial-gradient(900px 600px at 90% 90%, #cfe6f5 0%, transparent 60%), #eceef2;
+  --side: rgba(240, 240, 244, 0.68);
+  --content: #ffffff;
+  --pane: #f7f7f9;
+  --raised: #ffffff;
+  --glass: rgba(255, 255, 255, 0.78);
+  --hover: rgba(0, 0, 0, 0.04);
+  --active: rgba(0, 0, 0, 0.065);
+  --line: rgba(0, 0, 0, 0.07);
+  --line-2: rgba(0, 0, 0, 0.12);
+  --ink: #1d1d22;
+  --ink-2: #5d5d68;
+  --ink-3: #93939e;
+  --brand: #5b52d6;
+  --brand-ink: #fff;
+  --brand-soft: rgba(91, 82, 214, 0.09);
+  --run: #2f6fe0;
+  --wait: #b86e0a;
+  --done: #1f8a4c;
+  --fail: #c83d3d;
+  --run-soft: rgba(47, 111, 224, 0.07);
+  --wait-soft: rgba(184, 110, 10, 0.06);
+  --done-soft: rgba(31, 138, 76, 0.06);
+  --fail-soft: rgba(200, 61, 61, 0.05);
+  --line-w: #6c4cf0;
+  --line-n: #0a8fa6;
+  --line-d: #a8673a;
+  /* 地铁线规则（brief §四.2）：站是中性——浅底深描边，线色只认路线 */
+  --stn-fill: #ffffff;
+  --stn-line: var(--ink-2);
+  /* 「Kind 现在带着」八个块的颜色（沿用 v13 的 --kf-c1..8） */
+  --kf-c1: #2a78d6;
+  --kf-c2: #eb6834;
+  --kf-c3: #1baf7a;
+  --kf-c4: #eda100;
+  --kf-c5: #e87ba4;
+  --kf-c6: #008300;
+  --kf-c7: #6250d6;
+  --kf-c8: #e34948;
+  --shadow-pop: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 24px 64px rgba(30, 30, 60, 0.18),
+    0 4px 12px rgba(30, 30, 60, 0.08);
+}
+
+/* ── 映射成 Tailwind 语义工具类 ── */
+@theme inline {
+  --font-sans: var(--font-sans);
+  --font-brand: var(--font-brand);
+  --font-mono: var(--font-mono);
+
+  --color-content: var(--content);
+  --color-pane: var(--pane);
+  --color-raised: var(--raised);
+  --color-side: var(--side);
+  --color-glass: var(--glass);
+  --color-hover: var(--hover);
+  --color-active: var(--active);
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-brand: var(--brand);
+  --color-brand-ink: var(--brand-ink);
+  --color-brand-soft: var(--brand-soft);
+  --color-run: var(--run);
+  --color-wait: var(--wait);
+  --color-done: var(--done);
+  --color-fail: var(--fail);
+  --color-run-soft: var(--run-soft);
+  --color-wait-soft: var(--wait-soft);
+  --color-done-soft: var(--done-soft);
+  --color-fail-soft: var(--fail-soft);
+  --color-line-w: var(--line-w);
+  --color-line-n: var(--line-n);
+  --color-line-d: var(--line-d);
+
+  --radius-window: var(--r-window);
+  --radius-card: var(--r-card);
+  --radius-info: var(--r-info);
+  --radius-btn: var(--r-btn);
+  --radius-badge: var(--r-badge);
+
+  --text-1: 11px;
+  --text-2: 12px;
+  --text-3: 13px;
+  --text-4: 15px;
+  --text-5: 18px;
+  --text-6: 24px;
+  --text-1--line-height: 16px;
+  --text-2--line-height: 18px;
+  --text-3--line-height: 20px;
+  --text-4--line-height: 24px;
+  --text-5--line-height: 26px;
+  --text-6--line-height: 32px;
+  /* ── shadcn/ui 组件读的语义 token，全部映射到上面那套 token 上（不改组件、只改 token） ── */
+  --color-background: var(--content);
+  --color-foreground: var(--ink);
+  --color-card: var(--raised);
+  --color-card-foreground: var(--ink);
+  --color-popover: var(--raised);
+  --color-popover-foreground: var(--ink);
+  /* 主按钮是墨色实心（visual-plan-v12.md §配色） */
+  --color-primary: var(--ink);
+  --color-primary-foreground: var(--content);
+  --color-secondary: var(--pane);
+  --color-secondary-foreground: var(--ink);
+  --color-muted: var(--pane);
+  --color-muted-foreground: var(--ink-2);
+  --color-accent: var(--hover);
+  --color-accent-foreground: var(--ink);
+  --color-destructive: var(--fail);
+  --color-destructive-foreground: #ffffff;
+  --color-border: var(--line);
+  --color-input: var(--line-2);
+  --color-ring: var(--brand);
+  --color-sidebar: transparent;
+  --color-sidebar-foreground: var(--ink-2);
+  --color-sidebar-primary: var(--ink);
+  --color-sidebar-primary-foreground: var(--content);
+  --color-sidebar-accent: var(--hover);
+  --color-sidebar-accent-foreground: var(--ink);
+  --color-sidebar-border: var(--line);
+  --color-sidebar-ring: var(--brand);
+
+  /* 圆角按层级分（visual-plan-v12.md）：4 线路标 / 6 按钮 / 8 告知卡 / 10 要你动手 / 12 窗口 */
+  --radius-sm: var(--r-badge);
+  --radius-md: var(--r-btn);
+  --radius-lg: var(--r-info);
+  --radius-xl: var(--r-card);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    background: var(--desk);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 15px;
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+    /* 页面不许横向滚动（需求 §一） */
+    overflow-x: hidden;
+  }
+  ::selection {
+    background: var(--brand-soft);
+  }
+  button {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: 0;
+    padding: 0;
+    cursor: pointer;
+  }
+  input,
+  textarea {
+    font: inherit;
+    color: inherit;
+  }
+  /* 细滚动条，和 v13 一致 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-2) transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--line-2);
+    border-radius: 999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+/* 标识字体只在数字、时间、线路代码上用（visual-plan-v12.md §字体） */
+@utility brand-type {
+  font-family: var(--font-brand);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+/* 减少动效：系统设置或开发者开关打开时，全局只留淡入 */
+@layer base {
+  [data-reduced-motion="true"] *,
+  [data-reduced-motion="true"] *::before,
+  [data-reduced-motion="true"] *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 60ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-reduced-motion="off"]) *,
+  :root:not([data-reduced-motion="off"]) *::before,
+  :root:not([data-reduced-motion="off"]) *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 60ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+/* ── dockview：把它的可变量接到我们的 token 上（只改颜色与尺寸，不改行为） ── */
+.dv-theme {
+  --dv-group-view-background-color: var(--content);
+  --dv-tabs-and-actions-container-background-color: var(--pane);
+  --dv-tabs-and-actions-container-height: 30px;
+  --dv-tabs-and-actions-container-font-size: 12px;
+  --dv-tab-margin: 0;
+  --dv-tab-border-radius: 0;
+  --dv-activegroup-visiblepanel-tab-background-color: var(--content);
+  --dv-activegroup-visiblepanel-tab-color: var(--ink);
+  --dv-activegroup-hiddenpanel-tab-background-color: transparent;
+  --dv-activegroup-hiddenpanel-tab-color: var(--ink-3);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--content);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--ink-2);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: transparent;
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--ink-3);
+  --dv-separator-border: var(--line);
+  --dv-sash-color: transparent;
+  --dv-active-sash-color: var(--brand);
+  --dv-drag-over-background-color: var(--brand-soft);
+  --dv-drag-over-border-color: var(--brand);
+  --dv-scrollbar-background-color: var(--line-2);
+  --dv-icon-hover-background-color: var(--hover);
+  --dv-floating-box-shadow: var(--shadow-pop);
+}
+
+/* 一个分组里只有一个面板时，不显示标签条（v13 的对话/在做的事没有标签条）；
+   窄窗收成标签页时自然有多个标签，标签条就出来了。 */
+/* dockview 给单标签分组加了 dv-single-tab 类，直接用它判断 */
+.dv-theme .dv-tabs-and-actions-container.dv-single-tab {
+  display: none;
+}
+
+/* 场景面板固定，不提供关闭按钮（关面板是第 3 期的 Dock 功能） */
+.dv-theme .dv-tab .dv-default-tab-action {
+  display: none;
+}
+
+/* 面板内容自己管滚动 */
+.dv-theme .dv-groupview { overflow: hidden; }
+.dv-theme .dv-content-container { background: var(--content); }
+
+/* markdown 正文：react-markdown 生成的是原始标签，只能在这里给元素定样式 */
+.md {
+  font-size: 15px;
+  line-height: 24px;
+  color: var(--ink);
+}
+.md > *:first-child { margin-top: 0; }
+.md > *:last-child { margin-bottom: 0; }
+.md p { margin: 0 0 8px; }
+.md h1, .md h2, .md h3, .md h4 { margin: 14px 0 6px; font-weight: 600; color: var(--ink); }
+.md h1 { font-size: 18px; line-height: 26px; }
+.md h2 { font-size: 15px; line-height: 24px; }
+.md h3 { font-size: 15px; line-height: 22px; }
+.md ul, .md ol { margin: 4px 0 8px; padding-left: 20px; }
+.md ul { list-style: disc; }
+.md ol { list-style: decimal; }
+.md li { margin: 2px 0; }
+.md li::marker { color: var(--ink-3); }
+.md strong { font-weight: 600; color: var(--ink); }
+.md a { color: var(--brand); text-decoration: underline; text-underline-offset: 2px; }
+.md blockquote {
+  margin: 8px 0;
+  border-left: 2px solid var(--line-2);
+  padding-left: 10px;
+  color: var(--ink-2);
+}
+.md code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--pane);
+  border: 1px solid var(--line);
+  border-radius: var(--r-badge);
+  padding: 1px 4px;
+}
+.md pre {
+  margin: 8px 0;
+  background: var(--pane);
+  border: 1px solid var(--line);
+  border-radius: var(--r-info);
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+.md pre code { background: none; border: 0; padding: 0; font-size: 12px; line-height: 18px; }
+.md table {
+  margin: 8px 0;
+  border-collapse: collapse;
+  font-size: 13px;
+  width: 100%;
+}
+.md th, .md td {
+  border: 1px solid var(--line);
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+.md th { background: var(--pane); font-weight: 500; color: var(--ink-2); }
+.md hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
+.md img { max-width: 100%; border-radius: var(--r-info); }
+
+
+/* ── shadcn 侧栏放进「带外边距的窗口」里的两处适配（只改尺寸，不改行为） ── */
+/* 1) 容器是 fixed + h-svh，会按视口算高；窗口有外边距，得按窗口高度 */
+[data-slot="sidebar-container"] {
+  height: 100%;
+}
+/* 2) wrapper 的 min-h-svh 同样按视口算，会撑破窗口 */
+[data-slot="sidebar-wrapper"] {
+  min-height: 0;
+}
+/* 3) 侧栏内容区自己滚动，页脚不被挤出去 */
+[data-slot="sidebar-content"] {
+  min-height: 0;
+}
