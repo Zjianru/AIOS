@@ -50,7 +50,7 @@ export async function startKernelFixture(): Promise<KernelFixture> {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'aios-t007-'));
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
-  const child = spawn(bin, ['serve', '--data-dir', dataDir, '--cwd', dataDir], {
+  const child = spawn(bin, ['serve', '--data-dir', dataDir, '--cwd', dataDir, '--web-dist', path.join(repoRoot, 'web/dist')], {
     env: {
       ...process.env,
       DEEPSEEK_API_KEY: 'test-key',

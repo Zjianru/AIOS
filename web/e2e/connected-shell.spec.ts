@@ -19,7 +19,7 @@ test('接缝 5 骨架：真 serve 活着，连接视图只有 Kind、无原型�
   const body = await response.json();
   expect(body.object.sessionId).toBeTruthy();
 
-  await page.goto('/#kind');
+  await page.goto(`${fixture.baseUrl}/?token=${encodeURIComponent(fixture.token)}#kind`);
   await expect(page).toHaveTitle('AIOS');
   await expect(page.getByText('内核状态')).toHaveCount(0);
   await expect(page.getByText('原型：', { exact: false })).toHaveCount(0);
