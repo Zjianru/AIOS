@@ -29,7 +29,7 @@ const FINAL_TEXT_SSE = [
 
 const HIGH_USAGE_FINAL_TEXT_SSE = FINAL_TEXT_SSE.replace(
   '"usage":{"input_tokens":10,"output_tokens":1}',
-  '"usage":{"input_tokens":900000,"output_tokens":1}',
+  '"usage":{"input_tokens":4500,"output_tokens":1}',
 );
 
 const TOOL_CALL_SSE = [
@@ -118,8 +118,10 @@ export interface FixtureOptions {
   askTurn?: boolean;
   /// 模型失败脚本：前两次 500 后成功 / 一直 500 / 401 凭证错误。
   failure?: 'retry-then-succeed' | 'model' | 'credential';
-  /// 高上下文占用回放（input_tokens 90 万），用来触发自动压缩 / 让压缩按钮可用。
+  /// 高上下文占用回放（配小 --context-window），用来触发自动压缩 / 让压缩按钮可用。
   highUsage?: boolean;
+  /// serve 的 --context-window（自动压缩测试用 5000）。
+  contextWindow?: number;
 }
 
 /** 接缝 5：假 DeepSeek 脚本回放 + 真 aios-dev serve（页面也由它同源托管）。 */
@@ -177,9 +179,13 @@ export async function startKernelFixture(
   }
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
+  const serveArgs = ['serve', '--data-dir', dataDir, '--cwd', dataDir, '--web-dist', path.join(repoRoot, 'web/dist')];
+  if (options.contextWindow) {
+    serveArgs.push('--context-window', String(options.contextWindow));
+  }
   const child = spawn(
     bin,
-    ['serve', '--data-dir', dataDir, '--cwd', dataDir, '--web-dist', path.join(repoRoot, 'web/dist')],
+    serveArgs,
     {
       env: {
         ...process.env,

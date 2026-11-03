@@ -8,7 +8,7 @@
 import { create } from 'zustand';
 import { toast } from 'sonner';
 import { compactionSummary, liveDemo } from '@/data/api';
-import { answerQuestions, cancelTurn, connectSession, dismissQuestions, fetchEventsPage, sendMessage } from '@/data/service';
+import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchEventsPage, sendMessage } from '@/data/service';
 import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
 import type { AskAnswer, AskQuestion, FailureCause, LiveDemo, LiveScript, LiveStep } from '@/data/fixtures/kindLive';
 import { mark } from '@/lib/perf';
@@ -266,6 +266,8 @@ let activeSocket: WebSocket | null = null;
 
 /** T007.3/4：本轮已收到的日志事件（首屏页 + live）；实时帧按轮重算 view。 */
 let liveEvents: ServiceEvent[] = [];
+let contextWindow = 0;
+let pendingCompactionAuto = true;
 (window as unknown as { __derive?: unknown }).__derive = (events: ServiceEvent[]) => deriveTurnViews(events);
 let liveTurn: number | null = null;
 let liveStream = '';
@@ -275,8 +277,13 @@ function refreshTurn(turn: number): void {
   const events = liveEvents.filter(
     (event) => typeof event.data.turn === 'number' && Number(event.data.turn) === turn,
   );
-  const view = deriveTurnViews(events)[0];
-  if (!view) return;
+  const derived = deriveTurnViews(events)[0];
+  if (!derived) return;
+  const existing = useKindStore.getState().byId.get(derived.id);
+  const view =
+    derived.compaction || !existing?.compaction
+      ? derived
+      : { ...derived, compaction: existing.compaction };
   (window as unknown as { __q?: unknown }).__q = {
     turn,
     questions: view.question && 'questions' in view.question ? view.question.questions.map((item) => item.question) : null,
@@ -301,10 +308,68 @@ function refreshTurn(turn: number): void {
   });
 }
 
+/** 压缩摘要：ContentBlock 数组里的 text 拼起来（日志事实）。 */
+function summaryTextOf(data: Record<string, unknown>): string {
+  const blocks = Array.isArray(data.summary) ? data.summary : [];
+  return blocks
+    .map((block) =>
+      block && typeof block === 'object' ? String((block as { text?: unknown }).text ?? '') : '',
+    )
+    .join('');
+}
+
+function compactionViewOf(data: Record<string, unknown>, auto: boolean) {
+  return { auto, before: 0, after: 0, summary: summaryTextOf(data) };
+}
+
 /** 日志事件 live：追加进本轮事件，重建 view；turn/end 时收掉流式文本。 */
 function applyLiveEvent(event: ServiceEvent): void {
   liveEvents.push(event);
   const turn = typeof event.data.turn === 'number' ? Number(event.data.turn) : null;
+  if (event.type === 'compaction/start') {
+    pendingCompactionAuto = !(event.data.sourceCommandId !== undefined && event.data.sourceCommandId !== null);
+    return;
+  }
+  if (event.type === 'compaction/summary') {
+    const auto =
+      event.data.sourceCommandId === undefined || event.data.sourceCommandId === null
+        ? pendingCompactionAuto
+        : false;
+    const compaction = compactionViewOf(event.data, auto);
+    const compactionId = String(event.data.compactionId ?? String(event.seq));
+    const dividerTurn = turn === null ? null : turn + 0.5;
+    useKindStore.setState((state) => {
+      const id =
+        'turn-' + String(dividerTurn ?? state.views.length + 0.5) + '-compaction-' + compactionId;
+      const view: TurnViewData = {
+        id,
+        startedAt: null,
+        durationMs: null,
+        status: 'completed',
+        user: null,
+        reasoning: null,
+        tools: [],
+        cards: [],
+        answer: null,
+        thinkingSeconds: 0,
+        tokens: { input: 0, output: 0 },
+        cost: null,
+        model: DEMO_MODEL.label,
+        retry: null,
+        failure: null,
+        question: null,
+        compaction,
+        delivery: null,
+        stoppedAt: null,
+      };
+      const exists = state.views.some((item) => item.id === id);
+      const views = (exists ? state.views.map((item) => (item.id === id ? view : item)) : state.views.concat(view)).sort(
+        (left, right) => Number(left.id.split('-')[1]) - Number(right.id.split('-')[1]),
+      );
+      return { views, byId: indexOf(views) };
+    });
+    return;
+  }
   if (turn === null) return;
   if (event.type === 'turn/start') {
     liveTurn = turn;
@@ -318,6 +383,14 @@ function applyLiveEvent(event: ServiceEvent): void {
 
 /** agent 帧 live：流式文本先写进 useStreamStore（TurnRow 的 Answer 只重绘这一条）。 */
 function applyAgentEvent(event: AgentFrame['event']): void {
+  if (event.type === 'usage') {
+    const used =
+      (event.inputTokens ?? 0) + (event.cacheReadTokens ?? 0) + (event.cacheWriteTokens ?? 0);
+    if (contextWindow > 0) {
+      useKindStore.setState({ usage: Math.min(99, Math.round((used / contextWindow) * 100)) });
+    }
+    return;
+  }
   if (event.type !== 'text-delta' || typeof event.text !== 'string') return;
   if (liveTurn === null) return;
   liveStream += event.text;
@@ -330,6 +403,7 @@ function applyAgentEvent(event: AgentFrame['event']): void {
 
 function applyFrame(frame: Frame): void {
   if (frame.type === 'ready') {
+    contextWindow = frame.context.window;
     const usage =
       frame.context.window > 0
         ? Math.round((frame.context.used / frame.context.window) * 100)
@@ -356,6 +430,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     failure: { cause: FailureCause; reason: string } | null;
     question: QuestionView | null;
     retry: TurnViewData['retry'];
+    compaction: CompactionView | null;
     answered: AskAnswer[];
     cancelled: number;
     stoppedAt: string | null;
@@ -374,6 +449,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         failure: null,
         question: null,
         retry: null,
+        compaction: null,
         answered: [],
         cancelled: 0,
         stoppedAt: null,
@@ -572,7 +648,9 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       }
       case 'compaction/summary': {
         const raw = ensure(turn);
-        raw.status = raw.status === 'inProgress' ? 'completed' : raw.status;
+        const auto =
+          data.sourceCommandId === undefined || data.sourceCommandId === null;
+        raw.compaction = compactionViewOf(data, auto);
         break;
       }
       default:
@@ -596,9 +674,9 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       cost: null,
       model: DEMO_MODEL.label,
       retry: raw.retry,
+      compaction: raw.compaction,
       failure: raw.failure,
       question: raw.question,
-      compaction: null,
       delivery: null,
       stoppedAt: raw.stoppedAt,
     }));
@@ -896,15 +974,10 @@ export const useKindStore = create<KindState>()((set, get) => ({
   },
 
   compact: () => {
-    const state = get();
-    if (state.compacting || run) return;
-    set({ compacting: true });
-    setTimeout(() => {
-      const before = get().usage;
-      const after = 9;
-      append({ ...emptyTurn('compact_' + Date.now(), ''), user: null, status: 'completed', compaction: { auto: false, before, after, summary: compactionSummary() } });
-      set({ compacting: false, usage: after });
-    }, 1600);
+    // T007.8：真实手动压缩；分隔线由 compaction/* 日志事件回填（页面不预览假摘要）。
+    void compactThread(globalThis.crypto.randomUUID()).catch(() => {
+      toast('压缩没成功', { description: '连上内核再试；原文都还在日志里' });
+    });
   },
 
   setModel: (model) => {
