@@ -33,3 +33,20 @@ test('设置页删除提供商：列表变空', async ({ page }) => {
     await fixture.close();
   }
 });
+
+test('设置页换 key：保存后可以验证', async ({ page }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(`${fixture.baseUrl}/?token=${encodeURIComponent(fixture.token)}#kind`);
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await expect(page.locator('[data-settings="model"]')).toBeVisible({ timeout: 20_000 });
+    await page.getByRole('button', { name: '编辑', exact: true }).click();
+    await page.locator('#key-deepseek').fill('new-good-key');
+    await page.getByRole('button', { name: '保存', exact: true }).click();
+    await expect(page.locator('[data-settings="editor"]')).toHaveCount(0, { timeout: 20_000 });
+    await page.getByRole('button', { name: '验证', exact: true }).click();
+    await expect(page.getByText('连接可用', { exact: false })).toBeVisible({ timeout: 20_000 });
+  } finally {
+    await fixture.close();
+  }
+});
