@@ -152,6 +152,7 @@ export function ConversationPane() {
     if (!scroller) return;
     const onScroll = () => {
       if (scroller.scrollTop > 24) return;
+      if (!userScrolledRef.current) return;
       const state = useKindStore.getState();
       if (state.initialLoading || !state.hasOlder || state.loadingOlder) return;
       void state.loadOlder();

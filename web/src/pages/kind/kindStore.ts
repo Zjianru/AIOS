@@ -7,9 +7,10 @@
 
 import { create } from 'zustand';
 import { toast } from 'sonner';
-import { compactionSummary, liveDemo, liveScriptFor, threadResume, threadTurnsList } from '@/data/api';
+import { compactionSummary, liveDemo, liveScriptFor } from '@/data/api';
+import { connectSession, fetchEventsPage } from '@/data/service';
+import type { ServiceEvent } from '@/data/service';
 import type { AskAnswer, AskQuestion, FailureCause, LiveDemo, LiveScript, LiveStep } from '@/data/fixtures/kindLive';
-import { KIND_THREAD_ID } from '@/data/generate';
 import { mark } from '@/lib/perf';
 import type { KindCard, TextElement, Turn, TurnStatus } from '@/data/types';
 
@@ -197,6 +198,8 @@ interface KindState {
   byId: Map<string, TurnViewData>;
   firstItemIndex: number;
   nextCursor: string | null;
+  /** 当前最老一条日志的 seq（往上翻时 beforeSeq = oldestSeq - 1）。 */
+  oldestSeq: number | null;
   hasOlder: boolean;
   loadingOlder: boolean;
   initialLoading: boolean;
@@ -256,6 +259,194 @@ function emptyTurn(id: string, text: string): TurnViewData {
     cost: null,
     thinkingSeconds: 0,
   };
+}
+
+/** 当前连接（T007.9 起处理重连）；T007.3 只保留一个。 */
+let activeSocket: WebSocket | null = null;
+
+/** 从日志事实派生界面的一轮（T007.3：打开/历史/往上翻；其余能力逐票补）。 */
+export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
+  interface Raw {
+    turn: number;
+    user: string | null;
+    answer: string | null;
+    status: TurnStatus;
+    tools: ToolStep[];
+    tokens: { input: number; output: number };
+    failure: { cause: FailureCause; reason: string } | null;
+    question: QuestionView | null;
+  }
+  const turns = new Map<number, Raw>();
+  const ensure = (turn: number): Raw => {
+    let raw = turns.get(turn);
+    if (!raw) {
+      raw = {
+        turn,
+        user: null,
+        answer: null,
+        status: 'inProgress',
+        tools: [],
+        tokens: { input: 0, output: 0 },
+        failure: null,
+        question: null,
+      };
+      turns.set(turn, raw);
+    }
+    return raw;
+  };
+  const textOf = (message: unknown): string => {
+    if (!message || typeof message !== 'object') return '';
+    const content = (message as { content?: unknown }).content;
+    if (!Array.isArray(content)) return '';
+    return content
+      .map((block) =>
+        block && typeof block === 'object' && (block as { type?: string }).type === 'text'
+          ? String((block as { text?: unknown }).text ?? '')
+          : '',
+      )
+      .join('');
+  };
+  const usageOf = (data: Record<string, unknown>): { input: number; output: number } => {
+    const usage = data.usage;
+    if (!usage || typeof usage !== 'object') return { input: 0, output: 0 };
+    const value = (name: string) => {
+      const number = (usage as Record<string, unknown>)[name];
+      return typeof number === 'number' ? number : 0;
+    };
+    return { input: value('inputTokens'), output: value('outputTokens') };
+  };
+  for (const event of events) {
+    const data = event.data ?? {};
+    const turn = typeof data.turn === 'number' ? data.turn : null;
+    if (turn === null) continue;
+    switch (event.type) {
+      case 'turn/start':
+        ensure(turn);
+        break;
+      case 'user/message': {
+        const source = data.message as
+          | { source?: string | { kind?: string } }
+          | undefined;
+        const kind =
+          typeof source?.source === 'string' ? source.source : source?.source?.kind;
+        if (kind !== undefined && kind !== 'user' && kind !== 'skill-invocation') break;
+        const text = textOf(data.message);
+        if (text) ensure(turn).user = text;
+        break;
+      }
+      case 'assistant/message': {
+        const raw = ensure(turn);
+        const text = textOf(data.message);
+        if (text) raw.answer = text;
+        raw.tokens = usageOf(data);
+        raw.status = 'inProgress';
+        break;
+      }
+      case 'tool/call': {
+        const raw = ensure(turn);
+        raw.tools.push({
+          id: String(data.callId ?? ''),
+          command: String(data.name ?? ''),
+          output: '',
+          exitCode: null,
+          durationMs: null,
+          running: true,
+        });
+        break;
+      }
+      case 'tool/result': {
+        const raw = ensure(turn);
+        const step = [...raw.tools].reverse().find((item) => item.running);
+        if (step) {
+          step.running = false;
+          step.exitCode = data.error ? 1 : 0;
+          step.output = textOf(data.message);
+          if (!step.output) step.output = String((data.error as { code?: string } | undefined)?.code ?? '');
+        }
+        break;
+      }
+      case 'turn/end': {
+        const raw = ensure(turn);
+        const reason = data.reason as { kind?: string; error?: { message?: string } } | undefined;
+        switch (reason?.kind) {
+          case 'completed':
+            raw.status = 'completed';
+            break;
+          case 'aborted':
+          case 'interrupted':
+            raw.status = 'interrupted';
+            break;
+          case 'error':
+            raw.status = 'failed';
+            raw.failure = {
+              cause: event.cause ?? 'model',
+              reason: reason.error?.message ?? '原因不明',
+            };
+            break;
+          default:
+            raw.status = 'failed';
+        }
+        break;
+      }
+      case 'question/asked': {
+        const raw = ensure(turn);
+        const questions = Array.isArray(data.questions) ? (data.questions as AskQuestion[]) : null;
+        const question = questions?.[0];
+        if (question) {
+          raw.question = {
+            status: 'pending',
+            questions: questions as AskQuestion[],
+          };
+        } else if (typeof data.question === 'string') {
+          raw.question = {
+            status: 'pending',
+            questions: [
+              {
+                id: String(data.questionId ?? ''),
+                question: data.question,
+                header: typeof data.header === 'string' ? data.header : undefined,
+                options: Array.isArray(data.options)
+                  ? (data.options as string[]).map((label) => ({ label }))
+                  : undefined,
+                multiSelect: Boolean(data.multiSelect),
+              },
+            ],
+          };
+        }
+        break;
+      }
+      case 'compaction/summary': {
+        const raw = ensure(turn);
+        raw.status = raw.status === 'inProgress' ? 'completed' : raw.status;
+        break;
+      }
+      default:
+        break;
+    }
+  }
+  return [...turns.values()]
+    .sort((left, right) => left.turn - right.turn)
+    .map((raw) => ({
+      id: `turn-${raw.turn}`,
+      startedAt: null,
+      durationMs: null,
+      status: raw.status,
+      user: raw.user ? { text: raw.user, elements: [] } : null,
+      reasoning: null,
+      tools: raw.tools,
+      cards: [],
+      answer: raw.answer ? { text: raw.answer, elements: [] } : null,
+      thinkingSeconds: 0,
+      tokens: raw.tokens,
+      cost: null,
+      model: DEMO_MODEL.label,
+      retry: null,
+      failure: raw.failure,
+      question: raw.question,
+      compaction: null,
+      delivery: null,
+      stoppedAt: null,
+    }));
 }
 
 /** 改一轮：按 id 换成新对象（TurnRow 用 memo 比引用，只有这一条重绘）。 */
@@ -421,6 +612,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   byId: new Map(),
   firstItemIndex: FIRST_INDEX_BASE,
   nextCursor: null,
+  oldestSeq: null,
   hasOlder: false,
   loadingOlder: false,
   initialLoading: true,
@@ -436,40 +628,55 @@ export const useKindStore = create<KindState>()((set, get) => ({
   model: DEMO_MODEL,
 
   loadInitial: async () => {
-    const response = await threadResume({
-      threadId: KIND_THREAD_ID,
-      excludeTurns: true,
-      initialTurnsPage: { limit: PAGE_LAST, sortDirection: 'desc', itemsView: 'full' },
-    });
-    // 协议给的是「新的在前」，界面按「旧 → 新」排；bridge.mjs 也是先 reverse 再用。
-    const turns = response.initialTurnsPage.data.slice().reverse();
-    const views = turns.map(buildTurnView);
-    mark('turns:loaded');
-    set({
-      views,
-      byId: indexOf(views),
-      ...decorate(views),
-      firstItemIndex: FIRST_INDEX_BASE - views.length,
-      nextCursor: response.initialTurnsPage.nextCursor,
-      hasOlder: Boolean(response.initialTurnsPage.nextCursor),
-      initialLoading: false,
-    });
+    try {
+      const page = await fetchEventsPage({ maxMessages: 100, minMessages: 10, minTurns: 5 });
+      const views = deriveTurnViews(page.events);
+      const lastSeq = page.events[page.events.length - 1]?.seq ?? 0;
+      const oldestSeq = page.events[0]?.seq ?? null;
+      activeSocket?.close();
+      activeSocket = connectSession(
+        lastSeq,
+        (frame) => {
+          if (frame.type === 'ready') {
+            const usage =
+              frame.context.window > 0
+                ? Math.round((frame.context.used / frame.context.window) * 100)
+                : 0;
+            set({ connection: { state: 'online' }, usage });
+          }
+          // T007.4 起把实时事件接进列表；T007.3 只取 ready 的占用与连接状态。
+        },
+        () => set({ connection: { state: 'reconnecting', attempt: 1 } }),
+      );
+      mark('turns:loaded');
+      set({
+        views,
+        byId: indexOf(views),
+        ...decorate(views),
+        firstItemIndex: FIRST_INDEX_BASE - views.length,
+        oldestSeq,
+        hasOlder: page.hasMore,
+        initialLoading: false,
+      });
+    } catch {
+      set({ initialLoading: false });
+    }
   },
 
   loadOlder: async () => {
     const state = get();
-    if (!state.hasOlder || state.loadingOlder || !state.nextCursor) return;
+    if (!state.hasOlder || state.loadingOlder || state.oldestSeq === null) return;
     set({ loadingOlder: true });
     mark('prepend:start');
     try {
-      const response = await threadTurnsList({
-        threadId: KIND_THREAD_ID,
-        cursor: state.nextCursor,
-        limit: PAGE_OLDER,
-        sortDirection: 'desc',
-        itemsView: 'full',
+      const page = await fetchEventsPage({
+        beforeSeq: state.oldestSeq - 1,
+        maxMessages: 400,
+        minMessages: 100,
+        minTurns: 20,
       });
-      const older = response.data.slice().reverse().map(buildTurnView);
+      const older = deriveTurnViews(page.events);
+      const oldestSeq = page.events[0]?.seq ?? state.oldestSeq;
       set((current) => {
         const views = older.concat(current.views);
         return {
@@ -477,8 +684,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
           byId: indexOf(views),
           ...decorate(views),
           firstItemIndex: current.firstItemIndex - older.length,
-          nextCursor: response.nextCursor,
-          hasOlder: Boolean(response.nextCursor),
+          oldestSeq,
+          hasOlder: page.hasMore,
           loadingOlder: false,
         };
       });
