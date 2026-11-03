@@ -329,7 +329,69 @@ export async function startKernelFixture(
 
 
 /** T007.11 真 key DoD：真 DeepSeek + /tmp/aios-t007-dod/work；无 key 时调用方 skip。 */
-export async function startRealKernelFixture(): Promise<KernelFixture> {
+
+/** 页面 ↔ 服务之间的可断开 HTTP+WS 代理（DoD6 断线重连用）。 */
+function proxyTo(targetPort: number) {
+  const state: { server: Server | null; port: number; sockets: Set<net.Socket> } = {
+    server: null,
+    port: 0,
+    sockets: new Set(),
+  };
+  const crlf = String.fromCharCode(13, 10);
+  const start = async (port: number): Promise<number> =>
+    new Promise((resolve) => {
+      const server = createServer((req, res) => {
+        const upstream = httpRequest(
+          { host: '127.0.0.1', port: targetPort, path: req.url, method: req.method, headers: req.headers },
+          (response) => {
+            res.writeHead(response.statusCode ?? 502, response.headers);
+            response.pipe(res);
+          },
+        );
+        upstream.on('error', () => {
+          if (!res.headersSent) res.writeHead(502);
+          res.end();
+        });
+        req.pipe(upstream);
+      });
+      server.on('upgrade', (req, socket, head) => {
+        const upstream = net.connect(targetPort, '127.0.0.1', () => {
+          const lines: string[] = [];
+          for (let index = 0; index < req.rawHeaders.length; index += 2) {
+            lines.push(req.rawHeaders[index] + ': ' + req.rawHeaders[index + 1]);
+          }
+          upstream.write(req.method + ' ' + req.url + ' HTTP/1.1' + crlf + lines.join(crlf) + crlf + crlf);
+          if (head.length > 0) upstream.write(head);
+          socket.pipe(upstream);
+          upstream.pipe(socket);
+        });
+        state.sockets.add(socket);
+        socket.on('close', () => state.sockets.delete(socket));
+        upstream.on('error', () => socket.destroy());
+        socket.on('error', () => upstream.destroy());
+      });
+      server.listen(port, '127.0.0.1', () => {
+        state.server = server;
+        state.port = (server.address() as net.AddressInfo).port;
+        resolve(state.port);
+      });
+    });
+  const drop = async (): Promise<void> => {
+    const server = state.server;
+    state.server = null;
+    if (server) server.close();
+    for (const socket of state.sockets) socket.destroy();
+    state.sockets.clear();
+  };
+  const restore = async (): Promise<void> => {
+    if (!state.server) await start(state.port);
+  };
+  return { start, drop, restore };
+}
+
+export async function startRealKernelFixture(
+  options: { proxy?: boolean } = {},
+): Promise<KernelFixture> {
   const apiKey = process.env.DEEPSEEK_API_KEY;
   if (!apiKey) throw new Error('缺少 DEEPSEEK_API_KEY（D34：开发期从环境变量读 key）');
   const root = process.env.AIOS_DOD_ROOT ?? '/tmp/aios-t007-dod';
@@ -361,12 +423,19 @@ export async function startRealKernelFixture(): Promise<KernelFixture> {
       reject(new Error('真 key serve 退出: ' + String(code) + ' ' + output));
     });
   });
+  let baseUrl = parsed.baseUrl;
+  const proxy = proxyTo(Number(new URL(parsed.baseUrl).port));
+  if (options.proxy) {
+    baseUrl = 'http://127.0.0.1:' + String(await proxy.start(0));
+  }
   return {
     ...parsed,
+    baseUrl,
     dataDir,
-    dropProxy: async () => {},
-    restoreProxy: async () => {},
+    dropProxy: proxy.drop,
+    restoreProxy: proxy.restore,
     close: async () => {
+      await proxy.drop();
       child.kill('SIGTERM');
       await rm(root, { recursive: true, force: true });
     },
