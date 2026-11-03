@@ -59,7 +59,7 @@ export function AppShell() {
 
   // 只显示接上内核的部分：其他场景还没接上，回到 Kind。
   useEffect(() => {
-    if (scene !== 'kind') go('kind');
+    if (scene !== 'kind' && scene !== 'settings') go('kind');
   }, [scene]);
 
   // 路由切换：起点 mark + 画完 mark（Kind 页自己会再打细的 mark）
