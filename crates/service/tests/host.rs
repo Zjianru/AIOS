@@ -9,8 +9,9 @@ use agent::{Agent, AgentConfig};
 use model::{DeepSeek, DeepSeekConfig, Effort};
 use serde_json::json;
 use service::{
-    AnswerRequest, CancelRequest, CompactRequest, DeliveryMode, EventsRequest, FollowRequest,
-    SendRequest, ServiceAnswer, ServiceEvent, ServiceHost, StatusRequest,
+    AnswerRequest, CancelRequest, CompactRequest, DeliveryMode, DismissQuestionsRequest,
+    EventsRequest, FollowRequest, SendRequest, ServiceAnswer, ServiceEvent, ServiceHost,
+    StatusRequest,
 };
 use session::{SessionId, SessionStore};
 use tokio::sync::broadcast;
@@ -308,6 +309,110 @@ async fn answer_applies_whole_batch_with_selected_and_custom() {
         ]}),
         "tool/result 要带 T006.13 的 selected/custom 批形状"
     );
+}
+
+/// 关掉不答（T006.16c）：等待中的两个问题整批撤掉 → 模型收到 DSH 的 ASK_ABORTED
+/// 工具错误、本轮继续（不是整轮取消），question/cancelled 落盘、没有 question/answered；
+/// 撤销后答案路径不串（服务回答被拒）。
+#[tokio::test]
+async fn dismiss_pending_questions_returns_ask_aborted_and_turn_continues() {
+    let server = MockServer::start().await;
+    mount(&server, vec![sse(ASK_TWO_SSE), sse(FINAL_TEXT_SSE)]).await;
+    let (agent, data_dir, id) = setup(&server).await;
+    let service = ServiceHost::new(agent.clone());
+    let mut events = service.subscribe_events();
+
+    let started = service
+        .send(send_request("req-dismiss", "要问两个问题"))
+        .await;
+    assert!(started.is_ok(), "send 应成功：{started:?}");
+    wait_for(&mut events, "question/asked", 2).await;
+    let waiting = service.status(StatusRequest {}).await;
+    assert!(waiting.is_ok(), "status 应成功：{waiting:?}");
+    assert_eq!(
+        waiting.unwrap().pending_questions,
+        2,
+        "撤销前两个问题都在等"
+    );
+
+    let dismissed = service.dismiss_questions(DismissQuestionsRequest {}).await;
+    assert!(dismissed.is_ok(), "关掉不答应成功：{dismissed:?}");
+    assert!(dismissed.unwrap().dismissed, "有待答问题时要报告确实撤掉了");
+    agent.idle().await;
+
+    let quiet = service.status(StatusRequest {}).await;
+    assert!(quiet.is_ok(), "撤销后 status 应成功：{quiet:?}");
+    let quiet = quiet.unwrap();
+    assert_eq!(quiet.pending_questions, 0, "撤销后没有待答问题");
+    assert!(!quiet.running, "撤销后本轮照常收尾、服务空闲");
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2, "撤销后这一步继续跑（不是整轮取消）");
+    let second = String::from_utf8(requests[1].body.clone()).unwrap();
+    assert!(
+        second.contains("ask_user_question was aborted before the user answered"),
+        "模型收到 DSH 的 ASK_ABORTED 文案（user-questions/src/index.ts:53-59）：{second}"
+    );
+
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    let cancelled = store
+        .events()
+        .iter()
+        .filter(|event| matches!(event.kind, session::EventKind::QuestionCancelled { .. }))
+        .count();
+    assert_eq!(cancelled, 2, "两个问题各写一条 question/cancelled");
+    assert!(
+        !store
+            .events()
+            .iter()
+            .any(|event| matches!(event.kind, session::EventKind::QuestionAnswered { .. })),
+        "没有答案就不写 question/answered"
+    );
+    assert_eq!(
+        turn_ends(data_dir.path(), &id),
+        vec![session::TurnEndReason::Completed],
+        "撤销问题不是取消整轮（DSH：工具错误、本轮继续）"
+    );
+    let error_code = store.events().iter().find_map(|event| match &event.kind {
+        session::EventKind::ToolResult { message, error, .. }
+            if message.tool_call_id.as_deref() == Some("call_ask") =>
+        {
+            error.as_ref().map(|error| error.code.clone())
+        }
+        _ => None,
+    });
+    assert_eq!(
+        error_code.as_deref(),
+        Some("ASK_ABORTED"),
+        "工具结果错误码照 DSH HarnessError code"
+    );
+
+    let late = service
+        .answer(AnswerRequest {
+            answers: vec![ServiceAnswer {
+                question_id: "q1".to_owned(),
+                selected: vec!["Yes".to_owned()],
+                custom: None,
+            }],
+        })
+        .await;
+    assert!(
+        matches!(&late, Err(service::ServiceError::AnswerRejected(id)) if id == "q1"),
+        "撤销后答案路径不串：服务回答要被拒：{late:?}"
+    );
+}
+
+/// 没有待答问题时关掉不答：方法成功、dismissed=false（可辨结果，不报错）。
+#[tokio::test]
+async fn dismiss_without_pending_questions_reports_nothing() {
+    let server = MockServer::start().await;
+    mount(&server, vec![sse(FINAL_TEXT_SSE)]).await;
+    let (agent, _data_dir, _id) = setup(&server).await;
+    let service = ServiceHost::new(agent.clone());
+
+    let response = service.dismiss_questions(DismissQuestionsRequest {}).await;
+    assert!(response.is_ok(), "无待答问题时也要成功：{response:?}");
+    assert!(!response.unwrap().dismissed, "无待答问题时 dismissed=false");
 }
 
 /// 从请求体里取某个 tool_use_id 的 tool_result 内容（T006.13 形状）。
