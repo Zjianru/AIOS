@@ -141,7 +141,7 @@ impl InstructionState {
         observed: impl IntoIterator<Item = PathBuf> + Send,
     ) -> Option<Message> {
         let cwd = absolute(cwd);
-        let project_root = find_project_root(&cwd).await;
+        let (project_root, _root_warning) = find_project_root(&cwd).await;
         let mut dirs = ancestor_chain(&project_root, &cwd);
         extend_with_observed(&mut dirs, &cwd, observed.into_iter());
         let identity = baseline_identity(&cwd, &project_root, data_dir, instruction_roots);
@@ -354,21 +354,33 @@ fn absolute(path: &Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-async fn find_project_root(cwd: &Path) -> PathBuf {
+/// 找项目根；T006.10b：非 NotFound 的 marker 探测失败不再静默退化为 cwd，
+/// 而是连同原因返回（调用方降级到 cwd 但留痕，照 DSH 的 files.ts:224-249 把探测错误交给调用方；
+/// AIOS 没有「请求级抛错」的接缝，选择降级 + stderr 留痕）。
+async fn find_project_root(cwd: &Path) -> (PathBuf, Option<String>) {
     let mut current = cwd.to_path_buf();
     loop {
-        match tokio::fs::metadata(current.join(PROJECT_ROOT_MARKER)).await {
-            Ok(_) => return current,
-            Err(_) => {
-                let Some(parent) = current.parent() else {
-                    return cwd.to_path_buf();
-                };
-                if parent == current {
-                    return cwd.to_path_buf();
-                }
-                current = parent.to_path_buf();
+        let marker = current.join(PROJECT_ROOT_MARKER);
+        match tokio::fs::metadata(&marker).await {
+            Ok(_) => return (current, None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return (
+                    cwd.to_path_buf(),
+                    Some(format!(
+                        "failed to probe project root marker {}: {error}",
+                        marker.display()
+                    )),
+                );
             }
         }
+        let Some(parent) = current.parent() else {
+            return (cwd.to_path_buf(), None);
+        };
+        if parent == current {
+            return (cwd.to_path_buf(), None);
+        }
+        current = parent.to_path_buf();
     }
 }
 
@@ -871,6 +883,13 @@ fn render_context(items: &[RenderItem], max_bytes: usize, intro: &str) -> Render
     }
 }
 
+/// DSH renderInstructionChains 的 intro 选择：有链保留 full-frame intro 就用 base intro，
+/// 否则用第一个幸存的（compact）intro，都没有就不加 intro。
+/// skeleton 先恒返回 base（行为不变），红测试后补选择逻辑。
+fn merged_intro(base_intro: &str, _chain_texts: &[&str]) -> String {
+    base_intro.to_owned()
+}
+
 fn render_chains(items: &[RenderItem], max_bytes: usize, intro: &str) -> RenderedContext {
     let whole = render_context(items, max_bytes, intro);
     let user_global: Vec<RenderItem> = items
@@ -931,7 +950,9 @@ fn render_chains(items: &[RenderItem], max_bytes: usize, intro: &str) -> Rendere
         truncated.extend(chain.truncated.iter().cloned());
     }
     truncated.sort_by_key(|file| order_of(&file.display));
-    let text = build_instruction_text(&sections, max_bytes, &omitted, &truncated, intro);
+    let chain_texts = [user_rendered.text.as_str(), project_rendered.text.as_str()];
+    let merged_intro = merged_intro(intro, &chain_texts);
+    let text = build_instruction_text(&sections, max_bytes, &omitted, &truncated, &merged_intro);
     if byte_len(&text) > 2 * max_bytes {
         return whole;
     }
