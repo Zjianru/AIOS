@@ -8,7 +8,7 @@
 import { create } from 'zustand';
 import { toast } from 'sonner';
 import { compactionSummary, liveDemo } from '@/data/api';
-import { connectSession, fetchEventsPage, sendMessage } from '@/data/service';
+import { cancelTurn, connectSession, fetchEventsPage, sendMessage } from '@/data/service';
 import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
 import type { AskAnswer, AskQuestion, FailureCause, LiveDemo, LiveScript, LiveStep } from '@/data/fixtures/kindLive';
 import { mark } from '@/lib/perf';
@@ -348,6 +348,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     tokens: { input: number; output: number };
     failure: { cause: FailureCause; reason: string } | null;
     question: QuestionView | null;
+    stoppedAt: string | null;
   }
   const turns = new Map<number, Raw>();
   const ensure = (turn: number): Raw => {
@@ -362,6 +363,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         tokens: { input: 0, output: 0 },
         failure: null,
         question: null,
+        stoppedAt: null,
       };
       turns.set(turn, raw);
     }
@@ -476,6 +478,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
           case 'aborted':
           case 'interrupted':
             raw.status = 'interrupted';
+            raw.stoppedAt = clock();
             break;
           case 'error':
             raw.status = 'failed';
@@ -546,7 +549,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       question: raw.question,
       compaction: null,
       delivery: null,
-      stoppedAt: null,
+      stoppedAt: raw.stoppedAt,
     }));
 }
 
@@ -815,20 +818,10 @@ export const useKindStore = create<KindState>()((set, get) => ({
   },
 
   stop: () => {
-    if (!run) return;
-    const id = run.turnId;
-    clearTimer();
-    const streamed = useStreamStore.getState();
-    const partial = streamed.turnId === id ? streamed.text : '';
-    useStreamStore.setState({ turnId: null, itemId: null, text: '' });
-    patch(id, (view) => ({
-      ...view,
-      answer: partial ? { text: partial, elements: [] } : view.answer,
-      tools: view.tools.map((tool) => (tool.running ? { ...tool, running: false, output: '停下了' } : tool)),
-      question: view.question?.status === 'pending' ? { status: 'void', questions: view.question.questions } : view.question,
-      stoppedAt: clock(),
-    }));
-    finish('interrupted');
+    // T007.5：真实取消；页面状态由日志 turn/end(aborted) 驱动（不本地猜）。
+    void cancelTurn().catch(() => {
+      toast('停不下来', { description: '连上内核再试；或等这一轮自己结束' });
+    });
   },
 
   answer: (turnId, answers) => {
