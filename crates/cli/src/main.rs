@@ -246,10 +246,14 @@ impl model::CredentialSource for KeyringCredentialSource {
             .issue(&self.connection, purpose, None)
             .map(|issued| issued.secret)
             .map_err(|error| {
-                model::ModelError::new(
-                    model::ErrorCode::MissingCredential,
-                    format!("Keyring 无法签发：{error}"),
-                )
+                let message = match &error {
+                    credentials::KeyringError::KeyFileMissing(_)
+                    | credentials::KeyringError::Crypto(_) => {
+                        format!("Keyring 无法签发：{error}")
+                    }
+                    _ => format!("凭证不可用：{error}"),
+                };
+                model::ModelError::new(model::ErrorCode::MissingCredential, message)
             })
     }
 }
