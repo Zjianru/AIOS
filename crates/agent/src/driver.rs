@@ -1095,6 +1095,7 @@ async fn run_step(
             }])
             .await?;
     }
+    let claimed_messages = claimed.clone();
     for message in claimed {
         inner
             .append(&[EventKind::UserMessage {
@@ -1114,6 +1115,7 @@ async fn run_step(
             turn,
             step,
             host: inner.as_ref(),
+            messages: &claimed_messages,
             trigger: None,
             phase: crate::capabilities::PreStepPhase::Inject,
         })
@@ -1127,6 +1129,7 @@ async fn run_step(
             turn,
             step,
             host: inner.as_ref(),
+            messages: &claimed_messages,
             trigger: None,
             phase: crate::capabilities::PreStepPhase::Compact,
         })

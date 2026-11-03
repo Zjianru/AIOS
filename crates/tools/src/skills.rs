@@ -152,6 +152,44 @@ pub fn load_skill(
     })
 }
 
+/// 用户显式 /name 调用通道（T006.11b 照 DSH tool-skill 的 /name gesture）：
+/// 只认 user-invocable 的 skill；未知或 user-invocable=false 的名字静默跳过（DSH：仍是普通文本）。
+/// 不做模型调用策略检查——这条通道正是 disable-model-invocation skill 的唯一入口。
+pub fn load_user_invocable_skill(
+    cwd: &Path,
+    data_dir: &Path,
+    configured: &[PathBuf],
+    name: &str,
+) -> Option<SkillContent> {
+    if !is_skill_name(name) {
+        return None;
+    }
+    let (found, _warnings, _incomplete) = discover(cwd, data_dir, configured);
+    let found = found.into_iter().find(|found| found.summary.name == name)?;
+    if !found.summary.invocation.user_invocable {
+        return None;
+    }
+    Some(SkillContent {
+        summary: found.summary,
+        body: found.body,
+    })
+}
+
+/// 从一条用户文本里取 /name 手势 token，按首次出现顺序去重（DSH tool-skill 的
+/// SKILL_GESTURE：空白边界、名字走公开的 kebab-case 语法；`/usr/bin`、`5/8` 不算）。
+pub fn invoked_skill_names(text: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for token in text.split_whitespace() {
+        let Some(name) = token.strip_prefix('/') else {
+            continue;
+        };
+        if is_skill_name(name) && !names.iter().any(|existing| existing == name) {
+            names.push(name.to_owned());
+        }
+    }
+    names
+}
+
 /// skill 名是否合法：kebab-case，即 [a-z0-9]+(-[a-z0-9]+)*。
 pub fn is_skill_name(name: &str) -> bool {
     !name.is_empty()

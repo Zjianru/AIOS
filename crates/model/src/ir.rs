@@ -106,6 +106,9 @@ pub enum MessageSource {
         incomplete: bool,
         entries: Vec<SkillCatalogEntry>,
     },
+    /// 用户显式 /name 调用注入的 user 消息（DSH tool-skill 的 skill-invocation 来源，T006.11b）：
+    /// name 是用户点名的 skill，form 照 DSH 固定是 instructions。
+    SkillInvocation { name: String, form: String },
 }
 
 /// skill 目录消息的一条持久条目（DSH SkillCatalogSource.entries 的 AIOS 形状）。
@@ -312,6 +315,20 @@ impl Message {
                 update,
                 incomplete,
                 entries,
+            },
+        )
+    }
+
+    /// 用户显式 /name 调用注入的 skill 全文消息（source=skill-invocation，T006.11b 照 DSH
+    /// tool-skill：claimed user 消息里的 /name 命中 user-invocable skill 时注入）。
+    pub fn skill_invocation(text: impl Into<String>, name: String) -> Self {
+        Self::with_source(
+            MessageId::generate(),
+            Role::User,
+            vec![ContentBlock::text(text)],
+            MessageSource::SkillInvocation {
+                name,
+                form: "instructions".to_owned(),
             },
         )
     }

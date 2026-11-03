@@ -126,6 +126,8 @@ pub(crate) enum HookEvent<'a> {
         turn: u64,
         step: u64,
         host: &'a dyn LoopAccess,
+        /// 这一步 claim 到的 user 消息（T006.11b：skill 的 /name 只扫 source=user 的消息）。
+        messages: &'a [Message],
         /// None = 每步自动检查；Some(Manual) = 手动 /compact 入口（强制压缩）。
         trigger: Option<CompactionTrigger>,
         /// 1c：PreStep 拆两阶段（Inject 在 prune 前；Compact 在 prune 后）。
