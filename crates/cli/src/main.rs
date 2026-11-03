@@ -83,7 +83,7 @@ struct ServeArgs {
     web_dist: Option<PathBuf>,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 struct CommonArgs {
     /// 续接已有会话 id
     #[arg(long)]
@@ -345,19 +345,29 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         Some(path) => path.clone(),
         None => std::env::current_dir()?,
     };
-    let (deepseek_config, agent_config, credentials) = model_with_keyring(&args.common, &data_dir)?;
-    let window = deepseek_config.context_window;
+    // T008.3b：模型配置惰性解析——空 Keyring 也能起服务（首次使用页先显示）；
+    // recheck 时工厂重新读当前 Keyring 连接，用新模型重建根会话。
+    let (placeholder_config, agent_config) =
+        config_from_args(&args.common, "http://127.0.0.1:1".to_owned(), String::new())?;
+    let window = placeholder_config.context_window;
+    let factory_common = args.common.clone();
+    let factory_data_dir = data_dir.clone();
+    let model_factory: service::ModelFactory = std::sync::Arc::new(move || {
+        model_with_keyring(&factory_common, &factory_data_dir)
+            .map(|(config, _agent, credentials)| (config, Some(credentials)))
+            .map_err(|error| error.to_string())
+    });
     // T007.2：根会话打不开时服务照样起；ready 报状态（path/line），方法一律拒绝，
     // 页面对应五种说明页；修好后页面调 recheck 再检查一次。
     let host = RootHost::open(
         RootSessionOptions {
             data_dir,
             cwd,
-            model: deepseek_config,
+            model: placeholder_config,
             config: agent_config,
-            credentials: Some(credentials),
+            credentials: None,
             identity: args.common.identity.clone(),
-            model_factory: None,
+            model_factory: Some(model_factory),
         },
         window,
     )

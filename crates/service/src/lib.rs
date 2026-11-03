@@ -786,7 +786,7 @@ pub struct RootHost {
     session_id: Mutex<Option<String>>,
     context: Arc<Mutex<ContextUsage>>,
     options: RootSessionOptions,
-    window: u64,
+    window: Mutex<u64>,
     events: broadcast::Sender<ServiceEvent>,
     agent_events: broadcast::Sender<agent::AgentEvent>,
     forward: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -795,26 +795,53 @@ pub struct RootHost {
 
 impl RootHost {
     /// 打开根会话；打不开也返回宿主（状态进 ready，方法拒绝），由页面显示说明页。
-    pub async fn open(options: RootSessionOptions, window: u64) -> Self {
+    ///
+    /// T008.3b：配置了 model_factory 时先解析当前 Keyring 连接；解析失败（空库/读不出）
+    /// 仍返回宿主，状态报 Other，设置/首次使用方法照常可读。
+    pub async fn open(mut options: RootSessionOptions, fallback_window: u64) -> Self {
         let (events, _) = broadcast::channel(SERVICE_EVENT_CHANNEL_CAPACITY);
         let (agent_events, _) = broadcast::channel(SERVICE_EVENT_CHANNEL_CAPACITY);
+        let mut factory_error = None;
+        if let Some(factory) = options.model_factory.clone() {
+            match factory() {
+                Ok((model, credentials)) => {
+                    options.model = model;
+                    options.credentials = credentials;
+                }
+                Err(message) => factory_error = Some(message),
+            }
+        }
+        let window = if options.model_factory.is_some() {
+            options.model.context_window
+        } else {
+            fallback_window
+        };
         let host = Self {
             inner: tokio::sync::Mutex::new(None),
             state: Mutex::new(RootState::Ok),
             session_id: Mutex::new(None),
             context: Arc::new(Mutex::new(ContextUsage { used: 0, window })),
             options,
-            window,
+            window: Mutex::new(window),
             events,
             agent_events,
             forward: Mutex::new(None),
             agent_forward: Mutex::new(None),
         };
-        match open_root_session(host.options.clone()).await {
-            Ok(root) => host.install(root.agent).await,
-            Err(error) => {
-                *host.state.lock().expect("root state 锁被毒化") =
-                    RootState::from_root_error(&error);
+        if let Some(message) = factory_error {
+            *host.state.lock().expect("root state 锁被毒化") = RootState::Unavailable {
+                kind: RootUnavailableKind::Other,
+                path: None,
+                line: None,
+                message,
+            };
+        } else {
+            match open_root_session(host.options.clone()).await {
+                Ok(root) => host.install(root.agent).await,
+                Err(error) => {
+                    *host.state.lock().expect("root state 锁被毒化") =
+                        RootState::from_root_error(&error);
+                }
             }
         }
         host
@@ -850,7 +877,7 @@ impl RootHost {
         let mut source = service_host.subscribe_events();
         let tx = self.events.clone();
         let context = Arc::clone(&self.context);
-        let window = self.window;
+        let window = *self.window.lock().expect("window 锁被毒化");
         let forward = tokio::spawn(async move {
             loop {
                 match source.recv().await {
@@ -908,7 +935,29 @@ impl RootHost {
         if self.state.lock().expect("root state 锁被毒化").clone() == RootState::Ok {
             return RootState::Ok;
         }
-        match open_root_session(self.options.clone()).await {
+        let mut options = self.options.clone();
+        if let Some(factory) = options.model_factory.clone() {
+            match factory() {
+                Ok((model, credentials)) => {
+                    options.model = model;
+                    options.credentials = credentials;
+                }
+                Err(message) => {
+                    let state = RootState::Unavailable {
+                        kind: RootUnavailableKind::Other,
+                        path: None,
+                        line: None,
+                        message,
+                    };
+                    *self.state.lock().expect("root state 锁被毒化") = state.clone();
+                    return state;
+                }
+            }
+        }
+        let window = options.model.context_window;
+        *self.window.lock().expect("window 锁被毒化") = window;
+        *self.context.lock().expect("context 锁被毒化") = ContextUsage { used: 0, window };
+        match open_root_session(options).await {
             Ok(root) => {
                 self.install(root.agent).await;
                 RootState::Ok
