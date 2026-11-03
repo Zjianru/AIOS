@@ -36,7 +36,10 @@ fn 没有连接时提示接模型而不是环境变量() {
         !stderr.contains("DEEPSEEK_API_KEY"),
         "不能提示环境变量：{stderr}"
     );
-    assert!(stderr.contains("接模型") || stderr.contains("Keyring"), "stderr={stderr}");
+    assert!(
+        stderr.contains("接模型") || stderr.contains("Keyring"),
+        "stderr={stderr}"
+    );
 }
 
 #[test]
@@ -56,6 +59,12 @@ fn 连接存在时不再要求环境变量() {
         .expect("save");
     let output = run(&data_dir, &identity);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("DEEPSEEK_API_KEY"), "不能要求环境变量：{stderr}");
-    assert!(!stderr.contains("还没有接模型"), "连接存在不应说没接模型：{stderr}");
+    assert!(
+        !stderr.contains("DEEPSEEK_API_KEY"),
+        "不能要求环境变量：{stderr}"
+    );
+    assert!(
+        !stderr.contains("还没有接模型"),
+        "连接存在不应说没接模型：{stderr}"
+    );
 }

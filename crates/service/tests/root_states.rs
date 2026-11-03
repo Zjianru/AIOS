@@ -22,6 +22,7 @@ fn options(data_dir: &Path) -> RootSessionOptions {
             ..DeepSeekConfig::default()
         },
         config: AgentConfig::default(),
+        credentials: None,
     }
 }
 
