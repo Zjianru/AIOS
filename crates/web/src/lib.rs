@@ -11,21 +11,24 @@
 //! 重新跟随（session-controller follow :607，AIOS 用 T006.16b 的 follow(lastSeq)）。
 
 use std::net::{IpAddr, SocketAddr};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use ring::rand::SecureRandom;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
-use axum::http::header::{HOST, LOCATION, SET_COOKIE};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{
+    HeaderMap, StatusCode,
+    header::{CONTENT_TYPE, HOST},
+};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use service::{FollowRequest, FollowResponse, ServiceEvent, ServiceHost};
+use service::{
+    ContextUsage, FollowRequest, FollowResponse, HostInfo, PROTOCOL_VERSION, RootHost, RootState,
+    ServiceError, ServiceEvent,
+};
 
 /// 默认只绑 IPv4 回环。
 pub const DEFAULT_HOST: &str = "127.0.0.1";
@@ -116,6 +119,8 @@ pub struct ServeOptions {
     pub host: String,
     pub port: u16,
     pub token: String,
+    /// 同源托管的 web 构建产物目录（T007.2，通常是仓库的 web/dist）；None 时不托管静态文件。
+    pub static_dir: Option<PathBuf>,
 }
 
 /// 起好服务后拿到的句柄（端口可能是系统分配的，测试从 addr 读）。
@@ -146,10 +151,14 @@ impl ServeHandle {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Frame {
-    /// 连接建立后的第一帧（DSH 的 {type:'ready',...}）。
+    /// 连接建立后的第一帧（DSH 的 {type:'ready',...}）；T007.2 起带协议版本、根会话状态、上下文占用。
     Ready {
-        #[serde(rename = "sessionId")]
-        session_id: String,
+        #[serde(rename = "sessionId", default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(rename = "protocolVersion")]
+        protocol_version: u64,
+        root: RootState,
+        context: ContextUsage,
     },
     /// 日志事件帧（DSH 的 {type:'event', event: SessionWireEvent}）。
     Event { event: ServiceEvent },
@@ -212,225 +221,12 @@ fn token_matches(expected: &str, provided: &str) -> bool {
     diff == 0
 }
 
-/// 解析裸 authority（无 scheme 的 host[:port]，IPv6 用方括号）；返回小写主机与端口。
-fn parse_authority(raw: &str) -> Option<(String, Option<u16>)> {
-    let uri: axum::http::Uri = format!("http://{raw}").parse().ok()?;
-    let host = uri
-        .host()?
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .to_ascii_lowercase();
-    if host.is_empty() || host.contains('[') || host.contains(']') {
-        return None;
-    }
-    Some((host, uri.port_u16()))
-}
-
-/// Host/Origin 同源比较：http(s) scheme + 规范化 hostname + 端口（缺省按 scheme 归一）。
-fn origin_is_same_authority(origin: &str, host: &str) -> bool {
-    let origin_uri: axum::http::Uri = match origin.parse() {
-        Ok(uri) => uri,
-        Err(_) => return false,
-    };
-    let scheme = match origin_uri.scheme_str() {
-        Some("http") => "http",
-        Some("https") => "https",
-        _ => return false,
-    };
-    let Some(origin_host) = origin_uri.host() else {
-        return false;
-    };
-    let origin_host = origin_host.to_ascii_lowercase();
-    let Some((host_name, host_port)) = parse_authority(host) else {
-        return false;
-    };
-    let default_port = if scheme == "https" { 443 } else { 80 };
-    let origin_port = origin_uri.port_u16().unwrap_or(default_port);
-    let host_port = host_port.unwrap_or(default_port);
-    origin_host == host_name && origin_port == host_port
-}
-
-/// T006.F2：/connect 换 cookie 的结果。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConnectGrant {
-    pub set_cookie: String,
-    pub location: String,
-}
-
-const COOKIE_PREFIX: &str = "aios-auth-";
-const COOKIE_MAX_AGE_SECS: i64 = 30 * 24 * 60 * 60;
-
-#[derive(Debug, Serialize, Deserialize)]
-struct CookiePayload {
-    v: u8,
-    authority: String,
-    #[serde(rename = "issuedAt")]
-    issued_at: i64,
-    #[serde(rename = "expiresAt")]
-    expires_at: i64,
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push_str(&format!("{byte:02x}"));
-    }
-    out
-}
-
-fn hex_decode(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) {
-        return None;
-    }
-    let mut out = Vec::with_capacity(text.len() / 2);
-    let bytes = text.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        let high = (bytes[index] as char).to_digit(16)?;
-        let low = (bytes[index + 1] as char).to_digit(16)?;
-        out.push(u8::try_from((high << 4) | low).ok()?);
-        index += 2;
-    }
-    Some(out)
-}
-
-fn sha256_hex(data: &[u8]) -> String {
-    let digest = ring::digest::digest(&ring::digest::SHA256, data);
-    hex_encode(digest.as_ref())
-}
-
-fn hmac_sign(secret: &[u8; 32], body: &str) -> String {
-    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret);
-    hex_encode(ring::hmac::sign(&key, body.as_bytes()).as_ref())
-}
-
-fn hmac_verify(secret: &[u8; 32], body: &str, signature: &str) -> bool {
-    let Some(signature) = hex_decode(signature) else {
-        return false;
-    };
-    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret);
-    ring::hmac::verify(&key, body.as_bytes(), &signature).is_ok()
-}
-
-/// Host 头归一成 cookie authority：小写 hostname + 端口，HTTP 缺省端口 80。
-fn authority_of(host_header: &str) -> Option<String> {
-    let (host, port) = parse_authority(host_header)?;
-    Some(format!("{host}:{}", port.unwrap_or(80)))
-}
-
-fn cookie_name(authority: &str) -> String {
-    let hash = sha256_hex(authority.as_bytes());
-    format!("{COOKIE_PREFIX}{}", &hash[..16])
-}
-
-fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
-        .unwrap_or(0)
-}
-
-/// Unix 秒的 HTTP-date（RFC 7231），不引 chrono/time。
-fn http_date(secs: i64) -> String {
-    const DAY_NAMES: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    const MONTH_NAMES: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let days = secs.div_euclid(86_400);
-    let seconds_of_day = secs.rem_euclid(86_400);
-    let hour = seconds_of_day / 3_600;
-    let minute = (seconds_of_day % 3_600) / 60;
-    let second = seconds_of_day % 60;
-    let weekday = (days + 4).rem_euclid(7) as usize;
-    let (year, month, day) = civil_from_days(days);
-    format!(
-        "{}, {:02} {} {:04} {:02}:{:02}:{:02} GMT",
-        DAY_NAMES[weekday],
-        day,
-        MONTH_NAMES[(month - 1) as usize],
-        year,
-        hour,
-        minute,
-        second
-    )
-}
-
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let year = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = mp + if mp < 10 { 3 } else { -9 };
-    (
-        year + i64::from(month <= 2),
-        u32::try_from(month).unwrap_or(1),
-        u32::try_from(day).unwrap_or(1),
-    )
-}
-
-fn build_set_cookie(name: &str, value: &str, expires_at: i64) -> String {
-    format!(
-        "{name}={value}; Max-Age={COOKIE_MAX_AGE_SECS}; Path=/; Expires={}; HttpOnly; SameSite=Strict",
-        http_date(expires_at)
-    )
-}
-
-fn encode_cookie(secret: &[u8; 32], payload: &CookiePayload) -> String {
-    let body = hex_encode(&serde_json::to_vec(payload).expect("cookie payload 序列化"));
-    let signature = hmac_sign(secret, &body);
-    format!("v1.{body}.{signature}")
-}
-
-fn decode_cookie(secret: &[u8; 32], value: &str) -> Option<CookiePayload> {
-    let mut parts = value.split('.');
-    let version = parts.next()?;
-    let body = parts.next()?;
-    let signature = parts.next()?;
-    if version != "v1" || parts.next().is_some() || !hmac_verify(secret, body, signature) {
-        return None;
-    }
-    let bytes = hex_decode(body)?;
-    let payload: CookiePayload = serde_json::from_slice(&bytes).ok()?;
-    if payload.v != 1 {
-        return None;
-    }
-    Some(payload)
-}
-
-fn read_cookie(header: &str, name: &str) -> Option<String> {
-    for segment in header.split(';') {
-        let (key, value) = segment.trim().split_once('=')?;
-        if key == name {
-            return Some(value.to_owned());
-        }
-    }
-    None
-}
-
-fn valid_cookie(trust: &Trust, authority: &str, value: &str) -> Option<CookiePayload> {
-    let payload = decode_cookie(&trust.session_secret, value)?;
-    let now = now_secs();
-    if payload.authority != authority
-        || payload.issued_at > now
-        || payload.expires_at <= now
-        || payload.expires_at <= payload.issued_at
-        || payload.expires_at - payload.issued_at > COOKIE_MAX_AGE_SECS
-    {
-        return None;
-    }
-    Some(payload)
-}
-
-/// T006.F2：GET /connect?token= 换签名 cookie。
-pub fn authorize_connect(
+/// 校验一次请求：Host 头必须是本机（回环/localhost/绑定 IP），令牌必须匹配。
+pub fn check_request(
     trust: &Trust,
     host_header: Option<&str>,
     token: Option<&str>,
-) -> Result<ConnectGrant, TrustError> {
+) -> Result<(), TrustError> {
     let host = host_header.ok_or_else(|| TrustError::BadHost("<missing>".to_owned()))?;
     if !authority_is_loopback(host, trust.bind_ip) {
         return Err(TrustError::BadHost(host.to_owned()));
@@ -439,102 +235,17 @@ pub fn authorize_connect(
     if !token_matches(&trust.token, token) {
         return Err(TrustError::Unauthorized);
     }
-    let authority = authority_of(host).ok_or_else(|| TrustError::BadHost(host.to_owned()))?;
-    let issued_at = now_secs();
-    let expires_at = issued_at.saturating_add(COOKIE_MAX_AGE_SECS);
-    let payload = CookiePayload {
-        v: 1,
-        authority: authority.clone(),
-        issued_at,
-        expires_at,
-    };
-    let value = encode_cookie(&trust.session_secret, &payload);
-    Ok(ConnectGrant {
-        set_cookie: build_set_cookie(&cookie_name(&authority), &value, expires_at),
-        location: "./".to_owned(),
-    })
-}
-
-/// T006.F2：query token 只允许出现在 / 与 /connect；其他路径出现 token 一律 401。
-pub fn reject_query_token(uri: &axum::http::Uri) -> Result<(), TrustError> {
-    if let Some(query) = uri.query() {
-        for pair in query.split('&') {
-            let key = pair.split('=').next().unwrap_or_default();
-            if key == "token" {
-                return Err(TrustError::Unauthorized);
-            }
-        }
-    }
     Ok(())
 }
 
-/// T006.F2：/api、/ws 的统一认证入口：Origin 栅栏 → 拒绝 query token → cookie 认证。
-pub fn authorize_api_request(
-    trust: &Trust,
-    headers: &HeaderMap,
-    uri: &axum::http::Uri,
-) -> Result<(), TrustError> {
-    check_origin(headers)?;
-    reject_query_token(uri)?;
-    check_api_auth(trust, headers)
-}
-
-/// T006.F2：/api、/ws 只认 cookie 的认证入口。
-pub fn check_api_auth(trust: &Trust, headers: &HeaderMap) -> Result<(), TrustError> {
-    let host = headers
-        .get(HOST)
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| TrustError::BadHost("<missing>".to_owned()))?;
-    if !authority_is_loopback(host, trust.bind_ip) {
-        return Err(TrustError::BadHost(host.to_owned()));
-    }
-    let authority = authority_of(host).ok_or_else(|| TrustError::BadHost(host.to_owned()))?;
-    let cookie_header = headers
-        .get("cookie")
-        .and_then(|value| value.to_str().ok())
-        .ok_or(TrustError::Unauthorized)?;
-    let Some(value) = read_cookie(cookie_header, &cookie_name(&authority)) else {
-        return Err(TrustError::Unauthorized);
-    };
-    if valid_cookie(trust, &authority, &value).is_none() {
-        return Err(TrustError::Unauthorized);
-    }
-    Ok(())
-}
-
-/// T006.F2：浏览器请求的 Origin / Fetch-Metadata 栅栏。
-pub fn check_origin(headers: &HeaderMap) -> Result<(), TrustError> {
-    let host = headers
-        .get(HOST)
-        .and_then(|value| value.to_str().ok())
-        .ok_or_else(|| TrustError::BadHost("<missing>".to_owned()))?;
-    if headers
-        .get("sec-fetch-site")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.eq_ignore_ascii_case("cross-site"))
-    {
-        return Err(TrustError::BadOrigin(
-            "sec-fetch-site: cross-site".to_owned(),
-        ));
-    }
-    let Some(origin) = headers.get("origin") else {
-        return Ok(());
-    };
-    let origin = origin
-        .to_str()
-        .map_err(|_| TrustError::BadOrigin("<non-utf8>".to_owned()))?;
-    if origin_is_same_authority(origin, host) {
-        Ok(())
-    } else {
-        Err(TrustError::BadOrigin(origin.to_owned()))
-    }
-}
-
-/// 打开连接时的帧序列：ready 第一帧，然后按 lastSeq 补齐的事件（重连带序号）。
-pub fn opening_frames(session_id: &str, follow: FollowResponse) -> Vec<Frame> {
+/// 打开连接时的帧序列：ready 第一帧（带宿主信息），然后按 lastSeq 补齐的事件（重连带序号）。
+pub fn opening_frames(info: &HostInfo, follow: FollowResponse) -> Vec<Frame> {
     let mut frames = Vec::with_capacity(follow.events.len() + 1);
     frames.push(Frame::Ready {
-        session_id: session_id.to_owned(),
+        session_id: info.session_id.clone(),
+        protocol_version: PROTOCOL_VERSION,
+        root: info.root.clone(),
+        context: info.context,
     });
     frames.extend(
         follow
@@ -548,8 +259,9 @@ pub fn opening_frames(session_id: &str, follow: FollowResponse) -> Vec<Frame> {
 /// 路由状态：宿主 + 信任栅栏（Arc 让每个连接共享）。
 #[derive(Clone)]
 struct AppState {
-    host: Arc<ServiceHost>,
+    host: Arc<RootHost>,
     trust: Trust,
+    static_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -562,6 +274,83 @@ struct TokenQuery {
 struct WsQuery {
     #[serde(default, rename = "lastSeq")]
     last_seq: Option<u64>,
+}
+
+fn trust_check(
+    state: &AppState,
+    headers: &HeaderMap,
+    token: Option<&str>,
+) -> Result<(), TrustError> {
+    let host_header = headers.get(HOST).and_then(|value| value.to_str().ok());
+    check_request(&state.trust, host_header, token)
+}
+
+/// 静态资源只校 Host（页面先拿 HTML，令牌在 API/WS 上用）；防 DNS rebinding。
+fn host_check(state: &AppState, headers: &HeaderMap) -> Result<(), TrustError> {
+    let host_header = headers.get(HOST).and_then(|value| value.to_str().ok());
+    let host = host_header.ok_or_else(|| TrustError::BadHost("<missing>".to_owned()))?;
+    if authority_is_loopback(host, state.trust.bind_ip) {
+        Ok(())
+    } else {
+        Err(TrustError::BadHost(host.to_owned()))
+    }
+}
+
+/// 静态路径解析：文件存在就发文件；无扩展名的路由回 index.html（SPA fallback）；
+/// 有扩展名但文件不存在 → 404。拒绝 ..、绝对路径与空段。
+fn resolve_static(root: &Path, request_path: &str) -> Option<PathBuf> {
+    let trimmed = request_path.trim_start_matches('/');
+    if trimmed.split('/').any(|segment| segment == "..") {
+        return None;
+    }
+    if trimmed.is_empty() || request_path.ends_with('/') {
+        return Some(root.join("index.html"));
+    }
+    let candidate = root.join(trimmed);
+    if candidate.is_file() {
+        return Some(candidate);
+    }
+    let has_extension = Path::new(trimmed).extension().is_some();
+    if has_extension {
+        None
+    } else {
+        Some(root.join("index.html"))
+    }
+}
+
+fn content_type(path: &Path) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("json") => "application/json",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("woff2") => "font/woff2",
+        Some("map") => "application/json",
+        _ => "application/octet-stream",
+    }
+}
+
+/// GET 静态文件：同源托管 web/dist（T007.2）；没有 static_dir 时 404。
+async fn static_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+) -> Response {
+    if let Err(error) = host_check(&state, &headers) {
+        return trust_error_response(error);
+    }
+    let Some(root) = state.static_dir.as_deref() else {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    };
+    let Some(path) = resolve_static(root, uri.path()) else {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    };
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => (StatusCode::OK, [(CONTENT_TYPE, content_type(&path))], bytes).into_response(),
+        Err(_) => error_response(StatusCode::NOT_FOUND, "not found"),
+    }
 }
 
 fn error_response(status: StatusCode, message: &str) -> Response {
@@ -595,6 +384,15 @@ async fn api_handler(
     };
     match state.host.dispatch(call).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(ServiceError::RootUnavailable(root)) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "ROOT_UNAVAILABLE",
+                "root": root,
+                "protocolVersion": PROTOCOL_VERSION,
+            })),
+        )
+            .into_response(),
         Err(error) => error_response(StatusCode::BAD_GATEWAY, &error.to_string()),
     }
 }
@@ -676,24 +474,42 @@ async fn send_frame(socket: &mut WebSocket, frame: &Frame) -> bool {
 
 /// 一个 WebSocket 连接：ready → 补齐（lastSeq 之后）→ live（seq 去重；Lagged 时重新 follow 补齐）。
 async fn ws_session(mut socket: WebSocket, state: Arc<AppState>, last_seq: u64) {
+    let info = state.host.info();
     let mut live = state.host.subscribe_events();
-    let follow = match state.host.follow(FollowRequest { last_seq }).await {
-        Ok(follow) => follow,
-        Err(error) => {
-            let value = serde_json::json!({"type": "error", "message": error.to_string()});
-            let _ = send_value(&mut socket, &value).await;
-            return;
+    let root_available = info.root == RootState::Ok;
+    let follow = if root_available {
+        match state.host.follow(FollowRequest { last_seq }).await {
+            Ok(follow) => follow,
+            Err(error) => {
+                let value = serde_json::json!({"type": "error", "message": error.to_string()});
+                let _ = send_value(&mut socket, &value).await;
+                return;
+            }
+        }
+    } else {
+        FollowResponse {
+            events: Vec::new(),
+            last_seq,
         }
     };
     let mut last = last_seq;
     if let Some(seq) = follow.events.last().map(|event| event.seq) {
         last = last.max(seq);
     }
-    let session_id = state.host.object().session_id;
-    for frame in opening_frames(&session_id, follow) {
+    for frame in opening_frames(&info, follow) {
         if !send_frame(&mut socket, &frame).await {
             return;
         }
+    }
+    if !root_available {
+        // T007.2：根会话不可用时页面根据 ready 显示说明页；连接保持到关闭/重连，
+        // 修好后页面调 recheck 再重连。
+        while let Some(Ok(message)) = socket.recv().await {
+            if matches!(message, Message::Close(_)) {
+                return;
+            }
+        }
+        return;
     }
     loop {
         tokio::select! {
@@ -736,10 +552,11 @@ async fn ws_session(mut socket: WebSocket, state: Arc<AppState>, last_seq: u64) 
 }
 
 /// 由宿主和信任栅栏建 axum Router（HTTP /api + WS /ws）。
-pub fn router(host: ServiceHost, trust: Trust) -> Router {
+pub fn router(host: RootHost, trust: Trust, static_dir: Option<PathBuf>) -> Router {
     router_with_state(Arc::new(AppState {
         host: Arc::new(host),
         trust,
+        static_dir,
     }))
 }
 
@@ -749,17 +566,19 @@ fn router_with_state(state: Arc<AppState>) -> Router {
         .route("/connect", get(connect_handler))
         .route("/api", post(api_handler))
         .route("/ws", get(ws_handler))
+        .fallback(get(static_handler))
         .with_state(state)
 }
 
 /// 起服务：校验绑定地址 → TcpListener → axum::serve。
-pub async fn serve(options: ServeOptions, host: ServiceHost) -> Result<ServeHandle, ServeError> {
+pub async fn serve(options: ServeOptions, host: RootHost) -> Result<ServeHandle, ServeError> {
     let ip = check_bind_host(&options.host)?;
     let listener = tokio::net::TcpListener::bind(SocketAddr::new(ip, options.port)).await?;
     let addr = listener.local_addr()?;
     let state = Arc::new(AppState {
         host: Arc::new(host),
         trust: Trust::new(ip, addr.port(), options.token.clone()),
+        static_dir: options.static_dir.clone(),
     });
     let app = router_with_state(Arc::clone(&state));
     let (shutdown, shutdown_signal) = tokio::sync::oneshot::channel::<()>();
@@ -782,73 +601,37 @@ pub async fn serve(options: ServeOptions, host: ServiceHost) -> Result<ServeHand
 }
 
 #[cfg(test)]
-mod cookie_red_tests {
+mod t007_static_tests {
     use super::*;
 
-    fn trust() -> Trust {
-        Trust::new(IpAddr::from([127, 0, 0, 1]), 1417, "tok-1".to_owned())
-    }
-
-    fn host_headers(authority: &str) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        headers.insert(HOST, authority.to_owned().parse().unwrap());
-        headers
-    }
-
-    /// T006 r3 #3：401 正文照来源意思说「重新打开打印的地址」，不出现来源名字/令牌字样。
     #[test]
-    fn unauthorized_body_reopens_printed_address() {
-        let body = TrustError::Unauthorized.to_string();
+    fn resolve_static_serves_file_spa_and_rejects_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("assets")).unwrap();
+        std::fs::write(dir.path().join("index.html"), "<html></html>").unwrap();
+        std::fs::write(dir.path().join("assets/app.js"), "console.log(1)").unwrap();
         assert_eq!(
-            body,
-            "还没有登录或登录已失效：请重新打开 aios-dev serve 打印的地址。"
+            resolve_static(dir.path(), "/assets/app.js"),
+            Some(dir.path().join("assets/app.js"))
         );
-        assert!(!body.contains("令牌"), "cookie 错时不再说令牌：{body}");
-        assert!(!body.contains("dsh"), "不出现来源名字：{body}");
-        assert_eq!(TrustError::Unauthorized.to_string(), UNAUTHORIZED_BODY);
-    }
-
-    #[test]
-    fn dod7_expired_cookie_is_401() {
-        let trust = trust();
-        let authority = "127.0.0.1:1417";
-        let now = now_secs();
-        let payload = CookiePayload {
-            v: 1,
-            authority: authority.to_owned(),
-            issued_at: now - 10,
-            expires_at: now - 1,
-        };
-        let value = encode_cookie(&trust.session_secret, &payload);
-        let mut headers = host_headers(authority);
-        headers.insert(
-            "cookie",
-            format!("{}={value}", cookie_name(authority))
-                .parse()
-                .unwrap(),
+        assert_eq!(
+            resolve_static(dir.path(), "/"),
+            Some(dir.path().join("index.html"))
         );
-        assert_eq!(check_api_auth(&trust, &headers).unwrap_err().status(), 401);
-    }
-
-    #[test]
-    fn dod7_payload_authority_mismatch_is_401() {
-        let trust = trust();
-        let authority = "127.0.0.1:1417";
-        let now = now_secs();
-        let payload = CookiePayload {
-            v: 1,
-            authority: "evil.example:80".to_owned(),
-            issued_at: now,
-            expires_at: now + 60,
-        };
-        let value = encode_cookie(&trust.session_secret, &payload);
-        let mut headers = host_headers(authority);
-        headers.insert(
-            "cookie",
-            format!("{}={value}", cookie_name(authority))
-                .parse()
-                .unwrap(),
+        assert_eq!(
+            resolve_static(dir.path(), "/conversation/42"),
+            Some(dir.path().join("index.html")),
+            "无扩展名路由回 SPA"
         );
-        assert_eq!(check_api_auth(&trust, &headers).unwrap_err().status(), 401);
+        assert_eq!(resolve_static(dir.path(), "/assets/missing.js"), None);
+        assert_eq!(resolve_static(dir.path(), "/../etc/passwd"), None);
+        assert_eq!(
+            content_type(Path::new("index.html")),
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(
+            content_type(Path::new("app.JS")),
+            "application/octet-stream"
+        );
     }
 }

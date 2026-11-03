@@ -10,7 +10,7 @@ use agent::{
 };
 use clap::{Args, Parser, Subcommand};
 use model::{DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS, DeepSeekConfig, Effort, UserMessage};
-use service::{RootSessionOptions, ServiceHost};
+use service::{RootHost, RootSessionOptions};
 use session::SessionId;
 use tokio::io::AsyncBufReadExt;
 
@@ -41,6 +41,9 @@ struct ServeArgs {
     /// 端口（默认 0 = 系统分配）
     #[arg(long, default_value_t = web::DEFAULT_PORT)]
     port: u16,
+    /// 前端构建产物目录（默认找 ./web/dist；也可用 AIOS_WEB_DIST）
+    #[arg(long)]
+    web_dist: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -250,20 +253,34 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let base_url =
         std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_owned());
     let (deepseek_config, agent_config) = config_from_args(&args.common, base_url, api_key)?;
-    let root = service::open_root_session(RootSessionOptions {
-        data_dir,
-        cwd,
-        model: deepseek_config,
-        config: agent_config,
-    })
-    .await?;
-    let host = ServiceHost::new(root.agent.clone());
+    let window = deepseek_config.context_window;
+    // T007.2：根会话打不开时服务照样起；ready 报状态（path/line），方法一律拒绝，
+    // 页面对应五种说明页；修好后页面调 recheck 再检查一次。
+    let host = RootHost::open(
+        RootSessionOptions {
+            data_dir,
+            cwd,
+            model: deepseek_config,
+            config: agent_config,
+        },
+        window,
+    )
+    .await;
+    let static_dir = args
+        .web_dist
+        .clone()
+        .or_else(|| std::env::var_os("AIOS_WEB_DIST").map(PathBuf::from))
+        .or_else(|| {
+            let candidate = PathBuf::from("web/dist");
+            candidate.is_dir().then_some(candidate)
+        });
     let token = web::launch_token();
     let handle = web::serve(
         web::ServeOptions {
             host: args.host.clone(),
             port: args.port,
             token: token.clone(),
+            static_dir,
         },
         host,
     )
