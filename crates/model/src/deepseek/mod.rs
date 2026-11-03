@@ -8,7 +8,7 @@ mod transport;
 
 use std::collections::VecDeque;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub use config::{DEFAULT_BASE_URL, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DeepSeekConfig};
 
@@ -28,6 +28,7 @@ pub struct DeepSeek {
     config: DeepSeekConfig,
     url: reqwest::Url,
     credentials: Arc<dyn CredentialSource>,
+    model_override: Arc<Mutex<Option<String>>>,
 }
 
 impl fmt::Debug for DeepSeek {
@@ -59,6 +60,7 @@ impl DeepSeek {
             config,
             url,
             credentials,
+            model_override: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -76,11 +78,19 @@ impl DeepSeek {
             config,
             url,
             credentials,
+            model_override: Arc::new(Mutex::new(None)),
         })
     }
 
     pub fn config(&self) -> &DeepSeekConfig {
         &self.config
+    }
+
+    /// 换模型：下一轮请求生效，正在跑的请求不受影响（D26）。骨架期先保存、不生效。
+    pub fn set_model(&self, model: String) {
+        if let Ok(mut current) = self.model_override.lock() {
+            *current = Some(model);
+        }
     }
 
     /// provider 路由 id（DSH 的 provider 名；AIOS 只接 DeepSeek）。
