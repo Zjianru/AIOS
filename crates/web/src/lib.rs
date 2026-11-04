@@ -68,7 +68,11 @@ impl Trust {
     }
 }
 
-/// 信任栅栏的拒绝原因；HTTP 面上 Host 不对 403、令牌不对 401。
+/// T006 r3 #3：401 正文（照来源 writeUnauthorized 的意思）：没登录或登录失效时，
+/// 重新打开 aios-dev serve 打印的地址；不出现来源名字，也不再说「令牌」（cookie 是唯一认证方式）。
+const UNAUTHORIZED_BODY: &str = "还没有登录或登录已失效：请重新打开 aios-dev serve 打印的地址。";
+
+/// 信任栅栏的拒绝原因；HTTP 面上 Host 不对 403、未登录/cookie 不对 401。
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum TrustError {
     #[error("不支持的绑定地址：{0}（只允许本机回环地址，拒绝 0.0.0.0/非回环）")]
@@ -77,7 +81,7 @@ pub enum TrustError {
     BadHost(String),
     #[error("Origin/Fetch-Metadata 不是同源：{0}")]
     BadOrigin(String),
-    #[error("缺少或错误的启动令牌")]
+    #[error("{}", UNAUTHORIZED_BODY)]
     Unauthorized,
 }
 
@@ -653,7 +657,7 @@ async fn root_handler(
     if check_api_auth(&state.trust, &headers).is_ok() {
         return (StatusCode::SEE_OTHER, [(LOCATION, "./".to_owned())]).into_response();
     }
-    error_response(StatusCode::UNAUTHORIZED, "dsh web authentication required")
+    error_response(StatusCode::UNAUTHORIZED, UNAUTHORIZED_BODY)
 }
 
 async fn send_value(socket: &mut WebSocket, value: &serde_json::Value) -> bool {
@@ -801,6 +805,7 @@ mod cookie_red_tests {
         );
         assert!(!body.contains("令牌"), "cookie 错时不再说令牌：{body}");
         assert!(!body.contains("dsh"), "不出现来源名字：{body}");
+        assert_eq!(TrustError::Unauthorized.to_string(), UNAUTHORIZED_BODY);
     }
 
     #[test]
