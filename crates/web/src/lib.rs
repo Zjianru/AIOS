@@ -723,29 +723,32 @@ fn service_error_status(code: service::ServiceErrorCode) -> StatusCode {
     }
 }
 
-/// T009.1：/api 的错误响应；skeleton 先保持旧 {"error": ...} 形状（红测试后改结构化）。
+/// T009.1：/api 的错误响应（DSH RemoteError 形状：{code,message,details?}）。
 fn api_error_response(error: ServiceError) -> Response {
     let status = service_error_status(error.code());
-    match &error {
-        ServiceError::RootUnavailable(root) => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "error": "ROOT_UNAVAILABLE",
-                "root": root,
-                "protocolVersion": PROTOCOL_VERSION,
-            })),
-        )
-            .into_response(),
-        _ => error_response(status, &error.to_string()),
-    }
+    (
+        status,
+        Json(service::ServiceErrorBody::from_service_error(&error)),
+    )
+        .into_response()
+}
+
+/// T009.1：请求体不合法（不是 ServiceError 变体）：单独一个码 request/invalid-json。
+fn bad_request_response(message: String) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(service::ServiceErrorBody {
+            code: "request/invalid-json".to_owned(),
+            message,
+            details: None,
+        }),
+    )
+        .into_response()
 }
 
 fn error_response(status: StatusCode, message: &str) -> Response {
-    (
-        status,
-        Json(serde_json::json!({"error": message.to_owned()})),
-    )
-        .into_response()
+    // T009.1：非 /api 的错误（静态 404、信任栅栏 401/403）照来源回纯文本，不再用旧的 error JSON 体。
+    (status, message.to_owned()).into_response()
 }
 
 fn trust_error_response(error: TrustError) -> Response {
@@ -766,7 +769,7 @@ async fn api_handler(
     let call: service::Call = match serde_json::from_slice(&body) {
         Ok(call) => call,
         Err(error) => {
-            return error_response(StatusCode::BAD_REQUEST, &format!("bad request: {error}"));
+            return bad_request_response(format!("bad request: {error}"));
         }
     };
     match state.host.dispatch(call).await {

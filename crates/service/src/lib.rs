@@ -613,12 +613,19 @@ pub struct ServiceErrorBody {
 }
 
 impl ServiceErrorBody {
-    /// skeleton：先用码+说明（细节留到红测试后补），product 不调用。
+    /// T009.1：码 + 诊断 + 按码定的细节（root/unavailable 带 root 状态与协议版本）。
     pub fn from_service_error(error: &ServiceError) -> Self {
+        let details = match error {
+            ServiceError::RootUnavailable(root) => Some(serde_json::json!({
+                "root": root,
+                "protocolVersion": PROTOCOL_VERSION,
+            })),
+            _ => None,
+        };
         Self {
             code: error.code().as_str().to_owned(),
             message: error.to_string(),
-            details: None,
+            details,
         }
     }
 }
@@ -895,7 +902,8 @@ fn failure_cause(kind: &session::EventKind) -> Option<FailureCause> {
     };
     Some(match error.code.as_str() {
         "KEYRING" => FailureCause::Keyring,
-        "AUTH" | "MISSING_CREDENTIAL" => FailureCause::Credential,
+        // T009.1：QUOTA 归凭证类（下一步是检查账户）。
+        "AUTH" | "MISSING_CREDENTIAL" | "QUOTA" => FailureCause::Credential,
         _ => FailureCause::Model,
     })
 }
