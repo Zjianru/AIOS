@@ -218,6 +218,25 @@ fn 存储变化会通知订阅者() {
 
 #[test]
 fn 两个实例在换位置后都恢复且能签发() {
-    // T008.F1 骨架：一个进程里共享同一把钥匙；换位置/指回后，先打开的实例也要看到新配置。
-    panic!("T008.F1 skeleton: not implemented");
+    let fixture = Fixture::new();
+    let first = fixture.open();
+    first.save_connection(connection()).expect("save");
+    // 服务里 model_factory/设置/凭证来源可能各持有自己的 Keyring 句柄；先打开第二个实例。
+    let second = fixture.open();
+
+    let new_path = fixture._dir.path().join("moved/shared-identity.txt");
+    first.relocate_identity(&new_path).expect("relocate");
+
+    assert_eq!(
+        second.identity_path(),
+        new_path,
+        "第二个实例必须看到配置里的新位置，不能缓存旧路径"
+    );
+    let view = second.view();
+    assert!(
+        view.key_file.problem.is_none(),
+        "换位置后第二个实例应能读：{view:?}"
+    );
+    let issued = second.issue("deepseek", "kind-turn", None);
+    assert!(issued.is_ok(), "换位置后第二个实例应还能签发：{issued:?}");
 }
