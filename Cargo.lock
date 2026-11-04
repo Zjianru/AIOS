@@ -1793,6 +1793,7 @@ dependencies = [
  "grep-searcher",
  "ignore",
  "model",
+ "ring",
  "serde_json",
  "session",
  "tempfile",
