@@ -16,7 +16,7 @@ use crate::capabilities::{CompactionPolicy, LoopAccess};
 use crate::error::ManualCompactionErrorCode;
 use crate::{AgentError, AgentEvent, CompactionOutcome, CompactionTrigger};
 
-/// 手动压缩失败（可跨多个等待者广播；Agent::compact 再转成 AgentError::ManualCompaction）。
+/// 手动压缩失败分类（T006.F1 起不排队；Agent::compact 转为 AgentError::ManualCompaction）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManualCompactionFailure {
     pub(crate) code: ManualCompactionErrorCode,
