@@ -377,3 +377,9 @@ time.sleep(0.6)
     );
     worker.join().expect("join");
 }
+
+#[test]
+fn 签发记录带归属且视图有界() {
+    // T008.F4 骨架：每请求记 run/turn；view 只返回最近有界条数。
+    panic!("T008.F4 skeleton: not implemented");
+}
