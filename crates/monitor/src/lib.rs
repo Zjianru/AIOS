@@ -263,14 +263,51 @@ impl Drop for Monitor {
     }
 }
 
-/// T011.2：把一条会话事件写成 ledger 记录（skeleton：先只放 session id，红测试后补信封/severity/body）。
-pub fn ledger_record(session_id: &str, _event: &session::Event) -> Record {
+/// T011.2：把一条会话事件写成 ledger 记录。
+///
+/// body 是事件副本（脱敏在 T011.3 做）；sourceEvent 是会话 id + 去掉 data 的事件信封。
+pub fn ledger_record(session_id: &str, event: &session::Event) -> Record {
+    let body = serde_json::to_value(event).unwrap_or(Value::Null);
+    let mut envelope = body.clone();
+    if let Some(object) = envelope.as_object_mut() {
+        object.remove("data");
+    }
     let mut attributes = Map::new();
     attributes.insert(
         "session.id".to_owned(),
         Value::String(session_id.to_owned()),
     );
-    Record::new(Channel::Ledger, Severity::Info, attributes, json!({}))
+    attributes.insert(
+        "event.type".to_owned(),
+        envelope
+            .get("type")
+            .cloned()
+            .unwrap_or_else(|| Value::String(String::new())),
+    );
+    attributes.insert("event.seq".to_owned(), json!(event.seq));
+    Record {
+        channel: Channel::Ledger,
+        time: event.time,
+        severity: severity_of(&event.kind),
+        attributes,
+        body,
+        source_event: Some(SourceEvent {
+            session_id: session_id.to_owned(),
+            event: envelope,
+        }),
+    }
+}
+
+/// T011.2（照 DSH severityOf）：工具结果出错、一轮以出错结束为 error，其余 info。
+fn severity_of(kind: &session::EventKind) -> Severity {
+    match kind {
+        session::EventKind::ToolResult { error: Some(_), .. } => Severity::Error,
+        session::EventKind::TurnEnd {
+            reason: session::TurnEndReason::Error { .. },
+            ..
+        } => Severity::Error,
+        _ => Severity::Info,
+    }
 }
 
 /// T011.2：把监控装到会话的「追加之后」钩子上。

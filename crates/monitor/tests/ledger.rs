@@ -1,7 +1,7 @@
 //! T011.2 清单 1、2、9：ledger 挂在会话「追加之后」的钩子上。
 
 use model::Message;
-use monitor::{Severity, install_ledger};
+use monitor::install_ledger;
 use session::{EventKind, LlmFailure, SessionStore, ToolError, TurnEndReason};
 
 fn tool_result(message: Message, error: Option<ToolError>) -> EventKind {
@@ -148,8 +148,11 @@ fn reopened_session_only_records_events_after_reopen() {
     files.sort();
     assert_eq!(files.len(), 2, "两个进程记录文件");
     let second = std::fs::read_to_string(&files[1]).expect("读第二个文件");
-    let ledger: Vec<&str> = second.lines().collect();
+    let ledger: Vec<serde_json::Value> = second
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("JSON"))
+        .filter(|record: &serde_json::Value| record["channel"] == "ledger")
+        .collect();
     assert_eq!(ledger.len(), 1, "重开只采重开之后的事件：{second}");
-    let record: serde_json::Value = serde_json::from_str(ledger[0]).expect("JSON");
-    assert_eq!(record["attributes"]["event.seq"], 3, "seq 接着日志继续");
+    assert_eq!(ledger[0]["attributes"]["event.seq"], 3, "seq 接着日志继续");
 }

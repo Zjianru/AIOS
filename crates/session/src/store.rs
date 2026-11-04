@@ -301,6 +301,10 @@ impl SessionStore {
         }
         self.bytes = prior + buffer.len() as u64;
         let seqs = batch.iter().map(|event| event.seq).collect();
+        // T011.2：写成功之后交给钩子（监控）；钩子 panic 或报错不能影响业务。
+        if let Some(hook) = &self.append_hook {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| hook(&batch)));
+        }
         self.events.extend(batch);
         Ok(seqs)
     }
