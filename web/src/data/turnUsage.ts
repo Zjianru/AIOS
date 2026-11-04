@@ -70,16 +70,25 @@ export function thinkingSeconds(reasoningMs: number): number {
 /** 一轮里 reasoning 帧的时间跨度：连续 run 的 dt 之和（time0 到最后一帧）。 */
 export function reasoningSpanMs(stream: unknown): number {
   if (!Array.isArray(stream)) return 0;
-  let span = 0;
+  let first = Number.POSITIVE_INFINITY;
+  let last = Number.NEGATIVE_INFINITY;
   for (const record of stream) {
     if (!record || typeof record !== 'object') continue;
-    const typed = record as { type?: string; dt?: unknown };
-    if (typed.type !== 'reasoning-chunks' || !Array.isArray(typed.dt)) continue;
-    for (const step of typed.dt) {
-      if (typeof step === 'number') span += step;
+    const typed = record as { type?: string; time0?: unknown; dt?: unknown };
+    if (typed.type !== 'reasoning-chunks') continue;
+    const time0 = typeof typed.time0 === 'number' ? typed.time0 : undefined;
+    if (time0 === undefined) continue;
+    let end = time0;
+    if (Array.isArray(typed.dt)) {
+      for (const step of typed.dt) {
+        if (typeof step === 'number') end += step;
+      }
     }
+    if (time0 < first) first = time0;
+    if (end > last) last = end;
   }
-  return span;
+  if (!Number.isFinite(first) || !Number.isFinite(last) || last <= first) return 0;
+  return last - first;
 }
 
 /** 模型显示名：在模型设置的条目里找显示名，找不到就用 id。 */
