@@ -310,6 +310,42 @@ fn severity_of(kind: &session::EventKind) -> Severity {
     }
 }
 
+/// T011.3：脱敏规则（只改副本；key 不保存，只在匹配时用）。
+#[derive(Debug, Clone)]
+pub struct Redactor {
+    secrets: Arc<Vec<String>>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RedactError {
+    #[error("监控记录嵌套过深，脱敏放弃")]
+    TooDeep,
+}
+
+impl Redactor {
+    /// secrets：进程持有的 key（运行时从 Keyring 取，监控不落盘）。
+    pub fn new(secrets: Vec<String>) -> Self {
+        Self {
+            secrets: Arc::new(secrets),
+        }
+    }
+
+    /// 推理帧/思考块文本 → [推理已略去，N 字]；任意字符串里的 key → [已脱敏]。
+    /// skeleton：先不改（红测试后实现）。
+    pub fn redact(&self, _record: &mut Record) -> Result<(), RedactError> {
+        Ok(())
+    }
+}
+
+/// T011.3：装 ledger 时同时带脱敏；脱敏出错的记录扣下，另记一条 redact-failed。
+pub fn install_ledger_with_redactor(
+    monitor: &Monitor,
+    store: &mut session::SessionStore,
+    _redactor: Redactor,
+) {
+    install_ledger(monitor, store);
+}
+
 /// T011.2：把监控装到会话的「追加之后」钩子上。
 pub fn install_ledger(monitor: &Monitor, store: &mut session::SessionStore) {
     let session_id = store.id().as_str().to_owned();
