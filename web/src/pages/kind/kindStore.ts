@@ -7,12 +7,11 @@
 
 import { create } from 'zustand';
 import { toast } from 'sonner';
-import { compactionSummary, liveDemo } from '@/data/api';
 import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchEventsPage, recheckRoot, sendMessage, ServiceHttpError } from '@/data/service';
 import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
 import type { GateDetail, GateState } from './KernelGate';
 import { reconnectDelayMs } from '@/data/reconnect';
-import type { AskAnswer, AskQuestion, FailureCause, LiveDemo, LiveScript, LiveStep } from '@/data/fixtures/kindLive';
+import type { AskAnswer, AskQuestion, FailureCause } from '@/data/fixtures/kindLive';
 import { mark } from '@/lib/perf';
 import type { KindCard, TextElement, Turn, TurnStatus } from '@/data/types';
 
@@ -220,7 +219,6 @@ interface KindState {
   usage: number;
   compacting: boolean;
   /** 演示用：下一条消息送不到。 */
-  nextSendFails: boolean;
   /** 当前用的模型（底栏的模型选择，T008）。 */
   model: { connectionId: string; modelId: string; label: string };
   loadInitial: () => Promise<void>;
@@ -233,7 +231,6 @@ interface KindState {
   dismiss: (turnId: string) => void;
   compact: () => void;
   setModel: (model: KindState['model']) => void;
-  demo: (name: LiveDemo | 'compactAuto' | 'offline' | 'unsent' | 'empty' | 'restore') => void;
 }
 
 function indexOf(views: TurnViewData[]): Map<string, TurnViewData> {
@@ -244,27 +241,6 @@ function indexOf(views: TurnViewData[]): Map<string, TurnViewData> {
 
 function clock(date = new Date()): string {
   return String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0');
-}
-
-function emptyTurn(id: string, text: string): TurnViewData {
-  const stamp = Date.now();
-  return {
-    ...buildTurnView({
-      id,
-      items: [],
-      itemsView: 'full',
-      status: 'inProgress',
-      error: null,
-      startedAt: Math.floor(stamp / 1000),
-      completedAt: null,
-      durationMs: null,
-    }),
-    user: { text, elements: [] },
-    model: useKindStore.getState().model.label,
-    tokens: { input: 0, output: 0 },
-    cost: null,
-    thinkingSeconds: 0,
-  };
 }
 
 /** root 状态 → 整页说明（T007.10）：路径/行号来自服务事实，不在页面上编。 */
@@ -791,161 +767,6 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
 }
 
 /** 改一轮：按 id 换成新对象（TurnRow 用 memo 比引用，只有这一条重绘）。 */
-function patch(id: string, change: (view: TurnViewData) => TurnViewData): void {
-  useKindStore.setState((state) => {
-    const index = state.views.findIndex((view) => view.id === id);
-    if (index < 0) return {};
-    const views = state.views.slice();
-    views[index] = change(views[index]);
-    return { views, byId: indexOf(views) };
-  });
-}
-
-function append(view: TurnViewData): void {
-  useKindStore.setState((state) => {
-    const views = state.views.concat(view);
-    return { views, byId: indexOf(views), ...decorate(views), atBottom: true };
-  });
-}
-
-/* ───────── 一轮的演示：按步骤走（真的由内核推事件，这里只模拟样子） ───────── */
-
-interface Run {
-  turnId: string;
-  steps: LiveStep[];
-  index: number;
-  startedAt: number;
-  timer: ReturnType<typeof setTimeout> | ReturnType<typeof setInterval> | null;
-  waiting: boolean;
-}
-
-let run: Run | null = null;
-
-function clearTimer(): void {
-  if (run?.timer) {
-    clearTimeout(run.timer as ReturnType<typeof setTimeout>);
-    clearInterval(run.timer as ReturnType<typeof setInterval>);
-    run.timer = null;
-  }
-}
-
-function startRun(turnId: string, script: LiveScript): void {
-  run = { turnId, steps: script.steps, index: 0, startedAt: Date.now(), timer: null, waiting: false };
-  mark('stream:start');
-  useKindStore.setState({ streamingTurnId: turnId });
-  next();
-}
-
-function finish(status: TurnStatus): void {
-  if (!run) return;
-  const { turnId, startedAt } = run;
-  clearTimer();
-  run = null;
-  const durationMs = Date.now() - startedAt;
-  patch(turnId, (view) => ({
-    ...view,
-    status,
-    durationMs,
-    retry: null,
-    tokens: { input: 2400 + (durationMs % 3000), output: 180 + (durationMs % 600) },
-    thinkingSeconds: Math.max(1, Math.round(durationMs / 4000)),
-  }));
-  useKindStore.setState((state) => ({ streamingTurnId: null, usage: Math.min(99, state.usage + 3) }));
-  mark('stream:end');
-}
-
-function next(): void {
-  if (!run) return;
-  const current = run;
-  const step = current.steps[current.index++];
-  if (!step) {
-    finish('completed');
-    return;
-  }
-  const id = current.turnId;
-  switch (step.kind) {
-    case 'tool': {
-      const toolId = id + '_t' + current.index;
-      const begun = Date.now();
-      patch(id, (view) => ({
-        ...view,
-        tools: view.tools.concat({ id: toolId, command: step.command, output: '', exitCode: null, durationMs: null, running: true }),
-      }));
-      current.timer = setTimeout(() => {
-        patch(id, (view) => ({
-          ...view,
-          tools: view.tools.map((tool) =>
-            tool.id === toolId ? { ...tool, running: false, output: step.output, exitCode: 0, durationMs: Date.now() - begun } : tool,
-          ),
-        }));
-        next();
-      }, step.ms);
-      return;
-    }
-    case 'retry': {
-      patch(id, (view) => ({ ...view, retry: { attempt: step.attempt, reason: step.reason, inSeconds: Math.round(step.ms / 1000) } }));
-      current.timer = setTimeout(() => {
-        patch(id, (view) => ({ ...view, retry: null }));
-        next();
-      }, step.ms);
-      return;
-    }
-    case 'ask': {
-      current.waiting = true;
-      patch(id, (view) => ({ ...view, question: { status: 'pending', questions: step.questions } }));
-      return;
-    }
-    case 'say': {
-      const text = step.text;
-      const chunk = Math.max(1, Math.ceil(text.length / 90));
-      const tick = Math.max(16, Math.round(step.ms / (text.length / chunk)));
-      let offset = 0;
-      useStreamStore.setState({ turnId: id, itemId: id + '_say', text: '' });
-      current.timer = setInterval(() => {
-        offset = Math.min(text.length, offset + chunk);
-        useStreamStore.setState({ text: text.slice(0, offset) });
-        if (offset >= text.length) {
-          clearTimer();
-          patch(id, (view) => ({ ...view, answer: { text, elements: [] } }));
-          useStreamStore.setState({ turnId: null, itemId: null, text: '' });
-          next();
-        }
-      }, tick);
-      return;
-    }
-    case 'fail': {
-      patch(id, (view) => ({ ...view, failure: { cause: step.cause, reason: step.reason } }));
-      finish('failed');
-      return;
-    }
-  }
-}
-
-/** 你的消息先「发送中」，内核收下后这一轮才开始。 */
-function deliver(turnId: string, script: LiveScript): void {
-  const state = useKindStore.getState();
-  if (state.nextSendFails) {
-    useKindStore.setState({ nextSendFails: false });
-    setTimeout(() => patch(turnId, (view) => ({ ...view, delivery: 'unsent', status: 'interrupted' })), 900);
-    pendingScripts.set(turnId, script);
-    return;
-  }
-  setTimeout(() => {
-    patch(turnId, (view) => ({ ...view, delivery: null }));
-    startRun(turnId, script);
-  }, 350);
-}
-
-/** 没送到的消息，重发时还用原来那一轮的脚本。 */
-const pendingScripts = new Map<string, LiveScript>();
-
-function begin(script: LiveScript): void {
-  if (run) return;
-  const replyId = 'local_reply_' + Date.now();
-  append({ ...emptyTurn(replyId, script.user), delivery: 'sending' });
-  deliver(replyId, script);
-}
-
 const DEMO_MODEL = { connectionId: 'deepseek', modelId: 'deepseek-chat', label: 'DeepSeek Chat' };
 
 export const useKindStore = create<KindState>()((set, get) => ({
@@ -967,7 +788,6 @@ export const useKindStore = create<KindState>()((set, get) => ({
   connection: { state: 'online' },
   usage: 46,
   compacting: false,
-  nextSendFails: false,
   model: DEMO_MODEL,
 
   loadInitial: async () => {
@@ -1116,39 +936,6 @@ export const useKindStore = create<KindState>()((set, get) => ({
     toast('下一轮开始用 ' + model.label);
   },
 
-  demo: (name) => {
-    switch (name) {
-      case 'compactAuto': {
-        const before = 92;
-        append({ ...emptyTurn('compact_' + Date.now(), ''), user: null, status: 'completed', compaction: { auto: true, before, after: 11, summary: compactionSummary() } });
-        set({ usage: 11 });
-        return;
-      }
-      case 'offline': {
-        set({ connection: { state: 'reconnecting', attempt: 1 } });
-        setTimeout(() => set({ connection: { state: 'reconnecting', attempt: 2 } }), 1800);
-        setTimeout(() => {
-          set({ connection: { state: 'online' } });
-          toast('已经重新连上', { description: '断开期间的 12 条更新已经补上' });
-        }, 4200);
-        return;
-      }
-      case 'unsent':
-        set({ nextSendFails: true });
-        toast('下一条消息会送不到（演示）');
-        return;
-      case 'empty':
-        if (run) get().stop();
-        set({ views: [], byId: new Map(), ...decorate([]), hasOlder: false, nextCursor: null, usage: 0 });
-        return;
-      case 'restore':
-        set({ initialLoading: true, usage: 46 });
-        void get().loadInitial();
-        return;
-      default:
-        begin(liveDemo(name));
-    }
-  },
 }));
 /** 流式文本单独放一个 store：只有最后一条在重绘，别的消息不跟着重建。 */
 export const useStreamStore = create<{ turnId: string | null; itemId: string | null; text: string }>(() => ({
