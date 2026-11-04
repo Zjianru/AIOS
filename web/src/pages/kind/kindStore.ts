@@ -271,6 +271,7 @@ function applyRootState(root: {
 /** T007.9：当前连接 + 重连状态；lastSeq 是页面已处理到的日志序号（重连补齐去重用）。 */
 let activeSocket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let recheckTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempt = 0;
 let lastSeq = 0;
 /** 没送到内核的本地消息：viewId -> { requestId, text }；重发复用同一个 requestId。 */
@@ -323,6 +324,10 @@ function openSocket(): void {
       if (frame.type === 'ready') {
         applyRootState(frame.root);
         reconnectAttempt = 0;
+        if (recheckTimer !== null) {
+          clearTimeout(recheckTimer);
+          recheckTimer = null;
+        }
         useKindStore.setState({ connection: { state: 'online' } });
       }
       applyFrame(frame);
@@ -334,10 +339,14 @@ function openSocket(): void {
       useKindStore.setState({
         connection: { state: 'reconnecting', attempt: reconnectAttempt },
       });
-      // T007 #1：断线后先做一次 recheck，把「服务换了令牌」与「服务连不上」分开：
-      // recheck 收到 401 时页面进入令牌说明页（页面开着、服务重启后的下一次调用）。
-      if (reconnectAttempt === 1) {
-        void useKindStore.getState().recheck();
+      // T007 #1：断线 5 秒还没连回来时做一次 recheck，把「服务换了令牌」与「服务连不上」分开：
+      // recheck 收到 401 时页面进入令牌说明页（页面开着、服务重启后的下一次调用）；
+      // 短暂断线由横幅+重连补齐，不打断页面（reconnect.spec）。
+      if (recheckTimer === null) {
+        recheckTimer = setTimeout(() => {
+          recheckTimer = null;
+          void useKindStore.getState().recheck();
+        }, 5000);
       }
       if (reconnectTimer === null) {
         const delay = reconnectDelayMs(reconnectAttempt);
