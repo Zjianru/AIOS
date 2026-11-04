@@ -8,7 +8,7 @@
 
 mod root;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use agent::{Agent, SendAdmission};
 use model::UserMessage;
@@ -62,6 +62,8 @@ pub enum Call {
     Status(StatusRequest),
     Follow(FollowRequest),
     Events(EventsRequest),
+    /// T007.2：再检查一次根会话（修好 missing/corrupt/busy 之后回到对话）。
+    Recheck(RecheckRequest),
 }
 
 /// 调用的结果（与 Call 一一对应）。
@@ -76,6 +78,7 @@ pub enum Response {
     Status(StatusResponse),
     Follow(FollowResponse),
     Events(EventsResponse),
+    Recheck(RecheckResponse),
 }
 
 /// 发消息（DSH session-controller 的 prompt）。requestId 是幂等键：同一 id 只进一次。
@@ -221,6 +224,14 @@ pub struct EventsRequest {
     pub min_turns: Option<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RecheckRequest {}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RecheckResponse {
+    pub root: RootState,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventsResponse {
     /// 这一页事件（按日志顺序；页首通常是 turn/start，除非预算或日志耗尽先到）。
@@ -230,13 +241,111 @@ pub struct EventsResponse {
     pub has_more: bool,
 }
 
+/// 失败原因分类（T007.2）：页面失败块按这个分类写文案，不按 code 猜。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FailureCause {
+    /// 凭证问题（401 / 没配 key）——T008 的 Keyring 另算。
+    Credential,
+    /// 模型侧失败（重试用完/超时/服务错误等）。
+    Model,
+}
+
 /// 服务事件：严格来自会话日志事实（seq 连续、type 是日志事件类型、data 是事件字段）。
+/// cause 是 T007.2 只增的派生字段：只有 turn/end 的 error 事件带，取值来自日志里的 code，
+/// 页面拿它选失败块文案，不在页面上推算。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServiceEvent {
     pub seq: u64,
+    /// 日志事件发生时间（unix 毫秒；页面工作过程开始时间从这里取）。
+    pub time: u64,
     #[serde(rename = "type")]
     pub event_type: String,
     pub data: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cause: Option<FailureCause>,
+}
+
+/// 服务协议版本（T007.2 起）：只增不改的对外面每次扩展都记在这里，Web ready 帧里带上。
+pub const PROTOCOL_VERSION: u64 = 2;
+
+/// 根会话不可用的种类（T007.2）：服务照常起，ready 报出来，方法一律拒绝。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RootUnavailableKind {
+    /// 状态文件记过会话 id，但会话日志不见了。
+    Lost,
+    /// 状态文件损坏 / 版本未知。
+    Corrupt,
+    /// 另一个进程正持有会话写锁。
+    Busy,
+    /// 其他打开失败（IO/底层错误）。
+    Other,
+}
+
+/// 根会话状态（T007.2）：ready 里原样给页面，用于五种说明页。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum RootState {
+    Ok,
+    Unavailable {
+        kind: RootUnavailableKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        line: Option<u64>,
+        message: String,
+    },
+}
+
+impl RootState {
+    /// 把打开根会话的错误分类成页面状态（只增：error 的 Debug/说明仍保留）。
+    pub fn from_root_error(error: &RootError) -> Self {
+        match error {
+            RootError::StateCorrupt { path, line, .. } => RootState::Unavailable {
+                kind: RootUnavailableKind::Corrupt,
+                path: Some(path.clone()),
+                line: *line,
+                message: error.to_string(),
+            },
+            RootError::RecordedSessionMissing { path, .. } => RootState::Unavailable {
+                kind: RootUnavailableKind::Lost,
+                path: Some(path.clone()),
+                line: None,
+                message: error.to_string(),
+            },
+            RootError::WriterHeld { .. } => RootState::Unavailable {
+                kind: RootUnavailableKind::Busy,
+                path: None,
+                line: None,
+                message: error.to_string(),
+            },
+            RootError::Agent(_) | RootError::Io(_) => RootState::Unavailable {
+                kind: RootUnavailableKind::Other,
+                path: None,
+                line: None,
+                message: error.to_string(),
+            },
+        }
+    }
+}
+
+/// 上下文占用（T007.2）：服务从日志里的 usage + 模型配置的窗口算，页面不推算。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextUsage {
+    pub used: u64,
+    pub window: u64,
+}
+
+/// ready/status 里给页面的宿主信息（协议版本 + 根会话状态 + 上下文占用）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HostInfo {
+    #[serde(rename = "protocolVersion")]
+    pub protocol_version: u64,
+    #[serde(rename = "sessionId", default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub root: RootState,
+    pub context: ContextUsage,
 }
 
 /// 服务错误（协议层错误码的第一版；Web 适配器在 17 映射成线上错误）。
@@ -246,6 +355,9 @@ pub enum ServiceError {
     Agent(#[from] agent::AgentError),
     #[error("回答被拒绝的问题：{0}")]
     AnswerRejected(String),
+    /// T007.2：根会话不可用，方法一律拒绝；页面用 ready 里的状态显示说明页。
+    #[error("Kind 的根会话不可用")]
+    RootUnavailable(RootState),
 }
 
 /// 与载体无关的服务宿主：绑定一个 Agent/会话，调用经 dispatch 进入，事件从广播流出。
@@ -309,6 +421,10 @@ impl ServiceHost {
             Call::Status(request) => self.status(request).await.map(Response::Status),
             Call::Follow(request) => self.follow(request).await.map(Response::Follow),
             Call::Events(request) => self.events(request).await.map(Response::Events),
+            // T007.2：recheck 只对 RootHost 有意义；裸 ServiceHost 直接回根状态 ok（宿主不回退）。
+            Call::Recheck(_) => Ok(Response::Recheck(RecheckResponse {
+                root: RootState::Ok,
+            })),
         }
     }
 
@@ -480,7 +596,280 @@ fn service_event(event: &session::Event) -> ServiceEvent {
     }
     ServiceEvent {
         seq: event.seq,
+        time: event.time,
         event_type: event.kind.type_name().to_owned(),
         data,
+        cause: failure_cause(&event.kind),
+    }
+}
+
+/// T007.2：失败原因分类只从日志里的 turn/end error code 派生（页面不按 code 猜）。
+fn failure_cause(kind: &session::EventKind) -> Option<FailureCause> {
+    let session::EventKind::TurnEnd {
+        reason: session::TurnEndReason::Error { error },
+        ..
+    } = kind
+    else {
+        return None;
+    };
+    Some(match error.code.as_str() {
+        "AUTH" | "MISSING_CREDENTIAL" => FailureCause::Credential,
+        _ => FailureCause::Model,
+    })
+}
+
+/// 从一条服务事件里读上下文占用（assistant/message 的 usage 的 prompt 部分）。
+fn context_used(event: &ServiceEvent) -> Option<u64> {
+    if event.event_type != "assistant/message" {
+        return None;
+    }
+    let usage = event.data.get("usage")?;
+    let field = |name: &str| {
+        usage
+            .get(name)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+    };
+    Some(field("inputTokens") + field("cacheReadTokens") + field("cacheWriteTokens"))
+}
+
+/// 根会话宿主（T007.2）：根会话可用时转发一个 ServiceHost；不可用时服务照常起，
+/// ready 报状态、方法一律拒绝，recheck 修好后接管。协议方法只增不改。
+pub struct RootHost {
+    inner: tokio::sync::Mutex<Option<ServiceHost>>,
+    state: Mutex<RootState>,
+    session_id: Mutex<Option<String>>,
+    context: Arc<Mutex<ContextUsage>>,
+    options: RootSessionOptions,
+    window: u64,
+    events: broadcast::Sender<ServiceEvent>,
+    agent_events: broadcast::Sender<agent::AgentEvent>,
+    forward: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    agent_forward: Mutex<Option<tokio::task::JoinHandle<()>>>,
+}
+
+impl RootHost {
+    /// 打开根会话；打不开也返回宿主（状态进 ready，方法拒绝），由页面显示说明页。
+    pub async fn open(options: RootSessionOptions, window: u64) -> Self {
+        let (events, _) = broadcast::channel(SERVICE_EVENT_CHANNEL_CAPACITY);
+        let (agent_events, _) = broadcast::channel(SERVICE_EVENT_CHANNEL_CAPACITY);
+        let host = Self {
+            inner: tokio::sync::Mutex::new(None),
+            state: Mutex::new(RootState::Ok),
+            session_id: Mutex::new(None),
+            context: Arc::new(Mutex::new(ContextUsage { used: 0, window })),
+            options,
+            window,
+            events,
+            agent_events,
+            forward: Mutex::new(None),
+            agent_forward: Mutex::new(None),
+        };
+        match open_root_session(host.options.clone()).await {
+            Ok(root) => host.install(root.agent).await,
+            Err(error) => {
+                *host.state.lock().expect("root state 锁被毒化") =
+                    RootState::from_root_error(&error);
+            }
+        }
+        host
+    }
+
+    /// 接手一个已打开的 Agent：建 ServiceHost、把它的服务事件转发到本宿主的广播，
+    /// 同时更新上下文占用（页面要的 context 只从日志事实算）。
+    async fn install(&self, agent: Agent) {
+        let session_id = agent.id().as_str().to_owned();
+        // T007.4：流式文本等 AgentEvent 不落日志，单独转发给载体（只增帧类型）。
+        let mut agent_source = agent.subscribe();
+        let agent_tx = self.agent_events.clone();
+        let agent_forward = tokio::spawn(async move {
+            loop {
+                match agent_source.recv().await {
+                    Ok(event) => {
+                        let _ = agent_tx.send(event);
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        if let Some(handle) = self
+            .agent_forward
+            .lock()
+            .expect("agent forward 锁被毒化")
+            .replace(agent_forward)
+        {
+            handle.abort();
+        }
+        let service_host = ServiceHost::new(agent);
+        let mut source = service_host.subscribe_events();
+        let tx = self.events.clone();
+        let context = Arc::clone(&self.context);
+        let window = self.window;
+        let forward = tokio::spawn(async move {
+            loop {
+                match source.recv().await {
+                    Ok(event) => {
+                        if let Some(used) = context_used(&event) {
+                            *context.lock().expect("context 锁被毒化") =
+                                ContextUsage { used, window };
+                        }
+                        let _ = tx.send(event);
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+        if let Some(handle) = self
+            .forward
+            .lock()
+            .expect("forward 锁被毒化")
+            .replace(forward)
+        {
+            handle.abort();
+        }
+        *self.inner.lock().await = Some(service_host);
+        *self.state.lock().expect("root state 锁被毒化") = RootState::Ok;
+        *self.session_id.lock().expect("session id 锁被毒化") = Some(session_id);
+    }
+
+    /// 宿主信息（ready/status 用）：协议版本 + 根状态 + 上下文占用。
+    pub fn info(&self) -> HostInfo {
+        let context = *self.context.lock().expect("context 锁被毒化");
+        HostInfo {
+            protocol_version: PROTOCOL_VERSION,
+            session_id: self.session_id.lock().expect("session id 锁被毒化").clone(),
+            root: self.state.lock().expect("root state 锁被毒化").clone(),
+            context,
+        }
+    }
+
+    pub fn protocol_version(&self) -> u64 {
+        PROTOCOL_VERSION
+    }
+
+    pub fn subscribe_events(&self) -> broadcast::Receiver<ServiceEvent> {
+        self.events.subscribe()
+    }
+
+    /// T007.4：AgentEvent 的 live 订阅（流式文本/用量等不落日志的观察面）。
+    pub fn subscribe_agent_events(&self) -> broadcast::Receiver<agent::AgentEvent> {
+        self.agent_events.subscribe()
+    }
+
+    /// 再检查一次：修好之后接管根会话并返回新状态；还是不行就返回当前状态。
+    pub async fn recheck(&self) -> RootState {
+        if self.state.lock().expect("root state 锁被毒化").clone() == RootState::Ok {
+            return RootState::Ok;
+        }
+        match open_root_session(self.options.clone()).await {
+            Ok(root) => {
+                self.install(root.agent).await;
+                RootState::Ok
+            }
+            Err(error) => {
+                let state = RootState::from_root_error(&error);
+                *self.state.lock().expect("root state 锁被毒化") = state.clone();
+                state
+            }
+        }
+    }
+
+    /// 唯一调用入口；根会话不可用时除 recheck 外一律拒绝。
+    pub async fn dispatch(&self, call: Call) -> Result<Response, ServiceError> {
+        if matches!(call, Call::Recheck(_)) {
+            let root = self.recheck().await;
+            return Ok(Response::Recheck(RecheckResponse { root }));
+        }
+        let guard = self.inner.lock().await;
+        match guard.as_ref() {
+            Some(host) => host.dispatch(call).await,
+            None => Err(ServiceError::RootUnavailable(
+                self.state.lock().expect("root state 锁被毒化").clone(),
+            )),
+        }
+    }
+
+    pub async fn follow(&self, request: FollowRequest) -> Result<FollowResponse, ServiceError> {
+        let guard = self.inner.lock().await;
+        match guard.as_ref() {
+            Some(host) => host.follow(request).await,
+            None => Err(ServiceError::RootUnavailable(
+                self.state.lock().expect("root state 锁被毒化").clone(),
+            )),
+        }
+    }
+
+    pub async fn shutdown(&self) {
+        let guard = self.inner.lock().await;
+        if let Some(host) = guard.as_ref() {
+            host.shutdown().await;
+        }
+    }
+}
+
+impl Drop for RootHost {
+    fn drop(&mut self) {
+        if let Some(handle) = self.forward.lock().expect("forward 锁被毒化").take() {
+            handle.abort();
+        }
+    }
+}
+
+#[cfg(test)]
+mod t007_protocol_tests {
+    use super::*;
+
+    fn turn_end(code: &str) -> session::EventKind {
+        session::EventKind::TurnEnd {
+            turn: 1,
+            reason: session::TurnEndReason::Error {
+                error: session::LlmFailure {
+                    message: "boom".to_owned(),
+                    code: code.to_owned(),
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn failure_cause_classifies_credential_and_model() {
+        assert_eq!(
+            failure_cause(&turn_end("AUTH")),
+            Some(FailureCause::Credential)
+        );
+        assert_eq!(
+            failure_cause(&turn_end("MISSING_CREDENTIAL")),
+            Some(FailureCause::Credential)
+        );
+        assert_eq!(
+            failure_cause(&turn_end("SERVER")),
+            Some(FailureCause::Model)
+        );
+        assert_eq!(
+            failure_cause(&session::EventKind::StepStart { turn: 1, step: 1 }),
+            None
+        );
+    }
+
+    #[test]
+    fn context_used_reads_prompt_tokens_from_usage() {
+        let event = ServiceEvent {
+            seq: 1,
+            time: 1,
+            event_type: "assistant/message".to_owned(),
+            data: serde_json::json!({"usage": {"inputTokens": 100, "cacheReadTokens": 20, "cacheWriteTokens": 5, "outputTokens": 9}}),
+            cause: None,
+        };
+        assert_eq!(context_used(&event), Some(125));
+        let non_message = ServiceEvent {
+            seq: 2,
+            time: 2,
+            event_type: "turn/start".to_owned(),
+            data: serde_json::json!({}),
+            cause: None,
+        };
+        assert_eq!(context_used(&non_message), None);
     }
 }

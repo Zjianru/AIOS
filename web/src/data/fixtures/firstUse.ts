@@ -1,0 +1,108 @@
+/**
+ * 首次使用的 Kind（brief §四：用户 2026-10-27 晚定稿）。
+ *
+ * 没接模型时：在对话里直接填模型（提供方 + 密钥或登录），不跳设置页；
+ * 接好后 Kind 说一句话 + 3 张起手卡片，每张对应一个真实能力，不做功能导览；
+ * 可选问一句「你主要用我做什么」，按回答推荐内置流程和角色——只推荐、不自动采用；
+ * 不放假的演示数据（打开开发开关「首次使用」时，右栏也是空库状态）。
+ *
+ * 原型不联网、不校验密钥；「登录方式」「采用」都只给提示。
+ */
+
+export type FirstUseTier = '轻档' | '普通档' | '配对档';
+
+export interface FirstUseCard {
+  id: string;
+  /** 卡片上的能力标签（对应能力库里真实存在的条目）。 */
+  ability: string;
+  title: string;
+  /** 点它等于说这句。 */
+  prompt: string;
+  tier: FirstUseTier;
+  /** Kind 按这一档开工时会说的话（§四.4 三档露脸）。 */
+  say: string;
+}
+
+export interface FirstUseQuestionOption {
+  id: string;
+  label: string;
+  /** 按这个回答推荐什么。 */
+  recommend: {
+    flows: { name: string; tier: FirstUseTier; desc: string }[];
+    roles: { name: string; why: string }[];
+  };
+}
+
+export interface FirstUseFixture {
+  cards: FirstUseCard[];
+  question: string;
+  options: FirstUseQuestionOption[];
+}
+
+export const firstUseFixture: FirstUseFixture = {
+  cards: [
+    {
+      id: 'daily-brief',
+      ability: '每日简报',
+      title: '每天早上给我一份 AI 简报',
+      prompt: '每天早上 9 点给我一份 AI 简报，不超过 12 条，每条附原文链接。',
+      tier: '普通档',
+      say: '这件事按普通档做：我先给你一张任务图（搜集 → 核实来源 → 成稿 → 发送），你确认后我每天 9 点跑。',
+    },
+    {
+      id: 'read-web',
+      ability: '读取网页 + 写作文档',
+      title: '把一篇文章整理成一页',
+      prompt: '把这篇网页整理成一页说明，写清它讲了什么、结论是什么。',
+      tier: '轻档',
+      say: '这件事按轻档做：我直接读、直接写，做完把一页说明给你看，不中途找你。',
+    },
+    {
+      id: 'search-check',
+      ability: '网页搜索',
+      title: '帮我查一件事',
+      prompt: '帮我查一下这件事的现状，给出来源。',
+      tier: '普通档',
+      say: '这件事按普通档做：我先给你一张任务图（查 → 交叉核对 → 给结论），你确认后再跑。',
+    },
+  ],
+  question: '你主要用我做什么？（可以不答）',
+  options: [
+    {
+      id: 'work',
+      label: '工作上的事',
+      recommend: {
+        flows: [
+          { name: '日常档', tier: '轻档', desc: '小事我直接做，做完给你看' },
+          { name: '普通档', tier: '普通档', desc: '先给你任务图，你确认再开工' },
+        ],
+        roles: [
+          { name: '研究员', why: '查资料、对比、写结论' },
+          { name: '审查员', why: '对照要求逐条检查' },
+        ],
+      },
+    },
+    {
+      id: 'study',
+      label: '学习与阅读',
+      recommend: {
+        flows: [
+          { name: '日常档', tier: '轻档', desc: '整理、摘要这类直接做' },
+          { name: '配对档', tier: '配对档', desc: '两个人并行：一个读、一个验，各出结论' },
+        ],
+        roles: [
+          { name: '源码解读者', why: '逐行读透材料' },
+          { name: '审查员', why: '核对结论有没有依据' },
+        ],
+      },
+    },
+    {
+      id: 'life',
+      label: '生活里的事',
+      recommend: {
+        flows: [{ name: '日常档', tier: '轻档', desc: '琐事直接做，定时提醒用日历唤醒' }],
+        roles: [{ name: '研究员', why: '比较、查价、给建议' }],
+      },
+    },
+  ],
+};

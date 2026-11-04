@@ -44,7 +44,11 @@ pub enum RootError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error("根会话状态文件损坏：{path}（{reason}）")]
-    StateCorrupt { path: String, reason: String },
+    StateCorrupt {
+        path: String,
+        reason: String,
+        line: Option<u64>,
+    },
     #[error("根会话记录为 {session_id}，但会话日志缺失：{path}")]
     RecordedSessionMissing { session_id: String, path: String },
     #[error("根会话 {session_id} 已被其他写者占用（session/writer-held）")]
@@ -108,17 +112,20 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
                 serde_json::from_slice(&bytes).map_err(|error| RootError::StateCorrupt {
                     path: state_path.display().to_string(),
                     reason: error.to_string(),
+                    line: Some(error.line() as u64),
                 })?;
             if record.version != ROOT_STATE_VERSION {
                 return Err(RootError::StateCorrupt {
                     path: state_path.display().to_string(),
                     reason: format!("未知状态文件版本 {}", record.version),
+                    line: None,
                 });
             }
             let id =
                 SessionId::parse(&record.session_id).map_err(|error| RootError::StateCorrupt {
                     path: state_path.display().to_string(),
                     reason: error.to_string(),
+                    line: None,
                 })?;
             let log_path = options
                 .data_dir

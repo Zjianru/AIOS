@@ -11,21 +11,24 @@
 //! 重新跟随（session-controller follow :607，AIOS 用 T006.16b 的 follow(lastSeq)）。
 
 use std::net::{IpAddr, SocketAddr};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use ring::rand::SecureRandom;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
-use axum::http::header::{HOST, LOCATION, SET_COOKIE};
+use axum::http::header::{CONTENT_TYPE, HOST, LOCATION, SET_COOKIE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use ring::rand::SecureRandom;
 use serde::{Deserialize, Serialize};
-use service::{FollowRequest, FollowResponse, ServiceEvent, ServiceHost};
+use service::{
+    ContextUsage, FollowRequest, FollowResponse, HostInfo, PROTOCOL_VERSION, RootHost, RootState,
+    ServiceError, ServiceEvent,
+};
 
 /// 默认只绑 IPv4 回环。
 pub const DEFAULT_HOST: &str = "127.0.0.1";
@@ -116,6 +119,8 @@ pub struct ServeOptions {
     pub host: String,
     pub port: u16,
     pub token: String,
+    /// 同源托管的 web 构建产物目录（T007.2，通常是仓库的 web/dist）；None 时不托管静态文件。
+    pub static_dir: Option<PathBuf>,
 }
 
 /// 起好服务后拿到的句柄（端口可能是系统分配的，测试从 addr 读）。
@@ -146,13 +151,90 @@ impl ServeHandle {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Frame {
-    /// 连接建立后的第一帧（DSH 的 {type:'ready',...}）。
+    /// 连接建立后的第一帧（DSH 的 {type:'ready',...}）；T007.2 起带协议版本、根会话状态、上下文占用。
     Ready {
-        #[serde(rename = "sessionId")]
-        session_id: String,
+        #[serde(rename = "sessionId", default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        #[serde(rename = "protocolVersion")]
+        protocol_version: u64,
+        root: RootState,
+        context: ContextUsage,
     },
     /// 日志事件帧（DSH 的 {type:'event', event: SessionWireEvent}）。
     Event { event: ServiceEvent },
+    /// T007.4：不落日志的 AgentEvent（流式文本/用量/重试提示等），页面单独消费。
+    Agent { event: AgentEventWire },
+}
+
+/// AgentEvent 的线上形状（只挑页面要的；只增不改）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum AgentEventWire {
+    TextDelta {
+        text: String,
+    },
+    Usage {
+        #[serde(
+            rename = "inputTokens",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        input_tokens: Option<u64>,
+        #[serde(
+            rename = "outputTokens",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        output_tokens: Option<u64>,
+        #[serde(
+            rename = "cacheReadTokens",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        cache_read_tokens: Option<u64>,
+        #[serde(
+            rename = "cacheWriteTokens",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
+        cache_write_tokens: Option<u64>,
+    },
+    Retrying {
+        attempt: u32,
+        #[serde(rename = "maxAttempts")]
+        max_attempts: u32,
+        #[serde(rename = "delayMs")]
+        delay_ms: u64,
+        code: String,
+    },
+}
+
+impl AgentEventWire {
+    pub fn from_event(event: &agent::AgentEvent) -> Option<Self> {
+        match event {
+            agent::AgentEvent::AssistantTextDelta { text } => {
+                Some(Self::TextDelta { text: text.clone() })
+            }
+            agent::AgentEvent::UsageReported { usage } => Some(Self::Usage {
+                input_tokens: usage.input_tokens,
+                output_tokens: usage.output_tokens,
+                cache_read_tokens: usage.cache_read_input_tokens,
+                cache_write_tokens: usage.cache_creation_input_tokens,
+            }),
+            agent::AgentEvent::Retrying {
+                attempt,
+                max_attempts,
+                delay_ms,
+                code,
+            } => Some(Self::Retrying {
+                attempt: *attempt,
+                max_attempts: *max_attempts,
+                delay_ms: *delay_ms,
+                code: code.clone(),
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// 本进程的启动令牌（每个进程一个；uuid v4，不落盘、不进日志）。
@@ -530,11 +612,14 @@ pub fn check_origin(headers: &HeaderMap) -> Result<(), TrustError> {
     }
 }
 
-/// 打开连接时的帧序列：ready 第一帧，然后按 lastSeq 补齐的事件（重连带序号）。
-pub fn opening_frames(session_id: &str, follow: FollowResponse) -> Vec<Frame> {
+/// 打开连接时的帧序列：ready 第一帧（带宿主信息），然后按 lastSeq 补齐的事件（重连带序号）。
+pub fn opening_frames(info: &HostInfo, follow: FollowResponse) -> Vec<Frame> {
     let mut frames = Vec::with_capacity(follow.events.len() + 1);
     frames.push(Frame::Ready {
-        session_id: session_id.to_owned(),
+        session_id: info.session_id.clone(),
+        protocol_version: PROTOCOL_VERSION,
+        root: info.root.clone(),
+        context: info.context,
     });
     frames.extend(
         follow
@@ -548,8 +633,9 @@ pub fn opening_frames(session_id: &str, follow: FollowResponse) -> Vec<Frame> {
 /// 路由状态：宿主 + 信任栅栏（Arc 让每个连接共享）。
 #[derive(Clone)]
 struct AppState {
-    host: Arc<ServiceHost>,
+    host: Arc<RootHost>,
     trust: Trust,
+    static_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -562,6 +648,74 @@ struct TokenQuery {
 struct WsQuery {
     #[serde(default, rename = "lastSeq")]
     last_seq: Option<u64>,
+}
+
+/// 静态资源只校 Host（页面先拿 HTML，令牌在 API/WS 上用）；防 DNS rebinding。
+fn host_check(state: &AppState, headers: &HeaderMap) -> Result<(), TrustError> {
+    let host_header = headers.get(HOST).and_then(|value| value.to_str().ok());
+    let host = host_header.ok_or_else(|| TrustError::BadHost("<missing>".to_owned()))?;
+    if authority_is_loopback(host, state.trust.bind_ip) {
+        Ok(())
+    } else {
+        Err(TrustError::BadHost(host.to_owned()))
+    }
+}
+
+/// 静态路径解析：文件存在就发文件；无扩展名的路由回 index.html（SPA fallback）；
+/// 有扩展名但文件不存在 → 404。拒绝 ..、绝对路径与空段。
+fn resolve_static(root: &Path, request_path: &str) -> Option<PathBuf> {
+    let trimmed = request_path.trim_start_matches('/');
+    if trimmed.split('/').any(|segment| segment == "..") {
+        return None;
+    }
+    if trimmed.is_empty() || request_path.ends_with('/') {
+        return Some(root.join("index.html"));
+    }
+    let candidate = root.join(trimmed);
+    if candidate.is_file() {
+        return Some(candidate);
+    }
+    let has_extension = Path::new(trimmed).extension().is_some();
+    if has_extension {
+        None
+    } else {
+        Some(root.join("index.html"))
+    }
+}
+
+fn content_type(path: &Path) -> &'static str {
+    match path.extension().and_then(|ext| ext.to_str()) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("json") => "application/json",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("woff2") => "font/woff2",
+        Some("map") => "application/json",
+        _ => "application/octet-stream",
+    }
+}
+
+/// GET 静态文件：同源托管 web/dist（T007.2）；没有 static_dir 时 404。
+async fn static_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+) -> Response {
+    if let Err(error) = host_check(&state, &headers) {
+        return trust_error_response(error);
+    }
+    let Some(root) = state.static_dir.as_deref() else {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    };
+    let Some(path) = resolve_static(root, uri.path()) else {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    };
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => (StatusCode::OK, [(CONTENT_TYPE, content_type(&path))], bytes).into_response(),
+        Err(_) => error_response(StatusCode::NOT_FOUND, "not found"),
+    }
 }
 
 fn error_response(status: StatusCode, message: &str) -> Response {
@@ -595,6 +749,15 @@ async fn api_handler(
     };
     match state.host.dispatch(call).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
+        Err(ServiceError::RootUnavailable(root)) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "ROOT_UNAVAILABLE",
+                "root": root,
+                "protocolVersion": PROTOCOL_VERSION,
+            })),
+        )
+            .into_response(),
         Err(error) => error_response(StatusCode::BAD_GATEWAY, &error.to_string()),
     }
 }
@@ -643,6 +806,7 @@ async fn root_handler(
     State(state): State<Arc<AppState>>,
     Query(query): Query<TokenQuery>,
     headers: HeaderMap,
+    uri: axum::http::Uri,
 ) -> Response {
     if let Err(error) = check_origin(&headers) {
         return trust_error_response(error);
@@ -655,7 +819,7 @@ async fn root_handler(
         };
     }
     if check_api_auth(&state.trust, &headers).is_ok() {
-        return (StatusCode::SEE_OTHER, [(LOCATION, "./".to_owned())]).into_response();
+        return static_handler(State(state), headers, uri).await;
     }
     error_response(StatusCode::UNAUTHORIZED, UNAUTHORIZED_BODY)
 }
@@ -676,24 +840,43 @@ async fn send_frame(socket: &mut WebSocket, frame: &Frame) -> bool {
 
 /// 一个 WebSocket 连接：ready → 补齐（lastSeq 之后）→ live（seq 去重；Lagged 时重新 follow 补齐）。
 async fn ws_session(mut socket: WebSocket, state: Arc<AppState>, last_seq: u64) {
+    let info = state.host.info();
     let mut live = state.host.subscribe_events();
-    let follow = match state.host.follow(FollowRequest { last_seq }).await {
-        Ok(follow) => follow,
-        Err(error) => {
-            let value = serde_json::json!({"type": "error", "message": error.to_string()});
-            let _ = send_value(&mut socket, &value).await;
-            return;
+    let mut agent_live = state.host.subscribe_agent_events();
+    let root_available = info.root == RootState::Ok;
+    let follow = if root_available {
+        match state.host.follow(FollowRequest { last_seq }).await {
+            Ok(follow) => follow,
+            Err(error) => {
+                let value = serde_json::json!({"type": "error", "message": error.to_string()});
+                let _ = send_value(&mut socket, &value).await;
+                return;
+            }
+        }
+    } else {
+        FollowResponse {
+            events: Vec::new(),
+            last_seq,
         }
     };
     let mut last = last_seq;
     if let Some(seq) = follow.events.last().map(|event| event.seq) {
         last = last.max(seq);
     }
-    let session_id = state.host.object().session_id;
-    for frame in opening_frames(&session_id, follow) {
+    for frame in opening_frames(&info, follow) {
         if !send_frame(&mut socket, &frame).await {
             return;
         }
+    }
+    if !root_available {
+        // T007.2：根会话不可用时页面根据 ready 显示说明页；连接保持到关闭/重连，
+        // 修好后页面调 recheck 再重连。
+        while let Some(Ok(message)) = socket.recv().await {
+            if matches!(message, Message::Close(_)) {
+                return;
+            }
+        }
+        return;
     }
     loop {
         tokio::select! {
@@ -722,6 +905,18 @@ async fn ws_session(mut socket: WebSocket, state: Arc<AppState>, last_seq: u64) 
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
             },
+            agent_received = agent_live.recv() => match agent_received {
+                Ok(event) => {
+                    let Some(wire) = AgentEventWire::from_event(&event) else {
+                        continue;
+                    };
+                    if !send_frame(&mut socket, &Frame::Agent { event: wire }).await {
+                        return;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            },
             incoming = socket.recv() => match incoming {
                 Some(Ok(message)) => {
                     if matches!(message, Message::Close(_)) {
@@ -736,10 +931,11 @@ async fn ws_session(mut socket: WebSocket, state: Arc<AppState>, last_seq: u64) 
 }
 
 /// 由宿主和信任栅栏建 axum Router（HTTP /api + WS /ws）。
-pub fn router(host: ServiceHost, trust: Trust) -> Router {
+pub fn router(host: RootHost, trust: Trust, static_dir: Option<PathBuf>) -> Router {
     router_with_state(Arc::new(AppState {
         host: Arc::new(host),
         trust,
+        static_dir,
     }))
 }
 
@@ -749,17 +945,19 @@ fn router_with_state(state: Arc<AppState>) -> Router {
         .route("/connect", get(connect_handler))
         .route("/api", post(api_handler))
         .route("/ws", get(ws_handler))
+        .fallback(get(static_handler))
         .with_state(state)
 }
 
 /// 起服务：校验绑定地址 → TcpListener → axum::serve。
-pub async fn serve(options: ServeOptions, host: ServiceHost) -> Result<ServeHandle, ServeError> {
+pub async fn serve(options: ServeOptions, host: RootHost) -> Result<ServeHandle, ServeError> {
     let ip = check_bind_host(&options.host)?;
     let listener = tokio::net::TcpListener::bind(SocketAddr::new(ip, options.port)).await?;
     let addr = listener.local_addr()?;
     let state = Arc::new(AppState {
         host: Arc::new(host),
         trust: Trust::new(ip, addr.port(), options.token.clone()),
+        static_dir: options.static_dir.clone(),
     });
     let app = router_with_state(Arc::clone(&state));
     let (shutdown, shutdown_signal) = tokio::sync::oneshot::channel::<()>();
@@ -779,6 +977,42 @@ pub async fn serve(options: ServeOptions, host: ServiceHost) -> Result<ServeHand
         task,
         shutdown: Some(shutdown),
     })
+}
+
+#[cfg(test)]
+mod t007_static_tests {
+    use super::*;
+
+    #[test]
+    fn resolve_static_serves_file_spa_and_rejects_traversal() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("assets")).unwrap();
+        std::fs::write(dir.path().join("index.html"), "<html></html>").unwrap();
+        std::fs::write(dir.path().join("assets/app.js"), "console.log(1)").unwrap();
+        assert_eq!(
+            resolve_static(dir.path(), "/assets/app.js"),
+            Some(dir.path().join("assets/app.js"))
+        );
+        assert_eq!(
+            resolve_static(dir.path(), "/"),
+            Some(dir.path().join("index.html"))
+        );
+        assert_eq!(
+            resolve_static(dir.path(), "/conversation/42"),
+            Some(dir.path().join("index.html")),
+            "无扩展名路由回 SPA"
+        );
+        assert_eq!(resolve_static(dir.path(), "/assets/missing.js"), None);
+        assert_eq!(resolve_static(dir.path(), "/../etc/passwd"), None);
+        assert_eq!(
+            content_type(Path::new("index.html")),
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(
+            content_type(Path::new("app.JS")),
+            "application/octet-stream"
+        );
+    }
 }
 
 #[cfg(test)]

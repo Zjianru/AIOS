@@ -5,7 +5,7 @@
 //! 拒绝）、Connection generation（ready 项先于事件、重连带最后序号重新跟随）。
 
 use axum::http::{HeaderMap, header::HOST};
-use service::{FollowResponse, ServiceEvent};
+use service::{ContextUsage, FollowResponse, HostInfo, RootState, ServiceEvent};
 use web::{Frame, Trust, authorize_connect, check_api_auth, check_bind_host, opening_frames};
 
 fn trust() -> Trust {
@@ -19,8 +19,22 @@ fn trust() -> Trust {
 fn event(seq: u64, event_type: &str) -> ServiceEvent {
     ServiceEvent {
         seq,
+        time: 1,
         event_type: event_type.to_owned(),
         data: serde_json::json!({"seq": seq}),
+        cause: None,
+    }
+}
+
+fn info() -> HostInfo {
+    HostInfo {
+        protocol_version: service::PROTOCOL_VERSION,
+        session_id: Some("sess-1".to_owned()),
+        root: RootState::Ok,
+        context: ContextUsage {
+            used: 0,
+            window: 1000,
+        },
     }
 }
 
@@ -132,17 +146,17 @@ fn opening_sends_ready_before_events_in_order() {
         events: vec![event(3, "turn/start"), event(4, "user/message")],
         last_seq: 4,
     };
-    let frames = opening_frames("sess-1", follow);
+    let frames = opening_frames(&info(), follow);
     assert_eq!(frames.len(), 3, "ready + 两条事件");
     assert!(
-        matches!(&frames[0], Frame::Ready { session_id } if session_id == "sess-1"),
+        matches!(&frames[0], Frame::Ready { session_id: Some(id), .. } if id == "sess-1"),
         "第一帧必须是 ready：{frames:?}"
     );
     let seqs: Vec<u64> = frames
         .iter()
         .filter_map(|frame| match frame {
             Frame::Event { event } => Some(event.seq),
-            Frame::Ready { .. } => None,
+            Frame::Ready { .. } | Frame::Agent { .. } => None,
         })
         .collect();
     assert_eq!(seqs, vec![3, 4], "事件按 seq 顺序、ready 之后");
@@ -150,13 +164,19 @@ fn opening_sends_ready_before_events_in_order() {
     // 线上形状照 DSH：ready {type:'ready',...}；事件 {type:'event', event:{seq,type,data}}。
     assert_eq!(
         serde_json::to_value(&frames[0]).unwrap(),
-        serde_json::json!({"type": "ready", "sessionId": "sess-1"})
+        serde_json::json!({
+            "type": "ready",
+            "sessionId": "sess-1",
+            "protocolVersion": 2,
+            "root": {"state": "ok"},
+            "context": {"used": 0, "window": 1000}
+        })
     );
     assert_eq!(
         serde_json::to_value(&frames[1]).unwrap(),
         serde_json::json!({
             "type": "event",
-            "event": {"seq": 3, "type": "turn/start", "data": {"seq": 3}}
+            "event": {"seq": 3, "time": 1, "type": "turn/start", "data": {"seq": 3}}
         })
     );
 }
@@ -168,7 +188,7 @@ fn reconnect_follows_from_last_seq_without_duplicates() {
         events: Vec::new(),
         last_seq: 4,
     };
-    let frames = opening_frames("sess-1", follow);
+    let frames = opening_frames(&info(), follow);
     assert_eq!(frames.len(), 1, "没有新事件时只有 ready：{frames:?}");
     assert!(matches!(frames[0], Frame::Ready { .. }));
 
@@ -177,12 +197,12 @@ fn reconnect_follows_from_last_seq_without_duplicates() {
         events: vec![event(5, "step/start"), event(6, "assistant/message")],
         last_seq: 6,
     };
-    let frames = opening_frames("sess-1", follow);
+    let frames = opening_frames(&info(), follow);
     let seqs: Vec<u64> = frames
         .iter()
         .filter_map(|frame| match frame {
             Frame::Event { event } => Some(event.seq),
-            Frame::Ready { .. } => None,
+            Frame::Ready { .. } | Frame::Agent { .. } => None,
         })
         .collect();
     assert_eq!(seqs, vec![5, 6], "重连补齐从 lastSeq 之后开始、不重复");
