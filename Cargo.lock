@@ -2066,6 +2066,7 @@ dependencies = [
  "agent",
  "axum",
  "model",
+ "ring",
  "serde",
  "serde_json",
  "service",

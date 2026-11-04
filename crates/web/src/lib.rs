@@ -1,22 +1,26 @@
 //! T006.17：Web 薄适配器（axum HTTP + WebSocket）与信任栅栏（接缝 4）。
 //!
 //! 载体无关的宿主在 crates/service；这里只做线上形状：
-//! - HTTP：POST /api?token=..，body 是 service::Call 的 JSON，回 service::Response（或错误 JSON）；
-//! - WebSocket：GET /ws?token=..&lastSeq=..，先发 ready，再按 lastSeq 补齐事件，然后发 live 事件；
+//! - HTTP：POST /api，body 是 service::Call 的 JSON，回 service::Response（或错误 JSON）；/api 只认 cookie；
+//! - WebSocket：GET /ws?lastSeq=..（只认 cookie），先发 ready，再按 lastSeq 补齐事件，然后发 live 事件；
 //! - 信任栅栏照 DSH（client/connection README 第 41、47 行；host/webserver README 第 39 行）：
-//!   只绑本机回环地址（0.0.0.0/非回环一律拒绝启动）、每个进程一个启动令牌、Host 头只认本机
+//!   只绑本机回环地址（0.0.0.0/非回环一律拒绝启动）、每个进程一个启动令牌（只在 / 与 /connect 换签名 cookie）、Host 头只认本机
 //!   （回环地址/localhost/绑定 IP 字面量）；失败 403（Host 不对）/401（无令牌或令牌不对）。
 //!
 //! DSH 对照：ready 项先于事件（connection README「Connection generation」）；重连带最后序号
 //! 重新跟随（session-controller follow :607，AIOS 用 T006.16b 的 follow(lastSeq)）。
 
 use std::net::{IpAddr, SocketAddr};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use ring::rand::SecureRandom;
 use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
-use axum::http::{HeaderMap, StatusCode, header::HOST};
+use axum::http::header::{HOST, LOCATION, SET_COOKIE};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -28,20 +32,38 @@ pub const DEFAULT_HOST: &str = "127.0.0.1";
 /// 默认端口 0：由系统分配（测试/开发都从 ServeHandle 读实际端口）。
 pub const DEFAULT_PORT: u16 = 0;
 
-/// 信任栅栏的配置：绑定地址 + 本进程启动令牌。
-#[derive(Debug, Clone)]
+/// 信任栅栏的配置：绑定地址 + 本进程启动令牌 + cookie 签名钥匙。
+#[derive(Clone)]
 pub struct Trust {
     pub bind_ip: IpAddr,
     pub bind_port: u16,
     pub token: String,
+    /// 每进程一份的 cookie 签名钥匙；只放内存，不落盘、不进日志。
+    session_secret: [u8; 32],
+}
+
+impl std::fmt::Debug for Trust {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Trust")
+            .field("bind_ip", &self.bind_ip)
+            .field("bind_port", &self.bind_port)
+            .field("token", &"<redacted>")
+            .field("session_secret", &"<redacted>")
+            .finish()
+    }
 }
 
 impl Trust {
     pub fn new(bind_ip: IpAddr, bind_port: u16, token: String) -> Self {
+        let mut session_secret = [0u8; 32];
+        ring::rand::SystemRandom::new()
+            .fill(&mut session_secret)
+            .expect("ring 系统随机数不可用");
         Self {
             bind_ip,
             bind_port,
             token,
+            session_secret,
         }
     }
 }
@@ -241,25 +263,232 @@ fn origin_is_same_authority(origin: &str, host: &str) -> bool {
     origin_host == host_name && origin_port == host_port
 }
 
-/// T006.F2：/connect 换 cookie 的结果（骨架；签名实现待依赖批准）。
+/// T006.F2：/connect 换 cookie 的结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectGrant {
     pub set_cookie: String,
     pub location: String,
 }
 
-/// T006.F2：GET /connect?token= 的换 cookie 入口（骨架；红测试先行）。
-pub fn authorize_connect(
-    _trust: &Trust,
-    _host_header: Option<&str>,
-    _token: Option<&str>,
-) -> Result<ConnectGrant, TrustError> {
-    Err(TrustError::Unauthorized)
+const COOKIE_PREFIX: &str = "aios-auth-";
+const COOKIE_MAX_AGE_SECS: i64 = 30 * 24 * 60 * 60;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct CookiePayload {
+    v: u8,
+    authority: String,
+    #[serde(rename = "issuedAt")]
+    issued_at: i64,
+    #[serde(rename = "expiresAt")]
+    expires_at: i64,
 }
 
-/// T006.F2：/api、/ws 只认 cookie 的认证入口（骨架；红测试先行）。
-pub fn check_api_auth(_trust: &Trust, _headers: &HeaderMap) -> Result<(), TrustError> {
-    Err(TrustError::Unauthorized)
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+fn hex_decode(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(text.len() / 2);
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        let high = (bytes[index] as char).to_digit(16)?;
+        let low = (bytes[index + 1] as char).to_digit(16)?;
+        out.push(u8::try_from((high << 4) | low).ok()?);
+        index += 2;
+    }
+    Some(out)
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, data);
+    hex_encode(digest.as_ref())
+}
+
+fn hmac_sign(secret: &[u8; 32], body: &str) -> String {
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret);
+    hex_encode(ring::hmac::sign(&key, body.as_bytes()).as_ref())
+}
+
+fn hmac_verify(secret: &[u8; 32], body: &str, signature: &str) -> bool {
+    let Some(signature) = hex_decode(signature) else {
+        return false;
+    };
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret);
+    ring::hmac::verify(&key, body.as_bytes(), &signature).is_ok()
+}
+
+/// Host 头归一成 cookie authority：小写 hostname + 端口，HTTP 缺省端口 80。
+fn authority_of(host_header: &str) -> Option<String> {
+    let (host, port) = parse_authority(host_header)?;
+    Some(format!("{host}:{}", port.unwrap_or(80)))
+}
+
+fn cookie_name(authority: &str) -> String {
+    let hash = sha256_hex(authority.as_bytes());
+    format!("{COOKIE_PREFIX}{}", &hash[..16])
+}
+
+fn now_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
+}
+
+/// Unix 秒的 HTTP-date（RFC 7231），不引 chrono/time。
+fn http_date(secs: i64) -> String {
+    const DAY_NAMES: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MONTH_NAMES: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let days = secs.div_euclid(86_400);
+    let seconds_of_day = secs.rem_euclid(86_400);
+    let hour = seconds_of_day / 3_600;
+    let minute = (seconds_of_day % 3_600) / 60;
+    let second = seconds_of_day % 60;
+    let weekday = (days + 4).rem_euclid(7) as usize;
+    let (year, month, day) = civil_from_days(days);
+    format!(
+        "{}, {:02} {} {:04} {:02}:{:02}:{:02} GMT",
+        DAY_NAMES[weekday],
+        day,
+        MONTH_NAMES[(month - 1) as usize],
+        year,
+        hour,
+        minute,
+        second
+    )
+}
+
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    (
+        year + i64::from(month <= 2),
+        u32::try_from(month).unwrap_or(1),
+        u32::try_from(day).unwrap_or(1),
+    )
+}
+
+fn build_set_cookie(name: &str, value: &str, expires_at: i64) -> String {
+    format!(
+        "{name}={value}; Max-Age={COOKIE_MAX_AGE_SECS}; Path=/; Expires={}; HttpOnly; SameSite=Strict",
+        http_date(expires_at)
+    )
+}
+
+fn encode_cookie(secret: &[u8; 32], payload: &CookiePayload) -> String {
+    let body = hex_encode(&serde_json::to_vec(payload).expect("cookie payload 序列化"));
+    let signature = hmac_sign(secret, &body);
+    format!("v1.{body}.{signature}")
+}
+
+fn decode_cookie(secret: &[u8; 32], value: &str) -> Option<CookiePayload> {
+    let mut parts = value.split('.');
+    let version = parts.next()?;
+    let body = parts.next()?;
+    let signature = parts.next()?;
+    if version != "v1" || parts.next().is_some() || !hmac_verify(secret, body, signature) {
+        return None;
+    }
+    let bytes = hex_decode(body)?;
+    let payload: CookiePayload = serde_json::from_slice(&bytes).ok()?;
+    if payload.v != 1 {
+        return None;
+    }
+    Some(payload)
+}
+
+fn read_cookie(header: &str, name: &str) -> Option<String> {
+    for segment in header.split(';') {
+        let (key, value) = segment.trim().split_once('=')?;
+        if key == name {
+            return Some(value.to_owned());
+        }
+    }
+    None
+}
+
+fn valid_cookie(trust: &Trust, authority: &str, value: &str) -> Option<CookiePayload> {
+    let payload = decode_cookie(&trust.session_secret, value)?;
+    let now = now_secs();
+    if payload.authority != authority
+        || payload.issued_at > now
+        || payload.expires_at <= now
+        || payload.expires_at <= payload.issued_at
+        || payload.expires_at - payload.issued_at > COOKIE_MAX_AGE_SECS
+    {
+        return None;
+    }
+    Some(payload)
+}
+
+/// T006.F2：GET /connect?token= 换签名 cookie。
+pub fn authorize_connect(
+    trust: &Trust,
+    host_header: Option<&str>,
+    token: Option<&str>,
+) -> Result<ConnectGrant, TrustError> {
+    let host = host_header.ok_or_else(|| TrustError::BadHost("<missing>".to_owned()))?;
+    if !authority_is_loopback(host, trust.bind_ip) {
+        return Err(TrustError::BadHost(host.to_owned()));
+    }
+    let token = token.ok_or(TrustError::Unauthorized)?;
+    if !token_matches(&trust.token, token) {
+        return Err(TrustError::Unauthorized);
+    }
+    let authority = authority_of(host).ok_or_else(|| TrustError::BadHost(host.to_owned()))?;
+    let issued_at = now_secs();
+    let expires_at = issued_at.saturating_add(COOKIE_MAX_AGE_SECS);
+    let payload = CookiePayload {
+        v: 1,
+        authority: authority.clone(),
+        issued_at,
+        expires_at,
+    };
+    let value = encode_cookie(&trust.session_secret, &payload);
+    Ok(ConnectGrant {
+        set_cookie: build_set_cookie(&cookie_name(&authority), &value, expires_at),
+        location: "./".to_owned(),
+    })
+}
+
+/// T006.F2：/api、/ws 只认 cookie 的认证入口。
+pub fn check_api_auth(trust: &Trust, headers: &HeaderMap) -> Result<(), TrustError> {
+    let host = headers
+        .get(HOST)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| TrustError::BadHost("<missing>".to_owned()))?;
+    if !authority_is_loopback(host, trust.bind_ip) {
+        return Err(TrustError::BadHost(host.to_owned()));
+    }
+    let authority = authority_of(host).ok_or_else(|| TrustError::BadHost(host.to_owned()))?;
+    let cookie_header = headers
+        .get("cookie")
+        .and_then(|value| value.to_str().ok())
+        .ok_or(TrustError::Unauthorized)?;
+    let Some(value) = read_cookie(cookie_header, &cookie_name(&authority)) else {
+        return Err(TrustError::Unauthorized);
+    };
+    if valid_cookie(trust, &authority, &value).is_none() {
+        return Err(TrustError::Unauthorized);
+    }
+    Ok(())
 }
 
 /// T006.F2：浏览器请求的 Origin / Fetch-Metadata 栅栏。
@@ -313,26 +542,15 @@ struct AppState {
 }
 
 #[derive(Debug, Deserialize)]
-struct ApiQuery {
+struct TokenQuery {
     #[serde(default)]
     token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct WsQuery {
-    #[serde(default)]
-    token: Option<String>,
     #[serde(default, rename = "lastSeq")]
     last_seq: Option<u64>,
-}
-
-fn trust_check(
-    state: &AppState,
-    headers: &HeaderMap,
-    token: Option<&str>,
-) -> Result<(), TrustError> {
-    let host_header = headers.get(HOST).and_then(|value| value.to_str().ok());
-    check_request(&state.trust, host_header, token)
 }
 
 fn error_response(status: StatusCode, message: &str) -> Response {
@@ -351,14 +569,13 @@ fn trust_error_response(error: TrustError) -> Response {
 /// POST /api：Call JSON → dispatch → Response JSON。
 async fn api_handler(
     State(state): State<Arc<AppState>>,
-    Query(query): Query<ApiQuery>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     if let Err(error) = check_origin(&headers) {
         return trust_error_response(error);
     }
-    if let Err(error) = trust_check(&state, &headers, query.token.as_deref()) {
+    if let Err(error) = check_api_auth(&state.trust, &headers) {
         return trust_error_response(error);
     }
     let call: service::Call = match serde_json::from_slice(&body) {
@@ -383,11 +600,57 @@ async fn ws_handler(
     if let Err(error) = check_origin(&headers) {
         return trust_error_response(error);
     }
-    if let Err(error) = trust_check(&state, &headers, query.token.as_deref()) {
+    if let Err(error) = check_api_auth(&state.trust, &headers) {
         return trust_error_response(error);
     }
     let last_seq = query.last_seq.unwrap_or(0);
     upgrade.on_upgrade(move |socket| ws_session(socket, state, last_seq))
+}
+
+fn connect_response(grant: ConnectGrant) -> Response {
+    (
+        StatusCode::SEE_OTHER,
+        [(SET_COOKIE, grant.set_cookie), (LOCATION, grant.location)],
+    )
+        .into_response()
+}
+
+/// GET /connect?token=：启动令牌换签名 cookie（持有者随后用 cookie 访问 /api、/ws）。
+async fn connect_handler(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = check_origin(&headers) {
+        return trust_error_response(error);
+    }
+    let host = headers.get(HOST).and_then(|value| value.to_str().ok());
+    match authorize_connect(&state.trust, host, query.token.as_deref()) {
+        Ok(grant) => connect_response(grant),
+        Err(error) => trust_error_response(error),
+    }
+}
+
+/// GET /?token=：页面首屏换 cookie 后跳回不带令牌的地址；已有 cookie 也跳转。
+async fn root_handler(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<TokenQuery>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = check_origin(&headers) {
+        return trust_error_response(error);
+    }
+    let host = headers.get(HOST).and_then(|value| value.to_str().ok());
+    if query.token.is_some() {
+        return match authorize_connect(&state.trust, host, query.token.as_deref()) {
+            Ok(grant) => connect_response(grant),
+            Err(error) => trust_error_response(error),
+        };
+    }
+    if check_api_auth(&state.trust, &headers).is_ok() {
+        return (StatusCode::SEE_OTHER, [(LOCATION, "./".to_owned())]).into_response();
+    }
+    error_response(StatusCode::UNAUTHORIZED, "dsh web authentication required")
 }
 
 async fn send_value(socket: &mut WebSocket, value: &serde_json::Value) -> bool {
@@ -475,6 +738,8 @@ pub fn router(host: ServiceHost, trust: Trust) -> Router {
 
 fn router_with_state(state: Arc<AppState>) -> Router {
     Router::new()
+        .route("/", get(root_handler))
+        .route("/connect", get(connect_handler))
         .route("/api", post(api_handler))
         .route("/ws", get(ws_handler))
         .with_state(state)

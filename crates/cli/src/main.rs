@@ -269,7 +269,7 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     )
     .await?;
     println!(
-        "aios-dev serve: http://{}:{}?token={}",
+        "aios-dev serve: http://{}:{}/?token={}",
         args.host,
         handle.addr.port(),
         handle.token
