@@ -506,6 +506,8 @@ function applyFrame(frame: Frame): void {
 export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
   interface Raw {
     turn: number;
+    startedAt: number | null;
+    endedAt: number | null;
     user: string | null;
     answer: string | null;
     status: TurnStatus;
@@ -525,6 +527,8 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     if (!raw) {
       raw = {
         turn,
+        startedAt: null,
+        endedAt: null,
         user: null,
         answer: null,
         status: 'inProgress',
@@ -596,9 +600,11 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     const turn = typeof data.turn === 'number' ? data.turn : null;
     if (turn === null) continue;
     switch (event.type) {
-      case 'turn/start':
-        ensure(turn);
+      case 'turn/start': {
+        const raw = ensure(turn);
+        raw.startedAt = event.time;
         break;
+      }
       case 'user/message': {
         const source = data.message as
           | { source?: string | { kind?: string } }
@@ -644,6 +650,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       }
       case 'turn/end': {
         const raw = ensure(turn);
+        raw.endedAt = event.time;
         const reason = data.reason as { kind?: string; error?: { message?: string } } | undefined;
         switch (reason?.kind) {
           case 'completed':
@@ -745,8 +752,11 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     .sort((left, right) => left.turn - right.turn)
     .map((raw) => ({
       id: `turn-${raw.turn}`,
-      startedAt: null,
-      durationMs: null,
+      startedAt: raw.startedAt === null ? null : Math.floor(raw.startedAt / 1000),
+      durationMs:
+        raw.startedAt === null || raw.endedAt === null
+          ? null
+          : Math.max(0, raw.endedAt - raw.startedAt),
       status: raw.status,
       user: raw.user ? { text: raw.user, elements: [] } : null,
       reasoning: null,

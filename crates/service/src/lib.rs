@@ -257,6 +257,8 @@ pub enum FailureCause {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServiceEvent {
     pub seq: u64,
+    /// 日志事件发生时间（unix 毫秒；页面工作过程开始时间从这里取）。
+    pub time: u64,
     #[serde(rename = "type")]
     pub event_type: String,
     pub data: serde_json::Value,
@@ -594,6 +596,7 @@ fn service_event(event: &session::Event) -> ServiceEvent {
     }
     ServiceEvent {
         seq: event.seq,
+        time: event.time,
         event_type: event.kind.type_name().to_owned(),
         data,
         cause: failure_cause(&event.kind),
@@ -854,6 +857,7 @@ mod t007_protocol_tests {
     fn context_used_reads_prompt_tokens_from_usage() {
         let event = ServiceEvent {
             seq: 1,
+            time: 1,
             event_type: "assistant/message".to_owned(),
             data: serde_json::json!({"usage": {"inputTokens": 100, "cacheReadTokens": 20, "cacheWriteTokens": 5, "outputTokens": 9}}),
             cause: None,
@@ -861,6 +865,7 @@ mod t007_protocol_tests {
         assert_eq!(context_used(&event), Some(125));
         let non_message = ServiceEvent {
             seq: 2,
+            time: 2,
             event_type: "turn/start".to_owned(),
             data: serde_json::json!({}),
             cause: None,

@@ -18,6 +18,7 @@ fn trust() -> Trust {
 fn event(seq: u64, event_type: &str) -> ServiceEvent {
     ServiceEvent {
         seq,
+        time: 1,
         event_type: event_type.to_owned(),
         data: serde_json::json!({"seq": seq}),
         cause: None,
@@ -174,7 +175,7 @@ fn opening_sends_ready_before_events_in_order() {
         serde_json::to_value(&frames[1]).unwrap(),
         serde_json::json!({
             "type": "event",
-            "event": {"seq": 3, "type": "turn/start", "data": {"seq": 3}}
+            "event": {"seq": 3, "time": 1, "type": "turn/start", "data": {"seq": 3}}
         })
     );
 }

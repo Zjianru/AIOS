@@ -3,6 +3,8 @@
 
 export interface ServiceEvent {
   seq: number;
+  /** 日志事件发生时间（unix 毫秒；工作过程用）。 */
+  time: number;
   type: string;
   data: Record<string, unknown>;
   cause?: 'credential' | 'model';
