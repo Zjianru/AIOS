@@ -55,7 +55,6 @@ fn factory(
         *seen_model.lock().unwrap() = Some(connection.model.clone());
         let config = DeepSeekConfig {
             base_url: connection.endpoint.clone(),
-            api_key: String::new(),
             model: connection.model.clone(),
             ..DeepSeekConfig::default()
         };

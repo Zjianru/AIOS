@@ -41,7 +41,8 @@ async fn create_agent(
     let agent = Agent::create(
         common::isolated_config(data_dir),
         Deps {
-            model: DeepSeek::new(model_config(base_url)).unwrap(),
+            model: DeepSeek::with_credentials(model_config(base_url), common::test_credential())
+                .unwrap(),
             tools,
             store,
         },
@@ -57,7 +58,8 @@ async fn resume_agent(data_dir: &Path, id: &SessionId, base_url: &str, tools: To
         id.clone(),
         common::isolated_config(data_dir),
         Deps {
-            model: DeepSeek::new(model_config(base_url)).unwrap(),
+            model: DeepSeek::with_credentials(model_config(base_url), common::test_credential())
+                .unwrap(),
             tools,
             store,
         },

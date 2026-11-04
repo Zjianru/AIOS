@@ -62,7 +62,7 @@ pub struct RootSessionOptions {
     pub cwd: PathBuf,
     pub model: DeepSeekConfig,
     pub config: AgentConfig,
-    /// T008.2：凭证来源（服务传 Keyring 适配器）；None 用 DeepSeekConfig.api_key。
+    /// T008.2：凭证来源（服务传 Keyring 适配器）；None = 没有来源，组装会返回结构化 MissingCredential。
     pub credentials: Option<std::sync::Arc<dyn model::CredentialSource>>,
     /// T008.3：钥匙文件位置；设置方法每次操作重新打开 Keyring。
     pub identity: Option<PathBuf>,

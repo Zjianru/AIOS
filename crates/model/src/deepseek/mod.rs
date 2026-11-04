@@ -12,7 +12,6 @@ use std::sync::{Arc, Mutex};
 
 pub use config::{DEFAULT_BASE_URL, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DeepSeekConfig};
 
-use crate::credential::StaticCredential;
 use crate::{
     CancelToken, CredentialContext, CredentialSource, ErrorCode, Message, ModelError, StreamChunk,
     ToolSchema,
@@ -47,31 +46,7 @@ impl fmt::Debug for DeepSeek {
 }
 
 impl DeepSeek {
-    /// 校验配置并建立 HTTP 客户端；缺 key 或非法端点在发请求之前就报错。
-    pub fn new(config: DeepSeekConfig) -> Result<Self, ModelError> {
-        if config.api_key.trim().is_empty() {
-            return Err(ModelError::new(
-                ErrorCode::MissingCredential,
-                "凭证为空（应由 Keyring 签发）",
-            ));
-        }
-        let url = messages_url(&config.base_url)?;
-        let http = reqwest::Client::builder()
-            .build()
-            .map_err(transport::transport_error)?;
-        let credentials = Arc::new(StaticCredential::new(config.api_key.clone()));
-        Ok(Self {
-            http,
-            config,
-            url,
-            credentials,
-            issue_context: Arc::new(Mutex::new(CredentialContext::default())),
-            next_model: Arc::new(Mutex::new(None)),
-            turn_model: Arc::new(Mutex::new(None)),
-        })
-    }
-
-    /// 用外部凭证来源构造（T008.2：每次出站前申请一次；config.api_key 不再需要）。
+    /// 用外部凭证来源构造（T008.2：每次出站前申请一次；产品由 Keyring 适配器提供）。
     pub fn with_credentials(
         config: DeepSeekConfig,
         credentials: Arc<dyn CredentialSource>,

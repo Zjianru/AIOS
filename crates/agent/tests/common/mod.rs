@@ -560,7 +560,6 @@ pub fn tool_calls_with_inputs_sse(calls: &[(&str, &str, serde_json::Value)]) -> 
 pub fn model_config(base_url: &str) -> model::DeepSeekConfig {
     model::DeepSeekConfig {
         base_url: base_url.to_owned(),
-        api_key: "test-key".to_owned(),
         model: "deepseek-flash".to_owned(),
         max_tokens: 2048,
         context_window: model::DEFAULT_CONTEXT_WINDOW,
@@ -594,7 +593,8 @@ pub async fn setup_agent(
     let agent = agent::Agent::create(
         isolated_config(data_dir.path()),
         agent::Deps {
-            model: model::DeepSeek::new(model_config(base_url)).unwrap(),
+            model: model::DeepSeek::with_credentials(model_config(base_url), test_credential())
+                .unwrap(),
             tools,
             store,
         },
@@ -621,7 +621,8 @@ pub async fn setup_agent_custom(
     let agent = agent::Agent::create(
         config,
         agent::Deps {
-            model: model::DeepSeek::new(model_config(base_url)).unwrap(),
+            model: model::DeepSeek::with_credentials(model_config(base_url), test_credential())
+                .unwrap(),
             tools,
             store,
         },
@@ -648,7 +649,8 @@ pub async fn setup_agent_with_roots(
     let agent = agent::Agent::create(
         config,
         agent::Deps {
-            model: model::DeepSeek::new(model_config(base_url)).unwrap(),
+            model: model::DeepSeek::with_credentials(model_config(base_url), test_credential())
+                .unwrap(),
             tools,
             store,
         },
@@ -663,4 +665,21 @@ pub async fn wait_idle(agent: &agent::Agent, seconds: u64) {
     tokio::time::timeout(std::time::Duration::from_secs(seconds), agent.idle())
         .await
         .expect("idle() 超时");
+}
+
+/// T008.F9：测试凭证来源——产品删掉固定 key 构造入口后，测试显式注入一个来源。
+pub struct TestCredential;
+
+impl model::CredentialSource for TestCredential {
+    fn issue(
+        &self,
+        _purpose: &str,
+        _context: &model::CredentialContext,
+    ) -> Result<String, model::ModelError> {
+        Ok("test-key".to_owned())
+    }
+}
+
+pub fn test_credential() -> std::sync::Arc<dyn model::CredentialSource> {
+    std::sync::Arc::new(TestCredential)
 }

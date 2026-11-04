@@ -1,7 +1,22 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use model::{CancelToken, DeepSeek, DeepSeekConfig};
+use model::{
+    CancelToken, CredentialContext, CredentialSource, DeepSeek, DeepSeekConfig, ModelError,
+};
+
+/// T008.F9：测试凭证来源（产品不再有固定 key 构造入口，测试显式注入）。
+struct TestCredential;
+
+impl CredentialSource for TestCredential {
+    fn issue(&self, _purpose: &str, _context: &CredentialContext) -> Result<String, ModelError> {
+        Ok("test-key".to_owned())
+    }
+}
+
+fn test_credential() -> Arc<dyn CredentialSource> {
+    Arc::new(TestCredential)
+}
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -18,10 +33,9 @@ async fn 换模型后下一次请求用新模型() {
         .await;
     let config = DeepSeekConfig {
         base_url: server.uri(),
-        api_key: "test-key".to_owned(),
         ..DeepSeekConfig::default()
     };
-    let deepseek = DeepSeek::new(config).expect("构造");
+    let deepseek = DeepSeek::with_credentials(config, test_credential()).expect("构造");
     deepseek.set_model("deepseek-pro".to_owned());
     deepseek.begin_turn();
     let cancel = CancelToken::new(
@@ -51,10 +65,9 @@ async fn 本轮冻结模型中途换模型下一轮才生效() {
         .await;
     let config = DeepSeekConfig {
         base_url: server.uri(),
-        api_key: "test-key".to_owned(),
         ..DeepSeekConfig::default()
     };
-    let deepseek = DeepSeek::new(config).expect("构造");
+    let deepseek = DeepSeek::with_credentials(config, test_credential()).expect("构造");
     let cancel = CancelToken::new(
         Arc::new(AtomicBool::new(false)),
         Arc::new(tokio::sync::Notify::new()),

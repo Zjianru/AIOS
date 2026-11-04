@@ -31,7 +31,7 @@ pub struct AgentOpenOptions {
     pub model: model::DeepSeekConfig,
     /// Agent 行为配置（并发、压缩、spill、指令/skill 根、todo 策略）。
     pub config: AgentConfig,
-    /// T008.2：凭证来源（Keyring 适配器）；None 用 DeepSeekConfig.api_key（测试/旧路径）。
+    /// T008.2：凭证来源（Keyring 适配器）。None = 没有来源，组装直接失败（F9：不再有固定 key 旧路径）。
     pub credentials: Option<std::sync::Arc<dyn model::CredentialSource>>,
 }
 
@@ -62,10 +62,13 @@ impl Agent {
         // 配置在装载时先失败（DSH docs/user/develop/basic/config.md「Fail loudly on invalid
         // configuration」）：不先物化会话文件，也不把半装配状态交给调用方。
         options.config.validate()?;
-        let model = match options.credentials {
-            Some(credentials) => DeepSeek::with_credentials(options.model, credentials)?,
-            None => DeepSeek::new(options.model)?,
+        let Some(credentials) = options.credentials else {
+            return Err(AgentError::Model(model::ModelError::new(
+                model::ErrorCode::MissingCredential,
+                "凭证来源缺失（应由 Keyring 适配器提供）",
+            )));
         };
+        let model = DeepSeek::with_credentials(options.model, credentials)?;
         let tools = ToolSet::builtin();
         match options.resume {
             Some(id) => {

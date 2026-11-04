@@ -176,7 +176,6 @@ async fn main() -> ExitCode {
 fn config_from_args(
     common: &CommonArgs,
     base_url: String,
-    api_key: String,
 ) -> Result<(DeepSeekConfig, AgentConfig), CliError> {
     let effort = match common.effort.as_deref() {
         None => Effort::High,
@@ -222,7 +221,6 @@ fn config_from_args(
     }
     let config = DeepSeekConfig {
         base_url,
-        api_key,
         model: common
             .model
             .clone()
@@ -303,7 +301,7 @@ fn model_with_keyring(
             )
         })?;
     let (mut deepseek_config, agent_config) =
-        config_from_args(common, connection.endpoint.clone(), String::new())?;
+        config_from_args(common, connection.endpoint.clone())?;
     deepseek_config.model = common
         .model
         .clone()
@@ -366,7 +364,7 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     // T008.3b：模型配置惰性解析——空 Keyring 也能起服务（首次使用页先显示）；
     // recheck 时工厂重新读当前 Keyring 连接，用新模型重建根会话。
     let (placeholder_config, agent_config) =
-        config_from_args(&args.common, "http://127.0.0.1:1".to_owned(), String::new())?;
+        config_from_args(&args.common, "http://127.0.0.1:1".to_owned())?;
     let window = placeholder_config.context_window;
     let factory_common = args.common.clone();
     let factory_data_dir = data_dir.clone();
@@ -1110,8 +1108,7 @@ mod tests {
 
     #[test]
     fn config_from_args_defaults_match_production_defaults() {
-        let (deepseek, agent) =
-            config_from_args(&dev_common(), "http://x".to_owned(), "k".to_owned()).unwrap();
+        let (deepseek, agent) = config_from_args(&dev_common(), "http://x".to_owned()).unwrap();
         assert_eq!(deepseek.max_tokens, DEFAULT_MAX_TOKENS);
         assert_eq!(deepseek.context_window, model::DEFAULT_CONTEXT_WINDOW);
         assert_eq!(
@@ -1133,8 +1130,7 @@ mod tests {
             compaction_retain: Some(0.1),
             ..dev_common()
         };
-        let (deepseek, agent) =
-            config_from_args(&common, "http://x".to_owned(), "k".to_owned()).unwrap();
+        let (deepseek, agent) = config_from_args(&common, "http://x".to_owned()).unwrap();
         assert_eq!(deepseek.context_window, 24_000);
         assert_eq!(deepseek.max_tokens, 1024);
         assert_eq!(agent.compaction_threshold_ratio, 0.2);
@@ -1176,7 +1172,7 @@ mod tests {
         ];
         for common in cases {
             assert!(
-                config_from_args(&common, "http://x".to_owned(), "k".to_owned()).is_err(),
+                config_from_args(&common, "http://x".to_owned()).is_err(),
                 "非法值必须报错"
             );
         }

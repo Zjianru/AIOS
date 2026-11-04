@@ -15,20 +15,36 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const TEST_KEY: &str = "sk-t008-service-0123456789";
 
+/// T008.F9：测试凭证来源（产品不再有固定 key 构造入口，测试显式注入）。
+struct TestCredential;
+
+impl model::CredentialSource for TestCredential {
+    fn issue(
+        &self,
+        _purpose: &str,
+        _context: &model::CredentialContext,
+    ) -> Result<String, model::ModelError> {
+        Ok("test-key".to_owned())
+    }
+}
+
+fn test_credential() -> std::sync::Arc<dyn model::CredentialSource> {
+    std::sync::Arc::new(TestCredential)
+}
+
 fn options(data_dir: &Path, identity: &Path) -> RootSessionOptions {
     RootSessionOptions {
         data_dir: data_dir.to_path_buf(),
         cwd: data_dir.to_path_buf(),
         model: DeepSeekConfig {
             base_url: "http://127.0.0.1:1".to_owned(),
-            api_key: "test-key".to_owned(),
             model: "deepseek-flash".to_owned(),
             max_tokens: 2048,
             context_window: DEFAULT_CONTEXT_WINDOW,
             effort: Effort::High,
         },
         config: AgentConfig::default(),
-        credentials: None,
+        credentials: Some(test_credential()),
         identity: Some(identity.to_path_buf()),
         model_factory: None,
     }

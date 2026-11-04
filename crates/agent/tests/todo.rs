@@ -103,7 +103,11 @@ async fn resume_restores_todo_list_and_replacement_wins() {
         id.clone(),
         isolated_config(data_dir.path()),
         agent::Deps {
-            model: model::DeepSeek::new(model_config(&server.uri())).unwrap(),
+            model: model::DeepSeek::with_credentials(
+                model_config(&server.uri()),
+                common::test_credential(),
+            )
+            .unwrap(),
             tools: ToolSet::builtin(),
             store: SessionStore::open(data_dir.path(), &id).unwrap(),
         },
@@ -174,7 +178,11 @@ async fn single_active_policy_from_config_rejects_two_active() {
     let agent = Agent::create(
         config,
         agent::Deps {
-            model: model::DeepSeek::new(model_config(&server.uri())).unwrap(),
+            model: model::DeepSeek::with_credentials(
+                model_config(&server.uri()),
+                common::test_credential(),
+            )
+            .unwrap(),
             tools: ToolSet::builtin(),
             store,
         },

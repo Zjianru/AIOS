@@ -17,21 +17,3 @@ pub trait CredentialSource: Send + Sync {
     /// context 带上本次 Run/轮，供 Keyring 记录归属。
     fn issue(&self, purpose: &str, context: &CredentialContext) -> Result<String, ModelError>;
 }
-
-/// 固定 key 的来源（CLI 旧路径/测试用；T008.2 产品路径换成 Keyring）。
-#[derive(Debug)]
-pub(crate) struct StaticCredential {
-    key: String,
-}
-
-impl StaticCredential {
-    pub(crate) fn new(key: String) -> Self {
-        Self { key }
-    }
-}
-
-impl CredentialSource for StaticCredential {
-    fn issue(&self, _purpose: &str, _context: &CredentialContext) -> Result<String, ModelError> {
-        Ok(self.key.clone())
-    }
-}

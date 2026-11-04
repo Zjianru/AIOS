@@ -18,8 +18,6 @@ pub(crate) const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration:
 pub struct DeepSeekConfig {
     /// Messages 协议的根地址；请求发往 `<base_url>/v1/messages`。
     pub base_url: String,
-    /// 固定 key（测试/旧路径用）；T008 起产品由 CredentialSource 每请求签发，不读环境变量。
-    pub api_key: String,
     /// 模型 id。
     pub model: String,
     /// 单次请求输出上限。
@@ -34,7 +32,6 @@ impl Default for DeepSeekConfig {
     fn default() -> Self {
         Self {
             base_url: DEFAULT_BASE_URL.to_owned(),
-            api_key: String::new(),
             model: "deepseek-flash".to_owned(),
             max_tokens: DEFAULT_MAX_TOKENS,
             context_window: DEFAULT_CONTEXT_WINDOW,

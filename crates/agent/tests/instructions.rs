@@ -376,7 +376,11 @@ async fn resume_reconciles_instead_of_reinjecting_baseline() {
         session_id.clone(),
         config,
         agent::Deps {
-            model: model::DeepSeek::new(common::model_config(&server.uri())).unwrap(),
+            model: model::DeepSeek::with_credentials(
+                common::model_config(&server.uri()),
+                common::test_credential(),
+            )
+            .unwrap(),
             tools: ToolSet::builtin(),
             store,
         },
@@ -498,7 +502,11 @@ async fn default_config_without_home_is_valid() {
     let created = agent::Agent::create(
         config,
         agent::Deps {
-            model: model::DeepSeek::new(model_config(&base_url)).unwrap(),
+            model: model::DeepSeek::with_credentials(
+                model_config(&base_url),
+                common::test_credential(),
+            )
+            .unwrap(),
             tools: ToolSet::builtin(),
             store,
         },

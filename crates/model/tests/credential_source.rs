@@ -34,7 +34,6 @@ impl CredentialSource for CountingSource {
 fn config() -> DeepSeekConfig {
     DeepSeekConfig {
         base_url: "http://127.0.0.1:1/anthropic".to_owned(),
-        api_key: String::new(),
         ..DeepSeekConfig::default()
     }
 }

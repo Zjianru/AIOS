@@ -30,7 +30,11 @@ async fn setup(server: &MockServer) -> (Agent, tempfile::TempDir, SessionId) {
     let agent = Agent::create(
         isolated_config(data_dir.path()),
         agent::Deps {
-            model: model::DeepSeek::new(model_config(&server.uri())).unwrap(),
+            model: model::DeepSeek::with_credentials(
+                model_config(&server.uri()),
+                common::test_credential(),
+            )
+            .unwrap(),
             tools: tools::ToolSet::builtin(),
             store,
         },
@@ -129,7 +133,11 @@ async fn resume_agent(data_dir: &std::path::Path, id: &SessionId, base_url: &str
         id.clone(),
         isolated_config(data_dir),
         agent::Deps {
-            model: model::DeepSeek::new(model_config(base_url)).unwrap(),
+            model: model::DeepSeek::with_credentials(
+                model_config(base_url),
+                common::test_credential(),
+            )
+            .unwrap(),
             tools: tools::ToolSet::builtin(),
             store,
         },
@@ -476,7 +484,11 @@ async fn pending_questions_survive_restart_and_answer_continues_as_late_reply() 
     let agent = Agent::create(
         isolated_config(data_dir.path()),
         agent::Deps {
-            model: model::DeepSeek::new(model_config(&server.uri())).unwrap(),
+            model: model::DeepSeek::with_credentials(
+                model_config(&server.uri()),
+                common::test_credential(),
+            )
+            .unwrap(),
             tools: tools::ToolSet::builtin(),
             store,
         },

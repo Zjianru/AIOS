@@ -98,6 +98,23 @@ impl wiremock::Respond for Sequence {
     }
 }
 
+/// T008.F9：测试凭证来源（产品不再有固定 key 构造入口，测试显式注入）。
+struct TestCredential;
+
+impl model::CredentialSource for TestCredential {
+    fn issue(
+        &self,
+        _purpose: &str,
+        _context: &model::CredentialContext,
+    ) -> Result<String, model::ModelError> {
+        Ok("test-key".to_owned())
+    }
+}
+
+fn test_credential() -> std::sync::Arc<dyn model::CredentialSource> {
+    std::sync::Arc::new(TestCredential)
+}
+
 async fn setup(server: &MockServer) -> (Agent, tempfile::TempDir, SessionId) {
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
@@ -108,14 +125,16 @@ async fn setup(server: &MockServer) -> (Agent, tempfile::TempDir, SessionId) {
         skill_roots: vec![data_dir.path().join("skills-home")],
         ..AgentConfig::default()
     };
-    let model = DeepSeek::new(DeepSeekConfig {
-        base_url: server.uri(),
-        api_key: "test-key".to_owned(),
-        model: "deepseek-flash".to_owned(),
-        max_tokens: 2048,
-        context_window: model::DEFAULT_CONTEXT_WINDOW,
-        effort: Effort::High,
-    })
+    let model = DeepSeek::with_credentials(
+        DeepSeekConfig {
+            base_url: server.uri(),
+            model: "deepseek-flash".to_owned(),
+            max_tokens: 2048,
+            context_window: model::DEFAULT_CONTEXT_WINDOW,
+            effort: Effort::High,
+        },
+        test_credential(),
+    )
     .unwrap();
     let agent = Agent::create(
         config,
