@@ -49,7 +49,7 @@ test('模型重试用完：失败块按模型原因、可再发一次', async ({
 });
 
 /// T007.7 清单 5 + T008.4：401 凭证失败 → 失败块按凭证原因，并给「去设置」。
-test('凭证 401：失败块按凭证原因、不放去设置', async ({ page }) => {
+test('凭证 401：失败块按凭证原因，并给「去设置」', async ({ page }) => {
   const fixture = await startKernelFixture({ failure: 'credential' });
   try {
     await open(page, fixture);

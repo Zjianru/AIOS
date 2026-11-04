@@ -154,7 +154,3 @@ export async function relinkKeyFile(path: string): Promise<ModelSettingsView> {
 export async function resetKeyring(): Promise<ModelSettingsView> {
   return mapView(await restartKeyring());
 }
-
-export function setKeyringProblem(_problem: string | null): void {}
-
-export function syncKeyringEmpty(_empty: boolean): void {}
