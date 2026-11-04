@@ -1,4 +1,8 @@
+use std::fs::OpenOptions;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
 
 use credentials::{CheckResult, CheckState, ConnectionInfo, Keyring, NewConnection};
@@ -263,8 +267,37 @@ fn 两个实例在换位置后都恢复且能签发() {
 
 #[test]
 fn 并发写会等锁而不是丢更新() {
-    // T008.F3 骨架：外部持有 keyring.lock 时，保存操作必须等锁，而不是直接写回旧状态。
-    panic!("T008.F3 skeleton: not implemented");
+    let fixture = Fixture::new();
+    let keyring = Arc::new(fixture.open());
+    std::fs::create_dir_all(&fixture.data_dir).expect("data dir");
+    let lock_path = fixture.data_dir.join("keyring.lock");
+    let held = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .expect("open lock");
+    held.lock().expect("hold keyring lock");
+
+    let (sender, receiver) = mpsc::channel();
+    let worker = {
+        let keyring = Arc::clone(&keyring);
+        thread::spawn(move || {
+            let result = keyring.save_connection(connection());
+            sender.send(result.is_ok()).expect("send result");
+        })
+    };
+    assert!(
+        receiver.recv_timeout(Duration::from_millis(150)).is_err(),
+        "外部持有 keyring.lock 时，保存不能直接完成（会丢更新）"
+    );
+    drop(held);
+    assert!(
+        receiver.recv_timeout(Duration::from_secs(2)).expect("worker result"),
+        "释放锁后保存应成功"
+    );
+    worker.join().expect("worker join");
 }
 
 #[test]
