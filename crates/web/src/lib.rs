@@ -791,6 +791,18 @@ mod cookie_red_tests {
         headers
     }
 
+    /// T006 r3 #3：401 正文照来源意思说「重新打开打印的地址」，不出现来源名字/令牌字样。
+    #[test]
+    fn unauthorized_body_reopens_printed_address() {
+        let body = TrustError::Unauthorized.to_string();
+        assert_eq!(
+            body,
+            "还没有登录或登录已失效：请重新打开 aios-dev serve 打印的地址。"
+        );
+        assert!(!body.contains("令牌"), "cookie 错时不再说令牌：{body}");
+        assert!(!body.contains("dsh"), "不出现来源名字：{body}");
+    }
+
     #[test]
     fn dod7_expired_cookie_is_401() {
         let trust = trust();
