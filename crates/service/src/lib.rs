@@ -1363,3 +1363,13 @@ mod t007_protocol_tests {
         assert_eq!(context_used(&non_message), None);
     }
 }
+
+#[cfg(test)]
+mod f5_failure_cause_tests {
+    use super::*;
+
+    #[test]
+    fn failure_cause_keyring_uses_structured_code() {
+        panic!("T008.F5 skeleton: not implemented");
+    }
+}
