@@ -21,7 +21,7 @@ test('DoD4 真 key：bash 只读 /tmp/aios-t007-dod/work 并回答', async ({ pa
       '请只用 bash 工具、只读地查看 /tmp/aios-t007-dod/work/hello.txt 的内容，把文件内容原样回复我。不要写任何文件、不要安装。',
     );
     await page.getByRole('button', { name: '发送' }).click();
-    await expect(page.getByText('DOD-4-OK', { exact: false })).toBeVisible({ timeout: 180_000 });
+    await expect(page.getByText('DOD-4-OK', { exact: false }).last()).toBeVisible({ timeout: 180_000 });
     // 等这一轮的 turn/end 落到日志（流式文本先到，日志后写），再做截图与比对。
     const followFor = async () => {
       const response = await apiPost(request, fixture, { method: 'follow', lastSeq: 0 });
@@ -34,15 +34,57 @@ test('DoD4 真 key：bash 只读 /tmp/aios-t007-dod/work 并回答', async ({ pa
       .toBeGreaterThanOrEqual(1);
     await page.screenshot({ path: path.join(evidence, 'dod4-answer.png'), fullPage: true });
     const response = await apiPost(request, fixture, { method: 'follow', lastSeq: 0 });
-    const events = (await response.json()).events as { type: string }[];
-    const summary = {
-      pageTurnsVisible: await page.getByText('工作过程', { exact: false }).count(),
-      logTurns: events.filter((event) => event.type === 'turn/end').length,
-      logUserMessages: events.filter((event) => event.type === 'user/message').length,
-      token: '<redacted>',
+    const events = (await response.json()).events as {
+      type: string;
+      data?: Record<string, any>;
+    }[];
+    const textOf = (message: any): string => {
+      const content = message?.content;
+      if (!Array.isArray(content)) return '';
+      return content.filter((b: any) => b?.type === 'text').map((b: any) => String(b.text ?? '')).join('');
     };
+    const byTurn = new Map<number, { users: string[]; tools: string[]; answers: string[]; turn: number }>();
+    for (const event of events) {
+      const turn = event.data?.turn;
+      if (typeof turn !== 'number') continue;
+      let entry = byTurn.get(turn);
+      if (!entry) {
+        entry = { turn, users: [], tools: [], answers: [] };
+        byTurn.set(turn, entry);
+      }
+      if (event.type === 'user/message') {
+        const text = textOf(event.data?.message).trim();
+        if (text && !text.includes('<system-reminder>')) entry.users.push(text);
+      } else if (event.type === 'tool/call') {
+        entry.tools.push(String(event.data?.name ?? ''));
+      } else if (event.type === 'assistant/message') {
+        const text = textOf(event.data?.message).trim();
+        if (text) entry.answers.push(text);
+      }
+    }
+    await page.getByRole('button', { name: /工作过程/ }).click();
+    const rawPageText = await page.locator('main').innerText();
+    await writeFile(path.join(evidence, 'dod4-page.txt'), rawPageText);
+    const pageText = rawPageText.replace(/\s+/g, ' ');
+    const normalize = (text: string) => text.replace(/\s+/g, ' ').trim();
+    const condense = (text: string) => text.replace(/[^A-Za-z0-9\u4e00-\u9fff]/g, '');
+    const pageCondensed = condense(rawPageText);
+    const compare = [...byTurn.values()].sort((a, b) => a.turn - b.turn).map((entry) => {
+      const answer = entry.answers[entry.answers.length - 1] ?? '';
+      return {
+        turn: entry.turn,
+        users: entry.users,
+        tools: entry.tools,
+        answerTail: answer.slice(-80),
+        pageHasUser: entry.users.every((text) => pageText.includes(normalize(text))),
+        pageHasTools: entry.tools.every((text) => pageText.includes(normalize(text))),
+        pageHasAnswer: !answer || pageCondensed.includes(condense(answer).slice(0, 40)),
+      };
+    });
+    const allMatched = compare.every((row) => row.pageHasUser && row.pageHasTools && row.pageHasAnswer);
+    const summary = { turns: compare, allMatched, token: '<redacted>' };
     await writeFile(path.join(evidence, 'dod4-compare.json'), JSON.stringify(summary, null, 2));
-    expect(summary.logTurns).toBeGreaterThanOrEqual(1);
+    expect(allMatched).toBeTruthy();
   } finally {
     await fixture.close();
   }
