@@ -39,6 +39,12 @@ impl IssuedSecret {
     pub fn zeroize(&mut self) {
         self.secret.zeroize();
     }
+
+    /// 取出本次签发值（调用方用完后应立即交给模型请求并丢弃）。
+    pub fn into_secret(self) -> String {
+        let mut this = std::mem::ManuallyDrop::new(self);
+        std::mem::take(&mut this.secret)
+    }
 }
 
 impl Drop for IssuedSecret {

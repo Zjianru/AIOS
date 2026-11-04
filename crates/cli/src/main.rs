@@ -244,7 +244,7 @@ impl model::CredentialSource for KeyringCredentialSource {
     fn issue(&self, purpose: &str) -> Result<String, model::ModelError> {
         self.keyring
             .issue(&self.connection, purpose, None)
-            .map(|issued| issued.secret)
+            .map(credentials::IssuedSecret::into_secret)
             .map_err(|error| {
                 let message = match &error {
                     credentials::KeyringError::KeyFileMissing(_)
