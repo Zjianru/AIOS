@@ -6,7 +6,7 @@ void EVIDENCE;
 
 /** 页面会向默认 DeepSeek endpoint 发连接；e2e 把它改写到假 DeepSeek（真产品不变）。 */
 async function rewriteConnectionEndpoint(page: Page, fixture: KernelFixture): Promise<void> {
-  await page.route(/\/api\?/, async (route: Route) => {
+  await page.route(/\/api(\?|$)/, async (route: Route) => {
     const request = route.request();
     if (request.method() === 'POST') {
       const body = JSON.parse(request.postData() ?? '{}') as Record<string, unknown>;
