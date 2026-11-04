@@ -145,7 +145,6 @@ struct Config {
 /// Keyring 本体。一个数据目录一份存储，一把钥匙文件。
 pub struct Keyring {
     data_dir: PathBuf,
-    identity_path: Mutex<PathBuf>,
     since: u64,
     changes: Mutex<Vec<Sender<()>>>,
 }
@@ -162,9 +161,8 @@ impl Keyring {
         let data_dir = data_dir.into();
         create_private_dir(&data_dir)?;
         let config_path = data_dir.join("config.json");
-        let (identity_path, since) = if config_path.exists() {
-            let config = read_config(&config_path)?;
-            (config.identity_path, config.since)
+        let since = if config_path.exists() {
+            read_config(&config_path)?.since
         } else {
             let identity_path = match identity_path {
                 Some(path) => path.to_path_buf(),
@@ -178,15 +176,14 @@ impl Keyring {
                 &config_path,
                 &Config {
                     version: 1,
-                    identity_path: identity_path.clone(),
+                    identity_path,
                     since,
                 },
             )?;
-            (identity_path, since)
+            since
         };
         Ok(Self {
             data_dir,
-            identity_path: Mutex::new(identity_path),
             since,
             changes: Mutex::new(Vec::new()),
         })
@@ -196,12 +193,11 @@ impl Keyring {
         &self.data_dir
     }
 
-    /// 当前钥匙文件位置（换位置后跟着变）。
+    /// 当前钥匙文件位置：每次从配置重读（进程内多个 Keyring 实例共享同一份配置）。
     pub fn identity_path(&self) -> PathBuf {
-        self.identity_path
-            .lock()
-            .map(|path| path.clone())
-            .unwrap_or_default()
+        read_config(&self.data_dir.join("config.json"))
+            .map(|config| config.identity_path)
+            .unwrap_or_else(|_| default_identity_path(&self.data_dir))
     }
 
     /// 存/覆盖一个连接；saved_at 更新，验证状态重置为 Never。
@@ -373,9 +369,6 @@ impl Keyring {
         let text = fs::read_to_string(&old_path)?;
         create_identity_at(new_path, &text)?;
         self.write_config_for(new_path, self.since)?;
-        if let Ok(mut path) = self.identity_path.lock() {
-            *path = new_path.to_path_buf();
-        }
         if old_path != new_path {
             fs::remove_file(&old_path)?;
         }
@@ -387,9 +380,6 @@ impl Keyring {
     pub fn repoint_identity(&self, path: &Path) -> Result<(), KeyringError> {
         self.load_identity(path)?;
         self.write_config_for(path, self.since)?;
-        if let Ok(mut current) = self.identity_path.lock() {
-            *current = path.to_path_buf();
-        }
         self.notify();
         Ok(())
     }

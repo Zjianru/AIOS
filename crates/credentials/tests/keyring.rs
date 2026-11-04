@@ -239,4 +239,24 @@ fn 两个实例在换位置后都恢复且能签发() {
     );
     let issued = second.issue("deepseek", "kind-turn", None);
     assert!(issued.is_ok(), "换位置后第二个实例应还能签发：{issued:?}");
+
+    // 指回同样要不重启恢复：钥匙文件再从 new_path 挪走，second 指回，先打开的 first 也要看到。
+    let moved_again = fixture._dir.path().join("moved-again/identity.txt");
+    std::fs::create_dir_all(moved_again.parent().expect("parent")).expect("mkdir");
+    std::fs::rename(&new_path, &moved_again).expect("move identity");
+    second.repoint_identity(&moved_again).expect("repoint");
+    assert_eq!(
+        first.identity_path(),
+        moved_again,
+        "指回后先打开的实例也必须看到新位置"
+    );
+    assert!(
+        first.view().key_file.problem.is_none(),
+        "指回后 first 应能读：{:?}",
+        first.view().key_file
+    );
+    assert!(
+        first.issue("deepseek", "kind-turn", None).is_ok(),
+        "指回后 first 应还能签发"
+    );
 }
