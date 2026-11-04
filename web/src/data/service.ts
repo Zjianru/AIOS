@@ -66,6 +66,13 @@ export class ServiceHttpError extends Error {
   }
 }
 
+// T008 r4 #1：页面任何调用拿到 401 都进令牌说明页；401 的判断只在这一处。
+let onUnauthorized: (() => void) | null = null;
+
+export function setUnauthorizedHandler(handler: () => void): void {
+  onUnauthorized = handler;
+}
+
 export interface ServiceTarget {
   origin: string;
   token: string;
@@ -84,6 +91,10 @@ async function post<T>(body: Record<string, unknown>): Promise<T> {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
+  if (response.status === 401) {
+    onUnauthorized?.();
+    throw new ServiceHttpError(response.status, '登录已失效：请重新打开终端里打印的地址');
+  }
   if (!response.ok) {
     throw new ServiceHttpError(response.status, `服务拒绝：${response.status}`);
   }

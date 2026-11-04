@@ -105,7 +105,7 @@ function WorkProcess({ view }: { view: TurnViewData }) {
     <div className="group/work relative mt-2 text-2">
       {/* hover 出来的模型 / token / 花费：绝对定位在行右侧，不参与布局，所以行不会跳 */}
       <span className="pointer-events-none absolute right-0 top-0 hidden items-center gap-1.5 whitespace-nowrap text-ink-3 group-hover/work:flex">
-        {view.model} · 输入 <span className="brand-type">{view.tokens.input}</span> · 输出{' '}
+        输入 <span className="brand-type">{view.tokens.input}</span> · 输出{' '}
         <span className="brand-type">{view.tokens.output}</span>
         
       </span>

@@ -16,6 +16,10 @@ export function KindScene({ pane }: { pane: string }) {
   useEffect(() => {
     void bootstrap();
   }, [bootstrap]);
+  // T008 r4 #1：401 已由 service 请求层统一置 gate=token；令牌说明页先于第一次使用页。
+  if (gate !== 'ok') {
+    return <KernelGate state={gate} detail={gateDetail ?? undefined} onRecheck={recheck} />;
+  }
   if (firstUse) {
     return (
       <FirstUsePane
@@ -25,9 +29,6 @@ export function KindScene({ pane }: { pane: string }) {
         }}
       />
     );
-  }
-  if (gate !== 'ok') {
-    return <KernelGate state={gate} detail={gateDetail ?? undefined} onRecheck={recheck} />;
   }
   if (pane === 'conversation') return <ConversationPane />;
   return null;

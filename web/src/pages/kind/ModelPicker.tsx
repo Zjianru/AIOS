@@ -7,6 +7,7 @@
  */
 
 import { useState } from 'react';
+import { toast } from 'sonner';
 import { Check, ChevronDown } from 'lucide-react';
 import {
   DropdownMenu,
@@ -17,7 +18,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { getModelSettings } from '@/data/keyring';
-import { selectSessionModel } from '@/data/service';
+import { selectSessionModel, ServiceHttpError } from '@/data/service';
 import type { ModelSettingsView } from '@/data/fixtures/settings';
 import { go } from '@/app/navigate';
 import { useKindStore } from './kindStore';
@@ -72,8 +73,16 @@ export function ModelPicker() {
                       disabled={!state.ok}
                       onSelect={() => {
                         if (on) return;
-                        setModel({ connectionId: conn.id, modelId: row.id, label: row.name ?? row.id });
-                        void selectSessionModel(row.id);
+                        // T008 r4 #3：等 selectSessionModel 成功后再改状态/tost；失败给中文原因，不吞。
+                        void selectSessionModel(row.id)
+                          .then(() =>
+                            setModel({ connectionId: conn.id, modelId: row.id, label: row.name ?? row.id }),
+                          )
+                          .catch((error: unknown) => {
+                            const detail =
+                              error instanceof ServiceHttpError ? error.message : '连不上服务，稍后再试';
+                            toast.error('换模型没成：' + detail);
+                          });
                       }}
                       className="gap-2 text-2"
                     >
