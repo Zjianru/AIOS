@@ -337,6 +337,7 @@ async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
         model: deepseek_config,
         config,
         credentials: Some(credentials),
+        append_hook_factory: None,
     })
     .await
     .map_err(open_error)?;
@@ -453,6 +454,18 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             .map(|(config, _agent, credentials)| (config, Some(credentials)))
             .map_err(|error| error.to_string())
     });
+    // T011.4：ledger 钩子挂到根会话的「追加之后」（打开/recheck 重开会话都装）。
+    let ledger_monitor = monitor.clone();
+    let append_hook_factory: session::AppendHookFactory =
+        Arc::new(move |id: &session::SessionId| {
+            let monitor = ledger_monitor.clone();
+            let session_id = id.as_str().to_owned();
+            Arc::new(move |events: &[session::Event]| {
+                for event in events {
+                    let _ = monitor.record(monitor::ledger_record(&session_id, event));
+                }
+            }) as session::AppendHook
+        });
     // T007.2：根会话打不开时服务照样起；ready 报状态（path/line），方法一律拒绝，
     // 页面对应五种说明页；修好后页面调 recheck 再检查一次。
     let host = RootHost::open(
@@ -464,6 +477,7 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             credentials: None,
             identity: args.common.identity.clone(),
             model_factory: Some(model_factory),
+            append_hook_factory: Some(append_hook_factory),
         },
         window,
     )
