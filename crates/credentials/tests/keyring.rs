@@ -380,6 +380,22 @@ time.sleep(0.6)
 
 #[test]
 fn 签发记录带归属且视图有界() {
-    // T008.F4 骨架：每请求记 run/turn；view 只返回最近有界条数。
-    panic!("T008.F4 skeleton: not implemented");
+    let fixture = Fixture::new();
+    let keyring = fixture.open();
+    keyring.save_connection(connection()).expect("save");
+    keyring
+        .issue("deepseek", "kind-turn", Some("run-1"), Some(3))
+        .expect("issue");
+    let issues = keyring.issues();
+    assert_eq!(issues[0].run.as_deref(), Some("run-1"), "记录要带 run");
+    assert_eq!(issues[0].turn, Some(3), "记录要带 turn");
+    for index in 0..25 {
+        keyring
+            .issue("deepseek", "kind-turn", Some("run-1"), Some(3 + index))
+            .expect("issue");
+    }
+    assert!(
+        keyring.view().issues.len() <= 20,
+        "view 只返回最近有界条数，不能全量"
+    );
 }
