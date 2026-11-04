@@ -15,7 +15,7 @@ use session::{EventKind, SessionStore};
 use tokio::sync::broadcast;
 use tools::{ToolCall, ToolResult, ToolSessionState, ToolSet};
 
-use crate::ask_capability::{AnswerOutcome, AskCapability, AskState, CancelOutcome};
+use crate::ask_capability::{AskCapability, AskState};
 use crate::compaction_capability::CompactionCapability;
 use crate::error::AgentError;
 use crate::instructions::InstructionState;
@@ -59,14 +59,6 @@ pub(crate) enum HookPoint {
     Status,
     /// 本轮要停：对外推送收尾（服务接入后使用）。
     TurnStopping,
-}
-
-/// 一次排队的手动 /compact：发起命令 id + 结果回执（T006.3 起 Agent::compact 返回计数）。
-pub(crate) struct ManualCompaction {
-    pub source_command_id: Option<String>,
-    pub reply: tokio::sync::oneshot::Sender<
-        Result<Option<crate::CompactionOutcome>, crate::compaction::ManualCompactionFailure>,
-    >,
 }
 
 /// 解析后的压缩策略（DSH ResolvedTargetPolicy 的 AIOS 子集；T006.3）。
@@ -117,6 +109,8 @@ pub(crate) trait LoopAccess: Send + Sync {
     /// 把一段上下文消息投进会话（后台任务结算通知用；按 phase 选 NextStep/NextTurn）。
     /// T006.2a 起走同一条 durable splice（返回 future，调用方 await 落盘后再 wake）。
     fn enqueue_context<'a>(&'a self, text: String) -> BoxedFuture<'a, ()>;
+    /// T006.F1：投递一条已构造好的消息（提问迟到回答用）；落盘后负责唤醒驱动。
+    fn enqueue_message<'a>(&'a self, message: Message) -> BoxedFuture<'a, bool>;
 }
 
 /// 每个挂点一份 typed 事件：host 访问面 + 该挂点可用的运行态数据。
@@ -286,18 +280,23 @@ pub(crate) trait Capability: Send + Sync {
     fn hooks(&self) -> &'static [HookPoint];
     fn on_hook<'a>(&'a self, event: &'a HookEvent<'a>) -> HookFuture<'a>;
     // 以下为 loop 少量非挂点入口（默认 no-op，由对应能力实现；T006.1e 把状态收回能力）。
-    /// 回答一条待答问题（T006.13，DSH 形状：selected 选项标签 + 可选 custom 文本）。
-    fn answer_question(
-        &self,
-        _question_id: &str,
+    /// 回答一条待答问题（T006.F1：迟到回答的 durable 编排也在能力里；driver 只派发）。
+    fn answer_with<'a>(
+        &'a self,
+        _host: &'a dyn LoopAccess,
+        _question_id: &'a str,
         _selected: Vec<String>,
         _custom: Option<String>,
-    ) -> AnswerOutcome {
-        AnswerOutcome::Rejected
+    ) -> BoxedFuture<'a, bool> {
+        Box::pin(async { Ok(false) })
     }
-    /// 撤销一条待答问题（T006.13，提问服务路径）。
-    fn cancel_question(&self, _question_id: &str) -> CancelOutcome {
-        CancelOutcome::Rejected
+    /// 撤销一条待答问题（T006.F1：恢复批的事件编排也在能力里；driver 只派发）。
+    fn cancel_question_with<'a>(
+        &'a self,
+        _host: &'a dyn LoopAccess,
+        _question_id: &'a str,
+    ) -> BoxedFuture<'a, bool> {
+        Box::pin(async { Ok(false) })
     }
     /// 当前待答问题（T006.13，含重启恢复；UI 服务 T006.16a 用）。
     fn pending_questions(&self) -> Vec<crate::Question> {
@@ -305,15 +304,6 @@ pub(crate) trait Capability: Send + Sync {
     }
     fn cancel_questions(&self) {}
     fn reset_repeat_chain(&self) {}
-    fn push_compaction_waiter(&self, _request: ManualCompaction) -> bool {
-        false
-    }
-    fn has_compaction_waiters(&self) -> bool {
-        false
-    }
-    fn take_compaction_waiters(&self) -> Vec<ManualCompaction> {
-        Vec::new()
-    }
 }
 
 /// 占位登记：只声明功能与它关心的挂点，不接管行为。
@@ -343,7 +333,6 @@ pub(crate) struct CapabilityStates {
     pub instructions: Arc<tokio::sync::Mutex<InstructionState>>,
     pub skill_catalog: Arc<Mutex<SkillCatalogState>>,
     pub reminder_chain: Arc<Mutex<Option<(String, usize)>>>,
-    pub compaction_waiters: Arc<Mutex<Vec<ManualCompaction>>>,
     pub instruction_roots: Vec<PathBuf>,
     pub skill_roots: Vec<PathBuf>,
     pub spill_max_inline_tokens: usize,
@@ -358,7 +347,7 @@ impl CapabilityRegistry {
     pub(crate) fn production(states: CapabilityStates) -> Self {
         Self {
             capabilities: vec![
-                Box::new(CompactionCapability::new(states.compaction_waiters)),
+                Box::new(CompactionCapability::new()),
                 Box::new(PruneCapability),
                 Box::new(InstructionsCapability::new((
                     states.instructions,
@@ -380,19 +369,36 @@ impl CapabilityRegistry {
         }
     }
 
-    pub(crate) fn answer_question(
+    pub(crate) async fn answer(
         &self,
+        host: &dyn LoopAccess,
         question_id: &str,
         selected: Vec<String>,
         custom: Option<String>,
-    ) -> AnswerOutcome {
+    ) -> bool {
         for capability in &self.capabilities {
-            let outcome = capability.answer_question(question_id, selected.clone(), custom.clone());
-            if !matches!(outcome, AnswerOutcome::Rejected) {
-                return outcome;
+            if matches!(
+                capability
+                    .answer_with(host, question_id, selected.clone(), custom.clone())
+                    .await,
+                Ok(true)
+            ) {
+                return true;
             }
         }
-        AnswerOutcome::Rejected
+        false
+    }
+
+    pub(crate) async fn cancel_question(&self, host: &dyn LoopAccess, question_id: &str) -> bool {
+        for capability in &self.capabilities {
+            if matches!(
+                capability.cancel_question_with(host, question_id).await,
+                Ok(true)
+            ) {
+                return true;
+            }
+        }
+        false
     }
 
     pub(crate) fn pending_questions(&self) -> Vec<crate::Question> {
@@ -401,16 +407,6 @@ impl CapabilityRegistry {
             questions.extend(capability.pending_questions());
         }
         questions
-    }
-
-    pub(crate) fn cancel_question(&self, question_id: &str) -> CancelOutcome {
-        for capability in &self.capabilities {
-            let outcome = capability.cancel_question(question_id);
-            if !matches!(outcome, CancelOutcome::Rejected) {
-                return outcome;
-            }
-        }
-        CancelOutcome::Rejected
     }
 
     pub(crate) fn cancel_questions(&self) {
@@ -423,36 +419,6 @@ impl CapabilityRegistry {
         for capability in &self.capabilities {
             capability.reset_repeat_chain();
         }
-    }
-
-    pub(crate) fn push_compaction_waiter(
-        &self,
-        request: ManualCompaction,
-    ) -> Result<(), ManualCompaction> {
-        let mut request = Some(request);
-        for capability in &self.capabilities {
-            let Some(current) = request.take() else {
-                return Ok(());
-            };
-            if capability.push_compaction_waiter(current) {
-                return Ok(());
-            }
-        }
-        Err(request.expect("没有能力接收时 request 仍在"))
-    }
-
-    pub(crate) fn has_compaction_waiters(&self) -> bool {
-        self.capabilities
-            .iter()
-            .any(|capability| capability.has_compaction_waiters())
-    }
-
-    pub(crate) fn take_compaction_waiters(&self) -> Vec<ManualCompaction> {
-        let mut waiters = Vec::new();
-        for capability in &self.capabilities {
-            waiters.extend(capability.take_compaction_waiters());
-        }
-        waiters
     }
 
     #[cfg(test)]
@@ -595,6 +561,9 @@ mod dispatch_contract_tests {
             unimplemented!()
         }
         fn enqueue_context<'a>(&'a self, _text: String) -> BoxedFuture<'a, ()> {
+            unimplemented!()
+        }
+        fn enqueue_message<'a>(&'a self, _message: Message) -> BoxedFuture<'a, bool> {
             unimplemented!()
         }
     }

@@ -17,7 +17,9 @@ use session::EventKind;
 use tokio::sync::Notify;
 use tools::ToolResult;
 
-use crate::capabilities::{Capability, HookEvent, HookFuture, HookOutcome, HookPoint};
+use crate::capabilities::{
+    BoxedFuture, Capability, HookEvent, HookFuture, HookOutcome, HookPoint, LoopAccess,
+};
 use crate::{AgentEvent, QuestionOption};
 
 /// 一条答案（DSH AskUserQuestionAnswerItem）：选中的选项标签 + 可选自由文本。
@@ -534,17 +536,76 @@ impl Capability for AskCapability {
         &[HookPoint::ToolBefore]
     }
 
-    fn answer_question(
-        &self,
-        question_id: &str,
+    fn answer_with<'a>(
+        &'a self,
+        host: &'a dyn LoopAccess,
+        question_id: &'a str,
         selected: Vec<String>,
         custom: Option<String>,
-    ) -> AnswerOutcome {
-        self.state.answer(question_id, selected, custom)
+    ) -> BoxedFuture<'a, bool> {
+        Box::pin(async move {
+            match self.state.answer(question_id, selected, custom) {
+                AnswerOutcome::Rejected => Ok(false),
+                AnswerOutcome::Accepted => Ok(true),
+                AnswerOutcome::RestoredReply(reply) => {
+                    let events: Vec<EventKind> = reply
+                        .answers
+                        .iter()
+                        .map(|(question_id, answer)| EventKind::QuestionAnswered {
+                            turn: reply.turn,
+                            step: reply.step,
+                            call_id: reply.call_id.clone(),
+                            question_id: question_id.clone(),
+                            selected: answer.selected.clone(),
+                            custom: answer.custom.clone(),
+                        })
+                        .collect();
+                    if host.append(&events).await.is_err() {
+                        return Ok(false);
+                    }
+                    Ok(host
+                        .enqueue_message(late_reply_message(&reply))
+                        .await
+                        .unwrap_or(false))
+                }
+            }
+        })
     }
 
-    fn cancel_question(&self, question_id: &str) -> CancelOutcome {
-        self.state.cancel(question_id)
+    fn cancel_question_with<'a>(
+        &'a self,
+        host: &'a dyn LoopAccess,
+        question_id: &'a str,
+    ) -> BoxedFuture<'a, bool> {
+        Box::pin(async move {
+            match self.state.cancel(question_id) {
+                CancelOutcome::Rejected => Ok(false),
+                CancelOutcome::Live => Ok(true),
+                CancelOutcome::Restored(cancel) => {
+                    let mut events: Vec<EventKind> = cancel
+                        .answered
+                        .iter()
+                        .map(|(question_id, answer)| EventKind::QuestionAnswered {
+                            turn: cancel.turn,
+                            step: cancel.step,
+                            call_id: cancel.call_id.clone(),
+                            question_id: question_id.clone(),
+                            selected: answer.selected.clone(),
+                            custom: answer.custom.clone(),
+                        })
+                        .collect();
+                    events.extend(cancel.cancelled.iter().map(|question_id| {
+                        EventKind::QuestionCancelled {
+                            turn: cancel.turn,
+                            step: cancel.step,
+                            call_id: cancel.call_id.clone(),
+                            question_id: question_id.clone(),
+                        }
+                    }));
+                    Ok(host.append(&events).await.is_ok())
+                }
+            }
+        })
     }
 
     fn pending_questions(&self) -> Vec<Question> {

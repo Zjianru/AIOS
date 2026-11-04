@@ -700,6 +700,9 @@ mod tests {
         fn enqueue_context<'a>(&'a self, _text: String) -> BoxedFuture<'a, ()> {
             Box::pin(async move { Ok(()) })
         }
+        fn enqueue_message<'a>(&'a self, _message: model::Message) -> BoxedFuture<'a, bool> {
+            Box::pin(async move { Ok(true) })
+        }
     }
 
     fn test_policy() -> CompactionPolicy {

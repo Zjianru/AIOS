@@ -516,18 +516,7 @@ impl Agent {
         &self,
         source_command_id: Option<String>,
     ) -> Result<Option<CompactionOutcome>, AgentError> {
-        let receiver = self.inner.queue_compaction(source_command_id);
-        match receiver.await {
-            Ok(Ok(outcome)) => Ok(outcome),
-            Ok(Err(failure)) => Err(AgentError::ManualCompaction {
-                code: failure.code,
-                message: failure.message,
-            }),
-            Err(_) => Err(AgentError::ManualCompaction {
-                code: ManualCompactionErrorCode::Cancelled,
-                message: "压缩队列被丢弃".to_owned(),
-            }),
-        }
+        self.inner.compact_manual(source_command_id).await
     }
 
     pub fn id(&self) -> &SessionId {

@@ -18,7 +18,6 @@ use tokio::sync::Notify;
 use tokio::sync::broadcast;
 use tools::{ToolCall, ToolContext, ToolSessionState, ToolSet, execute_batch};
 
-use crate::ask_capability::{AnswerOutcome, CancelOutcome, RestoredReply};
 use crate::capabilities::{
     BoxedFuture, CapabilityRegistry, CompactionPolicy, HookEvent, LoopAccess,
 };
@@ -88,6 +87,10 @@ pub(crate) struct Inner {
     pub(crate) events: broadcast::Sender<AgentEvent>,
     /// T006.16a：日志事件的 live 广播（服务事件面；seq/type/data 直接来自日志事实）。
     session_events: broadcast::Sender<session::Event>,
+    /// T006.F1：自引用（迟到回答的 durable 投递需要唤醒驱动）。
+    self_ref: std::sync::OnceLock<std::sync::Weak<Inner>>,
+    /// 手动压缩互斥：同一时刻只允许一次 /compact（T006.F1，照 command-compact busy）。
+    manual_compaction: std::sync::atomic::AtomicBool,
     idle_notify: Notify,
     /// 取消时唤醒正在等模型流的 step（让流读取立刻停下）。
     cancel_notify: Arc<Notify>,
@@ -249,6 +252,22 @@ impl LoopAccess for Inner {
             Ok(())
         })
     }
+
+    fn enqueue_message<'a>(&'a self, message: Message) -> BoxedFuture<'a, bool> {
+        Box::pin(async move {
+            if self
+                .inbox_mutation(InboxTarget::NextStep, i64::MAX, 0, vec![message], false)
+                .await
+                .is_err()
+            {
+                return Ok(false);
+            }
+            if let Some(inner) = self.self_ref.get().and_then(std::sync::Weak::upgrade) {
+                inner.wake_driver();
+            }
+            Ok(true)
+        })
+    }
 }
 
 impl Inner {
@@ -286,8 +305,6 @@ impl Inner {
             crate::skill_capability::SkillCapability::load(&store, skill_roots);
         crate::todo_capability::TodoCapability::rehydrate(&tool_session, store.events());
         let reminder_chain: Arc<Mutex<Option<(String, usize)>>> = Arc::new(Mutex::new(None));
-        let compaction_waiters: Arc<Mutex<Vec<crate::capabilities::ManualCompaction>>> =
-            Arc::new(Mutex::new(Vec::new()));
         let ask_state = crate::ask_capability::new_state();
         // T006.13（D45）：从中断修复后的日志折出仍待答的问题；回答走 Agent::answer 的迟到回答。
         crate::ask_capability::rehydrate(&ask_state, store.events());
@@ -319,6 +336,8 @@ impl Inner {
             }),
             events,
             session_events,
+            self_ref: std::sync::OnceLock::new(),
+            manual_compaction: std::sync::atomic::AtomicBool::new(false),
             idle_notify: Notify::new(),
             cancel_notify: Arc::new(Notify::new()),
             capabilities: CapabilityRegistry::production(crate::capabilities::CapabilityStates {
@@ -326,7 +345,6 @@ impl Inner {
                 instructions: Arc::clone(&instruction_state),
                 skill_catalog: Arc::clone(&skill_catalog),
                 reminder_chain: Arc::clone(&reminder_chain),
-                compaction_waiters: Arc::clone(&compaction_waiters),
                 instruction_roots,
                 skill_roots,
                 spill_max_inline_tokens,
@@ -334,6 +352,8 @@ impl Inner {
             #[cfg(test)]
             settle_hook: Mutex::new(None),
         });
+        // T006.F1：迟到回答投递要唤醒驱动，先记下自引用。
+        let _ = inner.self_ref.set(Arc::downgrade(&inner));
         // T006.1e：结算回调与完成通知投递移入 jobs_capability 模块。
         crate::jobs_capability::install(&inner);
         Ok(inner)
@@ -584,77 +604,14 @@ impl Inner {
         selected: Vec<String>,
         custom: Option<String>,
     ) -> bool {
-        match self
-            .capabilities
-            .answer_question(question_id, selected, custom)
-        {
-            AnswerOutcome::Rejected => false,
-            AnswerOutcome::Accepted => true,
-            AnswerOutcome::RestoredReply(reply) => self.deliver_restored_reply(reply).await,
-        }
-    }
-
-    /// T006.13：把恢复问题的整批回答写成 durable 事实，再以 DSH 的迟到回答消息接续。
-    async fn deliver_restored_reply(self: &Arc<Self>, reply: RestoredReply) -> bool {
-        // 先落 question/answered 再投递：答案先成为日志事实，模型下一轮再从 user 消息看到它。
-        // 落盘失败返回 false（AskState 里该批已结算；已知边界见 handback §9）。
-        let events: Vec<EventKind> = reply
-            .answers
-            .iter()
-            .map(|(question_id, answer)| EventKind::QuestionAnswered {
-                turn: reply.turn,
-                step: reply.step,
-                call_id: reply.call_id.clone(),
-                question_id: question_id.clone(),
-                selected: answer.selected.clone(),
-                custom: answer.custom.clone(),
-            })
-            .collect();
-        if self.append(&events).await.is_err() {
-            return false;
-        }
-        let message = crate::ask_capability::late_reply_message(&reply);
-        if self
-            .inbox_mutation(InboxTarget::NextStep, i64::MAX, 0, vec![message], false)
+        self.capabilities
+            .answer(self.as_ref(), question_id, selected, custom)
             .await
-            .is_err()
-        {
-            return false;
-        }
-        self.wake_driver();
-        true
     }
 
-    /// T006.13：撤销一条待答问题（提问服务路径）。等待中的批由 hook 以 ASK_ABORTED 收尾；
-    /// 恢复的批移除并写 question/cancelled（内存里已收的答案先补成 question/answered）。
+    /// T006.13：撤销一条待答问题（提问服务路径；恢复批的事件编排在 ask 能力里）。
     pub(crate) async fn cancel_question(&self, question_id: &str) -> bool {
-        match self.capabilities.cancel_question(question_id) {
-            CancelOutcome::Rejected => false,
-            CancelOutcome::Live => true,
-            CancelOutcome::Restored(cancel) => {
-                let mut events: Vec<EventKind> = cancel
-                    .answered
-                    .iter()
-                    .map(|(question_id, answer)| EventKind::QuestionAnswered {
-                        turn: cancel.turn,
-                        step: cancel.step,
-                        call_id: cancel.call_id.clone(),
-                        question_id: question_id.clone(),
-                        selected: answer.selected.clone(),
-                        custom: answer.custom.clone(),
-                    })
-                    .collect();
-                events.extend(cancel.cancelled.iter().map(|question_id| {
-                    EventKind::QuestionCancelled {
-                        turn: cancel.turn,
-                        step: cancel.step,
-                        call_id: cancel.call_id.clone(),
-                        question_id: question_id.clone(),
-                    }
-                }));
-                self.append(&events).await.is_ok()
-            }
-        }
+        self.capabilities.cancel_question(self, question_id).await
     }
 
     /// T006.13：当前待答问题（含重启恢复）。
@@ -753,70 +710,44 @@ impl Inner {
         )
     }
 
-    /// 请求一次手动压缩（T005.8b/T006.3）：排队并唤醒驱动；接收者拿到结果计数。
-    pub(crate) fn queue_compaction(
+    /// 手动 /compact（T006.F1）：照来源 command-compact，轮次/压缩进行中回 busy，不排队。
+    pub(crate) async fn compact_manual(
         self: &Arc<Self>,
         source_command_id: Option<String>,
-    ) -> tokio::sync::oneshot::Receiver<
-        Result<Option<crate::CompactionOutcome>, crate::compaction::ManualCompactionFailure>,
-    > {
-        let (reply, receiver) = tokio::sync::oneshot::channel();
-        let request = crate::capabilities::ManualCompaction {
-            source_command_id,
-            reply,
-        };
-        if self.capabilities.push_compaction_waiter(request).is_err() {
-            // 没有能力接收：接收端会立刻拿到 RecvError，Agent::compact 转成错误。
+    ) -> Result<Option<crate::CompactionOutcome>, AgentError> {
+        if self.is_running() {
+            return Err(manual_busy_error());
         }
-        self.wake_driver();
-        receiver
-    }
-
-    /// 队列里还有没有等待手动压缩的请求。
-    fn has_queued_compaction(&self) -> bool {
-        self.capabilities.has_compaction_waiters()
-    }
-
-    /// kick 在轮次结束后处理排队的手动压缩；空闲时也会被 wake 进来处理。
-    /// 语义：同一批排队的请求合并成一次压缩（所有等待者一起唤醒）；压缩进行中新到的
-    /// 请求会进入下一轮 drain，再做一次压缩。循环 drain 保证不会丢等待者。
-    async fn run_queued_compaction(self: &Arc<Self>) -> Result<(), AgentError> {
-        loop {
-            let waiters = self.capabilities.take_compaction_waiters();
-            if waiters.is_empty() {
-                return Ok(());
-            }
-            let turn = {
-                let state = self.state.lock().expect("agent 状态锁被毒化");
-                state.last_turn
-            };
-            // T006.3：手动 /compact 直接走 compact_now（两次 turn 之间独立压缩，不带
-            // PreStep 的注入路径）；同一批等待的请求合并成一次压缩，结果广播给每个等待者。
-            // 合并时只保留第一个 sourceCommandId（事件字段只能带一个发起命令）。
-            let source_command_id = waiters
-                .iter()
-                .find_map(|request| request.source_command_id.clone());
-            let result =
-                crate::compaction::compact_now(self.as_ref(), turn, source_command_id).await;
-            let reply = match result {
-                Ok(outcome) => Ok(outcome),
-                Err(error) => Err(crate::compaction::manual_failure(error)),
-            };
-            for request in waiters {
-                let _ = request.reply.send(reply.clone());
-            }
+        if self
+            .manual_compaction
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(manual_busy_error());
         }
+        let turn = self.state.lock().expect("agent 状态锁被毒化").last_turn;
+        let result = crate::compaction::compact_now(self.as_ref(), turn, source_command_id).await;
+        self.manual_compaction
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        result.map_err(|error| {
+            let failure = crate::compaction::manual_failure(error);
+            AgentError::ManualCompaction {
+                code: failure.code,
+                message: failure.message,
+            }
+        })
+    }
+}
+
+fn manual_busy_error() -> AgentError {
+    AgentError::ManualCompaction {
+        code: crate::ManualCompactionErrorCode::Busy,
+        message: crate::ManualCompactionErrorCode::Busy.text().to_owned(),
     }
 }
 
 /// 驱动任务：连续跑若干轮，直到收件箱里没有会唤醒的输入。
 async fn kick(inner: Arc<Inner>) {
     loop {
-        // T005.8b：手动压缩排在当前轮之后；空闲时先处理队列，避免为它造空 turn。
-        if inner.has_queued_compaction() {
-            let _ = inner.run_queued_compaction().await;
-            continue;
-        }
         let has_input = inner
             .inbox
             .lock()
@@ -855,13 +786,12 @@ fn settle_idle(inner: &Arc<Inner>) {
         let wake = std::mem::take(&mut state.wake_requested);
         (turn, wake)
     };
-    let has_queued = inner.has_queued_compaction();
     let has_pending = inner
         .inbox
         .lock()
         .expect("agent 收件箱锁被毒化")
         .has_pending();
-    if has_queued || (wake && has_pending) {
+    if wake && has_pending {
         restart_kick(inner, turn);
         return;
     }
@@ -877,13 +807,10 @@ fn settle_idle(inner: &Arc<Inner>) {
             hook();
         }
     }
-    // 收尾临界区：在同一把 state 锁里重查一次 wake/队列再转 Idle。
-    // 否则 compact 可能在 has_queued 之后、Idle 之前入队：queue_compaction 的
-    // wake_driver 看到 Running 只置 wake_requested，settle 随后设 Idle 就丢了 waiter。
+    // 收尾临界区：在同一把 state 锁里重查一次 wake 再转 Idle。
     let mut state = inner.state.lock().expect("agent 状态锁被毒化");
     let wake_now = std::mem::take(&mut state.wake_requested);
-    let queued_now = inner.has_queued_compaction();
-    if wake_now || queued_now {
+    if wake_now {
         drop(state);
         restart_kick(inner, turn);
         return;
@@ -1842,82 +1769,4 @@ fn system_prompt(cwd: &Path, tools: &ToolSet) -> String {
         );
     }
     prompt
-}
-
-#[cfg(test)]
-mod settle_tests {
-    use super::*;
-
-    /// settle 边界确定性测试：用 test-only hook 把 settle 卡在「预检完成、
-    /// 最终临界区之前」，窗口内入队 compact 并模拟 wake_driver 只看到 Running，
-    /// 然后断言 Agent::compact 的 oneshot 在超时内收到通知（不看 phase、不 sleep）。
-    #[tokio::test]
-    async fn settle_requeues_waiter_arriving_at_boundary() {
-        let data = tempfile::tempdir().unwrap();
-        let cwd = tempfile::tempdir().unwrap();
-        let store = SessionStore::create(data.path(), cwd.path()).unwrap();
-        let model = model::DeepSeek::new(model::DeepSeekConfig {
-            api_key: "test-key".to_owned(),
-            base_url: "http://127.0.0.1:1".to_owned(),
-            ..model::DeepSeekConfig::default()
-        })
-        .unwrap();
-        let inner = Inner::start(
-            crate::AgentConfig::default(),
-            Deps {
-                model,
-                tools: ToolSet::empty(),
-                store,
-            },
-            0,
-        )
-        .unwrap();
-        {
-            let mut state = inner.state.lock().unwrap();
-            state.phase = Phase::Running {
-                abort: Arc::new(AtomicBool::new(false)),
-                turn: 0,
-            };
-        }
-        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
-        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-        let release_rx = std::sync::Mutex::new(release_rx);
-        let release_rx = std::sync::Arc::new(release_rx);
-        let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        {
-            let mut hook = inner.settle_hook.lock().unwrap();
-            *hook = Some(Arc::new(move || {
-                // 只卡第一次 settle（被测窗口）；后续 kick 里的 settle 直接放行，
-                // 否则会在 async worker 上阻塞标准库 recv、饿死运行时。
-                if fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                    return;
-                }
-                let _ = entered_tx.send(());
-                let _ = release_rx.lock().unwrap().recv();
-            }));
-        }
-        let arc = Arc::clone(&inner);
-        let settle = tokio::task::spawn_blocking(move || settle_idle(&arc));
-        // 等 settle 停在临界区之前（确定性，不靠 sleep）。
-        entered_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
-        // 窗口内：入队 waiter，并模拟 wake_driver 只看到 Running（只置 latch）。
-        let (reply, receiver) = tokio::sync::oneshot::channel();
-        let request = crate::capabilities::ManualCompaction {
-            source_command_id: None,
-            reply,
-        };
-        let _ = inner.capabilities.push_compaction_waiter(request);
-        inner.wake_driver();
-        let _ = release_tx.send(());
-        settle.await.unwrap();
-        let served = tokio::time::timeout(std::time::Duration::from_secs(5), receiver)
-            .await
-            .is_ok();
-        // 清理：避免随后 kick 真的尝试压缩。
-        let _ = inner.capabilities.take_compaction_waiters();
-        inner.state.lock().unwrap().phase = Phase::Idle;
-        assert!(served, "边界入队的 compact waiter 必须在超时内收到通知");
-    }
 }
