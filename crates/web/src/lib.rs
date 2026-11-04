@@ -1109,3 +1109,66 @@ mod cookie_red_tests {
         assert_eq!(check_api_auth(&trust, &headers).unwrap_err().status(), 401);
     }
 }
+
+#[cfg(test)]
+mod t009_error_tests {
+    use super::*;
+
+    async fn body_json(response: Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        serde_json::from_slice(&bytes).expect("json")
+    }
+
+    #[tokio::test]
+    async fn api_error_envelope_uses_structured_body() {
+        let cases: Vec<(ServiceError, StatusCode, &str)> = vec![
+            (
+                ServiceError::Agent(agent::AgentError::Compaction("x".to_owned())),
+                StatusCode::BAD_GATEWAY,
+                "agent/internal",
+            ),
+            (
+                ServiceError::AnswerRejected("q1".to_owned()),
+                StatusCode::BAD_GATEWAY,
+                "question/answer-rejected",
+            ),
+            (
+                ServiceError::RootUnavailable(service::RootState::Ok),
+                StatusCode::CONFLICT,
+                "root/unavailable",
+            ),
+            (
+                ServiceError::SettingsOnBareHost,
+                StatusCode::BAD_GATEWAY,
+                "settings/unavailable",
+            ),
+            (
+                ServiceError::InvalidPath("bad".to_owned()),
+                StatusCode::BAD_GATEWAY,
+                "request/invalid-path",
+            ),
+        ];
+        for (error, status, code) in cases {
+            let response = api_error_response(error);
+            assert_eq!(response.status(), status);
+            let json = body_json(response).await;
+            assert_eq!(json["code"], code, "body={json}");
+            assert!(json.get("error").is_none(), "不再有旧 error 字段：{json}");
+            assert!(json["message"].as_str().is_some(), "body={json}");
+        }
+    }
+
+    #[test]
+    fn service_error_statuses_are_stable() {
+        for code in service::ServiceErrorCode::ALL {
+            let status = service_error_status(code);
+            if matches!(code, service::ServiceErrorCode::RootUnavailable) {
+                assert_eq!(status, StatusCode::CONFLICT);
+            } else {
+                assert_eq!(status, StatusCode::BAD_GATEWAY);
+            }
+        }
+    }
+}

@@ -1551,3 +1551,136 @@ mod f6_path_tests {
         assert!(expand_user_path("~other/keyring.key", Some(home)).is_err());
     }
 }
+
+#[cfg(test)]
+mod t009_error_tests {
+    use super::*;
+
+    fn variants() -> Vec<(&'static str, ServiceError)> {
+        vec![
+            (
+                "agent/internal",
+                ServiceError::Agent(agent::AgentError::Compaction("x".to_owned())),
+            ),
+            (
+                "question/answer-rejected",
+                ServiceError::AnswerRejected("q1".to_owned()),
+            ),
+            (
+                "root/unavailable",
+                ServiceError::RootUnavailable(RootState::Ok),
+            ),
+            (
+                "keyring/key-file-missing",
+                ServiceError::Credentials(credentials::KeyringError::KeyFileMissing(
+                    PathBuf::from("/k"),
+                )),
+            ),
+            (
+                "keyring/undecryptable",
+                ServiceError::Credentials(credentials::KeyringError::Crypto("x".to_owned())),
+            ),
+            (
+                "keyring/corrupt",
+                ServiceError::Credentials(credentials::KeyringError::Corrupt("x".to_owned())),
+            ),
+            (
+                "keyring/io",
+                ServiceError::Credentials(credentials::KeyringError::Io(std::io::Error::other(
+                    "x",
+                ))),
+            ),
+            (
+                "connection/missing",
+                ServiceError::Credentials(credentials::KeyringError::MissingConnection(
+                    "deepseek".to_owned(),
+                )),
+            ),
+            (
+                "connection/invalid",
+                ServiceError::Credentials(credentials::KeyringError::InvalidConnection(
+                    "x".to_owned(),
+                )),
+            ),
+            ("settings/unavailable", ServiceError::SettingsOnBareHost),
+            (
+                "request/invalid-path",
+                ServiceError::InvalidPath("bad".to_owned()),
+            ),
+        ]
+    }
+
+    #[test]
+    fn service_error_codes_cover_every_variant() {
+        let pairs = variants();
+        for (expected, error) in &pairs {
+            assert_eq!(error.code().as_str(), *expected, "变体的码");
+        }
+        let mut used: Vec<&str> = pairs.iter().map(|(code, _)| *code).collect();
+        used.sort_unstable();
+        used.dedup();
+        let mut all: Vec<&str> = ServiceErrorCode::ALL
+            .iter()
+            .map(|code| code.as_str())
+            .collect();
+        all.sort_unstable();
+        assert_eq!(
+            used, all,
+            "码表与 ServiceError 变体必须一一对应（多/少都失败）"
+        );
+    }
+
+    #[test]
+    fn service_error_body_has_code_message_and_root_details() {
+        let root_error = ServiceError::RootUnavailable(RootState::Unavailable {
+            kind: RootUnavailableKind::Other,
+            path: Some("/x".to_owned()),
+            line: Some(3),
+            message: "x".to_owned(),
+        });
+        let body = ServiceErrorBody::from_service_error(&root_error);
+        let json = serde_json::to_value(&body).expect("serialize");
+        assert_eq!(json["code"], "root/unavailable");
+        assert!(
+            json["message"]
+                .as_str()
+                .is_some_and(|message| !message.is_empty())
+        );
+        assert_eq!(json["details"]["protocolVersion"], PROTOCOL_VERSION);
+        assert!(
+            json["details"].get("root").is_some(),
+            "details.root：{json}"
+        );
+        assert!(json.get("error").is_none(), "不再有旧 error 字段：{json}");
+        let other =
+            ServiceErrorBody::from_service_error(&ServiceError::AnswerRejected("q1".to_owned()));
+        let other_json = serde_json::to_value(&other).expect("serialize");
+        assert_eq!(other_json["code"], "question/answer-rejected");
+        assert!(
+            other_json.get("details").is_none(),
+            "无 detail 时不出现该字段：{other_json}"
+        );
+        assert!(other_json.get("error").is_none());
+    }
+
+    #[test]
+    fn quota_error_is_credential_cause() {
+        assert_eq!(
+            failure_cause(&turn_end("QUOTA", "额度用完")),
+            Some(FailureCause::Credential),
+            "QUOTA 归凭证类"
+        );
+    }
+
+    fn turn_end(code: &str, message: &str) -> session::EventKind {
+        session::EventKind::TurnEnd {
+            turn: 1,
+            reason: session::TurnEndReason::Error {
+                error: session::LlmFailure {
+                    message: message.to_owned(),
+                    code: code.to_owned(),
+                },
+            },
+        }
+    }
+}
