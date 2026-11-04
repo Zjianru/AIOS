@@ -3,6 +3,9 @@
 
 use std::process::{Command, Output};
 
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
 fn aios_dev() -> &'static str {
     env!("CARGO_BIN_EXE_aios-dev")
 }
@@ -86,15 +89,82 @@ const KEYRING_KEY: &str = "sk-keyring-f10";
 
 #[test]
 fn 环境变量有值但没有连接时仍提示接模型() {
-    // skeleton：红阶段补断言。
     let dir = tempfile::tempdir().expect("tempdir");
     let data_dir = dir.path().join("data");
     let identity = dir.path().join("identity.txt");
     let output = run_with_env(&data_dir, &identity, Some(ENV_KEY));
-    let _ = output;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "env 里有 key 也不能替代 Keyring 连接"
+    );
+    assert!(
+        !stderr.contains(ENV_KEY),
+        "env key 不能进入错误输出：{stderr}"
+    );
+    assert!(
+        !stderr.contains("DEEPSEEK_API_KEY"),
+        "env key 不能出现在提示里：{stderr}"
+    );
+    assert!(
+        stderr.contains("接模型") || stderr.contains("Keyring"),
+        "stderr={stderr}"
+    );
+    // env 有值也不签发：Keyring 没有连接时不能写 issue 记录。
+    let keyring = credentials::Keyring::open(&data_dir, Some(&identity)).expect("keyring");
+    assert!(
+        keyring.issues().is_empty(),
+        "env key 不能触发 Keyring 签发记录：{:?}",
+        keyring.issues()
+    );
 }
 
-#[test]
-fn 环境变量有值也不覆盖_keyring_的_key() {
-    // skeleton：红阶段补断言。
+#[tokio::test]
+async fn 环境变量有值也不覆盖_keyring_的_key() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data_dir = dir.path().join("data");
+    let identity = dir.path().join("identity.txt");
+    let keyring = credentials::Keyring::open(&data_dir, Some(&identity)).expect("keyring");
+    keyring
+        .save_connection(credentials::NewConnection {
+            id: "deepseek".to_owned(),
+            name: "DeepSeek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: server.uri(),
+            api_key: KEYRING_KEY.to_owned(),
+        })
+        .expect("save");
+    let output = run_with_env(&data_dir, &identity, Some(ENV_KEY));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains(ENV_KEY),
+        "env key 不能进入错误输出：{stderr}"
+    );
+    assert!(
+        !stderr.contains("DEEPSEEK_API_KEY"),
+        "env key 不能出现在提示里：{stderr}"
+    );
+    let requests = server.received_requests().await.expect("请求记录");
+    assert!(!requests.is_empty(), "连接存在时必须发起模型请求");
+    let header = requests[0]
+        .headers
+        .get("x-api-key")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert_eq!(header, KEYRING_KEY, "发出去的 key 必须来自 Keyring");
+    let keyring = credentials::Keyring::open(&data_dir, Some(&identity)).expect("keyring");
+    assert!(
+        keyring
+            .issues()
+            .iter()
+            .any(|issue| issue.purpose == "model-request" && issue.connection == "deepseek"),
+        "签发记录属于 Keyring 连接：{:?}",
+        keyring.issues()
+    );
 }
