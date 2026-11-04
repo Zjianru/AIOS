@@ -1272,6 +1272,7 @@ impl RootHost {
     fn emit_settings_changed(&self) {
         let event = ServiceEvent {
             seq: 0,
+            time: 0,
             event_type: "keyring/changed".to_owned(),
             data: serde_json::json!({}),
             cause: None,
