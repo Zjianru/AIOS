@@ -21,11 +21,18 @@ async function shot(page: import('@playwright/test').Page, name: string) {
 }
 
 /// DoD7：五种说明页各一张截图（造法见 evidence/dod/README.md）。
-test('DoD7 令牌失效', async ({ request }) => {
+/// T007 #1：令牌失效用真能走到的路——页面开着 → 重启服务（新进程新 cookie 钥匙）→ 下一次调用 401。
+test('DoD7 令牌失效：页面开着重启服务后下一次请求 401', async ({ page }) => {
   const fixture = await startKernelFixture();
   try {
-    const response = await request.get(urlOf(fixture, 'wrong-token'), { maxRedirects: 0 });
-    expect(response.status()).toBe(401);
+    await page.goto(urlOf(fixture));
+    await expect(page.getByPlaceholder('和 Kind 说…')).toBeVisible({ timeout: 30_000 });
+    await fixture.restart?.();
+    // 页面开着 → 重启服务（新进程=新 cookie 钥匙）→ 断线 recheck 的下一次 /api 收到 401 → 令牌说明页。
+    const gate = page.locator('[data-kind="kernel-gate"]');
+    await expect(gate).toHaveAttribute('data-state', 'token', { timeout: 40_000 });
+    await expect(page.getByText('这个地址已经失效')).toBeVisible();
+    await shot(page, 'dod7-1-token.png');
   } finally {
     await fixture.close();
   }

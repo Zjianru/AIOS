@@ -130,6 +130,8 @@ export interface KernelFixture {
   dataDir: string;
   dropProxy?: () => Promise<void>;
   restoreProxy?: () => Promise<void>;
+  /// T007 #1：页面开着时重启同一个端口的服务（新进程=新 cookie 钥匙，旧页面会话失效）。
+  restart?: () => Promise<void>;
   close(): Promise<void>;
 }
 
@@ -249,26 +251,43 @@ export async function startKernelFixture(
       });
     });
   }
-  const child = spawn(bin, serveArgs, {
+  const waitForUrl = (
+    proc: ReturnType<typeof spawn>,
+  ): Promise<{ baseUrl: string; token: string }> =>
+    new Promise((resolve, reject) => {
+      let output = '';
+      const timer = setTimeout(() => reject(new Error(`serve 启动超时: ${output}`)), 30_000);
+      proc.stdout?.on('data', (chunk: Buffer) => {
+        output += chunk.toString();
+        const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)\/?\?token=([0-9a-f-]+)/);
+        if (match) {
+          clearTimeout(timer);
+          resolve({ baseUrl: `http://127.0.0.1:${match[1]}`, token: match[2] });
+        }
+      });
+      proc.on('exit', (code) => {
+        clearTimeout(timer);
+        reject(new Error(`serve 退出（${code}）: ${output}`));
+      });
+    });
+  let child = spawn(bin, serveArgs, {
     env: serviceEnv,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  let output = '';
-  const parsed = await new Promise<{ baseUrl: string; token: string }>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`serve 启动超时: ${output}`)), 30_000);
-    child.stdout.on('data', (chunk: Buffer) => {
-      output += chunk.toString();
-      const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)\/?\?token=([0-9a-f-]+)/);
-      if (match) {
-        clearTimeout(timer);
-        resolve({ baseUrl: `http://127.0.0.1:${match[1]}`, token: match[2] });
-      }
+  const parsed = await waitForUrl(child);
+  let token = parsed.token;
+  const restart = async (): Promise<void> => {
+    child.kill('SIGTERM');
+    await new Promise<void>((resolve) => child.once('exit', () => resolve()));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const port = Number(new URL(parsed.baseUrl).port);
+    child = spawn(bin, [...serveArgs, '--port', String(port)], {
+      env: serviceEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
-    child.on('exit', (code) => {
-      clearTimeout(timer);
-      reject(new Error(`serve 退出（${code}）: ${output}`));
-    });
-  });
+    const next = await waitForUrl(child);
+    token = next.token;
+  };
   let baseUrl = parsed.baseUrl;
   const proxyState: {
     server: Server | null;
@@ -333,9 +352,11 @@ export async function startKernelFixture(
   return {
     ...parsed,
     baseUrl,
+    token,
     dataDir,
     dropProxy,
     restoreProxy,
+    restart,
     close: async () => {
       await dropProxy();
       holder?.kill('SIGTERM');

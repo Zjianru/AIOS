@@ -7,12 +7,8 @@ import path from 'node:path';
 
 const proto = process.env.AIOS_PROTOTYPE_DIR ?? path.join(homedir(), 'Documents/aios-design/app-v14');
 const src = path.resolve(process.cwd(), 'src');
-const head = execFileSync('git', ['-C', proto, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim();
-if (head !== 'e457744') {
-  console.error('原型不是 e457744：' + head);
-  process.exit(2);
-}
-const rows = execFileSync('git', ['-C', proto, 'grep', '-n', 'AIOS 概念', '--', '*.tsx', '*.ts'], {
+// 原型目录的 HEAD 可能已经前进；条目固定从 e457744 这个提交取（AIOS_PROTOTYPE_DIR 仍可覆盖仓库路径）。
+const rows = execFileSync('git', ['-C', proto, 'grep', '-n', 'AIOS 概念', 'e457744', '--', '*.tsx', '*.ts'], {
   encoding: 'utf8',
 }).trim().split('\n');
 const bodies = rows.map((row) => {
