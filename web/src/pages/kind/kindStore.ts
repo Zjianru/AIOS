@@ -115,7 +115,7 @@ interface KindState {
   byId: Map<string, TurnViewData>;
   firstItemIndex: number;
   nextCursor: string | null;
-  /** 当前最老一条日志的 seq（往上翻时 beforeSeq = oldestSeq - 1）。 */
+  /** 当前最老一条日志的 seq（往上翻时 beforeSeq = oldestSeq，不含本条）。 */
   oldestSeq: number | null;
   hasOlder: boolean;
   loadingOlder: boolean;
@@ -786,7 +786,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
     mark('prepend:start');
     try {
       const page = await fetchEventsPage({
-        beforeSeq: state.oldestSeq - 1,
+        beforeSeq: state.oldestSeq,
         maxMessages: 400,
         minMessages: 100,
         minTurns: 20,

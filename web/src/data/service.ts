@@ -159,7 +159,7 @@ export async function fetchEventsPage(options: {
 
 /* ───────────────────────── T008 设置 › 模型与连接（Keyring） ───────────────────────── */
 
-/** 与 service 协议 v3 对应的 Keyring 类型（响应里没有 key 正文）。 */
+/** 与 service 协议 v4 对应的 Keyring 类型（响应里没有 key 正文）。 */
 export interface ServiceKeyFileInfo {
   path: string;
   since: number;

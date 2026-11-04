@@ -232,7 +232,7 @@ pub struct FollowResponse {
 /// events（DSH :540）：往回翻一页日志，按轮对齐、有预算（默认 50/2/500）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct EventsRequest {
-    /// 页的末端（含）；省略 = 当前日志末端。
+    /// 页的末端（不含本条）；省略 = 当前日志末端之后。
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "beforeSeq")]
     pub before_seq: Option<u64>,
     /// 消息条数上限（user/message + assistant/message），默认 500。
@@ -266,7 +266,7 @@ pub struct RecheckResponse {
 pub struct EventsResponse {
     /// 这一页事件（按日志顺序；页首通常是 turn/start，除非预算或日志耗尽先到）。
     pub events: Vec<ServiceEvent>,
-    /// 还有更早的事件（下一轮用 beforeSeq = 页首 seq - 1 往回翻）。
+    /// 还有更早的事件（下一轮用 beforeSeq = 页首 seq 往回翻，不含本条）。
     #[serde(rename = "hasMore")]
     pub has_more: bool,
 }
@@ -845,7 +845,7 @@ impl Drop for ServiceHost {
     }
 }
 
-/// T009.4 骨架：events 的分页选择（先保持 T008 的含 beforeSeq 语义；红测试后改为不含本条）。
+/// T009.4：events 的分页选择（beforeSeq 不含本条；照 DSH history.ts:124-140）。
 fn page_events<'a>(
     all: &'a [session::Event],
     before_seq: Option<u64>,
@@ -856,15 +856,20 @@ fn page_events<'a>(
     if all.is_empty() {
         return (Vec::new(), false);
     }
-    let end_seq = before_seq
-        .unwrap_or(u64::MAX)
-        .min(all.last().map(|event| event.seq).unwrap_or(0));
+    // T009.4：beforeSeq 是「不含本条」的上界（照 DSH history.ts:124-140）；省略 = 日志末端之后。
+    let exclusive_end = match before_seq {
+        Some(seq) => seq,
+        None => all.last().map(|event| event.seq + 1).unwrap_or(0),
+    };
+    if exclusive_end == 0 {
+        return (Vec::new(), false);
+    }
     let min_messages = min_messages.unwrap_or(50).min(max_messages);
     let min_turns = min_turns.unwrap_or(2).max(1);
     let mut selected: Vec<&session::Event> = Vec::new();
     let mut messages = 0_usize;
     let mut turns = 0_usize;
-    for event in all.iter().filter(|event| event.seq <= end_seq).rev() {
+    for event in all.iter().filter(|event| event.seq < exclusive_end).rev() {
         selected.push(event);
         match &event.kind {
             session::EventKind::UserMessage { .. }
