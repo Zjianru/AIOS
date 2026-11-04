@@ -4,8 +4,9 @@
 //! IP；Host 失败 403、令牌失败 401；0.0.0.0 不支持）、webserver README 第 39 行（未指定地址
 //! 拒绝）、Connection generation（ready 项先于事件、重连带最后序号重新跟随）。
 
+use axum::http::{HeaderMap, header::HOST};
 use service::{ContextUsage, FollowResponse, HostInfo, RootState, ServiceEvent};
-use web::{Frame, Trust, check_bind_host, check_request, opening_frames};
+use web::{Frame, Trust, authorize_connect, check_api_auth, check_bind_host, opening_frames};
 
 fn trust() -> Trust {
     Trust::new(

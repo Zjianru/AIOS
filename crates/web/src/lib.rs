@@ -294,23 +294,6 @@ fn token_matches(expected: &str, provided: &str) -> bool {
     diff == 0
 }
 
-/// 校验一次请求：Host 头必须是本机（回环/localhost/绑定 IP），令牌必须匹配。
-pub fn check_request(
-    trust: &Trust,
-    host_header: Option<&str>,
-    token: Option<&str>,
-) -> Result<(), TrustError> {
-    let host = host_header.ok_or_else(|| TrustError::BadHost("<missing>".to_owned()))?;
-    if !authority_is_loopback(host, trust.bind_ip) {
-        return Err(TrustError::BadHost(host.to_owned()));
-    }
-    let token = token.ok_or(TrustError::Unauthorized)?;
-    if !token_matches(&trust.token, token) {
-        return Err(TrustError::Unauthorized);
-    }
-    Ok(())
-}
-
 /// 解析裸 authority（无 scheme 的 host[:port]，IPv6 用方括号）；返回小写主机与端口。
 fn parse_authority(raw: &str) -> Option<(String, Option<u16>)> {
     let uri: axum::http::Uri = format!("http://{raw}").parse().ok()?;
@@ -1044,6 +1027,19 @@ mod cookie_red_tests {
         let mut headers = HeaderMap::new();
         headers.insert(HOST, authority.to_owned().parse().unwrap());
         headers
+    }
+
+    /// T006 r3 #3：401 正文照来源意思说「重新打开打印的地址」，不出现来源名字/令牌字样。
+    #[test]
+    fn unauthorized_body_reopens_printed_address() {
+        let body = TrustError::Unauthorized.to_string();
+        assert_eq!(
+            body,
+            "还没有登录或登录已失效：请重新打开 aios-dev serve 打印的地址。"
+        );
+        assert!(!body.contains("令牌"), "cookie 错时不再说令牌：{body}");
+        assert!(!body.contains("dsh"), "不出现来源名字：{body}");
+        assert_eq!(TrustError::Unauthorized.to_string(), UNAUTHORIZED_BODY);
     }
 
     #[test]
