@@ -169,19 +169,17 @@ fn encode(records: &[AssistantStreamRecord], complete: bool) -> Vec<String> {
                     ));
                 }
                 StreamChunk::Usage { usage: reported } => usage = Some(reported.clone()),
-                StreamChunk::Finish { reason } => {
-                    if complete {
-                        frames.push(frame(
-                            "message_delta",
-                            json!({
-                                "type": "message_delta",
-                                "delta": {"stop_reason": stop_reason(*reason)},
-                                "usage": usage.as_ref().map(usage_wire).unwrap_or(json!({}))
-                            }),
-                        ));
-                        frames.push(frame("message_stop", json!({"type": "message_stop"})));
-                        finished = true;
-                    }
+                StreamChunk::Finish { reason } if complete => {
+                    frames.push(frame(
+                        "message_delta",
+                        json!({
+                            "type": "message_delta",
+                            "delta": {"stop_reason": stop_reason(*reason)},
+                            "usage": usage.as_ref().map(usage_wire).unwrap_or(json!({}))
+                        }),
+                    ));
+                    frames.push(frame("message_stop", json!({"type": "message_stop"})));
+                    finished = true;
                 }
                 _ => {}
             },
