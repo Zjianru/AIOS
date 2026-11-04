@@ -12,6 +12,7 @@ struct Shared {
     calls: Vec<ReplayCall>,
     pace_ms: Option<u64>,
     cursor: usize,
+    last_model: Option<String>,
 }
 
 /// 起好的回放服务（地址 + 后台任务）。
@@ -38,6 +39,7 @@ pub async fn start_replay_server(script: ReplayScript) -> Result<ReplayServer, R
         calls: script.calls,
         pace_ms: script.pace_ms,
         cursor: 0,
+        last_model: None,
     }));
     let task = tokio::spawn(async move {
         loop {
@@ -57,8 +59,41 @@ async fn handle(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> std::io::R
     let Some((head, body)) = read_request(&mut stream).await? else {
         return Ok(());
     };
+    let path = request_path(&head);
+    // 假模型的旧行为：x-api-key 是 bad-key 时回 401（first-use 错 key 用例）；不消耗脚本。
+    if header_value(&head, "x-api-key").as_deref() == Some("bad-key") {
+        let body = serde_json::json!({
+            "type": "error",
+            "error": {"type": "authentication_error", "message": "invalid api key"}
+        })
+        .to_string();
+        return write_response(
+            &mut stream,
+            401,
+            "application/json",
+            body.as_bytes().to_vec(),
+        )
+        .await;
+    }
+    // T010.2：测试夹具要断言下一轮用的模型；控制端点回最近一次请求的 model。
+    if path.contains("__replay/last-model") {
+        let model = shared.lock().await.last_model.clone();
+        let body = serde_json::json!({ "model": model })
+            .to_string()
+            .into_bytes();
+        return write_response(&mut stream, 200, "application/json", body).await;
+    }
+    let body_value: serde_json::Value =
+        serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+    let requested_model = body_value
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
     let (call, pace_ms) = {
         let mut state = shared.lock().await;
+        if let Some(model) = requested_model {
+            state.last_model = Some(model);
+        }
         let index = state.cursor;
         state.cursor += 1;
         (state.calls.get(index).cloned(), state.pace_ms)
@@ -74,8 +109,6 @@ async fn handle(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> std::io::R
         )
         .await;
     };
-    let _ = head;
-    let _ = body;
     match call {
         ReplayCall::Throw { status, body } => {
             let body = body.to_string().into_bytes();
@@ -123,6 +156,25 @@ async fn read_request(stream: &mut TcpStream) -> std::io::Result<Option<(Vec<u8>
             .to_vec();
         return Ok(Some((buffer[..header_end].to_vec(), body)));
     }
+}
+
+fn header_value(head: &[u8], name: &str) -> Option<String> {
+    let text = String::from_utf8_lossy(head);
+    let prefix = format!("{name}:");
+    for line in text.split(
+        "
+",
+    ) {
+        if let Some(value) = line.to_ascii_lowercase().strip_prefix(&prefix) {
+            return Some(value.trim().to_owned());
+        }
+    }
+    None
+}
+
+fn request_path(head: &[u8]) -> String {
+    let text = String::from_utf8_lossy(head);
+    text.split(' ').nth(1).unwrap_or_default().to_owned()
 }
 
 fn find_header_end(buffer: &[u8]) -> Option<usize> {

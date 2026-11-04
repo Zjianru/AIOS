@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use model::AssistantStreamRecord;
+use model::{AssistantStreamRecord, ContentBlock, FinishReason, StreamChunk, Usage};
 
 /// 回放脚本/服务用到的错误。
 #[derive(Debug, thiserror::Error)]
@@ -58,7 +58,10 @@ impl ReplayScript {
             let Some(kind) = value.get("type").and_then(serde_json::Value::as_str) else {
                 continue;
             };
-            if kind != "assistant/message" && kind != "assistant/attempt" {
+            if kind != "assistant/message"
+                && kind != "assistant/attempt"
+                && kind != "compaction/summary"
+            {
                 continue;
             }
             let event: session::Event = serde_json::from_value(value).map_err(|error| {
@@ -68,6 +71,15 @@ impl ReplayScript {
                 session::EventKind::AssistantMessage { stream, .. }
                 | session::EventKind::AssistantAttempt { stream, .. } => {
                     calls.push(ReplayCall::Stream(stream));
+                }
+                session::EventKind::CompactionSummary {
+                    llm_stream_call: true,
+                    raw_output,
+                    usage,
+                    ..
+                } => {
+                    // 本地压缩的摘要请求也走模型，但日志里只有 rawOutput + usage（没有 stream）。
+                    calls.push(ReplayCall::Stream(summary_records(raw_output, usage)));
                 }
                 _ => {}
             }
@@ -130,6 +142,33 @@ impl ReplayScript {
         }
         Ok(())
     }
+}
+
+/// 把压缩摘要的 rawOutput + usage 合成为回放用的流记录（块内容 + usage + 正常收尾）。
+fn summary_records(
+    raw_output: Vec<ContentBlock>,
+    usage: Option<Usage>,
+) -> Vec<AssistantStreamRecord> {
+    let mut records = Vec::new();
+    for (index, block) in raw_output.into_iter().enumerate() {
+        records.push(AssistantStreamRecord::Chunk {
+            time: 0,
+            chunk: StreamChunk::BlockEnd { index, block },
+        });
+    }
+    if let Some(usage) = usage {
+        records.push(AssistantStreamRecord::Chunk {
+            time: 0,
+            chunk: StreamChunk::Usage { usage },
+        });
+    }
+    records.push(AssistantStreamRecord::Chunk {
+        time: 0,
+        chunk: StreamChunk::Finish {
+            reason: FinishReason::Stop,
+        },
+    });
+    records
 }
 
 /// 覆盖文件里的一个 entry。
