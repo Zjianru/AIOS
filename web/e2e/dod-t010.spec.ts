@@ -89,10 +89,10 @@ test('DoD2/3/4 真 key：缓存、压缩占用、用量、夹具', async ({ page
     const cacheHit = Math.round(((second.cacheReadTokens ?? 0) / (shownInput || 1)) * 100);
     const row = page.getByText('工作过程', { exact: false }).last();
     await row.hover();
-    await expect(page.getByText('DeepSeek Flash · 输入 ' + String(shownInput), { exact: false })).toBeVisible({
+    await expect(page.getByText('DeepSeek Flash · 输入 ' + String(shownInput), { exact: false }).last()).toBeVisible({
       timeout: 20_000,
     });
-    await expect(page.getByText('缓存命中 ' + String(cacheHit) + '%', { exact: false })).toBeVisible();
+    await expect(page.getByText('缓存命中 ' + String(cacheHit) + '%', { exact: false }).last()).toBeVisible();
     await shot(page, 't010-dod4-usage.png');
 
     // DoD3：手动压缩一次，再发一条；分隔线的占用 a% → b% 与日志手算一致。
