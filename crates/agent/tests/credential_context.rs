@@ -5,7 +5,7 @@ mod common;
 use std::sync::Arc;
 
 use agent::{Agent, AgentOpenOptions, Delivery};
-use common::{isolated_config, model_config, sse, wait_idle, FINAL_TEXT_SSE};
+use common::{FINAL_TEXT_SSE, isolated_config, model_config, sse, wait_idle};
 use credentials::{Keyring, NewConnection};
 use model::CredentialContext;
 use model::UserMessage;
@@ -23,14 +23,11 @@ impl model::CredentialSource for KeyringSource {
         context: &CredentialContext,
     ) -> Result<String, model::ModelError> {
         self.keyring
-            .issue(
-                "deepseek",
-                purpose,
-                context.run.as_deref(),
-                context.turn,
-            )
+            .issue("deepseek", purpose, context.run.as_deref(), context.turn)
             .map(credentials::IssuedSecret::into_secret)
-            .map_err(|error| model::ModelError::new(model::ErrorCode::MissingCredential, error.to_string()))
+            .map_err(|error| {
+                model::ModelError::new(model::ErrorCode::MissingCredential, error.to_string())
+            })
     }
 }
 
@@ -46,9 +43,7 @@ async fn agent_turn_records_run_and_turn_in_keyring() {
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let keyring_dir = tempfile::tempdir().unwrap();
-    let keyring = Arc::new(
-        Keyring::open(keyring_dir.path(), None).expect("open keyring"),
-    );
+    let keyring = Arc::new(Keyring::open(keyring_dir.path(), None).expect("open keyring"));
     keyring
         .save_connection(NewConnection {
             id: "deepseek".to_owned(),
