@@ -203,9 +203,70 @@ pub fn check_request(
     Ok(())
 }
 
-/// T006.F2：浏览器请求的 Origin / Fetch-Metadata 栅栏（先骨架，红测试后实现）。
-pub fn check_origin(_headers: &HeaderMap) -> Result<(), TrustError> {
-    Ok(())
+/// 解析裸 authority（无 scheme 的 host[:port]，IPv6 用方括号）；返回小写主机与端口。
+fn parse_authority(raw: &str) -> Option<(String, Option<u16>)> {
+    let uri: axum::http::Uri = format!("http://{raw}").parse().ok()?;
+    let host = uri
+        .host()?
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
+    if host.is_empty() || host.contains('[') || host.contains(']') {
+        return None;
+    }
+    Some((host, uri.port_u16()))
+}
+
+/// Host/Origin 同源比较：http(s) scheme + 规范化 hostname + 端口（缺省按 scheme 归一）。
+fn origin_is_same_authority(origin: &str, host: &str) -> bool {
+    let origin_uri: axum::http::Uri = match origin.parse() {
+        Ok(uri) => uri,
+        Err(_) => return false,
+    };
+    let scheme = match origin_uri.scheme_str() {
+        Some("http") => "http",
+        Some("https") => "https",
+        _ => return false,
+    };
+    let Some(origin_host) = origin_uri.host() else {
+        return false;
+    };
+    let origin_host = origin_host.to_ascii_lowercase();
+    let Some((host_name, host_port)) = parse_authority(host) else {
+        return false;
+    };
+    let default_port = if scheme == "https" { 443 } else { 80 };
+    let origin_port = origin_uri.port_u16().unwrap_or(default_port);
+    let host_port = host_port.unwrap_or(default_port);
+    origin_host == host_name && origin_port == host_port
+}
+
+/// T006.F2：浏览器请求的 Origin / Fetch-Metadata 栅栏。
+pub fn check_origin(headers: &HeaderMap) -> Result<(), TrustError> {
+    let host = headers
+        .get(HOST)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| TrustError::BadHost("<missing>".to_owned()))?;
+    if headers
+        .get("sec-fetch-site")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("cross-site"))
+    {
+        return Err(TrustError::BadOrigin(
+            "sec-fetch-site: cross-site".to_owned(),
+        ));
+    }
+    let Some(origin) = headers.get("origin") else {
+        return Ok(());
+    };
+    let origin = origin
+        .to_str()
+        .map_err(|_| TrustError::BadOrigin("<non-utf8>".to_owned()))?;
+    if origin_is_same_authority(origin, host) {
+        Ok(())
+    } else {
+        Err(TrustError::BadOrigin(origin.to_owned()))
+    }
 }
 
 /// 打开连接时的帧序列：ready 第一帧，然后按 lastSeq 补齐的事件（重连带序号）。
@@ -273,6 +334,9 @@ async fn api_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    if let Err(error) = check_origin(&headers) {
+        return trust_error_response(error);
+    }
     if let Err(error) = trust_check(&state, &headers, query.token.as_deref()) {
         return trust_error_response(error);
     }
@@ -295,6 +359,9 @@ async fn ws_handler(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
+    if let Err(error) = check_origin(&headers) {
+        return trust_error_response(error);
+    }
     if let Err(error) = trust_check(&state, &headers, query.token.as_deref()) {
         return trust_error_response(error);
     }
