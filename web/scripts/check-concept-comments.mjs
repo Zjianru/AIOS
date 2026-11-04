@@ -44,4 +44,9 @@ for (const { file, line, body } of bodies) {
 }
 console.log('原型正文 ' + bodies.length + ' 条；web/src 命中 ' + hits.length + ' 条');
 for (const hit of hits) console.log('HIT ' + hit);
+if (hits.length > 0) {
+  console.error('原型正文仍出现在 web/src：' + hits.length + ' 条');
+  process.exit(1);
+}
+console.log('0 命中：通过');
 process.exit(0);
