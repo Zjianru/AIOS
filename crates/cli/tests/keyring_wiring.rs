@@ -1,13 +1,19 @@
 //! T008.2：CLI 不再读 DEEPSEEK_API_KEY；连接来自 Keyring。
+//! T008.F10（review #10）：补反证——env 里设了 key 也不用、也不签发。
 
-use std::process::Command;
+use std::process::{Command, Output};
 
 fn aios_dev() -> &'static str {
     env!("CARGO_BIN_EXE_aios-dev")
 }
 
-fn run(data_dir: &std::path::Path, identity: &std::path::Path) -> std::process::Output {
-    Command::new(aios_dev())
+fn run_with_env(
+    data_dir: &std::path::Path,
+    identity: &std::path::Path,
+    env_api_key: Option<&str>,
+) -> Output {
+    let mut command = Command::new(aios_dev());
+    command
         .args([
             "run",
             "--data-dir",
@@ -19,9 +25,15 @@ fn run(data_dir: &std::path::Path, identity: &std::path::Path) -> std::process::
             "你好",
         ])
         .env_remove("DEEPSEEK_API_KEY")
-        .env_remove("DEEPSEEK_BASE_URL")
-        .output()
-        .expect("运行 aios-dev")
+        .env_remove("DEEPSEEK_BASE_URL");
+    if let Some(key) = env_api_key {
+        command.env("DEEPSEEK_API_KEY", key);
+    }
+    command.output().expect("运行 aios-dev")
+}
+
+fn run(data_dir: &std::path::Path, identity: &std::path::Path) -> Output {
+    run_with_env(data_dir, identity, None)
 }
 
 #[test]
@@ -67,4 +79,22 @@ fn 连接存在时不再要求环境变量() {
         !stderr.contains("还没有接模型"),
         "连接存在不应说没接模型：{stderr}"
     );
+}
+
+const ENV_KEY: &str = "env-key-should-not-be-used";
+const KEYRING_KEY: &str = "sk-keyring-f10";
+
+#[test]
+fn 环境变量有值但没有连接时仍提示接模型() {
+    // skeleton：红阶段补断言。
+    let dir = tempfile::tempdir().expect("tempdir");
+    let data_dir = dir.path().join("data");
+    let identity = dir.path().join("identity.txt");
+    let output = run_with_env(&data_dir, &identity, Some(ENV_KEY));
+    let _ = output;
+}
+
+#[test]
+fn 环境变量有值也不覆盖_keyring_的_key() {
+    // skeleton：红阶段补断言。
 }
