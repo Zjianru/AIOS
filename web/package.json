@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "typecheck": "tsc -b",
     "e2e": "playwright test",
-    "check:markers": "node scripts/check-prototype-markers.mjs"
+    "check:markers": "node scripts/check-prototype-markers.mjs",
+    "check:concepts": "node scripts/check-concept-comments.mjs"
   },
   "dependencies": {
     "@fontsource-variable/overpass": "5.3.0",
