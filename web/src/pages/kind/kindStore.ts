@@ -11,6 +11,8 @@ import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQues
 import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
 import type { GateDetail, GateState } from './KernelGate';
 import { reconnectDelayMs } from '@/data/reconnect';
+import { getModelSettings } from '@/data/keyring';
+import { emptyUsage, mergeUsage, modelLabel, reasoningSpanMs, thinkingSeconds as thinkingSecondsOf, type UsageTotals } from '@/data/turnUsage';
 import { setHostHome } from '@/data/service';
 import { go } from '@/app/navigate';
 import type { AskAnswer, AskQuestion, FailureCause } from '@/data/fixtures/kindLive';
@@ -58,7 +60,9 @@ export interface TurnViewData {
   cards: KindCard[];
   answer: { text: string; elements: TextElement[] } | null;
   thinkingSeconds: number;
-  tokens: { input: number; output: number };
+  tokens: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
+  /** T010.3：这一轮最后一条 assistant/message 的模型显示名（日志里没有就退回 id）。 */
+  model: string;
   cost: number | null;
   /** 模型正在重试（第几次、为什么）。 */
   retry: { attempt: number; reason: string; inSeconds: number } | null;
@@ -138,6 +142,8 @@ interface KindState {
   usage: number;
   compacting: boolean;
   /** 演示用：下一条消息送不到。 */
+  /** T010.3：模型 id → 显示名（来自模型设置；拿不到就用 id）。 */
+  modelNames: Record<string, string>;
   /** 当前用的模型（底栏的模型选择，T008）。 */
   model: { connectionId: string; modelId: string; label: string };
   /** T008.4：Kind 首屏引导：先看是不是空库（首次使用），否则加载对话。 */
@@ -221,6 +227,7 @@ function addUnsentView(viewId: string, text: string): void {
       answer: null,
       thinkingSeconds: 0,
       tokens: { input: 0, output: 0 },
+      model: '模型服务',
       cost: null,
       retry: null,
       failure: null,
@@ -371,6 +378,7 @@ function applyLiveEvent(event: ServiceEvent): void {
         answer: null,
         thinkingSeconds: 0,
         tokens: { input: 0, output: 0 },
+      model: '模型服务',
         cost: null,
         retry: null,
         failure: null,
@@ -447,7 +455,9 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     answer: string | null;
     status: TurnStatus;
     tools: ToolStep[];
-    tokens: { input: number; output: number };
+    usage: UsageTotals;
+    modelId: string | null;
+    reasoningMs: number;
     failure: { cause: FailureCause; reason: string } | null;
     question: QuestionView | null;
     retry: TurnViewData['retry'];
@@ -468,7 +478,9 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         answer: null,
         status: 'inProgress',
         tools: [],
-        tokens: { input: 0, output: 0 },
+        usage: emptyUsage(),
+        modelId: null,
+        reasoningMs: 0,
         failure: null,
         question: null,
         retry: null,
@@ -521,14 +533,11 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     return parts.join('');
   };
 
-  const usageOf = (data: Record<string, unknown>): { input: number; output: number } => {
-    const usage = data.usage;
-    if (!usage || typeof usage !== 'object') return { input: 0, output: 0 };
-    const value = (name: string) => {
-      const number = (usage as Record<string, unknown>)[name];
-      return typeof number === 'number' ? number : 0;
-    };
-    return { input: value('inputTokens'), output: value('outputTokens') };
+  const modelIdOf = (message: unknown): string | null => {
+    if (!message || typeof message !== 'object') return null;
+    const source = (message as { source?: { kind?: string; model?: unknown } }).source;
+    if (!source || source.kind !== 'model') return null;
+    return typeof source.model === 'string' ? source.model : null;
   };
   for (const event of events) {
     const data = event.data ?? {};
@@ -555,9 +564,17 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         const raw = ensure(turn);
         const text = textOf(data.message);
         if (text) raw.answer = text;
-        raw.tokens = usageOf(data);
+        raw.usage = mergeUsage(raw.usage, data.usage);
+        raw.modelId = modelIdOf(data.message) ?? raw.modelId;
+        raw.reasoningMs += reasoningSpanMs(data.stream);
         raw.status = 'inProgress';
         raw.retry = null;
+        break;
+      }
+      case 'assistant/attempt': {
+        const raw = ensure(turn);
+        raw.usage = mergeUsage(raw.usage, data.usage);
+        raw.reasoningMs += reasoningSpanMs(data.stream);
         break;
       }
       case 'tool/call': {
@@ -698,8 +715,14 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       tools: raw.tools,
       cards: [],
       answer: raw.answer ? { text: raw.answer, elements: [] } : null,
-      thinkingSeconds: 0,
-      tokens: raw.tokens,
+      thinkingSeconds: thinkingSecondsOf(raw.reasoningMs),
+      tokens: {
+        input: raw.usage.input,
+        output: raw.usage.output,
+        cacheRead: raw.usage.cacheRead,
+        cacheWrite: raw.usage.cacheWrite,
+      },
+      model: modelLabel(raw.modelId, useKindStore.getState().modelNames),
       cost: null,
       retry: raw.retry,
       compaction: raw.compaction,
@@ -733,9 +756,24 @@ export const useKindStore = create<KindState>()((set, get) => ({
   connection: { state: 'online' },
   usage: 46,
   compacting: false,
+  modelNames: {},
   model: DEMO_MODEL,
 
   bootstrap: async () => {
+    void getModelSettings()
+      .then((view) => {
+        const names: Record<string, string> = {};
+        for (const connection of view.connections) {
+          for (const model of connection.models) if (model.name) names[model.id] = model.name;
+        }
+        for (const provider of view.catalog) {
+          for (const model of provider.defaultModels) if (model.name) names[model.id] = model.name;
+        }
+        set({ modelNames: names });
+      })
+      .catch(() => {
+        // 设置读不到时模型名退回 id（日志里的事实还在）。
+      });
     try {
       const first = await fetchFirstUse();
       if (first.firstUse) {
