@@ -11,6 +11,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+model = { path = "../model" }
 tempfile.workspace = true
 
 [lints]
