@@ -25,8 +25,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use service::{
-    ContextUsage, FollowRequest, FollowResponse, HostInfo, PROTOCOL_VERSION, RootHost, RootState,
-    ServiceError, ServiceEvent,
+    ContextUsage, FollowRequest, FollowResponse, HostInfo, HostLocation, PROTOCOL_VERSION,
+    RootHost, RootState, ServiceError, ServiceEvent,
 };
 
 /// 默认只绑 IPv4 回环。
@@ -156,6 +156,8 @@ pub enum Frame {
         protocol_version: u64,
         root: RootState,
         context: ContextUsage,
+        /// T009.5：host: {home}（页面用来缩写路径）。
+        host: HostLocation,
     },
     /// 日志事件帧（DSH 的 {type:'event', event: SessionWireEvent}）。
     Event { event: ServiceEvent },
@@ -617,6 +619,7 @@ pub fn opening_frames(info: &HostInfo, follow: FollowResponse) -> Vec<Frame> {
         protocol_version: PROTOCOL_VERSION,
         root: info.root.clone(),
         context: info.context,
+        host: info.host.clone(),
     });
     frames.extend(
         follow

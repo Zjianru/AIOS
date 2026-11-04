@@ -36,6 +36,9 @@ fn info() -> HostInfo {
             used: 0,
             window: 1000,
         },
+        host: service::HostLocation {
+            home: std::env::var("HOME").ok().filter(|home| !home.is_empty()),
+        },
     }
 }
 
@@ -163,16 +166,19 @@ fn opening_sends_ready_before_events_in_order() {
     assert_eq!(seqs, vec![3, 4], "事件按 seq 顺序、ready 之后");
 
     // 线上形状照 DSH：ready {type:'ready',...}；事件 {type:'event', event:{seq,type,data}}。
-    assert_eq!(
-        serde_json::to_value(&frames[0]).unwrap(),
-        serde_json::json!({
-            "type": "ready",
-            "sessionId": "sess-1",
-            "protocolVersion": service::PROTOCOL_VERSION,
-            "root": {"state": "ok"},
-            "context": {"used": 0, "window": 1000}
-        })
-    );
+    let mut expected_ready = serde_json::json!({
+        "type": "ready",
+        "sessionId": "sess-1",
+        "protocolVersion": service::PROTOCOL_VERSION,
+        "root": {"state": "ok"},
+        "context": {"used": 0, "window": 1000},
+    });
+    // T009.5：ready 带 host: {home}（测试进程的 HOME；没有就省略字段）。
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() => expected_ready["host"] = serde_json::json!({"home": home}),
+        _ => expected_ready["host"] = serde_json::json!({}),
+    }
+    assert_eq!(serde_json::to_value(&frames[0]).unwrap(), expected_ready);
     assert_eq!(
         serde_json::to_value(&frames[1]).unwrap(),
         serde_json::json!({

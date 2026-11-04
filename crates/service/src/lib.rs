@@ -495,7 +495,15 @@ pub struct ContextUsage {
     pub window: u64,
 }
 
-/// ready/status 里给页面的宿主信息（协议版本 + 根会话状态 + 上下文占用）。
+/// T009.5：宿主机的位置（ready 帧的 host）：页面只用 home 把路径缩写成 ~/…。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct HostLocation {
+    /// 宿主进程的 HOME（没有就不给；页面只在有值时缩写）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
+}
+
+/// ready/status 里给页面的宿主信息（协议版本 + 根会话状态 + 上下文占用 + 宿主位置）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HostInfo {
     #[serde(rename = "protocolVersion")]
@@ -504,6 +512,8 @@ pub struct HostInfo {
     pub session_id: Option<String>,
     pub root: RootState,
     pub context: ContextUsage,
+    /// T009.5：ready 帧加 host: {home}；不加 clientId。
+    pub host: HostLocation,
 }
 
 /// 服务错误（协议层错误码的第一版；Web 适配器在 17 映射成线上错误）。
@@ -1106,6 +1116,9 @@ impl RootHost {
             session_id: self.session_id.lock().expect("session id 锁被毒化").clone(),
             root: self.state.lock().expect("root state 锁被毒化").clone(),
             context,
+            host: HostLocation {
+                home: std::env::var("HOME").ok().filter(|home| !home.is_empty()),
+            },
         }
     }
 
