@@ -7,9 +7,9 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -179,12 +179,25 @@ fn run_writer(mut sink: Box<dyn LineSink>, rx: Receiver<Message>, dropped: Arc<A
     }
 }
 
-/// 一个进程的监控记录器。
-pub struct Monitor {
+/// 一个进程的监控记录器（Clone 共享同一个队列；只有持 join 的那一份负责退出排空）。
+struct Shared {
     tx: SyncSender<Message>,
     dropped: Arc<AtomicU64>,
-    join: Option<JoinHandle<()>>,
     path: PathBuf,
+}
+
+pub struct Monitor {
+    shared: Arc<Shared>,
+    join: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Clone for Monitor {
+    fn clone(&self) -> Self {
+        Self {
+            shared: Arc::clone(&self.shared),
+            join: Mutex::new(None),
+        }
+    }
 }
 
 impl Monitor {
@@ -207,23 +220,21 @@ impl Monitor {
             })
             .map_err(MonitorError::Io)?;
         Ok(Self {
-            tx,
-            dropped,
-            join: Some(join),
-            path,
+            shared: Arc::new(Shared { tx, dropped, path }),
+            join: Mutex::new(Some(join)),
         })
     }
 
     pub fn path(&self) -> &Path {
-        &self.path
+        &self.shared.path
     }
 
     /// 入队；队列满时丢新来的、计数并返回 false（业务不受影响）。
     pub fn record(&self, record: Record) -> bool {
-        match self.tx.try_send(Message::Record(record)) {
+        match self.shared.tx.try_send(Message::Record(record)) {
             Ok(()) => true,
             Err(TrySendError::Full(_)) => {
-                self.dropped.fetch_add(1, Ordering::SeqCst);
+                self.shared.dropped.fetch_add(1, Ordering::SeqCst);
                 false
             }
             Err(TrySendError::Disconnected(_)) => false,
@@ -236,8 +247,11 @@ impl Monitor {
     }
 
     fn stop(&mut self) {
-        if let Some(join) = self.join.take() {
-            let _ = self.tx.send(Message::Shutdown);
+        let Ok(mut guard) = self.join.lock() else {
+            return;
+        };
+        if let Some(join) = guard.take() {
+            let _ = self.shared.tx.send(Message::Shutdown);
             let _ = join.join();
         }
     }
@@ -247,6 +261,28 @@ impl Drop for Monitor {
     fn drop(&mut self) {
         self.stop();
     }
+}
+
+/// T011.2：把一条会话事件写成 ledger 记录（skeleton：先只放 session id，红测试后补信封/severity/body）。
+pub fn ledger_record(session_id: &str, _event: &session::Event) -> Record {
+    let mut attributes = Map::new();
+    attributes.insert(
+        "session.id".to_owned(),
+        Value::String(session_id.to_owned()),
+    );
+    Record::new(Channel::Ledger, Severity::Info, attributes, json!({}))
+}
+
+/// T011.2：把监控装到会话的「追加之后」钩子上。
+pub fn install_ledger(monitor: &Monitor, store: &mut session::SessionStore) {
+    let session_id = store.id().as_str().to_owned();
+    let monitor = monitor.clone();
+    let hook: session::AppendHook = Arc::new(move |events: &[session::Event]| {
+        for event in events {
+            let _ = monitor.record(ledger_record(&session_id, event));
+        }
+    });
+    store.set_append_hook(Some(hook));
 }
 
 #[cfg(test)]

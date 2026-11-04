@@ -1515,6 +1515,7 @@ version = "0.0.0"
 dependencies = [
  "serde",
  "serde_json",
+ "session",
  "tempfile",
  "thiserror 2.0.21",
 ]
