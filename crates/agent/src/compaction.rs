@@ -703,6 +703,12 @@ mod tests {
         fn enqueue_message<'a>(&'a self, _message: model::Message) -> BoxedFuture<'a, bool> {
             Box::pin(async move { Ok(true) })
         }
+        fn is_running(&self) -> bool {
+            false
+        }
+        fn last_turn(&self) -> u64 {
+            0
+        }
     }
 
     fn test_policy() -> CompactionPolicy {

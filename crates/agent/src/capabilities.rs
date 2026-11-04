@@ -111,6 +111,10 @@ pub(crate) trait LoopAccess: Send + Sync {
     fn enqueue_context<'a>(&'a self, text: String) -> BoxedFuture<'a, ()>;
     /// T006.F1：投递一条已构造好的消息（提问迟到回答用）；落盘后负责唤醒驱动。
     fn enqueue_message<'a>(&'a self, message: Message) -> BoxedFuture<'a, bool>;
+    /// 当前是否有一轮在跑（手动压缩 busy 判定）。
+    fn is_running(&self) -> bool;
+    /// 最近一轮的 turn 号（手动压缩写进 compaction/* 事件）。
+    fn last_turn(&self) -> u64;
 }
 
 /// 每个挂点一份 typed 事件：host 访问面 + 该挂点可用的运行态数据。
@@ -298,6 +302,14 @@ pub(crate) trait Capability: Send + Sync {
     ) -> BoxedFuture<'a, bool> {
         Box::pin(async { Ok(false) })
     }
+    /// T006.F1：手动压缩入口（照 command-compact busy；不排队）。None = 本能力不处理。
+    fn compact_manual_with<'a>(
+        &'a self,
+        _host: &'a dyn LoopAccess,
+        _source_command_id: Option<String>,
+    ) -> BoxedFuture<'a, Option<Result<Option<crate::CompactionOutcome>, AgentError>>> {
+        Box::pin(async { Ok(None) })
+    }
     /// 当前待答问题（T006.13，含重启恢复；UI 服务 T006.16a 用）。
     fn pending_questions(&self) -> Vec<crate::Question> {
         Vec::new()
@@ -399,6 +411,25 @@ impl CapabilityRegistry {
             }
         }
         false
+    }
+
+    pub(crate) async fn compact_manual(
+        &self,
+        host: &dyn LoopAccess,
+        source_command_id: Option<String>,
+    ) -> Result<Option<crate::CompactionOutcome>, AgentError> {
+        for capability in &self.capabilities {
+            if let Some(result) = capability
+                .compact_manual_with(host, source_command_id.clone())
+                .await?
+            {
+                return result;
+            }
+        }
+        Err(AgentError::ManualCompaction {
+            code: crate::ManualCompactionErrorCode::Commit,
+            message: "压缩能力未注册".to_owned(),
+        })
     }
 
     pub(crate) fn pending_questions(&self) -> Vec<crate::Question> {
@@ -565,6 +596,12 @@ mod dispatch_contract_tests {
         }
         fn enqueue_message<'a>(&'a self, _message: Message) -> BoxedFuture<'a, bool> {
             unimplemented!()
+        }
+        fn is_running(&self) -> bool {
+            false
+        }
+        fn last_turn(&self) -> u64 {
+            0
         }
     }
 

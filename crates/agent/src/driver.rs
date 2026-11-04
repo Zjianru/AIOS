@@ -89,8 +89,6 @@ pub(crate) struct Inner {
     session_events: broadcast::Sender<session::Event>,
     /// T006.F1：自引用（迟到回答的 durable 投递需要唤醒驱动）。
     self_ref: std::sync::OnceLock<std::sync::Weak<Inner>>,
-    /// 手动压缩互斥：同一时刻只允许一次 /compact（T006.F1，照 command-compact busy）。
-    manual_compaction: std::sync::atomic::AtomicBool,
     idle_notify: Notify,
     /// 取消时唤醒正在等模型流的 step（让流读取立刻停下）。
     cancel_notify: Arc<Notify>,
@@ -253,6 +251,17 @@ impl LoopAccess for Inner {
         })
     }
 
+    fn is_running(&self) -> bool {
+        matches!(
+            self.state.lock().expect("agent 状态锁被毒化").phase,
+            Phase::Running { .. }
+        )
+    }
+
+    fn last_turn(&self) -> u64 {
+        self.state.lock().expect("agent 状态锁被毒化").last_turn
+    }
+
     fn enqueue_message<'a>(&'a self, message: Message) -> BoxedFuture<'a, bool> {
         Box::pin(async move {
             if self
@@ -337,7 +346,6 @@ impl Inner {
             events,
             session_events,
             self_ref: std::sync::OnceLock::new(),
-            manual_compaction: std::sync::atomic::AtomicBool::new(false),
             idle_notify: Notify::new(),
             cancel_notify: Arc::new(Notify::new()),
             capabilities: CapabilityRegistry::production(crate::capabilities::CapabilityStates {
@@ -710,38 +718,14 @@ impl Inner {
         )
     }
 
-    /// 手动 /compact（T006.F1）：照来源 command-compact，轮次/压缩进行中回 busy，不排队。
+    /// 手动 /compact（T006.F1）：入口在 compaction 能力，driver 只派发（DoD1）。
     pub(crate) async fn compact_manual(
         self: &Arc<Self>,
         source_command_id: Option<String>,
     ) -> Result<Option<crate::CompactionOutcome>, AgentError> {
-        if self.is_running() {
-            return Err(manual_busy_error());
-        }
-        if self
-            .manual_compaction
-            .swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err(manual_busy_error());
-        }
-        let turn = self.state.lock().expect("agent 状态锁被毒化").last_turn;
-        let result = crate::compaction::compact_now(self.as_ref(), turn, source_command_id).await;
-        self.manual_compaction
-            .store(false, std::sync::atomic::Ordering::SeqCst);
-        result.map_err(|error| {
-            let failure = crate::compaction::manual_failure(error);
-            AgentError::ManualCompaction {
-                code: failure.code,
-                message: failure.message,
-            }
-        })
-    }
-}
-
-fn manual_busy_error() -> AgentError {
-    AgentError::ManualCompaction {
-        code: crate::ManualCompactionErrorCode::Busy,
-        message: crate::ManualCompactionErrorCode::Busy.text().to_owned(),
+        self.capabilities
+            .compact_manual(self.as_ref(), source_command_id)
+            .await
     }
 }
 

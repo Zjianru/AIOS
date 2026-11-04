@@ -13,11 +13,23 @@ use crate::capabilities::{
 use crate::compaction;
 use crate::{AgentError, CompactionTrigger};
 
-pub(crate) struct CompactionCapability;
+pub(crate) struct CompactionCapability {
+    /// T006.F1：手动压缩互斥（照 command-compact busy；不排队）。
+    manual_compaction: std::sync::atomic::AtomicBool,
+}
 
 impl CompactionCapability {
     pub(crate) fn new() -> Self {
-        Self
+        Self {
+            manual_compaction: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+fn manual_busy_error() -> AgentError {
+    AgentError::ManualCompaction {
+        code: crate::ManualCompactionErrorCode::Busy,
+        message: crate::ManualCompactionErrorCode::Busy.text().to_owned(),
     }
 }
 
@@ -32,6 +44,39 @@ impl Capability for CompactionCapability {
             HookPoint::Request,
             HookPoint::RequestError,
         ]
+    }
+
+    fn compact_manual_with<'a>(
+        &'a self,
+        host: &'a dyn crate::capabilities::LoopAccess,
+        source_command_id: Option<String>,
+    ) -> crate::capabilities::BoxedFuture<
+        'a,
+        Option<Result<Option<crate::CompactionOutcome>, AgentError>>,
+    > {
+        Box::pin(async move {
+            if host.is_running() {
+                return Ok(Some(Err(manual_busy_error())));
+            }
+            if self
+                .manual_compaction
+                .swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Ok(Some(Err(manual_busy_error())));
+            }
+            let result = compaction::compact_now(host, host.last_turn(), source_command_id)
+                .await
+                .map_err(|error| {
+                    let failure = compaction::manual_failure(error);
+                    AgentError::ManualCompaction {
+                        code: failure.code,
+                        message: failure.message,
+                    }
+                });
+            self.manual_compaction
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+            Ok(Some(result))
+        })
     }
 
     fn on_hook<'a>(&'a self, event: &'a HookEvent<'a>) -> HookFuture<'a> {
