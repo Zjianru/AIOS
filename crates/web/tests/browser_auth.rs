@@ -1,6 +1,9 @@
 // T006.F2 红测试：/connect 换 cookie 与 DoD7 六种情况（骨架先行；签名实现待依赖批准）。
 
-use web::{ConnectGrant, Trust, TrustError, authorize_connect, check_api_auth, check_origin};
+use web::{
+    ConnectGrant, Trust, TrustError, authorize_api_request, authorize_connect, check_api_auth,
+    check_origin,
+};
 
 fn trust() -> Trust {
     Trust::new(
@@ -16,9 +19,13 @@ fn headers(host: &str) -> axum::http::HeaderMap {
     headers
 }
 
-fn mint() -> ConnectGrant {
-    authorize_connect(&trust(), Some("127.0.0.1:1417"), Some("tok-1"))
+fn mint_with(trust: &Trust) -> ConnectGrant {
+    authorize_connect(trust, Some("127.0.0.1:1417"), Some("tok-1"))
         .expect("正确令牌必须能换到 cookie")
+}
+
+fn mint() -> ConnectGrant {
+    mint_with(&trust())
 }
 
 fn cookie_pair(grant: &ConnectGrant) -> String {
@@ -72,8 +79,12 @@ fn dod7_no_cookie_is_401() {
 
 #[test]
 fn dod7_wrong_signature_cookie_is_401() {
+    // 正确 cookie 名 + 坏 value，确保走到 HMAC 验签，而不是名字先被拒。
+    let grant = mint();
+    let pair = cookie_pair(&grant);
+    let (name, _value) = pair.split_once('=').expect("cookie 必须有名字");
     let mut headers = headers("127.0.0.1:1417");
-    headers.insert("cookie", "aios-auth-x=v1.bad.bad".parse().unwrap());
+    headers.insert("cookie", format!("{name}=v1.bad.bad").parse().unwrap());
     let error = check_api_auth(&trust(), &headers).unwrap_err();
     assert_eq!(error.status(), 401);
 }
@@ -88,12 +99,19 @@ fn dod7_cookie_bound_to_other_authority_is_401() {
 }
 
 #[test]
-fn dod7_token_outside_connect_is_rejected() {
-    // /api、/ws 不认 query token：没有 cookie 就只有 401（handler 接线后 query 会被忽略）。
+fn dod7_token_in_api_or_ws_query_is_rejected() {
+    // /api?token= 与 /ws?token= 攻击面：带有效 cookie 也要 401，证明 query token 不被接受。
+    let trust = trust();
+    let grant = mint_with(&trust);
     let mut headers = headers("127.0.0.1:1417");
-    headers.insert("x-token", "tok-1".parse().unwrap());
-    let error = check_api_auth(&trust(), &headers).unwrap_err();
-    assert_eq!(error.status(), 401);
+    headers.insert("cookie", cookie_pair(&grant).parse().unwrap());
+    for uri in ["/api?token=tok-1", "/ws?token=tok-1"] {
+        let uri: axum::http::Uri = uri.parse().unwrap();
+        let error = authorize_api_request(&trust, &headers, &uri).unwrap_err();
+        assert_eq!(error.status(), 401, "URI {uri} 必须拒绝 query token");
+    }
+    let plain: axum::http::Uri = "/api".parse().unwrap();
+    assert!(authorize_api_request(&trust, &headers, &plain).is_ok());
 }
 
 #[test]

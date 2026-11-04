@@ -468,6 +468,30 @@ pub fn authorize_connect(
     })
 }
 
+/// T006.F2：query token 只允许出现在 / 与 /connect；其他路径出现 token 一律 401。
+pub fn reject_query_token(uri: &axum::http::Uri) -> Result<(), TrustError> {
+    if let Some(query) = uri.query() {
+        for pair in query.split('&') {
+            let key = pair.split('=').next().unwrap_or_default();
+            if key == "token" {
+                return Err(TrustError::Unauthorized);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// T006.F2：/api、/ws 的统一认证入口：Origin 栅栏 → 拒绝 query token → cookie 认证。
+pub fn authorize_api_request(
+    trust: &Trust,
+    headers: &HeaderMap,
+    uri: &axum::http::Uri,
+) -> Result<(), TrustError> {
+    check_origin(headers)?;
+    reject_query_token(uri)?;
+    check_api_auth(trust, headers)
+}
+
 /// T006.F2：/api、/ws 只认 cookie 的认证入口。
 pub fn check_api_auth(trust: &Trust, headers: &HeaderMap) -> Result<(), TrustError> {
     let host = headers
@@ -570,12 +594,10 @@ fn trust_error_response(error: TrustError) -> Response {
 async fn api_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    uri: axum::http::Uri,
     body: Bytes,
 ) -> Response {
-    if let Err(error) = check_origin(&headers) {
-        return trust_error_response(error);
-    }
-    if let Err(error) = check_api_auth(&state.trust, &headers) {
+    if let Err(error) = authorize_api_request(&state.trust, &headers, &uri) {
         return trust_error_response(error);
     }
     let call: service::Call = match serde_json::from_slice(&body) {
@@ -595,12 +617,10 @@ async fn ws_handler(
     State(state): State<Arc<AppState>>,
     Query(query): Query<WsQuery>,
     headers: HeaderMap,
+    uri: axum::http::Uri,
     upgrade: WebSocketUpgrade,
 ) -> Response {
-    if let Err(error) = check_origin(&headers) {
-        return trust_error_response(error);
-    }
-    if let Err(error) = check_api_auth(&state.trust, &headers) {
+    if let Err(error) = authorize_api_request(&state.trust, &headers, &uri) {
         return trust_error_response(error);
     }
     let last_seq = query.last_seq.unwrap_or(0);
@@ -772,4 +792,63 @@ pub async fn serve(options: ServeOptions, host: ServiceHost) -> Result<ServeHand
         task,
         shutdown: Some(shutdown),
     })
+}
+
+#[cfg(test)]
+mod cookie_red_tests {
+    use super::*;
+
+    fn trust() -> Trust {
+        Trust::new(IpAddr::from([127, 0, 0, 1]), 1417, "tok-1".to_owned())
+    }
+
+    fn host_headers(authority: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, authority.to_owned().parse().unwrap());
+        headers
+    }
+
+    #[test]
+    fn dod7_expired_cookie_is_401() {
+        let trust = trust();
+        let authority = "127.0.0.1:1417";
+        let now = now_secs();
+        let payload = CookiePayload {
+            v: 1,
+            authority: authority.to_owned(),
+            issued_at: now - 10,
+            expires_at: now - 1,
+        };
+        let value = encode_cookie(&trust.session_secret, &payload);
+        let mut headers = host_headers(authority);
+        headers.insert(
+            "cookie",
+            format!("{}={value}", cookie_name(authority))
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(check_api_auth(&trust, &headers).unwrap_err().status(), 401);
+    }
+
+    #[test]
+    fn dod7_payload_authority_mismatch_is_401() {
+        let trust = trust();
+        let authority = "127.0.0.1:1417";
+        let now = now_secs();
+        let payload = CookiePayload {
+            v: 1,
+            authority: "evil.example:80".to_owned(),
+            issued_at: now,
+            expires_at: now + 60,
+        };
+        let value = encode_cookie(&trust.session_secret, &payload);
+        let mut headers = host_headers(authority);
+        headers.insert(
+            "cookie",
+            format!("{}={value}", cookie_name(authority))
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(check_api_auth(&trust, &headers).unwrap_err().status(), 401);
+    }
 }
