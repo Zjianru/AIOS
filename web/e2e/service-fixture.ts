@@ -20,6 +20,7 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.failure === 'credential') return { file: 'text', override: 'failure-credential' };
   if (options.failure === 'model') return { file: 'text', override: 'failure-model' };
   if (options.failure === 'retry-then-succeed') return { file: 'text', override: 'failure-retry' };
+  if (options.realTurn) return { file: 'real', paceMs: 20 };
   if (options.usageTurn) return { file: 'usage', paceMs: 400 };
   if (options.askTurn) return { file: 'ask' };
   if (options.toolTurn) return { file: 'tool' };
@@ -117,6 +118,8 @@ export interface FixtureOptions {
   home?: 'dataDir' | string;
   /// T010.3：用带 reasoning/缓存读写的用量夹具（turn-usage 用例）。
   usageTurn?: boolean;
+  /// T010.5：用真 key 录的夹具（多步工具/思考/缓存读/压缩）。
+  realTurn?: boolean;
 }
 
 /** 接缝 5：假 DeepSeek 脚本回放 + 真 aios-dev serve（页面也由它同源托管）。 */
@@ -424,7 +427,9 @@ export async function startRealKernelFixture(
     close: async () => {
       await proxy.drop();
       child.kill('SIGTERM');
-      await rm(root, { recursive: true, force: true });
+      if (process.env.AIOS_DOD_KEEP !== '1') {
+        await rm(root, { recursive: true, force: true });
+      }
     },
   };
 }
