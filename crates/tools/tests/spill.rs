@@ -219,3 +219,10 @@ fn spill_failure_reports_warning_and_keeps_inline_content() {
         "告警要带原因：{warning}"
     );
 }
+
+/// T006 r3 #1：会话 spill 目录名照来源 sha256(sessionId).hex[..12]（DSH spill-local/src/store.ts:79）。
+#[test]
+fn spill_dir_name_uses_sha256_prefix() {
+    assert_eq!(session_dir_name("session-a"), "session-fa57a52dbf08");
+    assert_eq!(session_dir_name("sess-1"), "session-abe633f3a47a");
+}
