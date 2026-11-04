@@ -200,6 +200,15 @@ impl Clone for Monitor {
     }
 }
 
+impl std::fmt::Debug for Monitor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Monitor")
+            .field("path", &self.shared.path)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Monitor {
     pub fn open(data_dir: &Path) -> Result<Self, MonitorError> {
         Self::open_with_capacity(data_dir, DEFAULT_QUEUE_CAPACITY)

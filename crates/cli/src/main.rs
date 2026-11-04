@@ -11,6 +11,7 @@ use agent::{
 };
 use clap::{Args, Parser, Subcommand};
 use model::{DEFAULT_MAX_TOKENS, DeepSeekConfig, Effort, UserMessage};
+use monitor::{Channel, Monitor, Record, Severity};
 use service::{RootHost, RootSessionOptions};
 use session::SessionId;
 use tokio::io::AsyncBufReadExt;
@@ -352,6 +353,26 @@ fn open_error(error: agent::AgentError) -> CliError {
 
 /// 起 Web 服务（T006.17）：找回/新建 Kind 根会话，起只绑本机的 HTTP+WS 载体。
 /// 启动令牌只在本进程内生成并打印带令牌的 URL；不写日志/证据，不读环境变量。
+/// T011.4：一条 ops 记录（attributes 带 telemetry.op）。
+fn record_ops(
+    monitor: &Monitor,
+    op: &str,
+    severity: Severity,
+    attributes: Vec<(&str, serde_json::Value)>,
+) {
+    let mut map = serde_json::Map::new();
+    map.insert("telemetry.op".to_owned(), serde_json::json!(op));
+    for (key, value) in attributes {
+        map.insert(key.to_owned(), value);
+    }
+    let _ = monitor.record(Record::new(
+        Channel::Ops,
+        severity,
+        map,
+        serde_json::json!({}),
+    ));
+}
+
 async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let data_dir = match &args.common.data_dir {
         Some(path) => path.clone(),
@@ -361,9 +382,52 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         Some(path) => path.clone(),
         None => std::env::current_dir()?,
     };
+    // T011.4：本进程的监控记录（process-start 先写；文件在 <数据目录>/monitor/ 下）。
+    let monitor = Monitor::open(&data_dir).map_err(|error| CliError::Message(error.to_string()))?;
+    record_ops(
+        &monitor,
+        "process-start",
+        Severity::Info,
+        vec![
+            ("version", serde_json::json!(env!("CARGO_PKG_VERSION"))),
+            (
+                "protocolVersion",
+                serde_json::json!(service::PROTOCOL_VERSION),
+            ),
+            ("dataDir", serde_json::json!(data_dir.display().to_string())),
+        ],
+    );
     // T008.F11：cookie 签名钥匙是 Keyring 里的一条记录——首次启动自动建，之后每次启动读回；
     // 删记录/重新开始后下次启动换新，旧页面会话全部失效。只在内存里用，不落日志。
-    let keyring = credentials::Keyring::open(data_dir.clone(), args.common.identity.as_deref())?;
+    let keyring =
+        match credentials::Keyring::open(data_dir.clone(), args.common.identity.as_deref()) {
+            Ok(keyring) => {
+                record_ops(
+                    &monitor,
+                    "keyring",
+                    Severity::Info,
+                    vec![
+                        ("action", serde_json::json!("open")),
+                        ("result", serde_json::json!("ok")),
+                        ("code", serde_json::json!("ok")),
+                    ],
+                );
+                keyring
+            }
+            Err(error) => {
+                record_ops(
+                    &monitor,
+                    "keyring",
+                    Severity::Warn,
+                    vec![
+                        ("action", serde_json::json!("open")),
+                        ("result", serde_json::json!("failed")),
+                        ("code", serde_json::json!("keyring/error")),
+                    ],
+                );
+                return Err(error.into());
+            }
+        };
     let session_secret = keyring.cookie_signing_secret()?;
     // T008.3b：模型配置惰性解析——空 Keyring 也能起服务（首次使用页先显示）；
     // recheck 时工厂重新读当前 Keyring 连接，用新模型重建根会话。
@@ -408,6 +472,7 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             token: token.clone(),
             session_secret,
             static_dir,
+            monitor: Some(monitor.clone()),
         },
         host,
     )
@@ -421,6 +486,9 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     tokio::signal::ctrl_c().await?;
     // T006.18：停服务收尾（取消正在跑的一轮、日志收尾完整）；骨架阶段等价 abort。
     handle.shutdown().await;
+    // T011.4：退出写 shutdown 并排空监控队列。
+    record_ops(&monitor, "shutdown", Severity::Info, vec![]);
+    monitor.shutdown();
     Ok(0)
 }
 

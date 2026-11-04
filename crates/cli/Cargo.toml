@@ -11,12 +11,14 @@ path = "src/main.rs"
 [dependencies]
 agent = { path = "../agent" }
 credentials = { path = "../credentials" }
+monitor = { path = "../monitor" }
 service = { path = "../service" }
 web = { path = "../web" }
 model = { path = "../model" }
 session = { path = "../session" }
 tools = { path = "../tools" }
 clap.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 
