@@ -524,6 +524,105 @@ pub enum ServiceError {
     InvalidPath(String),
 }
 
+/// T009.1：服务的结构化错误码（DSH remote-error 形状：`<namespace>/<kind>`，小写连字符）。
+///
+/// 码表只在这一处；页面按码处理，说明只进监控/诊断。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceErrorCode {
+    AgentInternal,
+    QuestionAnswerRejected,
+    RootUnavailable,
+    KeyringKeyFileMissing,
+    KeyringUndecryptable,
+    KeyringCorrupt,
+    KeyringIo,
+    ConnectionMissing,
+    ConnectionInvalid,
+    SettingsUnavailable,
+    RequestInvalidPath,
+}
+
+impl ServiceErrorCode {
+    /// 码表全集（覆盖检查用：多一个少一个都要失败）。
+    pub const ALL: [ServiceErrorCode; 11] = [
+        ServiceErrorCode::AgentInternal,
+        ServiceErrorCode::QuestionAnswerRejected,
+        ServiceErrorCode::RootUnavailable,
+        ServiceErrorCode::KeyringKeyFileMissing,
+        ServiceErrorCode::KeyringUndecryptable,
+        ServiceErrorCode::KeyringCorrupt,
+        ServiceErrorCode::KeyringIo,
+        ServiceErrorCode::ConnectionMissing,
+        ServiceErrorCode::ConnectionInvalid,
+        ServiceErrorCode::SettingsUnavailable,
+        ServiceErrorCode::RequestInvalidPath,
+    ];
+
+    /// 线上的码名。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AgentInternal => "agent/internal",
+            Self::QuestionAnswerRejected => "question/answer-rejected",
+            Self::RootUnavailable => "root/unavailable",
+            Self::KeyringKeyFileMissing => "keyring/key-file-missing",
+            Self::KeyringUndecryptable => "keyring/undecryptable",
+            Self::KeyringCorrupt => "keyring/corrupt",
+            Self::KeyringIo => "keyring/io",
+            Self::ConnectionMissing => "connection/missing",
+            Self::ConnectionInvalid => "connection/invalid",
+            Self::SettingsUnavailable => "settings/unavailable",
+            Self::RequestInvalidPath => "request/invalid-path",
+        }
+    }
+}
+
+impl ServiceError {
+    /// T009.1：这个错误在 wire 上的码。
+    pub fn code(&self) -> ServiceErrorCode {
+        match self {
+            Self::Agent(_) => ServiceErrorCode::AgentInternal,
+            Self::AnswerRejected(_) => ServiceErrorCode::QuestionAnswerRejected,
+            Self::RootUnavailable(_) => ServiceErrorCode::RootUnavailable,
+            Self::Credentials(error) => match error {
+                credentials::KeyringError::KeyFileMissing(_) => {
+                    ServiceErrorCode::KeyringKeyFileMissing
+                }
+                credentials::KeyringError::Crypto(_) => ServiceErrorCode::KeyringUndecryptable,
+                credentials::KeyringError::Corrupt(_) => ServiceErrorCode::KeyringCorrupt,
+                credentials::KeyringError::Io(_) => ServiceErrorCode::KeyringIo,
+                credentials::KeyringError::MissingConnection(_) => {
+                    ServiceErrorCode::ConnectionMissing
+                }
+                credentials::KeyringError::InvalidConnection(_) => {
+                    ServiceErrorCode::ConnectionInvalid
+                }
+            },
+            Self::SettingsOnBareHost => ServiceErrorCode::SettingsUnavailable,
+            Self::InvalidPath(_) => ServiceErrorCode::RequestInvalidPath,
+        }
+    }
+}
+
+/// T009.1：/api 的错误体（DSH RemoteError 的线上形状）：码 + 诊断 + 可选细节。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ServiceErrorBody {
+    pub code: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+}
+
+impl ServiceErrorBody {
+    /// skeleton：先用码+说明（细节留到红测试后补），product 不调用。
+    pub fn from_service_error(error: &ServiceError) -> Self {
+        Self {
+            code: error.code().as_str().to_owned(),
+            message: error.to_string(),
+            details: None,
+        }
+    }
+}
+
 /// 与载体无关的服务宿主：绑定一个 Agent/会话，调用经 dispatch 进入，事件从广播流出。
 pub struct ServiceHost {
     agent: Agent,

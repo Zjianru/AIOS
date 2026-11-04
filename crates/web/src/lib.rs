@@ -715,6 +715,31 @@ async fn static_handler(
     }
 }
 
+/// T009.1：ServiceError 的 HTTP 状态（保持 T008 现状：root/unavailable 409，其余 502）。
+fn service_error_status(code: service::ServiceErrorCode) -> StatusCode {
+    match code {
+        service::ServiceErrorCode::RootUnavailable => StatusCode::CONFLICT,
+        _ => StatusCode::BAD_GATEWAY,
+    }
+}
+
+/// T009.1：/api 的错误响应；skeleton 先保持旧 {"error": ...} 形状（红测试后改结构化）。
+fn api_error_response(error: ServiceError) -> Response {
+    let status = service_error_status(error.code());
+    match &error {
+        ServiceError::RootUnavailable(root) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "ROOT_UNAVAILABLE",
+                "root": root,
+                "protocolVersion": PROTOCOL_VERSION,
+            })),
+        )
+            .into_response(),
+        _ => error_response(status, &error.to_string()),
+    }
+}
+
 fn error_response(status: StatusCode, message: &str) -> Response {
     (
         status,
@@ -746,16 +771,7 @@ async fn api_handler(
     };
     match state.host.dispatch(call).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(ServiceError::RootUnavailable(root)) => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "error": "ROOT_UNAVAILABLE",
-                "root": root,
-                "protocolVersion": PROTOCOL_VERSION,
-            })),
-        )
-            .into_response(),
-        Err(error) => error_response(StatusCode::BAD_GATEWAY, &error.to_string()),
+        Err(error) => api_error_response(error),
     }
 }
 
