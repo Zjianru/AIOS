@@ -168,16 +168,16 @@ impl SpillStore {
     }
 }
 
-/// 会话 spill 子目录名（DSH spill-local/src/store.ts:108-121：root/session-<hash>）。
-/// DSH 用 sha256(sessionId).hex[..12]；AIOS 不新增依赖（D22），用 FNV-1a 64 的前 12 个十六进制
-/// 字符；session id 已经过 SessionId::parse 的 uuid 校验（无路径注入面），这里只取稳定的会话隔离名。
+/// 会话 spill 子目录名（DSH spill-local/src/store.ts:79 的 sessionDir：root/session-<hash>）。
+/// 照来源用 sha256(sessionId).hex[..12]（ring 是工作区既有依赖，不新增外部依赖；
+/// session id 已经过 SessionId::parse 的 uuid 校验，这里只取稳定的会话隔离名）。
 pub fn session_dir_name(session_id: &str) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in session_id.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    let hex = format!("{hash:016x}");
+    let digest = ring::digest::digest(&ring::digest::SHA256, session_id.as_bytes());
+    let hex: String = digest
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     format!("session-{}", &hex[..12])
 }
 
