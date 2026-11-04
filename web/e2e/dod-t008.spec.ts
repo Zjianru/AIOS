@@ -11,10 +11,10 @@ const evidence =
 
 test.skip(!process.env.DEEPSEEK_API_KEY, '需要运行时 DEEPSEEK_API_KEY（真 key DoD 3）');
 
-/** T008.F2 骨架：只断言最终 assistant 回答，不把工具/用户消息算进来。 */
+/** T008.F2：只断言最终 assistant 回答，不把工具/用户消息算进来。 */
 async function expectFinalAnswer(page: Page, text: string): Promise<void> {
-  void page;
-  void text;
+  await expect(page.locator('[data-kind="assistant-answer"]').last()).toContainText(text);
+  await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
 }
 
 test('DoD3 真 key：页面第一次填 key → 接上 → 空对话 → bash 只读 /tmp/aios-t008-dod/work 并回答', async ({ page }) => {
