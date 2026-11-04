@@ -782,6 +782,36 @@ async fn api_handler(
         .and_then(serde_json::Value::as_str)
         .unwrap_or("unknown")
         .to_owned();
+    // T011.6：页面没接住的异常/事件流重连经这里交给服务记 ops（内容限长，不阻塞页面）。
+    if method == "monitor-report" {
+        let kind = value
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("page-error");
+        let op = if kind == "page-reconnect" {
+            "page-reconnect"
+        } else {
+            "page-error"
+        };
+        let message: String = value
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .chars()
+            .take(512)
+            .collect();
+        record_ops(
+            &state,
+            op,
+            if op == "page-error" {
+                Severity::Warn
+            } else {
+                Severity::Info
+            },
+            vec![("message".to_owned(), serde_json::json!(message))],
+        );
+        return (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response();
+    }
     let call: service::Call = match serde_json::from_value(value.clone()) {
         Ok(call) => call,
         Err(error) => {

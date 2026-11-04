@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 import { toast } from 'sonner';
-import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchEventsPage, fetchFirstUse, recheckRoot, sendMessage, setUnauthorizedHandler } from '@/data/service';
+import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchEventsPage, fetchFirstUse, recheckRoot, reportMonitor, sendMessage, setUnauthorizedHandler } from '@/data/service';
 import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
 import type { GateDetail, GateState } from './KernelGate';
 import { reconnectDelayMs } from '@/data/reconnect';
@@ -254,7 +254,12 @@ function openSocket(): void {
     (frame) => {
       if (frame.type === 'ready') {
         applyRootState(frame.root);
+        const reconnects = reconnectAttempt;
         reconnectAttempt = 0;
+        if (reconnects > 0) {
+          // T011.6：重连成功后把「断过几次」报给服务记监控。
+          void reportMonitor('page-reconnect', 'attempts=' + String(reconnects));
+        }
         if (recheckTimer !== null) {
           clearTimeout(recheckTimer);
           recheckTimer = null;
