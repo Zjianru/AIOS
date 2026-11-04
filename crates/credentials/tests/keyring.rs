@@ -416,8 +416,15 @@ fn 默认钥匙在用户配置目录且不在数据目录() {
     unsafe {
         std::env::remove_var("XDG_CONFIG_HOME");
     }
-    let expected = config_home.join("aios").join("keyring").join("identity.txt");
-    assert_eq!(keyring.identity_path(), expected, "默认钥匙应在用户配置目录");
+    let expected = config_home
+        .join("aios")
+        .join("keyring")
+        .join("identity.txt");
+    assert_eq!(
+        keyring.identity_path(),
+        expected,
+        "默认钥匙应在用户配置目录"
+    );
     assert!(
         !fixture.data_dir.join("identity.txt").exists(),
         "数据目录里不应出现钥匙文件"

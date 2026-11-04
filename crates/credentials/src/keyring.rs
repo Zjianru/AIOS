@@ -596,8 +596,22 @@ fn write_config(path: &Path, config: &Config) -> Result<(), KeyringError> {
 }
 
 fn default_identity_path(data_dir: &Path) -> PathBuf {
-    let parent = data_dir.parent().unwrap_or(data_dir);
-    parent.join(".aios-keyring").join("identity.txt")
+    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    default_identity_path_for(data_dir, xdg.as_deref(), home.as_deref())
+}
+
+/// T008.F7：默认放用户配置目录（XDG_CONFIG_HOME 或 HOME/.config），不在数据目录里。
+fn default_identity_path_for(
+    data_dir: &Path,
+    xdg_config_home: Option<&Path>,
+    home: Option<&Path>,
+) -> PathBuf {
+    let root = xdg_config_home
+        .map(Path::to_path_buf)
+        .or_else(|| home.map(|home| home.join(".config")))
+        .unwrap_or_else(|| data_dir.parent().unwrap_or(data_dir).join(".config"));
+    root.join("aios").join("keyring").join("identity.txt")
 }
 
 fn create_identity(path: &Path) -> Result<(), KeyringError> {
@@ -668,5 +682,19 @@ mod issued_secret_drop_tests {
             super::ISSUED_DROP_CALLED.load(Ordering::Relaxed),
             "IssuedSecret Drop 必须调用 zeroize"
         );
+    }
+}
+
+#[cfg(test)]
+mod default_path_tests {
+    use super::*;
+
+    #[test]
+    fn default_identity_is_in_user_config_not_data_dir() {
+        let data_dir = Path::new("/tmp/aios-data");
+        let xdg = Path::new("/tmp/xdg-config");
+        let path = default_identity_path_for(data_dir, Some(xdg), None);
+        assert_eq!(path, xdg.join("aios").join("keyring").join("identity.txt"));
+        assert!(!path.starts_with(data_dir), "默认钥匙不能在数据目录里");
     }
 }
