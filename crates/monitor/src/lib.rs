@@ -125,16 +125,59 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-// T011.1 骨架：写线程行为待实现（红测试后补）。
-fn write_record(_sink: &mut dyn LineSink, _record: &Record) -> Result<(), MonitorError> {
+/// 写一条记录：序列化成一行 JSON，写完立即 flush。
+fn write_record(sink: &mut dyn LineSink, record: &Record) -> Result<(), MonitorError> {
+    let line = serde_json::to_string(record)?;
+    sink.write_line(&line)?;
+    sink.flush()?;
     Ok(())
 }
 
-fn write_pending_gap(_sink: &mut dyn LineSink, _dropped: &AtomicU64) -> Result<(), MonitorError> {
-    Ok(())
+/// 队列满丢掉的条数：下一条记录之前先写一条 gap，然后清零。
+fn write_pending_gap(sink: &mut dyn LineSink, dropped: &AtomicU64) -> Result<(), MonitorError> {
+    let dropped_count = dropped.swap(0, Ordering::SeqCst);
+    if dropped_count == 0 {
+        return Ok(());
+    }
+    write_record(
+        sink,
+        &Record::ops("gap", Severity::Warn, json!({ "dropped": dropped_count })),
+    )
 }
 
-fn run_writer(_sink: Box<dyn LineSink>, _rx: Receiver<Message>, _dropped: Arc<AtomicU64>) {}
+/// 写线程：records 逐条写；写失败停掉并在标准错误报一次（业务不受影响）；
+/// 退出时写 shutdown 记录并排空队列。
+fn run_writer(mut sink: Box<dyn LineSink>, rx: Receiver<Message>, dropped: Arc<AtomicU64>) {
+    loop {
+        match rx.recv() {
+            Ok(Message::Record(record)) => {
+                if let Err(error) = write_pending_gap(&mut *sink, &dropped) {
+                    eprintln!("monitor: 写监控失败，停止记录：{error}");
+                    break;
+                }
+                if let Err(error) = write_record(&mut *sink, &record) {
+                    eprintln!("monitor: 写监控失败，停止记录：{error}");
+                    break;
+                }
+            }
+            Ok(Message::Shutdown) => {
+                if let Err(error) = write_pending_gap(&mut *sink, &dropped) {
+                    eprintln!("monitor: 写监控失败，停止记录：{error}");
+                    break;
+                }
+                let shutdown = Record::ops("shutdown", Severity::Info, json!({}));
+                if let Err(error) = write_record(&mut *sink, &shutdown) {
+                    eprintln!("monitor: 写监控失败，停止记录：{error}");
+                }
+                break;
+            }
+            Err(_) => {
+                let _ = write_pending_gap(&mut *sink, &dropped);
+                break;
+            }
+        }
+    }
+}
 
 /// 一个进程的监控记录器。
 pub struct Monitor {
@@ -303,7 +346,7 @@ mod tests {
         assert_eq!(lines[1]["attributes"]["telemetry.op"], "api-call");
         assert_eq!(lines[1]["severity"], "warn");
         for (index, line) in lines.iter().enumerate().take(7).skip(2) {
-            assert_eq!(line["attributes"]["index"], index - 2);
+            assert_eq!(line["body"]["index"], index - 2, "记录顺序保持");
         }
         assert_eq!(
             lines[7]["attributes"]["telemetry.op"], "shutdown",
