@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import {
   cacheHitPercent,
+  contextPercent,
+  contextTokens,
   displayedInput,
   emptyUsage,
   mergeUsage,
@@ -56,4 +58,12 @@ assert.equal(
   6_000,
 );
 
-console.log('turn-usage 单测通过（清单 4/5/6 的数据层部分）');
+// 清单 7：压缩占用的前后 context 与百分比（窗口未知/0 不显示）。
+assert.equal(contextTokens({ inputTokens: 100, cacheReadTokens: 20, cacheWriteTokens: 5 }), 125);
+assert.equal(contextPercent(125, 500), 25);
+assert.equal(contextPercent(0, 500), 0);
+assert.equal(contextPercent(4500, 1_000_000), 0);
+assert.equal(contextPercent(125, undefined), null, '窗口拿不到就不显示占用');
+assert.equal(contextPercent(125, 0), null);
+
+console.log('turn-usage 单测通过（清单 4/5/6/7 的数据层部分）');
