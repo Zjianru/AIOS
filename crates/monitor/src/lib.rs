@@ -331,19 +331,108 @@ impl Redactor {
     }
 
     /// 推理帧/思考块文本 → [推理已略去，N 字]；任意字符串里的 key → [已脱敏]。
-    /// skeleton：先不改（红测试后实现）。
-    pub fn redact(&self, _record: &mut Record) -> Result<(), RedactError> {
+    /// 只改副本；出错（嵌套过深）时由调用方扣下该条。
+    pub fn redact(&self, record: &mut Record) -> Result<(), RedactError> {
+        redact_value(&mut record.body, &self.secrets, 0)?;
+        for value in record.attributes.values_mut() {
+            redact_value(value, &self.secrets, 0)?;
+        }
+        if let Some(source) = &mut record.source_event {
+            redact_value(&mut source.event, &self.secrets, 0)?;
+        }
         Ok(())
     }
+}
+
+/// 记录嵌套上限：超了就不脱敏、扣下该条。
+const MAX_REDACT_DEPTH: usize = 64;
+
+const REASONING_PLACEHOLDER: &str = "[推理已略去，{n} 字]";
+const SECRET_PLACEHOLDER: &str = "[已脱敏]";
+
+fn reasoning_placeholder(characters: usize) -> String {
+    REASONING_PLACEHOLDER.replace("{n}", &characters.to_string())
+}
+
+fn redact_value(value: &mut Value, secrets: &[String], depth: usize) -> Result<(), RedactError> {
+    if depth > MAX_REDACT_DEPTH {
+        return Err(RedactError::TooDeep);
+    }
+    match value {
+        Value::Object(map) => {
+            if map.get("type").and_then(Value::as_str) == Some("reasoning-chunks")
+                && let Some(Value::Array(texts)) = map.get_mut("texts")
+            {
+                let characters: usize = texts
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(|text| text.chars().count())
+                    .sum();
+                *texts = vec![Value::String(reasoning_placeholder(characters))];
+            }
+            if map.get("type").and_then(Value::as_str) == Some("reasoning")
+                && let Some(Value::String(text)) = map.get_mut("text")
+            {
+                let characters = text.chars().count();
+                *text = reasoning_placeholder(characters);
+            }
+            for item in map.values_mut() {
+                redact_value(item, secrets, depth + 1)?;
+            }
+        }
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                redact_value(item, secrets, depth + 1)?;
+            }
+        }
+        Value::String(text) => {
+            for secret in secrets {
+                if !secret.is_empty() && text.contains(secret.as_str()) {
+                    *text = text.replace(secret.as_str(), SECRET_PLACEHOLDER);
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// T011.3：装 ledger 时同时带脱敏；脱敏出错的记录扣下，另记一条 redact-failed。
 pub fn install_ledger_with_redactor(
     monitor: &Monitor,
     store: &mut session::SessionStore,
-    _redactor: Redactor,
+    redactor: Redactor,
 ) {
-    install_ledger(monitor, store);
+    let session_id = store.id().as_str().to_owned();
+    let monitor = monitor.clone();
+    let hook: session::AppendHook = Arc::new(move |events: &[session::Event]| {
+        for event in events {
+            let mut record = ledger_record(&session_id, event);
+            match redactor.redact(&mut record) {
+                Ok(()) => {
+                    let _ = monitor.record(record);
+                }
+                Err(_) => {
+                    let event_type = serde_json::to_value(event)
+                        .ok()
+                        .and_then(|value| value.get("type").cloned())
+                        .unwrap_or(Value::Null);
+                    let mut attributes = Map::new();
+                    attributes.insert("event.type".to_owned(), event_type);
+                    attributes.insert("event.seq".to_owned(), json!(event.seq));
+                    let _ = monitor.record(Record {
+                        channel: Channel::Ops,
+                        time: event.time,
+                        severity: Severity::Warn,
+                        attributes,
+                        body: json!({}),
+                        source_event: None,
+                    });
+                }
+            }
+        }
+    });
+    store.set_append_hook(Some(hook));
 }
 
 /// T011.2：把监控装到会话的「追加之后」钩子上。

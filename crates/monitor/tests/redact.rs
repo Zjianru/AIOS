@@ -78,8 +78,8 @@ fn reasoning_text_is_replaced_with_character_counts() {
     let body = ledger["body"].to_string();
     assert!(body.contains("[推理已略去，4 字]"), "思考块 N=4：{body}");
     assert!(
-        body.contains("[推理已略去，6 字]"),
-        "reasoning-chunks N=6：{body}"
+        body.contains("[推理已略去，7 字]"),
+        "reasoning-chunks N=7（很长的思考 5 + 继续 2）：{body}"
     );
     assert!(!body.contains("先想一下"), "推理原文不在副本里：{body}");
     assert!(!body.contains("很长的思考"), "推理帧原文不在副本里：{body}");
