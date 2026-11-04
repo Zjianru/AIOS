@@ -7,7 +7,11 @@ const src = path.resolve(process.cwd(), 'src');
 const patterns = [
   'connectedOnly', 'setKernel', 'setKeyringBroken', 'setFirstUse', 'setLatency',
   'setDevStressFlow', 'devStressFlow',
+  // T008.F12：死开关/空壳函数不得复活。
+  'setKeyringProblem', 'syncKeyringEmpty', 'keyringBroken',
 ];
+// T008.F12：导出的空函数（空壳开关）一律不允许。
+const emptyStub = /export function \w+\([^)]*\): void \{\}/;
 const files = [];
 const walk = (dir) => {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -24,6 +28,7 @@ for (const target of files) {
     for (const pattern of patterns) {
       if (text.includes(pattern)) hits.push(target + ':' + (index + 1) + ' ' + pattern);
     }
+    if (emptyStub.test(text)) hits.push(target + ':' + (index + 1) + ' 空函数');
   });
 }
 console.log('演示开关命中 ' + hits.length + ' 条');
