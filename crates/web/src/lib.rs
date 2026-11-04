@@ -241,6 +241,27 @@ fn origin_is_same_authority(origin: &str, host: &str) -> bool {
     origin_host == host_name && origin_port == host_port
 }
 
+/// T006.F2：/connect 换 cookie 的结果（骨架；签名实现待依赖批准）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectGrant {
+    pub set_cookie: String,
+    pub location: String,
+}
+
+/// T006.F2：GET /connect?token= 的换 cookie 入口（骨架；红测试先行）。
+pub fn authorize_connect(
+    _trust: &Trust,
+    _host_header: Option<&str>,
+    _token: Option<&str>,
+) -> Result<ConnectGrant, TrustError> {
+    Err(TrustError::Unauthorized)
+}
+
+/// T006.F2：/api、/ws 只认 cookie 的认证入口（骨架；红测试先行）。
+pub fn check_api_auth(_trust: &Trust, _headers: &HeaderMap) -> Result<(), TrustError> {
+    Err(TrustError::Unauthorized)
+}
+
 /// T006.F2：浏览器请求的 Origin / Fetch-Metadata 栅栏。
 pub fn check_origin(headers: &HeaderMap) -> Result<(), TrustError> {
     let host = headers
