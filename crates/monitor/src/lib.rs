@@ -7,9 +7,9 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
-use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -130,10 +130,7 @@ fn write_record(_sink: &mut dyn LineSink, _record: &Record) -> Result<(), Monito
     Ok(())
 }
 
-fn write_pending_gap(
-    _sink: &mut dyn LineSink,
-    _dropped: &AtomicU64,
-) -> Result<(), MonitorError> {
+fn write_pending_gap(_sink: &mut dyn LineSink, _dropped: &AtomicU64) -> Result<(), MonitorError> {
     Ok(())
 }
 
@@ -206,5 +203,161 @@ impl Monitor {
 impl Drop for Monitor {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn read_lines(path: &Path) -> Vec<Value> {
+        std::fs::read_to_string(path)
+            .expect("读监控文件")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("监控行是 JSON"))
+            .collect()
+    }
+
+    fn file_sink(path: &Path) -> FileSink {
+        FileSink {
+            file: OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .expect("打开测试文件"),
+        }
+    }
+
+    struct FailingSink {
+        attempts: Arc<AtomicUsize>,
+    }
+
+    impl LineSink for FailingSink {
+        fn write_line(&mut self, _line: &str) -> std::io::Result<()> {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            Err(std::io::Error::other("磁盘满了"))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn record_shape_file_location_and_shutdown() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let monitor = Monitor::open(dir.path()).expect("打开监控");
+        let path = monitor.path().to_path_buf();
+        assert!(
+            path.starts_with(dir.path().join("monitor")),
+            "文件在 <数据目录>/monitor 下"
+        );
+        assert!(
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with(".jsonl"),
+            "文件是 jsonl：{}",
+            path.display()
+        );
+
+        let mut attributes = Map::new();
+        attributes.insert("session.id".to_owned(), json!("s1"));
+        attributes.insert("event.type".to_owned(), json!("turn/start"));
+        let mut record = Record::new(
+            Channel::Ledger,
+            Severity::Info,
+            attributes,
+            json!({"turn": 1}),
+        );
+        record.source_event = Some(SourceEvent {
+            session_id: "s1".to_owned(),
+            event: json!({"type": "turn/start", "seq": 1, "time": 2}),
+        });
+        assert!(monitor.record(record));
+        assert!(monitor.record(Record::ops(
+            "api-call",
+            Severity::Warn,
+            json!({"method": "send"})
+        )));
+        for index in 0..5 {
+            assert!(monitor.record(Record::ops(
+                "stream-open",
+                Severity::Info,
+                json!({"index": index})
+            )));
+        }
+        monitor.shutdown();
+
+        let lines = read_lines(&path);
+        assert_eq!(lines.len(), 8, "2 条 + 5 条 + shutdown");
+        let first = &lines[0];
+        assert_eq!(first["channel"], "ledger");
+        assert!(first["time"].as_u64().unwrap() > 0);
+        assert_eq!(first["severity"], "info");
+        assert_eq!(first["attributes"]["session.id"], "s1");
+        assert_eq!(first["sourceEvent"]["sessionId"], "s1");
+        assert_eq!(first["sourceEvent"]["event"]["type"], "turn/start");
+        assert_eq!(lines[1]["channel"], "ops");
+        assert_eq!(lines[1]["attributes"]["telemetry.op"], "api-call");
+        assert_eq!(lines[1]["severity"], "warn");
+        for (index, line) in lines.iter().enumerate().take(7).skip(2) {
+            assert_eq!(line["attributes"]["index"], index - 2);
+        }
+        assert_eq!(
+            lines[7]["attributes"]["telemetry.op"], "shutdown",
+            "退出写 shutdown"
+        );
+    }
+
+    #[test]
+    fn gap_records_dropped_count_before_next_record() {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let path = dir.path().join("monitor.jsonl");
+        let mut sink = file_sink(&path);
+        let dropped = AtomicU64::new(3);
+        write_pending_gap(&mut sink, &dropped).expect("写 gap");
+        write_record(
+            &mut sink,
+            &Record::ops("stream-open", Severity::Info, json!({"ok": true})),
+        )
+        .expect("写下一条");
+        sink.flush().expect("flush");
+        let lines = read_lines(&path);
+        assert_eq!(lines.len(), 2, "gap 在下一条之前先写");
+        assert_eq!(lines[0]["attributes"]["telemetry.op"], "gap");
+        assert_eq!(lines[0]["severity"], "warn");
+        assert_eq!(lines[0]["body"]["dropped"], 3);
+        assert_eq!(lines[1]["attributes"]["telemetry.op"], "stream-open");
+        assert_eq!(dropped.load(Ordering::SeqCst), 0, "gap 写完后计数清零");
+        // 守恒：写下的 1 条 + 丢掉的 3 条 = 产生的 4 条。
+        assert_eq!(lines.len() - 1 + 3, 4);
+    }
+
+    #[test]
+    fn write_failure_stops_writer_after_one_attempt() {
+        let (tx, rx) = sync_channel(8);
+        tx.send(Message::Record(Record::ops(
+            "process-start",
+            Severity::Info,
+            json!({}),
+        )))
+        .unwrap();
+        tx.send(Message::Record(Record::ops(
+            "shutdown",
+            Severity::Info,
+            json!({}),
+        )))
+        .unwrap();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let sink = FailingSink {
+            attempts: Arc::clone(&attempts),
+        };
+        let handle = std::thread::spawn(move || {
+            run_writer(Box::new(sink), rx, Arc::new(AtomicU64::new(0)));
+        });
+        handle.join().expect("写线程应停下而不是 panic");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1, "写失败后不再尝试第二条");
     }
 }
