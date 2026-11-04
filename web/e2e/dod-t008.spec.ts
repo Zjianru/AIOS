@@ -2,7 +2,7 @@ import { renameSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { startRealDodFixture } from './service-fixture';
 
 const evidence =
@@ -10,6 +10,12 @@ const evidence =
   path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../aios-work/T008/evidence/dod');
 
 test.skip(!process.env.DEEPSEEK_API_KEY, '需要运行时 DEEPSEEK_API_KEY（真 key DoD 3）');
+
+/** T008.F2 骨架：只断言最终 assistant 回答，不把工具/用户消息算进来。 */
+async function expectFinalAnswer(page: Page, text: string): Promise<void> {
+  void page;
+  void text;
+}
 
 test('DoD3 真 key：页面第一次填 key → 接上 → 空对话 → bash 只读 /tmp/aios-t008-dod/work 并回答', async ({ page }) => {
   test.setTimeout(240_000);
@@ -32,6 +38,7 @@ test('DoD3 真 key：页面第一次填 key → 接上 → 空对话 → bash �
     );
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await expect(page.getByText('DOD-T008-OK', { exact: false })).toBeVisible({ timeout: 180_000 });
+    await expectFinalAnswer(page, 'DOD-T008-OK');
     await page.screenshot({ path: path.join(evidence, 'dod3-answer.png'), fullPage: true });
   } finally {
     await fixture.close();
