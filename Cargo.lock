@@ -59,6 +59,7 @@ dependencies = [
 name = "agent"
 version = "0.0.0"
 dependencies = [
+ "credentials",
  "insta",
  "model",
  "serde_json",
