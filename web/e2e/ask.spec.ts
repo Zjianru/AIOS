@@ -1,5 +1,5 @@
 import { test, expect, type APIRequestContext } from '@playwright/test';
-import { startKernelFixture, type KernelFixture } from './service-fixture';
+import { apiPost, startKernelFixture, type KernelFixture } from './service-fixture';
 
 let fixture: KernelFixture;
 
@@ -12,10 +12,7 @@ test.afterEach(async () => {
 });
 
 async function call(request: APIRequestContext, body: Record<string, unknown>) {
-  const response = await request.post(
-    `${fixture.baseUrl}/api?token=${encodeURIComponent(fixture.token)}`,
-    { data: body },
-  );
+  const response = await apiPost(request, fixture, body);
   expect(response.ok()).toBeTruthy();
   return response.json();
 }

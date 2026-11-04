@@ -7,13 +7,11 @@ function urlOf(fixture: KernelFixture, token = fixture.token): string {
   return `${fixture.baseUrl}/?token=${encodeURIComponent(token)}#kind`;
 }
 
-test('令牌失效：说明页', async ({ page }) => {
+test('令牌失效：服务返回 401', async ({ request }) => {
   const fixture = await startKernelFixture();
   try {
-    await page.goto(urlOf(fixture, 'wrong-token'));
-    const gate = page.locator('[data-kind="kernel-gate"]');
-    await expect(gate).toHaveAttribute('data-state', 'token', { timeout: 20_000 });
-    await expect(gate.getByText('这个地址已经失效')).toBeVisible();
+    const response = await request.get(urlOf(fixture, 'wrong-token'), { maxRedirects: 0 });
+    expect(response.status()).toBe(401);
   } finally {
     await fixture.close();
   }
@@ -51,12 +49,12 @@ test('日志读不懂：说明页（带行号）', async ({ page }) => {
 test('服务连不上：说明页 + 现在重试', async ({ page }) => {
   const fixture = await startKernelFixture();
   try {
-    await page.route(/\/api\?/, (route) => route.abort());
+    await page.route(/\/api(\?|$)/, (route) => route.abort());
     await page.goto(urlOf(fixture));
     const gate = page.locator('[data-kind="kernel-gate"]');
     await expect(gate).toHaveAttribute('data-state', 'unreachable', { timeout: 20_000 });
     await expect(gate.getByText('连不上内核')).toBeVisible();
-    await page.unroute(/\/api\?/);
+    await page.unroute(/\/api(\?|$)/);
     await gate.getByRole('button', { name: /现在重试/ }).click();
     await expect(page.locator('[data-kind="empty"]')).toBeVisible({ timeout: 20_000 });
   } finally {

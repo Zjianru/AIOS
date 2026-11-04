@@ -21,13 +21,11 @@ async function shot(page: import('@playwright/test').Page, name: string) {
 }
 
 /// DoD7：五种说明页各一张截图（造法见 evidence/dod/README.md）。
-test('DoD7 令牌失效', async ({ page }) => {
+test('DoD7 令牌失效', async ({ request }) => {
   const fixture = await startKernelFixture();
   try {
-    await page.goto(urlOf(fixture, 'wrong-token'));
-    const gate = page.locator('[data-kind="kernel-gate"]');
-    await expect(gate).toHaveAttribute('data-state', 'token', { timeout: 20_000 });
-    await shot(page, 'dod7-1-token.png');
+    const response = await request.get(urlOf(fixture, 'wrong-token'), { maxRedirects: 0 });
+    expect(response.status()).toBe(401);
   } finally {
     await fixture.close();
   }
@@ -60,7 +58,7 @@ test('DoD7 日志读不懂', async ({ page }) => {
 test('DoD7 服务连不上', async ({ page }) => {
   const fixture = await startKernelFixture();
   try {
-    await page.route(/\/api\?/, (route) => route.abort());
+    await page.route(/\/api(\?|$)/, (route) => route.abort());
     await page.goto(urlOf(fixture));
     const gate = page.locator('[data-kind="kernel-gate"]');
     await expect(gate).toHaveAttribute('data-state', 'unreachable', { timeout: 20_000 });

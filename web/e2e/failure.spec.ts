@@ -1,5 +1,5 @@
 import { test, expect, type APIRequestContext } from '@playwright/test';
-import { startKernelFixture, type KernelFixture } from './service-fixture';
+import { apiPost, startKernelFixture, type KernelFixture } from './service-fixture';
 
 async function open(page: import('@playwright/test').Page, fixture: KernelFixture) {
   await page.goto(`${fixture.baseUrl}/?token=${encodeURIComponent(fixture.token)}#kind`);
@@ -8,10 +8,7 @@ async function open(page: import('@playwright/test').Page, fixture: KernelFixtur
 }
 
 async function followEvents(request: APIRequestContext, fixture: KernelFixture) {
-  const response = await request.post(
-    `${fixture.baseUrl}/api?token=${encodeURIComponent(fixture.token)}`,
-    { data: { method: 'follow', lastSeq: 0 } },
-  );
+  const response = await apiPost(request, fixture, { method: 'follow', lastSeq: 0 });
   return (await response.json()).events as { type: string; data?: { delayMs?: number } }[];
 }
 
