@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { renameSync } from 'node:fs';
+import { rmSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,26 +22,23 @@ async function shot(page: import('@playwright/test').Page, name: string) {
 }
 
 /// DoD7：五种说明页各一张截图（造法见 evidence/dod/README.md）。
-/// T008 #1：令牌说明页用真能走到的路——页面开着 → Keyring 重新开始（含 cookie 签名钥匙）→ 重启服务 → 下一次调用 401。
-test('DoD7 令牌失效：Keyring 重新开始并重启服务后页面 401', async ({ page }) => {
-  const fixture = await startKernelFixture();
+/// T008 #1（r4）：401 统一进令牌说明页——固定顺序：等第一次使用页 → 重启服务 → 点「接上」→ 断言令牌说明页。
+/// Keyring 清空等价于「重新开始」：旧 cookie 失效，重启后第一次使用页的「接上」会拿到 401。
+test('DoD7 令牌失效：第一次使用页 → 重启服务 → 接上 → 令牌说明页', async ({ page }) => {
+  const fixture = await startKernelFixture({ emptyKeyring: true });
   try {
-    // 先挪走钥匙文件，让设置页出现「读不出」横幅，再点「重新开始」清空 Keyring。
-    const identity = path.join(fixture.dataDir, 'identity.txt');
-    const moved = path.join(fixture.dataDir, 'moved-identity.txt');
-    renameSync(identity, moved);
     await page.goto(urlOf(fixture));
-    await page.getByRole('button', { name: '设置', exact: true }).click();
-    const banner = page.locator('[data-settings="keyring-broken"]');
-    await expect(banner).toBeVisible({ timeout: 20_000 });
-    await banner.getByRole('button', { name: '找不回了，重新开始' }).click();
-    await page.getByRole('button', { name: '重新开始', exact: true }).click();
-    await page.getByRole('button', { name: 'Kind', exact: true }).click();
+    await expect(page.locator('[data-first-use="connect"]')).toBeVisible({ timeout: 30_000 });
+    for (const name of ['keyring.age', 'identity.txt', 'config.json']) {
+      rmSync(path.join(fixture.dataDir, name), { force: true });
+    }
     await fixture.restart?.();
-    // 新进程从空 Keyring 新建 cookie 签名钥匙；页面旧 cookie 在断线 recheck 时 401 → 令牌说明页。
+    await page.locator('#first-use-key').fill('sk-test-r4');
+    await page.getByRole('button', { name: '接上', exact: true }).click();
     const gate = page.locator('[data-kind="kernel-gate"]');
-    await expect(gate).toHaveAttribute('data-state', 'token', { timeout: 45_000 });
+    await expect(gate).toHaveAttribute('data-state', 'token', { timeout: 30_000 });
     await expect(page.getByText('这个页面需要重新打开')).toBeVisible();
+    await expect(page.getByText(/服务拒绝|401/)).toHaveCount(0);
     await shot(page, 'dod7-1-token.png');
   } finally {
     await fixture.close();
