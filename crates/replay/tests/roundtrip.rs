@@ -42,8 +42,8 @@ impl CredentialSource for TestCredential {
 
 struct TestAgent {
     agent: Agent,
-    data_dir: tempfile::TempDir,
-    cwd: tempfile::TempDir,
+    _data_dir: tempfile::TempDir,
+    _cwd: tempfile::TempDir,
     log_path: std::path::PathBuf,
 }
 
@@ -80,8 +80,8 @@ async fn setup_agent(base_url: &str) -> TestAgent {
     .expect("建 Agent");
     TestAgent {
         agent,
-        data_dir,
-        cwd,
+        _data_dir: data_dir,
+        _cwd: cwd,
         log_path,
     }
 }
