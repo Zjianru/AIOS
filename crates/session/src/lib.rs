@@ -24,7 +24,7 @@ pub use projection::{
     TodosProjection, TodosProjectionView, todos_projection,
 };
 pub use repair::{TurnClosers, interrupted_turn_closers};
-pub use store::{AppendHook, SessionSnapshot, SessionStore};
+pub use store::{AppendHook, AppendHookFactory, SessionSnapshot, SessionStore};
 
 #[cfg(test)]
 #[path = "format_tests.rs"]

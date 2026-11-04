@@ -1407,6 +1407,7 @@ mod t011_ops_tests {
             credentials: None,
             identity: Some(identity),
             model_factory: None,
+            append_hook_factory: None,
         };
         let host = service::RootHost::open(options, model::DEFAULT_CONTEXT_WINDOW).await;
         let monitor = Monitor::open_with_capacity(dir.path(), 1024).expect("监控");

@@ -42,6 +42,9 @@ impl LogWriter for File {
 /// T011.2：会话写入之后的钩子（监控在服务启动时装上）。session 只认这个函数，不引用监控类型。
 pub type AppendHook = std::sync::Arc<dyn Fn(&[Event]) + Send + Sync>;
 
+/// T011.4/T011.2：按会话 id 造一个「追加之后」钩子（agent 在打开会话时装上）。
+pub type AppendHookFactory = std::sync::Arc<dyn Fn(&crate::SessionId) -> AppendHook + Send + Sync>;
+
 /// 一个会话的只追加 JSONL 事件日志。
 pub struct SessionStore {
     header: SessionHeader,
