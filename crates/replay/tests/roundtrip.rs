@@ -94,13 +94,15 @@ async fn run_one_turn(agent: &Agent) {
     agent.idle().await;
 }
 
-fn assistant_messages(events: &[session::Event]) -> Vec<(Vec<model::ContentBlock>, Option<model::Usage>)> {
+fn assistant_messages(
+    events: &[session::Event],
+) -> Vec<(Vec<model::ContentBlock>, Option<model::Usage>)> {
     events
         .iter()
         .filter_map(|event| match &event.kind {
-            session::EventKind::AssistantMessage {
-                message, usage, ..
-            } => Some((message.content.clone(), usage.clone())),
+            session::EventKind::AssistantMessage { message, usage, .. } => {
+                Some((message.content.clone(), usage.clone()))
+            }
             _ => None,
         })
         .collect()

@@ -97,7 +97,10 @@ fn bare_override_replaces_the_whole_script() {
     .expect("写覆盖");
     let script = ReplayScript::from_log_with_override(&log, Some(&override_path)).expect("读覆盖");
     assert_eq!(script.len(), 3);
-    assert!(matches!(&script.calls[1], ReplayCall::Throw { status: 429, .. }));
+    assert!(matches!(
+        &script.calls[1],
+        ReplayCall::Throw { status: 429, .. }
+    ));
     assert!(matches!(script.calls[2], ReplayCall::Hang));
 }
 
@@ -120,7 +123,10 @@ fn patches_replace_and_append() {
     let script = ReplayScript::from_log_with_override(&log, Some(&override_path)).expect("读覆盖");
     assert_eq!(script.len(), 3, "替换 + 追加");
     assert!(matches!(script.calls[1], ReplayCall::Hang));
-    assert!(matches!(&script.calls[2], ReplayCall::Throw { status: 500, .. }));
+    assert!(matches!(
+        &script.calls[2],
+        ReplayCall::Throw { status: 500, .. }
+    ));
 }
 
 #[test]
@@ -130,8 +136,10 @@ fn patch_beyond_length_is_rejected() {
     let override_path = dir.path().join("replay.override.json");
     std::fs::write(
         &override_path,
-        serde_json::to_string(&serde_json::json!({"patches": [{"at": 3, "entry": {"kind": "hang"}}]}))
-            .expect("覆盖文件"),
+        serde_json::to_string(
+            &serde_json::json!({"patches": [{"at": 3, "entry": {"kind": "hang"}}]}),
+        )
+        .expect("覆盖文件"),
     )
     .expect("写覆盖");
     assert!(ReplayScript::from_log_with_override(&log, Some(&override_path)).is_err());

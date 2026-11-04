@@ -17,7 +17,10 @@ pub enum ReplayCall {
     /// 正常回一段流（从日志里的紧凑记录编码成 SSE）。
     Stream(Vec<AssistantStreamRecord>),
     /// 2xx 之前就失败：HTTP 状态和响应体。
-    Throw { status: u16, body: serde_json::Value },
+    Throw {
+        status: u16,
+        body: serde_json::Value,
+    },
     /// 回一段流之后把连接断掉（流到一半断开；没有 message_stop）。
     Cut(Vec<AssistantStreamRecord>),
     /// 不回应，直到请求被取消。

@@ -39,9 +39,15 @@ async fn replays_calls_in_order_then_reports_exhaustion() {
     let first = post(&url).await;
     assert_eq!(first.status(), 200);
     let body = first.text().await.expect("读第一段");
-    assert!(body.contains("message_start"), "第一段缺 message_start：{body}");
+    assert!(
+        body.contains("message_start"),
+        "第一段缺 message_start：{body}"
+    );
     assert!(body.contains("第一段"), "第一段内容不在：{body}");
-    assert!(body.contains("message_stop"), "第一段缺 message_stop：{body}");
+    assert!(
+        body.contains("message_stop"),
+        "第一段缺 message_stop：{body}"
+    );
 
     let second = post(&url).await;
     assert_eq!(second.status(), 200);
