@@ -349,9 +349,6 @@ function WaitingPane() {
         )}
       </div>
 
-      <footer className="shrink-0 border-t border-line px-4 py-2 text-1 leading-4 text-ink-3">
-        工作：看板四列是事实派生的；「等你」只放需要你的，问题默认 Kind 先处理。
-      </footer>
     </div>
   );
 }

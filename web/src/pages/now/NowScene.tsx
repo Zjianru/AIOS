@@ -331,9 +331,6 @@ export function NowScene() {
           <p className="mt-3 text-1 leading-4 text-ink-3">
             「还需」带 ≈ 的是估算：按这件事已完成的几站平均用时推算，不含等你的时间。
           </p>
-          <p className="mt-2 border-t border-line pt-2 text-1 leading-4 text-ink-3">
-            现在：你不在时发生的事汇总在这里；问题默认由 Kind 先处理，只有要你拍板的才冒泡成「等你决定」。
-          </p>
         </section>
       </div>
     </div>

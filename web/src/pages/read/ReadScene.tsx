@@ -458,9 +458,6 @@ function ReadMainPane() {
             </div>
           </div>
 
-          <p className="mt-6 border-t border-line pt-2 text-1 leading-4 text-ink-3">
-            阅读页：资料和成果共用同一页；右栏伴读收起后换成验收面板，验收永远对应具体一版。
-          </p>
         </div>
       </div>
     </div>

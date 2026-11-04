@@ -213,9 +213,6 @@ export function TraceScene() {
         <span>{loadingOlder ? '正在取更早的记录…' : hasOlder ? '往上滚加载更早的记录' : '已经是全部记录'}</span>
         <span className="ml-auto">筛选只作用于已加载的部分；原型里运行记录是 500 轮样例。</span>
       </footer>
-      <div className="shrink-0 border-t border-line px-4 py-1.5 text-1 leading-4 text-ink-3">
-        原始记录（第三层）：子助手、工具调用、模型请求、文件改动、审查结论按时间列在这里，平时不需要看。
-      </div>
     </div>
   );
 }

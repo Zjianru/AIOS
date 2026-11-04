@@ -186,9 +186,6 @@ function AbilityLibrary() {
           </section>
         ))}
 
-        <p className="mt-8 border-t border-line pt-2 text-1 leading-4 text-ink-3">
-          能力库：能力是角色能用的工具 / 技能 / 连接；流程是「一类事固定怎么做」的可复用模板，内置流程只读、可复制。
-        </p>
       </div>
     </div>
   );

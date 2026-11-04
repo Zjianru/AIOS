@@ -67,9 +67,6 @@ export function EmptyNow() {
           </div>
         </div>
 
-        <p className="mt-16 border-t border-line pt-2 text-1 leading-4 text-ink-3">
-          现在（空态）：第一次打开时不放假数据；三个分组就是 AIOS 里你需要关心的三件事。
-        </p>
       </div>
     </div>
   );
