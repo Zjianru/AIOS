@@ -541,7 +541,7 @@ export async function startRealDodFixture(): Promise<KernelFixture> {
     const timer = setTimeout(() => reject(new Error('T008 serve 启动超时: ' + output)), 60_000);
     child.stdout.on('data', (chunk: Buffer) => {
       output += chunk.toString();
-      const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)\?token=([0-9a-f-]+)/);
+      const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)\/?\?token=([0-9a-f-]+)/);
       if (match) {
         clearTimeout(timer);
         resolve({ baseUrl: 'http://127.0.0.1:' + match[1], token: match[2] });
