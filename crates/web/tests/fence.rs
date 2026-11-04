@@ -153,3 +153,62 @@ fn reconnect_follows_from_last_seq_without_duplicates() {
         .collect();
     assert_eq!(seqs, vec![5, 6], "重连补齐从 lastSeq 之后开始、不重复");
 }
+
+// T006.F2 红测试：Origin / sec-fetch-site 栅栏（先骨架，随后实现）。
+fn headers(host: &str) -> axum::http::HeaderMap {
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("host", host.parse().unwrap());
+    headers
+}
+
+#[test]
+fn cross_site_origin_is_rejected() {
+    let mut headers = headers("127.0.0.1:1417");
+    headers.insert("origin", "https://evil.example".parse().unwrap());
+    let error = web::check_origin(&headers).unwrap_err();
+    assert_eq!(error.status(), 403);
+    assert!(matches!(error, web::TrustError::BadOrigin(_)));
+}
+
+#[test]
+fn sec_fetch_cross_site_is_rejected_without_origin() {
+    let mut headers = headers("127.0.0.1:1417");
+    headers.insert("sec-fetch-site", "cross-site".parse().unwrap());
+    let error = web::check_origin(&headers).unwrap_err();
+    assert_eq!(error.status(), 403);
+    assert!(matches!(error, web::TrustError::BadOrigin(_)));
+}
+
+#[test]
+fn same_origin_is_allowed() {
+    let mut headers = headers("127.0.0.1:1417");
+    headers.insert("origin", "http://127.0.0.1:1417".parse().unwrap());
+    headers.insert("sec-fetch-site", "same-origin".parse().unwrap());
+    assert!(web::check_origin(&headers).is_ok());
+}
+
+#[test]
+fn null_or_malformed_origin_is_rejected() {
+    for origin in ["null", "http://", "not a url"] {
+        let mut headers = headers("127.0.0.1:1417");
+        headers.insert("origin", origin.parse().unwrap());
+        let error = web::check_origin(&headers).unwrap_err();
+        assert_eq!(error.status(), 403, "Origin {origin} 必须 403");
+    }
+}
+
+#[test]
+fn cross_port_origin_is_rejected() {
+    let mut headers = headers("127.0.0.1:1417");
+    headers.insert("origin", "http://127.0.0.1:1418".parse().unwrap());
+    assert!(matches!(
+        web::check_origin(&headers),
+        Err(web::TrustError::BadOrigin(_))
+    ));
+}
+
+#[test]
+fn missing_origin_and_fetch_metadata_is_allowed() {
+    let headers = headers("127.0.0.1:1417");
+    assert!(web::check_origin(&headers).is_ok());
+}
