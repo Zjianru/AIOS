@@ -168,7 +168,7 @@ fn opening_sends_ready_before_events_in_order() {
         serde_json::json!({
             "type": "ready",
             "sessionId": "sess-1",
-            "protocolVersion": 3,
+            "protocolVersion": service::PROTOCOL_VERSION,
             "root": {"state": "ok"},
             "context": {"used": 0, "window": 1000}
         })

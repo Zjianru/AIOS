@@ -425,7 +425,7 @@ pub struct ConnectionRevokeResponse {
 }
 
 /// 服务协议版本（T007.2 起）：只增不改的对外面每次扩展都记在这里，Web ready 帧里带上。
-pub const PROTOCOL_VERSION: u64 = 3;
+pub const PROTOCOL_VERSION: u64 = 4;
 
 /// 根会话不可用的种类（T007.2）：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -818,44 +818,13 @@ impl ServiceHost {
     /// 从页尾往回数，走到**轮起点**且两条下限都满足时停；预算或日志耗尽先到就按先到的停）。
     pub async fn events(&self, request: EventsRequest) -> Result<EventsResponse, ServiceError> {
         let all = self.agent.session_events_from(0);
-        if all.is_empty() {
-            return Ok(EventsResponse {
-                events: Vec::new(),
-                has_more: false,
-            });
-        }
-        let end_seq = request
-            .before_seq
-            .unwrap_or(u64::MAX)
-            .min(all.last().map(|event| event.seq).unwrap_or(0));
-        let max_messages = request.max_messages.unwrap_or(500).max(1);
-        let min_messages = request.min_messages.unwrap_or(50).min(max_messages);
-        let min_turns = request.min_turns.unwrap_or(2).max(1);
-
-        let mut selected: Vec<&session::Event> = Vec::new();
-        let mut messages = 0_usize;
-        let mut turns = 0_usize;
-        for event in all.iter().filter(|event| event.seq <= end_seq).rev() {
-            selected.push(event);
-            match &event.kind {
-                session::EventKind::UserMessage { .. }
-                | session::EventKind::AssistantMessage { .. } => messages += 1,
-                session::EventKind::TurnStart { .. } => turns += 1,
-                _ => {}
-            }
-            if messages >= max_messages {
-                break;
-            }
-            if matches!(event.kind, session::EventKind::TurnStart { .. })
-                && messages >= min_messages
-                && turns >= min_turns
-            {
-                break;
-            }
-        }
-        selected.reverse();
-        let first_seq = selected.first().map(|event| event.seq).unwrap_or(0);
-        let has_more = first_seq > all[0].seq;
+        let (selected, has_more) = page_events(
+            &all,
+            request.before_seq,
+            request.max_messages.unwrap_or(500).max(1),
+            request.min_messages,
+            request.min_turns,
+        );
         Ok(EventsResponse {
             events: selected.iter().map(|event| service_event(event)).collect(),
             has_more,
@@ -874,6 +843,49 @@ impl Drop for ServiceHost {
             handle.abort();
         }
     }
+}
+
+/// T009.4 骨架：events 的分页选择（先保持 T008 的含 beforeSeq 语义；红测试后改为不含本条）。
+fn page_events<'a>(
+    all: &'a [session::Event],
+    before_seq: Option<u64>,
+    max_messages: usize,
+    min_messages: Option<usize>,
+    min_turns: Option<usize>,
+) -> (Vec<&'a session::Event>, bool) {
+    if all.is_empty() {
+        return (Vec::new(), false);
+    }
+    let end_seq = before_seq
+        .unwrap_or(u64::MAX)
+        .min(all.last().map(|event| event.seq).unwrap_or(0));
+    let min_messages = min_messages.unwrap_or(50).min(max_messages);
+    let min_turns = min_turns.unwrap_or(2).max(1);
+    let mut selected: Vec<&session::Event> = Vec::new();
+    let mut messages = 0_usize;
+    let mut turns = 0_usize;
+    for event in all.iter().filter(|event| event.seq <= end_seq).rev() {
+        selected.push(event);
+        match &event.kind {
+            session::EventKind::UserMessage { .. }
+            | session::EventKind::AssistantMessage { .. } => messages += 1,
+            session::EventKind::TurnStart { .. } => turns += 1,
+            _ => {}
+        }
+        if messages >= max_messages {
+            break;
+        }
+        if matches!(event.kind, session::EventKind::TurnStart { .. })
+            && messages >= min_messages
+            && turns >= min_turns
+        {
+            break;
+        }
+    }
+    selected.reverse();
+    let first_seq = selected.first().map(|event| event.seq).unwrap_or(0);
+    let has_more = first_seq > all[0].seq;
+    (selected, has_more)
 }
 
 /// 会话日志事件 → 服务事件（data = 日志事件的字段，不含 type 标签）。
