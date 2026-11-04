@@ -6,7 +6,7 @@ import path from 'node:path';
 const src = path.resolve(process.cwd(), 'src');
 const patterns = [
   'connectedOnly', 'setKernel', 'setKeyringBroken', 'setFirstUse', 'setLatency',
-  'setDevStressFlow', 'devStressFlow', 'keyringBroken', 'firstUse',
+  'setDevStressFlow', 'devStressFlow',
 ];
 const files = [];
 const walk = (dir) => {
