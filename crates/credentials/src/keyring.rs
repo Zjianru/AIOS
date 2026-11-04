@@ -43,13 +43,22 @@ impl IssuedSecret {
     /// 取出本次签发值（调用方用完后应立即交给模型请求并丢弃）。
     pub fn into_secret(self) -> String {
         let mut this = std::mem::ManuallyDrop::new(self);
-        std::mem::take(&mut this.secret)
+        let secret = std::mem::take(&mut this.secret);
+        // 余下字段正常 drop（connection 不残留；String 已置空，不泄漏）。
+        drop(std::mem::take(&mut this.connection));
+        secret
     }
 }
+
+#[cfg(test)]
+static ISSUED_DROP_CALLED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 impl Drop for IssuedSecret {
     fn drop(&mut self) {
         self.zeroize();
+        #[cfg(test)]
+        ISSUED_DROP_CALLED.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -631,4 +640,24 @@ fn now_seconds() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod issued_secret_drop_tests {
+    use super::IssuedSecret;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn drop_calls_zeroize() {
+        super::ISSUED_DROP_CALLED.store(false, Ordering::Relaxed);
+        let issued = IssuedSecret {
+            connection: "deepseek".to_owned(),
+            secret: "sk-test-drop".to_owned(),
+        };
+        drop(issued);
+        assert!(
+            super::ISSUED_DROP_CALLED.load(Ordering::Relaxed),
+            "IssuedSecret Drop 必须调用 zeroize"
+        );
+    }
 }

@@ -315,3 +315,65 @@ fn 签发值用完清零() {
         "显式清零后不能还是原文：{issued:?}"
     );
 }
+
+#[test]
+fn into_secret返回原值且交出所有权() {
+    let fixture = Fixture::new();
+    let keyring = fixture.open();
+    keyring.save_connection(connection()).expect("save");
+    let issued = keyring.issue("deepseek", "kind-turn", None).expect("issue");
+    let secret = issued.into_secret();
+    assert_eq!(secret, TEST_KEY);
+}
+
+#[test]
+fn 跨进程持锁时保存会等待() {
+    let fixture = Fixture::new();
+    std::fs::create_dir_all(&fixture.data_dir).expect("data dir");
+    let lock_path = fixture.data_dir.join("keyring.lock");
+    let sentinel = fixture.data_dir.join("lock-ready");
+    let script = "import fcntl,pathlib,sys,time
+f=open(sys.argv[1],'a+')
+fcntl.flock(f,fcntl.LOCK_EX)
+pathlib.Path(sys.argv[2]).write_text('locked')
+time.sleep(0.6)
+";
+    let mut child = std::process::Command::new("python3")
+        .arg("-c")
+        .arg(script)
+        .arg(&lock_path)
+        .arg(&sentinel)
+        .spawn()
+        .expect("spawn lock holder");
+    for _ in 0..100 {
+        if sentinel.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(sentinel.exists(), "子进程应已持有 keyring.lock");
+
+    let keyring = Arc::new(fixture.open());
+    let (sender, receiver) = mpsc::channel();
+    let worker = {
+        let keyring = Arc::clone(&keyring);
+        thread::spawn(move || {
+            sender
+                .send(keyring.save_connection(connection()).is_ok())
+                .expect("send");
+        })
+    };
+    assert!(
+        receiver.recv_timeout(Duration::from_millis(150)).is_err(),
+        "另一个进程持有 keyring.lock 时，保存必须等待"
+    );
+    let status = child.wait().expect("wait child");
+    assert!(status.success(), "lock holder 应正常退出");
+    assert!(
+        receiver
+            .recv_timeout(Duration::from_secs(3))
+            .expect("worker result"),
+        "跨进程锁释放后保存应成功"
+    );
+    worker.join().expect("join");
+}
