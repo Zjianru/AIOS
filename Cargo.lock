@@ -1513,6 +1513,7 @@ dependencies = [
 name = "monitor"
 version = "0.0.0"
 dependencies = [
+ "model",
  "serde",
  "serde_json",
  "session",
