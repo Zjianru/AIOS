@@ -44,6 +44,11 @@ impl DeepSeek {
         &self.config
     }
 
+    /// provider 路由 id（DSH 的 provider 名；AIOS 只接 DeepSeek）。
+    pub fn provider(&self) -> &'static str {
+        "deepseek"
+    }
+
     /// 发一次流式请求。消息和工具定义按 Messages 协议序列化（system 单独成字段）。
     /// 取消令牌能在「等响应头」阶段打断请求（对应 DSH 把 AbortSignal 传进 LLM 层）。
     pub async fn stream(
@@ -52,7 +57,35 @@ impl DeepSeek {
         tools: &[ToolSchema],
         cancel: &CancelToken,
     ) -> Result<ChunkStream, ModelError> {
-        let body = serialize::request_body(&self.config, messages, tools)?;
+        self.stream_inner(messages, tools, cancel, None, true).await
+    }
+
+    /// 同 `stream`，但这一次请求覆盖输出上限（T006.3：摘要请求的 maxTokens 上限；DSH GenerateOptions.maxTokens）。
+    ///
+    /// T006.19：摘要请求的输入是**被截断的历史前缀**（压缩事务要摘的就是这段前缀），
+    /// 里面可能留下没有配对的 tool_use/tool_result；DSH 的三类防御校验针对完整对话请求，
+    /// 不能套在摘要前缀上（否则合法的截断前缀会被误拒）。所以这里跳过配对防御校验。
+    pub async fn stream_with_max_tokens(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSchema],
+        cancel: &CancelToken,
+        max_tokens: Option<u32>,
+    ) -> Result<ChunkStream, ModelError> {
+        self.stream_inner(messages, tools, cancel, max_tokens, false)
+            .await
+    }
+
+    async fn stream_inner(
+        &self,
+        messages: &[Message],
+        tools: &[ToolSchema],
+        cancel: &CancelToken,
+        max_tokens: Option<u32>,
+        validate_pairing: bool,
+    ) -> Result<ChunkStream, ModelError> {
+        let body =
+            serialize::request_body(&self.config, messages, tools, max_tokens, validate_pairing)?;
         let request = self
             .http
             .post(self.url.clone())

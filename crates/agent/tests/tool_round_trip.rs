@@ -75,7 +75,10 @@ async fn tool_round_trip() {
     std::fs::write(cwd.path().join("note.txt"), "hello\n").unwrap();
     let canonical_cwd = std::fs::canonicalize(cwd.path()).unwrap();
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("请读一下 note.txt"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("请读一下 note.txt"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let mut text = String::new();
@@ -91,7 +94,7 @@ async fn tool_round_trip() {
     assert_eq!(outcome, Some(TurnOutcome::Completed));
     drop(agent);
 
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     let kinds: Vec<&str> = reopened
         .events()
         .iter()
@@ -100,7 +103,9 @@ async fn tool_round_trip() {
     assert_eq!(
         kinds,
         vec![
+            "agent/inbox/spliced",
             "turn/start",
+            "agent/inbox/spliced",
             "step/start",
             "system/message",
             "user/message",
@@ -113,7 +118,7 @@ async fn tool_round_trip() {
             "step/end",
             "turn/end"
         ],
-        "工具调用一轮的事件顺序"
+        "工具调用一轮的事件顺序（T006.2a：收下与领取各一条 inbox splice）"
     );
 
     // 第一次 assistant 消息里有文本块和工具调用块
@@ -149,26 +154,21 @@ async fn tool_round_trip() {
         .events()
         .iter()
         .find_map(|event| match &event.kind {
-            EventKind::ToolResult {
-                message,
-                error_code,
-                ..
-            } => Some((message, error_code)),
+            EventKind::ToolResult { message, error, .. } => Some((message, error)),
             _ => None,
         })
         .expect("日志里有 tool/result");
     assert_eq!(tool_result.0.role, Role::Tool);
     assert_eq!(tool_result.1, &None);
-    let ContentBlock::ToolResult {
-        tool_use_id,
-        content,
-        is_error,
-    } = &tool_result.0.content[0]
-    else {
-        panic!("tool/result 消息里应当是 ToolResult 块");
-    };
-    assert_eq!(tool_use_id, "call_1");
-    assert!(!is_error);
+    // DSH ToolResultMessage：callId/isError 在消息级，content 是结果内容块。
+    assert_eq!(tool_result.0.tool_call_id.as_deref(), Some("call_1"));
+    assert_eq!(tool_result.0.is_error, None);
+    let content = tool_result
+        .0
+        .content
+        .first()
+        .and_then(ContentBlock::as_text)
+        .expect("tool/result 消息里是文本内容块");
     assert!(content.contains("<path>"));
     assert!(content.contains("1: hello"));
     assert!(content.contains("(End of file - total 1 lines)"));

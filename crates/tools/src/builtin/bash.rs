@@ -17,8 +17,6 @@ pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 pub const MAX_TIMEOUT_MS: u64 = 600_000;
 /// 前台结果每个流的内存上限（T005.3 契约：64,000 字节，超出留尾部 + 全文路径）。
 pub const MAX_OUTPUT_BYTES: usize = 64_000;
-/// 前景结果全文 spill 的单流上限（照 DSH bash-local maxSpillBytes 64 MiB）。
-pub const MAX_SPILL_BYTES: usize = 64 * 1024 * 1024;
 
 static FOREGROUND_READ_BYTES: AtomicU64 = AtomicU64::new(0);
 
@@ -39,12 +37,13 @@ impl BashTool {
             parameters: json!({
                 "type": "object",
                 "properties": {
+                    "description": {"type": "string", "description": "Clear, concise description of what this command does in active voice, 5-10 words (shown in the UI). Examples: \"ls\" → \"List files in current directory\"; \"git status\" → \"Show working tree status\"; \"npm install\" → \"Install package dependencies\"."},
                     "command": {"type": "string", "description": "The bash command to execute."},
                     "timeoutMs": {"type": "number", "description": "Timeout in milliseconds. On expiry the command moves to the background as a job instead of being killed. Defaults to 120000; capped at 600000."},
                     "workdir": {"type": "string", "description": "Working directory for this command. Defaults to the session workspace; a relative path is resolved against it."},
                     "run_in_background": {"type": "boolean", "description": "Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies."}
                 },
-                "required": ["command"]
+                "required": ["description", "command"]
             }),
         }
     }
@@ -75,7 +74,7 @@ impl Tool for BashTool {
         context: &'a ToolContext,
     ) -> ToolFuture<'a, ToolResult> {
         Box::pin(async move {
-            match bash(&call.arguments, &call.id, context) {
+            match bash(&call.arguments, &call.id, context).await {
                 Ok(content) => ToolResult::success(call.id, content),
                 Err(failure) => ToolResult::error(call.id, failure),
             }
@@ -83,7 +82,11 @@ impl Tool for BashTool {
     }
 }
 
-fn bash(arguments: &str, call_id: &str, context: &ToolContext) -> Result<String, ToolFailure> {
+async fn bash(
+    arguments: &str,
+    call_id: &str,
+    context: &ToolContext,
+) -> Result<String, ToolFailure> {
     let args: Value = serde_json::from_str(arguments)
         .map_err(|error| ToolFailure::plain(format!("arguments must be a JSON object: {error}")))?;
     let Some(object) = args.as_object() else {
@@ -96,6 +99,15 @@ fn bash(arguments: &str, call_id: &str, context: &ToolContext) -> Result<String,
     if command.trim().is_empty() {
         return Err(ToolFailure::plain(
             "invalid command: expected a non-empty string",
+        ));
+    }
+    let description = object
+        .get("description")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolFailure::plain("invalid description: expected a non-empty string"))?;
+    if description.trim().is_empty() {
+        return Err(ToolFailure::plain(
+            "invalid description: expected a non-empty string",
         ));
     }
     let workdir = object
@@ -124,22 +136,40 @@ fn bash(arguments: &str, call_id: &str, context: &ToolContext) -> Result<String,
 
     let registry = context.session().tasks();
     let label = first_line(command, 120);
-    let job_id = registry.start(
-        JobSpec {
-            command: command.to_owned(),
-            cwd: workdir,
-            env: jobs::child_env(context),
-            label,
-        },
-        !background,
-    )?;
+    let spec = JobSpec {
+        command: command.to_owned(),
+        cwd: workdir,
+        env: jobs::child_env(context),
+        label,
+        tool_call: Some(jobs::JobToolCall {
+            call_id: call_id.to_owned(),
+            root_call_id: call_id.to_owned(),
+        }),
+    };
+    // T006.8：前台输出边收边写进会话 spill 目录（照 DSH bash-local + subprocess collect）。
+    let job_id = if background {
+        registry.start(spec, false)?
+    } else {
+        registry.start_with_spill(
+            spec,
+            true,
+            jobs::JobSpill {
+                store: context.session().spill().clone(),
+                stdout_name: format!("bash-{call_id}-stdout.txt"),
+                stderr_name: format!("bash-{call_id}-stderr.txt"),
+            },
+            MAX_OUTPUT_BYTES,
+        )?
+    };
     if background {
         return Ok(format!("started background job {job_id}"));
     }
 
-    let read = registry.wait(&job_id, std::time::Duration::from_millis(timeout_ms))?;
+    let read = registry
+        .wait_async(&job_id, std::time::Duration::from_millis(timeout_ms))
+        .await?;
     if read.view.status.is_terminal() {
-        let rendered = render_final(context, call_id, &read);
+        let rendered = render_final(&read);
         registry.remove(&job_id);
         return Ok(rendered);
     }
@@ -166,99 +196,46 @@ fn first_line(command: &str, max_chars: usize) -> String {
     }
 }
 
-/// 前台结算的渲染：优先用 jobs 目录里的完整流（保留 T005.3 的 64,000 字节尾部 + spill 契约）。
-fn render_final(context: &ToolContext, call_id: &str, read: &JobRead) -> String {
-    let stdout = stream_from_job(
-        context,
-        call_id,
-        "stdout",
-        &read.stdout_path,
+/// 前台结算的渲染：内存只留每流 64,000 字节尾部；截断时照 DSH 追加完整输出 locator。
+fn render_final(read: &JobRead) -> String {
+    let stdout = rendered_stream(
         &read.stdout,
         read.stdout_dropped,
+        read.stdout_spill.as_deref(),
     );
-    let stderr = stream_from_job(
-        context,
-        call_id,
-        "stderr",
-        &read.stderr_path,
+    let stderr = rendered_stream(
         &read.stderr,
         read.stderr_dropped,
+        read.stderr_spill.as_deref(),
     );
     render_body(&stdout, &stderr, read.view.exit_code, read.view.signal)
 }
 
-struct StreamOutput {
-    text: String,
-    truncated: bool,
-    spill_path: Option<PathBuf>,
-}
-
-fn stream_from_job(
-    context: &ToolContext,
-    call_id: &str,
-    label: &str,
-    path: &Path,
-    fallback: &str,
-    dropped: bool,
-) -> StreamOutput {
-    use std::io::{Read as _, Seek as _, SeekFrom};
-
-    let fallback_stream = || StreamOutput {
-        text: fallback.to_owned(),
-        truncated: dropped,
-        spill_path: None,
-    };
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return fallback_stream();
-    };
-    let Ok(size) = file.metadata().map(|metadata| metadata.len()) else {
-        return fallback_stream();
-    };
-    if size <= MAX_OUTPUT_BYTES as u64 {
-        let mut bytes = Vec::new();
-        if file.read_to_end(&mut bytes).is_err() {
-            return fallback_stream();
-        }
-        FOREGROUND_READ_BYTES.fetch_add(bytes.len() as u64, Ordering::Relaxed);
-        return StreamOutput {
-            text: String::from_utf8_lossy(&bytes).into_owned(),
-            truncated: false,
-            spill_path: None,
-        };
+/// 单流渲染：截断时附 DSH 的 [output truncated; full output: path]（文件在会话 spill 目录）。
+fn rendered_stream(text: &str, truncated: bool, spill: Option<&Path>) -> String {
+    if !truncated {
+        return text.to_owned();
     }
-    // 只读尾部 64,000 字节；完整流不整文件进内存（大文件流式复制到 spill）。
-    if file
-        .seek(SeekFrom::Start(size - MAX_OUTPUT_BYTES as u64))
-        .is_err()
-    {
-        return fallback_stream();
-    }
-    let mut tail = Vec::with_capacity(MAX_OUTPUT_BYTES);
-    if file.read_to_end(&mut tail).is_err() {
-        return fallback_stream();
-    }
-    FOREGROUND_READ_BYTES.fetch_add(tail.len() as u64, Ordering::Relaxed);
-    let text = String::from_utf8_lossy(tail_bytes(&tail, MAX_OUTPUT_BYTES)).into_owned();
-    let spill_path = if size <= MAX_SPILL_BYTES as u64 {
-        context
-            .session()
-            .spill()
-            .save_file(&format!("bash-{call_id}-{label}"), path)
-            .ok()
-            .map(|saved| saved.locator)
-    } else {
-        None
-    };
-    StreamOutput {
-        text,
-        truncated: true,
-        spill_path,
-    }
+    let path = spill.map_or_else(
+        || "(unavailable)".to_owned(),
+        |spill| spill.display().to_string(),
+    );
+    format!("{text}\n[output truncated; full output: {path}]")
 }
 
 fn render_promoted(read: &JobRead, timeout_ms: u64) -> String {
-    let out = memory_stream(&read.stdout, read.stdout_dropped, &read.stdout_path);
-    let err = memory_stream(&read.stderr, read.stderr_dropped, &read.stderr_path);
+    let out = memory_stream(
+        &read.stdout,
+        read.stdout_dropped,
+        &read.stdout_path,
+        read.stdout_spill.as_deref(),
+    );
+    let err = memory_stream(
+        &read.stderr,
+        read.stderr_dropped,
+        &read.stderr_path,
+        read.stderr_spill.as_deref(),
+    );
     let mut body = out;
     if !err.is_empty() {
         if !body.is_empty() && !body.ends_with('\n') {
@@ -276,24 +253,20 @@ fn render_promoted(read: &JobRead, timeout_ms: u64) -> String {
     )
 }
 
-fn memory_stream(text: &str, dropped: bool, path: &Path) -> String {
+fn memory_stream(text: &str, dropped: bool, path: &Path, spill: Option<&Path>) -> String {
     if !dropped {
         return text.to_owned();
     }
+    let full = spill.map_or_else(|| path.to_path_buf(), Path::to_path_buf);
     format!(
         "{text}\n[some output was dropped from memory; full output: {}]",
-        path.display()
+        full.display()
     )
 }
 
-fn render_body(
-    stdout: &StreamOutput,
-    stderr: &StreamOutput,
-    exit_code: Option<i32>,
-    signal: Option<i32>,
-) -> String {
-    let out = stream_text(stdout);
-    let err = stream_text(stderr);
+fn render_body(stdout: &str, stderr: &str, exit_code: Option<i32>, signal: Option<i32>) -> String {
+    let out = stdout.to_owned();
+    let err = stderr.to_owned();
     let mut body = out;
     if !err.is_empty() {
         if !body.is_empty() && !body.ends_with('\n') {
@@ -317,25 +290,6 @@ fn render_body(
         body.push('\n');
     }
     format!("{body}{}", markers.join("\n"))
-}
-
-fn stream_text(stream: &StreamOutput) -> String {
-    if !stream.truncated {
-        return stream.text.clone();
-    }
-    let path = stream.spill_path.as_ref().map_or_else(
-        || "(unavailable)".to_owned(),
-        |path| path.display().to_string(),
-    );
-    format!("{}\n[output truncated; full output: {path}]", stream.text)
-}
-
-fn tail_bytes(bytes: &[u8], max: usize) -> &[u8] {
-    let mut start = bytes.len().saturating_sub(max);
-    while start < bytes.len() && (bytes[start] & 0xC0) == 0x80 {
-        start += 1;
-    }
-    &bytes[start..]
 }
 
 fn signal_name(signal: i32) -> String {

@@ -29,13 +29,21 @@ async fn bash_returns_output_and_exit_code() {
     let dir = tempfile::tempdir().unwrap();
     let context = session_context(dir.path(), dir.path());
 
-    let result = run(json!({"command": "printf 'hello\\n'"}), &context).await;
+    let result = run(
+        json!({"description": "test command", "command": "printf 'hello\\n'"}),
+        &context,
+    )
+    .await;
     assert!(!result.is_error, "{}", result.content);
     assert_eq!(result.content, "hello\n");
     assert_eq!(result.error_code, None);
 
     // 退出码 0 不写 marker（照 DSH renderResult：只看非零）。
-    let result = run(json!({"command": "true"}), &context).await;
+    let result = run(
+        json!({"description": "test command", "command": "true"}),
+        &context,
+    )
+    .await;
     assert!(!result.is_error, "{}", result.content);
     assert_eq!(result.content, "(no output)");
 }
@@ -45,7 +53,11 @@ async fn bash_nonzero_exit_is_result_not_error() {
     let dir = tempfile::tempdir().unwrap();
     let context = session_context(dir.path(), dir.path());
 
-    let result = run(json!({"command": "printf 'bad\\n' >&2; exit 7"}), &context).await;
+    let result = run(
+        json!({"description": "test command", "command": "printf 'bad\\n' >&2; exit 7"}),
+        &context,
+    )
+    .await;
     assert!(
         !result.is_error,
         "非零退出是结果，不是错误：{}",
@@ -63,7 +75,11 @@ async fn bash_long_output_keeps_tail_and_full_path() {
 
     // 5000 行、约 150KB：超过每流 64,000 字节上限。
     let command = "i=0; while [ $i -lt 5000 ]; do printf 'line%04d 0123456789abcdefghij\\n' \"$i\"; i=$((i+1)); done";
-    let result = run(json!({"command": command}), &context).await;
+    let result = run(
+        json!({"description": "test command", "command": command}),
+        &context,
+    )
+    .await;
     assert!(!result.is_error, "{}", result.content);
     assert!(
         result.content.contains("[output truncated; full output: "),
@@ -90,7 +106,7 @@ async fn bash_long_output_keeps_tail_and_full_path() {
             &data_dir
                 .path()
                 .join("spill")
-                .join("session-sess-1")
+                .join(tools::spill::session_dir_name("sess-1"))
                 .to_string_lossy()
                 .into_owned()
         ),
@@ -112,7 +128,7 @@ async fn bash_managed_env_vars() {
     let context = session_context(dir.path(), data_dir.path());
 
     let result = run(
-        json!({"command": "printf '%s\\n' \"$AIOS_SHELL\" \"$AIOS_SESSION_ID\" \"$AIOS_HOME\""}),
+        json!({"description": "test command", "command": "printf '%s\\n' \"$AIOS_SHELL\" \"$AIOS_SESSION_ID\" \"$AIOS_HOME\""}),
         &context,
     )
     .await;
@@ -159,7 +175,7 @@ async fn bash_does_not_leak_credential_env() {
     let dir = tempfile::tempdir().unwrap();
     let context = session_context(dir.path(), dir.path());
     let result = run(
-        json!({"command": "printf 'key=[%s] aios_leak=[%s] no_color=[%s] home=[%s]\\n' \"$DEEPSEEK_API_KEY\" \"$AIOS_LEAK_VALUE\" \"$NO_COLOR\" \"$HOME\"; printf 'path=[%s]\\n' \"${PATH:+set}\""}),
+        json!({"description": "test command", "command": "printf 'key=[%s] aios_leak=[%s] no_color=[%s] home=[%s]\\n' \"$DEEPSEEK_API_KEY\" \"$AIOS_LEAK_VALUE\" \"$NO_COLOR\" \"$HOME\"; printf 'path=[%s]\\n' \"${PATH:+set}\""}),
         &context,
     )
     .await;
@@ -192,7 +208,11 @@ async fn bash_stdin_is_closed() {
     let dir = tempfile::tempdir().unwrap();
     let context = session_context(dir.path(), dir.path());
     // stdin 是 null：cat 立刻 EOF，不会挂住。
-    let result = run(json!({"command": "cat; echo done"}), &context).await;
+    let result = run(
+        json!({"description": "test command", "command": "cat; echo done"}),
+        &context,
+    )
+    .await;
     assert!(!result.is_error, "{}", result.content);
     assert_eq!(result.content, "done\n");
 }
@@ -202,7 +222,7 @@ async fn bash_spawn_failure_is_tool_error() {
     let dir = tempfile::tempdir().unwrap();
     let context = session_context(dir.path(), dir.path());
     let result = run(
-        json!({"command": "true", "workdir": "/definitely/not/a/dir"}),
+        json!({"description": "test command", "command": "true", "workdir": "/definitely/not/a/dir"}),
         &context,
     )
     .await;
@@ -222,7 +242,7 @@ async fn bash_workdir_override() {
     fs::write(sub.join("note.txt"), "hello\n").unwrap();
     let context = session_context(dir.path(), dir.path());
     let result = run(
-        json!({"command": "cat note.txt", "workdir": "sub"}),
+        json!({"description": "test command", "command": "cat note.txt", "workdir": "sub"}),
         &context,
     )
     .await;
@@ -234,7 +254,11 @@ async fn bash_workdir_override() {
 async fn bash_signal_is_reported() {
     let dir = tempfile::tempdir().unwrap();
     let context = session_context(dir.path(), dir.path());
-    let result = run(json!({"command": "kill -TERM $$"}), &context).await;
+    let result = run(
+        json!({"description": "test command", "command": "kill -TERM $$"}),
+        &context,
+    )
+    .await;
     assert!(!result.is_error, "{}", result.content);
     assert!(
         result.content.contains("[killed by signal: SIGTERM]"),
@@ -267,7 +291,11 @@ async fn bash_stderr_over_limit_keeps_tail() {
     let dir = tempfile::tempdir().unwrap();
     let data_dir = tempfile::tempdir().unwrap();
     let context = session_context(dir.path(), data_dir.path());
-    let result = run(json!({"command": big_err_command()}), &context).await;
+    let result = run(
+        json!({"description": "test command", "command": big_err_command()}),
+        &context,
+    )
+    .await;
     assert!(!result.is_error, "{}", result.content);
     assert!(
         result.content.starts_with("[stderr]\n"),
@@ -292,7 +320,11 @@ async fn bash_both_streams_over_limit() {
     let data_dir = tempfile::tempdir().unwrap();
     let context = session_context(dir.path(), data_dir.path());
     let command = format!("{}; {}", big_out_command(), big_err_command());
-    let result = run(json!({"command": command}), &context).await;
+    let result = run(
+        json!({"description": "test command", "command": command}),
+        &context,
+    )
+    .await;
     assert!(!result.is_error, "{}", result.content);
     assert_eq!(
         result
@@ -315,5 +347,82 @@ async fn bash_both_streams_over_limit() {
         fs::read_to_string(stderr_path)
             .unwrap()
             .starts_with("err0000 ")
+    );
+}
+
+#[test]
+fn bash_schema_requires_description() {
+    let tool = BashTool::new();
+    let parameters = tool.parameters();
+    let properties = parameters["properties"].as_object().unwrap();
+    let description = properties
+        .get("description")
+        .expect("DSH tool-bash 的 description 参数是 required");
+    assert!(
+        description["description"]
+            .as_str()
+            .unwrap()
+            .contains("5-10 words"),
+        "description 文案照 DSH：{description}"
+    );
+    let required = parameters["required"].as_array().unwrap();
+    assert!(required.iter().any(|value| value == "description"));
+    assert!(required.iter().any(|value| value == "command"));
+}
+
+#[tokio::test]
+async fn bash_missing_description_is_invalid() {
+    let dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), dir.path());
+    let result = run(json!({"command": "true"}), &context).await;
+    assert!(
+        result.is_error,
+        "缺 description 应被拒绝：{}",
+        result.content
+    );
+    assert!(result.content.contains("description"), "{}", result.content);
+}
+
+#[tokio::test]
+async fn bash_does_not_block_runtime_while_command_runs() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), dir.path());
+    let counter = Arc::new(AtomicUsize::new(0));
+    let ticker = {
+        let counter = Arc::clone(&counter);
+        tokio::spawn(async move {
+            loop {
+                counter.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+    };
+    // current_thread runtime：bash 若同步阻塞等待，heartbeat 一次都跑不了。
+    let marker = dir.path().join("go");
+    let marker_thread = {
+        let marker = marker.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            fs::write(marker, "go").unwrap();
+        })
+    };
+    let command = format!(
+        "while [ ! -f {} ]; do sleep 0.01; done; printf done",
+        marker.display()
+    );
+    let result = run(
+        json!({"description": "wait for marker", "command": command}),
+        &context,
+    )
+    .await;
+    ticker.abort();
+    marker_thread.join().unwrap();
+    assert!(!result.is_error, "{}", result.content);
+    assert!(
+        counter.load(Ordering::SeqCst) > 0,
+        "bash 运行期间 runtime 应能处理其他任务（当前实现同步阻塞 worker）"
     );
 }

@@ -1,0 +1,306 @@
+// T006.5c1：消息 IR 的 id/source 与五角色 JSON 形状（照 DSH llm/llm/src/message.ts:139-180、:206-260）。
+
+use serde_json::json;
+
+/// uuid v4 形状：8-4-4-4-12 十六进制，版本位 4、变体位 8/9/a/b。
+fn assert_uuid_v4(raw: &str) {
+    let parts: Vec<&str> = raw.split('-').collect();
+    assert_eq!(
+        parts.iter().map(|part| part.len()).collect::<Vec<_>>(),
+        vec![8, 4, 4, 4, 12],
+        "id 应是 uuid v4 形状：{raw}"
+    );
+    assert!(
+        raw.chars().all(|ch| ch.is_ascii_hexdigit() || ch == '-'),
+        "id 只含十六进制和连字符：{raw}"
+    );
+    assert_eq!(parts[2].as_bytes()[0], b'4', "uuid 版本位应是 4：{raw}");
+    assert!(
+        matches!(parts[3].as_bytes()[0], b'8' | b'9' | b'a' | b'b'),
+        "uuid 变体位应是 8/9/a/b：{raw}"
+    );
+}
+
+#[test]
+fn message_has_stable_unique_id() {
+    let first = Message::user_text("第一条");
+    let second = Message::user_text("第二条");
+    // 新建时生成 uuid v4，且每条消息不同。
+    assert_uuid_v4(first.id.as_str());
+    assert_ne!(first.id, second.id, "每条消息的 id 唯一");
+
+    // 序列化/反序列化后 id 不变（续接、日志回放靠这个）。
+    let json = serde_json::to_string(&first).unwrap();
+    let parsed: Message = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed.id, first.id, "反序列化后 id 不变");
+    assert_eq!(parsed, first, "整条消息 round-trip 不变");
+
+    // 派生（克隆）也保持同一个 id。
+    assert_eq!(first.clone().id, first.id);
+
+    // 显式恢复已有身份：日志/派生消息用 parse 保留原值。
+    let restored = Message::with_source(
+        MessageId::parse("11111111-1111-4111-8111-111111111111"),
+        Role::User,
+        vec![ContentBlock::text("恢复")],
+        MessageSource::User { rpc_id: None },
+    );
+    assert_eq!(restored.id.as_str(), "11111111-1111-4111-8111-111111111111");
+}
+
+#[test]
+fn user_source_rpc_id_matches_dsh_wire_shape() {
+    // T006.16b：prompt 的 requestId 写进 user/message source.rpcId（DSH types.ts:397/589）；
+    // 没有 rpcId 时字段省略（旧日志 v<=11 没有这个字段，v12 才接受新的带字段消息）。
+    let plain = Message::user_text("你好");
+    let plain_json = serde_json::to_value(&plain).unwrap();
+    assert_eq!(plain_json["source"], serde_json::json!({"kind": "user"}));
+
+    let with_id = Message::user_text_with_request_id("你好", "req-1");
+    let with_id_json = serde_json::to_value(&with_id).unwrap();
+    assert_eq!(
+        with_id_json["source"],
+        serde_json::json!({"kind": "user", "rpcId": "req-1"})
+    );
+    let restored: Message = serde_json::from_value(with_id_json).unwrap();
+    assert_eq!(
+        restored.source,
+        MessageSource::User {
+            rpc_id: Some("req-1".to_owned())
+        }
+    );
+}
+
+#[test]
+fn source_kind_and_fields_match_dsh() {
+    // source kind 的字段照 DSH MessageSourceMap（T006.10 加 agent-instructions）。
+    let user = Message::user_text("你好");
+    assert_eq!(user.source, MessageSource::User { rpc_id: None });
+    let system = Message::system_prompt("系统提示");
+    assert_eq!(system.source, MessageSource::SystemPrompt);
+    let assistant = Message::assistant(
+        vec![ContentBlock::text("回答")],
+        "deepseek",
+        "deepseek-flash",
+    );
+    let MessageSource::Model {
+        provider,
+        model,
+        replay_state,
+    } = &assistant.source
+    else {
+        panic!("assistant 的 source 应是 model");
+    };
+    assert_eq!(provider, "deepseek");
+    assert_eq!(model, "deepseek-flash");
+    assert!(
+        replay_state.is_none(),
+        "AIOS 没有 adapter replayState，恒 None"
+    );
+    let result = Message::tool_result("call_0", "ok", false);
+    assert_eq!(
+        result.source,
+        MessageSource::Tool {
+            call_id: "call_0".to_owned()
+        }
+    );
+
+    // JSON 里 source 是带 kind 的对象；model 的路由字段在 source 里。
+    let assistant_json = serde_json::to_value(&assistant).unwrap();
+    assert_eq!(assistant_json["source"]["kind"], "model");
+    assert_eq!(assistant_json["source"]["provider"], "deepseek");
+    assert_eq!(assistant_json["source"]["model"], "deepseek-flash");
+    assert!(assistant_json["source"].get("replayState").is_none());
+    let user_json = serde_json::to_value(&user).unwrap();
+    assert_eq!(user_json["source"], json!({"kind": "user"}));
+    let system_json = serde_json::to_value(&system).unwrap();
+    assert_eq!(system_json["source"], json!({"kind": "system-prompt"}));
+    let tool_json = serde_json::to_value(&result).unwrap();
+    assert_eq!(
+        tool_json["source"],
+        json!({"kind": "tool", "callId": "call_0"})
+    );
+
+    // T006.10 照 DSH agent-instructions 来源：带类型 form、baseline identity 与变更对象。
+    let instructions = Message::agent_instructions(
+        "body",
+        true,
+        Some("identity".to_owned()),
+        vec![crate::InstructionChange {
+            action: crate::InstructionChangeAction::Set,
+            scope: "user-global\u{0}AGENTS.md".to_owned(),
+            path: "$AIOS_HOME/AGENTS.md".to_owned(),
+            digest: Some("digest".to_owned()),
+        }],
+    );
+    let instructions_json = serde_json::to_value(&instructions).unwrap();
+    assert_eq!(instructions_json["source"]["kind"], "agent-instructions");
+    assert_eq!(instructions_json["source"]["form"], "instructions");
+    assert_eq!(instructions_json["source"]["baseline"], true);
+    assert_eq!(instructions_json["source"]["baselineIdentity"], "identity");
+    assert_eq!(
+        instructions_json["source"]["changes"],
+        json!([{"action": "set", "scope": "user-global\u{0}AGENTS.md", "path": "$AIOS_HOME/AGENTS.md", "digest": "digest"}])
+    );
+}
+
+#[test]
+fn skill_catalog_source_serializes_dsh_shape() {
+    let message = Message::skill_catalog(
+        "catalog body",
+        true,
+        false,
+        vec![crate::SkillCatalogEntry {
+            name: "pdf".to_owned(),
+            description: "PDF helper".to_owned(),
+        }],
+    );
+    let value = serde_json::to_value(&message).unwrap();
+    assert_eq!(
+        value["source"],
+        json!({
+            "kind": "skill-catalog",
+            "form": "catalog",
+            "update": true,
+            "entries": [{"name": "pdf", "description": "PDF helper"}],
+        })
+    );
+    assert_eq!(value["role"], "user");
+    // 首次发布不带 update。
+    let first = Message::skill_catalog("first", false, true, Vec::new());
+    assert_eq!(
+        serde_json::to_value(&first).unwrap()["source"],
+        json!({"kind": "skill-catalog", "form": "catalog", "incomplete": true, "entries": []})
+    );
+}
+
+/// T006.13 照 DSH user-questions：重启后续答已恢复问题的 user 消息带
+/// user-question-reply source，callId 指回那次 ask_user_question 调用。
+#[test]
+fn user_question_reply_source_serializes_dsh_shape() {
+    let message = Message::user_question_reply("{}", "call_ask".to_owned());
+    assert_eq!(
+        message.source,
+        MessageSource::UserQuestionReply {
+            call_id: "call_ask".to_owned()
+        }
+    );
+    let value = serde_json::to_value(&message).unwrap();
+    assert_eq!(value["role"], "user");
+    assert_eq!(
+        value["source"],
+        json!({"kind": "user-question-reply", "callId": "call_ask"})
+    );
+}
+
+#[test]
+fn five_role_json_shapes() {
+    let system = Message::system_prompt("系统提示");
+    let developer = Message::developer(vec![ContentBlock::text("tool-addition")]);
+    let user = Message::user_text("你好");
+    let assistant = Message::assistant(
+        vec![ContentBlock::text("回答")],
+        "deepseek",
+        "deepseek-flash",
+    );
+    let tool = Message::tool_result("call_0", "结果文本", true);
+
+    let cases: [(&Message, &str); 5] = [
+        (&system, "system"),
+        (&developer, "developer"),
+        (&user, "user"),
+        (&assistant, "assistant"),
+        (&tool, "tool"),
+    ];
+    for (message, role) in cases {
+        let value = serde_json::to_value(message).unwrap();
+        assert_uuid_v4(value["id"].as_str().expect("消息 JSON 带 id"));
+        assert_eq!(value["role"], role);
+        assert!(value["content"].is_array(), "{role} 的 content 是块数组");
+        assert!(
+            value["source"]["kind"].is_string(),
+            "{role} 的 source 带 kind：{value}"
+        );
+    }
+
+    // system / developer / user / assistant 的 source 各自照 DSH。
+    assert_eq!(
+        serde_json::to_value(&system).unwrap()["source"],
+        json!({"kind": "system-prompt"})
+    );
+    assert_eq!(
+        serde_json::to_value(&developer).unwrap()["source"],
+        json!({"kind": "user"})
+    );
+    assert_eq!(
+        serde_json::to_value(&assistant).unwrap()["source"]["kind"],
+        "model"
+    );
+
+    // tool 消息照 DSH：消息级 toolCallId/isError，content 是结果内容块（不再有 tool_result 块）。
+    let tool_json = serde_json::to_value(&tool).unwrap();
+    assert_eq!(tool_json["role"], "tool");
+    assert_eq!(tool_json["toolCallId"], "call_0");
+    assert_eq!(tool_json["isError"], true);
+    assert_eq!(
+        tool_json["content"],
+        json!([{"type": "text", "text": "结果文本"}]),
+        "tool 消息的 content 是结果内容块"
+    );
+    // 成功的工具结果不写 isError（DSH isError?: boolean）。
+    let ok = Message::tool_result("call_0", "ok", false);
+    assert!(serde_json::to_value(&ok).unwrap().get("isError").is_none());
+}
+
+/// T006.14：tool-call-delta 的 JSON 照 DSH StreamChunk（types.ts:500）：name 可选、
+/// 参数增量字段名 argumentsDelta。
+#[test]
+fn tool_call_delta_chunk_json_matches_dsh() {
+    let with_name = serde_json::to_value(crate::StreamChunk::ToolCallDelta {
+        index: 2,
+        id: "call_0".to_owned(),
+        name: Some("read".to_owned()),
+        arguments_delta: String::new(),
+    })
+    .unwrap();
+    assert_eq!(
+        with_name,
+        json!({
+            "type": "tool-call-delta",
+            "index": 2,
+            "id": "call_0",
+            "name": "read",
+            "argumentsDelta": ""
+        })
+    );
+    let without_name = serde_json::to_value(crate::StreamChunk::ToolCallDelta {
+        index: 2,
+        id: "call_0".to_owned(),
+        name: None,
+        arguments_delta: "{\"a\":".to_owned(),
+    })
+    .unwrap();
+    assert_eq!(
+        without_name,
+        json!({
+            "type": "tool-call-delta",
+            "index": 2,
+            "id": "call_0",
+            "argumentsDelta": "{\"a\":"
+        }),
+        "没有 name 时不写 name 键"
+    );
+}
+
+
+/// T006.11b：skill-invocation 来源的 wire 形状照 DSH
+/// SkillInvocationSource { kind, name, form: instructions }。
+#[test]
+fn skill_invocation_source_serializes_dsh_shape() {
+    let message = crate::Message::skill_invocation("body", "pdf-tools".to_owned());
+    let json = serde_json::to_value(&message.source).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({"kind": "skill-invocation", "name": "pdf-tools", "form": "instructions"})
+    );
+}

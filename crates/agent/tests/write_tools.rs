@@ -6,7 +6,7 @@ use std::fs;
 
 use agent::Delivery;
 use common::{FINAL_TEXT_SSE, SequenceResponder, setup_agent, sse, tool_calls_with_inputs_sse};
-use model::{ContentBlock, UserMessage};
+use model::UserMessage;
 use serde_json::json;
 use session::{EventKind, SessionStore};
 use tools::ToolSet;
@@ -23,27 +23,17 @@ async fn mount(server: &MockServer, bodies: Vec<String>) {
         .await;
 }
 
-/// 会话日志里某个 call_id 的 tool/result：(is_error, error_code)。
-fn tool_result(store: &SessionStore, call_id: &str) -> (bool, Option<String>) {
+/// 会话日志里某个 call_id 的 tool/result：(is_error, error code)。
+fn tool_result(store: &session::SessionSnapshot, call_id: &str) -> (bool, Option<String>) {
     for event in store.events() {
-        let EventKind::ToolResult {
-            message,
-            error_code,
-            ..
-        } = &event.kind
-        else {
+        let EventKind::ToolResult { message, error, .. } = &event.kind else {
             continue;
         };
-        let Some(ContentBlock::ToolResult {
-            tool_use_id,
-            is_error,
-            ..
-        }) = message.content.first()
-        else {
-            continue;
-        };
-        if tool_use_id == call_id {
-            return (*is_error, error_code.clone());
+        if message.tool_call_id.as_deref() == Some(call_id) {
+            return (
+                message.is_error.unwrap_or(false),
+                error.as_ref().map(|error| error.code.clone()),
+            );
         }
     }
     panic!("日志里没有 call_id {call_id} 的 tool/result");
@@ -65,10 +55,14 @@ async fn read_then_write_across_steps_succeeds() {
         ],
     )
     .await;
-    let (agent, data_dir, cwd, id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
+    let (agent, data_dir, cwd, id) =
+        setup_agent(&server.uri(), ToolSet::builtin_with_patch()).await;
     fs::write(cwd.path().join("a.txt"), "old\n").unwrap();
 
-    agent.send(UserMessage::text("先读再写"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("先读再写"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let requests = server.received_requests().await.unwrap();
@@ -79,7 +73,7 @@ async fn read_then_write_across_steps_succeeds() {
         "apply_patch 指导句缺重试建议：{system}"
     );
 
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(tool_result(&store, "call_0"), (false, None));
     assert_eq!(tool_result(&store, "call_1"), (false, None));
     assert_eq!(
@@ -110,10 +104,13 @@ async fn batch_write_before_read_is_rejected() {
     let (agent, data_dir, cwd, id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
     fs::write(cwd.path().join("a.txt"), "old\n").unwrap();
 
-    agent.send(UserMessage::text("写再读"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("写再读"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(
         tool_result(&store, "call_0"),
         (true, Some("FS_NOT_OBSERVED".to_owned()))
@@ -132,7 +129,10 @@ async fn write_only_system_prompt_has_no_edit_advice() {
     let tools = ToolSet::new(vec![Box::new(tools::WriteTool::new())]);
     let (agent, _data_dir, _cwd, _id) = setup_agent(&server.uri(), tools).await;
 
-    agent.send(UserMessage::text("hi"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("hi"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let requests = server.received_requests().await.unwrap();
@@ -175,10 +175,13 @@ async fn edit_after_read_across_steps_succeeds() {
     let (agent, data_dir, cwd, id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
     fs::write(cwd.path().join("a.txt"), "old\n").unwrap();
 
-    agent.send(UserMessage::text("先读再改"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("先读再改"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(tool_result(&store, "call_0"), (false, None));
     assert_eq!(tool_result(&store, "call_1"), (false, None));
     assert_eq!(
@@ -203,13 +206,17 @@ async fn patch_after_read_across_steps_succeeds() {
         ],
     )
     .await;
-    let (agent, data_dir, cwd, id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
+    let (agent, data_dir, cwd, id) =
+        setup_agent(&server.uri(), ToolSet::builtin_with_patch()).await;
     fs::write(cwd.path().join("a.txt"), "one\n").unwrap();
 
-    agent.send(UserMessage::text("先读再打补丁"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("先读再打补丁"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(tool_result(&store, "call_0"), (false, None));
     assert_eq!(tool_result(&store, "call_1"), (false, None));
     assert_eq!(

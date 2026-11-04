@@ -1,0 +1,22 @@
+[package]
+name = "service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+agent = { path = "../agent" }
+model = { path = "../model" }
+session = { path = "../session" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tools = { path = "../tools" }
+tempfile.workspace = true
+wiremock.workspace = true
+
+[lints]
+workspace = true

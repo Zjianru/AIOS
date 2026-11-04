@@ -78,7 +78,10 @@ async fn repeated_identical_calls_trigger_gentle_reminder() {
     )
     .await;
     let (agent, _data, _id) = setup(&server, None).await;
-    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 20).await;
     let bodies = bodies(&server).await;
     assert_eq!(bodies.len(), 4);
@@ -104,7 +107,10 @@ async fn different_arguments_do_not_trigger_reminder() {
     )
     .await;
     let (agent, _data, _id) = setup(&server, None).await;
-    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 20).await;
     for body in bodies(&server).await {
         assert!(!body.contains(GENTLE));
@@ -116,7 +122,10 @@ async fn single_call_does_not_trigger_reminder() {
     let server = MockServer::start().await;
     mount(&server, vec![glob_call("*.rs"), FINAL_TEXT_SSE.to_owned()]).await;
     let (agent, _data, _id) = setup(&server, None).await;
-    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 20).await;
     for body in bodies(&server).await {
         assert!(!body.contains(GENTLE));
@@ -137,7 +146,10 @@ async fn reminder_is_not_repeated_within_one_step() {
     };
     mount(&server, vec![five(), FINAL_TEXT_SSE.to_owned()]).await;
     let (agent, _data, _id) = setup(&server, None).await;
-    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 20).await;
     let bodies = bodies(&server).await;
     let count = bodies[1].matches(GENTLE).count();
@@ -164,9 +176,15 @@ async fn new_user_message_resets_repeat_chain() {
     )
     .await;
     let (agent, _data, _id) = setup(&server, None).await;
-    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 20).await;
-    agent.send(UserMessage::text("new instruction"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("new instruction"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 20).await;
     for body in bodies(&server).await {
         assert!(!body.contains(GENTLE), "新用户消息应清零重复计数");
@@ -213,7 +231,10 @@ async fn timed_out_tool_returns_error_and_turn_continues() {
     .await;
     let (agent, _data, _id) = setup(&server, Some(ToolSet::new(vec![Box::new(TimeoutTool)]))).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 20).await;
     let bodies = bodies(&server).await;
     assert_eq!(bodies.len(), 2, "超时后这一轮继续发下一次请求");
@@ -260,7 +281,10 @@ async fn fifth_and_eighth_repeats_send_detailed_reminders() {
     responses.push(FINAL_TEXT_SSE.to_owned());
     mount(&server, responses).await;
     let (agent, _data, _id) = setup(&server, None).await;
-    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 20).await;
     let bodies = bodies(&server).await;
     assert!(
@@ -282,7 +306,10 @@ async fn detailed_reminder_truncates_arguments_preview_at_500() {
     responses.push(FINAL_TEXT_SSE.to_owned());
     mount(&server, responses).await;
     let (agent, _data, _id) = setup(&server, None).await;
-    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 20).await;
     let bodies = bodies(&server).await;
     let detailed = &bodies[5];
@@ -306,7 +333,10 @@ async fn todo_write_is_not_tracked_by_repeat_guard() {
     )
     .await;
     let (agent, _data, _id) = setup(&server, None).await;
-    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 20).await;
     for body in bodies(&server).await {
         assert!(!body.contains(GENTLE), "todo_write 不跟踪");
@@ -329,7 +359,10 @@ async fn error_results_also_count_towards_repeats() {
     )
     .await;
     let (agent, _data, _id) = setup(&server, None).await;
-    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 20).await;
     let bodies = bodies(&server).await;
     assert!(bodies[3].contains(GENTLE), "错误结果也计数：{}", bodies[3]);
@@ -342,7 +375,10 @@ async fn canonical_key_ignores_argument_key_order() {
     let b = raw_tool_call_sse("c2", "read", "{\"offset\":0,\"file_path\":\"/no/such/x\"}");
     mount(&server, vec![a, b.clone(), b, FINAL_TEXT_SSE.to_owned()]).await;
     let (agent, _data, _id) = setup(&server, None).await;
-    agent.send(UserMessage::text("go"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("go"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 20).await;
     let bodies = bodies(&server).await;
     assert!(

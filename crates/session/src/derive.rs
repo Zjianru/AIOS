@@ -1,21 +1,15 @@
 //! 从会话日志派生一次请求要带的消息。
 
-use std::collections::HashMap;
+use model::Message;
 
-use model::{ContentBlock, Message, Role};
-
-use crate::{Event, EventKind};
-
-/// 压缩 checkpoint 的开头（照 DSH compaction-basic 的 checkpoint preamble）。
-pub const COMPACTION_PREAMBLE: &str = "This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.";
-pub const SUMMARY_OPEN_TAG: &str = "<compacted-summary>";
-pub const SUMMARY_CLOSE_TAG: &str = "</compacted-summary>";
+use crate::{Event, EventKind, SurfaceOp};
 
 /// 按日志顺序派生消息；空消息跳过（照 DSH 的 deriveEventMessage）。
 ///
-/// T005.2：compaction/prune 事件把某个 call_id 的 tool/result 换成修剪视图。
-/// T005.8a：compaction/summary 事件把 shadowed 区间内的事件从派生视图里藏掉，
-/// 并在区间起点插一条 checkpoint 用户消息；同一条日志只保留最后一次压缩的 checkpoint。
+/// surface 模型照 DSH：带 `surfaceOp: replace` 的消息替换 [startSeq, endSeq] 区间里的
+/// 派生节点（T006.3 压缩 checkpoint 用；T006.4 pruner 复用），替换消息本身照常派生。
+/// `compaction/prune` 是 shadow-price 记录（T006.4），修剪替换同样走 surface replace；派生只认
+/// surfaceOp，不再维护 call_id 到 content 的替换表。
 pub(crate) fn derive_messages(events: &[Event]) -> Vec<Message> {
     derive_messages_with_seqs(events)
         .into_iter()
@@ -23,49 +17,22 @@ pub(crate) fn derive_messages(events: &[Event]) -> Vec<Message> {
         .collect()
 }
 
-/// 派生消息并带上来源事件 seq（T005.8a 压缩选区间用；checkpoint 用压缩 start 的 seq）。
+/// 派生消息并带上来源事件 seq（压缩选区间/替换消息定位用）。
 pub(crate) fn derive_messages_with_seqs(events: &[Event]) -> Vec<(u64, Message)> {
-    let mut replacements: HashMap<&str, &str> = HashMap::new();
-    let mut compactions: Vec<(String, u64, u64, String)> = Vec::new();
+    let mut shadowed: Vec<(u64, u64)> = Vec::new();
     for event in events {
-        match &event.kind {
-            EventKind::CompactionPrune { call_id, content } => {
-                replacements.insert(call_id.as_str(), content.as_str());
-            }
-            EventKind::CompactionSummary {
-                compaction_id,
-                summary,
-                shadowed_start,
-                shadowed_end,
-                ..
-            } => compactions.push((
-                compaction_id.clone(),
-                *shadowed_start,
-                *shadowed_end,
-                summary.clone(),
-            )),
-            _ => {}
+        if let Some(SurfaceOp::Replace { start_seq, end_seq }) = event.surface_op {
+            shadowed.push((start_seq, end_seq));
         }
     }
-    let last = compactions.last().cloned();
     let hidden = |seq: u64| {
-        compactions
+        shadowed
             .iter()
-            .any(|(_, start, end, _)| seq >= *start && seq <= *end)
+            .any(|(start, end)| seq >= *start && seq <= *end)
     };
     let mut derived: Vec<(u64, Message)> = Vec::new();
     for event in events {
-        if let Some((compaction_id, start, _, summary)) = &last
-            && event.seq == *start
-        {
-            let _ = compaction_id;
-            let text = format!(
-                "{COMPACTION_PREAMBLE}\n\n{SUMMARY_OPEN_TAG}\n{}\n{SUMMARY_CLOSE_TAG}",
-                summary.trim()
-            );
-            derived.push((event.seq, Message::text(Role::User, text)));
-            continue;
-        }
+        // 被更晚的 surface replace 藏掉的事件不进派生视图（替换消息自身 seq > endSeq，不会被藏）。
         if hidden(event.seq) {
             continue;
         }
@@ -73,23 +40,7 @@ pub(crate) fn derive_messages_with_seqs(events: &[Event]) -> Vec<(u64, Message)>
             EventKind::SystemMessage { message, .. }
             | EventKind::UserMessage { message, .. }
             | EventKind::AssistantMessage { message, .. } => message_or_skip(message),
-            EventKind::ToolResult { message, .. } => {
-                let Some(mut result_message) = message_or_skip(message) else {
-                    continue;
-                };
-                for block in &mut result_message.content {
-                    if let ContentBlock::ToolResult {
-                        tool_use_id,
-                        content,
-                        ..
-                    } = block
-                        && let Some(replacement) = replacements.get(tool_use_id.as_str())
-                    {
-                        *content = (*replacement).to_owned();
-                    }
-                }
-                Some(result_message)
-            }
+            EventKind::ToolResult { message, .. } => message_or_skip(message),
             EventKind::TurnStart { .. }
             | EventKind::TurnEnd { .. }
             | EventKind::StepStart { .. }
@@ -101,7 +52,14 @@ pub(crate) fn derive_messages_with_seqs(events: &[Event]) -> Vec<(u64, Message)>
             | EventKind::CompactionEnd { .. }
             | EventKind::TodoWrite { .. }
             | EventKind::QuestionAsked { .. }
-            | EventKind::QuestionCancelled { .. } => None,
+            | EventKind::QuestionAnswered { .. }
+            | EventKind::QuestionCancelled { .. }
+            | EventKind::AssistantAttempt { .. }
+            | EventKind::LlmRetry { .. }
+            | EventKind::LlmRetryStarted { .. }
+            | EventKind::InboxSpliced { .. }
+            | EventKind::JobRegistered { .. }
+            | EventKind::JobSettled { .. } => None,
         };
         if let Some(message) = message {
             derived.push((event.seq, message));

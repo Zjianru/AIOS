@@ -9,7 +9,7 @@ mod fs;
 mod jobs;
 mod session;
 mod skills;
-mod spill;
+pub mod spill;
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -26,14 +26,19 @@ pub use builtin::{
     foreground_bytes_read,
 };
 pub use jobs::{
-    JobRead, JobSettledCallback, JobSpec, JobStatus, JobView, MAX_WAIT_MS, TaskRegistry,
+    JobCause, JobNotifyCallback, JobOutputRead, JobRead, JobRegistered, JobRegisteredCallback,
+    JobSettled, JobSettledCallback, JobSpec, JobStatus, JobToolCall, JobView, MAX_WAIT_MS,
+    TaskRegistry, render_model_delta,
 };
 pub use session::{
-    FileVersion, ObservationStore, ObservedFile, SharedToolSession, SpillStore, ToolSessionState,
+    FileVersion, ObservationPolicy, ObservedFile, SharedToolSession, SpillStore, ToolSessionState,
+    WriteIntent,
 };
 pub use skills::{
-    SKILL_FILE, SkillContent, SkillSummary, catalog_description, discover_skills, is_skill_name,
-    load_skill, render_skill_content, skill_roots,
+    SKILL_FILE, SkillContent, SkillDiscovery, SkillFrontmatter, SkillInvocation, SkillSummary,
+    SkillWarning, catalog_description, discover_skill_catalog, discover_skills,
+    invoked_skill_names, is_skill_name, load_skill, load_user_invocable_skill,
+    parse_skill_frontmatter, render_skill_content, skill_roots,
 };
 pub use spill::{SpillRef, bound_result, estimate_text_tokens};
 
@@ -191,6 +196,12 @@ pub trait Tool: Send + Sync {
         ToolConcurrency::Exclusive
     }
 
+    /// 是否为内置 todo_write（T006.12：Agent 按 AgentConfig.allow_parallel_in_progress
+    /// 在装配时替换它的描述与校验策略；自定义同名工具默认 false，不被替换）。
+    fn is_builtin_todo_write(&self) -> bool {
+        false
+    }
+
     /// 执行一次调用。实现方不 panic；失败用 is_error 表达。
     fn execute<'a>(
         &'a self,
@@ -214,23 +225,52 @@ impl ToolSet {
         Self { tools }
     }
 
-    /// 开发用的内置工具集：read、glob、grep，写类 write、edit、apply_patch，bash，和后台任务三件。
+    /// 开发用的内置工具集。T006.6 起默认注册照 DSH：read、glob、grep，写类 write、edit
+    /// （apply_patch 不默认注册，DSH tool-fs 的 applyPatch 默认 false），bash，和后台任务三件。
     pub fn builtin() -> Self {
-        Self::new(vec![
+        Self::builtin_tools(false)
+    }
+
+    /// 显式开启 apply_patch 的内置工具集（等价 DSH tool-fs 配置 applyPatch: true）。
+    pub fn builtin_with_patch() -> Self {
+        Self::builtin_tools(true)
+    }
+
+    fn builtin_tools(include_patch: bool) -> Self {
+        let mut tools: Vec<Box<dyn Tool>> = vec![
             Box::new(ReadTool::new()),
             Box::new(GlobTool::new()),
             Box::new(GrepTool::new()),
             Box::new(WriteTool::new()),
             Box::new(EditTool::new()),
-            Box::new(ApplyPatchTool::new()),
-            Box::new(BashTool::new()),
+        ];
+        // T006.6：默认注册照 DSH tool-fs（applyPatch 默认 false，显式配置才注册）。
+        if include_patch {
+            tools.push(Box::new(ApplyPatchTool::new()));
+        }
+        tools.extend([
+            Box::new(BashTool::new()) as Box<dyn Tool>,
             Box::new(JobOutputTool::new()),
             Box::new(JobListTool::new()),
             Box::new(JobKillTool::new()),
             Box::new(SkillTool::new()),
             Box::new(TodoWriteTool::new()),
             Box::new(AskUserQuestionTool::new()),
-        ])
+        ]);
+        Self::new(tools)
+    }
+
+    /// T006.12：按部署配置替换内置 todo_write 的并行策略（Agent 在 create/resume 时按
+    /// AgentConfig.allow_parallel_in_progress 调；自定义 todo 工具不受影响）。
+    pub fn set_todo_parallel(&mut self, allow_parallel_in_progress: bool) {
+        if let Some(index) = self
+            .tools
+            .iter()
+            .position(|tool| tool.is_builtin_todo_write())
+        {
+            self.tools[index] =
+                Box::new(TodoWriteTool::new_with_parallel(allow_parallel_in_progress));
+        }
     }
 
     pub fn is_empty(&self) -> bool {

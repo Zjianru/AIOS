@@ -2,23 +2,51 @@
 //!
 //! 机制照 DSH 的 packages/core/agent-loop（strategy 第 1 节）。
 
+mod ask_capability;
+mod assembly;
+mod capabilities;
 mod compaction;
+mod compaction_capability;
 mod driver;
 mod error;
 mod inbox;
 mod instructions;
-mod prune;
+mod instructions_capability;
+mod jobs_capability;
+mod prune_capability;
+mod reminder_capability;
+mod skill_capability;
 mod skill_catalog;
+mod spill_capability;
+mod todo_capability;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use model::{DeepSeek, Usage, UserMessage};
+use model::{DeepSeek, Message, Usage, UserMessage};
 use session::{SessionId, SessionStore, TurnEndReason};
 use tools::ToolSet;
 
-pub use error::AgentError;
+pub use assembly::AgentOpenOptions;
+pub use error::{AgentError, ManualCompactionErrorCode};
 pub use inbox::Delivery;
+pub use instructions::{MAX_CHAIN_BYTES, MAX_SOURCE_BYTES};
+
+/// 按 provider/model 覆盖压缩策略（DSH compaction-basic 的 modelPolicies；只覆盖显式给出的字段）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompactionModelPolicy {
+    pub provider: String,
+    pub model: String,
+    pub threshold_ratio: Option<f64>,
+    pub retain_ratio: Option<f64>,
+    pub headroom_tokens: Option<u64>,
+    /// 摘要输出上限（DSH policy maxTokens）。
+    pub summary_max_tokens: Option<u32>,
+    /// 仍超阈值时最多再压几次（DSH compactionRetries）。
+    pub compaction_retries: Option<u32>,
+    /// 上下文溢出恢复最多重试几次（DSH maxOverflowRetries）。
+    pub max_overflow_retries: Option<u32>,
+}
 
 /// agent 的运行配置。默认值照 DSH 默认组合：agent-loop 的并发上限、
 /// compaction-basic 的阈值/保留/预留 token、bundle/base 的 spill 预算。
@@ -32,13 +60,27 @@ pub struct AgentConfig {
     pub compaction_retain_ratio: f64,
     /// 压缩阈值公式里的预留输出 token；DSH 默认 65536（headroomTokens）。
     pub compaction_headroom_tokens: u64,
+    /// 摘要输出的 token 上限；None 时照 DSH 取 headroomTokens。
+    pub compaction_summary_max_tokens: Option<u32>,
+    /// 首次压缩后仍超阈值时最多再压几次；DSH 默认 1（compactionRetries）。
+    pub compaction_retries: u32,
+    /// 上下文溢出恢复最多重试几次；DSH 默认 1（maxOverflowRetries）。
+    pub compaction_max_overflow_retries: u32,
+    /// 按 provider/model 的压缩策略覆盖表（DSH modelPolicies；重复 target 非法）。
+    pub compaction_model_policies: Vec<CompactionModelPolicy>,
     /// 单个工具结果内联进上下文的 token 预算；0 表示禁用 spill（DSH 省略 maxInlineTokens 即禁用）。
     /// DSH 默认组合是 12500（bundle/base 的 spill-policy: maxInlineTokens）。
     pub spill_max_inline_tokens: usize,
+    /// 启动时清理多少天前的 spill 文件（照 DSH spill-local 的 cleanupPeriodDays；默认 30，0 = 不清理）。
+    pub spill_cleanup_period_days: u64,
     /// 用户级指令文件根目录；Agent 还会固定加入 <data-dir>。默认 ~/.agents（DSH 的 agents home）。
     pub instruction_roots: Vec<PathBuf>,
     /// 用户级 skill 根目录；Agent 还会固定加入 <data-dir>/skills。默认 ~/.agents/skills。
     pub skill_roots: Vec<PathBuf>,
+    /// todo_write 是否允许多个 in_progress（照 DSH tool-todo 的 allowParallelInProgress；
+    /// DSH bundle/base 设为 true）。false 时工具描述改成「只留一个」，多于一个 in_progress 的
+    /// 调用被拒。Agent 在 create/resume 时用它替换内置 todo_write（T006.12）。
+    pub allow_parallel_in_progress: bool,
 }
 
 impl Default for AgentConfig {
@@ -50,12 +92,18 @@ impl Default for AgentConfig {
             compaction_threshold_ratio: 0.8,
             compaction_retain_ratio: 0.16,
             compaction_headroom_tokens: 65_536,
+            compaction_summary_max_tokens: None,
+            compaction_retries: 1,
+            compaction_max_overflow_retries: 1,
+            compaction_model_policies: Vec::new(),
             spill_max_inline_tokens: 12_500,
+            spill_cleanup_period_days: 30,
             skill_roots: home
                 .as_ref()
                 .map(|home| vec![home.join("skills")])
                 .unwrap_or_default(),
             instruction_roots: home.map(|home| vec![home]).unwrap_or_default(),
+            allow_parallel_in_progress: true,
         }
     }
 }
@@ -92,6 +140,62 @@ impl AgentConfig {
                 field: "compaction_headroom_tokens",
                 message: "必须是正整数".to_owned(),
             });
+        }
+        if let Some(max_tokens) = self.compaction_summary_max_tokens
+            && max_tokens == 0
+        {
+            return Err(AgentError::InvalidConfig {
+                field: "compaction_summary_max_tokens",
+                message: "必须是正整数".to_owned(),
+            });
+        }
+        for (index, policy) in self.compaction_model_policies.iter().enumerate() {
+            if policy.provider.trim().is_empty() || policy.model.trim().is_empty() {
+                return Err(AgentError::InvalidConfig {
+                    field: "compaction_model_policies",
+                    message: format!("第 {index} 项 provider/model 不能为空"),
+                });
+            }
+            if self.compaction_model_policies[..index]
+                .iter()
+                .any(|existing| {
+                    existing.provider == policy.provider && existing.model == policy.model
+                })
+            {
+                return Err(AgentError::InvalidConfig {
+                    field: "compaction_model_policies",
+                    message: format!(
+                        "重复的 provider/model：{}/{}",
+                        policy.provider, policy.model
+                    ),
+                });
+            }
+            if let Some(ratio) = policy.threshold_ratio
+                && (!ratio.is_finite() || ratio <= 0.0 || ratio > 1.0)
+            {
+                return Err(AgentError::InvalidConfig {
+                    field: "compaction_model_policies",
+                    message: format!("第 {index} 项 threshold_ratio 必须在 (0, 1] 之间"),
+                });
+            }
+            if let Some(max_tokens) = policy.summary_max_tokens
+                && max_tokens == 0
+            {
+                return Err(AgentError::InvalidConfig {
+                    field: "compaction_model_policies",
+                    message: format!("第 {index} 项 summary_max_tokens 必须是正整数"),
+                });
+            }
+            let threshold = policy
+                .threshold_ratio
+                .unwrap_or(self.compaction_threshold_ratio);
+            let retain = policy.retain_ratio.unwrap_or(self.compaction_retain_ratio);
+            if !retain.is_finite() || retain < 0.0 || retain >= threshold {
+                return Err(AgentError::InvalidConfig {
+                    field: "compaction_model_policies",
+                    message: format!("第 {index} 项 retain_ratio 必须 >= 0 且小于 threshold_ratio"),
+                });
+            }
         }
         validate_roots("instruction_roots", &self.instruction_roots)?;
         validate_roots("skill_roots", &self.skill_roots)?;
@@ -133,10 +237,12 @@ impl From<&TurnEndReason> for TurnOutcome {
         match reason {
             TurnEndReason::Completed => Self::Completed,
             TurnEndReason::MaxTokens => Self::MaxTokens,
-            TurnEndReason::Aborted => Self::Aborted,
-            TurnEndReason::Error { code, message } => Self::Error {
-                code: code.clone(),
-                message: message.clone(),
+            TurnEndReason::Aborted { .. } => Self::Aborted,
+            // 续接修复补的收尾不是一次实时跑完的轮次，订阅者事件里没有它（T006.5a）。
+            TurnEndReason::Interrupted => Self::Aborted,
+            TurnEndReason::Error { error } => Self::Error {
+                code: error.code.clone(),
+                message: error.message.clone(),
             },
         }
     }
@@ -176,6 +282,15 @@ pub enum JobStatus {
     Killed,
 }
 
+/// 一次成功压缩的可观察结果（DSH command-compact 的 CompactionResult 计数部分）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompactionOutcome {
+    /// 被替换的 surface 节点数（DSH shadowedSeqs.length）。
+    pub shadowed_items: usize,
+    /// 被替换内容的估算 token 数（DSH shadowedTokenCount）。
+    pub shadowed_tokens: u64,
+}
+
 /// 订阅者收到的 agent 事件。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentEvent {
@@ -208,6 +323,12 @@ pub enum AgentEvent {
         status: JobStatus,
         detail: Option<String>,
     },
+    /// 输入队列：一条消息被插进待处理列表（DSH agent/inbox/inserted；只是通知，不落日志）。
+    InboxInserted { message: Message },
+    /// 输入队列：一条消息被领进某一步（DSH agent/inbox/claimed；只是通知，不落日志）。
+    InboxClaimed { message: Message, turn: u64 },
+    /// 输入队列：一条待处理消息被取消丢掉（DSH agent/inbox/discarded；只是通知，不落日志）。
+    InboxDiscarded { message: Message },
     /// 一轮结束；idle() 返回之前一定已经发出。
     TurnEnded { turn: u64, outcome: TurnOutcome },
 }
@@ -219,7 +340,34 @@ pub struct Deps {
     pub store: SessionStore,
 }
 
-/// T004 的 agent：create/resume/send/cancel/subscribe/idle 是唯一入口。
+/// T006.7：Agent 启动时照 DSH spill-local 的 cleanupPeriodDays 一次性清理过期 spill 文件。
+/// best-effort（DSH 也是启动时异步 sweep、失败只 warn）：不阻塞/不打断会话启动。
+fn cleanup_spill_files(store: &SessionStore, period_days: u64) {
+    if period_days == 0 {
+        return;
+    }
+    let Some(data_dir) = store.path().parent().and_then(std::path::Path::parent) else {
+        return;
+    };
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(
+            period_days.saturating_mul(86_400),
+        ))
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    let _ = tools::spill::sweep_spill_root(&data_dir.join("spill"), cutoff);
+}
+
+/// T006.16b：带 requestId 的发送受理结果（durable rpcId 幂等）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SendAdmission {
+    /// 新消息已进收件箱并唤醒（或排队）。
+    Admitted,
+    /// 同一个 requestId 已经受理过（inbox 或日志里已有），没有重复插入。
+    Duplicate,
+}
+
+/// T004 的 agent。产品组装入口是 Agent::open（crates/agent/src/assembly.rs）；
+/// create/resume 是 deps 注入的低层构造，留给测试/定制工具集或已有 Store 的调用方。
 #[derive(Clone)]
 pub struct Agent {
     inner: Arc<driver::Inner>,
@@ -227,7 +375,13 @@ pub struct Agent {
 
 impl Agent {
     /// 新会话上启动 agent（会话日志由 store 建好，尚无事件）。
-    pub async fn create(config: AgentConfig, deps: Deps) -> Result<Self, AgentError> {
+    ///
+    /// 配置非法时在建之前返回 Err（不清理 spill、不动工具集、不留下驱动任务）。
+    pub async fn create(config: AgentConfig, mut deps: Deps) -> Result<Self, AgentError> {
+        config.validate()?;
+        cleanup_spill_files(&deps.store, config.spill_cleanup_period_days);
+        deps.tools
+            .set_todo_parallel(config.allow_parallel_in_progress);
         Ok(Self {
             inner: driver::Inner::start(config, deps, 0)?,
         })
@@ -245,11 +399,15 @@ impl Agent {
                 store: deps.store.id().as_str().to_owned(),
             });
         }
+        // 配置校验先于任何副作用（spill 清理/修复 append）。
+        config.validate()?;
+        cleanup_spill_files(&deps.store, config.spill_cleanup_period_days);
+        deps.tools
+            .set_todo_parallel(config.allow_parallel_in_progress);
         // 续接先修复：给最后一个没收尾的 turn 补收尾（照 DSH 的 core/session/repair.ts）。
         // 只读日志扫描 + 一次批 append（seq 连续、fsync、失败回滚由 store 负责）；不重跑工具。
-        let closers = session::interrupted_turn_closers(deps.store.events());
-        if !closers.is_empty() {
-            deps.store.append(&closers)?;
+        if let Some(closers) = session::interrupted_turn_closers(deps.store.events()) {
+            deps.store.append_with_time(&closers.events, closers.time)?;
         }
         let last_turn = deps
             .store
@@ -267,18 +425,67 @@ impl Agent {
     }
 
     /// 投递一条用户消息。delivery 决定它进入下一轮还是下一步。
-    pub fn send(&self, message: UserMessage, delivery: Delivery) {
-        self.inner.send(message, delivery);
+    /// T006.2a：返回时消息已经写进会话日志（重启后队列还在）。
+    pub async fn send(&self, message: UserMessage, delivery: Delivery) -> Result<(), AgentError> {
+        self.inner.send(message, delivery).await
     }
 
-    /// 取消：清空收件箱；正在跑的一轮在下一次检查点停下。
-    pub fn cancel(&self) {
-        self.inner.cancel();
+    /// T006.16b：带调用方 requestId 的发送（DSH prompt 的 requestId；durable 幂等）。
+    /// 同一个 id 已进 inbox 或已落日志时返回 Duplicate，不再插入、不再唤醒。
+    pub async fn send_with_request_id(
+        &self,
+        request_id: &str,
+        message: UserMessage,
+        delivery: Delivery,
+    ) -> Result<SendAdmission, AgentError> {
+        self.inner
+            .send_with_request_id(request_id, message, delivery)
+            .await
+    }
+
+    /// T006.16b：重启后领取 pending inbox（有排队输入就开一轮）；返回是否领取了东西。
+    /// 只由重启路径显式调用（2a 的 resume 只恢复、不唤醒）。
+    pub fn claim_pending(&self) -> bool {
+        self.inner.claim_pending()
+    }
+
+    /// T006.16b：follow/events 的日志读面（seq > after_seq，按日志顺序）。
+    pub fn session_events_from(&self, after_seq: u64) -> Vec<session::Event> {
+        self.inner.session_events_from(after_seq)
+    }
+
+    /// T006.16b：日志最后一条事件的 seq（空日志为 0）。
+    pub fn last_seq(&self) -> u64 {
+        self.inner.last_seq()
+    }
+
+    /// 取消：清空收件箱并中止正在跑的一轮；清空也写进会话日志（T006.2a）。
+    pub async fn cancel(&self) -> Result<(), AgentError> {
+        self.inner.cancel().await
     }
 
     /// T005.10：回答问题。question_id 必须是当前等待的问题；返回是否送达。
-    pub async fn answer(&self, question_id: &str, answer: &str) -> bool {
-        self.inner.answer(question_id, answer)
+    /// T006.13 起答案照 DSH 形状：selected 是选中的选项标签（可多个），custom 是自由文本
+    /// （K14；DSH `tool-ask-user/src/index.ts:111-116`）。
+    pub async fn answer(
+        &self,
+        question_id: &str,
+        selected: Vec<String>,
+        custom: Option<String>,
+    ) -> bool {
+        self.inner.answer(question_id, selected, custom).await
+    }
+
+    /// T006.13：撤销一条待答问题（提问服务路径）。等待中的问题让这一批以 DSH 的
+    /// ASK_ABORTED 工具错误收尾、本轮继续；重启恢复的问题写 question/cancelled 后移除。
+    /// 返回是否确实撤销了待答问题。
+    pub async fn cancel_question(&self, question_id: &str) -> bool {
+        self.inner.cancel_question(question_id).await
+    }
+
+    /// T006.13：当前待答问题（等待中 + 重启恢复）；界面服务 T006.16a 从这里接。
+    pub fn pending_questions(&self) -> Vec<Question> {
+        self.inner.pending_questions()
     }
 
     /// 订阅 agent 事件。
@@ -286,15 +493,30 @@ impl Agent {
         self.inner.subscribe()
     }
 
+    /// T006.16a：日志事件的 live 订阅（服务事件面）：每条带日志 seq/type/data，
+    /// 由服务宿主转发给载体；容量兜底用 Lagged（重新跟随在 T006.16b）。
+    pub fn subscribe_session_events(&self) -> tokio::sync::broadcast::Receiver<session::Event> {
+        self.inner.subscribe_session_events()
+    }
+
+    /// T006.16a：被动状态用的运行态（有一轮在跑）。
+    pub fn is_running(&self) -> bool {
+        self.inner.is_running()
+    }
+
     /// 等到 agent 空闲（没有正在跑的轮次，也没有会唤醒它的排队输入）。
     pub async fn idle(&self) {
         self.inner.idle().await;
     }
 
-    /// 手动压缩（chat 的 /compact）：空闲时立刻执行，运行中排到当前轮之后。
-    pub async fn compact(&self) {
-        let receiver = self.inner.queue_compaction();
-        let _ = receiver.await;
+    /// 手动压缩（chat 的 /compact，照 DSH command-compact）：空闲时立刻执行，运行中排到
+    /// 当前轮之后；`source_command_id` 会写进 compaction/* 事件。返回压缩结果计数，
+    /// 没有可压缩历史时返回 None。
+    pub async fn compact(
+        &self,
+        source_command_id: Option<String>,
+    ) -> Result<Option<CompactionOutcome>, AgentError> {
+        self.inner.compact_manual(source_command_id).await
     }
 
     pub fn id(&self) -> &SessionId {

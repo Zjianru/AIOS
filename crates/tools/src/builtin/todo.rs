@@ -10,11 +10,21 @@ use crate::{Tool, ToolCall, ToolContext, ToolFailure, ToolFuture, ToolResult};
 /// todo 列表维护工具。
 pub struct TodoWriteTool {
     parameters: Value,
+    /// T006.12 照 DSH tool-todo 的 allowParallelInProgress：false 时只允许一个 in_progress。
+    /// 描述与校验都在装配时按策略定（Agent 在 create/resume 用 ToolSet::set_todo_parallel 替换）。
+    allow_parallel_in_progress: bool,
 }
 
 impl TodoWriteTool {
+    /// 默认策略：允许多个 in_progress（照 DSH bundle/base 的 allowParallelInProgress: true）。
     pub fn new() -> Self {
+        Self::new_with_parallel(true)
+    }
+
+    /// 按部署策略构造（DSH tool-todo Config.allowParallelInProgress）。
+    pub fn new_with_parallel(allow_parallel_in_progress: bool) -> Self {
         Self {
+            allow_parallel_in_progress,
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -38,6 +48,15 @@ impl TodoWriteTool {
     }
 }
 
+/// 照 DSH tool-todo 的 describe(allowParallel)：并行策略只改「in_progress 几个」这一句。
+fn describe(allow_parallel: bool) -> &'static str {
+    if allow_parallel {
+        "Record and update a task list to plan multi-step work and show progress; skip it for trivial single-step tasks. Add one todo per concrete step before you start. While work remains, keep the todos being worked on `in_progress`, several only when work runs in parallel. Mark each todo `completed` as soon as it is done."
+    } else {
+        "Record and update a task list to plan multi-step work and show progress; skip it for trivial single-step tasks. Add one todo per concrete step before you start. While work remains, keep exactly one todo `in_progress`. Mark each todo `completed` as soon as it is done."
+    }
+}
+
 impl Default for TodoWriteTool {
     fn default() -> Self {
         Self::new()
@@ -50,7 +69,11 @@ impl Tool for TodoWriteTool {
     }
 
     fn description(&self) -> &str {
-        "Record and update a task list to plan multi-step work and show progress; skip it for trivial single-step tasks. Add one todo per concrete step before you start. While work remains, keep the todos being worked on `in_progress`, several only when work runs in parallel. Mark each todo `completed` as soon as it is done."
+        describe(self.allow_parallel_in_progress)
+    }
+
+    fn is_builtin_todo_write(&self) -> bool {
+        true
     }
 
     fn parameters(&self) -> &Value {
@@ -63,7 +86,7 @@ impl Tool for TodoWriteTool {
         context: &'a ToolContext,
     ) -> ToolFuture<'a, ToolResult> {
         Box::pin(async move {
-            match write(&call.arguments, context) {
+            match write(&call.arguments, context, self.allow_parallel_in_progress) {
                 Ok(content) => ToolResult::success(call.id, content),
                 Err(failure) => ToolResult::error(call.id, failure),
             }
@@ -71,7 +94,11 @@ impl Tool for TodoWriteTool {
     }
 }
 
-fn write(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
+fn write(
+    arguments: &str,
+    context: &ToolContext,
+    allow_parallel: bool,
+) -> Result<String, ToolFailure> {
     if context.session().session_id().is_none() {
         return Err(ToolFailure::plain(
             "todo_write requires an owning agent session",
@@ -90,6 +117,7 @@ fn write(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> 
     };
     let mut todos = Vec::with_capacity(items.len());
     let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut active_in_progress = 0_usize;
     for item in items {
         let Some(item) = item.as_object() else {
             return Err(ToolFailure::plain("invalid todo: expected an object"));
@@ -126,10 +154,18 @@ fn write(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> 
                 "invalid todos: status must be pending, in_progress or completed",
             ));
         };
+        if status == TodoStatus::InProgress {
+            active_in_progress += 1;
+        }
         todos.push(TodoItem {
             content: content.to_owned(),
             status,
         });
+    }
+    if !allow_parallel && active_in_progress > 1 {
+        return Err(ToolFailure::plain(format!(
+            "invalid todos: at most one task may be in_progress (got {active_in_progress})"
+        )));
     }
     let pending = todos
         .iter()

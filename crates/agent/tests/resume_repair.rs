@@ -147,25 +147,13 @@ fn repair_tail(events: &[session::Event]) -> Vec<&str> {
 fn find_tool_result<'a>(
     events: &'a [session::Event],
     call_id: &str,
-) -> Option<(&'a str, Option<&'a str>)> {
+) -> Option<(&'a str, Option<&'a session::ToolError>)> {
     for event in events {
-        if let EventKind::ToolResult {
-            message,
-            error_code,
-            ..
-        } = &event.kind
+        if let EventKind::ToolResult { message, error, .. } = &event.kind
+            && message.tool_call_id.as_deref() == Some(call_id)
         {
-            for block in &message.content {
-                if let ContentBlock::ToolResult {
-                    tool_use_id,
-                    content,
-                    ..
-                } = block
-                    && tool_use_id == call_id
-                {
-                    return Some((content, error_code.as_deref()));
-                }
-            }
+            let content = message.content.first().and_then(ContentBlock::as_text)?;
+            return Some((content, error.as_ref()));
         }
     }
     None
@@ -194,7 +182,10 @@ async fn resume_after_balanced_turn_sees_full_history() {
         &mut permits,
     )]);
     let (agent, id) = create_agent(data_dir.path(), cwd.path(), &server.uri(), tools).await;
-    agent.send(UserMessage::text("跑一个工具"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("跑一个工具"), Delivery::FollowUp)
+        .await
+        .unwrap();
     assert_eq!(
         started.recv().await,
         Some(ToolEvent::Started("gate".to_owned()))
@@ -204,7 +195,7 @@ async fn resume_after_balanced_turn_sees_full_history() {
     drop(agent);
 
     // 平衡日志：续接不应追加任何修复事件。
-    let balanced = SessionStore::open(data_dir.path(), &id).unwrap();
+    let balanced = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     let balanced_events = balanced.events().len();
     assert!(
         balanced
@@ -220,18 +211,21 @@ async fn resume_after_balanced_turn_sees_full_history() {
             .filter(|event| matches!(
                 event.kind,
                 EventKind::TurnEnd {
-                    reason: TurnEndReason::Aborted,
+                    reason: TurnEndReason::Interrupted,
                     ..
                 }
             ))
             .count(),
         0,
-        "平衡日志不该有 aborted 收尾"
+        "平衡日志不该有 interrupted 收尾"
     );
     drop(balanced);
 
     let resumed = resume_agent(data_dir.path(), &id, &server.uri(), ToolSet::empty()).await;
-    resumed.send(UserMessage::text("续接后第一句"), Delivery::FollowUp);
+    resumed
+        .send(UserMessage::text("续接后第一句"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&resumed, 3).await;
 
     let requests = server.received_requests().await.unwrap();
@@ -261,12 +255,12 @@ async fn resume_after_balanced_turn_sees_full_history() {
         "续接后的请求要带新输入"
     );
 
-    let reopened = SessionStore::open(data_dir.path(), &id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(count_turns(reopened.events()), 2);
     assert_eq!(
         reopened.events().len(),
-        balanced_events + 6,
-        "平衡日志续接只多一轮的 6 个事件（step/start、user/message、assistant/message、step/end、turn/end + turn/start）"
+        balanced_events + 8,
+        "平衡日志续接只多一轮的 8 个事件（inbox 收下、turn/start、inbox 领取、step/start、user/message、assistant/message、step/end、turn/end）"
     );
 }
 
@@ -286,7 +280,10 @@ async fn resume_repairs_unknown_call_from_torn_tail() {
         &mut permits,
     )]);
     let (agent, id) = create_agent(data_dir.path(), cwd.path(), &server.uri(), tools).await;
-    agent.send(UserMessage::text("跑工具"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("跑工具"), Delivery::FollowUp)
+        .await
+        .unwrap();
     assert_eq!(
         started.recv().await,
         Some(ToolEvent::Started("gate".to_owned()))
@@ -312,14 +309,27 @@ async fn resume_repairs_unknown_call_from_torn_tail() {
     )
     .await;
 
-    // 修复事件：tool/result（UNKNOWN）+ step/end + turn/end（Aborted）。
-    let repaired = SessionStore::open(crashed_dir.path(), &id).unwrap();
+    // 修复事件：tool/result（UNKNOWN）+ step/end + turn/end（interrupted）。
+    let repaired = SessionStore::open_read_only(crashed_dir.path(), &id).unwrap();
+    let repaired_events = repaired.events();
     assert_eq!(
-        repair_tail(repaired.events()),
+        repair_tail(repaired_events),
         vec!["tool/result", "step/end", "turn/end"]
     );
-    let (text, code) = find_tool_result(repaired.events(), "call_0").expect("要补出 call_0 的结果");
-    assert_eq!(code, Some("TOOL_OUTCOME_UNKNOWN"));
+    // 合成事件复用最后一个真实事件的时间（DSH repair.ts:88-90）。
+    let tail_len = repair_tail(repaired_events).len();
+    let last_real = &repaired_events[repaired_events.len() - tail_len - 1];
+    assert!(
+        repaired_events[repaired_events.len() - tail_len..]
+            .iter()
+            .all(|event| event.time == last_real.time),
+        "修复事件要复用最后一个真实事件的时间"
+    );
+    let (text, code) = find_tool_result(repaired_events, "call_0").expect("要补出 call_0 的结果");
+    assert_eq!(
+        code.map(|error| (error.name.as_str(), error.code.as_str())),
+        Some(("ToolOutcomeUnknownError", "TOOL_OUTCOME_UNKNOWN"))
+    );
     assert!(
         text.contains("outcome is unknown"),
         "模型可见文案要说明结果未知：{text}"
@@ -331,13 +341,13 @@ async fn resume_repairs_unknown_call_from_torn_tail() {
             .filter(|event| matches!(
                 event.kind,
                 EventKind::TurnEnd {
-                    reason: TurnEndReason::Aborted,
+                    reason: TurnEndReason::Interrupted,
                     ..
                 }
             ))
             .count(),
         1,
-        "崩溃收尾的 turn/end 用 Aborted"
+        "崩溃收尾的 turn/end 用 interrupted（DSH repair.ts:96）"
     );
     assert_eq!(count_turns(repaired.events()), 1, "修复不应重开一轮");
     drop(repaired);
@@ -346,7 +356,10 @@ async fn resume_repairs_unknown_call_from_torn_tail() {
     assert!(started.try_recv().is_err(), "工具不能被重跑");
 
     // 修复后能继续，请求里带合成结果和新输入。
-    resumed.send(UserMessage::text("修复后继续"), Delivery::FollowUp);
+    resumed
+        .send(UserMessage::text("修复后继续"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&resumed, 3).await;
     let requests = resumed_server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
@@ -381,7 +394,10 @@ async fn resume_repairs_not_started_call_after_assistant_message() {
         &mut permits,
     )]);
     let (agent, id) = create_agent(data_dir.path(), cwd.path(), &server.uri(), tools).await;
-    agent.send(UserMessage::text("跑工具"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("跑工具"), Delivery::FollowUp)
+        .await
+        .unwrap();
     assert_eq!(
         started.recv().await,
         Some(ToolEvent::Started("gate".to_owned()))
@@ -415,13 +431,25 @@ async fn resume_repairs_not_started_call_after_assistant_message() {
     )
     .await;
 
-    let repaired = SessionStore::open(crashed_dir.path(), &id).unwrap();
+    let repaired = SessionStore::open_read_only(crashed_dir.path(), &id).unwrap();
     assert_eq!(
         repair_tail(repaired.events()),
         vec!["tool/result", "step/end", "turn/end"]
     );
-    let (text, code) = find_tool_result(repaired.events(), "call_0").expect("要补出 call_0 的结果");
-    assert_eq!(code, Some("TOOL_NOT_STARTED"));
+    let repaired_events = repaired.events();
+    let tail_len = repair_tail(repaired_events).len();
+    let last_real = &repaired_events[repaired_events.len() - tail_len - 1];
+    assert!(
+        repaired_events[repaired_events.len() - tail_len..]
+            .iter()
+            .all(|event| event.time == last_real.time),
+        "修复事件要复用最后一个真实事件的时间"
+    );
+    let (text, code) = find_tool_result(repaired_events, "call_0").expect("要补出 call_0 的结果");
+    assert_eq!(
+        code.map(|error| (error.name.as_str(), error.code.as_str())),
+        Some(("ToolNotStartedError", "TOOL_NOT_STARTED"))
+    );
     assert!(
         text.contains("Retry it if it is still needed."),
         "模型可见文案要说明可以重试：{text}"
@@ -433,16 +461,20 @@ async fn resume_repairs_not_started_call_after_assistant_message() {
             .filter(|event| matches!(
                 event.kind,
                 EventKind::TurnEnd {
-                    reason: TurnEndReason::Aborted,
+                    reason: TurnEndReason::Interrupted,
                     ..
                 }
             ))
             .count(),
-        1
+        1,
+        "崩溃收尾的 turn/end 用 interrupted（DSH repair.ts:96）"
     );
     drop(repaired);
 
-    resumed.send(UserMessage::text("修复后继续"), Delivery::FollowUp);
+    resumed
+        .send(UserMessage::text("修复后继续"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&resumed, 3).await;
     let requests = resumed_server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);

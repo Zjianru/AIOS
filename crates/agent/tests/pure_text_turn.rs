@@ -49,7 +49,10 @@ async fn pure_text_turn() {
     let (agent, data_dir, cwd, session_id) = setup_agent(&server.uri(), ToolSet::empty()).await;
     let canonical_cwd = std::fs::canonicalize(cwd.path()).unwrap();
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("你好"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("你好"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
 
     let mut streamed = String::new();
@@ -65,7 +68,7 @@ async fn pure_text_turn() {
     assert_eq!(outcome, Some(TurnOutcome::Completed));
     drop(agent);
 
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     let kinds: Vec<&str> = reopened
         .events()
         .iter()
@@ -74,7 +77,9 @@ async fn pure_text_turn() {
     assert_eq!(
         kinds,
         vec![
+            "agent/inbox/spliced",
             "turn/start",
+            "agent/inbox/spliced",
             "step/start",
             "system/message",
             "user/message",
@@ -82,7 +87,7 @@ async fn pure_text_turn() {
             "step/end",
             "turn/end"
         ],
-        "一轮纯文本的事件顺序"
+        "一轮纯文本的事件顺序（T006.2a：收下与领取各一条 inbox splice）"
     );
 
     let assistant = reopened

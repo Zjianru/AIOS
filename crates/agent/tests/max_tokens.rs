@@ -26,7 +26,7 @@ fn gated_tools() -> (ToolSet, mpsc::UnboundedReceiver<ToolEvent>, ToolPermits) {
     (tools, started, permits)
 }
 
-fn count_turns(store: &SessionStore) -> usize {
+fn count_turns(store: &session::SessionSnapshot) -> usize {
     store
         .events()
         .iter()
@@ -34,7 +34,7 @@ fn count_turns(store: &SessionStore) -> usize {
         .count()
 }
 
-fn count_steps(store: &SessionStore) -> usize {
+fn count_steps(store: &session::SessionSnapshot) -> usize {
     store
         .events()
         .iter()
@@ -42,7 +42,7 @@ fn count_steps(store: &SessionStore) -> usize {
         .count()
 }
 
-fn turn_reasons(store: &SessionStore) -> Vec<TurnEndReason> {
+fn turn_reasons(store: &session::SessionSnapshot) -> Vec<TurnEndReason> {
     store
         .events()
         .iter()
@@ -53,7 +53,7 @@ fn turn_reasons(store: &SessionStore) -> Vec<TurnEndReason> {
         .collect()
 }
 
-fn assistant_blocks(store: &SessionStore) -> Vec<Vec<ContentBlock>> {
+fn assistant_blocks(store: &session::SessionSnapshot) -> Vec<Vec<ContentBlock>> {
     store
         .events()
         .iter()
@@ -64,7 +64,7 @@ fn assistant_blocks(store: &SessionStore) -> Vec<Vec<ContentBlock>> {
         .collect()
 }
 
-fn has_tool_events(store: &SessionStore) -> bool {
+fn has_tool_events(store: &session::SessionSnapshot) -> bool {
     store.events().iter().any(|event| {
         matches!(
             event.kind,
@@ -73,7 +73,7 @@ fn has_tool_events(store: &SessionStore) -> bool {
     })
 }
 
-fn has_tool_use_block(store: &SessionStore) -> bool {
+fn has_tool_use_block(store: &session::SessionSnapshot) -> bool {
     assistant_blocks(store)
         .iter()
         .flatten()
@@ -143,11 +143,14 @@ async fn max_tokens_does_not_execute_or_log_truncated_tool_call() {
     ]);
     let (tools, mut started, _permits) = gated_tools();
     let (agent, data_dir, _cwd, id) = setup_agent(&server.base_url(), tools).await;
-    agent.send(UserMessage::text("截断一个工具调用"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("截断一个工具调用"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 5).await;
 
     assert!(started.try_recv().is_err(), "被截断的工具调用不能执行");
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(count_turns(&store), 1);
     assert_eq!(turn_reasons(&store), vec![TurnEndReason::MaxTokens]);
     assert!(
@@ -158,16 +161,22 @@ async fn max_tokens_does_not_execute_or_log_truncated_tool_call() {
         !has_tool_use_block(&store),
         "assistant/message 里不能有截断的 tool_use"
     );
-    assert!(
-        assistant_blocks(&store).is_empty(),
-        "裁完为空不写 assistant/message（D1）"
+    // T004 K9 / DSH agent.ts:580-584：整轮被截断也要写一条空 content 的 assistant/message，
+    // 把 usage 留下来（D1 的「裁完为空不写」已改回）。
+    assert_eq!(
+        assistant_blocks(&store),
+        vec![Vec::new()],
+        "截断轮写空 assistant/message 保住 usage"
     );
     assert_eq!(server.request_bodies().len(), 1);
 
     // 下一轮请求里不能出现不配对的 tool_use（协议安全）。
-    agent.send(UserMessage::text("继续"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("继续"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 5).await;
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(count_turns(&store), 2);
     assert_eq!(
         turn_reasons(&store),
@@ -196,11 +205,14 @@ async fn max_tokens_keeps_text_but_drops_truncated_tool_call() {
     ]);
     let (tools, mut started, _permits) = gated_tools();
     let (agent, data_dir, _cwd, id) = setup_agent(&server.base_url(), tools).await;
-    agent.send(UserMessage::text("先说半截再截断工具"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("先说半截再截断工具"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 5).await;
 
     assert!(started.try_recv().is_err(), "工具不能执行");
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(turn_reasons(&store), vec![TurnEndReason::MaxTokens]);
     assert!(!has_tool_events(&store));
     assert_eq!(
@@ -211,7 +223,10 @@ async fn max_tokens_keeps_text_but_drops_truncated_tool_call() {
         "text 保留、截断的 tool-call 块丢弃"
     );
 
-    agent.send(UserMessage::text("继续"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("继续"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 5).await;
     let bodies = server.request_bodies();
     assert_eq!(bodies.len(), 2);
@@ -258,15 +273,21 @@ async fn max_tokens_stays_sticky_across_later_step() {
     ]);
     let (tools, mut started, _permits) = gated_tools();
     let (agent, data_dir, _cwd, id) = setup_agent(&server.base_url(), tools).await;
-    agent.send(UserMessage::text("截断这一轮"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("截断这一轮"), Delivery::FollowUp)
+        .await
+        .unwrap();
     // Step1 已经把前缀写出来、还没结算；此时插一句 steer，进 next-step。
     server.wait_ready().await;
-    agent.send(UserMessage::text("再补一句"), Delivery::Steer);
+    agent
+        .send(UserMessage::text("再补一句"), Delivery::Steer)
+        .await
+        .unwrap();
     server.release();
     wait_idle(&agent, 10).await;
 
     assert!(started.try_recv().is_err(), "工具不能执行");
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(count_turns(&store), 1, "steer 不另开一轮");
     assert_eq!(
         turn_reasons(&store),

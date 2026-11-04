@@ -111,14 +111,7 @@ fn result_order(events: &[session::Event]) -> Vec<String> {
     events
         .iter()
         .filter_map(|event| match &event.kind {
-            session::EventKind::ToolResult { message, .. } => {
-                message.content.first().and_then(|block| match block {
-                    model::ContentBlock::ToolResult { tool_use_id, .. } => {
-                        Some(tool_use_id.clone())
-                    }
-                    _ => None,
-                })
-            }
+            session::EventKind::ToolResult { message, .. } => message.tool_call_id.clone(),
             _ => None,
         })
         .collect()
@@ -149,7 +142,10 @@ async fn batch_limits_ordering_and_exclusive_barrier() {
     .await;
     let agent = fixture.agent.clone();
     let task = tokio::spawn(async move {
-        agent.send(UserMessage::text("跑工具"), Delivery::FollowUp);
+        agent
+            .send(UserMessage::text("跑工具"), Delivery::FollowUp)
+            .await
+            .unwrap();
         agent.idle().await;
     });
 
@@ -209,7 +205,8 @@ async fn batch_limits_ordering_and_exclusive_barrier() {
     assert_eq!(max_concurrency, 2, "同时在跑的工具不超过上限 2");
 
     task.await.expect("agent 驱动任务失败");
-    let reopened = SessionStore::open(fixture.data_dir.path(), &fixture.session_id).unwrap();
+    let reopened =
+        SessionStore::open_read_only(fixture.data_dir.path(), &fixture.session_id).unwrap();
     let events = reopened.events();
     assert_eq!(
         call_order(events),
@@ -259,7 +256,10 @@ async fn batch_limit_one_serializes() {
     .await;
     let agent = fixture.agent.clone();
     let task = tokio::spawn(async move {
-        agent.send(UserMessage::text("跑工具"), Delivery::FollowUp);
+        agent
+            .send(UserMessage::text("跑工具"), Delivery::FollowUp)
+            .await
+            .unwrap();
         agent.idle().await;
     });
 

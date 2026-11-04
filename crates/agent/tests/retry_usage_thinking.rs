@@ -53,7 +53,7 @@ fn retries(events: &[AgentEvent]) -> Vec<(u32, u32, u64, String)> {
         .collect()
 }
 
-fn assistant_blocks(store: &SessionStore) -> Vec<Vec<ContentBlock>> {
+fn assistant_blocks(store: &session::SessionSnapshot) -> Vec<Vec<ContentBlock>> {
     store
         .events()
         .iter()
@@ -147,7 +147,10 @@ async fn rate_limit_retries_then_succeeds() {
     .await;
     let (agent, data_dir, _cwd, id) = setup_agent(&server.uri(), ToolSet::empty()).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("重试一下"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("重试一下"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 15).await;
 
     let collected = drain_events(&mut events);
@@ -172,9 +175,28 @@ async fn rate_limit_retries_then_succeeds() {
         "重试成功后这一轮 completed"
     );
 
-    // 重试不写日志：正常一轮的 7 个事件，一个不多。
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
-    assert_eq!(store.events().len(), 7);
+    // T006.2b：重试写日志（llm/retry + llm/retry-started）。正常一轮 7 个事件 + 2 条 inbox
+    // splice（收下、领取）+ 2 次重试 × 2 条 = 13。
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    assert_eq!(store.events().len(), 13);
+    assert_eq!(
+        store
+            .events()
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::LlmRetry { .. }))
+            .count(),
+        2,
+        "两次排定的重试都落 llm/retry"
+    );
+    assert_eq!(
+        store
+            .events()
+            .iter()
+            .filter(|event| matches!(event.kind, EventKind::LlmRetryStarted { .. }))
+            .count(),
+        2,
+        "两次等待完成后都落 llm/retry-started"
+    );
     assert_eq!(
         store
             .events()
@@ -191,7 +213,10 @@ async fn auth_error_does_not_retry() {
     mount_responses(&server, vec![http_error(401, "authentication_error")]).await;
     let (agent, data_dir, _cwd, id) = setup_agent(&server.uri(), ToolSet::empty()).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("认证失败"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("认证失败"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 10).await;
 
     let collected = drain_events(&mut events);
@@ -207,7 +232,7 @@ async fn auth_error_does_not_retry() {
         )),
         "401 以 AUTH error 结束"
     );
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(
         store
             .events()
@@ -218,43 +243,64 @@ async fn auth_error_does_not_retry() {
             })
             .collect::<Vec<_>>(),
         vec![TurnEndReason::Error {
-            code: "AUTH".to_owned(),
-            message: "模型请求失败: AUTH: 测试错误".to_owned(),
+            error: session::LlmFailure {
+                code: "AUTH".to_owned(),
+                message: "模型请求失败: AUTH: 测试错误".to_owned(),
+            },
         }]
     );
 }
 
 #[tokio::test]
-async fn failure_after_streamed_content_is_not_retried() {
-    let server = ScriptedSseServer::start(vec![SseScript {
-        frames: MIDSTREAM_ERROR_SSE.to_owned(),
-        hold: false,
-    }]);
-    let (agent, data_dir, _cwd, id) = setup_agent(&server.base_url(), ToolSet::empty()).await;
+async fn failure_after_streamed_content_is_retried_like_dsh() {
+    // T006.2b 改回 DSH：已流出可见内容的重试没有额外门槛（agent.ts:544-564）。半截内容
+    // 只留在第一次 assistant/attempt 的 stream 里，不进消息、不进下一次请求。
+    let server = MockServer::start().await;
+    mount_responses(
+        &server,
+        vec![
+            sse(MIDSTREAM_ERROR_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ],
+    )
+    .await;
+    let (agent, data_dir, _cwd, id) = setup_agent(&server.uri(), ToolSet::empty()).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("流到一半失败"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("流到一半失败"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 10).await;
 
     let collected = drain_events(&mut events);
-    assert!(
-        retries(&collected).is_empty(),
-        "已经流出内容 delta 的请求不再重试"
-    );
-    assert_eq!(server.request_bodies().len(), 1, "只发了一次请求");
+    let retries = retries(&collected);
+    assert_eq!(retries.len(), 1, "已流出内容也重试（DSH）：{retries:?}");
+    assert_eq!(retries[0].3, "RATE_LIMIT");
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
     assert!(
         collected.iter().any(|event| matches!(
             event,
             AgentEvent::TurnEnded {
-                outcome: TurnOutcome::Error { code, .. },
+                outcome: TurnOutcome::Completed,
                 ..
-            } if code == "RATE_LIMIT"
+            }
         )),
-        "失败按 error 结束本轮"
+        "重试成功后这一轮 completed"
     );
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    assert_eq!(
+        assistant_blocks(&store),
+        vec![vec![ContentBlock::Text {
+            text: "工具都跑完了。".to_owned()
+        }]],
+        "只有重试成功的那条 assistant 消息"
+    );
     assert!(
-        assistant_blocks(&store).is_empty(),
-        "中途失败的请求不写 assistant 消息"
+        store
+            .events()
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::AssistantAttempt { .. })),
+        "第一次失败尝试落 assistant/attempt"
     );
 }
 
@@ -264,7 +310,10 @@ async fn usage_event_marks_missing_fields_unknown() {
     mount_responses(&server, vec![sse(PARTIAL_USAGE_SSE.to_owned())]).await;
     let (agent, _data_dir, _cwd, _id) = setup_agent(&server.uri(), ToolSet::empty()).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("报用量"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("报用量"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 10).await;
 
     let collected = drain_events(&mut events);
@@ -294,10 +343,13 @@ async fn thinking_round_trips_with_signature() {
     .await;
     let (agent, data_dir, cwd, id) = setup_agent(&server.uri(), ToolSet::empty()).await;
     let canonical_cwd = std::fs::canonicalize(cwd.path()).unwrap();
-    agent.send(UserMessage::text("想一想"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("想一想"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 10).await;
 
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     let blocks = &assistant_blocks(&store)[0];
     assert_eq!(
         blocks,
@@ -314,7 +366,10 @@ async fn thinking_round_trips_with_signature() {
     );
 
     // 下一次请求要按协议把 thinking 回放回去（带 signature）。
-    agent.send(UserMessage::text("继续"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("继续"), Delivery::FollowUp)
+        .await
+        .unwrap();
     wait_idle(&agent, 10).await;
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 2);
@@ -341,10 +396,13 @@ async fn cancel_while_waiting_headers_aborts_promptly() {
     let mut server = HeadersGatedServer::start();
     let (agent, data_dir, _cwd, id) = setup_agent(&server.base_url(), ToolSet::empty()).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("等响应头"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("等响应头"), Delivery::FollowUp)
+        .await
+        .unwrap();
     // 请求已经收到、响应头还没写：此时取消必须立刻生效。
     server.wait_request().await;
-    agent.cancel();
+    agent.cancel().await.unwrap();
     assert!(
         tokio::time::timeout(Duration::from_secs(2), agent.idle())
             .await
@@ -365,7 +423,7 @@ async fn cancel_while_waiting_headers_aborts_promptly() {
             ..
         }
     )));
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(
         store
             .events()
@@ -375,7 +433,9 @@ async fn cancel_while_waiting_headers_aborts_promptly() {
                 _ => None,
             })
             .collect::<Vec<_>>(),
-        vec![TurnEndReason::Aborted]
+        vec![TurnEndReason::Aborted {
+            reason: session::AbortCause::User
+        }]
     );
     drop(server);
 }
@@ -405,7 +465,10 @@ async fn cancel_keeps_interrupted_thinking_without_signature() {
     }]);
     let (agent, data_dir, _cwd, id) = setup_agent(&server.base_url(), ToolSet::empty()).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("边想边说"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("边想边说"), Delivery::FollowUp)
+        .await
+        .unwrap();
     server.wait_ready().await;
     let mut visible = String::new();
     while visible != "可见" {
@@ -415,11 +478,11 @@ async fn cancel_keeps_interrupted_thinking_without_signature() {
             Err(error) => panic!("事件通道关闭: {error}"),
         }
     }
-    agent.cancel();
+    agent.cancel().await.unwrap();
     server.release();
     wait_idle(&agent, 5).await;
 
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     let mut interrupted = None;
     for event in store.events() {
         if let EventKind::AssistantMessage {

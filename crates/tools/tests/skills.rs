@@ -256,3 +256,52 @@ async fn malformed_quotes_and_flow_frontmatter_are_discarded() {
         );
     }
 }
+
+/// T006.11b：/name 手势照 DSH SKILL_GESTURE——空白边界、kebab-case 名字；
+/// /usr/bin、5/8、大小写不合法与重复都不算/去重。
+#[test]
+fn user_invocation_names_follow_dsh_gesture() {
+    assert_eq!(tools::invoked_skill_names("/alpha 做事"), vec!["alpha"]);
+    assert_eq!(
+        tools::invoked_skill_names("请用 /alpha 和 /beta 再 /alpha"),
+        vec!["alpha", "beta"]
+    );
+    assert!(
+        tools::invoked_skill_names("/usr/bin 5/8 x/y /UPPER //double").is_empty(),
+        "路径/分数/大写/双斜杠都不是手势"
+    );
+}
+
+/// T006.11b：用户显式通道只认 user-invocable，不看 disable-model-invocation
+/// （DSH：这是隐藏 skill 的唯一入口）；未知名字静默返回 None。
+#[test]
+fn user_invocable_loader_ignores_model_policy_and_honors_user_policy() {
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join(".git")).unwrap();
+    write(
+        &project.path().join(".agents/skills/hidden/SKILL.md"),
+        "---\nname: hidden\ndescription: H.\ndisable-model-invocation: true\n---\nHidden body.\n",
+    );
+    write(
+        &project.path().join(".agents/skills/quiet/SKILL.md"),
+        "---\nname: quiet\ndescription: Q.\nuser-invocable: false\n---\nQuiet body.\n",
+    );
+    write(
+        &project.path().join(".agents/skills/normal/SKILL.md"),
+        "---\nname: normal\ndescription: N.\n---\nNormal body.\n",
+    );
+    let data_dir = tempfile::tempdir().unwrap();
+    let hidden = tools::load_user_invocable_skill(project.path(), data_dir.path(), &[], "hidden");
+    assert!(
+        hidden.is_some(),
+        "disable-model-invocation 不影响用户显式调用"
+    );
+    let quiet = tools::load_user_invocable_skill(project.path(), data_dir.path(), &[], "quiet");
+    assert!(quiet.is_none(), "user-invocable: false 不注入");
+    assert!(
+        tools::load_user_invocable_skill(project.path(), data_dir.path(), &[], "nope").is_none(),
+        "未知名字静默跳过"
+    );
+    let normal = tools::load_user_invocable_skill(project.path(), data_dir.path(), &[], "normal");
+    assert_eq!(normal.unwrap().body, "Normal body.");
+}

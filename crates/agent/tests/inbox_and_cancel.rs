@@ -134,14 +134,20 @@ async fn steer_enters_next_step_while_running() {
     )]);
     let (agent, data_dir, _cwd, session_id) = new_agent(&server.uri(), tools, 10).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("开始"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("开始"), Delivery::FollowUp)
+        .await
+        .unwrap();
     assert_eq!(
         started.recv().await,
         Some(ToolEvent::Started("gate".to_owned())),
         "工具先跑起来，这一轮还没结束"
     );
     // 模型这一轮还在跑，插一句 steer：它要进下一步的请求。
-    agent.send(UserMessage::text("插一句"), Delivery::Steer);
+    agent
+        .send(UserMessage::text("插一句"), Delivery::Steer)
+        .await
+        .unwrap();
     permits[0].1.add_permits(1);
     agent.idle().await;
 
@@ -157,7 +163,7 @@ async fn steer_enters_next_step_while_running() {
     assert_eq!(outcome, Some(TurnOutcome::Completed));
     assert!(streamed.contains("工具都跑完了。"));
 
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     let kinds: Vec<&str> = reopened
         .events()
         .iter()
@@ -166,21 +172,25 @@ async fn steer_enters_next_step_while_running() {
     assert_eq!(
         kinds,
         vec![
+            "agent/inbox/spliced",
             "turn/start",
+            "agent/inbox/spliced",
             "step/start",
             "system/message",
             "user/message",
             "assistant/message",
             "tool/call",
+            "agent/inbox/spliced",
             "tool/result",
             "step/end",
+            "agent/inbox/spliced",
             "step/start",
             "user/message",
             "assistant/message",
             "step/end",
             "turn/end"
         ],
-        "steer 在第二个 step 的 user/message 进入请求"
+        "steer 在第二个 step 的 user/message 进入请求（T006.2a：inbox splice 按发生位置落日志）"
     );
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 2);
@@ -197,19 +207,29 @@ async fn inject_enters_next_step_without_waking_idle_loop() {
     mount_sequence(&server, vec![FINAL_TEXT_SSE.to_owned()]).await;
     let (agent, data_dir, _cwd, session_id) = new_agent(&server.uri(), ToolSet::empty(), 10).await;
     // 空闲时 inject：下一步的请求要带上它，但不唤醒 loop、不产生 turn。
-    agent.send(UserMessage::text("注入"), Delivery::Inject);
+    agent
+        .send(UserMessage::text("注入"), Delivery::Inject)
+        .await
+        .unwrap();
     agent.idle().await;
-    let after_inject = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let after_inject = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     assert_eq!(
         after_inject.events().len(),
-        0,
-        "inject 不唤醒空闲的 loop，不应产生任何日志事件"
+        1,
+        "inject 不唤醒空闲的 loop：只落一条 durable 的 inbox 事件，不开 turn"
+    );
+    assert_eq!(
+        after_inject.events()[0].kind.type_name(),
+        "agent/inbox/spliced"
     );
     drop(after_inject);
 
-    agent.send(UserMessage::text("继续"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("继续"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     assert_eq!(count_turns(reopened.events()), 1);
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
@@ -248,16 +268,22 @@ async fn follow_up_opens_next_turn() {
         &mut permits,
     )]);
     let (agent, data_dir, _cwd, session_id) = new_agent(&server.uri(), tools, 10).await;
-    agent.send(UserMessage::text("第一句"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("第一句"), Delivery::FollowUp)
+        .await
+        .unwrap();
     assert_eq!(
         started.recv().await,
         Some(ToolEvent::Started("gate".to_owned()))
     );
-    agent.send(UserMessage::text("下一轮"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("下一轮"), Delivery::FollowUp)
+        .await
+        .unwrap();
     permits[0].1.add_permits(1);
     agent.idle().await;
 
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     assert_eq!(
         count_turns(reopened.events()),
         2,
@@ -288,7 +314,10 @@ async fn cancel_mid_stream_keeps_interrupted_text() {
     let (agent, data_dir, _cwd, session_id) =
         new_agent(&server.base_url(), ToolSet::empty(), 10).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("开始流"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("开始流"), Delivery::FollowUp)
+        .await
+        .unwrap();
     server.wait_ready().await;
     // 先确认订阅者真的收到了已流出的文本（driver 已处理完这部分帧，而服务端
     // 还 hold 着连接），再取消；否则取消可能赶在第一个帧被读到之前。
@@ -300,7 +329,7 @@ async fn cancel_mid_stream_keeps_interrupted_text() {
             Err(error) => panic!("事件通道关闭: {error}"),
         }
     }
-    agent.cancel();
+    agent.cancel().await.unwrap();
     agent.idle().await;
     let mut outcome = None;
     while let Ok(event) = events.try_recv() {
@@ -311,7 +340,7 @@ async fn cancel_mid_stream_keeps_interrupted_text() {
     assert_eq!(streamed, "已经流出来的部分文字。");
     assert_eq!(outcome, Some(TurnOutcome::Aborted));
 
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     let interrupted = assistant_text_of(reopened.events(), true);
     assert_eq!(
         interrupted,
@@ -320,18 +349,28 @@ async fn cancel_mid_stream_keeps_interrupted_text() {
     );
     assert_eq!(
         turn_reasons(reopened.events()),
-        vec![TurnEndReason::Aborted]
+        vec![TurnEndReason::Aborted {
+            reason: session::AbortCause::User
+        }]
     );
 
     // 取消之后会话还能接着用。
     server.release();
-    agent.send(UserMessage::text("再来"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("再来"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     assert_eq!(count_turns(reopened.events()), 2);
     assert_eq!(
         turn_reasons(reopened.events()),
-        vec![TurnEndReason::Aborted, TurnEndReason::Completed]
+        vec![
+            TurnEndReason::Aborted {
+                reason: session::AbortCause::User
+            },
+            TurnEndReason::Completed
+        ]
     );
 }
 
@@ -359,34 +398,35 @@ async fn cancel_batch_skips_unstarted_calls() {
     ]);
     // 上限 1：gate 跑起来时 gate2 还在排队，取消时它应当被跳过。
     let (agent, data_dir, _cwd, session_id) = new_agent(&server.uri(), tools, 1).await;
-    agent.send(UserMessage::text("跑工具"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("跑工具"), Delivery::FollowUp)
+        .await
+        .unwrap();
     assert_eq!(
         started.recv().await,
         Some(ToolEvent::Started("gate".to_owned()))
     );
-    agent.cancel();
+    agent.cancel().await.unwrap();
     permits[0].1.add_permits(1);
     agent.idle().await;
 
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     let results: Vec<(String, String, Option<String>)> = reopened
         .events()
         .iter()
         .filter_map(|event| match &event.kind {
-            EventKind::ToolResult {
-                message,
-                error_code,
-                ..
-            } => {
-                let block = message.content.first()?;
-                match block {
-                    ContentBlock::ToolResult {
-                        tool_use_id,
-                        content,
-                        ..
-                    } => Some((tool_use_id.clone(), content.clone(), error_code.clone())),
-                    _ => None,
-                }
+            EventKind::ToolResult { message, error, .. } => {
+                let tool_use_id = message.tool_call_id.clone()?;
+                let content: String = message
+                    .content
+                    .iter()
+                    .filter_map(ContentBlock::as_text)
+                    .collect();
+                Some((
+                    tool_use_id,
+                    content,
+                    error.as_ref().map(|error| error.code.clone()),
+                ))
             }
             _ => None,
         })
@@ -402,17 +442,27 @@ async fn cancel_batch_skips_unstarted_calls() {
     assert_eq!(results[1].2.as_deref(), Some("ABORTED_BEFORE_DISPATCH"));
     assert_eq!(
         turn_reasons(reopened.events()),
-        vec![TurnEndReason::Aborted]
+        vec![TurnEndReason::Aborted {
+            reason: session::AbortCause::User
+        }]
     );
 
     // 取消之后会话还能接着用。
-    agent.send(UserMessage::text("继续"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("继续"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     assert_eq!(count_turns(reopened.events()), 2);
     assert_eq!(
         turn_reasons(reopened.events()),
-        vec![TurnEndReason::Aborted, TurnEndReason::Completed]
+        vec![
+            TurnEndReason::Aborted {
+                reason: session::AbortCause::User
+            },
+            TurnEndReason::Completed
+        ]
     );
 }
 
@@ -425,7 +475,10 @@ async fn lost_wake_case(delivery: Delivery) {
     .await;
     let (agent, data_dir, _cwd, session_id) = new_agent(&server.uri(), ToolSet::empty(), 10).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("第一轮"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("第一轮"), Delivery::FollowUp)
+        .await
+        .unwrap();
     // driver 在收尾检查之后会显式让出一次调度；这里收到 TurnEnded 就投递，
     // 正好落在「收尾检查 → settle 快照」的窗口里（不靠 sleep）。
     loop {
@@ -435,10 +488,13 @@ async fn lost_wake_case(delivery: Delivery) {
             Err(error) => panic!("事件通道关闭: {error}"),
         }
     }
-    agent.send(UserMessage::text("窗口消息"), delivery);
+    agent
+        .send(UserMessage::text("窗口消息"), delivery)
+        .await
+        .unwrap();
     agent.idle().await;
 
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     assert_eq!(
         count_turns(reopened.events()),
         2,
@@ -508,7 +564,10 @@ async fn cancel_mid_stream_then_send_makes_exactly_one_more_turn() {
     let (agent, data_dir, _cwd, session_id) =
         new_agent(&server.base_url(), ToolSet::empty(), 10).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("开始"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("开始"), Delivery::FollowUp)
+        .await
+        .unwrap();
     server.wait_ready().await;
     let mut streamed = String::new();
     while streamed != "已经流出来的部分文字。" {
@@ -520,8 +579,11 @@ async fn cancel_mid_stream_then_send_makes_exactly_one_more_turn() {
     }
     // 取消后、这一轮收尾前立刻投递：修复前这里会让 agent 用同一个已 abort 的
     // Phase 空转（idle 不返回、日志无界增长）。
-    agent.cancel();
-    agent.send(UserMessage::text("取消后再来一句"), Delivery::FollowUp);
+    agent.cancel().await.unwrap();
+    agent
+        .send(UserMessage::text("取消后再来一句"), Delivery::FollowUp)
+        .await
+        .unwrap();
     server.release();
     assert!(
         tokio::time::timeout(std::time::Duration::from_secs(3), agent.idle())
@@ -530,7 +592,7 @@ async fn cancel_mid_stream_then_send_makes_exactly_one_more_turn() {
         "取消后立刻投递时 idle() 必须返回（不能空转）"
     );
 
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     assert_eq!(
         count_turns(reopened.events()),
         2,
@@ -538,7 +600,12 @@ async fn cancel_mid_stream_then_send_makes_exactly_one_more_turn() {
     );
     assert_eq!(
         turn_reasons(reopened.events()),
-        vec![TurnEndReason::Aborted, TurnEndReason::Completed]
+        vec![
+            TurnEndReason::Aborted {
+                reason: session::AbortCause::User
+            },
+            TurnEndReason::Completed
+        ]
     );
     assert_eq!(
         assistant_text_of(reopened.events(), true),
@@ -574,14 +641,20 @@ async fn cancel_during_tool_then_send_makes_exactly_one_more_turn() {
         &mut permits,
     )]);
     let (agent, data_dir, _cwd, session_id) = new_agent(&server.uri(), tools, 10).await;
-    agent.send(UserMessage::text("跑工具"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("跑工具"), Delivery::FollowUp)
+        .await
+        .unwrap();
     assert_eq!(
         started.recv().await,
         Some(ToolEvent::Started("gate".to_owned()))
     );
     // 取消要等已开始的工具结束，这个窗口里立刻投递 steer。
-    agent.cancel();
-    agent.send(UserMessage::text("工具窗口里插话"), Delivery::Steer);
+    agent.cancel().await.unwrap();
+    agent
+        .send(UserMessage::text("工具窗口里插话"), Delivery::Steer)
+        .await
+        .unwrap();
     permits[0].1.add_permits(1);
     assert!(
         tokio::time::timeout(std::time::Duration::from_secs(3), agent.idle())
@@ -598,7 +671,7 @@ async fn cancel_during_tool_then_send_makes_exactly_one_more_turn() {
     }
     assert_eq!(starts, 1, "工具不能被重跑");
 
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     assert_eq!(
         count_turns(reopened.events()),
         2,
@@ -606,7 +679,12 @@ async fn cancel_during_tool_then_send_makes_exactly_one_more_turn() {
     );
     assert_eq!(
         turn_reasons(reopened.events()),
-        vec![TurnEndReason::Aborted, TurnEndReason::Completed]
+        vec![
+            TurnEndReason::Aborted {
+                reason: session::AbortCause::User
+            },
+            TurnEndReason::Completed
+        ]
     );
     let requests = server.received_requests().await.unwrap();
     assert_eq!(requests.len(), 2);
@@ -626,7 +704,10 @@ async fn cancel_keeps_only_safe_interrupted_blocks() {
     let (agent, data_dir, _cwd, session_id) =
         new_agent(&server.base_url(), ToolSet::empty(), 10).await;
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text("开始"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("开始"), Delivery::FollowUp)
+        .await
+        .unwrap();
     server.wait_ready().await;
     let mut streamed = String::new();
     while !streamed.ends_with("开着的块") {
@@ -636,11 +717,11 @@ async fn cancel_keeps_only_safe_interrupted_blocks() {
             Err(error) => panic!("事件通道关闭: {error}"),
         }
     }
-    agent.cancel();
+    agent.cancel().await.unwrap();
     server.release();
     agent.idle().await;
 
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     let mut interrupted = None;
     for event in reopened.events() {
         if let EventKind::AssistantMessage {
@@ -682,14 +763,17 @@ async fn steer_wakes_idle_loop() {
     mount_sequence(&server, vec![FINAL_TEXT_SSE.to_owned()]).await;
     let (agent, data_dir, _cwd, session_id) = new_agent(&server.uri(), ToolSet::empty(), 10).await;
     // 空闲时投递 steer：要唤醒 loop、开一轮，并进入下一步的请求。
-    agent.send(UserMessage::text("插一句"), Delivery::Steer);
+    agent
+        .send(UserMessage::text("插一句"), Delivery::Steer)
+        .await
+        .unwrap();
     assert!(
         tokio::time::timeout(std::time::Duration::from_secs(3), agent.idle())
             .await
             .is_ok(),
         "steer 要唤醒空闲的 loop"
     );
-    let reopened = SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
     assert_eq!(count_turns(reopened.events()), 1);
     assert_eq!(
         turn_reasons(reopened.events()),

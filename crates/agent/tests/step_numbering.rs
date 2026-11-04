@@ -26,7 +26,7 @@ async fn next_started(started: &mut mpsc::UnboundedReceiver<ToolEvent>) -> Strin
     }
 }
 
-fn step_numbers(store: &SessionStore) -> Vec<(u64, u64)> {
+fn step_numbers(store: &session::SessionSnapshot) -> Vec<(u64, u64)> {
     store
         .events()
         .iter()
@@ -37,7 +37,7 @@ fn step_numbers(store: &SessionStore) -> Vec<(u64, u64)> {
         .collect()
 }
 
-fn turn_reasons(store: &SessionStore) -> Vec<session::TurnEndReason> {
+fn turn_reasons(store: &session::SessionSnapshot) -> Vec<session::TurnEndReason> {
     store
         .events()
         .iter()
@@ -73,18 +73,27 @@ async fn each_turn_starts_step_numbering_at_one() {
     let permits: Vec<_> = permits.into_iter().map(|(_, permit)| permit).collect();
     let (agent, data_dir, _cwd, id) = setup_agent(&server.uri(), tools).await;
 
-    agent.send(UserMessage::text("第一轮"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("第一轮"), Delivery::FollowUp)
+        .await
+        .unwrap();
     assert_eq!(next_started(&mut started).await, "gate");
     // 第一轮跑工具时排一条 follow-up：轮末已有 pending，kick 直接开第二轮。
-    agent.send(UserMessage::text("第二轮"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("第二轮"), Delivery::FollowUp)
+        .await
+        .unwrap();
     permits[0].add_permits(1);
     assert_eq!(next_started(&mut started).await, "gate");
     // 第二轮照样排第三轮的 follow-up。
-    agent.send(UserMessage::text("第三轮"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("第三轮"), Delivery::FollowUp)
+        .await
+        .unwrap();
     permits[0].add_permits(1);
     wait_idle(&agent, 10).await;
 
-    let store = SessionStore::open(data_dir.path(), &id).unwrap();
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(
         step_numbers(&store),
         vec![(1, 1), (1, 2), (2, 1), (2, 2), (3, 1)],

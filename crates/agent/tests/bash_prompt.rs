@@ -17,7 +17,10 @@ async fn system_prompt_for(tools: ToolSet) -> String {
         .mount(&server)
         .await;
     let (agent, _data_dir, _cwd, _id) = setup_agent(&server.uri(), tools).await;
-    agent.send(UserMessage::text("hi"), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text("hi"), Delivery::FollowUp)
+        .await
+        .unwrap();
     agent.idle().await;
     let requests = server.received_requests().await.unwrap();
     let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();

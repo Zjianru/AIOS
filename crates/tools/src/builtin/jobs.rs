@@ -63,6 +63,13 @@ fn stream_text(text: &str, dropped: bool, path: impl std::fmt::Display) -> Strin
     format!("{text}\n[some output was dropped from memory; full output: {path}]")
 }
 
+fn status_line_detail(view: &crate::jobs::JobView) -> String {
+    view.detail.as_ref().map_or_else(
+        || status_line(view.status),
+        |detail| format!("[status: {}, {detail}]", view.status.as_str()),
+    )
+}
+
 fn status_line(status: JobStatus) -> String {
     format!("[status: {}]", status.as_str())
 }
@@ -113,7 +120,7 @@ impl Tool for JobOutputTool {
         context: &'a ToolContext,
     ) -> ToolFuture<'a, ToolResult> {
         Box::pin(async move {
-            match job_output(&call.arguments, context) {
+            match job_output(&call.arguments, context).await {
                 Ok(content) => ToolResult::success(call.id, content),
                 Err(failure) => ToolResult::error(call.id, failure),
             }
@@ -121,7 +128,7 @@ impl Tool for JobOutputTool {
     }
 }
 
-fn job_output(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
+async fn job_output(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
     let args = parse_object(arguments)?;
     let id = job_id(&args, "job_output")?;
     let wait = match args.get("wait") {
@@ -144,16 +151,18 @@ fn job_output(arguments: &str, context: &ToolContext) -> Result<String, ToolFail
             (timeout as u64).min(MAX_WAIT_MS)
         }
     };
-    let read = if wait {
-        registry(context).wait(id, Duration::from_millis(timeout_ms))?
-    } else {
-        registry(context).output(id)?
-    };
-    Ok(format!(
-        "{}\n{}",
-        body_of(&read),
-        status_line(read.view.status)
-    ))
+    let registry = registry(context);
+    if wait {
+        registry
+            .wait_async(id, Duration::from_millis(timeout_ms))
+            .await?;
+    }
+    let read = registry.read_output(id)?;
+    let mut body = crate::render_model_delta(&read);
+    if body.is_empty() {
+        body = "(no new output)".to_owned();
+    }
+    Ok(format!("{body}\n{}", status_line_detail(&read.view)))
 }
 
 /// job_list：列出本会话的后台任务。
@@ -261,7 +270,7 @@ impl Tool for JobKillTool {
         context: &'a ToolContext,
     ) -> ToolFuture<'a, ToolResult> {
         Box::pin(async move {
-            match job_kill(&call.arguments, context) {
+            match job_kill(&call.arguments, context).await {
                 Ok(content) => ToolResult::success(call.id, content),
                 Err(failure) => ToolResult::error(call.id, failure),
             }
@@ -269,14 +278,20 @@ impl Tool for JobKillTool {
     }
 }
 
-fn job_kill(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
+async fn job_kill(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
     let args = parse_object(arguments)?;
     let id = job_id(&args, "job_kill")?;
     let reason = args
         .get("reason")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let read = registry(context).kill(id, reason)?;
+    // 照 DSH tool-jobs：先同步请求取消并判 requested/already-finished；requested 时在
+    // request_kill 的同一临界区里置 killedByModel（结算不再投完成通知），再等 SIGTERM→grace→SIGKILL。
+    let registry = registry(context);
+    let _requested = registry.request_kill(id, reason, true)?;
+    let read = registry
+        .await_termination(id, crate::jobs::KILL_GRACE)
+        .await?;
     let body = body_of(&read);
     let body = if body == "(no output)" {
         String::new()

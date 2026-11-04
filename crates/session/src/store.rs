@@ -1,8 +1,9 @@
 //! 会话日志的 JSONL 存储：一个会话一个只追加的文件。
 //!
 //! 机制照 DSH 的 session-persistence-jsonl（strategy 第 1 节），格式是本仓库
-//! 自己的 v1：首行 header；每批事件先写入再 fsync，写失败回滚到写之前的长度；
-//! 读的时候丢掉不完整的最后一行。
+//! 自己的 v2：首行 header；事件记录是 `{type, seq, time, data}`；每批事件先写入再
+//! fsync，写失败回滚到写之前的长度。尾行不完整时只从读到的视图里丢掉：只读打开
+//! 不改文件，写句柄在第一次 append 之前才把未提交的尾部截掉（照 DSH）。
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -13,7 +14,7 @@ use model::Message;
 
 use crate::derive::{derive_messages, derive_messages_with_seqs};
 use crate::error::SessionError;
-use crate::event::{Event, EventKind, FORMAT_VERSION, SessionHeader};
+use crate::event::{Event, EventKind, FORMAT_VERSION, SessionHeader, SurfaceOp};
 use crate::id::SessionId;
 
 /// 追加写日志的底层文件接缝。生产实现是 std::fs::File；单元测试用第二个
@@ -44,12 +45,47 @@ pub struct SessionStore {
     path: PathBuf,
     events: Vec<Event>,
     bytes: u64,
+    /// 文件里还有未提交的尾部；第一次 append 之前先截到 bytes（照 DSH 的写句柄语义）。
+    pending_truncate: bool,
     writer: Box<dyn LogWriter>,
+    /// 单写者锁（T006.5b）：跟随本 store 的生命周期；drop 即释放。
+    _writer_lock: crate::lock::WriterLock,
+}
+
+/// 只读打开得到的会话日志视图：读到最后一个完整事件为止，不改文件。
+#[derive(Debug, Clone)]
+pub struct SessionSnapshot {
+    id: crate::SessionId,
+    path: PathBuf,
+    events: Vec<Event>,
+}
+
+impl SessionSnapshot {
+    pub fn id(&self) -> &crate::SessionId {
+        &self.id
+    }
+
+    /// 这个会话的 JSONL 文件路径。
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn events(&self) -> &[Event] {
+        &self.events
+    }
+
+    /// 只读派生请求消息（检查/测试用；与写 store 的派生一致，不改文件）。
+    pub fn derive_messages(&self) -> Vec<Message> {
+        derive_messages(&self.events)
+    }
 }
 
 impl SessionStore {
     /// 新建会话：生成 id、写 header（首行）并 fsync。
     pub fn create(data_dir: &Path, cwd: &Path) -> Result<Self, SessionError> {
+        // T006.7 fix：data-dir 可能是相对路径；日志/spill locator 等对外路径一律绝对化。
+        let data_dir = absolute_data_dir(data_dir)?;
+        let data_dir = data_dir.as_path();
         let cwd = fs::canonicalize(cwd)?;
         let cwd_text = cwd.to_str().ok_or_else(|| {
             SessionError::Io(std::io::Error::new(
@@ -62,6 +98,8 @@ impl SessionStore {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
+        // T006.5b：创建会话就等于物化写句柄，先取单写者锁再落文件。
+        let writer_lock = crate::lock::WriterLock::acquire(data_dir, &id)?;
         let header = SessionHeader::new(id, cwd_text.to_owned(), now_ms());
         let header_line = format!("{}\n", serde_json::to_string(&header)?);
         let mut file = OpenOptions::new()
@@ -75,12 +113,19 @@ impl SessionStore {
             path,
             events: Vec::new(),
             bytes: header_line.len() as u64,
+            pending_truncate: false,
             writer: Box::new(file),
+            _writer_lock: writer_lock,
         })
     }
 
-    /// 打开已有会话；最后一行不完整就丢掉（并把文件截回完整前缀）。
+    /// 打开已有会话准备写。尾行不完整时只从读到的视图里丢掉，文件要等到第一次
+    /// append 之前才截（照 DSH：读打开不改文件，写句柄在首次追加前修掉 torn tail）。
     pub fn open(data_dir: &Path, id: &SessionId) -> Result<Self, SessionError> {
+        let data_dir = absolute_data_dir(data_dir)?;
+        let data_dir = data_dir.as_path();
+        // T006.5b：写打开先取非阻塞排他锁；被活写者占用立即报 AlreadyOwned（照 DSH）。
+        let writer_lock = crate::lock::WriterLock::acquire(data_dir, id)?;
         let path = log_path(data_dir, id);
         let bytes = fs::read(&path).map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
@@ -90,18 +135,40 @@ impl SessionStore {
             }
         })?;
         let (header, events, committed) = parse_log(&bytes)?;
-        if committed < bytes.len() as u64 {
-            let file = OpenOptions::new().write(true).open(&path)?;
-            file.set_len(committed)?;
-            file.sync_data()?;
-        }
+        let pending_truncate = committed < bytes.len() as u64;
         let file = OpenOptions::new().append(true).open(&path)?;
         Ok(Self {
             header,
             path,
             events,
             bytes: committed,
+            pending_truncate,
             writer: Box::new(file),
+            _writer_lock: writer_lock,
+        })
+    }
+
+    /// 只读打开一个已有会话：读到最后一个完整事件为止，不改文件。
+    ///
+    /// 尾行不完整时只从视图里丢掉，不截文件；要写的话另开 write 句柄（照 DSH
+    /// 的 open(id, 'read'|'write')，persistence-jsonl README:77,87）。
+    pub fn open_read_only(
+        data_dir: &Path,
+        id: &SessionId,
+    ) -> Result<SessionSnapshot, SessionError> {
+        let path = log_path(data_dir, id);
+        let bytes = fs::read(&path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                SessionError::NotFound(path.display().to_string())
+            } else {
+                SessionError::Io(error)
+            }
+        })?;
+        let (header, events, _committed) = parse_log(&bytes)?;
+        Ok(SessionSnapshot {
+            id: header.id,
+            path,
+            events,
         })
     }
 
@@ -142,18 +209,63 @@ impl SessionStore {
 
     /// 追加一批事件：先写入、再 fsync；任何一步失败都回滚到写之前的长度。
     pub fn append(&mut self, kinds: &[EventKind]) -> Result<Vec<u64>, SessionError> {
-        if kinds.is_empty() {
+        self.append_with_time(kinds, now_ms())
+    }
+
+    /// 按给定的 time 追加一批事件（seq 仍由 store 连续分配）。
+    ///
+    /// 中断修复的事件复用最后一个真实事件的时间（照 DSH repair.ts:88-96）。
+    pub fn append_with_time(
+        &mut self,
+        kinds: &[EventKind],
+        time: u64,
+    ) -> Result<Vec<u64>, SessionError> {
+        let entries: Vec<(EventKind, Option<SurfaceOp>, Option<Vec<u64>>)> = kinds
+            .iter()
+            .map(|kind| (kind.clone(), None, None))
+            .collect();
+        self.append_entries(entries, time)
+    }
+
+    /// 追加一条 message-producing 事件并带上 surface 放置信息（T006.3 压缩 checkpoint 的
+    /// `surfaceOp: replace` + `sourceEventSeqs`，照 DSH SessionEvent）。
+    pub fn append_surface(
+        &mut self,
+        kind: EventKind,
+        surface_op: SurfaceOp,
+        source_event_seqs: Vec<u64>,
+    ) -> Result<Vec<u64>, SessionError> {
+        self.append_entries(
+            vec![(kind, Some(surface_op), Some(source_event_seqs))],
+            now_ms(),
+        )
+    }
+
+    fn append_entries(
+        &mut self,
+        entries: Vec<(EventKind, Option<SurfaceOp>, Option<Vec<u64>>)>,
+        time: u64,
+    ) -> Result<Vec<u64>, SessionError> {
+        if entries.is_empty() {
             return Ok(Vec::new());
         }
+        // 写句柄的第一次 append 之前，先把上次没提交的尾部截掉（DSH storage.ts:317-334）。
+        if self.pending_truncate {
+            self.writer
+                .set_len(self.bytes)
+                .map_err(|source| SessionError::Truncate { source })?;
+            self.pending_truncate = false;
+        }
         let first_seq = self.events.len() as u64 + 1;
-        let time = now_ms();
-        let mut batch = Vec::with_capacity(kinds.len());
+        let mut batch = Vec::with_capacity(entries.len());
         let mut buffer = String::new();
-        for (offset, kind) in kinds.iter().enumerate() {
+        for (offset, (kind, surface_op, source_event_seqs)) in entries.into_iter().enumerate() {
             let event = Event {
                 seq: first_seq + offset as u64,
                 time,
-                kind: kind.clone(),
+                kind,
+                surface_op,
+                source_event_seqs,
             };
             buffer.push_str(&serde_json::to_string(&event)?);
             buffer.push('\n');
@@ -180,6 +292,11 @@ impl SessionStore {
         self.events.extend(batch);
         Ok(seqs)
     }
+}
+
+/// data-dir 绝对化（相对路径按进程 cwd 解析；不要求目录已存在）。T006.7 fix。
+fn absolute_data_dir(data_dir: &Path) -> Result<PathBuf, SessionError> {
+    std::path::absolute(data_dir).map_err(SessionError::Io)
 }
 
 fn log_path(data_dir: &Path, id: &SessionId) -> PathBuf {
@@ -330,7 +447,7 @@ mod tests {
 
     #[test]
     fn question_events_are_ignored_by_derive_and_repair() {
-        let at = |seq: u64, kind: EventKind| Event { seq, time: 0, kind };
+        let at = |seq: u64, kind: EventKind| Event::new(seq, 0, kind);
         let message = Message::text(Role::User, "go");
         let events = vec![
             at(1, EventKind::TurnStart { turn: 1 }),
@@ -347,6 +464,7 @@ mod tests {
                 EventKind::QuestionAsked {
                     turn: 1,
                     step: 1,
+                    call_id: "call_ask".to_owned(),
                     question_id: "q1".to_owned(),
                     question: "Proceed?".to_owned(),
                     header: Some("Confirm".to_owned()),
@@ -359,6 +477,7 @@ mod tests {
                 EventKind::QuestionCancelled {
                     turn: 1,
                     step: 1,
+                    call_id: "call_ask".to_owned(),
                     question_id: "q1".to_owned(),
                 },
             ),
@@ -379,6 +498,7 @@ mod tests {
                 EventKind::QuestionAsked {
                     turn: 1,
                     step: 1,
+                    call_id: "call_ask".to_owned(),
                     question_id: "q1".to_owned(),
                     question: "Proceed?".to_owned(),
                     header: None,
@@ -391,13 +511,14 @@ mod tests {
                 EventKind::QuestionCancelled {
                     turn: 1,
                     step: 1,
+                    call_id: "call_ask".to_owned(),
                     question_id: "q1".to_owned(),
                 },
             ),
         ];
         assert_eq!(
-            crate::repair::interrupted_turn_closers(&with_questions),
-            crate::repair::interrupted_turn_closers(&base),
+            crate::repair::interrupted_turn_closers(&with_questions).map(|closers| closers.events),
+            crate::repair::interrupted_turn_closers(&base).map(|closers| closers.events),
             "repair 必须忽略 question 事件"
         );
     }

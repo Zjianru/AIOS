@@ -143,6 +143,15 @@ impl Translator {
                     },
                 );
                 chunks.push(StreamChunk::BlockStart { index, block_type });
+                // DSH translate.ts:130：tool_use 块的起始帧带 id/name、参数增量为空。
+                if let ContentBlock::ToolCall { id, name, .. } = &self.blocks[&index].content {
+                    chunks.push(StreamChunk::ToolCallDelta {
+                        index,
+                        id: id.clone(),
+                        name: Some(name.clone()),
+                        arguments_delta: String::new(),
+                    });
+                }
                 if let Some(text) = initial_delta {
                     match block_type {
                         BlockType::Text => chunks.push(StreamChunk::TextDelta { index, text }),
@@ -201,13 +210,19 @@ impl Translator {
                         }
                     }
                     "input_json_delta" => {
-                        if let ContentBlock::ToolCall { .. } = &mut block.content {
-                            block
-                                .json
-                                .push_str(&required_string(delta, "partial_json")?);
-                        } else {
+                        // DSH translate.ts:82-85：每段参数增量发一帧 tool-call-delta。
+                        let piece = required_string(delta, "partial_json")?;
+                        let ContentBlock::ToolCall { id, .. } = &block.content else {
                             return Err(malformed("input_json_delta 指向非工具调用块"));
-                        }
+                        };
+                        let id = id.clone();
+                        block.json.push_str(&piece);
+                        chunks.push(StreamChunk::ToolCallDelta {
+                            index,
+                            id,
+                            name: None,
+                            arguments_delta: piece,
+                        });
                     }
                     other => return Err(malformed(&format!("不支持的内容增量 {other}"))),
                 }
@@ -274,8 +289,14 @@ impl Translator {
                     }
                 }
                 self.finished = true;
-                chunks.push(StreamChunk::Usage(self.usage.clone()));
-                chunks.push(StreamChunk::Finish(finish));
+                // K10：整段 usage 缺失时不出 usage 帧（不伪造 0/空用量；DSH 的适配器只在
+                // 真的报过用量时才带 usage）。
+                if !self.usage.is_empty() {
+                    chunks.push(StreamChunk::Usage {
+                        usage: self.usage.clone(),
+                    });
+                }
+                chunks.push(StreamChunk::Finish { reason: finish });
             }
             // Anthropic 允许其他事件类型（如 ping）：忽略。
             _ => {}
@@ -355,4 +376,128 @@ fn update_usage(usage: &mut Usage, raw: Option<&Value>) -> Result<(), ModelError
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn push(translator: &mut Translator, event: Value) -> Vec<StreamChunk> {
+        translator.push(event).expect("合法 wire 事件")
+    }
+
+    /// 空响应归 EMPTY_RESPONSE（K10 点名项）。
+    #[test]
+    fn empty_stream_maps_to_empty_response() {
+        let mut translator = Translator::new();
+        push(
+            &mut translator,
+            json!({"type": "message_start", "message": {"usage": {"input_tokens": 1}}}),
+        );
+        push(
+            &mut translator,
+            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}}),
+        );
+        let error = translator
+            .push(json!({"type": "message_stop"}))
+            .expect_err("没有内容块应报错");
+        assert_eq!(error.code, ErrorCode::EmptyResponse);
+    }
+
+    /// K10：整段 usage 缺失时不产生 usage 帧（不伪造 0/空用量）。
+    #[test]
+    fn usage_missing_produces_no_usage_chunk() {
+        let mut translator = Translator::new();
+        let mut chunks = push(
+            &mut translator,
+            json!({"type": "message_start", "message": {"content": []}}),
+        );
+        chunks.extend(push(
+            &mut translator,
+            json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+        ));
+        chunks.extend(push(
+            &mut translator,
+            json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "好"}}),
+        ));
+        chunks.extend(push(
+            &mut translator,
+            json!({"type": "content_block_stop", "index": 0}),
+        ));
+        chunks.extend(push(
+            &mut translator,
+            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}}),
+        ));
+        chunks.extend(push(&mut translator, json!({"type": "message_stop"})));
+        assert!(
+            !chunks
+                .iter()
+                .any(|chunk| matches!(chunk, StreamChunk::Usage { .. })),
+            "usage 整段缺失时不能伪造 usage 帧：{chunks:?}"
+        );
+    }
+
+    /// T006.14（DSH translate.ts:82-85,130）：工具参数增量逐帧发 tool-call-delta；
+    /// block-start 时带 id/name、argumentsDelta 为空，之后每段 input_json_delta 一帧。
+    #[test]
+    fn tool_call_deltas_match_dsh() {
+        let mut translator = Translator::new();
+        let mut chunks = push(
+            &mut translator,
+            json!({"type": "message_start", "message": {"usage": {"input_tokens": 1}}}),
+        );
+        chunks.extend(push(
+            &mut translator,
+            json!({"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "call_0", "name": "read", "input": {}}}),
+        ));
+        chunks.extend(push(
+            &mut translator,
+            json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"file"}}),
+        ));
+        chunks.extend(push(
+            &mut translator,
+            json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "_path\":\"a\"}"}}),
+        ));
+        chunks.extend(push(
+            &mut translator,
+            json!({"type": "content_block_stop", "index": 0}),
+        ));
+        assert_eq!(
+            chunks,
+            vec![
+                StreamChunk::BlockStart {
+                    index: 0,
+                    block_type: BlockType::ToolCall,
+                },
+                StreamChunk::ToolCallDelta {
+                    index: 0,
+                    id: "call_0".to_owned(),
+                    name: Some("read".to_owned()),
+                    arguments_delta: String::new(),
+                },
+                StreamChunk::ToolCallDelta {
+                    index: 0,
+                    id: "call_0".to_owned(),
+                    name: None,
+                    arguments_delta: "{\"file".to_owned(),
+                },
+                StreamChunk::ToolCallDelta {
+                    index: 0,
+                    id: "call_0".to_owned(),
+                    name: None,
+                    arguments_delta: "_path\":\"a\"}".to_owned(),
+                },
+                StreamChunk::BlockEnd {
+                    index: 0,
+                    block: ContentBlock::ToolCall {
+                        id: "call_0".to_owned(),
+                        name: "read".to_owned(),
+                        arguments: "{\"file_path\":\"a\"}".to_owned(),
+                    },
+                },
+            ]
+        );
+    }
 }

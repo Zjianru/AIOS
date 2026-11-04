@@ -5,13 +5,14 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use agent::{
-    Agent, AgentConfig, AgentEvent, CompactionTrigger, Delivery, Deps, JobStatus, TurnOutcome,
+    Agent, AgentConfig, AgentEvent, AgentOpenOptions, CompactionOutcome, Delivery, JobStatus,
+    TurnOutcome,
 };
 use clap::{Args, Parser, Subcommand};
-use model::{DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS, DeepSeek, DeepSeekConfig, Effort, UserMessage};
-use session::{SessionId, SessionStore};
+use model::{DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS, DeepSeekConfig, Effort, UserMessage};
+use service::{RootSessionOptions, ServiceHost};
+use session::SessionId;
 use tokio::io::AsyncBufReadExt;
-use tools::ToolSet;
 
 #[derive(Parser)]
 #[command(name = "aios-dev", about = "AIOS 开发用 CLI（内核 agent loop）")]
@@ -26,6 +27,20 @@ enum Command {
     Chat(CommonArgs),
     /// 跑一条消息，空闲后退出；completed 退出码 0，其余非 0
     Run(RunArgs),
+    /// 起 Web 服务（HTTP POST /api + WebSocket /ws，只绑本机，带启动令牌）
+    Serve(ServeArgs),
+}
+
+#[derive(Args)]
+struct ServeArgs {
+    #[command(flatten)]
+    common: CommonArgs,
+    /// 绑定地址（只允许本机回环；默认 127.0.0.1）
+    #[arg(long, default_value = web::DEFAULT_HOST)]
+    host: String,
+    /// 端口（默认 0 = 系统分配）
+    #[arg(long, default_value_t = web::DEFAULT_PORT)]
+    port: u16,
 }
 
 #[derive(Args)]
@@ -80,6 +95,13 @@ enum CliError {
     Model(#[from] model::ModelError),
     #[error(transparent)]
     Agent(#[from] agent::AgentError),
+    #[error(transparent)]
+    Root(#[from] service::RootError),
+    #[error(transparent)]
+    Web(#[from] web::ServeError),
+    /// T006.18：另一个写者（服务/进程）持有会话写锁（DSH 错误码 session/writer-held）。
+    #[error("会话 {id} 已被其他写者占用（session/writer-held）")]
+    WriterHeld { id: String },
 }
 
 #[tokio::main]
@@ -88,9 +110,15 @@ async fn main() -> ExitCode {
     let result = match cli.command {
         Command::Chat(args) => chat(args).await.map(|()| 0_u8),
         Command::Run(args) => run(args).await,
+        Command::Serve(args) => serve(args).await,
     };
     match result {
         Ok(code) => ExitCode::from(code),
+        // T006.18：会话被别的写者占用是独立的退出码（2），便于脚本区分「忙」和一般失败。
+        Err(error @ CliError::WriterHeld { .. }) => {
+            eprintln!("aios-dev: {error}");
+            ExitCode::from(2)
+        }
         Err(error) => {
             eprintln!("aios-dev: {error}");
             ExitCode::FAILURE
@@ -160,6 +188,8 @@ fn config_from_args(
     Ok((config, agent))
 }
 
+/// 唯一组装入口（T006.15）：这里只把 CLI 参数/env 变成普通配置数据；模型、工具集、
+/// 会话存储的构造由 agent::Agent::open 一处完成（chat/run 共用，后续服务同样走它）。
 async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
     let data_dir = match &common.data_dir {
         Some(path) => path.clone(),
@@ -177,36 +207,77 @@ async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
     let base_url =
         std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_owned());
     let (deepseek_config, config) = config_from_args(common, base_url, api_key)?;
-    let model = DeepSeek::new(deepseek_config)?;
-    let tools = ToolSet::builtin();
-    match &common.resume {
-        Some(raw) => {
-            let id = SessionId::parse(raw)?;
-            let store = SessionStore::open(&data_dir, &id)?;
-            Ok(Agent::resume(
-                id,
-                config,
-                Deps {
-                    model,
-                    tools,
-                    store,
-                },
-            )
-            .await?)
-        }
-        None => {
-            let store = SessionStore::create(&data_dir, &cwd)?;
-            Ok(Agent::create(
-                config,
-                Deps {
-                    model,
-                    tools,
-                    store,
-                },
-            )
-            .await?)
-        }
+    let resume = match &common.resume {
+        Some(raw) => Some(SessionId::parse(raw)?),
+        None => None,
+    };
+    let agent = Agent::open(AgentOpenOptions {
+        data_dir,
+        cwd,
+        resume,
+        model: deepseek_config,
+        config,
+    })
+    .await
+    .map_err(open_error)?;
+    Ok(agent)
+}
+
+/// T006.18：把「写锁被别的写者持有」映射成可辨的占用错误（DSH 错误码 session/writer-held）。
+fn open_error(error: agent::AgentError) -> CliError {
+    if let agent::AgentError::Store(session::SessionError::AlreadyOwned { id, .. }) = &error {
+        return CliError::WriterHeld { id: id.clone() };
     }
+    CliError::Agent(error)
+}
+
+/// 起 Web 服务（T006.17）：找回/新建 Kind 根会话，起只绑本机的 HTTP+WS 载体。
+/// 启动令牌只在本进程内生成并打印带令牌的 URL；不写日志/证据，不读环境变量。
+async fn serve(args: ServeArgs) -> Result<u8, CliError> {
+    let data_dir = match &args.common.data_dir {
+        Some(path) => path.clone(),
+        None => default_data_dir()?,
+    };
+    let cwd = match &args.common.cwd {
+        Some(path) => path.clone(),
+        None => std::env::current_dir()?,
+    };
+    let api_key = std::env::var("DEEPSEEK_API_KEY").map_err(|_| {
+        CliError::Message(
+            "缺少 DEEPSEEK_API_KEY 环境变量（D34：开发期从环境变量读 key）".to_owned(),
+        )
+    })?;
+    let base_url =
+        std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_owned());
+    let (deepseek_config, agent_config) = config_from_args(&args.common, base_url, api_key)?;
+    let root = service::open_root_session(RootSessionOptions {
+        data_dir,
+        cwd,
+        model: deepseek_config,
+        config: agent_config,
+    })
+    .await?;
+    let host = ServiceHost::new(root.agent.clone());
+    let token = web::launch_token();
+    let handle = web::serve(
+        web::ServeOptions {
+            host: args.host.clone(),
+            port: args.port,
+            token: token.clone(),
+        },
+        host,
+    )
+    .await?;
+    println!(
+        "aios-dev serve: http://{}:{}/?token={}",
+        args.host,
+        handle.addr.port(),
+        handle.token
+    );
+    tokio::signal::ctrl_c().await?;
+    // T006.18：停服务收尾（取消正在跑的一轮、日志收尾完整）；骨架阶段等价 abort。
+    handle.shutdown().await;
+    Ok(0)
 }
 
 fn default_data_dir() -> Result<PathBuf, CliError> {
@@ -221,6 +292,8 @@ enum ChatInput {
     Answer(String),
     Exit,
     Compact,
+    /// /compact 带了参数：照 DSH 只打 usage，不当成普通消息。
+    CompactUsage,
     Queue(String),
     FollowUp(String),
     Steer(String),
@@ -247,6 +320,11 @@ fn dispatch_chat_input(
     if is_compact_command(line) {
         return ChatInput::Compact;
     }
+    if let Some(rest) = line.strip_prefix("/compact")
+        && !rest.trim().is_empty()
+    {
+        return ChatInput::CompactUsage;
+    }
     if let Some(queued) = line.strip_prefix("/queue ") {
         let queued = queued.trim();
         if !queued.is_empty() {
@@ -258,6 +336,36 @@ fn dispatch_chat_input(
     } else {
         ChatInput::FollowUp(line.to_owned())
     }
+}
+
+/// 一行输入如何变成 DSH 答案（T006.13）：输入恰好是某个选项标签时当作选项
+/// （selected=[label]）；多选问题还接受逗号分隔的多个标签；其余一律当自定义文本（custom）。
+/// 这是开发 CLI 的交互适配（DSH 没有 CLI），界面走 T006.16a 的服务方法。
+fn classify_answer(answer: &str, question: &agent::Question) -> (Vec<String>, Option<String>) {
+    let labels: Vec<&str> = question
+        .options
+        .iter()
+        .map(|option| option.label.as_str())
+        .collect();
+    if labels.contains(&answer) {
+        return (vec![answer.to_owned()], None);
+    }
+    if question.multi_select {
+        let selected: Vec<String> = answer
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if !selected.is_empty()
+            && selected
+                .iter()
+                .all(|label| labels.contains(&label.as_str()))
+        {
+            return (selected, None);
+        }
+    }
+    (Vec::new(), Some(answer.to_owned()))
 }
 
 /// 事件如何改变待答问题队列（T005.12）：QuestionAsked 入队、TurnEnded 清空。
@@ -300,7 +408,7 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 // 清空收件箱并中止当前一轮；已流出的文字按 interrupted 收尾。
-                agent.cancel();
+                agent.cancel().await?;
                 pending_questions.clear();
                 println!();
             }
@@ -313,7 +421,8 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
                     ChatInput::Ignore => continue,
                     ChatInput::Answer(answer) => {
                         if let Some(question) = pending_questions.pop_front() {
-                            if agent.answer(&question.id, &answer).await {
+                            let (selected, custom) = classify_answer(&answer, &question);
+                            if agent.answer(&question.id, selected, custom).await {
                                 if let Some(next) = pending_questions.front() {
                                     println!();
                                     println!("{}", question_asked_text(next));
@@ -325,20 +434,35 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
                     }
                     ChatInput::Exit => break,
                     ChatInput::Compact => {
-                        // 空闲时立刻压缩；运行中排到当前轮之后（事件照常打印）。
+                        // 空闲时立刻压缩；运行中排到当前轮之后。结果照 DSH command-compact
+                        // 打一行计数（自动压缩不再往 CLI 打 start/end 行）。
                         let agent = agent.clone();
-                        tokio::spawn(async move { agent.compact().await; });
+                        let command_id = new_command_id();
+                        tokio::spawn(async move {
+                            match agent.compact(Some(command_id)).await {
+                                Ok(outcome) => println!("{}", compact_result_text(outcome)),
+                                Err(error) => println!(
+                                    "{}",
+                                    compact_failure_text(&error)
+                                        .unwrap_or_else(|| format!("Compaction failed: {error}."))
+                                ),
+                            }
+                        });
+                    }
+                    ChatInput::CompactUsage => {
+                        println!();
+                        println!("{COMPACT_USAGE}");
                     }
                     ChatInput::Queue(queued) => {
-                        agent.send(UserMessage::text(queued), Delivery::FollowUp);
+                        agent.send(UserMessage::text(queued), Delivery::FollowUp).await?;
                         running = true;
                     }
                     ChatInput::FollowUp(text) => {
-                        agent.send(UserMessage::text(text), Delivery::FollowUp);
+                        agent.send(UserMessage::text(text), Delivery::FollowUp).await?;
                         running = true;
                     }
                     ChatInput::Steer(text) => {
-                        agent.send(UserMessage::text(text), Delivery::Steer);
+                        agent.send(UserMessage::text(text), Delivery::Steer).await?;
                     }
                 }
             }
@@ -365,7 +489,7 @@ async fn chat(args: CommonArgs) -> Result<(), CliError> {
         }
     }
     // Ctrl-D / /exit：把还没收尾的一轮取消掉，等 idle 再退出。
-    agent.cancel();
+    agent.cancel().await?;
     agent.idle().await;
     Ok(())
 }
@@ -375,7 +499,9 @@ async fn run(args: RunArgs) -> Result<u8, CliError> {
     println!("session: {}", agent.id());
     println!("log: {}", agent.log_path().display());
     let mut events = agent.subscribe();
-    agent.send(UserMessage::text(args.prompt), Delivery::FollowUp);
+    agent
+        .send(UserMessage::text(args.prompt), Delivery::FollowUp)
+        .await?;
     match pump_until_idle(&agent, &mut events).await {
         Some(TurnOutcome::Completed) => Ok(0),
         _ => Ok(1),
@@ -400,7 +526,9 @@ async fn pump_until_idle(
                     // T005.10 非交互 run：不能静默卡死；打印问题并撤销这一轮。
                     if asked {
                         eprintln!("[非交互模式无法回答问题，已取消本轮]");
-                        agent.cancel();
+                        if let Err(error) = agent.cancel().await {
+                            eprintln!("aios-dev: {error}");
+                        }
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
@@ -437,20 +565,9 @@ fn handle_event(event: AgentEvent, outcome: &mut Option<TurnOutcome>) {
             println!();
             println!("{}", questions_asked_text(&questions));
         }
-        AgentEvent::CompactionStarted {
-            compaction_id,
-            trigger,
-        } => {
-            println!();
-            println!("{}", compaction_started_text(&compaction_id, trigger));
-        }
-        AgentEvent::CompactionEnded {
-            compaction_id,
-            error,
-        } => println!(
-            "{}",
-            compaction_ended_text(&compaction_id, error.as_deref())
-        ),
+        // T006.3：压缩是日志侧/命令侧行为（DSH command-compact 只打结果行），
+        // 自动压缩不往 CLI 打 start/end 行；这些事件留给服务/界面层消费。
+        AgentEvent::CompactionStarted { .. } | AgentEvent::CompactionEnded { .. } => {}
         AgentEvent::JobCompleted {
             job_id,
             status,
@@ -459,6 +576,10 @@ fn handle_event(event: AgentEvent, outcome: &mut Option<TurnOutcome>) {
             println!();
             println!("{}", job_completed_text(&job_id, status, detail.as_deref()));
         }
+        // T006.2a：输入队列通知只给界面/服务用；开发 CLI 不显示。
+        AgentEvent::InboxInserted { .. }
+        | AgentEvent::InboxClaimed { .. }
+        | AgentEvent::InboxDiscarded { .. } => {}
         AgentEvent::TurnEnded { outcome: ended, .. } => {
             println!();
             match &ended {
@@ -519,20 +640,36 @@ fn is_compact_command(line: &str) -> bool {
     line.trim() == "/compact"
 }
 
-/// T005.8a 票面：压缩开始/结束事件在 CLI 的展示文本（纯函数便于单测）。
-fn compaction_started_text(compaction_id: &str, trigger: CompactionTrigger) -> String {
-    let kind = match trigger {
-        CompactionTrigger::Auto => "自动",
-        CompactionTrigger::Manual => "手动",
+/// /compact 的用法提示（照 DSH command-compact 的 USAGE）。
+const COMPACT_USAGE: &str = "Usage: /compact (no arguments)";
+
+/// /compact 失败的逐码文案（T006.19 照 DSH command-compact 的 expectedFailure：
+/// 六类 ManualCompactionErrorCode 各一句稳定文案；非手动压缩错误不接管）。
+fn compact_failure_text(error: &agent::AgentError) -> Option<String> {
+    let agent::AgentError::ManualCompaction { code, .. } = error else {
+        return None;
     };
-    format!("[压缩开始：{compaction_id}（{kind}）]")
+    Some(code.text().to_owned())
 }
 
-fn compaction_ended_text(compaction_id: &str, error: Option<&str>) -> String {
-    match error {
-        Some(error) => format!("[压缩失败：{compaction_id}：{error}]"),
-        None => format!("[压缩完成：{compaction_id}]"),
+/// /compact 的结果文本（照 DSH command-compact：成功带替换节点数与估算 token，
+/// 没有可压缩历史时给一句明确的话）。
+fn compact_result_text(outcome: Option<CompactionOutcome>) -> String {
+    match outcome {
+        Some(outcome) => format!(
+            "Compacted {} history items (~{} tokens).",
+            outcome.shadowed_items, outcome.shadowed_tokens
+        ),
+        None => "No compactable history yet.".to_owned(),
     }
+}
+
+/// 为一次手动 /compact 生成发起命令 id（写进 compaction/* 的 sourceCommandId）。
+fn new_command_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.subsec_nanos());
+    format!("command-{}-{nanos}", std::process::id())
 }
 
 /// T005.4 票面：后台任务完成事件在 CLI 的展示文本（纯函数便于单测）。
@@ -550,11 +687,11 @@ fn job_completed_text(job_id: &str, status: JobStatus, detail: Option<&str>) -> 
 
 #[cfg(test)]
 mod tests {
-    use agent::{AgentConfig, AgentEvent, CompactionTrigger, JobStatus};
+    use agent::{AgentConfig, AgentEvent, CompactionOutcome, JobStatus};
     use model::DEFAULT_MAX_TOKENS;
 
     use super::{
-        ChatInput, CommonArgs, compaction_ended_text, compaction_started_text, config_from_args,
+        ChatInput, CommonArgs, classify_answer, compact_result_text, config_from_args,
         dispatch_chat_input, is_compact_command, job_completed_text, pending_questions_after_event,
         question_asked_text, questions_asked_text, run_should_cancel_for_question,
     };
@@ -584,23 +721,16 @@ mod tests {
     }
 
     #[test]
-    fn compaction_lines_are_rendered() {
+    fn compact_result_lines_follow_dsh_command() {
+        // DSH command-compact：成功打替换节点数与估算 token；没有历史给明确一句。
         assert_eq!(
-            compaction_started_text("compaction-1", CompactionTrigger::Auto),
-            "[压缩开始：compaction-1（自动）]"
+            compact_result_text(Some(CompactionOutcome {
+                shadowed_items: 3,
+                shadowed_tokens: 1200,
+            })),
+            "Compacted 3 history items (~1200 tokens)."
         );
-        assert_eq!(
-            compaction_started_text("compaction-2", CompactionTrigger::Manual),
-            "[压缩开始：compaction-2（手动）]"
-        );
-        assert_eq!(
-            compaction_ended_text("compaction-1", None),
-            "[压缩完成：compaction-1]"
-        );
-        assert_eq!(
-            compaction_ended_text("compaction-1", Some("boom")),
-            "[压缩失败：compaction-1：boom]"
-        );
+        assert_eq!(compact_result_text(None), "No compactable history yet.");
     }
     #[test]
     fn question_text_renders_header_and_options() {
@@ -691,6 +821,11 @@ mod tests {
             ChatInput::Compact
         );
         assert_eq!(
+            dispatch_chat_input("/compact now", true, None),
+            ChatInput::CompactUsage,
+            "/compact 带参数只打 usage（DSH 行为），不当普通消息"
+        );
+        assert_eq!(
             dispatch_chat_input("/queue 做别的", true, None),
             ChatInput::Queue("做别的".to_owned())
         );
@@ -721,6 +856,47 @@ mod tests {
             dispatch_chat_input("继续", true, None),
             ChatInput::Steer("继续".to_owned()),
             "问题结束后恢复普通输入"
+        );
+    }
+
+    #[test]
+    fn classify_answer_maps_option_labels_and_custom_text() {
+        // 照 DSH 答案项（K14）：标签是选项 → selected；其余文本 → custom；多选可逗号选多个。
+        let question = |multi_select: bool| agent::Question {
+            id: "q1".to_owned(),
+            question: "Pick".to_owned(),
+            header: None,
+            options: vec![
+                agent::QuestionOption {
+                    label: "Yes".to_owned(),
+                    description: None,
+                },
+                agent::QuestionOption {
+                    label: "No".to_owned(),
+                    description: None,
+                },
+            ],
+            multi_select,
+        };
+        assert_eq!(
+            classify_answer("Yes", &question(false)),
+            (vec!["Yes".to_owned()], None),
+            "输入恰好是选项标签 → selected"
+        );
+        assert_eq!(
+            classify_answer("我自己的答案", &question(false)),
+            (Vec::new(), Some("我自己的答案".to_owned())),
+            "不在选项里的输入 → custom"
+        );
+        assert_eq!(
+            classify_answer("Yes, No", &question(true)),
+            (vec!["Yes".to_owned(), "No".to_owned()], None),
+            "多选问题：逗号分隔且每项都是选项 → selected 多个"
+        );
+        assert_eq!(
+            classify_answer("Yes, maybe", &question(true)),
+            (Vec::new(), Some("Yes, maybe".to_owned())),
+            "有一项不是选项时整行当 custom"
         );
     }
 
@@ -862,5 +1038,59 @@ mod tests {
                 "非法值必须报错"
             );
         }
+    }
+}
+
+/// T006.19 红测试：/compact 失败文案逐码照 DSH command-compact 的 expectedFailure。
+#[cfg(test)]
+mod t006_19_compact_failure_tests {
+    use agent::{AgentError, ManualCompactionErrorCode};
+
+    use crate::compact_failure_text;
+
+    #[test]
+    fn compact_failure_texts_follow_dsh_command() {
+        let cases = [
+            (
+                ManualCompactionErrorCode::Busy,
+                "Compaction is unavailable because this process has an active compaction, or the agent is not idle.",
+            ),
+            (
+                ManualCompactionErrorCode::Cancelled,
+                "Compaction cancelled.",
+            ),
+            (
+                ManualCompactionErrorCode::Changed,
+                "The history selected for compaction changed before it could be replaced. The attempt is recorded in the session log.",
+            ),
+            (
+                ManualCompactionErrorCode::Summary,
+                "Compaction could not produce a useful summary. The attempt is recorded in the session log.",
+            ),
+            (
+                ManualCompactionErrorCode::Commit,
+                "Compaction did not finish cleanly; some session history may have changed. Inspect the current session state before retrying.",
+            ),
+            (
+                ManualCompactionErrorCode::Persistence,
+                "Compaction finished, but the session could not be saved.",
+            ),
+        ];
+        for (code, text) in cases {
+            let error = AgentError::ManualCompaction {
+                code,
+                message: "backend detail".to_owned(),
+            };
+            assert_eq!(
+                compact_failure_text(&error).as_deref(),
+                Some(text),
+                "code={code:?}"
+            );
+        }
+        assert_eq!(
+            compact_failure_text(&AgentError::Compaction("boom".to_owned())),
+            None,
+            "非手动压缩错误不给逐码文案"
+        );
     }
 }

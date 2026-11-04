@@ -10,6 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 agent = { path = "../agent" }
+service = { path = "../service" }
+web = { path = "../web" }
 model = { path = "../model" }
 session = { path = "../session" }
 tools = { path = "../tools" }
@@ -18,6 +20,7 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+tempfile.workspace = true
 wiremock.workspace = true
 
 [lints]
