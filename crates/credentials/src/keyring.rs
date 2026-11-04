@@ -1,4 +1,4 @@
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -8,6 +8,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use age::secrecy::ExposeSecret;
+use zeroize::Zeroize;
 use serde::{Deserialize, Serialize};
 
 /// Keyring 的错误。错误文本里不带 key 正文。
@@ -31,6 +32,19 @@ pub enum KeyringError {
 pub struct IssuedSecret {
     pub connection: String,
     pub secret: String,
+}
+
+impl IssuedSecret {
+    /// 显式清零本次签发值；Drop 也会调用。
+    pub fn zeroize(&mut self) {
+        self.secret.zeroize();
+    }
+}
+
+impl Drop for IssuedSecret {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
 }
 
 impl std::fmt::Debug for IssuedSecret {
@@ -200,6 +214,19 @@ impl Keyring {
             .unwrap_or_else(|_| default_identity_path(&self.data_dir))
     }
 
+    /// 进程内/跨进程文件锁：读改写整段持有；drop 释放。
+    fn lock(&self) -> Result<File, KeyringError> {
+        fs::create_dir_all(&self.data_dir)?;
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.data_dir.join("keyring.lock"))?;
+        file.lock()?;
+        Ok(file)
+    }
+
     /// 存/覆盖一个连接；saved_at 更新，验证状态重置为 Never。
     pub fn save_connection(
         &self,
@@ -217,6 +244,7 @@ impl Keyring {
         if connection.api_key.trim().is_empty() {
             return Err(KeyringError::InvalidConnection("key 不能为空".to_owned()));
         }
+        let _lock = self.lock()?;
         let mut store = self.load_store()?;
         let info = ConnectionInfo {
             id: connection.id.clone(),
@@ -247,6 +275,7 @@ impl Keyring {
 
     /// 删一个连接；返回是否真的存在过。
     pub fn delete_connection(&self, id: &str) -> Result<bool, KeyringError> {
+        let _lock = self.lock()?;
         let mut store = self.load_store()?;
         let before = store.connections.len();
         store.connections.retain(|item| item.info.id != id);
@@ -306,6 +335,7 @@ impl Keyring {
         purpose: &str,
         run: Option<&str>,
     ) -> Result<IssuedSecret, KeyringError> {
+        let _lock = self.lock()?;
         let mut store = self.load_store()?;
         let stored = store
             .connections
@@ -348,6 +378,7 @@ impl Keyring {
 
     /// 验证之后写回注册器。
     pub fn record_check(&self, connection: &str, result: CheckResult) -> Result<(), KeyringError> {
+        let _lock = self.lock()?;
         let mut store = self.load_store()?;
         let stored = store
             .connections
@@ -365,6 +396,7 @@ impl Keyring {
 
     /// 换钥匙文件的位置：复制到新位置、更新配置、删掉旧位置。
     pub fn relocate_identity(&self, new_path: &Path) -> Result<(), KeyringError> {
+        let _lock = self.lock()?;
         let old_path = self.identity_path();
         let text = fs::read_to_string(&old_path)?;
         create_identity_at(new_path, &text)?;
@@ -378,6 +410,7 @@ impl Keyring {
 
     /// 指到钥匙文件现在的位置（不复制）。
     pub fn repoint_identity(&self, path: &Path) -> Result<(), KeyringError> {
+        let _lock = self.lock()?;
         self.load_identity(path)?;
         self.write_config_for(path, self.since)?;
         self.notify();
@@ -386,6 +419,7 @@ impl Keyring {
 
     /// 重新开始：清空 Keyring、生成新钥匙文件，回到第一次使用。
     pub fn restart(&self) -> Result<(), KeyringError> {
+        let _lock = self.lock()?;
         let identity_path = self.identity_path();
         create_identity(&identity_path)?;
         let store_path = self.data_dir.join("keyring.age");
@@ -409,6 +443,7 @@ impl Keyring {
                 "endpoint/model 不能为空".to_owned(),
             ));
         }
+        let _lock = self.lock()?;
         let mut store = self.load_store()?;
         let stored = store
             .connections
@@ -425,6 +460,7 @@ impl Keyring {
 
     /// T008.3 增补：撤销 key（连接保留，之后的签发失败）。
     pub fn revoke_key(&self, id: &str) -> Result<ConnectionInfo, KeyringError> {
+        let _lock = self.lock()?;
         let mut store = self.load_store()?;
         let stored = store
             .connections
@@ -563,11 +599,25 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), KeyringError> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
     let temp_path = path.with_extension(format!("tmp-{}-{sequence}", std::process::id()));
-    fs::write(&temp_path, bytes)?;
-    fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o600))?;
-    fs::rename(&temp_path, path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    Ok(())
+    let result = (|| -> Result<(), KeyringError> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o600))?;
+        fs::rename(&temp_path, path)?;
+        if let Some(parent) = path.parent() {
+            File::open(parent)?.sync_all()?;
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
 }
 
 fn now_seconds() -> u64 {

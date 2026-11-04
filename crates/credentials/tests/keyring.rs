@@ -302,6 +302,14 @@ fn 并发写会等锁而不是丢更新() {
 
 #[test]
 fn 签发值用完清零() {
-    // T008.F3 骨架：IssuedSecret 显式清零后内存里不能还是原文。
-    panic!("T008.F3 skeleton: not implemented");
+    let fixture = Fixture::new();
+    let keyring = fixture.open();
+    keyring.save_connection(connection()).expect("save");
+    let mut issued = keyring.issue("deepseek", "kind-turn", None).expect("issue");
+    assert_eq!(issued.secret, TEST_KEY);
+    issued.zeroize();
+    assert!(
+        issued.secret.is_empty() || issued.secret.as_bytes().iter().all(|byte| *byte == 0),
+        "显式清零后不能还是原文：{issued:?}"
+    );
 }
