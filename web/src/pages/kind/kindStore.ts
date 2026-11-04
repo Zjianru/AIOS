@@ -334,6 +334,11 @@ function openSocket(): void {
       useKindStore.setState({
         connection: { state: 'reconnecting', attempt: reconnectAttempt },
       });
+      // T007 #1：断线后先做一次 recheck，把「服务换了令牌」与「服务连不上」分开：
+      // recheck 收到 401 时页面进入令牌说明页（页面开着、服务重启后的下一次调用）。
+      if (reconnectAttempt === 1) {
+        void useKindStore.getState().recheck();
+      }
       if (reconnectTimer === null) {
         const delay = reconnectDelayMs(reconnectAttempt);
         reconnectTimer = setTimeout(() => {
