@@ -53,6 +53,8 @@ pub enum TrustError {
     UnsupportedBind(String),
     #[error("Host 头不是本机：{0}")]
     BadHost(String),
+    #[error("Origin/Fetch-Metadata 不是同源：{0}")]
+    BadOrigin(String),
     #[error("缺少或错误的启动令牌")]
     Unauthorized,
 }
@@ -61,7 +63,7 @@ impl TrustError {
     /// 线上的状态码：Host/绑定信任失败 403，令牌失败 401。
     pub fn status(&self) -> u16 {
         match self {
-            Self::BadHost(_) | Self::UnsupportedBind(_) => 403,
+            Self::BadHost(_) | Self::BadOrigin(_) | Self::UnsupportedBind(_) => 403,
             Self::Unauthorized => 401,
         }
     }
@@ -198,6 +200,11 @@ pub fn check_request(
     if !token_matches(&trust.token, token) {
         return Err(TrustError::Unauthorized);
     }
+    Ok(())
+}
+
+/// T006.F2：浏览器请求的 Origin / Fetch-Metadata 栅栏（先骨架，红测试后实现）。
+pub fn check_origin(_headers: &HeaderMap) -> Result<(), TrustError> {
     Ok(())
 }
 
