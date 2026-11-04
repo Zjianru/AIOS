@@ -14,6 +14,7 @@ T010.2 时用一次性 Playwright 录制器（已删除，不在仓库）跑改�
 | tool.jsonl | 工具轮（read hello.txt 后回答） | 2 |
 | ask.jsonl | ask_user_question 两题作答后回答 | 2 |
 | high-usage.jsonl | 高上下文（4500/5000）自动压缩 + 手动压缩 + 再一轮 | 5（2 条 assistant/message + 3 条 compaction/summary 的 llmStreamCall） |
+| usage.jsonl | T010.3 用量夹具：第一轮带 reasoning 帧（回放 pace 400）与缓存读写 | 8（首轮 usage 1000+200 读+50 写、输出 120） |
 | failure-credential.json | text 的覆盖：第一次调用 401 | — |
 | failure-model.json | text 的覆盖：连续 500 | 10 条 throw |
 | failure-retry.json | text 的覆盖：3 条 500 后回 text 的正常流 | 3 throw + 1 stream |

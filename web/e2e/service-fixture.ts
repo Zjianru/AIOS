@@ -20,6 +20,7 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.failure === 'credential') return { file: 'text', override: 'failure-credential' };
   if (options.failure === 'model') return { file: 'text', override: 'failure-model' };
   if (options.failure === 'retry-then-succeed') return { file: 'text', override: 'failure-retry' };
+  if (options.usageTurn) return { file: 'usage', paceMs: 400 };
   if (options.askTurn) return { file: 'ask' };
   if (options.toolTurn) return { file: 'tool' };
   if (options.highUsage) return { file: 'high-usage' };
@@ -114,6 +115,8 @@ export interface FixtureOptions {
   emptyKeyring?: boolean;
   /// T009.5：serve 进程的 HOME；传 'dataDir' 用数据目录（页面路径缩写用例）。
   home?: 'dataDir' | string;
+  /// T010.3：用带 reasoning/缓存读写的用量夹具（turn-usage 用例）。
+  usageTurn?: boolean;
 }
 
 /** 接缝 5：假 DeepSeek 脚本回放 + 真 aios-dev serve（页面也由它同源托管）。 */
