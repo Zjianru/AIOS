@@ -14,13 +14,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, Plus, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { useAppStore } from '@/app/store';
 import {
   addConnection, checkConnection, discoverModels, getModelSettings, moveKeyFile, relinkKeyFile, removeConnection,
-  KERNEL_PROVIDERS, resetKeyring, revokeKey, setKeyringProblem, syncKeyringEmpty, updateConnection,
+  KERNEL_PROVIDERS, resetKeyring, revokeKey, setKeyringProblem, updateConnection,
 } from '@/data/api';
-import type { ConnectionView, ModelRow, ModelSettingsView, Protocol } from '@/data/fixtures/settings';
-import { PROTOCOL_ENDPOINT_HINT, PROTOCOL_LABEL } from '@/data/fixtures/settings';
+import type { ConnectionView, ModelRow, ModelSettingsView } from '@/data/fixtures/settings';
+import { PROTOCOL_LABEL } from '@/data/fixtures/settings';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -428,7 +427,6 @@ function ConnectionEditor({ conn, view, onDone, onView }: {
 
 /* ───────────────────────── 添加模型提供商 ───────────────────────── */
 
-type AddMode = 'catalog' | 'custom';
 
 function CatalogPanel({ view, onCreated, onCancel }: { view: ModelSettingsView; onCreated: (id: string, withKey: boolean, next: ModelSettingsView) => void; onCancel: () => void }) {
   const choices = view.catalog.filter((item) => !view.connections.some((conn) => conn.id === item.id));
@@ -494,111 +492,14 @@ function CatalogPanel({ view, onCreated, onCancel }: { view: ModelSettingsView; 
   );
 }
 
-function CustomPanel({ onCreated, onCancel }: { onCreated: (id: string, withKey: boolean, next: ModelSettingsView) => void; onCancel: () => void }) {
-  const [id, setId] = useState('');
-  const [name, setName] = useState('');
-  const [endpoint, setEndpoint] = useState('');
-  const [protocol, setProtocol] = useState<Protocol>('openai-chat');
-  const [key, setKey] = useState('');
-  const [models, setModels] = useState<ModelRow[]>([]);
-  const [saving, setSaving] = useState(false);
-  const idBad = id !== '' && !/^[a-z][a-z0-9-]*$/.test(id);
-  const endpointBad = endpoint !== '' && !/^https?:\/\/[^\s/]+/.test(endpoint);
-  const ready = id && !idBad && endpoint && !endpointBad && models.some((row) => row.id.trim());
 
-  const save = async () => {
-    setSaving(true);
-    try {
-      const next = await addConnection({ source: 'custom', id, name, protocol, endpoint, models, key });
-      onCreated(id, Boolean(key.trim()), next);
-    } catch (error) {
-      toast.error((error as Error).message);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div>
-      <Field
-        label="Provider ID"
-        hint={idBad ? '要以小写字母开头，只用小写字母、数字和 -' : '以小写字母开头的标识，在请求里唯一标识这个提供商，Keyring 里的凭证也按它登记。'}
-        tone={idBad ? 'fail' : undefined}
-      >
-        <input className={cn(inputClass, 'brand-type')} aria-invalid={idBad} value={id} onChange={(e) => setId(e.target.value)} placeholder="acme-gateway" />
-      </Field>
-      <Field label="显示名称">
-        <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} placeholder="显示名称" />
-      </Field>
-      <Field label="API 地址" hint={endpointBad ? '要是 http 或 https 开头的完整地址' : undefined} tone={endpointBad ? 'fail' : undefined}>
-        <input className={inputClass} aria-invalid={endpointBad} value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder={PROTOCOL_ENDPOINT_HINT[protocol]} />
-      </Field>
-      <Field label="API 协议">
-        <select value={protocol} onChange={(e) => setProtocol(e.target.value as Protocol)} className={cn(inputClass, 'w-auto min-w-[240px]')}>
-          {(Object.keys(PROTOCOL_LABEL) as Protocol[]).map((item) => (
-            <option key={item} value={item}>{PROTOCOL_LABEL[item]}</option>
-          ))}
-        </select>
-      </Field>
-      <KeyInput id="add-custom-key" value={key} onChange={setKey} conn={null} />
-      <ModelCatalog models={models} onChange={setModels} required discover={() => discoverModels({ endpoint })} />
-      <div className="mt-5 flex justify-end gap-2">
-        <Btn kind="plain" onClick={onCancel}>取消</Btn>
-        <Btn kind="primary" disabled={!ready || saving} onClick={() => void save()}>{saving ? '正在创建…' : '创建提供商'}</Btn>
-      </div>
-    </div>
-  );
-}
 
 function AddCard({ view, onCreated, onCancel }: { view: ModelSettingsView; onCreated: (id: string, withKey: boolean, next: ModelSettingsView) => void; onCancel: () => void }) {
-  const connectedOnly = useAppStore((state) => state.connectedOnly);
-  const [mode, setMode] = useState<AddMode>('catalog');
-  const [mounted, setMounted] = useState<Set<AddMode>>(new Set(['catalog']));
-  const pick = (next: AddMode) => {
-    setMode(next);
-    setMounted((s) => new Set([...s, next]));
-  };
-  const lead = mode === 'catalog'
-    ? '从内置目录里选 DeepSeek、Kimi、OpenAI 等提供商，填上 API 密钥就能用。'
-    : '连接中转站、自己部署的服务，或者其他兼容 OpenAI / Anthropic 协议的接口；要写 API 地址、协议和模型。';
-
-  if (connectedOnly) {
-    const kernelView = { ...view, catalog: view.catalog.filter((item) => KERNEL_PROVIDERS.has(item.id)) };
-    return (
-      <div className="mt-2 rounded-card border border-line-2 bg-raised/60 p-4" data-settings="add">
-        <p className="mb-4 text-1 leading-4 text-ink-3">Kind 现在只能用 DeepSeek，填上 API 密钥就能用。其他提供商之后再加。</p>
-        <CatalogPanel view={kernelView} onCreated={onCreated} onCancel={onCancel} />
-      </div>
-    );
-  }
-
+  const kernelView = { ...view, catalog: view.catalog.filter((item) => KERNEL_PROVIDERS.has(item.id)) };
   return (
     <div className="mt-2 rounded-card border border-line-2 bg-raised/60 p-4" data-settings="add">
-      <div className="inline-flex rounded-btn border border-line-2 bg-content p-0.5" role="tablist">
-        {(['catalog', 'custom'] as AddMode[]).map((item) => (
-          <button
-            key={item}
-            type="button"
-            role="tab"
-            aria-selected={mode === item}
-            onClick={() => pick(item)}
-            className={cn('rounded-[6px] px-3 py-1 text-2 transition-colors', mode === item ? 'bg-hover text-ink' : 'text-ink-3 hover:text-ink')}
-          >
-            {item === 'catalog' ? '第三方模型提供商' : '自定义模型 API'}
-          </button>
-        ))}
-      </div>
-      <p className="mb-4 mt-2 text-1 leading-4 text-ink-3">{lead}</p>
-      {mounted.has('catalog') ? (
-        <div hidden={mode !== 'catalog'}>
-          <CatalogPanel view={view} onCreated={onCreated} onCancel={onCancel} />
-        </div>
-      ) : null}
-      {mounted.has('custom') ? (
-        <div hidden={mode !== 'custom'}>
-          <CustomPanel onCreated={onCreated} onCancel={onCancel} />
-        </div>
-      ) : null}
+      <p className="mb-4 text-1 leading-4 text-ink-3">Kind 现在只能用 DeepSeek，填上 API 密钥就能用。其他提供商之后再加。</p>
+      <CatalogPanel view={kernelView} onCreated={onCreated} onCancel={onCancel} />
     </div>
   );
 }
@@ -615,14 +516,12 @@ function KeyringBroken({ view, onView }: { view: ModelSettingsView; onView: (vie
   const [path, setPath] = useState('');
   const [busy, setBusy] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
-  const setKeyringBroken = useAppStore((state) => state.setKeyringBroken);
 
   const relink = async () => {
     setBusy(true);
     try {
       const next = await relinkKeyFile(path);
       setKeyringProblem(null);
-      setKeyringBroken(false);
       onView(next);
       toast.success('找到了，Keyring 又能读出来了');
     } catch (error) {
@@ -635,7 +534,6 @@ function KeyringBroken({ view, onView }: { view: ModelSettingsView; onView: (vie
   const reset = async () => {
     const next = await resetKeyring();
     setKeyringProblem(null);
-    setKeyringBroken(false);
     setConfirmReset(false);
     onView(next);
     toast.success('换了一把新钥匙；给每个提供商重新填一次密钥');
@@ -784,20 +682,16 @@ function KeyringSection({ view, onView }: { view: ModelSettingsView; onView: (vi
 /* ───────────────────────── 整组 ───────────────────────── */
 
 export function ModelSettings() {
-  const firstUse = useAppStore((state) => state.firstUse);
-  const keyringBroken = useAppStore((state) => state.keyringBroken);
-  const connectedOnly = useAppStore((state) => state.connectedOnly);
   const [view, setView] = useState<ModelSettingsView | null>(null);
   /** 展开的是哪张卡片：连接 id、'add'，或者都不展开。一次只展开一张。 */
   const [open, setOpen] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    syncKeyringEmpty(firstUse);
     const next = await getModelSettings();
     setView(next);
     // 首次运行：一个提供商都没有时，直接展开添加卡片
     if (!next.connections.length) setOpen('add');
-  }, [firstUse, keyringBroken]);
+  }, []);
 
   useEffect(() => {
     void load();
@@ -879,7 +773,7 @@ export function ModelSettings() {
             </div>
           )}
 
-          {connectedOnly && rows.some((conn) => KERNEL_PROVIDERS.has(conn.id)) ? null : open === 'add' ? (
+          {rows.some((conn) => KERNEL_PROVIDERS.has(conn.id)) ? null : open === 'add' ? (
             <AddCard view={view} onCreated={(id, withKey, next) => void onCreated(id, withKey, next)} onCancel={() => setOpen(null)} />
           ) : (
             <Btn kind="plain" className="mt-2.5 inline-flex items-center gap-1" onClick={() => setOpen('add')}>

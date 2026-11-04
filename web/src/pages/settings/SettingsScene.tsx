@@ -10,7 +10,6 @@ import { go } from '@/app/navigate';
 import { SETTINGS_GROUPS } from '@/app/route';
 import { useRouteStore } from '@/app/routeStore';
 import { cn } from '@/lib/utils';
-import { useAppStore } from '@/app/store';
 import { ModelSettings } from './ModelSettings';
 
 /** 已经做出来的分组；其余仍是第 3 期。 */
@@ -20,8 +19,7 @@ const GROUPS = SETTINGS_GROUPS.map((group) => ({ ...group, built: BUILT.has(grou
 export function SettingsScene() {
   const route = useRouteStore((state) => state.route);
   // 只显示接上内核的部分（D46）：设置里只有「模型与连接」。
-  const connectedOnly = useAppStore((state) => state.connectedOnly);
-  const groups = connectedOnly ? GROUPS.filter((group) => group.built) : GROUPS;
+  const groups = GROUPS.filter((group) => group.built);
   const current = groups.find((group) => group.id === route.id) ?? groups[0];
 
   return (

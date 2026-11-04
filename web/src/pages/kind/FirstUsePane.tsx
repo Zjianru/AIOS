@@ -13,9 +13,7 @@
 import { useEffect, useState } from 'react';
 import { Check, Eye, EyeOff, Loader2, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { go } from '@/app/navigate';
-import { useAppStore } from '@/app/store';
-import { addConnection, checkConnection, getFirstUse, getModelSettings, KERNEL_PROVIDERS, syncKeyringEmpty, updateConnection } from '@/data/api';
+import { addConnection, checkConnection, getFirstUse, getModelSettings, KERNEL_PROVIDERS, updateConnection } from '@/data/api';
 import type { FirstUseCard, FirstUseFixture } from '@/data/fixtures/firstUse';
 import type { CatalogProvider, ConnectionView } from '@/data/fixtures/settings';
 import { cn } from '@/lib/utils';
@@ -59,16 +57,13 @@ function ConnectForm({ onConnected }: { onConnected: () => void }) {
   /** 这次提交以后的连接状态；没提交过是 null。 */
   const [conn, setConn] = useState<ConnectionView | null>(null);
   const active = catalog.find((item) => item.id === provider);
-  const connectedOnly = useAppStore((state) => state.connectedOnly);
 
   useEffect(() => {
     let alive = true;
     void getModelSettings().then((view) => {
       if (!alive) return;
       // 只显示接上内核的部分时，目录里只有内核会说的（D36：DeepSeek）
-      const items = useAppStore.getState().connectedOnly
-        ? view.catalog.filter((item) => KERNEL_PROVIDERS.has(item.id))
-        : view.catalog;
+      const items = view.catalog.filter((item) => KERNEL_PROVIDERS.has(item.id));
       setCatalog(items);
       setProvider((current) => current || items[0]?.id || '');
     });
@@ -207,15 +202,7 @@ function ConnectForm({ onConnected }: { onConnected: () => void }) {
                 {busy ? '正在接…' : failed ? '再试一次' : '接上'}
               </button>
             )}
-            {connectedOnly ? null : (
-              <button
-                type="button"
-                onClick={() => go('settings:model')}
-                className="ml-auto text-1 text-ink-3 hover:text-ink"
-              >
-                要接中转站或自己部署的接口？去设置 ›
-              </button>
-            )}
+            
           </div>
         </div>
 
@@ -347,8 +334,6 @@ function ReadyStep({ data }: { data: FirstUseFixture }) {
 }
 
 export function FirstUsePane() {
-  const firstUse = useAppStore((state) => state.firstUse);
-  syncKeyringEmpty(firstUse);
   const [data, setData] = useState<FirstUseFixture | null>(null);
   const [connected, setConnected] = useState(false);
 

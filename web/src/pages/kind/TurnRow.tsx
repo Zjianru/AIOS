@@ -8,12 +8,10 @@
 import { memo, useState } from 'react';
 import { ChevronRight, CircleAlert, LoaderCircle, RotateCw, Square } from 'lucide-react';
 import { Markdown } from './Markdown';
-import { KindCardView } from './KindCardView';
 import { QuoteChip } from './QuoteChip';
 import { QuestionCard } from './QuestionCard';
 import { useKindStore, useStreamStore } from './kindStore';
 import type { CompactionView, TurnViewData } from './kindStore';
-import { useAppStore } from '@/app/store';
 import type { TextElement } from '@/data/types';
 import { cn } from '@/lib/utils';
 
@@ -95,7 +93,6 @@ function Thinking({ view }: { view: TurnViewData }) {
 
 function WorkProcess({ view }: { view: TurnViewData }) {
   const [open, setOpen] = useState(false);
-  const connectedOnly = useAppStore((state) => state.connectedOnly);
   const toolCount = view.tools.length;
   const seconds = view.durationMs ? Math.max(1, Math.round(view.durationMs / 1000)) : 0;
   const tokens = view.tokens.input + view.tokens.output;
@@ -105,11 +102,7 @@ function WorkProcess({ view }: { view: TurnViewData }) {
       <span className="pointer-events-none absolute right-0 top-0 hidden items-center gap-1.5 whitespace-nowrap text-ink-3 group-hover/work:flex">
         {view.model} · 输入 <span className="brand-type">{view.tokens.input}</span> · 输出{' '}
         <span className="brand-type">{view.tokens.output}</span>
-        {connectedOnly ? null : (
-          <>
-            {' '}· 花费 <span className="brand-type">¥{view.cost?.toFixed(4) ?? '未知'}</span>
-          </>
-        )}
+        
       </span>
       <button
         type="button"
@@ -141,11 +134,7 @@ function WorkProcess({ view }: { view: TurnViewData }) {
               ) : null}
             </div>
           ))}
-          {connectedOnly ? null : (
-            <button type="button" className="text-2 text-ink-3 transition-colors hover:text-ink">
-              在监控里看 ›
-            </button>
-          )}
+          
         </div>
       ) : null}
     </div>
@@ -285,7 +274,6 @@ interface TurnProps {
 }
 
 export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, lastSeenCounts }: TurnProps) {
-  const connectedOnly = useAppStore((state) => state.connectedOnly);
   const streaming = view.status === 'inProgress';
   if (view.compaction) return <CompactionDivider compaction={view.compaction} />;
   const waitingForKernel = view.delivery !== null;
@@ -298,7 +286,7 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
           <span className="h-px flex-1 bg-line" />
         </div>
       ) : null}
-      {showLastSeen && !connectedOnly ? (
+      {showLastSeen ? (
         <div className="mb-3 mt-4 flex items-center gap-2 rounded-lg border border-dashed border-line-2 px-3 py-1.5 text-2 text-ink-3">
           <span className="text-ink-3">◯</span>
           上次查看之后：{lastSeenCounts.moved} 件推进、{lastSeenCounts.waiting} 件等你
@@ -331,7 +319,7 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
         <>
           <Thinking view={view} />
 
-          {connectedOnly ? null : view.cards.map((card) => <KindCardView key={card.id} card={card} />)}
+          
 
           {streaming ? <LiveWork view={view} /> : null}
           {view.question ? <QuestionCard turnId={view.id} question={view.question} /> : null}

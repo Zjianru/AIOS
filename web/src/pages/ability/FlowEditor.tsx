@@ -59,7 +59,6 @@ import { NewFlowDialog } from './FlowDialogs';
 import type { NewFlowChoice } from './FlowDialogs';
 import { FlowGlyph } from './flowGlyphs';
 import { cn } from '@/lib/utils';
-import { useAppStore } from '@/app/store';
 import { go } from '@/app/navigate';
 
 type Mode = 'flow' | 'instance';
@@ -328,12 +327,11 @@ interface FlowBoot {
 /** 先把数据取回来，再挂编辑器本体（编辑器本体假定数据都在）。 */
 export function FlowEditor({ flowId }: { flowId: string }): JSX.Element {
   const [boot, setBoot] = useState<FlowBoot | null>(null);
-  const devStressFlow = useAppStore((state) => state.devStressFlow);
   useEffect(() => {
     let alive = true;
     void (async () => {
       const [flows, palette, templates, drafts] = await Promise.all([
-        listFlows({ includeStress: devStressFlow }),
+        listFlows(),
         listFlowPalette(),
         listFlowTemplates(),
         listNewFlowDrafts(),
@@ -344,7 +342,7 @@ export function FlowEditor({ flowId }: { flowId: string }): JSX.Element {
     return () => {
       alive = false;
     };
-  }, [devStressFlow]);
+  }, []);
   if (!boot) {
     return <div className="grid h-full place-items-center text-3 text-ink-3">正在取流程…</div>;
   }

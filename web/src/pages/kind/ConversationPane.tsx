@@ -10,12 +10,11 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, m } from 'motion/react';
 import { Virtuoso } from 'react-virtuoso';
 import type { ListRange, VirtuosoHandle } from 'react-virtuoso';
-import { ArrowDown, AtSign, CircleHelp, DollarSign, LoaderCircle, MapPin, SendHorizontal, Square, WifiOff } from 'lucide-react';
+import { ArrowDown, CircleHelp, LoaderCircle, SendHorizontal, Square, WifiOff } from 'lucide-react';
 import { toast } from 'sonner';
 import { TurnRow } from './TurnRow';
 import { useKindStore } from './kindStore';
 import { ModelPicker } from './ModelPicker';
-import { useAppStore } from '@/app/store';
 import { mark } from '@/lib/perf';
 import { cn } from '@/lib/utils';
 
@@ -40,7 +39,6 @@ export function ConversationPane() {
     const last = state.views[state.views.length - 1];
     return last?.question?.status === 'pending';
   });
-  const connectedOnly = useAppStore((state) => state.connectedOnly);
   const running = streamingTurnId !== null;
   const offline = connection.state !== 'online';
   const listRef = useRef<VirtuosoHandle | null>(null);
@@ -283,19 +281,7 @@ export function ConversationPane() {
       <div className="shrink-0 border-t border-line px-6 pb-2 pt-3">
         <div className="mx-auto w-full max-w-[680px]">
           <div className={cn('rounded-card border border-line-2 bg-raised/70 px-3 py-2 transition-colors')}>
-            {connectedOnly ? null : (
-            <div className="mb-1.5 flex min-h-[18px] items-center gap-1.5 text-1 text-ink-3">
-              <span className="opacity-70">这条消息会带上的东西</span>
-              <span className="flex items-center gap-0.5 rounded-badge bg-hover px-1 py-[1px]">
-                <AtSign className="size-3" />
-                角色
-              </span>
-              <span className="flex items-center gap-0.5 rounded-badge bg-hover px-1 py-[1px]">
-                <DollarSign className="size-3" />
-                能力
-              </span>
-            </div>
-            )}
+            
             <div className="flex items-end gap-2">
               <textarea
                 ref={inputRef}
@@ -310,17 +296,7 @@ export function ConversationPane() {
                 }}
                 className="max-h-32 min-h-6 flex-1 resize-none bg-transparent text-4 leading-6 text-ink outline-none placeholder:text-ink-3"
               />
-              {connectedOnly ? null : (
-              <button
-                type="button"
-                onClick={() => toast('「指一下」（批注）排在第 3 期，第 1 期先不做', { description: '现在可以先在对话里直接说，或者用 @ 角色 / $ 能力 引用' })}
-                title="指一下（批注）在第 3 期"
-                className="flex h-7 items-center gap-1 rounded-btn px-2 text-2 text-ink-3 transition-colors hover:bg-hover hover:text-ink-2"
-              >
-                <MapPin className="size-3.5" />
-                指一下
-              </button>
-              )}
+              
               {running ? (
                 <button
                   type="button"
@@ -372,14 +348,7 @@ export function ConversationPane() {
                 >
                   压缩
                 </button>
-                {connectedOnly ? null : (
-                  <>
-                    <span className="opacity-60">·</span>
-                    <span>
-                      本次花费 <span className="brand-type">¥3.29</span>
-                    </span>
-                  </>
-                )}
+                
               </span>
             )}
             {waitingQuestion ? (
