@@ -127,8 +127,8 @@ function WorkProcess({ view }: { view: TurnViewData }) {
           {view.tools.map((tool) => (
             <div key={tool.id} className="flex items-start gap-2 text-2">
               <span className="mt-[1px] shrink-0 text-ink-3">›</span>
-              <code className="min-w-0 break-all font-mono text-ink-2">{tool.command}</code>
-              {tool.output ? <span className="shrink-0 text-ink-3">{tool.output.slice(0, 40)}</span> : null}
+              <code className="min-w-0 flex-1 break-all font-mono text-ink-2">{tool.command}</code>
+              {tool.output ? <span className="min-w-0 max-w-[38%] truncate text-ink-3">{tool.output.slice(0, 40)}</span> : null}
               {tool.durationMs ? (
                 <span className="ml-auto shrink-0 brand-type text-ink-3">{(tool.durationMs / 1000).toFixed(1)}s</span>
               ) : null}
@@ -159,8 +159,8 @@ function LiveWork({ view }: { view: TurnViewData }) {
             ) : (
               <span className="mt-[1px] shrink-0 text-ink-3">›</span>
             )}
-            <code className={cn('min-w-0 break-all font-mono', tool.running ? 'text-ink' : 'text-ink-2')}>{tool.command}</code>
-            {tool.output ? <span className="shrink-0 text-ink-3">{tool.output}</span> : null}
+            <code className={cn('min-w-0 flex-1 break-all font-mono', tool.running ? 'text-ink' : 'text-ink-2')}>{tool.command}</code>
+            {tool.output ? <span className="min-w-0 max-w-[38%] truncate text-ink-3">{tool.output}</span> : null}
             {tool.durationMs ? (
               <span className="ml-auto shrink-0 brand-type text-ink-3">{(tool.durationMs / 1000).toFixed(1)}s</span>
             ) : null}
