@@ -208,23 +208,6 @@ fn token_matches(expected: &str, provided: &str) -> bool {
     diff == 0
 }
 
-/// 校验一次请求：Host 头必须是本机（回环/localhost/绑定 IP），令牌必须匹配。
-pub fn check_request(
-    trust: &Trust,
-    host_header: Option<&str>,
-    token: Option<&str>,
-) -> Result<(), TrustError> {
-    let host = host_header.ok_or_else(|| TrustError::BadHost("<missing>".to_owned()))?;
-    if !authority_is_loopback(host, trust.bind_ip) {
-        return Err(TrustError::BadHost(host.to_owned()));
-    }
-    let token = token.ok_or(TrustError::Unauthorized)?;
-    if !token_matches(&trust.token, token) {
-        return Err(TrustError::Unauthorized);
-    }
-    Ok(())
-}
-
 /// 解析裸 authority（无 scheme 的 host[:port]，IPv6 用方括号）；返回小写主机与端口。
 fn parse_authority(raw: &str) -> Option<(String, Option<u16>)> {
     let uri: axum::http::Uri = format!("http://{raw}").parse().ok()?;

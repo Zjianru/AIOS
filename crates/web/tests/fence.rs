@@ -4,8 +4,9 @@
 //! IP；Host 失败 403、令牌失败 401；0.0.0.0 不支持）、webserver README 第 39 行（未指定地址
 //! 拒绝）、Connection generation（ready 项先于事件、重连带最后序号重新跟随）。
 
+use axum::http::{HeaderMap, header::HOST};
 use service::{FollowResponse, ServiceEvent};
-use web::{Frame, Trust, check_bind_host, check_request, opening_frames};
+use web::{Frame, Trust, authorize_connect, check_api_auth, check_bind_host, opening_frames};
 
 fn trust() -> Trust {
     Trust::new(
@@ -45,18 +46,41 @@ fn bind_fence_allows_only_loopback() {
     }
 }
 
+fn auth_headers(host: Option<&str>, cookie: Option<&str>) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    if let Some(host) = host {
+        headers.insert(HOST, host.parse().expect("Host"));
+    }
+    if let Some(cookie) = cookie {
+        headers.insert("cookie", cookie.parse().expect("cookie"));
+    }
+    headers
+}
+
+/// 用启动令牌换一次签名 cookie（fence 测试统一走 cookie 入口，照 T006.F2）。
+fn cookie_for(trust: &Trust, host: &str) -> String {
+    let grant = authorize_connect(trust, Some(host), Some("tok-1")).expect("正确令牌换 cookie");
+    grant
+        .set_cookie
+        .split(';')
+        .next()
+        .expect("Set-Cookie 不能为空")
+        .to_owned()
+}
+
 #[test]
 fn host_fence_rejects_external_host_header() {
     let trust = trust();
-    // loopback 的 Host 头（带任意端口）放行。
+    // loopback 的 Host 头（带任意端口）放行（cookie 绑同一个 authority）。
     for host in [
         "127.0.0.1",
         "127.0.0.1:1417",
         "localhost:9999",
         "[::1]:1417",
     ] {
+        let cookie = cookie_for(&trust, host);
         assert!(
-            check_request(&trust, Some(host), Some("tok-1")).is_ok(),
+            check_api_auth(&trust, &auth_headers(Some(host), Some(&cookie))).is_ok(),
             "Host {host} 应放行"
         );
     }
@@ -67,29 +91,39 @@ fn host_fence_rejects_external_host_header() {
         "0.0.0.0:1417",
         "127.0.0.1.evil:1417",
     ] {
-        let error = check_request(&trust, Some(host), Some("tok-1")).unwrap_err();
+        let cookie = cookie_for(&trust, "127.0.0.1:1417");
+        let error = check_api_auth(&trust, &auth_headers(Some(host), Some(&cookie))).unwrap_err();
         assert_eq!(error.status(), 403, "Host {host} 必须 403");
         assert!(
             matches!(error, web::TrustError::BadHost(_)),
             "{host} 应是 BadHost"
         );
     }
+    let cookie = cookie_for(&trust, "127.0.0.1:1417");
     assert!(matches!(
-        check_request(&trust, None, Some("tok-1")),
+        check_api_auth(&trust, &auth_headers(None, Some(&cookie))),
         Err(web::TrustError::BadHost(_))
     ));
 }
 
 #[test]
-fn token_fence_requires_launch_token() {
+fn cookie_fence_requires_valid_cookie() {
     let trust = trust();
-    let error = check_request(&trust, Some("127.0.0.1:1417"), None).unwrap_err();
-    assert_eq!(error.status(), 401, "没有令牌必须 401");
+    let authority = "127.0.0.1:1417";
+    let error = check_api_auth(&trust, &auth_headers(Some(authority), None)).unwrap_err();
+    assert_eq!(error.status(), 401, "没有 cookie 必须 401");
     assert!(matches!(error, web::TrustError::Unauthorized));
-    let error = check_request(&trust, Some("127.0.0.1:1417"), Some("tok-2")).unwrap_err();
-    assert_eq!(error.status(), 401, "错误令牌必须 401");
-    let error = check_request(&trust, Some("127.0.0.1:1417"), Some("tok-10000")).unwrap_err();
-    assert_eq!(error.status(), 401, "长度不同的令牌也必须 401");
+    let error =
+        check_api_auth(&trust, &auth_headers(Some(authority), Some("other=1"))).unwrap_err();
+    assert_eq!(error.status(), 401, "cookie 名字不对必须 401");
+    let cookie = cookie_for(&trust, authority);
+    let (name, value) = cookie.split_once('=').expect("cookie 有名字");
+    let error = check_api_auth(
+        &trust,
+        &auth_headers(Some(authority), Some(&format!("{name}={value}bad"))),
+    )
+    .unwrap_err();
+    assert_eq!(error.status(), 401, "坏签名 cookie 必须 401");
 }
 
 #[test]
