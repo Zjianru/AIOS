@@ -148,6 +148,11 @@ fn write_pending_gap(sink: &mut dyn LineSink, dropped: &AtomicU64) -> Result<(),
 /// 写线程：records 逐条写；写失败停掉并在标准错误报一次（业务不受影响）；
 /// 退出时写 shutdown 记录并排空队列。
 fn run_writer(mut sink: Box<dyn LineSink>, rx: Receiver<Message>, dropped: Arc<AtomicU64>) {
+    // 仅测试注入用：AIOS_MONITOR_FAIL_AFTER=N 时第 N 条写入之后模拟写失败（DoD4 不可写场景）。
+    let fail_after = std::env::var("AIOS_MONITOR_FAIL_AFTER")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok());
+    let mut written = 0_u64;
     loop {
         match rx.recv() {
             Ok(Message::Record(record)) => {
@@ -155,7 +160,9 @@ fn run_writer(mut sink: Box<dyn LineSink>, rx: Receiver<Message>, dropped: Arc<A
                     eprintln!("monitor: 写监控失败，停止记录：{error}");
                     break;
                 }
-                if let Err(error) = write_record(&mut *sink, &record) {
+                if let Err(error) =
+                    write_with_injection(&mut *sink, &record, fail_after, &mut written)
+                {
                     eprintln!("monitor: 写监控失败，停止记录：{error}");
                     break;
                 }
@@ -166,7 +173,9 @@ fn run_writer(mut sink: Box<dyn LineSink>, rx: Receiver<Message>, dropped: Arc<A
                     break;
                 }
                 let shutdown = Record::ops("shutdown", Severity::Info, json!({}));
-                if let Err(error) = write_record(&mut *sink, &shutdown) {
+                if let Err(error) =
+                    write_with_injection(&mut *sink, &shutdown, fail_after, &mut written)
+                {
                     eprintln!("monitor: 写监控失败，停止记录：{error}");
                 }
                 break;
@@ -177,6 +186,24 @@ fn run_writer(mut sink: Box<dyn LineSink>, rx: Receiver<Message>, dropped: Arc<A
             }
         }
     }
+}
+
+/// 测试注入：到了注入阈值之后返回写失败；未设置时永远写。
+fn write_with_injection(
+    sink: &mut dyn LineSink,
+    record: &Record,
+    fail_after: Option<u64>,
+    written: &mut u64,
+) -> Result<(), MonitorError> {
+    if let Some(limit) = fail_after
+        && *written >= limit
+    {
+        return Err(MonitorError::Io(std::io::Error::other(
+            "测试注入：监控写失败",
+        )));
+    }
+    *written += 1;
+    write_record(sink, record)
 }
 
 /// 一个进程的监控记录器（Clone 共享同一个队列；只有持 join 的那一份负责退出排空）。
