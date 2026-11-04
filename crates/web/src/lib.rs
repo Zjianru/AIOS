@@ -23,7 +23,6 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use ring::rand::SecureRandom;
 use serde::{Deserialize, Serialize};
 use service::{
     ContextUsage, FollowRequest, FollowResponse, HostInfo, PROTOCOL_VERSION, RootHost, RootState,
