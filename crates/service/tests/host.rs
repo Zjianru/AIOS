@@ -647,10 +647,10 @@ async fn events_page_is_turn_aligned_and_budgeted() {
     );
     assert_eq!(last_turn.events[0].seq, turn_starts[1]);
 
-    // 用 beforeSeq 往回翻：与上一页首尾相接、不重叠。
+    // 用 beforeSeq 往回翻（T009.4：beforeSeq 不含本条，传页首 seq）：与上一页首尾相接、不重叠。
     let earlier = service
         .events(EventsRequest {
-            before_seq: Some(last_turn.events[0].seq - 1),
+            before_seq: Some(last_turn.events[0].seq),
             min_messages: Some(1),
             min_turns: Some(1),
             ..EventsRequest::default()

@@ -846,13 +846,13 @@ impl Drop for ServiceHost {
 }
 
 /// T009.4：events 的分页选择（beforeSeq 不含本条；照 DSH history.ts:124-140）。
-fn page_events<'a>(
-    all: &'a [session::Event],
+fn page_events(
+    all: &[session::Event],
     before_seq: Option<u64>,
     max_messages: usize,
     min_messages: Option<usize>,
     min_turns: Option<usize>,
-) -> (Vec<&'a session::Event>, bool) {
+) -> (Vec<&session::Event>, bool) {
     if all.is_empty() {
         return (Vec::new(), false);
     }
