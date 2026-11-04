@@ -406,9 +406,55 @@ fn 签发记录带归属且视图有界() {
 
 /// T008.F11：cookie 签名钥匙存在 Keyring 记录里；删记录/重新开始后下次启动换新（旧会话失效）。
 #[test]
-fn cookie_signing_secret_persists_and_rotates_when_deleted() {
+fn cookie_signing_secret_persists_across_open_and_rotates() {
     let fixture = Fixture::new();
     let keyring = fixture.open();
-    let secret = keyring.cookie_signing_secret().expect("cookie secret");
-    assert_eq!(secret.len(), 32);
+    let first = keyring.cookie_signing_secret().expect("cookie secret");
+    let second = fixture
+        .open()
+        .cookie_signing_secret()
+        .expect("cookie secret");
+    assert_eq!(first, second, "启动时读取同一条 Keyring 记录");
+
+    // 不落明文：密文文件里不应出现钥匙的 hex。
+    let hex = first
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let raw = std::fs::read(fixture.data_dir.join("keyring.age")).expect("keyring.age");
+    let needle = hex.as_bytes();
+    assert!(
+        !raw.windows(needle.len()).any(|window| window == needle),
+        "cookie 签名钥匙不能明文落在 keyring.age 里"
+    );
+
+    // 删掉记录 → 下次启动生成新钥匙（旧页面会话全部失效）。
+    assert!(
+        keyring.delete_cookie_signing_secret().expect("delete"),
+        "删掉已存在的记录"
+    );
+    assert!(
+        !keyring
+            .delete_cookie_signing_secret()
+            .expect("delete again"),
+        "记录已经不存在"
+    );
+    let third = fixture
+        .open()
+        .cookie_signing_secret()
+        .expect("cookie secret");
+    assert_ne!(first, third, "删记录后下次启动换新钥匙");
+}
+
+#[test]
+fn restart_rotates_cookie_signing_secret() {
+    let fixture = Fixture::new();
+    let keyring = fixture.open();
+    let before = keyring.cookie_signing_secret().expect("cookie secret");
+    keyring.restart().expect("restart");
+    let after = fixture
+        .open()
+        .cookie_signing_secret()
+        .expect("cookie secret");
+    assert_ne!(before, after, "重新开始后签名钥匙换新");
 }
