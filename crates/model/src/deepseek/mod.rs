@@ -14,7 +14,8 @@ pub use config::{DEFAULT_BASE_URL, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, D
 
 use crate::credential::StaticCredential;
 use crate::{
-    CancelToken, CredentialSource, ErrorCode, Message, ModelError, StreamChunk, ToolSchema,
+    CancelToken, CredentialContext, CredentialSource, ErrorCode, Message, ModelError, StreamChunk,
+    ToolSchema,
 };
 use sse::SseParser;
 use translate::Translator;
@@ -28,6 +29,7 @@ pub struct DeepSeek {
     config: DeepSeekConfig,
     url: reqwest::Url,
     credentials: Arc<dyn CredentialSource>,
+    issue_context: Arc<Mutex<CredentialContext>>,
     model_override: Arc<Mutex<Option<String>>>,
 }
 
@@ -60,6 +62,7 @@ impl DeepSeek {
             config,
             url,
             credentials,
+            issue_context: Arc::new(Mutex::new(CredentialContext::default())),
             model_override: Arc::new(Mutex::new(None)),
         })
     }
@@ -78,12 +81,20 @@ impl DeepSeek {
             config,
             url,
             credentials,
+            issue_context: Arc::new(Mutex::new(CredentialContext::default())),
             model_override: Arc::new(Mutex::new(None)),
         })
     }
 
     pub fn config(&self) -> &DeepSeekConfig {
         &self.config
+    }
+
+    /// 标记本次请求的归属（run/turn）；授权来源在 issue 时读取。
+    pub fn set_issue_context(&self, context: CredentialContext) {
+        if let Ok(mut current) = self.issue_context.lock() {
+            *current = context;
+        }
     }
 
     /// 换模型：下一轮请求生效，正在跑的请求不受影响（D26）。骨架期先保存、不生效。
@@ -133,7 +144,12 @@ impl DeepSeek {
         max_tokens: Option<u32>,
         validate_pairing: bool,
     ) -> Result<ChunkStream, ModelError> {
-        let api_key = self.credentials.issue("model-request")?;
+        let context = self
+            .issue_context
+            .lock()
+            .map(|context| context.clone())
+            .unwrap_or_default();
+        let api_key = self.credentials.issue("model-request", &context)?;
         let mut effective = self.config.clone();
         if let Ok(current) = self.model_override.lock()
             && let Some(model) = current.as_deref()

@@ -1087,7 +1087,7 @@ impl RootHost {
                 ))
             })?;
         let api_key = keyring
-            .issue(&request.id, "connection-verify", None)?
+            .issue(&request.id, "connection-verify", None, None)?
             .into_secret();
         let endpoint = connection.endpoint.trim_end_matches('/');
         let body = serde_json::json!({

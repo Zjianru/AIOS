@@ -1,12 +1,16 @@
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use model::{CancelToken, CredentialSource, DeepSeek, DeepSeekConfig, ErrorCode, ModelError};
+use model::{
+    CancelToken, CredentialContext, CredentialSource, DeepSeek, DeepSeekConfig, ErrorCode,
+    ModelError,
+};
 
 struct FailingSource;
 
 impl CredentialSource for FailingSource {
-    fn issue(&self, _purpose: &str) -> Result<String, ModelError> {
+    fn issue(&self, _purpose: &str, _context: &CredentialContext) -> Result<String, ModelError> {
         Err(ModelError::new(
             ErrorCode::MissingCredential,
             "Keyring 无法签发：钥匙文件不在",
@@ -16,11 +20,13 @@ impl CredentialSource for FailingSource {
 
 struct CountingSource {
     calls: AtomicUsize,
+    last: Mutex<Option<CredentialContext>>,
 }
 
 impl CredentialSource for CountingSource {
-    fn issue(&self, _purpose: &str) -> Result<String, ModelError> {
+    fn issue(&self, _purpose: &str, context: &CredentialContext) -> Result<String, ModelError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
+        *self.last.lock().expect("last context") = Some(context.clone());
         Ok("key-from-source".to_owned())
     }
 }
@@ -61,6 +67,7 @@ fn 来源失败原样返回() {
 fn 每次请求都重新申请() {
     let source = Arc::new(CountingSource {
         calls: AtomicUsize::new(0),
+        last: Mutex::new(None),
     });
     let deepseek = DeepSeek::with_credentials(config(), source.clone()).expect("构造");
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
@@ -70,5 +77,29 @@ fn 每次请求都重新申请() {
         source.calls.load(Ordering::Relaxed),
         2,
         "每次 stream 都要向来源申请一次"
+    );
+}
+
+#[test]
+fn 来源收到本次run和轮() {
+    let source = Arc::new(CountingSource {
+        calls: AtomicUsize::new(0),
+        last: Mutex::new(None),
+    });
+    let deepseek = DeepSeek::with_credentials(config(), source.clone()).expect("构造");
+    deepseek.set_issue_context(CredentialContext {
+        run: Some("run-1".to_owned()),
+        turn: Some(3),
+    });
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let _ = runtime.block_on(deepseek.stream(&[], &[], &cancel()));
+    let last = source.last.lock().expect("last").clone();
+    assert_eq!(
+        last,
+        Some(CredentialContext {
+            run: Some("run-1".to_owned()),
+            turn: Some(3)
+        }),
+        "凭证来源必须拿到本次 run/turn"
     );
 }

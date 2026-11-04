@@ -16,9 +16,18 @@ struct KeyringSource {
 }
 
 impl model::CredentialSource for KeyringSource {
-    fn issue(&self, purpose: &str) -> Result<String, ModelError> {
+    fn issue(
+        &self,
+        purpose: &str,
+        context: &model::CredentialContext,
+    ) -> Result<String, ModelError> {
         self.keyring
-            .issue(&self.connection, purpose, None)
+            .issue(
+                &self.connection,
+                purpose,
+                context.run.as_deref(),
+                context.turn,
+            )
             .map(credentials::IssuedSecret::into_secret)
             .map_err(|error| {
                 ModelError::new(model::ErrorCode::MissingCredential, error.to_string())

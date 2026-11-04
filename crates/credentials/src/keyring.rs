@@ -126,6 +126,8 @@ pub struct IssueRecord {
     pub purpose: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<u64>,
 }
 
 /// 钥匙文件的位置和当前问题（读不出来时才有 problem）。
@@ -330,6 +332,7 @@ impl Keyring {
         let first_use = problem.is_none() && connections.is_empty();
         let mut issues = issues;
         issues.reverse();
+        issues.truncate(20);
         KeyringView {
             connections,
             key_file: KeyFileInfo {
@@ -349,6 +352,7 @@ impl Keyring {
         connection: &str,
         purpose: &str,
         run: Option<&str>,
+        turn: Option<u64>,
     ) -> Result<IssuedSecret, KeyringError> {
         let _lock = self.lock()?;
         let mut store = self.load_store()?;
@@ -371,7 +375,12 @@ impl Keyring {
             connection: connection.to_owned(),
             purpose: purpose.to_owned(),
             run: run.map(str::to_owned),
+            turn,
         });
+        if store.issues.len() > 200 {
+            let excess = store.issues.len() - 200;
+            store.issues.drain(0..excess);
+        }
         self.save_store(&store)?;
         self.notify();
         Ok(IssuedSecret {

@@ -241,9 +241,18 @@ struct KeyringCredentialSource {
 }
 
 impl model::CredentialSource for KeyringCredentialSource {
-    fn issue(&self, purpose: &str) -> Result<String, model::ModelError> {
+    fn issue(
+        &self,
+        purpose: &str,
+        context: &model::CredentialContext,
+    ) -> Result<String, model::ModelError> {
         self.keyring
-            .issue(&self.connection, purpose, None)
+            .issue(
+                &self.connection,
+                purpose,
+                context.run.as_deref(),
+                context.turn,
+            )
             .map(credentials::IssuedSecret::into_secret)
             .map_err(|error| {
                 let message = match &error {

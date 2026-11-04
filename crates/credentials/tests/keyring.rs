@@ -84,7 +84,7 @@ fn 重开数据目录后仍能签发() {
         "验证状态要持久化：{view:?}"
     );
 
-    let issued = reopened.issue("deepseek", "kind-turn", Some("run-1"));
+    let issued = reopened.issue("deepseek", "kind-turn", Some("run-1"), None);
     assert!(issued.is_ok(), "签发应成功：{issued:?}");
     let issued = issued.expect("issue");
     assert_eq!(issued.connection, "deepseek");
@@ -107,7 +107,7 @@ fn 换钥匙位置后还能读且旧位置不在了() {
 
     let reopened = Keyring::open(&fixture.data_dir, None).expect("reopen from config");
     assert_eq!(reopened.identity_path(), new_path);
-    let issued = reopened.issue("deepseek", "kind-turn", None);
+    let issued = reopened.issue("deepseek", "kind-turn", None, None);
     assert!(issued.is_ok(), "换位置后应还能签发：{issued:?}");
 }
 
@@ -128,7 +128,7 @@ fn 钥匙文件挪走后描述报读不出且签发失败() {
         view.key_file.problem.is_some(),
         "钥匙文件不在应报读不出：{view:?}"
     );
-    let issued = reopened.issue("deepseek", "kind-turn", None);
+    let issued = reopened.issue("deepseek", "kind-turn", None, None);
     assert!(issued.is_err(), "钥匙文件不在时签发必须失败");
 }
 
@@ -148,7 +148,7 @@ fn 指回新位置恢复重新开始清空() {
     reopened.repoint_identity(&moved).expect("repoint");
     let view = reopened.view();
     assert!(view.key_file.problem.is_none(), "指回后应恢复：{view:?}");
-    assert!(reopened.issue("deepseek", "kind-turn", None).is_ok());
+    assert!(reopened.issue("deepseek", "kind-turn", None, None).is_ok());
 
     reopened.restart().expect("restart");
     let view = reopened.view();
@@ -161,7 +161,7 @@ fn 指回新位置恢复重新开始清空() {
         view.key_file.problem.is_none(),
         "重新开始后钥匙文件能读：{view:?}"
     );
-    let issued = reopened.issue("deepseek", "kind-turn", None);
+    let issued = reopened.issue("deepseek", "kind-turn", None, None);
     assert!(issued.is_err(), "重新开始后没有连接可签发");
 }
 
@@ -173,7 +173,7 @@ fn 删掉连接后签发失败且描述里没有了() {
     assert!(keyring.delete_connection("deepseek").expect("delete"));
     assert!(!keyring.delete_connection("deepseek").expect("delete twice"));
     assert!(keyring.view().connections.is_empty());
-    let issued = keyring.issue("deepseek", "kind-turn", None);
+    let issued = keyring.issue("deepseek", "kind-turn", None, None);
     assert!(issued.is_err(), "删掉后签发必须失败（原因是凭证）");
 }
 
@@ -184,12 +184,12 @@ fn 每次签发一条记录且记录里没有正文() {
     keyring.save_connection(connection()).expect("save");
     assert!(
         keyring
-            .issue("deepseek", "kind-turn", Some("run-1"))
+            .issue("deepseek", "kind-turn", Some("run-1"), None)
             .is_ok()
     );
     assert!(
         keyring
-            .issue("deepseek", "compaction", Some("run-1"))
+            .issue("deepseek", "compaction", Some("run-1"), None)
             .is_ok()
     );
 
@@ -241,7 +241,7 @@ fn 两个实例在换位置后都恢复且能签发() {
         view.key_file.problem.is_none(),
         "换位置后第二个实例应能读：{view:?}"
     );
-    let issued = second.issue("deepseek", "kind-turn", None);
+    let issued = second.issue("deepseek", "kind-turn", None, None);
     assert!(issued.is_ok(), "换位置后第二个实例应还能签发：{issued:?}");
 
     // 指回同样要不重启恢复：钥匙文件再从 new_path 挪走，second 指回，先打开的 first 也要看到。
@@ -260,7 +260,7 @@ fn 两个实例在换位置后都恢复且能签发() {
         first.view().key_file
     );
     assert!(
-        first.issue("deepseek", "kind-turn", None).is_ok(),
+        first.issue("deepseek", "kind-turn", None, None).is_ok(),
         "指回后 first 应还能签发"
     );
 }
@@ -307,7 +307,9 @@ fn 签发值用完清零() {
     let fixture = Fixture::new();
     let keyring = fixture.open();
     keyring.save_connection(connection()).expect("save");
-    let mut issued = keyring.issue("deepseek", "kind-turn", None).expect("issue");
+    let mut issued = keyring
+        .issue("deepseek", "kind-turn", None, None)
+        .expect("issue");
     assert_eq!(issued.secret, TEST_KEY);
     issued.zeroize();
     assert!(
@@ -321,7 +323,9 @@ fn into_secret返回原值且交出所有权() {
     let fixture = Fixture::new();
     let keyring = fixture.open();
     keyring.save_connection(connection()).expect("save");
-    let issued = keyring.issue("deepseek", "kind-turn", None).expect("issue");
+    let issued = keyring
+        .issue("deepseek", "kind-turn", None, None)
+        .expect("issue");
     let secret = issued.into_secret();
     assert_eq!(secret, TEST_KEY);
 }

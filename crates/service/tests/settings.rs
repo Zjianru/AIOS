@@ -316,7 +316,10 @@ async fn 编辑连接保留key且不换正文() {
     let keyring =
         credentials::Keyring::open(dir.path(), Some(&dir.path().join("identity.txt"))).unwrap();
     assert_eq!(
-        keyring.issue("deepseek", "test", None).unwrap().secret,
+        keyring
+            .issue("deepseek", "test", None, None)
+            .unwrap()
+            .into_secret(),
         TEST_KEY
     );
 }
@@ -349,7 +352,7 @@ async fn 撤销key后连接还在但签发失败() {
     let keyring =
         credentials::Keyring::open(dir.path(), Some(&dir.path().join("identity.txt"))).unwrap();
     assert!(
-        keyring.issue("deepseek", "test", None).is_err(),
+        keyring.issue("deepseek", "test", None, None).is_err(),
         "撤销后签发应失败"
     );
 }
