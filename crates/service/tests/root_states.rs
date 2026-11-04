@@ -13,15 +13,34 @@ use tempfile::tempdir;
 
 const ABSENT_SESSION: &str = "00000000-0000-4000-8000-000000000000";
 
+/// T008.F9：测试凭证来源（产品不再有固定 key 构造入口，测试显式注入）。
+struct TestCredential;
+
+impl model::CredentialSource for TestCredential {
+    fn issue(
+        &self,
+        _purpose: &str,
+        _context: &model::CredentialContext,
+    ) -> Result<String, model::ModelError> {
+        Ok("test-key".to_owned())
+    }
+}
+
+fn test_credential() -> std::sync::Arc<dyn model::CredentialSource> {
+    std::sync::Arc::new(TestCredential)
+}
+
 fn options(data_dir: &Path) -> RootSessionOptions {
     RootSessionOptions {
         data_dir: data_dir.to_path_buf(),
         cwd: data_dir.to_path_buf(),
         model: DeepSeekConfig {
-            api_key: "test-key".to_owned(),
             ..DeepSeekConfig::default()
         },
         config: AgentConfig::default(),
+        credentials: Some(test_credential()),
+        identity: None,
+        model_factory: None,
     }
 }
 

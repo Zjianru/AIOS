@@ -39,7 +39,8 @@ async fn setup(server: &MockServer, tools: ToolSet, retain_ratio: f64) -> Harnes
     let agent = Agent::create(
         config,
         agent::Deps {
-            model: model::DeepSeek::new(model_config).unwrap(),
+            model: model::DeepSeek::with_credentials(model_config, common::test_credential())
+                .unwrap(),
             tools,
             store,
         },
@@ -279,7 +280,8 @@ async fn resume_after_compaction_derives_same_messages() {
         harness.id.clone(),
         config,
         agent::Deps {
-            model: model::DeepSeek::new(model_config).unwrap(),
+            model: model::DeepSeek::with_credentials(model_config, common::test_credential())
+                .unwrap(),
             tools: ToolSet::builtin(),
             store: SessionStore::open(harness.data_dir.path(), &harness.id).unwrap(),
         },
@@ -345,7 +347,8 @@ async fn compaction_ids_are_unique_across_resume() {
         harness.id.clone(),
         config,
         agent::Deps {
-            model: model::DeepSeek::new(model_config).unwrap(),
+            model: model::DeepSeek::with_credentials(model_config, common::test_credential())
+                .unwrap(),
             tools: ToolSet::builtin(),
             store: SessionStore::open(harness.data_dir.path(), &harness.id).unwrap(),
         },

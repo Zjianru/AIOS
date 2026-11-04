@@ -26,7 +26,6 @@ export function ConversationPane() {
   const lastSeenCounts = useKindStore((state) => state.lastSeenCounts);
   const atBottom = useKindStore((state) => state.atBottom);
   const initialLoading = useKindStore((state) => state.initialLoading);
-  const loadInitial = useKindStore((state) => state.loadInitial);
   const setAtBottom = useKindStore((state) => state.setAtBottom);
   const send = useKindStore((state) => state.send);
   const stop = useKindStore((state) => state.stop);
@@ -50,9 +49,6 @@ export function ConversationPane() {
   /** 跟着最新走：贴着底时为真；往上翻就放开，回到底或者新起一轮再接上。 */
   const followRef = useRef(true);
 
-  useEffect(() => {
-    void loadInitial();
-  }, [loadInitial]);
 
   // 首屏：落到最新一条。
   // Virtuoso 先按估算高度排版，量到真实高度后它的滚动模型会比 DOM 少一截（这里差不多 66px），

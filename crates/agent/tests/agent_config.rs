@@ -24,7 +24,11 @@ async fn create_result(config: AgentConfig) -> Result<Agent, AgentError> {
     Agent::create(
         config,
         Deps {
-            model: DeepSeek::new(model_config("http://127.0.0.1:1")).unwrap(),
+            model: DeepSeek::with_credentials(
+                model_config("http://127.0.0.1:1"),
+                common::test_credential(),
+            )
+            .unwrap(),
             tools: ToolSet::empty(),
             store,
         },

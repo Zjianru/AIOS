@@ -544,6 +544,23 @@ async fn summarize(
 
 #[cfg(test)]
 mod tests {
+    /// T008.F9：本 crate 单测的凭证来源（产品不再有固定 key 构造入口）。
+    struct TestCredential;
+
+    impl model::CredentialSource for TestCredential {
+        fn issue(
+            &self,
+            _purpose: &str,
+            _context: &model::CredentialContext,
+        ) -> Result<String, model::ModelError> {
+            Ok("test-key".to_owned())
+        }
+    }
+
+    fn test_credential() -> std::sync::Arc<dyn model::CredentialSource> {
+        std::sync::Arc::new(TestCredential)
+    }
+
     use super::*;
 
     fn message(text: &str) -> Message {
@@ -602,14 +619,16 @@ mod tests {
         let cwd = tempfile::tempdir().unwrap();
         let store = session::SessionStore::create(data.path(), cwd.path()).unwrap();
         let (events, _receiver) = broadcast::channel(16);
-        let model = model::DeepSeek::new(model::DeepSeekConfig {
-            base_url: "http://127.0.0.1:1".to_owned(),
-            api_key: "test-key".to_owned(),
-            model: "deepseek-flash".to_owned(),
-            max_tokens: 16,
-            context_window: 1000,
-            effort: model::Effort::High,
-        })
+        let model = model::DeepSeek::with_credentials(
+            model::DeepSeekConfig {
+                base_url: "http://127.0.0.1:1".to_owned(),
+                model: "deepseek-flash".to_owned(),
+                max_tokens: 16,
+                context_window: 1000,
+                effort: model::Effort::High,
+            },
+            test_credential(),
+        )
         .unwrap();
         RecordingHost {
             store: Mutex::new(store),

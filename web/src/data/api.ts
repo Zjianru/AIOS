@@ -16,8 +16,6 @@ import { kindContext } from './fixtures/context';
 import type { KindContextFixture } from './fixtures/context';
 import { nowFixture } from './fixtures/now';
 import type { NowFixture } from './fixtures/now';
-import { firstUseFixture } from './fixtures/firstUse';
-import type { FirstUseFixture } from './fixtures/firstUse';
 import { COMPACTION_SUMMARY, DEMO_SCRIPTS, defaultScript } from './fixtures/kindLive';
 import type { LiveDemo, LiveScript } from './fixtures/kindLive';
 import { DISCOVERED_MODELS, modelSettingsFixture } from './fixtures/settings';
@@ -287,10 +285,6 @@ export async function getNow(): Promise<NowFixture> {
 }
 
 /** 首次使用的 Kind（§四）：提供方 / 三张起手卡片 / 推荐。 */
-export async function getFirstUse(): Promise<FirstUseFixture> {
-  return transmit(firstUseFixture);
-}
-
 /* ───────────────────────── 设置 › 模型与连接（Keyring） ───────────────────────── */
 
 /**
@@ -301,7 +295,6 @@ export async function getFirstUse(): Promise<FirstUseFixture> {
 let keyring: ModelSettingsView = structuredClone(modelSettingsFixture);
 /** 哪些连接的密钥会被模拟拒绝（按连接记，不记正文）。 */
 const keyWillFail = new Set<string>();
-let keyringEmpty = false;
 
 function nowLabel(): string {
   const d = new Date();
@@ -317,19 +310,6 @@ function findConnection(id: string) {
   const conn = keyring.connections.find((item) => item.id === id);
   if (!conn) throw new Error('没有这个连接：' + id);
   return conn;
-}
-
-/** 开发开关「首次使用（空库）」打开时，Keyring 也是空的；关上恢复样例。 */
-export function syncKeyringEmpty(empty: boolean): void {
-  if (empty === keyringEmpty) return;
-  keyringEmpty = empty;
-  keyring = structuredClone(modelSettingsFixture);
-  keyWillFail.clear();
-  if (empty) {
-    keyring.connections = [];
-    keyring.issuedToday = 0;
-    keyring.issues = [];
-  }
 }
 
 export async function getModelSettings(): Promise<ModelSettingsView> {
@@ -454,23 +434,8 @@ export async function moveKeyFile(path: string): Promise<ModelSettingsView> {
   return transmit(keyring);
 }
 
-/**
- * 开发开关：钥匙文件读不出来（不在原处 / 打不开 / 解不开）。
- * 读不出来时不悄悄改用别的来源：所有连接都标「读不到」，请求直接失败并说原因。
- */
-export const KEYRING_PROBLEM = '密钥文件不在原处';
-
 /** 内核现在只会说 DeepSeek（D36）；只显示接上内核的部分时，目录里只有它，没有自定义。 */
 export const KERNEL_PROVIDERS: ReadonlySet<string> = new Set(['deepseek']);
-
-export function setKeyringProblem(problem: string | null): void {
-  if (problem) keyring.keyFile = { ...keyring.keyFile, problem };
-  else {
-    const { problem: _gone, ...rest } = keyring.keyFile;
-    void _gone;
-    keyring.keyFile = rest;
-  }
-}
 
 /** 用户把钥匙文件挪走过：告诉 AIOS 它现在在哪。不搬文件，只改指向。 */
 export async function relinkKeyFile(path: string): Promise<ModelSettingsView> {

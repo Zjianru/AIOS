@@ -62,7 +62,11 @@ async fn setup(
     Agent::create(
         config,
         Deps {
-            model: model::DeepSeek::new(model_config(&server.uri())).unwrap(),
+            model: model::DeepSeek::with_credentials(
+                model_config(&server.uri()),
+                common::test_credential(),
+            )
+            .unwrap(),
             tools,
             store,
         },
@@ -423,7 +427,8 @@ async fn auto_pressure_compaction_prunes_tool_results() {
     let agent = Agent::create(
         config,
         Deps {
-            model: model::DeepSeek::new(model_config).unwrap(),
+            model: model::DeepSeek::with_credentials(model_config, common::test_credential())
+                .unwrap(),
             tools: ToolSet::new(vec![Box::new(BigTool::new(content.clone()))]),
             store,
         },
@@ -555,7 +560,11 @@ async fn old_spill_files_are_cleaned_on_agent_start() {
     let agent = Agent::create(
         common::isolated_config(data_dir.path()),
         agent::Deps {
-            model: model::DeepSeek::new(common::model_config("http://127.0.0.1:1")).unwrap(),
+            model: model::DeepSeek::with_credentials(
+                common::model_config("http://127.0.0.1:1"),
+                common::test_credential(),
+            )
+            .unwrap(),
             tools: ToolSet::new(Vec::new()),
             store,
         },

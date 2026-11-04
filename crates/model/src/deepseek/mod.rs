@@ -7,41 +7,93 @@ mod translate;
 mod transport;
 
 use std::collections::VecDeque;
+use std::fmt;
+use std::sync::{Arc, Mutex};
 
 pub use config::{DEFAULT_BASE_URL, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DeepSeekConfig};
 
-use crate::{CancelToken, ErrorCode, Message, ModelError, StreamChunk, ToolSchema};
+use crate::{
+    CancelToken, CredentialContext, CredentialSource, ErrorCode, Message, ModelError, StreamChunk,
+    ToolSchema,
+};
 use sse::SseParser;
 use translate::Translator;
 
 use config::STREAM_IDLE_TIMEOUT;
 
 /// DeepSeek 的 Messages 适配器。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DeepSeek {
     http: reqwest::Client,
     config: DeepSeekConfig,
     url: reqwest::Url,
+    credentials: Arc<dyn CredentialSource>,
+    issue_context: Arc<Mutex<CredentialContext>>,
+    /// 下一轮开始时要用的模型（set_model 只写这里）。
+    next_model: Arc<Mutex<Option<String>>>,
+    /// 本轮冻结的模型；begin_turn 时从 next_model 复制，stream 只读这里。
+    turn_model: Arc<Mutex<Option<String>>>,
+}
+
+impl fmt::Debug for DeepSeek {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DeepSeek")
+            .field("config", &self.config)
+            .field("url", &self.url)
+            .finish_non_exhaustive()
+    }
 }
 
 impl DeepSeek {
-    /// 校验配置并建立 HTTP 客户端；缺 key 或非法端点在发请求之前就报错。
-    pub fn new(config: DeepSeekConfig) -> Result<Self, ModelError> {
-        if config.api_key.trim().is_empty() {
-            return Err(ModelError::new(
-                ErrorCode::MissingCredential,
-                "DEEPSEEK_API_KEY 为空",
-            ));
-        }
+    /// 用外部凭证来源构造（T008.2：每次出站前申请一次；产品由 Keyring 适配器提供）。
+    pub fn with_credentials(
+        config: DeepSeekConfig,
+        credentials: Arc<dyn CredentialSource>,
+    ) -> Result<Self, ModelError> {
         let url = messages_url(&config.base_url)?;
         let http = reqwest::Client::builder()
             .build()
             .map_err(transport::transport_error)?;
-        Ok(Self { http, config, url })
+        Ok(Self {
+            http,
+            config,
+            url,
+            credentials,
+            issue_context: Arc::new(Mutex::new(CredentialContext::default())),
+            next_model: Arc::new(Mutex::new(None)),
+            turn_model: Arc::new(Mutex::new(None)),
+        })
     }
 
     pub fn config(&self) -> &DeepSeekConfig {
         &self.config
+    }
+
+    /// 标记本次请求的归属（run/turn）；授权来源在 issue 时读取。
+    pub fn set_issue_context(&self, context: CredentialContext) {
+        if let Ok(mut current) = self.issue_context.lock() {
+            *current = context;
+        }
+    }
+
+    /// 换模型：只改下一轮；本轮冻结的模型在 begin_turn 时确定（D26）。
+    pub fn set_model(&self, model: String) {
+        if let Ok(mut current) = self.next_model.lock() {
+            *current = Some(model);
+        }
+    }
+
+    /// 本轮开始时冻结模型；stream 内不再读 next_model。
+    pub fn begin_turn(&self) {
+        let next = self
+            .next_model
+            .lock()
+            .map(|model| model.clone())
+            .unwrap_or(None);
+        if let Ok(mut current) = self.turn_model.lock() {
+            *current = next;
+        }
     }
 
     /// provider 路由 id（DSH 的 provider 名；AIOS 只接 DeepSeek）。
@@ -84,14 +136,26 @@ impl DeepSeek {
         max_tokens: Option<u32>,
         validate_pairing: bool,
     ) -> Result<ChunkStream, ModelError> {
+        let context = self
+            .issue_context
+            .lock()
+            .map(|context| context.clone())
+            .unwrap_or_default();
+        let api_key = self.credentials.issue("model-request", &context)?;
+        let mut effective = self.config.clone();
+        if let Ok(current) = self.turn_model.lock()
+            && let Some(model) = current.as_deref()
+        {
+            effective.model = model.to_owned();
+        }
         let body =
-            serialize::request_body(&self.config, messages, tools, max_tokens, validate_pairing)?;
+            serialize::request_body(&effective, messages, tools, max_tokens, validate_pairing)?;
         let request = self
             .http
             .post(self.url.clone())
             .header("content-type", "application/json")
             .header("accept", "text/event-stream")
-            .header("x-api-key", &self.config.api_key)
+            .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
             .body(body);
         let response = tokio::select! {

@@ -7,13 +7,14 @@
 
 import { create } from 'zustand';
 import { toast } from 'sonner';
-import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchEventsPage, recheckRoot, sendMessage, ServiceHttpError } from '@/data/service';
+import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchEventsPage, fetchFirstUse, recheckRoot, sendMessage, setUnauthorizedHandler } from '@/data/service';
 import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
 import type { GateDetail, GateState } from './KernelGate';
 import { reconnectDelayMs } from '@/data/reconnect';
+import { go } from '@/app/navigate';
 import type { AskAnswer, AskQuestion, FailureCause } from '@/data/fixtures/kindLive';
 import { mark } from '@/lib/perf';
-import type { KindCard, TextElement, Turn, TurnStatus } from '@/data/types';
+import type { KindCard, TextElement, TurnStatus } from '@/data/types';
 
 export const PAGE_LAST = 5;
 export const PAGE_OLDER = 20;
@@ -58,7 +59,6 @@ export interface TurnViewData {
   thinkingSeconds: number;
   tokens: { input: number; output: number };
   cost: number | null;
-  model: string;
   /** 模型正在重试（第几次、为什么）。 */
   retry: { attempt: number; reason: string; inSeconds: number } | null;
   /** 这一轮没做完：原因来自内核，按原因给下一步（去设置 / 再发一次）。 */
@@ -110,90 +110,6 @@ function decorate(views: TurnViewData[]): {
   return { dayLabels, lastSeenId, lastSeenCounts: { moved: 3, waiting: 5 } };
 }
 
-function describeArguments(value: unknown): string {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return '';
-  const record = value as Record<string, unknown>;
-  const first = Object.values(record)[0];
-  return typeof first === 'string' ? first : '';
-}
-
-export function buildTurnView(turn: Turn): TurnViewData {
-  let user: TurnViewData['user'] = null;
-  let reasoning: TurnViewData['reasoning'] = null;
-  let answer: TurnViewData['answer'] = null;
-  const tools: ToolStep[] = [];
-  const cards: KindCard[] = [];
-  for (const item of turn.items) {
-    switch (item.type) {
-      case 'userMessage': {
-        const input = item.content[0];
-        if (input && input.type === 'text') user = { text: input.text, elements: input.textElements ?? [] };
-        break;
-      }
-      case 'reasoning':
-        reasoning = {
-          summary: item.summary,
-          full: item.content.join(String.fromCharCode(10) + String.fromCharCode(10)),
-          seconds: 3 + (item.summary.length % 6),
-        };
-        break;
-      case 'agentMessage':
-        answer = { text: item.text, elements: item.textElements ?? [] };
-        break;
-      case 'commandExecution':
-        tools.push({
-          id: item.id,
-          command: item.command,
-          output: item.aggregatedOutput ?? '',
-          exitCode: item.exitCode,
-          durationMs: item.durationMs,
-        });
-        break;
-      case 'mcpToolCall':
-        tools.push({
-          id: item.id,
-          command: item.tool + '(' + describeArguments(item.arguments) + ')',
-          output: '',
-          exitCode: 0,
-          durationMs: item.durationMs,
-          tool: item.tool,
-        });
-        break;
-      case 'agentCard':
-        cards.push(item.card);
-        break;
-      default:
-        break;
-    }
-  }
-  const duration = turn.durationMs ?? 0;
-  const tokens = {
-    input: 1800 + ((duration * 7) % 4200),
-    output: 120 + ((duration * 3) % 900),
-  };
-  return {
-    id: turn.id,
-    startedAt: turn.startedAt,
-    durationMs: turn.durationMs,
-    status: turn.status,
-    user,
-    reasoning,
-    tools,
-    cards,
-    answer,
-    thinkingSeconds: reasoning ? reasoning.seconds : 2 + (duration % 5),
-    tokens,
-    cost: 0.000008 * (tokens.input + tokens.output),
-    model: 'DeepSeek V4 Pro',
-    retry: null,
-    failure: turn.status === 'failed' ? { cause: 'model', reason: turn.error?.message ?? '原因不明' } : null,
-    question: null,
-    compaction: null,
-    delivery: null,
-    stoppedAt: null,
-  };
-}
-
 interface KindState {
   views: TurnViewData[];
   byId: Map<string, TurnViewData>;
@@ -209,6 +125,8 @@ interface KindState {
   dayLabels: Map<string, string>;
   lastSeenId: string | null;
   lastSeenCounts: { moved: number; waiting: number };
+  /** T008.4：还没有接模型（空库）；true 时 Kind 首屏是第一次填 key。 */
+  firstUse: boolean;
   /** 根会话不可用时的整页说明（T007.10）；ok = 正常对话。 */
   gate: GateState | 'ok';
   gateDetail: GateDetail | null;
@@ -221,6 +139,8 @@ interface KindState {
   /** 演示用：下一条消息送不到。 */
   /** 当前用的模型（底栏的模型选择，T008）。 */
   model: { connectionId: string; modelId: string; label: string };
+  /** T008.4：Kind 首屏引导：先看是不是空库（首次使用），否则加载对话。 */
+  bootstrap: () => Promise<void>;
   loadInitial: () => Promise<void>;
   loadOlder: () => Promise<void>;
   setAtBottom: (value: boolean) => void;
@@ -301,7 +221,6 @@ function addUnsentView(viewId: string, text: string): void {
       thinkingSeconds: 0,
       tokens: { input: 0, output: 0 },
       cost: null,
-      model: DEMO_MODEL.label,
       retry: null,
       failure: null,
       question: null,
@@ -452,7 +371,6 @@ function applyLiveEvent(event: ServiceEvent): void {
         thinkingSeconds: 0,
         tokens: { input: 0, output: 0 },
         cost: null,
-        model: DEMO_MODEL.label,
         retry: null,
         failure: null,
         question: null,
@@ -780,7 +698,6 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       thinkingSeconds: 0,
       tokens: raw.tokens,
       cost: null,
-      model: DEMO_MODEL.label,
       retry: raw.retry,
       compaction: raw.compaction,
       failure: raw.failure,
@@ -807,12 +724,26 @@ export const useKindStore = create<KindState>()((set, get) => ({
   dayLabels: new Map(),
   lastSeenId: null,
   lastSeenCounts: { moved: 0, waiting: 0 },
+  firstUse: false,
   gate: 'ok',
   gateDetail: null,
   connection: { state: 'online' },
   usage: 46,
   compacting: false,
   model: DEMO_MODEL,
+
+  bootstrap: async () => {
+    try {
+      const first = await fetchFirstUse();
+      if (first.firstUse) {
+        set({ firstUse: true, initialLoading: false });
+        return;
+      }
+    } catch {
+      // 首次使用状态读不到时继续走对话加载；真正原因由 loadInitial 的 gate/横幅呈现。
+    }
+    await get().loadInitial();
+  },
 
   loadInitial: async () => {
     try {
@@ -841,9 +772,9 @@ export const useKindStore = create<KindState>()((set, get) => ({
         hasOlder: page.hasMore,
         initialLoading: false,
       });
-    } catch (error) {
-      const gate: GateState =
-        error instanceof ServiceHttpError && error.status === 401 ? 'token' : 'unreachable';
+    } catch {
+      // 401 已由 service 请求层统一进令牌说明页；这里只标不可达，不覆盖 token。
+      const gate: GateState = get().gate === 'token' ? 'token' : 'unreachable';
       set({ initialLoading: false, gate, gateDetail: null });
     }
   },
@@ -914,9 +845,9 @@ export const useKindStore = create<KindState>()((set, get) => ({
         useKindStore.setState({ gate: 'ok', gateDetail: null });
         await get().loadInitial();
       }
-    } catch (error) {
-      const gate: GateState =
-        error instanceof ServiceHttpError && error.status === 401 ? 'token' : 'unreachable';
+    } catch {
+      // 401 已由 service 请求层统一进令牌说明页；这里只标不可达，不覆盖 token。
+      const gate: GateState = get().gate === 'token' ? 'token' : 'unreachable';
       set({ gate, gateDetail: null });
     }
   },
@@ -967,3 +898,14 @@ export const useStreamStore = create<{ turnId: string | null; itemId: string | n
   itemId: null,
   text: '',
 }));
+
+// T008 r4 #1：任何调用拿到 401（service 请求层唯一判断）→ 令牌说明页，先于第一次使用页。
+setUnauthorizedHandler(() => {
+  useKindStore.setState({
+    gate: 'token',
+    gateDetail: null,
+    firstUse: false,
+    initialLoading: false,
+  });
+  go('kind:conversation');
+});

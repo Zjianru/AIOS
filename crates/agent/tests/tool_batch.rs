@@ -61,7 +61,11 @@ async fn setup(
             ..common::isolated_config(data_dir.path())
         },
         Deps {
-            model: DeepSeek::new(model_config(&server.uri())).unwrap(),
+            model: DeepSeek::with_credentials(
+                model_config(&server.uri()),
+                common::test_credential(),
+            )
+            .unwrap(),
             tools: ToolSet::new(tools),
             store,
         },
@@ -232,7 +236,11 @@ async fn agent_config_rejects_zero_parallelism() {
             ..common::isolated_config(data_dir.path())
         },
         Deps {
-            model: DeepSeek::new(model_config("http://127.0.0.1:1")).unwrap(),
+            model: DeepSeek::with_credentials(
+                model_config("http://127.0.0.1:1"),
+                common::test_credential(),
+            )
+            .unwrap(),
             tools: ToolSet::empty(),
             store,
         },

@@ -1,15 +1,16 @@
 //! 开发用 CLI：aios-dev chat / aios-dev run。
 
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use agent::{
     Agent, AgentConfig, AgentEvent, AgentOpenOptions, CompactionOutcome, Delivery, JobStatus,
     TurnOutcome,
 };
 use clap::{Args, Parser, Subcommand};
-use model::{DEFAULT_BASE_URL, DEFAULT_MAX_TOKENS, DeepSeekConfig, Effort, UserMessage};
+use model::{DEFAULT_MAX_TOKENS, DeepSeekConfig, Effort, UserMessage};
 use service::{RootHost, RootSessionOptions};
 use session::SessionId;
 use tokio::io::AsyncBufReadExt;
@@ -29,6 +30,42 @@ enum Command {
     Run(RunArgs),
     /// 起 Web 服务（HTTP POST /api + WebSocket /ws，只绑本机，带启动令牌）
     Serve(ServeArgs),
+    /// 配置 Keyring（key 只从标准输入读；命令行给 key 会被 clap 拒绝）
+    Keyring(KeyringArgs),
+}
+
+#[derive(Args)]
+struct KeyringArgs {
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+    /// 钥匙文件位置（默认在数据目录之外的用户配置目录）
+    #[arg(long)]
+    identity: Option<PathBuf>,
+    #[command(subcommand)]
+    action: KeyringAction,
+}
+
+#[derive(Subcommand)]
+enum KeyringAction {
+    /// 存 key：从标准输入读，不接 --key 参数
+    Set {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        endpoint: String,
+    },
+    /// 列出连接（不含 key）
+    List,
+    /// 删除连接
+    Delete { id: String },
+    /// 换钥匙文件位置（旧位置不再留）
+    Relocate { to: PathBuf },
+    /// 看签发记录
+    Issues,
 }
 
 #[derive(Args)]
@@ -46,7 +83,7 @@ struct ServeArgs {
     web_dist: Option<PathBuf>,
 }
 
-#[derive(Args)]
+#[derive(Args, Clone)]
 struct CommonArgs {
     /// 续接已有会话 id
     #[arg(long)]
@@ -54,6 +91,9 @@ struct CommonArgs {
     /// 数据目录（默认 ~/.aios-dev）
     #[arg(long)]
     data_dir: Option<PathBuf>,
+    /// Keyring 钥匙文件位置（默认在数据目录之外的用户配置目录）
+    #[arg(long)]
+    identity: Option<PathBuf>,
     /// 会话工作目录（默认当前目录）
     #[arg(long)]
     cwd: Option<PathBuf>,
@@ -99,6 +139,8 @@ enum CliError {
     #[error(transparent)]
     Agent(#[from] agent::AgentError),
     #[error(transparent)]
+    Credentials(#[from] credentials::KeyringError),
+    #[error(transparent)]
     Root(#[from] service::RootError),
     #[error(transparent)]
     Web(#[from] web::ServeError),
@@ -114,6 +156,7 @@ async fn main() -> ExitCode {
         Command::Chat(args) => chat(args).await.map(|()| 0_u8),
         Command::Run(args) => run(args).await,
         Command::Serve(args) => serve(args).await,
+        Command::Keyring(args) => keyring(args),
     };
     match result {
         Ok(code) => ExitCode::from(code),
@@ -133,7 +176,6 @@ async fn main() -> ExitCode {
 fn config_from_args(
     common: &CommonArgs,
     base_url: String,
-    api_key: String,
 ) -> Result<(DeepSeekConfig, AgentConfig), CliError> {
     let effort = match common.effort.as_deref() {
         None => Effort::High,
@@ -179,7 +221,6 @@ fn config_from_args(
     }
     let config = DeepSeekConfig {
         base_url,
-        api_key,
         model: common
             .model
             .clone()
@@ -189,6 +230,87 @@ fn config_from_args(
         effort,
     };
     Ok((config, agent))
+}
+
+/// T008.2：CLI 的凭证来源——每次请求向 Keyring 申请一次签发。
+struct KeyringCredentialSource {
+    keyring: Arc<credentials::Keyring>,
+    connection: String,
+}
+
+impl model::CredentialSource for KeyringCredentialSource {
+    fn issue(
+        &self,
+        purpose: &str,
+        context: &model::CredentialContext,
+    ) -> Result<String, model::ModelError> {
+        self.keyring
+            .issue(
+                &self.connection,
+                purpose,
+                context.run.as_deref(),
+                context.turn,
+            )
+            .map(credentials::IssuedSecret::into_secret)
+            .map_err(|error| {
+                let message = match &error {
+                    credentials::KeyringError::KeyFileMissing(_)
+                    | credentials::KeyringError::Crypto(_) => {
+                        format!("Keyring 无法签发：{error}")
+                    }
+                    _ => format!("凭证不可用：{error}"),
+                };
+                let code = match &error {
+                    credentials::KeyringError::KeyFileMissing(_)
+                    | credentials::KeyringError::Crypto(_) => model::ErrorCode::Keyring,
+                    _ => model::ErrorCode::MissingCredential,
+                };
+                model::ModelError::new(code, message)
+            })
+    }
+}
+
+/// 打开数据目录的 Keyring，并取 DeepSeek 连接的 endpoint/model。
+fn model_with_keyring(
+    common: &CommonArgs,
+    data_dir: &PathBuf,
+) -> Result<
+    (
+        DeepSeekConfig,
+        AgentConfig,
+        Arc<dyn model::CredentialSource>,
+    ),
+    CliError,
+> {
+    let keyring = Arc::new(credentials::Keyring::open(
+        data_dir,
+        common.identity.as_deref(),
+    )?);
+    let view = keyring.view();
+    if let Some(problem) = view.key_file.problem {
+        return Err(CliError::Message(format!("Keyring 读不出来：{problem}")));
+    }
+    let connection = view
+        .connections
+        .into_iter()
+        .find(|connection| connection.id == "deepseek")
+        .ok_or_else(|| {
+            CliError::Message(
+                "还没有接模型：先从页面接上，或运行 aios-dev keyring set（key 从标准输入读）"
+                    .to_owned(),
+            )
+        })?;
+    let (mut deepseek_config, agent_config) =
+        config_from_args(common, connection.endpoint.clone())?;
+    deepseek_config.model = common
+        .model
+        .clone()
+        .unwrap_or_else(|| connection.model.clone());
+    let source = KeyringCredentialSource {
+        keyring,
+        connection: "deepseek".to_owned(),
+    };
+    Ok((deepseek_config, agent_config, Arc::new(source)))
 }
 
 /// 唯一组装入口（T006.15）：这里只把 CLI 参数/env 变成普通配置数据；模型、工具集、
@@ -202,14 +324,7 @@ async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
         Some(path) => path.clone(),
         None => std::env::current_dir()?,
     };
-    let api_key = std::env::var("DEEPSEEK_API_KEY").map_err(|_| {
-        CliError::Message(
-            "缺少 DEEPSEEK_API_KEY 环境变量（D34：开发期从环境变量读 key）".to_owned(),
-        )
-    })?;
-    let base_url =
-        std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_owned());
-    let (deepseek_config, config) = config_from_args(common, base_url, api_key)?;
+    let (deepseek_config, config, credentials) = model_with_keyring(common, &data_dir)?;
     let resume = match &common.resume {
         Some(raw) => Some(SessionId::parse(raw)?),
         None => None,
@@ -220,6 +335,7 @@ async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
         resume,
         model: deepseek_config,
         config,
+        credentials: Some(credentials),
     })
     .await
     .map_err(open_error)?;
@@ -245,23 +361,33 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         Some(path) => path.clone(),
         None => std::env::current_dir()?,
     };
-    let api_key = std::env::var("DEEPSEEK_API_KEY").map_err(|_| {
-        CliError::Message(
-            "缺少 DEEPSEEK_API_KEY 环境变量（D34：开发期从环境变量读 key）".to_owned(),
-        )
-    })?;
-    let base_url =
-        std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_owned());
-    let (deepseek_config, agent_config) = config_from_args(&args.common, base_url, api_key)?;
-    let window = deepseek_config.context_window;
+    // T008.F11：cookie 签名钥匙是 Keyring 里的一条记录——首次启动自动建，之后每次启动读回；
+    // 删记录/重新开始后下次启动换新，旧页面会话全部失效。只在内存里用，不落日志。
+    let keyring = credentials::Keyring::open(data_dir.clone(), args.common.identity.as_deref())?;
+    let session_secret = keyring.cookie_signing_secret()?;
+    // T008.3b：模型配置惰性解析——空 Keyring 也能起服务（首次使用页先显示）；
+    // recheck 时工厂重新读当前 Keyring 连接，用新模型重建根会话。
+    let (placeholder_config, agent_config) =
+        config_from_args(&args.common, "http://127.0.0.1:1".to_owned())?;
+    let window = placeholder_config.context_window;
+    let factory_common = args.common.clone();
+    let factory_data_dir = data_dir.clone();
+    let model_factory: service::ModelFactory = std::sync::Arc::new(move || {
+        model_with_keyring(&factory_common, &factory_data_dir)
+            .map(|(config, _agent, credentials)| (config, Some(credentials)))
+            .map_err(|error| error.to_string())
+    });
     // T007.2：根会话打不开时服务照样起；ready 报状态（path/line），方法一律拒绝，
     // 页面对应五种说明页；修好后页面调 recheck 再检查一次。
     let host = RootHost::open(
         RootSessionOptions {
             data_dir,
             cwd,
-            model: deepseek_config,
+            model: placeholder_config,
             config: agent_config,
+            credentials: None,
+            identity: args.common.identity.clone(),
+            model_factory: Some(model_factory),
         },
         window,
     )
@@ -280,6 +406,7 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             host: args.host.clone(),
             port: args.port,
             token: token.clone(),
+            session_secret,
             static_dir,
         },
         host,
@@ -973,6 +1100,7 @@ mod tests {
         CommonArgs {
             resume: None,
             data_dir: None,
+            identity: None,
             cwd: None,
             model: None,
             effort: None,
@@ -985,8 +1113,7 @@ mod tests {
 
     #[test]
     fn config_from_args_defaults_match_production_defaults() {
-        let (deepseek, agent) =
-            config_from_args(&dev_common(), "http://x".to_owned(), "k".to_owned()).unwrap();
+        let (deepseek, agent) = config_from_args(&dev_common(), "http://x".to_owned()).unwrap();
         assert_eq!(deepseek.max_tokens, DEFAULT_MAX_TOKENS);
         assert_eq!(deepseek.context_window, model::DEFAULT_CONTEXT_WINDOW);
         assert_eq!(
@@ -1008,8 +1135,7 @@ mod tests {
             compaction_retain: Some(0.1),
             ..dev_common()
         };
-        let (deepseek, agent) =
-            config_from_args(&common, "http://x".to_owned(), "k".to_owned()).unwrap();
+        let (deepseek, agent) = config_from_args(&common, "http://x".to_owned()).unwrap();
         assert_eq!(deepseek.context_window, 24_000);
         assert_eq!(deepseek.max_tokens, 1024);
         assert_eq!(agent.compaction_threshold_ratio, 0.2);
@@ -1051,7 +1177,7 @@ mod tests {
         ];
         for common in cases {
             assert!(
-                config_from_args(&common, "http://x".to_owned(), "k".to_owned()).is_err(),
+                config_from_args(&common, "http://x".to_owned()).is_err(),
                 "非法值必须报错"
             );
         }
@@ -1109,5 +1235,89 @@ mod t006_19_compact_failure_tests {
             None,
             "非手动压缩错误不给逐码文案"
         );
+    }
+}
+
+fn keyring(args: KeyringArgs) -> Result<u8, CliError> {
+    let data_dir = args.data_dir.unwrap_or(default_data_dir()?);
+    let keyring = credentials::Keyring::open(data_dir, args.identity.as_deref())?;
+    match args.action {
+        KeyringAction::Set {
+            id,
+            name,
+            model,
+            endpoint,
+        } => {
+            let mut input = String::new();
+            io::stdin().read_to_string(&mut input)?;
+            let api_key = input.trim().to_owned();
+            if api_key.is_empty() {
+                return Err(CliError::Message(
+                    "没有从标准输入读到 key（不接 --key 参数，避免进 shell 历史）".to_owned(),
+                ));
+            }
+            let info = keyring.save_connection(credentials::NewConnection {
+                id,
+                name,
+                model,
+                endpoint,
+                api_key,
+            })?;
+            println!("已保存 {}（{}）", info.name, info.id);
+            Ok(0)
+        }
+        KeyringAction::List => {
+            let view = keyring.view();
+            if let Some(problem) = &view.key_file.problem {
+                println!("Keyring 读不出来：{problem}");
+                println!("钥匙文件：{}", view.key_file.path.display());
+                return Ok(1);
+            }
+            if view.connections.is_empty() {
+                println!("还没有连接");
+                return Ok(0);
+            }
+            for connection in &view.connections {
+                let check = match &connection.check {
+                    credentials::CheckState::Never => "还没验证".to_owned(),
+                    credentials::CheckState::Ok { .. } => "连接可用".to_owned(),
+                    credentials::CheckState::Fail { reason, .. } => format!("验证失败：{reason}"),
+                };
+                println!(
+                    "{}（{}） · {} · {} · {check}",
+                    connection.name, connection.id, connection.model, connection.endpoint
+                );
+            }
+            Ok(0)
+        }
+        KeyringAction::Delete { id } => {
+            let deleted = keyring.delete_connection(&id)?;
+            if deleted {
+                println!("已删除 {id}");
+            } else {
+                println!("没有这个连接：{id}");
+            }
+            Ok(0)
+        }
+        KeyringAction::Relocate { to } => {
+            keyring.relocate_identity(&to)?;
+            println!("钥匙文件已换到 {}", to.display());
+            Ok(0)
+        }
+        KeyringAction::Issues => {
+            let issues = keyring.issues();
+            if issues.is_empty() {
+                println!("还没有签发记录");
+                return Ok(0);
+            }
+            for issue in issues {
+                let run = issue.run.as_deref().unwrap_or("-");
+                println!(
+                    "#{} · {} · {} · {run}",
+                    issue.id, issue.connection, issue.purpose
+                );
+            }
+            Ok(0)
+        }
     }
 }

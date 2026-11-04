@@ -50,6 +50,23 @@ async fn mount(server: &MockServer) {
         .await;
 }
 
+/// T008.F9：测试凭证来源（产品不再有固定 key 构造入口，测试显式注入）。
+struct TestCredential;
+
+impl model::CredentialSource for TestCredential {
+    fn issue(
+        &self,
+        _purpose: &str,
+        _context: &model::CredentialContext,
+    ) -> Result<String, model::ModelError> {
+        Ok("test-key".to_owned())
+    }
+}
+
+fn test_credential() -> std::sync::Arc<dyn model::CredentialSource> {
+    std::sync::Arc::new(TestCredential)
+}
+
 fn options(
     data_dir: &std::path::Path,
     cwd: &std::path::Path,
@@ -65,13 +82,15 @@ fn options(
         cwd: cwd.to_path_buf(),
         model: DeepSeekConfig {
             base_url: base_url.to_owned(),
-            api_key: "test-key".to_owned(),
             model: "deepseek-flash".to_owned(),
             max_tokens: 2048,
             context_window: model::DEFAULT_CONTEXT_WINDOW,
             effort: Effort::High,
         },
         config,
+        credentials: Some(test_credential()),
+        identity: None,
+        model_factory: None,
     }
 }
 

@@ -10,6 +10,7 @@ fn trust() -> Trust {
         std::net::IpAddr::from([127, 0, 0, 1]),
         1417,
         "tok-1".to_owned(),
+        [7u8; 32],
     )
 }
 
@@ -128,4 +129,36 @@ fn dod7_sec_fetch_cross_site_is_403() {
     headers.insert("sec-fetch-site", "cross-site".parse().unwrap());
     let error = check_origin(&headers).unwrap_err();
     assert_eq!(error.status(), 403);
+}
+
+#[test]
+fn rotated_signing_key_invalidates_previous_cookie() {
+    // T008.F11：签名钥匙来自 Keyring，删记录/重新开始后下次启动换新 → 旧页面会话失效。
+    let old = Trust::new(
+        std::net::IpAddr::from([127, 0, 0, 1]),
+        1417,
+        "tok-1".to_owned(),
+        [1u8; 32],
+    );
+    let same = Trust::new(
+        std::net::IpAddr::from([127, 0, 0, 1]),
+        1417,
+        "tok-1".to_owned(),
+        [1u8; 32],
+    );
+    let rotated = Trust::new(
+        std::net::IpAddr::from([127, 0, 0, 1]),
+        1417,
+        "tok-1".to_owned(),
+        [2u8; 32],
+    );
+    let grant = mint_with(&old);
+    let mut headers = headers("127.0.0.1:1417");
+    headers.insert("cookie", cookie_pair(&grant).parse().unwrap());
+    assert!(
+        check_api_auth(&same, &headers).is_ok(),
+        "同一把钥匙（Keyring 记录未删）重启后旧 cookie 仍有效"
+    );
+    let error = check_api_auth(&rotated, &headers).unwrap_err();
+    assert_eq!(error.status(), 401, "换钥匙后旧 cookie 必须 401");
 }

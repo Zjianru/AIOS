@@ -18,6 +18,7 @@ pub enum ErrorCode {
     MalformedResponse,
     EmptyResponse,
     MissingCredential,
+    Keyring,
     UnsupportedContent,
     UnsupportedReasoningEffort,
     /// 没归类的 HTTP 状态。
@@ -48,6 +49,7 @@ impl ErrorCode {
             Self::MalformedResponse => "MALFORMED_RESPONSE",
             Self::EmptyResponse => "EMPTY_RESPONSE",
             Self::MissingCredential => "MISSING_CREDENTIAL",
+            Self::Keyring => "KEYRING",
             Self::UnsupportedContent => "UNSUPPORTED_CONTENT",
             Self::UnsupportedReasoningEffort => "UNSUPPORTED_REASONING_EFFORT",
             Self::Http(_) => "HTTP",

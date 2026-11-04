@@ -16,8 +16,8 @@ import { ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, Plus, X } from 'lu
 import { toast } from 'sonner';
 import {
   addConnection, checkConnection, discoverModels, getModelSettings, moveKeyFile, relinkKeyFile, removeConnection,
-  KERNEL_PROVIDERS, resetKeyring, revokeKey, setKeyringProblem, updateConnection,
-} from '@/data/api';
+  KERNEL_PROVIDERS, resetKeyring, revokeKey, updateConnection,
+} from '@/data/keyring';
 import type { ConnectionView, ModelRow, ModelSettingsView } from '@/data/fixtures/settings';
 import { PROTOCOL_LABEL } from '@/data/fixtures/settings';
 import {
@@ -521,7 +521,6 @@ function KeyringBroken({ view, onView }: { view: ModelSettingsView; onView: (vie
     setBusy(true);
     try {
       const next = await relinkKeyFile(path);
-      setKeyringProblem(null);
       onView(next);
       toast.success('找到了，Keyring 又能读出来了');
     } catch (error) {
@@ -533,7 +532,6 @@ function KeyringBroken({ view, onView }: { view: ModelSettingsView; onView: (vie
 
   const reset = async () => {
     const next = await resetKeyring();
-    setKeyringProblem(null);
     setConfirmReset(false);
     onView(next);
     toast.success('换了一把新钥匙；给每个提供商重新填一次密钥');

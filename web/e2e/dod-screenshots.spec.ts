@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { rmSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,7 +7,7 @@ import { startKernelFixture, type KernelFixture } from './service-fixture';
 
 const evidence =
   process.env.AIOS_DOD_EVIDENCE ??
-  path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../aios-work/T007/evidence/dod');
+  path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../aios-work/T008/evidence/dod');
 
 test.describe.configure({ mode: 'serial' });
 test.setTimeout(60_000);
@@ -21,17 +22,23 @@ async function shot(page: import('@playwright/test').Page, name: string) {
 }
 
 /// DoD7：五种说明页各一张截图（造法见 evidence/dod/README.md）。
-/// T007 #1：令牌失效用真能走到的路——页面开着 → 重启服务（新进程新 cookie 钥匙）→ 下一次调用 401。
-test('DoD7 令牌失效：页面开着重启服务后下一次请求 401', async ({ page }) => {
-  const fixture = await startKernelFixture();
+/// T008 #1（r4）：401 统一进令牌说明页——固定顺序：等第一次使用页 → 重启服务 → 点「接上」→ 断言令牌说明页。
+/// Keyring 清空等价于「重新开始」：旧 cookie 失效，重启后第一次使用页的「接上」会拿到 401。
+test('DoD7 令牌失效：第一次使用页 → 重启服务 → 接上 → 令牌说明页', async ({ page }) => {
+  const fixture = await startKernelFixture({ emptyKeyring: true });
   try {
     await page.goto(urlOf(fixture));
-    await expect(page.getByPlaceholder('和 Kind 说…')).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-first-use="connect"]')).toBeVisible({ timeout: 30_000 });
+    for (const name of ['keyring.age', 'identity.txt', 'config.json']) {
+      rmSync(path.join(fixture.dataDir, name), { force: true });
+    }
     await fixture.restart?.();
-    // 页面开着 → 重启服务（新进程=新 cookie 钥匙）→ 断线 recheck 的下一次 /api 收到 401 → 令牌说明页。
+    await page.locator('#first-use-key').fill('sk-test-r4');
+    await page.getByRole('button', { name: '接上', exact: true }).click();
     const gate = page.locator('[data-kind="kernel-gate"]');
-    await expect(gate).toHaveAttribute('data-state', 'token', { timeout: 40_000 });
-    await expect(page.getByText('这个地址已经失效')).toBeVisible();
+    await expect(gate).toHaveAttribute('data-state', 'token', { timeout: 30_000 });
+    await expect(page.getByText('这个页面需要重新打开')).toBeVisible();
+    await expect(page.getByText(/服务拒绝|401/)).toHaveCount(0);
     await shot(page, 'dod7-1-token.png');
   } finally {
     await fixture.close();

@@ -19,7 +19,7 @@ use crate::{Agent, AgentConfig, AgentError, Deps};
 ///
 /// 字段都是调用方已经解析好的值：CLI 的 env/参数、服务配置都在外面变成普通数据，
 /// 组装层不读环境变量、不猜默认路径。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AgentOpenOptions {
     /// 会话数据目录（sessions/<id>.jsonl、spill、jobs 都挂在下面）。
     pub data_dir: PathBuf,
@@ -31,6 +31,25 @@ pub struct AgentOpenOptions {
     pub model: model::DeepSeekConfig,
     /// Agent 行为配置（并发、压缩、spill、指令/skill 根、todo 策略）。
     pub config: AgentConfig,
+    /// T008.2：凭证来源（Keyring 适配器）。None = 没有来源，组装直接失败（F9：不再有固定 key 旧路径）。
+    pub credentials: Option<std::sync::Arc<dyn model::CredentialSource>>,
+}
+
+impl std::fmt::Debug for AgentOpenOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentOpenOptions")
+            .field("data_dir", &self.data_dir)
+            .field("cwd", &self.cwd)
+            .field("resume", &self.resume)
+            .field("model", &self.model)
+            .field("config", &self.config)
+            .field(
+                "credentials",
+                &self.credentials.as_ref().map(|_| "<source>"),
+            )
+            .finish()
+    }
 }
 
 impl Agent {
@@ -43,7 +62,13 @@ impl Agent {
         // 配置在装载时先失败（DSH docs/user/develop/basic/config.md「Fail loudly on invalid
         // configuration」）：不先物化会话文件，也不把半装配状态交给调用方。
         options.config.validate()?;
-        let model = DeepSeek::new(options.model)?;
+        let Some(credentials) = options.credentials else {
+            return Err(AgentError::Model(model::ModelError::new(
+                model::ErrorCode::MissingCredential,
+                "凭证来源缺失（应由 Keyring 适配器提供）",
+            )));
+        };
+        let model = DeepSeek::with_credentials(options.model, credentials)?;
         let tools = ToolSet::builtin();
         match options.resume {
             Some(id) => {

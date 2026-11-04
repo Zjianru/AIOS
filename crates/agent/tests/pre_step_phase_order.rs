@@ -61,7 +61,8 @@ async fn injection_happens_before_compaction_in_same_turn() {
     let agent = Agent::create(
         config,
         agent::Deps {
-            model: model::DeepSeek::new(model_config).unwrap(),
+            model: model::DeepSeek::with_credentials(model_config, common::test_credential())
+                .unwrap(),
             tools: ToolSet::builtin(),
             store,
         },

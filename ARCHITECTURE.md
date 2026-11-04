@@ -26,9 +26,10 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 - **tools**：Tool 接口与 ToolSet、工具批执行（独占屏障/并行池/按模型顺序提交）、内置文件工具与观察策略、spill、后台 job、bash。
 - **agent**：轮次驱动、收件箱、能力注册表与各能力实现；唯一产品组装入口是 Agent::open。
 - **agent 能力**：compaction（自动/溢出/手动）、prune、instructions、skill、todo、ask、spill、reminder、jobs。
+- **credentials**：Keyring 真恢复；age 加密整份存储（0600/0700）、age 身份文件作钥匙（换位置/指回/重新开始）、连接描述不含 key 正文、每请求签发并只追加签发记录、变化通知；数据目录配置只存钥匙位置。model::CredentialSource 是模型出站的凭证接缝：每次 stream 前 issue 一次、只用一次。
 - **service**：载体无关的宿主；对象固定 Kind 根会话，调用面 Call/Response，事件面 ServiceEvent；root 模块负责根会话找回、状态文件与不可用状态；shutdown 做停服务收尾。
 - **web**：axum HTTP/WS 薄适配器与信任栅栏；/connect、/ 换签名 cookie，/api、/ws 只认 cookie；同源托管 web/dist 静态资源（SPA fallback）；ready 帧带协议版本、根状态与上下文。
-- **web/ 前端**：React 19 + Vite；Kind 对话页只走服务方法与事件；只显示接上内核的部分，不带演示开关/脚本；e2e 用真 serve + 假 DeepSeek 回放。
+- **web/ 前端**：React 19 + Vite；Kind 对话页只走服务方法与事件；只显示接上内核的部分，不带演示开关/脚本；Kind 首次使用与设置 › 模型与连接接真 Keyring；e2e 用真 serve + 假 DeepSeek 回放。
 - **cli**：aios-dev 的 chat/run/serve；只把参数/env 变成普通配置数据，不构造模型/工具/存储。
 
 ## 依赖方向
@@ -71,5 +72,6 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
   - sec-fetch-site: cross-site 拒绝；
   - 静态资源只校 Host。
 - **协议只增**：根不可用时除 recheck 外方法回 409 ROOT_UNAVAILABLE；recheck 修复后接管；turn/end 的 cause 只增 credential/model。
+- **设置面协议 v3**：model-settings、connection-save/delete/verify、keyring-relocate/reopen/restart、issues、first-use、session-model-select 只增；设置由 RootHost 直接读 Keyring（根会话坏了也可读），key 只在 ConnectionSaveRequest.apiKey 请求体，响应/事件不含正文；connection-verify 发最小 Messages 请求并写注册器，session-model-select 覆盖下一轮请求 model（D26），设置变化发 keyring/changed 合成事件；RootHost 用 model_factory 惰性解析 Keyring 连接，空库可起 serve、存连接后 recheck 重建 root agent。
 - **CLI/服务入口统一**：写锁冲突映射为 writer-held；停服务先停收新连接，再取消在跑一轮并等收尾，日志完整、锁随 Agent drop 释放。
 - **前端只显示能用的部分**：侧栏与路由固定为接上内核的产品状态，不保留演示开关/脚本；不可达页的假数据不进入真路径。

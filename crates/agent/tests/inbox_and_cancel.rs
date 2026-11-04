@@ -34,7 +34,8 @@ async fn new_agent(
             ..common::isolated_config(data_dir.path())
         },
         Deps {
-            model: DeepSeek::new(model_config(base_url)).unwrap(),
+            model: DeepSeek::with_credentials(model_config(base_url), common::test_credential())
+                .unwrap(),
             tools,
             store,
         },

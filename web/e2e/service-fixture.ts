@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer, request as httpRequest, type Server } from 'node:http';
@@ -128,6 +128,10 @@ export interface KernelFixture {
   baseUrl: string;
   token: string;
   dataDir: string;
+  /** T008.4：假 DeepSeek 的 endpoint（页面连接会被 e2e 改写到它）。 */
+  fakeEndpoint: string;
+  /** T008.4：假 DeepSeek 最近一次请求体里的 model（下一轮生效断言用）。 */
+  lastModel: () => string | null;
   dropProxy?: () => Promise<void>;
   restoreProxy?: () => Promise<void>;
   /// T007 #1：页面开着时重启同一个端口的服务（新进程=新 cookie 钥匙，旧页面会话失效）。
@@ -154,6 +158,8 @@ export interface FixtureOptions {
   rootFault?: 'lost' | 'corrupt';
   /// 先起一个 holder serve 占住写锁，测试 serve 起来会报 busy（说明页用例）。
   busyRoot?: boolean;
+  /// T008.4：不预置 Keyring 连接（首次使用用例）；serve 仍能起（T008.3b）。
+  emptyKeyring?: boolean;
 }
 
 /** 接缝 5：假 DeepSeek 脚本回放 + 真 aios-dev serve（页面也由它同源托管）。 */
@@ -162,13 +168,25 @@ export async function startKernelFixture(
 ): Promise<KernelFixture> {
   let askCount = 0;
   let modelCalls = 0;
+  let lastModel: string | null = null;
   const fake: Server = createServer((req, res) => {
+    if (req.headers['x-api-key'] === 'bad-key') {
+      res.writeHead(401, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'invalid api key', type: 'authentication_error' } }));
+      return;
+    }
     if (req.method === 'POST' && req.url === '/v1/messages') {
       let body = '';
       req.on('data', (chunk: Buffer) => {
         body += chunk.toString();
       });
       req.on('end', () => {
+        try {
+          const parsed = JSON.parse(body) as { model?: string };
+          if (typeof parsed.model === 'string') lastModel = parsed.model;
+        } catch {
+          // 非 JSON 请求不记 model。
+        }
         if (options.failure === 'credential') {
           res.writeHead(401, { 'content-type': 'application/json' });
           res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid api key' } }));
@@ -219,18 +237,23 @@ export async function startKernelFixture(
   }
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
-  const serveArgs = ['serve', '--data-dir', dataDir, '--cwd', dataDir, '--web-dist', path.join(repoRoot, 'web/dist')];
+  const identityPath = path.join(dataDir, 'identity.txt');
+  if (!options.emptyKeyring) {
+    const seed = spawnSync(
+      bin,
+      ['keyring', '--data-dir', dataDir, '--identity', identityPath, 'set', '--id', 'deepseek', '--name', 'DeepSeek', '--model', 'deepseek-flash', '--endpoint', 'http://127.0.0.1:' + String(fakePort)],
+      { input: 'test-key' + String.fromCharCode(10), encoding: 'utf8' },
+    );
+    if (seed.status !== 0) throw new Error('seed keyring failed: ' + String(seed.stderr));
+  }
+  const serveArgs = ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', dataDir, '--web-dist', path.join(repoRoot, 'web/dist')];
   if (options.contextWindow) {
     serveArgs.push('--context-window', String(options.contextWindow));
   }
-  const serviceEnv = {
-    ...process.env,
-    DEEPSEEK_API_KEY: 'test-key',
-    DEEPSEEK_BASE_URL: 'http://127.0.0.1:' + String(fakePort),
-  };
+  const serviceEnv = { ...process.env };
   let holder: ReturnType<typeof spawn> | null = null;
   if (options.busyRoot) {
-    holder = spawn(bin, ['serve', '--data-dir', dataDir, '--cwd', dataDir], {
+    holder = spawn(bin, ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', dataDir], {
       env: serviceEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -354,6 +377,8 @@ export async function startKernelFixture(
     baseUrl,
     token,
     dataDir,
+    fakeEndpoint: 'http://127.0.0.1:' + String(fakePort),
+    lastModel: () => lastModel,
     dropProxy,
     restoreProxy,
     restart,
@@ -442,9 +467,16 @@ export async function startRealKernelFixture(
   await writeFile(path.join(workDir, 'hello.txt'), 'DOD-4-OK' + String.fromCharCode(10));
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
+  const identityPath = path.join(dataDir, 'identity.txt');
+  const seed = spawnSync(
+    bin,
+    ['keyring', '--data-dir', dataDir, '--identity', identityPath, 'set', '--id', 'deepseek', '--name', 'DeepSeek', '--model', 'deepseek-flash', '--endpoint', 'https://api.deepseek.com/anthropic'],
+    { input: apiKey + '\n', encoding: 'utf8' },
+  );
+  if (seed.status !== 0) throw new Error('seed keyring failed: ' + String(seed.stderr));
   const child = spawn(
     bin,
-    ['serve', '--data-dir', dataDir, '--cwd', workDir, '--web-dist', path.join(repoRoot, 'web/dist')],
+    ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', workDir, '--web-dist', path.join(repoRoot, 'web/dist')],
     { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] },
   );
   let output = '';
@@ -472,6 +504,8 @@ export async function startRealKernelFixture(
     ...parsed,
     baseUrl,
     dataDir,
+    fakeEndpoint: '',
+    lastModel: () => null,
     dropProxy: proxy.drop,
     restoreProxy: proxy.restore,
     close: async () => {
@@ -482,3 +516,54 @@ export async function startRealKernelFixture(
   };
 }
 
+/** T008.5 真 key DoD：/tmp/aios-t008-dod，空 Keyring，页面自己填 key。 */
+export async function startRealDodFixture(): Promise<KernelFixture> {
+  const root = process.env.AIOS_DOD_ROOT ?? '/tmp/aios-t008-dod';
+  const workDir = path.join(root, 'work');
+  const dataDir = path.join(root, 'data');
+  await rm(root, { recursive: true, force: true });
+  await mkdir(workDir, { recursive: true });
+  await mkdir(dataDir, { recursive: true });
+  await writeFile(path.join(workDir, 'hello.txt'), 'DOD-T008-OK' + String.fromCharCode(10));
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+  const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
+  const identity = path.join(dataDir, 'identity.txt');
+  const serveEnv = { ...process.env };
+  delete serveEnv.DEEPSEEK_API_KEY;
+  delete serveEnv.DEEPSEEK_BASE_URL;
+  const child = spawn(
+    bin,
+    ['serve', '--data-dir', dataDir, '--identity', identity, '--cwd', workDir, '--web-dist', path.join(repoRoot, 'web/dist')],
+    { env: serveEnv, stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  let output = '';
+  const parsed = await new Promise<{ baseUrl: string; token: string }>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('T008 serve 启动超时: ' + output)), 60_000);
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+      const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)\/?\?token=([0-9a-f-]+)/);
+      if (match) {
+        clearTimeout(timer);
+        resolve({ baseUrl: 'http://127.0.0.1:' + match[1], token: match[2] });
+      }
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      reject(new Error('T008 serve 退出: ' + String(code) + ' ' + output));
+    });
+  });
+  return {
+    ...parsed,
+    dataDir,
+    fakeEndpoint: '',
+    lastModel: () => null,
+    dropProxy: async () => {},
+    restoreProxy: async () => {},
+    close: async () => {
+      child.kill('SIGTERM');
+      if (process.env.AIOS_DOD_KEEP !== '1') {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  };
+}
