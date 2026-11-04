@@ -13,6 +13,7 @@ fn trust() -> Trust {
         std::net::IpAddr::from([127, 0, 0, 1]),
         1417,
         "tok-1".to_owned(),
+        [7u8; 32],
     )
 }
 

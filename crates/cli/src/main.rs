@@ -361,6 +361,10 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         Some(path) => path.clone(),
         None => std::env::current_dir()?,
     };
+    // T008.F11：cookie 签名钥匙是 Keyring 里的一条记录——首次启动自动建，之后每次启动读回；
+    // 删记录/重新开始后下次启动换新，旧页面会话全部失效。只在内存里用，不落日志。
+    let keyring = credentials::Keyring::open(data_dir.clone(), args.common.identity.as_deref())?;
+    let session_secret = keyring.cookie_signing_secret()?;
     // T008.3b：模型配置惰性解析——空 Keyring 也能起服务（首次使用页先显示）；
     // recheck 时工厂重新读当前 Keyring 连接，用新模型重建根会话。
     let (placeholder_config, agent_config) =
@@ -402,6 +406,7 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             host: args.host.clone(),
             port: args.port,
             token: token.clone(),
+            session_secret,
             static_dir,
         },
         host,

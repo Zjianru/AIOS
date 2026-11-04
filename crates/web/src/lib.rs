@@ -41,7 +41,7 @@ pub struct Trust {
     pub bind_ip: IpAddr,
     pub bind_port: u16,
     pub token: String,
-    /// 每进程一份的 cookie 签名钥匙；只放内存，不落盘、不进日志。
+    /// 每次启动从 Keyring 读入的 cookie 签名钥匙；只放内存，不落盘、不进日志。
     session_secret: [u8; 32],
 }
 
@@ -57,11 +57,7 @@ impl std::fmt::Debug for Trust {
 }
 
 impl Trust {
-    pub fn new(bind_ip: IpAddr, bind_port: u16, token: String) -> Self {
-        let mut session_secret = [0u8; 32];
-        ring::rand::SystemRandom::new()
-            .fill(&mut session_secret)
-            .expect("ring 系统随机数不可用");
+    pub fn new(bind_ip: IpAddr, bind_port: u16, token: String, session_secret: [u8; 32]) -> Self {
         Self {
             bind_ip,
             bind_port,
@@ -119,6 +115,8 @@ pub struct ServeOptions {
     pub host: String,
     pub port: u16,
     pub token: String,
+    /// 每次启动从 Keyring 读入的 cookie 签名钥匙（T008.F11）。
+    pub session_secret: [u8; 32],
     /// 同源托管的 web 构建产物目录（T007.2，通常是仓库的 web/dist）；None 时不托管静态文件。
     pub static_dir: Option<PathBuf>,
 }
@@ -956,7 +954,12 @@ pub async fn serve(options: ServeOptions, host: RootHost) -> Result<ServeHandle,
     let addr = listener.local_addr()?;
     let state = Arc::new(AppState {
         host: Arc::new(host),
-        trust: Trust::new(ip, addr.port(), options.token.clone()),
+        trust: Trust::new(
+            ip,
+            addr.port(),
+            options.token.clone(),
+            options.session_secret,
+        ),
         static_dir: options.static_dir.clone(),
     });
     let app = router_with_state(Arc::clone(&state));
@@ -1020,7 +1023,12 @@ mod cookie_red_tests {
     use super::*;
 
     fn trust() -> Trust {
-        Trust::new(IpAddr::from([127, 0, 0, 1]), 1417, "tok-1".to_owned())
+        Trust::new(
+            IpAddr::from([127, 0, 0, 1]),
+            1417,
+            "tok-1".to_owned(),
+            [7u8; 32],
+        )
     }
 
     fn host_headers(authority: &str) -> HeaderMap {

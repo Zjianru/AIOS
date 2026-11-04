@@ -460,14 +460,29 @@ impl Keyring {
 
     /// T008.F11：cookie 签名钥匙——Keyring 里的一条持久记录；没有就新建并写入。
     ///
-    /// skeleton：先每次现生成（行为待红测试后改为持久记录）。
+    /// 只在启动时读一次、用时留在内存；age 密文落盘（不落明文）。
     pub fn cookie_signing_secret(&self) -> Result<[u8; 32], KeyringError> {
-        Ok(random_secret())
+        let _lock = self.lock()?;
+        let mut store = self.load_store()?;
+        if let Some(hex) = store.cookie_secret.as_deref() {
+            return decode_cookie_secret(hex);
+        }
+        let secret = random_secret();
+        store.cookie_secret = Some(encode_cookie_secret(&secret));
+        self.save_store(&store)?;
+        Ok(secret)
     }
 
     /// T008.F11：删除 cookie 签名钥匙记录（下次启动重新生成，旧页面会话全部失效）。
     pub fn delete_cookie_signing_secret(&self) -> Result<bool, KeyringError> {
-        Ok(false)
+        let _lock = self.lock()?;
+        let mut store = self.load_store()?;
+        let existed = store.cookie_secret.take().is_some();
+        if existed {
+            self.save_store(&store)?;
+            self.notify();
+        }
+        Ok(existed)
     }
 
     /// T008.3 增补：只改 endpoint/model，保留已存 key。
@@ -671,6 +686,26 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), KeyringError> {
         let _ = fs::remove_file(&temp_path);
     }
     result
+}
+
+/// T008.F11：cookie 签名钥匙的 hex 编码（存进 age 密文里的 Store）。
+fn encode_cookie_secret(secret: &[u8; 32]) -> String {
+    secret.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// T008.F11：解码 hex 形式的 cookie 签名钥匙。
+fn decode_cookie_secret(hex: &str) -> Result<[u8; 32], KeyringError> {
+    if hex.len() != 64 {
+        return Err(KeyringError::Corrupt("cookie 签名钥匙长度不对".to_owned()));
+    }
+    let mut secret = [0u8; 32];
+    for (index, chunk) in hex.as_bytes().chunks(2).enumerate() {
+        let text = std::str::from_utf8(chunk)
+            .map_err(|_| KeyringError::Corrupt("cookie 签名钥匙不是 hex".to_owned()))?;
+        secret[index] = u8::from_str_radix(text, 16)
+            .map_err(|_| KeyringError::Corrupt("cookie 签名钥匙不是 hex".to_owned()))?;
+    }
+    Ok(secret)
 }
 
 /// T008.F11：cookie 签名钥匙的随机 32 字节（ring 系统随机数）。
