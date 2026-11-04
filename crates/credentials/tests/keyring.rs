@@ -406,6 +406,20 @@ fn 签发记录带归属且视图有界() {
 
 #[test]
 fn 默认钥匙在用户配置目录且不在数据目录() {
-    // T008.F7 骨架：默认位置应是用户配置目录，数据目录里不出现钥匙文件。
-    panic!("T008.F7 skeleton: not implemented");
+    let fixture = Fixture::new();
+    let config_home = fixture._dir.path().join("xdg-config");
+    // 本测试是本进程唯一读取默认配置根的用例；显式设置/恢复 XDG_CONFIG_HOME。
+    unsafe {
+        std::env::set_var("XDG_CONFIG_HOME", &config_home);
+    }
+    let keyring = Keyring::open(&fixture.data_dir, None).expect("open default keyring");
+    unsafe {
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+    let expected = config_home.join("aios").join("keyring").join("identity.txt");
+    assert_eq!(keyring.identity_path(), expected, "默认钥匙应在用户配置目录");
+    assert!(
+        !fixture.data_dir.join("identity.txt").exists(),
+        "数据目录里不应出现钥匙文件"
+    );
 }
