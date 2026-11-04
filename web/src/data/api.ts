@@ -16,8 +16,6 @@ import { kindContext } from './fixtures/context';
 import type { KindContextFixture } from './fixtures/context';
 import { nowFixture } from './fixtures/now';
 import type { NowFixture } from './fixtures/now';
-import { firstUseFixture } from './fixtures/firstUse';
-import type { FirstUseFixture } from './fixtures/firstUse';
 import { COMPACTION_SUMMARY, DEMO_SCRIPTS, defaultScript } from './fixtures/kindLive';
 import type { LiveDemo, LiveScript } from './fixtures/kindLive';
 import { DISCOVERED_MODELS, modelSettingsFixture } from './fixtures/settings';
@@ -287,10 +285,6 @@ export async function getNow(): Promise<NowFixture> {
 }
 
 /** 首次使用的 Kind（§四）：提供方 / 三张起手卡片 / 推荐。 */
-export async function getFirstUse(): Promise<FirstUseFixture> {
-  return transmit(firstUseFixture);
-}
-
 /* ───────────────────────── 设置 › 模型与连接（Keyring） ───────────────────────── */
 
 /**

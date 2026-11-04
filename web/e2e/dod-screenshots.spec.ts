@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { renameSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,7 +7,7 @@ import { startKernelFixture, type KernelFixture } from './service-fixture';
 
 const evidence =
   process.env.AIOS_DOD_EVIDENCE ??
-  path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../aios-work/T007/evidence/dod');
+  path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../aios-work/T008/evidence/dod');
 
 test.describe.configure({ mode: 'serial' });
 test.setTimeout(60_000);
@@ -21,17 +22,26 @@ async function shot(page: import('@playwright/test').Page, name: string) {
 }
 
 /// DoD7：五种说明页各一张截图（造法见 evidence/dod/README.md）。
-/// T007 #1：令牌失效用真能走到的路——页面开着 → 重启服务（新进程新 cookie 钥匙）→ 下一次调用 401。
-test('DoD7 令牌失效：页面开着重启服务后下一次请求 401', async ({ page }) => {
+/// T008 #1：令牌说明页用真能走到的路——页面开着 → Keyring 重新开始（含 cookie 签名钥匙）→ 重启服务 → 下一次调用 401。
+test('DoD7 令牌失效：Keyring 重新开始并重启服务后页面 401', async ({ page }) => {
   const fixture = await startKernelFixture();
   try {
+    // 先挪走钥匙文件，让设置页出现「读不出」横幅，再点「重新开始」清空 Keyring。
+    const identity = path.join(fixture.dataDir, 'identity.txt');
+    const moved = path.join(fixture.dataDir, 'moved-identity.txt');
+    renameSync(identity, moved);
     await page.goto(urlOf(fixture));
-    await expect(page.getByPlaceholder('和 Kind 说…')).toBeVisible({ timeout: 30_000 });
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    const banner = page.locator('[data-settings="keyring-broken"]');
+    await expect(banner).toBeVisible({ timeout: 20_000 });
+    await banner.getByRole('button', { name: '找不回了，重新开始' }).click();
+    await page.getByRole('button', { name: '重新开始', exact: true }).click();
+    await page.getByRole('button', { name: 'Kind', exact: true }).click();
     await fixture.restart?.();
-    // 页面开着 → 重启服务（新进程=新 cookie 钥匙）→ 断线 recheck 的下一次 /api 收到 401 → 令牌说明页。
+    // 新进程从空 Keyring 新建 cookie 签名钥匙；页面旧 cookie 在断线 recheck 时 401 → 令牌说明页。
     const gate = page.locator('[data-kind="kernel-gate"]');
-    await expect(gate).toHaveAttribute('data-state', 'token', { timeout: 40_000 });
-    await expect(page.getByText('这个地址已经失效')).toBeVisible();
+    await expect(gate).toHaveAttribute('data-state', 'token', { timeout: 45_000 });
+    await expect(page.getByText('这个页面需要重新打开')).toBeVisible();
     await shot(page, 'dod7-1-token.png');
   } finally {
     await fixture.close();

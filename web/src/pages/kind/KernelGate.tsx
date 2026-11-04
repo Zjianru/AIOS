@@ -91,11 +91,12 @@ export function KernelGate({
     },
     token: {
       icon: <KeyRound className="size-4" />,
-      title: '这个地址已经失效',
+      title: '这个页面需要重新打开',
       body: (
         <>
-          <p>内核每次启动都会换一个令牌。这个页面用的还是上一次的，服务拒绝了它。</p>
-          <p className="mt-2">用终端里最新打印出来的地址重新打开这一页。</p>
+          <p>这个页面的登录已经失效：登录满 30 天会过期，Keyring 重新开始以后也会失效。服务不再认它。</p>
+          <p className="mt-2">用终端里打印出来的地址重新打开这一页：</p>
+          <Block>{'AIOS 已启动：http://127.0.0.1:4417/?token=…'}</Block>
         </>
       ),
     },
