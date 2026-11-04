@@ -8,8 +8,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use age::secrecy::ExposeSecret;
-use zeroize::Zeroize;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 /// Keyring 的错误。错误文本里不带 key 正文。
 #[derive(Debug, thiserror::Error)]

@@ -294,7 +294,9 @@ fn 并发写会等锁而不是丢更新() {
     );
     drop(held);
     assert!(
-        receiver.recv_timeout(Duration::from_secs(2)).expect("worker result"),
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("worker result"),
         "释放锁后保存应成功"
     );
     worker.join().expect("worker join");
