@@ -278,6 +278,7 @@ mod tests {
         });
         let client = reqwest::Client::builder()
             .timeout(Duration::from_millis(100))
+            .no_proxy()
             .build()
             .unwrap();
         let error = client
@@ -296,7 +297,7 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let error = client
             .get(format!("http://127.0.0.1:{port}/v1/messages"))
             .send()
