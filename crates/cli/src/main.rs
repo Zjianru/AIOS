@@ -262,7 +262,12 @@ impl model::CredentialSource for KeyringCredentialSource {
                     }
                     _ => format!("凭证不可用：{error}"),
                 };
-                model::ModelError::new(model::ErrorCode::MissingCredential, message)
+                let code = match &error {
+                    credentials::KeyringError::KeyFileMissing(_)
+                    | credentials::KeyringError::Crypto(_) => model::ErrorCode::Keyring,
+                    _ => model::ErrorCode::MissingCredential,
+                };
+                model::ModelError::new(code, message)
             })
     }
 }

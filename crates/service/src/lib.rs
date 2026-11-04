@@ -792,7 +792,7 @@ fn failure_cause(kind: &session::EventKind) -> Option<FailureCause> {
         return None;
     };
     Some(match error.code.as_str() {
-        "MISSING_CREDENTIAL" if error.message.contains("Keyring") => FailureCause::Keyring,
+        "KEYRING" => FailureCause::Keyring,
         "AUTH" | "MISSING_CREDENTIAL" => FailureCause::Credential,
         _ => FailureCause::Model,
     })
@@ -1332,7 +1332,7 @@ mod t007_protocol_tests {
             reason: session::TurnEndReason::Error {
                 error: session::LlmFailure {
                     message: "Keyring 无法签发：钥匙文件不在".to_owned(),
-                    code: "MISSING_CREDENTIAL".to_owned(),
+                    code: "KEYRING".to_owned(),
                 },
             },
         };
@@ -1388,7 +1388,10 @@ mod f5_failure_cause_tests {
             "KEYRING 码必须映射 Keyring，不能看消息文本"
         );
         assert_eq!(
-            failure_cause(&turn_end("MISSING_CREDENTIAL", "Keyring 无法签发：钥匙文件不在")),
+            failure_cause(&turn_end(
+                "MISSING_CREDENTIAL",
+                "Keyring 无法签发：钥匙文件不在"
+            )),
             Some(FailureCause::Credential),
             "消息里有 Keyring 也不能改变码的分类"
         );
