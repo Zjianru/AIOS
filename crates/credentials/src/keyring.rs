@@ -154,6 +154,9 @@ pub struct KeyringView {
 struct Store {
     #[serde(default)]
     connections: Vec<StoredConnection>,
+    /// T008.F11：cookie 签名钥匙（hex 编码；age 密文落盘，不落明文）。
+    #[serde(default)]
+    cookie_secret: Option<String>,
     #[serde(default)]
     issues: Vec<IssueRecord>,
     #[serde(default)]
@@ -455,6 +458,18 @@ impl Keyring {
         Ok(())
     }
 
+    /// T008.F11：cookie 签名钥匙——Keyring 里的一条持久记录；没有就新建并写入。
+    ///
+    /// skeleton：先每次现生成（行为待红测试后改为持久记录）。
+    pub fn cookie_signing_secret(&self) -> Result<[u8; 32], KeyringError> {
+        Ok(random_secret())
+    }
+
+    /// T008.F11：删除 cookie 签名钥匙记录（下次启动重新生成，旧页面会话全部失效）。
+    pub fn delete_cookie_signing_secret(&self) -> Result<bool, KeyringError> {
+        Ok(false)
+    }
+
     /// T008.3 增补：只改 endpoint/model，保留已存 key。
     pub fn update_connection(
         &self,
@@ -656,6 +671,17 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), KeyringError> {
         let _ = fs::remove_file(&temp_path);
     }
     result
+}
+
+/// T008.F11：cookie 签名钥匙的随机 32 字节（ring 系统随机数）。
+fn random_secret() -> [u8; 32] {
+    use ring::rand::SecureRandom;
+
+    let mut secret = [0u8; 32];
+    ring::rand::SystemRandom::new()
+        .fill(&mut secret)
+        .expect("ring 系统随机数不可用");
+    secret
 }
 
 fn now_seconds() -> u64 {

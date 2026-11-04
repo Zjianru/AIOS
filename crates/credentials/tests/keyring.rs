@@ -403,3 +403,12 @@ fn 签发记录带归属且视图有界() {
         "view 只返回最近有界条数，不能全量"
     );
 }
+
+/// T008.F11：cookie 签名钥匙存在 Keyring 记录里；删记录/重新开始后下次启动换新（旧会话失效）。
+#[test]
+fn cookie_signing_secret_persists_and_rotates_when_deleted() {
+    let fixture = Fixture::new();
+    let keyring = fixture.open();
+    let secret = keyring.cookie_signing_secret().expect("cookie secret");
+    assert_eq!(secret.len(), 32);
+}

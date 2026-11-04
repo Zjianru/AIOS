@@ -483,6 +483,7 @@ name = "credentials"
 version = "0.0.0"
 dependencies = [
  "age",
+ "ring",
  "serde",
  "serde_json",
  "tempfile",
