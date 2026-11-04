@@ -12,7 +12,7 @@ import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
 import type { GateDetail, GateState } from './KernelGate';
 import { reconnectDelayMs } from '@/data/reconnect';
 import { getModelSettings } from '@/data/keyring';
-import { emptyUsage, mergeUsage, modelLabel, reasoningSpanMs, thinkingSeconds as thinkingSecondsOf, type UsageTotals } from '@/data/turnUsage';
+import { contextPercent, contextTokens, emptyUsage, mergeUsage, modelLabel, reasoningSpanMs, thinkingSeconds as thinkingSecondsOf, type UsageTotals } from '@/data/turnUsage';
 import { setHostHome } from '@/data/service';
 import { go } from '@/app/navigate';
 import type { AskAnswer, AskQuestion, FailureCause } from '@/data/fixtures/kindLive';
@@ -44,8 +44,10 @@ export type QuestionView =
 /** 压缩：在对话里是一条分隔线，不是一轮。 */
 export interface CompactionView {
   auto: boolean;
-  before: number;
-  after: number;
+  /** T010.4：压缩前占窗口的百分比（窗口/前后任一拿不到就不显示）。 */
+  before?: number;
+  /** T010.4：压缩后第一条响应占窗口的百分比。 */
+  after?: number;
   summary: string;
 }
 
@@ -144,6 +146,8 @@ interface KindState {
   /** 演示用：下一条消息送不到。 */
   /** T010.3：模型 id → 显示名（来自模型设置；拿不到就用 id）。 */
   modelNames: Record<string, string>;
+  /** T010.4：模型 id → contextWindow（模型设置里的窗口；拿不到就不显示压缩占用）。 */
+  modelWindows: Record<string, number>;
   /** 当前用的模型（底栏的模型选择，T008）。 */
   model: { connectionId: string; modelId: string; label: string };
   /** T008.4：Kind 首屏引导：先看是不是空库（首次使用），否则加载对话。 */
@@ -291,6 +295,7 @@ function openSocket(): void {
 let liveEvents: ServiceEvent[] = [];
 let contextWindow = 0;
 let pendingCompactionAuto = true;
+let livePendingCompaction: { id: string; window?: number } | null = null;
 (window as unknown as { __derive?: unknown }).__derive = (events: ServiceEvent[]) => deriveTurnViews(events);
 let liveTurn: number | null = null;
 let liveStream = '';
@@ -341,8 +346,8 @@ function summaryTextOf(data: Record<string, unknown>): string {
     .join('');
 }
 
-function compactionViewOf(data: Record<string, unknown>, auto: boolean) {
-  return { auto, before: 0, after: 0, summary: summaryTextOf(data) };
+function compactionViewOf(data: Record<string, unknown>, auto: boolean): CompactionView {
+  return { auto, summary: summaryTextOf(data) };
 }
 
 /** 日志事件 live：追加进本轮事件，重建 view；turn/end 时收掉流式文本。 */
@@ -361,6 +366,8 @@ function applyLiveEvent(event: ServiceEvent): void {
         ? pendingCompactionAuto
         : false;
     const compaction = compactionViewOf(event.data, auto);
+    const window = useKindStore.getState().modelWindows[String(event.data.model ?? '')];
+    compaction.before = contextPercent(contextTokens(event.data.usage), window) ?? undefined;
     const compactionId = String(event.data.compactionId ?? String(event.seq));
     const dividerTurn = turn === null ? null : turn + 0.5;
     useKindStore.setState((state) => {
@@ -387,6 +394,7 @@ function applyLiveEvent(event: ServiceEvent): void {
         delivery: null,
         stoppedAt: null,
       };
+      livePendingCompaction = { id, window };
       const exists = state.views.some((item) => item.id === id);
       const views = (exists ? state.views.map((item) => (item.id === id ? view : item)) : state.views.concat(view)).sort(
         (left, right) => Number(left.id.split('-')[1]) - Number(right.id.split('-')[1]),
@@ -396,6 +404,19 @@ function applyLiveEvent(event: ServiceEvent): void {
     return;
   }
   if (turn === null) return;
+  // T010.4：压缩后第一条 assistant/message 算「压缩后」占用。
+  if (event.type === 'assistant/message' && livePendingCompaction) {
+    const pending = livePendingCompaction;
+    livePendingCompaction = null;
+    const after = contextPercent(contextTokens(event.data.usage), pending.window) ?? undefined;
+    useKindStore.setState((state) => {
+      const views = state.views.map((item) => {
+        if (item.id !== pending.id || !item.compaction) return item;
+        return { ...item, compaction: { ...item.compaction, after } };
+      });
+      return { views, byId: indexOf(views) };
+    });
+  }
   if (event.type === 'turn/start') {
     liveTurn = turn;
   }
@@ -467,6 +488,8 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     stoppedAt: string | null;
   }
   const turns = new Map<number, Raw>();
+  // T010.4：每次压缩摘要等「压缩后第一条响应」来算 after。
+  const pendingCompaction = new Map<number, { view: CompactionView; window?: number }>();
   const ensure = (turn: number): Raw => {
     let raw = turns.get(turn);
     if (!raw) {
@@ -567,6 +590,11 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         raw.usage = mergeUsage(raw.usage, data.usage);
         raw.modelId = modelIdOf(data.message) ?? raw.modelId;
         raw.reasoningMs += reasoningSpanMs(data.stream);
+        const pending = pendingCompaction.get(turn);
+        if (pending) {
+          pending.view.after = contextPercent(contextTokens(data.usage), pending.window) ?? undefined;
+          pendingCompaction.delete(turn);
+        }
         raw.status = 'inProgress';
         raw.retry = null;
         break;
@@ -693,7 +721,11 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         const raw = ensure(turn);
         const auto =
           data.sourceCommandId === undefined || data.sourceCommandId === null;
-        raw.compaction = compactionViewOf(data, auto);
+        const view = compactionViewOf(data, auto);
+        const window = useKindStore.getState().modelWindows[String(data.model ?? '')];
+        view.before = contextPercent(contextTokens(data.usage), window) ?? undefined;
+        raw.compaction = view;
+        pendingCompaction.set(turn, { view, window });
         break;
       }
       default:
@@ -757,23 +789,30 @@ export const useKindStore = create<KindState>()((set, get) => ({
   usage: 46,
   compacting: false,
   modelNames: {},
+  modelWindows: {},
   model: DEMO_MODEL,
 
   bootstrap: async () => {
-    void getModelSettings()
-      .then((view) => {
-        const names: Record<string, string> = {};
-        for (const connection of view.connections) {
-          for (const model of connection.models) if (model.name) names[model.id] = model.name;
+    try {
+      const view = await getModelSettings();
+      const names: Record<string, string> = {};
+      const windows: Record<string, number> = {};
+      for (const connection of view.connections) {
+        for (const model of connection.models) {
+          if (model.name) names[model.id] = model.name;
+          if (model.contextWindow) windows[model.id] = model.contextWindow;
         }
-        for (const provider of view.catalog) {
-          for (const model of provider.defaultModels) if (model.name) names[model.id] = model.name;
+      }
+      for (const provider of view.catalog) {
+        for (const model of provider.defaultModels) {
+          if (model.name) names[model.id] = model.name;
+          if (model.contextWindow) windows[model.id] = model.contextWindow;
         }
-        set({ modelNames: names });
-      })
-      .catch(() => {
-        // 设置读不到时模型名退回 id（日志里的事实还在）。
-      });
+      }
+      set({ modelNames: names, modelWindows: windows });
+    } catch {
+      // 设置读不到时模型名退回 id、压缩占用不显示（日志里的事实还在）。
+    }
     try {
       const first = await fetchFirstUse();
       if (first.firstUse) {

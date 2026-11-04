@@ -91,6 +91,23 @@ export function reasoningSpanMs(stream: unknown): number {
   return last - first;
 }
 
+/** 一次摘要请求/一条回答占的 context：输入 + 缓存读 + 缓存写。 */
+export function contextTokens(usage: unknown): number {
+  if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return 0;
+  const record = usage as Record<string, unknown>;
+  const value = (name: string) => {
+    const number = record[name];
+    return typeof number === 'number' ? number : 0;
+  };
+  return value('inputTokens') + value('cacheReadTokens') + value('cacheWriteTokens');
+}
+
+/** context ÷ 窗口，四舍五入到整数百分比；窗口未知/0 → null（不显示占用）。 */
+export function contextPercent(context: number, window: number | undefined): number | null {
+  if (!window || window <= 0) return null;
+  return Math.round((context / window) * 100);
+}
+
 /** 模型显示名：在模型设置的条目里找显示名，找不到就用 id。 */
 export function modelLabel(modelId: string | null | undefined, names: Record<string, string>): string {
   if (!modelId) return '模型服务';
