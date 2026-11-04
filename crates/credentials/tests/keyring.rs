@@ -260,3 +260,15 @@ fn 两个实例在换位置后都恢复且能签发() {
         "指回后 first 应还能签发"
     );
 }
+
+#[test]
+fn 并发写会等锁而不是丢更新() {
+    // T008.F3 骨架：外部持有 keyring.lock 时，保存操作必须等锁，而不是直接写回旧状态。
+    panic!("T008.F3 skeleton: not implemented");
+}
+
+#[test]
+fn 签发值用完清零() {
+    // T008.F3 骨架：IssuedSecret 显式清零后内存里不能还是原文。
+    panic!("T008.F3 skeleton: not implemented");
+}
