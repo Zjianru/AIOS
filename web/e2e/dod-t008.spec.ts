@@ -105,7 +105,10 @@ test('DoD4 真 key：删 key 凭证失败、挪钥匙 Keyring 失败、指回恢
     await page.getByRole('button', { name: 'Kind', exact: true }).click();
     await page.getByPlaceholder('和 Kind 说…').fill('只回复 DOD4-OK');
     await page.getByRole('button', { name: '发送', exact: true }).click();
-    await expect(page.getByText('DOD4-OK', { exact: false })).toBeVisible({ timeout: 180_000 });
+    // L3：只断言最后一条 assistant 回答；用户消息里也含 DOD4-OK，不能算。
+    const recovered = page.locator('[data-kind="assistant-answer"]').last();
+    await expect(recovered).toContainText('DOD4-OK', { timeout: 180_000 });
+    await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
     await page.screenshot({ path: path.join(evidence, 'dod4-recovered.png'), fullPage: true });
   } finally {
     await fixture.close();
