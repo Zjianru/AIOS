@@ -152,7 +152,11 @@ export async function compactThread(commandId: string): Promise<void> {
 }
 
 export async function recheckRoot(): Promise<ServiceRootState> {
-  const response = await post<{ root: ServiceRootState }>({ method: 'recheck' });
+  const response = await post<{ root: ServiceRootState; host?: { home?: string } }>({
+    method: 'recheck',
+  });
+  // T009.5：根不可用时页面没有 ready 帧；recheck 也带 host.home，说明页的路径照样缩写。
+  setHostHome(response.host?.home);
   return response.root;
 }
 

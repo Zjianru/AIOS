@@ -18,6 +18,7 @@ import {
   addConnection, checkConnection, discoverModels, getModelSettings, moveKeyFile, relinkKeyFile, removeConnection,
   KERNEL_PROVIDERS, resetKeyring, revokeKey, updateConnection,
 } from '@/data/keyring';
+import { displayPath } from '@/data/service';
 import type { ConnectionView, ModelRow, ModelSettingsView } from '@/data/fixtures/settings';
 import { PROTOCOL_LABEL } from '@/data/fixtures/settings';
 import {
@@ -544,7 +545,7 @@ function KeyringBroken({ view, onView }: { view: ModelSettingsView; onView: (vie
         <div className="min-w-0 text-2 leading-5">
           <div className="text-3 text-ink">Keyring 现在读不出来</div>
           <p className="mt-0.5 text-ink-2">
-            加密钥匙 <span className="brand-type">{view.keyFile.path}</span>：{view.keyFile.problem}。
+            加密钥匙 <span className="brand-type">{displayPath(view.keyFile.path)}</span>：{view.keyFile.problem}。
             所有提供商都暂时不能用；AIOS 不会改用环境变量或别处的密钥。
           </p>
         </div>
@@ -628,7 +629,7 @@ function KeyringSection({ view, onView }: { view: ModelSettingsView; onView: (vi
             </div>
           ) : (
             <div className="mt-2 flex items-center gap-2 text-2">
-              <span className={cn('brand-type truncate', view.keyFile.problem ? 'text-ink-3 line-through' : 'text-ink-2')}>{view.keyFile.path}</span>
+              <span className={cn('brand-type truncate', view.keyFile.problem ? 'text-ink-3 line-through' : 'text-ink-2')}>{displayPath(view.keyFile.path)}</span>
               {view.keyFile.problem ? <span className="shrink-0 text-fail">{view.keyFile.problem}</span> : null}
             </div>
           )}

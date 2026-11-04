@@ -260,6 +260,9 @@ pub struct RecheckRequest {}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecheckResponse {
     pub root: RootState,
+    /// T009.5：根不可用时没有 ready 帧，页面靠这里的 host.home 缩写说明页里的路径。
+    #[serde(default)]
+    pub host: HostLocation,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -709,6 +712,7 @@ impl ServiceHost {
             // T007.2：recheck 只对 RootHost 有意义；裸 ServiceHost 直接回根状态 ok（宿主不回退）。
             Call::Recheck(_) => Ok(Response::Recheck(RecheckResponse {
                 root: RootState::Ok,
+                host: HostLocation::default(),
             })),
             // T008.3：设置接口由 RootHost 提供；裸宿主没有 Keyring。
             Call::ModelSettings(_)
@@ -1370,7 +1374,8 @@ impl RootHost {
     pub async fn dispatch(&self, call: Call) -> Result<Response, ServiceError> {
         if matches!(call, Call::Recheck(_)) {
             let root = self.recheck().await;
-            return Ok(Response::Recheck(RecheckResponse { root }));
+            let host = self.info().host;
+            return Ok(Response::Recheck(RecheckResponse { root, host }));
         }
         match call {
             Call::ModelSettings(_) => self.model_settings().await.map(Response::ModelSettings),

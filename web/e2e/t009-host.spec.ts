@@ -10,8 +10,9 @@ test('对话丢失的日志路径用 ~/ 缩写', async ({ page }) => {
   try {
     await page.goto(urlOf(fixture, 'kind'));
     await expect(page.getByText('Kind 的对话找不到了')).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByText('~/kind-root.json')).toBeVisible();
-    await expect(page.getByText(fixture.dataDir + '/kind-root.json')).toHaveCount(0);
+    // 丢失的是会话日志文件：路径在 ~/sessions/… 下；用 dataDir 作 HOME 时显示 ~/…
+    await expect(page.getByText(/^~\/sessions\/.+\.jsonl$/)).toBeVisible();
+    await expect(page.getByText(fixture.dataDir + '/sessions/')).toHaveCount(0);
   } finally {
     await fixture.close();
   }
@@ -36,10 +37,14 @@ test('关闭面板的读屏播报是中文', async ({ page }) => {
   try {
     await page.goto(urlOf(fixture, 'kind'));
     await expect(page.getByPlaceholder('和 Kind 说…')).toBeVisible({ timeout: 30_000 });
-    await page.getByRole('button', { name: /关闭.*聚焦/ }).click();
-    const live = page.locator('[aria-live]');
-    await expect(live.first()).toContainText('关闭', { timeout: 10_000 });
-    await expect(live.first()).not.toContainText('closed');
+    // 关掉「对话」面板：关闭动作在标签内（默认悬停才显形，直接派发点击）。
+    const tab = page.locator('.dv-tab').filter({ hasText: '对话' }).first();
+    await tab.locator('.dv-default-tab-action').dispatchEvent('click');
+    // dockview 有两个内部播报区（polite/assertive）；断言其中一条是中文，且没有内置英文。
+    await expect(page.locator('.dv-live-region').filter({ hasText: '关闭了 对话' })).toHaveCount(1, {
+      timeout: 10_000,
+    });
+    await expect(page.locator('.dv-live-region').filter({ hasText: 'closed' })).toHaveCount(0);
   } finally {
     await fixture.close();
   }

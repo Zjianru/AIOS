@@ -4,6 +4,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { displayPath } from '@/data/service';
 import { CircleAlert, FileWarning, KeyRound, Lock, PlugZap, RotateCw } from 'lucide-react';
 
 export type GateState = 'unreachable' | 'token' | 'lost' | 'broken' | 'busy';
@@ -63,7 +64,8 @@ export function KernelGate({
   onRecheck: () => Promise<void> | void;
 }) {
   const left = useCountdown(state === 'unreachable', 5);
-  const path = detail?.path;
+  // T009.5：显示的路径用 ~/ 缩写；拼给服务端的路径不变。
+  const path = detail?.path ? displayPath(detail.path) : undefined;
 
   // 「连不上服务」时页面每 5 秒自己再试一次。
   useEffect(() => {
