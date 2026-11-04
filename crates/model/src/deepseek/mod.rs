@@ -30,7 +30,10 @@ pub struct DeepSeek {
     url: reqwest::Url,
     credentials: Arc<dyn CredentialSource>,
     issue_context: Arc<Mutex<CredentialContext>>,
-    model_override: Arc<Mutex<Option<String>>>,
+    /// 下一轮开始时要用的模型（set_model 只写这里）。
+    next_model: Arc<Mutex<Option<String>>>,
+    /// 本轮冻结的模型；begin_turn 时从 next_model 复制，stream 只读这里。
+    turn_model: Arc<Mutex<Option<String>>>,
 }
 
 impl fmt::Debug for DeepSeek {
@@ -63,7 +66,8 @@ impl DeepSeek {
             url,
             credentials,
             issue_context: Arc::new(Mutex::new(CredentialContext::default())),
-            model_override: Arc::new(Mutex::new(None)),
+            next_model: Arc::new(Mutex::new(None)),
+            turn_model: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -82,7 +86,8 @@ impl DeepSeek {
             url,
             credentials,
             issue_context: Arc::new(Mutex::new(CredentialContext::default())),
-            model_override: Arc::new(Mutex::new(None)),
+            next_model: Arc::new(Mutex::new(None)),
+            turn_model: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -97,10 +102,22 @@ impl DeepSeek {
         }
     }
 
-    /// 换模型：下一轮请求生效，正在跑的请求不受影响（D26）。骨架期先保存、不生效。
+    /// 换模型：只改下一轮；本轮冻结的模型在 begin_turn 时确定（D26）。
     pub fn set_model(&self, model: String) {
-        if let Ok(mut current) = self.model_override.lock() {
+        if let Ok(mut current) = self.next_model.lock() {
             *current = Some(model);
+        }
+    }
+
+    /// 本轮开始时冻结模型；stream 内不再读 next_model。
+    pub fn begin_turn(&self) {
+        let next = self
+            .next_model
+            .lock()
+            .map(|model| model.clone())
+            .unwrap_or(None);
+        if let Ok(mut current) = self.turn_model.lock() {
+            *current = next;
         }
     }
 
@@ -151,7 +168,7 @@ impl DeepSeek {
             .unwrap_or_default();
         let api_key = self.credentials.issue("model-request", &context)?;
         let mut effective = self.config.clone();
-        if let Ok(current) = self.model_override.lock()
+        if let Ok(current) = self.turn_model.lock()
             && let Some(model) = current.as_deref()
         {
             effective.model = model.to_owned();

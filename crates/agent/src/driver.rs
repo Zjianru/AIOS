@@ -827,6 +827,7 @@ async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
     let mut step = 0u64;
     let turn = current_turn + 1;
     inner.append(&[EventKind::TurnStart { turn }]).await?;
+    inner.model.begin_turn();
     {
         let mut state = inner.state.lock().expect("agent 状态锁被毒化");
         if let Phase::Running { turn: current, .. } = &mut state.phase {
