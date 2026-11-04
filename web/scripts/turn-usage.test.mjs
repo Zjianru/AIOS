@@ -47,5 +47,13 @@ assert.equal(
   ]),
   500,
 );
+// spec：用 time0 和 dt 算跨度；两段 reasoning 中间隔 5 秒，间隔也要算进去。
+assert.equal(
+  reasoningSpanMs([
+    { type: 'reasoning-chunks', time0: 1_000, index: 0, dt: [200], texts: ['先'] },
+    { type: 'reasoning-chunks', time0: 7_000, index: 0, dt: [], texts: ['后'] },
+  ]),
+  6_000,
+);
 
 console.log('turn-usage 单测通过（清单 4/5/6 的数据层部分）');
