@@ -7,8 +7,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use model::{
-    AssistantStreamAccumulator, BlockType, CancelToken, ContentBlock, DeepSeek, ErrorCode,
-    FinishReason, Message, ModelError, StreamChunk, TimedStreamChunk, Usage, UserMessage,
+    AssistantStreamAccumulator, BlockType, CancelToken, ContentBlock, CredentialContext, DeepSeek,
+    ErrorCode, FinishReason, Message, ModelError, StreamChunk, TimedStreamChunk, Usage,
+    UserMessage,
 };
 use session::{
     AbortCause, EventKind, InboxTarget, LlmFailure, RetryId, RetryMode, SessionId, SessionStore,
@@ -1080,6 +1081,10 @@ async fn run_step(
                 messages: &messages,
             })
             .await?;
+        inner.model.set_issue_context(CredentialContext {
+            run: Some(inner.id().as_str().to_owned()),
+            turn: Some(turn),
+        });
         let mut stream = match inner.model.stream(&messages, &tool_schemas, &cancel).await {
             Ok(stream) => stream,
             Err(error) => {
