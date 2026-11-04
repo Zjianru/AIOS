@@ -219,9 +219,6 @@ function ConnectForm({ onConnected }: { onConnected: () => void }) {
           </div>
         </div>
 
-        <p className="mt-4 text-1 leading-4 text-ink-3">
-          首次使用：没接模型之前，Kind 只能做这一件事——把模型接上。这里存的密钥和「设置 › 模型与连接」是同一份。
-        </p>
       </div>
     </div>
   );
@@ -345,9 +342,6 @@ function ReadyStep({ data }: { data: FirstUseFixture }) {
         )}
       </div>
 
-      <p className="mt-8 border-t border-line pt-2 text-1 leading-4 text-ink-3">
-        首次使用：起手卡片对应真实能力，不做功能导览；推荐只是推荐，不自动改设置。
-      </p>
     </div>
   );
 }

@@ -236,9 +236,6 @@ function ProjectMainPane() {
           )}
         </section>
 
-        <p className="mt-6 border-t border-line pt-2 text-1 leading-4 text-ink-3">
-          项目页：里程碑把任务分段；里程碑没通过时后续任务停下，进了「等你决定」。
-        </p>
       </div>
       <StartThingDialog open={startOpen} onOpenChange={setStartOpen} />
     </div>
