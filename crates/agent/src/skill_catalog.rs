@@ -8,6 +8,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+use crate::warn::warn;
 use model::{Message, MessageSource, SkillCatalogEntry};
 use tools::{catalog_description, discover_skill_catalog};
 
@@ -48,7 +49,7 @@ impl SkillCatalogState {
             let text = warning.message.clone();
             if self.logged_warnings.insert(text.clone()) {
                 // AIOS 没有 logger 设施（T006.17 日志面），先落 stderr，不静默吞。
-                eprintln!("[skill] {text}");
+                warn(format!("[skill] {text}"));
             }
         }
         let entries: Vec<SkillCatalogEntry> = discovery

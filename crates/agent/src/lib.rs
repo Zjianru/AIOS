@@ -19,6 +19,7 @@ mod skill_capability;
 mod skill_catalog;
 mod spill_capability;
 mod todo_capability;
+mod warn;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,6 +32,7 @@ pub use assembly::AgentOpenOptions;
 pub use error::{AgentError, ManualCompactionErrorCode};
 pub use inbox::Delivery;
 pub use instructions::{MAX_CHAIN_BYTES, MAX_SOURCE_BYTES};
+pub use warn::{WarningHook, set_warning_hook};
 
 /// 按 provider/model 覆盖压缩策略（DSH compaction-basic 的 modelPolicies；只覆盖显式给出的字段）。
 #[derive(Debug, Clone, PartialEq)]

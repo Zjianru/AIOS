@@ -15,6 +15,7 @@ use tokio::sync::mpsc;
 
 use crate::capabilities::LoopAccess;
 use crate::driver::Inner;
+use crate::warn::warn;
 use crate::{AgentError, AgentEvent, JobStatus};
 
 /// DSH tool-jobs `inlineOutputBytes` 默认值：完成通知内联输出的字节上限。
@@ -53,7 +54,7 @@ pub(crate) fn install(inner: &Arc<Inner>) {
             match message {
                 Lifecycle::Settled(settled) => {
                     if let Err(error) = inner.append(&[settled_event(&settled)]).await {
-                        eprintln!("{}", lifecycle_record_warning(&settled.id, &error));
+                        warn(lifecycle_record_warning(&settled.id, &error));
                     }
                     if inner
                         .tool_session()
@@ -71,7 +72,7 @@ pub(crate) fn install(inner: &Arc<Inner>) {
                     if let Err(error) = deliver(inner.as_ref(), &settled).await {
                         // 后台边界：没有同步调用方接错误；投递失败留痕但不打断唤醒
                         // （T006.2a known：通知丢失，进程继续；T006.19 更正 ③）。
-                        eprintln!("{}", lifecycle_notify_warning(&settled.id, &error));
+                        warn(lifecycle_notify_warning(&settled.id, &error));
                     }
                     inner.wake();
                 }

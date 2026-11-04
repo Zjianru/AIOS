@@ -397,6 +397,18 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             ("dataDir", serde_json::json!(data_dir.display().to_string())),
         ],
     );
+    // T011.5：agent 的警告（五处 eprintln 出口）同时记成监控 ops；标准错误照旧。
+    {
+        let monitor_for_agent = monitor.clone();
+        agent::set_warning_hook(Arc::new(move |message: &str| {
+            record_ops(
+                &monitor_for_agent,
+                "agent-warn",
+                Severity::Warn,
+                vec![("message", serde_json::json!(message))],
+            );
+        }));
+    }
     // T008.F11：cookie 签名钥匙是 Keyring 里的一条记录——首次启动自动建，之后每次启动读回；
     // 删记录/重新开始后下次启动换新，旧页面会话全部失效。只在内存里用，不落日志。
     let keyring =
