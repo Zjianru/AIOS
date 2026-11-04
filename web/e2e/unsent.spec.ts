@@ -1,5 +1,5 @@
 import { test, expect, type APIRequestContext } from '@playwright/test';
-import { startKernelFixture, type KernelFixture } from './service-fixture';
+import { apiPost, startKernelFixture, type KernelFixture } from './service-fixture';
 import { failNextSend } from './network';
 
 let fixture: KernelFixture;
@@ -13,10 +13,7 @@ test.afterAll(async () => {
 });
 
 async function userMessages(request: APIRequestContext, text: string): Promise<number> {
-  const response = await request.post(
-    `${fixture.baseUrl}/api?token=${encodeURIComponent(fixture.token)}`,
-    { data: { method: 'follow', lastSeq: 0 } },
-  );
+  const response = await apiPost(request, fixture, { method: 'follow', lastSeq: 0 });
   const body = await response.json();
   return (body.events as { type: string; data: unknown }[]).filter(
     (event) => event.type === 'user/message' && JSON.stringify(event.data).includes(text),

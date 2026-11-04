@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { startRealKernelFixture } from './service-fixture';
+import { apiPost, startRealKernelFixture } from './service-fixture';
 
 const evidence =
   process.env.AIOS_DOD_EVIDENCE ??
@@ -24,10 +24,7 @@ test('DoD4 真 key：bash 只读 /tmp/aios-t007-dod/work 并回答', async ({ pa
     await expect(page.getByText('DOD-4-OK', { exact: false })).toBeVisible({ timeout: 180_000 });
     // 等这一轮的 turn/end 落到日志（流式文本先到，日志后写），再做截图与比对。
     const followFor = async () => {
-      const response = await request.post(
-        `${fixture.baseUrl}/api?token=${encodeURIComponent(fixture.token)}`,
-        { data: { method: 'follow', lastSeq: 0 } },
-      );
+      const response = await apiPost(request, fixture, { method: 'follow', lastSeq: 0 });
       return (await response.json()).events as { type: string }[];
     };
     await expect
@@ -36,10 +33,7 @@ test('DoD4 真 key：bash 只读 /tmp/aios-t007-dod/work 并回答', async ({ pa
       })
       .toBeGreaterThanOrEqual(1);
     await page.screenshot({ path: path.join(evidence, 'dod4-answer.png'), fullPage: true });
-    const response = await request.post(
-      `${fixture.baseUrl}/api?token=${encodeURIComponent(fixture.token)}`,
-      { data: { method: 'follow', lastSeq: 0 } },
-    );
+    const response = await apiPost(request, fixture, { method: 'follow', lastSeq: 0 });
     const events = (await response.json()).events as { type: string }[];
     const summary = {
       pageTurnsVisible: await page.getByText('工作过程', { exact: false }).count(),
@@ -141,10 +135,7 @@ test('DoD6 真 key 断线重连', async ({ page, request }) => {
     await expect(banner).toHaveCount(0, { timeout: 60_000 });
     await expect(page.getByText('断线后完成', { exact: true })).toBeVisible({ timeout: 180_000 });
     await page.screenshot({ path: path.join(evidence, 'dod6-reconnect.png'), fullPage: true });
-    const response = await request.post(
-      fixture.baseUrl + '/api?token=' + encodeURIComponent(fixture.token),
-      { data: { method: 'follow', lastSeq: 0 } },
-    );
+    const response = await apiPost(request, fixture, { method: 'follow', lastSeq: 0 });
     const events = (await response.json()).events as { seq: number }[];
     expect(events.length).toBeGreaterThan(0);
     for (let index = 1; index < events.length; index += 1) {

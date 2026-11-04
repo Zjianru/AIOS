@@ -1,5 +1,5 @@
 import { test, expect, type APIRequestContext } from '@playwright/test';
-import { startKernelFixture, type KernelFixture } from './service-fixture';
+import { apiPost, startKernelFixture, type KernelFixture } from './service-fixture';
 
 let fixture: KernelFixture;
 
@@ -12,10 +12,7 @@ test.afterAll(async () => {
 });
 
 async function abortedTurns(request: APIRequestContext): Promise<number> {
-  const response = await request.post(
-    `${fixture.baseUrl}/api?token=${encodeURIComponent(fixture.token)}`,
-    { data: { method: 'follow', lastSeq: 0 } },
-  );
+  const response = await apiPost(request, fixture, { method: 'follow', lastSeq: 0 });
   const body = await response.json();
   return (body.events as { type: string; data?: { reason?: { kind?: string } } }[]).filter(
     (event) => event.type === 'turn/end' && event.data?.reason?.kind === 'aborted',

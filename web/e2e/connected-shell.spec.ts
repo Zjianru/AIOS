@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { startKernelFixture, type KernelFixture } from './service-fixture';
+import { apiPost, startKernelFixture, type KernelFixture } from './service-fixture';
 
 let fixture: KernelFixture;
 
@@ -12,9 +12,7 @@ test.afterAll(async () => {
 });
 
 test('接缝 5 骨架：真 serve 活着，连接视图只有 Kind、无原型专属外壳', async ({ page, request }) => {
-  const response = await request.post(`${fixture.baseUrl}/api?token=${fixture.token}`, {
-    data: { method: 'status' },
-  });
+  const response = await apiPost(request, fixture, { method: 'status' });
   expect(response.status()).toBe(200);
   const body = await response.json();
   expect(body.object.sessionId).toBeTruthy();

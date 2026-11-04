@@ -105,6 +105,25 @@ const ASK_CALL_SSE = (() => {
   ].join('\n');
 })();
 
+/** 用 /connect 换到的 cookie 调 /api（e2e 不再带 query token）。 */
+export async function apiPost(
+  request: any,
+  fixture: KernelFixture,
+  data: unknown,
+) {
+  const connect = await request.get(
+    fixture.baseUrl + '/connect?token=' + encodeURIComponent(fixture.token),
+    { maxRedirects: 0 },
+  );
+  const setCookie = connect.headers()['set-cookie'];
+  if (!setCookie) throw new Error('connect 没有返回 set-cookie');
+  const cookie = setCookie.split(';', 1)[0];
+  return request.post(fixture.baseUrl + '/api', {
+    data,
+    headers: { Cookie: cookie },
+  });
+}
+
 export interface KernelFixture {
   baseUrl: string;
   token: string;
@@ -239,7 +258,7 @@ export async function startKernelFixture(
     const timer = setTimeout(() => reject(new Error(`serve 启动超时: ${output}`)), 30_000);
     child.stdout.on('data', (chunk: Buffer) => {
       output += chunk.toString();
-      const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)\?token=([0-9a-f-]+)/);
+      const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)\/?\?token=([0-9a-f-]+)/);
       if (match) {
         clearTimeout(timer);
         resolve({ baseUrl: `http://127.0.0.1:${match[1]}`, token: match[2] });
@@ -412,7 +431,7 @@ export async function startRealKernelFixture(
     const timer = setTimeout(() => reject(new Error('真 key serve 启动超时: ' + output)), 60_000);
     child.stdout.on('data', (chunk: Buffer) => {
       output += chunk.toString();
-      const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)\?token=([0-9a-f-]+)/);
+      const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)\/?\?token=([0-9a-f-]+)/);
       if (match) {
         clearTimeout(timer);
         resolve({ baseUrl: 'http://127.0.0.1:' + match[1], token: match[2] });

@@ -69,18 +69,16 @@ export interface ServiceTarget {
   token: string;
 }
 
-/** 从地址栏取启动令牌（T006 的信任栅栏：令牌在打印的地址里）。 */
-export function serviceTarget(): ServiceTarget | null {
-  const token = new URLSearchParams(window.location.search).get('token');
-  if (!token) return null;
-  return { origin: window.location.origin, token };
+/** 页面访问同源服务；认证靠首页换到的签名 cookie（D49/T006.F2）。 */
+export function serviceTarget(): ServiceTarget {
+  return { origin: window.location.origin, token: '' };
 }
 
 async function post<T>(body: Record<string, unknown>): Promise<T> {
   const target = serviceTarget();
-  if (!target) throw new Error('地址里没有启动令牌');
-  const response = await fetch(`${target.origin}/api?token=${encodeURIComponent(target.token)}`, {
+  const response = await fetch(`${target.origin}/api`, {
     method: 'POST',
+    credentials: 'same-origin',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
@@ -152,9 +150,8 @@ export function connectSession(
   onClose: () => void,
 ): WebSocket | null {
   const target = serviceTarget();
-  if (!target) return null;
   const socket = new WebSocket(
-    `${target.origin.replace('http', 'ws')}/ws?token=${encodeURIComponent(target.token)}&lastSeq=${lastSeq}`,
+    `${target.origin.replace('http', 'ws')}/ws?lastSeq=${lastSeq}`,
   );
   socket.onmessage = (message) => {
     try {
