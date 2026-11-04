@@ -8,6 +8,7 @@
 
 mod root;
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use agent::{Agent, SendAdmission};
@@ -519,6 +520,8 @@ pub enum ServiceError {
     Credentials(#[from] credentials::KeyringError),
     #[error("设置接口只能由根宿主提供")]
     SettingsOnBareHost,
+    #[error("路径不合法：{0}")]
+    InvalidPath(String),
 }
 
 /// 与载体无关的服务宿主：绑定一个 Agent/会话，调用经 dispatch 进入，事件从广播流出。
@@ -811,6 +814,36 @@ fn context_used(event: &ServiceEvent) -> Option<u64> {
             .unwrap_or(0)
     };
     Some(field("inputTokens") + field("cacheReadTokens") + field("cacheWriteTokens"))
+}
+
+/// T008.F6：把设置页路径里的 ~ 展开为 home；非绝对路径/未知 ~ 用户明确拒绝。
+fn expand_user_path(raw: &str, home: Option<&Path>) -> Result<PathBuf, ServiceError> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err(ServiceError::InvalidPath("路径不能为空".to_owned()));
+    }
+    let expanded = if raw == "~" || raw.starts_with("~/") {
+        let home = home.ok_or_else(|| {
+            ServiceError::InvalidPath("要找 home 目录，但当前进程没有 HOME".to_owned())
+        })?;
+        if raw == "~" {
+            home.to_path_buf()
+        } else {
+            home.join(&raw[2..])
+        }
+    } else if raw.starts_with('~') {
+        return Err(ServiceError::InvalidPath(
+            "只支持 ~ 或 ~/ 开头；~user 不支持".to_owned(),
+        ));
+    } else {
+        PathBuf::from(raw)
+    };
+    if !expanded.is_absolute() {
+        return Err(ServiceError::InvalidPath(
+            "要写完整路径（/ 或 ~/ 开头）".to_owned(),
+        ));
+    }
+    Ok(expanded)
 }
 
 /// 根会话宿主（T007.2）：根会话可用时转发一个 ServiceHost；不可用时服务照常起，
@@ -1134,8 +1167,9 @@ impl RootHost {
         &self,
         request: KeyringRelocateRequest,
     ) -> Result<KeyringRelocateResponse, ServiceError> {
-        self.keyring()?
-            .relocate_identity(std::path::Path::new(&request.to))?;
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let path = expand_user_path(&request.to, home.as_deref())?;
+        self.keyring()?.relocate_identity(&path)?;
         self.emit_settings_changed();
         Ok(KeyringRelocateResponse {})
     }
@@ -1144,8 +1178,9 @@ impl RootHost {
         &self,
         request: KeyringReopenRequest,
     ) -> Result<KeyringReopenResponse, ServiceError> {
-        self.keyring()?
-            .repoint_identity(std::path::Path::new(&request.at))?;
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let path = expand_user_path(&request.at, home.as_deref())?;
+        self.keyring()?.repoint_identity(&path)?;
         self.emit_settings_changed();
         Ok(KeyringReopenResponse {})
     }
