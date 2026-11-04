@@ -60,7 +60,11 @@ function Answer({ view }: { view: TurnViewData }) {
       </div>
     );
   }
-  return <Markdown text={text} elements={view.answer?.elements} />;
+  return (
+    <div data-kind="assistant-answer">
+      <Markdown text={text} elements={view.answer?.elements} />
+    </div>
+  );
 }
 
 function Thinking({ view }: { view: TurnViewData }) {
