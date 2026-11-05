@@ -21,12 +21,12 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 
 ## 功能与模块
 
-- **model**：provider 无关的消息 IR 与流式块、DeepSeek 适配器、重试/取消、token 估算与请求派生。
+- **model**：provider 无关的消息 IR 与流式块、Anthropic Messages 适配器（anthropic/；厂商差异集中在 vendors.rs：思考档按模型目录的档位适配，序列化 thinking/output_config/max_tokens）、重试/取消、token 估算与请求派生、models.dev 目录（24h 缓存/内置快照/厂商列表合并）、本机地址不走代理的共享 HTTP client。
 - **session**：会话事件与格式版本、JSONL 追加与读取、折叠/恢复、单写者文件锁。
 - **tools**：Tool 接口与 ToolSet、工具批执行（独占屏障/并行池/按模型顺序提交）、内置文件工具与观察策略、spill、后台 job、bash。
 - **agent**：轮次驱动、收件箱、能力注册表与各能力实现；唯一产品组装入口是 Agent::open。
 - **agent 能力**：compaction（自动/溢出/手动）、prune、instructions、skill、todo、ask、spill、reminder、jobs。
-- **credentials**：Keyring 真恢复；age 加密整份存储（0600/0700）、age 身份文件作钥匙（换位置/指回/重新开始）、连接描述不含 key 正文、每请求签发并只追加签发记录、变化通知；数据目录配置只存钥匙位置。model::CredentialSource 是模型出站的凭证接缝：每次 stream 前 issue 一次、只用一次。
+- **credentials**：Keyring 真恢复；age 加密整份存储（0600/0700）、age 身份文件作钥匙（换位置/指回/重新开始）、连接描述不含 key 正文、每请求签发并只追加签发记录、变化通知；数据目录配置只存钥匙位置。model::CredentialSource 是模型出站的凭证接缝：每次 stream 前 issue 一次、只用一次；T012.6 起还带 auth_header（连接上记住的单头，None = 两个都发）与 remember_auth_header（适配器学到单头后回报产品层写回连接）；服务验证连接的凭证来源同样写回。
 - **service**：载体无关的宿主；对象固定 Kind 根会话，调用面 Call/Response，事件面 ServiceEvent；root 模块负责根会话找回、状态文件与不可用状态；shutdown 做停服务收尾。
 - **web**：axum HTTP/WS 薄适配器与信任栅栏；/connect、/ 换签名 cookie，/api、/ws 只认 cookie；同源托管 web/dist 静态资源（SPA fallback）；ready 帧带协议版本、根状态与上下文。
 - **web/ 前端**：React 19 + Vite；Kind 对话页只走服务方法与事件；只显示接上内核的部分，不带演示开关/脚本；Kind 首次使用与设置 › 模型与连接接真 Keyring；e2e 用真 serve + 假 DeepSeek 回放。
@@ -51,6 +51,8 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 - **日志只追加**：SessionStore::append 是唯一追加入口；每批先写后 fsync，失败回滚到写前长度；open_read_only 不改文件；尾行不完整只从读视图丢弃。
 - **单写者**：create/写 open 在会话锁文件上取非阻塞排他锁；第二个写者立刻得到 AlreadyOwned；只读打开不取锁；锁随句柄/进程释放。
 - **每次模型请求从日志派生**：不保留独立消息副本；system/tools/已发消息前缀逐字稳定，供前缀缓存命中。
+- **思考档是模型自己的**：档来自模型目录（models.dev 缓存/快照 + 厂商列表）；要的档与模型档不同时按最近档发（actual≠wanted 时日志两个都记）；压缩摘要用模型的 DefaultEffort。
+- **学到的连接事实**：适配器在内存里按「连接 × 模型」学关不掉思考/必须思考（400 后本轮立即按最低非关档重发一次，同进程后续请求直接最低档）；按「连接」学通过的鉴权头（两个头一起被拒后各试一次，x-api-key 先、Authorization 后，学到的单头写回连接的 auth_header，之后只发它）。重启后再学一次；学到的状态不落日志。
 - **消息身份稳定**：消息 id 在创建时生成，写入日志、续接读回、派生后保持不变。
 - **输入队列先落盘再改内存**：send/cancel 返回前队列变更已作为 inbox/spliced 落盘；resume 从日志折叠恢复，不自动开 turn。
 - **模型尝试留痕**：已开始流式的尝试写 assistant/message；无可见内容的重试写 assistant/attempt，不进派生历史。
