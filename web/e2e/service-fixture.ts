@@ -27,6 +27,7 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.askTurn) return { file: 'ask', paceMs: options.askTurnPaceMs };
   if (options.toolTurn) return { file: 'tool' };
   if (options.t013Process) return { file: 'tool-process' };
+  if (options.t013Interrupted) return { file: 'tool-interrupted' };
   if (options.highUsage) return { file: 'high-usage' };
   return {
     file: 'text',
@@ -105,6 +106,8 @@ export interface FixtureOptions {
   toolTurn?: boolean;
   /// T013.5：一轮里 write/apply_patch/bash 三个工具 + 最终文本（工作过程页的卡片用）。
   t013Process?: boolean;
+  /// T013.5：工具做完后被停下的一轮（工作过程页的「已停止」）。
+  t013Interrupted?: boolean;
   /// 每次模型回放延迟毫秒（T007.5 停止用例要在运行中按停止/Esc）。
   slowMs?: number;
   /// first request 回一次 ask_user_question（两题：一题选项、一题自己写）。
