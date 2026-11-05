@@ -87,8 +87,53 @@ test('阅读位置：滚到中间切回同一位置', async ({ page }) => {
     await page.waitForTimeout(900);
     const after = await scroller.evaluate((element) => element.scrollTop);
     expect(after).toBeGreaterThan(0);
-    // 同一行附近（Virtuoso 重算布局会有一行的抖动）。
-    expect(Math.abs(after - before)).toBeLessThan(120);
+    // 回到同一行（顶行 key+偏移恢复；容差一行）。
+    expect(Math.abs(after - before)).toBeLessThan(60);
+  } finally {
+    await fixture.close();
+  }
+});
+
+
+/// T013.8：发送失败时草稿不清（受理成功才清）。
+test('发送失败：输入还在（草稿不清）', async ({ page }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    await page.route(/\/api(\?|$)/, async (route, request) => {
+      if ((request.postData() ?? '').includes('"method":"send"')) {
+        await route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+        return;
+      }
+      await route.continue();
+    });
+    const box = input(page);
+    await box.fill('发送会失败的文字');
+    await page.locator('[data-kind="send"]').click();
+    // 失败进 unsent：输入框里的字还在（草稿没被清）。
+    await expect(box).toHaveValue('发送会失败的文字', { timeout: 15_000 });
+  } finally {
+    await fixture.close();
+  }
+});
+
+/// T013.8：非法草稿当空（格式不对不崩）。
+test('非法草稿当空', async ({ page }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    await expect(input(page)).toBeVisible({ timeout: 15_000 });
+    const sessionId = await page.evaluate(() => {
+      const key = Object.keys(localStorage).find((item) => item.startsWith('aios.kind.draft.'));
+      return key ?? null;
+    });
+    // 会话 id 还没进草稿键时，用 ready 帧里的 id 手工写一份非法 JSON。
+    await page.evaluate((existing) => {
+      const target = existing ?? 'aios.kind.draft.invalid-test';
+      localStorage.setItem(target, '{not-json');
+    }, sessionId);
+    await page.reload();
+    await expect(input(page)).toHaveValue('', { timeout: 15_000 });
   } finally {
     await fixture.close();
   }

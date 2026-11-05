@@ -21,8 +21,17 @@ import type { ComposerHandle } from './composer/Composer';
 import { mark } from '@/lib/perf';
 import { cn } from '@/lib/utils';
 
-/** T013.8：阅读位置按会话存在内存里（离开 Kind 记下，回来恢复；刷新不保存）。 */
-const readingPositions = new Map<string, number>();
+/** T013.8：阅读位置（照 DSH capturePosition：顶行 key + 偏移；找不到这一行用 scrollTop）。 */
+interface ReadingPosition {
+  /** 顶上那一行的轮次 id（视图里的 key）。 */
+  turnId: string | null;
+  /** 这一行在视口里的偏移（像素）。 */
+  offset: number;
+  /** 兜底：原始 scrollTop。 */
+  scrollTop: number;
+}
+
+const readingPositions = new Map<string, ReadingPosition>();
 
 export function ConversationPane() {
   const views = useKindStore((state) => state.views);
@@ -45,7 +54,8 @@ export function ConversationPane() {
   const offline = connection.state !== 'online';
   const sessionId = useKindStore((state) => state.sessionId);
   const scrollerRef = useRef<HTMLElement | null>(null);
-  const savedScrollRef = useRef<number | null>(null);
+  const topIndexRef = useRef<number | null>(null);
+  const capturedForRef = useRef<string | null>(null);
   const listRef = useRef<VirtuosoHandle | null>(null);
   const [canSend, setCanSend] = useState(false);
   const paintedRef = useRef(false);
@@ -200,8 +210,8 @@ export function ConversationPane() {
   const onComposerSend = useCallback(
     (text: string, options: { pastes: string[]; attachments: { id: string; name: string; bytes: number }[] }) => {
       followRef.current = true;
-      send(text, options);
       listRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
+      return send(text, options);
     },
     [send],
   );
@@ -241,22 +251,7 @@ export function ConversationPane() {
           </div>
         ) : (
           <Virtuoso
-        scrollerRef={(ref) => {
-          const element = ref as HTMLElement | null;
-          scrollerRef.current = element;
-          if (!element || !sessionId) return;
-          const saved = readingPositions.get(sessionId);
-          if (saved !== null && saved !== undefined) {
-            savedScrollRef.current = saved;
-            requestAnimationFrame(() => {
-              if (scrollerRef.current) scrollerRef.current.scrollTop = saved;
-            });
-          }
-        }}
-        onScroll={(event) => {
-          const element = event.currentTarget as HTMLElement;
-          if (sessionId && element) readingPositions.set(sessionId, element.scrollTop);
-        }}
+
             ref={listRef}
             data={views}
             firstItemIndex={firstItemIndex}
@@ -265,9 +260,46 @@ export function ConversationPane() {
             startReached={handleStartReached}
             atBottomStateChange={handleAtBottom}
             atBottomThreshold={8}
-            rangeChanged={handleRangeChanged}
+            rangeChanged={(range: ListRange) => {
+              topIndexRef.current = range.startIndex;
+              handleRangeChanged(range);
+            }}
             followOutput={(isAtBottom: boolean) => (isAtBottom ? 'auto' : false)}
             increaseViewportBy={{ top: 800, bottom: 400 }}
+            scrollerRef={(ref) => {
+              const element = ref as HTMLElement | null;
+              scrollerRef.current = element;
+              if (!element || !sessionId) return;
+              if (capturedForRef.current === sessionId) return;
+              capturedForRef.current = sessionId;
+              const saved = readingPositions.get(sessionId);
+              requestAnimationFrame(() => {
+                const scroller = scrollerRef.current;
+                if (!scroller || !saved) return;
+                // 先按顶行的 key 恢复；找不到这一行（列表变了）用 scrollTop。
+                const viewIndex = saved.turnId ? views.findIndex((view) => view.id === saved.turnId) : -1;
+                if (viewIndex >= 0) {
+                  listRef.current?.scrollToIndex({
+                    index: firstItemIndex + viewIndex,
+                    offset: -saved.offset,
+                    behavior: 'auto',
+                  });
+                } else {
+                  scroller.scrollTop = saved.scrollTop;
+                }
+              });
+            }}
+            onScroll={(event: React.UIEvent<HTMLElement>) => {
+              const element = event.currentTarget;
+              if (!sessionId || !element) return;
+              const topIndex = topIndexRef.current;
+              const view = topIndex === null ? undefined : views[topIndex - firstItemIndex];
+              readingPositions.set(sessionId, {
+                turnId: view?.id ?? null,
+                offset: 0,
+                scrollTop: element.scrollTop,
+              });
+            }}
             itemContent={(_index, view) => (
               <div className="mx-auto w-full max-w-[680px]">
                 <TurnRow

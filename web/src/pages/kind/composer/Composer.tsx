@@ -35,7 +35,8 @@ export interface ComposerHandle {
 
 interface ComposerProps {
   offline: boolean;
-  onSend: (text: string, options: ComposerSendOptions) => void;
+  /** 发送；返回是否受理成功（成功才清草稿）。 */
+  onSend: (text: string, options: ComposerSendOptions) => Promise<boolean>;
   onCanSendChange: (value: boolean) => void;
   /** 右侧控件（模型选择 + 发送/停止）。 */
   children?: React.ReactNode;
@@ -118,6 +119,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // T013.8：草稿按会话存 localStorage（键 aios.kind.draft.<会话 id>）。
   const sessionId = useKindStore((state) => state.sessionId);
   const draftLoadedRef = useRef<string | null>(null);
+  const touchedRef = useRef(false);
 
   const canSend = text.trim().length > 0 || pastes.length > 0 || attachments.length > 0;
 
@@ -142,6 +144,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   useEffect(() => {
     if (!sessionId || draftLoadedRef.current === sessionId) return;
     draftLoadedRef.current = sessionId;
+    if (touchedRef.current) return; // ready 前已经输入：以用户输入为准，草稿不覆盖
     try {
       const raw = localStorage.getItem('aios.kind.draft.' + sessionId);
       if (!raw) return;
@@ -178,7 +181,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     const draft = {
       text,
       pastes,
-      attachments: attachments.map(({ id, name, bytes }) => ({ id, name, bytes })),
+      attachments: attachments.map(({ id, name, bytes, mime }) => ({ id, name, bytes, mime })),
     };
     try {
       localStorage.setItem('aios.kind.draft.' + sessionId, JSON.stringify(draft));
@@ -255,11 +258,16 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     });
   }, []);
 
-  const submit = useCallback(() => {
+  const submit = useCallback(async () => {
     if (offline) return;
     const value = text.trim();
     if (!value && pastes.length === 0 && attachments.length === 0) return;
-    onSend(value, { pastes, attachments: attachments.map(({ id, name, bytes }) => ({ id, name, bytes })) });
+    // T013.8：受理成功才清草稿（发送失败进 unsent 时输入还在）。
+    const accepted = await onSend(value, {
+      pastes,
+      attachments: attachments.map(({ id, name, bytes }) => ({ id, name, bytes })),
+    });
+    if (!accepted) return;
     setText('');
     setPastes([]);
     setAttachments([]);
@@ -274,9 +282,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       resize();
       inputRef.current?.focus();
     });
-  }, [attachments, offline, onSend, pastes, resize, text]);
+  }, [attachments, offline, onSend, pastes, resize, sessionId, text]);
 
-  useImperativeHandle(ref, () => ({ submit, focus: () => inputRef.current?.focus() }), [submit]);
+  useImperativeHandle(ref, () => ({ submit: () => void submit(), focus: () => inputRef.current?.focus() }), [submit]);
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // @ 菜单打开：↑↓ 换高亮、Esc 关（Enter 在下面选高亮项）。
@@ -324,6 +332,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   };
 
   const onInput = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    touchedRef.current = true;
     const element = event.currentTarget;
     setText(element.value);
     pruneAtMenu(element.value, element.selectionStart);
