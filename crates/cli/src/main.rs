@@ -374,6 +374,13 @@ fn record_ops(
     ));
 }
 
+/// F1：Keyring 当前持有的 key 刷新给监控（脱敏用；key 只在内存，不进日志/证据）。
+fn refresh_monitor_secrets(monitor: &Monitor, keyring: &credentials::Keyring) {
+    if let Ok(secrets) = keyring.secrets() {
+        monitor.set_secrets(secrets);
+    }
+}
+
 async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let data_dir = match &args.common.data_dir {
         Some(path) => path.clone(),
@@ -441,6 +448,7 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
                 return Err(error.into());
             }
         };
+    refresh_monitor_secrets(&monitor, &keyring);
     let session_secret = keyring.cookie_signing_secret()?;
     // T008.3b：模型配置惰性解析——空 Keyring 也能起服务（首次使用页先显示）；
     // recheck 时工厂重新读当前 Keyring 连接，用新模型重建根会话。
@@ -449,23 +457,25 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let window = placeholder_config.context_window;
     let factory_common = args.common.clone();
     let factory_data_dir = data_dir.clone();
+    let monitor_for_recheck = monitor.clone();
     let model_factory: service::ModelFactory = std::sync::Arc::new(move || {
+        if let Ok(keyring) =
+            credentials::Keyring::open(factory_data_dir.clone(), factory_common.identity.as_deref())
+        {
+            refresh_monitor_secrets(&monitor_for_recheck, &keyring);
+        }
         model_with_keyring(&factory_common, &factory_data_dir)
             .map(|(config, _agent, credentials)| (config, Some(credentials)))
             .map_err(|error| error.to_string())
     });
-    // T011.4：ledger 钩子挂到根会话的「追加之后」（打开/recheck 重开会话都装）。
-    let ledger_monitor = monitor.clone();
-    let append_hook_factory: session::AppendHookFactory =
-        Arc::new(move |id: &session::SessionId| {
-            let monitor = ledger_monitor.clone();
-            let session_id = id.as_str().to_owned();
-            Arc::new(move |events: &[session::Event]| {
-                for event in events {
-                    let _ = monitor.record(monitor::ledger_record(&session_id, event));
-                }
-            }) as session::AppendHook
+    // F1：设置页保存/删除/撤销、搬迁/重开/重启后，把 Keyring 当前 key 刷新给监控。
+    let monitor_for_keyring = monitor.clone();
+    let keyring_changed: service::KeyringChanged =
+        Arc::new(move |keyring: &credentials::Keyring| {
+            refresh_monitor_secrets(&monitor_for_keyring, keyring);
         });
+    // T011.4/F1：ledger 钩子挂到根会话的「追加之后」；脱敏在监控写线程出口统一做。
+    let append_hook_factory = monitor.append_hook_factory();
     // T007.2：根会话打不开时服务照样起；ready 报状态（path/line），方法一律拒绝，
     // 页面对应五种说明页；修好后页面调 recheck 再检查一次。
     let host = RootHost::open(
@@ -478,6 +488,7 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             identity: args.common.identity.clone(),
             model_factory: Some(model_factory),
             append_hook_factory: Some(append_hook_factory),
+            keyring_changed: Some(keyring_changed),
         },
         window,
     )
@@ -1413,5 +1424,99 @@ fn keyring(args: KeyringArgs) -> Result<u8, CliError> {
             }
             Ok(0)
         }
+    }
+}
+
+#[cfg(test)]
+mod f1_redaction_tests {
+    use super::*;
+    use serde_json::json;
+    use session::EventKind;
+
+    fn tool_result_with_key(text: &str) -> EventKind {
+        EventKind::ToolResult {
+            turn: 1,
+            step: 1,
+            message: model::Message::tool_result("call_1", text, false),
+            error: None,
+        }
+    }
+
+    fn connection(id: &str, name: &str, key: &str) -> credentials::NewConnection {
+        credentials::NewConnection {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: "http://127.0.0.1:1".to_owned(),
+            api_key: key.to_owned(),
+        }
+    }
+
+    /// F1：生产装配函数（refresh_monitor_secrets + append_hook_factory）下，
+    /// Keyring 启动 key、启动后保存的 key、ops 记录里的 key 都不能以原文进监控。
+    #[test]
+    fn production_assembly_redacts_startup_and_late_keys_everywhere() {
+        let data = tempfile::tempdir().expect("数据目录");
+        let cwd = tempfile::tempdir().expect("工作目录");
+        let identity = data.path().join("identity.txt");
+        let keyring = credentials::Keyring::open(data.path(), Some(&identity)).expect("keyring");
+        keyring
+            .save_connection(connection("deepseek", "DeepSeek", "sk-STARTUP-KEY-1"))
+            .expect("save startup");
+        let monitor = Monitor::open(data.path()).expect("monitor");
+        let path = monitor.path().to_path_buf();
+        refresh_monitor_secrets(&monitor, &keyring);
+
+        let mut store = session::SessionStore::create(data.path(), cwd.path()).expect("session");
+        let factory = monitor.append_hook_factory();
+        store.set_append_hook(Some(factory(store.id())));
+        store
+            .append(&[tool_result_with_key("工具输出 sk-STARTUP-KEY-1 结束")])
+            .expect("append startup");
+
+        let mut attributes = serde_json::Map::new();
+        attributes.insert("telemetry.op".to_owned(), json!("api-call"));
+        attributes.insert("echo".to_owned(), json!("sk-STARTUP-KEY-1"));
+        assert!(monitor.record(monitor::Record::new(
+            monitor::Channel::Ops,
+            monitor::Severity::Info,
+            attributes,
+            json!({"nested": "sk-STARTUP-KEY-1"}),
+        )));
+
+        // 启动后才保存的 key：设置页保存后走同一个刷新函数。
+        keyring
+            .save_connection(connection("late", "Late", "sk-LATE-KEY-2"))
+            .expect("save late");
+        refresh_monitor_secrets(&monitor, &keyring);
+        store
+            .append(&[tool_result_with_key("又输出 sk-LATE-KEY-2 结束")])
+            .expect("append late");
+        let mut attributes = serde_json::Map::new();
+        attributes.insert("telemetry.op".to_owned(), json!("api-call"));
+        attributes.insert("echo".to_owned(), json!("sk-LATE-KEY-2"));
+        assert!(monitor.record(monitor::Record::new(
+            monitor::Channel::Ops,
+            monitor::Severity::Info,
+            attributes,
+            json!({"nested": "sk-LATE-KEY-2"}),
+        )));
+
+        drop(store);
+        monitor.shutdown();
+        let text = std::fs::read_to_string(&path).expect("monitor file");
+        assert!(
+            !text.contains("sk-STARTUP-KEY-1"),
+            "启动 key 原文进监控：{text}"
+        );
+        assert!(
+            !text.contains("sk-LATE-KEY-2"),
+            "后存 key 原文进监控：{text}"
+        );
+        assert!(text.contains("[已脱敏]"), "有脱敏标记：{text}");
+        assert!(
+            !text.contains("redact-failed"),
+            "正常记录不该 redact-failed：{text}"
+        );
     }
 }

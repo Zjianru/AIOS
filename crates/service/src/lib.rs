@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex};
 use agent::{Agent, SendAdmission};
 use model::UserMessage;
 pub use root::{
-    ModelFactory, ROOT_STATE_FILE, RootError, RootSession, RootSessionOptions, RootStatus,
-    open_root_session,
+    KeyringChanged, ModelFactory, ROOT_STATE_FILE, RootError, RootSession, RootSessionOptions,
+    RootStatus, open_root_session,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -553,11 +553,12 @@ pub enum ServiceErrorCode {
     ConnectionInvalid,
     SettingsUnavailable,
     RequestInvalidPath,
+    RequestInvalidJson,
 }
 
 impl ServiceErrorCode {
     /// 码表全集（覆盖检查用：多一个少一个都要失败）。
-    pub const ALL: [ServiceErrorCode; 11] = [
+    pub const ALL: [ServiceErrorCode; 12] = [
         ServiceErrorCode::AgentInternal,
         ServiceErrorCode::QuestionAnswerRejected,
         ServiceErrorCode::RootUnavailable,
@@ -569,6 +570,7 @@ impl ServiceErrorCode {
         ServiceErrorCode::ConnectionInvalid,
         ServiceErrorCode::SettingsUnavailable,
         ServiceErrorCode::RequestInvalidPath,
+        ServiceErrorCode::RequestInvalidJson,
     ];
 
     /// 线上的码名。
@@ -585,6 +587,7 @@ impl ServiceErrorCode {
             Self::ConnectionInvalid => "connection/invalid",
             Self::SettingsUnavailable => "settings/unavailable",
             Self::RequestInvalidPath => "request/invalid-path",
+            Self::RequestInvalidJson => "request/invalid-json",
         }
     }
 }
@@ -1163,6 +1166,7 @@ impl RootHost {
                 }
             }
         }
+        self.notify_keyring_changed();
         let window = options.model.context_window;
         *self.window.lock().expect("window 锁被毒化") = window;
         *self.context.lock().expect("context 锁被毒化") = ContextUsage { used: 0, window };
@@ -1180,6 +1184,15 @@ impl RootHost {
     }
 
     /// T008.3：每次设置操作重新打开 Keyring（不缓存；换 key/换位置立即生效）。
+    /// F1：Keyring 变化后把当前持有的 key 交给装配层的刷新钩子（监控脱敏用）。
+    fn notify_keyring_changed(&self) {
+        if let Some(hook) = &self.options.keyring_changed
+            && let Ok(keyring) = self.keyring()
+        {
+            hook(&keyring);
+        }
+    }
+
     fn keyring(&self) -> Result<credentials::Keyring, ServiceError> {
         Ok(credentials::Keyring::open(
             &self.options.data_dir,
@@ -1208,6 +1221,7 @@ impl RootHost {
                 api_key: request.api_key,
             })?;
         self.emit_settings_changed();
+        self.notify_keyring_changed();
         Ok(ConnectionSaveResponse { connection })
     }
 
@@ -1218,6 +1232,7 @@ impl RootHost {
         let deleted = self.keyring()?.delete_connection(&request.id)?;
         if deleted {
             self.emit_settings_changed();
+            self.notify_keyring_changed();
         }
         Ok(ConnectionDeleteResponse { deleted })
     }
@@ -1231,6 +1246,7 @@ impl RootHost {
             self.keyring()?
                 .update_connection(&request.id, request.endpoint, request.model)?;
         self.emit_settings_changed();
+        self.notify_keyring_changed();
         Ok(ConnectionUpdateResponse { connection })
     }
 
@@ -1241,6 +1257,7 @@ impl RootHost {
     ) -> Result<ConnectionRevokeResponse, ServiceError> {
         let connection = self.keyring()?.revoke_key(&request.id)?;
         self.emit_settings_changed();
+        self.notify_keyring_changed();
         Ok(ConnectionRevokeResponse { connection })
     }
 
@@ -1263,30 +1280,34 @@ impl RootHost {
         let api_key = keyring
             .issue(&request.id, "connection-verify", None, None)?
             .into_secret();
-        let endpoint = connection.endpoint.trim_end_matches('/');
-        let body = serde_json::json!({
-            "model": connection.model,
-            "max_tokens": 1,
-            "messages": [{"role": "user", "content": "ping"}],
-        });
-        let response = reqwest::Client::new()
-            .post(format!("{endpoint}/v1/messages"))
-            .header("content-type", "application/json")
-            .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01")
-            .json(&body)
-            .send()
-            .await;
+        // T009.3：验证走模型适配器（和对话同一条请求路径/同一组头），不再手写 reqwest。
+        let config = model::DeepSeekConfig {
+            base_url: connection.endpoint.clone(),
+            model: connection.model.clone(),
+            max_tokens: 1,
+            context_window: model::DEFAULT_CONTEXT_WINDOW,
+            effort: model::Effort::Off,
+        };
+        let cancel = model::CancelToken::new(
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        );
+        let messages = vec![model::Message::user_text("ping")];
         let at = now_seconds();
-        let result = match response {
-            Ok(response) if response.status().is_success() => credentials::CheckResult::Ok { at },
-            Ok(response) => credentials::CheckResult::Fail {
-                at,
-                reason: format!("HTTP {}", response.status().as_u16()),
-            },
+        let result = match model::DeepSeek::with_credentials(
+            config,
+            std::sync::Arc::new(VerifyCredential { api_key }),
+        ) {
             Err(error) => credentials::CheckResult::Fail {
                 at,
-                reason: format!("连不上：{error}"),
+                reason: error.code.as_str().to_owned(),
+            },
+            Ok(model) => match model.stream(&messages, &[], &cancel).await {
+                Ok(_) => credentials::CheckResult::Ok { at },
+                Err(error) => credentials::CheckResult::Fail {
+                    at,
+                    reason: error.code.as_str().to_owned(),
+                },
             },
         };
         keyring.record_check(&request.id, result)?;
@@ -1312,6 +1333,7 @@ impl RootHost {
         let path = expand_user_path(&request.to, home.as_deref())?;
         self.keyring()?.relocate_identity(&path)?;
         self.emit_settings_changed();
+        self.notify_keyring_changed();
         Ok(KeyringRelocateResponse {})
     }
 
@@ -1323,6 +1345,7 @@ impl RootHost {
         let path = expand_user_path(&request.at, home.as_deref())?;
         self.keyring()?.repoint_identity(&path)?;
         self.emit_settings_changed();
+        self.notify_keyring_changed();
         Ok(KeyringReopenResponse {})
     }
 
@@ -1330,6 +1353,7 @@ impl RootHost {
         let keyring = self.keyring()?;
         keyring.restart()?;
         self.emit_settings_changed();
+        self.notify_keyring_changed();
         Ok(KeyringRestartResponse {
             settings: keyring.view(),
         })
@@ -1456,6 +1480,21 @@ impl RootHost {
         };
         // 没有订阅端是正常情况（服务刚起/页面没开）；不把广播失败当错误。
         let _delivered = self.events.send(event).unwrap_or(0);
+    }
+}
+
+/// T009.3：验证连接的固定 key 来源（key 只在内存里；签发记录仍由 Keyring 记）。
+struct VerifyCredential {
+    api_key: String,
+}
+
+impl model::CredentialSource for VerifyCredential {
+    fn issue(
+        &self,
+        _purpose: &str,
+        _context: &model::CredentialContext,
+    ) -> Result<String, model::ModelError> {
+        Ok(self.api_key.clone())
     }
 }
 
@@ -1662,15 +1701,71 @@ mod t009_error_tests {
         let mut used: Vec<&str> = pairs.iter().map(|(code, _)| *code).collect();
         used.sort_unstable();
         used.dedup();
+        // spec v1.1：12 码 = ServiceError 的 11 个变体码 + web 层的 request/invalid-json。
+        assert_eq!(ServiceErrorCode::ALL.len(), 12, "码数 12");
+        assert!(
+            ServiceErrorCode::ALL
+                .iter()
+                .any(|code| code.as_str() == "request/invalid-json"),
+            "invalid-json 在唯一码表里"
+        );
         let mut all: Vec<&str> = ServiceErrorCode::ALL
             .iter()
             .map(|code| code.as_str())
+            .filter(|code| *code != "request/invalid-json")
             .collect();
         all.sort_unstable();
         assert_eq!(
             used, all,
-            "码表与 ServiceError 变体必须一一对应（多/少都失败）"
+            "码表与 ServiceError 变体必须一一对应（多/少都失败；invalid-json 由 web 层用）"
         );
+    }
+
+    #[test]
+    fn invalid_json_code_is_in_the_single_code_table() {
+        assert_eq!(ServiceErrorCode::ALL.len(), 12, "码数 12（spec v1.1）");
+        assert!(
+            ServiceErrorCode::ALL
+                .iter()
+                .any(|code| code.as_str() == "request/invalid-json"),
+            "request/invalid-json 必须进唯一码表 ALL"
+        );
+    }
+
+    #[test]
+    fn page_error_table_covers_service_and_model_codes() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/src/data/errors.ts");
+        let table = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("页面错误表 {} 读不到：{error}", path.display()));
+        for code in ServiceErrorCode::ALL {
+            assert!(
+                table.contains(code.as_str()),
+                "页面对照表缺 {} 这一行",
+                code.as_str()
+            );
+        }
+        // 日志里的模型错误码（spec 测试清单 2）。
+        for code in [
+            "AUTH",
+            "MISSING_CREDENTIAL",
+            "KEYRING",
+            "QUOTA",
+            "RATE_LIMIT",
+            "CONTEXT_WINDOW_EXCEEDED",
+            "INVALID_REQUEST",
+            "SERVER",
+            "TRANSPORT",
+            "TIMEOUT",
+            "STREAM_CLOSED",
+            "MALFORMED_RESPONSE",
+            "EMPTY_RESPONSE",
+            "UNSUPPORTED_CONTENT",
+            "UNSUPPORTED_REASONING_EFFORT",
+            "ABORTED",
+        ] {
+            assert!(table.contains(code), "页面对照表缺模型码 {code} 这一行");
+        }
     }
 
     #[test]

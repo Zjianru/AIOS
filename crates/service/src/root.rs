@@ -70,6 +70,8 @@ pub struct RootSessionOptions {
     pub model_factory: Option<ModelFactory>,
     /// T011.4：打开会话后按 id 造「追加之后」的钩子（监控 ledger）；None = 不记。
     pub append_hook_factory: Option<session::AppendHookFactory>,
+    /// F1：Keyring 变化时刷新监控脱敏用的 key 列表；None = 不刷新。
+    pub keyring_changed: Option<KeyringChanged>,
 }
 
 /// T008.3b：从当前 Keyring 解析 (DeepSeekConfig, 凭证来源)；没有连接时返回 Err(说明)。
@@ -84,6 +86,10 @@ pub type ModelFactory = std::sync::Arc<
         + Sync,
 >;
 
+/// F1：Keyring 变化（启动、设置页保存/删除/撤销、搬迁/重开/重启、recheck）时通知装配层，
+/// 由 cli 把当前持有的 key 刷新给监控脱敏；service 不引用监控类型。
+pub type KeyringChanged = std::sync::Arc<dyn Fn(&credentials::Keyring) + Send + Sync>;
+
 impl std::fmt::Debug for RootSessionOptions {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -95,6 +101,10 @@ impl std::fmt::Debug for RootSessionOptions {
             .field(
                 "append_hook_factory",
                 &self.append_hook_factory.as_ref().map(|_| "<factory>"),
+            )
+            .field(
+                "keyring_changed",
+                &self.keyring_changed.as_ref().map(|_| "<hook>"),
             )
             .field(
                 "credentials",

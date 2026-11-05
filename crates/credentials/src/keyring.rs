@@ -349,6 +349,18 @@ impl Keyring {
         }
     }
 
+    /// F1：当前持有的全部 key 正文（只在进程内交给监控脱敏；不落盘、不进页面/日志）。
+    pub fn secrets(&self) -> Result<Vec<String>, KeyringError> {
+        let _lock = self.lock()?;
+        let store = self.load_store()?;
+        Ok(store
+            .connections
+            .into_iter()
+            .map(|stored| stored.api_key)
+            .filter(|key| !key.is_empty())
+            .collect())
+    }
+
     /// 申请一次签发：找到连接、记一条记录、返回这一次要用的值。
     pub fn issue(
         &self,

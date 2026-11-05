@@ -171,6 +171,7 @@ fn writer_lock_child_helper() {
         // 模拟崩溃：进程直接死，内核随进程释放 flock（DSH：崩溃持有者立即让出）。
         std::process::abort();
     }
+    // T009.H6：子进程持锁 1.2s，模拟崩溃/持锁窗口；真实宽限期
     std::thread::sleep(std::time::Duration::from_millis(1200));
     drop(store);
 }
@@ -202,6 +203,7 @@ fn wait_for_file(path: &std::path::Path) {
         if path.exists() {
             return;
         }
+        // T009.H6：等子进程写 marker 文件；轮询间隔
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     panic!("子进程没有在超时内写出 marker");
@@ -212,6 +214,7 @@ fn wait_until_writable(data: &std::path::Path, id: &crate::SessionId) -> Session
         if let Ok(store) = SessionStore::open(data, id) {
             return store;
         }
+        // T009.H6：等子进程释放写锁；轮询间隔
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     panic!("持锁进程退出后仍拿不到写锁");

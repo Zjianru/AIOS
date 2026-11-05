@@ -20,9 +20,10 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.failure === 'credential') return { file: 'text', override: 'failure-credential' };
   if (options.failure === 'model') return { file: 'text', override: 'failure-model' };
   if (options.failure === 'retry-then-succeed') return { file: 'text', override: 'failure-retry' };
+  if (options.failure === 'unknown') return { file: 'text', override: 'failure-unknown' };
   if (options.realTurn) return { file: 'real', paceMs: 20 };
   if (options.usageTurn) return { file: 'usage', paceMs: 400 };
-  if (options.askTurn) return { file: 'ask' };
+  if (options.askTurn) return { file: 'ask', paceMs: options.askTurnPaceMs };
   if (options.toolTurn) return { file: 'tool' };
   if (options.highUsage) return { file: 'high-usage' };
   return {
@@ -102,8 +103,10 @@ export interface FixtureOptions {
   slowMs?: number;
   /// first request 回一次 ask_user_question（两题：一题选项、一题自己写）。
   askTurn?: boolean;
+  /// T007.13：让 question/asked 分批到达（毫秒/帧）。
+  askTurnPaceMs?: number;
   /// 模型失败脚本：前两次 500 后成功 / 一直 500 / 401 凭证错误。
-  failure?: 'retry-then-succeed' | 'model' | 'credential';
+  failure?: 'retry-then-succeed' | 'model' | 'credential' | 'unknown';
   /// 高上下文占用回放（配小 --context-window），用来触发自动压缩 / 让压缩按钮可用。
   highUsage?: boolean;
   /// serve 的 --context-window（自动压缩测试用 5000）。

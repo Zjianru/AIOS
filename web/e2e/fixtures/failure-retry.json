@@ -1,34 +1,34 @@
 [
   {
     "kind": "throw",
-    "status": 500,
+    "status": 429,
     "body": {
       "type": "error",
       "error": {
-        "type": "server_error",
-        "message": "overloaded"
+        "type": "rate_limit_error",
+        "message": "rate limited"
       }
     }
   },
   {
     "kind": "throw",
-    "status": 500,
+    "status": 429,
     "body": {
       "type": "error",
       "error": {
-        "type": "server_error",
-        "message": "overloaded"
+        "type": "rate_limit_error",
+        "message": "rate limited"
       }
     }
   },
   {
     "kind": "throw",
-    "status": 500,
+    "status": 429,
     "body": {
       "type": "error",
       "error": {
-        "type": "server_error",
-        "message": "overloaded"
+        "type": "rate_limit_error",
+        "message": "rate limited"
       }
     }
   },

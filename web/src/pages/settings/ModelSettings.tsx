@@ -25,6 +25,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
+import { modelErrorReason } from '@/data/errors';
 
 /* ───────────────────────── 小部件 ───────────────────────── */
 
@@ -112,7 +113,7 @@ function keyStatus(conn: ConnectionView | null, broken?: boolean): { text: strin
     case 'ok':
       return { text: `${saved} · 连接可用（${conn.check.at} 验证）`, tone: 'ok' };
     case 'fail':
-      return { text: `${saved} · 不可用：${conn.check.reason}`, tone: 'fail' };
+      return { text: `${saved} · 不可用：${modelErrorReason(conn.check.reason)}`, tone: 'fail' };
     case 'checking':
       return { text: `${saved} · 正在验证…` };
     default:

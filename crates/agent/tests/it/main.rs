@@ -1,0 +1,32 @@
+//! agent 集成测试（T009.H5：一个 crate 一个测试二进制）。
+
+mod agent_config;
+mod ask_user;
+mod assembly;
+mod assistant_stream;
+mod bash_prompt;
+mod cache_prefix;
+mod common;
+mod compact_manual;
+mod compaction;
+mod compaction_dsh;
+mod credential_context;
+mod guard;
+mod inbox_and_cancel;
+mod inbox_durable;
+mod instructions;
+mod jobs;
+mod manual_compact_no_injection;
+mod max_tokens;
+mod pre_step_phase_order;
+mod pure_text_turn;
+mod resume_repair;
+mod retry_log;
+mod retry_usage_thinking;
+mod skills;
+mod spill;
+mod step_numbering;
+mod todo;
+mod tool_batch;
+mod tool_round_trip;
+mod write_tools;

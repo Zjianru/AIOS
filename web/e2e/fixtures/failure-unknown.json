@@ -1,0 +1,13 @@
+[
+  {
+    "kind": "throw",
+    "status": 418,
+    "body": {
+      "type": "error",
+      "error": {
+        "type": "teapot",
+        "message": "teapot"
+      }
+    }
+  }
+]

@@ -728,6 +728,7 @@ async fn static_handler(
 fn service_error_status(code: service::ServiceErrorCode) -> StatusCode {
     match code {
         service::ServiceErrorCode::RootUnavailable => StatusCode::CONFLICT,
+        service::ServiceErrorCode::RequestInvalidJson => StatusCode::BAD_REQUEST,
         _ => StatusCode::BAD_GATEWAY,
     }
 }
@@ -747,7 +748,9 @@ fn bad_request_response(message: String) -> Response {
     (
         StatusCode::BAD_REQUEST,
         Json(service::ServiceErrorBody {
-            code: "request/invalid-json".to_owned(),
+            code: service::ServiceErrorCode::RequestInvalidJson
+                .as_str()
+                .to_owned(),
             message,
             details: None,
         }),
@@ -1353,12 +1356,29 @@ mod t009_error_tests {
         }
     }
 
+    #[tokio::test]
+    async fn invalid_json_uses_the_shared_code_table() {
+        let response = bad_request_response("bad".to_owned());
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(response).await;
+        assert_eq!(json["code"], "request/invalid-json");
+        assert!(json.get("error").is_none(), "不再有旧 error 字段：{json}");
+        assert!(
+            service::ServiceErrorCode::ALL
+                .iter()
+                .any(|code| code.as_str() == "request/invalid-json"),
+            "invalid-json 必须进唯一码表 ALL"
+        );
+    }
+
     #[test]
     fn service_error_statuses_are_stable() {
         for code in service::ServiceErrorCode::ALL {
             let status = service_error_status(code);
             if matches!(code, service::ServiceErrorCode::RootUnavailable) {
                 assert_eq!(status, StatusCode::CONFLICT);
+            } else if matches!(code, service::ServiceErrorCode::RequestInvalidJson) {
+                assert_eq!(status, StatusCode::BAD_REQUEST);
             } else {
                 assert_eq!(status, StatusCode::BAD_GATEWAY);
             }
@@ -1408,6 +1428,7 @@ mod t011_ops_tests {
             identity: Some(identity),
             model_factory: None,
             append_hook_factory: None,
+            keyring_changed: None,
         };
         let host = service::RootHost::open(options, model::DEFAULT_CONTEXT_WINDOW).await;
         let monitor = Monitor::open_with_capacity(dir.path(), 1024).expect("监控");
