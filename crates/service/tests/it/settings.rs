@@ -2,6 +2,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use agent::AgentConfig;
+use credentials::CheckState;
 use model::{DEFAULT_CONTEXT_WINDOW, DeepSeekConfig, Effort};
 use service::{
     Call, ConnectionDeleteRequest, ConnectionRevokeRequest, ConnectionSaveRequest,
@@ -372,4 +373,107 @@ async fn 撤销key后连接还在但签发失败() {
         keyring.issue("deepseek", "test", None, None).is_err(),
         "撤销后签发应失败"
     );
+}
+
+#[tokio::test]
+async fn 验证连接走模型适配器成功时记可用() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(""),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "verify-ok".to_owned(),
+            name: "Verify".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+        }))
+        .await;
+    assert!(saved.is_ok(), "save: {saved:?}");
+    let verified = host
+        .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
+            id: "verify-ok".to_owned(),
+        }))
+        .await;
+    let service::Response::ConnectionVerify(response) = verified.expect("verify 应成功") else {
+        panic!("expected ConnectionVerify");
+    };
+    assert!(
+        matches!(response.connection.check, CheckState::Ok { .. }),
+        "验证成功记可用：{:?}",
+        response.connection.check
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "验证必须只发一条最小请求");
+    let request = &requests[0];
+    assert_eq!(
+        request
+            .headers
+            .get("x-api-key")
+            .and_then(|value| value.to_str().ok()),
+        Some(TEST_KEY),
+        "验证请求带 Keyring 签发的 key"
+    );
+    assert!(
+        request
+            .headers
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("application/json")),
+        "验证请求走模型适配器的 JSON 头"
+    );
+    let body: serde_json::Value = serde_json::from_slice(&request.body).expect("json");
+    assert!(
+        body.get("messages")
+            .and_then(serde_json::Value::as_array)
+            .is_some(),
+        "验证请求是对话形状：{body}"
+    );
+    assert_eq!(body["messages"][0]["role"], "user", "body={body}");
+    assert!(body.get("max_tokens").is_some(), "body={body}");
+}
+
+#[tokio::test]
+async fn 验证连接失败时注册器按码记() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+            "error": {"type": "authentication_error", "message": "bad key"}
+        })))
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "verify-bad".to_owned(),
+        name: "Bad".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        endpoint: server.uri(),
+        api_key: TEST_KEY.to_owned(),
+    }))
+    .await
+    .expect("save");
+    let verified = host
+        .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
+            id: "verify-bad".to_owned(),
+        }))
+        .await;
+    let service::Response::ConnectionVerify(response) = verified.expect("verify 返回响应")
+    else {
+        panic!("expected ConnectionVerify");
+    };
+    match response.connection.check {
+        CheckState::Fail { reason, .. } => assert_eq!(reason, "AUTH", "按码记原因"),
+        other => panic!("失败应记 Fail：{other:?}"),
+    }
 }

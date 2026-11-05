@@ -1266,30 +1266,34 @@ impl RootHost {
         let api_key = keyring
             .issue(&request.id, "connection-verify", None, None)?
             .into_secret();
-        let endpoint = connection.endpoint.trim_end_matches('/');
-        let body = serde_json::json!({
-            "model": connection.model,
-            "max_tokens": 1,
-            "messages": [{"role": "user", "content": "ping"}],
-        });
-        let response = reqwest::Client::new()
-            .post(format!("{endpoint}/v1/messages"))
-            .header("content-type", "application/json")
-            .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01")
-            .json(&body)
-            .send()
-            .await;
+        // T009.3：验证走模型适配器（和对话同一条请求路径/同一组头），不再手写 reqwest。
+        let config = model::DeepSeekConfig {
+            base_url: connection.endpoint.clone(),
+            model: connection.model.clone(),
+            max_tokens: 1,
+            context_window: model::DEFAULT_CONTEXT_WINDOW,
+            effort: model::Effort::Off,
+        };
+        let cancel = model::CancelToken::new(
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            std::sync::Arc::new(tokio::sync::Notify::new()),
+        );
+        let messages = vec![model::Message::user_text("ping")];
         let at = now_seconds();
-        let result = match response {
-            Ok(response) if response.status().is_success() => credentials::CheckResult::Ok { at },
-            Ok(response) => credentials::CheckResult::Fail {
-                at,
-                reason: format!("HTTP {}", response.status().as_u16()),
-            },
+        let result = match model::DeepSeek::with_credentials(
+            config,
+            std::sync::Arc::new(VerifyCredential { api_key }),
+        ) {
             Err(error) => credentials::CheckResult::Fail {
                 at,
-                reason: format!("连不上：{error}"),
+                reason: error.code.as_str().to_owned(),
+            },
+            Ok(model) => match model.stream(&messages, &[], &cancel).await {
+                Ok(_) => credentials::CheckResult::Ok { at },
+                Err(error) => credentials::CheckResult::Fail {
+                    at,
+                    reason: error.code.as_str().to_owned(),
+                },
             },
         };
         keyring.record_check(&request.id, result)?;
@@ -1459,6 +1463,21 @@ impl RootHost {
         };
         // 没有订阅端是正常情况（服务刚起/页面没开）；不把广播失败当错误。
         let _delivered = self.events.send(event).unwrap_or(0);
+    }
+}
+
+/// T009.3：验证连接的固定 key 来源（key 只在内存里；签发记录仍由 Keyring 记）。
+struct VerifyCredential {
+    api_key: String,
+}
+
+impl model::CredentialSource for VerifyCredential {
+    fn issue(
+        &self,
+        _purpose: &str,
+        _context: &model::CredentialContext,
+    ) -> Result<String, model::ModelError> {
+        Ok(self.api_key.clone())
     }
 }
 
