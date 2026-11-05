@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 
 pub use config::{DEFAULT_BASE_URL, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DeepSeekConfig};
 
+use crate::Effort;
 use crate::{
     CancelToken, CredentialContext, CredentialSource, ErrorCode, Message, ModelError, StreamChunk,
     ToolSchema,
@@ -64,6 +65,19 @@ impl DeepSeek {
             next_model: Arc::new(Mutex::new(None)),
             turn_model: Arc::new(Mutex::new(None)),
         })
+    }
+
+    /// T012.3：这个模型的 DefaultEffort（压缩摘要用）。
+    pub fn default_effort(&self) -> Effort {
+        let profile = vendors::reasoning(&self.config.base_url, &self.config.model);
+        Effort::new(crate::default_effort(&profile.efforts))
+    }
+
+    /// T012.3：同一连接/模型换一个要的档（压缩摘要用；不改原实例）。
+    pub fn with_effort(&self, effort: Effort) -> Self {
+        let mut clone = self.clone();
+        clone.config.effort = effort;
+        clone
     }
 
     /// T012.3：这一轮实际发的档和用户要的档（日志用；实际档按模型的档位适配过）。

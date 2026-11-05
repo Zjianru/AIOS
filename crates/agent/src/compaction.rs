@@ -496,8 +496,9 @@ async fn summarize(
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         std::sync::Arc::new(tokio::sync::Notify::new()),
     );
-    let mut stream = host
-        .model()
+    // T012.3：摘要请求用这个模型的 DefaultEffort（生产调用点，不再用用户/CLI 档）。
+    let summary_model = host.model().with_effort(host.model().default_effort());
+    let mut stream = summary_model
         .stream_with_max_tokens(&input, &tools, &cancel, Some(max_tokens))
         .await?;
     let mut text = String::new();

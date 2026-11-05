@@ -612,6 +612,45 @@ pub async fn setup_agent(
     (agent, data_dir, cwd, id)
 }
 
+/// T012.3：指定模型/档的测试会话（日志 actual≠wanted 用）。
+pub async fn setup_agent_with_model(
+    base_url: &str,
+    model_id: &str,
+    effort: model::Effort,
+) -> (
+    agent::Agent,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    session::SessionId,
+) {
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = session::SessionStore::create(data_dir.path(), cwd.path()).unwrap();
+    let id = store.id().clone();
+    let model = model::DeepSeek::with_credentials(
+        model::DeepSeekConfig {
+            base_url: base_url.to_owned(),
+            model: model_id.to_owned(),
+            max_tokens: 64_000,
+            context_window: 1_000_000,
+            effort,
+        },
+        test_credential(),
+    )
+    .unwrap();
+    let agent = agent::Agent::create(
+        isolated_config(data_dir.path()),
+        agent::Deps {
+            model,
+            tools: tools::ToolSet::empty(),
+            store,
+        },
+    )
+    .await
+    .unwrap();
+    (agent, data_dir, cwd, id)
+}
+
 /// 自定义工作目录与指令根的测试会话（T005.5 指令文件用）。
 pub async fn setup_agent_custom(
     base_url: &str,
