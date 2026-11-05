@@ -246,7 +246,8 @@ pub fn provider_id_for_endpoint(endpoint: &str) -> String {
 /// `…/anthropic/v1/models`（审计 T012.5 fix-now 1）。
 pub fn models_url(endpoint: &str) -> String {
     let base = endpoint.trim_end_matches('/');
-    format!("{base}/v1/models")
+    let chat_base = base.strip_suffix("/anthropic").unwrap_or(base);
+    format!("{chat_base}/v1/models")
 }
 
 /// GET /v1/models 的模型项（厂商列表字段优先）。
