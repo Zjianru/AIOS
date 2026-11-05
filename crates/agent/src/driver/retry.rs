@@ -1,28 +1,15 @@
-#![allow(unused_imports)]
 use std::collections::BTreeMap;
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use model::{
-    AssistantStreamAccumulator, BlockType, CancelToken, ContentBlock, CredentialContext, DeepSeek,
-    ErrorCode, FinishReason, Message, ModelError, StreamChunk, TimedStreamChunk, Usage,
-    UserMessage,
+    AssistantStreamAccumulator, BlockType, CancelToken, ContentBlock, ErrorCode, FinishReason,
+    ModelError, Usage,
 };
-use session::{
-    AbortCause, EventKind, InboxTarget, LlmFailure, RetryId, RetryMode, SessionId, SessionStore,
-    ToolError, TurnEndReason,
-};
-use tokio::sync::Notify;
-use tools::{ToolCall, ToolContext, ToolSessionState, ToolSet, execute_batch};
+use session::{EventKind, LlmFailure, RetryId, RetryMode};
 
-use crate::capabilities::{
-    BoxedFuture, CapabilityRegistry, CompactionPolicy, HookEvent, LoopAccess,
-};
+use crate::AgentEvent;
 use crate::error::AgentError;
-use crate::inbox::{Delivery, Inbox};
-use crate::{AgentConfig, AgentEvent, CompactionTrigger, Deps, TurnOutcome};
 
 use super::*;
 
