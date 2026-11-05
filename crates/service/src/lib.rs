@@ -1397,7 +1397,8 @@ impl RootHost {
         let mut models = catalog.models_for(&provider_id);
         let mut live = false;
         if let Ok(client) = model::http::client() {
-            let url = format!("{}/v1/models", connection.endpoint.trim_end_matches('/'));
+            // 审计 T012.5 fix-now 1：endpoint 以 /anthropic 结尾时列表在 Chat base 的 /v1/models。
+            let url = model::catalog::models_url(&connection.endpoint);
             let mut request = client.get(url).timeout(std::time::Duration::from_secs(5));
             match connection.auth_header.as_deref() {
                 Some("authorization") => {

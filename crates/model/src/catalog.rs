@@ -240,6 +240,15 @@ pub fn provider_id_for_endpoint(endpoint: &str) -> String {
     }
 }
 
+/// 模型列表 URL（T012.5）：Anthropic base 是 `/v1/messages` 的根，列表在它的 Chat base
+/// 的 `/v1/models`（Magpie catalog `FetchAt`：Anthropic base 与 Chat base 是各自根，列表按
+/// Chat base 的 `/v1/models` 找）；预设三家都以 `…/anthropic` 结尾，直接拼会请求
+/// `…/anthropic/v1/models`（审计 T012.5 fix-now 1）。
+pub fn models_url(endpoint: &str) -> String {
+    let base = endpoint.trim_end_matches('/');
+    format!("{base}/v1/models")
+}
+
 /// GET /v1/models 的模型项（厂商列表字段优先）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiveModel {
