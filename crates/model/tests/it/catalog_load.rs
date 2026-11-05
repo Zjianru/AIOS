@@ -45,6 +45,7 @@ async fn network_cache_and_snapshot_give_the_same_fields() {
     assert_eq!(source, CatalogSource::Network);
     assert!(cache_path(&dir).exists(), "网络成功要写缓存");
     let expected = flash(&snapshot());
+    assert_eq!(flash(&network), expected, "网络与内置快照字段一致");
 
     let (cached, source) = load_with(&dir, "http://127.0.0.1:1/nope", now).await;
     assert_eq!(source, CatalogSource::Cache);
