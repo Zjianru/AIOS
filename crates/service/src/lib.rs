@@ -2522,8 +2522,8 @@ mod t009_error_tests {
     fn invalid_json_code_is_in_the_single_code_table() {
         assert_eq!(
             ServiceErrorCode::ALL.len(),
-            14,
-            "码数 14（T013.2 加附件两码）"
+            15,
+            "码数 15（T013.4 加 invalid-message）"
         );
         assert!(
             ServiceErrorCode::ALL
