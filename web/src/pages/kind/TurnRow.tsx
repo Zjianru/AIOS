@@ -267,6 +267,9 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
               durationMs={view.durationMs}
               cwd=""
               answering={false}
+              usage={view.tokens.input || view.tokens.output ? { model: view.model, ...view.tokens } : undefined}
+              thinkingSeconds={view.thinkingSeconds}
+              alwaysShow
             />
           ) : null}
           {view.question ? <QuestionCard turnId={view.id} question={view.question} /> : null}
@@ -294,6 +297,9 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
                 durationMs={view.durationMs}
                 cwd=""
                 answering
+                usage={view.tokens.input || view.tokens.output ? { model: view.model, ...view.tokens } : undefined}
+                thinkingSeconds={view.thinkingSeconds}
+                alwaysShow
               />
             </div>
           ) : null}

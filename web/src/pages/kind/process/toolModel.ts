@@ -197,6 +197,8 @@ function stringArg(args: Record<string, unknown>, key: string): string | null {
 
 /** 行上点后面那段：文件工具写路径；其他先用 description，再用详情；工具名兜底。 */
 export function rowSummary(step: ToolStepView, cwd: string): string {
+  // 提问的问句由问题卡显示（页面已有 QuestionCard），行上不再重复一遍。
+  if (step.name === 'ask_user_question') return '';
   const file = stringArg(step.args, 'file_path');
   if (file && (step.name === 'read' || step.name === 'write' || step.name === 'edit')) return displayPath(file, cwd);
   if (step.name === 'apply_patch') return '';

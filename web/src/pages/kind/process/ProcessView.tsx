@@ -271,12 +271,35 @@ export interface ProcessViewProps {
   cwd: string;
   /** 回答已经在写了：过程这边不再有在跑的组。 */
   answering?: boolean;
+  /** T010.3：这一轮的用量（hover 整轮行时显示；没有就不显示用量行）。 */
+  usage?: {
+    model: string;
+    input: number;
+    output: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+  };
+  /** 这一轮想了多少秒（展开后「经过」行显示）。 */
+  thinkingSeconds?: number;
+  /** 没有工具也没有思考的完成轮也显示（T010 承诺：用量/用时的「工作过程」行）。 */
+  alwaysShow?: boolean;
 }
 
-export function ProcessView({ steps, status, live, startedAt, durationMs, cwd, answering = false }: ProcessViewProps) {
+export function ProcessView({
+  steps,
+  status,
+  live,
+  startedAt,
+  durationMs,
+  cwd,
+  answering = false,
+  usage,
+  thinkingSeconds = 0,
+  alwaysShow = false,
+}: ProcessViewProps) {
   const [open, setOpen] = useState(false);
   const elapsed = useElapsed(startedAt === null ? null : startedAt * 1000, live);
-  if (steps.length === 0 && !live) return null;
+  if (steps.length === 0 && !live && !alwaysShow) return null;
   const segments = segmentsOf(steps);
   // 停下、失败、还在跑：一直展开，不能收
   const pinned = live || status === 'failed' || status === 'interrupted';
@@ -285,8 +308,27 @@ export function ProcessView({ steps, status, live, startedAt, durationMs, cwd, a
   const label = live ? 'Kind 工作中' : status === 'interrupted' ? '已停止' : status === 'failed' ? '没做完' : '已完成';
   const visible = segments.filter((segment) => expanded || segment.kind === 'say');
   const lastGroup = segments.length > 0 && segments[segments.length - 1].kind === 'group' ? segments.length - 1 : -1;
+  // T010.3：悬停整轮行显示模型名与用量（输入含缓存读写；厂商没报缓存就不显示命中）。
+  const shownInput = usage ? usage.input + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0) : 0;
+  const cacheHit =
+    usage && usage.cacheRead !== undefined && usage.cacheRead !== null && shownInput > 0
+      ? Math.round((usage.cacheRead / shownInput) * 100)
+      : null;
+  const totalTokens = shownInput + (usage?.output ?? 0);
+  const toolCount = steps.filter((step) => step.kind === 'tool').length;
   return (
-    <div data-kind="process" data-open={expanded ? 'true' : 'false'}>
+    <div data-kind="process" data-open={expanded ? 'true' : 'false'} className="group/turn relative">
+      {usage ? (
+        <span className="pointer-events-none absolute right-0 top-0 hidden items-center gap-1.5 whitespace-nowrap text-ink-3 group-hover/turn:flex">
+          {usage.model} · 输入 <span className="brand-type">{shownInput}</span>
+          {cacheHit === null ? null : (
+            <>
+              {' '}· 缓存命中 <span className="brand-type">{cacheHit}%</span>
+            </>
+          )}{' '}
+          · 输出 <span className="brand-type">{usage.output}</span>
+        </span>
+      ) : null}
       <button
         type="button"
         disabled={pinned}
@@ -299,8 +341,16 @@ export function ProcessView({ steps, status, live, startedAt, durationMs, cwd, a
         {live ? <span className="tracking-widest">···</span> : null}
         {pinned ? null : <ChevronDown className={cn('size-3.5 transition-transform', expanded && 'rotate-180')} />}
       </button>
-      {visible.length > 0 || live ? (
+      {visible.length > 0 || live || expanded ? (
         <div className="mt-4 flex flex-col gap-1">
+          {/* 信息分层：默认只显示用时；想了多久、调了几次、多少 token 展开才看（T010 承诺）。 */}
+          {expanded && !live ? (
+            <div className="text-2 text-ink-3" data-kind="process-meta">
+              <span className="text-ink-2">经过</span> ·{' '}
+              {thinkingSeconds > 0 ? <>想了 {thinkingSeconds} 秒 · </> : null}调了 {toolCount} 次工具 ·{' '}
+              <span className="brand-type">{(totalTokens / 1000).toFixed(1)}k</span>
+            </div>
+          ) : null}
           {segments.map((segment, index) => {
             if (segment.kind === 'say') {
               return (

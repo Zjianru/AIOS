@@ -26,6 +26,7 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.usageReadOnly) return { file: 'usage-read-only', paceMs: 400 };
   if (options.askTurn) return { file: 'ask', paceMs: options.askTurnPaceMs };
   if (options.toolTurn) return { file: 'tool' };
+  if (options.t013Process) return { file: 'tool-process' };
   if (options.highUsage) return { file: 'high-usage' };
   return {
     file: 'text',
@@ -102,6 +103,8 @@ export interface KernelFixture {
 export interface FixtureOptions {
   /// first request 回一次工具调用（read hello.txt），拿到工具结果后再回最终文本。
   toolTurn?: boolean;
+  /// T013.5：一轮里 write/apply_patch/bash 三个工具 + 最终文本（工作过程页的卡片用）。
+  t013Process?: boolean;
   /// 每次模型回放延迟毫秒（T007.5 停止用例要在运行中按停止/Esc）。
   slowMs?: number;
   /// first request 回一次 ask_user_question（两题：一题选项、一题自己写）。
@@ -147,7 +150,7 @@ export async function startKernelFixture(
       JSON.stringify({ version: 1, sessionId: randomUUID() }),
     );
   }
-  if (options.toolTurn) {
+  if (options.toolTurn || options.t013Process) {
     await writeFile(path.join(dataDir, 'hello.txt'), 'hello from fixture\n');
   }
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
