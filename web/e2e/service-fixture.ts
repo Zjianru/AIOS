@@ -524,3 +524,69 @@ export async function startRealDodFixture(): Promise<KernelFixture> {
     },
   };
 }
+
+/** T013 DoD2：真 key（MiniMax）的夹具——/tmp/aios-t013-dod 下的数据目录 + 小项目工作目录。 */
+export async function startT013KernelFixture(): Promise<KernelFixture> {
+  const apiKey = process.env.MINIMAX_API_KEY;
+  if (!apiKey) throw new Error('缺少 MINIMAX_API_KEY（D35：DoD 从环境变量读 key）');
+  const root = process.env.AIOS_T013_DOD_ROOT ?? '/tmp/aios-t013-dod';
+  const workDir = path.join(root, 'work');
+  const dataDir = path.join(root, 'data');
+  await mkdir(workDir, { recursive: true });
+  await mkdir(dataDir, { recursive: true });
+  // 小项目：只有几个文件（自己造的测试文件）。
+  await writeFile(path.join(workDir, 'notes.md'), '# 项目笔记' + String.fromCharCode(10) + String.fromCharCode(10) + '第一行：DOD13-NOTES' + String.fromCharCode(10));
+  await writeFile(path.join(workDir, 'todo.txt'), 'DOD13-TODO：买牛奶、写代码' + String.fromCharCode(10));
+  await writeFile(path.join(workDir, 'config.json'), '{"name":"dod13"}' + String.fromCharCode(10));
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+  const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
+  const identityPath = path.join(dataDir, 'identity.txt');
+  const seed = spawnSync(
+    bin,
+    [
+      'keyring', '--data-dir', dataDir, '--identity', identityPath, 'set',
+      '--id', 'minimax-cn',
+      '--name', 'MiniMax（国内站）',
+      '--model', 'MiniMax-M3.1-Flash',
+      '--endpoint', 'https://api.minimaxi.com/anthropic',
+      '--preset', 'minimax-cn',
+    ],
+    { input: apiKey + '\n', encoding: 'utf8' },
+  );
+  if (seed.status !== 0) throw new Error('seed keyring failed: ' + String(seed.stderr));
+  const child = spawn(
+    bin,
+    ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', workDir, '--web-dist', path.join(repoRoot, 'web/dist')],
+    { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  let stderr = '';
+  child.stderr?.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  let output = '';
+  const parsed = await new Promise<{ baseUrl: string; token: string }>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('T013 真 key serve 启动超时: ' + output)), 60_000);
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+      const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)\/?\?token=([0-9a-f-]+)/);
+      if (match) {
+        clearTimeout(timer);
+        resolve({ baseUrl: 'http://127.0.0.1:' + match[1], token: match[2] });
+      }
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      reject(new Error('T013 serve 提前退出（' + String(code) + '）：' + stderr));
+    });
+  });
+  return {
+    baseUrl: parsed.baseUrl,
+    token: parsed.token,
+    baseUrlRaw: parsed.baseUrl,
+    close: async () => {
+      child.kill('SIGTERM');
+    },
+    stderr: () => stderr,
+    dataDir,
+  } as unknown as KernelFixture;
+}
