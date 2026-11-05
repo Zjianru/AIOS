@@ -52,14 +52,14 @@ impl Tool for WriteTool {
     ) -> ToolFuture<'a, ToolResult> {
         Box::pin(async move {
             match write(&call.arguments, context) {
-                Ok(content) => ToolResult::success(call.id, content),
+                Ok((content, meta)) => ToolResult::success_with_meta(call.id, content, meta),
                 Err(failure) => ToolResult::error(call.id, failure),
             }
         })
     }
 }
 
-fn write(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
+fn write(arguments: &str, context: &ToolContext) -> Result<(String, Value), ToolFailure> {
     let args: Value = serde_json::from_str(arguments)
         .map_err(|error| ToolFailure::plain(format!("arguments must be a JSON object: {error}")))?;
     let Some(object) = args.as_object() else {
@@ -77,10 +77,26 @@ fn write(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> 
         .and_then(Value::as_str)
         .ok_or_else(|| ToolFailure::plain("content must be a string"))?;
     let target = crate::fs::resolve(context, file_path)?;
+    let display = target.display();
+    // T013.1：覆盖要有改动前的文本才能算 diff（新建没有旧文本，diff 为空）。
+    let before = crate::fs::read_text_for_verb(&target, "write")
+        .ok()
+        .map(|text| text.content);
     let created = crate::fs::write_file(context, &target, content)?;
+    let diffs = if created {
+        Vec::new()
+    } else {
+        crate::diff::compute_hunk_diffs(&display, before.as_deref().unwrap_or_default(), content)
+    };
+    let meta = json!({
+        "operation": if created { "create" } else { "update" },
+        "path": display,
+        "diffs": diffs,
+    });
     let verb = if created { "Created" } else { "Updated" };
-    Ok(format!(
+    let text = format!(
         "<path>{}</path>\n<type>file</type>\n<content>\n{verb} file\n</content>",
         target.display()
-    ))
+    );
+    Ok((text, meta))
 }

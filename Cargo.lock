@@ -2539,6 +2539,7 @@ dependencies = [
  "serde",
  "serde_json",
  "session",
+ "similar",
  "tempfile",
  "tokio",
  "uuid",

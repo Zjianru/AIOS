@@ -7,6 +7,7 @@
 use std::fs;
 use std::io::Write;
 
+use model::Message;
 use serde_json::Value;
 
 use crate::{EventKind, SessionError, SessionId, SessionStore, TurnEndReason};
@@ -155,6 +156,42 @@ fn format_versions_outside_14_through_15_are_rejected_without_touching_the_file(
         );
         assert_eq!(fs::read(&path).unwrap(), legacy, "拒绝新版本不能改写它");
     }
+}
+
+/// T013.1 测试清单 2：tool/result 的 meta 写进日志再读出来一字不差。
+#[test]
+fn tool_result_meta_roundtrips_through_the_log() {
+    let (_data_dir, _cwd, mut store) = create_store();
+    let meta = serde_json::json!({
+        "diffs": [{"path": "/tmp/a.txt", "oldText": "old", "newText": "new"}],
+        "operation": "update",
+    });
+    store
+        .append(&[EventKind::ToolResult {
+            turn: 1,
+            step: 1,
+            message: Message::tool_result("call_1", "Updated file", false),
+            error: None,
+            meta: Some(meta.clone()),
+        }])
+        .unwrap();
+    // 原始 JSONL 行里就是原样的 meta（按解析后的 JSON 比较，键顺序无关）。
+    let text = fs::read_to_string(store.path()).unwrap();
+    let line: Value = text
+        .lines()
+        .nth(1)
+        .and_then(|line| serde_json::from_str(line).ok())
+        .expect("第二条是 tool/result");
+    assert_eq!(line["data"]["meta"], meta, "meta 要原样落盘：{text}");
+    // 读回来一字不差。
+    let snapshot =
+        SessionStore::open_read_only(store.path().parent().unwrap().parent().unwrap(), store.id())
+            .unwrap();
+    let event = &snapshot.events()[0];
+    let EventKind::ToolResult { meta: got, .. } = &event.kind else {
+        panic!("第一条应该是 tool/result");
+    };
+    assert_eq!(got, &Some(meta), "读出来的 meta 要一字不差");
 }
 
 #[test]

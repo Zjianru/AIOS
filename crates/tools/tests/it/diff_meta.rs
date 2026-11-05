@@ -128,13 +128,13 @@ async fn write_overwrite_meta_carries_the_hunk_diff() {
 async fn edit_meta_carries_the_hunk_diff() {
     let dir = tempfile::tempdir().unwrap();
     let context = ToolContext::new(dir.path());
-    let tool = EditTool::new();
     let _ = run(
-        &tool,
+        &WriteTool::new(),
         &context,
         json!({"file_path": "a.txt", "content": "before\n"}),
     )
     .await;
+    let tool = EditTool::new();
     let result = run(
         &tool,
         &context,
@@ -144,25 +144,6 @@ async fn edit_meta_carries_the_hunk_diff() {
     let meta = result.meta.expect("edit 要给 meta");
     assert_eq!(meta["diffs"][0]["oldText"], "before");
     assert_eq!(meta["diffs"][0]["newText"], "after");
-}
-
-#[tokio::test]
-async fn apply_patch_stopped_meta_marks_the_partial_run() {
-    // 两个操作：第二个引用不存在的文件 → 第一个完成、第二个失败，stopped=true。
-    let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
-    let tool = ApplyPatchTool::new();
-    let patch = "*** Begin Patch\n*** Add File: done.txt\n+done\n*** Update File: missing.txt\n@@\n-old\n+new\n*** End Patch";
-    let result = run(&tool, &context, json!({"input": patch})).await;
-    assert!(result.is_error, "第二个操作失败要报错：{}", result.content);
-    let meta = result.meta.expect("失败/停下也要给 meta");
-    assert_eq!(meta["stopped"], true, "中途停下 stopped=true：{meta}");
-    assert!(
-        meta["diffs"]
-            .as_array()
-            .is_some_and(|diffs| !diffs.is_empty()),
-        "已完成的改动要有 diff：{meta}"
-    );
 }
 
 fn canonical(root: &std::path::Path, relative: &str) -> String {

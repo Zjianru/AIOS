@@ -8,6 +8,8 @@ edition = "2024"
 license = "MIT"
 
 [workspace.dependencies]
+# T013.1：diff 展示（spec 允许的唯一新依赖；tools crate 正式依赖）
+similar = "2.7.0"
 tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "io-std", "signal"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"] }
 serde = { version = "1.0", features = ["derive"] }
