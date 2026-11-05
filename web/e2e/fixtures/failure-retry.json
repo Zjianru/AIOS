@@ -1,0 +1,91 @@
+[
+  {
+    "kind": "throw",
+    "status": 500,
+    "body": {
+      "type": "error",
+      "error": {
+        "type": "server_error",
+        "message": "overloaded"
+      }
+    }
+  },
+  {
+    "kind": "throw",
+    "status": 500,
+    "body": {
+      "type": "error",
+      "error": {
+        "type": "server_error",
+        "message": "overloaded"
+      }
+    }
+  },
+  {
+    "kind": "throw",
+    "status": 500,
+    "body": {
+      "type": "error",
+      "error": {
+        "type": "server_error",
+        "message": "overloaded"
+      }
+    }
+  },
+  {
+    "kind": "stream",
+    "records": [
+      {
+        "chunk": {
+          "blockType": "text",
+          "index": 0,
+          "type": "block-start"
+        },
+        "time": 1793817378403,
+        "type": "chunk"
+      },
+      {
+        "dt": [],
+        "index": 0,
+        "texts": [
+          "（T007 e2e 假回放）"
+        ],
+        "time0": 1793817378403,
+        "type": "text-chunks"
+      },
+      {
+        "chunk": {
+          "block": {
+            "text": "（T007 e2e 假回放）",
+            "type": "text"
+          },
+          "index": 0,
+          "type": "block-end"
+        },
+        "time": 1793817378403,
+        "type": "chunk"
+      },
+      {
+        "chunk": {
+          "type": "usage",
+          "usage": {
+            "inputTokens": 10,
+            "outputTokens": 3
+          }
+        },
+        "time": 1793817378403,
+        "type": "chunk"
+      },
+      {
+        "chunk": {
+          "reason": {
+            "kind": "stop"
+          },
+          "type": "finish"
+        },
+        "time": 1793817378403,
+        "type": "chunk"
+      }
+    ]
+  }
+]

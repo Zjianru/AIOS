@@ -100,14 +100,25 @@ function WorkProcess({ view }: { view: TurnViewData }) {
   const [open, setOpen] = useState(false);
   const toolCount = view.tools.length;
   const seconds = view.durationMs ? Math.max(1, Math.round(view.durationMs / 1000)) : 0;
-  const tokens = view.tokens.input + view.tokens.output;
+  // T010.3：输入显示全部输入（输入 + 缓存读 + 缓存写）；厂商没报缓存就不显示命中。
+  const shownInput = view.tokens.input + (view.tokens.cacheRead ?? 0) + (view.tokens.cacheWrite ?? 0);
+  const prompt = shownInput;
+  const cacheHit =
+    view.tokens.cacheRead === undefined || view.tokens.cacheRead === null || prompt === 0
+      ? null
+      : Math.round((view.tokens.cacheRead / prompt) * 100);
+  const tokens = shownInput + view.tokens.output;
   return (
     <div className="group/work relative mt-2 text-2">
       {/* hover 出来的模型 / token / 花费：绝对定位在行右侧，不参与布局，所以行不会跳 */}
       <span className="pointer-events-none absolute right-0 top-0 hidden items-center gap-1.5 whitespace-nowrap text-ink-3 group-hover/work:flex">
-        输入 <span className="brand-type">{view.tokens.input}</span> · 输出{' '}
-        <span className="brand-type">{view.tokens.output}</span>
-        
+        {view.model} · 输入 <span className="brand-type">{shownInput}</span>
+        {cacheHit === null ? null : (
+          <>
+            {' '}· 缓存命中 <span className="brand-type">{cacheHit}%</span>
+          </>
+        )}{' '}
+        · 输出 <span className="brand-type">{view.tokens.output}</span>
       </span>
       <button
         type="button"
@@ -121,7 +132,8 @@ function WorkProcess({ view }: { view: TurnViewData }) {
         <div className="mt-1.5 space-y-1 border-l border-line pl-3">
           {/* 信息分层（brief §四.3）：默认只显示用时；想了多久、调了几次、多少 token 点开才看 */}
           <div className="text-2 text-ink-3">
-            <span className="text-ink-2">经过</span> · 想了 {view.thinkingSeconds} 秒 · 调了 {toolCount} 次工具 ·{' '}
+            <span className="text-ink-2">经过</span> ·{' '}
+            {view.thinkingSeconds > 0 ? <>想了 {view.thinkingSeconds} 秒 · </> : null}调了 {toolCount} 次工具 ·{' '}
             <span className="brand-type">{(tokens / 1000).toFixed(1)}k</span>
           </div>
           {view.reasoning ? (
@@ -239,7 +251,7 @@ function CompactionDivider({ compaction }: { compaction: CompactionView }) {
         <button type="button" onClick={() => setOpen((value) => !value)} className="flex items-center gap-1.5 transition-colors hover:text-ink-2">
           <ChevronRight className={cn('size-3 transition-transform', open && 'rotate-90')} />
           上下文已压缩 · {compaction.auto ? '快满了，自动' : '你手动'}
-          {compaction.before > 0 ? (
+          {compaction.before !== undefined && compaction.after !== undefined ? (
             <>
               {' '}· 占用 <span className="brand-type">{compaction.before}%</span> →{' '}
               <span className="brand-type">{compaction.after}%</span>

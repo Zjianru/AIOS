@@ -11,6 +11,8 @@ import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQues
 import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
 import type { GateDetail, GateState } from './KernelGate';
 import { reconnectDelayMs } from '@/data/reconnect';
+import { getModelSettings } from '@/data/keyring';
+import { contextPercent, contextTokens, emptyUsage, mergeUsage, modelLabel, reasoningSpanMs, thinkingSeconds as thinkingSecondsOf, type UsageTotals } from '@/data/turnUsage';
 import { setHostHome } from '@/data/service';
 import { go } from '@/app/navigate';
 import type { AskAnswer, AskQuestion, FailureCause } from '@/data/fixtures/kindLive';
@@ -42,8 +44,10 @@ export type QuestionView =
 /** 压缩：在对话里是一条分隔线，不是一轮。 */
 export interface CompactionView {
   auto: boolean;
-  before: number;
-  after: number;
+  /** T010.4：压缩前占窗口的百分比（窗口/前后任一拿不到就不显示）。 */
+  before?: number;
+  /** T010.4：压缩后第一条响应占窗口的百分比。 */
+  after?: number;
   summary: string;
 }
 
@@ -58,7 +62,9 @@ export interface TurnViewData {
   cards: KindCard[];
   answer: { text: string; elements: TextElement[] } | null;
   thinkingSeconds: number;
-  tokens: { input: number; output: number };
+  tokens: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
+  /** T010.3：这一轮最后一条 assistant/message 的模型显示名（日志里没有就退回 id）。 */
+  model: string;
   cost: number | null;
   /** 模型正在重试（第几次、为什么）。 */
   retry: { attempt: number; reason: string; inSeconds: number } | null;
@@ -138,6 +144,10 @@ interface KindState {
   usage: number;
   compacting: boolean;
   /** 演示用：下一条消息送不到。 */
+  /** T010.3：模型 id → 显示名（来自模型设置；拿不到就用 id）。 */
+  modelNames: Record<string, string>;
+  /** T010.4：模型 id → contextWindow（模型设置里的窗口；拿不到就不显示压缩占用）。 */
+  modelWindows: Record<string, number>;
   /** 当前用的模型（底栏的模型选择，T008）。 */
   model: { connectionId: string; modelId: string; label: string };
   /** T008.4：Kind 首屏引导：先看是不是空库（首次使用），否则加载对话。 */
@@ -221,6 +231,7 @@ function addUnsentView(viewId: string, text: string): void {
       answer: null,
       thinkingSeconds: 0,
       tokens: { input: 0, output: 0 },
+      model: '模型服务',
       cost: null,
       retry: null,
       failure: null,
@@ -284,6 +295,7 @@ function openSocket(): void {
 let liveEvents: ServiceEvent[] = [];
 let contextWindow = 0;
 let pendingCompactionAuto = true;
+let livePendingCompaction: { id: string; window?: number } | null = null;
 (window as unknown as { __derive?: unknown }).__derive = (events: ServiceEvent[]) => deriveTurnViews(events);
 let liveTurn: number | null = null;
 let liveStream = '';
@@ -334,8 +346,8 @@ function summaryTextOf(data: Record<string, unknown>): string {
     .join('');
 }
 
-function compactionViewOf(data: Record<string, unknown>, auto: boolean) {
-  return { auto, before: 0, after: 0, summary: summaryTextOf(data) };
+function compactionViewOf(data: Record<string, unknown>, auto: boolean): CompactionView {
+  return { auto, summary: summaryTextOf(data) };
 }
 
 /** 日志事件 live：追加进本轮事件，重建 view；turn/end 时收掉流式文本。 */
@@ -354,6 +366,8 @@ function applyLiveEvent(event: ServiceEvent): void {
         ? pendingCompactionAuto
         : false;
     const compaction = compactionViewOf(event.data, auto);
+    const window = useKindStore.getState().modelWindows[String(event.data.model ?? '')];
+    compaction.before = contextPercent(contextTokens(event.data.usage), window) ?? undefined;
     const compactionId = String(event.data.compactionId ?? String(event.seq));
     const dividerTurn = turn === null ? null : turn + 0.5;
     useKindStore.setState((state) => {
@@ -371,6 +385,7 @@ function applyLiveEvent(event: ServiceEvent): void {
         answer: null,
         thinkingSeconds: 0,
         tokens: { input: 0, output: 0 },
+      model: '模型服务',
         cost: null,
         retry: null,
         failure: null,
@@ -379,6 +394,7 @@ function applyLiveEvent(event: ServiceEvent): void {
         delivery: null,
         stoppedAt: null,
       };
+      livePendingCompaction = { id, window };
       const exists = state.views.some((item) => item.id === id);
       const views = (exists ? state.views.map((item) => (item.id === id ? view : item)) : state.views.concat(view)).sort(
         (left, right) => Number(left.id.split('-')[1]) - Number(right.id.split('-')[1]),
@@ -388,6 +404,19 @@ function applyLiveEvent(event: ServiceEvent): void {
     return;
   }
   if (turn === null) return;
+  // T010.4：压缩后第一条 assistant/message 算「压缩后」占用。
+  if (event.type === 'assistant/message' && livePendingCompaction) {
+    const pending = livePendingCompaction;
+    livePendingCompaction = null;
+    const after = contextPercent(contextTokens(event.data.usage), pending.window) ?? undefined;
+    useKindStore.setState((state) => {
+      const views = state.views.map((item) => {
+        if (item.id !== pending.id || !item.compaction) return item;
+        return { ...item, compaction: { ...item.compaction, after } };
+      });
+      return { views, byId: indexOf(views) };
+    });
+  }
   if (event.type === 'turn/start') {
     liveTurn = turn;
   }
@@ -447,7 +476,9 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     answer: string | null;
     status: TurnStatus;
     tools: ToolStep[];
-    tokens: { input: number; output: number };
+    usage: UsageTotals;
+    modelId: string | null;
+    reasoningMs: number;
     failure: { cause: FailureCause; reason: string } | null;
     question: QuestionView | null;
     retry: TurnViewData['retry'];
@@ -457,6 +488,8 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     stoppedAt: string | null;
   }
   const turns = new Map<number, Raw>();
+  // T010.4：每次压缩摘要等「压缩后第一条响应」来算 after。
+  const pendingCompaction = new Map<number, { view: CompactionView; window?: number }>();
   const ensure = (turn: number): Raw => {
     let raw = turns.get(turn);
     if (!raw) {
@@ -468,7 +501,9 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         answer: null,
         status: 'inProgress',
         tools: [],
-        tokens: { input: 0, output: 0 },
+        usage: emptyUsage(),
+        modelId: null,
+        reasoningMs: 0,
         failure: null,
         question: null,
         retry: null,
@@ -521,14 +556,11 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     return parts.join('');
   };
 
-  const usageOf = (data: Record<string, unknown>): { input: number; output: number } => {
-    const usage = data.usage;
-    if (!usage || typeof usage !== 'object') return { input: 0, output: 0 };
-    const value = (name: string) => {
-      const number = (usage as Record<string, unknown>)[name];
-      return typeof number === 'number' ? number : 0;
-    };
-    return { input: value('inputTokens'), output: value('outputTokens') };
+  const modelIdOf = (message: unknown): string | null => {
+    if (!message || typeof message !== 'object') return null;
+    const source = (message as { source?: { kind?: string; model?: unknown } }).source;
+    if (!source || source.kind !== 'model') return null;
+    return typeof source.model === 'string' ? source.model : null;
   };
   for (const event of events) {
     const data = event.data ?? {};
@@ -555,9 +587,22 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         const raw = ensure(turn);
         const text = textOf(data.message);
         if (text) raw.answer = text;
-        raw.tokens = usageOf(data);
+        raw.usage = mergeUsage(raw.usage, data.usage);
+        raw.modelId = modelIdOf(data.message) ?? raw.modelId;
+        raw.reasoningMs += reasoningSpanMs(data.stream);
+        const pending = pendingCompaction.get(turn);
+        if (pending) {
+          pending.view.after = contextPercent(contextTokens(data.usage), pending.window) ?? undefined;
+          pendingCompaction.delete(turn);
+        }
         raw.status = 'inProgress';
         raw.retry = null;
+        break;
+      }
+      case 'assistant/attempt': {
+        const raw = ensure(turn);
+        raw.usage = mergeUsage(raw.usage, data.usage);
+        raw.reasoningMs += reasoningSpanMs(data.stream);
         break;
       }
       case 'tool/call': {
@@ -676,7 +721,11 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         const raw = ensure(turn);
         const auto =
           data.sourceCommandId === undefined || data.sourceCommandId === null;
-        raw.compaction = compactionViewOf(data, auto);
+        const view = compactionViewOf(data, auto);
+        const window = useKindStore.getState().modelWindows[String(data.model ?? '')];
+        view.before = contextPercent(contextTokens(data.usage), window) ?? undefined;
+        raw.compaction = view;
+        pendingCompaction.set(turn, { view, window });
         break;
       }
       default:
@@ -698,8 +747,14 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       tools: raw.tools,
       cards: [],
       answer: raw.answer ? { text: raw.answer, elements: [] } : null,
-      thinkingSeconds: 0,
-      tokens: raw.tokens,
+      thinkingSeconds: thinkingSecondsOf(raw.reasoningMs),
+      tokens: {
+        input: raw.usage.input,
+        output: raw.usage.output,
+        cacheRead: raw.usage.cacheRead,
+        cacheWrite: raw.usage.cacheWrite,
+      },
+      model: modelLabel(raw.modelId, useKindStore.getState().modelNames),
       cost: null,
       retry: raw.retry,
       compaction: raw.compaction,
@@ -733,9 +788,31 @@ export const useKindStore = create<KindState>()((set, get) => ({
   connection: { state: 'online' },
   usage: 46,
   compacting: false,
+  modelNames: {},
+  modelWindows: {},
   model: DEMO_MODEL,
 
   bootstrap: async () => {
+    try {
+      const view = await getModelSettings();
+      const names: Record<string, string> = {};
+      const windows: Record<string, number> = {};
+      for (const connection of view.connections) {
+        for (const model of connection.models) {
+          if (model.name) names[model.id] = model.name;
+          if (model.contextWindow) windows[model.id] = model.contextWindow;
+        }
+      }
+      for (const provider of view.catalog) {
+        for (const model of provider.defaultModels) {
+          if (model.name) names[model.id] = model.name;
+          if (model.contextWindow) windows[model.id] = model.contextWindow;
+        }
+      }
+      set({ modelNames: names, modelWindows: windows });
+    } catch {
+      // 设置读不到时模型名退回 id、压缩占用不显示（日志里的事实还在）。
+    }
     try {
       const first = await fetchFirstUse();
       if (first.firstUse) {

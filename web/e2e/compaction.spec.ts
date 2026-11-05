@@ -28,6 +28,8 @@ test('手动压缩：分隔线出现，点开是摘要', async ({ page, request 
     const divider = page.locator('[data-kind="compaction"]').last();
     await expect(divider).toBeVisible({ timeout: 20_000 });
     await expect(divider.getByText('你手动', { exact: false })).toBeVisible();
+    // T010.4：手动压缩是这个测试里最后一次模型请求，压缩后没有请求 → 不显示「占用」。
+    await expect(divider.getByText('占用', { exact: false })).toHaveCount(0);
     await divider.getByRole('button').click();
     await expect(divider.getByText('（T007 e2e 假回放）', { exact: false })).toBeVisible();
   } finally {
@@ -47,6 +49,8 @@ test('自动压缩：分隔线出现', async ({ page, request }) => {
     const divider = page.locator('[data-kind="compaction"]').last();
     await expect(divider).toBeVisible({ timeout: 30_000 });
     await expect(divider.getByText('快满了，自动', { exact: false })).toBeVisible();
+    // T010.4：前=摘要请求 context÷窗口、后=压缩后第一条 assistant/message context÷窗口（窗口来自模型设置）。
+    await expect(divider.getByText(/占用 \d+% → \d+%/)).toBeVisible();
   } finally {
     await fixture.close();
   }

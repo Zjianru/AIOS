@@ -7,103 +7,57 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const FINAL_TEXT_SSE = [
-  'event: message_start',
-  'data: {"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"deepseek-flash","content":[],"usage":{"input_tokens":10,"output_tokens":1}}}',
-  '',
-  'event: content_block_start',
-  'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
-  '',
-  'event: content_block_delta',
-  'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"（T007 e2e 假回放）"}}',
-  '',
-  'event: content_block_stop',
-  'data: {"type":"content_block_stop","index":0}',
-  '',
-  'event: message_delta',
-  'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}',
-  '',
-  'event: message_stop',
-  'data: {"type":"message_stop"}',
-  '',
-  '',
-].join('\n');
+const FIXTURE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
 
-const HIGH_USAGE_FINAL_TEXT_SSE = FINAL_TEXT_SSE.replace(
-  '"usage":{"input_tokens":10,"output_tokens":1}',
-  '"usage":{"input_tokens":4500,"output_tokens":1}',
-);
+interface ReplaySelection {
+  file: string;
+  override?: string;
+  paceMs?: number;
+}
 
-const TOOL_CALL_SSE = [
-  'event: message_start',
-  'data: {"type":"message_start","message":{"id":"msg_tool","type":"message","role":"assistant","model":"deepseek-flash","content":[],"usage":{"input_tokens":10,"output_tokens":1}}}',
-  '',
-  'event: content_block_start',
-  'data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool_read_1","name":"read","input":{}}}',
-  '',
-  'event: content_block_delta',
-  'data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"file_path\\":\\"hello.txt\\"}"}}',
-  '',
-  'event: content_block_stop',
-  'data: {"type":"content_block_stop","index":0}',
-  '',
-  'event: message_delta',
-  'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}}',
-  '',
-  'event: message_stop',
-  'data: {"type":"message_stop"}',
-  '',
-  '',
-].join('\n');
+/** T010.2：场景 -> 录好的会话日志 + 覆盖文件（手写 SSE 已删除）。 */
+function replaySelection(options: FixtureOptions): ReplaySelection {
+  if (options.failure === 'credential') return { file: 'text', override: 'failure-credential' };
+  if (options.failure === 'model') return { file: 'text', override: 'failure-model' };
+  if (options.failure === 'retry-then-succeed') return { file: 'text', override: 'failure-retry' };
+  if (options.realTurn) return { file: 'real', paceMs: 20 };
+  if (options.usageTurn) return { file: 'usage', paceMs: 400 };
+  if (options.askTurn) return { file: 'ask' };
+  if (options.toolTurn) return { file: 'tool' };
+  if (options.highUsage) return { file: 'high-usage' };
+  return {
+    file: 'text',
+    paceMs: options.slowMs ? Math.max(1, Math.round(options.slowMs / 6)) : undefined,
+  };
+}
 
-const ASK_QUESTIONS = [
-  { id: 'q1', question: '先选一个？', options: [{ label: 'Yes' }, { label: 'No' }] },
-  { id: 'q2', question: '再自己写一句？' },
-];
-
-const ASK_CALL_SSE = (() => {
-  const input = JSON.stringify({ questions: ASK_QUESTIONS });
-  const data = (value: unknown) => 'data: ' + JSON.stringify(value);
-  return [
-    'event: message_start',
-    data({
-      type: 'message_start',
-      message: {
-        id: 'msg_ask',
-        type: 'message',
-        role: 'assistant',
-        model: 'deepseek-flash',
-        content: [],
-        usage: { input_tokens: 10, output_tokens: 1 },
-      },
-    }),
-    '',
-    'event: content_block_start',
-    data({
-      type: 'content_block_start',
-      index: 0,
-      content_block: { type: 'tool_use', id: 'tool_ask_1', name: 'ask_user_question', input: {} },
-    }),
-    '',
-    'event: content_block_delta',
-    data({
-      type: 'content_block_delta',
-      index: 0,
-      delta: { type: 'input_json_delta', partial_json: input },
-    }),
-    '',
-    'event: content_block_stop',
-    data({ type: 'content_block_stop', index: 0 }),
-    '',
-    'event: message_delta',
-    data({ type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 3 } }),
-    '',
-    'event: message_stop',
-    data({ type: 'message_stop' }),
-    '',
-    '',
-  ].join('\n');
-})();
+/** 起 aios-replay（打印一行 aios-replay: http://…）；每夹具一个进程。 */
+function startReplay(options: FixtureOptions): { child: ReturnType<typeof spawn>; url: Promise<string> } {
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+  const bin = process.env.AIOS_REPLAY_BIN ?? path.join(repoRoot, 'target/debug/aios-replay');
+  const selection = replaySelection(options);
+  const args = ['--file', path.join(FIXTURE_DIR, selection.file + '.jsonl')];
+  if (selection.override) args.push('--override', path.join(FIXTURE_DIR, selection.override + '.json'));
+  if (selection.paceMs) args.push('--pace-ms', String(selection.paceMs));
+  args.push('--host', '127.0.0.1', '--port', '0');
+  const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  const url = new Promise<string>((resolve, reject) => {
+    let output = '';
+    const timer = setTimeout(() => reject(new Error('aios-replay 启动超时: ' + output)), 20_000);
+    child.stdout?.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+      const match = /aios-replay: (http:\/\/\S+)/.exec(output);
+      if (match) {
+        clearTimeout(timer);
+        resolve(match[1]);
+      }
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+    });
+  });
+  return { child, url };
+}
 
 /** 用 /connect 换到的 cookie 调 /api（e2e 不再带 query token）。 */
 export async function apiPost(
@@ -131,7 +85,7 @@ export interface KernelFixture {
   /** T008.4：假 DeepSeek 的 endpoint（页面连接会被 e2e 改写到它）。 */
   fakeEndpoint: string;
   /** T008.4：假 DeepSeek 最近一次请求体里的 model（下一轮生效断言用）。 */
-  lastModel: () => string | null;
+  lastModel: () => Promise<string | null>;
   dropProxy?: () => Promise<void>;
   restoreProxy?: () => Promise<void>;
   /// T007 #1：页面开着时重启同一个端口的服务（新进程=新 cookie 钥匙，旧页面会话失效）。
@@ -162,69 +116,18 @@ export interface FixtureOptions {
   emptyKeyring?: boolean;
   /// T009.5：serve 进程的 HOME；传 'dataDir' 用数据目录（页面路径缩写用例）。
   home?: 'dataDir' | string;
+  /// T010.3：用带 reasoning/缓存读写的用量夹具（turn-usage 用例）。
+  usageTurn?: boolean;
+  /// T010.5：用真 key 录的夹具（多步工具/思考/缓存读/压缩）。
+  realTurn?: boolean;
 }
 
 /** 接缝 5：假 DeepSeek 脚本回放 + 真 aios-dev serve（页面也由它同源托管）。 */
 export async function startKernelFixture(
   options: FixtureOptions = {},
 ): Promise<KernelFixture> {
-  let askCount = 0;
-  let modelCalls = 0;
-  let lastModel: string | null = null;
-  const fake: Server = createServer((req, res) => {
-    if (req.headers['x-api-key'] === 'bad-key') {
-      res.writeHead(401, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ error: { message: 'invalid api key', type: 'authentication_error' } }));
-      return;
-    }
-    if (req.method === 'POST' && req.url === '/v1/messages') {
-      let body = '';
-      req.on('data', (chunk: Buffer) => {
-        body += chunk.toString();
-      });
-      req.on('end', () => {
-        try {
-          const parsed = JSON.parse(body) as { model?: string };
-          if (typeof parsed.model === 'string') lastModel = parsed.model;
-        } catch {
-          // 非 JSON 请求不记 model。
-        }
-        if (options.failure === 'credential') {
-          res.writeHead(401, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid api key' } }));
-          return;
-        }
-        modelCalls += 1;
-        if (options.failure === 'model' || (options.failure === 'retry-then-succeed' && modelCalls <= 3)) {
-          res.writeHead(500, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ type: 'error', error: { type: 'server_error', message: 'overloaded' } }));
-          return;
-        }
-        res.writeHead(200, { 'content-type': 'text/event-stream' });
-        const finalReply = options.highUsage ? HIGH_USAGE_FINAL_TEXT_SSE : FINAL_TEXT_SSE;
-        const toolResult = body.includes('tool_result');
-        let reply = finalReply;
-        if (options.askTurn) {
-          // 奇数次请求 = 每轮首个请求：回 ask；偶数次 = 工具结果之后：回最终文本。
-          reply = askCount % 2 === 0 ? ASK_CALL_SSE : finalReply;
-          askCount += 1;
-        } else if (options.toolTurn && !toolResult) {
-          reply = TOOL_CALL_SSE;
-        }
-        if (options.slowMs) {
-          setTimeout(() => res.end(reply), options.slowMs);
-        } else {
-          res.end(reply);
-        }
-      });
-      return;
-    }
-    res.writeHead(404);
-    res.end();
-  });
-  await new Promise<void>((resolve) => fake.listen(0, '127.0.0.1', resolve));
-  const address = fake.address();
-  const fakePort = typeof address === 'object' && address !== null ? address.port : 0;
+  const replay = startReplay(options);
+  const replayUrl = await replay.url;
   const dataDir = await mkdtemp(path.join(tmpdir(), 'aios-t007-'));
   if (options.rootFault === 'corrupt') {
     await writeFile(path.join(dataDir, 'kind-root.json'), '{"version":1, ');
@@ -243,7 +146,7 @@ export async function startKernelFixture(
   if (!options.emptyKeyring) {
     const seed = spawnSync(
       bin,
-      ['keyring', '--data-dir', dataDir, '--identity', identityPath, 'set', '--id', 'deepseek', '--name', 'DeepSeek', '--model', 'deepseek-flash', '--endpoint', 'http://127.0.0.1:' + String(fakePort)],
+      ['keyring', '--data-dir', dataDir, '--identity', identityPath, 'set', '--id', 'deepseek', '--name', 'DeepSeek', '--model', 'deepseek-flash', '--endpoint', replayUrl],
       { input: 'test-key' + String.fromCharCode(10), encoding: 'utf8' },
     );
     if (seed.status !== 0) throw new Error('seed keyring failed: ' + String(seed.stderr));
@@ -382,8 +285,16 @@ export async function startKernelFixture(
     baseUrl,
     token,
     dataDir,
-    fakeEndpoint: 'http://127.0.0.1:' + String(fakePort),
-    lastModel: () => lastModel,
+    fakeEndpoint: replayUrl,
+    lastModel: async () => {
+      try {
+        const response = await fetch(replayUrl + '/__replay/last-model');
+        const body = (await response.json()) as { model?: string | null };
+        return body.model ?? null;
+      } catch {
+        return null;
+      }
+    },
     dropProxy,
     restoreProxy,
     restart,
@@ -391,7 +302,7 @@ export async function startKernelFixture(
       await dropProxy();
       holder?.kill('SIGTERM');
       child.kill('SIGTERM');
-      fake.close();
+      replay.child.kill('SIGTERM');
       await rm(dataDir, { recursive: true, force: true });
     },
   };
@@ -510,13 +421,15 @@ export async function startRealKernelFixture(
     baseUrl,
     dataDir,
     fakeEndpoint: '',
-    lastModel: () => null,
+    lastModel: async () => null,
     dropProxy: proxy.drop,
     restoreProxy: proxy.restore,
     close: async () => {
       await proxy.drop();
       child.kill('SIGTERM');
-      await rm(root, { recursive: true, force: true });
+      if (process.env.AIOS_DOD_KEEP !== '1') {
+        await rm(root, { recursive: true, force: true });
+      }
     },
   };
 }
@@ -561,7 +474,7 @@ export async function startRealDodFixture(): Promise<KernelFixture> {
     ...parsed,
     dataDir,
     fakeEndpoint: '',
-    lastModel: () => null,
+    lastModel: async () => null,
     dropProxy: async () => {},
     restoreProxy: async () => {},
     close: async () => {
