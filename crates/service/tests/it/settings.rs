@@ -5,10 +5,10 @@ use agent::AgentConfig;
 use credentials::CheckState;
 use model::{DEFAULT_CONTEXT_WINDOW, DeepSeekConfig, Effort};
 use service::{
-    Call, ConnectionDeleteRequest, ConnectionRevokeRequest, ConnectionSaveRequest,
-    ConnectionUpdateRequest, ConnectionVerifyRequest, FirstUseRequest, IssuesRequest,
-    KeyringRelocateRequest, KeyringReopenRequest, KeyringRestartRequest, ModelSettingsRequest,
-    RootHost, RootSessionOptions, SessionModelSelectRequest,
+    Call, ConnectionDeleteRequest, ConnectionQuotaRequest, ConnectionRevokeRequest,
+    ConnectionSaveRequest, ConnectionUpdateRequest, ConnectionVerifyRequest, FirstUseRequest,
+    IssuesRequest, KeyringRelocateRequest, KeyringReopenRequest, KeyringRestartRequest,
+    ModelSettingsRequest, RootHost, RootSessionOptions, SessionModelSelectRequest,
 };
 use tempfile::tempdir;
 use wiremock::matchers::{method, path};
@@ -1103,4 +1103,92 @@ async fn 状态带统计汇率与币种() {
     let fx = status.fx.expect("汇率");
     assert_eq!(fx.rate, 7.11, "12h 内用缓存");
     assert_eq!(status.currency.as_deref(), Some("usd"), "默认币种 usd");
+}
+
+/// T012.8b：余额/余量按厂商形状查询（DeepSeek /user/balance、MiniMax /v1/token_plan/remains）；
+/// 自定义地址不查（字段为空）、查不到不报错。
+#[tokio::test]
+async fn 余额和余量按厂商形状查询且查不到不报错() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/user/balance"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "is_available": true,
+            "balance_infos": [{"currency": "CNY", "total_balance": "110.00"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/token_plan/remains"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "model_remains": [{
+                "model_name": "general",
+                "current_interval_remaining_percent": 99,
+                "current_weekly_remaining_percent": 95
+            }],
+            "base_resp": {"status_code": 0}
+        })))
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let save = |id: &str, preset: &str| ConnectionSaveRequest {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        model: "deepseek-flash".to_owned(),
+        endpoint: server.uri(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some(preset.to_owned()),
+        ..Default::default()
+    };
+    // DeepSeek：余额（厂商币种）。
+    host.dispatch(Call::ConnectionSave(save("deepseek", "deepseek")))
+        .await
+        .expect("save deepseek");
+    let response = host
+        .dispatch(Call::ConnectionQuota(ConnectionQuotaRequest {
+            id: "deepseek".to_owned(),
+        }))
+        .await
+        .expect("quota deepseek");
+    let service::Response::ConnectionQuota(response) = response else {
+        panic!("expected ConnectionQuota");
+    };
+    let balance = response.balance.clone().expect("余额");
+    assert_eq!(balance.currency, "CNY");
+    assert!((balance.amount - 110.0).abs() < 1e-9);
+    assert!(response.plan.is_none());
+    assert!(response.checked_at > 0, "带查询时间");
+    no_key(&serde_json::to_string(&response).unwrap());
+    // MiniMax：套餐余量（5 小时窗口/每周剩余百分比）。
+    host.dispatch(Call::ConnectionSave(save("minimax-cn", "minimax-cn")))
+        .await
+        .expect("save minimax");
+    let response = host
+        .dispatch(Call::ConnectionQuota(ConnectionQuotaRequest {
+            id: "minimax-cn".to_owned(),
+        }))
+        .await
+        .expect("quota minimax");
+    let service::Response::ConnectionQuota(response) = response else {
+        panic!("expected ConnectionQuota");
+    };
+    let plan = response.plan.expect("余量");
+    assert_eq!(plan.interval_remaining_percent, Some(99.0));
+    assert_eq!(plan.weekly_remaining_percent, Some(95.0));
+    assert!(response.balance.is_none());
+    // 自定义地址：不查（字段为空，不报错）。
+    host.dispatch(Call::ConnectionSave(save("custom", "custom")))
+        .await
+        .expect("save custom");
+    let response = host
+        .dispatch(Call::ConnectionQuota(ConnectionQuotaRequest {
+            id: "custom".to_owned(),
+        }))
+        .await
+        .expect("quota custom");
+    let service::Response::ConnectionQuota(response) = response else {
+        panic!("expected ConnectionQuota");
+    };
+    assert!(response.balance.is_none() && response.plan.is_none());
 }

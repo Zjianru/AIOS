@@ -7,6 +7,7 @@
 //! 对象固定 Kind 根会话：根会话实体在 T006.16b 落，本票宿主绑定一个会话、Object 用 session id。
 
 pub mod fx;
+pub mod quota;
 mod root;
 pub mod settings;
 pub mod stats;
@@ -87,6 +88,8 @@ pub enum Call {
     FirstUse(FirstUseRequest),
     /// T008.3：选模型（下一轮生效，当前轮不换）。
     SessionModelSelect(SessionModelSelectRequest),
+    /// T012.8b：查询连接余额/套餐余量。
+    ConnectionQuota(ConnectionQuotaRequest),
 }
 
 /// 调用的结果（与 Call 一一对应）。
@@ -108,6 +111,8 @@ pub enum Response {
     ConnectionUpdate(ConnectionUpdateResponse),
     ConnectionRevoke(ConnectionRevokeResponse),
     ConnectionVerify(ConnectionVerifyResponse),
+    /// T012.8b：连接余额/套餐余量。
+    ConnectionQuota(ConnectionQuotaResponse),
     AvailableModels(AvailableModelsResponse),
     KeyringRelocate(KeyringRelocateResponse),
     KeyringReopen(KeyringReopenResponse),
@@ -426,6 +431,24 @@ pub struct ConnectionVerifyRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionVerifyResponse {
     pub connection: credentials::ConnectionInfo,
+}
+
+/// T012.8b：查询连接余额/套餐余量（查不到不报错，字段为空）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConnectionQuotaRequest {
+    pub id: String,
+}
+
+/// 余额（厂商币种）与套餐余量（MiniMax：5 小时窗口/每周剩余百分比）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectionQuotaResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance: Option<quota::BalanceInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<quota::PlanQuota>,
+    /// 查询时间（Unix 秒）。
+    #[serde(rename = "checkedAt")]
+    pub checked_at: u64,
 }
 
 /// T008.3/T012.7：选模型（连接、模型、想要的档）；只影响下一轮（D26）。
@@ -797,7 +820,8 @@ impl ServiceHost {
             | Call::KeyringRestart(_)
             | Call::Issues(_)
             | Call::FirstUse(_)
-            | Call::SessionModelSelect(_) => Err(ServiceError::SettingsOnBareHost),
+            | Call::SessionModelSelect(_)
+            | Call::ConnectionQuota(_) => Err(ServiceError::SettingsOnBareHost),
         }
     }
 
@@ -1566,6 +1590,34 @@ impl RootHost {
         })
     }
 
+    /// T012.8b：查询连接的余额/套餐余量（DeepSeek /user/balance、MiniMax /v1/token_plan/remains）。
+    /// 查不到不报错（字段为空；spec 故事 5）。
+    pub async fn connection_quota(
+        &self,
+        request: ConnectionQuotaRequest,
+    ) -> Result<ConnectionQuotaResponse, ServiceError> {
+        let keyring = self.keyring()?;
+        let view = keyring.view();
+        let connection = view
+            .connections
+            .into_iter()
+            .find(|connection| connection.id == request.id)
+            .ok_or_else(|| {
+                ServiceError::Credentials(credentials::KeyringError::MissingConnection(
+                    request.id.clone(),
+                ))
+            })?;
+        let key = keyring
+            .issue(&request.id, "connection-quota", None, None)?
+            .into_secret();
+        let quota = quota::fetch(&connection, &key).await;
+        Ok(ConnectionQuotaResponse {
+            balance: quota.balance,
+            plan: quota.plan,
+            checked_at: now_seconds(),
+        })
+    }
+
     /// T012.8：状态（对象/在跑/待答问题）+ 会话统计（轮/步/token/缓存/上下文/花费）+ 汇率 + 币种。
     ///
     /// 统计和花费从日志现算（不落日志）：每轮模型取 assistant/message 的 message.source.model，
@@ -1794,6 +1846,11 @@ impl RootHost {
                 .map(Response::SessionModelSelect),
             // T012.8：根宿主自己填统计/汇率/币种（需要 data_dir + Keyring）。
             Call::Status(request) => self.host_status(request).await.map(Response::Status),
+            // T012.8b：余额/余量需要 Keyring 签发 key。
+            Call::ConnectionQuota(request) => self
+                .connection_quota(request)
+                .await
+                .map(Response::ConnectionQuota),
             other => {
                 let guard = self.inner.lock().await;
                 match guard.as_ref() {
