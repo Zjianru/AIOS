@@ -570,6 +570,62 @@ pub struct ConnectionRevokeResponse {
     pub connection: credentials::ConnectionInfo,
 }
 
+/// T013.2：把附件错误映射成服务错误码。
+fn attachment_error(error: tools::attachments::AttachmentError) -> ServiceError {
+    use tools::attachments::AttachmentError;
+    match error {
+        AttachmentError::NotText => ServiceError::AttachmentNotText,
+        AttachmentError::BadName(_) | AttachmentError::BadId(_) => {
+            ServiceError::AttachmentInvalid(error.to_string())
+        }
+        AttachmentError::Io(io) => ServiceError::AttachmentInvalid(format!("附件读写失败：{io}")),
+    }
+}
+
+/// T013.2：严格 base64 解码（不引新依赖；不规范返回 None）。
+fn decode_base64(input: &str) -> Option<Vec<u8>> {
+    let bytes = input.as_bytes();
+    if bytes.len() % 4 != 0 {
+        return None;
+    }
+    let mut output = Vec::with_capacity(bytes.len() / 4 * 3);
+    let chunks = bytes.chunks(4).count();
+    for (chunk_index, chunk) in bytes.chunks(4).enumerate() {
+        let last = chunk_index + 1 == chunks;
+        let mut values = [0u8; 4];
+        let mut padding = 0;
+        for (position, byte) in chunk.iter().enumerate() {
+            values[position] = match byte {
+                b'A'..=b'Z' => byte - b'A',
+                b'a'..=b'z' => byte - b'a' + 26,
+                b'0'..=b'9' => byte - b'0' + 52,
+                b'+' => 62,
+                b'/' => 63,
+                b'=' if last && position >= 2 => {
+                    padding += 1;
+                    0
+                }
+                _ => return None,
+            };
+        }
+        if padding > 2 {
+            return None;
+        }
+        let number = (u32::from(values[0]) << 18)
+            | (u32::from(values[1]) << 12)
+            | (u32::from(values[2]) << 6)
+            | u32::from(values[3]);
+        output.push((number >> 16) as u8);
+        if padding < 2 {
+            output.push((number >> 8) as u8);
+        }
+        if padding < 1 {
+            output.push(number as u8);
+        }
+    }
+    Some(output)
+}
+
 /// 服务协议版本（T007.2 起）：只增不改的对外面每次扩展都记在这里，Web ready 帧里带上。
 ///
 /// - 4：T007.2 起的第一版；
@@ -1186,24 +1242,38 @@ pub struct RootHost {
 }
 
 impl RootHost {
-    /// T013.2：存一份文字附件（空壳，红阶段先报未实现）。
+    /// T013.2：存一份文字附件（base64 → 只读副本，返回 id）。
     async fn attachment_put(
         &self,
-        _request: AttachmentPutRequest,
+        request: AttachmentPutRequest,
     ) -> Result<AttachmentPutResponse, ServiceError> {
-        Err(ServiceError::AttachmentInvalid(
-            "attachment store is not implemented yet".to_owned(),
-        ))
+        let data = decode_base64(&request.data)
+            .ok_or_else(|| ServiceError::AttachmentInvalid("附件内容不是合法 base64".to_owned()))?;
+        let stored = tools::attachments::store(&self.options.data_dir, &request.name, &data)
+            .map_err(attachment_error)?;
+        Ok(AttachmentPutResponse {
+            id: stored.id,
+            name: stored.name,
+            bytes: stored.bytes as u64,
+        })
     }
 
-    /// T013.2：按 id 读回附件（空壳，红阶段先报未实现）。
+    /// T013.2：按 id 读回附件（卡片「点开看全文」）。
     async fn attachment_get(
         &self,
-        _request: AttachmentGetRequest,
+        request: AttachmentGetRequest,
     ) -> Result<AttachmentGetResponse, ServiceError> {
-        Err(ServiceError::AttachmentInvalid(
-            "attachment get is not implemented yet".to_owned(),
-        ))
+        let stored = tools::attachments::read(&self.options.data_dir, &request.id)
+            .map_err(attachment_error)?;
+        let bytes = std::fs::read(&stored.path)
+            .map_err(|error| ServiceError::AttachmentInvalid(format!("附件读不回来：{error}")))?;
+        let text = String::from_utf8(bytes)
+            .map_err(|_| ServiceError::AttachmentInvalid("附件不是 UTF-8 文字".to_owned()))?;
+        Ok(AttachmentGetResponse {
+            name: stored.name,
+            bytes: stored.bytes as u64,
+            text: Some(text),
+        })
     }
 
     /// 打开根会话；打不开也返回宿主（状态进 ready，方法拒绝），由页面显示说明页。
