@@ -59,14 +59,26 @@ struct WireText {
 /// T013.4：文件块的模型可见文本（照 DSH \`llm/llm/src/content.ts\` 的 fileHandleText 原句）。
 ///
 /// `path` 是只读副本的绝对路径；没有路径时用 DSH 的「环境不可读」分支。
-pub fn file_handle_text(
-    _attachment_id: &str,
-    _name: &str,
-    _bytes: u64,
-    _path: Option<&str>,
-) -> String {
-    // T013.4 红阶段：实现前空壳（fileHandleText 原句还没填）。
-    String::new()
+pub fn file_handle_text(attachment_id: &str, name: &str, bytes: u64, path: Option<&str>) -> String {
+    let digest: String = attachment_id
+        .strip_prefix("sha256:")
+        .unwrap_or(attachment_id)
+        .chars()
+        .take(8)
+        .collect();
+    let quoted = |value: &str| serde_json::to_string(value).unwrap_or_default();
+    let identity = format!("File {} ({} bytes, sha256:{})", quoted(name), bytes, digest);
+    match path {
+        Some(path) => format!(
+            "[{}: verbatim read-only copy saved at {}. Read that path with your file tools when its contents are needed; copy it to a writable location before modifying it. When delegating file work, include this saved path in the delegation prompt; only subagents sharing this execution environment can read it.]",
+            identity,
+            quoted(path)
+        ),
+        None => format!(
+            "[{} was uploaded, but the current execution environment cannot access a readable path. Report that limitation if its contents are needed; do not claim to have read it.]",
+            identity
+        ),
+    }
 }
 
 #[derive(Serialize)]

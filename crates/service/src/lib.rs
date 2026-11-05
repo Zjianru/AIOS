@@ -1025,18 +1025,26 @@ impl ServiceHost {
     /// 发消息：requestId 幂等（DSH prompt 的 requestId；判定在 Agent 的 durable rpcId 上：
     /// 同一 id 已进 inbox 或已落日志就不再插入，重启后仍然有效，T006.16b）。
     pub async fn send(&self, request: SendRequest) -> Result<SendResponse, ServiceError> {
+        let message = UserMessage::text(request.content);
+        self.send_message(&request.request_id, message, request.delivery)
+            .await
+    }
+
+    /// T013.4：发送一条已经拼好的块状用户消息（RootHost 解析附件后走这里）。
+    pub async fn send_message(
+        &self,
+        request_id: &str,
+        message: UserMessage,
+        delivery: DeliveryMode,
+    ) -> Result<SendResponse, ServiceError> {
         // 串行受理：并发同 id 时第一个进，其余在 Agent 的 durable 判重里变成 Duplicate。
         let _serialized = self.send_lock.lock().await;
         let admission = self
             .agent
-            .send_with_request_id(
-                &request.request_id,
-                UserMessage::text(request.content),
-                request.delivery.into(),
-            )
+            .send_with_request_id(request_id, message, delivery.into())
             .await?;
         Ok(SendResponse {
-            request_id: request.request_id,
+            request_id: request_id.to_owned(),
             accepted: true,
             duplicate: matches!(admission, SendAdmission::Duplicate),
         })
@@ -1298,6 +1306,36 @@ pub struct RootHost {
 }
 
 impl RootHost {
+    /// T013.4：把 SendRequest 拼成块状用户消息（content→pastes→files；附件解析成副本路径）。
+    fn user_message_from(&self, request: &SendRequest) -> Result<UserMessage, ServiceError> {
+        let mut blocks = Vec::new();
+        if !request.content.is_empty() {
+            blocks.push(model::ContentBlock::text(request.content.clone()));
+        }
+        for paste in &request.pastes {
+            if !paste.is_empty() {
+                blocks.push(model::ContentBlock::paste(paste.clone()));
+            }
+        }
+        for attachment in &request.attachments {
+            let stored = tools::attachments::read(&self.options.data_dir, &attachment.id)
+                .map_err(attachment_error)?;
+            blocks.push(model::ContentBlock::File {
+                attachment_id: attachment.id.clone(),
+                name: stored.name,
+                bytes: stored.bytes as u64,
+                path: Some(stored.path.to_string_lossy().into_owned()),
+            });
+        }
+        if blocks.is_empty() {
+            return Err(ServiceError::MessageEmpty);
+        }
+        Ok(UserMessage::with_request_id(
+            blocks,
+            request.request_id.clone(),
+        ))
+    }
+
     /// T013.3：按会话工作目录列 @ 文件候选。
     async fn file_references_list(
         &self,
@@ -2117,6 +2155,20 @@ impl RootHost {
             return Ok(Response::Recheck(RecheckResponse { root, host }));
         }
         match call {
+            // T013.4：发消息前把附件 id 解析成只读副本路径（文字/粘贴/文件拼成块）。
+            Call::Send(request) => {
+                let message = self.user_message_from(&request)?;
+                let guard = self.inner.lock().await;
+                match guard.as_ref() {
+                    Some(host) => host
+                        .send_message(&request.request_id, message, request.delivery)
+                        .await
+                        .map(Response::Send),
+                    None => Err(ServiceError::RootUnavailable(
+                        self.state.lock().expect("root state 锁被毒化").clone(),
+                    )),
+                }
+            }
             Call::ModelSettings(_) => self.model_settings().await.map(Response::ModelSettings),
             Call::ConnectionSave(request) => self
                 .connection_save(request)
