@@ -13,7 +13,8 @@ struct WireRequest {
     stream: bool,
     messages: Vec<WireMessage>,
     max_tokens: u32,
-    thinking: WireThinking,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<WireThinking>,
     #[serde(skip_serializing_if = "Option::is_none")]
     output_config: Option<WireOutputConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -26,6 +27,8 @@ struct WireRequest {
 struct WireThinking {
     #[serde(rename = "type")]
     kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    budget_tokens: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -220,21 +223,30 @@ pub(super) fn request_body(
                 .collect(),
         )
     };
+    let wire = super::vendors::wire_effort(
+        &config.base_url,
+        &config.model,
+        effort,
+        max_tokens,
+        config.max_tokens,
+    );
+    let thinking = wire.thinking.map(|thinking| match thinking {
+        super::vendors::ThinkingWire::Disabled => WireThinking {
+            kind: "disabled",
+            budget_tokens: None,
+        },
+        super::vendors::ThinkingWire::Enabled { budget_tokens } => WireThinking {
+            kind: "enabled",
+            budget_tokens: Some(budget_tokens),
+        },
+    });
     let body = WireRequest {
         model: config.model.clone(),
         stream: true,
         messages: wire_messages,
-        max_tokens: max_tokens.unwrap_or(config.max_tokens),
-        thinking: WireThinking {
-            kind: if super::vendors::thinking_enabled(effort) {
-                "enabled"
-            } else {
-                "disabled"
-            },
-        },
-        output_config: super::vendors::thinking_enabled(effort).then(|| WireOutputConfig {
-            effort: effort.as_str().to_owned(),
-        }),
+        max_tokens: wire.max_tokens,
+        thinking,
+        output_config: wire.output_effort.map(|effort| WireOutputConfig { effort }),
         system: if system.is_empty() {
             None
         } else {
@@ -390,5 +402,132 @@ mod t006_19_serialize_defense_tests {
             validate_tool_pairing(&messages).is_ok(),
             "成对的 tool_use/tool_result 不能被误拒"
         );
+    }
+}
+
+#[cfg(test)]
+mod effort_wire_tests {
+    use super::*;
+    use crate::{DeepSeekConfig, Effort};
+    use serde_json::Value;
+
+    fn body(base_url: &str, model: &str, effort: &str, max_tokens: Option<u32>) -> Value {
+        let config = DeepSeekConfig {
+            base_url: base_url.to_owned(),
+            model: model.to_owned(),
+            max_tokens: 256_000,
+            context_window: 1_000_000,
+            effort: Effort::new(effort),
+        };
+        let raw = request_body(&config, &[], &[], max_tokens, false).expect("序列化");
+        serde_json::from_slice(&raw).expect("JSON")
+    }
+
+    fn thinking(value: &Value) -> Option<(&str, Option<u64>)> {
+        value.get("thinking").map(|thinking| {
+            (
+                thinking["type"].as_str().expect("thinking.type"),
+                thinking.get("budget_tokens").and_then(Value::as_u64),
+            )
+        })
+    }
+
+    fn output_effort(value: &Value) -> Option<&str> {
+        value
+            .get("output_config")
+            .and_then(|config| config.get("effort"))
+            .and_then(Value::as_str)
+    }
+
+    #[test]
+    fn deepseek_levels_serialize_thinking_budget_and_output_effort() {
+        let table: &[(&str, &str, Option<u64>, Option<&str>)] = &[
+            ("none", "disabled", None, None),
+            ("low", "enabled", Some(4096), Some("low")),
+            ("high", "enabled", Some(24_000), Some("high")),
+            ("xhigh", "enabled", Some(32_000), Some("max")),
+            ("max", "enabled", Some(32_000), Some("max")),
+        ];
+        for (effort, kind, budget, output) in table {
+            let value = body(
+                "https://api.deepseek.com/anthropic",
+                "deepseek-flash",
+                effort,
+                Some(64_000),
+            );
+            assert_eq!(thinking(&value), Some((*kind, *budget)), "effort={effort}");
+            assert_eq!(output_effort(&value), *output, "effort={effort}");
+            assert_eq!(value["max_tokens"], 64_000);
+        }
+    }
+
+    #[test]
+    fn minimax_m31_always_thinks_but_uses_lowest_level_for_none() {
+        let value = body(
+            "https://api.minimax.cn/anthropic",
+            "MiniMax-M3.1-Flash",
+            "none",
+            Some(64_000),
+        );
+        assert_eq!(thinking(&value), Some(("enabled", Some(4096))));
+        assert_eq!(output_effort(&value), Some("low"));
+
+        let value = body(
+            "https://api.minimax.cn/anthropic",
+            "MiniMax-M3.1-Flash",
+            "xhigh",
+            Some(64_000),
+        );
+        assert_eq!(thinking(&value), Some(("enabled", Some(32_000))));
+        assert_eq!(output_effort(&value), Some("xhigh"));
+    }
+
+    #[test]
+    fn budget_only_models_do_not_get_output_effort() {
+        let value = body(
+            "https://api.minimax.cn/anthropic",
+            "MiniMax-M3",
+            "high",
+            Some(64_000),
+        );
+        assert_eq!(thinking(&value), Some(("enabled", Some(24_000))));
+        assert_eq!(output_effort(&value), None);
+
+        let value = body(
+            "https://relay.example.com/anthropic",
+            "deepseek-flash",
+            "high",
+            Some(64_000),
+        );
+        assert_eq!(thinking(&value), Some(("enabled", Some(24_000))));
+        assert_eq!(
+            output_effort(&value),
+            None,
+            "别的地址上的 DeepSeek 不当自己人"
+        );
+    }
+
+    #[test]
+    fn tiny_max_tokens_turns_thinking_off() {
+        let value = body(
+            "https://api.deepseek.com/anthropic",
+            "deepseek-flash",
+            "high",
+            Some(2048),
+        );
+        assert_eq!(thinking(&value), None);
+        assert_eq!(output_effort(&value), None);
+        assert_eq!(value["max_tokens"], 2048);
+    }
+
+    #[test]
+    fn no_caller_max_tokens_raises_it_above_the_budget() {
+        let value = body(
+            "https://api.deepseek.com/anthropic",
+            "deepseek-flash",
+            "max",
+            None,
+        );
+        assert_eq!(value["max_tokens"], 256_000);
     }
 }

@@ -1,5 +1,5 @@
 ---
-source: crates/agent/tests/tool_round_trip.rs
+source: crates/agent/tests/it/tool_round_trip.rs
 expression: body
 ---
 {
@@ -48,14 +48,8 @@ expression: body
     }
   ],
   "model": "deepseek-flash",
-  "output_config": {
-    "effort": "high"
-  },
   "stream": true,
   "system": "You are AIOS, a coding agent. Your working directory is <CWD>.\n\nUse the read tool — not shell commands like cat — to inspect text files. Use offset and limit to continue reading large files.\n\nCheck the [exit code: N] marker on every bash result; investigate failures before moving on.\n\nTrack every background job id you start. You are notified in-session when a job finishes — do not busy-poll or sleep on one; keep working on independent steps and do not duplicate a running job's work. Before giving a final answer, collect every still-relevant job with job_output (set wait: true only when you are genuinely blocked on it), and job_kill jobs that stopped mattering.\n\nRead an existing file before overwriting it with write; prefer edit for targeted changes.\n\nRead a file before editing it, unless you just created or edited it in this session.",
-  "thinking": {
-    "type": "enabled"
-  },
   "tools": [
     {
       "description": "Read a UTF-8 text file and return line-numbered content.",
