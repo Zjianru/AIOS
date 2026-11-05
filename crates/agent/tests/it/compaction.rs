@@ -134,7 +134,7 @@ async fn summary_uses_model_default_effort_not_wanted() {
         64_000,
         24_000,
         0.16,
-        "MiniMax-M3.1-Flash",
+        "MiniMax-M3",
         model::Effort::new("none"),
     )
     .await;
@@ -160,11 +160,13 @@ async fn summary_uses_model_default_effort_not_wanted() {
         .find(|body| body.contains("compaction engine"))
         .expect("应有一次摘要请求");
     let value: serde_json::Value = serde_json::from_str(&summary).expect("摘要请求 JSON");
+    // MiniMax-M3 没有档（默认 high）；用户要 none，摘要必须按默认 high 发 enabled + budget 24000。
     assert_eq!(
-        value["output_config"]["effort"], "medium",
-        "摘要请求用模型 DefaultEffort，不是用户要的 none：{summary}"
+        value["thinking"]["type"], "enabled",
+        "摘要请求用模型 DefaultEffort（high），不是用户要的 none：{summary}"
     );
-    assert_eq!(value["thinking"]["type"], "enabled");
+    // 摘要 max_tokens=24000，按 R3 留 1024 给答案：24000-1024。
+    assert_eq!(value["thinking"]["budget_tokens"], 22_976);
 }
 
 #[tokio::test]
