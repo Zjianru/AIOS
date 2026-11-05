@@ -889,3 +889,145 @@ async fn 重开会话从日志恢复模型选择() {
         "重开会话从日志恢复选择"
     );
 }
+
+/// T012.7 审计：空闲时跨连接切换重建根 agent——factory 收到新选择、下一轮走新连接、
+/// settings 的上次选择同步。（运行中跨连接的 known：不打断本轮，见 handback。）
+#[tokio::test]
+async fn 空闲时跨连接切换重建根agent并走新连接() {
+    let server_a = MockServer::start().await;
+    let server_b = MockServer::start().await;
+    for server in [&server_a, &server_b] {
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
+            )
+            .mount(server)
+            .await;
+    }
+    let dir = tempdir().unwrap();
+    let identity = dir.path().join("identity.txt");
+    let keyring = credentials::Keyring::open(dir.path(), Some(&identity)).unwrap();
+    keyring
+        .save_connection(credentials::NewConnection {
+            id: "deepseek".to_owned(),
+            name: "DeepSeek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: server_a.uri(),
+            api_key: TEST_KEY.to_owned(),
+            ..Default::default()
+        })
+        .expect("save A");
+    keyring
+        .save_connection(credentials::NewConnection {
+            id: "minimax-cn".to_owned(),
+            name: "MiniMax".to_owned(),
+            model: "MiniMax-M3.1-Flash".to_owned(),
+            endpoint: server_b.uri(),
+            api_key: TEST_KEY.to_owned(),
+            ..Default::default()
+        })
+        .expect("save B");
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(
+        Vec::<Option<session::ModelSelection>>::new(),
+    ));
+    let seen_for_factory = std::sync::Arc::clone(&seen);
+    let uri_a = server_a.uri();
+    let uri_b = server_b.uri();
+    let factory: service::ModelFactory =
+        std::sync::Arc::new(move |selection: Option<&session::ModelSelection>| {
+            seen_for_factory
+                .lock()
+                .expect("seen")
+                .push(selection.cloned());
+            let connection = selection
+                .map(|selection| selection.connection.clone())
+                .unwrap_or_else(|| "deepseek".to_owned());
+            let (endpoint, model) = if connection == "minimax-cn" {
+                (uri_b.clone(), "MiniMax-M3.1-Flash")
+            } else {
+                (uri_a.clone(), "deepseek-flash")
+            };
+            Ok((
+                connection,
+                DeepSeekConfig {
+                    base_url: endpoint,
+                    model: model.to_owned(),
+                    ..DeepSeekConfig::default()
+                },
+                Some(test_credential()),
+            ))
+        });
+    let mut options = options(dir.path(), &identity);
+    options.model_factory = Some(factory);
+    let host = RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await;
+    assert_eq!(
+        *seen.lock().expect("seen"),
+        vec![None],
+        "新会话 factory 收到 None"
+    );
+    // 先跑一轮：走连接 A（初始选择）。
+    host.dispatch(Call::Send(service::SendRequest {
+        request_id: "r1".to_owned(),
+        content: "hi".to_owned(),
+        delivery: service::DeliveryMode::FollowUp,
+    }))
+    .await
+    .expect("send A");
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        server_a.received_requests().await.unwrap().len(),
+        1,
+        "初始走连接 A"
+    );
+    // 空闲时换到连接 B：重建根 agent，factory 收到新选择。
+    let selected = host
+        .dispatch(Call::SessionModelSelect(SessionModelSelectRequest {
+            connection: Some("minimax-cn".to_owned()),
+            model: Some("MiniMax-M3.1-Flash".to_owned()),
+            effort_wanted: Some("low".to_owned()),
+        }))
+        .await
+        .expect("select B");
+    let service::Response::SessionModelSelect(selected) = selected else {
+        panic!("expected SessionModelSelect");
+    };
+    assert_eq!(selected.connection, "minimax-cn");
+    let selections = seen.lock().expect("seen").clone();
+    assert_eq!(selections.len(), 2, "重建时 factory 被调用：{selections:?}");
+    assert_eq!(
+        selections[1]
+            .as_ref()
+            .map(|selection| selection.connection.as_str()),
+        Some("minimax-cn"),
+        "factory 收到新选择"
+    );
+    // 下一轮走连接 B。
+    host.dispatch(Call::Send(service::SendRequest {
+        request_id: "r2".to_owned(),
+        content: "hi again".to_owned(),
+        delivery: service::DeliveryMode::FollowUp,
+    }))
+    .await
+    .expect("send B");
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        server_a.received_requests().await.unwrap().len(),
+        1,
+        "连接 A 不再收到请求"
+    );
+    assert_eq!(
+        server_b.received_requests().await.unwrap().len(),
+        1,
+        "下一轮走新连接 B"
+    );
+    assert_eq!(
+        service::settings::load(dir.path())
+            .last_selection
+            .map(|selection| selection.connection),
+        Some("minimax-cn".to_owned()),
+        "settings 的上次选择同步"
+    );
+}

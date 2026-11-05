@@ -15,15 +15,11 @@ use crate::common::{
 
 async fn create_agent(
     server: &MockServer,
-    responses: usize,
+    responses: Vec<wiremock::ResponseTemplate>,
 ) -> (agent::Agent, tempfile::TempDir, session::SessionId) {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(SequenceResponder::new(
-            (0..responses)
-                .map(|_| sse(FINAL_TEXT_SSE.to_owned()))
-                .collect(),
-        ))
+        .respond_with(SequenceResponder::new(responses))
         .mount(server)
         .await;
     let data_dir = tempfile::tempdir().unwrap();
@@ -60,7 +56,14 @@ fn log_rows(data_dir: &std::path::Path, id: &session::SessionId) -> Vec<Value> {
 #[tokio::test]
 async fn 选择写session_model事件且下一轮请求用新模型和档() {
     let server = MockServer::start().await;
-    let (agent, data_dir, id) = create_agent(&server, 2).await;
+    let (agent, data_dir, id) = create_agent(
+        &server,
+        vec![
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ],
+    )
+    .await;
     agent
         .send(
             model::UserMessage::text("第一个问题"),
@@ -111,5 +114,52 @@ async fn 选择写session_model事件且下一轮请求用新模型和档() {
     assert_eq!(
         second["output_config"]["effort"], "low",
         "下一轮用新档：{second}"
+    );
+}
+
+/// T012.7 审计：在途（本轮请求已发出、还没回）时选择——本轮仍是旧模型/档，下一轮才换。
+#[tokio::test]
+async fn 在途选择只影响下一轮() {
+    let server = MockServer::start().await;
+    let delayed = sse(FINAL_TEXT_SSE.to_owned()).set_delay(std::time::Duration::from_millis(400));
+    let (agent, _data_dir, _id) =
+        create_agent(&server, vec![delayed, sse(FINAL_TEXT_SSE.to_owned())]).await;
+    agent
+        .send(
+            model::UserMessage::text("第一个问题"),
+            agent::Delivery::FollowUp,
+        )
+        .await
+        .unwrap();
+    // 等本轮请求已发出（mock 响应延迟 400ms，仍在途）。
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    agent
+        .select(&session::ModelSelection {
+            connection: "minimax-cn".to_owned(),
+            model: "MiniMax-M3.1-Flash".to_owned(),
+            effort_wanted: "low".to_owned(),
+        })
+        .await
+        .unwrap();
+    wait_idle(&agent, 20).await;
+    agent
+        .send(
+            model::UserMessage::text("第二个问题"),
+            agent::Delivery::FollowUp,
+        )
+        .await
+        .unwrap();
+    wait_idle(&agent, 20).await;
+    let requests = server.received_requests().await.expect("请求记录");
+    assert_eq!(requests.len(), 2, "在途请求 + 下一轮请求");
+    let first: Value = serde_json::from_slice(&requests[0].body).expect("body");
+    assert_eq!(
+        first["model"], "deepseek-flash",
+        "在途请求仍是旧模型：{first}"
+    );
+    let second: Value = serde_json::from_slice(&requests[1].body).expect("body");
+    assert_eq!(
+        second["model"], "MiniMax-M3.1-Flash",
+        "下一轮才换：{second}"
     );
 }

@@ -318,6 +318,48 @@ impl model::CredentialSource for KeyringCredentialSource {
     }
 }
 
+/// T012.7 审计 P2：解析目标 (连接, 模型, 档)。
+///
+/// 规则：命令行 > 会话日志选择（resume 恢复）> settings 上次选择 > 连接默认；
+/// **换了连接就整组取连接默认**——不把旧连接的模型/档带过去，避免 endpoint × 模型错配。
+fn resolve_selection(
+    common: &CommonArgs,
+    last: Option<&session::ModelSelection>,
+    connections: &[credentials::ConnectionInfo],
+) -> Option<(credentials::ConnectionInfo, String, String)> {
+    let preferred = common
+        .connection
+        .clone()
+        .or_else(|| last.map(|selection| selection.connection.clone()));
+    let connection = preferred
+        .as_ref()
+        .and_then(|id| {
+            connections
+                .iter()
+                .find(|connection| &connection.id == id)
+                .cloned()
+        })
+        .or_else(|| {
+            connections
+                .iter()
+                .find(|connection| connection.id == "deepseek")
+                .cloned()
+        })?;
+    let same_connection = last.is_some_and(|selection| selection.connection == connection.id);
+    let last = same_connection.then_some(last).flatten();
+    let model = common
+        .model
+        .clone()
+        .or_else(|| last.map(|selection| selection.model.clone()))
+        .unwrap_or_else(|| connection.primary_model().to_owned());
+    let effort = common
+        .effort
+        .clone()
+        .or_else(|| last.map(|selection| selection.effort_wanted.clone()))
+        .unwrap_or_else(|| "high".to_owned());
+    Some((connection, model, effort))
+}
+
 /// 打开数据目录的 Keyring，按会话选择解析 (连接 id, 模型配置, 上次选择的 Agent 配置, 凭证来源)。
 ///
 /// T012.7：优先级 命令行 > 会话日志的选择（重开恢复）> settings.json 上次选择 > 连接默认。
@@ -347,44 +389,13 @@ fn model_with_keyring(
     let last = session_selection
         .cloned()
         .or_else(|| settings.last_selection.clone());
-    // 目标连接：命令行 > 会话/上次选择 > deepseek。
-    let preferred = common
-        .connection
-        .clone()
-        .or_else(|| last.as_ref().map(|selection| selection.connection.clone()));
-    let connection = preferred
-        .and_then(|id| {
-            view.connections
-                .iter()
-                .find(|connection| connection.id == id)
-                .cloned()
-        })
-        .or_else(|| {
-            view.connections
-                .iter()
-                .find(|connection| connection.id == "deepseek")
-                .cloned()
-        })
+    let (connection, model, effort) = resolve_selection(common, last.as_ref(), &view.connections)
         .ok_or_else(|| {
-            CliError::Message(
-                "还没有接模型：先从页面接上，或运行 aios-dev keyring set（key 从标准输入读）"
-                    .to_owned(),
-            )
-        })?;
-    // 模型/档：命令行 > 会话/上次选择 > 连接默认。
-    let model = common
-        .model
-        .clone()
-        .or_else(|| last.as_ref().map(|selection| selection.model.clone()))
-        .unwrap_or_else(|| connection.primary_model().to_owned());
-    let effort = common
-        .effort
-        .clone()
-        .or_else(|| {
-            last.as_ref()
-                .map(|selection| selection.effort_wanted.clone())
-        })
-        .unwrap_or_else(|| "high".to_owned());
+        CliError::Message(
+            "还没有接模型：先从页面接上，或运行 aios-dev keyring set（key 从标准输入读）"
+                .to_owned(),
+        )
+    })?;
     let mut resolved_common = common.clone();
     resolved_common.effort = Some(effort);
     let (mut deepseek_config, agent_config) =
@@ -1338,6 +1349,78 @@ mod tests {
             compaction_threshold: None,
             compaction_retain: None,
         }
+    }
+
+    fn connection_info(id: &str, model: &str) -> credentials::ConnectionInfo {
+        credentials::ConnectionInfo {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            model: model.to_owned(),
+            endpoint: "http://127.0.0.1:1".to_owned(),
+            saved_at: 0,
+            check: credentials::CheckState::Never,
+            key_saved: true,
+            preset: String::new(),
+            models: vec![credentials::ModelRow {
+                id: model.to_owned(),
+                name: None,
+                context_window: None,
+                max_tokens: None,
+                price: None,
+            }],
+            price_rate: 1.0,
+            auth_header: None,
+        }
+    }
+
+    /// T012.7 审计 P2：只给 --connection B 时，模型/档取 B 的默认，不把 A 的带过去。
+    #[test]
+    fn switching_connection_resets_model_and_effort_to_connection_defaults() {
+        let mut common = dev_common();
+        common.connection = Some("minimax-cn".to_owned());
+        let last = session::ModelSelection {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-pro".to_owned(),
+            effort_wanted: "low".to_owned(),
+        };
+        let connections = vec![
+            connection_info("deepseek", "deepseek-flash"),
+            connection_info("minimax-cn", "MiniMax-M3.1-Flash"),
+        ];
+        let (connection, model, effort) =
+            crate::resolve_selection(&common, Some(&last), &connections).expect("resolved");
+        assert_eq!(connection.id, "minimax-cn");
+        assert_eq!(
+            model, "MiniMax-M3.1-Flash",
+            "换连接整组取连接默认：不带旧连接的模型"
+        );
+        assert_eq!(effort, "high", "换连接取默认档");
+    }
+
+    /// 同一连接保留上次选择；命令行显式覆盖最优先。
+    #[test]
+    fn same_connection_keeps_last_selection_and_cli_overrides_win() {
+        let connections = vec![
+            connection_info("deepseek", "deepseek-flash"),
+            connection_info("minimax-cn", "MiniMax-M3.1-Flash"),
+        ];
+        let last = session::ModelSelection {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-pro".to_owned(),
+            effort_wanted: "low".to_owned(),
+        };
+        let mut common = dev_common();
+        common.connection = Some("deepseek".to_owned());
+        let (_, model, effort) =
+            crate::resolve_selection(&common, Some(&last), &connections).expect("resolved");
+        assert_eq!(model, "deepseek-pro");
+        assert_eq!(effort, "low");
+        common.model = Some("explicit-model".to_owned());
+        common.effort = Some("max".to_owned());
+        let (_, model, effort) =
+            crate::resolve_selection(&common, Some(&last), &connections).expect("resolved");
+        assert_eq!(model, "explicit-model");
+        assert_eq!(effort, "max");
     }
 
     #[test]

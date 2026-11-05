@@ -1600,10 +1600,17 @@ impl RootHost {
         if cross_connection && idle {
             self.rebuild_with(&target).await?;
         }
+        // T012.7 审计 P2：响应报实际生效的选择（跨连接重建后 factory 解析的 connection 可能不同）。
+        let actual = self
+            .selection
+            .lock()
+            .expect("selection 锁被毒化")
+            .clone()
+            .unwrap_or(target);
         Ok(SessionModelSelectResponse {
-            connection: target.connection,
-            model: target.model,
-            effort_wanted: target.effort_wanted,
+            connection: actual.connection,
+            model: actual.model,
+            effort_wanted: actual.effort_wanted,
         })
     }
 
