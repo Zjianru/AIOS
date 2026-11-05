@@ -7,7 +7,8 @@
 
 import { create } from 'zustand';
 import { toast } from 'sonner';
-import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchEventsPage, fetchFirstUse, recheckRoot, reportMonitor, sendMessage, setUnauthorizedHandler } from '@/data/service';
+import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchEventsPage, fetchFirstUse, fetchStatus, recheckRoot, reportMonitor, selectSessionModel, sendMessage, setUnauthorizedHandler, updateSettings } from '@/data/service';
+import type { Currency } from '@/lib/numbers';
 import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
 import { reconnectDelayMs } from '@/data/reconnect';
 import type { GateDetail, GateState } from './KernelGate';
@@ -64,6 +65,39 @@ function decorate(views: TurnViewData[]): {
   return { dayLabels, lastSeenId, lastSeenCounts: { moved: 3, waiting: 5 } };
 }
 
+/** T012.9：会话合计（服务 status.stats 给；页面不自己加）。 */
+export interface SessionStats {
+  turns: number;
+  steps: number;
+  input: number;
+  cacheRead: number;
+  cacheWrite: number;
+  output: number;
+  cost: number | null;
+  unpriced: boolean;
+}
+
+const EMPTY_STATS: SessionStats = {
+  turns: 0,
+  steps: 0,
+  input: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  output: 0,
+  cost: null,
+  unpriced: false,
+};
+
+/** T012.9：显示币种与汇率（服务 settings.json + status.fx；页面只显示和切换）。 */
+export interface MoneyState {
+  currency: Currency;
+  cnyPerUsd: number;
+  /** 汇率拉到的时间（unix 秒；0 = 没取到，用 7.2）。 */
+  fxAt: number;
+}
+
+const DEFAULT_MONEY: MoneyState = { currency: 'usd', cnyPerUsd: 7.2, fxAt: 0 };
+
 interface KindState {
   views: TurnViewData[];
   byId: Map<string, TurnViewData>;
@@ -97,8 +131,26 @@ interface KindState {
   modelWindows: Record<string, number>;
   /** T009.2：模型 id → 连接显示名（错误原因里用；取不到写「模型服务」）。 */
   connectionNames: Record<string, string>;
-  /** 当前用的模型（底栏的模型选择，T008）。 */
-  model: { connectionId: string; modelId: string; label: string };
+  /** 当前用的模型（底栏的模型选择，T008；T012.9 加价格/窗口/思考档）。 */
+  model: {
+    connectionId: string;
+    modelId: string;
+    label: string;
+    /** 生效价格（美元/百万 token，已按连接倍率算好）；没有价格就是 undefined。 */
+    price?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
+    contextWindow?: number;
+    thinks?: boolean;
+    /** 这个模型能选的档（厂商自己的叫法）；没有就是不能调。 */
+    efforts?: string[];
+    /** 下一轮实际要发的档。 */
+    effort?: string;
+  };
+  /** T012.9：用户最后选的档（换到不能调的模型也记着）。 */
+  wantedEffort?: string;
+  /** T012.9：会话合计（服务 status.stats）。 */
+  stats: SessionStats;
+  /** T012.9：币种与汇率（服务 settings.json + status.fx）。 */
+  money: MoneyState;
   /** T008.4：Kind 首屏引导：先看是不是空库（首次使用），否则加载对话。 */
   bootstrap: () => Promise<void>;
   loadInitial: () => Promise<void>;
@@ -111,6 +163,12 @@ interface KindState {
   dismiss: (turnId: string) => void;
   compact: () => void;
   setModel: (model: KindState['model']) => void;
+  /** T012.9：从服务刷新会话合计/汇率/币种。 */
+  refreshStats: () => Promise<void>;
+  /** T012.9：切币种（写 settings.json）。 */
+  setCurrency: (currency: Currency) => Promise<void>;
+  /** T012.9：换思考档（下一轮生效）。 */
+  setEffort: (effort: string) => Promise<void>;
 }
 
 function indexOf(views: TurnViewData[]): Map<string, TurnViewData> {
@@ -429,6 +487,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
   modelWindows: {},
   connectionNames: {},
   model: DEMO_MODEL,
+  stats: EMPTY_STATS,
+  money: DEFAULT_MONEY,
 
   bootstrap: async () => {
     try {
@@ -609,6 +669,64 @@ export const useKindStore = create<KindState>()((set, get) => ({
   setModel: (model) => {
     set({ model });
     toast('下一轮开始用 ' + model.label);
+  },
+
+  refreshStats: async () => {
+    try {
+      const status = await fetchStatus();
+      if (status.stats) {
+        const stats = status.stats;
+        set({
+          stats: {
+            turns: stats.turns,
+            steps: stats.steps,
+            input: stats.inputTokens,
+            cacheRead: stats.cacheReadTokens,
+            cacheWrite: stats.cacheWriteTokens,
+            output: stats.outputTokens,
+            cost: stats.costUsd ?? null,
+            unpriced: stats.unpriced,
+          },
+        });
+      }
+      if (status.fx || status.currency) {
+        set((state) => ({
+          money: {
+            currency: (status.currency as Currency | undefined) ?? state.money.currency,
+            cnyPerUsd: status.fx?.rate ?? state.money.cnyPerUsd,
+            fxAt: status.fx?.fetchedAt ?? state.money.fxAt,
+          },
+        }));
+      }
+    } catch {
+      // 状态读不到时保留旧值（页面不显示假数据）。
+    }
+  },
+
+  setCurrency: async (currency) => {
+    try {
+      const saved = (await updateSettings({ currency })) as Currency;
+      set((state) => ({ money: { ...state.money, currency: saved } }));
+    } catch {
+      toast('币种没保存', { description: '连上内核再试一次' });
+    }
+  },
+
+  setEffort: async (effort) => {
+    const state = get();
+    try {
+      const selected = await selectSessionModel({
+        connection: state.model.connectionId,
+        model: state.model.modelId,
+        effortWanted: effort,
+      });
+      set({
+        wantedEffort: selected.effortWanted,
+        model: { ...state.model, effort: selected.effortWanted },
+      });
+    } catch {
+      toast('思考强度没送达', { description: '连上内核再试一次' });
+    }
   },
 
 }));

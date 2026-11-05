@@ -90,6 +90,8 @@ pub enum Call {
     SessionModelSelect(SessionModelSelectRequest),
     /// T012.8b：查询连接余额/套餐余量。
     ConnectionQuota(ConnectionQuotaRequest),
+    /// T012.9：写非密钥设置（currency；只写 settings.json）。
+    SettingsUpdate(SettingsUpdateRequest),
 }
 
 /// 调用的结果（与 Call 一一对应）。
@@ -113,6 +115,8 @@ pub enum Response {
     ConnectionVerify(ConnectionVerifyResponse),
     /// T012.8b：连接余额/套餐余量。
     ConnectionQuota(ConnectionQuotaResponse),
+    /// T012.9：写非密钥设置。
+    SettingsUpdate(SettingsUpdateResponse),
     AvailableModels(AvailableModelsResponse),
     KeyringRelocate(KeyringRelocateResponse),
     KeyringReopen(KeyringReopenResponse),
@@ -451,6 +455,19 @@ pub struct ConnectionQuotaResponse {
     pub checked_at: u64,
 }
 
+/// T012.9：写非密钥设置（settings.json）；只碰非密钥设置，不碰 Keyring/连接。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct SettingsUpdateRequest {
+    /// 币种（usd/cny）；None = 不改。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SettingsUpdateResponse {
+    pub currency: String,
+}
+
 /// T008.3/T012.7：选模型（连接、模型、想要的档）；只影响下一轮（D26）。
 ///
 /// 三个字段都可选（协议只增）：None = 保持当前值。
@@ -513,7 +530,10 @@ pub struct ConnectionRevokeResponse {
 }
 
 /// 服务协议版本（T007.2 起）：只增不改的对外面每次扩展都记在这里，Web ready 帧里带上。
-pub const PROTOCOL_VERSION: u64 = 4;
+///
+/// - 4：T007.2 起的第一版；
+/// - 5（T012.9）：settings-update（写非密钥设置 currency）。
+pub const PROTOCOL_VERSION: u64 = 5;
 
 /// 根会话不可用的种类（T007.2）：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -821,7 +841,8 @@ impl ServiceHost {
             | Call::Issues(_)
             | Call::FirstUse(_)
             | Call::SessionModelSelect(_)
-            | Call::ConnectionQuota(_) => Err(ServiceError::SettingsOnBareHost),
+            | Call::ConnectionQuota(_)
+            | Call::SettingsUpdate(_) => Err(ServiceError::SettingsOnBareHost),
         }
     }
 
@@ -1604,6 +1625,14 @@ impl RootHost {
         })
     }
 
+    /// T012.9：写非密钥设置（目前只有 currency）。骨架版先拒绝，实现提交接 settings.json。
+    pub async fn settings_update(
+        &self,
+        _request: SettingsUpdateRequest,
+    ) -> Result<SettingsUpdateResponse, ServiceError> {
+        Err(ServiceError::SettingsOnBareHost)
+    }
+
     /// T012.8b：查询连接的余额/套餐余量（DeepSeek /user/balance、MiniMax /v1/token_plan/remains）。
     /// 查不到不报错（字段为空；spec 故事 5）。
     pub async fn connection_quota(
@@ -1865,6 +1894,11 @@ impl RootHost {
                 .connection_quota(request)
                 .await
                 .map(Response::ConnectionQuota),
+            // T012.9：写非密钥设置。
+            Call::SettingsUpdate(request) => self
+                .settings_update(request)
+                .await
+                .map(Response::SettingsUpdate),
             other => {
                 let guard = self.inner.lock().await;
                 match guard.as_ref() {
@@ -2369,7 +2403,7 @@ mod t009_pagination_tests {
     }
 
     #[test]
-    fn protocol_version_is_4() {
-        assert_eq!(PROTOCOL_VERSION, 4);
+    fn protocol_version_is_5() {
+        assert_eq!(PROTOCOL_VERSION, 5);
     }
 }

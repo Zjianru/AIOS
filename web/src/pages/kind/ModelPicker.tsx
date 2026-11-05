@@ -74,7 +74,7 @@ export function ModelPicker() {
                       onSelect={() => {
                         if (on) return;
                         // T008 r4 #3：等 selectSessionModel 成功后再改状态/tost；失败给中文原因，不吞。
-                        void selectSessionModel(row.id)
+                        void selectSessionModel({ model: row.id })
                           .then(() =>
                             setModel({ connectionId: conn.id, modelId: row.id, label: row.name ?? row.id }),
                           )
