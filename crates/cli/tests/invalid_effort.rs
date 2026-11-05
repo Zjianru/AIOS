@@ -24,7 +24,15 @@ async fn invalid_effort_is_rejected_before_request() {
         })
         .expect("save connection");
 
+    let home = tempfile::tempdir().expect("隔离 HOME");
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_aios-dev"))
+        .env("HOME", home.path())
+        .env_remove("http_proxy")
+        .env_remove("https_proxy")
+        .env_remove("all_proxy")
+        .env_remove("HTTP_PROXY")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("ALL_PROXY")
         .args([
             "run",
             "--data-dir",

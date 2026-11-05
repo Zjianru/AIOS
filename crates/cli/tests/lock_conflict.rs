@@ -35,7 +35,9 @@ fn run_resume(
     id: &str,
     identity: &std::path::Path,
 ) -> std::process::Output {
+    let home = tempfile::tempdir().expect("隔离 HOME");
     Command::new(aios_dev())
+        .env("HOME", home.path())
         .args([
             "run",
             "--resume",

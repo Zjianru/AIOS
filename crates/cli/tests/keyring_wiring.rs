@@ -17,8 +17,10 @@ fn run_with_env(
     identity: &std::path::Path,
     env_api_key: Option<&str>,
 ) -> Output {
+    let home = tempfile::tempdir().expect("隔离 HOME");
     let mut command = Command::new(aios_dev());
     command
+        .env("HOME", home.path())
         .args([
             "run",
             "--data-dir",

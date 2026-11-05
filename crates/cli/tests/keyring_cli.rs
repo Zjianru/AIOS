@@ -10,7 +10,15 @@ fn aios_dev() -> &'static str {
 }
 
 fn run(args: &[&str], stdin: &str) -> Output {
+    let home = tempfile::tempdir().expect("隔离 HOME");
     let mut child = Command::new(aios_dev())
+        .env("HOME", home.path())
+        .env_remove("http_proxy")
+        .env_remove("https_proxy")
+        .env_remove("all_proxy")
+        .env_remove("HTTP_PROXY")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("ALL_PROXY")
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
