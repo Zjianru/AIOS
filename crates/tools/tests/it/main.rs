@@ -4,6 +4,7 @@ mod attachments;
 mod bash;
 mod builtin_tools;
 mod diff_meta;
+mod file_references;
 mod fs_tools;
 mod jobs;
 mod skills;
