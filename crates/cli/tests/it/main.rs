@@ -5,3 +5,4 @@ mod invalid_effort;
 mod keyring_cli;
 mod keyring_wiring;
 mod lock_conflict;
+mod preset_set;

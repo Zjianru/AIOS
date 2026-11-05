@@ -21,6 +21,7 @@ async fn empty_effort_is_rejected_before_request() {
             model: "deepseek-flash".to_owned(),
             endpoint: server.uri(),
             api_key: "test-key".to_owned(),
+            ..Default::default()
         })
         .expect("save connection");
 

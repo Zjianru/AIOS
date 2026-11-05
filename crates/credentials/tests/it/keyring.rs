@@ -40,6 +40,7 @@ fn connection() -> NewConnection {
         model: "deepseek-flash".to_owned(),
         endpoint: "https://api.deepseek.com".to_owned(),
         api_key: TEST_KEY.to_owned(),
+        ..Default::default()
     }
 }
 

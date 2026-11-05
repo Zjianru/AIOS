@@ -5,8 +5,10 @@
 //! 每次操作重新从文件读取，不缓存。
 
 mod keyring;
+pub mod presets;
 
 pub use keyring::{
     CheckResult, CheckState, ConnectionInfo, IssueRecord, IssuedSecret, KeyFileInfo, Keyring,
     KeyringError, KeyringView, NewConnection,
 };
+pub use presets::{PRESETS, Preset, preset, preset_for_endpoint};

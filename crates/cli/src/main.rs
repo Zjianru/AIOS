@@ -54,10 +54,13 @@ enum KeyringAction {
         id: String,
         #[arg(long)]
         name: String,
+        /// 预设（deepseek/minimax/minimax-cn）；给了就用它的地址
+        #[arg(long)]
+        preset: Option<String>,
         #[arg(long)]
         model: String,
         #[arg(long)]
-        endpoint: String,
+        endpoint: Option<String>,
     },
     /// 列出连接（不含 key）
     List,
@@ -1364,9 +1367,23 @@ fn keyring(args: KeyringArgs) -> Result<u8, CliError> {
         KeyringAction::Set {
             id,
             name,
+            preset,
             model,
             endpoint,
         } => {
+            let preset = preset
+                .as_deref()
+                .map(|id| {
+                    credentials::preset(id).ok_or_else(|| {
+                        CliError::Message(format!(
+                            "未知预设 {id}（可用：deepseek/minimax/minimax-cn）"
+                        ))
+                    })
+                })
+                .transpose()?;
+            let endpoint = endpoint
+                .or_else(|| preset.map(|preset| preset.endpoint.to_owned()))
+                .ok_or_else(|| CliError::Message("--endpoint 或 --preset 必须给一个".to_owned()))?;
             let mut input = String::new();
             io::stdin().read_to_string(&mut input)?;
             let api_key = input.trim().to_owned();
@@ -1381,6 +1398,8 @@ fn keyring(args: KeyringArgs) -> Result<u8, CliError> {
                 model,
                 endpoint,
                 api_key,
+                preset: preset.map(|preset| preset.id.to_owned()),
+                ..Default::default()
             })?;
             println!("已保存 {}（{}）", info.name, info.id);
             Ok(0)
@@ -1463,6 +1482,7 @@ mod f1_redaction_tests {
             model: "deepseek-flash".to_owned(),
             endpoint: "http://127.0.0.1:1".to_owned(),
             api_key: key.to_owned(),
+            ..Default::default()
         }
     }
 

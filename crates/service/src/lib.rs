@@ -24,7 +24,7 @@ use tokio::sync::broadcast;
 const SERVICE_EVENT_CHANNEL_CAPACITY: usize = 1024;
 
 /// 服务对象：固定 Kind 根会话（16b 换成根会话实体）；第一版用会话 id 表达。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Object {
     #[serde(rename = "sessionId")]
     pub session_id: String,
@@ -112,7 +112,7 @@ pub enum Response {
 }
 
 /// 发消息（DSH session-controller 的 prompt）。requestId 是幂等键：同一 id 只进一次。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SendRequest {
     #[serde(rename = "requestId")]
     pub request_id: String,
@@ -126,7 +126,7 @@ fn default_delivery() -> DeliveryMode {
 }
 
 /// 发消息的受理回执（重复 requestId 返回原始受理，duplicate=true）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SendResponse {
     #[serde(rename = "requestId")]
     pub request_id: String,
@@ -138,13 +138,13 @@ pub struct SendResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct CancelRequest {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CancelResponse {
     pub cancelled: bool,
 }
 
 /// 一条答案（接 T006.13 的 {id, selected[], custom?}）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServiceAnswer {
     #[serde(rename = "questionId")]
     pub question_id: String,
@@ -154,12 +154,12 @@ pub struct ServiceAnswer {
 }
 
 /// 回答整批（一次调用覆盖一批问题；逐题走 Agent::answer，全部被接受才算成功）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnswerRequest {
     pub answers: Vec<ServiceAnswer>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnswerResponse {
     pub applied: usize,
 }
@@ -173,7 +173,7 @@ pub struct AnswerResponse {
 pub struct DismissQuestionsRequest {}
 
 /// 关掉不答的回执：是否确实有待答问题被撤掉（没有待答问题时 false）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DismissQuestionsResponse {
     pub dismissed: bool,
 }
@@ -186,7 +186,7 @@ pub struct CompactRequest {
 }
 
 /// 压缩计数（有可压缩历史才 Some）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompactCounts {
     #[serde(rename = "shadowedItems")]
     pub shadowed_items: usize,
@@ -194,7 +194,7 @@ pub struct CompactCounts {
     pub shadowed_tokens: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompactResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compacted: Option<CompactCounts>,
@@ -204,7 +204,7 @@ pub struct CompactResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct StatusRequest {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StatusResponse {
     pub object: Object,
     pub running: bool,
@@ -305,13 +305,13 @@ pub struct ServiceEvent {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelSettingsRequest {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelSettingsResponse {
     pub settings: credentials::KeyringView,
 }
 
 /// T008.3：存/换连接；apiKey 只在请求体里，任何响应不带。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionSaveRequest {
     pub id: String,
     pub name: String,
@@ -321,22 +321,22 @@ pub struct ConnectionSaveRequest {
     pub api_key: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionSaveResponse {
     pub connection: credentials::ConnectionInfo,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionDeleteRequest {
     pub id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionDeleteResponse {
     pub deleted: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KeyringRelocateRequest {
     pub to: String,
 }
@@ -344,7 +344,7 @@ pub struct KeyringRelocateRequest {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyringRelocateResponse {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KeyringReopenRequest {
     pub at: String,
 }
@@ -355,7 +355,7 @@ pub struct KeyringReopenResponse {}
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyringRestartRequest {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KeyringRestartResponse {
     pub settings: credentials::KeyringView,
 }
@@ -363,7 +363,7 @@ pub struct KeyringRestartResponse {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IssuesRequest {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IssuesResponse {
     #[serde(rename = "issuedToday")]
     pub issued_today: u64,
@@ -373,7 +373,7 @@ pub struct IssuesResponse {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FirstUseRequest {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FirstUseResponse {
     #[serde(rename = "firstUse")]
     pub first_use: bool,
@@ -382,47 +382,47 @@ pub struct FirstUseResponse {
 }
 
 /// T008.3：验证一个连接（空 = 用注册器里的 endpoint/key 发最小请求）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionVerifyRequest {
     pub id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionVerifyResponse {
     pub connection: credentials::ConnectionInfo,
 }
 
 /// T008.3：选模型；只影响下一轮（D26）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionModelSelectRequest {
     pub model: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionModelSelectResponse {
     pub model: String,
 }
 
 /// T008.3 增补：编辑连接，只改 endpoint/model（不换 key）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionUpdateRequest {
     pub id: String,
     pub endpoint: String,
     pub model: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionUpdateResponse {
     pub connection: credentials::ConnectionInfo,
 }
 
 /// T008.3 增补：撤销 key（连接保留，之后签发失败）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionRevokeRequest {
     pub id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionRevokeResponse {
     pub connection: credentials::ConnectionInfo,
 }
@@ -1219,6 +1219,7 @@ impl RootHost {
                 model: request.model,
                 endpoint: request.endpoint,
                 api_key: request.api_key,
+                ..Default::default()
             })?;
         self.emit_settings_changed();
         self.notify_keyring_changed();

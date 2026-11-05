@@ -49,6 +49,7 @@ async fn agent_turn_records_run_and_turn_in_keyring() {
             model: "deepseek-flash".to_owned(),
             endpoint: server.uri(),
             api_key: "sk-test-context".to_owned(),
+            ..Default::default()
         })
         .expect("save connection");
 

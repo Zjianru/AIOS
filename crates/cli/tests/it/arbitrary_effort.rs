@@ -21,6 +21,7 @@ async fn arbitrary_effort_is_sent() {
             model: "deepseek-flash".to_owned(),
             endpoint: server.uri(),
             api_key: "test-key".to_owned(),
+            ..Default::default()
         })
         .expect("save connection");
     let home = tempfile::tempdir().expect("隔离 HOME");
