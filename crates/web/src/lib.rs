@@ -23,6 +23,9 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use std::sync::Mutex;
+
+use monitor::{Channel, Monitor, Record, Severity};
 use serde::{Deserialize, Serialize};
 use service::{
     ContextUsage, FollowRequest, FollowResponse, HostInfo, HostLocation, PROTOCOL_VERSION,
@@ -118,6 +121,8 @@ pub struct ServeOptions {
     pub session_secret: [u8; 32],
     /// 同源托管的 web 构建产物目录（T007.2，通常是仓库的 web/dist）；None 时不托管静态文件。
     pub static_dir: Option<PathBuf>,
+    /// T011.4：本进程的监控记录器（None 时不记）。
+    pub monitor: Option<Monitor>,
 }
 
 /// 起好服务后拿到的句柄（端口可能是系统分配的，测试从 addr 读）。
@@ -636,6 +641,7 @@ struct AppState {
     host: Arc<RootHost>,
     trust: Trust,
     static_dir: Option<PathBuf>,
+    monitor: Option<Monitor>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -769,15 +775,193 @@ async fn api_handler(
     if let Err(error) = authorize_api_request(&state.trust, &headers, &uri) {
         return trust_error_response(error);
     }
-    let call: service::Call = match serde_json::from_slice(&body) {
+    let started = std::time::Instant::now();
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+    let method = value
+        .get("method")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown")
+        .to_owned();
+    // T011.6：页面没接住的异常/事件流重连经这里交给服务记 ops（内容限长，不阻塞页面）。
+    if method == "monitor-report" {
+        let kind = value
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("page-error");
+        let op = if kind == "page-reconnect" {
+            "page-reconnect"
+        } else {
+            "page-error"
+        };
+        let message: String = value
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .chars()
+            .take(512)
+            .collect();
+        record_ops(
+            &state,
+            op,
+            if op == "page-error" {
+                Severity::Warn
+            } else {
+                Severity::Info
+            },
+            vec![("message".to_owned(), serde_json::json!(message))],
+        );
+        return (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response();
+    }
+    let call: service::Call = match serde_json::from_value(value.clone()) {
         Ok(call) => call,
         Err(error) => {
             return bad_request_response(format!("bad request: {error}"));
         }
     };
-    match state.host.dispatch(call).await {
+    let result = state.host.dispatch(call).await;
+    let duration_ms = started.elapsed().as_millis() as u64;
+    let (http_status, code, ok) = match &result {
+        Ok(_) => (200_u16, "ok".to_owned(), true),
+        Err(error) => (
+            service_error_status(error.code()).as_u16(),
+            error.code().as_str().to_owned(),
+            false,
+        ),
+    };
+    // T011.4：每次 /api 一条 api-call（不记请求体/响应体）；Keyring/连接操作另记一条 ops。
+    record_ops(
+        &state,
+        "api-call",
+        if ok { Severity::Info } else { Severity::Warn },
+        vec![
+            ("method".to_owned(), serde_json::json!(method)),
+            ("status".to_owned(), serde_json::json!(http_status)),
+            ("code".to_owned(), serde_json::json!(code)),
+            ("durationMs".to_owned(), serde_json::json!(duration_ms)),
+        ],
+    );
+    record_domain_op(&state, &method, &value, ok, &code, duration_ms);
+    match result {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(error) => api_error_response(error),
+    }
+}
+
+/// 一条 ops 记录（attributes 里带 telemetry.op；body 不写请求/响应内容）。
+fn record_ops(
+    state: &AppState,
+    op: &str,
+    severity: Severity,
+    attributes: Vec<(String, serde_json::Value)>,
+) {
+    let Some(monitor) = &state.monitor else {
+        return;
+    };
+    let mut map = serde_json::Map::new();
+    map.insert("telemetry.op".to_owned(), serde_json::json!(op));
+    if let Some(session_id) = state.host.info().session_id {
+        map.insert("session.id".to_owned(), serde_json::json!(session_id));
+    }
+    for (key, value) in attributes {
+        map.insert(key, value);
+    }
+    let _ = monitor.record(Record::new(
+        Channel::Ops,
+        severity,
+        map,
+        serde_json::json!({}),
+    ));
+}
+
+/// T011.4：Keyring/连接操作的 ops（只记动作、连接 id/model、结果、码、耗时）。
+fn record_domain_op(
+    state: &AppState,
+    method: &str,
+    body: &serde_json::Value,
+    ok: bool,
+    code: &str,
+    duration_ms: u64,
+) {
+    let op = match method {
+        "connection-save"
+        | "connection-delete"
+        | "connection-verify"
+        | "connection-update"
+        | "connection-revoke"
+        | "session-model-select" => "connection",
+        "keyring-relocate" | "keyring-reopen" | "keyring-restart" => "keyring",
+        _ => return,
+    };
+    let action = match method {
+        "session-model-select" => "model-select",
+        other => other.strip_prefix("connection-").unwrap_or(other),
+    };
+    let mut attributes = vec![
+        ("action".to_owned(), serde_json::json!(action)),
+        (
+            "result".to_owned(),
+            serde_json::json!(if ok { "ok" } else { "failed" }),
+        ),
+        ("code".to_owned(), serde_json::json!(code)),
+        ("durationMs".to_owned(), serde_json::json!(duration_ms)),
+    ];
+    if let Some(id) = body.get("id").and_then(serde_json::Value::as_str) {
+        attributes.push(("connectionId".to_owned(), serde_json::json!(id)));
+    }
+    if let Some(model) = body.get("model").and_then(serde_json::Value::as_str) {
+        attributes.push(("model".to_owned(), serde_json::json!(model)));
+    }
+    record_ops(
+        state,
+        op,
+        if ok { Severity::Info } else { Severity::Warn },
+        attributes,
+    );
+}
+
+/// T011.4：事件流的连上/断开记录（reason 在 Drop 兜底写）。
+struct StreamOps {
+    monitor: Option<Monitor>,
+    session_id: Option<String>,
+    reason: Mutex<&'static str>,
+}
+
+impl StreamOps {
+    fn open(state: &AppState) -> Self {
+        let session_id = state.host.info().session_id;
+        record_ops(
+            state,
+            "stream-open",
+            Severity::Info,
+            vec![("reason".to_owned(), serde_json::json!("requested"))],
+        );
+        Self {
+            monitor: state.monitor.clone(),
+            session_id,
+            reason: Mutex::new("closed"),
+        }
+    }
+}
+
+impl Drop for StreamOps {
+    fn drop(&mut self) {
+        let Some(monitor) = &self.monitor else {
+            return;
+        };
+        let mut map = serde_json::Map::new();
+        map.insert("telemetry.op".to_owned(), serde_json::json!("stream-close"));
+        if let Some(session_id) = &self.session_id {
+            map.insert("session.id".to_owned(), serde_json::json!(session_id));
+        }
+        if let Ok(reason) = self.reason.lock() {
+            map.insert("reason".to_owned(), serde_json::json!(*reason));
+        }
+        let _ = monitor.record(Record::new(
+            Channel::Ops,
+            Severity::Info,
+            map,
+            serde_json::json!({}),
+        ));
     }
 }
 
@@ -859,6 +1043,7 @@ async fn send_frame(socket: &mut WebSocket, frame: &Frame) -> bool {
 
 /// 一个 WebSocket 连接：ready → 补齐（lastSeq 之后）→ live（seq 去重；Lagged 时重新 follow 补齐）。
 async fn ws_session(mut socket: WebSocket, state: Arc<AppState>, last_seq: u64) {
+    let _stream_ops = StreamOps::open(&state);
     let info = state.host.info();
     let mut live = state.host.subscribe_events();
     let mut agent_live = state.host.subscribe_agent_events();
@@ -955,6 +1140,7 @@ pub fn router(host: RootHost, trust: Trust, static_dir: Option<PathBuf>) -> Rout
         host: Arc::new(host),
         trust,
         static_dir,
+        monitor: None,
     }))
 }
 
@@ -982,6 +1168,7 @@ pub async fn serve(options: ServeOptions, host: RootHost) -> Result<ServeHandle,
             options.session_secret,
         ),
         static_dir: options.static_dir.clone(),
+        monitor: options.monitor.clone(),
     });
     let app = router_with_state(Arc::clone(&state));
     let (shutdown, shutdown_signal) = tokio::sync::oneshot::channel::<()>();
@@ -1176,5 +1363,205 @@ mod t009_error_tests {
                 assert_eq!(status, StatusCode::BAD_GATEWAY);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod t011_ops_tests {
+    use super::*;
+    use axum::body::Bytes;
+
+    fn model_config() -> model::DeepSeekConfig {
+        model::DeepSeekConfig {
+            base_url: "http://127.0.0.1:1".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            max_tokens: 2048,
+            context_window: model::DEFAULT_CONTEXT_WINDOW,
+            effort: model::Effort::High,
+        }
+    }
+
+    fn auth_headers(trust: &Trust) -> HeaderMap {
+        let host = "127.0.0.1:1417";
+        let cookie = authorize_connect(trust, Some(host), Some("tok-1"))
+            .expect("换 cookie")
+            .set_cookie
+            .split(';')
+            .next()
+            .expect("cookie")
+            .to_owned();
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, host.parse().expect("Host"));
+        headers.insert("cookie", cookie.parse().expect("cookie"));
+        headers
+    }
+
+    async fn setup() -> (tempfile::TempDir, Arc<AppState>, HeaderMap) {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let identity = dir.path().join("identity.txt");
+        let options = service::RootSessionOptions {
+            data_dir: dir.path().to_path_buf(),
+            cwd: dir.path().to_path_buf(),
+            model: model_config(),
+            config: agent::AgentConfig::default(),
+            credentials: None,
+            identity: Some(identity),
+            model_factory: None,
+            append_hook_factory: None,
+        };
+        let host = service::RootHost::open(options, model::DEFAULT_CONTEXT_WINDOW).await;
+        let monitor = Monitor::open_with_capacity(dir.path(), 1024).expect("监控");
+        let trust = Trust::new(
+            std::net::IpAddr::from([127, 0, 0, 1]),
+            1417,
+            "tok-1".to_owned(),
+            [7_u8; 32],
+        );
+        let headers = auth_headers(&trust);
+        let state = Arc::new(AppState {
+            host: Arc::new(host),
+            trust,
+            static_dir: None,
+            monitor: Some(monitor),
+        });
+        (dir, state, headers)
+    }
+
+    async fn call(state: &Arc<AppState>, headers: &HeaderMap, body: serde_json::Value) -> Response {
+        api_handler(
+            State(Arc::clone(state)),
+            headers.clone(),
+            axum::http::Uri::from_static("/api"),
+            Bytes::from(body.to_string()),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn api_and_domain_ops_are_recorded_without_bodies() {
+        let (dir, state, headers) = setup().await;
+        let keyring_new = dir.path().join("moved-identity.txt");
+        let bodies = vec![
+            serde_json::json!({"method": "status"}),
+            serde_json::json!({"method": "follow", "lastSeq": 0}),
+            serde_json::json!({"method": "events", "maxMessages": 5}),
+            serde_json::json!({"method": "recheck"}),
+            serde_json::json!({"method": "first-use"}),
+            serde_json::json!({"method": "issues"}),
+            serde_json::json!({"method": "model-settings"}),
+            serde_json::json!({
+                "method": "connection-save",
+                "id": "mon-test",
+                "name": "Monitor Test",
+                "model": "deepseek-flash",
+                "endpoint": "http://127.0.0.1:1",
+                "apiKey": "sk-monitor-secret"
+            }),
+            serde_json::json!({"method": "connection-verify", "id": "missing-conn"}),
+            serde_json::json!({"method": "connection-delete", "id": "missing-conn"}),
+            serde_json::json!({"method": "connection-update", "id": "missing-conn", "endpoint": "http://127.0.0.1:1", "model": "deepseek-flash"}),
+            serde_json::json!({"method": "connection-revoke", "id": "missing-conn"}),
+            serde_json::json!({"method": "session-model-select", "model": "deepseek-pro"}),
+            serde_json::json!({"method": "keyring-restart"}),
+            serde_json::json!({"method": "keyring-relocate", "to": keyring_new.display().to_string()}),
+            serde_json::json!({"method": "keyring-reopen", "at": keyring_new.display().to_string()}),
+        ];
+        let methods = [
+            "status",
+            "follow",
+            "events",
+            "recheck",
+            "first-use",
+            "issues",
+            "model-settings",
+            "connection-save",
+            "connection-verify",
+            "connection-delete",
+            "connection-update",
+            "connection-revoke",
+            "session-model-select",
+            "keyring-restart",
+            "keyring-relocate",
+            "keyring-reopen",
+        ];
+        for body in &bodies {
+            let _ = call(&state, &headers, body.clone()).await;
+        }
+        // 事件流连上/断开也各记一条。
+        drop(StreamOps::open(&state));
+        drop(state);
+
+        let mut files: Vec<_> = std::fs::read_dir(dir.path().join("monitor"))
+            .expect("monitor 目录")
+            .map(|entry| entry.expect("目录项").path())
+            .collect();
+        files.sort();
+        let mut records = Vec::new();
+        let mut text = String::new();
+        for file in &files {
+            let content = std::fs::read_to_string(file).expect("读监控");
+            text.push_str(&content);
+            for line in content.lines() {
+                records.push(serde_json::from_str::<serde_json::Value>(line).expect("JSON"));
+            }
+        }
+        let api_calls: Vec<&serde_json::Value> = records
+            .iter()
+            .filter(|record| record["attributes"]["telemetry.op"] == "api-call")
+            .collect();
+        assert_eq!(
+            api_calls.len(),
+            methods.len(),
+            "每次 /api 一条 api-call：{text}"
+        );
+        for method in methods {
+            assert_eq!(
+                api_calls
+                    .iter()
+                    .filter(|record| record["attributes"]["method"] == method)
+                    .count(),
+                1,
+                "方法 {method} 一条 api-call"
+            );
+        }
+        for record in &api_calls {
+            assert!(record["attributes"]["status"].as_u64().is_some());
+            assert!(record["attributes"]["code"].as_str().is_some());
+            assert!(record["attributes"]["durationMs"].as_u64().is_some());
+        }
+        let verify = api_calls
+            .iter()
+            .find(|record| record["attributes"]["method"] == "connection-verify")
+            .expect("verify 记录");
+        assert_eq!(
+            verify["attributes"]["code"], "connection/missing",
+            "码与 T009 码表一致"
+        );
+
+        let connections: Vec<&serde_json::Value> = records
+            .iter()
+            .filter(|record| record["attributes"]["telemetry.op"] == "connection")
+            .collect();
+        assert_eq!(connections.len(), 6, "连接操作各一条");
+        let keyring_ops: Vec<&serde_json::Value> = records
+            .iter()
+            .filter(|record| record["attributes"]["telemetry.op"] == "keyring")
+            .collect();
+        assert_eq!(keyring_ops.len(), 3, "Keyring 操作各一条");
+
+        let streams: Vec<&serde_json::Value> = records
+            .iter()
+            .filter(|record| {
+                record["attributes"]["telemetry.op"] == "stream-open"
+                    || record["attributes"]["telemetry.op"] == "stream-close"
+            })
+            .collect();
+        assert_eq!(streams.len(), 2, "事件流连上/断开各一条");
+
+        assert!(
+            !text.contains("sk-monitor-secret"),
+            "监控里不能有请求体里的 key：{text}"
+        );
+        assert!(!text.contains("apiKey"), "监控里不能有请求体字段：{text}");
     }
 }

@@ -79,6 +79,7 @@ fn options(dir: &std::path::Path, seen_model: Arc<Mutex<Option<String>>>) -> Roo
             dir.join("identity.txt"),
             seen_model,
         )),
+        append_hook_factory: None,
     }
 }
 

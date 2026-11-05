@@ -68,6 +68,8 @@ pub struct RootSessionOptions {
     pub identity: Option<PathBuf>,
     /// T008.3b：每次打开/recheck 根会话时重新解析模型配置（首次使用后 Keyring 才有连接）。
     pub model_factory: Option<ModelFactory>,
+    /// T011.4：打开会话后按 id 造「追加之后」的钩子（监控 ledger）；None = 不记。
+    pub append_hook_factory: Option<session::AppendHookFactory>,
 }
 
 /// T008.3b：从当前 Keyring 解析 (DeepSeekConfig, 凭证来源)；没有连接时返回 Err(说明)。
@@ -90,6 +92,10 @@ impl std::fmt::Debug for RootSessionOptions {
             .field("cwd", &self.cwd)
             .field("model", &self.model)
             .field("config", &self.config)
+            .field(
+                "append_hook_factory",
+                &self.append_hook_factory.as_ref().map(|_| "<factory>"),
+            )
             .field(
                 "credentials",
                 &self.credentials.as_ref().map(|_| "<source>"),
@@ -127,6 +133,7 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
                 model: options.model,
                 config: options.config,
                 credentials: options.credentials.clone(),
+                append_hook_factory: options.append_hook_factory.clone(),
             })
             .await?;
             let record = RootRecord {
@@ -179,6 +186,7 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
                 model: options.model,
                 config: options.config,
                 credentials: options.credentials.clone(),
+                append_hook_factory: options.append_hook_factory.clone(),
             })
             .await
             .map_err(|error| match &error {

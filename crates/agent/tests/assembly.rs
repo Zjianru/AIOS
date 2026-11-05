@@ -38,6 +38,7 @@ fn options(
         model: model_config(base_url),
         config: isolated_config(data_dir),
         credentials: Some(common::test_credential()),
+        append_hook_factory: None,
     }
 }
 
@@ -129,6 +130,7 @@ async fn open_rejects_invalid_config_before_creating_session() {
         model: model_config("http://127.0.0.1:1"),
         config,
         credentials: Some(common::test_credential()),
+        append_hook_factory: None,
     })
     .await
     {

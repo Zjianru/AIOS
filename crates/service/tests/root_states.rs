@@ -41,6 +41,7 @@ fn options(data_dir: &Path) -> RootSessionOptions {
         credentials: Some(test_credential()),
         identity: None,
         model_factory: None,
+        append_hook_factory: None,
     }
 }
 

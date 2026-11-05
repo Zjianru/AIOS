@@ -39,6 +39,12 @@ impl LogWriter for File {
     }
 }
 
+/// T011.2：会话写入之后的钩子（监控在服务启动时装上）。session 只认这个函数，不引用监控类型。
+pub type AppendHook = std::sync::Arc<dyn Fn(&[Event]) + Send + Sync>;
+
+/// T011.4/T011.2：按会话 id 造一个「追加之后」钩子（agent 在打开会话时装上）。
+pub type AppendHookFactory = std::sync::Arc<dyn Fn(&crate::SessionId) -> AppendHook + Send + Sync>;
+
 /// 一个会话的只追加 JSONL 事件日志。
 pub struct SessionStore {
     header: SessionHeader,
@@ -50,6 +56,8 @@ pub struct SessionStore {
     writer: Box<dyn LogWriter>,
     /// 单写者锁（T006.5b）：跟随本 store 的生命周期；drop 即释放。
     _writer_lock: crate::lock::WriterLock,
+    /// T011.2：追加成功之后的钩子（默认没有；监控装上）。
+    append_hook: Option<AppendHook>,
 }
 
 /// 只读打开得到的会话日志视图：读到最后一个完整事件为止，不改文件。
@@ -81,6 +89,11 @@ impl SessionSnapshot {
 }
 
 impl SessionStore {
+    /// T011.2：装上/卸下「追加之后」的钩子。钩子拿到刚成功写入的事件（顺序=seq）。
+    pub fn set_append_hook(&mut self, hook: Option<AppendHook>) {
+        self.append_hook = hook;
+    }
+
     /// 新建会话：生成 id、写 header（首行）并 fsync。
     pub fn create(data_dir: &Path, cwd: &Path) -> Result<Self, SessionError> {
         // T006.7 fix：data-dir 可能是相对路径；日志/spill locator 等对外路径一律绝对化。
@@ -116,6 +129,7 @@ impl SessionStore {
             pending_truncate: false,
             writer: Box::new(file),
             _writer_lock: writer_lock,
+            append_hook: None,
         })
     }
 
@@ -145,6 +159,7 @@ impl SessionStore {
             pending_truncate,
             writer: Box::new(file),
             _writer_lock: writer_lock,
+            append_hook: None,
         })
     }
 
@@ -289,6 +304,10 @@ impl SessionStore {
         }
         self.bytes = prior + buffer.len() as u64;
         let seqs = batch.iter().map(|event| event.seq).collect();
+        // T011.2：写成功之后交给钩子（监控）；钩子 panic 或报错不能影响业务。
+        if let Some(hook) = &self.append_hook {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| hook(&batch)));
+        }
         self.events.extend(batch);
         Ok(seqs)
     }

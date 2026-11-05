@@ -86,6 +86,8 @@ export interface KernelFixture {
   fakeEndpoint: string;
   /** T008.4：假 DeepSeek 最近一次请求体里的 model（下一轮生效断言用）。 */
   lastModel: () => Promise<string | null>;
+  /** 真 key fixture：serve 进程的 stderr（DoD4 断言写失败那行用）。 */
+  stderr?: () => string;
   dropProxy?: () => Promise<void>;
   restoreProxy?: () => Promise<void>;
   /// T007 #1：页面开着时重启同一个端口的服务（新进程=新 cookie 钥匙，旧页面会话失效）。
@@ -395,6 +397,10 @@ export async function startRealKernelFixture(
     ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', workDir, '--web-dist', path.join(repoRoot, 'web/dist')],
     { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] },
   );
+  let stderr = '';
+  child.stderr?.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
   let output = '';
   const parsed = await new Promise<{ baseUrl: string; token: string }>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('真 key serve 启动超时: ' + output)), 60_000);
@@ -422,6 +428,7 @@ export async function startRealKernelFixture(
     dataDir,
     fakeEndpoint: '',
     lastModel: async () => null,
+    stderr: () => stderr,
     dropProxy: proxy.drop,
     restoreProxy: proxy.restore,
     close: async () => {

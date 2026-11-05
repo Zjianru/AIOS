@@ -2,6 +2,7 @@
 //! 逻辑照 T005.2：按会话目录落盘，进日志/上下文的是 preview + locator；read 不在此列。
 
 use crate::capabilities::{Capability, HookEvent, HookFuture, HookOutcome, HookPoint};
+use crate::warn::warn;
 
 pub(crate) struct SpillCapability {
     max_inline_tokens: usize,
@@ -38,7 +39,9 @@ impl Capability for SpillCapability {
             if let Some(warning) = bounded.warning {
                 // DSH spill-policy: `ctx.logger.warn(`spill-policy: ${error}; keeping the inline content`)`；
                 // AIOS 没有 logger 设施，按 skill warning 同样的约定落 stderr（T006.19）。
-                eprintln!("[spill-policy] {warning}; keeping the inline content");
+                warn(format!(
+                    "[spill-policy] {warning}; keeping the inline content"
+                ));
             }
             let content = bounded.content.unwrap_or_else(|| result.content.clone());
             Ok(HookOutcome::ToolResultContent(content))

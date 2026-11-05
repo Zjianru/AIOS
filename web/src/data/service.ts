@@ -120,6 +120,18 @@ async function post<T>(body: Record<string, unknown>): Promise<T> {
   return (await response.json()) as T;
 }
 
+/** T011.6：页面没接住的异常、事件流重连，报给服务记监控（限长；失败静默，不阻塞页面）。 */
+export async function reportMonitor(
+  kind: 'page-error' | 'page-reconnect',
+  message: string,
+): Promise<void> {
+  try {
+    await post({ method: 'monitor-report', kind, message: message.slice(0, 512) });
+  } catch {
+    // 监控是尽力而为；页面不因上报失败改变行为。
+  }
+}
+
 /** 发消息（requestId 是幂等键：重发同一个 id 不会让 Kind 收到两次）。 */
 export async function sendMessage(content: string, requestId: string): Promise<void> {
   await post({ method: 'send', requestId, content });

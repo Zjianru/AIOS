@@ -33,6 +33,8 @@ pub struct AgentOpenOptions {
     pub config: AgentConfig,
     /// T008.2：凭证来源（Keyring 适配器）。None = 没有来源，组装直接失败（F9：不再有固定 key 旧路径）。
     pub credentials: Option<std::sync::Arc<dyn model::CredentialSource>>,
+    /// T011.4：打开会话后按 id 造「追加之后」的钩子（监控 ledger）；None = 不记。
+    pub append_hook_factory: Option<session::AppendHookFactory>,
 }
 
 impl std::fmt::Debug for AgentOpenOptions {
@@ -44,6 +46,10 @@ impl std::fmt::Debug for AgentOpenOptions {
             .field("resume", &self.resume)
             .field("model", &self.model)
             .field("config", &self.config)
+            .field(
+                "append_hook_factory",
+                &self.append_hook_factory.as_ref().map(|_| "<factory>"),
+            )
             .field(
                 "credentials",
                 &self.credentials.as_ref().map(|_| "<source>"),
@@ -72,7 +78,10 @@ impl Agent {
         let tools = ToolSet::builtin();
         match options.resume {
             Some(id) => {
-                let store = SessionStore::open(&options.data_dir, &id)?;
+                let mut store = SessionStore::open(&options.data_dir, &id)?;
+                if let Some(factory) = &options.append_hook_factory {
+                    store.set_append_hook(Some(factory(store.id())));
+                }
                 Self::resume(
                     id,
                     options.config,
@@ -85,7 +94,10 @@ impl Agent {
                 .await
             }
             None => {
-                let store = SessionStore::create(&options.data_dir, &options.cwd)?;
+                let mut store = SessionStore::create(&options.data_dir, &options.cwd)?;
+                if let Some(factory) = &options.append_hook_factory {
+                    store.set_append_hook(Some(factory(store.id())));
+                }
                 Self::create(
                     options.config,
                     Deps {

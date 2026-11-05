@@ -63,6 +63,7 @@ async fn agent_turn_records_run_and_turn_in_keyring() {
         credentials: Some(Arc::new(KeyringSource {
             keyring: Arc::clone(&keyring),
         })),
+        append_hook_factory: None,
     })
     .await
     .expect("open agent");

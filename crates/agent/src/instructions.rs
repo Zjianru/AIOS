@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
+use crate::warn::warn;
 use model::{InstructionChange, InstructionChangeAction, Message, MessageSource};
 
 pub const USER_GLOBAL_FILE: &str = "AGENTS.md";
@@ -145,7 +146,7 @@ impl InstructionState {
         if let Some(warning) = root_warning {
             // DSH 把 marker 探测错误交给调用方（files.ts:224-249 `@throws`）；AIOS 没有请求级
             // 抛错接缝（P11 适配），选择降级 cwd + stderr 留痕（T006.10b）。
-            eprintln!("[instructions] {warning}; using cwd");
+            warn(format!("[instructions] {warning}; using cwd"));
         }
         let mut dirs = ancestor_chain(&project_root, &cwd);
         extend_with_observed(&mut dirs, &cwd, observed.into_iter());
