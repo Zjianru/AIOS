@@ -455,14 +455,35 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             .map_err(|error| error.to_string())
     });
     // T011.4：ledger 钩子挂到根会话的「追加之后」（打开/recheck 重开会话都装）。
+    // T011.3：副本先过脱敏（推理帧/思考块 → [推理已略去，N 字]），再入队。
     let ledger_monitor = monitor.clone();
+    let ledger_redactor = monitor::Redactor::new(Vec::new());
     let append_hook_factory: session::AppendHookFactory =
         Arc::new(move |id: &session::SessionId| {
             let monitor = ledger_monitor.clone();
+            let redactor = ledger_redactor.clone();
             let session_id = id.as_str().to_owned();
             Arc::new(move |events: &[session::Event]| {
                 for event in events {
-                    let _ = monitor.record(monitor::ledger_record(&session_id, event));
+                    let mut record = monitor::ledger_record(&session_id, event);
+                    match redactor.redact(&mut record) {
+                        Ok(()) => {
+                            let _ = monitor.record(record);
+                        }
+                        Err(_) => {
+                            let _ = monitor.record(monitor::Record::ops(
+                                "redact-failed",
+                                monitor::Severity::Warn,
+                                serde_json::json!({
+                                    "event.type": serde_json::to_value(event)
+                                        .ok()
+                                        .and_then(|value| value.get("type").cloned())
+                                        .unwrap_or(serde_json::Value::Null),
+                                    "event.seq": event.seq,
+                                }),
+                            ));
+                        }
+                    }
                 }
             }) as session::AppendHook
         });
