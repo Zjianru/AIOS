@@ -56,6 +56,19 @@ fn proxy_url(raw: &str) -> Option<Url> {
     Url::parse(&with_scheme).ok()
 }
 
+/// 本机地址按主机名/IP 判：localhost、127.0.0.0/8、::1（故事 9）。
+fn is_loopback(url: &Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .map(|address| address.is_loopback())
+        .unwrap_or(false)
+}
+
 fn no_proxy_matches(url: &Url, no_proxy: Option<&str>) -> bool {
     let Some(no_proxy) = no_proxy else {
         return false;
@@ -87,10 +100,12 @@ fn build_with_env(env: HttpEnv) -> Result<Client, ModelError> {
         // 代理只从 HttpEnv 来，避免 reqwest 自己再读一遍环境、绕开本机判断。
         .no_proxy()
         .proxy(Proxy::custom(move |url: &Url| {
+            if is_loopback(url) {
+                return None;
+            }
             if no_proxy_matches(url, no_proxy.as_deref()) {
                 return None;
             }
-            // T012.1 骨架：还没有本机地址绕行（红测试在这里失败）。
             match url.scheme() {
                 "https" => https.clone().or_else(|| all.clone()),
                 "http" => http.clone().or_else(|| all.clone()),
