@@ -1,5 +1,6 @@
 //! model 集成测试（T009.H5：一个 crate 一个测试二进制）。
 
+mod catalog_load;
 mod credential_source;
 mod http_proxy;
 mod model_select;
