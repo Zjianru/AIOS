@@ -13,6 +13,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 pub use config::{DEFAULT_BASE_URL, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DeepSeekConfig};
+pub use serialize::file_handle_text;
 /// T012 F2：这一轮实际会发的档（内核规则；页面不另抄表）。
 pub use vendors::actual_effort;
 

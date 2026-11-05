@@ -96,17 +96,23 @@ pub(super) fn interrupted_content(
     for index in indexes {
         let block = blocks.get(&index).cloned().or_else(|| {
             open.get(&index).map(|(block_type, text)| match block_type {
-                BlockType::Text => ContentBlock::Text { text: text.clone() },
+                BlockType::Text => ContentBlock::Text {
+                    text: text.clone(),
+                    paste: false,
+                },
                 BlockType::Reasoning => ContentBlock::Reasoning {
                     text: text.clone(),
                     signature: None,
                 },
-                BlockType::ToolCall => ContentBlock::Text { text: text.clone() },
+                BlockType::ToolCall => ContentBlock::Text {
+                    text: text.clone(),
+                    paste: false,
+                },
             })
         });
         match block {
-            Some(ContentBlock::Text { text }) if !text.trim().is_empty() => {
-                content.push(ContentBlock::Text { text });
+            Some(ContentBlock::Text { text, .. }) if !text.trim().is_empty() => {
+                content.push(ContentBlock::Text { text, paste: false });
             }
             Some(ContentBlock::Reasoning { text, .. }) if !text.trim().is_empty() => {
                 content.push(ContentBlock::Reasoning {

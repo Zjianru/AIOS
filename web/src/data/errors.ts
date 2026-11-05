@@ -18,6 +18,7 @@ export const API_ERROR_CODES = [
   'agent/internal',
   'attachment/invalid',
   'attachment/not-text',
+  'request/invalid-message',
 ] as const;
 
 export const MODEL_ERROR_CODES = [
@@ -80,6 +81,7 @@ const API_REASONS: Record<string, string> = {
   'agent/internal': '内核出错了，稍后再试',
   'attachment/invalid': '附件不对（名字或内容格式有问题）',
   'attachment/not-text': '只支持文字文件，这个附件是二进制',
+  'request/invalid-message': '消息是空的（写点字、贴一段或者拖个文件）',
 };
 
 const API_ACTIONS: Record<string, 'settings' | 'retry'> = {

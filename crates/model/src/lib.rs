@@ -13,6 +13,7 @@ pub mod http;
 mod ir;
 
 pub use anthropic::actual_effort;
+pub use anthropic::file_handle_text;
 pub use anthropic::{
     ChunkStream, DEFAULT_BASE_URL, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DeepSeek,
     DeepSeekConfig,

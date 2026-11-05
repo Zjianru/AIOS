@@ -376,7 +376,7 @@ Use the pdf command.
     assert!(
         messages[0].content.iter().any(|block| matches!(
             block,
-            model::ContentBlock::Text { text } if text.contains("<skill_content name=\"pdf-tools\">")
+            model::ContentBlock::Text { text, .. } if text.contains("<skill_content name=\"pdf-tools\">")
         )),
         "注入消息内容应是 renderSkillContent"
     );

@@ -154,6 +154,8 @@ fn send_request(request_id: &str, text: &str) -> SendRequest {
         request_id: request_id.to_owned(),
         content: text.to_owned(),
         delivery: DeliveryMode::FollowUp,
+        pastes: Vec::new(),
+        attachments: Vec::new(),
     }
 }
 

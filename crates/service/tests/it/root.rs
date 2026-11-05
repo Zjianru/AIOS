@@ -321,6 +321,8 @@ async fn durable_rpc_id_is_idempotent_across_restart() {
             request_id: "req-dup-restart".to_owned(),
             content: "同一条请求".to_owned(),
             delivery: DeliveryMode::FollowUp,
+            pastes: Vec::new(),
+            attachments: Vec::new(),
         })
         .await;
     assert!(sent.is_ok(), "发送应成功：{sent:?}");
@@ -341,6 +343,8 @@ async fn durable_rpc_id_is_idempotent_across_restart() {
             request_id: "req-dup-restart".to_owned(),
             content: "同一条请求".to_owned(),
             delivery: DeliveryMode::FollowUp,
+            pastes: Vec::new(),
+            attachments: Vec::new(),
         })
         .await;
     assert!(duplicate.is_ok(), "重复发送应返回受理回执：{duplicate:?}");
@@ -366,6 +370,8 @@ async fn durable_rpc_id_is_idempotent_across_restart() {
             request_id: "req-new".to_owned(),
             content: "新请求".to_owned(),
             delivery: DeliveryMode::FollowUp,
+            pastes: Vec::new(),
+            attachments: Vec::new(),
         })
         .await
         .unwrap();

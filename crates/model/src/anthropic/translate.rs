@@ -101,7 +101,11 @@ impl Translator {
                         } else {
                             Some(text.clone())
                         };
-                        (ContentBlock::Text { text }, BlockType::Text, initial)
+                        (
+                            ContentBlock::Text { text, paste: false },
+                            BlockType::Text,
+                            initial,
+                        )
                     }
                     "tool_use" => {
                         let id = required_string(native, "id")?;
@@ -181,7 +185,7 @@ impl Translator {
                     .ok_or_else(|| malformed("delta 缺少 type"))?;
                 match delta_type {
                     "text_delta" => {
-                        if let ContentBlock::Text { text } = &mut block.content {
+                        if let ContentBlock::Text { text, .. } = &mut block.content {
                             let piece = required_string(delta, "text")?;
                             text.push_str(&piece);
                             chunks.push(StreamChunk::TextDelta { index, text: piece });

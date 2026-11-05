@@ -44,7 +44,7 @@ pub(crate) fn prune_content(blocks: &[ContentBlock]) -> Option<Vec<ContentBlock>
     let mut consumed = 0_usize;
     let mut marker_inserted = false;
     for block in blocks {
-        let ContentBlock::Text { text } = block else {
+        let ContentBlock::Text { text, .. } = block else {
             pruned.push(block.clone());
             continue;
         };

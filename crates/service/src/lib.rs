@@ -145,6 +145,20 @@ pub struct SendRequest {
     pub content: String,
     #[serde(default = "default_delivery")]
     pub delivery: DeliveryMode,
+    /// T013.4：用户粘贴的段（每段一个块，投给模型时照原文）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pastes: Vec<String>,
+    /// T013.4：用户拖进来的文件（已经存进附件仓库）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<SendAttachment>,
+}
+
+/// T013.4：发送消息时引用的一个附件（服务端解析成只读副本路径）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SendAttachment {
+    pub id: String,
+    pub name: String,
+    pub bytes: u64,
 }
 
 fn default_delivery() -> DeliveryMode {
@@ -782,6 +796,9 @@ pub enum ServiceError {
     /// T013.2：不是文字文件（前 8000 字节有 NUL），拒收。
     #[error("附件不是文字文件")]
     AttachmentNotText,
+    /// T013.4：一条消息里文字、粘贴、文件都没有。
+    #[error("消息是空的")]
+    MessageEmpty,
 }
 
 /// T009.1：服务的结构化错误码（DSH remote-error 形状：`<namespace>/<kind>`，小写连字符）。
@@ -803,11 +820,12 @@ pub enum ServiceErrorCode {
     RequestInvalidJson,
     AttachmentInvalid,
     AttachmentNotText,
+    RequestInvalidMessage,
 }
 
 impl ServiceErrorCode {
     /// 码表全集（覆盖检查用：多一个少一个都要失败）。
-    pub const ALL: [ServiceErrorCode; 14] = [
+    pub const ALL: [ServiceErrorCode; 15] = [
         ServiceErrorCode::AgentInternal,
         ServiceErrorCode::QuestionAnswerRejected,
         ServiceErrorCode::RootUnavailable,
@@ -822,6 +840,7 @@ impl ServiceErrorCode {
         ServiceErrorCode::RequestInvalidJson,
         ServiceErrorCode::AttachmentInvalid,
         ServiceErrorCode::AttachmentNotText,
+        ServiceErrorCode::RequestInvalidMessage,
     ];
 
     /// 线上的码名。
@@ -841,6 +860,7 @@ impl ServiceErrorCode {
             Self::RequestInvalidJson => "request/invalid-json",
             Self::AttachmentInvalid => "attachment/invalid",
             Self::AttachmentNotText => "attachment/not-text",
+            Self::RequestInvalidMessage => "request/invalid-message",
         }
     }
 }
@@ -872,6 +892,7 @@ impl ServiceError {
             Self::InvalidPath(_) => ServiceErrorCode::RequestInvalidPath,
             Self::AttachmentInvalid(_) => ServiceErrorCode::AttachmentInvalid,
             Self::AttachmentNotText => ServiceErrorCode::AttachmentNotText,
+            Self::MessageEmpty => ServiceErrorCode::RequestInvalidMessage,
         }
     }
 }
@@ -2464,6 +2485,7 @@ mod t009_error_tests {
                 ServiceError::AttachmentInvalid("x".to_owned()),
             ),
             ("attachment/not-text", ServiceError::AttachmentNotText),
+            ("request/invalid-message", ServiceError::MessageEmpty),
         ]
     }
 
@@ -2477,7 +2499,7 @@ mod t009_error_tests {
         used.sort_unstable();
         used.dedup();
         // T013.2：14 码 = ServiceError 的 13 个变体码 + web 层的 request/invalid-json。
-        assert_eq!(ServiceErrorCode::ALL.len(), 14, "码数 14");
+        assert_eq!(ServiceErrorCode::ALL.len(), 15, "码数 15");
         assert!(
             ServiceErrorCode::ALL
                 .iter()

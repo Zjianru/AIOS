@@ -13,7 +13,7 @@ fn user_text_contains(kind: &EventKind, marker: &str) -> bool {
         return false;
     };
     message.content.iter().any(|block| {
-        let ContentBlock::Text { text } = block else {
+        let ContentBlock::Text { text, .. } = block else {
             return false;
         };
         text.contains(marker)

@@ -56,6 +56,19 @@ struct WireText {
     text: String,
 }
 
+/// T013.4：文件块的模型可见文本（照 DSH \`llm/llm/src/content.ts\` 的 fileHandleText 原句）。
+///
+/// `path` 是只读副本的绝对路径；没有路径时用 DSH 的「环境不可读」分支。
+pub fn file_handle_text(
+    _attachment_id: &str,
+    _name: &str,
+    _bytes: u64,
+    _path: Option<&str>,
+) -> String {
+    // T013.4 红阶段：实现前空壳（fileHandleText 原句还没填）。
+    String::new()
+}
+
 #[derive(Serialize)]
 #[serde(tag = "type")]
 enum WireBlock {
@@ -105,8 +118,10 @@ pub(super) fn request_body(
                 let mut text = String::new();
                 for block in &message.content {
                     match block {
-                        ContentBlock::Text { text: piece } => text.push_str(piece),
-                        ContentBlock::Reasoning { .. } | ContentBlock::ToolCall { .. } => {
+                        ContentBlock::Text { text: piece, .. } => text.push_str(piece),
+                        ContentBlock::Reasoning { .. }
+                        | ContentBlock::ToolCall { .. }
+                        | ContentBlock::File { .. } => {
                             return Err(unsupported("system 消息只能包含文本块"));
                         }
                     }
@@ -134,10 +149,20 @@ pub(super) fn request_body(
                     .content
                     .iter()
                     .filter_map(|block| match block {
-                        ContentBlock::Text { text } if !text.is_empty() => {
+                        ContentBlock::Text { text, .. } if !text.is_empty() => {
                             Some(WireBlock::Text { text: text.clone() })
                         }
                         ContentBlock::Text { .. } => None,
+                        // T013.4：文件块投给模型时换成 fileHandleText（DSH 原句照抄）。
+                        ContentBlock::File {
+                            attachment_id,
+                            name,
+                            bytes,
+                            path,
+                        } if message.role == Role::User => Some(WireBlock::Text {
+                            text: file_handle_text(attachment_id, name, *bytes, path.as_deref()),
+                        }),
+                        ContentBlock::File { .. } => None,
                         ContentBlock::Reasoning { text, signature }
                             if message.role == Role::Assistant =>
                         {
@@ -179,14 +204,16 @@ pub(super) fn request_body(
                 let mut content = Vec::new();
                 for block in &message.content {
                     match block {
-                        ContentBlock::Text { text } if !text.is_empty() => {
+                        ContentBlock::Text { text, .. } if !text.is_empty() => {
                             content.push(WireText {
                                 kind: "text",
                                 text: text.clone(),
                             });
                         }
                         ContentBlock::Text { .. } => {}
-                        ContentBlock::Reasoning { .. } | ContentBlock::ToolCall { .. } => {
+                        ContentBlock::Reasoning { .. }
+                        | ContentBlock::ToolCall { .. }
+                        | ContentBlock::File { .. } => {
                             return Err(unsupported("tool 消息只能包含文本内容块"));
                         }
                     }

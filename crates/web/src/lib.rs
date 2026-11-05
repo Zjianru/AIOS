@@ -730,7 +730,8 @@ fn service_error_status(code: service::ServiceErrorCode) -> StatusCode {
         service::ServiceErrorCode::RootUnavailable => StatusCode::CONFLICT,
         service::ServiceErrorCode::RequestInvalidJson
         | service::ServiceErrorCode::AttachmentInvalid
-        | service::ServiceErrorCode::AttachmentNotText => StatusCode::BAD_REQUEST,
+        | service::ServiceErrorCode::AttachmentNotText
+        | service::ServiceErrorCode::RequestInvalidMessage => StatusCode::BAD_REQUEST,
         _ => StatusCode::BAD_GATEWAY,
     }
 }
