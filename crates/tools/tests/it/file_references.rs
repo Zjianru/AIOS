@@ -3,7 +3,6 @@
 //! 和 DSH 的不同（spec v1.2）：不列目录；排好序后按 git 规则判断文字，凑满 20 条或看完。
 
 use std::fs;
-use std::path::Path;
 
 use tempfile::TempDir;
 use tools::file_references::{
