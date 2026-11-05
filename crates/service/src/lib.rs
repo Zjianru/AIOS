@@ -1697,6 +1697,42 @@ mod t009_error_tests {
     }
 
     #[test]
+    fn page_error_table_covers_service_and_model_codes() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../web/src/data/errors.ts");
+        let table = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("页面错误表 {} 读不到：{error}", path.display()));
+        for code in ServiceErrorCode::ALL {
+            assert!(
+                table.contains(code.as_str()),
+                "页面对照表缺 {} 这一行",
+                code.as_str()
+            );
+        }
+        // 日志里的模型错误码（spec 测试清单 2）。
+        for code in [
+            "AUTH",
+            "MISSING_CREDENTIAL",
+            "KEYRING",
+            "QUOTA",
+            "RATE_LIMIT",
+            "CONTEXT_WINDOW_EXCEEDED",
+            "INVALID_REQUEST",
+            "SERVER",
+            "TRANSPORT",
+            "TIMEOUT",
+            "STREAM_CLOSED",
+            "MALFORMED_RESPONSE",
+            "EMPTY_RESPONSE",
+            "UNSUPPORTED_CONTENT",
+            "UNSUPPORTED_REASONING_EFFORT",
+            "ABORTED",
+        ] {
+            assert!(table.contains(code), "页面对照表缺模型码 {code} 这一行");
+        }
+    }
+
+    #[test]
     fn service_error_body_has_code_message_and_root_details() {
         let root_error = ServiceError::RootUnavailable(RootState::Unavailable {
             kind: RootUnavailableKind::Other,

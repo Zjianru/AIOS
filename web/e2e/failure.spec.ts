@@ -18,6 +18,7 @@ test('重试两次后成功：页面显示第几次重试、为什么', async ({
   try {
     await open(page, fixture);
     await expect(page.getByText(/次重试/)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText('请求太频繁', { exact: false })).toBeVisible();
     // 第 3 次重试的退避是 2 秒：页面「X 秒后」必须等于 llm/retry.delayMs 折算值（camelCase）。
     await expect(page.getByText('2 秒后', { exact: false })).toBeVisible({ timeout: 40_000 });
     await expect(page.getByText('（T007 e2e 假回放）')).toBeVisible({ timeout: 30_000 });
@@ -43,6 +44,8 @@ test('模型重试用完：失败块按模型原因、可再发一次', async ({
     });
     await expect(page.getByRole('button', { name: '再发一次' })).toBeVisible();
     await expect(page.getByRole('button', { name: /去设置/ })).toHaveCount(0);
+    await expect(page.locator('[data-kind="failure"]')).toContainText('那边出错了');
+    await expect(page.locator('[data-kind="failure"]')).not.toContainText('SERVER');
   } finally {
     await fixture.close();
   }
@@ -59,6 +62,24 @@ test('凭证 401：失败块按凭证原因，并给「去设置」', async ({ p
     await expect(page.getByText('换一把密钥', { exact: false })).toBeVisible();
     await expect(page.getByRole('button', { name: '再发一次' })).toBeVisible();
     await expect(page.getByRole('button', { name: /去设置/ })).toBeVisible();
+    await expect(page.locator('[data-kind="failure"]')).toContainText('拒绝了这把密钥');
+    await expect(page.locator('[data-kind="failure"]')).not.toContainText('AUTH');
+  } finally {
+    await fixture.close();
+  }
+});
+
+/// T009.2 清单 4：页面不认识的错误码 → 通用中文原因，不显示原始码。
+test('未知错误码：显示通用中文原因', async ({ page }) => {
+  const fixture = await startKernelFixture({ failure: 'unknown' });
+  try {
+    await open(page, fixture);
+    await expect(page.getByText('这一轮没做完', { exact: false })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.locator('[data-kind="failure"]')).toContainText('返回了意外的错误');
+    await expect(page.locator('[data-kind="failure"]')).not.toContainText('HTTP_');
+    await expect(page.locator('[data-kind="failure"]')).not.toContainText('418');
   } finally {
     await fixture.close();
   }

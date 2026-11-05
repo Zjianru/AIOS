@@ -11,6 +11,7 @@ import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQues
 import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
 import type { GateDetail, GateState } from './KernelGate';
 import { reconnectDelayMs } from '@/data/reconnect';
+import { modelErrorReason, retryReason } from '@/data/errors';
 import { getModelSettings } from '@/data/keyring';
 import { contextPercent, contextTokens, emptyUsage, mergeUsage, modelLabel, reasoningSpanMs, thinkingSeconds as thinkingSecondsOf, type UsageTotals } from '@/data/turnUsage';
 import { setHostHome } from '@/data/service';
@@ -67,9 +68,9 @@ export interface TurnViewData {
   model: string;
   cost: number | null;
   /** 模型正在重试（第几次、为什么）。 */
-  retry: { attempt: number; reason: string; inSeconds: number } | null;
+  retry: { attempt: number; reason: string; inSeconds: number; code?: string } | null;
   /** 这一轮没做完：原因来自内核，按原因给下一步（去设置 / 再发一次）。 */
-  failure: { cause: FailureCause; reason: string } | null;
+  failure: { cause: FailureCause; reason: string; code?: string } | null;
   question: QuestionView | null;
   compaction: CompactionView | null;
   /** 你的消息：发送中 / 没送到（重发用同一个请求编号，内核只收一次）。 */
@@ -148,6 +149,8 @@ interface KindState {
   modelNames: Record<string, string>;
   /** T010.4：模型 id → contextWindow（模型设置里的窗口；拿不到就不显示压缩占用）。 */
   modelWindows: Record<string, number>;
+  /** T009.2：模型 id → 连接显示名（错误原因里用；取不到写「模型服务」）。 */
+  connectionNames: Record<string, string>;
   /** 当前用的模型（底栏的模型选择，T008）。 */
   model: { connectionId: string; modelId: string; label: string };
   /** T008.4：Kind 首屏引导：先看是不是空库（首次使用），否则加载对话。 */
@@ -484,7 +487,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     usage: UsageTotals;
     modelId: string | null;
     reasoningMs: number;
-    failure: { cause: FailureCause; reason: string } | null;
+    failure: { cause: FailureCause; reason: string; code?: string } | null;
     question: QuestionView | null;
     retry: TurnViewData['retry'];
     compaction: CompactionView | null;
@@ -649,13 +652,19 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
               raw.question = { status: 'void', questions: raw.question.questions };
             }
             break;
-          case 'error':
+          case 'error': {
             raw.status = 'failed';
+            const failure = reason.error as { message?: string; code?: string } | undefined;
+            const connectionName = raw.modelId
+              ? useKindStore.getState().connectionNames[raw.modelId]
+              : undefined;
             raw.failure = {
               cause: event.cause ?? 'model',
-              reason: reason.error?.message ?? '原因不明',
+              reason: modelErrorReason(failure?.code, connectionName),
+              code: failure?.code,
             };
             break;
+          }
           default:
             raw.status = 'failed';
         }
@@ -711,10 +720,14 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         const raw = ensure(turn);
         const delayMs = typeof data.delayMs === 'number' ? data.delayMs : typeof data.delay_ms === 'number' ? data.delay_ms : 0;
         const failure = (data.failure ?? {}) as { message?: string; code?: string };
+        const connectionName = raw.modelId
+          ? useKindStore.getState().connectionNames[raw.modelId]
+          : undefined;
         raw.retry = {
           attempt: typeof data.retry === 'number' ? data.retry : 1,
-          reason: failure.message || failure.code || '模型请求失败',
+          reason: retryReason(failure.code, connectionName),
           inSeconds: Math.max(1, Math.round(delayMs / 1000)),
+          code: failure.code,
         };
         break;
       }
@@ -795,6 +808,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   compacting: false,
   modelNames: {},
   modelWindows: {},
+  connectionNames: {},
   model: DEMO_MODEL,
 
   bootstrap: async () => {
@@ -802,10 +816,12 @@ export const useKindStore = create<KindState>()((set, get) => ({
       const view = await getModelSettings();
       const names: Record<string, string> = {};
       const windows: Record<string, number> = {};
+      const connectionNames: Record<string, string> = {};
       for (const connection of view.connections) {
         for (const model of connection.models) {
           if (model.name) names[model.id] = model.name;
           if (model.contextWindow) windows[model.id] = model.contextWindow;
+          connectionNames[model.id] = connection.name;
         }
       }
       for (const provider of view.catalog) {
@@ -814,7 +830,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
           if (model.contextWindow) windows[model.id] = model.contextWindow;
         }
       }
-      set({ modelNames: names, modelWindows: windows });
+      set({ modelNames: names, modelWindows: windows, connectionNames });
     } catch {
       // 设置读不到时模型名退回 id、压缩占用不显示（日志里的事实还在）。
     }

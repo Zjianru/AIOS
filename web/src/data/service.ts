@@ -1,6 +1,8 @@
 // T007.3/4：页面与 aios-dev serve 的线上客户端（只加页面要用的方法/帧）。
 // 协议事实：POST /api {method,...} → Response；WS /ws 先 ready 再事件/agent 帧。
 
+import { apiErrorReason } from './errors';
+
 export interface ServiceEvent {
   seq: number;
   /** 日志事件发生时间（unix 毫秒；工作过程用）。 */
@@ -79,9 +81,11 @@ export function displayPath(raw: string | null | undefined): string {
 
 export class ServiceHttpError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  code?: string;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -115,7 +119,15 @@ async function post<T>(body: Record<string, unknown>): Promise<T> {
     throw new ServiceHttpError(response.status, '登录已失效：请重新打开终端里打印的地址');
   }
   if (!response.ok) {
-    throw new ServiceHttpError(response.status, `服务拒绝：${response.status}`);
+    // T009.2：/api 错误体是 {code,message,details?}；页面只显示对照表的中文原因，不显示码/状态。
+    let code: string | undefined;
+    try {
+      const body = (await response.json()) as { code?: unknown };
+      if (typeof body.code === 'string') code = body.code;
+    } catch {
+      // 非 JSON 错误体：走通用原因。
+    }
+    throw new ServiceHttpError(response.status, apiErrorReason(code), code);
   }
   return (await response.json()) as T;
 }

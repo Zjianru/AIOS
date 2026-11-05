@@ -10,6 +10,8 @@ test('失败块：凭证原因给「去设置」', async ({ page }) => {
     await page.getByPlaceholder('和 Kind 说…').fill('你好');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await expect(page.locator('[data-kind="failure"]')).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator('[data-kind="failure"]')).toContainText('拒绝了这把密钥');
+    await expect(page.locator('[data-kind="failure"]')).not.toContainText('AUTH');
     await page.getByRole('button', { name: /去设置/ }).click();
     await expect(page.locator('[data-settings="model"]')).toBeVisible({ timeout: 20_000 });
   } finally {
