@@ -553,11 +553,12 @@ pub enum ServiceErrorCode {
     ConnectionInvalid,
     SettingsUnavailable,
     RequestInvalidPath,
+    RequestInvalidJson,
 }
 
 impl ServiceErrorCode {
     /// 码表全集（覆盖检查用：多一个少一个都要失败）。
-    pub const ALL: [ServiceErrorCode; 11] = [
+    pub const ALL: [ServiceErrorCode; 12] = [
         ServiceErrorCode::AgentInternal,
         ServiceErrorCode::QuestionAnswerRejected,
         ServiceErrorCode::RootUnavailable,
@@ -569,6 +570,7 @@ impl ServiceErrorCode {
         ServiceErrorCode::ConnectionInvalid,
         ServiceErrorCode::SettingsUnavailable,
         ServiceErrorCode::RequestInvalidPath,
+        ServiceErrorCode::RequestInvalidJson,
     ];
 
     /// 线上的码名。
@@ -585,6 +587,7 @@ impl ServiceErrorCode {
             Self::ConnectionInvalid => "connection/invalid",
             Self::SettingsUnavailable => "settings/unavailable",
             Self::RequestInvalidPath => "request/invalid-path",
+            Self::RequestInvalidJson => "request/invalid-json",
         }
     }
 }
@@ -1662,14 +1665,23 @@ mod t009_error_tests {
         let mut used: Vec<&str> = pairs.iter().map(|(code, _)| *code).collect();
         used.sort_unstable();
         used.dedup();
+        // spec v1.1：12 码 = ServiceError 的 11 个变体码 + web 层的 request/invalid-json。
+        assert_eq!(ServiceErrorCode::ALL.len(), 12, "码数 12");
+        assert!(
+            ServiceErrorCode::ALL
+                .iter()
+                .any(|code| code.as_str() == "request/invalid-json"),
+            "invalid-json 在唯一码表里"
+        );
         let mut all: Vec<&str> = ServiceErrorCode::ALL
             .iter()
             .map(|code| code.as_str())
+            .filter(|code| *code != "request/invalid-json")
             .collect();
         all.sort_unstable();
         assert_eq!(
             used, all,
-            "码表与 ServiceError 变体必须一一对应（多/少都失败）"
+            "码表与 ServiceError 变体必须一一对应（多/少都失败；invalid-json 由 web 层用）"
         );
     }
 
