@@ -585,7 +585,7 @@ fn attachment_error(error: tools::attachments::AttachmentError) -> ServiceError 
 /// T013.2：严格 base64 解码（不引新依赖；不规范返回 None）。
 fn decode_base64(input: &str) -> Option<Vec<u8>> {
     let bytes = input.as_bytes();
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return None;
     }
     let mut output = Vec::with_capacity(bytes.len() / 4 * 3);
