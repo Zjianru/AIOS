@@ -2,23 +2,23 @@
 //!
 //! 照抄来源：DSH 的 packages/llm 与 packages/llm/llm-deepseek（strategy 第 1 节）。
 
+mod anthropic;
 mod assistant_stream;
 mod cancel;
 mod credential;
-mod deepseek;
 mod error;
 pub mod http;
 mod ir;
 
+pub use anthropic::{
+    ChunkStream, DEFAULT_BASE_URL, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DeepSeek,
+    DeepSeekConfig,
+};
 pub use assistant_stream::{
     AssistantStreamAccumulator, AssistantStreamRecord, TimedStreamChunk, expand_assistant_stream,
 };
 pub use cancel::CancelToken;
 pub use credential::{CredentialContext, CredentialSource};
-pub use deepseek::{
-    ChunkStream, DEFAULT_BASE_URL, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DeepSeek,
-    DeepSeekConfig,
-};
 pub use error::{ErrorCode, ModelError};
 pub use ir::{
     BlockType, ContentBlock, Effort, FinishReason, InstructionChange, InstructionChangeAction,

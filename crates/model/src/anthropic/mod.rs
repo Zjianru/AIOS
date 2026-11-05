@@ -1,4 +1,4 @@
-//! DeepSeek Messages 适配器：HTTP 传输、SSE 解码和流事件翻译。
+//! Anthropic Messages 适配器：HTTP 传输、SSE 解码和流事件翻译。
 
 mod config;
 mod serialize;
