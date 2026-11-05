@@ -97,7 +97,7 @@ function UsagePill() {
           <Row label="输出" value={formatExactTokens(stats.output)} />
           <div className="my-1 border-t border-line" />
           <Row label="合计" value={formatExactTokens(prompt + stats.output)} strong />
-          {hit === null ? null : <Row label="缓存命中" value={hit + '%'} />}
+          {hit === null ? null : <Row label="缓存命中" value={hit} />}
         </>
       }
     >
@@ -109,7 +109,7 @@ function UsagePill() {
         {hit === null ? null : (
           <>
             <Dot />
-            缓存命中 <span className="brand-type">{hit}%</span>
+            缓存命中 <span className="brand-type">{hit}</span>
           </>
         )}
       </span>

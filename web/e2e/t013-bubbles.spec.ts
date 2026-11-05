@@ -41,6 +41,48 @@ test('气泡：我的话在右侧气泡、Kind 回答没有气泡、复制原文
   }
 });
 
+/// T013.6 故事 4：Kind 回答 hover 出复制，复制的是回答原文。
+test('回答复制：停在 Kind 回答上复制原文', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    await send(page, '你好呀');
+    const answer = page.locator('[data-kind="answer"]').first();
+    await expect(answer).toContainText('（T007 e2e 假回放）', { timeout: 30_000 });
+    await answer.hover();
+    const copy = answer.locator('[data-kind="copy"]').first();
+    await expect(copy).toBeVisible();
+    await copy.click();
+    const copied = await page.evaluate(() => navigator.clipboard.readText());
+    expect(copied).toBe('（T007 e2e 假回放）');
+  } finally {
+    await fixture.close();
+  }
+});
+
+/// T013.6 清单 16：占用/缓存命中不到 1% 显示「不到 1%」；0 显示 0%。
+test('百分比：不到 1% 与 0%', async ({ page }) => {
+  const empty = await startKernelFixture();
+  try {
+    await page.goto(urlOf(empty));
+    await expect(page.locator('[data-kind="context-meter"]')).toContainText('0%', { timeout: 15_000 });
+  } finally {
+    await empty.close();
+  }
+  const fixture = await startKernelFixture({ tinyPercent: true });
+  try {
+    await page.goto(urlOf(fixture));
+    await send(page, '你好');
+    await expect(page.getByText('（T007 e2e 假回放）')).toBeVisible({ timeout: 30_000 });
+    // 缓存命中 1/1000 → 不到 1%；占用在 128k 窗口里也远不到 1%。
+    await expect(page.locator('[data-kind="stats-usage"]')).toContainText('缓存命中 不到 1%', { timeout: 15_000 });
+    await expect(page.locator('[data-kind="context-meter"]')).toContainText('不到 1%', { timeout: 15_000 });
+  } finally {
+    await fixture.close();
+  }
+});
+
 /// T013.6 清单 12：代码块右上角复制，复制出来是原文。
 test('代码块右上角复制：复制原文', async ({ page, context }) => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);

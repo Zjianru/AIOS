@@ -26,19 +26,19 @@ export function formatExactTokens(value: number): string {
   return value.toLocaleString('en-US');
 }
 
-/** 缓存命中百分比（文本，不带 %）；没有命中时为 null；有命中但不到 1% 写「不到 1%」。 */
+/** 缓存命中的文本（带 %）；没有命中时为 null；有命中但不到 1% 写「不到 1%」。 */
 export function formatCacheHitPercent(cacheRead: number, prompt: number): string | null {
   if (prompt === 0 || cacheRead <= 0) return null;
-  if (cacheRead >= prompt) return '100';
+  if (cacheRead >= prompt) return '100%';
   const percent = (cacheRead / prompt) * 100;
   if (percent < 1) return '不到 1%';
   const rounded = Math.round(percent);
-  if (rounded < 100) return String(rounded);
+  if (rounded < 100) return rounded + '%';
   for (let places = 1; places < 6; places += 1) {
     const text = percent.toFixed(places);
-    if (Number(text) < 100) return text;
+    if (Number(text) < 100) return text + '%';
   }
-  return '99.99999';
+  return '99.99999%';
 }
 
 /** 上下文占用的百分比（带 %）：有占用但不到 1% 写「不到 1%」，不显示成 0%；其余四舍五入。 */
