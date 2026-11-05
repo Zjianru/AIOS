@@ -262,27 +262,35 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     if (offline) return;
     const value = text.trim();
     if (!value && pastes.length === 0 && attachments.length === 0) return;
-    // T013.8：受理成功才清草稿（发送失败进 unsent 时输入还在）。
-    const accepted = await onSend(value, {
-      pastes,
-      attachments: attachments.map(({ id, name, bytes }) => ({ id, name, bytes })),
-    });
-    if (!accepted) return;
+    // T013.8：发送时先清空（马上能继续打），受理失败再把内容放回来（草稿不清）。
+    const snapshot = { text, pastes, attachments, quote };
     setText('');
     setPastes([]);
     setAttachments([]);
     setAtMenu(null);
     setQuote('');
+    requestAnimationFrame(() => {
+      resize();
+      inputRef.current?.focus();
+    });
+    const accepted = await onSend(value, {
+      pastes,
+      attachments: attachments.map(({ id, name, bytes }) => ({ id, name, bytes })),
+    });
+    if (!accepted) {
+      // 失败进 unsent：把刚才的内容放回输入框（草稿也没动）。
+      setText(snapshot.text);
+      setPastes(snapshot.pastes);
+      setAttachments(snapshot.attachments);
+      setQuote(snapshot.quote);
+      return;
+    }
     try {
       if (sessionId) localStorage.removeItem('aios.kind.draft.' + sessionId);
     } catch {
       // 忽略。
     }
-    requestAnimationFrame(() => {
-      resize();
-      inputRef.current?.focus();
-    });
-  }, [attachments, offline, onSend, pastes, resize, sessionId, text]);
+  }, [attachments, offline, onSend, pastes, quote, resize, sessionId, text]);
 
   useImperativeHandle(ref, () => ({ submit: () => void submit(), focus: () => inputRef.current?.focus() }), [submit]);
 

@@ -294,9 +294,17 @@ export function ConversationPane() {
               if (!sessionId || !element) return;
               const topIndex = topIndexRef.current;
               const view = topIndex === null ? undefined : views[topIndex - firstItemIndex];
+              // 顶行相对视口顶的偏移（capturePosition 的 offset）。
+              let offset = 0;
+              if (topIndex !== null) {
+                const row = element.querySelector('[data-item-index="' + String(topIndex) + '"]');
+                if (row) {
+                  offset = row.getBoundingClientRect().top - element.getBoundingClientRect().top;
+                }
+              }
               readingPositions.set(sessionId, {
                 turnId: view?.id ?? null,
-                offset: 0,
+                offset,
                 scrollTop: element.scrollTop,
               });
             }}
