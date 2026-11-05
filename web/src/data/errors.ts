@@ -16,6 +16,8 @@ export const API_ERROR_CODES = [
   'request/invalid-json',
   'settings/unavailable',
   'agent/internal',
+  'attachment/invalid',
+  'attachment/not-text',
 ] as const;
 
 export const MODEL_ERROR_CODES = [
@@ -76,6 +78,8 @@ const API_REASONS: Record<string, string> = {
   'request/invalid-json': '页面发给服务的内容，服务没看懂',
   'settings/unavailable': '现在还不能改设置',
   'agent/internal': '内核出错了，稍后再试',
+  'attachment/invalid': '附件不对（名字或内容格式有问题）',
+  'attachment/not-text': '只支持文字文件，这个附件是二进制',
 };
 
 const API_ACTIONS: Record<string, 'settings' | 'retry'> = {

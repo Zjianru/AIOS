@@ -728,7 +728,9 @@ async fn static_handler(
 fn service_error_status(code: service::ServiceErrorCode) -> StatusCode {
     match code {
         service::ServiceErrorCode::RootUnavailable => StatusCode::CONFLICT,
-        service::ServiceErrorCode::RequestInvalidJson => StatusCode::BAD_REQUEST,
+        service::ServiceErrorCode::RequestInvalidJson
+        | service::ServiceErrorCode::AttachmentInvalid
+        | service::ServiceErrorCode::AttachmentNotText => StatusCode::BAD_REQUEST,
         _ => StatusCode::BAD_GATEWAY,
     }
 }
@@ -1388,7 +1390,12 @@ mod t009_error_tests {
             let status = service_error_status(code);
             if matches!(code, service::ServiceErrorCode::RootUnavailable) {
                 assert_eq!(status, StatusCode::CONFLICT);
-            } else if matches!(code, service::ServiceErrorCode::RequestInvalidJson) {
+            } else if matches!(
+                code,
+                service::ServiceErrorCode::RequestInvalidJson
+                    | service::ServiceErrorCode::AttachmentInvalid
+                    | service::ServiceErrorCode::AttachmentNotText
+            ) {
                 assert_eq!(status, StatusCode::BAD_REQUEST);
             } else {
                 assert_eq!(status, StatusCode::BAD_GATEWAY);

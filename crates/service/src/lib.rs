@@ -92,6 +92,10 @@ pub enum Call {
     ConnectionQuota(ConnectionQuotaRequest),
     /// T012.9：写非密钥设置（currency；只写 settings.json）。
     SettingsUpdate(SettingsUpdateRequest),
+    /// T013.2：存一份文字附件（只读副本），返回 id。
+    AttachmentPut(AttachmentPutRequest),
+    /// T013.2：按 id 读回附件（卡片「点开看全文」）。
+    AttachmentGet(AttachmentGetRequest),
 }
 
 /// 调用的结果（与 Call 一一对应）。
@@ -124,6 +128,9 @@ pub enum Response {
     Issues(IssuesResponse),
     FirstUse(FirstUseResponse),
     SessionModelSelect(SessionModelSelectResponse),
+    /// T013.2：附件仓库。
+    AttachmentPut(AttachmentPutResponse),
+    AttachmentGet(AttachmentGetResponse),
 }
 
 /// 发消息（DSH session-controller 的 prompt）。requestId 是幂等键：同一 id 只进一次。
@@ -500,6 +507,37 @@ pub struct SessionModelSelectResponse {
     pub effort_actual: String,
 }
 
+/// T013.2：存一份文字附件（data 是 base64 的原始字节）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttachmentPutRequest {
+    pub name: String,
+    /// base64 编码的内容；不规范直接拒收（request/invalid）。
+    pub data: String,
+}
+
+/// T013.2：存好后的附件 id（sha256:<64hex>）与字节数。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttachmentPutResponse {
+    pub id: String,
+    pub name: String,
+    pub bytes: u64,
+}
+
+/// T013.2：按 id 读回附件。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttachmentGetRequest {
+    pub id: String,
+}
+
+/// T013.2：读回的附件（文字文件附全文；二进制不进仓库，text 为 None 兼容旧数据）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttachmentGetResponse {
+    pub name: String,
+    pub bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
 /// T008.3 增补：编辑连接，只改 endpoint/model（不换 key）。
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ConnectionUpdateRequest {
@@ -536,7 +574,9 @@ pub struct ConnectionRevokeResponse {
 ///
 /// - 4：T007.2 起的第一版；
 /// - 5（T012.9）：settings-update（写非密钥设置 currency）。
-pub const PROTOCOL_VERSION: u64 = 5;
+/// - 6（T013.2 一次升完）：attachment-put / attachment-get / file-references-list 三个 op，
+///   以及 send 的 pastes / attachments 两个字段（后两项由后续票实现，形状已定）。
+pub const PROTOCOL_VERSION: u64 = 6;
 
 /// 根会话不可用的种类（T007.2）：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -646,6 +686,12 @@ pub enum ServiceError {
     SettingsInvalid(String),
     #[error("路径不合法：{0}")]
     InvalidPath(String),
+    /// T013.2：附件参数/id 不合法（坏 base64、坏文件名、坏 id）。
+    #[error("附件不合法：{0}")]
+    AttachmentInvalid(String),
+    /// T013.2：不是文字文件（前 8000 字节有 NUL），拒收。
+    #[error("附件不是文字文件")]
+    AttachmentNotText,
 }
 
 /// T009.1：服务的结构化错误码（DSH remote-error 形状：`<namespace>/<kind>`，小写连字符）。
@@ -665,11 +711,13 @@ pub enum ServiceErrorCode {
     SettingsUnavailable,
     RequestInvalidPath,
     RequestInvalidJson,
+    AttachmentInvalid,
+    AttachmentNotText,
 }
 
 impl ServiceErrorCode {
     /// 码表全集（覆盖检查用：多一个少一个都要失败）。
-    pub const ALL: [ServiceErrorCode; 12] = [
+    pub const ALL: [ServiceErrorCode; 14] = [
         ServiceErrorCode::AgentInternal,
         ServiceErrorCode::QuestionAnswerRejected,
         ServiceErrorCode::RootUnavailable,
@@ -682,6 +730,8 @@ impl ServiceErrorCode {
         ServiceErrorCode::SettingsUnavailable,
         ServiceErrorCode::RequestInvalidPath,
         ServiceErrorCode::RequestInvalidJson,
+        ServiceErrorCode::AttachmentInvalid,
+        ServiceErrorCode::AttachmentNotText,
     ];
 
     /// 线上的码名。
@@ -699,6 +749,8 @@ impl ServiceErrorCode {
             Self::SettingsUnavailable => "settings/unavailable",
             Self::RequestInvalidPath => "request/invalid-path",
             Self::RequestInvalidJson => "request/invalid-json",
+            Self::AttachmentInvalid => "attachment/invalid",
+            Self::AttachmentNotText => "attachment/not-text",
         }
     }
 }
@@ -728,6 +780,8 @@ impl ServiceError {
                 ServiceErrorCode::SettingsUnavailable
             }
             Self::InvalidPath(_) => ServiceErrorCode::RequestInvalidPath,
+            Self::AttachmentInvalid(_) => ServiceErrorCode::AttachmentInvalid,
+            Self::AttachmentNotText => ServiceErrorCode::AttachmentNotText,
         }
     }
 }
@@ -850,7 +904,9 @@ impl ServiceHost {
             | Call::FirstUse(_)
             | Call::SessionModelSelect(_)
             | Call::ConnectionQuota(_)
-            | Call::SettingsUpdate(_) => Err(ServiceError::SettingsOnBareHost),
+            | Call::SettingsUpdate(_)
+            | Call::AttachmentPut(_)
+            | Call::AttachmentGet(_) => Err(ServiceError::SettingsOnBareHost),
         }
     }
 
@@ -1130,6 +1186,26 @@ pub struct RootHost {
 }
 
 impl RootHost {
+    /// T013.2：存一份文字附件（空壳，红阶段先报未实现）。
+    async fn attachment_put(
+        &self,
+        _request: AttachmentPutRequest,
+    ) -> Result<AttachmentPutResponse, ServiceError> {
+        Err(ServiceError::AttachmentInvalid(
+            "attachment store is not implemented yet".to_owned(),
+        ))
+    }
+
+    /// T013.2：按 id 读回附件（空壳，红阶段先报未实现）。
+    async fn attachment_get(
+        &self,
+        _request: AttachmentGetRequest,
+    ) -> Result<AttachmentGetResponse, ServiceError> {
+        Err(ServiceError::AttachmentInvalid(
+            "attachment get is not implemented yet".to_owned(),
+        ))
+    }
+
     /// 打开根会话；打不开也返回宿主（状态进 ready，方法拒绝），由页面显示说明页。
     ///
     /// T008.3b：配置了 model_factory 时先解析当前 Keyring 连接；解析失败（空库/读不出）
@@ -1949,6 +2025,15 @@ impl RootHost {
                 .settings_update(request)
                 .await
                 .map(Response::SettingsUpdate),
+            // T013.2：附件仓库（文字文件只读副本）。
+            Call::AttachmentPut(request) => self
+                .attachment_put(request)
+                .await
+                .map(Response::AttachmentPut),
+            Call::AttachmentGet(request) => self
+                .attachment_get(request)
+                .await
+                .map(Response::AttachmentGet),
             other => {
                 let guard = self.inner.lock().await;
                 match guard.as_ref() {
@@ -2246,6 +2331,11 @@ mod t009_error_tests {
                 "request/invalid-path",
                 ServiceError::InvalidPath("bad".to_owned()),
             ),
+            (
+                "attachment/invalid",
+                ServiceError::AttachmentInvalid("x".to_owned()),
+            ),
+            ("attachment/not-text", ServiceError::AttachmentNotText),
         ]
     }
 
@@ -2258,8 +2348,8 @@ mod t009_error_tests {
         let mut used: Vec<&str> = pairs.iter().map(|(code, _)| *code).collect();
         used.sort_unstable();
         used.dedup();
-        // spec v1.1：12 码 = ServiceError 的 11 个变体码 + web 层的 request/invalid-json。
-        assert_eq!(ServiceErrorCode::ALL.len(), 12, "码数 12");
+        // T013.2：14 码 = ServiceError 的 13 个变体码 + web 层的 request/invalid-json。
+        assert_eq!(ServiceErrorCode::ALL.len(), 14, "码数 14");
         assert!(
             ServiceErrorCode::ALL
                 .iter()
@@ -2280,7 +2370,11 @@ mod t009_error_tests {
 
     #[test]
     fn invalid_json_code_is_in_the_single_code_table() {
-        assert_eq!(ServiceErrorCode::ALL.len(), 12, "码数 12（spec v1.1）");
+        assert_eq!(
+            ServiceErrorCode::ALL.len(),
+            14,
+            "码数 14（T013.2 加附件两码）"
+        );
         assert!(
             ServiceErrorCode::ALL
                 .iter()
@@ -2453,7 +2547,7 @@ mod t009_pagination_tests {
     }
 
     #[test]
-    fn protocol_version_is_5() {
-        assert_eq!(PROTOCOL_VERSION, 5);
+    fn protocol_version_is_6() {
+        assert_eq!(PROTOCOL_VERSION, 6, "T013.2：附件 op 让协议升到 6");
     }
 }

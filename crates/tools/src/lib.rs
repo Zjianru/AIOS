@@ -3,6 +3,7 @@
 //! 机制照 DSH 的 packages/core/tools 与 packages/fs/tool-fs、packages/fs/tool-fs-search
 //! （strategy 第 1 节）。
 
+pub mod attachments;
 mod batch;
 mod builtin;
 pub mod diff;
