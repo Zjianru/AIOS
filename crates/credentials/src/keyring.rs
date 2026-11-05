@@ -622,7 +622,7 @@ impl Keyring {
         id: &str,
         update: ConnectionUpdate,
     ) -> Result<ConnectionInfo, KeyringError> {
-        if endpoint.trim().is_empty() || model.trim().is_empty() {
+        if update.endpoint.trim().is_empty() || update.model.trim().is_empty() {
             return Err(KeyringError::InvalidConnection(
                 "endpoint/model 不能为空".to_owned(),
             ));
@@ -645,7 +645,7 @@ impl Keyring {
                 stored.info.model = first.id.clone();
             }
         } else if let Some(row) = stored.info.models.first_mut() {
-            row.id = model;
+            row.id = update.model;
         }
         if let Some(price_rate) = update.price_rate {
             stored.info.price_rate = price_rate;
