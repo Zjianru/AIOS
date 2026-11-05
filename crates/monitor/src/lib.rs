@@ -209,10 +209,8 @@ fn write_emitted(
     match redactor.redact(&mut record) {
         Ok(()) => write_with_injection(sink, &record, fail_after, written),
         Err(_) => {
-            let mut body = json!({
-                "channel": channel_label(record.channel),
-                "time": record.time,
-            });
+            // T012.8 K5（票面）：只记 event.type/event.seq（不记 channel/time，也不记正文）。
+            let mut body = json!({});
             // T012.8 K5：记事件类型和序号（定位是哪条日志），不记正文。
             if let Some(source) = &record.source_event
                 && let Some(event) = source.event.as_object()
@@ -230,13 +228,6 @@ fn write_emitted(
                 Err(_) => Ok(()),
             }
         }
-    }
-}
-
-fn channel_label(channel: Channel) -> &'static str {
-    match channel {
-        Channel::Ledger => "ledger",
-        Channel::Ops => "ops",
     }
 }
 
