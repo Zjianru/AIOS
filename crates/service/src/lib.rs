@@ -1264,12 +1264,14 @@ impl RootHost {
     ) -> Result<ConnectionUpdateResponse, ServiceError> {
         let connection = self.keyring()?.update_connection_details(
             &request.id,
-            request.endpoint,
-            request.model,
-            request.preset,
-            request.models,
-            request.price_rate,
-            request.auth_header,
+            credentials::ConnectionUpdate {
+                endpoint: request.endpoint,
+                model: request.model,
+                preset: request.preset,
+                models: request.models,
+                price_rate: request.price_rate,
+                auth_header: request.auth_header,
+            },
         )?;
         self.emit_settings_changed();
         self.notify_keyring_changed();

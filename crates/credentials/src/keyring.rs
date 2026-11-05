@@ -86,6 +86,17 @@ pub struct ModelRow {
     pub price: Option<f64>,
 }
 
+/// T012.4：编辑连接时一次传的新形状字段（endpoint/model 必填，其余可选）。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ConnectionUpdate {
+    pub endpoint: String,
+    pub model: String,
+    pub preset: Option<String>,
+    pub models: Option<Vec<ModelRow>>,
+    pub price_rate: Option<f64>,
+    pub auth_header: Option<String>,
+}
+
 /// 新建/覆盖一个连接时传入的内容（key 只在这一步进来；models 为空时用 model 一行）。
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct NewConnection {
@@ -595,19 +606,21 @@ impl Keyring {
         endpoint: String,
         model: String,
     ) -> Result<ConnectionInfo, KeyringError> {
-        self.update_connection_details(id, endpoint, model, None, None, None, None)
+        self.update_connection_details(
+            id,
+            ConnectionUpdate {
+                endpoint,
+                model,
+                ..ConnectionUpdate::default()
+            },
+        )
     }
 
-    /// T012.4：编辑连接时同时更新新形状字段（preset/models/price_rate/auth_header）。
+    /// T012.4：编辑连接时同时更新新形状字段。
     pub fn update_connection_details(
         &self,
         id: &str,
-        endpoint: String,
-        model: String,
-        preset: Option<String>,
-        models: Option<Vec<ModelRow>>,
-        price_rate: Option<f64>,
-        auth_header: Option<String>,
+        update: ConnectionUpdate,
     ) -> Result<ConnectionInfo, KeyringError> {
         if endpoint.trim().is_empty() || model.trim().is_empty() {
             return Err(KeyringError::InvalidConnection(
@@ -621,12 +634,12 @@ impl Keyring {
             .iter_mut()
             .find(|item| item.info.id == id)
             .ok_or_else(|| KeyringError::MissingConnection(id.to_owned()))?;
-        stored.info.endpoint = endpoint;
-        stored.info.model = model.clone();
-        if let Some(preset) = preset {
+        stored.info.endpoint = update.endpoint;
+        stored.info.model = update.model.clone();
+        if let Some(preset) = update.preset {
             stored.info.preset = preset;
         }
-        if let Some(models) = models {
+        if let Some(models) = update.models {
             stored.info.models = models;
             if let Some(first) = stored.info.models.first() {
                 stored.info.model = first.id.clone();
@@ -634,11 +647,11 @@ impl Keyring {
         } else if let Some(row) = stored.info.models.first_mut() {
             row.id = model;
         }
-        if let Some(price_rate) = price_rate {
+        if let Some(price_rate) = update.price_rate {
             stored.info.price_rate = price_rate;
         }
-        if auth_header.is_some() {
-            stored.info.auth_header = auth_header;
+        if update.auth_header.is_some() {
+            stored.info.auth_header = update.auth_header;
         }
         let info = stored.info.clone();
         self.save_store(&store)?;
