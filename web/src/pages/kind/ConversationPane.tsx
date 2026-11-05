@@ -309,6 +309,7 @@ export function ConversationPane() {
                   onClick={handleSend}
                   title={offline ? '连上之后再发' : canSend ? '发送' : '先写点什么'}
                   aria-disabled={!canSend || offline}
+                  data-kind="send"
                   className={
                     'grid size-7 place-items-center rounded-full transition-opacity ' +
                     (canSend && !offline ? 'bg-ink text-content hover:opacity-90' : 'bg-hover text-ink-3')

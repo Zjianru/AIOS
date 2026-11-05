@@ -4,8 +4,9 @@
  * - 引用片以占位符塞进文本，解析后再把占位符换成真组件（这样片子在段落里是内联的）。
  */
 
-import { memo } from 'react';
+import { memo, useRef } from 'react';
 import type { ReactNode } from 'react';
+import { CopyButton } from './CopyButton';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { QuoteChip } from './QuoteChip';
@@ -71,7 +72,9 @@ function MarkdownBody({ text, elements }: MarkdownProps) {
   if (chips.size === 0) {
     return (
       <div className="md">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{prepared}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: PreBlock }}>
+          {prepared}
+        </ReactMarkdown>
       </div>
     );
   }
@@ -94,12 +97,28 @@ function MarkdownBody({ text, elements }: MarkdownProps) {
     strong: wrap('strong'),
     em: wrap('em'),
     blockquote: wrap('blockquote'),
+    pre: PreBlock,
   };
   return (
     <div className="md">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {prepared}
       </ReactMarkdown>
+    </div>
+  );
+}
+
+/** T013.6：代码块右上角的复制（复制原文；从 DOM 里取 code 的 textContent）。 */
+function PreBlock({ children }: { children?: ReactNode }) {
+  const ref = useRef<HTMLPreElement | null>(null);
+  const copyText = () => {
+    const code = ref.current?.querySelector('code');
+    return code?.textContent ?? '';
+  };
+  return (
+    <div className="group/code relative">
+      <pre ref={ref}>{children}</pre>
+      <CopyButton kind="code-copy" text={copyText} className="absolute right-1.5 top-1.5" />
     </div>
   );
 }

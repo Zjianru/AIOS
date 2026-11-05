@@ -76,8 +76,9 @@ function SidebarInner({ route }: { route: ParsedRoute }) {
   const active = navOf(route);
   const theme = useAppStore((s) => s.theme);
   const toggleTheme = useAppStore((s) => s.toggleTheme);
-  // 只显示接上内核的部分（D46）：只有 Kind 和设置（外观是本地开关，留着）。
-  const mainNav = MAIN_NAV.filter((item) => item.id === 'kind' || item.id === 'settings');
+  // 只显示接上内核的部分（D46）：Kind 在上、设置挪到左下角（T013.6）。
+  const mainNav = MAIN_NAV.filter((item) => item.id === 'kind');
+  const settingsItem = MAIN_NAV.find((item) => item.id === 'settings')!;
 
   return (
     <ShadcnSidebar
@@ -89,7 +90,7 @@ function SidebarInner({ route }: { route: ParsedRoute }) {
         <TrafficLights />
       </SidebarHeader>
 
-      <SidebarContent className="gap-0 px-2">
+      <SidebarContent className="gap-0 px-2" data-kind="sidebar-content">
         <SidebarGroup className="py-1">
           <SidebarMenu>
             {mainNav.map((item) => (
@@ -101,8 +102,9 @@ function SidebarInner({ route }: { route: ParsedRoute }) {
         
       </SidebarContent>
 
-      <SidebarFooter className="gap-0.5 px-2 pb-3">
+      <SidebarFooter className="gap-0.5 px-2 pb-3" data-kind="sidebar-footer">
         <SidebarMenu>
+          <Item item={settingsItem} active={active === 'settings'} />
           <SidebarMenuItem>
             <SidebarMenuButton
               tooltip={theme === 'dark' ? '换浅色（外观）' : '换深色（外观）'}

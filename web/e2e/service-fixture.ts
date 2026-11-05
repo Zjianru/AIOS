@@ -26,6 +26,7 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.usageReadOnly) return { file: 'usage-read-only', paceMs: 400 };
   if (options.askTurn) return { file: 'ask', paceMs: options.askTurnPaceMs };
   if (options.toolTurn) return { file: 'tool' };
+  if (options.codeBlock) return { file: 'tool-code' };
   if (options.t013Process) return { file: 'tool-process' };
   if (options.t013Interrupted) return { file: 'tool-interrupted', paceMs: 800 };
   if (options.highUsage) return { file: 'high-usage' };
@@ -104,6 +105,8 @@ export interface KernelFixture {
 export interface FixtureOptions {
   /// first request 回一次工具调用（read hello.txt），拿到工具结果后再回最终文本。
   toolTurn?: boolean;
+  /// T013.6：最终回答里带一个代码块（复制按钮用）。
+  codeBlock?: boolean;
   /// T013.5：一轮里 write/apply_patch/bash 三个工具 + 最终文本（工作过程页的卡片用）。
   t013Process?: boolean;
   /// T013.5：工具做完后被停下的一轮（工作过程页的「已停止」）。

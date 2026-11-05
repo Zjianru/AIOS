@@ -12,7 +12,7 @@ import type { ReactNode } from 'react';
 import { ArrowDown, ArrowUp, CircleHelp, Gauge, LoaderCircle, Wallet } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { formatCacheHitPercent, formatCost, formatExactTokens, formatFxTime, formatTokens } from '@/lib/numbers';
+import { formatCacheHitPercent, formatCost, formatExactTokens, formatFxTime, formatPercent, formatTokens } from '@/lib/numbers';
 import { cn } from '@/lib/utils';
 import { useKindStore } from './kindStore';
 
@@ -185,8 +185,10 @@ function ContextMeter({ running }: { running: boolean }) {
   const label = useKindStore((state) => state.model.label);
   const window = stats.contextWindow > 0 ? stats.contextWindow : undefined;
   const used = stats.contextUsed > 0 ? stats.contextUsed : null;
-  const usage =
-    stats.contextWindow > 0 ? Math.round((stats.contextUsed / stats.contextWindow) * 100) : 0;
+  // T013.6：占用 >0 但不到 1% 显示「不到 1%」；圆环/颜色仍用四舍五入后的数字。
+  const usageValue = stats.contextWindow > 0 ? (stats.contextUsed / stats.contextWindow) * 100 : 0;
+  const usage = Math.round(usageValue);
+  const usageText = formatPercent(usageValue);
 
   if (compacting) {
     return (
@@ -201,7 +203,7 @@ function ContextMeter({ running }: { running: boolean }) {
       <Hint
         content={
           <>
-            上下文已用 <span className="brand-type">{usage}%</span>
+            上下文已用 <span className="brand-type">{usageText}</span>
             {used !== null ? (
               <>
                 {' '}
@@ -215,7 +217,7 @@ function ContextMeter({ running }: { running: boolean }) {
         <PopoverTrigger asChild>
           <button type="button" className={cn(pill, meterTone(usage))} data-kind="context-meter">
             <Ring percent={usage} />
-            <span className="brand-type">{usage}%</span>
+            <span className="brand-type">{usageText}</span>
           </button>
         </PopoverTrigger>
       </Hint>
@@ -228,7 +230,7 @@ function ContextMeter({ running }: { running: boolean }) {
       >
         <div className="flex items-baseline justify-between">
           <span className="text-ink">上下文</span>
-          <span className={cn('brand-type', meterTone(usage))}>{usage}%</span>
+          <span className={cn('brand-type', meterTone(usage))}>{usageText}</span>
         </div>
         <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-hover">
           <div

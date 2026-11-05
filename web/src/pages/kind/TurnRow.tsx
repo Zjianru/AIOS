@@ -7,6 +7,7 @@
 
 import { memo, useState } from 'react';
 import { ChevronRight, CircleAlert, RotateCw, Square } from 'lucide-react';
+import { CopyButton } from './CopyButton';
 import { Markdown } from './Markdown';
 import { QuoteChip } from './QuoteChip';
 import { QuestionCard } from './QuestionCard';
@@ -232,8 +233,17 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
       ) : null}
 
       {view.user ? (
-        <div className="mb-2 mt-3 text-4 leading-6 text-ink">
-          <RichText text={view.user.text} elements={view.user.elements} />
+        <div className="mb-2 mt-3 flex justify-end" data-kind="user-message-row">
+          <div
+            className="group/user relative max-w-[82%] rounded-2xl rounded-br-md border border-line-2 bg-raised px-3.5 py-2 text-4 leading-6 text-ink"
+            data-kind="user-bubble"
+          >
+            <RichText text={view.user.text} elements={view.user.elements} />
+            <CopyButton
+              text={view.user.text}
+              className="absolute -right-8 top-1 opacity-0 transition-opacity group-hover/user:opacity-100"
+            />
+          </div>
         </div>
       ) : (
         <div className="mb-2 mt-3 flex items-center gap-1.5 text-2 text-ink-3">
@@ -275,8 +285,14 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
           {view.question ? <QuestionCard turnId={view.id} question={view.question} /> : null}
           {view.retry ? <RetryLine retry={view.retry} /> : null}
 
-          <div className={cn('mt-1', streaming && 'min-h-[24px]')}>
+          <div className={cn('group/answer relative mt-1', streaming && 'min-h-[24px]')} data-kind="answer">
             <Answer view={view} />
+            {view.answer ? (
+              <CopyButton
+                text={view.answer.text}
+                className="absolute -right-8 top-0 opacity-0 transition-opacity group-hover/answer:opacity-100"
+              />
+            ) : null}
           </div>
 
           {view.status === 'interrupted' && view.stoppedAt ? (

@@ -26,19 +26,26 @@ export function formatExactTokens(value: number): string {
   return value.toLocaleString('en-US');
 }
 
-/** 缓存命中百分比（文本，不带 %）；没有输入时为 null。部分命中最多显示到 99.99999。 */
+/** 缓存命中百分比（文本，不带 %）；没有命中时为 null；有命中但不到 1% 写「不到 1%」。 */
 export function formatCacheHitPercent(cacheRead: number, prompt: number): string | null {
-  if (prompt === 0) return null;
+  if (prompt === 0 || cacheRead <= 0) return null;
   if (cacheRead >= prompt) return '100';
-  const rounded = Math.round((cacheRead / prompt) * 100);
+  const percent = (cacheRead / prompt) * 100;
+  if (percent < 1) return '不到 1%';
+  const rounded = Math.round(percent);
   if (rounded < 100) return String(rounded);
   for (let places = 1; places < 6; places += 1) {
-    const text = ((cacheRead / prompt) * 100).toFixed(places);
+    const text = percent.toFixed(places);
     if (Number(text) < 100) return text;
   }
   return '99.99999';
 }
 
+/** 上下文占用的百分比（带 %）：有占用但不到 1% 写「不到 1%」，不显示成 0%；其余四舍五入。 */
+export function formatPercent(value: number): string {
+  if (value > 0 && value < 1) return '不到 1%';
+  return Math.round(value) + '%';
+}
 /** 花费（美元）按币种显示；cnyPerUsd 是汇率（没取到时 7.2）；partial：有调用没价格，后面加「+」。 */
 export function formatCost(usd: number, currency: Currency, cnyPerUsd: number, partial = false): string {
   let amount = usd;
