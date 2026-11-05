@@ -61,12 +61,24 @@ fn is_loopback(url: &Url) -> bool {
     let Some(host) = url.host_str() else {
         return false;
     };
+    // url 2.x 对 IPv6 的 host_str 带方括号（"[::1]"），先去掉再判。
+    let host = host
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(host);
     if host.eq_ignore_ascii_case("localhost") {
         return true;
     }
-    host.parse::<std::net::IpAddr>()
-        .map(|address| address.is_loopback())
-        .unwrap_or(false)
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(address)) => address.is_loopback(),
+        Ok(std::net::IpAddr::V6(address)) => {
+            address.is_loopback()
+                || address
+                    .to_ipv4_mapped()
+                    .is_some_and(|address| address.is_loopback())
+        }
+        Err(_) => false,
+    }
 }
 
 fn no_proxy_matches(url: &Url, no_proxy: Option<&str>) -> bool {
