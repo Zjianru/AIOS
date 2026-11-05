@@ -541,7 +541,7 @@ mod tests {
     }
 
     /// T012 F1（Claude 审核）：DoD 会话用量 × 快照价——四类单价各自算，缓存读是输入价的 1/50。
-    /// DoD 会话：输入 755、缓存读 24970、输出 435（无缓存写）；deepseek-flash 快照价
+    /// DoD 会话：输入 755、缓存读 24970、输出 354（无缓存写）；deepseek-flash 快照价
     /// input 0.15 / output 0.6 / cache_read 0.003（美元/百万 token）。
     #[test]
     fn deepseek_session_cost_uses_four_class_prices() {
@@ -549,18 +549,21 @@ mod tests {
         let price = effective_price(&connection, &catalog(), "deepseek-flash").expect("快照价");
         let usage = Usage {
             input_tokens: Some(755),
-            output_tokens: Some(435),
+            output_tokens: Some(354),
             cache_read_input_tokens: Some(24_970),
             cache_creation_input_tokens: Some(0),
         };
-        let expected = (755.0 * 0.15 + 24_970.0 * 0.003 + 435.0 * 0.6) / 1e6;
+        let expected = (755.0 * 0.15 + 24_970.0 * 0.003 + 354.0 * 0.6) / 1e6;
         let cost = usage_cost_usd(&usage, &price).expect("四类价都有");
         assert!(
             (cost - expected).abs() < 1e-12,
             "四类单价：期望 {expected}，实际 {cost}（输入 755 缓存读 24970 输出 435）"
         );
-        // 旧算法（把缓存读乘输入价）会高约 10 倍：0.004185…
-        assert!(cost < 0.001, "四类算出来约 0.00045，不应超过 0.001：{cost}");
+        // 旧算法（把缓存读乘输入价）会高约 10 倍：≈0.00417。
+        assert!(
+            (cost - 0.000_400_56).abs() < 1e-12,
+            "DoD 会话四类价应为 $0.00040056：{cost}"
+        );
     }
 
     /// T012 F1：有缓存写用量、对应那一类没有单价 → 这一轮无价格，不拿输入价顶。
