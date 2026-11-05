@@ -85,7 +85,8 @@ function ActivityPill() {
 function UsagePill() {
   const stats = useKindStore((state) => state.stats);
   const prompt = stats.input + stats.cacheRead + stats.cacheWrite;
-  const hit = formatCacheHitPercent(stats.cacheRead, prompt);
+  // 没命中过缓存（0）就不显示「缓存命中 0%」；命中过才显示。
+  const hit = stats.cacheRead > 0 ? formatCacheHitPercent(stats.cacheRead, prompt) : null;
   return (
     <Hint
       content={
@@ -177,12 +178,15 @@ function Ring({ percent, className }: { percent: number; className?: string }) {
 }
 
 function ContextMeter({ running }: { running: boolean }) {
-  const usage = useKindStore((state) => state.usage);
+  // T012.9：占用/窗口都来自服务 status.stats（内核算好），页面不自己算。
+  const stats = useKindStore((state) => state.stats);
   const compacting = useKindStore((state) => state.compacting);
   const compact = useKindStore((state) => state.compact);
-  const window = useKindStore((state) => state.model.contextWindow);
   const label = useKindStore((state) => state.model.label);
-  const used = window ? Math.round((window * usage) / 100) : null;
+  const window = stats.contextWindow > 0 ? stats.contextWindow : undefined;
+  const used = stats.contextUsed > 0 ? stats.contextUsed : null;
+  const usage =
+    stats.contextWindow > 0 ? Math.round((stats.contextUsed / stats.contextWindow) * 100) : 0;
 
   if (compacting) {
     return (

@@ -24,15 +24,19 @@ import type {
 /** T012.9：接上内核的提供方（D36 的 DeepSeek + T012 的 MiniMax 两家国内/国际站）。 */
 export const KERNEL_PROVIDERS: ReadonlySet<string> = new Set(['deepseek', 'minimax', 'minimax-cn']);
 
+/** T012.9：与服务内置目录一致的模型名（菜单/添加连接先列这些；真名单以「获取可用模型」为准）。 */
 const DEEPSEEK_MODELS = [
-  { id: 'deepseek-flash', name: 'DeepSeek Flash', contextWindow: 1_000_000 },
-  { id: 'deepseek-pro', name: 'DeepSeek Pro', contextWindow: 1_000_000 },
+  { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', contextWindow: 1_000_000 },
+  { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', contextWindow: 1_000_000 },
+  { id: 'deepseek-v4-flash-vision-exp', name: 'DeepSeek V4 Flash Vision Exp', contextWindow: 1_000_000 },
+  { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', contextWindow: 1_000_000 },
 ];
 
-/** T012.5：MiniMax 目录里的常见模型（真名单以「获取可用模型」为准）。 */
 const MINIMAX_MODELS = [
-  { id: 'MiniMax-M3.1-Flash', name: 'MiniMax M3.1 Flash', contextWindow: 200_000 },
-  { id: 'MiniMax-M3', name: 'MiniMax M3', contextWindow: 200_000 },
+  { id: 'MiniMax-M3.1-Flash', name: 'MiniMax-M3.1-Flash', contextWindow: 1_000_000 },
+  { id: 'MiniMax-M3', name: 'MiniMax-M3', contextWindow: 1_000_000 },
+  { id: 'MiniMax-M2.7', name: 'MiniMax-M2.7', contextWindow: 204_800 },
+  { id: 'MiniMax-M2.5', name: 'MiniMax-M2.5', contextWindow: 204_800 },
 ];
 
 const CATALOG: CatalogProvider[] = [

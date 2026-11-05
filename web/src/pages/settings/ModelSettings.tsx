@@ -31,6 +31,12 @@ import { modelErrorReason } from '@/data/errors';
 
 /* ───────────────────────── 小部件 ───────────────────────── */
 
+/** 用户单价（美元/百万 token）；空串表示继承目录价。 */
+function parsePrice(text: string): number | undefined {
+  const n = Number(text.trim());
+  return text.trim() !== '' && Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
 const inputClass =
   'w-full rounded-btn border border-line-2 bg-content px-2.5 py-1.5 text-3 text-ink outline-none placeholder:text-ink-3 focus:border-ink-3 aria-invalid:border-[var(--fail)]';
 
@@ -284,19 +290,30 @@ function ModelCatalog({ models, onChange, defaults, discover, required }: {
 
       {models.length ? (
         <div className="mt-2 space-y-1.5">
-          <div className="grid grid-cols-[1fr_1fr_64px_64px_24px] gap-1.5 px-0.5 text-1 text-ink-3">
+          <div className="grid grid-cols-[1fr_1fr_64px_64px_80px_24px] gap-1.5 px-0.5 text-1 text-ink-3">
             <span>模型 ID</span>
             <span>显示名称</span>
             <span>上下文</span>
             <span>最大输出</span>
+            <span>单价 $/M</span>
             <span />
           </div>
           {models.map((row, index) => (
-            <div key={index} className="grid grid-cols-[1fr_1fr_64px_64px_24px] items-center gap-1.5">
+            <div key={index} className="grid grid-cols-[1fr_1fr_64px_64px_80px_24px] items-center gap-1.5">
               <input className={cn(inputClass, 'brand-type')} value={row.id} placeholder="model-id" onChange={(e) => setRow(index, { id: e.target.value })} />
               <input className={inputClass} value={row.name ?? ''} placeholder="可不填" onChange={(e) => setRow(index, { name: e.target.value || undefined })} />
               <input key={'cw' + index + ':' + row.contextWindow} className={inputClass} defaultValue={formatTokens(row.contextWindow)} placeholder="继承" onBlur={(e) => setRow(index, { contextWindow: parseTokens(e.target.value) })} />
               <input key={'mt' + index + ':' + row.maxTokens} className={inputClass} defaultValue={formatTokens(row.maxTokens)} placeholder="继承" onBlur={(e) => setRow(index, { maxTokens: parseTokens(e.target.value) })} />
+              <input
+                key={'pr' + index + ':' + row.price}
+                className={cn(inputClass, 'brand-type')}
+                data-settings="model-price"
+                defaultValue={row.price === undefined ? '' : String(row.price)}
+                placeholder="继承"
+                inputMode="decimal"
+                title="每百万 token 的美元价格（输入/输出同价）；填了就用它算花费，不乘倍率"
+                onBlur={(e) => setRow(index, { price: parsePrice(e.target.value) })}
+              />
               <button
                 type="button"
                 aria-label="删掉这个模型"
@@ -375,13 +392,15 @@ function ConnectionEditor({ conn, view, onDone, onView }: {
     setSaving(true);
     try {
       const withKey = Boolean(key.trim());
-      const rate = Number(priceRate);
+      // 空串 = 不传（保留原值）；非法/负数也不传，避免把「免费」误存成 0。
+      const trimmedRate = priceRate.trim();
+      const rate = trimmedRate === '' ? undefined : Number(trimmedRate);
       onView(
         await updateConnection(conn.id, {
           endpoint,
           models,
           key,
-          priceRate: Number.isFinite(rate) && rate >= 0 ? rate : undefined,
+          priceRate: rate !== undefined && Number.isFinite(rate) && rate >= 0 ? rate : undefined,
         }),
       );
       onDone();
@@ -775,6 +794,10 @@ function KeyringSection({ view, onView }: { view: ModelSettingsView; onView: (vi
 /* ───────────────────────── 整组 ───────────────────────── */
 
 export function ModelSettings() {
+  useEffect(() => {
+    // T012.9：直接打开设置页（不经 Kind 页）时也要拿币种/汇率。
+    void useKindStore.getState().refreshStats();
+  }, []);
   const [view, setView] = useState<ModelSettingsView | null>(null);
   /** 展开的是哪张卡片：连接 id、'add'，或者都不展开。一次只展开一张。 */
   const [open, setOpen] = useState<string | null>(null);

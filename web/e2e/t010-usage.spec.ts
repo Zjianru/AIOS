@@ -33,7 +33,7 @@ test('没报缓存、没思考：不出现缓存命中与想了 N 秒', async ({
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await expect(page.getByText('（T007 e2e 假回放）').last()).toBeVisible({ timeout: 30_000 });
     await page.getByText('工作过程', { exact: false }).last().hover();
-    await expect(page.locator('[data-kind="assistant-answer"]').getByText('缓存命中', { exact: false })).toHaveCount(0);
+    await expect(page.getByText('缓存命中', { exact: false })).toHaveCount(0);
     await page.getByText('工作过程', { exact: false }).last().click();
     await expect(page.getByText('想了', { exact: false })).toHaveCount(0);
   } finally {

@@ -76,6 +76,9 @@ export interface SessionStats {
   output: number;
   cost: number | null;
   unpriced: boolean;
+  /** 上下文占用（服务 status.stats 给；页面不自己算）。 */
+  contextUsed: number;
+  contextWindow: number;
 }
 
 const EMPTY_STATS: SessionStats = {
@@ -87,6 +90,8 @@ const EMPTY_STATS: SessionStats = {
   output: 0,
   cost: null,
   unpriced: false,
+  contextUsed: 0,
+  contextWindow: 0,
 };
 
 /** T012.9：显示币种与汇率（服务 settings.json + status.fx；页面只显示和切换）。 */
@@ -170,6 +175,13 @@ interface KindState {
   setCurrency: (currency: Currency) => Promise<void>;
   /** T012.9：换思考档（下一轮生效）。 */
   setEffort: (effort: string) => Promise<void>;
+  /** T012.9：选中模型后补目录字段（档位/价格/窗口），让档位选择立刻可用。 */
+  hydrateModel: (selection: {
+    connectionId: string;
+    modelId: string;
+    label: string;
+    effort?: string;
+  }) => Promise<void>;
 }
 
 function indexOf(views: TurnViewData[]): Map<string, TurnViewData> {
@@ -672,8 +684,45 @@ export const useKindStore = create<KindState>()((set, get) => ({
   },
 
   setModel: (model) => {
-    set({ model });
+    set((state) => ({ model: { ...state.model, ...model } }));
+    // T012.9：换模型后马上补目录字段（档位/价格/窗口），不等下一轮 refreshStats。
+    void get().hydrateModel({
+      connectionId: model.connectionId,
+      modelId: model.modelId,
+      label: model.label,
+      effort: model.effort,
+    });
     toast('下一轮开始用 ' + model.label);
+  },
+
+  hydrateModel: async (selection) => {
+    const { connectionId, modelId, label } = selection;
+    let models = catalogCache.get(connectionId);
+    if (models === undefined) {
+      try {
+        models = (await fetchAvailableModels(connectionId)).models;
+        catalogCache.set(connectionId, models);
+      } catch {
+        models = [];
+      }
+    }
+    const info = models.find((model) => model.id === modelId);
+    set((state) => ({
+      model: {
+        ...state.model,
+        connectionId,
+        modelId,
+        label: info?.name ?? label,
+        price:
+          info?.priceInput !== undefined
+            ? { input: info.priceInput, output: info.priceOutput ?? info.priceInput }
+            : undefined,
+        contextWindow: info?.contextWindow,
+        thinks: info?.thinks,
+        efforts: info?.efforts,
+        effort: selection.effort ?? state.model.effort,
+      },
+    }));
   },
 
   refreshStats: async () => {
@@ -691,6 +740,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
             output: stats.outputTokens,
             cost: stats.costUsd ?? null,
             unpriced: stats.unpriced,
+            contextUsed: stats.contextUsed,
+            contextWindow: stats.contextWindow,
           },
         });
       }
