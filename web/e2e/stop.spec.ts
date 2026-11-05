@@ -28,7 +28,7 @@ test('停止：按钮和 Esc 各一次，服务收到取消', async ({ page, req
   await input.fill('先停一下（按钮）');
   await page.getByRole('button', { name: '发送' }).click();
   await expect(page.getByText('先停一下（按钮）')).toBeVisible({ timeout: 15_000 });
-  const stop = page.getByRole('button', { name: '停止' });
+  const stop = page.getByRole('button', { name: '停止', exact: true });
   await expect(stop).toBeVisible({ timeout: 10_000 });
   await stop.click();
   await expect(page.getByText('停下了这一轮', { exact: false })).toHaveCount(1, {
@@ -38,7 +38,7 @@ test('停止：按钮和 Esc 各一次，服务收到取消', async ({ page, req
   await input.fill('再停一下（Esc）');
   await page.getByRole('button', { name: '发送' }).click();
   await expect(page.getByText('再停一下（Esc）')).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByRole('button', { name: '停止' })).toBeVisible({ timeout: 10_000 });
+  await expect(page.getByRole('button', { name: '停止', exact: true })).toBeVisible({ timeout: 10_000 });
   await page.keyboard.press('Escape');
   await expect(page.getByText('停下了这一轮', { exact: false })).toHaveCount(2, {
     timeout: 15_000,

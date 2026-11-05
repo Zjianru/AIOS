@@ -13,7 +13,7 @@ test('每轮用量：模型名、全部输入、缓存命中、输出、想了 N
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await expect(page.getByText('（T007 e2e 假回放）').last()).toBeVisible({ timeout: 30_000 });
     // 等这一轮真的结束（用量/token 在 turn/end 后进视图，运行中还是「Kind 工作中」）。
-    await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0, { timeout: 60_000 });
+    await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 60_000 });
     // T013.5：悬停整轮工作过程行才显示用量；输入 = 1000 + 200 + 50 = 1250；命中 = 200/1250 = 16%。
     const process = page.locator('[data-kind="process"]').last();
     await process.hover();
@@ -37,7 +37,7 @@ test('没报缓存、没思考：不出现缓存命中与想了 N 秒', async ({
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await expect(page.getByText('（T007 e2e 假回放）').last()).toBeVisible({ timeout: 30_000 });
     // 等这一轮真的结束（用量/token 在 turn/end 后进视图，运行中还是「Kind 工作中」）。
-    await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0, { timeout: 60_000 });
+    await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 60_000 });
     const process = page.locator('[data-kind="process"]').last();
     await process.hover();
     await expect(page.getByText('缓存命中', { exact: false })).toHaveCount(0);

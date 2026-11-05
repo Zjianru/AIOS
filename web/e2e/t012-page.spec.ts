@@ -36,7 +36,7 @@ test('统计行：轮/步/输入输出/缓存命中/花费', async ({ page, requ
     await page.getByPlaceholder('和 Kind 说…').fill('你好');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await expect(page.getByText('（T007 e2e 假回放）').last()).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0, { timeout: 60_000 });
+    await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 60_000 });
     const dock = page.locator('[data-kind="composer-dock"]');
     await expect(dock).toBeVisible();
     await expect(dock).toContainText('轮');
@@ -122,7 +122,7 @@ test('币种：设置页切 CNY 后花费显示 ¥', async ({ page, request }) =
     await page.getByPlaceholder('和 Kind 说…').fill('你好');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await expect(page.getByText('（T007 e2e 假回放）').last()).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0, { timeout: 60_000 });
+    await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 60_000 });
     await expect(page.locator('[data-kind="stats-cost"]')).toContainText('$');
     // 真实 UI：设置页 › 显示币种 › ¥ CNY。
     await page.getByRole('button', { name: '设置', exact: true }).click();
@@ -146,7 +146,7 @@ test('只填缓存读价：合计变了', async ({ page }) => {
     await page.getByPlaceholder('和 Kind 说…').fill('你好');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await expect(page.getByText('（T007 e2e 假回放）').last()).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0, { timeout: 60_000 });
+    await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 60_000 });
     const cost = page.locator('[data-kind="stats-cost"]');
     await expect(cost).toBeVisible({ timeout: 20_000 });
     const before = (await cost.innerText()).trim();

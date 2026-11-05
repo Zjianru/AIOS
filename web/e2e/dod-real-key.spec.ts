@@ -100,7 +100,7 @@ test('DoD5 真 key：跑到工具时 Esc 停下', async ({ page }) => {
       '请必须调用 bash 工具运行前台命令：sleep 10；等它结束后回复我「完成」。',
     );
     await page.getByRole('button', { name: '发送' }).click();
-    await expect(page.getByRole('button', { name: '停止' })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole('button', { name: '停止', exact: true })).toBeVisible({ timeout: 30_000 });
     await page.keyboard.press('Escape');
     await expect(page.getByText('停下了这一轮', { exact: false })).toBeVisible({
       timeout: 30_000,
@@ -168,7 +168,7 @@ test('DoD6 真 key 断线重连', async ({ page, request }) => {
       '必须调用 bash 工具运行前台命令 sleep 8；等它结束后回复「断线后完成」。',
     );
     await page.getByRole('button', { name: '发送' }).click();
-    await expect(page.getByRole('button', { name: '停止' })).toBeVisible({ timeout: 60_000 });
+    await expect(page.getByRole('button', { name: '停止', exact: true })).toBeVisible({ timeout: 60_000 });
     await fixture.dropProxy?.();
     const banner = page.locator('[data-kind="offline"]');
     await expect(banner).toBeVisible({ timeout: 30_000 });

@@ -12,7 +12,7 @@ test('工作过程：行/卡片/退出码/开合（write + apply_patch + bash �
     await page.getByPlaceholder('和 Kind 说…').fill('先写文件，再改一下，最后跑个命令');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await expect(page.getByText('（T007 e2e 假回放）').last()).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0, { timeout: 60_000 });
+    await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 60_000 });
 
     const process = page.locator('[data-kind="process"]').last();
     // 做完的一轮收成「已完成，用时 X」，默认收起（组不显示）。
@@ -40,7 +40,7 @@ test('工作过程：行/卡片/退出码/开合（write + apply_patch + bash �
     await expect(process.getByText('退出码 2', { exact: false })).toHaveCount(2);
     // 刷新页面，行与 diff 还在（都来自日志事件/meta）。
     await page.reload();
-    await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0, { timeout: 60_000 });
+    await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 60_000 });
     const process2 = page.locator('[data-kind="process"]').last();
     await expect(process2.locator('button').first()).toContainText(/已完成，用时/, { timeout: 15_000 });
     await process2.locator('button').first().click();
@@ -65,7 +65,7 @@ test('工作过程中途停：整轮一直展开、不能收、标已停止', as
     // 回放放慢：等在跑的整轮出现（「Kind 工作中」），再点停止。
     const process = page.locator('[data-kind="process"]').last();
     await expect(process.locator('button').first()).toContainText(/Kind 工作中|已停止/, { timeout: 30_000 });
-    const stop = page.getByRole('button', { name: '停止' });
+    const stop = page.getByRole('button', { name: '停止', exact: true });
     if (await stop.count()) await stop.click();
     // 停下的一轮：整轮行写「已停止」，一直展开（data-open=true），点也不收起。
     await expect(process.locator('button').first()).toContainText('已停止', { timeout: 30_000 });
