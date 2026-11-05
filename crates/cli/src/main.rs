@@ -280,6 +280,39 @@ impl model::CredentialSource for KeyringCredentialSource {
         }
         Ok(issued.into_secret())
     }
+
+    /// T012.6：连接上记住的鉴权头（None = x-api-key 与 Authorization 都发）。
+    fn auth_header(&self) -> Option<String> {
+        self.keyring
+            .view()
+            .connections
+            .into_iter()
+            .find(|connection| connection.id == self.connection)
+            .and_then(|connection| connection.auth_header)
+    }
+
+    /// T012.6：适配器学到「只发某一个头」后写回连接（ConnectionInfo.auth_header）。
+    fn remember_auth_header(&self, header: &str) {
+        let Some(connection) = self
+            .keyring
+            .view()
+            .connections
+            .into_iter()
+            .find(|connection| connection.id == self.connection)
+        else {
+            return;
+        };
+        // 只改 auth_header；endpoint/model 原样传回，其余字段保持不动。
+        let _ = self.keyring.update_connection_details(
+            &self.connection,
+            credentials::ConnectionUpdate {
+                endpoint: connection.endpoint.clone(),
+                model: connection.primary_model().to_owned(),
+                auth_header: Some(header.to_owned()),
+                ..credentials::ConnectionUpdate::default()
+            },
+        );
+    }
 }
 
 /// 打开数据目录的 Keyring，并取 DeepSeek 连接的 endpoint/model。
@@ -1574,5 +1607,41 @@ mod f1_redaction_tests {
             !text.contains("redact-failed"),
             "正常记录不该 redact-failed：{text}"
         );
+    }
+
+    /// T012.6：CLI 的凭证来源把学到的鉴权头写回连接，并优先读连接上的值。
+    #[test]
+    fn learned_auth_header_is_written_back_to_the_connection() {
+        use model::CredentialSource as _;
+        let data = tempfile::tempdir().expect("数据目录");
+        let identity = data.path().join("identity.txt");
+        let keyring = std::sync::Arc::new(
+            credentials::Keyring::open(data.path(), Some(&identity)).expect("keyring"),
+        );
+        keyring
+            .save_connection(connection("deepseek", "DeepSeek", "sk-T0126-KEY"))
+            .expect("save");
+        let source = KeyringCredentialSource {
+            keyring: std::sync::Arc::clone(&keyring),
+            connection: "deepseek".to_owned(),
+            monitor: None,
+        };
+        assert_eq!(source.auth_header(), None, "还没学到的连接默认两个头都发");
+        source.remember_auth_header("authorization");
+        assert_eq!(
+            source.auth_header().as_deref(),
+            Some("authorization"),
+            "写回后从连接读回学到的单头"
+        );
+        let stored = keyring
+            .view()
+            .connections
+            .into_iter()
+            .find(|connection| connection.id == "deepseek")
+            .expect("connection");
+        assert_eq!(stored.auth_header.as_deref(), Some("authorization"));
+        assert_eq!(stored.endpoint, "http://127.0.0.1:1", "写回不动 endpoint");
+        assert_eq!(stored.model, "deepseek-flash", "写回不动 model");
+        assert!(stored.models.len() == 1, "写回不动 models 行");
     }
 }

@@ -1340,9 +1340,15 @@ impl RootHost {
         );
         let messages = vec![model::Message::user_text("ping")];
         let at = now_seconds();
+        // T012.6：验证也必须能把学到的鉴权头写回连接，所以把 Keyring 的 Arc 交给来源。
+        let keyring = std::sync::Arc::new(keyring);
         let result = match model::DeepSeek::with_credentials(
             config,
-            std::sync::Arc::new(VerifyCredential { api_key }),
+            std::sync::Arc::new(VerifyCredential {
+                api_key,
+                keyring: std::sync::Arc::clone(&keyring),
+                connection: request.id.clone(),
+            }),
         ) {
             Err(error) => credentials::CheckResult::Fail {
                 at,
@@ -1616,8 +1622,11 @@ impl RootHost {
 }
 
 /// T009.3：验证连接的固定 key 来源（key 只在内存里；签发记录仍由 Keyring 记）。
+/// T012.6：验证时学到的鉴权头也写回连接（和对话路径同一接缝）。
 struct VerifyCredential {
     api_key: String,
+    keyring: std::sync::Arc<credentials::Keyring>,
+    connection: String,
 }
 
 impl model::CredentialSource for VerifyCredential {
@@ -1627,6 +1636,27 @@ impl model::CredentialSource for VerifyCredential {
         _context: &model::CredentialContext,
     ) -> Result<String, model::ModelError> {
         Ok(self.api_key.clone())
+    }
+
+    fn remember_auth_header(&self, header: &str) {
+        let Some(connection) = self
+            .keyring
+            .view()
+            .connections
+            .into_iter()
+            .find(|connection| connection.id == self.connection)
+        else {
+            return;
+        };
+        let _ = self.keyring.update_connection_details(
+            &self.connection,
+            credentials::ConnectionUpdate {
+                endpoint: connection.endpoint.clone(),
+                model: connection.primary_model().to_owned(),
+                auth_header: Some(header.to_owned()),
+                ..credentials::ConnectionUpdate::default()
+            },
+        );
     }
 }
 

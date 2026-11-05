@@ -12,7 +12,7 @@ use service::{
 };
 use tempfile::tempdir;
 use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 const TEST_KEY: &str = "sk-t008-service-0123456789";
 
@@ -31,6 +31,29 @@ impl model::CredentialSource for TestCredential {
 
 fn test_credential() -> std::sync::Arc<dyn model::CredentialSource> {
     std::sync::Arc::new(TestCredential)
+}
+
+/// 按脚本顺序回放（第 N 次请求拿第 N 个响应；耗尽 500）。
+struct SequenceResponder {
+    responses: std::sync::Mutex<std::collections::VecDeque<ResponseTemplate>>,
+}
+
+impl SequenceResponder {
+    fn new(responses: Vec<ResponseTemplate>) -> Self {
+        Self {
+            responses: std::sync::Mutex::new(responses.into()),
+        }
+    }
+}
+
+impl Respond for SequenceResponder {
+    fn respond(&self, _request: &Request) -> ResponseTemplate {
+        self.responses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop_front()
+            .unwrap_or_else(|| ResponseTemplate::new(500))
+    }
 }
 
 fn options(data_dir: &Path, identity: &Path) -> RootSessionOptions {
@@ -669,5 +692,76 @@ async fn 获取可用模型时_anthropic_端点请求_chat_base_的列表() {
         "/v1/models",
         "列表路径是 Chat base：{}",
         requests[0].url
+    );
+}
+
+#[tokio::test]
+async fn 验证连接时学到的鉴权头写回连接() {
+    // T012.6：验证走真实适配器；双头被拒后各试一次单头，记住通过的那个并写回连接。
+    let server = MockServer::start().await;
+    let both_refused = ResponseTemplate::new(401).set_body_json(serde_json::json!({
+        "type": "error",
+        "error": {
+            "type": "authentication_error",
+            "message": "x-api-key 和 Authorization 不可以同时存在，只能使用一个"
+        }
+    }));
+    let unauthorized = ResponseTemplate::new(401).set_body_json(serde_json::json!({
+        "type": "error",
+        "error": {"type": "authentication_error", "message": "bad key"}
+    }));
+    let ok = ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_string("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![both_refused, unauthorized, ok]))
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "learn-auth".to_owned(),
+            name: "Learn auth".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            ..Default::default()
+        }))
+        .await;
+    assert!(saved.is_ok(), "save: {saved:?}");
+    let verified = host
+        .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
+            id: "learn-auth".to_owned(),
+        }))
+        .await;
+    let service::Response::ConnectionVerify(response) = verified.expect("verify 返回") else {
+        panic!("expected ConnectionVerify");
+    };
+    assert!(
+        matches!(response.connection.check, CheckState::Ok { .. }),
+        "单头轮换后验证成功：{:?}",
+        response.connection.check
+    );
+    assert_eq!(
+        response.connection.auth_header.as_deref(),
+        Some("authorization"),
+        "学到的鉴权头写回连接"
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 3, "双头被拒 + 两个单头各试一次");
+    let has = |index: usize, header: &str| requests[index].headers.contains_key(header);
+    assert!(
+        has(0, "x-api-key") && has(0, "authorization"),
+        "第一次两个头一起发"
+    );
+    assert!(
+        has(1, "x-api-key") && !has(1, "authorization"),
+        "先只试 x-api-key"
+    );
+    assert!(
+        !has(2, "x-api-key") && has(2, "authorization"),
+        "再只试 authorization"
     );
 }

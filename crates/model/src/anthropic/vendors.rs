@@ -151,6 +151,13 @@ pub(crate) fn wire_effort(
     }
 }
 
+/// T012.6：学到的「关不掉思考/必须思考」后，这一轮要发的最低非关档（Magpie onEffort：
+/// 取模型最少的那一档；模型没有档时按内核 low）。学到的状态替代目录里缺的 always_thinks。
+pub(crate) fn lowest_non_off_effort(base_url: &str, model: &str) -> String {
+    let profile = reasoning(base_url, model);
+    fit_effort("low", &profile.efforts)
+}
+
 /// 这一轮实际会发的档（用于日志；与 wire_effort 的选择一致）。
 pub(crate) fn actual_effort(base_url: &str, model: &str, effort: &Effort) -> String {
     let profile = reasoning(base_url, model);

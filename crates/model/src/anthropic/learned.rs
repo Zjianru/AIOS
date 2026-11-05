@@ -6,10 +6,6 @@
 //!
 //! 存在内存里，重启后再学一次（spec「学到的东西」；Magpie `gateway.go` 的 fits/markUnfit 同形）。
 
-// T012.6 骨架：类型与接缝先落，接线（stream_inner 重发/鉴权头轮换）在实现提交里；
-// 骨架阶段这些 helper 还没有调用方，先允许 dead_code，实现后删掉这行。
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Mutex;
 

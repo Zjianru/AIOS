@@ -19,7 +19,7 @@ use crate::{
     CancelToken, CredentialContext, CredentialSource, ErrorCode, Message, ModelError, StreamChunk,
     ToolSchema,
 };
-use learned::Learned;
+use learned::{AuthChoice, Learned};
 use sse::SseParser;
 use translate::Translator;
 
@@ -38,8 +38,6 @@ pub struct DeepSeek {
     /// 本轮冻结的模型；begin_turn 时从 next_model 复制，stream 只读这里。
     turn_model: Arc<Mutex<Option<String>>>,
     /// T012.6：学到的连接事实（关不掉思考、通过的鉴权头），同实例的 clone 共享。
-    /// 骨架阶段还没读（接线在实现提交），先允许 dead_code。
-    #[allow(dead_code)]
     learned: Arc<Learned>,
 }
 
@@ -179,16 +177,121 @@ impl DeepSeek {
         {
             effective.model = model.to_owned();
         }
+        let base_url = effective.base_url.clone();
+        // T012.6：学到的「关不掉思考」：要 none 也按最低非关档发（与内置 always_thinks 同行为）。
+        if self.learned.thinking_required(&base_url, &effective.model) && effective.effort.is_off()
+        {
+            effective.effort =
+                crate::Effort::new(vendors::lowest_non_off_effort(&base_url, &effective.model));
+        }
+        let choice = self.auth_choice(&base_url);
         let body =
             serialize::request_body(&effective, messages, tools, max_tokens, validate_pairing)?;
+        let attempt = self.post_messages(body, &api_key, choice, cancel).await?;
+        if let Some(response) = attempt.response {
+            return Ok(ChunkStream::new(response, cancel.clone()));
+        }
+        // T012.6-A：400 拒绝关掉思考 → 学到 + 本轮立即按最低非关档重发一次。
+        if attempt.status == reqwest::StatusCode::BAD_REQUEST
+            && transport::refuses_thinking_off(&attempt.raw)
+        {
+            self.learned
+                .learn_thinking_required(&base_url, &effective.model);
+            effective.effort =
+                crate::Effort::new(vendors::lowest_non_off_effort(&base_url, &effective.model));
+            let body =
+                serialize::request_body(&effective, messages, tools, max_tokens, validate_pairing)?;
+            let retry = self.post_messages(body, &api_key, choice, cancel).await?;
+            return match retry.response {
+                Some(response) => Ok(ChunkStream::new(response, cancel.clone())),
+                None => Err(transport::provider_error(
+                    &retry.raw,
+                    Some(retry.status.as_u16()),
+                    Some(&retry.headers),
+                )),
+            };
+        }
+        // T012.6-B：401 拒绝双头 → 各试一次单头（x-api-key 先、Authorization 后），记住通过的。
+        if attempt.status == reqwest::StatusCode::UNAUTHORIZED
+            && choice == AuthChoice::Both
+            && transport::both_auth_refused(401, &attempt.raw)
+        {
+            let mut last = (attempt.raw, attempt.headers, 401_u16);
+            for only in [AuthChoice::XApiKey, AuthChoice::Authorization] {
+                let body = serialize::request_body(
+                    &effective,
+                    messages,
+                    tools,
+                    max_tokens,
+                    validate_pairing,
+                )?;
+                let retry = self.post_messages(body, &api_key, only, cancel).await?;
+                if let Some(response) = retry.response {
+                    if let Some(name) = only.learned_name() {
+                        self.learned.learn_auth_header(&base_url, name);
+                        self.credentials.remember_auth_header(name);
+                    }
+                    return Ok(ChunkStream::new(response, cancel.clone()));
+                }
+                if retry.status != reqwest::StatusCode::UNAUTHORIZED
+                    && retry.status != reqwest::StatusCode::FORBIDDEN
+                {
+                    return Err(transport::provider_error(
+                        &retry.raw,
+                        Some(retry.status.as_u16()),
+                        Some(&retry.headers),
+                    ));
+                }
+                last = (retry.raw, retry.headers, retry.status.as_u16());
+            }
+            return Err(transport::provider_error(
+                &last.0,
+                Some(last.2),
+                Some(&last.1),
+            ));
+        }
+        Err(transport::provider_error(
+            &attempt.raw,
+            Some(attempt.status.as_u16()),
+            Some(&attempt.headers),
+        ))
+    }
+
+    /// T012.6：本次请求该带哪些鉴权头（学到的内存优先，其次连接上记住的，默认两个都发）。
+    fn auth_choice(&self, base_url: &str) -> AuthChoice {
+        if let Some(header) = self.learned.auth_header(base_url) {
+            return AuthChoice::from_learned(&header);
+        }
+        match self.credentials.auth_header() {
+            Some(header) => AuthChoice::from_learned(&header),
+            None => AuthChoice::Both,
+        }
+    }
+
+    /// T012.6：发一次 Messages 请求。成功返回响应；失败返回状态/头/错误体（重发判定用）。
+    async fn post_messages(
+        &self,
+        body: Vec<u8>,
+        api_key: &str,
+        choice: AuthChoice,
+        cancel: &CancelToken,
+    ) -> Result<Attempt, ModelError> {
         let request = self
             .http
             .post(self.url.clone())
             .header("content-type", "application/json")
             .header("accept", "text/event-stream")
-            .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01")
-            .body(body);
+            .header("anthropic-version", "2023-06-01");
+        let request = match choice {
+            AuthChoice::Both => request
+                .header("x-api-key", api_key)
+                .header("authorization", format!("Bearer {api_key}")),
+            AuthChoice::XApiKey => request.header("x-api-key", api_key),
+            AuthChoice::Authorization => {
+                request.header("authorization", format!("Bearer {api_key}"))
+            }
+        };
+        let request = request.body(body);
         let response = tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(aborted("DeepSeek Messages 请求被取消")),
@@ -198,25 +301,39 @@ impl DeepSeek {
             return Err(aborted("DeepSeek Messages 请求被取消"));
         }
         let status = response.status();
-        if !status.is_success() {
-            let headers = response.headers().clone();
-            // 错误体读取也接取消：极端慢的错误体不能让 Ctrl-C 挂住。
-            let text = tokio::select! {
-                biased;
-                () = cancel.cancelled() => {
-                    return Err(aborted("DeepSeek Messages 请求被取消"));
-                }
-                text = response.text() => text.unwrap_or_default(),
-            };
-            let raw = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
-            return Err(transport::provider_error(
-                &raw,
-                Some(status.as_u16()),
-                Some(&headers),
-            ));
+        if status.is_success() {
+            return Ok(Attempt {
+                status,
+                headers: reqwest::header::HeaderMap::new(),
+                raw: serde_json::Value::Null,
+                response: Some(response),
+            });
         }
-        Ok(ChunkStream::new(response, cancel.clone()))
+        let headers = response.headers().clone();
+        // 错误体读取也接取消：极端慢的错误体不能让 Ctrl-C 挂住。
+        let text = tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                return Err(aborted("DeepSeek Messages 请求被取消"));
+            }
+            text = response.text() => text.unwrap_or_default(),
+        };
+        let raw = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+        Ok(Attempt {
+            status,
+            headers,
+            raw,
+            response: None,
+        })
     }
+}
+
+/// T012.6：一次出站尝试。成功时 response 留给 ChunkStream；失败时带状态/头/错误体（重发判定用）。
+struct Attempt {
+    status: reqwest::StatusCode,
+    headers: reqwest::header::HeaderMap,
+    raw: serde_json::Value,
+    response: Option<reqwest::Response>,
 }
 
 /// 取消造成的错误（调用方按「取消」收尾，不当作 turn error）。

@@ -54,6 +54,89 @@ pub(super) fn provider_error(
     error
 }
 
+/// T012.6：400 是不是厂商在拒绝「关掉思考」（关不掉思考 / 必须思考）。
+///
+/// 照 Magpie gateway/anthropic.go:425 的 alwaysThinks 与 thinking_needed.go 的
+/// thinkingNeededRefusal（只认 Messages 协议会遇到的文案；中英文都认）。
+pub(super) fn refuses_thinking_off(raw: &Value) -> bool {
+    let message = raw
+        .pointer("/error/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let lower = message.to_ascii_lowercase();
+    // MiniMax 的 2013 出现在错误原文里（Magpie 的 alwaysThinks 行）。
+    if lower.contains("2013") {
+        return true;
+    }
+    const FRAGMENTS: &[&str] = &[
+        "always engages in thinking",
+        "thinking cannot be disabled",
+        "thinking can't be disabled",
+        "thinking cannot be turned off",
+        "requires adaptive thinking",
+        "thinking.type must be enabled",
+        "thinking.type `disabled` is not supported",
+        "enable_thinking parameter is restricted to true",
+    ];
+    if FRAGMENTS.iter().any(|fragment| lower.contains(fragment)) {
+        return true;
+    }
+    // thinkingNeededRefusal：thinking.type must/should/has to be "enabled"。
+    let thinking_needed = lower.contains("thinking")
+        && (lower.contains("must be")
+            || lower.contains("should be")
+            || lower.contains("has to be"))
+        && lower.contains("enabled");
+    if thinking_needed {
+        return true;
+    }
+    // 中文：始终思考 / 思考不可关闭、无法关闭、不能关闭。
+    (message.contains("始终") && message.contains("思考"))
+        || (message.contains("思考")
+            && (message.contains("不可关闭")
+                || message.contains("无法关闭")
+                || message.contains("不能关闭")))
+}
+
+/// T012.6：401 是不是厂商在拒绝「x-api-key 和 Authorization 一起带」。
+///
+/// 照 Magpie catalog.BothAuthRefused：401 且错误体同时提到两个头、并带拒绝同时存在的措辞
+/// （中英文）。
+pub(super) fn both_auth_refused(status: u16, raw: &Value) -> bool {
+    if status != 401 {
+        return false;
+    }
+    let text = raw.to_string().to_ascii_lowercase();
+    if !text.contains("x-api-key") || !text.contains("authorization") {
+        return false;
+    }
+    const PHRASES: &[&str] = &[
+        "同时",
+        "并存",
+        "共存",
+        "只能使用一个",
+        "只能选择一个",
+        "只能有一个",
+        "cannot both",
+        "can't both",
+        "can not both",
+        "cannot be both",
+        "not both",
+        "together",
+        "at the same time",
+        "simultaneous",
+        "mutually exclusive",
+        "only one of",
+        "only one auth",
+        "only one header",
+        "both present",
+        "both be present",
+        "both provided",
+        "both be provided",
+    ];
+    PHRASES.iter().any(|phrase| text.contains(phrase))
+}
+
 /// 上下文溢出识别（照 DSH 的 provider 错误归一）：状态 400/413 且错误类型/文案符合时
 /// 归到 `CONTEXT_WINDOW_EXCEEDED`，驱动层据此先压缩再重试一次。
 fn is_context_overflow(message: &str, error_type: &str) -> bool {
