@@ -3,13 +3,11 @@
 //! 三种状态只有在「同一驱动任务连续开下一轮」时才暴露：轮末已有排队的
 //! follow-up 时，kick 直接进下一轮；旧实现把上一轮的 step 计数带过去。
 
-
-
-use agent::Delivery;
 use crate::common::{
     FINAL_TEXT_SSE, SequenceResponder, ToolEvent, gated, setup_agent, sse, tool_calls_sse,
     wait_idle,
 };
+use agent::Delivery;
 use model::UserMessage;
 use session::{EventKind, SessionStore};
 use tokio::sync::mpsc;

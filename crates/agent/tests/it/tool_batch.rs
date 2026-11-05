@@ -1,13 +1,11 @@
 //! 接缝 1：工具批执行的并行上限、顺序和独占屏障（测试清单第 3 条）。
 
-
-
 use std::sync::Arc;
 
-use agent::{Agent, AgentConfig, Delivery, Deps};
 use crate::common::{
     FINAL_TEXT_SSE, SequenceResponder, ToolEvent, gated, model_config, sse, tool_calls_sse,
 };
+use agent::{Agent, AgentConfig, Delivery, Deps};
 use model::{DeepSeek, UserMessage};
 use session::SessionStore;
 use tokio::sync::{Semaphore, mpsc};

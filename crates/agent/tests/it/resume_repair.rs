@@ -1,14 +1,12 @@
 //! 接缝 1：续接与中断修复（测试清单第 7、8 条）。
 
-
-
 use std::path::{Path, PathBuf};
 
-use agent::{Agent, Delivery, Deps};
 use crate::common::{
     FINAL_TEXT_SSE, SequenceResponder, ToolEvent, gated, model_config, sse, tool_calls_sse,
     wait_idle,
 };
+use agent::{Agent, Delivery, Deps};
 use model::{ContentBlock, DeepSeek, UserMessage};
 use session::{EventKind, SessionId, SessionStore, TurnEndReason};
 use tokio::sync::mpsc;
@@ -41,8 +39,11 @@ async fn create_agent(
     let agent = Agent::create(
         crate::common::isolated_config(data_dir),
         Deps {
-            model: DeepSeek::with_credentials(model_config(base_url), crate::common::test_credential())
-                .unwrap(),
+            model: DeepSeek::with_credentials(
+                model_config(base_url),
+                crate::common::test_credential(),
+            )
+            .unwrap(),
             tools,
             store,
         },
@@ -58,8 +59,11 @@ async fn resume_agent(data_dir: &Path, id: &SessionId, base_url: &str, tools: To
         id.clone(),
         crate::common::isolated_config(data_dir),
         Deps {
-            model: DeepSeek::with_credentials(model_config(base_url), crate::common::test_credential())
-                .unwrap(),
+            model: DeepSeek::with_credentials(
+                model_config(base_url),
+                crate::common::test_credential(),
+            )
+            .unwrap(),
             tools,
             store,
         },

@@ -808,6 +808,7 @@ async fn job_kill_uses_sigterm_grace_then_sigkill() {
             ready = true;
             break;
         }
+        // T009.H6：等后台子进程输出 ready；轮询间隔
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(ready, "先等子进程输出 ready");
@@ -855,6 +856,7 @@ async fn job_kill_grace_lets_sigterm_handler_run() {
         if registry.output(&job_id).unwrap().stdout.contains("ready") {
             break;
         }
+        // T009.H6：等后台子进程输出 ready；轮询间隔
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let began = Instant::now();
@@ -921,6 +923,7 @@ async fn job_output_reads_model_cursor_once() {
             first = out.content;
             break;
         }
+        // T009.H6：等后台子进程输出 first；轮询间隔
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     assert!(first.contains("first"), "第一次游标读拿到 first：{first}");

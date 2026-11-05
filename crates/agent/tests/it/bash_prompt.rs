@@ -1,9 +1,7 @@
 //! 接缝 1：bash 指导句只随 bash 工具出现（测试清单第 3 条 + 提示词回归）。
 
-
-
-use agent::Delivery;
 use crate::common::{FINAL_TEXT_SSE, SequenceResponder, setup_agent, sse};
+use agent::Delivery;
 use model::UserMessage;
 use tools::{BashTool, ToolSet, WriteTool};
 use wiremock::matchers::{method, path};

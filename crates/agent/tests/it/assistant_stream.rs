@@ -2,16 +2,14 @@
 //! assistant/attempt 事件（DSH packages/core/session/src/types.ts:349-363；
 //! packages/core/agent-loop/src/agent.ts:480-590；packages/core/agent-loop/src/assistant-stream.ts）。
 
-
-
 use std::fs;
 use std::path::Path;
 
-use agent::Delivery;
 use crate::common::{
     FINAL_TEXT_SSE, PARTIAL_TEXT_SSE, ScriptedSseServer, SequenceResponder, SseScript, setup_agent,
     sse, tool_calls_with_inputs_sse, wait_idle,
 };
+use agent::Delivery;
 use model::{AssistantStreamRecord, UserMessage, expand_assistant_stream};
 use serde_json::{Value, json};
 use session::{SessionId, SessionStore, TurnEndReason};
@@ -340,6 +338,7 @@ async fn attempt_without_surface_goes_to_assistant_attempt() {
     server.wait_ready().await;
     // 等 driver 真的从流里读第一轮（和上面 cancel_mid_stream 用事件同步不同，这里
     // 没有可见 delta 可等；hold 住连接后 driver 会停在 select 上等下一帧）。
+    // T009.H6：这段流没有可见 delta 可等，用真实等待让 driver 进入读帧状态；取消语义用例
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     agent.cancel().await.unwrap();
     agent.idle().await;

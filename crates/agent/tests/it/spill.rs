@@ -1,12 +1,12 @@
 //! 接缝 1：大工具结果 spill 与大结果修剪（测试清单第 8 条）。
 
-
-
 use std::fs;
 use std::path::PathBuf;
 
+use crate::common::{
+    FINAL_TEXT_SSE, SequenceResponder, model_config, sse, tool_calls_with_inputs_sse,
+};
 use agent::{Agent, AgentConfig, Delivery, Deps};
-use crate::common::{FINAL_TEXT_SSE, SequenceResponder, model_config, sse, tool_calls_with_inputs_sse};
 use model::UserMessage;
 use serde_json::{Value, json};
 use session::{EventKind, SessionStore};
@@ -427,8 +427,11 @@ async fn auto_pressure_compaction_prunes_tool_results() {
     let agent = Agent::create(
         config,
         Deps {
-            model: model::DeepSeek::with_credentials(model_config, crate::common::test_credential())
-                .unwrap(),
+            model: model::DeepSeek::with_credentials(
+                model_config,
+                crate::common::test_credential(),
+            )
+            .unwrap(),
             tools: ToolSet::new(vec![Box::new(BigTool::new(content.clone()))]),
             store,
         },

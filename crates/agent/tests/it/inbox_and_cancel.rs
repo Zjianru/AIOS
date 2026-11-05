@@ -1,12 +1,10 @@
 //! 接缝 1：收件箱（steer / inject / follow-up）、取消与失唤醒回归（测试清单第 4、5、6 条 + 票面加项）。
 
-
-
-use agent::{Agent, AgentConfig, AgentEvent, Delivery, Deps, TurnOutcome};
 use crate::common::{
     FINAL_TEXT_SSE, PARTIAL_TEXT_SSE, ScriptedSseServer, SequenceResponder, SseScript, ToolEvent,
     gated, model_config, sse, tool_calls_sse,
 };
+use agent::{Agent, AgentConfig, AgentEvent, Delivery, Deps, TurnOutcome};
 use model::{ContentBlock, DeepSeek, UserMessage};
 use session::{EventKind, SessionStore, TurnEndReason};
 use tokio::sync::mpsc;
@@ -34,8 +32,11 @@ async fn new_agent(
             ..crate::common::isolated_config(data_dir.path())
         },
         Deps {
-            model: DeepSeek::with_credentials(model_config(base_url), crate::common::test_credential())
-                .unwrap(),
+            model: DeepSeek::with_credentials(
+                model_config(base_url),
+                crate::common::test_credential(),
+            )
+            .unwrap(),
             tools,
             store,
         },

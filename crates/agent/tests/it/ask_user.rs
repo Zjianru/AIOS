@@ -7,15 +7,13 @@
 //! 批必须每题恰好一次、迟到回答以 user-question-reply 消息 steer）、
 //! `user-questions/src/types.ts:72-122`（答案项与回复 source）。
 
-
-
 use std::time::Duration;
 
-use agent::{Agent, AgentEvent, Delivery, TurnOutcome};
 use crate::common::{
     FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse,
     tool_calls_with_inputs_sse, wait_idle,
 };
+use agent::{Agent, AgentEvent, Delivery, TurnOutcome};
 use model::UserMessage;
 use serde_json::json;
 use session::{EventKind, SessionId, SessionStore, TurnEndReason};

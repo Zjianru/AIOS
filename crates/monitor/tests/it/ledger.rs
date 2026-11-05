@@ -129,6 +129,7 @@ fn reopened_session_only_records_events_after_reopen() {
     drop(store);
     first_monitor.shutdown();
 
+    // T009.H6：等下一次毫秒启动时间，让两个监控文件不同名
     std::thread::sleep(std::time::Duration::from_millis(5));
     let mut reopened = SessionStore::open(data.path(), &id).expect("重开会话");
     let second_monitor =

@@ -340,6 +340,7 @@ fn 跨进程持锁时保存会等待() {
 f=open(sys.argv[1],'a+')
 fcntl.flock(f,fcntl.LOCK_EX)
 pathlib.Path(sys.argv[2]).write_text('locked')
+# T009.H6：子进程持锁 0.6s 模拟跨进程占用；Python 里真实等待
 time.sleep(0.6)
 ";
     let mut child = std::process::Command::new("python3")
@@ -353,6 +354,7 @@ time.sleep(0.6)
         if sentinel.exists() {
             break;
         }
+        // T009.H6：等子进程写 lock-ready 文件；轮询间隔
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(sentinel.exists(), "子进程应已持有 keyring.lock");

@@ -4,13 +4,13 @@
 //! :158-231（splice/通知）；README.zh.md:71（每次 inbox 变更提交一条规范化事件；
 //! claimed/discarded/inserted 是 dispatch 通知、不落日志）。
 
-
-
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::common::{
+    FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse, wait_idle,
+};
 use agent::{Agent, AgentError, AgentEvent, Delivery, Deps};
-use crate::common::{FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse, wait_idle};
 use model::{DeepSeek, Message, Role, UserMessage};
 use serde_json::Value;
 use session::{EventKind, InboxOutcome, InboxTarget, SessionId, SessionSnapshot, SessionStore};
@@ -51,8 +51,11 @@ async fn create_agent(data_dir: &Path, cwd: &Path, base_url: &str) -> (Agent, Se
     let agent = Agent::create(
         isolated_config(data_dir),
         Deps {
-            model: DeepSeek::with_credentials(model_config(base_url), crate::common::test_credential())
-                .unwrap(),
+            model: DeepSeek::with_credentials(
+                model_config(base_url),
+                crate::common::test_credential(),
+            )
+            .unwrap(),
             tools: ToolSet::empty(),
             store,
         },
@@ -72,8 +75,11 @@ async fn resume_agent(
         id.clone(),
         isolated_config(data_dir),
         Deps {
-            model: DeepSeek::with_credentials(model_config(base_url), crate::common::test_credential())
-                .unwrap(),
+            model: DeepSeek::with_credentials(
+                model_config(base_url),
+                crate::common::test_credential(),
+            )
+            .unwrap(),
             tools: ToolSet::empty(),
             store,
         },

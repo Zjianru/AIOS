@@ -1,12 +1,12 @@
 //! 接缝 1：后台任务完成通知与 JobCompleted 事件（测试清单第 4 条 + 票面加项）。
 
-
-
 use std::fs;
 use std::time::Duration;
 
+use crate::common::{
+    FINAL_TEXT_SSE, SequenceResponder, setup_agent, sse, tool_calls_with_inputs_sse,
+};
 use agent::Delivery;
-use crate::common::{FINAL_TEXT_SSE, SequenceResponder, setup_agent, sse, tool_calls_with_inputs_sse};
 use model::UserMessage;
 use serde_json::json;
 use tools::ToolSet;
@@ -140,10 +140,12 @@ async fn job_completion_during_turn_arrives_as_next_step() {
             if cwd_path.join("go").exists() {
                 return;
             }
+            // T009.H6：等后台任务看到 go 文件再放行；文件轮询间隔
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
         std::fs::write(cwd_path.join("go"), "").unwrap();
     });
+    // T009.H6：固定等 notifier 轮询落位后再放行；没有更早的同步信号
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     std::fs::write(cwd.path().join("go"), "").unwrap();
     notifier.abort();

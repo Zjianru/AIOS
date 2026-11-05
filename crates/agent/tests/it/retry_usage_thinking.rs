@@ -1,15 +1,13 @@
 //! 接缝 1：请求层重试、用量事件、thinking 解析/回放、取消等响应头
 //! （测试清单第 9、10、11 条 + T004.3 审计扩的两笔）。
 
-
-
 use std::time::Duration;
 
-use agent::{AgentEvent, Delivery, TurnOutcome};
 use crate::common::{
     FINAL_TEXT_SSE, HeadersGatedServer, ScriptedSseServer, SequenceResponder, SseScript,
     setup_agent, sse, wait_idle,
 };
+use agent::{AgentEvent, Delivery, TurnOutcome};
 use model::{ContentBlock, UserMessage};
 use session::{EventKind, SessionStore, TurnEndReason};
 use tools::ToolSet;

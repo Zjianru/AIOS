@@ -38,6 +38,7 @@ impl Tool for SlowTool {
         _context: &'a ToolContext,
     ) -> ToolFuture<'a, ToolResult> {
         Box::pin(async move {
+            // T009.H6：可控慢工具模拟耗时；wait_ms 由测试给定
             tokio::time::sleep(Duration::from_millis(self.wait_ms)).await;
             ToolResult::success(call.id, "slow done")
         })

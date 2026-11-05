@@ -1,12 +1,10 @@
 //! 接缝 1：指令文件（AGENTS.md / CLAUDE.md）的发现、注入与刷新（测试清单第 5 条）。
 
-
-
-use agent::Delivery;
 use crate::common::{
     FINAL_TEXT_SSE, SequenceResponder, model_config, setup_agent_custom, sse,
     tool_calls_with_inputs_sse,
 };
+use agent::Delivery;
 use model::UserMessage;
 use serde_json::json;
 use tools::ToolSet;

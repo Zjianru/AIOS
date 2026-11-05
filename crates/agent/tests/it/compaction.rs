@@ -1,9 +1,9 @@
 //! 接缝 1：自动压缩与溢出恢复（测试清单第 9 条）。
 
-
-
+use crate::common::{
+    FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse, wait_idle,
+};
 use agent::{Agent, AgentConfig, AgentEvent, CompactionTrigger, Delivery};
-use crate::common::{FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse, wait_idle};
 use model::UserMessage;
 use serde_json::json;
 use session::{EventKind, SessionStore};
@@ -41,8 +41,11 @@ async fn setup(
     let agent = Agent::create(
         config,
         agent::Deps {
-            model: model::DeepSeek::with_credentials(model_config, crate::common::test_credential())
-                .unwrap(),
+            model: model::DeepSeek::with_credentials(
+                model_config,
+                crate::common::test_credential(),
+            )
+            .unwrap(),
             tools: ToolSet::builtin(),
             store,
         },

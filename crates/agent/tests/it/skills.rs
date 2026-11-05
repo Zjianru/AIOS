@@ -1,12 +1,10 @@
 //! 接缝 1：skill 目录进入请求（测试清单第 6 条）。
 
-
-
-use agent::Delivery;
 use crate::common::{
     FINAL_TEXT_SSE, SequenceResponder, setup_agent_custom, setup_agent_with_roots, sse,
     tool_calls_with_inputs_sse,
 };
+use agent::Delivery;
 use model::UserMessage;
 use serde_json::json;
 use tools::ToolSet;

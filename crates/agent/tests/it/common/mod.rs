@@ -304,6 +304,7 @@ fn accept_while_running(
         match listener.accept() {
             Ok((stream, _)) => return Some(stream),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                // T009.H6：accept 非阻塞轮询间隔，等测试连接；属真实等待
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
             Err(_) => return None,

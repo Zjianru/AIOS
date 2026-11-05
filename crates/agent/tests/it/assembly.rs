@@ -6,10 +6,10 @@
 //! 本票的可观测行为改动（DSH docs/user/develop/basic/config.md 的「Fail loudly on invalid
 //! configuration」是同一个失败时机口径）。
 
-
-
+use crate::common::{
+    FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse, wait_idle,
+};
 use agent::{Agent, AgentError, AgentOpenOptions, Delivery};
-use crate::common::{FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse, wait_idle};
 use model::UserMessage;
 use session::SessionStore;
 use wiremock::matchers::{method, path};

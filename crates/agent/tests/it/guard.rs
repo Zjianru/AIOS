@@ -1,14 +1,12 @@
 //! 接缝 1：重复调用提醒与工具级超时（测试清单第 12、13 条 stub 红测试）。
 
-
-
 use std::time::Duration;
 
-use agent::{Agent, AgentEvent, Delivery, TurnOutcome};
 use crate::common::{
     FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse,
     tool_calls_with_inputs_sse, wait_idle,
 };
+use agent::{Agent, AgentEvent, Delivery, TurnOutcome};
 use model::UserMessage;
 use serde_json::{Value, json};
 use tools::{Tool, ToolCall, ToolConcurrency, ToolContext, ToolFuture, ToolResult, ToolSet};
@@ -30,8 +28,11 @@ async fn setup(
     let agent = Agent::create(
         config,
         agent::Deps {
-            model: model::DeepSeek::with_credentials(model_config, crate::common::test_credential())
-                .unwrap(),
+            model: model::DeepSeek::with_credentials(
+                model_config,
+                crate::common::test_credential(),
+            )
+            .unwrap(),
             tools: tools.unwrap_or_else(ToolSet::builtin),
             store,
         },
@@ -213,6 +214,7 @@ impl Tool for TimeoutTool {
     }
     fn execute<'a>(&'a self, call: ToolCall, _c: &'a ToolContext) -> ToolFuture<'a, ToolResult> {
         Box::pin(async move {
+            // T009.H6：慢工具模拟长执行（10ms 超时用例），睡眠是产品行为输入
             tokio::time::sleep(Duration::from_millis(300)).await;
             ToolResult::success(call.id, "slow done")
         })

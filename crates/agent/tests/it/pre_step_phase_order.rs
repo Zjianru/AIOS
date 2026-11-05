@@ -1,9 +1,7 @@
 //! 接缝 1：同一 turn 内「注入 → prune → 压缩」的 PreStep 两阶段顺序（T006.1c 回归断言）。
 
-
-
-use agent::{Agent, AgentConfig, Delivery};
 use crate::common::{FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse};
+use agent::{Agent, AgentConfig, Delivery};
 use model::{ContentBlock, UserMessage};
 use session::{EventKind, SessionStore, TurnEndReason};
 use tools::ToolSet;
@@ -64,8 +62,11 @@ async fn injection_happens_before_compaction_in_same_turn() {
     let agent = Agent::create(
         config,
         agent::Deps {
-            model: model::DeepSeek::with_credentials(model_config, crate::common::test_credential())
-                .unwrap(),
+            model: model::DeepSeek::with_credentials(
+                model_config,
+                crate::common::test_credential(),
+            )
+            .unwrap(),
             tools: ToolSet::builtin(),
             store,
         },

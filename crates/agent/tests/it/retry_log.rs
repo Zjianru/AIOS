@@ -4,13 +4,11 @@
 //! packages/llm/llm-retry/src/types.ts:9-40（事件数据形状）、
 //! packages/core/agent-loop/src/agent.ts:544-564（已流出内容的重试没有额外门槛）。
 
-
-
 use std::fs;
 use std::path::Path;
 
-use agent::{AgentEvent, Delivery};
 use crate::common::{FINAL_TEXT_SSE, SequenceResponder, setup_agent, sse, wait_idle};
+use agent::{AgentEvent, Delivery};
 use model::UserMessage;
 use serde_json::{Value, json};
 use session::{SessionId, SessionStore, TurnEndReason};

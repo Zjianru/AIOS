@@ -396,6 +396,7 @@ async fn bash_does_not_block_runtime_while_command_runs() {
         tokio::spawn(async move {
             loop {
                 counter.fetch_add(1, Ordering::SeqCst);
+                // T009.H6：heartbeat 采样节拍，用于断言 runtime 没有被同步阻塞
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
@@ -405,6 +406,7 @@ async fn bash_does_not_block_runtime_while_command_runs() {
     let marker_thread = {
         let marker = marker.clone();
         std::thread::spawn(move || {
+            // T009.H6：后台线程延迟写 marker，制造可观察的同步等待窗口
             std::thread::sleep(Duration::from_millis(300));
             fs::write(marker, "go").unwrap();
         })

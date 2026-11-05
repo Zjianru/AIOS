@@ -5,13 +5,13 @@
 //! config.ts:172-193,235；packages/compaction/compaction/src/types.ts:24-70；
 //! packages/compaction/command-compact/src/index.ts。
 
-
-
 use std::fs;
 use std::path::Path;
 
+use crate::common::{
+    FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse, wait_idle,
+};
 use agent::{Agent, AgentConfig, CompactionModelPolicy, Delivery};
-use crate::common::{FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse, wait_idle};
 use model::UserMessage;
 use serde_json::Value;
 use session::{EventKind, SessionId, SessionStore};
@@ -53,8 +53,11 @@ async fn setup(
     let agent = Agent::create(
         config,
         agent::Deps {
-            model: model::DeepSeek::with_credentials(model_config, crate::common::test_credential())
-                .unwrap(),
+            model: model::DeepSeek::with_credentials(
+                model_config,
+                crate::common::test_credential(),
+            )
+            .unwrap(),
             tools: ToolSet::builtin(),
             store,
         },

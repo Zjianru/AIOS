@@ -1,11 +1,9 @@
 //! T005.0 接口地基：AgentConfig 字段、默认值与非法值校验。
 
-
-
 use std::path::PathBuf;
 
-use agent::{Agent, AgentConfig, AgentError, Deps};
 use crate::common::model_config;
+use agent::{Agent, AgentConfig, AgentError, Deps};
 use model::DeepSeek;
 use session::SessionStore;
 use tools::ToolSet;

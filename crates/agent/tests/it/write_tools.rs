@@ -1,11 +1,11 @@
 //! 接缝 1：写类工具经由 Agent 驱动（测试清单第 1、2 条 + D5 加项）。
 
-
-
 use std::fs;
 
+use crate::common::{
+    FINAL_TEXT_SSE, SequenceResponder, setup_agent, sse, tool_calls_with_inputs_sse,
+};
 use agent::Delivery;
-use crate::common::{FINAL_TEXT_SSE, SequenceResponder, setup_agent, sse, tool_calls_with_inputs_sse};
 use model::UserMessage;
 use serde_json::json;
 use session::{EventKind, SessionStore};

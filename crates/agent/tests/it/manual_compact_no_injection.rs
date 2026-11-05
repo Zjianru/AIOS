@@ -1,9 +1,7 @@
 //! 接缝 1：手动 /compact 不能顺带注入指令/skill（T006.1c 回归断言）。
 
-
-
-use agent::Delivery;
 use crate::common::{FINAL_TEXT_SSE, SequenceResponder, setup_agent_custom, sse};
+use agent::Delivery;
 use model::{ContentBlock, UserMessage};
 use session::{EventKind, SessionStore};
 use tools::ToolSet;
