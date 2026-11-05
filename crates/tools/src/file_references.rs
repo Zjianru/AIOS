@@ -109,14 +109,34 @@ pub fn list_with(
         Some(position) => (&query[..=position], &query[position + 1..]),
         None => ("", query.as_str()),
     };
+    // 目录段是排除目录的查询一律空（照 DSH listDirectory 对 excluded 段的处理）。
+    let directory_excluded = !directory.is_empty()
+        && directory.split('/').any(|segment| {
+            config
+                .excluded_directories
+                .iter()
+                .any(|name| name == segment)
+        });
+    if directory_excluded {
+        return Ok(Vec::new());
+    }
+    // 隐藏规则对全局查询和目录前缀查询都生效：只有显式点查询才看隐藏路径。
+    let hidden_query = query.starts_with('.') || query.contains("/.");
     let mut ranked: Vec<(IndexedPath, i64)> = indexed
         .into_iter()
         .filter(|entry| {
-            if directory.is_empty() {
-                visible_for_global_query(&entry.path, &query)
-            } else {
-                entry.path.starts_with(directory)
+            if !hidden_query
+                && entry
+                    .path
+                    .split('/')
+                    .any(|segment| segment.starts_with('.'))
+            {
+                return false;
             }
+            if !directory.is_empty() && !entry.path.starts_with(directory) {
+                return false;
+            }
+            true
         })
         .filter_map(|entry| score_candidate(&entry.path, fragment).map(|score| (entry, score)))
         .collect();
@@ -124,13 +144,7 @@ pub fn list_with(
         right
             .1
             .cmp(&left.1)
-            .then_with(|| {
-                if fragment.is_empty() {
-                    std::cmp::Ordering::Equal
-                } else {
-                    left.0.path.len().cmp(&right.0.path.len())
-                }
-            })
+            .then_with(|| left.0.path.len().cmp(&right.0.path.len()))
             .then_with(|| left.0.path.cmp(&right.0.path))
     });
     // 排好序后按 git 规则判断文字，凑满 maxResults 条或看完。
@@ -241,14 +255,6 @@ fn scan_workspace(
         }
     }
     Ok(indexed)
-}
-
-/// 全局查询（不含 /）的隐藏过滤：query 以点开头或含 "/." 才看隐藏路径。
-fn visible_for_global_query(path: &str, query: &str) -> bool {
-    if query.starts_with('.') || query.contains("/.") {
-        return true;
-    }
-    !path.split('/').any(|segment| segment.starts_with('.'))
 }
 
 /// 打分（照 DSH scoreCandidate；AIOS 没有目录加成）。

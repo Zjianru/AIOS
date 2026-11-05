@@ -149,14 +149,54 @@ fn ranks_exact_prefix_name_path_then_subsequence() {
 
 #[test]
 fn empty_query_ranks_short_then_alphabetical() {
+    // 长度序和字典序在这组数据上不同：字典序是 a-long < b < zz，长度序是 b(4) < zz(5) < a-long(9)。
     let dir = tempfile::tempdir().unwrap();
-    for path in ["bbb.ts", "a.ts", "cccc.ts"] {
+    for path in ["a-long.ts", "zz.ts", "b.ts"] {
         fs::write(dir.path().join(path), "x").unwrap();
     }
     assert_eq!(
         paths(&list(dir.path(), "").expect("空查询")),
-        vec!["a.ts".to_owned(), "bbb.ts".to_owned(), "cccc.ts".to_owned()],
+        vec![
+            "b.ts".to_owned(),
+            "zz.ts".to_owned(),
+            "a-long.ts".to_owned()
+        ],
         "空查询按路径长度、再按字典序"
+    );
+}
+
+#[test]
+fn directory_query_hides_dot_files_unless_explicitly_requested() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/visible.ts"), "x").unwrap();
+    fs::write(dir.path().join("src/.secret.ts"), "x").unwrap();
+    fs::write(dir.path().join("src/.cache/.hidden.ts"), "x").unwrap();
+    assert_eq!(
+        paths(&list(dir.path(), "src/").expect("目录查询")),
+        vec!["src/visible.ts".to_owned()],
+        "默认不列隐藏文件（含隐藏子目录里的）"
+    );
+    assert_eq!(
+        paths(&list(dir.path(), "src/.").expect("显式点查询")),
+        vec![
+            "src/.secret.ts".to_owned(),
+            "src/.cache/.hidden.ts".to_owned()
+        ],
+        "显式点查询才看隐藏（含隐藏子目录）"
+    );
+}
+
+#[test]
+fn directory_query_on_an_excluded_directory_is_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("node_modules/x")).unwrap();
+    fs::write(dir.path().join("node_modules/x/index.js"), "x").unwrap();
+    assert!(
+        list(dir.path(), "node_modules/")
+            .expect("排除目录查询")
+            .is_empty(),
+        "排除目录的查询给空"
     );
 }
 
