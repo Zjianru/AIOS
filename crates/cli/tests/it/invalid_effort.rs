@@ -1,10 +1,10 @@
-//! CLI 在发请求之前拒绝非法推理强度（测试清单第 11 条）。
+//! CLI 在发请求之前拒绝空推理强度（测试清单第 11 条）。
 
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[tokio::test]
-async fn invalid_effort_is_rejected_before_request() {
+async fn empty_effort_is_rejected_before_request() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
@@ -42,17 +42,17 @@ async fn invalid_effort_is_rejected_before_request() {
             "--cwd",
             ".",
             "--effort",
-            "bogus",
+            "",
             "你好",
         ])
         .output()
         .expect("运行 aios-dev");
-    assert!(!output.status.success(), "非法推理强度必须非 0 退出");
+    assert!(!output.status.success(), "空推理强度必须非 0 退出");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("推理强度"), "stderr={stderr}");
     assert_eq!(
         server.received_requests().await.unwrap().len(),
         0,
-        "非法推理强度不能发请求"
+        "空推理强度不能发请求"
     );
 }

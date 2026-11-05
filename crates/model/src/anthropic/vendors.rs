@@ -7,11 +7,6 @@
 use crate::Effort;
 
 /// 这次请求要不要发 thinking.enabled；关思考只发 disabled（现有 DeepSeek 行为）。
-pub(crate) fn thinking_enabled(effort: Effort) -> bool {
-    effort != Effort::Off
-}
-
-/// 非关档时 output_config.effort 的字符串。
-pub(crate) fn output_effort(effort: Effort) -> Option<&'static str> {
-    thinking_enabled(effort).then(|| effort.as_wire())
+pub(crate) fn thinking_enabled(effort: &Effort) -> bool {
+    !effort.is_off()
 }

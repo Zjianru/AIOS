@@ -42,7 +42,7 @@ fn options(data_dir: &Path, identity: &Path) -> RootSessionOptions {
             model: "deepseek-flash".to_owned(),
             max_tokens: 2048,
             context_window: DEFAULT_CONTEXT_WINDOW,
-            effort: Effort::High,
+            effort: Effort::new("high"),
         },
         config: AgentConfig::default(),
         credentials: Some(test_credential()),

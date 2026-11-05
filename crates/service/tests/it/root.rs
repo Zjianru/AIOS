@@ -85,7 +85,7 @@ fn options(
             model: "deepseek-flash".to_owned(),
             max_tokens: 2048,
             context_window: model::DEFAULT_CONTEXT_WINDOW,
-            effort: Effort::High,
+            effort: Effort::new("high"),
         },
         config,
         credentials: Some(test_credential()),

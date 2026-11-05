@@ -1286,7 +1286,7 @@ impl RootHost {
             model: connection.model.clone(),
             max_tokens: 1,
             context_window: model::DEFAULT_CONTEXT_WINDOW,
-            effort: model::Effort::Off,
+            effort: model::Effort::new("off"),
         };
         let cancel = model::CancelToken::new(
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),

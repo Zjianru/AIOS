@@ -35,7 +35,7 @@ impl Default for DeepSeekConfig {
             model: "deepseek-flash".to_owned(),
             max_tokens: DEFAULT_MAX_TOKENS,
             context_window: DEFAULT_CONTEXT_WINDOW,
-            effort: Effort::High,
+            effort: Effort::new("high"),
         }
     }
 }

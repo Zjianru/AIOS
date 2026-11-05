@@ -65,7 +65,7 @@ async fn setup_agent(base_url: &str) -> TestAgent {
         model: "deepseek-flash".to_owned(),
         max_tokens: 2048,
         context_window: model::DEFAULT_CONTEXT_WINDOW,
-        effort: model::Effort::High,
+        effort: model::Effort::new("high"),
     };
     let agent = Agent::create(
         config,

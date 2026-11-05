@@ -625,7 +625,7 @@ mod tests {
                 model: "deepseek-flash".to_owned(),
                 max_tokens: 16,
                 context_window: 1000,
-                effort: model::Effort::High,
+                effort: model::Effort::new("high"),
             },
             test_credential(),
         )

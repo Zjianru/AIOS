@@ -30,7 +30,7 @@ struct WireThinking {
 
 #[derive(Serialize)]
 struct WireOutputConfig {
-    effort: &'static str,
+    effort: String,
 }
 
 #[derive(Serialize)]
@@ -205,7 +205,7 @@ pub(super) fn request_body(
         }
     }
 
-    let effort = config.effort;
+    let effort = &config.effort;
     let wire_tools = if tools.is_empty() {
         None
     } else {
@@ -232,8 +232,9 @@ pub(super) fn request_body(
                 "disabled"
             },
         },
-        output_config: super::vendors::output_effort(effort)
-            .map(|effort| WireOutputConfig { effort }),
+        output_config: super::vendors::thinking_enabled(effort).then(|| WireOutputConfig {
+            effort: effort.as_str().to_owned(),
+        }),
         system: if system.is_empty() {
             None
         } else {

@@ -571,7 +571,7 @@ pub fn model_config(base_url: &str) -> model::DeepSeekConfig {
         model: "deepseek-flash".to_owned(),
         max_tokens: 2048,
         context_window: model::DEFAULT_CONTEXT_WINDOW,
-        effort: model::Effort::High,
+        effort: model::Effort::new("high"),
     }
 }
 

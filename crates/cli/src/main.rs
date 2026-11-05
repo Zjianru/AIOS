@@ -179,9 +179,11 @@ fn config_from_args(
     base_url: String,
 ) -> Result<(DeepSeekConfig, AgentConfig), CliError> {
     let effort = match common.effort.as_deref() {
-        None => Effort::High,
+        None => Effort::new("high"),
         Some(raw) => Effort::parse(raw).ok_or_else(|| {
-            CliError::Message(format!("非法推理强度 {raw}（只接受 off、low、high、max）"))
+            CliError::Message(format!(
+                "非法推理强度 {raw}（只接受非空字符串；模型档位规则在发送时适配）"
+            ))
         })?,
     };
     let max_tokens = match common.max_tokens {

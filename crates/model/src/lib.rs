@@ -6,6 +6,7 @@ mod anthropic;
 mod assistant_stream;
 mod cancel;
 mod credential;
+mod effort;
 mod error;
 pub mod http;
 mod ir;
@@ -19,9 +20,12 @@ pub use assistant_stream::{
 };
 pub use cancel::CancelToken;
 pub use credential::{CredentialContext, CredentialSource};
+pub use effort::{
+    EFFORT_ALIASES, EFFORT_RANK, Effort, budget_of, default_effort, effort_level, fit_effort,
+    nearest_effort, output_effort_at,
+};
 pub use error::{ErrorCode, ModelError};
 pub use ir::{
-    BlockType, ContentBlock, Effort, FinishReason, InstructionChange, InstructionChangeAction,
-    Message, MessageId, MessageSource, Role, SkillCatalogEntry, StreamChunk, ToolSchema, Usage,
-    UserMessage,
+    BlockType, ContentBlock, FinishReason, InstructionChange, InstructionChangeAction, Message,
+    MessageId, MessageSource, Role, SkillCatalogEntry, StreamChunk, ToolSchema, Usage, UserMessage,
 };
