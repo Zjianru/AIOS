@@ -1573,6 +1573,7 @@ mod t009_error_tests {
                 service::ServiceErrorCode::RequestInvalidJson
                     | service::ServiceErrorCode::AttachmentInvalid
                     | service::ServiceErrorCode::AttachmentNotText
+                    | service::ServiceErrorCode::RequestInvalidMessage
             ) {
                 assert_eq!(status, StatusCode::BAD_REQUEST);
             } else {
