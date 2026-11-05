@@ -5,7 +5,7 @@ mod common;
 use agent::{Agent, AgentConfig, Delivery};
 use common::{FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse};
 use model::{ContentBlock, UserMessage};
-use session::{EventKind, SessionStore};
+use session::{EventKind, SessionStore, TurnEndReason};
 use tools::ToolSet;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer};
@@ -31,6 +31,7 @@ async fn injection_happens_before_compaction_in_same_turn() {
             sse(FINAL_TEXT_SSE.to_owned()),
             sse(FINAL_TEXT_SSE.to_owned()),
         ]))
+        .expect(3)
         .mount(&server)
         .await;
 
@@ -93,5 +94,16 @@ async fn injection_happens_before_compaction_in_same_turn() {
     assert!(
         instr < compaction && skill < compaction,
         "注入必须发生在 compaction/start 之前：instr={instr}, skill={skill}, compaction={compaction}"
+    );
+    let end = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            EventKind::TurnEnd { reason, .. } => Some(reason),
+            _ => None,
+        })
+        .expect("这一轮应有 turn/end");
+    assert!(
+        matches!(end, TurnEndReason::Completed),
+        "这一轮应做完（不是被 mock 耗尽拖成错误）：{end:?}"
     );
 }
