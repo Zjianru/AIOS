@@ -24,7 +24,7 @@ test('设置页从目录加 MiniMax 连接并保存', async ({ page }) => {
     // 设置里也显示模型行（MiniMax M3.1 Flash 来自内置目录）；先展开自定义设置。
     await page.getByRole('button', { name: '编辑', exact: true }).last().click();
     await page.locator('[data-settings="editor"]').getByText('自定义设置').click();
-    await expect(page.locator('[data-settings="editor"]')).toContainText('2 个模型', {
+    await expect(page.locator('[data-settings="editor"]')).toContainText('4 个模型', {
       timeout: 20_000,
     });
     await expect(

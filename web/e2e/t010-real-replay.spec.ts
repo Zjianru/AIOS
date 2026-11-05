@@ -37,7 +37,7 @@ test('回放真 key 夹具：缓存命中、想了 N 秒、压缩占用', async 
 
     // 悬停最后一轮：模型名 + 缓存命中（真 key 录的 usage 有 cacheRead）。
     await page.getByText('工作过程', { exact: false }).last().hover();
-    await expect(page.getByText(/DeepSeek Flash · 输入 \d+/).last()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(/DeepSeek-V4\.1-Flash · 输入 \d+/).last()).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText(/缓存命中 \d+%/).last()).toBeVisible();
 
     // 展开第一轮：思考帧 → 想了 N 秒。

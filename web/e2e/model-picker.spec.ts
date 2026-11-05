@@ -10,11 +10,11 @@ test('底栏选模型：下一轮请求用新模型', async ({ page, request }) 
       id: 'deepseek',
       endpoint: fixture.fakeEndpoint,
       model: 'deepseek-flash',
-      models: [{ id: 'deepseek-flash' }, { id: 'deepseek-pro' }],
+      models: [{ id: 'deepseek-flash' }, { id: 'deepseek-v4-pro' }],
     });
     await page.goto(`${fixture.baseUrl}/?token=${encodeURIComponent(fixture.token)}#kind`);
     await page.locator('[data-kind="model-picker"]').click();
-    await page.getByRole('menuitem', { name: /DeepSeek Pro/ }).click({ force: true });
+    await page.getByRole('menuitem', { name: /DeepSeek-V4-Pro/ }).click({ force: true });
     await page.getByPlaceholder('和 Kind 说…').fill('你好');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await expect.poll(() => fixture.lastModel(), { timeout: 30_000 }).toBe('deepseek-pro');
@@ -32,7 +32,7 @@ test('换模型失败：不先改状态，给中文原因', async ({ page, reque
       id: 'deepseek',
       endpoint: fixture.fakeEndpoint,
       model: 'deepseek-flash',
-      models: [{ id: 'deepseek-flash' }, { id: 'deepseek-pro' }],
+      models: [{ id: 'deepseek-flash' }, { id: 'deepseek-v4-pro' }],
     });
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     await page.locator('[data-kind="model-picker"]').click();
@@ -43,7 +43,7 @@ test('换模型失败：不先改状态，给中文原因', async ({ page, reque
       }
       await route.continue();
     });
-    await page.getByRole('menuitem', { name: /DeepSeek Pro/ }).click({ force: true });
+    await page.getByRole('menuitem', { name: /DeepSeek-V4-Pro/ }).click({ force: true });
     await expect(page.locator('[data-kind="model-picker"]')).toContainText('DeepSeek Chat');
     await expect(page.getByText('换模型没成：', { exact: false })).toBeVisible({ timeout: 15_000 });
   } finally {
