@@ -549,7 +549,6 @@ export async function startT013KernelFixture(): Promise<KernelFixture> {
       '--name', 'MiniMax（国内站）',
       '--model', 'MiniMax-M3.1-Flash',
       '--endpoint', 'https://api.minimaxi.com/anthropic',
-      '--preset', 'minimax-cn',
     ],
     { input: apiKey + '\n', encoding: 'utf8' },
   );
