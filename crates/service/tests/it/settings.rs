@@ -814,7 +814,6 @@ async fn 选模型写会话日志事件并保存上次选择() {
             connection: Some("deepseek".to_owned()),
             model: Some("deepseek-pro".to_owned()),
             effort_wanted: Some("low".to_owned()),
-            ..Default::default()
         }))
         .await
         .expect("session-model-select");
