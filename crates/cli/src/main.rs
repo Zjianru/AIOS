@@ -239,6 +239,8 @@ fn config_from_args(
 struct KeyringCredentialSource {
     keyring: Arc<credentials::Keyring>,
     connection: String,
+    /// K4：外部 keyring set 改 key 后，签发时把监控脱敏列表刷新。
+    monitor: Option<Monitor>,
 }
 
 impl model::CredentialSource for KeyringCredentialSource {
@@ -247,14 +249,14 @@ impl model::CredentialSource for KeyringCredentialSource {
         purpose: &str,
         context: &model::CredentialContext,
     ) -> Result<String, model::ModelError> {
-        self.keyring
+        let issued = self
+            .keyring
             .issue(
                 &self.connection,
                 purpose,
                 context.run.as_deref(),
                 context.turn,
             )
-            .map(credentials::IssuedSecret::into_secret)
             .map_err(|error| {
                 let message = match &error {
                     credentials::KeyringError::KeyFileMissing(_)
@@ -269,7 +271,11 @@ impl model::CredentialSource for KeyringCredentialSource {
                     _ => model::ErrorCode::MissingCredential,
                 };
                 model::ModelError::new(code, message)
-            })
+            })?;
+        if let Some(monitor) = &self.monitor {
+            refresh_monitor_secrets(monitor, &self.keyring);
+        }
+        Ok(issued.into_secret())
     }
 }
 
@@ -277,6 +283,7 @@ impl model::CredentialSource for KeyringCredentialSource {
 fn model_with_keyring(
     common: &CommonArgs,
     data_dir: &PathBuf,
+    monitor: Option<&Monitor>,
 ) -> Result<
     (
         DeepSeekConfig,
@@ -312,6 +319,7 @@ fn model_with_keyring(
     let source = KeyringCredentialSource {
         keyring,
         connection: "deepseek".to_owned(),
+        monitor: monitor.cloned(),
     };
     Ok((deepseek_config, agent_config, Arc::new(source)))
 }
@@ -327,7 +335,7 @@ async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
         Some(path) => path.clone(),
         None => std::env::current_dir()?,
     };
-    let (deepseek_config, config, credentials) = model_with_keyring(common, &data_dir)?;
+    let (deepseek_config, config, credentials) = model_with_keyring(common, &data_dir, None)?;
     let resume = match &common.resume {
         Some(raw) => Some(SessionId::parse(raw)?),
         None => None,
@@ -466,9 +474,13 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         {
             refresh_monitor_secrets(&monitor_for_recheck, &keyring);
         }
-        model_with_keyring(&factory_common, &factory_data_dir)
-            .map(|(config, _agent, credentials)| (config, Some(credentials)))
-            .map_err(|error| error.to_string())
+        model_with_keyring(
+            &factory_common,
+            &factory_data_dir,
+            Some(&monitor_for_recheck),
+        )
+        .map(|(config, _agent, credentials)| (config, Some(credentials)))
+        .map_err(|error| error.to_string())
     });
     // F1：设置页保存/删除/撤销、搬迁/重开/重启后，把 Keyring 当前 key 刷新给监控。
     let monitor_for_keyring = monitor.clone();
