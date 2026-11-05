@@ -5,6 +5,7 @@
 mod anthropic;
 mod assistant_stream;
 mod cancel;
+pub mod catalog;
 mod credential;
 mod effort;
 mod error;
