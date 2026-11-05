@@ -75,8 +75,7 @@ pub fn file_handle_text(attachment_id: &str, name: &str, bytes: u64, path: Optio
             quoted(path)
         ),
         None => format!(
-            "[{} was uploaded, but the current execution environment cannot access a readable path. Report that limitation if its contents are needed; do not claim to have read it.]",
-            identity
+            "[{identity} was uploaded, but the current execution environment cannot access a readable path. Report that limitation if its contents are needed; do not claim to have read it.]"
         ),
     }
 }
