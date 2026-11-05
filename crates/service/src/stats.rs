@@ -262,6 +262,81 @@ mod tests {
         assert_eq!(stats.context_window, 1000);
     }
 
+    fn connection_with(
+        id: &str,
+        endpoint: &str,
+        preset: &str,
+        rate: f64,
+        user_price: Option<f64>,
+    ) -> ConnectionInfo {
+        ConnectionInfo {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: endpoint.to_owned(),
+            saved_at: 0,
+            check: credentials::CheckState::Never,
+            key_saved: true,
+            preset: preset.to_owned(),
+            models: vec![credentials::ModelRow {
+                id: "deepseek-flash".to_owned(),
+                name: None,
+                context_window: None,
+                max_tokens: None,
+                price: user_price,
+            }],
+            price_rate: rate,
+            auth_header: None,
+        }
+    }
+
+    /// T012.8a 审计：两轮跨连接（DeepSeek 用户价 → MiniMax 倍率 0=免费）按各自连接定价。
+    #[test]
+    fn stats_price_each_round_with_its_own_connection() {
+        let deepseek = connection_with(
+            "deepseek",
+            "https://api.deepseek.com/anthropic",
+            "deepseek",
+            1.0,
+            Some(2.0),
+        );
+        let minimax = connection_with(
+            "minimax-cn",
+            "https://api.minimaxi.com/anthropic",
+            "minimax-cn",
+            0.0,
+            None,
+        );
+        let events = vec![
+            session::Event::new(1, 1, session::EventKind::TurnStart { turn: 1 }),
+            session::Event::new(2, 2, assistant_message("deepseek-flash")),
+            session::Event::new(
+                3,
+                3,
+                session::EventKind::SessionModel {
+                    connection: "minimax-cn".to_owned(),
+                    model: "MiniMax-M3.1-Flash".to_owned(),
+                    effort_wanted: "low".to_owned(),
+                },
+            ),
+            session::Event::new(4, 4, session::EventKind::TurnStart { turn: 2 }),
+            session::Event::new(5, 5, assistant_message("MiniMax-M3.1-Flash")),
+        ];
+        let current = session::ModelSelection {
+            connection: "minimax-cn".to_owned(),
+            model: "MiniMax-M3.1-Flash".to_owned(),
+            effort_wanted: "low".to_owned(),
+        };
+        // 修复前签名：只传当前连接（MiniMax，倍率 0）；DeepSeek 轮会被错算成免费/无价。
+        let stats = session_stats(&events, &minimax, &catalog(), &current, 0, 0);
+        let cost = stats.cost_usd.expect("DeepSeek 轮有用户价，应该有花费");
+        let deepseek_cost = (1_300_000.0 * 2.0 + 500_000.0 * 2.0) / 1e6;
+        assert!(
+            (cost - deepseek_cost).abs() < 1e-6,
+            "每轮按自己连接的价格算：{cost} vs {deepseek_cost}"
+        );
+    }
+
     #[test]
     fn no_priced_round_hides_cost() {
         let events = vec![session::Event::new(

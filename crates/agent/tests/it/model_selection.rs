@@ -117,6 +117,17 @@ async fn 选择写session_model事件且下一轮请求用新模型和档() {
         .unwrap();
     wait_idle(&agent, 20).await;
 
+    // T012.8a 审计：assistant/message 的 source.model 必须是本轮实际模型（不是 config.model）。
+    let rows = log_rows(data_dir.path(), &id);
+    let second_assistant = rows
+        .iter()
+        .filter(|row| row["type"] == "assistant/message")
+        .nth(1)
+        .expect("第二轮的 assistant/message");
+    assert_eq!(
+        second_assistant["data"]["message"]["source"]["model"], "MiniMax-M3.1-Flash",
+        "本轮冻结模型写进 assistant/message 的 source（换模型后不能记旧模型）：{second_assistant}"
+    );
     let requests = server.received_requests().await.expect("请求记录");
     assert_eq!(requests.len(), 2, "两轮各一次请求");
     let first: Value = serde_json::from_slice(&requests[0].body).expect("body");
