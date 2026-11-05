@@ -14,6 +14,42 @@ use crate::{
     RetryMode, SessionStore, ShadowedRange, TodoItem, TodoStatus, ToolError, TurnEndReason,
 };
 
+/// T012.7：session/model 事件的日志形状（type/data/effortWanted）与最近选择折叠。
+#[test]
+fn session_model_event_shape_and_last_selection() {
+    let events = vec![
+        crate::Event::new(
+            1,
+            1,
+            EventKind::SessionModel {
+                connection: "deepseek".to_owned(),
+                model: "deepseek-flash".to_owned(),
+                effort_wanted: "high".to_owned(),
+            },
+        ),
+        crate::Event::new(
+            2,
+            2,
+            EventKind::SessionModel {
+                connection: "minimax-cn".to_owned(),
+                model: "MiniMax-M3.1-Flash".to_owned(),
+                effort_wanted: "low".to_owned(),
+            },
+        ),
+    ];
+    let json = serde_json::to_value(&events[1]).unwrap();
+    assert_eq!(json["type"], "session/model");
+    assert_eq!(json["data"]["connection"], "minimax-cn");
+    assert_eq!(json["data"]["effortWanted"], "low");
+    let last = crate::last_model_selection(&events).expect("最近选择");
+    assert_eq!(last.connection, "minimax-cn");
+    assert_eq!(last.model, "MiniMax-M3.1-Flash");
+    assert_eq!(last.effort_wanted, "low");
+    // 日志行读回（反序列化）后折叠结果不变。
+    let parsed: crate::Event = serde_json::from_value(json).unwrap();
+    assert_eq!(crate::last_model_selection(&[parsed]).unwrap(), last);
+}
+
 fn create_store() -> (tempfile::TempDir, tempfile::TempDir, SessionStore) {
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();

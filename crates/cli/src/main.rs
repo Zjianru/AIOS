@@ -325,7 +325,7 @@ fn model_with_keyring(
     common: &CommonArgs,
     data_dir: &PathBuf,
     monitor: Option<&Monitor>,
-    _session_selection: Option<&session::ModelSelection>,
+    session_selection: Option<&session::ModelSelection>,
 ) -> Result<
     (
         String,
@@ -343,24 +343,53 @@ fn model_with_keyring(
     if let Some(problem) = view.key_file.problem.clone() {
         return Err(CliError::Message(format!("Keyring 读不出来：{problem}")));
     }
-    // 骨架版：仍然只找 deepseek 连接（T012.7 的连接/模型/档解析在实现提交里接）。
-    let connection = view
-        .connections
-        .iter()
-        .find(|connection| connection.id == "deepseek")
+    let settings = service::settings::load(data_dir);
+    let last = session_selection
         .cloned()
+        .or_else(|| settings.last_selection.clone());
+    // 目标连接：命令行 > 会话/上次选择 > deepseek。
+    let preferred = common
+        .connection
+        .clone()
+        .or_else(|| last.as_ref().map(|selection| selection.connection.clone()));
+    let connection = preferred
+        .and_then(|id| {
+            view.connections
+                .iter()
+                .find(|connection| connection.id == id)
+                .cloned()
+        })
+        .or_else(|| {
+            view.connections
+                .iter()
+                .find(|connection| connection.id == "deepseek")
+                .cloned()
+        })
         .ok_or_else(|| {
             CliError::Message(
                 "还没有接模型：先从页面接上，或运行 aios-dev keyring set（key 从标准输入读）"
                     .to_owned(),
             )
         })?;
-    let (mut deepseek_config, agent_config) =
-        config_from_args(common, connection.endpoint.clone())?;
-    deepseek_config.model = common
+    // 模型/档：命令行 > 会话/上次选择 > 连接默认。
+    let model = common
         .model
         .clone()
-        .unwrap_or_else(|| connection.model.clone());
+        .or_else(|| last.as_ref().map(|selection| selection.model.clone()))
+        .unwrap_or_else(|| connection.primary_model().to_owned());
+    let effort = common
+        .effort
+        .clone()
+        .or_else(|| {
+            last.as_ref()
+                .map(|selection| selection.effort_wanted.clone())
+        })
+        .unwrap_or_else(|| "high".to_owned());
+    let mut resolved_common = common.clone();
+    resolved_common.effort = Some(effort);
+    let (mut deepseek_config, agent_config) =
+        config_from_args(&resolved_common, connection.endpoint.clone())?;
+    deepseek_config.model = model;
     let source = KeyringCredentialSource {
         keyring,
         connection: connection.id.clone(),
@@ -389,8 +418,14 @@ async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
         Some(raw) => Some(SessionId::parse(raw)?),
         None => None,
     };
+    // T012.7：续接时从会话日志恢复模型选择（重开会话还是它）。
+    let session_selection = resume.as_ref().and_then(|id| {
+        session::SessionStore::open_read_only(&data_dir, id)
+            .ok()
+            .and_then(|snapshot| session::last_model_selection(snapshot.events()))
+    });
     let (_connection, deepseek_config, config, credentials) =
-        model_with_keyring(common, &data_dir, None, None)?;
+        model_with_keyring(common, &data_dir, None, session_selection.as_ref())?;
     let agent = Agent::open(AgentOpenOptions {
         data_dir,
         cwd,
@@ -541,7 +576,7 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let factory_common = args.common.clone();
     let factory_data_dir = data_dir.clone();
     let monitor_for_recheck = monitor.clone();
-    let model_factory: service::ModelFactory = std::sync::Arc::new(move |_selection| {
+    let model_factory: service::ModelFactory = std::sync::Arc::new(move |selection| {
         if let Ok(keyring) =
             credentials::Keyring::open(factory_data_dir.clone(), factory_common.identity.as_deref())
         {
@@ -551,7 +586,7 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             &factory_common,
             &factory_data_dir,
             Some(&monitor_for_recheck),
-            None,
+            selection,
         )
         .map(|(connection, config, _agent, credentials)| (connection, config, Some(credentials)))
         .map_err(|error| error.to_string())

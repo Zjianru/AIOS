@@ -1554,29 +1554,99 @@ impl RootHost {
 
     /// T008.3/T012.7：选模型（连接/模型/想要的档；下一轮生效，D26）。
     ///
-    /// 骨架版：只保留原来的「同连接换模型、下一轮生效」；durable 选择（事件/settings/
-    /// 跨连接重建）在实现提交里接线。
+    /// 选择是 durable 事实：写 session/model 事件（重开会话从日志恢复）并更新 settings.json
+    /// 的上次选择（新会话继承）。同连接换模型/档只改下一轮；跨连接时若当前空闲则重建根
+    /// agent（新连接从下一轮开始用）；正在跑一轮时只记录选择，重建留到 recheck/重启
+    /// （known：运行中跨连接热切换不打断当前轮）。
     pub async fn session_model_select(
         &self,
         request: SessionModelSelectRequest,
     ) -> Result<SessionModelSelectResponse, ServiceError> {
-        let guard = self.inner.lock().await;
-        match guard.as_ref() {
-            Some(host) => {
-                let model = request
-                    .model
-                    .clone()
-                    .unwrap_or_else(|| self.options.model.model.clone());
-                host.select_model(model.clone());
-                Ok(SessionModelSelectResponse {
-                    connection: request.connection.unwrap_or_else(|| "deepseek".to_owned()),
-                    model,
-                    effort_wanted: request.effort_wanted.unwrap_or_else(|| "high".to_owned()),
-                })
+        let current = self
+            .selection
+            .lock()
+            .expect("selection 锁被毒化")
+            .clone()
+            .unwrap_or_else(|| session::ModelSelection {
+                connection: "deepseek".to_owned(),
+                model: self.options.model.model.clone(),
+                effort_wanted: self.options.model.effort.as_str().to_owned(),
+            });
+        let target = session::ModelSelection {
+            connection: request
+                .connection
+                .unwrap_or_else(|| current.connection.clone()),
+            model: request.model.unwrap_or_else(|| current.model.clone()),
+            effort_wanted: request
+                .effort_wanted
+                .unwrap_or_else(|| current.effort_wanted.clone()),
+        };
+        // settings.json：新会话默认用上一次选的（story 2）。
+        let mut settings = settings::load(&self.options.data_dir);
+        settings.last_selection = Some(target.clone());
+        let _ = settings::save(&self.options.data_dir, &settings);
+        let cross_connection = target.connection != current.connection;
+        let idle = {
+            let guard = self.inner.lock().await;
+            let Some(host) = guard.as_ref() else {
+                return Err(ServiceError::RootUnavailable(
+                    self.state.lock().expect("root state 锁被毒化").clone(),
+                ));
+            };
+            host.agent().select(&target).await?;
+            !host.agent().is_running()
+        };
+        *self.selection.lock().expect("selection 锁被毒化") = Some(target.clone());
+        if cross_connection && idle {
+            self.rebuild_with(&target).await?;
+        }
+        Ok(SessionModelSelectResponse {
+            connection: target.connection,
+            model: target.model,
+            effort_wanted: target.effort_wanted,
+        })
+    }
+
+    /// T012.7：按新的选择重建根 agent（跨连接热切换；用 factory 解析新连接）。
+    async fn rebuild_with(&self, selection: &session::ModelSelection) -> Result<(), ServiceError> {
+        let mut options = self.options.clone();
+        if let Some(factory) = options.model_factory.clone() {
+            match factory(Some(selection)) {
+                Ok((connection, model, credentials)) => {
+                    *self.selection.lock().expect("selection 锁被毒化") =
+                        Some(session::ModelSelection {
+                            connection,
+                            model: model.model.clone(),
+                            effort_wanted: model.effort.as_str().to_owned(),
+                        });
+                    options.model = model;
+                    options.credentials = credentials;
+                }
+                Err(message) => {
+                    let state = RootState::Unavailable {
+                        kind: RootUnavailableKind::Other,
+                        path: None,
+                        line: None,
+                        message,
+                    };
+                    *self.state.lock().expect("root state 锁被毒化") = state.clone();
+                    return Err(ServiceError::RootUnavailable(state));
+                }
             }
-            None => Err(ServiceError::RootUnavailable(
-                self.state.lock().expect("root state 锁被毒化").clone(),
-            )),
+        }
+        // 先放掉旧 Agent（释放会话写锁）再重开同一会话。
+        let old = self.inner.lock().await.take();
+        drop(old);
+        match open_root_session(options).await {
+            Ok(root) => {
+                self.install(root.agent).await;
+                Ok(())
+            }
+            Err(error) => {
+                let state = RootState::from_root_error(&error);
+                *self.state.lock().expect("root state 锁被毒化") = state.clone();
+                Err(ServiceError::RootUnavailable(state))
+            }
         }
     }
 
