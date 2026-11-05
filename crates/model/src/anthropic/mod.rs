@@ -1,6 +1,7 @@
 //! Anthropic Messages 适配器：HTTP 传输、SSE 解码和流事件翻译。
 
 mod config;
+mod learned;
 mod serialize;
 mod sse;
 mod translate;
@@ -18,6 +19,7 @@ use crate::{
     CancelToken, CredentialContext, CredentialSource, ErrorCode, Message, ModelError, StreamChunk,
     ToolSchema,
 };
+use learned::Learned;
 use sse::SseParser;
 use translate::Translator;
 
@@ -35,6 +37,10 @@ pub struct DeepSeek {
     next_model: Arc<Mutex<Option<String>>>,
     /// 本轮冻结的模型；begin_turn 时从 next_model 复制，stream 只读这里。
     turn_model: Arc<Mutex<Option<String>>>,
+    /// T012.6：学到的连接事实（关不掉思考、通过的鉴权头），同实例的 clone 共享。
+    /// 骨架阶段还没读（接线在实现提交），先允许 dead_code。
+    #[allow(dead_code)]
+    learned: Arc<Learned>,
 }
 
 impl fmt::Debug for DeepSeek {
@@ -64,6 +70,7 @@ impl DeepSeek {
             issue_context: Arc::new(Mutex::new(CredentialContext::default())),
             next_model: Arc::new(Mutex::new(None)),
             turn_model: Arc::new(Mutex::new(None)),
+            learned: Arc::new(Learned::default()),
         })
     }
 
