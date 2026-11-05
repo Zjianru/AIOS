@@ -6,11 +6,13 @@
  */
 
 import { memo, useState } from 'react';
-import { ChevronRight, CircleAlert, LoaderCircle, RotateCw, Square } from 'lucide-react';
+import { ChevronRight, CircleAlert, RotateCw, Square } from 'lucide-react';
 import { Markdown } from './Markdown';
 import { QuoteChip } from './QuoteChip';
 import { QuestionCard } from './QuestionCard';
 import { useKindStore, useStreamStore } from './kindStore';
+import { processStepsOf } from './turnViews';
+import { ProcessView } from './process/ProcessView';
 import type { CompactionView, TurnViewData } from './kindStore';
 import { go } from '@/app/navigate';
 import type { TextElement } from '@/data/types';
@@ -46,7 +48,7 @@ function Answer({ view }: { view: TurnViewData }) {
     view.delivery !== null ||
     view.retry !== null ||
     view.question?.status === 'pending' ||
-    view.tools.some((tool) => tool.running);
+    view.tools.some((tool) => tool.state === 'running');
   if (!text && busyElsewhere) return null;
   if (!text) {
     return (
@@ -96,97 +98,6 @@ function Thinking({ view }: { view: TurnViewData }) {
   );
 }
 
-function WorkProcess({ view }: { view: TurnViewData }) {
-  const [open, setOpen] = useState(false);
-  const toolCount = view.tools.length;
-  const seconds = view.durationMs ? Math.max(1, Math.round(view.durationMs / 1000)) : 0;
-  // T010.3：输入显示全部输入（输入 + 缓存读 + 缓存写）；厂商没报缓存就不显示命中。
-  const shownInput = view.tokens.input + (view.tokens.cacheRead ?? 0) + (view.tokens.cacheWrite ?? 0);
-  const prompt = shownInput;
-  const cacheHit =
-    view.tokens.cacheRead === undefined || view.tokens.cacheRead === null || prompt === 0
-      ? null
-      : Math.round((view.tokens.cacheRead / prompt) * 100);
-  const tokens = shownInput + view.tokens.output;
-  return (
-    <div className="group/work relative mt-2 text-2">
-      {/* hover 出来的模型 / token / 花费：绝对定位在行右侧，不参与布局，所以行不会跳 */}
-      <span className="pointer-events-none absolute right-0 top-0 hidden items-center gap-1.5 whitespace-nowrap text-ink-3 group-hover/work:flex">
-        {view.model} · 输入 <span className="brand-type">{shownInput}</span>
-        {cacheHit === null ? null : (
-          <>
-            {' '}· 缓存命中 <span className="brand-type">{cacheHit}%</span>
-          </>
-        )}{' '}
-        · 输出 <span className="brand-type">{view.tokens.output}</span>
-      </span>
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className="flex items-center gap-1.5 text-ink-3 transition-colors hover:text-ink-2"
-      >
-        <ChevronRight className={cn('size-3.5 transition-transform', open && 'rotate-90')} />
-        工作过程 · <span className="brand-type">{seconds} 秒</span>
-      </button>
-      {open ? (
-        <div className="mt-1.5 space-y-1 border-l border-line pl-3">
-          {/* 信息分层（brief §四.3）：默认只显示用时；想了多久、调了几次、多少 token 点开才看 */}
-          <div className="text-2 text-ink-3">
-            <span className="text-ink-2">经过</span> ·{' '}
-            {view.thinkingSeconds > 0 ? <>想了 {view.thinkingSeconds} 秒 · </> : null}调了 {toolCount} 次工具 ·{' '}
-            <span className="brand-type">{(tokens / 1000).toFixed(1)}k</span>
-          </div>
-          {view.reasoning ? (
-            <div className="text-2 text-ink-3">
-              <span className="text-ink-2">思考</span> · {view.reasoning.summary.join(' / ') || '（略）'}
-            </div>
-          ) : null}
-          {view.tools.map((tool) => (
-            <div key={tool.id} className="flex items-start gap-2 text-2">
-              <span className="mt-[1px] shrink-0 text-ink-3">›</span>
-              <code className="min-w-0 flex-1 break-all font-mono text-ink-2">{tool.command}</code>
-              {tool.output ? <span className="min-w-0 max-w-[38%] truncate text-ink-3">{tool.output.slice(0, 40)}</span> : null}
-              {tool.durationMs ? (
-                <span className="ml-auto shrink-0 brand-type text-ink-3">{(tool.durationMs / 1000).toFixed(1)}s</span>
-              ) : null}
-            </div>
-          ))}
-          
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-/** 运行中的一轮：工作过程展开着，一步一步实时出现；正在跑的那步转圈。 */
-function LiveWork({ view }: { view: TurnViewData }) {
-  if (view.tools.length === 0) return null;
-  const running = view.tools.find((tool) => tool.running);
-  return (
-    <div className="mt-2 text-2" data-kind="live-work">
-      <div className="flex items-center gap-1.5 text-ink-3">
-        <ChevronRight className="size-3.5 rotate-90" />
-        工作中{running ? <span className="truncate">· 正在 <code className="font-mono text-ink-2">{running.command}</code></span> : null}
-      </div>
-      <div className="mt-1.5 space-y-1 border-l border-line pl-3">
-        {view.tools.map((tool) => (
-          <div key={tool.id} className="flex items-start gap-2">
-            {tool.running ? (
-              <LoaderCircle className="mt-[2px] size-3 shrink-0 animate-spin text-run" />
-            ) : (
-              <span className="mt-[1px] shrink-0 text-ink-3">›</span>
-            )}
-            <code className={cn('min-w-0 flex-1 break-all font-mono', tool.running ? 'text-ink' : 'text-ink-2')}>{tool.command}</code>
-            {tool.output ? <span className="min-w-0 max-w-[38%] truncate text-ink-3">{tool.output}</span> : null}
-            {tool.durationMs ? (
-              <span className="ml-auto shrink-0 brand-type text-ink-3">{(tool.durationMs / 1000).toFixed(1)}s</span>
-            ) : null}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 /** 模型请求失败、内核在重试：说清楚第几次、为什么。 */
 function RetryLine({ retry }: { retry: NonNullable<TurnViewData['retry']> }) {
@@ -347,7 +258,17 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
 
           
 
-          {streaming ? <LiveWork view={view} /> : null}
+          {streaming ? (
+            <ProcessView
+              steps={processStepsOf(view, '')}
+              status={view.status}
+              live
+              startedAt={view.startedAt}
+              durationMs={view.durationMs}
+              cwd=""
+              answering={false}
+            />
+          ) : null}
           {view.question ? <QuestionCard turnId={view.id} question={view.question} /> : null}
           {view.retry ? <RetryLine retry={view.retry} /> : null}
 
@@ -363,7 +284,19 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
           ) : null}
           <FailureBlock view={view} />
 
-          {!streaming && (view.tools.length > 0 || view.answer) ? <WorkProcess view={view} /> : null}
+          {!streaming && (view.tools.length > 0 || view.answer) ? (
+            <div className="mt-2">
+              <ProcessView
+                steps={processStepsOf(view, '')}
+                status={view.status}
+                live={false}
+                startedAt={view.startedAt}
+                durationMs={view.durationMs}
+                cwd=""
+                answering
+              />
+            </div>
+          ) : null}
         </>
       )}
     </div>

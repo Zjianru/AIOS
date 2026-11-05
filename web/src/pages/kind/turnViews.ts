@@ -4,6 +4,8 @@ import type { ServiceEvent } from '@/data/service';
 import type { AskAnswer, AskQuestion, FailureCause } from '@/data/fixtures/kindLive';
 import type { KindCard, TextElement, TurnStatus } from '@/data/types';
 import { modelErrorReason, retryReason } from '@/data/errors';
+import { parseExitStatus } from './process/toolModel';
+import type { ProcessStep } from './process/toolModel';
 import { useKindStore } from './kindStore';
 import {
   contextPercent,
@@ -18,13 +20,21 @@ import {
 
 export interface ToolStep {
   id: string;
-  command: string;
+  /** T013.5：工具名（read/write/bash/...）与解析后的参数。 */
+  name: string;
+  args: Record<string, unknown>;
   output: string;
   exitCode: number | null;
+  /** 被信号杀掉时的信号名（bash 的 [killed by signal: X]）。 */
+  signal?: string | null;
   durationMs: number | null;
+  /** running/done/error/stopped（T013.5：停下的一轮把没结束的标 stopped）。 */
+  state: 'running' | 'done' | 'error' | 'stopped';
+  /** T013.1：tool/result.meta（diffs/operation/stopped）。 */
+  meta?: Record<string, unknown> | null;
+  /** 调用事件的时间（算这一步用时）。 */
+  startedAtMs?: number | null;
   tool?: string;
-  /** 这一步还在跑（运行中的一轮里实时出现）。 */
-  running?: boolean;
 }
 
 /** 模型提问：等你答 → 答了 / 不答 / 这一轮被停了。 */
@@ -230,24 +240,43 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       }
       case 'tool/call': {
         const raw = ensure(turn);
+        let args: Record<string, unknown> = {};
+        const rawArgs = data.arguments;
+        if (typeof rawArgs === 'string' && rawArgs.trim()) {
+          try {
+            const parsed = JSON.parse(rawArgs) as unknown;
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) args = parsed as Record<string, unknown>;
+          } catch {
+            args = {};
+          }
+        }
         raw.tools.push({
           id: String(data.call_id ?? data.callId ?? ''),
-          command: String(data.name ?? ''),
+          name: String(data.name ?? ''),
+          args,
           output: '',
           exitCode: null,
           durationMs: null,
-          running: true,
+          state: 'running',
+          startedAtMs: event.time,
         });
         break;
       }
       case 'tool/result': {
         const raw = ensure(turn);
-        const step = [...raw.tools].reverse().find((item) => item.running);
+        // T013.5：按 call id 配对（不再用「最后一条 running」猜），并留下 meta。
+        const message = (data.message ?? {}) as Record<string, unknown>;
+        const callId = String(message.toolCallId ?? message.tool_call_id ?? '');
+        const step = callId ? raw.tools.find((item) => item.id === callId) : undefined;
         if (step) {
-          step.running = false;
-          step.exitCode = data.error ? 1 : 0;
-          step.output = textOf(data.message) || textOfToolResult(data.message);
-          if (!step.output) step.output = String((data.error as { code?: string } | undefined)?.code ?? '');
+          step.state = data.error ? 'error' : 'done';
+          const body = textOf(data.message) || textOfToolResult(data.message);
+          step.output = body || String((data.error as { code?: string } | undefined)?.code ?? '');
+          step.meta = (data.meta as Record<string, unknown> | undefined) ?? null;
+          const status = parseExitStatus(step.output);
+          step.exitCode = status.exitCode;
+          step.signal = status.signal;
+          if (step.startedAtMs) step.durationMs = Math.max(0, event.time - step.startedAtMs);
         }
         break;
       }
@@ -263,6 +292,9 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
           case 'interrupted':
             raw.status = 'interrupted';
             raw.stoppedAt = clock();
+            for (const tool of raw.tools) {
+              if (tool.state === 'running') tool.state = 'stopped';
+            }
             if (raw.question && raw.question.status === 'pending') {
               raw.question = { status: 'void', questions: raw.question.questions };
             }
@@ -399,3 +431,33 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
 }
 
 /** 改一轮：按 id 换成新对象（TurnRow 用 memo 比引用，只有这一条重绘）。 */
+
+
+/** T013.5：把一轮的工具/思考折成工作过程的步骤（页面用；cwd 用于行上的路径相对化）。 */
+export function processStepsOf(view: TurnViewData, cwd: string): ProcessStep[] {
+  void cwd;
+  const steps: ProcessStep[] = [];
+  if (view.reasoning?.full) {
+    steps.push({
+      kind: 'think',
+      id: view.id + '-think',
+      text: view.reasoning.full,
+      streaming: view.status === 'inProgress' && view.tools.some((tool) => tool.state === 'running' && tool.id === view.tools[view.tools.length - 1]?.id) === false && view.tools.length === 0,
+    });
+  }
+  for (const tool of view.tools) {
+    steps.push({
+      kind: 'tool',
+      id: tool.id,
+      name: tool.name,
+      args: tool.args,
+      output: tool.output,
+      exitCode: tool.exitCode,
+      signal: tool.signal ?? null,
+      durationMs: tool.durationMs,
+      state: tool.state,
+      meta: tool.meta ?? null,
+    });
+  }
+  return steps;
+}
