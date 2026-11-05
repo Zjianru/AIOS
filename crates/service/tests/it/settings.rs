@@ -870,7 +870,6 @@ async fn 重开会话从日志恢复模型选择() {
         connection: Some("deepseek".to_owned()),
         model: Some("deepseek-pro".to_owned()),
         effort_wanted: Some("low".to_owned()),
-        ..Default::default()
     }))
     .await
     .expect("select");
