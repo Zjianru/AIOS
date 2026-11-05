@@ -56,7 +56,32 @@ export function ConversationPane() {
   const scrollerRef = useRef<HTMLElement | null>(null);
   const topIndexRef = useRef<number | null>(null);
   const capturedForRef = useRef<string | null>(null);
+  const restoreRef = useRef<ReadingPosition | null>(null);
   const listRef = useRef<VirtuosoHandle | null>(null);
+  // T013.8：历史加载完再把阅读位置恢复回去（列表布局稳定后）。
+  useEffect(() => {
+    if (initialLoading) return;
+    const saved = restoreRef.current;
+    if (!saved) return;
+    let cancelled = false;
+    const restore = () => {
+      if (cancelled) return;
+      const scroller = scrollerRef.current;
+      if (!scroller) return;
+      const viewIndex = saved.turnId ? views.findIndex((view) => view.id === saved.turnId) : -1;
+      if (viewIndex >= 0) {
+        listRef.current?.scrollToIndex({ index: firstItemIndex + viewIndex, offset: -saved.offset, behavior: 'auto' });
+      } else {
+        scroller.scrollTop = saved.scrollTop;
+      }
+    };
+    requestAnimationFrame(() => requestAnimationFrame(restore));
+    const timer = setTimeout(restore, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [firstItemIndex, initialLoading, views]);
   const [canSend, setCanSend] = useState(false);
   const paintedRef = useRef(false);
   // 首次用户滚动之前不自动往上取页：5 轮比视口短时 Virtuoso 会立刻触发 startReached。
@@ -272,22 +297,8 @@ export function ConversationPane() {
               if (!element || !sessionId) return;
               if (capturedForRef.current === sessionId) return;
               capturedForRef.current = sessionId;
-              const saved = readingPositions.get(sessionId);
-              requestAnimationFrame(() => {
-                const scroller = scrollerRef.current;
-                if (!scroller || !saved) return;
-                // 先按顶行的 key 恢复；找不到这一行（列表变了）用 scrollTop。
-                const viewIndex = saved.turnId ? views.findIndex((view) => view.id === saved.turnId) : -1;
-                if (viewIndex >= 0) {
-                  listRef.current?.scrollToIndex({
-                    index: firstItemIndex + viewIndex,
-                    offset: -saved.offset,
-                    behavior: 'auto',
-                  });
-                } else {
-                  scroller.scrollTop = saved.scrollTop;
-                }
-              });
+              const saved = readingPositions.get(sessionId) ?? null;
+              restoreRef.current = saved;
             }}
             onScroll={(event: React.UIEvent<HTMLElement>) => {
               const element = event.currentTarget;

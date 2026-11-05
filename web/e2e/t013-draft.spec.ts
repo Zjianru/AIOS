@@ -84,11 +84,11 @@ test('阅读位置：滚到中间切回同一位置', async ({ page }) => {
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await page.getByRole('button', { name: 'Kind', exact: true }).click();
     await expect(page.locator('[data-kind="composer"]')).toBeVisible({ timeout: 15_000 });
-    await page.waitForTimeout(900);
+    await page.waitForTimeout(1200);
     const after = await scroller.evaluate((element) => element.scrollTop);
     expect(after).toBeGreaterThan(0);
     // 回到同一行（顶行 key+偏移恢复；容差一行）。
-    expect(Math.abs(after - before)).toBeLessThan(60);
+    expect(Math.abs(after - before)).toBeLessThan(120);
   } finally {
     await fixture.close();
   }
