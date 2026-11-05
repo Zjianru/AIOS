@@ -163,11 +163,11 @@ pub fn read(data_dir: &Path, id: &str) -> Result<StoredAttachment, AttachmentErr
     let alias_dir = root.join("files").join(&hex[..2]).join(hex);
     let mut name = String::new();
     let mut path = object.clone();
-    if let Ok(mut entries) = fs::read_dir(&alias_dir) {
-        if let Some(entry) = entries.next().transpose()? {
-            name = entry.file_name().to_string_lossy().into_owned();
-            path = entry.path();
-        }
+    if let Ok(mut entries) = fs::read_dir(&alias_dir)
+        && let Some(entry) = entries.next().transpose()?
+    {
+        name = entry.file_name().to_string_lossy().into_owned();
+        path = entry.path();
     }
     let bytes = fs::metadata(&object)?.len() as usize;
     Ok(StoredAttachment {
