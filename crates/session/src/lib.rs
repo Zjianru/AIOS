@@ -15,8 +15,8 @@ mod store;
 pub use error::SessionError;
 pub use event::{
     AbortCause, Event, EventKind, FORMAT_VERSION, InboxOutcome, InboxTarget, JobToolCallData,
-    LlmFailure, RetryId, RetryMode, SessionHeader, ShadowedRange, SurfaceOp, TodoItem, TodoStatus,
-    ToolError, TurnEndReason, last_todos,
+    LlmFailure, ModelSelection, RetryId, RetryMode, SessionHeader, ShadowedRange, SurfaceOp,
+    TodoItem, TodoStatus, ToolError, TurnEndReason, last_model_selection, last_todos,
 };
 pub use id::SessionId;
 pub use projection::{

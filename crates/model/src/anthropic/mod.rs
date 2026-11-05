@@ -37,6 +37,10 @@ pub struct DeepSeek {
     next_model: Arc<Mutex<Option<String>>>,
     /// 本轮冻结的模型；begin_turn 时从 next_model 复制，stream 只读这里。
     turn_model: Arc<Mutex<Option<String>>>,
+    /// T012.7：下一轮要用的思考档（set_effort 只写这里）。
+    next_effort: Arc<Mutex<Option<String>>>,
+    /// 本轮冻结的档；begin_turn 时从 next_effort 复制，stream 只读这里。
+    turn_effort: Arc<Mutex<Option<String>>>,
     /// T012.6：学到的连接事实（关不掉思考、通过的鉴权头），同实例的 clone 共享。
     learned: Arc<Learned>,
 }
@@ -68,6 +72,8 @@ impl DeepSeek {
             issue_context: Arc::new(Mutex::new(CredentialContext::default())),
             next_model: Arc::new(Mutex::new(None)),
             turn_model: Arc::new(Mutex::new(None)),
+            next_effort: Arc::new(Mutex::new(None)),
+            turn_effort: Arc::new(Mutex::new(None)),
             learned: Arc::new(Learned::default()),
         })
     }
@@ -79,9 +85,12 @@ impl DeepSeek {
     }
 
     /// T012.3：同一连接/模型换一个要的档（压缩摘要用；不改原实例）。
+    /// T012.7：克隆不继承运行时冻结的档（压缩摘要用 config.effort）。
     pub fn with_effort(&self, effort: Effort) -> Self {
         let mut clone = self.clone();
         clone.config.effort = effort;
+        clone.next_effort = Arc::new(Mutex::new(None));
+        clone.turn_effort = Arc::new(Mutex::new(None));
         clone
     }
 
@@ -96,16 +105,24 @@ impl DeepSeek {
             .ok()
             .and_then(|current| current.clone())
             .unwrap_or_else(|| self.config.model.clone());
-        let actual = if self.config.effort.is_off()
+        // T012.7：本轮要的档以 begin_turn 冻结的为准（中途换档不影响本轮日志）。
+        let wanted = self
+            .turn_effort
+            .lock()
+            .ok()
+            .and_then(|current| current.clone())
+            .unwrap_or_else(|| self.config.effort.as_str().to_owned());
+        let effort = Effort::new(wanted.clone());
+        let actual = if effort.is_off()
             && self
                 .learned
                 .thinking_required(&self.config.base_url, &model)
         {
             vendors::lowest_non_off_effort(&self.config.base_url, &model)
         } else {
-            vendors::actual_effort(&self.config.base_url, &model, &self.config.effort)
+            vendors::actual_effort(&self.config.base_url, &model, &effort)
         };
-        (self.config.effort.as_str().to_owned(), actual)
+        (wanted, actual)
     }
 
     pub fn config(&self) -> &DeepSeekConfig {
@@ -126,7 +143,14 @@ impl DeepSeek {
         }
     }
 
-    /// 本轮开始时冻结模型；stream 内不再读 next_model。
+    /// T012.7：换思考档：只改下一轮；本轮冻结的档在 begin_turn 时确定（D26）。
+    pub fn set_effort(&self, effort: Effort) {
+        if let Ok(mut current) = self.next_effort.lock() {
+            *current = Some(effort.as_str().to_owned());
+        }
+    }
+
+    /// 本轮开始时冻结模型和档；stream 内不再读 next_*（D26）。
     pub fn begin_turn(&self) {
         let next = self
             .next_model
@@ -134,6 +158,14 @@ impl DeepSeek {
             .map(|model| model.clone())
             .unwrap_or(None);
         if let Ok(mut current) = self.turn_model.lock() {
+            *current = next;
+        }
+        let next = self
+            .next_effort
+            .lock()
+            .map(|effort| effort.clone())
+            .unwrap_or(None);
+        if let Ok(mut current) = self.turn_effort.lock() {
             *current = next;
         }
     }
@@ -189,6 +221,12 @@ impl DeepSeek {
             && let Some(model) = current.as_deref()
         {
             effective.model = model.to_owned();
+        }
+        // T012.7：本轮冻结的档（用户中途换档不影响正在跑的轮）。
+        if let Ok(current) = self.turn_effort.lock()
+            && let Some(effort) = current.as_deref()
+        {
+            effective.effort = crate::Effort::new(effort);
         }
         let base_url = effective.base_url.clone();
         // T012.6：学到的「关不掉思考」：要 none 也按最低非关档发（与内置 always_thinks 同行为）。

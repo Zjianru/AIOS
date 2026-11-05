@@ -7,6 +7,7 @@
 //! 对象固定 Kind 根会话：根会话实体在 T006.16b 落，本票宿主绑定一个会话、Object 用 session id。
 
 mod root;
+pub mod settings;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -15,7 +16,7 @@ use agent::{Agent, SendAdmission};
 use model::UserMessage;
 pub use root::{
     KeyringChanged, ModelFactory, ROOT_STATE_FILE, RootError, RootSession, RootSessionOptions,
-    RootStatus, open_root_session,
+    RootStatus, open_root_session, session_model_selection,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -416,15 +417,33 @@ pub struct ConnectionVerifyResponse {
     pub connection: credentials::ConnectionInfo,
 }
 
-/// T008.3：选模型；只影响下一轮（D26）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// T008.3/T012.7：选模型（连接、模型、想要的档）；只影响下一轮（D26）。
+///
+/// 三个字段都可选（协议只增）：None = 保持当前值。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct SessionModelSelectRequest {
-    pub model: String,
+    /// 连接 id（Keyring 里的连接）；None = 保持当前连接。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<String>,
+    /// 模型 id；None = 保持当前模型。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// 想要的思考档（模型自己的字符串）；None = 保持当前。
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "effortWanted"
+    )]
+    pub effort_wanted: Option<String>,
 }
 
+/// 选择结果：生效的目标选择（下一轮开始用）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionModelSelectResponse {
+    pub connection: String,
     pub model: String,
+    #[serde(rename = "effortWanted")]
+    pub effort_wanted: String,
 }
 
 /// T008.3 增补：编辑连接，只改 endpoint/model（不换 key）。
@@ -716,6 +735,11 @@ impl ServiceHost {
     /// T008.3：选模型（下一轮生效；正在跑的请求不受影响）。
     pub fn select_model(&self, model: String) {
         self.agent.select_model(model);
+    }
+
+    /// T012.7：宿主绑定的 Agent（会话选择写日志/判断 busy；调用方不要长期持有）。
+    pub fn agent(&self) -> &Agent {
+        &self.agent
     }
 
     /// 服务对象（第一版：会话 id；16b 换成 Kind 根会话实体）。
@@ -1033,6 +1057,9 @@ pub struct RootHost {
     agent_events: broadcast::Sender<agent::AgentEvent>,
     forward: Mutex<Option<tokio::task::JoinHandle<()>>>,
     agent_forward: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// T012.7：当前生效的模型选择（连接/模型/想要的档）；session/model 的 durable 事实
+    /// 在会话日志里，这里只是进程内缓存（重开从日志恢复）。
+    selection: Mutex<Option<session::ModelSelection>>,
 }
 
 impl RootHost {
@@ -1044,9 +1071,17 @@ impl RootHost {
         let (events, _) = broadcast::channel(SERVICE_EVENT_CHANNEL_CAPACITY);
         let (agent_events, _) = broadcast::channel(SERVICE_EVENT_CHANNEL_CAPACITY);
         let mut factory_error = None;
+        let mut selection = None;
         if let Some(factory) = options.model_factory.clone() {
-            match factory() {
-                Ok((model, credentials)) => {
+            // T012.7：重开会话从日志恢复选择；新会话由实现方按 settings/默认连接解析。
+            let wanted = session_model_selection(&options.data_dir);
+            match factory(wanted.as_ref()) {
+                Ok((connection, model, credentials)) => {
+                    selection = Some(session::ModelSelection {
+                        connection,
+                        model: model.model.clone(),
+                        effort_wanted: model.effort.as_str().to_owned(),
+                    });
                     options.model = model;
                     options.credentials = credentials;
                 }
@@ -1069,6 +1104,7 @@ impl RootHost {
             agent_events,
             forward: Mutex::new(None),
             agent_forward: Mutex::new(None),
+            selection: Mutex::new(selection),
         };
         if let Some(message) = factory_error {
             *host.state.lock().expect("root state 锁被毒化") = RootState::Unavailable {
@@ -1181,9 +1217,16 @@ impl RootHost {
             return RootState::Ok;
         }
         let mut options = self.options.clone();
+        let wanted = self.selection.lock().expect("selection 锁被毒化").clone();
         if let Some(factory) = options.model_factory.clone() {
-            match factory() {
-                Ok((model, credentials)) => {
+            match factory(wanted.as_ref()) {
+                Ok((connection, model, credentials)) => {
+                    *self.selection.lock().expect("selection 锁被毒化") =
+                        Some(session::ModelSelection {
+                            connection,
+                            model: model.model.clone(),
+                            effort_wanted: model.effort.as_str().to_owned(),
+                        });
                     options.model = model;
                     options.credentials = credentials;
                 }
@@ -1509,7 +1552,10 @@ impl RootHost {
         })
     }
 
-    /// T008.3：选模型（下一轮生效；当前轮已发出的请求不换，D26）。
+    /// T008.3/T012.7：选模型（连接/模型/想要的档；下一轮生效，D26）。
+    ///
+    /// 骨架版：只保留原来的「同连接换模型、下一轮生效」；durable 选择（事件/settings/
+    /// 跨连接重建）在实现提交里接线。
     pub async fn session_model_select(
         &self,
         request: SessionModelSelectRequest,
@@ -1517,9 +1563,15 @@ impl RootHost {
         let guard = self.inner.lock().await;
         match guard.as_ref() {
             Some(host) => {
-                host.select_model(request.model.clone());
+                let model = request
+                    .model
+                    .clone()
+                    .unwrap_or_else(|| self.options.model.model.clone());
+                host.select_model(model.clone());
                 Ok(SessionModelSelectResponse {
-                    model: request.model,
+                    connection: request.connection.unwrap_or_else(|| "deepseek".to_owned()),
+                    model,
+                    effort_wanted: request.effort_wanted.unwrap_or_else(|| "high".to_owned()),
                 })
             }
             None => Err(ServiceError::RootUnavailable(

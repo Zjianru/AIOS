@@ -101,10 +101,13 @@ struct CommonArgs {
     /// 会话工作目录（默认当前目录）
     #[arg(long)]
     cwd: Option<PathBuf>,
-    /// 模型 id（默认 deepseek-flash）
+    /// 连接 id（Keyring 里的连接；默认会话选择/上次选择/deepseek）
+    #[arg(long)]
+    connection: Option<String>,
+    /// 模型 id（默认会话选择/上次选择/连接的模型）
     #[arg(long)]
     model: Option<String>,
-    /// 推理强度：off、low、high、max（默认 high）
+    /// 思考档（模型自己的字符串，如 none/low/high/max；默认会话选择/上次选择/high）
     #[arg(long)]
     effort: Option<String>,
     /// 仅开发/DoD 用：覆盖模型 context window（默认 1_000_000）
@@ -315,13 +318,17 @@ impl model::CredentialSource for KeyringCredentialSource {
     }
 }
 
-/// 打开数据目录的 Keyring，并取 DeepSeek 连接的 endpoint/model。
+/// 打开数据目录的 Keyring，按会话选择解析 (连接 id, 模型配置, 上次选择的 Agent 配置, 凭证来源)。
+///
+/// T012.7：优先级 命令行 > 会话日志的选择（重开恢复）> settings.json 上次选择 > 连接默认。
 fn model_with_keyring(
     common: &CommonArgs,
     data_dir: &PathBuf,
     monitor: Option<&Monitor>,
+    _session_selection: Option<&session::ModelSelection>,
 ) -> Result<
     (
+        String,
         DeepSeekConfig,
         AgentConfig,
         Arc<dyn model::CredentialSource>,
@@ -333,13 +340,15 @@ fn model_with_keyring(
         common.identity.as_deref(),
     )?);
     let view = keyring.view();
-    if let Some(problem) = view.key_file.problem {
+    if let Some(problem) = view.key_file.problem.clone() {
         return Err(CliError::Message(format!("Keyring 读不出来：{problem}")));
     }
+    // 骨架版：仍然只找 deepseek 连接（T012.7 的连接/模型/档解析在实现提交里接）。
     let connection = view
         .connections
-        .into_iter()
+        .iter()
         .find(|connection| connection.id == "deepseek")
+        .cloned()
         .ok_or_else(|| {
             CliError::Message(
                 "还没有接模型：先从页面接上，或运行 aios-dev keyring set（key 从标准输入读）"
@@ -354,10 +363,15 @@ fn model_with_keyring(
         .unwrap_or_else(|| connection.model.clone());
     let source = KeyringCredentialSource {
         keyring,
-        connection: "deepseek".to_owned(),
+        connection: connection.id.clone(),
         monitor: monitor.cloned(),
     };
-    Ok((deepseek_config, agent_config, Arc::new(source)))
+    Ok((
+        connection.id,
+        deepseek_config,
+        agent_config,
+        Arc::new(source),
+    ))
 }
 
 /// 唯一组装入口（T006.15）：这里只把 CLI 参数/env 变成普通配置数据；模型、工具集、
@@ -371,11 +385,12 @@ async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
         Some(path) => path.clone(),
         None => std::env::current_dir()?,
     };
-    let (deepseek_config, config, credentials) = model_with_keyring(common, &data_dir, None)?;
     let resume = match &common.resume {
         Some(raw) => Some(SessionId::parse(raw)?),
         None => None,
     };
+    let (_connection, deepseek_config, config, credentials) =
+        model_with_keyring(common, &data_dir, None, None)?;
     let agent = Agent::open(AgentOpenOptions {
         data_dir,
         cwd,
@@ -526,7 +541,7 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let factory_common = args.common.clone();
     let factory_data_dir = data_dir.clone();
     let monitor_for_recheck = monitor.clone();
-    let model_factory: service::ModelFactory = std::sync::Arc::new(move || {
+    let model_factory: service::ModelFactory = std::sync::Arc::new(move |_selection| {
         if let Ok(keyring) =
             credentials::Keyring::open(factory_data_dir.clone(), factory_common.identity.as_deref())
         {
@@ -536,8 +551,9 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             &factory_common,
             &factory_data_dir,
             Some(&monitor_for_recheck),
+            None,
         )
-        .map(|(config, _agent, credentials)| (config, Some(credentials)))
+        .map(|(connection, config, _agent, credentials)| (connection, config, Some(credentials)))
         .map_err(|error| error.to_string())
     });
     // F1：设置页保存/删除/撤销、搬迁/重开/重启后，把 Keyring 当前 key 刷新给监控。
@@ -1279,6 +1295,7 @@ mod tests {
             data_dir: None,
             identity: None,
             cwd: None,
+            connection: None,
             model: None,
             effort: None,
             context_window: None,

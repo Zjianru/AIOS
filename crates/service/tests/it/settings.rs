@@ -320,7 +320,8 @@ async fn 选模型下一轮生效() {
     let host = host(dir.path()).await;
     let response = host
         .dispatch(Call::SessionModelSelect(SessionModelSelectRequest {
-            model: "deepseek-pro".to_owned(),
+            model: Some("deepseek-pro".to_owned()),
+            ..Default::default()
         }))
         .await;
     assert!(

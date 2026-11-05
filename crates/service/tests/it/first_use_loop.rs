@@ -40,7 +40,7 @@ fn factory(
     identity: PathBuf,
     seen_model: Arc<Mutex<Option<String>>>,
 ) -> ModelFactory {
-    Arc::new(move || {
+    Arc::new(move |_selection: Option<&session::ModelSelection>| {
         let keyring = credentials::Keyring::open(&data_dir, Some(&identity))
             .map_err(|error| error.to_string())?;
         let view = keyring.view();
@@ -62,7 +62,11 @@ fn factory(
             keyring: Arc::new(keyring),
             connection: "deepseek".to_owned(),
         });
-        Ok((config, Some(source as Arc<dyn model::CredentialSource>)))
+        Ok((
+            "deepseek".to_owned(),
+            config,
+            Some(source as Arc<dyn model::CredentialSource>),
+        ))
     })
 }
 

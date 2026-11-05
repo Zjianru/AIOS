@@ -70,6 +70,7 @@ pub fn interrupted_turn_closers(events: &[Event]) -> Option<TurnClosers> {
             | EventKind::QuestionAnswered { .. }
             | EventKind::QuestionCancelled { .. } => {}
             EventKind::JobRegistered { .. } | EventKind::JobSettled { .. } => {}
+            EventKind::SessionModel { .. } => {}
             EventKind::AssistantMessage {
                 turn,
                 step,

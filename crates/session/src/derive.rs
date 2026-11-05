@@ -59,7 +59,8 @@ pub(crate) fn derive_messages_with_seqs(events: &[Event]) -> Vec<(u64, Message)>
             | EventKind::LlmRetryStarted { .. }
             | EventKind::InboxSpliced { .. }
             | EventKind::JobRegistered { .. }
-            | EventKind::JobSettled { .. } => None,
+            | EventKind::JobSettled { .. }
+            | EventKind::SessionModel { .. } => None,
         };
         if let Some(message) = message {
             derived.push((event.seq, message));

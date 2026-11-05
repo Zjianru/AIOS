@@ -39,7 +39,9 @@ use crate::SessionId;
 /// v13：message source 新增 skill-invocation（T006.11b 照 DSH tool-skill 的用户显式 /name
 /// 注入：source {kind, name, form: instructions}）；旧版本读不了新 source，按 spec 升版本、
 /// 旧版本仍拒绝（不迁移）。
-pub const FORMAT_VERSION: u64 = 13;
+/// v14：新增 session/model 事件（T012.7：连接、模型、想要的档；会话选择的 durable 事实，从
+/// 下一轮开始生效，重开会话从日志恢复）；旧版本读不了新事件，按 spec 升版本、旧版本仍拒绝。
+pub const FORMAT_VERSION: u64 = 14;
 
 /// JSONL 第一行的会话 header。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -487,6 +489,41 @@ pub enum EventKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// 会话的模型选择（T012.7）：连接、模型、想要的档。是用户选择的 durable 事实
+    /// （从下一轮开始生效，D26）；重开会话从日志恢复，新会话用上一次的选择（settings.json）。
+    /// 每轮实际发的档不在这里，在 assistant/message 的 effort。
+    #[serde(rename = "session/model")]
+    SessionModel {
+        connection: String,
+        model: String,
+        #[serde(rename = "effortWanted")]
+        effort_wanted: String,
+    },
+}
+
+/// 会话的模型选择（session/model 事件的内容；T012.7）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelSelection {
+    pub connection: String,
+    pub model: String,
+    #[serde(rename = "effortWanted")]
+    pub effort_wanted: String,
+}
+
+/// 从日志回放当前的模型选择：最近一条 session/model 胜出（T012.7 续接恢复用）。
+pub fn last_model_selection(events: &[Event]) -> Option<ModelSelection> {
+    events.iter().rev().find_map(|event| match &event.kind {
+        EventKind::SessionModel {
+            connection,
+            model,
+            effort_wanted,
+        } => Some(ModelSelection {
+            connection: connection.clone(),
+            model: model.clone(),
+            effort_wanted: effort_wanted.clone(),
+        }),
+        _ => None,
+    })
 }
 
 impl EventKind {
@@ -516,6 +553,7 @@ impl EventKind {
             Self::CompactionEnd { .. } => "compaction/end",
             Self::JobRegistered { .. } => "job/registered",
             Self::JobSettled { .. } => "job/settled",
+            Self::SessionModel { .. } => "session/model",
         }
     }
 }
