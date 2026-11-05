@@ -89,6 +89,20 @@ fn named_copy_is_read_only() {
 }
 
 #[test]
+fn object_file_is_read_only() {
+    let dir = root();
+    let stored = store(dir.path(), "a.txt", b"hello\n").expect("存");
+    let hex = stored.id.strip_prefix("sha256:").expect("id 前缀");
+    let object = dir
+        .path()
+        .join("attachments/v1/file-objects")
+        .join(&hex[..2])
+        .join(hex);
+    let mode = fs::metadata(&object).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o444, "内容对象只读：{mode:o}");
+}
+
+#[test]
 fn binary_is_rejected_as_not_text() {
     let dir = root();
     let error = store(dir.path(), "bin.dat", b"abc\0def").expect_err("二进制要拒收");

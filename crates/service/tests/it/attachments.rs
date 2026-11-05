@@ -114,14 +114,50 @@ async fn attachment_put_rejects_binary_with_not_text_code() {
 async fn attachment_put_rejects_bad_base64() {
     let dir = tempdir().unwrap();
     let host = host(dir.path()).await;
-    let error = host
+    // 非规范形式一律拒收：非法字符、长度不对、`=` 后还有数据、尾部填充位非 0。
+    for data in ["!!!not base64!!!", "AAA", "AA=A", "A===", "AB==", "AA!="] {
+        let error = host
+            .dispatch(Call::AttachmentPut(AttachmentPutRequest {
+                name: "a.txt".to_owned(),
+                data: data.to_owned(),
+            }))
+            .await
+            .expect_err("坏 base64 要拒收");
+        assert_eq!(error.code().as_str(), "attachment/invalid", "{data:?}");
+    }
+    // 规范形式照收（不含 NUL 的文字内容）：`aGVsbG8=`（hello）、`aGVsbG9f`（hello_）、`5L2g5aW9`（你好）。
+    for data in ["aGVsbG8=", "aGVsbG9f", "5L2g5aW9"] {
+        let response = host
+            .dispatch(Call::AttachmentPut(AttachmentPutRequest {
+                name: "ok.txt".to_owned(),
+                data: data.to_owned(),
+            }))
+            .await;
+        assert!(response.is_ok(), "{data:?} 应合法：{response:?}");
+    }
+}
+
+#[tokio::test]
+async fn attachment_get_gives_text_none_for_non_utf8_text_files() {
+    // 0xFF 不是合法 UTF-8，但没有 NUL → 按 git 规则算文字、能进仓库；get 时给 text=None。
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let put = host
         .dispatch(Call::AttachmentPut(AttachmentPutRequest {
-            name: "a.txt".to_owned(),
-            data: "!!!not base64!!!".to_owned(),
+            name: "latin1.txt".to_owned(),
+            data: "/w==".to_owned(),
         }))
         .await
-        .expect_err("坏 base64 要拒收");
-    assert_eq!(error.code().as_str(), "attachment/invalid");
+        .expect("非 UTF-8 但无 NUL 的字节按文字收");
+    let put_json = serde_json::to_value(&put).unwrap();
+    let id = put_json["id"].as_str().unwrap().to_owned();
+    let got = host
+        .dispatch(Call::AttachmentGet(AttachmentGetRequest { id }))
+        .await
+        .expect("get");
+    let json = serde_json::to_value(&got).unwrap();
+    assert_eq!(json["bytes"], 1);
+    assert!(json.get("text").is_none(), "非 UTF-8 → text=None：{json}");
 }
 
 #[tokio::test]

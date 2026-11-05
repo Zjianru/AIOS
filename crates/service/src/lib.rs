@@ -583,33 +583,50 @@ fn attachment_error(error: tools::attachments::AttachmentError) -> ServiceError 
 }
 
 /// T013.2：严格 base64 解码（不引新依赖；不规范返回 None）。
+///
+/// 只收规范形式：长度是 4 的倍数、`=` 只允许在末尾（最多两个）、`=` 后不能有数据、
+/// 尾部填充位的低位必须为 0（`AA==` 收，`AB==` 拒）。
 fn decode_base64(input: &str) -> Option<Vec<u8>> {
     let bytes = input.as_bytes();
     if !bytes.len().is_multiple_of(4) {
         return None;
     }
-    let mut output = Vec::with_capacity(bytes.len() / 4 * 3);
-    let chunks = bytes.chunks(4).count();
-    for (chunk_index, chunk) in bytes.chunks(4).enumerate() {
-        let last = chunk_index + 1 == chunks;
+    let total = bytes.len() / 4;
+    let mut output = Vec::with_capacity(total * 3);
+    for (index, chunk) in bytes.chunks(4).enumerate() {
+        let last = index + 1 == total;
+        let padding = chunk.iter().rev().take_while(|byte| **byte == b'=').count();
+        if padding > 2 || (padding > 0 && !last) {
+            return None;
+        }
+        let data = &chunk[..4 - padding];
+        if data.contains(&b'=') {
+            return None;
+        }
         let mut values = [0u8; 4];
-        let mut padding = 0;
-        for (position, byte) in chunk.iter().enumerate() {
+        for (position, byte) in data.iter().enumerate() {
             values[position] = match byte {
                 b'A'..=b'Z' => byte - b'A',
                 b'a'..=b'z' => byte - b'a' + 26,
                 b'0'..=b'9' => byte - b'0' + 52,
                 b'+' => 62,
                 b'/' => 63,
-                b'=' if last && position >= 2 => {
-                    padding += 1;
-                    0
-                }
                 _ => return None,
             };
         }
-        if padding > 2 {
-            return None;
+        // 非规范的尾部填充位拒收：`=` 占掉的 sextet 低位必须是 0。
+        match padding {
+            1 => {
+                if values[2] & 0b11 != 0 {
+                    return None;
+                }
+            }
+            2 => {
+                if values[1] & 0b1111 != 0 {
+                    return None;
+                }
+            }
+            _ => {}
         }
         let number = (u32::from(values[0]) << 18)
             | (u32::from(values[1]) << 12)
@@ -1267,12 +1284,12 @@ impl RootHost {
             .map_err(attachment_error)?;
         let bytes = std::fs::read(&stored.path)
             .map_err(|error| ServiceError::AttachmentInvalid(format!("附件读不回来：{error}")))?;
-        let text = String::from_utf8(bytes)
-            .map_err(|_| ServiceError::AttachmentInvalid("附件不是 UTF-8 文字".to_owned()))?;
+        // 仓库按 git 的「无 NUL 即文字」收；不是合法 UTF-8 时给 text=None（旧数据兼容口径）。
+        let text = String::from_utf8(bytes).ok();
         Ok(AttachmentGetResponse {
             name: stored.name,
             bytes: stored.bytes as u64,
-            text: Some(text),
+            text,
         })
     }
 

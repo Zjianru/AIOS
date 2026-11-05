@@ -1,7 +1,7 @@
 //! T013.2：附件仓库（文字文件的只读副本）。
 //!
 //! 照 DSH `fs/tool-fs/src/file-store.ts` + `admission.ts`：
-//! - `<root>/` 下按 sha256 存一份内容（file-objects/<前2>/<sha>），再按文件名给只读副本（files/<前2>/<sha>/<name>）；
+//! - `<数据目录>/attachments/v1/` 下按 sha256 存一份内容（file-objects/<前2>/<sha>），再按文件名给只读副本（files/<前2>/<sha>/<name>）；
 //! - 文字判断照 git：前 8000 字节里有 NUL 就不是文字，拒收（错误码 not-text）；
 //! - 不设大小/个数上限，不做清理（日志里还引用着）。
 
