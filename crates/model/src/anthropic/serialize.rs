@@ -558,3 +558,75 @@ mod effort_wire_tests {
         assert_eq!(value["max_tokens"], 256_000);
     }
 }
+
+#[cfg(test)]
+mod t013_file_block_tests {
+    use super::*;
+
+    /// T013.4：fileHandleText 原句（DSH llm/llm/src/content.ts:151-158 照抄）。
+    #[test]
+    fn file_handle_text_matches_dsh_verbatim() {
+        let path = "/tmp/data/attachments/v1/files/ab/abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567/notes.txt";
+        let text = file_handle_text(
+            "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+            "notes.txt",
+            12,
+            Some(path),
+        );
+        assert_eq!(
+            text,
+            format!(
+                "[File \"notes.txt\" (12 bytes, sha256:abcdef01): verbatim read-only copy saved at \"{path}\". Read that path with your file tools when its contents are needed; copy it to a writable location before modifying it. When delegating file work, include this saved path in the delegation prompt; only subagents sharing this execution environment can read it.]"
+            ),
+            "fileHandleText 要和 DSH 一字不差"
+        );
+    }
+
+    #[test]
+    fn file_handle_text_without_a_path_uses_the_uploaded_branch() {
+        let text = file_handle_text("sha256:abcdef0123456789", "a b.txt", 3, None);
+        assert_eq!(
+            text,
+            "[File \"a b.txt\" (3 bytes, sha256:abcdef01) was uploaded, but the current execution environment cannot access a readable path. Report that limitation if its contents are needed; do not claim to have read it.]"
+        );
+    }
+
+    /// T013.4：粘贴块照原文进请求体；文件块换成 fileHandleText。
+    #[test]
+    fn request_body_keeps_pastes_verbatim_and_replaces_files_with_handle_text() {
+        let config = DeepSeekConfig {
+            base_url: "http://127.0.0.1:1".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            max_tokens: 2048,
+            context_window: 128_000,
+            effort: crate::Effort::new("high"),
+        };
+        let message = Message::user_with_request_id(
+            vec![
+                ContentBlock::text("看这两个"),
+                ContentBlock::paste("第一段\n粘贴原文  "),
+                ContentBlock::paste("第二段"),
+                ContentBlock::File {
+                    attachment_id:
+                        "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567"
+                            .to_owned(),
+                    name: "notes.txt".to_owned(),
+                    bytes: 12,
+                    path: Some("/tmp/data/attachments/v1/files/ab/x/notes.txt".to_owned()),
+                },
+            ],
+            "req-1",
+        );
+        let body = super::request_body(&config, &[message], &[], Some(2048), true).expect("序列化");
+        let json: Value = serde_json::from_slice(&body).unwrap();
+        let content = json["messages"][0]["content"].as_array().unwrap();
+        assert_eq!(content[0]["text"], "看这两个");
+        assert_eq!(
+            content[1]["text"], "第一段\n粘贴原文  ",
+            "粘贴原文不截断不改写"
+        );
+        assert_eq!(content[2]["text"], "第二段");
+        let expected = "[File \"notes.txt\" (12 bytes, sha256:abcdef01): verbatim read-only copy saved at \"/tmp/data/attachments/v1/files/ab/x/notes.txt\". Read that path with your file tools when its contents are needed; copy it to a writable location before modifying it. When delegating file work, include this saved path in the delegation prompt; only subagents sharing this execution environment can read it.]";
+        assert_eq!(content[3]["text"], expected, "文件块换成 fileHandleText");
+    }
+}
