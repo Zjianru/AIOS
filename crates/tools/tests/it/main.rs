@@ -2,6 +2,7 @@
 
 mod bash;
 mod builtin_tools;
+mod diff_meta;
 mod fs_tools;
 mod jobs;
 mod skills;

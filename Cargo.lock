@@ -2536,6 +2536,7 @@ dependencies = [
  "ignore",
  "model",
  "ring",
+ "serde",
  "serde_json",
  "session",
  "tempfile",

@@ -5,6 +5,7 @@
 
 mod batch;
 mod builtin;
+pub mod diff;
 mod fs;
 mod jobs;
 mod session;
@@ -25,6 +26,7 @@ pub use builtin::{
     JobListTool, JobOutputTool, ReadTool, SkillTool, TodoWriteTool, WriteTool,
     foreground_bytes_read,
 };
+pub use diff::{DIFF_CONTEXT, FileDiff, compute_hunk_diffs};
 pub use jobs::{
     JobCause, JobNotifyCallback, JobOutputRead, JobRead, JobRegistered, JobRegisteredCallback,
     JobSettled, JobSettledCallback, JobSpec, JobStatus, JobToolCall, JobView, MAX_WAIT_MS,
