@@ -194,8 +194,12 @@ test('换到没有这一档的模型：显示最近档并告诉用户', async ({
 
     await page.goto(urlOf(fixture));
     await expect(page.getByPlaceholder('和 Kind 说…')).toBeVisible({ timeout: 30_000 });
+    // T012.9 底栏标签是异步 hydration 的（模型名 + 思考档「…·强」）；等它出来再点菜单。
+    await expect(page.locator('[data-kind="model-picker"]')).toContainText('·', { timeout: 30_000 });
     await page.locator('[data-kind="model-picker"]').click();
-    await page.getByRole('menuitem', { name: /DeepSeek/ }).first().click({ force: true });
+    const deepseekItem = page.getByRole('menuitem', { name: /DeepSeek/ }).first();
+    await expect(deepseekItem).toBeVisible({ timeout: 30_000 });
+    await deepseekItem.click({ force: true });
     await page.waitForTimeout(500);
     await page.locator('[data-kind="model-picker"]').click();
     const effort = page.locator('[data-kind="effort"]');
@@ -205,7 +209,9 @@ test('换到没有这一档的模型：显示最近档并告诉用户', async ({
     await page.keyboard.press('Escape');
 
     await page.locator('[data-kind="model-picker"]').click();
-    await page.getByRole('menuitem', { name: /MiniMax-M3\.1-Flash/ }).click({ force: true });
+    const minimaxItem = page.getByRole('menuitem', { name: /MiniMax-M3\.1-Flash/ });
+    await expect(minimaxItem).toBeVisible({ timeout: 30_000 });
+    await minimaxItem.click({ force: true });
     await expect(page.locator('[data-kind="model-picker"]')).toContainText('MiniMax-M3.1-Flash', {
       timeout: 20_000,
     });
