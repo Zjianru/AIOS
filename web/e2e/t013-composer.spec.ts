@@ -202,3 +202,84 @@ test('发送：粘贴折卡片后发出去，日志里有 paste 块', async ({ p
     await fixture.close();
   }
 });
+
+
+/// T013.7 清单 13：插入 @路径 后下层高亮存在，文字仍可编辑。
+test('@路径高亮：插入后高亮层有 @路径，文字仍可编辑', async ({ page }) => {
+  const fixture = await startKernelFixture({ toolTurn: true });
+  try {
+    await page.goto(urlOf(fixture));
+    const box = input(page);
+    await box.fill('@he');
+    const menu = page.locator('[data-kind="at-menu"]');
+    await expect(menu).toBeVisible({ timeout: 15_000 });
+    await menu.getByRole('button', { name: /hello\.txt/ }).first().click();
+    await expect(box).toHaveValue('@hello.txt');
+    const highlight = page.locator('[data-kind="at-highlight"]');
+    await expect(highlight).toContainText('@hello.txt');
+    await expect(highlight.locator('[data-at-token="@hello.txt"]')).toHaveCount(1);
+    // 文字仍可编辑（高亮层是展示层，不抢焦点）：继续输入 + 高亮跟着变。
+    await box.pressSequentially(' 追加');
+    await expect(box).toHaveValue('@hello.txt 追加');
+    await expect(highlight).toContainText('@hello.txt 追加');
+  } finally {
+    await fixture.close();
+  }
+});
+
+/// T013.7 清单 13：附件横排滚动，新加的滚到最后。
+test('附件横排：多张卡片横排不换行，新加的滚到最后', async ({ page }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    const composer = page.locator('[data-kind="composer"]');
+    for (let index = 0; index < 8; index += 1) {
+      const name = 'very-long-file-name-' + String(index).padStart(2, '0') + '.txt';
+      await composer.evaluate((element, fileName) => {
+        const data = new DataTransfer();
+        data.items.add(new File(['hello'], fileName, { type: 'text/plain' }));
+        element.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }));
+      }, name);
+    }
+    await expect(page.locator('[data-kind="file-card"]')).toHaveCount(8, { timeout: 15_000 });
+    const cards = page.locator('[data-kind="composer-cards"]');
+    const metrics = await cards.evaluate((element) => ({
+      scrollLeft: element.scrollLeft,
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+      overflowX: getComputedStyle(element).overflowX,
+      whiteSpace: getComputedStyle(element).whiteSpace,
+    }));
+    expect(metrics.overflowX).toBe('auto');
+    // 三张卡片在窄输入框里放不下：容器可滚，且新加的滚到了最后。
+    expect(metrics.scrollWidth).toBeGreaterThan(metrics.clientWidth);
+    expect(metrics.scrollLeft).toBeGreaterThan(0);
+  } finally {
+    await fixture.close();
+  }
+});
+
+/// T013.7：拖目录进来明确拒绝（toast），不出卡片。
+test('拖拽目录：明确拒绝，不出卡片', async ({ page }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    const composer = page.locator('[data-kind="composer"]');
+    await composer.evaluate((element) => {
+      const data = new DataTransfer();
+      data.items.add(new File(['hello'], 'a-directory', { type: '' }));
+      const item = data.items[0];
+      // 原型上注入（合成事件的 DataTransferItem 不好直接改）：让这一条被识别成目录。
+      Object.defineProperty(Object.getPrototypeOf(item), 'webkitGetAsEntry', {
+        value: () => ({ isDirectory: true }),
+        configurable: true,
+      });
+      element.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }));
+      delete (Object.getPrototypeOf(item) as { webkitGetAsEntry?: unknown }).webkitGetAsEntry;
+    });
+    await expect(page.getByText('只能放文字文件')).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('[data-kind="file-card"]')).toHaveCount(0);
+  } finally {
+    await fixture.close();
+  }
+});

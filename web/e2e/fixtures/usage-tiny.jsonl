@@ -1,4 +1,4 @@
-{"type":"session","version":13,"id":"c859575c-c0c6-4c8d-8316-fe00297477da","createdAt":1793817378345,"cwd":"/private/var/folders/0v/79pnwx6s7_1cbfy77l8c8spr0000gn/T/aios-t007-RnkNIu"}
+{"type":"session","version":15,"id":"c859575c-c0c6-4c8d-8316-fe00297477da","createdAt":1793817378345,"cwd":"/private/var/folders/0v/79pnwx6s7_1cbfy77l8c8spr0000gn/T/aios-t007-RnkNIu"}
 {"type":"agent/inbox/spliced","seq":1,"time":1793817378364,"data":{"inserted":[{"content":[{"text":"你好 1","type":"text"}],"id":"2995edce-e4c5-447c-af50-010207f0cc3d","role":"user","source":{"kind":"user","rpcId":"rec-text-1"}}],"start":0,"target":"next-turn"}}
 {"type":"turn/start","seq":2,"time":1793817378368,"data":{"turn":1}}
 {"type":"agent/inbox/spliced","seq":3,"time":1793817378370,"data":{"inserted":[],"removedCount":1,"start":0,"target":"next-turn"}}

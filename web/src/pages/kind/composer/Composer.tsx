@@ -59,6 +59,21 @@ function readAsBase64(file: File): Promise<string> {
   });
 }
 
+/** 把文本按 @路径 / @"路径" 切段（高亮层用）。 */
+function highlightSegments(text: string): { value: string; mayPath: boolean }[] {
+  const segments: { value: string; mayPath: boolean }[] = [];
+  const pattern = /@(?:"[^"]*"|[^\s@]*)/g;
+  let cursor = 0;
+  for (const match of text.matchAll(pattern)) {
+    const start = match.index ?? 0;
+    if (start > cursor) segments.push({ value: text.slice(cursor, start), mayPath: false });
+    segments.push({ value: match[0], mayPath: true });
+    cursor = start + match[0].length;
+  }
+  if (cursor < text.length) segments.push({ value: text.slice(cursor), mayPath: false });
+  return segments;
+}
+
 /** 插入到光标的文字（带空格路径加引号）。 */
 function insertReference(path: string): string {
   return path.includes(' ') ? '@"' + path + '"' : '@' + path;
@@ -76,6 +91,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const [atMenu, setAtMenu] = useState<AtMenuState | null>(null);
   const [quote, setQuote] = useState<string>('');
   const cardsRef = useRef<HTMLDivElement | null>(null);
+  const highlightRef = useRef<HTMLDivElement | null>(null);
 
   const canSend = text.trim().length > 0 || pastes.length > 0 || attachments.length > 0;
 
@@ -213,6 +229,18 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       }}
       onDrop={(event) => {
         event.preventDefault();
+        // 目录不收（只收文字文件）：webkitGetAsEntry 能识别拖进来的目录。
+        const items = Array.from(event.dataTransfer.items ?? []);
+        const hasDirectory = items.some((item) => {
+          const entry = (
+            item as DataTransferItem & { webkitGetAsEntry?: () => { isDirectory?: boolean } | null }
+          ).webkitGetAsEntry?.();
+          return entry?.isDirectory === true;
+        });
+        if (hasDirectory) {
+          toast('只能放文字文件', { description: '文件夹不行，一次拖一个文字文件' });
+          return;
+        }
         const files = Array.from(event.dataTransfer.files ?? []);
         if (files.length > 0) void intakeFiles(files);
       }}
@@ -260,7 +288,30 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           </div>
         ) : null}
         <div className="flex items-end gap-2">
-          <textarea
+          <div className="relative min-w-0 flex-1">
+            {/* T013.7：下层 @路径 高亮（textarea 文字透明，看到的彩色文字来自这层）。 */}
+            <div
+              ref={highlightRef}
+              data-kind="at-highlight"
+              aria-hidden
+              className="pointer-events-none absolute inset-0 overflow-hidden whitespace-pre-wrap break-words text-4 leading-6"
+            >
+              {highlightSegments(text).map((segment, index) =>
+                segment.mayPath ? (
+                  <span
+                    key={index}
+                    data-at-token={segment.value}
+                    className="rounded-[3px] bg-active px-0.5 text-brand"
+                  >
+                    {segment.value}
+                  </span>
+                ) : (
+                  <span key={index}>{segment.value}</span>
+                ),
+              )}
+              {text.endsWith(String.fromCharCode(10)) ? ' ' : null}
+            </div>
+            <textarea
             ref={inputRef}
             rows={1}
             data-kind="composer-input"
@@ -268,6 +319,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             value={text}
             onChange={onInput}
             onKeyDown={onKeyDown}
+            onScroll={(event) => {
+              if (highlightRef.current) highlightRef.current.scrollTop = event.currentTarget.scrollTop;
+            }}
             onCompositionStart={() => {
               composingRef.current = true;
             }}
@@ -298,9 +352,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               const selected = element.value.slice(element.selectionStart, element.selectionEnd).trim();
               setQuote(selected);
             }}
-            className="min-h-6 flex-1 resize-none bg-transparent text-4 leading-6 text-ink outline-none placeholder:text-ink-3"
+            className="relative min-h-6 w-full resize-none bg-transparent text-4 leading-6 text-transparent caret-ink outline-none placeholder:text-ink-3"
             style={{ maxHeight: MAX_HEIGHT }}
-          />
+            />
+          </div>
           {children}
         </div>
       </div>
