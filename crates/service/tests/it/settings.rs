@@ -1192,3 +1192,17 @@ async fn 余额和余量按厂商形状查询且查不到不报错() {
     };
     assert!(response.balance.is_none() && response.plan.is_none());
 }
+
+/// T012.8 审计：打开会话时把初始模型选择写成 durable 事实（session/model），
+/// 重开时第一条 session/model 就是真正初始选择（stats 定价用）。
+#[tokio::test]
+async fn 打开会话写初始模型选择事件() {
+    let dir = tempdir().unwrap();
+    let _host = host(dir.path()).await;
+    let id = root_session_id(dir.path());
+    let snapshot = session::SessionStore::open_read_only(dir.path(), &id).expect("snapshot");
+    let selection = session::last_model_selection(snapshot.events())
+        .expect("初始选择要写成 session/model 事件");
+    assert_eq!(selection.connection, "deepseek");
+    assert_eq!(selection.model, "deepseek-flash");
+}

@@ -195,4 +195,59 @@ mod tests {
             "https://relay.example/api"
         );
     }
+
+    fn connection_info(id: &str, endpoint: &str) -> ConnectionInfo {
+        ConnectionInfo {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: endpoint.to_owned(),
+            saved_at: 0,
+            check: credentials::CheckState::Never,
+            key_saved: true,
+            preset: id.to_owned(),
+            models: Vec::new(),
+            price_rate: 1.0,
+            auth_header: None,
+        }
+    }
+
+    /// T012.8b P2：custom 地址 host 里带 minimax 字样不算 MiniMax（按预设/已知厂商域名判断）。
+    #[test]
+    fn custom_relay_with_minimax_in_hostname_is_not_queried() {
+        let connection = connection_info("custom", "https://relay.minimax-proxy.com/anthropic");
+        assert!(
+            kind_of(&connection).is_none(),
+            "custom 地址不按 host 里的字样猜厂商"
+        );
+    }
+
+    /// T012.8b P2：MiniMax 余量用连接上学到的单头（T012.6 的 auth_header）。
+    #[tokio::test]
+    async fn minimax_quota_uses_learned_auth_header() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(path("/v1/token_plan/remains"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "model_remains": [{"model_name": "general", "current_interval_remaining_percent": 99}],
+                "base_resp": {"status_code": 0}
+            })))
+            .mount(&server)
+            .await;
+        let mut connection = connection_info("minimax-cn", &format!("{}/anthropic", server.uri()));
+        connection.auth_header = Some("authorization".to_owned());
+        let quota = fetch(&connection, "test-key").await;
+        assert!(quota.plan.is_some(), "余量解析成功");
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(
+            requests[0].headers.contains_key("authorization"),
+            "带学到的 authorization"
+        );
+        assert!(
+            !requests[0].headers.contains_key("x-api-key"),
+            "学到的单头时不带另一个头"
+        );
+    }
 }

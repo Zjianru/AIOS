@@ -1,7 +1,7 @@
 //! T011.3/F1 清单 5、6：所有记录在写线程出口统一脱敏（ledger/ops/推理/凭证）。
 
 use model::{AssistantStreamRecord, ContentBlock, Message};
-use monitor::{Channel, Monitor, Record, Severity};
+use monitor::{Channel, Monitor, Record, Severity, SourceEvent};
 use serde_json::{Map, json};
 use session::{EventKind, SessionStore};
 
@@ -233,4 +233,33 @@ fn too_deep_record_is_dropped_and_redact_failed_is_recorded() {
             .any(|record| record["attributes"]["telemetry.op"] == "redact-failed"),
         "过深记录扣下并写 redact-failed：{records:?}"
     );
+}
+
+/// T012.8 K5：redact-failed 记事件类型和序号（不是 channel/time），供定位是哪条日志。
+#[test]
+fn redact_failed_records_event_type_and_seq() {
+    let data = tempfile::tempdir().expect("数据目录");
+    let monitor = Monitor::open_with_capacity(data.path(), 128).expect("监控");
+    monitor.set_secrets(Vec::new());
+    let mut nested = json!("底");
+    for _ in 0..100 {
+        nested = json!({"x": nested});
+    }
+    let mut record = Record::new(Channel::Ops, Severity::Info, Map::new(), nested);
+    record.source_event = Some(SourceEvent {
+        session_id: "s-1".to_owned(),
+        event: json!({"type": "tool/result", "seq": 42, "data": {}}),
+    });
+    monitor.record(record);
+    monitor.shutdown();
+    let records = monitor_records(data.path());
+    let failed = records
+        .iter()
+        .find(|record| record["attributes"]["telemetry.op"] == "redact-failed")
+        .expect("redact-failed 记录");
+    assert_eq!(
+        failed["body"]["eventType"], "tool/result",
+        "redact-failed：{failed}"
+    );
+    assert_eq!(failed["body"]["eventSeq"], 42, "redact-failed：{failed}");
 }

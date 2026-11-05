@@ -393,4 +393,88 @@ mod tests {
         assert!(value.get("costUsd").is_none(), "无价格不序列化");
         let _ = json!({});
     }
+
+    /// T012.8 审计：会话选择在轮中写入时，本轮后续 assistant/message 仍按旧连接定价（pending 到下一个 TurnStart）。
+    #[test]
+    fn stats_holds_selection_change_until_next_turn() {
+        let deepseek = connection_with(
+            "deepseek",
+            "https://api.deepseek.com/anthropic",
+            "deepseek",
+            1.0,
+            Some(2.0),
+        );
+        let minimax = connection_with(
+            "minimax-cn",
+            "https://api.minimaxi.com/anthropic",
+            "minimax-cn",
+            0.0,
+            None,
+        );
+        let events = vec![
+            // 会话初始选择（修复后 open 会把它写成第一条 durable 事实）。
+            session::Event::new(
+                1,
+                1,
+                session::EventKind::SessionModel {
+                    connection: "deepseek".to_owned(),
+                    model: "deepseek-flash".to_owned(),
+                    effort_wanted: "high".to_owned(),
+                },
+            ),
+            session::Event::new(2, 2, session::EventKind::TurnStart { turn: 1 }),
+            session::Event::new(3, 3, assistant_message("deepseek-flash")),
+            // 用户在轮中换了连接（T012.7 允许）：本轮后面的请求仍是旧模型/旧连接。
+            session::Event::new(
+                4,
+                4,
+                session::EventKind::SessionModel {
+                    connection: "minimax-cn".to_owned(),
+                    model: "MiniMax-M3.1-Flash".to_owned(),
+                    effort_wanted: "low".to_owned(),
+                },
+            ),
+            session::Event::new(5, 5, assistant_message("deepseek-flash")),
+            session::Event::new(
+                6,
+                6,
+                session::EventKind::TurnEnd {
+                    turn: 1,
+                    reason: session::TurnEndReason::Completed,
+                },
+            ),
+            session::Event::new(7, 7, session::EventKind::TurnStart { turn: 2 }),
+            session::Event::new(8, 8, assistant_message("MiniMax-M3.1-Flash")),
+        ];
+        let current = session::ModelSelection {
+            connection: "minimax-cn".to_owned(),
+            model: "MiniMax-M3.1-Flash".to_owned(),
+            effort_wanted: "low".to_owned(),
+        };
+        let initial = session::ModelSelection {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            effort_wanted: "high".to_owned(),
+        };
+        let stats = session_stats(
+            &events,
+            &[deepseek.clone(), minimax.clone()],
+            &initial,
+            &catalog(),
+            &current,
+            0,
+            0,
+        );
+        let deepseek_cost = (1_300_000.0 * 2.0 + 500_000.0 * 2.0) / 1e6;
+        assert!(
+            !stats.unpriced,
+            "本轮两条都按 DeepSeek 定价，不应无价：{stats:?}"
+        );
+        assert!(
+            (stats.cost_usd.unwrap_or(0.0) - deepseek_cost * 2.0).abs() < 1e-6,
+            "轮中换连接不影响本轮定价：{:?} vs {}",
+            stats.cost_usd,
+            deepseek_cost * 2.0
+        );
+    }
 }
