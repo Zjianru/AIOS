@@ -27,7 +27,7 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.askTurn) return { file: 'ask', paceMs: options.askTurnPaceMs };
   if (options.toolTurn) return { file: 'tool' };
   if (options.t013Process) return { file: 'tool-process' };
-  if (options.t013Interrupted) return { file: 'tool-interrupted' };
+  if (options.t013Interrupted) return { file: 'tool-interrupted', paceMs: 800 };
   if (options.highUsage) return { file: 'high-usage' };
   return {
     file: 'text',

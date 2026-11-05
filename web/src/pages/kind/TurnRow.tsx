@@ -287,7 +287,11 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
           ) : null}
           <FailureBlock view={view} />
 
-          {!streaming && (view.tools.length > 0 || view.answer) ? (
+          {!streaming &&
+          (view.tools.length > 0 ||
+            view.answer ||
+            view.status === 'interrupted' ||
+            view.status === 'failed') ? (
             <div className="mt-2">
               <ProcessView
                 steps={processStepsOf(view, '')}
