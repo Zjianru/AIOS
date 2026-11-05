@@ -140,7 +140,7 @@ test('非法草稿当空', async ({ page }) => {
 });
 
 
-/// T013.8：恢复阅读位置只做一次——之后来新消息/用户滚动不再被拉回旧位置。
+/// T013.8：恢复阅读位置只做一次——用户上滚后再切页回来，停在用户的位置（不是旧恢复点）。
 test('阅读位置：恢复后不再拉回', async ({ page }) => {
   const fixture = await startKernelFixture();
   try {
@@ -155,23 +155,26 @@ test('阅读位置：恢复后不再拉回', async ({ page }) => {
       element.scrollTop = Math.max(0, element.scrollHeight * 0.4);
     });
     await page.waitForTimeout(300);
-    // 切设置再回来，恢复一次。
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await page.getByRole('button', { name: 'Kind', exact: true }).click();
     await expect(page.locator('[data-kind="composer"]')).toBeVisible({ timeout: 15_000 });
     await page.waitForTimeout(1200);
-    // 用户往上滚（离开恢复的位置）——然后来一条新消息，位置不能被拉回旧的恢复点。
+    const restored = await scroller.evaluate((element) => element.scrollTop);
+    // 用户往上滚离开恢复点。
     await scroller.evaluate((element) => {
-      element.scrollTop = Math.max(0, element.scrollTop - 200);
+      element.scrollTop = Math.max(0, element.scrollTop - 250);
     });
+    await page.waitForTimeout(300);
     const before = await scroller.evaluate((element) => element.scrollTop);
-    await page.getByPlaceholder('和 Kind 说…').fill('新消息来了');
-    await page.getByRole('button', { name: '发送', exact: true }).click();
-    await expect(page.getByText('（T007 e2e 假回放）').last()).toBeVisible({ timeout: 30_000 });
-    await page.waitForTimeout(600);
+    // 再切一次页回来：应该记住「用户上滚后的位置」，而不是旧恢复点。
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await page.getByRole('button', { name: 'Kind', exact: true }).click();
+    await expect(page.locator('[data-kind="composer"]')).toBeVisible({ timeout: 15_000 });
+    await page.waitForTimeout(1200);
     const after = await scroller.evaluate((element) => element.scrollTop);
-    // 允许因为新内容高度变化带来的少量位移，但不能被拉回「恢复点」附近以外的旧位置。
-    expect(Math.abs(after - before)).toBeLessThan(200);
+    // 回来落在「用户上滚后」的位置（说明恢复用的是最新位置，不是旧恢复点）。
+    expect(Math.abs(after - before)).toBeLessThan(120);
+    void restored;
   } finally {
     await fixture.close();
   }

@@ -55,10 +55,13 @@ test('换思考档：下一轮请求的 thinking 档按选择', async ({ page })
   const fixture = await startKernelFixture();
   try {
     await page.goto(urlOf(fixture));
+    // T012.9 底栏标签是异步 hydration 的（模型名 + 思考档）；等它出来再点菜单。
+    await expect(page.locator('[data-kind="model-picker"]')).toContainText('·', { timeout: 30_000 });
     await page.locator('[data-kind="model-picker"]').click();
     const effort = page.locator('[data-kind="effort"]');
-    await expect(effort).toBeVisible();
+    await expect(effort).toBeVisible({ timeout: 30_000 });
     await effort.getByRole('button', { name: 'low', exact: true }).click({ force: true });
+    await page.waitForTimeout(500);
     await page.keyboard.press('Escape');
     await page.getByPlaceholder('和 Kind 说…').fill('你好');
     await page.getByRole('button', { name: '发送', exact: true }).click();
