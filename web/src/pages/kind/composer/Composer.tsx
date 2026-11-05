@@ -145,9 +145,12 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     (entry: FileReferenceEntry) => {
       const element = inputRef.current;
       if (!element || !atMenu) return;
+      // 用 DOM 里的真实值（state 闭包可能比输入慢一拍）。
+      const value = element.value;
       const caret = element.selectionStart;
       const inserted = insertReference(entry.path);
-      setText(text.slice(0, atMenu.start) + inserted + text.slice(caret));
+      const next = value.slice(0, atMenu.start) + inserted + value.slice(caret);
+      setText(next);
       setAtMenu(null);
       requestAnimationFrame(() => {
         element.focus();
@@ -155,7 +158,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         element.setSelectionRange(position, position);
       });
     },
-    [atMenu, text],
+    [atMenu],
   );
 
   const intakeFiles = useCallback(async (files: File[]) => {

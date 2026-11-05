@@ -218,7 +218,8 @@ test('@路径高亮：插入后高亮层有 @路径，文字仍可编辑', async
     const highlight = page.locator('[data-kind="at-highlight"]');
     await expect(highlight).toContainText('@hello.txt');
     await expect(highlight.locator('[data-at-token="@hello.txt"]')).toHaveCount(1);
-    // 文字仍可编辑（高亮层是展示层，不抢焦点）：继续输入 + 高亮跟着变。
+    // 文字仍可编辑（高亮层是展示层，不抢焦点）：等插入后的光标落定，再继续输入。
+    await page.waitForTimeout(150);
     await box.pressSequentially(' 追加');
     await expect(box).toHaveValue('@hello.txt 追加');
     await expect(highlight).toContainText('@hello.txt 追加');
