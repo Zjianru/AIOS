@@ -31,6 +31,8 @@ export interface ReadyFrame {
   protocolVersion: number;
   root: ServiceRootState;
   context: ServiceContext;
+  /** T009.5：宿主位置；页面只把它用于缩写显示的路径。 */
+  host?: { home?: string };
 }
 
 export interface EventFrame {
@@ -57,6 +59,23 @@ export interface AgentFrame {
 }
 
 export type Frame = ReadyFrame | EventFrame | AgentFrame;
+
+// T009.5：ready 帧给的宿主 home；页面把显示的路径缩写成 ~/…，不改服务端事实。
+let hostHomeValue: string | null = null;
+
+export function setHostHome(home: string | null | undefined): void {
+  hostHomeValue = home && home.length > 0 ? home.replace(/\/$/, '') : null;
+}
+
+/** 把宿主机上的绝对路径缩写成 ~/…（只用于显示；拼给服务端的路径不变）。 */
+export function displayPath(raw: string | null | undefined): string {
+  if (!raw) return '';
+  const home = hostHomeValue;
+  if (!home) return raw;
+  if (raw === home) return '~';
+  if (raw.startsWith(home + '/')) return '~' + raw.slice(home.length);
+  return raw;
+}
 
 export class ServiceHttpError extends Error {
   status: number;
@@ -133,7 +152,11 @@ export async function compactThread(commandId: string): Promise<void> {
 }
 
 export async function recheckRoot(): Promise<ServiceRootState> {
-  const response = await post<{ root: ServiceRootState }>({ method: 'recheck' });
+  const response = await post<{ root: ServiceRootState; host?: { home?: string } }>({
+    method: 'recheck',
+  });
+  // T009.5：根不可用时页面没有 ready 帧；recheck 也带 host.home，说明页的路径照样缩写。
+  setHostHome(response.host?.home);
   return response.root;
 }
 
@@ -159,7 +182,7 @@ export async function fetchEventsPage(options: {
 
 /* ───────────────────────── T008 设置 › 模型与连接（Keyring） ───────────────────────── */
 
-/** 与 service 协议 v3 对应的 Keyring 类型（响应里没有 key 正文）。 */
+/** 与 service 协议 v4 对应的 Keyring 类型（响应里没有 key 正文）。 */
 export interface ServiceKeyFileInfo {
   path: string;
   since: number;

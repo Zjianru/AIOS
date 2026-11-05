@@ -11,6 +11,7 @@ import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQues
 import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
 import type { GateDetail, GateState } from './KernelGate';
 import { reconnectDelayMs } from '@/data/reconnect';
+import { setHostHome } from '@/data/service';
 import { go } from '@/app/navigate';
 import type { AskAnswer, AskQuestion, FailureCause } from '@/data/fixtures/kindLive';
 import { mark } from '@/lib/perf';
@@ -115,7 +116,7 @@ interface KindState {
   byId: Map<string, TurnViewData>;
   firstItemIndex: number;
   nextCursor: string | null;
-  /** 当前最老一条日志的 seq（往上翻时 beforeSeq = oldestSeq - 1）。 */
+  /** 当前最老一条日志的 seq（往上翻时 beforeSeq = oldestSeq，不含本条）。 */
   oldestSeq: number | null;
   hasOlder: boolean;
   loadingOlder: boolean;
@@ -419,6 +420,8 @@ function applyAgentEvent(event: AgentFrame['event']): void {
 
 function applyFrame(frame: Frame): void {
   if (frame.type === 'ready') {
+    // T009.5：记住宿主的 home，页面显示路径时缩写成 ~/…。
+    setHostHome(frame.host?.home);
     contextWindow = frame.context.window;
     const usage =
       frame.context.window > 0
@@ -786,7 +789,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
     mark('prepend:start');
     try {
       const page = await fetchEventsPage({
-        beforeSeq: state.oldestSeq - 1,
+        beforeSeq: state.oldestSeq,
         maxMessages: 400,
         minMessages: 100,
         minTurns: 20,

@@ -25,8 +25,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use service::{
-    ContextUsage, FollowRequest, FollowResponse, HostInfo, PROTOCOL_VERSION, RootHost, RootState,
-    ServiceError, ServiceEvent,
+    ContextUsage, FollowRequest, FollowResponse, HostInfo, HostLocation, PROTOCOL_VERSION,
+    RootHost, RootState, ServiceError, ServiceEvent,
 };
 
 /// 默认只绑 IPv4 回环。
@@ -156,6 +156,8 @@ pub enum Frame {
         protocol_version: u64,
         root: RootState,
         context: ContextUsage,
+        /// T009.5：host: {home}（页面用来缩写路径）。
+        host: HostLocation,
     },
     /// 日志事件帧（DSH 的 {type:'event', event: SessionWireEvent}）。
     Event { event: ServiceEvent },
@@ -617,6 +619,7 @@ pub fn opening_frames(info: &HostInfo, follow: FollowResponse) -> Vec<Frame> {
         protocol_version: PROTOCOL_VERSION,
         root: info.root.clone(),
         context: info.context,
+        host: info.host.clone(),
     });
     frames.extend(
         follow
@@ -715,12 +718,40 @@ async fn static_handler(
     }
 }
 
-fn error_response(status: StatusCode, message: &str) -> Response {
+/// T009.1：ServiceError 的 HTTP 状态（保持 T008 现状：root/unavailable 409，其余 502）。
+fn service_error_status(code: service::ServiceErrorCode) -> StatusCode {
+    match code {
+        service::ServiceErrorCode::RootUnavailable => StatusCode::CONFLICT,
+        _ => StatusCode::BAD_GATEWAY,
+    }
+}
+
+/// T009.1：/api 的错误响应（DSH RemoteError 形状：{code,message,details?}）。
+fn api_error_response(error: ServiceError) -> Response {
+    let status = service_error_status(error.code());
     (
         status,
-        Json(serde_json::json!({"error": message.to_owned()})),
+        Json(service::ServiceErrorBody::from_service_error(&error)),
     )
         .into_response()
+}
+
+/// T009.1：请求体不合法（不是 ServiceError 变体）：单独一个码 request/invalid-json。
+fn bad_request_response(message: String) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(service::ServiceErrorBody {
+            code: "request/invalid-json".to_owned(),
+            message,
+            details: None,
+        }),
+    )
+        .into_response()
+}
+
+fn error_response(status: StatusCode, message: &str) -> Response {
+    // T009.1：非 /api 的错误（静态 404、信任栅栏 401/403）照来源回纯文本，不再用旧的 error JSON 体。
+    (status, message.to_owned()).into_response()
 }
 
 fn trust_error_response(error: TrustError) -> Response {
@@ -741,21 +772,12 @@ async fn api_handler(
     let call: service::Call = match serde_json::from_slice(&body) {
         Ok(call) => call,
         Err(error) => {
-            return error_response(StatusCode::BAD_REQUEST, &format!("bad request: {error}"));
+            return bad_request_response(format!("bad request: {error}"));
         }
     };
     match state.host.dispatch(call).await {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
-        Err(ServiceError::RootUnavailable(root)) => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "error": "ROOT_UNAVAILABLE",
-                "root": root,
-                "protocolVersion": PROTOCOL_VERSION,
-            })),
-        )
-            .into_response(),
-        Err(error) => error_response(StatusCode::BAD_GATEWAY, &error.to_string()),
+        Err(error) => api_error_response(error),
     }
 }
 
@@ -1091,5 +1113,68 @@ mod cookie_red_tests {
                 .unwrap(),
         );
         assert_eq!(check_api_auth(&trust, &headers).unwrap_err().status(), 401);
+    }
+}
+
+#[cfg(test)]
+mod t009_error_tests {
+    use super::*;
+
+    async fn body_json(response: Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        serde_json::from_slice(&bytes).expect("json")
+    }
+
+    #[tokio::test]
+    async fn api_error_envelope_uses_structured_body() {
+        let cases: Vec<(ServiceError, StatusCode, &str)> = vec![
+            (
+                ServiceError::Agent(agent::AgentError::Compaction("x".to_owned())),
+                StatusCode::BAD_GATEWAY,
+                "agent/internal",
+            ),
+            (
+                ServiceError::AnswerRejected("q1".to_owned()),
+                StatusCode::BAD_GATEWAY,
+                "question/answer-rejected",
+            ),
+            (
+                ServiceError::RootUnavailable(service::RootState::Ok),
+                StatusCode::CONFLICT,
+                "root/unavailable",
+            ),
+            (
+                ServiceError::SettingsOnBareHost,
+                StatusCode::BAD_GATEWAY,
+                "settings/unavailable",
+            ),
+            (
+                ServiceError::InvalidPath("bad".to_owned()),
+                StatusCode::BAD_GATEWAY,
+                "request/invalid-path",
+            ),
+        ];
+        for (error, status, code) in cases {
+            let response = api_error_response(error);
+            assert_eq!(response.status(), status);
+            let json = body_json(response).await;
+            assert_eq!(json["code"], code, "body={json}");
+            assert!(json.get("error").is_none(), "不再有旧 error 字段：{json}");
+            assert!(json["message"].as_str().is_some(), "body={json}");
+        }
+    }
+
+    #[test]
+    fn service_error_statuses_are_stable() {
+        for code in service::ServiceErrorCode::ALL {
+            let status = service_error_status(code);
+            if matches!(code, service::ServiceErrorCode::RootUnavailable) {
+                assert_eq!(status, StatusCode::CONFLICT);
+            } else {
+                assert_eq!(status, StatusCode::BAD_GATEWAY);
+            }
+        }
     }
 }

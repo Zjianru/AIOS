@@ -232,7 +232,7 @@ pub struct FollowResponse {
 /// events（DSH :540）：往回翻一页日志，按轮对齐、有预算（默认 50/2/500）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct EventsRequest {
-    /// 页的末端（含）；省略 = 当前日志末端。
+    /// 页的末端（不含本条）；省略 = 当前日志末端之后。
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "beforeSeq")]
     pub before_seq: Option<u64>,
     /// 消息条数上限（user/message + assistant/message），默认 500。
@@ -260,13 +260,16 @@ pub struct RecheckRequest {}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecheckResponse {
     pub root: RootState,
+    /// T009.5：根不可用时没有 ready 帧，页面靠这里的 host.home 缩写说明页里的路径。
+    #[serde(default)]
+    pub host: HostLocation,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventsResponse {
     /// 这一页事件（按日志顺序；页首通常是 turn/start，除非预算或日志耗尽先到）。
     pub events: Vec<ServiceEvent>,
-    /// 还有更早的事件（下一轮用 beforeSeq = 页首 seq - 1 往回翻）。
+    /// 还有更早的事件（下一轮用 beforeSeq = 页首 seq 往回翻，不含本条）。
     #[serde(rename = "hasMore")]
     pub has_more: bool,
 }
@@ -425,7 +428,7 @@ pub struct ConnectionRevokeResponse {
 }
 
 /// 服务协议版本（T007.2 起）：只增不改的对外面每次扩展都记在这里，Web ready 帧里带上。
-pub const PROTOCOL_VERSION: u64 = 3;
+pub const PROTOCOL_VERSION: u64 = 4;
 
 /// 根会话不可用的种类（T007.2）：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -495,7 +498,15 @@ pub struct ContextUsage {
     pub window: u64,
 }
 
-/// ready/status 里给页面的宿主信息（协议版本 + 根会话状态 + 上下文占用）。
+/// T009.5：宿主机的位置（ready 帧的 host）：页面只用 home 把路径缩写成 ~/…。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct HostLocation {
+    /// 宿主进程的 HOME（没有就不给；页面只在有值时缩写）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<String>,
+}
+
+/// ready/status 里给页面的宿主信息（协议版本 + 根会话状态 + 上下文占用 + 宿主位置）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HostInfo {
     #[serde(rename = "protocolVersion")]
@@ -504,6 +515,8 @@ pub struct HostInfo {
     pub session_id: Option<String>,
     pub root: RootState,
     pub context: ContextUsage,
+    /// T009.5：ready 帧加 host: {home}；不加 clientId。
+    pub host: HostLocation,
 }
 
 /// 服务错误（协议层错误码的第一版；Web 适配器在 17 映射成线上错误）。
@@ -522,6 +535,112 @@ pub enum ServiceError {
     SettingsOnBareHost,
     #[error("路径不合法：{0}")]
     InvalidPath(String),
+}
+
+/// T009.1：服务的结构化错误码（DSH remote-error 形状：`<namespace>/<kind>`，小写连字符）。
+///
+/// 码表只在这一处；页面按码处理，说明只进监控/诊断。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceErrorCode {
+    AgentInternal,
+    QuestionAnswerRejected,
+    RootUnavailable,
+    KeyringKeyFileMissing,
+    KeyringUndecryptable,
+    KeyringCorrupt,
+    KeyringIo,
+    ConnectionMissing,
+    ConnectionInvalid,
+    SettingsUnavailable,
+    RequestInvalidPath,
+}
+
+impl ServiceErrorCode {
+    /// 码表全集（覆盖检查用：多一个少一个都要失败）。
+    pub const ALL: [ServiceErrorCode; 11] = [
+        ServiceErrorCode::AgentInternal,
+        ServiceErrorCode::QuestionAnswerRejected,
+        ServiceErrorCode::RootUnavailable,
+        ServiceErrorCode::KeyringKeyFileMissing,
+        ServiceErrorCode::KeyringUndecryptable,
+        ServiceErrorCode::KeyringCorrupt,
+        ServiceErrorCode::KeyringIo,
+        ServiceErrorCode::ConnectionMissing,
+        ServiceErrorCode::ConnectionInvalid,
+        ServiceErrorCode::SettingsUnavailable,
+        ServiceErrorCode::RequestInvalidPath,
+    ];
+
+    /// 线上的码名。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AgentInternal => "agent/internal",
+            Self::QuestionAnswerRejected => "question/answer-rejected",
+            Self::RootUnavailable => "root/unavailable",
+            Self::KeyringKeyFileMissing => "keyring/key-file-missing",
+            Self::KeyringUndecryptable => "keyring/undecryptable",
+            Self::KeyringCorrupt => "keyring/corrupt",
+            Self::KeyringIo => "keyring/io",
+            Self::ConnectionMissing => "connection/missing",
+            Self::ConnectionInvalid => "connection/invalid",
+            Self::SettingsUnavailable => "settings/unavailable",
+            Self::RequestInvalidPath => "request/invalid-path",
+        }
+    }
+}
+
+impl ServiceError {
+    /// T009.1：这个错误在 wire 上的码。
+    pub fn code(&self) -> ServiceErrorCode {
+        match self {
+            Self::Agent(_) => ServiceErrorCode::AgentInternal,
+            Self::AnswerRejected(_) => ServiceErrorCode::QuestionAnswerRejected,
+            Self::RootUnavailable(_) => ServiceErrorCode::RootUnavailable,
+            Self::Credentials(error) => match error {
+                credentials::KeyringError::KeyFileMissing(_) => {
+                    ServiceErrorCode::KeyringKeyFileMissing
+                }
+                credentials::KeyringError::Crypto(_) => ServiceErrorCode::KeyringUndecryptable,
+                credentials::KeyringError::Corrupt(_) => ServiceErrorCode::KeyringCorrupt,
+                credentials::KeyringError::Io(_) => ServiceErrorCode::KeyringIo,
+                credentials::KeyringError::MissingConnection(_) => {
+                    ServiceErrorCode::ConnectionMissing
+                }
+                credentials::KeyringError::InvalidConnection(_) => {
+                    ServiceErrorCode::ConnectionInvalid
+                }
+            },
+            Self::SettingsOnBareHost => ServiceErrorCode::SettingsUnavailable,
+            Self::InvalidPath(_) => ServiceErrorCode::RequestInvalidPath,
+        }
+    }
+}
+
+/// T009.1：/api 的错误体（DSH RemoteError 的线上形状）：码 + 诊断 + 可选细节。
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ServiceErrorBody {
+    pub code: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+}
+
+impl ServiceErrorBody {
+    /// T009.1：码 + 诊断 + 按码定的细节（root/unavailable 带 root 状态与协议版本）。
+    pub fn from_service_error(error: &ServiceError) -> Self {
+        let details = match error {
+            ServiceError::RootUnavailable(root) => Some(serde_json::json!({
+                "root": root,
+                "protocolVersion": PROTOCOL_VERSION,
+            })),
+            _ => None,
+        };
+        Self {
+            code: error.code().as_str().to_owned(),
+            message: error.to_string(),
+            details,
+        }
+    }
 }
 
 /// 与载体无关的服务宿主：绑定一个 Agent/会话，调用经 dispatch 进入，事件从广播流出。
@@ -593,6 +712,7 @@ impl ServiceHost {
             // T007.2：recheck 只对 RootHost 有意义；裸 ServiceHost 直接回根状态 ok（宿主不回退）。
             Call::Recheck(_) => Ok(Response::Recheck(RecheckResponse {
                 root: RootState::Ok,
+                host: HostLocation::default(),
             })),
             // T008.3：设置接口由 RootHost 提供；裸宿主没有 Keyring。
             Call::ModelSettings(_)
@@ -712,44 +832,13 @@ impl ServiceHost {
     /// 从页尾往回数，走到**轮起点**且两条下限都满足时停；预算或日志耗尽先到就按先到的停）。
     pub async fn events(&self, request: EventsRequest) -> Result<EventsResponse, ServiceError> {
         let all = self.agent.session_events_from(0);
-        if all.is_empty() {
-            return Ok(EventsResponse {
-                events: Vec::new(),
-                has_more: false,
-            });
-        }
-        let end_seq = request
-            .before_seq
-            .unwrap_or(u64::MAX)
-            .min(all.last().map(|event| event.seq).unwrap_or(0));
-        let max_messages = request.max_messages.unwrap_or(500).max(1);
-        let min_messages = request.min_messages.unwrap_or(50).min(max_messages);
-        let min_turns = request.min_turns.unwrap_or(2).max(1);
-
-        let mut selected: Vec<&session::Event> = Vec::new();
-        let mut messages = 0_usize;
-        let mut turns = 0_usize;
-        for event in all.iter().filter(|event| event.seq <= end_seq).rev() {
-            selected.push(event);
-            match &event.kind {
-                session::EventKind::UserMessage { .. }
-                | session::EventKind::AssistantMessage { .. } => messages += 1,
-                session::EventKind::TurnStart { .. } => turns += 1,
-                _ => {}
-            }
-            if messages >= max_messages {
-                break;
-            }
-            if matches!(event.kind, session::EventKind::TurnStart { .. })
-                && messages >= min_messages
-                && turns >= min_turns
-            {
-                break;
-            }
-        }
-        selected.reverse();
-        let first_seq = selected.first().map(|event| event.seq).unwrap_or(0);
-        let has_more = first_seq > all[0].seq;
+        let (selected, has_more) = page_events(
+            &all,
+            request.before_seq,
+            request.max_messages.unwrap_or(500).max(1),
+            request.min_messages,
+            request.min_turns,
+        );
         Ok(EventsResponse {
             events: selected.iter().map(|event| service_event(event)).collect(),
             has_more,
@@ -768,6 +857,54 @@ impl Drop for ServiceHost {
             handle.abort();
         }
     }
+}
+
+/// T009.4：events 的分页选择（beforeSeq 不含本条；照 DSH history.ts:124-140）。
+fn page_events(
+    all: &[session::Event],
+    before_seq: Option<u64>,
+    max_messages: usize,
+    min_messages: Option<usize>,
+    min_turns: Option<usize>,
+) -> (Vec<&session::Event>, bool) {
+    if all.is_empty() {
+        return (Vec::new(), false);
+    }
+    // T009.4：beforeSeq 是「不含本条」的上界（照 DSH history.ts:124-140）；省略 = 日志末端之后。
+    let exclusive_end = match before_seq {
+        Some(seq) => seq,
+        None => all.last().map(|event| event.seq + 1).unwrap_or(0),
+    };
+    if exclusive_end == 0 {
+        return (Vec::new(), false);
+    }
+    let min_messages = min_messages.unwrap_or(50).min(max_messages);
+    let min_turns = min_turns.unwrap_or(2).max(1);
+    let mut selected: Vec<&session::Event> = Vec::new();
+    let mut messages = 0_usize;
+    let mut turns = 0_usize;
+    for event in all.iter().filter(|event| event.seq < exclusive_end).rev() {
+        selected.push(event);
+        match &event.kind {
+            session::EventKind::UserMessage { .. }
+            | session::EventKind::AssistantMessage { .. } => messages += 1,
+            session::EventKind::TurnStart { .. } => turns += 1,
+            _ => {}
+        }
+        if messages >= max_messages {
+            break;
+        }
+        if matches!(event.kind, session::EventKind::TurnStart { .. })
+            && messages >= min_messages
+            && turns >= min_turns
+        {
+            break;
+        }
+    }
+    selected.reverse();
+    let first_seq = selected.first().map(|event| event.seq).unwrap_or(0);
+    let has_more = first_seq > all[0].seq;
+    (selected, has_more)
 }
 
 /// 会话日志事件 → 服务事件（data = 日志事件的字段，不含 type 标签）。
@@ -796,7 +933,8 @@ fn failure_cause(kind: &session::EventKind) -> Option<FailureCause> {
     };
     Some(match error.code.as_str() {
         "KEYRING" => FailureCause::Keyring,
-        "AUTH" | "MISSING_CREDENTIAL" => FailureCause::Credential,
+        // T009.1：QUOTA 归凭证类（下一步是检查账户）。
+        "AUTH" | "MISSING_CREDENTIAL" | "QUOTA" => FailureCause::Credential,
         _ => FailureCause::Model,
     })
 }
@@ -982,6 +1120,9 @@ impl RootHost {
             session_id: self.session_id.lock().expect("session id 锁被毒化").clone(),
             root: self.state.lock().expect("root state 锁被毒化").clone(),
             context,
+            host: HostLocation {
+                home: std::env::var("HOME").ok().filter(|home| !home.is_empty()),
+            },
         }
     }
 
@@ -1233,7 +1374,8 @@ impl RootHost {
     pub async fn dispatch(&self, call: Call) -> Result<Response, ServiceError> {
         if matches!(call, Call::Recheck(_)) {
             let root = self.recheck().await;
-            return Ok(Response::Recheck(RecheckResponse { root }));
+            let host = self.info().host;
+            return Ok(Response::Recheck(RecheckResponse { root, host }));
         }
         match call {
             Call::ModelSettings(_) => self.model_settings().await.map(Response::ModelSettings),
@@ -1450,5 +1592,216 @@ mod f6_path_tests {
         );
         assert!(expand_user_path("relative/keyring.key", Some(home)).is_err());
         assert!(expand_user_path("~other/keyring.key", Some(home)).is_err());
+    }
+}
+
+#[cfg(test)]
+mod t009_error_tests {
+    use super::*;
+
+    fn variants() -> Vec<(&'static str, ServiceError)> {
+        vec![
+            (
+                "agent/internal",
+                ServiceError::Agent(agent::AgentError::Compaction("x".to_owned())),
+            ),
+            (
+                "question/answer-rejected",
+                ServiceError::AnswerRejected("q1".to_owned()),
+            ),
+            (
+                "root/unavailable",
+                ServiceError::RootUnavailable(RootState::Ok),
+            ),
+            (
+                "keyring/key-file-missing",
+                ServiceError::Credentials(credentials::KeyringError::KeyFileMissing(
+                    PathBuf::from("/k"),
+                )),
+            ),
+            (
+                "keyring/undecryptable",
+                ServiceError::Credentials(credentials::KeyringError::Crypto("x".to_owned())),
+            ),
+            (
+                "keyring/corrupt",
+                ServiceError::Credentials(credentials::KeyringError::Corrupt("x".to_owned())),
+            ),
+            (
+                "keyring/io",
+                ServiceError::Credentials(credentials::KeyringError::Io(std::io::Error::other(
+                    "x",
+                ))),
+            ),
+            (
+                "connection/missing",
+                ServiceError::Credentials(credentials::KeyringError::MissingConnection(
+                    "deepseek".to_owned(),
+                )),
+            ),
+            (
+                "connection/invalid",
+                ServiceError::Credentials(credentials::KeyringError::InvalidConnection(
+                    "x".to_owned(),
+                )),
+            ),
+            ("settings/unavailable", ServiceError::SettingsOnBareHost),
+            (
+                "request/invalid-path",
+                ServiceError::InvalidPath("bad".to_owned()),
+            ),
+        ]
+    }
+
+    #[test]
+    fn service_error_codes_cover_every_variant() {
+        let pairs = variants();
+        for (expected, error) in &pairs {
+            assert_eq!(error.code().as_str(), *expected, "变体的码");
+        }
+        let mut used: Vec<&str> = pairs.iter().map(|(code, _)| *code).collect();
+        used.sort_unstable();
+        used.dedup();
+        let mut all: Vec<&str> = ServiceErrorCode::ALL
+            .iter()
+            .map(|code| code.as_str())
+            .collect();
+        all.sort_unstable();
+        assert_eq!(
+            used, all,
+            "码表与 ServiceError 变体必须一一对应（多/少都失败）"
+        );
+    }
+
+    #[test]
+    fn service_error_body_has_code_message_and_root_details() {
+        let root_error = ServiceError::RootUnavailable(RootState::Unavailable {
+            kind: RootUnavailableKind::Other,
+            path: Some("/x".to_owned()),
+            line: Some(3),
+            message: "x".to_owned(),
+        });
+        let body = ServiceErrorBody::from_service_error(&root_error);
+        let json = serde_json::to_value(&body).expect("serialize");
+        assert_eq!(json["code"], "root/unavailable");
+        assert!(
+            json["message"]
+                .as_str()
+                .is_some_and(|message| !message.is_empty())
+        );
+        assert_eq!(json["details"]["protocolVersion"], PROTOCOL_VERSION);
+        assert!(
+            json["details"].get("root").is_some(),
+            "details.root：{json}"
+        );
+        assert!(json.get("error").is_none(), "不再有旧 error 字段：{json}");
+        let other =
+            ServiceErrorBody::from_service_error(&ServiceError::AnswerRejected("q1".to_owned()));
+        let other_json = serde_json::to_value(&other).expect("serialize");
+        assert_eq!(other_json["code"], "question/answer-rejected");
+        assert!(
+            other_json.get("details").is_none(),
+            "无 detail 时不出现该字段：{other_json}"
+        );
+        assert!(other_json.get("error").is_none());
+    }
+
+    #[test]
+    fn quota_error_is_credential_cause() {
+        assert_eq!(
+            failure_cause(&turn_end("QUOTA", "额度用完")),
+            Some(FailureCause::Credential),
+            "QUOTA 归凭证类"
+        );
+    }
+
+    fn turn_end(code: &str, message: &str) -> session::EventKind {
+        session::EventKind::TurnEnd {
+            turn: 1,
+            reason: session::TurnEndReason::Error {
+                error: session::LlmFailure {
+                    message: message.to_owned(),
+                    code: code.to_owned(),
+                },
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod t009_pagination_tests {
+    use super::*;
+
+    fn events(count: u64) -> Vec<session::Event> {
+        (0..count)
+            .map(|seq| {
+                session::Event::new(
+                    seq,
+                    1_000 + seq,
+                    session::EventKind::UserMessage {
+                        turn: seq / 2 + 1,
+                        step: 1,
+                        message: model::Message::text(model::Role::User, "m"),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn seqs(page: &[&session::Event]) -> Vec<u64> {
+        page.iter().map(|event| event.seq).collect()
+    }
+
+    #[test]
+    fn before_seq_is_exclusive_upper_bound() {
+        let all = events(10);
+        let (page, has_more) = page_events(&all, Some(5), 100, None, None);
+        assert_eq!(seqs(&page), vec![0, 1, 2, 3, 4], "beforeSeq 不含本条");
+        assert!(!has_more);
+        let (page, _) = page_events(&all, Some(0), 100, None, None);
+        assert!(page.is_empty(), "beforeSeq=0 没有任何更早的事件");
+        let (page, _) = page_events(&all, Some(11), 100, None, None);
+        assert_eq!(
+            seqs(&page),
+            (0..10).collect::<Vec<_>>(),
+            "beforeSeq=N+1 等于全部"
+        );
+        let (page, _) = page_events(&all, None, 100, None, None);
+        assert_eq!(
+            seqs(&page),
+            (0..10).collect::<Vec<_>>(),
+            "省略 beforeSeq 等于全部"
+        );
+    }
+
+    #[test]
+    fn paging_backwards_yields_each_seq_exactly_once() {
+        let all = events(10);
+        for page_size in [2_usize, 3] {
+            let mut cursor: Option<u64> = None;
+            let mut collected: Vec<u64> = Vec::new();
+            for _ in 0..100 {
+                let (page, has_more) = page_events(&all, cursor, page_size, None, None);
+                if page.is_empty() {
+                    break;
+                }
+                collected.extend(seqs(&page));
+                cursor = page.first().map(|event| event.seq);
+                if !has_more {
+                    break;
+                }
+            }
+            collected.sort_unstable();
+            assert_eq!(
+                collected,
+                (0..10).collect::<Vec<_>>(),
+                "page_size={page_size}：每条正好一次、不缺"
+            );
+        }
+    }
+
+    #[test]
+    fn protocol_version_is_4() {
+        assert_eq!(PROTOCOL_VERSION, 4);
     }
 }

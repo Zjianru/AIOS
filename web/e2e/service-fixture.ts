@@ -160,6 +160,8 @@ export interface FixtureOptions {
   busyRoot?: boolean;
   /// T008.4：不预置 Keyring 连接（首次使用用例）；serve 仍能起（T008.3b）。
   emptyKeyring?: boolean;
+  /// T009.5：serve 进程的 HOME；传 'dataDir' 用数据目录（页面路径缩写用例）。
+  home?: 'dataDir' | string;
 }
 
 /** 接缝 5：假 DeepSeek 脚本回放 + 真 aios-dev serve（页面也由它同源托管）。 */
@@ -251,6 +253,9 @@ export async function startKernelFixture(
     serveArgs.push('--context-window', String(options.contextWindow));
   }
   const serviceEnv = { ...process.env };
+  if (options.home) {
+    serviceEnv.HOME = options.home === 'dataDir' ? dataDir : options.home;
+  }
   let holder: ReturnType<typeof spawn> | null = null;
   if (options.busyRoot) {
     holder = spawn(bin, ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', dataDir], {

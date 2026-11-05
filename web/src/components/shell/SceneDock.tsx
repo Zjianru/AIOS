@@ -22,6 +22,36 @@ interface SceneDockProps {
 
 const SPLITTER_WIDTH = 6;
 
+/** T009.5：dockview 的读屏播报改成中文，覆盖它内置的全部英文条目（DockviewMessages）。 */
+const EDGE_NAMES: Record<string, string> = {
+  top: '上方',
+  bottom: '下方',
+  left: '左侧',
+  right: '右侧',
+  center: '中间',
+};
+
+const DOCKVIEW_MESSAGES = {
+  panelOpened: (title: string) => '打开了 ' + title,
+  panelClosed: (title: string) => '关闭了 ' + title,
+  groupMaximized: (title: string) => '放大了 ' + title,
+  groupRestored: (title: string) => '恢复了 ' + title,
+  groupFloated: (title: string) => '浮出了 ' + title,
+  groupDocked: (title: string) => '停靠了 ' + title,
+  groupPoppedOut: (title: string) => '弹出了 ' + title,
+  closeTab: (title: string) => '关闭 ' + title,
+  closeTabPlain: () => '关闭这个面板',
+  movePickTarget: (source: string, target: string, current: number, total: number) =>
+    '要移动 ' + source + '：目标是 ' + target + '（第 ' + current + ' 个，共 ' + total + ' 个），按回车放下，按 Esc 取消',
+  movePickEdge: (position: string, target: string) =>
+    '要移动：' + (EDGE_NAMES[position] ?? position) + ' ' + target + '，按回车放下，按 Esc 取消',
+  moveCommitted: (source: string, target: string, position: string) =>
+    '已把 ' + source + ' 移到 ' + target + ' 的 ' + (EDGE_NAMES[position] ?? position),
+  moveCancelled: () => '移动已取消',
+  moveNotAllowed: () => '这里不能放',
+  moveFloated: (source: string) => '已把 ' + source + ' 浮出来',
+};
+
 function buildDefault(api: DockviewApi, panes: PaneDef[]): void {
   const [first, ...rest] = panes;
   api.addPanel({ id: first.id, component: first.id, title: first.title });
@@ -166,6 +196,7 @@ export function SceneDock({ scene, panes, renderPane, resetToken, onNarrowChange
       <DockviewReact
         className={theme === 'dark' ? 'dv-theme dockview-theme-dark' : 'dv-theme dockview-theme-light'}
         components={components}
+        messages={DOCKVIEW_MESSAGES}
         onReady={handleReady}
       />
     </div>
