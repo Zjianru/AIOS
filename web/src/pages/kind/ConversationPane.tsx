@@ -74,6 +74,8 @@ export function ConversationPane() {
       } else {
         scroller.scrollTop = saved.scrollTop;
       }
+      // 只恢复一次：之后的新消息/滚动不再把用户拉回旧位置。
+      restoreRef.current = null;
     };
     requestAnimationFrame(() => requestAnimationFrame(restore));
     const timer = setTimeout(restore, 400);
@@ -303,6 +305,7 @@ export function ConversationPane() {
             onScroll={(event: React.UIEvent<HTMLElement>) => {
               const element = event.currentTarget;
               if (!sessionId || !element) return;
+              // rangeChanged 是异步的；这里用最近一次的值（onScroll 连续触发，误差可忽略）。
               const topIndex = topIndexRef.current;
               const view = topIndex === null ? undefined : views[topIndex - firstItemIndex];
               // 顶行相对视口顶的偏移（capturePosition 的 offset）。

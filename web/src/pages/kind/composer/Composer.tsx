@@ -120,6 +120,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const sessionId = useKindStore((state) => state.sessionId);
   const draftLoadedRef = useRef<string | null>(null);
   const touchedRef = useRef(false);
+  const changedDuringSendRef = useRef(false);
 
   const canSend = text.trim().length > 0 || pastes.length > 0 || attachments.length > 0;
 
@@ -227,6 +228,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       const value = element.value;
       const caret = element.selectionStart;
       const inserted = insertReference(entry.path);
+      touchedRef.current = true;
+      changedDuringSendRef.current = true;
       const next = value.slice(0, atMenu.start) + inserted + value.slice(caret);
       setText(next);
       setAtMenu(null);
@@ -240,6 +243,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   );
 
   const intakeFiles = useCallback(async (files: File[]) => {
+    touchedRef.current = true;
+    changedDuringSendRef.current = true;
     for (const file of files) {
       try {
         const data = await readAsBase64(file);
@@ -264,6 +269,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     if (!value && pastes.length === 0 && attachments.length === 0) return;
     // T013.8：发送时先清空（马上能继续打），受理失败再把内容放回来（草稿不清）。
     const snapshot = { text, pastes, attachments, quote };
+    changedDuringSendRef.current = false;
     setText('');
     setPastes([]);
     setAttachments([]);
@@ -278,7 +284,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       attachments: attachments.map(({ id, name, bytes }) => ({ id, name, bytes })),
     });
     if (!accepted) {
-      // 失败进 unsent：把刚才的内容放回输入框（草稿也没动）。
+      // 失败进 unsent：内容放回输入框（草稿也没动）；失败等待期间用户又输入了就不覆盖新的。
+      if (changedDuringSendRef.current) return;
       setText(snapshot.text);
       setPastes(snapshot.pastes);
       setAttachments(snapshot.attachments);
@@ -341,6 +348,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   const onInput = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
     touchedRef.current = true;
+    changedDuringSendRef.current = true;
     const element = event.currentTarget;
     setText(element.value);
     pruneAtMenu(element.value, element.selectionStart);
@@ -493,6 +501,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               const pasted = clipboard.getData('text/plain');
               if (pasted.length > LARGE_PASTE_CHAR_THRESHOLD) {
                 event.preventDefault();
+                touchedRef.current = true;
+                changedDuringSendRef.current = true;
                 setPastes((previous) => [...previous, pasted]);
                 requestAnimationFrame(() => {
                   const cards = cardsRef.current;
@@ -526,6 +536,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
               .split(String.fromCharCode(10))
               .map((line) => '> ' + line)
               .join(String.fromCharCode(10));
+            touchedRef.current = true;
+            changedDuringSendRef.current = true;
             setText(element.value.slice(0, start) + quoted + element.value.slice(end));
             setQuote('');
             element.focus();
