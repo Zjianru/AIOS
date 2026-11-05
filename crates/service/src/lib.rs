@@ -311,7 +311,7 @@ pub struct ModelSettingsResponse {
 }
 
 /// T008.3：存/换连接；apiKey 只在请求体里，任何响应不带。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ConnectionSaveRequest {
     pub id: String,
     pub name: String,
@@ -319,6 +319,14 @@ pub struct ConnectionSaveRequest {
     pub endpoint: String,
     #[serde(rename = "apiKey")]
     pub api_key: String,
+    #[serde(default)]
+    pub preset: Option<String>,
+    #[serde(default)]
+    pub models: Option<Vec<credentials::ModelRow>>,
+    #[serde(default)]
+    pub price_rate: Option<f64>,
+    #[serde(default)]
+    pub auth_header: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -404,11 +412,19 @@ pub struct SessionModelSelectResponse {
 }
 
 /// T008.3 增补：编辑连接，只改 endpoint/model（不换 key）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ConnectionUpdateRequest {
     pub id: String,
     pub endpoint: String,
     pub model: String,
+    #[serde(default)]
+    pub preset: Option<String>,
+    #[serde(default)]
+    pub models: Option<Vec<credentials::ModelRow>>,
+    #[serde(default)]
+    pub price_rate: Option<f64>,
+    #[serde(default)]
+    pub auth_header: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1219,7 +1235,10 @@ impl RootHost {
                 model: request.model,
                 endpoint: request.endpoint,
                 api_key: request.api_key,
-                ..Default::default()
+                preset: request.preset,
+                models: request.models,
+                price_rate: request.price_rate,
+                auth_header: request.auth_header,
             })?;
         self.emit_settings_changed();
         self.notify_keyring_changed();
@@ -1243,9 +1262,15 @@ impl RootHost {
         &self,
         request: ConnectionUpdateRequest,
     ) -> Result<ConnectionUpdateResponse, ServiceError> {
-        let connection =
-            self.keyring()?
-                .update_connection(&request.id, request.endpoint, request.model)?;
+        let connection = self.keyring()?.update_connection_details(
+            &request.id,
+            request.endpoint,
+            request.model,
+            request.preset,
+            request.models,
+            request.price_rate,
+            request.auth_header,
+        )?;
         self.emit_settings_changed();
         self.notify_keyring_changed();
         Ok(ConnectionUpdateResponse { connection })

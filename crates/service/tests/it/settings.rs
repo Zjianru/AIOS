@@ -95,6 +95,7 @@ async fn 存连接删连接都无正文() {
             model: "deepseek-flash".to_owned(),
             endpoint: "https://api.deepseek.com/anthropic".to_owned(),
             api_key: TEST_KEY.to_owned(),
+            ..Default::default()
         }))
         .await;
     assert!(saved.is_ok(), "connection-save 应成功：{saved:?}");
@@ -126,6 +127,7 @@ async fn 换位置指回重新开始和记录() {
             model: "deepseek-flash".to_owned(),
             endpoint: "https://api.deepseek.com/anthropic".to_owned(),
             api_key: TEST_KEY.to_owned(),
+            ..Default::default()
         }))
         .await;
     assert!(saved.is_ok(), "save: {saved:?}");
@@ -170,6 +172,7 @@ async fn 换位置指回重新开始() {
             model: "deepseek-flash".to_owned(),
             endpoint: "https://api.deepseek.com/anthropic".to_owned(),
             api_key: TEST_KEY.to_owned(),
+            ..Default::default()
         }))
         .await;
     assert!(saved.is_ok(), "save: {saved:?}");
@@ -212,6 +215,7 @@ async fn 验证成功写注册器且响应无正文() {
             model: "deepseek-flash".to_owned(),
             endpoint: server.uri(),
             api_key: TEST_KEY.to_owned(),
+            ..Default::default()
         }))
         .await;
     assert!(saved.is_ok(), "save: {saved:?}");
@@ -248,6 +252,7 @@ async fn 验证失败写原因且响应无正文() {
             model: "deepseek-flash".to_owned(),
             endpoint: server.uri(),
             api_key: TEST_KEY.to_owned(),
+            ..Default::default()
         }))
         .await;
     assert!(saved.is_ok(), "save: {saved:?}");
@@ -274,6 +279,7 @@ async fn 设置变化会发事件且事件无正文() {
             model: "deepseek-flash".to_owned(),
             endpoint: "https://api.deepseek.com/anthropic".to_owned(),
             api_key: TEST_KEY.to_owned(),
+            ..Default::default()
         }))
         .await;
     assert!(saved.is_ok(), "save: {saved:?}");
@@ -313,6 +319,7 @@ async fn 编辑连接保留key且不换正文() {
         model: "deepseek-flash".to_owned(),
         endpoint: "https://api.deepseek.com/anthropic".to_owned(),
         api_key: TEST_KEY.to_owned(),
+        ..Default::default()
     }))
     .await
     .expect("save");
@@ -321,6 +328,7 @@ async fn 编辑连接保留key且不换正文() {
             id: "deepseek".to_owned(),
             endpoint: "https://new.example/anthropic".to_owned(),
             model: "deepseek-pro".to_owned(),
+            ..Default::default()
         }))
         .await;
     assert!(updated.is_ok(), "connection-update 应成功：{updated:?}");
@@ -353,6 +361,7 @@ async fn 撤销key后连接还在但签发失败() {
         model: "deepseek-flash".to_owned(),
         endpoint: "https://api.deepseek.com/anthropic".to_owned(),
         api_key: TEST_KEY.to_owned(),
+        ..Default::default()
     }))
     .await
     .expect("save");
@@ -397,6 +406,7 @@ async fn 验证连接走模型适配器成功时记可用() {
             model: "deepseek-flash".to_owned(),
             endpoint: server.uri(),
             api_key: TEST_KEY.to_owned(),
+            ..Default::default()
         }))
         .await;
     assert!(saved.is_ok(), "save: {saved:?}");
@@ -461,6 +471,7 @@ async fn 验证连接失败时注册器按码记() {
         model: "deepseek-flash".to_owned(),
         endpoint: server.uri(),
         api_key: TEST_KEY.to_owned(),
+        ..Default::default()
     }))
     .await
     .expect("save");
@@ -477,4 +488,56 @@ async fn 验证连接失败时注册器按码记() {
         CheckState::Fail { reason, .. } => assert_eq!(reason, "AUTH", "按码记原因"),
         other => panic!("失败应记 Fail：{other:?}"),
     }
+}
+#[tokio::test]
+async fn 验证新形状用主模型且请求符合思考档规则() {
+    // K3：models[0]=MiniMax-M3.1-Flash，旧的 model 字段是 deepseek-flash；
+    // 验证必须用主模型 M3.1，并且请求体满足 R3（max_tokens>2048，thinking enabled 且 budget>1）。
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "k3".to_owned(),
+            name: "K3".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            models: Some(vec![credentials::ModelRow {
+                id: "MiniMax-M3.1-Flash".to_owned(),
+                name: None,
+                context_window: Some(1_000_000),
+                max_tokens: Some(524_288),
+                price: None,
+            }]),
+            ..Default::default()
+        }))
+        .await;
+    assert!(saved.is_ok(), "save: {saved:?}");
+    let verified = host
+        .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
+            id: "k3".to_owned(),
+        }))
+        .await;
+    let service::Response::ConnectionVerify(response) = verified.expect("verify 返回") else {
+        panic!("expected ConnectionVerify");
+    };
+    assert!(matches!(response.connection.check, CheckState::Ok { .. }));
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json");
+    assert_eq!(body["model"], "MiniMax-M3.1-Flash", "K3 用主模型：{body}");
+    let max_tokens = body["max_tokens"].as_u64().expect("max_tokens") as u32;
+    assert!(max_tokens > 2048, "验证请求不能压到 2048 以下：{body}");
+    assert_eq!(
+        body["thinking"]["type"], "enabled",
+        "M3.1 关不掉思考：{body}"
+    );
+    let budget = body["thinking"]["budget_tokens"].as_u64().expect("budget");
+    assert!(budget > 1, "budget 不能被 max_tokens=1 压到 1：{body}");
 }

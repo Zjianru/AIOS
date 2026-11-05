@@ -9,6 +9,6 @@ pub mod presets;
 
 pub use keyring::{
     CheckResult, CheckState, ConnectionInfo, IssueRecord, IssuedSecret, KeyFileInfo, Keyring,
-    KeyringError, KeyringView, NewConnection,
+    KeyringError, KeyringView, ModelRow, NewConnection,
 };
 pub use presets::{PRESETS, Preset, preset, preset_for_endpoint};

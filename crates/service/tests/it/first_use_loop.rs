@@ -127,6 +127,7 @@ async fn 空库起服务存连接后recheck用新模型() {
             model: "deepseek-pro".to_owned(),
             endpoint: "https://api.deepseek.com/anthropic".to_owned(),
             api_key: TEST_KEY.to_owned(),
+            ..Default::default()
         }))
         .await
         .expect("save connection");

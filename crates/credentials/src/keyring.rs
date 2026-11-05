@@ -158,11 +158,8 @@ fn normalize_info(info: &mut ConnectionInfo) {
         });
     }
     if info.preset.is_empty() {
-        info.preset = if info.endpoint.contains("deepseek") {
-            "deepseek".to_owned()
-        } else {
-            "custom".to_owned()
-        };
+        // spec：旧存储只有 model 的，一律按 deepseek 读；新形状保存时 preset 已显式给出。
+        info.preset = "deepseek".to_owned();
     }
     if info.model.is_empty()
         && let Some(first) = info.models.first()
@@ -598,6 +595,20 @@ impl Keyring {
         endpoint: String,
         model: String,
     ) -> Result<ConnectionInfo, KeyringError> {
+        self.update_connection_details(id, endpoint, model, None, None, None, None)
+    }
+
+    /// T012.4：编辑连接时同时更新新形状字段（preset/models/price_rate/auth_header）。
+    pub fn update_connection_details(
+        &self,
+        id: &str,
+        endpoint: String,
+        model: String,
+        preset: Option<String>,
+        models: Option<Vec<ModelRow>>,
+        price_rate: Option<f64>,
+        auth_header: Option<String>,
+    ) -> Result<ConnectionInfo, KeyringError> {
         if endpoint.trim().is_empty() || model.trim().is_empty() {
             return Err(KeyringError::InvalidConnection(
                 "endpoint/model 不能为空".to_owned(),
@@ -612,8 +623,22 @@ impl Keyring {
             .ok_or_else(|| KeyringError::MissingConnection(id.to_owned()))?;
         stored.info.endpoint = endpoint;
         stored.info.model = model.clone();
-        if let Some(row) = stored.info.models.first_mut() {
+        if let Some(preset) = preset {
+            stored.info.preset = preset;
+        }
+        if let Some(models) = models {
+            stored.info.models = models;
+            if let Some(first) = stored.info.models.first() {
+                stored.info.model = first.id.clone();
+            }
+        } else if let Some(row) = stored.info.models.first_mut() {
             row.id = model;
+        }
+        if let Some(price_rate) = price_rate {
+            stored.info.price_rate = price_rate;
+        }
+        if auth_header.is_some() {
+            stored.info.auth_header = auth_header;
         }
         let info = stored.info.clone();
         self.save_store(&store)?;
@@ -897,6 +922,13 @@ mod shape_tests {
         assert_eq!(info.models[0].id, "deepseek-flash");
         assert_eq!(info.preset, "deepseek");
         assert_eq!(info.primary_model(), "deepseek-flash");
+        // 旧存储非 deepseek 地址也一律按 spec 读成 deepseek。
+        let mut relay = info.clone();
+        relay.endpoint = "https://relay.example.com/anthropic".to_owned();
+        relay.models.clear();
+        relay.preset = String::new();
+        normalize_info(&mut relay);
+        assert_eq!(relay.preset, "deepseek");
     }
 
     #[test]
