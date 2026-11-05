@@ -18,10 +18,12 @@ test('手动压缩：分隔线出现，点开是摘要', async ({ page, request 
   try {
     await page.goto(`${fixture.baseUrl}/?token=${encodeURIComponent(fixture.token)}#kind`);
     await openAndSend(page, fixture, '写点东西，我要手动压缩');
+    // 等这一轮真的结束（压缩按钮在该轮跑着时是禁用的；并发跑时常比 15s 慢）。
+    await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 60_000 });
     // T012.9：压缩入口在输入框下的上下文圆环里。
     await page.locator('[data-kind="context-meter"]').click();
     const compact = page.locator('[data-kind="compact"]');
-    await expect(compact).toBeEnabled({ timeout: 15_000 });
+    await expect(compact).toBeEnabled({ timeout: 60_000 });
     await compact.click();
     const events = await followEvents(request, fixture);
     expect(events.filter((event) => event.type === 'compaction/summary').length).toBeGreaterThanOrEqual(1);

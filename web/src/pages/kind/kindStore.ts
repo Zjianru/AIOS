@@ -128,6 +128,8 @@ interface KindState {
   recheck: () => Promise<void>;
   /** 和内核的连接：断了就自动重连，期间不能发。 */
   connection: { state: 'online' } | { state: 'reconnecting'; attempt: number };
+  /** T013.8：会话 id（ready 帧给；草稿 localStorage 的键用它）。 */
+  sessionId: string | null;
   /** 上下文占用（%），底栏悬停可见。 */
   usage: number;
   compacting: boolean;
@@ -295,7 +297,7 @@ function openSocket(): void {
           clearTimeout(recheckTimer);
           recheckTimer = null;
         }
-        useKindStore.setState({ connection: { state: 'online' } });
+        useKindStore.setState({ connection: { state: 'online' }, sessionId: frame.sessionId ?? null });
       }
       applyFrame(frame);
     },
@@ -512,6 +514,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   gate: 'ok',
   gateDetail: null,
   connection: { state: 'online' },
+  sessionId: null,
   usage: 46,
   compacting: false,
   modelNames: {},

@@ -21,6 +21,9 @@ import type { ComposerHandle } from './composer/Composer';
 import { mark } from '@/lib/perf';
 import { cn } from '@/lib/utils';
 
+/** T013.8：阅读位置按会话存在内存里（离开 Kind 记下，回来恢复；刷新不保存）。 */
+const readingPositions = new Map<string, number>();
+
 export function ConversationPane() {
   const views = useKindStore((state) => state.views);
   const firstItemIndex = useKindStore((state) => state.firstItemIndex);
@@ -40,6 +43,9 @@ export function ConversationPane() {
   });
   const running = streamingTurnId !== null;
   const offline = connection.state !== 'online';
+  const sessionId = useKindStore((state) => state.sessionId);
+  const scrollerRef = useRef<HTMLElement | null>(null);
+  const savedScrollRef = useRef<number | null>(null);
   const listRef = useRef<VirtuosoHandle | null>(null);
   const [canSend, setCanSend] = useState(false);
   const paintedRef = useRef(false);
@@ -235,6 +241,22 @@ export function ConversationPane() {
           </div>
         ) : (
           <Virtuoso
+        scrollerRef={(ref) => {
+          const element = ref as HTMLElement | null;
+          scrollerRef.current = element;
+          if (!element || !sessionId) return;
+          const saved = readingPositions.get(sessionId);
+          if (saved !== null && saved !== undefined) {
+            savedScrollRef.current = saved;
+            requestAnimationFrame(() => {
+              if (scrollerRef.current) scrollerRef.current.scrollTop = saved;
+            });
+          }
+        }}
+        onScroll={(event) => {
+          const element = event.currentTarget as HTMLElement;
+          if (sessionId && element) readingPositions.set(sessionId, element.scrollTop);
+        }}
             ref={listRef}
             data={views}
             firstItemIndex={firstItemIndex}

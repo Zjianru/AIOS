@@ -14,6 +14,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { FileText, Quote, X } from 'lucide-react';
 import { toast } from 'sonner';
+import { useKindStore } from '../kindStore';
 import { attachmentGet, attachmentPut, fileReferences } from '@/data/service';
 import type { FileReferenceEntry, SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
@@ -114,6 +115,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const [quote, setQuote] = useState<string>('');
   const cardsRef = useRef<HTMLDivElement | null>(null);
   const highlightRef = useRef<HTMLDivElement | null>(null);
+  // T013.8：草稿按会话存 localStorage（键 aios.kind.draft.<会话 id>）。
+  const sessionId = useKindStore((state) => state.sessionId);
+  const draftLoadedRef = useRef<string | null>(null);
 
   const canSend = text.trim().length > 0 || pastes.length > 0 || attachments.length > 0;
 
@@ -133,6 +137,55 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   useEffect(() => {
     resize();
   }, [text, resize]);
+
+  // T013.8：会话 id 就绪后读一次草稿（读不出当空）。
+  useEffect(() => {
+    if (!sessionId || draftLoadedRef.current === sessionId) return;
+    draftLoadedRef.current = sessionId;
+    try {
+      const raw = localStorage.getItem('aios.kind.draft.' + sessionId);
+      if (!raw) return;
+      const draft = JSON.parse(raw) as {
+        text?: unknown;
+        pastes?: unknown;
+        attachments?: unknown;
+      };
+      if (typeof draft.text === 'string') setText(draft.text);
+      if (Array.isArray(draft.pastes)) {
+        setPastes(draft.pastes.filter((item): item is string => typeof item === 'string'));
+      }
+      if (Array.isArray(draft.attachments)) {
+        const files = draft.attachments
+          .filter((item): item is { id: string; name: string; bytes: number; mime?: string } => {
+            return (
+              Boolean(item) &&
+              typeof (item as { id?: unknown }).id === 'string' &&
+              typeof (item as { name?: unknown }).name === 'string' &&
+              typeof (item as { bytes?: unknown }).bytes === 'number'
+            );
+          })
+          .map((item) => ({ ...item, mime: item.mime ?? 'text/plain' }));
+        setAttachments(files);
+      }
+    } catch {
+      // 读不出或格式不对：当空草稿，不打扰用户。
+    }
+  }, [sessionId]);
+
+  // 草稿变化就写（读完之后才写，避免把刚读到的覆盖成空）。
+  useEffect(() => {
+    if (!sessionId || draftLoadedRef.current !== sessionId) return;
+    const draft = {
+      text,
+      pastes,
+      attachments: attachments.map(({ id, name, bytes }) => ({ id, name, bytes })),
+    };
+    try {
+      localStorage.setItem('aios.kind.draft.' + sessionId, JSON.stringify(draft));
+    } catch {
+      // 存不下（隐私模式）就算了。
+    }
+  }, [attachments, pastes, sessionId, text]);
 
   const pruneAtMenu = useCallback((value: string, caret: number) => {
     const before = value.slice(0, caret);
@@ -212,6 +265,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     setAttachments([]);
     setAtMenu(null);
     setQuote('');
+    try {
+      if (sessionId) localStorage.removeItem('aios.kind.draft.' + sessionId);
+    } catch {
+      // 忽略。
+    }
     requestAnimationFrame(() => {
       resize();
       inputRef.current?.focus();

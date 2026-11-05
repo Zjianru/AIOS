@@ -85,8 +85,12 @@ test('粘贴：1001 字符折卡片，1000 字符留在输入框', async ({ page
     await paste('x'.repeat(1001));
     await expect(page.locator('[data-kind="paste-card"]')).toHaveCount(1);
     await expect(box).toHaveValue('');
-    // 1000 个字符不折：走真实输入（合成 ClipboardEvent 不会触发浏览器的默认插入）。
-    await box.fill('y'.repeat(1000));
+    // 1000 个字符不折：走真实粘贴（剪贴板 + Meta+V，让浏览器走默认插入）。
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+    await page.evaluate(() => navigator.clipboard.writeText('y'.repeat(1000)));
+    await box.fill('');
+    await box.focus();
+    await page.keyboard.press('Meta+V');
     await expect(page.locator('[data-kind="paste-card"]')).toHaveCount(1);
     await expect(box).toHaveValue('y'.repeat(1000));
   } finally {
@@ -382,17 +386,19 @@ test('@ 菜单：ArrowDown/ArrowUp 换项、Escape 关闭', async ({ page }) => 
     await expect(menu).toBeVisible({ timeout: 15_000 });
     const items = menu.getByRole('button');
     await expect(items.first()).toBeVisible();
-    const firstText = await items.first().innerText();
+    await expect(items.nth(1)).toBeVisible();
+    const secondPath = (await items.nth(1).innerText()).trim();
     await box.press('ArrowDown');
-    // 高亮项变成第二个（背景 class 变化不好断言，直接看 data-state 没做——用 Enter 选第二项再断言插入内容）。
     await box.press('Enter');
-    await expect(box).not.toHaveValue('');
+    // 插的是第二项（高亮项）的路径。
+    const value = await box.inputValue();
+    const expected = secondPath.includes(' ') ? '@"' + secondPath + '"' : '@' + secondPath;
+    expect(value).toBe(expected);
     // Esc 关菜单。
     await box.fill('@');
     await expect(menu).toBeVisible({ timeout: 15_000 });
     await box.press('Escape');
     await expect(menu).toHaveCount(0);
-    void firstText;
   } finally {
     await fixture.close();
   }
