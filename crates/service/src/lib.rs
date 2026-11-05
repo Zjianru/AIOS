@@ -1277,12 +1277,22 @@ pub struct RootHost {
 }
 
 impl RootHost {
-    /// T013.3：按会话工作目录列 @ 文件候选（空壳，红阶段先返回空）。
+    /// T013.3：按会话工作目录列 @ 文件候选。
     async fn file_references_list(
         &self,
-        _request: FileReferencesListRequest,
+        request: FileReferencesListRequest,
     ) -> Result<FileReferencesListResponse, ServiceError> {
-        Ok(FileReferencesListResponse::default())
+        let references = tools::file_references::list(&self.options.cwd, &request.query)
+            .map_err(|error| ServiceError::InvalidPath(error.to_string()))?;
+        Ok(FileReferencesListResponse {
+            references: references
+                .into_iter()
+                .map(|reference| FileReferenceEntry {
+                    path: reference.path,
+                    bytes: reference.bytes,
+                })
+                .collect(),
+        })
     }
 
     /// T013.2：存一份文字附件（base64 → 只读副本，返回 id）。
