@@ -1,6 +1,7 @@
 /** T008.4：把服务协议 v3 的 Keyring 视图映射成设置/首次使用页用的原型类型。 */
 import {
   deleteConnection,
+  fetchAvailableModels,
   fetchModelSettings,
   revokeConnectionKey,
   updateConnectionInfo,
@@ -11,6 +12,7 @@ import {
   verifyConnection,
   type ServiceConnectionInfo,
   type ServiceKeyringView,
+  type ServiceModelRow,
 } from '@/data/service';
 import type {
   CatalogProvider,
@@ -19,12 +21,18 @@ import type {
   ModelSettingsView,
 } from '@/data/fixtures/settings';
 
-/** 原型文案：只显示接上内核的提供方（D36：目录里只有 DeepSeek）。 */
-export const KERNEL_PROVIDERS: ReadonlySet<string> = new Set(['deepseek']);
+/** T012.9：接上内核的提供方（D36 的 DeepSeek + T012 的 MiniMax 两家国内/国际站）。 */
+export const KERNEL_PROVIDERS: ReadonlySet<string> = new Set(['deepseek', 'minimax', 'minimax-cn']);
 
 const DEEPSEEK_MODELS = [
   { id: 'deepseek-flash', name: 'DeepSeek Flash', contextWindow: 1_000_000 },
   { id: 'deepseek-pro', name: 'DeepSeek Pro', contextWindow: 1_000_000 },
+];
+
+/** T012.5：MiniMax 目录里的常见模型（真名单以「获取可用模型」为准）。 */
+const MINIMAX_MODELS = [
+  { id: 'MiniMax-M3.1-Flash', name: 'MiniMax M3.1 Flash', contextWindow: 200_000 },
+  { id: 'MiniMax-M3', name: 'MiniMax M3', contextWindow: 200_000 },
 ];
 
 const CATALOG: CatalogProvider[] = [
@@ -35,6 +43,20 @@ const CATALOG: CatalogProvider[] = [
     defaultEndpoint: 'https://api.deepseek.com/anthropic',
     defaultModels: DEEPSEEK_MODELS,
   },
+  {
+    id: 'minimax-cn',
+    name: 'MiniMax（国内站）',
+    protocol: 'anthropic-messages',
+    defaultEndpoint: 'https://api.minimaxi.com/anthropic',
+    defaultModels: MINIMAX_MODELS,
+  },
+  {
+    id: 'minimax',
+    name: 'MiniMax（国际站）',
+    protocol: 'anthropic-messages',
+    defaultEndpoint: 'https://api.minimax.io/anthropic',
+    defaultModels: MINIMAX_MODELS,
+  },
 ];
 
 function mapCheck(info: ServiceConnectionInfo): CheckState {
@@ -44,14 +66,25 @@ function mapCheck(info: ServiceConnectionInfo): CheckState {
 }
 
 function mapConnection(info: ServiceConnectionInfo): ConnectionView {
+  const preset = CATALOG.find((item) => item.id === info.preset);
   return {
     id: info.id,
     name: info.name,
-    source: 'catalog',
+    source: preset ? 'catalog' : 'custom',
     protocol: 'anthropic-messages',
     endpoint: info.endpoint,
-    defaultEndpoint: CATALOG[0]?.defaultEndpoint ?? 'https://api.deepseek.com/anthropic',
-    models: [],
+    defaultEndpoint: preset?.defaultEndpoint ?? CATALOG[0]?.defaultEndpoint ?? 'https://api.deepseek.com/anthropic',
+    models: (info.models ?? []).map((row) => {
+      const known = CATALOG.flatMap((item) => item.defaultModels).find((model) => model.id === row.id);
+      return {
+        id: row.id,
+        name: row.name ?? known?.name,
+        contextWindow: row.context_window ?? known?.contextWindow,
+        maxTokens: row.max_tokens,
+        price: row.price,
+      };
+    }),
+    priceRate: info.price_rate,
     key: info.key_saved ? { saved: true, savedAt: String(info.saved_at) } : { saved: false },
     check: mapCheck(info),
   };
@@ -93,9 +126,14 @@ export interface ConnectionDraft {
 
 /** 存连接；key 只在这一次请求体里进服务。 */
 export async function addConnection(draft: ConnectionDraft): Promise<ModelSettingsView> {
-  const model = draft.models[0]?.id || 'deepseek-flash';
-  const endpoint = draft.endpoint || CATALOG[0]?.defaultEndpoint || '';
-  await saveConnection({ id: draft.id, name: draft.name, model, endpoint, apiKey: draft.key });
+  const preset = KERNEL_PROVIDERS.has(draft.id) ? draft.id : undefined;
+  const fallback = CATALOG.find((item) => item.id === draft.id)?.defaultModels ?? CATALOG[0]?.defaultModels ?? [];
+  const rows: ServiceModelRow[] = draft.models.length
+    ? draft.models.map((row) => ({ id: row.id, name: row.name }))
+    : fallback.map((row) => ({ id: row.id, name: row.name, context_window: row.contextWindow }));
+  const model = rows[0]?.id || 'deepseek-flash';
+  const endpoint = draft.endpoint || CATALOG.find((item) => item.id === draft.id)?.defaultEndpoint || CATALOG[0]?.defaultEndpoint || '';
+  await saveConnection({ id: draft.id, name: draft.name, model, endpoint, apiKey: draft.key, preset, models: rows });
   return getModelSettings();
 }
 
@@ -105,17 +143,39 @@ export async function checkConnection(connectionId: string): Promise<ModelSettin
   return getModelSettings();
 }
 
-/** 设置页的编辑：有 key 就 upsert；没有 key 时服务目前没有「只改地址/模型」的方法（WIP）。 */
+/** 设置页的编辑：地址/模型行/倍率一起保存；填了 key 就连 key 一起 upsert。 */
 export async function updateConnection(
   connectionId: string,
-  patch: { endpoint: string; models: { id: string; name?: string }[]; key: string },
+  patch: {
+    endpoint: string;
+    models: { id: string; name?: string; contextWindow?: number; maxTokens?: number; price?: number }[];
+    key: string;
+    priceRate?: number;
+  },
 ): Promise<ModelSettingsView> {
   const model = patch.models[0]?.id || 'deepseek-flash';
   const endpoint = patch.endpoint.trim() || CATALOG[0]?.defaultEndpoint || '';
+  const rows: ServiceModelRow[] = patch.models
+    .filter((row) => row.id.trim())
+    .map((row) => ({
+      id: row.id.trim(),
+      name: row.name,
+      context_window: row.contextWindow,
+      max_tokens: row.maxTokens,
+      price: row.price,
+    }));
   if (patch.key.trim()) {
-    await saveConnection({ id: connectionId, name: connectionId, model, endpoint, apiKey: patch.key });
+    await saveConnection({
+      id: connectionId,
+      name: connectionId,
+      model,
+      endpoint,
+      apiKey: patch.key,
+      models: rows,
+      price_rate: patch.priceRate,
+    });
   } else {
-    await updateConnectionInfo(connectionId, endpoint, model);
+    await updateConnectionInfo(connectionId, { endpoint, model, models: rows, price_rate: patch.priceRate });
   }
   return getModelSettings();
 }
@@ -131,10 +191,17 @@ export async function revokeKey(connectionId: string): Promise<ModelSettingsView
   return getModelSettings();
 }
 
-export async function discoverModels(_target: { catalogId?: string; endpoint: string }): Promise<
-  { id: string; name?: string; contextWindow?: number }[]
+/** T012.9：从服务问这个连接现在可用的模型（目录 + 厂商列表合并；带窗口/标价）。 */
+export async function discoverModels(connectionId: string): Promise<
+  { id: string; name?: string; contextWindow?: number; price?: number }[]
 > {
-  return DEEPSEEK_MODELS;
+  const { models } = await fetchAvailableModels(connectionId);
+  return models.map((row) => ({
+    id: row.id,
+    name: row.name,
+    contextWindow: row.contextWindow,
+    price: row.priceInput,
+  }));
 }
 
 export async function moveKeyFile(path: string): Promise<ModelSettingsView> {

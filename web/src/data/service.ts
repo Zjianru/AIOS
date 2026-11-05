@@ -213,6 +213,15 @@ export interface ServiceKeyFileInfo {
   problem?: string;
 }
 
+/** T012.4：连接的新形状（服务端 snake_case）。 */
+export interface ServiceModelRow {
+  id: string;
+  name?: string;
+  context_window?: number;
+  max_tokens?: number;
+  price?: number;
+}
+
 export interface ServiceConnectionInfo {
   id: string;
   name: string;
@@ -220,6 +229,14 @@ export interface ServiceConnectionInfo {
   endpoint: string;
   saved_at: number;
   key_saved: boolean;
+  /** T012.4：来源预设（deepseek/minimax/minimax-cn；空/未知 = 自定义）。 */
+  preset?: string;
+  /** 用户在这个连接里存的模型行（价格/窗口/输出上限）。 */
+  models?: ServiceModelRow[];
+  /** T012.4：价格倍率（1 = 原价，0 = 免费）。 */
+  price_rate?: number;
+  /** T012.6：学到的单头（x-api-key / authorization）。 */
+  auth_header?: string | null;
   check: { kind: 'never' } | { kind: 'ok'; at: number } | { kind: 'fail'; at: number; reason: string };
 }
 
@@ -245,6 +262,10 @@ export interface SaveConnectionInput {
   model: string;
   endpoint: string;
   apiKey: string;
+  /** T012.4：预设来源、模型行、倍率（只增）。 */
+  preset?: string;
+  models?: ServiceModelRow[];
+  price_rate?: number;
 }
 
 /** 设置页读取（不含 key 正文）。 */
@@ -340,17 +361,21 @@ export function connectSession(
   return socket;
 }
 
-/** T008.3 增补：只改 endpoint/model，保留已存 key。 */
+/** T008.3/T012.4：改连接（endpoint/model 必填；preset/models/price_rate 只增），保留已存 key。 */
 export async function updateConnectionInfo(
   id: string,
-  endpoint: string,
-  model: string,
+  patch: {
+    endpoint: string;
+    model: string;
+    preset?: string;
+    models?: ServiceModelRow[];
+    price_rate?: number;
+  },
 ): Promise<ServiceConnectionInfo> {
   const response = await post<{ connection: ServiceConnectionInfo }>({
     method: 'connection-update',
     id,
-    endpoint,
-    model,
+    ...patch,
   });
   return response.connection;
 }

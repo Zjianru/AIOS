@@ -638,6 +638,9 @@ pub enum ServiceError {
     Credentials(#[from] credentials::KeyringError),
     #[error("设置接口只能由根宿主提供")]
     SettingsOnBareHost,
+    /// T012.9：写非密钥设置失败（非法值/落盘失败）。
+    #[error("设置没保存：{0}")]
+    SettingsInvalid(String),
     #[error("路径不合法：{0}")]
     InvalidPath(String),
 }
@@ -718,7 +721,9 @@ impl ServiceError {
                     ServiceErrorCode::ConnectionInvalid
                 }
             },
-            Self::SettingsOnBareHost => ServiceErrorCode::SettingsUnavailable,
+            Self::SettingsOnBareHost | Self::SettingsInvalid(_) => {
+                ServiceErrorCode::SettingsUnavailable
+            }
             Self::InvalidPath(_) => ServiceErrorCode::RequestInvalidPath,
         }
     }
@@ -1625,12 +1630,26 @@ impl RootHost {
         })
     }
 
-    /// T012.9：写非密钥设置（目前只有 currency）。骨架版先拒绝，实现提交接 settings.json。
+    /// T012.9：写非密钥设置（目前只有 currency）。只碰 settings.json，不碰 Keyring/连接。
     pub async fn settings_update(
         &self,
-        _request: SettingsUpdateRequest,
+        request: SettingsUpdateRequest,
     ) -> Result<SettingsUpdateResponse, ServiceError> {
-        Err(ServiceError::SettingsOnBareHost)
+        let mut settings = settings::load(&self.options.data_dir);
+        if let Some(currency) = request.currency {
+            match currency.as_str() {
+                "usd" | "cny" => settings.currency = currency,
+                other => {
+                    return Err(ServiceError::SettingsInvalid(format!(
+                        "不支持的币种：{other}（只有 usd/cny）"
+                    )));
+                }
+            }
+        }
+        settings::save(&self.options.data_dir, &settings).map_err(ServiceError::SettingsInvalid)?;
+        Ok(SettingsUpdateResponse {
+            currency: settings.currency,
+        })
     }
 
     /// T012.8b：查询连接的余额/套餐余量（DeepSeek /user/balance、MiniMax /v1/token_plan/remains）。

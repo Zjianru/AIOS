@@ -78,6 +78,11 @@ async fn handle(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> std::io::R
         )
         .await;
     }
+    // T012.9：available-models 会请求厂商 /v1/models；测试夹具没有模型列表，404 不消耗回放脚本。
+    if path.contains("/v1/models") {
+        let body = br#"{"error":{"message":"fixture has no /v1/models"}}"#.to_vec();
+        return write_response(&mut stream, 404, "application/json", body).await;
+    }
     // T010.2：测试夹具要断言下一轮用的模型；控制端点回最近一次请求的 model。
     // T012.9：测试夹具要断言下一轮请求的思考档；控制端点回最近一次请求的完整 body。
     if path.contains("__replay/last-request") {

@@ -16,9 +16,11 @@ import { ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, Plus, X } from 'lu
 import { toast } from 'sonner';
 import {
   addConnection, checkConnection, discoverModels, getModelSettings, moveKeyFile, relinkKeyFile, removeConnection,
-  KERNEL_PROVIDERS, resetKeyring, revokeKey, updateConnection,
+  resetKeyring, revokeKey, updateConnection,
 } from '@/data/keyring';
-import { displayPath } from '@/data/service';
+import { displayPath, fetchConnectionQuota, type ServiceQuota } from '@/data/service';
+import { CURRENCIES } from '@/lib/numbers';
+import { useKindStore } from '@/pages/kind/kindStore';
 import type { ConnectionView, ModelRow, ModelSettingsView } from '@/data/fixtures/settings';
 import { PROTOCOL_LABEL } from '@/data/fixtures/settings';
 import {
@@ -351,15 +353,37 @@ function ConnectionEditor({ conn, view, onDone, onView }: {
   const [key, setKey] = useState('');
   const [endpoint, setEndpoint] = useState(conn.endpoint);
   const [models, setModels] = useState<ModelRow[]>(conn.models);
+  const [priceRate, setPriceRate] = useState(String(conn.priceRate ?? 1));
+  const [quota, setQuota] = useState<ServiceQuota | null>(null);
+  const [askingQuota, setAskingQuota] = useState(false);
   const [saving, setSaving] = useState(false);
   const [confirm, setConfirm] = useState<'revoke' | 'remove' | null>(null);
   const catalog = view.catalog.find((item) => item.id === conn.id);
+
+  const askQuota = async () => {
+    setAskingQuota(true);
+    try {
+      setQuota(await fetchConnectionQuota(conn.id));
+    } catch (error) {
+      toast.error((error as Error).message);
+    } finally {
+      setAskingQuota(false);
+    }
+  };
 
   const save = async () => {
     setSaving(true);
     try {
       const withKey = Boolean(key.trim());
-      onView(await updateConnection(conn.id, { endpoint, models, key }));
+      const rate = Number(priceRate);
+      onView(
+        await updateConnection(conn.id, {
+          endpoint,
+          models,
+          key,
+          priceRate: Number.isFinite(rate) && rate >= 0 ? rate : undefined,
+        }),
+      );
       onDone();
       toast.success(withKey ? `已保存；${conn.name} 的新密钥进了 Keyring，正在验证` : '已保存');
       if (withKey) onView(await checkConnection(conn.id));
@@ -395,8 +419,48 @@ function ConnectionEditor({ conn, view, onDone, onView }: {
           onChange={setModels}
           defaults={catalog?.defaultModels}
           required={conn.source === 'custom'}
-          discover={() => discoverModels({ catalogId: catalog?.id, endpoint: endpoint || conn.defaultEndpoint })}
+          discover={() => discoverModels(conn.id)}
         />
+        <Field
+          label="价格倍率"
+          help="目录标价乘这个数算花费；1 = 原价，0 = 这个连接免费（例如 Coding Plan）。"
+        >
+          <input
+            className={cn(inputClass, 'brand-type')}
+            value={priceRate}
+            inputMode="decimal"
+            onChange={(event) => setPriceRate(event.target.value)}
+          />
+        </Field>
+      </Collapsible>
+      <Collapsible title="余额与套餐余量">
+        <div data-settings="quota">
+          <Btn kind="quiet" disabled={askingQuota} onClick={() => void askQuota()}>
+            {askingQuota ? '正在查询…' : '查询余额/余量'}
+          </Btn>
+          {quota ? (
+            <div className="mt-2 space-y-0.5 text-2 text-ink-2">
+              {quota.balance ? (
+                <div>
+                  余额：
+                  <span className="brand-type">
+                    {quota.balance.currency} {quota.balance.amount.toFixed(2)}
+                  </span>
+                </div>
+              ) : null}
+              {quota.plan ? (
+                <div>
+                  套餐余量：5 小时窗口{' '}
+                  <span className="brand-type">{quota.plan.intervalRemainingPercent ?? '—'}%</span> · 每周{' '}
+                  <span className="brand-type">{quota.plan.weeklyRemainingPercent ?? '—'}%</span>
+                </div>
+              ) : null}
+              {!quota.balance && !quota.plan ? (
+                <div className="text-ink-3">这个连接查不到余额/余量（只有 DeepSeek 与 MiniMax 官方地址支持）。</div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       </Collapsible>
       <div className="mt-5 flex items-center gap-2">
         {conn.key.saved ? <Btn kind="danger" onClick={() => setConfirm('revoke')}>撤销密钥</Btn> : null}
@@ -483,7 +547,8 @@ function CatalogPanel({ view, onCreated, onCancel }: { view: ModelSettingsView; 
           models={models}
           onChange={setModels}
           defaults={provider.defaultModels}
-          discover={() => discoverModels({ catalogId: provider.id, endpoint: endpoint || provider.defaultEndpoint })}
+          // 新连接还没有 id：先列内置目录的模型；保存后在「编辑」里能对真实厂商再拉一次。
+          discover={async () => provider.defaultModels ?? []}
         />
       </Collapsible>
       <div className="mt-5 flex justify-end gap-2">
@@ -497,11 +562,10 @@ function CatalogPanel({ view, onCreated, onCancel }: { view: ModelSettingsView; 
 
 
 function AddCard({ view, onCreated, onCancel }: { view: ModelSettingsView; onCreated: (id: string, withKey: boolean, next: ModelSettingsView) => void; onCancel: () => void }) {
-  const kernelView = { ...view, catalog: view.catalog.filter((item) => KERNEL_PROVIDERS.has(item.id)) };
   return (
     <div className="mt-2 rounded-card border border-line-2 bg-raised/60 p-4" data-settings="add">
-      <p className="mb-4 text-1 leading-4 text-ink-3">Kind 现在只能用 DeepSeek，填上 API 密钥就能用。其他提供商之后再加。</p>
-      <CatalogPanel view={kernelView} onCreated={onCreated} onCancel={onCancel} />
+      <p className="mb-4 text-1 leading-4 text-ink-3">从内置目录选一家（DeepSeek / MiniMax 国内站 / MiniMax 国际站），填上 API 密钥就能用。</p>
+      <CatalogPanel view={view} onCreated={onCreated} onCancel={onCancel} />
     </div>
   );
 }
@@ -590,6 +654,35 @@ function KeyringBroken({ view, onView }: { view: ModelSettingsView; onView: (vie
 }
 
 /* ───────────────────────── Keyring 一节 ───────────────────────── */
+
+/** T012.9：显示币种（settings.json 的 currency；价格和花费一律按美元存，显示时换算）。 */
+function CurrencySection() {
+  const money = useKindStore((state) => state.money);
+  const setCurrency = useKindStore((state) => state.setCurrency);
+  return (
+    <section className="mt-5" data-settings="currency">
+      <div className="flex items-center gap-2">
+        <span className="text-2 text-ink-2">显示币种</span>
+        {CURRENCIES.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => void setCurrency(item.id)}
+            className={cn(
+              'h-6 rounded-btn px-2 text-2 transition-colors',
+              money.currency === item.id ? 'bg-ink text-content' : 'text-ink-2 hover:bg-hover hover:text-ink',
+            )}
+          >
+            {item.label}
+          </button>
+        ))}
+        <span className="text-1 text-ink-3">
+          花费按 1 美元 = {money.cnyPerUsd} 元换算{money.fxAt ? '' : '（还没取到汇率，先按 7.2）'}
+        </span>
+      </div>
+    </section>
+  );
+}
 
 function KeyringSection({ view, onView }: { view: ModelSettingsView; onView: (view: ModelSettingsView) => void }) {
   const [moving, setMoving] = useState(false);
@@ -732,6 +825,8 @@ export function ModelSettings() {
 
       {broken ? <KeyringBroken view={view} onView={setView} /> : null}
 
+      <CurrencySection />
+
       <section className="mt-6">
         <h2 className="text-3 font-medium text-ink">模型提供商</h2>
         <div className="mt-2">
@@ -773,7 +868,7 @@ export function ModelSettings() {
             </div>
           )}
 
-          {rows.some((conn) => KERNEL_PROVIDERS.has(conn.id)) ? null : open === 'add' ? (
+          {open === 'add' ? (
             <AddCard view={view} onCreated={(id, withKey, next) => void onCreated(id, withKey, next)} onCancel={() => setOpen(null)} />
           ) : (
             <Btn kind="plain" className="mt-2.5 inline-flex items-center gap-1" onClick={() => setOpen('add')}>

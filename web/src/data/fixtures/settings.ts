@@ -20,6 +20,8 @@ export interface ModelRow {
   /** 上下文窗口，token。没填就是继承适配器的值。 */
   contextWindow?: number;
   maxTokens?: number;
+  /** T012.4：美元/百万 token（用户价；不乘倍率）。 */
+  price?: number;
 }
 
 export type Protocol = 'anthropic-messages' | 'openai-chat' | 'openai-responses';
@@ -48,6 +50,8 @@ export interface ConnectionView {
   defaultEndpoint: string;
   /** 模型目录；空表示用适配器默认的模型。 */
   models: ModelRow[];
+  /** T012.4：价格倍率（1 = 原价，0 = 免费）。 */
+  priceRate?: number;
   key: { saved: false } | { saved: true; savedAt: string };
   check: CheckState;
 }

@@ -153,7 +153,7 @@ export async function startKernelFixture(
   if (!options.emptyKeyring) {
     const seed = spawnSync(
       bin,
-      ['keyring', '--data-dir', dataDir, '--identity', identityPath, 'set', '--id', 'deepseek', '--name', 'DeepSeek', '--model', 'deepseek-flash', '--endpoint', replayUrl],
+      ['keyring', '--data-dir', dataDir, '--identity', identityPath, 'set', '--id', 'deepseek', '--name', 'DeepSeek', '--preset', 'deepseek', '--model', 'deepseek-flash', '--endpoint', replayUrl],
       { input: 'test-key' + String.fromCharCode(10), encoding: 'utf8' },
     );
     if (seed.status !== 0) throw new Error('seed keyring failed: ' + String(seed.stderr));

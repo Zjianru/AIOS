@@ -7,7 +7,8 @@
 
 import { create } from 'zustand';
 import { toast } from 'sonner';
-import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchEventsPage, fetchFirstUse, fetchStatus, recheckRoot, reportMonitor, selectSessionModel, sendMessage, setUnauthorizedHandler, updateSettings } from '@/data/service';
+import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchAvailableModels, fetchEventsPage, fetchFirstUse, fetchStatus, recheckRoot, reportMonitor, selectSessionModel, sendMessage, setUnauthorizedHandler, updateSettings } from '@/data/service';
+import type { ServiceCatalogModel } from '@/data/service';
 import type { Currency } from '@/lib/numbers';
 import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
 import { reconnectDelayMs } from '@/data/reconnect';
@@ -417,6 +418,8 @@ function applyLiveEvent(event: ServiceEvent): void {
   if (event.type === 'turn/end') {
     liveStream = '';
     useStreamStore.setState({ turnId: null, itemId: null, text: '' });
+    // T012.9：一轮结束后从服务刷新统计（轮/步/token/花费由内核从日志算好）。
+    void useKindStore.getState().refreshStats();
   }
   refreshTurn(turn);
 }
@@ -523,6 +526,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
       // 首次使用状态读不到时继续走对话加载；真正原因由 loadInitial 的 gate/横幅呈现。
     }
     await get().loadInitial();
+    // T012.9：拿到会话统计和当前模型（价格/窗口/档）再让输入区显示
+    await get().refreshStats();
   },
 
   loadInitial: async () => {
@@ -698,6 +703,37 @@ export const useKindStore = create<KindState>()((set, get) => ({
           },
         }));
       }
+      // T012.9：当前模型（连接/模型/档由服务 status 给；价格/窗口/档位来自模型目录）。
+      if (status.stats) {
+        const stats = status.stats;
+        let models = catalogCache.get(stats.connection);
+        if (models === undefined) {
+          try {
+            const catalog = await fetchAvailableModels(stats.connection);
+            models = catalog.models;
+            catalogCache.set(stats.connection, models);
+          } catch {
+            models = [];
+          }
+        }
+        const info = models.find((model) => model.id === stats.model);
+        set({
+          model: {
+            connectionId: stats.connection,
+            modelId: stats.model,
+            label: info?.name ?? stats.model,
+            price:
+              info?.priceInput !== undefined
+                ? { input: info.priceInput, output: info.priceOutput ?? info.priceInput }
+                : undefined,
+            contextWindow: info?.contextWindow,
+            thinks: info?.thinks,
+            efforts: info?.efforts,
+            effort: stats.effortWanted,
+          },
+          wantedEffort: stats.effortWanted,
+        });
+      }
     } catch {
       // 状态读不到时保留旧值（页面不显示假数据）。
     }
@@ -730,6 +766,9 @@ export const useKindStore = create<KindState>()((set, get) => ({
   },
 
 }));
+/** T012.9：连接 id → 模型目录（第一次用到时拉一次；价格/窗口/思考档从这里来）。 */
+const catalogCache = new Map<string, ServiceCatalogModel[]>();
+
 /** 流式文本单独放一个 store：只有最后一条在重绘，别的消息不跟着重建。 */
 export const useStreamStore = create<{ turnId: string | null; itemId: string | null; text: string }>(() => ({
   turnId: null,

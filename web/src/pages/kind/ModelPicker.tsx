@@ -1,8 +1,11 @@
 /**
- * 底栏的模型选择（docs 10 篇 §10.2：这里只选，不加不改；加连接、改连接去设置）。
+ * 模型和思考强度（docs 10 篇 §10.2：这里只选，不加不改；加连接、改连接去设置）。
  *
- * - 列出已保存的连接和它们的模型；连接不可用的灰掉，说原因。
- * - 选了从下一轮开始用；正在跑的这一轮不换。
+ * 照原型 app-v14 1f0c920：
+ * - 放在输入框里、发送键旁边：按钮上是「模型 · 思考强度」；
+ * - 上面一段选思考强度：列的是当前模型自己的档、厂商自己的叫法，从弱到强；
+ * - 下面列已保存的连接和它们的模型；连接不可用的灰掉，说原因；
+ * - 选了从下一轮开始用；正在跑的这一轮不换。模型只在用户自己选的时候换，出错也不自动换；
  * - 最下面一行去「设置 › 模型与连接」。
  */
 
@@ -31,9 +34,46 @@ function usable(view: ModelSettingsView, connectionId: string): { ok: true } | {
   return { ok: true };
 }
 
+/** 档位的常识名（厂商自己的叫法优先显示；图标用排序位置）。 */
+export function effortName(effort: string): string {
+  const names: Record<string, string> = {
+    none: '不思考',
+    minimal: '最弱',
+    low: '弱',
+    medium: '中',
+    high: '强',
+    xhigh: '更强',
+    max: '最强',
+  };
+  return names[effort] ?? effort;
+}
+
+/** 强度图标（照 Magpie effortIcon）：四格由矮到高，亮到这一档在这个模型里排第几。 */
+export function EffortIcon({ effort, levels, className }: { effort?: string; levels: string[]; className?: string }) {
+  const index = effort ? levels.indexOf(effort) : -1;
+  const lit = levels.length > 1 && index >= 0 ? Math.round(((index + 1) / levels.length) * 4) : 0;
+  return (
+    <svg viewBox="0 0 16 16" className={className ?? 'size-3.5'} aria-hidden>
+      {[4, 7, 10, 13].map((height, bar) => (
+        <rect
+          key={height}
+          x={1.25 + bar * 3.6}
+          y={14.5 - height}
+          width={2.6}
+          height={height}
+          rx={1}
+          fill="currentColor"
+          opacity={bar < lit ? 1 : 0.28}
+        />
+      ))}
+    </svg>
+  );
+}
+
 export function ModelPicker() {
   const model = useKindStore((state) => state.model);
   const setModel = useKindStore((state) => state.setModel);
+  const setEffort = useKindStore((state) => state.setEffort);
   const [view, setView] = useState<ModelSettingsView | null>(null);
 
   return (
@@ -41,14 +81,51 @@ export function ModelPicker() {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="flex items-center gap-1 rounded-btn px-1 py-[1px] text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+          className="flex h-7 max-w-[240px] items-center gap-1.5 rounded-btn px-2 text-2 text-ink-2 transition-colors hover:bg-hover hover:text-ink data-[state=open]:bg-hover"
           data-kind="model-picker"
         >
-          {model.label}
-          <ChevronDown className="size-3 opacity-70" />
+          <span className="truncate">{model.label}</span>
+          {model.effort ? (
+            <span className="flex shrink-0 items-center gap-1 text-ink-3" data-kind="effort-now">
+              <span className="opacity-60">·</span>
+              <EffortIcon effort={model.effort} levels={model.efforts ?? []} />
+              {effortName(model.effort)}
+            </span>
+          ) : null}
+          <ChevronDown className="size-3 shrink-0 opacity-60" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" side="top" className="w-64">
+      <DropdownMenuContent align="end" side="top" className="w-72">
+        <DropdownMenuLabel className="text-1 font-normal text-ink-3">思考强度</DropdownMenuLabel>
+        {model.efforts?.length ? (
+          <div className="flex gap-1 px-2 pb-1.5" data-kind="effort">
+            {model.efforts.map((effort) => {
+              const on = model.effort === effort;
+              return (
+                <button
+                  key={effort}
+                  type="button"
+                  onClick={() => !on && void setEffort(effort)}
+                  className={
+                    'h-7 flex-1 rounded-btn text-2 transition-colors ' +
+                    (on ? 'bg-ink text-content' : 'text-ink-2 hover:bg-hover hover:text-ink')
+                  }
+                  title={effortName(effort)}
+                >
+                  {effort}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="px-2 pb-1.5 text-2 text-ink-3" data-kind="effort">
+            {model.thinks === false ? '这个模型不思考' : '这个模型不能调思考强度'}
+          </div>
+        )}
+        <p className="px-2 pb-1 text-1 leading-4 text-ink-3">
+          从下一轮开始用；正在跑的这一轮不换。
+        </p>
+        <DropdownMenuSeparator />
         {!view ? (
           <div className="px-2 py-1.5 text-2 text-ink-3">正在读取…</div>
         ) : view.connections.length === 0 ? (
@@ -73,10 +150,18 @@ export function ModelPicker() {
                       disabled={!state.ok}
                       onSelect={() => {
                         if (on) return;
-                        // T008 r4 #3：等 selectSessionModel 成功后再改状态/tost；失败给中文原因，不吞。
-                        void selectSessionModel({ model: row.id })
-                          .then(() =>
-                            setModel({ connectionId: conn.id, modelId: row.id, label: row.name ?? row.id }),
+                        void selectSessionModel({
+                          connection: conn.id,
+                          model: row.id,
+                          effortWanted: model.effort,
+                        })
+                          .then((selected) =>
+                            setModel({
+                              connectionId: selected.connection,
+                              modelId: selected.model,
+                              label: row.name ?? selected.model,
+                              effort: selected.effortWanted,
+                            }),
                           )
                           .catch((error: unknown) => {
                             const detail =
@@ -88,7 +173,9 @@ export function ModelPicker() {
                     >
                       <span className="min-w-0 flex-1 truncate">{row.name ?? row.id}</span>
                       {row.contextWindow ? (
-                        <span className="brand-type text-1 text-ink-3">{Math.round(row.contextWindow / 1000)}k</span>
+                        <span className="brand-type text-1 text-ink-3">
+                          {Math.round(row.contextWindow / 1000)}k
+                        </span>
                       ) : null}
                       {on ? <Check className="size-3.5" /> : <span className="size-3.5" />}
                     </DropdownMenuItem>

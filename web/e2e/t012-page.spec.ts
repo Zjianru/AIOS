@@ -33,7 +33,8 @@ test('换思考档：下一轮请求的 thinking 档按选择', async ({ page })
     await page.locator('[data-kind="model-picker"]').click();
     const effort = page.locator('[data-kind="effort"]');
     await expect(effort).toBeVisible();
-    await effort.getByRole('button', { name: 'high', exact: true }).click();
+    await effort.getByRole('button', { name: 'high', exact: true }).click({ force: true });
+    await page.keyboard.press('Escape');
     await page.getByPlaceholder('和 Kind 说…').fill('你好');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await expect(page.getByText('（T007 e2e 假回放）').last()).toBeVisible({ timeout: 30_000 });
