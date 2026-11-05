@@ -43,6 +43,22 @@ async fn create_agent(
     (agent, data_dir, id)
 }
 
+/// 轮询 mock 收到至少 n 个请求（替代固定 sleep 等「请求已发出」；D57）。
+async fn wait_for_requests(server: &MockServer, n: usize) {
+    for _ in 0..600 {
+        let received = server
+            .received_requests()
+            .await
+            .map(|requests| requests.len())
+            .unwrap_or(0);
+        if received >= n {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("等待 mock 收到 {n} 个请求超时");
+}
+
 fn log_rows(data_dir: &std::path::Path, id: &session::SessionId) -> Vec<Value> {
     let text = std::fs::read_to_string(data_dir.join("sessions").join(format!("{id}.jsonl")))
         .expect("session log");
@@ -131,8 +147,8 @@ async fn 在途选择只影响下一轮() {
         )
         .await
         .unwrap();
-    // 等本轮请求已发出（mock 响应延迟 400ms，仍在途）。
-    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    // 等本轮请求已发出（mock 响应延迟 400ms，仍在途；轮询而非固定 sleep）。
+    wait_for_requests(&server, 1).await;
     agent
         .select(&session::ModelSelection {
             connection: "minimax-cn".to_owned(),

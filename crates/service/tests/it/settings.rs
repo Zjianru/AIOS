@@ -962,6 +962,7 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
         });
     let mut options = options(dir.path(), &identity);
     options.model_factory = Some(factory);
+    seed_fx_cache(dir.path());
     let host = RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await;
     assert_eq!(
         *seen.lock().expect("seen"),
@@ -976,7 +977,8 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
     }))
     .await
     .expect("send A");
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    wait_for_requests(&server_a, 1).await;
+    wait_host_idle(&host).await;
     assert_eq!(
         server_a.received_requests().await.unwrap().len(),
         1,
@@ -1012,7 +1014,8 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
     }))
     .await
     .expect("send B");
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    wait_for_requests(&server_b, 1).await;
+    wait_host_idle(&host).await;
     assert_eq!(
         server_a.received_requests().await.unwrap().len(),
         1,
@@ -1030,6 +1033,40 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
         Some("minimax-cn".to_owned()),
         "settings 的上次选择同步"
     );
+}
+
+/// 轮询 mock 收到至少 n 个请求（D57：不拿固定 sleep 等结果）。
+async fn wait_for_requests(server: &MockServer, n: usize) {
+    for _ in 0..600 {
+        let received = server
+            .received_requests()
+            .await
+            .map(|requests| requests.len())
+            .unwrap_or(0);
+        if received >= n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("等待 mock 收到 {n} 个请求超时");
+}
+
+/// 轮询根会话空闲（一轮结束）。
+async fn wait_host_idle(host: &RootHost) {
+    for _ in 0..600 {
+        let response = host
+            .dispatch(Call::Status(service::StatusRequest {}))
+            .await
+            .expect("status");
+        let service::Response::Status(status) = response else {
+            panic!("expected Status");
+        };
+        if !status.running {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("等待根会话空闲超时");
 }
 
 fn seed_fx_cache(dir: &std::path::Path) {
