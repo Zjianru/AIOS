@@ -171,6 +171,7 @@ fn directory_query_hides_dot_files_unless_explicitly_requested() {
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/visible.ts"), "x").unwrap();
     fs::write(dir.path().join("src/.secret.ts"), "x").unwrap();
+    fs::create_dir_all(dir.path().join("src/.cache")).unwrap();
     fs::write(dir.path().join("src/.cache/.hidden.ts"), "x").unwrap();
     assert_eq!(
         paths(&list(dir.path(), "src/").expect("目录查询")),
