@@ -421,7 +421,7 @@ async fn compaction_ids_differ_across_processes() {
     let file = dir.path().join("child-id.txt");
     let exe = std::env::current_exe().unwrap();
     let output = std::process::Command::new(&exe)
-        .arg("compaction_ids_differ_across_processes")
+        .arg("compact_manual::compaction_ids_differ_across_processes")
         .arg("--exact")
         .arg("--nocapture")
         .env(ID_CHILD_ENV, "1")
