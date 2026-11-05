@@ -226,19 +226,14 @@ pub(super) fn request_body(
         messages: wire_messages,
         max_tokens: max_tokens.unwrap_or(config.max_tokens),
         thinking: WireThinking {
-            kind: if effort == crate::Effort::Off {
-                "disabled"
-            } else {
+            kind: if super::vendors::thinking_enabled(effort) {
                 "enabled"
+            } else {
+                "disabled"
             },
         },
-        output_config: if effort == crate::Effort::Off {
-            None
-        } else {
-            Some(WireOutputConfig {
-                effort: effort.as_wire(),
-            })
-        },
+        output_config: super::vendors::output_effort(effort)
+            .map(|effort| WireOutputConfig { effort }),
         system: if system.is_empty() {
             None
         } else {

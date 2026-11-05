@@ -5,6 +5,7 @@ mod serialize;
 mod sse;
 mod translate;
 mod transport;
+mod vendors;
 
 use std::collections::VecDeque;
 use std::fmt;
