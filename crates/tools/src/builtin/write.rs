@@ -83,8 +83,9 @@ fn write(arguments: &str, context: &ToolContext) -> Result<(String, Value), Tool
         .ok()
         .map(|text| text.content);
     let created = crate::fs::write_file(context, &target, content)?;
+    // 新建也出 diff（oldText=null：整份内容作为新文本，卡片按新增画）。
     let diffs = if created {
-        Vec::new()
+        crate::diff::compute_hunk_diffs(&display, "", content)
     } else {
         crate::diff::compute_hunk_diffs(&display, before.as_deref().unwrap_or_default(), content)
     };

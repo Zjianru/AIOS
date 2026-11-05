@@ -194,6 +194,31 @@ fn tool_result_meta_roundtrips_through_the_log() {
     assert_eq!(got, &Some(meta), "读出来的 meta 要一字不差");
 }
 
+/// T013.1（P2）：14 版日志里的 tool/result 没有 meta 字段，15 读取器读出来是 None。
+#[test]
+fn version_14_tool_result_without_meta_reads_with_none() {
+    let (data_dir, _cwd, store) = create_store();
+    let id = store.id().clone();
+    let path = store.path().to_path_buf();
+    drop(store);
+    let legacy = format!(
+        "{{\"type\":\"session\",\"version\":14,\"id\":\"{id}\",\"createdAt\":1,\"cwd\":\"/tmp\"}}\n\
+         {{\"type\":\"tool/result\",\"seq\":1,\"time\":1,\"data\":{{\"turn\":1,\"step\":1,\"message\":{{\"content\":[{{\"text\":\"ok\",\"type\":\"text\"}}],\"id\":\"00000000-0000-4000-8000-000000000001\",\"role\":\"tool\",\"source\":{{\"callId\":\"call_1\",\"kind\":\"tool\"}},\"toolCallId\":\"call_1\"}}}}}}\n"
+    );
+    fs::write(&path, legacy.as_bytes()).unwrap();
+    let snapshot = SessionStore::open_read_only(data_dir.path(), &id)
+        .expect("15 读取器能读 14 版没有 meta 的 tool/result");
+    let EventKind::ToolResult { meta, .. } = &snapshot.events()[0].kind else {
+        panic!("第一条应该是 tool/result");
+    };
+    assert!(meta.is_none(), "14 版没有 meta 字段 → 读出来 None");
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        legacy.as_bytes(),
+        "只读打开不改文件"
+    );
+}
+
 #[test]
 fn read_only_open_leaves_torn_tail_untouched() {
     let (data_dir, _cwd, mut store) = create_store();

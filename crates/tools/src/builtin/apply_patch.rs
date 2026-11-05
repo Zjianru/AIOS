@@ -456,15 +456,14 @@ fn commit(context: &ToolContext, planned: &[Planned]) -> Result<(String, Value),
         match execute_operation(context, planned) {
             Ok(()) => {
                 outcomes[index].status = Status::Completed;
-                outcomes[index].after = read_after(context, planned);
-                outcomes[index].after_path =
-                    planned.move_target.as_ref().map(|target| target.display());
+                outcomes[index].after = read_after(planned);
+                outcomes[index].after_path = planned.move_target.as_ref().map(Target::display);
             }
             Err(failure) => {
                 outcomes[index].status = Status::Failed;
                 outcomes[index].partial = failure.partial;
                 outcomes[index].failure = Some(failure.failure);
-                outcomes[index].after = read_after(context, planned);
+                outcomes[index].after = read_after(planned);
                 break;
             }
         }
@@ -489,7 +488,7 @@ fn commit(context: &ToolContext, planned: &[Planned]) -> Result<(String, Value),
 }
 
 /// 操作后的文本（move 读目标；失败/删除时可能没有）。
-fn read_after(context: &ToolContext, planned: &Planned) -> Option<String> {
+fn read_after(planned: &Planned) -> Option<String> {
     let target = planned.move_target.as_ref().unwrap_or(&planned.target);
     crate::fs::read_text_for_verb(target, "apply_patch")
         .ok()
@@ -500,26 +499,27 @@ fn read_after(context: &ToolContext, planned: &Planned) -> Option<String> {
 fn patch_meta(outcomes: &[Outcome]) -> Value {
     let mut diffs = Vec::new();
     for outcome in outcomes {
-        // 没执行到的操作没有效果，不产生 diff。
-        if outcome.status == Status::Skipped {
+        // 失败/没执行到的操作没有可确认的改动：不出 diff（只 stopped）。
+        if outcome.status != Status::Completed {
             continue;
         }
-        // 新建没有旧文本：不落 diff（照 DSH：创建不存 diff）。
-        let Some(before) = &outcome.before else {
-            continue;
-        };
         let path = outcome
             .after_path
             .clone()
             .unwrap_or_else(|| outcome.record.path.clone());
-        match &outcome.after {
-            Some(after) => diffs.extend(crate::diff::compute_hunk_diffs(&path, before, after)),
+        match (&outcome.before, &outcome.after) {
+            // 新建（没有旧文本）：整份内容作为新文本，oldText 为 null。
+            (None, Some(after)) => diffs.extend(crate::diff::compute_hunk_diffs(&path, "", after)),
             // 删除：新文本为空。
-            None => diffs.push(crate::diff::FileDiff {
+            (Some(before), None) => diffs.push(crate::diff::FileDiff {
                 path,
                 old_text: Some(before.clone()),
                 new_text: String::new(),
             }),
+            (Some(before), Some(after)) => {
+                diffs.extend(crate::diff::compute_hunk_diffs(&path, before, after));
+            }
+            (None, None) => {}
         }
     }
     let stopped = outcomes
@@ -677,7 +677,7 @@ mod patch_meta_tests {
         }
     }
 
-    /// T013.1：全部完成时 stopped=false，完成的改动各出 diff。
+    /// T013.1：全部完成时 stopped=false，完成的改动各出 diff（新建 oldText=null）。
     #[test]
     fn all_completed_is_not_stopped_and_emits_diffs() {
         let outcomes = vec![
@@ -687,13 +687,18 @@ mod patch_meta_tests {
         let meta = patch_meta(&outcomes);
         assert_eq!(meta["stopped"], false);
         let diffs = meta["diffs"].as_array().expect("diffs 数组");
-        assert_eq!(diffs.len(), 1, "新建没有 diff，只有 a.txt 一条：{meta}");
-        assert_eq!(diffs[0]["path"], "a.txt");
+        assert_eq!(diffs.len(), 2, "a.txt + 新建 b.txt 各一条：{meta}");
+        let created = diffs
+            .iter()
+            .find(|diff| diff["path"] == "b.txt")
+            .expect("新建的 diff");
+        assert_eq!(created["oldText"], Value::Null);
+        assert_eq!(created["newText"], "created");
     }
 
-    /// T013.1：有失败/未执行的操作时 stopped=true；删除出空 newText；新建不落 diff。
+    /// T013.1：有失败/未执行的操作时 stopped=true；失败/跳过的操作不出 diff；删除出空 newText。
     #[test]
-    fn failed_operation_marks_stopped_and_deleted_file_gets_empty_new_text() {
+    fn failed_operations_mark_stopped_without_emitting_diffs() {
         let outcomes = vec![
             outcome(Status::Completed, Some("gone"), None, "deleted.txt"),
             outcome(Status::Failed, Some("old"), Some("new"), "readonly.txt"),
@@ -702,11 +707,13 @@ mod patch_meta_tests {
         let meta = patch_meta(&outcomes);
         assert_eq!(meta["stopped"], true, "有失败/未执行就是 stopped：{meta}");
         let diffs = meta["diffs"].as_array().expect("diffs 数组");
-        assert_eq!(diffs.len(), 2, "删除一条 + 失败操作的上下文一条：{meta}");
+        assert_eq!(diffs.len(), 1, "只有完成的删除出 diff：{meta}");
         assert_eq!(diffs[0]["newText"], "", "删除的新文本为空");
         assert!(
-            diffs.iter().all(|diff| diff["path"] != "skipped.txt"),
-            "没执行的操作不落 diff：{meta}"
+            diffs
+                .iter()
+                .all(|diff| diff["path"] != "readonly.txt" && diff["path"] != "skipped.txt"),
+            "失败/没执行的操作不落 diff：{meta}"
         );
     }
 }

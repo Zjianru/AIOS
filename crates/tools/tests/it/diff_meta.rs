@@ -81,7 +81,7 @@ fn no_trailing_newline_marker_is_not_part_of_the_diff() {
 }
 
 #[tokio::test]
-async fn write_new_file_meta_has_create_operation_and_no_diff() {
+async fn write_new_file_meta_has_create_operation_and_null_old_text() {
     let dir = tempfile::tempdir().unwrap();
     let context = ToolContext::new(dir.path());
     let tool = WriteTool::new();
@@ -98,7 +98,9 @@ async fn write_new_file_meta_has_create_operation_and_no_diff() {
         meta["path"],
         Value::String(canonical(dir.path(), "notes/a.txt"))
     );
-    assert_eq!(meta["diffs"], json!([]));
+    // 新建也要出 diff：oldText=null、newText 是整份内容（卡片按新增画）。
+    assert_eq!(meta["diffs"][0]["oldText"], Value::Null);
+    assert_eq!(meta["diffs"][0]["newText"], "hello");
 }
 
 #[tokio::test]
@@ -144,6 +146,98 @@ async fn edit_meta_carries_the_hunk_diff() {
     let meta = result.meta.expect("edit 要给 meta");
     assert_eq!(meta["diffs"][0]["oldText"], "before");
     assert_eq!(meta["diffs"][0]["newText"], "after");
+}
+
+#[tokio::test]
+async fn apply_patch_normal_run_meta_has_diffs_for_add_and_update() {
+    let dir = tempfile::tempdir().unwrap();
+    let context = ToolContext::new(dir.path());
+    fs::write(dir.path().join("old.txt"), "line1\nline2\nline3\n").unwrap();
+    let read = run(
+        &tools::ReadTool::new(),
+        &context,
+        json!({"file_path": "old.txt"}),
+    )
+    .await;
+    assert!(!read.is_error, "{}", read.content);
+    let tool = ApplyPatchTool::new();
+    let patch = "*** Begin Patch\n*** Add File: new.txt\n+new content\n*** Update File: old.txt\n@@\n-line2\n+changed\n*** End Patch";
+    let result = run(&tool, &context, json!({"input": patch})).await;
+    assert!(!result.is_error, "{}", result.content);
+    let meta = result.meta.expect("apply_patch 要给 meta");
+    assert_eq!(meta["stopped"], false, "全部完成 stopped=false：{meta}");
+    let diffs = meta["diffs"].as_array().expect("diffs 数组");
+    assert_eq!(diffs.len(), 2, "add + update 各一条：{meta}");
+    // add：oldText=null、newText 是内容。
+    let add = diffs
+        .iter()
+        .find(|diff| {
+            diff["path"]
+                .as_str()
+                .is_some_and(|path| path.ends_with("new.txt"))
+        })
+        .expect("add 的 diff");
+    assert_eq!(add["oldText"], Value::Null);
+    assert_eq!(add["newText"], "new content");
+    // update：老/新文本都带上。
+    let update = diffs
+        .iter()
+        .find(|diff| {
+            diff["path"]
+                .as_str()
+                .is_some_and(|path| path.ends_with("old.txt"))
+        })
+        .expect("update 的 diff");
+    assert_eq!(update["oldText"], "line1\nline2\nline3");
+    assert_eq!(update["newText"], "line1\nchanged\nline3");
+}
+
+#[tokio::test]
+async fn apply_patch_stopped_meta_marks_the_partial_run_without_failed_diff() {
+    // 第一个操作完成；第二个操作删除失败（父目录只读）→ stopped=true，失败操作不出 diff。
+    let dir = tempfile::tempdir().unwrap();
+    let locked = dir.path().join("locked");
+    fs::create_dir(&locked).unwrap();
+    fs::write(locked.join("victim.txt"), "bye\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&locked).unwrap().permissions();
+        permissions.set_mode(0o555);
+        fs::set_permissions(&locked, permissions).unwrap();
+    }
+    let context = ToolContext::new(dir.path());
+    let read = run(
+        &tools::ReadTool::new(),
+        &context,
+        json!({"file_path": "locked/victim.txt"}),
+    )
+    .await;
+    assert!(!read.is_error, "{}", read.content);
+    let tool = ApplyPatchTool::new();
+    let patch = "*** Begin Patch\n*** Add File: done.txt\n+done\n*** Delete File: locked/victim.txt\n*** End Patch";
+    let result = run(&tool, &context, json!({"input": patch})).await;
+    let meta = result.meta.expect("停下也要给 meta");
+    assert_eq!(
+        meta["stopped"], true,
+        "删除失败 → stopped=true：{meta}（{}）",
+        result.content
+    );
+    let diffs = meta["diffs"].as_array().expect("diffs 数组");
+    assert_eq!(
+        diffs.len(),
+        1,
+        "失败的删除不出 diff，只有完成的 add：{meta}"
+    );
+    assert_eq!(diffs[0]["oldText"], Value::Null);
+    // 恢复目录权限，让 tempdir 收得掉。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(&locked).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&locked, permissions).unwrap();
+    }
 }
 
 fn canonical(root: &std::path::Path, relative: &str) -> String {
