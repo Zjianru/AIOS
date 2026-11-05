@@ -69,6 +69,106 @@ fn overflow_response() -> ResponseTemplate {
     }))
 }
 
+async fn setup_with_model(
+    server: &MockServer,
+    window: u64,
+    max_tokens: u32,
+    headroom: u64,
+    retain_ratio: f64,
+    model_id: &str,
+    effort: model::Effort,
+) -> Harness {
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::create(data_dir.path(), cwd.path()).unwrap();
+    let id = store.id().clone();
+    let config = AgentConfig {
+        compaction_headroom_tokens: headroom,
+        compaction_retain_ratio: retain_ratio,
+        ..isolated_config(data_dir.path())
+    };
+    let model_config = model::DeepSeekConfig {
+        context_window: window,
+        max_tokens,
+        model: model_id.to_owned(),
+        effort,
+        ..model_config(&server.uri())
+    };
+    let agent = Agent::create(
+        config,
+        agent::Deps {
+            model: model::DeepSeek::with_credentials(
+                model_config,
+                crate::common::test_credential(),
+            )
+            .unwrap(),
+            tools: ToolSet::builtin(),
+            store,
+        },
+    )
+    .await
+    .unwrap();
+    Harness {
+        agent,
+        data_dir,
+        id,
+    }
+}
+
+#[tokio::test]
+async fn summary_uses_model_default_effort_not_wanted() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+    let harness = setup_with_model(
+        &server,
+        128_000,
+        64_000,
+        24_000,
+        0.16,
+        "MiniMax-M3",
+        model::Effort::new("none"),
+    )
+    .await;
+    harness
+        .agent
+        .send(UserMessage::text("SHORT"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    harness.agent.idle().await;
+    harness
+        .agent
+        .send(
+            UserMessage::text(format!("LONG {}", "x".repeat(600_000))),
+            Delivery::FollowUp,
+        )
+        .await
+        .unwrap();
+    wait_idle(&harness.agent, 60).await;
+    let requests = server.received_requests().await.unwrap();
+    let summary = requests
+        .iter()
+        .map(|request| String::from_utf8_lossy(&request.body).into_owned())
+        .find(|body| body.contains("compaction engine"))
+        .expect("应有一次摘要请求");
+    let value: serde_json::Value = serde_json::from_str(&summary).expect("摘要请求 JSON");
+    // MiniMax-M3 没有档（默认 high）；用户要 none，摘要必须按默认 high 发 enabled + budget 24000。
+    assert_eq!(
+        value["thinking"]["type"], "enabled",
+        "摘要请求用模型 DefaultEffort（high），不是用户要的 none：{summary}"
+    );
+    // 摘要 max_tokens=24000，按 R3 留 1024 给答案：24000-1024。
+    assert_eq!(value["thinking"]["budget_tokens"], 22_976);
+}
+
 #[tokio::test]
 async fn pressure_triggers_compaction_and_next_request_uses_summary() {
     let server = MockServer::start().await;

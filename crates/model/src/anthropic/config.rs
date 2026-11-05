@@ -1,4 +1,4 @@
-//! DeepSeek Messages 适配器的连接默认值。
+//! Anthropic Messages 适配器的连接默认值。
 
 use crate::Effort;
 
@@ -13,7 +13,7 @@ pub const DEFAULT_CONTEXT_WINDOW: u64 = 1_000_000;
 /// 流读取的空闲超时（spec 实现决定：300 秒）。
 pub(crate) const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// DeepSeek Messages 适配器的连接与默认值。
+/// Anthropic Messages 适配器的连接与默认值。
 #[derive(Debug, Clone)]
 pub struct DeepSeekConfig {
     /// Messages 协议的根地址；请求发往 `<base_url>/v1/messages`。
@@ -35,7 +35,7 @@ impl Default for DeepSeekConfig {
             model: "deepseek-flash".to_owned(),
             max_tokens: DEFAULT_MAX_TOKENS,
             context_window: DEFAULT_CONTEXT_WINDOW,
-            effort: Effort::High,
+            effort: Effort::new("high"),
         }
     }
 }

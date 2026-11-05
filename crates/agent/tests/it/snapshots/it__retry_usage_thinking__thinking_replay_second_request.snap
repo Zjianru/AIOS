@@ -1,5 +1,5 @@
 ---
-source: crates/agent/tests/retry_usage_thinking.rs
+source: crates/agent/tests/it/retry_usage_thinking.rs
 expression: body
 ---
 {
@@ -39,12 +39,6 @@ expression: body
     }
   ],
   "model": "deepseek-flash",
-  "output_config": {
-    "effort": "high"
-  },
   "stream": true,
-  "system": "You are AIOS, a coding agent. Your working directory is <CWD>.",
-  "thinking": {
-    "type": "enabled"
-  }
+  "system": "You are AIOS, a coding agent. Your working directory is <CWD>."
 }

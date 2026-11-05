@@ -16,9 +16,11 @@ import { ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, Plus, X } from 'lu
 import { toast } from 'sonner';
 import {
   addConnection, checkConnection, discoverModels, getModelSettings, moveKeyFile, relinkKeyFile, removeConnection,
-  KERNEL_PROVIDERS, resetKeyring, revokeKey, updateConnection,
+  resetKeyring, revokeKey, updateConnection,
 } from '@/data/keyring';
-import { displayPath } from '@/data/service';
+import { displayPath, fetchConnectionQuota, type ServiceQuota } from '@/data/service';
+import { CURRENCIES } from '@/lib/numbers';
+import { useKindStore } from '@/pages/kind/kindStore';
 import type { ConnectionView, ModelRow, ModelSettingsView } from '@/data/fixtures/settings';
 import { PROTOCOL_LABEL } from '@/data/fixtures/settings';
 import {
@@ -28,6 +30,81 @@ import { cn } from '@/lib/utils';
 import { modelErrorReason } from '@/data/errors';
 
 /* ───────────────────────── 小部件 ───────────────────────── */
+
+/** 用户单价（美元/百万 token）；空串表示继承目录价。 */
+function parsePrice(text: string): number | undefined {
+  const n = Number(text.trim());
+  return text.trim() !== '' && Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
+/** 模型行上的价格摘要：填了哪几格就写哪几格，没填写「标价」。 */
+function priceLabel(row: ModelRow): string {
+  const parts: string[] = [];
+  if (row.priceInput !== undefined) parts.push('in ' + row.priceInput);
+  if (row.priceOutput !== undefined) parts.push('out ' + row.priceOutput);
+  if (row.priceCacheRead !== undefined) parts.push('r ' + row.priceCacheRead);
+  if (row.priceCacheWrite !== undefined) parts.push('w ' + row.priceCacheWrite);
+  return parts.length === 0 ? '标价' : parts.join(' / ');
+}
+
+function formatPrice(value: number | undefined): string {
+  return value === undefined ? '' : String(value);
+}
+
+/** T012 F1：用户单价四格（照原型 PriceEditor）；空=继承目录标价，「恢复标价」清空四格。 */
+function PriceEditor({ price, onChange }: { price: ModelRow; onChange: (patch: Partial<ModelRow>) => void }) {
+  const fields: { key: 'priceInput' | 'priceCacheRead' | 'priceCacheWrite' | 'priceOutput'; label: string }[] = [
+    { key: 'priceInput', label: '输入' },
+    { key: 'priceCacheRead', label: '缓存读' },
+    { key: 'priceCacheWrite', label: '缓存写' },
+    { key: 'priceOutput', label: '输出' },
+  ];
+  const hasAny =
+    price.priceInput !== undefined ||
+    price.priceOutput !== undefined ||
+    price.priceCacheRead !== undefined ||
+    price.priceCacheWrite !== undefined;
+  return (
+    <div className="mb-1 ml-0.5 rounded-btn bg-content px-2.5 py-2" data-settings="price">
+      <div className="grid grid-cols-4 gap-1.5">
+        {fields.map((field) => (
+          <label key={field.key} className="text-1 text-ink-3">
+            {field.label}
+            <input
+              key={field.key + ':' + String(price[field.key])}
+              className={cn(inputClass, 'mt-0.5 brand-type')}
+              data-settings={'price-' + field.key}
+              defaultValue={formatPrice(price[field.key])}
+              placeholder="继承"
+              inputMode="decimal"
+              onBlur={(event) => onChange({ [field.key]: parsePrice(event.target.value) })}
+            />
+          </label>
+        ))}
+      </div>
+      <div className="mt-1.5 flex items-start gap-2 text-1 leading-5 text-ink-3">
+        <span>美元 / 百万 token。空着按目录标价算；自己填的价格不乘倍率。以厂商账单为准。</span>
+        {hasAny ? (
+          <button
+            type="button"
+            className="ml-auto shrink-0 text-ink-2 hover:text-ink"
+            data-settings="price-reset"
+            onClick={() =>
+              onChange({
+                priceInput: undefined,
+                priceOutput: undefined,
+                priceCacheRead: undefined,
+                priceCacheWrite: undefined,
+              })
+            }
+          >
+            恢复标价
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 const inputClass =
   'w-full rounded-btn border border-line-2 bg-content px-2.5 py-1.5 text-3 text-ink outline-none placeholder:text-ink-3 focus:border-ink-3 aria-invalid:border-[var(--fail)]';
@@ -190,6 +267,7 @@ function ModelCatalog({ models, onChange, defaults, discover, required }: {
   required?: boolean;
 }) {
   const [candidates, setCandidates] = useState<ModelRow[] | null>(null);
+  const [priceOpen, setPriceOpen] = useState<number | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState('');
   const [asking, setAsking] = useState(false);
@@ -282,19 +360,33 @@ function ModelCatalog({ models, onChange, defaults, discover, required }: {
 
       {models.length ? (
         <div className="mt-2 space-y-1.5">
-          <div className="grid grid-cols-[1fr_1fr_64px_64px_24px] gap-1.5 px-0.5 text-1 text-ink-3">
+          <div className="grid grid-cols-[1fr_1fr_64px_64px_80px_24px] gap-1.5 px-0.5 text-1 text-ink-3">
             <span>模型 ID</span>
             <span>显示名称</span>
             <span>上下文</span>
             <span>最大输出</span>
+            <span>单价 $/M</span>
             <span />
           </div>
           {models.map((row, index) => (
-            <div key={index} className="grid grid-cols-[1fr_1fr_64px_64px_24px] items-center gap-1.5">
+            <div key={index}>
+            <div className="grid grid-cols-[1fr_1fr_64px_64px_80px_24px] items-center gap-1.5">
               <input className={cn(inputClass, 'brand-type')} value={row.id} placeholder="model-id" onChange={(e) => setRow(index, { id: e.target.value })} />
               <input className={inputClass} value={row.name ?? ''} placeholder="可不填" onChange={(e) => setRow(index, { name: e.target.value || undefined })} />
               <input key={'cw' + index + ':' + row.contextWindow} className={inputClass} defaultValue={formatTokens(row.contextWindow)} placeholder="继承" onBlur={(e) => setRow(index, { contextWindow: parseTokens(e.target.value) })} />
               <input key={'mt' + index + ':' + row.maxTokens} className={inputClass} defaultValue={formatTokens(row.maxTokens)} placeholder="继承" onBlur={(e) => setRow(index, { maxTokens: parseTokens(e.target.value) })} />
+              <button
+                type="button"
+                data-settings="model-price"
+                title="用户单价（四类）；填了就用它算花费，不乘倍率；空=继承目录标价"
+                onClick={() => setPriceOpen(priceOpen === index ? null : index)}
+                className={cn(
+                  'h-7 rounded-btn border border-line-2 px-1 text-2 transition-colors hover:bg-hover',
+                  priceOpen === index ? 'text-ink' : 'text-ink-2',
+                )}
+              >
+                {priceLabel(row)}
+              </button>
               <button
                 type="button"
                 aria-label="删掉这个模型"
@@ -303,6 +395,13 @@ function ModelCatalog({ models, onChange, defaults, discover, required }: {
               >
                 <X className="size-3.5" />
               </button>
+            </div>
+            {priceOpen === index ? (
+              <PriceEditor
+                price={row}
+                onChange={(patch) => setRow(index, patch)}
+              />
+            ) : null}
             </div>
           ))}
         </div>
@@ -351,15 +450,39 @@ function ConnectionEditor({ conn, view, onDone, onView }: {
   const [key, setKey] = useState('');
   const [endpoint, setEndpoint] = useState(conn.endpoint);
   const [models, setModels] = useState<ModelRow[]>(conn.models);
+  const [priceRate, setPriceRate] = useState(String(conn.priceRate ?? 1));
+  const [quota, setQuota] = useState<ServiceQuota | null>(null);
+  const [askingQuota, setAskingQuota] = useState(false);
   const [saving, setSaving] = useState(false);
   const [confirm, setConfirm] = useState<'revoke' | 'remove' | null>(null);
   const catalog = view.catalog.find((item) => item.id === conn.id);
+
+  const askQuota = async () => {
+    setAskingQuota(true);
+    try {
+      setQuota(await fetchConnectionQuota(conn.id));
+    } catch (error) {
+      toast.error((error as Error).message);
+    } finally {
+      setAskingQuota(false);
+    }
+  };
 
   const save = async () => {
     setSaving(true);
     try {
       const withKey = Boolean(key.trim());
-      onView(await updateConnection(conn.id, { endpoint, models, key }));
+      // 空串 = 不传（保留原值）；非法/负数也不传，避免把「免费」误存成 0。
+      const trimmedRate = priceRate.trim();
+      const rate = trimmedRate === '' ? undefined : Number(trimmedRate);
+      onView(
+        await updateConnection(conn.id, {
+          endpoint,
+          models,
+          key,
+          priceRate: rate !== undefined && Number.isFinite(rate) && rate >= 0 ? rate : undefined,
+        }),
+      );
       onDone();
       toast.success(withKey ? `已保存；${conn.name} 的新密钥进了 Keyring，正在验证` : '已保存');
       if (withKey) onView(await checkConnection(conn.id));
@@ -395,8 +518,48 @@ function ConnectionEditor({ conn, view, onDone, onView }: {
           onChange={setModels}
           defaults={catalog?.defaultModels}
           required={conn.source === 'custom'}
-          discover={() => discoverModels({ catalogId: catalog?.id, endpoint: endpoint || conn.defaultEndpoint })}
+          discover={() => discoverModels(conn.id)}
         />
+        <Field
+          label="价格倍率"
+          help="目录标价乘这个数算花费；1 = 原价，0 = 这个连接免费（例如 Coding Plan）。"
+        >
+          <input
+            className={cn(inputClass, 'brand-type')}
+            value={priceRate}
+            inputMode="decimal"
+            onChange={(event) => setPriceRate(event.target.value)}
+          />
+        </Field>
+      </Collapsible>
+      <Collapsible title="余额与套餐余量">
+        <div data-settings="quota">
+          <Btn kind="quiet" disabled={askingQuota} onClick={() => void askQuota()}>
+            {askingQuota ? '正在查询…' : '查询余额/余量'}
+          </Btn>
+          {quota ? (
+            <div className="mt-2 space-y-0.5 text-2 text-ink-2">
+              {quota.balance ? (
+                <div>
+                  余额：
+                  <span className="brand-type">
+                    {quota.balance.currency} {quota.balance.amount.toFixed(2)}
+                  </span>
+                </div>
+              ) : null}
+              {quota.plan ? (
+                <div>
+                  套餐余量：5 小时窗口{' '}
+                  <span className="brand-type">{quota.plan.intervalRemainingPercent ?? '—'}%</span> · 每周{' '}
+                  <span className="brand-type">{quota.plan.weeklyRemainingPercent ?? '—'}%</span>
+                </div>
+              ) : null}
+              {!quota.balance && !quota.plan ? (
+                <div className="text-ink-3">这个连接查不到余额/余量（只有 DeepSeek 与 MiniMax 官方地址支持）。</div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
       </Collapsible>
       <div className="mt-5 flex items-center gap-2">
         {conn.key.saved ? <Btn kind="danger" onClick={() => setConfirm('revoke')}>撤销密钥</Btn> : null}
@@ -483,7 +646,8 @@ function CatalogPanel({ view, onCreated, onCancel }: { view: ModelSettingsView; 
           models={models}
           onChange={setModels}
           defaults={provider.defaultModels}
-          discover={() => discoverModels({ catalogId: provider.id, endpoint: endpoint || provider.defaultEndpoint })}
+          // 新连接还没有 id：先列内置目录的模型；保存后在「编辑」里能对真实厂商再拉一次。
+          discover={async () => provider.defaultModels ?? []}
         />
       </Collapsible>
       <div className="mt-5 flex justify-end gap-2">
@@ -497,11 +661,10 @@ function CatalogPanel({ view, onCreated, onCancel }: { view: ModelSettingsView; 
 
 
 function AddCard({ view, onCreated, onCancel }: { view: ModelSettingsView; onCreated: (id: string, withKey: boolean, next: ModelSettingsView) => void; onCancel: () => void }) {
-  const kernelView = { ...view, catalog: view.catalog.filter((item) => KERNEL_PROVIDERS.has(item.id)) };
   return (
     <div className="mt-2 rounded-card border border-line-2 bg-raised/60 p-4" data-settings="add">
-      <p className="mb-4 text-1 leading-4 text-ink-3">Kind 现在只能用 DeepSeek，填上 API 密钥就能用。其他提供商之后再加。</p>
-      <CatalogPanel view={kernelView} onCreated={onCreated} onCancel={onCancel} />
+      <p className="mb-4 text-1 leading-4 text-ink-3">从内置目录选一家（DeepSeek / MiniMax 国内站 / MiniMax 国际站），填上 API 密钥就能用。</p>
+      <CatalogPanel view={view} onCreated={onCreated} onCancel={onCancel} />
     </div>
   );
 }
@@ -590,6 +753,35 @@ function KeyringBroken({ view, onView }: { view: ModelSettingsView; onView: (vie
 }
 
 /* ───────────────────────── Keyring 一节 ───────────────────────── */
+
+/** T012.9：显示币种（settings.json 的 currency；价格和花费一律按美元存，显示时换算）。 */
+function CurrencySection() {
+  const money = useKindStore((state) => state.money);
+  const setCurrency = useKindStore((state) => state.setCurrency);
+  return (
+    <section className="mt-5" data-settings="currency">
+      <div className="flex items-center gap-2">
+        <span className="text-2 text-ink-2">显示币种</span>
+        {CURRENCIES.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            onClick={() => void setCurrency(item.id)}
+            className={cn(
+              'h-6 rounded-btn px-2 text-2 transition-colors',
+              money.currency === item.id ? 'bg-ink text-content' : 'text-ink-2 hover:bg-hover hover:text-ink',
+            )}
+          >
+            {item.label}
+          </button>
+        ))}
+        <span className="text-1 text-ink-3">
+          花费按 1 美元 = {money.cnyPerUsd} 元换算{money.fxAt ? '' : '（还没取到汇率，先按 7.2）'}
+        </span>
+      </div>
+    </section>
+  );
+}
 
 function KeyringSection({ view, onView }: { view: ModelSettingsView; onView: (view: ModelSettingsView) => void }) {
   const [moving, setMoving] = useState(false);
@@ -682,6 +874,10 @@ function KeyringSection({ view, onView }: { view: ModelSettingsView; onView: (vi
 /* ───────────────────────── 整组 ───────────────────────── */
 
 export function ModelSettings() {
+  useEffect(() => {
+    // T012.9：直接打开设置页（不经 Kind 页）时也要拿币种/汇率。
+    void useKindStore.getState().refreshStats();
+  }, []);
   const [view, setView] = useState<ModelSettingsView | null>(null);
   /** 展开的是哪张卡片：连接 id、'add'，或者都不展开。一次只展开一张。 */
   const [open, setOpen] = useState<string | null>(null);
@@ -732,6 +928,8 @@ export function ModelSettings() {
 
       {broken ? <KeyringBroken view={view} onView={setView} /> : null}
 
+      <CurrencySection />
+
       <section className="mt-6">
         <h2 className="text-3 font-medium text-ink">模型提供商</h2>
         <div className="mt-2">
@@ -773,7 +971,7 @@ export function ModelSettings() {
             </div>
           )}
 
-          {rows.some((conn) => KERNEL_PROVIDERS.has(conn.id)) ? null : open === 'add' ? (
+          {open === 'add' ? (
             <AddCard view={view} onCreated={(id, withKey, next) => void onCreated(id, withKey, next)} onCancel={() => setOpen(null)} />
           ) : (
             <Btn kind="plain" className="mt-2.5 inline-flex items-center gap-1" onClick={() => setOpen('add')}>

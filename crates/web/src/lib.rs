@@ -832,16 +832,27 @@ async fn api_handler(
         ),
     };
     // T011.4：每次 /api 一条 api-call（不记请求体/响应体）；Keyring/连接操作另记一条 ops。
+    // T012.3 P1：请求里带档（T012.7 起 session-send/session-model-select 会带）时，api-call 记下来。
+    let mut attributes = vec![
+        ("method".to_owned(), serde_json::json!(method)),
+        ("status".to_owned(), serde_json::json!(http_status)),
+        ("code".to_owned(), serde_json::json!(code)),
+        ("durationMs".to_owned(), serde_json::json!(duration_ms)),
+    ];
+    // 请求里带档时记下来：session-send/session-model-select 用 effortWanted（camelCase），
+    // 其他调用方若用 effort 也认。
+    let effort = value
+        .get("effort")
+        .or_else(|| value.get("effortWanted"))
+        .and_then(serde_json::Value::as_str);
+    if let Some(effort) = effort {
+        attributes.push(("effort".to_owned(), serde_json::json!(effort)));
+    }
     record_ops(
         &state,
         "api-call",
         if ok { Severity::Info } else { Severity::Warn },
-        vec![
-            ("method".to_owned(), serde_json::json!(method)),
-            ("status".to_owned(), serde_json::json!(http_status)),
-            ("code".to_owned(), serde_json::json!(code)),
-            ("durationMs".to_owned(), serde_json::json!(duration_ms)),
-        ],
+        attributes,
     );
     record_domain_op(&state, &method, &value, ok, &code, duration_ms);
     match result {
@@ -1397,7 +1408,7 @@ mod t011_ops_tests {
             model: "deepseek-flash".to_owned(),
             max_tokens: 2048,
             context_window: model::DEFAULT_CONTEXT_WINDOW,
-            effort: model::Effort::High,
+            effort: model::Effort::new("high"),
         }
     }
 
@@ -1482,7 +1493,7 @@ mod t011_ops_tests {
             serde_json::json!({"method": "connection-delete", "id": "missing-conn"}),
             serde_json::json!({"method": "connection-update", "id": "missing-conn", "endpoint": "http://127.0.0.1:1", "model": "deepseek-flash"}),
             serde_json::json!({"method": "connection-revoke", "id": "missing-conn"}),
-            serde_json::json!({"method": "session-model-select", "model": "deepseek-pro"}),
+            serde_json::json!({"method": "session-model-select", "model": "deepseek-pro", "effortWanted": "max"}),
             serde_json::json!({"method": "keyring-restart"}),
             serde_json::json!({"method": "keyring-relocate", "to": keyring_new.display().to_string()}),
             serde_json::json!({"method": "keyring-reopen", "at": keyring_new.display().to_string()}),
@@ -1550,6 +1561,15 @@ mod t011_ops_tests {
             assert!(record["attributes"]["code"].as_str().is_some());
             assert!(record["attributes"]["durationMs"].as_u64().is_some());
         }
+        // T012.3 P1：带档的请求在 api-call 里记 effort（session-model-select 用 effortWanted）。
+        let effort_call = api_calls
+            .iter()
+            .find(|record| record["attributes"]["method"] == "session-model-select")
+            .expect("session-model-select 一条 api-call");
+        assert_eq!(
+            effort_call["attributes"]["effort"], "max",
+            "带档请求记 effort：{text}"
+        );
         let verify = api_calls
             .iter()
             .find(|record| record["attributes"]["method"] == "connection-verify")

@@ -18,9 +18,9 @@ test('手动压缩：分隔线出现，点开是摘要', async ({ page, request 
   try {
     await page.goto(`${fixture.baseUrl}/?token=${encodeURIComponent(fixture.token)}#kind`);
     await openAndSend(page, fixture, '写点东西，我要手动压缩');
-    // 底栏占用/压缩在悬停时才显示。
-    await page.getByText('DeepSeek Chat').last().hover();
-    const compact = page.getByRole('button', { name: '压缩', exact: true });
+    // T012.9：压缩入口在输入框下的上下文圆环里。
+    await page.locator('[data-kind="context-meter"]').click();
+    const compact = page.locator('[data-kind="compact"]');
     await expect(compact).toBeEnabled({ timeout: 15_000 });
     await compact.click();
     const events = await followEvents(request, fixture);

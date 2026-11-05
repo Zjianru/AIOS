@@ -92,7 +92,13 @@ async fn pure_text_turn() {
         .events()
         .iter()
         .find_map(|event| match &event.kind {
-            EventKind::AssistantMessage { message, usage, .. } => Some((message, usage)),
+            EventKind::AssistantMessage {
+                message,
+                usage,
+                effort,
+                effort_wanted,
+                ..
+            } => Some((message, usage, effort, effort_wanted)),
             _ => None,
         })
         .expect("日志里有 assistant/message");
@@ -106,6 +112,13 @@ async fn pure_text_turn() {
     let usage = assistant.1.as_ref().expect("assistant/message 带用量");
     assert_eq!(usage.input_tokens, Some(12));
     assert_eq!(usage.output_tokens, Some(5));
+    // T012.3 测试清单 9：日志记用户要的档和实际发的档（这一轮都 high）。
+    assert_eq!(assistant.2.as_deref(), Some("high"), "effort 是实际发的档");
+    assert_eq!(
+        assistant.3.as_deref(),
+        Some("high"),
+        "effort_wanted 是用户要的档"
+    );
 
     let derived = reopened.derive_messages();
     let roles: Vec<Role> = derived.iter().map(|message| message.role).collect();

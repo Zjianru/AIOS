@@ -24,6 +24,7 @@ fn seed_keyring(data_dir: &std::path::Path, endpoint: &str) -> std::path::PathBu
             model: "deepseek-flash".to_owned(),
             endpoint: endpoint.to_owned(),
             api_key: "test-key".to_owned(),
+            ..Default::default()
         })
         .expect("save connection");
     identity

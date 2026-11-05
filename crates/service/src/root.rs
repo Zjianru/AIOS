@@ -74,10 +74,15 @@ pub struct RootSessionOptions {
     pub keyring_changed: Option<KeyringChanged>,
 }
 
-/// T008.3b：从当前 Keyring 解析 (DeepSeekConfig, 凭证来源)；没有连接时返回 Err(说明)。
+/// T008.3b/T012.7：按会话的模型选择解析 (连接 id, 模型配置, 凭证来源)。
+/// `selection` = 会话日志里的选择（重开恢复）；None = 没有会话选择（新会话，实现方用
+/// settings 的上次选择/默认连接）。
 pub type ModelFactory = std::sync::Arc<
-    dyn Fn() -> Result<
+    dyn Fn(
+            Option<&session::ModelSelection>,
+        ) -> Result<
             (
+                String,
                 DeepSeekConfig,
                 Option<std::sync::Arc<dyn model::CredentialSource>>,
             ),
@@ -219,6 +224,22 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
             })
         }
     }
+}
+
+/// T012.7：从根会话日志恢复模型选择（重开会话还是它）。
+///
+/// 没有根状态文件、状态文件坏了、会话日志缺失或没有 session/model 事件时返回 None
+/// （交给实现方按 settings 的上次选择解析）；这里不报错——严格恢复链错误由
+/// open_root_session 负责。
+pub fn session_model_selection(data_dir: &Path) -> Option<session::ModelSelection> {
+    let bytes = std::fs::read(RootSession::state_path(data_dir)).ok()?;
+    let record: RootRecord = serde_json::from_slice(&bytes).ok()?;
+    if record.version != ROOT_STATE_VERSION {
+        return None;
+    }
+    let id = SessionId::parse(&record.session_id).ok()?;
+    let snapshot = session::SessionStore::open_read_only(data_dir, &id).ok()?;
+    session::last_model_selection(snapshot.events())
 }
 
 /// 原子写状态文件：同目录临时文件 → fsync → rename 覆盖 → 目录 fsync（best effort）。

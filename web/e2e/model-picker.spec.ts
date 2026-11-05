@@ -1,24 +1,39 @@
 import { test, expect } from '@playwright/test';
-import { startKernelFixture } from './service-fixture';
+import { apiPost, startKernelFixture } from './service-fixture';
 
-test('底栏选模型：下一轮请求用新模型', async ({ page }) => {
+test('底栏选模型：下一轮请求用新模型', async ({ page, request }) => {
   const fixture = await startKernelFixture();
   try {
+    // T012.9：给连接补第二行模型（底栏只列这个连接里存着的模型）。
+    await apiPost(request, fixture, {
+      method: 'connection-update',
+      id: 'deepseek',
+      endpoint: fixture.fakeEndpoint,
+      model: 'deepseek-flash',
+      models: [{ id: 'deepseek-flash' }, { id: 'deepseek-v4-pro' }],
+    });
     await page.goto(`${fixture.baseUrl}/?token=${encodeURIComponent(fixture.token)}#kind`);
     await page.locator('[data-kind="model-picker"]').click();
-    await page.getByRole('menuitem', { name: /DeepSeek Pro/ }).click();
+    await page.getByRole('menuitem', { name: /DeepSeek-V4-Pro/ }).click({ force: true });
     await page.getByPlaceholder('和 Kind 说…').fill('你好');
     await page.getByRole('button', { name: '发送', exact: true }).click();
-    await expect.poll(() => fixture.lastModel(), { timeout: 30_000 }).toBe('deepseek-pro');
+    await expect.poll(() => fixture.lastModel(), { timeout: 30_000 }).toBe('deepseek-v4-pro');
   } finally {
     await fixture.close();
   }
 });
 
 /// T008 r4 #3：换模型等成功再改状态；失败给中文原因，不吞。
-test('换模型失败：不先改状态，给中文原因', async ({ page }) => {
+test('换模型失败：不先改状态，给中文原因', async ({ page, request }) => {
   const fixture = await startKernelFixture();
   try {
+    await apiPost(request, fixture, {
+      method: 'connection-update',
+      id: 'deepseek',
+      endpoint: fixture.fakeEndpoint,
+      model: 'deepseek-flash',
+      models: [{ id: 'deepseek-flash' }, { id: 'deepseek-v4-pro' }],
+    });
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     await page.locator('[data-kind="model-picker"]').click();
     await page.route(/\/api(\?|$)/, async (route, request) => {
@@ -28,7 +43,7 @@ test('换模型失败：不先改状态，给中文原因', async ({ page }) => 
       }
       await route.continue();
     });
-    await page.getByRole('menuitem', { name: /DeepSeek Pro/ }).click();
+    await page.getByRole('menuitem', { name: /DeepSeek-V4-Pro/ }).click({ force: true });
     await expect(page.locator('[data-kind="model-picker"]')).toContainText('DeepSeek Chat');
     await expect(page.getByText('换模型没成：', { exact: false })).toBeVisible({ timeout: 15_000 });
   } finally {

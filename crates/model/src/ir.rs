@@ -500,39 +500,6 @@ impl Usage {
     }
 }
 
-/// 推理强度。默认 High（spec 实现决定）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Effort {
-    Off,
-    Low,
-    #[default]
-    High,
-    Max,
-}
-
-impl Effort {
-    /// wire 上的取值（off、low、high、max）。
-    pub fn as_wire(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Low => "low",
-            Self::High => "high",
-            Self::Max => "max",
-        }
-    }
-
-    /// 解析 CLI 传入的取值；非法值返回 None。
-    pub fn parse(raw: &str) -> Option<Self> {
-        match raw {
-            "off" => Some(Self::Off),
-            "low" => Some(Self::Low),
-            "high" => Some(Self::High),
-            "max" => Some(Self::Max),
-            _ => None,
-        }
-    }
-}
-
 /// 流的结束原因；JSON 照 DSH FinishReasonMap（`{"kind":"stop"}` 等，types.ts:159-172）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]

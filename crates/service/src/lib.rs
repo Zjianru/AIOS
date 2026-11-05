@@ -6,7 +6,11 @@
 //!
 //! 对象固定 Kind 根会话：根会话实体在 T006.16b 落，本票宿主绑定一个会话、Object 用 session id。
 
+pub mod fx;
+pub mod quota;
 mod root;
+pub mod settings;
+pub mod stats;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -15,7 +19,7 @@ use agent::{Agent, SendAdmission};
 use model::UserMessage;
 pub use root::{
     KeyringChanged, ModelFactory, ROOT_STATE_FILE, RootError, RootSession, RootSessionOptions,
-    RootStatus, open_root_session,
+    RootStatus, open_root_session, session_model_selection,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -24,7 +28,7 @@ use tokio::sync::broadcast;
 const SERVICE_EVENT_CHANNEL_CAPACITY: usize = 1024;
 
 /// 服务对象：固定 Kind 根会话（16b 换成根会话实体）；第一版用会话 id 表达。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Object {
     #[serde(rename = "sessionId")]
     pub session_id: String,
@@ -75,6 +79,8 @@ pub enum Call {
     ConnectionRevoke(ConnectionRevokeRequest),
     /// T008.3：验证连接（最小请求）；结果写进注册器。
     ConnectionVerify(ConnectionVerifyRequest),
+    /// T012.5：获取可用模型（目录 + 厂商列表）。
+    AvailableModels(AvailableModelsRequest),
     KeyringRelocate(KeyringRelocateRequest),
     KeyringReopen(KeyringReopenRequest),
     KeyringRestart(KeyringRestartRequest),
@@ -82,6 +88,10 @@ pub enum Call {
     FirstUse(FirstUseRequest),
     /// T008.3：选模型（下一轮生效，当前轮不换）。
     SessionModelSelect(SessionModelSelectRequest),
+    /// T012.8b：查询连接余额/套餐余量。
+    ConnectionQuota(ConnectionQuotaRequest),
+    /// T012.9：写非密钥设置（currency；只写 settings.json）。
+    SettingsUpdate(SettingsUpdateRequest),
 }
 
 /// 调用的结果（与 Call 一一对应）。
@@ -103,6 +113,11 @@ pub enum Response {
     ConnectionUpdate(ConnectionUpdateResponse),
     ConnectionRevoke(ConnectionRevokeResponse),
     ConnectionVerify(ConnectionVerifyResponse),
+    /// T012.8b：连接余额/套餐余量。
+    ConnectionQuota(ConnectionQuotaResponse),
+    /// T012.9：写非密钥设置。
+    SettingsUpdate(SettingsUpdateResponse),
+    AvailableModels(AvailableModelsResponse),
     KeyringRelocate(KeyringRelocateResponse),
     KeyringReopen(KeyringReopenResponse),
     KeyringRestart(KeyringRestartResponse),
@@ -112,7 +127,7 @@ pub enum Response {
 }
 
 /// 发消息（DSH session-controller 的 prompt）。requestId 是幂等键：同一 id 只进一次。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SendRequest {
     #[serde(rename = "requestId")]
     pub request_id: String,
@@ -126,7 +141,7 @@ fn default_delivery() -> DeliveryMode {
 }
 
 /// 发消息的受理回执（重复 requestId 返回原始受理，duplicate=true）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SendResponse {
     #[serde(rename = "requestId")]
     pub request_id: String,
@@ -138,13 +153,13 @@ pub struct SendResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct CancelRequest {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CancelResponse {
     pub cancelled: bool,
 }
 
 /// 一条答案（接 T006.13 的 {id, selected[], custom?}）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServiceAnswer {
     #[serde(rename = "questionId")]
     pub question_id: String,
@@ -154,12 +169,12 @@ pub struct ServiceAnswer {
 }
 
 /// 回答整批（一次调用覆盖一批问题；逐题走 Agent::answer，全部被接受才算成功）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnswerRequest {
     pub answers: Vec<ServiceAnswer>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnswerResponse {
     pub applied: usize,
 }
@@ -173,7 +188,7 @@ pub struct AnswerResponse {
 pub struct DismissQuestionsRequest {}
 
 /// 关掉不答的回执：是否确实有待答问题被撤掉（没有待答问题时 false）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DismissQuestionsResponse {
     pub dismissed: bool,
 }
@@ -186,7 +201,7 @@ pub struct CompactRequest {
 }
 
 /// 压缩计数（有可压缩历史才 Some）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompactCounts {
     #[serde(rename = "shadowedItems")]
     pub shadowed_items: usize,
@@ -194,7 +209,7 @@ pub struct CompactCounts {
     pub shadowed_tokens: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompactResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compacted: Option<CompactCounts>,
@@ -204,12 +219,21 @@ pub struct CompactResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct StatusRequest {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StatusResponse {
     pub object: Object,
     pub running: bool,
     #[serde(rename = "pendingQuestions")]
     pub pending_questions: usize,
+    /// T012.8：会话统计（轮/步/token/缓存/上下文/花费）；裸宿主为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<stats::SessionStats>,
+    /// T012.8：USD→CNY 汇率与拉到时间；裸宿主为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fx: Option<fx::FxInfo>,
+    /// T012.8：币种（settings.json：usd/cny）；裸宿主为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
 }
 
 /// follow（DSH :607）：带上调用方最后看到的日志序号，服务补齐之后的事件。
@@ -305,13 +329,13 @@ pub struct ServiceEvent {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelSettingsRequest {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelSettingsResponse {
     pub settings: credentials::KeyringView,
 }
 
 /// T008.3：存/换连接；apiKey 只在请求体里，任何响应不带。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ConnectionSaveRequest {
     pub id: String,
     pub name: String,
@@ -319,24 +343,45 @@ pub struct ConnectionSaveRequest {
     pub endpoint: String,
     #[serde(rename = "apiKey")]
     pub api_key: String,
+    #[serde(default)]
+    pub preset: Option<String>,
+    #[serde(default)]
+    pub models: Option<Vec<credentials::ModelRow>>,
+    #[serde(default)]
+    pub price_rate: Option<f64>,
+    #[serde(default)]
+    pub auth_header: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionSaveResponse {
     pub connection: credentials::ConnectionInfo,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// T012.5：获取某连接的可用模型。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AvailableModelsRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AvailableModelsResponse {
+    pub models: Vec<model::catalog::ModelInfo>,
+    /// 厂商 /v1/models 是否成功；失败时只给目录/用户模型。
+    pub live: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionDeleteRequest {
     pub id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionDeleteResponse {
     pub deleted: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KeyringRelocateRequest {
     pub to: String,
 }
@@ -344,7 +389,7 @@ pub struct KeyringRelocateRequest {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyringRelocateResponse {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KeyringReopenRequest {
     pub at: String,
 }
@@ -355,7 +400,7 @@ pub struct KeyringReopenResponse {}
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyringRestartRequest {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KeyringRestartResponse {
     pub settings: credentials::KeyringView,
 }
@@ -363,7 +408,7 @@ pub struct KeyringRestartResponse {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IssuesRequest {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IssuesResponse {
     #[serde(rename = "issuedToday")]
     pub issued_today: u64,
@@ -373,7 +418,7 @@ pub struct IssuesResponse {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FirstUseRequest {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FirstUseResponse {
     #[serde(rename = "firstUse")]
     pub first_use: bool,
@@ -382,53 +427,116 @@ pub struct FirstUseResponse {
 }
 
 /// T008.3：验证一个连接（空 = 用注册器里的 endpoint/key 发最小请求）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionVerifyRequest {
     pub id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionVerifyResponse {
     pub connection: credentials::ConnectionInfo,
 }
 
-/// T008.3：选模型；只影响下一轮（D26）。
+/// T012.8b：查询连接余额/套餐余量（查不到不报错，字段为空）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionModelSelectRequest {
-    pub model: String,
+pub struct ConnectionQuotaRequest {
+    pub id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// 余额（厂商币种）与套餐余量（MiniMax：5 小时窗口/每周剩余百分比）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectionQuotaResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance: Option<quota::BalanceInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<quota::PlanQuota>,
+    /// 查询时间（Unix 秒）。
+    #[serde(rename = "checkedAt")]
+    pub checked_at: u64,
+}
+
+/// T012.9：写非密钥设置（settings.json）；只碰非密钥设置，不碰 Keyring/连接。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct SettingsUpdateRequest {
+    /// 币种（usd/cny）；None = 不改。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SettingsUpdateResponse {
+    pub currency: String,
+}
+
+/// T008.3/T012.7：选模型（连接、模型、想要的档）；只影响下一轮（D26）。
+///
+/// 三个字段都可选（协议只增）：None = 保持当前值。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct SessionModelSelectRequest {
+    /// 连接 id（Keyring 里的连接）；None = 保持当前连接。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<String>,
+    /// 模型 id；None = 保持当前模型。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// 想要的思考档（模型自己的字符串）；None = 保持当前。
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "effortWanted"
+    )]
+    pub effort_wanted: Option<String>,
+}
+
+/// 选择结果：生效的目标选择（下一轮开始用）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionModelSelectResponse {
+    pub connection: String,
     pub model: String,
+    #[serde(rename = "effortWanted")]
+    pub effort_wanted: String,
+    /// T012 F2：这一轮实际会发的档（没有想要的档时是最近档；页面据此显示并告诉用户）。
+    #[serde(rename = "effortActual")]
+    pub effort_actual: String,
 }
 
 /// T008.3 增补：编辑连接，只改 endpoint/model（不换 key）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ConnectionUpdateRequest {
     pub id: String,
     pub endpoint: String,
     pub model: String,
+    #[serde(default)]
+    pub preset: Option<String>,
+    #[serde(default)]
+    pub models: Option<Vec<credentials::ModelRow>>,
+    #[serde(default)]
+    pub price_rate: Option<f64>,
+    #[serde(default)]
+    pub auth_header: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionUpdateResponse {
     pub connection: credentials::ConnectionInfo,
 }
 
 /// T008.3 增补：撤销 key（连接保留，之后签发失败）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionRevokeRequest {
     pub id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionRevokeResponse {
     pub connection: credentials::ConnectionInfo,
 }
 
 /// 服务协议版本（T007.2 起）：只增不改的对外面每次扩展都记在这里，Web ready 帧里带上。
-pub const PROTOCOL_VERSION: u64 = 4;
+///
+/// - 4：T007.2 起的第一版；
+/// - 5（T012.9）：settings-update（写非密钥设置 currency）。
+pub const PROTOCOL_VERSION: u64 = 5;
 
 /// 根会话不可用的种类（T007.2）：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -533,6 +641,9 @@ pub enum ServiceError {
     Credentials(#[from] credentials::KeyringError),
     #[error("设置接口只能由根宿主提供")]
     SettingsOnBareHost,
+    /// T012.9：写非密钥设置失败（非法值/落盘失败）。
+    #[error("设置没保存：{0}")]
+    SettingsInvalid(String),
     #[error("路径不合法：{0}")]
     InvalidPath(String),
 }
@@ -613,7 +724,9 @@ impl ServiceError {
                     ServiceErrorCode::ConnectionInvalid
                 }
             },
-            Self::SettingsOnBareHost => ServiceErrorCode::SettingsUnavailable,
+            Self::SettingsOnBareHost | Self::SettingsInvalid(_) => {
+                ServiceErrorCode::SettingsUnavailable
+            }
             Self::InvalidPath(_) => ServiceErrorCode::RequestInvalidPath,
         }
     }
@@ -686,6 +799,11 @@ impl ServiceHost {
         self.agent.select_model(model);
     }
 
+    /// T012.7：宿主绑定的 Agent（会话选择写日志/判断 busy；调用方不要长期持有）。
+    pub fn agent(&self) -> &Agent {
+        &self.agent
+    }
+
     /// 服务对象（第一版：会话 id；16b 换成 Kind 根会话实体）。
     pub fn object(&self) -> Object {
         Object {
@@ -722,6 +840,7 @@ impl ServiceHost {
             | Call::ConnectionSave(_)
             | Call::ConnectionDelete(_)
             | Call::ConnectionVerify(_)
+            | Call::AvailableModels(_)
             | Call::ConnectionUpdate(_)
             | Call::ConnectionRevoke(_)
             | Call::KeyringRelocate(_)
@@ -729,7 +848,9 @@ impl ServiceHost {
             | Call::KeyringRestart(_)
             | Call::Issues(_)
             | Call::FirstUse(_)
-            | Call::SessionModelSelect(_) => Err(ServiceError::SettingsOnBareHost),
+            | Call::SessionModelSelect(_)
+            | Call::ConnectionQuota(_)
+            | Call::SettingsUpdate(_) => Err(ServiceError::SettingsOnBareHost),
         }
     }
 
@@ -809,6 +930,9 @@ impl ServiceHost {
             object: self.object(),
             running: self.agent.is_running(),
             pending_questions: self.agent.pending_questions().len(),
+            stats: None,
+            fx: None,
+            currency: None,
         })
     }
 
@@ -1000,6 +1124,9 @@ pub struct RootHost {
     agent_events: broadcast::Sender<agent::AgentEvent>,
     forward: Mutex<Option<tokio::task::JoinHandle<()>>>,
     agent_forward: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// T012.7：当前生效的模型选择（连接/模型/想要的档）；session/model 的 durable 事实
+    /// 在会话日志里，这里只是进程内缓存（重开从日志恢复）。
+    selection: Mutex<Option<session::ModelSelection>>,
 }
 
 impl RootHost {
@@ -1011,20 +1138,37 @@ impl RootHost {
         let (events, _) = broadcast::channel(SERVICE_EVENT_CHANNEL_CAPACITY);
         let (agent_events, _) = broadcast::channel(SERVICE_EVENT_CHANNEL_CAPACITY);
         let mut factory_error = None;
+        let mut selection = None;
         if let Some(factory) = options.model_factory.clone() {
-            match factory() {
-                Ok((model, credentials)) => {
+            // T012.7：重开会话从日志恢复选择；新会话由实现方按 settings/默认连接解析。
+            let wanted = session_model_selection(&options.data_dir);
+            match factory(wanted.as_ref()) {
+                Ok((connection, model, credentials)) => {
+                    selection = Some(session::ModelSelection {
+                        connection,
+                        model: model.model.clone(),
+                        effort_wanted: model.effort.as_str().to_owned(),
+                    });
                     options.model = model;
                     options.credentials = credentials;
                 }
                 Err(message) => factory_error = Some(message),
             }
+        } else {
+            // 无 model_factory（测试/定制宿主）：从占位配置推初始选择，同样写成 durable 事实。
+            selection = Some(session::ModelSelection {
+                connection: "deepseek".to_owned(),
+                model: options.model.model.clone(),
+                effort_wanted: options.model.effort.as_str().to_owned(),
+            });
         }
         let window = if options.model_factory.is_some() {
             options.model.context_window
         } else {
             fallback_window
         };
+        // T012.8 审计：把初始选择写成 durable 事实（open/首次打开时若日志里没有）。
+        let initial_selection = selection.clone();
         let host = Self {
             inner: tokio::sync::Mutex::new(None),
             state: Mutex::new(RootState::Ok),
@@ -1036,6 +1180,7 @@ impl RootHost {
             agent_events,
             forward: Mutex::new(None),
             agent_forward: Mutex::new(None),
+            selection: Mutex::new(selection),
         };
         if let Some(message) = factory_error {
             *host.state.lock().expect("root state 锁被毒化") = RootState::Unavailable {
@@ -1046,7 +1191,10 @@ impl RootHost {
             };
         } else {
             match open_root_session(host.options.clone()).await {
-                Ok(root) => host.install(root.agent).await,
+                Ok(root) => {
+                    ensure_initial_selection(&root.agent, initial_selection.as_ref()).await;
+                    host.install(root.agent).await;
+                }
                 Err(error) => {
                     *host.state.lock().expect("root state 锁被毒化") =
                         RootState::from_root_error(&error);
@@ -1148,9 +1296,16 @@ impl RootHost {
             return RootState::Ok;
         }
         let mut options = self.options.clone();
+        let wanted = self.selection.lock().expect("selection 锁被毒化").clone();
         if let Some(factory) = options.model_factory.clone() {
-            match factory() {
-                Ok((model, credentials)) => {
+            match factory(wanted.as_ref()) {
+                Ok((connection, model, credentials)) => {
+                    *self.selection.lock().expect("selection 锁被毒化") =
+                        Some(session::ModelSelection {
+                            connection,
+                            model: model.model.clone(),
+                            effort_wanted: model.effort.as_str().to_owned(),
+                        });
                     options.model = model;
                     options.credentials = credentials;
                 }
@@ -1172,6 +1327,8 @@ impl RootHost {
         *self.context.lock().expect("context 锁被毒化") = ContextUsage { used: 0, window };
         match open_root_session(options).await {
             Ok(root) => {
+                let current = self.selection.lock().expect("selection 锁被毒化").clone();
+                ensure_initial_selection(&root.agent, current.as_ref()).await;
                 self.install(root.agent).await;
                 RootState::Ok
             }
@@ -1219,6 +1376,10 @@ impl RootHost {
                 model: request.model,
                 endpoint: request.endpoint,
                 api_key: request.api_key,
+                preset: request.preset,
+                models: request.models,
+                price_rate: request.price_rate,
+                auth_header: request.auth_header,
             })?;
         self.emit_settings_changed();
         self.notify_keyring_changed();
@@ -1242,9 +1403,17 @@ impl RootHost {
         &self,
         request: ConnectionUpdateRequest,
     ) -> Result<ConnectionUpdateResponse, ServiceError> {
-        let connection =
-            self.keyring()?
-                .update_connection(&request.id, request.endpoint, request.model)?;
+        let connection = self.keyring()?.update_connection_details(
+            &request.id,
+            credentials::ConnectionUpdate {
+                endpoint: request.endpoint,
+                model: request.model,
+                preset: request.preset,
+                models: request.models,
+                price_rate: request.price_rate,
+                auth_header: request.auth_header,
+            },
+        )?;
         self.emit_settings_changed();
         self.notify_keyring_changed();
         Ok(ConnectionUpdateResponse { connection })
@@ -1283,10 +1452,11 @@ impl RootHost {
         // T009.3：验证走模型适配器（和对话同一条请求路径/同一组头），不再手写 reqwest。
         let config = model::DeepSeekConfig {
             base_url: connection.endpoint.clone(),
-            model: connection.model.clone(),
+            // K3：验证用连接所选模型（新形状的 models 第一行）序列化。
+            model: connection.primary_model().to_owned(),
             max_tokens: 1,
             context_window: model::DEFAULT_CONTEXT_WINDOW,
-            effort: model::Effort::Off,
+            effort: model::Effort::new("off"),
         };
         let cancel = model::CancelToken::new(
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -1294,9 +1464,15 @@ impl RootHost {
         );
         let messages = vec![model::Message::user_text("ping")];
         let at = now_seconds();
+        // T012.6：验证也必须能把学到的鉴权头写回连接，所以把 Keyring 的 Arc 交给来源。
+        let keyring = std::sync::Arc::new(keyring);
         let result = match model::DeepSeek::with_credentials(
             config,
-            std::sync::Arc::new(VerifyCredential { api_key }),
+            std::sync::Arc::new(VerifyCredential {
+                api_key,
+                keyring: std::sync::Arc::clone(&keyring),
+                connection: request.id.clone(),
+            }),
         ) {
             Err(error) => credentials::CheckResult::Fail {
                 at,
@@ -1323,6 +1499,99 @@ impl RootHost {
                 ))
             })?;
         Ok(ConnectionVerifyResponse { connection })
+    }
+
+    /// T012.5：目录 + 厂商 GET /v1/models 合并；用户填的字段最后覆盖。
+    pub async fn available_models(
+        &self,
+        request: AvailableModelsRequest,
+    ) -> Result<AvailableModelsResponse, ServiceError> {
+        let keyring = self.keyring()?;
+        let view = keyring.view();
+        let connection = view
+            .connections
+            .into_iter()
+            .find(|connection| connection.id == request.id)
+            .ok_or_else(|| {
+                ServiceError::Credentials(credentials::KeyringError::MissingConnection(
+                    request.id.clone(),
+                ))
+            })?;
+        let key = keyring.issue(&request.id, "models-list", None, None)?;
+        let catalog = model::catalog::global().unwrap_or_else(model::catalog::snapshot);
+        let provider_id = if connection.preset.is_empty() || connection.preset == "custom" {
+            model::catalog::provider_id_for_endpoint(&connection.endpoint)
+        } else {
+            connection.preset.clone()
+        };
+        let mut models = catalog.models_for(&provider_id);
+        let mut live = false;
+        if let Ok(client) = model::http::client() {
+            // 审计 T012.5 fix-now 1：endpoint 以 /anthropic 结尾时列表在 Chat base 的 /v1/models。
+            let url = model::catalog::models_url(&connection.endpoint);
+            let mut request = client.get(url).timeout(std::time::Duration::from_secs(5));
+            match connection.auth_header.as_deref() {
+                Some("authorization") => {
+                    request =
+                        request.header("authorization", format!("Bearer {}", key.into_secret()));
+                }
+                _ => {
+                    request = request.header("x-api-key", key.into_secret());
+                }
+            }
+            if let Ok(response) = request.send().await
+                && response.status().is_success()
+                && let Ok(bytes) = response.bytes().await
+                && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
+            {
+                let live_models = model::catalog::parse_live_models(&value);
+                if !live_models.is_empty() {
+                    models = model::catalog::merge_live(models, live_models);
+                    live = true;
+                }
+            }
+        }
+        // 用户填过的字段不动：同名覆盖 name/窗口/输出/用户价格；目录没有的也列出来。
+        for row in &connection.models {
+            if let Some(info) = models.iter_mut().find(|info| info.id == row.id) {
+                if let Some(name) = &row.name {
+                    info.name = name.clone();
+                }
+                if row.context_window.is_some() {
+                    info.context_window = row.context_window;
+                }
+                if row.max_tokens.is_some() {
+                    info.max_tokens = row.max_tokens;
+                }
+                if let Some(price) = row.price_input {
+                    info.price_input = Some(price);
+                    info.price_output.get_or_insert(price);
+                }
+                if let Some(price) = row.price_output {
+                    info.price_output = Some(price);
+                }
+                if let Some(price) = row.price_cache_read {
+                    info.price_cache_read = Some(price);
+                }
+                if let Some(price) = row.price_cache_write {
+                    info.price_cache_write = Some(price);
+                }
+            } else {
+                models.push(model::catalog::ModelInfo {
+                    id: row.id.clone(),
+                    name: row.name.clone().unwrap_or_else(|| row.id.clone()),
+                    context_window: row.context_window,
+                    max_tokens: row.max_tokens,
+                    price_input: row.price_input,
+                    price_output: row.price_output.or(row.price_input),
+                    price_cache_read: row.price_cache_read,
+                    price_cache_write: row.price_cache_write,
+                    thinks: false,
+                    efforts: Vec::new(),
+                });
+            }
+        }
+        Ok(AvailableModelsResponse { models, live })
     }
 
     pub async fn keyring_relocate(
@@ -1375,22 +1644,248 @@ impl RootHost {
         })
     }
 
-    /// T008.3：选模型（下一轮生效；当前轮已发出的请求不换，D26）。
+    /// T012.9：写非密钥设置（目前只有 currency）。只碰 settings.json，不碰 Keyring/连接。
+    pub async fn settings_update(
+        &self,
+        request: SettingsUpdateRequest,
+    ) -> Result<SettingsUpdateResponse, ServiceError> {
+        let mut settings = settings::load(&self.options.data_dir);
+        if let Some(currency) = request.currency {
+            match currency.as_str() {
+                "usd" | "cny" => settings.currency = currency,
+                other => {
+                    return Err(ServiceError::SettingsInvalid(format!(
+                        "不支持的币种：{other}（只有 usd/cny）"
+                    )));
+                }
+            }
+        }
+        settings::save(&self.options.data_dir, &settings).map_err(ServiceError::SettingsInvalid)?;
+        Ok(SettingsUpdateResponse {
+            currency: settings.currency,
+        })
+    }
+
+    /// T012.8b：查询连接的余额/套餐余量（DeepSeek /user/balance、MiniMax /v1/token_plan/remains）。
+    /// 查不到不报错（字段为空；spec 故事 5）。
+    pub async fn connection_quota(
+        &self,
+        request: ConnectionQuotaRequest,
+    ) -> Result<ConnectionQuotaResponse, ServiceError> {
+        let keyring = self.keyring()?;
+        let view = keyring.view();
+        let connection = view
+            .connections
+            .into_iter()
+            .find(|connection| connection.id == request.id)
+            .ok_or_else(|| {
+                ServiceError::Credentials(credentials::KeyringError::MissingConnection(
+                    request.id.clone(),
+                ))
+            })?;
+        let key = keyring
+            .issue(&request.id, "connection-quota", None, None)?
+            .into_secret();
+        let quota = quota::fetch(&connection, &key).await;
+        Ok(ConnectionQuotaResponse {
+            balance: quota.balance,
+            plan: quota.plan,
+            checked_at: now_seconds(),
+        })
+    }
+
+    /// T012.8：状态（对象/在跑/待答问题）+ 会话统计（轮/步/token/缓存/上下文/花费）+ 汇率 + 币种。
+    ///
+    /// 统计和花费从日志现算（不落日志）：每轮模型取 assistant/message 的 message.source.model，
+    /// 价格按当前连接 + 目录（用户价 > 标价×倍率 > 无价格；无价格的轮标 unpriced）。
+    async fn host_status(&self, _request: StatusRequest) -> Result<StatusResponse, ServiceError> {
+        let (object, running, pending_questions, agent) = {
+            let guard = self.inner.lock().await;
+            let Some(host) = guard.as_ref() else {
+                return Err(ServiceError::RootUnavailable(
+                    self.state.lock().expect("root state 锁被毒化").clone(),
+                ));
+            };
+            (
+                host.object(),
+                host.agent().is_running(),
+                host.agent().pending_questions().len(),
+                host.agent().clone(),
+            )
+        };
+        let events = agent.session_events_from(0);
+        let current = self
+            .selection
+            .lock()
+            .expect("selection 锁被毒化")
+            .clone()
+            .unwrap_or_else(|| session::ModelSelection {
+                connection: "deepseek".to_owned(),
+                model: self.options.model.model.clone(),
+                effort_wanted: self.options.model.effort.as_str().to_owned(),
+            });
+        let settings = settings::load(&self.options.data_dir);
+        let keyring = self.keyring()?;
+        let view = keyring.view();
+        let connection = view
+            .connections
+            .iter()
+            .find(|connection| connection.id == current.connection)
+            .or_else(|| view.connections.first())
+            .cloned();
+        let catalog = model::catalog::global().unwrap_or_else(model::catalog::snapshot);
+        let (context_used, context_window) = {
+            let context = self.context.lock().expect("context 锁被毒化");
+            (context.used, context.window)
+        };
+        let stats = match connection {
+            Some(_) => stats::session_stats(
+                &events,
+                &view.connections,
+                &catalog,
+                &current,
+                context_used,
+                context_window,
+            ),
+            None => stats::SessionStats {
+                context_used,
+                context_window,
+                connection: current.connection.clone(),
+                model: current.model.clone(),
+                effort_wanted: current.effort_wanted.clone(),
+                ..stats::SessionStats::default()
+            },
+        };
+        let mut stats = stats;
+        stats.effort_actual = connection
+            .as_ref()
+            .map(|connection| stats::actual_effort_of(connection, &current))
+            .unwrap_or_else(|| current.effort_wanted.clone());
+        let fx = fx::usd_to_cny(&self.options.data_dir).await;
+        Ok(StatusResponse {
+            object,
+            running,
+            pending_questions,
+            stats: Some(stats),
+            fx: Some(fx),
+            currency: Some(settings.currency),
+        })
+    }
+
+    /// T008.3/T012.7：选模型（连接/模型/想要的档；下一轮生效，D26）。
+    ///
+    /// 选择是 durable 事实：写 session/model 事件（重开会话从日志恢复）并更新 settings.json
+    /// 的上次选择（新会话继承）。同连接换模型/档只改下一轮；跨连接时若当前空闲则重建根
+    /// agent（新连接从下一轮开始用）；正在跑一轮时只记录选择，重建留到 recheck/重启
+    /// （known：运行中跨连接热切换不打断当前轮）。
     pub async fn session_model_select(
         &self,
         request: SessionModelSelectRequest,
     ) -> Result<SessionModelSelectResponse, ServiceError> {
-        let guard = self.inner.lock().await;
-        match guard.as_ref() {
-            Some(host) => {
-                host.select_model(request.model.clone());
-                Ok(SessionModelSelectResponse {
-                    model: request.model,
-                })
+        let current = self
+            .selection
+            .lock()
+            .expect("selection 锁被毒化")
+            .clone()
+            .unwrap_or_else(|| session::ModelSelection {
+                connection: "deepseek".to_owned(),
+                model: self.options.model.model.clone(),
+                effort_wanted: self.options.model.effort.as_str().to_owned(),
+            });
+        let target = session::ModelSelection {
+            connection: request
+                .connection
+                .unwrap_or_else(|| current.connection.clone()),
+            model: request.model.unwrap_or_else(|| current.model.clone()),
+            effort_wanted: request
+                .effort_wanted
+                .unwrap_or_else(|| current.effort_wanted.clone()),
+        };
+        // settings.json：新会话默认用上一次选的（story 2）。
+        let mut settings = settings::load(&self.options.data_dir);
+        settings.last_selection = Some(target.clone());
+        let _ = settings::save(&self.options.data_dir, &settings);
+        let cross_connection = target.connection != current.connection;
+        let idle = {
+            let guard = self.inner.lock().await;
+            let Some(host) = guard.as_ref() else {
+                return Err(ServiceError::RootUnavailable(
+                    self.state.lock().expect("root state 锁被毒化").clone(),
+                ));
+            };
+            host.agent().select(&target).await?;
+            !host.agent().is_running()
+        };
+        *self.selection.lock().expect("selection 锁被毒化") = Some(target.clone());
+        if cross_connection && idle {
+            self.rebuild_with(&target).await?;
+        }
+        // T012.7 审计 P2：响应报实际生效的选择（跨连接重建后 factory 解析的 connection 可能不同）。
+        let actual = self
+            .selection
+            .lock()
+            .expect("selection 锁被毒化")
+            .clone()
+            .unwrap_or(target);
+        let effort_actual = self
+            .keyring()
+            .ok()
+            .and_then(|keyring| {
+                let view = keyring.view();
+                view.connections
+                    .iter()
+                    .find(|connection| connection.id == actual.connection)
+                    .map(|connection| stats::actual_effort_of(connection, &actual))
+            })
+            .unwrap_or_else(|| actual.effort_wanted.clone());
+        Ok(SessionModelSelectResponse {
+            connection: actual.connection,
+            model: actual.model,
+            effort_wanted: actual.effort_wanted,
+            effort_actual,
+        })
+    }
+
+    /// T012.7：按新的选择重建根 agent（跨连接热切换；用 factory 解析新连接）。
+    async fn rebuild_with(&self, selection: &session::ModelSelection) -> Result<(), ServiceError> {
+        let mut options = self.options.clone();
+        if let Some(factory) = options.model_factory.clone() {
+            match factory(Some(selection)) {
+                Ok((connection, model, credentials)) => {
+                    *self.selection.lock().expect("selection 锁被毒化") =
+                        Some(session::ModelSelection {
+                            connection,
+                            model: model.model.clone(),
+                            effort_wanted: model.effort.as_str().to_owned(),
+                        });
+                    options.model = model;
+                    options.credentials = credentials;
+                }
+                Err(message) => {
+                    let state = RootState::Unavailable {
+                        kind: RootUnavailableKind::Other,
+                        path: None,
+                        line: None,
+                        message,
+                    };
+                    *self.state.lock().expect("root state 锁被毒化") = state.clone();
+                    return Err(ServiceError::RootUnavailable(state));
+                }
             }
-            None => Err(ServiceError::RootUnavailable(
-                self.state.lock().expect("root state 锁被毒化").clone(),
-            )),
+        }
+        // 先放掉旧 Agent（释放会话写锁）再重开同一会话。
+        let old = self.inner.lock().await.take();
+        drop(old);
+        match open_root_session(options).await {
+            Ok(root) => {
+                self.install(root.agent).await;
+                Ok(())
+            }
+            Err(error) => {
+                let state = RootState::from_root_error(&error);
+                *self.state.lock().expect("root state 锁被毒化") = state.clone();
+                Err(ServiceError::RootUnavailable(state))
+            }
         }
     }
 
@@ -1415,6 +1910,10 @@ impl RootHost {
                 .connection_verify(request)
                 .await
                 .map(Response::ConnectionVerify),
+            Call::AvailableModels(request) => self
+                .available_models(request)
+                .await
+                .map(Response::AvailableModels),
             Call::ConnectionUpdate(request) => self
                 .connection_update(request)
                 .await
@@ -1438,6 +1937,18 @@ impl RootHost {
                 .session_model_select(request)
                 .await
                 .map(Response::SessionModelSelect),
+            // T012.8：根宿主自己填统计/汇率/币种（需要 data_dir + Keyring）。
+            Call::Status(request) => self.host_status(request).await.map(Response::Status),
+            // T012.8b：余额/余量需要 Keyring 签发 key。
+            Call::ConnectionQuota(request) => self
+                .connection_quota(request)
+                .await
+                .map(Response::ConnectionQuota),
+            // T012.9：写非密钥设置。
+            Call::SettingsUpdate(request) => self
+                .settings_update(request)
+                .await
+                .map(Response::SettingsUpdate),
             other => {
                 let guard = self.inner.lock().await;
                 match guard.as_ref() {
@@ -1484,8 +1995,11 @@ impl RootHost {
 }
 
 /// T009.3：验证连接的固定 key 来源（key 只在内存里；签发记录仍由 Keyring 记）。
+/// T012.6：验证时学到的鉴权头也写回连接（和对话路径同一接缝）。
 struct VerifyCredential {
     api_key: String,
+    keyring: std::sync::Arc<credentials::Keyring>,
+    connection: String,
 }
 
 impl model::CredentialSource for VerifyCredential {
@@ -1496,6 +2010,49 @@ impl model::CredentialSource for VerifyCredential {
     ) -> Result<String, model::ModelError> {
         Ok(self.api_key.clone())
     }
+
+    /// T012.6 P2：连接上记住的鉴权头（第二次验证直接用它，不再从双头开始）。
+    fn auth_header(&self) -> Option<String> {
+        self.keyring
+            .view()
+            .connections
+            .into_iter()
+            .find(|connection| connection.id == self.connection)
+            .and_then(|connection| connection.auth_header)
+    }
+
+    fn remember_auth_header(&self, header: &str) {
+        let Some(connection) = self
+            .keyring
+            .view()
+            .connections
+            .into_iter()
+            .find(|connection| connection.id == self.connection)
+        else {
+            return;
+        };
+        let _ = self.keyring.update_connection_details(
+            &self.connection,
+            credentials::ConnectionUpdate {
+                endpoint: connection.endpoint.clone(),
+                model: connection.primary_model().to_owned(),
+                auth_header: Some(header.to_owned()),
+                ..credentials::ConnectionUpdate::default()
+            },
+        );
+    }
+}
+
+/// T012.8 审计：会话日志里没有 session/model 事件时，把当前选择写成第一条 durable 事实；
+/// 重开时第一条 session/model 就是真正初始选择（stats 逐轮定价用）。
+async fn ensure_initial_selection(agent: &Agent, selection: Option<&session::ModelSelection>) {
+    let Some(selection) = selection else {
+        return;
+    };
+    if session::last_model_selection(&agent.session_events_from(0)).is_some() {
+        return;
+    }
+    let _ = agent.select(selection).await;
 }
 
 fn now_seconds() -> u64 {
@@ -1896,7 +2453,7 @@ mod t009_pagination_tests {
     }
 
     #[test]
-    fn protocol_version_is_4() {
-        assert_eq!(PROTOCOL_VERSION, 4);
+    fn protocol_version_is_5() {
+        assert_eq!(PROTOCOL_VERSION, 5);
     }
 }

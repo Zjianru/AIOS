@@ -1,21 +1,27 @@
-//! DeepSeek Messages 适配器：HTTP 传输、SSE 解码和流事件翻译。
+//! Anthropic Messages 适配器：HTTP 传输、SSE 解码和流事件翻译。
 
 mod config;
+mod learned;
 mod serialize;
 mod sse;
 mod translate;
 mod transport;
+mod vendors;
 
 use std::collections::VecDeque;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
 pub use config::{DEFAULT_BASE_URL, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DeepSeekConfig};
+/// T012 F2：这一轮实际会发的档（内核规则；页面不另抄表）。
+pub use vendors::actual_effort;
 
+use crate::Effort;
 use crate::{
     CancelToken, CredentialContext, CredentialSource, ErrorCode, Message, ModelError, StreamChunk,
     ToolSchema,
 };
+use learned::{AuthChoice, Learned};
 use sse::SseParser;
 use translate::Translator;
 
@@ -33,6 +39,12 @@ pub struct DeepSeek {
     next_model: Arc<Mutex<Option<String>>>,
     /// 本轮冻结的模型；begin_turn 时从 next_model 复制，stream 只读这里。
     turn_model: Arc<Mutex<Option<String>>>,
+    /// T012.7：下一轮要用的思考档（set_effort 只写这里）。
+    next_effort: Arc<Mutex<Option<String>>>,
+    /// 本轮冻结的档；begin_turn 时从 next_effort 复制，stream 只读这里。
+    turn_effort: Arc<Mutex<Option<String>>>,
+    /// T012.6：学到的连接事实（关不掉思考、通过的鉴权头），同实例的 clone 共享。
+    learned: Arc<Learned>,
 }
 
 impl fmt::Debug for DeepSeek {
@@ -52,9 +64,8 @@ impl DeepSeek {
         credentials: Arc<dyn CredentialSource>,
     ) -> Result<Self, ModelError> {
         let url = messages_url(&config.base_url)?;
-        let http = reqwest::Client::builder()
-            .build()
-            .map_err(transport::transport_error)?;
+        // T012.1：出站 client 只在 model::http 一处造。
+        let http = crate::http::client()?;
         Ok(Self {
             http,
             config,
@@ -63,7 +74,57 @@ impl DeepSeek {
             issue_context: Arc::new(Mutex::new(CredentialContext::default())),
             next_model: Arc::new(Mutex::new(None)),
             turn_model: Arc::new(Mutex::new(None)),
+            next_effort: Arc::new(Mutex::new(None)),
+            turn_effort: Arc::new(Mutex::new(None)),
+            learned: Arc::new(Learned::default()),
         })
+    }
+
+    /// T012.3：这个模型的 DefaultEffort（压缩摘要用）。
+    pub fn default_effort(&self) -> Effort {
+        let profile = vendors::reasoning(&self.config.base_url, &self.config.model);
+        Effort::new(crate::default_effort(&profile.efforts))
+    }
+
+    /// T012.3：同一连接/模型换一个要的档（压缩摘要用；不改原实例）。
+    /// T012.7：克隆不继承运行时冻结的档（压缩摘要用 config.effort）。
+    pub fn with_effort(&self, effort: Effort) -> Self {
+        let mut clone = self.clone();
+        clone.config.effort = effort;
+        clone.next_effort = Arc::new(Mutex::new(None));
+        clone.turn_effort = Arc::new(Mutex::new(None));
+        clone
+    }
+
+    /// T012.3/T012.6：这一轮实际发的档和用户要的档（日志用；与实际请求一致）。
+    ///
+    /// T012.6 P2：本轮模型以 begin_turn 冻结的为准（与请求体一致）；学到「关不掉思考」后，
+    /// 要 none 时实际发最低非关档（与 stream 的重发一致），日志不能记旧 actual。
+    pub fn effort_state(&self) -> (String, String) {
+        let model = self
+            .turn_model
+            .lock()
+            .ok()
+            .and_then(|current| current.clone())
+            .unwrap_or_else(|| self.config.model.clone());
+        // T012.7：本轮要的档以 begin_turn 冻结的为准（中途换档不影响本轮日志）。
+        let wanted = self
+            .turn_effort
+            .lock()
+            .ok()
+            .and_then(|current| current.clone())
+            .unwrap_or_else(|| self.config.effort.as_str().to_owned());
+        let effort = Effort::new(wanted.clone());
+        let actual = if effort.is_off()
+            && self
+                .learned
+                .thinking_required(&self.config.base_url, &model)
+        {
+            vendors::lowest_non_off_effort(&self.config.base_url, &model)
+        } else {
+            vendors::actual_effort(&self.config.base_url, &model, &effort)
+        };
+        (wanted, actual)
     }
 
     pub fn config(&self) -> &DeepSeekConfig {
@@ -77,6 +138,15 @@ impl DeepSeek {
         }
     }
 
+    /// T012.7/T012.8a：本轮冻结的模型（begin_turn 之后的实际请求模型；没有冻结时用 config）。
+    pub fn current_model(&self) -> String {
+        self.turn_model
+            .lock()
+            .ok()
+            .and_then(|current| current.clone())
+            .unwrap_or_else(|| self.config.model.clone())
+    }
+
     /// 换模型：只改下一轮；本轮冻结的模型在 begin_turn 时确定（D26）。
     pub fn set_model(&self, model: String) {
         if let Ok(mut current) = self.next_model.lock() {
@@ -84,7 +154,14 @@ impl DeepSeek {
         }
     }
 
-    /// 本轮开始时冻结模型；stream 内不再读 next_model。
+    /// T012.7：换思考档：只改下一轮；本轮冻结的档在 begin_turn 时确定（D26）。
+    pub fn set_effort(&self, effort: Effort) {
+        if let Ok(mut current) = self.next_effort.lock() {
+            *current = Some(effort.as_str().to_owned());
+        }
+    }
+
+    /// 本轮开始时冻结模型和档；stream 内不再读 next_*（D26）。
     pub fn begin_turn(&self) {
         let next = self
             .next_model
@@ -92,6 +169,14 @@ impl DeepSeek {
             .map(|model| model.clone())
             .unwrap_or(None);
         if let Ok(mut current) = self.turn_model.lock() {
+            *current = next;
+        }
+        let next = self
+            .next_effort
+            .lock()
+            .map(|effort| effort.clone())
+            .unwrap_or(None);
+        if let Ok(mut current) = self.turn_effort.lock() {
             *current = next;
         }
     }
@@ -148,16 +233,127 @@ impl DeepSeek {
         {
             effective.model = model.to_owned();
         }
+        // T012.7：本轮冻结的档（用户中途换档不影响正在跑的轮）。
+        if let Ok(current) = self.turn_effort.lock()
+            && let Some(effort) = current.as_deref()
+        {
+            effective.effort = crate::Effort::new(effort);
+        }
+        let base_url = effective.base_url.clone();
+        // T012.6：学到的「关不掉思考」：要 none 也按最低非关档发（与内置 always_thinks 同行为）。
+        if self.learned.thinking_required(&base_url, &effective.model) && effective.effort.is_off()
+        {
+            effective.effort =
+                crate::Effort::new(vendors::lowest_non_off_effort(&base_url, &effective.model));
+        }
+        let choice = self.auth_choice(&base_url);
         let body =
             serialize::request_body(&effective, messages, tools, max_tokens, validate_pairing)?;
+        let attempt = self.post_messages(body, &api_key, choice, cancel).await?;
+        if let Some(response) = attempt.response {
+            return Ok(ChunkStream::new(response, cancel.clone()));
+        }
+        // T012.6-A：400 拒绝关掉思考 → 学到 + 本轮立即按最低非关档重发一次。
+        if attempt.status == reqwest::StatusCode::BAD_REQUEST
+            && transport::refuses_thinking_off(&attempt.raw)
+        {
+            self.learned
+                .learn_thinking_required(&base_url, &effective.model);
+            effective.effort =
+                crate::Effort::new(vendors::lowest_non_off_effort(&base_url, &effective.model));
+            let body =
+                serialize::request_body(&effective, messages, tools, max_tokens, validate_pairing)?;
+            let retry = self.post_messages(body, &api_key, choice, cancel).await?;
+            return match retry.response {
+                Some(response) => Ok(ChunkStream::new(response, cancel.clone())),
+                None => Err(transport::provider_error(
+                    &retry.raw,
+                    Some(retry.status.as_u16()),
+                    Some(&retry.headers),
+                )),
+            };
+        }
+        // T012.6-B：401 拒绝双头 → 各试一次单头（x-api-key 先、Authorization 后），记住通过的。
+        if attempt.status == reqwest::StatusCode::UNAUTHORIZED
+            && choice == AuthChoice::Both
+            && transport::both_auth_refused(401, &attempt.raw)
+        {
+            let mut last = (attempt.raw, attempt.headers, 401_u16);
+            for only in [AuthChoice::XApiKey, AuthChoice::Authorization] {
+                let body = serialize::request_body(
+                    &effective,
+                    messages,
+                    tools,
+                    max_tokens,
+                    validate_pairing,
+                )?;
+                let retry = self.post_messages(body, &api_key, only, cancel).await?;
+                if let Some(response) = retry.response {
+                    if let Some(name) = only.learned_name() {
+                        self.learned.learn_auth_header(&base_url, name);
+                        self.credentials.remember_auth_header(name);
+                    }
+                    return Ok(ChunkStream::new(response, cancel.clone()));
+                }
+                if retry.status != reqwest::StatusCode::UNAUTHORIZED
+                    && retry.status != reqwest::StatusCode::FORBIDDEN
+                {
+                    return Err(transport::provider_error(
+                        &retry.raw,
+                        Some(retry.status.as_u16()),
+                        Some(&retry.headers),
+                    ));
+                }
+                last = (retry.raw, retry.headers, retry.status.as_u16());
+            }
+            return Err(transport::provider_error(
+                &last.0,
+                Some(last.2),
+                Some(&last.1),
+            ));
+        }
+        Err(transport::provider_error(
+            &attempt.raw,
+            Some(attempt.status.as_u16()),
+            Some(&attempt.headers),
+        ))
+    }
+
+    /// T012.6：本次请求该带哪些鉴权头（学到的内存优先，其次连接上记住的，默认两个都发）。
+    fn auth_choice(&self, base_url: &str) -> AuthChoice {
+        if let Some(header) = self.learned.auth_header(base_url) {
+            return AuthChoice::from_learned(&header);
+        }
+        match self.credentials.auth_header() {
+            Some(header) => AuthChoice::from_learned(&header),
+            None => AuthChoice::Both,
+        }
+    }
+
+    /// T012.6：发一次 Messages 请求。成功返回响应；失败返回状态/头/错误体（重发判定用）。
+    async fn post_messages(
+        &self,
+        body: Vec<u8>,
+        api_key: &str,
+        choice: AuthChoice,
+        cancel: &CancelToken,
+    ) -> Result<Attempt, ModelError> {
         let request = self
             .http
             .post(self.url.clone())
             .header("content-type", "application/json")
             .header("accept", "text/event-stream")
-            .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01")
-            .body(body);
+            .header("anthropic-version", "2023-06-01");
+        let request = match choice {
+            AuthChoice::Both => request
+                .header("x-api-key", api_key)
+                .header("authorization", format!("Bearer {api_key}")),
+            AuthChoice::XApiKey => request.header("x-api-key", api_key),
+            AuthChoice::Authorization => {
+                request.header("authorization", format!("Bearer {api_key}"))
+            }
+        };
+        let request = request.body(body);
         let response = tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(aborted("DeepSeek Messages 请求被取消")),
@@ -167,25 +363,39 @@ impl DeepSeek {
             return Err(aborted("DeepSeek Messages 请求被取消"));
         }
         let status = response.status();
-        if !status.is_success() {
-            let headers = response.headers().clone();
-            // 错误体读取也接取消：极端慢的错误体不能让 Ctrl-C 挂住。
-            let text = tokio::select! {
-                biased;
-                () = cancel.cancelled() => {
-                    return Err(aborted("DeepSeek Messages 请求被取消"));
-                }
-                text = response.text() => text.unwrap_or_default(),
-            };
-            let raw = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
-            return Err(transport::provider_error(
-                &raw,
-                Some(status.as_u16()),
-                Some(&headers),
-            ));
+        if status.is_success() {
+            return Ok(Attempt {
+                status,
+                headers: reqwest::header::HeaderMap::new(),
+                raw: serde_json::Value::Null,
+                response: Some(response),
+            });
         }
-        Ok(ChunkStream::new(response, cancel.clone()))
+        let headers = response.headers().clone();
+        // 错误体读取也接取消：极端慢的错误体不能让 Ctrl-C 挂住。
+        let text = tokio::select! {
+            biased;
+            () = cancel.cancelled() => {
+                return Err(aborted("DeepSeek Messages 请求被取消"));
+            }
+            text = response.text() => text.unwrap_or_default(),
+        };
+        let raw = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+        Ok(Attempt {
+            status,
+            headers,
+            raw,
+            response: None,
+        })
     }
+}
+
+/// T012.6：一次出站尝试。成功时 response 留给 ChunkStream；失败时带状态/头/错误体（重发判定用）。
+struct Attempt {
+    status: reqwest::StatusCode,
+    headers: reqwest::header::HeaderMap,
+    raw: serde_json::Value,
+    response: Option<reqwest::Response>,
 }
 
 /// 取消造成的错误（调用方按「取消」收尾，不当作 turn error）。

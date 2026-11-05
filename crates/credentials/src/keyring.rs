@@ -72,21 +72,76 @@ impl std::fmt::Debug for IssuedSecret {
     }
 }
 
-/// 新建/覆盖一个连接时传入的内容（key 只在这一步进来）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// T012.4：连接里的一行模型（价格是用户填的美元/百万 token；None = 用目录标价）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelRow {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    /// T012 F1：用户填的四类单价（美元/百万 token，不乘倍率）。旧连接只有单数 `price`，
+    /// 读入时当作输入价和输出价（alias）；缓存两格可以不填。
+    #[serde(
+        rename = "priceInput",
+        alias = "price",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub price_input: Option<f64>,
+    #[serde(
+        rename = "priceOutput",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub price_output: Option<f64>,
+    #[serde(
+        rename = "priceCacheRead",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub price_cache_read: Option<f64>,
+    #[serde(
+        rename = "priceCacheWrite",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub price_cache_write: Option<f64>,
+}
+
+/// T012.4：编辑连接时一次传的新形状字段（endpoint/model 必填，其余可选）。
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ConnectionUpdate {
+    pub endpoint: String,
+    pub model: String,
+    pub preset: Option<String>,
+    pub models: Option<Vec<ModelRow>>,
+    pub price_rate: Option<f64>,
+    pub auth_header: Option<String>,
+}
+
+/// 新建/覆盖一个连接时传入的内容（key 只在这一步进来；models 为空时用 model 一行）。
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct NewConnection {
     pub id: String,
     pub name: String,
     pub model: String,
     pub endpoint: String,
     pub api_key: String,
+    pub preset: Option<String>,
+    pub models: Option<Vec<ModelRow>>,
+    pub price_rate: Option<f64>,
+    pub auth_header: Option<String>,
 }
 
 /// 连接的描述，不含 key 正文。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionInfo {
     pub id: String,
     pub name: String,
+    /// T012.4 兼容字段：旧存储只有 model；新形状的模型见 models。
     pub model: String,
     pub endpoint: String,
     /// Unix 秒；界面自己格式化。
@@ -95,10 +150,61 @@ pub struct ConnectionInfo {
     /// Keyring 里有没有这把 key（撤销后连接还在，但不能签发）。
     #[serde(default = "default_key_saved")]
     pub key_saved: bool,
+    /// T012.4：预设 id（deepseek/minimax/minimax-cn/custom）。
+    #[serde(default)]
+    pub preset: String,
+    /// T012.4：模型行；旧存储读出来是 [model]。
+    #[serde(default)]
+    pub models: Vec<ModelRow>,
+    /// T012.4：生效价格倍率（0 = 免费）。
+    #[serde(default = "default_price_rate")]
+    pub price_rate: f64,
+    /// T012.4：学到的鉴权头（x-api-key / authorization）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_header: Option<String>,
+}
+
+fn default_price_rate() -> f64 {
+    1.0
+}
+
+impl ConnectionInfo {
+    /// T012.4：新形状取 models 第一行；旧存储已归一化到 models。
+    pub fn primary_model(&self) -> &str {
+        self.models
+            .first()
+            .map(|row| row.id.as_str())
+            .unwrap_or(self.model.as_str())
+    }
 }
 
 fn default_key_saved() -> bool {
     true
+}
+
+/// T012.4：旧存储只有 model——读的时候当成 models=[model]、preset=deepseek。
+fn normalize_info(info: &mut ConnectionInfo) {
+    if info.models.is_empty() && !info.model.is_empty() {
+        info.models.push(ModelRow {
+            id: info.model.clone(),
+            name: None,
+            context_window: None,
+            max_tokens: None,
+            price_input: None,
+            price_output: None,
+            price_cache_read: None,
+            price_cache_write: None,
+        });
+    }
+    if info.preset.is_empty() {
+        // spec：旧存储只有 model 的，一律按 deepseek 读；新形状保存时 preset 已显式给出。
+        info.preset = "deepseek".to_owned();
+    }
+    if info.model.is_empty()
+        && let Some(first) = info.models.first()
+    {
+        info.model = first.id.clone();
+    }
 }
 
 /// 「连接可用」的验证状态；已保存和最近一次验证分开记。
@@ -140,7 +246,7 @@ pub struct KeyFileInfo {
 }
 
 /// 设置页/CLI 看的视图；没有任何 key 正文。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KeyringView {
     pub connections: Vec<ConnectionInfo>,
     pub key_file: KeyFileInfo,
@@ -266,14 +372,41 @@ impl Keyring {
         }
         let _lock = self.lock()?;
         let mut store = self.load_store()?;
+        let models = connection.models.unwrap_or_else(|| {
+            vec![ModelRow {
+                id: connection.model.clone(),
+                name: None,
+                context_window: None,
+                max_tokens: None,
+                price_input: None,
+                price_output: None,
+                price_cache_read: None,
+                price_cache_write: None,
+            }]
+        });
+        let model = models
+            .first()
+            .map(|row| row.id.clone())
+            .unwrap_or(connection.model);
+        let preset = connection
+            .preset
+            .or_else(|| {
+                crate::presets::preset_for_endpoint(&connection.endpoint)
+                    .map(|preset| preset.id.to_owned())
+            })
+            .unwrap_or_else(|| "custom".to_owned());
         let info = ConnectionInfo {
             id: connection.id.clone(),
             name: connection.name,
-            model: connection.model,
+            model,
             endpoint: connection.endpoint,
             saved_at: now_seconds(),
             check: CheckState::Never,
             key_saved: true,
+            preset,
+            models,
+            price_rate: connection.price_rate.unwrap_or(1.0),
+            auth_header: connection.auth_header,
         };
         let stored = StoredConnection {
             info: info.clone(),
@@ -504,7 +637,23 @@ impl Keyring {
         endpoint: String,
         model: String,
     ) -> Result<ConnectionInfo, KeyringError> {
-        if endpoint.trim().is_empty() || model.trim().is_empty() {
+        self.update_connection_details(
+            id,
+            ConnectionUpdate {
+                endpoint,
+                model,
+                ..ConnectionUpdate::default()
+            },
+        )
+    }
+
+    /// T012.4：编辑连接时同时更新新形状字段。
+    pub fn update_connection_details(
+        &self,
+        id: &str,
+        update: ConnectionUpdate,
+    ) -> Result<ConnectionInfo, KeyringError> {
+        if update.endpoint.trim().is_empty() || update.model.trim().is_empty() {
             return Err(KeyringError::InvalidConnection(
                 "endpoint/model 不能为空".to_owned(),
             ));
@@ -516,8 +665,25 @@ impl Keyring {
             .iter_mut()
             .find(|item| item.info.id == id)
             .ok_or_else(|| KeyringError::MissingConnection(id.to_owned()))?;
-        stored.info.endpoint = endpoint;
-        stored.info.model = model;
+        stored.info.endpoint = update.endpoint;
+        stored.info.model = update.model.clone();
+        if let Some(preset) = update.preset {
+            stored.info.preset = preset;
+        }
+        if let Some(models) = update.models {
+            stored.info.models = models;
+            if let Some(first) = stored.info.models.first() {
+                stored.info.model = first.id.clone();
+            }
+        } else if let Some(row) = stored.info.models.first_mut() {
+            row.id = update.model;
+        }
+        if let Some(price_rate) = update.price_rate {
+            stored.info.price_rate = price_rate;
+        }
+        if update.auth_header.is_some() {
+            stored.info.auth_header = update.auth_header;
+        }
         let info = stored.info.clone();
         self.save_store(&store)?;
         self.notify();
@@ -587,8 +753,12 @@ impl Keyring {
             .map_err(|error| KeyringError::Crypto(format!("存储解不开：{error}")))?;
         let mut plaintext = Vec::new();
         reader.read_to_end(&mut plaintext)?;
-        serde_json::from_slice(&plaintext)
-            .map_err(|error| KeyringError::Corrupt(format!("存储格式不对：{error}")))
+        let mut store: Store = serde_json::from_slice(&plaintext)
+            .map_err(|error| KeyringError::Corrupt(format!("存储格式不对：{error}")))?;
+        for stored in &mut store.connections {
+            normalize_info(&mut stored.info);
+        }
+        Ok(store)
     }
 
     fn save_store(&self, store: &Store) -> Result<(), KeyringError> {
@@ -769,5 +939,94 @@ mod default_path_tests {
         let path = default_identity_path_for(data_dir, Some(xdg), None);
         assert_eq!(path, xdg.join("aios").join("keyring").join("identity.txt"));
         assert!(!path.starts_with(data_dir), "默认钥匙不能在数据目录里");
+    }
+}
+
+#[cfg(test)]
+mod shape_tests {
+    use super::*;
+
+    #[test]
+    fn old_model_only_connection_normalizes_to_models_and_deepseek_preset() {
+        let mut info = ConnectionInfo {
+            id: "deepseek".to_owned(),
+            name: "DeepSeek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: "https://api.deepseek.com/anthropic".to_owned(),
+            saved_at: 1,
+            check: CheckState::Never,
+            key_saved: true,
+            preset: String::new(),
+            models: Vec::new(),
+            price_rate: 0.0,
+            auth_header: None,
+        };
+        normalize_info(&mut info);
+        assert_eq!(info.models.len(), 1);
+        assert_eq!(info.models[0].id, "deepseek-flash");
+        assert_eq!(info.preset, "deepseek");
+        assert_eq!(info.primary_model(), "deepseek-flash");
+        // 旧存储非 deepseek 地址也一律按 spec 读成 deepseek。
+        let mut relay = info.clone();
+        relay.endpoint = "https://relay.example.com/anthropic".to_owned();
+        relay.models.clear();
+        relay.preset = String::new();
+        normalize_info(&mut relay);
+        assert_eq!(relay.preset, "deepseek");
+    }
+
+    #[test]
+    fn new_connection_saves_new_shape_and_keeps_key() {
+        let data = tempfile::tempdir().expect("数据目录");
+        let identity = data.path().join("identity.txt");
+        let keyring = Keyring::open(data.path(), Some(&identity)).expect("keyring");
+        let info = keyring
+            .save_connection(NewConnection {
+                id: "minimax".to_owned(),
+                name: "MiniMax".to_owned(),
+                model: "MiniMax-M3.1-Flash".to_owned(),
+                endpoint: "https://api.minimaxi.com/anthropic".to_owned(),
+                api_key: "test-key".to_owned(),
+                preset: Some("minimax-cn".to_owned()),
+                models: Some(vec![ModelRow {
+                    id: "MiniMax-M3.1-Flash".to_owned(),
+                    name: None,
+                    context_window: Some(1_000_000),
+                    max_tokens: Some(524_288),
+                    price_input: None,
+                    price_output: None,
+                    price_cache_read: None,
+                    price_cache_write: None,
+                }]),
+                price_rate: Some(0.0),
+                auth_header: None,
+            })
+            .expect("save");
+        assert_eq!(info.preset, "minimax-cn");
+        assert_eq!(info.models.len(), 1);
+        assert_eq!(info.price_rate, 0.0);
+        let reopened = Keyring::open(data.path(), Some(&identity)).expect("reopen");
+        let view = reopened.view();
+        let saved = &view.connections[0];
+        assert_eq!(saved.preset, "minimax-cn");
+        assert_eq!(saved.models[0].id, "MiniMax-M3.1-Flash");
+        assert!(saved.key_saved);
+        let issued = reopened
+            .issue("minimax", "test", None, None)
+            .expect("issue");
+        assert_eq!(issued.into_secret(), "test-key");
+    }
+
+    #[test]
+    fn presets_cover_the_three_connections() {
+        let ids: Vec<&str> = crate::presets::PRESETS
+            .iter()
+            .map(|preset| preset.id)
+            .collect();
+        assert_eq!(ids, vec!["deepseek", "minimax", "minimax-cn"]);
+        assert_eq!(
+            crate::presets::preset("minimax-cn").unwrap().endpoint,
+            "https://api.minimaxi.com/anthropic"
+        );
     }
 }

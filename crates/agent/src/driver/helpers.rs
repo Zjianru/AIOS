@@ -14,11 +14,7 @@ use super::*;
 
 /// 一条助手消息：source 是本次产出它的模型路由（DSH AssistantMessage 的 source=model）。
 pub(super) fn assistant_message(inner: &Arc<Inner>, content: Vec<ContentBlock>) -> Message {
-    Message::assistant(
-        content,
-        inner.model.provider(),
-        inner.model.config().model.clone(),
-    )
+    Message::assistant(content, inner.model.provider(), inner.model.current_model())
 }
 
 pub(super) fn emit_usage(inner: &Arc<Inner>, usage: &Option<Usage>) {
@@ -45,8 +41,11 @@ pub(super) async fn interrupted_step(
         append_attempt(inner, turn, step, stream).await?;
     } else {
         let message = assistant_message(inner, content);
+        let (effort_wanted, effort) = inner.model.effort_state();
         inner
             .append(&[EventKind::AssistantMessage {
+                effort: Some(effort),
+                effort_wanted: Some(effort_wanted),
                 turn,
                 step,
                 message,

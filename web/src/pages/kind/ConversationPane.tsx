@@ -10,11 +10,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence, m } from 'motion/react';
 import { Virtuoso } from 'react-virtuoso';
 import type { ListRange, VirtuosoHandle } from 'react-virtuoso';
-import { ArrowDown, CircleHelp, LoaderCircle, SendHorizontal, Square, WifiOff } from 'lucide-react';
+import { ArrowDown, SendHorizontal, Square, WifiOff } from 'lucide-react';
 import { toast } from 'sonner';
 import { TurnRow } from './TurnRow';
 import { useKindStore } from './kindStore';
 import { ModelPicker } from './ModelPicker';
+import { ComposerDock } from './ComposerDock';
 import { mark } from '@/lib/perf';
 import { cn } from '@/lib/utils';
 
@@ -29,11 +30,8 @@ export function ConversationPane() {
   const setAtBottom = useKindStore((state) => state.setAtBottom);
   const send = useKindStore((state) => state.send);
   const stop = useKindStore((state) => state.stop);
-  const compact = useKindStore((state) => state.compact);
   const streamingTurnId = useKindStore((state) => state.streamingTurnId);
   const connection = useKindStore((state) => state.connection);
-  const usage = useKindStore((state) => state.usage);
-  const compacting = useKindStore((state) => state.compacting);
   const waitingQuestion = useKindStore((state) => {
     const last = state.views[state.views.length - 1];
     return last?.question?.status === 'pending';
@@ -292,6 +290,7 @@ export function ConversationPane() {
                 }}
                 className="max-h-32 min-h-6 flex-1 resize-none bg-transparent text-4 leading-6 text-ink outline-none placeholder:text-ink-3"
               />
+              <ModelPicker />
               
               {running ? (
                 <button
@@ -320,45 +319,11 @@ export function ConversationPane() {
               )}
             </div>
           </div>
-          <div className="group/status mt-1.5 flex items-center gap-2 text-1 text-ink-3">
-            <ModelPicker />
-            {/* 信息分层（brief §四.3）：底栏只留模型名，占用、压缩和花费鼠标悬停才出；正在压缩时一直显示 */}
-            {compacting ? (
-              <span className="flex items-center gap-1.5 text-ink-2" data-kind="compacting">
-                <LoaderCircle className="size-3 animate-spin" />
-                正在压缩上下文…
-              </span>
-            ) : (
-              <span className="hidden items-center gap-2 group-hover/status:flex group-focus-within/status:flex">
-                <span className="opacity-60">·</span>
-                <span>
-                  占用 <span className="brand-type">{usage}%</span>
-                </span>
-                <button
-                  type="button"
-                  onClick={compact}
-                  disabled={running || usage === 0}
-                  title={running ? '这一轮做完再压缩' : '把之前的对话换成一份摘要，腾出上下文；原文留在日志里'}
-                  className="rounded-btn px-1 py-[1px] text-ink-2 transition-colors hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
-                  data-kind="compact"
-                >
-                  压缩
-                </button>
-                
-              </span>
-            )}
-            {waitingQuestion ? (
-              <button
-                type="button"
-                onClick={scrollToLatest}
-                className="ml-auto flex items-center gap-1 text-wait transition-opacity hover:opacity-80"
-                data-kind="waiting-hint"
-              >
-                <CircleHelp className="size-3" />
-                Kind 在等你回答
-              </button>
-            ) : null}
-          </div>
+          <ComposerDock
+            running={running}
+            waitingQuestion={waitingQuestion}
+            onJumpToQuestion={scrollToLatest}
+          />
         </div>
       </div>
     </div>

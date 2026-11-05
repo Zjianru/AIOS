@@ -525,7 +525,8 @@ pub(crate) fn event_context(kind: &EventKind) -> Option<(u64, u64)> {
         | EventKind::JobRegistered { .. }
         | EventKind::JobSettled { .. }
         | EventKind::CompactionSummary { .. }
-        | EventKind::CompactionPrune { .. } => return None,
+        | EventKind::CompactionPrune { .. }
+        | EventKind::SessionModel { .. } => return None,
     };
     Some(pair)
 }

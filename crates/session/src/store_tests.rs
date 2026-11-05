@@ -30,14 +30,14 @@ fn append_torn_line(store: &SessionStore) {
 }
 
 #[test]
-fn written_header_uses_format_version_13() {
+fn written_header_uses_format_version_14() {
     let (_data_dir, _cwd, store) = create_store();
     let text = fs::read_to_string(store.path()).unwrap();
     let header: Value =
         serde_json::from_str(text.lines().next().expect("日志有 header 行")).unwrap();
     assert_eq!(
-        header["version"], 13,
-        "message source 新增 skill-invocation 后 FORMAT_VERSION 升到 13（T006.11b）"
+        header["version"], 14,
+        "新增 session/model 事件后 FORMAT_VERSION 升到 14（T012.7）"
     );
 }
 
@@ -48,8 +48,8 @@ fn previous_format_versions_are_rejected_without_migration() {
     let path = store.path().to_path_buf();
     drop(store);
 
-    // 手写 v1–v12 日志：header 版本不对 + 旧格式事件；读取一律直接拒绝。
-    for version in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] {
+    // 手写 v1–v13 日志：header 版本不对 + 旧格式事件；读取一律直接拒绝。
+    for version in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] {
         let legacy = format!(
             "{{\"type\":\"session\",\"version\":{version},\"id\":\"{id}\",\"createdAt\":1,\"cwd\":\"/tmp\"}}\n\
              {{\"seq\":1,\"time\":1,\"type\":\"turn/start\",\"turn\":1}}\n"
@@ -66,7 +66,7 @@ fn previous_format_versions_are_rejected_without_migration() {
                 error,
                 SessionError::UnsupportedVersion {
                     version: got,
-                    supported: 13
+                    supported: 14
                 } if got == version
             ),
             "v{version} 日志要直接拒绝，实际 {error}"
@@ -83,7 +83,7 @@ fn previous_format_versions_are_rejected_without_migration() {
                 read_error,
                 SessionError::UnsupportedVersion {
                     version: got,
-                    supported: 13
+                    supported: 14
                 } if got == version
             ),
             "只读路径同样拒绝 v{version}，实际 {read_error}"
@@ -310,8 +310,8 @@ fn store_absolutizes_relative_data_dir() {
     assert!(reopened.path().is_absolute(), "写打开同样绝对化");
 }
 
-/// T006.11b：message source 新增 skill-invocation 后 FORMAT_VERSION 升到 13。
+/// T012.7：新增 session/model 事件后 FORMAT_VERSION 升到 14（T006.11b 的 13 是上一版）。
 #[test]
-fn skill_invocation_source_bumps_format_version_to_13() {
-    assert_eq!(crate::FORMAT_VERSION, 13);
+fn format_version_bumps_to_14_after_session_model() {
+    assert_eq!(crate::FORMAT_VERSION, 14);
 }

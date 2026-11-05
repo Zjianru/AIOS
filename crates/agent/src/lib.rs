@@ -381,6 +381,23 @@ impl Agent {
         self.inner.model.set_model(model);
     }
 
+    /// T012.7：用户选择连接/模型/档（下一轮生效，D26）。选择是 durable 事实：写
+    /// session/model 事件（重开会话从日志恢复）；本轮已冻结的 model/effort 不受影响。
+    pub async fn select(&self, selection: &session::ModelSelection) -> Result<(), AgentError> {
+        self.inner
+            .append(&[session::EventKind::SessionModel {
+                connection: selection.connection.clone(),
+                model: selection.model.clone(),
+                effort_wanted: selection.effort_wanted.clone(),
+            }])
+            .await?;
+        self.inner.model.set_model(selection.model.clone());
+        self.inner
+            .model
+            .set_effort(model::Effort::new(selection.effort_wanted.clone()));
+        Ok(())
+    }
+
     /// 新会话上启动 agent（会话日志由 store 建好，尚无事件）。
     ///
     /// 配置非法时在建之前返回 Err（不清理 spill、不动工具集、不留下驱动任务）。

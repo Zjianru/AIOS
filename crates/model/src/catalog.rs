@@ -1,0 +1,707 @@
+//! T012.3/T012.5：models.dev 目录（推理档规则、拉取、24h 缓存、内置快照、获取可用模型合并）。
+//!
+//! 规则照 Magpie catalog.go：toggle 加 none 只给 DeepSeek；同 family 借档；budget-only 无档。
+//! T012.5 增加：models.dev 拉取/缓存/快照，目录字段（窗口/输出/价格/thinks/efforts），
+//! 以及和 GET /v1/models 的结果合并（厂商列表字段优先，用户填的不动由 service 覆盖）。
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
+use std::time::{Duration, SystemTime};
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// models.dev 的快照地址（T012.5 启动拉取）。
+pub const MODELS_DEV_URL: &str = "https://models.dev/api.json";
+/// 缓存多久算过期（照 Magpie fresh.go）。
+pub const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// 内置快照：只带 DeepSeek / MiniMax / MiniMax 国内站三家。
+pub fn snapshot_json() -> &'static str {
+    include_str!("catalog/snapshot.json")
+}
+
+pub fn deserialize_snapshot(raw: &str) -> CatalogSnapshot {
+    parse_snapshot(raw)
+}
+
+fn parse_snapshot(raw: &str) -> CatalogSnapshot {
+    serde_json::from_str(raw).expect("内置 models.dev 快照必须是合法 JSON")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogSnapshot {
+    pub providers: BTreeMap<String, CatalogProvider>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogProvider {
+    pub id: String,
+    #[serde(default)]
+    pub models: BTreeMap<String, CatalogModel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalogModel {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub family: String,
+    #[serde(default)]
+    pub release_date: String,
+    #[serde(default)]
+    pub reasoning: bool,
+    #[serde(default)]
+    pub reasoning_options: Vec<ReasoningOption>,
+    #[serde(default)]
+    pub limit: Limit,
+    #[serde(default)]
+    pub cost: Option<Cost>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Limit {
+    #[serde(default)]
+    pub context: Option<u64>,
+    #[serde(default)]
+    pub output: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Cost {
+    #[serde(default)]
+    pub input: f64,
+    #[serde(default)]
+    pub output: f64,
+    /// 缓存读单价（美元/百万 token）；目录没给就是 None（T012 F1：有缓存用量却无价 → 这一轮无价格）。
+    #[serde(default)]
+    pub cache_read: Option<f64>,
+    /// 缓存写单价；多数目录没有这一项。
+    #[serde(default)]
+    pub cache_write: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ReasoningOption {
+    Toggle,
+    Effort {
+        values: Vec<String>,
+    },
+    #[serde(rename = "budget_tokens")]
+    BudgetTokens {
+        #[serde(default)]
+        min: Option<u32>,
+        #[serde(default)]
+        max: Option<u32>,
+    },
+}
+
+fn reasoning_off_provider(provider_id: &str) -> bool {
+    provider_id == "deepseek"
+}
+
+fn budgeted(model: &CatalogModel) -> bool {
+    model
+        .reasoning_options
+        .iter()
+        .any(|option| matches!(option, ReasoningOption::BudgetTokens { .. }))
+}
+
+/// 模型能选的档：effort 选项的 values；DeepSeek 的 toggle 在最前面加 none；
+/// 只有 toggle 的模型返回空（Magpie mdModel.efforts）。
+pub fn efforts(model: &CatalogModel, provider_id: &str) -> Vec<String> {
+    let mut toggle = false;
+    let mut values = Vec::new();
+    for option in &model.reasoning_options {
+        match option {
+            ReasoningOption::Toggle => toggle = true,
+            ReasoningOption::Effort { values: listed } => values = listed.clone(),
+            ReasoningOption::BudgetTokens { .. } => {}
+        }
+    }
+    if reasoning_off_provider(provider_id)
+        && toggle
+        && !values.is_empty()
+        && !values.contains(&"none".to_owned())
+    {
+        values.insert(0, "none".to_owned());
+    }
+    values
+}
+
+/// 模型实际的档：自己的 efforts；会思考但没列档的，借同 family、发布日期不晚于它、
+/// 最新一个会思考模型的档；只有预算的模型不借（Magpie mdProvider.levels）。
+pub fn levels(provider: &CatalogProvider, model: &CatalogModel) -> Vec<String> {
+    let own = efforts(model, &provider.id);
+    if !own.is_empty() || !model.reasoning || model.family.is_empty() || budgeted(model) {
+        return own;
+    }
+    let mut best: Option<(&str, &str, Vec<String>)> = None;
+    for sibling in provider.models.values() {
+        if sibling.id == model.id || !sibling.reasoning || sibling.family != model.family {
+            continue;
+        }
+        if !model.release_date.is_empty() && sibling.release_date > model.release_date {
+            continue;
+        }
+        let sibling_efforts = efforts(sibling, &provider.id);
+        if sibling_efforts.is_empty() {
+            continue;
+        }
+        let take = match &best {
+            None => true,
+            Some((best_date, best_id, _)) => {
+                sibling.release_date.as_str() > *best_date
+                    || (sibling.release_date == *best_date && sibling.id.as_str() > *best_id)
+            }
+        };
+        if take {
+            best = Some((&sibling.release_date, &sibling.id, sibling_efforts));
+        }
+    }
+    best.map(|(_, _, efforts)| efforts).unwrap_or_default()
+}
+
+/// 目录给一个模型的可展示字段（T012.5）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelInfo {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_input: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_output: Option<f64>,
+    /// T012 F1：缓存读/写单价（用户价或目录标价×倍率在 stats 里合成）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_cache_read: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_cache_write: Option<f64>,
+    pub thinks: bool,
+    pub efforts: Vec<String>,
+}
+
+impl CatalogSnapshot {
+    pub fn provider(&self, provider_id: &str) -> Option<&CatalogProvider> {
+        self.providers.get(provider_id)
+    }
+
+    pub fn model(&self, provider_id: &str, model_id: &str) -> Option<&CatalogModel> {
+        self.provider(provider_id)?.models.get(model_id)
+    }
+
+    /// 这个 provider 的模型，字段来自目录。
+    pub fn models_for(&self, provider_id: &str) -> Vec<ModelInfo> {
+        self.provider(provider_id)
+            .map(|provider| {
+                provider
+                    .models
+                    .values()
+                    .map(|model| model_info(provider, model))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// 适配器需要的思考能力：会思考吗、能选哪些档。
+    pub fn reasoning_for(&self, provider_id: &str, model_id: &str) -> Option<(bool, Vec<String>)> {
+        let provider = self.provider(provider_id)?;
+        let model = provider.models.get(model_id)?;
+        Some((model.reasoning, levels(provider, model)))
+    }
+}
+
+fn model_info(provider: &CatalogProvider, model: &CatalogModel) -> ModelInfo {
+    let max_tokens = model
+        .limit
+        .output
+        .and_then(|value| u32::try_from(value).ok());
+    ModelInfo {
+        id: model.id.clone(),
+        name: if model.name.is_empty() {
+            model.id.clone()
+        } else {
+            model.name.clone()
+        },
+        context_window: model.limit.context,
+        max_tokens,
+        price_input: model.cost.as_ref().map(|cost| cost.input),
+        price_output: model.cost.as_ref().map(|cost| cost.output),
+        price_cache_read: model.cost.as_ref().and_then(|cost| cost.cache_read),
+        price_cache_write: model.cost.as_ref().and_then(|cost| cost.cache_write),
+        thinks: model.reasoning,
+        efforts: levels(provider, model),
+    }
+}
+
+/// 从 endpoint 推目录 provider id（预设 id 可直接用；custom 走这里）。
+pub fn provider_id_for_endpoint(endpoint: &str) -> String {
+    if endpoint.contains("deepseek") {
+        "deepseek".to_owned()
+    } else if endpoint.contains("minimaxi") || endpoint.contains("api.minimax.cn") {
+        "minimax-cn".to_owned()
+    } else if endpoint.contains("minimax") {
+        "minimax".to_owned()
+    } else {
+        "custom".to_owned()
+    }
+}
+
+/// 模型列表 URL（T012.5）：Anthropic base 是 `/v1/messages` 的根，列表在它的 Chat base
+/// 的 `/v1/models`（Magpie catalog `FetchAt`：Anthropic base 与 Chat base 是各自根，列表按
+/// Chat base 的 `/v1/models` 找）；预设三家都以 `…/anthropic` 结尾，直接拼会请求
+/// `…/anthropic/v1/models`（审计 T012.5 fix-now 1）。
+pub fn models_url(endpoint: &str) -> String {
+    let base = endpoint.trim_end_matches('/');
+    let chat_base = base.strip_suffix("/anthropic").unwrap_or(base);
+    format!("{chat_base}/v1/models")
+}
+
+/// GET /v1/models 的模型项（厂商列表字段优先）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveModel {
+    pub id: String,
+    pub display_name: Option<String>,
+    pub context_window: Option<u64>,
+    pub max_tokens: Option<u32>,
+}
+
+/// 解析厂商 /v1/models 的响应：数组，或 { data: [...] }（Anthropic/OpenAI 风格）。
+pub fn parse_live_models(value: &Value) -> Vec<LiveModel> {
+    let items = value
+        .as_array()
+        .or_else(|| value.get("data").and_then(Value::as_array));
+    let Some(items) = items else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(Value::as_str)?.to_owned();
+            let display_name = item
+                .get("display_name")
+                .or_else(|| item.get("name"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let context_window = item
+                .get("context_length")
+                .or_else(|| item.get("context_window"))
+                .and_then(Value::as_u64);
+            let max_tokens = item
+                .get("max_output_tokens")
+                .or_else(|| item.get("max_tokens"))
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok());
+            Some(LiveModel {
+                id,
+                display_name,
+                context_window,
+                max_tokens,
+            })
+        })
+        .collect()
+}
+
+/// 把目录模型和厂商列表合并：同一 id 厂商的 name/窗口/输出优先；目录价格/档保留；
+/// 厂商多出来的模型也列出来（目录没有的其他字段为空）。
+pub fn merge_live(catalog_models: Vec<ModelInfo>, live: Vec<LiveModel>) -> Vec<ModelInfo> {
+    let mut live_by_id: BTreeMap<String, LiveModel> = live
+        .into_iter()
+        .map(|model| (model.id.clone(), model))
+        .collect();
+    let mut merged = Vec::with_capacity(catalog_models.len() + live_by_id.len());
+    for mut info in catalog_models {
+        if let Some(live) = live_by_id.remove(&info.id) {
+            if let Some(name) = live.display_name {
+                info.name = name;
+            }
+            if live.context_window.is_some() {
+                info.context_window = live.context_window;
+            }
+            if live.max_tokens.is_some() {
+                info.max_tokens = live.max_tokens;
+            }
+        }
+        merged.push(info);
+    }
+    merged.extend(live_by_id.into_values().map(|live| ModelInfo {
+        id: live.id.clone(),
+        name: live.display_name.unwrap_or_else(|| live.id.clone()),
+        context_window: live.context_window,
+        max_tokens: live.max_tokens,
+        price_input: None,
+        price_output: None,
+        price_cache_read: None,
+        price_cache_write: None,
+        thinks: false,
+        efforts: Vec::new(),
+    }));
+    merged
+}
+
+/// 目录来源（缓存/快照/网络）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogSource {
+    Network,
+    Cache,
+    Snapshot,
+}
+
+/// 缓存文件：<数据目录>/catalog/models-dev.json。
+pub fn cache_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("catalog").join("models-dev.json")
+}
+
+pub fn read_cache(data_dir: &Path) -> Option<CatalogSnapshot> {
+    let text = std::fs::read_to_string(cache_path(data_dir)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+pub fn write_cache(data_dir: &Path, snapshot: &CatalogSnapshot) -> Result<(), String> {
+    let path = cache_path(data_dir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let json = serde_json::to_string(snapshot).map_err(|error| error.to_string())?;
+    std::fs::write(path, json).map_err(|error| error.to_string())
+}
+
+pub fn is_fresh(modified: SystemTime, now: SystemTime) -> bool {
+    match now.duration_since(modified) {
+        Ok(age) => age < CACHE_TTL,
+        // 时钟回拨/未来 mtime：当作刚写过，不再拉。
+        Err(_) => true,
+    }
+}
+
+fn cache_is_fresh(data_dir: &Path, now: SystemTime) -> bool {
+    std::fs::metadata(cache_path(data_dir))
+        .and_then(|metadata| metadata.modified())
+        .map(|modified| is_fresh(modified, now))
+        .unwrap_or(false)
+}
+
+/// 拉 models.dev（用统一的出站 client；测试注入 URL）。
+pub async fn fetch(url: &str) -> Result<CatalogSnapshot, String> {
+    let client = crate::http::client().map_err(|error| error.message)?;
+    let response = client
+        .get(url)
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("models.dev 返回 {}", response.status()));
+    }
+    let bytes = response.bytes().await.map_err(|error| error.to_string())?;
+    serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+}
+
+/// 缓存新鲜用缓存；否则拉网络；拉不到按缓存、再按内置快照。
+pub async fn load_with(
+    data_dir: &Path,
+    url: &str,
+    now: SystemTime,
+) -> (CatalogSnapshot, CatalogSource) {
+    let cached = read_cache(data_dir);
+    if cache_is_fresh(data_dir, now)
+        && let Some(cached) = &cached
+    {
+        return (cached.clone(), CatalogSource::Cache);
+    }
+    match fetch(url).await {
+        Ok(snapshot) => {
+            let _ = write_cache(data_dir, &snapshot);
+            (snapshot, CatalogSource::Network)
+        }
+        Err(_) => match cached {
+            Some(snapshot) => (snapshot, CatalogSource::Cache),
+            None => (snapshot(), CatalogSource::Snapshot),
+        },
+    }
+}
+
+/// 生产入口：当前时间 + models.dev 正式地址。
+pub async fn load(data_dir: &Path, now: SystemTime) -> (CatalogSnapshot, CatalogSource) {
+    load_with(data_dir, MODELS_DEV_URL, now).await
+}
+
+/// 内置快照（解析一次）。
+pub fn snapshot() -> CatalogSnapshot {
+    static SNAPSHOT: OnceLock<CatalogSnapshot> = OnceLock::new();
+    SNAPSHOT
+        .get_or_init(|| parse_snapshot(snapshot_json()))
+        .clone()
+}
+
+/// 进程内的当前目录（适配器和获取可用模型都读它）。
+static GLOBAL: OnceLock<RwLock<CatalogSnapshot>> = OnceLock::new();
+
+pub fn set_global(snapshot: CatalogSnapshot) {
+    if let Some(lock) = GLOBAL.get() {
+        if let Ok(mut guard) = lock.write() {
+            *guard = snapshot;
+        }
+    } else {
+        let _ = GLOBAL.set(RwLock::new(snapshot));
+    }
+}
+
+pub fn global() -> Option<CatalogSnapshot> {
+    GLOBAL
+        .get()
+        .and_then(|lock| lock.read().ok().map(|guard| guard.clone()))
+}
+
+/// 启动时先用缓存/快照（不等网络），返回来源；随后由后台 refresh 换新。
+pub fn bootstrap_global(data_dir: &Path) -> CatalogSource {
+    match read_cache(data_dir) {
+        Some(cached) => {
+            set_global(cached);
+            CatalogSource::Cache
+        }
+        None => {
+            set_global(snapshot());
+            CatalogSource::Snapshot
+        }
+    }
+}
+
+/// 后台刷新：拉网络/缓存/快照并更新 GLOBAL。
+pub async fn refresh_global(data_dir: &Path, now: SystemTime) -> CatalogSource {
+    let (snapshot, source) = load(data_dir, now).await;
+    set_global(snapshot);
+    source
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SNAPSHOT: &str = include_str!("../tests/test_data/models.dev-mini.json");
+
+    fn lookup<'a>(
+        snapshot: &'a CatalogSnapshot,
+        provider_id: &str,
+        model_id: &str,
+    ) -> (&'a CatalogProvider, &'a CatalogModel) {
+        let provider = snapshot
+            .providers
+            .get(provider_id)
+            .expect("provider 在快照里");
+        let model = provider.models.get(model_id).expect("model 在快照里");
+        (provider, model)
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "aios-catalog-{name}-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    #[test]
+    fn toggle_adds_none_only_for_deepseek() {
+        let snapshot = serde_json::from_str(SNAPSHOT).expect("snapshot");
+        let (provider, model) = lookup(&snapshot, "deepseek", "deepseek-flash");
+        assert_eq!(
+            efforts(model, &provider.id),
+            vec!["none", "low", "high", "max"]
+        );
+        let (provider, model) = lookup(&snapshot, "minimax-cn", "MiniMax-M3");
+        assert_eq!(efforts(model, &provider.id), Vec::<String>::new());
+    }
+
+    #[test]
+    fn borrowing_levels_from_the_same_family() {
+        let snapshot = deserialize_snapshot(SNAPSHOT);
+        let (provider, model) = lookup(&snapshot, "xai", "grok-4.20-0309-reasoning");
+        assert_eq!(
+            levels(provider, model),
+            vec!["low", "medium", "high", "xhigh"]
+        );
+    }
+
+    #[test]
+    fn budget_only_and_no_kin_models_have_no_levels() {
+        let snapshot = deserialize_snapshot(SNAPSHOT);
+        let (provider, model) = lookup(&snapshot, "commandcode", "claude-haiku-4-5-20251001");
+        assert_eq!(levels(provider, model), Vec::<String>::new());
+        let (provider, model) = lookup(&snapshot, "minimax-cn", "MiniMax-M3");
+        assert_eq!(levels(provider, model), Vec::<String>::new());
+    }
+
+    #[test]
+    fn calls_ones_own_efforts_levels() {
+        let snapshot = deserialize_snapshot(SNAPSHOT);
+        let (provider, model) = lookup(&snapshot, "minimax-cn", "MiniMax-M3.1-Flash");
+        assert_eq!(
+            levels(provider, model),
+            vec!["low", "medium", "high", "xhigh", "max"]
+        );
+    }
+
+    #[test]
+    fn built_in_snapshot_has_the_three_vendors_and_fields() {
+        let snapshot = snapshot();
+        let models = snapshot.models_for("deepseek");
+        let flash = models
+            .iter()
+            .find(|model| model.id == "deepseek-flash")
+            .expect("deepseek-flash");
+        assert!(flash.thinks);
+        assert_eq!(flash.efforts, vec!["none", "low", "high", "max"]);
+        assert!(flash.context_window.is_some());
+        assert!(flash.max_tokens.is_some());
+        assert!(flash.price_input.is_some());
+        assert!(!snapshot.models_for("minimax-cn").is_empty());
+        assert_eq!(
+            provider_id_for_endpoint("https://api.minimaxi.com/anthropic"),
+            "minimax-cn"
+        );
+        assert_eq!(
+            provider_id_for_endpoint("https://api.deepseek.com/anthropic"),
+            "deepseek"
+        );
+        assert_eq!(
+            provider_id_for_endpoint("https://relay.example.com"),
+            "custom"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_prefers_network_then_cache_then_snapshot() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/catalog.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(snapshot_json()))
+            .mount(&server)
+            .await;
+        let url = format!("{}/catalog.json", server.uri());
+        let data_dir = temp_dir("load");
+        let now = SystemTime::now();
+
+        let (network, source) = load_with(&data_dir, &url, now).await;
+        assert_eq!(source, CatalogSource::Network);
+        assert!(cache_path(&data_dir).exists());
+        assert_eq!(
+            network.models_for("deepseek").len(),
+            snapshot().models_for("deepseek").len()
+        );
+
+        // 缓存新鲜：不再拉网络（即使 URL 不可用也走缓存）。
+        let (cached, source) = load_with(&data_dir, "http://127.0.0.1:1/nope", now).await;
+        assert_eq!(source, CatalogSource::Cache);
+        assert_eq!(
+            cached.models_for("minimax-cn"),
+            network.models_for("minimax-cn")
+        );
+
+        // 缓存过期 + 网络失败：仍用缓存。
+        let future = now + Duration::from_secs(48 * 60 * 60);
+        let (stale, source) = load_with(&data_dir, "http://127.0.0.1:1/nope", future).await;
+        assert_eq!(source, CatalogSource::Cache);
+        assert_eq!(stale.models_for("deepseek"), network.models_for("deepseek"));
+
+        // 没有缓存 + 网络失败：内置快照，字段与快照一致。
+        let empty_dir = temp_dir("snapshot");
+        let (fallback, source) = load_with(&empty_dir, "http://127.0.0.1:1/nope", now).await;
+        assert_eq!(source, CatalogSource::Snapshot);
+        assert_eq!(
+            fallback.models_for("minimax"),
+            snapshot().models_for("minimax")
+        );
+
+        std::fs::remove_dir_all(data_dir).ok();
+        std::fs::remove_dir_all(empty_dir).ok();
+    }
+
+    #[test]
+    fn live_merge_lets_vendor_fields_win_and_keeps_catalog_price() {
+        let catalog = snapshot().models_for("deepseek");
+        let live = vec![
+            LiveModel {
+                id: "deepseek-flash".to_owned(),
+                display_name: Some("DeepSeek Flash (vendor)".to_owned()),
+                context_window: Some(123),
+                max_tokens: Some(456),
+            },
+            LiveModel {
+                id: "deepseek-future".to_owned(),
+                display_name: Some("Future".to_owned()),
+                context_window: Some(999),
+                max_tokens: None,
+            },
+        ];
+        let merged = merge_live(catalog, live);
+        let flash = merged
+            .iter()
+            .find(|model| model.id == "deepseek-flash")
+            .expect("flash");
+        assert_eq!(flash.name, "DeepSeek Flash (vendor)");
+        assert_eq!(flash.context_window, Some(123));
+        assert_eq!(flash.max_tokens, Some(456));
+        assert!(flash.price_input.is_some(), "目录价格保留");
+        assert!(flash.efforts.contains(&"none".to_owned()));
+        let future = merged
+            .iter()
+            .find(|model| model.id == "deepseek-future")
+            .expect("future");
+        assert_eq!(future.context_window, Some(999));
+        assert!(!future.thinks);
+    }
+
+    #[test]
+    fn parse_live_models_accepts_array_and_data_wrapper() {
+        let wrapped: Value = serde_json::from_str(
+            r#"{"data":[{"id":"m1","display_name":"M1","context_length":1000,"max_output_tokens":200}]}"#,
+        )
+        .unwrap();
+        let models = parse_live_models(&wrapped);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "m1");
+        assert_eq!(models[0].context_window, Some(1000));
+        let array: Value = serde_json::from_str(
+            r#"[{"id":"m2","name":"M2","context_window":3000,"max_tokens":400}]"#,
+        )
+        .unwrap();
+        assert_eq!(parse_live_models(&array)[0].max_tokens, Some(400));
+    }
+
+    #[test]
+    fn models_url_asks_the_chat_base_for_anthropic_endpoints() {
+        // 审计 T012.5 fix-now 1：预设三家都以 …/anthropic 结尾，列表在 Chat base 的 /v1/models。
+        assert_eq!(
+            models_url("https://api.deepseek.com/anthropic"),
+            "https://api.deepseek.com/v1/models"
+        );
+        assert_eq!(
+            models_url("https://api.minimaxi.com/anthropic/"),
+            "https://api.minimaxi.com/v1/models"
+        );
+        assert_eq!(
+            models_url("https://api.minimax.io/anthropic"),
+            "https://api.minimax.io/v1/models"
+        );
+        // 已经指向 Chat base 的自定义地址：原样拼 /v1/models。
+        assert_eq!(
+            models_url("https://relay.example.com"),
+            "https://relay.example.com/v1/models"
+        );
+    }
+}

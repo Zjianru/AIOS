@@ -209,26 +209,25 @@ fn write_emitted(
     match redactor.redact(&mut record) {
         Ok(()) => write_with_injection(sink, &record, fail_after, written),
         Err(_) => {
-            let failed = Record::ops(
-                "redact-failed",
-                Severity::Warn,
-                json!({
-                    "channel": channel_label(record.channel),
-                    "time": record.time,
-                }),
-            );
+            // T012.8 K5（票面）：只记 event.type/event.seq（不记 channel/time，也不记正文）。
+            let mut body = json!({});
+            // T012.8 K5：记事件类型和序号（定位是哪条日志），不记正文。
+            if let Some(source) = &record.source_event
+                && let Some(event) = source.event.as_object()
+            {
+                if let Some(kind) = event.get("type").and_then(serde_json::Value::as_str) {
+                    body["eventType"] = serde_json::json!(kind);
+                }
+                if let Some(seq) = event.get("seq").and_then(serde_json::Value::as_u64) {
+                    body["eventSeq"] = serde_json::json!(seq);
+                }
+            }
+            let failed = Record::ops("redact-failed", Severity::Warn, body);
             match redactor.redact(&mut failed.clone()) {
                 Ok(()) => write_with_injection(sink, &failed, fail_after, written),
                 Err(_) => Ok(()),
             }
         }
-    }
-}
-
-fn channel_label(channel: Channel) -> &'static str {
-    match channel {
-        Channel::Ledger => "ledger",
-        Channel::Ops => "ops",
     }
 }
 

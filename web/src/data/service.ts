@@ -213,6 +213,19 @@ export interface ServiceKeyFileInfo {
   problem?: string;
 }
 
+/** T012.4：连接的新形状（服务端 snake_case）。 */
+export interface ServiceModelRow {
+  id: string;
+  name?: string;
+  context_window?: number;
+  max_tokens?: number;
+  /** T012 F1：用户填的四类单价（美元/百万 token，不乘倍率；服务端 camelCase）。 */
+  priceInput?: number;
+  priceOutput?: number;
+  priceCacheRead?: number;
+  priceCacheWrite?: number;
+}
+
 export interface ServiceConnectionInfo {
   id: string;
   name: string;
@@ -220,6 +233,14 @@ export interface ServiceConnectionInfo {
   endpoint: string;
   saved_at: number;
   key_saved: boolean;
+  /** T012.4：来源预设（deepseek/minimax/minimax-cn；空/未知 = 自定义）。 */
+  preset?: string;
+  /** 用户在这个连接里存的模型行（价格/窗口/输出上限）。 */
+  models?: ServiceModelRow[];
+  /** T012.4：价格倍率（1 = 原价，0 = 免费）。 */
+  price_rate?: number;
+  /** T012.6：学到的单头（x-api-key / authorization）。 */
+  auth_header?: string | null;
   check: { kind: 'never' } | { kind: 'ok'; at: number } | { kind: 'fail'; at: number; reason: string };
 }
 
@@ -245,6 +266,10 @@ export interface SaveConnectionInput {
   model: string;
   endpoint: string;
   apiKey: string;
+  /** T012.4：预设来源、模型行、倍率（只增）。 */
+  preset?: string;
+  models?: ServiceModelRow[];
+  price_rate?: number;
 }
 
 /** 设置页读取（不含 key 正文）。 */
@@ -303,10 +328,19 @@ export async function fetchFirstUse(): Promise<{ firstUse: boolean; keyFile: Ser
   return response;
 }
 
-/** 选模型：下一轮生效，正在跑的轮不换（D26）。 */
-export async function selectSessionModel(model: string): Promise<string> {
-  const response = await post<{ model: string }>({ method: 'session-model-select', model });
-  return response.model;
+/** 选模型/思考档：下一轮生效，正在跑的轮不换（D26）。T012.9：可同时给连接/模型/想要的档。 */
+export interface SessionModelSelectInput {
+  connection?: string;
+  model?: string;
+  effortWanted?: string;
+}
+export async function selectSessionModel(
+  input: SessionModelSelectInput,
+): Promise<{ connection: string; model: string; effortWanted: string; effortActual: string }> {
+  return post<{ connection: string; model: string; effortWanted: string; effortActual: string }>({
+    method: 'session-model-select',
+    ...input,
+  });
 }
 
 /** 连 WS：ready → 补齐/直播的日志事件（event）与不落日志的 agent 帧（流式文本等）。 */
@@ -331,17 +365,21 @@ export function connectSession(
   return socket;
 }
 
-/** T008.3 增补：只改 endpoint/model，保留已存 key。 */
+/** T008.3/T012.4：改连接（endpoint/model 必填；preset/models/price_rate 只增），保留已存 key。 */
 export async function updateConnectionInfo(
   id: string,
-  endpoint: string,
-  model: string,
+  patch: {
+    endpoint: string;
+    model: string;
+    preset?: string;
+    models?: ServiceModelRow[];
+    price_rate?: number;
+  },
 ): Promise<ServiceConnectionInfo> {
   const response = await post<{ connection: ServiceConnectionInfo }>({
     method: 'connection-update',
     id,
-    endpoint,
-    model,
+    ...patch,
   });
   return response.connection;
 }
@@ -353,4 +391,78 @@ export async function revokeConnectionKey(id: string): Promise<ServiceConnection
     id,
   });
   return response.connection;
+}
+
+/* ───────────────── T012.9：统计 / 模型目录 / 余额余量 / 设置 ───────────────── */
+
+/** 会话统计（服务 status.stats；从日志现算，页面不自己加）。 */
+export interface ServiceSessionStats {
+  turns: number;
+  steps: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  contextUsed: number;
+  contextWindow: number;
+  costUsd?: number;
+  unpriced: boolean;
+  connection: string;
+  model: string;
+  effortWanted: string;
+  /** T012 F2：这一轮实际会发的档（服务端内核算好）。 */
+  effortActual?: string;
+}
+
+export interface ServiceFxInfo {
+  rate: number;
+  fetchedAt: number;
+}
+
+export interface ServiceStatus {
+  stats?: ServiceSessionStats;
+  fx?: ServiceFxInfo;
+  currency?: string;
+}
+
+export async function fetchStatus(): Promise<ServiceStatus> {
+  return post<ServiceStatus>({ method: 'status' });
+}
+
+/** T012.9：写非密钥设置（目前只有 currency）；返回生效的币种。 */
+export async function updateSettings(input: { currency?: string }): Promise<string> {
+  const response = await post<{ currency: string }>({ method: 'settings-update', ...input });
+  return response.currency;
+}
+
+/** 模型目录（服务把 models.dev 目录和厂商列表合并后给的；efforts 是这个模型自己的档）。 */
+export interface ServiceCatalogModel {
+  id: string;
+  name?: string;
+  contextWindow?: number;
+  maxTokens?: number;
+  /** 目录标价四类（服务端 ModelInfo 序列化是 snake_case）。 */
+  price_input?: number;
+  price_output?: number;
+  price_cache_read?: number;
+  price_cache_write?: number;
+  thinks?: boolean;
+  efforts?: string[];
+}
+
+export async function fetchAvailableModels(
+  id: string,
+): Promise<{ models: ServiceCatalogModel[]; live: boolean }> {
+  return post<{ models: ServiceCatalogModel[]; live: boolean }>({ method: 'available-models', id });
+}
+
+/** T012.8b：连接余额（厂商币种）或套餐余量（MiniMax：5 小时窗口/每周剩余百分比）。 */
+export interface ServiceQuota {
+  balance?: { currency: string; amount: number };
+  plan?: { intervalRemainingPercent?: number; weeklyRemainingPercent?: number };
+  checkedAt: number;
+}
+
+export async function fetchConnectionQuota(id: string): Promise<ServiceQuota> {
+  return post<ServiceQuota>({ method: 'connection-quota', id });
 }

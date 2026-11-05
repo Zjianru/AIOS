@@ -54,10 +54,13 @@ enum KeyringAction {
         id: String,
         #[arg(long)]
         name: String,
+        /// 预设（deepseek/minimax/minimax-cn）；给了就用它的地址
+        #[arg(long)]
+        preset: Option<String>,
         #[arg(long)]
         model: String,
         #[arg(long)]
-        endpoint: String,
+        endpoint: Option<String>,
     },
     /// 列出连接（不含 key）
     List,
@@ -98,10 +101,13 @@ struct CommonArgs {
     /// 会话工作目录（默认当前目录）
     #[arg(long)]
     cwd: Option<PathBuf>,
-    /// 模型 id（默认 deepseek-flash）
+    /// 连接 id（Keyring 里的连接；默认会话选择/上次选择/deepseek）
+    #[arg(long)]
+    connection: Option<String>,
+    /// 模型 id（默认会话选择/上次选择/连接的模型）
     #[arg(long)]
     model: Option<String>,
-    /// 推理强度：off、low、high、max（默认 high）
+    /// 思考档（模型自己的字符串，如 none/low/high/max；默认会话选择/上次选择/high）
     #[arg(long)]
     effort: Option<String>,
     /// 仅开发/DoD 用：覆盖模型 context window（默认 1_000_000）
@@ -179,9 +185,11 @@ fn config_from_args(
     base_url: String,
 ) -> Result<(DeepSeekConfig, AgentConfig), CliError> {
     let effort = match common.effort.as_deref() {
-        None => Effort::High,
+        None => Effort::new("high"),
         Some(raw) => Effort::parse(raw).ok_or_else(|| {
-            CliError::Message(format!("非法推理强度 {raw}（只接受 off、low、high、max）"))
+            CliError::Message(format!(
+                "非法推理强度 {raw}（只接受非空字符串；模型档位规则在发送时适配）"
+            ))
         })?,
     };
     let max_tokens = match common.max_tokens {
@@ -237,6 +245,8 @@ fn config_from_args(
 struct KeyringCredentialSource {
     keyring: Arc<credentials::Keyring>,
     connection: String,
+    /// K4：外部 keyring set 改 key 后，签发时把监控脱敏列表刷新。
+    monitor: Option<Monitor>,
 }
 
 impl model::CredentialSource for KeyringCredentialSource {
@@ -245,14 +255,14 @@ impl model::CredentialSource for KeyringCredentialSource {
         purpose: &str,
         context: &model::CredentialContext,
     ) -> Result<String, model::ModelError> {
-        self.keyring
+        let issued = self
+            .keyring
             .issue(
                 &self.connection,
                 purpose,
                 context.run.as_deref(),
                 context.turn,
             )
-            .map(credentials::IssuedSecret::into_secret)
             .map_err(|error| {
                 let message = match &error {
                     credentials::KeyringError::KeyFileMissing(_)
@@ -267,16 +277,100 @@ impl model::CredentialSource for KeyringCredentialSource {
                     _ => model::ErrorCode::MissingCredential,
                 };
                 model::ModelError::new(code, message)
-            })
+            })?;
+        if let Some(monitor) = &self.monitor {
+            refresh_monitor_secrets(monitor, &self.keyring);
+        }
+        Ok(issued.into_secret())
+    }
+
+    /// T012.6：连接上记住的鉴权头（None = x-api-key 与 Authorization 都发）。
+    fn auth_header(&self) -> Option<String> {
+        self.keyring
+            .view()
+            .connections
+            .into_iter()
+            .find(|connection| connection.id == self.connection)
+            .and_then(|connection| connection.auth_header)
+    }
+
+    /// T012.6：适配器学到「只发某一个头」后写回连接（ConnectionInfo.auth_header）。
+    fn remember_auth_header(&self, header: &str) {
+        let Some(connection) = self
+            .keyring
+            .view()
+            .connections
+            .into_iter()
+            .find(|connection| connection.id == self.connection)
+        else {
+            return;
+        };
+        // 只改 auth_header；endpoint/model 原样传回，其余字段保持不动。
+        let _ = self.keyring.update_connection_details(
+            &self.connection,
+            credentials::ConnectionUpdate {
+                endpoint: connection.endpoint.clone(),
+                model: connection.primary_model().to_owned(),
+                auth_header: Some(header.to_owned()),
+                ..credentials::ConnectionUpdate::default()
+            },
+        );
     }
 }
 
-/// 打开数据目录的 Keyring，并取 DeepSeek 连接的 endpoint/model。
+/// T012.7 审计 P2：解析目标 (连接, 模型, 档)。
+///
+/// 规则：命令行 > 会话日志选择（resume 恢复）> settings 上次选择 > 连接默认；
+/// **换了连接就整组取连接默认**——不把旧连接的模型/档带过去，避免 endpoint × 模型错配。
+fn resolve_selection(
+    common: &CommonArgs,
+    last: Option<&session::ModelSelection>,
+    connections: &[credentials::ConnectionInfo],
+) -> Option<(credentials::ConnectionInfo, String, String)> {
+    let preferred = common
+        .connection
+        .clone()
+        .or_else(|| last.map(|selection| selection.connection.clone()));
+    let connection = preferred
+        .as_ref()
+        .and_then(|id| {
+            connections
+                .iter()
+                .find(|connection| &connection.id == id)
+                .cloned()
+        })
+        .or_else(|| {
+            connections
+                .iter()
+                .find(|connection| connection.id == "deepseek")
+                .cloned()
+        })?;
+    let same_connection = last.is_some_and(|selection| selection.connection == connection.id);
+    let last = same_connection.then_some(last).flatten();
+    let model = common
+        .model
+        .clone()
+        .or_else(|| last.map(|selection| selection.model.clone()))
+        .unwrap_or_else(|| connection.primary_model().to_owned());
+    let effort = common
+        .effort
+        .clone()
+        .or_else(|| last.map(|selection| selection.effort_wanted.clone()))
+        .unwrap_or_else(|| "high".to_owned());
+    Some((connection, model, effort))
+}
+
+/// 打开数据目录的 Keyring，按会话选择解析 (连接 id, 模型配置, 上次选择的 Agent 配置, 凭证来源)。
+///
+/// T012.7：优先级 命令行 > 会话日志的选择（重开恢复）> settings.json 上次选择 > 连接默认。
 fn model_with_keyring(
     common: &CommonArgs,
     data_dir: &PathBuf,
+    monitor: Option<&Monitor>,
+    session_selection: Option<&session::ModelSelection>,
 ) -> Result<
     (
+        String,
         DeepSeekConfig,
         AgentConfig,
         Arc<dyn model::CredentialSource>,
@@ -288,30 +382,36 @@ fn model_with_keyring(
         common.identity.as_deref(),
     )?);
     let view = keyring.view();
-    if let Some(problem) = view.key_file.problem {
+    if let Some(problem) = view.key_file.problem.clone() {
         return Err(CliError::Message(format!("Keyring 读不出来：{problem}")));
     }
-    let connection = view
-        .connections
-        .into_iter()
-        .find(|connection| connection.id == "deepseek")
+    let settings = service::settings::load(data_dir);
+    let last = session_selection
+        .cloned()
+        .or_else(|| settings.last_selection.clone());
+    let (connection, model, effort) = resolve_selection(common, last.as_ref(), &view.connections)
         .ok_or_else(|| {
-            CliError::Message(
-                "还没有接模型：先从页面接上，或运行 aios-dev keyring set（key 从标准输入读）"
-                    .to_owned(),
-            )
-        })?;
+        CliError::Message(
+            "还没有接模型：先从页面接上，或运行 aios-dev keyring set（key 从标准输入读）"
+                .to_owned(),
+        )
+    })?;
+    let mut resolved_common = common.clone();
+    resolved_common.effort = Some(effort);
     let (mut deepseek_config, agent_config) =
-        config_from_args(common, connection.endpoint.clone())?;
-    deepseek_config.model = common
-        .model
-        .clone()
-        .unwrap_or_else(|| connection.model.clone());
+        config_from_args(&resolved_common, connection.endpoint.clone())?;
+    deepseek_config.model = model;
     let source = KeyringCredentialSource {
         keyring,
-        connection: "deepseek".to_owned(),
+        connection: connection.id.clone(),
+        monitor: monitor.cloned(),
     };
-    Ok((deepseek_config, agent_config, Arc::new(source)))
+    Ok((
+        connection.id,
+        deepseek_config,
+        agent_config,
+        Arc::new(source),
+    ))
 }
 
 /// 唯一组装入口（T006.15）：这里只把 CLI 参数/env 变成普通配置数据；模型、工具集、
@@ -325,11 +425,18 @@ async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
         Some(path) => path.clone(),
         None => std::env::current_dir()?,
     };
-    let (deepseek_config, config, credentials) = model_with_keyring(common, &data_dir)?;
     let resume = match &common.resume {
         Some(raw) => Some(SessionId::parse(raw)?),
         None => None,
     };
+    // T012.7：续接时从会话日志恢复模型选择（重开会话还是它）。
+    let session_selection = resume.as_ref().and_then(|id| {
+        session::SessionStore::open_read_only(&data_dir, id)
+            .ok()
+            .and_then(|snapshot| session::last_model_selection(snapshot.events()))
+    });
+    let (_connection, deepseek_config, config, credentials) =
+        model_with_keyring(common, &data_dir, None, session_selection.as_ref())?;
     let agent = Agent::open(AgentOpenOptions {
         data_dir,
         cwd,
@@ -392,6 +499,28 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     };
     // T011.4：本进程的监控记录（process-start 先写；文件在 <数据目录>/monitor/ 下）。
     let monitor = Monitor::open(&data_dir).map_err(|error| CliError::Message(error.to_string()))?;
+    // T012.5：目录先用缓存/内置快照（不等网络），后台刷新 models.dev。
+    let catalog_source = model::catalog::bootstrap_global(&data_dir);
+    record_ops(
+        &monitor,
+        "catalog",
+        Severity::Info,
+        vec![(
+            "source",
+            serde_json::json!(match catalog_source {
+                model::catalog::CatalogSource::Network => "network",
+                model::catalog::CatalogSource::Cache => "cache",
+                model::catalog::CatalogSource::Snapshot => "snapshot",
+            }),
+        )],
+    );
+    {
+        let catalog_data_dir = data_dir.clone();
+        tokio::spawn(async move {
+            let _ = model::catalog::refresh_global(&catalog_data_dir, std::time::SystemTime::now())
+                .await;
+        });
+    }
     record_ops(
         &monitor,
         "process-start",
@@ -458,15 +587,20 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let factory_common = args.common.clone();
     let factory_data_dir = data_dir.clone();
     let monitor_for_recheck = monitor.clone();
-    let model_factory: service::ModelFactory = std::sync::Arc::new(move || {
+    let model_factory: service::ModelFactory = std::sync::Arc::new(move |selection| {
         if let Ok(keyring) =
             credentials::Keyring::open(factory_data_dir.clone(), factory_common.identity.as_deref())
         {
             refresh_monitor_secrets(&monitor_for_recheck, &keyring);
         }
-        model_with_keyring(&factory_common, &factory_data_dir)
-            .map(|(config, _agent, credentials)| (config, Some(credentials)))
-            .map_err(|error| error.to_string())
+        model_with_keyring(
+            &factory_common,
+            &factory_data_dir,
+            Some(&monitor_for_recheck),
+            selection,
+        )
+        .map(|(connection, config, _agent, credentials)| (connection, config, Some(credentials)))
+        .map_err(|error| error.to_string())
     });
     // F1：设置页保存/删除/撤销、搬迁/重开/重启后，把 Keyring 当前 key 刷新给监控。
     let monitor_for_keyring = monitor.clone();
@@ -1207,6 +1341,7 @@ mod tests {
             data_dir: None,
             identity: None,
             cwd: None,
+            connection: None,
             model: None,
             effort: None,
             context_window: None,
@@ -1214,6 +1349,81 @@ mod tests {
             compaction_threshold: None,
             compaction_retain: None,
         }
+    }
+
+    fn connection_info(id: &str, model: &str) -> credentials::ConnectionInfo {
+        credentials::ConnectionInfo {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            model: model.to_owned(),
+            endpoint: "http://127.0.0.1:1".to_owned(),
+            saved_at: 0,
+            check: credentials::CheckState::Never,
+            key_saved: true,
+            preset: String::new(),
+            models: vec![credentials::ModelRow {
+                id: model.to_owned(),
+                name: None,
+                context_window: None,
+                max_tokens: None,
+                price_input: None,
+                price_output: None,
+                price_cache_read: None,
+                price_cache_write: None,
+            }],
+            price_rate: 1.0,
+            auth_header: None,
+        }
+    }
+
+    /// T012.7 审计 P2：只给 --connection B 时，模型/档取 B 的默认，不把 A 的带过去。
+    #[test]
+    fn switching_connection_resets_model_and_effort_to_connection_defaults() {
+        let mut common = dev_common();
+        common.connection = Some("minimax-cn".to_owned());
+        let last = session::ModelSelection {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-pro".to_owned(),
+            effort_wanted: "low".to_owned(),
+        };
+        let connections = vec![
+            connection_info("deepseek", "deepseek-flash"),
+            connection_info("minimax-cn", "MiniMax-M3.1-Flash"),
+        ];
+        let (connection, model, effort) =
+            crate::resolve_selection(&common, Some(&last), &connections).expect("resolved");
+        assert_eq!(connection.id, "minimax-cn");
+        assert_eq!(
+            model, "MiniMax-M3.1-Flash",
+            "换连接整组取连接默认：不带旧连接的模型"
+        );
+        assert_eq!(effort, "high", "换连接取默认档");
+    }
+
+    /// 同一连接保留上次选择；命令行显式覆盖最优先。
+    #[test]
+    fn same_connection_keeps_last_selection_and_cli_overrides_win() {
+        let connections = vec![
+            connection_info("deepseek", "deepseek-flash"),
+            connection_info("minimax-cn", "MiniMax-M3.1-Flash"),
+        ];
+        let last = session::ModelSelection {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-pro".to_owned(),
+            effort_wanted: "low".to_owned(),
+        };
+        let mut common = dev_common();
+        common.connection = Some("deepseek".to_owned());
+        let (_, model, effort) =
+            crate::resolve_selection(&common, Some(&last), &connections).expect("resolved");
+        assert_eq!(model, "deepseek-pro");
+        assert_eq!(effort, "low");
+        common.model = Some("explicit-model".to_owned());
+        common.effort = Some("max".to_owned());
+        let (_, model, effort) =
+            crate::resolve_selection(&common, Some(&last), &connections).expect("resolved");
+        assert_eq!(model, "explicit-model");
+        assert_eq!(effort, "max");
     }
 
     #[test]
@@ -1350,9 +1560,23 @@ fn keyring(args: KeyringArgs) -> Result<u8, CliError> {
         KeyringAction::Set {
             id,
             name,
+            preset,
             model,
             endpoint,
         } => {
+            let preset = preset
+                .as_deref()
+                .map(|id| {
+                    credentials::preset(id).ok_or_else(|| {
+                        CliError::Message(format!(
+                            "未知预设 {id}（可用：deepseek/minimax/minimax-cn）"
+                        ))
+                    })
+                })
+                .transpose()?;
+            let endpoint = endpoint
+                .or_else(|| preset.map(|preset| preset.endpoint.to_owned()))
+                .ok_or_else(|| CliError::Message("--endpoint 或 --preset 必须给一个".to_owned()))?;
             let mut input = String::new();
             io::stdin().read_to_string(&mut input)?;
             let api_key = input.trim().to_owned();
@@ -1367,6 +1591,8 @@ fn keyring(args: KeyringArgs) -> Result<u8, CliError> {
                 model,
                 endpoint,
                 api_key,
+                preset: preset.map(|preset| preset.id.to_owned()),
+                ..Default::default()
             })?;
             println!("已保存 {}（{}）", info.name, info.id);
             Ok(0)
@@ -1449,6 +1675,7 @@ mod f1_redaction_tests {
             model: "deepseek-flash".to_owned(),
             endpoint: "http://127.0.0.1:1".to_owned(),
             api_key: key.to_owned(),
+            ..Default::default()
         }
     }
 
@@ -1518,5 +1745,41 @@ mod f1_redaction_tests {
             !text.contains("redact-failed"),
             "正常记录不该 redact-failed：{text}"
         );
+    }
+
+    /// T012.6：CLI 的凭证来源把学到的鉴权头写回连接，并优先读连接上的值。
+    #[test]
+    fn learned_auth_header_is_written_back_to_the_connection() {
+        use model::CredentialSource as _;
+        let data = tempfile::tempdir().expect("数据目录");
+        let identity = data.path().join("identity.txt");
+        let keyring = std::sync::Arc::new(
+            credentials::Keyring::open(data.path(), Some(&identity)).expect("keyring"),
+        );
+        keyring
+            .save_connection(connection("deepseek", "DeepSeek", "sk-T0126-KEY"))
+            .expect("save");
+        let source = KeyringCredentialSource {
+            keyring: std::sync::Arc::clone(&keyring),
+            connection: "deepseek".to_owned(),
+            monitor: None,
+        };
+        assert_eq!(source.auth_header(), None, "还没学到的连接默认两个头都发");
+        source.remember_auth_header("authorization");
+        assert_eq!(
+            source.auth_header().as_deref(),
+            Some("authorization"),
+            "写回后从连接读回学到的单头"
+        );
+        let stored = keyring
+            .view()
+            .connections
+            .into_iter()
+            .find(|connection| connection.id == "deepseek")
+            .expect("connection");
+        assert_eq!(stored.auth_header.as_deref(), Some("authorization"));
+        assert_eq!(stored.endpoint, "http://127.0.0.1:1", "写回不动 endpoint");
+        assert_eq!(stored.model, "deepseek-flash", "写回不动 model");
+        assert!(stored.models.len() == 1, "写回不动 models 行");
     }
 }

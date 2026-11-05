@@ -13,6 +13,8 @@ struct Shared {
     pace_ms: Option<u64>,
     cursor: usize,
     last_model: Option<String>,
+    /// T012.9：最近一次请求的完整请求体（e2e 断言思考档用）。
+    last_request: Option<serde_json::Value>,
 }
 
 /// 起好的回放服务（地址 + 后台任务）。
@@ -40,6 +42,7 @@ pub async fn start_replay_server(script: ReplayScript) -> Result<ReplayServer, R
         pace_ms: script.pace_ms,
         cursor: 0,
         last_model: None,
+        last_request: None,
     }));
     let task = tokio::spawn(async move {
         loop {
@@ -75,7 +78,20 @@ async fn handle(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> std::io::R
         )
         .await;
     }
+    // T012.9：available-models 会请求厂商 /v1/models；测试夹具没有模型列表，404 不消耗回放脚本。
+    if path.contains("/v1/models") {
+        let body = br#"{"error":{"message":"fixture has no /v1/models"}}"#.to_vec();
+        return write_response(&mut stream, 404, "application/json", body).await;
+    }
     // T010.2：测试夹具要断言下一轮用的模型；控制端点回最近一次请求的 model。
+    // T012.9：测试夹具要断言下一轮请求的思考档；控制端点回最近一次请求的完整 body。
+    if path.contains("__replay/last-request") {
+        let request = shared.lock().await.last_request.clone();
+        let body = serde_json::json!({ "request": request })
+            .to_string()
+            .into_bytes();
+        return write_response(&mut stream, 200, "application/json", body).await;
+    }
     if path.contains("__replay/last-model") {
         let model = shared.lock().await.last_model.clone();
         let body = serde_json::json!({ "model": model })
@@ -93,6 +109,9 @@ async fn handle(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> std::io::R
         let mut state = shared.lock().await;
         if let Some(model) = requested_model {
             state.last_model = Some(model);
+        }
+        if !body_value.is_null() {
+            state.last_request = Some(body_value.clone());
         }
         let index = state.cursor;
         state.cursor += 1;

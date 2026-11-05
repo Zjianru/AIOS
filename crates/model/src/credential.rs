@@ -16,4 +16,14 @@ pub trait CredentialSource: Send + Sync {
     /// purpose 说明这次签发的用途（如 model-request / compaction）；
     /// context 带上本次 Run/轮，供 Keyring 记录归属。
     fn issue(&self, purpose: &str, context: &CredentialContext) -> Result<String, ModelError>;
+
+    /// T012.6：这个连接的鉴权头。`None` = x-api-key 与 Authorization: Bearer 都发（默认）；
+    /// `Some("x-api-key")` / `Some("authorization")` = 只发学到的那个（产品层从连接读）。
+    fn auth_header(&self) -> Option<String> {
+        None
+    }
+
+    /// T012.6：适配器学到「只发某一个头」时回报；产品层写回连接的 `auth_header`。
+    /// 测试来源可忽略；产品实现是 Keyring。
+    fn remember_auth_header(&self, _header: &str) {}
 }

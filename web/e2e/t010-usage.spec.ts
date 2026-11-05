@@ -15,7 +15,7 @@ test('每轮用量：模型名、全部输入、缓存命中、输出、想了 N
     // 悬停「工作过程」才显示用量行；输入 = 1000 + 200 + 50 = 1250；命中 = 200/1250 = 16%。
     await page.getByText('工作过程', { exact: false }).last().hover();
     await expect(
-      page.getByText('DeepSeek Flash · 输入 1250 · 缓存命中 16% · 输出 120', { exact: false }),
+      page.getByText('DeepSeek-V4.1-Flash · 输入 1250 · 缓存命中 16% · 输出 120', { exact: false }),
     ).toBeVisible();
     await page.getByText('工作过程', { exact: false }).last().click();
     await expect(page.getByText('想了 1 秒', { exact: false })).toBeVisible();

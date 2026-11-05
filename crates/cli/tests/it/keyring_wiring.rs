@@ -89,6 +89,7 @@ async fn 连接存在时不再要求环境变量() {
             model: "deepseek-flash".to_owned(),
             endpoint: server.uri(),
             api_key: "test-key".to_owned(),
+            ..Default::default()
         })
         .expect("save");
     let output = run(&data_dir, &identity);
@@ -157,6 +158,7 @@ async fn 环境变量有值也不覆盖_keyring_的_key() {
             model: "deepseek-flash".to_owned(),
             endpoint: server.uri(),
             api_key: KEYRING_KEY.to_owned(),
+            ..Default::default()
         })
         .expect("save");
     let output = run_with_env(&data_dir, &identity, Some(ENV_KEY));

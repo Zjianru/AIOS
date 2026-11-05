@@ -496,8 +496,9 @@ async fn summarize(
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         std::sync::Arc::new(tokio::sync::Notify::new()),
     );
-    let mut stream = host
-        .model()
+    // T012.3：摘要请求用这个模型的 DefaultEffort（生产调用点，不再用用户/CLI 档）。
+    let summary_model = host.model().with_effort(host.model().default_effort());
+    let mut stream = summary_model
         .stream_with_max_tokens(&input, &tools, &cancel, Some(max_tokens))
         .await?;
     let mut text = String::new();
@@ -625,7 +626,7 @@ mod tests {
                 model: "deepseek-flash".to_owned(),
                 max_tokens: 16,
                 context_window: 1000,
-                effort: model::Effort::High,
+                effort: model::Effort::new("high"),
             },
             test_credential(),
         )
@@ -797,6 +798,8 @@ mod tests {
                         message: Message::user_text("a".repeat(400)),
                     },
                     EventKind::AssistantMessage {
+                        effort: None,
+                        effort_wanted: None,
                         turn: 1,
                         step: 1,
                         message: Message::assistant(

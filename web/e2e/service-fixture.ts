@@ -23,6 +23,7 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.failure === 'unknown') return { file: 'text', override: 'failure-unknown' };
   if (options.realTurn) return { file: 'real', paceMs: 20 };
   if (options.usageTurn) return { file: 'usage', paceMs: 400 };
+  if (options.usageReadOnly) return { file: 'usage-read-only', paceMs: 400 };
   if (options.askTurn) return { file: 'ask', paceMs: options.askTurnPaceMs };
   if (options.toolTurn) return { file: 'tool' };
   if (options.highUsage) return { file: 'high-usage' };
@@ -87,6 +88,8 @@ export interface KernelFixture {
   fakeEndpoint: string;
   /** T008.4：假 DeepSeek 最近一次请求体里的 model（下一轮生效断言用）。 */
   lastModel: () => Promise<string | null>;
+  /** T012.9：假 DeepSeek 最近一次请求的完整请求体（断言思考档用）。 */
+  lastRequest: () => Promise<Record<string, unknown> | null>;
   /** 真 key fixture：serve 进程的 stderr（DoD4 断言写失败那行用）。 */
   stderr?: () => string;
   dropProxy?: () => Promise<void>;
@@ -123,6 +126,8 @@ export interface FixtureOptions {
   home?: 'dataDir' | string;
   /// T010.3：用带 reasoning/缓存读写的用量夹具（turn-usage 用例）。
   usageTurn?: boolean;
+  /// T012 F1：用量夹具去掉缓存写（只填缓存读价的端到端用）。
+  usageReadOnly?: boolean;
   /// T010.5：用真 key 录的夹具（多步工具/思考/缓存读/压缩）。
   realTurn?: boolean;
 }
@@ -151,7 +156,7 @@ export async function startKernelFixture(
   if (!options.emptyKeyring) {
     const seed = spawnSync(
       bin,
-      ['keyring', '--data-dir', dataDir, '--identity', identityPath, 'set', '--id', 'deepseek', '--name', 'DeepSeek', '--model', 'deepseek-flash', '--endpoint', replayUrl],
+      ['keyring', '--data-dir', dataDir, '--identity', identityPath, 'set', '--id', 'deepseek', '--name', 'DeepSeek', '--preset', 'deepseek', '--model', 'deepseek-flash', '--endpoint', replayUrl],
       { input: 'test-key' + String.fromCharCode(10), encoding: 'utf8' },
     );
     if (seed.status !== 0) throw new Error('seed keyring failed: ' + String(seed.stderr));
@@ -300,6 +305,15 @@ export async function startKernelFixture(
         return null;
       }
     },
+    lastRequest: async () => {
+      try {
+        const response = await fetch(replayUrl + '/__replay/last-request');
+        const body = (await response.json()) as { request?: Record<string, unknown> | null };
+        return body.request ?? null;
+      } catch {
+        return null;
+      }
+    },
     dropProxy,
     restoreProxy,
     restart,
@@ -431,6 +445,7 @@ export async function startRealKernelFixture(
     dataDir,
     fakeEndpoint: '',
     lastModel: async () => null,
+    lastRequest: async () => null,
     stderr: () => stderr,
     dropProxy: proxy.drop,
     restoreProxy: proxy.restore,
