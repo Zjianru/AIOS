@@ -87,6 +87,8 @@ export interface KernelFixture {
   fakeEndpoint: string;
   /** T008.4：假 DeepSeek 最近一次请求体里的 model（下一轮生效断言用）。 */
   lastModel: () => Promise<string | null>;
+  /** T012.9：假 DeepSeek 最近一次请求的完整请求体（断言思考档用）。 */
+  lastRequest: () => Promise<Record<string, unknown> | null>;
   /** 真 key fixture：serve 进程的 stderr（DoD4 断言写失败那行用）。 */
   stderr?: () => string;
   dropProxy?: () => Promise<void>;
@@ -300,6 +302,15 @@ export async function startKernelFixture(
         return null;
       }
     },
+    lastRequest: async () => {
+      try {
+        const response = await fetch(replayUrl + '/__replay/last-request');
+        const body = (await response.json()) as { request?: Record<string, unknown> | null };
+        return body.request ?? null;
+      } catch {
+        return null;
+      }
+    },
     dropProxy,
     restoreProxy,
     restart,
@@ -431,6 +442,7 @@ export async function startRealKernelFixture(
     dataDir,
     fakeEndpoint: '',
     lastModel: async () => null,
+    lastRequest: async () => null,
     stderr: () => stderr,
     dropProxy: proxy.drop,
     restoreProxy: proxy.restore,

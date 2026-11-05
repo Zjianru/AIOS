@@ -1206,3 +1206,42 @@ async fn 打开会话写初始模型选择事件() {
     assert_eq!(selection.connection, "deepseek");
     assert_eq!(selection.model, "deepseek-flash");
 }
+
+/// T012.9：写非密钥设置（currency）——settings.json 生效，status 也带新币种。
+#[tokio::test]
+async fn 设置更新写币种且状态里带新币种() {
+    let dir = tempdir().unwrap();
+    seed_fx_cache(dir.path());
+    let host = host(dir.path()).await;
+    let response = host
+        .dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
+            currency: Some("cny".to_owned()),
+        }))
+        .await
+        .expect("settings-update 应成功");
+    let service::Response::SettingsUpdate(response) = response else {
+        panic!("expected SettingsUpdate");
+    };
+    assert_eq!(response.currency, "cny");
+    assert_eq!(
+        service::settings::load(dir.path()).currency,
+        "cny",
+        "settings.json 里是 cny"
+    );
+    let status = host
+        .dispatch(Call::Status(service::StatusRequest {}))
+        .await
+        .expect("status");
+    let service::Response::Status(status) = status else {
+        panic!("expected Status");
+    };
+    assert_eq!(status.currency.as_deref(), Some("cny"), "status 带新币种");
+    // 非法币种：拒绝且不改 settings。
+    let rejected = host
+        .dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
+            currency: Some("eur".to_owned()),
+        }))
+        .await;
+    assert!(rejected.is_err(), "只接受 usd/cny");
+    assert_eq!(service::settings::load(dir.path()).currency, "cny");
+}
