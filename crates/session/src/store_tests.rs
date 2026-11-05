@@ -1,4 +1,4 @@
-//! T006.5a：FORMAT_VERSION 升级（旧版本直接拒绝、不迁移）与只读读取（不截尾）。
+//! T006.5a → T013.1：日志版本读 14–15（14 原样读/续写 header 留 14）、13- 与 16+ 拒绝且文件不动；只读读取（不截尾）。
 //!
 //! DSH 依据：`packages/core/session/src/types.ts:90`（SESSION_FORMAT_VERSION）、
 //! `packages/session/session-persistence-jsonl/README.md:77,87,93`（读打开不改历史；
@@ -30,35 +30,75 @@ fn append_torn_line(store: &SessionStore) {
 }
 
 #[test]
-fn written_header_uses_format_version_14() {
+fn written_header_uses_format_version_15() {
     let (_data_dir, _cwd, store) = create_store();
     let text = fs::read_to_string(store.path()).unwrap();
     let header: Value =
         serde_json::from_str(text.lines().next().expect("日志有 header 行")).unwrap();
     assert_eq!(
-        header["version"], 14,
-        "新增 session/model 事件后 FORMAT_VERSION 升到 14（T012.7）"
+        header["version"], 15,
+        "T013.1：tool/result.meta 让 FORMAT_VERSION 升到 15"
     );
 }
 
+/// 手写一份指定版本的日志（header + 一条 v15 兼容的 turn/start）。
+fn legacy_log(id: &SessionId, version: u64) -> Vec<u8> {
+    format!(
+        "{{\"type\":\"session\",\"version\":{version},\"id\":\"{id}\",\"createdAt\":1,\"cwd\":\"/tmp\"}}\n\
+         {{\"type\":\"turn/start\",\"seq\":1,\"time\":1,\"data\":{{\"turn\":1}}}}\n"
+    )
+    .into_bytes()
+}
+
+/// T013.1 测试清单 2：15 版读取器能读 14 版日志；只读打开与续写都不改写原有行；
+/// 续写后 header 还是 14；整份再读没有错。
 #[test]
-fn previous_format_versions_are_rejected_without_migration() {
+fn version_14_logs_are_read_as_is_and_can_be_continued() {
+    let (data_dir, _cwd, store) = create_store();
+    let id = store.id().clone();
+    let path = store.path().to_path_buf();
+    drop(store);
+    let legacy = legacy_log(&id, 14);
+    fs::write(&path, &legacy).unwrap();
+
+    // 只读打开：能读、不改文件。
+    let snapshot = SessionStore::open_read_only(data_dir.path(), &id).expect("15 读取器能读 14");
+    assert_eq!(snapshot.events().len(), 1, "14 版日志的事件原样读出来");
+    assert_eq!(fs::read(&path).unwrap(), legacy, "只读打开不改文件");
+
+    // 读写打开 + 续写：header 留 14，原有行一字不改。
+    let mut opened = SessionStore::open(data_dir.path(), &id).expect("写打开也接受 14");
+    opened
+        .append(&[EventKind::TurnEnd {
+            turn: 1,
+            reason: TurnEndReason::Completed,
+        }])
+        .unwrap();
+    drop(opened);
+    let after = fs::read(&path).unwrap();
+    assert!(after.starts_with(&legacy), "续写只追加：原有行一字不改");
+    let text = String::from_utf8(after).unwrap();
+    let header: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    assert_eq!(header["version"], 14, "在 14 版日志上续写时 header 留 14");
+
+    // 整份再读没有错，新事件也在。
+    let snapshot = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    assert_eq!(snapshot.events().len(), 2);
+}
+
+/// T013.1 测试清单 2：13 及以下、16 及以上照旧拒绝，文件一字不改；更新的提示升级。
+#[test]
+fn format_versions_outside_14_through_15_are_rejected_without_touching_the_file() {
     let (data_dir, _cwd, store) = create_store();
     let id = store.id().clone();
     let path = store.path().to_path_buf();
     drop(store);
 
-    // 手写 v1–v13 日志：header 版本不对 + 旧格式事件；读取一律直接拒绝。
-    for version in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13] {
-        let legacy = format!(
-            "{{\"type\":\"session\",\"version\":{version},\"id\":\"{id}\",\"createdAt\":1,\"cwd\":\"/tmp\"}}\n\
-             {{\"seq\":1,\"time\":1,\"type\":\"turn/start\",\"turn\":1}}\n"
-        );
-        fs::write(&path, legacy.as_bytes()).unwrap();
-        let before = fs::read(&path).unwrap();
-
+    for version in [1, 13] {
+        let legacy = legacy_log(&id, version);
+        fs::write(&path, &legacy).unwrap();
         let error = match SessionStore::open(data_dir.path(), &id) {
-            Ok(_) => panic!("旧版本日志不能被接受"),
+            Ok(_) => panic!("v{version} 日志不能被接受"),
             Err(error) => error,
         };
         assert!(
@@ -66,28 +106,54 @@ fn previous_format_versions_are_rejected_without_migration() {
                 error,
                 SessionError::UnsupportedVersion {
                     version: got,
-                    supported: 14
+                    min: 14,
+                    max: 15
                 } if got == version
             ),
-            "v{version} 日志要直接拒绝，实际 {error}"
+            "v{version} 要拒绝并写出范围，实际 {error}"
         );
-        assert_eq!(
-            fs::read(&path).unwrap(),
-            before,
-            "拒绝旧版本不能迁移或改写它"
+        assert!(
+            error.to_string().contains("14–15"),
+            "报错要写出能读的范围：{error}"
         );
-
+        assert_eq!(fs::read(&path).unwrap(), legacy, "拒绝旧版本不能改写它");
         let read_error = SessionStore::open_read_only(data_dir.path(), &id).unwrap_err();
         assert!(
             matches!(
                 read_error,
                 SessionError::UnsupportedVersion {
                     version: got,
-                    supported: 14
+                    min: 14,
+                    max: 15
                 } if got == version
             ),
             "只读路径同样拒绝 v{version}，实际 {read_error}"
         );
+    }
+
+    for version in [16, 99] {
+        let legacy = legacy_log(&id, version);
+        fs::write(&path, &legacy).unwrap();
+        let error = match SessionStore::open(data_dir.path(), &id) {
+            Ok(_) => panic!("v{version} 日志不能被接受"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(
+                error,
+                SessionError::UnsupportedFutureVersion {
+                    version: got,
+                    min: 14,
+                    max: 15
+                } if got == version
+            ),
+            "更新版本要拒绝，实际 {error}"
+        );
+        assert!(
+            error.to_string().contains("请升级"),
+            "比 15 新的要提示升级：{error}"
+        );
+        assert_eq!(fs::read(&path).unwrap(), legacy, "拒绝新版本不能改写它");
     }
 }
 
@@ -312,6 +378,6 @@ fn store_absolutizes_relative_data_dir() {
 
 /// T012.7：新增 session/model 事件后 FORMAT_VERSION 升到 14（T006.11b 的 13 是上一版）。
 #[test]
-fn format_version_bumps_to_14_after_session_model() {
-    assert_eq!(crate::FORMAT_VERSION, 14);
+fn format_version_bumps_to_15_after_tool_result_meta() {
+    assert_eq!(crate::FORMAT_VERSION, 15);
 }

@@ -128,6 +128,7 @@ pub(crate) async fn prune_session(
             step,
             message,
             error,
+            ..
         } = kind
         else {
             continue;
@@ -153,6 +154,8 @@ pub(crate) async fn prune_session(
                 step,
                 message: replacement,
                 error,
+                // 修剪后的结果不再带展示元信息（卡片按普通结果渲染）。
+                meta: None,
             },
             SurfaceOp::Replace {
                 start_seq: seq,

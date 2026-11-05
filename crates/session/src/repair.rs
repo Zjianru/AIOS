@@ -145,6 +145,7 @@ pub fn interrupted_turn_closers(events: &[Event]) -> Option<TurnClosers> {
                 name: name.to_owned(),
                 code: code.to_owned(),
             }),
+            meta: None,
         });
     }
     if let Some(step) = open_step {

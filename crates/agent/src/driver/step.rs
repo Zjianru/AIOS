@@ -511,6 +511,8 @@ pub(super) async fn run_step(
                     name: "HarnessError".to_owned(),
                     code: code.clone(),
                 }),
+                // T013.1：工具结果的展示元信息原样落盘（不进模型消息）。
+                meta: result.meta.clone(),
             }])
             .await?;
     }

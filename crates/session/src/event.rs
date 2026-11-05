@@ -41,7 +41,12 @@ use crate::SessionId;
 /// 旧版本仍拒绝（不迁移）。
 /// v14：新增 session/model 事件（T012.7：连接、模型、想要的档；会话选择的 durable 事实，从
 /// 下一轮开始生效，重开会话从日志恢复）；旧版本读不了新事件，按 spec 升版本、旧版本仍拒绝。
-pub const FORMAT_VERSION: u64 = 14;
+/// v15：tool/result 可选 meta（T013.1：diff 卡片等展示用；只增可选字段，旧日志原样读）。
+pub const FORMAT_VERSION: u64 = 15;
+
+/// T013.1：读取器最早能读的版本。14 版日志原样读、续写时 header 留 14；
+/// 13 及以下、16 及以上拒绝（文件一字不改）。
+pub const MIN_READ_VERSION: u64 = 14;
 
 /// JSONL 第一行的会话 header。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -425,6 +430,9 @@ pub enum EventKind {
         message: Message,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<ToolError>,
+        /// T013.1：工具结果的展示用元信息（如 diff）；可选、原样落盘、不投给模型。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        meta: Option<serde_json::Value>,
     },
     /// 一个旧工具结果被修剪的 shadow-price 事件（T006.4，照 DSH
     /// compaction-tool-result-pruner/src/index.ts:164-169）：记录被替换节点的区间/seq 与

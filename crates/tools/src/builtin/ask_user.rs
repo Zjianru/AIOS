@@ -75,6 +75,7 @@ impl Tool for AskUserQuestionTool {
                 content: "ask_user_question is handled by the agent loop".to_owned(),
                 is_error: true,
                 error_code: Some("ASK_USER_LOOP_ONLY".to_owned()),
+                meta: None,
             }
         })
     }

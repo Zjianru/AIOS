@@ -46,6 +46,7 @@ fn user_and_tool_result_json_carry_id_source() {
                 step: 1,
                 message: tool,
                 error: None,
+                meta: None,
             },
         ])
         .unwrap();

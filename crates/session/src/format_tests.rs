@@ -196,6 +196,7 @@ fn tool_result_error_uses_dsh_identity() {
                 name: "ToolOutcomeUnknownError".to_owned(),
                 code: "TOOL_OUTCOME_UNKNOWN".to_owned(),
             }),
+            meta: None,
         }])
         .unwrap();
 
@@ -549,6 +550,7 @@ fn all_event_kinds_round_trip_under_dsh_envelope() {
             step: 1,
             message: Message::tool_result("call_0", "内容", false),
             error: None,
+            meta: None,
         },
         EventKind::CompactionPrune {
             shadowed_range: ShadowedRange { start: 2, end: 2 },
@@ -857,6 +859,7 @@ fn compaction_prune_matches_dsh() {
                 step: 1,
                 message: original.clone(),
                 error: None,
+                meta: None,
             },
         ])
         .unwrap();
@@ -880,6 +883,7 @@ fn compaction_prune_matches_dsh() {
                 step: 1,
                 message: replacement,
                 error: None,
+                meta: None,
             },
             crate::SurfaceOp::Replace {
                 start_seq: original_seq,
