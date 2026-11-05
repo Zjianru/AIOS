@@ -49,6 +49,7 @@ fn options(data_dir: &Path, identity: &Path) -> RootSessionOptions {
         identity: Some(identity.to_path_buf()),
         model_factory: None,
         append_hook_factory: None,
+        keyring_changed: None,
     }
 }
 

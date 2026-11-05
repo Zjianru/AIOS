@@ -14,8 +14,8 @@ use std::sync::{Arc, Mutex};
 use agent::{Agent, SendAdmission};
 use model::UserMessage;
 pub use root::{
-    ModelFactory, ROOT_STATE_FILE, RootError, RootSession, RootSessionOptions, RootStatus,
-    open_root_session,
+    KeyringChanged, ModelFactory, ROOT_STATE_FILE, RootError, RootSession, RootSessionOptions,
+    RootStatus, open_root_session,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
@@ -1166,6 +1166,7 @@ impl RootHost {
                 }
             }
         }
+        self.notify_keyring_changed();
         let window = options.model.context_window;
         *self.window.lock().expect("window 锁被毒化") = window;
         *self.context.lock().expect("context 锁被毒化") = ContextUsage { used: 0, window };
@@ -1183,6 +1184,15 @@ impl RootHost {
     }
 
     /// T008.3：每次设置操作重新打开 Keyring（不缓存；换 key/换位置立即生效）。
+    /// F1：Keyring 变化后把当前持有的 key 交给装配层的刷新钩子（监控脱敏用）。
+    fn notify_keyring_changed(&self) {
+        if let Some(hook) = &self.options.keyring_changed
+            && let Ok(keyring) = self.keyring()
+        {
+            hook(&keyring);
+        }
+    }
+
     fn keyring(&self) -> Result<credentials::Keyring, ServiceError> {
         Ok(credentials::Keyring::open(
             &self.options.data_dir,
@@ -1211,6 +1221,7 @@ impl RootHost {
                 api_key: request.api_key,
             })?;
         self.emit_settings_changed();
+        self.notify_keyring_changed();
         Ok(ConnectionSaveResponse { connection })
     }
 
@@ -1221,6 +1232,7 @@ impl RootHost {
         let deleted = self.keyring()?.delete_connection(&request.id)?;
         if deleted {
             self.emit_settings_changed();
+            self.notify_keyring_changed();
         }
         Ok(ConnectionDeleteResponse { deleted })
     }
@@ -1234,6 +1246,7 @@ impl RootHost {
             self.keyring()?
                 .update_connection(&request.id, request.endpoint, request.model)?;
         self.emit_settings_changed();
+        self.notify_keyring_changed();
         Ok(ConnectionUpdateResponse { connection })
     }
 
@@ -1244,6 +1257,7 @@ impl RootHost {
     ) -> Result<ConnectionRevokeResponse, ServiceError> {
         let connection = self.keyring()?.revoke_key(&request.id)?;
         self.emit_settings_changed();
+        self.notify_keyring_changed();
         Ok(ConnectionRevokeResponse { connection })
     }
 
@@ -1319,6 +1333,7 @@ impl RootHost {
         let path = expand_user_path(&request.to, home.as_deref())?;
         self.keyring()?.relocate_identity(&path)?;
         self.emit_settings_changed();
+        self.notify_keyring_changed();
         Ok(KeyringRelocateResponse {})
     }
 
@@ -1330,6 +1345,7 @@ impl RootHost {
         let path = expand_user_path(&request.at, home.as_deref())?;
         self.keyring()?.repoint_identity(&path)?;
         self.emit_settings_changed();
+        self.notify_keyring_changed();
         Ok(KeyringReopenResponse {})
     }
 
@@ -1337,6 +1353,7 @@ impl RootHost {
         let keyring = self.keyring()?;
         keyring.restart()?;
         self.emit_settings_changed();
+        self.notify_keyring_changed();
         Ok(KeyringRestartResponse {
             settings: keyring.view(),
         })

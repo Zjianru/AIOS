@@ -92,6 +92,7 @@ fn options(
         identity: None,
         model_factory: None,
         append_hook_factory: None,
+        keyring_changed: None,
     }
 }
 

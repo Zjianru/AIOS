@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread::JoinHandle;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -134,20 +134,20 @@ fn write_record(sink: &mut dyn LineSink, record: &Record) -> Result<(), MonitorE
 }
 
 /// 队列满丢掉的条数：下一条记录之前先写一条 gap，然后清零。
-fn write_pending_gap(sink: &mut dyn LineSink, dropped: &AtomicU64) -> Result<(), MonitorError> {
+fn pending_gap(dropped: &AtomicU64) -> Option<Record> {
     let dropped_count = dropped.swap(0, Ordering::SeqCst);
-    if dropped_count == 0 {
-        return Ok(());
-    }
-    write_record(
-        sink,
-        &Record::ops("gap", Severity::Warn, json!({ "dropped": dropped_count })),
-    )
+    (dropped_count > 0)
+        .then(|| Record::ops("gap", Severity::Warn, json!({ "dropped": dropped_count })))
 }
 
-/// 写线程：records 逐条写；写失败停掉并在标准错误报一次（业务不受影响）；
-/// 退出时写 shutdown 记录并排空队列。
-fn run_writer(mut sink: Box<dyn LineSink>, rx: Receiver<Message>, dropped: Arc<AtomicU64>) {
+/// 写线程：records 逐条写；所有记录在写入前统一脱敏（ledger/ops/gap/shutdown），
+/// 写失败停掉并在标准错误报一次（业务不受影响）；退出时写 shutdown 记录并排空队列。
+fn run_writer(
+    mut sink: Box<dyn LineSink>,
+    rx: Receiver<Message>,
+    dropped: Arc<AtomicU64>,
+    redactor: Redactor,
+) {
     // 仅测试注入用：AIOS_MONITOR_FAIL_AFTER=N 时第 N 条写入之后模拟写失败（DoD4 不可写场景）。
     let fail_after = std::env::var("AIOS_MONITOR_FAIL_AFTER")
         .ok()
@@ -156,35 +156,79 @@ fn run_writer(mut sink: Box<dyn LineSink>, rx: Receiver<Message>, dropped: Arc<A
     loop {
         match rx.recv() {
             Ok(Message::Record(record)) => {
-                if let Err(error) = write_pending_gap(&mut *sink, &dropped) {
+                if let Some(gap) = pending_gap(&dropped)
+                    && let Err(error) =
+                        write_emitted(&mut *sink, gap, &redactor, fail_after, &mut written)
+                {
                     eprintln!("monitor: 写监控失败，停止记录：{error}");
                     break;
                 }
                 if let Err(error) =
-                    write_with_injection(&mut *sink, &record, fail_after, &mut written)
+                    write_emitted(&mut *sink, record, &redactor, fail_after, &mut written)
                 {
                     eprintln!("monitor: 写监控失败，停止记录：{error}");
                     break;
                 }
             }
             Ok(Message::Shutdown) => {
-                if let Err(error) = write_pending_gap(&mut *sink, &dropped) {
+                if let Some(gap) = pending_gap(&dropped)
+                    && let Err(error) =
+                        write_emitted(&mut *sink, gap, &redactor, fail_after, &mut written)
+                {
                     eprintln!("monitor: 写监控失败，停止记录：{error}");
                     break;
                 }
                 let shutdown = Record::ops("shutdown", Severity::Info, json!({}));
                 if let Err(error) =
-                    write_with_injection(&mut *sink, &shutdown, fail_after, &mut written)
+                    write_emitted(&mut *sink, shutdown, &redactor, fail_after, &mut written)
                 {
                     eprintln!("monitor: 写监控失败，停止记录：{error}");
                 }
                 break;
             }
             Err(_) => {
-                let _ = write_pending_gap(&mut *sink, &dropped);
+                if let Some(gap) = pending_gap(&dropped) {
+                    let _ = write_emitted(&mut *sink, gap, &redactor, fail_after, &mut written);
+                }
                 break;
             }
         }
+    }
+}
+
+/// 所有记录交给后端前的唯一出口：先脱敏，再写（脱敏失败的原记录扣下，
+/// 只写一条不含原文的 redact-failed ops）。
+fn write_emitted(
+    sink: &mut dyn LineSink,
+    record: Record,
+    redactor: &Redactor,
+    fail_after: Option<u64>,
+    written: &mut u64,
+) -> Result<(), MonitorError> {
+    let mut record = record;
+    match redactor.redact(&mut record) {
+        Ok(()) => write_with_injection(sink, &record, fail_after, written),
+        Err(_) => {
+            let failed = Record::ops(
+                "redact-failed",
+                Severity::Warn,
+                json!({
+                    "channel": channel_label(record.channel),
+                    "time": record.time,
+                }),
+            );
+            match redactor.redact(&mut failed.clone()) {
+                Ok(()) => write_with_injection(sink, &failed, fail_after, written),
+                Err(_) => Ok(()),
+            }
+        }
+    }
+}
+
+fn channel_label(channel: Channel) -> &'static str {
+    match channel {
+        Channel::Ledger => "ledger",
+        Channel::Ops => "ops",
     }
 }
 
@@ -211,6 +255,7 @@ struct Shared {
     tx: SyncSender<Message>,
     dropped: Arc<AtomicU64>,
     path: PathBuf,
+    redactor: Redactor,
 }
 
 pub struct Monitor {
@@ -248,21 +293,47 @@ impl Monitor {
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         let (tx, rx) = sync_channel(capacity.max(1));
         let dropped = Arc::new(AtomicU64::new(0));
+        let redactor = Redactor::new(Vec::new());
         let join = std::thread::Builder::new()
             .name("aios-monitor".to_owned())
             .spawn({
                 let dropped = Arc::clone(&dropped);
-                move || run_writer(Box::new(FileSink { file }), rx, dropped)
+                let redactor = redactor.clone();
+                move || run_writer(Box::new(FileSink { file }), rx, dropped, redactor)
             })
             .map_err(MonitorError::Io)?;
         Ok(Self {
-            shared: Arc::new(Shared { tx, dropped, path }),
+            shared: Arc::new(Shared {
+                tx,
+                dropped,
+                path,
+                redactor,
+            }),
             join: Mutex::new(Some(join)),
         })
     }
 
     pub fn path(&self) -> &Path {
         &self.shared.path
+    }
+
+    /// F1：更新进程当前持有的 key 列表（来自 Keyring；由 cli 装配在启动/设置保存/recheck 时刷新）。
+    pub fn set_secrets(&self, secrets: Vec<String>) {
+        self.shared.redactor.set_secrets(secrets);
+    }
+
+    /// F1：会话「追加之后」的钩子工厂。生产（cli serve）和测试用同一个装配入口。
+    pub fn append_hook_factory(&self) -> session::AppendHookFactory {
+        let monitor = self.clone();
+        Arc::new(move |id: &session::SessionId| {
+            let monitor = monitor.clone();
+            let session_id = id.as_str().to_owned();
+            Arc::new(move |events: &[session::Event]| {
+                for event in events {
+                    let _ = monitor.record(ledger_record(&session_id, event));
+                }
+            }) as session::AppendHook
+        })
     }
 
     /// 入队；队列满时丢新来的、计数并返回 false（业务不受影响）。
@@ -346,35 +417,46 @@ fn severity_of(kind: &session::EventKind) -> Severity {
     }
 }
 
-/// T011.3：脱敏规则（只改副本；key 不保存，只在匹配时用）。
+/// T011.3/F1：脱敏规则（只改副本；key 不落盘，只在内存里匹配）。
 #[derive(Debug, Clone)]
-pub struct Redactor {
-    secrets: Arc<Vec<String>>,
+struct Redactor {
+    secrets: Arc<RwLock<Vec<String>>>,
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum RedactError {
+enum RedactError {
     #[error("监控记录嵌套过深，脱敏放弃")]
     TooDeep,
 }
 
 impl Redactor {
-    /// secrets：进程持有的 key（运行时从 Keyring 取，监控不落盘）。
-    pub fn new(secrets: Vec<String>) -> Self {
+    fn new(secrets: Vec<String>) -> Self {
         Self {
-            secrets: Arc::new(secrets),
+            secrets: Arc::new(RwLock::new(secrets)),
+        }
+    }
+
+    /// F1：Keyring 的 key 在进程生命期内会变；这里原地替换，写线程下一条起生效。
+    fn set_secrets(&self, secrets: Vec<String>) {
+        if let Ok(mut guard) = self.secrets.write() {
+            *guard = secrets;
         }
     }
 
     /// 推理帧/思考块文本 → [推理已略去，N 字]；任意字符串里的 key → [已脱敏]。
     /// 只改副本；出错（嵌套过深）时由调用方扣下该条。
-    pub fn redact(&self, record: &mut Record) -> Result<(), RedactError> {
-        redact_value(&mut record.body, &self.secrets, 0)?;
+    fn redact(&self, record: &mut Record) -> Result<(), RedactError> {
+        let secrets = self
+            .secrets
+            .read()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        redact_value(&mut record.body, &secrets, 0)?;
         for value in record.attributes.values_mut() {
-            redact_value(value, &self.secrets, 0)?;
+            redact_value(value, &secrets, 0)?;
         }
         if let Some(source) = &mut record.source_event {
-            redact_value(&mut source.event, &self.secrets, 0)?;
+            redact_value(&mut source.event, &secrets, 0)?;
         }
         Ok(())
     }
@@ -431,56 +513,6 @@ fn redact_value(value: &mut Value, secrets: &[String], depth: usize) -> Result<(
         _ => {}
     }
     Ok(())
-}
-
-/// T011.3：装 ledger 时同时带脱敏；脱敏出错的记录扣下，另记一条 redact-failed。
-pub fn install_ledger_with_redactor(
-    monitor: &Monitor,
-    store: &mut session::SessionStore,
-    redactor: Redactor,
-) {
-    let session_id = store.id().as_str().to_owned();
-    let monitor = monitor.clone();
-    let hook: session::AppendHook = Arc::new(move |events: &[session::Event]| {
-        for event in events {
-            let mut record = ledger_record(&session_id, event);
-            match redactor.redact(&mut record) {
-                Ok(()) => {
-                    let _ = monitor.record(record);
-                }
-                Err(_) => {
-                    let event_type = serde_json::to_value(event)
-                        .ok()
-                        .and_then(|value| value.get("type").cloned())
-                        .unwrap_or(Value::Null);
-                    let mut attributes = Map::new();
-                    attributes.insert("event.type".to_owned(), event_type);
-                    attributes.insert("event.seq".to_owned(), json!(event.seq));
-                    let _ = monitor.record(Record {
-                        channel: Channel::Ops,
-                        time: event.time,
-                        severity: Severity::Warn,
-                        attributes,
-                        body: json!({}),
-                        source_event: None,
-                    });
-                }
-            }
-        }
-    });
-    store.set_append_hook(Some(hook));
-}
-
-/// T011.2：把监控装到会话的「追加之后」钩子上。
-pub fn install_ledger(monitor: &Monitor, store: &mut session::SessionStore) {
-    let session_id = store.id().as_str().to_owned();
-    let monitor = monitor.clone();
-    let hook: session::AppendHook = Arc::new(move |events: &[session::Event]| {
-        for event in events {
-            let _ = monitor.record(ledger_record(&session_id, event));
-        }
-    });
-    store.set_append_hook(Some(hook));
 }
 
 #[cfg(test)]
@@ -594,7 +626,8 @@ mod tests {
         let path = dir.path().join("monitor.jsonl");
         let mut sink = file_sink(&path);
         let dropped = AtomicU64::new(3);
-        write_pending_gap(&mut sink, &dropped).expect("写 gap");
+        let gap = pending_gap(&dropped).expect("gap");
+        write_record(&mut sink, &gap).expect("写 gap");
         write_record(
             &mut sink,
             &Record::ops("stream-open", Severity::Info, json!({"ok": true})),
@@ -632,7 +665,12 @@ mod tests {
             attempts: Arc::clone(&attempts),
         };
         let handle = std::thread::spawn(move || {
-            run_writer(Box::new(sink), rx, Arc::new(AtomicU64::new(0)));
+            run_writer(
+                Box::new(sink),
+                rx,
+                Arc::new(AtomicU64::new(0)),
+                Redactor::new(Vec::new()),
+            );
         });
         handle.join().expect("写线程应停下而不是 panic");
         assert_eq!(attempts.load(Ordering::SeqCst), 1, "写失败后不再尝试第二条");

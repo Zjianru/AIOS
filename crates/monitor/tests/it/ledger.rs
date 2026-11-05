@@ -1,8 +1,13 @@
-//! T011.2 清单 1、2、9：ledger 挂在会话「追加之后」的钩子上。
+//! T011.2 清单 1、2、9：ledger 挂在会话「追加之后」的钩子上（F1 后生产/测试共用 append_hook_factory）。
 
 use model::Message;
-use monitor::install_ledger;
+use monitor::Monitor;
 use session::{EventKind, LlmFailure, SessionStore, ToolError, TurnEndReason};
+
+fn wire_ledger(monitor: &Monitor, store: &mut SessionStore) {
+    let factory = monitor.append_hook_factory();
+    store.set_append_hook(Some(factory(store.id())));
+}
 
 fn tool_result(message: Message, error: Option<ToolError>) -> EventKind {
     EventKind::ToolResult {
@@ -40,7 +45,7 @@ fn ledger_records_every_event_in_order_with_severity() {
     let mut store = SessionStore::create(data.path(), cwd.path()).expect("建会话");
     let session_id = store.id().as_str().to_owned();
     let monitor = monitor::Monitor::open_with_capacity(data.path(), 1024).expect("监控");
-    install_ledger(&monitor, &mut store);
+    wire_ledger(&monitor, &mut store);
 
     store
         .append(&[
@@ -116,7 +121,7 @@ fn reopened_session_only_records_events_after_reopen() {
     let mut store = SessionStore::create(data.path(), cwd.path()).expect("建会话");
     let id = store.id().clone();
     let first_monitor = monitor::Monitor::open_with_capacity(data.path(), 128).expect("第一个监控");
-    install_ledger(&first_monitor, &mut store);
+    wire_ledger(&first_monitor, &mut store);
     store
         .append(&[
             EventKind::TurnStart { turn: 1 },
@@ -134,7 +139,7 @@ fn reopened_session_only_records_events_after_reopen() {
     let mut reopened = SessionStore::open(data.path(), &id).expect("重开会话");
     let second_monitor =
         monitor::Monitor::open_with_capacity(data.path(), 128).expect("第二个监控");
-    install_ledger(&second_monitor, &mut reopened);
+    wire_ledger(&second_monitor, &mut reopened);
     reopened
         .append(&[EventKind::TurnStart { turn: 2 }])
         .expect("追加新事件");
