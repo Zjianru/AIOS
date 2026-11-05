@@ -135,3 +135,43 @@ pub(crate) fn wire_effort(
         max_tokens: effective,
     }
 }
+
+/// 这一轮实际会发的档（用于日志；与 wire_effort 的选择一致）。
+pub(crate) fn actual_effort(base_url: &str, model: &str, effort: &Effort) -> String {
+    let profile = reasoning(base_url, model);
+    if effort.is_off() && profile.always_thinks {
+        return fit_effort("low", &profile.efforts);
+    }
+    fit_effort(effort.as_str(), &profile.efforts)
+}
+
+#[cfg(test)]
+mod effort_state_tests {
+    use super::*;
+
+    #[test]
+    fn wanted_none_on_an_always_thinking_model_logs_the_lowest_level() {
+        let (wanted, actual) = (
+            Effort::new("none"),
+            actual_effort(
+                "https://api.minimax.cn/anthropic",
+                "MiniMax-M3.1-Flash",
+                &Effort::new("none"),
+            ),
+        );
+        assert_eq!(wanted.as_str(), "none");
+        assert_eq!(actual, "low");
+    }
+
+    #[test]
+    fn deepseek_high_stays_high() {
+        assert_eq!(
+            actual_effort(
+                "https://api.deepseek.com/anthropic",
+                "deepseek-flash",
+                &Effort::new("high"),
+            ),
+            "high"
+        );
+    }
+}

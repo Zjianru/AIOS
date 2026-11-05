@@ -27,6 +27,8 @@ fn message_event(seq: u64, text: &str) -> Event {
         seq,
         seq * 10,
         EventKind::AssistantMessage {
+            effort: None,
+            effort_wanted: None,
             turn: 1,
             step: 1,
             message: Message::text(Role::Assistant, text),

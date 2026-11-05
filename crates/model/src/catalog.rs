@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-fn deserialize_snapshot(raw: &str) -> CatalogSnapshot {
+pub fn deserialize_snapshot(raw: &str) -> CatalogSnapshot {
     match serde_json::from_str(raw) {
         Ok(snapshot) => snapshot,
         Err(error) => panic!("内置目录测试数据必须是合法 JSON: {error}"),

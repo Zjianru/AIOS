@@ -832,16 +832,21 @@ async fn api_handler(
         ),
     };
     // T011.4：每次 /api 一条 api-call（不记请求体/响应体）；Keyring/连接操作另记一条 ops。
+    // T012.3 P1：请求里带档（T012.7 起 session-send/session-model-select 会带）时，api-call 记下来。
+    let mut attributes = vec![
+        ("method".to_owned(), serde_json::json!(method)),
+        ("status".to_owned(), serde_json::json!(http_status)),
+        ("code".to_owned(), serde_json::json!(code)),
+        ("durationMs".to_owned(), serde_json::json!(duration_ms)),
+    ];
+    if let Some(effort) = value.get("effort").and_then(serde_json::Value::as_str) {
+        attributes.push(("effort".to_owned(), serde_json::json!(effort)));
+    }
     record_ops(
         &state,
         "api-call",
         if ok { Severity::Info } else { Severity::Warn },
-        vec![
-            ("method".to_owned(), serde_json::json!(method)),
-            ("status".to_owned(), serde_json::json!(http_status)),
-            ("code".to_owned(), serde_json::json!(code)),
-            ("durationMs".to_owned(), serde_json::json!(duration_ms)),
-        ],
+        attributes,
     );
     record_domain_op(&state, &method, &value, ok, &code, duration_ms);
     match result {

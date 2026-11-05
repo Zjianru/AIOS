@@ -233,6 +233,8 @@ fn assistant_settlement_shapes_match_dsh() {
     store
         .append(&[
             EventKind::AssistantMessage {
+                effort: None,
+                effort_wanted: None,
                 turn: 1,
                 step: 1,
                 message: Message::assistant(
@@ -261,6 +263,8 @@ fn assistant_settlement_shapes_match_dsh() {
                 }],
             },
             EventKind::AssistantMessage {
+                effort: None,
+                effort_wanted: None,
                 turn: 1,
                 step: 1,
                 message: Message::assistant(
@@ -468,6 +472,8 @@ fn all_event_kinds_round_trip_under_dsh_envelope() {
             outcome: Some(InboxOutcome::Canceled),
         },
         EventKind::AssistantMessage {
+            effort: None,
+            effort_wanted: None,
             turn: 1,
             step: 1,
             message: Message::text(Role::Assistant, "好的"),

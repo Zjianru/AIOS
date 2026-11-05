@@ -66,6 +66,16 @@ impl DeepSeek {
         })
     }
 
+    /// T012.3：这一轮实际发的档和用户要的档（日志用；实际档按模型的档位适配过）。
+    pub fn effort_state(&self) -> (String, String) {
+        let actual = vendors::actual_effort(
+            &self.config.base_url,
+            &self.config.model,
+            &self.config.effort,
+        );
+        (self.config.effort.as_str().to_owned(), actual)
+    }
+
     pub fn config(&self) -> &DeepSeekConfig {
         &self.config
     }

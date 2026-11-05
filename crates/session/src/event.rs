@@ -364,6 +364,12 @@ pub enum EventKind {
         usage: Option<Usage>,
         #[serde(skip_serializing_if = "Option::is_none")]
         interrupted: Option<bool>,
+        /// T012.3：这一轮实际发的档（要的档见 effort_wanted）。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
+        /// T012.3：用户要的档；换到不能调的模型时和实际发的不同。
+        #[serde(skip_serializing_if = "Option::is_none")]
+        effort_wanted: Option<String>,
     },
     /// 一次没有产出可见消息的模型尝试（重试/取消/流错误）。stream 保留帧，不进派生历史。
     #[serde(rename = "assistant/attempt")]

@@ -48,6 +48,8 @@ fn reasoning_text_is_replaced_with_character_counts() {
     wire_ledger(&monitor, &mut store);
     store
         .append(&[EventKind::AssistantMessage {
+            effort: None,
+            effort_wanted: None,
             turn: 1,
             step: 1,
             message: Message::assistant(

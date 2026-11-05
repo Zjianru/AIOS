@@ -797,6 +797,8 @@ mod tests {
                         message: Message::user_text("a".repeat(400)),
                     },
                     EventKind::AssistantMessage {
+                        effort: None,
+                        effort_wanted: None,
                         turn: 1,
                         step: 1,
                         message: Message::assistant(

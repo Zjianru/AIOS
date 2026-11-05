@@ -16,6 +16,8 @@ fn assistant_tool_call(time: u64) -> Event {
         4,
         time,
         EventKind::AssistantMessage {
+            effort: None,
+            effort_wanted: None,
             turn: 1,
             step: 1,
             message: Message::assistant(
@@ -207,6 +209,8 @@ fn two_pending_calls_events() -> Vec<Event> {
             3,
             1_200,
             EventKind::AssistantMessage {
+                effort: None,
+                effort_wanted: None,
                 turn: 1,
                 step: 1,
                 message: Message::assistant(

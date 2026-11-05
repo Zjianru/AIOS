@@ -386,8 +386,11 @@ pub(super) async fn run_step(
     // 成功结算一律写 assistant/message（DSH agent.ts:566-584）：content 裁空也要写，
     // 让 usage 落日志（T004 K9）；派生历史会跳过空消息（session/surface.ts:140）。
     let message = assistant_message(inner, content.clone());
+    let (effort_wanted, effort) = inner.model.effort_state();
     inner
         .append(&[EventKind::AssistantMessage {
+            effort: Some(effort),
+            effort_wanted: Some(effort_wanted),
             turn,
             step,
             message,
