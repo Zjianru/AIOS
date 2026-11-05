@@ -178,11 +178,14 @@ fn directory_query_hides_dot_files_unless_explicitly_requested() {
         vec!["src/visible.ts".to_owned()],
         "默认不列隐藏文件（含隐藏子目录里的）"
     );
+    // 显式点查询不隐藏任何条目（照 DSH：fragment 以点开头就不跳过 dot 文件），
+    // 但打分管：名字以 "." 开头的排在扩展名命中前面。
     assert_eq!(
         paths(&list(dir.path(), "src/.").expect("显式点查询")),
         vec![
             "src/.secret.ts".to_owned(),
-            "src/.cache/.hidden.ts".to_owned()
+            "src/.cache/.hidden.ts".to_owned(),
+            "src/visible.ts".to_owned(),
         ],
         "显式点查询才看隐藏（含隐藏子目录）"
     );
