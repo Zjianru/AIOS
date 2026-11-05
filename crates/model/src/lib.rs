@@ -7,6 +7,7 @@ mod cancel;
 mod credential;
 mod deepseek;
 mod error;
+pub mod http;
 mod ir;
 
 pub use assistant_stream::{

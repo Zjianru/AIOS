@@ -52,9 +52,8 @@ impl DeepSeek {
         credentials: Arc<dyn CredentialSource>,
     ) -> Result<Self, ModelError> {
         let url = messages_url(&config.base_url)?;
-        let http = reqwest::Client::builder()
-            .build()
-            .map_err(transport::transport_error)?;
+        // T012.1：出站 client 只在 model::http 一处造。
+        let http = crate::http::client()?;
         Ok(Self {
             http,
             config,
