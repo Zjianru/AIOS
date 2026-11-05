@@ -17,7 +17,7 @@ test('底栏选模型：下一轮请求用新模型', async ({ page, request }) 
     await page.getByRole('menuitem', { name: /DeepSeek-V4-Pro/ }).click({ force: true });
     await page.getByPlaceholder('和 Kind 说…').fill('你好');
     await page.getByRole('button', { name: '发送', exact: true }).click();
-    await expect.poll(() => fixture.lastModel(), { timeout: 30_000 }).toBe('deepseek-pro');
+    await expect.poll(() => fixture.lastModel(), { timeout: 30_000 }).toBe('deepseek-v4-pro');
   } finally {
     await fixture.close();
   }

@@ -29,7 +29,7 @@ test('设置页从目录加 MiniMax 连接并保存', async ({ page }) => {
     });
     await expect(
       page.locator('[data-settings="editor"] input[value="MiniMax-M3.1-Flash"]'),
-    ).toHaveCount(1);
+    ).toHaveCount(2); // 模型 ID 和显示名称两个输入都是这个值
     // 余额/余量查询入口在（假端点查不到，给「查不到」提示，不报错）。
     await page.getByText('余额与套餐余量').click();
     await page.getByRole('button', { name: '查询余额/余量' }).click();
