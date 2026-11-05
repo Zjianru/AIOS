@@ -33,7 +33,7 @@ impl Respond for SequenceResponder {
             let mut responses = self
                 .responses
                 .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             responses.pop_front()
         };
         match next {
