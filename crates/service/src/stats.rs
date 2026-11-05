@@ -557,7 +557,7 @@ mod tests {
         let cost = usage_cost_usd(&usage, &price).expect("四类价都有");
         assert!(
             (cost - expected).abs() < 1e-12,
-            "四类单价：期望 {expected}，实际 {cost}（输入 755 缓存读 24970 输出 435）"
+            "四类单价：期望 {expected}，实际 {cost}（输入 755 缓存读 24970 输出 354）"
         );
         // 旧算法（把缓存读乘输入价）会高约 10 倍：≈0.00417。
         assert!(
