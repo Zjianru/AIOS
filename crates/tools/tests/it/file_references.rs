@@ -244,6 +244,18 @@ fn unreadable_subtree_costs_only_its_candidates() {
 }
 
 #[test]
+fn fresh_files_appear_without_an_invalidation_step() {
+    // AIOS 的 file-references-list 每次现场遍历（没有 DSH 的索引缓存），新文件下一次查询就能看到。
+    let dir = tempfile::tempdir().unwrap();
+    assert!(list(dir.path(), "fresh-file").expect("空目录").is_empty());
+    fs::write(dir.path().join("fresh-file.ts"), "fresh").unwrap();
+    assert_eq!(
+        paths(&list(dir.path(), "fresh-file").expect("新文件")),
+        vec!["fresh-file.ts".to_owned()]
+    );
+}
+
+#[test]
 fn bytes_are_reported_for_each_candidate() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("a.ts"), "hello").unwrap();
