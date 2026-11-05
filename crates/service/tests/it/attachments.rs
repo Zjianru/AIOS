@@ -7,8 +7,6 @@ use model::{DEFAULT_CONTEXT_WINDOW, DeepSeekConfig, Effort};
 use service::{AttachmentGetRequest, AttachmentPutRequest, Call, RootHost, RootSessionOptions};
 use tempfile::tempdir;
 
-const TEST_KEY: &str = "sk-t013-service-0123456789";
-
 struct TestCredential;
 
 impl model::CredentialSource for TestCredential {
