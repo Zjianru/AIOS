@@ -1284,7 +1284,8 @@ impl RootHost {
         // T009.3：验证走模型适配器（和对话同一条请求路径/同一组头），不再手写 reqwest。
         let config = model::DeepSeekConfig {
             base_url: connection.endpoint.clone(),
-            model: connection.model.clone(),
+            // K3：验证用连接所选模型（新形状的 models 第一行）序列化。
+            model: connection.primary_model().to_owned(),
             max_tokens: 1,
             context_window: model::DEFAULT_CONTEXT_WINDOW,
             effort: model::Effort::new("off"),
