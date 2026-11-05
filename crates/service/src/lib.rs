@@ -1674,6 +1674,17 @@ mod t009_error_tests {
     }
 
     #[test]
+    fn invalid_json_code_is_in_the_single_code_table() {
+        assert_eq!(ServiceErrorCode::ALL.len(), 12, "码数 12（spec v1.1）");
+        assert!(
+            ServiceErrorCode::ALL
+                .iter()
+                .any(|code| code.as_str() == "request/invalid-json"),
+            "request/invalid-json 必须进唯一码表 ALL"
+        );
+    }
+
+    #[test]
     fn service_error_body_has_code_message_and_root_details() {
         let root_error = ServiceError::RootUnavailable(RootState::Unavailable {
             kind: RootUnavailableKind::Other,

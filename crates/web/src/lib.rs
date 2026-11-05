@@ -1353,6 +1353,21 @@ mod t009_error_tests {
         }
     }
 
+    #[tokio::test]
+    async fn invalid_json_uses_the_shared_code_table() {
+        let response = bad_request_response("bad".to_owned());
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let json = body_json(response).await;
+        assert_eq!(json["code"], "request/invalid-json");
+        assert!(json.get("error").is_none(), "不再有旧 error 字段：{json}");
+        assert!(
+            service::ServiceErrorCode::ALL
+                .iter()
+                .any(|code| code.as_str() == "request/invalid-json"),
+            "invalid-json 必须进唯一码表 ALL"
+        );
+    }
+
     #[test]
     fn service_error_statuses_are_stable() {
         for code in service::ServiceErrorCode::ALL {
