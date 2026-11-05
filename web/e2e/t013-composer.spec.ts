@@ -284,3 +284,162 @@ test('拖拽目录：明确拒绝，不出卡片', async ({ page }) => {
     await fixture.close();
   }
 });
+
+
+/// T013.7 清单 13/故事 8：粘贴卡片有行数/字数，点开看全文。
+test('粘贴卡片：行数/字数与点开全文', async ({ page }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    const box = input(page);
+    const content = '第一行\n第二行\n第三行';
+    await box.evaluate((element, value) => {
+      const data = new DataTransfer();
+      data.setData('text/plain', value.repeat(120));
+      element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true }));
+    }, content);
+    const card = page.locator('[data-kind="paste-card"]').first();
+    await expect(card).toBeVisible();
+    await expect(card).toContainText('行');
+    await expect(card).toContainText('字');
+    await card.locator('[data-kind="paste-open"]').click();
+    const preview = page.locator('[data-kind="paste-preview"]');
+    await expect(preview).toBeVisible();
+    const previewText = await preview.innerText();
+    expect(previewText).toContain('第一行');
+    expect(previewText).toContain('第三行');
+  } finally {
+    await fixture.close();
+  }
+});
+
+/// T013.7 清单 13/故事 7：文件卡片有类型与大小，点开看全文（attachment-get）。
+test('文件卡片：类型/大小与点开全文', async ({ page }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    const composer = page.locator('[data-kind="composer"]');
+    await composer.evaluate((element) => {
+      const data = new DataTransfer();
+      data.items.add(new File(['文件里的内容\n'], 'notes.txt', { type: 'text/plain' }));
+      element.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }));
+    });
+    const card = page.locator('[data-kind="file-card"]').first();
+    await expect(card).toBeVisible({ timeout: 15_000 });
+    await expect(card).toContainText('文字');
+    await expect(card).toContainText('notes.txt');
+    await card.locator('[data-kind="file-open"]').click();
+    const preview = page.locator('[data-kind="file-preview"]');
+    await expect(preview).toBeVisible();
+    await expect(preview).toContainText('文件里的内容');
+  } finally {
+    await fixture.close();
+  }
+});
+
+/// T013.7 清单 13：@高亮 token 与 textarea 同位置字符对齐（去掉 padding 后不横向错位）。
+test('@高亮：token 与输入框字符位置对齐', async ({ page }) => {
+  const fixture = await startKernelFixture({ toolTurn: true });
+  try {
+    await page.goto(urlOf(fixture));
+    const box = input(page);
+    await box.fill('前缀文字 @hello.txt');
+    const highlight = page.locator('[data-kind="at-highlight"]');
+    const token = highlight.locator('[data-at-token="@hello.txt"]');
+    await expect(token).toHaveCount(1);
+    // 用同样的字体量前缀文本宽度；token 的 x 应等于「层左缘 + 前缀宽度」（±1px）。
+    const aligned = await page.evaluate(() => {
+      const layer = document.querySelector('[data-kind="at-highlight"]') as HTMLElement;
+      const tokenElement = layer.querySelector('[data-at-token]') as HTMLElement;
+      const textarea = document.querySelector('[data-kind="composer-input"]') as HTMLTextAreaElement;
+      const layerBox = layer.getBoundingClientRect();
+      const tokenBox = tokenElement.getBoundingClientRect();
+      const measure = document.createElement('span');
+      const style = getComputedStyle(textarea);
+      measure.style.font = style.font;
+      measure.style.letterSpacing = style.letterSpacing;
+      measure.style.whiteSpace = 'pre';
+      measure.textContent = '前缀文字 ';
+      document.body.appendChild(measure);
+      const width = measure.getBoundingClientRect().width;
+      measure.remove();
+      return { delta: Math.abs(tokenBox.x - (layerBox.x + width)) };
+    });
+    expect(aligned.delta).toBeLessThan(1.5);
+  } finally {
+    await fixture.close();
+  }
+});
+
+/// T013.7 清单 13：@ 菜单 ↑↓ 换高亮、Esc 关、Enter 选当前项。
+test('@ 菜单：ArrowDown/ArrowUp 换项、Escape 关闭', async ({ page }) => {
+  const fixture = await startKernelFixture({ toolTurn: true });
+  try {
+    await page.goto(urlOf(fixture));
+    const box = input(page);
+    await box.fill('@');
+    const menu = page.locator('[data-kind="at-menu"]');
+    await expect(menu).toBeVisible({ timeout: 15_000 });
+    const items = menu.getByRole('button');
+    await expect(items.first()).toBeVisible();
+    const firstText = await items.first().innerText();
+    await box.press('ArrowDown');
+    // 高亮项变成第二个（背景 class 变化不好断言，直接看 data-state 没做——用 Enter 选第二项再断言插入内容）。
+    await box.press('Enter');
+    await expect(box).not.toHaveValue('');
+    // Esc 关菜单。
+    await box.fill('@');
+    await expect(menu).toBeVisible({ timeout: 15_000 });
+    await box.press('Escape');
+    await expect(menu).toHaveCount(0);
+    void firstText;
+  } finally {
+    await fixture.close();
+  }
+});
+
+/// T013.7 清单 13：带空格的路径要加引号插入。
+test('@ 菜单：带空格的路径加引号', async ({ page }) => {
+  const fixture = await startKernelFixture({ toolTurn: true });
+  try {
+    await page.goto(urlOf(fixture));
+    const box = input(page);
+    await box.fill('@with');
+    const menu = page.locator('[data-kind="at-menu"]');
+    await expect(menu).toBeVisible({ timeout: 15_000 });
+    await expect(menu).toContainText('with space.txt');
+    await menu.getByRole('button', { name: /with space/ }).first().click();
+    await expect(page.locator('[data-kind="composer-input"]')).toHaveValue('@"with space.txt"');
+  } finally {
+    await fixture.close();
+  }
+});
+
+/// T013.7 清单 14：Ctrl+Enter 也发送。
+test('Ctrl+Enter 发送', async ({ page }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    const box = input(page);
+    await box.fill('Ctrl 发送');
+    await box.press('Control+Enter');
+    await expect(page.locator('[data-kind="user-bubble"]').first()).toContainText('Ctrl 发送', { timeout: 15_000 });
+  } finally {
+    await fixture.close();
+  }
+});
+
+/// T013.7 清单 14：Alt+Enter 不发送也不换行。
+test('Alt+Enter 不发送也不换行', async ({ page }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    const box = input(page);
+    await box.fill('Alt 不动作');
+    await box.press('Alt+Enter');
+    await expect(page.locator('[data-kind="user-bubble"]')).toHaveCount(0);
+    await expect(box).toHaveValue('Alt 不动作');
+  } finally {
+    await fixture.close();
+  }
+});

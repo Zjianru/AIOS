@@ -14,7 +14,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { FileText, Quote, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { attachmentPut, fileReferences } from '@/data/service';
+import { attachmentGet, attachmentPut, fileReferences } from '@/data/service';
 import type { FileReferenceEntry, SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
 
@@ -38,6 +38,26 @@ interface ComposerProps {
   onCanSendChange: (value: boolean) => void;
   /** 右侧控件（模型选择 + 发送/停止）。 */
   children?: React.ReactNode;
+}
+
+/** 本地记录文件的 MIME（发送时只带 id/name/bytes；预览用）。 */
+interface ComposerAttachment extends SendAttachmentRef {
+  mime: string;
+}
+
+/** 文件类型的人话（故事 7：卡片上有类型与大小）。 */
+function typeLabel(mime: string): string {
+  if (mime === 'text/plain') return '文字';
+  if (mime === 'application/json') return 'JSON';
+  if (mime === 'text/markdown') return 'Markdown';
+  if (mime === 'text/csv') return 'CSV';
+  if (mime.startsWith('text/')) return mime.slice(5) || '文字';
+  return mime || '文字';
+}
+
+/** 粘贴文本的行数/字数（故事 8：卡片上要显示）。 */
+function pasteStats(text: string): { lines: number; chars: number } {
+  return { lines: text.split(String.fromCharCode(10)).length, chars: [...text].length };
 }
 
 interface AtMenuState {
@@ -87,7 +107,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const composingRef = useRef(false);
   const [text, setText] = useState('');
   const [pastes, setPastes] = useState<string[]>([]);
-  const [attachments, setAttachments] = useState<SendAttachmentRef[]>([]);
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [pastePreview, setPastePreview] = useState<number | null>(null);
+  const [filePreview, setFilePreview] = useState<{ id: string; text: string } | null>(null);
   const [atMenu, setAtMenu] = useState<AtMenuState | null>(null);
   const [quote, setQuote] = useState<string>('');
   const cardsRef = useRef<HTMLDivElement | null>(null);
@@ -166,7 +188,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       try {
         const data = await readAsBase64(file);
         const stored = await attachmentPut(file.name, data);
-        setAttachments((previous) => [...previous, { id: stored.id, name: stored.name, bytes: stored.bytes }]);
+        setAttachments((previous) => [
+          ...previous,
+          { id: stored.id, name: stored.name, bytes: stored.bytes, mime: file.type || 'text/plain' },
+        ]);
       } catch {
         toast('只能放文字文件', { description: file.name + ' 不是能读的文字文件' });
       }
@@ -181,7 +206,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     if (offline) return;
     const value = text.trim();
     if (!value && pastes.length === 0 && attachments.length === 0) return;
-    onSend(value, { pastes, attachments });
+    onSend(value, { pastes, attachments: attachments.map(({ id, name, bytes }) => ({ id, name, bytes })) });
     setText('');
     setPastes([]);
     setAttachments([]);
@@ -196,6 +221,30 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   useImperativeHandle(ref, () => ({ submit, focus: () => inputRef.current?.focus() }), [submit]);
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // @ 菜单打开：↑↓ 换高亮、Esc 关（Enter 在下面选高亮项）。
+    if (atMenu && atMenu.items.length > 0) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setAtMenu((previous) =>
+          previous ? { ...previous, index: (previous.index + 1) % previous.items.length } : previous,
+        );
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setAtMenu((previous) =>
+          previous
+            ? { ...previous, index: (previous.index - 1 + previous.items.length) % previous.items.length }
+            : previous,
+        );
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setAtMenu(null);
+        return;
+      }
+    }
     if (event.key !== 'Enter') return;
     // 组字器里的 Enter 是选字，不发送也不换行（浏览器自己处理）。
     if (event.nativeEvent.isComposing || composingRef.current) return;
@@ -251,33 +300,59 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       <div className="rounded-card border border-line-2 bg-raised/70 px-3 py-2 transition-colors">
         {pastes.length > 0 || attachments.length > 0 ? (
           <div ref={cardsRef} className="mb-1.5 flex gap-1.5 overflow-x-auto pb-1" data-kind="composer-cards">
-            {pastes.map((paste, index) => (
-              <span
-                key={'paste-' + index}
-                data-kind="paste-card"
-                className="flex shrink-0 items-center gap-1 rounded-btn border border-line-2 bg-pane px-2 py-1 text-2 text-ink-2"
-              >
-                <FileText className="size-3" />
-                <span className="max-w-[220px] truncate">{paste.replace(/\s+/g, ' ').slice(0, 80)}</span>
-                <button
-                  type="button"
-                  aria-label="移除粘贴"
-                  onClick={() => setPastes((previous) => previous.filter((_, item) => item !== index))}
-                  className="text-ink-3 hover:text-ink"
+            {pastes.map((paste, index) => {
+              const stats = pasteStats(paste);
+              return (
+                <span
+                  key={'paste-' + index}
+                  data-kind="paste-card"
+                  className="flex shrink-0 items-center gap-1 rounded-btn border border-line-2 bg-pane px-2 py-1 text-2 text-ink-2"
                 >
-                  <X className="size-3" />
-                </button>
-              </span>
-            ))}
-            {attachments.map((file) => (
+                  <FileText className="size-3" />
+                  <button
+                    type="button"
+                    data-kind="paste-open"
+                    onClick={() => setPastePreview(index)}
+                    className="flex min-w-0 items-center gap-1 text-left hover:text-ink"
+                  >
+                    <span className="max-w-[160px] truncate">{paste.replace(/\s+/g, ' ').slice(0, 80)}</span>
+                    <span className="shrink-0 text-ink-3">
+                      {stats.lines} 行 · {stats.chars} 字
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="移除粘贴"
+                    onClick={() => setPastes((previous) => previous.filter((_, item) => item !== index))}
+                    className="text-ink-3 hover:text-ink"
+                  >
+                    <X className="size-3" />
+                  </button>
+                </span>
+              );
+            })}
+            {attachments.map((file, index) => (
               <span
-                key={file.id}
+                key={file.id + '-' + index}
                 data-kind="file-card"
                 className="flex shrink-0 items-center gap-1 rounded-btn border border-line-2 bg-pane px-2 py-1 text-2 text-ink-2"
               >
                 <FileText className="size-3" />
-                <span className="max-w-[180px] truncate">{file.name}</span>
-                <span className="text-ink-3">{Math.max(1, Math.round(file.bytes / 1024))}KB</span>
+                <button
+                  type="button"
+                  data-kind="file-open"
+                  onClick={() => {
+                    void attachmentGet(file.id)
+                      .then((result) => setFilePreview({ id: file.id, text: result.text ?? '（这个文件没有可显示的文字）' }))
+                      .catch(() => toast('读不回这个文件', { description: file.name }));
+                  }}
+                  className="flex min-w-0 items-center gap-1 text-left hover:text-ink"
+                >
+                  <span className="max-w-[150px] truncate">{file.name}</span>
+                  <span className="shrink-0 text-ink-3">
+                    {typeLabel(file.mime)} · {Math.max(1, Math.round(file.bytes / 1024))}KB
+                  </span>
+                </button>
                 <button
                   type="button"
                   aria-label="移除文件"
@@ -304,7 +379,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
                   <span
                     key={index}
                     data-at-token={segment.value}
-                    className="rounded-[3px] bg-active px-0.5 text-brand"
+                    className="rounded-[3px] bg-active text-brand"
                   >
                     {segment.value}
                   </span>
@@ -385,6 +460,36 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           <Quote className="size-3" />
           引用
         </button>
+      ) : null}
+      {pastePreview !== null && pastes[pastePreview] !== undefined ? (
+        <div
+          data-kind="paste-preview"
+          className="absolute bottom-full left-3 mb-1 max-h-[240px] w-[420px] max-w-[calc(100%-24px)] overflow-auto rounded-card border border-line-2 bg-raised p-2 shadow-[var(--shadow-pop)]"
+        >
+          <div className="mb-1 flex items-center justify-between text-1 text-ink-3">
+            <span>
+              粘贴内容 · {pasteStats(pastes[pastePreview]).lines} 行 · {pasteStats(pastes[pastePreview]).chars} 字
+            </span>
+            <button type="button" aria-label="关闭粘贴全文" onClick={() => setPastePreview(null)} className="hover:text-ink">
+              <X className="size-3" />
+            </button>
+          </div>
+          <pre className="whitespace-pre-wrap break-words font-mono text-2 leading-5 text-ink-2">{pastes[pastePreview]}</pre>
+        </div>
+      ) : null}
+      {filePreview ? (
+        <div
+          data-kind="file-preview"
+          className="absolute bottom-full left-3 mb-1 max-h-[240px] w-[420px] max-w-[calc(100%-24px)] overflow-auto rounded-card border border-line-2 bg-raised p-2 shadow-[var(--shadow-pop)]"
+        >
+          <div className="mb-1 flex items-center justify-between text-1 text-ink-3">
+            <span>文件全文</span>
+            <button type="button" aria-label="关闭文件全文" onClick={() => setFilePreview(null)} className="hover:text-ink">
+              <X className="size-3" />
+            </button>
+          </div>
+          <pre className="whitespace-pre-wrap break-words font-mono text-2 leading-5 text-ink-2">{filePreview.text}</pre>
+        </div>
       ) : null}
       {atMenu && atMenu.items.length > 0 ? (
         <div

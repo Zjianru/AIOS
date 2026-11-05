@@ -171,6 +171,18 @@ export async function attachmentPut(name: string, base64Data: string): Promise<A
   return response as unknown as AttachmentPutResult;
 }
 
+/** T013.7：按 id 读回附件（文字文件给全文；二进制 text 为空）。 */
+export interface AttachmentGetResult {
+  name: string;
+  bytes: number;
+  text?: string;
+}
+
+export async function attachmentGet(id: string): Promise<AttachmentGetResult> {
+  const response = await post({ method: 'attachment-get', id });
+  return response as unknown as AttachmentGetResult;
+}
+
 /** T013.7：按打的字列 @ 文件候选（服务端 BFS + 排序）。 */
 export interface FileReferenceEntry {
   path: string;

@@ -161,6 +161,8 @@ export async function startKernelFixture(
   }
   if (options.toolTurn || options.t013Process) {
     await writeFile(path.join(dataDir, 'hello.txt'), 'hello from fixture\n');
+    // T013.7：带空格的路径（@ 菜单插入要给引号用）。
+    await writeFile(path.join(dataDir, 'with space.txt'), 'spaced file\n');
   }
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
