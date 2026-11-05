@@ -22,15 +22,15 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 ## 功能与模块
 
 - **model**：provider 无关的消息 IR 与流式块、Anthropic Messages 适配器（anthropic/；厂商差异集中在 vendors.rs：思考档按模型目录的档位适配，序列化 thinking/output_config/max_tokens）、重试/取消、token 估算与请求派生、models.dev 目录（24h 缓存/内置快照/厂商列表合并）、本机地址不走代理的共享 HTTP client。
-- **session**：会话事件与格式版本、JSONL 追加与读取、折叠/恢复、单写者文件锁。
+- **session**：会话事件与格式版本、JSONL 追加与读取、折叠/恢复、单写者文件锁；session/model 是会话模型选择（连接/模型/想要的档）的 durable 事实，最近一条胜出（重开恢复）。
 - **tools**：Tool 接口与 ToolSet、工具批执行（独占屏障/并行池/按模型顺序提交）、内置文件工具与观察策略、spill、后台 job、bash。
-- **agent**：轮次驱动、收件箱、能力注册表与各能力实现；唯一产品组装入口是 Agent::open。
+- **agent**：轮次驱动、收件箱、能力注册表与各能力实现；唯一产品组装入口是 Agent::open；Agent::select 写 session/model 并只改下一轮。
 - **agent 能力**：compaction（自动/溢出/手动）、prune、instructions、skill、todo、ask、spill、reminder、jobs。
 - **credentials**：Keyring 真恢复；age 加密整份存储（0600/0700）、age 身份文件作钥匙（换位置/指回/重新开始）、连接描述不含 key 正文、每请求签发并只追加签发记录、变化通知；数据目录配置只存钥匙位置。model::CredentialSource 是模型出站的凭证接缝：每次 stream 前 issue 一次、只用一次；T012.6 起还带 auth_header（连接上记住的单头，None = 两个都发）与 remember_auth_header（适配器学到单头后回报产品层写回连接）；服务验证连接的凭证来源同样写回。
-- **service**：载体无关的宿主；对象固定 Kind 根会话，调用面 Call/Response，事件面 ServiceEvent；root 模块负责根会话找回、状态文件与不可用状态；shutdown 做停服务收尾。
+- **service**：载体无关的宿主；对象固定 Kind 根会话，调用面 Call/Response，事件面 ServiceEvent；root 模块负责根会话找回、状态文件与不可用状态；shutdown 做停服务收尾；settings 模块管 <数据目录>/settings.json 的非密钥设置（上次模型选择）；session-model-select 写事件/上次选择，跨连接空闲时重建根 agent。
 - **web**：axum HTTP/WS 薄适配器与信任栅栏；/connect、/ 换签名 cookie，/api、/ws 只认 cookie；同源托管 web/dist 静态资源（SPA fallback）；ready 帧带协议版本、根状态与上下文。
 - **web/ 前端**：React 19 + Vite；Kind 对话页只走服务方法与事件；只显示接上内核的部分，不带演示开关/脚本；Kind 首次使用与设置 › 模型与连接接真 Keyring；e2e 用真 serve + 假 DeepSeek 回放。
-- **cli**：aios-dev 的 chat/run/serve；只把参数/env 变成普通配置数据，不构造模型/工具/存储。
+- **cli**：aios-dev 的 chat/run/serve；只把参数/env 变成普通配置数据，不构造模型/工具/存储；连接/模型/档的优先级是 命令行 > 会话日志选择（resume 恢复）> settings.json 上次选择 > 连接默认。
 
 ## 依赖方向
 
@@ -52,6 +52,7 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 - **单写者**：create/写 open 在会话锁文件上取非阻塞排他锁；第二个写者立刻得到 AlreadyOwned；只读打开不取锁；锁随句柄/进程释放。
 - **每次模型请求从日志派生**：不保留独立消息副本；system/tools/已发消息前缀逐字稳定，供前缀缓存命中。
 - **思考档是模型自己的**：档来自模型目录（models.dev 缓存/快照 + 厂商列表）；要的档与模型档不同时按最近档发（actual≠wanted 时日志两个都记）；压缩摘要用模型的 DefaultEffort。
+- **会话模型选择**：选择写 session/model（连接/模型/想要的档）是 durable 事实；只从下一轮生效（begin_turn 冻结 model/effort），正在跑的轮不换；重开会话从日志恢复；新会话用 settings.json 的上次选择；跨连接切换在空闲时重建根 agent（运行中只记录选择，不打断本轮）。
 - **学到的连接事实**：适配器在内存里按「连接 × 模型」学关不掉思考/必须思考（400 后本轮立即按最低非关档重发一次，同进程后续请求直接最低档）；按「连接」学通过的鉴权头（两个头一起被拒后各试一次，x-api-key 先、Authorization 后，学到的单头写回连接的 auth_header，之后只发它）。重启后再学一次；学到的状态不落日志。
 - **消息身份稳定**：消息 id 在创建时生成，写入日志、续接读回、派生后保持不变。
 - **输入队列先落盘再改内存**：send/cancel 返回前队列变更已作为 inbox/spliced 落盘；resume 从日志折叠恢复，不自动开 turn。
@@ -74,6 +75,6 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
   - sec-fetch-site: cross-site 拒绝；
   - 静态资源只校 Host。
 - **协议只增**：根不可用时除 recheck 外方法回 409 ROOT_UNAVAILABLE；recheck 修复后接管；turn/end 的 cause 只增 credential/model。
-- **设置面协议 v3**：model-settings、connection-save/delete/verify、keyring-relocate/reopen/restart、issues、first-use、session-model-select 只增；设置由 RootHost 直接读 Keyring（根会话坏了也可读），key 只在 ConnectionSaveRequest.apiKey 请求体，响应/事件不含正文；connection-verify 发最小 Messages 请求并写注册器，session-model-select 覆盖下一轮请求 model（D26），设置变化发 keyring/changed 合成事件；RootHost 用 model_factory 惰性解析 Keyring 连接，空库可起 serve、存连接后 recheck 重建 root agent。
+- **设置面协议 v3**：model-settings、connection-save/delete/verify、keyring-relocate/reopen/restart、issues、first-use、session-model-select 只增；设置由 RootHost 直接读 Keyring（根会话坏了也可读），key 只在 ConnectionSaveRequest.apiKey 请求体，响应/事件不含正文；connection-verify 发最小 Messages 请求并写注册器，session-model-select 收 connection/model/effortWanted 三个可选字段（只增）并覆盖下一轮请求（D26），设置变化发 keyring/changed 合成事件；RootHost 用 model_factory 按会话选择惰性解析 Keyring 连接（重开传日志里的选择），空库可起 serve、存连接后 recheck 重建 root agent。
 - **CLI/服务入口统一**：写锁冲突映射为 writer-held；停服务先停收新连接，再取消在跑一轮并等收尾，日志完整、锁随 Agent drop 释放。
 - **前端只显示能用的部分**：侧栏与路由固定为接上内核的产品状态，不保留演示开关/脚本；不可达页的假数据不进入真路径。
