@@ -796,3 +796,98 @@ async fn 验证连接时学到的鉴权头写回连接() {
         "第二次验证直接只带学到的 authorization"
     );
 }
+
+/// 根会话 id（读状态文件；测试断言 session/model 事件用）。
+fn root_session_id(dir: &std::path::Path) -> session::SessionId {
+    let text = std::fs::read_to_string(dir.join(service::ROOT_STATE_FILE)).expect("root state");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("json");
+    session::SessionId::parse(value["sessionId"].as_str().expect("sessionId")).expect("id")
+}
+
+#[tokio::test]
+async fn 选模型写会话日志事件并保存上次选择() {
+    // T012.7 故事 2/8：选择是 durable 事实（session/model 事件 + settings 上次选择）。
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let response = host
+        .dispatch(Call::SessionModelSelect(SessionModelSelectRequest {
+            connection: Some("deepseek".to_owned()),
+            model: Some("deepseek-pro".to_owned()),
+            effort_wanted: Some("low".to_owned()),
+            ..Default::default()
+        }))
+        .await
+        .expect("session-model-select");
+    let service::Response::SessionModelSelect(response) = response else {
+        panic!("expected SessionModelSelect");
+    };
+    assert_eq!(response.connection, "deepseek");
+    assert_eq!(response.model, "deepseek-pro");
+    assert_eq!(response.effort_wanted, "low");
+    // durable：会话日志里有 session/model 事件（重开会话从日志恢复）。
+    let id = root_session_id(dir.path());
+    let snapshot = session::SessionStore::open_read_only(dir.path(), &id).expect("snapshot");
+    let selection = session::last_model_selection(snapshot.events()).expect("session/model 事件");
+    assert_eq!(
+        selection,
+        session::ModelSelection {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-pro".to_owned(),
+            effort_wanted: "low".to_owned(),
+        }
+    );
+    // settings.json：新会话默认用上一次选的。
+    let settings = service::settings::load(dir.path());
+    assert_eq!(settings.last_selection, Some(selection));
+}
+
+#[tokio::test]
+async fn 重开会话从日志恢复模型选择() {
+    // T012.7 故事 2：重开会话还是它（工厂收到日志里的选择）。
+    fn recording_factory(
+        seen: std::sync::Arc<std::sync::Mutex<Option<session::ModelSelection>>>,
+    ) -> service::ModelFactory {
+        std::sync::Arc::new(move |selection: Option<&session::ModelSelection>| {
+            *seen.lock().expect("seen") = selection.cloned();
+            Ok((
+                "deepseek".to_owned(),
+                DeepSeekConfig::default(),
+                Some(test_credential()),
+            ))
+        })
+    }
+    let dir = tempdir().unwrap();
+    let identity = dir.path().join("identity.txt");
+    let first_seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let mut first_options = options(dir.path(), &identity);
+    first_options.model_factory = Some(recording_factory(std::sync::Arc::clone(&first_seen)));
+    let host = RootHost::open(first_options, DEFAULT_CONTEXT_WINDOW).await;
+    assert_eq!(
+        *first_seen.lock().expect("seen"),
+        None,
+        "新会话没有会话选择"
+    );
+    host.dispatch(Call::SessionModelSelect(SessionModelSelectRequest {
+        connection: Some("deepseek".to_owned()),
+        model: Some("deepseek-pro".to_owned()),
+        effort_wanted: Some("low".to_owned()),
+        ..Default::default()
+    }))
+    .await
+    .expect("select");
+    drop(host);
+    // 重开：工厂收到日志里的选择。
+    let second_seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let mut second_options = options(dir.path(), &identity);
+    second_options.model_factory = Some(recording_factory(std::sync::Arc::clone(&second_seen)));
+    let _host = RootHost::open(second_options, DEFAULT_CONTEXT_WINDOW).await;
+    assert_eq!(
+        *second_seen.lock().expect("seen"),
+        Some(session::ModelSelection {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-pro".to_owned(),
+            effort_wanted: "low".to_owned(),
+        }),
+        "重开会话从日志恢复选择"
+    );
+}
