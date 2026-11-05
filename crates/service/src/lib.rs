@@ -615,18 +615,11 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
             };
         }
         // 非规范的尾部填充位拒收：`=` 占掉的 sextet 低位必须是 0。
-        match padding {
-            1 => {
-                if values[2] & 0b11 != 0 {
-                    return None;
-                }
-            }
-            2 => {
-                if values[1] & 0b1111 != 0 {
-                    return None;
-                }
-            }
-            _ => {}
+        if padding == 1 && values[2] & 0b11 != 0 {
+            return None;
+        }
+        if padding == 2 && values[1] & 0b1111 != 0 {
+            return None;
         }
         let number = (u32::from(values[0]) << 18)
             | (u32::from(values[1]) << 12)
