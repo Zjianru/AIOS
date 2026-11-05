@@ -1,0 +1,8 @@
+# T009.H2：慢测试判定；单测超过 5 秒记为 SLOW，连续 6 个周期（约 30 秒）没结束就杀掉。
+[profile.default]
+slow-timeout = { period = "5s", terminate-after = 6 }
+
+# 真 key 的慢测试只在本地/DoD 跑，按名字放宽（常规门禁不命中）。
+[[profile.default.overrides]]
+filter = 'test(/real_key|real-key|真_key/)'
+slow-timeout = { period = "180s", terminate-after = 2 }
