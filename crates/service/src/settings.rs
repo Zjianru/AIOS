@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 pub const SETTINGS_FILE: &str = "settings.json";
 
 /// 不是密钥的设置。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
     /// 上一次的模型选择（T012.7）。
     #[serde(
@@ -20,6 +20,22 @@ pub struct Settings {
         rename = "lastSelection"
     )]
     pub last_selection: Option<session::ModelSelection>,
+    /// 币种（T012.8）：`usd` 或 `cny`；默认 usd。
+    #[serde(default = "default_currency")]
+    pub currency: String,
+}
+
+fn default_currency() -> String {
+    "usd".to_owned()
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            last_selection: None,
+            currency: default_currency(),
+        }
+    }
 }
 
 /// 设置文件路径。
@@ -76,6 +92,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("dir");
         let settings = Settings {
             last_selection: Some(selection()),
+            ..Settings::default()
         };
         save(dir.path(), &settings).expect("save");
         assert_eq!(load(dir.path()), settings);

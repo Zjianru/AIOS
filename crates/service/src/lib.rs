@@ -6,8 +6,10 @@
 //!
 //! 对象固定 Kind 根会话：根会话实体在 T006.16b 落，本票宿主绑定一个会话、Object 用 session id。
 
+pub mod fx;
 mod root;
 pub mod settings;
+pub mod stats;
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -214,6 +216,15 @@ pub struct StatusResponse {
     pub running: bool,
     #[serde(rename = "pendingQuestions")]
     pub pending_questions: usize,
+    /// T012.8：会话统计（轮/步/token/缓存/上下文/花费）；裸宿主为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<stats::SessionStats>,
+    /// T012.8：USD→CNY 汇率与拉到时间；裸宿主为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fx: Option<fx::FxInfo>,
+    /// T012.8：币种（settings.json：usd/cny）；裸宿主为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
 }
 
 /// follow（DSH :607）：带上调用方最后看到的日志序号，服务补齐之后的事件。
@@ -866,6 +877,9 @@ impl ServiceHost {
             object: self.object(),
             running: self.agent.is_running(),
             pending_questions: self.agent.pending_questions().len(),
+            stats: None,
+            fx: None,
+            currency: None,
         })
     }
 
@@ -1552,6 +1566,79 @@ impl RootHost {
         })
     }
 
+    /// T012.8：状态（对象/在跑/待答问题）+ 会话统计（轮/步/token/缓存/上下文/花费）+ 汇率 + 币种。
+    ///
+    /// 统计和花费从日志现算（不落日志）：每轮模型取 assistant/message 的 message.source.model，
+    /// 价格按当前连接 + 目录（用户价 > 标价×倍率 > 无价格；无价格的轮标 unpriced）。
+    async fn host_status(&self, _request: StatusRequest) -> Result<StatusResponse, ServiceError> {
+        let (object, running, pending_questions, agent) = {
+            let guard = self.inner.lock().await;
+            let Some(host) = guard.as_ref() else {
+                return Err(ServiceError::RootUnavailable(
+                    self.state.lock().expect("root state 锁被毒化").clone(),
+                ));
+            };
+            (
+                host.object(),
+                host.agent().is_running(),
+                host.agent().pending_questions().len(),
+                host.agent().clone(),
+            )
+        };
+        let events = agent.session_events_from(0);
+        let current = self
+            .selection
+            .lock()
+            .expect("selection 锁被毒化")
+            .clone()
+            .unwrap_or_else(|| session::ModelSelection {
+                connection: "deepseek".to_owned(),
+                model: self.options.model.model.clone(),
+                effort_wanted: self.options.model.effort.as_str().to_owned(),
+            });
+        let settings = settings::load(&self.options.data_dir);
+        let keyring = self.keyring()?;
+        let view = keyring.view();
+        let connection = view
+            .connections
+            .iter()
+            .find(|connection| connection.id == current.connection)
+            .or_else(|| view.connections.first())
+            .cloned();
+        let catalog = model::catalog::global().unwrap_or_else(model::catalog::snapshot);
+        let (context_used, context_window) = {
+            let context = self.context.lock().expect("context 锁被毒化");
+            (context.used, context.window)
+        };
+        let stats = match connection {
+            Some(connection) => stats::session_stats(
+                &events,
+                &connection,
+                &catalog,
+                &current,
+                context_used,
+                context_window,
+            ),
+            None => stats::SessionStats {
+                context_used,
+                context_window,
+                connection: current.connection.clone(),
+                model: current.model.clone(),
+                effort_wanted: current.effort_wanted.clone(),
+                ..stats::SessionStats::default()
+            },
+        };
+        let fx = fx::usd_to_cny(&self.options.data_dir).await;
+        Ok(StatusResponse {
+            object,
+            running,
+            pending_questions,
+            stats: Some(stats),
+            fx: Some(fx),
+            currency: Some(settings.currency),
+        })
+    }
+
     /// T008.3/T012.7：选模型（连接/模型/想要的档；下一轮生效，D26）。
     ///
     /// 选择是 durable 事实：写 session/model 事件（重开会话从日志恢复）并更新 settings.json
@@ -1705,6 +1792,8 @@ impl RootHost {
                 .session_model_select(request)
                 .await
                 .map(Response::SessionModelSelect),
+            // T012.8：根宿主自己填统计/汇率/币种（需要 data_dir + Keyring）。
+            Call::Status(request) => self.host_status(request).await.map(Response::Status),
             other => {
                 let guard = self.inner.lock().await;
                 match guard.as_ref() {
