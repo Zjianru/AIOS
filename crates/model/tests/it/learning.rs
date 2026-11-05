@@ -149,6 +149,12 @@ async fn 学_400_后本轮立即按最低非关档重发且下一轮直接最低
     // 第一轮：想要的档是 none（默认 config 是 high；这里显式用 none 模拟「用户选了不思考」）。
     let off = deepseek.with_effort(model::Effort::new("none"));
     drain(&off).await.expect("400 后本轮应按最低非关档重发成功");
+    // T012.6 P2：日志侧 effort_state 的 actual 与实际重发的档一致（不是旧 actual）。
+    assert_eq!(
+        off.effort_state(),
+        ("none".to_owned(), "low".to_owned()),
+        "学到 400 后 effort_state 的 actual 是实际发的最低非关档"
+    );
     // 第二轮：同一实例的下一轮，第一次请求就直接最低档。
     drain(&off).await.expect("学到的下一轮直接最低档");
 

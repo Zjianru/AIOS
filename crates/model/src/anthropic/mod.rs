@@ -85,13 +85,26 @@ impl DeepSeek {
         clone
     }
 
-    /// T012.3：这一轮实际发的档和用户要的档（日志用；实际档按模型的档位适配过）。
+    /// T012.3/T012.6：这一轮实际发的档和用户要的档（日志用；与实际请求一致）。
+    ///
+    /// T012.6 P2：本轮模型以 begin_turn 冻结的为准（与请求体一致）；学到「关不掉思考」后，
+    /// 要 none 时实际发最低非关档（与 stream 的重发一致），日志不能记旧 actual。
     pub fn effort_state(&self) -> (String, String) {
-        let actual = vendors::actual_effort(
-            &self.config.base_url,
-            &self.config.model,
-            &self.config.effort,
-        );
+        let model = self
+            .turn_model
+            .lock()
+            .ok()
+            .and_then(|current| current.clone())
+            .unwrap_or_else(|| self.config.model.clone());
+        let actual = if self.config.effort.is_off()
+            && self
+                .learned
+                .thinking_required(&self.config.base_url, &model)
+        {
+            vendors::lowest_non_off_effort(&self.config.base_url, &model)
+        } else {
+            vendors::actual_effort(&self.config.base_url, &model, &self.config.effort)
+        };
         (self.config.effort.as_str().to_owned(), actual)
     }
 

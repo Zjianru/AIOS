@@ -715,7 +715,12 @@ async fn 验证连接时学到的鉴权头写回连接() {
         .set_body_string("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(SequenceResponder::new(vec![both_refused, unauthorized, ok]))
+        .respond_with(SequenceResponder::new(vec![
+            both_refused,
+            unauthorized,
+            ok.clone(),
+            ok,
+        ]))
         .mount(&server)
         .await;
     let dir = tempdir().unwrap();
@@ -763,5 +768,30 @@ async fn 验证连接时学到的鉴权头写回连接() {
     assert!(
         !has(2, "x-api-key") && has(2, "authorization"),
         "再只试 authorization"
+    );
+
+    // T012.6 P2：第二次验证读连接上记住的 auth_header，第一次请求就只带 authorization。
+    let again = host
+        .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
+            id: "learn-auth".to_owned(),
+        }))
+        .await;
+    let service::Response::ConnectionVerify(again) = again.expect("verify 返回") else {
+        panic!("expected ConnectionVerify");
+    };
+    assert!(
+        matches!(again.connection.check, CheckState::Ok { .. }),
+        "第二次验证用记住的单头成功"
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(
+        requests.len(),
+        4,
+        "第二次验证只发一次请求（不再从双头开始）"
+    );
+    assert!(
+        !requests[3].headers.contains_key("x-api-key")
+            && requests[3].headers.contains_key("authorization"),
+        "第二次验证直接只带学到的 authorization"
     );
 }

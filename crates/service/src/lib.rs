@@ -1638,6 +1638,16 @@ impl model::CredentialSource for VerifyCredential {
         Ok(self.api_key.clone())
     }
 
+    /// T012.6 P2：连接上记住的鉴权头（第二次验证直接用它，不再从双头开始）。
+    fn auth_header(&self) -> Option<String> {
+        self.keyring
+            .view()
+            .connections
+            .into_iter()
+            .find(|connection| connection.id == self.connection)
+            .and_then(|connection| connection.auth_header)
+    }
+
     fn remember_auth_header(&self, header: &str) {
         let Some(connection) = self
             .keyring
