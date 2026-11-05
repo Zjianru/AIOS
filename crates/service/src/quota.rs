@@ -51,13 +51,27 @@ enum Kind {
 }
 
 fn kind_of(connection: &ConnectionInfo) -> Option<Kind> {
-    if connection.endpoint.contains("deepseek") || connection.preset == "deepseek" {
-        return Some(Kind::DeepSeekBalance);
+    // 预设优先；custom 只按已知厂商域名判断（relay 的 host 里带 minimax 字样不算）。
+    match connection.preset.as_str() {
+        "deepseek" => return Some(Kind::DeepSeekBalance),
+        "minimax" | "minimax-cn" => return Some(Kind::MiniMaxPlan),
+        _ => {}
     }
-    if connection.preset.starts_with("minimax") || connection.endpoint.contains("minimax") {
-        return Some(Kind::MiniMaxPlan);
+    let host = endpoint_host(&connection.endpoint)?;
+    match host.as_str() {
+        "api.deepseek.com" => Some(Kind::DeepSeekBalance),
+        "api.minimax.io" | "api.minimaxi.com" | "api.minimax.cn" => Some(Kind::MiniMaxPlan),
+        _ => None,
     }
-    None
+}
+
+/// 从 endpoint 里取主机名（小写；不引 url 依赖，够判断已知厂商域名）。
+fn endpoint_host(endpoint: &str) -> Option<String> {
+    let rest = endpoint.split("://").nth(1)?;
+    let authority = rest.split('/').next()?;
+    let authority = authority.rsplit('@').next()?;
+    let host = authority.split(':').next()?;
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
 }
 
 /// 从 Anthropic base（…/anthropic）推厂商 API 根地址。
@@ -75,22 +89,32 @@ pub async fn fetch(connection: &ConnectionInfo, key: &str) -> Quota {
         return Quota::default();
     };
     let root = api_root(&connection.endpoint);
+    // T012.8b P2：连接上学到过单头（T012.6）就只带那个；没学过按各自默认。
+    let learned = connection.auth_header.as_deref();
     let (url, request) = match kind {
-        Kind::DeepSeekBalance => (
-            format!("{root}/user/balance"),
-            client
+        Kind::DeepSeekBalance => {
+            let mut request = client
                 .get(format!("{root}/user/balance"))
-                .timeout(std::time::Duration::from_secs(5))
-                .header("authorization", format!("Bearer {key}")),
-        ),
-        Kind::MiniMaxPlan => (
-            format!("{root}/v1/token_plan/remains"),
-            client
+                .timeout(std::time::Duration::from_secs(5));
+            request = match learned {
+                Some("x-api-key") => request.header("x-api-key", key),
+                _ => request.header("authorization", format!("Bearer {key}")),
+            };
+            (format!("{root}/user/balance"), request)
+        }
+        Kind::MiniMaxPlan => {
+            let mut request = client
                 .get(format!("{root}/v1/token_plan/remains"))
-                .timeout(std::time::Duration::from_secs(5))
-                .header("x-api-key", key)
-                .header("authorization", format!("Bearer {key}")),
-        ),
+                .timeout(std::time::Duration::from_secs(5));
+            request = match learned {
+                Some("x-api-key") => request.header("x-api-key", key),
+                Some("authorization") => request.header("authorization", format!("Bearer {key}")),
+                _ => request
+                    .header("x-api-key", key)
+                    .header("authorization", format!("Bearer {key}")),
+            };
+            (format!("{root}/v1/token_plan/remains"), request)
+        }
     };
     let _ = url;
     let Ok(response) = request.send().await else {

@@ -95,7 +95,6 @@ pub struct SessionStats {
 pub fn session_stats(
     events: &[session::Event],
     connections: &[ConnectionInfo],
-    initial: &session::ModelSelection,
     catalog: &CatalogSnapshot,
     current: &session::ModelSelection,
     context_used: u64,
@@ -109,20 +108,27 @@ pub fn session_stats(
         effort_wanted: current.effort_wanted.clone(),
         ..SessionStats::default()
     };
-    // 逐轮取「当时生效的连接」：事件流里 session/model 折叠；第一条之前用会话初始选择。
-    let mut round_connection = initial.connection.clone();
-    let mut round_model = initial.model.clone();
+    // 逐轮取「当时生效的连接」：session/model 只算 pending，到下一个 TurnStart 才生效
+    // （T012.7 允许轮中 select；本轮后续请求仍是旧连接，T012.8 审计）。
+    let mut round_connection = current.connection.clone();
+    let mut round_model = current.model.clone();
+    let mut pending_selection: Option<(String, String)> = None;
     let mut cost = 0.0_f64;
     let mut priced = 0_u64;
     for event in events {
         match &event.kind {
-            EventKind::TurnStart { .. } => stats.turns += 1,
+            EventKind::TurnStart { .. } => {
+                stats.turns += 1;
+                if let Some((connection, model)) = pending_selection.take() {
+                    round_connection = connection;
+                    round_model = model;
+                }
+            }
             EventKind::StepStart { .. } => stats.steps += 1,
             EventKind::SessionModel {
                 connection, model, ..
             } => {
-                round_connection = connection.clone();
-                round_model = model.clone();
+                pending_selection = Some((connection.clone(), model.clone()));
             }
             EventKind::AssistantMessage { message, usage, .. } => {
                 let Some(usage) = usage else { continue };
@@ -261,7 +267,6 @@ mod tests {
         let stats = session_stats(
             &events,
             std::slice::from_ref(&connection(1.0, None)),
-            &selection(),
             &catalog(),
             &selection(),
             123,
@@ -324,34 +329,38 @@ mod tests {
             None,
         );
         let events = vec![
-            session::Event::new(1, 1, session::EventKind::TurnStart { turn: 1 }),
-            session::Event::new(2, 2, assistant_message("deepseek-flash")),
+            // 会话初始选择（open 会把它写成第一条 durable 事实）。
             session::Event::new(
-                3,
-                3,
+                1,
+                1,
+                session::EventKind::SessionModel {
+                    connection: "deepseek".to_owned(),
+                    model: "deepseek-flash".to_owned(),
+                    effort_wanted: "high".to_owned(),
+                },
+            ),
+            session::Event::new(2, 2, session::EventKind::TurnStart { turn: 1 }),
+            session::Event::new(3, 3, assistant_message("deepseek-flash")),
+            session::Event::new(
+                4,
+                4,
                 session::EventKind::SessionModel {
                     connection: "minimax-cn".to_owned(),
                     model: "MiniMax-M3.1-Flash".to_owned(),
                     effort_wanted: "low".to_owned(),
                 },
             ),
-            session::Event::new(4, 4, session::EventKind::TurnStart { turn: 2 }),
-            session::Event::new(5, 5, assistant_message("MiniMax-M3.1-Flash")),
+            session::Event::new(5, 5, session::EventKind::TurnStart { turn: 2 }),
+            session::Event::new(6, 6, assistant_message("MiniMax-M3.1-Flash")),
         ];
         let current = session::ModelSelection {
             connection: "minimax-cn".to_owned(),
             model: "MiniMax-M3.1-Flash".to_owned(),
             effort_wanted: "low".to_owned(),
         };
-        let deepseek_selection = session::ModelSelection {
-            connection: "deepseek".to_owned(),
-            model: "deepseek-flash".to_owned(),
-            effort_wanted: "high".to_owned(),
-        };
         let stats = session_stats(
             &events,
             &[deepseek.clone(), minimax.clone()],
-            &deepseek_selection,
             &catalog(),
             &current,
             0,
@@ -375,7 +384,6 @@ mod tests {
         let stats = session_stats(
             &events,
             std::slice::from_ref(&connection(1.0, None)),
-            &selection(),
             &catalog(),
             &selection(),
             0,
@@ -451,15 +459,9 @@ mod tests {
             model: "MiniMax-M3.1-Flash".to_owned(),
             effort_wanted: "low".to_owned(),
         };
-        let initial = session::ModelSelection {
-            connection: "deepseek".to_owned(),
-            model: "deepseek-flash".to_owned(),
-            effort_wanted: "high".to_owned(),
-        };
         let stats = session_stats(
             &events,
             &[deepseek.clone(), minimax.clone()],
-            &initial,
             &catalog(),
             &current,
             0,

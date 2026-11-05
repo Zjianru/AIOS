@@ -1098,8 +1098,6 @@ pub struct RootHost {
     /// T012.7：当前生效的模型选择（连接/模型/想要的档）；session/model 的 durable 事实
     /// 在会话日志里，这里只是进程内缓存（重开从日志恢复）。
     selection: Mutex<Option<session::ModelSelection>>,
-    /// T012.8a：会话开始时的选择（第一条 session/model 之前的轮按它定价）。
-    initial_selection: Mutex<Option<session::ModelSelection>>,
 }
 
 impl RootHost {
@@ -1127,12 +1125,21 @@ impl RootHost {
                 }
                 Err(message) => factory_error = Some(message),
             }
+        } else {
+            // 无 model_factory（测试/定制宿主）：从占位配置推初始选择，同样写成 durable 事实。
+            selection = Some(session::ModelSelection {
+                connection: "deepseek".to_owned(),
+                model: options.model.model.clone(),
+                effort_wanted: options.model.effort.as_str().to_owned(),
+            });
         }
         let window = if options.model_factory.is_some() {
             options.model.context_window
         } else {
             fallback_window
         };
+        // T012.8 审计：把初始选择写成 durable 事实（open/首次打开时若日志里没有）。
+        let initial_selection = selection.clone();
         let host = Self {
             inner: tokio::sync::Mutex::new(None),
             state: Mutex::new(RootState::Ok),
@@ -1144,8 +1151,7 @@ impl RootHost {
             agent_events,
             forward: Mutex::new(None),
             agent_forward: Mutex::new(None),
-            selection: Mutex::new(selection.clone()),
-            initial_selection: Mutex::new(selection),
+            selection: Mutex::new(selection),
         };
         if let Some(message) = factory_error {
             *host.state.lock().expect("root state 锁被毒化") = RootState::Unavailable {
@@ -1156,7 +1162,10 @@ impl RootHost {
             };
         } else {
             match open_root_session(host.options.clone()).await {
-                Ok(root) => host.install(root.agent).await,
+                Ok(root) => {
+                    ensure_initial_selection(&root.agent, initial_selection.as_ref()).await;
+                    host.install(root.agent).await;
+                }
                 Err(error) => {
                     *host.state.lock().expect("root state 锁被毒化") =
                         RootState::from_root_error(&error);
@@ -1289,6 +1298,8 @@ impl RootHost {
         *self.context.lock().expect("context 锁被毒化") = ContextUsage { used: 0, window };
         match open_root_session(options).await {
             Ok(root) => {
+                let current = self.selection.lock().expect("selection 锁被毒化").clone();
+                ensure_initial_selection(&root.agent, current.as_ref()).await;
                 self.install(root.agent).await;
                 RootState::Ok
             }
@@ -1665,17 +1676,10 @@ impl RootHost {
             let context = self.context.lock().expect("context 锁被毒化");
             (context.used, context.window)
         };
-        let initial = self
-            .initial_selection
-            .lock()
-            .expect("initial selection 锁被毒化")
-            .clone()
-            .unwrap_or_else(|| current.clone());
         let stats = match connection {
             Some(_) => stats::session_stats(
                 &events,
                 &view.connections,
-                &initial,
                 &catalog,
                 &current,
                 context_used,
@@ -1953,6 +1957,18 @@ impl model::CredentialSource for VerifyCredential {
             },
         );
     }
+}
+
+/// T012.8 审计：会话日志里没有 session/model 事件时，把当前选择写成第一条 durable 事实；
+/// 重开时第一条 session/model 就是真正初始选择（stats 逐轮定价用）。
+async fn ensure_initial_selection(agent: &Agent, selection: Option<&session::ModelSelection>) {
+    let Some(selection) = selection else {
+        return;
+    };
+    if session::last_model_selection(&agent.session_events_from(0)).is_some() {
+        return;
+    }
+    let _ = agent.select(selection).await;
 }
 
 fn now_seconds() -> u64 {
