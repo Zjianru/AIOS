@@ -136,6 +136,15 @@ impl DeepSeek {
         }
     }
 
+    /// T012.7/T012.8a：本轮冻结的模型（begin_turn 之后的实际请求模型；没有冻结时用 config）。
+    pub fn current_model(&self) -> String {
+        self.turn_model
+            .lock()
+            .ok()
+            .and_then(|current| current.clone())
+            .unwrap_or_else(|| self.config.model.clone())
+    }
+
     /// 换模型：只改下一轮；本轮冻结的模型在 begin_turn 时确定（D26）。
     pub fn set_model(&self, model: String) {
         if let Ok(mut current) = self.next_model.lock() {

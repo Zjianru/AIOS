@@ -14,11 +14,7 @@ use super::*;
 
 /// 一条助手消息：source 是本次产出它的模型路由（DSH AssistantMessage 的 source=model）。
 pub(super) fn assistant_message(inner: &Arc<Inner>, content: Vec<ContentBlock>) -> Message {
-    Message::assistant(
-        content,
-        inner.model.provider(),
-        inner.model.config().model.clone(),
-    )
+    Message::assistant(content, inner.model.provider(), inner.model.current_model())
 }
 
 pub(super) fn emit_usage(inner: &Arc<Inner>, usage: &Option<Usage>) {

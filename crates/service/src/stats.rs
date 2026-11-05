@@ -94,7 +94,8 @@ pub struct SessionStats {
 /// message.source.model（没有就按当前 model 算）。
 pub fn session_stats(
     events: &[session::Event],
-    connection: &ConnectionInfo,
+    connections: &[ConnectionInfo],
+    initial: &session::ModelSelection,
     catalog: &CatalogSnapshot,
     current: &session::ModelSelection,
     context_used: u64,
@@ -108,12 +109,21 @@ pub fn session_stats(
         effort_wanted: current.effort_wanted.clone(),
         ..SessionStats::default()
     };
+    // 逐轮取「当时生效的连接」：事件流里 session/model 折叠；第一条之前用会话初始选择。
+    let mut round_connection = initial.connection.clone();
+    let mut round_model = initial.model.clone();
     let mut cost = 0.0_f64;
     let mut priced = 0_u64;
     for event in events {
         match &event.kind {
             EventKind::TurnStart { .. } => stats.turns += 1,
             EventKind::StepStart { .. } => stats.steps += 1,
+            EventKind::SessionModel {
+                connection, model, ..
+            } => {
+                round_connection = connection.clone();
+                round_model = model.clone();
+            }
             EventKind::AssistantMessage { message, usage, .. } => {
                 let Some(usage) = usage else { continue };
                 stats.input_tokens += usage.input_tokens.unwrap_or(0);
@@ -122,9 +132,14 @@ pub fn session_stats(
                 stats.cache_write_tokens += usage.cache_creation_input_tokens.unwrap_or(0);
                 let model_name = match &message.source {
                     model::MessageSource::Model { model, .. } => model.clone(),
-                    _ => current.model.clone(),
+                    _ => round_model.clone(),
                 };
-                match effective_price(connection, catalog, &model_name) {
+                let connection = connections
+                    .iter()
+                    .find(|connection| connection.id == round_connection);
+                match connection
+                    .and_then(|connection| effective_price(connection, catalog, &model_name))
+                {
                     Some(price) => {
                         cost += usage_cost_usd(usage, &price);
                         priced += 1;
@@ -245,7 +260,8 @@ mod tests {
         ];
         let stats = session_stats(
             &events,
-            &connection(1.0, None),
+            std::slice::from_ref(&connection(1.0, None)),
+            &selection(),
             &catalog(),
             &selection(),
             123,
@@ -327,8 +343,20 @@ mod tests {
             model: "MiniMax-M3.1-Flash".to_owned(),
             effort_wanted: "low".to_owned(),
         };
-        // 修复前签名：只传当前连接（MiniMax，倍率 0）；DeepSeek 轮会被错算成免费/无价。
-        let stats = session_stats(&events, &minimax, &catalog(), &current, 0, 0);
+        let deepseek_selection = session::ModelSelection {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            effort_wanted: "high".to_owned(),
+        };
+        let stats = session_stats(
+            &events,
+            &[deepseek.clone(), minimax.clone()],
+            &deepseek_selection,
+            &catalog(),
+            &current,
+            0,
+            0,
+        );
         let cost = stats.cost_usd.expect("DeepSeek 轮有用户价，应该有花费");
         let deepseek_cost = (1_300_000.0 * 2.0 + 500_000.0 * 2.0) / 1e6;
         assert!(
@@ -346,7 +374,8 @@ mod tests {
         )];
         let stats = session_stats(
             &events,
-            &connection(1.0, None),
+            std::slice::from_ref(&connection(1.0, None)),
+            &selection(),
             &catalog(),
             &selection(),
             0,

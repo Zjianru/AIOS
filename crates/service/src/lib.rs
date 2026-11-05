@@ -1098,6 +1098,8 @@ pub struct RootHost {
     /// T012.7：当前生效的模型选择（连接/模型/想要的档）；session/model 的 durable 事实
     /// 在会话日志里，这里只是进程内缓存（重开从日志恢复）。
     selection: Mutex<Option<session::ModelSelection>>,
+    /// T012.8a：会话开始时的选择（第一条 session/model 之前的轮按它定价）。
+    initial_selection: Mutex<Option<session::ModelSelection>>,
 }
 
 impl RootHost {
@@ -1142,7 +1144,8 @@ impl RootHost {
             agent_events,
             forward: Mutex::new(None),
             agent_forward: Mutex::new(None),
-            selection: Mutex::new(selection),
+            selection: Mutex::new(selection.clone()),
+            initial_selection: Mutex::new(selection),
         };
         if let Some(message) = factory_error {
             *host.state.lock().expect("root state 锁被毒化") = RootState::Unavailable {
@@ -1662,10 +1665,17 @@ impl RootHost {
             let context = self.context.lock().expect("context 锁被毒化");
             (context.used, context.window)
         };
+        let initial = self
+            .initial_selection
+            .lock()
+            .expect("initial selection 锁被毒化")
+            .clone()
+            .unwrap_or_else(|| current.clone());
         let stats = match connection {
-            Some(connection) => stats::session_stats(
+            Some(_) => stats::session_stats(
                 &events,
-                &connection,
+                &view.connections,
+                &initial,
                 &catalog,
                 &current,
                 context_used,
