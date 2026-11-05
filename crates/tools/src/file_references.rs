@@ -214,7 +214,7 @@ fn scan_workspace(
             }
         };
         let mut sorted: Vec<_> = entries.flatten().collect();
-        sorted.sort_by_key(|entry| entry.file_name());
+        sorted.sort_by_key(std::fs::DirEntry::file_name);
         for entry in sorted {
             if indexed.len() >= config.max_entries {
                 break;
