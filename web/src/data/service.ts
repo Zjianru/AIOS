@@ -145,8 +145,32 @@ export async function reportMonitor(
 }
 
 /** 发消息（requestId 是幂等键：重发同一个 id 不会让 Kind 收到两次）。 */
-export async function sendMessage(content: string, requestId: string): Promise<void> {
-  await post({ method: 'send', requestId, content });
+/** T013.4：发消息时可选带粘贴段与附件引用（服务端拼成用户消息的块）。 */
+export interface SendAttachmentRef {
+  id: string;
+  name: string;
+  bytes: number;
+}
+
+export interface SendOptions {
+  /** 用户粘贴的段（每段一个块）。 */
+  pastes?: string[];
+  /** 用户拖进来的文件（已存进附件仓库）。 */
+  attachments?: SendAttachmentRef[];
+}
+
+export async function sendMessage(
+  content: string,
+  requestId: string,
+  options: SendOptions = {},
+): Promise<void> {
+  await post({
+    method: 'send',
+    requestId,
+    content,
+    pastes: options.pastes ?? [],
+    attachments: options.attachments ?? [],
+  });
 }
 
 /** 取消当前轮（T007.5 停止按钮 / Esc；服务端取消正在跑的一轮并保留已做的）。 */

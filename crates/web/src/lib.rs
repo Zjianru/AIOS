@@ -1427,6 +1427,74 @@ mod t012_attachment_http_tests {
     }
 
     #[tokio::test]
+    async fn send_over_http_accepts_pastes_and_attachments() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = host(dir.path()).await;
+        let (status, put) = call_api(
+            host.clone(),
+            serde_json::json!({
+                "method": "attachment-put",
+                "name": "notes.txt",
+                "data": "aGVsbG8=",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{put}");
+        let id = put["id"].as_str().expect("id").to_owned();
+        let (status, json) = call_api(
+            host,
+            serde_json::json!({
+                "method": "send",
+                "requestId": "req-t013-4-http",
+                "content": "看这个",
+                "pastes": ["第一段"],
+                "attachments": [{"id": id, "name": "notes.txt", "bytes": 5}],
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "send 应受理：{json}");
+        assert_eq!(json["method"], "send");
+        assert_eq!(json["accepted"], true);
+    }
+
+    #[tokio::test]
+    async fn send_over_http_rejects_an_empty_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let (status, json) = call_api(
+            host(dir.path()).await,
+            serde_json::json!({
+                "method": "send",
+                "requestId": "req-t013-4-empty",
+                "content": "",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_eq!(json["code"], "request/invalid-message");
+    }
+
+    #[tokio::test]
+    async fn send_over_http_rejects_an_unknown_attachment() {
+        let dir = tempfile::tempdir().unwrap();
+        let (status, json) = call_api(
+            host(dir.path()).await,
+            serde_json::json!({
+                "method": "send",
+                "requestId": "req-t013-4-bad-attachment",
+                "content": "带个文件",
+                "attachments": [{
+                    "id": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                    "name": "missing.txt",
+                    "bytes": 1,
+                }],
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_eq!(json["code"], "attachment/invalid");
+    }
+
+    #[tokio::test]
     async fn attachment_put_over_http_returns_the_id() {
         let dir = tempfile::tempdir().unwrap();
         let (status, json) = call_api(

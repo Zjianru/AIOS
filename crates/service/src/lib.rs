@@ -1320,10 +1320,11 @@ impl RootHost {
         for attachment in &request.attachments {
             let stored = tools::attachments::read(&self.options.data_dir, &attachment.id)
                 .map_err(attachment_error)?;
+            // 名字/字节数用请求里的值：同内容不同名时，卡片上要显示用户拖进来的那个名字。
             blocks.push(model::ContentBlock::File {
                 attachment_id: attachment.id.clone(),
-                name: stored.name,
-                bytes: stored.bytes as u64,
+                name: attachment.name.clone(),
+                bytes: attachment.bytes,
                 path: Some(stored.path.to_string_lossy().into_owned()),
             });
         }
