@@ -4,10 +4,10 @@
 //! messages 必须以先前请求为前缀、其余顶层字段逐字相同；历史很短时也不能出现额外的摘要请求
 //! （摘要请求的前缀复用由 T006.3 的测试覆盖）。
 
-mod common;
+
 
 use agent::Delivery;
-use common::{
+use crate::common::{
     FINAL_TEXT_SSE, SequenceResponder, setup_agent, sse, tool_calls_with_inputs_sse, wait_idle,
 };
 use model::UserMessage;

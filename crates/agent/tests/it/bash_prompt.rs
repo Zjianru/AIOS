@@ -1,9 +1,9 @@
 //! 接缝 1：bash 指导句只随 bash 工具出现（测试清单第 3 条 + 提示词回归）。
 
-mod common;
+
 
 use agent::Delivery;
-use common::{FINAL_TEXT_SSE, SequenceResponder, setup_agent, sse};
+use crate::common::{FINAL_TEXT_SSE, SequenceResponder, setup_agent, sse};
 use model::UserMessage;
 use tools::{BashTool, ToolSet, WriteTool};
 use wiremock::matchers::{method, path};

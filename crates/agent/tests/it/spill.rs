@@ -1,12 +1,12 @@
 //! 接缝 1：大工具结果 spill 与大结果修剪（测试清单第 8 条）。
 
-mod common;
+
 
 use std::fs;
 use std::path::PathBuf;
 
 use agent::{Agent, AgentConfig, Delivery, Deps};
-use common::{FINAL_TEXT_SSE, SequenceResponder, model_config, sse, tool_calls_with_inputs_sse};
+use crate::common::{FINAL_TEXT_SSE, SequenceResponder, model_config, sse, tool_calls_with_inputs_sse};
 use model::UserMessage;
 use serde_json::{Value, json};
 use session::{EventKind, SessionStore};
@@ -64,7 +64,7 @@ async fn setup(
         Deps {
             model: model::DeepSeek::with_credentials(
                 model_config(&server.uri()),
-                common::test_credential(),
+                crate::common::test_credential(),
             )
             .unwrap(),
             tools,
@@ -164,7 +164,7 @@ async fn oversized_tool_result_becomes_preview_with_locator() {
         cwd.path(),
         &server,
         ToolSet::new(vec![Box::new(BigTool::new(content.clone()))]),
-        common::isolated_config(data_dir.path()),
+        crate::common::isolated_config(data_dir.path()),
     )
     .await;
     agent
@@ -231,7 +231,7 @@ async fn zero_spill_threshold_disables_spill() {
     let (content, _) = big_content();
     let config = AgentConfig {
         spill_max_inline_tokens: 0,
-        ..common::isolated_config(data_dir.path())
+        ..crate::common::isolated_config(data_dir.path())
     };
     let agent = setup(
         data_dir.path(),
@@ -287,7 +287,7 @@ async fn tool_result_not_pruned_without_compaction_and_manual_compact_does_not_p
         cwd.path(),
         &server,
         ToolSet::new(vec![Box::new(BigTool::new(content.clone()))]),
-        common::isolated_config(data_dir.path()),
+        crate::common::isolated_config(data_dir.path()),
     )
     .await;
     agent
@@ -417,17 +417,17 @@ async fn auto_pressure_compaction_prunes_tool_results() {
         compaction_headroom_tokens: 1,
         compaction_retain_ratio: 0.000001,
         compaction_retries: 0,
-        ..common::isolated_config(data_dir.path())
+        ..crate::common::isolated_config(data_dir.path())
     };
     let model_config = model::DeepSeekConfig {
         context_window: 1000,
         max_tokens: 100,
-        ..common::model_config(&server.uri())
+        ..crate::common::model_config(&server.uri())
     };
     let agent = Agent::create(
         config,
         Deps {
-            model: model::DeepSeek::with_credentials(model_config, common::test_credential())
+            model: model::DeepSeek::with_credentials(model_config, crate::common::test_credential())
                 .unwrap(),
             tools: ToolSet::new(vec![Box::new(BigTool::new(content.clone()))]),
             store,
@@ -489,7 +489,7 @@ async fn overflow_recovery_prunes_tool_results() {
         cwd.path(),
         &server,
         ToolSet::new(vec![Box::new(BigTool::new(content.clone()))]),
-        common::isolated_config(data_dir.path()),
+        crate::common::isolated_config(data_dir.path()),
     )
     .await;
     agent
@@ -558,11 +558,11 @@ async fn old_spill_files_are_cleaned_on_agent_start() {
 
     let store = SessionStore::create(data_dir.path(), cwd.path()).unwrap();
     let agent = Agent::create(
-        common::isolated_config(data_dir.path()),
+        crate::common::isolated_config(data_dir.path()),
         agent::Deps {
             model: model::DeepSeek::with_credentials(
-                common::model_config("http://127.0.0.1:1"),
-                common::test_credential(),
+                crate::common::model_config("http://127.0.0.1:1"),
+                crate::common::test_credential(),
             )
             .unwrap(),
             tools: ToolSet::new(Vec::new()),

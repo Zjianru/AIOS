@@ -1,9 +1,9 @@
 //! 接缝 1：工具调用 → 第二次请求带着工具结果（测试清单第 2 条）。
 
-mod common;
+
 
 use agent::{AgentEvent, Delivery, TurnOutcome};
-use common::{SequenceResponder, setup_agent, sse};
+use crate::common::{SequenceResponder, setup_agent, sse};
 use model::{ContentBlock, Role, UserMessage};
 use session::{EventKind, SessionStore};
 use tools::ToolSet;

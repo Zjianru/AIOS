@@ -1,11 +1,11 @@
 //! T008.F4：经过 Agent 的真实模型请求，Keyring 签发记录必须带 run/turn。
 
-mod common;
+
 
 use std::sync::Arc;
 
 use agent::{Agent, AgentOpenOptions, Delivery};
-use common::{FINAL_TEXT_SSE, isolated_config, model_config, sse, wait_idle};
+use crate::common::{FINAL_TEXT_SSE, isolated_config, model_config, sse, wait_idle};
 use credentials::{Keyring, NewConnection};
 use model::CredentialContext;
 use model::UserMessage;

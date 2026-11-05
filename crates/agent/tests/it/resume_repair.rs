@@ -1,11 +1,11 @@
 //! 接缝 1：续接与中断修复（测试清单第 7、8 条）。
 
-mod common;
+
 
 use std::path::{Path, PathBuf};
 
 use agent::{Agent, Delivery, Deps};
-use common::{
+use crate::common::{
     FINAL_TEXT_SSE, SequenceResponder, ToolEvent, gated, model_config, sse, tool_calls_sse,
     wait_idle,
 };
@@ -39,9 +39,9 @@ async fn create_agent(
     let store = SessionStore::create(data_dir, cwd).unwrap();
     let id = store.id().clone();
     let agent = Agent::create(
-        common::isolated_config(data_dir),
+        crate::common::isolated_config(data_dir),
         Deps {
-            model: DeepSeek::with_credentials(model_config(base_url), common::test_credential())
+            model: DeepSeek::with_credentials(model_config(base_url), crate::common::test_credential())
                 .unwrap(),
             tools,
             store,
@@ -56,9 +56,9 @@ async fn resume_agent(data_dir: &Path, id: &SessionId, base_url: &str, tools: To
     let store = SessionStore::open(data_dir, id).unwrap();
     Agent::resume(
         id.clone(),
-        common::isolated_config(data_dir),
+        crate::common::isolated_config(data_dir),
         Deps {
-            model: DeepSeek::with_credentials(model_config(base_url), common::test_credential())
+            model: DeepSeek::with_credentials(model_config(base_url), crate::common::test_credential())
                 .unwrap(),
             tools,
             store,

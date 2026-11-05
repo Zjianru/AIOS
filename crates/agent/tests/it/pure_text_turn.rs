@@ -1,9 +1,9 @@
 //! 接缝 1：通过 Agent 的 6 个入口驱动一轮纯文本对话（测试清单第 1 条）。
 
-mod common;
+
 
 use agent::{AgentEvent, Delivery, TurnOutcome};
-use common::setup_agent;
+use crate::common::setup_agent;
 use model::{Role, UserMessage};
 use session::{EventKind, SessionStore};
 use tools::ToolSet;

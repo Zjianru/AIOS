@@ -1,9 +1,9 @@
 //! 接缝 1：todo_write 事件与续接恢复（测试清单第 7 条）。
 
-mod common;
+
 
 use agent::{Agent, Delivery};
-use common::{
+use crate::common::{
     FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse,
     tool_calls_with_inputs_sse,
 };
@@ -33,7 +33,7 @@ async fn todo_write_appends_event_and_stays_in_history() {
         ]))
         .mount(&server)
         .await;
-    let (agent, data_dir, _cwd, id) = common::setup_agent(&server.uri(), ToolSet::builtin()).await;
+    let (agent, data_dir, _cwd, id) = crate::common::setup_agent(&server.uri(), ToolSet::builtin()).await;
 
     agent
         .send(UserMessage::text("plan it"), Delivery::FollowUp)
@@ -80,7 +80,7 @@ async fn resume_restores_todo_list_and_replacement_wins() {
         ]))
         .mount(&server)
         .await;
-    let (agent, data_dir, _cwd, id) = common::setup_agent(&server.uri(), ToolSet::builtin()).await;
+    let (agent, data_dir, _cwd, id) = crate::common::setup_agent(&server.uri(), ToolSet::builtin()).await;
     agent
         .send(UserMessage::text("first"), Delivery::FollowUp)
         .await
@@ -105,7 +105,7 @@ async fn resume_restores_todo_list_and_replacement_wins() {
         agent::Deps {
             model: model::DeepSeek::with_credentials(
                 model_config(&server.uri()),
-                common::test_credential(),
+                crate::common::test_credential(),
             )
             .unwrap(),
             tools: ToolSet::builtin(),
@@ -180,7 +180,7 @@ async fn single_active_policy_from_config_rejects_two_active() {
         agent::Deps {
             model: model::DeepSeek::with_credentials(
                 model_config(&server.uri()),
-                common::test_credential(),
+                crate::common::test_credential(),
             )
             .unwrap(),
             tools: ToolSet::builtin(),

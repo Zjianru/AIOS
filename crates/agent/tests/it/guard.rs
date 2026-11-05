@@ -1,11 +1,11 @@
 //! 接缝 1：重复调用提醒与工具级超时（测试清单第 12、13 条 stub 红测试）。
 
-mod common;
+
 
 use std::time::Duration;
 
 use agent::{Agent, AgentEvent, Delivery, TurnOutcome};
-use common::{
+use crate::common::{
     FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse,
     tool_calls_with_inputs_sse, wait_idle,
 };
@@ -30,7 +30,7 @@ async fn setup(
     let agent = Agent::create(
         config,
         agent::Deps {
-            model: model::DeepSeek::with_credentials(model_config, common::test_credential())
+            model: model::DeepSeek::with_credentials(model_config, crate::common::test_credential())
                 .unwrap(),
             tools: tools.unwrap_or_else(ToolSet::builtin),
             store,

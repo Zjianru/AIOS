@@ -1,12 +1,12 @@
 //! 接缝 1：后台任务完成通知与 JobCompleted 事件（测试清单第 4 条 + 票面加项）。
 
-mod common;
+
 
 use std::fs;
 use std::time::Duration;
 
 use agent::Delivery;
-use common::{FINAL_TEXT_SSE, SequenceResponder, setup_agent, sse, tool_calls_with_inputs_sse};
+use crate::common::{FINAL_TEXT_SSE, SequenceResponder, setup_agent, sse, tool_calls_with_inputs_sse};
 use model::UserMessage;
 use serde_json::json;
 use tools::ToolSet;

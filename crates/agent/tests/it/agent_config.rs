@@ -1,11 +1,11 @@
 //! T005.0 接口地基：AgentConfig 字段、默认值与非法值校验。
 
-mod common;
+
 
 use std::path::PathBuf;
 
 use agent::{Agent, AgentConfig, AgentError, Deps};
-use common::model_config;
+use crate::common::model_config;
 use model::DeepSeek;
 use session::SessionStore;
 use tools::ToolSet;
@@ -26,7 +26,7 @@ async fn create_result(config: AgentConfig) -> Result<Agent, AgentError> {
         Deps {
             model: DeepSeek::with_credentials(
                 model_config("http://127.0.0.1:1"),
-                common::test_credential(),
+                crate::common::test_credential(),
             )
             .unwrap(),
             tools: ToolSet::empty(),

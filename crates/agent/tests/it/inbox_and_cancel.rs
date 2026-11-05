@@ -1,9 +1,9 @@
 //! 接缝 1：收件箱（steer / inject / follow-up）、取消与失唤醒回归（测试清单第 4、5、6 条 + 票面加项）。
 
-mod common;
+
 
 use agent::{Agent, AgentConfig, AgentEvent, Delivery, Deps, TurnOutcome};
-use common::{
+use crate::common::{
     FINAL_TEXT_SSE, PARTIAL_TEXT_SSE, ScriptedSseServer, SequenceResponder, SseScript, ToolEvent,
     gated, model_config, sse, tool_calls_sse,
 };
@@ -31,10 +31,10 @@ async fn new_agent(
     let agent = Agent::create(
         AgentConfig {
             max_parallel_tool_calls,
-            ..common::isolated_config(data_dir.path())
+            ..crate::common::isolated_config(data_dir.path())
         },
         Deps {
-            model: DeepSeek::with_credentials(model_config(base_url), common::test_credential())
+            model: DeepSeek::with_credentials(model_config(base_url), crate::common::test_credential())
                 .unwrap(),
             tools,
             store,

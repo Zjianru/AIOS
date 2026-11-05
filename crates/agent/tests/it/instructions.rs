@@ -1,9 +1,9 @@
 //! 接缝 1：指令文件（AGENTS.md / CLAUDE.md）的发现、注入与刷新（测试清单第 5 条）。
 
-mod common;
+
 
 use agent::Delivery;
-use common::{
+use crate::common::{
     FINAL_TEXT_SSE, SequenceResponder, model_config, setup_agent_custom, sse,
     tool_calls_with_inputs_sse,
 };
@@ -370,15 +370,15 @@ async fn resume_reconciles_instead_of_reinjecting_baseline() {
     let store = session::SessionStore::open(data_dir.path(), &session_id).unwrap();
     let config = agent::AgentConfig {
         instruction_roots: Vec::new(),
-        ..common::isolated_config(data_dir.path())
+        ..crate::common::isolated_config(data_dir.path())
     };
     let agent = agent::Agent::resume(
         session_id.clone(),
         config,
         agent::Deps {
             model: model::DeepSeek::with_credentials(
-                common::model_config(&server.uri()),
-                common::test_credential(),
+                crate::common::model_config(&server.uri()),
+                crate::common::test_credential(),
             )
             .unwrap(),
             tools: ToolSet::builtin(),
@@ -504,7 +504,7 @@ async fn default_config_without_home_is_valid() {
         agent::Deps {
             model: model::DeepSeek::with_credentials(
                 model_config(&base_url),
-                common::test_credential(),
+                crate::common::test_credential(),
             )
             .unwrap(),
             tools: ToolSet::builtin(),

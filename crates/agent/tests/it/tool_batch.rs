@@ -1,11 +1,11 @@
 //! 接缝 1：工具批执行的并行上限、顺序和独占屏障（测试清单第 3 条）。
 
-mod common;
+
 
 use std::sync::Arc;
 
 use agent::{Agent, AgentConfig, Delivery, Deps};
-use common::{
+use crate::common::{
     FINAL_TEXT_SSE, SequenceResponder, ToolEvent, gated, model_config, sse, tool_calls_sse,
 };
 use model::{DeepSeek, UserMessage};
@@ -58,12 +58,12 @@ async fn setup(
     let agent = Agent::create(
         AgentConfig {
             max_parallel_tool_calls,
-            ..common::isolated_config(data_dir.path())
+            ..crate::common::isolated_config(data_dir.path())
         },
         Deps {
             model: DeepSeek::with_credentials(
                 model_config(&server.uri()),
-                common::test_credential(),
+                crate::common::test_credential(),
             )
             .unwrap(),
             tools: ToolSet::new(tools),
@@ -233,12 +233,12 @@ async fn agent_config_rejects_zero_parallelism() {
     let created = Agent::create(
         AgentConfig {
             max_parallel_tool_calls: 0,
-            ..common::isolated_config(data_dir.path())
+            ..crate::common::isolated_config(data_dir.path())
         },
         Deps {
             model: DeepSeek::with_credentials(
                 model_config("http://127.0.0.1:1"),
-                common::test_credential(),
+                crate::common::test_credential(),
             )
             .unwrap(),
             tools: ToolSet::empty(),

@@ -2,13 +2,13 @@
 //! assistant/attempt 事件（DSH packages/core/session/src/types.ts:349-363；
 //! packages/core/agent-loop/src/agent.ts:480-590；packages/core/agent-loop/src/assistant-stream.ts）。
 
-mod common;
+
 
 use std::fs;
 use std::path::Path;
 
 use agent::Delivery;
-use common::{
+use crate::common::{
     FINAL_TEXT_SSE, PARTIAL_TEXT_SSE, ScriptedSseServer, SequenceResponder, SseScript, setup_agent,
     sse, tool_calls_with_inputs_sse, wait_idle,
 };

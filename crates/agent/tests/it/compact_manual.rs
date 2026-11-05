@@ -1,12 +1,12 @@
 //! 接缝 1：手动 compact、运行中 busy 与续接一致性（测试清单第 10、11 条；T006.F1 起不排队）。
 
-mod common;
+
 
 use agent::{
     Agent, AgentConfig, AgentError, AgentEvent, CompactionTrigger, Delivery,
     ManualCompactionErrorCode,
 };
-use common::{
+use crate::common::{
     FINAL_TEXT_SSE, SequenceResponder, ToolEvent, gated, isolated_config, model_config, sse,
     tool_calls_sse, wait_idle,
 };
@@ -39,7 +39,7 @@ async fn setup(server: &MockServer, tools: ToolSet, retain_ratio: f64) -> Harnes
     let agent = Agent::create(
         config,
         agent::Deps {
-            model: model::DeepSeek::with_credentials(model_config, common::test_credential())
+            model: model::DeepSeek::with_credentials(model_config, crate::common::test_credential())
                 .unwrap(),
             tools,
             store,
@@ -280,7 +280,7 @@ async fn resume_after_compaction_derives_same_messages() {
         harness.id.clone(),
         config,
         agent::Deps {
-            model: model::DeepSeek::with_credentials(model_config, common::test_credential())
+            model: model::DeepSeek::with_credentials(model_config, crate::common::test_credential())
                 .unwrap(),
             tools: ToolSet::builtin(),
             store: SessionStore::open(harness.data_dir.path(), &harness.id).unwrap(),
@@ -347,7 +347,7 @@ async fn compaction_ids_are_unique_across_resume() {
         harness.id.clone(),
         config,
         agent::Deps {
-            model: model::DeepSeek::with_credentials(model_config, common::test_credential())
+            model: model::DeepSeek::with_credentials(model_config, crate::common::test_credential())
                 .unwrap(),
             tools: ToolSet::builtin(),
             store: SessionStore::open(harness.data_dir.path(), &harness.id).unwrap(),

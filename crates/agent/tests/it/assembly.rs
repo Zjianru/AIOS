@@ -6,10 +6,10 @@
 //! 本票的可观测行为改动（DSH docs/user/develop/basic/config.md 的「Fail loudly on invalid
 //! configuration」是同一个失败时机口径）。
 
-mod common;
+
 
 use agent::{Agent, AgentError, AgentOpenOptions, Delivery};
-use common::{FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse, wait_idle};
+use crate::common::{FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse, wait_idle};
 use model::UserMessage;
 use session::SessionStore;
 use wiremock::matchers::{method, path};
@@ -37,7 +37,7 @@ fn options(
         resume,
         model: model_config(base_url),
         config: isolated_config(data_dir),
-        credentials: Some(common::test_credential()),
+        credentials: Some(crate::common::test_credential()),
         append_hook_factory: None,
     }
 }
@@ -129,7 +129,7 @@ async fn open_rejects_invalid_config_before_creating_session() {
         resume: None,
         model: model_config("http://127.0.0.1:1"),
         config,
-        credentials: Some(common::test_credential()),
+        credentials: Some(crate::common::test_credential()),
         append_hook_factory: None,
     })
     .await

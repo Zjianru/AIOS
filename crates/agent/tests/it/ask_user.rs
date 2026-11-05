@@ -7,12 +7,12 @@
 //! 批必须每题恰好一次、迟到回答以 user-question-reply 消息 steer）、
 //! `user-questions/src/types.ts:72-122`（答案项与回复 source）。
 
-mod common;
+
 
 use std::time::Duration;
 
 use agent::{Agent, AgentEvent, Delivery, TurnOutcome};
-use common::{
+use crate::common::{
     FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse,
     tool_calls_with_inputs_sse, wait_idle,
 };
@@ -32,7 +32,7 @@ async fn setup(server: &MockServer) -> (Agent, tempfile::TempDir, SessionId) {
         agent::Deps {
             model: model::DeepSeek::with_credentials(
                 model_config(&server.uri()),
-                common::test_credential(),
+                crate::common::test_credential(),
             )
             .unwrap(),
             tools: tools::ToolSet::builtin(),
@@ -135,7 +135,7 @@ async fn resume_agent(data_dir: &std::path::Path, id: &SessionId, base_url: &str
         agent::Deps {
             model: model::DeepSeek::with_credentials(
                 model_config(base_url),
-                common::test_credential(),
+                crate::common::test_credential(),
             )
             .unwrap(),
             tools: tools::ToolSet::builtin(),
@@ -486,7 +486,7 @@ async fn pending_questions_survive_restart_and_answer_continues_as_late_reply() 
         agent::Deps {
             model: model::DeepSeek::with_credentials(
                 model_config(&server.uri()),
-                common::test_credential(),
+                crate::common::test_credential(),
             )
             .unwrap(),
             tools: tools::ToolSet::builtin(),

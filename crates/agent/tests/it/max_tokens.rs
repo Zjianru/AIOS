@@ -1,9 +1,9 @@
 //! 接缝 1：输出截断（测试清单第 12 条 + 票面加项 D3）。
 
-mod common;
+
 
 use agent::Delivery;
-use common::{
+use crate::common::{
     FINAL_TEXT_SSE, PhaseScript, PhaseSseServer, ScriptedSseServer, SseScript, ToolEvent, gated,
     setup_agent, wait_idle,
 };
