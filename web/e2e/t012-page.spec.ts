@@ -61,7 +61,7 @@ test('换思考档：下一轮请求的 thinking 档按选择', async ({ page })
     const effort = page.locator('[data-kind="effort"]');
     await expect(effort).toBeVisible({ timeout: 30_000 });
     await effort.getByRole('button', { name: 'low', exact: true }).click({ force: true });
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(900);
     await page.keyboard.press('Escape');
     await page.getByPlaceholder('和 Kind 说…').fill('你好');
     await page.getByRole('button', { name: '发送', exact: true }).click();
