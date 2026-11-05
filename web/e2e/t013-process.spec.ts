@@ -55,7 +55,6 @@ test('工作过程：行/卡片/退出码/开合（write + apply_patch + bash �
 });
 
 /// T013.5 清单 3：中途停的一轮——一直展开、不能收，行上标已停止。
-// T013.5 清单 3：中途停的一轮——一直展开、不能收，行上标已停止。
 test('工作过程中途停：整轮一直展开、不能收、标已停止', async ({ page }) => {
   const fixture = await startKernelFixture({ t013Interrupted: true });
   try {
