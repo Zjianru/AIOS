@@ -666,4 +666,26 @@ mod tests {
         .unwrap();
         assert_eq!(parse_live_models(&array)[0].max_tokens, Some(400));
     }
+
+    #[test]
+    fn models_url_asks_the_chat_base_for_anthropic_endpoints() {
+        // 审计 T012.5 fix-now 1：预设三家都以 …/anthropic 结尾，列表在 Chat base 的 /v1/models。
+        assert_eq!(
+            models_url("https://api.deepseek.com/anthropic"),
+            "https://api.deepseek.com/v1/models"
+        );
+        assert_eq!(
+            models_url("https://api.minimaxi.com/anthropic/"),
+            "https://api.minimaxi.com/v1/models"
+        );
+        assert_eq!(
+            models_url("https://api.minimax.io/anthropic"),
+            "https://api.minimax.io/v1/models"
+        );
+        // 已经指向 Chat base 的自定义地址：原样拼 /v1/models。
+        assert_eq!(
+            models_url("https://relay.example.com"),
+            "https://relay.example.com/v1/models"
+        );
+    }
 }

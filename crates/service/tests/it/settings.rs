@@ -621,3 +621,53 @@ async fn 获取可用模型合并目录与厂商列表且用户字段不动() {
     );
     assert!(!find("my-only-model").thinks);
 }
+
+#[tokio::test]
+async fn 获取可用模型时_anthropic_端点请求_chat_base_的列表() {
+    // 审计 T012.5 fix-now 1：endpoint 是 …/anthropic 时，列表必须请求 Chat base 的
+    // /v1/models（不是 …/anthropic/v1/models）；用带 /anthropic 的 endpoint 断言路径。
+    model::catalog::set_global(model::catalog::snapshot());
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [{"id": "deepseek-flash", "display_name": "Chat base 列表"}]
+        })))
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "list-chat-base".to_owned(),
+            name: "Anthropic base".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: format!("{}/anthropic", server.uri()),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some("deepseek".to_owned()),
+            ..Default::default()
+        }))
+        .await;
+    assert!(saved.is_ok(), "save: {saved:?}");
+    let response = host
+        .dispatch(Call::AvailableModels(service::AvailableModelsRequest {
+            id: "list-chat-base".to_owned(),
+        }))
+        .await
+        .expect("available models");
+    let service::Response::AvailableModels(response) = response else {
+        panic!("expected AvailableModels");
+    };
+    assert!(
+        response.live,
+        "带 /anthropic 的端点要请求 Chat base 的 /v1/models"
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "只发一次列表请求");
+    assert_eq!(
+        requests[0].url.path(),
+        "/v1/models",
+        "列表路径是 Chat base：{}",
+        requests[0].url
+    );
+}
