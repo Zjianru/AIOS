@@ -39,6 +39,21 @@ fn host_of(base_url: &str) -> String {
 /// 内置的厂商思考能力表（T012.3 的临时来源；T012.5 换成 models.dev 目录）。
 pub(crate) fn reasoning(base_url: &str, model: &str) -> ModelReasoning {
     let host = host_of(base_url);
+    // T012.5：目录是档位的权威来源；模型在目录里时用目录的 thinks/efforts。
+    if let Some(snapshot) = crate::catalog::global() {
+        let provider_id = if host == "api.deepseek.com" {
+            "deepseek".to_owned()
+        } else {
+            crate::catalog::provider_id_for_endpoint(base_url)
+        };
+        if let Some((thinks, efforts)) = snapshot.reasoning_for(&provider_id, model) {
+            return ModelReasoning {
+                thinks,
+                efforts,
+                always_thinks: model_is_minimax_m31_flash(model),
+            };
+        }
+    }
     if host == "api.deepseek.com" {
         return ModelReasoning {
             thinks: true,
@@ -172,6 +187,24 @@ mod effort_state_tests {
                 &Effort::new("high"),
             ),
             "high"
+        );
+    }
+}
+
+#[cfg(test)]
+mod catalog_wiring_tests {
+    use super::*;
+
+    #[test]
+    fn catalog_global_feeds_adapter_reasoning() {
+        crate::catalog::set_global(crate::catalog::snapshot());
+        let deepseek = reasoning("https://api.deepseek.com/anthropic", "deepseek-flash");
+        assert!(deepseek.thinks);
+        assert_eq!(deepseek.efforts, vec!["none", "low", "high", "max"]);
+        let minimax = reasoning("https://api.minimaxi.com/anthropic", "MiniMax-M3.1-Flash");
+        assert_eq!(
+            minimax.efforts,
+            vec!["low", "medium", "high", "xhigh", "max"]
         );
     }
 }

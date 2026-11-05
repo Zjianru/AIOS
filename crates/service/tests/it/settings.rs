@@ -541,3 +541,83 @@ async fn 验证新形状用主模型且请求符合思考档规则() {
     let budget = body["thinking"]["budget_tokens"].as_u64().expect("budget");
     assert!(budget > 1, "budget 不能被 max_tokens=1 压到 1：{body}");
 }
+#[tokio::test]
+async fn 获取可用模型合并目录与厂商列表且用户字段不动() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [
+                {"id": "deepseek-flash", "display_name": "Vendor Flash", "context_length": 1000, "max_output_tokens": 200},
+                {"id": "deepseek-v4-pro", "display_name": "Vendor Pro", "context_length": 2000, "max_output_tokens": 300},
+                {"id": "deepseek-future", "display_name": "Future", "context_length": 3000}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "list".to_owned(),
+            name: "List".to_owned(),
+            model: "old-model".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some("deepseek".to_owned()),
+            models: Some(vec![
+                credentials::ModelRow {
+                    id: "deepseek-flash".to_owned(),
+                    name: Some("我的名字".to_owned()),
+                    context_window: Some(42),
+                    max_tokens: Some(111),
+                    price: Some(9.9),
+                },
+                credentials::ModelRow {
+                    id: "my-only-model".to_owned(),
+                    name: None,
+                    context_window: None,
+                    max_tokens: None,
+                    price: None,
+                },
+            ]),
+            ..Default::default()
+        }))
+        .await;
+    assert!(saved.is_ok(), "save: {saved:?}");
+    let response = host
+        .dispatch(Call::AvailableModels(service::AvailableModelsRequest {
+            id: "list".to_owned(),
+        }))
+        .await
+        .expect("available models");
+    let service::Response::AvailableModels(response) = response else {
+        panic!("expected AvailableModels");
+    };
+    assert!(response.live, "厂商列表成功");
+    let find = |id: &str| {
+        response
+            .models
+            .iter()
+            .find(|model| model.id == id)
+            .expect(id)
+    };
+    let flash = find("deepseek-flash");
+    assert_eq!(flash.name, "我的名字", "用户填的名字不被厂商覆盖");
+    assert_eq!(flash.context_window, Some(42), "用户填的窗口不动");
+    assert_eq!(flash.max_tokens, Some(111), "用户填的输出上限不动");
+    assert_eq!(flash.price_input, Some(9.9), "用户价格不动");
+    assert!(flash.thinks, "thinks 来自目录");
+    assert!(flash.efforts.contains(&"none".to_owned()), "档来自目录");
+    let pro = find("deepseek-v4-pro");
+    assert_eq!(pro.name, "Vendor Pro", "厂商字段优先于目录");
+    assert_eq!(pro.context_window, Some(2000));
+    assert!(pro.price_input.is_some(), "目录价格仍在");
+    assert_eq!(
+        find("deepseek-future").context_window,
+        Some(3000),
+        "厂商多出的模型也列出"
+    );
+    assert!(!find("my-only-model").thinks);
+}

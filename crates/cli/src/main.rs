@@ -405,6 +405,28 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     };
     // T011.4：本进程的监控记录（process-start 先写；文件在 <数据目录>/monitor/ 下）。
     let monitor = Monitor::open(&data_dir).map_err(|error| CliError::Message(error.to_string()))?;
+    // T012.5：目录先用缓存/内置快照（不等网络），后台刷新 models.dev。
+    let catalog_source = model::catalog::bootstrap_global(&data_dir);
+    record_ops(
+        &monitor,
+        "catalog",
+        Severity::Info,
+        vec![(
+            "source",
+            serde_json::json!(match catalog_source {
+                model::catalog::CatalogSource::Network => "network",
+                model::catalog::CatalogSource::Cache => "cache",
+                model::catalog::CatalogSource::Snapshot => "snapshot",
+            }),
+        )],
+    );
+    {
+        let catalog_data_dir = data_dir.clone();
+        tokio::spawn(async move {
+            let _ = model::catalog::refresh_global(&catalog_data_dir, std::time::SystemTime::now())
+                .await;
+        });
+    }
     record_ops(
         &monitor,
         "process-start",

@@ -75,6 +75,8 @@ pub enum Call {
     ConnectionRevoke(ConnectionRevokeRequest),
     /// T008.3：验证连接（最小请求）；结果写进注册器。
     ConnectionVerify(ConnectionVerifyRequest),
+    /// T012.5：获取可用模型（目录 + 厂商列表）。
+    AvailableModels(AvailableModelsRequest),
     KeyringRelocate(KeyringRelocateRequest),
     KeyringReopen(KeyringReopenRequest),
     KeyringRestart(KeyringRestartRequest),
@@ -103,6 +105,7 @@ pub enum Response {
     ConnectionUpdate(ConnectionUpdateResponse),
     ConnectionRevoke(ConnectionRevokeResponse),
     ConnectionVerify(ConnectionVerifyResponse),
+    AvailableModels(AvailableModelsResponse),
     KeyringRelocate(KeyringRelocateResponse),
     KeyringReopen(KeyringReopenResponse),
     KeyringRestart(KeyringRestartResponse),
@@ -332,6 +335,19 @@ pub struct ConnectionSaveRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionSaveResponse {
     pub connection: credentials::ConnectionInfo,
+}
+
+/// T012.5：获取某连接的可用模型。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AvailableModelsRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AvailableModelsResponse {
+    pub models: Vec<model::catalog::ModelInfo>,
+    /// 厂商 /v1/models 是否成功；失败时只给目录/用户模型。
+    pub live: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -738,6 +754,7 @@ impl ServiceHost {
             | Call::ConnectionSave(_)
             | Call::ConnectionDelete(_)
             | Call::ConnectionVerify(_)
+            | Call::AvailableModels(_)
             | Call::ConnectionUpdate(_)
             | Call::ConnectionRevoke(_)
             | Call::KeyringRelocate(_)
@@ -1354,6 +1371,87 @@ impl RootHost {
         Ok(ConnectionVerifyResponse { connection })
     }
 
+    /// T012.5：目录 + 厂商 GET /v1/models 合并；用户填的字段最后覆盖。
+    pub async fn available_models(
+        &self,
+        request: AvailableModelsRequest,
+    ) -> Result<AvailableModelsResponse, ServiceError> {
+        let keyring = self.keyring()?;
+        let view = keyring.view();
+        let connection = view
+            .connections
+            .into_iter()
+            .find(|connection| connection.id == request.id)
+            .ok_or_else(|| {
+                ServiceError::Credentials(credentials::KeyringError::MissingConnection(
+                    request.id.clone(),
+                ))
+            })?;
+        let key = keyring.issue(&request.id, "models-list", None, None)?;
+        let catalog = model::catalog::global().unwrap_or_else(model::catalog::snapshot);
+        let provider_id = if connection.preset.is_empty() || connection.preset == "custom" {
+            model::catalog::provider_id_for_endpoint(&connection.endpoint)
+        } else {
+            connection.preset.clone()
+        };
+        let mut models = catalog.models_for(&provider_id);
+        let mut live = false;
+        if let Ok(client) = model::http::client() {
+            let url = format!("{}/v1/models", connection.endpoint.trim_end_matches('/'));
+            let mut request = client.get(url).timeout(std::time::Duration::from_secs(5));
+            match connection.auth_header.as_deref() {
+                Some("authorization") => {
+                    request =
+                        request.header("authorization", format!("Bearer {}", key.into_secret()));
+                }
+                _ => {
+                    request = request.header("x-api-key", key.into_secret());
+                }
+            }
+            if let Ok(response) = request.send().await
+                && response.status().is_success()
+                && let Ok(bytes) = response.bytes().await
+                && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
+            {
+                let live_models = model::catalog::parse_live_models(&value);
+                if !live_models.is_empty() {
+                    models = model::catalog::merge_live(models, live_models);
+                    live = true;
+                }
+            }
+        }
+        // 用户填过的字段不动：同名覆盖 name/窗口/输出/用户价格；目录没有的也列出来。
+        for row in &connection.models {
+            if let Some(info) = models.iter_mut().find(|info| info.id == row.id) {
+                if let Some(name) = &row.name {
+                    info.name = name.clone();
+                }
+                if row.context_window.is_some() {
+                    info.context_window = row.context_window;
+                }
+                if row.max_tokens.is_some() {
+                    info.max_tokens = row.max_tokens;
+                }
+                if let Some(price) = row.price {
+                    info.price_input = Some(price);
+                    info.price_output = Some(price);
+                }
+            } else {
+                models.push(model::catalog::ModelInfo {
+                    id: row.id.clone(),
+                    name: row.name.clone().unwrap_or_else(|| row.id.clone()),
+                    context_window: row.context_window,
+                    max_tokens: row.max_tokens,
+                    price_input: row.price,
+                    price_output: row.price,
+                    thinks: false,
+                    efforts: Vec::new(),
+                });
+            }
+        }
+        Ok(AvailableModelsResponse { models, live })
+    }
+
     pub async fn keyring_relocate(
         &self,
         request: KeyringRelocateRequest,
@@ -1444,6 +1542,10 @@ impl RootHost {
                 .connection_verify(request)
                 .await
                 .map(Response::ConnectionVerify),
+            Call::AvailableModels(request) => self
+                .available_models(request)
+                .await
+                .map(Response::AvailableModels),
             Call::ConnectionUpdate(request) => self
                 .connection_update(request)
                 .await
