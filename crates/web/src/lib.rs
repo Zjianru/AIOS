@@ -839,7 +839,13 @@ async fn api_handler(
         ("code".to_owned(), serde_json::json!(code)),
         ("durationMs".to_owned(), serde_json::json!(duration_ms)),
     ];
-    if let Some(effort) = value.get("effort").and_then(serde_json::Value::as_str) {
+    // 请求里带档时记下来：session-send/session-model-select 用 effortWanted（camelCase），
+    // 其他调用方若用 effort 也认。
+    let effort = value
+        .get("effort")
+        .or_else(|| value.get("effortWanted"))
+        .and_then(serde_json::Value::as_str);
+    if let Some(effort) = effort {
         attributes.push(("effort".to_owned(), serde_json::json!(effort)));
     }
     record_ops(
@@ -1487,7 +1493,7 @@ mod t011_ops_tests {
             serde_json::json!({"method": "connection-delete", "id": "missing-conn"}),
             serde_json::json!({"method": "connection-update", "id": "missing-conn", "endpoint": "http://127.0.0.1:1", "model": "deepseek-flash"}),
             serde_json::json!({"method": "connection-revoke", "id": "missing-conn"}),
-            serde_json::json!({"method": "session-model-select", "model": "deepseek-pro"}),
+            serde_json::json!({"method": "session-model-select", "model": "deepseek-pro", "effortWanted": "max"}),
             serde_json::json!({"method": "keyring-restart"}),
             serde_json::json!({"method": "keyring-relocate", "to": keyring_new.display().to_string()}),
             serde_json::json!({"method": "keyring-reopen", "at": keyring_new.display().to_string()}),
@@ -1555,6 +1561,15 @@ mod t011_ops_tests {
             assert!(record["attributes"]["code"].as_str().is_some());
             assert!(record["attributes"]["durationMs"].as_u64().is_some());
         }
+        // T012.3 P1：带档的请求在 api-call 里记 effort（session-model-select 用 effortWanted）。
+        let effort_call = api_calls
+            .iter()
+            .find(|record| record["attributes"]["method"] == "session-model-select")
+            .expect("session-model-select 一条 api-call");
+        assert_eq!(
+            effort_call["attributes"]["effort"], "max",
+            "带档请求记 effort：{text}"
+        );
         let verify = api_calls
             .iter()
             .find(|record| record["attributes"]["method"] == "connection-verify")

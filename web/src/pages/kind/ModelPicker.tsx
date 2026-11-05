@@ -74,10 +74,25 @@ export function ModelPicker() {
   const model = useKindStore((state) => state.model);
   const setModel = useKindStore((state) => state.setModel);
   const setEffort = useKindStore((state) => state.setEffort);
+  const hydrateModel = useKindStore((state) => state.hydrateModel);
   const [view, setView] = useState<ModelSettingsView | null>(null);
 
   return (
-    <DropdownMenu onOpenChange={(open) => open && void getModelSettings().then(setView)}>
+    <DropdownMenu
+      onOpenChange={(open) => {
+        if (!open) return;
+        void getModelSettings().then(setView);
+        // T012.9：模型目录字段（档位/价格/窗口）还没到就补一次；不阻塞页面加载。
+        if (!model.efforts?.length) {
+          void hydrateModel({
+            connectionId: model.connectionId,
+            modelId: model.modelId,
+            label: model.label,
+            effort: model.effort,
+          });
+        }
+      }}
+    >
       <DropdownMenuTrigger asChild>
         <button
           type="button"

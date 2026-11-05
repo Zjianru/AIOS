@@ -538,8 +538,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
       // 首次使用状态读不到时继续走对话加载；真正原因由 loadInitial 的 gate/横幅呈现。
     }
     await get().loadInitial();
-    // T012.9：拿到会话统计和当前模型（价格/窗口/档）再让输入区显示
-    await get().refreshStats();
+    // T012.9：统计/模型信息异步补（不让目录网络请求拖慢页面首屏）。
+    void get().refreshStats();
   },
 
   loadInitial: async () => {
