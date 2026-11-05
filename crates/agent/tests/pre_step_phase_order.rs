@@ -27,7 +27,9 @@ async fn injection_happens_before_compaction_in_same_turn() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
+        // 真实请求数 3：阈值极小 + compaction_retries=1，先做两次压缩摘要尝试，再发主请求。
         .respond_with(SequenceResponder::new(vec![
+            sse(FINAL_TEXT_SSE.to_owned()),
             sse(FINAL_TEXT_SSE.to_owned()),
             sse(FINAL_TEXT_SSE.to_owned()),
         ]))

@@ -6,11 +6,15 @@
 
 use std::process::{Command, Stdio};
 
+use serde_json::json;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
 fn aios_dev() -> &'static str {
     env!("CARGO_BIN_EXE_aios-dev")
 }
 
-fn seed_keyring(data_dir: &std::path::Path) -> std::path::PathBuf {
+fn seed_keyring(data_dir: &std::path::Path, endpoint: &str) -> std::path::PathBuf {
     let identity = data_dir.join("identity.txt");
     let keyring = credentials::Keyring::open(data_dir, Some(&identity)).expect("keyring");
     keyring
@@ -18,7 +22,7 @@ fn seed_keyring(data_dir: &std::path::Path) -> std::path::PathBuf {
             id: "deepseek".to_owned(),
             name: "DeepSeek".to_owned(),
             model: "deepseek-flash".to_owned(),
-            endpoint: "http://127.0.0.1:1".to_owned(),
+            endpoint: endpoint.to_owned(),
             api_key: "test-key".to_owned(),
         })
         .expect("save connection");
@@ -44,6 +48,12 @@ fn run_resume(
             cwd.to_str().expect("cwd 是 UTF-8"),
             "你好",
         ])
+        .env_remove("http_proxy")
+        .env_remove("https_proxy")
+        .env_remove("all_proxy")
+        .env_remove("HTTP_PROXY")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("ALL_PROXY")
         .stdin(Stdio::null())
         .output()
         .expect("aios-dev 子进程应能启动")
@@ -56,7 +66,7 @@ fn busy_session_is_rejected_with_writer_held_code() {
     // 测试进程先持有写锁，模拟「服务开着 Kind 会话」。
     let store = session::SessionStore::create(data_dir.path(), cwd.path()).unwrap();
     let id = store.id().clone();
-    let identity = seed_keyring(data_dir.path());
+    let identity = seed_keyring(data_dir.path(), "http://127.0.0.1:1");
 
     let output = run_resume(data_dir.path(), cwd.path(), id.as_str(), &identity);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -75,14 +85,23 @@ fn busy_session_is_rejected_with_writer_held_code() {
     );
 }
 
-#[test]
-fn released_lock_allows_the_session_again() {
+#[tokio::test]
+async fn released_lock_allows_the_session_again() {
+    // 锁释放后子进程会真发请求：wiremock 立刻回 401（不重试），避免连接退避的 15 秒。
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(
+            json!({"error": {"message": "bad key", "type": "authentication_error"}}),
+        ))
+        .mount(&server)
+        .await;
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let store = session::SessionStore::create(data_dir.path(), cwd.path()).unwrap();
     let id = store.id().clone();
-    drop(store); // 锁释放：第二个进程应能打开（然后用假 base URL 失败在模型请求，而不是占用）。
-    let identity = seed_keyring(data_dir.path());
+    drop(store); // 锁释放：第二个进程应能打开（然后模型请求被拒，而不是占用）。
+    let identity = seed_keyring(data_dir.path(), &server.uri());
 
     let output = run_resume(data_dir.path(), cwd.path(), id.as_str(), &identity);
     let stderr = String::from_utf8_lossy(&output.stderr);

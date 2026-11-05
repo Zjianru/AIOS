@@ -3,6 +3,8 @@
 
 use std::process::{Command, Output};
 
+use serde_json::json;
+
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -28,7 +30,13 @@ fn run_with_env(
             "你好",
         ])
         .env_remove("DEEPSEEK_API_KEY")
-        .env_remove("DEEPSEEK_BASE_URL");
+        .env_remove("DEEPSEEK_BASE_URL")
+        .env_remove("http_proxy")
+        .env_remove("https_proxy")
+        .env_remove("all_proxy")
+        .env_remove("HTTP_PROXY")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("ALL_PROXY");
     if let Some(key) = env_api_key {
         command.env("DEEPSEEK_API_KEY", key);
     }
@@ -57,8 +65,17 @@ fn 没有连接时提示接模型而不是环境变量() {
     );
 }
 
-#[test]
-fn 连接存在时不再要求环境变量() {
+#[tokio::test]
+async fn 连接存在时不再要求环境变量() {
+    // 连接存在时子进程会真发请求：wiremock 立刻回 401（不重试），避免连接退避的 15 秒。
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(
+            json!({"error": {"message": "bad key", "type": "authentication_error"}}),
+        ))
+        .mount(&server)
+        .await;
     let dir = tempfile::tempdir().expect("tempdir");
     let data_dir = dir.path().join("data");
     let identity = dir.path().join("identity.txt");
@@ -68,7 +85,7 @@ fn 连接存在时不再要求环境变量() {
             id: "deepseek".to_owned(),
             name: "DeepSeek".to_owned(),
             model: "deepseek-flash".to_owned(),
-            endpoint: "http://127.0.0.1:1".to_owned(),
+            endpoint: server.uri(),
             api_key: "test-key".to_owned(),
         })
         .expect("save");

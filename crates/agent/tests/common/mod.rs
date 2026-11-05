@@ -28,11 +28,18 @@ impl SequenceResponder {
 
 impl Respond for SequenceResponder {
     fn respond(&self, _request: &Request) -> ResponseTemplate {
-        self.responses
-            .lock()
-            .expect("mock 脚本锁被毒化")
-            .pop_front()
-            .expect("mock 收到的请求比脚本多")
+        // 先在锁内取响应、释放锁，再在锁外 panic：脚本耗尽时后面的重试不会撞上毒锁。
+        let next = {
+            let mut responses = self
+                .responses
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            responses.pop_front()
+        };
+        match next {
+            Some(response) => response,
+            None => panic!("mock 收到的请求比脚本多"),
+        }
     }
 }
 
