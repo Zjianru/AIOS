@@ -25,6 +25,7 @@ import { selectSessionModel, ServiceHttpError } from '@/data/service';
 import type { ModelSettingsView } from '@/data/fixtures/settings';
 import { go } from '@/app/navigate';
 import { useKindStore } from './kindStore';
+import { effortName } from './effortName';
 
 function usable(view: ModelSettingsView, connectionId: string): { ok: true } | { ok: false; why: string } {
   if (view.keyFile.problem) return { ok: false, why: '读不到 Keyring' };
@@ -34,19 +35,7 @@ function usable(view: ModelSettingsView, connectionId: string): { ok: true } | {
   return { ok: true };
 }
 
-/** 档位的常识名（厂商自己的叫法优先显示；图标用排序位置）。 */
-export function effortName(effort: string): string {
-  const names: Record<string, string> = {
-    none: '不思考',
-    minimal: '最弱',
-    low: '弱',
-    medium: '中',
-    high: '强',
-    xhigh: '更强',
-    max: '最强',
-  };
-  return names[effort] ?? effort;
-}
+export { effortName } from './effortName';
 
 /** 强度图标（照 Magpie effortIcon）：四格由矮到高，亮到这一档在这个模型里排第几。 */
 export function EffortIcon({ effort, levels, className }: { effort?: string; levels: string[]; className?: string }) {
@@ -72,10 +61,15 @@ export function EffortIcon({ effort, levels, className }: { effort?: string; lev
 
 export function ModelPicker() {
   const model = useKindStore((state) => state.model);
-  const setModel = useKindStore((state) => state.setModel);
   const setEffort = useKindStore((state) => state.setEffort);
   const hydrateModel = useKindStore((state) => state.hydrateModel);
+  const applySelection = useKindStore((state) => state.applySelection);
   const [view, setView] = useState<ModelSettingsView | null>(null);
+  // 用 store 的最新值（闭包里的 wantedEffort 可能还是上一次渲染的旧值）。
+  const getWantedEffort = () => {
+    const state = useKindStore.getState();
+    return state.wantedEffort ?? state.model.effortActual ?? state.model.effort;
+  };
 
   return (
     <DropdownMenu
@@ -100,11 +94,11 @@ export function ModelPicker() {
           data-kind="model-picker"
         >
           <span className="truncate">{model.label}</span>
-          {model.effort ? (
+          {model.effortActual ?? model.effort ? (
             <span className="flex shrink-0 items-center gap-1 text-ink-3" data-kind="effort-now">
               <span className="opacity-60">·</span>
-              <EffortIcon effort={model.effort} levels={model.efforts ?? []} />
-              {effortName(model.effort)}
+              <EffortIcon effort={model.effortActual ?? model.effort} levels={model.efforts ?? []} />
+              {effortName(model.effortActual ?? model.effort ?? '')}
             </span>
           ) : null}
           <ChevronDown className="size-3 shrink-0 opacity-60" />
@@ -115,7 +109,7 @@ export function ModelPicker() {
         {model.efforts?.length ? (
           <div className="flex gap-1 px-2 pb-1.5" data-kind="effort">
             {model.efforts.map((effort) => {
-              const on = model.effort === effort;
+              const on = (model.effortActual ?? model.effort) === effort;
               return (
                 <button
                   key={effort}
@@ -168,14 +162,15 @@ export function ModelPicker() {
                         void selectSessionModel({
                           connection: conn.id,
                           model: row.id,
-                          effortWanted: model.effort,
+                          effortWanted: getWantedEffort(),
                         })
                           .then((selected) =>
-                            setModel({
+                            applySelection({
                               connectionId: selected.connection,
                               modelId: selected.model,
                               label: row.name ?? selected.model,
-                              effort: selected.effortWanted,
+                              effortWanted: selected.effortWanted,
+                              effortActual: selected.effortActual,
                             }),
                           )
                           .catch((error: unknown) => {

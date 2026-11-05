@@ -85,7 +85,10 @@ function mapConnection(info: ServiceConnectionInfo): ConnectionView {
         name: row.name ?? known?.name,
         contextWindow: row.context_window ?? known?.contextWindow,
         maxTokens: row.max_tokens,
-        price: row.price,
+        priceInput: row.priceInput,
+        priceOutput: row.priceOutput,
+        priceCacheRead: row.priceCacheRead,
+        priceCacheWrite: row.priceCacheWrite,
       };
     }),
     priceRate: info.price_rate,
@@ -152,7 +155,16 @@ export async function updateConnection(
   connectionId: string,
   patch: {
     endpoint: string;
-    models: { id: string; name?: string; contextWindow?: number; maxTokens?: number; price?: number }[];
+    models: {
+      id: string;
+      name?: string;
+      contextWindow?: number;
+      maxTokens?: number;
+      priceInput?: number;
+      priceOutput?: number;
+      priceCacheRead?: number;
+      priceCacheWrite?: number;
+    }[];
     key: string;
     priceRate?: number;
   },
@@ -166,7 +178,10 @@ export async function updateConnection(
       name: row.name,
       context_window: row.contextWindow,
       max_tokens: row.maxTokens,
-      price: row.price,
+      priceInput: row.priceInput,
+      priceOutput: row.priceOutput,
+      priceCacheRead: row.priceCacheRead,
+      priceCacheWrite: row.priceCacheWrite,
     }));
   if (patch.key.trim()) {
     await saveConnection({
@@ -204,7 +219,10 @@ export async function discoverModels(connectionId: string): Promise<
     id: row.id,
     name: row.name,
     contextWindow: row.contextWindow,
-    price: row.priceInput,
+    priceInput: row.price_input,
+    priceOutput: row.price_output,
+    priceCacheRead: row.price_cache_read,
+    priceCacheWrite: row.price_cache_write,
   }));
 }
 

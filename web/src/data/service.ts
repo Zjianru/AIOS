@@ -219,7 +219,11 @@ export interface ServiceModelRow {
   name?: string;
   context_window?: number;
   max_tokens?: number;
-  price?: number;
+  /** T012 F1：用户填的四类单价（美元/百万 token，不乘倍率；服务端 camelCase）。 */
+  priceInput?: number;
+  priceOutput?: number;
+  priceCacheRead?: number;
+  priceCacheWrite?: number;
 }
 
 export interface ServiceConnectionInfo {
@@ -332,8 +336,8 @@ export interface SessionModelSelectInput {
 }
 export async function selectSessionModel(
   input: SessionModelSelectInput,
-): Promise<{ connection: string; model: string; effortWanted: string }> {
-  return post<{ connection: string; model: string; effortWanted: string }>({
+): Promise<{ connection: string; model: string; effortWanted: string; effortActual: string }> {
+  return post<{ connection: string; model: string; effortWanted: string; effortActual: string }>({
     method: 'session-model-select',
     ...input,
   });
@@ -406,6 +410,8 @@ export interface ServiceSessionStats {
   connection: string;
   model: string;
   effortWanted: string;
+  /** T012 F2：这一轮实际会发的档（服务端内核算好）。 */
+  effortActual?: string;
 }
 
 export interface ServiceFxInfo {
@@ -435,8 +441,11 @@ export interface ServiceCatalogModel {
   name?: string;
   contextWindow?: number;
   maxTokens?: number;
-  priceInput?: number;
-  priceOutput?: number;
+  /** 目录标价四类（服务端 ModelInfo 序列化是 snake_case）。 */
+  price_input?: number;
+  price_output?: number;
+  price_cache_read?: number;
+  price_cache_write?: number;
   thinks?: boolean;
   efforts?: string[];
 }

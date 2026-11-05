@@ -75,6 +75,12 @@ pub struct Cost {
     pub input: f64,
     #[serde(default)]
     pub output: f64,
+    /// 缓存读单价（美元/百万 token）；目录没给就是 None（T012 F1：有缓存用量却无价 → 这一轮无价格）。
+    #[serde(default)]
+    pub cache_read: Option<f64>,
+    /// 缓存写单价；多数目录没有这一项。
+    #[serde(default)]
+    pub cache_write: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +178,11 @@ pub struct ModelInfo {
     pub price_input: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price_output: Option<f64>,
+    /// T012 F1：缓存读/写单价（用户价或目录标价×倍率在 stats 里合成）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_cache_read: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_cache_write: Option<f64>,
     pub thinks: bool,
     pub efforts: Vec<String>,
 }
@@ -222,6 +233,8 @@ fn model_info(provider: &CatalogProvider, model: &CatalogModel) -> ModelInfo {
         max_tokens,
         price_input: model.cost.as_ref().map(|cost| cost.input),
         price_output: model.cost.as_ref().map(|cost| cost.output),
+        price_cache_read: model.cost.as_ref().and_then(|cost| cost.cache_read),
+        price_cache_write: model.cost.as_ref().and_then(|cost| cost.cache_write),
         thinks: model.reasoning,
         efforts: levels(provider, model),
     }
@@ -324,6 +337,8 @@ pub fn merge_live(catalog_models: Vec<ModelInfo>, live: Vec<LiveModel>) -> Vec<M
         max_tokens: live.max_tokens,
         price_input: None,
         price_output: None,
+        price_cache_read: None,
+        price_cache_write: None,
         thinks: false,
         efforts: Vec::new(),
     }));

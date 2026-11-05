@@ -495,6 +495,9 @@ pub struct SessionModelSelectResponse {
     pub model: String,
     #[serde(rename = "effortWanted")]
     pub effort_wanted: String,
+    /// T012 F2：这一轮实际会发的档（没有想要的档时是最近档；页面据此显示并告诉用户）。
+    #[serde(rename = "effortActual")]
+    pub effort_actual: String,
 }
 
 /// T008.3 增补：编辑连接，只改 endpoint/model（不换 key）。
@@ -1560,9 +1563,18 @@ impl RootHost {
                 if row.max_tokens.is_some() {
                     info.max_tokens = row.max_tokens;
                 }
-                if let Some(price) = row.price {
+                if let Some(price) = row.price_input {
                     info.price_input = Some(price);
+                    info.price_output.get_or_insert(price);
+                }
+                if let Some(price) = row.price_output {
                     info.price_output = Some(price);
+                }
+                if let Some(price) = row.price_cache_read {
+                    info.price_cache_read = Some(price);
+                }
+                if let Some(price) = row.price_cache_write {
+                    info.price_cache_write = Some(price);
                 }
             } else {
                 models.push(model::catalog::ModelInfo {
@@ -1570,8 +1582,10 @@ impl RootHost {
                     name: row.name.clone().unwrap_or_else(|| row.id.clone()),
                     context_window: row.context_window,
                     max_tokens: row.max_tokens,
-                    price_input: row.price,
-                    price_output: row.price,
+                    price_input: row.price_input,
+                    price_output: row.price_output.or(row.price_input),
+                    price_cache_read: row.price_cache_read,
+                    price_cache_write: row.price_cache_write,
                     thinks: false,
                     efforts: Vec::new(),
                 });
@@ -1742,6 +1756,11 @@ impl RootHost {
                 ..stats::SessionStats::default()
             },
         };
+        let mut stats = stats;
+        stats.effort_actual = connection
+            .as_ref()
+            .map(|connection| stats::actual_effort_of(connection, &current))
+            .unwrap_or_else(|| current.effort_wanted.clone());
         let fx = fx::usd_to_cny(&self.options.data_dir).await;
         Ok(StatusResponse {
             object,
@@ -1808,10 +1827,22 @@ impl RootHost {
             .expect("selection 锁被毒化")
             .clone()
             .unwrap_or(target);
+        let effort_actual = self
+            .keyring()
+            .ok()
+            .and_then(|keyring| {
+                let view = keyring.view();
+                view.connections
+                    .iter()
+                    .find(|connection| connection.id == actual.connection)
+                    .map(|connection| stats::actual_effort_of(connection, &actual))
+            })
+            .unwrap_or_else(|| actual.effort_wanted.clone());
         Ok(SessionModelSelectResponse {
             connection: actual.connection,
             model: actual.model,
             effort_wanted: actual.effort_wanted,
+            effort_actual,
         })
     }
 

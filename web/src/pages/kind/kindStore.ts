@@ -10,6 +10,7 @@ import { toast } from 'sonner';
 import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchAvailableModels, fetchEventsPage, fetchFirstUse, fetchStatus, recheckRoot, reportMonitor, selectSessionModel, sendMessage, setUnauthorizedHandler, updateSettings } from '@/data/service';
 import type { ServiceCatalogModel } from '@/data/service';
 import type { Currency } from '@/lib/numbers';
+import { effortName } from './effortName';
 import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
 import { reconnectDelayMs } from '@/data/reconnect';
 import type { GateDetail, GateState } from './KernelGate';
@@ -148,13 +149,17 @@ interface KindState {
     thinks?: boolean;
     /** 这个模型能选的档（厂商自己的叫法）；没有就是不能调。 */
     efforts?: string[];
-    /** 下一轮实际要发的档。 */
+    /** 下一轮实际要发的档（T012 F2：服务端内核算好的实际档；没有想要的档时是最近档）。 */
     effort?: string;
+    /** T012 F2：用户要的档（选择器显示实际档，提示时对比）。 */
+    effortActual?: string;
   };
   /** T012.9：用户最后选的档（换到不能调的模型也记着）。 */
   wantedEffort?: string;
   /** T012.9：会话合计（服务 status.stats）。 */
   stats: SessionStats;
+  /** T012 F2：模型信息是否已从服务初始化过（之后 refreshStats 不覆盖用户的选择，避免异步竞态）。 */
+  modelInitialized: boolean;
   /** T012.9：币种与汇率（服务 settings.json + status.fx）。 */
   money: MoneyState;
   /** T008.4：Kind 首屏引导：先看是不是空库（首次使用），否则加载对话。 */
@@ -175,6 +180,17 @@ interface KindState {
   setCurrency: (currency: Currency) => Promise<void>;
   /** T012.9：换思考档（下一轮生效）。 */
   setEffort: (effort: string) => Promise<void>;
+  /** T012 F2：应用一次服务端选择（wanted/actual 都由服务给），补目录字段并提示。 */
+  applySelection: (
+    selection: {
+      connectionId: string;
+      modelId: string;
+      label: string;
+      effortWanted?: string;
+      effortActual?: string;
+    },
+    announce?: boolean,
+  ) => Promise<void>;
   /** T012.9：选中模型后补目录字段（档位/价格/窗口），让档位选择立刻可用。 */
   hydrateModel: (selection: {
     connectionId: string;
@@ -504,6 +520,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   model: DEMO_MODEL,
   stats: EMPTY_STATS,
   money: DEFAULT_MONEY,
+  modelInitialized: false,
 
   bootstrap: async () => {
     try {
@@ -695,6 +712,35 @@ export const useKindStore = create<KindState>()((set, get) => ({
     toast('下一轮开始用 ' + model.label);
   },
 
+  applySelection: async (selection, announce = true) => {
+    const { connectionId, modelId, label, effortWanted, effortActual } = selection;
+    const wanted = effortWanted ?? get().wantedEffort;
+    const actual = effortActual ?? effortWanted;
+    set((state) => ({
+      wantedEffort: wanted,
+      model: {
+        ...state.model,
+        connectionId,
+        modelId,
+        label,
+        effort: actual,
+        effortActual: actual,
+      },
+    }));
+    await get().hydrateModel({ connectionId, modelId, label, effort: actual });
+    if (!announce) return;
+    // T012 F2：提示带档；实际档和想要的档对不上时写明「没有」。
+    const wantedName = wanted ? effortName(wanted) : null;
+    const actualName = actual ? effortName(actual) : null;
+    if (wantedName && actualName && wanted !== actual) {
+      toast('下一轮开始用 ' + label + ' · 思考 ' + actualName + '（没有「' + wantedName + '」，按「' + actualName + '」）');
+    } else if (actualName) {
+      toast('下一轮开始用 ' + label + ' · 思考 ' + actualName);
+    } else {
+      toast('下一轮开始用 ' + label);
+    }
+  },
+
   hydrateModel: async (selection) => {
     const { connectionId, modelId, label } = selection;
     let models = catalogCache.get(connectionId);
@@ -714,13 +760,19 @@ export const useKindStore = create<KindState>()((set, get) => ({
         modelId,
         label: info?.name ?? label,
         price:
-          info?.priceInput !== undefined
-            ? { input: info.priceInput, output: info.priceOutput ?? info.priceInput }
+          info?.price_input !== undefined
+            ? {
+                input: info.price_input,
+                output: info.price_output ?? info.price_input,
+                cacheRead: info.price_cache_read,
+                cacheWrite: info.price_cache_write,
+              }
             : undefined,
         contextWindow: info?.contextWindow,
         thinks: info?.thinks,
         efforts: info?.efforts,
         effort: selection.effort ?? state.model.effort,
+        effortActual: selection.effort ?? state.model.effortActual,
       },
     }));
   },
@@ -755,7 +807,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
         }));
       }
       // T012.9：当前模型（连接/模型/档由服务 status 给；价格/窗口/档位来自模型目录）。
-      if (status.stats) {
+      // T012 F2：只在首次初始化时写 model；之后由 applySelection 维护，避免 refreshStats 异步回来覆盖用户刚做的选择。
+      if (status.stats && !get().modelInitialized) {
         const stats = status.stats;
         let models = catalogCache.get(stats.connection);
         if (models === undefined) {
@@ -774,15 +827,22 @@ export const useKindStore = create<KindState>()((set, get) => ({
             modelId: stats.model,
             label: info?.name ?? stats.model,
             price:
-              info?.priceInput !== undefined
-                ? { input: info.priceInput, output: info.priceOutput ?? info.priceInput }
+              info?.price_input !== undefined
+                ? {
+                    input: info.price_input,
+                    output: info.price_output ?? info.price_input,
+                    cacheRead: info.price_cache_read,
+                    cacheWrite: info.price_cache_write,
+                  }
                 : undefined,
             contextWindow: info?.contextWindow,
             thinks: info?.thinks,
             efforts: info?.efforts,
-            effort: stats.effortWanted,
+            effort: stats.effortActual ?? stats.effortWanted,
+            effortActual: stats.effortActual,
           },
           wantedEffort: stats.effortWanted,
+          modelInitialized: true,
         });
       }
     } catch {
@@ -807,10 +867,17 @@ export const useKindStore = create<KindState>()((set, get) => ({
         model: state.model.modelId,
         effortWanted: effort,
       });
-      set({
-        wantedEffort: selected.effortWanted,
-        model: { ...state.model, effort: selected.effortWanted },
-      });
+      // T012 F2：实际档由服务给（模型没有这一档时是最近档）；换档不弹提示。
+      await get().applySelection(
+        {
+          connectionId: selected.connection,
+          modelId: selected.model,
+          label: state.model.label,
+          effortWanted: selected.effortWanted,
+          effortActual: selected.effortActual,
+        },
+        false,
+      );
     } catch {
       toast('思考强度没送达', { description: '连上内核再试一次' });
     }

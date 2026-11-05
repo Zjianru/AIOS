@@ -23,6 +23,7 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.failure === 'unknown') return { file: 'text', override: 'failure-unknown' };
   if (options.realTurn) return { file: 'real', paceMs: 20 };
   if (options.usageTurn) return { file: 'usage', paceMs: 400 };
+  if (options.usageReadOnly) return { file: 'usage-read-only', paceMs: 400 };
   if (options.askTurn) return { file: 'ask', paceMs: options.askTurnPaceMs };
   if (options.toolTurn) return { file: 'tool' };
   if (options.highUsage) return { file: 'high-usage' };
@@ -125,6 +126,8 @@ export interface FixtureOptions {
   home?: 'dataDir' | string;
   /// T010.3：用带 reasoning/缓存读写的用量夹具（turn-usage 用例）。
   usageTurn?: boolean;
+  /// T012 F1：用量夹具去掉缓存写（只填缓存读价的端到端用）。
+  usageReadOnly?: boolean;
   /// T010.5：用真 key 录的夹具（多步工具/思考/缓存读/压缩）。
   realTurn?: boolean;
 }

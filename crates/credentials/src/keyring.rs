@@ -82,8 +82,33 @@ pub struct ModelRow {
     pub context_window: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub price: Option<f64>,
+    /// T012 F1：用户填的四类单价（美元/百万 token，不乘倍率）。旧连接只有单数 `price`，
+    /// 读入时当作输入价和输出价（alias）；缓存两格可以不填。
+    #[serde(
+        rename = "priceInput",
+        alias = "price",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub price_input: Option<f64>,
+    #[serde(
+        rename = "priceOutput",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub price_output: Option<f64>,
+    #[serde(
+        rename = "priceCacheRead",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub price_cache_read: Option<f64>,
+    #[serde(
+        rename = "priceCacheWrite",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub price_cache_write: Option<f64>,
 }
 
 /// T012.4：编辑连接时一次传的新形状字段（endpoint/model 必填，其余可选）。
@@ -165,7 +190,10 @@ fn normalize_info(info: &mut ConnectionInfo) {
             name: None,
             context_window: None,
             max_tokens: None,
-            price: None,
+            price_input: None,
+            price_output: None,
+            price_cache_read: None,
+            price_cache_write: None,
         });
     }
     if info.preset.is_empty() {
@@ -350,7 +378,10 @@ impl Keyring {
                 name: None,
                 context_window: None,
                 max_tokens: None,
-                price: None,
+                price_input: None,
+                price_output: None,
+                price_cache_read: None,
+                price_cache_write: None,
             }]
         });
         let model = models
@@ -962,7 +993,10 @@ mod shape_tests {
                     name: None,
                     context_window: Some(1_000_000),
                     max_tokens: Some(524_288),
-                    price: None,
+                    price_input: None,
+                    price_output: None,
+                    price_cache_read: None,
+                    price_cache_write: None,
                 }]),
                 price_rate: Some(0.0),
                 auth_header: None,

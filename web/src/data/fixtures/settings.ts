@@ -20,8 +20,11 @@ export interface ModelRow {
   /** 上下文窗口，token。没填就是继承适配器的值。 */
   contextWindow?: number;
   maxTokens?: number;
-  /** T012.4：美元/百万 token（用户价；不乘倍率）。 */
-  price?: number;
+  /** T012 F1：用户填的四类单价（美元/百万 token；不乘倍率；空=继承目录标价）。 */
+  priceInput?: number;
+  priceOutput?: number;
+  priceCacheRead?: number;
+  priceCacheWrite?: number;
 }
 
 export type Protocol = 'anthropic-messages' | 'openai-chat' | 'openai-responses';

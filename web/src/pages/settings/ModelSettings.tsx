@@ -37,6 +37,75 @@ function parsePrice(text: string): number | undefined {
   return text.trim() !== '' && Number.isFinite(n) && n >= 0 ? n : undefined;
 }
 
+/** 模型行上的价格摘要：填了哪几格就写哪几格，没填写「标价」。 */
+function priceLabel(row: ModelRow): string {
+  const parts: string[] = [];
+  if (row.priceInput !== undefined) parts.push('in ' + row.priceInput);
+  if (row.priceOutput !== undefined) parts.push('out ' + row.priceOutput);
+  if (row.priceCacheRead !== undefined) parts.push('r ' + row.priceCacheRead);
+  if (row.priceCacheWrite !== undefined) parts.push('w ' + row.priceCacheWrite);
+  return parts.length === 0 ? '标价' : parts.join(' / ');
+}
+
+function formatPrice(value: number | undefined): string {
+  return value === undefined ? '' : String(value);
+}
+
+/** T012 F1：用户单价四格（照原型 PriceEditor）；空=继承目录标价，「恢复标价」清空四格。 */
+function PriceEditor({ price, onChange }: { price: ModelRow; onChange: (patch: Partial<ModelRow>) => void }) {
+  const fields: { key: 'priceInput' | 'priceCacheRead' | 'priceCacheWrite' | 'priceOutput'; label: string }[] = [
+    { key: 'priceInput', label: '输入' },
+    { key: 'priceCacheRead', label: '缓存读' },
+    { key: 'priceCacheWrite', label: '缓存写' },
+    { key: 'priceOutput', label: '输出' },
+  ];
+  const hasAny =
+    price.priceInput !== undefined ||
+    price.priceOutput !== undefined ||
+    price.priceCacheRead !== undefined ||
+    price.priceCacheWrite !== undefined;
+  return (
+    <div className="mb-1 ml-0.5 rounded-btn bg-content px-2.5 py-2" data-settings="price">
+      <div className="grid grid-cols-4 gap-1.5">
+        {fields.map((field) => (
+          <label key={field.key} className="text-1 text-ink-3">
+            {field.label}
+            <input
+              key={field.key + ':' + String(price[field.key])}
+              className={cn(inputClass, 'mt-0.5 brand-type')}
+              data-settings={'price-' + field.key}
+              defaultValue={formatPrice(price[field.key])}
+              placeholder="继承"
+              inputMode="decimal"
+              onBlur={(event) => onChange({ [field.key]: parsePrice(event.target.value) })}
+            />
+          </label>
+        ))}
+      </div>
+      <div className="mt-1.5 flex items-start gap-2 text-1 leading-5 text-ink-3">
+        <span>美元 / 百万 token。空着按目录标价算；自己填的价格不乘倍率。以厂商账单为准。</span>
+        {hasAny ? (
+          <button
+            type="button"
+            className="ml-auto shrink-0 text-ink-2 hover:text-ink"
+            data-settings="price-reset"
+            onClick={() =>
+              onChange({
+                priceInput: undefined,
+                priceOutput: undefined,
+                priceCacheRead: undefined,
+                priceCacheWrite: undefined,
+              })
+            }
+          >
+            恢复标价
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 const inputClass =
   'w-full rounded-btn border border-line-2 bg-content px-2.5 py-1.5 text-3 text-ink outline-none placeholder:text-ink-3 focus:border-ink-3 aria-invalid:border-[var(--fail)]';
 
@@ -198,6 +267,7 @@ function ModelCatalog({ models, onChange, defaults, discover, required }: {
   required?: boolean;
 }) {
   const [candidates, setCandidates] = useState<ModelRow[] | null>(null);
+  const [priceOpen, setPriceOpen] = useState<number | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState('');
   const [asking, setAsking] = useState(false);
@@ -299,21 +369,24 @@ function ModelCatalog({ models, onChange, defaults, discover, required }: {
             <span />
           </div>
           {models.map((row, index) => (
-            <div key={index} className="grid grid-cols-[1fr_1fr_64px_64px_80px_24px] items-center gap-1.5">
+            <div key={index}>
+            <div className="grid grid-cols-[1fr_1fr_64px_64px_80px_24px] items-center gap-1.5">
               <input className={cn(inputClass, 'brand-type')} value={row.id} placeholder="model-id" onChange={(e) => setRow(index, { id: e.target.value })} />
               <input className={inputClass} value={row.name ?? ''} placeholder="可不填" onChange={(e) => setRow(index, { name: e.target.value || undefined })} />
               <input key={'cw' + index + ':' + row.contextWindow} className={inputClass} defaultValue={formatTokens(row.contextWindow)} placeholder="继承" onBlur={(e) => setRow(index, { contextWindow: parseTokens(e.target.value) })} />
               <input key={'mt' + index + ':' + row.maxTokens} className={inputClass} defaultValue={formatTokens(row.maxTokens)} placeholder="继承" onBlur={(e) => setRow(index, { maxTokens: parseTokens(e.target.value) })} />
-              <input
-                key={'pr' + index + ':' + row.price}
-                className={cn(inputClass, 'brand-type')}
+              <button
+                type="button"
                 data-settings="model-price"
-                defaultValue={row.price === undefined ? '' : String(row.price)}
-                placeholder="继承"
-                inputMode="decimal"
-                title="每百万 token 的美元价格（输入/输出同价）；填了就用它算花费，不乘倍率"
-                onBlur={(e) => setRow(index, { price: parsePrice(e.target.value) })}
-              />
+                title="用户单价（四类）；填了就用它算花费，不乘倍率；空=继承目录标价"
+                onClick={() => setPriceOpen(priceOpen === index ? null : index)}
+                className={cn(
+                  'h-7 rounded-btn border border-line-2 px-1 text-2 transition-colors hover:bg-hover',
+                  priceOpen === index ? 'text-ink' : 'text-ink-2',
+                )}
+              >
+                {priceLabel(row)}
+              </button>
               <button
                 type="button"
                 aria-label="删掉这个模型"
@@ -322,6 +395,13 @@ function ModelCatalog({ models, onChange, defaults, discover, required }: {
               >
                 <X className="size-3.5" />
               </button>
+            </div>
+            {priceOpen === index ? (
+              <PriceEditor
+                price={row}
+                onChange={(patch) => setRow(index, patch)}
+              />
+            ) : null}
             </div>
           ))}
         </div>

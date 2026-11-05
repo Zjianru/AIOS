@@ -159,7 +159,7 @@ pub(crate) fn lowest_non_off_effort(base_url: &str, model: &str) -> String {
 }
 
 /// 这一轮实际会发的档（用于日志；与 wire_effort 的选择一致）。
-pub(crate) fn actual_effort(base_url: &str, model: &str, effort: &Effort) -> String {
+pub fn actual_effort(base_url: &str, model: &str, effort: &Effort) -> String {
     let profile = reasoning(base_url, model);
     if effort.is_off() && profile.always_thinks {
         return fit_effort("low", &profile.efforts);
