@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { startKernelFixture } from './service-fixture';
+import { apiPost, startKernelFixture } from './service-fixture';
 
 const urlOf = (fixture: { baseUrl: string; token: string }) =>
   fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind';
@@ -128,6 +128,76 @@ test('引用：选中文字浮出引用按钮，点了变 > 引用', async ({ pa
     await expect(quote).toBeVisible();
     await quote.click();
     await expect(box).toHaveValue('> 这一段要被引用');
+  } finally {
+    await fixture.close();
+  }
+});
+
+
+/// T013.7 清单 13：拖进文字文件出卡片；拖进二进制给提示。
+test('拖拽：文字文件出卡片，二进制提示只能放文字文件', async ({ page }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    const composer = page.locator('[data-kind="composer"]');
+    await composer.evaluate((element) => {
+      const data = new DataTransfer();
+      data.items.add(new File(['hello text'], 'note.txt', { type: 'text/plain' }));
+      element.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }));
+    });
+    await expect(page.locator('[data-kind="file-card"]')).toHaveCount(1, { timeout: 15_000 });
+    await expect(page.locator('[data-kind="file-card"]').first()).toContainText('note.txt');
+    await composer.evaluate((element) => {
+      const data = new DataTransfer();
+      data.items.add(new File([new Uint8Array([0, 1, 2, 3])], 'bin.dat', { type: 'application/octet-stream' }));
+      element.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }));
+    });
+    await expect(page.getByText('只能放文字文件')).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('[data-kind="file-card"]')).toHaveCount(1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+/// T013.7 清单 14：长按 Enter 不连发。
+test('长按 Enter 不连发', async ({ page }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    const box = input(page);
+    await box.fill('长按不连发');
+    await box.evaluate((element) => {
+      element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', repeat: true, bubbles: true }));
+    });
+    await expect(page.locator('[data-kind="user-bubble"]')).toHaveCount(0);
+    await expect(box).toHaveValue('长按不连发');
+  } finally {
+    await fixture.close();
+  }
+});
+
+/// T013.7 清单 13：发出去以后，日志里的 user/message 带 paste 块；气泡照常出现。
+test('发送：粘贴折卡片后发出去，日志里有 paste 块', async ({ page, request }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    const box = input(page);
+    await box.evaluate((element) => {
+      const data = new DataTransfer();
+      data.setData('text/plain', 'x'.repeat(1001));
+      element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true }));
+    });
+    await expect(page.locator('[data-kind="paste-card"]')).toHaveCount(1);
+    await box.fill('看这个粘贴');
+    await page.locator('[data-kind="send"]').click();
+    await expect(page.locator('[data-kind="user-bubble"]').first()).toContainText('看这个粘贴', { timeout: 15_000 });
+    const response = await apiPost(request, fixture, { method: 'events', maxMessages: 60 });
+    const json = await response.json();
+    const userMessage = (json.events ?? []).find((event: { type: string }) => event.type === 'user/message');
+    const blocks = userMessage?.data?.message?.content ?? [];
+    const pasteBlocks = blocks.filter((block: { type?: string; paste?: boolean }) => block.type === 'text' && block.paste === true);
+    expect(pasteBlocks.length).toBe(1);
+    expect(pasteBlocks[0].text).toBe('x'.repeat(1001));
   } finally {
     await fixture.close();
   }

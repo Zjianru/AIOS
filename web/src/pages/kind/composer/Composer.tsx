@@ -205,18 +205,19 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   };
 
   return (
-    <div data-kind="composer" className="relative">
-      <div
-        className="rounded-card border border-line-2 bg-raised/70 px-3 py-2 transition-colors"
-        onDragOver={(event) => {
-          event.preventDefault();
-        }}
-        onDrop={(event) => {
-          event.preventDefault();
-          const files = Array.from(event.dataTransfer.files ?? []);
-          if (files.length > 0) void intakeFiles(files);
-        }}
-      >
+    <div
+      data-kind="composer"
+      className="relative"
+      onDragOver={(event) => {
+        event.preventDefault();
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        const files = Array.from(event.dataTransfer.files ?? []);
+        if (files.length > 0) void intakeFiles(files);
+      }}
+    >
+      <div className="rounded-card border border-line-2 bg-raised/70 px-3 py-2 transition-colors">
         {pastes.length > 0 || attachments.length > 0 ? (
           <div ref={cardsRef} className="mb-1.5 flex gap-1.5 overflow-x-auto pb-1" data-kind="composer-cards">
             {pastes.map((paste, index) => (
