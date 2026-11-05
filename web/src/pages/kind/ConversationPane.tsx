@@ -16,6 +16,8 @@ import { TurnRow } from './TurnRow';
 import { useKindStore } from './kindStore';
 import { ModelPicker } from './ModelPicker';
 import { ComposerDock } from './ComposerDock';
+import { Composer } from './composer/Composer';
+import type { ComposerHandle } from './composer/Composer';
 import { mark } from '@/lib/perf';
 import { cn } from '@/lib/utils';
 
@@ -39,7 +41,6 @@ export function ConversationPane() {
   const running = streamingTurnId !== null;
   const offline = connection.state !== 'online';
   const listRef = useRef<VirtuosoHandle | null>(null);
-  const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const [canSend, setCanSend] = useState(false);
   const paintedRef = useRef(false);
   // 首次用户滚动之前不自动往上取页：5 轮比视口短时 Virtuoso 会立刻触发 startReached。
@@ -178,22 +179,26 @@ export function ConversationPane() {
     return () => window.removeEventListener('keydown', onKey);
   }, [running, stop]);
 
+  const composerRef = useRef<ComposerHandle | null>(null);
+
+  // T013.7：发送走 Composer（Enter/Cmd+Enter/按钮都到 submit）；pastes/attachments 跟着发。
   const handleSend = useCallback(() => {
-    const input = inputRef.current;
-    if (!input) return;
-    const text = input.value.trim();
-    if (!text) return;
     if (useKindStore.getState().connection.state !== 'online') return;
     if (useKindStore.getState().streamingTurnId) {
       toast('Kind 还在做上一轮', { description: '等它做完，或者先停下（Esc）' });
       return;
     }
-    input.value = '';
-    setCanSend(false);
-    followRef.current = true;
-    send(text);
-    listRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
-  }, [send]);
+    composerRef.current?.submit();
+  }, []);
+
+  const onComposerSend = useCallback(
+    (text: string, options: { pastes: string[]; attachments: { id: string; name: string; bytes: number }[] }) => {
+      followRef.current = true;
+      send(text, options);
+      listRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
+    },
+    [send],
+  );
 
   return (
     <div
@@ -276,22 +281,13 @@ export function ConversationPane() {
         <div className="mx-auto w-full max-w-[680px]">
           <div className={cn('rounded-card border border-line-2 bg-raised/70 px-3 py-2 transition-colors')}>
             
-            <div className="flex items-end gap-2">
-              <textarea
-                ref={inputRef}
-                rows={1}
-                placeholder={offline ? '连上之后再发…' : '和 Kind 说…'}
-                onInput={(event) => setCanSend(event.currentTarget.value.trim().length > 0)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-                    event.preventDefault();
-                    handleSend();
-                  }
-                }}
-                className="max-h-32 min-h-6 flex-1 resize-none bg-transparent text-4 leading-6 text-ink outline-none placeholder:text-ink-3"
-              />
+            <Composer
+              ref={composerRef}
+              offline={offline}
+              onSend={onComposerSend}
+              onCanSendChange={setCanSend}
+            >
               <ModelPicker />
-              
               {running ? (
                 <button
                   type="button"
@@ -318,7 +314,7 @@ export function ConversationPane() {
                   <SendHorizontal className="size-3.5" />
                 </button>
               )}
-            </div>
+            </Composer>
           </div>
           <ComposerDock
             running={running}

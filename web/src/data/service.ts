@@ -159,6 +159,29 @@ export interface SendOptions {
   attachments?: SendAttachmentRef[];
 }
 
+/** T013.7：把一段文字文件存进附件仓库（base64）；二进制会拒收。 */
+export interface AttachmentPutResult {
+  id: string;
+  name: string;
+  bytes: number;
+}
+
+export async function attachmentPut(name: string, base64Data: string): Promise<AttachmentPutResult> {
+  const response = await post({ method: 'attachment-put', name, data: base64Data });
+  return response as unknown as AttachmentPutResult;
+}
+
+/** T013.7：按打的字列 @ 文件候选（服务端 BFS + 排序）。 */
+export interface FileReferenceEntry {
+  path: string;
+  bytes: number;
+}
+
+export async function fileReferences(query: string): Promise<FileReferenceEntry[]> {
+  const response = await post({ method: 'file-references-list', query });
+  return (response as unknown as { references?: FileReferenceEntry[] }).references ?? [];
+}
+
 export async function sendMessage(
   content: string,
   requestId: string,

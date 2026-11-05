@@ -167,7 +167,7 @@ interface KindState {
   loadInitial: () => Promise<void>;
   loadOlder: () => Promise<void>;
   setAtBottom: (value: boolean) => void;
-  send: (text: string, totalMs?: number) => void;
+  send: (text: string, options?: { pastes?: string[]; attachments?: { id: string; name: string; bytes: number }[] }) => void;
   resend: (turnId: string) => void;
   stop: () => void;
   answer: (turnId: string, answers: AskAnswer[]) => void;
@@ -627,11 +627,12 @@ export const useKindStore = create<KindState>()((set, get) => ({
 
   setAtBottom: (value) => set({ atBottom: value }),
 
-  send: (text) => {
+  send: (text, options) => {
     // T007.4：真实发送；requestId 是幂等键（T007.9 的重发复用同一个）。
+    // T013.7：pastes/attachments 跟着发（服务端拼成用户消息的块）。
     const requestId = globalThis.crypto.randomUUID();
     const viewId = 'turn-999-unsent-' + requestId;
-    void sendMessage(text, requestId).catch(() => {
+    void sendMessage(text, requestId, options).catch(() => {
       unsentSends.set(viewId, { requestId, text });
       addUnsentView(viewId, text);
     });
