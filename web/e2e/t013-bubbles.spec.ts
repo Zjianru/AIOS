@@ -130,3 +130,24 @@ test('C10：空会话没有停止键、发送灰', async ({ page }) => {
     await fixture.close();
   }
 });
+
+
+/// T013 故事 6：气泡里开头的 `> ` 行画成引用块（照 DSH QuotedUserText 的样式）。
+test('气泡引用块：> 开头的行渲染成引用块', async ({ page }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    const box = page.locator('[data-kind="composer-input"]');
+    await box.fill('> 引用第一行\n> 引用第二行\n普通的一句话');
+    await page.locator('[data-kind="send"]').click();
+    const bubble = page.locator('[data-kind="user-bubble"]').first();
+    await expect(bubble).toBeVisible({ timeout: 15_000 });
+    const quote = bubble.locator('[data-kind="quote-block"]');
+    await expect(quote).toHaveCount(1);
+    await expect(quote).toContainText('引用第一行');
+    await expect(quote).toContainText('引用第二行');
+    await expect(bubble).toContainText('普通的一句话');
+  } finally {
+    await fixture.close();
+  }
+});

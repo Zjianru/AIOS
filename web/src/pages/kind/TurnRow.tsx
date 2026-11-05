@@ -25,6 +25,49 @@ function timeOf(seconds: number | null): string {
   return String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0');
 }
 
+/** 气泡里的引用块：开头的 `> ` 行（照 DSH QuotedUserText 的样子，左边框 + 弱一点的文字）。 */
+function QuoteBlock({ lines }: { lines: string[] }) {
+  return (
+    <div
+      data-kind="quote-block"
+      className="my-1 border-l-2 border-line-2 pl-2 text-ink-2"
+    >
+      {lines.join(String.fromCharCode(10))}
+    </div>
+  );
+}
+
+/** 你说的话：普通行照旧（带内联引用片），`> ` 开头的行画成引用块。 */
+function UserBubbleText({ text, elements }: { text: string; elements: TextElement[] }) {
+  const lines = text.split(String.fromCharCode(10));
+  const nodes: React.ReactNode[] = [];
+  let plain: string[] = [];
+  let quote: string[] = [];
+  const flushPlain = () => {
+    if (plain.length === 0) return;
+    const value = plain.join(String.fromCharCode(10));
+    nodes.push(<RichText key={'plain-' + nodes.length} text={value} elements={elements} />);
+    plain = [];
+  };
+  const flushQuote = () => {
+    if (quote.length === 0) return;
+    nodes.push(<QuoteBlock key={'quote-' + nodes.length} lines={quote} />);
+    quote = [];
+  };
+  for (const line of lines) {
+    if (line.startsWith('> ')) {
+      flushPlain();
+      quote.push(line.slice(2));
+    } else {
+      flushQuote();
+      plain.push(line);
+    }
+  }
+  flushPlain();
+  flushQuote();
+  return <>{nodes}</>;
+}
+
 /** 纯文本 + 内联引用片（你说的话用这个，不走 markdown）。 */
 function RichText({ text, elements }: { text: string; elements: TextElement[] }) {
   if (elements.length === 0) return <>{text}</>;
@@ -238,7 +281,7 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
             className="group/user relative max-w-[82%] rounded-2xl rounded-br-md border border-line-2 bg-raised px-3.5 py-2 text-4 leading-6 text-ink"
             data-kind="user-bubble"
           >
-            <RichText text={view.user.text} elements={view.user.elements} />
+            <UserBubbleText text={view.user.text} elements={view.user.elements} />
             <CopyButton
               text={view.user.text}
               className="absolute -right-8 top-1 opacity-0 transition-opacity group-hover/user:opacity-100"
