@@ -7,6 +7,7 @@ pub mod attachments;
 mod batch;
 mod builtin;
 pub mod diff;
+pub mod file_references;
 mod fs;
 mod jobs;
 mod session;

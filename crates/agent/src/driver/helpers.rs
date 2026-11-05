@@ -122,6 +122,10 @@ pub(super) fn interrupted_content(
 
 /// 系统提示：固定文字 + 会话的工作目录；按可见工具补指导句（照 DSH 的 tool-fs 各工具
 /// 系统提示段，插件名换成 AIOS 的规则表述）。
+/// T013.3：@ 文件提示（DSH `context/file-reference/src/index.ts` 的 FILE_REFERENCE_PROMPT，
+/// 去掉讲目录的那半句：AIOS 的 @ 候选不列目录）。
+pub(crate) const FILE_REFERENCE_PROMPT: &str = "Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root; absolute paths identify files or directories on the host. Anything else is a file: use the read tool when its contents are needed, and do not claim to have inspected it before reading. @\"...\" quotes a path containing spaces.";
+
 pub(super) fn system_prompt(cwd: &Path, tools: &ToolSet) -> String {
     let mut prompt = format!(
         "You are AIOS, a coding agent. Your working directory is {}.",
@@ -131,6 +135,8 @@ pub(super) fn system_prompt(cwd: &Path, tools: &ToolSet) -> String {
         prompt.push_str(
             "\n\nUse the read tool — not shell commands like cat — to inspect text files. Use offset and limit to continue reading large files.",
         );
+        prompt.push_str("\n\n");
+        prompt.push_str(FILE_REFERENCE_PROMPT);
     }
     if tools.get("bash").is_some() {
         prompt.push_str(
@@ -160,4 +166,31 @@ pub(super) fn system_prompt(cwd: &Path, tools: &ToolSet) -> String {
         );
     }
     prompt
+}
+
+#[cfg(test)]
+mod t013_file_reference_prompt_tests {
+    use super::*;
+
+    fn prompt_with(tools: &ToolSet) -> String {
+        system_prompt(std::path::Path::new("/tmp/workspace"), tools)
+    }
+
+    #[test]
+    fn file_reference_prompt_is_present_only_with_the_read_tool() {
+        let with_read = prompt_with(&ToolSet::builtin());
+        assert!(
+            with_read.contains(FILE_REFERENCE_PROMPT),
+            "有 read 工具时要有 @ 那句"
+        );
+        assert!(
+            !with_read.contains("A trailing slash marks a directory"),
+            "AIOS 的候选不列目录：讲目录的半句要去掉"
+        );
+        let without_read = prompt_with(&ToolSet::empty());
+        assert!(
+            !without_read.contains(FILE_REFERENCE_PROMPT),
+            "没有 read 工具时不要 @ 那句"
+        );
+    }
 }

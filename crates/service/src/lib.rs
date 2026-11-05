@@ -96,6 +96,8 @@ pub enum Call {
     AttachmentPut(AttachmentPutRequest),
     /// T013.2：按 id 读回附件（卡片「点开看全文」）。
     AttachmentGet(AttachmentGetRequest),
+    /// T013.3：@ 文件候选（按会话工作目录）。
+    FileReferencesList(FileReferencesListRequest),
 }
 
 /// 调用的结果（与 Call 一一对应）。
@@ -131,6 +133,8 @@ pub enum Response {
     /// T013.2：附件仓库。
     AttachmentPut(AttachmentPutResponse),
     AttachmentGet(AttachmentGetResponse),
+    /// T013.3：@ 文件候选。
+    FileReferencesList(FileReferencesListResponse),
 }
 
 /// 发消息（DSH session-controller 的 prompt）。requestId 是幂等键：同一 id 只进一次。
@@ -536,6 +540,26 @@ pub struct AttachmentGetResponse {
     pub bytes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+}
+
+/// T013.3：@ 文件候选（query 是 @ 后面那段；空就是列前面的）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct FileReferencesListRequest {
+    #[serde(default)]
+    pub query: String,
+}
+
+/// T013.3：一个候选（相对工作目录的路径 + 内容字节数）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileReferenceEntry {
+    pub path: String,
+    pub bytes: u64,
+}
+
+/// T013.3：@ 文件候选列表。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct FileReferencesListResponse {
+    pub references: Vec<FileReferenceEntry>,
 }
 
 /// T008.3 增补：编辑连接，只改 endpoint/model（不换 key）。
@@ -972,7 +996,8 @@ impl ServiceHost {
             | Call::ConnectionQuota(_)
             | Call::SettingsUpdate(_)
             | Call::AttachmentPut(_)
-            | Call::AttachmentGet(_) => Err(ServiceError::SettingsOnBareHost),
+            | Call::AttachmentGet(_)
+            | Call::FileReferencesList(_) => Err(ServiceError::SettingsOnBareHost),
         }
     }
 
@@ -1252,6 +1277,14 @@ pub struct RootHost {
 }
 
 impl RootHost {
+    /// T013.3：按会话工作目录列 @ 文件候选（空壳，红阶段先返回空）。
+    async fn file_references_list(
+        &self,
+        _request: FileReferencesListRequest,
+    ) -> Result<FileReferencesListResponse, ServiceError> {
+        Ok(FileReferencesListResponse::default())
+    }
+
     /// T013.2：存一份文字附件（base64 → 只读副本，返回 id）。
     async fn attachment_put(
         &self,
@@ -2114,6 +2147,11 @@ impl RootHost {
                 .attachment_get(request)
                 .await
                 .map(Response::AttachmentGet),
+            // T013.3：@ 文件候选（按会话工作目录）。
+            Call::FileReferencesList(request) => self
+                .file_references_list(request)
+                .await
+                .map(Response::FileReferencesList),
             other => {
                 let guard = self.inner.lock().await;
                 match guard.as_ref() {
