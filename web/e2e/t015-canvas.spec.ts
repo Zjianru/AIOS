@@ -10,6 +10,8 @@ import { startKernelFixture, type KernelFixture } from './service-fixture';
  * 地址清单和隔离、死循环不卡页面。
  * T015.2（版本）：第 2 版用 edits 出、旧版缩成一行、点了跳到最新、标题栏切版本、刷新回最新；
  * 页面切到旧版后发一句，发给模型的画布仍是最新版。
+ * T015.4（来自画布）：点画布里的按钮只把话放进输入框（带可移除标记，不替用户发）；
+ * 用户发出去以后，气泡、日志块、请求体三处都带「来自画布」。
  *
  * 画布那一轮由真内核执行 canvas 工具产生（夹具只是假模型的回放脚本），所以页面看到的
  * HTML 一定来自日志里的 tool/result.meta.canvas。
@@ -505,3 +507,150 @@ test('切到第 1 版以后发一句：请求里给模型的画布仍是第 2 �
   }
 });
 
+/* ───────── T015.4：画布里的话进输入框，带「来自画布」 ───────── */
+
+/** 日志里每条 user/message 的块（按出现顺序）。 */
+async function userMessageBlocks(fixture: KernelFixture) {
+  const events = await sessionEvents(fixture);
+  return events
+    .filter((event) => event.type === 'user/message')
+    .map(
+      (event) =>
+        (event.data.message?.content ?? []) as {
+          type?: string;
+          text?: string;
+          canvas?: { id?: string; title?: string };
+        }[],
+    );
+}
+
+/** 日志里那一版画布的 id（tool/result.meta.canvas.id）。 */
+async function canvasIdOf(fixture: KernelFixture): Promise<string> {
+  const events = await sessionEvents(fixture);
+  const result = events.find((event) => event.type === 'tool/result' && event.data.meta?.canvas);
+  if (!result) throw new Error('日志里还没有画布');
+  return String((result.data.meta as { canvas: { id: string } }).canvas.id);
+}
+
+/**
+ * T015.4 清单 7（故事 5、16）：点画布里的按钮，话进真输入框、带可移除的「来自画布」；
+ * 点完不替用户发；接着写再发以后，气泡、日志块（canvas 恰好 {id,title}）、请求体三处都带标记。
+ */
+test('画布按钮：话进输入框带标记、点完不自动发；接着写再发，气泡/日志/请求体都带标记', async ({
+  page,
+}) => {
+  const fixture = await startKernelFixture({ canvas: 'send' });
+  try {
+    await page.goto(urlOf(fixture));
+    await ask(page);
+    await waitCanvas(page, '每月存钱算一算');
+    await expect(page.locator('[data-kind="assistant-answer"]').last()).toContainText(
+      '画好了：拖滑块看结果。',
+      { timeout: 40_000 },
+    );
+
+    const frame = await canvasFrame(page);
+    await frame.locator('#save').click();
+
+    // 话真进了输入框，带一个能移除的「来自画布：标题」。
+    const input = page.getByPlaceholder('和 Kind 说…');
+    await expect(input).toHaveValue('按这个存：每月 3000');
+    const chip = page.locator('[data-kind="composer"] [data-kind="from-canvas"]');
+    await expect(chip).toContainText('来自画布');
+    await expect(chip).toContainText('每月存钱算一算');
+
+    // 点完以后、用户发送之前：日志里没有新的 user/message（不替用户发，故事 16）。
+    // 留 500ms 给「自动发」真写进日志的窗口，再数。
+    await page.waitForTimeout(500);
+    expect((await userMessageBlocks(fixture)).length, '点完按钮就替用户发了').toBe(1);
+
+    // 接着写一句再发（同一句话后面接，不是替换）。
+    await input.fill('按这个存：每月 3000，再存五年');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    await expect(page.locator('[data-kind="assistant-answer"]').last()).toContainText(
+      '收到，我按画布里的数接着算。',
+      { timeout: 40_000 },
+    );
+
+    // 气泡上留着标记。
+    await expect(
+      page.locator('[data-kind="user-message-row"]').last().locator('[data-kind="from-canvas"]'),
+    ).toContainText('每月存钱算一算');
+
+    // 日志：标记块排在最前，块上 canvas 恰好是 {id, title}，正文块是打的字。
+    const canvasId = await canvasIdOf(fixture);
+    const blocks = await userMessageBlocks(fixture);
+    expect(blocks.length).toBe(2);
+    expect(blocks[1]).toEqual([
+      {
+        type: 'text',
+        text: '（来自画布「每月存钱算一算」）',
+        canvas: { id: canvasId, title: '每月存钱算一算' },
+      },
+      { type: 'text', text: '按这个存：每月 3000，再存五年' },
+    ]);
+
+    // 请求体：模型看到的是「（来自画布「标题」）」。
+    const request = await fixture.lastRequest();
+    expect(request, '要拿到第 2 轮的请求体').toBeTruthy();
+    expect(JSON.stringify(request)).toContain('（来自画布「每月存钱算一算」）');
+    expect(JSON.stringify(request)).toContain('按这个存：每月 3000，再存五年');
+  } finally {
+    await fixture.close();
+  }
+});
+
+/**
+ * T015.4 清单 7（故事 5）：草稿里的标记刷新后还在；移除标记再发，日志里没有 canvas 块。
+ */
+test('草稿里的「来自画布」刷新后还在；移除标记再发，日志里没有 canvas 块', async ({ page }) => {
+  const fixture = await startKernelFixture({ canvas: 'send' });
+  try {
+    await page.goto(urlOf(fixture));
+    await ask(page);
+    await waitCanvas(page, '每月存钱算一算');
+    await expect(page.locator('[data-kind="assistant-answer"]').last()).toContainText(
+      '画好了：拖滑块看结果。',
+      { timeout: 40_000 },
+    );
+
+    const frame = await canvasFrame(page);
+    await frame.locator('#save').click();
+    await expect(page.locator('[data-kind="composer"] [data-kind="from-canvas"]')).toBeVisible();
+
+    // 草稿（文字 + 标记）写进了 localStorage。
+    const draftCanvas = () =>
+      page.evaluate(() => {
+        const key = Object.keys(localStorage).find((name) => name.startsWith('aios.kind.draft.'));
+        if (!key) return null;
+        try {
+          const value = JSON.parse(localStorage.getItem(key) ?? '{}') as { canvas?: unknown };
+          return value.canvas ?? null;
+        } catch {
+          return null;
+        }
+      });
+    await expect.poll(draftCanvas).toEqual({ id: expect.any(String), title: '每月存钱算一算' });
+
+    // 刷新以后文字和标记都在（草稿从 localStorage 回来）。
+    await page.reload();
+    const input = page.getByPlaceholder('和 Kind 说…');
+    await expect(input).toHaveValue('按这个存：每月 3000', { timeout: 15_000 });
+    const chip = page.locator('[data-kind="composer"] [data-kind="from-canvas"]');
+    await expect(chip).toContainText('每月存钱算一算');
+
+    // 移除标记再发：日志里没有 canvas 块（当成你自己写的）。
+    await page.getByRole('button', { name: '移除来自画布的标记' }).click();
+    await expect(chip).toHaveCount(0);
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    await expect(page.locator('[data-kind="assistant-answer"]').last()).toContainText(
+      '收到，我按画布里的数接着算。',
+      { timeout: 40_000 },
+    );
+    const blocks = await userMessageBlocks(fixture);
+    expect(blocks.length).toBe(2);
+    expect(blocks[1]).toEqual([{ type: 'text', text: '按这个存：每月 3000' }]);
+  } finally {
+    await fixture.close();
+  }
+});

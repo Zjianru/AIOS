@@ -229,3 +229,66 @@ async fn unknown_attachment_is_rejected() {
         .expect_err("坏附件要拒收");
     assert_eq!(error.code().as_str(), "attachment/invalid");
 }
+
+/* ───────── T015.4：画布放进输入框的那一句（「来自画布」） ───────── */
+
+/// 页面发 send 的真实形状：JSON 里带一个 canvas（画布 id + 标题）。
+/// 冻结基上 SendRequest 还不认这个字段，测试照样跑得起来（serde 忽略多余字段），
+/// 红就红在块上：没有标记块、没有 canvas、文本还是打的字。
+fn canvas_send_request() -> Call {
+    serde_json::from_value(serde_json::json!({
+        "method": "send",
+        "requestId": "req-t015-4",
+        "content": "按这个存：每月 3000",
+        "canvas": { "id": "cv_1", "title": "每月存钱算一算" },
+    }))
+    .expect("send 请求要读得出来")
+}
+
+/// 日志里用户消息的块，按 JSON 原样（要断言的就是日志里的形状）。
+fn user_blocks_json(blocks: &[model::ContentBlock]) -> Vec<serde_json::Value> {
+    blocks
+        .iter()
+        .map(|block| serde_json::to_value(block).expect("块要能序列化"))
+        .collect()
+}
+
+#[tokio::test]
+async fn send_with_canvas_adds_a_tagged_text_block_before_the_message() {
+    let data = tempdir().unwrap();
+    let cwd = tempdir().unwrap();
+    let host = host(data.path(), cwd.path()).await;
+    host.dispatch(canvas_send_request()).await.expect("send");
+    let blocks = wait_user_blocks(&host, data.path()).await;
+    let json = user_blocks_json(&blocks);
+    assert_eq!(json.len(), 2, "标记块 + 打的字：{json:?}");
+    assert_eq!(json[0]["type"], "text", "标记那一块是文字块：{json:?}");
+    assert_eq!(json[0]["text"], "（来自画布「每月存钱算一算」）", "{json:?}");
+    assert_eq!(
+        json[0]["canvas"],
+        serde_json::json!({ "id": "cv_1", "title": "每月存钱算一算" }),
+        "块上的 canvas 恰好是 id/title（多一个字段就是契约变了）：{json:?}"
+    );
+    assert_eq!(json[1]["text"], "按这个存：每月 3000", "{json:?}");
+    assert!(
+        json[1].get("canvas").is_none(),
+        "打的字那一块不带 canvas：{json:?}"
+    );
+}
+
+/// 不带 canvas 的 send 和 T013.4 一样只有一块（移除标记后再发就是这个形状）。
+#[tokio::test]
+async fn send_without_canvas_keeps_a_single_text_block() {
+    let data = tempdir().unwrap();
+    let cwd = tempdir().unwrap();
+    let host = host(data.path(), cwd.path()).await;
+    host.dispatch(Call::Send(request("按这个存：每月 3000")))
+        .await
+        .expect("send");
+    let blocks = wait_user_blocks(&host, data.path()).await;
+    assert_eq!(
+        user_blocks_json(&blocks),
+        vec![serde_json::json!({ "type": "text", "text": "按这个存：每月 3000" })],
+        "没有画布就不该多出标记块"
+    );
+}
