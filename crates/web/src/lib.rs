@@ -689,6 +689,13 @@ fn resolve_static(root: &Path, request_path: &str) -> Option<PathBuf> {
     }
 }
 
+/// 静态 fallback 绝不能直接发的文件（画布外壳；只能走 canvas_frame_handler）。
+fn is_canvas_frame_alias(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("canvas-frame.html"))
+}
+
 fn content_type(path: &Path) -> &'static str {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some("html") => "text/html; charset=utf-8",
@@ -757,6 +764,12 @@ async fn static_handler(
     let Some(path) = resolve_static(root, uri.path()) else {
         return error_response(StatusCode::NOT_FOUND, "not found");
     };
+    // T015.1 fix：画布外壳只能由 canvas_frame_handler 出（它带 CSP）。静态 fallback
+    // 在大小写不敏感的文件系统（macOS 的 APFS）上也会把 /CANVAS-FRAME.HTML 解析到
+    // 这个文件，所以按文件名（不分大小写）拒绝，而不是只 route 小写路径。
+    if is_canvas_frame_alias(&path) {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    }
     match tokio::fs::read(&path).await {
         Ok(bytes) => (StatusCode::OK, [(CONTENT_TYPE, content_type(&path))], bytes).into_response(),
         Err(_) => error_response(StatusCode::NOT_FOUND, "not found"),
@@ -1207,6 +1220,9 @@ fn router_with_state(state: Arc<AppState>) -> Router {
         .route("/api", post(api_handler))
         .route("/ws", get(ws_handler))
         .route("/canvas-frame", get(canvas_frame_handler))
+        // T015.1 fix：web/public 里的同名文件会被静态 fallback 原样 200（无 CSP），
+        // 和官方路径行为不一致；显式接住，让两条路径走同一个 handler。
+        .route("/canvas-frame.html", get(canvas_frame_handler))
         .fallback(get(static_handler))
         .with_state(state)
 }
@@ -1280,6 +1296,18 @@ mod t007_static_tests {
             content_type(Path::new("app.JS")),
             "application/octet-stream"
         );
+    }
+
+    /// T015.1 fix：静态 fallback 不分大小写都不许直接发画布外壳（它必须带 CSP）。
+    #[test]
+    fn static_fallback_refuses_canvas_frame_shell_under_any_case() {
+        assert!(is_canvas_frame_alias(Path::new("/srv/canvas-frame.html")));
+        assert!(is_canvas_frame_alias(Path::new("/srv/CANVAS-FRAME.HTML")));
+        assert!(is_canvas_frame_alias(Path::new("./Canvas-Frame.Html")));
+        assert!(!is_canvas_frame_alias(Path::new("/srv/index.html")));
+        assert!(!is_canvas_frame_alias(Path::new(
+            "/srv/canvas-frame.html.bak"
+        )));
     }
 }
 
