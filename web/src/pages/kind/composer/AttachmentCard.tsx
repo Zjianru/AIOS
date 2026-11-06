@@ -1,7 +1,7 @@
 /**
  * 附件卡片（T013.7，F1 起输入框和气泡共用同一张卡）：
  * - 粘贴卡：行数、字数（故事 8），点开看全文；
- * - 文件卡：名字、类型（给了 mime 才显示）、大小（故事 7），点开看全文。
+ * - 文件卡：名字、类型（从后缀或 mime 推）、大小（故事 7），点开看全文。
  * 删除按钮只有输入框要（气泡上的卡是发出去的消息，不能删）。
  */
 
@@ -17,6 +17,56 @@ export function typeLabel(mime: string): string {
   if (mime === 'text/csv') return 'CSV';
   if (mime.startsWith('text/')) return mime.slice(5) || '文字';
   return mime || '文字';
+}
+
+/** 文件名后缀 → 类型的人话（回放的 file 块没有 mime，只能从名字推）。 */
+const EXTENSION_TYPES: Record<string, string> = {
+  txt: '文字',
+  text: '文字',
+  log: '日志',
+  md: 'Markdown',
+  markdown: 'Markdown',
+  json: 'JSON',
+  jsonl: 'JSONL',
+  ndjson: 'JSONL',
+  csv: 'CSV',
+  tsv: 'TSV',
+  yaml: 'YAML',
+  yml: 'YAML',
+  toml: 'TOML',
+  xml: 'XML',
+  html: 'HTML',
+  css: 'CSS',
+  js: 'JavaScript',
+  jsx: 'JavaScript',
+  ts: 'TypeScript',
+  tsx: 'TypeScript',
+  rs: 'Rust',
+  py: 'Python',
+  sh: 'Shell',
+  bash: 'Shell',
+  zsh: 'Shell',
+  sql: 'SQL',
+  go: 'Go',
+  java: 'Java',
+  c: 'C',
+  h: 'C',
+  cpp: 'C++',
+  hpp: 'C++',
+  diff: 'Diff',
+};
+
+/**
+ * 文件卡上的类型：先看文件名后缀（气泡回放的 file 块只有名字和大小，没有 mime），
+ * 后缀不认识才用浏览器给的 mime；都没有就当文字。
+ */
+export function fileTypeLabel(name: string, mime?: string): string {
+  const dot = name.lastIndexOf('.');
+  const extension = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+  const byExtension = EXTENSION_TYPES[extension];
+  if (byExtension) return byExtension;
+  if (mime) return typeLabel(mime);
+  return '文字';
 }
 
 /** 粘贴文本的行数/字数（故事 8：卡片上要显示）。 */
@@ -64,13 +114,14 @@ export function PasteCard({ paste, onOpen, onRemove }: PasteCardProps) {
 
 interface FileCardProps {
   file: SendAttachmentRef;
-  /** 输入框知道本地文件的 MIME；日志里的文件块只有名字和大小。 */
+  /** 输入框知道本地文件的 MIME；日志里的文件块只有名字和大小（回放从后缀推）。 */
   mime?: string;
   onOpen: () => void;
   onRemove?: () => void;
 }
 
 export function FileCard({ file, mime, onOpen, onRemove }: FileCardProps) {
+  const type = fileTypeLabel(file.name, mime);
   return (
     <span
       data-kind="file-card"
@@ -85,8 +136,7 @@ export function FileCard({ file, mime, onOpen, onRemove }: FileCardProps) {
       >
         <span className="max-w-[150px] truncate">{file.name}</span>
         <span className="shrink-0 text-ink-3">
-          {mime ? typeLabel(mime) + ' · ' : ''}
-          {sizeLabel(file.bytes)}
+          {type} · {sizeLabel(file.bytes)}
         </span>
       </button>
       {onRemove ? (
