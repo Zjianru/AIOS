@@ -123,7 +123,13 @@ const cdnProbe = [
   '-c', '-s',
   [
     '[ .[] | select(.type=="tool/result") | .data.meta.canvas? // empty | select(.n==2)',
-    '  | {n, cdn:(.html | test("cdn\\\\\\\\.jsdelivr\\\\\\\\.net|cdnjs\\\\\\\\.cloudflare\\\\\\\\.com|unpkg\\\\\\\\.com|cdn\\\\\\\\.tailwindcss\\\\\\\\.com|code\\\\\\\\.jquery\\\\\\\\.com"))} ]',
+    '  | {n, cdn:(',
+    '      (.html | contains("cdn.jsdelivr.net"))',
+    '      or (.html | contains("cdnjs.cloudflare.com"))',
+    '      or (.html | contains("unpkg.com"))',
+    '      or (.html | contains("cdn.tailwindcss.com"))',
+    '      or (.html | contains("code.jquery.com"))',
+    '    )} ]',
   ].join(NL),
 ];
 
@@ -168,7 +174,10 @@ test('DoD2：真 key 四件事（MiniMax）', async ({ page }) => {
     expect(chartBox && chartBox.width > 0 && chartBox.height > 0).toBeTruthy();
     await waitTurnEnd(page);
     await pollJq(logOf(), canvasVersionCountProbe, 2);
-    jq(cdnProbe, logOf(), '② 第 2 版 html 是否引用清单里的 CDN', second);
+    const cdnRaw = jq(cdnProbe, logOf(), '② 第 2 版 html 是否引用清单里的 CDN', second);
+    const cdnVec = JSON.parse(cdnRaw) as { n: number; cdn: boolean }[];
+    expect(cdnVec.length).toBe(1);
+    expect(cdnVec[0].cdn).toBeTruthy();
     jq(canvasVersionsProbe, logOf(), '② 第 2 版 meta', second);
     await page.screenshot({ path: path.join(EVIDENCE, 'T015.6-dod2-2-cdn.png'), fullPage: true });
     record('2-cdn', second);
