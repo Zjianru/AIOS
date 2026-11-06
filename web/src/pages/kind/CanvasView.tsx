@@ -1,12 +1,194 @@
-/// 画布（T015.1；D58，样子照原型 app-v14 CanvasView.tsx）。
-///
-/// 外壳在 /canvas-frame：一个 sandbox="allow-scripts allow-forms" 的 iframe，
-/// 父窗口把这一版的 HTML 用 postMessage 交给它，它用 document.write 写进自己的文档。
-/// 画布只做一件事：把主题变量和尺寸报给父窗口。
+/**
+ * 画布（T015.1；D58，样子照原型 app-v14 a938d2e 的 CanvasView.tsx）。
+ *
+ * - 标题栏：画布 · 标题，能收起、重新载入；内容超过 420px 时标题栏给「展开」。
+ * - 正文是沙箱 iframe：src="/canvas-frame"，sandbox 只给脚本和表单（不给同源、弹窗、下载）。
+ * - 父窗口把这一版的 HTML 用 postMessage 交给外壳，外壳 document.write 写进自己的文档；
+ *   外壳报尺寸，父窗口把主题变量交给它（MCP Apps 的标准名），深浅色跟着 AIOS。
+ * - 旧版缩成一行、标题栏切版本在 T015.2。
+ */
 
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { AppWindow, ChevronRight, Maximize2, Minimize2, RotateCcw } from 'lucide-react';
+import { useAppStore } from '@/app/store';
+import { cn } from '@/lib/utils';
 import type { CanvasViewDoc } from './turnViews';
 
+/** 不展开时最多这么高；超过了画布里面滚动，标题栏给「展开」。 */
+const MAX_HEIGHT = 420;
+
+/**
+ * AIOS 的设计变量换成 MCP Apps 的标准名（照原型 hostVariables）。
+ * 只给画布要的那几样；值从页面上取，深浅色切换时重新发一次。
+ */
+function hostVariables(): Record<string, string> {
+  const css = getComputedStyle(document.documentElement);
+  const value = (name: string) => css.getPropertyValue(name).trim();
+  return {
+    '--color-background-primary': value('--raised'),
+    '--color-background-secondary': value('--pane'),
+    '--color-background-inverse': value('--ink'),
+    '--color-text-primary': value('--ink'),
+    '--color-text-secondary': value('--ink-2'),
+    '--color-text-tertiary': value('--ink-3'),
+    '--color-text-inverse': value('--content'),
+    '--color-text-danger': value('--fail'),
+    '--color-text-success': value('--done'),
+    '--color-border-primary': value('--line'),
+    '--color-border-secondary': value('--line-2'),
+    '--font-sans': value('--font-sans'),
+    '--font-mono': value('--font-mono'),
+    '--font-weight-normal': '400',
+    '--font-weight-medium': '500',
+    '--font-weight-semibold': '600',
+    '--font-text-sm-size': '12px',
+    '--font-text-md-size': '14px',
+    '--font-heading-lg-size': '24px',
+    '--border-radius-sm': value('--r-btn'),
+    '--border-radius-md': value('--r-card'),
+  };
+}
+
+/**
+ * 画布转过来的滚轮：滚外面那个滚动区，再在 iframe 上补一个滚轮事件，
+ * 让对话知道是你在滚（往上滚就不再钉到底）。补的这个事件本身不会滚动。
+ */
+function forwardWheel(frame: HTMLIFrameElement | null, dy: number, dx: number) {
+  if (!frame) return;
+  frame.dispatchEvent(
+    new WheelEvent('wheel', { deltaX: dx, deltaY: dy, bubbles: true, cancelable: true }),
+  );
+  let node: HTMLElement | null = frame.parentElement;
+  while (node && !(node.scrollHeight > node.clientHeight && /(auto|scroll)/.test(getComputedStyle(node).overflowY))) {
+    node = node.parentElement;
+  }
+  node?.scrollBy({ top: dy, left: 0 });
+}
+
+interface FrameProps {
+  html: string;
+  /** 展开时不限高。 */
+  expanded: boolean;
+  onOverflow: (overflow: boolean) => void;
+}
+
+function CanvasFrame({ html, expanded, onOverflow }: FrameProps) {
+  const ref = useRef<HTMLIFrameElement | null>(null);
+  const [height, setHeight] = useState(64);
+  const theme = useAppStore((state) => state.theme);
+  // 外壳每次重新载入（换 key）只收一次 render：document.write 之后又会来一次 load。
+  const rendered = useRef(false);
+
+  const sendHost = useCallback(() => {
+    // 等外壳把 data-theme 换好再取值（子组件的 effect 比外壳的先跑）
+    requestAnimationFrame(() => {
+      ref.current?.contentWindow?.postMessage(
+        { aiosHost: true, theme, variables: hostVariables() },
+        '*',
+      );
+    });
+  }, [theme]);
+
+  // 主题变了重新发一次变量（MCP Apps host-context-changed）
+  useEffect(() => {
+    sendHost();
+  }, [sendHost]);
+
+  const onLoad = useCallback(() => {
+    const frame = ref.current?.contentWindow;
+    if (!frame || rendered.current) return;
+    rendered.current = true;
+    frame.postMessage({ aiosHost: true, type: 'render', html }, '*');
+  }, [html]);
+
+  useEffect(() => {
+    const listen = (event: MessageEvent) => {
+      // 只认自己这个 iframe 发来的（sandbox 没给同源，按 source 认）
+      if (event.source !== ref.current?.contentWindow) return;
+      const data = event.data as { aiosCanvas?: boolean; type?: string; height?: number; dx?: number; dy?: number } | null;
+      if (!data?.aiosCanvas) return;
+      if (data.type === 'ready') sendHost();
+      if (data.type === 'size' && typeof data.height === 'number') setHeight(data.height);
+      if (data.type === 'wheel' && typeof data.dy === 'number') {
+        forwardWheel(ref.current, data.dy, typeof data.dx === 'number' ? data.dx : 0);
+      }
+    };
+    window.addEventListener('message', listen);
+    return () => window.removeEventListener('message', listen);
+  }, [sendHost]);
+
+  const overflow = height > MAX_HEIGHT;
+  useEffect(() => onOverflow(overflow), [overflow, onOverflow]);
+
+  return (
+    <iframe
+      ref={ref}
+      title="画布"
+      sandbox="allow-scripts allow-forms"
+      src="/canvas-frame"
+      onLoad={onLoad}
+      className="block w-full border-0 bg-transparent"
+      style={{ height: expanded ? height : Math.min(height, MAX_HEIGHT) }}
+      data-kind="canvas-frame"
+    />
+  );
+}
+
 export function CanvasView({ doc }: { doc: CanvasViewDoc }) {
-  void doc;
-  return null;
+  const [open, setOpen] = useState(true);
+  const [expanded, setExpanded] = useState(false);
+  const [overflow, setOverflow] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  return (
+    <div className="my-3 overflow-hidden rounded-card border border-line-2 bg-raised" data-kind="canvas">
+      <div className="flex h-9 items-center gap-1.5 border-b border-line pl-2 pr-1.5 text-2 text-ink-2">
+        <button
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          aria-expanded={open}
+          aria-label={open ? '收起画布' : '展开画布'}
+          className="flex min-w-0 items-center gap-1.5 rounded-btn px-1 py-0.5 transition-colors hover:text-ink"
+        >
+          <ChevronRight className={cn('size-3 shrink-0 transition-transform', open && 'rotate-90')} />
+          <AppWindow className="size-3.5 shrink-0 text-ink-3" />
+          <span className="shrink-0 text-ink-3">画布</span>
+          <span className="truncate text-ink" data-kind="canvas-title">
+            {doc.title}
+          </span>
+        </button>
+
+        <span className="ml-auto flex shrink-0 items-center">
+          <button
+            type="button"
+            aria-label="重新载入"
+            title="重新载入（画布里的状态清零）"
+            onClick={() => setReloadKey((value) => value + 1)}
+            className="rounded-btn p-1 text-ink-3 transition-colors hover:bg-hover hover:text-ink"
+          >
+            <RotateCcw className="size-3.5" />
+          </button>
+          {open && (overflow || expanded) ? (
+            <button
+              type="button"
+              aria-label={expanded ? '收起' : '展开'}
+              title={expanded ? '收回最大高度' : '按内容全部展开'}
+              onClick={() => setExpanded((value) => !value)}
+              className="rounded-btn p-1 text-ink-3 transition-colors hover:bg-hover hover:text-ink"
+            >
+              {expanded ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
+            </button>
+          ) : null}
+        </span>
+      </div>
+      {open ? (
+        <CanvasFrame
+          key={reloadKey}
+          html={doc.html}
+          expanded={expanded}
+          onOverflow={setOverflow}
+        />
+      ) : null}
+    </div>
+  );
 }

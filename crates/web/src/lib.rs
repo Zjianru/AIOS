@@ -19,7 +19,7 @@ use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::header::{CONTENT_TYPE, HOST, LOCATION, SET_COOKIE};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderName, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -704,14 +704,42 @@ fn content_type(path: &Path) -> &'static str {
 }
 
 /// 画布外壳页的 CSP（T015.1：CSP 由响应头下发，逐字照 `WORK/T015/strategy.md` 第 5 节）。
-pub const CANVAS_FRAME_CSP: &str = "";
+/// 脚本只认五个 CDN 和行内；字体只认 Google Fonts；fetch/XHR/WebSocket 只能连字体那两个地址。
+pub const CANVAS_FRAME_CSP: &str = "default-src 'none'; \
+script-src 'unsafe-inline' cdnjs.cloudflare.com cdn.jsdelivr.net/npm/ unpkg.com cdn.tailwindcss.com code.jquery.com; \
+style-src 'unsafe-inline' fonts.googleapis.com cdnjs.cloudflare.com cdn.jsdelivr.net/npm/ unpkg.com cdn.tailwindcss.com code.jquery.com; \
+font-src data: fonts.gstatic.com; \
+img-src data: blob:; \
+media-src data: blob:; \
+connect-src fonts.googleapis.com fonts.gstatic.com; \
+frame-src 'none'; \
+object-src 'none'; \
+base-uri 'none'; \
+frame-ancestors 'self'";
 
 /// GET /canvas-frame：画布外壳页（T015.1）。不要 cookie，只校 Host；CSP 写在响应头里。
 async fn canvas_frame_handler(
-    State(_state): State<Arc<AppState>>,
-    _headers: HeaderMap,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Response {
-    error_response(StatusCode::NOT_FOUND, "not found")
+    if let Err(error) = host_check(&state, &headers) {
+        return trust_error_response(error);
+    }
+    let Some(root) = state.static_dir.as_deref() else {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    };
+    match tokio::fs::read(root.join("canvas-frame.html")).await {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [
+                (CONTENT_TYPE, "text/html; charset=utf-8"),
+                (HeaderName::from_static("content-security-policy"), CANVAS_FRAME_CSP),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => error_response(StatusCode::NOT_FOUND, "not found"),
+    }
 }
 
 /// GET 静态文件：同源托管 web/dist（T007.2）；没有 static_dir 时 404。

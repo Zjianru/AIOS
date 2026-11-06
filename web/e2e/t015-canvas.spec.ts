@@ -41,12 +41,14 @@ async function waitCanvas(page: Page, title: string) {
 
 /** 画布 iframe 的 frame（sandbox 没给 allow-same-origin，是跨源 frame，Playwright 仍能进去）。 */
 async function canvasFrame(page: Page) {
-  const handle = page.locator('iframe[data-kind="canvas-frame"]').first();
-  await expect(handle).toBeAttached();
-  let frame = await handle.contentFrame();
+  const locator = page.locator('iframe[data-kind="canvas-frame"]').first();
+  await expect(locator).toBeAttached();
+  const element = await locator.elementHandle();
+  if (!element) throw new Error('画布 iframe 不在页面上');
+  let frame = await element.contentFrame();
   for (let attempt = 0; attempt < 100 && !frame; attempt += 1) {
     await page.waitForTimeout(50);
-    frame = await handle.contentFrame();
+    frame = await element.contentFrame();
   }
   if (!frame) throw new Error('画布 iframe 没有 contentFrame');
   return frame;
@@ -180,12 +182,14 @@ test('内容超过 420px：封顶 420、标题栏出「展开」，点了展开�
     expect(Math.round(capped)).toBe(420);
 
     await page.getByRole('button', { name: '展开', exact: true }).click();
-    const expanded = await iframe.evaluate((element) => element.getBoundingClientRect().height);
-    expect(expanded).toBeGreaterThan(420);
+    await expect
+      .poll(async () => Math.round(await iframe.evaluate((element) => element.getBoundingClientRect().height)))
+      .toBeGreaterThan(420);
 
     await page.getByRole('button', { name: '收起', exact: true }).click();
-    const collapsed = await iframe.evaluate((element) => element.getBoundingClientRect().height);
-    expect(Math.round(collapsed)).toBe(420);
+    await expect
+      .poll(async () => Math.round(await iframe.evaluate((element) => element.getBoundingClientRect().height)))
+      .toBe(420);
   } finally {
     await fixture.close();
   }
@@ -217,14 +221,16 @@ test('/canvas-frame：CSP 头逐字对上，直接打开报错，非父窗口的
       helper.srcdoc = '<body></body>';
       document.body.append(helper);
     });
-    const helperHandle = page.locator('#t015-helper');
-    let helperFrame = await helperHandle.contentFrame();
+    const helperElement = await page.locator('#t015-helper').elementHandle();
+    if (!helperElement) throw new Error('helper iframe 不在页面上');
+    let helperFrame = await helperElement.contentFrame();
     for (let attempt = 0; attempt < 100 && !helperFrame; attempt += 1) {
       await page.waitForTimeout(50);
-      helperFrame = await helperHandle.contentFrame();
+      helperFrame = await helperElement.contentFrame();
     }
     if (!helperFrame) throw new Error('helper iframe 没有 contentFrame');
-    await helperFrame.evaluate(() => {
+    // 先确认这个「外来窗口」真的拿到了画布 iframe —— 否则这条断言等于空转。
+    const found = await helperFrame.evaluate(() => {
       const target = parent.document.querySelector('iframe[data-kind="canvas-frame"]') as
         | HTMLIFrameElement
         | null;
@@ -232,7 +238,9 @@ test('/canvas-frame：CSP 头逐字对上，直接打开报错，非父窗口的
         { aiosHost: true, type: 'render', html: '<div id="pwned">pwned</div>' },
         '*',
       );
+      return Boolean(target?.contentWindow);
     });
+    expect(found).toBe(true);
     await page.waitForTimeout(300);
 
     const frame = await canvasFrame(page);

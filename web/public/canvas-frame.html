@@ -4,5 +4,122 @@
     <meta charset="utf-8" />
     <title>画布</title>
   </head>
-  <body></body>
+  <body>
+    <script>
+      (function () {
+        'use strict';
+
+        // 外壳自检（照 MCP Apps 的 sandbox.ts，WORK/T015/research/src/sandbox.ts）：
+        // 这个页面只能当 iframe 用；够不到 window.top 才算和宿主隔开。
+        if (window.self === window.top) {
+          document.body.textContent = '画布只能嵌在对话里';
+          throw new Error('画布只能嵌在对话里：/canvas-frame 只能作为对话里的 iframe 打开');
+        }
+        try {
+          window.top.alert('能看到这句话，说明画布的沙箱没设好。');
+          throw 'FAIL';
+        } catch (error) {
+          if (error === 'FAIL') {
+            throw new Error('画布只能嵌在对话里：沙箱没设好（能摸到 window.top）');
+          }
+          // 预期：跨源访问抛出 SecurityError
+        }
+
+        // 画布文档的基础样式：让不写样式的画布也像 AIOS（照原型 frameDocument）。
+        var BASE_STYLE = [
+          ':root{color-scheme:light dark}',
+          'html,body{margin:0;padding:0;background:transparent}',
+          'body{font-family:var(--font-sans);font-size:var(--font-text-md-size);line-height:1.6;',
+          'color:var(--color-text-primary);padding:14px 16px;box-sizing:border-box}',
+          '*{box-sizing:inherit}',
+        ].join('');
+
+        // 只认父窗口发来的消息：画布 HTML 由父窗口在一次 render 消息里给。
+        window.addEventListener('message', function (event) {
+          if (event.source !== window.parent) return;
+          var data = event.data;
+          if (!data || data.aiosHost !== true || data.type !== 'render') return;
+          if (typeof data.html !== 'string') return;
+          write(data.html);
+        });
+
+        // 用 document.write 把画布写进自己的文档（照 sandbox.ts；不用 srcdoc，库认文档）。
+        // 写完这个页面的脚本就被换掉了，所以运行时脚本（见 canvasRuntime）要一起写进去。
+        function write(html) {
+          var doc =
+            '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">' +
+            '<style>' + BASE_STYLE + '</style></head><body>' + html +
+            '<script>(' + canvasRuntime.toString() + ')();<' + '/script></body></html>';
+          document.open();
+          document.write(doc);
+          document.close();
+        }
+
+        /**
+         * 画布里的运行时（会被 toString 写进画布文档）：
+         * 主题变量、aios.send、尺寸、滚轮转发。只认父窗口发来的消息。
+         */
+        function canvasRuntime() {
+          var post = function (type, data) {
+            parent.postMessage(Object.assign({ aiosCanvas: true, type: type }, data || {}), '*');
+          };
+
+          // 画布对宿主只开这一条路（T015.4 接进输入框）：把一句话交给宿主，由用户发。
+          window.aios = {
+            send: function (text) {
+              if (typeof text === 'string' && text.trim()) {
+                post('message', { text: String(text).slice(0, 4000) });
+              }
+            },
+          };
+
+          // 主题变量从父窗口来（MCP Apps 的标准名）；深浅色切换时父窗口会再发一次。
+          addEventListener('message', function (event) {
+            if (event.source !== parent) return;
+            var data = event.data;
+            if (!data || data.aiosHost !== true) return;
+            var variables = data.variables || {};
+            for (var name in variables) {
+              document.documentElement.style.setProperty(name, variables[name]);
+            }
+            if (data.theme) document.documentElement.style.colorScheme = data.theme;
+          });
+
+          // 滚轮：画布里能滚的先滚；滚到头了（或者本来就不能滚）交给对话去滚。
+          // 不同源的 iframe 不会把滚轮接力给外面，不转发的话鼠标停在画布上对话就滚不动。
+          var canScroll = function (node, dy) {
+            for (; node && node !== document; node = node.parentNode) {
+              if (node.nodeType !== 1) continue;
+              var overflowY = getComputedStyle(node).overflowY;
+              var element = node === document.body ? document.scrollingElement : node;
+              if (
+                (overflowY === 'auto' || overflowY === 'scroll' || node === document.body) &&
+                element.scrollHeight > element.clientHeight + 1
+              ) {
+                if (dy < 0 ? element.scrollTop > 0 : element.scrollTop + element.clientHeight < element.scrollHeight - 1) {
+                  return true;
+                }
+              }
+            }
+            return false;
+          };
+          addEventListener('wheel', function (event) {
+            if (event.ctrlKey || canScroll(event.target, event.deltaY)) return;
+            event.preventDefault();
+            var factor = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 400 : 1;
+            post('wheel', { dx: event.deltaX * factor, dy: event.deltaY * factor });
+          }, { passive: false });
+
+          var report = function () {
+            post('size', { height: Math.ceil(document.body.getBoundingClientRect().height) });
+          };
+          addEventListener('load', function () {
+            new ResizeObserver(report).observe(document.body);
+            report();
+          });
+          post('ready');
+        }
+      })();
+    </script>
+  </body>
 </html>

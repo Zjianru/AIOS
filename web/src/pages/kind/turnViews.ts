@@ -147,6 +147,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     question: QuestionView | null;
     retry: TurnViewData['retry'];
     compaction: CompactionView | null;
+    canvas: CanvasViewDoc | null;
     answered: AskAnswer[];
     cancelled: number;
     stoppedAt: string | null;
@@ -173,6 +174,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         question: null,
         retry: null,
         compaction: null,
+        canvas: null,
         answered: [],
         cancelled: 0,
         stoppedAt: null,
@@ -259,6 +261,23 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       }
     }
     return parts.join('');
+  };
+
+  /** T015.1：tool/result.meta.canvas → 这一轮要画的画布（形状不对就当没有）。 */
+  const canvasOf = (meta: Record<string, unknown> | null): CanvasViewDoc | null => {
+    const value = meta?.canvas;
+    if (!value || typeof value !== 'object') return null;
+    const typed = value as { id?: unknown; n?: unknown; title?: unknown; note?: unknown; html?: unknown };
+    if (typeof typed.id !== 'string' || typeof typed.title !== 'string' || typeof typed.html !== 'string') {
+      return null;
+    }
+    return {
+      id: typed.id,
+      n: typeof typed.n === 'number' ? typed.n : 1,
+      title: typed.title,
+      note: typeof typed.note === 'string' ? typed.note : '',
+      html: typed.html,
+    };
   };
 
   const modelIdOf = (message: unknown): string | null => {
@@ -356,6 +375,8 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
           const body = textOf(data.message) || textOfToolResult(data.message);
           step.output = body || String((data.error as { code?: string } | undefined)?.code ?? '');
           step.meta = (data.meta as Record<string, unknown> | undefined) ?? null;
+          // T015.1：画布全文只从日志的 meta 来；回放和实时同一条路。
+          raw.canvas = canvasOf(step.meta) ?? raw.canvas;
           const status = parseExitStatus(step.output);
           step.exitCode = status.exitCode;
           step.signal = status.signal;
@@ -516,7 +537,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       compaction: raw.compaction,
       failure: raw.failure,
       question: raw.question,
-      canvas: null,
+      canvas: raw.canvas,
       delivery: null,
       stoppedAt: raw.stoppedAt,
     }));
