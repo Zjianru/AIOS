@@ -23,13 +23,17 @@ test('空库加连接后 root 恢复：Kind 有 composer 能发消息', async ({
     await add.locator('input:not([type="password"])').first().fill(fixture.fakeEndpoint);
     await add.getByRole('button', { name: '保存', exact: true }).click();
     await expect(page.getByText('DeepSeek').first()).toBeVisible({ timeout: 30_000 });
-    // 回 Kind：空库 firstUse 还在 → 点「开始」触发 recheck。
-    await page.getByRole('button', { name: 'Kind', exact: true }).click();
-    await page.waitForTimeout(2000);
+    // 刷新让页面重新 bootstrap：连接已保存 → 不再显示首次使用页；
+    // 服务端 root 还没起 → 说明页带「现在重试」→ 点它触发 recheck（修法 A 让它能恢复）。
+    await page.reload();
+    await page.waitForTimeout(3000);
     const start = page.getByRole('button', { name: '开始', exact: true });
     if ((await start.count()) > 0) {
-      await start.waitFor({ state: 'visible', timeout: 15_000 });
       await start.click();
+    }
+    const retry = page.getByRole('button', { name: '现在重试' });
+    if ((await retry.count()) > 0) {
+      await retry.click();
     }
     // 修法 C：onConnected → recheck；修法 A：factory 能解析到刚保存的连接 → root 恢复。
     await expect(page.locator('[data-kind="composer-input"]')).toBeVisible({ timeout: 60_000 });

@@ -136,8 +136,14 @@ test('DoD2④：改文件（diff 卡片，刷新后还在）', async ({ page }) 
     await expect
       .poll(async () => {
         const log = sessionLog(fixture.dataDir);
+        // jq 输出的是 diffs 数组本身；判空 + 新文本才算真的改到了文件。
         const output = execFileSync('jq', ['-c', 'select(.type=="tool/result") | .data.meta.diffs', log], { encoding: 'utf8' });
-        return output.includes('diffs') ? 1 : 0;
+        const hasDiffs = output
+          .split(String.fromCharCode(10))
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0 && line !== 'null')
+          .length;
+        return hasDiffs > 0 && output.includes('DOD13-EDITED') ? 1 : 0;
       }, { timeout: 180_000 })
       .toBeGreaterThanOrEqual(1);
     const process = page.locator('[data-kind="process"]').last();
