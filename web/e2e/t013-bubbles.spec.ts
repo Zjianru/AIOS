@@ -397,3 +397,24 @@ test('复制兜底：clipboard 被拒 → execCommand 复制到原文，显示�
     await fixture.close();
   }
 });
+
+/// T013 验收 F6：消息里的 @文件引用画成引用片（图标+路径，不附带内容），不能是 @"..." 生文本。
+test('@文件引用（验收 F6）：气泡里是引用片、不是生文本', async ({ page }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    await send(page, '看 @"my notes.txt"');
+    const bubble = page.locator('[data-kind="user-bubble"]').first();
+    await expect(bubble).toContainText('看', { timeout: 30_000 });
+    const chip = bubble.locator('[data-kind="file-reference"]');
+    await expect(chip).toHaveCount(1);
+    await expect(chip).toContainText('my notes.txt');
+    // 不出现 @" 生文本；引用片上只给路径，不自动读文件。
+    await expect(bubble).not.toContainText('@"');
+    await expect(chip).toHaveAttribute('data-ref-path', 'my notes.txt');
+    await expect(chip).toHaveAttribute('title', 'my notes.txt');
+  } finally {
+    await fixture.close();
+  }
+});
+

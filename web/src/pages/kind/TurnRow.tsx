@@ -11,6 +11,8 @@ import { ChevronRight, CircleAlert, RotateCw, Square } from 'lucide-react';
 import { CopyButton } from './CopyButton';
 import { Markdown } from './Markdown';
 import { QuoteChip } from './QuoteChip';
+import { FileReferenceChip } from './FileReferenceChip';
+import { fileMentions } from './atGrammar';
 import { QuestionCard } from './QuestionCard';
 import { useKindStore, useStreamStore } from './kindStore';
 import { processStepsOf } from './turnViews';
@@ -122,18 +124,35 @@ function UserBubbleText({ text, elements }: { text: string; elements: TextElemen
   return <>{nodes}</>;
 }
 
+/** 一段普通文字：把 @文件引用换成引用片，其余原样（F6：不显示 @"..." 生文本）。 */
+function MentionText({ text }: { text: string }) {
+  const mentions = fileMentions(text);
+  if (mentions.length === 0) return <>{text}</>;
+  const nodes: React.ReactNode[] = [];
+  let cursor = 0;
+  mentions.forEach((mention, index) => {
+    if (mention.start > cursor) nodes.push(text.slice(cursor, mention.start));
+    nodes.push(<FileReferenceChip key={'m' + index} path={mention.path} />);
+    cursor = mention.end;
+  });
+  if (cursor < text.length) nodes.push(text.slice(cursor));
+  return <>{nodes}</>;
+}
+
 /** 纯文本 + 内联引用片（你说的话用这个，不走 markdown）。 */
 function RichText({ text, elements }: { text: string; elements: TextElement[] }) {
-  if (elements.length === 0) return <>{text}</>;
+  if (elements.length === 0) return <MentionText text={text} />;
   const nodes: React.ReactNode[] = [];
   let cursor = 0;
   elements.forEach((element, index) => {
     if (element.start < cursor) return;
-    if (element.start > cursor) nodes.push(text.slice(cursor, element.start));
+    if (element.start > cursor) {
+      nodes.push(<MentionText key={'t' + index} text={text.slice(cursor, element.start)} />);
+    }
     nodes.push(<QuoteChip key={'q' + index} element={element} />);
     cursor = element.end;
   });
-  if (cursor < text.length) nodes.push(text.slice(cursor));
+  if (cursor < text.length) nodes.push(<MentionText key="tail" text={text.slice(cursor)} />);
   return <>{nodes}</>;
 }
 
