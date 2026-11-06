@@ -386,27 +386,7 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
               alwaysShow
             />
           ) : null}
-          {view.question ? <QuestionCard turnId={view.id} question={view.question} /> : null}
-          {view.retry ? <RetryLine retry={view.retry} /> : null}
-
-          <div className={cn('group/answer relative mt-1', streaming && 'min-h-[24px]')} data-kind="answer">
-            <Answer view={view} />
-            {view.answer ? (
-              <CopyButton
-                text={view.answer.text}
-                className="absolute -right-8 top-0 opacity-0 transition-opacity group-hover/answer:opacity-100"
-              />
-            ) : null}
-          </div>
-
-          {view.status === 'interrupted' && view.stoppedAt ? (
-            <div className="mt-1 flex items-center gap-1.5 text-2 text-ink-3" data-kind="stopped">
-              <Square className="size-3 fill-current" />
-              你在 <span className="brand-type">{view.stoppedAt}</span> 停下了这一轮，已经做的留着
-            </div>
-          ) : null}
-          <FailureBlock view={view} />
-
+          {/* T013 验收 F2：完成轮的工作过程在回答上面（原型 a5d6f58 的顺序：过程 → 问题卡 → 回答）。 */}
           {!streaming &&
           (view.tools.length > 0 ||
             view.answer ||
@@ -427,6 +407,26 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
               />
             </div>
           ) : null}
+          {view.question ? <QuestionCard turnId={view.id} question={view.question} /> : null}
+          {view.retry ? <RetryLine retry={view.retry} /> : null}
+
+          <div className={cn('group/answer relative mt-1', streaming && 'min-h-[24px]')} data-kind="answer">
+            <Answer view={view} />
+            {view.answer ? (
+              <CopyButton
+                text={view.answer.text}
+                className="absolute -right-8 top-0 opacity-0 transition-opacity group-hover/answer:opacity-100"
+              />
+            ) : null}
+          </div>
+
+          {view.status === 'interrupted' && view.stoppedAt ? (
+            <div className="mt-1 flex items-center gap-1.5 text-2 text-ink-3" data-kind="stopped">
+              <Square className="size-3 fill-current" />
+              你在 <span className="brand-type">{view.stoppedAt}</span> 停下了这一轮，已经做的留着
+            </div>
+          ) : null}
+          <FailureBlock view={view} />
         </>
       )}
     </div>
