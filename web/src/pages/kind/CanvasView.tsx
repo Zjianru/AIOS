@@ -200,7 +200,8 @@ function LiveCanvas({ doc, latest, versions, onCanvasMessage }: Omit<CanvasViewP
   const current =
     available.find((item) => item.n === shown) ??
     available[available.length - 1] ?? { n: doc.n, title: doc.title, note: doc.note, html: doc.html };
-  // 只有最新版（这个画布出过的最后一版）在页面上；点它里面的按钮才把话交上来。
+  // 这一轮展开这个画布（旧版只剩一行）；页面上显示的那一版（可在标题栏切）里的按钮点一下，
+  // 就把这句话连同画布的 id/标题交给输入框（不发送）。
   const onMessage = useCallback(
     (text: string) => onCanvasMessage(text, { id: doc.id, title: doc.title }),
     [doc.id, doc.title, onCanvasMessage],
