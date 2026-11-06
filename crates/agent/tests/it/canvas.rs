@@ -396,11 +396,11 @@ fn canvas_inputs(body: &Value) -> Vec<Value> {
     inputs
 }
 
-/// 请求体里所有 tool_result 的文字（wire 的 tool_result 块）。
-fn request_tool_results(body: &Value) -> Vec<String> {
-    let mut texts = Vec::new();
+/// 请求体里所有 tool_result 的（tool_use_id，文字）（wire 的 tool_result 块）。
+fn request_tool_results_with_ids(body: &Value) -> Vec<(String, String)> {
+    let mut results = Vec::new();
     let Some(messages) = body["messages"].as_array() else {
-        return texts;
+        return results;
     };
     for message in messages {
         let Some(content) = message["content"].as_array() else {
@@ -418,10 +418,21 @@ fn request_tool_results(body: &Value) -> Vec<String> {
                     }
                 }
             }
-            texts.push(text);
+            results.push((
+                block["tool_use_id"].as_str().unwrap_or_default().to_owned(),
+                text,
+            ));
         }
     }
-    texts
+    results
+}
+
+/// 请求体里所有 tool_result 的文字。
+fn request_tool_results(body: &Value) -> Vec<String> {
+    request_tool_results_with_ids(body)
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect()
 }
 
 /// 日志里某个 seq 的结果替换事件。
@@ -796,4 +807,193 @@ async fn without_compaction_consecutive_requests_keep_the_full_canvas_history() 
     assert_eq!(folded.len(), 1);
     assert_eq!(folded[0].n, 2);
     assert_eq!(folded[0].html, page(2));
+}
+
+/// T015.3 审计 fix-now：旧版画布所在的 assistant 批里，如果还夹着一条超过阈值
+/// （8192 字符）的普通 tool result，它也必须照 T006.4 换 head+marker+tail；
+/// 不能因为和旧版同批就整份重落到 tail（压缩摘要通常保留 tail）。
+#[tokio::test]
+async fn old_canvas_batch_prunes_an_oversized_sibling_result() {
+    const BIG_CHARS: usize = 16_000;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![
+            // 一步里三个调用：画布第 1 版、同画布第 2 版（edits）、16k 普通结果。
+            // 所以第 1 版是旧版，另外两条是 sentence=None 的同批兄弟结果。
+            sse(tool_calls_with_inputs_sse(&[
+                (
+                    "call_v1",
+                    "canvas",
+                    json!({"title": CANVAS_TITLE, "note": "第一版", "html": page(1)}),
+                ),
+                (
+                    "call_v2",
+                    "canvas",
+                    json!({
+                        "id": "cv_1",
+                        "title": CANVAS_TITLE,
+                        "note": "第二版",
+                        "edits": [{"old": "<div id=\"v\">1</div>", "new": "<div id=\"v\">2</div>"}],
+                    }),
+                ),
+                ("call_big", "big", json!({"chars": BIG_CHARS})),
+            ])),
+            sse(FINAL_TEXT_SSE.to_owned()),
+            // 修剪没把上下文压回阈值内才会再要一次摘要；正常情况下用不到。
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = SessionStore::create(data_dir.path(), cwd.path()).unwrap();
+    let id = store.id().clone();
+    let agent = Agent::create(
+        compaction_config(data_dir.path()),
+        Deps {
+            model: DeepSeek::with_credentials(
+                compaction_model_config(&server.uri()),
+                test_credential(),
+            )
+            .unwrap(),
+            tools: ToolSet::new(vec![
+                Box::new(CanvasTool::new()) as Box<dyn Tool>,
+                Box::new(BigTool::new()),
+            ]),
+            store,
+        },
+    )
+    .await
+    .unwrap();
+    agent
+        .send(
+            UserMessage::text("画一个存钱的画布，再跑个大结果"),
+            Delivery::FollowUp,
+        )
+        .await
+        .unwrap();
+    wait_idle(&agent, 10).await;
+    drop(agent);
+
+    let bodies: Vec<Value> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| serde_json::from_slice(&request.body).expect("请求体是 JSON"))
+        .collect();
+    let body = bodies.last().expect("压缩/修剪之后还要发下一步请求");
+    let results = request_tool_results_with_ids(body);
+    let result_of = |call_id: &str| -> String {
+        results
+            .iter()
+            .find(|(id, _)| id == call_id)
+            .unwrap_or_else(|| panic!("请求里缺少 {call_id} 的 tool/result"))
+            .1
+            .clone()
+    };
+
+    // 同批的普通大结果被 head+marker+tail 剪过，全文不再进请求。
+    let big = result_of("call_big");
+    assert!(
+        big.contains("[... tool result middle pruned ...]"),
+        "同批普通大结果要出现剪枝 marker：{big:?}"
+    );
+    assert!(
+        !body.to_string().contains(&"x".repeat(BIG_CHARS)),
+        "16k 全文不应出现在压缩后的请求里"
+    );
+    assert!(
+        big.starts_with(&"x".repeat(4096)) && big.ends_with(&"x".repeat(1024)),
+        "保留头 4096 和尾 1024"
+    );
+
+    // 旧版结果换一句；最新版（第 2 版）结果原样。
+    assert_eq!(result_of("call_v1"), sentence(1, "第一版"));
+    assert_eq!(
+        result_of("call_v2"),
+        format!("画布「{CANVAS_TITLE}」第 2 版已显示（cv_1）")
+    );
+    let inputs = canvas_inputs(body);
+    let v1 = inputs
+        .iter()
+        .find(|input| input.get("id").is_none())
+        .expect("第 1 版调用");
+    assert_eq!(
+        v1["html"],
+        json!(sentence(1, "第一版")),
+        "旧版 html 只剩一句"
+    );
+    assert_eq!(v1["title"], json!(CANVAS_TITLE), "别的参数不动");
+    let v2 = inputs
+        .iter()
+        .find(|input| input.get("edits").is_some())
+        .expect("第 2 版调用");
+    assert_eq!(
+        v2["edits"][0]["new"],
+        json!("<div id=\"v\">2</div>"),
+        "最新版 edits 原样"
+    );
+    assert!(
+        !body.to_string().contains(&page(1)),
+        "旧版 html 全文不应留在请求里"
+    );
+
+    // 整批重落之后，tool_use 仍在对应的 tool_result 之前，结果按调用顺序。
+    let messages = body["messages"].as_array().expect("messages");
+    let position = |kind: &str, id: &str| -> Option<usize> {
+        messages.iter().position(|message| {
+            message["content"].as_array().is_some_and(|blocks| {
+                blocks.iter().any(|block| {
+                    block["type"] == json!(kind)
+                        && (block["id"] == json!(id) || block["tool_use_id"] == json!(id))
+                })
+            })
+        })
+    };
+    let v1_call = position("tool_use", "call_v1").expect("旧版 canvas 调用还在");
+    let v2_call = position("tool_use", "call_v2").expect("最新版 canvas 调用还在");
+    let big_call = position("tool_use", "call_big").expect("同批普通调用还在");
+    assert_eq!(v1_call, v2_call, "同一条 assistant/message 一起重落");
+    assert_eq!(v2_call, big_call);
+    let v1_result = position("tool_result", "call_v1").expect("第 1 版结果");
+    let big_result = position("tool_result", "call_big").expect("大结果");
+    assert!(big_call < big_result, "tool_use 必须在 tool_result 之前");
+    // 相邻 tool/result 在 wire 上合并成一条 user 消息，顺序要看同一条消息里的块顺序。
+    assert_eq!(v1_result, big_result, "三条结果重落在同一批相邻消息里");
+    let result_order: Vec<&str> = messages[v1_result]["content"]
+        .as_array()
+        .expect("content")
+        .iter()
+        .filter(|block| block["type"] == json!("tool_result"))
+        .filter_map(|block| block["tool_use_id"].as_str())
+        .collect();
+    assert_eq!(
+        result_order,
+        ["call_v1", "call_v2", "call_big"],
+        "结果按调用顺序重落"
+    );
+
+    // 日志事实：原事件仍是全文，替换事件才是修剪视图且不带展示 meta。
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    let events = store.events().to_vec();
+    drop(store);
+    let original_big = events
+        .iter()
+        .find(|event| {
+            matches!(&event.kind, EventKind::ToolResult { message, .. }
+                if message.tool_call_id.as_deref() == Some("call_big"))
+        })
+        .expect("原始大结果还在日志里");
+    assert_eq!(original_big.surface_op, None, "原事件本身不能被改写");
+    let replaced = replacement_of(&events, original_big.seq);
+    let EventKind::ToolResult { message, meta, .. } = &replaced.kind else {
+        panic!("替换事件应仍是 tool/result");
+    };
+    assert!(
+        message_text(message).contains("[... tool result middle pruned ...]"),
+        "替换事件是剪枝视图"
+    );
+    assert!(meta.is_none(), "修剪后的结果不再带展示 meta");
 }
