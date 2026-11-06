@@ -17,6 +17,7 @@ import { QuestionCard } from './QuestionCard';
 import { useKindStore, useStreamStore } from './kindStore';
 import { processStepsOf } from './turnViews';
 import { ProcessView } from './process/ProcessView';
+import { CanvasView } from './CanvasView';
 import { AttachmentPreview, FileCard, PasteCard, pasteStats } from './composer/AttachmentCard';
 import { attachmentGet } from '@/data/service';
 import type { CompactionView, TurnUserView, TurnViewData } from './kindStore';
@@ -392,6 +393,8 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
               />
             </div>
           ) : null}
+          {view.canvas ? <CanvasView doc={view.canvas} /> : null}
+
           {view.question ? <QuestionCard turnId={view.id} question={view.question} /> : null}
           {view.retry ? <RetryLine retry={view.retry} /> : null}
 

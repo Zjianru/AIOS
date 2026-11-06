@@ -45,6 +45,19 @@ export type QuestionView =
   | { status: 'dismissed'; questions: AskQuestion[] }
   | { status: 'void'; questions: AskQuestion[] };
 
+/**
+ * 画布（T015.1）：日志里 tool/result.meta.canvas 的那一版全文。
+ * 回放和实时都走同一份事件，所以这里只有日志事实，没有页面自己的状态。
+ */
+export interface CanvasViewDoc {
+  id: string;
+  /** 第几版（T015.1 只出第 1 版；版本切换在 T015.2）。 */
+  n: number;
+  title: string;
+  note: string;
+  html: string;
+}
+
 /** 压缩：在对话里是一条分隔线，不是一轮。 */
 export interface CompactionView {
   auto: boolean;
@@ -89,6 +102,8 @@ export interface TurnViewData {
   failure: { cause: FailureCause; reason: string; code?: string } | null;
   question: QuestionView | null;
   compaction: CompactionView | null;
+  /** 这一轮出的画布（日志里 tool/result.meta.canvas）。 */
+  canvas: CanvasViewDoc | null;
   /** 你的消息：发送中 / 没送到（重发用同一个请求编号，内核只收一次）。 */
   delivery: 'sending' | 'unsent' | null;
   /** 停下的时间（status 为 interrupted 时）。 */
@@ -501,6 +516,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       compaction: raw.compaction,
       failure: raw.failure,
       question: raw.question,
+      canvas: null,
       delivery: null,
       stoppedAt: raw.stoppedAt,
     }));

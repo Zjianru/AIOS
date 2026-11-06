@@ -703,6 +703,17 @@ fn content_type(path: &Path) -> &'static str {
     }
 }
 
+/// 画布外壳页的 CSP（T015.1：CSP 由响应头下发，逐字照 `WORK/T015/strategy.md` 第 5 节）。
+pub const CANVAS_FRAME_CSP: &str = "";
+
+/// GET /canvas-frame：画布外壳页（T015.1）。不要 cookie，只校 Host；CSP 写在响应头里。
+async fn canvas_frame_handler(
+    State(_state): State<Arc<AppState>>,
+    _headers: HeaderMap,
+) -> Response {
+    error_response(StatusCode::NOT_FOUND, "not found")
+}
+
 /// GET 静态文件：同源托管 web/dist（T007.2）；没有 static_dir 时 404。
 async fn static_handler(
     State(state): State<Arc<AppState>>,
@@ -1167,6 +1178,7 @@ fn router_with_state(state: Arc<AppState>) -> Router {
         .route("/connect", get(connect_handler))
         .route("/api", post(api_handler))
         .route("/ws", get(ws_handler))
+        .route("/canvas-frame", get(canvas_frame_handler))
         .fallback(get(static_handler))
         .with_state(state)
 }

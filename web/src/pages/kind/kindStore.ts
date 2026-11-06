@@ -278,6 +278,7 @@ function addUnsentView(
       failure: null,
       question: null,
       compaction: null,
+      canvas: null,
       delivery: 'unsent',
       stoppedAt: null,
     };
@@ -424,6 +425,7 @@ function applyLiveEvent(event: ServiceEvent): void {
         failure: null,
         question: null,
         compaction,
+        canvas: null,
         delivery: null,
         stoppedAt: null,
       };
