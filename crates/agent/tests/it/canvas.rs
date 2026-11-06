@@ -468,7 +468,11 @@ async fn compaction_keeps_one_sentence_for_each_old_canvas_version_and_the_lates
     let second = sentence(2, "第二版");
     let latest = format!("画布「{CANVAS_TITLE}」第 3 版已显示（cv_1）");
 
-    assert_eq!(bodies.len(), 7, "三轮 + 压缩摘要各一次请求（重开那轮在另一处）");
+    assert_eq!(
+        bodies.len(),
+        7,
+        "三轮 + 压缩摘要各一次请求（重开那轮在另一处）"
+    );
     let first_count = after.to_string().matches(&first).count();
     assert_eq!(
         first_count, 2,
