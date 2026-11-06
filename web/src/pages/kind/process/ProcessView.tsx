@@ -319,14 +319,14 @@ export function ProcessView({
   return (
     <div data-kind="process" data-open={expanded ? 'true' : 'false'} className="group/turn relative">
       {usage ? (
-        <span className="pointer-events-none absolute right-0 top-0 hidden items-center gap-1.5 whitespace-nowrap text-ink-3 group-hover/turn:flex">
-          {usage.model} · 输入 <span className="brand-type">{shownInput}</span>
+        <span data-kind="turn-usage" className="pointer-events-none absolute right-0 top-0 hidden items-center gap-1.5 whitespace-nowrap text-ink-3 group-hover/turn:flex">
+          {usage.model} · 输入 <span data-kind="usage-number">{shownInput}</span>
           {cacheHit === null ? null : (
             <>
-              {' '}· 缓存命中 <span className="brand-type">{cacheHit}%</span>
+              {' '}· 缓存命中 <span data-kind="usage-number">{cacheHit}%</span>
             </>
           )}{' '}
-          · 输出 <span className="brand-type">{usage.output}</span>
+          · 输出 <span data-kind="usage-number">{usage.output}</span>
         </span>
       ) : null}
       <button

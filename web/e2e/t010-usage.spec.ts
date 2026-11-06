@@ -47,3 +47,28 @@ test('没报缓存、没思考：不出现缓存命中与想了 N 秒', async ({
     await fixture.close();
   }
 });
+
+/// T013 验收 F3：悬停用量行的数字跟正文同字体（原来这几个数字用了 brand-type 的标识字体）。
+test('用量行数字与正文字体一致', async ({ page }) => {
+  const fixture = await startKernelFixture({ usageTurn: true });
+  try {
+    await page.goto(urlOf(fixture));
+    await page.getByPlaceholder('和 Kind 说…').fill('你好');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    await expect(page.getByText('（T007 e2e 假回放）').last()).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 60_000 });
+    const process = page.locator('[data-kind="process"]').last();
+    await process.hover();
+    const row = process.locator('[data-kind="turn-usage"]');
+    await expect(row).toBeVisible();
+    const numbers = row.locator('[data-kind="usage-number"]');
+    expect(await numbers.count()).toBeGreaterThan(0);
+    const fonts = await numbers.evaluateAll((elements) =>
+      elements.map((element) => getComputedStyle(element).fontFamily),
+    );
+    const bodyFont = await page.evaluate(() => getComputedStyle(document.body).fontFamily);
+    expect(fonts.every((font) => font === bodyFont)).toBe(true);
+  } finally {
+    await fixture.close();
+  }
+});
