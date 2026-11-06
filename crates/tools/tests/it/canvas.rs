@@ -45,7 +45,10 @@ async fn new_canvas_puts_the_whole_html_in_meta_and_one_sentence_to_the_model() 
         format!("画布「会走的小猫」第 1 版已显示（{id}）")
     );
     assert!(!result.content.contains("<div"), "模型的消息里没有 HTML");
-    assert!(!result.content.contains("点了会走"), "模型的消息里没有 note");
+    assert!(
+        !result.content.contains("点了会走"),
+        "模型的消息里没有 note"
+    );
 }
 
 /// 票面验收：工具说明照抄 Claude Code 的「When to use」「What an artifact is not」，

@@ -87,7 +87,8 @@ export interface TurnViewData {
   durationMs: number | null;
   status: TurnStatus;
   user: TurnUserView | null;
-  reasoning: { summary: string[]; full: string; seconds: number } | null;
+  /** 思考全文（T013 验收 F5）；摘要和秒数页面不用，日志里也没有（T013 C1）。 */
+  reasoning: { full: string } | null;
   tools: ToolStep[];
   cards: KindCard[];
   answer: { text: string; elements: TextElement[] } | null;
@@ -513,14 +514,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       status: raw.status,
       user: raw.user,
       reasoning:
-        raw.reasoningParts.length > 0
-          ? {
-              // 日志里没有摘要字段：summary 留空，不替模型编摘要。
-              summary: [],
-              full: raw.reasoningParts.join('\n\n'),
-              seconds: Math.max(1, thinkingSecondsOf(raw.reasoningMs)),
-            }
-          : null,
+        raw.reasoningParts.length > 0 ? { full: raw.reasoningParts.join('\n\n') } : null,
       tools: raw.tools,
       cards: [],
       answer: raw.answer ? { text: raw.answer, elements: [] } : null,

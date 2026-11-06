@@ -718,10 +718,7 @@ base-uri 'none'; \
 frame-ancestors 'self'";
 
 /// GET /canvas-frame：画布外壳页（T015.1）。不要 cookie，只校 Host；CSP 写在响应头里。
-async fn canvas_frame_handler(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-) -> Response {
+async fn canvas_frame_handler(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     if let Err(error) = host_check(&state, &headers) {
         return trust_error_response(error);
     }
@@ -733,7 +730,10 @@ async fn canvas_frame_handler(
             StatusCode::OK,
             [
                 (CONTENT_TYPE, "text/html; charset=utf-8"),
-                (HeaderName::from_static("content-security-policy"), CANVAS_FRAME_CSP),
+                (
+                    HeaderName::from_static("content-security-policy"),
+                    CANVAS_FRAME_CSP,
+                ),
             ],
             bytes,
         )
