@@ -171,6 +171,9 @@ test('拖滑块、点按钮当场变；刷新以后画布还在、滑块回初�
 test('内容超过 420px：封顶 420、标题栏出「展开」，点了展开再收起', async ({ page }) => {
   const fixture = await startKernelFixture({ canvas: 'interactive' });
   try {
+    // 展开以后画布比一屏（720）高；用高一点的视口，标题栏不会被列表的「钉到底」挤出去，
+    // 点「收起」时按钮也不会在 mousedown 和 mouseup 之间移动。
+    await page.setViewportSize({ width: 1280, height: 1600 });
     await page.goto(urlOf(fixture));
     await ask(page);
     await waitCanvas(page, '每月存钱算一算');
