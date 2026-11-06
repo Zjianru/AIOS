@@ -44,12 +44,14 @@
         });
 
         // 用 document.write 把画布写进自己的文档（照 sandbox.ts；不用 srcdoc，库认文档）。
-        // 写完这个页面的脚本就被换掉了，所以运行时脚本（见 canvasRuntime）要一起写进去。
+        // 写完这个页面的脚本就被换掉了，所以运行时脚本（见 canvasRuntime）要一起写进去；
+        // 它排在画布 HTML 前面：画布一打开就 throw 时错误监听已经装好（T015.5 审计 #1）。
         function write(html) {
           var doc =
             '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">' +
-            '<style>' + BASE_STYLE + '</style></head><body>' + html +
-            '<script data-aios-runtime="1">(' + canvasRuntime.toString() + ')(' + JSON.stringify(BASE_STYLE) + ');<' + '/script></body></html>';
+            '<style>' + BASE_STYLE + '</style></head><body>' +
+            '<script data-aios-runtime="1">(' + canvasRuntime.toString() + ')(' + JSON.stringify(BASE_STYLE) + ');<' + '/script>' +
+            html + '</body></html>';
           document.open();
           document.write(doc);
           document.close();
