@@ -123,8 +123,18 @@ export interface FixtureOptions {
   /// T015.4 加 send：画布里一个「按这个存」按钮（aios.send），第 2 轮的回答另备一条。
   /// T015.5 加 streaming：参数拆成多段慢慢流（「正在画 · 标题」）；errors：脚本报错/
   /// 未处理 rejection/CSP 违规三个按钮。
+  /// T015.5 审计修复加 init-error（画布顶层一打开就 throw）和 forged-export（画布自己发 export）。
   /// 每份都是手写的模型回放脚本（第一轮回 canvas 工具调用，第二轮回一句回答）。
-  canvas?: 'interactive' | 'cdn' | 'loop' | 'versions' | 'send' | 'streaming' | 'errors';
+  canvas?:
+    | 'interactive'
+    | 'cdn'
+    | 'loop'
+    | 'versions'
+    | 'send'
+    | 'streaming'
+    | 'errors'
+    | 'init-error'
+    | 'forged-export';
   /// 每次模型回放延迟毫秒（T007.5 停止用例要在运行中按停止/Esc）。
   slowMs?: number;
   /// first request 回一次 ask_user_question（两题：一题选项、一题自己写）。

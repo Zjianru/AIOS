@@ -585,9 +585,10 @@ test('画布按钮：话进输入框带标记、点完不自动发；接着写�
     await expect(chip).toContainText('来自画布');
     await expect(chip).toContainText('每月存钱算一算');
 
-    // 点完以后、用户发送之前：日志里没有新的 user/message（不替用户发，故事 16）。
-    // 留 500ms 给「自动发」真写进日志的窗口，再数。
-    await page.waitForTimeout(500);
+    // 点完以后、用户发送之前：话只在输入框里，没有开始跑，也没有新的 user/message（故事 16）。
+    // 不睡固定时长：发送会在同一个消息处理器里同步起一轮，此刻「停止」在不在、日志条数
+    // 都能直接看；真被替发的话，下面发送后的日志会多出第三条。
+    await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0);
     expect((await userMessageBlocks(fixture)).length, '点完按钮就替用户发了').toBe(1);
 
     // 接着写一句再发（同一句话后面接，不是替换）。
@@ -784,6 +785,40 @@ test('出错：脚本报错、未处理的 rejection、CSP 违规都出「出错
   }
 });
 
+/**
+ * 审计 T015.5 #1（故事 12）：画布顶层脚本一打开就 throw，错误监听必须已经装好。
+ * 走真外壳（iframe src=/canvas-frame，响应头带 CSP），标题栏出「出错了」；点了进输入框。
+ */
+test('初始化脚本报错：一打开就出「出错了」，点了错误进输入框', async ({ page, request }) => {
+  const fixture = await startKernelFixture({ canvas: 'init-error' });
+  try {
+    // 真外壳：/canvas-frame 的响应头带 CSP（不是静态 fallback 的裸 HTML）。
+    const shell = await request.get(fixture.baseUrl + '/canvas-frame');
+    expect(shell.headers()['content-security-policy']).toBe(CANVAS_FRAME_CSP);
+
+    await page.goto(urlOf(fixture));
+    await ask(page);
+    await waitCanvas(page, '初始化就报错');
+    const errorButton = page.getByRole('button', { name: '出错了' });
+    await expect(errorButton).toBeVisible({ timeout: 15_000 });
+
+    const frame = await canvasFrame(page);
+    expect(new URL(frame.url()).pathname).toBe('/canvas-frame');
+    // throw 只打断那一段脚本，后面的 HTML 照常解析。
+    await expect(frame.locator('#still')).toHaveText('还在');
+
+    await errorButton.click();
+    const input = page.getByPlaceholder('和 Kind 说…');
+    await expect(input).toHaveValue(/脚本报错/);
+    expect(await input.inputValue()).toContain('init-boom');
+    await expect(page.locator('[data-kind="composer"] [data-kind="from-canvas"]')).toContainText(
+      '初始化就报错',
+    );
+  } finally {
+    await fixture.close();
+  }
+});
+
 /** 清单 10（故事 9）：全屏能开能关（按钮和 Esc 都行），画布还是同一个 iframe。 */
 test('全屏：能开能关（按钮和 Esc）', async ({ page }) => {
   const fixture = await startKernelFixture({ canvas: 'interactive' });
@@ -837,6 +872,8 @@ test('存成文件：外壳 + 画布 HTML + CSP meta；单独打开能显示，�
     await page.goto(urlOf(fixture));
     await ask(page);
     await waitCanvas(page, 'CDN 与隔离');
+    await expect.poll(() => canvasVariable(page, '--color-background-primary')).not.toBe('');
+    const liveBackground = await canvasVariable(page, '--color-background-primary');
 
     const downloadPromise = page.waitForEvent('download');
     await page.getByRole('button', { name: '存成文件' }).click();
@@ -856,15 +893,65 @@ test('存成文件：外壳 + 画布 HTML + CSP meta；单独打开能显示，�
     expect(html).toContain('id="marker"');
     // 外壳的基础样式（不是只有画布 HTML 那一段）。
     expect(html).toContain('font-family:var(--font-sans)');
+    // 标题和主题变量由父窗口写进去（审计整洁 #5）。
+    expect(html).toContain('<title>CDN 与隔离</title>');
+    expect(html).toContain('--color-background-primary:' + liveBackground);
     // 存下来的是能单独打开的页面，不是 iframe 自检外壳，也不带宿主运行时。
     expect(html).not.toContain('window.self === window.top');
     expect(html).not.toContain('data-aios-runtime');
 
-    // 单独打开：清单里的库能加载，画布显示；清单外的请求一个都没发出去。
+    // 单独打开：清单里的库能加载，画布显示；主题变量在文件里真的生效；清单外的请求一个都没发出去。
     await page.goto('file://' + htmlPath);
     await expect(page.locator('#marker')).toHaveText('lib:1', { timeout: 20_000 });
     await expect(page.locator('#fetch')).toHaveText('fetch:blocked');
+    expect(
+      await page.evaluate(() =>
+        getComputedStyle(document.documentElement)
+          .getPropertyValue('--color-background-primary')
+          .trim(),
+      ),
+    ).toBe(liveBackground);
     expect(offList, '清单外的请求发了出去').toBe(0);
+  } finally {
+    await fixture.close();
+  }
+});
+
+/**
+ * 审计 T015.5 #2（故事 10、16）：文件由父窗口生成，只认自己这份。
+ * 不可信画布直接发 export（带自己的 HTML）时宿主不下载；点「存成文件」拿到的
+ * 仍是日志里那一版 + 宿主自己的外壳/CSP，没有伪造内容。
+ */
+test('伪造 export：画布自己发 export 不产生下载；存下的文件仍由宿主生成', async ({ page }) => {
+  const fixture = await startKernelFixture({ canvas: 'forged-export' });
+  const downloads: string[] = [];
+  page.on('download', (download) => downloads.push(download.suggestedFilename()));
+  try {
+    await page.goto(urlOf(fixture));
+    await ask(page);
+    await waitCanvas(page, '伪造导出的画布');
+
+    const frame = await canvasFrame(page);
+    await expect(frame.locator('#marker')).toHaveText('真的画布');
+    // 让画布再伪造一次 export，然后发一条普通消息当回执：宿主收到了消息，却不应下载。
+    await frame.locator('#forge').click();
+    const input = page.getByPlaceholder('和 Kind 说…');
+    await expect(input).toHaveValue('伪造完成');
+    expect(downloads, '伪造的 export 触发了下载').toEqual([]);
+
+    const downloadPromise = page.waitForEvent('download');
+    await page.getByRole('button', { name: '存成文件' }).click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toBe('伪造导出的画布.html');
+    const filePath = await download.path();
+    if (!filePath) throw new Error('下载的文件没有落盘路径');
+    const html = await readFile(filePath, 'utf8');
+    expect(html).toContain(
+      '<meta http-equiv="Content-Security-Policy" content="' + CANVAS_FILE_CSP + '">',
+    );
+    expect(html).toContain('id="marker"');
+    expect(html).not.toContain('id="pwned"');
+    expect(downloads, '真正的存文件应恰好下载一次').toEqual(['伪造导出的画布.html']);
   } finally {
     await fixture.close();
   }

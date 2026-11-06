@@ -31,6 +31,8 @@ T010.2 时用一次性 Playwright 录制器（已删除，不在仓库）跑改�
 | canvas-send.jsonl | 画布：「按这个存」按钮（aios.send），第 2 轮回答另备一条（T015.4） | 2 |
 | canvas-streaming.jsonl | 画布：canvas 参数拆成 4 段慢慢流（回放 pace 120ms），看「正在画 · 标题」（T015.5） | 2 |
 | canvas-errors.jsonl | 画布：脚本报错 / 未处理 rejection / CSP 违规三个按钮（T015.5） | 2 |
+| canvas-init-error.jsonl | 画布：顶层脚本一打开就 throw，验初始化错误的「出错了」（T015.5 审计 #1） | 2 |
+| canvas-forged-export.jsonl | 画布：自己往父窗口发 export，验伪造导出不下载（T015.5 审计 #2） | 2 |
 
 这些是手写的，只放模型回放要的 `assistant/message`：第 1 条回一次 `canvas` 工具调用（HTML 在参数里），第 2 条回一句回答（versions 多一条第三轮）。**工具调用由真内核执行**，所以页面显示的画布一定来自日志的 `tool/result.meta.canvas`，不是夹具里写死的结果。`canvas-streaming` 只把 `tool-call-chunks` 的 args 拆成几段；完整参数（`message.content` 和 block-end）不变。
 
