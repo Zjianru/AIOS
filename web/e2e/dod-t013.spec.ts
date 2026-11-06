@@ -40,25 +40,25 @@ test.afterAll(() => {
   flushJq();
 });
 
-/** 空库里先在设置页真实加 MiniMax 连接并验证（T012.10 流程；key 从 env 读，只进页面输入）。 */
+/** 空库里走首次使用页（T008 流程）：选 MiniMax（国内站）→ 填 key → 接上 → 连接可用 → 开始。 */
 async function connectMinimax(page: import('@playwright/test').Page): Promise<void> {
-  await page.getByRole('button', { name: '设置', exact: true }).click();
-  await expect(page.locator('[data-settings="model"]')).toBeVisible({ timeout: 30_000 });
-  await page.getByRole('button', { name: '添加模型提供商' }).click();
-  const add = page.locator('[data-settings="add"]');
-  await expect(add).toBeVisible({ timeout: 20_000 });
-  await add.locator('select').selectOption('minimax-cn');
-  await add.locator('input[type="password"]').first().fill(process.env.MINIMAX_API_KEY ?? '');
-  await add.getByRole('button', { name: '保存', exact: true }).click();
-  await expect(page.getByText('MiniMax（国内站）').first()).toBeVisible({ timeout: 60_000 });
-  // 验证连接（设置页有验证入口）。
-  const verify = page.getByRole('button', { name: /验证/ });
-  if (await verify.count()) {
-    await verify.first().click();
-    await expect(page.getByText(/连接可用|验证通过|可用/).first()).toBeVisible({ timeout: 120_000 });
+  await expect(page.locator('[data-first-use="connect"]')).toBeVisible({ timeout: 60_000 });
+  await page.getByRole('button', { name: 'MiniMax（国内站）' }).click();
+  await page.locator('#first-use-key').fill(process.env.MINIMAX_API_KEY ?? '');
+  await page.getByRole('button', { name: '接上', exact: true }).click();
+  await expect(page.getByText('连接可用', { exact: false })).toBeVisible({ timeout: 180_000 });
+  await page.getByRole('button', { name: '开始', exact: true }).click();
+  // 进空对话；若 RootHost 还没恢复，页面是「内核不可用」说明页 → 点「现在重试」。
+  const composerInput = page.locator('[data-kind="composer-input"]');
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (await composerInput.isVisible().catch(() => false)) return;
+    const retry = page.getByRole('button', { name: '现在重试' });
+    if (await retry.count()) {
+      await retry.first().click().catch(() => undefined);
+    }
+    await page.waitForTimeout(1500);
   }
-  await page.getByRole('button', { name: 'Kind', exact: true }).click();
-  await expect(page.locator('[data-kind="composer-input"]')).toBeVisible({ timeout: 60_000 });
+  await expect(composerInput).toBeVisible({ timeout: 30_000 });
 }
 
 const send = async (page: import('@playwright/test').Page, text: string) => {
