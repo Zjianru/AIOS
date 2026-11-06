@@ -249,6 +249,7 @@ function LiveCanvas({ doc, latest, versions, onCanvasMessage }: Omit<CanvasViewP
   const [reloadKey, setReloadKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
+  const blockRef = useRef<HTMLDivElement | null>(null);
   // 新版来了就跳到新版（只在页面上；日志里一直是最新那一版）。
   useEffect(() => setShown(latest), [latest]);
   const available = versions.filter((item) => item.n <= latest);
@@ -265,17 +266,39 @@ function LiveCanvas({ doc, latest, versions, onCanvasMessage }: Omit<CanvasViewP
   useEffect(() => {
     setError(null);
   }, [current.n, reloadKey]);
-  // 全屏时 Esc 只关全屏，不落到「停止这一轮」。
+  // 全屏走浏览器 Fullscreen API（元素进 top layer，虚拟列表的 transform 不影响它）；
+  // Esc 由浏览器退出，fullscreenchange 把状态同步回来（Safari 旧版用 webkit 前缀）。
+  useEffect(() => {
+    const sync = () => setFullscreen(document.fullscreenElement === blockRef.current);
+    document.addEventListener('fullscreenchange', sync);
+    return () => document.removeEventListener('fullscreenchange', sync);
+  }, []);
+  // Esc：先在捕获阶段退出全屏并吃掉这个键，别让它同时落成「停止这一轮」。
   useEffect(() => {
     if (!fullscreen) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (event.key !== 'Escape') return;
       event.preventDefault();
-      setFullscreen(false);
+      event.stopPropagation();
+      void document.exitFullscreen().catch(() => {});
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
   }, [fullscreen]);
+  const toggleFullscreen = useCallback(() => {
+    const element = blockRef.current;
+    if (!element) return;
+    if (document.fullscreenElement === element) {
+      void document.exitFullscreen().catch(() => {});
+      return;
+    }
+    const target = element as HTMLDivElement & {
+      webkitRequestFullscreen?: () => Promise<void>;
+    };
+    const request = target.requestFullscreen?.bind(target) ?? target.webkitRequestFullscreen?.bind(target);
+    if (!request) return;
+    void Promise.resolve(request()).catch(() => {});
+  }, []);
   // 存成文件：让外壳把当前文档（基础样式 + 当前主题变量 + 画布 HTML + CSP meta）拼好再下载。
   const requestExport = useCallback(() => {
     frameRef.current?.contentWindow?.postMessage({ aiosHost: true, type: 'export' }, '*');
@@ -287,9 +310,10 @@ function LiveCanvas({ doc, latest, versions, onCanvasMessage }: Omit<CanvasViewP
 
   return (
     <div
+      ref={blockRef}
       className={cn(
         'my-3 overflow-hidden rounded-card border border-line-2 bg-raised',
-        fullscreen && 'fixed inset-0 z-50 m-0 flex flex-col rounded-none border-0 bg-pane',
+        fullscreen && 'm-0 flex h-screen w-screen flex-col rounded-none border-0 bg-pane',
       )}
       data-kind="canvas"
       data-fullscreen={fullscreen ? 'true' : 'false'}
@@ -298,8 +322,8 @@ function LiveCanvas({ doc, latest, versions, onCanvasMessage }: Omit<CanvasViewP
         <button
           type="button"
           onClick={() => {
+            if (fullscreen) void document.exitFullscreen().catch(() => {});
             setOpen((value) => !value);
-            setFullscreen(false);
           }}
           aria-expanded={open}
           aria-label={open ? '收起画布' : '展开画布'}
@@ -380,7 +404,7 @@ function LiveCanvas({ doc, latest, versions, onCanvasMessage }: Omit<CanvasViewP
             type="button"
             aria-label={fullscreen ? '退出全屏' : '全屏'}
             title={fullscreen ? '退出全屏（Esc）' : '全屏看'}
-            onClick={() => setFullscreen((value) => !value)}
+            onClick={toggleFullscreen}
             className="rounded-btn p-1 text-ink-3 transition-colors hover:bg-hover hover:text-ink"
           >
             {fullscreen ? <Minimize className="size-3.5" /> : <Fullscreen className="size-3.5" />}

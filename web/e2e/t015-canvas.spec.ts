@@ -795,6 +795,14 @@ test('全屏：能开能关（按钮和 Esc）', async ({ page }) => {
 
     await page.getByRole('button', { name: '全屏' }).click();
     await expect(block).toHaveAttribute('data-fullscreen', 'true');
+    // 真的铺满窗口，不只是加了个属性（虚拟列表的祖先可能有 transform）。
+    const viewport = page.viewportSize();
+    const box = await block.boundingBox();
+    if (!viewport || !box) throw new Error('拿不到全屏画布的位置');
+    expect(Math.round(box.x)).toBe(0);
+    expect(Math.round(box.y)).toBe(0);
+    expect(Math.round(box.width)).toBe(viewport.width);
+    expect(Math.round(box.height)).toBe(viewport.height);
     await expect(page.locator('iframe[data-kind="canvas-frame"]')).toHaveCount(1);
     await expect((await canvasFrame(page)).locator('#total')).toHaveText('¥378,000');
 
