@@ -1,15 +1,18 @@
 import { test, expect } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startT013DodFixture } from './service-fixture';
+import { answeredAfterRead, renderCommand, runProbe, sessionLog } from './dod-log';
 
 /**
  * T013 DoD2（真 key，MiniMax）：四件事各一条用例。
- * F2（Claude fix-now）：① 断言只认最后一个 [data-kind="answer"]（用户自己的话里不会自己命中）；
- * ①② 另外从日志核「回答之前有 read 那个路径」；每条用例自己的数据目录，跑完不清；
- * jq 的命令和输出写进 WORK/T013/evidence/。
+ * F2（Claude fix-now）：
+ * - ①②③ 的断言只认最后一个 [data-kind="answer"]（你自己的话里不会自己命中），等这一轮结束再看；
+ * - 问句里不写标记原文（标记只在文件里 / 粘贴里）；
+ * - ①② 另外从会话日志核「回答之前有 read 那个路径」（jq 读，不是打印）；
+ * - 每条用例用自己的数据目录，跑完不清；jq 的命令和输出写进 WORK/T013/evidence/。
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -18,25 +21,7 @@ const EVIDENCE = process.env.AIOS_DOD_EVIDENCE ?? path.join(repoRoot, '../aios-w
 test.skip(!process.env.MINIMAX_API_KEY, '需要 MINIMAX_API_KEY（T013.9 真 key DoD）');
 test.setTimeout(600_000);
 
-function sessionLog(dataDir: string): string {
-  const dir = path.join(dataDir, 'sessions');
-  const file = readdirSync(dir).filter((name) => name.endsWith('.jsonl')).sort().pop();
-  if (!file) throw new Error('没有会话日志');
-  return path.join(dir, file);
-}
-
-/** 证据里抄一份能重跑的命令（参数带空格就加单引号）。 */
-function renderCommand(args: string[]): string {
-  return args
-    .map((arg) => (arg.includes(' ') || arg.includes(String.fromCharCode(10)) ? "'" + arg + "'" : arg))
-    .join(' ');
-}
-
-function jq(
-  lines: string[],
-  args: string[],
-  label: string,
-): string {
+function jq(lines: string[], args: string[], label: string): string {
   const out = execFileSync('jq', args, { encoding: 'utf8' }).trim();
   lines.push('$ jq ' + renderCommand(args) + '  # ' + label + String.fromCharCode(10) + out);
   return out;
@@ -50,23 +35,9 @@ function jqExamples(dataDir: string, tag: string, lines: string[]): void {
   jq(lines, ['-c', 'select(.type=="tool/result") | .data.meta.diffs', log], tag + ' tool/result.meta');
 }
 
-/** 一次按会话日志算：带标记的回答在第几条；read 过某个路径的调用在第几条。 */
-const READ_PROBE = [
-  '[ .[] | select(.type=="tool/call") | {seq, name: .data.name, arguments: .data.arguments} ] as $calls',
-  '| [ .[] | select(.type=="assistant/message")',
-  '    | {seq, text: ([.data.message.content[]? | select(.type=="text") | .text] | join(""))} ] as $answers',
-  '| { answerSeq: ([ $answers[] | select(.text | contains($marker)) | .seq ] | min),',
-  '    readSeqs: [ $calls[] | select(.name=="read") | select(.arguments | contains($needle)) | .seq ] }',
-].join(String.fromCharCode(10));
-
-interface ReadProbe {
-  answerSeq: number | null;
-  readSeqs: number[];
-}
-
 /**
  * ①②：回答之前必须有一次 read 那个路径。
- * 用 jq 读日志算，不用页面文字猜；答案（带标记的那条 assistant/message）之前要有 read。
+ * 答案（带标记的那条 assistant/message）之前要有 seq 更小的 read 调用。
  */
 async function assertReadBeforeAnswer(options: {
   log: string;
@@ -75,26 +46,16 @@ async function assertReadBeforeAnswer(options: {
   tag: string;
   lines: string[];
 }): Promise<void> {
-  const args = [
-    '-c',
-    '-s',
-    '--arg',
-    'marker',
-    options.marker,
-    '--arg',
-    'needle',
-    options.needle,
-    READ_PROBE,
-    options.log,
-  ];
-  let last = '（还没跑）';
+  let raw = '（还没跑）';
+  let args: string[] = [];
   try {
     await expect
       .poll(
         () => {
-          last = execFileSync('jq', args, { encoding: 'utf8' }).trim();
-          const probe = JSON.parse(last) as ReadProbe;
-          return probe.answerSeq !== null && probe.readSeqs.some((seq) => seq < probe.answerSeq!) ? 1 : 0;
+          const result = runProbe(options.log, options.marker, options.needle);
+          raw = result.raw;
+          args = result.args;
+          return answeredAfterRead(result.probe) ? 1 : 0;
         },
         { timeout: 180_000, intervals: [500, 1000] },
       )
@@ -109,7 +70,7 @@ async function assertReadBeforeAnswer(options: {
         options.needle +
         '」' +
         String.fromCharCode(10) +
-        last,
+        raw,
     );
   }
 }
@@ -117,7 +78,10 @@ async function assertReadBeforeAnswer(options: {
 /** 每条用例自己的证据文件（jq 命令 + 输出），写进 WORK。 */
 function recordCase(caseName: string, lines: string[]): void {
   mkdirSync(EVIDENCE, { recursive: true });
-  writeFileSync(path.join(EVIDENCE, 'T013.10-dod2-jq-' + caseName + '.txt'), lines.join(String.fromCharCode(10) + String.fromCharCode(10)) + String.fromCharCode(10));
+  writeFileSync(
+    path.join(EVIDENCE, 'T013.10-dod2-jq-' + caseName + '.txt'),
+    lines.join(String.fromCharCode(10) + String.fromCharCode(10)) + String.fromCharCode(10),
+  );
 }
 
 /** 等这一轮结束（停止按钮消失）之后再看日志和气泡。 */
@@ -162,8 +126,8 @@ test('DoD2①：@ 文件问内容（回答之前 read notes.md）', async ({ pag
     const box = page.locator('[data-kind="composer-input"]');
     await box.fill('@notes.md');
     await page.locator('[data-kind="at-menu"]').getByRole('button', { name: /notes\.md/ }).first().click();
-    // F2：问句里不写标记原文，标记只在文件里。
-    await box.fill('@notes.md 这个文件的全文是什么？原样告诉我。');
+    // F2：问句里不写标记原文，标记只在文件里；先读这个文件是测试提示，不是系统提示。
+    await box.fill('@notes.md 先读这个文件，再把它的全文原样告诉我。');
     await page.locator('[data-kind="send"]').click();
     const answer = page.locator('[data-kind="answer"]').last();
     await expect(answer).toContainText('DOD13-NOTES', { timeout: 180_000 });
@@ -194,7 +158,7 @@ test('DoD2②：拖文件问内容（回答之前 read 副本路径）', async (
     const answer = page.locator('[data-kind="answer"]').last();
     await expect(answer).toContainText('DOD13-DROP', { timeout: 180_000 });
     await waitTurnEnd(page);
-    // 副本路径：<数据目录>/attachments/v1/files/…（spec 实现决定：文件块给副本的绝对路径）。
+    // 副本路径：<数据目录>/attachments/v1/files/…（spec：文件块给副本的绝对路径）。
     await assertReadBeforeAnswer({
       log: sessionLog(fixture.dataDir),
       marker: 'DOD13-DROP',
