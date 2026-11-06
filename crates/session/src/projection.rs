@@ -40,9 +40,53 @@ pub struct CanvasState {
 }
 
 /// 从会话事件折叠每个画布的当前版（T015.2）：工具要据此出新一版，页面据此画版本。
-pub fn canvases(_events: &[Event]) -> Vec<CanvasState> {
-    // T015.2 skeleton：签名先落地，折叠在实现提交里补。
-    Vec::new()
+///
+/// 只认 `tool/result.meta.canvas` 的原文。压缩剪枝会把旧版结果改写成一句摘要，
+/// 但原事件还在日志里；带 surfaceOp 的替换事件一律跳过，折叠照读原事件。
+pub fn canvases(events: &[Event]) -> Vec<CanvasState> {
+    let mut out: Vec<CanvasState> = Vec::new();
+    for event in events {
+        if event.surface_op.is_some() {
+            continue;
+        }
+        let EventKind::ToolResult {
+            meta: Some(meta), ..
+        } = &event.kind
+        else {
+            continue;
+        };
+        let Some(canvas) = canvas_state(meta) else {
+            continue;
+        };
+        match out.iter_mut().find(|item| item.id == canvas.id) {
+            Some(item) => *item = canvas,
+            None => out.push(canvas),
+        }
+    }
+    out
+}
+
+/// `meta.canvas` 的形状（页面那边读同一套字段）。
+fn canvas_state(meta: &serde_json::Value) -> Option<CanvasState> {
+    let canvas = meta.get("canvas")?;
+    let id = canvas.get("id")?.as_str()?;
+    let html = canvas.get("html")?.as_str()?;
+    let title = canvas.get("title")?.as_str()?;
+    let n = canvas
+        .get("n")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(1);
+    let note = canvas
+        .get("note")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    Some(CanvasState {
+        id: id.to_owned(),
+        n,
+        title: title.to_owned(),
+        note: note.to_owned(),
+        html: html.to_owned(),
+    })
 }
 
 /// 从会话事件折叠 todos 投影（照 DSH 的 todo 投影 fold）。

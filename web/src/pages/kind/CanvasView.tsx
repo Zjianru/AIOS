@@ -1,17 +1,25 @@
 /**
- * 画布（T015.1；D58，样子照原型 app-v14 a938d2e 的 CanvasView.tsx）。
+ * 画布（T015.2；D58，样子照原型 app-v14 a938d2e 的 CanvasView.tsx）。
  *
- * - 标题栏：画布 · 标题，能收起、重新载入；内容超过 420px 时标题栏给「展开」。
+ * - 最新版展开：标题栏「画布 · 标题」，能收起、重新载入、切版本；内容超过 420px 给「展开」。
+ * - 旧版那一轮缩成一行（CanvasStub），点了跳到出最新版的那一轮。
+ * - 切版本只在页面上切（shown 是本地状态）；日志和发给模型的仍是最新版。
  * - 正文是沙箱 iframe：src="/canvas-frame"，sandbox 只给脚本和表单（不给同源、弹窗、下载）。
  * - 父窗口把这一版的 HTML 用 postMessage 交给外壳，外壳 document.write 写进自己的文档；
  *   外壳报尺寸，父窗口把主题变量交给它（MCP Apps 的标准名），深浅色跟着 AIOS。
- * - 旧版缩成一行、标题栏切版本在 T015.2。
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppWindow, ChevronRight, Maximize2, Minimize2, RotateCcw } from 'lucide-react';
+import { AppWindow, ChevronDown, ChevronRight, Maximize2, Minimize2, RotateCcw } from 'lucide-react';
 import { useAppStore } from '@/app/store';
 import { cn } from '@/lib/utils';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import type { CanvasVersionView, CanvasViewDoc } from './turnViews';
 
 /** 不展开时最多这么高；超过了画布里面滚动，标题栏给「展开」。 */
@@ -145,11 +153,41 @@ interface CanvasViewProps {
   onJumpLatest: () => void;
 }
 
-export function CanvasView({ doc }: CanvasViewProps) {
+/** 旧版那一轮：缩成一行，点了跳到最新那一轮（照原型 CanvasStub）。 */
+function CanvasStub({ doc, latest, onJumpLatest }: Omit<CanvasViewProps, 'versions'>) {
+  return (
+    <button
+      type="button"
+      onClick={onJumpLatest}
+      className="my-2 flex w-full items-center gap-2 rounded-card border border-line px-3 py-2 text-left text-2 text-ink-3 transition-colors hover:bg-hover hover:text-ink-2"
+      data-kind="canvas-stub"
+    >
+      <AppWindow className="size-3.5 shrink-0" />
+      <span className="shrink-0 text-ink-2">画布 · {doc.title}</span>
+      <span className="shrink-0">
+        · 第 <span className="brand-type">{doc.n}</span> 版
+      </span>
+      <span className="min-w-0 truncate">· {doc.note}</span>
+      <span className="ml-auto shrink-0">
+        已有第 <span className="brand-type">{latest}</span> 版 ›
+      </span>
+    </button>
+  );
+}
+
+/** 最新版：标题栏（收起、切版本、重新载入、展开）+ 沙箱 iframe。 */
+function LiveCanvas({ doc, latest, versions }: Omit<CanvasViewProps, 'onJumpLatest'>) {
+  const [shown, setShown] = useState(latest);
   const [open, setOpen] = useState(true);
   const [expanded, setExpanded] = useState(false);
   const [overflow, setOverflow] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  // 新版来了就跳到新版（只在页面上；日志里一直是最新那一版）。
+  useEffect(() => setShown(latest), [latest]);
+  const available = versions.filter((item) => item.n <= latest);
+  const current =
+    available.find((item) => item.n === shown) ??
+    available[available.length - 1] ?? { n: doc.n, title: doc.title, note: doc.note, html: doc.html };
 
   return (
     <div className="my-3 overflow-hidden rounded-card border border-line-2 bg-raised" data-kind="canvas">
@@ -165,9 +203,49 @@ export function CanvasView({ doc }: CanvasViewProps) {
           <AppWindow className="size-3.5 shrink-0 text-ink-3" />
           <span className="shrink-0 text-ink-3">画布</span>
           <span className="truncate text-ink" data-kind="canvas-title">
-            {doc.title}
+            {current.title}
           </span>
         </button>
+
+        {available.length > 1 ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                data-kind="canvas-versions"
+                className="flex shrink-0 items-center gap-0.5 rounded-btn px-1.5 py-0.5 text-ink-3 transition-colors hover:bg-hover hover:text-ink"
+              >
+                第 <span className="brand-type">{shown}</span> 版{shown === latest ? '' : '（旧）'}
+                <ChevronDown className="size-3" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-72">
+              <DropdownMenuLabel className="text-1 text-ink-3">
+                切到哪一版看（只在你这里切，Kind 那边还是最新版）
+              </DropdownMenuLabel>
+              {available
+                .slice()
+                .reverse()
+                .map((item) => (
+                  <DropdownMenuItem
+                    key={item.n}
+                    data-kind="canvas-version"
+                    data-version={item.n}
+                    onSelect={() => setShown(item.n)}
+                    className="items-start gap-2"
+                  >
+                    <span className={cn('brand-type w-10 shrink-0', item.n === shown ? 'text-ink' : 'text-ink-3')}>
+                      第 {item.n} 版
+                    </span>
+                    <span className="text-2 leading-5 text-ink-2">
+                      {item.note}
+                      {item.n === latest ? <span className="text-ink-3"> · 最新</span> : null}
+                    </span>
+                  </DropdownMenuItem>
+                ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
 
         <span className="ml-auto flex shrink-0 items-center">
           <button
@@ -194,12 +272,19 @@ export function CanvasView({ doc }: CanvasViewProps) {
       </div>
       {open ? (
         <CanvasFrame
-          key={reloadKey}
-          html={doc.html}
+          // 换版或重新载入都重挂：外壳按新 HTML 重写自己的文档（T015.2；review F6）。
+          key={current.n + ':' + String(reloadKey)}
+          html={current.html}
           expanded={expanded}
           onOverflow={setOverflow}
         />
       ) : null}
     </div>
   );
+}
+
+export function CanvasView({ doc, latest, versions, onJumpLatest }: CanvasViewProps) {
+  // 这一轮不是最新版：缩成一行，不占地方。
+  if (doc.n < latest) return <CanvasStub doc={doc} latest={latest} onJumpLatest={onJumpLatest} />;
+  return <LiveCanvas doc={doc} latest={latest} versions={versions} />;
 }

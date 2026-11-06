@@ -85,9 +85,47 @@ export function mergeCanvasTracks(
   tracks: Record<string, CanvasTrack>,
   events: ServiceEvent[],
 ): Record<string, CanvasTrack> {
-  // T015.2 skeleton：签名先落地，折叠在实现提交里补。
-  void events;
-  return tracks;
+  let next = tracks;
+  for (const event of events) {
+    if (event.type !== 'tool/result') continue;
+    const turn = typeof event.data.turn === 'number' ? event.data.turn : null;
+    if (turn === null) continue;
+    const version = canvasVersionOf(event.data.meta);
+    if (!version) continue;
+    const track = next[version.id] ?? { latest: 0, latestTurnId: '', versions: [] };
+    const versions = track.versions
+      .filter((item) => item.n !== version.n)
+      .concat({ n: version.n, title: version.title, note: version.note, html: version.html })
+      .sort((left, right) => left.n - right.n);
+    next = {
+      ...next,
+      [version.id]: {
+        latest: Math.max(track.latest, version.n),
+        // 同一版重复到达时认后一次（live 重放同一条事件不该丢轮次）。
+        latestTurnId: version.n >= track.latest ? 'turn-' + String(turn) : track.latestTurnId,
+        versions,
+      },
+    };
+  }
+  return next;
+}
+
+/** tool/result.meta.canvas → 一版画布（形状不对就当没有）。 */
+function canvasVersionOf(meta: unknown): (CanvasVersionView & { id: string }) | null {
+  if (!meta || typeof meta !== 'object') return null;
+  const value = (meta as { canvas?: unknown }).canvas;
+  if (!value || typeof value !== 'object') return null;
+  const typed = value as { id?: unknown; n?: unknown; title?: unknown; note?: unknown; html?: unknown };
+  if (typeof typed.id !== 'string' || typeof typed.title !== 'string' || typeof typed.html !== 'string') {
+    return null;
+  }
+  return {
+    id: typed.id,
+    n: typeof typed.n === 'number' ? typed.n : 1,
+    title: typed.title,
+    note: typeof typed.note === 'string' ? typed.note : '',
+    html: typed.html,
+  };
 }
 
 /** 压缩：在对话里是一条分隔线，不是一轮。 */
@@ -297,21 +335,8 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
   };
 
   /** T015.1：tool/result.meta.canvas → 这一轮要画的画布（形状不对就当没有）。 */
-  const canvasOf = (meta: Record<string, unknown> | null): CanvasViewDoc | null => {
-    const value = meta?.canvas;
-    if (!value || typeof value !== 'object') return null;
-    const typed = value as { id?: unknown; n?: unknown; title?: unknown; note?: unknown; html?: unknown };
-    if (typeof typed.id !== 'string' || typeof typed.title !== 'string' || typeof typed.html !== 'string') {
-      return null;
-    }
-    return {
-      id: typed.id,
-      n: typeof typed.n === 'number' ? typed.n : 1,
-      title: typed.title,
-      note: typeof typed.note === 'string' ? typed.note : '',
-      html: typed.html,
-    };
-  };
+  const canvasOf = (meta: Record<string, unknown> | null): CanvasViewDoc | null =>
+    canvasVersionOf(meta);
 
   const modelIdOf = (message: unknown): string | null => {
     if (!message || typeof message !== 'object') return null;
