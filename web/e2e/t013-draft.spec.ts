@@ -84,8 +84,9 @@ test('阅读位置：滚到中间切回同一位置', async ({ page }) => {
   const fixture = await startKernelFixture();
   try {
     await page.goto(urlOf(fixture));
-    // 发几条消息把列表撑长。
-    for (let index = 0; index < 4; index += 1) {
+    // 发几条消息把列表撑长。8 条保证滚得动：4 条时内容高度只比视口多几十像素，
+    // 「40% 位置」会等于 0（T015.6 全量 e2e 第 1 次红的就是这个几何边界）。
+    for (let index = 0; index < 8; index += 1) {
       await page.getByPlaceholder('和 Kind 说…').fill('消息 ' + String(index));
       await page.getByRole('button', { name: '发送', exact: true }).click();
       await expect(page.getByText('（T007 e2e 假回放）').last()).toBeVisible({ timeout: 30_000 });
@@ -95,12 +96,20 @@ test('阅读位置：滚到中间切回同一位置', async ({ page }) => {
       element.scrollTop = Math.max(0, element.scrollHeight * 0.4);
       return element.scrollTop;
     });
+
     await page.waitForTimeout(300);
     // 切设置再回来。
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await page.getByRole('button', { name: 'Kind', exact: true }).click();
     await expect(page.locator('[data-kind="composer"]')).toBeVisible({ timeout: 15_000 });
-    await page.waitForTimeout(1200);
+    // 恢复在历史布局稳定后做（双 rAF + 400ms 兜底）；并行跑时重新挂载会慢过固定 1200ms 等待，
+    // 这里等条件成立，不放宽后面的 >0 / <260 断言。
+    await expect
+      .poll(async () => scroller.evaluate((element) => element.scrollTop), {
+        timeout: 8_000,
+        intervals: [100, 200, 300, 500],
+      })
+      .toBeGreaterThan(0);
     const after = await scroller.evaluate((element) => element.scrollTop);
     expect(after).toBeGreaterThan(0);
     // 回到同一行附近（顶行 key+偏移恢复；Virtuoso 重排会有一两行抖动）。
