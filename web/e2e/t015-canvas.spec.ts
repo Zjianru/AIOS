@@ -509,11 +509,18 @@ test('切到第 1 版以后发一句：请求里给模型的画布仍是第 2 �
 
 /* ───────── T015.4：画布里的话进输入框，带「来自画布」 ───────── */
 
-/** 日志里每条 user/message 的块（按出现顺序）。 */
+/**
+ * 日志里你自己发的每条 user/message 的块（按出现顺序）。
+ * 同一个事件类型还有 pre-step 注入的 AGENTS.md/skill 消息（source 不是 user），不算。
+ */
 async function userMessageBlocks(fixture: KernelFixture) {
   const events = await sessionEvents(fixture);
   return events
-    .filter((event) => event.type === 'user/message')
+    .filter(
+      (event) =>
+        event.type === 'user/message' &&
+        (event.data.message?.source as { kind?: string } | undefined)?.kind === 'user',
+    )
     .map(
       (event) =>
         (event.data.message?.content ?? []) as {
