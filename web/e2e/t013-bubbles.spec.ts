@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { startKernelFixture } from './service-fixture';
+import { apiPost, startKernelFixture } from './service-fixture';
 
 const urlOf = (fixture: { baseUrl: string; token: string }) =>
   fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind';
@@ -201,6 +201,45 @@ test('气泡卡片：文字+1001字粘贴+一个文件 → 一张粘贴卡、一
     await expect(reloaded.locator('[data-kind="file-card"]')).toHaveCount(1);
     await expect(reloaded.locator('[data-kind="user-bubble"]')).toContainText('看这个粘贴和这个文件');
     await expect(reloaded.locator('[data-kind="user-bubble"]')).not.toContainText('BUBBLE-PASTE-START');
+  } finally {
+    await fixture.close();
+  }
+});
+
+
+/// T013 F1：失败块的「再发一次」把你发过的粘贴一起再发一次（不是只剩打的字）。
+test('再发一次：粘贴跟着重发（两次 user/message 都有 paste 块）', async ({ page, request }) => {
+  const fixture = await startKernelFixture({ failure: 'model' });
+  try {
+    await page.goto(urlOf(fixture));
+    await page.locator('[data-kind="composer-input"]').evaluate((element) => {
+      const data = new DataTransfer();
+      data.setData('text/plain', '重发也要带上的粘贴' + String.fromCharCode(10) + 'z'.repeat(1000));
+      element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true }));
+    });
+    await expect(page.locator('[data-kind="paste-card"]')).toHaveCount(1);
+    await send(page, '看这个粘贴');
+    await expect(page.getByText('这一轮没做完', { exact: false })).toBeVisible({ timeout: 40_000 });
+    await page.getByRole('button', { name: '再发一次' }).click();
+    // 第二轮也会失败；两轮各有一条你自己的消息，第二条的块里要有那段粘贴。
+    await expect
+      .poll(
+        async () => {
+          const response = await apiPost(request, fixture, { method: 'follow', lastSeq: 0 });
+          const events = (await response.json()).events as {
+            type: string;
+            data?: { message?: { source?: { kind?: string }; content?: { type?: string; paste?: boolean }[] } };
+          }[];
+          const mine = events.filter(
+            (event) => event.type === 'user/message' && event.data?.message?.source?.kind === 'user',
+          );
+          const second = mine[mine.length - 1];
+          const blocks = second?.data?.message?.content ?? [];
+          return mine.length >= 2 && blocks.some((block) => block.type === 'text' && block.paste === true) ? 1 : 0;
+        },
+        { timeout: 40_000 },
+      )
+      .toBe(1);
   } finally {
     await fixture.close();
   }
