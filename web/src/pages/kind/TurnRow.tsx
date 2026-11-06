@@ -172,7 +172,7 @@ function Thinking({ view }: { view: TurnViewData }) {
   const reasoning = view.reasoning;
   if (!reasoning) return null;
   return (
-    <div className="mt-2">
+    <div className="mt-2" data-kind="thinking">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}

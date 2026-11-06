@@ -6,6 +6,7 @@ import type { KindCard, TextElement, TurnStatus } from '@/data/types';
 import { modelErrorReason, retryReason } from '@/data/errors';
 import { parseExitStatus } from './process/toolModel';
 import type { ProcessStep } from './process/toolModel';
+import { reasoningTextOf, reasoningTextOfStream } from './reasoning';
 import { useKindStore } from './kindStore';
 import {
   contextPercent,
@@ -125,6 +126,8 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     usage: UsageTotals;
     modelId: string | null;
     reasoningMs: number;
+    /** T013 验收 F5：这一轮各次模型尝试的 reasoning 全文（按出现顺序）。 */
+    reasoningParts: string[];
     failure: { cause: FailureCause; reason: string; code?: string } | null;
     question: QuestionView | null;
     retry: TurnViewData['retry'];
@@ -150,6 +153,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         usage: emptyUsage(),
         modelId: null,
         reasoningMs: 0,
+        reasoningParts: [],
         failure: null,
         question: null,
         retry: null,
@@ -248,6 +252,14 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     if (!source || source.kind !== 'model') return null;
     return typeof source.model === 'string' ? source.model : null;
   };
+
+  /** T013 验收 F5：按出现顺序收 reasoning 全文；同一条尝试的 message/stream 不重复记。 */
+  const pushReasoning = (raw: Raw, text: string) => {
+    const value = text.trim();
+    if (!value) return;
+    if (raw.reasoningParts[raw.reasoningParts.length - 1] === value) return;
+    raw.reasoningParts.push(value);
+  };
   for (const event of events) {
     const data = event.data ?? {};
     const turn = typeof data.turn === 'number' ? data.turn : null;
@@ -276,6 +288,8 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         raw.usage = mergeUsage(raw.usage, data.usage);
         raw.modelId = modelIdOf(data.message) ?? raw.modelId;
         raw.reasoningMs += reasoningSpanMs(data.stream);
+        // 正文块里是思考全文；没有块时才退回 stream 的增量（失败/中断的那次尝试）。
+        pushReasoning(raw, reasoningTextOf(data.message) || reasoningTextOfStream(data.stream));
         const pending = pendingCompaction.get(turn);
         if (pending) {
           pending.view.after = contextPercent(contextTokens(data.usage), pending.window) ?? undefined;
@@ -289,6 +303,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         const raw = ensure(turn);
         raw.usage = mergeUsage(raw.usage, data.usage);
         raw.reasoningMs += reasoningSpanMs(data.stream);
+        pushReasoning(raw, reasoningTextOfStream(data.stream));
         break;
       }
       case 'tool/call': {
@@ -461,7 +476,15 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
           : Math.max(0, raw.endedAt - raw.startedAt),
       status: raw.status,
       user: raw.user,
-      reasoning: null,
+      reasoning:
+        raw.reasoningParts.length > 0
+          ? {
+              // 日志里没有摘要字段：summary 留空，不替模型编摘要。
+              summary: [],
+              full: raw.reasoningParts.join('\n\n'),
+              seconds: Math.max(1, thinkingSecondsOf(raw.reasoningMs)),
+            }
+          : null,
       tools: raw.tools,
       cards: [],
       answer: raw.answer ? { text: raw.answer, elements: [] } : null,
