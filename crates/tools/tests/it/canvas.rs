@@ -49,10 +49,7 @@ impl Conversation {
 }
 
 fn canvas_of(result: &ToolResult) -> &Value {
-    &result
-        .meta
-        .as_ref()
-        .expect("meta 里要有 canvas")["canvas"]
+    &result.meta.as_ref().expect("meta 里要有 canvas")["canvas"]
 }
 
 fn edit(id: &str, old: &str, new: &str) -> Value {

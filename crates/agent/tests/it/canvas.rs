@@ -49,7 +49,9 @@ fn canvases(events: &[session::Event]) -> Vec<Value> {
     events
         .iter()
         .filter_map(|event| match &event.kind {
-            EventKind::ToolResult { meta: Some(meta), .. } => meta.get("canvas").cloned(),
+            EventKind::ToolResult {
+                meta: Some(meta), ..
+            } => meta.get("canvas").cloned(),
             _ => None,
         })
         .collect()
