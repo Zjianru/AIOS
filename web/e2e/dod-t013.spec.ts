@@ -2,10 +2,18 @@ import { test, expect } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { startT013DodFixture } from './service-fixture';
 
-const EVIDENCE = process.env.AIOS_DOD_EVIDENCE ?? '/tmp/aios-t013-dod/evidence';
-const jqLog: string[] = [];
+/**
+ * T013 DoD2（真 key，MiniMax）：四件事各一条用例。
+ * F2（Claude fix-now）：① 断言只认最后一个 [data-kind="answer"]（用户自己的话里不会自己命中）；
+ * ①② 另外从日志核「回答之前有 read 那个路径」；每条用例自己的数据目录，跑完不清；
+ * jq 的命令和输出写进 WORK/T013/evidence/。
+ */
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const EVIDENCE = process.env.AIOS_DOD_EVIDENCE ?? path.join(repoRoot, '../aios-work/T013/evidence');
 
 test.skip(!process.env.MINIMAX_API_KEY, '需要 MINIMAX_API_KEY（T013.9 真 key DoD）');
 test.setTimeout(600_000);
@@ -17,28 +25,105 @@ function sessionLog(dataDir: string): string {
   return path.join(dir, file);
 }
 
-function jqExamples(dataDir: string, tag: string): void {
+/** 证据里抄一份能重跑的命令（参数带空格就加单引号）。 */
+function renderCommand(args: string[]): string {
+  return args
+    .map((arg) => (arg.includes(' ') || arg.includes(String.fromCharCode(10)) ? "'" + arg + "'" : arg))
+    .join(' ');
+}
+
+function jq(
+  lines: string[],
+  args: string[],
+  label: string,
+): string {
+  const out = execFileSync('jq', args, { encoding: 'utf8' }).trim();
+  lines.push('$ jq ' + renderCommand(args) + '  # ' + label + String.fromCharCode(10) + out);
+  return out;
+}
+
+/** DoD2 的四条都要的日志事实：user/message 的块、tool/call、tool/result.meta。 */
+function jqExamples(dataDir: string, tag: string, lines: string[]): void {
   const log = sessionLog(dataDir);
-  const run = (args: string[], label: string) => {
-    const out = execFileSync('jq', args, { encoding: 'utf8' }).trim();
-    jqLog.push('$ jq ' + args.join(' ') + '  # ' + label + String.fromCharCode(10) + out);
-  };
-  run(['-c', 'select(.type=="user/message") | .data.message.content', log], tag + ' user/message 块');
-  run(['-c', 'select(.type=="tool/call") | {name: .data.name, arguments: .data.arguments}', log], tag + ' tool/call');
-  run(['-c', 'select(.type=="tool/result") | .data.meta.diffs', log], tag + ' tool/result.meta');
+  jq(lines, ['-c', 'select(.type=="user/message") | .data.message.content', log], tag + ' user/message 块');
+  jq(lines, ['-c', 'select(.type=="tool/call") | {name: .data.name, arguments: .data.arguments}', log], tag + ' tool/call');
+  jq(lines, ['-c', 'select(.type=="tool/result") | .data.meta.diffs', log], tag + ' tool/result.meta');
 }
 
-function flushJq(): void {
-  mkdirSync(EVIDENCE, { recursive: true });
-  writeFileSync(path.join(EVIDENCE, 'dod2-jq.txt'), jqLog.join(String.fromCharCode(10) + String.fromCharCode(10)));
+/** 一次按会话日志算：带标记的回答在第几条；read 过某个路径的调用在第几条。 */
+const READ_PROBE = [
+  '[ .[] | select(.type=="tool/call") | {seq, name: .data.name, arguments: .data.arguments} ] as $calls',
+  '| [ .[] | select(.type=="assistant/message")',
+  '    | {seq, text: ([.data.message.content[]? | select(.type=="text") | .text] | join(""))} ] as $answers',
+  '| { answerSeq: ([ $answers[] | select(.text | contains($marker)) | .seq ] | min),',
+  '    readSeqs: [ $calls[] | select(.name=="read") | select(.arguments | contains($needle)) | .seq ] }',
+].join(String.fromCharCode(10));
+
+interface ReadProbe {
+  answerSeq: number | null;
+  readSeqs: number[];
 }
 
-test.beforeAll(() => {
+/**
+ * ①②：回答之前必须有一次 read 那个路径。
+ * 用 jq 读日志算，不用页面文字猜；答案（带标记的那条 assistant/message）之前要有 read。
+ */
+async function assertReadBeforeAnswer(options: {
+  log: string;
+  marker: string;
+  needle: string;
+  tag: string;
+  lines: string[];
+}): Promise<void> {
+  const args = [
+    '-c',
+    '-s',
+    '--arg',
+    'marker',
+    options.marker,
+    '--arg',
+    'needle',
+    options.needle,
+    READ_PROBE,
+    options.log,
+  ];
+  let last = '（还没跑）';
+  try {
+    await expect
+      .poll(
+        () => {
+          last = execFileSync('jq', args, { encoding: 'utf8' }).trim();
+          const probe = JSON.parse(last) as ReadProbe;
+          return probe.answerSeq !== null && probe.readSeqs.some((seq) => seq < probe.answerSeq!) ? 1 : 0;
+        },
+        { timeout: 180_000, intervals: [500, 1000] },
+      )
+      .toBe(1);
+  } finally {
+    options.lines.push(
+      '$ jq ' +
+        renderCommand(args) +
+        '  # ' +
+        options.tag +
+        ' 回答之前有没有 read「' +
+        options.needle +
+        '」' +
+        String.fromCharCode(10) +
+        last,
+    );
+  }
+}
+
+/** 每条用例自己的证据文件（jq 命令 + 输出），写进 WORK。 */
+function recordCase(caseName: string, lines: string[]): void {
   mkdirSync(EVIDENCE, { recursive: true });
-});
-test.afterAll(() => {
-  flushJq();
-});
+  writeFileSync(path.join(EVIDENCE, 'T013.10-dod2-jq-' + caseName + '.txt'), lines.join(String.fromCharCode(10) + String.fromCharCode(10)) + String.fromCharCode(10));
+}
+
+/** 等这一轮结束（停止按钮消失）之后再看日志和气泡。 */
+async function waitTurnEnd(page: import('@playwright/test').Page): Promise<void> {
+  await expect(page.locator('[data-kind="stop"]')).toHaveCount(0, { timeout: 180_000 });
+}
 
 /** 空库里走首次使用页（T008 流程）：选 MiniMax（国内站）→ 填 key → 接上 → 连接可用 → 开始。 */
 async function connectMinimax(page: import('@playwright/test').Page): Promise<void> {
@@ -66,27 +151,36 @@ const send = async (page: import('@playwright/test').Page, text: string) => {
   await page.locator('[data-kind="send"]').click();
 };
 
-/// DoD2①：@ 文件问内容——日志回答前有 read 该路径。
-test('DoD2①：@ 文件问内容', async ({ page }) => {
-  const fixture = await startT013DodFixture();
+/// DoD2①：@ 文件问内容——回答说得对，而且回答之前 read 过 notes.md。
+test('DoD2①：@ 文件问内容（回答之前 read notes.md）', async ({ page }) => {
+  const fixture = await startT013DodFixture('1-at-file');
+  const lines: string[] = [];
+  const tag = '① @ 文件';
   try {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     await connectMinimax(page);
     const box = page.locator('[data-kind="composer-input"]');
     await box.fill('@notes.md');
     await page.locator('[data-kind="at-menu"]').getByRole('button', { name: /notes\.md/ }).first().click();
-    await box.fill('@notes.md 这个文件里有一行带 DOD13-NOTES 吗？把那一行原样告诉我。');
+    // F2：问句里不写标记原文，标记只在文件里。
+    await box.fill('@notes.md 这个文件的全文是什么？原样告诉我。');
     await page.locator('[data-kind="send"]').click();
-    await expect(page.getByText('DOD13-NOTES', { exact: false }).last()).toBeVisible({ timeout: 180_000 });
-    jqExamples(fixture.dataDir, '① @ 文件');
+    const answer = page.locator('[data-kind="answer"]').last();
+    await expect(answer).toContainText('DOD13-NOTES', { timeout: 180_000 });
+    await waitTurnEnd(page);
+    await assertReadBeforeAnswer({ log: sessionLog(fixture.dataDir), marker: 'DOD13-NOTES', needle: 'notes.md', tag, lines });
   } finally {
+    jqExamples(fixture.dataDir, tag, lines);
+    recordCase('1-at-file', lines);
     await fixture.close();
   }
 });
 
-/// DoD2②：拖文件问内容——日志里有 read 副本路径。
-test('DoD2②：拖文件问内容（副本路径）', async ({ page }) => {
-  const fixture = await startT013DodFixture();
+/// DoD2②：拖文件问内容——回答说得对，而且回答之前 read 过副本路径。
+test('DoD2②：拖文件问内容（回答之前 read 副本路径）', async ({ page }) => {
+  const fixture = await startT013DodFixture('2-dropped-file');
+  const lines: string[] = [];
+  const tag = '② 拖文件';
   try {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     await connectMinimax(page);
@@ -97,16 +191,29 @@ test('DoD2②：拖文件问内容（副本路径）', async ({ page }) => {
     });
     await expect(page.locator('[data-kind="file-card"]')).toHaveCount(1, { timeout: 20_000 });
     await send(page, '拖进来的这个文件里写了什么？原样告诉我。');
-    await expect(page.getByText('DOD13-DROP', { exact: false }).last()).toBeVisible({ timeout: 180_000 });
-    jqExamples(fixture.dataDir, '② 拖文件');
+    const answer = page.locator('[data-kind="answer"]').last();
+    await expect(answer).toContainText('DOD13-DROP', { timeout: 180_000 });
+    await waitTurnEnd(page);
+    // 副本路径：<数据目录>/attachments/v1/files/…（spec 实现决定：文件块给副本的绝对路径）。
+    await assertReadBeforeAnswer({
+      log: sessionLog(fixture.dataDir),
+      marker: 'DOD13-DROP',
+      needle: 'attachments/v1/files',
+      tag,
+      lines,
+    });
   } finally {
+    jqExamples(fixture.dataDir, tag, lines);
+    recordCase('2-dropped-file', lines);
     await fixture.close();
   }
 });
 
-/// DoD2③：粘贴 >1000 字符问内容——答对。
-test('DoD2③：大段粘贴问内容', async ({ page }) => {
-  const fixture = await startT013DodFixture();
+/// DoD2③：粘贴 >1000 字符问内容——回答说得对，气泡上是卡片（F1）。
+test('DoD2③：大段粘贴问内容（气泡上是卡片）', async ({ page }) => {
+  const fixture = await startT013DodFixture('3-large-paste');
+  const lines: string[] = [];
+  const tag = '③ 大段粘贴';
   try {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     await connectMinimax(page);
@@ -119,16 +226,25 @@ test('DoD2③：大段粘贴问内容', async ({ page }) => {
     }, content);
     await expect(page.locator('[data-kind="paste-card"]')).toHaveCount(1);
     await send(page, '我粘贴的这段文字里第一行有什么标记？原样告诉我。');
-    await expect(page.getByText(marker, { exact: false }).last()).toBeVisible({ timeout: 180_000 });
-    jqExamples(fixture.dataDir, '③ 大段粘贴');
+    const answer = page.locator('[data-kind="answer"]').last();
+    await expect(answer).toContainText(marker, { timeout: 180_000 });
+    await waitTurnEnd(page);
+    // F1：发出去以后，气泡上面是一张粘贴卡，正文不是一大段字。
+    const row = page.locator('[data-kind="user-message-row"]').last();
+    await expect(row.locator('[data-kind="paste-card"]')).toHaveCount(1);
+    await expect(row.locator('[data-kind="user-bubble"]')).not.toContainText('x'.repeat(40));
   } finally {
+    jqExamples(fixture.dataDir, tag, lines);
+    recordCase('3-large-paste', lines);
     await fixture.close();
   }
 });
 
 /// DoD2④：让它改文件——diff 卡片出来，刷新后还在。
 test('DoD2④：改文件（diff 卡片，刷新后还在）', async ({ page }) => {
-  const fixture = await startT013DodFixture();
+  const fixture = await startT013DodFixture('4-edit-file');
+  const lines: string[] = [];
+  const tag = '④ 改文件';
   try {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     await connectMinimax(page);
@@ -146,6 +262,7 @@ test('DoD2④：改文件（diff 卡片，刷新后还在）', async ({ page }) 
         return hasDiffs > 0 && output.includes('DOD13-EDITED') ? 1 : 0;
       }, { timeout: 180_000 })
       .toBeGreaterThanOrEqual(1);
+    await waitTurnEnd(page);
     const process = page.locator('[data-kind="process"]').last();
     await process.locator('button').first().click();
     const group = process.locator('[data-kind="process-group"] button').first();
@@ -160,8 +277,9 @@ test('DoD2④：改文件（diff 卡片，刷新后还在）', async ({ page }) 
     const group2 = process2.locator('[data-kind="process-group"] button').first();
     if (await group2.count()) await group2.click();
     await expect(process2.getByText('notes.md').first()).toBeVisible({ timeout: 30_000 });
-    jqExamples(fixture.dataDir, '④ 改文件');
   } finally {
+    jqExamples(fixture.dataDir, tag, lines);
+    recordCase('4-edit-file', lines);
     await fixture.close();
   }
 });

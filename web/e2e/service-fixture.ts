@@ -590,9 +590,12 @@ export async function startT013KernelFixture(): Promise<KernelFixture> {
   } as unknown as KernelFixture;
 }
 
-/** T013 DoD2（T008 模式）：空库起服务，页面里真实加连接并验证（key 从 env 读、只进页面输入）。 */
-export async function startT013DodFixture(): Promise<KernelFixture> {
-  const root = process.env.AIOS_T013_DOD_ROOT ?? '/tmp/aios-t013-dod';
+/**
+ * T013 DoD2（T008 模式）：空库起服务，页面里真实加连接并验证（key 从 env 读、只进页面输入）。
+ * F2：每条用例用自己的数据目录（root/<用例名>/），跑完不清，便于按条回查日志。
+ */
+export async function startT013DodFixture(caseName: string): Promise<KernelFixture> {
+  const root = path.join(process.env.AIOS_T013_DOD_ROOT ?? '/tmp/aios-t013-dod', caseName);
   const workDir = path.join(root, 'work');
   const dataDir = path.join(root, 'data');
   await rm(root, { recursive: true, force: true });
