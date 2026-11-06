@@ -132,7 +132,7 @@ test('DoD2④：改文件（diff 卡片，刷新后还在）', async ({ page }) 
   try {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     await connectMinimax(page);
-    await send(page, '用 edit 或 apply_patch 工具把 notes.md 里的 DOD13-NOTES 改成 DOD13-EDITED，不要用 bash 写文件。只改这一处，别做别的。');
+    await send(page, '必须使用 edit 或 apply_patch 工具修改文件；禁止用 bash/shell 写文件；改完用 read 工具确认修改结果。任务：把 notes.md 里的 DOD13-NOTES 改成 DOD13-EDITED，只改这一处，别做别的。');
     await expect
       .poll(async () => {
         const log = sessionLog(fixture.dataDir);
