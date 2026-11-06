@@ -319,7 +319,7 @@ export function ProcessView({
   return (
     <div data-kind="process" data-open={expanded ? 'true' : 'false'} className="group/turn relative">
       {usage ? (
-        <span data-kind="turn-usage" className="pointer-events-none absolute right-0 top-0 hidden items-center gap-1.5 whitespace-nowrap text-ink-3 group-hover/turn:flex">
+        <span data-kind="turn-usage" className="pointer-events-none absolute right-0 top-0 hidden items-center gap-1.5 whitespace-nowrap font-mono text-2 text-ink-3 group-hover/turn:flex">
           {usage.model} · 输入 <span data-kind="usage-number">{shownInput}</span>
           {cacheHit === null ? null : (
             <>

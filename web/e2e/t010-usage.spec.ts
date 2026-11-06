@@ -48,8 +48,8 @@ test('没报缓存、没思考：不出现缓存命中与想了 N 秒', async ({
   }
 });
 
-/// T013 验收 F3：悬停用量行的数字跟正文同字体（原来这几个数字用了 brand-type 的标识字体）。
-test('用量行数字与正文字体一致', async ({ page }) => {
+/// T013 验收 G2：悬停用量行用回答里代码块那种字体（mono、12px/18px），不再跟正文一样大。
+test('用量行用代码块字体（mono、12px）', async ({ page }) => {
   const fixture = await startKernelFixture({ usageTurn: true });
   try {
     await page.goto(urlOf(fixture));
@@ -61,13 +61,21 @@ test('用量行数字与正文字体一致', async ({ page }) => {
     await process.hover();
     const row = process.locator('[data-kind="turn-usage"]');
     await expect(row).toBeVisible();
-    const numbers = row.locator('[data-kind="usage-number"]');
-    expect(await numbers.count()).toBeGreaterThan(0);
-    const fonts = await numbers.evaluateAll((elements) =>
-      elements.map((element) => getComputedStyle(element).fontFamily),
-    );
-    const bodyFont = await page.evaluate(() => getComputedStyle(document.body).fontFamily);
-    expect(fonts.every((font) => font === bodyFont)).toBe(true);
+    const metrics = await row.evaluate((element) => {
+      const style = getComputedStyle(element);
+      const numbers = [...element.querySelectorAll('[data-kind="usage-number"]')];
+      return {
+        family: style.fontFamily,
+        size: style.fontSize,
+        lineHeight: style.lineHeight,
+        numberFamilies: numbers.map((item) => getComputedStyle(item).fontFamily),
+      };
+    });
+    expect(metrics.family).toContain('mono');
+    expect(metrics.size).toBe('12px');
+    expect(metrics.lineHeight).toBe('18px');
+    expect(metrics.numberFamilies.length).toBeGreaterThan(0);
+    expect(metrics.numberFamilies.every((family) => family === metrics.family)).toBe(true);
   } finally {
     await fixture.close();
   }
