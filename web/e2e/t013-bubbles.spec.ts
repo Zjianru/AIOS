@@ -76,7 +76,7 @@ test('百分比：不到 1% 与 0%', async ({ page }) => {
     await send(page, '你好');
     await expect(page.getByText('（T007 e2e 假回放）')).toBeVisible({ timeout: 30_000 });
     // 缓存命中 1/1000 → 不到 1%；占用在 128k 窗口里也远不到 1%。
-    await expect(page.locator('[data-kind="stats-usage"]')).toContainText('缓存命中 不到 1%', { timeout: 15_000 });
+    await expect(page.locator('[data-kind="stats-usage"]')).toContainText(/缓存命中\s*不到 1%/, { timeout: 15_000 });
     await expect(page.locator('[data-kind="context-meter"]')).toContainText('不到 1%', { timeout: 15_000 });
   } finally {
     await fixture.close();
