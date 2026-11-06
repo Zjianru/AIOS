@@ -449,3 +449,67 @@ test('Alt+Enter 不发送也不换行', async ({ page }) => {
     await fixture.close();
   }
 });
+
+/// T013 验收 F4：选中对话正文（Kind 回答）里的文字，浮出「引用」，点了把文字按行加 > 追加到输入框。
+test('引用（验收 F4）：选中回答正文浮出引用按钮，点了把选中文字变成 > 行', async ({ page }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    const box = input(page);
+    await box.fill('引用回答');
+    await box.press('Enter');
+    const answer = page.locator('[data-kind="answer"]').last();
+    await expect(answer).toContainText('（T007 e2e 假回放）', { timeout: 30_000 });
+    // 等这一轮结束：完成轮的回答和过程行位置稳定后再选。
+    await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 60_000 });
+    // Virtuoso 首帧把这一条标成 hidden，等它真的显示出来再划选。
+    await expect(answer).toBeVisible();
+
+    // 真的用鼠标划选回答正文里的前 5 个字（和用户操作同一条路：mouseup + selectionchange）。
+    const range = await page.evaluate(() => {
+      const target = document.querySelectorAll('[data-kind="answer"]');
+      const element = target[target.length - 1];
+      if (!element) throw new Error('没有回答正文');
+      const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      const node = walker.nextNode() as Text | null;
+      if (!node) throw new Error('回答正文没有可选的文字');
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      const range = document.createRange();
+      range.setStart(node, 0);
+      range.setEnd(node, 5);
+      const rect = range.getBoundingClientRect();
+      return { left: rect.left + 1, right: rect.right - 1, y: rect.top + rect.height / 2 };
+    });
+    await page.mouse.move(range.left, range.y);
+    await page.mouse.down();
+    await page.mouse.move(range.right, range.y, { steps: 8 });
+    await page.mouse.up();
+    const selected = await page.evaluate(() => window.getSelection()?.toString() ?? '');
+    expect(selected.length).toBeGreaterThan(0);
+
+    const quote = page.locator('[data-kind="quote-button"]');
+    await expect(quote).toBeVisible({ timeout: 5_000 });
+    // 按钮浮在选区附近（选区上方一个按钮高度内）。
+    const metrics = await page.evaluate(() => {
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0) throw new Error('选区没了');
+      const rect = selection.getRangeAt(0).getBoundingClientRect();
+      const button = document.querySelector('[data-kind="quote-button"]');
+      if (!button) throw new Error('引用按钮不在');
+      const box = button.getBoundingClientRect();
+      return { selectionTop: rect.top, buttonBottom: box.bottom };
+    });
+    expect(metrics.buttonBottom).toBeLessThanOrEqual(metrics.selectionTop);
+    expect(metrics.selectionTop - metrics.buttonBottom).toBeLessThan(60);
+
+    await quote.click();
+    // 选中文字按行加 > 后进输入框；按钮和选区清掉。
+    await expect(box).toHaveValue('> ' + selected);
+    await expect(page.locator('[data-kind="quote-button"]')).toHaveCount(0);
+    expect(await page.evaluate(() => (window.getSelection()?.toString() ?? '') === '')).toBe(true);
+  } finally {
+    await fixture.close();
+  }
+});
+

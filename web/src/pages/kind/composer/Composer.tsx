@@ -12,9 +12,11 @@
  */
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { FileText, Quote } from 'lucide-react';
 import { toast } from 'sonner';
 import { useKindStore } from '../kindStore';
+import { fileMentions } from '../atGrammar';
 import { attachmentGet, attachmentPut, fileReferences } from '@/data/service';
 import type { FileReferenceEntry, SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
@@ -67,16 +69,14 @@ function readAsBase64(file: File): Promise<string> {
   });
 }
 
-/** 把文本按 @路径 / @"路径" 切段（高亮层用）。 */
+/** 把文本按 @路径 / @"路径" 切段（高亮层用；和消息气泡共用 atGrammar 的语法）。 */
 function highlightSegments(text: string): { value: string; mayPath: boolean }[] {
   const segments: { value: string; mayPath: boolean }[] = [];
-  const pattern = /@(?:"[^"]*"|[^\s@]*)/g;
   let cursor = 0;
-  for (const match of text.matchAll(pattern)) {
-    const start = match.index ?? 0;
-    if (start > cursor) segments.push({ value: text.slice(cursor, start), mayPath: false });
-    segments.push({ value: match[0], mayPath: true });
-    cursor = start + match[0].length;
+  for (const mention of fileMentions(text)) {
+    if (mention.start > cursor) segments.push({ value: text.slice(cursor, mention.start), mayPath: false });
+    segments.push({ value: mention.raw, mayPath: true });
+    cursor = mention.end;
   }
   if (cursor < text.length) segments.push({ value: text.slice(cursor), mayPath: false });
   return segments;
@@ -100,6 +100,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const [filePreview, setFilePreview] = useState<{ id: string; text: string } | null>(null);
   const [atMenu, setAtMenu] = useState<AtMenuState | null>(null);
   const [quote, setQuote] = useState<string>('');
+  /** T013 验收 F4：对话正文里的选区（页面级选区）与浮出的引用按钮位置。 */
+  const [pageQuote, setPageQuote] = useState<{ text: string; top: number; left: number } | null>(null);
   const cardsRef = useRef<HTMLDivElement | null>(null);
   const highlightRef = useRef<HTMLDivElement | null>(null);
   // T013.8：草稿按会话存 localStorage（键 aios.kind.draft.<会话 id>）。
@@ -126,6 +128,85 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   useEffect(() => {
     resize();
   }, [text, resize]);
+
+  // T013 验收 F4：选中对话正文（回答、你的消息、工作过程）里的文字就浮出「引用」；
+  // 输入框里的选区仍走 textarea 自己的 onSelect，两条路互不干扰。
+  useEffect(() => {
+    const inConversation = (node: Node | null): boolean => {
+      if (!node) return false;
+      const element = node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
+      if (!element || !element.closest('[data-pane="conversation"]')) return false;
+      // 输入框在对话面板里，但它的选区由 textarea 自己处理。
+      return element.closest('[data-kind="composer"]') === null;
+    };
+    const update = () => {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+        setPageQuote(null);
+        return;
+      }
+      const selected = selection.toString().trim();
+      if (!selected || !inConversation(selection.anchorNode) || !inConversation(selection.focusNode)) {
+        setPageQuote(null);
+        return;
+      }
+      const range = selection.getRangeAt(0);
+      const rects = range.getClientRects();
+      const rect = rects.length > 0 ? rects[rects.length - 1] : range.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) {
+        setPageQuote(null);
+        return;
+      }
+      // 按钮放在选区上方；上面放不下就放下面，左右夹在视口里。
+      const width = 68;
+      const top = rect.top >= 44 ? rect.top - 36 : Math.min(window.innerHeight - 44, rect.bottom + 8);
+      const left = Math.min(Math.max(8, rect.right - width), window.innerWidth - width - 8);
+      setPageQuote({ text: selected, top, left });
+    };
+    // 滚动/改窗口大小时选区位置变了，先收起按钮（不清用户选区）。
+    const hide = () => setPageQuote(null);
+    document.addEventListener('selectionchange', update);
+    document.addEventListener('mouseup', update);
+    document.addEventListener('scroll', hide, true);
+    window.addEventListener('resize', hide);
+    return () => {
+      document.removeEventListener('selectionchange', update);
+      document.removeEventListener('mouseup', update);
+      document.removeEventListener('scroll', hide, true);
+      window.removeEventListener('resize', hide);
+    };
+  }, []);
+
+  /** T013 验收 F4：把正文选区按行加 > 前缀，追加到输入框（光标处，或末尾）。 */
+  const applyPageQuote = useCallback(() => {
+    if (!pageQuote) return;
+    const element = inputRef.current;
+    const current = element ? element.value : text;
+    const caret = element && document.activeElement === element ? element.selectionStart : current.length;
+    const quoted = pageQuote.text
+      .split(String.fromCharCode(10))
+      .map((line) => '> ' + line)
+      .join(String.fromCharCode(10));
+    const before = current.slice(0, caret);
+    const after = current.slice(caret);
+    // 引用块要独占行首：前后不是换行就各补一个。
+    const prefix = before && !before.endsWith(String.fromCharCode(10)) ? String.fromCharCode(10) : '';
+    const suffix = after && !after.startsWith(String.fromCharCode(10)) ? String.fromCharCode(10) : '';
+    const inserted = prefix + quoted + suffix;
+    touchedRef.current = true;
+    changedDuringSendRef.current = true;
+    setText(before + inserted + after);
+    setPageQuote(null);
+    window.getSelection()?.removeAllRanges();
+    requestAnimationFrame(() => {
+      const input = inputRef.current;
+      if (!input) return;
+      input.focus();
+      const position = (before + prefix + quoted).length;
+      input.setSelectionRange(position, position);
+      resize();
+    });
+  }, [pageQuote, resize, text]);
 
   // T013.8：会话 id 就绪后读一次草稿（读不出当空）。
   useEffect(() => {
@@ -261,6 +342,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     setAttachments([]);
     setAtMenu(null);
     setQuote('');
+    setPageQuote(null);
     requestAnimationFrame(() => {
       resize();
       inputRef.current?.focus();
@@ -466,7 +548,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           {children}
         </div>
       </div>
-      {quote ? (
+      {quote && !pageQuote ? (
         <button
           type="button"
           data-kind="quote-button"
@@ -492,6 +574,23 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           引用
         </button>
       ) : null}
+      {pageQuote
+        ? createPortal(
+            <button
+              type="button"
+              data-kind="quote-button"
+              // 按下时别清掉页面选区：click 里还要用 pageQuote.text。
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={applyPageQuote}
+              style={{ top: pageQuote.top, left: pageQuote.left }}
+              className="fixed z-50 flex items-center gap-1 rounded-btn border border-line-2 bg-raised px-2 py-1 text-2 text-ink-2 shadow-[var(--shadow-pop)] hover:bg-hover hover:text-ink"
+            >
+              <Quote className="size-3" />
+              引用
+            </button>,
+            document.body,
+          )
+        : null}
       {pastePreview !== null && pastes[pastePreview] !== undefined ? (
         <AttachmentPreview
           kind="paste"
