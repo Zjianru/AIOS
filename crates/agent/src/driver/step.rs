@@ -127,6 +127,8 @@ pub(super) async fn run_step(
     // tool-call 丢弃）。
     let mut blocks: BTreeMap<usize, ContentBlock> = BTreeMap::new();
     let mut open: BTreeMap<usize, (BlockType, String)> = BTreeMap::new();
+    // T015.5：模型流里的 name 只在工具调用的起始帧给；同一 index 的后续增量沿用它。
+    let mut tool_names: BTreeMap<usize, String> = BTreeMap::new();
     let mut usage: Option<Usage> = None;
     let mut finish: Option<FinishReason> = None;
     // 同一 step 的重试链 id（首个 llm/retry 生成，之后复用；DSH 投影在 step/start、turn/end 后重置）。
@@ -217,6 +219,7 @@ pub(super) async fn run_step(
                             &mut finish,
                             &mut attempt_stream,
                         );
+                        tool_names.clear();
                         continue 'attempts;
                     }
                     RetryDecision::Cancel => return Ok(StepEnd::Aborted),
@@ -293,9 +296,24 @@ pub(super) async fn run_step(
                         buffer.push_str(&text);
                     }
                 }
-                // 工具参数增量只进 stream 记录（T006.14 照 DSH tool-call-delta）；
-                // 完整参数在 block-end 的 block 里，不需要额外状态。
-                Ok(StreamChunk::ToolCallDelta { .. }) => {}
+                // 工具参数增量：照 DSH tool-call-delta 往订阅者发（T015.5，页面画「正在画 · 标题」）；
+                // 同时照 T006.14 留在 stream 记录里。帧本身不落日志。
+                Ok(StreamChunk::ToolCallDelta {
+                    index,
+                    id,
+                    name,
+                    arguments_delta,
+                }) => {
+                    if let Some(name) = name {
+                        tool_names.insert(index, name);
+                    }
+                    let name = tool_names.get(&index).cloned().unwrap_or_default();
+                    let _ = inner.events.send(AgentEvent::ToolCallDelta {
+                        call_id: id,
+                        name,
+                        arguments_delta,
+                    });
+                }
                 Ok(StreamChunk::BlockEnd { index, block }) => {
                     open.remove(&index);
                     blocks.insert(index, block);

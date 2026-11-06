@@ -49,7 +49,7 @@
           var doc =
             '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">' +
             '<style>' + BASE_STYLE + '</style></head><body>' + html +
-            '<script>(' + canvasRuntime.toString() + ')();<' + '/script></body></html>';
+            '<script data-aios-runtime="1">(' + canvasRuntime.toString() + ')(' + JSON.stringify(BASE_STYLE) + ');<' + '/script></body></html>';
           document.open();
           document.write(doc);
           document.close();
@@ -57,12 +57,42 @@
 
         /**
          * 画布里的运行时（会被 toString 写进画布文档）：
-         * 主题变量、aios.send、尺寸、滚轮转发。只认父窗口发来的消息。
+         * 主题变量、aios.send、尺寸、滚轮转发、错误上报、存成文件。只认父窗口发来的消息。
          */
-        function canvasRuntime() {
+        function canvasRuntime(baseStyle) {
           var post = function (type, data) {
             parent.postMessage(Object.assign({ aiosCanvas: true, type: type }, data || {}), '*');
           };
+
+          // 出错告诉 Kind（T015.5）：脚本报错、没加载上的库/资源、未处理的 rejection、
+          // CSP 违规各报各的。请求被拦（比如 fetch 失败）不会自己变成 CSP 违规，分开记。
+          var reportError = function (message) {
+            post('error', { message: String(message).slice(0, 4000) });
+          };
+          addEventListener('error', function (event) {
+            var target = event.target;
+            if (target && target !== window && target !== document) {
+              // 资源加载失败（库没加载上）：报地址，不冒充脚本报错。
+              var url = target.src || target.href || '';
+              reportError('没加载上：' + (url || String(target.tagName || '资源')));
+              return;
+            }
+            var where = '';
+            if (event.filename) {
+              where = '（' + event.filename + (event.lineno ? ':' + event.lineno : '') + '）';
+            }
+            reportError('脚本报错：' + (event.message ? String(event.message) : '脚本抛错') + where);
+          }, true);
+          addEventListener('unhandledrejection', function (event) {
+            var reason = event.reason;
+            var text = reason && reason.message ? String(reason.message) : String(reason);
+            reportError('未处理的 rejection：' + text.slice(0, 1000));
+          });
+          document.addEventListener('securitypolicyviolation', function (event) {
+            reportError(
+              'CSP 违规：' + (event.violatedDirective || '策略') + ' 拦了 ' + (event.blockedURI || '请求'),
+            );
+          });
 
           // 画布对宿主只开这一条路（T015.4 接进输入框）：把一句话交给宿主，由用户发。
           window.aios = {
@@ -74,10 +104,15 @@
           };
 
           // 主题变量从父窗口来（MCP Apps 的标准名）；深浅色切换时父窗口会再发一次。
+          // export（T015.5）：把当前文档拼成能单独打开的 .html，由父窗口下载。
           addEventListener('message', function (event) {
             if (event.source !== parent) return;
             var data = event.data;
             if (!data || data.aiosHost !== true) return;
+            if (data.type === 'export') {
+              post('export', { html: exportDocument(baseStyle) });
+              return;
+            }
             var variables = data.variables || {};
             for (var name in variables) {
               document.documentElement.style.setProperty(name, variables[name]);
@@ -109,6 +144,43 @@
             var factor = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 400 : 1;
             post('wheel', { dx: event.deltaX * factor, dy: event.deltaY * factor });
           }, { passive: false });
+
+          // 存成文件（T015.5）：外壳（基础样式 + 当前主题变量）+ 画布 HTML；CSP 写成 meta。
+          // frame-ancestors 只在响应头里有意义，meta 里会被浏览器忽略，所以不放进来；
+          // file:// 文档里的无 scheme 主机源会按 file: 继承，CDN 必须写成 https:// 才放得行。
+          var EXPORT_CSP = [
+            "default-src 'none'",
+            "script-src 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net/npm/ https://unpkg.com https://cdn.tailwindcss.com https://code.jquery.com",
+            "style-src 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net/npm/ https://unpkg.com https://cdn.tailwindcss.com https://code.jquery.com",
+            'font-src data: https://fonts.gstatic.com',
+            'img-src data: blob:',
+            'media-src data: blob:',
+            'connect-src https://fonts.googleapis.com https://fonts.gstatic.com',
+            "frame-src 'none'",
+            "object-src 'none'",
+            "base-uri 'none'",
+          ].join('; ');
+          var exportDocument = function (style) {
+            var variables = [];
+            var inline = document.documentElement.style;
+            for (var index = 0; index < inline.length; index += 1) {
+              var name = inline[index];
+              if (name.indexOf('--') !== 0) continue;
+              variables.push(name + ':' + inline.getPropertyValue(name).trim());
+            }
+            var theme = inline.colorScheme || 'light dark';
+            // 存下来的页面不需要宿主运行时（它只服务 iframe 里的消息）；画布自己的脚本留着。
+            var body = document.body.cloneNode(true);
+            var host = body.querySelector('script[data-aios-runtime]');
+            if (host) host.remove();
+            return (
+              '<!doctype html>\n<html lang="zh-CN">\n<head>\n<meta charset="utf-8">\n' +
+              '<meta http-equiv="Content-Security-Policy" content="' + EXPORT_CSP + '">\n' +
+              '<title>画布</title>\n' +
+              '<style>:root{color-scheme:' + theme + ';' + variables.join(';') + '}' + style + '</style>\n' +
+              '</head>\n<body>' + body.innerHTML + '</body>\n</html>\n'
+            );
+          };
 
           var report = function () {
             post('size', { height: Math.ceil(document.body.getBoundingClientRect().height) });

@@ -210,6 +210,8 @@ interface KindState {
   }) => Promise<void>;
   /** T015.2：每个画布出过的版本和最新版在哪一轮（从日志折叠）。 */
   canvasTracks: Record<string, CanvasTrack>;
+  /** T015.5：正在流式收到的画布标题（工作过程里画「正在画 · 标题」）；没在画是 null。 */
+  drawingCanvas: { turnId: string; title: string } | null;
   /** T015.2：点了旧版画布那一行要跳到的那一轮（只影响滚动，不改日志）。 */
   reveal: { turnId: string; at: number } | null;
   revealTurn: (turnId: string) => void;
@@ -366,6 +368,19 @@ let livePendingCompaction: { id: string; window?: number } | null = null;
 (window as unknown as { __derive?: unknown }).__derive = (events: ServiceEvent[]) => deriveTurnViews(events);
 let liveTurn: number | null = null;
 let liveStream = '';
+/** T015.5：这一轮正在流的工具参数（callId → 名字 + 拼起来的参数）；只给「正在画」用，不落日志。 */
+const liveToolCalls = new Map<string, { name: string; arguments: string }>();
+
+/** 从还没流完的参数 JSON 里取 canvas 的 title；还没流到（或半个转义）就先给空串。 */
+function canvasTitleOf(partial: string): string {
+  const match = /"title"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(partial);
+  if (!match) return '';
+  try {
+    return JSON.parse('"' + match[1] + '"') as string;
+  } catch {
+    return '';
+  }
+}
 
 /** 一轮的最新日志事件 → 重建这一个 view（其它轮不动）。 */
 function refreshTurn(turn: number): void {
@@ -414,6 +429,11 @@ function applyLiveEvent(event: ServiceEvent): void {
     useKindStore.setState((state) => ({
       canvasTracks: mergeCanvasTracks(state.canvasTracks, [event]),
     }));
+  }
+  // T015.5：工具结果回来，这一版已经能显示了；「正在画」那一行收掉（参数增量也不再留）。
+  if (event.type === 'tool/result') {
+    liveToolCalls.clear();
+    useKindStore.setState({ drawingCanvas: null });
   }
   const turn = typeof event.data.turn === 'number' ? Number(event.data.turn) : null;
   if (event.type === 'compaction/start') {
@@ -483,6 +503,8 @@ function applyLiveEvent(event: ServiceEvent): void {
   }
   if (event.type === 'turn/end') {
     liveStream = '';
+    liveToolCalls.clear();
+    useKindStore.setState({ drawingCanvas: null });
     useStreamStore.setState({ turnId: null, itemId: null, text: '' });
     // T012.9：一轮结束后从服务刷新统计（轮/步/token/花费由内核从日志算好）。
     void useKindStore.getState().refreshStats();
@@ -492,6 +514,20 @@ function applyLiveEvent(event: ServiceEvent): void {
 
 /** agent 帧 live：流式文本先写进 useStreamStore（TurnRow 的 Answer 只重绘这一条）。 */
 function applyAgentEvent(event: AgentFrame['event']): void {
+  // T015.5：canvas 的参数增量到了就先画「正在画 · 标题」；title 可能还没流到，先只画「正在画」。
+  // 帧不落日志（日志里只有 assistant stream 的 tool-call-chunks 记录）。
+  if (event.type === 'tool-call-delta') {
+    if (typeof event.callId !== 'string' || !event.callId) return;
+    const call = liveToolCalls.get(event.callId) ?? { name: '', arguments: '' };
+    if (typeof event.name === 'string' && event.name) call.name = event.name;
+    if (typeof event.argumentsDelta === 'string') call.arguments += event.argumentsDelta;
+    liveToolCalls.set(event.callId, call);
+    if (call.name !== 'canvas' || liveTurn === null) return;
+    useKindStore.setState({
+      drawingCanvas: { turnId: 'turn-' + String(liveTurn), title: canvasTitleOf(call.arguments) },
+    });
+    return;
+  }
   if (event.type === 'usage') {
     const used =
       (event.inputTokens ?? 0) + (event.cacheReadTokens ?? 0) + (event.cacheWriteTokens ?? 0);
@@ -561,6 +597,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   money: DEFAULT_MONEY,
   modelInitialized: false,
   canvasTracks: {},
+  drawingCanvas: null,
   reveal: null,
   revealTurn: (turnId) => set({ reveal: { turnId, at: Date.now() } }),
 
@@ -615,6 +652,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
         }
       }
       liveStream = '';
+      liveToolCalls.clear();
       useStreamStore.setState({ turnId: null, itemId: null, text: '' });
       lastSeq = lastSeqOfPage;
       openSocket();
@@ -624,6 +662,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
         byId: indexOf(views),
         ...decorate(views),
         canvasTracks: canvasTracks(page.events),
+        drawingCanvas: null,
         firstItemIndex: FIRST_INDEX_BASE - views.length,
         oldestSeq,
         hasOlder: page.hasMore,

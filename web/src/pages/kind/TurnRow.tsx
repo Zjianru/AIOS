@@ -344,6 +344,10 @@ export const TurnRow = memo(function TurnRow({
   onCanvasMessage,
 }: TurnProps) {
   const streaming = view.status === 'inProgress';
+  // T015.5：这一轮正在画的画布标题（工作过程里「正在画 · 标题」）。
+  const drawing = useKindStore((state) =>
+    state.drawingCanvas?.turnId === view.id ? state.drawingCanvas.title : null,
+  );
   if (view.compaction) return <CompactionDivider compaction={view.compaction} />;
   const waitingForKernel = view.delivery !== null;
   return (
@@ -410,6 +414,7 @@ export const TurnRow = memo(function TurnRow({
               answering={false}
               usage={view.tokens.input || view.tokens.output ? { model: view.model, ...view.tokens } : undefined}
               thinkingSeconds={view.thinkingSeconds}
+              drawing={drawing}
               alwaysShow
             />
           ) : null}

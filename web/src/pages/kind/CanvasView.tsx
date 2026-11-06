@@ -7,10 +7,22 @@
  * - 正文是沙箱 iframe：src="/canvas-frame"，sandbox 只给脚本和表单（不给同源、弹窗、下载）。
  * - 父窗口把这一版的 HTML 用 postMessage 交给外壳，外壳 document.write 写进自己的文档；
  *   外壳报尺寸，父窗口把主题变量交给它（MCP Apps 的标准名），深浅色跟着 AIOS。
+ * - T015.5：外壳报脚本错误/未处理 rejection/CSP 违规，标题栏出「出错了」（点了把错误放进输入框）；
+ *   全屏（Esc 退出）；存成 .html（外壳拼好基础样式和 CSP meta，页面负责下载）。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppWindow, ChevronDown, ChevronRight, Maximize2, Minimize2, RotateCcw } from 'lucide-react';
+import { type RefObject, useCallback, useEffect, useRef, useState } from 'react';
+import {
+  AppWindow,
+  ChevronDown,
+  ChevronRight,
+  Download,
+  Fullscreen,
+  Maximize2,
+  Minimize,
+  Minimize2,
+  RotateCcw,
+} from 'lucide-react';
 import { useAppStore } from '@/app/store';
 import { cn } from '@/lib/utils';
 import {
@@ -24,6 +36,20 @@ import type { CanvasVersionView, CanvasViewDoc } from './turnViews';
 
 /** 不展开时最多这么高；超过了画布里面滚动，标题栏给「展开」。 */
 const MAX_HEIGHT = 420;
+
+/** 存成文件（T015.5）：HTML 由外壳拼好（基础样式 + 画布 HTML + CSP meta），这里只负责下载。 */
+function downloadCanvasFile(html: string, title: string) {
+  const name = title.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').trim() || '画布';
+  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = name + '.html';
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
 
 /**
  * AIOS 的设计变量换成 MCP Apps 的标准名（照原型 hostVariables）。
@@ -77,13 +103,29 @@ interface FrameProps {
   html: string;
   /** 展开时不限高。 */
   expanded: boolean;
+  /** T015.5：全屏时填满视口（标题栏下面那一段）。 */
+  fullscreen: boolean;
+  /** 父窗口要发 export 消息给这个 iframe（T015.5 存成文件）。 */
+  frameRef: RefObject<HTMLIFrameElement | null>;
   /** T015.4：画布里的按钮交上来的一句话（放进输入框，不发送）。 */
   onMessage: (text: string) => void;
+  /** T015.5：画布报错（脚本/rejection/CSP/资源没加载上），标题栏出「出错了」。 */
+  onError: (message: string) => void;
+  /** T015.5：外壳拼好的、能单独打开的 .html。 */
+  onExport: (html: string) => void;
   onOverflow: (overflow: boolean) => void;
 }
 
-function CanvasFrame({ html, expanded, onMessage, onOverflow }: FrameProps) {
-  const ref = useRef<HTMLIFrameElement | null>(null);
+function CanvasFrame({
+  html,
+  expanded,
+  fullscreen,
+  frameRef,
+  onMessage,
+  onError,
+  onExport,
+  onOverflow,
+}: FrameProps) {
   const [height, setHeight] = useState(64);
   const theme = useAppStore((state) => state.theme);
   // 外壳每次重新载入（换 key）只收一次 render：document.write 之后又会来一次 load。
@@ -92,12 +134,12 @@ function CanvasFrame({ html, expanded, onMessage, onOverflow }: FrameProps) {
   const sendHost = useCallback(() => {
     // 等外壳把 data-theme 换好再取值（子组件的 effect 比外壳的先跑）
     requestAnimationFrame(() => {
-      ref.current?.contentWindow?.postMessage(
+      frameRef.current?.contentWindow?.postMessage(
         { aiosHost: true, theme, variables: hostVariables() },
         '*',
       );
     });
-  }, [theme]);
+  }, [frameRef, theme]);
 
   // 主题变了重新发一次变量（MCP Apps host-context-changed）
   useEffect(() => {
@@ -105,21 +147,23 @@ function CanvasFrame({ html, expanded, onMessage, onOverflow }: FrameProps) {
   }, [sendHost]);
 
   const onLoad = useCallback(() => {
-    const frame = ref.current?.contentWindow;
+    const frame = frameRef.current?.contentWindow;
     if (!frame || rendered.current) return;
     rendered.current = true;
     frame.postMessage({ aiosHost: true, type: 'render', html }, '*');
-  }, [html]);
+  }, [frameRef, html]);
 
   useEffect(() => {
     const listen = (event: MessageEvent) => {
       // 只认自己这个 iframe 发来的（sandbox 没给同源，按 source 认）
-      if (event.source !== ref.current?.contentWindow) return;
+      if (event.source !== frameRef.current?.contentWindow) return;
       const data = event.data as {
         aiosCanvas?: boolean;
         type?: string;
         height?: number;
         text?: string;
+        message?: string;
+        html?: string;
         dx?: number;
         dy?: number;
       } | null;
@@ -127,26 +171,34 @@ function CanvasFrame({ html, expanded, onMessage, onOverflow }: FrameProps) {
       if (data.type === 'ready') sendHost();
       if (data.type === 'size' && typeof data.height === 'number') setHeight(data.height);
       if (data.type === 'message' && typeof data.text === 'string') onMessage(data.text);
+      if (data.type === 'error' && typeof data.message === 'string') onError(data.message);
+      if (data.type === 'export' && typeof data.html === 'string') onExport(data.html);
       if (data.type === 'wheel' && typeof data.dy === 'number') {
-        forwardWheel(ref.current, data.dy, typeof data.dx === 'number' ? data.dx : 0);
+        forwardWheel(frameRef.current, data.dy, typeof data.dx === 'number' ? data.dx : 0);
       }
     };
     window.addEventListener('message', listen);
     return () => window.removeEventListener('message', listen);
-  }, [onMessage, sendHost]);
+  }, [frameRef, onError, onExport, onMessage, sendHost]);
 
   const overflow = height > MAX_HEIGHT;
   useEffect(() => onOverflow(overflow), [overflow, onOverflow]);
 
   return (
     <iframe
-      ref={ref}
+      ref={frameRef}
       title="画布"
       sandbox="allow-scripts allow-forms"
       src="/canvas-frame"
       onLoad={onLoad}
       className="block w-full border-0 bg-transparent"
-      style={{ height: expanded ? height : Math.min(height, MAX_HEIGHT) }}
+      style={{
+        height: fullscreen
+          ? 'calc(100vh - 36px)'
+          : expanded
+            ? height
+            : Math.min(height, MAX_HEIGHT),
+      }}
       data-kind="canvas-frame"
     />
   );
@@ -187,13 +239,16 @@ function CanvasStub({ doc, latest, onJumpLatest }: Omit<CanvasViewProps, 'versio
   );
 }
 
-/** 最新版：标题栏（收起、切版本、重新载入、展开）+ 沙箱 iframe。 */
+/** 最新版：标题栏（收起、切版本、重新载入、展开、全屏、存成文件、出错了）+ 沙箱 iframe。 */
 function LiveCanvas({ doc, latest, versions, onCanvasMessage }: Omit<CanvasViewProps, 'onJumpLatest'>) {
   const [shown, setShown] = useState(latest);
   const [open, setOpen] = useState(true);
   const [expanded, setExpanded] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
   const [overflow, setOverflow] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
   // 新版来了就跳到新版（只在页面上；日志里一直是最新那一版）。
   useEffect(() => setShown(latest), [latest]);
   const available = versions.filter((item) => item.n <= latest);
@@ -206,13 +261,46 @@ function LiveCanvas({ doc, latest, versions, onCanvasMessage }: Omit<CanvasViewP
     (text: string) => onCanvasMessage(text, { id: doc.id, title: doc.title }),
     [doc.id, doc.title, onCanvasMessage],
   );
+  // 换版、重新载入都换掉画布文档：上一个文档的错误不再算数（T015.5）。
+  useEffect(() => {
+    setError(null);
+  }, [current.n, reloadKey]);
+  // 全屏时 Esc 只关全屏，不落到「停止这一轮」。
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      event.preventDefault();
+      setFullscreen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [fullscreen]);
+  // 存成文件：让外壳把当前文档（基础样式 + 当前主题变量 + 画布 HTML + CSP meta）拼好再下载。
+  const requestExport = useCallback(() => {
+    frameRef.current?.contentWindow?.postMessage({ aiosHost: true, type: 'export' }, '*');
+  }, []);
+  const onExport = useCallback(
+    (html: string) => downloadCanvasFile(html, current.title),
+    [current.title],
+  );
 
   return (
-    <div className="my-3 overflow-hidden rounded-card border border-line-2 bg-raised" data-kind="canvas">
+    <div
+      className={cn(
+        'my-3 overflow-hidden rounded-card border border-line-2 bg-raised',
+        fullscreen && 'fixed inset-0 z-50 m-0 flex flex-col rounded-none border-0 bg-pane',
+      )}
+      data-kind="canvas"
+      data-fullscreen={fullscreen ? 'true' : 'false'}
+    >
       <div className="flex h-9 items-center gap-1.5 border-b border-line pl-2 pr-1.5 text-2 text-ink-2">
         <button
           type="button"
-          onClick={() => setOpen((value) => !value)}
+          onClick={() => {
+            setOpen((value) => !value);
+            setFullscreen(false);
+          }}
           aria-expanded={open}
           aria-label={open ? '收起画布' : '展开画布'}
           className="flex min-w-0 items-center gap-1.5 rounded-btn px-1 py-0.5 transition-colors hover:text-ink"
@@ -266,6 +354,37 @@ function LiveCanvas({ doc, latest, versions, onCanvasMessage }: Omit<CanvasViewP
         ) : null}
 
         <span className="ml-auto flex shrink-0 items-center">
+          {error ? (
+            <button
+              type="button"
+              data-kind="canvas-error"
+              aria-label="出错了"
+              title="把错误放进输入框，由你发"
+              onClick={() => onMessage(error)}
+              className="mr-0.5 shrink-0 rounded-btn px-1.5 py-0.5 text-fail transition-colors hover:bg-fail-soft"
+            >
+              出错了
+            </button>
+          ) : null}
+          <button
+            type="button"
+            aria-label="存成文件"
+            title={open ? '存成一张能单独打开的 .html' : '展开后可以存成文件'}
+            disabled={!open}
+            onClick={requestExport}
+            className="rounded-btn p-1 text-ink-3 transition-colors hover:bg-hover hover:text-ink disabled:cursor-default disabled:opacity-40"
+          >
+            <Download className="size-3.5" />
+          </button>
+          <button
+            type="button"
+            aria-label={fullscreen ? '退出全屏' : '全屏'}
+            title={fullscreen ? '退出全屏（Esc）' : '全屏看'}
+            onClick={() => setFullscreen((value) => !value)}
+            className="rounded-btn p-1 text-ink-3 transition-colors hover:bg-hover hover:text-ink"
+          >
+            {fullscreen ? <Minimize className="size-3.5" /> : <Fullscreen className="size-3.5" />}
+          </button>
           <button
             type="button"
             aria-label="重新载入"
@@ -294,7 +413,11 @@ function LiveCanvas({ doc, latest, versions, onCanvasMessage }: Omit<CanvasViewP
           key={current.n + ':' + String(reloadKey)}
           html={current.html}
           expanded={expanded}
+          fullscreen={fullscreen}
+          frameRef={frameRef}
           onMessage={onMessage}
+          onError={setError}
+          onExport={onExport}
           onOverflow={setOverflow}
         />
       ) : null}

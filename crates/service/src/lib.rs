@@ -690,7 +690,8 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
 /// - 5（T012.9）：settings-update（写非密钥设置 currency）。
 /// - 6（T013.2 一次升完）：attachment-put / attachment-get / file-references-list 三个 op，
 ///   以及 send 的 pastes / attachments 两个字段（后两项由后续票实现，形状已定）。
-pub const PROTOCOL_VERSION: u64 = 6;
+/// - 7（T015.5）：tool-call-delta + send.canvas（send.canvas 由 T015.4 先加字段）。
+pub const PROTOCOL_VERSION: u64 = 7;
 
 /// 根会话不可用的种类（T007.2）：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1316,7 +1317,7 @@ pub struct RootHost {
 }
 
 impl RootHost {
-    /// T013.4：把 SendRequest 拼成块状用户消息（content→pastes→files；附件解析成副本路径）。
+    /// T013.4：把 SendRequest 拼成块状用户消息（canvas→content→pastes→files；附件解析成副本路径）。
     fn user_message_from(&self, request: &SendRequest) -> Result<UserMessage, ServiceError> {
         let mut blocks = Vec::new();
         // T015.4：画布按钮放进来的那一句排在最前（照原型 composeForModel 的顺序）；
