@@ -352,8 +352,18 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     if (raw.reasoningParts[raw.reasoningParts.length - 1] === value) return;
     raw.reasoningParts.push(value);
   };
+  // T015.3：压缩剪枝替换的 assistant/message 与原文同一个消息 id（surface 替换视图）。
+  // 页面看日志事实，只认第一次出现，免得旧轮状态被替换事件重置；旧版调用参数仍按原文显示。
+  const seenAssistantMessages = new Set<string>();
   for (const event of events) {
     const data = event.data ?? {};
+    if (event.type === 'assistant/message') {
+      const id = (data.message as { id?: unknown } | undefined)?.id;
+      if (typeof id === 'string') {
+        if (seenAssistantMessages.has(id)) continue;
+        seenAssistantMessages.add(id);
+      }
+    }
     const turn = typeof data.turn === 'number' ? data.turn : null;
     if (turn === null) continue;
     switch (event.type) {

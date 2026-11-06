@@ -40,28 +40,47 @@ pub struct CanvasState {
     pub html: String,
 }
 
+/// 日志里的一次画布版本事件（T015.3）：版本状态 + 来源事件 seq。
+///
+/// 剪枝要按事件定位「非最新版」的结果；折叠本身不关心 seq。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanvasVersion {
+    pub seq: u64,
+    pub state: CanvasState,
+}
+
+/// 按日志顺序列出每个画布版本（T015.3）：只认 `tool/result.meta.canvas` 的原文。
+///
+/// 压缩剪枝会把旧版结果改写成一句摘要，但原事件还在日志里；带 surfaceOp 的替换事件
+/// 一律跳过，所以这里读到的永远是完整版本（折叠照读原事件）。
+pub fn canvas_versions(events: &[Event]) -> Vec<CanvasVersion> {
+    events
+        .iter()
+        .filter(|event| event.surface_op.is_none())
+        .filter_map(|event| {
+            let EventKind::ToolResult {
+                meta: Some(meta), ..
+            } = &event.kind
+            else {
+                return None;
+            };
+            canvas_state(meta).map(|state| CanvasVersion {
+                seq: event.seq,
+                state,
+            })
+        })
+        .collect()
+}
+
 /// 从会话事件折叠每个画布的当前版（T015.2）：工具要据此出新一版，页面据此画版本。
 ///
-/// 只认 `tool/result.meta.canvas` 的原文。压缩剪枝会把旧版结果改写成一句摘要，
-/// 但原事件还在日志里；带 surfaceOp 的替换事件一律跳过，折叠照读原事件。
+/// 同一画布后出现的版本胜出（日志顺序即版本顺序），与 `canvas_versions` 同源。
 pub fn canvases(events: &[Event]) -> Vec<CanvasState> {
     let mut out: Vec<CanvasState> = Vec::new();
-    for event in events {
-        if event.surface_op.is_some() {
-            continue;
-        }
-        let EventKind::ToolResult {
-            meta: Some(meta), ..
-        } = &event.kind
-        else {
-            continue;
-        };
-        let Some(canvas) = canvas_state(meta) else {
-            continue;
-        };
-        match out.iter_mut().find(|item| item.id == canvas.id) {
-            Some(item) => *item = canvas,
-            None => out.push(canvas),
+    for version in canvas_versions(events) {
+        match out.iter_mut().find(|item| item.id == version.state.id) {
+            Some(item) => *item = version.state,
+            None => out.push(version.state),
         }
     }
     out
