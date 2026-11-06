@@ -12,7 +12,7 @@ test('草稿：切到设置再回来，文字/引用/粘贴/文件都在', async
     await page.goto(urlOf(fixture));
     const box = input(page);
     await box.fill('草稿文字');
-    // 引用：选中后点引用。
+    // 引用：选中后点引用——变成输入框上方的引用卡，不写进输入框。
     await box.click();
     await page.keyboard.press('Home');
     await page.keyboard.down('Shift');
@@ -20,6 +20,8 @@ test('草稿：切到设置再回来，文字/引用/粘贴/文件都在', async
     await page.keyboard.press('ArrowRight');
     await page.keyboard.up('Shift');
     await page.locator('[data-kind="quote-button"]').click();
+    await expect(page.locator('[data-kind="quote-card"]')).toHaveCount(1);
+    await expect(page.locator('[data-kind="quote-card"]')).toContainText('草稿');
     // 粘贴折卡片（合成 paste 事件即可：控制器只关心长度）。
     await box.evaluate((element) => {
       const data = new DataTransfer();
@@ -38,10 +40,13 @@ test('草稿：切到设置再回来，文字/引用/粘贴/文件都在', async
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Kind', exact: true })).toBeVisible({ timeout: 15_000 });
     await page.getByRole('button', { name: 'Kind', exact: true }).click();
-    // 回来都在。
-    await expect(input(page)).toContainText('> 草稿文字');
+    // 回来都在：引用卡还在，输入框里仍是草稿文字（没有 `> ` 生文本）。
+    await expect(input(page)).toHaveValue('草稿文字');
+    await expect(page.locator('[data-kind="quote-card"]')).toHaveCount(1);
+    await expect(page.locator('[data-kind="quote-card"]')).toContainText('草稿');
     await expect(page.locator('[data-kind="paste-card"]')).toHaveCount(1, { timeout: 15_000 });
     await expect(page.locator('[data-kind="file-card"]')).toHaveCount(1);
+    expect(await input(page).inputValue()).not.toContain('>');
     void box;
   } finally {
     await fixture.close();
@@ -55,9 +60,20 @@ test('草稿：刷新后还在', async ({ page }) => {
     await page.goto(urlOf(fixture));
     const box = input(page);
     await box.fill('刷新还在的草稿');
+    // 引用也进草稿：选中两个字变成引用卡。
+    await box.click();
+    await page.keyboard.press('Home');
+    await page.keyboard.down('Shift');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.up('Shift');
+    await page.locator('[data-kind="quote-button"]').click();
+    await expect(page.locator('[data-kind="quote-card"]')).toHaveCount(1);
     await page.waitForTimeout(300);
     await page.reload();
     await expect(input(page)).toHaveValue('刷新还在的草稿', { timeout: 15_000 });
+    await expect(page.locator('[data-kind="quote-card"]')).toHaveCount(1);
+    await expect(page.locator('[data-kind="quote-card"]')).toContainText('刷新');
   } finally {
     await fixture.close();
   }

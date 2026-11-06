@@ -48,3 +48,35 @@ export function formatFileMention(
   if (kind === 'directory') return '@"' + full;
   return '@"' + full + '"';
 }
+
+/** T013 验收 F6：消息里 @文件引用 token 的位置（含 @；带空格的路径可以是 @"..."）。 */
+export interface FileMention {
+  /** 原文（含 @，带引号时含引号）。 */
+  raw: string;
+  /** 路径（去掉 @ 和引号）。 */
+  path: string;
+  /** 在整段文字里的起止下标（raw 的范围，含 @）。 */
+  start: number;
+  end: number;
+}
+
+/**
+ * 认 @路径 / @"带 空格 的路径"。只认行首/空白/常见标点后面的 @（邮箱里的 @ 不算），
+ * 没引号的路径在中文标点处停（@hello.txt，谢谢 → hello.txt）。
+ */
+const FILE_MENTION = /(^|[\s(（【「『，。；：、])@(?:"([^"\n]*)"|([^\s@"，。；：！？、（）【】「」『』]+))/gu;
+
+/** 纯函数：把一段文字切成「普通文字 / @文件引用」用的 token 列表。 */
+export function fileMentions(text: string): FileMention[] {
+  const out: FileMention[] = [];
+  for (const match of text.matchAll(FILE_MENTION)) {
+    const prefix = match[1] ?? '';
+    const raw = match[0].slice(prefix.length);
+    const path = match[2] ?? match[3] ?? '';
+    if (!path) continue;
+    const start = (match.index ?? 0) + prefix.length;
+    out.push({ raw, path, start, end: start + raw.length });
+  }
+  return out;
+}
+

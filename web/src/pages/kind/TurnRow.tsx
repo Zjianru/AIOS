@@ -1,5 +1,5 @@
 /**
- * 一回合：你的消息 → (思考) → 卡片 → Kind 的回答 → 回答下方一行「工作过程」。
+ * 一回合：你的消息 → 卡片 → Kind 的回答 → 回答下方一行「工作过程」。
  * 依据 experience-spec-v1.md §6.2 + prototype-to-product-v1.md §6（思考要展示，照 Codex / Claude 应用的样子）。
  *
  * 性能：整轮用 memo（比较 view 引用）；只有正在流式的那一条会重绘，别的不跟着重建。
@@ -11,6 +11,8 @@ import { ChevronRight, CircleAlert, RotateCw, Square } from 'lucide-react';
 import { CopyButton } from './CopyButton';
 import { Markdown } from './Markdown';
 import { QuoteChip } from './QuoteChip';
+import { FileReferenceChip } from './FileReferenceChip';
+import { fileMentions } from './atGrammar';
 import { QuestionCard } from './QuestionCard';
 import { useKindStore, useStreamStore } from './kindStore';
 import { processStepsOf } from './turnViews';
@@ -122,18 +124,35 @@ function UserBubbleText({ text, elements }: { text: string; elements: TextElemen
   return <>{nodes}</>;
 }
 
+/** 一段普通文字：把 @文件引用换成引用片，其余原样（F6：不显示 @"..." 生文本）。 */
+function MentionText({ text }: { text: string }) {
+  const mentions = fileMentions(text);
+  if (mentions.length === 0) return <>{text}</>;
+  const nodes: React.ReactNode[] = [];
+  let cursor = 0;
+  mentions.forEach((mention, index) => {
+    if (mention.start > cursor) nodes.push(text.slice(cursor, mention.start));
+    nodes.push(<FileReferenceChip key={'m' + index} path={mention.path} />);
+    cursor = mention.end;
+  });
+  if (cursor < text.length) nodes.push(text.slice(cursor));
+  return <>{nodes}</>;
+}
+
 /** 纯文本 + 内联引用片（你说的话用这个，不走 markdown）。 */
 function RichText({ text, elements }: { text: string; elements: TextElement[] }) {
-  if (elements.length === 0) return <>{text}</>;
+  if (elements.length === 0) return <MentionText text={text} />;
   const nodes: React.ReactNode[] = [];
   let cursor = 0;
   elements.forEach((element, index) => {
     if (element.start < cursor) return;
-    if (element.start > cursor) nodes.push(text.slice(cursor, element.start));
+    if (element.start > cursor) {
+      nodes.push(<MentionText key={'t' + index} text={text.slice(cursor, element.start)} />);
+    }
     nodes.push(<QuoteChip key={'q' + index} element={element} />);
     cursor = element.end;
   });
-  if (cursor < text.length) nodes.push(text.slice(cursor));
+  if (cursor < text.length) nodes.push(<MentionText key="tail" text={text.slice(cursor)} />);
   return <>{nodes}</>;
 }
 
@@ -166,36 +185,6 @@ function Answer({ view }: { view: TurnViewData }) {
     </div>
   );
 }
-
-function Thinking({ view }: { view: TurnViewData }) {
-  const [open, setOpen] = useState(false);
-  const reasoning = view.reasoning;
-  if (!reasoning) return null;
-  return (
-    <div className="mt-2">
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className="flex items-center gap-1.5 text-2 text-ink-3 transition-colors hover:text-ink-2"
-      >
-        <ChevronRight className={cn('size-3.5 transition-transform', open && 'rotate-90')} />
-        已思考 {reasoning.seconds} 秒
-        {!open && reasoning.summary[0] ? <span className="truncate opacity-70">· {reasoning.summary[0]}</span> : null}
-      </button>
-      {open ? (
-        <div className="mt-1.5 border-l border-line pl-3 text-2 leading-5 text-ink-3">
-          {reasoning.full ? reasoning.full.split(String.fromCharCode(10)).map((line, index) => <p key={index}>{line}</p>) : null}
-          <ul className="mt-1 list-disc pl-4">
-            {reasoning.summary.map((line) => (
-              <li key={line}>{line}</li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 
 /** 模型请求失败、内核在重试：说清楚第几次、为什么。 */
 function RetryLine({ retry }: { retry: NonNullable<TurnViewData['retry']> }) {
@@ -368,10 +357,6 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
 
       {waitingForKernel ? null : (
         <>
-          <Thinking view={view} />
-
-          
-
           {streaming ? (
             <ProcessView
               steps={processStepsOf(view, '')}
@@ -385,6 +370,27 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
               thinkingSeconds={view.thinkingSeconds}
               alwaysShow
             />
+          ) : null}
+          {/* T013 验收 F2：完成轮的工作过程在回答上面（原型 a5d6f58 的顺序：过程 → 问题卡 → 回答）。 */}
+          {!streaming &&
+          (view.tools.length > 0 ||
+            view.answer ||
+            view.status === 'interrupted' ||
+            view.status === 'failed') ? (
+            <div className="mt-2">
+              <ProcessView
+                steps={processStepsOf(view, '')}
+                status={view.status}
+                live={false}
+                startedAt={view.startedAt}
+                durationMs={view.durationMs}
+                cwd=""
+                answering
+                usage={view.tokens.input || view.tokens.output ? { model: view.model, ...view.tokens } : undefined}
+                thinkingSeconds={view.thinkingSeconds}
+                alwaysShow
+              />
+            </div>
           ) : null}
           {view.question ? <QuestionCard turnId={view.id} question={view.question} /> : null}
           {view.retry ? <RetryLine retry={view.retry} /> : null}
@@ -406,27 +412,6 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
             </div>
           ) : null}
           <FailureBlock view={view} />
-
-          {!streaming &&
-          (view.tools.length > 0 ||
-            view.answer ||
-            view.status === 'interrupted' ||
-            view.status === 'failed') ? (
-            <div className="mt-2">
-              <ProcessView
-                steps={processStepsOf(view, '')}
-                status={view.status}
-                live={false}
-                startedAt={view.startedAt}
-                durationMs={view.durationMs}
-                cwd=""
-                answering
-                usage={view.tokens.input || view.tokens.output ? { model: view.model, ...view.tokens } : undefined}
-                thinkingSeconds={view.thinkingSeconds}
-                alwaysShow
-              />
-            </div>
-          ) : null}
         </>
       )}
     </div>

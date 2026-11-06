@@ -10,6 +10,7 @@
 
 import type { ReactNode } from 'react';
 import { ArrowDown, ArrowUp, CircleHelp, Gauge, LoaderCircle, Wallet } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatCacheHitPercent, formatCost, formatExactTokens, formatFxTime, formatPercent, formatTokens } from '@/lib/numbers';
@@ -32,7 +33,8 @@ export function Hint({
       <TooltipContent
         side={side}
         sideOffset={6}
-        className="min-w-[180px] rounded-card border border-line-2 bg-raised px-3 py-2 text-2 text-ink-2 shadow-[var(--shadow-pop)]"
+        arrow={false}
+        className="min-w-[180px] max-w-[280px] whitespace-normal break-words rounded-card border border-line-2 bg-raised px-3 py-2 text-2 text-ink-2 shadow-[var(--shadow-pop)]"
       >
         {content}
       </TooltipContent>
@@ -45,7 +47,7 @@ function Row({ label, value, strong }: { label: string; value: string; strong?: 
   return (
     <div className="flex items-baseline justify-between gap-6 py-[1px]">
       <span className={strong ? 'text-ink' : 'text-ink-3'}>{label}</span>
-      <span className={cn('brand-type tabular-nums', strong ? 'text-ink' : 'text-ink-2')}>{value}</span>
+      <span className={cn('tabular-nums', strong ? 'text-ink' : 'text-ink-2')}>{value}</span>
     </div>
   );
 }
@@ -53,8 +55,37 @@ function Row({ label, value, strong }: { label: string; value: string; strong?: 
 const pill =
   'flex h-6 items-center gap-1.5 rounded-full px-2 text-ink-3 tabular-nums transition-colors hover:bg-hover hover:text-ink-2';
 
+/** 分隔点：flex 项自己垂直居中，左右间距统一交给父级 gap。 */
 function Dot() {
-  return <span className="mx-0.5 opacity-50">·</span>;
+  return (
+    <span data-kind="stat-sep" className="flex shrink-0 items-center justify-center opacity-50" aria-hidden>
+      ·
+    </span>
+  );
+}
+
+/** 数字 + 单位：同一组、同一字体，数字只加 tabular-nums 保证位宽对齐。 */
+function Unit({ value, unit }: { value: string; unit: string }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span data-kind="stat-number" className="tabular-nums">
+        {value}
+      </span>
+      <span data-kind="stat-text">{unit}</span>
+    </span>
+  );
+}
+
+/** ↑/↓ + 数字：图标和数字同一组；图标统一 14px，与文字同一垂直中心。 */
+function TokenGroup({ icon: Icon, value }: { icon: LucideIcon; value: string }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <Icon className="size-3.5 shrink-0" aria-hidden />
+      <span data-kind="stat-number" className="tabular-nums">
+        {value}
+      </span>
+    </span>
+  );
 }
 
 function ActivityPill() {
@@ -66,17 +97,17 @@ function ActivityPill() {
         <>
           <Row label="轮" value={formatExactTokens(turns)} />
           <Row label="步" value={formatExactTokens(steps)} />
-          <p className="mt-1.5 text-1 text-ink-3">
-            你发一条算一轮；模型每回一次算一步，一轮里调了几次工具就多几步。
+          <p className="mt-1.5 text-1 leading-4 text-ink-3">
+            你发一条算一轮；模型每回一次算一步，调几次工具就多几步。
           </p>
         </>
       }
     >
       <span className={pill} data-kind="stats-activity">
-        <Gauge className="size-3.5" />
-        <span className="brand-type">{formatExactTokens(turns)}</span> 轮
+        <Gauge className="size-3.5 shrink-0" aria-hidden />
+        <Unit value={formatExactTokens(turns)} unit="轮" />
         <Dot />
-        <span className="brand-type">{formatExactTokens(steps)}</span> 步
+        <Unit value={formatExactTokens(steps)} unit="步" />
       </span>
     </Hint>
   );
@@ -102,14 +133,17 @@ function UsagePill() {
       }
     >
       <span className={pill} data-kind="stats-usage">
-        <ArrowUp className="size-3" />
-        <span className="brand-type">{formatTokens(prompt)}</span>
-        <ArrowDown className="ml-0.5 size-3" />
-        <span className="brand-type">{formatTokens(stats.output)}</span>
+        <TokenGroup icon={ArrowUp} value={formatTokens(prompt)} />
+        <TokenGroup icon={ArrowDown} value={formatTokens(stats.output)} />
         {hit === null ? null : (
           <>
             <Dot />
-            缓存命中 <span className="brand-type">{hit}</span>
+            <span className="inline-flex items-center gap-1">
+              <span data-kind="stat-text">缓存命中</span>
+              <span data-kind="stat-number" className="tabular-nums">
+                {hit}
+              </span>
+            </span>
           </>
         )}
       </span>
@@ -142,8 +176,10 @@ function CostPill() {
       }
     >
       <span className={pill} data-kind="stats-cost">
-        <Wallet className="size-3.5" />
-        <span className="brand-type">{formatCost(stats.cost, money.currency, money.cnyPerUsd, stats.unpriced)}</span>
+        <Wallet className="size-3.5 shrink-0" aria-hidden />
+        <span data-kind="stat-number" className="tabular-nums">
+          {formatCost(stats.cost, money.currency, money.cnyPerUsd, stats.unpriced)}
+        </span>
       </span>
     </Hint>
   );
@@ -161,7 +197,7 @@ function Ring({ percent, className }: { percent: number; className?: string }) {
   const r = 5.5;
   const length = 2 * Math.PI * r;
   return (
-    <svg viewBox="0 0 14 14" className={cn('size-3.5 -rotate-90', className)} aria-hidden>
+    <svg viewBox="0 0 14 14" className={cn('size-3.5 shrink-0 -rotate-90', className)} aria-hidden>
       <circle cx="7" cy="7" r={r} fill="none" stroke="currentColor" strokeOpacity={0.2} strokeWidth={2} />
       <circle
         cx="7"
@@ -193,8 +229,8 @@ function ContextMeter({ running }: { running: boolean }) {
   if (compacting) {
     return (
       <span className={cn(pill, 'text-ink-2')} data-kind="compacting">
-        <LoaderCircle className="size-3.5 animate-spin" />
-        正在压缩上下文…
+        <LoaderCircle className="size-3.5 shrink-0 animate-spin" aria-hidden />
+        <span data-kind="stat-text">正在压缩上下文…</span>
       </span>
     );
   }
@@ -203,12 +239,12 @@ function ContextMeter({ running }: { running: boolean }) {
       <Hint
         content={
           <>
-            上下文已用 <span className="brand-type">{usageText}</span>
+            上下文已用 <span data-kind="stat-number" className="tabular-nums">{usageText}</span>
             {used !== null ? (
               <>
                 {' '}
-                · 约 <span className="brand-type">{formatTokens(used)}</span> /{' '}
-                <span className="brand-type">{formatTokens(window!)}</span>
+                · 约 <span data-kind="stat-number" className="tabular-nums">{formatTokens(used)}</span> /{' '}
+                <span data-kind="stat-number" className="tabular-nums">{formatTokens(window!)}</span>
               </>
             ) : null}
           </>
@@ -217,7 +253,9 @@ function ContextMeter({ running }: { running: boolean }) {
         <PopoverTrigger asChild>
           <button type="button" className={cn(pill, meterTone(usage))} data-kind="context-meter">
             <Ring percent={usage} />
-            <span className="brand-type">{usageText}</span>
+            <span data-kind="stat-number" className="tabular-nums">
+              {usageText}
+            </span>
           </button>
         </PopoverTrigger>
       </Hint>
@@ -230,7 +268,7 @@ function ContextMeter({ running }: { running: boolean }) {
       >
         <div className="flex items-baseline justify-between">
           <span className="text-ink">上下文</span>
-          <span className={cn('brand-type', meterTone(usage))}>{usageText}</span>
+          <span className={cn('tabular-nums', meterTone(usage))}>{usageText}</span>
         </div>
         <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-hover">
           <div
@@ -283,8 +321,8 @@ export function ComposerDock({
             className="flex items-center gap-1 px-2 text-wait transition-opacity hover:opacity-80"
             data-kind="waiting-hint"
           >
-            <CircleHelp className="size-3" />
-            Kind 在等你回答
+            <CircleHelp className="size-3.5 shrink-0" aria-hidden />
+            <span data-kind="stat-text">Kind 在等你回答</span>
           </button>
         ) : null}
         <ContextMeter running={running} />

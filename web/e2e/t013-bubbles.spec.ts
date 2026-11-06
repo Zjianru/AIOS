@@ -76,7 +76,7 @@ test('百分比：不到 1% 与 0%', async ({ page }) => {
     await send(page, '你好');
     await expect(page.getByText('（T007 e2e 假回放）')).toBeVisible({ timeout: 30_000 });
     // 缓存命中 1/1000 → 不到 1%；占用在 128k 窗口里也远不到 1%。
-    await expect(page.locator('[data-kind="stats-usage"]')).toContainText('缓存命中 不到 1%', { timeout: 15_000 });
+    await expect(page.locator('[data-kind="stats-usage"]')).toContainText(/缓存命中\s*不到 1%/, { timeout: 15_000 });
     await expect(page.locator('[data-kind="context-meter"]')).toContainText('不到 1%', { timeout: 15_000 });
   } finally {
     await fixture.close();
@@ -329,6 +329,90 @@ test('再发一次：粘贴跟着重发（两次 user/message 都有 paste 块�
         { timeout: 40_000 },
       )
       .toBe(1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+
+/// T013 验收 F1：真实浏览器里写剪贴板可能被拒（e2e 不授 clipboard 权限时就会）。
+/// 写失败、execCommand 兜底也失败 → 按钮显示「复制失败」，不装作成功。
+test('复制失败：写剪贴板被拒、兜底也失败 → 显示复制失败', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: () => Promise.reject(new DOMException('Write permission denied.', 'NotAllowedError')),
+      },
+    });
+    document.execCommand = () => false;
+  });
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    await send(page, '你好呀');
+    await expect(page.getByText('（T007 e2e 假回放）').first()).toBeVisible({ timeout: 30_000 });
+    const bubble = page.locator('[data-kind="user-bubble"]').first();
+    await bubble.hover();
+    const copy = bubble.locator('[data-kind="copy"]').first();
+    await expect(copy).toBeVisible();
+    await copy.click();
+    await expect(copy).toHaveAttribute('aria-label', '复制失败');
+    await expect(copy).toHaveAttribute('title', '复制失败');
+  } finally {
+    await fixture.close();
+  }
+});
+
+/// T013 验收 F1：clipboard 被拒时的兜底——隐藏 textarea + execCommand('copy')，兜底成功仍算复制成功。
+test('复制兜底：clipboard 被拒 → execCommand 复制到原文，显示已复制', async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as unknown as { copied: string }).copied = '';
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: () => Promise.reject(new DOMException('Write permission denied.', 'NotAllowedError')),
+      },
+    });
+    document.execCommand = (command: string) => {
+      if (command !== 'copy') return false;
+      const area = document.activeElement;
+      (window as unknown as { copied: string }).copied = area instanceof HTMLTextAreaElement ? area.value : '';
+      return true;
+    };
+  });
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    await send(page, '你好呀');
+    await expect(page.getByText('（T007 e2e 假回放）').first()).toBeVisible({ timeout: 30_000 });
+    const bubble = page.locator('[data-kind="user-bubble"]').first();
+    await bubble.hover();
+    const copy = bubble.locator('[data-kind="copy"]').first();
+    await copy.click();
+    await expect(copy).toHaveAttribute('aria-label', '已复制');
+    const copied = await page.evaluate(() => (window as unknown as { copied: string }).copied);
+    expect(copied).toBe('你好呀');
+  } finally {
+    await fixture.close();
+  }
+});
+
+/// T013 验收 F6：消息里的 @文件引用画成引用片（图标+路径，不附带内容），不能是 @"..." 生文本。
+test('@文件引用（验收 F6）：气泡里是引用片、不是生文本', async ({ page }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    await send(page, '看 @"my notes.txt"');
+    const bubble = page.locator('[data-kind="user-bubble"]').first();
+    await expect(bubble).toContainText('看', { timeout: 30_000 });
+    const chip = bubble.locator('[data-kind="file-reference"]');
+    await expect(chip).toHaveCount(1);
+    await expect(chip).toContainText('my notes.txt');
+    // 不出现 @" 生文本；引用片上只给路径，不自动读文件。
+    await expect(bubble).not.toContainText('@"');
+    await expect(chip).toHaveAttribute('data-ref-path', 'my notes.txt');
+    await expect(chip).toHaveAttribute('title', 'my notes.txt');
   } finally {
     await fixture.close();
   }

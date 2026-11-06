@@ -8,17 +8,19 @@
  * - 粘贴超过 1000 个字符折成卡片（不进 textarea），发送时作为 pastes 的一项；
  * - 拖文件/粘贴文件出附件卡片（只收文字文件，二进制提示）；
  * - @ 菜单（打 @ 后按打的字列候选，选中插 @路径；带空格的路径加引号）；
- * - 选中文字浮出「引用」，点了把那几行变成 > 引用。
+ * - 选中文字浮出「引用」，点了变成输入框上方的引用卡；发送时才按行变成 > 行。
  */
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { FileText, Quote } from 'lucide-react';
 import { toast } from 'sonner';
 import { useKindStore } from '../kindStore';
+import { fileMentions } from '../atGrammar';
 import { attachmentGet, attachmentPut, fileReferences } from '@/data/service';
 import type { FileReferenceEntry, SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
-import { AttachmentPreview, FileCard, PasteCard, pasteStats } from './AttachmentCard';
+import { AttachmentPreview, FileCard, PasteCard, QuoteCard, pasteStats } from './AttachmentCard';
 
 const LARGE_PASTE_CHAR_THRESHOLD = 1000;
 const MAX_HEIGHT = 240;
@@ -67,16 +69,14 @@ function readAsBase64(file: File): Promise<string> {
   });
 }
 
-/** 把文本按 @路径 / @"路径" 切段（高亮层用）。 */
+/** 把文本按 @路径 / @"路径" 切段（高亮层用；和消息气泡共用 atGrammar 的语法）。 */
 function highlightSegments(text: string): { value: string; mayPath: boolean }[] {
   const segments: { value: string; mayPath: boolean }[] = [];
-  const pattern = /@(?:"[^"]*"|[^\s@]*)/g;
   let cursor = 0;
-  for (const match of text.matchAll(pattern)) {
-    const start = match.index ?? 0;
-    if (start > cursor) segments.push({ value: text.slice(cursor, start), mayPath: false });
-    segments.push({ value: match[0], mayPath: true });
-    cursor = start + match[0].length;
+  for (const mention of fileMentions(text)) {
+    if (mention.start > cursor) segments.push({ value: text.slice(cursor, mention.start), mayPath: false });
+    segments.push({ value: mention.raw, mayPath: true });
+    cursor = mention.end;
   }
   if (cursor < text.length) segments.push({ value: text.slice(cursor), mayPath: false });
   return segments;
@@ -87,6 +87,14 @@ function insertReference(path: string): string {
   return path.includes(' ') ? '@"' + path + '"' : '@' + path;
 }
 
+/** G3：一条引用按行加 `> `，多条之间空一行；发送时才拼进消息。 */
+function quotedLines(quote: string): string {
+  return quote
+    .split(String.fromCharCode(10))
+    .map((line) => '> ' + line)
+    .join(String.fromCharCode(10));
+}
+
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
   { offline, onSend, onCanSendChange, children },
   ref,
@@ -94,12 +102,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const composingRef = useRef(false);
   const [text, setText] = useState('');
+  const [quotes, setQuotes] = useState<string[]>([]);
   const [pastes, setPastes] = useState<string[]>([]);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [pastePreview, setPastePreview] = useState<number | null>(null);
   const [filePreview, setFilePreview] = useState<{ id: string; text: string } | null>(null);
   const [atMenu, setAtMenu] = useState<AtMenuState | null>(null);
   const [quote, setQuote] = useState<string>('');
+  /** T013 验收 F4：对话正文里的选区（页面级选区）与浮出的引用按钮位置。 */
+  const [pageQuote, setPageQuote] = useState<{ text: string; top: number; left: number } | null>(null);
   const cardsRef = useRef<HTMLDivElement | null>(null);
   const highlightRef = useRef<HTMLDivElement | null>(null);
   // T013.8：草稿按会话存 localStorage（键 aios.kind.draft.<会话 id>）。
@@ -108,7 +119,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const touchedRef = useRef(false);
   const changedDuringSendRef = useRef(false);
 
-  const canSend = text.trim().length > 0 || pastes.length > 0 || attachments.length > 0;
+  const canSend = text.trim().length > 0 || quotes.length > 0 || pastes.length > 0 || attachments.length > 0;
 
   useEffect(() => {
     onCanSendChange(canSend);
@@ -127,6 +138,70 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     resize();
   }, [text, resize]);
 
+  // T013 验收 F4：选中对话正文（回答、你的消息、工作过程）里的文字就浮出「引用」；
+  // 输入框里的选区仍走 textarea 自己的 onSelect，两条路互不干扰。
+  useEffect(() => {
+    const inConversation = (node: Node | null): boolean => {
+      if (!node) return false;
+      const element = node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
+      if (!element || !element.closest('[data-pane="conversation"]')) return false;
+      // 输入框在对话面板里，但它的选区由 textarea 自己处理。
+      return element.closest('[data-kind="composer"]') === null;
+    };
+    const update = () => {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+        setPageQuote(null);
+        return;
+      }
+      const selected = selection.toString().trim();
+      if (!selected || !inConversation(selection.anchorNode) || !inConversation(selection.focusNode)) {
+        setPageQuote(null);
+        return;
+      }
+      const range = selection.getRangeAt(0);
+      const rects = range.getClientRects();
+      const rect = rects.length > 0 ? rects[rects.length - 1] : range.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) {
+        setPageQuote(null);
+        return;
+      }
+      // 按钮放在选区上方；上面放不下就放下面，左右夹在视口里。
+      const width = 68;
+      const top = rect.top >= 44 ? rect.top - 36 : Math.min(window.innerHeight - 44, rect.bottom + 8);
+      const left = Math.min(Math.max(8, rect.right - width), window.innerWidth - width - 8);
+      setPageQuote({ text: selected, top, left });
+    };
+    // 滚动/改窗口大小时选区位置变了，先收起按钮（不清用户选区）。
+    const hide = () => setPageQuote(null);
+    document.addEventListener('selectionchange', update);
+    document.addEventListener('mouseup', update);
+    document.addEventListener('scroll', hide, true);
+    window.addEventListener('resize', hide);
+    return () => {
+      document.removeEventListener('selectionchange', update);
+      document.removeEventListener('mouseup', update);
+      document.removeEventListener('scroll', hide, true);
+      window.removeEventListener('resize', hide);
+    };
+  }, []);
+
+  /** T013 验收 F4 + G3：正文选区变成输入框上方的引用卡，不写进输入框。 */
+  const applyPageQuote = useCallback(() => {
+    if (!pageQuote) return;
+    const selected = pageQuote.text.trim();
+    if (!selected) {
+      setPageQuote(null);
+      return;
+    }
+    touchedRef.current = true;
+    changedDuringSendRef.current = true;
+    setQuotes((previous) => [...previous, selected]);
+    setPageQuote(null);
+    window.getSelection()?.removeAllRanges();
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [pageQuote]);
+
   // T013.8：会话 id 就绪后读一次草稿（读不出当空）。
   useEffect(() => {
     if (!sessionId || draftLoadedRef.current === sessionId) return;
@@ -137,10 +212,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       if (!raw) return;
       const draft = JSON.parse(raw) as {
         text?: unknown;
+        quotes?: unknown;
         pastes?: unknown;
         attachments?: unknown;
       };
       if (typeof draft.text === 'string') setText(draft.text);
+      if (Array.isArray(draft.quotes)) {
+        setQuotes(draft.quotes.filter((item): item is string => typeof item === 'string'));
+      }
       if (Array.isArray(draft.pastes)) {
         setPastes(draft.pastes.filter((item): item is string => typeof item === 'string'));
       }
@@ -167,6 +246,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     if (!sessionId || draftLoadedRef.current !== sessionId) return;
     const draft = {
       text,
+      quotes,
       pastes,
       attachments: attachments.map(({ id, name, bytes, mime }) => ({ id, name, bytes, mime })),
     };
@@ -175,7 +255,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     } catch {
       // 存不下（隐私模式）就算了。
     }
-  }, [attachments, pastes, sessionId, text]);
+  }, [attachments, pastes, quotes, sessionId, text]);
 
   const pruneAtMenu = useCallback((value: string, caret: number) => {
     const before = value.slice(0, caret);
@@ -251,16 +331,22 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   const submit = useCallback(async () => {
     if (offline) return;
-    const value = text.trim();
+    // G3：引用卡在发送时才按行变成 `> `，排在打的字前面（气泡里画成引用块）。
+    const quoted = quotes.map(quotedLines).join(String.fromCharCode(10) + String.fromCharCode(10));
+    const value = [quoted, text.trim()]
+      .filter((part) => part.length > 0)
+      .join(String.fromCharCode(10));
     if (!value && pastes.length === 0 && attachments.length === 0) return;
     // T013.8：发送时先清空（马上能继续打），受理失败再把内容放回来（草稿不清）。
-    const snapshot = { text, pastes, attachments, quote };
+    const snapshot = { text, quotes, pastes, attachments, quote };
     changedDuringSendRef.current = false;
     setText('');
+    setQuotes([]);
     setPastes([]);
     setAttachments([]);
     setAtMenu(null);
     setQuote('');
+    setPageQuote(null);
     requestAnimationFrame(() => {
       resize();
       inputRef.current?.focus();
@@ -273,6 +359,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       // 失败进 unsent：内容放回输入框（草稿也没动）；失败等待期间用户又输入了就不覆盖新的。
       if (changedDuringSendRef.current) return;
       setText(snapshot.text);
+      setQuotes(snapshot.quotes);
       setPastes(snapshot.pastes);
       setAttachments(snapshot.attachments);
       setQuote(snapshot.quote);
@@ -283,7 +370,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     } catch {
       // 忽略。
     }
-  }, [attachments, offline, onSend, pastes, quote, resize, sessionId, text]);
+  }, [attachments, offline, onSend, pastes, quote, quotes, resize, sessionId, text]);
 
   useImperativeHandle(ref, () => ({ submit: () => void submit(), focus: () => inputRef.current?.focus() }), [submit]);
 
@@ -367,8 +454,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       }}
     >
       <div className="rounded-card border border-line-2 bg-raised/70 px-3 py-2 transition-colors">
-        {pastes.length > 0 || attachments.length > 0 ? (
+        {quotes.length > 0 || pastes.length > 0 || attachments.length > 0 ? (
           <div ref={cardsRef} className="mb-1.5 flex gap-1.5 overflow-x-auto pb-1" data-kind="composer-cards">
+            {quotes.map((item, index) => (
+              <QuoteCard
+                key={'quote-' + index}
+                quote={item}
+                onRemove={() => setQuotes((previous) => previous.filter((_, position) => position !== index))}
+              />
+            ))}
             {pastes.map((paste, index) => (
               <PasteCard
                 key={'paste-' + index}
@@ -466,25 +560,18 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           {children}
         </div>
       </div>
-      {quote ? (
+      {quote && !pageQuote ? (
         <button
           type="button"
           data-kind="quote-button"
           onClick={() => {
-            const element = inputRef.current;
-            if (!element) return;
-            const start = element.selectionStart;
-            const end = element.selectionEnd;
-            const quoted = element.value
-              .slice(start, end)
-              .split(String.fromCharCode(10))
-              .map((line) => '> ' + line)
-              .join(String.fromCharCode(10));
+            const selected = quote.trim();
+            if (!selected) return;
             touchedRef.current = true;
             changedDuringSendRef.current = true;
-            setText(element.value.slice(0, start) + quoted + element.value.slice(end));
+            setQuotes((previous) => [...previous, selected]);
             setQuote('');
-            element.focus();
+            inputRef.current?.focus();
           }}
           className="absolute -top-8 right-0 flex items-center gap-1 rounded-btn border border-line-2 bg-raised px-2 py-1 text-2 text-ink-2 shadow-[var(--shadow-pop)] hover:bg-hover hover:text-ink"
         >
@@ -492,6 +579,23 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           引用
         </button>
       ) : null}
+      {pageQuote
+        ? createPortal(
+            <button
+              type="button"
+              data-kind="quote-button"
+              // 按下时别清掉页面选区：click 里还要用 pageQuote.text。
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={applyPageQuote}
+              style={{ top: pageQuote.top, left: pageQuote.left }}
+              className="fixed z-50 flex items-center gap-1 rounded-btn border border-line-2 bg-raised px-2 py-1 text-2 text-ink-2 shadow-[var(--shadow-pop)] hover:bg-hover hover:text-ink"
+            >
+              <Quote className="size-3" />
+              引用
+            </button>,
+            document.body,
+          )
+        : null}
       {pastePreview !== null && pastes[pastePreview] !== undefined ? (
         <AttachmentPreview
           kind="paste"

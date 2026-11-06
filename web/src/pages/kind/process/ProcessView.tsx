@@ -64,6 +64,15 @@ function Dot() {
   return <i className="mx-2 inline-block size-[2px] shrink-0 rounded-full bg-ink-3" />;
 }
 
+/** 用量行里的「·」：flex 项自己垂直居中，左右间距交给父级 gap。 */
+function Sep() {
+  return (
+    <span className="flex shrink-0 items-center justify-center opacity-50" aria-hidden>
+      ·
+    </span>
+  );
+}
+
 /* ───────── 行 ───────── */
 
 function ThinkRow({ step }: { step: ThinkStepView }) {
@@ -318,29 +327,47 @@ export function ProcessView({
   const toolCount = steps.filter((step) => step.kind === 'tool').length;
   return (
     <div data-kind="process" data-open={expanded ? 'true' : 'false'} className="group/turn relative">
-      {usage ? (
-        <span className="pointer-events-none absolute right-0 top-0 hidden items-center gap-1.5 whitespace-nowrap text-ink-3 group-hover/turn:flex">
-          {usage.model} · 输入 <span className="brand-type">{shownInput}</span>
-          {cacheHit === null ? null : (
-            <>
-              {' '}· 缓存命中 <span className="brand-type">{cacheHit}%</span>
-            </>
-          )}{' '}
-          · 输出 <span className="brand-type">{usage.output}</span>
-        </span>
-      ) : null}
-      <button
-        type="button"
-        disabled={pinned}
-        onClick={() => setOpen((value) => !value)}
-        className="group/turn flex h-[33px] w-full items-center gap-1 border-b-[0.5px] border-line-2 text-left text-3 text-ink-3 transition-colors enabled:hover:text-ink-2 disabled:cursor-default"
-      >
-        <span className={cn(live && 'process-shimmer', status === 'failed' && !live && 'text-fail')}>
-          {label}，用时 <span className="brand-type">{duration}</span>
-        </span>
-        {live ? <span className="tracking-widest">···</span> : null}
-        {pinned ? null : <ChevronDown className={cn('size-3.5 transition-transform', expanded && 'rotate-180')} />}
-      </button>
+      <div className="relative">
+        {usage ? (
+          <span
+            data-kind="turn-usage"
+            className="pointer-events-none absolute inset-y-0 right-0 hidden items-center gap-1.5 whitespace-nowrap text-2 text-ink-3 tabular-nums group-hover/turn:flex"
+          >
+            <span>{usage.model}</span>
+            <Sep />
+            <span className="inline-flex items-center gap-1">
+              <span>输入</span>
+              <span data-kind="usage-number">{shownInput}</span>
+            </span>
+            {cacheHit === null ? null : (
+              <>
+                <Sep />
+                <span className="inline-flex items-center gap-1">
+                  <span>缓存命中</span>
+                  <span data-kind="usage-number">{cacheHit}%</span>
+                </span>
+              </>
+            )}
+            <Sep />
+            <span className="inline-flex items-center gap-1">
+              <span>输出</span>
+              <span data-kind="usage-number">{usage.output}</span>
+            </span>
+          </span>
+        ) : null}
+        <button
+          type="button"
+          disabled={pinned}
+          onClick={() => setOpen((value) => !value)}
+          className="group/turn flex h-[33px] w-full items-center gap-1 border-b-[0.5px] border-line-2 text-left text-3 text-ink-3 transition-colors enabled:hover:text-ink-2 disabled:cursor-default"
+        >
+          <span className={cn(live && 'process-shimmer', status === 'failed' && !live && 'text-fail')}>
+            {label}，用时 <span className="brand-type">{duration}</span>
+          </span>
+          {live ? <span className="tracking-widest">···</span> : null}
+          {pinned ? null : <ChevronDown className={cn('size-3.5 transition-transform', expanded && 'rotate-180')} />}
+        </button>
+      </div>
       {visible.length > 0 || live || expanded ? (
         <div className="mt-4 flex flex-col gap-1">
           {/* 信息分层：默认只显示用时；想了多久、调了几次、多少 token 展开才看（T010 承诺）。 */}
