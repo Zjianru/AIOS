@@ -614,11 +614,10 @@ export async function startT013KernelFixture(): Promise<KernelFixture> {
 }
 
 /**
- * T013 DoD2（T008 模式）：空库起服务，页面里真实加连接并验证（key 从 env 读、只进页面输入）。
- * F2：每条用例用自己的数据目录（root/<用例名>/），跑完不清，便于按条回查日志。
+ * DoD 真 key 的通用夹具（T008 模式）：空库起服务，页面里真实加连接并验证（key 从 env 读、只进页面输入）。
+ * 每条用例用自己的数据目录（root/<用例名>/），跑完不清，便于按条回查日志。
  */
-export async function startT013DodFixture(caseName: string): Promise<KernelFixture> {
-  const root = path.join(process.env.AIOS_T013_DOD_ROOT ?? '/tmp/aios-t013-dod', caseName);
+export async function startDodConnectFixture(root: string): Promise<KernelFixture> {
   const workDir = path.join(root, 'work');
   const dataDir = path.join(root, 'data');
   await rm(root, { recursive: true, force: true });
@@ -667,4 +666,18 @@ export async function startT013DodFixture(caseName: string): Promise<KernelFixtu
     stderr: () => stderr,
     dataDir,
   } as unknown as KernelFixture;
+}
+
+/** T013 DoD2：真 key（MiniMax）的夹具——/tmp/aios-t013-dod 下的数据目录 + 小项目工作目录。 */
+export async function startT013DodFixture(caseName: string): Promise<KernelFixture> {
+  return startDodConnectFixture(
+    path.join(process.env.AIOS_T013_DOD_ROOT ?? '/tmp/aios-t013-dod', caseName),
+  );
+}
+
+/** T015 DoD2：真 key（MiniMax）画布四件事——/tmp/aios-t015-dod 下的数据目录 + 小项目工作目录。 */
+export async function startT015DodFixture(caseName: string): Promise<KernelFixture> {
+  return startDodConnectFixture(
+    path.join(process.env.AIOS_T015_DOD_ROOT ?? '/tmp/aios-t015-dod', caseName),
+  );
 }
