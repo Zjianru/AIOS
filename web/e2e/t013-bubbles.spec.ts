@@ -151,3 +151,58 @@ test('气泡引用块：> 开头的行渲染成引用块', async ({ page }) => {
     await fixture.close();
   }
 });
+
+/// T013 F1（Claude fix-now）：发出去以后，气泡上面是一排卡片，正文只放打的字。
+/// 照原型 app-v14 TurnRow.tsx 的 UserBubble：粘贴卡（行数/字数，点开全文）、文件卡（名字/大小，点开走 attachment-get）。
+test('气泡卡片：文字+1001字粘贴+一个文件 → 一张粘贴卡、一张文件卡，正文不含粘贴原文，刷新后不变', async ({ page }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    // 一个文件：拖进来变成卡片。
+    await page.locator('[data-kind="composer"]').evaluate((element) => {
+      const data = new DataTransfer();
+      data.items.add(new File(['文件里的内容：BUBBLE-FILE' + String.fromCharCode(10)], 'bubble.txt', { type: 'text/plain' }));
+      element.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }));
+    });
+    await expect(page.locator('[data-kind="file-card"]')).toHaveCount(1, { timeout: 20_000 });
+    // 一段 1001 字符以上的粘贴：折成一张卡片。
+    const pasted = 'BUBBLE-PASTE-START' + String.fromCharCode(10) + 'y'.repeat(1000);
+    await page.locator('[data-kind="composer-input"]').evaluate((element, value) => {
+      const data = new DataTransfer();
+      data.setData('text/plain', value);
+      element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true }));
+    }, pasted);
+    await expect(page.locator('[data-kind="paste-card"]')).toHaveCount(1);
+    await page.locator('[data-kind="composer-input"]').fill('看这个粘贴和这个文件');
+    await page.locator('[data-kind="send"]').click();
+
+    const row = page.locator('[data-kind="user-message-row"]').last();
+    await expect(row).toBeVisible({ timeout: 15_000 });
+    // 气泡上面一排卡片：一张粘贴卡、一张文件卡。
+    await expect(row.locator('[data-kind="paste-card"]')).toHaveCount(1);
+    await expect(row.locator('[data-kind="file-card"]')).toHaveCount(1);
+    await expect(row.locator('[data-kind="file-card"]')).toContainText('bubble.txt');
+    // 正文只放打的字，粘贴原文不进正文。
+    const bubble = row.locator('[data-kind="user-bubble"]');
+    await expect(bubble).toContainText('看这个粘贴和这个文件');
+    await expect(bubble).not.toContainText('BUBBLE-PASTE-START');
+    await expect(bubble).not.toContainText('yyyyyyyyyyyyyyyyyyyy');
+    // 点开看全文：粘贴卡显示粘贴原文；文件卡走 attachment-get 显示文件内容。
+    await row.locator('[data-kind="paste-open"]').click();
+    await expect(row.locator('[data-kind="paste-preview"]')).toContainText('BUBBLE-PASTE-START');
+    await row.locator('[data-kind="file-open"]').click();
+    await expect(row.locator('[data-kind="file-preview"]')).toContainText('BUBBLE-FILE');
+
+    // 刷新后不变（回放和实时同源：都从 user/message 的块派生）。
+    await page.reload();
+    const reloaded = page.locator('[data-kind="user-message-row"]').last();
+    await expect(reloaded).toBeVisible({ timeout: 30_000 });
+    await expect(reloaded.locator('[data-kind="paste-card"]')).toHaveCount(1);
+    await expect(reloaded.locator('[data-kind="file-card"]')).toHaveCount(1);
+    await expect(reloaded.locator('[data-kind="user-bubble"]')).toContainText('看这个粘贴和这个文件');
+    await expect(reloaded.locator('[data-kind="user-bubble"]')).not.toContainText('BUBBLE-PASTE-START');
+  } finally {
+    await fixture.close();
+  }
+});
+
