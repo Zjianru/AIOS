@@ -589,3 +589,56 @@ export async function startT013KernelFixture(): Promise<KernelFixture> {
     dataDir,
   } as unknown as KernelFixture;
 }
+
+/** T013 DoD2（T008 模式）：空库起服务，页面里真实加连接并验证（key 从 env 读、只进页面输入）。 */
+export async function startT013DodFixture(): Promise<KernelFixture> {
+  const root = process.env.AIOS_T013_DOD_ROOT ?? '/tmp/aios-t013-dod';
+  const workDir = path.join(root, 'work');
+  const dataDir = path.join(root, 'data');
+  await rm(root, { recursive: true, force: true });
+  await mkdir(workDir, { recursive: true });
+  await mkdir(dataDir, { recursive: true });
+  await writeFile(path.join(workDir, 'notes.md'), '# 项目笔记' + String.fromCharCode(10) + String.fromCharCode(10) + '第一行：DOD13-NOTES' + String.fromCharCode(10));
+  await writeFile(path.join(workDir, 'todo.txt'), 'DOD13-TODO：买牛奶、写代码' + String.fromCharCode(10));
+  await writeFile(path.join(workDir, 'config.json'), '{"name":"dod13"}' + String.fromCharCode(10));
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+  const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
+  const identity = path.join(dataDir, 'identity.txt');
+  const serveEnv = { ...process.env };
+  delete serveEnv.MINIMAX_API_KEY;
+  delete serveEnv.DEEPSEEK_API_KEY;
+  const child = spawn(
+    bin,
+    ['serve', '--data-dir', dataDir, '--identity', identity, '--cwd', workDir, '--web-dist', path.join(repoRoot, 'web/dist')],
+    { env: serveEnv, stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  let stderr = '';
+  child.stderr?.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  let output = '';
+  const parsed = await new Promise<{ baseUrl: string; token: string }>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('T013 DoD serve 启动超时: ' + output)), 60_000);
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+      const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)\/?\?token=([0-9a-f-]+)/);
+      if (match) {
+        clearTimeout(timer);
+        resolve({ baseUrl: 'http://127.0.0.1:' + match[1], token: match[2] });
+      }
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      reject(new Error('T013 DoD serve 提前退出（' + String(code) + '）：' + stderr));
+    });
+  });
+  return {
+    baseUrl: parsed.baseUrl,
+    token: parsed.token,
+    close: async () => {
+      child.kill('SIGTERM');
+    },
+    stderr: () => stderr,
+    dataDir,
+  } as unknown as KernelFixture;
+}
