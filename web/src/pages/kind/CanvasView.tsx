@@ -8,7 +8,8 @@
  * - 父窗口把这一版的 HTML 用 postMessage 交给外壳，外壳 document.write 写进自己的文档；
  *   外壳报尺寸，父窗口把主题变量交给它（MCP Apps 的标准名），深浅色跟着 AIOS。
  * - T015.5：外壳报脚本错误/未处理 rejection/CSP 违规，标题栏出「出错了」（点了把错误放进输入框）；
- *   全屏（Esc 退出）；存成 .html（外壳拼好基础样式和 CSP meta，页面负责下载）。
+ *   全屏（Esc 退出）；存成 .html（页面用日志里这一版的 HTML + 自己的基础样式/主题变量 + CSP meta
+ *   生成，不向画布 iframe 要内容）。
  */
 
 import { type RefObject, useCallback, useEffect, useRef, useState } from 'react';
@@ -33,11 +34,12 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import type { CanvasVersionView, CanvasViewDoc } from './turnViews';
+import { buildCanvasFile } from './canvasExport';
 
 /** 不展开时最多这么高；超过了画布里面滚动，标题栏给「展开」。 */
 const MAX_HEIGHT = 420;
 
-/** 存成文件（T015.5）：HTML 由外壳拼好（基础样式 + 画布 HTML + CSP meta），这里只负责下载。 */
+/** 存成文件（T015.5）：HTML 由父窗口拼好，这里只负责触发浏览器下载。 */
 function downloadCanvasFile(html: string, title: string) {
   const name = title.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').trim() || '画布';
   const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
@@ -111,8 +113,6 @@ interface FrameProps {
   onMessage: (text: string) => void;
   /** T015.5：画布报错（脚本/rejection/CSP/资源没加载上），标题栏出「出错了」。 */
   onError: (message: string) => void;
-  /** T015.5：外壳拼好的、能单独打开的 .html。 */
-  onExport: (html: string) => void;
   onOverflow: (overflow: boolean) => void;
 }
 
@@ -123,7 +123,6 @@ function CanvasFrame({
   frameRef,
   onMessage,
   onError,
-  onExport,
   onOverflow,
 }: FrameProps) {
   const [height, setHeight] = useState(64);
@@ -163,7 +162,6 @@ function CanvasFrame({
         height?: number;
         text?: string;
         message?: string;
-        html?: string;
         dx?: number;
         dy?: number;
       } | null;
@@ -172,14 +170,13 @@ function CanvasFrame({
       if (data.type === 'size' && typeof data.height === 'number') setHeight(data.height);
       if (data.type === 'message' && typeof data.text === 'string') onMessage(data.text);
       if (data.type === 'error' && typeof data.message === 'string') onError(data.message);
-      if (data.type === 'export' && typeof data.html === 'string') onExport(data.html);
       if (data.type === 'wheel' && typeof data.dy === 'number') {
         forwardWheel(frameRef.current, data.dy, typeof data.dx === 'number' ? data.dx : 0);
       }
     };
     window.addEventListener('message', listen);
     return () => window.removeEventListener('message', listen);
-  }, [frameRef, onError, onExport, onMessage, sendHost]);
+  }, [frameRef, onError, onMessage, sendHost]);
 
   const overflow = height > MAX_HEIGHT;
   useEffect(() => onOverflow(overflow), [overflow, onOverflow]);
@@ -250,6 +247,7 @@ function LiveCanvas({ doc, latest, versions, onCanvasMessage }: Omit<CanvasViewP
   const [error, setError] = useState<string | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const blockRef = useRef<HTMLDivElement | null>(null);
+  const theme = useAppStore((state) => state.theme);
   // 新版来了就跳到新版（只在页面上；日志里一直是最新那一版）。
   useEffect(() => setShown(latest), [latest]);
   const available = versions.filter((item) => item.n <= latest);
@@ -299,14 +297,19 @@ function LiveCanvas({ doc, latest, versions, onCanvasMessage }: Omit<CanvasViewP
     if (!request) return;
     void Promise.resolve(request()).catch(() => {});
   }, []);
-  // 存成文件：让外壳把当前文档（基础样式 + 当前主题变量 + 画布 HTML + CSP meta）拼好再下载。
-  const requestExport = useCallback(() => {
-    frameRef.current?.contentWindow?.postMessage({ aiosHost: true, type: 'export' }, '*');
-  }, []);
-  const onExport = useCallback(
-    (html: string) => downloadCanvasFile(html, current.title),
-    [current.title],
-  );
+  // 存成文件：文件由页面生成——日志里这一版的 HTML + 页面自己的基础样式、主题变量、CSP meta。
+  // 不向画布 iframe 要内容，也不接受它发来的 export（T015.5 审计 #2）。
+  const saveFile = useCallback(() => {
+    downloadCanvasFile(
+      buildCanvasFile({
+        title: current.title,
+        html: current.html,
+        theme,
+        variables: hostVariables(),
+      }),
+      current.title,
+    );
+  }, [current.html, current.title, theme]);
 
   return (
     <div
@@ -395,7 +398,7 @@ function LiveCanvas({ doc, latest, versions, onCanvasMessage }: Omit<CanvasViewP
             aria-label="存成文件"
             title={open ? '存成一张能单独打开的 .html' : '展开后可以存成文件'}
             disabled={!open}
-            onClick={requestExport}
+            onClick={saveFile}
             className="rounded-btn p-1 text-ink-3 transition-colors hover:bg-hover hover:text-ink disabled:cursor-default disabled:opacity-40"
           >
             <Download className="size-3.5" />
@@ -441,7 +444,6 @@ function LiveCanvas({ doc, latest, versions, onCanvasMessage }: Omit<CanvasViewP
           frameRef={frameRef}
           onMessage={onMessage}
           onError={setError}
-          onExport={onExport}
           onOverflow={setOverflow}
         />
       ) : null}
