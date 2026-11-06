@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { createServer } from 'node:http';
-import { readFile } from 'node:fs/promises';
+import { copyFile, readFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { startKernelFixture, type KernelFixture } from './service-fixture';
@@ -34,10 +34,22 @@ const CANVAS_FRAME_CSP = [
   "frame-ancestors 'self'",
 ].join('; ');
 
-/** 存文件用的 CSP：响应头那份去掉只在响应头里有意义的 frame-ancestors（meta 里会被忽略）。 */
-const CANVAS_FILE_CSP = CANVAS_FRAME_CSP.split('; ')
-  .filter((item) => !item.startsWith('frame-ancestors'))
-  .join('; ');
+/**
+ * 存文件用的 CSP：默认同响应头，但 frame-ancestors 在 meta 里会被忽略（去掉）；
+ * file:// 文档里无 scheme 的主机源会按 file: 继承，所以 CDN/字体源要显式写 https://。
+ */
+const CANVAS_FILE_CSP = [
+  "default-src 'none'",
+  "script-src 'unsafe-inline' https://cdnjs.cloudflare.com https://cdn.jsdelivr.net/npm/ https://unpkg.com https://cdn.tailwindcss.com https://code.jquery.com",
+  "style-src 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net/npm/ https://unpkg.com https://cdn.tailwindcss.com https://code.jquery.com",
+  'font-src data: https://fonts.gstatic.com',
+  'img-src data: blob:',
+  'media-src data: blob:',
+  'connect-src https://fonts.googleapis.com https://fonts.gstatic.com',
+  "frame-src 'none'",
+  "object-src 'none'",
+  "base-uri 'none'",
+].join('; ');
 
 const urlOf = (fixture: KernelFixture) =>
   fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind';
@@ -824,7 +836,10 @@ test('存成文件：外壳 + 画布 HTML + CSP meta；单独打开能显示，�
     expect(download.suggestedFilename()).toBe('CDN 与隔离.html');
     const filePath = await download.path();
     if (!filePath) throw new Error('下载的文件没有落盘路径');
-    const html = await readFile(filePath, 'utf8');
+    // Playwright 把下载暂存成没有扩展名的文件；file:// 会按 text/plain 打开，复制一份 .html 再看。
+    const htmlPath = filePath + '.html';
+    await copyFile(filePath, htmlPath);
+    const html = await readFile(htmlPath, 'utf8');
 
     expect(html.startsWith('<!doctype html>')).toBe(true);
     expect(html).toContain(
@@ -833,11 +848,12 @@ test('存成文件：外壳 + 画布 HTML + CSP meta；单独打开能显示，�
     expect(html).toContain('id="marker"');
     // 外壳的基础样式（不是只有画布 HTML 那一段）。
     expect(html).toContain('font-family:var(--font-sans)');
-    // 存下来的是能单独打开的页面，不是 iframe 自检外壳。
+    // 存下来的是能单独打开的页面，不是 iframe 自检外壳，也不带宿主运行时。
     expect(html).not.toContain('window.self === window.top');
+    expect(html).not.toContain('data-aios-runtime');
 
     // 单独打开：清单里的库能加载，画布显示；清单外的请求一个都没发出去。
-    await page.goto('file://' + filePath);
+    await page.goto('file://' + htmlPath);
     await expect(page.locator('#marker')).toHaveText('lib:1', { timeout: 20_000 });
     await expect(page.locator('#fetch')).toHaveText('fetch:blocked');
     expect(offList, '清单外的请求发了出去').toBe(0);
