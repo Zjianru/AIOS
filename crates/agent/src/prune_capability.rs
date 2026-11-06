@@ -8,6 +8,7 @@
 //! T015.3：同一事务里也认画布旧版（D58/D60）——每个画布的非最新版结果换成一句
 //! 「画布「标题」第 n 版：<note>」，调用参数里的 html/edits 换成同一句；最新版不剪。
 //! 调用参数与整批结果一起按调用顺序重新落盘，保证派生请求里的 tool_use/tool_result 仍配对。
+//! 同批其它结果不因跟旧版同批就被豁免：超过阈值的普通结果照 T006.4 换 head+marker+tail。
 //!
 //! 触发：挂 HookPoint::Compaction，只在真实压缩事务里由压缩实现派发（T006.3 fix 之后），
 //! loop 不再每个请求前剪。照 DSH 只跑压力/溢出两路：`compaction-basic/src/index.ts:292-347`
@@ -125,7 +126,8 @@ struct CanvasPruneResult {
     call_id: String,
     seq: u64,
     kind: EventKind,
-    /// Some = 旧版画布：结果换成这句；None = 同批的其它结果，原样重落。
+    /// Some = 旧版画布：结果换成这句；None = 同批的其它结果，照常走普通剪枝
+    /// （没超阈值才原样重落并保留 meta）。
     sentence: Option<String>,
 }
 
@@ -281,10 +283,13 @@ async fn append_prune(host: &dyn LoopAccess, seq: u64, token_count: u64) -> Resu
 }
 
 /// 落一组画布旧版替换：先调用参数换一句，再按调用顺序重落这一步的结果。
+///
+/// 返回这组剪掉的节点数（旧版画布结果 + 命中 T006.4 阈值的同批普通结果）；参数换不动、
+/// 这一组什么都没写时返回 0。
 async fn apply_canvas_group(
     host: &dyn LoopAccess,
     group: &CanvasPruneGroup,
-) -> Result<bool, AgentError> {
+) -> Result<usize, AgentError> {
     let EventKind::AssistantMessage {
         turn,
         step,
@@ -295,7 +300,7 @@ async fn apply_canvas_group(
         ..
     } = &group.call
     else {
-        return Ok(false);
+        return Ok(0);
     };
     let mut replacement = message.clone();
     let mut changed = false;
@@ -313,7 +318,7 @@ async fn apply_canvas_group(
         }
     }
     if !changed {
-        return Ok(false);
+        return Ok(0);
     }
     append_prune(host, group.call_seq, estimate_message(message)).await?;
     host.append_surface(
@@ -335,6 +340,7 @@ async fn apply_canvas_group(
         vec![group.call_seq],
     )
     .await?;
+    let mut pruned_count = 0;
     for result in &group.results {
         let EventKind::ToolResult {
             turn,
@@ -348,15 +354,26 @@ async fn apply_canvas_group(
             continue;
         };
         let token_count = estimate_message(message);
-        // 旧版换一句；同批其它结果原样重落（meta 保留，页面工作过程照旧）。
-        let (replacement, meta) = match &result.sentence {
+        // 旧版换一句；同批其它结果照常走 T006.4：超过阈值就换 head+marker+tail，
+        // 没超才原样重落并保留 meta（页面工作过程照旧）。
+        let (replacement, meta, pruned) = match &result.sentence {
             Some(sentence) => {
-                let mut pruned = message.clone();
-                pruned.content = vec![ContentBlock::text(sentence.clone())];
-                (pruned, None)
+                let mut replacement = message.clone();
+                replacement.content = vec![ContentBlock::text(sentence.clone())];
+                (replacement, None, true)
             }
-            None => (message.clone(), meta.clone()),
+            None => match prune_content(&message.content) {
+                Some(content) => {
+                    let mut replacement = message.clone();
+                    replacement.content = content;
+                    (replacement, None, true)
+                }
+                None => (message.clone(), meta.clone(), false),
+            },
         };
+        if pruned {
+            pruned_count += 1;
+        }
         append_prune(host, result.seq, token_count).await?;
         host.append_surface(
             EventKind::ToolResult {
@@ -374,7 +391,7 @@ async fn apply_canvas_group(
         )
         .await?;
     }
-    Ok(true)
+    Ok(pruned_count)
 }
 
 /// 收集当前 surface 上可修剪的 tool/result：跳过已被更晚 surfaceOp replace 藏掉的节点；
@@ -404,30 +421,38 @@ pub(crate) async fn prune_session(
     host: &dyn LoopAccess,
     current_turn: Option<u64>,
 ) -> Result<usize, AgentError> {
-    let (canvas_groups, candidates) = {
+    let (canvas_groups, mut candidates) = {
         let store = host.session().lock().expect("agent 会话锁被毒化");
         let events = store.events();
         let groups = canvas_prune_groups(events, current_turn);
-        // 画布旧版结果按「一句」处理，不再走普通剪枝；否则同一 seq 会有两条替换。
-        let canvas_result_seqs: Vec<u64> = groups
+        // 画布旧版结果按「一句」处理，不走普通剪枝（否则同一 seq 会有两条替换）；
+        // 同批 sentence=None 的兄弟结果不算画布结果，候选照收，随后在 group 内剪。
+        let canvas_sentence_seqs: Vec<u64> = groups
             .iter()
-            .flat_map(|group| group.results.iter().map(|result| result.seq))
+            .flat_map(|group| {
+                group
+                    .results
+                    .iter()
+                    .filter(|result| result.sentence.is_some())
+                    .map(|result| result.seq)
+            })
             .collect();
         let candidates: Vec<(u64, EventKind)> = prunable_tool_results(events, current_turn)
             .into_iter()
-            .filter(|(seq, _)| !canvas_result_seqs.contains(seq))
+            .filter(|(seq, _)| !canvas_sentence_seqs.contains(seq))
             .collect();
         (groups, candidates)
     };
     let mut pruned_count = 0;
     for group in &canvas_groups {
-        if apply_canvas_group(host, group).await? {
-            pruned_count += group
-                .results
-                .iter()
-                .filter(|result| result.sentence.is_some())
-                .count();
-        }
+        pruned_count += apply_canvas_group(host, group).await?;
+    }
+    // 同批的 sentence=None 兄弟结果已随 group 重落，原 seq 被 surfaceOp 藏掉；候选是在
+    // 重落之前收的，跳过这些过期节点，避免给同一个 seq 再落一条替换（派生视图会多一份结果）。
+    if !canvas_groups.is_empty() {
+        let store = host.session().lock().expect("agent 会话锁被毒化");
+        let hidden = hidden_ranges(store.events());
+        candidates.retain(|(seq, _)| !is_hidden(&hidden, *seq));
     }
     for (seq, kind) in candidates {
         let EventKind::ToolResult {
