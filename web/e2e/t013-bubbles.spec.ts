@@ -182,16 +182,31 @@ test('气泡卡片：文字+1001字粘贴+一个文件 → 一张粘贴卡、一
     await expect(row.locator('[data-kind="paste-card"]')).toHaveCount(1);
     await expect(row.locator('[data-kind="file-card"]')).toHaveCount(1);
     await expect(row.locator('[data-kind="file-card"]')).toContainText('bubble.txt');
+    // 文件卡要有类型和大小；日志的 file 块没有 mime，类型从文件名后缀推。
+    await expect(row.locator('[data-kind="file-card"]')).toContainText('文字');
+    await expect(row.locator('[data-kind="file-card"]')).toContainText('1KB');
     // 正文只放打的字，粘贴原文不进正文。
     const bubble = row.locator('[data-kind="user-bubble"]');
     await expect(bubble).toContainText('看这个粘贴和这个文件');
     await expect(bubble).not.toContainText('BUBBLE-PASTE-START');
     await expect(bubble).not.toContainText('yyyyyyyyyyyyyyyyyyyy');
+    // 卡片在气泡上面（审查：原先只断言了左右，没断言上下）。
+    const bubbleBox = await bubble.boundingBox();
+    const pasteBox = await row.locator('[data-kind="paste-card"]').boundingBox();
+    const fileBox = await row.locator('[data-kind="file-card"]').boundingBox();
+    expect(bubbleBox && pasteBox && fileBox ? pasteBox.y < bubbleBox.y && fileBox.y < bubbleBox.y : false).toBe(true);
     // 点开看全文：粘贴卡显示粘贴原文；文件卡走 attachment-get 显示文件内容。
     await row.locator('[data-kind="paste-open"]').click();
-    await expect(row.locator('[data-kind="paste-preview"]')).toContainText('BUBBLE-PASTE-START');
+    const pastePreview = row.locator('[data-kind="paste-preview"]');
+    await expect(pastePreview).toContainText('BUBBLE-PASTE-START');
+    // 预览内联在 user-message-row 里，不是 portal。
+    await expect(pastePreview).toHaveCount(1);
+    expect(await pastePreview.evaluate((element) => element.closest('[data-kind="user-message-row"]') !== null)).toBe(true);
     await row.locator('[data-kind="file-open"]').click();
-    await expect(row.locator('[data-kind="file-preview"]')).toContainText('BUBBLE-FILE');
+    const filePreview = row.locator('[data-kind="file-preview"]');
+    await expect(filePreview).toContainText('BUBBLE-FILE');
+    await expect(filePreview).toHaveCount(1);
+    expect(await filePreview.evaluate((element) => element.closest('[data-kind="user-message-row"]') !== null)).toBe(true);
 
     // 刷新后不变（回放和实时同源：都从 user/message 的块派生）。
     await page.reload();
@@ -201,11 +216,85 @@ test('气泡卡片：文字+1001字粘贴+一个文件 → 一张粘贴卡、一
     await expect(reloaded.locator('[data-kind="file-card"]')).toHaveCount(1);
     await expect(reloaded.locator('[data-kind="user-bubble"]')).toContainText('看这个粘贴和这个文件');
     await expect(reloaded.locator('[data-kind="user-bubble"]')).not.toContainText('BUBBLE-PASTE-START');
+    // 刷新后点开全文：粘贴卡和文件卡都还能走对路径（文件卡是 attachment-get）。
+    await reloaded.locator('[data-kind="paste-open"]').click();
+    const reloadedPaste = reloaded.locator('[data-kind="paste-preview"]');
+    await expect(reloadedPaste).toHaveCount(1);
+    await expect(reloadedPaste).toContainText('BUBBLE-PASTE-START');
+    expect(await reloadedPaste.evaluate((element) => element.closest('[data-kind="user-message-row"]') !== null)).toBe(true);
+    await reloaded.locator('[data-kind="file-open"]').click();
+    const reloadedFile = reloaded.locator('[data-kind="file-preview"]');
+    await expect(reloadedFile).toHaveCount(1);
+    await expect(reloadedFile).toContainText('BUBBLE-FILE');
   } finally {
     await fixture.close();
   }
 });
 
+
+/// T013 F1（覆盖缺口）：只粘一段、输入框一个字都没打，也能发；卡片在、没有空气泡。
+test('气泡卡片：只发一段粘贴（输入框为空）→ 一条我的消息、粘贴卡、没有空正文气泡', async ({ page }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    const input = page.locator('[data-kind="composer-input"]');
+    await input.evaluate((element) => {
+      const data = new DataTransfer();
+      data.setData('text/plain', 'PASTE-ONLY-START' + String.fromCharCode(10) + 'p'.repeat(1000));
+      element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true }));
+    });
+    await expect(page.locator('[data-kind="paste-card"]')).toHaveCount(1);
+    await expect(input).toHaveValue('');
+    await page.locator('[data-kind="send"]').click();
+
+    const row = page.locator('[data-kind="user-message-row"]').last();
+    await expect(row).toBeVisible({ timeout: 15_000 });
+    await expect(row.locator('[data-kind="user-cards"]')).toContainText('PASTE-ONLY-START');
+    await expect(row.locator('[data-kind="paste-card"]')).toHaveCount(1);
+    await expect(row.locator('[data-kind="paste-card"]')).toContainText('行');
+    // 正文一个字都没有：不画空气泡。
+    await expect(row.locator('[data-kind="user-bubble"]')).toHaveCount(0);
+    // 这一轮照常跑完（不是只发了个空消息）。
+    await expect(page.locator('[data-kind="answer"]').last()).toContainText('（T007 e2e 假回放）', {
+      timeout: 30_000,
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
+/// T013 F1（覆盖缺口）：只拖一个文件直接发、输入框为空；文件卡有类型和大小，没有空气泡。
+test('气泡卡片：只发一个文件（输入框为空）→ 文件卡有类型和大小、没有空正文气泡', async ({ page }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    await page.locator('[data-kind="composer"]').evaluate((element) => {
+      const data = new DataTransfer();
+      data.items.add(new File(['FILE-ONLY-CONTENT' + String.fromCharCode(10)], 'only.md', { type: 'text/markdown' }));
+      element.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }));
+    });
+    await expect(page.locator('[data-kind="composer"] [data-kind="file-card"]')).toHaveCount(1, { timeout: 20_000 });
+    await expect(page.locator('[data-kind="composer-input"]')).toHaveValue('');
+    await page.locator('[data-kind="send"]').click();
+
+    const row = page.locator('[data-kind="user-message-row"]').last();
+    await expect(row).toBeVisible({ timeout: 15_000 });
+    const card = row.locator('[data-kind="file-card"]');
+    await expect(card).toHaveCount(1);
+    await expect(card).toContainText('only.md');
+    // 日志的 file 块没有 mime：类型从 .md 后缀推。
+    await expect(card).toContainText('Markdown');
+    await expect(card).toContainText('1KB');
+    // 正文一个字都没有：不画空气泡；文件内容也不会漏进正文。
+    await expect(row.locator('[data-kind="user-bubble"]')).toHaveCount(0);
+    await expect(row).not.toContainText('FILE-ONLY-CONTENT');
+    await expect(page.locator('[data-kind="answer"]').last()).toContainText('（T007 e2e 假回放）', {
+      timeout: 30_000,
+    });
+  } finally {
+    await fixture.close();
+  }
+});
 
 /// T013 F1：失败块的「再发一次」把你发过的粘贴一起再发一次（不是只剩打的字）。
 test('再发一次：粘贴跟着重发（两次 user/message 都有 paste 块）', async ({ page, request }) => {
