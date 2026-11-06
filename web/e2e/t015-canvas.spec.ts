@@ -1,5 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
+import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { startKernelFixture, type KernelFixture } from './service-fixture';
 
@@ -201,10 +203,25 @@ test('内容超过 420px：封顶 420、标题栏出「展开」，点了展开�
 test('/canvas-frame：CSP 头逐字对上，直接打开报错，非父窗口的消息被忽略', async ({ page, request }) => {
   const fixture = await startKernelFixture({ canvas: 'interactive' });
   try {
-    // 不要 cookie，只要 Host 对。
-    const response = await request.get(fixture.baseUrl + '/canvas-frame');
-    expect(response.status()).toBe(200);
-    expect(response.headers()['content-security-policy']).toBe(CANVAS_FRAME_CSP);
+    // 不要 cookie，只要 Host 对。两条路径都要带同一份 CSP：
+    // /canvas-frame.html 是 public 里的同名文件，曾被静态 fallback 原样 200（无 CSP）。
+    for (const path of ['/canvas-frame', '/canvas-frame.html']) {
+      const response = await request.get(fixture.baseUrl + path);
+      expect(response.status(), path).toBe(200);
+      expect(response.headers()['content-security-policy'], path).toBe(CANVAS_FRAME_CSP);
+      expect(response.headers()['content-security-policy'], path).toContain(
+        "frame-ancestors 'self'",
+      );
+    }
+
+    // 大小写变体也不能被静态 fallback 原样发出来（macOS 的文件系统不分大小写）：
+    // 要么 404，要么和官方路径一样带 CSP，不能 200 + 无头。
+    const caseVariant = await request.get(fixture.baseUrl + '/CANVAS-FRAME.HTML');
+    expect(
+      caseVariant.status() === 404 ||
+        caseVariant.headers()['content-security-policy'] === CANVAS_FRAME_CSP,
+      '大小写变体走了静态 fallback 且没有 CSP',
+    ).toBe(true);
 
     // 直接打开（不在 iframe 里）：外壳自检报错。
     const errors: string[] = [];
@@ -315,6 +332,75 @@ test('死循环画布：页面计数器照走，画布能收起', async ({ page 
     await page.getByRole('button', { name: '收起画布', exact: true }).click();
     await expect(page.locator('iframe[data-kind="canvas-frame"]')).toHaveCount(0);
   } finally {
+    await fixture.close();
+  }
+});
+
+test('另一个 localhost 端口嵌入：两条路径都被 frame-ancestors 挡住，注入 render 不生效', async ({
+  page,
+}) => {
+  const fixture = await startKernelFixture({ canvas: 'interactive' });
+  // 对手页：另一个 localhost 端口上的普通页面，负责嵌 iframe、发 render、收注入脚本的回执。
+  const attacker = createServer((request, response) => {
+    if (request.url !== '/') {
+      response.writeHead(404);
+      response.end();
+      return;
+    }
+    response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+    response.end(
+      '<!doctype html><meta charset="utf-8"><body><script>' +
+        'window.__pwned = 0;' +
+        'addEventListener("message", function (event) {' +
+        '  if (event.data && event.data.pwned) window.__pwned += 1;' +
+        '});' +
+        '</script></body>',
+    );
+  });
+  try {
+    await new Promise<void>((resolve) => attacker.listen(0, '127.0.0.1', resolve));
+    const attackerPort = (attacker.address() as AddressInfo).port;
+    expect(attackerPort).not.toBe(Number(new URL(fixture.baseUrl).port));
+    await page.goto('http://127.0.0.1:' + String(attackerPort) + '/');
+
+    for (const path of ['/canvas-frame', '/canvas-frame.html']) {
+      const pwned = await page.evaluate(
+        async ({ base, path }) => {
+          const scope = window as unknown as { __pwned: number };
+          scope.__pwned = 0;
+          for (const old of Array.from(document.querySelectorAll('iframe'))) old.remove();
+          const frame = document.createElement('iframe');
+          frame.src = base + path;
+          document.body.append(frame);
+          const html =
+            '<script>parent.postMessage({ pwned: true }, "*")<' +
+            '/script><div id="pwned">pwned</div>';
+          // 外壳脚本就绪前消息会丢，重发几次；被 frame-ancestors 挡住时一次也到不了。
+          for (let attempt = 0; attempt < 20; attempt += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            frame.contentWindow?.postMessage({ aiosHost: true, type: 'render', html }, '*');
+          }
+          await new Promise((resolve) => setTimeout(resolve, 300));
+          return scope.__pwned;
+        },
+        { base: fixture.baseUrl, path },
+      );
+      expect(pwned, path + ' 被另一个 localhost 端口嵌入并注入了 render').toBe(0);
+
+      // 再用 Playwright 的跨源视角看 #pwned；被挡的 frame 可能根本拿不到文档。
+      let nodes = 0;
+      for (const frame of page.frames()) {
+        if (frame === page.mainFrame()) continue;
+        try {
+          nodes += await frame.locator('#pwned').count();
+        } catch {
+          // frame 没有可访问的文档（被 frame-ancestors 挡住）。
+        }
+      }
+      expect(nodes, path + ' 的注入内容进了 DOM').toBe(0);
+    }
+  } finally {
+    await new Promise<void>((resolve) => attacker.close(() => resolve()));
     await fixture.close();
   }
 });
