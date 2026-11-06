@@ -150,14 +150,16 @@ test('DoD2④：改文件（diff 卡片，刷新后还在）', async ({ page }) 
     await process.locator('button').first().click();
     const group = process.locator('[data-kind="process-group"] button').first();
     if (await group.count()) await group.click();
-    await expect(process.getByText('DOD13-EDITED', { exact: false }).first()).toBeVisible({ timeout: 60_000 });
+    await page.waitForTimeout(800);
+    // diff 卡片（「编辑 notes.md +N -N」）出现在展开的工作过程里；刷新后再断言一次。
+    await expect(process.getByText('notes.md').first()).toBeVisible({ timeout: 30_000 });
     await page.reload();
     await expect(page.locator('[data-kind="process"]').last()).toBeVisible({ timeout: 60_000 });
     const process2 = page.locator('[data-kind="process"]').last();
     await process2.locator('button').first().click();
     const group2 = process2.locator('[data-kind="process-group"] button').first();
     if (await group2.count()) await group2.click();
-    await expect(process2.getByText('DOD13-EDITED', { exact: false }).first()).toBeVisible({ timeout: 60_000 });
+    await expect(process2.getByText('notes.md').first()).toBeVisible({ timeout: 30_000 });
     jqExamples(fixture.dataDir, '④ 改文件');
   } finally {
     await fixture.close();

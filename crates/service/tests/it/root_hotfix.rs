@@ -145,7 +145,11 @@ async fn connection_save_keeps_existing_selection_after_root_ok() {
     let data = tempdir().unwrap();
     let cwd = tempdir().unwrap();
     let identity = data.path().join("identity.txt");
-    let host = RootHost::open(options(data.path(), &identity, cwd.path()), DEFAULT_CONTEXT_WINDOW).await;
+    let host = RootHost::open(
+        options(data.path(), &identity, cwd.path()),
+        DEFAULT_CONTEXT_WINDOW,
+    )
+    .await;
     let save = |id: &str, preset: &str, endpoint: &str| ConnectionSaveRequest {
         id: id.to_owned(),
         name: id.to_owned(),
@@ -158,9 +162,13 @@ async fn connection_save_keeps_existing_selection_after_root_ok() {
         auth_header: None,
     };
     // 空库（root unavailable）：存 A → 被设为当前选择。
-    host.dispatch(Call::ConnectionSave(save("deepseek", "deepseek", "http://127.0.0.1:1")))
-        .await
-        .expect("save A");
+    host.dispatch(Call::ConnectionSave(save(
+        "deepseek",
+        "deepseek",
+        "http://127.0.0.1:1",
+    )))
+    .await
+    .expect("save A");
     // recheck 把 root 拉起来（A 在，factory 能解析）。
     let rechecked = host
         .dispatch(Call::Recheck(RecheckRequest {}))
@@ -169,9 +177,13 @@ async fn connection_save_keeps_existing_selection_after_root_ok() {
     let json = serde_json::to_value(&rechecked).unwrap();
     assert_eq!(json["root"]["state"], "ok", "recheck 要恢复：{json}");
     // root Ok 之后存 B：不能换掉当前选择。
-    host.dispatch(Call::ConnectionSave(save("minimax-cn", "minimax-cn", "http://127.0.0.1:1/anthropic")))
-        .await
-        .expect("save B");
+    host.dispatch(Call::ConnectionSave(save(
+        "minimax-cn",
+        "minimax-cn",
+        "http://127.0.0.1:1/anthropic",
+    )))
+    .await
+    .expect("save B");
     assert_eq!(
         service::settings::load(data.path())
             .last_selection
