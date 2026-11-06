@@ -8,6 +8,8 @@ import { startKernelFixture, type KernelFixture } from './service-fixture';
 /**
  * T015.1（画布外壳）：画布显示、主题变量、420px、刷新回初始、/canvas-frame 的 CSP 和自检、
  * 地址清单和隔离、死循环不卡页面。
+ * T015.2（版本）：第 2 版用 edits 出、旧版缩成一行、点了跳到最新、标题栏切版本、刷新回最新；
+ * 页面切到旧版后发一句，发给模型的画布仍是最新版。
  *
  * 画布那一轮由真内核执行 canvas 工具产生（夹具只是假模型的回放脚本），所以页面看到的
  * HTML 一定来自日志里的 tool/result.meta.canvas。
@@ -404,3 +406,102 @@ test('另一个 localhost 端口嵌入：两条路径都被 frame-ancestors 挡�
     await fixture.close();
   }
 });
+
+/** 第 2 版：第 1 版那一轮缩成一行，点了跳到最新；标题栏切版本；刷新回最新。 */
+test('第 2 版：旧版缩成一行、点它跳到最新；标题栏切版本，刷新回最新', async ({ page }) => {
+  const fixture = await startKernelFixture({ canvas: 'versions' });
+  try {
+    await page.goto(urlOf(fixture));
+    await ask(page);
+    await waitCanvas(page, '每月存钱算一算');
+    await expect((await canvasFrame(page)).locator('#v')).toHaveText('1');
+
+    // 第二句：Kind 用 edits 给同一个画布出第 2 版。
+    await ask(page, '把柱子换成折线');
+    const stub = page.locator('[data-kind="canvas-stub"]');
+    await expect(stub).toHaveCount(1, { timeout: 40_000 });
+    await expect(stub).toContainText('画布 · 每月存钱算一算');
+    await expect(stub).toContainText('第 1 版');
+    await expect(stub).toContainText('第一版：三个滑块');
+    await expect(stub).toContainText('已有第 2 版');
+
+    // 第 2 版在最新那一轮展开；内容来自日志里的 edits 结果。
+    await expect(page.locator('iframe[data-kind="canvas-frame"]')).toHaveCount(1);
+    const live = await canvasFrame(page);
+    await expect(live.locator('#v')).toHaveText('2');
+    await expect(live.locator('#total')).toHaveText('¥1,260,000');
+
+    // 点旧版那一行：滚到出最新版的那一轮（往下走）。
+    const scroller = page.locator('[data-pane="conversation"] [data-virtuoso-scroller="true"]');
+    await stub.scrollIntoViewIfNeeded();
+    const before = await scroller.evaluate((element) => element.scrollTop);
+    await stub.click();
+    await expect
+      .poll(() => scroller.evaluate((element) => element.scrollTop), { timeout: 15_000 })
+      .toBeGreaterThan(before);
+    await expect(page.locator('[data-kind="canvas"]')).toBeInViewport();
+
+    // 标题栏切到第 1 版：只在页面上切。
+    const versions = page.locator('[data-kind="canvas-versions"]');
+    await versions.click();
+    await page.locator('[data-kind="canvas-version"][data-version="1"]').click();
+    await expect(versions).toContainText('第 1 版');
+    await expect(versions).toContainText('旧');
+    await expect((await canvasFrame(page)).locator('#v')).toHaveText('1');
+    await expect((await canvasFrame(page)).locator('#total')).toHaveText('¥378,000');
+
+    // 刷新：回到最新版。
+    await page.reload();
+    await waitCanvas(page, '每月存钱算一算');
+    await expect(page.locator('[data-kind="canvas-versions"]')).toContainText('第 2 版');
+    await expect((await canvasFrame(page)).locator('#v')).toHaveText('2');
+  } finally {
+    await fixture.close();
+  }
+});
+
+/** 页面切到第 1 版以后发一句：发给模型的画布仍是第 2 版（日志 + 请求体各一条，故事 7）。 */
+test('切到第 1 版以后发一句：请求里给模型的画布仍是第 2 版', async ({ page }) => {
+  const fixture = await startKernelFixture({ canvas: 'versions' });
+  try {
+    await page.goto(urlOf(fixture));
+    await ask(page);
+    await waitCanvas(page, '每月存钱算一算');
+    await ask(page, '把柱子换成折线');
+    const versions = page.locator('[data-kind="canvas-versions"]');
+    await expect(versions).toHaveCount(1, { timeout: 40_000 });
+
+    // 页面上切到第 1 版。
+    await versions.click();
+    await page.locator('[data-kind="canvas-version"][data-version="1"]').click();
+    await expect((await canvasFrame(page)).locator('#v')).toHaveText('1');
+
+    // 第 3 轮：模型只回一句话（夹具第 5 条）。
+    await ask(page, '那这样呢');
+    await expect(
+      page.locator('[data-kind="assistant-answer"]').last(),
+    ).toContainText('好的。', { timeout: 30_000 });
+
+    // 请求体：这一轮给模型的历史里，画布仍是第 2 版（页面切版本没有写回日志，也没有改请求）。
+    const request = await fixture.lastRequest();
+    expect(request, '要拿到第 3 轮的请求体').toBeTruthy();
+    const body = JSON.stringify(request);
+    expect(body).toContain('第 2 版已显示（cv_1）');
+    expect(body).toContain('第二版：柱子换成折线');
+    expect(body).toContain('¥1,260,000');
+
+    // 日志：最后一条 tool/result.meta.canvas 是第 2 版，全文是改过的那份。
+    const events = await sessionEvents(fixture);
+    const canvases = events
+      .filter((event) => event.type === 'tool/result' && event.data.meta?.canvas)
+      .map((event) => event.data.meta!.canvas as Record<string, unknown>);
+    expect(canvases).toHaveLength(2);
+    expect(canvases[1].n).toBe(2);
+    expect(canvases[1].note).toBe('第二版：柱子换成折线');
+    expect(String(canvases[1].html)).toContain('<div id="v">2</div>');
+    expect(String(canvases[1].html)).toContain('¥1,260,000');
+  } finally {
+    await fixture.close();
+  }
+});
+

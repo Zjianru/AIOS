@@ -116,8 +116,9 @@ export interface FixtureOptions {
   /// T013.5：工具做完后被停下的一轮（工作过程页的「已停止」）。
   t013Interrupted?: boolean;
   /// T015.1：画布夹具。interactive 是拖滑块/换标签、内容超过 420px 的那张；cdn 验地址清单和隔离；
-  /// loop 验死循环不卡页面。每份都是手写的模型回放脚本（第一轮回 canvas 工具调用，第二轮回一句回答）。
-  canvas?: 'interactive' | 'cdn' | 'loop';
+  /// loop 验死循环不卡页面。T015.2 加 versions：同一画布两版（第 2 版用 edits 改），再一条第三轮回答。
+  /// 每份都是手写的模型回放脚本（第一轮回 canvas 工具调用，第二轮回一句回答）。
+  canvas?: 'interactive' | 'cdn' | 'loop' | 'versions';
   /// 每次模型回放延迟毫秒（T007.5 停止用例要在运行中按停止/Esc）。
   slowMs?: number;
   /// first request 回一次 ask_user_question（两题：一题选项、一题自己写）。
