@@ -671,43 +671,55 @@ test('草稿里的「来自画布」刷新后还在；移除标记再发，日�
 
 /* ───────── T015.5：正在画、出错、全屏、存成文件 ───────── */
 
+/** 另开一条 WS 取第一帧 ready（页面自己那条已经在用）。 */
+async function readReady(page: Page): Promise<Record<string, unknown>> {
+  return page.evaluate(
+    () =>
+      new Promise<Record<string, unknown>>((resolve, reject) => {
+        const socket = new WebSocket('ws://' + location.host + '/ws');
+        const timer = setTimeout(() => {
+          socket.close();
+          reject(new Error('等 ready 帧超时'));
+        }, 5000);
+        socket.onmessage = (event) => {
+          const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
+          if (frame.type !== 'ready') return;
+          clearTimeout(timer);
+          socket.close();
+          resolve(frame);
+        };
+        socket.onerror = () => {
+          clearTimeout(timer);
+          reject(new Error('WS 打不开'));
+        };
+      }),
+  );
+}
+
+/** 验收：ready 帧协议版本 7（T015.5），旧的 root/context 字段照旧。 */
+test('ready 帧：协议版本 7，旧的 root/context 字段不变', async ({ page }) => {
+  const fixture = await startKernelFixture({ canvas: 'interactive' });
+  try {
+    await page.goto(urlOf(fixture));
+    const ready = await readReady(page);
+    expect(ready.protocolVersion).toBe(7);
+    expect(ready.root).toEqual({ state: 'ok' });
+    expect(ready.context).toEqual(expect.objectContaining({ window: expect.any(Number) }));
+  } finally {
+    await fixture.close();
+  }
+});
+
 /**
  * 清单 9（故事 8）：流式过程中工作过程里有「正在画 · 标题」，结束后那一行消失、画布出现；
- * 会话日志里没有 tool-call-delta；ready 帧协议版本 7，旧字段不变。
+ * 会话日志里没有 tool-call-delta。
  */
-test('正在画：流式过程中有「正在画 · 标题」，结束后变成画布；日志没有 tool-call-delta，ready 是 7', async ({
+test('正在画：流式过程中有「正在画 · 标题」，结束后变成画布；日志没有 tool-call-delta', async ({
   page,
 }) => {
   const fixture = await startKernelFixture({ canvas: 'streaming' });
   try {
     await page.goto(urlOf(fixture));
-
-    // ready 帧：另开一条 WS（页面自己的那条已经在用），第一帧要带协议 7。
-    const ready = await page.evaluate(
-      () =>
-        new Promise<Record<string, unknown>>((resolve, reject) => {
-          const socket = new WebSocket('ws://' + location.host + '/ws');
-          const timer = setTimeout(() => {
-            socket.close();
-            reject(new Error('等 ready 帧超时'));
-          }, 5000);
-          socket.onmessage = (event) => {
-            const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
-            if (frame.type !== 'ready') return;
-            clearTimeout(timer);
-            socket.close();
-            resolve(frame);
-          };
-          socket.onerror = () => {
-            clearTimeout(timer);
-            reject(new Error('WS 打不开'));
-          };
-        }),
-    );
-    expect(ready.protocolVersion).toBe(7);
-    expect(ready.root).toEqual({ state: 'ok' });
-    expect(ready.context).toEqual(expect.objectContaining({ window: expect.any(Number) }));
-
     const drawing = page.locator('[data-kind="canvas-drawing"]');
     await ask(page);
     await expect(drawing).toContainText('正在画 · 每月存钱算一算', { timeout: 30_000 });
