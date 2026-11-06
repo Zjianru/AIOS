@@ -334,3 +334,66 @@ test('再发一次：粘贴跟着重发（两次 user/message 都有 paste 块�
   }
 });
 
+
+/// T013 验收 F1：真实浏览器里写剪贴板可能被拒（e2e 不授 clipboard 权限时就会）。
+/// 写失败、execCommand 兜底也失败 → 按钮显示「复制失败」，不装作成功。
+test('复制失败：写剪贴板被拒、兜底也失败 → 显示复制失败', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: () => Promise.reject(new DOMException('Write permission denied.', 'NotAllowedError')),
+      },
+    });
+    document.execCommand = () => false;
+  });
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    await send(page, '你好呀');
+    await expect(page.getByText('（T007 e2e 假回放）').first()).toBeVisible({ timeout: 30_000 });
+    const bubble = page.locator('[data-kind="user-bubble"]').first();
+    await bubble.hover();
+    const copy = bubble.locator('[data-kind="copy"]').first();
+    await expect(copy).toBeVisible();
+    await copy.click();
+    await expect(copy).toHaveAttribute('aria-label', '复制失败');
+    await expect(copy).toHaveAttribute('title', '复制失败');
+  } finally {
+    await fixture.close();
+  }
+});
+
+/// T013 验收 F1：clipboard 被拒时的兜底——隐藏 textarea + execCommand('copy')，兜底成功仍算复制成功。
+test('复制兜底：clipboard 被拒 → execCommand 复制到原文，显示已复制', async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as unknown as { copied: string }).copied = '';
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: () => Promise.reject(new DOMException('Write permission denied.', 'NotAllowedError')),
+      },
+    });
+    document.execCommand = (command: string) => {
+      if (command !== 'copy') return false;
+      const area = document.activeElement;
+      (window as unknown as { copied: string }).copied = area instanceof HTMLTextAreaElement ? area.value : '';
+      return true;
+    };
+  });
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    await send(page, '你好呀');
+    await expect(page.getByText('（T007 e2e 假回放）').first()).toBeVisible({ timeout: 30_000 });
+    const bubble = page.locator('[data-kind="user-bubble"]').first();
+    await bubble.hover();
+    const copy = bubble.locator('[data-kind="copy"]').first();
+    await copy.click();
+    await expect(copy).toHaveAttribute('aria-label', '已复制');
+    const copied = await page.evaluate(() => (window as unknown as { copied: string }).copied);
+    expect(copied).toBe('你好呀');
+  } finally {
+    await fixture.close();
+  }
+});

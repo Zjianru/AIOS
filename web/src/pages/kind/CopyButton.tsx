@@ -1,11 +1,46 @@
 /**
  * T013.6：复制按钮（照原型 a5d6f58 的 CopyButton）——回答、你的消息、代码块共用。
- * 点了换成对勾 1.5 秒；复制的永远是原文。
+ * T013 验收 F1：写入成功才显示对勾；被拒就走隐藏 textarea + execCommand 兜底，还失败就显示「复制失败」，
+ * 不装作成功（真实浏览器没给剪贴板写权限时，原来的写法会把失败吞掉还打对勾）。
  */
 
 import { useEffect, useRef, useState } from 'react';
 import { Check, Copy } from 'lucide-react';
 import { cn } from '@/lib/utils';
+
+type CopyState = 'idle' | 'copied' | 'failed';
+
+/** 写入剪贴板：先走异步 API；被拒或没有这个 API 时走 execCommand 兜底。 */
+async function writeClipboard(value: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {
+    // 没授权/被拒：继续走兜底。
+  }
+  return legacyCopy(value);
+}
+
+function legacyCopy(value: string): boolean {
+  const area = document.createElement('textarea');
+  area.value = value;
+  area.setAttribute('readonly', '');
+  area.style.position = 'fixed';
+  area.style.top = '0';
+  area.style.left = '-9999px';
+  document.body.appendChild(area);
+  try {
+    area.focus();
+    area.select();
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    document.body.removeChild(area);
+  }
+}
 
 interface CopyButtonProps {
   /** 要复制的文字；给函数就是点的时候再取（代码块从 DOM 里取）。 */
@@ -18,7 +53,7 @@ interface CopyButtonProps {
 }
 
 export function CopyButton({ text, label, kind = 'copy', className }: CopyButtonProps) {
-  const [copied, setCopied] = useState(false);
+  const [state, setState] = useState<CopyState>('idle');
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
     () => () => {
@@ -27,19 +62,23 @@ export function CopyButton({ text, label, kind = 'copy', className }: CopyButton
     [],
   );
   const onClick = () => {
-    const value = typeof text === 'function' ? text() : text;
-    void navigator.clipboard?.writeText(value).catch(() => undefined);
-    setCopied(true);
     if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => setCopied(false), 1500);
+    const value = typeof text === 'function' ? text() : text;
+    // 空内容没有可复制的：直接算失败，也不去写空串。
+    void (async () => {
+      const ok = value !== '' && (await writeClipboard(value));
+      setState(ok ? 'copied' : 'failed');
+      timer.current = setTimeout(() => setState('idle'), 1500);
+    })();
   };
-  const Icon = copied ? Check : Copy;
+  const labelText = state === 'copied' ? '已复制' : state === 'failed' ? '复制失败' : '复制';
+  const Icon = state === 'copied' ? Check : Copy;
   return (
     <button
       type="button"
       onClick={onClick}
-      aria-label={copied ? '已复制' : '复制'}
-      title={copied ? '已复制' : '复制'}
+      aria-label={labelText}
+      title={labelText}
       data-kind={kind}
       className={cn(
         'inline-flex shrink-0 items-center gap-1 rounded-btn text-ink-3 transition-colors hover:bg-hover hover:text-ink',
@@ -47,8 +86,14 @@ export function CopyButton({ text, label, kind = 'copy', className }: CopyButton
         className,
       )}
     >
-      <Icon className={cn('size-3.5', copied && 'text-done')} />
-      {label ? <span>{copied ? '已复制' : label}</span> : null}
+      <Icon
+        className={cn(
+          'size-3.5',
+          state === 'copied' && 'text-done',
+          state === 'failed' && 'text-fail',
+        )}
+      />
+      {label ? <span>{state === 'idle' ? label : labelText}</span> : null}
     </button>
   );
 }
