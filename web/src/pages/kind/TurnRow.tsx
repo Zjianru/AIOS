@@ -240,7 +240,11 @@ function FailureBlock({ view }: { view: TurnViewData }) {
         <button
           type="button"
           disabled={Boolean(streaming)}
-          onClick={() => view.user && send(view.user.text)}
+          // F1：粘贴和文件跟着一起再发一次（不是只剩打的字）。
+          onClick={() =>
+            view.user &&
+            send(view.user.text, { pastes: view.user.pastes, attachments: view.user.files })
+          }
           className="shrink-0 rounded-btn border border-line-2 px-2.5 py-1 text-2 text-ink-2 transition-colors hover:bg-hover hover:text-ink disabled:opacity-50"
         >
           再发一次
