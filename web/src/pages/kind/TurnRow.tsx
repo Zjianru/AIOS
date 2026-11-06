@@ -6,6 +6,7 @@
  */
 
 import { memo, useState } from 'react';
+import { toast } from 'sonner';
 import { ChevronRight, CircleAlert, RotateCw, Square } from 'lucide-react';
 import { CopyButton } from './CopyButton';
 import { Markdown } from './Markdown';
@@ -14,7 +15,9 @@ import { QuestionCard } from './QuestionCard';
 import { useKindStore, useStreamStore } from './kindStore';
 import { processStepsOf } from './turnViews';
 import { ProcessView } from './process/ProcessView';
-import type { CompactionView, TurnViewData } from './kindStore';
+import { AttachmentPreview, FileCard, PasteCard, pasteStats } from './composer/AttachmentCard';
+import { attachmentGet } from '@/data/service';
+import type { CompactionView, TurnUserView, TurnViewData } from './kindStore';
 import { go } from '@/app/navigate';
 import type { TextElement } from '@/data/types';
 import { cn } from '@/lib/utils';
@@ -33,6 +36,57 @@ function QuoteBlock({ lines }: { lines: string[] }) {
       className="my-1 border-l-2 border-line-2 pl-2 text-ink-2"
     >
       {lines.join(String.fromCharCode(10))}
+    </div>
+  );
+}
+
+/**
+ * 你的消息带着的东西（T013 F1，照原型 app-v14 TurnRow UserBubble）：
+ * 气泡上面一排卡片——粘贴卡和文件卡用输入框里的同一张卡；点开看全文。
+ */
+function UserCards({ user }: { user: TurnUserView }) {
+  const [openPaste, setOpenPaste] = useState<number | null>(null);
+  const [openFile, setOpenFile] = useState<{ name: string; text: string } | null>(null);
+  return (
+    <div className="flex max-w-[82%] flex-wrap items-center justify-end gap-2" data-kind="user-cards">
+      {user.pastes.map((paste, index) => (
+        <PasteCard
+          key={'paste-' + String(index)}
+          paste={paste}
+          onOpen={() => setOpenPaste(openPaste === index ? null : index)}
+        />
+      ))}
+      {user.files.map((file) => (
+        <FileCard
+          key={file.id + '-' + file.name}
+          file={file}
+          onOpen={() => {
+            void attachmentGet(file.id)
+              .then((result) =>
+                setOpenFile({ name: file.name, text: result.text ?? '（这个文件没有可显示的文字）' }),
+              )
+              .catch(() => toast('读不回这个文件', { description: file.name }));
+          }}
+        />
+      ))}
+      {openPaste !== null && user.pastes[openPaste] !== undefined ? (
+        <AttachmentPreview
+          kind="paste"
+          title={'粘贴内容 · ' + pasteStats(user.pastes[openPaste]).lines + ' 行 · ' + pasteStats(user.pastes[openPaste]).chars + ' 字'}
+          text={user.pastes[openPaste]}
+          onClose={() => setOpenPaste(null)}
+          className="w-full"
+        />
+      ) : null}
+      {openFile ? (
+        <AttachmentPreview
+          kind="file"
+          title={'文件全文 · ' + openFile.name}
+          text={openFile.text}
+          onClose={() => setOpenFile(null)}
+          className="w-full"
+        />
+      ) : null}
     </div>
   );
 }
@@ -276,17 +330,20 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
       ) : null}
 
       {view.user ? (
-        <div className="mb-2 mt-3 flex justify-end" data-kind="user-message-row">
-          <div
-            className="group/user relative max-w-[82%] rounded-2xl rounded-br-md border border-line-2 bg-raised px-3.5 py-2 text-4 leading-6 text-ink"
-            data-kind="user-bubble"
-          >
-            <UserBubbleText text={view.user.text} elements={view.user.elements} />
-            <CopyButton
-              text={view.user.text}
-              className="absolute -right-8 top-1 opacity-0 transition-opacity group-hover/user:opacity-100"
-            />
-          </div>
+        <div className="mb-2 mt-3 flex flex-col items-end gap-1.5" data-kind="user-message-row">
+          {view.user.pastes.length > 0 || view.user.files.length > 0 ? <UserCards user={view.user} /> : null}
+          {view.user.text ? (
+            <div
+              className="group/user relative max-w-[82%] rounded-2xl rounded-br-md border border-line-2 bg-raised px-3.5 py-2 text-4 leading-6 text-ink"
+              data-kind="user-bubble"
+            >
+              <UserBubbleText text={view.user.text} elements={view.user.elements} />
+              <CopyButton
+                text={view.user.text}
+                className="absolute -right-8 top-1 opacity-0 transition-opacity group-hover/user:opacity-100"
+              />
+            </div>
+          ) : null}
         </div>
       ) : (
         <div className="mb-2 mt-3 flex items-center gap-1.5 text-2 text-ink-3">

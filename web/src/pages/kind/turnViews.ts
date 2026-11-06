@@ -1,6 +1,6 @@
 /// T009.7：Kind 的轮次视图与从日志事件派生（只搬代码，行为不变）。
 
-import type { ServiceEvent } from '@/data/service';
+import type { SendAttachmentRef, ServiceEvent } from '@/data/service';
 import type { AskAnswer, AskQuestion, FailureCause } from '@/data/fixtures/kindLive';
 import type { KindCard, TextElement, TurnStatus } from '@/data/types';
 import { modelErrorReason, retryReason } from '@/data/errors';
@@ -54,12 +54,25 @@ export interface CompactionView {
   summary: string;
 }
 
+/**
+ * 你的消息（T013 F1）：正文只放打的字；每段粘贴、每个文件各是一张卡。
+ * 块从日志的 user/message 来，实时和回放同一份。
+ */
+export interface TurnUserView {
+  text: string;
+  elements: TextElement[];
+  /** paste: true 的文字块，一段一条（不拼进正文）。 */
+  pastes: string[];
+  /** file 块（服务发消息时写下的 id/名字/大小）。 */
+  files: SendAttachmentRef[];
+}
+
 export interface TurnViewData {
   id: string;
   startedAt: number | null;
   durationMs: number | null;
   status: TurnStatus;
-  user: { text: string; elements: TextElement[] } | null;
+  user: TurnUserView | null;
   reasoning: { summary: string[]; full: string; seconds: number } | null;
   tools: ToolStep[];
   cards: KindCard[];
@@ -105,7 +118,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     turn: number;
     startedAt: number | null;
     endedAt: number | null;
-    user: string | null;
+    user: TurnUserView | null;
     answer: string | null;
     status: TurnStatus;
     tools: ToolStep[];
@@ -162,6 +175,46 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       .join('');
   };
 
+  /**
+   * T013 F1：你的消息按块拆开——正文只留打的字；paste 块各是一段粘贴；file 块各是一个文件。
+   * 粘贴原文不进正文（Claude F1：气泡上是一排卡片，不是一大段字）。
+   */
+  const userOf = (message: unknown): TurnUserView | null => {
+    if (!message || typeof message !== 'object') return null;
+    const content = (message as { content?: unknown }).content;
+    if (!Array.isArray(content)) return null;
+    const text: string[] = [];
+    const pastes: string[] = [];
+    const files: SendAttachmentRef[] = [];
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue;
+      const typed = block as {
+        type?: string;
+        text?: unknown;
+        paste?: unknown;
+        attachmentId?: unknown;
+        name?: unknown;
+        bytes?: unknown;
+      };
+      if (typed.type === 'text') {
+        const value = typeof typed.text === 'string' ? typed.text : '';
+        if (typed.paste === true) pastes.push(value);
+        else text.push(value);
+        continue;
+      }
+      if (typed.type === 'file' && typeof typed.attachmentId === 'string') {
+        files.push({
+          id: typed.attachmentId,
+          name: typeof typed.name === 'string' ? typed.name : '',
+          bytes: typeof typed.bytes === 'number' ? typed.bytes : 0,
+        });
+      }
+    }
+    const body = text.join('');
+    if (!body && pastes.length === 0 && files.length === 0) return null;
+    return { text: body, elements: [], pastes, files };
+  };
+
   const textOfToolResult = (message: unknown): string => {
     if (!message || typeof message !== 'object') return '';
     const content = (message as { content?: unknown }).content;
@@ -212,8 +265,8 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         const kind =
           typeof source?.source === 'string' ? source.source : source?.source?.kind;
         if (kind !== undefined && kind !== 'user' && kind !== 'skill-invocation') break;
-        const text = textOf(data.message);
-        if (text) ensure(turn).user = text;
+        const view = userOf(data.message);
+        if (view) ensure(turn).user = view;
         break;
       }
       case 'assistant/message': {
@@ -407,7 +460,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
           ? null
           : Math.max(0, raw.endedAt - raw.startedAt),
       status: raw.status,
-      user: raw.user ? { text: raw.user, elements: [] } : null,
+      user: raw.user,
       reasoning: null,
       tools: raw.tools,
       cards: [],

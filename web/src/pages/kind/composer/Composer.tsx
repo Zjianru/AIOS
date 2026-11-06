@@ -12,12 +12,13 @@
  */
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
-import { FileText, Quote, X } from 'lucide-react';
+import { FileText, Quote } from 'lucide-react';
 import { toast } from 'sonner';
 import { useKindStore } from '../kindStore';
 import { attachmentGet, attachmentPut, fileReferences } from '@/data/service';
 import type { FileReferenceEntry, SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
+import { AttachmentPreview, FileCard, PasteCard, pasteStats } from './AttachmentCard';
 
 const LARGE_PASTE_CHAR_THRESHOLD = 1000;
 const MAX_HEIGHT = 240;
@@ -45,21 +46,6 @@ interface ComposerProps {
 /** 本地记录文件的 MIME（发送时只带 id/name/bytes；预览用）。 */
 interface ComposerAttachment extends SendAttachmentRef {
   mime: string;
-}
-
-/** 文件类型的人话（故事 7：卡片上有类型与大小）。 */
-function typeLabel(mime: string): string {
-  if (mime === 'text/plain') return '文字';
-  if (mime === 'application/json') return 'JSON';
-  if (mime === 'text/markdown') return 'Markdown';
-  if (mime === 'text/csv') return 'CSV';
-  if (mime.startsWith('text/')) return mime.slice(5) || '文字';
-  return mime || '文字';
-}
-
-/** 粘贴文本的行数/字数（故事 8：卡片上要显示）。 */
-function pasteStats(text: string): { lines: number; chars: number } {
-  return { lines: text.split(String.fromCharCode(10)).length, chars: [...text].length };
 }
 
 interface AtMenuState {
@@ -383,68 +369,26 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       <div className="rounded-card border border-line-2 bg-raised/70 px-3 py-2 transition-colors">
         {pastes.length > 0 || attachments.length > 0 ? (
           <div ref={cardsRef} className="mb-1.5 flex gap-1.5 overflow-x-auto pb-1" data-kind="composer-cards">
-            {pastes.map((paste, index) => {
-              const stats = pasteStats(paste);
-              return (
-                <span
-                  key={'paste-' + index}
-                  data-kind="paste-card"
-                  className="flex shrink-0 items-center gap-1 rounded-btn border border-line-2 bg-pane px-2 py-1 text-2 text-ink-2"
-                >
-                  <FileText className="size-3" />
-                  <button
-                    type="button"
-                    data-kind="paste-open"
-                    onClick={() => setPastePreview(index)}
-                    className="flex min-w-0 items-center gap-1 text-left hover:text-ink"
-                  >
-                    <span className="max-w-[160px] truncate">{paste.replace(/\s+/g, ' ').slice(0, 80)}</span>
-                    <span className="shrink-0 text-ink-3">
-                      {stats.lines} 行 · {stats.chars} 字
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="移除粘贴"
-                    onClick={() => setPastes((previous) => previous.filter((_, item) => item !== index))}
-                    className="text-ink-3 hover:text-ink"
-                  >
-                    <X className="size-3" />
-                  </button>
-                </span>
-              );
-            })}
-            {attachments.map((file, index) => (
-              <span
-                key={file.id + '-' + index}
-                data-kind="file-card"
-                className="flex shrink-0 items-center gap-1 rounded-btn border border-line-2 bg-pane px-2 py-1 text-2 text-ink-2"
-              >
-                <FileText className="size-3" />
-                <button
-                  type="button"
-                  data-kind="file-open"
-                  onClick={() => {
-                    void attachmentGet(file.id)
-                      .then((result) => setFilePreview({ id: file.id, text: result.text ?? '（这个文件没有可显示的文字）' }))
-                      .catch(() => toast('读不回这个文件', { description: file.name }));
-                  }}
-                  className="flex min-w-0 items-center gap-1 text-left hover:text-ink"
-                >
-                  <span className="max-w-[150px] truncate">{file.name}</span>
-                  <span className="shrink-0 text-ink-3">
-                    {typeLabel(file.mime)} · {Math.max(1, Math.round(file.bytes / 1024))}KB
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  aria-label="移除文件"
-                  onClick={() => setAttachments((previous) => previous.filter((item) => item.id !== file.id))}
-                  className="text-ink-3 hover:text-ink"
-                >
-                  <X className="size-3" />
-                </button>
-              </span>
+            {pastes.map((paste, index) => (
+              <PasteCard
+                key={'paste-' + index}
+                paste={paste}
+                onOpen={() => setPastePreview(index)}
+                onRemove={() => setPastes((previous) => previous.filter((_, item) => item !== index))}
+              />
+            ))}
+            {attachments.map((file) => (
+              <FileCard
+                key={file.id + '-' + file.name}
+                file={file}
+                mime={file.mime}
+                onOpen={() => {
+                  void attachmentGet(file.id)
+                    .then((result) => setFilePreview({ id: file.id, text: result.text ?? '（这个文件没有可显示的文字）' }))
+                    .catch(() => toast('读不回这个文件', { description: file.name }));
+                }}
+                onRemove={() => setAttachments((previous) => previous.filter((item) => item.id !== file.id))}
+              />
             ))}
           </div>
         ) : null}
@@ -549,34 +493,22 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         </button>
       ) : null}
       {pastePreview !== null && pastes[pastePreview] !== undefined ? (
-        <div
-          data-kind="paste-preview"
-          className="absolute bottom-full left-3 mb-1 max-h-[240px] w-[420px] max-w-[calc(100%-24px)] overflow-auto rounded-card border border-line-2 bg-raised p-2 shadow-[var(--shadow-pop)]"
-        >
-          <div className="mb-1 flex items-center justify-between text-1 text-ink-3">
-            <span>
-              粘贴内容 · {pasteStats(pastes[pastePreview]).lines} 行 · {pasteStats(pastes[pastePreview]).chars} 字
-            </span>
-            <button type="button" aria-label="关闭粘贴全文" onClick={() => setPastePreview(null)} className="hover:text-ink">
-              <X className="size-3" />
-            </button>
-          </div>
-          <pre className="whitespace-pre-wrap break-words font-mono text-2 leading-5 text-ink-2">{pastes[pastePreview]}</pre>
-        </div>
+        <AttachmentPreview
+          kind="paste"
+          title={'粘贴内容 · ' + pasteStats(pastes[pastePreview]).lines + ' 行 · ' + pasteStats(pastes[pastePreview]).chars + ' 字'}
+          text={pastes[pastePreview]}
+          onClose={() => setPastePreview(null)}
+          className="absolute bottom-full left-3 mb-1 w-[420px] max-w-[calc(100%-24px)]"
+        />
       ) : null}
       {filePreview ? (
-        <div
-          data-kind="file-preview"
-          className="absolute bottom-full left-3 mb-1 max-h-[240px] w-[420px] max-w-[calc(100%-24px)] overflow-auto rounded-card border border-line-2 bg-raised p-2 shadow-[var(--shadow-pop)]"
-        >
-          <div className="mb-1 flex items-center justify-between text-1 text-ink-3">
-            <span>文件全文</span>
-            <button type="button" aria-label="关闭文件全文" onClick={() => setFilePreview(null)} className="hover:text-ink">
-              <X className="size-3" />
-            </button>
-          </div>
-          <pre className="whitespace-pre-wrap break-words font-mono text-2 leading-5 text-ink-2">{filePreview.text}</pre>
-        </div>
+        <AttachmentPreview
+          kind="file"
+          title="文件全文"
+          text={filePreview.text}
+          onClose={() => setFilePreview(null)}
+          className="absolute bottom-full left-3 mb-1 w-[420px] max-w-[calc(100%-24px)]"
+        />
       ) : null}
       {atMenu && atMenu.items.length > 0 ? (
         <div

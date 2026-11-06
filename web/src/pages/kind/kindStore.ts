@@ -22,7 +22,7 @@ import type { AskAnswer } from '@/data/fixtures/kindLive';
 import { mark } from '@/lib/perf';
 import { compactionViewOf, deriveTurnViews } from './turnViews';
 import type { TurnViewData } from './turnViews';
-export type { CompactionView, QuestionView, ToolStep, TurnViewData } from './turnViews';
+export type { CompactionView, QuestionView, ToolStep, TurnUserView, TurnViewData } from './turnViews';
 export { deriveTurnViews } from './turnViews';
 
 export const PAGE_LAST = 5;
@@ -238,8 +238,11 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let recheckTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempt = 0;
 let lastSeq = 0;
-/** 没送到内核的本地消息：viewId -> { requestId, text }；重发复用同一个 requestId。 */
-const unsentSends = new Map<string, { requestId: string; text: string }>();
+/** 没送到内核的本地消息：viewId -> { requestId, text, pastes, files }；重发复用同一个 requestId。 */
+const unsentSends = new Map<
+  string,
+  { requestId: string; text: string; pastes: string[]; files: { id: string; name: string; bytes: number }[] }
+>();
 
 function removeView(viewId: string): void {
   useKindStore.setState((state) => {
@@ -249,7 +252,12 @@ function removeView(viewId: string): void {
 }
 
 /** 发不出去时在对话里留一条「没送到内核」的本地消息（重发成功后移除）。 */
-function addUnsentView(viewId: string, text: string): void {
+function addUnsentView(
+  viewId: string,
+  text: string,
+  pastes: string[],
+  files: { id: string; name: string; bytes: number }[],
+): void {
   useKindStore.setState((state) => {
     if (state.views.some((view) => view.id === viewId)) return {};
     const view: TurnViewData = {
@@ -257,7 +265,7 @@ function addUnsentView(viewId: string, text: string): void {
       startedAt: null,
       durationMs: null,
       status: 'completed',
-      user: { text, elements: [] },
+      user: { text, elements: [], pastes, files },
       reasoning: null,
       tools: [],
       cards: [],
@@ -636,11 +644,14 @@ export const useKindStore = create<KindState>()((set, get) => ({
     // T013.8：返回是否受理成功（草稿只在成功时清）。
     const requestId = globalThis.crypto.randomUUID();
     const viewId = 'turn-999-unsent-' + requestId;
+    // F1：没送到的那条也把粘贴和文件带着，重发时原样再发一次。
+    const pastes = options?.pastes ?? [];
+    const files = options?.attachments ?? [];
     return sendMessage(text, requestId, options).then(
       () => true,
       () => {
-        unsentSends.set(viewId, { requestId, text });
-        addUnsentView(viewId, text);
+        unsentSends.set(viewId, { requestId, text, pastes, files });
+        addUnsentView(viewId, text, pastes, files);
         return false;
       },
     );
@@ -650,7 +661,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
     const pending = unsentSends.get(turnId);
     if (!pending) return;
     const viewId = turnId;
-    void sendMessage(pending.text, pending.requestId)
+    void sendMessage(pending.text, pending.requestId, { pastes: pending.pastes, attachments: pending.files })
       .then(() => {
         unsentSends.delete(viewId);
         removeView(viewId);
