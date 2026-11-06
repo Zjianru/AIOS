@@ -177,6 +177,14 @@ pub enum AgentEventWire {
     TextDelta {
         text: String,
     },
+    /// T015.5：工具调用参数的增量（不落日志；页面拿 canvas 的 title 画「正在画」）。
+    ToolCallDelta {
+        #[serde(rename = "callId")]
+        call_id: String,
+        name: String,
+        #[serde(rename = "argumentsDelta")]
+        arguments_delta: String,
+    },
     Usage {
         #[serde(
             rename = "inputTokens",
@@ -219,6 +227,15 @@ impl AgentEventWire {
             agent::AgentEvent::AssistantTextDelta { text } => {
                 Some(Self::TextDelta { text: text.clone() })
             }
+            agent::AgentEvent::ToolCallDelta {
+                call_id,
+                name,
+                arguments_delta,
+            } => Some(Self::ToolCallDelta {
+                call_id: call_id.clone(),
+                name: name.clone(),
+                arguments_delta: arguments_delta.clone(),
+            }),
             agent::AgentEvent::UsageReported { usage } => Some(Self::Usage {
                 input_tokens: usage.input_tokens,
                 output_tokens: usage.output_tokens,

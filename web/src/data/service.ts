@@ -43,8 +43,12 @@ export interface EventFrame {
 }
 
 export interface AgentWireEvent {
-  type: 'text-delta' | 'usage' | 'retrying';
+  type: 'text-delta' | 'usage' | 'retrying' | 'tool-call-delta';
   text?: string;
+  /** T015.5：工具参数增量（不落日志）；callId/name/argumentsDelta。 */
+  callId?: string;
+  name?: string;
+  argumentsDelta?: string;
   attempt?: number;
   maxAttempts?: number;
   delayMs?: number;
