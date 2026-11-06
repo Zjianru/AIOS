@@ -32,6 +32,7 @@ export function Hint({
       <TooltipContent
         side={side}
         sideOffset={6}
+        arrow={false}
         className="min-w-[180px] rounded-card border border-line-2 bg-raised px-3 py-2 text-2 text-ink-2 shadow-[var(--shadow-pop)]"
       >
         {content}
