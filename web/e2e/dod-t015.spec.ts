@@ -186,10 +186,16 @@ test('DoD2：真 key 四件事（MiniMax）', async ({ page }) => {
     await pollJq(logOf(), canvasVersionCountProbe, 3);
     const argsRaw = jq(canvasArgsProbe, logOf(), '③ 每次 canvas 调用的参数（第 3 版应只有 edits，没有 html）', third);
     const args = JSON.parse(argsRaw) as { note: string; hasHtml: boolean; edits: unknown }[];
+    // 真 key 的模型可能先漏 title 被 bad-args 拒一次再重试；只认最后一次调用和成功出来的第 3 版。
     const editsCalls = args.filter((item) => !item.hasHtml && Array.isArray(item.edits) && item.edits.length > 0);
-    expect(editsCalls.length).toBe(1);
-    expect(args[args.length - 1].hasHtml).toBeFalsy();
-    jq(canvasVersionsProbe, logOf(), '③ 第 3 版 meta', third);
+    expect(editsCalls.length).toBeGreaterThanOrEqual(1);
+    const lastCall = args[args.length - 1];
+    expect(lastCall.hasHtml).toBeFalsy();
+    expect(Array.isArray(lastCall.edits) && (lastCall.edits as unknown[]).length > 0).toBeTruthy();
+    const versionsRaw = jq(canvasVersionsProbe, logOf(), '③ 第 3 版 meta', third);
+    const versions = JSON.parse(versionsRaw) as { n: number; htmlLength: number }[];
+    expect(versions[versions.length - 1].n).toBe(3);
+    expect(versions[versions.length - 1].htmlLength).toBeGreaterThan(0);
     await page.screenshot({ path: path.join(EVIDENCE, 'T015.6-dod2-3-edits.png'), fullPage: true });
     record('3-edits', third);
 
