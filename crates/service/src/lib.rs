@@ -1644,19 +1644,15 @@ impl RootHost {
         // RootHost 的 recheck 走 model_factory → resolve_selection，只认 CLI 参数 /
         // settings.last_selection / id=="deepseek"；页面/HTTP 建连接（如 minimax-cn）
         // 如果不写 last_selection，recheck 永远报「还没有接模型」（root/unavailable）。
-        // 审计修正：只在没有有效选择时写（last_selection 为空 / 指向的连接已不存在），
-        // 避免重存连接或新增第二连接时改掉下次启动的默认选择。
-        let mut settings = settings::load(&self.options.data_dir);
-        let keep_existing = settings.last_selection.as_ref().is_some_and(|selection| {
-            self.keyring().ok().is_some_and(|keyring| {
-                keyring
-                    .view()
-                    .connections
-                    .iter()
-                    .any(|item| item.id == selection.connection)
-            })
-        });
-        if !keep_existing {
+        // 审计修正（第二轮）：只有「还没接上模型」——RootHost 状态 unavailable——时，
+        // 才把刚保存的连接设为当前选择；已接上（Ok）就不换，避免加第二个连接或
+        // 重存连接时悄悄改掉用户正在用的模型。
+        let set_selection = matches!(
+            &*self.state.lock().expect("root state 锁被毒化"),
+            RootState::Unavailable { .. }
+        );
+        if set_selection {
+            let mut settings = settings::load(&self.options.data_dir);
             settings.last_selection = Some(session::ModelSelection {
                 connection: connection.id.clone(),
                 model: connection.primary_model().to_owned(),
