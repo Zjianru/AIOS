@@ -33,7 +33,7 @@ export function Hint({
         side={side}
         sideOffset={6}
         arrow={false}
-        className="min-w-[180px] rounded-card border border-line-2 bg-raised px-3 py-2 text-2 text-ink-2 shadow-[var(--shadow-pop)]"
+        className="min-w-[180px] max-w-[280px] whitespace-normal break-words rounded-card border border-line-2 bg-raised px-3 py-2 text-2 text-ink-2 shadow-[var(--shadow-pop)]"
       >
         {content}
       </TooltipContent>
@@ -67,8 +67,8 @@ function ActivityPill() {
         <>
           <Row label="轮" value={formatExactTokens(turns)} />
           <Row label="步" value={formatExactTokens(steps)} />
-          <p className="mt-1.5 text-1 text-ink-3">
-            你发一条算一轮；模型每回一次算一步，一轮里调了几次工具就多几步。
+          <p className="mt-1.5 text-1 leading-4 text-ink-3">
+            你发一条算一轮；模型每回一次算一步，调几次工具就多几步。
           </p>
         </>
       }

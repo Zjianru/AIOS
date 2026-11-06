@@ -67,3 +67,29 @@ test('tooltip（验收 F7）：花费悬停卡不再有独立白箭头，背景�
     await fixture.close();
   }
 });
+
+/// T013 验收 G4：轮数/步数的说明很长，悬停卡不能给撑到三百多像素；长文本在框内换行。
+test('tooltip（验收 G4）：轮数/步数说明限宽换行，不超过 320', async ({ page }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    const activity = page.locator('[data-kind="stats-activity"]');
+    await expect(activity).toBeVisible({ timeout: 15_000 });
+    await activity.hover();
+    const tooltip = page.locator('[data-slot="tooltip-content"]').filter({ hasText: '你发一条算一轮' });
+    await expect(tooltip).toBeVisible({ timeout: 5_000 });
+    const box = await tooltip.boundingBox();
+    if (!box) throw new Error('轮数/步数 tooltip 没有可见的尺寸');
+    expect(box.width).toBeLessThanOrEqual(320);
+    const layout = await tooltip.evaluate((element) => ({
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+      whiteSpace: getComputedStyle(element).whiteSpace,
+    }));
+    // 长文本在框内换行，不横向溢出。
+    expect(layout.whiteSpace).not.toBe('nowrap');
+    expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth + 1);
+  } finally {
+    await fixture.close();
+  }
+});
