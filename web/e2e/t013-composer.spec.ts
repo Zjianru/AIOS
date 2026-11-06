@@ -115,8 +115,8 @@ test('@ 菜单：出现、插入路径、带空格加引号', async ({ page }) =
   }
 });
 
-/// T013.7 清单 13：选中文字浮出「引用」，点了变成 > 引用。
-test('引用：选中文字浮出引用按钮，点了变 > 引用', async ({ page }) => {
+/// T013.7 清单 13 + 验收 G3：选中文字浮出「引用」，点了变成输入框上方的引用卡，不写进输入框。
+test('引用：选中文字变成输入框上方的引用卡', async ({ page }) => {
   const fixture = await startKernelFixture();
   try {
     await page.goto(urlOf(fixture));
@@ -131,7 +131,16 @@ test('引用：选中文字浮出引用按钮，点了变 > 引用', async ({ pa
     const quote = page.locator('[data-kind="quote-button"]');
     await expect(quote).toBeVisible();
     await quote.click();
-    await expect(box).toHaveValue('> 这一段要被引用');
+    const card = page.locator('[data-kind="quote-card"]');
+    await expect(card).toHaveCount(1);
+    await expect(card.first()).toContainText('这一');
+    await expect(card.first()).toContainText('1 行');
+    // G3：引用不写进输入框（没有 `> ` 生文本）。
+    await expect(box).toHaveValue('这一段要被引用');
+    expect(await box.inputValue()).not.toContain('>');
+    // 引用卡可以删掉。
+    await card.first().getByRole('button', { name: '移除引用' }).click();
+    await expect(card).toHaveCount(0);
   } finally {
     await fixture.close();
   }
@@ -450,8 +459,9 @@ test('Alt+Enter 不发送也不换行', async ({ page }) => {
   }
 });
 
-/// T013 验收 F4：选中对话正文（Kind 回答）里的文字，浮出「引用」，点了把文字按行加 > 追加到输入框。
-test('引用（验收 F4）：选中回答正文浮出引用按钮，点了把选中文字变成 > 行', async ({ page }) => {
+/// T013 验收 F4 + G3：选中对话正文（Kind 回答）里的文字，浮出「引用」，点了变成输入框上方的引用卡；
+/// 发送时引用才按行变成 > 行，气泡里画成引用块。
+test('引用（验收 F4）：选中回答正文出引用卡，发送后气泡有引用块', async ({ page }) => {
   const fixture = await startKernelFixture();
   try {
     await page.goto(urlOf(fixture));
@@ -504,10 +514,23 @@ test('引用（验收 F4）：选中回答正文浮出引用按钮，点了把�
     expect(metrics.selectionTop - metrics.buttonBottom).toBeLessThan(60);
 
     await quote.click();
-    // 选中文字按行加 > 后进输入框；按钮和选区清掉。
-    await expect(box).toHaveValue('> ' + selected);
+    // G3：选中文字变成输入框上方的引用卡，不写进输入框；按钮和选区清掉。
+    const quoteCard = page.locator('[data-kind="quote-card"]');
+    await expect(quoteCard).toHaveCount(1);
+    await expect(quoteCard.first()).toContainText(selected);
+    await expect(box).toHaveValue('');
+    await expect(page.locator('[data-kind="send"]')).toHaveAttribute('aria-disabled', 'false');
     await expect(page.locator('[data-kind="quote-button"]')).toHaveCount(0);
     expect(await page.evaluate(() => (window.getSelection()?.toString() ?? '') === '')).toBe(true);
+
+    // 发送：引用卡变成气泡里的引用块；发送成功后清空。
+    await page.locator('[data-kind="send"]').click();
+    const bubble = page.locator('[data-kind="user-bubble"]').last();
+    await expect(bubble).toBeVisible({ timeout: 15_000 });
+    const quoteBlock = bubble.locator('[data-kind="quote-block"]');
+    await expect(quoteBlock).toHaveCount(1);
+    await expect(quoteBlock).toContainText(selected);
+    await expect(quoteCard).toHaveCount(0);
   } finally {
     await fixture.close();
   }

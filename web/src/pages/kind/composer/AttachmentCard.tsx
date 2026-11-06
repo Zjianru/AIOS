@@ -5,7 +5,7 @@
  * 删除按钮只有输入框要（气泡上的卡是发出去的消息，不能删）。
  */
 
-import { FileText, X } from 'lucide-react';
+import { FileText, Quote, X } from 'lucide-react';
 import type { SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
 
@@ -108,6 +108,31 @@ export function PasteCard({ paste, onOpen, onRemove }: PasteCardProps) {
           <X className="size-3" />
         </button>
       ) : null}
+    </span>
+  );
+}
+
+interface QuoteCardProps {
+  quote: string;
+  onRemove: () => void;
+}
+
+/** 输入框上方的引用卡（G3）：前 80 字 + 行数，和粘贴/文件卡同一套卡片外观。 */
+export function QuoteCard({ quote, onRemove }: QuoteCardProps) {
+  const lines = quote.split(String.fromCharCode(10)).length;
+  return (
+    <span
+      data-kind="quote-card"
+      className="flex shrink-0 items-center gap-1 rounded-btn border border-line-2 bg-pane px-2 py-1 text-2 text-ink-2"
+    >
+      <Quote className="size-3" />
+      <span className="max-w-[160px] truncate" title={quote}>
+        {quote.replace(/\s+/g, ' ').slice(0, 80)}
+      </span>
+      <span className="shrink-0 text-ink-3">{lines} 行</span>
+      <button type="button" aria-label="移除引用" onClick={onRemove} className="text-ink-3 hover:text-ink">
+        <X className="size-3" />
+      </button>
     </span>
   );
 }

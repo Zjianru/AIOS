@@ -8,7 +8,7 @@
  * - 粘贴超过 1000 个字符折成卡片（不进 textarea），发送时作为 pastes 的一项；
  * - 拖文件/粘贴文件出附件卡片（只收文字文件，二进制提示）；
  * - @ 菜单（打 @ 后按打的字列候选，选中插 @路径；带空格的路径加引号）；
- * - 选中文字浮出「引用」，点了把那几行变成 > 引用。
+ * - 选中文字浮出「引用」，点了变成输入框上方的引用卡；发送时才按行变成 > 行。
  */
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
@@ -20,7 +20,7 @@ import { fileMentions } from '../atGrammar';
 import { attachmentGet, attachmentPut, fileReferences } from '@/data/service';
 import type { FileReferenceEntry, SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
-import { AttachmentPreview, FileCard, PasteCard, pasteStats } from './AttachmentCard';
+import { AttachmentPreview, FileCard, PasteCard, QuoteCard, pasteStats } from './AttachmentCard';
 
 const LARGE_PASTE_CHAR_THRESHOLD = 1000;
 const MAX_HEIGHT = 240;
@@ -87,6 +87,14 @@ function insertReference(path: string): string {
   return path.includes(' ') ? '@"' + path + '"' : '@' + path;
 }
 
+/** G3：一条引用按行加 `> `，多条之间空一行；发送时才拼进消息。 */
+function quotedLines(quote: string): string {
+  return quote
+    .split(String.fromCharCode(10))
+    .map((line) => '> ' + line)
+    .join(String.fromCharCode(10));
+}
+
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
   { offline, onSend, onCanSendChange, children },
   ref,
@@ -94,6 +102,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const composingRef = useRef(false);
   const [text, setText] = useState('');
+  const [quotes, setQuotes] = useState<string[]>([]);
   const [pastes, setPastes] = useState<string[]>([]);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [pastePreview, setPastePreview] = useState<number | null>(null);
@@ -110,7 +119,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const touchedRef = useRef(false);
   const changedDuringSendRef = useRef(false);
 
-  const canSend = text.trim().length > 0 || pastes.length > 0 || attachments.length > 0;
+  const canSend = text.trim().length > 0 || quotes.length > 0 || pastes.length > 0 || attachments.length > 0;
 
   useEffect(() => {
     onCanSendChange(canSend);
@@ -177,36 +186,21 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     };
   }, []);
 
-  /** T013 验收 F4：把正文选区按行加 > 前缀，追加到输入框（光标处，或末尾）。 */
+  /** T013 验收 F4 + G3：正文选区变成输入框上方的引用卡，不写进输入框。 */
   const applyPageQuote = useCallback(() => {
     if (!pageQuote) return;
-    const element = inputRef.current;
-    const current = element ? element.value : text;
-    const caret = element && document.activeElement === element ? element.selectionStart : current.length;
-    const quoted = pageQuote.text
-      .split(String.fromCharCode(10))
-      .map((line) => '> ' + line)
-      .join(String.fromCharCode(10));
-    const before = current.slice(0, caret);
-    const after = current.slice(caret);
-    // 引用块要独占行首：前后不是换行就各补一个。
-    const prefix = before && !before.endsWith(String.fromCharCode(10)) ? String.fromCharCode(10) : '';
-    const suffix = after && !after.startsWith(String.fromCharCode(10)) ? String.fromCharCode(10) : '';
-    const inserted = prefix + quoted + suffix;
+    const selected = pageQuote.text.trim();
+    if (!selected) {
+      setPageQuote(null);
+      return;
+    }
     touchedRef.current = true;
     changedDuringSendRef.current = true;
-    setText(before + inserted + after);
+    setQuotes((previous) => [...previous, selected]);
     setPageQuote(null);
     window.getSelection()?.removeAllRanges();
-    requestAnimationFrame(() => {
-      const input = inputRef.current;
-      if (!input) return;
-      input.focus();
-      const position = (before + prefix + quoted).length;
-      input.setSelectionRange(position, position);
-      resize();
-    });
-  }, [pageQuote, resize, text]);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [pageQuote]);
 
   // T013.8：会话 id 就绪后读一次草稿（读不出当空）。
   useEffect(() => {
@@ -218,10 +212,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       if (!raw) return;
       const draft = JSON.parse(raw) as {
         text?: unknown;
+        quotes?: unknown;
         pastes?: unknown;
         attachments?: unknown;
       };
       if (typeof draft.text === 'string') setText(draft.text);
+      if (Array.isArray(draft.quotes)) {
+        setQuotes(draft.quotes.filter((item): item is string => typeof item === 'string'));
+      }
       if (Array.isArray(draft.pastes)) {
         setPastes(draft.pastes.filter((item): item is string => typeof item === 'string'));
       }
@@ -248,6 +246,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     if (!sessionId || draftLoadedRef.current !== sessionId) return;
     const draft = {
       text,
+      quotes,
       pastes,
       attachments: attachments.map(({ id, name, bytes, mime }) => ({ id, name, bytes, mime })),
     };
@@ -256,7 +255,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     } catch {
       // 存不下（隐私模式）就算了。
     }
-  }, [attachments, pastes, sessionId, text]);
+  }, [attachments, pastes, quotes, sessionId, text]);
 
   const pruneAtMenu = useCallback((value: string, caret: number) => {
     const before = value.slice(0, caret);
@@ -332,12 +331,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   const submit = useCallback(async () => {
     if (offline) return;
-    const value = text.trim();
+    // G3：引用卡在发送时才按行变成 `> `，排在打的字前面（气泡里画成引用块）。
+    const quoted = quotes.map(quotedLines).join(String.fromCharCode(10) + String.fromCharCode(10));
+    const value = [quoted, text.trim()]
+      .filter((part) => part.length > 0)
+      .join(String.fromCharCode(10));
     if (!value && pastes.length === 0 && attachments.length === 0) return;
     // T013.8：发送时先清空（马上能继续打），受理失败再把内容放回来（草稿不清）。
-    const snapshot = { text, pastes, attachments, quote };
+    const snapshot = { text, quotes, pastes, attachments, quote };
     changedDuringSendRef.current = false;
     setText('');
+    setQuotes([]);
     setPastes([]);
     setAttachments([]);
     setAtMenu(null);
@@ -355,6 +359,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       // 失败进 unsent：内容放回输入框（草稿也没动）；失败等待期间用户又输入了就不覆盖新的。
       if (changedDuringSendRef.current) return;
       setText(snapshot.text);
+      setQuotes(snapshot.quotes);
       setPastes(snapshot.pastes);
       setAttachments(snapshot.attachments);
       setQuote(snapshot.quote);
@@ -365,7 +370,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     } catch {
       // 忽略。
     }
-  }, [attachments, offline, onSend, pastes, quote, resize, sessionId, text]);
+  }, [attachments, offline, onSend, pastes, quote, quotes, resize, sessionId, text]);
 
   useImperativeHandle(ref, () => ({ submit: () => void submit(), focus: () => inputRef.current?.focus() }), [submit]);
 
@@ -449,8 +454,15 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       }}
     >
       <div className="rounded-card border border-line-2 bg-raised/70 px-3 py-2 transition-colors">
-        {pastes.length > 0 || attachments.length > 0 ? (
+        {quotes.length > 0 || pastes.length > 0 || attachments.length > 0 ? (
           <div ref={cardsRef} className="mb-1.5 flex gap-1.5 overflow-x-auto pb-1" data-kind="composer-cards">
+            {quotes.map((item, index) => (
+              <QuoteCard
+                key={'quote-' + index}
+                quote={item}
+                onRemove={() => setQuotes((previous) => previous.filter((_, position) => position !== index))}
+              />
+            ))}
             {pastes.map((paste, index) => (
               <PasteCard
                 key={'paste-' + index}
@@ -553,20 +565,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
           type="button"
           data-kind="quote-button"
           onClick={() => {
-            const element = inputRef.current;
-            if (!element) return;
-            const start = element.selectionStart;
-            const end = element.selectionEnd;
-            const quoted = element.value
-              .slice(start, end)
-              .split(String.fromCharCode(10))
-              .map((line) => '> ' + line)
-              .join(String.fromCharCode(10));
+            const selected = quote.trim();
+            if (!selected) return;
             touchedRef.current = true;
             changedDuringSendRef.current = true;
-            setText(element.value.slice(0, start) + quoted + element.value.slice(end));
+            setQuotes((previous) => [...previous, selected]);
             setQuote('');
-            element.focus();
+            inputRef.current?.focus();
           }}
           className="absolute -top-8 right-0 flex items-center gap-1 rounded-btn border border-line-2 bg-raised px-2 py-1 text-2 text-ink-2 shadow-[var(--shadow-pop)] hover:bg-hover hover:text-ink"
         >
