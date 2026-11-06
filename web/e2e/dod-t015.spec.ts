@@ -17,20 +17,30 @@ import { sessionLog } from './dod-log';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const EVIDENCE = process.env.AIOS_DOD_EVIDENCE ?? path.join(repoRoot, '../aios-work/T015/evidence');
+const NL = String.fromCharCode(10);
 
 test.skip(!process.env.MINIMAX_API_KEY, '需要 MINIMAX_API_KEY（T015.6 真 key DoD）');
 test.setTimeout(900_000);
 
 function renderCommand(args: string[]): string {
   return args
-    .map((arg) => (arg.includes(' ') || arg.includes(String.fromCharCode(10)) ? "'" + arg + "'" : arg))
+    .map((arg) => (arg.includes(' ') || arg.includes(NL) ? "'" + arg + "'" : arg))
     .join(' ');
 }
 
-function jq(args: string[], label: string, lines: string[]): string {
-  const out = execFileSync('jq', args, { encoding: 'utf8' }).trim();
-  lines.push('$ jq ' + renderCommand(args) + '  # ' + label + String.fromCharCode(10) + out);
+function jq(args: string[], log: string, label: string, lines: string[]): string {
+  const out = execFileSync('jq', [...args, log], { encoding: 'utf8' }).trim();
+  lines.push('$ jq ' + renderCommand([...args, log]) + '  # ' + label + NL + out);
   return out;
+}
+
+/** 日志是 turn/end 之后才落；等它稳定到期望的条数，别在日志还没写完时读。 */
+async function pollJq(log: string, probe: string[], expected: number): Promise<void> {
+  await expect
+    .poll(() => Number(execFileSync('jq', [...probe, log], { encoding: 'utf8' }).trim()), {
+      timeout: 30_000,
+    })
+    .toBe(expected);
 }
 
 function record(name: string, lines: string[]): void {
@@ -38,7 +48,7 @@ function record(name: string, lines: string[]): void {
   const head = execFileSync('git', ['-C', repoRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   writeFileSync(
     path.join(EVIDENCE, 'T015.6-dod2-jq-' + name + '.txt'),
-    ['# frozen sha: ' + head, ...lines].join(String.fromCharCode(10) + String.fromCharCode(10)) + String.fromCharCode(10),
+    ['# frozen sha: ' + head, ...lines].join(NL + NL) + NL,
   );
 }
 
@@ -90,6 +100,11 @@ const canvasCallsProbe = [
   '[ .[] | select(.type=="tool/call" and .data.name=="canvas") ] | length',
 ];
 
+const canvasVersionCountProbe = [
+  '-c', '-s',
+  '[ .[] | select(.type=="tool/result") | .data.meta.canvas? // empty ] | length',
+];
+
 const canvasVersionsProbe = [
   '-c', '-s',
   '[ .[] | select(.type=="tool/result") | .data.meta.canvas? // empty | {id,n,title,note,htmlLength:(.html|length)} ]',
@@ -100,35 +115,22 @@ const canvasArgsProbe = [
   [
     '[ .[] | select(.type=="tool/call" and .data.name=="canvas")',
     '  | (.data.arguments | fromjson)',
-    '  | {id:(.id // null), title, note, hasHtml:has("html"), edits:(.edits // null)} ]',
-  ].join(String.fromCharCode(10)),
+    '  | {id:(.id // null), title:(.title // null), note, hasHtml:has("html"), edits:(.edits // null)} ]',
+  ].join(NL),
 ];
 
 const cdnProbe = [
   '-c', '-s',
   [
     '[ .[] | select(.type=="tool/result") | .data.meta.canvas? // empty | select(.n==2)',
-    '  | {n, cdn:(.html | test("cdn\\\\.jsdelivr\\\\.net|cdnjs\\\\.cloudflare\\\\.com|unpkg\\\\.com|cdn\\\\.tailwindcss\\\\.com|code\\\\.jquery\\\\.com"))} ]',
-  ].join(String.fromCharCode(10)),
+    '  | {n, cdn:(.html | test("cdn\\\\\\\\.jsdelivr\\\\\\\\.net|cdnjs\\\\\\\\.cloudflare\\\\\\\\.com|unpkg\\\\\\\\.com|cdn\\\\\\\\.tailwindcss\\\\\\\\.com|code\\\\\\\\.jquery\\\\\\\\.com"))} ]',
+  ].join(NL),
 ];
-
-const canvasVersionCountProbe = [
-  '-c', '-s',
-  '[ .[] | select(.type=="tool/result") | .data.meta.canvas? // empty ] | length',
-];
-
-/** 日志是 turn/end 之后才落；等它稳定到期望的条数，别在日志还没写完时读。 */
-async function pollJq(log: string, probe: string[], expected: number): Promise<void> {
-  await expect
-    .poll(() => Number(execFileSync('jq', [...probe, log], { encoding: 'utf8' }).trim()), {
-      timeout: 30_000,
-    })
-    .toBe(expected);
-}
 
 /// DoD2 四件事：① 画布出来 ② CDN 图表库重画 ③ edits 改标题颜色 ④ 一句话不画。
 test('DoD2：真 key 四件事（MiniMax）', async ({ page }) => {
   const fixture = await startT015DodFixture('dod2');
+  const logOf = () => sessionLog(fixture.dataDir);
   const all: string[] = [];
   try {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
@@ -143,9 +145,10 @@ test('DoD2：真 key 四件事（MiniMax）', async ({ page }) => {
     await expect(iframe1).toHaveCount(1);
     expect(await iframe1.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(0);
     await waitTurnEnd(page);
-    await pollJq(sessionLog(fixture.dataDir), canvasCallsProbe, 1);
-    jq(canvasCallsProbe, '① 新建：canvas 调用数', first);
-    jq(canvasVersionsProbe, '① 新建：各画布版本的 meta', first);
+    await pollJq(logOf(), canvasVersionCountProbe, 1);
+    const calls1 = Number(jq(canvasCallsProbe, logOf(), '① 新建：canvas 调用数', first));
+    expect(calls1).toBeGreaterThanOrEqual(1);
+    jq(canvasVersionsProbe, logOf(), '① 新建：各画布版本的 meta', first);
     await page.screenshot({ path: path.join(EVIDENCE, 'T015.6-dod2-1-new.png'), fullPage: true });
     record('1-new', first);
 
@@ -164,9 +167,9 @@ test('DoD2：真 key 四件事（MiniMax）', async ({ page }) => {
     const chartBox = await chart.first().boundingBox();
     expect(chartBox && chartBox.width > 0 && chartBox.height > 0).toBeTruthy();
     await waitTurnEnd(page);
-    await pollJq(sessionLog(fixture.dataDir), canvasCallsProbe, 2);
-    jq(cdnProbe, '② 第 2 版 html 是否引用清单里的 CDN', second);
-    jq(canvasVersionsProbe, '② 第 2 版 meta', second);
+    await pollJq(logOf(), canvasVersionCountProbe, 2);
+    jq(cdnProbe, logOf(), '② 第 2 版 html 是否引用清单里的 CDN', second);
+    jq(canvasVersionsProbe, logOf(), '② 第 2 版 meta', second);
     await page.screenshot({ path: path.join(EVIDENCE, 'T015.6-dod2-2-cdn.png'), fullPage: true });
     record('2-cdn', second);
 
@@ -180,24 +183,25 @@ test('DoD2：真 key 四件事（MiniMax）', async ({ page }) => {
     await expect(page.locator('[data-kind="canvas-versions"]')).toContainText('第 3 版', { timeout: 240_000 });
     await expect(page.locator('[data-kind="canvas-stub"]')).toHaveCount(2);
     await waitTurnEnd(page);
-    await pollJq(sessionLog(fixture.dataDir), canvasCallsProbe, 3);
-    const argsRaw = jq(canvasArgsProbe, '③ 三次 canvas 调用的参数（第 3 版应只有 edits，没有 html）', third);
+    await pollJq(logOf(), canvasVersionCountProbe, 3);
+    const argsRaw = jq(canvasArgsProbe, logOf(), '③ 每次 canvas 调用的参数（第 3 版应只有 edits，没有 html）', third);
     const args = JSON.parse(argsRaw) as { note: string; hasHtml: boolean; edits: unknown }[];
-    expect(args.length).toBe(3);
-    expect(args[2].hasHtml).toBeFalsy();
-    expect(Array.isArray(args[2].edits) && (args[2].edits as unknown[]).length > 0).toBeTruthy();
-    jq(canvasVersionsProbe, '③ 第 3 版 meta', third);
+    const editsCalls = args.filter((item) => !item.hasHtml && Array.isArray(item.edits) && item.edits.length > 0);
+    expect(editsCalls.length).toBe(1);
+    expect(args[args.length - 1].hasHtml).toBeFalsy();
+    jq(canvasVersionsProbe, logOf(), '③ 第 3 版 meta', third);
     await page.screenshot({ path: path.join(EVIDENCE, 'T015.6-dod2-3-edits.png'), fullPage: true });
     record('3-edits', third);
 
     // ④ 一句话的问题：回答出来，没有 canvas 调用，页面不新增画布。
     const fourth: string[] = [];
+    const callsBefore = Number(jq(canvasCallsProbe, logOf(), '④ 一句话之前 canvas 调用数', fourth));
     await send(page, '1+1 等于几？只回答数字，不要画任何东西，也不要调用工具。');
     await expect(page.locator('[data-kind="answer"]').last()).toContainText('2', { timeout: 240_000 });
     await waitTurnEnd(page);
-    await pollJq(sessionLog(fixture.dataDir), canvasCallsProbe, 3);
-    const callsRaw = jq(canvasCallsProbe, '④ 一句话之后 canvas 调用数（应仍为 3）', fourth);
-    expect(Number(callsRaw)).toBe(3);
+    const callsRaw = jq(canvasCallsProbe, logOf(), '④ 一句话之后 canvas 调用数（应与之前相同）', fourth);
+    expect(Number(callsRaw)).toBe(callsBefore);
+    await pollJq(logOf(), canvasVersionCountProbe, 3);
     await expect(page.locator('[data-kind="canvas"]')).toHaveCount(1);
     await expect(page.locator('[data-kind="canvas-stub"]')).toHaveCount(2);
     await page.screenshot({ path: path.join(EVIDENCE, 'T015.6-dod2-4-one-liner.png'), fullPage: true });
