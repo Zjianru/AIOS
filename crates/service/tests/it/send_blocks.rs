@@ -57,6 +57,7 @@ fn request(content: &str) -> SendRequest {
         delivery: service::DeliveryMode::FollowUp,
         pastes: Vec::new(),
         attachments: Vec::new(),
+        canvas: None,
     }
 }
 
@@ -120,12 +121,12 @@ async fn send_builds_blocks_in_order_content_then_pastes_then_files() {
     );
     assert_eq!(blocks[0].as_text(), Some("看这个"));
     assert!(
-        matches!(&blocks[1], model::ContentBlock::Text { text, paste } if text == "第一段" && *paste),
+        matches!(&blocks[1], model::ContentBlock::Text { text, paste, .. } if text == "第一段" && *paste),
         "第二块是粘贴：{:?}",
         blocks[1]
     );
     assert!(
-        matches!(&blocks[2], model::ContentBlock::Text { text, paste } if text == "第二段" && *paste),
+        matches!(&blocks[2], model::ContentBlock::Text { text, paste, .. } if text == "第二段" && *paste),
         "第三块是第二段粘贴：{:?}",
         blocks[2]
     );
@@ -161,7 +162,7 @@ async fn send_with_empty_content_starts_with_the_paste_block() {
     let blocks = wait_user_blocks(&host, data.path()).await;
     assert_eq!(blocks.len(), 1, "content 空就不放那一块：{blocks:?}");
     assert!(
-        matches!(&blocks[0], model::ContentBlock::Text { text, paste } if text == "只有粘贴" && *paste),
+        matches!(&blocks[0], model::ContentBlock::Text { text, paste, .. } if text == "只有粘贴" && *paste),
         "{blocks:?}"
     );
 }
@@ -263,7 +264,10 @@ async fn send_with_canvas_adds_a_tagged_text_block_before_the_message() {
     let json = user_blocks_json(&blocks);
     assert_eq!(json.len(), 2, "标记块 + 打的字：{json:?}");
     assert_eq!(json[0]["type"], "text", "标记那一块是文字块：{json:?}");
-    assert_eq!(json[0]["text"], "（来自画布「每月存钱算一算」）", "{json:?}");
+    assert_eq!(
+        json[0]["text"], "（来自画布「每月存钱算一算」）",
+        "{json:?}"
+    );
     assert_eq!(
         json[0]["canvas"],
         serde_json::json!({ "id": "cv_1", "title": "每月存钱算一算" }),

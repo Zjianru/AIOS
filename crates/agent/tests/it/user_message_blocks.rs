@@ -57,12 +57,12 @@ async fn user_message_blocks_keep_order_and_request_body_uses_file_handle_text()
     assert_eq!(blocks.len(), 4, "content + 两段粘贴 + 一个文件：{blocks:?}");
     assert_eq!(blocks[0].as_text(), Some("看这两个"), "第一块是 content");
     assert!(
-        matches!(&blocks[1], ContentBlock::Text { text, paste } if text == "第一段粘贴" && *paste),
+        matches!(&blocks[1], ContentBlock::Text { text, paste, .. } if text == "第一段粘贴" && *paste),
         "第二块是 paste=true 的粘贴：{:?}",
         blocks[1]
     );
     assert!(
-        matches!(&blocks[2], ContentBlock::Text { text, paste } if text == "第二段粘贴" && *paste),
+        matches!(&blocks[2], ContentBlock::Text { text, paste, .. } if text == "第二段粘贴" && *paste),
         "第三块是第二段粘贴：{:?}",
         blocks[2]
     );

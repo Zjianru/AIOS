@@ -20,7 +20,7 @@ import { fileMentions } from '../atGrammar';
 import { attachmentGet, attachmentPut, fileReferences } from '@/data/service';
 import type { FileReferenceEntry, SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
-import { AttachmentPreview, FileCard, PasteCard, QuoteCard, pasteStats } from './AttachmentCard';
+import { AttachmentPreview, FileCard, FromCanvasChip, PasteCard, QuoteCard, pasteStats } from './AttachmentCard';
 
 const LARGE_PASTE_CHAR_THRESHOLD = 1000;
 const MAX_HEIGHT = 240;
@@ -28,12 +28,16 @@ const MAX_HEIGHT = 240;
 export interface ComposerSendOptions {
   pastes: string[];
   attachments: SendAttachmentRef[];
+  /** T015.4：画布放进来的那一句带着画布身份；没有就是自己写的。 */
+  canvas?: { id: string; title: string };
 }
 
 export interface ComposerHandle {
   /** 发送（按钮 / Enter 都走这里）。 */
   submit: () => void;
   focus: () => void;
+  /** T015.4：画布里的按钮把一句话放进输入框（接在已经写的后面，不发送）。 */
+  putFromCanvas: (text: string, canvas: { id: string; title: string }) => void;
 }
 
 interface ComposerProps {
@@ -105,6 +109,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const [quotes, setQuotes] = useState<string[]>([]);
   const [pastes, setPastes] = useState<string[]>([]);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  /** T015.4：这句话是画布放进来的（发出去时带标记，气泡上留着）。 */
+  const [fromCanvas, setFromCanvas] = useState<{ id: string; title: string } | null>(null);
   const [pastePreview, setPastePreview] = useState<number | null>(null);
   const [filePreview, setFilePreview] = useState<{ id: string; text: string } | null>(null);
   const [atMenu, setAtMenu] = useState<AtMenuState | null>(null);
@@ -215,8 +221,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         quotes?: unknown;
         pastes?: unknown;
         attachments?: unknown;
+        canvas?: unknown;
       };
       if (typeof draft.text === 'string') setText(draft.text);
+      const fromCanvas = draft.canvas as { id?: unknown; title?: unknown } | null | undefined;
+      if (fromCanvas && typeof fromCanvas.id === 'string' && typeof fromCanvas.title === 'string') {
+        setFromCanvas({ id: fromCanvas.id, title: fromCanvas.title });
+      }
       if (Array.isArray(draft.quotes)) {
         setQuotes(draft.quotes.filter((item): item is string => typeof item === 'string'));
       }
@@ -249,13 +260,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       quotes,
       pastes,
       attachments: attachments.map(({ id, name, bytes, mime }) => ({ id, name, bytes, mime })),
+      canvas: fromCanvas,
     };
     try {
       localStorage.setItem('aios.kind.draft.' + sessionId, JSON.stringify(draft));
     } catch {
       // 存不下（隐私模式）就算了。
     }
-  }, [attachments, pastes, quotes, sessionId, text]);
+  }, [attachments, fromCanvas, pastes, quotes, sessionId, text]);
 
   const pruneAtMenu = useCallback((value: string, caret: number) => {
     const before = value.slice(0, caret);
@@ -338,7 +350,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       .join(String.fromCharCode(10));
     if (!value && pastes.length === 0 && attachments.length === 0) return;
     // T013.8：发送时先清空（马上能继续打），受理失败再把内容放回来（草稿不清）。
-    const snapshot = { text, quotes, pastes, attachments, quote };
+    const snapshot = { text, quotes, pastes, attachments, quote, fromCanvas };
     changedDuringSendRef.current = false;
     setText('');
     setQuotes([]);
@@ -347,6 +359,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     setAtMenu(null);
     setQuote('');
     setPageQuote(null);
+    setFromCanvas(null);
     requestAnimationFrame(() => {
       resize();
       inputRef.current?.focus();
@@ -354,6 +367,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     const accepted = await onSend(value, {
       pastes,
       attachments: attachments.map(({ id, name, bytes }) => ({ id, name, bytes })),
+      ...(fromCanvas ? { canvas: fromCanvas } : {}),
     });
     if (!accepted) {
       // 失败进 unsent：内容放回输入框（草稿也没动）；失败等待期间用户又输入了就不覆盖新的。
@@ -363,6 +377,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       setPastes(snapshot.pastes);
       setAttachments(snapshot.attachments);
       setQuote(snapshot.quote);
+      setFromCanvas(snapshot.fromCanvas);
       return;
     }
     try {
@@ -370,9 +385,27 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     } catch {
       // 忽略。
     }
-  }, [attachments, offline, onSend, pastes, quote, quotes, resize, sessionId, text]);
+  }, [attachments, fromCanvas, offline, onSend, pastes, quote, quotes, resize, sessionId, text]);
 
-  useImperativeHandle(ref, () => ({ submit: () => void submit(), focus: () => inputRef.current?.focus() }), [submit]);
+  useImperativeHandle(
+    ref,
+    () => ({
+      submit: () => void submit(),
+      focus: () => inputRef.current?.focus(),
+      // T015.4：画布里的按钮把一句话放进输入框（不替用户发）：已经写了的留着，另起一行接上。
+      putFromCanvas: (value, canvas) => {
+        touchedRef.current = true;
+        changedDuringSendRef.current = true;
+        setText((previous) => (previous.trim() ? previous.replace(/\s+$/, '') + String.fromCharCode(10) + value : value));
+        setFromCanvas(canvas);
+        requestAnimationFrame(() => {
+          resize();
+          inputRef.current?.focus();
+        });
+      },
+    }),
+    [resize, submit],
+  );
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // @ 菜单打开：↑↓ 换高亮、Esc 关（Enter 在下面选高亮项）。
@@ -454,6 +487,17 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       }}
     >
       <div className="rounded-card border border-line-2 bg-raised/70 px-3 py-2 transition-colors">
+        {fromCanvas ? (
+          <FromCanvasChip
+            title={fromCanvas.title}
+            onRemove={() => {
+              touchedRef.current = true;
+              changedDuringSendRef.current = true;
+              setFromCanvas(null);
+            }}
+            className="mb-1.5"
+          />
+        ) : null}
         {quotes.length > 0 || pastes.length > 0 || attachments.length > 0 ? (
           <div ref={cardsRef} className="mb-1.5 flex gap-1.5 overflow-x-auto pb-1" data-kind="composer-cards">
             {quotes.map((item, index) => (

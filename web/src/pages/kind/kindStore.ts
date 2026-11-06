@@ -169,7 +169,15 @@ interface KindState {
   loadInitial: () => Promise<void>;
   loadOlder: () => Promise<void>;
   setAtBottom: (value: boolean) => void;
-  send: (text: string, options?: { pastes?: string[]; attachments?: { id: string; name: string; bytes: number }[] }) => Promise<boolean>;
+  send: (
+    text: string,
+    options?: {
+      pastes?: string[];
+      attachments?: { id: string; name: string; bytes: number }[];
+      /** T015.4：画布放进来的那一句带着画布身份（id + 标题）。 */
+      canvas?: { id: string; title: string };
+    },
+  ) => Promise<boolean>;
   resend: (turnId: string) => void;
   stop: () => void;
   answer: (turnId: string, answers: AskAnswer[]) => void;
@@ -243,10 +251,16 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let recheckTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempt = 0;
 let lastSeq = 0;
-/** 没送到内核的本地消息：viewId -> { requestId, text, pastes, files }；重发复用同一个 requestId。 */
+/** 没送到内核的本地消息：viewId -> { requestId, text, pastes, files, canvas }；重发复用同一个 requestId。 */
 const unsentSends = new Map<
   string,
-  { requestId: string; text: string; pastes: string[]; files: { id: string; name: string; bytes: number }[] }
+  {
+    requestId: string;
+    text: string;
+    pastes: string[];
+    files: { id: string; name: string; bytes: number }[];
+    canvas?: { id: string; title: string };
+  }
 >();
 
 function removeView(viewId: string): void {
@@ -262,6 +276,7 @@ function addUnsentView(
   text: string,
   pastes: string[],
   files: { id: string; name: string; bytes: number }[],
+  canvas?: { id: string; title: string },
 ): void {
   useKindStore.setState((state) => {
     if (state.views.some((view) => view.id === viewId)) return {};
@@ -270,7 +285,7 @@ function addUnsentView(
       startedAt: null,
       durationMs: null,
       status: 'completed',
-      user: { text, elements: [], pastes, files },
+      user: { text, elements: [], pastes, files, canvas: canvas ?? null },
       reasoning: null,
       tools: [],
       cards: [],
@@ -665,11 +680,12 @@ export const useKindStore = create<KindState>()((set, get) => ({
     // F1：没送到的那条也把粘贴和文件带着，重发时原样再发一次。
     const pastes = options?.pastes ?? [];
     const files = options?.attachments ?? [];
+    const canvas = options?.canvas;
     return sendMessage(text, requestId, options).then(
       () => true,
       () => {
-        unsentSends.set(viewId, { requestId, text, pastes, files });
-        addUnsentView(viewId, text, pastes, files);
+        unsentSends.set(viewId, { requestId, text, pastes, files, canvas });
+        addUnsentView(viewId, text, pastes, files, canvas);
         return false;
       },
     );
@@ -679,7 +695,11 @@ export const useKindStore = create<KindState>()((set, get) => ({
     const pending = unsentSends.get(turnId);
     if (!pending) return;
     const viewId = turnId;
-    void sendMessage(pending.text, pending.requestId, { pastes: pending.pastes, attachments: pending.files })
+    void sendMessage(pending.text, pending.requestId, {
+      pastes: pending.pastes,
+      attachments: pending.files,
+      canvas: pending.canvas,
+    })
       .then(() => {
         unsentSends.delete(viewId);
         removeView(viewId);

@@ -121,6 +121,7 @@ async fn 空库起服务存连接后recheck用新模型() {
             delivery: DeliveryMode::FollowUp,
             pastes: Vec::new(),
             attachments: Vec::new(),
+            canvas: None,
         }))
         .await;
     assert!(send.is_err(), "空库时发送应被拒：{send:?}");
@@ -169,6 +170,7 @@ async fn 空库起服务存连接后recheck用新模型() {
             delivery: DeliveryMode::FollowUp,
             pastes: Vec::new(),
             attachments: Vec::new(),
+            canvas: None,
         }))
         .await
         .is_ok()

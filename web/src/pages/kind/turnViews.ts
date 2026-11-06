@@ -110,6 +110,14 @@ export function mergeCanvasTracks(
   return next;
 }
 
+/** T015.4：user/message 文字块上的 canvas（{id, title} 都是字符串才算；形状不对就当普通文字）。 */
+function canvasSourceOf(value: unknown): { id: string; title: string } | null {
+  if (!value || typeof value !== 'object') return null;
+  const typed = value as { id?: unknown; title?: unknown };
+  if (typeof typed.id !== 'string' || typeof typed.title !== 'string') return null;
+  return { id: typed.id, title: typed.title };
+}
+
 /** tool/result.meta.canvas → 一版画布（形状不对就当没有）。 */
 function canvasVersionOf(meta: unknown): (CanvasVersionView & { id: string }) | null {
   if (!meta || typeof meta !== 'object') return null;
@@ -149,6 +157,8 @@ export interface TurnUserView {
   pastes: string[];
   /** file 块（服务发消息时写下的 id/名字/大小）。 */
   files: SendAttachmentRef[];
+  /** T015.4：这句话是画布里的按钮放进来的（日志块上的 canvas：id + 标题）；没有就是自己写的。 */
+  canvas: { id: string; title: string } | null;
 }
 
 export interface TurnViewData {
@@ -278,18 +288,26 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     const text: string[] = [];
     const pastes: string[] = [];
     const files: SendAttachmentRef[] = [];
+    let canvas: { id: string; title: string } | null = null;
     for (const block of content) {
       if (!block || typeof block !== 'object') continue;
       const typed = block as {
         type?: string;
         text?: unknown;
         paste?: unknown;
+        canvas?: unknown;
         attachmentId?: unknown;
         name?: unknown;
         bytes?: unknown;
       };
       if (typed.type === 'text') {
         const value = typeof typed.text === 'string' ? typed.text : '';
+        // T015.4：画布放进来的那一句不进正文——气泡上画成「来自画布」标记，正文只留打的字。
+        const source = canvasSourceOf(typed.canvas);
+        if (source) {
+          canvas = source;
+          continue;
+        }
         if (typed.paste === true) pastes.push(value);
         else text.push(value);
         continue;
@@ -303,8 +321,8 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       }
     }
     const body = text.join('');
-    if (!body && pastes.length === 0 && files.length === 0) return null;
-    return { text: body, elements: [], pastes, files };
+    if (!body && pastes.length === 0 && files.length === 0 && !canvas) return null;
+    return { text: body, elements: [], pastes, files, canvas };
   };
 
   const textOfToolResult = (message: unknown): string => {

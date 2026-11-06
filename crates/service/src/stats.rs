@@ -259,6 +259,7 @@ mod tests {
             vec![model::ContentBlock::Text {
                 text: "ok".to_owned(),
                 paste: false,
+                canvas: None,
             }],
             "deepseek",
             model,
@@ -601,6 +602,7 @@ mod tests {
                         vec![model::ContentBlock::Text {
                             text: "ok".to_owned(),
                             paste: false,
+                            canvas: None,
                         }],
                         "deepseek",
                         "deepseek-flash",

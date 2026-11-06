@@ -151,6 +151,9 @@ pub struct SendRequest {
     /// T013.4：用户拖进来的文件（已经存进附件仓库）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<SendAttachment>,
+    /// T015.4：画布按钮放进输入框的那一句带着画布身份（id + 标题）；用户自己写的不带。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canvas: Option<SendCanvas>,
 }
 
 /// T013.4：发送消息时引用的一个附件（服务端解析成只读副本路径）。
@@ -159,6 +162,13 @@ pub struct SendAttachment {
     pub id: String,
     pub name: String,
     pub bytes: u64,
+}
+
+/// T015.4：画布放进输入框的那一句带来的画布（页面从日志的 meta.canvas 拿 id 和标题）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SendCanvas {
+    pub id: String,
+    pub title: String,
 }
 
 fn default_delivery() -> DeliveryMode {
@@ -1309,6 +1319,14 @@ impl RootHost {
     /// T013.4：把 SendRequest 拼成块状用户消息（content→pastes→files；附件解析成副本路径）。
     fn user_message_from(&self, request: &SendRequest) -> Result<UserMessage, ServiceError> {
         let mut blocks = Vec::new();
+        // T015.4：画布按钮放进来的那一句排在最前（照原型 composeForModel 的顺序）；
+        // 块上带画布身份，页面据此画「来自画布」标记，模型看到的也是这句话。
+        if let Some(canvas) = &request.canvas {
+            blocks.push(model::ContentBlock::from_canvas(model::CanvasSource::new(
+                canvas.id.clone(),
+                canvas.title.clone(),
+            )));
+        }
         if !request.content.is_empty() {
             blocks.push(model::ContentBlock::text(request.content.clone()));
         }

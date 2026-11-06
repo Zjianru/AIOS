@@ -101,11 +101,7 @@ impl Translator {
                         } else {
                             Some(text.clone())
                         };
-                        (
-                            ContentBlock::Text { text, paste: false },
-                            BlockType::Text,
-                            initial,
-                        )
+                        (ContentBlock::text(text), BlockType::Text, initial)
                     }
                     "tool_use" => {
                         let id = required_string(native, "id")?;

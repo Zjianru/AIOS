@@ -77,10 +77,12 @@ interface FrameProps {
   html: string;
   /** 展开时不限高。 */
   expanded: boolean;
+  /** T015.4：画布里的按钮交上来的一句话（放进输入框，不发送）。 */
+  onMessage: (text: string) => void;
   onOverflow: (overflow: boolean) => void;
 }
 
-function CanvasFrame({ html, expanded, onOverflow }: FrameProps) {
+function CanvasFrame({ html, expanded, onMessage, onOverflow }: FrameProps) {
   const ref = useRef<HTMLIFrameElement | null>(null);
   const [height, setHeight] = useState(64);
   const theme = useAppStore((state) => state.theme);
@@ -113,17 +115,25 @@ function CanvasFrame({ html, expanded, onOverflow }: FrameProps) {
     const listen = (event: MessageEvent) => {
       // 只认自己这个 iframe 发来的（sandbox 没给同源，按 source 认）
       if (event.source !== ref.current?.contentWindow) return;
-      const data = event.data as { aiosCanvas?: boolean; type?: string; height?: number; dx?: number; dy?: number } | null;
+      const data = event.data as {
+        aiosCanvas?: boolean;
+        type?: string;
+        height?: number;
+        text?: string;
+        dx?: number;
+        dy?: number;
+      } | null;
       if (!data?.aiosCanvas) return;
       if (data.type === 'ready') sendHost();
       if (data.type === 'size' && typeof data.height === 'number') setHeight(data.height);
+      if (data.type === 'message' && typeof data.text === 'string') onMessage(data.text);
       if (data.type === 'wheel' && typeof data.dy === 'number') {
         forwardWheel(ref.current, data.dy, typeof data.dx === 'number' ? data.dx : 0);
       }
     };
     window.addEventListener('message', listen);
     return () => window.removeEventListener('message', listen);
-  }, [sendHost]);
+  }, [onMessage, sendHost]);
 
   const overflow = height > MAX_HEIGHT;
   useEffect(() => onOverflow(overflow), [overflow, onOverflow]);
@@ -151,10 +161,12 @@ interface CanvasViewProps {
   versions: CanvasVersionView[];
   /** 旧版缩成一行时，点它跳到最新那一轮。 */
   onJumpLatest: () => void;
+  /** T015.4：画布里的按钮交上来的一句话（带这个画布的 id 和标题）。 */
+  onCanvasMessage: (text: string, canvas: { id: string; title: string }) => void;
 }
 
 /** 旧版那一轮：缩成一行，点了跳到最新那一轮（照原型 CanvasStub）。 */
-function CanvasStub({ doc, latest, onJumpLatest }: Omit<CanvasViewProps, 'versions'>) {
+function CanvasStub({ doc, latest, onJumpLatest }: Omit<CanvasViewProps, 'versions' | 'onCanvasMessage'>) {
   return (
     <button
       type="button"
@@ -176,7 +188,7 @@ function CanvasStub({ doc, latest, onJumpLatest }: Omit<CanvasViewProps, 'versio
 }
 
 /** 最新版：标题栏（收起、切版本、重新载入、展开）+ 沙箱 iframe。 */
-function LiveCanvas({ doc, latest, versions }: Omit<CanvasViewProps, 'onJumpLatest'>) {
+function LiveCanvas({ doc, latest, versions, onCanvasMessage }: Omit<CanvasViewProps, 'onJumpLatest'>) {
   const [shown, setShown] = useState(latest);
   const [open, setOpen] = useState(true);
   const [expanded, setExpanded] = useState(false);
@@ -188,6 +200,11 @@ function LiveCanvas({ doc, latest, versions }: Omit<CanvasViewProps, 'onJumpLate
   const current =
     available.find((item) => item.n === shown) ??
     available[available.length - 1] ?? { n: doc.n, title: doc.title, note: doc.note, html: doc.html };
+  // 只有最新版（这个画布出过的最后一版）在页面上；点它里面的按钮才把话交上来。
+  const onMessage = useCallback(
+    (text: string) => onCanvasMessage(text, { id: doc.id, title: doc.title }),
+    [doc.id, doc.title, onCanvasMessage],
+  );
 
   return (
     <div className="my-3 overflow-hidden rounded-card border border-line-2 bg-raised" data-kind="canvas">
@@ -276,6 +293,7 @@ function LiveCanvas({ doc, latest, versions }: Omit<CanvasViewProps, 'onJumpLate
           key={current.n + ':' + String(reloadKey)}
           html={current.html}
           expanded={expanded}
+          onMessage={onMessage}
           onOverflow={setOverflow}
         />
       ) : null}
@@ -283,8 +301,15 @@ function LiveCanvas({ doc, latest, versions }: Omit<CanvasViewProps, 'onJumpLate
   );
 }
 
-export function CanvasView({ doc, latest, versions, onJumpLatest }: CanvasViewProps) {
-  // 这一轮不是最新版：缩成一行，不占地方。
+export function CanvasView({ doc, latest, versions, onJumpLatest, onCanvasMessage }: CanvasViewProps) {
+  // 这一轮不是最新版：缩成一行，不占地方（旧版里没有按钮可点，也不交话）。
   if (doc.n < latest) return <CanvasStub doc={doc} latest={latest} onJumpLatest={onJumpLatest} />;
-  return <LiveCanvas doc={doc} latest={latest} versions={versions} />;
+  return (
+    <LiveCanvas
+      doc={doc}
+      latest={latest}
+      versions={versions}
+      onCanvasMessage={onCanvasMessage}
+    />
+  );
 }

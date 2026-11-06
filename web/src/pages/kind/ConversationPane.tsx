@@ -238,6 +238,14 @@ export function ConversationPane() {
 
   const composerRef = useRef<ComposerHandle | null>(null);
 
+  // T015.4：画布里的按钮把一句话交给输入框（只放进输入框，由用户自己发）。
+  const onCanvasMessage = useCallback(
+    (text: string, canvas: { id: string; title: string }) => {
+      composerRef.current?.putFromCanvas(text, canvas);
+    },
+    [],
+  );
+
   // T013.7：发送走 Composer（Enter/Cmd+Enter/按钮都到 submit）；pastes/attachments 跟着发。
   const handleSend = useCallback(() => {
     if (useKindStore.getState().connection.state !== 'online') return;
@@ -343,6 +351,7 @@ export function ConversationPane() {
                   dayLabel={dayLabels.get(view.id) ?? null}
                   showLastSeen={lastSeenId === view.id}
                   lastSeenCounts={lastSeenCounts}
+                  onCanvasMessage={onCanvasMessage}
                 />
               </div>
             )}

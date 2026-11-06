@@ -19,7 +19,7 @@ import { useKindStore, useStreamStore } from './kindStore';
 import { processStepsOf } from './turnViews';
 import { ProcessView } from './process/ProcessView';
 import { CanvasView } from './CanvasView';
-import { AttachmentPreview, FileCard, PasteCard, pasteStats } from './composer/AttachmentCard';
+import { AttachmentPreview, FileCard, FromCanvasChip, PasteCard, pasteStats } from './composer/AttachmentCard';
 import { attachmentGet } from '@/data/service';
 import type { CompactionView, TurnUserView, TurnViewData } from './kindStore';
 import type { CanvasViewDoc } from './turnViews';
@@ -143,7 +143,13 @@ function MentionText({ text }: { text: string }) {
 }
 
 /** 这一轮出的画布：最新版展开，旧版缩成一行（T015.2）；版本从日志折叠的 canvasTracks 来。 */
-function CanvasBlock({ doc }: { doc: CanvasViewDoc }) {
+function CanvasBlock({
+  doc,
+  onCanvasMessage,
+}: {
+  doc: CanvasViewDoc;
+  onCanvasMessage: (text: string, canvas: { id: string; title: string }) => void;
+}) {
   const track = useKindStore((state) => state.canvasTracks[doc.id]);
   const revealTurn = useKindStore((state) => state.revealTurn);
   const latest = track?.latest ?? doc.n;
@@ -157,6 +163,7 @@ function CanvasBlock({ doc }: { doc: CanvasViewDoc }) {
       onJumpLatest={() => {
         if (track) revealTurn(track.latestTurnId);
       }}
+      onCanvasMessage={onCanvasMessage}
     />
   );
 }
@@ -254,7 +261,11 @@ function FailureBlock({ view }: { view: TurnViewData }) {
           // F1：粘贴和文件跟着一起再发一次（不是只剩打的字）。
           onClick={() =>
             view.user &&
-            send(view.user.text, { pastes: view.user.pastes, attachments: view.user.files })
+            send(view.user.text, {
+              pastes: view.user.pastes,
+              attachments: view.user.files,
+              canvas: view.user.canvas ?? undefined,
+            })
           }
           className="shrink-0 rounded-btn border border-line-2 px-2.5 py-1 text-2 text-ink-2 transition-colors hover:bg-hover hover:text-ink disabled:opacity-50"
         >
@@ -321,9 +332,17 @@ interface TurnProps {
   /** 「上次查看之后」的分隔线画在这一轮上面。 */
   showLastSeen: boolean;
   lastSeenCounts: { moved: number; waiting: number };
+  /** T015.4：画布里的按钮交上来的一句话（带画布 id 和标题）。 */
+  onCanvasMessage: (text: string, canvas: { id: string; title: string }) => void;
 }
 
-export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, lastSeenCounts }: TurnProps) {
+export const TurnRow = memo(function TurnRow({
+  view,
+  dayLabel,
+  showLastSeen,
+  lastSeenCounts,
+  onCanvasMessage,
+}: TurnProps) {
   const streaming = view.status === 'inProgress';
   if (view.compaction) return <CompactionDivider compaction={view.compaction} />;
   const waitingForKernel = view.delivery !== null;
@@ -346,6 +365,7 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
 
       {view.user ? (
         <div className="mb-2 mt-3 flex flex-col items-end gap-1.5" data-kind="user-message-row">
+          {view.user.canvas ? <FromCanvasChip title={view.user.canvas.title} /> : null}
           {view.user.pastes.length > 0 || view.user.files.length > 0 ? <UserCards user={view.user} /> : null}
           {view.user.text ? (
             <div
@@ -414,7 +434,7 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
               />
             </div>
           ) : null}
-          {view.canvas ? <CanvasBlock doc={view.canvas} /> : null}
+          {view.canvas ? <CanvasBlock doc={view.canvas} onCanvasMessage={onCanvasMessage} /> : null}
 
           {view.question ? <QuestionCard turnId={view.id} question={view.question} /> : null}
           {view.retry ? <RetryLine retry={view.retry} /> : null}
