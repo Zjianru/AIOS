@@ -30,6 +30,9 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.codeBlock) return { file: 'tool-code' };
   if (options.t013Process) return { file: 'tool-process' };
   if (options.t013Interrupted) return { file: 'tool-interrupted', paceMs: 800 };
+  if (options.canvas) {
+    return { file: options.canvas === 'interactive' ? 'canvas' : 'canvas-' + options.canvas };
+  }
   if (options.highUsage) return { file: 'high-usage' };
   return {
     file: 'text',
@@ -112,6 +115,9 @@ export interface FixtureOptions {
   t013Process?: boolean;
   /// T013.5：工具做完后被停下的一轮（工作过程页的「已停止」）。
   t013Interrupted?: boolean;
+  /// T015.1：画布夹具。interactive 是拖滑块/换标签、内容超过 420px 的那张；cdn 验地址清单和隔离；
+  /// loop 验死循环不卡页面。每份都是手写的模型回放脚本（第一轮回 canvas 工具调用，第二轮回一句回答）。
+  canvas?: 'interactive' | 'cdn' | 'loop';
   /// 每次模型回放延迟毫秒（T007.5 停止用例要在运行中按停止/Esc）。
   slowMs?: number;
   /// first request 回一次 ask_user_question（两题：一题选项、一题自己写）。

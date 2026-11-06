@@ -3,6 +3,7 @@
 mod attachments;
 mod bash;
 mod builtin_tools;
+mod canvas;
 mod diff_meta;
 mod file_references;
 mod fs_tools;

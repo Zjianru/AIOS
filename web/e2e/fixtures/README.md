@@ -20,6 +20,16 @@ T010.2 时用一次性 Playwright 录制器（已删除，不在仓库）跑改�
 | failure-model.json | text 的覆盖：连续 500 | 10 条 throw |
 | failure-retry.json | text 的覆盖：3 条 500 后回 text 的正常流 | 3 throw + 1 stream |
 
+## T015.1 画布夹具（手写）
+
+| 文件 | 场景 | 模型调用数 |
+|---|---|---|
+| canvas.jsonl | 画布：三个滑块 + 换标签的按钮，内容超过 420px | 2 |
+| canvas-cdn.jsonl | 画布：清单里的 CDN 库；清单外的脚本/图片/fetch；/api、/ws、parent.document 探测 | 2 |
+| canvas-loop.jsonl | 画布：脚本里转死循环 | 2 |
+
+这三份是手写的，只放模型回放要的两条 `assistant/message`：第 1 条回一次 `canvas` 工具调用（HTML 在参数里），第 2 条回一句回答。**工具调用由真内核执行**，所以页面显示的画布一定来自日志的 `tool/result.meta.canvas`，不是夹具里写死的结果。
+
 ## 真 key 夹具的来源（T010.5）
 
 real.jsonl 用真 key 录制（key 只在运行时注入 Keyring，不进文件/命令行/证据）：
