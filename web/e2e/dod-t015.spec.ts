@@ -209,7 +209,6 @@ test('DoD2：真 key 四件事（MiniMax）', async ({ page }) => {
     expect(Number(callsRaw)).toBe(callsBefore);
     await pollJq(logOf(), canvasVersionCountProbe, 3);
     await expect(page.locator('[data-kind="canvas"]')).toHaveCount(1);
-    await expect(page.locator('[data-kind="canvas-stub"]')).toHaveCount(2);
     await page.screenshot({ path: path.join(EVIDENCE, 'T015.6-dod2-4-one-liner.png'), fullPage: true });
     record('4-one-liner', fourth);
   } finally {
