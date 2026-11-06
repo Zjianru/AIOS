@@ -158,6 +158,19 @@ pub enum Role {
 pub enum ContentBlock {
     Text {
         text: String,
+        /// T013.4：这段文字是用户的一段粘贴（页面按粘贴块画；投给模型时照原文）。
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        paste: bool,
+    },
+    /// T013.4：用户消息里的一个文件块（投给模型时换成 fileHandleText）。
+    File {
+        #[serde(rename = "attachmentId")]
+        attachment_id: String,
+        name: String,
+        bytes: u64,
+        /// 只读副本的绝对路径（服务发消息时解析；模型适配层用它拼 fileHandleText）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
     },
     /// 模型的思考内容（thinking）；signature 是回放用的原生元数据（块级，照 DSH）。
     Reasoning {
@@ -175,14 +188,25 @@ pub enum ContentBlock {
 
 impl ContentBlock {
     pub fn text(text: impl Into<String>) -> Self {
-        Self::Text { text: text.into() }
+        Self::Text {
+            text: text.into(),
+            paste: false,
+        }
+    }
+
+    /// T013.4：一段粘贴（paste=true）。
+    pub fn paste(text: impl Into<String>) -> Self {
+        Self::Text {
+            text: text.into(),
+            paste: true,
+        }
     }
 
     /// 文本块的内容；非文本块返回 None。
     pub fn as_text(&self) -> Option<&str> {
         match self {
-            Self::Text { text } => Some(text),
-            Self::Reasoning { .. } | Self::ToolCall { .. } => None,
+            Self::Text { text, .. } => Some(text),
+            Self::Reasoning { .. } | Self::ToolCall { .. } | Self::File { .. } => None,
         }
     }
 
@@ -194,7 +218,7 @@ impl ContentBlock {
                 name,
                 arguments,
             } => Some((id, name, arguments)),
-            Self::Text { .. } | Self::Reasoning { .. } => None,
+            Self::Text { .. } | Self::Reasoning { .. } | Self::File { .. } => None,
         }
     }
 }
@@ -277,6 +301,18 @@ impl Message {
             Role::User,
             content,
             MessageSource::User { rpc_id: None },
+        )
+    }
+
+    /// T013.4：带 requestId 的块状用户消息。
+    pub fn user_with_request_id(content: Vec<ContentBlock>, request_id: impl Into<String>) -> Self {
+        Self::with_source(
+            MessageId::generate(),
+            Role::User,
+            content,
+            MessageSource::User {
+                rpc_id: Some(request_id.into()),
+            },
         )
     }
 
@@ -442,6 +478,11 @@ impl UserMessage {
 
     pub fn new(content: Vec<ContentBlock>) -> Self {
         Self(Message::user(content))
+    }
+
+    /// T013.4：带 requestId 的块状用户消息（服务发消息的 durable rpcId）。
+    pub fn with_request_id(content: Vec<ContentBlock>, request_id: impl Into<String>) -> Self {
+        Self(Message::user_with_request_id(content, request_id))
     }
 
     pub fn as_message(&self) -> &Message {

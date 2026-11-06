@@ -22,7 +22,7 @@ import type { AskAnswer } from '@/data/fixtures/kindLive';
 import { mark } from '@/lib/perf';
 import { compactionViewOf, deriveTurnViews } from './turnViews';
 import type { TurnViewData } from './turnViews';
-export type { CompactionView, QuestionView, ToolStep, TurnViewData } from './turnViews';
+export type { CompactionView, QuestionView, ToolStep, TurnUserView, TurnViewData } from './turnViews';
 export { deriveTurnViews } from './turnViews';
 
 export const PAGE_LAST = 5;
@@ -128,6 +128,8 @@ interface KindState {
   recheck: () => Promise<void>;
   /** 和内核的连接：断了就自动重连，期间不能发。 */
   connection: { state: 'online' } | { state: 'reconnecting'; attempt: number };
+  /** T013.8：会话 id（ready 帧给；草稿 localStorage 的键用它）。 */
+  sessionId: string | null;
   /** 上下文占用（%），底栏悬停可见。 */
   usage: number;
   compacting: boolean;
@@ -167,7 +169,7 @@ interface KindState {
   loadInitial: () => Promise<void>;
   loadOlder: () => Promise<void>;
   setAtBottom: (value: boolean) => void;
-  send: (text: string, totalMs?: number) => void;
+  send: (text: string, options?: { pastes?: string[]; attachments?: { id: string; name: string; bytes: number }[] }) => Promise<boolean>;
   resend: (turnId: string) => void;
   stop: () => void;
   answer: (turnId: string, answers: AskAnswer[]) => void;
@@ -236,8 +238,11 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let recheckTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempt = 0;
 let lastSeq = 0;
-/** 没送到内核的本地消息：viewId -> { requestId, text }；重发复用同一个 requestId。 */
-const unsentSends = new Map<string, { requestId: string; text: string }>();
+/** 没送到内核的本地消息：viewId -> { requestId, text, pastes, files }；重发复用同一个 requestId。 */
+const unsentSends = new Map<
+  string,
+  { requestId: string; text: string; pastes: string[]; files: { id: string; name: string; bytes: number }[] }
+>();
 
 function removeView(viewId: string): void {
   useKindStore.setState((state) => {
@@ -247,7 +252,12 @@ function removeView(viewId: string): void {
 }
 
 /** 发不出去时在对话里留一条「没送到内核」的本地消息（重发成功后移除）。 */
-function addUnsentView(viewId: string, text: string): void {
+function addUnsentView(
+  viewId: string,
+  text: string,
+  pastes: string[],
+  files: { id: string; name: string; bytes: number }[],
+): void {
   useKindStore.setState((state) => {
     if (state.views.some((view) => view.id === viewId)) return {};
     const view: TurnViewData = {
@@ -255,7 +265,7 @@ function addUnsentView(viewId: string, text: string): void {
       startedAt: null,
       durationMs: null,
       status: 'completed',
-      user: { text, elements: [] },
+      user: { text, elements: [], pastes, files },
       reasoning: null,
       tools: [],
       cards: [],
@@ -295,7 +305,7 @@ function openSocket(): void {
           clearTimeout(recheckTimer);
           recheckTimer = null;
         }
-        useKindStore.setState({ connection: { state: 'online' } });
+        useKindStore.setState({ connection: { state: 'online' }, sessionId: frame.sessionId ?? null });
       }
       applyFrame(frame);
     },
@@ -512,6 +522,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   gate: 'ok',
   gateDetail: null,
   connection: { state: 'online' },
+  sessionId: null,
   usage: 46,
   compacting: false,
   modelNames: {},
@@ -627,21 +638,30 @@ export const useKindStore = create<KindState>()((set, get) => ({
 
   setAtBottom: (value) => set({ atBottom: value }),
 
-  send: (text) => {
+  send: (text, options) => {
     // T007.4：真实发送；requestId 是幂等键（T007.9 的重发复用同一个）。
+    // T013.7：pastes/attachments 跟着发（服务端拼成用户消息的块）。
+    // T013.8：返回是否受理成功（草稿只在成功时清）。
     const requestId = globalThis.crypto.randomUUID();
     const viewId = 'turn-999-unsent-' + requestId;
-    void sendMessage(text, requestId).catch(() => {
-      unsentSends.set(viewId, { requestId, text });
-      addUnsentView(viewId, text);
-    });
+    // F1：没送到的那条也把粘贴和文件带着，重发时原样再发一次。
+    const pastes = options?.pastes ?? [];
+    const files = options?.attachments ?? [];
+    return sendMessage(text, requestId, options).then(
+      () => true,
+      () => {
+        unsentSends.set(viewId, { requestId, text, pastes, files });
+        addUnsentView(viewId, text, pastes, files);
+        return false;
+      },
+    );
   },
 
   resend: (turnId) => {
     const pending = unsentSends.get(turnId);
     if (!pending) return;
     const viewId = turnId;
-    void sendMessage(pending.text, pending.requestId)
+    void sendMessage(pending.text, pending.requestId, { pastes: pending.pastes, attachments: pending.files })
       .then(() => {
         unsentSends.delete(viewId);
         removeView(viewId);

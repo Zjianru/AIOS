@@ -35,13 +35,14 @@ test('回放真 key 夹具：缓存命中、想了 N 秒、压缩占用', async 
     await send(request, fixture, '再简短说一次刚才的文件内容。', 'replay-real-2');
     await waitTurns(request, fixture, 2);
 
-    // 悬停最后一轮：模型名 + 缓存命中（真 key 录的 usage 有 cacheRead）。
-    await page.getByText('工作过程', { exact: false }).last().hover();
+    // T013.5：悬停最后一轮整轮行：模型名 + 缓存命中（真 key 录的 usage 有 cacheRead）。
+    const lastProcess = page.locator('[data-kind="process"]').last();
+    await lastProcess.hover();
     await expect(page.getByText(/DeepSeek-V4\.1-Flash · 输入 \d+/).last()).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText(/缓存命中 \d+%/).last()).toBeVisible();
 
     // 展开第一轮：思考帧 → 想了 N 秒。
-    await page.getByText('工作过程', { exact: false }).first().click();
+    await page.locator('[data-kind="process"]').first().locator('button').first().click();
     await expect(page.getByText(/想了 \d+ 秒/)).toBeVisible({ timeout: 20_000 });
 
     // 手动压缩 + 再发一条：分隔线出现占用 a% → b%。

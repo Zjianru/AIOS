@@ -258,6 +258,7 @@ mod tests {
         let message = model::Message::assistant(
             vec![model::ContentBlock::Text {
                 text: "ok".to_owned(),
+                paste: false,
             }],
             "deepseek",
             model,
@@ -599,6 +600,7 @@ mod tests {
                     message: model::Message::assistant(
                         vec![model::ContentBlock::Text {
                             text: "ok".to_owned(),
+                            paste: false,
                         }],
                         "deepseek",
                         "deepseek-flash",

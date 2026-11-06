@@ -87,7 +87,7 @@ impl Capability for SkillCapability {
                     continue;
                 }
                 for block in &message.content {
-                    let ContentBlock::Text { text } = block else {
+                    let ContentBlock::Text { text, .. } = block else {
                         continue;
                     };
                     for name in invoked_skill_names(text) {

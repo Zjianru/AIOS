@@ -28,6 +28,7 @@ fn aborted_result(call: &ToolCall) -> ToolResult {
         content: "Error: tool call aborted before dispatch".to_owned(),
         is_error: true,
         error_code: Some("ABORTED_BEFORE_DISPATCH".to_owned()),
+        meta: None,
     }
 }
 
@@ -60,6 +61,7 @@ async fn invoke<'a>(plan: &'a Planned<'_>, context: &'a ToolContext) -> ToolResu
                     content: format!("Error: tool call timed out after {timeout_ms}ms"),
                     is_error: true,
                     error_code: Some("TOOL_TIMEOUT".to_owned()),
+                    meta: None,
                 },
             }
         }

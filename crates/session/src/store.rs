@@ -14,7 +14,7 @@ use model::Message;
 
 use crate::derive::{derive_messages, derive_messages_with_seqs};
 use crate::error::SessionError;
-use crate::event::{Event, EventKind, FORMAT_VERSION, SessionHeader, SurfaceOp};
+use crate::event::{Event, EventKind, FORMAT_VERSION, MIN_READ_VERSION, SessionHeader, SurfaceOp};
 use crate::id::SessionId;
 
 /// 追加写日志的底层文件接缝。生产实现是 std::fs::File；单元测试用第二个
@@ -340,10 +340,19 @@ fn parse_log(bytes: &[u8]) -> Result<(SessionHeader, Vec<Event>, u64), SessionEr
         .map_err(|_| SessionError::CorruptHeader("header 不是合法 UTF-8".to_owned()))?;
     let header: SessionHeader = serde_json::from_str(header_text)
         .map_err(|error| SessionError::CorruptHeader(error.to_string()))?;
-    if header.version != FORMAT_VERSION {
+    // T013.1：读 14–15；更早、更新的拒绝（不迁移、文件一字不改）；更新的另说「请升级」。
+    if header.version < MIN_READ_VERSION {
         return Err(SessionError::UnsupportedVersion {
             version: header.version,
-            supported: FORMAT_VERSION,
+            min: MIN_READ_VERSION,
+            max: FORMAT_VERSION,
+        });
+    }
+    if header.version > FORMAT_VERSION {
+        return Err(SessionError::UnsupportedFutureVersion {
+            version: header.version,
+            min: MIN_READ_VERSION,
+            max: FORMAT_VERSION,
         });
     }
     header.validate()?;

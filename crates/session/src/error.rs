@@ -16,8 +16,11 @@ pub enum SessionError {
     MissingHeader(String),
     #[error("会话日志 header 损坏: {0}")]
     CorruptHeader(String),
-    #[error("会话日志格式版本 {version} 不受支持（当前支持 {supported}）")]
-    UnsupportedVersion { version: u64, supported: u64 },
+    /// 日志版本不在可读范围内（T013.1：读 14–15；更早拒绝，更新提示升级）。
+    #[error("会话日志版本 {version} 不受支持（支持 {min}–{max}）")]
+    UnsupportedVersion { version: u64, min: u64, max: u64 },
+    #[error("这个日志是更新版本的 AIOS 写的（版本 {version}；本机支持 {min}–{max}），请升级")]
+    UnsupportedFutureVersion { version: u64, min: u64, max: u64 },
     #[error("会话日志第 {line} 行损坏: {detail}")]
     CorruptLine { line: usize, detail: String },
     #[error("会话日志 seq 不连续: 期望 {expected}，读到 {actual}")]

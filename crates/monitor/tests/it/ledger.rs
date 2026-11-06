@@ -15,6 +15,7 @@ fn tool_result(message: Message, error: Option<ToolError>) -> EventKind {
         step: 1,
         message,
         error,
+        meta: None,
     }
 }
 

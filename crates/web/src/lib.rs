@@ -728,7 +728,10 @@ async fn static_handler(
 fn service_error_status(code: service::ServiceErrorCode) -> StatusCode {
     match code {
         service::ServiceErrorCode::RootUnavailable => StatusCode::CONFLICT,
-        service::ServiceErrorCode::RequestInvalidJson => StatusCode::BAD_REQUEST,
+        service::ServiceErrorCode::RequestInvalidJson
+        | service::ServiceErrorCode::AttachmentInvalid
+        | service::ServiceErrorCode::AttachmentNotText
+        | service::ServiceErrorCode::RequestInvalidMessage => StatusCode::BAD_REQUEST,
         _ => StatusCode::BAD_GATEWAY,
     }
 }
@@ -1318,6 +1321,251 @@ mod cookie_red_tests {
 }
 
 #[cfg(test)]
+mod t012_attachment_http_tests {
+    use super::*;
+    use axum::body::Bytes;
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use std::net::IpAddr;
+    use std::path::Path;
+
+    use agent::AgentConfig;
+    use model::{DEFAULT_CONTEXT_WINDOW, DeepSeekConfig, Effort};
+    use service::{RootHost, RootSessionOptions};
+
+    fn trust() -> Trust {
+        Trust::new(
+            IpAddr::from([127, 0, 0, 1]),
+            1417,
+            "tok-1".to_owned(),
+            [7u8; 32],
+        )
+    }
+
+    fn options(data_dir: &Path, identity: &Path) -> RootSessionOptions {
+        RootSessionOptions {
+            data_dir: data_dir.to_path_buf(),
+            cwd: data_dir.to_path_buf(),
+            model: DeepSeekConfig {
+                base_url: "http://127.0.0.1:1".to_owned(),
+                model: "deepseek-flash".to_owned(),
+                max_tokens: 2048,
+                context_window: DEFAULT_CONTEXT_WINDOW,
+                effort: Effort::new("high"),
+            },
+            config: AgentConfig::default(),
+            credentials: Some(std::sync::Arc::new(TestCredential)),
+            identity: Some(identity.to_path_buf()),
+            model_factory: None,
+            append_hook_factory: None,
+            keyring_changed: None,
+        }
+    }
+
+    struct TestCredential;
+
+    impl model::CredentialSource for TestCredential {
+        fn issue(
+            &self,
+            _purpose: &str,
+            _context: &model::CredentialContext,
+        ) -> Result<String, model::ModelError> {
+            Ok("test-key".to_owned())
+        }
+    }
+
+    async fn host(dir: &Path) -> Arc<RootHost> {
+        Arc::new(
+            RootHost::open(
+                options(dir, &dir.join("identity.txt")),
+                DEFAULT_CONTEXT_WINDOW,
+            )
+            .await,
+        )
+    }
+
+    /// 走真实的 api_handler（带 cookie/host/origin 认证头），返回 (HTTP 状态, JSON body)。
+    async fn call_api(
+        host: Arc<RootHost>,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        let trust = trust();
+        let state = Arc::new(AppState {
+            host,
+            trust: trust.clone(),
+            static_dir: None,
+            monitor: None,
+        });
+        let grant =
+            authorize_connect(&trust, Some("127.0.0.1:1417"), Some("tok-1")).expect("换 cookie");
+        let cookie = grant
+            .set_cookie
+            .split(';')
+            .next()
+            .expect("Set-Cookie")
+            .to_owned();
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "127.0.0.1:1417".parse().unwrap());
+        headers.insert("origin", "http://127.0.0.1:1417".parse().unwrap());
+        headers.insert("cookie", cookie.parse().unwrap());
+        let uri: axum::http::Uri = "/api".parse().unwrap();
+        let response = api_handler(
+            State(state),
+            headers,
+            uri,
+            Bytes::from(serde_json::to_vec(&body).unwrap()),
+        )
+        .await;
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    #[tokio::test]
+    async fn send_over_http_accepts_pastes_and_attachments() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = host(dir.path()).await;
+        let (status, put) = call_api(
+            host.clone(),
+            serde_json::json!({
+                "method": "attachment-put",
+                "name": "notes.txt",
+                "data": "aGVsbG8=",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{put}");
+        let id = put["id"].as_str().expect("id").to_owned();
+        let (status, json) = call_api(
+            host,
+            serde_json::json!({
+                "method": "send",
+                "requestId": "req-t013-4-http",
+                "content": "看这个",
+                "pastes": ["第一段"],
+                "attachments": [{"id": id, "name": "notes.txt", "bytes": 5}],
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "send 应受理：{json}");
+        assert_eq!(json["method"], "send");
+        assert_eq!(json["accepted"], true);
+    }
+
+    #[tokio::test]
+    async fn send_over_http_rejects_an_empty_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let (status, json) = call_api(
+            host(dir.path()).await,
+            serde_json::json!({
+                "method": "send",
+                "requestId": "req-t013-4-empty",
+                "content": "",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_eq!(json["code"], "request/invalid-message");
+    }
+
+    #[tokio::test]
+    async fn send_over_http_rejects_an_unknown_attachment() {
+        let dir = tempfile::tempdir().unwrap();
+        let (status, json) = call_api(
+            host(dir.path()).await,
+            serde_json::json!({
+                "method": "send",
+                "requestId": "req-t013-4-bad-attachment",
+                "content": "带个文件",
+                "attachments": [{
+                    "id": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                    "name": "missing.txt",
+                    "bytes": 1,
+                }],
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_eq!(json["code"], "attachment/invalid");
+    }
+
+    #[tokio::test]
+    async fn attachment_put_over_http_returns_the_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let (status, json) = call_api(
+            host(dir.path()).await,
+            serde_json::json!({
+                "method": "attachment-put",
+                "name": "notes.txt",
+                "data": "aGVsbG8=",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert_eq!(json["method"], "attachment-put");
+        assert!(
+            json["id"]
+                .as_str()
+                .is_some_and(|id| id.starts_with("sha256:")),
+            "{json}"
+        );
+        assert_eq!(json["bytes"], 5);
+    }
+
+    #[tokio::test]
+    async fn attachment_put_over_http_rejects_bad_base64() {
+        let dir = tempfile::tempdir().unwrap();
+        let (status, json) = call_api(
+            host(dir.path()).await,
+            serde_json::json!({
+                "method": "attachment-put",
+                "name": "a.txt",
+                "data": "AA=A",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_eq!(json["code"], "attachment/invalid");
+    }
+
+    #[tokio::test]
+    async fn attachment_put_over_http_rejects_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let (status, json) = call_api(
+            host(dir.path()).await,
+            serde_json::json!({
+                "method": "attachment-put",
+                "name": "bin.dat",
+                "data": "AA==",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_eq!(json["code"], "attachment/not-text");
+    }
+
+    #[tokio::test]
+    async fn attachment_get_over_http_rejects_bad_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let (status, json) = call_api(
+            host(dir.path()).await,
+            serde_json::json!({
+                "method": "attachment-get",
+                "id": "sha256:xx",
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{json}");
+        assert_eq!(json["code"], "attachment/invalid");
+    }
+}
+
+#[cfg(test)]
 mod t009_error_tests {
     use super::*;
 
@@ -1388,7 +1636,13 @@ mod t009_error_tests {
             let status = service_error_status(code);
             if matches!(code, service::ServiceErrorCode::RootUnavailable) {
                 assert_eq!(status, StatusCode::CONFLICT);
-            } else if matches!(code, service::ServiceErrorCode::RequestInvalidJson) {
+            } else if matches!(
+                code,
+                service::ServiceErrorCode::RequestInvalidJson
+                    | service::ServiceErrorCode::AttachmentInvalid
+                    | service::ServiceErrorCode::AttachmentNotText
+                    | service::ServiceErrorCode::RequestInvalidMessage
+            ) {
                 assert_eq!(status, StatusCode::BAD_REQUEST);
             } else {
                 assert_eq!(status, StatusCode::BAD_GATEWAY);

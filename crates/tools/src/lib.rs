@@ -3,8 +3,11 @@
 //! 机制照 DSH 的 packages/core/tools 与 packages/fs/tool-fs、packages/fs/tool-fs-search
 //! （strategy 第 1 节）。
 
+pub mod attachments;
 mod batch;
 mod builtin;
+pub mod diff;
+pub mod file_references;
 mod fs;
 mod jobs;
 mod session;
@@ -25,6 +28,7 @@ pub use builtin::{
     JobListTool, JobOutputTool, ReadTool, SkillTool, TodoWriteTool, WriteTool,
     foreground_bytes_read,
 };
+pub use diff::{DIFF_CONTEXT, FileDiff, compute_hunk_diffs};
 pub use jobs::{
     JobCause, JobNotifyCallback, JobOutputRead, JobRead, JobRegistered, JobRegisteredCallback,
     JobSettled, JobSettledCallback, JobSpec, JobStatus, JobToolCall, JobView, MAX_WAIT_MS,
@@ -152,6 +156,8 @@ pub struct ToolResult {
     pub content: String,
     pub is_error: bool,
     pub error_code: Option<String>,
+    /// T013.1：展示用元信息（diff 卡片等）；落进会话日志的 tool/result.meta。
+    pub meta: Option<serde_json::Value>,
 }
 
 impl ToolResult {
@@ -161,6 +167,22 @@ impl ToolResult {
             content: content.into(),
             is_error: false,
             error_code: None,
+            meta: None,
+        }
+    }
+
+    /// 带展示元信息的成功结果（T013.1：write/edit/apply_patch 的 diff）。
+    pub fn success_with_meta(
+        call_id: impl Into<String>,
+        content: impl Into<String>,
+        meta: serde_json::Value,
+    ) -> Self {
+        Self {
+            call_id: call_id.into(),
+            content: content.into(),
+            is_error: false,
+            error_code: None,
+            meta: Some(meta),
         }
     }
 
@@ -170,6 +192,7 @@ impl ToolResult {
             content: format!("Error: {}", failure.message),
             is_error: true,
             error_code: failure.code,
+            meta: None,
         }
     }
 }

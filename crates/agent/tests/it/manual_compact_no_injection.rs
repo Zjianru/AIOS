@@ -17,7 +17,7 @@ fn user_message_count(store: &session::SessionSnapshot, marker: &str) -> usize {
                 return false;
             };
             message.content.iter().any(|block| {
-                let ContentBlock::Text { text } = block else {
+                let ContentBlock::Text { text, .. } = block else {
                     return false;
                 };
                 text.contains(marker)

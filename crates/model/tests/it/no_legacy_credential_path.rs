@@ -12,7 +12,7 @@ fn repo_file(relative: &str) -> String {
 
 #[test]
 fn product_src_has_no_legacy_credential_path() {
-    let model_mod = repo_file("crates/model/src/deepseek/mod.rs");
+    let model_mod = repo_file("crates/model/src/anthropic/mod.rs");
     assert!(
         !model_mod.contains("StaticCredential"),
         "DeepSeek 适配器不再有 StaticCredential 旧路径"
@@ -22,7 +22,7 @@ fn product_src_has_no_legacy_credential_path() {
         "DeepSeek::new(config) 旧构造入口要删掉"
     );
 
-    let config = repo_file("crates/model/src/deepseek/config.rs");
+    let config = repo_file("crates/model/src/anthropic/config.rs");
     assert!(
         !config.contains("pub api_key: String"),
         "DeepSeekConfig 不再有 api_key 旧字段"

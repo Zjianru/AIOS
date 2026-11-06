@@ -36,7 +36,7 @@ test('统计行：轮/步/输入输出/缓存命中/花费', async ({ page, requ
     await page.getByPlaceholder('和 Kind 说…').fill('你好');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await expect(page.getByText('（T007 e2e 假回放）').last()).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0, { timeout: 60_000 });
+    await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 60_000 });
     const dock = page.locator('[data-kind="composer-dock"]');
     await expect(dock).toBeVisible();
     await expect(dock).toContainText('轮');
@@ -55,10 +55,13 @@ test('换思考档：下一轮请求的 thinking 档按选择', async ({ page })
   const fixture = await startKernelFixture();
   try {
     await page.goto(urlOf(fixture));
+    // T012.9 底栏标签是异步 hydration 的（模型名 + 思考档）；等它出来再点菜单。
+    await expect(page.locator('[data-kind="model-picker"]')).toContainText('·', { timeout: 30_000 });
     await page.locator('[data-kind="model-picker"]').click();
     const effort = page.locator('[data-kind="effort"]');
-    await expect(effort).toBeVisible();
+    await expect(effort).toBeVisible({ timeout: 30_000 });
     await effort.getByRole('button', { name: 'low', exact: true }).click({ force: true });
+    await page.waitForTimeout(900);
     await page.keyboard.press('Escape');
     await page.getByPlaceholder('和 Kind 说…').fill('你好');
     await page.getByRole('button', { name: '发送', exact: true }).click();
@@ -122,7 +125,7 @@ test('币种：设置页切 CNY 后花费显示 ¥', async ({ page, request }) =
     await page.getByPlaceholder('和 Kind 说…').fill('你好');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await expect(page.getByText('（T007 e2e 假回放）').last()).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0, { timeout: 60_000 });
+    await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 60_000 });
     await expect(page.locator('[data-kind="stats-cost"]')).toContainText('$');
     // 真实 UI：设置页 › 显示币种 › ¥ CNY。
     await page.getByRole('button', { name: '设置', exact: true }).click();
@@ -146,7 +149,7 @@ test('只填缓存读价：合计变了', async ({ page }) => {
     await page.getByPlaceholder('和 Kind 说…').fill('你好');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await expect(page.getByText('（T007 e2e 假回放）').last()).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0, { timeout: 60_000 });
+    await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 60_000 });
     const cost = page.locator('[data-kind="stats-cost"]');
     await expect(cost).toBeVisible({ timeout: 20_000 });
     const before = (await cost.innerText()).trim();
@@ -194,8 +197,12 @@ test('换到没有这一档的模型：显示最近档并告诉用户', async ({
 
     await page.goto(urlOf(fixture));
     await expect(page.getByPlaceholder('和 Kind 说…')).toBeVisible({ timeout: 30_000 });
+    // T012.9 底栏标签是异步 hydration 的（模型名 + 思考档「…·强」）；等它出来再点菜单。
+    await expect(page.locator('[data-kind="model-picker"]')).toContainText('·', { timeout: 30_000 });
     await page.locator('[data-kind="model-picker"]').click();
-    await page.getByRole('menuitem', { name: /DeepSeek/ }).first().click({ force: true });
+    const deepseekItem = page.getByRole('menuitem', { name: /DeepSeek/ }).first();
+    await expect(deepseekItem).toBeVisible({ timeout: 30_000 });
+    await deepseekItem.click({ force: true });
     await page.waitForTimeout(500);
     await page.locator('[data-kind="model-picker"]').click();
     const effort = page.locator('[data-kind="effort"]');
@@ -205,7 +212,9 @@ test('换到没有这一档的模型：显示最近档并告诉用户', async ({
     await page.keyboard.press('Escape');
 
     await page.locator('[data-kind="model-picker"]').click();
-    await page.getByRole('menuitem', { name: /MiniMax-M3\.1-Flash/ }).click({ force: true });
+    const minimaxItem = page.getByRole('menuitem', { name: /MiniMax-M3\.1-Flash/ });
+    await expect(minimaxItem).toBeVisible({ timeout: 30_000 });
+    await minimaxItem.click({ force: true });
     await expect(page.locator('[data-kind="model-picker"]')).toContainText('MiniMax-M3.1-Flash', {
       timeout: 20_000,
     });

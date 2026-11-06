@@ -119,6 +119,8 @@ async fn 空库起服务存连接后recheck用新模型() {
             request_id: "r1".to_owned(),
             content: "你好".to_owned(),
             delivery: DeliveryMode::FollowUp,
+            pastes: Vec::new(),
+            attachments: Vec::new(),
         }))
         .await;
     assert!(send.is_err(), "空库时发送应被拒：{send:?}");
@@ -165,6 +167,8 @@ async fn 空库起服务存连接后recheck用新模型() {
             request_id: "r2".to_owned(),
             content: "你好".to_owned(),
             delivery: DeliveryMode::FollowUp,
+            pastes: Vec::new(),
+            attachments: Vec::new(),
         }))
         .await
         .is_ok()

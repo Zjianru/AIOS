@@ -1665,6 +1665,7 @@ mod f1_redaction_tests {
             step: 1,
             message: model::Message::tool_result("call_1", text, false),
             error: None,
+            meta: None,
         }
     }
 

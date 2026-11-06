@@ -111,6 +111,7 @@ fn ledger_and_ops_keys_are_redacted_from_any_string() {
             step: 1,
             message: Message::tool_result("call_1", "输出 sk-secret-123 结束", false),
             error: None,
+            meta: None,
         }])
         .expect("追加");
     let mut attributes = Map::new();

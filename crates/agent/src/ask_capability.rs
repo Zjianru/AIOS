@@ -647,6 +647,7 @@ impl Capability for AskCapability {
                             content: "Error: invalid ask_user_question arguments (each question needs non-empty id and question)".to_owned(),
                             is_error: true,
                             error_code: Some("ASK_USER_INVALID".to_owned()),
+                            meta: None,
                         },
                     ));
                     continue;
@@ -753,6 +754,7 @@ impl Capability for AskCapability {
                                 .to_owned(),
                             is_error: true,
                             error_code: Some("ASK_ABORTED".to_owned()),
+                            meta: None,
                         },
                     ));
                 }

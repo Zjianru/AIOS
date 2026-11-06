@@ -112,7 +112,7 @@ fn encode(records: &[AssistantStreamRecord], complete: bool) -> Vec<String> {
                 StreamChunk::BlockEnd { index, block } => {
                     if !started.contains(index) {
                         match block {
-                            ContentBlock::Text { text } => {
+                            ContentBlock::Text { text, .. } => {
                                 frames.push(start_text_with(*index, text));
                                 started.insert(*index);
                             }
@@ -148,6 +148,8 @@ fn encode(records: &[AssistantStreamRecord], complete: bool) -> Vec<String> {
                                     ));
                                 }
                             }
+                            // 文件块只在用户消息里，assistant 流里不会出现。
+                            ContentBlock::File { .. } => {}
                         }
                     } else if let ContentBlock::Reasoning {
                         signature: Some(signature),

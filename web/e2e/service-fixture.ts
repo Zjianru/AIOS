@@ -23,9 +23,13 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.failure === 'unknown') return { file: 'text', override: 'failure-unknown' };
   if (options.realTurn) return { file: 'real', paceMs: 20 };
   if (options.usageTurn) return { file: 'usage', paceMs: 400 };
+  if (options.tinyPercent) return { file: 'usage-tiny', paceMs: 400 };
   if (options.usageReadOnly) return { file: 'usage-read-only', paceMs: 400 };
   if (options.askTurn) return { file: 'ask', paceMs: options.askTurnPaceMs };
   if (options.toolTurn) return { file: 'tool' };
+  if (options.codeBlock) return { file: 'tool-code' };
+  if (options.t013Process) return { file: 'tool-process' };
+  if (options.t013Interrupted) return { file: 'tool-interrupted', paceMs: 800 };
   if (options.highUsage) return { file: 'high-usage' };
   return {
     file: 'text',
@@ -102,6 +106,12 @@ export interface KernelFixture {
 export interface FixtureOptions {
   /// first request 回一次工具调用（read hello.txt），拿到工具结果后再回最终文本。
   toolTurn?: boolean;
+  /// T013.6：最终回答里带一个代码块（复制按钮用）。
+  codeBlock?: boolean;
+  /// T013.5：一轮里 write/apply_patch/bash 三个工具 + 最终文本（工作过程页的卡片用）。
+  t013Process?: boolean;
+  /// T013.5：工具做完后被停下的一轮（工作过程页的「已停止」）。
+  t013Interrupted?: boolean;
   /// 每次模型回放延迟毫秒（T007.5 停止用例要在运行中按停止/Esc）。
   slowMs?: number;
   /// first request 回一次 ask_user_question（两题：一题选项、一题自己写）。
@@ -126,6 +136,8 @@ export interface FixtureOptions {
   home?: 'dataDir' | string;
   /// T010.3：用带 reasoning/缓存读写的用量夹具（turn-usage 用例）。
   usageTurn?: boolean;
+  /// T013.6：缓存命中不到 1%（usage 夹具的 cacheRead=1/input=1000）。
+  tinyPercent?: boolean;
   /// T012 F1：用量夹具去掉缓存写（只填缓存读价的端到端用）。
   usageReadOnly?: boolean;
   /// T010.5：用真 key 录的夹具（多步工具/思考/缓存读/压缩）。
@@ -147,8 +159,10 @@ export async function startKernelFixture(
       JSON.stringify({ version: 1, sessionId: randomUUID() }),
     );
   }
-  if (options.toolTurn) {
+  if (options.toolTurn || options.t013Process) {
     await writeFile(path.join(dataDir, 'hello.txt'), 'hello from fixture\n');
+    // T013.7：带空格的路径（@ 菜单插入要给引号用）。
+    await writeFile(path.join(dataDir, 'with space.txt'), 'spaced file\n');
   }
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
@@ -509,4 +523,125 @@ export async function startRealDodFixture(): Promise<KernelFixture> {
       }
     },
   };
+}
+
+/** T013 DoD2：真 key（MiniMax）的夹具——/tmp/aios-t013-dod 下的数据目录 + 小项目工作目录。 */
+export async function startT013KernelFixture(): Promise<KernelFixture> {
+  const apiKey = process.env.MINIMAX_API_KEY;
+  if (!apiKey) throw new Error('缺少 MINIMAX_API_KEY（D35：DoD 从环境变量读 key）');
+  const root = process.env.AIOS_T013_DOD_ROOT ?? '/tmp/aios-t013-dod';
+  const workDir = path.join(root, 'work');
+  const dataDir = path.join(root, 'data');
+  await mkdir(workDir, { recursive: true });
+  await mkdir(dataDir, { recursive: true });
+  // 小项目：只有几个文件（自己造的测试文件）。
+  await writeFile(path.join(workDir, 'notes.md'), '# 项目笔记' + String.fromCharCode(10) + String.fromCharCode(10) + '第一行：DOD13-NOTES' + String.fromCharCode(10));
+  await writeFile(path.join(workDir, 'todo.txt'), 'DOD13-TODO：买牛奶、写代码' + String.fromCharCode(10));
+  await writeFile(path.join(workDir, 'config.json'), '{"name":"dod13"}' + String.fromCharCode(10));
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+  const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
+  const identityPath = path.join(dataDir, 'identity.txt');
+  const seed = spawnSync(
+    bin,
+    [
+      'keyring', '--data-dir', dataDir, '--identity', identityPath, 'set',
+      '--id', 'minimax-cn',
+      '--name', 'MiniMax（国内站）',
+      '--model', 'MiniMax-M3.1-Flash',
+      '--endpoint', 'https://api.minimaxi.com/anthropic',
+    ],
+    { input: apiKey + '\n', encoding: 'utf8' },
+  );
+  if (seed.status !== 0) throw new Error('seed keyring failed: ' + String(seed.stderr));
+  const child = spawn(
+    bin,
+    ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', workDir, '--web-dist', path.join(repoRoot, 'web/dist')],
+    { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  let stderr = '';
+  child.stderr?.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  let output = '';
+  const parsed = await new Promise<{ baseUrl: string; token: string }>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('T013 真 key serve 启动超时: ' + output)), 60_000);
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+      const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)\/?\?token=([0-9a-f-]+)/);
+      if (match) {
+        clearTimeout(timer);
+        resolve({ baseUrl: 'http://127.0.0.1:' + match[1], token: match[2] });
+      }
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      reject(new Error('T013 serve 提前退出（' + String(code) + '）：' + stderr));
+    });
+  });
+  return {
+    baseUrl: parsed.baseUrl,
+    token: parsed.token,
+    baseUrlRaw: parsed.baseUrl,
+    close: async () => {
+      child.kill('SIGTERM');
+    },
+    stderr: () => stderr,
+    dataDir,
+  } as unknown as KernelFixture;
+}
+
+/**
+ * T013 DoD2（T008 模式）：空库起服务，页面里真实加连接并验证（key 从 env 读、只进页面输入）。
+ * F2：每条用例用自己的数据目录（root/<用例名>/），跑完不清，便于按条回查日志。
+ */
+export async function startT013DodFixture(caseName: string): Promise<KernelFixture> {
+  const root = path.join(process.env.AIOS_T013_DOD_ROOT ?? '/tmp/aios-t013-dod', caseName);
+  const workDir = path.join(root, 'work');
+  const dataDir = path.join(root, 'data');
+  await rm(root, { recursive: true, force: true });
+  await mkdir(workDir, { recursive: true });
+  await mkdir(dataDir, { recursive: true });
+  await writeFile(path.join(workDir, 'notes.md'), '# 项目笔记' + String.fromCharCode(10) + String.fromCharCode(10) + '第一行：DOD13-NOTES' + String.fromCharCode(10));
+  await writeFile(path.join(workDir, 'todo.txt'), 'DOD13-TODO：买牛奶、写代码' + String.fromCharCode(10));
+  await writeFile(path.join(workDir, 'config.json'), '{"name":"dod13"}' + String.fromCharCode(10));
+  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+  const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
+  const identity = path.join(dataDir, 'identity.txt');
+  const serveEnv = { ...process.env };
+  delete serveEnv.MINIMAX_API_KEY;
+  delete serveEnv.DEEPSEEK_API_KEY;
+  const child = spawn(
+    bin,
+    ['serve', '--data-dir', dataDir, '--identity', identity, '--cwd', workDir, '--web-dist', path.join(repoRoot, 'web/dist')],
+    { env: serveEnv, stdio: ['ignore', 'pipe', 'pipe'] },
+  );
+  let stderr = '';
+  child.stderr?.on('data', (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  let output = '';
+  const parsed = await new Promise<{ baseUrl: string; token: string }>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('T013 DoD serve 启动超时: ' + output)), 60_000);
+    child.stdout.on('data', (chunk: Buffer) => {
+      output += chunk.toString();
+      const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)\/?\?token=([0-9a-f-]+)/);
+      if (match) {
+        clearTimeout(timer);
+        resolve({ baseUrl: 'http://127.0.0.1:' + match[1], token: match[2] });
+      }
+    });
+    child.on('exit', (code) => {
+      clearTimeout(timer);
+      reject(new Error('T013 DoD serve 提前退出（' + String(code) + '）：' + stderr));
+    });
+  });
+  return {
+    baseUrl: parsed.baseUrl,
+    token: parsed.token,
+    close: async () => {
+      child.kill('SIGTERM');
+    },
+    stderr: () => stderr,
+    dataDir,
+  } as unknown as KernelFixture;
 }

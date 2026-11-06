@@ -54,14 +54,14 @@ impl Tool for EditTool {
     ) -> ToolFuture<'a, ToolResult> {
         Box::pin(async move {
             match edit(&call.arguments, context) {
-                Ok(content) => ToolResult::success(call.id, content),
+                Ok((content, meta)) => ToolResult::success_with_meta(call.id, content, meta),
                 Err(failure) => ToolResult::error(call.id, failure),
             }
         })
     }
 }
 
-fn edit(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
+fn edit(arguments: &str, context: &ToolContext) -> Result<(String, Value), ToolFailure> {
     let args: Value = serde_json::from_str(arguments)
         .map_err(|error| ToolFailure::plain(format!("arguments must be a JSON object: {error}")))?;
     let Some(object) = args.as_object() else {
@@ -95,11 +95,22 @@ fn edit(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
             .ok_or_else(|| ToolFailure::plain("replace_all must be a boolean"))?,
     };
     let target = crate::fs::resolve(context, file_path)?;
-    crate::fs::edit_file(context, &target, old_string, new_string, replace_all)?;
     let display = target.display();
-    Ok(if replace_all {
+    // T013.1：编辑前后文本算 diff（编辑前读失败就让 edit_file 走它自己的错误）。
+    let before = crate::fs::read_text_for_verb(&target, "edit")
+        .ok()
+        .map(|text| text.content);
+    crate::fs::edit_file(context, &target, old_string, new_string, replace_all)?;
+    let after = crate::fs::read_text_for_verb(&target, "edit")
+        .map(|text| text.content)
+        .unwrap_or_default();
+    let diffs =
+        crate::diff::compute_hunk_diffs(&display, before.as_deref().unwrap_or_default(), &after);
+    let meta = json!({"path": display, "diffs": diffs});
+    let text = if replace_all {
         format!("The file {display} has been updated. All occurrences were successfully replaced.")
     } else {
         format!("The file {display} has been updated successfully.")
-    })
+    };
+    Ok((text, meta))
 }

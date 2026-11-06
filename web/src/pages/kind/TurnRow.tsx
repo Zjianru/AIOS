@@ -6,12 +6,18 @@
  */
 
 import { memo, useState } from 'react';
-import { ChevronRight, CircleAlert, LoaderCircle, RotateCw, Square } from 'lucide-react';
+import { toast } from 'sonner';
+import { ChevronRight, CircleAlert, RotateCw, Square } from 'lucide-react';
+import { CopyButton } from './CopyButton';
 import { Markdown } from './Markdown';
 import { QuoteChip } from './QuoteChip';
 import { QuestionCard } from './QuestionCard';
 import { useKindStore, useStreamStore } from './kindStore';
-import type { CompactionView, TurnViewData } from './kindStore';
+import { processStepsOf } from './turnViews';
+import { ProcessView } from './process/ProcessView';
+import { AttachmentPreview, FileCard, PasteCard, pasteStats } from './composer/AttachmentCard';
+import { attachmentGet } from '@/data/service';
+import type { CompactionView, TurnUserView, TurnViewData } from './kindStore';
 import { go } from '@/app/navigate';
 import type { TextElement } from '@/data/types';
 import { cn } from '@/lib/utils';
@@ -20,6 +26,100 @@ function timeOf(seconds: number | null): string {
   if (!seconds) return '';
   const date = new Date(seconds * 1000);
   return String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0');
+}
+
+/** 气泡里的引用块：开头的 `> ` 行（照 DSH QuotedUserText 的样子，左边框 + 弱一点的文字）。 */
+function QuoteBlock({ lines }: { lines: string[] }) {
+  return (
+    <div
+      data-kind="quote-block"
+      className="my-1 border-l-2 border-line-2 pl-2 text-ink-2"
+    >
+      {lines.join(String.fromCharCode(10))}
+    </div>
+  );
+}
+
+/**
+ * 你的消息带着的东西（T013 F1，照原型 app-v14 TurnRow UserBubble）：
+ * 气泡上面一排卡片——粘贴卡和文件卡用输入框里的同一张卡；点开看全文。
+ */
+function UserCards({ user }: { user: TurnUserView }) {
+  const [openPaste, setOpenPaste] = useState<number | null>(null);
+  const [openFile, setOpenFile] = useState<{ name: string; text: string } | null>(null);
+  return (
+    <div className="flex max-w-[82%] flex-wrap items-center justify-end gap-2" data-kind="user-cards">
+      {user.pastes.map((paste, index) => (
+        <PasteCard
+          key={'paste-' + String(index)}
+          paste={paste}
+          onOpen={() => setOpenPaste(openPaste === index ? null : index)}
+        />
+      ))}
+      {user.files.map((file) => (
+        <FileCard
+          key={file.id + '-' + file.name}
+          file={file}
+          onOpen={() => {
+            void attachmentGet(file.id)
+              .then((result) =>
+                setOpenFile({ name: file.name, text: result.text ?? '（这个文件没有可显示的文字）' }),
+              )
+              .catch(() => toast('读不回这个文件', { description: file.name }));
+          }}
+        />
+      ))}
+      {openPaste !== null && user.pastes[openPaste] !== undefined ? (
+        <AttachmentPreview
+          kind="paste"
+          title={'粘贴内容 · ' + pasteStats(user.pastes[openPaste]).lines + ' 行 · ' + pasteStats(user.pastes[openPaste]).chars + ' 字'}
+          text={user.pastes[openPaste]}
+          onClose={() => setOpenPaste(null)}
+          className="w-full"
+        />
+      ) : null}
+      {openFile ? (
+        <AttachmentPreview
+          kind="file"
+          title={'文件全文 · ' + openFile.name}
+          text={openFile.text}
+          onClose={() => setOpenFile(null)}
+          className="w-full"
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** 你说的话：普通行照旧（带内联引用片），`> ` 开头的行画成引用块。 */
+function UserBubbleText({ text, elements }: { text: string; elements: TextElement[] }) {
+  const lines = text.split(String.fromCharCode(10));
+  const nodes: React.ReactNode[] = [];
+  let plain: string[] = [];
+  let quote: string[] = [];
+  const flushPlain = () => {
+    if (plain.length === 0) return;
+    const value = plain.join(String.fromCharCode(10));
+    nodes.push(<RichText key={'plain-' + nodes.length} text={value} elements={elements} />);
+    plain = [];
+  };
+  const flushQuote = () => {
+    if (quote.length === 0) return;
+    nodes.push(<QuoteBlock key={'quote-' + nodes.length} lines={quote} />);
+    quote = [];
+  };
+  for (const line of lines) {
+    if (line.startsWith('> ')) {
+      flushPlain();
+      quote.push(line.slice(2));
+    } else {
+      flushQuote();
+      plain.push(line);
+    }
+  }
+  flushPlain();
+  flushQuote();
+  return <>{nodes}</>;
 }
 
 /** 纯文本 + 内联引用片（你说的话用这个，不走 markdown）。 */
@@ -46,7 +146,7 @@ function Answer({ view }: { view: TurnViewData }) {
     view.delivery !== null ||
     view.retry !== null ||
     view.question?.status === 'pending' ||
-    view.tools.some((tool) => tool.running);
+    view.tools.some((tool) => tool.state === 'running');
   if (!text && busyElsewhere) return null;
   if (!text) {
     return (
@@ -96,97 +196,6 @@ function Thinking({ view }: { view: TurnViewData }) {
   );
 }
 
-function WorkProcess({ view }: { view: TurnViewData }) {
-  const [open, setOpen] = useState(false);
-  const toolCount = view.tools.length;
-  const seconds = view.durationMs ? Math.max(1, Math.round(view.durationMs / 1000)) : 0;
-  // T010.3：输入显示全部输入（输入 + 缓存读 + 缓存写）；厂商没报缓存就不显示命中。
-  const shownInput = view.tokens.input + (view.tokens.cacheRead ?? 0) + (view.tokens.cacheWrite ?? 0);
-  const prompt = shownInput;
-  const cacheHit =
-    view.tokens.cacheRead === undefined || view.tokens.cacheRead === null || prompt === 0
-      ? null
-      : Math.round((view.tokens.cacheRead / prompt) * 100);
-  const tokens = shownInput + view.tokens.output;
-  return (
-    <div className="group/work relative mt-2 text-2">
-      {/* hover 出来的模型 / token / 花费：绝对定位在行右侧，不参与布局，所以行不会跳 */}
-      <span className="pointer-events-none absolute right-0 top-0 hidden items-center gap-1.5 whitespace-nowrap text-ink-3 group-hover/work:flex">
-        {view.model} · 输入 <span className="brand-type">{shownInput}</span>
-        {cacheHit === null ? null : (
-          <>
-            {' '}· 缓存命中 <span className="brand-type">{cacheHit}%</span>
-          </>
-        )}{' '}
-        · 输出 <span className="brand-type">{view.tokens.output}</span>
-      </span>
-      <button
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-        className="flex items-center gap-1.5 text-ink-3 transition-colors hover:text-ink-2"
-      >
-        <ChevronRight className={cn('size-3.5 transition-transform', open && 'rotate-90')} />
-        工作过程 · <span className="brand-type">{seconds} 秒</span>
-      </button>
-      {open ? (
-        <div className="mt-1.5 space-y-1 border-l border-line pl-3">
-          {/* 信息分层（brief §四.3）：默认只显示用时；想了多久、调了几次、多少 token 点开才看 */}
-          <div className="text-2 text-ink-3">
-            <span className="text-ink-2">经过</span> ·{' '}
-            {view.thinkingSeconds > 0 ? <>想了 {view.thinkingSeconds} 秒 · </> : null}调了 {toolCount} 次工具 ·{' '}
-            <span className="brand-type">{(tokens / 1000).toFixed(1)}k</span>
-          </div>
-          {view.reasoning ? (
-            <div className="text-2 text-ink-3">
-              <span className="text-ink-2">思考</span> · {view.reasoning.summary.join(' / ') || '（略）'}
-            </div>
-          ) : null}
-          {view.tools.map((tool) => (
-            <div key={tool.id} className="flex items-start gap-2 text-2">
-              <span className="mt-[1px] shrink-0 text-ink-3">›</span>
-              <code className="min-w-0 flex-1 break-all font-mono text-ink-2">{tool.command}</code>
-              {tool.output ? <span className="min-w-0 max-w-[38%] truncate text-ink-3">{tool.output.slice(0, 40)}</span> : null}
-              {tool.durationMs ? (
-                <span className="ml-auto shrink-0 brand-type text-ink-3">{(tool.durationMs / 1000).toFixed(1)}s</span>
-              ) : null}
-            </div>
-          ))}
-          
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-/** 运行中的一轮：工作过程展开着，一步一步实时出现；正在跑的那步转圈。 */
-function LiveWork({ view }: { view: TurnViewData }) {
-  if (view.tools.length === 0) return null;
-  const running = view.tools.find((tool) => tool.running);
-  return (
-    <div className="mt-2 text-2" data-kind="live-work">
-      <div className="flex items-center gap-1.5 text-ink-3">
-        <ChevronRight className="size-3.5 rotate-90" />
-        工作中{running ? <span className="truncate">· 正在 <code className="font-mono text-ink-2">{running.command}</code></span> : null}
-      </div>
-      <div className="mt-1.5 space-y-1 border-l border-line pl-3">
-        {view.tools.map((tool) => (
-          <div key={tool.id} className="flex items-start gap-2">
-            {tool.running ? (
-              <LoaderCircle className="mt-[2px] size-3 shrink-0 animate-spin text-run" />
-            ) : (
-              <span className="mt-[1px] shrink-0 text-ink-3">›</span>
-            )}
-            <code className={cn('min-w-0 flex-1 break-all font-mono', tool.running ? 'text-ink' : 'text-ink-2')}>{tool.command}</code>
-            {tool.output ? <span className="min-w-0 max-w-[38%] truncate text-ink-3">{tool.output}</span> : null}
-            {tool.durationMs ? (
-              <span className="ml-auto shrink-0 brand-type text-ink-3">{(tool.durationMs / 1000).toFixed(1)}s</span>
-            ) : null}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 /** 模型请求失败、内核在重试：说清楚第几次、为什么。 */
 function RetryLine({ retry }: { retry: NonNullable<TurnViewData['retry']> }) {
@@ -231,7 +240,11 @@ function FailureBlock({ view }: { view: TurnViewData }) {
         <button
           type="button"
           disabled={Boolean(streaming)}
-          onClick={() => view.user && send(view.user.text)}
+          // F1：粘贴和文件跟着一起再发一次（不是只剩打的字）。
+          onClick={() =>
+            view.user &&
+            send(view.user.text, { pastes: view.user.pastes, attachments: view.user.files })
+          }
           className="shrink-0 rounded-btn border border-line-2 px-2.5 py-1 text-2 text-ink-2 transition-colors hover:bg-hover hover:text-ink disabled:opacity-50"
         >
           再发一次
@@ -321,8 +334,20 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
       ) : null}
 
       {view.user ? (
-        <div className="mb-2 mt-3 text-4 leading-6 text-ink">
-          <RichText text={view.user.text} elements={view.user.elements} />
+        <div className="mb-2 mt-3 flex flex-col items-end gap-1.5" data-kind="user-message-row">
+          {view.user.pastes.length > 0 || view.user.files.length > 0 ? <UserCards user={view.user} /> : null}
+          {view.user.text ? (
+            <div
+              className="group/user relative max-w-[82%] rounded-2xl rounded-br-md border border-line-2 bg-raised px-3.5 py-2 text-4 leading-6 text-ink"
+              data-kind="user-bubble"
+            >
+              <UserBubbleText text={view.user.text} elements={view.user.elements} />
+              <CopyButton
+                text={view.user.text}
+                className="absolute -right-8 top-1 opacity-0 transition-opacity group-hover/user:opacity-100"
+              />
+            </div>
+          ) : null}
         </div>
       ) : (
         <div className="mb-2 mt-3 flex items-center gap-1.5 text-2 text-ink-3">
@@ -347,12 +372,31 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
 
           
 
-          {streaming ? <LiveWork view={view} /> : null}
+          {streaming ? (
+            <ProcessView
+              steps={processStepsOf(view, '')}
+              status={view.status}
+              live
+              startedAt={view.startedAt}
+              durationMs={view.durationMs}
+              cwd=""
+              answering={false}
+              usage={view.tokens.input || view.tokens.output ? { model: view.model, ...view.tokens } : undefined}
+              thinkingSeconds={view.thinkingSeconds}
+              alwaysShow
+            />
+          ) : null}
           {view.question ? <QuestionCard turnId={view.id} question={view.question} /> : null}
           {view.retry ? <RetryLine retry={view.retry} /> : null}
 
-          <div className={cn('mt-1', streaming && 'min-h-[24px]')}>
+          <div className={cn('group/answer relative mt-1', streaming && 'min-h-[24px]')} data-kind="answer">
             <Answer view={view} />
+            {view.answer ? (
+              <CopyButton
+                text={view.answer.text}
+                className="absolute -right-8 top-0 opacity-0 transition-opacity group-hover/answer:opacity-100"
+              />
+            ) : null}
           </div>
 
           {view.status === 'interrupted' && view.stoppedAt ? (
@@ -363,7 +407,26 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
           ) : null}
           <FailureBlock view={view} />
 
-          {!streaming && (view.tools.length > 0 || view.answer) ? <WorkProcess view={view} /> : null}
+          {!streaming &&
+          (view.tools.length > 0 ||
+            view.answer ||
+            view.status === 'interrupted' ||
+            view.status === 'failed') ? (
+            <div className="mt-2">
+              <ProcessView
+                steps={processStepsOf(view, '')}
+                status={view.status}
+                live={false}
+                startedAt={view.startedAt}
+                durationMs={view.durationMs}
+                cwd=""
+                answering
+                usage={view.tokens.input || view.tokens.output ? { model: view.model, ...view.tokens } : undefined}
+                thinkingSeconds={view.thinkingSeconds}
+                alwaysShow
+              />
+            </div>
+          ) : null}
         </>
       )}
     </div>

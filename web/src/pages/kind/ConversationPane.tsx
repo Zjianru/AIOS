@@ -16,8 +16,22 @@ import { TurnRow } from './TurnRow';
 import { useKindStore } from './kindStore';
 import { ModelPicker } from './ModelPicker';
 import { ComposerDock } from './ComposerDock';
+import { Composer } from './composer/Composer';
+import type { ComposerHandle } from './composer/Composer';
 import { mark } from '@/lib/perf';
 import { cn } from '@/lib/utils';
+
+/** T013.8：阅读位置（照 DSH capturePosition：顶行 key + 偏移；找不到这一行用 scrollTop）。 */
+interface ReadingPosition {
+  /** 顶上那一行的轮次 id（视图里的 key）。 */
+  turnId: string | null;
+  /** 这一行在视口里的偏移（像素）。 */
+  offset: number;
+  /** 兜底：原始 scrollTop。 */
+  scrollTop: number;
+}
+
+const readingPositions = new Map<string, ReadingPosition>();
 
 export function ConversationPane() {
   const views = useKindStore((state) => state.views);
@@ -38,8 +52,38 @@ export function ConversationPane() {
   });
   const running = streamingTurnId !== null;
   const offline = connection.state !== 'online';
+  const sessionId = useKindStore((state) => state.sessionId);
+  const scrollerRef = useRef<HTMLElement | null>(null);
+  const topIndexRef = useRef<number | null>(null);
+  const capturedForRef = useRef<string | null>(null);
+  const restoreRef = useRef<ReadingPosition | null>(null);
   const listRef = useRef<VirtuosoHandle | null>(null);
-  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  // T013.8：历史加载完再把阅读位置恢复回去（列表布局稳定后）。
+  useEffect(() => {
+    if (initialLoading) return;
+    const saved = restoreRef.current;
+    if (!saved) return;
+    let cancelled = false;
+    const restore = () => {
+      if (cancelled) return;
+      const scroller = scrollerRef.current;
+      if (!scroller) return;
+      const viewIndex = saved.turnId ? views.findIndex((view) => view.id === saved.turnId) : -1;
+      if (viewIndex >= 0) {
+        listRef.current?.scrollToIndex({ index: firstItemIndex + viewIndex, offset: -saved.offset, behavior: 'auto' });
+      } else {
+        scroller.scrollTop = saved.scrollTop;
+      }
+      // 只恢复一次：之后的新消息/滚动不再把用户拉回旧位置。
+      restoreRef.current = null;
+    };
+    requestAnimationFrame(() => requestAnimationFrame(restore));
+    const timer = setTimeout(restore, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [firstItemIndex, initialLoading, views]);
   const [canSend, setCanSend] = useState(false);
   const paintedRef = useRef(false);
   // 首次用户滚动之前不自动往上取页：5 轮比视口短时 Virtuoso 会立刻触发 startReached。
@@ -178,22 +222,26 @@ export function ConversationPane() {
     return () => window.removeEventListener('keydown', onKey);
   }, [running, stop]);
 
+  const composerRef = useRef<ComposerHandle | null>(null);
+
+  // T013.7：发送走 Composer（Enter/Cmd+Enter/按钮都到 submit）；pastes/attachments 跟着发。
   const handleSend = useCallback(() => {
-    const input = inputRef.current;
-    if (!input) return;
-    const text = input.value.trim();
-    if (!text) return;
     if (useKindStore.getState().connection.state !== 'online') return;
     if (useKindStore.getState().streamingTurnId) {
       toast('Kind 还在做上一轮', { description: '等它做完，或者先停下（Esc）' });
       return;
     }
-    input.value = '';
-    setCanSend(false);
-    followRef.current = true;
-    send(text);
-    listRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
-  }, [send]);
+    composerRef.current?.submit();
+  }, []);
+
+  const onComposerSend = useCallback(
+    (text: string, options: { pastes: string[]; attachments: { id: string; name: string; bytes: number }[] }) => {
+      followRef.current = true;
+      listRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
+      return send(text, options);
+    },
+    [send],
+  );
 
   return (
     <div
@@ -230,6 +278,7 @@ export function ConversationPane() {
           </div>
         ) : (
           <Virtuoso
+
             ref={listRef}
             data={views}
             firstItemIndex={firstItemIndex}
@@ -238,9 +287,41 @@ export function ConversationPane() {
             startReached={handleStartReached}
             atBottomStateChange={handleAtBottom}
             atBottomThreshold={8}
-            rangeChanged={handleRangeChanged}
+            rangeChanged={(range: ListRange) => {
+              topIndexRef.current = range.startIndex;
+              handleRangeChanged(range);
+            }}
             followOutput={(isAtBottom: boolean) => (isAtBottom ? 'auto' : false)}
             increaseViewportBy={{ top: 800, bottom: 400 }}
+            scrollerRef={(ref) => {
+              const element = ref as HTMLElement | null;
+              scrollerRef.current = element;
+              if (!element || !sessionId) return;
+              if (capturedForRef.current === sessionId) return;
+              capturedForRef.current = sessionId;
+              const saved = readingPositions.get(sessionId) ?? null;
+              restoreRef.current = saved;
+            }}
+            onScroll={(event: React.UIEvent<HTMLElement>) => {
+              const element = event.currentTarget;
+              if (!sessionId || !element) return;
+              // rangeChanged 是异步的；这里用最近一次的值（onScroll 连续触发，误差可忽略）。
+              const topIndex = topIndexRef.current;
+              const view = topIndex === null ? undefined : views[topIndex - firstItemIndex];
+              // 顶行相对视口顶的偏移（capturePosition 的 offset）。
+              let offset = 0;
+              if (topIndex !== null) {
+                const row = element.querySelector('[data-item-index="' + String(topIndex) + '"]');
+                if (row) {
+                  offset = row.getBoundingClientRect().top - element.getBoundingClientRect().top;
+                }
+              }
+              readingPositions.set(sessionId, {
+                turnId: view?.id ?? null,
+                offset,
+                scrollTop: element.scrollTop,
+              });
+            }}
             itemContent={(_index, view) => (
               <div className="mx-auto w-full max-w-[680px]">
                 <TurnRow
@@ -276,22 +357,13 @@ export function ConversationPane() {
         <div className="mx-auto w-full max-w-[680px]">
           <div className={cn('rounded-card border border-line-2 bg-raised/70 px-3 py-2 transition-colors')}>
             
-            <div className="flex items-end gap-2">
-              <textarea
-                ref={inputRef}
-                rows={1}
-                placeholder={offline ? '连上之后再发…' : '和 Kind 说…'}
-                onInput={(event) => setCanSend(event.currentTarget.value.trim().length > 0)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
-                    event.preventDefault();
-                    handleSend();
-                  }
-                }}
-                className="max-h-32 min-h-6 flex-1 resize-none bg-transparent text-4 leading-6 text-ink outline-none placeholder:text-ink-3"
-              />
+            <Composer
+              ref={composerRef}
+              offline={offline}
+              onSend={onComposerSend}
+              onCanSendChange={setCanSend}
+            >
               <ModelPicker />
-              
               {running ? (
                 <button
                   type="button"
@@ -309,6 +381,7 @@ export function ConversationPane() {
                   onClick={handleSend}
                   title={offline ? '连上之后再发' : canSend ? '发送' : '先写点什么'}
                   aria-disabled={!canSend || offline}
+                  data-kind="send"
                   className={
                     'grid size-7 place-items-center rounded-full transition-opacity ' +
                     (canSend && !offline ? 'bg-ink text-content hover:opacity-90' : 'bg-hover text-ink-3')
@@ -317,7 +390,7 @@ export function ConversationPane() {
                   <SendHorizontal className="size-3.5" />
                 </button>
               )}
-            </div>
+            </Composer>
           </div>
           <ComposerDock
             running={running}
