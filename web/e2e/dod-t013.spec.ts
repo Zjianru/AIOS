@@ -75,12 +75,14 @@ async function assertReadBeforeAnswer(options: {
   }
 }
 
-/** 每条用例自己的证据文件（jq 命令 + 输出），写进 WORK。 */
+/** 每条用例自己的证据文件（frozen sha + jq 命令 + 输出），写进 WORK。 */
 function recordCase(caseName: string, lines: string[]): void {
   mkdirSync(EVIDENCE, { recursive: true });
+  const head = execFileSync('git', ['-C', repoRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   writeFileSync(
     path.join(EVIDENCE, 'T013.10-dod2-jq-' + caseName + '.txt'),
-    lines.join(String.fromCharCode(10) + String.fromCharCode(10)) + String.fromCharCode(10),
+    ['# frozen sha: ' + head, ...lines].join(String.fromCharCode(10) + String.fromCharCode(10)) +
+      String.fromCharCode(10),
   );
 }
 

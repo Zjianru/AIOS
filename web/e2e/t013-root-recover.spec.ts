@@ -7,7 +7,7 @@ test.skip(!process.env.MINIMAX_API_KEY, '需要 MINIMAX_API_KEY');
 test.setTimeout(300_000);
 
 test('空库加连接后 root 恢复：Kind 有 composer 能发消息', async ({ page }) => {
-  const fixture = await startT013DodFixture();
+  const fixture = await startT013DodFixture('root-recover');
   try {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     await expect(page.locator('[data-first-use="connect"]')).toBeVisible({ timeout: 60_000 });
