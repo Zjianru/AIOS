@@ -1640,6 +1640,17 @@ impl RootHost {
                 price_rate: request.price_rate,
                 auth_header: request.auth_header,
             })?;
+        // T013.9 DoD 发现（修法 A）：把刚保存的连接设为当前选择。
+        // RootHost 的 recheck 走 model_factory → resolve_selection，只认 CLI 参数 /
+        // settings.last_selection / id=="deepseek"；页面/HTTP 建连接（如 minimax-cn）
+        // 如果不写 last_selection，recheck 永远报「还没有接模型」（root/unavailable）。
+        let mut settings = settings::load(&self.options.data_dir);
+        settings.last_selection = Some(session::ModelSelection {
+            connection: connection.id.clone(),
+            model: connection.primary_model().to_owned(),
+            effort_wanted: "high".to_owned(),
+        });
+        let _ = settings::save(&self.options.data_dir, &settings);
         self.emit_settings_changed();
         self.notify_keyring_changed();
         Ok(ConnectionSaveResponse { connection })
