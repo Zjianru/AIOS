@@ -1,4 +1,5 @@
-//! 会话投影（T006.12 照 DSH session-projections 的 todos 投影）：UI（T008）消费的内核侧接口。
+//! 会话投影（T006.12 照 DSH session-projections 的 todos 投影；T015.2 加画布状态折叠）：
+//! UI（T008）和画布工具消费的内核侧接口。
 //!
 //! DSH tool-todo 注册 key=todos、stateVersion=2、summary=false 的投影：fold 取最新一条
 //! todo/write 的整表；下一个 turn/start 把它清回 null（turn/end 保留已完成的清单，供 UI 展示）；

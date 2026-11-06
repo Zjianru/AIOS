@@ -21,8 +21,7 @@ import { go } from '@/app/navigate';
 import type { AskAnswer } from '@/data/fixtures/kindLive';
 import { mark } from '@/lib/perf';
 import { canvasTracks, compactionViewOf, deriveTurnViews, mergeCanvasTracks } from './turnViews';
-import type { CanvasTrack } from './turnViews';
-import type { TurnViewData } from './turnViews';
+import type { CanvasTrack, TurnViewData } from './turnViews';
 export type { CompactionView, QuestionView, ToolStep, TurnUserView, TurnViewData } from './turnViews';
 export { deriveTurnViews } from './turnViews';
 
