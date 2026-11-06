@@ -461,12 +461,12 @@ async fn tool_call_delta_events_are_not_logged() {
     );
 
     // 不落日志：会话文件里没有 tool-call-delta 这种事件/帧。
-    let path = data_dir
-        .path()
-        .join("sessions")
-        .join(format!("{id}.jsonl"));
+    let path = data_dir.path().join("sessions").join(format!("{id}.jsonl"));
     let raw = fs::read_to_string(path).unwrap();
-    assert!(!raw.contains("tool-call-delta"), "tool-call-delta 进了会话日志");
+    assert!(
+        !raw.contains("tool-call-delta"),
+        "tool-call-delta 进了会话日志"
+    );
     let rows = log_rows(data_dir.path(), &id);
     assert!(
         event_data(&rows, "tool-call-delta").is_empty(),
