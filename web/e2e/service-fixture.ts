@@ -31,6 +31,9 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.t013Process) return { file: 'tool-process' };
   if (options.t013Interrupted) return { file: 'tool-interrupted', paceMs: 800 };
   if (options.canvas) {
+    // T015.5：streaming 把 canvas 的参数拆成几段慢慢流（页面画「正在画 · 标题」）；
+    // errors 是三个错误触发按钮的画布。
+    if (options.canvas === 'streaming') return { file: 'canvas-streaming', paceMs: 120 };
     return { file: options.canvas === 'interactive' ? 'canvas' : 'canvas-' + options.canvas };
   }
   if (options.highUsage) return { file: 'high-usage' };
@@ -118,8 +121,10 @@ export interface FixtureOptions {
   /// T015.1：画布夹具。interactive 是拖滑块/换标签、内容超过 420px 的那张；cdn 验地址清单和隔离；
   /// loop 验死循环不卡页面。T015.2 加 versions：同一画布两版（第 2 版用 edits 改），再一条第三轮回答。
   /// T015.4 加 send：画布里一个「按这个存」按钮（aios.send），第 2 轮的回答另备一条。
+  /// T015.5 加 streaming：参数拆成多段慢慢流（「正在画 · 标题」）；errors：脚本报错/
+  /// 未处理 rejection/CSP 违规三个按钮。
   /// 每份都是手写的模型回放脚本（第一轮回 canvas 工具调用，第二轮回一句回答）。
-  canvas?: 'interactive' | 'cdn' | 'loop' | 'versions' | 'send';
+  canvas?: 'interactive' | 'cdn' | 'loop' | 'versions' | 'send' | 'streaming' | 'errors';
   /// 每次模型回放延迟毫秒（T007.5 停止用例要在运行中按停止/Esc）。
   slowMs?: number;
   /// first request 回一次 ask_user_question（两题：一题选项、一题自己写）。

@@ -1329,6 +1329,31 @@ mod t007_static_tests {
 }
 
 #[cfg(test)]
+mod t015_5_wire_tests {
+    use super::*;
+
+    /// T015.5（清单 9）：tool-call-delta 的线上帧只增不改——tag 与字段名照票面。
+    #[test]
+    fn tool_call_delta_wire_frame_shape() {
+        let wire = AgentEventWire::from_event(&agent::AgentEvent::ToolCallDelta {
+            call_id: "call_1".to_owned(),
+            name: "canvas".to_owned(),
+            arguments_delta: "{\"title\":\"".to_owned(),
+        })
+        .expect("tool-call-delta 要发到页面");
+        assert_eq!(
+            serde_json::to_value(&wire).unwrap(),
+            serde_json::json!({
+                "type": "tool-call-delta",
+                "callId": "call_1",
+                "name": "canvas",
+                "argumentsDelta": "{\"title\":\"",
+            })
+        );
+    }
+}
+
+#[cfg(test)]
 mod cookie_red_tests {
     use super::*;
 

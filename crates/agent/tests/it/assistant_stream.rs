@@ -405,6 +405,75 @@ async fn truncated_turn_keeps_usage() {
     );
 }
 
+/// T015.5（清单 9；故事 8）：工具参数增量以 agent 事件往外发（页面据此画「正在画 · 标题」），
+/// 但这些帧不落日志：日志里只有 T006.14 的 tool-call-chunks 紧凑记录，没有 tool-call-delta。
+#[tokio::test]
+async fn tool_call_delta_events_are_not_logged() {
+    let server = MockServer::start().await;
+    let tool_call = tool_calls_with_inputs_sse(&[(
+        "call_0",
+        "read",
+        json!({"file_path": "/nonexistent/t015-5"}),
+    )]);
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(tool_call),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+    let (agent, data_dir, _cwd, id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
+    let mut events = agent.subscribe();
+    agent
+        .send(UserMessage::text("读一个文件"), Delivery::FollowUp)
+        .await
+        .unwrap();
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut deltas: Vec<(String, String, String)> = Vec::new();
+    loop {
+        let event = tokio::time::timeout_at(deadline, events.recv())
+            .await
+            .expect("等 agent 事件超时")
+            .expect("agent 事件通道关了");
+        match event {
+            agent::AgentEvent::ToolCallDelta {
+                call_id,
+                name,
+                arguments_delta,
+            } => deltas.push((call_id, name, arguments_delta)),
+            agent::AgentEvent::TurnEnded { .. } => break,
+            _ => {}
+        }
+    }
+
+    assert!(!deltas.is_empty(), "要有 tool-call-delta 事件：{deltas:?}");
+    assert!(
+        deltas.iter().all(|(call_id, ..)| call_id == "call_0"),
+        "每帧都带 tool_use 的 id：{deltas:?}"
+    );
+    assert_eq!(deltas[0].1, "read", "起始帧带 name（后续帧沿用）");
+    let arguments: String = deltas.iter().map(|(_, _, args)| args.as_str()).collect();
+    assert_eq!(
+        arguments, "{\"file_path\":\"/nonexistent/t015-5\"}",
+        "参数增量拼起来就是完整参数"
+    );
+
+    // 不落日志：会话文件里没有 tool-call-delta 这种事件/帧。
+    let path = data_dir
+        .path()
+        .join("sessions")
+        .join(format!("{id}.jsonl"));
+    let raw = fs::read_to_string(path).unwrap();
+    assert!(!raw.contains("tool-call-delta"), "tool-call-delta 进了会话日志");
+    let rows = log_rows(data_dir.path(), &id);
+    assert!(
+        event_data(&rows, "tool-call-delta").is_empty(),
+        "日志里不该有 tool-call-delta 事件"
+    );
+}
+
 /// T006.14（DSH assistant-stream.ts:35-43,129-166；deepseek/translate.ts:82-85,130）：
 /// 工具参数增量记成 tool-call-chunks run（id/name 从 block-start 带下来），展开后逐帧还原。
 #[tokio::test]

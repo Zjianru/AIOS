@@ -12,6 +12,8 @@ import { startKernelFixture, type KernelFixture } from './service-fixture';
  * 页面切到旧版后发一句，发给模型的画布仍是最新版。
  * T015.4（来自画布）：点画布里的按钮只把话放进输入框（带可移除标记，不替用户发）；
  * 用户发出去以后，气泡、日志块、请求体三处都带「来自画布」。
+ * T015.5（正在画、出错、全屏、存成文件）：流式时有「正在画 · 标题」、日志里没有 tool-call-delta、
+ * ready 帧协议 7；三种错误都出「出错了」；全屏能开能关；存下的 .html 单独打开能显示、清单外被拦。
  *
  * 画布那一轮由真内核执行 canvas 工具产生（夹具只是假模型的回放脚本），所以页面看到的
  * HTML 一定来自日志里的 tool/result.meta.canvas。
@@ -31,6 +33,11 @@ const CANVAS_FRAME_CSP = [
   "base-uri 'none'",
   "frame-ancestors 'self'",
 ].join('; ');
+
+/** 存文件用的 CSP：响应头那份去掉只在响应头里有意义的 frame-ancestors（meta 里会被忽略）。 */
+const CANVAS_FILE_CSP = CANVAS_FRAME_CSP.split('; ')
+  .filter((item) => !item.startsWith('frame-ancestors'))
+  .join('; ');
 
 const urlOf = (fixture: KernelFixture) =>
   fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind';
@@ -657,6 +664,171 @@ test('草稿里的「来自画布」刷新后还在；移除标记再发，日�
     const blocks = await userMessageBlocks(fixture);
     expect(blocks.length).toBe(2);
     expect(blocks[1]).toEqual([{ type: 'text', text: '按这个存：每月 3000' }]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+/* ───────── T015.5：正在画、出错、全屏、存成文件 ───────── */
+
+/**
+ * 清单 9（故事 8）：流式过程中工作过程里有「正在画 · 标题」，结束后那一行消失、画布出现；
+ * 会话日志里没有 tool-call-delta；ready 帧协议版本 7，旧字段不变。
+ */
+test('正在画：流式过程中有「正在画 · 标题」，结束后变成画布；日志没有 tool-call-delta，ready 是 7', async ({
+  page,
+}) => {
+  const fixture = await startKernelFixture({ canvas: 'streaming' });
+  try {
+    await page.goto(urlOf(fixture));
+
+    // ready 帧：另开一条 WS（页面自己的那条已经在用），第一帧要带协议 7。
+    const ready = await page.evaluate(
+      () =>
+        new Promise<Record<string, unknown>>((resolve, reject) => {
+          const socket = new WebSocket('ws://' + location.host + '/ws');
+          const timer = setTimeout(() => {
+            socket.close();
+            reject(new Error('等 ready 帧超时'));
+          }, 5000);
+          socket.onmessage = (event) => {
+            const frame = JSON.parse(String(event.data)) as Record<string, unknown>;
+            if (frame.type !== 'ready') return;
+            clearTimeout(timer);
+            socket.close();
+            resolve(frame);
+          };
+          socket.onerror = () => {
+            clearTimeout(timer);
+            reject(new Error('WS 打不开'));
+          };
+        }),
+    );
+    expect(ready.protocolVersion).toBe(7);
+    expect(ready.root).toEqual({ state: 'ok' });
+    expect(ready.context).toEqual(expect.objectContaining({ window: expect.any(Number) }));
+
+    const drawing = page.locator('[data-kind="canvas-drawing"]');
+    await ask(page);
+    await expect(drawing).toContainText('正在画 · 每月存钱算一算', { timeout: 30_000 });
+    await waitCanvas(page, '每月存钱算一算');
+    await expect(drawing).toHaveCount(0);
+    await expect(page.locator('iframe[data-kind="canvas-frame"]')).toHaveCount(1);
+
+    // 不落日志：日志里没有 tool-call-delta 这种事件/帧（只有 T006.14 的 tool-call-chunks）。
+    const events = await sessionEvents(fixture);
+    expect(events.some((event) => event.type === 'tool-call-delta')).toBe(false);
+    expect(JSON.stringify(events)).not.toContain('tool-call-delta');
+  } finally {
+    await fixture.close();
+  }
+});
+
+/**
+ * 清单 12（故事 12）：脚本报错、未处理 rejection、securitypolicyviolation 三种都让标题栏出
+ * 「出错了」，点了把错误放进输入框（带「来自画布」标记，由用户发）。
+ */
+test('出错：脚本报错、未处理的 rejection、CSP 违规都出「出错了」，点了错误进输入框', async ({
+  page,
+}) => {
+  const fixture = await startKernelFixture({ canvas: 'errors' });
+  try {
+    await page.goto(urlOf(fixture));
+    await ask(page);
+    await waitCanvas(page, '出错测试画布');
+    const frame = await canvasFrame(page);
+    const input = page.getByPlaceholder('和 Kind 说…');
+    const errorButton = page.getByRole('button', { name: '出错了' });
+
+    const tellKind = async (trigger: string, expected: string) => {
+      await frame.locator('#' + trigger).click();
+      await expect(errorButton).toBeVisible({ timeout: 15_000 });
+      // 清掉上次放进来的文字，再点「出错了」；断言这次是新的那种错误。
+      await input.fill('');
+      await errorButton.click();
+      await expect(input).toHaveValue(new RegExp(expected));
+      await expect(page.locator('[data-kind="composer"] [data-kind="from-canvas"]')).toContainText(
+        '出错测试画布',
+      );
+    };
+
+    await tellKind('script-error', '脚本报错');
+    await tellKind('rejection', '未处理的 rejection');
+    await tellKind('csp', 'CSP 违规');
+  } finally {
+    await fixture.close();
+  }
+});
+
+/** 清单 10（故事 9）：全屏能开能关（按钮和 Esc 都行），画布还是同一个 iframe。 */
+test('全屏：能开能关（按钮和 Esc）', async ({ page }) => {
+  const fixture = await startKernelFixture({ canvas: 'interactive' });
+  try {
+    await page.goto(urlOf(fixture));
+    await ask(page);
+    await waitCanvas(page, '每月存钱算一算');
+    const block = page.locator('[data-kind="canvas"]');
+
+    await page.getByRole('button', { name: '全屏' }).click();
+    await expect(block).toHaveAttribute('data-fullscreen', 'true');
+    await expect(page.locator('iframe[data-kind="canvas-frame"]')).toHaveCount(1);
+    await expect((await canvasFrame(page)).locator('#total')).toHaveText('¥378,000');
+
+    await page.getByRole('button', { name: '退出全屏' }).click();
+    await expect(block).toHaveAttribute('data-fullscreen', 'false');
+
+    await page.getByRole('button', { name: '全屏' }).click();
+    await expect(block).toHaveAttribute('data-fullscreen', 'true');
+    await page.keyboard.press('Escape');
+    await expect(block).toHaveAttribute('data-fullscreen', 'false');
+  } finally {
+    await fixture.close();
+  }
+});
+
+/**
+ * 清单 10（故事 10）：存成 .html 由页面生成，文件里有外壳、画布 HTML、CSP meta；
+ * 用新页面单独打开能显示，清单外的请求被拦（CSP meta 生效，不是「请求被拦」冒充 CSP 违规）。
+ */
+test('存成文件：外壳 + 画布 HTML + CSP meta；单独打开能显示，清单外请求被拦', async ({ page }) => {
+  const fixture = await startKernelFixture({ canvas: 'cdn' });
+  try {
+    await page.route('https://cdn.jsdelivr.net/npm/t015-fake-lib/index.js', (route) =>
+      route.fulfill({ status: 200, contentType: 'text/javascript', body: 'window.__t015Lib = true;' }),
+    );
+    let offList = 0;
+    await page.route('https://evil.example/**', async (route) => {
+      offList += 1;
+      await route.fulfill({ status: 200, body: 'x' });
+    });
+
+    await page.goto(urlOf(fixture));
+    await ask(page);
+    await waitCanvas(page, 'CDN 与隔离');
+
+    const downloadPromise = page.waitForEvent('download');
+    await page.getByRole('button', { name: '存成文件' }).click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toBe('CDN 与隔离.html');
+    const filePath = await download.path();
+    if (!filePath) throw new Error('下载的文件没有落盘路径');
+    const html = await readFile(filePath, 'utf8');
+
+    expect(html.startsWith('<!doctype html>')).toBe(true);
+    expect(html).toContain(
+      '<meta http-equiv="Content-Security-Policy" content="' + CANVAS_FILE_CSP + '">',
+    );
+    expect(html).toContain('id="marker"');
+    // 外壳的基础样式（不是只有画布 HTML 那一段）。
+    expect(html).toContain('font-family:var(--font-sans)');
+    // 存下来的是能单独打开的页面，不是 iframe 自检外壳。
+    expect(html).not.toContain('window.self === window.top');
+
+    // 单独打开：清单里的库能加载，画布显示；清单外的请求一个都没发出去。
+    await page.goto('file://' + filePath);
+    await expect(page.locator('#marker')).toHaveText('lib:1', { timeout: 20_000 });
+    await expect(page.locator('#fetch')).toHaveText('fetch:blocked');
+    expect(offList, '清单外的请求发了出去').toBe(0);
   } finally {
     await fixture.close();
   }
