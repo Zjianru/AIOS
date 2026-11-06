@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use session::TodoItem;
+use session::{CanvasState, TodoItem};
 
 /// 文件版本 token（T005.1 从 metadata 生成；这里只保存不透明字符串）。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -79,6 +79,8 @@ pub struct ToolSessionState {
     skill_roots: Mutex<Vec<PathBuf>>,
     /// 工具刚写入的 todo 列表快照（T005.7；driver 追加 todo/write 事件后取走）。
     todos: Mutex<Option<Vec<TodoItem>>>,
+    /// 画布状态（T015.2）：建/续接会话时从日志折叠，canvas 工具每出一版更新。
+    canvases: Mutex<Vec<CanvasState>>,
 }
 
 impl ToolSessionState {
@@ -92,6 +94,7 @@ impl ToolSessionState {
             data_dir: Some(data_dir.to_path_buf()),
             skill_roots: Mutex::new(Vec::new()),
             todos: Mutex::new(None),
+            canvases: Mutex::new(Vec::new()),
         }
     }
 
@@ -105,6 +108,7 @@ impl ToolSessionState {
             data_dir: None,
             skill_roots: Mutex::new(Vec::new()),
             todos: Mutex::new(None),
+            canvases: Mutex::new(Vec::new()),
         }
     }
 
@@ -133,6 +137,25 @@ impl ToolSessionState {
     /// 当前 todo 列表（续接恢复/测试用）。
     pub fn todos(&self) -> Option<Vec<TodoItem>> {
         self.todos.lock().expect("todo 状态锁被毒化").clone()
+    }
+
+    /// Agent 建/续接会话时从日志折叠画布状态（T015.2；重开会话还能接着改）。
+    pub fn set_canvases(&self, canvases: Vec<CanvasState>) {
+        *self.canvases.lock().expect("画布状态锁被毒化") = canvases;
+    }
+
+    /// 当前每个画布的版本（canvas 工具用）。
+    pub(crate) fn canvases(&self) -> Vec<CanvasState> {
+        self.canvases.lock().expect("画布状态锁被毒化").clone()
+    }
+
+    /// canvas 工具出一版后更新：同一个 id 覆盖旧版，新的追加在后面。
+    pub(crate) fn put_canvas(&self, canvas: CanvasState) {
+        let mut canvases = self.canvases.lock().expect("画布状态锁被毒化");
+        match canvases.iter_mut().find(|item| item.id == canvas.id) {
+            Some(existing) => *existing = canvas,
+            None => canvases.push(canvas),
+        }
     }
 
     /// Agent 建/续接会话时写入配置的 skill 根（T005.6）。

@@ -20,7 +20,8 @@ import { setHostHome } from '@/data/service';
 import { go } from '@/app/navigate';
 import type { AskAnswer } from '@/data/fixtures/kindLive';
 import { mark } from '@/lib/perf';
-import { compactionViewOf, deriveTurnViews } from './turnViews';
+import { canvasTracks, compactionViewOf, deriveTurnViews, mergeCanvasTracks } from './turnViews';
+import type { CanvasTrack } from './turnViews';
 import type { TurnViewData } from './turnViews';
 export type { CompactionView, QuestionView, ToolStep, TurnUserView, TurnViewData } from './turnViews';
 export { deriveTurnViews } from './turnViews';
@@ -200,6 +201,11 @@ interface KindState {
     label: string;
     effort?: string;
   }) => Promise<void>;
+  /** T015.2：每个画布出过的版本和最新版在哪一轮（从日志折叠）。 */
+  canvasTracks: Record<string, CanvasTrack>;
+  /** T015.2：点了旧版画布那一行要跳到的那一轮（只影响滚动，不改日志）。 */
+  reveal: { turnId: string; at: number } | null;
+  revealTurn: (turnId: string) => void;
 }
 
 function indexOf(views: TurnViewData[]): Map<string, TurnViewData> {
@@ -389,6 +395,12 @@ function applyLiveEvent(event: ServiceEvent): void {
   if (event.seq <= lastSeq) return;
   lastSeq = event.seq;
   liveEvents.push(event);
+  // T015.2：画布版本从日志折叠（旧版缩成一行、标题栏切版本、点旧版跳最新都用它）。
+  if (event.type === 'tool/result' && event.data.meta) {
+    useKindStore.setState((state) => ({
+      canvasTracks: mergeCanvasTracks(state.canvasTracks, [event]),
+    }));
+  }
   const turn = typeof event.data.turn === 'number' ? Number(event.data.turn) : null;
   if (event.type === 'compaction/start') {
     pendingCompactionAuto = !(event.data.sourceCommandId !== undefined && event.data.sourceCommandId !== null);
@@ -534,6 +546,9 @@ export const useKindStore = create<KindState>()((set, get) => ({
   stats: EMPTY_STATS,
   money: DEFAULT_MONEY,
   modelInitialized: false,
+  canvasTracks: {},
+  reveal: null,
+  revealTurn: (turnId) => set({ reveal: { turnId, at: Date.now() } }),
 
   bootstrap: async () => {
     try {
@@ -594,6 +609,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
         views,
         byId: indexOf(views),
         ...decorate(views),
+        canvasTracks: canvasTracks(page.events),
         firstItemIndex: FIRST_INDEX_BASE - views.length,
         oldestSeq,
         hasOlder: page.hasMore,
@@ -626,6 +642,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
           views,
           byId: indexOf(views),
           ...decorate(views),
+          canvasTracks: mergeCanvasTracks(current.canvasTracks, page.events),
           firstItemIndex: current.firstItemIndex - older.length,
           oldestSeq,
           hasOlder: page.hasMore,

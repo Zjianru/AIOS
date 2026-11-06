@@ -305,6 +305,8 @@ impl Inner {
         let (skill_catalog, skill_roots) =
             crate::skill_capability::SkillCapability::load(&store, skill_roots);
         crate::todo_capability::TodoCapability::rehydrate(&tool_session, store.events());
+        // T015.2：画布状态从日志折叠；重开会话后 canvas 工具接着改同一个画布。
+        tool_session.set_canvases(session::canvases(store.events()));
         let reminder_chain: Arc<Mutex<Option<(String, usize)>>> = Arc::new(Mutex::new(None));
         let ask_state = crate::ask_capability::new_state();
         // T006.13（D45）：从中断修复后的日志折出仍待答的问题；回答走 Agent::answer 的迟到回答。

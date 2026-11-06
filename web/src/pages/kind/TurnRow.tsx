@@ -22,6 +22,7 @@ import { CanvasView } from './CanvasView';
 import { AttachmentPreview, FileCard, PasteCard, pasteStats } from './composer/AttachmentCard';
 import { attachmentGet } from '@/data/service';
 import type { CompactionView, TurnUserView, TurnViewData } from './kindStore';
+import type { CanvasViewDoc } from './turnViews';
 import { go } from '@/app/navigate';
 import type { TextElement } from '@/data/types';
 import { cn } from '@/lib/utils';
@@ -139,6 +140,25 @@ function MentionText({ text }: { text: string }) {
   });
   if (cursor < text.length) nodes.push(text.slice(cursor));
   return <>{nodes}</>;
+}
+
+/** 这一轮出的画布：最新版展开，旧版缩成一行（T015.2）；版本从日志折叠的 canvasTracks 来。 */
+function CanvasBlock({ doc }: { doc: CanvasViewDoc }) {
+  const track = useKindStore((state) => state.canvasTracks[doc.id]);
+  const revealTurn = useKindStore((state) => state.revealTurn);
+  const latest = track?.latest ?? doc.n;
+  const versions =
+    track?.versions ?? [{ n: doc.n, title: doc.title, note: doc.note, html: doc.html }];
+  return (
+    <CanvasView
+      doc={doc}
+      latest={latest}
+      versions={versions}
+      onJumpLatest={() => {
+        if (track) revealTurn(track.latestTurnId);
+      }}
+    />
+  );
 }
 
 /** 纯文本 + 内联引用片（你说的话用这个，不走 markdown）。 */
@@ -394,7 +414,7 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
               />
             </div>
           ) : null}
-          {view.canvas ? <CanvasView doc={view.canvas} /> : null}
+          {view.canvas ? <CanvasBlock doc={view.canvas} /> : null}
 
           {view.question ? <QuestionCard turnId={view.id} question={view.question} /> : null}
           {view.retry ? <RetryLine retry={view.retry} /> : null}

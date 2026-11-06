@@ -5,6 +5,7 @@
 //! 页面从日志的 meta 取 HTML，重开或刷新都从日志重建（日志是唯一事实来源）。
 
 use serde_json::{Value, json};
+use session::CanvasState;
 
 use crate::{Tool, ToolCall, ToolContext, ToolFailure, ToolFuture, ToolResult};
 
@@ -61,9 +62,9 @@ impl Tool for CanvasTool {
     fn execute<'a>(
         &'a self,
         call: ToolCall,
-        _context: &'a ToolContext,
+        context: &'a ToolContext,
     ) -> ToolFuture<'a, ToolResult> {
-        Box::pin(async move { create(&call) })
+        Box::pin(async move { create(&call, context) })
     }
 }
 
@@ -91,23 +92,43 @@ title is the header title, note says what this version shows or changes, html is
 }
 
 /// 新建一块画布：算出这一版的全文放进 meta，给模型只回一句。
-fn create(call: &ToolCall) -> ToolResult {
+fn create(call: &ToolCall, context: &ToolContext) -> ToolResult {
     match parse(&call.arguments) {
         Ok(canvas) => {
-            let id = format!("cv_{}", &uuid::Uuid::new_v4().simple().to_string()[..16]);
-            let content = format!("画布「{}」第 1 版已显示（{id}）", canvas.title);
+            let id = next_id(&context.session().canvases());
+            let state = CanvasState {
+                id,
+                n: 1,
+                title: canvas.title,
+                note: canvas.note,
+                html: canvas.html,
+            };
+            let content = format!("画布「{}」第 1 版已显示（{}）", state.title, state.id);
             let meta = json!({
                 "canvas": {
-                    "id": id,
-                    "n": 1,
-                    "title": canvas.title,
-                    "note": canvas.note,
-                    "html": canvas.html,
+                    "id": &state.id,
+                    "n": state.n,
+                    "title": &state.title,
+                    "note": &state.note,
+                    "html": &state.html,
                 }
             });
+            context.session().put_canvas(state);
             ToolResult::success_with_meta(call.id.clone(), content, meta)
         }
         Err(failure) => ToolResult::error(call.id.clone(), failure),
+    }
+}
+
+/// 会话里下一个画布的 id：cv_1、cv_2…（同一会话内唯一；日志重放时 id 可复现）。
+fn next_id(canvases: &[CanvasState]) -> String {
+    let mut number = canvases.len() + 1;
+    loop {
+        let id = format!("cv_{number}");
+        if !canvases.iter().any(|canvas| canvas.id == id) {
+            return id;
+        }
+        number += 1;
     }
 }
 

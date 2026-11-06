@@ -58,6 +58,38 @@ export interface CanvasViewDoc {
   html: string;
 }
 
+/** 画布的一个版本（日志里的一条 tool/result.meta.canvas）。 */
+export interface CanvasVersionView {
+  /** 第几版，从 1 开始。 */
+  n: number;
+  title: string;
+  note: string;
+  html: string;
+}
+
+/** 一个画布出过的版本（按 n 升序）和最新版在哪一轮。 */
+export interface CanvasTrack {
+  latest: number;
+  /** 最新一版所在轮次的视图 id（旧版缩成一行时点它跳过去）。 */
+  latestTurnId: string;
+  versions: CanvasVersionView[];
+}
+
+/** 从日志折叠每个画布的版本（T015.2）：只认 tool/result.meta.canvas。 */
+export function canvasTracks(events: ServiceEvent[]): Record<string, CanvasTrack> {
+  return mergeCanvasTracks({}, events);
+}
+
+/** 把一批事件折进已有的版本表（首屏、往上翻、live 三处共用）。 */
+export function mergeCanvasTracks(
+  tracks: Record<string, CanvasTrack>,
+  events: ServiceEvent[],
+): Record<string, CanvasTrack> {
+  // T015.2 skeleton：签名先落地，折叠在实现提交里补。
+  void events;
+  return tracks;
+}
+
 /** 压缩：在对话里是一条分隔线，不是一轮。 */
 export interface CompactionView {
   auto: boolean;

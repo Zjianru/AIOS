@@ -208,6 +208,20 @@ export function ConversationPane() {
     listRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'smooth' });
   }, []);
 
+  // T015.2：点了旧版画布那一行 —— 滚到出最新版的那一轮。
+  const reveal = useKindStore((state) => state.reveal);
+  useEffect(() => {
+    if (!reveal) return;
+    const index = useKindStore.getState().views.findIndex((view) => view.id === reveal.turnId);
+    if (index < 0) return;
+    followRef.current = false;
+    listRef.current?.scrollToIndex({
+      index: firstItemIndex + index,
+      align: 'start',
+      behavior: 'smooth',
+    });
+  }, [reveal, firstItemIndex]);
+
 
   // 停止（D12）：运行中按 Esc 随时停；有弹层开着时让弹层先处理 Esc。
   useEffect(() => {

@@ -28,6 +28,23 @@ pub struct TodosProjection {
     pub view: TodosProjectionView,
 }
 
+/// 一个画布当前的样子（T015.2）：从 tool/result.meta.canvas 折叠出的最新一版。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanvasState {
+    pub id: String,
+    /// 第几版，从 1 开始。
+    pub n: u64,
+    pub title: String,
+    pub note: String,
+    pub html: String,
+}
+
+/// 从会话事件折叠每个画布的当前版（T015.2）：工具要据此出新一版，页面据此画版本。
+pub fn canvases(_events: &[Event]) -> Vec<CanvasState> {
+    // T015.2 skeleton：签名先落地，折叠在实现提交里补。
+    Vec::new()
+}
+
 /// 从会话事件折叠 todos 投影（照 DSH 的 todo 投影 fold）。
 pub fn todos_projection(events: &[Event]) -> TodosProjection {
     let mut view: TodosProjectionView = None;

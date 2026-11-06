@@ -12,7 +12,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppWindow, ChevronRight, Maximize2, Minimize2, RotateCcw } from 'lucide-react';
 import { useAppStore } from '@/app/store';
 import { cn } from '@/lib/utils';
-import type { CanvasViewDoc } from './turnViews';
+import type { CanvasVersionView, CanvasViewDoc } from './turnViews';
 
 /** 不展开时最多这么高；超过了画布里面滚动，标题栏给「展开」。 */
 const MAX_HEIGHT = 420;
@@ -134,7 +134,18 @@ function CanvasFrame({ html, expanded, onOverflow }: FrameProps) {
   );
 }
 
-export function CanvasView({ doc }: { doc: CanvasViewDoc }) {
+interface CanvasViewProps {
+  /** 这一轮出的那一版。 */
+  doc: CanvasViewDoc;
+  /** 这个画布现在最新是第几版（同一会话里后面的轮可能已经出了新版）。 */
+  latest: number;
+  /** 这个画布出过的版本，按 n 升序（标题栏切版本用）。 */
+  versions: CanvasVersionView[];
+  /** 旧版缩成一行时，点它跳到最新那一轮。 */
+  onJumpLatest: () => void;
+}
+
+export function CanvasView({ doc }: CanvasViewProps) {
   const [open, setOpen] = useState(true);
   const [expanded, setExpanded] = useState(false);
   const [overflow, setOverflow] = useState(false);
