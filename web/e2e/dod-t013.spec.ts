@@ -75,7 +75,7 @@ test('DoD2①：@ 文件问内容', async ({ page }) => {
     const box = page.locator('[data-kind="composer-input"]');
     await box.fill('@notes.md');
     await page.locator('[data-kind="at-menu"]').getByRole('button', { name: /notes\.md/ }).first().click();
-    await box.fill('@notes.md 这个文件第一行写了什么？原样告诉我。');
+    await box.fill('@notes.md 这个文件里有一行带 DOD13-NOTES 吗？把那一行原样告诉我。');
     await page.locator('[data-kind="send"]').click();
     await expect(page.getByText('DOD13-NOTES', { exact: false }).last()).toBeVisible({ timeout: 180_000 });
     jqExamples(fixture.dataDir, '① @ 文件');
