@@ -353,6 +353,14 @@
 .md li::marker { color: var(--ink-3); }
 .md strong { font-weight: 600; color: var(--ink); }
 .md a { color: var(--brand); text-decoration: underline; text-underline-offset: 2px; }
+/* T015 fix A：思考展开区比正文小一号、次级色（.md 自己写死了 15px/24px，这里按更具体的选择器覆盖）。
+   代码块仍走 .md pre code 的 mono 规则，只缩正文和标题。 */
+.think-md .md { font-size: 12px; line-height: 18px; color: var(--ink-3); }
+.think-md .md strong { color: var(--ink-2); }
+.think-md .md h1,
+.think-md .md h2,
+.think-md .md h3,
+.think-md .md h4 { font-size: 13px; line-height: 20px; }
 .md blockquote {
   margin: 8px 0;
   border-left: 2px solid var(--line-2);

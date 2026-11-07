@@ -96,7 +96,8 @@ function ThinkRow({ step }: { step: ThinkStepView }) {
         ) : null}
       </button>
       {open ? (
-        <div className="mb-1 mt-0.5 pl-[22px]">
+        // T015 fix A：展开的思考内容比正文小一号、次级文字色；代码块仍由 .md pre code 保持 mono。
+        <div className="think-md mb-1 mt-0.5 pl-[22px] text-2 leading-5 text-ink-3">
           <Markdown text={step.text} />
         </div>
       ) : null}
