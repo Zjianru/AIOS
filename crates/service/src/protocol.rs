@@ -361,8 +361,7 @@ pub struct ModelSettingsResponse {
     /// 占位（恒 false）：这一版还没有带检查的读法。
     #[serde(rename = "disabledUnknown")]
     pub disabled_unknown: bool,
-    /// 与 disabledModels 等长同序：每条规则现在命中的「连接/模型」。
-    /// 占位（空表）：这一版还没有匹配数据。
+    /// 与 disabledModels 等长同序：每条规则现在命中的「连接/模型」；一条都不命中的给空表。
     #[serde(rename = "disabledHits")]
     pub disabled_hits: Vec<Vec<String>>,
     /// 每个连接现在存下的厂商列表，键是连接 id（没存过的连接不出现）。

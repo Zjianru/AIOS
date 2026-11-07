@@ -104,6 +104,34 @@ pub fn disabled_models(data_dir: &Path) -> Vec<String> {
     settings::load(data_dir).disabled_models
 }
 
+/// 规则列表现在各命中哪些「连接/模型」：和规则等长同序，一条都不命中的给空表。
+///
+/// 命中口径和确认框一致：按每个连接现在能选的模型逐个匹配（`selectable_models`）。
+/// 页面只读这份结果写「现在匹配 n 个」，不自己算。
+pub fn hits_by_rule(
+    data_dir: &Path,
+    connections: &[credentials::ConnectionInfo],
+    rules: &[String],
+) -> Vec<Vec<String>> {
+    let mut models: Vec<(&str, String)> = Vec::new();
+    for connection in connections {
+        for row in crate::models::selectable_models(data_dir, connection) {
+            models.push((connection.id.as_str(), row.id));
+        }
+    }
+    rules
+        .iter()
+        .map(|rule| {
+            let rule = std::slice::from_ref(rule);
+            models
+                .iter()
+                .filter(|(connection, model)| match_disabled(rule, connection, model).is_some())
+                .map(|(connection, model)| format!("{connection}/{model}"))
+                .collect()
+        })
+        .collect()
+}
+
 /// 被屏蔽的模型被拒时给用户看的话：说出模型和命中的规则，并指出两个出口。
 pub fn refusal(model: &str, pattern: &str) -> String {
     format!(
@@ -152,14 +180,10 @@ impl RootHost {
         let pattern = request.pattern.trim();
         let rules = vec![pattern.to_owned()];
         let view = self.keyring()?.view();
-        let mut hits = Vec::new();
-        for connection in &view.connections {
-            for row in crate::models::selectable_models(&self.options.data_dir, connection) {
-                if match_disabled(&rules, &connection.id, &row.id).is_some() {
-                    hits.push(format!("{}/{}", connection.id, row.id));
-                }
-            }
-        }
+        // 和「现在匹配 n 个」（`model-settings` 的 disabledHits）同源，确认框和行下写的一致。
+        let hits = hits_by_rule(&self.options.data_dir, &view.connections, &rules)
+            .pop()
+            .unwrap_or_default();
 
         let running = self.running_turn_model().await;
         let current = running.clone().or_else(|| {

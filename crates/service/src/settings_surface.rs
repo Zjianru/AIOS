@@ -77,9 +77,11 @@ impl RootHost {
         Ok(())
     }
 
-    /// 设置页的 Keyring 视图（响应不含 key 正文）加上屏蔽表和每个连接存下的厂商列表。
+    /// 设置页的 Keyring 视图（响应不含 key 正文）加上屏蔽表、每条规则现在命中的模型，
+    /// 和每个连接存下的厂商列表。
     ///
-    /// 屏蔽的命中/未知还没有数据来源，先给空值；每个连接存下的厂商列表是真的，页面小标签用它。
+    /// 「不知道」（disabledUnknown）还没有数据来源，先给 false。命中表是真的：
+    /// 页面写「现在匹配 n 个」只读它，不自己匹配。
     pub async fn model_settings(&self) -> Result<ModelSettingsResponse, ServiceError> {
         let view = self.keyring()?.view();
         let mut listed = std::collections::BTreeMap::new();
@@ -94,11 +96,17 @@ impl RootHost {
                 );
             }
         }
+        let disabled_models = crate::disabled::disabled_models(&self.options.data_dir);
+        let disabled_hits = crate::disabled::hits_by_rule(
+            &self.options.data_dir,
+            &view.connections,
+            &disabled_models,
+        );
         Ok(ModelSettingsResponse {
             settings: view,
-            disabled_models: crate::disabled::disabled_models(&self.options.data_dir),
+            disabled_models,
             disabled_unknown: false,
-            disabled_hits: Vec::new(),
+            disabled_hits,
             listed,
         })
     }
