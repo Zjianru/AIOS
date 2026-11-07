@@ -242,7 +242,6 @@ impl DeepSeek {
             .lock()
             .map(|context| context.clone())
             .unwrap_or_default();
-        let api_key = self.credentials.issue("model-request", &context)?;
         let mut effective = self.config.clone();
         if let Ok(current) = self.turn_model.lock()
             && let Some(model) = current.as_deref()
@@ -255,6 +254,9 @@ impl DeepSeek {
         {
             effective.effort = crate::Effort::new(effort);
         }
+        // 出站之前先查屏蔽：被拒就不签发、不发请求（聊天、重试、摘要、验证共用这一处）。
+        self.credentials.admit(&effective.model)?;
+        let api_key = self.credentials.issue("model-request", &context)?;
         let base_url = effective.base_url.clone();
         // T012.6：学到的「关不掉思考」：要 none 也按最低非关档发（与内置 always_thinks 同行为）。
         if self.learned.thinking_required(&base_url, &effective.model) && effective.effort.is_off()
