@@ -29,3 +29,15 @@ fn failure_cause_keyring_uses_structured_code() {
         "消息里有 Keyring 也不能改变码的分类"
     );
 }
+
+#[test]
+fn failure_cause_masked_uses_model_disabled_code() {
+    assert_eq!(
+        failure_cause(&turn_end(
+            "MODEL_DISABLED",
+            "deepseek-flash 已在设置里屏蔽（规则「deepseek/deepseek-flash」）"
+        )),
+        Some(FailureCause::Masked),
+        "MODEL_DISABLED 必须映射 masked（失败块给换模型/去设置）"
+    );
+}

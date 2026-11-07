@@ -3,6 +3,7 @@
 //! 协议形状、错误码、事件映射、根会话生命周期、设置面和输入解析各在自己的模块里；
 //! 本文件只声明模块并 re-export 对外面，载体（web/cli）只从 crate 根取名字。
 
+pub mod disabled;
 mod error;
 mod events;
 mod input;
@@ -32,6 +33,9 @@ pub use root::{
 pub use root_lifecycle::RootHost;
 pub use session_host::ServiceHost;
 
+#[cfg(test)]
+#[path = "disabled_tests.rs"]
+mod disabled_tests;
 #[cfg(test)]
 #[path = "error_code_tests.rs"]
 mod error_code_tests;

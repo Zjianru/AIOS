@@ -49,6 +49,10 @@ pub enum Call {
     /// 再检查一次根会话（修好 missing/corrupt/busy 之后回到对话）。
     Recheck(RecheckRequest),
     ModelSettings(ModelSettingsRequest),
+    /// 整表替换屏蔽的模型规则（立即保存、立即生效）。
+    DisabledModelsSet(DisabledModelsSetRequest),
+    /// 一条屏蔽规则现在匹配哪些模型、谁在用（确认框）。
+    DisabledModelsCheck(DisabledModelsCheckRequest),
     ConnectionSave(ConnectionSaveRequest),
     ConnectionDelete(ConnectionDeleteRequest),
     /// 只改 endpoint/model，保留 key。
@@ -92,6 +96,8 @@ pub enum Response {
     Events(EventsResponse),
     Recheck(RecheckResponse),
     ModelSettings(ModelSettingsResponse),
+    DisabledModelsSet(DisabledModelsSetResponse),
+    DisabledModelsCheck(DisabledModelsCheckResponse),
     ConnectionSave(ConnectionSaveResponse),
     ConnectionDelete(ConnectionDeleteResponse),
     ConnectionUpdate(ConnectionUpdateResponse),
@@ -321,6 +327,8 @@ pub enum FailureCause {
     Model,
     /// Keyring 读不出/无法签发；页面失败块说 Keyring 原因、指去设置。
     Keyring,
+    /// 模型在设置里被屏蔽：失败块给「换模型」和「去设置」，不重试。
+    Masked,
 }
 
 /// 服务事件：严格来自会话日志事实（seq 连续、type 是日志事件类型、data 是事件字段）。
@@ -344,7 +352,67 @@ pub struct ModelSettingsRequest {}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelSettingsResponse {
+    /// Keyring 视图：旧字段原样保留，页面照旧读。
     pub settings: credentials::KeyringView,
+    /// 屏蔽规则的整表（保存时的顺序）。
+    #[serde(rename = "disabledModels")]
+    pub disabled_models: Vec<String>,
+    /// settings.json 读不出来、而且这个进程从没读到过：不知道哪些被屏蔽。
+    /// 本票占位（恒 false）；带检查的读法随后的票填。
+    #[serde(rename = "disabledUnknown")]
+    pub disabled_unknown: bool,
+    /// 与 disabledModels 等长同序：每条规则现在命中的「连接/模型」。
+    /// 本票占位（空表）；匹配数据随后的票填。
+    #[serde(rename = "disabledHits")]
+    pub disabled_hits: Vec<Vec<String>>,
+    /// 每个连接现在存下的厂商列表，键是连接 id；本票占位（空表）。
+    pub listed: std::collections::BTreeMap<String, ListedModels>,
+}
+
+/// 一个连接存下的厂商模型列表（获取时按连接存；页面小标签用它）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListedModels {
+    /// 存下这份列表的时间（Unix 秒）。
+    #[serde(rename = "fetchedAt")]
+    pub fetched_at: u64,
+    pub models: Vec<model::catalog::ModelInfo>,
+}
+
+/// 整表替换屏蔽规则（空表 = 都不屏蔽）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisabledModelsSetRequest {
+    #[serde(default)]
+    pub models: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DisabledModelsSetResponse {
+    /// 规范化后的整表：去首尾空白、丢空规则、不分大小写去重，保持原来的顺序。
+    pub models: Vec<String>,
+}
+
+/// 查一条规则现在匹配到哪些模型、谁在用。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisabledModelsCheckRequest {
+    #[serde(default)]
+    pub pattern: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DisabledModelsCheckResponse {
+    /// 现在匹配到的「连接/模型」。
+    pub hits: Vec<String>,
+    pub users: Vec<DisabledModelUser>,
+}
+
+/// 谁在用（只列当前 Kind 对话与新会话；任务、角色、日历以后加）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum DisabledModelUser {
+    /// 当前 Kind 对话；`running` = 有一轮正在跑。
+    KindChat { running: bool },
+    /// 新会话会用上一次的选择。
+    NewSessions,
 }
 
 /// 存/换连接；apiKey 只在请求体里，任何响应不带。
@@ -379,9 +447,19 @@ pub struct AvailableModelsRequest {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AvailableModelsResponse {
-    pub models: Vec<model::catalog::ModelInfo>,
+    pub models: Vec<AvailableModelRow>,
     /// 厂商 /v1/models 是否成功；失败时只给目录/用户模型。
     pub live: bool,
+}
+
+/// 可用模型的一行：目录字段（camelCase）不变，另加这次的「新」。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AvailableModelRow {
+    #[serde(flatten)]
+    pub model: model::catalog::ModelInfo,
+    /// 和上一次存下的列表比没见过（第一次获取的基准在获取那一侧定）。
+    /// 本票占位（恒 false）；比较随后的票填。
+    pub fresh: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -603,7 +681,11 @@ pub struct ConnectionRevokeResponse {
 /// - 6：attachment-put / attachment-get / file-references-list 三个 op，
 ///   以及 send 的 pastes / attachments 两个字段（后两项随后实现，形状已定）。
 /// - 7：tool-call-delta + send.canvas（send.canvas 先加字段）。
-pub const PROTOCOL_VERSION: u64 = 7;
+/// - 8：屏蔽的模型——`disabled-models-set`、`disabled-models-check`；
+///   `model-settings` 的 disabledModels / disabledUnknown / disabledHits / listed；
+///   `available-models` 每行的 fresh；`FailureCause` 的 masked；
+///   新错误码 settings/unreadable（码表 16）。全是只增字段/值，旧页忽略。
+pub const PROTOCOL_VERSION: u64 = 8;
 
 /// 根会话不可用的种类：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

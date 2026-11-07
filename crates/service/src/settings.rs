@@ -23,6 +23,9 @@ pub struct Settings {
     /// 币种（T012.8）：`usd` 或 `cny`；默认 usd。
     #[serde(default = "default_currency")]
     pub currency: String,
+    /// 屏蔽的模型规则（通配；空表 = 都不屏蔽）。改了立即生效。
+    #[serde(default, rename = "disabledModels")]
+    pub disabled_models: Vec<String>,
 }
 
 fn default_currency() -> String {
@@ -34,6 +37,7 @@ impl Default for Settings {
         Self {
             last_selection: None,
             currency: default_currency(),
+            disabled_models: Vec::new(),
         }
     }
 }

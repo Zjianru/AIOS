@@ -21,6 +21,9 @@ pub enum ServiceError {
     /// 写非密钥设置失败（非法值/落盘失败）。
     #[error("设置没保存：{0}")]
     SettingsInvalid(String),
+    /// settings.json 存在但读不出来：不写、也不覆盖（带检查的读法报这个）。
+    #[error("设置读不出来：{0}")]
+    SettingsUnreadable(String),
     #[error("路径不合法：{0}")]
     InvalidPath(String),
     /// 附件参数/id 不合法（坏 base64、坏文件名、坏 id）。
@@ -49,6 +52,7 @@ pub enum ServiceErrorCode {
     ConnectionMissing,
     ConnectionInvalid,
     SettingsUnavailable,
+    SettingsUnreadable,
     RequestInvalidPath,
     RequestInvalidJson,
     AttachmentInvalid,
@@ -58,7 +62,7 @@ pub enum ServiceErrorCode {
 
 impl ServiceErrorCode {
     /// 码表全集（覆盖检查用：多一个少一个都要失败）。
-    pub const ALL: [ServiceErrorCode; 15] = [
+    pub const ALL: [ServiceErrorCode; 16] = [
         ServiceErrorCode::AgentInternal,
         ServiceErrorCode::QuestionAnswerRejected,
         ServiceErrorCode::RootUnavailable,
@@ -69,6 +73,7 @@ impl ServiceErrorCode {
         ServiceErrorCode::ConnectionMissing,
         ServiceErrorCode::ConnectionInvalid,
         ServiceErrorCode::SettingsUnavailable,
+        ServiceErrorCode::SettingsUnreadable,
         ServiceErrorCode::RequestInvalidPath,
         ServiceErrorCode::RequestInvalidJson,
         ServiceErrorCode::AttachmentInvalid,
@@ -89,6 +94,7 @@ impl ServiceErrorCode {
             Self::ConnectionMissing => "connection/missing",
             Self::ConnectionInvalid => "connection/invalid",
             Self::SettingsUnavailable => "settings/unavailable",
+            Self::SettingsUnreadable => "settings/unreadable",
             Self::RequestInvalidPath => "request/invalid-path",
             Self::RequestInvalidJson => "request/invalid-json",
             Self::AttachmentInvalid => "attachment/invalid",
@@ -122,6 +128,7 @@ impl ServiceError {
             Self::SettingsOnBareHost | Self::SettingsInvalid(_) => {
                 ServiceErrorCode::SettingsUnavailable
             }
+            Self::SettingsUnreadable(_) => ServiceErrorCode::SettingsUnreadable,
             Self::InvalidPath(_) => ServiceErrorCode::RequestInvalidPath,
             Self::AttachmentInvalid(_) => ServiceErrorCode::AttachmentInvalid,
             Self::AttachmentNotText => ServiceErrorCode::AttachmentNotText,

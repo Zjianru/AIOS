@@ -19,6 +19,8 @@ pub enum ErrorCode {
     EmptyResponse,
     MissingCredential,
     Keyring,
+    /// 这个模型在设置里被屏蔽：不发请求，也不重试。
+    ModelDisabled,
     UnsupportedContent,
     UnsupportedReasoningEffort,
     /// 没归类的 HTTP 状态。
@@ -50,6 +52,7 @@ impl ErrorCode {
             Self::EmptyResponse => "EMPTY_RESPONSE",
             Self::MissingCredential => "MISSING_CREDENTIAL",
             Self::Keyring => "KEYRING",
+            Self::ModelDisabled => "MODEL_DISABLED",
             Self::UnsupportedContent => "UNSUPPORTED_CONTENT",
             Self::UnsupportedReasoningEffort => "UNSUPPORTED_REASONING_EFFORT",
             Self::Http(_) => "HTTP",

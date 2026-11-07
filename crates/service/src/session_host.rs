@@ -95,6 +95,8 @@ impl ServiceHost {
             })),
             // 设置接口由 RootHost 提供；裸宿主没有 Keyring。
             Call::ModelSettings(_)
+            | Call::DisabledModelsSet(_)
+            | Call::DisabledModelsCheck(_)
             | Call::ConnectionSave(_)
             | Call::ConnectionDelete(_)
             | Call::ConnectionVerify(_)

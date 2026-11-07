@@ -77,10 +77,15 @@ impl RootHost {
         Ok(())
     }
 
-    /// 设置页的 Keyring 视图（响应不含 key 正文）。
+    /// 设置页的 Keyring 视图（响应不含 key 正文）加上屏蔽表。
     pub async fn model_settings(&self) -> Result<ModelSettingsResponse, ServiceError> {
         Ok(ModelSettingsResponse {
             settings: self.keyring()?.view(),
+            // 占位：读法与匹配数据在下一笔接上。
+            disabled_models: Vec::new(),
+            disabled_unknown: false,
+            disabled_hits: Vec::new(),
+            listed: std::collections::BTreeMap::new(),
         })
     }
 
@@ -341,6 +346,14 @@ impl RootHost {
                 });
             }
         }
+        let models = models
+            .into_iter()
+            .map(|model| crate::protocol::AvailableModelRow {
+                model,
+                // 占位：和上一次存下的列表比「新」在获取那一侧算。
+                fresh: false,
+            })
+            .collect();
         Ok(AvailableModelsResponse { models, live })
     }
 

@@ -655,26 +655,29 @@ async fn 获取可用模型合并目录与厂商列表且用户字段不动() {
         response
             .models
             .iter()
-            .find(|model| model.id == id)
+            .find(|row| row.model.id == id)
             .expect(id)
     };
     let flash = find("deepseek-flash");
-    assert_eq!(flash.name, "我的名字", "用户填的名字不被厂商覆盖");
-    assert_eq!(flash.context_window, Some(42), "用户填的窗口不动");
-    assert_eq!(flash.max_tokens, Some(111), "用户填的输出上限不动");
-    assert_eq!(flash.price_input, Some(9.9), "用户价格不动");
-    assert!(flash.thinks, "thinks 来自目录");
-    assert!(flash.efforts.contains(&"none".to_owned()), "档来自目录");
+    assert_eq!(flash.model.name, "我的名字", "用户填的名字不被厂商覆盖");
+    assert_eq!(flash.model.context_window, Some(42), "用户填的窗口不动");
+    assert_eq!(flash.model.max_tokens, Some(111), "用户填的输出上限不动");
+    assert_eq!(flash.model.price_input, Some(9.9), "用户价格不动");
+    assert!(flash.model.thinks, "thinks 来自目录");
+    assert!(
+        flash.model.efforts.contains(&"none".to_owned()),
+        "档来自目录"
+    );
     let pro = find("deepseek-v4-pro");
-    assert_eq!(pro.name, "Vendor Pro", "厂商字段优先于目录");
-    assert_eq!(pro.context_window, Some(2000));
-    assert!(pro.price_input.is_some(), "目录价格仍在");
+    assert_eq!(pro.model.name, "Vendor Pro", "厂商字段优先于目录");
+    assert_eq!(pro.model.context_window, Some(2000));
+    assert!(pro.model.price_input.is_some(), "目录价格仍在");
     assert_eq!(
-        find("deepseek-future").context_window,
+        find("deepseek-future").model.context_window,
         Some(3000),
         "厂商多出的模型也列出"
     );
-    assert!(!find("my-only-model").thinks);
+    assert!(!find("my-only-model").model.thinks);
 }
 
 #[tokio::test]
@@ -1477,14 +1480,14 @@ async fn 可用模型响应字段是驼峰命名且四类价格都在() {
     let row = response
         .models
         .iter()
-        .find(|model| model.id == "MiniMax-M2.7")
+        .find(|row| row.model.id == "MiniMax-M2.7")
         .expect("MiniMax-M2.7");
-    assert_eq!(row.context_window, Some(204_800));
-    assert_eq!(row.max_tokens, Some(131_072));
-    assert_eq!(row.price_input, Some(0.3));
-    assert_eq!(row.price_output, Some(1.2));
-    assert_eq!(row.price_cache_read, Some(0.06));
-    assert_eq!(row.price_cache_write, Some(0.375));
+    assert_eq!(row.model.context_window, Some(204_800));
+    assert_eq!(row.model.max_tokens, Some(131_072));
+    assert_eq!(row.model.price_input, Some(0.3));
+    assert_eq!(row.model.price_output, Some(1.2));
+    assert_eq!(row.model.price_cache_read, Some(0.06));
+    assert_eq!(row.model.price_cache_write, Some(0.375));
     let json = serde_json::to_value(&response).expect("json");
     let entry = json["models"]
         .as_array()
@@ -1499,9 +1502,11 @@ async fn 可用模型响应字段是驼峰命名且四类价格都在() {
         "priceOutput",
         "priceCacheRead",
         "priceCacheWrite",
+        "fresh",
     ] {
         assert!(entry.get(key).is_some(), "缺 {key}: {entry}");
     }
+    assert_eq!(entry["fresh"], false, "本票的 fresh 是占位（获取比较还没做）");
     for key in [
         "context_window",
         "max_tokens",

@@ -28,6 +28,14 @@ impl RootHost {
                 }
             }
             Call::ModelSettings(_) => self.model_settings().await.map(Response::ModelSettings),
+            Call::DisabledModelsSet(request) => self
+                .disabled_models_set(request)
+                .await
+                .map(Response::DisabledModelsSet),
+            Call::DisabledModelsCheck(request) => self
+                .disabled_models_check(request)
+                .await
+                .map(Response::DisabledModelsCheck),
             Call::ConnectionSave(request) => self
                 .connection_save(request)
                 .await

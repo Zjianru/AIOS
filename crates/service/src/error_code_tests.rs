@@ -47,6 +47,10 @@ fn variants() -> Vec<(&'static str, ServiceError)> {
         ),
         ("settings/unavailable", ServiceError::SettingsOnBareHost),
         (
+            "settings/unreadable",
+            ServiceError::SettingsUnreadable("bad".to_owned()),
+        ),
+        (
             "request/invalid-path",
             ServiceError::InvalidPath("bad".to_owned()),
         ),
@@ -68,7 +72,7 @@ fn service_error_codes_cover_every_variant() {
     let mut used: Vec<&str> = pairs.iter().map(|(code, _)| *code).collect();
     used.sort_unstable();
     used.dedup();
-    assert_eq!(ServiceErrorCode::ALL.len(), 15, "码数 15");
+    assert_eq!(ServiceErrorCode::ALL.len(), 16, "码数 16（加了 settings/unreadable）");
     assert!(
         ServiceErrorCode::ALL
             .iter()
@@ -91,8 +95,8 @@ fn service_error_codes_cover_every_variant() {
 fn invalid_json_code_is_in_the_single_code_table() {
     assert_eq!(
         ServiceErrorCode::ALL.len(),
-        15,
-        "码数 15（T013.4 加 invalid-message）"
+        16,
+        "码数 16（settings/unreadable 进面）"
     );
     assert!(
         ServiceErrorCode::ALL
@@ -133,6 +137,7 @@ fn page_error_table_covers_service_and_model_codes() {
         "UNSUPPORTED_CONTENT",
         "UNSUPPORTED_REASONING_EFFORT",
         "ABORTED",
+        "MODEL_DISABLED",
     ] {
         assert!(table.contains(code), "页面对照表缺模型码 {code} 这一行");
     }
