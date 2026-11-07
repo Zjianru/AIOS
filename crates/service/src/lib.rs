@@ -1559,6 +1559,11 @@ impl RootHost {
         PROTOCOL_VERSION
     }
 
+    /// T015 fix B1：会话工作目录（本地文件路由拿它当根；只借用，不复制）。
+    pub fn cwd(&self) -> &Path {
+        &self.options.cwd
+    }
+
     pub fn subscribe_events(&self) -> broadcast::Receiver<ServiceEvent> {
         self.events.subscribe()
     }

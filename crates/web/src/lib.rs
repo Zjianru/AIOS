@@ -766,6 +766,97 @@ async fn canvas_frame_handler(State(state): State<Arc<AppState>>, headers: Heade
     }
 }
 
+/// T015 fix B1：/local-file 的查询参数（页面 localFile.ts 发的就是 ?path=，整段 URL 编码）。
+#[derive(Debug, Deserialize)]
+struct LocalFileQuery {
+    #[serde(default)]
+    path: Option<String>,
+}
+
+/// 单个本地文件的上限（8 MiB）：给回答里的产物「在浏览器打开」，不是通用文件服务器。
+const LOCAL_FILE_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// 本地文件的 MIME：只按扩展名给浏览器能直接渲染的几类，其余按二进制下载。
+/// 扩展名大小写不敏感（生成的文件常见 .HTML）。
+fn local_file_content_type(path: &Path) -> &'static str {
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase);
+    match extension.as_deref() {
+        Some("html" | "htm") => "text/html; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("js" | "mjs") => "text/javascript; charset=utf-8",
+        Some("txt" | "md" | "markdown" | "log" | "csv") => "text/plain; charset=utf-8",
+        Some("json") => "application/json",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("pdf") => "application/pdf",
+        _ => "application/octet-stream",
+    }
+}
+
+/// GET /local-file?path=…：把会话工作目录里的普通文件只读回给浏览器（T015 fix B1）。
+///
+/// 认证和 /api 走同一条栅栏：Host 必须是本机、Origin/Fetch-Metadata 必须同源、只认签名 cookie，
+/// query 里出现 token 一律 401。路径边界：
+/// - 只收绝对路径（相对路径 400；页面也只生成绝对路径）；
+/// - canonicalize 之后再和 canonicalize 过的会话工作目录比前缀：..、符号链接跳出目录都 403；
+/// - 目录、不存在、读不到一律 404（不透露目录外有什么）；超过 8 MiB 413。
+///
+/// 响应头：只加 nosniff 与 no-store（产物可能含隐私，不让浏览器缓存）。不套 canvas-frame 的
+/// 外壳 CSP：用户生成的自包含 HTML 常带行内脚本，套上会把页面打坏；外壳 CSP 只由
+/// canvas_frame_handler 下发，这里不新增也不改写。
+async fn local_file_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Query(query): Query<LocalFileQuery>,
+) -> Response {
+    if let Err(error) = authorize_api_request(&state.trust, &headers, &uri) {
+        return trust_error_response(error);
+    }
+    let Some(requested) = query.path.as_deref() else {
+        return error_response(StatusCode::BAD_REQUEST, "missing path");
+    };
+    if !requested.starts_with('/') {
+        return error_response(StatusCode::BAD_REQUEST, "path must be absolute");
+    }
+    // /tmp 与 /private/tmp（macOS）这种同一个目录的两种写法由两边的 canonicalize 收束。
+    let Ok(root) = tokio::fs::canonicalize(state.host.cwd()).await else {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    };
+    let Ok(path) = tokio::fs::canonicalize(requested).await else {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    };
+    if !path.starts_with(&root) {
+        return error_response(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let Ok(metadata) = tokio::fs::metadata(&path).await else {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    };
+    if !metadata.is_file() {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    }
+    if metadata.len() > LOCAL_FILE_MAX_BYTES {
+        return error_response(StatusCode::PAYLOAD_TOO_LARGE, "too large");
+    }
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [
+                (CONTENT_TYPE, local_file_content_type(&path)),
+                (HeaderName::from_static("x-content-type-options"), "nosniff"),
+                (HeaderName::from_static("cache-control"), "no-store"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => error_response(StatusCode::NOT_FOUND, "not found"),
+    }
+}
+
 /// GET 静态文件：同源托管 web/dist（T007.2）；没有 static_dir 时 404。
 async fn static_handler(
     State(state): State<Arc<AppState>>,
@@ -1240,6 +1331,8 @@ fn router_with_state(state: Arc<AppState>) -> Router {
         // T015.1 fix：web/public 里的同名文件会被静态 fallback 原样 200（无 CSP），
         // 和官方路径行为不一致；显式接住，让两条路径走同一个 handler。
         .route("/canvas-frame.html", get(canvas_frame_handler))
+        // T015 fix B1：回答里本地绝对路径的只读出口（cookie + Host，只放会话工作目录）。
+        .route("/local-file", get(local_file_handler))
         .fallback(get(static_handler))
         .with_state(state)
 }
@@ -1968,5 +2061,253 @@ mod t011_ops_tests {
             "监控里不能有请求体里的 key：{text}"
         );
         assert!(!text.contains("apiKey"), "监控里不能有请求体字段：{text}");
+    }
+}
+
+#[cfg(test)]
+mod t015_local_file_tests {
+    use super::*;
+    use std::net::IpAddr;
+
+    fn model_config() -> model::DeepSeekConfig {
+        model::DeepSeekConfig {
+            base_url: "http://127.0.0.1:1".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            max_tokens: 2048,
+            context_window: model::DEFAULT_CONTEXT_WINDOW,
+            effort: model::Effort::new("high"),
+        }
+    }
+
+    fn auth_headers(trust: &Trust) -> HeaderMap {
+        let host = "127.0.0.1:1417";
+        let cookie = authorize_connect(trust, Some(host), Some("tok-1"))
+            .expect("换 cookie")
+            .set_cookie
+            .split(';')
+            .next()
+            .expect("cookie")
+            .to_owned();
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, host.parse().expect("Host"));
+        headers.insert("cookie", cookie.parse().expect("cookie"));
+        headers
+    }
+
+    struct Fixture {
+        dir: tempfile::TempDir,
+        work: PathBuf,
+        state: Arc<AppState>,
+        headers: HeaderMap,
+        trust: Trust,
+    }
+
+    async fn fixture() -> Fixture {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let work = dir.path().join("work");
+        let data = dir.path().join("data");
+        std::fs::create_dir_all(&work).expect("工作目录");
+        std::fs::create_dir_all(&data).expect("数据目录");
+        let options = service::RootSessionOptions {
+            data_dir: data,
+            cwd: work.clone(),
+            model: model_config(),
+            config: agent::AgentConfig::default(),
+            credentials: None,
+            identity: Some(dir.path().join("identity.txt")),
+            model_factory: None,
+            append_hook_factory: None,
+            keyring_changed: None,
+        };
+        let host = service::RootHost::open(options, model::DEFAULT_CONTEXT_WINDOW).await;
+        let trust = Trust::new(
+            IpAddr::from([127, 0, 0, 1]),
+            1417,
+            "tok-1".to_owned(),
+            [7u8; 32],
+        );
+        let headers = auth_headers(&trust);
+        let state = Arc::new(AppState {
+            host: Arc::new(host),
+            trust: trust.clone(),
+            static_dir: None,
+            monitor: None,
+        });
+        Fixture {
+            dir,
+            work,
+            state,
+            headers,
+            trust,
+        }
+    }
+
+    async fn call(
+        state: &Arc<AppState>,
+        headers: &HeaderMap,
+        uri: &str,
+        path: Option<&str>,
+    ) -> Response {
+        local_file_handler(
+            State(Arc::clone(state)),
+            headers.clone(),
+            uri.parse().expect("uri"),
+            Query(LocalFileQuery {
+                path: path.map(str::to_owned),
+            }),
+        )
+        .await
+    }
+
+    async fn body_text(response: Response) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        String::from_utf8(bytes.to_vec()).expect("utf8")
+    }
+
+    #[tokio::test]
+    async fn serves_html_inside_work_dir_without_caching() {
+        let fixture = fixture().await;
+        let file = fixture.work.join("answer.html");
+        std::fs::write(&file, "<!doctype html><h1>本地文件正文</h1>").expect("写文件");
+        let response = call(
+            &fixture.state,
+            &fixture.headers,
+            "/local-file",
+            Some(file.to_str().expect("路径")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).expect("content-type"),
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-content-type-options")
+                .expect("nosniff"),
+            "nosniff"
+        );
+        assert_eq!(
+            response.headers().get("cache-control").expect("cache"),
+            "no-store"
+        );
+        assert!(body_text(response).await.contains("本地文件正文"));
+    }
+
+    #[tokio::test]
+    async fn serves_path_with_space_and_chinese() {
+        let fixture = fixture().await;
+        let file = fixture.work.join("报告 第 1 版.txt");
+        std::fs::write(&file, "带空格和中文的文件").expect("写文件");
+        let response = call(
+            &fixture.state,
+            &fixture.headers,
+            "/local-file",
+            Some(file.to_str().expect("路径")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).expect("content-type"),
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(body_text(response).await, "带空格和中文的文件");
+    }
+
+    #[tokio::test]
+    async fn rejects_outside_directory_missing_relative_and_missing_param() {
+        let fixture = fixture().await;
+        let outside = fixture.dir.path().join("outside.html");
+        std::fs::write(&outside, "outside").expect("写文件");
+        let nested = fixture.work.join("nested");
+        std::fs::create_dir_all(&nested).expect("目录");
+        let escape = fixture.work.join("../outside.html");
+        let missing = fixture.work.join("missing.html");
+        let cases = [
+            (Some(outside.to_str().expect("路径")), StatusCode::FORBIDDEN),
+            (Some(escape.to_str().expect("路径")), StatusCode::FORBIDDEN),
+            (Some(nested.to_str().expect("路径")), StatusCode::NOT_FOUND),
+            (Some(missing.to_str().expect("路径")), StatusCode::NOT_FOUND),
+            (Some("answer.html"), StatusCode::BAD_REQUEST),
+            (None, StatusCode::BAD_REQUEST),
+        ];
+        for (path, expected) in cases {
+            let response = call(&fixture.state, &fixture.headers, "/local-file", path).await;
+            assert_eq!(response.status(), expected, "path={path:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_symlink_escape() {
+        let fixture = fixture().await;
+        let outside = fixture.dir.path().join("outside.html");
+        std::fs::write(&outside, "outside").expect("写文件");
+        let link = fixture.work.join("link.html");
+        std::os::unix::fs::symlink(&outside, &link).expect("建符号链接");
+        let response = call(
+            &fixture.state,
+            &fixture.headers,
+            "/local-file",
+            Some(link.to_str().expect("路径")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn requires_cookie_and_rejects_query_token() {
+        let fixture = fixture().await;
+        let file = fixture.work.join("answer.html");
+        std::fs::write(&file, "<h1>x</h1>").expect("写文件");
+        let path = file.to_str().expect("路径");
+        let mut host_only = HeaderMap::new();
+        host_only.insert(HOST, "127.0.0.1:1417".parse().expect("Host"));
+        let response = call(&fixture.state, &host_only, "/local-file", Some(path)).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = call(
+            &fixture.state,
+            &fixture.headers,
+            "/local-file?token=tok-1",
+            Some(path),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        // 同源 cookie + Host 齐全时通过（前面两个用例已覆盖 200，这里确认带 token 的 query 才被拒）。
+        let _ = fixture.trust;
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_file() {
+        let fixture = fixture().await;
+        let file = fixture.work.join("big.bin");
+        std::fs::write(&file, vec![b'x'; LOCAL_FILE_MAX_BYTES as usize + 1]).expect("写文件");
+        let response = call(
+            &fixture.state,
+            &fixture.headers,
+            "/local-file",
+            Some(file.to_str().expect("路径")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[test]
+    fn content_type_follows_extension() {
+        for (name, expected) in [
+            ("a.html", "text/html; charset=utf-8"),
+            ("a.HTML", "text/html; charset=utf-8"),
+            ("a.css", "text/css; charset=utf-8"),
+            ("a.js", "text/javascript; charset=utf-8"),
+            ("a.txt", "text/plain; charset=utf-8"),
+            ("a.md", "text/plain; charset=utf-8"),
+            ("a.json", "application/json"),
+            ("a.png", "image/png"),
+            ("a.bin", "application/octet-stream"),
+        ] {
+            assert_eq!(local_file_content_type(Path::new(name)), expected, "{name}");
+        }
     }
 }
