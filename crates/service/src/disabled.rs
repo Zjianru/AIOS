@@ -115,8 +115,12 @@ pub fn refusal(model: &str, pattern: &str) -> String {
 ///
 /// 这一层不区分是谁在发：聊天、重试、压缩摘要、验证连接都经过同一条出站接缝。
 pub fn admit(data_dir: &Path, connection: &str, model: &str) -> Result<(), model::ModelError> {
-    // 占位：先把接缝和测试立起来，按表拒绝在下一笔实现。
-    let _ = (data_dir, connection, model);
+    if let Some(pattern) = match_disabled(&disabled_models(data_dir), connection, model) {
+        return Err(model::ModelError::new(
+            model::ErrorCode::ModelDisabled,
+            refusal(model, &pattern),
+        ));
+    }
     Ok(())
 }
 
@@ -126,10 +130,13 @@ impl RootHost {
         &self,
         request: DisabledModelsSetRequest,
     ) -> Result<DisabledModelsSetResponse, ServiceError> {
-        // 占位：只回规范化结果，不落盘也不发事件（下一笔实现）。
-        Ok(DisabledModelsSetResponse {
-            models: normalize(&request.models),
-        })
+        let models = normalize(&request.models);
+        let mut settings = settings::load(&self.options.data_dir);
+        settings.disabled_models = models.clone();
+        settings::save(&self.options.data_dir, &settings).map_err(ServiceError::SettingsInvalid)?;
+        // 立即生效：页面不用刷新；订阅端收到后重拉设置/屏蔽表。
+        self.emit_settings_changed();
+        Ok(DisabledModelsSetResponse { models })
     }
 
     /// 一条规则现在匹配哪些模型、谁在用（确认框用）。

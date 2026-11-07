@@ -78,11 +78,13 @@ impl RootHost {
     }
 
     /// 设置页的 Keyring 视图（响应不含 key 正文）加上屏蔽表。
+    ///
+    /// disabledUnknown / disabledHits / listed 本票是占位（带检查的读法与匹配数据在后面的票填），
+    /// 字段形状已经定在协议 8 里，旧页忽略。
     pub async fn model_settings(&self) -> Result<ModelSettingsResponse, ServiceError> {
         Ok(ModelSettingsResponse {
             settings: self.keyring()?.view(),
-            // 占位：读法与匹配数据在下一笔接上。
-            disabled_models: Vec::new(),
+            disabled_models: crate::disabled::disabled_models(&self.options.data_dir),
             disabled_unknown: false,
             disabled_hits: Vec::new(),
             listed: std::collections::BTreeMap::new(),
@@ -230,6 +232,7 @@ impl RootHost {
                 api_key,
                 keyring: std::sync::Arc::clone(&keyring),
                 connection: request.id.clone(),
+                data_dir: self.options.data_dir.clone(),
             }),
         ) {
             Err(error) => credentials::CheckResult::Fail {
@@ -458,7 +461,7 @@ impl RootHost {
     }
 
     /// 设置变化通知（seq=0 的合成事件；页面收到后重新拉设置）。
-    fn emit_settings_changed(&self) {
+    pub(crate) fn emit_settings_changed(&self) {
         let event = ServiceEvent {
             seq: 0,
             time: 0,
@@ -476,6 +479,8 @@ struct VerifyCredential {
     api_key: String,
     keyring: std::sync::Arc<credentials::Keyring>,
     connection: String,
+    /// 验证和聊天共用同一条出站接缝：被屏蔽的模型不发请求。
+    data_dir: std::path::PathBuf,
 }
 
 impl model::CredentialSource for VerifyCredential {
@@ -495,6 +500,11 @@ impl model::CredentialSource for VerifyCredential {
             .into_iter()
             .find(|connection| connection.id == self.connection)
             .and_then(|connection| connection.auth_header)
+    }
+
+    /// 验证连接也走屏蔽检查：被屏蔽时记录失败（MODEL_DISABLED），不发出请求。
+    fn admit(&self, model: &str) -> Result<(), model::ModelError> {
+        crate::disabled::admit(&self.data_dir, &self.connection, model)
     }
 
     fn remember_auth_header(&self, header: &str) {

@@ -75,6 +75,7 @@ pub(crate) fn failure_cause(kind: &session::EventKind) -> Option<FailureCause> {
         return None;
     };
     Some(match error.code.as_str() {
+        "MODEL_DISABLED" => FailureCause::Masked,
         "KEYRING" => FailureCause::Keyring,
         // QUOTA 归凭证类（下一步是检查账户）。
         "AUTH" | "MISSING_CREDENTIAL" | "QUOTA" => FailureCause::Credential,
