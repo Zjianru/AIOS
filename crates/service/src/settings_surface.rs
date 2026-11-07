@@ -103,23 +103,54 @@ impl RootHost {
         })
     }
 
+    /// 换了厂商身份（地址或预设）就丢掉这个连接存下的厂商列表。
+    ///
+    /// 那份列表属于旧地址；留着会让小标签和主模型继续按旧厂商走，直到下一次获取。
+    fn forget_stale_live(
+        &self,
+        before: &credentials::ConnectionInfo,
+        after: &credentials::ConnectionInfo,
+    ) -> Result<(), ServiceError> {
+        if before.endpoint == after.endpoint && before.preset == after.preset {
+            return Ok(());
+        }
+        self.remove_live(&after.id)
+    }
+
+    /// 删一个连接存下的厂商列表；没存过不算失败。
+    fn remove_live(&self, connection: &str) -> Result<(), ServiceError> {
+        model::catalog::remove_live(&self.options.data_dir, connection)
+            .map_err(|error| ServiceError::SettingsInvalid(format!("旧的模型列表没清掉：{error}")))
+    }
+
+    /// 存/换连接。
+    ///
+    /// 覆盖已有连接且换了地址或预设：旧地址的厂商列表作废，主模型和小标签回到内置目录。
     pub async fn connection_save(
         &self,
         request: ConnectionSaveRequest,
     ) -> Result<ConnectionSaveResponse, ServiceError> {
-        let connection = self
-            .keyring()?
-            .save_connection(credentials::NewConnection {
-                id: request.id,
-                name: request.name,
-                model: request.model,
-                endpoint: request.endpoint,
-                api_key: request.api_key,
-                preset: request.preset,
-                models: request.models,
-                price_rate: request.price_rate,
-                auth_header: request.auth_header,
-            })?;
+        let keyring = self.keyring()?;
+        let before = keyring
+            .view()
+            .connections
+            .into_iter()
+            .find(|connection| connection.id == request.id);
+        let connection = keyring.save_connection(credentials::NewConnection {
+            id: request.id,
+            name: request.name,
+            model: request.model,
+            endpoint: request.endpoint,
+            api_key: request.api_key,
+            preset: request.preset,
+            models: request.models,
+            price_rate: request.price_rate,
+            auth_header: request.auth_header,
+        })?;
+        // 覆盖已有连接且换了地址/预设：旧地址的厂商列表作废（同 connection_update）。
+        if let Some(before) = before {
+            self.forget_stale_live(&before, &connection)?;
+        }
         // 把刚保存的连接设为当前选择。
         // RootHost 的 recheck 走 model_factory → resolve_selection，只认 CLI 参数 /
         // settings.last_selection / id=="deepseek"；页面/HTTP 建连接（如 minimax-cn）
@@ -158,6 +189,9 @@ impl RootHost {
         &self,
         request: ConnectionDeleteRequest,
     ) -> Result<ConnectionDeleteResponse, ServiceError> {
+        // 先删派生出来的厂商列表，再删连接：删列表失败就不删连接，不会留下能被
+        // 同 id 重加复活的旧表；删连接本身失败只是丢一份列表，下次获取还能再存。
+        self.remove_live(&request.id)?;
         let deleted = self.keyring()?.delete_connection(&request.id)?;
         if deleted {
             self.emit_settings_changed();
@@ -191,12 +225,8 @@ impl RootHost {
                 auth_header: request.auth_header,
             },
         )?;
-        if let Some(before) = before
-            && (before.endpoint != connection.endpoint || before.preset != connection.preset)
-        {
-            model::catalog::remove_live(&self.options.data_dir, &connection.id).map_err(
-                |error| ServiceError::SettingsInvalid(format!("旧的模型列表没清掉：{error}")),
-            )?;
+        if let Some(before) = before {
+            self.forget_stale_live(&before, &connection)?;
         }
         self.emit_settings_changed();
         self.notify_keyring_changed();

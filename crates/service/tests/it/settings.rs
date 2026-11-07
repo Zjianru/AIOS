@@ -1171,6 +1171,228 @@ async fn 换端点后旧厂商列表作废获取后新表生效() {
     );
 }
 
+/// 页面在编辑器里重填密钥、换 API 地址：保存走 connection-save。旧地址存下的厂商列表
+/// 不能留着；小标签和主模型回到这个连接自己的模型，直到在新地址按一次「获取可用模型」。
+#[tokio::test]
+async fn 重填密钥保存换地址后旧厂商列表作废获取后新表生效() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let old_vendor = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [{"id": "old-vendor-model"}]
+        })))
+        .expect(1)
+        .mount(&old_vendor)
+        .await;
+    let new_vendor = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [{"id": "new-vendor-model"}]
+        })))
+        .expect(1)
+        .mount(&new_vendor)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let save = |endpoint: &str| ConnectionSaveRequest {
+        id: "edited".to_owned(),
+        name: "Edited".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        endpoint: endpoint.to_owned(),
+        api_key: TEST_KEY.to_owned(),
+        models: Some(Vec::new()),
+        ..Default::default()
+    };
+
+    host.dispatch(Call::ConnectionSave(save(&old_vendor.uri())))
+        .await
+        .expect("save");
+    available_models(&host, discover_request("edited")).await;
+    assert_eq!(
+        stored_live(dir.path(), "edited").0,
+        vec!["old-vendor-model"]
+    );
+
+    // 只重填密钥、地址没换：存下的列表还在，不该顺手清掉。
+    host.dispatch(Call::ConnectionSave(save(&old_vendor.uri())))
+        .await
+        .expect("re-save");
+    assert_eq!(
+        listed_ids(&host, "edited").await,
+        vec!["old-vendor-model"],
+        "地址和预设都没变，旧列表要留着"
+    );
+
+    // 换地址：旧表当场作废。
+    host.dispatch(Call::ConnectionSave(save(&new_vendor.uri())))
+        .await
+        .expect("save moved");
+    assert!(
+        !model::catalog::live_path(dir.path(), "edited").exists(),
+        "换地址要清掉旧厂商列表"
+    );
+    assert!(
+        listed_ids(&host, "edited").await.is_empty(),
+        "设置页不再显示旧表"
+    );
+    assert_eq!(
+        service::models::primary_model(dir.path(), &connection_of(&host, "edited").await),
+        "deepseek-flash",
+        "回到连接自己的模型"
+    );
+
+    // 在新地址按获取：新表生效，旧表不再出现。
+    let fetched = available_models(&host, discover_request("edited")).await;
+    assert!(fetched.live, "新地址获取成功");
+    assert_eq!(
+        stored_live(dir.path(), "edited").0,
+        vec!["new-vendor-model"]
+    );
+    assert_eq!(listed_ids(&host, "edited").await, vec!["new-vendor-model"]);
+    assert_eq!(
+        service::models::primary_model(dir.path(), &connection_of(&host, "edited").await),
+        "new-vendor-model"
+    );
+}
+
+/// 同一个地址只换预设，也算换了厂商身份：旧表作废，小标签和主模型回到新预设的内置目录。
+#[tokio::test]
+async fn 保存换预设后旧厂商列表作废() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let vendor = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"id": "old-vendor-model"}]
+            })),
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"id": "preset-vendor-model"}]
+            })),
+        ]))
+        .expect(2)
+        .mount(&vendor)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let save = |preset: &str| ConnectionSaveRequest {
+        id: "preset-moved".to_owned(),
+        name: "Preset moved".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        endpoint: vendor.uri(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some(preset.to_owned()),
+        models: Some(Vec::new()),
+        ..Default::default()
+    };
+
+    host.dispatch(Call::ConnectionSave(save("deepseek")))
+        .await
+        .expect("save");
+    available_models(&host, discover_request("preset-moved")).await;
+    assert_eq!(
+        service::models::primary_model(dir.path(), &connection_of(&host, "preset-moved").await),
+        "old-vendor-model"
+    );
+
+    host.dispatch(Call::ConnectionSave(save("minimax")))
+        .await
+        .expect("save preset");
+    assert!(
+        !model::catalog::live_path(dir.path(), "preset-moved").exists(),
+        "换预设也要清掉旧厂商列表"
+    );
+    assert!(listed_ids(&host, "preset-moved").await.is_empty());
+    assert_eq!(
+        service::models::primary_model(dir.path(), &connection_of(&host, "preset-moved").await),
+        "MiniMax-M2",
+        "回到 minimax 的内置目录"
+    );
+
+    let fetched = available_models(&host, discover_request("preset-moved")).await;
+    assert!(
+        fresh_of(&fetched, "preset-vendor-model"),
+        "内置目录里没有的算新"
+    );
+    assert_eq!(
+        listed_ids(&host, "preset-moved").await,
+        vec!["preset-vendor-model"]
+    );
+}
+
+/// 删连接时把存下的厂商列表一起删；同一个 id 再加回来，不能复活旧表。
+#[tokio::test]
+async fn 删除连接清掉旧厂商列表且同id重加不复活() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let vendor = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [{"id": "old-vendor-model"}]
+        })))
+        .expect(1)
+        .mount(&vendor)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let save = || ConnectionSaveRequest {
+        id: "gone".to_owned(),
+        name: "Gone".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        endpoint: vendor.uri(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some("deepseek".to_owned()),
+        models: Some(Vec::new()),
+        ..Default::default()
+    };
+    host.dispatch(Call::ConnectionSave(save()))
+        .await
+        .expect("save");
+    available_models(&host, discover_request("gone")).await;
+    assert_eq!(stored_live(dir.path(), "gone").0, vec!["old-vendor-model"]);
+
+    let deleted = host
+        .dispatch(Call::ConnectionDelete(ConnectionDeleteRequest {
+            id: "gone".to_owned(),
+        }))
+        .await
+        .expect("delete");
+    let service::Response::ConnectionDelete(deleted) = deleted else {
+        panic!("expected ConnectionDelete");
+    };
+    assert!(deleted.deleted);
+    assert!(
+        !model::catalog::live_path(dir.path(), "gone").exists(),
+        "删连接要一起删掉旧厂商列表"
+    );
+
+    // 同一个 id 再加回来：旧表不能复活。
+    host.dispatch(Call::ConnectionSave(save()))
+        .await
+        .expect("re-add");
+    assert!(listed_ids(&host, "gone").await.is_empty());
+    assert_eq!(
+        service::models::primary_model(dir.path(), &connection_of(&host, "gone").await),
+        "deepseek-flash"
+    );
+}
+
+/// 旧页面发 available-models 不带 mode：按「获取」读，行为跟以前一样。
+#[test]
+fn 旧页面不传mode时按获取处理() {
+    let call: Call = serde_json::from_value(serde_json::json!({
+        "method": "available-models",
+        "id": "deepseek",
+    }))
+    .expect("旧页面的 available-models 要读得出来");
+    let Call::AvailableModels(request) = call else {
+        panic!("expected AvailableModels");
+    };
+    assert_eq!(request.mode, service::AvailableModelsMode::Fetch);
+}
+
 #[tokio::test]
 async fn 获取可用模型时_anthropic_端点请求_chat_base_的列表() {
     // 审计 T012.5 fix-now 1：endpoint 是 …/anthropic 时，列表必须请求 Chat base 的

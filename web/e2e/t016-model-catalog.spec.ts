@@ -299,6 +299,68 @@ test('换 API 地址后旧厂商列表作废，获取后新表生效', async ({ 
   }
 });
 
+/// 页面编辑器里换 API 地址、重填密钥再保存：这条走 connection-save（不是 connection-update），
+/// 旧地址存下的厂商列表也要当场作废；在新地址按「获取可用模型」才用新表。
+test('编辑器换地址重填密钥后旧厂商列表作废，获取后新表生效', async ({ page, request }) => {
+  const fixture = await startKernelFixture();
+  const first = await startVendor(['deepseek-flash', 'vendor-old']);
+  const second = await startVendor(['deepseek-flash', 'vendor-new']);
+  const listedIds = async () => {
+    const response = await apiPost(request, fixture, { method: 'model-settings' });
+    const listed = (await response.json()).listed as Record<string, { models: { id: string }[] }>;
+    return listed.deepseek?.models.map((row) => row.id) ?? [];
+  };
+  try {
+    const toFirst = await apiPost(request, fixture, {
+      method: 'connection-update',
+      id: 'deepseek',
+      endpoint: first.url,
+      model: 'deepseek-flash',
+    });
+    expect(toFirst.ok()).toBeTruthy();
+
+    await page.goto(urlOf(fixture));
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await expect(page.locator('[data-settings="model"]')).toBeVisible({ timeout: 20_000 });
+    const edit = page.getByRole('button', { name: '编辑', exact: true }).first();
+    await edit.click();
+    const editor = page.locator('[data-settings="editor"]');
+    await expect(editor).toBeVisible();
+    // 内置预设时「自定义设置」默认收起；换过地址后连接算自定义，默认展开。
+    const openCustom = async () => {
+      const toggle = editor.getByRole('button', { name: '自定义设置' });
+      if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
+    };
+    await openCustom();
+    await editor.getByRole('button', { name: '获取可用模型' }).click();
+    await expect(editor.locator('[data-settings="discover"]')).toBeVisible({ timeout: 20_000 });
+    expect(await listedIds()).toEqual(['deepseek-flash', 'vendor-old']);
+
+    // 换地址、重填密钥，按页面「保存」：有密钥，页面走 connection-save。
+    await editor.locator('[data-settings="endpoint"]').fill(second.url);
+    await editor.locator('#key-deepseek').fill('sk-e2e-rewritten-key');
+    await editor.getByRole('button', { name: '保存', exact: true }).click();
+    // 保存成功后编辑器关掉；旧地址存下的列表不能还在。
+    await expect(editor).toHaveCount(0, { timeout: 20_000 });
+    await expect.poll(listedIds, { timeout: 20_000 }).toEqual([]);
+
+    // 在新地址按获取：新表生效，旧厂商的模型不再出现。
+    await edit.click();
+    await expect(editor).toBeVisible();
+    await openCustom();
+    await editor.getByRole('button', { name: '获取可用模型' }).click();
+    const discover = editor.locator('[data-settings="discover"]');
+    await expect(discover).toBeVisible({ timeout: 20_000 });
+    await expect(discover.locator('label', { hasText: 'vendor-new' })).toBeVisible();
+    await expect(discover.locator('label', { hasText: 'vendor-old' })).toHaveCount(0);
+    expect(await listedIds()).toEqual(['deepseek-flash', 'vendor-new']);
+  } finally {
+    await first.close();
+    await second.close();
+    await fixture.close();
+  }
+});
+
 /// 新连接还没有 Keyring 记录：不能假装去问厂商；按钮不可用，并写明先保存连接。
 test('新连接不能获取可用模型：按钮不可用并写明原因', async ({ page }) => {
   const fixture = await startKernelFixture();

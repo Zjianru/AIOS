@@ -598,7 +598,13 @@ function ConnectionEditor({ conn, view, onDone, onView, onMask }: {
       <KeyInput id={'key-' + conn.id} value={key} onChange={setKey} conn={conn} />
       <Collapsible title="自定义设置" defaultOpen={conn.source === 'custom'}>
         <Field label="API 地址" hint={`协议：${PROTOCOL_LABEL[conn.protocol]}`}>
-          <input className={inputClass} value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder={conn.defaultEndpoint} />
+          <input
+            className={inputClass}
+            data-settings="endpoint"
+            value={endpoint}
+            onChange={(e) => setEndpoint(e.target.value)}
+            placeholder={conn.defaultEndpoint}
+          />
         </Field>
         <ModelCatalog
           models={models}
