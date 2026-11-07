@@ -508,11 +508,11 @@ export interface ServiceCatalogModel {
   name?: string;
   contextWindow?: number;
   maxTokens?: number;
-  /** 目录标价四类（服务端 ModelInfo 序列化是 snake_case）。 */
-  price_input?: number;
-  price_output?: number;
-  price_cache_read?: number;
-  price_cache_write?: number;
+  /** 目录标价四类（服务端 ModelInfo 是 camelCase）。 */
+  priceInput?: number;
+  priceOutput?: number;
+  priceCacheRead?: number;
+  priceCacheWrite?: number;
   thinks?: boolean;
   efforts?: string[];
 }

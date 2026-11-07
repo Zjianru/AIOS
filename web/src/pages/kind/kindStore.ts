@@ -857,12 +857,12 @@ export const useKindStore = create<KindState>()((set, get) => ({
         modelId,
         label: info?.name ?? label,
         price:
-          info?.price_input !== undefined
+          info?.priceInput !== undefined
             ? {
-                input: info.price_input,
-                output: info.price_output ?? info.price_input,
-                cacheRead: info.price_cache_read,
-                cacheWrite: info.price_cache_write,
+                input: info.priceInput,
+                output: info.priceOutput ?? info.priceInput,
+                cacheRead: info.priceCacheRead,
+                cacheWrite: info.priceCacheWrite,
               }
             : undefined,
         contextWindow: info?.contextWindow,
@@ -924,12 +924,12 @@ export const useKindStore = create<KindState>()((set, get) => ({
             modelId: stats.model,
             label: info?.name ?? stats.model,
             price:
-              info?.price_input !== undefined
+              info?.priceInput !== undefined
                 ? {
-                    input: info.price_input,
-                    output: info.price_output ?? info.price_input,
-                    cacheRead: info.price_cache_read,
-                    cacheWrite: info.price_cache_write,
+                    input: info.priceInput,
+                    output: info.priceOutput ?? info.priceInput,
+                    cacheRead: info.priceCacheRead,
+                    cacheWrite: info.priceCacheWrite,
                   }
                 : undefined,
             contextWindow: info?.contextWindow,

@@ -166,7 +166,10 @@ pub fn levels(provider: &CatalogProvider, model: &CatalogModel) -> Vec<String> {
 }
 
 /// 目录给一个模型的可展示字段（T012.5）。
+///
+/// 线上字段用 camelCase：页面（设置页的获取面板、选择器）直接读，四类价格不另起名字。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
     pub id: String,
     pub name: String,

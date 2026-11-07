@@ -212,17 +212,25 @@ export async function revokeKey(connectionId: string): Promise<ModelSettingsView
 
 /** T012.9：从服务问这个连接现在可用的模型（目录 + 厂商列表合并；带窗口/标价）。 */
 export async function discoverModels(connectionId: string): Promise<
-  { id: string; name?: string; contextWindow?: number; price?: number }[]
+  {
+    id: string;
+    name?: string;
+    contextWindow?: number;
+    priceInput?: number;
+    priceOutput?: number;
+    priceCacheRead?: number;
+    priceCacheWrite?: number;
+  }[]
 > {
   const { models } = await fetchAvailableModels(connectionId);
   return models.map((row) => ({
     id: row.id,
     name: row.name,
     contextWindow: row.contextWindow,
-    priceInput: row.price_input,
-    priceOutput: row.price_output,
-    priceCacheRead: row.price_cache_read,
-    priceCacheWrite: row.price_cache_write,
+    priceInput: row.priceInput,
+    priceOutput: row.priceOutput,
+    priceCacheRead: row.priceCacheRead,
+    priceCacheWrite: row.priceCacheWrite,
   }));
 }
 
