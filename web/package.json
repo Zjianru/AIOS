@@ -13,6 +13,7 @@
     "check:concepts": "node scripts/check-concept-comments.mjs",
     "check:switches": "node scripts/check-demo-switches.mjs",
     "check:kind-demo": "node scripts/check-kind-demo.mjs",
+    "test:disabled": "node scripts/disabled.test.mjs",
     "test:turn-usage": "node scripts/turn-usage.test.mjs",
     "test:reasoning": "node scripts/reasoning.test.mjs",
     "test:local-file": "node scripts/local-file.test.mjs"

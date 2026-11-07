@@ -9,7 +9,7 @@ export interface ServiceEvent {
   time: number;
   type: string;
   data: Record<string, unknown>;
-  cause?: 'credential' | 'model' | 'keyring';
+  cause?: 'credential' | 'model' | 'keyring' | 'masked';
 }
 
 export type ServiceRootState =
@@ -327,6 +327,23 @@ export interface ServiceKeyringView {
   first_use: boolean;
 }
 
+/** 一个连接存下的厂商模型列表（页面小标签用）。 */
+export interface ServiceListedModels {
+  fetchedAt: number;
+  models: ServiceCatalogModel[];
+}
+
+/** 设置页响应：Keyring 视图（旧字段）+ 屏蔽表（只增字段）。 */
+export interface ServiceModelSettings {
+  settings: ServiceKeyringView;
+  disabledModels: string[];
+  disabledUnknown: boolean;
+  /** 与 disabledModels 等长同序：每条规则现在命中的「连接/模型」。 */
+  disabledHits: string[][];
+  /** 每个连接现在存下的厂商列表，键是连接 id。 */
+  listed: Record<string, ServiceListedModels>;
+}
+
 export interface SaveConnectionInput {
   id: string;
   name: string;
@@ -340,9 +357,14 @@ export interface SaveConnectionInput {
 }
 
 /** 设置页读取（不含 key 正文）。 */
-export async function fetchModelSettings(): Promise<ServiceKeyringView> {
-  const response = await post<{ settings: ServiceKeyringView }>({ method: 'model-settings' });
-  return response.settings;
+export async function fetchModelSettings(): Promise<ServiceModelSettings> {
+  return post<ServiceModelSettings>({ method: 'model-settings' });
+}
+
+/** 整表替换屏蔽规则；返回规范化后的整表（去空白/空规则/不分大小写去重，保持顺序）。 */
+export async function setDisabledModels(models: string[]): Promise<string[]> {
+  const response = await post<{ models: string[] }>({ method: 'disabled-models-set', models });
+  return response.models;
 }
 
 /** 存/换连接；key 只在这一次请求体里。 */
@@ -508,6 +530,8 @@ export interface ServiceCatalogModel {
   name?: string;
   contextWindow?: number;
   maxTokens?: number;
+  /** 和上一次存下的厂商列表比没见过（第一次获取的基准在服务端定）。 */
+  fresh?: boolean;
   /** 目录标价四类（服务端 ModelInfo 是 camelCase）。 */
   priceInput?: number;
   priceOutput?: number;

@@ -15,6 +15,7 @@ export const API_ERROR_CODES = [
   'request/invalid-path',
   'request/invalid-json',
   'settings/unavailable',
+  'settings/unreadable',
   'agent/internal',
   'attachment/invalid',
   'attachment/not-text',
@@ -38,6 +39,7 @@ export const MODEL_ERROR_CODES = [
   'UNSUPPORTED_CONTENT',
   'UNSUPPORTED_REASONING_EFFORT',
   'ABORTED',
+  'MODEL_DISABLED',
 ] as const;
 
 const DEFAULT_CONNECTION = '模型服务';
@@ -64,6 +66,8 @@ const MODEL_REASONS: Record<string, (name: string) => string> = {
   UNSUPPORTED_CONTENT: () => '这个模型不支持这种内容',
   UNSUPPORTED_REASONING_EFFORT: () => '这个模型不支持所选的思考强度',
   ABORTED: () => '这一轮被停下了',
+  // 失败块的「换模型 / 去设置」走 FailureCause.masked；这里只在没有服务端原文时兜底。
+  MODEL_DISABLED: () => '这个模型已在设置里屏蔽',
 };
 
 const API_REASONS: Record<string, string> = {
@@ -78,6 +82,7 @@ const API_REASONS: Record<string, string> = {
   'request/invalid-path': '发给服务的内容里路径不对',
   'request/invalid-json': '页面发给服务的内容，服务没看懂',
   'settings/unavailable': '现在还不能改设置',
+  'settings/unreadable': '设置读不出来：先修好或恢复 settings.json',
   'agent/internal': '内核出错了，稍后再试',
   'attachment/invalid': '附件不对（名字或内容格式有问题）',
   'attachment/not-text': '只支持文字文件，这个附件是二进制',

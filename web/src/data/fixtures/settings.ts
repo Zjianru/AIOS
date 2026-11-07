@@ -79,6 +79,8 @@ export interface IssueRecord {
 export interface ModelSettingsView {
   connections: ConnectionView[];
   catalog: CatalogProvider[];
+  /** 屏蔽的模型规则（通配；服务端保存的整表）。 */
+  disabledModels: string[];
   /** problem：钥匙文件读不出来时的原因（不在原处、打不开、解不开）；读得出来就没有这个字段。 */
   keyFile: { path: string; since: string; problem?: string };
   issuedToday: number;
@@ -104,6 +106,7 @@ export const modelSettingsFixture: ModelSettingsView = {
       check: { kind: 'ok', at: '今天 11:42' },
     },
   ],
+  disabledModels: [],
   catalog: [
     {
       id: 'deepseek',

@@ -9,6 +9,7 @@ import {
   reopenKeyring,
   restartKeyring,
   saveConnection,
+  setDisabledModels as setDisabledModelsOnService,
   verifyConnection,
   type ServiceConnectionInfo,
   type ServiceKeyringView,
@@ -97,10 +98,11 @@ function mapConnection(info: ServiceConnectionInfo): ConnectionView {
   };
 }
 
-function mapView(view: ServiceKeyringView): ModelSettingsView {
+function mapView(view: ServiceKeyringView, disabledModels: string[]): ModelSettingsView {
   return {
     connections: view.connections.map(mapConnection),
     catalog: CATALOG,
+    disabledModels,
     keyFile: {
       path: view.key_file.path,
       since: String(view.key_file.since),
@@ -118,7 +120,14 @@ function mapView(view: ServiceKeyringView): ModelSettingsView {
 }
 
 export async function getModelSettings(): Promise<ModelSettingsView> {
-  return mapView(await fetchModelSettings());
+  const response = await fetchModelSettings();
+  return mapView(response.settings, response.disabledModels ?? []);
+}
+
+/** 整表替换屏蔽规则；返回新的设置视图（立即生效）。 */
+export async function setDisabledModels(models: string[]): Promise<ModelSettingsView> {
+  const normalized = await setDisabledModelsOnService(models);
+  return mapView((await fetchModelSettings()).settings, normalized);
 }
 
 export interface ConnectionDraft {
@@ -249,5 +258,7 @@ export async function relinkKeyFile(path: string): Promise<ModelSettingsView> {
 }
 
 export async function resetKeyring(): Promise<ModelSettingsView> {
-  return mapView(await restartKeyring());
+  await restartKeyring();
+  // 重启只换钥匙文件；屏蔽表还在 settings.json 里，跟着重读一次视图。
+  return getModelSettings();
 }

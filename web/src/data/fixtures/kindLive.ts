@@ -26,7 +26,7 @@ export interface AskAnswer {
   custom?: string;
 }
 
-export type FailureCause = 'credential' | 'keyring' | 'model';
+export type FailureCause = 'credential' | 'keyring' | 'model' | 'masked';
 
 export type LiveStep =
   | { kind: 'tool'; command: string; ms: number; output: string }
