@@ -19,7 +19,7 @@ use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::header::{CONTENT_TYPE, HOST, LOCATION, SET_COOKIE};
-use axum::http::{HeaderMap, HeaderName, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -776,6 +776,11 @@ struct LocalFileQuery {
 /// 单个本地文件的上限（8 MiB）：给回答里的产物「在浏览器打开」，不是通用文件服务器。
 const LOCAL_FILE_MAX_BYTES: u64 = 8 * 1024 * 1024;
 
+/// /local-file 的隔离 CSP（T015 安全修复，照 Jupyter 的 AuthenticatedFileHandler）：
+/// 脚本照跑，但 HTML/SVG 进唯一的不透明来源——拿不到 AIOS 的 cookie/同源存储，调不通
+/// /api，也 fetch 不到同目录其它文件；frame-ancestors 顺手挡住被别的页面嵌。
+pub const LOCAL_FILE_CSP: &str = "frame-ancestors 'self'; sandbox allow-scripts";
+
 /// 本地文件的 MIME：只按扩展名给浏览器能直接渲染的几类，其余按二进制下载。
 /// 扩展名大小写不敏感（生成的文件常见 .HTML）。
 fn local_file_content_type(path: &Path) -> &'static str {
@@ -805,14 +810,29 @@ fn local_file_content_type(path: &Path) -> &'static str {
 /// - canonicalize 之后再和 canonicalize 过的会话工作目录比前缀：..、符号链接跳出目录都 403；
 /// - 目录、不存在、读不到一律 404（不透露目录外有什么）；超过 8 MiB 413。
 ///
-/// 响应头：只加 nosniff 与 no-store（产物可能含隐私，不让浏览器缓存）。不套 canvas-frame 的
-/// 外壳 CSP：用户生成的自包含 HTML 常带行内脚本，套上会把页面打坏；外壳 CSP 只由
-/// canvas_frame_handler 下发，这里不新增也不改写。
+/// 响应头：nosniff、no-store（产物可能含隐私，不让浏览器缓存），以及所有响应（含错误）都加的
+/// LOCAL_FILE_CSP。外壳 CSP 仍只由 canvas_frame_handler 下发：两条用途不同，这里那串不限制
+/// script-src，所以自包含 HTML 的行内脚本和 CDN 图表照跑，只是进 opaque origin。
 async fn local_file_handler(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     uri: axum::http::Uri,
     Query(query): Query<LocalFileQuery>,
+) -> Response {
+    let mut response = local_file_response(state, headers, uri, query).await;
+    response.headers_mut().insert(
+        HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_static(LOCAL_FILE_CSP),
+    );
+    response
+}
+
+/// /local-file 的查询、路径边界与文件响应体；响应头的统一收口在 local_file_handler。
+async fn local_file_response(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    query: LocalFileQuery,
 ) -> Response {
     if let Err(error) = authorize_api_request(&state.trust, &headers, &uri) {
         return trust_error_response(error);
