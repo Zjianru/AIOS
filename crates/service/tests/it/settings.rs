@@ -1397,18 +1397,28 @@ async fn 编辑连接不改上次选择() {
 async fn 选模型写上次选择失败时报设置不可用且不改内存与日志() {
     let dir = tempdir().unwrap();
     let host = host(dir.path()).await;
+    // 先正常选一次，让 settings.json 和日志里都已有上一次选择。
+    host.dispatch(Call::SessionModelSelect(SessionModelSelectRequest {
+        connection: Some("deepseek".to_owned()),
+        model: Some("deepseek-pro".to_owned()),
+        effort_wanted: Some("low".to_owned()),
+    }))
+    .await
+    .expect("第一次选择");
     let id = root_session_id(dir.path());
     let before = {
         let snapshot = session::SessionStore::open_read_only(dir.path(), &id).expect("snapshot");
-        session::last_model_selection(snapshot.events()).expect("初始 session/model")
+        session::last_model_selection(snapshot.events()).expect("session/model")
     };
+    let before_settings =
+        std::fs::read(service::settings::path(dir.path())).expect("settings.json");
     // 原子的临时文件位置被目录占住，rename 前的写入一定失败。
     std::fs::create_dir(dir.path().join("settings.json.tmp")).expect("tmp dir");
     let result = host
         .dispatch(Call::SessionModelSelect(SessionModelSelectRequest {
             connection: Some("deepseek".to_owned()),
-            model: Some("deepseek-pro".to_owned()),
-            effort_wanted: Some("low".to_owned()),
+            model: Some("deepseek-flash".to_owned()),
+            effort_wanted: Some("high".to_owned()),
         }))
         .await;
     let Err(error) = result else {
@@ -1416,6 +1426,11 @@ async fn 选模型写上次选择失败时报设置不可用且不改内存与�
     };
     assert_eq!(error.code().as_str(), "settings/unavailable");
     assert!(matches!(error, ServiceError::SettingsInvalid(_)));
+    assert_eq!(
+        std::fs::read(service::settings::path(dir.path())).expect("settings.json"),
+        before_settings,
+        "settings.json 字节不变"
+    );
     let after = {
         let snapshot = session::SessionStore::open_read_only(dir.path(), &id).expect("snapshot");
         session::last_model_selection(snapshot.events()).expect("session/model")

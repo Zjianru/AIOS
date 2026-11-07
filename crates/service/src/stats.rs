@@ -370,6 +370,26 @@ mod tests {
         }
     }
 
+    /// 统计定价按连接的真实 provider 查目录：MiniMax 连接用 minimax 的价，不是 deepseek 的。
+    #[test]
+    fn minimax_connection_prices_use_minimax_catalog() {
+        let mut connection = connection_with(
+            "minimax",
+            "https://api.minimax.io/anthropic",
+            "minimax",
+            1.0,
+            None,
+        );
+        connection.model = "MiniMax-M2.7".to_owned();
+        connection.models[0].id = "MiniMax-M2.7".to_owned();
+        let price =
+            effective_price(&connection, &catalog(), "MiniMax-M2.7").expect("minimax 目录价");
+        assert!((price.input - 0.3).abs() < 1e-9);
+        assert!((price.output - 1.2).abs() < 1e-9);
+        assert_eq!(price.cache_read, Some(0.06));
+        assert_eq!(price.cache_write, Some(0.375));
+    }
+
     /// T012.8a 审计：两轮跨连接（DeepSeek 用户价 → MiniMax 倍率 0=免费）按各自连接定价。
     #[test]
     fn stats_price_each_round_with_its_own_connection() {
