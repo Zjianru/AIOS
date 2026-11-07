@@ -1124,6 +1124,30 @@ fn assert_settings_unreadable<T: std::fmt::Debug>(result: Result<T, ServiceError
     );
 }
 
+/// C1：读到合法文件就记下「上次读到的」——不经写入口（save 也会记，覆盖不到 read 这条路径）。
+#[tokio::test]
+async fn 读到合法设置文件就记下屏蔽表() {
+    let dir = tempdir().unwrap();
+    std::fs::write(
+        service::settings::path(dir.path()),
+        br#"{"disabledModels":["m1"]}"#,
+    )
+    .expect("写合法设置");
+    let host = host(dir.path(), "http://127.0.0.1:1").await;
+    let read = model_settings(&host).await;
+    assert_eq!(read.disabled_models, vec!["m1".to_owned()]);
+    assert!(!read.disabled_unknown, "读到过就不是「不知道」");
+
+    std::fs::write(service::settings::path(dir.path()), b"{not json").expect("写坏");
+    let after = model_settings(&host).await;
+    assert_eq!(
+        after.disabled_models,
+        vec!["m1".to_owned()],
+        "读到时记下的表要在坏文件上沿用"
+    );
+    assert!(!after.disabled_unknown, "不是「从没读到过」");
+}
+
 /// 设置文件坏掉：读到过的那份屏蔽表继续生效；从没读到过的数据目录仍然是「不知道」，
 /// 不串用别的目录读到的表。
 #[tokio::test]
