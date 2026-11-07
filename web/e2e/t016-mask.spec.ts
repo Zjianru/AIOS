@@ -8,9 +8,13 @@ const RULE = 'deepseek/deepseek-flash';
 
 /// 设置页在模型行上屏蔽当前模型：立即生效、发不出去、失败块给「换模型」「去设置」；
 /// 解除以后又能选、能发。规则、失败块文字、选择器标记都由服务事实给。
-test('设置页屏蔽当前模型：发不出去，失败块给换模型和去设置；解除后能再用', async ({ page }) => {
+test('设置页屏蔽当前模型：发不出去，失败块给换模型和去设置；解除后能再用', async ({ page, request }) => {
   const fixture = await startKernelFixture();
   try {
+    // 先有一次选择：确认框的「新会话：会用上一次选的」才有对象。
+    await apiPost(request, fixture, {
+      method: 'session-model-select', connection: 'deepseek', model: 'deepseek-flash',
+    });
     await page.goto(urlOf(fixture));
     // 先聊一句：历史里有一轮，后面才能看「照常显示」。
     await page.getByPlaceholder('和 Kind 说…').fill('先说一句');
@@ -27,7 +31,13 @@ test('设置页屏蔽当前模型：发不出去，失败块给换模型和去�
     await editor.getByRole('button', { name: '屏蔽 deepseek-flash' }).click();
     const confirm = page.locator('[data-settings="mask-confirm"]');
     await expect(confirm).toBeVisible();
+    // 命中和谁在用都由服务算：这一行现在匹配 1 个，Kind 对话下一轮发不出去，新会话用上一次选的。
     await expect(confirm).toContainText(RULE);
+    await expect(confirm).toContainText('现在匹配 1 个');
+    await expect(confirm.getByText('Kind 对话')).toBeVisible();
+    await expect(confirm).toContainText('下一轮发不出去');
+    await expect(confirm.getByText('新会话')).toBeVisible();
+    await expect(confirm).toContainText('会用上一次选的');
     await confirm.getByRole('button', { name: '屏蔽', exact: true }).click();
 
     // 立即生效：规则出现在「已屏蔽的模型」，行上标出已屏蔽。
@@ -107,6 +117,72 @@ test('屏蔽以后历史和用量行照常显示原来的模型名', async ({ pa
     await expect(page.locator('[data-kind="model-picker"]')).toContainText('已屏蔽');
     await page.locator('[data-kind="process"]').first().hover();
     await expect(page.locator('[data-kind="turn-usage"]').first()).toContainText(processLabel);
+  } finally {
+    await fixture.close();
+  }
+});
+
+/// 跑着的时候去设置页屏蔽当前模型：确认框写「这一轮还在跑，会立即停下」；
+/// 确认后那一轮停下、出失败块，已经流出来的字还在。
+test('跑着的时候屏蔽当前模型：确认框写着会立即停下，确认后那一轮停下出失败块', async ({ page, request }) => {
+  const fixture = await startKernelFixture({ slowMs: 15_000 });
+  try {
+    await apiPost(request, fixture, {
+      method: 'session-model-select', connection: 'deepseek', model: 'deepseek-flash',
+    });
+    await page.goto(urlOf(fixture));
+    await page.getByPlaceholder('和 Kind 说…').fill('跑一轮长的');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    // 已经流出来的字出现时，这一轮还在跑。
+    await expect(page.getByText('（T007 e2e 假回放）').first()).toBeVisible({ timeout: 30_000 });
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await expect(page.locator('[data-settings="model"]')).toBeVisible({ timeout: 20_000 });
+    await page.getByRole('button', { name: '编辑', exact: true }).first().click();
+    const editor = page.locator('[data-settings="editor"]');
+    await expect(editor).toBeVisible();
+    await editor.getByText('自定义设置').click();
+    await editor.getByRole('button', { name: '屏蔽 deepseek-flash' }).click();
+    const confirm = page.locator('[data-settings="mask-confirm"]');
+    await expect(confirm).toBeVisible();
+    await expect(confirm).toContainText('这一轮还在跑，会立即停下');
+    await expect(confirm.getByText('Kind 对话')).toBeVisible();
+    await expect(confirm.getByText('新会话')).toBeVisible();
+    await confirm.getByRole('button', { name: '屏蔽', exact: true }).click();
+
+    await page.getByRole('button', { name: 'Kind', exact: true }).click();
+    const failure = page.locator('[data-kind="failure"]');
+    await expect(failure).toBeVisible({ timeout: 20_000 });
+    await expect(failure).toContainText('模型在设置里被屏蔽了');
+    await expect(failure.getByRole('button', { name: '换模型' })).toBeVisible();
+    await expect(page.getByText('（T007 e2e 假回放）').first()).toBeVisible();
+  } finally {
+    await fixture.close();
+  }
+});
+
+/// 跟着厂商走时的小标签上也有屏蔽按钮，打开的是同一个确认框。
+test('厂商模型小标签上的屏蔽按钮打开同一个确认框', async ({ page, request }) => {
+  const fixture = await startKernelFixture();
+  try {
+    // models: [] = 跟着厂商走，编辑卡片里显示厂商模型小标签。
+    await apiPost(request, fixture, {
+      method: 'connection-update', id: 'deepseek', endpoint: fixture.fakeEndpoint,
+      model: 'deepseek-flash', models: [],
+    });
+    await page.goto(urlOf(fixture));
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await expect(page.locator('[data-settings="model"]')).toBeVisible({ timeout: 20_000 });
+    await page.getByRole('button', { name: '编辑', exact: true }).first().click();
+    const editor = page.locator('[data-settings="editor"]');
+    await expect(editor).toBeVisible();
+    await editor.getByText('自定义设置').click();
+    const tag = editor.locator('[data-settings="vendor-model"]').first();
+    await expect(tag).toBeVisible();
+    await expect(tag.getByRole('button', { name: /^屏蔽 / })).toBeVisible();
+    await tag.getByRole('button', { name: /^屏蔽 / }).click();
+    const confirm = page.locator('[data-settings="mask-confirm"]');
+    await expect(confirm).toBeVisible();
+    await expect(confirm).toContainText('现在匹配 1 个');
   } finally {
     await fixture.close();
   }
