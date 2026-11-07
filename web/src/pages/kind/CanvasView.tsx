@@ -39,8 +39,8 @@ import { buildCanvasFile } from './canvasExport';
 /** 不展开时最多这么高；超过了画布里面滚动，标题栏给「展开」。 */
 const MAX_HEIGHT = 420;
 
-/** 存成文件（T015.5）：HTML 由父窗口拼好，这里只负责触发浏览器下载。 */
-function downloadCanvasFile(html: string, title: string) {
+/** 存成文件（T015.5）：HTML 由父窗口拼好，这里负责触发下载。 */
+function downloadCanvasFile(html: string, title: string): { url: string; name: string } {
   const name = title.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '').trim() || '画布';
   const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
   const url = URL.createObjectURL(blob);
@@ -50,7 +50,8 @@ function downloadCanvasFile(html: string, title: string) {
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
+  // T015 fix B3：URL 留给页面里的「在浏览器打开」，到组件卸载才 revoke。
+  return { url, name: name + '.html' };
 }
 
 /**
@@ -245,6 +246,9 @@ function LiveCanvas({ doc, latest, versions, onCanvasMessage }: Omit<CanvasViewP
   const [overflow, setOverflow] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // T015 fix B3：刚存的文件的 blob URL 与完整文件名（页面里给「在浏览器打开」）。
+  const [savedFile, setSavedFile] = useState<{ url: string; name: string } | null>(null);
+  const savedUrlRef = useRef<string | null>(null);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const blockRef = useRef<HTMLDivElement | null>(null);
   const theme = useAppStore((state) => state.theme);
@@ -300,7 +304,7 @@ function LiveCanvas({ doc, latest, versions, onCanvasMessage }: Omit<CanvasViewP
   // 存成文件：文件由页面生成——日志里这一版的 HTML + 页面自己的基础样式、主题变量、CSP meta。
   // 不向画布 iframe 要内容，也不接受它发来的 export（T015.5 审计 #2）。
   const saveFile = useCallback(() => {
-    downloadCanvasFile(
+    const saved = downloadCanvasFile(
       buildCanvasFile({
         title: current.title,
         html: current.html,
@@ -309,7 +313,17 @@ function LiveCanvas({ doc, latest, versions, onCanvasMessage }: Omit<CanvasViewP
       }),
       current.title,
     );
+    if (savedUrlRef.current) URL.revokeObjectURL(savedUrlRef.current);
+    savedUrlRef.current = saved.url;
+    setSavedFile(saved);
   }, [current.html, current.title, theme]);
+  // 组件卸载才释放 blob URL（用户可能在新标签页里还开着）。
+  useEffect(
+    () => () => {
+      if (savedUrlRef.current) URL.revokeObjectURL(savedUrlRef.current);
+    },
+    [],
+  );
 
   return (
     <div
@@ -434,6 +448,24 @@ function LiveCanvas({ doc, latest, versions, onCanvasMessage }: Omit<CanvasViewP
           ) : null}
         </span>
       </div>
+      {savedFile ? (
+        <div
+          data-kind="canvas-saved-file"
+          className="flex items-center gap-1.5 border-b border-line bg-pane px-2 py-1 text-1 text-ink-3"
+        >
+          <span className="shrink-0">已存文件</span>
+          <span className="min-w-0 break-all text-ink-2">{savedFile.name}</span>
+          <a
+            data-kind="canvas-open-file"
+            href={savedFile.url}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="shrink-0 text-run underline underline-offset-2 hover:text-ink"
+          >
+            在浏览器打开
+          </a>
+        </div>
+      ) : null}
       {open ? (
         <CanvasFrame
           // 换版或重新载入都重挂：外壳按新 HTML 重写自己的文档（T015.2；review F6）。
