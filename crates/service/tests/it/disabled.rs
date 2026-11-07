@@ -10,7 +10,7 @@ use service::{
     Call, CancelRequest, CompactRequest, ConnectionSaveRequest, ConnectionVerifyRequest,
     DeliveryMode, DisabledModelUser, DisabledModelsCheckRequest, DisabledModelsSetRequest,
     FollowRequest, ModelSettingsRequest, Response, RootHost, RootSessionOptions, SendRequest,
-    SessionModelSelectRequest, StatusRequest,
+    ServiceError, SessionModelSelectRequest, SettingsUpdateRequest, StatusRequest,
 };
 
 use crate::scripted_sse::{ScriptedSseServer, SseScript};
@@ -493,7 +493,10 @@ async fn 模型设置响应旧字段照旧新字段只增() {
         panic!("expected ModelSettings");
     };
     assert_eq!(response.disabled_models, vec!["*preview*".to_owned()]);
-    assert!(!response.disabled_unknown, "这一版还不会报「不知道」");
+    assert!(
+        !response.disabled_unknown,
+        "读到过就是 false；坏文件沿用上次时才不是「不知道」"
+    );
     assert_eq!(
         response.disabled_hits,
         vec![Vec::<String>::new()],
@@ -1086,5 +1089,254 @@ async fn 查询规则返回命中的模型和使用者() {
             DisabledModelUser::NewSessions,
         ],
         "没在跑时 running 为假"
+    );
+}
+
+/// 空 Keyring 的宿主：根会话 Unavailable，`connection-save` 会走写 lastSelection 的那条路。
+fn unavailable_options(data_dir: &Path) -> RootSessionOptions {
+    let mut options = options(data_dir, "http://127.0.0.1:1");
+    let factory: service::ModelFactory =
+        std::sync::Arc::new(|_selection| Err("还没有接模型".to_owned()));
+    options.model_factory = Some(factory);
+    options
+}
+
+async fn model_settings(host: &RootHost) -> service::ModelSettingsResponse {
+    match host
+        .dispatch(Call::ModelSettings(ModelSettingsRequest {}))
+        .await
+        .expect("model-settings")
+    {
+        Response::ModelSettings(response) => response,
+        other => panic!("expected ModelSettings：{other:?}"),
+    }
+}
+
+#[track_caller]
+fn assert_settings_unreadable<T: std::fmt::Debug>(result: Result<T, ServiceError>) {
+    let Err(error) = result else {
+        panic!("坏文件不能写成功：{result:?}");
+    };
+    assert_eq!(error.code().as_str(), "settings/unreadable");
+    assert!(
+        matches!(error, ServiceError::SettingsUnreadable(_)),
+        "结构化错误：{error:?}"
+    );
+}
+
+/// 设置文件坏掉：读到过的那份屏蔽表继续生效；从没读到过的数据目录仍然是「不知道」，
+/// 不串用别的目录读到的表。
+#[tokio::test]
+async fn 坏设置文件沿用各自路径上次读到的屏蔽表() {
+    let server = MockServer::start().await;
+    mock_turn(&server).await;
+    let read_dir = tempdir().unwrap();
+    let never_dir = tempdir().unwrap();
+    let read_host = host(read_dir.path(), &server.uri()).await;
+    let never_host = host(never_dir.path(), &server.uri()).await;
+
+    // 读到一份表：这一步同时记下「上次读到的」。
+    read_host
+        .dispatch(Call::DisabledModelsSet(DisabledModelsSetRequest {
+            models: vec!["m1".to_owned()],
+        }))
+        .await
+        .expect("set");
+    std::fs::write(service::settings::path(read_dir.path()), b"{not json").expect("写坏");
+    std::fs::write(service::settings::path(never_dir.path()), b"{not json").expect("写坏");
+    let read_before =
+        std::fs::read(service::settings::path(read_dir.path())).expect("read settings");
+    let never_before =
+        std::fs::read(service::settings::path(never_dir.path())).expect("never settings");
+
+    let read_view = model_settings(&read_host).await;
+    assert_eq!(
+        read_view.disabled_models,
+        vec!["m1".to_owned()],
+        "坏文件沿用上次读到的表"
+    );
+    assert!(!read_view.disabled_unknown, "读到过就不是「不知道」");
+
+    let never_view = model_settings(&never_host).await;
+    assert!(
+        never_view.disabled_models.is_empty(),
+        "从没读到过没有表：{:?}",
+        never_view.disabled_models
+    );
+    assert!(
+        never_view.disabled_unknown,
+        "从没读到过又坏了：不知道哪些被屏蔽，不能当空表"
+    );
+
+    // 出站拦截用同一份判断：读到过的按表拦；从没读到过的全拒，说明带路径。
+    let blocked = service::disabled::admit(read_dir.path(), "deepseek", "m1").expect_err("被拦");
+    assert_eq!(blocked.code, model::ErrorCode::ModelDisabled);
+    assert!(
+        blocked.message.contains("规则「m1」"),
+        "{}",
+        blocked.message
+    );
+    assert!(
+        !blocked.message.contains("settings.json 读不出来"),
+        "上次读到的表还在，不该说不知道：{}",
+        blocked.message
+    );
+    let unknown =
+        service::disabled::admit(never_dir.path(), "deepseek", "deepseek-flash").expect_err("全拒");
+    assert_eq!(unknown.code, model::ErrorCode::ModelDisabled);
+    assert!(
+        unknown.message.contains("settings.json 读不出来"),
+        "{}",
+        unknown.message
+    );
+    assert!(
+        unknown.message.contains(
+            &service::settings::path(never_dir.path())
+                .display()
+                .to_string()
+        ),
+        "说明里带 settings.json 路径：{}",
+        unknown.message
+    );
+    assert!(
+        unknown.message.contains("不知道哪些模型被屏蔽了"),
+        "说明原因：{}",
+        unknown.message
+    );
+
+    // 读不出来的文件一个字节都不写。
+    assert_eq!(
+        std::fs::read(service::settings::path(read_dir.path())).expect("settings"),
+        read_before,
+        "读不能改文件"
+    );
+    assert_eq!(
+        std::fs::read(service::settings::path(never_dir.path())).expect("settings"),
+        never_before,
+        "读不能改文件"
+    );
+}
+
+/// 文件不存在算空表：不是「不知道」，所有模型照常能用，也不会被读操作建出来。
+#[tokio::test]
+async fn 设置文件不存在时屏蔽表为空也不当成不知道() {
+    let server = MockServer::start().await;
+    mock_turn(&server).await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path(), &server.uri()).await;
+    assert!(
+        !service::settings::path(dir.path()).exists(),
+        "起宿主和读设置都不该建 settings.json"
+    );
+
+    let view = model_settings(&host).await;
+    assert!(view.disabled_models.is_empty());
+    assert!(!view.disabled_unknown, "文件不存在算空表，不是不知道");
+
+    service::disabled::admit(dir.path(), "deepseek", "deepseek-flash")
+        .expect("文件不存在：所有模型照常能用");
+    assert!(
+        !service::settings::path(dir.path()).exists(),
+        "读一遍不能把文件写出来"
+    );
+}
+
+/// 坏文件上三个写设置的方法都拒绝（码 settings/unreadable），文件字节不变。
+#[tokio::test]
+async fn 坏设置文件时三个写设置入口都拒绝且不写() {
+    let server = MockServer::start().await;
+    mock_turn(&server).await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path(), &server.uri()).await;
+    std::fs::write(service::settings::path(dir.path()), b"{not json").expect("写坏");
+    let before = std::fs::read(service::settings::path(dir.path())).expect("settings.json");
+
+    let set = host
+        .dispatch(Call::DisabledModelsSet(DisabledModelsSetRequest {
+            models: vec!["m1".to_owned()],
+        }))
+        .await;
+    assert_settings_unreadable(set);
+
+    let select = host
+        .dispatch(Call::SessionModelSelect(SessionModelSelectRequest {
+            connection: Some("deepseek".to_owned()),
+            model: Some("deepseek-flash".to_owned()),
+            effort_wanted: Some("low".to_owned()),
+        }))
+        .await;
+    assert_settings_unreadable(select);
+
+    let update = host
+        .dispatch(Call::SettingsUpdate(SettingsUpdateRequest {
+            currency: Some("cny".to_owned()),
+        }))
+        .await;
+    assert_settings_unreadable(update);
+
+    assert_eq!(
+        std::fs::read(service::settings::path(dir.path())).expect("settings.json"),
+        before,
+        "写入口都不能写坏文件"
+    );
+}
+
+/// 未接模型时 connection-save 会写 lastSelection：坏文件上同样拒绝，文件字节不变。
+#[tokio::test]
+async fn 坏设置文件时未接模型的连接保存拒绝且不写() {
+    let data = tempdir().unwrap();
+    let host = RootHost::open(unavailable_options(data.path()), DEFAULT_CONTEXT_WINDOW).await;
+    std::fs::write(service::settings::path(data.path()), b"{not json").expect("写坏");
+    let before = std::fs::read(service::settings::path(data.path())).expect("settings.json");
+
+    let result = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "minimax".to_owned(),
+            name: "MiniMax".to_owned(),
+            model: "MiniMax-M3.1-Flash".to_owned(),
+            endpoint: "http://127.0.0.1:1/anthropic".to_owned(),
+            api_key: "sk-test-not-a-real-key".to_owned(),
+            preset: Some("custom".to_owned()),
+            ..ConnectionSaveRequest::default()
+        }))
+        .await;
+    assert_settings_unreadable(result);
+    assert_eq!(
+        std::fs::read(service::settings::path(data.path())).expect("settings.json"),
+        before,
+        "不写坏文件"
+    );
+}
+
+/// 已经接上模型时 connection-save 不碰 lastSelection：坏文件上不报错、也不写。
+#[tokio::test]
+async fn 已接模型时坏设置文件上的连接保存不写也不报错() {
+    let server = MockServer::start().await;
+    mock_turn(&server).await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path(), &server.uri()).await;
+    std::fs::write(service::settings::path(dir.path()), b"{not json").expect("写坏");
+    let before = std::fs::read(service::settings::path(dir.path())).expect("settings.json");
+
+    let response = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "other".to_owned(),
+            name: "Other".to_owned(),
+            model: "sonnet-x".to_owned(),
+            endpoint: server.uri(),
+            api_key: "sk-test-not-a-real-key".to_owned(),
+            preset: Some("custom".to_owned()),
+            ..ConnectionSaveRequest::default()
+        }))
+        .await
+        .expect("已接模型：connection-save 不写 lastSelection，不该报设置读不出来");
+    let Response::ConnectionSave(response) = response else {
+        panic!("expected ConnectionSave");
+    };
+    assert_eq!(response.connection.id, "other");
+    assert_eq!(
+        std::fs::read(service::settings::path(dir.path())).expect("settings.json"),
+        before,
+        "没有写 settings.json"
     );
 }

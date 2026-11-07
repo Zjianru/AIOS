@@ -156,6 +156,8 @@ export interface FixtureOptions {
   busyRoot?: boolean;
   /// T008.4：不预置 Keyring 连接（首次使用用例）；serve 仍能起（T008.3b）。
   emptyKeyring?: boolean;
+  /// T016.5：启动前把 settings.json 写成坏文件；serve 仍要能起（读设置是宽松的）。
+  settingsFault?: 'corrupt';
   /// T009.5：serve 进程的 HOME；传 'dataDir' 用数据目录（页面路径缩写用例）。
   home?: 'dataDir' | string;
   /// T010.3：用带 reasoning/缓存读写的用量夹具（turn-usage 用例）。
@@ -200,6 +202,10 @@ export async function startKernelFixture(
       { input: 'test-key' + String.fromCharCode(10), encoding: 'utf8' },
     );
     if (seed.status !== 0) throw new Error('seed keyring failed: ' + String(seed.stderr));
+  }
+  // T016.5：坏文件要在 serve 起来之前就在；不预置 Keyring 时也照写（坏文件与连接无关）。
+  if (options.settingsFault === 'corrupt') {
+    await writeFile(path.join(dataDir, 'settings.json'), '{"lastSelection": ');
   }
   const serveArgs = ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', dataDir, '--web-dist', path.join(repoRoot, 'web/dist')];
   if (options.contextWindow) {
