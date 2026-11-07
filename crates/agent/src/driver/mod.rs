@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use model::{DeepSeek, Message, UserMessage};
-use session::{EventKind, InboxTarget, SessionId, SessionStore};
+use session::{AbortCause, EventKind, InboxTarget, SessionId, SessionStore};
 use tokio::sync::Notify;
 use tokio::sync::broadcast;
 use tools::{ToolSessionState, ToolSet};
@@ -24,7 +24,12 @@ const SESSION_EVENT_CHANNEL_CAPACITY: usize = 1024;
 /// 驱动阶段。
 enum Phase {
     Idle,
-    Running { abort: Arc<AtomicBool>, turn: u64 },
+    Running {
+        abort: Arc<AtomicBool>,
+        /// 中断原因：钩子/用户只在跑的一轮上写一次，收尾时取走。
+        cause: Arc<Mutex<Option<AbortCause>>>,
+        turn: u64,
+    },
 }
 
 struct RunState {
@@ -526,23 +531,19 @@ impl Inner {
             self.inbox_splice(InboxTarget::NextTurn, 0, i64::MAX, Vec::new(), true)
                 .await?;
         }
-        let mut state = self.state.lock().expect("agent 状态锁被毒化");
-        state.wake_requested = false;
-        if let Phase::Running { abort, .. } = &state.phase {
-            abort.store(true, Ordering::SeqCst);
-            // 让正在等模型流的 step 立刻醒来、走 interrupted 收尾。
-            self.cancel_notify.notify_waiters();
-            // T006.1d2：让正在等用户回答的 ask 能力醒来，撤销问题并 aborted 收尾。
-            self.capabilities.cancel_questions();
-        }
+        self.cancel_with(AbortCause::User);
         Ok(())
     }
 
-    /// 只在当前一轮上置中断，不动输入队列（钩子取消用）。
-    pub(crate) fn cancel_keep_inbox(&self) {
+    /// 取消当前一轮，不动输入队列（钩子取消用）；cause 写进 turn/end。
+    pub(crate) fn cancel_with(&self, cause: AbortCause) {
         let mut state = self.state.lock().expect("agent 状态锁被毒化");
         state.wake_requested = false;
-        if let Phase::Running { abort, .. } = &state.phase {
+        if let Phase::Running {
+            abort, cause: slot, ..
+        } = &state.phase
+        {
+            *slot.lock().expect("agent 中断原因锁被毒化") = Some(cause);
             abort.store(true, Ordering::SeqCst);
             self.cancel_notify.notify_waiters();
             self.capabilities.cancel_questions();
@@ -652,6 +653,7 @@ impl Inner {
                 let turn = state.last_turn;
                 state.phase = Phase::Running {
                     abort: Arc::new(AtomicBool::new(false)),
+                    cause: Arc::new(Mutex::new(None)),
                     turn,
                 };
                 drop(state);

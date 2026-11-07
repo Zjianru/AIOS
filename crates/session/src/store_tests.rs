@@ -467,8 +467,9 @@ fn store_absolutizes_relative_data_dir() {
     assert!(reopened.path().is_absolute(), "写打开同样绝对化");
 }
 
-/// T012.7：新增 session/model 事件后 FORMAT_VERSION 升到 14（T006.11b 的 13 是上一版）。
+/// hook 取消原因进 turn/end 后 FORMAT_VERSION 升到 16；读取器仍从 14 起。
 #[test]
-fn format_version_bumps_to_15_after_tool_result_meta() {
-    assert_eq!(crate::FORMAT_VERSION, 15);
+fn format_version_bumps_to_16_after_hook_abort_cause() {
+    assert_eq!(crate::FORMAT_VERSION, 16);
+    assert_eq!(crate::MIN_READ_VERSION, 14);
 }
