@@ -357,8 +357,8 @@ pub struct ModelSettingsResponse {
     /// 屏蔽规则的整表（保存时的顺序）。
     #[serde(rename = "disabledModels")]
     pub disabled_models: Vec<String>,
-    /// settings.json 读不出来、而且这个进程从没读到过：不知道哪些被屏蔽。
-    /// 占位（恒 false）：这一版还没有带检查的读法。
+    /// settings.json 读不出来、而且这个进程从没读到过：不知道哪些被屏蔽（所有模型都拒）。
+    /// 坏文件但上次读到过为 false：沿用上次读到的表。
     #[serde(rename = "disabledUnknown")]
     pub disabled_unknown: bool,
     /// 与 disabledModels 等长同序：每条规则现在命中的「连接/模型」；一条都不命中的给空表。

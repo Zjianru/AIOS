@@ -70,7 +70,8 @@ impl RootHost {
         &self,
         selection: &session::ModelSelection,
     ) -> Result<(), ServiceError> {
-        let mut settings = settings::load(&self.options.data_dir);
+        let mut settings = settings::load_for_write(&self.options.data_dir)
+            .map_err(ServiceError::SettingsUnreadable)?;
         settings.last_selection = Some(selection.clone());
         settings::save(&self.options.data_dir, &settings).map_err(ServiceError::SettingsInvalid)?;
         *self.selection.lock().expect("selection 锁被毒化") = Some(selection.clone());
@@ -80,7 +81,8 @@ impl RootHost {
     /// 设置页的 Keyring 视图（响应不含 key 正文）加上屏蔽表、每条规则现在命中的模型，
     /// 和每个连接存下的厂商列表。
     ///
-    /// 「不知道」（disabledUnknown）还没有数据来源，先给 false。命中表是真的：
+    /// 屏蔽表用带检查的读法：坏文件沿用上次读到的（disabledUnknown 为假），从没读到过
+    /// 才是「不知道」（disabledUnknown 为真），不能当成空表。命中表同样从这份表算，
     /// 页面写「现在匹配 n 个」只读它，不自己匹配。
     pub async fn model_settings(&self) -> Result<ModelSettingsResponse, ServiceError> {
         let view = self.keyring()?.view();
@@ -96,16 +98,16 @@ impl RootHost {
                 );
             }
         }
-        let disabled_models = crate::disabled::disabled_models(&self.options.data_dir);
+        let disabled = crate::disabled::table(&self.options.data_dir);
         let disabled_hits = crate::disabled::hits_by_rule(
             &self.options.data_dir,
             &view.connections,
-            &disabled_models,
+            &disabled.models,
         );
         Ok(ModelSettingsResponse {
             settings: view,
-            disabled_models,
-            disabled_unknown: false,
+            disabled_models: disabled.models,
+            disabled_unknown: disabled.unknown,
             disabled_hits,
             listed,
         })
@@ -519,7 +521,8 @@ impl RootHost {
         &self,
         request: SettingsUpdateRequest,
     ) -> Result<SettingsUpdateResponse, ServiceError> {
-        let mut settings = settings::load(&self.options.data_dir);
+        let mut settings = settings::load_for_write(&self.options.data_dir)
+            .map_err(ServiceError::SettingsUnreadable)?;
         if let Some(currency) = request.currency {
             match currency.as_str() {
                 "usd" | "cny" => settings.currency = currency,

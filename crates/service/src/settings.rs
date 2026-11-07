@@ -3,7 +3,9 @@
 //! 现有：上一次的模型选择（新会话默认用；story 2「新会话默认用我上一次选的」）。
 //! T012.8 起同一个文件还放币种（只增字段）。
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -47,13 +49,87 @@ pub fn path(data_dir: &Path) -> PathBuf {
     data_dir.join(SETTINGS_FILE)
 }
 
-/// 读设置：文件不存在/读不出/坏 JSON 都按默认值（设置丢了不阻塞启动；与根会话状态文件的
-/// 严格报错不同——这里不是恢复链的硬事实）。
+/// 带检查的读法结果（屏蔽表和写入口用）。
+pub(crate) enum Read {
+    /// 读到：文件存在且能解析，或者文件不存在/空文件（按空设置算）。
+    Known(Settings),
+    /// 文件存在但读不出来；last 是这个进程上次读到的屏蔽表。
+    Unreadable {
+        last: Option<Vec<String>>,
+        /// 原因（含 settings.json 路径）：只进失败块/诊断，不上页面。
+        reason: String,
+    },
+}
+
+/// 宽松读设置：文件不存在/读不出/坏 JSON 都按默认值（设置丢了不阻塞启动；与根会话状态
+/// 文件的严格报错不同——这里不是恢复链的硬事实）。
+///
+/// 只给「上次选择/币种」这类不守门的字段用；屏蔽表和写入口用 read。
 pub fn load(data_dir: &Path) -> Settings {
-    std::fs::read(path(data_dir))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_default()
+    read_file(data_dir).unwrap_or_default()
+}
+
+/// 带检查地读设置（照 Magpie LoadChecked）：文件不存在/空文件 = 空设置；
+/// 存在但读不出来 = 错误，附带这个进程上次读到的屏蔽表。
+///
+/// 读成功（含文件不存在）时记下 disabledModels，坏文件时屏蔽表沿用它；
+/// 从没读到过就是 last = None，调用方不能把它当成「什么都没屏蔽」。
+pub(crate) fn read(data_dir: &Path) -> Read {
+    match read_file(data_dir) {
+        Ok(settings) => {
+            remember_last(data_dir, &settings.disabled_models);
+            Read::Known(settings)
+        }
+        Err(reason) => Read::Unreadable {
+            last: last_disabled(data_dir),
+            reason,
+        },
+    }
+}
+
+/// 写入口的读法：文件存在但读不出来就报原因（SETTINGS_UNREADABLE），不写。
+pub(crate) fn load_for_write(data_dir: &Path) -> Result<Settings, String> {
+    match read(data_dir) {
+        Read::Known(settings) => Ok(settings),
+        Read::Unreadable { reason, .. } => Err(reason),
+    }
+}
+
+/// 上次读到的屏蔽表（进程级，按 settings.json 路径分开）。
+///
+/// 只在读到文件（含不存在/空文件）或写成功时更新；坏文件沿用它。按路径分开，
+/// 换数据目录或一个进程里开多个宿主时不会串用别人的表。
+static LAST_DISABLED: LazyLock<Mutex<HashMap<PathBuf, Vec<String>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn remember_last(data_dir: &Path, models: &[String]) {
+    LAST_DISABLED
+        .lock()
+        .expect("上次读到的屏蔽表锁被毒化")
+        .insert(path(data_dir), models.to_vec());
+}
+
+fn last_disabled(data_dir: &Path) -> Option<Vec<String>> {
+    LAST_DISABLED
+        .lock()
+        .expect("上次读到的屏蔽表锁被毒化")
+        .get(&path(data_dir))
+        .cloned()
+}
+
+/// 读文件并解析：不存在/空文件是空设置；读错误/坏 JSON 是 Err(含路径的原因)。
+fn read_file(data_dir: &Path) -> Result<Settings, String> {
+    let target = path(data_dir);
+    match std::fs::read(&target) {
+        Ok(bytes) => {
+            if bytes.iter().all(u8::is_ascii_whitespace) {
+                return Ok(Settings::default());
+            }
+            serde_json::from_slice(&bytes).map_err(|error| format!("{}：{error}", target.display()))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
+        Err(error) => Err(format!("{}：{error}", target.display())),
+    }
 }
 
 /// 原子写设置：同目录临时文件 → fsync → rename 覆盖（照根会话状态文件）。
@@ -70,6 +146,8 @@ pub fn save(data_dir: &Path, settings: &Settings) -> Result<(), String> {
         file.sync_all().map_err(|error| error.to_string())?;
     }
     std::fs::rename(&tmp, &target).map_err(|error| error.to_string())?;
+    // 写成功也是「读到了」：文件里就是这份内容，坏了时沿用它。
+    remember_last(data_dir, &settings.disabled_models);
     Ok(())
 }
 

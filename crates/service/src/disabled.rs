@@ -99,9 +99,24 @@ pub fn match_disabled(list: &[String], connection: &str, model: &str) -> Option<
     None
 }
 
-/// 现在的禁用表（settings.json 每次现读，不缓存）。
-pub fn disabled_models(data_dir: &Path) -> Vec<String> {
-    settings::load(data_dir).disabled_models
+/// 现在的屏蔽表（照 Magpie readDisabled）：文件读不出来时沿用上次读到的；
+/// 从没读到过就是「不知道」——所有模型都拒，不能当成「什么都没屏蔽」。
+pub(crate) struct DisabledTable {
+    pub(crate) models: Vec<String>,
+    pub(crate) unknown: bool,
+}
+
+pub(crate) fn table(data_dir: &Path) -> DisabledTable {
+    match settings::read(data_dir) {
+        settings::Read::Known(settings) => DisabledTable {
+            models: settings.disabled_models,
+            unknown: false,
+        },
+        settings::Read::Unreadable { last, .. } => DisabledTable {
+            unknown: last.is_none(),
+            models: last.unwrap_or_default(),
+        },
+    }
 }
 
 /// 规则列表现在各命中哪些「连接/模型」：和规则等长同序，一条都不命中的给空表。
@@ -143,13 +158,28 @@ pub fn refusal(model: &str, pattern: &str) -> String {
 ///
 /// 这一层不区分是谁在发：聊天、重试、压缩摘要、验证连接都经过同一条出站接缝。
 pub fn admit(data_dir: &Path, connection: &str, model: &str) -> Result<(), model::ModelError> {
-    if let Some(pattern) = match_disabled(&disabled_models(data_dir), connection, model) {
+    let table = table(data_dir);
+    if table.unknown {
+        return Err(model::ModelError::new(
+            model::ErrorCode::ModelDisabled,
+            unknown_refusal(&settings::path(data_dir)),
+        ));
+    }
+    if let Some(pattern) = match_disabled(&table.models, connection, model) {
         return Err(model::ModelError::new(
             model::ErrorCode::ModelDisabled,
             refusal(model, &pattern),
         ));
     }
     Ok(())
+}
+
+/// 「不知道」时的拒绝说明：带 settings.json 路径，只进失败块/日志，不上页面。
+fn unknown_refusal(path: &Path) -> String {
+    format!(
+        "settings.json 读不出来（{}），不知道哪些模型被屏蔽了，先都不发。修好或者恢复这个文件",
+        path.display()
+    )
 }
 
 impl RootHost {
@@ -159,7 +189,8 @@ impl RootHost {
         request: DisabledModelsSetRequest,
     ) -> Result<DisabledModelsSetResponse, ServiceError> {
         let models = normalize(&request.models);
-        let mut settings = settings::load(&self.options.data_dir);
+        let mut settings = settings::load_for_write(&self.options.data_dir)
+            .map_err(ServiceError::SettingsUnreadable)?;
         settings.disabled_models = models.clone();
         settings::save(&self.options.data_dir, &settings).map_err(ServiceError::SettingsInvalid)?;
         // 立即生效：页面不用刷新；订阅端收到后重拉设置/屏蔽表。
