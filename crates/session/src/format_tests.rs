@@ -50,6 +50,34 @@ fn session_model_event_shape_and_last_selection() {
     assert_eq!(crate::last_model_selection(&[parsed]).unwrap(), last);
 }
 
+/// 设置里屏蔽了正在跑的一轮时，turn/end 以 hook 原因收尾；日志往返后原因不丢。
+#[test]
+fn hook_abort_cause_roundtrips_through_the_log() {
+    let event = crate::Event::new(
+        1,
+        1,
+        EventKind::TurnEnd {
+            turn: 1,
+            reason: TurnEndReason::Aborted {
+                reason: AbortCause::Hook {
+                    reason: "model-disabled".to_owned(),
+                },
+            },
+        },
+    );
+    let json = serde_json::to_value(&event).unwrap();
+    assert_eq!(json["type"], "turn/end");
+    assert_eq!(
+        json["data"]["reason"],
+        json!({
+            "kind": "aborted",
+            "reason": {"kind": "hook", "reason": "model-disabled"},
+        })
+    );
+    let parsed: crate::Event = serde_json::from_value(json).unwrap();
+    assert_eq!(parsed.kind, event.kind, "hook 原因往返序列化");
+}
+
 fn create_store() -> (tempfile::TempDir, tempfile::TempDir, SessionStore) {
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();

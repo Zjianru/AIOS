@@ -41,3 +41,20 @@ fn failure_cause_masked_uses_model_disabled_code() {
         "MODEL_DISABLED 必须映射 masked（失败块给换模型/去设置）"
     );
 }
+
+#[test]
+fn failure_cause_masked_covers_hook_abort() {
+    let kind = session::EventKind::TurnEnd {
+        turn: 1,
+        reason: session::TurnEndReason::Aborted {
+            reason: session::AbortCause::Hook {
+                reason: "model-disabled".to_owned(),
+            },
+        },
+    };
+    assert_eq!(
+        failure_cause(&kind),
+        Some(FailureCause::Masked),
+        "hook: model-disabled 的 aborted 也归 masked（失败块同 MODEL_DISABLED）"
+    );
+}

@@ -163,6 +163,16 @@ impl DeepSeek {
             .unwrap_or_else(|| self.config.model.clone())
     }
 
+    /// 本轮开始后冻结的模型；还没开始一轮、或上一轮已经收尾时为 None。
+    ///
+    /// 只读，不推进状态；服务用它判断「正在跑的一轮」到底在用哪个模型。
+    pub fn frozen_model(&self) -> Option<String> {
+        None
+    }
+
+    /// 一轮收尾：清掉冻结的模型，服务不再把刚停下的那一轮当成在跑。
+    pub fn end_turn(&self) {}
+
     /// 换模型：只改下一轮；本轮冻结的模型在 begin_turn 时确定（D26）。
     pub fn set_model(&self, model: String) {
         if let Ok(mut current) = self.next_model.lock() {

@@ -538,6 +538,17 @@ impl Inner {
         Ok(())
     }
 
+    /// 只在当前一轮上置中断，不动输入队列（钩子取消用）。
+    pub(crate) fn cancel_keep_inbox(&self) {
+        let mut state = self.state.lock().expect("agent 状态锁被毒化");
+        state.wake_requested = false;
+        if let Phase::Running { abort, .. } = &state.phase {
+            abort.store(true, Ordering::SeqCst);
+            self.cancel_notify.notify_waiters();
+            self.capabilities.cancel_questions();
+        }
+    }
+
     /// 规范化 + 落日志 + 应用 + 发通知；调用方必须持有 `inbox_mutations` 锁。
     async fn inbox_splice(
         &self,

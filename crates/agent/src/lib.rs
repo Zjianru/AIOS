@@ -495,6 +495,18 @@ impl Agent {
         self.inner.cancel().await
     }
 
+    /// 取消当前一轮，但保留输入队列：队列里的消息还在，下一轮照常领取。
+    ///
+    /// `cause` 写进 turn/end 的 aborted 原因（例如内核钩子 model-disabled）。
+    pub fn cancel_with(&self, _cause: session::AbortCause) {
+        self.inner.cancel_keep_inbox();
+    }
+
+    /// 本轮冻结的模型（适配器在 begin_turn 时确定）；没有正在跑的一轮时为 None。
+    pub fn frozen_model(&self) -> Option<String> {
+        None
+    }
+
     /// T005.10：回答问题。question_id 必须是当前等待的问题；返回是否送达。
     /// T006.13 起答案照 DSH 形状：selected 是选中的选项标签（可多个），custom 是自由文本
     /// （K14；DSH `tool-ask-user/src/index.ts:111-116`）。

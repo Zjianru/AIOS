@@ -42,10 +42,13 @@ use crate::SessionId;
 /// v14：新增 session/model 事件（T012.7：连接、模型、想要的档；会话选择的 durable 事实，从
 /// 下一轮开始生效，重开会话从日志恢复）；旧版本读不了新事件，按 spec 升版本、旧版本仍拒绝。
 /// v15：tool/result 可选 meta（T013.1：diff 卡片等展示用；只增可选字段，旧日志原样读）。
-pub const FORMAT_VERSION: u64 = 15;
+/// v16：turn/end 的 aborted 原因新增 hook（设置里屏蔽了正在跑的模型时由服务触发；
+/// reason 是稳定的钩子名）；旧版本读不了一条带 hook 原因的 turn/end，按 spec 升版本、
+/// 旧版本仍拒绝（不迁移）。
+pub const FORMAT_VERSION: u64 = 16;
 
-/// T013.1：读取器最早能读的版本。14 版日志原样读、续写时 header 留 14；
-/// 13 及以下、16 及以上拒绝（文件一字不改）。
+/// 读取器最早能读的版本。14、15 版日志原样读、续写时 header 留原版本；
+/// 13 及以下、17 及以上拒绝（文件一字不改）。
 pub const MIN_READ_VERSION: u64 = 14;
 
 /// JSONL 第一行的会话 header。
@@ -84,11 +87,14 @@ impl SessionHeader {
     }
 }
 
-/// 一轮被取消的原因（DSH 的 TurnEndCancelCause 子集；AIOS 目前只有用户/调用方取消）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// 一轮被取消的原因（DSH 的 TurnEndCancelCause 子集）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum AbortCause {
+    /// 用户/调用方取消。
     User,
+    /// 内核钩子取消；reason 是稳定的钩子名（例如 model-disabled），页面按它分类。
+    Hook { reason: String },
 }
 
 /// turn/end 的 error 原因（DSH 的 LlmFailure 子集：AIOS 只记 message 和 code）。

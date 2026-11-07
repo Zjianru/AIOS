@@ -376,6 +376,97 @@ async fn cancel_mid_stream_keeps_interrupted_text() {
     );
 }
 
+/// 钩子取消（设置里屏蔽了正在跑的模型）：保留已流出的前缀，也保留排队消息。
+#[tokio::test]
+async fn cancel_with_hook_keeps_prefix_and_queued_message() {
+    let mut server = ScriptedSseServer::start(vec![
+        SseScript {
+            frames: PARTIAL_TEXT_SSE.to_owned(),
+            hold: true,
+        },
+        SseScript {
+            frames: FINAL_TEXT_SSE.to_owned(),
+            hold: false,
+        },
+    ]);
+    let (agent, data_dir, _cwd, session_id) =
+        new_agent(&server.base_url(), ToolSet::empty(), 10).await;
+    let mut events = agent.subscribe();
+    agent
+        .send(UserMessage::text("开始流"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    server.wait_ready().await;
+    let mut streamed = String::new();
+    while streamed != "已经流出来的部分文字。" {
+        match events.recv().await {
+            Ok(AgentEvent::AssistantTextDelta { text }) => streamed.push_str(&text),
+            Ok(_) => {}
+            Err(error) => panic!("事件通道关闭: {error}"),
+        }
+    }
+    // 排队一句话：钩子取消不清理输入队列，它要在下一轮被领取。
+    agent
+        .send(UserMessage::text("排队的一句"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.cancel_with(session::AbortCause::Hook {
+        reason: "model-disabled".to_owned(),
+    });
+    // 等这一轮先收尾，再放行连接：钩子取消保留队列，排队的消息会开下一轮。
+    loop {
+        match events.recv().await {
+            Ok(AgentEvent::TurnEnded { .. }) => break,
+            Ok(_) => {}
+            Err(error) => panic!("事件通道关闭: {error}"),
+        }
+    }
+    server.release();
+    agent.idle().await;
+
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
+    assert_eq!(
+        assistant_text_of(reopened.events(), true),
+        vec!["已经流出来的部分文字。".to_owned()],
+        "钩子取消也保留已流出的文本前缀"
+    );
+    assert_eq!(
+        turn_reasons(reopened.events()),
+        vec![TurnEndReason::Aborted {
+            reason: session::AbortCause::Hook {
+                reason: "model-disabled".to_owned(),
+            },
+        }],
+        "第一轮以 hook 原因停下"
+    );
+    assert_eq!(count_turns(reopened.events()), 1, "被打断的这一轮只有一轮");
+
+    // 队列里的消息还在：重开后的领取入口能把它领走、开出下一轮。
+    assert!(agent.claim_pending(), "排队的消息还在");
+    agent.idle().await;
+    let reopened = SessionStore::open_read_only(data_dir.path(), &session_id).unwrap();
+    assert_eq!(
+        turn_reasons(reopened.events()),
+        vec![
+            TurnEndReason::Aborted {
+                reason: session::AbortCause::Hook {
+                    reason: "model-disabled".to_owned(),
+                },
+            },
+            TurnEndReason::Completed,
+        ],
+        "排队消息开出的下一轮照常完成"
+    );
+    assert_eq!(count_turns(reopened.events()), 2);
+    let bodies = server.request_bodies();
+    assert_eq!(bodies.len(), 2, "两轮各发一次模型请求");
+    let second: serde_json::Value = serde_json::from_slice(&bodies[1]).expect("第二个请求的 JSON");
+    assert!(
+        user_texts(&second).contains(&"排队的一句".to_owned()),
+        "第二轮请求带上了排队的消息：{second}"
+    );
+}
+
 #[tokio::test]
 async fn cancel_batch_skips_unstarted_calls() {
     let server = MockServer::start().await;

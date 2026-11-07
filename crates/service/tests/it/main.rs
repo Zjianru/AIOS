@@ -8,5 +8,6 @@ mod host;
 mod root;
 mod root_hotfix;
 mod root_states;
+mod scripted_sse;
 mod send_blocks;
 mod settings;

@@ -95,3 +95,25 @@ async fn 本轮冻结模型中途换模型下一轮才生效() {
     let body: serde_json::Value = serde_json::from_slice(&requests[2].body).expect("body json");
     assert_eq!(body["model"], "deepseek-later", "下一轮才用新模型");
 }
+
+/// 本轮冻结的模型是只读事实：begin_turn 后固定，set_model 只改下一轮；end_turn 清掉。
+#[test]
+fn frozen_model_is_set_at_begin_turn_and_cleared_at_end() {
+    let deepseek =
+        DeepSeek::with_credentials(DeepSeekConfig::default(), test_credential()).expect("构造");
+    assert_eq!(deepseek.frozen_model(), None, "开始一轮前没有冻结");
+    deepseek.begin_turn();
+    assert_eq!(
+        deepseek.frozen_model().as_deref(),
+        Some("deepseek-flash"),
+        "按 config 的模型冻结"
+    );
+    deepseek.set_model("deepseek-pro".to_owned());
+    assert_eq!(
+        deepseek.frozen_model().as_deref(),
+        Some("deepseek-flash"),
+        "中途换模型不动本轮冻结"
+    );
+    deepseek.end_turn();
+    assert_eq!(deepseek.frozen_model(), None, "收尾后不再是「本轮」");
+}
