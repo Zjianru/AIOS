@@ -358,14 +358,15 @@ pub struct ModelSettingsResponse {
     #[serde(rename = "disabledModels")]
     pub disabled_models: Vec<String>,
     /// settings.json 读不出来、而且这个进程从没读到过：不知道哪些被屏蔽。
-    /// 本票占位（恒 false）；带检查的读法随后的票填。
+    /// 占位（恒 false）：这一版还没有带检查的读法。
     #[serde(rename = "disabledUnknown")]
     pub disabled_unknown: bool,
     /// 与 disabledModels 等长同序：每条规则现在命中的「连接/模型」。
-    /// 本票占位（空表）；匹配数据随后的票填。
+    /// 占位（空表）：这一版还没有匹配数据。
     #[serde(rename = "disabledHits")]
     pub disabled_hits: Vec<Vec<String>>,
-    /// 每个连接现在存下的厂商列表，键是连接 id；本票占位（空表）。
+    /// 每个连接现在存下的厂商列表，键是连接 id。
+    /// 占位（空表）：这一版还没有存下的列表。
     pub listed: std::collections::BTreeMap<String, ListedModels>,
 }
 
@@ -458,7 +459,7 @@ pub struct AvailableModelRow {
     #[serde(flatten)]
     pub model: model::catalog::ModelInfo,
     /// 和上一次存下的列表比没见过（第一次获取的基准在获取那一侧定）。
-    /// 本票占位（恒 false）；比较随后的票填。
+    /// 占位（恒 false）：这一版还没有上一次的列表可比。
     pub fresh: bool,
 }
 

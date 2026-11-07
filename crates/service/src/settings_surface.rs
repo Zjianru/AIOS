@@ -79,8 +79,8 @@ impl RootHost {
 
     /// 设置页的 Keyring 视图（响应不含 key 正文）加上屏蔽表。
     ///
-    /// disabledUnknown / disabledHits / listed 本票是占位（带检查的读法与匹配数据在后面的票填），
-    /// 字段形状已经定在协议 8 里，旧页忽略。
+    /// disabledUnknown / disabledHits / listed 是占位（带检查的读法与匹配数据还要再扩展），
+    /// 字段形状已经在协议 8 里定下，旧页忽略。
     pub async fn model_settings(&self) -> Result<ModelSettingsResponse, ServiceError> {
         Ok(ModelSettingsResponse {
             settings: self.keyring()?.view(),

@@ -133,7 +133,10 @@ async fn send(host: &RootHost, request_id: &str, text: &str) {
 }
 
 async fn set_disabled(host: &RootHost, models: Vec<&str>) {
-    let expected: Vec<String> = models.iter().map(|m| m.to_string()).collect();
+    let expected: Vec<String> = models
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
     let response = host
         .dispatch(Call::DisabledModelsSet(DisabledModelsSetRequest {
             models: expected.clone(),
@@ -363,7 +366,7 @@ async fn 模型设置响应旧字段照旧新字段只增() {
         panic!("expected ModelSettings");
     };
     assert_eq!(response.disabled_models, vec!["*preview*".to_owned()]);
-    assert!(!response.disabled_unknown, "本票的读法还不会报「不知道」");
+    assert!(!response.disabled_unknown, "这一版还不会报「不知道」");
     assert!(response.disabled_hits.is_empty(), "匹配数留给后续实现");
     assert!(response.listed.is_empty(), "存下的厂商列表留给后续实现");
 

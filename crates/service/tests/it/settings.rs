@@ -1506,10 +1506,7 @@ async fn 可用模型响应字段是驼峰命名且四类价格都在() {
     ] {
         assert!(entry.get(key).is_some(), "缺 {key}: {entry}");
     }
-    assert_eq!(
-        entry["fresh"], false,
-        "本票的 fresh 是占位（获取比较还没做）"
-    );
+    assert_eq!(entry["fresh"], false, "fresh 是占位（获取比较还没做）");
     for key in [
         "context_window",
         "max_tokens",
