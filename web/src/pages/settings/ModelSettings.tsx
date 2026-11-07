@@ -262,9 +262,10 @@ function parseTokens(text: string): number | undefined {
 function ModelCatalog({ models, onChange, defaults, discover, required, connectionId, masked, onMask }: {
   models: ModelRow[];
   onChange: (models: ModelRow[]) => void;
-  /** 目录为空时用的默认模型（内置目录才有）。 */
+  /** 跟着厂商走时列出来的模型（存下的厂商列表；没存过用内置目录）。 */
   defaults?: ModelRow[];
-  discover: () => Promise<ModelRow[]>;
+  /** 已保存的连接才能向厂商要列表；新连接没有 keyring 记录，不给这个函数。 */
+  discover?: () => Promise<ModelRow[]>;
   required?: boolean;
   /** 这批模型属于哪个连接（行上的屏蔽按钮用；新建连接还没有 id 时不给）。 */
   connectionId?: string;
@@ -281,12 +282,14 @@ function ModelCatalog({ models, onChange, defaults, discover, required, connecti
   const blockedBy = (id: string) => (connectionId ? matchDisabled(masked ?? [], connectionId, id) : undefined);
 
   const ask = async () => {
+    if (!discover) return;
     setAsking(true);
     try {
       const list = await discover();
       setCandidates(list);
+      // 跟着厂商走（一个没勾）的打开还是一个没勾；勾过的打开是原来勾的。
       const configured = new Set(models.map((row) => row.id));
-      setPicked(new Set(models.length ? list.filter((row) => configured.has(row.id)).map((row) => row.id) : list.map((row) => row.id)));
+      setPicked(new Set(list.filter((row) => configured.has(row.id)).map((row) => row.id)));
     } catch (error) {
       toast.error((error as Error).message);
     } finally {
@@ -294,12 +297,22 @@ function ModelCatalog({ models, onChange, defaults, discover, required, connecti
     }
   };
 
+  const needle = query.trim().toLowerCase();
   const visible = (candidates ?? []).filter(
-    (row) => !query || row.id.includes(query) || (row.name ?? '').toLowerCase().includes(query.toLowerCase()),
+    (row) => !needle || row.id.toLowerCase().includes(needle) || (row.name ?? '').toLowerCase().includes(needle),
   );
+  const freshCount = (candidates ?? []).filter((row) => row.fresh).length;
+  const followModels = models.length ? [] : defaults ?? [];
 
   const applyPicked = () => {
     if (!candidates) return;
+    // 一个都不勾：跟着厂商的列表走（照 Magpie：Models 为空）。
+    if (picked.size === 0) {
+      onChange([]);
+      setCandidates(null);
+      setQuery('');
+      return;
+    }
     const listed = new Set(candidates.map((row) => row.id));
     const kept = models.filter((row) => !listed.has(row.id) || picked.has(row.id));
     const have = new Set(kept.map((row) => row.id));
@@ -318,10 +331,16 @@ function ModelCatalog({ models, onChange, defaults, discover, required, connecti
         <div>
           <div className="text-2 text-ink-2">模型目录</div>
           <div className="mt-0.5 text-1 text-ink-3">
-            {models.length ? `${models.length} 个模型` : defaults?.length ? '正在使用适配器默认模型' : '还没有模型'}
+            {models.length ? `只用勾的 ${models.length} 个` : followModels.length ? '跟着厂商的列表走' : '还没有模型'}
           </div>
         </div>
-        <Btn kind="quiet" className="ml-auto" disabled={asking} onClick={() => void ask()}>
+        <Btn
+          kind="quiet"
+          className="ml-auto"
+          disabled={asking || !discover}
+          title={discover ? undefined : '保存连接后，才能向厂商要真实列表'}
+          onClick={() => void ask()}
+        >
           {asking ? '正在询问…' : '获取可用模型'}
         </Btn>
       </div>
@@ -334,8 +353,12 @@ function ModelCatalog({ models, onChange, defaults, discover, required, connecti
             placeholder="搜索模型"
             className={inputClass}
           />
-          <div className="mt-2 flex items-center gap-2 text-1 text-ink-3">
-            服务商回了 {candidates.length} 个
+          <div className="mt-2 flex items-center gap-2 text-1 text-ink-3" data-settings="discover-count">
+            <span>
+              列出 {candidates.length} 个
+              {freshCount ? <span className="font-medium text-ink">，{freshCount} 个是新的</span> : null}
+              {picked.size ? `，勾了 ${picked.size} 个` : '，一个没勾'}
+            </span>
             <button type="button" className="ml-auto hover:text-ink" onClick={() => setPicked((s) => new Set([...s, ...visible.map((r) => r.id)]))}>全选</button>
             <button type="button" className="hover:text-ink" onClick={() => setPicked((s) => new Set([...s].filter((id) => !visible.some((r) => r.id === id))))}>取消全选</button>
           </div>
@@ -355,13 +378,17 @@ function ModelCatalog({ models, onChange, defaults, discover, required, connecti
                   }
                 />
                 <span className="brand-type truncate text-2 text-ink">{row.id}</span>
+                {row.fresh ? (
+                  <span className="shrink-0 rounded-btn bg-done-soft px-1 text-1 font-medium text-done" data-settings="fresh">新</span>
+                ) : null}
                 {row.contextWindow ? <span className="ml-auto text-1 text-ink-3">{formatTokens(row.contextWindow)}</span> : null}
               </label>
             ))}
           </div>
-          <div className="mt-2 flex justify-end gap-2">
-            <Btn kind="quiet" onClick={() => setCandidates(null)}>取消</Btn>
-            <Btn kind="primary" disabled={models.length > 0 && picked.size === 0} onClick={applyPicked}>更新列表</Btn>
+          <div className="mt-2 flex items-center gap-2">
+            <span className="text-1 leading-4 text-ink-3">一个都不勾：跟着厂商的列表走，新出的自动算进来。勾了就只用勾的。</span>
+            <Btn kind="quiet" className="ml-auto" onClick={() => setCandidates(null)}>取消</Btn>
+            <Btn kind="primary" disabled={Boolean(required) && picked.size === 0} onClick={applyPicked}>更新列表</Btn>
           </div>
         </div>
       ) : null}
@@ -449,11 +476,30 @@ function ModelCatalog({ models, onChange, defaults, discover, required, connecti
           className="mt-2 rounded-card border border-dashed border-line-2 px-3 py-3 text-center text-2 leading-5 text-ink-3"
           style={required ? { color: 'var(--wait)' } : undefined}
         >
-          {defaults?.length
-            ? `模型选择器里列出默认的 ${defaults.map((row) => row.id).join('、')}；要改就在这里加。`
-            : required
-              ? '自定义接口至少要写一个模型。'
-              : '模型选择器里不会列出模型；目录外的 ID 仍可直接发送。'}
+          {followModels.length ? (
+            <>
+              <div>跟着厂商的列表走，厂商新出的自动算进来。只想用其中几个，就「获取可用模型」勾上。</div>
+              <div className="mt-2 flex flex-wrap justify-center gap-1.5">
+                {followModels.map((row) => (
+                  <span
+                    key={row.id}
+                    className="inline-flex items-center rounded-btn border border-line-2 px-2 py-0.5 brand-type text-1 text-ink-2"
+                    data-settings="vendor-model"
+                    title={row.name ?? row.id}
+                  >
+                    {row.id}
+                  </span>
+                ))}
+              </div>
+              {!discover ? (
+                <div className="mt-2 text-1">保存连接后，才能向厂商要真实列表；现在列的是内置目录。</div>
+              ) : null}
+            </>
+          ) : required ? (
+            '自定义接口至少要写一个模型。'
+          ) : (
+            '模型选择器里不会列出模型；目录外的 ID 仍可直接发送。'
+          )}
         </div>
       )}
 
@@ -557,9 +603,15 @@ function ConnectionEditor({ conn, view, onDone, onView, onMask }: {
         <ModelCatalog
           models={models}
           onChange={setModels}
-          defaults={catalog?.defaultModels}
+          // 跟着厂商走时的小标签/选择器用存下的厂商列表；没存过用内置目录。
+          defaults={view.listed?.[conn.id]?.models ?? catalog?.defaultModels}
           required={conn.source === 'custom'}
-          discover={() => discoverModels(conn.id)}
+          discover={async () => {
+            const list = await discoverModels(conn.id);
+            // 获取后服务端存下了厂商列表：把设置视图刷新一次，小标签/选择器立刻用它。
+            onView(await getModelSettings());
+            return list;
+          }}
           connectionId={conn.id}
           masked={view.disabledModels}
           onMask={onMask}
@@ -690,8 +742,8 @@ function CatalogPanel({ view, onCreated, onCancel }: { view: ModelSettingsView; 
           models={models}
           onChange={setModels}
           defaults={provider.defaultModels}
-          // 新连接还没有 id：先列内置目录的模型；保存后在「编辑」里能对真实厂商再拉一次。
-          discover={async () => provider.defaultModels ?? []}
+          // 新连接还没有 id/Keyring 记录：拿到列表的只可能是本地目录，所以不提供「获取」，
+          // 保存后在「编辑」里向厂商要真实列表。
         />
       </Collapsible>
       <div className="mt-5 flex justify-end gap-2">

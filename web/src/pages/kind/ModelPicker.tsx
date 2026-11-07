@@ -169,7 +169,7 @@ export function ModelPicker() {
             const state = usable(view, conn.id);
             const rows = conn.models.length
               ? conn.models
-              : view.catalog.find((item) => item.id === conn.id)?.defaultModels ?? [];
+              : conn.availableModels ?? view.catalog.find((item) => item.id === conn.id)?.defaultModels ?? [];
             return (
               <div key={conn.id}>
                 <DropdownMenuLabel className="flex items-center gap-2 text-1 font-normal text-ink-3">

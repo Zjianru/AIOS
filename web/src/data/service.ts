@@ -280,13 +280,13 @@ export interface ServiceKeyFileInfo {
   problem?: string;
 }
 
-/** T012.4：连接的新形状（服务端 snake_case）。 */
+/** T012.4：连接里的一行模型（服务端 `credentials::ModelRow`，线上一律 camelCase）。 */
 export interface ServiceModelRow {
   id: string;
   name?: string;
-  context_window?: number;
-  max_tokens?: number;
-  /** T012 F1：用户填的四类单价（美元/百万 token，不乘倍率；服务端 camelCase）。 */
+  contextWindow?: number;
+  maxTokens?: number;
+  /** T012 F1：用户填的四类单价（美元/百万 token，不乘倍率）。 */
   priceInput?: number;
   priceOutput?: number;
   priceCacheRead?: number;

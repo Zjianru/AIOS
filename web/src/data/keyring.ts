@@ -70,8 +70,41 @@ function mapCheck(info: ServiceConnectionInfo): CheckState {
   return { kind: 'fail', at: String(info.check.at), reason: info.check.reason };
 }
 
-function mapConnection(info: ServiceConnectionInfo): ConnectionView {
+/** 线上模型行/目录行（都是 camelCase）映射成页面行。 */
+type WireRow = {
+  id: string;
+  name?: string;
+  contextWindow?: number;
+  maxTokens?: number;
+  priceInput?: number;
+  priceOutput?: number;
+  priceCacheRead?: number;
+  priceCacheWrite?: number;
+};
+
+function mapRow(row: WireRow): WireRow {
+  return {
+    id: row.id,
+    name: row.name,
+    contextWindow: row.contextWindow,
+    maxTokens: row.maxTokens,
+    priceInput: row.priceInput,
+    priceOutput: row.priceOutput,
+    priceCacheRead: row.priceCacheRead,
+    priceCacheWrite: row.priceCacheWrite,
+  };
+}
+
+function mapConnection(info: ServiceConnectionInfo, listed?: WireRow[]): ConnectionView {
   const preset = CATALOG.find((item) => item.id === info.preset);
+  const models = (info.models ?? []).map((row) => {
+    const known = CATALOG.flatMap((item) => item.defaultModels).find((model) => model.id === row.id);
+    return {
+      ...mapRow(row),
+      name: row.name ?? known?.name,
+      contextWindow: row.contextWindow ?? known?.contextWindow,
+    };
+  });
   return {
     id: info.id,
     name: info.name,
@@ -79,29 +112,28 @@ function mapConnection(info: ServiceConnectionInfo): ConnectionView {
     protocol: 'anthropic-messages',
     endpoint: info.endpoint,
     defaultEndpoint: preset?.defaultEndpoint ?? CATALOG[0]?.defaultEndpoint ?? 'https://api.deepseek.com/anthropic',
-    models: (info.models ?? []).map((row) => {
-      const known = CATALOG.flatMap((item) => item.defaultModels).find((model) => model.id === row.id);
-      return {
-        id: row.id,
-        name: row.name ?? known?.name,
-        contextWindow: row.context_window ?? known?.contextWindow,
-        maxTokens: row.max_tokens,
-        priceInput: row.priceInput,
-        priceOutput: row.priceOutput,
-        priceCacheRead: row.priceCacheRead,
-        priceCacheWrite: row.priceCacheWrite,
-      };
-    }),
+    models,
+    // 跟着厂商走（models 为空）时，可选的是存下的厂商列表；没存过用内置目录。
+    availableModels: listed ?? preset?.defaultModels ?? [],
     priceRate: info.price_rate,
     key: info.key_saved ? { saved: true, savedAt: String(info.saved_at) } : { saved: false },
     check: mapCheck(info),
   };
 }
 
-function mapView(view: ServiceKeyringView, disabledModels: string[]): ModelSettingsView {
+function mapView(
+  view: ServiceKeyringView,
+  disabledModels: string[],
+  listed: Record<string, { fetchedAt: number; models: WireRow[] }> = {},
+): ModelSettingsView {
+  const mappedListed: Record<string, { fetchedAt: string; models: WireRow[] }> = {};
+  for (const [id, entry] of Object.entries(listed)) {
+    mappedListed[id] = { fetchedAt: String(entry.fetchedAt), models: entry.models.map(mapRow) };
+  }
   return {
-    connections: view.connections.map(mapConnection),
+    connections: view.connections.map((info) => mapConnection(info, mappedListed[info.id]?.models)),
     catalog: CATALOG,
+    listed: mappedListed,
     disabledModels,
     keyFile: {
       path: view.key_file.path,
@@ -121,13 +153,14 @@ function mapView(view: ServiceKeyringView, disabledModels: string[]): ModelSetti
 
 export async function getModelSettings(): Promise<ModelSettingsView> {
   const response = await fetchModelSettings();
-  return mapView(response.settings, response.disabledModels ?? []);
+  return mapView(response.settings, response.disabledModels ?? [], response.listed ?? {});
 }
 
 /** 整表替换屏蔽规则；返回新的设置视图（立即生效）。 */
 export async function setDisabledModels(models: string[]): Promise<ModelSettingsView> {
   const normalized = await setDisabledModelsOnService(models);
-  return mapView((await fetchModelSettings()).settings, normalized);
+  const response = await fetchModelSettings();
+  return mapView(response.settings, normalized, response.listed ?? {});
 }
 
 export interface ConnectionDraft {
@@ -144,10 +177,9 @@ export interface ConnectionDraft {
 export async function addConnection(draft: ConnectionDraft): Promise<ModelSettingsView> {
   const preset = KERNEL_PROVIDERS.has(draft.id) ? draft.id : undefined;
   const fallback = CATALOG.find((item) => item.id === draft.id)?.defaultModels ?? CATALOG[0]?.defaultModels ?? [];
-  const rows: ServiceModelRow[] = draft.models.length
-    ? draft.models.map((row) => ({ id: row.id, name: row.name }))
-    : fallback.map((row) => ({ id: row.id, name: row.name, context_window: row.contextWindow }));
-  const model = rows[0]?.id || 'deepseek-flash';
+  // 一个都不勾 = 空表：跟着厂商的列表走（服务端存的 model 只作旧字段回退）。
+  const rows: ServiceModelRow[] = draft.models.map((row) => ({ id: row.id, name: row.name }));
+  const model = rows[0]?.id || fallback[0]?.id || 'deepseek-flash';
   const endpoint = draft.endpoint || CATALOG.find((item) => item.id === draft.id)?.defaultEndpoint || CATALOG[0]?.defaultEndpoint || '';
   await saveConnection({ id: draft.id, name: draft.name, model, endpoint, apiKey: draft.key, preset, models: rows });
   return getModelSettings();
@@ -185,8 +217,8 @@ export async function updateConnection(
     .map((row) => ({
       id: row.id.trim(),
       name: row.name,
-      context_window: row.contextWindow,
-      max_tokens: row.maxTokens,
+      contextWindow: row.contextWindow,
+      maxTokens: row.maxTokens,
       priceInput: row.priceInput,
       priceOutput: row.priceOutput,
       priceCacheRead: row.priceCacheRead,
@@ -225,6 +257,7 @@ export async function discoverModels(connectionId: string): Promise<
     id: string;
     name?: string;
     contextWindow?: number;
+    fresh?: boolean;
     priceInput?: number;
     priceOutput?: number;
     priceCacheRead?: number;
@@ -236,6 +269,7 @@ export async function discoverModels(connectionId: string): Promise<
     id: row.id,
     name: row.name,
     contextWindow: row.contextWindow,
+    fresh: row.fresh,
     priceInput: row.priceInput,
     priceOutput: row.priceOutput,
     priceCacheRead: row.priceCacheRead,
