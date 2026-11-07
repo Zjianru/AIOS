@@ -11,7 +11,7 @@ use service::{
     ModelSettingsRequest, RootHost, RootSessionOptions, ServiceError, SessionModelSelectRequest,
 };
 use tempfile::tempdir;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 const TEST_KEY: &str = "sk-t008-service-0123456789";
@@ -776,6 +776,53 @@ fn stored_live(data_dir: &Path, connection: &str) -> (Vec<String>, u64) {
         .collect();
     let fetched_at = value["fetchedAt"].as_u64().expect("fetchedAt");
     (ids, fetched_at)
+}
+
+/// 厂商列表接口只认 Authorization（MiniMax 国内站真 key：messages 双头都过，列表只认 Bearer）：
+/// 连接没记过单个头时，列表请求要照 T012.6/Magpie 默认把两个头都发上，不能只发 x-api-key。
+#[tokio::test]
+async fn 厂商列表只认Bearer时默认两个鉴权头都发() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .and(header(
+            "authorization",
+            format!("Bearer {TEST_KEY}").as_str(),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [{"id": "vendor-bearer-only"}]
+        })))
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "bearer".to_owned(),
+            name: "Bearer".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some("deepseek".to_owned()),
+            ..Default::default()
+        }))
+        .await;
+    assert!(saved.is_ok(), "save: {saved:?}");
+
+    let response = host
+        .dispatch(Call::AvailableModels(discover_request("bearer")))
+        .await
+        .expect("获取");
+    let service::Response::AvailableModels(response) = response else {
+        panic!("expected AvailableModels");
+    };
+    assert!(
+        response.live,
+        "只认 Bearer 的列表接口也要成功（默认两个头都发）"
+    );
+    let (ids, _) = stored_live(dir.path(), "bearer");
+    assert_eq!(ids, vec!["vendor-bearer-only".to_owned()]);
 }
 
 #[tokio::test]
