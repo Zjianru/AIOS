@@ -252,6 +252,7 @@ async fn connection_save_uses_model_default_effort_and_recheck_reports_it() {
         DEFAULT_CONTEXT_WINDOW,
     )
     .await;
+    crate::settings::seed_fx_cache(data.path());
     host.dispatch(Call::ConnectionSave(save_request(
         "minimax",
         "minimax",
@@ -345,6 +346,7 @@ async fn connection_save_reports_when_selection_cannot_be_saved() {
     .await;
     // 原子的临时文件位置被目录占住，rename 前的写入一定失败。
     std::fs::create_dir(data.path().join("settings.json.tmp")).expect("tmp dir");
+    let mut events = host.subscribe_events();
     let result = host
         .dispatch(Call::ConnectionSave(save_request(
             "minimax",
@@ -353,6 +355,9 @@ async fn connection_save_reports_when_selection_cannot_be_saved() {
             "http://127.0.0.1:1/anthropic",
         )))
         .await;
+    // 连接本身已进 Keyring：设置变化事件照发（页面刷新、监控脱敏列表都要知道 key 换了）。
+    let event = events.try_recv().expect("连接已保存，要有设置变化事件");
+    assert_eq!(event.event_type, "keyring/changed");
     let Err(error) = result else {
         panic!("写上次选择失败不能报成功");
     };

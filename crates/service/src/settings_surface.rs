@@ -112,7 +112,7 @@ impl RootHost {
             &*self.state.lock().expect("root state 锁被毒化"),
             RootState::Unavailable { .. }
         );
-        if set_selection {
+        let selected = if set_selection {
             let model = connection.primary_model().to_owned();
             let provider = model::catalog::provider_id_for_connection(
                 &connection.preset,
@@ -123,10 +123,15 @@ impl RootHost {
                 // 新会话的档按模型自己的默认档，不是写死的 high。
                 effort_wanted: model::default_effort_for(&provider, &connection.endpoint, &model),
                 model,
-            })?;
-        }
+            })
+        } else {
+            Ok(())
+        };
+        // 连接本身已经进 Keyring：即使上次选择没写成，也要刷新页面和监控脱敏列表
+        // （key 已经换了）；错误放在最后原样报给调用方。
         self.emit_settings_changed();
         self.notify_keyring_changed();
+        selected?;
         Ok(ConnectionSaveResponse { connection })
     }
 

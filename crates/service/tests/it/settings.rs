@@ -1176,7 +1176,7 @@ async fn stats_of(host: &RootHost) -> service::stats::SessionStats {
     status.stats.expect("stats")
 }
 
-fn seed_fx_cache(dir: &std::path::Path) {
+pub(crate) fn seed_fx_cache(dir: &std::path::Path) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
