@@ -68,7 +68,6 @@ fn service_error_codes_cover_every_variant() {
     let mut used: Vec<&str> = pairs.iter().map(|(code, _)| *code).collect();
     used.sort_unstable();
     used.dedup();
-    // T013.2：14 码 = ServiceError 的 13 个变体码 + web 层的 request/invalid-json。
     assert_eq!(ServiceErrorCode::ALL.len(), 15, "码数 15");
     assert!(
         ServiceErrorCode::ALL

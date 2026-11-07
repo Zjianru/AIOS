@@ -13,7 +13,7 @@ impl RootHost {
             return Ok(Response::Recheck(RecheckResponse { root, host }));
         }
         match call {
-            // T013.4：发消息前把附件 id 解析成只读副本路径（文字/粘贴/文件拼成块）。
+            // 发消息前把附件 id 解析成只读副本路径（文字/粘贴/文件拼成块）。
             Call::Send(request) => {
                 let message = self.user_message_from(&request)?;
                 let guard = self.inner.lock().await;
@@ -67,19 +67,19 @@ impl RootHost {
                 .session_model_select(request)
                 .await
                 .map(Response::SessionModelSelect),
-            // T012.8：根宿主自己填统计/汇率/币种（需要 data_dir + Keyring）。
+            // 根宿主自己填统计/汇率/币种（需要 data_dir + Keyring）。
             Call::Status(request) => self.host_status(request).await.map(Response::Status),
-            // T012.8b：余额/余量需要 Keyring 签发 key。
+            // 余额/余量需要 Keyring 签发 key。
             Call::ConnectionQuota(request) => self
                 .connection_quota(request)
                 .await
                 .map(Response::ConnectionQuota),
-            // T012.9：写非密钥设置。
+            // 写非密钥设置。
             Call::SettingsUpdate(request) => self
                 .settings_update(request)
                 .await
                 .map(Response::SettingsUpdate),
-            // T013.2：附件仓库（文字文件只读副本）。
+            // 附件仓库（文字文件只读副本）。
             Call::AttachmentPut(request) => self
                 .attachment_put(request)
                 .await
@@ -88,7 +88,7 @@ impl RootHost {
                 .attachment_get(request)
                 .await
                 .map(Response::AttachmentGet),
-            // T013.3：@ 文件候选（按会话工作目录）。
+            // @ 文件候选（按会话工作目录）。
             Call::FileReferencesList(request) => self
                 .file_references_list(request)
                 .await

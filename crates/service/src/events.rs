@@ -2,7 +2,7 @@
 
 use crate::protocol::{FailureCause, ServiceEvent};
 
-/// T009.4：events 的分页选择（beforeSeq 不含本条；照 DSH history.ts:124-140）。
+/// events 的分页选择（beforeSeq 不含本条；照 DSH history.ts:124-140）。
 pub(crate) fn page_events(
     all: &[session::Event],
     before_seq: Option<u64>,
@@ -13,7 +13,7 @@ pub(crate) fn page_events(
     if all.is_empty() {
         return (Vec::new(), false);
     }
-    // T009.4：beforeSeq 是「不含本条」的上界（照 DSH history.ts:124-140）；省略 = 日志末端之后。
+    // beforeSeq 是「不含本条」的上界（照 DSH history.ts:124-140）；省略 = 日志末端之后。
     let exclusive_end = match before_seq {
         Some(seq) => seq,
         None => all.last().map(|event| event.seq + 1).unwrap_or(0),
@@ -65,7 +65,7 @@ pub(crate) fn service_event(event: &session::Event) -> ServiceEvent {
     }
 }
 
-/// T007.2：失败原因分类只从日志里的 turn/end error code 派生（页面不按 code 猜）。
+/// 失败原因分类只从日志里的 turn/end error code 派生（页面不按 code 猜）。
 pub(crate) fn failure_cause(kind: &session::EventKind) -> Option<FailureCause> {
     let session::EventKind::TurnEnd {
         reason: session::TurnEndReason::Error { error },
@@ -76,7 +76,7 @@ pub(crate) fn failure_cause(kind: &session::EventKind) -> Option<FailureCause> {
     };
     Some(match error.code.as_str() {
         "KEYRING" => FailureCause::Keyring,
-        // T009.1：QUOTA 归凭证类（下一步是检查账户）。
+        // QUOTA 归凭证类（下一步是检查账户）。
         "AUTH" | "MISSING_CREDENTIAL" | "QUOTA" => FailureCause::Credential,
         _ => FailureCause::Model,
     })

@@ -21,7 +21,7 @@ use crate::protocol::{
 pub struct ServiceHost {
     agent: Agent,
     events: broadcast::Sender<ServiceEvent>,
-    /// 串行化发送受理：并发同 requestId 时一次进、其余拿到 durable 判重（T006.16b）。
+    /// 串行化发送受理：并发同 requestId 时一次进、其余拿到 durable 判重。
     send_lock: tokio::sync::Mutex<()>,
     forward: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -38,7 +38,7 @@ impl ServiceHost {
                     Ok(event) => {
                         let _ = forward_tx.send(service_event(&event));
                     }
-                    // 订阅者落后/重连的重新跟随在 T006.16b；转发端自己不能停。
+                    // 订阅者落后时继续转发，补齐由调用方的 follow 负责；转发端自己不能停。
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
@@ -52,12 +52,12 @@ impl ServiceHost {
         }
     }
 
-    /// T008.3：选模型（下一轮生效；正在跑的请求不受影响）。
+    /// 选模型（下一轮生效；正在跑的请求不受影响）。
     pub fn select_model(&self, model: String) {
         self.agent.select_model(model);
     }
 
-    /// T012.7：宿主绑定的 Agent（会话选择写日志/判断 busy；调用方不要长期持有）。
+    /// 宿主绑定的 Agent（会话选择写日志/判断 busy；调用方不要长期持有）。
     pub fn agent(&self) -> &Agent {
         &self.agent
     }
@@ -88,12 +88,12 @@ impl ServiceHost {
             Call::Status(request) => self.status(request).await.map(Response::Status),
             Call::Follow(request) => self.follow(request).await.map(Response::Follow),
             Call::Events(request) => self.events(request).await.map(Response::Events),
-            // T007.2：recheck 只对 RootHost 有意义；裸 ServiceHost 直接回根状态 ok（宿主不回退）。
+            // recheck 只对 RootHost 有意义；裸 ServiceHost 直接回根状态 ok（宿主不回退）。
             Call::Recheck(_) => Ok(Response::Recheck(RecheckResponse {
                 root: RootState::Ok,
                 host: HostLocation::default(),
             })),
-            // T008.3：设置接口由 RootHost 提供；裸宿主没有 Keyring。
+            // 设置接口由 RootHost 提供；裸宿主没有 Keyring。
             Call::ModelSettings(_)
             | Call::ConnectionSave(_)
             | Call::ConnectionDelete(_)
@@ -116,14 +116,14 @@ impl ServiceHost {
     }
 
     /// 发消息：requestId 幂等（DSH prompt 的 requestId；判定在 Agent 的 durable rpcId 上：
-    /// 同一 id 已进 inbox 或已落日志就不再插入，重启后仍然有效，T006.16b）。
+    /// 同一 id 已进 inbox 或已落日志就不再插入，重启后仍然有效）。
     pub async fn send(&self, request: SendRequest) -> Result<SendResponse, ServiceError> {
         let message = UserMessage::text(request.content);
         self.send_message(&request.request_id, message, request.delivery)
             .await
     }
 
-    /// T013.4：发送一条已经拼好的块状用户消息（RootHost 解析附件后走这里）。
+    /// 发送一条已经拼好的块状用户消息（RootHost 解析附件后走这里）。
     pub async fn send_message(
         &self,
         request_id: &str,
@@ -143,13 +143,13 @@ impl ServiceHost {
         })
     }
 
-    /// 取消当前轮（清空 pending inbox + 中止正在跑的轮，照 T006.2a）。
+    /// 取消当前轮（清空 pending inbox + 中止正在跑的轮）。
     pub async fn cancel(&self, _request: CancelRequest) -> Result<CancelResponse, ServiceError> {
         self.agent.cancel().await?;
         Ok(CancelResponse { cancelled: true })
     }
 
-    /// 回答整批：逐题走 T006.13 的 Agent::answer；有一题被拒就报错（已应用的保留）。
+    /// 回答整批：逐题走 Agent::answer；有一题被拒就报错（已应用的保留）。
     pub async fn answer(&self, request: AnswerRequest) -> Result<AnswerResponse, ServiceError> {
         let mut applied = 0;
         for answer in request.answers {
@@ -165,8 +165,8 @@ impl ServiceHost {
         Ok(AnswerResponse { applied })
     }
 
-    /// 关掉不答（T006.16c）：撤掉当前全部待答问题（面板关掉的动作）。
-    /// 逐条映射 T006.13 的 Agent::cancel_question：等待中的批整批标记撤销，整批 settle 后
+    /// 关掉不答：撤掉当前全部待答问题（面板关掉的动作）。
+    /// 逐条映射 Agent::cancel_question：等待中的批整批标记撤销，整批 settle 后
     /// hook 以 ASK_ABORTED 工具错误收尾、本轮继续；重启恢复的批第一条就把整批移除，
     /// 已收的答案补写 question/answered、未答的写 question/cancelled（不投迟到回答）。
     pub async fn dismiss_questions(
@@ -205,7 +205,7 @@ impl ServiceHost {
         })
     }
 
-    /// T006.18：停服务收尾——取消正在跑的一轮、等驱动空闲（日志收尾完整、写锁随 Agent drop 释放）。
+    /// 停服务收尾——取消正在跑的一轮、等驱动空闲（日志收尾完整、写锁随 Agent drop 释放）。
     pub async fn shutdown(&self) {
         let _ = self.agent.cancel().await;
         self.agent.idle().await;

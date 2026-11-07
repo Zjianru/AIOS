@@ -12,7 +12,7 @@ pub struct Object {
     pub session_id: String,
 }
 
-/// 投递方式（照 T006.2a 的 Delivery；服务协议里用稳定的 kebab-case 名）。
+/// 投递方式（服务协议里用稳定的 kebab-case 名）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DeliveryMode {
@@ -34,7 +34,7 @@ impl From<DeliveryMode> for agent::Delivery {
     }
 }
 
-/// 一次调用（载体把线上请求解码成它；Web 适配器在 T006.17）。
+/// 一次调用（载体把线上请求解码成它）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "kebab-case")]
 pub enum Call {
@@ -46,35 +46,35 @@ pub enum Call {
     Status(StatusRequest),
     Follow(FollowRequest),
     Events(EventsRequest),
-    /// T007.2：再检查一次根会话（修好 missing/corrupt/busy 之后回到对话）。
+    /// 再检查一次根会话（修好 missing/corrupt/busy 之后回到对话）。
     Recheck(RecheckRequest),
     ModelSettings(ModelSettingsRequest),
     ConnectionSave(ConnectionSaveRequest),
     ConnectionDelete(ConnectionDeleteRequest),
-    /// T008.3 增补：只改 endpoint/model，保留 key。
+    /// 只改 endpoint/model，保留 key。
     ConnectionUpdate(ConnectionUpdateRequest),
-    /// T008.3 增补：撤销 key，连接保留。
+    /// 撤销 key，连接保留。
     ConnectionRevoke(ConnectionRevokeRequest),
-    /// T008.3：验证连接（最小请求）；结果写进注册器。
+    /// 验证连接（最小请求）；结果写进注册器。
     ConnectionVerify(ConnectionVerifyRequest),
-    /// T012.5：获取可用模型（目录 + 厂商列表）。
+    /// 获取可用模型（目录 + 厂商列表）。
     AvailableModels(AvailableModelsRequest),
     KeyringRelocate(KeyringRelocateRequest),
     KeyringReopen(KeyringReopenRequest),
     KeyringRestart(KeyringRestartRequest),
     Issues(IssuesRequest),
     FirstUse(FirstUseRequest),
-    /// T008.3：选模型（下一轮生效，当前轮不换）。
+    /// 选模型（下一轮生效，当前轮不换）。
     SessionModelSelect(SessionModelSelectRequest),
-    /// T012.8b：查询连接余额/套餐余量。
+    /// 查询连接余额/套餐余量。
     ConnectionQuota(ConnectionQuotaRequest),
-    /// T012.9：写非密钥设置（currency；只写 settings.json）。
+    /// 写非密钥设置（currency；只写 settings.json）。
     SettingsUpdate(SettingsUpdateRequest),
-    /// T013.2：存一份文字附件（只读副本），返回 id。
+    /// 存一份文字附件（只读副本），返回 id。
     AttachmentPut(AttachmentPutRequest),
-    /// T013.2：按 id 读回附件（卡片「点开看全文」）。
+    /// 按 id 读回附件（卡片「点开看全文」）。
     AttachmentGet(AttachmentGetRequest),
-    /// T013.3：@ 文件候选（按会话工作目录）。
+    /// @ 文件候选（按会话工作目录）。
     FileReferencesList(FileReferencesListRequest),
 }
 
@@ -97,9 +97,9 @@ pub enum Response {
     ConnectionUpdate(ConnectionUpdateResponse),
     ConnectionRevoke(ConnectionRevokeResponse),
     ConnectionVerify(ConnectionVerifyResponse),
-    /// T012.8b：连接余额/套餐余量。
+    /// 连接余额/套餐余量。
     ConnectionQuota(ConnectionQuotaResponse),
-    /// T012.9：写非密钥设置。
+    /// 写非密钥设置。
     SettingsUpdate(SettingsUpdateResponse),
     AvailableModels(AvailableModelsResponse),
     KeyringRelocate(KeyringRelocateResponse),
@@ -108,10 +108,10 @@ pub enum Response {
     Issues(IssuesResponse),
     FirstUse(FirstUseResponse),
     SessionModelSelect(SessionModelSelectResponse),
-    /// T013.2：附件仓库。
+    /// 附件仓库。
     AttachmentPut(AttachmentPutResponse),
     AttachmentGet(AttachmentGetResponse),
-    /// T013.3：@ 文件候选。
+    /// @ 文件候选。
     FileReferencesList(FileReferencesListResponse),
 }
 
@@ -123,18 +123,18 @@ pub struct SendRequest {
     pub content: String,
     #[serde(default = "default_delivery")]
     pub delivery: DeliveryMode,
-    /// T013.4：用户粘贴的段（每段一个块，投给模型时照原文）。
+    /// 用户粘贴的段（每段一个块，投给模型时照原文）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pastes: Vec<String>,
-    /// T013.4：用户拖进来的文件（已经存进附件仓库）。
+    /// 用户拖进来的文件（已经存进附件仓库）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<SendAttachment>,
-    /// T015.4：画布按钮放进输入框的那一句带着画布身份（id + 标题）；用户自己写的不带。
+    /// 画布按钮放进输入框的那一句带着画布身份（id + 标题）；用户自己写的不带。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas: Option<SendCanvas>,
 }
 
-/// T013.4：发送消息时引用的一个附件（服务端解析成只读副本路径）。
+/// 发送消息时引用的一个附件（服务端解析成只读副本路径）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SendAttachment {
     pub id: String,
@@ -142,7 +142,7 @@ pub struct SendAttachment {
     pub bytes: u64,
 }
 
-/// T015.4：画布放进输入框的那一句带来的画布（页面从日志的 meta.canvas 拿 id 和标题）。
+/// 画布放进输入框的那一句带来的画布（页面从日志的 meta.canvas 拿 id 和标题）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SendCanvas {
     pub id: String,
@@ -162,7 +162,7 @@ pub struct SendResponse {
     pub duplicate: bool,
 }
 
-/// 取消当前轮（不丢 pending inbox，照 T006.2a 的 cancel）。
+/// 取消当前轮（不丢 pending inbox）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct CancelRequest {}
 
@@ -171,7 +171,7 @@ pub struct CancelResponse {
     pub cancelled: bool,
 }
 
-/// 一条答案（接 T006.13 的 {id, selected[], custom?}）。
+/// 一条答案（{id, selected[], custom?}）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServiceAnswer {
     #[serde(rename = "questionId")]
@@ -192,11 +192,11 @@ pub struct AnswerResponse {
     pub applied: usize,
 }
 
-/// 关掉/取消待答问题（T006.16c；DoD5 的「关掉不答」）。一次撤掉当前全部待答问题：
+/// 关掉/取消待答问题（「关掉不答」）。一次撤掉当前全部待答问题：
 /// 等待中的批以 DSH ASK_ABORTED 工具错误收尾、本轮继续；重启恢复的批先补写已收答案，
 /// 再写 question/cancelled 并移除。DSH 没有对应的 Remote 方法（关闭面板不发请求，靠
-/// timed wait 超时；见 user-questions README 第 35、40 行与 T006.16c-dsh-compare.log），
-/// 这里是按 T006.13 撤销语义的适配，不假装与 DSH 相同。
+/// timed wait 超时；见 user-questions README 第 35、40 行），
+/// 这里是按撤销语义做的适配，不假装与 DSH 相同。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct DismissQuestionsRequest {}
 
@@ -238,13 +238,13 @@ pub struct StatusResponse {
     pub running: bool,
     #[serde(rename = "pendingQuestions")]
     pub pending_questions: usize,
-    /// T012.8：会话统计（轮/步/token/缓存/上下文/花费）；裸宿主为 None。
+    /// 会话统计（轮/步/token/缓存/上下文/花费）；裸宿主为 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stats: Option<stats::SessionStats>,
-    /// T012.8：USD→CNY 汇率与拉到时间；裸宿主为 None。
+    /// USD→CNY 汇率与拉到时间；裸宿主为 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fx: Option<fx::FxInfo>,
-    /// T012.8：币种（settings.json：usd/cny）；裸宿主为 None。
+    /// 币种（settings.json：usd/cny）；裸宿主为 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
 }
@@ -297,7 +297,7 @@ pub struct RecheckRequest {}
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecheckResponse {
     pub root: RootState,
-    /// T009.5：根不可用时没有 ready 帧，页面靠这里的 host.home 缩写说明页里的路径。
+    /// 根不可用时没有 ready 帧，页面靠这里的 host.home 缩写说明页里的路径。
     #[serde(default)]
     pub host: HostLocation,
 }
@@ -311,20 +311,20 @@ pub struct EventsResponse {
     pub has_more: bool,
 }
 
-/// 失败原因分类（T007.2）：页面失败块按这个分类写文案，不按 code 猜。
+/// 失败原因分类：页面失败块按这个分类写文案，不按 code 猜。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FailureCause {
-    /// 凭证问题（401 / 没配 key）——T008 的 Keyring 另算。
+    /// 凭证问题（401 / 没配 key）；Keyring 问题另算。
     Credential,
     /// 模型侧失败（重试用完/超时/服务错误等）。
     Model,
-    /// T008.4：Keyring 读不出/无法签发；页面失败块说 Keyring 原因、指去设置。
+    /// Keyring 读不出/无法签发；页面失败块说 Keyring 原因、指去设置。
     Keyring,
 }
 
 /// 服务事件：严格来自会话日志事实（seq 连续、type 是日志事件类型、data 是事件字段）。
-/// cause 是 T007.2 只增的派生字段：只有 turn/end 的 error 事件带，取值来自日志里的 code，
+/// cause 是只增的派生字段：只有 turn/end 的 error 事件带，取值来自日志里的 code，
 /// 页面拿它选失败块文案，不在页面上推算。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ServiceEvent {
@@ -338,7 +338,7 @@ pub struct ServiceEvent {
     pub cause: Option<FailureCause>,
 }
 
-/// T008.3：设置页读模型连接（空请求体）。
+/// 设置页读模型连接（空请求体）。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelSettingsRequest {}
 
@@ -347,7 +347,7 @@ pub struct ModelSettingsResponse {
     pub settings: credentials::KeyringView,
 }
 
-/// T008.3：存/换连接；apiKey 只在请求体里，任何响应不带。
+/// 存/换连接；apiKey 只在请求体里，任何响应不带。
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ConnectionSaveRequest {
     pub id: String,
@@ -371,7 +371,7 @@ pub struct ConnectionSaveResponse {
     pub connection: credentials::ConnectionInfo,
 }
 
-/// T012.5：获取某连接的可用模型。
+/// 获取某连接的可用模型。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AvailableModelsRequest {
     pub id: String,
@@ -439,7 +439,7 @@ pub struct FirstUseResponse {
     pub key_file: credentials::KeyFileInfo,
 }
 
-/// T008.3：验证一个连接（空 = 用注册器里的 endpoint/key 发最小请求）。
+/// 验证一个连接（空 = 用注册器里的 endpoint/key 发最小请求）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionVerifyRequest {
     pub id: String,
@@ -450,7 +450,7 @@ pub struct ConnectionVerifyResponse {
     pub connection: credentials::ConnectionInfo,
 }
 
-/// T012.8b：查询连接余额/套餐余量（查不到不报错，字段为空）。
+/// 查询连接余额/套餐余量（查不到不报错，字段为空）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionQuotaRequest {
     pub id: String,
@@ -468,7 +468,7 @@ pub struct ConnectionQuotaResponse {
     pub checked_at: u64,
 }
 
-/// T012.9：写非密钥设置（settings.json）；只碰非密钥设置，不碰 Keyring/连接。
+/// 写非密钥设置（settings.json）；只碰非密钥设置，不碰 Keyring/连接。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct SettingsUpdateRequest {
     /// 币种（usd/cny）；None = 不改。
@@ -481,7 +481,7 @@ pub struct SettingsUpdateResponse {
     pub currency: String,
 }
 
-/// T008.3/T012.7：选模型（连接、模型、想要的档）；只影响下一轮（D26）。
+/// 选模型（连接、模型、想要的档）；只影响下一轮（D26）。
 ///
 /// 三个字段都可选（协议只增）：None = 保持当前值。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -508,12 +508,12 @@ pub struct SessionModelSelectResponse {
     pub model: String,
     #[serde(rename = "effortWanted")]
     pub effort_wanted: String,
-    /// T012 F2：这一轮实际会发的档（没有想要的档时是最近档；页面据此显示并告诉用户）。
+    /// 这一轮实际会发的档（没有想要的档时是最近档；页面据此显示并告诉用户）。
     #[serde(rename = "effortActual")]
     pub effort_actual: String,
 }
 
-/// T013.2：存一份文字附件（data 是 base64 的原始字节）。
+/// 存一份文字附件（data 是 base64 的原始字节）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttachmentPutRequest {
     pub name: String,
@@ -521,7 +521,7 @@ pub struct AttachmentPutRequest {
     pub data: String,
 }
 
-/// T013.2：存好后的附件 id（sha256:<64hex>）与字节数。
+/// 存好后的附件 id（sha256:<64hex>）与字节数。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttachmentPutResponse {
     pub id: String,
@@ -529,13 +529,13 @@ pub struct AttachmentPutResponse {
     pub bytes: u64,
 }
 
-/// T013.2：按 id 读回附件。
+/// 按 id 读回附件。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttachmentGetRequest {
     pub id: String,
 }
 
-/// T013.2：读回的附件（文字文件附全文；二进制不进仓库，text 为 None 兼容旧数据）。
+/// 读回的附件（文字文件附全文；二进制不进仓库，text 为 None 兼容旧数据）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttachmentGetResponse {
     pub name: String,
@@ -544,27 +544,27 @@ pub struct AttachmentGetResponse {
     pub text: Option<String>,
 }
 
-/// T013.3：@ 文件候选（query 是 @ 后面那段；空就是列前面的）。
+/// @ 文件候选（query 是 @ 后面那段；空就是列前面的）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct FileReferencesListRequest {
     #[serde(default)]
     pub query: String,
 }
 
-/// T013.3：一个候选（相对工作目录的路径 + 内容字节数）。
+/// 一个候选（相对工作目录的路径 + 内容字节数）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileReferenceEntry {
     pub path: String,
     pub bytes: u64,
 }
 
-/// T013.3：@ 文件候选列表。
+/// @ 文件候选列表。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct FileReferencesListResponse {
     pub references: Vec<FileReferenceEntry>,
 }
 
-/// T008.3 增补：编辑连接，只改 endpoint/model（不换 key）。
+/// 编辑连接，只改 endpoint/model（不换 key）。
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ConnectionUpdateRequest {
     pub id: String,
@@ -585,7 +585,7 @@ pub struct ConnectionUpdateResponse {
     pub connection: credentials::ConnectionInfo,
 }
 
-/// T008.3 增补：撤销 key（连接保留，之后签发失败）。
+/// 撤销 key（连接保留，之后签发失败）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConnectionRevokeRequest {
     pub id: String,
@@ -596,16 +596,16 @@ pub struct ConnectionRevokeResponse {
     pub connection: credentials::ConnectionInfo,
 }
 
-/// 服务协议版本（T007.2 起）：只增不改的对外面每次扩展都记在这里，Web ready 帧里带上。
+/// 服务协议版本：只增不改的对外面每次扩展都记在这里，Web ready 帧里带上。
 ///
-/// - 4：T007.2 起的第一版；
-/// - 5（T012.9）：settings-update（写非密钥设置 currency）。
-/// - 6（T013.2 一次升完）：attachment-put / attachment-get / file-references-list 三个 op，
-///   以及 send 的 pastes / attachments 两个字段（后两项由后续票实现，形状已定）。
-/// - 7（T015.5）：tool-call-delta + send.canvas（send.canvas 由 T015.4 先加字段）。
+/// - 4：第一版；
+/// - 5：settings-update（写非密钥设置 currency）。
+/// - 6：attachment-put / attachment-get / file-references-list 三个 op，
+///   以及 send 的 pastes / attachments 两个字段（后两项随后实现，形状已定）。
+/// - 7：tool-call-delta + send.canvas（send.canvas 先加字段）。
 pub const PROTOCOL_VERSION: u64 = 7;
 
-/// 根会话不可用的种类（T007.2）：服务照常起，ready 报出来，方法一律拒绝。
+/// 根会话不可用的种类：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RootUnavailableKind {
@@ -619,7 +619,7 @@ pub enum RootUnavailableKind {
     Other,
 }
 
-/// 根会话状态（T007.2）：ready 里原样给页面，用于五种说明页。
+/// 根会话状态：ready 里原样给页面，用于五种说明页。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum RootState {
@@ -634,14 +634,14 @@ pub enum RootState {
     },
 }
 
-/// 上下文占用（T007.2）：服务从日志里的 usage + 模型配置的窗口算，页面不推算。
+/// 上下文占用：服务从日志里的 usage + 模型配置的窗口算，页面不推算。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextUsage {
     pub used: u64,
     pub window: u64,
 }
 
-/// T009.5：宿主机的位置（ready 帧的 host）：页面只用 home 把路径缩写成 ~/…。
+/// 宿主机的位置（ready 帧的 host）：页面只用 home 把路径缩写成 ~/…。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct HostLocation {
     /// 宿主进程的 HOME（没有就不给；页面只在有值时缩写）。
@@ -658,6 +658,6 @@ pub struct HostInfo {
     pub session_id: Option<String>,
     pub root: RootState,
     pub context: ContextUsage,
-    /// T009.5：ready 帧加 host: {home}；不加 clientId。
+    /// ready 帧加 host: {home}；不加 clientId。
     pub host: HostLocation,
 }

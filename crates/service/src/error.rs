@@ -11,30 +11,30 @@ pub enum ServiceError {
     Agent(#[from] agent::AgentError),
     #[error("回答被拒绝的问题：{0}")]
     AnswerRejected(String),
-    /// T007.2：根会话不可用，方法一律拒绝；页面用 ready 里的状态显示说明页。
+    /// 根会话不可用，方法一律拒绝；页面用 ready 里的状态显示说明页。
     #[error("Kind 的根会话不可用")]
     RootUnavailable(RootState),
     #[error(transparent)]
     Credentials(#[from] credentials::KeyringError),
     #[error("设置接口只能由根宿主提供")]
     SettingsOnBareHost,
-    /// T012.9：写非密钥设置失败（非法值/落盘失败）。
+    /// 写非密钥设置失败（非法值/落盘失败）。
     #[error("设置没保存：{0}")]
     SettingsInvalid(String),
     #[error("路径不合法：{0}")]
     InvalidPath(String),
-    /// T013.2：附件参数/id 不合法（坏 base64、坏文件名、坏 id）。
+    /// 附件参数/id 不合法（坏 base64、坏文件名、坏 id）。
     #[error("附件不合法：{0}")]
     AttachmentInvalid(String),
-    /// T013.2：不是文字文件（前 8000 字节有 NUL），拒收。
+    /// 不是文字文件（前 8000 字节有 NUL），拒收。
     #[error("附件不是文字文件")]
     AttachmentNotText,
-    /// T013.4：一条消息里文字、粘贴、文件都没有。
+    /// 一条消息里文字、粘贴、文件都没有。
     #[error("消息是空的")]
     MessageEmpty,
 }
 
-/// T009.1：服务的结构化错误码（DSH remote-error 形状：`<namespace>/<kind>`，小写连字符）。
+/// 服务的结构化错误码（DSH remote-error 形状：`<namespace>/<kind>`，小写连字符）。
 ///
 /// 码表只在这一处；页面按码处理，说明只进监控/诊断。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,7 +99,7 @@ impl ServiceErrorCode {
 }
 
 impl ServiceError {
-    /// T009.1：这个错误在 wire 上的码。
+    /// 这个错误在 wire 上的码。
     pub fn code(&self) -> ServiceErrorCode {
         match self {
             Self::Agent(_) => ServiceErrorCode::AgentInternal,
@@ -130,7 +130,7 @@ impl ServiceError {
     }
 }
 
-/// T009.1：/api 的错误体（DSH RemoteError 的线上形状）：码 + 诊断 + 可选细节。
+/// /api 的错误体（DSH RemoteError 的线上形状）：码 + 诊断 + 可选细节。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ServiceErrorBody {
     pub code: String,
@@ -140,7 +140,7 @@ pub struct ServiceErrorBody {
 }
 
 impl ServiceErrorBody {
-    /// T009.1：码 + 诊断 + 按码定的细节（root/unavailable 带 root 状态与协议版本）。
+    /// 码 + 诊断 + 按码定的细节（root/unavailable 带 root 状态与协议版本）。
     pub fn from_service_error(error: &ServiceError) -> Self {
         let details = match error {
             ServiceError::RootUnavailable(root) => Some(serde_json::json!({

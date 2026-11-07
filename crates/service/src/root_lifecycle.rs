@@ -47,7 +47,7 @@ impl RootState {
     }
 }
 
-/// 根会话宿主（T007.2）：根会话可用时转发一个 ServiceHost；不可用时服务照常起，
+/// 根会话宿主：根会话可用时转发一个 ServiceHost；不可用时服务照常起，
 /// ready 报状态、方法一律拒绝，recheck 修好后接管。协议方法只增不改。
 pub struct RootHost {
     pub(crate) inner: tokio::sync::Mutex<Option<ServiceHost>>,
@@ -60,7 +60,7 @@ pub struct RootHost {
     agent_events: broadcast::Sender<agent::AgentEvent>,
     forward: Mutex<Option<tokio::task::JoinHandle<()>>>,
     agent_forward: Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// T012.7：当前生效的模型选择（连接/模型/想要的档）；session/model 的 durable 事实
+    /// 当前生效的模型选择（连接/模型/想要的档）；session/model 的 durable 事实
     /// 在会话日志里，这里只是进程内缓存（重开从日志恢复）。
     pub(crate) selection: Mutex<Option<session::ModelSelection>>,
 }
@@ -68,7 +68,7 @@ pub struct RootHost {
 impl RootHost {
     /// 打开根会话；打不开也返回宿主（状态进 ready，方法拒绝），由页面显示说明页。
     ///
-    /// T008.3b：配置了 model_factory 时先解析当前 Keyring 连接；解析失败（空库/读不出）
+    /// 配置了 model_factory 时先解析当前 Keyring 连接；解析失败（空库/读不出）
     /// 仍返回宿主，状态报 Other，设置/首次使用方法照常可读。
     pub async fn open(mut options: RootSessionOptions, fallback_window: u64) -> Self {
         let (events, _) = broadcast::channel(SERVICE_EVENT_CHANNEL_CAPACITY);
@@ -76,7 +76,7 @@ impl RootHost {
         let mut factory_error = None;
         let mut selection = None;
         if let Some(factory) = options.model_factory.clone() {
-            // T012.7：重开会话从日志恢复选择；新会话由实现方按 settings/默认连接解析。
+            // 重开会话从日志恢复选择；新会话由实现方按 settings/默认连接解析。
             let wanted = session_model_selection(&options.data_dir);
             match factory(wanted.as_ref()) {
                 Ok((connection, model, credentials)) => {
@@ -103,7 +103,7 @@ impl RootHost {
         } else {
             fallback_window
         };
-        // T012.8 审计：把初始选择写成 durable 事实（open/首次打开时若日志里没有）。
+        // 把初始选择写成 durable 事实（open/首次打开时若日志里没有）。
         let initial_selection = selection.clone();
         let host = Self {
             inner: tokio::sync::Mutex::new(None),
@@ -144,7 +144,7 @@ impl RootHost {
     /// 同时更新上下文占用（页面要的 context 只从日志事实算）。
     async fn install(&self, agent: Agent) {
         let session_id = agent.id().as_str().to_owned();
-        // T007.4：流式文本等 AgentEvent 不落日志，单独转发给载体（只增帧类型）。
+        // 流式文本等 AgentEvent 不落日志，单独转发给载体（只增帧类型）。
         let mut agent_source = agent.subscribe();
         let agent_tx = self.agent_events.clone();
         let agent_forward = tokio::spawn(async move {
@@ -217,7 +217,7 @@ impl RootHost {
         PROTOCOL_VERSION
     }
 
-    /// T015 fix B1：会话工作目录（本地文件路由拿它当根；只借用，不复制）。
+    /// 会话工作目录（本地文件路由拿它当根；只借用，不复制）。
     pub fn cwd(&self) -> &Path {
         &self.options.cwd
     }
@@ -226,7 +226,7 @@ impl RootHost {
         self.events.subscribe()
     }
 
-    /// T007.4：AgentEvent 的 live 订阅（流式文本/用量等不落日志的观察面）。
+    /// AgentEvent 的 live 订阅（流式文本/用量等不落日志的观察面）。
     pub fn subscribe_agent_events(&self) -> broadcast::Receiver<agent::AgentEvent> {
         self.agent_events.subscribe()
     }
@@ -300,7 +300,7 @@ impl RootHost {
     }
 }
 
-/// T012.8 审计：会话日志里没有 session/model 事件时，把当前选择写成第一条 durable 事实；
+/// 会话日志里没有 session/model 事件时，把当前选择写成第一条 durable 事实；
 /// 重开时第一条 session/model 就是真正初始选择（stats 逐轮定价用）。
 async fn ensure_initial_selection(agent: &Agent, selection: Option<&session::ModelSelection>) {
     let Some(selection) = selection else {

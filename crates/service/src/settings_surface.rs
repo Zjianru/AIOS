@@ -16,7 +16,7 @@ use crate::protocol::{
 use crate::root_lifecycle::RootHost;
 use crate::{quota, settings};
 
-/// T008.F6：把设置页路径里的 ~ 展开为 home；非绝对路径/未知 ~ 用户明确拒绝。
+/// 把设置页路径里的 ~ 展开为 home；非绝对路径/未知 ~ 用户明确拒绝。
 pub(crate) fn expand_user_path(raw: &str, home: Option<&Path>) -> Result<PathBuf, ServiceError> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -47,8 +47,8 @@ pub(crate) fn expand_user_path(raw: &str, home: Option<&Path>) -> Result<PathBuf
 }
 
 impl RootHost {
-    /// T008.3：每次设置操作重新打开 Keyring（不缓存；换 key/换位置立即生效）。
-    /// F1：Keyring 变化后把当前持有的 key 交给装配层的刷新钩子（监控脱敏用）。
+    /// 每次设置操作重新打开 Keyring（不缓存；换 key/换位置立即生效）。
+    /// Keyring 变化后把当前持有的 key 交给装配层的刷新钩子（监控脱敏用）。
     pub(crate) fn notify_keyring_changed(&self) {
         if let Some(hook) = &self.options.keyring_changed
             && let Ok(keyring) = self.keyring()
@@ -64,7 +64,7 @@ impl RootHost {
         )?)
     }
 
-    /// T008.3：设置页的 Keyring 视图（响应不含 key 正文）。
+    /// 设置页的 Keyring 视图（响应不含 key 正文）。
     pub async fn model_settings(&self) -> Result<ModelSettingsResponse, ServiceError> {
         Ok(ModelSettingsResponse {
             settings: self.keyring()?.view(),
@@ -88,11 +88,11 @@ impl RootHost {
                 price_rate: request.price_rate,
                 auth_header: request.auth_header,
             })?;
-        // T013.9 DoD 发现（修法 A）：把刚保存的连接设为当前选择。
+        // 把刚保存的连接设为当前选择。
         // RootHost 的 recheck 走 model_factory → resolve_selection，只认 CLI 参数 /
         // settings.last_selection / id=="deepseek"；页面/HTTP 建连接（如 minimax-cn）
         // 如果不写 last_selection，recheck 永远报「还没有接模型」（root/unavailable）。
-        // 审计修正（第二轮）：只有「还没接上模型」——RootHost 状态 unavailable——时，
+        // 只有「还没接上模型」——RootHost 状态 unavailable——时，
         // 才把刚保存的连接设为当前选择；已接上（Ok）就不换，避免加第二个连接或
         // 重存连接时悄悄改掉用户正在用的模型。
         let set_selection = matches!(
@@ -125,7 +125,7 @@ impl RootHost {
         Ok(ConnectionDeleteResponse { deleted })
     }
 
-    /// T008.3 增补：编辑连接（只改 endpoint/model，保留 key）。
+    /// 编辑连接（只改 endpoint/model，保留 key）。
     pub async fn connection_update(
         &self,
         request: ConnectionUpdateRequest,
@@ -146,7 +146,7 @@ impl RootHost {
         Ok(ConnectionUpdateResponse { connection })
     }
 
-    /// T008.3 增补：撤销 key（连接保留）。
+    /// 撤销 key（连接保留）。
     pub async fn connection_revoke(
         &self,
         request: ConnectionRevokeRequest,
@@ -157,7 +157,7 @@ impl RootHost {
         Ok(ConnectionRevokeResponse { connection })
     }
 
-    /// T008.3：验证连接：从 Keyring 取一次签发，发最小 Messages 请求，把结果写进注册器。
+    /// 验证连接：从 Keyring 取一次签发，发最小 Messages 请求，把结果写进注册器。
     pub async fn connection_verify(
         &self,
         request: ConnectionVerifyRequest,
@@ -176,7 +176,7 @@ impl RootHost {
         let api_key = keyring
             .issue(&request.id, "connection-verify", None, None)?
             .into_secret();
-        // T009.3：验证走模型适配器（和对话同一条请求路径/同一组头），不再手写 reqwest。
+        // 验证走模型适配器（和对话同一条请求路径/同一组头），不再手写 reqwest。
         let config = model::DeepSeekConfig {
             base_url: connection.endpoint.clone(),
             // K3：验证用连接所选模型（新形状的 models 第一行）序列化。
@@ -191,7 +191,7 @@ impl RootHost {
         );
         let messages = vec![model::Message::user_text("ping")];
         let at = now_seconds();
-        // T012.6：验证也必须能把学到的鉴权头写回连接，所以把 Keyring 的 Arc 交给来源。
+        // 验证也必须能把学到的鉴权头写回连接，所以把 Keyring 的 Arc 交给来源。
         let keyring = std::sync::Arc::new(keyring);
         let result = match model::DeepSeek::with_credentials(
             config,
@@ -228,7 +228,7 @@ impl RootHost {
         Ok(ConnectionVerifyResponse { connection })
     }
 
-    /// T012.5：目录 + 厂商 GET /v1/models 合并；用户填的字段最后覆盖。
+    /// 目录 + 厂商 GET /v1/models 合并；用户填的字段最后覆盖。
     pub async fn available_models(
         &self,
         request: AvailableModelsRequest,
@@ -254,7 +254,7 @@ impl RootHost {
         let mut models = catalog.models_for(&provider_id);
         let mut live = false;
         if let Ok(client) = model::http::client() {
-            // 审计 T012.5 fix-now 1：endpoint 以 /anthropic 结尾时列表在 Chat base 的 /v1/models。
+            // endpoint 以 /anthropic 结尾时列表在 Chat base 的 /v1/models。
             let url = model::catalog::models_url(&connection.endpoint);
             let mut request = client.get(url).timeout(std::time::Duration::from_secs(5));
             match connection.auth_header.as_deref() {
@@ -371,7 +371,7 @@ impl RootHost {
         })
     }
 
-    /// T012.9：写非密钥设置（目前只有 currency）。只碰 settings.json，不碰 Keyring/连接。
+    /// 写非密钥设置（目前只有 currency）。只碰 settings.json，不碰 Keyring/连接。
     pub async fn settings_update(
         &self,
         request: SettingsUpdateRequest,
@@ -393,7 +393,7 @@ impl RootHost {
         })
     }
 
-    /// T012.8b：查询连接的余额/套餐余量（DeepSeek /user/balance、MiniMax /v1/token_plan/remains）。
+    /// 查询连接的余额/套餐余量（DeepSeek /user/balance、MiniMax /v1/token_plan/remains）。
     /// 查不到不报错（字段为空；spec 故事 5）。
     pub async fn connection_quota(
         &self,
@@ -421,7 +421,7 @@ impl RootHost {
         })
     }
 
-    /// T008.3：设置变化通知（seq=0 的合成事件；页面收到后重新拉设置）。
+    /// 设置变化通知（seq=0 的合成事件；页面收到后重新拉设置）。
     fn emit_settings_changed(&self) {
         let event = ServiceEvent {
             seq: 0,
@@ -434,8 +434,8 @@ impl RootHost {
         let _delivered = self.events.send(event).unwrap_or(0);
     }
 }
-/// T009.3：验证连接的固定 key 来源（key 只在内存里；签发记录仍由 Keyring 记）。
-/// T012.6：验证时学到的鉴权头也写回连接（和对话路径同一接缝）。
+/// 验证连接的固定 key 来源（key 只在内存里；签发记录仍由 Keyring 记）。
+/// 验证时学到的鉴权头也写回连接（和对话路径同一接缝）。
 struct VerifyCredential {
     api_key: String,
     keyring: std::sync::Arc<credentials::Keyring>,
@@ -451,7 +451,7 @@ impl model::CredentialSource for VerifyCredential {
         Ok(self.api_key.clone())
     }
 
-    /// T012.6 P2：连接上记住的鉴权头（第二次验证直接用它，不再从双头开始）。
+    /// 连接上记住的鉴权头（第二次验证直接用它，不再从双头开始）。
     fn auth_header(&self) -> Option<String> {
         self.keyring
             .view()

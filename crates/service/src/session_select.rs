@@ -7,7 +7,7 @@ use crate::settings;
 use crate::stats;
 
 impl RootHost {
-    /// T008.3/T012.7：选模型（连接/模型/想要的档；下一轮生效，D26）。
+    /// 选模型（连接/模型/想要的档；下一轮生效，D26）。
     ///
     /// 选择是 durable 事实：写 session/model 事件（重开会话从日志恢复）并更新 settings.json
     /// 的上次选择（新会话继承）。同连接换模型/档只改下一轮；跨连接时若当前空闲则重建根
@@ -57,7 +57,7 @@ impl RootHost {
                 .await
                 .map_err(ServiceError::RootUnavailable)?;
         }
-        // T012.7 审计 P2：响应报实际生效的选择（跨连接重建后 factory 解析的 connection 可能不同）。
+        // 响应报实际生效的选择（跨连接重建后 factory 解析的 connection 可能不同）。
         let actual = self
             .selection
             .lock()

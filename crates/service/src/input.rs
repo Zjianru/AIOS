@@ -9,7 +9,7 @@ use crate::protocol::{
 };
 use crate::root_lifecycle::RootHost;
 
-/// T013.2：把附件错误映射成服务错误码。
+/// 把附件错误映射成服务错误码。
 fn attachment_error(error: tools::attachments::AttachmentError) -> ServiceError {
     use tools::attachments::AttachmentError;
     match error {
@@ -21,7 +21,7 @@ fn attachment_error(error: tools::attachments::AttachmentError) -> ServiceError 
     }
 }
 
-/// T013.2：严格 base64 解码（不引新依赖；不规范返回 None）。
+/// 严格 base64 解码（不引新依赖；不规范返回 None）。
 ///
 /// 只收规范形式：长度是 4 的倍数、`=` 只允许在末尾（最多两个）、`=` 后不能有数据、
 /// 尾部填充位的低位必须为 0（`AA==` 收，`AB==` 拒）。
@@ -76,13 +76,13 @@ fn decode_base64(input: &str) -> Option<Vec<u8>> {
 }
 
 impl RootHost {
-    /// T013.4：把 SendRequest 拼成块状用户消息（canvas→content→pastes→files；附件解析成副本路径）。
+    /// 把 SendRequest 拼成块状用户消息（canvas→content→pastes→files；附件解析成副本路径）。
     pub(crate) fn user_message_from(
         &self,
         request: &SendRequest,
     ) -> Result<UserMessage, ServiceError> {
         let mut blocks = Vec::new();
-        // T015.4：画布按钮放进来的那一句排在最前（照原型 composeForModel 的顺序）；
+        // 画布按钮放进来的那一句排在最前（照原型 composeForModel 的顺序）；
         // 块上带画布身份，页面据此画「来自画布」标记，模型看到的也是这句话。
         if let Some(canvas) = &request.canvas {
             blocks.push(model::ContentBlock::from_canvas(model::CanvasSource::new(
@@ -118,7 +118,7 @@ impl RootHost {
         ))
     }
 
-    /// T013.3：按会话工作目录列 @ 文件候选。
+    /// 按会话工作目录列 @ 文件候选。
     pub(crate) async fn file_references_list(
         &self,
         request: FileReferencesListRequest,
@@ -136,7 +136,7 @@ impl RootHost {
         })
     }
 
-    /// T013.2：存一份文字附件（base64 → 只读副本，返回 id）。
+    /// 存一份文字附件（base64 → 只读副本，返回 id）。
     pub(crate) async fn attachment_put(
         &self,
         request: AttachmentPutRequest,
@@ -152,7 +152,7 @@ impl RootHost {
         })
     }
 
-    /// T013.2：按 id 读回附件（卡片「点开看全文」）。
+    /// 按 id 读回附件（卡片「点开看全文」）。
     pub(crate) async fn attachment_get(
         &self,
         request: AttachmentGetRequest,
