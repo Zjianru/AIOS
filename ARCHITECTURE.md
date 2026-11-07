@@ -34,14 +34,18 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 
 ## 依赖方向
 
-- cli → agent、service、web、model、session、tools
-- web → service、agent、model、session
-- service → agent、model、session
-- agent → tools、session、model
-- tools → session、model
+- cli → agent、credentials、model、monitor、service、session、tools、web
+- web → agent、model、monitor、service、session
+- service → agent、credentials、model、session、tools
+- agent → model、session、tools
+- replay → model、session
+- monitor → session
+- tools → model、session
 - session → model
+- credentials 不依赖其他内部 crate
 - model 不依赖其他内部 crate
 
+- 这份清单按 `cargo metadata --no-deps` 的正常 path 依赖（`kind` 为 null）维护；新增或删除内部依赖时同步。
 - 只允许上层依赖下层；下层不反向依赖上层。
 - 跨层只走公开接口；axum 只出现在 web，载体无关的服务不依赖 HTTP。
 - 测试替身放在公开边界：HTTP 用 wiremock，前端 e2e 用真 serve + 假模型端点，文件系统用临时目录。
