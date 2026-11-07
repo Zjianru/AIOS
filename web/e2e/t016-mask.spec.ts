@@ -187,3 +187,64 @@ test('厂商模型小标签上的屏蔽按钮打开同一个确认框', async ({
     await fixture.close();
   }
 });
+
+/// 写通配规则：输入框提示从已知模型里选；先过确认框（列出命中的模型）再保存；
+/// 每条规则下面写着「现在匹配 n 个：…」；一条都不命中的写着「现在不匹配任何模型；
+/// 出现了也会被拒」；解除后那一行消失。匹配数只读服务的 disabledHits，页面不自己算。
+test('写通配规则：确认框列出命中，保存后每条写着现在匹配几个，解除后那一行消失', async ({ page, request }) => {
+  const fixture = await startKernelFixture();
+  try {
+    // 跟着厂商走：可选的是内置目录里的四个 deepseek 模型，`*flash*` 命中三个。
+    await apiPost(request, fixture, {
+      method: 'connection-update', id: 'deepseek', endpoint: fixture.fakeEndpoint,
+      model: 'deepseek-flash', models: [],
+    });
+    await page.goto(urlOf(fixture));
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    const section = page.locator('[data-settings="masked"]');
+    await expect(section).toBeVisible({ timeout: 20_000 });
+
+    // 写规则的入口：提示从已知模型里选（datalist），也能随便写通配。
+    const input = section.locator('[data-settings="mask-input"]');
+    await expect(input).toBeVisible({ timeout: 3_000 });
+    await expect(section.locator('option[value="deepseek/deepseek-flash"]')).toHaveCount(1);
+
+    // 写 `*flash*`：先过确认框，确认框列出命中的模型。
+    await input.fill('*flash*');
+    await section.getByRole('button', { name: '屏蔽…' }).click();
+    const confirm = page.locator('[data-settings="mask-confirm"]');
+    await expect(confirm).toBeVisible();
+    await expect(confirm).toContainText('现在匹配 3 个');
+    for (const hit of [
+      'deepseek/deepseek-flash',
+      'deepseek/deepseek-v4-flash',
+      'deepseek/deepseek-v4-flash-vision-exp',
+    ]) {
+      await expect(confirm).toContainText(hit);
+    }
+    await confirm.getByRole('button', { name: '屏蔽', exact: true }).click();
+
+    // 保存后那一条下面写着「现在匹配 3 个」和命中的「连接/模型」。
+    const flashRow = section.locator('[data-settings="mask-row"]').filter({ hasText: '*flash*' });
+    await expect(flashRow).toContainText('现在匹配 3 个');
+    await expect(flashRow).toContainText('deepseek/deepseek-v4-flash-vision-exp');
+
+    // 一条都不匹配的规则照样能存；写着出现了也会被拒。
+    await input.fill('*gpt-9*');
+    await section.getByRole('button', { name: '屏蔽…' }).click();
+    await expect(confirm).toContainText('现在不匹配任何模型');
+    await confirm.getByRole('button', { name: '屏蔽', exact: true }).click();
+    const missRow = section.locator('[data-settings="mask-row"]').filter({ hasText: '*gpt-9*' });
+    await expect(missRow).toContainText('现在不匹配任何模型；出现了也会被拒');
+
+    // 解除：那一行消失，另一条还在；都解除后回到空状态。
+    await flashRow.getByRole('button', { name: '解除屏蔽' }).click();
+    await expect(flashRow).toHaveCount(0);
+    await expect(missRow).toBeVisible();
+    await missRow.getByRole('button', { name: '解除屏蔽' }).click();
+    await expect(missRow).toHaveCount(0);
+    await expect(section).toContainText('还没有屏蔽任何模型');
+  } finally {
+    await fixture.close();
+  }
+});

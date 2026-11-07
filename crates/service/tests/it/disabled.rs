@@ -494,7 +494,11 @@ async fn 模型设置响应旧字段照旧新字段只增() {
     };
     assert_eq!(response.disabled_models, vec!["*preview*".to_owned()]);
     assert!(!response.disabled_unknown, "这一版还不会报「不知道」");
-    assert!(response.disabled_hits.is_empty(), "匹配数留给后续实现");
+    assert_eq!(
+        response.disabled_hits,
+        vec![Vec::<String>::new()],
+        "一条都没命中时给空表，和规则等长同序"
+    );
     assert!(response.listed.is_empty(), "存下的厂商列表留给后续实现");
 
     let json = serde_json::to_value(&response).expect("json");
@@ -504,9 +508,69 @@ async fn 模型设置响应旧字段照旧新字段只增() {
     );
     assert_eq!(json["disabledModels"][0], "*preview*");
     assert_eq!(json["disabledUnknown"], false);
-    assert!(json["disabledHits"].as_array().is_some());
+    assert_eq!(
+        json["disabledHits"],
+        serde_json::json!([[]]),
+        "线上是空表数组，页面只读这个字段"
+    );
     assert!(json["listed"].as_object().is_some());
     assert_eq!(host.protocol_version(), 8, "ready 帧的协议版本是 8");
+}
+
+/// 每条规则下面写「现在匹配 n 个」：`disabledHits` 与 `disabledModels` 等长同序，
+/// 给的是现在真正能选的「连接/模型」；一条都不命中的规则给空表。
+#[tokio::test]
+async fn 屏蔽表的每条规则给出现在命中的连接和模型() {
+    let server = MockServer::start().await;
+    mock_turn(&server).await;
+    let dir = tempdir().unwrap();
+    let root = host(dir.path(), &server.uri()).await;
+    // A 跟着厂商走：可选的是内置目录里的模型；B 只勾了一个。
+    root.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "deepseek".to_owned(),
+        name: "DeepSeek".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        endpoint: server.uri(),
+        api_key: "sk-test-not-a-real-key".to_owned(),
+        preset: Some("deepseek".to_owned()),
+        models: Some(Vec::new()),
+        ..ConnectionSaveRequest::default()
+    }))
+    .await
+    .expect("save A");
+    root.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "other".to_owned(),
+        name: "Other".to_owned(),
+        model: "sonnet-x".to_owned(),
+        endpoint: server.uri(),
+        api_key: "sk-test-not-a-real-key".to_owned(),
+        preset: Some("custom".to_owned()),
+        ..ConnectionSaveRequest::default()
+    }))
+    .await
+    .expect("save B");
+    set_disabled(&root, vec!["*flash*", "*gpt-9*", "other/*"]).await;
+
+    let response = root
+        .dispatch(Call::ModelSettings(ModelSettingsRequest {}))
+        .await
+        .expect("model-settings");
+    let Response::ModelSettings(response) = response else {
+        panic!("expected ModelSettings");
+    };
+    assert_eq!(
+        response.disabled_hits,
+        vec![
+            vec![
+                "deepseek/deepseek-flash".to_owned(),
+                "deepseek/deepseek-v4-flash".to_owned(),
+                "deepseek/deepseek-v4-flash-vision-exp".to_owned(),
+            ],
+            Vec::new(),
+            vec!["other/sonnet-x".to_owned()],
+        ],
+        "每条规则给出现在命中的「连接/模型」，一条都不命中的给空表"
+    );
 }
 
 #[tokio::test]
