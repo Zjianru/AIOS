@@ -879,6 +879,12 @@ test('存成文件：外壳 + 画布 HTML + CSP meta；单独打开能显示，�
     await page.getByRole('button', { name: '存成文件' }).click();
     const download = await downloadPromise;
     expect(download.suggestedFilename()).toBe('CDN 与隔离.html');
+    // T015 fix B3：页面里留一个可点的「在浏览器打开」，文件名完整显示（blob URL 到组件卸载）。
+    const openLink = page.locator('[data-kind="canvas-open-file"]');
+    await expect(openLink).toBeVisible();
+    await expect(openLink).toHaveAttribute('target', '_blank');
+    expect(await openLink.getAttribute('href')).toMatch(/^blob:/);
+    await expect(openLink).toContainText('在浏览器打开');
     const filePath = await download.path();
     if (!filePath) throw new Error('下载的文件没有落盘路径');
     // Playwright 把下载暂存成没有扩展名的文件；file:// 会按 text/plain 打开，复制一份 .html 再看。

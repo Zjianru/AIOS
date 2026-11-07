@@ -32,6 +32,20 @@ test('思考（验收 G1）：完成轮没有独立「已思考」，展开工�
     await think.locator('button').first().click();
     await expect(process.getByText('No skill needed for this trivial task.')).toBeVisible();
     await expect(page.getByText(/已思考 \d+ 秒/)).toHaveCount(0);
+
+    // T015 fix A：展开的思考内容比正文小一号（12px / 18px，次级文字色），不是正文的 15px。
+    const thinkMd = think.locator('.md').first();
+    const style = await thinkMd.evaluate((element) => {
+      const computed = getComputedStyle(element);
+      return { fontSize: computed.fontSize, lineHeight: computed.lineHeight, color: computed.color };
+    });
+    expect(style.fontSize).toBe('12px');
+    expect(style.lineHeight).toBe('18px');
+    expect(style.color).not.toBe('rgb(237, 237, 242)'); // --ink（正文色）
+    // 折叠行本身的高度/图标不变：还是 h-6。
+    expect(
+      await think.locator('button').first().evaluate((element) => element.getBoundingClientRect().height),
+    ).toBe(24);
   } finally {
     await fixture.close();
   }
