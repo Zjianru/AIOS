@@ -153,9 +153,10 @@ pub struct ConnectionInfo {
     /// T012.4：预设 id（deepseek/minimax/minimax-cn/custom）。
     #[serde(default)]
     pub preset: String,
-    /// T012.4：模型行；旧存储读出来是 [model]。
+    /// T016.6：模型行。None = 旧存储没有这个键（读的时候补成 [model]）；
+    /// Some([]) = 显式「跟着厂商的列表走」，不能再补成 [model]。
     #[serde(default)]
-    pub models: Vec<ModelRow>,
+    pub models: Option<Vec<ModelRow>>,
     /// T012.4：生效价格倍率（0 = 免费）。
     #[serde(default = "default_price_rate")]
     pub price_rate: f64,
@@ -169,10 +170,12 @@ fn default_price_rate() -> f64 {
 }
 
 impl ConnectionInfo {
-    /// T012.4：新形状取 models 第一行；旧存储已归一化到 models。
+    /// 连接里显式勾的第一行；显式空表（跟着厂商走）返回旧的 model 字段，
+    /// 跟厂商走时可选的模型由 service 结合存下的厂商列表/内置目录解析。
     pub fn primary_model(&self) -> &str {
         self.models
-            .first()
+            .as_deref()
+            .and_then(|models| models.first())
             .map(|row| row.id.as_str())
             .unwrap_or(self.model.as_str())
     }
@@ -184,8 +187,8 @@ fn default_key_saved() -> bool {
 
 /// T012.4：旧存储只有 model——读的时候当成 models=[model]、preset=deepseek。
 fn normalize_info(info: &mut ConnectionInfo) {
-    if info.models.is_empty() && !info.model.is_empty() {
-        info.models.push(ModelRow {
+    if info.models.as_ref().is_none_or(Vec::is_empty) && !info.model.is_empty() {
+        info.models.get_or_insert_with(Vec::new).push(ModelRow {
             id: info.model.clone(),
             name: None,
             context_window: None,
@@ -201,7 +204,7 @@ fn normalize_info(info: &mut ConnectionInfo) {
         info.preset = "deepseek".to_owned();
     }
     if info.model.is_empty()
-        && let Some(first) = info.models.first()
+        && let Some(first) = info.models.as_deref().and_then(|models| models.first())
     {
         info.model = first.id.clone();
     }
@@ -387,7 +390,7 @@ impl Keyring {
         let model = models
             .first()
             .map(|row| row.id.clone())
-            .unwrap_or(connection.model);
+            .unwrap_or_else(|| connection.model.clone());
         let preset = connection
             .preset
             .or_else(|| {
@@ -404,7 +407,7 @@ impl Keyring {
             check: CheckState::Never,
             key_saved: true,
             preset,
-            models,
+            models: Some(models),
             price_rate: connection.price_rate.unwrap_or(1.0),
             auth_header: connection.auth_header,
         };
@@ -671,11 +674,16 @@ impl Keyring {
             stored.info.preset = preset;
         }
         if let Some(models) = update.models {
-            stored.info.models = models;
-            if let Some(first) = stored.info.models.first() {
+            if let Some(first) = models.first() {
                 stored.info.model = first.id.clone();
             }
-        } else if let Some(row) = stored.info.models.first_mut() {
+            stored.info.models = Some(models);
+        } else if let Some(row) = stored
+            .info
+            .models
+            .as_mut()
+            .and_then(|models| models.first_mut())
+        {
             row.id = update.model;
         }
         if let Some(price_rate) = update.price_rate {
@@ -957,22 +965,117 @@ mod shape_tests {
             check: CheckState::Never,
             key_saved: true,
             preset: String::new(),
-            models: Vec::new(),
+            models: None,
             price_rate: 0.0,
             auth_header: None,
         };
         normalize_info(&mut info);
-        assert_eq!(info.models.len(), 1);
-        assert_eq!(info.models[0].id, "deepseek-flash");
+        assert_eq!(info.models.as_deref().map(|models| models.len()), Some(1));
+        assert_eq!(
+            info.models.as_deref().and_then(|models| models.first()),
+            Some(&ModelRow {
+                id: "deepseek-flash".to_owned(),
+                name: None,
+                context_window: None,
+                max_tokens: None,
+                price_input: None,
+                price_output: None,
+                price_cache_read: None,
+                price_cache_write: None,
+            })
+        );
         assert_eq!(info.preset, "deepseek");
         assert_eq!(info.primary_model(), "deepseek-flash");
         // 旧存储非 deepseek 地址也一律按 spec 读成 deepseek。
         let mut relay = info.clone();
         relay.endpoint = "https://relay.example.com/anthropic".to_owned();
-        relay.models.clear();
+        relay.models = Some(Vec::new());
         relay.preset = String::new();
         normalize_info(&mut relay);
         assert_eq!(relay.preset, "deepseek");
+    }
+
+    #[test]
+    fn old_json_without_models_key_normalizes_to_model_row() {
+        let old = serde_json::json!({
+            "id": "deepseek",
+            "name": "DeepSeek",
+            "model": "deepseek-flash",
+            "endpoint": "https://api.deepseek.com/anthropic",
+            "saved_at": 1,
+            "check": {"kind": "never"},
+            "key_saved": true,
+            "preset": "deepseek",
+            "price_rate": 1.0
+        });
+        let mut info: ConnectionInfo = serde_json::from_value(old).expect("旧存储");
+        assert!(info.models.is_none(), "没有 models 键读成缺失");
+        normalize_info(&mut info);
+        assert_eq!(
+            info.models
+                .as_deref()
+                .and_then(|models| models.first())
+                .map(|row| row.id.as_str()),
+            Some("deepseek-flash"),
+            "旧存储按 [model] 读"
+        );
+    }
+
+    #[test]
+    fn explicit_empty_models_survive_save_and_reopen() {
+        let data = tempfile::tempdir().expect("数据目录");
+        let identity = data.path().join("identity.txt");
+        let keyring = Keyring::open(data.path(), Some(&identity)).expect("keyring");
+        let info = keyring
+            .save_connection(NewConnection {
+                id: "follow".to_owned(),
+                name: "Follow".to_owned(),
+                model: "ignored".to_owned(),
+                endpoint: "https://api.example.com/v1".to_owned(),
+                api_key: "test-key".to_owned(),
+                preset: Some("custom".to_owned()),
+                models: Some(Vec::new()),
+                price_rate: None,
+                auth_header: None,
+            })
+            .expect("save");
+        assert_eq!(info.models, Some(Vec::new()), "显式空表保存后仍是空表");
+        let reopened = Keyring::open(data.path(), Some(&identity)).expect("reopen");
+        let view = reopened.view();
+        assert_eq!(
+            view.connections[0].models,
+            Some(Vec::new()),
+            "读回仍是空表，不被补成 [model]"
+        );
+    }
+
+    #[test]
+    fn model_row_wire_is_camel_case_and_reads_old_snake() {
+        let row = ModelRow {
+            id: "m".to_owned(),
+            name: Some("M".to_owned()),
+            context_window: Some(128_000),
+            max_tokens: Some(4096),
+            price_input: Some(1.0),
+            price_output: Some(2.0),
+            price_cache_read: None,
+            price_cache_write: None,
+        };
+        let json = serde_json::to_value(&row).expect("json");
+        assert_eq!(json["contextWindow"], 128_000);
+        assert_eq!(json["maxTokens"], 4096);
+        assert!(json.get("context_window").is_none(), "新形状不再写 snake");
+        assert!(json.get("max_tokens").is_none(), "新形状不再写 snake");
+        let old: ModelRow = serde_json::from_value(serde_json::json!({
+            "id": "m",
+            "context_window": 128000,
+            "max_tokens": 4096,
+            "price": 1.5
+        }))
+        .expect("旧 shape");
+        assert_eq!(old.context_window, Some(128_000), "旧 context_window 能读");
+        assert_eq!(old.max_tokens, Some(4096), "旧 max_tokens 能读");
+        assert_eq!(old.price_input, Some(1.5), "旧 price 别名照读");
     }
 
     #[test]
@@ -1003,13 +1106,20 @@ mod shape_tests {
             })
             .expect("save");
         assert_eq!(info.preset, "minimax-cn");
-        assert_eq!(info.models.len(), 1);
+        assert_eq!(info.models.as_deref().map(|models| models.len()), Some(1));
         assert_eq!(info.price_rate, 0.0);
         let reopened = Keyring::open(data.path(), Some(&identity)).expect("reopen");
         let view = reopened.view();
         let saved = &view.connections[0];
         assert_eq!(saved.preset, "minimax-cn");
-        assert_eq!(saved.models[0].id, "MiniMax-M3.1-Flash");
+        assert_eq!(
+            saved
+                .models
+                .as_deref()
+                .and_then(|models| models.first())
+                .map(|row| row.id.as_str()),
+            Some("MiniMax-M3.1-Flash")
+        );
         assert!(saved.key_saved);
         let issued = reopened
             .issue("minimax", "test", None, None)

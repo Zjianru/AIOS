@@ -120,7 +120,7 @@ impl RootHost {
             RootState::Unavailable { .. }
         );
         let selected = if set_selection {
-            let model = connection.primary_model().to_owned();
+            let model = crate::models::primary_model(&self.options.data_dir, &connection);
             let provider = model::catalog::provider_id_for_connection(
                 &connection.preset,
                 &connection.endpoint,
@@ -212,8 +212,8 @@ impl RootHost {
                 &connection.endpoint,
             ),
             base_url: connection.endpoint.clone(),
-            // K3：验证用连接所选模型（新形状的 models 第一行）序列化。
-            model: connection.primary_model().to_owned(),
+            // K3：验证用连接所选模型；跟厂商走时用可选的第一个。
+            model: crate::models::primary_model(&self.options.data_dir, &connection),
             max_tokens: 1,
             context_window: model::DEFAULT_CONTEXT_WINDOW,
             effort: model::Effort::new("off"),
@@ -310,7 +310,7 @@ impl RootHost {
             }
         }
         // 用户填过的字段不动：同名覆盖 name/窗口/输出/用户价格；目录没有的也列出来。
-        for row in &connection.models {
+        for row in connection.models.as_deref().unwrap_or_default() {
             if let Some(info) = models.iter_mut().find(|info| info.id == row.id) {
                 if let Some(name) = &row.name {
                     info.name = name.clone();

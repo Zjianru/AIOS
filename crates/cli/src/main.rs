@@ -334,6 +334,7 @@ fn resolve_selection(
     common: &CommonArgs,
     last: Option<&session::ModelSelection>,
     connections: &[credentials::ConnectionInfo],
+    data_dir: &std::path::Path,
 ) -> Option<(credentials::ConnectionInfo, String, String)> {
     let preferred = common
         .connection
@@ -359,7 +360,7 @@ fn resolve_selection(
         .model
         .clone()
         .or_else(|| last.map(|selection| selection.model.clone()))
-        .unwrap_or_else(|| connection.primary_model().to_owned());
+        .unwrap_or_else(|| service::models::primary_model(data_dir, &connection));
     let effort = common
         .effort
         .clone()
@@ -397,13 +398,13 @@ fn model_with_keyring(
     let last = session_selection
         .cloned()
         .or_else(|| settings.last_selection.clone());
-    let (connection, model, effort) = resolve_selection(common, last.as_ref(), &view.connections)
-        .ok_or_else(|| {
-        CliError::Message(
-            "还没有接模型：先从页面接上，或运行 aios-dev keyring set（key 从标准输入读）"
-                .to_owned(),
-        )
-    })?;
+    let (connection, model, effort) =
+        resolve_selection(common, last.as_ref(), &view.connections, data_dir).ok_or_else(|| {
+            CliError::Message(
+                "还没有接模型：先从页面接上，或运行 aios-dev keyring set（key 从标准输入读）"
+                    .to_owned(),
+            )
+        })?;
     let mut resolved_common = common.clone();
     resolved_common.effort = Some(effort);
     let (mut deepseek_config, agent_config) =
@@ -1374,7 +1375,7 @@ mod tests {
             check: credentials::CheckState::Never,
             key_saved: true,
             preset: String::new(),
-            models: vec![credentials::ModelRow {
+            models: Some(vec![credentials::ModelRow {
                 id: model.to_owned(),
                 name: None,
                 context_window: None,
@@ -1383,7 +1384,7 @@ mod tests {
                 price_output: None,
                 price_cache_read: None,
                 price_cache_write: None,
-            }],
+            }]),
             price_rate: 1.0,
             auth_header: None,
         }
@@ -1404,7 +1405,8 @@ mod tests {
             connection_info("minimax-cn", "MiniMax-M3.1-Flash"),
         ];
         let (connection, model, effort) =
-            crate::resolve_selection(&common, Some(&last), &connections).expect("resolved");
+            crate::resolve_selection(&common, Some(&last), &connections, &std::env::temp_dir())
+                .expect("resolved");
         assert_eq!(connection.id, "minimax-cn");
         assert_eq!(
             model, "MiniMax-M3.1-Flash",
@@ -1428,13 +1430,15 @@ mod tests {
         let mut common = dev_common();
         common.connection = Some("deepseek".to_owned());
         let (_, model, effort) =
-            crate::resolve_selection(&common, Some(&last), &connections).expect("resolved");
+            crate::resolve_selection(&common, Some(&last), &connections, &std::env::temp_dir())
+                .expect("resolved");
         assert_eq!(model, "deepseek-pro");
         assert_eq!(effort, "low");
         common.model = Some("explicit-model".to_owned());
         common.effort = Some("max".to_owned());
         let (_, model, effort) =
-            crate::resolve_selection(&common, Some(&last), &connections).expect("resolved");
+            crate::resolve_selection(&common, Some(&last), &connections, &std::env::temp_dir())
+                .expect("resolved");
         assert_eq!(model, "explicit-model");
         assert_eq!(effort, "max");
     }
@@ -1795,6 +1799,12 @@ mod f1_redaction_tests {
         assert_eq!(stored.auth_header.as_deref(), Some("authorization"));
         assert_eq!(stored.endpoint, "http://127.0.0.1:1", "写回不动 endpoint");
         assert_eq!(stored.model, "deepseek-flash", "写回不动 model");
-        assert!(stored.models.len() == 1, "写回不动 models 行");
+        assert!(
+            stored
+                .models
+                .as_deref()
+                .is_some_and(|models| models.len() == 1),
+            "写回不动 models 行"
+        );
     }
 }

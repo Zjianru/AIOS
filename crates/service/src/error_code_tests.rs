@@ -65,7 +65,14 @@ fn variants() -> Vec<(&'static str, ServiceError)> {
 
 #[test]
 fn service_error_codes_cover_every_variant() {
+    // 每个 ServiceError 变体都要有一项（Credentials 的六个子类各一项）；
+    // 漏一个，下面「码表与变体一一对应」仍可能凑巧通过，所以先核项数。
     let pairs = variants();
+    assert_eq!(
+        pairs.len(),
+        16,
+        "ServiceError 的每个变体（Credentials 按子类拆）都有一项"
+    );
     for (expected, error) in &pairs {
         assert_eq!(error.code().as_str(), *expected, "变体的码");
     }

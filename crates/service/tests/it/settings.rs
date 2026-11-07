@@ -680,6 +680,303 @@ async fn 获取可用模型合并目录与厂商列表且用户字段不动() {
     assert!(!find("my-only-model").model.thinks);
 }
 
+/// 把一次 available-models 响应里某个模型的 fresh 读出来。
+fn fresh_of(response: &service::AvailableModelsResponse, id: &str) -> bool {
+    response
+        .models
+        .iter()
+        .find(|row| row.model.id == id)
+        .unwrap_or_else(|| panic!("响应里没有 {id}"))
+        .fresh
+}
+
+fn fresh_ids(response: &service::AvailableModelsResponse) -> Vec<&str> {
+    response
+        .models
+        .iter()
+        .filter(|row| row.fresh)
+        .map(|row| row.model.id.as_str())
+        .collect()
+}
+
+/// 读出 live 列表文件里的模型 id 和 fetchedAt。
+fn stored_live(data_dir: &Path, connection: &str) -> (Vec<String>, u64) {
+    let path = model::catalog::live_path(data_dir, connection);
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("读不到存下的厂商列表 {}：{error}", path.display()));
+    assert!(!text.contains(TEST_KEY), "厂商列表文件里不能有 key：{text}");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("列表 JSON");
+    let ids = value["models"]
+        .as_array()
+        .expect("models 数组")
+        .iter()
+        .map(|row| row["id"].as_str().expect("模型 id").to_owned())
+        .collect();
+    let fetched_at = value["fetchedAt"].as_u64().expect("fetchedAt");
+    (ids, fetched_at)
+}
+
+#[tokio::test]
+async fn 获取成功只存厂商列表且第二次只有新模型是新() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    {"id": "deepseek-flash", "display_name": "Flash"},
+                    {"id": "vendor-new-1", "display_name": "New One"}
+                ]
+            })),
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    {"id": "deepseek-flash"},
+                    {"id": "vendor-new-1"},
+                    {"id": "vendor-new-2"}
+                ]
+            })),
+        ]))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "fresh".to_owned(),
+            name: "Fresh".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some("deepseek".to_owned()),
+            ..Default::default()
+        }))
+        .await;
+    assert!(saved.is_ok(), "save: {saved:?}");
+
+    let first = host
+        .dispatch(Call::AvailableModels(service::AvailableModelsRequest {
+            id: "fresh".to_owned(),
+        }))
+        .await
+        .expect("第一次获取");
+    let service::Response::AvailableModels(first) = first else {
+        panic!("expected AvailableModels");
+    };
+    assert!(first.live, "厂商列表成功");
+    assert!(
+        fresh_of(&first, "vendor-new-1"),
+        "目录里没有的厂商模型第一次是新"
+    );
+    assert!(!fresh_of(&first, "deepseek-flash"), "目录里已有的不算新");
+    assert!(
+        !fresh_of(&first, "deepseek-v4-pro"),
+        "目录独有项不是厂商这次给的"
+    );
+    let (ids, first_fetched_at) = stored_live(dir.path(), "fresh");
+    assert_eq!(
+        ids,
+        vec!["deepseek-flash", "vendor-new-1"],
+        "文件只含厂商这次给的模型（顺序也照厂商）"
+    );
+    assert!(first_fetched_at > 0);
+
+    let second = host
+        .dispatch(Call::AvailableModels(service::AvailableModelsRequest {
+            id: "fresh".to_owned(),
+        }))
+        .await
+        .expect("第二次获取");
+    let service::Response::AvailableModels(second) = second else {
+        panic!("expected AvailableModels");
+    };
+    assert_eq!(
+        fresh_ids(&second),
+        vec!["vendor-new-2"],
+        "第二次只有厂商新增的那一个是新"
+    );
+    let (ids, second_fetched_at) = stored_live(dir.path(), "fresh");
+    assert_eq!(
+        ids,
+        vec!["deepseek-flash", "vendor-new-1", "vendor-new-2"],
+        "第二次覆盖成新的厂商列表"
+    );
+    assert!(second_fetched_at >= first_fetched_at);
+}
+
+#[tokio::test]
+async fn 自定义地址第一次获取一个都不标新() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [
+                {"id": "custom-a", "display_name": "A"},
+                {"id": "custom-b", "display_name": "B"}
+            ]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "custom-fresh".to_owned(),
+            name: "Custom".to_owned(),
+            model: "custom-a".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            ..Default::default()
+        }))
+        .await;
+    assert!(saved.is_ok(), "save: {saved:?}");
+    let response = host
+        .dispatch(Call::AvailableModels(service::AvailableModelsRequest {
+            id: "custom-fresh".to_owned(),
+        }))
+        .await
+        .expect("获取");
+    let service::Response::AvailableModels(response) = response else {
+        panic!("expected AvailableModels");
+    };
+    assert!(response.live);
+    assert!(
+        fresh_ids(&response).is_empty(),
+        "自定义地址第一次没有可比的基准，一条都不标新"
+    );
+    let (ids, _) = stored_live(dir.path(), "custom-fresh");
+    assert_eq!(ids, vec!["custom-a", "custom-b"]);
+}
+
+#[tokio::test]
+async fn 显式空模型列表跟着厂商走且主模型取可选第一个() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"id": "zeta"}, {"id": "alpha"}]
+            })),
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"id": "omega"}, {"id": "alpha"}]
+            })),
+        ]))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "follow".to_owned(),
+            name: "Follow".to_owned(),
+            model: "ignored".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some("deepseek".to_owned()),
+            models: Some(Vec::new()),
+            ..Default::default()
+        }))
+        .await
+        .expect("save");
+    let service::Response::ConnectionSave(saved) = saved else {
+        panic!("expected ConnectionSave");
+    };
+    assert_eq!(
+        saved.connection.models,
+        Some(Vec::new()),
+        "显式空表原样保存"
+    );
+    assert_eq!(
+        service::models::primary_model(dir.path(), &saved.connection),
+        "deepseek-flash",
+        "还没存过厂商列表时用内置目录的第一个"
+    );
+
+    host.dispatch(Call::AvailableModels(service::AvailableModelsRequest {
+        id: "follow".to_owned(),
+    }))
+    .await
+    .expect("第一次获取");
+    let settings = host
+        .dispatch(Call::ModelSettings(ModelSettingsRequest {}))
+        .await
+        .expect("model-settings");
+    let service::Response::ModelSettings(settings) = settings else {
+        panic!("expected ModelSettings");
+    };
+    let listed = settings.listed.get("follow").expect("listed 有 follow");
+    assert_eq!(
+        listed
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["zeta", "alpha"],
+        "listed 是存下的厂商列表"
+    );
+    let (ids, fetched_at) = stored_live(dir.path(), "follow");
+    assert_eq!(ids, vec!["zeta", "alpha"]);
+    assert_eq!(
+        listed.fetched_at, fetched_at,
+        "listed 的 fetchedAt 与文件一致"
+    );
+
+    let verified = host
+        .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
+            id: "follow".to_owned(),
+        }))
+        .await
+        .expect("verify");
+    let service::Response::ConnectionVerify(verified) = verified else {
+        panic!("expected ConnectionVerify");
+    };
+    assert!(matches!(verified.connection.check, CheckState::Ok { .. }));
+
+    // 厂商列表变了再获取：可选的跟着变，主模型是新列表的第一个。
+    host.dispatch(Call::AvailableModels(service::AvailableModelsRequest {
+        id: "follow".to_owned(),
+    }))
+    .await
+    .expect("第二次获取");
+    let verified = host
+        .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
+            id: "follow".to_owned(),
+        }))
+        .await
+        .expect("verify again");
+    let service::Response::ConnectionVerify(verified) = verified else {
+        panic!("expected ConnectionVerify");
+    };
+    assert!(matches!(verified.connection.check, CheckState::Ok { .. }));
+
+    let requests = server.received_requests().await.unwrap();
+    let models: Vec<String> = requests
+        .iter()
+        .filter(|request| !request.body.is_empty())
+        .map(|request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("verify body");
+            body["model"].as_str().expect("model").to_owned()
+        })
+        .collect();
+    assert_eq!(
+        models,
+        vec!["zeta".to_owned(), "omega".to_owned()],
+        "验证请求的模型跟着可选的第一个变"
+    );
+}
+
 #[tokio::test]
 async fn 获取可用模型时_anthropic_端点请求_chat_base_的列表() {
     // 审计 T012.5 fix-now 1：endpoint 是 …/anthropic 时，列表必须请求 Chat base 的

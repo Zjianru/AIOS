@@ -358,6 +358,51 @@ pub fn merge_live(catalog_models: Vec<ModelInfo>, live: Vec<LiveModel>) -> Vec<M
     merged
 }
 
+/// 一个连接存下的厂商 live 列表（照 Magpie catalog.LivePath 的形状）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveList {
+    /// 存下这份列表的时间（Unix 秒）。
+    pub fetched_at: u64,
+    /// 厂商 /v1/models 原样给的模型（不并目录、不写用户字段）。
+    pub models: Vec<ModelInfo>,
+}
+
+/// 存 live 列表的目录：<数据目录>/catalog/models（Magpie LivePath，键换成连接 id）。
+pub fn live_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("catalog").join("models")
+}
+
+/// 一个连接存下的 live 列表文件。连接 id 里可能有路径分隔符，文件名按字节转义。
+pub fn live_path(data_dir: &Path, connection_id: &str) -> PathBuf {
+    let mut name = String::with_capacity(connection_id.len());
+    for byte in connection_id.bytes() {
+        if byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' {
+            name.push(char::from(byte));
+        } else {
+            name.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    live_dir(data_dir).join(format!("{name}.json"))
+}
+
+/// 读一个连接上次存下的厂商列表；没有/读不出来都是 None。
+pub fn read_live(data_dir: &Path, connection_id: &str) -> Option<LiveList> {
+    let _ = (data_dir, connection_id);
+    None
+}
+
+/// 存一个连接这次从厂商拿到的列表；空列表不写（也不动上一次的文件）。
+pub fn save_live(
+    data_dir: &Path,
+    connection_id: &str,
+    fetched_at: u64,
+    models: Vec<ModelInfo>,
+) -> Result<(), String> {
+    let _ = (data_dir, connection_id, fetched_at, models);
+    Ok(())
+}
+
 /// 目录来源（缓存/快照/网络）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogSource {

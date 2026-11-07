@@ -49,6 +49,13 @@ fn preset_set_writes_new_shape() {
         connection.endpoint, "https://api.minimaxi.com/anthropic",
         "预设地址"
     );
-    assert_eq!(connection.models[0].id, "MiniMax-M3.1-Flash");
+    assert_eq!(
+        connection
+            .models
+            .as_deref()
+            .and_then(|models| models.first())
+            .map(|row| row.id.as_str()),
+        Some("MiniMax-M3.1-Flash")
+    );
     assert_eq!(connection.primary_model(), "MiniMax-M3.1-Flash");
 }

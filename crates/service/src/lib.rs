@@ -16,6 +16,7 @@ mod settings_surface;
 mod status;
 
 pub mod fx;
+pub mod models;
 pub mod quota;
 mod root;
 pub mod settings;
