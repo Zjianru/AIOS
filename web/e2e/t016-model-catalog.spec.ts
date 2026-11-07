@@ -4,7 +4,7 @@ import { startKernelFixture } from './service-fixture';
 const urlOf = (fixture: { baseUrl: string; token: string }) =>
   fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind';
 
-/// T016.1 K6：设置页「获取可用模型」显示目录窗口；把目录里的新模型加进来时，
+/// 设置页「获取可用模型」显示目录窗口；把目录里的新模型加进来时，
 /// 四类价格（输入/输出/缓存读/缓存写）跟着列表走，不丢。
 test('设置页获取模型：目录窗口和四类价格都在', async ({ page }) => {
   const fixture = await startKernelFixture();

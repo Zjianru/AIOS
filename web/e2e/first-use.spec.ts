@@ -37,7 +37,7 @@ test('第一次填 key：接上后是空对话', async ({ page }) => {
   }
 });
 
-/// T016.1：第一次接 MiniMax（国际站）：它成为当前模型，档取模型自己的默认档（medium），
+/// 第一次接 MiniMax（国际站）：它成为当前模型，档取模型自己的默认档（medium），
 /// 页面状态与选择器都跟着新连接。
 test('第一次填 key：MiniMax 连接成为当前模型并用模型默认档', async ({ page, request }) => {
   const fixture = await startKernelFixture({ emptyKeyring: true });
