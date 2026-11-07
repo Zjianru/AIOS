@@ -12,12 +12,13 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, Plus, X } from 'lucide-react';
+import { Ban, ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, Plus, X } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   addConnection, checkConnection, discoverModels, getModelSettings, moveKeyFile, relinkKeyFile, removeConnection,
-  resetKeyring, revokeKey, updateConnection,
+  resetKeyring, revokeKey, setDisabledModels, updateConnection,
 } from '@/data/keyring';
+import { matchDisabled } from '@/data/disabled';
 import { displayPath, fetchConnectionQuota, type ServiceQuota } from '@/data/service';
 import { CURRENCIES } from '@/lib/numbers';
 import { useKindStore } from '@/pages/kind/kindStore';
@@ -258,19 +259,26 @@ function parseTokens(text: string): number | undefined {
 
 /* ───────────────────────── 模型目录 ───────────────────────── */
 
-function ModelCatalog({ models, onChange, defaults, discover, required }: {
+function ModelCatalog({ models, onChange, defaults, discover, required, connectionId, masked, onMask }: {
   models: ModelRow[];
   onChange: (models: ModelRow[]) => void;
   /** 目录为空时用的默认模型（内置目录才有）。 */
   defaults?: ModelRow[];
   discover: () => Promise<ModelRow[]>;
   required?: boolean;
+  /** 这批模型属于哪个连接（行上的屏蔽按钮用；新建连接还没有 id 时不给）。 */
+  connectionId?: string;
+  /** 已屏蔽的规则整表（服务端保存的）。 */
+  masked?: string[];
+  /** 点行上的屏蔽按钮（带简单确认）。 */
+  onMask?: (pattern: string) => void;
 }) {
   const [candidates, setCandidates] = useState<ModelRow[] | null>(null);
   const [priceOpen, setPriceOpen] = useState<number | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState('');
   const [asking, setAsking] = useState(false);
+  const blockedBy = (id: string) => (connectionId ? matchDisabled(masked ?? [], connectionId, id) : undefined);
 
   const ask = async () => {
     setAsking(true);
@@ -371,7 +379,12 @@ function ModelCatalog({ models, onChange, defaults, discover, required }: {
           {models.map((row, index) => (
             <div key={index}>
             <div className="grid grid-cols-[1fr_1fr_64px_64px_80px_24px] items-center gap-1.5">
-              <input className={cn(inputClass, 'brand-type')} value={row.id} placeholder="model-id" onChange={(e) => setRow(index, { id: e.target.value })} />
+              <input
+                className={cn(inputClass, 'brand-type', blockedBy(row.id) && 'text-ink-3 line-through')}
+                value={row.id}
+                placeholder="model-id"
+                onChange={(e) => setRow(index, { id: e.target.value })}
+              />
               <input className={inputClass} value={row.name ?? ''} placeholder="可不填" onChange={(e) => setRow(index, { name: e.target.value || undefined })} />
               <input key={'cw' + index + ':' + row.contextWindow} className={inputClass} defaultValue={formatTokens(row.contextWindow)} placeholder="继承" onBlur={(e) => setRow(index, { contextWindow: parseTokens(e.target.value) })} />
               <input key={'mt' + index + ':' + row.maxTokens} className={inputClass} defaultValue={formatTokens(row.maxTokens)} placeholder="继承" onBlur={(e) => setRow(index, { maxTokens: parseTokens(e.target.value) })} />
@@ -387,14 +400,40 @@ function ModelCatalog({ models, onChange, defaults, discover, required }: {
               >
                 {priceLabel(row)}
               </button>
-              <button
-                type="button"
-                aria-label="删掉这个模型"
-                onClick={() => onChange(models.filter((_, i) => i !== index))}
-                className="grid size-6 place-items-center rounded-btn text-ink-3 hover:bg-hover hover:text-ink"
-              >
-                <X className="size-3.5" />
-              </button>
+              <div className="flex items-center">
+                {onMask && connectionId && row.id.trim() ? (
+                  blockedBy(row.id) ? (
+                    <span
+                      className="grid size-6 place-items-center text-fail"
+                      title={'已屏蔽（规则「' + blockedBy(row.id) + '」）；在下面「已屏蔽的模型」里解除'}
+                      data-settings="row-masked"
+                    >
+                      <Ban className="size-3.5" />
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      aria-label={'屏蔽 ' + row.id}
+                      title="屏蔽：立即不让用，不删除"
+                      onClick={() => onMask(connectionId + '/' + row.id)}
+                      className="grid size-6 place-items-center rounded-btn text-ink-3 hover:bg-[var(--fail-soft)] hover:text-[var(--fail)]"
+                      data-settings="mask"
+                    >
+                      <Ban className="size-3.5" />
+                    </button>
+                  )
+                ) : (
+                  <span className="size-6" />
+                )}
+                <button
+                  type="button"
+                  aria-label="删掉这个模型"
+                  onClick={() => onChange(models.filter((_, i) => i !== index))}
+                  className="grid size-6 place-items-center rounded-btn text-ink-3 hover:bg-hover hover:text-ink"
+                >
+                  <X className="size-3.5" />
+                </button>
+              </div>
             </div>
             {priceOpen === index ? (
               <PriceEditor
@@ -441,11 +480,13 @@ function Collapsible({ title, children, defaultOpen = false }: { title: string; 
 
 /* ───────────────────────── 已有提供方的编辑卡片 ───────────────────────── */
 
-function ConnectionEditor({ conn, view, onDone, onView }: {
+function ConnectionEditor({ conn, view, onDone, onView, onMask }: {
   conn: ConnectionView;
   view: ModelSettingsView;
   onDone: () => void;
   onView: (view: ModelSettingsView) => void;
+  /** 行上的屏蔽按钮：打开确认框，确认后立即保存（不经过这张卡片的保存）。 */
+  onMask: (pattern: string) => void;
 }) {
   const [key, setKey] = useState('');
   const [endpoint, setEndpoint] = useState(conn.endpoint);
@@ -519,6 +560,9 @@ function ConnectionEditor({ conn, view, onDone, onView }: {
           defaults={catalog?.defaultModels}
           required={conn.source === 'custom'}
           discover={() => discoverModels(conn.id)}
+          connectionId={conn.id}
+          masked={view.disabledModels}
+          onMask={onMask}
         />
         <Field
           label="价格倍率"
@@ -871,6 +915,102 @@ function KeyringSection({ view, onView }: { view: ModelSettingsView; onView: (vi
   );
 }
 
+/* ───────────────────────── 屏蔽（D67） ───────────────────────── */
+
+/**
+ * 「已屏蔽的模型」：先只有列表和「解除屏蔽」。
+ *
+ * 每条规则的「现在匹配几个」和写通配的入口要用服务端的 `disabledHits`/`disabled-models-check`，
+ * 那是下一张票；这里不自己算。
+ */
+function MaskSection({ view, onView }: {
+  view: ModelSettingsView;
+  onView: (view: ModelSettingsView) => void;
+}) {
+  const refreshMasks = useKindStore((state) => state.refreshMasks);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const unmask = async (pattern: string) => {
+    setBusy(pattern);
+    try {
+      onView(await setDisabledModels(view.disabledModels.filter((item) => item !== pattern)));
+      await refreshMasks();
+      toast('已解除屏蔽「' + pattern + '」');
+    } catch (error) {
+      toast.error((error as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <section className="mt-10" data-settings="masked">
+      <h2 className="text-3 font-medium text-ink">已屏蔽的模型</h2>
+      <p className="mt-1.5 text-2 leading-5 text-ink-2">
+        屏蔽的模型不让用：每次请求前查一遍。模型选择器里照样列出，标「已屏蔽」，选不了。
+        屏蔽不是删除，历史和用量照常显示。
+      </p>
+      <div className="mt-3 rounded-card border border-line" data-settings="mask-list">
+        {view.disabledModels.length === 0 ? (
+          <div className="px-4 py-3 text-2 text-ink-3">还没有屏蔽任何模型。</div>
+        ) : (
+          view.disabledModels.map((pattern, index) => (
+            <div
+              key={pattern}
+              className={cn('flex items-center gap-3 px-4 py-3', index > 0 && 'border-t border-line')}
+              data-settings="mask-row"
+            >
+              <div className="min-w-0">
+                <div className="brand-type truncate text-3 text-ink">{pattern}</div>
+              </div>
+              <Btn
+                kind="quiet"
+                className="ml-auto"
+                disabled={busy === pattern}
+                onClick={() => void unmask(pattern)}
+              >
+                解除屏蔽
+              </Btn>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+/** 屏蔽前的简单确认：立即生效，不用再点保存（「谁在用」整张确认框是下一张票）。 */
+function MaskConfirmDialog({ pattern, busy, onCancel, onConfirm }: {
+  pattern: string;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog open onOpenChange={(open) => (open ? null : onCancel())}>
+      <DialogContent data-settings="mask-confirm">
+        <DialogHeader>
+          <DialogTitle>屏蔽「{pattern}」？</DialogTitle>
+          <DialogDescription>
+            确认后立即生效，不用再点保存。模型还在列表里，标「已屏蔽」，选不了；历史和用量照常显示。
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Btn kind="plain" onClick={onCancel}>取消</Btn>
+          <Btn
+            kind="primary"
+            className="!bg-[var(--fail)] !text-white"
+            disabled={busy}
+            onClick={onConfirm}
+          >
+            {busy ? '正在保存…' : '屏蔽'}
+          </Btn>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /* ───────────────────────── 整组 ───────────────────────── */
 
 export function ModelSettings() {
@@ -881,6 +1021,10 @@ export function ModelSettings() {
   const [view, setView] = useState<ModelSettingsView | null>(null);
   /** 展开的是哪张卡片：连接 id、'add'，或者都不展开。一次只展开一张。 */
   const [open, setOpen] = useState<string | null>(null);
+  /** 正在确认屏蔽的规则；null = 没有对话框。 */
+  const [masking, setMasking] = useState<string | null>(null);
+  const [maskBusy, setMaskBusy] = useState(false);
+  const refreshMasks = useKindStore((state) => state.refreshMasks);
 
   const load = useCallback(async () => {
     const next = await getModelSettings();
@@ -905,6 +1049,23 @@ export function ModelSettings() {
       setView(await checkConnection(id));
     } catch (error) {
       toast.error((error as Error).message);
+    }
+  };
+
+  const mask = async () => {
+    if (!masking) return;
+    const pattern = masking;
+    setMaskBusy(true);
+    try {
+      setView(await setDisabledModels(view ? [...view.disabledModels, pattern] : [pattern]));
+      // 页面不用刷新：选择器上的「已屏蔽」立刻跟上。
+      await refreshMasks();
+      toast('已屏蔽「' + pattern + '」');
+      setMasking(null);
+    } catch (error) {
+      toast.error((error as Error).message);
+    } finally {
+      setMaskBusy(false);
     }
   };
 
@@ -964,7 +1125,14 @@ export function ModelSettings() {
                     </div>
                   </div>
                   {open === conn.id ? (
-                    <ConnectionEditor key={conn.id} conn={conn} view={view} onDone={() => setOpen(null)} onView={setView} />
+                    <ConnectionEditor
+                      key={conn.id}
+                      conn={conn}
+                      view={view}
+                      onDone={() => setOpen(null)}
+                      onView={setView}
+                      onMask={(pattern) => setMasking(pattern)}
+                    />
                   ) : null}
                 </div>
               ))}
@@ -982,8 +1150,18 @@ export function ModelSettings() {
         </div>
       </section>
 
+      <MaskSection view={view} onView={setView} />
+
       <KeyringSection view={view} onView={setView} />
 
+      {masking ? (
+        <MaskConfirmDialog
+          pattern={masking}
+          busy={maskBusy}
+          onCancel={() => setMasking(null)}
+          onConfirm={() => void mask()}
+        />
+      ) : null}
     </div>
   );
 }
