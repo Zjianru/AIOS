@@ -57,11 +57,7 @@ async fn text_server() -> MockServer {
 }
 
 async fn request_count(server: &MockServer) -> usize {
-    server
-        .received_requests()
-        .await
-        .expect("请求记录")
-        .len()
+    server.received_requests().await.expect("请求记录").len()
 }
 
 #[tokio::test]
@@ -79,7 +75,11 @@ async fn 被屏蔽的模型一次也不出站() {
         error.message.contains("已在设置里屏蔽"),
         "说明要带屏蔽原因：{error}"
     );
-    assert_eq!(request_count(&server).await, 0, "被屏蔽的请求一个字节都不发");
+    assert_eq!(
+        request_count(&server).await,
+        0,
+        "被屏蔽的请求一个字节都不发"
+    );
 }
 
 #[tokio::test]

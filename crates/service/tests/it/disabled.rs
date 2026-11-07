@@ -96,11 +96,7 @@ async fn mock_turn(server: &MockServer) {
 }
 
 async fn request_count(server: &MockServer) -> usize {
-    server
-        .received_requests()
-        .await
-        .expect("请求记录")
-        .len()
+    server.received_requests().await.expect("请求记录").len()
 }
 
 async fn wait_host_idle(host: &RootHost) {
@@ -400,11 +396,10 @@ async fn 查询规则返回形状() {
     };
     assert!(response.hits.is_empty());
     assert!(response.users.is_empty());
-    let json = serde_json::to_value(service::DisabledModelUser::KindChat { running: true })
-        .expect("json");
+    let json =
+        serde_json::to_value(service::DisabledModelUser::KindChat { running: true }).expect("json");
     assert_eq!(json["kind"], "kind-chat");
     assert_eq!(json["running"], true);
-    let new_sessions =
-        serde_json::to_value(service::DisabledModelUser::NewSessions).expect("json");
+    let new_sessions = serde_json::to_value(service::DisabledModelUser::NewSessions).expect("json");
     assert_eq!(new_sessions["kind"], "new-sessions");
 }

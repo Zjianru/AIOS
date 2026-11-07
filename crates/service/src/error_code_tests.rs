@@ -72,7 +72,11 @@ fn service_error_codes_cover_every_variant() {
     let mut used: Vec<&str> = pairs.iter().map(|(code, _)| *code).collect();
     used.sort_unstable();
     used.dedup();
-    assert_eq!(ServiceErrorCode::ALL.len(), 16, "码数 16（加了 settings/unreadable）");
+    assert_eq!(
+        ServiceErrorCode::ALL.len(),
+        16,
+        "码数 16（加了 settings/unreadable）"
+    );
     assert!(
         ServiceErrorCode::ALL
             .iter()

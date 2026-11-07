@@ -58,7 +58,11 @@ fn 规则匹配三种名字且不分大小写() {
         "anthropic/claude-fable-5",
     ] {
         assert_eq!(
-            match_disabled(&[pattern.to_owned()], "openrouter", "anthropic/claude-fable-5"),
+            match_disabled(
+                &[pattern.to_owned()],
+                "openrouter",
+                "anthropic/claude-fable-5"
+            ),
             Some(pattern.to_owned()),
             "{pattern} 应命中"
         );
@@ -77,7 +81,10 @@ fn 规则匹配三种名字且不分大小写() {
         ),
         Some("DEEPSEEK/DEEPSEEK-FLASH".to_owned())
     );
-    assert_eq!(match_disabled(&["m9".to_owned()], "deepseek", "deepseek-flash"), None);
+    assert_eq!(
+        match_disabled(&["m9".to_owned()], "deepseek", "deepseek-flash"),
+        None
+    );
 }
 
 #[test]
