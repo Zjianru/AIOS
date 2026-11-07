@@ -327,12 +327,11 @@ impl RootHost {
 
 /// 初始模型选择写不进会话日志时的可见状态：recheck/ready 会带着原因拒绝方法。
 pub(crate) fn initial_selection_state(error: &agent::AgentError) -> RootState {
-    let _ = error;
     RootState::Unavailable {
         kind: RootUnavailableKind::Other,
         path: None,
         line: None,
-        message: String::new(),
+        message: format!("初始模型选择没写成：{error}"),
     }
 }
 

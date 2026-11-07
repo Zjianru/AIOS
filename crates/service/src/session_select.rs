@@ -3,7 +3,6 @@
 use crate::error::ServiceError;
 use crate::protocol::{SessionModelSelectRequest, SessionModelSelectResponse};
 use crate::root_lifecycle::{ReopenMode, RootHost};
-use crate::settings;
 use crate::stats;
 
 impl RootHost {
@@ -36,10 +35,9 @@ impl RootHost {
                 .effort_wanted
                 .unwrap_or_else(|| current.effort_wanted.clone()),
         };
-        // settings.json：新会话默认用上一次选的（story 2）。
-        let mut settings = settings::load(&self.options.data_dir);
-        settings.last_selection = Some(target.clone());
-        let _ = settings::save(&self.options.data_dir, &settings);
+        // 先写 durable 设置（新会话默认用上一次选的）：写失败就不动内存和会话日志，
+        // 页面收到 settings/unavailable，不会以为已经换过去了。
+        self.remember_selection(&target)?;
         let cross_connection = target.connection != current.connection;
         let idle = {
             let guard = self.inner.lock().await;
@@ -51,7 +49,6 @@ impl RootHost {
             host.agent().select(&target).await?;
             !host.agent().is_running()
         };
-        *self.selection.lock().expect("selection 锁被毒化") = Some(target.clone());
         if cross_connection && idle {
             self.reopen(Some(&target), ReopenMode::HotSwitch)
                 .await

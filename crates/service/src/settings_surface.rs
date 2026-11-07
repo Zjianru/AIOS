@@ -64,6 +64,19 @@ impl RootHost {
         )?)
     }
 
+    /// 把模型选择写成同一份事实：settings.json 的 lastSelection + 内存 selection。
+    /// 先落盘，写失败不改内存——页面看到错误，不会以为已经保存。
+    pub(crate) fn remember_selection(
+        &self,
+        selection: &session::ModelSelection,
+    ) -> Result<(), ServiceError> {
+        let mut settings = settings::load(&self.options.data_dir);
+        settings.last_selection = Some(selection.clone());
+        settings::save(&self.options.data_dir, &settings).map_err(ServiceError::SettingsInvalid)?;
+        *self.selection.lock().expect("selection 锁被毒化") = Some(selection.clone());
+        Ok(())
+    }
+
     /// 设置页的 Keyring 视图（响应不含 key 正文）。
     pub async fn model_settings(&self) -> Result<ModelSettingsResponse, ServiceError> {
         Ok(ModelSettingsResponse {
@@ -100,13 +113,17 @@ impl RootHost {
             RootState::Unavailable { .. }
         );
         if set_selection {
-            let mut settings = settings::load(&self.options.data_dir);
-            settings.last_selection = Some(session::ModelSelection {
+            let model = connection.primary_model().to_owned();
+            let provider = model::catalog::provider_id_for_connection(
+                &connection.preset,
+                &connection.endpoint,
+            );
+            self.remember_selection(&session::ModelSelection {
                 connection: connection.id.clone(),
-                model: connection.primary_model().to_owned(),
-                effort_wanted: "high".to_owned(),
-            });
-            let _ = settings::save(&self.options.data_dir, &settings);
+                // 新会话的档按模型自己的默认档，不是写死的 high。
+                effort_wanted: model::default_effort_for(&provider, &connection.endpoint, &model),
+                model,
+            })?;
         }
         self.emit_settings_changed();
         self.notify_keyring_changed();
@@ -491,8 +508,7 @@ impl model::CredentialSource for VerifyCredential {
 
 /// 鉴权头写回 Keyring 失败时的一行可见日志：连接 id + 原因（key 不进日志）。
 pub(crate) fn auth_header_writeback_failure(connection: &str, reason: &str) -> String {
-    let _ = (connection, reason);
-    String::new()
+    format!("连接 {connection} 的鉴权头没写回 Keyring：{reason}")
 }
 
 fn now_seconds() -> u64 {
