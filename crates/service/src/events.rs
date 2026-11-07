@@ -65,13 +65,20 @@ pub(crate) fn service_event(event: &session::Event) -> ServiceEvent {
     }
 }
 
-/// 失败原因分类只从日志里的 turn/end error code 派生（页面不按 code 猜）。
+/// 失败原因分类只从日志里的 turn/end 事实派生（页面不按 code 猜）。
 pub(crate) fn failure_cause(kind: &session::EventKind) -> Option<FailureCause> {
-    let session::EventKind::TurnEnd {
-        reason: session::TurnEndReason::Error { error },
-        ..
-    } = kind
-    else {
+    let session::EventKind::TurnEnd { reason, .. } = kind else {
+        return None;
+    };
+    // 设置里屏蔽了正在跑的模型：这一轮以 hook 原因停下，失败块和 MODEL_DISABLED 同一类。
+    if let session::TurnEndReason::Aborted {
+        reason: session::AbortCause::Hook { reason },
+    } = reason
+        && reason == "model-disabled"
+    {
+        return Some(FailureCause::Masked);
+    }
+    let session::TurnEndReason::Error { error } = reason else {
         return None;
     };
     Some(match error.code.as_str() {

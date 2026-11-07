@@ -72,6 +72,8 @@ pub struct RootHost {
     /// 当前生效的模型选择（连接/模型/想要的档）；session/model 的 durable 事实
     /// 在会话日志里，这里只是进程内缓存（重开从日志恢复）。
     pub(crate) selection: Mutex<Option<session::ModelSelection>>,
+    /// 根会话装配时用的连接 id；只在安装/重建时更新，运行中不跟着 selection 变。
+    pub(crate) root_connection: Mutex<Option<String>>,
 }
 
 impl RootHost {
@@ -126,6 +128,7 @@ impl RootHost {
             forward: Mutex::new(None),
             agent_forward: Mutex::new(None),
             selection: Mutex::new(selection),
+            root_connection: Mutex::new(None),
         };
         if let Some(message) = factory_error {
             *host.state.lock().expect("root state 锁被毒化") = RootState::Unavailable {
@@ -157,6 +160,17 @@ impl RootHost {
     /// 同时更新上下文占用（页面要的 context 只从日志事实算）。
     async fn install(&self, agent: Agent) {
         let session_id = agent.id().as_str().to_owned();
+        // 这一份根会话绑定的连接：之后运行中换选择不改它，直到下次安装/重建。
+        let root_connection = self
+            .selection
+            .lock()
+            .expect("selection 锁被毒化")
+            .as_ref()
+            .map(|selection| selection.connection.clone());
+        *self
+            .root_connection
+            .lock()
+            .expect("root connection 锁被毒化") = root_connection;
         // 流式文本等 AgentEvent 不落日志，单独转发给载体（只增帧类型）。
         let mut agent_source = agent.subscribe();
         let agent_tx = self.agent_events.clone();

@@ -757,6 +757,18 @@ async fn 查询规则返回命中的模型和使用者() {
         .await;
     let dir = tempdir().unwrap();
     let root = host(dir.path(), &server.uri()).await;
+    // 命中表列的是已保存连接的可选模型；先存一个连接。
+    root.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "deepseek".to_owned(),
+        name: "DeepSeek".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        endpoint: server.uri(),
+        api_key: "sk-test-not-a-real-key".to_owned(),
+        preset: Some("deepseek".to_owned()),
+        ..ConnectionSaveRequest::default()
+    }))
+    .await
+    .expect("save connection");
     select_model(&root, "deepseek-flash").await;
 
     let a = check_rule(&root, "deepseek/deepseek-flash").await;

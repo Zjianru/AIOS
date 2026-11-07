@@ -136,20 +136,100 @@ impl RootHost {
         settings::save(&self.options.data_dir, &settings).map_err(ServiceError::SettingsInvalid)?;
         // 立即生效：页面不用刷新；订阅端收到后重拉设置/屏蔽表。
         self.emit_settings_changed();
+        // 存好之后，正在跑的那一轮如果命中了刚存的表，就用钩子取消它（队列保留）。
+        self.interrupt_if_disabled(&models).await;
         Ok(DisabledModelsSetResponse { models })
     }
 
     /// 一条规则现在匹配哪些模型、谁在用（确认框用）。
     ///
-    /// 占位：命中和使用者要等本轮冻结的连接 × 模型查询；先返回空表。
+    /// 谁在用只列 Kind 对话和新会话：前者用本轮冻结的连接 × 模型（没在跑时用当前选择），
+    /// 后者只在 settings.json 的上一次选择命中时出现。
     pub async fn disabled_models_check(
         &self,
-        _request: DisabledModelsCheckRequest,
+        request: DisabledModelsCheckRequest,
     ) -> Result<DisabledModelsCheckResponse, ServiceError> {
-        Ok(DisabledModelsCheckResponse {
-            hits: Vec::new(),
-            users: Vec::<DisabledModelUser>::new(),
-        })
+        let pattern = request.pattern.trim();
+        let rules = vec![pattern.to_owned()];
+        let view = self.keyring()?.view();
+        let mut hits = Vec::new();
+        for connection in &view.connections {
+            for row in crate::models::selectable_models(&self.options.data_dir, connection) {
+                if match_disabled(&rules, &connection.id, &row.id).is_some() {
+                    hits.push(format!("{}/{}", connection.id, row.id));
+                }
+            }
+        }
+
+        let running = self.running_turn_model().await;
+        let current = running.clone().or_else(|| {
+            self.selection
+                .lock()
+                .expect("selection 锁被毒化")
+                .as_ref()
+                .map(|selection| (selection.connection.clone(), selection.model.clone()))
+        });
+        let mut users = Vec::new();
+        if let Some((connection, model)) = current
+            && match_disabled(&rules, &connection, &model).is_some()
+        {
+            users.push(DisabledModelUser::KindChat {
+                running: running.is_some(),
+            });
+        }
+        if let Some(selection) = settings::load(&self.options.data_dir).last_selection
+            && match_disabled(&rules, &selection.connection, &selection.model).is_some()
+        {
+            users.push(DisabledModelUser::NewSessions);
+        }
+        Ok(DisabledModelsCheckResponse { hits, users })
+    }
+
+    /// 正在跑的一轮用的连接 × 模型（连接在装配时记下，模型在 begin_turn 冻结）。
+    ///
+    /// 没有在跑的一轮时为空；服务不拿会变的 selection 现查这一轮。
+    async fn running_turn_model(&self) -> Option<(String, String)> {
+        let guard = self.inner.lock().await;
+        let host = guard.as_ref()?;
+        if !host.agent().is_running() {
+            return None;
+        }
+        let model = host.agent().frozen_model()?;
+        let connection = self
+            .root_connection
+            .lock()
+            .expect("root connection 锁被毒化")
+            .clone()?;
+        Some((connection, model))
+    }
+
+    /// 正在跑的一轮命中禁用表时用钩子取消它；返回是否打断。
+    async fn interrupt_if_disabled(&self, models: &[String]) -> bool {
+        let guard = self.inner.lock().await;
+        let Some(host) = guard.as_ref() else {
+            return false;
+        };
+        if !host.agent().is_running() {
+            return false;
+        }
+        let Some(model) = host.agent().frozen_model() else {
+            return false;
+        };
+        let Some(connection) = self
+            .root_connection
+            .lock()
+            .expect("root connection 锁被毒化")
+            .clone()
+        else {
+            return false;
+        };
+        if match_disabled(models, &connection, &model).is_none() {
+            return false;
+        }
+        host.agent().cancel_with(session::AbortCause::Hook {
+            reason: "model-disabled".to_owned(),
+        });
+        true
     }
 }
 
