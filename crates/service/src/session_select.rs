@@ -2,7 +2,7 @@
 
 use crate::error::ServiceError;
 use crate::protocol::{SessionModelSelectRequest, SessionModelSelectResponse};
-use crate::root_lifecycle::RootHost;
+use crate::root_lifecycle::{ReopenMode, RootHost};
 use crate::settings;
 use crate::stats;
 
@@ -11,8 +11,8 @@ impl RootHost {
     ///
     /// 选择是 durable 事实：写 session/model 事件（重开会话从日志恢复）并更新 settings.json
     /// 的上次选择（新会话继承）。同连接换模型/档只改下一轮；跨连接时若当前空闲则重建根
-    /// agent（新连接从下一轮开始用）；正在跑一轮时只记录选择，重建留到 recheck/重启
-    /// （known：运行中跨连接热切换不打断当前轮）。
+    /// agent（新连接从下一轮开始用），已用上下文保留、不重复通知 Keyring；正在跑一轮时只
+    /// 记录选择，重建留到 recheck/重启（known：运行中跨连接热切换不打断当前轮）。
     pub async fn session_model_select(
         &self,
         request: SessionModelSelectRequest,
@@ -53,7 +53,7 @@ impl RootHost {
         };
         *self.selection.lock().expect("selection 锁被毒化") = Some(target.clone());
         if cross_connection && idle {
-            self.reopen(Some(&target))
+            self.reopen(Some(&target), ReopenMode::HotSwitch)
                 .await
                 .map_err(ServiceError::RootUnavailable)?;
         }

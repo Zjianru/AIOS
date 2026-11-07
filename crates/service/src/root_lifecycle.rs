@@ -47,6 +47,15 @@ impl RootState {
     }
 }
 
+/// 重开根会话的两种来历：根会话不可用后的恢复，或空闲时跨连接换模型。
+#[derive(Clone, Copy)]
+pub(crate) enum ReopenMode {
+    /// 恢复（recheck）：Keyring 可能变了；窗口和占用一起重置。
+    Restore,
+    /// 热切换（跨连接选模型）：Keyring 没变；只换窗口，占用保留。
+    HotSwitch,
+}
+
 /// 根会话宿主：根会话可用时转发一个 ServiceHost；不可用时服务照常起，
 /// ready 报状态、方法一律拒绝，recheck 修好后接管。协议方法只增不改。
 pub struct RootHost {
@@ -237,7 +246,7 @@ impl RootHost {
             return RootState::Ok;
         }
         let wanted = self.selection.lock().expect("selection 锁被毒化").clone();
-        match self.reopen(wanted.as_ref()).await {
+        match self.reopen(wanted.as_ref(), ReopenMode::Restore).await {
             Ok(()) => RootState::Ok,
             Err(state) => state,
         }
@@ -247,9 +256,11 @@ impl RootHost {
     /// 装回宿主。失败时把不可用状态写回；调用方决定报错（跨连接切换）还是只报状态（recheck）。
     ///
     /// `wanted` = None 表示没有会话选择（新会话），实现方按 settings/默认连接解析。
+    /// 恢复会重置窗口与占用并通知 Keyring；热切换只换窗口，占用是同一会话日志的事实。
     pub(crate) async fn reopen(
         &self,
         wanted: Option<&session::ModelSelection>,
+        mode: ReopenMode,
     ) -> Result<(), RootState> {
         let mut options = self.options.clone();
         if let Some(factory) = options.model_factory.clone() {
@@ -276,16 +287,23 @@ impl RootHost {
                 }
             }
         }
-        self.notify_keyring_changed();
-        // 新连接可能换模型/窗口，重开时上下文从新窗口重新算。
+        // 新连接可能换模型/窗口；恢复时窗口和占用一起重置，热切换只换窗口。
         let window = options.model.context_window;
-        *self.window.lock().expect("window 锁被毒化") = window;
-        *self.context.lock().expect("context 锁被毒化") = ContextUsage { used: 0, window };
+        if matches!(mode, ReopenMode::Restore) {
+            self.notify_keyring_changed();
+            *self.window.lock().expect("window 锁被毒化") = window;
+            *self.context.lock().expect("context 锁被毒化") = ContextUsage { used: 0, window };
+        }
         // 先放掉旧 Agent（释放会话写锁）再重开同一会话；recheck 时通常已经是 None。
         let old = self.inner.lock().await.take();
         drop(old);
         match open_root_session(options).await {
             Ok(root) => {
+                if matches!(mode, ReopenMode::HotSwitch) {
+                    // 占用是同一会话日志里的事实，换连接的窗口只影响之后算比例。
+                    *self.window.lock().expect("window 锁被毒化") = window;
+                    self.context.lock().expect("context 锁被毒化").window = window;
+                }
                 let current = self.selection.lock().expect("selection 锁被毒化").clone();
                 ensure_initial_selection(&root.agent, current.as_ref()).await;
                 self.install(root.agent).await;
