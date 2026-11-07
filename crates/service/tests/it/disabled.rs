@@ -87,6 +87,88 @@ async fn host(dir: &Path, endpoint: &str) -> RootHost {
     RootHost::open(options(dir, endpoint), DEFAULT_CONTEXT_WINDOW).await
 }
 
+/// 跨连接测试用：照 cli 的 model_factory 从 Keyring 按连接 id 解析配置和凭证。
+fn keyring_factory(data_dir: &Path, identity: &Path) -> service::ModelFactory {
+    let data = data_dir.to_path_buf();
+    let identity = identity.to_path_buf();
+    std::sync::Arc::new(move |selection: Option<&session::ModelSelection>| {
+        let keyring = credentials::Keyring::open(data.clone(), Some(&identity))
+            .map_err(|error| error.to_string())?;
+        let view = keyring.view();
+        if let Some(problem) = view.key_file.problem.clone() {
+            return Err(format!("Keyring 读不出来：{problem}"));
+        }
+        let wanted = selection
+            .map(|selection| selection.connection.clone())
+            .or_else(|| {
+                service::settings::load(&data)
+                    .last_selection
+                    .map(|selection| selection.connection)
+            })
+            .unwrap_or_else(|| "deepseek".to_owned());
+        let connection = view
+            .connections
+            .iter()
+            .find(|connection| connection.id == wanted)
+            .or_else(|| {
+                view.connections
+                    .iter()
+                    .find(|connection| connection.id == "deepseek")
+            })
+            .or_else(|| view.connections.first())
+            .ok_or_else(|| "还没有接模型".to_owned())?;
+        // 同连接才沿用选择里的模型/档；跨连接整组取连接默认（和 cli 的 resolve_selection 一致）。
+        let same = selection.is_some_and(|selection| selection.connection == connection.id);
+        let model = selection
+            .filter(|_| same)
+            .map(|selection| selection.model.clone())
+            .unwrap_or_else(|| connection.primary_model().to_owned());
+        let effort = selection
+            .filter(|_| same)
+            .map(|selection| selection.effort_wanted.clone())
+            .unwrap_or_else(|| "high".to_owned());
+        Ok((
+            connection.id.clone(),
+            DeepSeekConfig {
+                provider: model::catalog::provider_id_for_connection(
+                    &connection.preset,
+                    &connection.endpoint,
+                ),
+                base_url: connection.endpoint.clone(),
+                model,
+                max_tokens: 2048,
+                context_window: DEFAULT_CONTEXT_WINDOW,
+                effort: Effort::new(effort),
+            },
+            Some(std::sync::Arc::new(ConnectionCredential {
+                data_dir: data.clone(),
+                connection: connection.id.clone(),
+            })
+                as std::sync::Arc<dyn model::CredentialSource>),
+        ))
+    })
+}
+
+/// 按连接签发：屏蔽检查带这个连接的 id（和产品 Keyring 来源一致）。
+struct ConnectionCredential {
+    data_dir: std::path::PathBuf,
+    connection: String,
+}
+
+impl model::CredentialSource for ConnectionCredential {
+    fn issue(
+        &self,
+        _purpose: &str,
+        _context: &model::CredentialContext,
+    ) -> Result<String, model::ModelError> {
+        Ok("test-key".to_owned())
+    }
+
+    fn admit(&self, model: &str) -> Result<(), model::ModelError> {
+        service::disabled::admit(&self.data_dir, &self.connection, model)
+    }
+}
+
 async fn mock_turn(server: &MockServer) {
     Mock::given(method("POST"))
         .respond_with(
@@ -739,6 +821,120 @@ async fn 打断判断用本轮冻结的连接和模型不用会变的当前选�
     let requests = server.received_requests().await.expect("请求记录");
     let body: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("body json");
     assert_eq!(body["model"], "deepseek-flash", "跑着的一轮一直用冻结的 A");
+}
+
+/// 跨连接：A 跑着时切到 B 只记选择、不重建；屏蔽 B 不能停 A，屏蔽 A 才以 hook 停。
+/// check 的 Kind 行必须还是冻结的 A——读 selection.connection 会红。
+#[tokio::test]
+async fn 跨连接切换后屏蔽判断用根会话冻结的连接不用当前选择() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(TEXT_SSE)
+                .set_delay(Duration::from_secs(10)),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let identity = dir.path().join("identity.txt");
+    // 真的准备 A/B 两个已保存连接：factory 和 check 都从同一份 Keyring 读。
+    let keyring = credentials::Keyring::open(dir.path(), Some(&identity)).expect("keyring");
+    for (id, model) in [
+        ("deepseek", "deepseek-flash"),
+        ("deepseek-b", "deepseek-v4-flash"),
+    ] {
+        keyring
+            .save_connection(credentials::NewConnection {
+                id: id.to_owned(),
+                name: id.to_owned(),
+                model: model.to_owned(),
+                endpoint: server.uri(),
+                api_key: "sk-test-not-a-real-key".to_owned(),
+                preset: Some("deepseek".to_owned()),
+                ..credentials::NewConnection::default()
+            })
+            .expect("save connection");
+    }
+    let mut root_options = options(dir.path(), &server.uri());
+    root_options.identity = Some(identity.clone());
+    root_options.credentials = None;
+    root_options.model_factory = Some(keyring_factory(dir.path(), &identity));
+    let root = RootHost::open(root_options, DEFAULT_CONTEXT_WINDOW).await;
+
+    send(&root, "r1", "用 A 跑一轮").await;
+    wait_host_running(&root).await;
+    for _ in 0..600 {
+        if request_count(&server).await == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let requests = server.received_requests().await.expect("请求记录");
+    assert_eq!(requests.len(), 1, "A 的一轮已经出站");
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("body json");
+    assert_eq!(body["model"], "deepseek-flash", "跑着的一轮用连接 A 的模型");
+
+    // 运行中跨连接切到 B：只记选择，根会话仍是 A（不重建）。
+    let selected = root
+        .dispatch(Call::SessionModelSelect(SessionModelSelectRequest {
+            connection: Some("deepseek-b".to_owned()),
+            model: Some("deepseek-v4-flash".to_owned()),
+            effort_wanted: None,
+        }))
+        .await
+        .expect("换到 B");
+    let Response::SessionModelSelect(selected) = selected else {
+        panic!("expected SessionModelSelect");
+    };
+    assert_eq!(selected.connection, "deepseek-b", "选择已经换成 B");
+
+    // check 的 Kind 行必须还是冻结的 A：读 selection.connection 的话，这里会只剩命中表。
+    let a = check_rule(&root, "deepseek/deepseek-flash").await;
+    assert!(
+        a.hits.contains(&"deepseek/deepseek-flash".to_owned()),
+        "命中表列出 A：{:?}",
+        a.hits
+    );
+    assert_eq!(
+        a.users,
+        vec![DisabledModelUser::KindChat { running: true }],
+        "Kind 对话是冻结的 A，不在已经选中的 B 上"
+    );
+
+    // 屏蔽 B：跑着的 A 不动。
+    set_disabled(&root, vec!["deepseek-b/deepseek-v4-flash"]).await;
+    let status = root
+        .dispatch(Call::Status(StatusRequest {}))
+        .await
+        .expect("status");
+    let Response::Status(status) = status else {
+        panic!("expected Status");
+    };
+    assert!(status.running, "屏蔽 B 不能停跑着的 A");
+
+    // 屏蔽 A：才以 hook 停。
+    set_disabled(&root, vec!["deepseek/deepseek-flash"]).await;
+    wait_host_idle(&root).await;
+    let id = root_session_id(dir.path());
+    let snapshot = session::SessionStore::open_read_only(dir.path(), &id).expect("snapshot");
+    let last = snapshot
+        .events()
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            session::EventKind::TurnEnd { reason, .. } => Some(reason.clone()),
+            _ => None,
+        })
+        .expect("这一轮有收尾");
+    match last {
+        session::TurnEndReason::Aborted {
+            reason: session::AbortCause::Hook { reason },
+        } => assert_eq!(reason, "model-disabled"),
+        other => panic!("屏蔽 A 之后这一轮应以 hook 停下：{other:?}"),
+    }
+    assert_eq!(request_count(&server).await, 1, "打断后没有新出站");
 }
 
 /// 查询一条规则：命中表和谁在用都由服务算；新会话只在 lastSelection 命中时出现，

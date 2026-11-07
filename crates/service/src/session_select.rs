@@ -11,7 +11,8 @@ impl RootHost {
     /// 选择是 durable 事实：写 session/model 事件（重开会话从日志恢复）并更新 settings.json
     /// 的上次选择（新会话继承）。同连接换模型/档只改下一轮；跨连接时若当前空闲则重建根
     /// agent（新连接从下一轮开始用），已用上下文保留、不重复通知 Keyring；正在跑一轮时只
-    /// 记录选择，重建留到 recheck/重启（known：运行中跨连接热切换不打断当前轮）。
+    /// 记录选择，根会话仍用旧连接（known：运行中跨连接热切换不打断当前轮）。这时的恢复
+    /// 路径是重启，或空闲时先选另一个连接再选回来；recheck 在根状态 Ok 时不重建。
     pub async fn session_model_select(
         &self,
         request: SessionModelSelectRequest,
