@@ -648,6 +648,31 @@ mod tests {
         );
     }
 
+    /// T016 验收修复：MiniMax 列表最新的在前；highspeed 跟同代相邻；
+    /// 内置目录要含厂商实际列出的旧代（M2.1-highspeed），否则第一次获取会把它误标「新」。
+    #[test]
+    fn minimax_models_list_newest_first_with_highspeed_body() {
+        let ids: Vec<String> = snapshot()
+            .models_for("minimax-cn")
+            .into_iter()
+            .map(|model| model.id)
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "MiniMax-M3.1-Flash".to_owned(),
+                "MiniMax-M3".to_owned(),
+                "MiniMax-M2.7".to_owned(),
+                "MiniMax-M2.7-highspeed".to_owned(),
+                "MiniMax-M2.5".to_owned(),
+                "MiniMax-M2.5-highspeed".to_owned(),
+                "MiniMax-M2.1".to_owned(),
+                "MiniMax-M2.1-highspeed".to_owned(),
+                "MiniMax-M2".to_owned(),
+            ]
+        );
+    }
+
     #[test]
     fn built_in_snapshot_has_the_three_vendors_and_fields() {
         let snapshot = snapshot();

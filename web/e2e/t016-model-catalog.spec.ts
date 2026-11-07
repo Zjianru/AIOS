@@ -31,9 +31,17 @@ test('设置页获取模型：目录窗口和四类价格都在', async ({ page 
     await expect(discover).toHaveCount(0);
     const prices = editor.locator('[data-settings="model-price"]');
     await expect(prices).toHaveCount(2);
-    await expect(prices.nth(1)).toContainText('in 0.66');
-    await expect(prices.nth(1)).toContainText('out 1.98');
-    await expect(prices.nth(1)).toContainText('r 0.022');
+    // 紧凑：只显示输入/输出两格；四类完整值和「标价=目录价」在 title。
+    await expect(prices.nth(0)).toHaveText('标价');
+    await expect(prices.nth(1)).toHaveText('$0.66 / $1.98');
+    const priceTitle = await prices.nth(1).getAttribute('title');
+    expect(priceTitle).toContain('输入 $0.66');
+    expect(priceTitle).toContain('输出 $1.98');
+    expect(priceTitle).toContain('缓存读 $0.022');
+    expect(priceTitle).toContain('缓存写');
+    expect(priceTitle).toContain('不乘倍率');
+    await expect(editor.locator('[data-settings="price-help"]')).toContainText('标价 = 目录价');
+    await expect(editor.locator('[data-settings="price-help"]')).toContainText('不乘倍率');
     await expect(editor.locator('input[value="1.048576M"]')).toHaveCount(1);
   } finally {
     await fixture.close();

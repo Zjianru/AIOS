@@ -910,6 +910,68 @@ async fn 获取成功只存厂商列表且第二次只有新模型是新() {
     assert!(second_fetched_at >= first_fetched_at);
 }
 
+/// T016 验收修复：MiniMax 厂商列表按版本降序（最新在前，highspeed 跟同代相邻）；
+/// 内置目录补上厂商实际列出的旧代（M2.1-highspeed），第一次获取时旧模型不能标「新」。
+#[tokio::test]
+async fn minimax_列表最新在前且旧highspeed不标新() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let ids = vec![
+        "MiniMax-M3.1-Flash",
+        "MiniMax-M3",
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
+        "MiniMax-M2.5",
+        "MiniMax-M2.5-highspeed",
+        "MiniMax-M2.1",
+        "MiniMax-M2.1-highspeed",
+        "MiniMax-M2",
+    ];
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": ids.iter().map(|id| serde_json::json!({"id": id})).collect::<Vec<_>>()
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "minimax-order".to_owned(),
+            name: "MiniMax".to_owned(),
+            model: "MiniMax-M3.1-Flash".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some("minimax-cn".to_owned()),
+            models: Some(Vec::new()),
+            ..Default::default()
+        }))
+        .await
+        .expect("save");
+    let service::Response::ConnectionSave(saved) = saved else {
+        panic!("expected ConnectionSave");
+    };
+    let response = available_models(&host, discover_request("minimax-order")).await;
+    assert!(
+        fresh_ids(&response).is_empty(),
+        "内置目录已有的旧模型第一次获取不能标新：{:?}",
+        fresh_ids(&response)
+    );
+    let order: Vec<&str> = response
+        .models
+        .iter()
+        .map(|row| row.model.id.as_str())
+        .collect();
+    assert_eq!(order, ids, "最新的在前，highspeed 跟同代相邻");
+    assert_eq!(
+        service::models::primary_model(dir.path(), &saved.connection),
+        "MiniMax-M3.1-Flash",
+        "跟着厂商走、还没存过列表时，默认模型是最新的那个"
+    );
+}
+
 #[tokio::test]
 async fn 自定义地址第一次获取一个都不标新() {
     model::catalog::set_global(model::catalog::snapshot());
