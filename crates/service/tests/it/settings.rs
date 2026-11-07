@@ -8,7 +8,7 @@ use service::{
     Call, ConnectionDeleteRequest, ConnectionQuotaRequest, ConnectionRevokeRequest,
     ConnectionSaveRequest, ConnectionUpdateRequest, ConnectionVerifyRequest, FirstUseRequest,
     IssuesRequest, KeyringRelocateRequest, KeyringReopenRequest, KeyringRestartRequest,
-    ModelSettingsRequest, RootHost, RootSessionOptions, SessionModelSelectRequest,
+    ModelSettingsRequest, RootHost, RootSessionOptions, ServiceError, SessionModelSelectRequest,
 };
 use tempfile::tempdir;
 use wiremock::matchers::{method, path};
@@ -82,6 +82,7 @@ fn options(data_dir: &Path, identity: &Path) -> RootSessionOptions {
         data_dir: data_dir.to_path_buf(),
         cwd: data_dir.to_path_buf(),
         model: DeepSeekConfig {
+            provider: "deepseek".to_owned(),
             base_url: "http://127.0.0.1:1".to_owned(),
             model: "deepseek-flash".to_owned(),
             max_tokens: 2048,
@@ -868,6 +869,18 @@ async fn 选模型写会话日志事件并保存上次选择() {
     // settings.json：新会话默认用上一次选的。
     let settings = service::settings::load(dir.path());
     assert_eq!(settings.last_selection, Some(selection));
+    // 内存里的当前选择与它一致（status 从内存选择算）。
+    let status = host
+        .dispatch(Call::Status(service::StatusRequest {}))
+        .await
+        .expect("status");
+    let service::Response::Status(status) = status else {
+        panic!("expected Status");
+    };
+    let stats = status.stats.expect("stats");
+    assert_eq!(stats.connection, "deepseek");
+    assert_eq!(stats.model, "deepseek-pro", "内存选择跟 lastSelection 一致");
+    assert_eq!(stats.effort_wanted, "low");
 }
 
 #[tokio::test]
@@ -990,6 +1003,7 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
             Ok((
                 connection,
                 DeepSeekConfig {
+                    provider: "deepseek".to_owned(),
                     base_url: endpoint,
                     model: model.to_owned(),
                     context_window,
@@ -1337,4 +1351,271 @@ async fn 设置更新写币种且状态里带新币种() {
         .await;
     assert!(rejected.is_err(), "只接受 usd/cny");
     assert_eq!(service::settings::load(dir.path()).currency, "cny");
+}
+
+/// 编辑连接（地址/模型/价格）不动 settings.json 里的上次选择。
+#[tokio::test]
+async fn 编辑连接不改上次选择() {
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "deepseek".to_owned(),
+        name: "DeepSeek".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        endpoint: "http://127.0.0.1:1".to_owned(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some("deepseek".to_owned()),
+        ..ConnectionSaveRequest::default()
+    }))
+    .await
+    .expect("save");
+    host.dispatch(Call::SessionModelSelect(SessionModelSelectRequest {
+        connection: Some("deepseek".to_owned()),
+        model: Some("deepseek-pro".to_owned()),
+        effort_wanted: Some("low".to_owned()),
+    }))
+    .await
+    .expect("select");
+    let before = std::fs::read(service::settings::path(dir.path())).expect("settings.json");
+    host.dispatch(Call::ConnectionUpdate(ConnectionUpdateRequest {
+        id: "deepseek".to_owned(),
+        endpoint: "http://127.0.0.1:2".to_owned(),
+        model: "deepseek-v4-pro".to_owned(),
+        preset: Some("deepseek".to_owned()),
+        models: None,
+        price_rate: None,
+        auth_header: None,
+    }))
+    .await
+    .expect("connection-update");
+    let after = std::fs::read(service::settings::path(dir.path())).expect("settings.json");
+    assert_eq!(before, after, "编辑连接不能改上次选择");
+}
+
+/// 选模型时 settings.json 写不进去：报 settings/unavailable，内存选择和会话日志都不改。
+#[tokio::test]
+async fn 选模型写上次选择失败时报设置不可用且不改内存与日志() {
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let id = root_session_id(dir.path());
+    let before = {
+        let snapshot = session::SessionStore::open_read_only(dir.path(), &id).expect("snapshot");
+        session::last_model_selection(snapshot.events()).expect("初始 session/model")
+    };
+    // 原子的临时文件位置被目录占住，rename 前的写入一定失败。
+    std::fs::create_dir(dir.path().join("settings.json.tmp")).expect("tmp dir");
+    let result = host
+        .dispatch(Call::SessionModelSelect(SessionModelSelectRequest {
+            connection: Some("deepseek".to_owned()),
+            model: Some("deepseek-pro".to_owned()),
+            effort_wanted: Some("low".to_owned()),
+        }))
+        .await;
+    let Err(error) = result else {
+        panic!("写上次选择失败不能报成功");
+    };
+    assert_eq!(error.code().as_str(), "settings/unavailable");
+    assert!(matches!(error, ServiceError::SettingsInvalid(_)));
+    let after = {
+        let snapshot = session::SessionStore::open_read_only(dir.path(), &id).expect("snapshot");
+        session::last_model_selection(snapshot.events()).expect("session/model")
+    };
+    assert_eq!(after, before, "日志里的选择不变");
+    let status = host
+        .dispatch(Call::Status(service::StatusRequest {}))
+        .await
+        .expect("status");
+    let service::Response::Status(status) = status else {
+        panic!("expected Status");
+    };
+    let stats = status.stats.expect("stats");
+    assert_eq!(stats.model, before.model, "内存里的选择不变");
+    assert_eq!(stats.effort_wanted, before.effort_wanted);
+}
+
+/// 可用模型响应的字段是 camelCase，目录里的四类价格都在。
+#[tokio::test]
+async fn 可用模型响应字段是驼峰命名且四类价格都在() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "minimax".to_owned(),
+        name: "MiniMax".to_owned(),
+        model: "MiniMax-M2.7".to_owned(),
+        endpoint: "http://127.0.0.1:1/anthropic".to_owned(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some("minimax".to_owned()),
+        ..ConnectionSaveRequest::default()
+    }))
+    .await
+    .expect("save");
+    let response = host
+        .dispatch(Call::AvailableModels(service::AvailableModelsRequest {
+            id: "minimax".to_owned(),
+        }))
+        .await
+        .expect("available models");
+    let service::Response::AvailableModels(response) = response else {
+        panic!("expected AvailableModels");
+    };
+    let row = response
+        .models
+        .iter()
+        .find(|model| model.id == "MiniMax-M2.7")
+        .expect("MiniMax-M2.7");
+    assert_eq!(row.context_window, Some(204_800));
+    assert_eq!(row.max_tokens, Some(131_072));
+    assert_eq!(row.price_input, Some(0.3));
+    assert_eq!(row.price_output, Some(1.2));
+    assert_eq!(row.price_cache_read, Some(0.06));
+    assert_eq!(row.price_cache_write, Some(0.375));
+    let json = serde_json::to_value(&response).expect("json");
+    let entry = json["models"]
+        .as_array()
+        .expect("models")
+        .iter()
+        .find(|model| model["id"] == "MiniMax-M2.7")
+        .expect("JSON 里的 MiniMax-M2.7");
+    for key in [
+        "contextWindow",
+        "maxTokens",
+        "priceInput",
+        "priceOutput",
+        "priceCacheRead",
+        "priceCacheWrite",
+    ] {
+        assert!(entry.get(key).is_some(), "缺 {key}: {entry}");
+    }
+    for key in [
+        "context_window",
+        "max_tokens",
+        "price_input",
+        "price_output",
+        "price_cache_read",
+        "price_cache_write",
+    ] {
+        assert!(entry.get(key).is_none(), "旧字段 {key} 还在: {entry}");
+    }
+}
+
+/// 按连接身份发一轮消息，返回会话日志里 assistant/message 的 provider。
+async fn assistant_message_provider(connection_id: &str, preset: &str, model_id: &str) -> String {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(USAGE_SSE),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let identity = dir.path().join("identity.txt");
+    credentials::Keyring::open(dir.path(), Some(&identity))
+        .expect("keyring")
+        .save_connection(credentials::NewConnection {
+            id: connection_id.to_owned(),
+            name: connection_id.to_owned(),
+            model: model_id.to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some(preset.to_owned()),
+            ..credentials::NewConnection::default()
+        })
+        .expect("save connection");
+    let data = dir.path().to_path_buf();
+    let identity_for_factory = identity.clone();
+    // 和 cli 的 model_with_keyring 一样：连接的厂商 id 进模型配置。
+    let factory: service::ModelFactory =
+        std::sync::Arc::new(move |selection: Option<&session::ModelSelection>| {
+            let keyring = credentials::Keyring::open(data.clone(), Some(&identity_for_factory))
+                .map_err(|error| error.to_string())?;
+            let view = keyring.view();
+            let wanted = selection
+                .map(|selection| selection.connection.clone())
+                .or_else(|| {
+                    view.connections
+                        .first()
+                        .map(|connection| connection.id.clone())
+                })
+                .ok_or_else(|| "还没有接模型".to_owned())?;
+            let connection = view
+                .connections
+                .into_iter()
+                .find(|connection| connection.id == wanted)
+                .ok_or_else(|| "连接不在".to_owned())?;
+            let same = selection.is_some_and(|selection| selection.connection == connection.id);
+            let model = selection
+                .filter(|_| same)
+                .map(|selection| selection.model.clone())
+                .unwrap_or_else(|| connection.primary_model().to_owned());
+            let effort = selection
+                .filter(|_| same)
+                .map(|selection| selection.effort_wanted.clone())
+                .unwrap_or_else(|| "high".to_owned());
+            Ok((
+                connection.id.clone(),
+                DeepSeekConfig {
+                    provider: model::catalog::provider_id_for_connection(
+                        &connection.preset,
+                        &connection.endpoint,
+                    ),
+                    base_url: connection.endpoint.clone(),
+                    model,
+                    max_tokens: 2048,
+                    context_window: 111_000,
+                    effort: Effort::new(effort),
+                },
+                Some(test_credential()),
+            ))
+        });
+    let mut options = options(dir.path(), &identity);
+    options.model_factory = Some(factory);
+    let host = RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await;
+    host.dispatch(Call::Send(service::SendRequest {
+        request_id: "r1".to_owned(),
+        content: "hi".to_owned(),
+        delivery: service::DeliveryMode::FollowUp,
+        pastes: Vec::new(),
+        attachments: Vec::new(),
+        canvas: None,
+    }))
+    .await
+    .expect("send");
+    wait_for_requests(&server, 1).await;
+    wait_host_idle(&host).await;
+    let id = root_session_id(dir.path());
+    let snapshot = session::SessionStore::open_read_only(dir.path(), &id).expect("snapshot");
+    snapshot
+        .events()
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            session::EventKind::AssistantMessage { message, .. } => match &message.source {
+                model::MessageSource::Model { provider, .. } => Some(provider.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("assistant/message")
+}
+
+/// MiniMax 连接的助手消息按连接身份记厂商，不记成 deepseek。
+#[tokio::test]
+async fn minimax连接的助手消息记真实厂商() {
+    assert_eq!(
+        assistant_message_provider("minimax", "minimax", "MiniMax-M3.1-Flash").await,
+        "minimax"
+    );
+}
+
+/// DeepSeek 连接仍记 deepseek（厂商身份来自连接，不是写死的）。
+#[tokio::test]
+async fn deepseek连接的助手消息仍记deepseek() {
+    assert_eq!(
+        assistant_message_provider("deepseek", "deepseek", "deepseek-flash").await,
+        "deepseek"
+    );
 }

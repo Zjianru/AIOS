@@ -48,5 +48,11 @@ mod history_pagination_tests;
 #[path = "protocol_version_tests.rs"]
 mod protocol_version_tests;
 #[cfg(test)]
+#[path = "root_lifecycle_tests.rs"]
+mod root_lifecycle_tests;
+#[cfg(test)]
 #[path = "settings_path_tests.rs"]
 mod settings_path_tests;
+#[cfg(test)]
+#[path = "settings_surface_tests.rs"]
+mod settings_surface_tests;

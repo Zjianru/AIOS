@@ -32,6 +32,26 @@ async fn setup(
     config: AgentConfig,
     responses: usize,
 ) -> Harness {
+    setup_with_model(
+        server,
+        window,
+        model_max_tokens,
+        config,
+        responses,
+        model_config(&server.uri()),
+    )
+    .await
+}
+
+/// 用调用方给的模型配置搭会话（厂商身份/模型名不同的场景）。
+async fn setup_with_model(
+    server: &MockServer,
+    window: u64,
+    model_max_tokens: u32,
+    config: AgentConfig,
+    responses: usize,
+    base: model::DeepSeekConfig,
+) -> Harness {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .respond_with(SequenceResponder::new(
@@ -48,7 +68,7 @@ async fn setup(
     let model_config = model::DeepSeekConfig {
         context_window: window,
         max_tokens: model_max_tokens,
-        ..model_config(&server.uri())
+        ..base
     };
     let agent = Agent::create(
         config,
@@ -401,6 +421,44 @@ async fn model_policy_overrides_summary_policy() {
     assert_eq!(summaries[0]["maxTokens"], 123);
     let starts = data_of(&rows, "compaction/start");
     assert_eq!(starts.len(), 1, "compactionRetries=0 只压一次");
+}
+
+/// 压缩策略按连接带来的厂商 id 匹配：MiniMax 的策略不能因为写死 deepseek 而失效。
+#[tokio::test]
+async fn model_policy_matches_the_provider_from_the_connection() {
+    let server = MockServer::start().await;
+    let data_dir = tempfile::tempdir().unwrap();
+    let config = AgentConfig {
+        compaction_model_policies: vec![CompactionModelPolicy {
+            provider: "minimax".to_owned(),
+            model: "MiniMax-M3.1-Flash".to_owned(),
+            threshold_ratio: None,
+            retain_ratio: None,
+            headroom_tokens: None,
+            summary_max_tokens: Some(123),
+            compaction_retries: Some(0),
+            max_overflow_retries: None,
+        }],
+        ..pressure_config(data_dir.path())
+    };
+    let base = model::DeepSeekConfig {
+        provider: "minimax".to_owned(),
+        model: "MiniMax-M3.1-Flash".to_owned(),
+        ..model_config(&server.uri())
+    };
+    let harness = setup_with_model(&server, 1000, 100, config, 3, base).await;
+    run_pressure(&server, &harness).await;
+
+    let requests = server.received_requests().await.unwrap();
+    let summary: Value = serde_json::from_slice(&requests[1].body).unwrap();
+    assert_eq!(
+        summary["max_tokens"], 123,
+        "按 minimax 的模型策略覆盖摘要上限"
+    );
+    let rows = log_rows(harness.data_dir.path(), &harness.id);
+    let summaries = data_of(&rows, "compaction/summary");
+    assert_eq!(summaries[0]["provider"], "minimax");
+    assert_eq!(summaries[0]["maxTokens"], 123);
 }
 
 #[tokio::test]

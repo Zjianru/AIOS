@@ -178,6 +178,7 @@ impl RootHost {
             .into_secret();
         // 验证走模型适配器（和对话同一条请求路径/同一组头），不再手写 reqwest。
         let config = model::DeepSeekConfig {
+            provider: "deepseek".to_owned(),
             base_url: connection.endpoint.clone(),
             // K3：验证用连接所选模型（新形状的 models 第一行）序列化。
             model: connection.primary_model().to_owned(),
@@ -471,7 +472,7 @@ impl model::CredentialSource for VerifyCredential {
         else {
             return;
         };
-        let _ = self.keyring.update_connection_details(
+        if let Err(error) = self.keyring.update_connection_details(
             &self.connection,
             credentials::ConnectionUpdate {
                 endpoint: connection.endpoint.clone(),
@@ -479,8 +480,19 @@ impl model::CredentialSource for VerifyCredential {
                 auth_header: Some(header.to_owned()),
                 ..credentials::ConnectionUpdate::default()
             },
-        );
+        ) {
+            eprintln!(
+                "{}",
+                auth_header_writeback_failure(&self.connection, &error.to_string())
+            );
+        }
     }
+}
+
+/// 鉴权头写回 Keyring 失败时的一行可见日志：连接 id + 原因（key 不进日志）。
+pub(crate) fn auth_header_writeback_failure(connection: &str, reason: &str) -> String {
+    let _ = (connection, reason);
+    String::new()
 }
 
 fn now_seconds() -> u64 {

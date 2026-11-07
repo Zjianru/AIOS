@@ -16,6 +16,9 @@ pub(crate) const STREAM_IDLE_TIMEOUT: std::time::Duration = std::time::Duration:
 /// Anthropic Messages 适配器的连接与默认值。
 #[derive(Debug, Clone)]
 pub struct DeepSeekConfig {
+    /// 厂商路由 id（目录 provider id）：内置提供方用连接里的 preset，自定义地址按 endpoint 推断。
+    /// 日志里的 assistant/message、llm/retry 和压缩策略按它匹配。
+    pub provider: String,
     /// Messages 协议的根地址；请求发往 `<base_url>/v1/messages`。
     pub base_url: String,
     /// 模型 id。
@@ -31,6 +34,7 @@ pub struct DeepSeekConfig {
 impl Default for DeepSeekConfig {
     fn default() -> Self {
         Self {
+            provider: "deepseek".to_owned(),
             base_url: DEFAULT_BASE_URL.to_owned(),
             model: "deepseek-flash".to_owned(),
             max_tokens: DEFAULT_MAX_TOKENS,

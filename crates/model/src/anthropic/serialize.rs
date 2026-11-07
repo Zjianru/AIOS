@@ -451,6 +451,7 @@ mod effort_wire_tests {
 
     fn body(base_url: &str, model: &str, effort: &str, max_tokens: Option<u32>) -> Value {
         let config = DeepSeekConfig {
+            provider: "deepseek".to_owned(),
             base_url: base_url.to_owned(),
             model: model.to_owned(),
             max_tokens: 256_000,
@@ -606,6 +607,7 @@ mod t013_file_block_tests {
     #[test]
     fn request_body_keeps_pastes_verbatim_and_replaces_files_with_handle_text() {
         let config = DeepSeekConfig {
+            provider: "deepseek".to_owned(),
             base_url: "http://127.0.0.1:1".to_owned(),
             model: "deepseek-flash".to_owned(),
             max_tokens: 2048,

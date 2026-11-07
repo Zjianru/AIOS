@@ -137,8 +137,12 @@ impl RootHost {
         } else {
             match open_root_session(host.options.clone()).await {
                 Ok(root) => {
-                    ensure_initial_selection(&root.agent, initial_selection.as_ref()).await;
-                    host.install(root.agent).await;
+                    match ensure_initial_selection(&root.agent, initial_selection.as_ref()).await {
+                        Ok(()) => host.install(root.agent).await,
+                        Err(state) => {
+                            *host.state.lock().expect("root state 锁被毒化") = state;
+                        }
+                    }
                 }
                 Err(error) => {
                     *host.state.lock().expect("root state 锁被毒化") =
@@ -299,13 +303,16 @@ impl RootHost {
         drop(old);
         match open_root_session(options).await {
             Ok(root) => {
+                let current = self.selection.lock().expect("selection 锁被毒化").clone();
+                if let Err(state) = ensure_initial_selection(&root.agent, current.as_ref()).await {
+                    *self.state.lock().expect("root state 锁被毒化") = state.clone();
+                    return Err(state);
+                }
                 if matches!(mode, ReopenMode::HotSwitch) {
                     // 占用是同一会话日志里的事实，换连接的窗口只影响之后算比例。
                     *self.window.lock().expect("window 锁被毒化") = window;
                     self.context.lock().expect("context 锁被毒化").window = window;
                 }
-                let current = self.selection.lock().expect("selection 锁被毒化").clone();
-                ensure_initial_selection(&root.agent, current.as_ref()).await;
                 self.install(root.agent).await;
                 Ok(())
             }
@@ -318,16 +325,33 @@ impl RootHost {
     }
 }
 
+/// 初始模型选择写不进会话日志时的可见状态：recheck/ready 会带着原因拒绝方法。
+pub(crate) fn initial_selection_state(error: &agent::AgentError) -> RootState {
+    let _ = error;
+    RootState::Unavailable {
+        kind: RootUnavailableKind::Other,
+        path: None,
+        line: None,
+        message: String::new(),
+    }
+}
+
 /// 会话日志里没有 session/model 事件时，把当前选择写成第一条 durable 事实；
 /// 重开时第一条 session/model 就是真正初始选择（stats 逐轮定价用）。
-async fn ensure_initial_selection(agent: &Agent, selection: Option<&session::ModelSelection>) {
+async fn ensure_initial_selection(
+    agent: &Agent,
+    selection: Option<&session::ModelSelection>,
+) -> Result<(), RootState> {
     let Some(selection) = selection else {
-        return;
+        return Ok(());
     };
     if session::last_model_selection(&agent.session_events_from(0)).is_some() {
-        return;
+        return Ok(());
     }
-    let _ = agent.select(selection).await;
+    agent
+        .select(selection)
+        .await
+        .map_err(|error| initial_selection_state(&error))
 }
 
 impl Drop for RootHost {

@@ -81,6 +81,7 @@ fn options(
         data_dir: data_dir.to_path_buf(),
         cwd: cwd.to_path_buf(),
         model: DeepSeekConfig {
+            provider: "deepseek".to_owned(),
             base_url: base_url.to_owned(),
             model: "deepseek-flash".to_owned(),
             max_tokens: 2048,

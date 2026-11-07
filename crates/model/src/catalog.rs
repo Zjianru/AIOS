@@ -240,6 +240,16 @@ fn model_info(provider: &CatalogProvider, model: &CatalogModel) -> ModelInfo {
     }
 }
 
+/// 连接对应的目录 provider id：内置提供方用 preset，自定义地址按 endpoint 推断。
+/// 日志里的厂商身份、统计定价和压缩策略匹配都用同一个来源。
+pub fn provider_id_for_connection(preset: &str, endpoint: &str) -> String {
+    if preset.is_empty() || preset == "custom" {
+        provider_id_for_endpoint(endpoint)
+    } else {
+        preset.to_owned()
+    }
+}
+
 /// 从 endpoint 推目录 provider id（预设 id 可直接用；custom 走这里）。
 pub fn provider_id_for_endpoint(endpoint: &str) -> String {
     if endpoint.contains("deepseek") {

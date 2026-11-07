@@ -1570,6 +1570,7 @@ mod t012_attachment_http_tests {
             data_dir: data_dir.to_path_buf(),
             cwd: data_dir.to_path_buf(),
             model: DeepSeekConfig {
+                provider: "deepseek".to_owned(),
                 base_url: "http://127.0.0.1:1".to_owned(),
                 model: "deepseek-flash".to_owned(),
                 max_tokens: 2048,
@@ -1881,6 +1882,7 @@ mod t011_ops_tests {
 
     fn model_config() -> model::DeepSeekConfig {
         model::DeepSeekConfig {
+            provider: "deepseek".to_owned(),
             base_url: "http://127.0.0.1:1".to_owned(),
             model: "deepseek-flash".to_owned(),
             max_tokens: 2048,
@@ -2091,6 +2093,7 @@ mod t015_local_file_tests {
 
     fn model_config() -> model::DeepSeekConfig {
         model::DeepSeekConfig {
+            provider: "deepseek".to_owned(),
             base_url: "http://127.0.0.1:1".to_owned(),
             model: "deepseek-flash".to_owned(),
             max_tokens: 2048,

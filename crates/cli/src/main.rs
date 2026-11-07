@@ -229,6 +229,7 @@ fn config_from_args(
         ));
     }
     let config = DeepSeekConfig {
+        provider: "deepseek".to_owned(),
         base_url,
         model: common
             .model
