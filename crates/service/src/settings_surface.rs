@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::ServiceError;
 use crate::protocol::{
-    AvailableModelsRequest, AvailableModelsResponse, ConnectionDeleteRequest,
+    AvailableModelsMode, AvailableModelsRequest, AvailableModelsResponse, ConnectionDeleteRequest,
     ConnectionDeleteResponse, ConnectionQuotaRequest, ConnectionQuotaResponse,
     ConnectionRevokeRequest, ConnectionRevokeResponse, ConnectionSaveRequest,
     ConnectionSaveResponse, ConnectionUpdateRequest, ConnectionUpdateResponse,
@@ -79,7 +79,7 @@ impl RootHost {
 
     /// 设置页的 Keyring 视图（响应不含 key 正文）加上屏蔽表和每个连接存下的厂商列表。
     ///
-    /// disabledUnknown / disabledHits 是 .5/.4 的落点；listed 这一版填真实值。
+    /// 屏蔽的命中/未知还没有数据来源，先给空值；每个连接存下的厂商列表是真的，页面小标签用它。
     pub async fn model_settings(&self) -> Result<ModelSettingsResponse, ServiceError> {
         let view = self.keyring()?.view();
         let mut listed = std::collections::BTreeMap::new();
@@ -167,11 +167,20 @@ impl RootHost {
     }
 
     /// 编辑连接（只改 endpoint/model，保留 key）。
+    ///
+    /// 换了厂商身份（地址或预设）就丢掉这个连接存下的厂商列表：那份列表属于旧地址，
+    /// 留着会让小标签和主模型继续按旧厂商走，直到下一次获取。
     pub async fn connection_update(
         &self,
         request: ConnectionUpdateRequest,
     ) -> Result<ConnectionUpdateResponse, ServiceError> {
-        let connection = self.keyring()?.update_connection_details(
+        let keyring = self.keyring()?;
+        let before = keyring
+            .view()
+            .connections
+            .into_iter()
+            .find(|connection| connection.id == request.id);
+        let connection = keyring.update_connection_details(
             &request.id,
             credentials::ConnectionUpdate {
                 endpoint: request.endpoint,
@@ -182,6 +191,13 @@ impl RootHost {
                 auth_header: request.auth_header,
             },
         )?;
+        if let Some(before) = before
+            && (before.endpoint != connection.endpoint || before.preset != connection.preset)
+        {
+            model::catalog::remove_live(&self.options.data_dir, &connection.id).map_err(
+                |error| ServiceError::SettingsInvalid(format!("旧的模型列表没清掉：{error}")),
+            )?;
+        }
         self.emit_settings_changed();
         self.notify_keyring_changed();
         Ok(ConnectionUpdateResponse { connection })
@@ -279,6 +295,8 @@ impl RootHost {
         &self,
         request: AvailableModelsRequest,
     ) -> Result<AvailableModelsResponse, ServiceError> {
+        // 后面有个同名的局部变量（这次 HTTP 请求），先把意图留下来。
+        let mode = request.mode;
         let keyring = self.keyring()?;
         let view = keyring.view();
         let connection = view
@@ -333,16 +351,20 @@ impl RootHost {
             {
                 let live_models = model::catalog::parse_live_models(&value);
                 if !live_models.is_empty() {
-                    // 只存厂商这次给的列表（没并目录、没写用户字段）；空表不写。
-                    model::catalog::save_live(
-                        &self.options.data_dir,
-                        &connection.id,
-                        now_seconds(),
-                        model::catalog::live_models_info(&live_models),
-                    )
-                    .map_err(|error| {
-                        ServiceError::SettingsInvalid(format!("模型列表没保存：{error}"))
-                    })?;
+                    // 只有用户按了「获取可用模型」才落盘。打开选择器/设置页也会走到这里，
+                    // 那一次落盘会把「新」的基准推着走，设置页就再也看不到「新」。
+                    // 存的是厂商这次给的列表（没并目录、没写用户字段）；空表不写。
+                    if mode == AvailableModelsMode::Fetch {
+                        model::catalog::save_live(
+                            &self.options.data_dir,
+                            &connection.id,
+                            now_seconds(),
+                            model::catalog::live_models_info(&live_models),
+                        )
+                        .map_err(|error| {
+                            ServiceError::SettingsInvalid(format!("模型列表没保存：{error}"))
+                        })?;
+                    }
                     live_ids = live_models.iter().map(|model| model.id.clone()).collect();
                     models = model::catalog::merge_live(models, live_models);
                     live = true;

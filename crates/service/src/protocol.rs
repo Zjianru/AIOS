@@ -439,10 +439,28 @@ pub struct ConnectionSaveResponse {
     pub connection: credentials::ConnectionInfo,
 }
 
+/// 这一次 `available-models` 是页面「看一眼」，还是用户按了「获取可用模型」。
+///
+/// 看一眼只补目录字段（价格、窗口、档）：不写盘，也不挪动「新」的基准；获取成功才把这次
+/// 的厂商列表存下来。两者混在一起的话，打开选择器或设置页就会把列表存掉，用户看不到「新」。
+/// 缺这个字段的旧页面按「获取」处理：它们只有「获取」这一个入口，行为不变。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum AvailableModelsMode {
+    /// 用户按了「获取可用模型」：厂商返回成功就存下这次的列表，下一次拿它当基准。
+    #[default]
+    Fetch,
+    /// 页面只是要目录字段（价格/窗口/档）：只读，不落盘。
+    Query,
+}
+
 /// 获取某连接的可用模型。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct AvailableModelsRequest {
     pub id: String,
+    /// 看一眼还是获取；见 [`AvailableModelsMode`]。
+    #[serde(default)]
+    pub mode: AvailableModelsMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

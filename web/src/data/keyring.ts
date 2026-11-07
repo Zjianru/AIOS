@@ -1,7 +1,7 @@
 /** T008.4：把服务协议 v3 的 Keyring 视图映射成设置/首次使用页用的原型类型。 */
 import {
   deleteConnection,
-  fetchAvailableModels,
+  discoverAvailableModels,
   fetchModelSettings,
   revokeConnectionKey,
   updateConnectionInfo,
@@ -251,7 +251,7 @@ export async function revokeKey(connectionId: string): Promise<ModelSettingsView
   return getModelSettings();
 }
 
-/** T012.9：从服务问这个连接现在可用的模型（目录 + 厂商列表合并；带窗口/标价）。 */
+/** 用户按「获取可用模型」：从服务问这个连接现在可用的模型（目录 + 厂商列表合并；带窗口/标价）。 */
 export async function discoverModels(connectionId: string): Promise<
   {
     id: string;
@@ -264,7 +264,7 @@ export async function discoverModels(connectionId: string): Promise<
     priceCacheWrite?: number;
   }[]
 > {
-  const { models } = await fetchAvailableModels(connectionId);
+  const { models } = await discoverAvailableModels(connectionId);
   return models.map((row) => ({
     id: row.id,
     name: row.name,

@@ -72,10 +72,10 @@ impl std::fmt::Debug for IssuedSecret {
     }
 }
 
-/// T012.4：连接里的一行模型（价格是用户填的美元/百万 token；None = 用目录标价）。
+/// 连接里的一行模型（价格是用户填的美元/百万 token；None = 用目录标价）。
 ///
-/// T016.6/D75：线上和存储都用 camelCase，和目录的 `ModelInfo` 一套字段名；旧存储的
-/// `context_window`/`max_tokens` 和旧连接的 `price` 用 alias 照读。
+/// 线上和存储都用 camelCase，和目录的 `ModelInfo` 是同一套字段名，页面读一处就够。
+/// 旧存储的 `context_window`/`max_tokens` 和旧连接的 `price` 用 alias 照读，老数据不用迁移。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelRow {
@@ -146,7 +146,7 @@ pub struct ConnectionInfo {
     /// T012.4：预设 id（deepseek/minimax/minimax-cn/custom）。
     #[serde(default)]
     pub preset: String,
-    /// T016.6：模型行。None = 旧存储没有这个键（读的时候补成 [model]）；
+    /// 模型行。None = 旧存储没有这个键（读的时候补成 [model]）；
     /// Some([]) = 显式「跟着厂商的列表走」，不能再补成 [model]。
     #[serde(default)]
     pub models: Option<Vec<ModelRow>>,
@@ -1040,6 +1040,34 @@ mod shape_tests {
             view.connections[0].models,
             Some(Vec::new()),
             "读回仍是空表，不被补成 [model]"
+        );
+    }
+
+    #[test]
+    fn legacy_empty_models_array_follows_the_vendor() {
+        // 旧页面把模型行删光也能保存，存下来就是 models: []。这一版把它读成「跟着厂商走」，
+        // 不再补回 [model]；旧的无键存储仍按 [model] 读（见 old_json_without_models_key…）。
+        let legacy: ConnectionInfo = serde_json::from_value(serde_json::json!({
+            "id": "deepseek",
+            "name": "DeepSeek",
+            "model": "deepseek-flash",
+            "endpoint": "https://api.deepseek.com/anthropic",
+            "saved_at": 1,
+            "check": {"kind": "never"},
+            "key_saved": true,
+            "preset": "deepseek",
+            "price_rate": 1.0,
+            "models": []
+        }))
+        .expect("旧存储");
+        assert_eq!(legacy.models, Some(Vec::new()), "显式空数组不补 [model]");
+        let mut info = legacy;
+        normalize_info(&mut info);
+        assert_eq!(info.models, Some(Vec::new()), "normalize 也不补");
+        assert_eq!(
+            info.primary_model(),
+            "deepseek-flash",
+            "没有存下的厂商列表时退回旧的 model 字段"
         );
     }
 

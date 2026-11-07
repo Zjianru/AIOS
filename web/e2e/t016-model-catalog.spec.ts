@@ -41,9 +41,16 @@ test('设置页获取模型：目录窗口和四类价格都在', async ({ page 
 });
 
 /** 假厂商的 /v1/models：e2e 要看厂商真正回的列表，不用回放脚本那张 404。 */
-async function startVendor(models: string[]): Promise<{ url: string; close: () => Promise<void> }> {
+async function startVendor(models: string[]): Promise<{
+  url: string;
+  /** 收到过几次 /v1/models：用来确认「页面/选择器确实问过厂商」。 */
+  modelsRequests: () => number;
+  close: () => Promise<void>;
+}> {
+  let modelsRequests = 0;
   const server = createServer((request, response) => {
     if (request.url?.includes('/v1/models')) {
+      modelsRequests += 1;
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end(JSON.stringify({ data: models.map((id) => ({ id, display_name: id })) }));
       return;
@@ -59,6 +66,7 @@ async function startVendor(models: string[]): Promise<{ url: string; close: () =
   if (!address || typeof address === 'string') throw new Error('厂商 mock 没拿到端口');
   return {
     url: `http://127.0.0.1:${address.port}`,
+    modelsRequests: () => modelsRequests,
     close: () => new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))),
   };
 }
@@ -177,6 +185,136 @@ test('勾两个模型，选择器里只有这两个', async ({ page, request }) 
     await expect(page.getByRole('menuitem', { name: /deepseek-v4-pro/ })).toHaveCount(0);
   } finally {
     await vendor.close();
+    await fixture.close();
+  }
+});
+
+/// 打开页面/选择器会顺带问一次厂商（补价格、窗口和档），但只有按「获取可用模型」才把
+/// 这一次的列表存下来。隐式查询也落盘的话，「新」的基准会被推着走，设置页就再也看不到「新」。
+test('隐式查询不存厂商列表，按获取才存下并标新', async ({ page, request }) => {
+  const fixture = await startKernelFixture();
+  const vendor = await startVendor(['deepseek-flash', 'vendor-future']);
+  try {
+    const updated = await apiPost(request, fixture, {
+      method: 'connection-update',
+      id: 'deepseek',
+      endpoint: vendor.url,
+      model: 'deepseek-flash',
+    });
+    expect(updated.ok()).toBeTruthy();
+
+    await page.goto(urlOf(fixture));
+    await page.locator('[data-kind="model-picker"]').click();
+    // 首屏和选择器确实问过厂商（补价格/窗口/档，隐式那条路走了），
+    // 但设置页还不该有这家存下的列表。
+    await expect.poll(() => vendor.modelsRequests(), { timeout: 20_000 }).toBeGreaterThan(0);
+    const before = await apiPost(request, fixture, { method: 'model-settings' });
+    expect((await before.json()).listed).not.toHaveProperty('deepseek');
+
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await expect(page.locator('[data-settings="model"]')).toBeVisible({ timeout: 20_000 });
+    await page.getByRole('button', { name: '编辑', exact: true }).first().click();
+    const editor = page.locator('[data-settings="editor"]');
+    await expect(editor).toBeVisible();
+    await editor.getByText('自定义设置').click();
+    await editor.getByRole('button', { name: '获取可用模型' }).click();
+    const discover = editor.locator('[data-settings="discover"]');
+    await expect(discover).toBeVisible({ timeout: 20_000 });
+    // 基准还是内置目录：厂商多出来的那个才算新。
+    await expect(discover.locator('[data-settings="discover-count"]')).toContainText('1 个是新的');
+    await expect(
+      discover.locator('label', { hasText: 'vendor-future' }).locator('[data-settings="fresh"]'),
+    ).toHaveText('新');
+
+    // 按过「获取」以后，这一次的列表才存进设置页的 listed。
+    const after = await apiPost(request, fixture, { method: 'model-settings' });
+    const listed = (await after.json()).listed as Record<string, { models: { id: string }[] }>;
+    expect(listed.deepseek.models.map((row) => row.id)).toEqual(['deepseek-flash', 'vendor-future']);
+  } finally {
+    await vendor.close();
+    await fixture.close();
+  }
+});
+
+/// 换了 API 地址，旧地址存下的厂商列表就不能再算数：小标签和主模型要回到内置目录，
+/// 直到在新地址按一次「获取可用模型」。
+test('换 API 地址后旧厂商列表作废，获取后新表生效', async ({ page, request }) => {
+  const fixture = await startKernelFixture();
+  const first = await startVendor(['deepseek-flash', 'vendor-old']);
+  const second = await startVendor(['deepseek-flash', 'vendor-new']);
+  const listedIds = async () => {
+    const response = await apiPost(request, fixture, { method: 'model-settings' });
+    const listed = (await response.json()).listed as Record<string, { models: { id: string }[] }>;
+    return listed.deepseek?.models.map((row) => row.id) ?? [];
+  };
+  try {
+    const toFirst = await apiPost(request, fixture, {
+      method: 'connection-update',
+      id: 'deepseek',
+      endpoint: first.url,
+      model: 'deepseek-flash',
+    });
+    expect(toFirst.ok()).toBeTruthy();
+
+    await page.goto(urlOf(fixture));
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await expect(page.locator('[data-settings="model"]')).toBeVisible({ timeout: 20_000 });
+    await page.getByRole('button', { name: '编辑', exact: true }).first().click();
+    const editor = page.locator('[data-settings="editor"]');
+    await expect(editor).toBeVisible();
+    await editor.getByText('自定义设置').click();
+    await editor.getByRole('button', { name: '获取可用模型' }).click();
+    await expect(editor.locator('[data-settings="discover"]')).toBeVisible({ timeout: 20_000 });
+    expect(await listedIds()).toEqual(['deepseek-flash', 'vendor-old']);
+
+    // 换到另一个地址：旧地址的那份列表马上失效。
+    const toSecond = await apiPost(request, fixture, {
+      method: 'connection-update',
+      id: 'deepseek',
+      endpoint: second.url,
+      model: 'deepseek-flash',
+    });
+    expect(toSecond.ok()).toBeTruthy();
+    expect(await listedIds()).toEqual([]);
+
+    // 重新打开设置页，在新地址按获取：新表生效，旧厂商的模型不再出现。
+    await page.goto(urlOf(fixture));
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await expect(page.locator('[data-settings="model"]')).toBeVisible({ timeout: 20_000 });
+    await page.getByRole('button', { name: '编辑', exact: true }).first().click();
+    await expect(editor).toBeVisible();
+    await editor.getByText('自定义设置').click();
+    await editor.getByRole('button', { name: '获取可用模型' }).click();
+    const discover = editor.locator('[data-settings="discover"]');
+    await expect(discover).toBeVisible({ timeout: 20_000 });
+    await expect(discover.locator('[data-settings="discover-count"]')).toContainText('1 个是新的');
+    await expect(discover.locator('label', { hasText: 'vendor-new' })).toBeVisible();
+    await expect(discover.locator('label', { hasText: 'vendor-old' })).toHaveCount(0);
+    expect(await listedIds()).toEqual(['deepseek-flash', 'vendor-new']);
+  } finally {
+    await first.close();
+    await second.close();
+    await fixture.close();
+  }
+});
+
+/// 新连接还没有 Keyring 记录：不能假装去问厂商；按钮不可用，并写明先保存连接。
+test('新连接不能获取可用模型：按钮不可用并写明原因', async ({ page }) => {
+  const fixture = await startKernelFixture();
+  try {
+    await page.goto(urlOf(fixture));
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await expect(page.locator('[data-settings="model"]')).toBeVisible({ timeout: 20_000 });
+    await page.getByRole('button', { name: '添加模型提供商' }).click();
+    const add = page.locator('[data-settings="add"]');
+    await expect(add).toBeVisible();
+    await add.getByText('自定义设置').click();
+    const button = add.getByRole('button', { name: '获取可用模型' });
+    await expect(button).toBeDisabled();
+    await expect(button).toHaveAttribute('title', '保存连接后，才能向厂商要真实列表');
+    await expect(add).toContainText('保存连接后，才能向厂商要真实列表；现在列的是内置目录。');
+  } finally {
     await fixture.close();
   }
 });

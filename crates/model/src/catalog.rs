@@ -429,6 +429,17 @@ pub fn save_live(
     std::fs::write(path, json).map_err(|error| error.to_string())
 }
 
+/// 丢掉一个连接存下的厂商列表：换了厂商身份（地址或预设）以后，旧表不能再算数。
+///
+/// 没存过不算失败——那已经是「没有旧表」的状态。
+pub fn remove_live(data_dir: &Path, connection_id: &str) -> Result<(), String> {
+    match std::fs::remove_file(live_path(data_dir, connection_id)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 /// 目录来源（缓存/快照/网络）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CatalogSource {
@@ -787,5 +798,40 @@ mod tests {
             models_url("https://relay.example.com"),
             "https://relay.example.com/v1/models"
         );
+    }
+
+    #[test]
+    fn empty_live_list_is_not_written_and_keeps_the_previous_file() {
+        let dir = temp_dir("live-empty");
+        let saved = live_models_info(&[LiveModel {
+            id: "m1".to_owned(),
+            display_name: None,
+            context_window: None,
+            max_tokens: None,
+        }]);
+        save_live(&dir, "conn", 7, saved).expect("存列表");
+        save_live(&dir, "conn", 8, Vec::new()).expect("空表不写");
+        let live = read_live(&dir, "conn").expect("上一次的文件还在");
+        assert_eq!(live.fetched_at, 7, "空表不动上一次的时间");
+        assert_eq!(
+            live.models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["m1"]
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn unreadable_live_file_reads_as_missing() {
+        let dir = temp_dir("live-broken");
+        assert!(read_live(&dir, "conn").is_none(), "没存过是 None");
+        std::fs::create_dir_all(live_dir(&dir)).expect("列表目录");
+        std::fs::write(live_path(&dir, "conn"), "").expect("空文件");
+        assert!(read_live(&dir, "conn").is_none(), "空文件读不出来");
+        std::fs::write(live_path(&dir, "conn"), "{\"fetchedAt\":").expect("坏 JSON");
+        assert!(read_live(&dir, "conn").is_none(), "坏 JSON 读不出来");
+        std::fs::remove_dir_all(dir).ok();
     }
 }

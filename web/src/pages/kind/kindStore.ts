@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 import { toast } from 'sonner';
-import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchAvailableModels, fetchEventsPage, fetchFirstUse, fetchStatus, recheckRoot, reportMonitor, selectSessionModel, sendMessage, setUnauthorizedHandler, updateSettings } from '@/data/service';
+import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchEventsPage, fetchFirstUse, fetchStatus, peekAvailableModels, recheckRoot, reportMonitor, selectSessionModel, sendMessage, setUnauthorizedHandler, updateSettings } from '@/data/service';
 import type { ServiceCatalogModel } from '@/data/service';
 import type { Currency } from '@/lib/numbers';
 import { effortName } from './effortName';
@@ -866,7 +866,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
     let models = catalogCache.get(connectionId);
     if (models === undefined) {
       try {
-        models = (await fetchAvailableModels(connectionId)).models;
+        models = (await peekAvailableModels(connectionId)).models;
         catalogCache.set(connectionId, models);
       } catch {
         models = [];
@@ -936,14 +936,15 @@ export const useKindStore = create<KindState>()((set, get) => ({
           },
         }));
       }
-      // T012.9：当前模型（连接/模型/档由服务 status 给；价格/窗口/档位来自模型目录）。
+      // 当前模型（连接/模型/档由服务 status 给；价格/窗口/档位来自模型目录）：
+      // 目录只是补字段，只读地问，不落盘、不动「新」的基准。
       // T012 F2：只在首次初始化时写 model；之后由 applySelection 维护，避免 refreshStats 异步回来覆盖用户刚做的选择。
       if (status.stats && !get().modelInitialized) {
         const stats = status.stats;
         let models = catalogCache.get(stats.connection);
         if (models === undefined) {
           try {
-            const catalog = await fetchAvailableModels(stats.connection);
+            const catalog = await peekAvailableModels(stats.connection);
             models = catalog.models;
             catalogCache.set(stats.connection, models);
           } catch {

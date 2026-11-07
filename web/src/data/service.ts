@@ -541,10 +541,26 @@ export interface ServiceCatalogModel {
   efforts?: string[];
 }
 
-export async function fetchAvailableModels(
+/** 只看一眼可用模型（打开选择器、补价格/窗口/档）：服务端不落盘，「新」的基准也不动。 */
+export async function peekAvailableModels(
   id: string,
 ): Promise<{ models: ServiceCatalogModel[]; live: boolean }> {
-  return post<{ models: ServiceCatalogModel[]; live: boolean }>({ method: 'available-models', id });
+  return post<{ models: ServiceCatalogModel[]; live: boolean }>({
+    method: 'available-models',
+    id,
+    mode: 'query',
+  });
+}
+
+/** 用户按了「获取可用模型」：厂商这次的列表由服务端存下，下次拿它当「新」的基准。 */
+export async function discoverAvailableModels(
+  id: string,
+): Promise<{ models: ServiceCatalogModel[]; live: boolean }> {
+  return post<{ models: ServiceCatalogModel[]; live: boolean }>({
+    method: 'available-models',
+    id,
+    mode: 'fetch',
+  });
 }
 
 /** T012.8b：连接余额（厂商币种）或套餐余量（MiniMax：5 小时窗口/每周剩余百分比）。 */
