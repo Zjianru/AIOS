@@ -2241,6 +2241,48 @@ mod t015_local_file_tests {
     }
 
     #[tokio::test]
+    async fn rejects_external_host_header() {
+        let fixture = fixture().await;
+        let file = fixture.work.join("answer.html");
+        std::fs::write(&file, "<h1>x</h1>").expect("写文件");
+        let mut headers = fixture.headers.clone();
+        headers.insert(HOST, "evil.example:1417".parse().expect("Host"));
+        let response = call(
+            &fixture.state,
+            &headers,
+            "/local-file",
+            Some(file.to_str().expect("路径")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unreadable_file_is_404() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = fixture().await;
+        let file = fixture.work.join("unreadable.html");
+        std::fs::write(&file, "<h1>secret</h1>").expect("写文件");
+        let permissions = std::fs::metadata(&file).expect("metadata").permissions();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).expect("chmod 000");
+        // root（或忽略权限位的文件系统）读得到 000 文件，这条用例没有可断言的拒绝面：跳过。
+        let denied = std::fs::read(&file).is_err();
+        let response = call(
+            &fixture.state,
+            &fixture.headers,
+            "/local-file",
+            Some(file.to_str().expect("路径")),
+        )
+        .await;
+        std::fs::set_permissions(&file, permissions).expect("恢复权限");
+        if denied {
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
+    }
+
+    #[tokio::test]
     async fn rejects_symlink_escape() {
         let fixture = fixture().await;
         let outside = fixture.dir.path().join("outside.html");
