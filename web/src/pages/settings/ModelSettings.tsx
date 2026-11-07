@@ -19,7 +19,9 @@ import {
   resetKeyring, revokeKey, setDisabledModels, updateConnection,
 } from '@/data/keyring';
 import { matchDisabled } from '@/data/disabled';
-import { displayPath, fetchConnectionQuota, type ServiceQuota } from '@/data/service';
+import {
+  checkDisabledModels, displayPath, fetchConnectionQuota, type DisabledModelUser, type ServiceQuota,
+} from '@/data/service';
 import { CURRENCIES } from '@/lib/numbers';
 import { useKindStore } from '@/pages/kind/kindStore';
 import type { ConnectionView, ModelRow, ModelSettingsView } from '@/data/fixtures/settings';
@@ -480,16 +482,41 @@ function ModelCatalog({ models, onChange, defaults, discover, required, connecti
             <>
               <div>跟着厂商的列表走，厂商新出的自动算进来。只想用其中几个，就「获取可用模型」勾上。</div>
               <div className="mt-2 flex flex-wrap justify-center gap-1.5">
-                {followModels.map((row) => (
-                  <span
-                    key={row.id}
-                    className="inline-flex items-center rounded-btn border border-line-2 px-2 py-0.5 brand-type text-1 text-ink-2"
-                    data-settings="vendor-model"
-                    title={row.name ?? row.id}
-                  >
-                    {row.id}
-                  </span>
-                ))}
+                {followModels.map((row) => {
+                  const rule = blockedBy(row.id);
+                  return (
+                    <span
+                      key={row.id}
+                      className="inline-flex items-center gap-1 rounded-btn border border-line-2 py-0.5 pl-2 pr-0.5 brand-type text-1 text-ink-2"
+                      data-settings="vendor-model"
+                      title={row.name ?? row.id}
+                    >
+                      <span className={cn(rule && "line-through")}>{row.id}</span>
+                      {onMask && connectionId ? (
+                        rule ? (
+                          <span
+                            className="grid size-5 place-items-center text-fail"
+                            title={"已屏蔽（规则「" + rule + "」）"}
+                            data-settings="vendor-masked"
+                          >
+                            <Ban className="size-3" />
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            aria-label={"屏蔽 " + row.id}
+                            title="屏蔽：立即不让用，不删除"
+                            onClick={() => onMask(connectionId + "/" + row.id)}
+                            className="grid size-5 place-items-center rounded-btn text-ink-3 hover:bg-[var(--fail-soft)] hover:text-[var(--fail)]"
+                            data-settings="vendor-mask"
+                          >
+                            <Ban className="size-3" />
+                          </button>
+                        )
+                      ) : null}
+                    </span>
+                  );
+                })}
               </div>
               {!discover ? (
                 <div className="mt-2 text-1">保存连接后，才能向厂商要真实列表；现在列的是内置目录。</div>
@@ -1005,7 +1032,7 @@ function MaskSection({ view, onView }: {
     <section className="mt-10" data-settings="masked">
       <h2 className="text-3 font-medium text-ink">已屏蔽的模型</h2>
       <p className="mt-1.5 text-2 leading-5 text-ink-2">
-        屏蔽的模型不让用：每次请求前查一遍。模型选择器里照样列出，标「已屏蔽」，选不了。
+        屏蔽的模型不让用：每次请求前查一遍，正在跑的一轮也会停下。模型选择器里照样列出，标「已屏蔽」，选不了。
         屏蔽不是删除，历史和用量照常显示。
       </p>
       <div className="mt-3 rounded-card border border-line" data-settings="mask-list">
@@ -1037,29 +1064,95 @@ function MaskSection({ view, onView }: {
   );
 }
 
-/** 屏蔽前的简单确认：立即生效，不用再点保存（「谁在用」整张确认框是下一张票）。 */
-function MaskConfirmDialog({ pattern, busy, onCancel, onConfirm }: {
+/**
+ * 屏蔽前先列出谁在用（照原型 MaskDialog）：命中的模型和使用者都由服务的
+ * disabled-models-check 给，页面不自己匹配。
+ */
+function MaskDialog({ pattern, busy, onCancel, onConfirm }: {
   pattern: string;
   busy: boolean;
   onCancel: () => void;
-  onConfirm: () => void;
+  onConfirm: (wasRunning: boolean) => void;
 }) {
+  const [check, setCheck] = useState<{ hits: string[]; users: DisabledModelUser[] } | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let live = true;
+    setCheck(null);
+    setFailed(false);
+    void checkDisabledModels(pattern)
+      .then((next) => {
+        if (live) setCheck(next);
+      })
+      .catch(() => {
+        if (live) setFailed(true);
+      });
+    return () => {
+      live = false;
+    };
+  }, [pattern]);
+  const users = check?.users ?? [];
+  const running = users.some((item) => item.kind === 'kind-chat' && item.running);
+  const inUse = users.some((item) => item.kind === 'kind-chat');
   return (
     <Dialog open onOpenChange={(open) => (open ? null : onCancel())}>
       <DialogContent data-settings="mask-confirm">
         <DialogHeader>
           <DialogTitle>屏蔽「{pattern}」？</DialogTitle>
           <DialogDescription>
-            确认后立即生效，不用再点保存。模型还在列表里，标「已屏蔽」，选不了；历史和用量照常显示。
+            {check
+              ? check.hits.length
+                ? '现在匹配 ' + check.hits.length + ' 个：' + check.hits.join('、') + '。'
+                : '现在不匹配任何模型；以后出现了也会被拒。'
+              : failed
+                ? '读不到谁在用；先别动这条规则。'
+                : '正在查谁在用…'}
+            {' '}确认后立即不让用，不用再点保存。
           </DialogDescription>
         </DialogHeader>
+        <div className="text-2">
+          <div className="mb-1.5 text-ink-2">谁在用</div>
+          {failed ? (
+            <div className="text-ink-3">读不到谁在用；关掉重试。</div>
+          ) : !check ? (
+            <div className="text-ink-3">正在查…</div>
+          ) : users.length ? (
+            <div className="rounded-card border border-line">
+              {users.map((item, index) => (
+                <div
+                  key={item.kind}
+                  className={cn('flex gap-3 px-3 py-2', index > 0 && 'border-t border-line')}
+                  data-settings="mask-user"
+                >
+                  <span className="w-20 shrink-0 text-ink">{item.kind === 'kind-chat' ? 'Kind 对话' : '新会话'}</span>
+                  <span style={{ color: 'var(--' + (item.kind === 'kind-chat' && item.running ? 'fail' : 'wait') + ')' }}>
+                    {item.kind === 'kind-chat'
+                      ? item.running
+                        ? '这一轮还在跑，会立即停下'
+                        : '下一轮发不出去'
+                      : '会用上一次选的'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-ink-3">现在没有地方在用。</div>
+          )}
+          {inUse ? (
+            <p className="mt-2 text-1 leading-4 text-ink-3">
+              {running
+                ? '停下的那一轮已经做的留着；接着用哪个模型、从哪接，由你在对话里定。AIOS 不会自己换模型。'
+                : '接着用哪个模型由你在对话里选。AIOS 不会自己换模型。'}
+            </p>
+          ) : null}
+        </div>
         <DialogFooter>
           <Btn kind="plain" onClick={onCancel}>取消</Btn>
           <Btn
             kind="primary"
             className="!bg-[var(--fail)] !text-white"
-            disabled={busy}
-            onClick={onConfirm}
+            disabled={busy || !check}
+            onClick={() => onConfirm(running)}
           >
             {busy ? '正在保存…' : '屏蔽'}
           </Btn>
@@ -1110,7 +1203,7 @@ export function ModelSettings() {
     }
   };
 
-  const mask = async () => {
+  const mask = async (wasRunning: boolean) => {
     if (!masking) return;
     const pattern = masking;
     setMaskBusy(true);
@@ -1118,7 +1211,7 @@ export function ModelSettings() {
       setView(await setDisabledModels(view ? [...view.disabledModels, pattern] : [pattern]));
       // 页面不用刷新：选择器上的「已屏蔽」立刻跟上。
       await refreshMasks();
-      toast('已屏蔽「' + pattern + '」');
+      toast('已屏蔽「' + pattern + '」' + (wasRunning ? '；Kind 对话里在跑的一轮已经停下' : ''));
       setMasking(null);
     } catch (error) {
       toast.error((error as Error).message);
@@ -1213,11 +1306,11 @@ export function ModelSettings() {
       <KeyringSection view={view} onView={setView} />
 
       {masking ? (
-        <MaskConfirmDialog
+        <MaskDialog
           pattern={masking}
           busy={maskBusy}
           onCancel={() => setMasking(null)}
-          onConfirm={() => void mask()}
+          onConfirm={(wasRunning) => void mask(wasRunning)}
         />
       ) : null}
     </div>

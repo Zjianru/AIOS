@@ -487,8 +487,10 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
             raw.status = 'completed';
             break;
           case 'aborted':
-          case 'interrupted':
-            raw.status = 'interrupted';
+          case 'interrupted': {
+            // 屏蔽打断的一轮走失败块（和 MODEL_DISABLED 同一类），不写「你停下了这一轮」。
+            const masked = event.cause === 'masked';
+            raw.status = masked ? 'failed' : 'interrupted';
             raw.stoppedAt = clock();
             for (const tool of raw.tools) {
               if (tool.state === 'running') tool.state = 'stopped';
@@ -496,7 +498,11 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
             if (raw.question && raw.question.status === 'pending') {
               raw.question = { status: 'void', questions: raw.question.questions };
             }
+            if (masked) {
+              raw.failure = { cause: 'masked', reason: '模型在设置里被屏蔽了' };
+            }
             break;
+          }
           case 'error': {
             raw.status = 'failed';
             const failure = reason.error as { message?: string; code?: string } | undefined;

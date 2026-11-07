@@ -367,6 +367,21 @@ export async function setDisabledModels(models: string[]): Promise<string[]> {
   return response.models;
 }
 
+/** 谁在用：当前 Kind 对话（带是否在跑）与新会话（上一次选的）。 */
+export type DisabledModelUser =
+  | { kind: 'kind-chat'; running: boolean }
+  | { kind: 'new-sessions' };
+
+/** 一条规则现在匹配哪些模型、谁在用（确认框用；页面不自己匹配）。 */
+export interface DisabledModelsCheck {
+  hits: string[];
+  users: DisabledModelUser[];
+}
+
+export async function checkDisabledModels(pattern: string): Promise<DisabledModelsCheck> {
+  return post<DisabledModelsCheck>({ method: 'disabled-models-check', pattern });
+}
+
 /** 存/换连接；key 只在这一次请求体里。 */
 export async function saveConnection(input: SaveConnectionInput): Promise<ServiceConnectionInfo> {
   const response = await post<{ connection: ServiceConnectionInfo }>({
