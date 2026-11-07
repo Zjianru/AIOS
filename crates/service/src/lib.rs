@@ -1578,10 +1578,21 @@ impl RootHost {
         if self.state.lock().expect("root state 锁被毒化").clone() == RootState::Ok {
             return RootState::Ok;
         }
-        let mut options = self.options.clone();
         let wanted = self.selection.lock().expect("selection 锁被毒化").clone();
+        match self.reopen(wanted.as_ref()).await {
+            Ok(()) => RootState::Ok,
+            Err(state) => state,
+        }
+    }
+
+    /// 重开根会话：按想要的选择解析连接，放掉旧 Agent（释放会话写锁），打开同一条根会话，
+    /// 装回宿主。失败时把不可用状态写回；调用方决定报错（跨连接切换）还是只报状态（recheck）。
+    ///
+    /// `wanted` = None 表示没有会话选择（新会话），实现方按 settings/默认连接解析。
+    async fn reopen(&self, wanted: Option<&session::ModelSelection>) -> Result<(), RootState> {
+        let mut options = self.options.clone();
         if let Some(factory) = options.model_factory.clone() {
-            match factory(wanted.as_ref()) {
+            match factory(wanted) {
                 Ok((connection, model, credentials)) => {
                     *self.selection.lock().expect("selection 锁被毒化") =
                         Some(session::ModelSelection {
@@ -1600,25 +1611,29 @@ impl RootHost {
                         message,
                     };
                     *self.state.lock().expect("root state 锁被毒化") = state.clone();
-                    return state;
+                    return Err(state);
                 }
             }
         }
         self.notify_keyring_changed();
+        // 新连接可能换模型/窗口，重开时上下文从新窗口重新算。
         let window = options.model.context_window;
         *self.window.lock().expect("window 锁被毒化") = window;
         *self.context.lock().expect("context 锁被毒化") = ContextUsage { used: 0, window };
+        // 先放掉旧 Agent（释放会话写锁）再重开同一会话；recheck 时通常已经是 None。
+        let old = self.inner.lock().await.take();
+        drop(old);
         match open_root_session(options).await {
             Ok(root) => {
                 let current = self.selection.lock().expect("selection 锁被毒化").clone();
                 ensure_initial_selection(&root.agent, current.as_ref()).await;
                 self.install(root.agent).await;
-                RootState::Ok
+                Ok(())
             }
             Err(error) => {
                 let state = RootState::from_root_error(&error);
                 *self.state.lock().expect("root state 锁被毒化") = state.clone();
-                state
+                Err(state)
             }
         }
     }
@@ -2121,7 +2136,9 @@ impl RootHost {
         };
         *self.selection.lock().expect("selection 锁被毒化") = Some(target.clone());
         if cross_connection && idle {
-            self.rebuild_with(&target).await?;
+            self.reopen(Some(&target))
+                .await
+                .map_err(ServiceError::RootUnavailable)?;
         }
         // T012.7 审计 P2：响应报实际生效的选择（跨连接重建后 factory 解析的 connection 可能不同）。
         let actual = self
@@ -2147,49 +2164,6 @@ impl RootHost {
             effort_wanted: actual.effort_wanted,
             effort_actual,
         })
-    }
-
-    /// T012.7：按新的选择重建根 agent（跨连接热切换；用 factory 解析新连接）。
-    async fn rebuild_with(&self, selection: &session::ModelSelection) -> Result<(), ServiceError> {
-        let mut options = self.options.clone();
-        if let Some(factory) = options.model_factory.clone() {
-            match factory(Some(selection)) {
-                Ok((connection, model, credentials)) => {
-                    *self.selection.lock().expect("selection 锁被毒化") =
-                        Some(session::ModelSelection {
-                            connection,
-                            model: model.model.clone(),
-                            effort_wanted: model.effort.as_str().to_owned(),
-                        });
-                    options.model = model;
-                    options.credentials = credentials;
-                }
-                Err(message) => {
-                    let state = RootState::Unavailable {
-                        kind: RootUnavailableKind::Other,
-                        path: None,
-                        line: None,
-                        message,
-                    };
-                    *self.state.lock().expect("root state 锁被毒化") = state.clone();
-                    return Err(ServiceError::RootUnavailable(state));
-                }
-            }
-        }
-        // 先放掉旧 Agent（释放会话写锁）再重开同一会话。
-        let old = self.inner.lock().await.take();
-        drop(old);
-        match open_root_session(options).await {
-            Ok(root) => {
-                self.install(root.agent).await;
-                Ok(())
-            }
-            Err(error) => {
-                let state = RootState::from_root_error(&error);
-                *self.state.lock().expect("root state 锁被毒化") = state.clone();
-                Err(ServiceError::RootUnavailable(state))
-            }
-        }
     }
 
     /// 唯一调用入口；根会话不可用时除 recheck 外一律拒绝。
