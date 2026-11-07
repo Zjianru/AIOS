@@ -375,13 +375,20 @@ impl RootHost {
             // endpoint 以 /anthropic 结尾时列表在 Chat base 的 /v1/models。
             let url = model::catalog::models_url(&connection.endpoint);
             let mut request = client.get(url).timeout(std::time::Duration::from_secs(5));
+            // 没记过单个头时两个都发：MiniMax 国内站的 /v1/models 只认 Bearer（messages 双头
+            // 都能过，所以验证不会学到单头）；照 T012.6/Magpie 的默认，列表也两个头一起发。
+            let secret = key.into_secret();
             match connection.auth_header.as_deref() {
                 Some("authorization") => {
-                    request =
-                        request.header("authorization", format!("Bearer {}", key.into_secret()));
+                    request = request.header("authorization", format!("Bearer {secret}"));
+                }
+                Some("x-api-key") => {
+                    request = request.header("x-api-key", secret);
                 }
                 _ => {
-                    request = request.header("x-api-key", key.into_secret());
+                    request = request
+                        .header("x-api-key", secret.clone())
+                        .header("authorization", format!("Bearer {secret}"));
                 }
             }
             if let Ok(response) = request.send().await
