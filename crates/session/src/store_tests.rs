@@ -1,4 +1,4 @@
-//! T006.5a → T016.3：日志版本读 14–16（旧版原样读、续写 header 留原版本）、13- 与 17+ 拒绝且文件不动；只读读取（不截尾）。
+//! 日志版本读 14–16（旧版原样读、续写 header 留原版本）、13- 与 17+ 拒绝且文件不动；只读读取（不截尾）。
 //!
 //! DSH 依据：`packages/core/session/src/types.ts:90`（SESSION_FORMAT_VERSION）、
 //! `packages/session/session-persistence-jsonl/README.md:77,87,93`（读打开不改历史；
