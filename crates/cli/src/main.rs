@@ -248,9 +248,16 @@ struct KeyringCredentialSource {
     connection: String,
     /// K4：外部 keyring set 改 key 后，签发时把监控脱敏列表刷新。
     monitor: Option<Monitor>,
+    /// 屏蔽表在 settings.json（数据目录下）；聊天、重试、摘要都先过它。
+    data_dir: PathBuf,
 }
 
 impl model::CredentialSource for KeyringCredentialSource {
+    /// 出站前查一次屏蔽表：被拒就不签发、不发请求（和 service 的验证走同一份规则）。
+    fn admit(&self, model: &str) -> Result<(), model::ModelError> {
+        service::disabled::admit(&self.data_dir, &self.connection, model)
+    }
+
     fn issue(
         &self,
         purpose: &str,
@@ -408,6 +415,7 @@ fn model_with_keyring(
         keyring,
         connection: connection.id.clone(),
         monitor: monitor.cloned(),
+        data_dir: data_dir.clone(),
     };
     Ok((
         connection.id,
@@ -1769,6 +1777,7 @@ mod f1_redaction_tests {
             keyring: std::sync::Arc::clone(&keyring),
             connection: "deepseek".to_owned(),
             monitor: None,
+            data_dir: data.path().to_path_buf(),
         };
         assert_eq!(source.auth_header(), None, "还没学到的连接默认两个头都发");
         source.remember_auth_header("authorization");
