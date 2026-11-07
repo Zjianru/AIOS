@@ -690,3 +690,10 @@ export async function startT015DodFixture(caseName: string): Promise<KernelFixtu
     path.join(process.env.AIOS_T015_DOD_ROOT ?? '/tmp/aios-t015-dod', caseName),
   );
 }
+
+/** T016.7 DoD2：真 key（MiniMax 国内站）获取/打断/再发/解除——/tmp/aios-t016-dod 下的数据目录。 */
+export async function startT016DodFixture(caseName: string): Promise<KernelFixture> {
+  return startDodConnectFixture(
+    path.join(process.env.AIOS_T016_DOD_ROOT ?? '/tmp/aios-t016-dod', caseName),
+  );
+}
