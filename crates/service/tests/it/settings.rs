@@ -781,7 +781,7 @@ fn stored_live(data_dir: &Path, connection: &str) -> (Vec<String>, u64) {
 /// 厂商列表接口只认 Authorization（MiniMax 国内站真 key：messages 双头都过，列表只认 Bearer）：
 /// 连接没记过单个头时，列表请求要照 T012.6/Magpie 默认把两个头都发上，不能只发 x-api-key。
 #[tokio::test]
-async fn 厂商列表只认Bearer时默认两个鉴权头都发() {
+async fn 厂商列表只认小写bearer时默认两个鉴权头都发() {
     model::catalog::set_global(model::catalog::snapshot());
     let server = MockServer::start().await;
     Mock::given(method("GET"))
