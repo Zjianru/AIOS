@@ -402,6 +402,8 @@ fn model_with_keyring(
     let (mut deepseek_config, agent_config) =
         config_from_args(&resolved_common, connection.endpoint.clone())?;
     deepseek_config.model = model;
+    deepseek_config.provider =
+        model::catalog::provider_id_for_connection(&connection.preset, &connection.endpoint);
     let source = KeyringCredentialSource {
         keyring,
         connection: connection.id.clone(),

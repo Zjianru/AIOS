@@ -31,11 +31,8 @@ pub fn effective_price(
     // T012 F1：逐字段取价——用户填了的格原样用（不乘倍率），没填的格用目录标价 × 连接倍率；
     // 某格两边都没有就是 None（有这一类用量时这一轮无价格）。
     let user = connection.models.iter().find(|row| row.id == model);
-    let provider = if connection.preset.is_empty() || connection.preset == "custom" {
-        model::catalog::provider_id_for_endpoint(&connection.endpoint)
-    } else {
-        connection.preset.clone()
-    };
+    let provider =
+        model::catalog::provider_id_for_connection(&connection.preset, &connection.endpoint);
     let info = catalog
         .models_for(&provider)
         .into_iter()

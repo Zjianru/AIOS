@@ -178,7 +178,10 @@ impl RootHost {
             .into_secret();
         // 验证走模型适配器（和对话同一条请求路径/同一组头），不再手写 reqwest。
         let config = model::DeepSeekConfig {
-            provider: "deepseek".to_owned(),
+            provider: model::catalog::provider_id_for_connection(
+                &connection.preset,
+                &connection.endpoint,
+            ),
             base_url: connection.endpoint.clone(),
             // K3：验证用连接所选模型（新形状的 models 第一行）序列化。
             model: connection.primary_model().to_owned(),
@@ -247,11 +250,8 @@ impl RootHost {
             })?;
         let key = keyring.issue(&request.id, "models-list", None, None)?;
         let catalog = model::catalog::global().unwrap_or_else(model::catalog::snapshot);
-        let provider_id = if connection.preset.is_empty() || connection.preset == "custom" {
-            model::catalog::provider_id_for_endpoint(&connection.endpoint)
-        } else {
-            connection.preset.clone()
-        };
+        let provider_id =
+            model::catalog::provider_id_for_connection(&connection.preset, &connection.endpoint);
         let mut models = catalog.models_for(&provider_id);
         let mut live = false;
         if let Ok(client) = model::http::client() {

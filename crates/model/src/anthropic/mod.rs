@@ -28,6 +28,18 @@ use translate::Translator;
 
 use config::STREAM_IDLE_TIMEOUT;
 
+/// 模型自己的默认档：先按连接的真实厂商 id 查目录，查不到再用地址/模型名的内置表。
+/// 新连接没有用户选择时用它（不是写死 high）。
+pub fn default_effort_for(provider: &str, base_url: &str, model: &str) -> String {
+    if let Some((_thinks, efforts)) = crate::catalog::global()
+        .as_ref()
+        .and_then(|catalog| catalog.reasoning_for(provider, model))
+    {
+        return crate::default_effort(&efforts);
+    }
+    crate::default_effort(&vendors::reasoning(base_url, model).efforts)
+}
+
 /// DeepSeek 的 Messages 适配器。
 #[derive(Clone)]
 pub struct DeepSeek {
@@ -83,8 +95,11 @@ impl DeepSeek {
 
     /// T012.3：这个模型的 DefaultEffort（压缩摘要用）。
     pub fn default_effort(&self) -> Effort {
-        let profile = vendors::reasoning(&self.config.base_url, &self.config.model);
-        Effort::new(crate::default_effort(&profile.efforts))
+        Effort::new(default_effort_for(
+            &self.config.provider,
+            &self.config.base_url,
+            &self.config.model,
+        ))
     }
 
     /// T012.3：同一连接/模型换一个要的档（压缩摘要用；不改原实例）。
@@ -182,9 +197,9 @@ impl DeepSeek {
         }
     }
 
-    /// provider 路由 id（DSH 的 provider 名；AIOS 只接 DeepSeek）。
-    pub fn provider(&self) -> &'static str {
-        "deepseek"
+    /// 厂商路由 id（DSH 的 provider 名）：日志、统计和压缩策略都按它匹配。
+    pub fn provider(&self) -> &str {
+        &self.config.provider
     }
 
     /// 发一次流式请求。消息和工具定义按 Messages 协议序列化（system 单独成字段）。
