@@ -73,41 +73,32 @@ impl std::fmt::Debug for IssuedSecret {
 }
 
 /// T012.4：连接里的一行模型（价格是用户填的美元/百万 token；None = 用目录标价）。
+///
+/// T016.6/D75：线上和存储都用 camelCase，和目录的 `ModelInfo` 一套字段名；旧存储的
+/// `context_window`/`max_tokens` 和旧连接的 `price` 用 alias 照读。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelRow {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        alias = "context_window"
+    )]
     pub context_window: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "max_tokens")]
     pub max_tokens: Option<u32>,
     /// T012 F1：用户填的四类单价（美元/百万 token，不乘倍率）。旧连接只有单数 `price`，
     /// 读入时当作输入价和输出价（alias）；缓存两格可以不填。
-    #[serde(
-        rename = "priceInput",
-        alias = "price",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "price")]
     pub price_input: Option<f64>,
-    #[serde(
-        rename = "priceOutput",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price_output: Option<f64>,
-    #[serde(
-        rename = "priceCacheRead",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price_cache_read: Option<f64>,
-    #[serde(
-        rename = "priceCacheWrite",
-        default,
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price_cache_write: Option<f64>,
 }
 
@@ -122,7 +113,9 @@ pub struct ConnectionUpdate {
     pub auth_header: Option<String>,
 }
 
-/// 新建/覆盖一个连接时传入的内容（key 只在这一步进来；models 为空时用 model 一行）。
+/// 新建/覆盖一个连接时传入的内容（key 只在这一步进来）。
+///
+/// models = None 时用 model 一行；Some([]) 是「跟着厂商走」，不再补 [model]。
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct NewConnection {
     pub id: String,
@@ -187,7 +180,8 @@ fn default_key_saved() -> bool {
 
 /// T012.4：旧存储只有 model——读的时候当成 models=[model]、preset=deepseek。
 fn normalize_info(info: &mut ConnectionInfo) {
-    if info.models.as_ref().is_none_or(Vec::is_empty) && !info.model.is_empty() {
+    // 只在没有这个键时补 [model]；显式 `[]` 是「跟着厂商走」，不能补。
+    if info.models.is_none() && !info.model.is_empty() {
         info.models.get_or_insert_with(Vec::new).push(ModelRow {
             id: info.model.clone(),
             name: None,
@@ -970,7 +964,7 @@ mod shape_tests {
             auth_header: None,
         };
         normalize_info(&mut info);
-        assert_eq!(info.models.as_deref().map(|models| models.len()), Some(1));
+        assert_eq!(info.models.as_deref().map(<[ModelRow]>::len), Some(1));
         assert_eq!(
             info.models.as_deref().and_then(|models| models.first()),
             Some(&ModelRow {
@@ -1106,7 +1100,7 @@ mod shape_tests {
             })
             .expect("save");
         assert_eq!(info.preset, "minimax-cn");
-        assert_eq!(info.models.as_deref().map(|models| models.len()), Some(1));
+        assert_eq!(info.models.as_deref().map(<[ModelRow]>::len), Some(1));
         assert_eq!(info.price_rate, 0.0);
         let reopened = Keyring::open(data.path(), Some(&identity)).expect("reopen");
         let view = reopened.view();

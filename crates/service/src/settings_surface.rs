@@ -77,17 +77,29 @@ impl RootHost {
         Ok(())
     }
 
-    /// 设置页的 Keyring 视图（响应不含 key 正文）加上屏蔽表。
+    /// 设置页的 Keyring 视图（响应不含 key 正文）加上屏蔽表和每个连接存下的厂商列表。
     ///
-    /// disabledUnknown / disabledHits / listed 是占位（带检查的读法与匹配数据还要再扩展），
-    /// 字段形状已经在协议 8 里定下，旧页忽略。
+    /// disabledUnknown / disabledHits 是 .5/.4 的落点；listed 这一版填真实值。
     pub async fn model_settings(&self) -> Result<ModelSettingsResponse, ServiceError> {
+        let view = self.keyring()?.view();
+        let mut listed = std::collections::BTreeMap::new();
+        for connection in &view.connections {
+            if let Some(live) = model::catalog::read_live(&self.options.data_dir, &connection.id) {
+                listed.insert(
+                    connection.id.clone(),
+                    crate::protocol::ListedModels {
+                        fetched_at: live.fetched_at,
+                        models: live.models,
+                    },
+                );
+            }
+        }
         Ok(ModelSettingsResponse {
-            settings: self.keyring()?.view(),
+            settings: view,
             disabled_models: crate::disabled::disabled_models(&self.options.data_dir),
             disabled_unknown: false,
             disabled_hits: Vec::new(),
-            listed: std::collections::BTreeMap::new(),
+            listed,
         })
     }
 
@@ -279,11 +291,28 @@ impl RootHost {
                 ))
             })?;
         let key = keyring.issue(&request.id, "models-list", None, None)?;
+        let previous = model::catalog::read_live(&self.options.data_dir, &connection.id);
         let catalog = model::catalog::global().unwrap_or_else(model::catalog::snapshot);
         let provider_id =
             model::catalog::provider_id_for_connection(&connection.preset, &connection.endpoint);
-        let mut models = catalog.models_for(&provider_id);
+        let catalog_models = catalog.models_for(&provider_id);
+        // 「新」的基准：上一次存下的厂商列表；从没存过时内置提供方以目录为基准，
+        // 自定义地址没有基准（第一条都不标新）。
+        let baseline: Option<std::collections::HashSet<String>> = match previous {
+            Some(list) if !list.models.is_empty() => {
+                Some(list.models.into_iter().map(|model| model.id).collect())
+            }
+            _ if provider_id != "custom" => Some(
+                catalog_models
+                    .iter()
+                    .map(|model| model.id.clone())
+                    .collect(),
+            ),
+            _ => None,
+        };
+        let mut models = catalog_models;
         let mut live = false;
+        let mut live_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
         if let Ok(client) = model::http::client() {
             // endpoint 以 /anthropic 结尾时列表在 Chat base 的 /v1/models。
             let url = model::catalog::models_url(&connection.endpoint);
@@ -304,6 +333,17 @@ impl RootHost {
             {
                 let live_models = model::catalog::parse_live_models(&value);
                 if !live_models.is_empty() {
+                    // 只存厂商这次给的列表（没并目录、没写用户字段）；空表不写。
+                    model::catalog::save_live(
+                        &self.options.data_dir,
+                        &connection.id,
+                        now_seconds(),
+                        model::catalog::live_models_info(&live_models),
+                    )
+                    .map_err(|error| {
+                        ServiceError::SettingsInvalid(format!("模型列表没保存：{error}"))
+                    })?;
+                    live_ids = live_models.iter().map(|model| model.id.clone()).collect();
                     models = model::catalog::merge_live(models, live_models);
                     live = true;
                 }
@@ -351,10 +391,14 @@ impl RootHost {
         }
         let models = models
             .into_iter()
-            .map(|model| crate::protocol::AvailableModelRow {
-                model,
-                // 占位：和上一次存下的列表比「新」在获取那一侧算。
-                fresh: false,
+            .map(|model| {
+                // 只有厂商这次给的、上一次没见过的才算「新」；目录独有项/用户行不算。
+                let fresh = live
+                    && live_ids.contains(&model.id)
+                    && baseline
+                        .as_ref()
+                        .is_some_and(|baseline| !baseline.contains(&model.id));
+                crate::protocol::AvailableModelRow { model, fresh }
             })
             .collect();
         Ok(AvailableModelsResponse { models, live })

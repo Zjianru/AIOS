@@ -47,6 +47,10 @@ fn variants() -> Vec<(&'static str, ServiceError)> {
         ),
         ("settings/unavailable", ServiceError::SettingsOnBareHost),
         (
+            "settings/unavailable",
+            ServiceError::SettingsInvalid("bad".to_owned()),
+        ),
+        (
             "settings/unreadable",
             ServiceError::SettingsUnreadable("bad".to_owned()),
         ),

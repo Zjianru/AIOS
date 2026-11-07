@@ -358,6 +358,24 @@ pub fn merge_live(catalog_models: Vec<ModelInfo>, live: Vec<LiveModel>) -> Vec<M
     merged
 }
 
+/// 厂商这次给的列表转成可存的 ModelInfo：保持厂商顺序，字段只来自厂商。
+pub fn live_models_info(live: &[LiveModel]) -> Vec<ModelInfo> {
+    live.iter()
+        .map(|live| ModelInfo {
+            id: live.id.clone(),
+            name: live.display_name.clone().unwrap_or_else(|| live.id.clone()),
+            context_window: live.context_window,
+            max_tokens: live.max_tokens,
+            price_input: None,
+            price_output: None,
+            price_cache_read: None,
+            price_cache_write: None,
+            thinks: false,
+            efforts: Vec::new(),
+        })
+        .collect()
+}
+
 /// 一个连接存下的厂商 live 列表（照 Magpie catalog.LivePath 的形状）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -388,8 +406,8 @@ pub fn live_path(data_dir: &Path, connection_id: &str) -> PathBuf {
 
 /// 读一个连接上次存下的厂商列表；没有/读不出来都是 None。
 pub fn read_live(data_dir: &Path, connection_id: &str) -> Option<LiveList> {
-    let _ = (data_dir, connection_id);
-    None
+    let text = std::fs::read_to_string(live_path(data_dir, connection_id)).ok()?;
+    serde_json::from_str(&text).ok()
 }
 
 /// 存一个连接这次从厂商拿到的列表；空列表不写（也不动上一次的文件）。
@@ -399,8 +417,16 @@ pub fn save_live(
     fetched_at: u64,
     models: Vec<ModelInfo>,
 ) -> Result<(), String> {
-    let _ = (data_dir, connection_id, fetched_at, models);
-    Ok(())
+    if models.is_empty() {
+        return Ok(());
+    }
+    let path = live_path(data_dir, connection_id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let json = serde_json::to_string(&LiveList { fetched_at, models })
+        .map_err(|error| error.to_string())?;
+    std::fs::write(path, json).map_err(|error| error.to_string())
 }
 
 /// 目录来源（缓存/快照/网络）。

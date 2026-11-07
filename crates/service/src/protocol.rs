@@ -365,8 +365,7 @@ pub struct ModelSettingsResponse {
     /// 占位（空表）：这一版还没有匹配数据。
     #[serde(rename = "disabledHits")]
     pub disabled_hits: Vec<Vec<String>>,
-    /// 每个连接现在存下的厂商列表，键是连接 id。
-    /// 占位（空表）：这一版还没有存下的列表。
+    /// 每个连接现在存下的厂商列表，键是连接 id（没存过的连接不出现）。
     pub listed: std::collections::BTreeMap<String, ListedModels>,
 }
 
@@ -458,8 +457,8 @@ pub struct AvailableModelsResponse {
 pub struct AvailableModelRow {
     #[serde(flatten)]
     pub model: model::catalog::ModelInfo,
-    /// 和上一次存下的列表比没见过（第一次获取的基准在获取那一侧定）。
-    /// 占位（恒 false）：这一版还没有上一次的列表可比。
+    /// 厂商这次给的模型里，上一次存下的列表没见过的那个（从没存过时：内置提供方
+    /// 和目录比，自定义地址一条都不标）。
     pub fresh: bool,
 }
 
