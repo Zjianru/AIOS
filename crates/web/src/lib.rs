@@ -2336,6 +2336,105 @@ mod t015_local_file_tests {
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
+    /// T015 安全修复：/local-file 给每种文件类型都带同一条隔离 CSP（照 Jupyter 的
+    /// AuthenticatedFileHandler；不按扩展名分），原来的 nosniff/no-store 不丢。
+    #[tokio::test]
+    async fn file_responses_carry_isolation_csp_for_all_types() {
+        let fixture = fixture().await;
+        for (name, body, content_type) in [
+            (
+                "answer.html",
+                "<!doctype html><p>x</p>",
+                "text/html; charset=utf-8",
+            ),
+            (
+                "shape.svg",
+                "<svg xmlns=\"http://www.w3.org/2000/svg\"><text>x</text></svg>",
+                "image/svg+xml",
+            ),
+            ("notes.txt", "text", "text/plain; charset=utf-8"),
+            ("pixel.png", "\u{89}PNG\r\n\u{1a}\n", "image/png"),
+            ("doc.pdf", "%PDF-1.4\n%%EOF\n", "application/pdf"),
+        ] {
+            let file = fixture.work.join(name);
+            std::fs::write(&file, body).expect("写文件");
+            let response = call(
+                &fixture.state,
+                &fixture.headers,
+                "/local-file",
+                Some(file.to_str().expect("路径")),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK, "{name}");
+            assert_eq!(
+                response.headers().get(CONTENT_TYPE).expect("content-type"),
+                content_type,
+                "{name}"
+            );
+            assert_eq!(
+                csp_of(&response),
+                "frame-ancestors 'self'; sandbox allow-scripts",
+                "{name}"
+            );
+            assert_eq!(
+                response
+                    .headers()
+                    .get("x-content-type-options")
+                    .expect("nosniff"),
+                "nosniff",
+                "{name}"
+            );
+            assert_eq!(
+                response.headers().get("cache-control").expect("no-store"),
+                "no-store",
+                "{name}"
+            );
+        }
+    }
+
+    /// 同一个处理器的错误响应也带 CSP：认证失败、路径不存在都不能绕开这条响应策略。
+    #[tokio::test]
+    async fn rejection_responses_carry_isolation_csp() {
+        let fixture = fixture().await;
+        let missing = fixture.work.join("missing.html");
+        let response = call(
+            &fixture.state,
+            &fixture.headers,
+            "/local-file",
+            Some(missing.to_str().expect("路径")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            csp_of(&response),
+            "frame-ancestors 'self'; sandbox allow-scripts"
+        );
+
+        let mut host_only = HeaderMap::new();
+        host_only.insert(HOST, "127.0.0.1:1417".parse().expect("Host"));
+        let response = call(
+            &fixture.state,
+            &host_only,
+            "/local-file",
+            Some(missing.to_str().expect("路径")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            csp_of(&response),
+            "frame-ancestors 'self'; sandbox allow-scripts"
+        );
+    }
+
+    fn csp_of(response: &Response) -> &str {
+        response
+            .headers()
+            .get(HeaderName::from_static("content-security-policy"))
+            .expect("CSP")
+            .to_str()
+            .expect("CSP 文本")
+    }
+
     #[test]
     fn content_type_follows_extension() {
         for (name, expected) in [
