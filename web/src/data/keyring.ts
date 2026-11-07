@@ -125,6 +125,7 @@ function mapView(
   view: ServiceKeyringView,
   disabledModels: string[],
   listed: Record<string, { fetchedAt: number; models: WireRow[] }> = {},
+  disabledHits: string[][] = [],
 ): ModelSettingsView {
   const mappedListed: Record<string, { fetchedAt: string; models: WireRow[] }> = {};
   for (const [id, entry] of Object.entries(listed)) {
@@ -135,6 +136,7 @@ function mapView(
     catalog: CATALOG,
     listed: mappedListed,
     disabledModels,
+    disabledHits,
     keyFile: {
       path: view.key_file.path,
       since: String(view.key_file.since),
@@ -153,14 +155,15 @@ function mapView(
 
 export async function getModelSettings(): Promise<ModelSettingsView> {
   const response = await fetchModelSettings();
-  return mapView(response.settings, response.disabledModels ?? [], response.listed ?? {});
+  return mapView(response.settings, response.disabledModels ?? [], response.listed ?? {}, response.disabledHits ?? []);
 }
 
 /** 整表替换屏蔽规则；返回新的设置视图（立即生效）。 */
 export async function setDisabledModels(models: string[]): Promise<ModelSettingsView> {
-  const normalized = await setDisabledModelsOnService(models);
+  await setDisabledModelsOnService(models);
+  // 规则表和命中表从同一次读里取：页面的「现在匹配 n 个」按位置对齐，不能分两次拼。
   const response = await fetchModelSettings();
-  return mapView(response.settings, normalized, response.listed ?? {});
+  return mapView(response.settings, response.disabledModels ?? [], response.listed ?? {}, response.disabledHits ?? []);
 }
 
 export interface ConnectionDraft {

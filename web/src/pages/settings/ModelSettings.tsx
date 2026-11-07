@@ -1003,17 +1003,40 @@ function KeyringSection({ view, onView }: { view: ModelSettingsView; onView: (vi
 /* ───────────────────────── 屏蔽（D67） ───────────────────────── */
 
 /**
- * 「已屏蔽的模型」：先只有列表和「解除屏蔽」。
+ * 「已屏蔽的模型」：照原型 MaskSection。
  *
- * 每条规则的「现在匹配几个」和写通配的入口要用服务端的 `disabledHits`/`disabled-models-check`，
- * 那是下一张票；这里不自己算。
+ * - 上面一行写规则：从已知模型里挑（datalist），也能写通配；
+ * - 每条规则下面写着「现在匹配 n 个：…」；一个都不匹配也留着（出现了照样拒）；
+ * - 先过确认框（MaskDialog）再保存；「解除屏蔽」立即生效。
+ *
+ * 匹配数只读服务给的 `disabledHits`（与规则等长同序），这里不自己匹配。
  */
-function MaskSection({ view, onView }: {
+function MaskSection({ view, onView, onMask }: {
   view: ModelSettingsView;
   onView: (view: ModelSettingsView) => void;
+  onMask: (pattern: string) => void;
 }) {
   const refreshMasks = useKindStore((state) => state.refreshMasks);
+  const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
+  const duplicate = view.disabledModels.some(
+    (pattern) => pattern.toLowerCase() === draft.trim().toLowerCase(),
+  );
+  // 提示从已知模型里选：和选择器同一个口径（勾了的；没勾就是厂商列表/内置目录）。
+  const known = view.connections.flatMap((conn) =>
+    (conn.models.length
+      ? conn.models
+      : conn.availableModels ?? view.catalog.find((item) => item.id === conn.id)?.defaultModels ?? []
+    ).map((row) => conn.id + '/' + row.id),
+  );
+
+  const submit = () => {
+    const pattern = draft.trim();
+    if (!pattern || duplicate) return;
+    // 先过确认框；真正保存由确认框决定。
+    onMask(pattern);
+    setDraft('');
+  };
 
   const unmask = async (pattern: string) => {
     setBusy(pattern);
@@ -1036,28 +1059,62 @@ function MaskSection({ view, onView }: {
         屏蔽不是删除，历史和用量照常显示。
       </p>
       <div className="mt-3 rounded-card border border-line" data-settings="mask-list">
+        <div className="flex items-center gap-2 px-4 py-3">
+          <input
+            list="mask-models"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') submit();
+            }}
+            placeholder="挑一个模型，或者写通配，比如 *preview*"
+            className={cn(inputClass, 'brand-type')}
+            data-settings="mask-input"
+          />
+          <datalist id="mask-models">
+            {known.map((id) => (
+              <option key={id} value={id} />
+            ))}
+          </datalist>
+          <Btn
+            kind="plain"
+            disabled={!draft.trim() || duplicate}
+            title={duplicate ? '已经有这一条了' : undefined}
+            onClick={submit}
+          >
+            屏蔽…
+          </Btn>
+        </div>
         {view.disabledModels.length === 0 ? (
-          <div className="px-4 py-3 text-2 text-ink-3">还没有屏蔽任何模型。</div>
+          <div className="border-t border-line px-4 py-3 text-2 text-ink-3">还没有屏蔽任何模型。</div>
         ) : (
-          view.disabledModels.map((pattern, index) => (
-            <div
-              key={pattern}
-              className={cn('flex items-center gap-3 px-4 py-3', index > 0 && 'border-t border-line')}
-              data-settings="mask-row"
-            >
-              <div className="min-w-0">
-                <div className="brand-type truncate text-3 text-ink">{pattern}</div>
-              </div>
-              <Btn
-                kind="quiet"
-                className="ml-auto"
-                disabled={busy === pattern}
-                onClick={() => void unmask(pattern)}
+          view.disabledModels.map((pattern, index) => {
+            const hits = view.disabledHits[index] ?? [];
+            return (
+              <div
+                key={pattern}
+                className="flex items-center gap-3 border-t border-line px-4 py-3"
+                data-settings="mask-row"
               >
-                解除屏蔽
-              </Btn>
-            </div>
-          ))
+                <div className="min-w-0">
+                  <div className="brand-type truncate text-3 text-ink">{pattern}</div>
+                  <div className="mt-0.5 truncate text-1 text-ink-3">
+                    {hits.length
+                      ? '现在匹配 ' + hits.length + ' 个：' + hits.slice(0, 4).join('、') + (hits.length > 4 ? '…' : '')
+                      : '现在不匹配任何模型；出现了也会被拒'}
+                  </div>
+                </div>
+                <Btn
+                  kind="quiet"
+                  className="ml-auto"
+                  disabled={busy === pattern}
+                  onClick={() => void unmask(pattern)}
+                >
+                  解除屏蔽
+                </Btn>
+              </div>
+            );
+          })
         )}
       </div>
     </section>
@@ -1301,7 +1358,7 @@ export function ModelSettings() {
         </div>
       </section>
 
-      <MaskSection view={view} onView={setView} />
+      <MaskSection view={view} onView={setView} onMask={(pattern) => setMasking(pattern)} />
 
       <KeyringSection view={view} onView={setView} />
 

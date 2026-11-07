@@ -87,6 +87,8 @@ export interface ModelSettingsView {
   listed?: Record<string, { fetchedAt: string; models: ModelRow[] }>;
   /** 屏蔽的模型规则（通配；服务端保存的整表）。 */
   disabledModels: string[];
+  /** 与 disabledModels 等长同序：每条规则现在命中的「连接/模型」（服务端算，页面不自己匹配）。 */
+  disabledHits: string[][];
   /** problem：钥匙文件读不出来时的原因（不在原处、打不开、解不开）；读得出来就没有这个字段。 */
   keyFile: { path: string; since: string; problem?: string };
   issuedToday: number;
@@ -113,6 +115,7 @@ export const modelSettingsFixture: ModelSettingsView = {
     },
   ],
   disabledModels: [],
+  disabledHits: [],
   catalog: [
     {
       id: 'deepseek',
