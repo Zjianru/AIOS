@@ -10,7 +10,7 @@ import { CopyButton } from './CopyButton';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { QuoteChip } from './QuoteChip';
-import { fileNameOf, isLocalFilePath, localFileHref, openCommandPath } from './localFile';
+import { fileNameOf, isLocalFilePath, localFileHref, openCommandPath, splitLocalPathText } from './localFile';
 import type { TextElement } from '@/data/types';
 
 const TOKEN_SOURCE = '%%Q(\\d+)%%';
@@ -81,36 +81,66 @@ function nodeText(node: ReactNode): string {
   return '';
 }
 
-/** T015 fix B2：行内 code 的绝对路径、整段加粗的绝对路径 → /local-file 链接（含空格路径）。 */
+/** 这些节点里的文字不是正文可见文字：代码、命令、URL、图片 alt 都不改成文件链接。 */
+const NO_BARE_PATH_REWRITE = new Set(['code', 'inlineCode', 'link', 'image', 'html']);
+
+function localLink(path: string): MdNode {
+  return {
+    type: 'link',
+    url: localFileHref(path),
+    title: null,
+    children: [{ type: 'text', value: path }],
+  };
+}
+
+/** 一段正文按裸文本路径切成 text/link 节点；没有路径时原样返回一个 text 节点。 */
+function textWithBarePaths(value: string): MdNode[] {
+  if (!value) return [];
+  return splitLocalPathText(value).map((piece) =>
+    typeof piece === 'string' ? { type: 'text', value: piece } : localLink(piece.path),
+  );
+}
+
+/**
+ * T015 fix B2：行内 code、整段加粗、正文裸文本里的绝对路径 → /local-file 链接（含空格路径）。
+ * 裸文本只改真正的 text 节点，所以代码块里的命令和已有链接（URL）不会被动到。
+ */
 function rewriteLocalPaths(node: MdNode): void {
   if (!node.children) return;
-  node.children = node.children.map((child) => {
+  const out: MdNode[] = [];
+  for (const child of node.children) {
     if (child.type === 'inlineCode') {
       const value = child.value ?? '';
-      if (isLocalFilePath(value)) {
-        const path = value.trim();
-        return {
-          type: 'link',
-          url: localFileHref(path),
-          title: null,
-          children: [{ type: 'text', value: path }],
-        };
-      }
+      out.push(isLocalFilePath(value) ? localLink(value.trim()) : child);
+      continue;
     }
     if (child.type === 'strong') {
       const text = nodeText(child as unknown as ReactNode).trim();
       if (isLocalFilePath(text)) {
-        return {
+        out.push({
           type: 'link',
           url: localFileHref(text),
           title: null,
           children: child.children ?? [{ type: 'text', value: text }],
-        };
+        });
+        continue;
       }
+      rewriteLocalPaths(child);
+      out.push(child);
+      continue;
+    }
+    if (child.type === 'text') {
+      out.push(...textWithBarePaths(child.value ?? ''));
+      continue;
+    }
+    if (child.type && NO_BARE_PATH_REWRITE.has(child.type)) {
+      out.push(child);
+      continue;
     }
     rewriteLocalPaths(child);
-    return child;
-  });
+    out.push(child);
+  }
+  node.children = out;
 }
 
 function localFileLinks() {

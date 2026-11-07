@@ -36,6 +36,7 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
     if (options.canvas === 'streaming') return { file: 'canvas-streaming', paceMs: 120 };
     return { file: options.canvas === 'interactive' ? 'canvas' : 'canvas-' + options.canvas };
   }
+  if (options.localFilePath) return { file: 'local-file-text' };
   if (options.highUsage) return { file: 'high-usage' };
   return {
     file: 'text',
@@ -163,6 +164,8 @@ export interface FixtureOptions {
   tinyPercent?: boolean;
   /// T012 F1：用量夹具去掉缓存写（只填缓存读价的端到端用）。
   usageReadOnly?: boolean;
+  /// T015 验收补 B2：回答里裸文本绝对路径 + `open <path>` 代码块（页面渲染成 /local-file 链接）。
+  localFilePath?: boolean;
   /// T010.5：用真 key 录的夹具（多步工具/思考/缓存读/压缩）。
   realTurn?: boolean;
 }
