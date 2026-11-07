@@ -16,6 +16,27 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 const TEST_KEY: &str = "sk-t008-service-0123456789";
 
+/// 一轮成功并报 usage 的 SSE：A→B 热切换要证明已用上下文没被归零。
+const USAGE_SSE: &str = r#"event: message_start
+data: {"type":"message_start","message":{"id":"m_usage","type":"message","role":"assistant","model":"deepseek-flash","content":[],"usage":{"input_tokens":9,"output_tokens":2}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"完成。"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#;
+
 /// T008.F9：测试凭证来源（产品不再有固定 key 构造入口，测试显式注入）。
 struct TestCredential;
 
@@ -905,17 +926,24 @@ async fn 重开会话从日志恢复模型选择() {
 async fn 空闲时跨连接切换重建根agent并走新连接() {
     let server_a = MockServer::start().await;
     let server_b = MockServer::start().await;
-    for server in [&server_a, &server_b] {
-        Mock::given(method("POST"))
-            .and(path("/v1/messages"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "text/event-stream")
-                    .set_body_string("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
-            )
-            .mount(server)
-            .await;
-    }
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(USAGE_SSE),
+        )
+        .mount(&server_a)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
+        )
+        .mount(&server_b)
+        .await;
     let dir = tempdir().unwrap();
     let identity = dir.path().join("identity.txt");
     let keyring = credentials::Keyring::open(dir.path(), Some(&identity)).unwrap();
@@ -954,16 +982,17 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
             let connection = selection
                 .map(|selection| selection.connection.clone())
                 .unwrap_or_else(|| "deepseek".to_owned());
-            let (endpoint, model) = if connection == "minimax-cn" {
-                (uri_b.clone(), "MiniMax-M3.1-Flash")
+            let (endpoint, model, context_window) = if connection == "minimax-cn" {
+                (uri_b.clone(), "MiniMax-M3.1-Flash", 222_000)
             } else {
-                (uri_a.clone(), "deepseek-flash")
+                (uri_a.clone(), "deepseek-flash", 111_000)
             };
             Ok((
                 connection,
                 DeepSeekConfig {
                     base_url: endpoint,
                     model: model.to_owned(),
+                    context_window,
                     ..DeepSeekConfig::default()
                 },
                 Some(test_credential()),
@@ -971,12 +1000,24 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
         });
     let mut options = options(dir.path(), &identity);
     options.model_factory = Some(factory);
+    let hook_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hook_calls_for_hook = std::sync::Arc::clone(&hook_calls);
+    options.keyring_changed = Some(std::sync::Arc::new(
+        move |_keyring: &credentials::Keyring| {
+            hook_calls_for_hook.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        },
+    ));
     seed_fx_cache(dir.path());
     let host = RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await;
     assert_eq!(
         *seen.lock().expect("seen"),
         vec![None],
         "新会话 factory 收到 None"
+    );
+    assert_eq!(
+        hook_calls.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "打开根会话不改 Keyring，不触发脱敏钩子"
     );
     // 先跑一轮：走连接 A（初始选择）。
     host.dispatch(Call::Send(service::SendRequest {
@@ -991,6 +1032,12 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
     .expect("send A");
     wait_for_requests(&server_a, 1).await;
     wait_host_idle(&host).await;
+    wait_context_used(&host, 9).await;
+    assert_eq!(
+        stats_of(&host).await.context_window,
+        111_000,
+        "初始连接 A 的窗口"
+    );
     assert_eq!(
         server_a.received_requests().await.unwrap().len(),
         1,
@@ -1017,6 +1064,15 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
             .map(|selection| selection.connection.as_str()),
         Some("minimax-cn"),
         "factory 收到新选择"
+    );
+    // 热切换只换窗口：已用上下文还是同一会话日志里的事实；Keyring 没动过，不能多触发钩子。
+    let stats = stats_of(&host).await;
+    assert_eq!(stats.context_window, 222_000, "热切换后窗口跟新模型");
+    assert_eq!(stats.context_used, 9, "热切换保留已用上下文，不归零");
+    assert_eq!(
+        hook_calls.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "Keyring 没变，热切换不触发脱敏钩子"
     );
     // 下一轮走连接 B。
     host.dispatch(Call::Send(service::SendRequest {
@@ -1082,6 +1138,28 @@ async fn wait_host_idle(host: &RootHost) {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     panic!("等待根会话空闲超时");
+}
+
+/// 轮询上下文占用变成期望值（usage 事件由转发任务异步落进 context）。
+async fn wait_context_used(host: &RootHost, used: u64) {
+    for _ in 0..600 {
+        if stats_of(host).await.context_used == used {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("等待 context used 变成 {used} 超时");
+}
+
+async fn stats_of(host: &RootHost) -> service::stats::SessionStats {
+    let response = host
+        .dispatch(Call::Status(service::StatusRequest {}))
+        .await
+        .expect("status");
+    let service::Response::Status(status) = response else {
+        panic!("expected Status");
+    };
+    status.stats.expect("stats")
 }
 
 fn seed_fx_cache(dir: &std::path::Path) {
