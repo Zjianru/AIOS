@@ -185,12 +185,11 @@ impl RootHost {
         Ok(DisabledModelsCheckResponse { hits, users })
     }
 
-    /// 正在跑的一轮用的连接 × 模型（连接在装配时记下，模型在 begin_turn 冻结）。
+    /// 在已锁住 inner 的宿主上取本轮冻结的连接 × 模型。
     ///
-    /// 没有在跑的一轮时为空；服务不拿会变的 selection 现查这一轮。
-    async fn running_turn_model(&self) -> Option<(String, String)> {
-        let guard = self.inner.lock().await;
-        let host = guard.as_ref()?;
+    /// 连接在装配/重建根会话时记下，模型在 begin_turn 冻结；没有在跑的一轮时为空，
+    /// 不拿会变的 selection 现查这一轮。
+    fn frozen_turn_model(&self, host: &crate::ServiceHost) -> Option<(String, String)> {
         if !host.agent().is_running() {
             return None;
         }
@@ -203,24 +202,18 @@ impl RootHost {
         Some((connection, model))
     }
 
+    async fn running_turn_model(&self) -> Option<(String, String)> {
+        let guard = self.inner.lock().await;
+        self.frozen_turn_model(guard.as_ref()?)
+    }
+
     /// 正在跑的一轮命中禁用表时用钩子取消它；返回是否打断。
     async fn interrupt_if_disabled(&self, models: &[String]) -> bool {
         let guard = self.inner.lock().await;
         let Some(host) = guard.as_ref() else {
             return false;
         };
-        if !host.agent().is_running() {
-            return false;
-        }
-        let Some(model) = host.agent().frozen_model() else {
-            return false;
-        };
-        let Some(connection) = self
-            .root_connection
-            .lock()
-            .expect("root connection 锁被毒化")
-            .clone()
-        else {
+        let Some((connection, model)) = self.frozen_turn_model(host) else {
             return false;
         };
         if match_disabled(models, &connection, &model).is_none() {
