@@ -1007,7 +1007,9 @@ function KeyringSection({ view, onView }: { view: ModelSettingsView; onView: (vi
  *
  * - 上面一行写规则：从已知模型里挑（datalist），也能写通配；
  * - 每条规则下面写着「现在匹配 n 个：…」；一个都不匹配也留着（出现了照样拒）；
- * - 先过确认框（MaskDialog）再保存；「解除屏蔽」立即生效。
+ * - 先过确认框（MaskDialog）再保存；「解除屏蔽」立即生效；
+ * - 固定说明「读不出来时沿用上一次读到的；从没读到过就都不发。」；
+ *   从没读到过时动态写「settings.json 读不出来」（不写路径/服务端原因）。
  *
  * 匹配数只读服务给的 `disabledHits`（与规则等长同序），这里不自己匹配。
  */
@@ -1058,6 +1060,9 @@ function MaskSection({ view, onView, onMask }: {
         屏蔽的模型不让用：每次请求前查一遍，正在跑的一轮也会停下。模型选择器里照样列出，标「已屏蔽」，选不了。
         屏蔽不是删除，历史和用量照常显示。
       </p>
+      <p className="mt-1.5 text-1 leading-5 text-ink-3" data-settings="mask-note">
+        读不出来时沿用上一次读到的；从没读到过就都不发。
+      </p>
       <div className="mt-3 rounded-card border border-line" data-settings="mask-list">
         <div className="flex items-center gap-2 px-4 py-3">
           <input
@@ -1085,8 +1090,15 @@ function MaskSection({ view, onView, onMask }: {
             屏蔽…
           </Btn>
         </div>
+        {view.disabledUnknown ? (
+          <div className="border-t border-line px-4 py-3 text-2 text-fail" data-settings="mask-unknown">
+            settings.json 读不出来
+          </div>
+        ) : null}
         {view.disabledModels.length === 0 ? (
-          <div className="border-t border-line px-4 py-3 text-2 text-ink-3">还没有屏蔽任何模型。</div>
+          view.disabledUnknown ? null : (
+            <div className="border-t border-line px-4 py-3 text-2 text-ink-3">还没有屏蔽任何模型。</div>
+          )
         ) : (
           view.disabledModels.map((pattern, index) => {
             const hits = view.disabledHits[index] ?? [];
