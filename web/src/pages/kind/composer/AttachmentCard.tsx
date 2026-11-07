@@ -5,7 +5,7 @@
  * 删除按钮只有输入框要（气泡上的卡是发出去的消息，不能删）。
  */
 
-import { FileText, Quote, X } from 'lucide-react';
+import { AppWindow, FileText, Quote, X } from 'lucide-react';
 import type { SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
 
@@ -166,6 +166,46 @@ export function FileCard({ file, mime, onOpen, onRemove }: FileCardProps) {
       </button>
       {onRemove ? (
         <button type="button" aria-label="移除文件" onClick={onRemove} className="text-ink-3 hover:text-ink">
+          <X className="size-3" />
+        </button>
+      ) : null}
+    </span>
+  );
+}
+
+interface FromCanvasChipProps {
+  title: string;
+  /** 输入框里可以移除（当成你自己写的）；气泡上的标记不给删除。 */
+  onRemove?: () => void;
+  className?: string;
+}
+
+/**
+ * 「来自画布」（T015.4）：画布里的按钮放进输入框的那一句话带着它（D58）；
+ * 发出去以后气泡上也留着；输入框里可以移除。
+ */
+export function FromCanvasChip({ title, onRemove, className }: FromCanvasChipProps) {
+  return (
+    <span
+      data-kind="from-canvas"
+      title="这句话是画布里的按钮放进来的"
+      className={cn(
+        'inline-flex h-6 max-w-[260px] items-center gap-1 rounded-full border border-line-2 bg-pane pl-2 text-1 text-ink-2',
+        onRemove ? 'pr-0.5' : 'pr-2',
+        className,
+      )}
+    >
+      <AppWindow className="size-3 shrink-0 text-ink-3" />
+      <span className="shrink-0 text-ink-3">来自画布</span>
+      <span className="min-w-0 truncate">{title}</span>
+      {onRemove ? (
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label="移除来自画布的标记"
+          title="不带这个标记（当成你自己写的）"
+          className="grid size-5 shrink-0 place-items-center rounded-full text-ink-3 transition-colors hover:bg-active hover:text-ink"
+        >
           <X className="size-3" />
         </button>
       ) : null}

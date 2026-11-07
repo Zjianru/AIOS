@@ -218,6 +218,7 @@ async fn max_tokens_keeps_text_but_drops_truncated_tool_call() {
         vec![vec![ContentBlock::Text {
             text: "半截文本".to_owned(),
             paste: false,
+            canvas: None,
         }]],
         "text 保留、截断的 tool-call 块丢弃"
     );

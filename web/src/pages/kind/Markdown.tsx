@@ -10,6 +10,7 @@ import { CopyButton } from './CopyButton';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { QuoteChip } from './QuoteChip';
+import { fileNameOf, isLocalFilePath, localFileHref, openCommandPath, splitLocalPathText } from './localFile';
 import type { TextElement } from '@/data/types';
 
 const TOKEN_SOURCE = '%%Q(\\d+)%%';
@@ -62,6 +63,110 @@ function prepare(text: string, elements: TextElement[] | undefined): { text: str
   return { text: out, chips };
 }
 
+type MdNode = {
+  type?: string;
+  value?: string;
+  url?: string;
+  title?: string | null;
+  children?: MdNode[];
+};
+
+function nodeText(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(nodeText).join('');
+  if (node && typeof node === 'object' && 'props' in node) {
+    const props = (node as { props?: { children?: ReactNode } }).props;
+    return nodeText(props?.children ?? null);
+  }
+  return '';
+}
+
+/** 这些节点里的文字不是正文可见文字：代码、命令、URL、图片 alt 都不改成文件链接。 */
+const NO_BARE_PATH_REWRITE = new Set(['code', 'inlineCode', 'link', 'image', 'html']);
+
+function localLink(path: string): MdNode {
+  return {
+    type: 'link',
+    url: localFileHref(path),
+    title: null,
+    children: [{ type: 'text', value: path }],
+  };
+}
+
+/** 一段正文按裸文本路径切成 text/link 节点；没有路径时原样返回一个 text 节点。 */
+function textWithBarePaths(value: string): MdNode[] {
+  if (!value) return [];
+  return splitLocalPathText(value).map((piece) =>
+    typeof piece === 'string' ? { type: 'text', value: piece } : localLink(piece.path),
+  );
+}
+
+/**
+ * T015 fix B2：行内 code、整段加粗、正文裸文本里的绝对路径 → /local-file 链接（含空格路径）。
+ * 裸文本只改真正的 text 节点，所以代码块里的命令和已有链接（URL）不会被动到。
+ */
+function rewriteLocalPaths(node: MdNode): void {
+  if (!node.children) return;
+  const out: MdNode[] = [];
+  for (const child of node.children) {
+    if (child.type === 'inlineCode') {
+      const value = child.value ?? '';
+      out.push(isLocalFilePath(value) ? localLink(value.trim()) : child);
+      continue;
+    }
+    if (child.type === 'strong') {
+      const text = nodeText(child as unknown as ReactNode).trim();
+      if (isLocalFilePath(text)) {
+        out.push({
+          type: 'link',
+          url: localFileHref(text),
+          title: null,
+          children: child.children ?? [{ type: 'text', value: text }],
+        });
+        continue;
+      }
+      rewriteLocalPaths(child);
+      out.push(child);
+      continue;
+    }
+    if (child.type === 'text') {
+      out.push(...textWithBarePaths(child.value ?? ''));
+      continue;
+    }
+    if (child.type && NO_BARE_PATH_REWRITE.has(child.type)) {
+      out.push(child);
+      continue;
+    }
+    rewriteLocalPaths(child);
+    out.push(child);
+  }
+  node.children = out;
+}
+
+function localFileLinks() {
+  return (tree: MdNode) => rewriteLocalPaths(tree);
+}
+
+function MdLink({
+  href,
+  children,
+  chips,
+}: {
+  href?: string;
+  children?: ReactNode;
+  chips?: Map<string, TextElement>;
+}) {
+  const content = chips ? withChips(children, chips) : children;
+  if (href && href.startsWith('/local-file?')) {
+    return (
+      <a href={href} target="_blank" rel="noreferrer noopener" data-kind="local-file-link">
+        {content}
+      </a>
+    );
+  }
+  return <a href={href}>{content}</a>;
+}
+
 interface MarkdownProps {
   text: string;
   elements?: TextElement[];
@@ -72,7 +177,10 @@ function MarkdownBody({ text, elements }: MarkdownProps) {
   if (chips.size === 0) {
     return (
       <div className="md">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ pre: PreBlock }}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm, localFileLinks]}
+          components={{ pre: PreBlock, a: MdLink }}
+        >
           {prepared}
         </ReactMarkdown>
       </div>
@@ -98,10 +206,11 @@ function MarkdownBody({ text, elements }: MarkdownProps) {
     em: wrap('em'),
     blockquote: wrap('blockquote'),
     pre: PreBlock,
+    a: (props: { href?: string; children?: ReactNode }) => <MdLink {...props} chips={chips} />,
   };
   return (
     <div className="md">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown remarkPlugins={[remarkGfm, localFileLinks]} components={components}>
         {prepared}
       </ReactMarkdown>
     </div>
@@ -111,6 +220,22 @@ function MarkdownBody({ text, elements }: MarkdownProps) {
 /** T013.6：代码块右上角的复制（复制原文；从 DOM 里取 code 的 textContent）。 */
 function PreBlock({ children }: { children?: ReactNode }) {
   const ref = useRef<HTMLPreElement | null>(null);
+  // T015 fix B2：只含一行 `open <绝对路径>` 的 fenced code 换成可点链接；普通代码/命令不变。
+  const openTarget = openCommandPath(nodeText(children));
+  if (openTarget) {
+    return (
+      <p data-kind="local-file-open" className="my-1">
+        <a
+          href={localFileHref(openTarget)}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="inline-flex items-center gap-1 text-run underline underline-offset-2 hover:text-ink"
+        >
+          在浏览器打开 {fileNameOf(openTarget)}
+        </a>
+      </p>
+    );
+  }
   const copyText = () => {
     const code = ref.current?.querySelector('code');
     return code?.textContent ?? '';

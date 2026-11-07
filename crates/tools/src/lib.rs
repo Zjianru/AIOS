@@ -24,8 +24,8 @@ use serde_json::Value;
 
 pub use batch::{BatchOutcome, execute_batch};
 pub use builtin::{
-    ApplyPatchTool, AskUserQuestionTool, BashTool, EditTool, GlobTool, GrepTool, JobKillTool,
-    JobListTool, JobOutputTool, ReadTool, SkillTool, TodoWriteTool, WriteTool,
+    ApplyPatchTool, AskUserQuestionTool, BashTool, CanvasTool, EditTool, GlobTool, GrepTool,
+    JobKillTool, JobListTool, JobOutputTool, ReadTool, SkillTool, TodoWriteTool, WriteTool,
     foreground_bytes_read,
 };
 pub use diff::{DIFF_CONTEXT, FileDiff, compute_hunk_diffs};
@@ -279,6 +279,8 @@ impl ToolSet {
             Box::new(SkillTool::new()),
             Box::new(TodoWriteTool::new()),
             Box::new(AskUserQuestionTool::new()),
+            // T015.1：画布（D58）；默认注册，Kind 自己决定什么时候画。
+            Box::new(CanvasTool::new()),
         ]);
         Self::new(tools)
     }

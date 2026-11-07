@@ -20,8 +20,9 @@ pub use event::{
 };
 pub use id::SessionId;
 pub use projection::{
-    TODOS_PROJECTION_IN_SUMMARY, TODOS_PROJECTION_KEY, TODOS_PROJECTION_STATE_VERSION,
-    TodosProjection, TodosProjectionView, todos_projection,
+    CanvasState, CanvasVersion, TODOS_PROJECTION_IN_SUMMARY, TODOS_PROJECTION_KEY,
+    TODOS_PROJECTION_STATE_VERSION, TodosProjection, TodosProjectionView, canvas_versions,
+    canvases, todos_projection,
 };
 pub use repair::{TurnClosers, interrupted_turn_closers};
 pub use store::{AppendHook, AppendHookFactory, SessionSnapshot, SessionStore};

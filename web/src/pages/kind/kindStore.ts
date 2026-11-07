@@ -20,8 +20,8 @@ import { setHostHome } from '@/data/service';
 import { go } from '@/app/navigate';
 import type { AskAnswer } from '@/data/fixtures/kindLive';
 import { mark } from '@/lib/perf';
-import { compactionViewOf, deriveTurnViews } from './turnViews';
-import type { TurnViewData } from './turnViews';
+import { canvasTracks, compactionViewOf, deriveTurnViews, mergeCanvasTracks } from './turnViews';
+import type { CanvasTrack, TurnViewData } from './turnViews';
 export type { CompactionView, QuestionView, ToolStep, TurnUserView, TurnViewData } from './turnViews';
 export { deriveTurnViews } from './turnViews';
 
@@ -169,7 +169,15 @@ interface KindState {
   loadInitial: () => Promise<void>;
   loadOlder: () => Promise<void>;
   setAtBottom: (value: boolean) => void;
-  send: (text: string, options?: { pastes?: string[]; attachments?: { id: string; name: string; bytes: number }[] }) => Promise<boolean>;
+  send: (
+    text: string,
+    options?: {
+      pastes?: string[];
+      attachments?: { id: string; name: string; bytes: number }[];
+      /** T015.4：画布放进来的那一句带着画布身份（id + 标题）。 */
+      canvas?: { id: string; title: string };
+    },
+  ) => Promise<boolean>;
   resend: (turnId: string) => void;
   stop: () => void;
   answer: (turnId: string, answers: AskAnswer[]) => void;
@@ -200,6 +208,13 @@ interface KindState {
     label: string;
     effort?: string;
   }) => Promise<void>;
+  /** T015.2：每个画布出过的版本和最新版在哪一轮（从日志折叠）。 */
+  canvasTracks: Record<string, CanvasTrack>;
+  /** T015.5：正在流式收到的画布标题（工作过程里画「正在画 · 标题」）；没在画是 null。 */
+  drawingCanvas: { turnId: string; title: string } | null;
+  /** T015.2：点了旧版画布那一行要跳到的那一轮（只影响滚动，不改日志）。 */
+  reveal: { turnId: string; at: number } | null;
+  revealTurn: (turnId: string) => void;
 }
 
 function indexOf(views: TurnViewData[]): Map<string, TurnViewData> {
@@ -238,10 +253,16 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let recheckTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempt = 0;
 let lastSeq = 0;
-/** 没送到内核的本地消息：viewId -> { requestId, text, pastes, files }；重发复用同一个 requestId。 */
+/** 没送到内核的本地消息：viewId -> { requestId, text, pastes, files, canvas }；重发复用同一个 requestId。 */
 const unsentSends = new Map<
   string,
-  { requestId: string; text: string; pastes: string[]; files: { id: string; name: string; bytes: number }[] }
+  {
+    requestId: string;
+    text: string;
+    pastes: string[];
+    files: { id: string; name: string; bytes: number }[];
+    canvas?: { id: string; title: string };
+  }
 >();
 
 function removeView(viewId: string): void {
@@ -257,6 +278,7 @@ function addUnsentView(
   text: string,
   pastes: string[],
   files: { id: string; name: string; bytes: number }[],
+  canvas?: { id: string; title: string },
 ): void {
   useKindStore.setState((state) => {
     if (state.views.some((view) => view.id === viewId)) return {};
@@ -265,7 +287,7 @@ function addUnsentView(
       startedAt: null,
       durationMs: null,
       status: 'completed',
-      user: { text, elements: [], pastes, files },
+      user: { text, elements: [], pastes, files, canvas: canvas ?? null },
       reasoning: null,
       tools: [],
       cards: [],
@@ -278,6 +300,7 @@ function addUnsentView(
       failure: null,
       question: null,
       compaction: null,
+      canvas: null,
       delivery: 'unsent',
       stoppedAt: null,
     };
@@ -345,6 +368,19 @@ let livePendingCompaction: { id: string; window?: number } | null = null;
 (window as unknown as { __derive?: unknown }).__derive = (events: ServiceEvent[]) => deriveTurnViews(events);
 let liveTurn: number | null = null;
 let liveStream = '';
+/** T015.5：这一轮正在流的工具参数（callId → 名字 + 拼起来的参数）；只给「正在画」用，不落日志。 */
+const liveToolCalls = new Map<string, { name: string; arguments: string }>();
+
+/** 从还没流完的参数 JSON 里取 canvas 的 title；还没流到（或半个转义）就先给空串。 */
+function canvasTitleOf(partial: string): string {
+  const match = /"title"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(partial);
+  if (!match) return '';
+  try {
+    return JSON.parse('"' + match[1] + '"') as string;
+  } catch {
+    return '';
+  }
+}
 
 /** 一轮的最新日志事件 → 重建这一个 view（其它轮不动）。 */
 function refreshTurn(turn: number): void {
@@ -388,6 +424,17 @@ function applyLiveEvent(event: ServiceEvent): void {
   if (event.seq <= lastSeq) return;
   lastSeq = event.seq;
   liveEvents.push(event);
+  // T015.2：画布版本从日志折叠（旧版缩成一行、标题栏切版本、点旧版跳最新都用它）。
+  if (event.type === 'tool/result' && event.data.meta) {
+    useKindStore.setState((state) => ({
+      canvasTracks: mergeCanvasTracks(state.canvasTracks, [event]),
+    }));
+  }
+  // T015.5：工具结果回来，这一版已经能显示了；「正在画」那一行收掉（参数增量也不再留）。
+  if (event.type === 'tool/result') {
+    liveToolCalls.clear();
+    useKindStore.setState({ drawingCanvas: null });
+  }
   const turn = typeof event.data.turn === 'number' ? Number(event.data.turn) : null;
   if (event.type === 'compaction/start') {
     pendingCompactionAuto = !(event.data.sourceCommandId !== undefined && event.data.sourceCommandId !== null);
@@ -424,6 +471,7 @@ function applyLiveEvent(event: ServiceEvent): void {
         failure: null,
         question: null,
         compaction,
+        canvas: null,
         delivery: null,
         stoppedAt: null,
       };
@@ -455,6 +503,8 @@ function applyLiveEvent(event: ServiceEvent): void {
   }
   if (event.type === 'turn/end') {
     liveStream = '';
+    liveToolCalls.clear();
+    useKindStore.setState({ drawingCanvas: null });
     useStreamStore.setState({ turnId: null, itemId: null, text: '' });
     // T012.9：一轮结束后从服务刷新统计（轮/步/token/花费由内核从日志算好）。
     void useKindStore.getState().refreshStats();
@@ -464,6 +514,20 @@ function applyLiveEvent(event: ServiceEvent): void {
 
 /** agent 帧 live：流式文本先写进 useStreamStore（TurnRow 的 Answer 只重绘这一条）。 */
 function applyAgentEvent(event: AgentFrame['event']): void {
+  // T015.5：canvas 的参数增量到了就先画「正在画 · 标题」；title 可能还没流到，先只画「正在画」。
+  // 帧不落日志（日志里只有 assistant stream 的 tool-call-chunks 记录）。
+  if (event.type === 'tool-call-delta') {
+    if (typeof event.callId !== 'string' || !event.callId) return;
+    const call = liveToolCalls.get(event.callId) ?? { name: '', arguments: '' };
+    if (typeof event.name === 'string' && event.name) call.name = event.name;
+    if (typeof event.argumentsDelta === 'string') call.arguments += event.argumentsDelta;
+    liveToolCalls.set(event.callId, call);
+    if (call.name !== 'canvas' || liveTurn === null) return;
+    useKindStore.setState({
+      drawingCanvas: { turnId: 'turn-' + String(liveTurn), title: canvasTitleOf(call.arguments) },
+    });
+    return;
+  }
   if (event.type === 'usage') {
     const used =
       (event.inputTokens ?? 0) + (event.cacheReadTokens ?? 0) + (event.cacheWriteTokens ?? 0);
@@ -532,6 +596,10 @@ export const useKindStore = create<KindState>()((set, get) => ({
   stats: EMPTY_STATS,
   money: DEFAULT_MONEY,
   modelInitialized: false,
+  canvasTracks: {},
+  drawingCanvas: null,
+  reveal: null,
+  revealTurn: (turnId) => set({ reveal: { turnId, at: Date.now() } }),
 
   bootstrap: async () => {
     try {
@@ -584,6 +652,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
         }
       }
       liveStream = '';
+      liveToolCalls.clear();
       useStreamStore.setState({ turnId: null, itemId: null, text: '' });
       lastSeq = lastSeqOfPage;
       openSocket();
@@ -592,6 +661,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
         views,
         byId: indexOf(views),
         ...decorate(views),
+        canvasTracks: canvasTracks(page.events),
+        drawingCanvas: null,
         firstItemIndex: FIRST_INDEX_BASE - views.length,
         oldestSeq,
         hasOlder: page.hasMore,
@@ -624,6 +695,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
           views,
           byId: indexOf(views),
           ...decorate(views),
+          canvasTracks: mergeCanvasTracks(current.canvasTracks, page.events),
           firstItemIndex: current.firstItemIndex - older.length,
           oldestSeq,
           hasOlder: page.hasMore,
@@ -647,11 +719,12 @@ export const useKindStore = create<KindState>()((set, get) => ({
     // F1：没送到的那条也把粘贴和文件带着，重发时原样再发一次。
     const pastes = options?.pastes ?? [];
     const files = options?.attachments ?? [];
+    const canvas = options?.canvas;
     return sendMessage(text, requestId, options).then(
       () => true,
       () => {
-        unsentSends.set(viewId, { requestId, text, pastes, files });
-        addUnsentView(viewId, text, pastes, files);
+        unsentSends.set(viewId, { requestId, text, pastes, files, canvas });
+        addUnsentView(viewId, text, pastes, files, canvas);
         return false;
       },
     );
@@ -661,7 +734,11 @@ export const useKindStore = create<KindState>()((set, get) => ({
     const pending = unsentSends.get(turnId);
     if (!pending) return;
     const viewId = turnId;
-    void sendMessage(pending.text, pending.requestId, { pastes: pending.pastes, attachments: pending.files })
+    void sendMessage(pending.text, pending.requestId, {
+      pastes: pending.pastes,
+      attachments: pending.files,
+      canvas: pending.canvas,
+    })
       .then(() => {
         unsentSends.delete(viewId);
         removeView(viewId);

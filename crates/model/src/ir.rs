@@ -152,6 +152,25 @@ pub enum Role {
     Tool,
 }
 
+/// T015.4：「来自画布」——这个文字块是画布里的按钮放进输入框的那一句，块上带画布身份。
+///
+/// 页面上画成「来自画布」标记（id 用来认是哪个画布，标题用来显示），投给模型时就是块里的文本
+/// （「（来自画布「标题」）」，照原型 app-v14 a938d2e 的 composeForModel）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanvasSource {
+    pub id: String,
+    pub title: String,
+}
+
+impl CanvasSource {
+    pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            title: title.into(),
+        }
+    }
+}
+
 /// 消息内容块。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case")]
@@ -161,6 +180,9 @@ pub enum ContentBlock {
         /// T013.4：这段文字是用户的一段粘贴（页面按粘贴块画；投给模型时照原文）。
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         paste: bool,
+        /// T015.4：画布放进来的那一句带画布身份；普通文字块没有（只增可选字段，旧日志原样读）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        canvas: Option<CanvasSource>,
     },
     /// T013.4：用户消息里的一个文件块（投给模型时换成 fileHandleText）。
     File {
@@ -191,6 +213,7 @@ impl ContentBlock {
         Self::Text {
             text: text.into(),
             paste: false,
+            canvas: None,
         }
     }
 
@@ -199,6 +222,16 @@ impl ContentBlock {
         Self::Text {
             text: text.into(),
             paste: true,
+            canvas: None,
+        }
+    }
+
+    /// T015.4：画布放进输入框的那一句。块上带画布身份，给模型看到的就是这句话。
+    pub fn from_canvas(canvas: CanvasSource) -> Self {
+        Self::Text {
+            text: format!("（来自画布「{}」）", canvas.title),
+            paste: false,
+            canvas: Some(canvas),
         }
     }
 

@@ -99,6 +99,7 @@ pub(super) fn interrupted_content(
                 BlockType::Text => ContentBlock::Text {
                     text: text.clone(),
                     paste: false,
+                    canvas: None,
                 },
                 BlockType::Reasoning => ContentBlock::Reasoning {
                     text: text.clone(),
@@ -107,12 +108,17 @@ pub(super) fn interrupted_content(
                 BlockType::ToolCall => ContentBlock::Text {
                     text: text.clone(),
                     paste: false,
+                    canvas: None,
                 },
             })
         });
         match block {
             Some(ContentBlock::Text { text, .. }) if !text.trim().is_empty() => {
-                content.push(ContentBlock::Text { text, paste: false });
+                content.push(ContentBlock::Text {
+                    text,
+                    paste: false,
+                    canvas: None,
+                });
             }
             Some(ContentBlock::Reasoning { text, .. }) if !text.trim().is_empty() => {
                 content.push(ContentBlock::Reasoning {

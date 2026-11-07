@@ -43,8 +43,12 @@ export interface EventFrame {
 }
 
 export interface AgentWireEvent {
-  type: 'text-delta' | 'usage' | 'retrying';
+  type: 'text-delta' | 'usage' | 'retrying' | 'tool-call-delta';
   text?: string;
+  /** T015.5：工具参数增量（不落日志）；callId/name/argumentsDelta。 */
+  callId?: string;
+  name?: string;
+  argumentsDelta?: string;
   attempt?: number;
   maxAttempts?: number;
   delayMs?: number;
@@ -157,6 +161,8 @@ export interface SendOptions {
   pastes?: string[];
   /** 用户拖进来的文件（已存进附件仓库）。 */
   attachments?: SendAttachmentRef[];
+  /** T015.4：画布按钮放进输入框的那一句带着画布身份（id + 标题）；自己写的不带。 */
+  canvas?: { id: string; title: string };
 }
 
 /** T013.7：把一段文字文件存进附件仓库（base64）；二进制会拒收。 */
@@ -205,6 +211,8 @@ export async function sendMessage(
     content,
     pastes: options.pastes ?? [],
     attachments: options.attachments ?? [],
+    // 没有标记就不带这个字段（服务端缺省就是用户自己写的）。
+    ...(options.canvas ? { canvas: options.canvas } : {}),
   });
 }
 

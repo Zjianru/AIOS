@@ -29,6 +29,7 @@ pub use effort::{
 };
 pub use error::{ErrorCode, ModelError};
 pub use ir::{
-    BlockType, ContentBlock, FinishReason, InstructionChange, InstructionChangeAction, Message,
-    MessageId, MessageSource, Role, SkillCatalogEntry, StreamChunk, ToolSchema, Usage, UserMessage,
+    BlockType, CanvasSource, ContentBlock, FinishReason, InstructionChange,
+    InstructionChangeAction, Message, MessageId, MessageSource, Role, SkillCatalogEntry,
+    StreamChunk, ToolSchema, Usage, UserMessage,
 };

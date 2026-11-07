@@ -19,7 +19,7 @@ use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::header::{CONTENT_TYPE, HOST, LOCATION, SET_COOKIE};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -177,6 +177,14 @@ pub enum AgentEventWire {
     TextDelta {
         text: String,
     },
+    /// T015.5：工具调用参数的增量（不落日志；页面拿 canvas 的 title 画「正在画」）。
+    ToolCallDelta {
+        #[serde(rename = "callId")]
+        call_id: String,
+        name: String,
+        #[serde(rename = "argumentsDelta")]
+        arguments_delta: String,
+    },
     Usage {
         #[serde(
             rename = "inputTokens",
@@ -219,6 +227,15 @@ impl AgentEventWire {
             agent::AgentEvent::AssistantTextDelta { text } => {
                 Some(Self::TextDelta { text: text.clone() })
             }
+            agent::AgentEvent::ToolCallDelta {
+                call_id,
+                name,
+                arguments_delta,
+            } => Some(Self::ToolCallDelta {
+                call_id: call_id.clone(),
+                name: name.clone(),
+                arguments_delta: arguments_delta.clone(),
+            }),
             agent::AgentEvent::UsageReported { usage } => Some(Self::Usage {
                 input_tokens: usage.input_tokens,
                 output_tokens: usage.output_tokens,
@@ -689,6 +706,13 @@ fn resolve_static(root: &Path, request_path: &str) -> Option<PathBuf> {
     }
 }
 
+/// 静态 fallback 绝不能直接发的文件（画布外壳；只能走 canvas_frame_handler）。
+fn is_canvas_frame_alias(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case("canvas-frame.html"))
+}
+
 fn content_type(path: &Path) -> &'static str {
     match path.extension().and_then(|ext| ext.to_str()) {
         Some("html") => "text/html; charset=utf-8",
@@ -700,6 +724,156 @@ fn content_type(path: &Path) -> &'static str {
         Some("woff2") => "font/woff2",
         Some("map") => "application/json",
         _ => "application/octet-stream",
+    }
+}
+
+/// 画布外壳页的 CSP（T015.1：CSP 由响应头下发，逐字照 `WORK/T015/strategy.md` 第 5 节）。
+/// 脚本只认五个 CDN 和行内；字体只认 Google Fonts；fetch/XHR/WebSocket 只能连字体那两个地址。
+pub const CANVAS_FRAME_CSP: &str = "default-src 'none'; \
+script-src 'unsafe-inline' cdnjs.cloudflare.com cdn.jsdelivr.net/npm/ unpkg.com cdn.tailwindcss.com code.jquery.com; \
+style-src 'unsafe-inline' fonts.googleapis.com cdnjs.cloudflare.com cdn.jsdelivr.net/npm/ unpkg.com cdn.tailwindcss.com code.jquery.com; \
+font-src data: fonts.gstatic.com; \
+img-src data: blob:; \
+media-src data: blob:; \
+connect-src fonts.googleapis.com fonts.gstatic.com; \
+frame-src 'none'; \
+object-src 'none'; \
+base-uri 'none'; \
+frame-ancestors 'self'";
+
+/// GET /canvas-frame：画布外壳页（T015.1）。不要 cookie，只校 Host；CSP 写在响应头里。
+async fn canvas_frame_handler(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if let Err(error) = host_check(&state, &headers) {
+        return trust_error_response(error);
+    }
+    let Some(root) = state.static_dir.as_deref() else {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    };
+    match tokio::fs::read(root.join("canvas-frame.html")).await {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [
+                (CONTENT_TYPE, "text/html; charset=utf-8"),
+                (
+                    HeaderName::from_static("content-security-policy"),
+                    CANVAS_FRAME_CSP,
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => error_response(StatusCode::NOT_FOUND, "not found"),
+    }
+}
+
+/// T015 fix B1：/local-file 的查询参数（页面 localFile.ts 发的就是 ?path=，整段 URL 编码）。
+#[derive(Debug, Deserialize)]
+struct LocalFileQuery {
+    #[serde(default)]
+    path: Option<String>,
+}
+
+/// 单个本地文件的上限（8 MiB）：给回答里的产物「在浏览器打开」，不是通用文件服务器。
+const LOCAL_FILE_MAX_BYTES: u64 = 8 * 1024 * 1024;
+
+/// /local-file 的隔离 CSP（T015 安全修复，照 Jupyter 的 AuthenticatedFileHandler）：
+/// 脚本照跑，但 HTML/SVG 进唯一的不透明来源——拿不到 AIOS 的 cookie/同源存储，调不通
+/// /api，也 fetch 不到同目录其它文件；frame-ancestors 顺手挡住被别的页面嵌。
+pub const LOCAL_FILE_CSP: &str = "frame-ancestors 'self'; sandbox allow-scripts";
+
+/// 本地文件的 MIME：只按扩展名给浏览器能直接渲染的几类，其余按二进制下载。
+/// 扩展名大小写不敏感（生成的文件常见 .HTML）。
+fn local_file_content_type(path: &Path) -> &'static str {
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase);
+    match extension.as_deref() {
+        Some("html" | "htm") => "text/html; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("js" | "mjs") => "text/javascript; charset=utf-8",
+        Some("txt" | "md" | "markdown" | "log" | "csv") => "text/plain; charset=utf-8",
+        Some("json") => "application/json",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("pdf") => "application/pdf",
+        _ => "application/octet-stream",
+    }
+}
+
+/// GET /local-file?path=…：把会话工作目录里的普通文件只读回给浏览器（T015 fix B1）。
+///
+/// 认证和 /api 走同一条栅栏：Host 必须是本机、Origin/Fetch-Metadata 必须同源、只认签名 cookie，
+/// query 里出现 token 一律 401。路径边界：
+/// - 只收绝对路径（相对路径 400；页面也只生成绝对路径）；
+/// - canonicalize 之后再和 canonicalize 过的会话工作目录比前缀：..、符号链接跳出目录都 403；
+/// - 目录、不存在、读不到一律 404（不透露目录外有什么）；超过 8 MiB 413。
+///
+/// 响应头：nosniff、no-store（产物可能含隐私，不让浏览器缓存），以及所有响应（含错误）都加的
+/// LOCAL_FILE_CSP。外壳 CSP 仍只由 canvas_frame_handler 下发：两条用途不同，这里那串不限制
+/// script-src，所以自包含 HTML 的行内脚本和 CDN 图表照跑，只是进 opaque origin。
+async fn local_file_handler(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    Query(query): Query<LocalFileQuery>,
+) -> Response {
+    let mut response = local_file_response(state, headers, uri, query).await;
+    response.headers_mut().insert(
+        HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_static(LOCAL_FILE_CSP),
+    );
+    response
+}
+
+/// /local-file 的查询、路径边界与文件响应体；响应头的统一收口在 local_file_handler。
+async fn local_file_response(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+    query: LocalFileQuery,
+) -> Response {
+    if let Err(error) = authorize_api_request(&state.trust, &headers, &uri) {
+        return trust_error_response(error);
+    }
+    let Some(requested) = query.path.as_deref() else {
+        return error_response(StatusCode::BAD_REQUEST, "missing path");
+    };
+    if !requested.starts_with('/') {
+        return error_response(StatusCode::BAD_REQUEST, "path must be absolute");
+    }
+    // /tmp 与 /private/tmp（macOS）这种同一个目录的两种写法由两边的 canonicalize 收束。
+    let Ok(root) = tokio::fs::canonicalize(state.host.cwd()).await else {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    };
+    let Ok(path) = tokio::fs::canonicalize(requested).await else {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    };
+    if !path.starts_with(&root) {
+        return error_response(StatusCode::FORBIDDEN, "forbidden");
+    }
+    let Ok(metadata) = tokio::fs::metadata(&path).await else {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    };
+    if !metadata.is_file() {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    }
+    if metadata.len() > LOCAL_FILE_MAX_BYTES {
+        return error_response(StatusCode::PAYLOAD_TOO_LARGE, "too large");
+    }
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [
+                (CONTENT_TYPE, local_file_content_type(&path)),
+                (HeaderName::from_static("x-content-type-options"), "nosniff"),
+                (HeaderName::from_static("cache-control"), "no-store"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => error_response(StatusCode::NOT_FOUND, "not found"),
     }
 }
 
@@ -718,6 +892,12 @@ async fn static_handler(
     let Some(path) = resolve_static(root, uri.path()) else {
         return error_response(StatusCode::NOT_FOUND, "not found");
     };
+    // T015.1 fix：画布外壳只能由 canvas_frame_handler 出（它带 CSP）。静态 fallback
+    // 在大小写不敏感的文件系统（macOS 的 APFS）上也会把 /CANVAS-FRAME.HTML 解析到
+    // 这个文件，所以按文件名（不分大小写）拒绝，而不是只 route 小写路径。
+    if is_canvas_frame_alias(&path) {
+        return error_response(StatusCode::NOT_FOUND, "not found");
+    }
     match tokio::fs::read(&path).await {
         Ok(bytes) => (StatusCode::OK, [(CONTENT_TYPE, content_type(&path))], bytes).into_response(),
         Err(_) => error_response(StatusCode::NOT_FOUND, "not found"),
@@ -1167,6 +1347,12 @@ fn router_with_state(state: Arc<AppState>) -> Router {
         .route("/connect", get(connect_handler))
         .route("/api", post(api_handler))
         .route("/ws", get(ws_handler))
+        .route("/canvas-frame", get(canvas_frame_handler))
+        // T015.1 fix：web/public 里的同名文件会被静态 fallback 原样 200（无 CSP），
+        // 和官方路径行为不一致；显式接住，让两条路径走同一个 handler。
+        .route("/canvas-frame.html", get(canvas_frame_handler))
+        // T015 fix B1：回答里本地绝对路径的只读出口（cookie + Host，只放会话工作目录）。
+        .route("/local-file", get(local_file_handler))
         .fallback(get(static_handler))
         .with_state(state)
 }
@@ -1239,6 +1425,43 @@ mod t007_static_tests {
         assert_eq!(
             content_type(Path::new("app.JS")),
             "application/octet-stream"
+        );
+    }
+
+    /// T015.1 fix：静态 fallback 不分大小写都不许直接发画布外壳（它必须带 CSP）。
+    #[test]
+    fn static_fallback_refuses_canvas_frame_shell_under_any_case() {
+        assert!(is_canvas_frame_alias(Path::new("/srv/canvas-frame.html")));
+        assert!(is_canvas_frame_alias(Path::new("/srv/CANVAS-FRAME.HTML")));
+        assert!(is_canvas_frame_alias(Path::new("./Canvas-Frame.Html")));
+        assert!(!is_canvas_frame_alias(Path::new("/srv/index.html")));
+        assert!(!is_canvas_frame_alias(Path::new(
+            "/srv/canvas-frame.html.bak"
+        )));
+    }
+}
+
+#[cfg(test)]
+mod t015_5_wire_tests {
+    use super::*;
+
+    /// T015.5（清单 9）：tool-call-delta 的线上帧只增不改——tag 与字段名照票面。
+    #[test]
+    fn tool_call_delta_wire_frame_shape() {
+        let wire = AgentEventWire::from_event(&agent::AgentEvent::ToolCallDelta {
+            call_id: "call_1".to_owned(),
+            name: "canvas".to_owned(),
+            arguments_delta: "{\"title\":\"".to_owned(),
+        })
+        .expect("tool-call-delta 要发到页面");
+        assert_eq!(
+            serde_json::to_value(&wire).unwrap(),
+            serde_json::json!({
+                "type": "tool-call-delta",
+                "callId": "call_1",
+                "name": "canvas",
+                "argumentsDelta": "{\"title\":\"",
+            })
         );
     }
 }
@@ -1858,5 +2081,394 @@ mod t011_ops_tests {
             "监控里不能有请求体里的 key：{text}"
         );
         assert!(!text.contains("apiKey"), "监控里不能有请求体字段：{text}");
+    }
+}
+
+#[cfg(test)]
+mod t015_local_file_tests {
+    use super::*;
+    use std::net::IpAddr;
+
+    fn model_config() -> model::DeepSeekConfig {
+        model::DeepSeekConfig {
+            base_url: "http://127.0.0.1:1".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            max_tokens: 2048,
+            context_window: model::DEFAULT_CONTEXT_WINDOW,
+            effort: model::Effort::new("high"),
+        }
+    }
+
+    fn auth_headers(trust: &Trust) -> HeaderMap {
+        let host = "127.0.0.1:1417";
+        let cookie = authorize_connect(trust, Some(host), Some("tok-1"))
+            .expect("换 cookie")
+            .set_cookie
+            .split(';')
+            .next()
+            .expect("cookie")
+            .to_owned();
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, host.parse().expect("Host"));
+        headers.insert("cookie", cookie.parse().expect("cookie"));
+        headers
+    }
+
+    struct Fixture {
+        dir: tempfile::TempDir,
+        work: PathBuf,
+        state: Arc<AppState>,
+        headers: HeaderMap,
+        trust: Trust,
+    }
+
+    async fn fixture() -> Fixture {
+        let dir = tempfile::tempdir().expect("临时目录");
+        let work = dir.path().join("work");
+        let data = dir.path().join("data");
+        std::fs::create_dir_all(&work).expect("工作目录");
+        std::fs::create_dir_all(&data).expect("数据目录");
+        let options = service::RootSessionOptions {
+            data_dir: data,
+            cwd: work.clone(),
+            model: model_config(),
+            config: agent::AgentConfig::default(),
+            credentials: None,
+            identity: Some(dir.path().join("identity.txt")),
+            model_factory: None,
+            append_hook_factory: None,
+            keyring_changed: None,
+        };
+        let host = service::RootHost::open(options, model::DEFAULT_CONTEXT_WINDOW).await;
+        let trust = Trust::new(
+            IpAddr::from([127, 0, 0, 1]),
+            1417,
+            "tok-1".to_owned(),
+            [7u8; 32],
+        );
+        let headers = auth_headers(&trust);
+        let state = Arc::new(AppState {
+            host: Arc::new(host),
+            trust: trust.clone(),
+            static_dir: None,
+            monitor: None,
+        });
+        Fixture {
+            dir,
+            work,
+            state,
+            headers,
+            trust,
+        }
+    }
+
+    async fn call(
+        state: &Arc<AppState>,
+        headers: &HeaderMap,
+        uri: &str,
+        path: Option<&str>,
+    ) -> Response {
+        local_file_handler(
+            State(Arc::clone(state)),
+            headers.clone(),
+            uri.parse().expect("uri"),
+            Query(LocalFileQuery {
+                path: path.map(str::to_owned),
+            }),
+        )
+        .await
+    }
+
+    async fn body_text(response: Response) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        String::from_utf8(bytes.to_vec()).expect("utf8")
+    }
+
+    #[tokio::test]
+    async fn serves_html_inside_work_dir_without_caching() {
+        let fixture = fixture().await;
+        let file = fixture.work.join("answer.html");
+        std::fs::write(&file, "<!doctype html><h1>本地文件正文</h1>").expect("写文件");
+        let response = call(
+            &fixture.state,
+            &fixture.headers,
+            "/local-file",
+            Some(file.to_str().expect("路径")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).expect("content-type"),
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("x-content-type-options")
+                .expect("nosniff"),
+            "nosniff"
+        );
+        assert_eq!(
+            response.headers().get("cache-control").expect("cache"),
+            "no-store"
+        );
+        assert!(body_text(response).await.contains("本地文件正文"));
+    }
+
+    #[tokio::test]
+    async fn serves_path_with_space_and_chinese() {
+        let fixture = fixture().await;
+        let file = fixture.work.join("报告 第 1 版.txt");
+        std::fs::write(&file, "带空格和中文的文件").expect("写文件");
+        let response = call(
+            &fixture.state,
+            &fixture.headers,
+            "/local-file",
+            Some(file.to_str().expect("路径")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE).expect("content-type"),
+            "text/plain; charset=utf-8"
+        );
+        assert_eq!(body_text(response).await, "带空格和中文的文件");
+    }
+
+    #[tokio::test]
+    async fn rejects_outside_directory_missing_relative_and_missing_param() {
+        let fixture = fixture().await;
+        let outside = fixture.dir.path().join("outside.html");
+        std::fs::write(&outside, "outside").expect("写文件");
+        let nested = fixture.work.join("nested");
+        std::fs::create_dir_all(&nested).expect("目录");
+        let escape = fixture.work.join("../outside.html");
+        let missing = fixture.work.join("missing.html");
+        let cases = [
+            (Some(outside.to_str().expect("路径")), StatusCode::FORBIDDEN),
+            (Some(escape.to_str().expect("路径")), StatusCode::FORBIDDEN),
+            (Some(nested.to_str().expect("路径")), StatusCode::NOT_FOUND),
+            (Some(missing.to_str().expect("路径")), StatusCode::NOT_FOUND),
+            (Some("answer.html"), StatusCode::BAD_REQUEST),
+            (None, StatusCode::BAD_REQUEST),
+        ];
+        for (path, expected) in cases {
+            let response = call(&fixture.state, &fixture.headers, "/local-file", path).await;
+            assert_eq!(response.status(), expected, "path={path:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_external_host_header() {
+        let fixture = fixture().await;
+        let file = fixture.work.join("answer.html");
+        std::fs::write(&file, "<h1>x</h1>").expect("写文件");
+        let mut headers = fixture.headers.clone();
+        headers.insert(HOST, "evil.example:1417".parse().expect("Host"));
+        let response = call(
+            &fixture.state,
+            &headers,
+            "/local-file",
+            Some(file.to_str().expect("路径")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unreadable_file_is_404() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = fixture().await;
+        let file = fixture.work.join("unreadable.html");
+        std::fs::write(&file, "<h1>secret</h1>").expect("写文件");
+        let permissions = std::fs::metadata(&file).expect("metadata").permissions();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).expect("chmod 000");
+        // root（或忽略权限位的文件系统）读得到 000 文件，这条用例没有可断言的拒绝面：跳过。
+        let denied = std::fs::read(&file).is_err();
+        let response = call(
+            &fixture.state,
+            &fixture.headers,
+            "/local-file",
+            Some(file.to_str().expect("路径")),
+        )
+        .await;
+        std::fs::set_permissions(&file, permissions).expect("恢复权限");
+        if denied {
+            assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_symlink_escape() {
+        let fixture = fixture().await;
+        let outside = fixture.dir.path().join("outside.html");
+        std::fs::write(&outside, "outside").expect("写文件");
+        let link = fixture.work.join("link.html");
+        std::os::unix::fs::symlink(&outside, &link).expect("建符号链接");
+        let response = call(
+            &fixture.state,
+            &fixture.headers,
+            "/local-file",
+            Some(link.to_str().expect("路径")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn requires_cookie_and_rejects_query_token() {
+        let fixture = fixture().await;
+        let file = fixture.work.join("answer.html");
+        std::fs::write(&file, "<h1>x</h1>").expect("写文件");
+        let path = file.to_str().expect("路径");
+        let mut host_only = HeaderMap::new();
+        host_only.insert(HOST, "127.0.0.1:1417".parse().expect("Host"));
+        let response = call(&fixture.state, &host_only, "/local-file", Some(path)).await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = call(
+            &fixture.state,
+            &fixture.headers,
+            "/local-file?token=tok-1",
+            Some(path),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        // 同源 cookie + Host 齐全时通过（前面两个用例已覆盖 200，这里确认带 token 的 query 才被拒）。
+        let _ = fixture.trust;
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_file() {
+        let fixture = fixture().await;
+        let file = fixture.work.join("big.bin");
+        std::fs::write(&file, vec![b'x'; LOCAL_FILE_MAX_BYTES as usize + 1]).expect("写文件");
+        let response = call(
+            &fixture.state,
+            &fixture.headers,
+            "/local-file",
+            Some(file.to_str().expect("路径")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    /// T015 安全修复：/local-file 给每种文件类型都带同一条隔离 CSP（照 Jupyter 的
+    /// AuthenticatedFileHandler；不按扩展名分），原来的 nosniff/no-store 不丢。
+    #[tokio::test]
+    async fn file_responses_carry_isolation_csp_for_all_types() {
+        let fixture = fixture().await;
+        for (name, body, content_type) in [
+            (
+                "answer.html",
+                "<!doctype html><p>x</p>",
+                "text/html; charset=utf-8",
+            ),
+            (
+                "shape.svg",
+                "<svg xmlns=\"http://www.w3.org/2000/svg\"><text>x</text></svg>",
+                "image/svg+xml",
+            ),
+            ("notes.txt", "text", "text/plain; charset=utf-8"),
+            ("pixel.png", "\u{89}PNG\r\n\u{1a}\n", "image/png"),
+            ("doc.pdf", "%PDF-1.4\n%%EOF\n", "application/pdf"),
+        ] {
+            let file = fixture.work.join(name);
+            std::fs::write(&file, body).expect("写文件");
+            let response = call(
+                &fixture.state,
+                &fixture.headers,
+                "/local-file",
+                Some(file.to_str().expect("路径")),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK, "{name}");
+            assert_eq!(
+                response.headers().get(CONTENT_TYPE).expect("content-type"),
+                content_type,
+                "{name}"
+            );
+            assert_eq!(
+                csp_of(&response),
+                "frame-ancestors 'self'; sandbox allow-scripts",
+                "{name}"
+            );
+            assert_eq!(
+                response
+                    .headers()
+                    .get("x-content-type-options")
+                    .expect("nosniff"),
+                "nosniff",
+                "{name}"
+            );
+            assert_eq!(
+                response.headers().get("cache-control").expect("no-store"),
+                "no-store",
+                "{name}"
+            );
+        }
+    }
+
+    /// 同一个处理器的错误响应也带 CSP：认证失败、路径不存在都不能绕开这条响应策略。
+    #[tokio::test]
+    async fn rejection_responses_carry_isolation_csp() {
+        let fixture = fixture().await;
+        let missing = fixture.work.join("missing.html");
+        let response = call(
+            &fixture.state,
+            &fixture.headers,
+            "/local-file",
+            Some(missing.to_str().expect("路径")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            csp_of(&response),
+            "frame-ancestors 'self'; sandbox allow-scripts"
+        );
+
+        let mut host_only = HeaderMap::new();
+        host_only.insert(HOST, "127.0.0.1:1417".parse().expect("Host"));
+        let response = call(
+            &fixture.state,
+            &host_only,
+            "/local-file",
+            Some(missing.to_str().expect("路径")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            csp_of(&response),
+            "frame-ancestors 'self'; sandbox allow-scripts"
+        );
+    }
+
+    fn csp_of(response: &Response) -> &str {
+        response
+            .headers()
+            .get(HeaderName::from_static("content-security-policy"))
+            .expect("CSP")
+            .to_str()
+            .expect("CSP 文本")
+    }
+
+    #[test]
+    fn content_type_follows_extension() {
+        for (name, expected) in [
+            ("a.html", "text/html; charset=utf-8"),
+            ("a.HTML", "text/html; charset=utf-8"),
+            ("a.css", "text/css; charset=utf-8"),
+            ("a.js", "text/javascript; charset=utf-8"),
+            ("a.txt", "text/plain; charset=utf-8"),
+            ("a.md", "text/plain; charset=utf-8"),
+            ("a.json", "application/json"),
+            ("a.png", "image/png"),
+            ("a.bin", "application/octet-stream"),
+        ] {
+            assert_eq!(local_file_content_type(Path::new(name)), expected, "{name}");
+        }
     }
 }

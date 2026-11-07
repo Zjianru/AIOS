@@ -367,6 +367,58 @@ expression: body
         "type": "object"
       },
       "name": "ask_user_question"
+    },
+    {
+      "description": "Show what you made as a live page inside the conversation instead of describing it in text. The page runs in a sandbox in that turn and follows the AIOS light and dark theme.\n\nWhen to use\nUse the canvas when terminal text is the wrong medium for the result: output that is easier to look at and interact with than to read line by line. Good candidates are a chart, a small calculator with sliders the user can drag, several options laid out side by side, or something that moves. If you would otherwise answer with paragraphs (a savings plan over ten years, a dashboard of numbers the session already pulled), consider a canvas.\n\nDo not use a canvas for an answer one sentence covers, and do not use it to operate AIOS: creating tasks, changing settings, and questions the user has to answer go through cards, never a canvas.\n\nWhat an artifact is not\nA canvas is a capture of work: one self-contained HTML page with no backend. It cannot serve multiple routes, read AIOS data, trigger AIOS actions, keep state across a reload, or start a download. Its only way out is aios.send(text), which puts one line into the user's input box marked as coming from this canvas; the user decides whether to send it.\n\nLoading\nInline your CSS and JavaScript. Scripts and stylesheets may load only from cdnjs.cloudflare.com, cdn.jsdelivr.net/npm/, unpkg.com, cdn.tailwindcss.com and code.jquery.com; fonts only from fonts.googleapis.com and fonts.gstatic.com. Every other external image, script, fetch, XHR and WebSocket is blocked, so embed images as data URIs.\n\nInside the page\nThe AIOS design tokens arrive as CSS variables named after the MCP Apps standard: --color-background-primary, --color-background-secondary, --color-background-inverse, --color-text-primary, --color-text-secondary, --color-text-tertiary, --color-text-inverse, --color-text-danger, --color-text-success, --color-border-primary, --color-border-secondary, --font-sans, --font-mono, --font-weight-normal, --font-weight-medium, --font-weight-semibold, --font-text-sm-size, --font-text-md-size, --font-heading-lg-size, --border-radius-sm, --border-radius-md. They follow the user's theme. The body is sized to its content up to 420px; taller content scrolls.\n\nArguments\ntitle is the header title, note says what this version shows or changes. To create a canvas, omit id and pass html. To revise a canvas, pass its id (the result of an earlier call tells you the id and version) and exactly one of: html (rewrite the whole page) or edits (a list of {old, new}). Each old must appear exactly once and edits apply in order; if any edit does not match, nothing changes and the whole call fails. Every call produces the next version of that canvas.",
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "edits": {
+            "description": "Local replacements for an existing canvas. Each old must appear exactly once; if any edit does not match, nothing changes.",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "new": {
+                  "description": "Replacement text.",
+                  "type": "string"
+                },
+                "old": {
+                  "description": "Exact text that must appear exactly once in the current page.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "old",
+                "new"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "html": {
+            "description": "The whole page content (a body fragment); inline its CSS and JavaScript. Use this to create a canvas or rewrite an existing one.",
+            "type": "string"
+          },
+          "id": {
+            "description": "Existing canvas id (from an earlier result). Omit to start a new canvas.",
+            "type": "string"
+          },
+          "note": {
+            "description": "What this version shows or changes; shown when the version is collapsed.",
+            "type": "string"
+          },
+          "title": {
+            "description": "Short title shown in the canvas header.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "note"
+        ],
+        "type": "object"
+      },
+      "name": "canvas"
     }
   ]
 }

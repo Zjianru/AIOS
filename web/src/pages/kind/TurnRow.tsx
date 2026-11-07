@@ -1,5 +1,6 @@
 /**
- * 一回合：你的消息 → 卡片 → Kind 的回答 → 回答下方一行「工作过程」。
+ * 一回合：你的消息 → 工作过程 → 画布 / 问题卡 → Kind 的回答（工作过程在回答上面，T013 验收 F2；
+ * 画布是 T015.1 加的，排在问题卡前面，照原型）。
  * 依据 experience-spec-v1.md §6.2 + prototype-to-product-v1.md §6（思考要展示，照 Codex / Claude 应用的样子）。
  *
  * 性能：整轮用 memo（比较 view 引用）；只有正在流式的那一条会重绘，别的不跟着重建。
@@ -17,9 +18,11 @@ import { QuestionCard } from './QuestionCard';
 import { useKindStore, useStreamStore } from './kindStore';
 import { processStepsOf } from './turnViews';
 import { ProcessView } from './process/ProcessView';
-import { AttachmentPreview, FileCard, PasteCard, pasteStats } from './composer/AttachmentCard';
+import { CanvasView } from './CanvasView';
+import { AttachmentPreview, FileCard, FromCanvasChip, PasteCard, pasteStats } from './composer/AttachmentCard';
 import { attachmentGet } from '@/data/service';
 import type { CompactionView, TurnUserView, TurnViewData } from './kindStore';
+import type { CanvasViewDoc } from './turnViews';
 import { go } from '@/app/navigate';
 import type { TextElement } from '@/data/types';
 import { cn } from '@/lib/utils';
@@ -139,6 +142,32 @@ function MentionText({ text }: { text: string }) {
   return <>{nodes}</>;
 }
 
+/** 这一轮出的画布：最新版展开，旧版缩成一行（T015.2）；版本从日志折叠的 canvasTracks 来。 */
+function CanvasBlock({
+  doc,
+  onCanvasMessage,
+}: {
+  doc: CanvasViewDoc;
+  onCanvasMessage: (text: string, canvas: { id: string; title: string }) => void;
+}) {
+  const track = useKindStore((state) => state.canvasTracks[doc.id]);
+  const revealTurn = useKindStore((state) => state.revealTurn);
+  const latest = track?.latest ?? doc.n;
+  const versions =
+    track?.versions ?? [{ n: doc.n, title: doc.title, note: doc.note, html: doc.html }];
+  return (
+    <CanvasView
+      doc={doc}
+      latest={latest}
+      versions={versions}
+      onJumpLatest={() => {
+        if (track) revealTurn(track.latestTurnId);
+      }}
+      onCanvasMessage={onCanvasMessage}
+    />
+  );
+}
+
 /** 纯文本 + 内联引用片（你说的话用这个，不走 markdown）。 */
 function RichText({ text, elements }: { text: string; elements: TextElement[] }) {
   if (elements.length === 0) return <MentionText text={text} />;
@@ -232,7 +261,11 @@ function FailureBlock({ view }: { view: TurnViewData }) {
           // F1：粘贴和文件跟着一起再发一次（不是只剩打的字）。
           onClick={() =>
             view.user &&
-            send(view.user.text, { pastes: view.user.pastes, attachments: view.user.files })
+            send(view.user.text, {
+              pastes: view.user.pastes,
+              attachments: view.user.files,
+              canvas: view.user.canvas ?? undefined,
+            })
           }
           className="shrink-0 rounded-btn border border-line-2 px-2.5 py-1 text-2 text-ink-2 transition-colors hover:bg-hover hover:text-ink disabled:opacity-50"
         >
@@ -299,10 +332,22 @@ interface TurnProps {
   /** 「上次查看之后」的分隔线画在这一轮上面。 */
   showLastSeen: boolean;
   lastSeenCounts: { moved: number; waiting: number };
+  /** T015.4：画布里的按钮交上来的一句话（带画布 id 和标题）。 */
+  onCanvasMessage: (text: string, canvas: { id: string; title: string }) => void;
 }
 
-export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, lastSeenCounts }: TurnProps) {
+export const TurnRow = memo(function TurnRow({
+  view,
+  dayLabel,
+  showLastSeen,
+  lastSeenCounts,
+  onCanvasMessage,
+}: TurnProps) {
   const streaming = view.status === 'inProgress';
+  // T015.5：这一轮正在画的画布标题（工作过程里「正在画 · 标题」）。
+  const drawing = useKindStore((state) =>
+    state.drawingCanvas?.turnId === view.id ? state.drawingCanvas.title : null,
+  );
   if (view.compaction) return <CompactionDivider compaction={view.compaction} />;
   const waitingForKernel = view.delivery !== null;
   return (
@@ -324,6 +369,7 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
 
       {view.user ? (
         <div className="mb-2 mt-3 flex flex-col items-end gap-1.5" data-kind="user-message-row">
+          {view.user.canvas ? <FromCanvasChip title={view.user.canvas.title} /> : null}
           {view.user.pastes.length > 0 || view.user.files.length > 0 ? <UserCards user={view.user} /> : null}
           {view.user.text ? (
             <div
@@ -368,6 +414,7 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
               answering={false}
               usage={view.tokens.input || view.tokens.output ? { model: view.model, ...view.tokens } : undefined}
               thinkingSeconds={view.thinkingSeconds}
+              drawing={drawing}
               alwaysShow
             />
           ) : null}
@@ -392,6 +439,8 @@ export const TurnRow = memo(function TurnRow({ view, dayLabel, showLastSeen, las
               />
             </div>
           ) : null}
+          {view.canvas ? <CanvasBlock doc={view.canvas} onCanvasMessage={onCanvasMessage} /> : null}
+
           {view.question ? <QuestionCard turnId={view.id} question={view.question} /> : null}
           {view.retry ? <RetryLine retry={view.retry} /> : null}
 

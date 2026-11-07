@@ -6,6 +6,7 @@ mod assembly;
 mod assistant_stream;
 mod bash_prompt;
 mod cache_prefix;
+mod canvas;
 mod common;
 mod compact_manual;
 mod compaction;

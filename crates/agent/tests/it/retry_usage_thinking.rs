@@ -291,6 +291,7 @@ async fn failure_after_streamed_content_is_retried_like_dsh() {
         vec![vec![ContentBlock::Text {
             text: "工具都跑完了。".to_owned(),
             paste: false,
+            canvas: None,
         }]],
         "只有重试成功的那条 assistant 消息"
     );
@@ -360,6 +361,7 @@ async fn thinking_round_trips_with_signature() {
             ContentBlock::Text {
                 text: "答案".to_owned(),
                 paste: false,
+                canvas: None,
             },
         ],
         "thinking 进历史、signature 存在块上"
@@ -505,6 +507,7 @@ async fn cancel_keeps_interrupted_thinking_without_signature() {
             ContentBlock::Text {
                 text: "可见".to_owned(),
                 paste: false,
+                canvas: None,
             },
         ],
         "interrupted 内容要含 thinking 前缀，且不带 signature"

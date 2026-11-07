@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>画布</title>
+  </head>
+  <body>
+    <script>
+      (function () {
+        'use strict';
+
+        // 外壳自检（照 MCP Apps 的 sandbox.ts，WORK/T015/research/src/sandbox.ts）：
+        // 这个页面只能当 iframe 用；够不到 window.top 才算和宿主隔开。
+        if (window.self === window.top) {
+          document.body.textContent = '画布只能嵌在对话里';
+          throw new Error('画布只能嵌在对话里：/canvas-frame 只能作为对话里的 iframe 打开');
+        }
+        try {
+          window.top.alert('能看到这句话，说明画布的沙箱没设好。');
+          throw 'FAIL';
+        } catch (error) {
+          if (error === 'FAIL') {
+            throw new Error('画布只能嵌在对话里：沙箱没设好（能摸到 window.top）');
+          }
+          // 预期：跨源访问抛出 SecurityError
+        }
+
+        // 画布文档的基础样式：让不写样式的画布也像 AIOS（照原型 frameDocument）。
+        // 与 web/src/pages/kind/canvasExport.ts 的 CANVAS_BASE_STYLE 保持一致（存文件也带这份）。
+        var BASE_STYLE = [
+          ':root{color-scheme:light dark}',
+          'html,body{margin:0;padding:0;background:transparent}',
+          'body{font-family:var(--font-sans);font-size:var(--font-text-md-size);line-height:1.6;',
+          'color:var(--color-text-primary);padding:14px 16px;box-sizing:border-box}',
+          '*{box-sizing:inherit}',
+        ].join('');
+
+        // 只认父窗口发来的消息：画布 HTML 由父窗口在一次 render 消息里给。
+        window.addEventListener('message', function (event) {
+          if (event.source !== window.parent) return;
+          var data = event.data;
+          if (!data || data.aiosHost !== true || data.type !== 'render') return;
+          if (typeof data.html !== 'string') return;
+          write(data.html);
+        });
+
+        // 用 document.write 把画布写进自己的文档（照 sandbox.ts；不用 srcdoc，库认文档）。
+        // 写完这个页面的脚本就被换掉了，所以运行时脚本（见 canvasRuntime）要一起写进去；
+        // 它排在画布 HTML 前面：画布一打开就 throw 时错误监听已经装好（T015.5 审计 #1）。
+        function write(html) {
+          var doc =
+            '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">' +
+            '<style>' + BASE_STYLE + '</style></head><body>' +
+            '<script data-aios-runtime="1">(' + canvasRuntime.toString() + ')();<' + '/script>' +
+            html + '</body></html>';
+          document.open();
+          document.write(doc);
+          document.close();
+        }
+
+        /**
+         * 画布里的运行时（会被 toString 写进画布文档）：
+         * 主题变量、aios.send、尺寸、滚轮转发、错误上报。只认父窗口发来的消息。
+         */
+        function canvasRuntime() {
+          var post = function (type, data) {
+            parent.postMessage(Object.assign({ aiosCanvas: true, type: type }, data || {}), '*');
+          };
+
+          // 出错告诉 Kind（T015.5）：脚本报错、没加载上的库/资源、未处理的 rejection、
+          // CSP 违规各报各的。请求被拦（比如 fetch 失败）不会自己变成 CSP 违规，分开记。
+          var reportError = function (message) {
+            post('error', { message: String(message).slice(0, 4000) });
+          };
+          addEventListener('error', function (event) {
+            var target = event.target;
+            if (target && target !== window && target !== document) {
+              // 资源加载失败（库没加载上）：报地址，不冒充脚本报错。
+              var url = target.src || target.href || '';
+              reportError('没加载上：' + (url || String(target.tagName || '资源')));
+              return;
+            }
+            var where = '';
+            if (event.filename) {
+              where = '（' + event.filename + (event.lineno ? ':' + event.lineno : '') + '）';
+            }
+            reportError('脚本报错：' + (event.message ? String(event.message) : '脚本抛错') + where);
+          }, true);
+          addEventListener('unhandledrejection', function (event) {
+            var reason = event.reason;
+            var text = reason && reason.message ? String(reason.message) : String(reason);
+            reportError('未处理的 rejection：' + text.slice(0, 1000));
+          });
+          document.addEventListener('securitypolicyviolation', function (event) {
+            reportError(
+              'CSP 违规：' + (event.violatedDirective || '策略') + ' 拦了 ' + (event.blockedURI || '请求'),
+            );
+          });
+
+          // 画布对宿主只开这一条路（T015.4 接进输入框）：把一句话交给宿主，由用户发。
+          window.aios = {
+            send: function (text) {
+              if (typeof text === 'string' && text.trim()) {
+                post('message', { text: String(text).slice(0, 4000) });
+              }
+            },
+          };
+
+          // 主题变量从父窗口来（MCP Apps 的标准名）；深浅色切换时父窗口会再发一次。
+          // 存成文件由父窗口自己生成，这个文档在 iframe 里，没有导出这条路（T015.5 审计 #2）。
+          addEventListener('message', function (event) {
+            if (event.source !== parent) return;
+            var data = event.data;
+            if (!data || data.aiosHost !== true) return;
+            var variables = data.variables || {};
+            for (var name in variables) {
+              document.documentElement.style.setProperty(name, variables[name]);
+            }
+            if (data.theme) document.documentElement.style.colorScheme = data.theme;
+          });
+
+          // 滚轮：画布里能滚的先滚；滚到头了（或者本来就不能滚）交给对话去滚。
+          // 不同源的 iframe 不会把滚轮接力给外面，不转发的话鼠标停在画布上对话就滚不动。
+          var canScroll = function (node, dy) {
+            for (; node && node !== document; node = node.parentNode) {
+              if (node.nodeType !== 1) continue;
+              var overflowY = getComputedStyle(node).overflowY;
+              var element = node === document.body ? document.scrollingElement : node;
+              if (
+                (overflowY === 'auto' || overflowY === 'scroll' || node === document.body) &&
+                element.scrollHeight > element.clientHeight + 1
+              ) {
+                if (dy < 0 ? element.scrollTop > 0 : element.scrollTop + element.clientHeight < element.scrollHeight - 1) {
+                  return true;
+                }
+              }
+            }
+            return false;
+          };
+          addEventListener('wheel', function (event) {
+            if (event.ctrlKey || canScroll(event.target, event.deltaY)) return;
+            event.preventDefault();
+            var factor = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 400 : 1;
+            post('wheel', { dx: event.deltaX * factor, dy: event.deltaY * factor });
+          }, { passive: false });
+
+          var report = function () {
+            post('size', { height: Math.ceil(document.body.getBoundingClientRect().height) });
+          };
+          addEventListener('load', function () {
+            new ResizeObserver(report).observe(document.body);
+            report();
+          });
+          post('ready');
+        }
+      })();
+    </script>
+  </body>
+</html>

@@ -20,6 +20,22 @@ T010.2 时用一次性 Playwright 录制器（已删除，不在仓库）跑改�
 | failure-model.json | text 的覆盖：连续 500 | 10 条 throw |
 | failure-retry.json | text 的覆盖：3 条 500 后回 text 的正常流 | 3 throw + 1 stream |
 
+## T015.1 画布夹具（手写）
+
+| 文件 | 场景 | 模型调用数 |
+|---|---|---|
+| canvas.jsonl | 画布：三个滑块 + 换标签的按钮，内容超过 420px | 2 |
+| canvas-cdn.jsonl | 画布：清单里的 CDN 库；清单外的脚本/图片/fetch；/api、/ws、parent.document 探测 | 2 |
+| canvas-loop.jsonl | 画布：脚本里转死循环 | 2 |
+| canvas-versions.jsonl | 画布：同一画布两版（第 2 版用 edits），再一条第三轮回答（T015.2） | 3 |
+| canvas-send.jsonl | 画布：「按这个存」按钮（aios.send），第 2 轮回答另备一条（T015.4） | 2 |
+| canvas-streaming.jsonl | 画布：canvas 参数拆成 4 段慢慢流（回放 pace 120ms），看「正在画 · 标题」（T015.5） | 2 |
+| canvas-errors.jsonl | 画布：脚本报错 / 未处理 rejection / CSP 违规三个按钮（T015.5） | 2 |
+| canvas-init-error.jsonl | 画布：顶层脚本一打开就 throw，验初始化错误的「出错了」（T015.5 审计 #1） | 2 |
+| canvas-forged-export.jsonl | 画布：自己往父窗口发 export，验伪造导出不下载（T015.5 审计 #2） | 2 |
+
+这些是手写的，只放模型回放要的 `assistant/message`：第 1 条回一次 `canvas` 工具调用（HTML 在参数里），第 2 条回一句回答（versions 多一条第三轮）。**工具调用由真内核执行**，所以页面显示的画布一定来自日志的 `tool/result.meta.canvas`，不是夹具里写死的结果。`canvas-streaming` 只把 `tool-call-chunks` 的 args 拆成几段；完整参数（`message.content` 和 block-end）不变。
+
 ## 真 key 夹具的来源（T010.5）
 
 real.jsonl 用真 key 录制（key 只在运行时注入 Keyring，不进文件/命令行/证据）：

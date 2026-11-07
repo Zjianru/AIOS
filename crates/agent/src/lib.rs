@@ -298,6 +298,13 @@ pub struct CompactionOutcome {
 pub enum AgentEvent {
     /// 一段模型流出的文本（CLI 据此显示）。
     AssistantTextDelta { text: String },
+    /// 工具调用参数的增量（T015.5 照 DSH tool-call-delta）：只给订阅者，不落日志。
+    /// 同一 callId 的后续帧沿用首帧的 name（模型流里的 name 只在起始帧给）。
+    ToolCallDelta {
+        call_id: String,
+        name: String,
+        arguments_delta: String,
+    },
     /// 一次请求失败后准备重试（CLI 显示「正在重试」；重试不写日志）。
     Retrying {
         attempt: u32,

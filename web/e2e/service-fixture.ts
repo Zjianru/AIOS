@@ -30,6 +30,13 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.codeBlock) return { file: 'tool-code' };
   if (options.t013Process) return { file: 'tool-process' };
   if (options.t013Interrupted) return { file: 'tool-interrupted', paceMs: 800 };
+  if (options.canvas) {
+    // T015.5：streaming 把 canvas 的参数拆成几段慢慢流（页面画「正在画 · 标题」）；
+    // errors 是三个错误触发按钮的画布。
+    if (options.canvas === 'streaming') return { file: 'canvas-streaming', paceMs: 120 };
+    return { file: options.canvas === 'interactive' ? 'canvas' : 'canvas-' + options.canvas };
+  }
+  if (options.localFilePath) return { file: 'local-file-text' };
   if (options.highUsage) return { file: 'high-usage' };
   return {
     file: 'text',
@@ -112,6 +119,23 @@ export interface FixtureOptions {
   t013Process?: boolean;
   /// T013.5：工具做完后被停下的一轮（工作过程页的「已停止」）。
   t013Interrupted?: boolean;
+  /// T015.1：画布夹具。interactive 是拖滑块/换标签、内容超过 420px 的那张；cdn 验地址清单和隔离；
+  /// loop 验死循环不卡页面。T015.2 加 versions：同一画布两版（第 2 版用 edits 改），再一条第三轮回答。
+  /// T015.4 加 send：画布里一个「按这个存」按钮（aios.send），第 2 轮的回答另备一条。
+  /// T015.5 加 streaming：参数拆成多段慢慢流（「正在画 · 标题」）；errors：脚本报错/
+  /// 未处理 rejection/CSP 违规三个按钮。
+  /// T015.5 审计修复加 init-error（画布顶层一打开就 throw）和 forged-export（画布自己发 export）。
+  /// 每份都是手写的模型回放脚本（第一轮回 canvas 工具调用，第二轮回一句回答）。
+  canvas?:
+    | 'interactive'
+    | 'cdn'
+    | 'loop'
+    | 'versions'
+    | 'send'
+    | 'streaming'
+    | 'errors'
+    | 'init-error'
+    | 'forged-export';
   /// 每次模型回放延迟毫秒（T007.5 停止用例要在运行中按停止/Esc）。
   slowMs?: number;
   /// first request 回一次 ask_user_question（两题：一题选项、一题自己写）。
@@ -140,6 +164,8 @@ export interface FixtureOptions {
   tinyPercent?: boolean;
   /// T012 F1：用量夹具去掉缓存写（只填缓存读价的端到端用）。
   usageReadOnly?: boolean;
+  /// T015 验收补 B2：回答里裸文本绝对路径 + `open <path>` 代码块（页面渲染成 /local-file 链接）。
+  localFilePath?: boolean;
   /// T010.5：用真 key 录的夹具（多步工具/思考/缓存读/压缩）。
   realTurn?: boolean;
 }
@@ -591,11 +617,10 @@ export async function startT013KernelFixture(): Promise<KernelFixture> {
 }
 
 /**
- * T013 DoD2（T008 模式）：空库起服务，页面里真实加连接并验证（key 从 env 读、只进页面输入）。
- * F2：每条用例用自己的数据目录（root/<用例名>/），跑完不清，便于按条回查日志。
+ * DoD 真 key 的通用夹具（T008 模式）：空库起服务，页面里真实加连接并验证（key 从 env 读、只进页面输入）。
+ * 每条用例用自己的数据目录（root/<用例名>/），跑完不清，便于按条回查日志。
  */
-export async function startT013DodFixture(caseName: string): Promise<KernelFixture> {
-  const root = path.join(process.env.AIOS_T013_DOD_ROOT ?? '/tmp/aios-t013-dod', caseName);
+export async function startDodConnectFixture(root: string): Promise<KernelFixture> {
   const workDir = path.join(root, 'work');
   const dataDir = path.join(root, 'data');
   await rm(root, { recursive: true, force: true });
@@ -644,4 +669,18 @@ export async function startT013DodFixture(caseName: string): Promise<KernelFixtu
     stderr: () => stderr,
     dataDir,
   } as unknown as KernelFixture;
+}
+
+/** T013 DoD2：真 key（MiniMax）的夹具——/tmp/aios-t013-dod 下的数据目录 + 小项目工作目录。 */
+export async function startT013DodFixture(caseName: string): Promise<KernelFixture> {
+  return startDodConnectFixture(
+    path.join(process.env.AIOS_T013_DOD_ROOT ?? '/tmp/aios-t013-dod', caseName),
+  );
+}
+
+/** T015 DoD2：真 key（MiniMax）画布四件事——/tmp/aios-t015-dod 下的数据目录 + 小项目工作目录。 */
+export async function startT015DodFixture(caseName: string): Promise<KernelFixture> {
+  return startDodConnectFixture(
+    path.join(process.env.AIOS_T015_DOD_ROOT ?? '/tmp/aios-t015-dod', caseName),
+  );
 }

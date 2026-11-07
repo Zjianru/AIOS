@@ -8,6 +8,7 @@
 
 import { useEffect, useState } from 'react';
 import {
+  AppWindow,
   ChevronDown,
   ChevronUp,
   FilePen,
@@ -95,7 +96,8 @@ function ThinkRow({ step }: { step: ThinkStepView }) {
         ) : null}
       </button>
       {open ? (
-        <div className="mb-1 mt-0.5 pl-[22px]">
+        // T015 fix A：展开的思考内容比正文小一号、次级文字色；代码块仍由 .md pre code 保持 mono。
+        <div className="think-md mb-1 mt-0.5 pl-[22px] text-2 leading-5 text-ink-3">
           <Markdown text={step.text} />
         </div>
       ) : null}
@@ -290,6 +292,8 @@ export interface ProcessViewProps {
   };
   /** 这一轮想了多少秒（展开后「经过」行显示）。 */
   thinkingSeconds?: number;
+  /** T015.5：正在流的画布标题（空串表示参数到了、title 还没到）；null/undefined 表示没在画。 */
+  drawing?: string | null;
   /** 没有工具也没有思考的完成轮也显示（T010 承诺：用量/用时的「工作过程」行）。 */
   alwaysShow?: boolean;
 }
@@ -305,6 +309,7 @@ export function ProcessView({
   usage,
   thinkingSeconds = 0,
   alwaysShow = false,
+  drawing,
 }: ProcessViewProps) {
   const [open, setOpen] = useState(false);
   const elapsed = useElapsed(startedAt === null ? null : startedAt * 1000, live);
@@ -376,6 +381,17 @@ export function ProcessView({
               <span className="text-ink-2">经过</span> ·{' '}
               {thinkingSeconds > 0 ? <>想了 {thinkingSeconds} 秒 · </> : null}调了 {toolCount} 次工具 ·{' '}
               <span className="brand-type">{(totalTokens / 1000).toFixed(1)}k</span>
+            </div>
+          ) : null}
+          {/* T015.5：画笔还在流参数：工作过程里先占一行「正在画 · 标题」，画布出来就收掉。 */}
+          {live && !answering && drawing !== null && drawing !== undefined ? (
+            <div
+              data-kind="canvas-drawing"
+              className="flex h-6 min-w-0 items-center text-3 text-ink-3"
+            >
+              <AppWindow className="size-4 shrink-0" strokeWidth={1.6} />
+              <span className="ml-1.5 shrink-0 process-shimmer">{'正在画'}</span>
+              {drawing ? <span className="min-w-0 truncate">{' · '}{drawing}</span> : null}
             </div>
           ) : null}
           {segments.map((segment, index) => {

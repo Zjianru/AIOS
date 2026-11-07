@@ -45,6 +45,97 @@ export type QuestionView =
   | { status: 'dismissed'; questions: AskQuestion[] }
   | { status: 'void'; questions: AskQuestion[] };
 
+/**
+ * 画布（T015.1）：日志里 tool/result.meta.canvas 的那一版全文。
+ * 回放和实时都走同一份事件，所以这里只有日志事实，没有页面自己的状态。
+ */
+export interface CanvasViewDoc {
+  id: string;
+  /** 第几版（T015.1 只出第 1 版；版本切换在 T015.2）。 */
+  n: number;
+  title: string;
+  note: string;
+  html: string;
+}
+
+/** 画布的一个版本（日志里的一条 tool/result.meta.canvas）。 */
+export interface CanvasVersionView {
+  /** 第几版，从 1 开始。 */
+  n: number;
+  title: string;
+  note: string;
+  html: string;
+}
+
+/** 一个画布出过的版本（按 n 升序）和最新版在哪一轮。 */
+export interface CanvasTrack {
+  latest: number;
+  /** 最新一版所在轮次的视图 id（旧版缩成一行时点它跳过去）。 */
+  latestTurnId: string;
+  versions: CanvasVersionView[];
+}
+
+/** 从日志折叠每个画布的版本（T015.2）：只认 tool/result.meta.canvas。 */
+export function canvasTracks(events: ServiceEvent[]): Record<string, CanvasTrack> {
+  return mergeCanvasTracks({}, events);
+}
+
+/** 把一批事件折进已有的版本表（首屏、往上翻、live 三处共用）。 */
+export function mergeCanvasTracks(
+  tracks: Record<string, CanvasTrack>,
+  events: ServiceEvent[],
+): Record<string, CanvasTrack> {
+  let next = tracks;
+  for (const event of events) {
+    if (event.type !== 'tool/result') continue;
+    const turn = typeof event.data.turn === 'number' ? event.data.turn : null;
+    if (turn === null) continue;
+    const version = canvasVersionOf(event.data.meta);
+    if (!version) continue;
+    const track = next[version.id] ?? { latest: 0, latestTurnId: '', versions: [] };
+    const versions = track.versions
+      .filter((item) => item.n !== version.n)
+      .concat({ n: version.n, title: version.title, note: version.note, html: version.html })
+      .sort((left, right) => left.n - right.n);
+    next = {
+      ...next,
+      [version.id]: {
+        latest: Math.max(track.latest, version.n),
+        // 同一版重复到达时认后一次（live 重放同一条事件不该丢轮次）。
+        latestTurnId: version.n >= track.latest ? 'turn-' + String(turn) : track.latestTurnId,
+        versions,
+      },
+    };
+  }
+  return next;
+}
+
+/** T015.4：user/message 文字块上的 canvas（{id, title} 都是字符串才算；形状不对就当普通文字）。 */
+function canvasSourceOf(value: unknown): { id: string; title: string } | null {
+  if (!value || typeof value !== 'object') return null;
+  const typed = value as { id?: unknown; title?: unknown };
+  if (typeof typed.id !== 'string' || typeof typed.title !== 'string') return null;
+  return { id: typed.id, title: typed.title };
+}
+
+/** tool/result.meta.canvas → 一版画布（形状不对就当没有）。 */
+function canvasVersionOf(meta: unknown): (CanvasVersionView & { id: string }) | null {
+  if (!meta || typeof meta !== 'object') return null;
+  const value = (meta as { canvas?: unknown }).canvas;
+  if (!value || typeof value !== 'object') return null;
+  const typed = value as { id?: unknown; n?: unknown; title?: unknown; note?: unknown; html?: unknown };
+  if (typeof typed.id !== 'string' || typeof typed.title !== 'string' || typeof typed.html !== 'string') {
+    return null;
+  }
+  return {
+    id: typed.id,
+    n: typeof typed.n === 'number' ? typed.n : 1,
+    title: typed.title,
+    note: typeof typed.note === 'string' ? typed.note : '',
+    html: typed.html,
+  };
+}
+
 /** 压缩：在对话里是一条分隔线，不是一轮。 */
 export interface CompactionView {
   auto: boolean;
@@ -66,6 +157,8 @@ export interface TurnUserView {
   pastes: string[];
   /** file 块（服务发消息时写下的 id/名字/大小）。 */
   files: SendAttachmentRef[];
+  /** T015.4：这句话是画布里的按钮放进来的（日志块上的 canvas：id + 标题）；没有就是自己写的。 */
+  canvas: { id: string; title: string } | null;
 }
 
 export interface TurnViewData {
@@ -74,7 +167,8 @@ export interface TurnViewData {
   durationMs: number | null;
   status: TurnStatus;
   user: TurnUserView | null;
-  reasoning: { summary: string[]; full: string; seconds: number } | null;
+  /** 思考全文（T013 验收 F5）；摘要和秒数页面不用，日志里也没有（T013 C1）。 */
+  reasoning: { full: string } | null;
   tools: ToolStep[];
   cards: KindCard[];
   answer: { text: string; elements: TextElement[] } | null;
@@ -89,6 +183,8 @@ export interface TurnViewData {
   failure: { cause: FailureCause; reason: string; code?: string } | null;
   question: QuestionView | null;
   compaction: CompactionView | null;
+  /** 这一轮出的画布（日志里 tool/result.meta.canvas）。 */
+  canvas: CanvasViewDoc | null;
   /** 你的消息：发送中 / 没送到（重发用同一个请求编号，内核只收一次）。 */
   delivery: 'sending' | 'unsent' | null;
   /** 停下的时间（status 为 interrupted 时）。 */
@@ -132,6 +228,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     question: QuestionView | null;
     retry: TurnViewData['retry'];
     compaction: CompactionView | null;
+    canvas: CanvasViewDoc | null;
     answered: AskAnswer[];
     cancelled: number;
     stoppedAt: string | null;
@@ -158,6 +255,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         question: null,
         retry: null,
         compaction: null,
+        canvas: null,
         answered: [],
         cancelled: 0,
         stoppedAt: null,
@@ -190,18 +288,26 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     const text: string[] = [];
     const pastes: string[] = [];
     const files: SendAttachmentRef[] = [];
+    let canvas: { id: string; title: string } | null = null;
     for (const block of content) {
       if (!block || typeof block !== 'object') continue;
       const typed = block as {
         type?: string;
         text?: unknown;
         paste?: unknown;
+        canvas?: unknown;
         attachmentId?: unknown;
         name?: unknown;
         bytes?: unknown;
       };
       if (typed.type === 'text') {
         const value = typeof typed.text === 'string' ? typed.text : '';
+        // T015.4：画布放进来的那一句不进正文——气泡上画成「来自画布」标记，正文只留打的字。
+        const source = canvasSourceOf(typed.canvas);
+        if (source) {
+          canvas = source;
+          continue;
+        }
         if (typed.paste === true) pastes.push(value);
         else text.push(value);
         continue;
@@ -215,8 +321,8 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       }
     }
     const body = text.join('');
-    if (!body && pastes.length === 0 && files.length === 0) return null;
-    return { text: body, elements: [], pastes, files };
+    if (!body && pastes.length === 0 && files.length === 0 && !canvas) return null;
+    return { text: body, elements: [], pastes, files, canvas };
   };
 
   const textOfToolResult = (message: unknown): string => {
@@ -246,6 +352,10 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     return parts.join('');
   };
 
+  /** T015.1：tool/result.meta.canvas → 这一轮要画的画布（形状不对就当没有）。 */
+  const canvasOf = (meta: Record<string, unknown> | null): CanvasViewDoc | null =>
+    canvasVersionOf(meta);
+
   const modelIdOf = (message: unknown): string | null => {
     if (!message || typeof message !== 'object') return null;
     const source = (message as { source?: { kind?: string; model?: unknown } }).source;
@@ -260,8 +370,18 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     if (raw.reasoningParts[raw.reasoningParts.length - 1] === value) return;
     raw.reasoningParts.push(value);
   };
+  // T015.3：压缩剪枝替换的 assistant/message 与原文同一个消息 id（surface 替换视图）。
+  // 页面看日志事实，只认第一次出现，免得旧轮状态被替换事件重置；旧版调用参数仍按原文显示。
+  const seenAssistantMessages = new Set<string>();
   for (const event of events) {
     const data = event.data ?? {};
+    if (event.type === 'assistant/message') {
+      const id = (data.message as { id?: unknown } | undefined)?.id;
+      if (typeof id === 'string') {
+        if (seenAssistantMessages.has(id)) continue;
+        seenAssistantMessages.add(id);
+      }
+    }
     const turn = typeof data.turn === 'number' ? data.turn : null;
     if (turn === null) continue;
     switch (event.type) {
@@ -341,6 +461,8 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
           const body = textOf(data.message) || textOfToolResult(data.message);
           step.output = body || String((data.error as { code?: string } | undefined)?.code ?? '');
           step.meta = (data.meta as Record<string, unknown> | undefined) ?? null;
+          // T015.1：画布全文只从日志的 meta 来；回放和实时同一条路。
+          raw.canvas = canvasOf(step.meta) ?? raw.canvas;
           const status = parseExitStatus(step.output);
           step.exitCode = status.exitCode;
           step.signal = status.signal;
@@ -477,14 +599,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       status: raw.status,
       user: raw.user,
       reasoning:
-        raw.reasoningParts.length > 0
-          ? {
-              // 日志里没有摘要字段：summary 留空，不替模型编摘要。
-              summary: [],
-              full: raw.reasoningParts.join('\n\n'),
-              seconds: Math.max(1, thinkingSecondsOf(raw.reasoningMs)),
-            }
-          : null,
+        raw.reasoningParts.length > 0 ? { full: raw.reasoningParts.join('\n\n') } : null,
       tools: raw.tools,
       cards: [],
       answer: raw.answer ? { text: raw.answer, elements: [] } : null,
@@ -501,6 +616,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       compaction: raw.compaction,
       failure: raw.failure,
       question: raw.question,
+      canvas: raw.canvas,
       delivery: null,
       stoppedAt: raw.stoppedAt,
     }));

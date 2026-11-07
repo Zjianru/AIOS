@@ -7,7 +7,6 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AnimatePresence, m } from 'motion/react';
 import { Virtuoso } from 'react-virtuoso';
 import type { ListRange, VirtuosoHandle } from 'react-virtuoso';
 import { ArrowDown, SendHorizontal, Square, WifiOff } from 'lucide-react';
@@ -208,6 +207,20 @@ export function ConversationPane() {
     listRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'smooth' });
   }, []);
 
+  // T015.2：点了旧版画布那一行 —— 滚到出最新版的那一轮。
+  const reveal = useKindStore((state) => state.reveal);
+  useEffect(() => {
+    if (!reveal) return;
+    const index = useKindStore.getState().views.findIndex((view) => view.id === reveal.turnId);
+    if (index < 0) return;
+    followRef.current = false;
+    listRef.current?.scrollToIndex({
+      index: firstItemIndex + index,
+      align: 'start',
+      behavior: 'smooth',
+    });
+  }, [reveal, firstItemIndex]);
+
 
   // 停止（D12）：运行中按 Esc 随时停；有弹层开着时让弹层先处理 Esc。
   useEffect(() => {
@@ -223,6 +236,14 @@ export function ConversationPane() {
   }, [running, stop]);
 
   const composerRef = useRef<ComposerHandle | null>(null);
+
+  // T015.4：画布里的按钮把一句话交给输入框（只放进输入框，由用户自己发）。
+  const onCanvasMessage = useCallback(
+    (text: string, canvas: { id: string; title: string }) => {
+      composerRef.current?.putFromCanvas(text, canvas);
+    },
+    [],
+  );
 
   // T013.7：发送走 Composer（Enter/Cmd+Enter/按钮都到 submit）；pastes/attachments 跟着发。
   const handleSend = useCallback(() => {
@@ -329,28 +350,26 @@ export function ConversationPane() {
                   dayLabel={dayLabels.get(view.id) ?? null}
                   showLastSeen={lastSeenId === view.id}
                   lastSeenCounts={lastSeenCounts}
+                  onCanvasMessage={onCanvasMessage}
                 />
               </div>
             )}
           />
         )}
 
-        <AnimatePresence>
-          {!atBottom && !initialLoading ? (
-            <m.button
-              type="button"
-              onClick={scrollToLatest}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 8 }}
-              transition={{ duration: 0.12, ease: [0.2, 0.8, 0.2, 1] }}
-              className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-line-2 bg-raised px-3 py-1.5 text-2 text-ink-2 shadow-[var(--shadow-pop)] hover:text-ink"
-            >
-              <ArrowDown className="size-3.5" />
-              回到最新
-            </m.button>
-          ) : null}
-        </AnimatePresence>
+        {/* 不做淡入/位移：滚动时 atBottom 会抖动反复触发过渡，transform 让文字落在亚像素位置发虚。
+            需要时干脆出现，平时是静态灰，悬浮才变实。 */}
+        {!atBottom && !initialLoading ? (
+          <button
+            type="button"
+            onClick={scrollToLatest}
+            data-kind="scroll-latest"
+            className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-line-2 bg-raised px-3 py-1.5 text-2 text-ink-3 shadow-[var(--shadow-pop)] hover:text-ink"
+          >
+            <ArrowDown className="size-3.5" />
+            回到最新
+          </button>
+        ) : null}
       </div>
 
       <div className="shrink-0 border-t border-line px-6 pb-2 pt-3">

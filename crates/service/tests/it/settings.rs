@@ -985,6 +985,7 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
         delivery: service::DeliveryMode::FollowUp,
         pastes: Vec::new(),
         attachments: Vec::new(),
+        canvas: None,
     }))
     .await
     .expect("send A");
@@ -1024,6 +1025,7 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
         delivery: service::DeliveryMode::FollowUp,
         pastes: Vec::new(),
         attachments: Vec::new(),
+        canvas: None,
     }))
     .await
     .expect("send B");

@@ -156,6 +156,7 @@ fn send_request(request_id: &str, text: &str) -> SendRequest {
         delivery: DeliveryMode::FollowUp,
         pastes: Vec::new(),
         attachments: Vec::new(),
+        canvas: None,
     }
 }
 

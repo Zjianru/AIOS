@@ -960,9 +960,11 @@ fn handle_event(event: AgentEvent, outcome: &mut Option<TurnOutcome>) {
             println!("{}", job_completed_text(&job_id, status, detail.as_deref()));
         }
         // T006.2a：输入队列通知只给界面/服务用；开发 CLI 不显示。
+        // T015.5：工具参数增量同样只给页面（「正在画 · 标题」），CLI 不显示。
         AgentEvent::InboxInserted { .. }
         | AgentEvent::InboxClaimed { .. }
-        | AgentEvent::InboxDiscarded { .. } => {}
+        | AgentEvent::InboxDiscarded { .. }
+        | AgentEvent::ToolCallDelta { .. } => {}
         AgentEvent::TurnEnded { outcome: ended, .. } => {
             println!();
             match &ended {
