@@ -755,6 +755,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
       if (root.state === 'ok') {
         useKindStore.setState({ gate: 'ok', gateDetail: null });
         await get().loadInitial();
+        // 恢复时服务端可能刚接上新连接：把当前模型/档同步到选择器（首次初始化才写）。
+        await get().refreshStats();
       }
     } catch {
       // 401 已由 service 请求层统一进令牌说明页；这里只标不可达，不覆盖 token。

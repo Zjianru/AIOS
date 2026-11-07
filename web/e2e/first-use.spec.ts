@@ -1,5 +1,5 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
-import { startKernelFixture, type KernelFixture } from './service-fixture';
+import { apiPost, startKernelFixture, type KernelFixture } from './service-fixture';
 
 const EVIDENCE = process.env.AIOS_DOD_EVIDENCE;
 void EVIDENCE;
@@ -32,6 +32,36 @@ test('第一次填 key：接上后是空对话', async ({ page }) => {
     await expect(page.getByText('连接可用')).toBeVisible({ timeout: 20_000 });
     await page.getByRole('button', { name: '开始', exact: true }).click();
     await expect(page.locator('[data-kind="empty"]')).toBeVisible({ timeout: 20_000 });
+  } finally {
+    await fixture.close();
+  }
+});
+
+/// T016.1：第一次接 MiniMax（国际站）：它成为当前模型，档取模型自己的默认档（medium），
+/// 页面状态与选择器都跟着新连接。
+test('第一次填 key：MiniMax 连接成为当前模型并用模型默认档', async ({ page, request }) => {
+  const fixture = await startKernelFixture({ emptyKeyring: true });
+  try {
+    await rewriteConnectionEndpoint(page, fixture);
+    await page.goto(`${fixture.baseUrl}/?token=${encodeURIComponent(fixture.token)}#kind`);
+    await expect(page.locator('[data-first-use="connect"]')).toBeVisible({ timeout: 20_000 });
+    await page.getByRole('button', { name: 'MiniMax（国际站）', exact: true }).click();
+    await page.locator('#first-use-key').fill('good-key');
+    await page.getByRole('button', { name: '接上', exact: true }).click();
+    await expect(page.getByText('连接可用')).toBeVisible({ timeout: 20_000 });
+    await page.getByRole('button', { name: '开始', exact: true }).click();
+    await expect(page.locator('[data-kind="empty"]')).toBeVisible({ timeout: 20_000 });
+    // 选择器显示新连接上的模型和它自己的默认档（中 = medium，不是写死的 high）。
+    const picker = page.locator('[data-kind="model-picker"]');
+    await expect(picker).toContainText('MiniMax-M3.1-Flash', { timeout: 20_000 });
+    await expect(picker).toContainText('中', { timeout: 20_000 });
+    // 服务端 current/ready 与页面选择一致。
+    const status = await apiPost(request, fixture, { method: 'status' });
+    expect(status.ok()).toBeTruthy();
+    const body = await status.json();
+    expect(body.stats.connection).toBe('minimax');
+    expect(body.stats.model).toBe('MiniMax-M3.1-Flash');
+    expect(body.stats.effortWanted).toBe('medium');
   } finally {
     await fixture.close();
   }
