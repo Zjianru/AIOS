@@ -34,6 +34,9 @@ test('本地文件路由：会话工作目录内的文件可读，越界/目录/
     const ok = await get(answer);
     expect(ok.status()).toBe(200);
     expect(ok.headers()['content-type']).toContain('text/html');
+    // 产物可能带隐私：明确不缓存、不按内容猜类型。
+    expect(ok.headers()['cache-control']).toBe('no-store');
+    expect(ok.headers()['x-content-type-options']).toBe('nosniff');
     expect(await ok.text()).toContain('本地文件正文');
 
     // 空格/中文文件名：前端整体 encodeURIComponent，服务端 Query 解回原路径。
@@ -62,6 +65,23 @@ test('本地文件路由：会话工作目录内的文件可读，越界/目录/
     expect(
       (await request.get(fixture.baseUrl + '/local-file?path=' + encodeURIComponent(answer) + '&token=' + encodeURIComponent(fixture.token))).status(),
     ).toBe(401);
+  } finally {
+    await fixture.close();
+  }
+});
+
+// 用户真正点链接是浏览器的顶层导航（新标签页）：SameSite=Strict 的签名 cookie 在这条路径上
+// 必须照样发出，不能只对 APIRequestContext 成立。先照用户打开服务地址的路径 (?token=) 换 cookie。
+test('本地文件路由：浏览器顶层导航带同源 cookie 能直接打开', async ({ page }) => {
+  const fixture = await startKernelFixture({});
+  try {
+    const answer = path.join(fixture.dataDir, 'browser.html');
+    await writeFile(answer, '<!doctype html><h1>浏览器打开</h1>', 'utf8');
+    await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token));
+    await page.goto(
+      fixture.baseUrl + '/local-file?path=' + encodeURIComponent(answer),
+    );
+    await expect(page.locator('h1')).toHaveText('浏览器打开');
   } finally {
     await fixture.close();
   }
