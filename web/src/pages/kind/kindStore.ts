@@ -164,6 +164,14 @@ interface KindState {
   modelInitialized: boolean;
   /** T012.9：币种与汇率（服务 settings.json + status.fx）。 */
   money: MoneyState;
+  /** 屏蔽的模型规则（服务端 settings.json 的整表）；选择器按它灰掉、标「已屏蔽」。 */
+  masked: string[];
+  /** 模型选择器开着没有（失败块的「换模型」要靠它打开）。 */
+  pickerOpen: boolean;
+  /** 打开/收起模型选择器。 */
+  setPickerOpen: (open: boolean) => void;
+  /** 重新读屏蔽表（设置变化事件或屏蔽操作以后；读不到就保留上一次的）。 */
+  refreshMasks: () => Promise<void>;
   /** T008.4：Kind 首屏引导：先看是不是空库（首次使用），否则加载对话。 */
   bootstrap: () => Promise<void>;
   loadInitial: () => Promise<void>;
@@ -421,6 +429,12 @@ function refreshTurn(turn: number): void {
 /** 压缩摘要：ContentBlock 数组里的 text 拼起来（日志事实）。 */
 /** 日志事件 live：追加进本轮事件，重建 view；turn/end 时收掉流式文本。 */
 function applyLiveEvent(event: ServiceEvent): void {
+  if (event.type === 'keyring/changed') {
+    // 设置变化是 seq=0 的合成事件：不进日志、不动 lastSeq；只把屏蔽表重读一遍，
+    // 让选择器的「已屏蔽」立刻跟上（不用刷新页面）。
+    void useKindStore.getState().refreshMasks();
+    return;
+  }
   if (event.seq <= lastSeq) return;
   lastSeq = event.seq;
   liveEvents.push(event);
@@ -595,6 +609,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
   model: DEMO_MODEL,
   stats: EMPTY_STATS,
   money: DEFAULT_MONEY,
+  masked: [],
+  pickerOpen: false,
   modelInitialized: false,
   canvasTracks: {},
   drawingCanvas: null,
@@ -620,7 +636,12 @@ export const useKindStore = create<KindState>()((set, get) => ({
           if (model.contextWindow) windows[model.id] = model.contextWindow;
         }
       }
-      set({ modelNames: names, modelWindows: windows, connectionNames });
+      set({
+        modelNames: names,
+        modelWindows: windows,
+        connectionNames,
+        masked: view.disabledModels,
+      });
     } catch {
       // 设置读不到时模型名退回 id、压缩占用不显示（日志里的事实还在）。
     }
@@ -874,6 +895,16 @@ export const useKindStore = create<KindState>()((set, get) => ({
         effortActual: selection.effort ?? state.model.effortActual,
       },
     }));
+  },
+
+  setPickerOpen: (open) => set({ pickerOpen: open }),
+  refreshMasks: async () => {
+    try {
+      const view = await getModelSettings();
+      set({ masked: view.disabledModels });
+    } catch {
+      // 读不到设置时保留上一次的屏蔽表；服务端仍按文件里的规则拦。
+    }
   },
 
   refreshStats: async () => {

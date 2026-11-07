@@ -1283,6 +1283,13 @@ async fn ws_session(mut socket: WebSocket, state: Arc<AppState>, last_seq: u64) 
         tokio::select! {
             received = live.recv() => match received {
                 Ok(event) => {
+                    if event.seq == 0 {
+                        // 合成事件（设置变化）：不在日志里，不推进 lastSeq；页面收到后自己重拉设置。
+                        if !send_frame(&mut socket, &Frame::Event { event }).await {
+                            return;
+                        }
+                        continue;
+                    }
                     if event.seq <= last {
                         continue;
                     }

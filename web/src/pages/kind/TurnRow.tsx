@@ -226,12 +226,14 @@ function RetryLine({ retry }: { retry: NonNullable<TurnViewData['retry']> }) {
   );
 }
 
-/** 这一轮没做完：原因原样给出；密钥类给「去设置」，其余给「再发一次」。 */
+/** 这一轮没做完：原因原样给出；密钥类给「去设置」，被屏蔽的给「换模型」「去设置」。 */
 function FailureBlock({ view }: { view: TurnViewData }) {
   const send = useKindStore((state) => state.send);
   const streaming = useKindStore((state) => state.streamingTurnId);
+  const setPickerOpen = useKindStore((state) => state.setPickerOpen);
   const failure = view.failure;
   if (!failure) return null;
+  const masked = failure.cause === 'masked';
   return (
     <div className="mt-2 flex items-start gap-2 rounded-card border border-fail/40 bg-fail-soft/50 px-3 py-2 text-2" data-kind="failure">
       <CircleAlert className="mt-[2px] size-3.5 shrink-0 text-fail" />
@@ -242,10 +244,22 @@ function FailureBlock({ view }: { view: TurnViewData }) {
             ? 'AIOS 不会改用别处的密钥。把钥匙文件找回来，或者在设置里重新填。'
             : failure.cause === 'credential'
               ? '换一把密钥，或者检查这个提供商的账户。'
-              : '内核已经按规矩重试过了。过一会儿再发一次，或者换个模型。'}
+              : masked
+                ? '已经做的留着。换一个模型接着说，或者去设置解除屏蔽。'
+                : '内核已经按规矩重试过了。过一会儿再发一次，或者换个模型。'}
         </div>
       </div>
-      {failure.cause === 'keyring' || failure.cause === 'credential' ? (
+      {masked ? (
+        <button
+          type="button"
+          data-kind="failure-pick"
+          onClick={() => setPickerOpen(true)}
+          className="shrink-0 rounded-btn border border-line-2 px-2.5 py-1 text-2 text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+        >
+          换模型
+        </button>
+      ) : null}
+      {failure.cause === 'keyring' || failure.cause === 'credential' || masked ? (
         <button
           type="button"
           onClick={() => go('settings:model')}
@@ -254,7 +268,7 @@ function FailureBlock({ view }: { view: TurnViewData }) {
           去设置 ›
         </button>
       ) : null}
-      {view.user ? (
+      {view.user && !masked ? (
         <button
           type="button"
           disabled={Boolean(streaming)}
