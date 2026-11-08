@@ -49,6 +49,28 @@ export interface CardEnvelope<Slots = unknown> {
   receipt?: CardReceipt;
 }
 
+/** 一次作答的形状（和 data/service 的 AskAnswer 一致；卡片模型不 import 页面数据层）。 */
+export interface AnswerInput {
+  id: string;
+  selected: string[];
+  custom?: string;
+}
+
+/** 卡片能触发的程序操作：按钮 id 和内部操作由程序定，模型给不了。 */
+export interface CardHost {
+  /** 提问卡：整批作答。 */
+  answer: (answers: AnswerInput[]) => void;
+  /** 提问卡：整批不答。 */
+  dismiss: () => void;
+}
+
+/** 卡片视图的 props：信封、校验过的槽位、程序操作。 */
+export interface CardViewProps<Slots> {
+  envelope: CardEnvelope;
+  slots: Slots;
+  host: CardHost;
+}
+
 /** 槽位上限（spec :54：这两个数是常数，验收时截得不对可以调，不算改设计）。 */
 export const LABEL_MAX = 20;
 export const BODY_MAX = 600;
