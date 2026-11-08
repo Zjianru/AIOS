@@ -23,7 +23,7 @@ import {
   checkDisabledModels, displayPath, type DisabledModelUser, type ServiceQuota,
 } from '@/data/service';
 import { cachedQuota, loadQuota } from '@/data/quota';
-import { CURRENCIES } from '@/lib/numbers';
+import { CURRENCIES, compactPrice } from '@/lib/numbers';
 import { formatLocalDateTime } from '@/lib/time';
 import { useKindStore } from '@/pages/kind/kindStore';
 import type { ConnectionView, ModelRow, ModelSettingsView } from '@/data/fixtures/settings';
@@ -40,13 +40,6 @@ import { modelErrorReason } from '@/data/errors';
 function parsePrice(text: string): number | undefined {
   const n = Number(text.trim());
   return text.trim() !== '' && Number.isFinite(n) && n >= 0 ? n : undefined;
-}
-
-/** 行上的紧凑价：只显示输入/输出；缓存两格和完整四类值放 title。 */
-function compactPrice(value: number): string {
-  if (value >= 0.01) return '$' + value.toFixed(2);
-  // 缓存价可能小于 0.01，两小数会变成 0；用两位有效数字。
-  return '$' + value.toPrecision(2).replace(/0+$/, '');
 }
 
 function priceLabel(row: ModelRow): string {
