@@ -26,11 +26,7 @@ pub struct ProposeActionTool {
 }
 
 impl ProposeActionTool {
-    pub fn new(
-        actions: Arc<ActionRegistry>,
-        data_dir: PathBuf,
-        identity: Option<PathBuf>,
-    ) -> Self {
+    pub fn new(actions: Arc<ActionRegistry>, data_dir: PathBuf, identity: Option<PathBuf>) -> Self {
         Self {
             actions,
             data_dir,
@@ -116,9 +112,9 @@ impl ProposeActionTool {
             let details = kind
                 .details(&option.details)
                 .map_err(|reason| ToolFailure::plain(format!("Invalid details: {reason}")))?;
-            let facts = kind
-                .describe(&details, &env)
-                .map_err(|reason| ToolFailure::plain(format!("Cannot offer this option: {reason}")))?;
+            let facts = kind.describe(&details, &env).map_err(|reason| {
+                ToolFailure::plain(format!("Cannot offer this option: {reason}"))
+            })?;
             options.push(CardMetaOption {
                 id: option.id.clone(),
                 label: option.label.trim().to_owned(),
@@ -243,10 +239,7 @@ fn earlier_card_in_turn(events: &[session::Event], turn: u64, current: &str) -> 
             continue;
         }
         let failed = events.iter().any(|event| {
-            let session::EventKind::ToolResult {
-                message, error, ..
-            } = &event.kind
-            else {
+            let session::EventKind::ToolResult { message, error, .. } = &event.kind else {
                 return false;
             };
             message.tool_call_id.as_deref() == Some(call_id)

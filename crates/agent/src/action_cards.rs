@@ -97,7 +97,10 @@ pub(crate) fn status_notice(events: &[Event]) -> Option<Message> {
     if latest.is_empty() {
         return None;
     }
-    let mut ordered: Vec<(&Event, &session::CardDecision)> = latest.values().map(|(event, decision)| (*event, decision)).collect();
+    let mut ordered: Vec<(&Event, &session::CardDecision)> = latest
+        .values()
+        .map(|(event, decision)| (*event, decision))
+        .collect();
     ordered.sort_by_key(|(event, _)| event.seq);
     let updates: Vec<serde_json::Value> = ordered
         .into_iter()

@@ -105,10 +105,7 @@ impl ActionRegistry {
     /// 登记一个动作；同一个名字登记两次是装配错误。
     pub fn register(&mut self, kind: Arc<dyn ActionKind>) {
         let name = kind.name().to_owned();
-        assert!(
-            !self.kinds.contains_key(&name),
-            "动作被重复登记：{name}"
-        );
+        assert!(!self.kinds.contains_key(&name), "动作被重复登记：{name}");
         self.kinds.insert(name, kind);
     }
 

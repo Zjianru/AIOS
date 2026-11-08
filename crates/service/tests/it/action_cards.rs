@@ -2,13 +2,13 @@
 //!
 //! 卡片和具体动作无关：这里有一个只在测试里登记的假动作，产品的换模型动作单独测。
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 use service::{
     ActionEnv, ActionFuture, ActionKind, ActionOutcome, ActionRegistry, Call, CardActRequest,
-    CardVerb, CardFact, DeliveryMode, RootHost, SendRequest,
+    CardFact, CardVerb, DeliveryMode, RootHost, SendRequest,
 };
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
 
 use crate::common::{self, read_root_events, text_sse, tool_use_sse, wait_turns};
@@ -71,11 +71,7 @@ impl ActionKind for FakeAction {
         Ok(json!({ "choice": choice }))
     }
 
-    fn describe(
-        &self,
-        details: &Value,
-        _env: &ActionEnv<'_>,
-    ) -> Result<Vec<CardFact>, String> {
+    fn describe(&self, details: &Value, _env: &ActionEnv<'_>) -> Result<Vec<CardFact>, String> {
         if let Some(reason) = self.describe_error.lock().expect("describe 错误锁").clone() {
             return Err(reason);
         }
@@ -105,7 +101,10 @@ impl ActionKind for FakeAction {
                 .unwrap_or_default()
                 .to_owned();
             self.acts.fetch_add(1, Ordering::SeqCst);
-            self.choices.lock().expect("选择记录锁").push(choice.clone());
+            self.choices
+                .lock()
+                .expect("选择记录锁")
+                .push(choice.clone());
             Ok(ActionOutcome {
                 summary: format!("执行了 {choice}"),
                 data: json!({ "choice": choice }),
@@ -207,16 +206,20 @@ fn tool_result(events: &[session::Event], name: &str) -> Option<session::Event> 
             names.insert(call_id.clone(), name.clone());
         }
     }
-    events.iter().rev().find(|event| {
-        let session::EventKind::ToolResult { message, .. } = &event.kind else {
-            return false;
-        };
-        message
-            .tool_call_id
-            .as_deref()
-            .and_then(|id| names.get(id))
-            .is_some_and(|tool| tool == name)
-    }).cloned()
+    events
+        .iter()
+        .rev()
+        .find(|event| {
+            let session::EventKind::ToolResult { message, .. } = &event.kind else {
+                return false;
+            };
+            message
+                .tool_call_id
+                .as_deref()
+                .and_then(|id| names.get(id))
+                .is_some_and(|tool| tool == name)
+        })
+        .cloned()
 }
 
 fn card_meta(events: &[session::Event]) -> Value {
@@ -288,7 +291,12 @@ async fn three_options_confirm_only_the_chosen_one() {
     let scenario = scenario(
         vec![
             skill_script(),
-            tool_script(1, "call_card", "propose_action", &options_json(&[("a", "甲"), ("b", "乙"), ("c", "丙")])),
+            tool_script(
+                1,
+                "call_card",
+                "propose_action",
+                &options_json(&[("a", "甲"), ("b", "乙"), ("c", "丙")]),
+            ),
             answer_script("选一个告诉我。"),
         ],
         registry(&fake),
@@ -299,8 +307,16 @@ async fn three_options_confirm_only_the_chosen_one() {
 
     // 工具只在本轮加载 skill 以后出现：第一次请求没有它，第二次有。
     let bodies = scenario._server.request_bodies();
-    assert!(!request_tools(&bodies[0]).iter().any(|name| name == "propose_action"));
-    assert!(request_tools(&bodies[1]).iter().any(|name| name == "propose_action"));
+    assert!(
+        !request_tools(&bodies[0])
+            .iter()
+            .any(|name| name == "propose_action")
+    );
+    assert!(
+        request_tools(&bodies[1])
+            .iter()
+            .any(|name| name == "propose_action")
+    );
 
     let result = tool_result(&events, "propose_action").expect("提议工具结果");
     let session::EventKind::ToolResult { message, .. } = &result.kind else {
@@ -345,7 +361,10 @@ async fn three_options_confirm_only_the_chosen_one() {
         .await
         .expect("第二次确认卡");
     assert_eq!(fake.acts(), 1);
-    assert_eq!(card_decisions(&read_root_events(&scenario.data_dir)).len(), 1);
+    assert_eq!(
+        card_decisions(&read_root_events(&scenario.data_dir)).len(),
+        1
+    );
 }
 
 /// 六种拒绝：没加载对应 skill、同一轮第二次、动作没登记、details 不合法、
@@ -357,7 +376,12 @@ async fn refuses_when_the_skill_was_not_loaded_this_turn() {
         vec![
             skill_script(),
             answer_script("记住了。"),
-            tool_script(1, "call_card", "propose_action", &options_json(&[("a", "甲")])),
+            tool_script(
+                1,
+                "call_card",
+                "propose_action",
+                &options_json(&[("a", "甲")]),
+            ),
             answer_script("这次不提议。"),
         ],
         registry(&fake),
@@ -381,8 +405,18 @@ async fn refuses_a_second_card_in_the_same_turn() {
     let scenario = scenario(
         vec![
             skill_script(),
-            tool_script(1, "call_card", "propose_action", &options_json(&[("a", "甲")])),
-            tool_script(2, "call_card_2", "propose_action", &options_json(&[("b", "乙")])),
+            tool_script(
+                1,
+                "call_card",
+                "propose_action",
+                &options_json(&[("a", "甲")]),
+            ),
+            tool_script(
+                2,
+                "call_card_2",
+                "propose_action",
+                &options_json(&[("b", "乙")]),
+            ),
             answer_script("一张卡。"),
         ],
         registry(&fake),
@@ -392,14 +426,13 @@ async fn refuses_a_second_card_in_the_same_turn() {
     let events = wait_turns(scenario.host(), &scenario.data_dir, 1).await;
     let mut results = Vec::new();
     for event in &events {
-        if let session::EventKind::ToolResult { message, .. } = &event.kind {
-            if message
+        if let session::EventKind::ToolResult { message, .. } = &event.kind
+            && message
                 .tool_call_id
                 .as_deref()
                 .is_some_and(|id| id.starts_with("call_card"))
-            {
-                results.push((message_text(message), message.is_error == Some(true)));
-            }
+        {
+            results.push((message_text(message), message.is_error == Some(true)));
         }
     }
     assert_eq!(results.len(), 2);
@@ -502,7 +535,12 @@ async fn refuses_when_describe_fails() {
     let scenario = scenario(
         vec![
             skill_script(),
-            tool_script(1, "call_card", "propose_action", &options_json(&[("a", "甲")])),
+            tool_script(
+                1,
+                "call_card",
+                "propose_action",
+                &options_json(&[("a", "甲")]),
+            ),
             answer_script("不行。"),
         ],
         registry(&fake),
@@ -572,7 +610,10 @@ async fn select_model_changes_session_and_last_selection() {
     let choices = card["options"].as_array().expect("选项数组");
     assert_eq!(choices.len(), 3);
     let facts = |index: usize| -> Vec<Value> {
-        choices[index]["facts"].as_array().expect("事实数组").clone()
+        choices[index]["facts"]
+            .as_array()
+            .expect("事实数组")
+            .clone()
     };
     assert_eq!(facts(0).len(), 1, "模型变了、强度没变：只显示模型一行");
     assert_eq!(facts(0)[0]["name"], "模型");
@@ -605,7 +646,14 @@ async fn select_model_changes_session_and_last_selection() {
             _ => None,
         })
         .expect("session/model");
-    assert_eq!(selected, ("deepseek".to_owned(), "deepseek-v4-pro".to_owned(), "max".to_owned()));
+    assert_eq!(
+        selected,
+        (
+            "deepseek".to_owned(),
+            "deepseek-v4-pro".to_owned(),
+            "max".to_owned()
+        )
+    );
     let settings = service::settings::load(&data_dir);
     assert_eq!(
         settings.last_selection,
@@ -628,7 +676,12 @@ async fn dismiss_records_and_notifies_the_model_once() {
     let scenario = scenario(
         vec![
             skill_script(),
-            tool_script(1, "call_card", "propose_action", &options_json(&[("a", "甲")])),
+            tool_script(
+                1,
+                "call_card",
+                "propose_action",
+                &options_json(&[("a", "甲")]),
+            ),
             answer_script("选一个。"),
             answer_script("那就不改了。"),
             answer_script("还是不改。"),
@@ -669,7 +722,10 @@ async fn dismiss_records_and_notifies_the_model_once() {
         .iter()
         .find_map(|event| match &event.kind {
             session::EventKind::SystemMessage { message, .. }
-                if message_text(message).contains(preamble) => Some(message_text(message)),
+                if message_text(message).contains(preamble) =>
+            {
+                Some(message_text(message))
+            }
             _ => None,
         })
         .expect("状态通知");
@@ -688,7 +744,12 @@ async fn changed_facts_refuse_without_executing() {
     let scenario = scenario(
         vec![
             skill_script(),
-            tool_script(1, "call_card", "propose_action", &options_json(&[("a", "甲")])),
+            tool_script(
+                1,
+                "call_card",
+                "propose_action",
+                &options_json(&[("a", "甲")]),
+            ),
             answer_script("选一个。"),
         ],
         registry(&fake),
@@ -721,10 +782,20 @@ async fn a_new_card_replaces_an_untouched_old_card() {
     let scenario = scenario(
         vec![
             skill_script(),
-            tool_script(1, "call_card", "propose_action", &options_json(&[("a", "甲")])),
+            tool_script(
+                1,
+                "call_card",
+                "propose_action",
+                &options_json(&[("a", "甲")]),
+            ),
             answer_script("选一个。"),
             skill_script(),
-            tool_script(2, "call_card_2", "propose_action", &options_json(&[("b", "乙")])),
+            tool_script(
+                2,
+                "call_card_2",
+                "propose_action",
+                &options_json(&[("b", "乙")]),
+            ),
             answer_script("这张是新的。"),
         ],
         registry(&fake),
@@ -770,7 +841,12 @@ async fn act_failure_is_recorded_as_failed() {
     let scenario = scenario(
         vec![
             skill_script(),
-            tool_script(1, "call_card", "propose_action", &options_json(&[("a", "甲")])),
+            tool_script(
+                1,
+                "call_card",
+                "propose_action",
+                &options_json(&[("a", "甲")]),
+            ),
             answer_script("选一个。"),
         ],
         registry(&fake),

@@ -6,10 +6,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::actions::{ActionEnv, CardFact};
 use crate::error::ServiceError;
 use crate::protocol::{CardActRequest, CardActResponse, CardVerb};
 use crate::root_lifecycle::RootHost;
-use crate::actions::{ActionEnv, CardFact};
 
 /// 模型传给 propose_action 的参数。
 #[derive(Debug, Clone, Deserialize)]
@@ -78,7 +78,10 @@ pub(crate) fn proposal_of(events: &[session::Event], call_id: &str) -> Option<Pr
     let mut seq = None;
     for event in events {
         if let session::EventKind::ToolResult {
-            message, error, meta: result_meta, ..
+            message,
+            error,
+            meta: result_meta,
+            ..
         } = &event.kind
         {
             if message.tool_call_id.as_deref() != Some(call_id) || error.is_some() {
@@ -127,8 +130,7 @@ pub(crate) fn is_replaced(events: &[session::Event], call_id: &str) -> bool {
                 meta: Some(meta),
                 ..
             } if error.is_none() => {
-                meta.get("card").is_some()
-                    && message.tool_call_id.as_deref() != Some(call_id)
+                meta.get("card").is_some() && message.tool_call_id.as_deref() != Some(call_id)
             }
             _ => false,
         }
@@ -150,10 +152,7 @@ impl RootHost {
     ///
     /// 未知的卡、被新卡替换的旧卡不执行也不记（返回 None）；已经有决定的卡返回那条决定，
     /// 重复点击不重复执行。
-    pub async fn card_act(
-        &self,
-        request: CardActRequest,
-    ) -> Result<CardActResponse, ServiceError> {
+    pub async fn card_act(&self, request: CardActRequest) -> Result<CardActResponse, ServiceError> {
         let events = self.card_events().await?;
         let Some(proposal) = proposal_of(&events, &request.call_id) else {
             return Ok(CardActResponse { decision: None });
@@ -197,8 +196,8 @@ impl RootHost {
         option_id: Option<&str>,
         events: &[session::Event],
     ) -> Result<Option<session::CardDecision>, ServiceError> {
-        let Some(option) = option_id
-            .and_then(|id| proposal.args.options.iter().find(|option| option.id == id))
+        let Some(option) =
+            option_id.and_then(|id| proposal.args.options.iter().find(|option| option.id == id))
         else {
             return Ok(None);
         };
@@ -261,10 +260,7 @@ impl RootHost {
         Ok(host.agent().session_events_from(0))
     }
 
-    async fn record_decision(
-        &self,
-        decision: &session::CardDecision,
-    ) -> Result<(), ServiceError> {
+    async fn record_decision(&self, decision: &session::CardDecision) -> Result<(), ServiceError> {
         let guard = self.inner.lock().await;
         let Some(host) = guard.as_ref() else {
             return Err(ServiceError::RootUnavailable(

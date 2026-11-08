@@ -71,7 +71,6 @@ pub async fn open(options: RootSessionOptions) -> RootHost {
     RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await
 }
 
-
 /// 一次工具调用的 SSE（参数走 input_json_delta，和真模型一样）。
 pub fn tool_use_sse(index: usize, call_id: &str, name: &str, arguments: &str) -> String {
     let arguments = serde_json::json!(arguments).to_string();
@@ -105,11 +104,7 @@ pub fn read_root_events(data_dir: &Path) -> Vec<session::Event> {
 }
 
 /// 等这一条根会话日志里至少收尾了 turns 轮，返回当时的全部事件。
-pub async fn wait_turns(
-    host: &RootHost,
-    data_dir: &Path,
-    turns: usize,
-) -> Vec<session::Event> {
+pub async fn wait_turns(host: &RootHost, data_dir: &Path, turns: usize) -> Vec<session::Event> {
     for _ in 0..600 {
         tokio::time::sleep(Duration::from_millis(20)).await;
         let status = host

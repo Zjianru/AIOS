@@ -65,11 +65,7 @@ impl SelectModelAction {
             .ok_or_else(|| "这条对话还没有选过模型".to_owned())
     }
 
-    fn display_name(
-        &self,
-        models: &[model::catalog::ModelInfo],
-        model_id: &str,
-    ) -> String {
+    fn display_name(&self, models: &[model::catalog::ModelInfo], model_id: &str) -> String {
         models
             .iter()
             .find(|info| info.id == model_id)
@@ -101,11 +97,7 @@ impl ActionKind for SelectModelAction {
         Ok(Value::Object(normalized))
     }
 
-    fn describe(
-        &self,
-        details: &Value,
-        env: &ActionEnv<'_>,
-    ) -> Result<Vec<CardFact>, String> {
+    fn describe(&self, details: &Value, env: &ActionEnv<'_>) -> Result<Vec<CardFact>, String> {
         let parts = self.parts(details)?;
         let current = self.current(env)?;
         let keyring = self.keyring()?;
@@ -195,10 +187,7 @@ impl ActionKind for SelectModelAction {
                 })
                 .unwrap_or_else(|| response.model.clone());
             Ok(ActionOutcome {
-                summary: format!(
-                    "下一轮用 {name}（思考 {}）",
-                    response.effort_actual
-                ),
+                summary: format!("下一轮用 {name}（思考 {}）", response.effort_actual),
                 data: json!({
                     "connection": response.connection,
                     "model": response.model,

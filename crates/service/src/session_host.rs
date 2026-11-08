@@ -10,11 +10,11 @@ use crate::SERVICE_EVENT_CHANNEL_CAPACITY;
 use crate::error::ServiceError;
 use crate::events::{page_events, service_event};
 use crate::protocol::{
-    AnswerRequest, AnswerResponse, Call, CancelRequest, CancelResponse, CompactCounts,
-    CompactRequest, CompactResponse, DeliveryMode, DismissQuestionsRequest,
+    AnswerRequest, AnswerResponse, Call, CancelRequest, CancelResponse, CardActResponse,
+    CompactCounts, CompactRequest, CompactResponse, DeliveryMode, DismissQuestionsRequest,
     DismissQuestionsResponse, EventsRequest, EventsResponse, FollowRequest, FollowResponse,
-    CardActResponse, HostLocation, MonitorReportResponse, Object, RecheckResponse, Response,
-    RootState, SendRequest, SendResponse, ServiceEvent, StatusRequest, StatusResponse,
+    HostLocation, MonitorReportResponse, Object, RecheckResponse, Response, RootState, SendRequest,
+    SendResponse, ServiceEvent, StatusRequest, StatusResponse,
 };
 
 /// 与载体无关的服务宿主：绑定一个 Agent/会话，调用经 dispatch 进入，事件从广播流出。
