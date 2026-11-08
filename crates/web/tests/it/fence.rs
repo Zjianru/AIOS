@@ -6,7 +6,10 @@
 
 use axum::http::{HeaderMap, header::HOST};
 use service::{ContextUsage, FollowResponse, HostInfo, RootState, ServiceEvent};
-use web::{Frame, Trust, authorize_connect, check_api_auth, check_bind_host, opening_frames};
+use web::{
+    Frame, Trust, authorize_connect, check_api_auth, check_bind_host, opening_frames,
+    reject_query_token,
+};
 
 use crate::common::{headers, trust};
 
@@ -135,6 +138,21 @@ fn cookie_fence_requires_valid_cookie() {
     )
     .unwrap_err();
     assert_eq!(error.status(), 401, "坏签名 cookie 必须 401");
+}
+
+/// 公开面回归：trust 拆成私有模块后，crate 外仍要能调用 `web::reject_query_token`
+/// （这条用例编译不过，就说明重导出又丢了）。
+#[test]
+fn query_token_guard_is_reachable_from_outside_the_crate() {
+    let plain: axum::http::Uri = "http://127.0.0.1:1417/api".parse().expect("Uri");
+    assert!(reject_query_token(&plain).is_ok());
+    let tokened: axum::http::Uri = "http://127.0.0.1:1417/api?token=tok-1"
+        .parse()
+        .expect("Uri");
+    assert!(matches!(
+        reject_query_token(&tokened),
+        Err(web::TrustError::Unauthorized)
+    ));
 }
 
 #[test]

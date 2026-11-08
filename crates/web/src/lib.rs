@@ -27,7 +27,7 @@ pub use connection::{AgentEventWire, Frame, opening_frames};
 pub use routes::{CANVAS_FRAME_CSP, LOCAL_FILE_CSP, router};
 pub use trust::{
     ConnectGrant, Trust, TrustError, authorize_api_request, authorize_connect, check_api_auth,
-    check_bind_host, check_origin,
+    check_bind_host, check_origin, reject_query_token,
 };
 
 /// 默认只绑 IPv4 回环。
