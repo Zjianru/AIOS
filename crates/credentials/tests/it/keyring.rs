@@ -470,3 +470,104 @@ fn restart_rotates_cookie_signing_secret() {
         .expect("cookie secret");
     assert_ne!(before, after, "重新开始后签名钥匙换新");
 }
+
+const EXA_KEY: &str = "exa-test-key-0123456789";
+
+#[test]
+fn exa_key_saves_changes_and_deletes_like_the_settings_page() {
+    let fixture = Fixture::new();
+    let keyring = fixture.open();
+    let empty = keyring.exa_key_view().expect("读空视图");
+    assert!(!empty.key.saved, "还没存");
+    assert!(empty.key.saved_at.is_none(), "没存就没有保存时间");
+    assert_eq!(empty.check, CheckState::Never, "没存就没有验证结果");
+
+    let saved = keyring.save_exa_key(EXA_KEY).expect("存 Exa key");
+    assert!(saved.key.saved, "存了");
+    let saved_at = saved.key.saved_at.expect("保存时间");
+    assert_eq!(saved.check, CheckState::Never, "换 key 要重置验证");
+    assert_eq!(
+        fixture.open().exa_key_view().expect("重开视图"),
+        saved,
+        "设置页重新打开读到的和保存时一致"
+    );
+    assert!(fixture.open().exa_key_saved(), "工具条件读得到这笔凭证");
+
+    let replaced = keyring.save_exa_key("exa-second-key").expect("换一把");
+    assert!(replaced.key.saved);
+    assert!(replaced.key.saved_at.expect("时间") >= saved_at);
+    assert_eq!(replaced.check, CheckState::Never);
+
+    let issued = keyring
+        .issue_exa_key(credentials::EXA_CHECK_PURPOSE)
+        .expect("签发")
+        .into_secret();
+    assert_eq!(issued, "exa-second-key", "签发的是最后存的那一把");
+
+    keyring
+        .record_exa_check(CheckResult::Ok { at: 42 })
+        .expect("记验证");
+    let after_check = keyring.exa_key_view().expect("验证后的视图");
+    assert_eq!(after_check.check, CheckState::Ok { at: 42 });
+    assert_eq!(
+        fixture.open().exa_key_view().expect("重开视图").check,
+        CheckState::Ok { at: 42 },
+        "验证结果落盘"
+    );
+
+    let deleted = keyring.delete_exa_key().expect("删 Exa key");
+    assert!(!deleted.key.saved, "删了");
+    assert!(deleted.key.saved_at.is_none());
+    assert_eq!(deleted.check, CheckState::Never);
+    assert!(!fixture.open().exa_key_saved(), "删掉以后工具条件读不到");
+}
+
+#[test]
+fn exa_key_check_is_issued_and_recorded_without_the_secret() {
+    let fixture = Fixture::new();
+    let keyring = fixture.open();
+    keyring.save_exa_key(EXA_KEY).expect("存 Exa key");
+    keyring
+        .record_exa_check(CheckResult::Fail {
+            at: 41,
+            reason: "Exa 拒绝了这把 key（401）".to_owned(),
+        })
+        .expect("记验证");
+    let view = keyring.exa_key_view().expect("视图");
+    assert_eq!(
+        view.check,
+        CheckState::Fail {
+            at: 41,
+            reason: "Exa 拒绝了这把 key（401）".to_owned(),
+        }
+    );
+    // 视图、Debug、签发记录里都没有正文。
+    assert!(!format!("{view:?}").contains(EXA_KEY), "视图不带正文");
+    let keyring_view = keyring.view();
+    let issue = keyring_view
+        .issues
+        .iter()
+        .find(|issue| issue.connection == "Exa")
+        .expect("签发记录里有 Exa");
+    assert_eq!(issue.purpose, credentials::EXA_CHECK_PURPOSE);
+    assert!(
+        !format!("{keyring_view:?}").contains(EXA_KEY),
+        "描述不带正文"
+    );
+    // 密文里也不出现正文。
+    let raw = std::fs::read(fixture.data_dir.join("keyring.age")).expect("keyring.age");
+    assert!(
+        !raw.windows(EXA_KEY.len())
+            .any(|window| window == EXA_KEY.as_bytes()),
+        "Exa 的 key 不能明文落在 keyring.age 里"
+    );
+
+    // 读不出来的 Keyring：按没存处理，不建任何文件。
+    let absent = fixture._dir.path().join("absent-data");
+    let absent_identity = absent.join("identity.txt");
+    assert!(
+        credentials::Keyring::open_read_only(&absent, Some(&absent_identity)).is_err(),
+        "没有钥匙文件就报错，不建目录"
+    );
+    assert!(!absent.exists(), "只读打开不能让数据目录出现");
+}

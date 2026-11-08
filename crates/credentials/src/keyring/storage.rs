@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use age::secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 
-use super::{ConnectionInfo, IssueRecord, Keyring, KeyringError, normalize_info};
+use super::{CheckState, ConnectionInfo, IssueRecord, Keyring, KeyringError, normalize_info};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(super) struct Store {
@@ -18,10 +18,22 @@ pub(super) struct Store {
     /// T008.F11：cookie 签名钥匙（hex 编码；age 密文落盘，不落明文）。
     #[serde(default)]
     pub(super) cookie_secret: Option<String>,
+    /// 工具凭证（D73）：这一期只有 Exa 的 key；age 密文落盘，不出现在任何视图里。
+    #[serde(default)]
+    pub(super) exa: Option<StoredToolKey>,
     #[serde(default)]
     pub(super) issues: Vec<IssueRecord>,
     #[serde(default)]
     pub(super) next_issue: u64,
+}
+
+/// 一种工具凭证的存储形状：正文 + 保存时间 + 最近一次验证结果。
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct StoredToolKey {
+    pub(super) api_key: String,
+    pub(super) saved_at: u64,
+    #[serde(default)]
+    pub(super) check: CheckState,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

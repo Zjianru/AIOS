@@ -71,14 +71,37 @@ pub struct BundledSkill {
     pub name: &'static str,
     /// 正文（含 frontmatter），编译期从 `bundled/<name>/SKILL.md` 读进来。
     pub raw: &'static str,
+    /// 进目录需要哪一种工具凭证；None = 总是可用。
+    pub requires: Option<crate::ToolKey>,
+    /// 凭证没存时目录里写给模型的一句话：说明它现在不可用、让用户去哪填。
+    /// 不需要条件的 skill 留空。
+    pub unavailable_hint: &'static str,
+}
+
+impl BundledSkill {
+    /// 这一次求值里这份自带 skill 能不能进目录（凭证已存或不需要凭证）。
+    pub fn available(&self, keys: &std::collections::BTreeSet<crate::ToolKey>) -> bool {
+        let _ = keys;
+        true
+    }
 }
 
 /// 随二进制发布、用户可以加载的 skill。
 pub fn bundled_skills() -> &'static [BundledSkill] {
-    const BUNDLED: &[BundledSkill] = &[BundledSkill {
-        name: "aios-settings",
-        raw: include_str!("../bundled/aios-settings/SKILL.md"),
-    }];
+    const BUNDLED: &[BundledSkill] = &[
+        BundledSkill {
+            name: "aios-settings",
+            raw: include_str!("../bundled/aios-settings/SKILL.md"),
+            requires: None,
+            unavailable_hint: "",
+        },
+        BundledSkill {
+            name: "web",
+            raw: include_str!("../bundled/web/SKILL.md"),
+            requires: Some(crate::ToolKey::Exa),
+            unavailable_hint: "Web search and page reading are unavailable: no Exa API key is saved. If the user asks you to search the web or read a link, say you cannot yet and tell them to save an Exa API key in the settings page (设置 › 模型与连接 › 联网搜索), then ask them to try again.",
+        },
+    ];
     BUNDLED
 }
 

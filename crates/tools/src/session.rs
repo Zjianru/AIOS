@@ -71,6 +71,8 @@ pub struct ToolSessionState {
     skill_roots: Mutex<Vec<PathBuf>>,
     /// 程序自带的 skill 来源（AgentConfig::bundled_skills）。
     bundled_skills: Mutex<Vec<crate::skills::BundledSkill>>,
+    /// 现在已存的工具凭证（AgentConfig::tool_keys）；自带 skill 缺凭证时不进目录。
+    tool_keys: Mutex<crate::ToolKeySource>,
     /// 工具刚写入的 todo 列表快照（T005.7；driver 追加 todo/write 事件后取走）。
     todos: Mutex<Option<Vec<TodoItem>>>,
     /// 画布状态（T015.2）：建/续接会话时从日志折叠，canvas 工具每出一版更新。
@@ -88,6 +90,7 @@ impl ToolSessionState {
             data_dir: Some(data_dir.to_path_buf()),
             skill_roots: Mutex::new(Vec::new()),
             bundled_skills: Mutex::new(Vec::new()),
+            tool_keys: Mutex::new(crate::ToolKeySource::none()),
             todos: Mutex::new(None),
             canvases: Mutex::new(Vec::new()),
         }
@@ -154,12 +157,21 @@ impl ToolSessionState {
         *self.bundled_skills.lock().expect("自带 skill 锁被毒化") = bundled;
     }
 
-    /// 程序自带的 skill 来源（skill 工具用）。
+    /// Agent 建/续接会话时写入工具凭证的求值面（自带 skill 的条件用它）。
+    pub fn set_tool_keys(&self, source: crate::ToolKeySource) {
+        *self.tool_keys.lock().expect("工具凭证锁被毒化") = source;
+    }
+
+    /// 现在能加载的程序自带 skill（凭证没存的那些不进目录，skill 工具也不认得）。
     pub(crate) fn bundled_skills(&self) -> Vec<crate::skills::BundledSkill> {
+        let keys = self.tool_keys.lock().expect("工具凭证锁被毒化").present();
         self.bundled_skills
             .lock()
             .expect("自带 skill 锁被毒化")
-            .clone()
+            .iter()
+            .copied()
+            .filter(|skill| skill.available(&keys))
+            .collect()
     }
 
     /// 会话 id（bash 受管环境变量用；detached 时 None）。

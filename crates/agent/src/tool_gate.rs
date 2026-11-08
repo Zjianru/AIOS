@@ -56,10 +56,11 @@ pub(crate) fn request_tools(
     tools: &ToolSet,
     events: &[Event],
     derived: &[(u64, Message)],
+    tool_keys: &BTreeSet<tools::ToolKey>,
 ) -> (Vec<ToolSchema>, Option<ToolHistory>) {
     let loaded = loaded_skills(events);
     let registry = ToolRegistryState::rehydrate(events);
-    let enabled = registry.enabled(tools, &loaded);
+    let enabled = registry.enabled(tools, &loaded, tool_keys);
     (
         tools.definitions_for(&enabled),
         tool_history(events, derived),
@@ -131,8 +132,9 @@ impl ToolRegistryState {
         &self,
         tools: &ToolSet,
         loaded_skills: &BTreeSet<String>,
+        tool_keys: &BTreeSet<tools::ToolKey>,
     ) -> BTreeSet<String> {
-        let mut enabled = tools.enabled(loaded_skills);
+        let mut enabled = tools.enabled(loaded_skills, tool_keys);
         for name in &self.recorded {
             if tools.get(name).is_some() {
                 enabled.insert(name.clone());

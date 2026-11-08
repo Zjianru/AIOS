@@ -382,3 +382,43 @@ fn user_invocable_loader_ignores_model_policy_and_honors_user_policy() {
         tools::load_user_invocable_skill(project.path(), data_dir.path(), &[], &[], "normal");
     assert_eq!(normal.unwrap().body, "Normal body.");
 }
+
+/// 程序自带的 web：要 Exa 的 key 才进目录；没 key 时留一句为什么、去哪里填。
+/// 正文写清什么时候搜、怎么读、内容不可信、引用 URL。
+#[test]
+fn bundled_web_skill_needs_the_exa_key_and_names_its_tools() {
+    let web = tools::bundled_skills()
+        .iter()
+        .find(|skill| skill.name == "web")
+        .expect("程序自带 web");
+    assert_eq!(web.requires, Some(tools::ToolKey::Exa));
+    assert!(
+        !web.available(&std::collections::BTreeSet::new()),
+        "没 key 不进目录"
+    );
+    assert!(web.available(&std::collections::BTreeSet::from([tools::ToolKey::Exa])));
+    assert!(
+        web.unavailable_hint
+            .contains("设置 › 模型与连接 › 联网搜索"),
+        "没 key 时告诉用户去哪里填：{}",
+        web.unavailable_hint
+    );
+
+    let cwd = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let skill = tools::load_skill(
+        cwd.path(),
+        data_dir.path(),
+        &[],
+        tools::bundled_skills(),
+        "web",
+    )
+    .expect("加载自带 web");
+    for needle in ["web_search", "web_fetch", "untrusted", "markdown link"] {
+        assert!(
+            skill.body.contains(needle),
+            "正文要写到 {needle}：\n{}",
+            skill.body
+        );
+    }
+}

@@ -54,6 +54,8 @@ pub(crate) struct Inner {
     cwd: PathBuf,
     /// 会话数据目录；也是固定的用户级指令根（T005.5）。
     data_dir: PathBuf,
+    /// 现在已存的工具凭证（产品装配注入；每步求值一次）。
+    tool_keys: tools::ToolKeySource,
 
     pub(crate) model: DeepSeek,
     pub(crate) tools: ToolSet,
@@ -120,6 +122,9 @@ impl LoopAccess for Inner {
     }
     fn log_path(&self) -> &Path {
         &self.log_path
+    }
+    fn tool_keys(&self) -> std::collections::BTreeSet<tools::ToolKey> {
+        self.tool_keys.present()
     }
     fn compaction_policy(&self) -> CompactionPolicy {
         let provider = self.model.provider();
@@ -304,9 +309,11 @@ impl Inner {
         let (session_events, _) = broadcast::channel(SESSION_EVENT_CHANNEL_CAPACITY);
         let instruction_roots = config.instruction_roots.clone();
         let skill_roots = config.skill_roots.clone();
+        let tool_keys = config.tool_keys.clone();
         let spill_max_inline_tokens = config.spill_max_inline_tokens;
         tool_session.set_skill_roots(skill_roots.clone());
         tool_session.set_bundled_skills(config.bundled_skills.clone());
+        tool_session.set_tool_keys(tool_keys.clone());
         // T006.1e：能力状态由能力模块装载/持有；driver 只做装配。
         let (instruction_state, instruction_roots) =
             crate::instructions_capability::InstructionsCapability::load(&store, instruction_roots);
@@ -335,6 +342,7 @@ impl Inner {
             log_path,
             cwd,
             data_dir,
+            tool_keys,
             model,
             tools,
             tool_gate,

@@ -525,7 +525,7 @@ async fn summarize(
     let (tools, history) = {
         let store = host.session().lock().expect("agent 会话锁被毒化");
         let derived = store.derive_messages_with_seqs();
-        crate::tool_gate::request_tools(host.tools(), store.events(), &derived)
+        crate::tool_gate::request_tools(host.tools(), store.events(), &derived, &host.tool_keys())
     };
     let tool_request = model::ToolRequest { tools, history };
     let cancel = model::CancelToken::new(
@@ -707,6 +707,9 @@ mod tests {
         }
         fn log_path(&self) -> &Path {
             Path::new("/tmp/aios-test.log")
+        }
+        fn tool_keys(&self) -> std::collections::BTreeSet<tools::ToolKey> {
+            std::collections::BTreeSet::new()
         }
         fn compaction_policy(&self) -> CompactionPolicy {
             self.policy

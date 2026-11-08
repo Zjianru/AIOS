@@ -86,6 +86,8 @@ pub(crate) trait LoopAccess: Send + Sync {
     fn cwd(&self) -> &Path;
     fn data_dir(&self) -> &Path;
     fn log_path(&self) -> &Path;
+    /// 宿主现在已存的工具凭证；每步求值一次（产品装配提供，读不出来按没存）。
+    fn tool_keys(&self) -> std::collections::BTreeSet<tools::ToolKey>;
     fn compaction_policy(&self) -> CompactionPolicy;
     /// 写日志入口：内部走 `Inner::append`（落盘后逐事件派发 SessionEvent）；禁止直接锁
     /// `session()` 后 append 绕过 SessionEvent。
@@ -570,6 +572,9 @@ mod dispatch_contract_tests {
             unimplemented!()
         }
         fn log_path(&self) -> &Path {
+            unimplemented!()
+        }
+        fn tool_keys(&self) -> std::collections::BTreeSet<tools::ToolKey> {
             unimplemented!()
         }
         fn compaction_policy(&self) -> CompactionPolicy {

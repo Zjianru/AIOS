@@ -78,11 +78,18 @@ impl Capability for SkillCapability {
                 return Ok(HookOutcome::Continue);
             }
             let host = event.host();
+            let tool_keys = host.tool_keys();
             let catalog = self
                 .state
                 .lock()
                 .expect("agent skill 目录锁被毒化")
-                .prepare(host.cwd(), host.data_dir(), &self.roots, &self.bundled);
+                .prepare(
+                    host.cwd(),
+                    host.data_dir(),
+                    &self.roots,
+                    &self.bundled,
+                    &tool_keys,
+                );
             if let Some(message) = catalog {
                 host.append(&[EventKind::UserMessage {
                     turn: event.turn(),
@@ -93,6 +100,13 @@ impl Capability for SkillCapability {
             }
 
             // T006.11b：用户显式 /name（只扫 source=user 的 claimed 消息，排除注入上下文）。
+            // 凭证没存的自带 skill 不进这条通道，和目录保持一致。
+            let available: Vec<tools::BundledSkill> = self
+                .bundled
+                .iter()
+                .copied()
+                .filter(|skill| skill.available(&tool_keys))
+                .collect();
             let mut injected: Vec<String> = Vec::new();
             for message in messages.iter() {
                 if !matches!(message.source, MessageSource::User { .. }) {
@@ -110,7 +124,7 @@ impl Capability for SkillCapability {
                             host.cwd(),
                             host.data_dir(),
                             &self.roots,
-                            &self.bundled,
+                            &available,
                             &name,
                         ) else {
                             continue;

@@ -86,6 +86,10 @@ pub struct AgentConfig {
     /// 默认空：自带什么由产品装配决定（`Agent::open` 填入 `tools::bundled_skills()`）；
     /// 低层构造不替调用方猜产品资产。
     pub bundled_skills: Vec<tools::BundledSkill>,
+    /// 宿主现在已存的工具凭证（自带 skill 与工具的条件每步求值一次）。
+    ///
+    /// 默认空：低层构造不假设任何凭证；产品的服务装配在打开根会话时接上 Keyring。
+    pub tool_keys: tools::ToolKeySource,
     /// todo_write 是否允许多个 in_progress（照 DSH tool-todo 的 allowParallelInProgress；
     /// DSH bundle/base 设为 true）。false 时工具描述改成「只留一个」，多于一个 in_progress 的
     /// 调用被拒。Agent 在 create/resume 时用它替换内置 todo_write（T006.12）。
@@ -112,6 +116,7 @@ impl Default for AgentConfig {
                 .map(|home| vec![home.join("skills")])
                 .unwrap_or_default(),
             bundled_skills: Vec::new(),
+            tool_keys: tools::ToolKeySource::none(),
             instruction_roots: home.map(|home| vec![home]).unwrap_or_default(),
             allow_parallel_in_progress: true,
         }

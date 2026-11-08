@@ -59,6 +59,56 @@ impl Tool for FakeQueryTool {
     }
 }
 
+/// 替身网页搜索工具：名字和开出条件跟产品里的 `web_search` 一样。
+struct FakeWebSearchTool {
+    parameters: LazyLock<Value>,
+}
+
+impl FakeWebSearchTool {
+    fn new() -> Self {
+        Self {
+            parameters: LazyLock::new(|| {
+                json!({
+                    "type": "object",
+                    "properties": {
+                        "queries": {"type": "array", "items": {"type": "string"}}
+                    },
+                    "required": ["queries"]
+                })
+            }),
+        }
+    }
+}
+
+impl Tool for FakeWebSearchTool {
+    fn name(&self) -> &str {
+        "web_search"
+    }
+
+    fn description(&self) -> &str {
+        "search the web (test double)"
+    }
+
+    fn parameters(&self) -> &Value {
+        &self.parameters
+    }
+
+    fn condition(&self) -> ToolCondition {
+        ToolCondition::AfterSkillWithKey {
+            skills: vec!["web".to_owned()],
+            key: tools::ToolKey::Exa,
+        }
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: ToolCall,
+        _context: &'a ToolContext,
+    ) -> ToolFuture<'a, ToolResult> {
+        Box::pin(async move { ToolResult::success(call.id, "searched") })
+    }
+}
+
 fn tool_set() -> ToolSet {
     ToolSet::new(vec![
         Box::new(SkillTool::new()),
@@ -66,10 +116,29 @@ fn tool_set() -> ToolSet {
     ])
 }
 
+fn web_tool_set() -> ToolSet {
+    ToolSet::new(vec![
+        Box::new(SkillTool::new()),
+        Box::new(FakeWebSearchTool::new()),
+    ])
+}
+
 /// 这一组测试的配置：自带 skill 由产品装配决定，这里显式给它一份，别的不碰用户环境。
 fn config(data_dir: &std::path::Path) -> agent::AgentConfig {
     agent::AgentConfig {
         bundled_skills: tools::bundled_skills().to_vec(),
+        ..crate::common::isolated_config(data_dir)
+    }
+}
+
+/// 同 config，但把「现在已存的工具凭证」换成给定来源（每步求值一次）。
+fn config_with_keys(
+    data_dir: &std::path::Path,
+    tool_keys: tools::ToolKeySource,
+) -> agent::AgentConfig {
+    agent::AgentConfig {
+        bundled_skills: tools::bundled_skills().to_vec(),
+        tool_keys,
         ..crate::common::isolated_config(data_dir)
     }
 }
@@ -137,6 +206,34 @@ async fn setup(
     tools: ToolSet,
 ) -> (Agent, tempfile::TempDir, tempfile::TempDir, SessionId) {
     setup_with_model(server, tools, model_config(&server.uri())).await
+}
+
+/// 同 setup，但工具凭证来源由调用方给（要测工具凭证的条件时用）。
+async fn setup_with_keys(
+    server: &MockServer,
+    tools: ToolSet,
+    tool_keys: tools::ToolKeySource,
+) -> (Agent, tempfile::TempDir, tempfile::TempDir, SessionId) {
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = session::SessionStore::create(data_dir.path(), cwd.path()).unwrap();
+    let id = store.id().clone();
+    let config = config_with_keys(data_dir.path(), tool_keys);
+    let agent = Agent::create(
+        config,
+        agent::Deps {
+            model: model::DeepSeek::with_credentials(
+                model_config(&server.uri()),
+                test_credential(),
+            )
+            .expect("模型"),
+            tools,
+            store,
+        },
+    )
+    .await
+    .expect("建 agent");
+    (agent, data_dir, cwd, id)
 }
 
 /// 同 setup，但模型配置由调用方给（要测声明了能力的路由时用）。
@@ -660,5 +757,106 @@ async fn compaction_shadowing_the_load_point_still_sends_summary_and_main_reques
         bodies[5].to_string().contains("<compacted-summary>"),
         "第二次压缩后的主请求带摘要：{}",
         bodies[5]
+    );
+}
+
+/// 测试清单 5 / 故事 9：没存 Exa key 时自带 web 不进目录、工具表里没有 web_search；
+/// 目录里留一句为什么、让用户去哪里填。存了以后目录里有 web，加载以后的下一步开出 web_search。
+/// 凭证只由 ToolKeySource 给：环境变量不参与。
+#[tokio::test]
+async fn web_skill_and_tools_open_only_with_the_exa_key() {
+    // 没 key：目录里没有 web，硬加载也是未知 skill；工具表始终没有 web_search。
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(tool_calls_with_inputs_sse(&[(
+                "call_web",
+                "skill",
+                json!({"name": "web"}),
+            )])),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+    let (agent, _data_dir, _cwd, _id) =
+        setup_with_keys(&server, web_tool_set(), tools::ToolKeySource::none()).await;
+    agent
+        .send(
+            UserMessage::text("帮我搜一下今天的新闻"),
+            Delivery::FollowUp,
+        )
+        .await
+        .expect("send");
+    wait_idle(&agent, 10).await;
+
+    let first = bodies(&server).await;
+    assert_eq!(first.len(), 2, "加载失败以后还要收尾一步");
+    assert_eq!(tool_names(&first[0]), vec!["skill".to_owned()]);
+    let catalog = first[0]["messages"].to_string();
+    assert!(
+        !catalog.contains("- \u{60}web\u{60}:"),
+        "没 key 时 web 不进目录：{catalog}"
+    );
+    assert!(
+        catalog.contains("save an Exa API key in the settings page"),
+        "目录里要写清为什么、去哪里填：{catalog}"
+    );
+    assert_eq!(
+        tool_names(&first[1]),
+        vec!["skill".to_owned()],
+        "没 key 时 web_search 不开出"
+    );
+    let refused = tool_result_text(&first[1], "call_web").expect("加载失败的调用也有结果");
+    assert!(
+        refused.contains("unknown") || refused.contains("not available"),
+        "没 key 时 web 加载不了：{refused}"
+    );
+
+    // 有 key：目录里出现 web；加载以后的下一步开出 web_search。
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(tool_calls_with_inputs_sse(&[(
+                "call_web",
+                "skill",
+                json!({"name": "web"}),
+            )])),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+    let keys = tools::ToolKeySource::new(std::sync::Arc::new(|| {
+        std::collections::BTreeSet::from([tools::ToolKey::Exa])
+    }));
+    let (agent, _data_dir, _cwd, _id) = setup_with_keys(&server, web_tool_set(), keys).await;
+    agent
+        .send(
+            UserMessage::text("帮我搜一下今天的新闻"),
+            Delivery::FollowUp,
+        )
+        .await
+        .expect("send");
+    wait_idle(&agent, 10).await;
+
+    let second = bodies(&server).await;
+    assert_eq!(second.len(), 2);
+    let catalog = second[0]["messages"].to_string();
+    assert!(
+        catalog.contains("- \u{60}web\u{60}:"),
+        "有 key 时 web 进目录：{catalog}"
+    );
+    assert!(
+        !catalog.contains("save an Exa API key in the settings page"),
+        "有 key 时不再写没 key 的提示：{catalog}"
+    );
+    assert_eq!(
+        tool_names(&second[1]),
+        vec!["skill".to_owned(), "web_search".to_owned()],
+        "加载 web 以后的下一步开出 web_search"
+    );
+    let loaded = tool_result_text(&second[1], "call_web").expect("加载结果");
+    assert!(
+        loaded.contains("<skill_content name=\"web\">"),
+        "加载成功给的是 web 的正文：{loaded}"
     );
 }

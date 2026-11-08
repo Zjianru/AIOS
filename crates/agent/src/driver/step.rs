@@ -91,13 +91,15 @@ pub(super) async fn prepare_step(
         })
         .await?;
     // T014.2：工具的条件每步算一次；本步新开出的工具记进日志（只在新增时记一条，带完整定义）。
+    // 条件里的工具凭证也每步查一次：设置页换了 key，下一步就跟着变。
     let loaded_skills = {
         let store = inner.store.lock().expect("agent 会话锁被毒化");
         crate::tool_gate::loaded_skills(store.events())
     };
+    let tool_keys = inner.tool_keys.present();
     let enabled = {
         let gate = inner.tool_gate.lock().expect("加载记录锁被毒化");
-        gate.enabled(&inner.tools, &loaded_skills)
+        gate.enabled(&inner.tools, &loaded_skills, &tool_keys)
     };
     let additions = {
         let gate = inner.tool_gate.lock().expect("加载记录锁被毒化");

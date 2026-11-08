@@ -14,6 +14,7 @@ mod session;
 mod skills;
 pub mod spill;
 
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -146,11 +147,68 @@ impl ToolContext {
     }
 }
 
+/// 工具凭证的种类（D73）：只有 Exa 的 key（联网搜索用它）。
+///
+/// 程序自带的 skill 和工具都可以挂在一种凭证上：凭证没存时，skill 不进目录、
+/// 工具不开出。凭证的事实由产品装配提供（`ToolKeySource`），内核不自己读 Keyring。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ToolKey {
+    Exa,
+}
+
+/// 当前已存的工具凭证：产品装配时注入的求值面，每步查一次。
+///
+/// 默认空（内核测试、CLI 不假设任何工具凭证）。读不出来时按「没存」处理：
+/// 设置页另外报读不出的原因，不在这里重复报。
+#[derive(Clone, Default)]
+pub struct ToolKeySource(Option<Arc<dyn Fn() -> BTreeSet<ToolKey> + Send + Sync>>);
+
+impl ToolKeySource {
+    /// 什么凭证都没有。
+    pub const fn none() -> Self {
+        Self(None)
+    }
+
+    /// 产品装配：每次求值返回现在已存的凭证。
+    pub fn new(source: Arc<dyn Fn() -> BTreeSet<ToolKey> + Send + Sync>) -> Self {
+        Self(Some(source))
+    }
+
+    /// 现在已存的凭证。
+    pub fn present(&self) -> BTreeSet<ToolKey> {
+        self.0
+            .as_ref()
+            .map_or_else(BTreeSet::new, |source| source())
+    }
+}
+
+impl std::fmt::Debug for ToolKeySource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let state = if self.0.is_some() { "<source>" } else { "none" };
+        formatter
+            .debug_tuple("ToolKeySource")
+            .field(&state)
+            .finish()
+    }
+}
+
+/// 只有同一份来源的两个副本相等；空来源与空来源相等（`AgentConfig` 的比较用）。
+impl PartialEq for ToolKeySource {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (None, None) => true,
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            _ => false,
+        }
+    }
+}
+
 /// 工具的开出条件：每步开始时算一次，不满足的不进本步的工具表，也不能执行。
 ///
 /// 照 DSH core/tools 的 `when`（`core-tools-contracts.ts:123`、action-cards `:211`）：
-/// 条件挂在工具注册处，由宿主每步求值一次；AIOS 只有一种会变的条件——模型在本会话里
-/// 加载过哪个 skill。skill 名字是编进二进制的那几个，所以用静态切片，不另造类型。
+/// 条件挂在工具注册处，由宿主每步求值一次；会变的条件有两类——模型在本会话里加载过
+/// 哪个 skill，以及宿主有没有存对应的工具凭证。skill 名字是编进二进制的那几个，
+/// 所以用静态切片，不另造类型。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolCondition {
     /// 总是开出（内置工具）。
@@ -158,14 +216,18 @@ pub enum ToolCondition {
     /// 本会话里 `skill` 工具成功加载过这些名字之一以后开出。名单由登记表算出来
     /// （服务装配时定），所以是拥有的字符串而不是静态切片。
     AfterSkill(Vec<String>),
+    /// 加载过这些 skill 之一，并且已经存了这种工具凭证。
+    AfterSkillWithKey { skills: Vec<String>, key: ToolKey },
 }
 
 impl ToolCondition {
-    /// 条件在这一次求值里是否满足；`loaded` 是本会话已成功加载的 skill 名。
-    pub fn satisfied_by(&self, loaded: &std::collections::BTreeSet<String>) -> bool {
+    /// 条件在这一次求值里是否满足；`loaded` 是已成功加载的 skill 名，
+    /// `keys` 是宿主现在已存的工具凭证。
+    pub fn satisfied_by(&self, loaded: &BTreeSet<String>, keys: &BTreeSet<ToolKey>) -> bool {
         match self {
             Self::Always => true,
             Self::AfterSkill(names) => names.iter().any(|name| loaded.contains(name)),
+            Self::AfterSkillWithKey { .. } => false,
         }
     }
 }
@@ -395,17 +457,18 @@ impl ToolSet {
     /// 本步开出的工具名：每个工具的条件求值一次（照 DSH 的 `when`）。
     pub fn enabled(
         &self,
-        loaded_skills: &std::collections::BTreeSet<String>,
-    ) -> std::collections::BTreeSet<String> {
+        loaded_skills: &BTreeSet<String>,
+        tool_keys: &BTreeSet<ToolKey>,
+    ) -> BTreeSet<String> {
         self.tools
             .iter()
-            .filter(|tool| tool.condition().satisfied_by(loaded_skills))
+            .filter(|tool| tool.condition().satisfied_by(loaded_skills, tool_keys))
             .map(|tool| tool.name().to_owned())
             .collect()
     }
 
     /// 本步的请求工具表：只含开出的工具，按注册顺序。
-    pub fn definitions_for(&self, enabled: &std::collections::BTreeSet<String>) -> Vec<ToolSchema> {
+    pub fn definitions_for(&self, enabled: &BTreeSet<String>) -> Vec<ToolSchema> {
         self.tools
             .iter()
             .filter(|tool| enabled.contains(tool.name()))
