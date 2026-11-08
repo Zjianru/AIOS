@@ -84,7 +84,9 @@ fn cancel() -> CancelToken {
 
 /// 跑一次 stream 到结束；成功返回 ().
 async fn drain(deepseek: &DeepSeek) -> Result<(), ModelError> {
-    let mut stream = deepseek.stream(&[], &[], &cancel()).await?;
+    let mut stream = deepseek
+        .stream(&[], &model::ToolRequest::default(), &cancel())
+        .await?;
     while let Some(chunk) = stream.next().await {
         chunk?;
     }

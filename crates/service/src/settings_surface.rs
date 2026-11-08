@@ -283,6 +283,7 @@ impl RootHost {
             max_tokens: 1,
             context_window: model::DEFAULT_CONTEXT_WINDOW,
             effort: model::Effort::new("off"),
+            tool_update: None,
         };
         let cancel = model::CancelToken::new(
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -305,7 +306,10 @@ impl RootHost {
                 at,
                 reason: error.code.as_str().to_owned(),
             },
-            Ok(model) => match model.stream(&messages, &[], &cancel).await {
+            Ok(model) => match model
+                .stream(&messages, &model::ToolRequest::default(), &cancel)
+                .await
+            {
                 Ok(_) => credentials::CheckResult::Ok { at },
                 Err(error) => credentials::CheckResult::Fail {
                     at,
@@ -448,6 +452,7 @@ impl RootHost {
                     price_cache_write: row.price_cache_write,
                     thinks: false,
                     efforts: Vec::new(),
+                    tool_update: None,
                 });
             }
         }

@@ -3,7 +3,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{ContentBlock, ErrorCode, Message, ModelError, Role, ToolSchema};
+use crate::{ContentBlock, ErrorCode, Message, ModelError, Role, ToolRequest, ToolUpdate};
 
 use super::config::DeepSeekConfig;
 
@@ -41,6 +41,16 @@ struct WireTool {
     name: String,
     description: String,
     input_schema: Value,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    defer_loading: bool,
+}
+
+/// `tool_addition` 块里对工具定义的引用（DSH 的 `tool_reference`）。
+#[derive(Serialize)]
+struct WireToolReference {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    name: String,
 }
 
 #[derive(Serialize)]
@@ -104,6 +114,9 @@ enum WireBlock {
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
+    /// 历史里的一次工具加载：把带 `defer_loading` 的声明激活（DSH 的 tool_addition 块）。
+    #[serde(rename = "tool_addition")]
+    ToolAddition { tool: WireToolReference },
 }
 
 /// 序列化一次请求。
@@ -114,16 +127,18 @@ enum WireBlock {
 pub(super) fn request_body(
     config: &DeepSeekConfig,
     messages: &[Message],
-    tools: &[ToolSchema],
+    tools: &ToolRequest,
+    tool_update: Option<ToolUpdate>,
     max_tokens: Option<u32>,
     validate_pairing: bool,
-) -> Result<Vec<u8>, ModelError> {
+) -> Result<PreparedRequest, ModelError> {
     if validate_pairing {
         validate_tool_pairing(messages)?;
     }
+    let projected = crate::tool_updates::project(messages, tools, tool_update);
     let mut system = String::new();
     let mut wire_messages: Vec<WireMessage> = Vec::new();
-    for message in messages {
+    for (index, message) in messages.iter().enumerate() {
         match message.role {
             Role::System => {
                 let mut text = String::new();
@@ -248,19 +263,43 @@ pub(super) fn request_body(
                 );
             }
         }
+        // 加载点插一条 system 角色的 tool_addition（只在声明了能力的路由上；空表 = 不插）。
+        // 位置必须紧跟 user/tool-result 回合，和 DSH 的 flushSystemUpdates 形状一致。
+        if let Some(names) = projected.insertions.get(&index) {
+            if !matches!(message.role, Role::User | Role::Tool) {
+                return Err(invalid_request(
+                    "tool addition must follow a user or tool-result turn",
+                ));
+            }
+            let content = names
+                .iter()
+                .map(|name| WireBlock::ToolAddition {
+                    tool: WireToolReference {
+                        kind: "tool_reference",
+                        name: name.clone(),
+                    },
+                })
+                .collect();
+            wire_messages.push(WireMessage {
+                role: "system",
+                content,
+            });
+        }
     }
 
     let effort = &config.effort;
-    let wire_tools = if tools.is_empty() {
+    let wire_tools = if projected.tools.is_empty() {
         None
     } else {
         Some(
-            tools
+            projected
+                .tools
                 .iter()
                 .map(|tool| WireTool {
                     name: tool.name.clone(),
                     description: tool.description.clone(),
                     input_schema: tool.parameters.clone(),
+                    defer_loading: tool.defer_loading,
                 })
                 .collect(),
         )
@@ -296,12 +335,22 @@ pub(super) fn request_body(
         },
         tools: wire_tools,
     };
-    serde_json::to_vec(&body).map_err(|error| {
+    let body = serde_json::to_vec(&body).map_err(|error| {
         ModelError::new(
             ErrorCode::InvalidRequest,
             format!("请求序列化失败: {error}"),
         )
+    })?;
+    Ok(PreparedRequest {
+        body,
+        tool_changes: !projected.insertions.is_empty(),
     })
+}
+
+/// 序列化好的一次请求：请求体 + 是否需要工具变更 beta 头（照 DSH：有 tool_addition 块才加）。
+pub(super) struct PreparedRequest {
+    pub body: Vec<u8>,
+    pub tool_changes: bool,
 }
 
 /// DSH DeepSeek 序列化的三类防御校验（T006.19 照 llm-deepseek/src/serialize.ts:136-146）：
@@ -467,6 +516,7 @@ mod t006_19_serialize_defense_tests {
             max_tokens: 256_000,
             context_window: 1_000_000,
             effort: crate::Effort::new("low"),
+            tool_update: None,
         };
         let messages = vec![Message::assistant(
             vec![ContentBlock::ToolCall {
@@ -477,10 +527,17 @@ mod t006_19_serialize_defense_tests {
             "deepseek",
             "deepseek-flash",
         )];
-        let error = match request_body(&config, &messages, &[], None, false) {
-            Ok(raw) => panic!(
+        let error = match request_body(
+            &config,
+            &messages,
+            &crate::ToolRequest::default(),
+            None,
+            None,
+            false,
+        ) {
+            Ok(prepared) => panic!(
                 "坏参数必须报错，不能静默变成空参数：{}",
-                String::from_utf8_lossy(&raw)
+                String::from_utf8_lossy(&prepared.body)
             ),
             Err(error) => error,
         };
@@ -507,9 +564,18 @@ mod effort_wire_tests {
             max_tokens: 256_000,
             context_window: 1_000_000,
             effort: Effort::new(effort),
+            tool_update: None,
         };
-        let raw = request_body(&config, &[], &[], max_tokens, false).expect("序列化");
-        serde_json::from_slice(&raw).expect("JSON")
+        let prepared = request_body(
+            &config,
+            &[],
+            &crate::ToolRequest::default(),
+            None,
+            max_tokens,
+            false,
+        )
+        .expect("序列化");
+        serde_json::from_slice(&prepared.body).expect("JSON")
     }
 
     fn thinking(value: &Value) -> Option<(&str, Option<u64>)> {
@@ -663,6 +729,7 @@ mod t013_file_block_tests {
             max_tokens: 2048,
             context_window: 128_000,
             effort: crate::Effort::new("high"),
+            tool_update: None,
         };
         let message = Message::user_with_request_id(
             vec![
@@ -680,8 +747,16 @@ mod t013_file_block_tests {
             ],
             "req-1",
         );
-        let body = super::request_body(&config, &[message], &[], Some(2048), true).expect("序列化");
-        let json: Value = serde_json::from_slice(&body).unwrap();
+        let prepared = super::request_body(
+            &config,
+            &[message],
+            &crate::ToolRequest::default(),
+            None,
+            Some(2048),
+            true,
+        )
+        .expect("序列化");
+        let json: Value = serde_json::from_slice(&prepared.body).unwrap();
         let content = json["messages"][0]["content"].as_array().unwrap();
         assert_eq!(content[0]["text"], "看这两个");
         assert_eq!(

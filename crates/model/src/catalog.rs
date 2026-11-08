@@ -9,8 +9,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, SystemTime};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+
+use crate::ToolUpdate;
 
 /// models.dev 的快照地址（T012.5 启动拉取）。
 pub const MODELS_DEV_URL: &str = "https://models.dev/api.json";
@@ -188,6 +190,23 @@ pub struct ModelInfo {
     pub price_cache_write: Option<f64>,
     pub thinks: bool,
     pub efforts: Vec<String>,
+    /// 这个模型声明支持的对话中途工具更新模式；只认 `addition-only`（其他值读成 None）。
+    /// 只增可选字段：旧设置文件/旧 live 列表原样读。
+    #[serde(
+        default,
+        deserialize_with = "deserialize_tool_update",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub tool_update: Option<ToolUpdate>,
+}
+
+/// 只认 `addition-only`；不认识的字符串（例如 DSH 的 `in-history`）读成 None，不报错。
+fn deserialize_tool_update<'de, D>(deserializer: D) -> Result<Option<ToolUpdate>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let raw = Option::<String>::deserialize(deserializer)?;
+    Ok(raw.as_deref().and_then(ToolUpdate::parse))
 }
 
 impl CatalogSnapshot {
@@ -211,6 +230,12 @@ impl CatalogSnapshot {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// 路由声明支持的对话中途工具更新模式（适配器按它选两条路）。
+    pub fn tool_update_for(&self, provider_id: &str, model_id: &str) -> Option<ToolUpdate> {
+        self.model(provider_id, model_id)?;
+        declared_tool_update(provider_id, model_id)
     }
 
     /// 适配器需要的思考能力：会思考吗、能选哪些档。
@@ -241,7 +266,15 @@ fn model_info(provider: &CatalogProvider, model: &CatalogModel) -> ModelInfo {
         price_cache_write: model.cost.as_ref().and_then(|cost| cost.cache_write),
         thinks: model.reasoning,
         efforts: levels(provider, model),
+        tool_update: declared_tool_update(&provider.id, &model.id),
     }
+}
+
+/// 目录里写死的路由能力：models.dev 不声明 API 能力，DeepSeek 的官方 Flash 路由声明
+/// `addition-only`（同 DSH 默认目录的 deepseek-flash）；其余模型没有来源，按没声明算。
+fn declared_tool_update(_provider_id: &str, _model_id: &str) -> Option<ToolUpdate> {
+    // 骨架：红阶段先不写死。
+    None
 }
 
 /// 连接对应的目录 provider id：内置提供方用 preset，自定义地址按 endpoint 推断。
@@ -284,6 +317,8 @@ pub struct LiveModel {
     pub display_name: Option<String>,
     pub context_window: Option<u64>,
     pub max_tokens: Option<u32>,
+    /// 厂商在 `api_capabilities.anthropic_messages.tool_update` 声明的能力；只认 addition-only。
+    pub tool_update: Option<ToolUpdate>,
 }
 
 /// 解析厂商 /v1/models 的响应：数组，或 { data: [...] }（Anthropic/OpenAI 风格）。
@@ -312,11 +347,18 @@ pub fn parse_live_models(value: &Value) -> Vec<LiveModel> {
                 .or_else(|| item.get("max_tokens"))
                 .and_then(Value::as_u64)
                 .and_then(|value| u32::try_from(value).ok());
+            let tool_update = item
+                .pointer("/api_capabilities/anthropic_messages/tool_update")
+                .and_then(Value::as_str)
+                .and_then(ToolUpdate::parse);
+            // 骨架：红阶段先不读厂商字段。
+            let _ = tool_update;
             Some(LiveModel {
                 id,
                 display_name,
                 context_window,
                 max_tokens,
+                tool_update: None,
             })
         })
         .collect()
@@ -342,6 +384,7 @@ pub fn merge_live(catalog_models: Vec<ModelInfo>, live: Vec<LiveModel>) -> Vec<M
             price_cache_write: None,
             thinks: false,
             efforts: Vec::new(),
+            tool_update: None,
         });
         if let Some(name) = live.display_name {
             info.name = name;
@@ -351,6 +394,9 @@ pub fn merge_live(catalog_models: Vec<ModelInfo>, live: Vec<LiveModel>) -> Vec<M
         }
         if live.max_tokens.is_some() {
             info.max_tokens = live.max_tokens;
+        }
+        if live.tool_update.is_some() {
+            info.tool_update = live.tool_update;
         }
         merged.push(info);
     }
@@ -372,6 +418,7 @@ pub fn live_models_info(live: &[LiveModel]) -> Vec<ModelInfo> {
             price_cache_write: None,
             thinks: false,
             efforts: Vec::new(),
+            tool_update: live.tool_update,
         })
         .collect()
 }
@@ -671,12 +718,14 @@ mod tests {
             price_cache_write: None,
             thinks: true,
             efforts: vec!["low".to_owned()],
+            tool_update: None,
         };
         let live = |id: &str| LiveModel {
             id: id.to_owned(),
             display_name: None,
             context_window: Some(2_000),
             max_tokens: None,
+            tool_update: None,
         };
         let merged = merge_live(
             vec![info("catalog-a", 0.1), info("catalog-b", 0.2)],
@@ -779,12 +828,14 @@ mod tests {
                 display_name: Some("DeepSeek Flash (vendor)".to_owned()),
                 context_window: Some(123),
                 max_tokens: Some(456),
+                tool_update: None,
             },
             LiveModel {
                 id: "deepseek-future".to_owned(),
                 display_name: Some("Future".to_owned()),
                 context_window: Some(999),
                 max_tokens: None,
+                tool_update: None,
             },
         ];
         let merged = merge_live(catalog, live);
@@ -822,6 +873,103 @@ mod tests {
         assert_eq!(parse_live_models(&array)[0].max_tokens, Some(400));
     }
 
+    /// 目录里 deepseek-flash 写死 addition-only（同 DSH 默认目录）；其余模型没有来源。
+    #[test]
+    fn catalog_declares_deepseek_flash_addition_only() {
+        let snapshot = snapshot();
+        let models = snapshot.models_for("deepseek");
+        let flash = models
+            .iter()
+            .find(|model| model.id == "deepseek-flash")
+            .expect("deepseek-flash");
+        assert_eq!(flash.tool_update, Some(ToolUpdate::AdditionOnly));
+        let plain = models
+            .iter()
+            .find(|model| model.id == "deepseek-v4-flash")
+            .expect("deepseek-v4-flash");
+        assert_eq!(plain.tool_update, None, "没写死的模型不声明能力");
+        assert!(
+            snapshot
+                .models_for("minimax-cn")
+                .iter()
+                .all(|model| model.tool_update.is_none()),
+            "MiniMax 没有来源，按没声明算"
+        );
+        assert_eq!(
+            snapshot.tool_update_for("deepseek", "deepseek-flash"),
+            Some(ToolUpdate::AdditionOnly)
+        );
+        assert_eq!(
+            snapshot.tool_update_for("deepseek", "mystery-model"),
+            None,
+            "目录里没有的模型按没声明算"
+        );
+    }
+
+    /// 获取模型时读厂商返回的 `api_capabilities.anthropic_messages.tool_update`：只认
+    /// addition-only；读到的能力落进模型信息（驼峰 `toolUpdate`）。
+    #[test]
+    fn vendor_tool_update_is_read_from_the_model_listing() {
+        let listing: Value = serde_json::from_str(
+            r#"{"data":[
+                {"id":"m1","api_capabilities":{"anthropic_messages":{"tool_update":"addition-only"}}},
+                {"id":"m2","api_capabilities":{"anthropic_messages":{"tool_update":"in-history"}}},
+                {"id":"m3"}
+            ]}"#,
+        )
+        .unwrap();
+        let models = parse_live_models(&listing);
+        assert_eq!(models[0].tool_update, Some(ToolUpdate::AdditionOnly));
+        assert_eq!(models[1].tool_update, None, "只认 addition-only");
+        assert_eq!(models[2].tool_update, None, "没声明就是没能力");
+        let saved = serde_json::to_value(live_models_info(&models)).unwrap();
+        assert_eq!(saved[0]["toolUpdate"], "addition-only");
+        assert!(
+            saved[2].get("toolUpdate").is_none(),
+            "没有能力时不写字段：{saved}"
+        );
+    }
+
+    /// 厂商字段写进合并后的模型信息；厂商这次没声明时保留目录的能力。
+    #[test]
+    fn live_merge_carries_vendor_tool_update() {
+        let flash = snapshot()
+            .models_for("deepseek")
+            .into_iter()
+            .find(|model| model.id == "deepseek-flash")
+            .expect("deepseek-flash");
+        let merged = merge_live(
+            vec![flash],
+            vec![LiveModel {
+                id: "deepseek-flash".to_owned(),
+                display_name: None,
+                context_window: None,
+                max_tokens: None,
+                tool_update: None,
+            }],
+        );
+        assert_eq!(
+            merged[0].tool_update,
+            Some(ToolUpdate::AdditionOnly),
+            "厂商没声明时保留目录能力"
+        );
+        let merged = merge_live(
+            Vec::new(),
+            vec![LiveModel {
+                id: "deepseek-new".to_owned(),
+                display_name: None,
+                context_window: None,
+                max_tokens: None,
+                tool_update: Some(ToolUpdate::AdditionOnly),
+            }],
+        );
+        assert_eq!(
+            merged[0].tool_update,
+            Some(ToolUpdate::AdditionOnly),
+            "厂商声明的能力落进模型信息"
+        );
+    }
+
     #[test]
     fn models_url_asks_the_chat_base_for_anthropic_endpoints() {
         // 审计 T012.5 fix-now 1：预设三家都以 …/anthropic 结尾，列表在 Chat base 的 /v1/models。
@@ -852,6 +1000,7 @@ mod tests {
             display_name: None,
             context_window: None,
             max_tokens: None,
+            tool_update: None,
         }]);
         save_live(&dir, "conn", 7, saved).expect("存列表");
         save_live(&dir, "conn", 8, Vec::new()).expect("空表不写");

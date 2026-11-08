@@ -49,7 +49,7 @@ fn cancel() -> CancelToken {
 fn 来源失败原样返回() {
     let deepseek = DeepSeek::with_credentials(config(), Arc::new(FailingSource)).expect("构造");
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
-    let result = runtime.block_on(deepseek.stream(&[], &[], &cancel()));
+    let result = runtime.block_on(deepseek.stream(&[], &model::ToolRequest::default(), &cancel()));
     let error = result.err().expect("凭证来源失败时应失败");
     assert_eq!(
         error.code,
@@ -74,12 +74,12 @@ fn 每次请求都重新申请() {
         clippy::let_underscore_must_use,
         reason = "用例只核凭据来源调用，流的预期错误不参与断言"
     )]
-    let _ = runtime.block_on(deepseek.stream(&[], &[], &cancel()));
+    let _ = runtime.block_on(deepseek.stream(&[], &model::ToolRequest::default(), &cancel()));
     #[expect(
         clippy::let_underscore_must_use,
         reason = "用例只核凭据来源调用，流的预期错误不参与断言"
     )]
-    let _ = runtime.block_on(deepseek.stream(&[], &[], &cancel()));
+    let _ = runtime.block_on(deepseek.stream(&[], &model::ToolRequest::default(), &cancel()));
     assert_eq!(
         source.calls.load(Ordering::Relaxed),
         2,
@@ -103,7 +103,7 @@ fn 来源收到本次run和轮() {
         clippy::let_underscore_must_use,
         reason = "用例只核凭据来源调用，流的预期错误不参与断言"
     )]
-    let _ = runtime.block_on(deepseek.stream(&[], &[], &cancel()));
+    let _ = runtime.block_on(deepseek.stream(&[], &model::ToolRequest::default(), &cancel()));
     let last = source.last.lock().expect("last").clone();
     assert_eq!(
         last,

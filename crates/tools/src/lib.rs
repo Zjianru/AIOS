@@ -419,5 +419,6 @@ fn schema_of(tool: &dyn Tool) -> ToolSchema {
         name: tool.name().to_owned(),
         description: tool.description().to_owned(),
         parameters: tool.parameters().clone(),
+        defer_loading: false,
     }
 }

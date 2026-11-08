@@ -20,13 +20,16 @@ pub use vendors::actual_effort;
 use crate::Effort;
 use crate::{
     CancelToken, CredentialContext, CredentialSource, ErrorCode, Message, ModelError, StreamChunk,
-    ToolSchema,
+    ToolRequest, ToolUpdate,
 };
 use learned::{AuthChoice, Learned};
 use sse::SseParser;
 use translate::Translator;
 
 use config::STREAM_IDLE_TIMEOUT;
+
+/// 对话中途加工具（`tool_addition`）要求的 beta 头（照 DSH `deepseek-messages-api.ts:7`）。
+pub const MESSAGES_TOOL_CHANGES_BETA: &str = "mid-conversation-tool-changes-2026-07-01";
 
 /// 模型自己的默认档：先按连接的真实厂商 id 查目录，查不到再用地址/模型名的内置表。
 /// 新连接没有用户选择时用它（不是写死 high）。
@@ -226,7 +229,7 @@ impl DeepSeek {
     pub async fn stream(
         &self,
         messages: &[Message],
-        tools: &[ToolSchema],
+        tools: &ToolRequest,
         cancel: &CancelToken,
     ) -> Result<ChunkStream, ModelError> {
         self.stream_inner(messages, tools, cancel, None, true).await
@@ -240,7 +243,7 @@ impl DeepSeek {
     pub async fn stream_with_max_tokens(
         &self,
         messages: &[Message],
-        tools: &[ToolSchema],
+        tools: &ToolRequest,
         cancel: &CancelToken,
         max_tokens: Option<u32>,
     ) -> Result<ChunkStream, ModelError> {
@@ -251,7 +254,7 @@ impl DeepSeek {
     async fn stream_inner(
         &self,
         messages: &[Message],
-        tools: &[ToolSchema],
+        tools: &ToolRequest,
         cancel: &CancelToken,
         max_tokens: Option<u32>,
         validate_pairing: bool,
@@ -284,9 +287,24 @@ impl DeepSeek {
                 crate::Effort::new(vendors::lowest_non_off_effort(&base_url, &effective.model));
         }
         let choice = self.auth_choice(&base_url);
-        let body =
-            serialize::request_body(&effective, messages, tools, max_tokens, validate_pairing)?;
-        let attempt = self.post_messages(body, &api_key, choice, cancel).await?;
+        let tool_update = self.route_tool_update(&effective.model);
+        let prepared = serialize::request_body(
+            &effective,
+            messages,
+            tools,
+            tool_update,
+            max_tokens,
+            validate_pairing,
+        )?;
+        let attempt = self
+            .post_messages(
+                prepared.body,
+                prepared.tool_changes,
+                &api_key,
+                choice,
+                cancel,
+            )
+            .await?;
         if let Some(response) = attempt.response {
             return Ok(ChunkStream::new(response, cancel.clone()));
         }
@@ -298,9 +316,23 @@ impl DeepSeek {
                 .learn_thinking_required(&base_url, &effective.model);
             effective.effort =
                 crate::Effort::new(vendors::lowest_non_off_effort(&base_url, &effective.model));
-            let body =
-                serialize::request_body(&effective, messages, tools, max_tokens, validate_pairing)?;
-            let retry = self.post_messages(body, &api_key, choice, cancel).await?;
+            let prepared = serialize::request_body(
+                &effective,
+                messages,
+                tools,
+                tool_update,
+                max_tokens,
+                validate_pairing,
+            )?;
+            let retry = self
+                .post_messages(
+                    prepared.body,
+                    prepared.tool_changes,
+                    &api_key,
+                    choice,
+                    cancel,
+                )
+                .await?;
             return match retry.response {
                 Some(response) => Ok(ChunkStream::new(response, cancel.clone())),
                 None => Err(transport::provider_error(
@@ -317,14 +349,17 @@ impl DeepSeek {
         {
             let mut last = (attempt.raw, attempt.headers, 401_u16);
             for only in [AuthChoice::XApiKey, AuthChoice::Authorization] {
-                let body = serialize::request_body(
+                let prepared = serialize::request_body(
                     &effective,
                     messages,
                     tools,
+                    tool_update,
                     max_tokens,
                     validate_pairing,
                 )?;
-                let retry = self.post_messages(body, &api_key, only, cancel).await?;
+                let retry = self
+                    .post_messages(prepared.body, prepared.tool_changes, &api_key, only, cancel)
+                    .await?;
                 if let Some(response) = retry.response {
                     if let Some(name) = only.learned_name() {
                         self.learned.learn_auth_header(&base_url, name);
@@ -356,6 +391,19 @@ impl DeepSeek {
         ))
     }
 
+    /// 这条路由支持的对话中途工具更新模式：先看连接配置（选择时按模型信息解析），
+    /// 再看目录（deepseek-flash 写死 addition-only）。运行时换模型按新模型名重查目录。
+    fn route_tool_update(&self, model: &str) -> Option<ToolUpdate> {
+        if model == self.config.model
+            && let Some(update) = self.config.tool_update
+        {
+            return Some(update);
+        }
+        crate::catalog::global()
+            .unwrap_or_else(crate::catalog::snapshot)
+            .tool_update_for(&self.config.provider, model)
+    }
+
     /// T012.6：本次请求该带哪些鉴权头（学到的内存优先，其次连接上记住的，默认两个都发）。
     fn auth_choice(&self, base_url: &str) -> AuthChoice {
         if let Some(header) = self.learned.auth_header(base_url) {
@@ -371,16 +419,20 @@ impl DeepSeek {
     async fn post_messages(
         &self,
         body: Vec<u8>,
+        tool_changes: bool,
         api_key: &str,
         choice: AuthChoice,
         cancel: &CancelToken,
     ) -> Result<Attempt, ModelError> {
-        let request = self
+        let mut request = self
             .http
             .post(self.url.clone())
             .header("content-type", "application/json")
             .header("accept", "text/event-stream")
             .header("anthropic-version", "2023-06-01");
+        if tool_changes {
+            request = request.header("anthropic-beta", MESSAGES_TOOL_CHANGES_BETA);
+        }
         let request = match choice {
             AuthChoice::Both => request
                 .header("x-api-key", api_key)

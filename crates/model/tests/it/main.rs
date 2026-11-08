@@ -7,4 +7,5 @@ mod disabled_admit;
 mod http_proxy;
 mod learning;
 mod model_select;
+mod tool_projection;
 mod usage_display;

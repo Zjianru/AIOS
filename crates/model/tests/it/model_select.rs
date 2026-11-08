@@ -33,7 +33,9 @@ async fn 换模型后下一次请求用新模型() {
         clippy::let_underscore_must_use,
         reason = "用例只核请求里的模型名，流的预期错误不参与断言"
     )]
-    let _ = deepseek.stream(&[], &[], &cancel).await;
+    let _ = deepseek
+        .stream(&[], &model::ToolRequest::default(), &cancel)
+        .await;
     let requests = server.received_requests().await.expect("请求记录");
     assert_eq!(requests.len(), 1, "应发出一次请求");
     let body: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("body json");
@@ -69,13 +71,17 @@ async fn 本轮冻结模型中途换模型下一轮才生效() {
         clippy::let_underscore_must_use,
         reason = "用例只核请求里的模型名，流的预期错误不参与断言"
     )]
-    let _ = deepseek.stream(&[], &[], &cancel).await;
+    let _ = deepseek
+        .stream(&[], &model::ToolRequest::default(), &cancel)
+        .await;
     deepseek.set_model("deepseek-later".to_owned());
     #[expect(
         clippy::let_underscore_must_use,
         reason = "用例只核请求里的模型名，流的预期错误不参与断言"
     )]
-    let _ = deepseek.stream(&[], &[], &cancel).await;
+    let _ = deepseek
+        .stream(&[], &model::ToolRequest::default(), &cancel)
+        .await;
     let requests = server.received_requests().await.expect("请求记录");
     let models: Vec<String> = requests
         .iter()
@@ -93,7 +99,9 @@ async fn 本轮冻结模型中途换模型下一轮才生效() {
         clippy::let_underscore_must_use,
         reason = "用例只核请求里的模型名，流的预期错误不参与断言"
     )]
-    let _ = deepseek.stream(&[], &[], &cancel).await;
+    let _ = deepseek
+        .stream(&[], &model::ToolRequest::default(), &cancel)
+        .await;
     let requests = server.received_requests().await.expect("请求记录");
     let body: serde_json::Value = serde_json::from_slice(&requests[2].body).expect("body json");
     assert_eq!(body["model"], "deepseek-later", "下一轮才用新模型");

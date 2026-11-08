@@ -54,6 +54,7 @@ pub fn options(data_dir: &Path) -> RootSessionOptions {
             max_tokens: 2048,
             context_window: DEFAULT_CONTEXT_WINDOW,
             effort: Effort::new("high"),
+            tool_update: None,
         },
         config: AgentConfig::default(),
         credentials: Some(test_credential(data_dir)),

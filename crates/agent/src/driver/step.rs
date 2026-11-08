@@ -17,12 +17,10 @@ use super::helpers::*;
 use super::retry::*;
 use super::*;
 
-use model::ToolSchema;
-
-/// 一次 step 的请求上下文：派生消息、工具表、本步开出的工具名、取消令牌。
+/// 一次 step 的请求上下文：派生消息、工具请求、本步开出的工具名、取消令牌。
 pub(super) struct StepContext {
     messages: Vec<Message>,
-    tool_schemas: Vec<ToolSchema>,
+    tool_request: model::ToolRequest,
     /// 本步按条件开出的工具名；没开出的既不在表里，也不能执行。
     enabled: Arc<std::collections::BTreeSet<String>>,
     cancel: CancelToken,
@@ -121,16 +119,27 @@ pub(super) async fn prepare_step(
     }
     let tool_schemas = inner.tools.definitions_for(&enabled);
     let enabled = Arc::new(enabled);
-    let messages = inner
-        .store
-        .lock()
-        .expect("agent 会话锁被毒化")
-        .derive_messages();
+    let (messages, tool_history) = {
+        let store = inner.store.lock().expect("agent 会话锁被毒化");
+        let derived = store.derive_messages_with_seqs();
+        let history = crate::tool_gate::tool_history(store.events(), &derived);
+        (
+            derived
+                .into_iter()
+                .map(|(_, message)| message)
+                .collect::<Vec<_>>(),
+            history,
+        )
+    };
+    let tool_request = model::ToolRequest {
+        tools: tool_schemas,
+        history: tool_history,
+    };
     // 取消令牌共用 agent 的 abort 标志 + Notify：等响应头阶段也能被打断。
     let cancel = CancelToken::new(Arc::clone(abort), Arc::clone(&inner.cancel_notify));
     Ok(Some(StepContext {
         messages,
-        tool_schemas,
+        tool_request,
         enabled,
         cancel,
     }))
@@ -150,7 +159,7 @@ pub(super) async fn run_step(
     };
     let StepContext {
         mut messages,
-        tool_schemas,
+        tool_request,
         enabled,
         cancel,
     } = context;
@@ -187,7 +196,7 @@ pub(super) async fn run_step(
             run: Some(inner.id().as_str().to_owned()),
             turn: Some(turn),
         });
-        let mut stream = match inner.model.stream(&messages, &tool_schemas, &cancel).await {
+        let mut stream = match inner.model.stream(&messages, &tool_request, &cancel).await {
             Ok(stream) => stream,
             Err(error) => {
                 if abort.load(Ordering::SeqCst) || error.code == ErrorCode::Aborted {

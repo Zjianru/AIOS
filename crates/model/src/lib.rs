@@ -11,6 +11,7 @@ mod effort;
 mod error;
 pub mod http;
 mod ir;
+mod tool_updates;
 
 pub use anthropic::actual_effort;
 pub use anthropic::file_handle_text;
@@ -33,3 +34,4 @@ pub use ir::{
     InstructionChangeAction, Message, MessageId, MessageSource, Role, SkillCatalogEntry,
     StreamChunk, ToolSchema, Usage, UserMessage,
 };
+pub use tool_updates::{ToolAddition, ToolHistory, ToolRequest, ToolUpdate};

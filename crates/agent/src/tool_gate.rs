@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use model::ToolSchema;
+use model::{Message, ToolHistory, ToolSchema};
 use session::{Event, EventKind};
 use tools::ToolSet;
 
@@ -47,6 +47,15 @@ pub(crate) fn loaded_skills(events: &[Event]) -> BTreeSet<String> {
         }
     }
     loaded
+}
+
+/// 从会话日志恢复请求投影要用的加载历史（主请求与压缩摘要请求共用）。
+///
+/// 第一条 `tool/registry` 是第一次请求的声明（立即可用）；之后每条是某个加载点。
+/// 加载点用「它前面最后一条派生消息」定位：日志只追加，所以续接前后算出来一样。
+pub(crate) fn tool_history(_events: &[Event], _derived: &[(u64, Message)]) -> Option<ToolHistory> {
+    // 骨架：红阶段先不重建历史。
+    None
 }
 
 fn skill_name_of(arguments: &str) -> Option<String> {

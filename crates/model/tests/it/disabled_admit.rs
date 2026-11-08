@@ -66,7 +66,7 @@ async fn 被屏蔽的模型一次也不出站() {
     let deepseek =
         DeepSeek::with_credentials(config(&server), Arc::new(RefusingSource)).expect("构造");
     let error = deepseek
-        .stream(&[], &[], &cancel())
+        .stream(&[], &model::ToolRequest::default(), &cancel())
         .await
         .err()
         .expect("被屏蔽的请求应失败");
@@ -88,7 +88,7 @@ async fn 压缩摘要的请求同样被拒() {
     let deepseek =
         DeepSeek::with_credentials(config(&server), Arc::new(RefusingSource)).expect("构造");
     let error = deepseek
-        .stream_with_max_tokens(&[], &[], &cancel(), Some(256))
+        .stream_with_max_tokens(&[], &model::ToolRequest::default(), &cancel(), Some(256))
         .await
         .err()
         .expect("摘要请求也应失败");
@@ -111,7 +111,7 @@ async fn 放行的模型照常出站() {
     let deepseek =
         DeepSeek::with_credentials(config(&server), Arc::new(AllowingSource)).expect("构造");
     deepseek
-        .stream(&[], &[], &cancel())
+        .stream(&[], &model::ToolRequest::default(), &cancel())
         .await
         .expect("放行的请求应成功");
     assert_eq!(request_count(&server).await, 1, "放行的请求照常发出");

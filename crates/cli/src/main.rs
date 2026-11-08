@@ -238,6 +238,7 @@ fn config_from_args(
         max_tokens,
         context_window,
         effort,
+        tool_update: None,
     };
     Ok((config, agent))
 }

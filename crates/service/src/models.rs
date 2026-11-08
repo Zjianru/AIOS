@@ -50,5 +50,6 @@ fn info_from_row(row: &credentials::ModelRow) -> ModelInfo {
         price_cache_write: row.price_cache_write,
         thinks: false,
         efforts: Vec::new(),
+        tool_update: None,
     }
 }
