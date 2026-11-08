@@ -44,6 +44,7 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.t014Confirm) return { file: 't014-confirm' };
   if (options.t014Mask) return { file: 't014-mask' };
   if (options.t014Web) return { file: 't014-web' };
+  if (options.t014Search) return { file: 't014-search' };
   return {
     file: 'text',
     paceMs: options.slowMs ? Math.max(1, Math.round(options.slowMs / 6)) : undefined,
@@ -197,6 +198,8 @@ export interface FixtureOptions {
   t014Mask?: boolean;
   /// T014.6：先加载 skill web，再收尾一句回答（联网搜索的目录/工具表用）。
   t014Web?: boolean;
+  /// T014.7：先加载 skill web，再 web_search 一次，最后回答引用来源 URL（联网搜索回放用）。
+  t014Search?: boolean;
   /// T014.6：起一个本地假 Exa；serve 用 --exa-base-url 指过去。
   fakeExa?: boolean;
   /// T014.6：把 EXA_API_KEY 放进 serve 的环境变量，用来证明 key 不从环境变量读。
@@ -347,8 +350,26 @@ export async function startKernelFixture(
           response.end(JSON.stringify({ error: 'invalid api key' }));
           return;
         }
+        // T014.7：搜索请求（numResults 8）回一条带摘要的结果；验证请求（numResults 1）照旧空结果。
+        let numResults: unknown;
+        try {
+          numResults = (JSON.parse(body) as { numResults?: unknown }).numResults;
+        } catch {
+          numResults = undefined;
+        }
+        const results =
+          numResults === 8
+            ? [
+                {
+                  url: 'https://example.com/aios-search',
+                  title: 'AIOS 原生工具',
+                  highlights: ['AIOS 的联网搜索结果样例。'],
+                  publishedDate: '2026-11-09',
+                },
+              ]
+            : [];
         response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({ results: [] }));
+        response.end(JSON.stringify({ results }));
       });
     });
     await new Promise<void>((resolve) => {

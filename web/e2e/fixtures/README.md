@@ -44,6 +44,14 @@ T010.2 时用一次性 Playwright 录制器（已删除，不在仓库）跑改�
 
 手写：第一条 assistant/message 回一次 `ask_user_question` 工具调用（参数在 block-end 里），第二条回一句回答。空 label 的选项内核保留（`question/asked` 里是 `""`），缺 label 的选项内核在发事件之前就丢掉了（`crates/agent/src/ask_capability.rs` 的 filter_map）；页面只负责把空 label 那一项去掉。
 
+## T014.7 联网搜索夹具（手写）
+
+| 文件 | 场景 | 模型调用数 |
+|---|---|---|
+| t014-search.jsonl | 联网搜索：加载 skill web、调用 web_search、回答引用来源 URL | 3 |
+
+手写：第 1 条回 `skill`（加载 `web`），第 2 条回一次 `web_search`，第 3 条回一句引用来源 URL 的回答。工具调用由真内核执行，搜索请求打到 `service-fixture.ts` 的本地假 Exa（`--exa-base-url`）；页面上的来源 URL 来自假 Exa 的响应，不是夹具里写死的工具结果。
+
 ## 工作过程路径夹具（T014.1，模板）
 
 | 文件 | 场景 | 模型调用数 |
