@@ -2,6 +2,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use tools::{
@@ -1208,4 +1209,91 @@ async fn registration_is_queued_synchronously_for_commit() {
             .call_id,
         "call_1"
     );
+}
+
+/// 后台任务输出有界：运行中单流 ≤ RETAIN_BYTES，结算后终态读把内存裁到结算保留量，
+/// 淘汰时任务条目和两个输出文件一起回收（DSH jobs-local 的 settledRetainBytes 语义）。
+#[tokio::test]
+async fn settled_output_is_trimmed_and_removal_reclaims_job_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path(), "sess-retain");
+    // stdout 与 stderr 各 400 KiB，都超过 RETAIN_BYTES（262144）。
+    let started = bash(
+        json!({
+            "description": "large output",
+            "command": "head -c 409600 /dev/zero | tr '\\0' x; head -c 409600 /dev/zero | tr '\\0' y >&2",
+            "run_in_background": true
+        }),
+        &context,
+    )
+    .await;
+    assert!(!started.is_error, "{}", started.content);
+    let job_id = extract_job_id(&started.content);
+    let registry = context.session().tasks();
+    let settled = registry
+        .wait_async(&job_id, Duration::from_secs(10))
+        .await
+        .expect("job 要能结算");
+    assert!(
+        settled.view.status.is_terminal(),
+        "10 秒内应结算：{:?}",
+        settled.view.status
+    );
+
+    // 结算后、模型读之前：活上限仍然生效，单流不超过 256 KiB，多出的标记 dropped。
+    let before_read = registry.output(&job_id).unwrap();
+    assert!(
+        before_read.stdout_dropped,
+        "超过 256 KiB 的 stdout 应标 dropped"
+    );
+    assert!(
+        before_read.stderr_dropped,
+        "超过 256 KiB 的 stderr 应标 dropped"
+    );
+    assert!(
+        before_read.stdout.len() <= 262_144,
+        "单流内存不得超过 RETAIN_BYTES：{}",
+        before_read.stdout.len()
+    );
+    assert!(
+        before_read.stderr.len() <= 262_144,
+        "单流内存不得超过 RETAIN_BYTES：{}",
+        before_read.stderr.len()
+    );
+
+    // 终态读把模型游标推到末尾，此后裁到结算保留量（DSH 默认 16384）。
+    let delta = registry.read_output(&job_id).expect("终态读");
+    assert!(!delta.stdout.is_empty(), "第一次读应拿到输出");
+    let after_read = registry.output(&job_id).unwrap();
+    assert!(
+        after_read.stdout.len() <= 16 * 1024,
+        "结算后读过的 stdout 应裁到 16 KiB：{}",
+        after_read.stdout.len()
+    );
+    assert!(
+        after_read.stderr.len() <= 16 * 1024,
+        "结算后读过的 stderr 应裁到 16 KiB：{}",
+        after_read.stderr.len()
+    );
+    assert!(
+        after_read.stdout.len() < before_read.stdout.len(),
+        "结算 + 终态读之后内存字节数应下降"
+    );
+
+    // 淘汰：任务条目和两个输出文件都回收。
+    let stdout_path = after_read.stdout_path.clone();
+    let stderr_path = after_read.stderr_path.clone();
+    assert!(
+        stdout_path.exists(),
+        "淘汰前完整输出文件在：{stdout_path:?}"
+    );
+    assert!(
+        stderr_path.exists(),
+        "淘汰前完整输出文件在：{stderr_path:?}"
+    );
+    registry.remove(&job_id);
+    assert!(registry.list().is_empty(), "淘汰后任务条目应消失");
+    assert!(!stdout_path.exists(), "淘汰后 stdout 文件应回收");
+    assert!(!stderr_path.exists(), "淘汰后 stderr 文件应回收");
 }
