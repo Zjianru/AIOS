@@ -8,6 +8,10 @@
  */
 
 import { z } from 'zod';
+// 工具卡的槽位从现有的派生函数来（terminalOf/diffOf/readOf/searchOf），不另写一份。
+// 这个模块要被 node 单测直接 import：Node 的相对导入必须写扩展名，tsconfig 因此打开了
+// allowImportingTsExtensions（只影响类型检查，不产出文件）。
+import { diffOf, readOf, searchOf, terminalOf } from '../process/toolModel.ts';
 import type { ToolStepView } from '../process/toolModel';
 
 /* ───────── 信封 ───────── */
@@ -131,6 +135,9 @@ export interface QuestionCardFact {
 export interface GenericSlots {
   title: LabelSlot;
   body: BodySlot;
+  /** 工具卡（T017.3）：不认识的工具展开后的输入 / 输出；认不出的信封没有这两项。 */
+  input?: BodySlot;
+  output?: BodySlot;
 }
 
 /* ───────── 槽位规则（每个都带 .catch） ───────── */
@@ -142,17 +149,23 @@ function chars(text: string): number {
   return [...text].length;
 }
 
+/** 一段正文 → 正文槽：原文完整保留，超过上限标成折起来。 */
+function bodyOf(text: string): BodySlot {
+  return { text, folded: chars(text) > BODY_MAX };
+}
+
+const bodyInput = z
+  .union([z.string(), z.object({ text: z.string() })])
+  .transform((value): BodySlot => bodyOf(typeof value === 'string' ? value : value.text));
+
 /**
  * 正文槽：不合法（不是字符串）就退回空，这一项不显示；超过 BODY_MAX 字标成折起来，原文不丢。
  * 也接受已经解出来的 {text}：卡片入口对同一个信封会再校验一次，解过的东西要能原样再过一遍。
  */
-const bodySlot = z
-  .union([z.string(), z.object({ text: z.string() })])
-  .transform((value): BodySlot => {
-    const text = typeof value === 'string' ? value : value.text;
-    return { text, folded: chars(text) > BODY_MAX };
-  })
-  .catch(EMPTY_BODY);
+const bodySlot = bodyInput.catch(EMPTY_BODY);
+
+/** 可缺的正文槽：不合法就是没有这一项，不塞一个空段（工具卡的输入 / 输出用）。 */
+const optionalBodySlot = bodyInput.optional().catch(undefined);
 
 /** 标签槽：不是字符串或超过 LABEL_MAX 字，退回这个槽位的默认值。 */
 function labelSlot(fallbackValue: LabelSlot) {
@@ -203,6 +216,8 @@ export const questionSlotsSchema = z.object({
 export const genericSlotsSchema = z.object({
   title: labelSlot(''),
   body: bodySlot,
+  input: optionalBodySlot,
+  output: optionalBodySlot,
 });
 
 /* ───────── 信封本身的校验 ───────── */
@@ -262,11 +277,16 @@ function questionStateOf(status: QuestionCardFact['status']): CardState {
   return 'done';
 }
 
+/** 答过的回执文字：对话里的提问卡和工作过程里的提问卡共用一句。 */
+function answeredSummary(count: number): string {
+  return '你回答了 Kind 的 ' + String(count) + ' 个问题';
+}
+
 /** 回执文字和现在页面上的完全一样（QuestionCard 的 ClosedCard）。 */
 function questionReceiptOf(fact: QuestionCardFact, count: number): CardReceipt | null {
   switch (fact.status) {
     case 'answered':
-      return { outcome: 'success', summary: '你回答了 Kind 的 ' + String(count) + ' 个问题' };
+      return { outcome: 'success', summary: answeredSummary(count) };
     case 'dismissed':
       return { outcome: 'cancelled', summary: '你没回答 Kind 的问题；它知道你没答，照常收尾' };
     case 'void':
@@ -329,9 +349,344 @@ export const genericCard: CardDefinition<unknown, GenericSlots> = {
   fallback: GENERIC_FALLBACK_SLOTS,
 };
 
+/* ───────── 工具卡（T017.3）：工具名 → 类型、槽位和信封 ───────── */
+
+/**
+ * 工具名 → 卡片类型（spec 实现决定：另有一张工具名对应卡片类型的表）。
+ * write / edit / apply_patch 都是差异；glob / grep 都是搜索；没登记的工具退回通用卡。
+ */
+const TOOL_CARD_TYPES: Record<string, CardType> = {
+  write: 'diff',
+  edit: 'diff',
+  apply_patch: 'diff',
+  bash: 'terminal',
+  read: 'read',
+  glob: 'search',
+  grep: 'search',
+  ask_user_question: 'question',
+};
+
+export function toolCardTypeOf(name: string): CardType {
+  return TOOL_CARD_TYPES[name] ?? 'generic';
+}
+
+/** 工具状态 → 信封状态（程序定，不由模型给）。 */
+function toolCardStateOf(state: ToolStepView['state']): CardState {
+  switch (state) {
+    case 'running':
+      return 'running';
+    case 'done':
+      return 'done';
+    case 'error':
+      return 'failed';
+    case 'stopped':
+      return 'stopped';
+  }
+}
+
+/** 工具卡的派生事实：一条 tool/* 调用和会话工作目录（差异的路径要相对化）。 */
+export interface ToolCardFact {
+  step: ToolStepView;
+  cwd: string;
+}
+
+/* 终端 */
+
+export interface TerminalSlots {
+  command: string;
+  output: BodySlot;
+  exitCode: number | null;
+  signal: string | null;
+}
+
+const textSlot = z.string().catch('');
+const integerSlot = z.number().int().catch(0);
+const nullableNumberSlot = z.number().int().nullable().catch(null);
+
+export const terminalSlotsSchema = z.object({
+  command: textSlot,
+  output: bodySlot,
+  exitCode: nullableNumberSlot,
+  signal: z.string().nullable().catch(null),
+});
+
+/* 差异 */
+
+export interface DiffLineSlot {
+  kind: 'add' | 'del' | 'ctx' | 'hunk';
+  text: string;
+  number: number | null;
+}
+
+export interface DiffFileSlot {
+  path: string;
+  isNew: boolean;
+  lines: DiffLineSlot[];
+  added: number;
+  removed: number;
+}
+
+export interface DiffSlots {
+  files: DiffFileSlot[];
+}
+
+const diffLineSchema = z.object({
+  kind: z.enum(['add', 'del', 'ctx', 'hunk']).catch('ctx'),
+  text: textSlot,
+  number: nullableNumberSlot,
+});
+
+const diffFileSchema = z.object({
+  path: textSlot,
+  isNew: z.boolean().catch(false),
+  lines: z
+    .array(diffLineSchema.nullable().catch(null))
+    .default([])
+    .transform((items) => items.filter((item): item is DiffLineSlot => item !== null)),
+  added: integerSlot,
+  removed: integerSlot,
+});
+
+export const diffSlotsSchema = z.object({
+  files: z
+    .array(diffFileSchema.nullable().catch(null))
+    .default([])
+    .transform((items) => items.filter((item): item is DiffFileSlot => item !== null)),
+});
+
+/* 读文件 */
+
+export interface ReadLineSlot {
+  number: number;
+  text: string;
+}
+
+export interface ReadSlots {
+  path: string;
+  lines: ReadLineSlot[];
+  footer: string;
+}
+
+const readLineSchema = z.object({ number: integerSlot, text: textSlot });
+
+export const readSlotsSchema = z.object({
+  path: textSlot,
+  lines: z
+    .array(readLineSchema.nullable().catch(null))
+    .default([])
+    .transform((items) => items.filter((item): item is ReadLineSlot => item !== null)),
+  footer: textSlot,
+});
+
+/* 搜索 */
+
+export interface SearchRowSlot {
+  number: number;
+  text: string;
+}
+
+export interface SearchGroupSlot {
+  path: string;
+  rows: SearchRowSlot[];
+}
+
+export interface SearchSlots {
+  header: string;
+  groups: SearchGroupSlot[];
+}
+
+const searchGroupSchema = z.object({
+  path: textSlot,
+  rows: z
+    .array(readLineSchema.nullable().catch(null))
+    .default([])
+    .transform((items) => items.filter((item): item is SearchRowSlot => item !== null)),
+});
+
+export const searchSlotsSchema = z.object({
+  header: textSlot,
+  groups: z
+    .array(searchGroupSchema.nullable().catch(null))
+    .default([])
+    .transform((items) => items.filter((item): item is SearchGroupSlot => item !== null)),
+});
+
+const TERMINAL_FALLBACK_SLOTS: TerminalSlots = { command: '', output: EMPTY_BODY, exitCode: null, signal: null };
+const DIFF_FALLBACK_SLOTS: DiffSlots = { files: [] };
+const READ_FALLBACK_SLOTS: ReadSlots = { path: '', lines: [], footer: '' };
+const SEARCH_FALLBACK_SLOTS: SearchSlots = { header: '', groups: [] };
+
+/* 从 tool/* 的事实派生信封 */
+
+export function terminalCardOf(step: ToolStepView): CardEnvelope<TerminalSlots> | null {
+  const card = terminalOf(step);
+  if (!card) return null;
+  return {
+    id: step.id,
+    type: 'terminal',
+    role: 'state',
+    state: toolCardStateOf(step.state),
+    slots: {
+      command: card.command,
+      output: bodyOf(card.output),
+      exitCode: card.exitCode,
+      signal: card.signal ?? null,
+    },
+  };
+}
+
+export function diffCardOf(fact: ToolCardFact): CardEnvelope<DiffSlots> | null {
+  const files = diffOf(fact.step, fact.cwd);
+  if (!files || files.length === 0) return null;
+  return {
+    id: fact.step.id,
+    type: 'diff',
+    role: 'state',
+    state: toolCardStateOf(fact.step.state),
+    slots: { files },
+  };
+}
+
+export function readCardOf(fact: ToolCardFact): CardEnvelope<ReadSlots> | null {
+  const card = readOf(fact.step, fact.cwd);
+  if (!card) return null;
+  return {
+    id: fact.step.id,
+    type: 'read',
+    role: 'state',
+    state: toolCardStateOf(fact.step.state),
+    slots: { path: card.path, lines: card.lines, footer: card.footer },
+  };
+}
+
+export function searchCardOf(step: ToolStepView): CardEnvelope<SearchSlots> | null {
+  const card = searchOf(step);
+  if (!card) return null;
+  return {
+    id: step.id,
+    type: 'search',
+    role: 'state',
+    state: toolCardStateOf(step.state),
+    slots: { header: card.header, groups: card.groups },
+  };
+}
+
+/** 不认识的工具：输入 / 输出两段；输出照旧只取前 200 行。 */
+export function genericToolCardOf(step: ToolStepView): CardEnvelope<GenericSlots> {
+  const input = JSON.stringify(step.args, null, 2);
+  const output = step.output ? step.output.split('\n').slice(0, 200).join('\n') : '';
+  return {
+    id: step.id,
+    type: 'generic',
+    role: 'state',
+    state: toolCardStateOf(step.state),
+    slots: {
+      title: '',
+      body: EMPTY_BODY,
+      input: bodyOf(input),
+      ...(output ? { output: bodyOf(output) } : {}),
+    },
+  };
+}
+
+/** 工作过程里的提问卡：问题从调用参数来，回答从工具结果的 answers JSON 来。 */
+function answersOf(output: string): unknown[] {
+  try {
+    const parsed: unknown = JSON.parse(output);
+    if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { answers?: unknown }).answers)) {
+      return (parsed as { answers: unknown[] }).answers;
+    }
+  } catch {
+    // 不是回答的 JSON：当没答，回执照「没答」写。
+  }
+  return [];
+}
+
+export function askCardOf(step: ToolStepView): CardEnvelope<QuestionSlots> | null {
+  const parsed = questionSlotsSchema.safeParse({
+    questions: step.args.questions,
+    answers: step.state === 'done' ? answersOf(step.output) : [],
+  });
+  if (!parsed.success || parsed.data.questions.length === 0) return null;
+  // 答完了却解不出回答：退回通用卡，不凭空造一份回执。
+  if (step.state === 'done' && parsed.data.answers.length === 0) return null;
+  const state: CardState =
+    step.state === 'running' ? 'pending' : step.state === 'done' ? 'done' : 'stopped';
+  const receipt =
+    state === 'done'
+      ? { outcome: 'success' as const, summary: answeredSummary(parsed.data.questions.length) }
+      : state === 'stopped'
+        ? {
+            outcome: 'cancelled' as const,
+            summary:
+              step.state === 'stopped'
+                ? '这一轮停下了，问题没再等回答'
+                : '你没回答 Kind 的问题；它知道你没答，照常收尾',
+          }
+        : null;
+  return {
+    id: step.id,
+    type: 'question',
+    role: 'decision',
+    state,
+    slots: parsed.data,
+    ...(receipt ? { receipt } : {}),
+  };
+}
+
+export const terminalCard: CardDefinition<ToolCardFact, TerminalSlots> = {
+  schema: terminalSlotsSchema,
+  from: (fact) => terminalCardOf(fact.step),
+  fallback: TERMINAL_FALLBACK_SLOTS,
+};
+
+export const diffCard: CardDefinition<ToolCardFact, DiffSlots> = {
+  schema: diffSlotsSchema,
+  from: diffCardOf,
+  fallback: DIFF_FALLBACK_SLOTS,
+};
+
+export const readCard: CardDefinition<ToolCardFact, ReadSlots> = {
+  schema: readSlotsSchema,
+  from: readCardOf,
+  fallback: READ_FALLBACK_SLOTS,
+};
+
+export const searchCard: CardDefinition<ToolCardFact, SearchSlots> = {
+  schema: searchSlotsSchema,
+  from: (fact) => searchCardOf(fact.step),
+  fallback: SEARCH_FALLBACK_SLOTS,
+};
+
+/**
+ * 一次工具调用 → 卡片信封。类型不认识就是通用卡；类型认识但取不出槽位
+ * （失败、停下、还没跑完）也退回通用卡的输入 / 输出，不整卡报错。
+ */
+export function toolCardOf(step: ToolStepView, cwd: string): CardEnvelope {
+  const fact: ToolCardFact = { step, cwd };
+  switch (toolCardTypeOf(step.name)) {
+    case 'terminal':
+      return terminalCard.from(fact) ?? genericToolCardOf(step);
+    case 'diff':
+      return diffCard.from(fact) ?? genericToolCardOf(step);
+    case 'read':
+      return readCard.from(fact) ?? genericToolCardOf(step);
+    case 'search':
+      return searchCard.from(fact) ?? genericToolCardOf(step);
+    case 'question':
+      return askCardOf(step) ?? genericToolCardOf(step);
+    default:
+      return genericToolCardOf(step);
+  }
+}
+
 /** 登记表：卡片类型 → 一项 { schema, from, fallback }（view 在 cards/Card.tsx 合进来）。 */
 export const cardDefinitions = {
   question: questionCard,
+  terminal: terminalCard,
+  diff: diffCard,
+  read: readCard,
+  search: searchCard,
   generic: genericCard,
 };
 
@@ -359,19 +714,5 @@ export function cardTone(role: CardRole, state: CardState): CardTone {
   if (state === 'running') return RUN_TONE;
   if (state === 'pending' && role === 'decision') return WAIT_TONE;
   return NEUTRAL_TONE;
-}
-
-/* ───────── 工具卡（T017.3 骨架：先红，实现见下一笔） ───────── */
-
-/** 工具名 → 卡片类型（票面 .3）。没登记的工具退回通用卡。 */
-export function toolCardTypeOf(name: string): CardType {
-  void name;
-  return 'generic';
-}
-
-/** 工具调用 → 卡片信封（骨架：还不会派生，统一退回通用卡）。 */
-export function toolCardOf(step: ToolStepView, cwd: string): CardEnvelope {
-  void cwd;
-  return { id: step.id, type: 'generic', role: 'state', state: 'pending', slots: {} };
 }
 

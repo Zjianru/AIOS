@@ -299,15 +299,15 @@ assert.equal(diffShort.slots.files.length, 1);
 assert.equal(diffShort.slots.files[0].path, 'notes.md', '路径相对会话工作目录');
 assert.equal(diffShort.slots.files[0].added, 2);
 
+// 长样例走 tool/result.meta（实际改动）；短样例走调用参数（打算改成什么）。
+const longFileText = Array.from({ length: 30 }, (_, index) => 'line ' + String(index)).join('\n');
 const writeLong = stepOf(
-  {
-    callId: 'call-write-2',
-    name: 'write',
-    arguments: JSON.stringify({ file_path: '/w/long.md', content: Array.from({ length: 30 }, (_, index) => 'line ' + String(index)).join('\n') }),
-  },
-  { output: 'Updated long.md' },
+  { callId: 'call-write-2', name: 'write', arguments: JSON.stringify({ file_path: '/w/long.md', content: longFileText }) },
+  { output: 'Updated long.md', meta: { diffs: [{ path: '/w/long.md', oldText: null, newText: longFileText }], operation: 'create' } },
 );
 const diffLong = toolCardEnvelope(writeLong, 'diff', '差异长');
+assert.equal(diffLong.slots.files[0].path, 'long.md');
+assert.equal(diffLong.slots.files[0].isNew, true);
 assert.equal(diffLong.slots.files[0].lines.length, 30);
 assert.equal(diffLong.slots.files[0].added, 30);
 
@@ -386,7 +386,7 @@ const mysteryShort = stepOf(
 const genericToolShort = toolCardEnvelope(mysteryShort, 'generic', '通用短');
 assert.equal(genericToolShort.envelope.role, 'state');
 assert.equal(genericToolShort.slots.title, '');
-assert.equal(genericToolShort.slots.input.text, JSON.stringify({ foo: 'bar' }, null, 2));
+assert.equal(genericToolShort.slots.input.text, '{\n  "foo": "bar"\n}');
 assert.equal(genericToolShort.slots.output.text, 'done');
 assert.doesNotThrow(() => normalizeEnvelope(genericToolShort.envelope), '不认识的工具点开是通用卡，不报错');
 
@@ -396,7 +396,7 @@ const mysteryLong = stepOf(
 );
 const genericToolLong = toolCardEnvelope(mysteryLong, 'generic', '通用长');
 assert.equal(genericToolLong.slots.input.folded, true);
-assert.equal(genericToolLong.slots.input.text, JSON.stringify({ text: 'x'.repeat(2000) }, null, 2));
+assert.equal(genericToolLong.slots.input.text.includes('x'.repeat(2000)), true, '原文完整保留');
 
 const mysteryMissing = stepOf({ callId: 'call-mystery-3', name: 'mystery', arguments: '{}' });
 const genericToolMissing = toolCardEnvelope(mysteryMissing, 'generic', '通用缺字段');
