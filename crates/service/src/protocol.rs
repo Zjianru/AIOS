@@ -428,8 +428,6 @@ pub struct ConnectionSaveRequest {
     #[serde(default)]
     pub models: Option<Vec<credentials::ModelRow>>,
     #[serde(default)]
-    pub price_rate: Option<f64>,
-    #[serde(default)]
     pub auth_header: Option<String>,
 }
 
@@ -670,8 +668,6 @@ pub struct ConnectionUpdateRequest {
     #[serde(default)]
     pub models: Option<Vec<credentials::ModelRow>>,
     #[serde(default)]
-    pub price_rate: Option<f64>,
-    #[serde(default)]
     pub auth_header: Option<String>,
 }
 
@@ -702,6 +698,9 @@ pub struct ConnectionRevokeResponse {
 ///   `model-settings` 的 disabledModels / disabledUnknown / disabledHits / listed；
 ///   `available-models` 每行的 fresh；`FailureCause` 的 masked；
 ///   新错误码 settings/unreadable（码表 16）。全是只增字段/值，旧页忽略。
+///
+/// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
+/// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
 pub const PROTOCOL_VERSION: u64 = 8;
 
 /// 根会话不可用的种类：服务照常起，ready 报出来，方法一律拒绝。

@@ -231,7 +231,6 @@ mod tests {
             key_saved: true,
             preset: id.to_owned(),
             models: None,
-            price_rate: 1.0,
             auth_header: None,
         }
     }

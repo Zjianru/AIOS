@@ -150,7 +150,6 @@ async fn connection_save_recovers_root_after_recheck() {
         api_key: "test-key".to_owned(),
         preset: Some("minimax-cn".to_owned()),
         models: None,
-        price_rate: None,
         auth_header: None,
     }))
     .await
@@ -191,7 +190,6 @@ async fn connection_save_keeps_existing_selection_after_root_ok() {
         api_key: "test-key".to_owned(),
         preset: Some(preset.to_owned()),
         models: None,
-        price_rate: None,
         auth_header: None,
     };
     // 空库（root unavailable）：存 A → 被设为当前选择。
@@ -235,7 +233,6 @@ fn save_request(id: &str, preset: &str, model: &str, endpoint: &str) -> Connecti
         api_key: "test-key".to_owned(),
         preset: Some(preset.to_owned()),
         models: None,
-        price_rate: None,
         auth_header: None,
     }
 }

@@ -181,7 +181,7 @@ pub struct ModelInfo {
     pub price_input: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price_output: Option<f64>,
-    /// T012 F1：缓存读/写单价（用户价或目录标价×倍率在 stats 里合成）。
+    /// T012 F1：缓存读/写单价（stats 里按用户价或目录标价取）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price_cache_read: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
