@@ -199,7 +199,8 @@ impl CatalogSnapshot {
         self.provider(provider_id)?.models.get(model_id)
     }
 
-    /// 这个 provider 的模型，字段来自目录。顺序就是快照里的顺序（不排序）。
+    /// 这个 provider 的模型，字段来自目录。顺序是 BTreeMap 的键序（按 id），
+    /// 不按版本或发布日期排序。
     pub fn models_for(&self, provider_id: &str) -> Vec<ModelInfo> {
         self.provider(provider_id)
             .map(|provider| {
