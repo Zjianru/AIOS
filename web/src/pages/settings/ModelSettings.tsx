@@ -111,7 +111,7 @@ function PriceEditor({ price, onChange }: { price: ModelRow; onChange: (patch: P
         ))}
       </div>
       <div className="mt-1.5 flex items-start gap-2 text-1 leading-5 text-ink-3">
-        <span>美元 / 百万 token。空着按目录标价算；自己填的价格不乘倍率。以厂商账单为准。</span>
+        <span>美元 / 百万 token。空着按目录标价算。以厂商账单为准。</span>
         {hasAny ? (
           <button
             type="button"

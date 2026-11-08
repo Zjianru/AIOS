@@ -31,7 +31,7 @@ export interface ModelRow {
   maxTokens?: number;
   /** 获取面板里厂商这次新给的模型（只在候选行上有；服务端算）。 */
   fresh?: boolean;
-  /** T012 F1：用户填的四类单价（美元/百万 token；不乘倍率；空=继承目录标价）。 */
+  /** T012 F1：用户填的四类单价（美元/百万 token；空=继承目录标价）。 */
   priceInput?: number;
   priceOutput?: number;
   priceCacheRead?: number;

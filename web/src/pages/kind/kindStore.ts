@@ -133,7 +133,7 @@ interface KindState {
     connectionId: string;
     modelId: string;
     label: string;
-    /** 生效价格（美元/百万 token，已按连接倍率算好）；没有价格就是 undefined。 */
+    /** 生效价格（美元/百万 token，服务端按用户价或目录标价算好）；没有价格就是 undefined。 */
     price?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
     contextWindow?: number;
     thinks?: boolean;

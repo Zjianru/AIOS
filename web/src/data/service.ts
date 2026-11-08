@@ -310,7 +310,7 @@ export interface ServiceModelRow {
   name?: string;
   contextWindow?: number;
   maxTokens?: number;
-  /** T012 F1：用户填的四类单价（美元/百万 token，不乘倍率）。 */
+  /** T012 F1：用户填的四类单价（美元/百万 token；空=用目录标价）。 */
   priceInput?: number;
   priceOutput?: number;
   priceCacheRead?: number;
@@ -328,8 +328,6 @@ export interface ServiceConnectionInfo {
   preset?: string;
   /** 用户在这个连接里存的模型行（价格/窗口/输出上限）。 */
   models?: ServiceModelRow[];
-  /** T012.4：价格倍率（1 = 原价，0 = 免费）。 */
-  price_rate?: number;
   /** T012.6：学到的单头（x-api-key / authorization）。 */
   auth_header?: string | null;
   check: { kind: 'never' } | { kind: 'ok'; at: number } | { kind: 'fail'; at: number; reason: string };
@@ -374,10 +372,9 @@ export interface SaveConnectionInput {
   model: string;
   endpoint: string;
   apiKey: string;
-  /** T012.4：预设来源、模型行、倍率（只增）。 */
+  /** T012.4：预设来源、模型行（只增）。 */
   preset?: string;
   models?: ServiceModelRow[];
-  price_rate?: number;
 }
 
 /** 设置页读取（不含 key 正文）。 */
@@ -493,7 +490,7 @@ export function connectSession(
   return socket;
 }
 
-/** T008.3/T012.4：改连接（endpoint/model 必填；preset/models/price_rate 只增），保留已存 key。 */
+/** T008.3/T012.4：改连接（endpoint/model 必填；preset/models 只增），保留已存 key。 */
 export async function updateConnectionInfo(
   id: string,
   patch: {
@@ -501,7 +498,6 @@ export async function updateConnectionInfo(
     model: string;
     preset?: string;
     models?: ServiceModelRow[];
-    price_rate?: number;
   },
 ): Promise<ServiceConnectionInfo> {
   const response = await post<{ connection: ServiceConnectionInfo }>({
