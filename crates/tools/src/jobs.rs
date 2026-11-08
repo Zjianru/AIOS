@@ -25,6 +25,9 @@ use tokio::sync::Notify;
 pub const MAX_RUNNING_JOBS: usize = 10;
 /// 每个流在内存在保留的尾部字节数（照 DSH jobs-local retainBytes 默认 262,144）。
 pub const RETAIN_BYTES: usize = 262_144;
+/// 结算后每个流保留的尾部字节数（照 DSH jobs-local settledRetainBytes 默认 16,384）；
+/// 模型游标尚未消费的字节优先保留，首次终态读之后才裁到这个上限。
+pub const SETTLED_RETAIN_BYTES: usize = 16 * 1024;
 /// job_output/job_kill 等待结算的上限（毫秒）。
 pub const MAX_WAIT_MS: u64 = 600_000;
 /// 前台流式 spill 的单流上限（照 DSH bash-local maxSpillBytes 64 MiB）。
@@ -539,6 +542,7 @@ impl TaskRegistry {
                     _ => producer_detail,
                 };
                 state.detail = Some(detail.clone());
+                trim_settled_streams(&mut state);
                 let settled = JobSettled {
                     id: monitored.id.clone(),
                     owner: owner.clone(),
@@ -805,6 +809,11 @@ impl TaskRegistry {
         let read = cursor_read(&record, &state);
         state.read_stdout = state.stdout_total;
         state.read_stderr = state.stderr_total;
+        // 照 DSH jobs-local readJob：终态读是结算流裁到 settledRetainBytes 的时点；
+        // 游标已经推到末尾，这之后不再需要为模型保留更多字节。
+        if state.status.is_terminal() {
+            trim_terminal_streams(&mut state);
+        }
         Ok(read)
     }
 
@@ -994,6 +1003,40 @@ fn classify(exit: ExitStatus) -> (JobStatus, Option<i32>, Option<i32>) {
         Some(code) => (JobStatus::Completed, Some(code), None),
         None => (JobStatus::Failed, None, None),
     }
+}
+
+/// 结算裁剪（照 DSH jobs-local settle）：保留 `max(settledRetainBytes, 游标未消费字节)`，
+/// 在模型首次终态读之前不丢它还没读到的内容。
+fn trim_settled_streams(state: &mut JobState) {
+    let stdout_keep =
+        SETTLED_RETAIN_BYTES.max(state.stdout_total.saturating_sub(state.read_stdout));
+    let stderr_keep =
+        SETTLED_RETAIN_BYTES.max(state.stderr_total.saturating_sub(state.read_stderr));
+    trim_stream(&mut state.stdout, stdout_keep, &mut state.stdout_dropped);
+    trim_stream(&mut state.stderr, stderr_keep, &mut state.stderr_dropped);
+}
+
+/// 终态读之后：游标已到末尾，两个流都裁到结算保留量。
+fn trim_terminal_streams(state: &mut JobState) {
+    trim_stream(
+        &mut state.stdout,
+        SETTLED_RETAIN_BYTES,
+        &mut state.stdout_dropped,
+    );
+    trim_stream(
+        &mut state.stderr,
+        SETTLED_RETAIN_BYTES,
+        &mut state.stderr_dropped,
+    );
+}
+
+fn trim_stream(stream: &mut Vec<u8>, keep: usize, dropped: &mut bool) {
+    if stream.len() <= keep {
+        return;
+    }
+    let overflow = stream.len() - keep;
+    stream.drain(..overflow);
+    *dropped = true;
 }
 
 fn view_of(record: &JobRecord) -> JobView {
