@@ -15,7 +15,7 @@ mod write;
 
 pub use apply_patch::ApplyPatchTool;
 pub use ask_user::AskUserQuestionTool;
-pub use bash::{BashTool, foreground_bytes_read};
+pub use bash::BashTool;
 pub use canvas::CanvasTool;
 pub use edit::EditTool;
 pub use glob::GlobTool;

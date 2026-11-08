@@ -26,7 +26,6 @@ pub use batch::{BatchOutcome, execute_batch};
 pub use builtin::{
     ApplyPatchTool, AskUserQuestionTool, BashTool, CanvasTool, EditTool, GlobTool, GrepTool,
     JobKillTool, JobListTool, JobOutputTool, ReadTool, SkillTool, TodoWriteTool, WriteTool,
-    foreground_bytes_read,
 };
 pub use diff::{DIFF_CONTEXT, FileDiff, compute_hunk_diffs};
 pub use jobs::{

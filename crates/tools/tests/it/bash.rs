@@ -160,8 +160,15 @@ async fn bash_does_not_leak_credential_env() {
             .arg("--nocapture")
             .env(SCRUB_CHILD_ENV, "1")
             .env(SCRUB_CHILD_HOME, home.path())
+            .env("HOME", home.path())
             .env("DEEPSEEK_API_KEY", "fake-key-not-real")
             .env("AIOS_LEAK_VALUE", "leak-not-allowed")
+            .env_remove("http_proxy")
+            .env_remove("https_proxy")
+            .env_remove("all_proxy")
+            .env_remove("HTTP_PROXY")
+            .env_remove("HTTPS_PROXY")
+            .env_remove("ALL_PROXY")
             .output()
             .unwrap();
         assert!(

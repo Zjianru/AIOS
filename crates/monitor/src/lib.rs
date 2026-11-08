@@ -148,47 +148,36 @@ fn run_writer(
     dropped: Arc<AtomicU64>,
     redactor: Redactor,
 ) {
-    // 仅测试注入用：AIOS_MONITOR_FAIL_AFTER=N 时第 N 条写入之后模拟写失败（DoD4 不可写场景）。
-    let fail_after = std::env::var("AIOS_MONITOR_FAIL_AFTER")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok());
-    let mut written = 0_u64;
     loop {
         match rx.recv() {
             Ok(Message::Record(record)) => {
                 if let Some(gap) = pending_gap(&dropped)
-                    && let Err(error) =
-                        write_emitted(&mut *sink, gap, &redactor, fail_after, &mut written)
+                    && let Err(error) = write_emitted(&mut *sink, gap, &redactor)
                 {
                     eprintln!("monitor: 写监控失败，停止记录：{error}");
                     break;
                 }
-                if let Err(error) =
-                    write_emitted(&mut *sink, record, &redactor, fail_after, &mut written)
-                {
+                if let Err(error) = write_emitted(&mut *sink, record, &redactor) {
                     eprintln!("monitor: 写监控失败，停止记录：{error}");
                     break;
                 }
             }
             Ok(Message::Shutdown) => {
                 if let Some(gap) = pending_gap(&dropped)
-                    && let Err(error) =
-                        write_emitted(&mut *sink, gap, &redactor, fail_after, &mut written)
+                    && let Err(error) = write_emitted(&mut *sink, gap, &redactor)
                 {
                     eprintln!("monitor: 写监控失败，停止记录：{error}");
                     break;
                 }
                 let shutdown = Record::ops("shutdown", Severity::Info, json!({}));
-                if let Err(error) =
-                    write_emitted(&mut *sink, shutdown, &redactor, fail_after, &mut written)
-                {
+                if let Err(error) = write_emitted(&mut *sink, shutdown, &redactor) {
                     eprintln!("monitor: 写监控失败，停止记录：{error}");
                 }
                 break;
             }
             Err(_) => {
                 if let Some(gap) = pending_gap(&dropped) {
-                    let _ = write_emitted(&mut *sink, gap, &redactor, fail_after, &mut written);
+                    let _ = write_emitted(&mut *sink, gap, &redactor);
                 }
                 break;
             }
@@ -202,12 +191,10 @@ fn write_emitted(
     sink: &mut dyn LineSink,
     record: Record,
     redactor: &Redactor,
-    fail_after: Option<u64>,
-    written: &mut u64,
 ) -> Result<(), MonitorError> {
     let mut record = record;
     match redactor.redact(&mut record) {
-        Ok(()) => write_with_injection(sink, &record, fail_after, written),
+        Ok(()) => write_record(sink, &record),
         Err(_) => {
             // T012.8 K5（票面）：只记 event.type/event.seq（不记 channel/time，也不记正文）。
             let mut body = json!({});
@@ -224,29 +211,11 @@ fn write_emitted(
             }
             let failed = Record::ops("redact-failed", Severity::Warn, body);
             match redactor.redact(&mut failed.clone()) {
-                Ok(()) => write_with_injection(sink, &failed, fail_after, written),
+                Ok(()) => write_record(sink, &failed),
                 Err(_) => Ok(()),
             }
         }
     }
-}
-
-/// 测试注入：到了注入阈值之后返回写失败；未设置时永远写。
-fn write_with_injection(
-    sink: &mut dyn LineSink,
-    record: &Record,
-    fail_after: Option<u64>,
-    written: &mut u64,
-) -> Result<(), MonitorError> {
-    if let Some(limit) = fail_after
-        && *written >= limit
-    {
-        return Err(MonitorError::Io(std::io::Error::other(
-            "测试注入：监控写失败",
-        )));
-    }
-    *written += 1;
-    write_record(sink, record)
 }
 
 /// 一个进程的监控记录器（Clone 共享同一个队列；只有持 join 的那一份负责退出排空）。

@@ -425,6 +425,7 @@ async fn compaction_ids_differ_across_processes() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
     let file = dir.path().join("child-id.txt");
     let exe = std::env::current_exe().unwrap();
     let output = std::process::Command::new(&exe)
@@ -433,12 +434,24 @@ async fn compaction_ids_differ_across_processes() {
         .arg("--nocapture")
         .env(ID_CHILD_ENV, "1")
         .env(ID_FILE_ENV, &file)
+        .env("HOME", home.path())
+        .env_remove("http_proxy")
+        .env_remove("https_proxy")
+        .env_remove("all_proxy")
+        .env_remove("HTTP_PROXY")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("ALL_PROXY")
         .output()
         .unwrap();
     assert!(
         output.status.success(),
         "子进程失败：{}",
         String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "子进程必须真的跑到这条测试：{}",
+        String::from_utf8_lossy(&output.stdout)
     );
     let child_id = std::fs::read_to_string(&file).unwrap();
     assert_ne!(

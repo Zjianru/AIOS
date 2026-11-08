@@ -343,12 +343,21 @@ fn spawn_lock_child(
     marker: &std::path::Path,
     mode: &str,
 ) -> std::process::Child {
+    let home = data.join("test-home");
+    std::fs::create_dir_all(&home).expect("隔离 HOME");
     std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", LOCK_CHILD_TEST, "--nocapture"])
+        .env("HOME", &home)
         .env(LOCK_CHILD_DATA, data)
         .env(LOCK_CHILD_ID, id.as_str())
         .env(LOCK_CHILD_MARKER, marker)
         .env(LOCK_CHILD_MODE, mode)
+        .env_remove("http_proxy")
+        .env_remove("https_proxy")
+        .env_remove("all_proxy")
+        .env_remove("HTTP_PROXY")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("ALL_PROXY")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
