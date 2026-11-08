@@ -177,7 +177,7 @@ fn grep(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
     })?;
 
     let mut searcher = SearcherBuilder::new().build();
-    let mut matches: Vec<Match> = Vec::new();
+    let mut matches = MatchCollector::new(GREP_MAX_MATCHES);
     if metadata.is_file() {
         search_file(&mut searcher, &matcher, &root, &cwd, &mut matches)?;
     } else if metadata.is_dir() {
@@ -207,6 +207,9 @@ fn grep(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
         files.sort();
         for file in files {
             search_file(&mut searcher, &matcher, &file, &cwd, &mut matches)?;
+            if matches.truncated {
+                break;
+            }
         }
     } else {
         return Err(ToolFailure::coded(
@@ -278,31 +281,52 @@ fn search_file(
     matcher: &RegexMatcher,
     path: &Path,
     cwd: &Path,
-    matches: &mut Vec<Match>,
+    matches: &mut MatchCollector,
 ) -> Result<(), ToolFailure> {
-    let display = display_path(cwd, path);
-    let mut sink = CollectSink::default();
+    let mut sink = CollectSink {
+        path: display_path(cwd, path),
+        matches,
+    };
     searcher
         .search_path(matcher, path, &mut sink)
         .map_err(|error| {
             ToolFailure::coded("SEARCH_FAILED", format!("grep search failed: {error}"))
-        })?;
-    for (line_number, line) in sink.matches {
-        matches.push(Match {
-            path: display.clone(),
-            line_number,
-            line,
-        });
+        })
+}
+
+/// 收集层的上限：收满 limit 条后，下一条匹配只用来判定「还有更多」，然后让
+/// grep-searcher 停在该文件（sink 返回 false），不再把整棵树读一遍。
+struct MatchCollector {
+    matches: Vec<Match>,
+    limit: usize,
+    truncated: bool,
+}
+
+impl MatchCollector {
+    fn new(limit: usize) -> Self {
+        Self {
+            matches: Vec::new(),
+            limit,
+            truncated: false,
+        }
     }
-    Ok(())
+
+    fn offer(&mut self, matched: Match) -> bool {
+        if self.matches.len() == self.limit {
+            self.truncated = true;
+            return false;
+        }
+        self.matches.push(matched);
+        true
+    }
 }
 
-#[derive(Default)]
-struct CollectSink {
-    matches: Vec<(u64, String)>,
+struct CollectSink<'a> {
+    path: String,
+    matches: &'a mut MatchCollector,
 }
 
-impl Sink for CollectSink {
+impl Sink for CollectSink<'_> {
     type Error = std::io::Error;
 
     fn matched(&mut self, _searcher: &Searcher, mat: &SinkMatch<'_>) -> Result<bool, Self::Error> {
@@ -311,8 +335,12 @@ impl Sink for CollectSink {
             Ok(text) => text.trim_end_matches(['\n', '\r']).to_owned(),
             Err(_) => "(line is not valid UTF-8)".to_owned(),
         };
-        self.matches.push((line_number, line));
-        Ok(true)
+        let matched = Match {
+            path: self.path.clone(),
+            line_number,
+            line,
+        };
+        Ok(self.matches.offer(matched))
     }
 }
 
@@ -327,21 +355,22 @@ fn preview_line(line: &str, max_bytes: usize) -> String {
     format!("{} (line truncated)", &line[..end])
 }
 
-fn format_output(matches: Vec<Match>) -> String {
-    let seen = matches.len();
-    if seen == 0 {
+fn format_output(collector: MatchCollector) -> String {
+    let MatchCollector {
+        matches, truncated, ..
+    } = collector;
+    if matches.is_empty() {
         return "No matches found".to_owned();
     }
-    let truncated = seen > GREP_MAX_MATCHES;
     let kept: Vec<Match> = matches
         .into_iter()
-        .take(GREP_MAX_MATCHES)
         .map(|matched| Match {
             path: matched.path,
             line_number: matched.line_number,
             line: preview_line(&matched.line, GREP_MAX_LINE_BYTES),
         })
         .collect();
+    let match_count = kept.len();
     let mut groups: Vec<(String, Vec<(u64, String)>)> = Vec::new();
     for matched in kept {
         match groups.iter_mut().find(|(path, _)| path == &matched.path) {
@@ -361,12 +390,10 @@ fn format_output(matches: Vec<Match>) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n\n");
-    let header = if truncated {
-        format!("Found {GREP_MAX_MATCHES} of {seen} matches")
-    } else if seen == 1 {
+    let header = if match_count == 1 && !truncated {
         "Found 1 match".to_owned()
     } else {
-        format!("Found {seen} matches")
+        format!("Found {match_count} matches")
     };
     if truncated {
         format!(
@@ -374,5 +401,41 @@ fn format_output(matches: Vec<Match>) -> String {
         )
     } else {
         format!("{header}\n\n{body}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Match, MatchCollector};
+
+    fn matched(path: &str) -> Match {
+        Match {
+            path: path.to_owned(),
+            line_number: 1,
+            line: "hit".to_owned(),
+        }
+    }
+
+    #[test]
+    fn collector_stops_after_limit_and_keeps_limit_matches() {
+        let mut collector = MatchCollector::new(2);
+        assert!(collector.offer(matched("a")));
+        assert!(collector.offer(matched("b")));
+        assert!(
+            !collector.offer(matched("c")),
+            "第 limit+1 条匹配要返回 false，让 grep-searcher 停下"
+        );
+        assert!(!collector.offer(matched("d")));
+        assert_eq!(collector.matches.len(), 2, "只保留前 limit 条");
+        assert!(collector.truncated);
+    }
+
+    #[test]
+    fn collector_is_not_truncated_when_matches_end_at_limit() {
+        let mut collector = MatchCollector::new(2);
+        assert!(collector.offer(matched("a")));
+        assert!(collector.offer(matched("b")));
+        assert_eq!(collector.matches.len(), 2);
+        assert!(!collector.truncated, "正好 limit 条不算截断");
     }
 }

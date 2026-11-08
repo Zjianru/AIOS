@@ -4,6 +4,7 @@
 //! 描述和记录里没有 key 正文。存储是 age 密文，钥匙文件是 age 身份文件；
 //! 每次操作重新从文件读取，不缓存。
 
+pub mod atomic;
 mod keyring;
 pub mod presets;
 

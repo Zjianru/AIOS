@@ -3,9 +3,10 @@
 //! 参数、上限、输出格式和错误文字照 DSH 的 packages/fs/tool-fs-search/src/glob.ts。
 
 use std::fs;
+use std::path::Path;
 use std::time::SystemTime;
 
-use globset::Glob;
+use globset::{Glob, GlobMatcher};
 use ignore::WalkBuilder;
 use serde_json::{Value, json};
 
@@ -141,33 +142,47 @@ fn glob(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
         )
     })?;
 
-    let mut files: Vec<(String, SystemTime)> = Vec::new();
-    for entry in build_walker(&root).build() {
-        let Ok(entry) = entry else {
-            continue;
-        };
+    let matches = matching_files(&root, &cwd, &matcher, &pattern, requested_path.as_deref());
+    let (mut files, truncated) = collect_bounded(matches, GLOB_MAX_RESULTS);
+    // 修改时间升序（ripgrep --sort=modified 是升序，最旧在前）；同一时间按路径排序，保证可复现。
+    files.sort_by(|(left_path, left_time), (right_path, right_time)| {
+        left_time
+            .cmp(right_time)
+            .then_with(|| left_path.cmp(right_path))
+    });
+    Ok(format_paths(files, truncated))
+}
+
+/// 走搜索根，产出匹配的文件（路径、修改时间），不收集。
+fn matching_files<'a>(
+    root: &'a Path,
+    cwd: &'a Path,
+    matcher: &'a GlobMatcher,
+    pattern: &'a str,
+    requested_path: Option<&'a str>,
+) -> impl Iterator<Item = (String, SystemTime)> + 'a {
+    build_walker(root).build().filter_map(move |entry| {
+        let entry = entry.ok()?;
         if entry.depth() == 0 {
-            continue;
+            return None;
         }
-        let Some(file_type) = entry.file_type() else {
-            continue;
-        };
+        let file_type = entry.file_type()?;
         if !file_type.is_file() {
-            continue;
+            return None;
         }
         let path = entry.path();
         // 匹配用未加 ./ 前缀的 cwd 相对路径（照 DSH：rg 的 --glob 匹配搜索根相对路径）。
-        let plain = display_path(&cwd, path);
+        let plain = display_path(cwd, path);
         let matched = if pattern.contains('/') {
             matcher.is_match(plain.as_str())
         } else {
             matcher.is_match(entry.file_name())
         };
         if !matched {
-            continue;
+            return None;
         }
         // 输出照 rg：显式 path="." 时路径带 ./ 前缀。
-        let display = if requested_path.as_deref() == Some(".") && plain != "." {
+        let display = if requested_path == Some(".") && plain != "." {
             format!("./{plain}")
         } else {
             plain
@@ -177,15 +192,23 @@ fn glob(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
             .ok()
             .and_then(|metadata| metadata.modified().ok())
             .unwrap_or(SystemTime::UNIX_EPOCH);
-        files.push((display, modified));
+        Some((display, modified))
+    })
+}
+
+/// 有界收集：收满 limit 条后再取一条只用于判断「还有更多」，然后立刻停；不先收全再截。
+fn collect_bounded<I>(entries: I, limit: usize) -> (Vec<(String, SystemTime)>, bool)
+where
+    I: Iterator<Item = (String, SystemTime)>,
+{
+    let mut files = Vec::with_capacity(limit);
+    for entry in entries {
+        if files.len() == limit {
+            return (files, true);
+        }
+        files.push(entry);
     }
-    // 修改时间升序（ripgrep --sort=modified 是升序，最旧在前）；同一时间按路径排序，保证可复现。
-    files.sort_by(|(left_path, left_time), (right_path, right_time)| {
-        left_time
-            .cmp(right_time)
-            .then_with(|| left_path.cmp(right_path))
-    });
-    Ok(format_paths(files))
+    (files, false)
 }
 
 fn build_walker(root: &std::path::Path) -> WalkBuilder {
@@ -208,17 +231,48 @@ fn build_walker(root: &std::path::Path) -> WalkBuilder {
     builder
 }
 
-fn format_paths(files: Vec<(String, SystemTime)>) -> String {
+fn format_paths(files: Vec<(String, SystemTime)>, truncated: bool) -> String {
     if files.is_empty() {
         return "No files found".to_owned();
     }
     let paths: Vec<String> = files.into_iter().map(|(path, _)| path).collect();
-    if paths.len() <= GLOB_MAX_RESULTS {
-        return paths.join("\n");
+    let shown = paths.join("\n");
+    if !truncated {
+        return shown;
     }
-    let shown = paths[..GLOB_MAX_RESULTS].join("\n");
     format!(
-        "{shown}\n\n(Showing {GLOB_MAX_RESULTS} of {} paths. The complete result could not be saved; narrow pattern or path to see more.)",
-        paths.len()
+        "{shown}\n\n(Showing {GLOB_MAX_RESULTS} paths; more matches were not read. Narrow pattern or path to see more.)"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_bounded;
+    use std::cell::Cell;
+    use std::time::SystemTime;
+
+    #[test]
+    fn bounded_collection_stops_after_limit_and_reads_one_extra() {
+        let consumed = Cell::new(0);
+        let entries = (0..10).map(|index| {
+            consumed.set(consumed.get() + 1);
+            (format!("f{index}.txt"), SystemTime::UNIX_EPOCH)
+        });
+        let (files, truncated) = collect_bounded(entries, 3);
+        assert_eq!(files.len(), 3, "只保留前 limit 条");
+        assert!(truncated, "多出第 limit+1 条就是截断");
+        assert_eq!(
+            consumed.get(),
+            4,
+            "收满后再取一条判断有更多，然后立刻停，不读剩下的 6 条"
+        );
+    }
+
+    #[test]
+    fn bounded_collection_is_not_truncated_at_exact_limit() {
+        let entries = (0..3).map(|index| (format!("f{index}.txt"), SystemTime::UNIX_EPOCH));
+        let (files, truncated) = collect_bounded(entries, 3);
+        assert_eq!(files.len(), 3);
+        assert!(!truncated, "正好 limit 条不算截断");
+    }
 }

@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use agent::AgentConfig;
 use model::{DEFAULT_CONTEXT_WINDOW, DeepSeekConfig, ModelError};
 use service::{
     Call, ConnectionSaveRequest, DeliveryMode, FirstUseRequest, ModelFactory, ModelSettingsRequest,
@@ -70,22 +69,19 @@ fn factory(
     })
 }
 
-fn options(dir: &std::path::Path, seen_model: Arc<Mutex<Option<String>>>) -> RootSessionOptions {
-    RootSessionOptions {
-        data_dir: dir.to_path_buf(),
-        cwd: dir.to_path_buf(),
-        model: DeepSeekConfig::default(),
-        config: AgentConfig::default(),
-        credentials: None,
-        identity: Some(dir.join("identity.txt")),
-        model_factory: Some(factory(
-            dir.to_path_buf(),
-            dir.join("identity.txt"),
-            seen_model,
-        )),
-        append_hook_factory: None,
-        keyring_changed: None,
-    }
+fn first_use_options(
+    dir: &std::path::Path,
+    seen_model: Arc<Mutex<Option<String>>>,
+) -> RootSessionOptions {
+    let mut options = crate::common::options(dir);
+    options.model = DeepSeekConfig::default();
+    options.credentials = None;
+    options.model_factory = Some(factory(
+        dir.to_path_buf(),
+        dir.join("identity.txt"),
+        seen_model,
+    ));
+    options
 }
 
 #[tokio::test]
@@ -93,7 +89,7 @@ async fn 空库起服务存连接后recheck用新模型() {
     let dir = tempfile::tempdir().unwrap();
     let seen = Arc::new(Mutex::new(None));
     let host = RootHost::open(
-        options(dir.path(), Arc::clone(&seen)),
+        first_use_options(dir.path(), Arc::clone(&seen)),
         DEFAULT_CONTEXT_WINDOW,
     )
     .await;

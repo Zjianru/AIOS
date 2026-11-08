@@ -76,6 +76,10 @@ async fn ipv6_and_named_loopback_addresses_bypass_proxy() {
         "http://[::ffff:127.0.0.1]:9/",
     ] {
         let before = proxy.received_requests().await.expect("代理记录").len();
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "坏代理请求预期失败，只核代理是否收到请求"
+        )]
         let _ = client
             .get(url)
             .timeout(std::time::Duration::from_millis(500))
@@ -84,4 +88,19 @@ async fn ipv6_and_named_loopback_addresses_bypass_proxy() {
         let after = proxy.received_requests().await.expect("代理记录").len();
         assert_eq!(after, before, "本机地址不能走代理：{url}");
     }
+}
+/// 代理地址解析失败不能再静默直连：造 client 时就把坏地址报出来，并指名是哪个变量。
+#[test]
+fn proxy_resolve_fail() {
+    let env = HttpEnv::from_source(|key| match key {
+        "https_proxy" | "HTTPS_PROXY" => Some("http://[::1".to_owned()),
+        _ => None,
+    });
+    let error = client_with_env(env).expect_err("坏代理地址必须报错，不能静默直连");
+    assert_eq!(error.code, model::ErrorCode::Transport);
+    assert!(
+        error.message.contains("https_proxy"),
+        "报错要指名是哪个代理变量：{}",
+        error.message
+    );
 }

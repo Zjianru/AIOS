@@ -1,13 +1,12 @@
 /**
- * 工具卡的视图（T017.3）：终端、差异、读文件、搜索。
+ * 工具卡的视图：终端、差异、读文件、搜索。
  *
  * - 槽位已经由卡片入口（<Card>）按每类卡的 schema 校验过，这里不再回头去看工具调用的原始形状；
- * - 样子照 T013.5 的 process/ToolCards.tsx（D61：外观、行为不变；正文槽超长时多一个「展开全文」）；
+ * - 样子照既有工具卡（D61：外观、行为不变；正文槽超长时多一个「展开全文」）；
  * - 终端的「退出码 N / 完成」仍按实际退出码算，信封的 state 只用来区分运行中 / 已停止。
  */
 
 import { useState } from 'react';
-import type { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import type {
   CardViewProps,
@@ -18,11 +17,7 @@ import type {
   TerminalSlots,
 } from './model';
 import { BodyPre } from './BodyText';
-
-/** 卡片外壳：代码块的底色、0.5px 边（同 T013.5）。 */
-export function Shell({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cn('overflow-hidden rounded-info border-[0.5px] border-line-2 bg-pane', className)}>{children}</div>;
-}
+import { Shell } from './Shell';
 
 /* ───────── 终端 ───────── */
 

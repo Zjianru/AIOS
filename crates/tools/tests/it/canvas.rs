@@ -13,7 +13,7 @@ struct Conversation {
 impl Conversation {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let context = ToolContext::new(dir.path());
+        let context = crate::common::context(dir.path());
         Self {
             _dir: dir,
             context,

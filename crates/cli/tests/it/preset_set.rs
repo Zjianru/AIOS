@@ -1,12 +1,20 @@
 //! T012.4：CLI keyring set --preset 用预设地址，连接写成新形状。
 
+use crate::common::aios_dev;
+
 #[test]
 fn preset_set_writes_new_shape() {
     let data_dir = tempfile::tempdir().expect("tempdir");
     let identity = data_dir.path().join("identity.txt");
     let home = tempfile::tempdir().expect("隔离 HOME");
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_aios-dev"))
+    let output = std::process::Command::new(aios_dev())
         .env("HOME", home.path())
+        .env_remove("http_proxy")
+        .env_remove("https_proxy")
+        .env_remove("all_proxy")
+        .env_remove("HTTP_PROXY")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("ALL_PROXY")
         .args([
             "keyring",
             "--data-dir",

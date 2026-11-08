@@ -19,6 +19,10 @@ pub(super) fn assistant_message(inner: &Arc<Inner>, content: Vec<ContentBlock>) 
 
 pub(super) fn emit_usage(inner: &Arc<Inner>, usage: &Option<Usage>) {
     if let Some(usage) = usage {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "用量事件只作展示；订阅端未连接时丢弃"
+        )]
         let _ = inner.events.send(AgentEvent::UsageReported {
             usage: usage.clone(),
         });

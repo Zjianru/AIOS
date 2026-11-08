@@ -46,6 +46,8 @@ pub enum Call {
     Status(StatusRequest),
     Follow(FollowRequest),
     Events(EventsRequest),
+    /// 页面没接住的异常 / 事件流重连（只记 web 监控 ops，不进会话日志）。
+    MonitorReport(MonitorReportRequest),
     /// 再检查一次根会话（修好 missing/corrupt/busy 之后回到对话）。
     Recheck(RecheckRequest),
     ModelSettings(ModelSettingsRequest),
@@ -94,6 +96,7 @@ pub enum Response {
     Status(StatusResponse),
     Follow(FollowResponse),
     Events(EventsResponse),
+    MonitorReport(MonitorReportResponse),
     Recheck(RecheckResponse),
     ModelSettings(ModelSettingsResponse),
     DisabledModelsSet(DisabledModelsSetResponse),
@@ -572,6 +575,22 @@ pub struct SettingsUpdateRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SettingsUpdateResponse {
     pub currency: String,
+}
+
+/// 页面异常 / 事件流重连上报：只记 web 的 ops，不进会话日志；正文限长由载体截。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MonitorReportRequest {
+    /// 上报种类；未知值按 page-error 记。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+/// 上报结果（页面不读内容；ok = 已记下）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MonitorReportResponse {
+    pub ok: bool,
 }
 
 /// 选模型（连接、模型、想要的档）；只影响下一轮（D26）。

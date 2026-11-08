@@ -8,9 +8,7 @@ use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn aios_dev() -> &'static str {
-    env!("CARGO_BIN_EXE_aios-dev")
-}
+use crate::common::aios_dev;
 
 fn run_with_env(
     data_dir: &std::path::Path,

@@ -25,7 +25,7 @@ pub use projection::{
     canvases, todos_projection,
 };
 pub use repair::{TurnClosers, interrupted_turn_closers};
-pub use store::{AppendHook, AppendHookFactory, SessionSnapshot, SessionStore};
+pub use store::{AppendHook, AppendHookFactory, SessionSnapshot, SessionStore, WarningSink};
 
 #[cfg(test)]
 #[path = "format_tests.rs"]

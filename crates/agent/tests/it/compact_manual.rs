@@ -257,6 +257,10 @@ async fn resume_after_compaction_derives_same_messages() {
         .await
         .unwrap();
     wait_idle(&harness.agent, 20).await;
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "用例只观察压缩后的状态，压缩自身错误不参与断言"
+    )]
     let _ = harness.agent.compact(None).await;
     let store = SessionStore::open_read_only(harness.data_dir.path(), &harness.id).unwrap();
     let before = store.derive_messages();
@@ -335,6 +339,10 @@ async fn compaction_ids_are_unique_across_resume() {
         .await
         .unwrap();
     wait_idle(&harness.agent, 20).await;
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "用例只观察压缩后的状态，压缩自身错误不参与断言"
+    )]
     let _ = harness.agent.compact(None).await;
     drop(harness.agent);
 
@@ -362,7 +370,16 @@ async fn compaction_ids_are_unique_across_resume() {
     )
     .await
     .expect("续接应成功");
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "用例只观察压缩后的状态，压缩自身错误不参与断言"
+    )]
     let _ = resumed.compact(None).await;
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        3,
+        "发送、首次压缩、续接后压缩各一次请求"
+    );
 
     let store = SessionStore::open_read_only(harness.data_dir.path(), &harness.id).unwrap();
     let ids: Vec<String> = store
@@ -400,7 +417,16 @@ async fn compact_and_get_id() -> String {
         .await
         .unwrap();
     wait_idle(&harness.agent, 20).await;
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "用例只观察压缩后的状态，压缩自身错误不参与断言"
+    )]
     let _ = harness.agent.compact(None).await;
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        2,
+        "发送与压缩各一次请求"
+    );
     let store = SessionStore::open_read_only(harness.data_dir.path(), &harness.id).unwrap();
     store
         .events()
@@ -425,6 +451,7 @@ async fn compaction_ids_differ_across_processes() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
     let file = dir.path().join("child-id.txt");
     let exe = std::env::current_exe().unwrap();
     let output = std::process::Command::new(&exe)
@@ -433,12 +460,24 @@ async fn compaction_ids_differ_across_processes() {
         .arg("--nocapture")
         .env(ID_CHILD_ENV, "1")
         .env(ID_FILE_ENV, &file)
+        .env("HOME", home.path())
+        .env_remove("http_proxy")
+        .env_remove("https_proxy")
+        .env_remove("all_proxy")
+        .env_remove("HTTP_PROXY")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("ALL_PROXY")
         .output()
         .unwrap();
     assert!(
         output.status.success(),
         "子进程失败：{}",
         String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "子进程必须真的跑到这条测试：{}",
+        String::from_utf8_lossy(&output.stdout)
     );
     let child_id = std::fs::read_to_string(&file).unwrap();
     assert_ne!(
@@ -485,6 +524,11 @@ async fn idle_compact_does_not_create_empty_turn() {
     assert!(done, "空闲 compact 不能丢等待者");
     let after = turn_starts(harness.data_dir.path());
     assert_eq!(after, before, "空闲 compact 不应为空 turn 写 turn/start");
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        2,
+        "发送与空闲压缩各一次请求"
+    );
 }
 
 #[tokio::test]
@@ -600,6 +644,11 @@ async fn second_compact_while_compacting_is_busy() {
         1,
         "第二个请求 busy，不能再压一次"
     );
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        2,
+        "发送与第一次压缩各一次请求"
+    );
 }
 #[tokio::test]
 async fn manual_compact_summary_failure_is_classified() {
@@ -627,4 +676,9 @@ async fn manual_compact_summary_failure_is_classified() {
         }
         other => panic!("期望 ManualCompaction(Summary)，实际：{other:?}"),
     }
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        2,
+        "发送与摘要请求各一次"
+    );
 }

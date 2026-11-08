@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::common::{
-    FINAL_TEXT_SSE, SequenceResponder, model_config, sse, tool_calls_with_inputs_sse,
+    FINAL_TEXT_SSE, SequenceResponder, model_config, sse, tool_calls_with_inputs_sse, tool_context,
 };
 use agent::{Agent, AgentConfig, Delivery, Deps};
 use model::UserMessage;
@@ -104,7 +104,7 @@ fn tool_result_text(store: &session::SessionSnapshot, call_id: &str) -> String {
 
 /// 用 read 工具按 locator 把全文读回来（分两页，read 有 2000 行/50KB 上限）。
 async fn read_all(cwd: &std::path::Path, locator: &str, total_lines: usize) -> String {
-    let context = ToolContext::new(cwd);
+    let context = tool_context(cwd);
     let read = tools::ReadTool::new();
     let mut lines: Vec<String> = Vec::new();
     let mut offset = 1;
@@ -246,6 +246,11 @@ async fn zero_spill_threshold_disables_spill() {
         .await
         .unwrap();
     agent.idle().await;
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        2,
+        "工具调用与下一步各一次请求"
+    );
 
     let stored = tool_result_text(
         &session::SessionStore::open_read_only(data_dir.path(), agent.id()).unwrap(),

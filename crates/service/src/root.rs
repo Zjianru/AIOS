@@ -4,9 +4,9 @@
 //! 以后启动只找回它。**记过 id 但会话日志缺失、或状态文件损坏，就报错，不静默新建**
 //! （06 篇恢复链：缺失、损坏、身份冲突都明确报告）。
 //!
-//! 状态文件原子写：先写同目录临时文件、fsync、rename 覆盖；半写不会破坏已提交的状态。
+//! 状态文件原子写走 credentials::atomic（临时文件 + fsync + rename + 目录 fsync）；
+//! 半写不会破坏已提交的状态。
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use agent::{Agent, AgentConfig, AgentError, AgentOpenOptions};
@@ -155,7 +155,7 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
                 version: ROOT_STATE_VERSION,
                 session_id: agent.id().as_str().to_owned(),
             };
-            write_root_state_atomic(&options.data_dir, &state_path, &record)?;
+            write_root_state_atomic(&state_path, &record)?;
             Ok(RootSession {
                 session_id: agent.id().clone(),
                 agent,
@@ -242,25 +242,11 @@ pub fn session_model_selection(data_dir: &Path) -> Option<session::ModelSelectio
     session::last_model_selection(snapshot.events())
 }
 
-/// 原子写状态文件：同目录临时文件 → fsync → rename 覆盖 → 目录 fsync（best effort）。
-fn write_root_state_atomic(
-    data_dir: &Path,
-    path: &Path,
-    record: &RootRecord,
-) -> Result<(), RootError> {
-    let json = serde_json::to_vec(record)
+/// 原子写状态文件：临时文件 + fsync + rename + 目录 fsync，失败向上返回（credentials::atomic）。
+fn write_root_state_atomic(path: &Path, record: &RootRecord) -> Result<(), RootError> {
+    let mut json = serde_json::to_vec(record)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let tmp = path.with_extension("json.tmp");
-    {
-        let mut file = std::fs::File::create(&tmp)?;
-        file.write_all(&json)?;
-        file.write_all(b"\n")?;
-        file.sync_all()?;
-    }
-    std::fs::rename(&tmp, path)?;
-    // rename 的持久性要靠目录 fsync；失败只影响掉电场景，不破坏当前进程。
-    if let Ok(dir) = std::fs::File::open(data_dir) {
-        let _ = dir.sync_all();
-    }
+    json.push(b'\n');
+    credentials::atomic::write(path, &json, credentials::atomic::TargetKind::Shared)?;
     Ok(())
 }

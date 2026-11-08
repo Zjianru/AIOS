@@ -101,16 +101,30 @@ fn edit(arguments: &str, context: &ToolContext) -> Result<(String, Value), ToolF
         .ok()
         .map(|text| text.content);
     crate::fs::edit_file(context, &target, old_string, new_string, replace_all)?;
+    // 编辑已经成功。重读失败时画不出差量：旧实现拿空串去算，差量就成了「整文件被删」。
     let after = crate::fs::read_text_for_verb(&target, "edit")
-        .map(|text| text.content)
-        .unwrap_or_default();
-    let diffs =
-        crate::diff::compute_hunk_diffs(&display, before.as_deref().unwrap_or_default(), &after);
+        .ok()
+        .map(|text| text.content);
+    let (diffs, note) = match (&before, &after) {
+        (Some(before), Some(after)) => {
+            (crate::diff::compute_hunk_diffs(&display, before, after), "")
+        }
+        (None, _) => (
+            Vec::new(),
+            " (diff unavailable: the file could not be read before the edit)",
+        ),
+        (Some(_), None) => (
+            Vec::new(),
+            " (diff unavailable: the file could not be read back after the edit)",
+        ),
+    };
     let meta = json!({"path": display, "diffs": diffs});
     let text = if replace_all {
-        format!("The file {display} has been updated. All occurrences were successfully replaced.")
+        format!(
+            "The file {display} has been updated. All occurrences were successfully replaced.{note}"
+        )
     } else {
-        format!("The file {display} has been updated successfully.")
+        format!("The file {display} has been updated successfully.{note}")
     };
     Ok((text, meta))
 }

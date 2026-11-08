@@ -10,6 +10,10 @@ static HOOK: OnceLock<WarningHook> = OnceLock::new();
 
 /// 装警告钩子（只在进程启动时装一次；重复装直接忽略）。
 pub fn set_warning_hook(hook: WarningHook) {
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "全局警告钩子只装一次；重复装配保留首个"
+    )]
     let _ = HOOK.set(hook);
 }
 
@@ -20,6 +24,12 @@ pub(crate) fn warn(message: impl Into<String>) {
     if let Some(hook) = HOOK.get() {
         hook(&message);
     }
+}
+
+/// 会话 store 的警告出口：钩子降级这类会话侧信号接到 agent 的警告通道
+/// （标准错误 + 服务装的监控钩子），和 agent 自己的警告走同一条路。
+pub(crate) fn session_store_sink() -> session::WarningSink {
+    Arc::new(|message: &str| warn(message.to_owned()))
 }
 
 #[cfg(test)]

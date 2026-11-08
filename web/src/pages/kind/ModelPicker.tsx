@@ -28,6 +28,7 @@ import type { ModelSettingsView } from '@/data/keyring';
 import { matchDisabled } from '@/data/disabled';
 import { go } from '@/app/navigate';
 import { useKindStore } from './kindStore';
+import { useSettingsState } from '@/lib/settingsState';
 import { effortName } from './effortName';
 
 function usable(view: ModelSettingsView, connectionId: string): { ok: true } | { ok: false; why: string } {
@@ -64,7 +65,7 @@ export function EffortIcon({ effort, levels, className }: { effort?: string; lev
 
 export function ModelPicker() {
   const model = useKindStore((state) => state.model);
-  const masked = useKindStore((state) => state.masked);
+  const masked = useSettingsState((state) => state.masked);
   const open = useKindStore((state) => state.pickerOpen);
   const setPickerOpen = useKindStore((state) => state.setPickerOpen);
   const setEffort = useKindStore((state) => state.setEffort);
@@ -80,7 +81,7 @@ export function ModelPicker() {
       .then((nextView) => {
         setView(nextView);
         // 同步进 store：选择器按钮和行上的「已屏蔽」立刻是对的。
-        useKindStore.setState({ masked: nextView.disabledModels });
+        useSettingsState.setState({ masked: nextView.disabledModels });
       })
       .catch(() => setLoadError(true));
     // 模型目录字段（档位/价格/窗口）还没到就补一次；不阻塞页面加载。

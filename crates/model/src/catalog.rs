@@ -512,6 +512,10 @@ pub async fn load_with(
     }
     match fetch(url).await {
         Ok(snapshot) => {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "缓存写失败不挡住本次目录使用，下次会重新拉网络"
+            )]
             let _ = write_cache(data_dir, &snapshot);
             (snapshot, CatalogSource::Network)
         }
@@ -544,6 +548,10 @@ pub fn set_global(snapshot: CatalogSnapshot) {
             *guard = snapshot;
         }
     } else {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "并发初始化只保留第一份目录，后到的设置忽略"
+        )]
         let _ = GLOBAL.set(RwLock::new(snapshot));
     }
 }

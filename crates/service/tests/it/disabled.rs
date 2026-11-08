@@ -3,7 +3,6 @@
 use std::path::Path;
 use std::time::Duration;
 
-use agent::AgentConfig;
 use credentials::CheckState;
 use model::{DEFAULT_CONTEXT_WINDOW, DeepSeekConfig, Effort};
 use service::{
@@ -39,52 +38,10 @@ data: {"type":"message_stop"}
 
 "#;
 
-/// 产品的凭证来源会先查屏蔽表；测试来源照做（数据目录 + 连接 id）。
-struct TestCredential {
-    data_dir: std::path::PathBuf,
-    connection: String,
-}
-
-impl model::CredentialSource for TestCredential {
-    fn issue(
-        &self,
-        _purpose: &str,
-        _context: &model::CredentialContext,
-    ) -> Result<String, model::ModelError> {
-        Ok("test-key".to_owned())
-    }
-
-    fn admit(&self, model: &str) -> Result<(), model::ModelError> {
-        service::disabled::admit(&self.data_dir, &self.connection, model)
-    }
-}
-
-fn options(data_dir: &Path, endpoint: &str) -> RootSessionOptions {
-    RootSessionOptions {
-        data_dir: data_dir.to_path_buf(),
-        cwd: data_dir.to_path_buf(),
-        model: DeepSeekConfig {
-            provider: "deepseek".to_owned(),
-            base_url: endpoint.to_owned(),
-            model: "deepseek-flash".to_owned(),
-            max_tokens: 2048,
-            context_window: DEFAULT_CONTEXT_WINDOW,
-            effort: Effort::new("high"),
-        },
-        config: AgentConfig::default(),
-        credentials: Some(std::sync::Arc::new(TestCredential {
-            data_dir: data_dir.to_path_buf(),
-            connection: "deepseek".to_owned(),
-        })),
-        identity: Some(data_dir.join("identity.txt")),
-        model_factory: None,
-        append_hook_factory: None,
-        keyring_changed: None,
-    }
-}
-
 async fn host(dir: &Path, endpoint: &str) -> RootHost {
-    RootHost::open(options(dir, endpoint), DEFAULT_CONTEXT_WINDOW).await
+    let mut options = crate::common::options(dir);
+    options.model.base_url = endpoint.to_owned();
+    crate::common::open(options).await
 }
 
 /// 跨连接测试用：照 cli 的 model_factory 从 Keyring 按连接 id 解析配置和凭证。
@@ -475,6 +432,7 @@ async fn 屏蔽表整表替换规范化保存并发设置变化事件() {
     );
     let event = events.try_recv().expect("存好后发设置变化事件");
     assert_eq!(event.event_type, "keyring/changed", "设置变化事件");
+    assert_eq!(request_count(&server).await, 0, "设置变更不出站");
 }
 
 #[tokio::test]
@@ -518,6 +476,7 @@ async fn 模型设置响应旧字段照旧新字段只增() {
     );
     assert!(json["listed"].as_object().is_some());
     assert_eq!(host.protocol_version(), 8, "ready 帧的协议版本是 8");
+    assert_eq!(request_count(&server).await, 0, "读设置不出站");
 }
 
 /// 每条规则下面写「现在匹配 n 个」：`disabledHits` 与 `disabledModels` 等长同序，
@@ -574,6 +533,7 @@ async fn 屏蔽表的每条规则给出现在命中的连接和模型() {
         ],
         "每条规则给出现在命中的「连接/模型」，一条都不命中的给空表"
     );
+    assert_eq!(request_count(&server).await, 0, "保存连接与读设置不出站");
 }
 
 #[tokio::test]
@@ -599,6 +559,7 @@ async fn 查询规则返回形状() {
     assert_eq!(json["running"], true);
     let new_sessions = serde_json::to_value(service::DisabledModelUser::NewSessions).expect("json");
     assert_eq!(new_sessions["kind"], "new-sessions");
+    assert_eq!(request_count(&server).await, 0, "查询规则不出站");
 }
 
 /// 先回一次工具调用（read hello.txt），下一轮再回文字。
@@ -795,6 +756,7 @@ async fn 屏蔽一个不在用的模型时在跑的一轮照常跑完() {
                 .set_body_string(TEXT_SSE)
                 .set_delay(Duration::from_millis(300)),
         )
+        .expect(1)
         .mount(&server)
         .await;
     let dir = tempdir().unwrap();
@@ -834,8 +796,10 @@ async fn 打断判断用本轮冻结的连接和模型不用会变的当前选�
             ResponseTemplate::new(200)
                 .insert_header("content-type", "text/event-stream")
                 .set_body_string(TEXT_SSE)
-                .set_delay(Duration::from_secs(3)),
+                // 只要这一轮停在等模型上；给足余量，避免并行负载下 3s 内跑完导致断言时已 idle。
+                .set_delay(Duration::from_secs(30)),
         )
+        .expect(1)
         .mount(&server)
         .await;
     let dir = tempdir().unwrap();
@@ -902,6 +866,7 @@ async fn 跨连接切换后屏蔽判断用根会话冻结的连接不用当前�
                 .set_body_string(TEXT_SSE)
                 .set_delay(Duration::from_secs(10)),
         )
+        .expect(1)
         .mount(&server)
         .await;
     let dir = tempdir().unwrap();
@@ -924,7 +889,8 @@ async fn 跨连接切换后屏蔽判断用根会话冻结的连接不用当前�
             })
             .expect("save connection");
     }
-    let mut root_options = options(dir.path(), &server.uri());
+    let mut root_options = crate::common::options(dir.path());
+    root_options.model.base_url = server.uri();
     root_options.identity = Some(identity.clone());
     root_options.credentials = None;
     root_options.model_factory = Some(keyring_factory(dir.path(), &identity));
@@ -1016,6 +982,7 @@ async fn 查询规则返回命中的模型和使用者() {
                 .set_body_string(TEXT_SSE)
                 .set_delay(Duration::from_secs(10)),
         )
+        .expect(1)
         .mount(&server)
         .await;
     let dir = tempdir().unwrap();
@@ -1094,7 +1061,7 @@ async fn 查询规则返回命中的模型和使用者() {
 
 /// 空 Keyring 的宿主：根会话 Unavailable，`connection-save` 会走写 lastSelection 的那条路。
 fn unavailable_options(data_dir: &Path) -> RootSessionOptions {
-    let mut options = options(data_dir, "http://127.0.0.1:1");
+    let mut options = crate::common::options(data_dir);
     let factory: service::ModelFactory =
         std::sync::Arc::new(|_selection| Err("还没有接模型".to_owned()));
     options.model_factory = Some(factory);
@@ -1239,6 +1206,7 @@ async fn 坏设置文件沿用各自路径上次读到的屏蔽表() {
         never_before,
         "读不能改文件"
     );
+    assert_eq!(request_count(&server).await, 0, "读坏设置不出站");
 }
 
 /// 文件不存在算空表：不是「不知道」，所有模型照常能用，也不会被读操作建出来。
@@ -1263,6 +1231,7 @@ async fn 设置文件不存在时屏蔽表为空也不当成不知道() {
         !service::settings::path(dir.path()).exists(),
         "读一遍不能把文件写出来"
     );
+    assert_eq!(request_count(&server).await, 0, "读设置不出站");
 }
 
 /// 坏文件上三个写设置的方法都拒绝（码 settings/unreadable），文件字节不变。
@@ -1303,6 +1272,7 @@ async fn 坏设置文件时三个写设置入口都拒绝且不写() {
         before,
         "写入口都不能写坏文件"
     );
+    assert_eq!(request_count(&server).await, 0, "被拒绝的写入口不出站");
 }
 
 /// 未接模型时 connection-save 会写 lastSelection：坏文件上同样拒绝，文件字节不变。
@@ -1363,4 +1333,5 @@ async fn 已接模型时坏设置文件上的连接保存不写也不报错() {
         before,
         "没有写 settings.json"
     );
+    assert_eq!(request_count(&server).await, 0, "连接保存不出站");
 }

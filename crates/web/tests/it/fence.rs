@@ -6,16 +6,12 @@
 
 use axum::http::{HeaderMap, header::HOST};
 use service::{ContextUsage, FollowResponse, HostInfo, RootState, ServiceEvent};
-use web::{Frame, Trust, authorize_connect, check_api_auth, check_bind_host, opening_frames};
+use web::{
+    Frame, Trust, authorize_connect, check_api_auth, check_bind_host, opening_frames,
+    reject_query_token,
+};
 
-fn trust() -> Trust {
-    Trust::new(
-        std::net::IpAddr::from([127, 0, 0, 1]),
-        1417,
-        "tok-1".to_owned(),
-        [7u8; 32],
-    )
-}
+use crate::common::{headers, trust};
 
 fn event(seq: u64, event_type: &str) -> ServiceEvent {
     ServiceEvent {
@@ -144,6 +140,21 @@ fn cookie_fence_requires_valid_cookie() {
     assert_eq!(error.status(), 401, "坏签名 cookie 必须 401");
 }
 
+/// 公开面回归：trust 拆成私有模块后，crate 外仍要能调用 `web::reject_query_token`
+/// （这条用例编译不过，就说明重导出又丢了）。
+#[test]
+fn query_token_guard_is_reachable_from_outside_the_crate() {
+    let plain: axum::http::Uri = "http://127.0.0.1:1417/api".parse().expect("Uri");
+    assert!(reject_query_token(&plain).is_ok());
+    let tokened: axum::http::Uri = "http://127.0.0.1:1417/api?token=tok-1"
+        .parse()
+        .expect("Uri");
+    assert!(matches!(
+        reject_query_token(&tokened),
+        Err(web::TrustError::Unauthorized)
+    ));
+}
+
 #[test]
 fn opening_sends_ready_before_events_in_order() {
     let follow = FollowResponse {
@@ -216,12 +227,6 @@ fn reconnect_follows_from_last_seq_without_duplicates() {
 }
 
 // T006.F2 红测试：Origin / sec-fetch-site 栅栏（先骨架，随后实现）。
-fn headers(host: &str) -> axum::http::HeaderMap {
-    let mut headers = axum::http::HeaderMap::new();
-    headers.insert("host", host.parse().unwrap());
-    headers
-}
-
 #[test]
 fn cross_site_origin_is_rejected() {
     let mut headers = headers("127.0.0.1:1417");
@@ -272,14 +277,4 @@ fn cross_port_origin_is_rejected() {
 fn missing_origin_and_fetch_metadata_is_allowed() {
     let headers = headers("127.0.0.1:1417");
     assert!(web::check_origin(&headers).is_ok());
-}
-
-/// T006 r3 #2：查询参数令牌旧入口 check_request 必须删掉（同一件事只留 cookie 一条路）。
-#[test]
-fn query_token_entry_is_gone() {
-    let source = include_str!("../../src/lib.rs");
-    assert!(
-        !source.contains("pub fn check_request"),
-        "check_request 旧入口必须删掉；测试改走 cookie 入口"
-    );
 }

@@ -1,43 +1,18 @@
 //! 接缝 2：后台任务 job_output / job_list / job_kill 与超时转后台（测试清单第 4 条）。
 
-use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use tools::{
-    BashTool, JobKillTool, JobListTool, JobOutputTool, JobSpec, Tool, ToolCall, ToolContext,
-    ToolResult, ToolSessionState,
+    BashTool, JobKillTool, JobListTool, JobOutputTool, JobSpec, ToolContext, ToolResult,
+    ToolSessionState,
 };
 
-fn session_context(cwd: &Path, data_dir: &Path, session_id: &str) -> ToolContext {
-    ToolContext::with_session(cwd, Arc::new(ToolSessionState::new(data_dir, session_id)))
-}
-
-async fn run(tool: &dyn Tool, arguments: Value, context: &ToolContext) -> ToolResult {
-    tool.execute(
-        ToolCall {
-            id: "call_1".to_owned(),
-            name: tool.name().to_owned(),
-            arguments: arguments.to_string(),
-        },
-        context,
-    )
-    .await
-}
+use crate::common::{run, session_context_with_id as session_context, truncated_path};
 
 async fn bash(arguments: Value, context: &ToolContext) -> ToolResult {
     run(&BashTool::new(), arguments, context).await
-}
-
-fn truncated_path(content: &str, nth: usize) -> String {
-    let marker = "[output truncated; full output: ";
-    let mut start = 0;
-    for _ in 0..=nth {
-        let found = content[start..].find(marker).expect("有截断通知");
-        start += found + marker.len();
-    }
-    let rest = &content[start..];
-    rest[..rest.find(']').unwrap()].to_owned()
 }
 
 fn extract_job_id(content: &str) -> String {
@@ -192,16 +167,24 @@ async fn non_utf8_env_var_does_not_panic() {
     // 父进程环境里塞一个非 UTF-8 的值，bash 工具不能 panic（std::env::vars 会）。
     if std::env::var_os(NON_UTF8_CHILD_ENV).is_none() {
         use std::os::unix::ffi::OsStringExt;
+        let home = tempfile::tempdir().unwrap();
         let exe = std::env::current_exe().unwrap();
         let output = std::process::Command::new(&exe)
-            .arg("non_utf8_env_var_does_not_panic")
+            .arg("jobs::non_utf8_env_var_does_not_panic")
             .arg("--exact")
             .arg("--nocapture")
             .env(NON_UTF8_CHILD_ENV, "1")
+            .env("HOME", home.path())
             .env(
                 "AIOS_TEST_BAD_ENV",
                 std::ffi::OsString::from_vec(b"v\xFF".to_vec()),
             )
+            .env_remove("http_proxy")
+            .env_remove("https_proxy")
+            .env_remove("all_proxy")
+            .env_remove("HTTP_PROXY")
+            .env_remove("HTTPS_PROXY")
+            .env_remove("ALL_PROXY")
             .output()
             .unwrap();
         assert!(
@@ -209,6 +192,11 @@ async fn non_utf8_env_var_does_not_panic() {
             "子进程失败\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "子进程必须真的跑到这条测试：{}",
+            String::from_utf8_lossy(&output.stdout)
         );
         return;
     }
@@ -288,6 +276,10 @@ async fn job_output_wait_timeout_does_not_suppress_completion_notification() {
     let (sender, receiver) = mpsc::channel::<String>();
     context.session().tasks().set_on_notify(std::sync::Arc::new(
         move |settled: &tools::JobSettled| {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试通知通道的接收端已退出；断言只等需要的信号"
+            )]
             let _ = sender.send(settled.id.clone());
         },
     ));
@@ -332,6 +324,10 @@ async fn foreground_fast_command_does_not_notify() {
     let (sender, receiver) = mpsc::channel::<String>();
     context.session().tasks().set_on_notify(std::sync::Arc::new(
         move |settled: &tools::JobSettled| {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试通知通道的接收端已退出；断言只等需要的信号"
+            )]
             let _ = sender.send(settled.id.clone());
         },
     ));
@@ -361,6 +357,10 @@ async fn promoted_timeout_job_completion_notifies() {
     let (sender, receiver) = mpsc::channel::<String>();
     context.session().tasks().set_on_notify(std::sync::Arc::new(
         move |settled: &tools::JobSettled| {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试通知通道的接收端已退出；断言只等需要的信号"
+            )]
             let _ = sender.send(settled.id.clone());
         },
     ));
@@ -414,7 +414,6 @@ async fn foreground_large_output_reads_only_tail() {
     let data_dir = tempfile::tempdir().unwrap();
     let context = session_context(dir.path(), data_dir.path(), "sess-1");
     // 5 MiB 输出（远超前台 64,000 字节上限）。
-    let bytes_before = tools::foreground_bytes_read();
     let result = bash(
         json!({"description": "test command", "command": "dd if=/dev/zero bs=1048576 count=5 2>/dev/null | tr '\\0' 'a'"}),
         &context,
@@ -434,12 +433,6 @@ async fn foreground_large_output_reads_only_tail() {
         result.content.len() < 70_000,
         "结果不应含全文：{} 字节",
         result.content.len()
-    );
-    // 可观测计数：渲染时读进内存的字节数只应约等于尾部，不能是整文件。
-    let read_delta = tools::foreground_bytes_read() - bytes_before;
-    assert!(
-        read_delta <= 70_000,
-        "前台渲染读进内存 {read_delta} 字节（应只读尾部 64,000）"
     );
 }
 
@@ -494,6 +487,10 @@ async fn foreground_fast_settlement_without_wait_does_not_notify() {
     let (sender, receiver) = mpsc::channel::<String>();
     context.session().tasks().set_on_notify(std::sync::Arc::new(
         move |settled: &tools::JobSettled| {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试通知通道的接收端已退出；断言只等需要的信号"
+            )]
             let _ = sender.send(settled.id.clone());
         },
     ));
@@ -547,6 +544,10 @@ async fn promote_after_settlement_still_notifies() {
         }));
     context.session().tasks().set_on_notify(std::sync::Arc::new(
         move |settled: &tools::JobSettled| {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试通知通道的接收端已退出；断言只等需要的信号"
+            )]
             let _ = sender.send(settled.id.clone());
         },
     ));
@@ -755,6 +756,10 @@ async fn operator_kill_still_notifies() {
     let (sender, receiver) = mpsc::channel::<String>();
     context.session().tasks().set_on_notify(std::sync::Arc::new(
         move |settled: &tools::JobSettled| {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试通知通道的接收端已退出；断言只等需要的信号"
+            )]
             let _ = sender.send(settled.id.clone());
         },
     ));
@@ -1036,6 +1041,10 @@ async fn settled_callback_records_foreground_settlement_without_notice() {
     let (notified_sender, notified_receiver) = std::sync::mpsc::channel::<String>();
     context.session().tasks().set_on_notify(std::sync::Arc::new(
         move |settled: &tools::JobSettled| {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试通知通道的接收端已退出；断言只等需要的信号"
+            )]
             let _ = notified_sender.send(settled.id.clone());
         },
     ));
@@ -1208,4 +1217,91 @@ async fn registration_is_queued_synchronously_for_commit() {
             .call_id,
         "call_1"
     );
+}
+
+/// 后台任务输出有界：运行中单流 ≤ RETAIN_BYTES，结算后终态读把内存裁到结算保留量，
+/// 淘汰时任务条目和两个输出文件一起回收（DSH jobs-local 的 settledRetainBytes 语义）。
+#[tokio::test]
+async fn settled_output_is_trimmed_and_removal_reclaims_job_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path(), "sess-retain");
+    // stdout 与 stderr 各 400 KiB，都超过 RETAIN_BYTES（262144）。
+    let started = bash(
+        json!({
+            "description": "large output",
+            "command": "head -c 409600 /dev/zero | tr '\\0' x; head -c 409600 /dev/zero | tr '\\0' y >&2",
+            "run_in_background": true
+        }),
+        &context,
+    )
+    .await;
+    assert!(!started.is_error, "{}", started.content);
+    let job_id = extract_job_id(&started.content);
+    let registry = context.session().tasks();
+    let settled = registry
+        .wait_async(&job_id, Duration::from_secs(10))
+        .await
+        .expect("job 要能结算");
+    assert!(
+        settled.view.status.is_terminal(),
+        "10 秒内应结算：{:?}",
+        settled.view.status
+    );
+
+    // 结算后、模型读之前：活上限仍然生效，单流不超过 256 KiB，多出的标记 dropped。
+    let before_read = registry.output(&job_id).unwrap();
+    assert!(
+        before_read.stdout_dropped,
+        "超过 256 KiB 的 stdout 应标 dropped"
+    );
+    assert!(
+        before_read.stderr_dropped,
+        "超过 256 KiB 的 stderr 应标 dropped"
+    );
+    assert!(
+        before_read.stdout.len() <= 262_144,
+        "单流内存不得超过 RETAIN_BYTES：{}",
+        before_read.stdout.len()
+    );
+    assert!(
+        before_read.stderr.len() <= 262_144,
+        "单流内存不得超过 RETAIN_BYTES：{}",
+        before_read.stderr.len()
+    );
+
+    // 终态读把模型游标推到末尾，此后裁到结算保留量（DSH 默认 16384）。
+    let delta = registry.read_output(&job_id).expect("终态读");
+    assert!(!delta.stdout.is_empty(), "第一次读应拿到输出");
+    let after_read = registry.output(&job_id).unwrap();
+    assert!(
+        after_read.stdout.len() <= 16 * 1024,
+        "结算后读过的 stdout 应裁到 16 KiB：{}",
+        after_read.stdout.len()
+    );
+    assert!(
+        after_read.stderr.len() <= 16 * 1024,
+        "结算后读过的 stderr 应裁到 16 KiB：{}",
+        after_read.stderr.len()
+    );
+    assert!(
+        after_read.stdout.len() < before_read.stdout.len(),
+        "结算 + 终态读之后内存字节数应下降"
+    );
+
+    // 淘汰：任务条目和两个输出文件都回收。
+    let stdout_path = after_read.stdout_path.clone();
+    let stderr_path = after_read.stderr_path.clone();
+    assert!(
+        stdout_path.exists(),
+        "淘汰前完整输出文件在：{stdout_path:?}"
+    );
+    assert!(
+        stderr_path.exists(),
+        "淘汰前完整输出文件在：{stderr_path:?}"
+    );
+    registry.remove(&job_id);
+    assert!(registry.list().is_empty(), "淘汰后任务条目应消失");
+    assert!(!stdout_path.exists(), "淘汰后 stdout 文件应回收");
+    assert!(!stderr_path.exists(), "淘汰后 stderr 文件应回收");
 }

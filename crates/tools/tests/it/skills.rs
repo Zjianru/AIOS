@@ -1,32 +1,15 @@
 //! 接缝 2：skill 发现与加载（测试清单第 6 条）。
 
 use std::path::Path;
-use std::sync::Arc;
 
-use serde_json::{Value, json};
-use tools::{
-    SkillTool, Tool, ToolCall, ToolContext, ToolResult, ToolSessionState, discover_skills,
-};
+use serde_json::json;
+use tools::{SkillTool, ToolContext, ToolResult, discover_skills};
 
-fn session_context(cwd: &Path, data_dir: &Path) -> ToolContext {
-    ToolContext::with_session(cwd, Arc::new(ToolSessionState::new(data_dir, "sess-1")))
-}
+use crate::common::{run, session_context};
 
 fn write(path: &Path, content: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, content).unwrap();
-}
-
-async fn run(tool: &dyn Tool, arguments: Value, context: &ToolContext) -> ToolResult {
-    tool.execute(
-        ToolCall {
-            id: "call_1".to_owned(),
-            name: tool.name().to_owned(),
-            arguments: arguments.to_string(),
-        },
-        context,
-    )
-    .await
 }
 
 async fn load_skill(name: &str, context: &ToolContext) -> ToolResult {

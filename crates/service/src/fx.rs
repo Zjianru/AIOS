@@ -1,7 +1,8 @@
 //! T012.8：汇率（USD → CNY）。照 Magpie `fx/fx.go:26,37,43`：open.er-api、12 小时缓存、
 //! 拉不到用上一次、从没拉到过用 7.2。
 //!
-//! 缓存写 `<数据目录>/fx.json`（原子写，照 settings）；不用进程内全局状态，测试互不干扰。
+//! 缓存写 `<数据目录>/fx.json`（原子写，与 settings/根状态同一模块）；不用进程内全局状态，
+//! 测试互不干扰。
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -41,24 +42,17 @@ fn read_cache(data_dir: &Path) -> Option<FxInfo> {
     serde_json::from_slice(&bytes).ok()
 }
 
-fn write_cache(data_dir: &Path, info: &FxInfo) {
-    use std::io::Write;
-    let Ok(json) = serde_json::to_vec(info) else {
-        return;
-    };
-    if std::fs::create_dir_all(data_dir).is_err() {
-        return;
-    }
-    let target = path(data_dir);
-    let tmp = target.with_extension("json.tmp");
-    let write = || -> std::io::Result<()> {
-        let mut file = std::fs::File::create(&tmp)?;
-        file.write_all(&json)?;
-        file.write_all(b"\n")?;
-        file.sync_all()?;
-        std::fs::rename(&tmp, &target)
-    };
-    let _ = write();
+/// 写汇率缓存：原子写（credentials::atomic），失败原样返回——缓存写不进去只是下次要重拉，
+/// 但调用方要留下信号，不能装作写好了。
+fn write_cache(data_dir: &Path, info: &FxInfo) -> std::io::Result<()> {
+    let mut json = serde_json::to_vec(info)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    json.push(b'\n');
+    credentials::atomic::write(
+        &path(data_dir),
+        &json,
+        credentials::atomic::TargetKind::Shared,
+    )
 }
 
 /// 现在用的汇率：12h 内用缓存；过期拉网络；拉不到用上一次；从没拉到过用 7.2。
@@ -76,7 +70,10 @@ pub async fn usd_to_cny_with(data_dir: &Path, url: &str) -> FxInfo {
         return cached.clone();
     }
     if let Some(fresh) = fetch(url).await {
-        write_cache(data_dir, &fresh);
+        if let Err(error) = write_cache(data_dir, &fresh) {
+            // 汇率本身照用；缓存没写进去要有信号（下次会重拉，行为不变）。
+            eprintln!("汇率缓存没写进 {}：{error}", path(data_dir).display());
+        }
         return fresh;
     }
     // 拉不到：用上一次；从没拉到过就 7.2（fetchedAt=0）。
@@ -120,6 +117,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "rates": {"CNY": 7.3}
             })))
+            .expect(1)
             .mount(&server)
             .await;
         let dir = tempfile::tempdir().expect("dir");
@@ -145,8 +143,33 @@ mod tests {
             rate: 6.9,
             fetched_at: now_secs().saturating_sub(CACHE_TTL_SECS + 60),
         };
-        write_cache(dir.path(), &stale);
+        write_cache(dir.path(), &stale).expect("写汇率缓存");
         let fallback = usd_to_cny_with(dir.path(), "http://127.0.0.1:1/nope").await;
         assert_eq!(fallback.rate, 6.9);
+    }
+
+    /// 缓存写不进去（数据目录本身是个文件）：汇率照用，但不能把失败当成写好了。
+    #[tokio::test]
+    async fn cache_write_failure_keeps_rate() {
+        let server = MockServer::start().await;
+        Mock::given(path("/latest/USD"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "rates": {"CNY": 7.3}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().expect("dir");
+        let not_a_dir = dir.path().join("not-a-dir");
+        std::fs::write(&not_a_dir, b"x").expect("占位文件");
+        let url = format!("{}/latest/USD", server.uri());
+        let fresh = usd_to_cny_with(&not_a_dir, &url).await;
+        assert_eq!(fresh.rate, 7.3, "缓存写失败不影响这次汇率");
+        assert!(fresh.fetched_at > 0);
+        assert!(
+            write_cache(&not_a_dir, &fresh).is_err(),
+            "写失败要报出来，不能吞"
+        );
+        assert!(!not_a_dir.join(FX_FILE).exists(), "缓存没有落盘");
     }
 }

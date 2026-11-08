@@ -3,11 +3,9 @@ use std::process::{Command, Output, Stdio};
 
 use tempfile::TempDir;
 
-const TEST_KEY: &str = "sk-cli-test-0123456789";
+use crate::common::aios_dev;
 
-fn aios_dev() -> &'static str {
-    env!("CARGO_BIN_EXE_aios-dev")
-}
+const TEST_KEY: &str = "sk-cli-test-0123456789";
 
 fn run(args: &[&str], stdin: &str) -> Output {
     let home = tempfile::tempdir().expect("隔离 HOME");

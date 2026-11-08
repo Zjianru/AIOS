@@ -25,7 +25,7 @@ import {
 import { cachedQuota, loadQuota } from '@/data/quota';
 import { CURRENCIES, compactPrice, formatModelTokens } from '@/lib/numbers';
 import { formatLocalDateTime } from '@/lib/time';
-import { useKindStore } from '@/pages/kind/kindStore';
+import { useSettingsState } from '@/lib/settingsState';
 import { PROTOCOL_LABEL } from '@/data/keyring';
 import type { ConnectionView, ModelRow, ModelSettingsView } from '@/data/keyring';
 import {
@@ -33,8 +33,9 @@ import {
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 import { modelErrorReason } from '@/data/errors';
-import { connectionCardOf } from '@/pages/kind/cards/model';
-import type { CardEnvelope, ConnectionSlots } from '@/pages/kind/cards/model';
+import { connectionCardOf } from '@/data/connectionCard';
+import type { ConnectionSlots } from '@/data/connectionCard';
+import type { CardEnvelope } from '@/lib/cardEnvelope';
 
 /* ───────────────────────── 小部件 ───────────────────────── */
 
@@ -946,8 +947,8 @@ function KeyringBroken({ view, onView }: { view: ModelSettingsView; onView: (vie
 
 /** T012.9：显示币种（settings.json 的 currency；价格和花费一律按美元存，显示时换算）。 */
 function CurrencySection() {
-  const money = useKindStore((state) => state.money);
-  const setCurrency = useKindStore((state) => state.setCurrency);
+  const money = useSettingsState((state) => state.money);
+  const setCurrency = useSettingsState((state) => state.setCurrency);
   return (
     <section className="mt-5" data-settings="currency">
       <div className="flex items-center gap-2">
@@ -1079,7 +1080,7 @@ function MaskSection({ view, onView, onMask }: {
   onView: (view: ModelSettingsView) => void;
   onMask: (pattern: string) => void;
 }) {
-  const refreshMasks = useKindStore((state) => state.refreshMasks);
+  const refreshMasks = useSettingsState((state) => state.refreshMasks);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const duplicate = view.disabledModels.some(
@@ -1297,7 +1298,7 @@ function MaskDialog({ pattern, busy, onCancel, onConfirm }: {
 export function ModelSettings() {
   useEffect(() => {
     // T012.9：直接打开设置页（不经 Kind 页）时也要拿币种/汇率。
-    void useKindStore.getState().refreshStats();
+    void useSettingsState.getState().refreshMoney();
   }, []);
   const [view, setView] = useState<ModelSettingsView | null>(null);
   /** 展开的是哪张卡片：连接 id、'add'，或者都不展开。一次只展开一张。 */
@@ -1305,7 +1306,7 @@ export function ModelSettings() {
   /** 正在确认屏蔽的规则；null = 没有对话框。 */
   const [masking, setMasking] = useState<string | null>(null);
   const [maskBusy, setMaskBusy] = useState(false);
-  const refreshMasks = useKindStore((state) => state.refreshMasks);
+  const refreshMasks = useSettingsState((state) => state.refreshMasks);
 
   const load = useCallback(async () => {
     const next = await getModelSettings();

@@ -6,24 +6,11 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use agent::AgentConfig;
 use model::{DEFAULT_CONTEXT_WINDOW, DeepSeekConfig, Effort};
 use service::{
     Call, ConnectionSaveRequest, RecheckRequest, RootHost, RootSessionOptions, ServiceError,
 };
 use tempfile::tempdir;
-
-struct TestCredential;
-
-impl model::CredentialSource for TestCredential {
-    fn issue(
-        &self,
-        _purpose: &str,
-        _context: &model::CredentialContext,
-    ) -> Result<String, model::ModelError> {
-        Ok("test-key".to_owned())
-    }
-}
 
 fn deepseek_config() -> DeepSeekConfig {
     DeepSeekConfig {
@@ -103,23 +90,18 @@ fn factory(data_dir: &Path, identity: &Path) -> service::ModelFactory {
                 context_window: DEFAULT_CONTEXT_WINDOW,
                 effort: Effort::new(effort),
             },
-            Some(Arc::new(TestCredential) as Arc<dyn model::CredentialSource>),
+            Some(crate::common::test_credential(&data)),
         ))
     })
 }
 
-fn options(data_dir: &Path, identity: &Path, cwd: &Path) -> RootSessionOptions {
-    RootSessionOptions {
-        data_dir: data_dir.to_path_buf(),
-        cwd: cwd.to_path_buf(),
-        model: deepseek_config(),
-        config: AgentConfig::default(),
-        credentials: Some(Arc::new(TestCredential)),
-        identity: Some(identity.to_path_buf()),
-        model_factory: Some(factory(data_dir, identity)),
-        append_hook_factory: None,
-        keyring_changed: None,
-    }
+fn hotfix_options(data_dir: &Path, identity: &Path, cwd: &Path) -> RootSessionOptions {
+    let mut options = crate::common::options(data_dir);
+    options.cwd = cwd.to_path_buf();
+    options.identity = Some(identity.to_path_buf());
+    options.model = deepseek_config();
+    options.model_factory = Some(factory(data_dir, identity));
+    options
 }
 
 /// 空库 → root unavailable；connection-save 后再 recheck → root Ok（真实恢复路径）。
@@ -129,7 +111,7 @@ async fn connection_save_recovers_root_after_recheck() {
     let cwd = tempdir().unwrap();
     let identity = data.path().join("identity.txt");
     let host = RootHost::open(
-        options(data.path(), &identity, cwd.path()),
+        hotfix_options(data.path(), &identity, cwd.path()),
         DEFAULT_CONTEXT_WINDOW,
     )
     .await;
@@ -178,7 +160,7 @@ async fn connection_save_keeps_existing_selection_after_root_ok() {
     let cwd = tempdir().unwrap();
     let identity = data.path().join("identity.txt");
     let host = RootHost::open(
-        options(data.path(), &identity, cwd.path()),
+        hotfix_options(data.path(), &identity, cwd.path()),
         DEFAULT_CONTEXT_WINDOW,
     )
     .await;
@@ -245,7 +227,7 @@ async fn connection_save_uses_model_default_effort_and_recheck_reports_it() {
     let cwd = tempdir().unwrap();
     let identity = data.path().join("identity.txt");
     let host = RootHost::open(
-        options(data.path(), &identity, cwd.path()),
+        hotfix_options(data.path(), &identity, cwd.path()),
         DEFAULT_CONTEXT_WINDOW,
     )
     .await;
@@ -296,7 +278,7 @@ async fn new_connection_is_current_selection_for_following_select() {
     let cwd = tempdir().unwrap();
     let identity = data.path().join("identity.txt");
     let host = RootHost::open(
-        options(data.path(), &identity, cwd.path()),
+        hotfix_options(data.path(), &identity, cwd.path()),
         DEFAULT_CONTEXT_WINDOW,
     )
     .await;
@@ -337,7 +319,7 @@ async fn connection_save_reports_when_selection_cannot_be_saved() {
     let cwd = tempdir().unwrap();
     let identity = data.path().join("identity.txt");
     let host = RootHost::open(
-        options(data.path(), &identity, cwd.path()),
+        hotfix_options(data.path(), &identity, cwd.path()),
         DEFAULT_CONTEXT_WINDOW,
     )
     .await;

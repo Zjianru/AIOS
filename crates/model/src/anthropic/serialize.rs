@@ -159,47 +159,51 @@ pub(super) fn request_body(
                 let content: Vec<WireBlock> = message
                     .content
                     .iter()
-                    .filter_map(|block| match block {
-                        ContentBlock::Text { text, .. } if !text.is_empty() => {
-                            Some(WireBlock::Text { text: text.clone() })
-                        }
-                        ContentBlock::Text { .. } => None,
-                        // T013.4：文件块投给模型时换成 fileHandleText（DSH 原句照抄）。
-                        ContentBlock::File {
-                            attachment_id,
-                            name,
-                            bytes,
-                            path,
-                        } if message.role == Role::User => Some(WireBlock::Text {
-                            text: file_handle_text(attachment_id, name, *bytes, path.as_deref()),
-                        }),
-                        ContentBlock::File { .. } => None,
-                        ContentBlock::Reasoning { text, signature }
-                            if message.role == Role::Assistant =>
-                        {
-                            Some(WireBlock::Thinking {
-                                thinking: text.clone(),
-                                signature: signature.clone(),
-                            })
-                        }
-                        ContentBlock::Reasoning { .. } => None,
-                        ContentBlock::ToolCall {
-                            id,
-                            name,
-                            arguments,
-                        } if message.role == Role::Assistant => {
-                            let input = serde_json::from_str::<Value>(arguments)
-                                .ok()
-                                .filter(Value::is_object)
-                                .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-                            Some(WireBlock::ToolUse {
+                    .map(|block| -> Result<Option<WireBlock>, ModelError> {
+                        Ok(match block {
+                            ContentBlock::Text { text, .. } if !text.is_empty() => {
+                                Some(WireBlock::Text { text: text.clone() })
+                            }
+                            ContentBlock::Text { .. } => None,
+                            // T013.4：文件块投给模型时换成 fileHandleText（DSH 原句照抄）。
+                            ContentBlock::File {
+                                attachment_id,
+                                name,
+                                bytes,
+                                path,
+                            } if message.role == Role::User => Some(WireBlock::Text {
+                                text: file_handle_text(
+                                    attachment_id,
+                                    name,
+                                    *bytes,
+                                    path.as_deref(),
+                                ),
+                            }),
+                            ContentBlock::File { .. } => None,
+                            ContentBlock::Reasoning { text, signature }
+                                if message.role == Role::Assistant =>
+                            {
+                                Some(WireBlock::Thinking {
+                                    thinking: text.clone(),
+                                    signature: signature.clone(),
+                                })
+                            }
+                            ContentBlock::Reasoning { .. } => None,
+                            ContentBlock::ToolCall {
+                                id,
+                                name,
+                                arguments,
+                            } if message.role == Role::Assistant => Some(WireBlock::ToolUse {
                                 id: id.clone(),
                                 name: name.clone(),
-                                input,
-                            })
-                        }
-                        ContentBlock::ToolCall { .. } => None,
+                                input: tool_input(id, arguments)?,
+                            }),
+                            ContentBlock::ToolCall { .. } => None,
+                        })
                     })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .flatten()
                     .collect();
                 if content.is_empty() {
                     continue;
@@ -360,6 +364,17 @@ fn invalid_request(message: &str) -> ModelError {
     ModelError::new(ErrorCode::InvalidRequest, message.to_owned())
 }
 
+/// 历史里的 tool_use 参数：必须是 JSON 对象。坏参数不能静默变成空参数——模型会以为工具
+/// 当时没收到参数，重放出来的请求也就不是这条历史了。
+fn tool_input(id: &str, arguments: &str) -> Result<Value, ModelError> {
+    match serde_json::from_str::<Value>(arguments) {
+        Ok(value) if value.is_object() => Ok(value),
+        _ => Err(invalid_request(&format!(
+            "工具调用 {id} 的 arguments 不是 JSON 对象，请求体不能忠实重建"
+        ))),
+    }
+}
+
 fn push_or_merge(messages: &mut Vec<WireMessage>, role: &'static str, content: Vec<WireBlock>) {
     if let Some(previous) = messages.last_mut()
         && previous.role == role
@@ -439,6 +454,41 @@ mod t006_19_serialize_defense_tests {
         assert!(
             validate_tool_pairing(&messages).is_ok(),
             "成对的 tool_use/tool_result 不能被误拒"
+        );
+    }
+
+    /// 历史里的 tool_use 参数不是 JSON 时，请求体不能静默变成空参数：报错并指名是哪次调用。
+    #[test]
+    fn bad_json_signal() {
+        let config = crate::DeepSeekConfig {
+            provider: "deepseek".to_owned(),
+            base_url: "https://api.deepseek.com/anthropic".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            max_tokens: 256_000,
+            context_window: 1_000_000,
+            effort: crate::Effort::new("low"),
+        };
+        let messages = vec![Message::assistant(
+            vec![ContentBlock::ToolCall {
+                id: "call_bad".to_owned(),
+                name: "bash".to_owned(),
+                arguments: "{not json".to_owned(),
+            }],
+            "deepseek",
+            "deepseek-flash",
+        )];
+        let error = match request_body(&config, &messages, &[], None, false) {
+            Ok(raw) => panic!(
+                "坏参数必须报错，不能静默变成空参数：{}",
+                String::from_utf8_lossy(&raw)
+            ),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(
+            error.message.contains("call_bad"),
+            "报错要指名是哪次工具调用：{}",
+            error.message
         );
     }
 }

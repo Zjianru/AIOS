@@ -4,13 +4,16 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use serde_json::{Value, json};
 use tokio::sync::{Semaphore, mpsc};
-use tools::{Tool, ToolCall, ToolConcurrency, ToolContext, ToolFuture, ToolResult};
+use tools::{
+    Tool, ToolCall, ToolConcurrency, ToolContext, ToolFuture, ToolResult, ToolSessionState,
+};
 use wiremock::{Request, Respond, ResponseTemplate};
 
 /// 一个按脚本顺序回放的 mock 响应器（第 N 次请求拿第 N 个响应）。
@@ -89,11 +92,19 @@ impl Tool for GatedTool {
         _context: &'a ToolContext,
     ) -> ToolFuture<'a, ToolResult> {
         Box::pin(async move {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+            )]
             let _ = self.started.send(ToolEvent::Started(self.name.to_owned()));
             let permit = Arc::clone(&self.permits)
                 .acquire_owned()
                 .await
                 .expect("测试工具的信号量被关闭");
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+            )]
             let _ = self.started.send(ToolEvent::Finished(self.name.to_owned()));
             drop(permit);
             ToolResult::success(call.id, format!("ok:{}", self.name))
@@ -217,6 +228,10 @@ impl ScriptedSseServer {
                 };
                 // macOS 上 accept 出来的 socket 可能继承 listener 的非阻塞标志；
                 // 这里显式恢复阻塞，否则请求体还没到时 read 会 WouldBlock、记录不到。
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+                )]
                 let _ = stream.set_nonblocking(false);
                 if let Some(body) = read_request(&mut stream) {
                     bodies_in_thread
@@ -236,8 +251,16 @@ impl ScriptedSseServer {
                 }
                 if script.hold {
                     if let Some(sender) = ready_tx.take() {
+                        #[expect(
+                            clippy::let_underscore_must_use,
+                            reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+                        )]
                         let _ = sender.send(());
                     }
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+                    )]
                     let _ = control_rx.recv();
                 }
                 // drop(stream) 关连接；下一轮脚本等服务下一个请求。
@@ -260,6 +283,10 @@ impl ScriptedSseServer {
     /// 等到第一个 hold 响应已经写出（此时模型流还没结束）。
     pub async fn wait_ready(&mut self) {
         if let Some(receiver) = self.ready.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+            )]
             let _ = receiver.await;
         }
     }
@@ -267,6 +294,10 @@ impl ScriptedSseServer {
     /// 放行当前 hold 的响应（关连接）。
     pub fn release(&mut self) {
         if let Some(sender) = self.control.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+            )]
             let _ = sender.send(());
         }
     }
@@ -284,9 +315,17 @@ impl Drop for ScriptedSseServer {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::SeqCst);
         if let Some(sender) = self.control.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+            )]
             let _ = sender.send(());
         }
         if let Some(handle) = self.handle.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+            )]
             let _ = handle.join();
         }
     }
@@ -380,11 +419,23 @@ impl HeadersGatedServer {
             let Some(mut stream) = accept_while_running(&listener, &stopped_in_thread) else {
                 return;
             };
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+            )]
             let _ = stream.set_nonblocking(false);
             let _ = read_request(&mut stream);
             if let Some(sender) = ready_tx.take() {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+                )]
                 let _ = sender.send(());
             }
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+            )]
             let _ = release_rx.recv();
             // 取消后客户端已经断开；不再写响应，直接关连接。
         });
@@ -404,6 +455,10 @@ impl HeadersGatedServer {
     /// 等到请求已经收到、响应头还没写。
     pub async fn wait_request(&mut self) {
         if let Some(receiver) = self.ready.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+            )]
             let _ = receiver.await;
         }
     }
@@ -413,9 +468,17 @@ impl Drop for HeadersGatedServer {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::SeqCst);
         if let Some(sender) = self.release.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+            )]
             let _ = sender.send(());
         }
         if let Some(handle) = self.handle.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+            )]
             let _ = handle.join();
         }
     }
@@ -457,6 +520,10 @@ impl PhaseSseServer {
                 let Some(mut stream) = accept_while_running(&listener, &stopped_in_thread) else {
                     return;
                 };
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+                )]
                 let _ = stream.set_nonblocking(false);
                 if let Some(body) = read_request(&mut stream) {
                     bodies_in_thread
@@ -480,13 +547,25 @@ connection: close
                 }
                 if script.hold {
                     if let Some(sender) = ready_tx.take() {
+                        #[expect(
+                            clippy::let_underscore_must_use,
+                            reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+                        )]
                         let _ = sender.send(());
                     }
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+                    )]
                     let _ = control_rx.recv();
                 }
                 if stream.write_all(script.suffix.as_bytes()).is_err() {
                     continue;
                 }
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+                )]
                 let _ = stream.flush();
             }
         });
@@ -507,6 +586,10 @@ connection: close
     /// 等到 prefix 已经写出、suffix 还没写。
     pub async fn wait_ready(&mut self) {
         if let Some(receiver) = self.ready.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+            )]
             let _ = receiver.await;
         }
     }
@@ -514,6 +597,10 @@ connection: close
     /// 放行第一个 hold 的脚本（写 suffix）。
     pub fn release(&mut self) {
         if let Some(sender) = self.control.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+            )]
             let _ = sender.send(());
         }
     }
@@ -530,9 +617,17 @@ impl Drop for PhaseSseServer {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::SeqCst);
         if let Some(sender) = self.control.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+            )]
             let _ = sender.send(());
         }
         if let Some(handle) = self.handle.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试辅助的 socket/通道失败不影响断言（线程可能已退出）"
+            )]
             let _ = handle.join();
         }
     }
@@ -731,4 +826,9 @@ impl model::CredentialSource for TestCredential {
 
 pub fn test_credential() -> std::sync::Arc<dyn model::CredentialSource> {
     std::sync::Arc::new(TestCredential)
+}
+
+/// 只驱动单个工具的测试上下文（真实会话状态；读工具不写 spill）。
+pub fn tool_context(cwd: &Path) -> ToolContext {
+    ToolContext::with_session(cwd, std::sync::Arc::new(ToolSessionState::new(cwd, "test")))
 }

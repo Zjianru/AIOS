@@ -148,6 +148,10 @@ pub(super) async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
         })
         .await?;
     let appended = inner.append(&[EventKind::TurnEnd { turn, reason }]).await;
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "轮次结束事件只作展示；收尾写入结果仍照常返回"
+    )]
     let _ = inner.events.send(AgentEvent::TurnEnded { turn, outcome });
     appended?;
     // 收尾之后不再算「本轮」：服务不会再拿刚停下的模型去判断在跑的一轮。

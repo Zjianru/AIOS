@@ -7,10 +7,10 @@
 
 import { create } from 'zustand';
 import { toast } from 'sonner';
-import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchEventsPage, fetchFirstUse, fetchStatus, peekAvailableModels, recheckRoot, reportMonitor, selectSessionModel, sendMessage, setUnauthorizedHandler, updateSettings } from '@/data/service';
+import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchEventsPage, fetchFirstUse, fetchStatus, peekAvailableModels, recheckRoot, reportMonitor, selectSessionModel, sendMessage, setUnauthorizedHandler } from '@/data/service';
 import type { ServiceCatalogModel } from '@/data/service';
 import { dayLabelOf } from '@/lib/numbers';
-import type { Currency } from '@/lib/numbers';
+import { useSettingsState } from '@/lib/settingsState';
 import { effortName } from './effortName';
 import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
 import { reconnectDelayMs } from '@/data/reconnect';
@@ -83,16 +83,6 @@ const EMPTY_STATS: SessionStats = {
   contextWindow: 0,
 };
 
-/** T012.9：显示币种与汇率（服务 settings.json + status.fx；页面只显示和切换）。 */
-export interface MoneyState {
-  currency: Currency;
-  cnyPerUsd: number;
-  /** 汇率拉到的时间（unix 秒；0 = 没取到，用 7.2）。 */
-  fxAt: number;
-}
-
-const DEFAULT_MONEY: MoneyState = { currency: 'usd', cnyPerUsd: 7.2, fxAt: 0 };
-
 interface KindState {
   views: TurnViewData[];
   byId: Map<string, TurnViewData>;
@@ -150,16 +140,10 @@ interface KindState {
   stats: SessionStats;
   /** T012 F2：模型信息是否已从服务初始化过（之后 refreshStats 不覆盖用户的选择，避免异步竞态）。 */
   modelInitialized: boolean;
-  /** T012.9：币种与汇率（服务 settings.json + status.fx）。 */
-  money: MoneyState;
-  /** 屏蔽的模型规则（服务端 settings.json 的整表）；选择器按它灰掉、标「已屏蔽」。 */
-  masked: string[];
   /** 模型选择器开着没有（失败块的「换模型」要靠它打开）。 */
   pickerOpen: boolean;
   /** 打开/收起模型选择器。 */
   setPickerOpen: (open: boolean) => void;
-  /** 重新读屏蔽表（设置变化事件或屏蔽操作以后；读不到就保留上一次的）。 */
-  refreshMasks: () => Promise<void>;
   /** T008.4：Kind 首屏引导：先看是不是空库（首次使用），否则加载对话。 */
   bootstrap: () => Promise<void>;
   loadInitial: () => Promise<void>;
@@ -182,8 +166,6 @@ interface KindState {
   setModel: (model: KindState['model']) => void;
   /** T012.9：从服务刷新会话合计/汇率/币种。 */
   refreshStats: () => Promise<void>;
-  /** T012.9：切币种（写 settings.json）。 */
-  setCurrency: (currency: Currency) => Promise<void>;
   /** T012.9：换思考档（下一轮生效）。 */
   setEffort: (effort: string) => Promise<void>;
   /** T012 F2：应用一次服务端选择（wanted/actual 都由服务给），补目录字段并提示。 */
@@ -412,7 +394,7 @@ function applyLiveEvent(event: ServiceEvent): void {
   if (event.type === 'keyring/changed') {
     // 设置变化是 seq=0 的合成事件：不进日志、不动 lastSeq；只把屏蔽表重读一遍，
     // 让选择器的「已屏蔽」立刻跟上（不用刷新页面）。
-    void useKindStore.getState().refreshMasks();
+    void useSettingsState.getState().refreshMasks();
     return;
   }
   if (event.seq <= lastSeq) return;
@@ -587,8 +569,6 @@ export const useKindStore = create<KindState>()((set, get) => ({
   connectionNames: {},
   model: DEMO_MODEL,
   stats: EMPTY_STATS,
-  money: DEFAULT_MONEY,
-  masked: [],
   pickerOpen: false,
   modelInitialized: false,
   canvasTracks: {},
@@ -619,8 +599,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
         modelNames: names,
         modelWindows: windows,
         connectionNames,
-        masked: view.disabledModels,
       });
+      useSettingsState.setState({ masked: view.disabledModels });
     } catch {
       // 设置读不到时模型名退回 id、压缩占用不显示（日志里的事实还在）。
     }
@@ -877,14 +857,6 @@ export const useKindStore = create<KindState>()((set, get) => ({
   },
 
   setPickerOpen: (open) => set({ pickerOpen: open }),
-  refreshMasks: async () => {
-    try {
-      const view = await getModelSettings();
-      set({ masked: view.disabledModels });
-    } catch {
-      // 读不到设置时保留上一次的屏蔽表；服务端仍按文件里的规则拦。
-    }
-  },
 
   refreshStats: async () => {
     try {
@@ -906,15 +878,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
           },
         });
       }
-      if (status.fx || status.currency) {
-        set((state) => ({
-          money: {
-            currency: (status.currency as Currency | undefined) ?? state.money.currency,
-            cnyPerUsd: status.fx?.rate ?? state.money.cnyPerUsd,
-            fxAt: status.fx?.fetchedAt ?? state.money.fxAt,
-          },
-        }));
-      }
+      // 币种/汇率和设置页共用一个 store，换算只在那里做。
+      useSettingsState.getState().applyStatus(status);
       // 当前模型（连接/模型/档由服务 status 给；价格/窗口/档位来自模型目录）：
       // 目录只是补字段，只读地问，不落盘、不动「新」的基准。
       // T012 F2：只在首次初始化时写 model；之后由 applySelection 维护，避免 refreshStats 异步回来覆盖用户刚做的选择。
@@ -957,15 +922,6 @@ export const useKindStore = create<KindState>()((set, get) => ({
       }
     } catch {
       // 状态读不到时保留旧值（页面不显示假数据）。
-    }
-  },
-
-  setCurrency: async (currency) => {
-    try {
-      const saved = (await updateSettings({ currency })) as Currency;
-      set((state) => ({ money: { ...state.money, currency: saved } }));
-    } catch {
-      toast('币种没保存', { description: '连上内核再试一次' });
     }
   },
 

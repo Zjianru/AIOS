@@ -10,7 +10,7 @@ use std::io::Write;
 use model::Message;
 use serde_json::Value;
 
-use crate::{EventKind, SessionError, SessionId, SessionStore, TurnEndReason};
+use crate::{Event, EventKind, SessionError, SessionId, SessionStore, TurnEndReason};
 
 fn create_store() -> (tempfile::TempDir, tempfile::TempDir, SessionStore) {
     let data_dir = tempfile::tempdir().unwrap();
@@ -343,12 +343,21 @@ fn spawn_lock_child(
     marker: &std::path::Path,
     mode: &str,
 ) -> std::process::Child {
+    let home = data.join("test-home");
+    std::fs::create_dir_all(&home).expect("隔离 HOME");
     std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", LOCK_CHILD_TEST, "--nocapture"])
+        .env("HOME", &home)
         .env(LOCK_CHILD_DATA, data)
         .env(LOCK_CHILD_ID, id.as_str())
         .env(LOCK_CHILD_MARKER, marker)
         .env(LOCK_CHILD_MODE, mode)
+        .env_remove("http_proxy")
+        .env_remove("https_proxy")
+        .env_remove("all_proxy")
+        .env_remove("HTTP_PROXY")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("ALL_PROXY")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
@@ -472,4 +481,54 @@ fn store_absolutizes_relative_data_dir() {
 fn format_version_bumps_to_16_after_hook_abort_cause() {
     assert_eq!(crate::FORMAT_VERSION, 16);
     assert_eq!(crate::MIN_READ_VERSION, 14);
+}
+
+/// 注入的 panic 会经默认 panic hook 打到标准错误，门禁日志里就成了「有 panic」。
+/// 这里装一个过滤钩子：只吞这一条注入的 panic，其余照旧交给原来的钩子。
+/// 不还原：nextest 每个测试一个进程，而在断言失败的 unwind 里改钩子会被标准库拒绝。
+fn silence_injected_panic() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let text = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or_default();
+        if !text.contains("注入的追加钩子") {
+            previous(info);
+        }
+    }));
+}
+
+/// 追加之后的钩子 panic：业务照常（事件已经落盘），但要留一条带原因的警告。
+#[test]
+fn hook_panic_signal() {
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let mut store = SessionStore::create(data_dir.path(), cwd.path()).unwrap();
+    let hook: crate::AppendHook = std::sync::Arc::new(|_events: &[Event]| {
+        panic!("注入的追加钩子 panic");
+    });
+    store.set_append_hook(Some(hook));
+    let warnings = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = std::sync::Arc::clone(&warnings);
+    store.set_warning_sink(Some(std::sync::Arc::new(move |message: &str| {
+        sink.lock().expect("警告锁").push(message.to_owned());
+    })));
+    silence_injected_panic();
+
+    let seqs = store
+        .append(&[EventKind::TurnStart { turn: 1 }])
+        .expect("钩子 panic 不能挡住已经成功的写入");
+    assert_eq!(seqs, vec![1]);
+    assert_eq!(store.events().len(), 1, "事件已经落盘");
+
+    let warnings = warnings.lock().expect("警告锁");
+    assert_eq!(warnings.len(), 1, "一次 panic 一条警告：{warnings:?}");
+    assert!(
+        warnings[0].contains("注入的追加钩子 panic"),
+        "警告要带原因：{}",
+        warnings[0]
+    );
 }

@@ -3,10 +3,11 @@
  * T017.3：不认识的工具展开后也是通用卡——带输入 / 输出两段时照 T013.5 的样子画。
  */
 
-import type { BodySlot, CardViewProps, GenericSlots } from './model';
+import type { BodySlot } from '@/lib/cardEnvelope';
+import type { CardViewProps, GenericSlots } from './model';
 import { cardTone } from './model';
 import { BodyPre, BodyText } from './BodyText';
-import { Shell } from './ToolViews';
+import { Shell } from './Shell';
 import { cn } from '@/lib/utils';
 
 /** 通用工具卡的一段：输入 / 输出。 */

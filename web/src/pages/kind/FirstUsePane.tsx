@@ -4,7 +4,7 @@
  * 两步都在对话里完成，不跳设置页：
  * 1) 接模型：选提供方、填密钥。密钥交给 Keyring（和「设置 › 模型与连接」同一套：
  *    同一份提供方目录、同一个保存和验证）；「已保存」和「连接可用」分两步显示；
- * 2) 接好后 Kind 说一句，下面 3 张起手卡片（每张对应一个真实能力），点一张它说明这次按哪档做；
+ * 2) 接好后 Kind 说一句；起手卡由当前能力决定（不固定张数），每张对应一个真实能力，点一张它说明这次按哪档做；
  *    再可选问一句「你主要用我做什么」，按回答推荐内置流程和角色——只推荐、不自动采用。
  * 打开开发开关「首次使用（空库）」时显示，数据从 api 取，不 import 样例。
  * 原型约定：以 sk-bad 开头的密钥模拟被服务商拒绝。
@@ -17,8 +17,9 @@ import { addConnection, checkConnection, getModelSettings, KERNEL_PROVIDERS } fr
 import type { CatalogProvider, ConnectionView } from '@/data/keyring';
 import { toast } from 'sonner';
 import { Card } from './cards/Card';
-import { connectionCardOf } from './cards/model';
-import type { CardHost, ConnectionCardFact } from './cards/model';
+import { connectionCardOf } from '@/data/connectionCard';
+import type { ConnectionCardFact } from '@/data/connectionCard';
+import type { CardHost } from './cards/model';
 
 /** 首次使用页的事实：内置目录 + 选中的提供方 + Keyring 里已有的那个连接。 */
 function connectionFactOf(

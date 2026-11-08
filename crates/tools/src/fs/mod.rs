@@ -152,6 +152,98 @@ pub(crate) fn edit_version(
         .edit_intent(&target.key, &target.display(), verb)
 }
 
+/// 版本护栏的缺失口径：目标不在了时报什么。
+#[derive(Clone, Copy)]
+enum Missing {
+    /// 已观察过的文件消失（edit/read/delete）：FS_STALE_VERSION「file changed since it was read」。
+    Stale,
+    /// 现场确认替换目标消失（write/preflight destination）：FS_STALE_VERSION「file no longer exists」。
+    Vanished,
+    /// preflight 源检查找不到：FS_NOT_FOUND「not found」。
+    NotFound,
+}
+
+/// 版本护栏的期望来源。
+enum Expected {
+    /// 从会话观察表取（edit_version；没见过报 FS_NOT_OBSERVED）。
+    Observed,
+    /// 调用方已取好版本（写策略的 replace）。
+    Pinned(FileVersion),
+    /// 不做观察/版本比对（preflight 的 touched 分支）。
+    Skip,
+}
+
+/// fs 版本护栏的唯一实现（write/edit/read_guarded/delete/check_destination/check_source
+/// 六处共用）：先按 `Expected` 取期望版本，再从 `current` 取目标当前 stat，按
+/// 「缺失 / 非普通文件 / 版本不等」三项判定。
+fn guard_version(
+    context: &ToolContext,
+    target: &Target,
+    verb: &str,
+    expected: Expected,
+    current: impl FnOnce() -> Result<Option<FileInfo>, ToolFailure>,
+    missing: Missing,
+) -> Result<FileInfo, ToolFailure> {
+    let expected = match expected {
+        Expected::Observed => Some(edit_version(context, target, verb)?),
+        Expected::Pinned(version) => Some(version),
+        Expected::Skip => None,
+    };
+    let Some(info) = current()? else {
+        return Err(match missing {
+            Missing::Stale => stale_version(target, verb),
+            Missing::Vanished => ToolFailure::coded(
+                "FS_STALE_VERSION",
+                format!(
+                    "cannot {verb} \"{}\": file no longer exists",
+                    target.display()
+                ),
+            ),
+            Missing::NotFound => ToolFailure::coded(
+                "FS_NOT_FOUND",
+                format!("cannot {verb} \"{}\": not found", target.display()),
+            ),
+        });
+    };
+    ensure_regular(&info, target, verb)?;
+    if let Some(version) = expected
+        && info.version != version
+    {
+        return Err(stale_version(target, verb));
+    }
+    Ok(info)
+}
+
+fn ensure_regular(info: &FileInfo, target: &Target, verb: &str) -> Result<(), ToolFailure> {
+    if info.is_file {
+        return Ok(());
+    }
+    Err(ToolFailure::coded(
+        "FS_NOT_REGULAR_FILE",
+        format!("cannot {verb} \"{}\": not a regular file", target.display()),
+    ))
+}
+
+fn stale_version(target: &Target, verb: &str) -> ToolFailure {
+    ToolFailure::coded(
+        "FS_STALE_VERSION",
+        format!(
+            "cannot {verb} \"{}\": file changed since it was read",
+            target.display()
+        ),
+    )
+}
+
+fn unobserved(target: &Target) -> ToolFailure {
+    ToolFailure::coded(
+        "FS_NOT_OBSERVED",
+        format!(
+            "cannot overwrite existing \"{}\" without reading it first",
+            target.display()
+        ),
+    )
+}
+
 /// 登记一次「确认不存在」的观察（read 找不到时）。
 pub(crate) fn record_absent(context: &ToolContext, target: &Target) {
     context
@@ -188,45 +280,22 @@ fn write_file_raw(
 ) -> Result<bool, ToolFailure> {
     let intent = write_intent(context, target);
     let existing = probe(target)?;
-    if let Some(info) = &existing
-        && !info.is_file
-    {
-        return Err(ToolFailure::coded(
-            "FS_NOT_REGULAR_FILE",
-            format!("cannot write \"{}\": not a regular file", target.display()),
-        ));
-    }
-    let (mode, create_if_absent) = match &intent {
+    let (mode, create_if_absent) = match intent {
         WriteIntent::ReplaceIfVersion(version) => {
-            let Some(info) = &existing else {
-                return Err(ToolFailure::coded(
-                    "FS_STALE_VERSION",
-                    format!(
-                        "cannot write \"{}\": file no longer exists",
-                        target.display()
-                    ),
-                ));
-            };
-            if &info.version != version {
-                return Err(ToolFailure::coded(
-                    "FS_STALE_VERSION",
-                    format!(
-                        "cannot write \"{}\": file changed since it was read",
-                        target.display()
-                    ),
-                ));
-            }
+            let info = guard_version(
+                context,
+                target,
+                "write",
+                Expected::Pinned(version),
+                || Ok(existing),
+                Missing::Vanished,
+            )?;
             (Some(info.mode), false)
         }
         WriteIntent::CreateIfAbsent => {
-            if existing.is_some() {
-                return Err(ToolFailure::coded(
-                    "FS_NOT_OBSERVED",
-                    format!(
-                        "cannot overwrite existing \"{}\" without reading it first",
-                        target.display()
-                    ),
-                ));
+            if let Some(info) = &existing {
+                ensure_regular(info, target, "write")?;
+                return Err(unobserved(target));
             }
             (None, true)
         }
@@ -314,20 +383,10 @@ fn atomic_write(
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 // 并发创建者赢了：区分目录/其他（不能写）与普通文件（未读不能覆盖）。
                 let existing = probe(target)?;
-                if existing.as_ref().is_some_and(|info| !info.is_file) {
-                    Err(ToolFailure::coded(
-                        "FS_NOT_REGULAR_FILE",
-                        format!("cannot write \"{}\": not a regular file", target.display()),
-                    ))
-                } else {
-                    Err(ToolFailure::coded(
-                        "FS_NOT_OBSERVED",
-                        format!(
-                            "cannot overwrite existing \"{}\" without reading it first",
-                            target.display()
-                        ),
-                    ))
+                if let Some(info) = &existing {
+                    ensure_regular(info, target, "write")?;
                 }
+                Err(unobserved(target))
             }
             Err(error) => Err(io_failure("cannot write", &target.key, &error)),
         }
@@ -336,6 +395,10 @@ fn atomic_write(
     };
     match published {
         Ok(()) => {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "发布成功后临时文件应已 rename；清不掉只是残留"
+            )]
             let _ = fs::remove_file(&temp);
             Ok(())
         }
@@ -517,31 +580,14 @@ fn edit_file_raw(
     new_string: &str,
     replace_all: bool,
 ) -> Result<(), ToolFailure> {
-    let expected = edit_version(context, target, "edit")?;
-    let Some(info) = probe(target)? else {
-        return Err(ToolFailure::coded(
-            "FS_STALE_VERSION",
-            format!(
-                "cannot edit \"{}\": file changed since it was read",
-                target.display()
-            ),
-        ));
-    };
-    if !info.is_file {
-        return Err(ToolFailure::coded(
-            "FS_NOT_REGULAR_FILE",
-            format!("cannot edit \"{}\": not a regular file", target.display()),
-        ));
-    }
-    if info.version != expected {
-        return Err(ToolFailure::coded(
-            "FS_STALE_VERSION",
-            format!(
-                "cannot edit \"{}\": file changed since it was read",
-                target.display()
-            ),
-        ));
-    }
+    let info = guard_version(
+        context,
+        target,
+        "edit",
+        Expected::Observed,
+        || probe(target),
+        Missing::Stale,
+    )?;
     let text = read_for_edit(target)?;
     let after = apply_literal_edit(
         &text.content,
@@ -580,31 +626,14 @@ pub(crate) fn read_guarded_text(
     target: &Target,
     verb: &str,
 ) -> Result<(TextFile, FileInfo), ToolFailure> {
-    let expected = edit_version(context, target, verb)?;
-    let Some(info) = probe(target)? else {
-        return Err(ToolFailure::coded(
-            "FS_STALE_VERSION",
-            format!(
-                "cannot {verb} \"{}\": file changed since it was read",
-                target.display()
-            ),
-        ));
-    };
-    if !info.is_file {
-        return Err(ToolFailure::coded(
-            "FS_NOT_REGULAR_FILE",
-            format!("cannot {verb} \"{}\": not a regular file", target.display()),
-        ));
-    }
-    if info.version != expected {
-        return Err(ToolFailure::coded(
-            "FS_STALE_VERSION",
-            format!(
-                "cannot {verb} \"{}\": file changed since it was read",
-                target.display()
-            ),
-        ));
-    }
+    let info = guard_version(
+        context,
+        target,
+        verb,
+        Expected::Observed,
+        || probe(target),
+        Missing::Stale,
+    )?;
     let text = read_text_for_verb(target, verb)?;
     Ok((text, info))
 }
@@ -702,31 +731,14 @@ pub(crate) fn delete_file(
 }
 
 fn delete_file_raw(context: &ToolContext, target: &Target, verb: &str) -> Result<(), ToolFailure> {
-    let expected = edit_version(context, target, verb)?;
-    let Some(info) = probe(target)? else {
-        return Err(ToolFailure::coded(
-            "FS_STALE_VERSION",
-            format!(
-                "cannot {verb} \"{}\": file changed since it was read",
-                target.display()
-            ),
-        ));
-    };
-    if !info.is_file {
-        return Err(ToolFailure::coded(
-            "FS_NOT_REGULAR_FILE",
-            format!("cannot {verb} \"{}\": not a regular file", target.display()),
-        ));
-    }
-    if info.version != expected {
-        return Err(ToolFailure::coded(
-            "FS_STALE_VERSION",
-            format!(
-                "cannot {verb} \"{}\": file changed since it was read",
-                target.display()
-            ),
-        ));
-    }
+    guard_version(
+        context,
+        target,
+        verb,
+        Expected::Observed,
+        || probe(target),
+        Missing::Stale,
+    )?;
     fs::remove_file(&target.key)
         .map_err(|error| io_failure(&format!("cannot {verb}"), &target.key, &error))?;
     record_absent(context, target);
@@ -804,13 +816,8 @@ fn check_destination_raw(
     context: &ToolContext,
     target: &Target,
 ) -> Result<(), ToolFailure> {
-    if let Some(info) = state_info
-        && !info.is_file
-    {
-        return Err(ToolFailure::coded(
-            "FS_NOT_REGULAR_FILE",
-            format!("cannot modify \"{}\": not a regular file", target.display()),
-        ));
+    if let Some(info) = state_info {
+        ensure_regular(info, target, "modify")?;
     }
     if touched {
         return Ok(());
@@ -818,34 +825,18 @@ fn check_destination_raw(
     match write_intent(context, target) {
         WriteIntent::CreateIfAbsent => {
             if state_exists {
-                return Err(ToolFailure::coded(
-                    "FS_NOT_OBSERVED",
-                    format!(
-                        "cannot overwrite existing \"{}\" without reading it first",
-                        target.display()
-                    ),
-                ));
+                return Err(unobserved(target));
             }
         }
         WriteIntent::ReplaceIfVersion(version) => {
-            let Some(info) = state_info else {
-                return Err(ToolFailure::coded(
-                    "FS_STALE_VERSION",
-                    format!(
-                        "cannot write \"{}\": file no longer exists",
-                        target.display()
-                    ),
-                ));
-            };
-            if info.version != version {
-                return Err(ToolFailure::coded(
-                    "FS_STALE_VERSION",
-                    format!(
-                        "cannot write \"{}\": file changed since it was read",
-                        target.display()
-                    ),
-                ));
-            }
+            guard_version(
+                context,
+                target,
+                "write",
+                Expected::Pinned(version),
+                || Ok(state_info.cloned()),
+                Missing::Vanished,
+            )?;
         }
     }
     Ok(())
@@ -870,35 +861,19 @@ fn check_source_raw(
     target: &Target,
     verb: &str,
 ) -> Result<(), ToolFailure> {
-    let intent = if touched {
-        None
-    } else {
-        Some(edit_version(context, target, verb)?)
-    };
-    let Some(info) = state_info else {
-        return Err(ToolFailure::coded(
-            "FS_NOT_FOUND",
-            format!("cannot {verb} \"{}\": not found", target.display()),
-        ));
-    };
-    if !info.is_file {
-        return Err(ToolFailure::coded(
-            "FS_NOT_REGULAR_FILE",
-            format!("cannot {verb} \"{}\": not a regular file", target.display()),
-        ));
-    }
-    if let Some(version) = intent
-        && info.version != version
-    {
-        return Err(ToolFailure::coded(
-            "FS_STALE_VERSION",
-            format!(
-                "cannot {verb} \"{}\": file changed since it was read",
-                target.display()
-            ),
-        ));
-    }
-    Ok(())
+    guard_version(
+        context,
+        target,
+        verb,
+        if touched {
+            Expected::Skip
+        } else {
+            Expected::Observed
+        },
+        || Ok(state_info.cloned()),
+        Missing::NotFound,
+    )
+    .map(|_| ())
 }
 
 /// 路径本身（不跟随）是不是符号链接；不存在或不是链接都返回 false。

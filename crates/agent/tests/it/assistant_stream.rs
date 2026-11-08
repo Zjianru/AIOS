@@ -125,6 +125,7 @@ async fn assistant_message_records_dsh_stream_frames() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .respond_with(SequenceResponder::new(vec![sse(TWO_DELTA_SSE.to_owned())]))
+        .expect(1)
         .mount(&server)
         .await;
     let (agent, data_dir, _cwd, id) = setup_agent(&server.uri(), ToolSet::empty()).await;
@@ -204,6 +205,7 @@ async fn assistant_message_usage_and_interrupted() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .respond_with(SequenceResponder::new(vec![sse(FINAL_TEXT_SSE.to_owned())]))
+        .expect(1)
         .mount(&server)
         .await;
     let (agent, data_dir, _cwd, id) = setup_agent(&server.uri(), ToolSet::empty()).await;
@@ -421,6 +423,7 @@ async fn tool_call_delta_events_are_not_logged() {
             sse(tool_call),
             sse(FINAL_TEXT_SSE.to_owned()),
         ]))
+        .expect(2)
         .mount(&server)
         .await;
     let (agent, data_dir, _cwd, id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
@@ -490,6 +493,7 @@ async fn assistant_message_records_tool_call_delta_chunks() {
             sse(tool_call),
             sse(FINAL_TEXT_SSE.to_owned()),
         ]))
+        .expect(2)
         .mount(&server)
         .await;
     let (agent, data_dir, _cwd, id) = setup_agent(&server.uri(), ToolSet::builtin()).await;

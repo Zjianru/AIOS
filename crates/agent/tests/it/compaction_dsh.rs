@@ -146,6 +146,11 @@ async fn compaction_events_carry_dsh_fields_and_replacement() {
     };
     let harness = setup(&server, 1000, 100, config, 3).await;
     run_pressure(&server, &harness).await;
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        3,
+        "两轮请求加一次摘要请求"
+    );
 
     let rows = log_rows(harness.data_dir.path(), &harness.id);
     let starts = data_of(&rows, "compaction/start");
@@ -318,6 +323,11 @@ async fn compaction_retries_until_below_threshold_or_error() {
     };
     let harness = setup(&server, 1000, 100, config, 6).await;
     run_pressure(&server, &harness).await;
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        5,
+        "两轮请求加三次摘要请求"
+    );
 
     let rows = log_rows(harness.data_dir.path(), &harness.id);
     let starts = data_of(&rows, "compaction/start");
@@ -368,6 +378,11 @@ async fn manual_compact_counts_and_source_command_id() {
         .await
         .expect("手动压缩成功")
         .expect("有可压缩历史");
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        2,
+        "发送与手动压缩各一次请求"
+    );
     let rows = log_rows(harness.data_dir.path(), &harness.id);
     let summaries = data_of(&rows, "compaction/summary");
     assert_eq!(summaries.len(), 1);
@@ -469,6 +484,11 @@ async fn manual_compact_no_history_returns_none() {
     let harness = setup(&server, 1_000_000, 2048, config, 0).await;
     let outcome = harness.agent.compact(None).await.expect("不应报错");
     assert!(outcome.is_none(), "没有可压缩历史时返回 None");
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        0,
+        "没有可压缩历史不出站"
+    );
     let rows = log_rows(harness.data_dir.path(), &harness.id);
     assert!(
         data_of(&rows, "compaction/start").is_empty(),

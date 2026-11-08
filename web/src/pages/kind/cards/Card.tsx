@@ -4,8 +4,10 @@
  */
 
 import type { ReactElement } from 'react';
-import type { CardDefinition, CardEnvelope, CardHost, CardType, CardViewProps } from './model';
-import { cardDefinitions, normalizeEnvelope, resolveSlots } from './model';
+import type { CardDefinition, CardEnvelope, CardType } from '@/lib/cardEnvelope';
+import { resolveSlots } from '@/lib/cardEnvelope';
+import type { CardHost, CardViewProps } from './model';
+import { cardDefinitions, normalizeEnvelope } from './model';
 import { ConnectionCardView } from './ConnectionCardView';
 import { GenericCardView } from './GenericView';
 import { QuestionCardView } from './QuestionView';

@@ -103,7 +103,7 @@ export interface KernelFixture {
   lastModel: () => Promise<string | null>;
   /** T012.9：假 DeepSeek 最近一次请求的完整请求体（断言思考档用）。 */
   lastRequest: () => Promise<Record<string, unknown> | null>;
-  /** 真 key fixture：serve 进程的 stderr（DoD4 断言写失败那行用）。 */
+  /** 真 key fixture：serve 进程的 stderr。 */
   stderr?: () => string;
   dropProxy?: () => Promise<void>;
   restoreProxy?: () => Promise<void>;

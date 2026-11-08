@@ -131,7 +131,7 @@ fn call_order(events: &[session::Event]) -> Vec<String> {
 
 #[tokio::test]
 async fn batch_limits_ordering_and_exclusive_barrier() {
-    let (mut fixture, _server) = setup(
+    let (mut fixture, server) = setup(
         &[
             ("p1", ToolConcurrency::Parallel),
             ("p2", ToolConcurrency::Parallel),
@@ -220,6 +220,11 @@ async fn batch_limits_ordering_and_exclusive_barrier() {
         vec!["call_0", "call_1", "call_2", "call_3", "call_4"],
         "tool/result 按模型顺序提交，与完成顺序无关"
     );
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        2,
+        "工具批次与下一步各一次请求"
+    );
 }
 
 #[tokio::test]
@@ -252,7 +257,7 @@ async fn agent_config_rejects_zero_parallelism() {
 
 #[tokio::test]
 async fn batch_limit_one_serializes() {
-    let (mut fixture, _server) = setup(
+    let (mut fixture, server) = setup(
         &[
             ("q1", ToolConcurrency::Parallel),
             ("q2", ToolConcurrency::Parallel),
@@ -289,4 +294,9 @@ async fn batch_limit_one_serializes() {
     assert_eq!(max_concurrency, 1, "上限设成 1 就是串行");
 
     task.await.expect("agent 驱动任务失败");
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        2,
+        "工具批次与下一步各一次请求"
+    );
 }

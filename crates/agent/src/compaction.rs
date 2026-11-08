@@ -326,6 +326,10 @@ async fn compact_once(
     let provider = host.model().provider().to_owned();
     let model = host.model().config().model.clone();
 
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "页面未订阅时丢弃展示事件；持久化事实照常落盘"
+    )]
     let _ = host.events().send(AgentEvent::CompactionStarted {
         compaction_id: compaction_id.clone(),
         trigger,
@@ -345,6 +349,10 @@ async fn compact_once(
         Ok(summary) => summary,
         Err(error) => {
             let message = error.to_string();
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "压缩已失败，补记 compaction/end 失败不覆盖原错误"
+            )]
             let _ = host
                 .append(&[EventKind::CompactionEnd {
                     compaction_id: compaction_id.clone(),
@@ -353,6 +361,10 @@ async fn compact_once(
                     error: Some(message.clone()),
                 }])
                 .await;
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "页面未订阅时丢弃展示事件；持久化事实照常落盘"
+            )]
             let _ = host.events().send(AgentEvent::CompactionEnded {
                 compaction_id,
                 error: Some(message),
@@ -403,6 +415,10 @@ async fn compact_once(
         if !unchanged {
             let message = "the history selected for compaction changed before it could be replaced"
                 .to_owned();
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "压缩已失败，补记 compaction/end 失败不覆盖原错误"
+            )]
             let _ = host
                 .append(&[EventKind::CompactionEnd {
                     compaction_id: compaction_id.clone(),
@@ -411,6 +427,10 @@ async fn compact_once(
                     error: Some(message.clone()),
                 }])
                 .await;
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "页面未订阅时丢弃展示事件；持久化事实照常落盘"
+            )]
             let _ = host.events().send(AgentEvent::CompactionEnded {
                 compaction_id,
                 error: Some(message.clone()),
@@ -455,6 +475,10 @@ async fn compact_once(
     }])
     .await
     .map_err(|error| manual_error(trigger, ManualCompactionErrorCode::Persistence, error))?;
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "页面未订阅时丢弃展示事件；持久化事实照常落盘"
+    )]
     let _ = host.events().send(AgentEvent::CompactionEnded {
         compaction_id,
         error: None,
@@ -643,7 +667,7 @@ mod tests {
             events,
             tools: tools::ToolSet::empty(),
             model,
-            tool_session: Arc::new(tools::ToolSessionState::detached()),
+            tool_session: Arc::new(tools::ToolSessionState::new(data.path(), "compaction-test")),
             data_dir: data.path().to_path_buf(),
             policy,
             compaction_dispatches: AtomicU32::new(0),

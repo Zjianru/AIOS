@@ -51,6 +51,10 @@ pub async fn start_replay_server(script: ReplayScript) -> Result<ReplayServer, R
             };
             let shared = Arc::clone(&shared);
             tokio::spawn(async move {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "单连接处理出错只断开该连接，回放服务继续接收"
+                )]
                 let _ = handle(stream, shared).await;
             });
         }

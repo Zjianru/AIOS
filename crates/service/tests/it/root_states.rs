@@ -3,7 +3,6 @@
 use std::fs;
 use std::path::Path;
 
-use agent::AgentConfig;
 use model::DeepSeekConfig;
 use service::{
     Call, ContextUsage, PROTOCOL_VERSION, RecheckRequest, RootHost, RootSessionOptions, RootState,
@@ -13,37 +12,11 @@ use tempfile::tempdir;
 
 const ABSENT_SESSION: &str = "00000000-0000-4000-8000-000000000000";
 
-/// T008.F9：测试凭证来源（产品不再有固定 key 构造入口，测试显式注入）。
-struct TestCredential;
-
-impl model::CredentialSource for TestCredential {
-    fn issue(
-        &self,
-        _purpose: &str,
-        _context: &model::CredentialContext,
-    ) -> Result<String, model::ModelError> {
-        Ok("test-key".to_owned())
-    }
-}
-
-fn test_credential() -> std::sync::Arc<dyn model::CredentialSource> {
-    std::sync::Arc::new(TestCredential)
-}
-
-fn options(data_dir: &Path) -> RootSessionOptions {
-    RootSessionOptions {
-        data_dir: data_dir.to_path_buf(),
-        cwd: data_dir.to_path_buf(),
-        model: DeepSeekConfig {
-            ..DeepSeekConfig::default()
-        },
-        config: AgentConfig::default(),
-        credentials: Some(test_credential()),
-        identity: None,
-        model_factory: None,
-        append_hook_factory: None,
-        keyring_changed: None,
-    }
+fn state_options(data_dir: &Path) -> RootSessionOptions {
+    let mut options = crate::common::options(data_dir);
+    options.model = DeepSeekConfig::default();
+    options.identity = None;
+    options
 }
 
 fn write_record(data_dir: &Path, session_id: &str) {
@@ -60,7 +33,7 @@ async fn missing_root_log_reports_lost_with_path_and_rejects_methods() {
     let dir = tempdir().unwrap();
     let data = dir.path().join("data");
     write_record(&data, ABSENT_SESSION);
-    let host = RootHost::open(options(&data), 1_000).await;
+    let host = RootHost::open(state_options(&data), 1_000).await;
     let info = host.info();
     assert_eq!(info.protocol_version, PROTOCOL_VERSION);
     assert_eq!(
@@ -95,7 +68,7 @@ async fn corrupt_root_state_reports_corrupt_with_path_and_line() {
     let data = dir.path().join("data");
     fs::create_dir_all(&data).unwrap();
     fs::write(data.join(service::ROOT_STATE_FILE), b"{\"version\": 1, ").unwrap();
-    let host = RootHost::open(options(&data), 1_000).await;
+    let host = RootHost::open(state_options(&data), 1_000).await;
     let RootState::Unavailable {
         kind, path, line, ..
     } = &host.info().root
@@ -115,13 +88,13 @@ async fn recheck_recovers_after_root_state_is_restored() {
     let dir = tempdir().unwrap();
     let data = dir.path().join("data");
     // 先正常打开，建出根会话并记下 id。
-    let initial = RootHost::open(options(&data), 1_000).await;
+    let initial = RootHost::open(state_options(&data), 1_000).await;
     assert_eq!(initial.info().root, RootState::Ok);
     let session_id = initial.info().session_id.expect("根会话 id");
     drop(initial);
     // 改成指向不存在的会话：服务照常起，状态是 lost。
     write_record(&data, ABSENT_SESSION);
-    let host = RootHost::open(options(&data), 1_000).await;
+    let host = RootHost::open(state_options(&data), 1_000).await;
     assert!(matches!(
         host.info().root,
         RootState::Unavailable {

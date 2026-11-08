@@ -109,6 +109,11 @@ async fn batch_write_before_read_is_rejected() {
         .await
         .unwrap();
     agent.idle().await;
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        2,
+        "工具批次与下一步各一次请求"
+    );
 
     let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(
@@ -180,6 +185,11 @@ async fn edit_after_read_across_steps_succeeds() {
         .await
         .unwrap();
     agent.idle().await;
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        3,
+        "读、改、收尾各一次请求"
+    );
 
     let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     assert_eq!(tool_result(&store, "call_0"), (false, None));
@@ -222,5 +232,10 @@ async fn patch_after_read_across_steps_succeeds() {
     assert_eq!(
         fs::read_to_string(cwd.path().join("a.txt")).unwrap(),
         "two\n"
+    );
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        3,
+        "读、打补丁、收尾各一次请求"
     );
 }

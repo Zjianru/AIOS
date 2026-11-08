@@ -8,14 +8,7 @@
  * - 「已保存」和「连接可用」是两件事，分开记（docs 10 篇第 2 节）。
  */
 
-import type { ModelRow, ModelSettingsView, Protocol } from '@/data/keyring';
-
-/** 地址占位随协议变：Anthropic 的 SDK 会自己追加 /v1/messages。 */
-export const PROTOCOL_ENDPOINT_HINT: Record<Protocol, string> = {
-  'anthropic-messages': 'https://gateway.example',
-  'openai-chat': 'https://gateway.example/v1',
-  'openai-responses': 'https://gateway.example/v1',
-};
+import type { ModelRow, ModelSettingsView } from '@/data/keyring';
 
 const DEEPSEEK_MODELS: ModelRow[] = [
   { id: 'deepseek-chat', name: 'DeepSeek Chat', contextWindow: 128000, maxTokens: 8000 },

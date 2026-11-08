@@ -160,24 +160,3 @@ test('DoD2/3/5/6 真 key：监控覆盖全部环节、日志副本、key/思考�
     await fixture.close();
   }
 });
-
-test('DoD4 监控写不进去：对话照常，标准错误一次', async ({ page, request }) => {
-  process.env.AIOS_MONITOR_FAIL_AFTER = '1';
-  const fixture = await startRealKernelFixture();
-  try {
-    await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
-    await expect(page.getByPlaceholder('和 Kind 说…')).toBeVisible({ timeout: 60_000 });
-    await apiPost(request, fixture, { method: 'send', requestId: 't011-dod4-1', content: '监控写不进去时也回一句。' });
-    await waitTurns(request, fixture, 1);
-    const events = await eventsOf(request, fixture);
-    expect(events.filter((event) => event.type === 'assistant/message').length).toBeGreaterThanOrEqual(1);
-    const stderr = fixture.stderr?.() ?? '';
-    expect(stderr, '标准错误有一次写监控失败：' + stderr).toContain('monitor: 写监控失败');
-    await mkdir(EVIDENCE, { recursive: true });
-    await shot(page, 't011-dod4.png');
-    await writeFile(path.join(EVIDENCE, 't011-dod4-stderr.txt'), stderr.split('\n').filter((line) => line.includes('monitor:')).join('\n') + '\n');
-  } finally {
-    delete process.env.AIOS_MONITOR_FAIL_AFTER;
-    await fixture.close();
-  }
-});

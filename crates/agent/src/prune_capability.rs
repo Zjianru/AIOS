@@ -509,6 +509,10 @@ impl Capability for PruneCapability {
                 if *trigger != CompactionTrigger::Manual {
                     // 修剪失败不打断压缩事务（DSH 也是尽力而为的 model-free pass；
                     // 压缩自己的错误仍按原路径上报）。
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "修剪是尽力而为；失败不打断压缩事务"
+                    )]
                     let _ = prune_session(*host, None).await;
                 }
             }

@@ -557,6 +557,11 @@ async fn cancel_batch_skips_unstarted_calls() {
             TurnEndReason::Completed
         ]
     );
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        2,
+        "打断的一轮与下一轮各一次请求"
+    );
 }
 
 async fn lost_wake_case(delivery: Delivery) {

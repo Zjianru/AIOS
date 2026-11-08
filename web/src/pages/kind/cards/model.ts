@@ -1,58 +1,42 @@
 /**
- * 卡片机制（T017.2）：卡片信封、逐槽位的校验和降级、每类卡的注册项（schema / from / fallback）的纯数据模型。
+ * 卡片机制（T017.2）：逐槽位的校验和降级、每类卡的注册项（schema / from / fallback）的纯数据模型。
  *
- * - 信封的 id、type、role、state、receipt 由程序定；模型的文字只进 slots。
+ * - 信封的词汇、槽位上限和规则在 lib/cardEnvelope（设置页也从那里取，不反向 import 这里）。
+ * - 连接卡的派生在 data/connectionCard（设置页和首次使用共用）；这里只把它登记进注册表。
  * - 每个槽位自己的规则都带 .catch，一个槽位坏了不牵连整张卡（spec 实现决定「校验和降级」）。
  * - 信封本身不合法（类型不认识、没有 id）才整卡退回 generic。
  * - 这个文件不依赖 React，node 单测（scripts/cards.test.mjs）直接 import。
  */
 
 import { z } from 'zod';
+import type {
+  BodySlot,
+  CardDefinition,
+  CardEnvelope,
+  CardReceipt,
+  CardRole,
+  CardState,
+  CardType,
+  LabelSlot,
+} from '../../../lib/cardEnvelope.ts';
+import {
+  CARD_ROLES,
+  CARD_STATES,
+  CARD_TYPES,
+  EMPTY_BODY,
+  RECEIPT_OUTCOMES,
+  bodyOf,
+  bodySlot,
+  labelSlot,
+  optionalBodySlot,
+  textSlot,
+} from '../../../lib/cardEnvelope.ts';
+import { connectionCard } from '../../../data/connectionCard.ts';
 // 工具卡的槽位从现有的派生函数来（terminalOf/diffOf/readOf/searchOf），不另写一份。
 // 这个模块要被 node 单测直接 import：Node 的相对导入必须写扩展名，tsconfig 因此打开了
 // allowImportingTsExtensions（只影响类型检查，不产出文件）。
 import { diffOf, readOf, searchOf, terminalOf } from '../process/toolModel.ts';
 import type { ToolStepView } from '../process/toolModel';
-
-/* ───────── 信封 ───────── */
-
-/** 注册表的键（spec :40；.2 登记 question 和 generic，其余随 .3/.4）。 */
-export const CARD_TYPES = [
-  'question',
-  'terminal',
-  'diff',
-  'read',
-  'search',
-  'generic',
-  'connection',
-] as const;
-export type CardType = (typeof CARD_TYPES)[number];
-
-/** 卡片的角色：决定、状态、信息（颜色跟着角色和状态走，不由模型给）。 */
-export const CARD_ROLES = ['decision', 'state', 'information'] as const;
-export type CardRole = (typeof CARD_ROLES)[number];
-
-export const CARD_STATES = ['pending', 'running', 'done', 'failed', 'stopped'] as const;
-export type CardState = (typeof CARD_STATES)[number];
-
-export const RECEIPT_OUTCOMES = ['success', 'partial', 'failed', 'cancelled'] as const;
-export type ReceiptOutcome = (typeof RECEIPT_OUTCOMES)[number];
-
-/** 回执：做过的决定留下的持久事实（答过、不答、被停了）。 */
-export interface CardReceipt {
-  outcome: ReceiptOutcome;
-  summary: string;
-}
-
-/** 卡片信封：id/type/role/state/receipt 程序定，slots 的文字来自模型。 */
-export interface CardEnvelope<Slots = unknown> {
-  id: string;
-  type: CardType;
-  role: CardRole;
-  state: CardState;
-  slots: Slots;
-  receipt?: CardReceipt;
-}
 
 /** 一次作答的形状（和 data/service 的 AskAnswer 一致；卡片模型不 import 页面数据层）。 */
 export interface AnswerInput {
@@ -81,19 +65,6 @@ export interface CardViewProps<Slots> {
   slots: Slots;
   host: CardHost;
 }
-
-/** 槽位上限（spec :54：这两个数是常数，验收时截得不对可以调，不算改设计）。 */
-export const LABEL_MAX = 20;
-export const BODY_MAX = 600;
-
-/** 一格正文：原文完整保留，超过上限标成折起来，点开看全文。 */
-export interface BodySlot {
-  text: string;
-  folded: boolean;
-}
-
-/** 标签槽：小标题；不合法或超长退回默认值（默认值由每个槽位自己定，通常是空＝不显示）。 */
-export type LabelSlot = string;
 
 /* ───────── 提问卡 ───────── */
 
@@ -146,43 +117,7 @@ export interface GenericSlots {
   output?: BodySlot;
 }
 
-/* ───────── 槽位规则（每个都带 .catch） ───────── */
-
-const EMPTY_BODY: BodySlot = { text: '', folded: false };
-
-/** 字数按字符算（和「大段粘贴卡」的字数口径一致）。 */
-function chars(text: string): number {
-  return [...text].length;
-}
-
-/** 一段正文 → 正文槽：原文完整保留，超过上限标成折起来。 */
-function bodyOf(text: string): BodySlot {
-  return { text, folded: chars(text) > BODY_MAX };
-}
-
-const bodyInput = z
-  .union([z.string(), z.object({ text: z.string() })])
-  .transform((value): BodySlot => bodyOf(typeof value === 'string' ? value : value.text));
-
-/**
- * 正文槽：不合法（不是字符串）就退回空，这一项不显示；超过 BODY_MAX 字标成折起来，原文不丢。
- * 也接受已经解出来的 {text}：卡片入口对同一个信封会再校验一次，解过的东西要能原样再过一遍。
- */
-const bodySlot = bodyInput.catch(EMPTY_BODY);
-
-/** 可缺的正文槽：不合法就是没有这一项，不塞一个空段（工具卡的输入 / 输出用）。 */
-const optionalBodySlot = bodyInput.optional().catch(undefined);
-
-/** 标签槽：不是字符串或超过 LABEL_MAX 字，退回这个槽位的默认值。 */
-function labelSlot(fallbackValue: LabelSlot) {
-  return z
-    .string()
-    .refine((text) => chars(text) <= LABEL_MAX, { message: '标签太长' })
-    .catch(fallbackValue);
-}
-
-/** 不折的正文槽：一行字（连接卡的名字、时间、原因、工具卡的命令等）。 */
-const textSlot = z.string().catch('');
+/* ───────── 提问卡的槽位规则（每个都带 .catch） ───────── */
 
 const optionSlotSchema = z.object({
   label: bodySlot,
@@ -305,7 +240,9 @@ function questionReceiptOf(fact: QuestionCardFact, count: number): CardReceipt |
   }
 }
 
-export function questionCardOf(fact: QuestionCardFact): CardEnvelope<QuestionSlots> | null {
+export function questionCardOf(
+  fact: QuestionCardFact | null | undefined,
+): CardEnvelope<QuestionSlots> | null {
   if (!fact || typeof fact !== 'object') return null;
   const parsed = questionSlotsSchema.safeParse({
     questions: fact.questions,
@@ -323,24 +260,9 @@ export function questionCardOf(fact: QuestionCardFact): CardEnvelope<QuestionSlo
   };
 }
 
-/* ───────── 注册项 ───────── */
-
-export interface CardDefinition<Fact, Slots> {
-  /** 每个槽位一条规则，都带 .catch。 */
-  schema: z.ZodType<Slots>;
-  /** 从事实派生信封；取不出返回 null。 */
-  from: (fact: Fact) => CardEnvelope<Slots> | null;
-  /** slots 整块坏掉时的默认值（每个槽位的默认值）。 */
-  fallback: Slots;
-}
-
-/** 信封 → 槽位：schema 过了就用解析结果，没过就整块退回默认值。卡片入口和单测共用。 */
-export function resolveSlots<Fact, Slots>(
-  definition: CardDefinition<Fact, Slots>,
-  slots: unknown,
-): Slots {
-  const parsed = definition.schema.safeParse(slots);
-  return parsed.success ? parsed.data : definition.fallback;
+/** 对话里的提问卡：取不出信封（事实坏了）时退回通用卡，不整卡消失。 */
+export function questionCardEntryOf(fact: QuestionCardFact | null | undefined): CardEnvelope {
+  return questionCardOf(fact) ?? genericCardOf(fact);
 }
 
 const QUESTION_FALLBACK_SLOTS: QuestionSlots = { questions: [], answers: [] };
@@ -356,149 +278,6 @@ export const genericCard: CardDefinition<unknown, GenericSlots> = {
   schema: genericSlotsSchema,
   from: genericCardOf,
   fallback: GENERIC_FALLBACK_SLOTS,
-};
-
-/* ───────── 连接卡（T017.4）：从 Keyring 状态派生信封 ───────── */
-
-/** Keyring 里一个连接的当前状态（首次使用页和设置页共用；结构上等同 ConnectionView）。 */
-export interface ConnectionCardFact {
-  /** 连接 id；首次使用还没保存过时用固定值。 */
-  id: string;
-  name?: string;
-  /** 可选：还没接的提供方（首次使用页的按钮）。空列表也能出信封。 */
-  providers?: { id: string; name: string }[];
-  /** 当前选中的提供方。 */
-  provider?: string;
-  /** Keyring 里的密钥状态。 */
-  key?: { saved: boolean; savedAt?: string };
-  /** 最近一次验证。 */
-  check?: { kind: 'never' | 'checking' | 'ok' | 'fail'; at?: string; reason?: string };
-  /** Keyring 读不出来：所有连接一起停用（设置页）。 */
-  broken?: boolean;
-}
-
-export interface ConnectionProviderSlot {
-  id: string;
-  name: LabelSlot;
-}
-
-/** 连接卡的槽位：程序从 Keyring 状态填，模型的文字进不来。 */
-export interface ConnectionSlots {
-  name: LabelSlot;
-  providers: ConnectionProviderSlot[];
-  provider: string;
-  saved: boolean;
-  savedAt: string;
-  check: 'never' | 'checking' | 'ok' | 'fail';
-  checkedAt: string;
-  reason: string;
-  broken: boolean;
-}
-
-/** 每个连接槽位一条规则，都带 .catch：缺字段或坏字段只降级，不整卡报错。 */
-const providerSlotSchema = z
-  .object({
-    id: z.string().min(1),
-    name: labelSlot(''),
-  })
-  .nullable()
-  .catch(null);
-
-export const connectionSlotsSchema = z.object({
-  name: labelSlot(''),
-  providers: z
-    .array(providerSlotSchema)
-    .default([])
-    .transform((items) => items.filter((item): item is ConnectionProviderSlot => item !== null)),
-  provider: textSlot,
-  saved: z.boolean().catch(false),
-  savedAt: textSlot,
-  check: z.enum(['never', 'checking', 'ok', 'fail']).catch('never'),
-  checkedAt: textSlot,
-  reason: textSlot,
-  broken: z.boolean().catch(false),
-});
-
-const CONNECTION_FALLBACK_SLOTS: ConnectionSlots = {
-  name: '',
-  providers: [],
-  provider: '',
-  saved: false,
-  savedAt: '',
-  check: 'never',
-  checkedAt: '',
-  reason: '',
-  broken: false,
-};
-
-/**
- * 连接的状态由 Keyring 决定（程序定，不由模型给）：
- * 已保存是决定做完了，正在验证是 running，失败是 failed；还没保存是 pending。
- */
-function connectionStateOf(fact: ConnectionCardFact): CardState {
-  if (fact.broken) return 'failed';
-  if (!fact.key?.saved) return 'pending';
-  switch (fact.check?.kind) {
-    case 'checking':
-      return 'running';
-    case 'fail':
-      return 'failed';
-    default:
-      return 'done';
-  }
-}
-
-/** 回执和状态对得上：已保存 / 可用是 success，失败是 failed；还没决定、验证中没有回执。 */
-function connectionReceiptOf(fact: ConnectionCardFact): CardReceipt | null {
-  if (fact.broken) return { outcome: 'failed', summary: 'Keyring 读不出来，这个连接暂时不能用' };
-  if (!fact.key?.saved) return null;
-  switch (fact.check?.kind) {
-    case 'ok':
-      return { outcome: 'success', summary: '连接可用' };
-    case 'fail': {
-      const reason = typeof fact.check.reason === 'string' ? fact.check.reason : '';
-      return { outcome: 'failed', summary: reason ? `连接不可用：${reason}` : '连接不可用' };
-    }
-    case 'checking':
-      return null;
-    default:
-      return { outcome: 'success', summary: '已保存到 Keyring' };
-  }
-}
-
-/** Keyring 状态 → 连接卡信封；没有连接 id（取不出事实）返回 null。 */
-export function connectionCardOf(fact: ConnectionCardFact): CardEnvelope<ConnectionSlots> | null {
-  if (!fact || typeof fact !== 'object') return null;
-  const id = typeof fact.id === 'string' ? fact.id : '';
-  if (!id) return null;
-  const parsed = connectionSlotsSchema.safeParse({
-    name: fact.name,
-    providers: fact.providers,
-    provider: fact.provider,
-    saved: fact.key?.saved === true,
-    savedAt: fact.key?.savedAt,
-    check: fact.check?.kind,
-    checkedAt: fact.check?.at,
-    reason: fact.check?.reason,
-    broken: fact.broken === true,
-  });
-  if (!parsed.success) return null;
-  const state = connectionStateOf(fact);
-  const receipt = connectionReceiptOf(fact);
-  return {
-    id,
-    type: 'connection',
-    role: 'decision',
-    state,
-    slots: parsed.data,
-    ...(receipt ? { receipt } : {}),
-  };
-}
-
-export const connectionCard: CardDefinition<ConnectionCardFact, ConnectionSlots> = {
-  schema: connectionSlotsSchema,
-  from: connectionCardOf,
-  fallback: CONNECTION_FALLBACK_SLOTS,
 };
 
 /* ───────── 工具卡（T017.3）：工具名 → 类型、槽位和信封 ───────── */
@@ -753,9 +532,22 @@ function answersOf(output: string): unknown[] {
   return [];
 }
 
+/** 模型参数是 multi_select（snake_case）；卡片槽位用 multiSelect，工作过程的待答卡照多选显示。 */
+function questionsWithMultiSelect(raw: unknown): unknown {
+  if (!Array.isArray(raw)) return raw;
+  return raw.map((item) => {
+    if (!item || typeof item !== 'object') return item;
+    const record = item as Record<string, unknown>;
+    if (typeof record.multiSelect === 'boolean' || typeof record.multi_select !== 'boolean') {
+      return item;
+    }
+    return { ...record, multiSelect: record.multi_select };
+  });
+}
+
 export function askCardOf(step: ToolStepView): CardEnvelope<QuestionSlots> | null {
   const parsed = questionSlotsSchema.safeParse({
-    questions: step.args.questions,
+    questions: questionsWithMultiSelect(step.args.questions),
     answers: step.state === 'done' ? answersOf(step.output) : [],
   });
   if (!parsed.success || parsed.data.questions.length === 0) return null;

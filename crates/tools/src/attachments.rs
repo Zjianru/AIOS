@@ -91,7 +91,7 @@ fn sha256_hex(data: &[u8]) -> String {
     let mut hex = String::with_capacity(64);
     for byte in digest.as_ref() {
         use std::fmt::Write as _;
-        let _ = write!(hex, "{byte:02x}");
+        write!(hex, "{byte:02x}").expect("写入 String 不会失败");
     }
     hex
 }

@@ -344,11 +344,20 @@ pathlib.Path(sys.argv[2]).write_text('locked')
 # T009.H6：子进程持锁 0.6s 模拟跨进程占用；Python 里真实等待
 time.sleep(0.6)
 ";
+    let home = fixture.data_dir.join("test-home");
+    std::fs::create_dir_all(&home).expect("隔离 HOME");
     let mut child = std::process::Command::new("python3")
         .arg("-c")
         .arg(script)
         .arg(&lock_path)
         .arg(&sentinel)
+        .env("HOME", &home)
+        .env_remove("http_proxy")
+        .env_remove("https_proxy")
+        .env_remove("all_proxy")
+        .env_remove("HTTP_PROXY")
+        .env_remove("HTTPS_PROXY")
+        .env_remove("ALL_PROXY")
         .spawn()
         .expect("spawn lock holder");
     for _ in 0..100 {

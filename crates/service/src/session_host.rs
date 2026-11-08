@@ -13,8 +13,8 @@ use crate::protocol::{
     AnswerRequest, AnswerResponse, Call, CancelRequest, CancelResponse, CompactCounts,
     CompactRequest, CompactResponse, DeliveryMode, DismissQuestionsRequest,
     DismissQuestionsResponse, EventsRequest, EventsResponse, FollowRequest, FollowResponse,
-    HostLocation, Object, RecheckResponse, Response, RootState, SendRequest, SendResponse,
-    ServiceEvent, StatusRequest, StatusResponse,
+    HostLocation, MonitorReportResponse, Object, RecheckResponse, Response, RootState, SendRequest,
+    SendResponse, ServiceEvent, StatusRequest, StatusResponse,
 };
 
 /// 与载体无关的服务宿主：绑定一个 Agent/会话，调用经 dispatch 进入，事件从广播流出。
@@ -36,6 +36,10 @@ impl ServiceHost {
             loop {
                 match source.recv().await {
                     Ok(event) => {
+                        #[expect(
+                            clippy::let_underscore_must_use,
+                            reason = "转发端在订阅者关闭时不能停，继续消费到源关闭"
+                        )]
                         let _ = forward_tx.send(service_event(&event));
                     }
                     // 订阅者落后时继续转发，补齐由调用方的 follow 负责；转发端自己不能停。
@@ -88,6 +92,10 @@ impl ServiceHost {
             Call::Status(request) => self.status(request).await.map(Response::Status),
             Call::Follow(request) => self.follow(request).await.map(Response::Follow),
             Call::Events(request) => self.events(request).await.map(Response::Events),
+            // 监控上报只对 Web 载体有意义：裸宿主没有 Monitor，接受但不记。
+            Call::MonitorReport(_) => {
+                Ok(Response::MonitorReport(MonitorReportResponse { ok: true }))
+            }
             // recheck 只对 RootHost 有意义；裸 ServiceHost 直接回根状态 ok（宿主不回退）。
             Call::Recheck(_) => Ok(Response::Recheck(RecheckResponse {
                 root: RootState::Ok,
@@ -209,6 +217,10 @@ impl ServiceHost {
 
     /// 停服务收尾——取消正在跑的一轮、等驱动空闲（日志收尾完整、写锁随 Agent drop 释放）。
     pub async fn shutdown(&self) {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "停服务收尾；取消失败也要继续等 idle"
+        )]
         let _ = self.agent.cancel().await;
         self.agent.idle().await;
     }

@@ -6,7 +6,8 @@
 
 import { useState } from 'react';
 import { Check, Eye, EyeOff, Loader2, X } from 'lucide-react';
-import type { CardViewProps, ConnectionProviderSlot, ConnectionSlots } from './model';
+import type { ConnectionProviderSlot, ConnectionSlots } from '@/data/connectionCard';
+import type { CardViewProps } from './model';
 import { cn } from '@/lib/utils';
 
 function KindOrb({ size = 34 }: { size?: number }) {

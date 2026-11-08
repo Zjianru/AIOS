@@ -1,14 +1,13 @@
 // T017.2：卡片信封和注册表（spec 测试清单 1–5、7 的 node 部分）。
 // 期望值来自 spec 的降级规则和现在页面上的回执文案，不来自组件输出。
 import assert from 'node:assert/strict';
+import { BODY_MAX, LABEL_MAX, resolveSlots } from '../src/lib/cardEnvelope.ts';
+import { connectionCardOf } from '../src/data/connectionCard.ts';
 import {
-  BODY_MAX,
-  LABEL_MAX,
   cardDefinitions,
-  connectionCardOf,
   normalizeEnvelope,
+  questionCardEntryOf,
   questionCardOf,
-  resolveSlots,
   toolCardOf,
   toolCardTypeOf,
 } from '../src/pages/kind/cards/model.ts';
@@ -201,6 +200,11 @@ const voided = questionEnvelope(questionFact({ status: 'void' }));
 assert.equal(voided.state, 'stopped');
 assert.deepEqual(voided.receipt, { outcome: 'cancelled', summary: '这一轮停下了，问题没再等回答' });
 
+/* 提问卡取不出信封（null）时退回通用卡，不整卡消失、不抛异常。 */
+const questionFallback = questionCardEntryOf(null);
+assert.equal(questionFallback.type, 'generic', 'null 事实退回通用卡');
+assert.equal(normalizeEnvelope(questionFallback).type, 'generic', '能过卡片入口再校验');
+
 /* ───────── T017.3 工具卡（spec 清单 6、8；票面 15 份样例） ───────── */
 
 /**
@@ -251,6 +255,28 @@ const TOOL_TYPES = {
 for (const [name, expected] of Object.entries(TOOL_TYPES)) {
   assert.equal(toolCardTypeOf(name), expected, name + ' → ' + expected);
 }
+
+/* 工作过程里的待答提问卡读模型参数 multi_select（不是 multiSelect）。 */
+const askMulti = stepOf(
+  {
+    callId: 'call-ask-multi',
+    name: 'ask_user_question',
+    arguments: JSON.stringify({
+      questions: [
+        {
+          id: 'q1',
+          question: '哪些都算？',
+          header: '',
+          options: [{ label: '甲' }, { label: '乙' }],
+          multi_select: true,
+        },
+      ],
+    }),
+  },
+  null,
+);
+const askMultiCard = toolCardEnvelope(askMulti, 'question', '提问卡多选');
+assert.equal(askMultiCard.slots.questions[0].multiSelect, true, 'multi_select 要映射成 multiSelect');
 
 /* 终端：长 / 短 / 缺字段 */
 const bashShort = stepOf(
@@ -397,7 +423,11 @@ const mysteryLong = stepOf(
 );
 const genericToolLong = toolCardEnvelope(mysteryLong, 'generic', '通用长');
 assert.equal(genericToolLong.slots.input.folded, true);
-assert.equal(genericToolLong.slots.input.text.includes('x'.repeat(2000)), true, '原文完整保留');
+assert.equal(
+  genericToolLong.slots.input.text,
+  '{\n  "text": "' + 'x'.repeat(2000) + '"\n}',
+  '原文完整保留',
+);
 
 const mysteryMissing = stepOf({ callId: 'call-mystery-3', name: 'mystery', arguments: '{}' });
 const genericToolMissing = toolCardEnvelope(mysteryMissing, 'generic', '通用缺字段');
@@ -626,6 +656,12 @@ assert.doesNotThrow(() => normalizeEnvelope(brokenKeyring), '连接卡的信封�
 
 // 没有 id：出不了信封，由卡片入口退回通用卡。
 assert.equal(connectionCardOf({ id: '' }), null);
+
+/* providers 是坏数组（不是数组）时退回空列表，连接卡仍出信封，不整卡 generic。 */
+const badProviders = connectionEnvelope(connectionFact({ providers: { nope: true } }));
+assert.equal(badProviders.type, 'connection');
+assert.deepEqual(badProviders.slots.providers, []);
+assert.equal(badProviders.state, 'pending');
 
 // 槽位坏了逐项降级，不整卡报错。
 const connectionBad = resolveSlots(cardDefinitions.connection, {

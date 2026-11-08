@@ -1,10 +1,8 @@
 //! T010.1 清单 1：回放往返——用真适配器跑一段假模型的日志，再拿日志回放同一段对话，
 //! 新日志里每条 assistant/message 的 content 和 usage 和原日志相同。
 
-use std::sync::Arc;
-
 use agent::{Agent, Delivery};
-use model::{CredentialContext, CredentialSource, ModelError, UserMessage};
+use model::UserMessage;
 use replay::ReplayScript;
 use replay::start_replay_server;
 use session::SessionStore;
@@ -31,14 +29,6 @@ event: message_stop
 data: {"type":"message_stop"}
 
 "#;
-
-struct TestCredential;
-
-impl CredentialSource for TestCredential {
-    fn issue(&self, _purpose: &str, _context: &CredentialContext) -> Result<String, ModelError> {
-        Ok("test-key".to_owned())
-    }
-}
 
 struct TestAgent {
     agent: Agent,
@@ -71,8 +61,11 @@ async fn setup_agent(base_url: &str) -> TestAgent {
     let agent = Agent::create(
         config,
         agent::Deps {
-            model: model::DeepSeek::with_credentials(config_model, Arc::new(TestCredential))
-                .expect("模型适配器"),
+            model: model::DeepSeek::with_credentials(
+                config_model,
+                crate::common::test_credential(),
+            )
+            .expect("模型适配器"),
             tools: ToolSet::empty(),
             store,
         },

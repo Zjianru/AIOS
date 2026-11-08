@@ -28,7 +28,7 @@ fn canonical(path: &Path) -> String {
 #[tokio::test]
 async fn write_creates_file() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let tool = WriteTool::new();
 
     let result = run(
@@ -59,7 +59,7 @@ async fn batch_write_before_read_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("a.txt");
     fs::write(&file, "old\n").unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let tools = ToolSet::builtin();
     let calls = vec![
         ToolCall {
@@ -96,7 +96,7 @@ async fn batch_write_before_read_is_rejected() {
 async fn read_then_write_overwrites_file() {
     // 测试清单第 1、2 条：读过之后才允许覆盖；写成功记 Updated file。
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let file = dir.path().join("a.txt");
     fs::write(&file, "old\n").unwrap();
 
@@ -125,7 +125,7 @@ async fn read_then_write_overwrites_file() {
 #[tokio::test]
 async fn write_unread_existing_file_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let file = dir.path().join("a.txt");
     fs::write(&file, "old\n").unwrap();
 
@@ -150,7 +150,7 @@ async fn write_unread_existing_file_is_rejected() {
 #[tokio::test]
 async fn write_after_external_change_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let file = dir.path().join("a.txt");
     fs::write(&file, "old\n").unwrap();
     let read = run(
@@ -183,7 +183,7 @@ async fn write_after_external_change_is_rejected() {
 #[tokio::test]
 async fn edit_replaces_unique_match() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let file = dir.path().join("a.txt");
     fs::write(&file, "alpha\nbeta\ngamma\n").unwrap();
     let read = run(
@@ -213,7 +213,7 @@ async fn edit_replaces_unique_match() {
 #[tokio::test]
 async fn edit_reports_missing_match() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let file = dir.path().join("a.txt");
     fs::write(&file, "alpha\nbeta\n").unwrap();
     let read = run(
@@ -245,7 +245,7 @@ async fn edit_reports_missing_match() {
 #[tokio::test]
 async fn edit_reports_ambiguous_match_then_replace_all() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let file = dir.path().join("a.txt");
     fs::write(&file, "x\nx\n").unwrap();
     let read = run(
@@ -293,7 +293,7 @@ async fn edit_reports_ambiguous_match_then_replace_all() {
 #[tokio::test]
 async fn edit_unread_file_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let file = dir.path().join("a.txt");
     fs::write(&file, "alpha\n").unwrap();
 
@@ -318,7 +318,7 @@ async fn edit_unread_file_is_rejected() {
 #[tokio::test]
 async fn edit_after_external_change_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let file = dir.path().join("a.txt");
     fs::write(&file, "alpha\n").unwrap();
     let read = run(
@@ -351,7 +351,7 @@ async fn edit_after_external_change_is_rejected() {
 #[tokio::test]
 async fn edit_preserves_crlf_line_endings() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let file = dir.path().join("a.txt");
     fs::write(&file, b"one\r\ntwo\r\nthree\r\n").unwrap();
     let read = run(
@@ -372,6 +372,44 @@ async fn edit_preserves_crlf_line_endings() {
     // D4：匹配按 LF 归一，写回恢复文件原来的 CRLF 行尾。
     assert_eq!(fs::read(&file).unwrap(), b"one\r\nTWO\r\nthree\r\n");
 }
+
+/// 编辑后文件读不回来（这里写进 NUL 让文件不再是文本）：差量不能画成整文件删除，
+/// 结果要标明差量不可用——编辑本身已经成功。
+#[tokio::test]
+async fn edit_read_fail() {
+    let dir = tempfile::tempdir().unwrap();
+    let context = crate::common::context(dir.path());
+    let file = dir.path().join("a.txt");
+    fs::write(&file, "alpha\nbeta\ngamma\n").unwrap();
+    let read = run(
+        &tools::ReadTool::new(),
+        &context,
+        json!({"file_path": "a.txt"}),
+    )
+    .await;
+    assert!(!read.is_error, "{}", read.content);
+
+    let result = run(
+        &EditTool::new(),
+        &context,
+        json!({"file_path": "a.txt", "old_string": "beta", "new_string": "be\u{0}ta"}),
+    )
+    .await;
+    assert!(!result.is_error, "编辑本身成功了：{}", result.content);
+    assert_eq!(fs::read(&file).unwrap(), b"alpha\nbe\0ta\ngamma\n");
+    let diffs = result
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("diffs"))
+        .and_then(Value::as_array)
+        .expect("diffs 是数组");
+    assert!(diffs.is_empty(), "读不回来时不能画出整文件删除：{diffs:?}");
+    assert!(
+        result.content.contains("diff unavailable"),
+        "差量不可用要写进结果：{}",
+        result.content
+    );
+}
 async fn patch_run(arguments: Value, context: &ToolContext) -> ToolResult {
     run(&ApplyPatchTool::new(), context, arguments).await
 }
@@ -379,7 +417,7 @@ async fn patch_run(arguments: Value, context: &ToolContext) -> ToolResult {
 #[tokio::test]
 async fn patch_rejects_syntax_error() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
 
     let result = patch_run(json!({"input": "not a patch"}), &context).await;
     assert!(result.is_error);
@@ -394,7 +432,7 @@ async fn patch_rejects_syntax_error() {
 #[tokio::test]
 async fn patch_applies_add_and_update() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let file = dir.path().join("a.txt");
     fs::write(&file, "one\ntwo\nthree\n").unwrap();
     let read = run(
@@ -424,7 +462,7 @@ async fn patch_applies_add_and_update() {
 #[tokio::test]
 async fn patch_rejects_hunk_mismatch_before_any_change() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let file = dir.path().join("a.txt");
     fs::write(&file, "one\ntwo\n").unwrap();
     let read = run(
@@ -454,7 +492,7 @@ async fn patch_rejects_hunk_mismatch_before_any_change() {
 #[tokio::test]
 async fn patch_delete_requires_read() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let file = dir.path().join("a.txt");
     fs::write(&file, "one\n").unwrap();
     let a = canonical(&file);
@@ -475,7 +513,7 @@ async fn patch_delete_requires_read() {
 #[tokio::test]
 async fn patch_empty_is_noop() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let result = patch_run(json!({"input": "*** Begin Patch\n*** End Patch"}), &context).await;
     assert!(!result.is_error, "{}", result.content);
     assert_eq!(result.content, "Success. No operations in patch.");
@@ -501,7 +539,7 @@ fn write_tools_are_exclusive() {
 async fn patch_delete_symlink_source_is_rejected() {
     use std::os::unix::fs::symlink;
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let real = dir.path().join("a.txt");
     fs::write(&real, "one\n").unwrap();
     let link = dir.path().join("link.txt");
@@ -525,7 +563,7 @@ async fn patch_delete_symlink_source_is_rejected() {
 #[tokio::test]
 async fn patch_move_to_same_path_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let file = dir.path().join("a.txt");
     fs::write(&file, "one\n").unwrap();
     let read = run(
@@ -554,7 +592,7 @@ async fn patch_move_to_same_path_is_rejected() {
 async fn patch_move_to_symlink_alias_is_rejected() {
     use std::os::unix::fs::symlink;
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let file = dir.path().join("a.txt");
     fs::write(&file, "one\n").unwrap();
     let link = dir.path().join("link.txt");
@@ -591,7 +629,7 @@ async fn patch_move_partial_failure_reports_destination_written() {
     fs::create_dir_all(&dst_dir).unwrap();
     let src = src_dir.join("a.txt");
     fs::write(&src, "one\n").unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let read = run(
         &tools::ReadTool::new(),
         &context,
@@ -633,7 +671,7 @@ async fn patch_move_partial_failure_reports_destination_written() {
 #[tokio::test]
 async fn patch_deletes_read_file() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let file = dir.path().join("a.txt");
     fs::write(&file, "one\n").unwrap();
     let read = run(
@@ -658,7 +696,7 @@ async fn patch_deletes_read_file() {
 #[tokio::test]
 async fn patch_moves_file_with_update() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let file = dir.path().join("a.txt");
     fs::write(&file, "one\n").unwrap();
     let read = run(
@@ -687,7 +725,7 @@ async fn patch_moves_file_with_update() {
 #[tokio::test]
 async fn patch_after_external_change_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let file = dir.path().join("a.txt");
     fs::write(&file, "one\n").unwrap();
     let read = run(
@@ -755,6 +793,10 @@ impl Tool for BlockingTool {
         _context: &'a ToolContext,
     ) -> tools::ToolFuture<'a, ToolResult> {
         Box::pin(async move {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试工具的启动信号接收端可能已退出"
+            )]
             let _ = self.started.send(());
             let permit = self
                 .release
@@ -778,7 +820,7 @@ async fn write_tool_forms_real_batch_barrier() {
         Box::new(BlockingTool::new(started_tx, release.clone())),
         Box::new(WriteTool::new()),
     ]);
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let calls = vec![
         ToolCall {
             id: "call_0".to_owned(),
@@ -821,7 +863,7 @@ async fn write_tool_forms_real_batch_barrier() {
 #[tokio::test]
 async fn patch_rejected_aggregates_resolution_and_preflight_problems() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     // op1 解析失败（父路径是普通文件，ENOTDIR）；op2 预检失败（存在但没读过）。
     fs::write(dir.path().join("blocker"), "x").unwrap();
     fs::write(

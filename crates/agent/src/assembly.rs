@@ -79,6 +79,7 @@ impl Agent {
         match options.resume {
             Some(id) => {
                 let mut store = SessionStore::open(&options.data_dir, &id)?;
+                store.set_warning_sink(Some(crate::warn::session_store_sink()));
                 if let Some(factory) = &options.append_hook_factory {
                     store.set_append_hook(Some(factory(store.id())));
                 }
@@ -95,6 +96,7 @@ impl Agent {
             }
             None => {
                 let mut store = SessionStore::create(&options.data_dir, &options.cwd)?;
+                store.set_warning_sink(Some(crate::warn::session_store_sink()));
                 if let Some(factory) = &options.append_hook_factory {
                     store.set_append_hook(Some(factory(store.id())));
                 }
