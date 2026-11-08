@@ -178,6 +178,10 @@ impl RootHost {
             loop {
                 match agent_source.recv().await {
                     Ok(event) => {
+                        #[expect(
+                            clippy::let_underscore_must_use,
+                            reason = "下游订阅端已关时继续消费到源关闭；事件已从源广播"
+                        )]
                         let _ = agent_tx.send(event);
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,
@@ -206,6 +210,10 @@ impl RootHost {
                             *context.lock().expect("context 锁被毒化") =
                                 ContextUsage { used, window };
                         }
+                        #[expect(
+                            clippy::let_underscore_must_use,
+                            reason = "下游订阅端已关时继续消费到源关闭；事件已从源广播"
+                        )]
                         let _ = tx.send(event);
                     }
                     Err(broadcast::error::RecvError::Lagged(_)) => continue,

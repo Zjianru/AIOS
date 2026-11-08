@@ -118,6 +118,10 @@ impl SpillStore {
                 bytes: bytes as usize,
             }),
             Err(error) => {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "spill 失败已返回错误；删不掉的半成品不在 locator 上"
+                )]
                 let _ = fs::remove_file(&locator);
                 Err(ToolFailure::plain(format!(
                     "cannot spill file {}: {error}",
@@ -300,6 +304,10 @@ impl SpillFile {
     fn discard(&mut self) {
         self.broken = true;
         self.sink = None;
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "discard 已置空 sink 并清零字节；删文件失败不影响判空"
+        )]
         let _ = fs::remove_file(&self.locator);
         self.bytes = 0;
     }
@@ -311,6 +319,10 @@ impl SpillFile {
         }
         let mut sink = self.sink.take()?;
         if sink.sync_file().is_err() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "fsync 失败已按丢弃处理；删不掉的半成品不再交出 locator"
+            )]
             let _ = fs::remove_file(&self.locator);
             return None;
         }
@@ -367,6 +379,10 @@ pub fn sweep_spill_root(root: &Path, cutoff: std::time::SystemTime) -> usize {
             }
         }
         if kept == 0 {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "清理空 spill 目录失败不影响已清理的文件"
+            )]
             let _ = fs::remove_dir(&path);
         }
     }

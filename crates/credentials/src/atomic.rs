@@ -41,6 +41,10 @@ pub fn write(path: &Path, bytes: &[u8], kind: TargetKind) -> std::io::Result<()>
         Ok(()) => Ok(()),
         Err(error) => {
             // 半成品不能留着（下一次写会撞名，读的人也会误以为它是目标文件）。
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "主错误已产生，清理临时文件失败不覆盖它"
+            )]
             let _ = fs::remove_file(&temp);
             Err(error)
         }
@@ -68,6 +72,10 @@ fn publish(
 ) -> std::io::Result<()> {
     if kind == TargetKind::Shared {
         // 固定临时名：上一次崩在 rename 之前留下的文件当陈旧文件清掉；清不掉就让 create_new 报错。
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "陈旧临时文件清不掉时由 create_new 报错，这里只做尽力清理"
+        )]
         let _ = fs::remove_file(temp);
     }
     let mut options = fs::OpenOptions::new();

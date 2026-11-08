@@ -177,6 +177,10 @@ fn run_writer(
             }
             Err(_) => {
                 if let Some(gap) = pending_gap(&dropped) {
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "sink 已出错时补写 gap 失败没有别的上报通道"
+                    )]
                     let _ = write_emitted(&mut *sink, gap, &redactor);
                 }
                 break;
@@ -326,7 +330,15 @@ impl Monitor {
             return;
         };
         if let Some(join) = guard.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "关闭通知可能因线程先退出而失败；join 仍照常做"
+            )]
             let _ = self.shared.tx.send(Message::Shutdown);
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "后台线程已退出时 join 返回错误；关闭流程继续"
+            )]
             let _ = join.join();
         }
     }

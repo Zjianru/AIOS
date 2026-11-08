@@ -360,6 +360,10 @@ impl Inner {
             settle_hook: Mutex::new(None),
         });
         // T006.F1：迟到回答投递要唤醒驱动，先记下自引用。
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "自引用只设置一次；重复构造保留第一个弱引用"
+        )]
         let _ = inner.self_ref.set(Arc::downgrade(&inner));
         // T006.1e：结算回调与完成通知投递移入 jobs_capability 模块。
         crate::jobs_capability::install(&inner);
@@ -513,6 +517,10 @@ impl Inner {
             );
         }
         for message in &claimed {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "事件订阅端未连接时丢弃副本；入队事实已落盘"
+            )]
             let _ = self.events.send(AgentEvent::InboxClaimed {
                 message: message.clone(),
                 turn,
@@ -580,12 +588,20 @@ impl Inner {
             .apply(&splice);
         if splice.discard_removed() {
             for message in splice.removed() {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "事件订阅端未连接时丢弃副本；入队事实已落盘"
+                )]
                 let _ = self.events.send(AgentEvent::InboxDiscarded {
                     message: message.clone(),
                 });
             }
         }
         for message in splice.inserted() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "事件订阅端未连接时丢弃副本；入队事实已落盘"
+            )]
             let _ = self.events.send(AgentEvent::InboxInserted {
                 message: message.clone(),
             });
@@ -708,6 +724,10 @@ impl Inner {
         let store = self.store.lock().expect("agent 会话锁被毒化");
         let events = store.events();
         for event in events.iter().skip(before.min(events.len())) {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "服务事件面没有订阅者时广播失败；日志事实已持久化"
+            )]
             let _ = self.session_events.send(event.clone());
         }
     }

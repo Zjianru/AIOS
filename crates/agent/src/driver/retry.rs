@@ -99,6 +99,10 @@ pub(super) async fn decide_retry(
             },
         }])
         .await?;
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "重试事件只作展示；订阅端未连接时丢弃"
+    )]
     let _ = inner.events.send(AgentEvent::Retrying {
         attempt: *attempt,
         max_attempts: MAX_RETRIES,

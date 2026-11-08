@@ -37,9 +37,17 @@ pub(crate) fn install(inner: &Arc<Inner>) {
     let tasks = inner.job_session().tasks();
     let settled_sender = sender.clone();
     tasks.set_on_settled(Arc::new(move |settled: &tools::JobSettled| {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "结算/通知回调可能晚于接收端退出；发送失败不影响任务结算"
+        )]
         let _ = settled_sender.send(Lifecycle::Settled(settled.clone()));
     }));
     tasks.set_on_notify(Arc::new(move |settled: &tools::JobSettled| {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "结算/通知回调可能晚于接收端退出；发送失败不影响任务结算"
+        )]
         let _ = sender.send(Lifecycle::Notify(settled.clone()));
     }));
     tokio::spawn(async move {
@@ -157,6 +165,10 @@ async fn deliver(host: &dyn LoopAccess, settled: &tools::JobSettled) -> Result<(
     let text = match inline.filter(|text| text.len() <= INLINE_OUTPUT_BYTES) {
         Some(text) => {
             // 通知已经内联这段输出：推进模型游标，后续 job_output 不再重复返回（DSH held read）。
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "通知已内联输出；游标推进失败时下次重复返回"
+            )]
             let _ = tasks.read_output(&settled.id);
             text
         }
@@ -168,6 +180,10 @@ async fn deliver(host: &dyn LoopAccess, settled: &tools::JobSettled) -> Result<(
         tools::JobStatus::Killed => JobStatus::Killed,
         tools::JobStatus::Running => JobStatus::Killed,
     };
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "完成事件只作展示；作业结算已写在会话事件里"
+    )]
     let _ = host.events().send(AgentEvent::JobCompleted {
         job_id: settled.id.clone(),
         status: agent_status,

@@ -395,6 +395,10 @@ fn atomic_write(
     };
     match published {
         Ok(()) => {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "发布成功后临时文件应已 rename；清不掉只是残留"
+            )]
             let _ = fs::remove_file(&temp);
             Ok(())
         }

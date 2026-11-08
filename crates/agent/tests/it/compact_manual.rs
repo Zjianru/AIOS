@@ -257,6 +257,10 @@ async fn resume_after_compaction_derives_same_messages() {
         .await
         .unwrap();
     wait_idle(&harness.agent, 20).await;
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "用例只观察压缩后的状态，压缩自身错误不参与断言"
+    )]
     let _ = harness.agent.compact(None).await;
     let store = SessionStore::open_read_only(harness.data_dir.path(), &harness.id).unwrap();
     let before = store.derive_messages();
@@ -335,6 +339,10 @@ async fn compaction_ids_are_unique_across_resume() {
         .await
         .unwrap();
     wait_idle(&harness.agent, 20).await;
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "用例只观察压缩后的状态，压缩自身错误不参与断言"
+    )]
     let _ = harness.agent.compact(None).await;
     drop(harness.agent);
 
@@ -362,6 +370,10 @@ async fn compaction_ids_are_unique_across_resume() {
     )
     .await
     .expect("续接应成功");
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "用例只观察压缩后的状态，压缩自身错误不参与断言"
+    )]
     let _ = resumed.compact(None).await;
     assert_eq!(
         server.received_requests().await.unwrap().len(),
@@ -405,6 +417,10 @@ async fn compact_and_get_id() -> String {
         .await
         .unwrap();
     wait_idle(&harness.agent, 20).await;
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "用例只观察压缩后的状态，压缩自身错误不参与断言"
+    )]
     let _ = harness.agent.compact(None).await;
     assert_eq!(
         server.received_requests().await.unwrap().len(),

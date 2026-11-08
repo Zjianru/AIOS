@@ -77,8 +77,16 @@ impl ServeHandle {
     /// 停服务（测试/CLI Ctrl-C）：先停收新连接，再取消正在跑的一轮、等日志收尾。
     pub async fn shutdown(mut self) {
         if let Some(signal) = self.shutdown.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "关闭信号接收端已退出说明服务已停；继续等任务收尾"
+            )]
             let _ = signal.send(());
         }
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "任务结果在 shutdown 不再使用；等它结束即可"
+        )]
         let _ = self.task.await;
     }
 
@@ -114,6 +122,10 @@ pub async fn serve(options: ServeOptions, host: RootHost) -> Result<ServeHandle,
     let task = tokio::spawn(async move {
         let result = axum::serve(listener, app)
             .with_graceful_shutdown(async move {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "关闭信号发送端已退出等价于立刻关闭"
+                )]
                 let _ = shutdown_signal.await;
             })
             .await;

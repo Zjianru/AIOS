@@ -314,6 +314,10 @@ impl model::CredentialSource for KeyringCredentialSource {
             return;
         };
         // 只改 auth_header；endpoint/model 原样传回，其余字段保持不动。
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "记住鉴权头是尽力优化；写回失败下次请求重新学"
+        )]
         let _ = self.keyring.update_connection_details(
             &self.connection,
             credentials::ConnectionUpdate {
@@ -941,6 +945,10 @@ fn handle_event(event: AgentEvent, outcome: &mut Option<TurnOutcome>) {
     match event {
         AgentEvent::AssistantTextDelta { text } => {
             print!("{text}");
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "终端关闭时刷新失败是预期；不改变事件处理"
+            )]
             let _ = io::stdout().flush();
         }
         AgentEvent::Retrying {

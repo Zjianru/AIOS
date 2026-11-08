@@ -188,6 +188,10 @@ impl AskState {
         if live.settled()
             && let Some(deliver) = live.deliver.take()
         {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "等待方可能已取消；唤醒信号丢失不影响状态判定"
+            )]
             let _ = deliver.send(());
         }
         true
@@ -237,6 +241,10 @@ impl AskState {
         if live.settled()
             && let Some(deliver) = live.deliver.take()
         {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "等待方可能已取消；唤醒信号丢失不影响状态判定"
+            )]
             let _ = deliver.send(());
         }
         true
@@ -674,6 +682,10 @@ impl Capability for AskCapability {
                         }])
                         .await?;
                 }
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "页面/服务未在线时问题事件丢弃；追问本身照常进行"
+                )]
                 let _ = event.host().events().send(AgentEvent::QuestionAsked {
                     questions: questions.clone(),
                 });
@@ -901,7 +913,15 @@ mod tests {
         {
             let mut hook = state.wait_hook.lock().unwrap();
             *hook = Some(Arc::new(move || {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "测试闸门通道的接收端可能先退出；只用于同步步骤"
+                )]
                 let _ = entered_tx.send(());
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "测试闸门通道的接收端可能先退出；只用于同步步骤"
+                )]
                 let _ = release_rx.lock().unwrap().recv();
             }));
         }
@@ -914,6 +934,10 @@ mod tests {
             .unwrap();
         abort.store(true, Ordering::SeqCst);
         state.cancel_waiters();
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "测试闸门通道的接收端可能先退出；只用于同步步骤"
+        )]
         let _ = release_tx.send(());
         let settled = tokio::time::timeout(std::time::Duration::from_secs(5), task)
             .await

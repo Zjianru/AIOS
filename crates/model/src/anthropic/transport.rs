@@ -355,6 +355,10 @@ mod tests {
             use std::io::Read;
             if let Ok((mut stream, _)) = listener.accept() {
                 let mut buffer = [0u8; 1024];
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "测试服务器不读请求内容，读失败不影响超时用例"
+                )]
                 let _ = stream.read(&mut buffer);
                 // T009.H6：测试服务器收请求后保持不响应，等客户端 100ms 超时；3s 保持线程存活
                 std::thread::sleep(Duration::from_secs(3));

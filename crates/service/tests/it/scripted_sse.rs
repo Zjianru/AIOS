@@ -43,6 +43,10 @@ impl ScriptedSseServer {
                     return;
                 };
                 // macOS 上 accept 出来的 socket 可能继承 listener 的非阻塞标志。
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "测试辅助的 socket/通道失败不影响断言"
+                )]
                 let _ = stream.set_nonblocking(false);
                 if let Some(body) = read_request(&mut stream) {
                     bodies_in_thread
@@ -62,8 +66,16 @@ impl ScriptedSseServer {
                 }
                 if script.hold {
                     if let Some(sender) = ready_tx.take() {
+                        #[expect(
+                            clippy::let_underscore_must_use,
+                            reason = "测试辅助的 socket/通道失败不影响断言"
+                        )]
                         let _ = sender.send(());
                     }
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "测试辅助的 socket/通道失败不影响断言"
+                    )]
                     let _ = control_rx.recv();
                 }
             }
@@ -85,6 +97,10 @@ impl ScriptedSseServer {
     /// 等到当前 hold 的响应已经写出（此时模型流还没结束）。
     pub async fn wait_ready(&mut self) {
         if let Some(receiver) = self.ready.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试辅助的 socket/通道失败不影响断言"
+            )]
             let _ = receiver.await;
         }
     }
@@ -92,6 +108,10 @@ impl ScriptedSseServer {
     /// 放行当前 hold 的响应（关连接）。
     pub fn release(&mut self) {
         if let Some(sender) = self.control.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试辅助的 socket/通道失败不影响断言"
+            )]
             let _ = sender.send(());
         }
     }
@@ -109,9 +129,17 @@ impl Drop for ScriptedSseServer {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::SeqCst);
         if let Some(sender) = self.control.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试辅助的 socket/通道失败不影响断言"
+            )]
             let _ = sender.send(());
         }
         if let Some(handle) = self.handle.take() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试辅助的 socket/通道失败不影响断言"
+            )]
             let _ = handle.join();
         }
     }

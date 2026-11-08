@@ -36,6 +36,10 @@ impl ServiceHost {
             loop {
                 match source.recv().await {
                     Ok(event) => {
+                        #[expect(
+                            clippy::let_underscore_must_use,
+                            reason = "转发端在订阅者关闭时不能停，继续消费到源关闭"
+                        )]
                         let _ = forward_tx.send(service_event(&event));
                     }
                     // 订阅者落后时继续转发，补齐由调用方的 follow 负责；转发端自己不能停。
@@ -213,6 +217,10 @@ impl ServiceHost {
 
     /// 停服务收尾——取消正在跑的一轮、等驱动空闲（日志收尾完整、写锁随 Agent drop 释放）。
     pub async fn shutdown(&self) {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "停服务收尾；取消失败也要继续等 idle"
+        )]
         let _ = self.agent.cancel().await;
         self.agent.idle().await;
     }

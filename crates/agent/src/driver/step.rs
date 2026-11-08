@@ -289,6 +289,10 @@ pub(super) async fn run_step(
                     if let Some((_, buffer)) = open.get_mut(&index) {
                         buffer.push_str(&text);
                     }
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "流式增量只作展示；订阅端未连接时丢弃"
+                    )]
                     let _ = inner.events.send(AgentEvent::AssistantTextDelta { text });
                 }
                 Ok(StreamChunk::ReasoningDelta { index, text }) => {
@@ -308,6 +312,10 @@ pub(super) async fn run_step(
                         tool_names.insert(index, name);
                     }
                     let name = tool_names.get(&index).cloned().unwrap_or_default();
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "流式增量只作展示；订阅端未连接时丢弃"
+                    )]
                     let _ = inner.events.send(AgentEvent::ToolCallDelta {
                         call_id: id,
                         name,

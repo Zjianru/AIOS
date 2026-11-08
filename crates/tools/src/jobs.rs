@@ -744,7 +744,15 @@ impl TaskRegistry {
         let _ = self.take_killed_by_model(id);
         let removed = self.jobs.lock().expect("jobs 表锁被毒化").remove(id);
         if let Some(record) = removed {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "任务已从表里移除；输出文件清不掉只是残留"
+            )]
             let _ = std::fs::remove_file(&record.stdout_path);
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "任务已从表里移除；输出文件清不掉只是残留"
+            )]
             let _ = std::fs::remove_file(&record.stderr_path);
         }
     }
@@ -779,6 +787,10 @@ impl TaskRegistry {
     #[cfg(unix)]
     fn signal_group(record: &Arc<JobRecord>, signal: &str) {
         let pid = record.child.lock().expect("job 子进程锁被毒化").id();
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "进程可能已退出，kill 失败是预期；结算以 wait 结果为准"
+        )]
         let _ = std::process::Command::new("/bin/kill")
             .args([signal, "--", &format!("-{pid}")])
             .status();
@@ -837,6 +849,10 @@ fn prepare_jobs_root(root: &Path) {
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = if metadata.is_dir() { 0o700 } else { 0o600 };
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "旧文件权限只做尽力加固；单个失败不挡目录准备"
+            )]
             let _ = std::fs::set_permissions(entry.path(), std::fs::Permissions::from_mode(mode));
         }
         #[cfg(not(unix))]
@@ -876,6 +892,10 @@ fn spawn_reader(
         #[cfg(unix)]
         if let Some(file) = file.as_ref() {
             use std::os::unix::fs::PermissionsExt;
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "创建时已带 0600；再钉一次失败不改变已写内容"
+            )]
             let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
         }
         let mut buffer = [0_u8; 8192];
@@ -884,6 +904,10 @@ fn spawn_reader(
                 Ok(0) => break,
                 Ok(read) => {
                     if let Some(file) = file.as_mut() {
+                        #[expect(
+                            clippy::let_underscore_must_use,
+                            reason = "读线程没有向上返回错误的通道；落盘失败时仍保留内存窗口与已写文件"
+                        )]
                         let _ = file.write_all(&buffer[..read]);
                     }
                     if let Some(spill) = spill.as_mut() {
@@ -915,6 +939,10 @@ fn spawn_reader(
             }
         }
         let spill = spill.and_then(SpillFile::finish);
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "收尾线程的接收端可能已退出；ReaderDone 只用于拼 spill"
+        )]
         let _ = done.send(ReaderDone { is_stdout, spill });
     });
 }

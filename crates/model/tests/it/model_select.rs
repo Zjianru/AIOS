@@ -29,6 +29,10 @@ async fn 换模型后下一次请求用新模型() {
         Arc::new(AtomicBool::new(false)),
         Arc::new(tokio::sync::Notify::new()),
     );
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "用例只核请求里的模型名，流的预期错误不参与断言"
+    )]
     let _ = deepseek.stream(&[], &[], &cancel).await;
     let requests = server.received_requests().await.expect("请求记录");
     assert_eq!(requests.len(), 1, "应发出一次请求");
@@ -61,8 +65,16 @@ async fn 本轮冻结模型中途换模型下一轮才生效() {
     );
     deepseek.set_model("deepseek-pro".to_owned());
     deepseek.begin_turn();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "用例只核请求里的模型名，流的预期错误不参与断言"
+    )]
     let _ = deepseek.stream(&[], &[], &cancel).await;
     deepseek.set_model("deepseek-later".to_owned());
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "用例只核请求里的模型名，流的预期错误不参与断言"
+    )]
     let _ = deepseek.stream(&[], &[], &cancel).await;
     let requests = server.received_requests().await.expect("请求记录");
     let models: Vec<String> = requests
@@ -77,6 +89,10 @@ async fn 本轮冻结模型中途换模型下一轮才生效() {
     assert_eq!(models[0], "deepseek-pro", "本轮先用冻结模型");
     assert_eq!(models[1], "deepseek-pro", "中途换模型不影响本轮");
     deepseek.begin_turn();
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "用例只核请求里的模型名，流的预期错误不参与断言"
+    )]
     let _ = deepseek.stream(&[], &[], &cancel).await;
     let requests = server.received_requests().await.expect("请求记录");
     let body: serde_json::Value = serde_json::from_slice(&requests[2].body).expect("body json");

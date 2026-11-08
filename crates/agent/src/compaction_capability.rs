@@ -89,6 +89,10 @@ impl Capability for CompactionCapability {
                     phase,
                     ..
                 } if *phase == PreStepPhase::Compact => {
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "自动压缩失败不打断本轮（事件已记录），这里只触发"
+                    )]
                     let _ = compaction::compact_if_needed(
                         event.host(),
                         event.turn(),

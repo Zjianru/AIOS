@@ -76,6 +76,10 @@ async fn ipv6_and_named_loopback_addresses_bypass_proxy() {
         "http://[::ffff:127.0.0.1]:9/",
     ] {
         let before = proxy.received_requests().await.expect("代理记录").len();
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "坏代理请求预期失败，只核代理是否收到请求"
+        )]
         let _ = client
             .get(url)
             .timeout(std::time::Duration::from_millis(500))

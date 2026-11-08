@@ -10,6 +10,10 @@ static HOOK: OnceLock<WarningHook> = OnceLock::new();
 
 /// 装警告钩子（只在进程启动时装一次；重复装直接忽略）。
 pub fn set_warning_hook(hook: WarningHook) {
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "全局警告钩子只装一次；重复装配保留首个"
+    )]
     let _ = HOOK.set(hook);
 }
 

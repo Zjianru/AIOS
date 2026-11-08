@@ -276,6 +276,10 @@ async fn job_output_wait_timeout_does_not_suppress_completion_notification() {
     let (sender, receiver) = mpsc::channel::<String>();
     context.session().tasks().set_on_notify(std::sync::Arc::new(
         move |settled: &tools::JobSettled| {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试通知通道的接收端已退出；断言只等需要的信号"
+            )]
             let _ = sender.send(settled.id.clone());
         },
     ));
@@ -320,6 +324,10 @@ async fn foreground_fast_command_does_not_notify() {
     let (sender, receiver) = mpsc::channel::<String>();
     context.session().tasks().set_on_notify(std::sync::Arc::new(
         move |settled: &tools::JobSettled| {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试通知通道的接收端已退出；断言只等需要的信号"
+            )]
             let _ = sender.send(settled.id.clone());
         },
     ));
@@ -349,6 +357,10 @@ async fn promoted_timeout_job_completion_notifies() {
     let (sender, receiver) = mpsc::channel::<String>();
     context.session().tasks().set_on_notify(std::sync::Arc::new(
         move |settled: &tools::JobSettled| {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试通知通道的接收端已退出；断言只等需要的信号"
+            )]
             let _ = sender.send(settled.id.clone());
         },
     ));
@@ -475,6 +487,10 @@ async fn foreground_fast_settlement_without_wait_does_not_notify() {
     let (sender, receiver) = mpsc::channel::<String>();
     context.session().tasks().set_on_notify(std::sync::Arc::new(
         move |settled: &tools::JobSettled| {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试通知通道的接收端已退出；断言只等需要的信号"
+            )]
             let _ = sender.send(settled.id.clone());
         },
     ));
@@ -528,6 +544,10 @@ async fn promote_after_settlement_still_notifies() {
         }));
     context.session().tasks().set_on_notify(std::sync::Arc::new(
         move |settled: &tools::JobSettled| {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试通知通道的接收端已退出；断言只等需要的信号"
+            )]
             let _ = sender.send(settled.id.clone());
         },
     ));
@@ -736,6 +756,10 @@ async fn operator_kill_still_notifies() {
     let (sender, receiver) = mpsc::channel::<String>();
     context.session().tasks().set_on_notify(std::sync::Arc::new(
         move |settled: &tools::JobSettled| {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试通知通道的接收端已退出；断言只等需要的信号"
+            )]
             let _ = sender.send(settled.id.clone());
         },
     ));
@@ -1017,6 +1041,10 @@ async fn settled_callback_records_foreground_settlement_without_notice() {
     let (notified_sender, notified_receiver) = std::sync::mpsc::channel::<String>();
     context.session().tasks().set_on_notify(std::sync::Arc::new(
         move |settled: &tools::JobSettled| {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试通知通道的接收端已退出；断言只等需要的信号"
+            )]
             let _ = notified_sender.send(settled.id.clone());
         },
     ));

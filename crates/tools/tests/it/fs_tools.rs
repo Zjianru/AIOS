@@ -793,6 +793,10 @@ impl Tool for BlockingTool {
         _context: &'a ToolContext,
     ) -> tools::ToolFuture<'a, ToolResult> {
         Box::pin(async move {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "测试工具的启动信号接收端可能已退出"
+            )]
             let _ = self.started.send(());
             let permit = self
                 .release

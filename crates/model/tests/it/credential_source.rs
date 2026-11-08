@@ -70,7 +70,15 @@ fn 每次请求都重新申请() {
     });
     let deepseek = DeepSeek::with_credentials(config(), source.clone()).expect("构造");
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "用例只核凭据来源调用，流的预期错误不参与断言"
+    )]
     let _ = runtime.block_on(deepseek.stream(&[], &[], &cancel()));
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "用例只核凭据来源调用，流的预期错误不参与断言"
+    )]
     let _ = runtime.block_on(deepseek.stream(&[], &[], &cancel()));
     assert_eq!(
         source.calls.load(Ordering::Relaxed),
@@ -91,6 +99,10 @@ fn 来源收到本次run和轮() {
         turn: Some(3),
     });
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    #[expect(
+        clippy::let_underscore_must_use,
+        reason = "用例只核凭据来源调用，流的预期错误不参与断言"
+    )]
     let _ = runtime.block_on(deepseek.stream(&[], &[], &cancel()));
     let last = source.last.lock().expect("last").clone();
     assert_eq!(
