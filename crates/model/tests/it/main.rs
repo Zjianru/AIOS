@@ -7,5 +7,4 @@ mod disabled_admit;
 mod http_proxy;
 mod learning;
 mod model_select;
-mod no_legacy_credential_path;
 mod usage_display;

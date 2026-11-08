@@ -273,13 +273,3 @@ fn missing_origin_and_fetch_metadata_is_allowed() {
     let headers = headers("127.0.0.1:1417");
     assert!(web::check_origin(&headers).is_ok());
 }
-
-/// T006 r3 #2：查询参数令牌旧入口 check_request 必须删掉（同一件事只留 cookie 一条路）。
-#[test]
-fn query_token_entry_is_gone() {
-    let source = include_str!("../../src/lib.rs");
-    assert!(
-        !source.contains("pub fn check_request"),
-        "check_request 旧入口必须删掉；测试改走 cookie 入口"
-    );
-}

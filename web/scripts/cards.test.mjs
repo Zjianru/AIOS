@@ -397,7 +397,11 @@ const mysteryLong = stepOf(
 );
 const genericToolLong = toolCardEnvelope(mysteryLong, 'generic', '通用长');
 assert.equal(genericToolLong.slots.input.folded, true);
-assert.equal(genericToolLong.slots.input.text.includes('x'.repeat(2000)), true, '原文完整保留');
+assert.equal(
+  genericToolLong.slots.input.text,
+  '{\n  "text": "' + 'x'.repeat(2000) + '"\n}',
+  '原文完整保留',
+);
 
 const mysteryMissing = stepOf({ callId: 'call-mystery-3', name: 'mystery', arguments: '{}' });
 const genericToolMissing = toolCardEnvelope(mysteryMissing, 'generic', '通用缺字段');

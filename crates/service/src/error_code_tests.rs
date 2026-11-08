@@ -121,6 +121,10 @@ fn invalid_json_code_is_in_the_single_code_table() {
     );
 }
 
+/// 过渡测试：页面的错误码表还是手抄的，这里用源码子串守住两边不漂。
+///
+/// 退出条件：web/src/data/errors.ts 的码表改由 service 的码表和 model 的错误码生成后，
+/// 删掉本测试（那时缺码由生成物直接暴露）。
 #[test]
 fn page_error_table_covers_service_and_model_codes() {
     let path =

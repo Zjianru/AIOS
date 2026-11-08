@@ -35,10 +35,6 @@ import type {
 export type MockLatency = 0 | 40 | 300;
 let latencyMs: MockLatency = 40;
 
-export function getMockLatency(): MockLatency {
-  return latencyMs;
-}
-
 /** 模拟走一遍网络：序列化 + 反序列化，再按设定延迟等一等。 */
 function transmit<T>(value: T): Promise<T> {
   const wire = JSON.stringify(value);
