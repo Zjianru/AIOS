@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use age::secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 
-use super::{CheckState, ConnectionInfo, IssueRecord, Keyring, KeyringError, normalize_info};
+use super::{
+    CheckState, ConnectionInfo, IssueRecord, Keyring, KeyringError, normalize_info, now_seconds,
+};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(super) struct Store {
@@ -40,6 +42,32 @@ pub(super) struct StoredToolKey {
 pub(super) struct StoredConnection {
     pub(super) info: ConnectionInfo,
     pub(super) api_key: String,
+}
+
+impl Store {
+    /// 记一条签发记录（只追加，只留最近 200 条）；不记正文。
+    pub(super) fn record_issue(
+        &mut self,
+        connection: &str,
+        purpose: &str,
+        run: Option<&str>,
+        turn: Option<u64>,
+    ) {
+        self.next_issue = self.next_issue.saturating_add(1);
+        let id = self.next_issue;
+        self.issues.push(IssueRecord {
+            id,
+            at: now_seconds(),
+            connection: connection.to_owned(),
+            purpose: purpose.to_owned(),
+            run: run.map(str::to_owned),
+            turn,
+        });
+        if self.issues.len() > 200 {
+            let excess = self.issues.len() - 200;
+            self.issues.drain(0..excess);
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

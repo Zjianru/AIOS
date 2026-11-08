@@ -48,15 +48,23 @@ impl Keyring {
     }
 
     /// F1：当前持有的全部 key 正文（只在进程内交给监控脱敏；不落盘、不进页面/日志）。
+    ///
+    /// 模型连接的密钥和工具凭证（Exa）都算：监控写日志前要一起脱敏。
     pub fn secrets(&self) -> Result<Vec<String>, KeyringError> {
         let _lock = self.lock()?;
         let store = self.load_store()?;
-        Ok(store
+        let mut secrets: Vec<String> = store
             .connections
             .into_iter()
             .map(|stored| stored.api_key)
             .filter(|key| !key.is_empty())
-            .collect())
+            .collect();
+        if let Some(exa) = store.exa
+            && !exa.api_key.trim().is_empty()
+        {
+            secrets.push(exa.api_key);
+        }
+        Ok(secrets)
     }
 
     /// 签发记录（最近的在前）。

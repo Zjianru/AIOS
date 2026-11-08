@@ -492,6 +492,14 @@ fn exa_key_saves_changes_and_deletes_like_the_settings_page() {
         "设置页重新打开读到的和保存时一致"
     );
     assert!(fixture.open().exa_key_saved(), "工具条件读得到这笔凭证");
+    assert!(
+        fixture
+            .open()
+            .secrets()
+            .expect("secrets")
+            .contains(&EXA_KEY.to_owned()),
+        "监控脱敏要拿得到 Exa 的 key"
+    );
 
     let replaced = keyring.save_exa_key("exa-second-key").expect("换一把");
     assert!(replaced.key.saved);
@@ -520,6 +528,15 @@ fn exa_key_saves_changes_and_deletes_like_the_settings_page() {
     assert!(deleted.key.saved_at.is_none());
     assert_eq!(deleted.check, CheckState::Never);
     assert!(!fixture.open().exa_key_saved(), "删掉以后工具条件读不到");
+    assert!(
+        !fixture
+            .open()
+            .secrets()
+            .expect("secrets")
+            .iter()
+            .any(|key| key == EXA_KEY || key == "exa-second-key"),
+        "删掉以后监控脱敏列表里也没有它"
+    );
 }
 
 #[test]
@@ -527,6 +544,10 @@ fn exa_key_check_is_issued_and_recorded_without_the_secret() {
     let fixture = Fixture::new();
     let keyring = fixture.open();
     keyring.save_exa_key(EXA_KEY).expect("存 Exa key");
+    // 验证前先向 Keyring 申请一次签发（设置页的验证按钮就走这条）。
+    keyring
+        .issue_exa_key(credentials::EXA_CHECK_PURPOSE)
+        .expect("签发");
     keyring
         .record_exa_check(CheckResult::Fail {
             at: 41,

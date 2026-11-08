@@ -227,7 +227,9 @@ impl ToolCondition {
         match self {
             Self::Always => true,
             Self::AfterSkill(names) => names.iter().any(|name| loaded.contains(name)),
-            Self::AfterSkillWithKey { .. } => false,
+            Self::AfterSkillWithKey { skills, key } => {
+                keys.contains(key) && skills.iter().any(|name| loaded.contains(name))
+            }
         }
     }
 }

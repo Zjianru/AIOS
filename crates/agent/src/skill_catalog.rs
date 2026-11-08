@@ -221,7 +221,7 @@ fn unavailable_lines(unavailable: &[BundledSkill]) -> Vec<String> {
     let mut lines = vec![String::new(), "<unavailable_skills>".to_owned()];
     for skill in unavailable {
         lines.push(format!(
-            "- `{}`: {}",
+            "- `{}` (unavailable): {}",
             skill.name,
             escape_text(skill.unavailable_hint)
         ));

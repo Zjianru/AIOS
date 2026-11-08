@@ -81,8 +81,7 @@ pub struct BundledSkill {
 impl BundledSkill {
     /// 这一次求值里这份自带 skill 能不能进目录（凭证已存或不需要凭证）。
     pub fn available(&self, keys: &std::collections::BTreeSet<crate::ToolKey>) -> bool {
-        let _ = keys;
-        true
+        self.requires.is_none_or(|key| keys.contains(&key))
     }
 }
 

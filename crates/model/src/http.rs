@@ -6,6 +6,7 @@
 
 use std::sync::OnceLock;
 
+use reqwest::redirect::Policy;
 use reqwest::{Client, Proxy, Url};
 
 use crate::{ErrorCode, ModelError};
@@ -114,12 +115,27 @@ fn no_proxy_matches(url: &Url, no_proxy: Option<&str>) -> bool {
     })
 }
 
+/// 重定向策略：跟随（模型请求）或不跟（带工具凭证的网页请求，重定向由调用方决定）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Redirects {
+    Follow,
+    Never,
+}
+
 fn build_with_env(env: HttpEnv) -> Result<Client, ModelError> {
+    build(env, Redirects::Follow)
+}
+
+fn build_without_redirects(env: HttpEnv) -> Result<Client, ModelError> {
+    build(env, Redirects::Never)
+}
+
+fn build(env: HttpEnv, redirects: Redirects) -> Result<Client, ModelError> {
     let http = proxy_url("http_proxy", env.http_proxy.as_deref())?;
     let https = proxy_url("https_proxy", env.https_proxy.as_deref())?;
     let all = proxy_url("all_proxy", env.all_proxy.as_deref())?;
     let no_proxy = env.no_proxy.clone();
-    Client::builder()
+    let mut builder = Client::builder()
         // 代理只从 HttpEnv 来，避免 reqwest 自己再读一遍环境、绕开本机判断。
         .no_proxy()
         .proxy(Proxy::custom(move |url: &Url| {
@@ -134,14 +150,16 @@ fn build_with_env(env: HttpEnv) -> Result<Client, ModelError> {
                 "http" => http.clone().or_else(|| all.clone()),
                 _ => None,
             }
-        }))
-        .build()
-        .map_err(|error| {
-            ModelError::new(
-                ErrorCode::Transport,
-                format!("构造出站 HTTP client 失败: {error}"),
-            )
-        })
+        }));
+    if redirects == Redirects::Never {
+        builder = builder.redirect(Policy::none());
+    }
+    builder.build().map_err(|error| {
+        ModelError::new(
+            ErrorCode::Transport,
+            format!("构造出站 HTTP client 失败: {error}"),
+        )
+    })
 }
 
 /// 用给定环境造一个 client（测试/未来需要显式环境的调用方）。
@@ -152,13 +170,54 @@ pub fn client_with_env(env: HttpEnv) -> Result<Client, ModelError> {
 /// 进程内唯一的出站 client（按进程环境读一次代理配置）。
 pub fn client() -> Result<Client, ModelError> {
     static CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
-    let client = CLIENT
-        .get_or_init(|| client_with_env(HttpEnv::from_process()).map_err(|error| error.message));
+    cached_client(&CLIENT, || client_with_env(HttpEnv::from_process()))
+}
+
+/// 出站 client，但不跟重定向：带工具凭证的请求（Exa 验证、网页搜索）把重定向留给调用方判断。
+///
+/// 代理与本机地址的规则和 client() 相同；reqwest 的重定向策略建在 client 上，
+/// 不能按请求覆盖，所以另缓存一份。
+pub fn client_without_redirects() -> Result<Client, ModelError> {
+    static CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();
+    cached_client(&CLIENT, || build_without_redirects(HttpEnv::from_process()))
+}
+
+fn cached_client(
+    cell: &'static OnceLock<Result<Client, String>>,
+    build: impl FnOnce() -> Result<Client, ModelError>,
+) -> Result<Client, ModelError> {
+    let client = cell.get_or_init(|| build().map_err(|error| error.message));
     match client {
         Ok(client) => Ok(client.clone()),
         Err(message) => Err(ModelError::new(
             ErrorCode::Transport,
             format!("构造出站 HTTP client 失败: {message}"),
         )),
+    }
+}
+
+#[cfg(test)]
+mod redirect_tests {
+    use super::client_without_redirects;
+    use wiremock::matchers::path;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// 带工具凭证的请求不吃重定向：302 原样回到调用方，钥匙不会被带到别处。
+    #[tokio::test]
+    async fn client_without_redirects_returns_the_redirect() {
+        let server = MockServer::start().await;
+        Mock::given(path("/search"))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("location", "https://elsewhere.example/"),
+            )
+            .mount(&server)
+            .await;
+        let client = client_without_redirects().expect("出站 client");
+        let response = client
+            .post(format!("{}/search", server.uri()))
+            .send()
+            .await
+            .expect("请求");
+        assert_eq!(response.status(), reqwest::StatusCode::FOUND);
     }
 }
