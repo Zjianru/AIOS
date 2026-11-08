@@ -332,10 +332,17 @@ async fn durable_rpc_id_is_idempotent_across_restart() {
         "重复 id 不能触发第二次模型请求"
     );
     let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    // 只数用户自己发的那条：skill 目录注入也是 user/message，不是这条请求。
     let user_messages = store
         .events()
         .iter()
-        .filter(|event| matches!(event.kind, session::EventKind::UserMessage { .. }))
+        .filter(|event| {
+            matches!(
+                &event.kind,
+                session::EventKind::UserMessage { message, .. }
+                    if matches!(message.source, model::MessageSource::User { .. })
+            )
+        })
         .count();
     assert_eq!(user_messages, 1, "日志里只能有一条这条请求");
 

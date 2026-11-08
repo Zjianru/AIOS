@@ -27,6 +27,9 @@ const FINAL_TEXT_SSE: &str = "event: message_start\ndata: {\"type\":\"message_st
 async fn host(dir: &Path, base_url: &str) -> RootHost {
     let mut options = crate::common::options(dir);
     options.model.base_url = base_url.to_owned();
+    // 隔离用户的 ~/.agents：指令和 skill 根都落在数据目录里，技能目录只来自程序自带的那份。
+    options.config.instruction_roots = vec![dir.join("agents-home")];
+    options.config.skill_roots = vec![dir.join("skills-home")];
     crate::common::open(options).await
 }
 
@@ -45,7 +48,10 @@ fn send_request(content: &str) -> SendRequest {
 async fn wait_turn_events(host: &RootHost, data_dir: &Path) -> Vec<session::Event> {
     for _ in 0..400 {
         tokio::time::sleep(Duration::from_millis(20)).await;
-        let status = host.dispatch(Call::Status(StatusRequest {})).await.expect("status");
+        let status = host
+            .dispatch(Call::Status(StatusRequest {}))
+            .await
+            .expect("status");
         let json = serde_json::to_value(&status).expect("status json");
         let Some(session_id) = json["object"]["sessionId"].as_str() else {
             continue;
@@ -71,10 +77,7 @@ async fn wait_turn_events(host: &RootHost, data_dir: &Path) -> Vec<session::Even
 fn query_results(events: &[session::Event]) -> Vec<String> {
     let mut names: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     for event in events {
-        if let session::EventKind::ToolCall {
-            call_id, name, ..
-        } = &event.kind
-        {
+        if let session::EventKind::ToolCall { call_id, name, .. } = &event.kind {
             names.insert(call_id.clone(), name.clone());
         }
     }
@@ -153,9 +156,11 @@ async fn aios_query_topics_match_service_reads() {
         .await;
     assert!(saved.is_ok(), "存连接应成功：{saved:?}");
 
-    host.dispatch(Call::Send(send_request("现在用的什么模型，这条对话花了多少？")))
-        .await
-        .expect("send");
+    host.dispatch(Call::Send(send_request(
+        "现在用的什么模型，这条对话花了多少？",
+    )))
+    .await
+    .expect("send");
     let events = wait_turn_events(&host, data.path()).await;
     let results = query_results(&events);
     assert_eq!(results.len(), 5, "五个主题各一条：{results:?}");
@@ -198,14 +203,17 @@ async fn aios_query_topics_match_service_reads() {
     let connections = topic(1);
     let rows = connections["connections"].as_array().expect("connections");
     assert_eq!(rows.len(), 1, "只有一个连接：{connections}");
-    assert_eq!(rows[0]["id"], model_settings["settings"]["connections"][0]["id"]);
+    assert_eq!(
+        rows[0]["id"],
+        model_settings["settings"]["connections"][0]["id"]
+    );
     assert_eq!(
         rows[0]["name"],
         model_settings["settings"]["connections"][0]["name"]
     );
     assert_eq!(
-        rows[0]["hasKey"],
-        model_settings["settings"]["connections"][0]["keySaved"]
+        rows[0]["hasKey"], model_settings["settings"]["connections"][0]["key_saved"],
+        "有没有 key 和设置页一致"
     );
     assert_eq!(
         rows[0]["lastCheck"],
@@ -229,21 +237,26 @@ async fn aios_query_topics_match_service_reads() {
         "连接的可选模型在表里且没被屏蔽：{models}"
     );
 
-    // 用量：和 status 的统计一致。
+    // 用量：查的时候是第 5 步，前 5 次请求各报 input 10 / output 2（回放脚本里的数）。
+    // 期望值手写自回放脚本，不从实现算出来。
     let usage = topic(3);
-    for (query_field, status_field) in [
-        ("turns", "turns"),
-        ("steps", "steps"),
-        ("inputTokens", "inputTokens"),
-        ("outputTokens", "outputTokens"),
-        ("costUsd", "costUsd"),
-        ("unpriced", "unpriced"),
-    ] {
-        assert_eq!(
-            usage[query_field], status["stats"][status_field],
-            "用量的 {query_field} 和 status 一致：{usage}"
-        );
-    }
+    assert_eq!(usage["turns"], 1, "这一轮：{usage}");
+    assert_eq!(usage["steps"], 5, "第 5 步查的，5 条 step/start：{usage}");
+    assert_eq!(usage["inputTokens"], 50, "5 × 10：{usage}");
+    assert_eq!(usage["outputTokens"], 10, "5 × 2：{usage}");
+    assert_eq!(
+        usage["connection"], status["stats"]["connection"],
+        "用量的连接和 status 一致：{usage}"
+    );
+    assert_eq!(
+        usage["model"], status["stats"]["model"],
+        "用量的模型和 status 一致：{usage}"
+    );
+    assert_eq!(
+        usage["costUsd"].is_null(),
+        usage["unpriced"].as_bool().unwrap_or(false),
+        "没有价格时不给花费数字：{usage}"
+    );
 
     // 产品：说清 AIOS 能做什么、不能做什么。
     let product = topic(4);

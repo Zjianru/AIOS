@@ -138,6 +138,11 @@ impl RootSession {
 /// 找回或新建 Kind 根会话（T006.16b）：四态见 docs/02 篇第 1 节与 06 篇恢复链。
 pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSession, RootError> {
     let state_path = RootSession::state_path(&options.data_dir);
+    // 根会话独有的工具：`aios_query` 读服务里已存的数据（T014.2）。CLI 的对话不装它。
+    let extra_tools = vec![std::sync::Arc::new(crate::aios_query::QueryTool::new(
+        options.data_dir.clone(),
+        options.identity.clone(),
+    )) as std::sync::Arc<dyn tools::Tool>];
     match std::fs::read(&state_path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             std::fs::create_dir_all(&options.data_dir)?;
@@ -149,6 +154,7 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
                 config: options.config,
                 credentials: options.credentials.clone(),
                 append_hook_factory: options.append_hook_factory.clone(),
+                extra_tools: extra_tools.clone(),
             })
             .await?;
             let record = RootRecord {
@@ -202,6 +208,7 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
                 config: options.config,
                 credentials: options.credentials.clone(),
                 append_hook_factory: options.append_hook_factory.clone(),
+                extra_tools,
             })
             .await
             .map_err(|error| match &error {
