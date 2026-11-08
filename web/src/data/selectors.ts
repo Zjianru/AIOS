@@ -5,6 +5,7 @@
  * 第 1 期的 fixtures/workspace.ts 注释里说的就是这里。
  */
 
+import { formatDurationSeconds } from '@/lib/numbers';
 import { artifacts, materials, projects, tasks } from './fixtures/workspace';
 import type { ProjectFixture, TaskFixture, TaskState } from './fixtures/workspace';
 
@@ -173,13 +174,6 @@ function secondsOf(task: TaskFixture): number {
   return task.elapsed ?? 0;
 }
 
-function formatDuration(seconds: number): string {
-  if (!seconds) return '—';
-  const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return minutes + ' 分';
-  return Math.floor(minutes / 60) + ' 小时 ' + (minutes % 60) + ' 分';
-}
-
 function shortNumber(value: number): string {
   return value >= 1000 ? (value / 1000).toFixed(1) + 'k' : String(value);
 }
@@ -209,7 +203,7 @@ export function taskDetail(taskId: string): TaskDetail | null {
     eta = '—';
     etaNote = '所有子任务都已完成。';
   } else if (doneLeaves.length >= 2) {
-    eta = '≈ ' + formatDuration(Math.round(avgSeconds * remainingLeaves.length));
+    eta = '≈ ' + formatDurationSeconds(Math.round(avgSeconds * remainingLeaves.length));
     etaNote =
       '按已完成 ' + doneLeaves.length + ' 项、平均每项约 ' + Math.round(avgSeconds / 60) + ' 分钟估算，不含等你的时间。';
   }
@@ -273,7 +267,7 @@ export function taskDetail(taskId: string): TaskDetail | null {
     artifacts: artifactViews,
     ledger: {
       model: models.length > 1 ? models[0] + ' 等 ' + models.length + ' 个' : models[0] ?? '—',
-      elapsed: formatDuration(elapsedSeconds),
+      elapsed: formatDurationSeconds(elapsedSeconds),
       eta,
       etaNote,
       tokens: shortNumber(tokens) + ' tokens',

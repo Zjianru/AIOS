@@ -458,16 +458,3 @@ export function parseExitStatus(output: string): { text: string; exitCode: numbe
   }
   return { text: trimmed, exitCode: 0, signal: null };
 }
-
-/* ───────── 时长 ───────── */
-
-/** 「1分0秒」「12秒」「1小时3分」：不补前导零，最少 1 秒。 */
-export function formatDuration(ms: number): string {
-  const total = Math.max(1, Math.round(ms / 1000));
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const seconds = total % 60;
-  if (hours > 0) return hours + '小时' + minutes + '分';
-  if (minutes > 0) return minutes + '分' + seconds + '秒';
-  return seconds + '秒';
-}

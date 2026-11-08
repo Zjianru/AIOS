@@ -1,12 +1,12 @@
 // T013.5：工作过程的纯计算（清单 11 的 node 部分；原型 toolModel 用例翻改）。
 import assert from 'node:assert/strict';
+import { formatDurationMs } from '../src/lib/numbers.ts';
 import {
   categoryOf,
   diffOf,
   diffTotals,
   displayPath,
   doneSummary,
-  formatDuration,
   parseExitStatus,
   toolTitle,
   rowSummary,
@@ -93,9 +93,9 @@ assert.deepEqual(totals, { added: 1, removed: 0 });
 // 行摘要与路径相对化、时长文案。
 assert.equal(displayPath('/w/src/a.ts', '/w'), 'src/a.ts');
 assert.equal(rowSummary(step('read', { file_path: '/w/src/a.ts' }, '', 'done', {}), '/w'), 'src/a.ts');
-assert.equal(formatDuration(1000), '1秒');
-assert.equal(formatDuration(61_000), '1分1秒');
-assert.equal(formatDuration(3_600_000), '1小时0分');
+assert.equal(formatDurationMs(1000), '1秒');
+assert.equal(formatDurationMs(61_000), '1分1秒');
+assert.equal(formatDurationMs(3_600_000), '1小时0分');
 
 // 组头文案：两类用「并」连；空组是「已完成分析」。
 const read = step('read', { file_path: '/w/a.ts' });

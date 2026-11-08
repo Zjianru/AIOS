@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { formatDurationMs } from '@/lib/numbers';
 import type { TurnStatus } from '@/data/types';
 import { Markdown } from '../Markdown';
 import { ToolCard, hasCard } from './ToolCards';
@@ -34,7 +35,6 @@ import {
   diffTotals,
   doneSummary,
   firstLine,
-  formatDuration,
   rowSummary,
   runningSummary,
   sizeSuffix,
@@ -318,7 +318,7 @@ export function ProcessView({
   // 停下、失败、还在跑：一直展开，不能收
   const pinned = live || status === 'failed' || status === 'interrupted';
   const expanded = pinned || open;
-  const duration = formatDuration(live ? elapsed : (durationMs ?? 0));
+  const duration = formatDurationMs(live ? elapsed : (durationMs ?? 0));
   const label = live ? 'Kind 工作中' : status === 'interrupted' ? '已停止' : status === 'failed' ? '没做完' : '已完成';
   const visible = segments.filter((segment) => expanded || segment.kind === 'say');
   const lastGroup = segments.length > 0 && segments[segments.length - 1].kind === 'group' ? segments.length - 1 : -1;

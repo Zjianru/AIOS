@@ -23,7 +23,7 @@ import {
   checkDisabledModels, displayPath, type DisabledModelUser, type ServiceQuota,
 } from '@/data/service';
 import { cachedQuota, loadQuota } from '@/data/quota';
-import { CURRENCIES, compactPrice } from '@/lib/numbers';
+import { CURRENCIES, compactPrice, formatModelTokens } from '@/lib/numbers';
 import { formatLocalDateTime } from '@/lib/time';
 import { useKindStore } from '@/pages/kind/kindStore';
 import { PROTOCOL_LABEL } from '@/data/keyring';
@@ -270,11 +270,6 @@ function KeyInput({ id, value, onChange, conn }: {
   );
 }
 
-function formatTokens(n?: number): string {
-  if (!n) return '';
-  return n >= 1000000 ? n / 1000000 + 'M' : n >= 1000 ? Math.round(n / 1000) + 'K' : String(n);
-}
-
 function parseTokens(text: string): number | undefined {
   const t = text.trim().toUpperCase();
   if (!t) return undefined;
@@ -408,7 +403,7 @@ function ModelCatalog({ models, onChange, defaults, discover, required, connecti
                 {row.fresh ? (
                   <span className="shrink-0 rounded-btn bg-done-soft px-1 text-1 font-medium text-done" data-settings="fresh">新</span>
                 ) : null}
-                {row.contextWindow ? <span className="ml-auto text-1 text-ink-3">{formatTokens(row.contextWindow)}</span> : null}
+                {row.contextWindow ? <span className="ml-auto text-1 text-ink-3">{formatModelTokens(row.contextWindow)}</span> : null}
               </label>
             ))}
           </div>
@@ -443,8 +438,8 @@ function ModelCatalog({ models, onChange, defaults, discover, required, connecti
                 onChange={(e) => setRow(index, { id: e.target.value })}
               />
               <input className={inputClass} value={row.name ?? ''} placeholder="可不填" onChange={(e) => setRow(index, { name: e.target.value || undefined })} />
-              <input key={'cw' + index + ':' + row.contextWindow} className={inputClass} defaultValue={formatTokens(row.contextWindow)} placeholder="继承" onBlur={(e) => setRow(index, { contextWindow: parseTokens(e.target.value) })} />
-              <input key={'mt' + index + ':' + row.maxTokens} className={inputClass} defaultValue={formatTokens(row.maxTokens)} placeholder="继承" onBlur={(e) => setRow(index, { maxTokens: parseTokens(e.target.value) })} />
+              <input key={'cw' + index + ':' + row.contextWindow} className={inputClass} defaultValue={formatModelTokens(row.contextWindow)} placeholder="继承" onBlur={(e) => setRow(index, { contextWindow: parseTokens(e.target.value) })} />
+              <input key={'mt' + index + ':' + row.maxTokens} className={inputClass} defaultValue={formatModelTokens(row.maxTokens)} placeholder="继承" onBlur={(e) => setRow(index, { maxTokens: parseTokens(e.target.value) })} />
               <button
                 type="button"
                 data-settings="model-price"
