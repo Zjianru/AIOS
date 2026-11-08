@@ -1,22 +1,9 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use model::{
-    CancelToken, CredentialContext, CredentialSource, DeepSeek, DeepSeekConfig, ModelError,
-};
+use model::{CancelToken, DeepSeek, DeepSeekConfig};
 
-/// T008.F9：测试凭证来源（产品不再有固定 key 构造入口，测试显式注入）。
-struct TestCredential;
-
-impl CredentialSource for TestCredential {
-    fn issue(&self, _purpose: &str, _context: &CredentialContext) -> Result<String, ModelError> {
-        Ok("test-key".to_owned())
-    }
-}
-
-fn test_credential() -> Arc<dyn CredentialSource> {
-    Arc::new(TestCredential)
-}
+use crate::common::test_credential;
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

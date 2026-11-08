@@ -4,13 +4,16 @@
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use serde_json::{Value, json};
 use tokio::sync::{Semaphore, mpsc};
-use tools::{Tool, ToolCall, ToolConcurrency, ToolContext, ToolFuture, ToolResult};
+use tools::{
+    Tool, ToolCall, ToolConcurrency, ToolContext, ToolFuture, ToolResult, ToolSessionState,
+};
 use wiremock::{Request, Respond, ResponseTemplate};
 
 /// 一个按脚本顺序回放的 mock 响应器（第 N 次请求拿第 N 个响应）。
@@ -731,4 +734,9 @@ impl model::CredentialSource for TestCredential {
 
 pub fn test_credential() -> std::sync::Arc<dyn model::CredentialSource> {
     std::sync::Arc::new(TestCredential)
+}
+
+/// 只驱动单个工具的测试上下文（真实会话状态；读工具不写 spill）。
+pub fn tool_context(cwd: &Path) -> ToolContext {
+    ToolContext::with_session(cwd, std::sync::Arc::new(ToolSessionState::new(cwd, "test")))
 }

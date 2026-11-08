@@ -42,7 +42,7 @@ fn canonical(path: &Path) -> String {
 #[tokio::test]
 async fn read_tool_limits_and_errors() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let file = dir.path().join("a.txt");
     write(&file, "alpha\nbeta\ngamma\n");
     let display = canonical(&file);
@@ -190,7 +190,7 @@ async fn read_tool_limits_and_errors() {
 #[tokio::test]
 async fn glob_tool_limits_and_errors() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     write(&dir.path().join("src/alpha.ts"), "");
     write(&dir.path().join("src/beta.ts"), "");
     write(&dir.path().join("notes.md"), "");
@@ -272,7 +272,7 @@ async fn glob_tool_limits_and_errors() {
 #[tokio::test]
 async fn grep_tool_limits_and_errors() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     write(
         &dir.path().join("src/alpha.ts"),
         "export const alpha = 1\n// TODO: refit alpha\n",

@@ -1,6 +1,5 @@
 //! 接缝 2：工具级限时超时（测试清单第 13 条 stub 红测试）。
 
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -46,8 +45,7 @@ impl Tool for SlowTool {
 }
 
 fn context() -> ToolContext {
-    let dir = std::env::temp_dir();
-    ToolContext::with_session(dir, Arc::new(tools::ToolSessionState::detached()))
+    crate::common::context(&std::env::temp_dir())
 }
 
 fn calls(names: &[(&str, &str)]) -> Vec<ToolCall> {

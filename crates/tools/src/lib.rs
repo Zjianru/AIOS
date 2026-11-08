@@ -84,14 +84,6 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
-    /// 独立工具测试用：空观察表、空任务表、禁用 spill。
-    pub fn new(cwd: impl Into<PathBuf>) -> Self {
-        Self {
-            cwd: cwd.into(),
-            session: Arc::new(ToolSessionState::detached()),
-        }
-    }
-
     /// Agent 的批执行用：带会话级状态。
     pub fn with_session(cwd: impl Into<PathBuf>, session: Arc<ToolSessionState>) -> Self {
         Self {

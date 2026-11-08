@@ -45,14 +45,6 @@ impl SpillStore {
         }
     }
 
-    /// 单元测试/纯工具场景：没有会话数据目录，spill 不可用。
-    pub fn disabled() -> Self {
-        Self {
-            root: None,
-            session_id: None,
-        }
-    }
-
     pub fn root(&self) -> Option<&Path> {
         self.root.as_deref()
     }
@@ -65,7 +57,7 @@ impl SpillStore {
     }
 }
 
-/// 一次会话共享的工具上下文状态；ToolContext::new 的测试路径用 detached 空状态。
+/// 一次会话共享的工具上下文状态。
 #[derive(Debug)]
 pub struct ToolSessionState {
     observations: Mutex<ObservationPolicy>,
@@ -92,20 +84,6 @@ impl ToolSessionState {
             spill: SpillStore::new(data_dir.join("spill"), session_id),
             session_id: Some(session_id.to_owned()),
             data_dir: Some(data_dir.to_path_buf()),
-            skill_roots: Mutex::new(Vec::new()),
-            todos: Mutex::new(None),
-            canvases: Mutex::new(Vec::new()),
-        }
-    }
-
-    /// 与真实会话无关的工具测试：空观察表、空任务表、禁用 spill。
-    pub fn detached() -> Self {
-        Self {
-            observations: Mutex::new(ObservationPolicy::default()),
-            tasks: TaskRegistry::detached(),
-            spill: SpillStore::disabled(),
-            session_id: None,
-            data_dir: None,
             skill_roots: Mutex::new(Vec::new()),
             todos: Mutex::new(None),
             canvases: Mutex::new(Vec::new()),

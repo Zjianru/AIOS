@@ -1,44 +1,18 @@
 //! 接缝 2：后台任务 job_output / job_list / job_kill 与超时转后台（测试清单第 4 条）。
 
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
 use tools::{
-    BashTool, JobKillTool, JobListTool, JobOutputTool, JobSpec, Tool, ToolCall, ToolContext,
-    ToolResult, ToolSessionState,
+    BashTool, JobKillTool, JobListTool, JobOutputTool, JobSpec, ToolContext, ToolResult,
+    ToolSessionState,
 };
 
-fn session_context(cwd: &Path, data_dir: &Path, session_id: &str) -> ToolContext {
-    ToolContext::with_session(cwd, Arc::new(ToolSessionState::new(data_dir, session_id)))
-}
-
-async fn run(tool: &dyn Tool, arguments: Value, context: &ToolContext) -> ToolResult {
-    tool.execute(
-        ToolCall {
-            id: "call_1".to_owned(),
-            name: tool.name().to_owned(),
-            arguments: arguments.to_string(),
-        },
-        context,
-    )
-    .await
-}
+use crate::common::{run, session_context_with_id as session_context, truncated_path};
 
 async fn bash(arguments: Value, context: &ToolContext) -> ToolResult {
     run(&BashTool::new(), arguments, context).await
-}
-
-fn truncated_path(content: &str, nth: usize) -> String {
-    let marker = "[output truncated; full output: ";
-    let mut start = 0;
-    for _ in 0..=nth {
-        let found = content[start..].find(marker).expect("有截断通知");
-        start += found + marker.len();
-    }
-    let rest = &content[start..];
-    rest[..rest.find(']').unwrap()].to_owned()
 }
 
 fn extract_job_id(content: &str) -> String {

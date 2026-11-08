@@ -4,7 +4,6 @@
 //! 期望值来源：Magpie `gateway/anthropic.go:425`（alwaysThinks）、`thinking_needed.go`
 //! （thinkingNeededRefusal）、`provider/authheader.go`（RetryOneAuth：x-api-key 先、Authorization 后）。
 
-use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use model::{
@@ -12,7 +11,9 @@ use model::{
 };
 use serde_json::Value;
 use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+use crate::common::SequenceResponder;
 
 /// 一次正常的纯文本回答 SSE（照 agent tests 的 FINAL_TEXT_SSE 最小版）。
 const FINAL_TEXT_SSE: &str = r#"event: message_start
@@ -39,29 +40,6 @@ fn sse(body: String) -> ResponseTemplate {
     ResponseTemplate::new(200)
         .insert_header("content-type", "text/event-stream")
         .set_body_string(body)
-}
-
-/// 按脚本顺序回放（第 N 次请求拿第 N 个响应；耗尽 500）。
-struct SequenceResponder {
-    responses: Mutex<VecDeque<ResponseTemplate>>,
-}
-
-impl SequenceResponder {
-    fn new(responses: Vec<ResponseTemplate>) -> Self {
-        Self {
-            responses: Mutex::new(responses.into()),
-        }
-    }
-}
-
-impl Respond for SequenceResponder {
-    fn respond(&self, _request: &Request) -> ResponseTemplate {
-        self.responses
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pop_front()
-            .unwrap_or_else(|| ResponseTemplate::new(500))
-    }
 }
 
 /// 记录 `remember_auth_header` 回报的凭证来源。

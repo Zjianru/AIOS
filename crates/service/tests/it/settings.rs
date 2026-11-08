@@ -1,18 +1,18 @@
 use std::path::Path;
 use std::time::Duration;
 
-use agent::AgentConfig;
+use crate::common::SequenceResponder;
 use credentials::CheckState;
 use model::{DEFAULT_CONTEXT_WINDOW, DeepSeekConfig, Effort};
 use service::{
     Call, ConnectionDeleteRequest, ConnectionQuotaRequest, ConnectionRevokeRequest,
     ConnectionSaveRequest, ConnectionUpdateRequest, ConnectionVerifyRequest, FirstUseRequest,
     IssuesRequest, KeyringRelocateRequest, KeyringReopenRequest, KeyringRestartRequest,
-    ModelSettingsRequest, RootHost, RootSessionOptions, ServiceError, SessionModelSelectRequest,
+    ModelSettingsRequest, RootHost, ServiceError, SessionModelSelectRequest,
 };
 use tempfile::tempdir;
 use wiremock::matchers::{header, method, path};
-use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const TEST_KEY: &str = "sk-t008-service-0123456789";
 
@@ -37,73 +37,8 @@ data: {"type":"message_stop"}
 
 "#;
 
-/// T008.F9：测试凭证来源（产品不再有固定 key 构造入口，测试显式注入）。
-struct TestCredential;
-
-impl model::CredentialSource for TestCredential {
-    fn issue(
-        &self,
-        _purpose: &str,
-        _context: &model::CredentialContext,
-    ) -> Result<String, model::ModelError> {
-        Ok("test-key".to_owned())
-    }
-}
-
-fn test_credential() -> std::sync::Arc<dyn model::CredentialSource> {
-    std::sync::Arc::new(TestCredential)
-}
-
-/// 按脚本顺序回放（第 N 次请求拿第 N 个响应；耗尽 500）。
-struct SequenceResponder {
-    responses: std::sync::Mutex<std::collections::VecDeque<ResponseTemplate>>,
-}
-
-impl SequenceResponder {
-    fn new(responses: Vec<ResponseTemplate>) -> Self {
-        Self {
-            responses: std::sync::Mutex::new(responses.into()),
-        }
-    }
-}
-
-impl Respond for SequenceResponder {
-    fn respond(&self, _request: &Request) -> ResponseTemplate {
-        self.responses
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .pop_front()
-            .unwrap_or_else(|| ResponseTemplate::new(500))
-    }
-}
-
-fn options(data_dir: &Path, identity: &Path) -> RootSessionOptions {
-    RootSessionOptions {
-        data_dir: data_dir.to_path_buf(),
-        cwd: data_dir.to_path_buf(),
-        model: DeepSeekConfig {
-            provider: "deepseek".to_owned(),
-            base_url: "http://127.0.0.1:1".to_owned(),
-            model: "deepseek-flash".to_owned(),
-            max_tokens: 2048,
-            context_window: DEFAULT_CONTEXT_WINDOW,
-            effort: Effort::new("high"),
-        },
-        config: AgentConfig::default(),
-        credentials: Some(test_credential()),
-        identity: Some(identity.to_path_buf()),
-        model_factory: None,
-        append_hook_factory: None,
-        keyring_changed: None,
-    }
-}
-
 async fn host(dir: &Path) -> RootHost {
-    RootHost::open(
-        options(dir, &dir.join("identity.txt")),
-        DEFAULT_CONTEXT_WINDOW,
-    )
-    .await
+    crate::common::open(crate::common::options(dir)).await
 }
 
 fn no_key(json: &str) {
@@ -195,11 +130,7 @@ async fn 根会话不可用时设置仍可用() {
     let dir = tempdir().unwrap();
     std::fs::create_dir_all(dir.path()).unwrap();
     std::fs::write(dir.path().join("kind-root.json"), "{not json").unwrap();
-    let host = RootHost::open(
-        options(dir.path(), &dir.path().join("identity.txt")),
-        DEFAULT_CONTEXT_WINDOW,
-    )
-    .await;
+    let host = RootHost::open(crate::common::options(dir.path()), DEFAULT_CONTEXT_WINDOW).await;
     let response = host
         .dispatch(Call::ModelSettings(ModelSettingsRequest {}))
         .await;
@@ -1716,21 +1647,24 @@ async fn 重开会话从日志恢复模型选择() {
     // T012.7 故事 2：重开会话还是它（工厂收到日志里的选择）。
     fn recording_factory(
         seen: std::sync::Arc<std::sync::Mutex<Option<session::ModelSelection>>>,
+        data_dir: std::path::PathBuf,
     ) -> service::ModelFactory {
         std::sync::Arc::new(move |selection: Option<&session::ModelSelection>| {
             *seen.lock().expect("seen") = selection.cloned();
             Ok((
                 "deepseek".to_owned(),
                 DeepSeekConfig::default(),
-                Some(test_credential()),
+                Some(crate::common::test_credential(&data_dir)),
             ))
         })
     }
     let dir = tempdir().unwrap();
-    let identity = dir.path().join("identity.txt");
     let first_seen = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let mut first_options = options(dir.path(), &identity);
-    first_options.model_factory = Some(recording_factory(std::sync::Arc::clone(&first_seen)));
+    let mut first_options = crate::common::options(dir.path());
+    first_options.model_factory = Some(recording_factory(
+        std::sync::Arc::clone(&first_seen),
+        dir.path().to_path_buf(),
+    ));
     let host = RootHost::open(first_options, DEFAULT_CONTEXT_WINDOW).await;
     assert_eq!(
         *first_seen.lock().expect("seen"),
@@ -1747,8 +1681,11 @@ async fn 重开会话从日志恢复模型选择() {
     drop(host);
     // 重开：工厂收到日志里的选择。
     let second_seen = std::sync::Arc::new(std::sync::Mutex::new(None));
-    let mut second_options = options(dir.path(), &identity);
-    second_options.model_factory = Some(recording_factory(std::sync::Arc::clone(&second_seen)));
+    let mut second_options = crate::common::options(dir.path());
+    second_options.model_factory = Some(recording_factory(
+        std::sync::Arc::clone(&second_seen),
+        dir.path().to_path_buf(),
+    ));
     let _host = RootHost::open(second_options, DEFAULT_CONTEXT_WINDOW).await;
     assert_eq!(
         *second_seen.lock().expect("seen"),
@@ -1812,6 +1749,7 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
         Vec::<Option<session::ModelSelection>>::new(),
     ));
     let seen_for_factory = std::sync::Arc::clone(&seen);
+    let test_data = dir.path().to_path_buf();
     let uri_a = server_a.uri();
     let uri_b = server_b.uri();
     let factory: service::ModelFactory =
@@ -1837,10 +1775,10 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
                     context_window,
                     ..DeepSeekConfig::default()
                 },
-                Some(test_credential()),
+                Some(crate::common::test_credential(&test_data)),
             ))
         });
-    let mut options = options(dir.path(), &identity);
+    let mut options = crate::common::options(dir.path());
     options.model_factory = Some(factory);
     let hook_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let hook_calls_for_hook = std::sync::Arc::clone(&hook_calls);
@@ -2410,10 +2348,10 @@ async fn assistant_message_provider(connection_id: &str, preset: &str, model_id:
                     context_window: 111_000,
                     effort: Effort::new(effort),
                 },
-                Some(test_credential()),
+                Some(crate::common::test_credential(&data)),
             ))
         });
-    let mut options = options(dir.path(), &identity);
+    let mut options = crate::common::options(dir.path());
     options.model_factory = Some(factory);
     let host = RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await;
     host.dispatch(Call::Send(service::SendRequest {

@@ -643,7 +643,7 @@ mod tests {
             events,
             tools: tools::ToolSet::empty(),
             model,
-            tool_session: Arc::new(tools::ToolSessionState::detached()),
+            tool_session: Arc::new(tools::ToolSessionState::new(data.path(), "compaction-test")),
             data_dir: data.path().to_path_buf(),
             policy,
             compaction_dispatches: AtomicU32::new(0),

@@ -68,51 +68,9 @@ fn sse(body: &str) -> ResponseTemplate {
 async fn mount(server: &MockServer, responses: Vec<ResponseTemplate>) {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(service_sequence(responses))
+        .respond_with(crate::common::SequenceResponder::new(responses))
         .mount(server)
         .await;
-}
-
-/// 顺序回放（wiremock 的 Respond 实现；与 agent 测试的 SequenceResponder 同形）。
-fn service_sequence(responses: Vec<ResponseTemplate>) -> Sequence {
-    Sequence {
-        responses: std::sync::Mutex::new(responses),
-    }
-}
-
-struct Sequence {
-    responses: std::sync::Mutex<Vec<ResponseTemplate>>,
-}
-
-impl wiremock::Respond for Sequence {
-    fn respond(&self, _request: &wiremock::Request) -> ResponseTemplate {
-        let mut responses = self.responses.lock().unwrap();
-        if responses.len() > 1 {
-            responses.remove(0)
-        } else {
-            responses
-                .first()
-                .cloned()
-                .unwrap_or_else(|| ResponseTemplate::new(500))
-        }
-    }
-}
-
-/// T008.F9：测试凭证来源（产品不再有固定 key 构造入口，测试显式注入）。
-struct TestCredential;
-
-impl model::CredentialSource for TestCredential {
-    fn issue(
-        &self,
-        _purpose: &str,
-        _context: &model::CredentialContext,
-    ) -> Result<String, model::ModelError> {
-        Ok("test-key".to_owned())
-    }
-}
-
-fn test_credential() -> std::sync::Arc<dyn model::CredentialSource> {
-    std::sync::Arc::new(TestCredential)
 }
 
 async fn setup(server: &MockServer) -> (Agent, tempfile::TempDir, SessionId) {
@@ -134,7 +92,7 @@ async fn setup(server: &MockServer) -> (Agent, tempfile::TempDir, SessionId) {
             context_window: model::DEFAULT_CONTEXT_WINDOW,
             effort: Effort::new("high"),
         },
-        test_credential(),
+        crate::common::test_credential(data_dir.path()),
     )
     .unwrap();
     let agent = Agent::create(

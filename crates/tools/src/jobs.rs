@@ -256,20 +256,6 @@ impl TaskRegistry {
         }
     }
 
-    /// 工具单元测试等无会话目录的场景：任务不可用。
-    pub fn detached() -> Self {
-        Self {
-            jobs: Mutex::new(HashMap::new()),
-            root: None,
-            session_id: None,
-            on_registered: Mutex::new(None),
-            on_settled: Mutex::new(None),
-            on_notify: Mutex::new(None),
-            registered_pending: Mutex::new(Vec::new()),
-            killed_by_model: Mutex::new(HashSet::new()),
-        }
-    }
-
     pub fn is_enabled(&self) -> bool {
         self.root.is_some()
     }

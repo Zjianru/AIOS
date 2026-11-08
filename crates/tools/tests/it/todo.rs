@@ -1,30 +1,13 @@
 //! 接缝 2：todo_write 工具（测试清单第 7 条）。
 
-use std::path::Path;
-use std::sync::Arc;
-
 use serde_json::{Value, json};
 use session::{TodoItem, TodoStatus};
-use tools::{TodoWriteTool, Tool, ToolCall, ToolContext, ToolResult, ToolSessionState};
+use tools::{TodoWriteTool, Tool, ToolContext, ToolResult};
 
-fn session_context(dir: &Path) -> ToolContext {
-    ToolContext::with_session(dir, Arc::new(ToolSessionState::new(dir, "sess-1")))
-}
-
-async fn call(tool: &dyn Tool, arguments: Value, context: &ToolContext) -> ToolResult {
-    tool.execute(
-        ToolCall {
-            id: "call_1".to_owned(),
-            name: tool.name().to_owned(),
-            arguments: arguments.to_string(),
-        },
-        context,
-    )
-    .await
-}
+use crate::common::{context as tool_context, run};
 
 async fn write_todos(todos: Value, context: &ToolContext) -> ToolResult {
-    call(&TodoWriteTool::new(), json!({ "todos": todos }), context).await
+    run(&TodoWriteTool::new(), json!({ "todos": todos }), context).await
 }
 
 fn item(content: &str, status: TodoStatus) -> TodoItem {
@@ -37,7 +20,7 @@ fn item(content: &str, status: TodoStatus) -> TodoItem {
 #[tokio::test]
 async fn todo_write_replaces_whole_list_and_returns_counts() {
     let dir = tempfile::tempdir().unwrap();
-    let context = session_context(dir.path());
+    let context = tool_context(dir.path());
     let first = write_todos(
         json!([
             { "content": "plan", "status": "in_progress" },
@@ -83,7 +66,7 @@ async fn todo_write_replaces_whole_list_and_returns_counts() {
 #[tokio::test]
 async fn empty_list_clears_the_todo_list() {
     let dir = tempfile::tempdir().unwrap();
-    let context = session_context(dir.path());
+    let context = tool_context(dir.path());
     let wrote = write_todos(json!([{ "content": "a", "status": "pending" }]), &context).await;
     assert!(!wrote.is_error, "{}", wrote.content);
 
@@ -99,7 +82,7 @@ async fn empty_list_clears_the_todo_list() {
 #[tokio::test]
 async fn invalid_todo_entries_are_rejected() {
     let dir = tempfile::tempdir().unwrap();
-    let context = session_context(dir.path());
+    let context = tool_context(dir.path());
     let cases: Vec<(Value, &str)> = vec![
         (
             json!([{ "content": "   ", "status": "pending" }]),
@@ -139,9 +122,9 @@ async fn invalid_todo_entries_are_rejected() {
 #[tokio::test]
 async fn single_active_policy_rejects_two_in_progress() {
     let dir = tempfile::tempdir().unwrap();
-    let context = session_context(dir.path());
+    let context = tool_context(dir.path());
     let tool = TodoWriteTool::new_with_parallel(false);
-    let rejected = call(
+    let rejected = run(
         &tool,
         json!({"todos": [
             {"content": "a", "status": "in_progress"},
@@ -155,7 +138,7 @@ async fn single_active_policy_rejects_two_in_progress() {
         rejected.content,
         "Error: invalid todos: at most one task may be in_progress (got 2)"
     );
-    let accepted = call(
+    let accepted = run(
         &tool,
         json!({"todos": [
             {"content": "a", "status": "in_progress"},

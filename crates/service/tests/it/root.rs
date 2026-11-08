@@ -6,7 +6,6 @@
 //! source.rpcId（types.ts:397/589、commands.ts:540-556 hasPromptRequest）。
 
 use agent::{AgentConfig, Delivery};
-use model::{DeepSeekConfig, Effort};
 use service::{
     DeliveryMode, RootError, RootSessionOptions, RootStatus, SendRequest, ServiceHost,
     open_root_session,
@@ -50,51 +49,21 @@ async fn mount(server: &MockServer) {
         .await;
 }
 
-/// T008.F9：测试凭证来源（产品不再有固定 key 构造入口，测试显式注入）。
-struct TestCredential;
-
-impl model::CredentialSource for TestCredential {
-    fn issue(
-        &self,
-        _purpose: &str,
-        _context: &model::CredentialContext,
-    ) -> Result<String, model::ModelError> {
-        Ok("test-key".to_owned())
-    }
-}
-
-fn test_credential() -> std::sync::Arc<dyn model::CredentialSource> {
-    std::sync::Arc::new(TestCredential)
-}
-
-fn options(
+fn root_options(
     data_dir: &std::path::Path,
     cwd: &std::path::Path,
     base_url: &str,
 ) -> RootSessionOptions {
-    let config = AgentConfig {
+    let mut options = crate::common::options(data_dir);
+    options.cwd = cwd.to_path_buf();
+    options.identity = None;
+    options.model.base_url = base_url.to_owned();
+    options.config = AgentConfig {
         instruction_roots: vec![data_dir.join("agents-home")],
         skill_roots: vec![data_dir.join("skills-home")],
         ..AgentConfig::default()
     };
-    RootSessionOptions {
-        data_dir: data_dir.to_path_buf(),
-        cwd: cwd.to_path_buf(),
-        model: DeepSeekConfig {
-            provider: "deepseek".to_owned(),
-            base_url: base_url.to_owned(),
-            model: "deepseek-flash".to_owned(),
-            max_tokens: 2048,
-            context_window: model::DEFAULT_CONTEXT_WINDOW,
-            effort: Effort::new("high"),
-        },
-        config,
-        credentials: Some(test_credential()),
-        identity: None,
-        model_factory: None,
-        append_hook_factory: None,
-        keyring_changed: None,
-    }
+    options
 }
 
 fn sessions_dir(data_dir: &std::path::Path) -> std::path::PathBuf {
@@ -128,7 +97,7 @@ async fn root_created_on_first_start_and_recorded_atomically() {
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
 
-    let root = open_root_session(options(data_dir.path(), cwd.path(), &server.uri()))
+    let root = open_root_session(root_options(data_dir.path(), cwd.path(), &server.uri()))
         .await
         .expect("首次启动应建根会话");
     assert_eq!(root.status, RootStatus::Created);
@@ -151,13 +120,13 @@ async fn root_restored_when_record_and_log_exist() {
     mount(&server).await;
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
-    let first = open_root_session(options(data_dir.path(), cwd.path(), &server.uri()))
+    let first = open_root_session(root_options(data_dir.path(), cwd.path(), &server.uri()))
         .await
         .unwrap();
     let id = first.session_id.clone();
     drop(first);
 
-    let second = open_root_session(options(data_dir.path(), cwd.path(), &server.uri()))
+    let second = open_root_session(root_options(data_dir.path(), cwd.path(), &server.uri()))
         .await
         .expect("记过且日志在，应找回同一条根会话");
     assert_eq!(second.status, RootStatus::Restored);
@@ -171,7 +140,7 @@ async fn root_recorded_but_missing_log_reports_and_does_not_create() {
     mount(&server).await;
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
-    let root = open_root_session(options(data_dir.path(), cwd.path(), &server.uri()))
+    let root = open_root_session(root_options(data_dir.path(), cwd.path(), &server.uri()))
         .await
         .unwrap();
     let id = root.session_id.clone();
@@ -181,10 +150,11 @@ async fn root_recorded_but_missing_log_reports_and_does_not_create() {
     std::fs::remove_file(&log).unwrap();
     let before = session_file_count(data_dir.path());
 
-    let error = match open_root_session(options(data_dir.path(), cwd.path(), &server.uri())).await {
-        Ok(_) => panic!("记过但日志缺失必须报错"),
-        Err(error) => error,
-    };
+    let error =
+        match open_root_session(root_options(data_dir.path(), cwd.path(), &server.uri())).await {
+            Ok(_) => panic!("记过但日志缺失必须报错"),
+            Err(error) => error,
+        };
     assert!(
         matches!(&error, RootError::RecordedSessionMissing { session_id, .. } if session_id == id.as_str()),
         "应是 RecordedSessionMissing：{error:?}"
@@ -208,10 +178,11 @@ async fn root_corrupt_state_file_reports_and_does_not_create() {
     )
     .unwrap();
 
-    let error = match open_root_session(options(data_dir.path(), cwd.path(), &server.uri())).await {
-        Ok(_) => panic!("状态文件损坏必须报错"),
-        Err(error) => error,
-    };
+    let error =
+        match open_root_session(root_options(data_dir.path(), cwd.path(), &server.uri())).await {
+            Ok(_) => panic!("状态文件损坏必须报错"),
+            Err(error) => error,
+        };
     assert!(
         matches!(error, RootError::StateCorrupt { .. }),
         "应是 StateCorrupt：{error:?}"
@@ -225,7 +196,7 @@ async fn root_half_written_tmp_does_not_break_existing_state() {
     mount(&server).await;
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
-    let first = open_root_session(options(data_dir.path(), cwd.path(), &server.uri()))
+    let first = open_root_session(root_options(data_dir.path(), cwd.path(), &server.uri()))
         .await
         .unwrap();
     let id = first.session_id.clone();
@@ -240,7 +211,7 @@ async fn root_half_written_tmp_does_not_break_existing_state() {
     )
     .unwrap();
 
-    let second = open_root_session(options(data_dir.path(), cwd.path(), &server.uri()))
+    let second = open_root_session(root_options(data_dir.path(), cwd.path(), &server.uri()))
         .await
         .expect("半写的临时文件不能破坏已提交的状态");
     assert_eq!(second.status, RootStatus::Restored);
@@ -255,7 +226,7 @@ async fn restart_claims_pending_inbox_exactly_once() {
     let cwd = tempfile::tempdir().unwrap();
 
     // 第一次启动：建根会话；投一条 Inject（进下一步队列但不唤醒，模拟重启前没跑完的输入）。
-    let first = open_root_session(options(data_dir.path(), cwd.path(), &server.uri()))
+    let first = open_root_session(root_options(data_dir.path(), cwd.path(), &server.uri()))
         .await
         .unwrap();
     let id = first.session_id.clone();
@@ -269,7 +240,7 @@ async fn restart_claims_pending_inbox_exactly_once() {
     drop(first);
 
     // 第二次启动（重启）：找回根会话，自动领取 pending inbox 并转成一轮，恰好一次。
-    let second = open_root_session(options(data_dir.path(), cwd.path(), &server.uri()))
+    let second = open_root_session(root_options(data_dir.path(), cwd.path(), &server.uri()))
         .await
         .expect("重启应找回根会话");
     assert_eq!(second.status, RootStatus::Restored);
@@ -296,7 +267,7 @@ async fn restart_claims_pending_inbox_exactly_once() {
     drop(second);
 
     // 第三次启动：队列已消费，不再领取、不再跑。
-    let third = open_root_session(options(data_dir.path(), cwd.path(), &server.uri()))
+    let third = open_root_session(root_options(data_dir.path(), cwd.path(), &server.uri()))
         .await
         .unwrap();
     assert!(!third.claimed_pending, "没有 pending inbox 时不领取");
@@ -312,7 +283,7 @@ async fn durable_rpc_id_is_idempotent_across_restart() {
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
 
-    let first = open_root_session(options(data_dir.path(), cwd.path(), &server.uri()))
+    let first = open_root_session(root_options(data_dir.path(), cwd.path(), &server.uri()))
         .await
         .unwrap();
     let id = first.session_id.clone();
@@ -336,7 +307,7 @@ async fn durable_rpc_id_is_idempotent_across_restart() {
     drop(first);
 
     // 重启后同一个 requestId 再发：durable rpcId 应判重，不产生第二条消息/第二次请求。
-    let second = open_root_session(options(data_dir.path(), cwd.path(), &server.uri()))
+    let second = open_root_session(root_options(data_dir.path(), cwd.path(), &server.uri()))
         .await
         .unwrap();
     let service = ServiceHost::new(second.agent.clone());

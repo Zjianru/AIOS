@@ -1,15 +1,12 @@
 //! 接缝 2：bash 工具与受管环境变量（测试清单第 3 条）。
 
 use std::fs;
-use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use tools::{BashTool, Tool, ToolCall, ToolContext, ToolResult, ToolSessionState, ToolSet};
+use tools::{BashTool, Tool, ToolCall, ToolContext, ToolResult, ToolSet};
 
-fn session_context(cwd: &Path, data_dir: &Path) -> ToolContext {
-    ToolContext::with_session(cwd, Arc::new(ToolSessionState::new(data_dir, "sess-1")))
-}
+use crate::common::session_context;
 
 async fn run(arguments: Value, context: &ToolContext) -> ToolResult {
     let tool = BashTool::new();

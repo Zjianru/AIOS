@@ -83,7 +83,7 @@ fn no_trailing_newline_marker_is_not_part_of_the_diff() {
 #[tokio::test]
 async fn write_new_file_meta_has_create_operation_and_null_old_text() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let tool = WriteTool::new();
     let result = run(
         &tool,
@@ -106,7 +106,7 @@ async fn write_new_file_meta_has_create_operation_and_null_old_text() {
 #[tokio::test]
 async fn write_overwrite_meta_carries_the_hunk_diff() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let tool = WriteTool::new();
     let _ = run(
         &tool,
@@ -129,7 +129,7 @@ async fn write_overwrite_meta_carries_the_hunk_diff() {
 #[tokio::test]
 async fn edit_meta_carries_the_hunk_diff() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let _ = run(
         &WriteTool::new(),
         &context,
@@ -151,7 +151,7 @@ async fn edit_meta_carries_the_hunk_diff() {
 #[tokio::test]
 async fn apply_patch_normal_run_meta_has_diffs_for_add_and_update() {
     let dir = tempfile::tempdir().unwrap();
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     fs::write(dir.path().join("old.txt"), "line1\nline2\nline3\n").unwrap();
     let read = run(
         &tools::ReadTool::new(),
@@ -206,7 +206,7 @@ async fn apply_patch_stopped_meta_marks_the_partial_run_without_failed_diff() {
         permissions.set_mode(0o555);
         fs::set_permissions(&locked, permissions).unwrap();
     }
-    let context = ToolContext::new(dir.path());
+    let context = crate::common::context(dir.path());
     let read = run(
         &tools::ReadTool::new(),
         &context,

@@ -2,50 +2,11 @@
 
 use std::path::Path;
 
-use agent::AgentConfig;
-use model::{DEFAULT_CONTEXT_WINDOW, DeepSeekConfig, Effort};
-use service::{AttachmentGetRequest, AttachmentPutRequest, Call, RootHost, RootSessionOptions};
+use service::{AttachmentGetRequest, AttachmentPutRequest, Call, RootHost};
 use tempfile::tempdir;
 
-struct TestCredential;
-
-impl model::CredentialSource for TestCredential {
-    fn issue(
-        &self,
-        _purpose: &str,
-        _context: &model::CredentialContext,
-    ) -> Result<String, model::ModelError> {
-        Ok("test-key".to_owned())
-    }
-}
-
-fn options(data_dir: &Path, identity: &Path) -> RootSessionOptions {
-    RootSessionOptions {
-        data_dir: data_dir.to_path_buf(),
-        cwd: data_dir.to_path_buf(),
-        model: DeepSeekConfig {
-            provider: "deepseek".to_owned(),
-            base_url: "http://127.0.0.1:1".to_owned(),
-            model: "deepseek-flash".to_owned(),
-            max_tokens: 2048,
-            context_window: DEFAULT_CONTEXT_WINDOW,
-            effort: Effort::new("high"),
-        },
-        config: AgentConfig::default(),
-        credentials: Some(std::sync::Arc::new(TestCredential)),
-        identity: Some(identity.to_path_buf()),
-        model_factory: None,
-        append_hook_factory: None,
-        keyring_changed: None,
-    }
-}
-
 async fn host(dir: &Path) -> RootHost {
-    RootHost::open(
-        options(dir, &dir.join("identity.txt")),
-        DEFAULT_CONTEXT_WINDOW,
-    )
-    .await
+    crate::common::open(crate::common::options(dir)).await
 }
 
 fn base64(bytes: &[u8]) -> String {

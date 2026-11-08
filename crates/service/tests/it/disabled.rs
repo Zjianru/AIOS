@@ -3,7 +3,6 @@
 use std::path::Path;
 use std::time::Duration;
 
-use agent::AgentConfig;
 use credentials::CheckState;
 use model::{DEFAULT_CONTEXT_WINDOW, DeepSeekConfig, Effort};
 use service::{
@@ -39,52 +38,10 @@ data: {"type":"message_stop"}
 
 "#;
 
-/// 产品的凭证来源会先查屏蔽表；测试来源照做（数据目录 + 连接 id）。
-struct TestCredential {
-    data_dir: std::path::PathBuf,
-    connection: String,
-}
-
-impl model::CredentialSource for TestCredential {
-    fn issue(
-        &self,
-        _purpose: &str,
-        _context: &model::CredentialContext,
-    ) -> Result<String, model::ModelError> {
-        Ok("test-key".to_owned())
-    }
-
-    fn admit(&self, model: &str) -> Result<(), model::ModelError> {
-        service::disabled::admit(&self.data_dir, &self.connection, model)
-    }
-}
-
-fn options(data_dir: &Path, endpoint: &str) -> RootSessionOptions {
-    RootSessionOptions {
-        data_dir: data_dir.to_path_buf(),
-        cwd: data_dir.to_path_buf(),
-        model: DeepSeekConfig {
-            provider: "deepseek".to_owned(),
-            base_url: endpoint.to_owned(),
-            model: "deepseek-flash".to_owned(),
-            max_tokens: 2048,
-            context_window: DEFAULT_CONTEXT_WINDOW,
-            effort: Effort::new("high"),
-        },
-        config: AgentConfig::default(),
-        credentials: Some(std::sync::Arc::new(TestCredential {
-            data_dir: data_dir.to_path_buf(),
-            connection: "deepseek".to_owned(),
-        })),
-        identity: Some(data_dir.join("identity.txt")),
-        model_factory: None,
-        append_hook_factory: None,
-        keyring_changed: None,
-    }
-}
-
 async fn host(dir: &Path, endpoint: &str) -> RootHost {
-    RootHost::open(options(dir, endpoint), DEFAULT_CONTEXT_WINDOW).await
+    let mut options = crate::common::options(dir);
+    options.model.base_url = endpoint.to_owned();
+    crate::common::open(options).await
 }
 
 /// 跨连接测试用：照 cli 的 model_factory 从 Keyring 按连接 id 解析配置和凭证。
@@ -924,7 +881,8 @@ async fn 跨连接切换后屏蔽判断用根会话冻结的连接不用当前�
             })
             .expect("save connection");
     }
-    let mut root_options = options(dir.path(), &server.uri());
+    let mut root_options = crate::common::options(dir.path());
+    root_options.model.base_url = server.uri();
     root_options.identity = Some(identity.clone());
     root_options.credentials = None;
     root_options.model_factory = Some(keyring_factory(dir.path(), &identity));
@@ -1094,7 +1052,7 @@ async fn 查询规则返回命中的模型和使用者() {
 
 /// 空 Keyring 的宿主：根会话 Unavailable，`connection-save` 会走写 lastSelection 的那条路。
 fn unavailable_options(data_dir: &Path) -> RootSessionOptions {
-    let mut options = options(data_dir, "http://127.0.0.1:1");
+    let mut options = crate::common::options(data_dir);
     let factory: service::ModelFactory =
         std::sync::Arc::new(|_selection| Err("还没有接模型".to_owned()));
     options.model_factory = Some(factory);
