@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { createServer } from 'node:http';
 import { apiPost, startKernelFixture } from './service-fixture';
 
-/// T016 验收修复的三件事：MiniMax 列表最新在前（旧 highspeed 不标新）、
+/// 验收修复的页面行为：获取面板按厂商给的顺序原样列出（第一次获取一条都不标新）、
 /// 价格摘要紧凑、套餐余量常显并自动查询。这里只做页面能看到的行为。
 const urlOf = (fixture: { baseUrl: string; token: string }) =>
   fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind';
@@ -54,9 +54,9 @@ async function startVendor(options: { models?: string[]; balanceDelayMs?: number
   };
 }
 
-/// 验收发现 1：MiniMax 最新的模型在前（M3.1/M3 → M2.7/M2.5 → M2.1/M2），
-/// highspeed 跟同代相邻；内置目录补过的旧模型第一次获取不能标「新」。
-test('MiniMax 列表最新在前，旧 highspeed 不标新', async ({ page, request }) => {
+/// 获取面板按厂商给的顺序原样列出（含厂商仍会给的旧 highspeed）；第一次获取没有基准，
+/// 一条都不标新。
+test('获取面板按厂商顺序原样列出，第一次不标新', async ({ page, request }) => {
   const fixture = await startKernelFixture();
   const vendor = await startVendor({
     models: [
@@ -111,6 +111,8 @@ test('MiniMax 列表最新在前，旧 highspeed 不标新', async ({ page, requ
     for (const [index, id] of order.entries()) {
       await expect(labels.nth(index)).toContainText(id);
     }
+    // 第一次获取（这个连接还没有存下的列表）：一个都不标「新」。
+    await expect(discover.locator('[data-settings="fresh"]')).toHaveCount(0);
   } finally {
     await vendor.close();
     await fixture.close();

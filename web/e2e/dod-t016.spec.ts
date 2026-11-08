@@ -7,8 +7,8 @@ import { apiPost, startT016DodFixture } from './service-fixture';
 import { sessionLog } from './dod-log';
 
 /**
- * T016.7 DoD2（真 key，MiniMax 国内站）：四件事——
- * ① 获取模型：存下的 live 列表文件在；再获取一次一个都不标新；
+ * DoD2（真 key，MiniMax 国内站）：四件事——
+ * ① 获取模型：存下的 live 列表文件在；第一次和再获取一次都一个不标新；
  * ② 让 Kind 写长内容，跑着时用 disabled-models-set 屏蔽当前模型：turn/end aborted + hook model-disabled，
  *    监控里打断后没有发给这个模型的请求；
  * ③ 再发一句：turn/end error MODEL_DISABLED，监控里这一轮 0 次模型请求；
@@ -109,7 +109,7 @@ test('DoD2：真 key 四件事（MiniMax）', async ({ page, request }) => {
     expect(connection, '首次使用页建好 minimax-cn 连接').toBeTruthy();
     const currentModel: string = connection.model;
 
-    // ① 获取两次：第一次落盘，第二次一个都不标新。
+    // ① 获取两次：第一次落盘、没有上一次列表可比，第二次也没有新增；两次都不标新。
     const first = await apiPost(request, fixture, {
       method: 'available-models',
       id: 'minimax-cn',
@@ -124,6 +124,8 @@ test('DoD2：真 key 四件事（MiniMax）', async ({ page, request }) => {
     expect(existsSync(livePath), '存下的 live 列表文件存在：' + livePath).toBeTruthy();
     const live = JSON.parse(readFileSync(livePath, 'utf8')) as LiveEntry;
     expect(live.models.length).toBeGreaterThan(0);
+    const freshFirst = (firstBody.models as { fresh: boolean }[]).filter((row) => row.fresh).length;
+    expect(freshFirst, '第一次获取没有上一次的列表，一条都不标新').toBe(0);
 
     const fetchStep: string[] = [];
     jq(['-c', '{live, models:(.models | length), fresh:([.models[] | select(.fresh)] | length)}'], fetch1Path, '① 第一次获取：厂商列表成功、条数、标新的条数', fetchStep);

@@ -49,13 +49,16 @@ test('设置页获取模型：目录窗口和四类价格都在', async ({ page 
 });
 
 /** 假厂商的 /v1/models：e2e 要看厂商真正回的列表，不用回放脚本那张 404。 */
-async function startVendor(models: string[]): Promise<{
+async function startVendor(initialModels: string[]): Promise<{
   url: string;
   /** 收到过几次 /v1/models：用来确认「页面/选择器确实问过厂商」。 */
   modelsRequests: () => number;
+  /** 改厂商下一次回的列表（同一个连接前后两次获取看到不同结果）。 */
+  setModels: (models: string[]) => void;
   close: () => Promise<void>;
 }> {
   let modelsRequests = 0;
+  let models = initialModels;
   const server = createServer((request, response) => {
     if (request.url?.includes('/v1/models')) {
       modelsRequests += 1;
@@ -75,12 +78,15 @@ async function startVendor(models: string[]): Promise<{
   return {
     url: `http://127.0.0.1:${address.port}`,
     modelsRequests: () => modelsRequests,
+    setModels: (next) => {
+      models = next;
+    },
     close: () => new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))),
   };
 }
 
-/// 获取面板：「新」、搜索、计数、不勾就跟着厂商走；选择器和小标签用厂商列表。
-test('获取模型标新、搜索计数，不勾就跟着厂商走', async ({ page, request }) => {
+/// 获取面板：第一次不标新、第二次只标新增；搜索、计数、不勾就跟着厂商走。
+test('第一次获取不标新，第二次只标新增，不勾跟着厂商走', async ({ page, request }) => {
   const fixture = await startKernelFixture();
   const vendor = await startVendor(['deepseek-flash', 'vendor-future']);
   try {
@@ -103,14 +109,24 @@ test('获取模型标新、搜索计数，不勾就跟着厂商走', async ({ pa
     const discover = editor.locator('[data-settings="discover"]');
     await expect(discover).toBeVisible({ timeout: 20_000 });
 
-    // 计数：目录 + 厂商合并列出 5 个；目录里没有的 vendor-future 是新的。
+    // 第一次获取没有上一次的列表可比较：目录 + 厂商合并列出 5 个，一个都不标新。
     const count = discover.locator('[data-settings="discover-count"]');
     await expect(count).toContainText('列出 5 个');
-    await expect(count).toContainText('1 个是新的');
-    const future = discover.locator('label', { hasText: 'vendor-future' });
-    await expect(future.locator('[data-settings="fresh"]')).toHaveText('新');
+    await expect(count).not.toContainText('个是新的');
     await expect(
-      discover.locator('label', { hasText: 'deepseek-flash' }).locator('[data-settings="fresh"]'),
+      discover.locator('label', { hasText: 'vendor-future' }).locator('[data-settings="fresh"]'),
+    ).toHaveCount(0);
+
+    // 厂商多给一个，再获取一次：只有新的那个标「新」，之前见过的都不标。
+    vendor.setModels(['deepseek-flash', 'vendor-future', 'vendor-newer']);
+    await editor.getByRole('button', { name: '获取可用模型' }).click();
+    await expect(count).toContainText('列出 6 个');
+    await expect(count).toContainText('1 个是新的');
+    await expect(
+      discover.locator('label', { hasText: 'vendor-newer' }).locator('[data-settings="fresh"]'),
+    ).toHaveText('新');
+    await expect(
+      discover.locator('label', { hasText: 'vendor-future' }).locator('[data-settings="fresh"]'),
     ).toHaveCount(0);
 
     // 搜索只剩匹配行。
@@ -118,6 +134,9 @@ test('获取模型标新、搜索计数，不勾就跟着厂商走', async ({ pa
     await search.fill('future');
     await expect(discover.locator('label')).toHaveCount(1);
     await expect(discover.locator('label')).toContainText('vendor-future');
+    await search.fill('newer');
+    await expect(discover.locator('label')).toHaveCount(1);
+    await expect(discover.locator('label')).toContainText('vendor-newer');
     await search.fill('');
 
     // 一个都不勾：提示跟着厂商走，更新后列表为空、小标签列出厂商模型。
@@ -127,7 +146,7 @@ test('获取模型标新、搜索计数，不勾就跟着厂商走', async ({ pa
     await discover.getByRole('button', { name: '更新列表' }).click();
     await expect(discover).toHaveCount(0);
     await expect(editor).toContainText('跟着厂商的列表走');
-    await expect(editor.locator('[data-settings="vendor-model"]')).toHaveCount(2);
+    await expect(editor.locator('[data-settings="vendor-model"]')).toHaveCount(3);
 
     // 保存后重开：空表（跟厂商走）和厂商小标签都还在。
     await editor.getByRole('button', { name: '保存', exact: true }).click();
@@ -137,13 +156,13 @@ test('获取模型标新、搜索计数，不勾就跟着厂商走', async ({ pa
     await expect(editor).toBeVisible();
     await editor.getByText('自定义设置').click();
     await expect(editor).toContainText('跟着厂商的列表走');
-    await expect(editor.locator('[data-settings="vendor-model"]')).toHaveCount(2);
+    await expect(editor.locator('[data-settings="vendor-model"]')).toHaveCount(3);
 
     // 选择器跟可选的模型（厂商列表），不再列目录独有项。
     await page.getByRole('button', { name: 'Kind', exact: true }).click();
     await page.locator('[data-kind="model-picker"]').click();
-    const futureItem = page.getByRole('menuitem', { name: /vendor-future/ });
-    await expect(futureItem).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole('menuitem', { name: /vendor-future/ })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole('menuitem', { name: /vendor-newer/ })).toBeVisible();
     await expect(page.getByRole('menuitem', { name: /deepseek-v4-pro/ })).toHaveCount(0);
   } finally {
     await vendor.close();
@@ -198,8 +217,8 @@ test('勾两个模型，选择器里只有这两个', async ({ page, request }) 
 });
 
 /// 打开页面/选择器会顺带问一次厂商（补价格、窗口和档），但只有按「获取可用模型」才把
-/// 这一次的列表存下来。隐式查询也落盘的话，「新」的基准会被推着走，设置页就再也看不到「新」。
-test('隐式查询不存厂商列表，按获取才存下并标新', async ({ page, request }) => {
+/// 这一次的列表存下来；隐式查询也不建立「新」的基准。
+test('隐式查询不存厂商列表，按获取才存下', async ({ page, request }) => {
   const fixture = await startKernelFixture();
   const vendor = await startVendor(['deepseek-flash', 'vendor-future']);
   try {
@@ -229,11 +248,10 @@ test('隐式查询不存厂商列表，按获取才存下并标新', async ({ pa
     await editor.getByRole('button', { name: '获取可用模型' }).click();
     const discover = editor.locator('[data-settings="discover"]');
     await expect(discover).toBeVisible({ timeout: 20_000 });
-    // 基准还是内置目录：厂商多出来的那个才算新。
-    await expect(discover.locator('[data-settings="discover-count"]')).toContainText('1 个是新的');
-    await expect(
-      discover.locator('label', { hasText: 'vendor-future' }).locator('[data-settings="fresh"]'),
-    ).toHaveText('新');
+    // 隐式查询没写盘，第一次获取还是没有基准：目录 + 厂商 5 个，一条都不标新。
+    await expect(discover.locator('[data-settings="discover-count"]')).toContainText('列出 5 个');
+    await expect(discover.locator('[data-settings="discover-count"]')).not.toContainText('个是新的');
+    await expect(discover.locator('[data-settings="fresh"]')).toHaveCount(0);
 
     // 按过「获取」以后，这一次的列表才存进设置页的 listed。
     const after = await apiPost(request, fixture, { method: 'model-settings' });
@@ -296,7 +314,9 @@ test('换 API 地址后旧厂商列表作废，获取后新表生效', async ({ 
     await editor.getByRole('button', { name: '获取可用模型' }).click();
     const discover = editor.locator('[data-settings="discover"]');
     await expect(discover).toBeVisible({ timeout: 20_000 });
-    await expect(discover.locator('[data-settings="discover-count"]')).toContainText('1 个是新的');
+    // 换了地址后第一次获取，旧表已删，一条都不标新。
+    await expect(discover.locator('[data-settings="discover-count"]')).toContainText('列出 5 个');
+    await expect(discover.locator('[data-settings="fresh"]')).toHaveCount(0);
     await expect(discover.locator('label', { hasText: 'vendor-new' })).toBeVisible();
     await expect(discover.locator('label', { hasText: 'vendor-old' })).toHaveCount(0);
     expect(await listedIds()).toEqual(['deepseek-flash', 'vendor-new']);

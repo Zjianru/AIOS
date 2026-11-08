@@ -826,7 +826,7 @@ async fn 厂商列表只认小写bearer时默认两个鉴权头都发() {
 }
 
 #[tokio::test]
-async fn 获取成功只存厂商列表且第二次只有新模型是新() {
+async fn 获取成功只存厂商列表且第二次只标新增() {
     model::catalog::set_global(model::catalog::snapshot());
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -873,10 +873,9 @@ async fn 获取成功只存厂商列表且第二次只有新模型是新() {
     };
     assert!(first.live, "厂商列表成功");
     assert!(
-        fresh_of(&first, "vendor-new-1"),
-        "目录里没有的厂商模型第一次是新"
+        fresh_ids(&first).is_empty(),
+        "第一次获取没有上一次的列表可比较，一条都不标新"
     );
-    assert!(!fresh_of(&first, "deepseek-flash"), "目录里已有的不算新");
     assert!(
         !fresh_of(&first, "deepseek-v4-pro"),
         "目录独有项不是厂商这次给的"
@@ -910,8 +909,7 @@ async fn 获取成功只存厂商列表且第二次只有新模型是新() {
     assert!(second_fetched_at >= first_fetched_at);
 }
 
-/// T016 验收纠偏：列表跟厂商 live 顺序走（不按版本重排）；目录里的字段照常合并，
-/// 目录没有的模型没有标价。
+/// 列表跟厂商 live 顺序走（不按版本重排）；目录里的字段照常合并，目录没有的模型没有标价。
 #[tokio::test]
 async fn minimax_列表保留厂商顺序() {
     model::catalog::set_global(model::catalog::snapshot());
@@ -974,47 +972,47 @@ async fn minimax_列表保留厂商顺序() {
 }
 
 #[tokio::test]
-async fn 自定义地址第一次获取一个都不标新() {
+async fn 第一次获取内置和自定义都一条都不标新() {
     model::catalog::set_global(model::catalog::snapshot());
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/models"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "data": [
-                {"id": "custom-a", "display_name": "A"},
-                {"id": "custom-b", "display_name": "B"}
+                {"id": "deepseek-flash", "display_name": "Flash"},
+                {"id": "vendor-builtin", "display_name": "Builtin"}
             ]
         })))
-        .expect(1)
+        .expect(2)
         .mount(&server)
         .await;
     let dir = tempdir().unwrap();
     let host = host(dir.path()).await;
-    let saved = host
-        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
-            id: "custom-fresh".to_owned(),
-            name: "Custom".to_owned(),
-            model: "custom-a".to_owned(),
-            endpoint: server.uri(),
-            api_key: TEST_KEY.to_owned(),
-            ..Default::default()
-        }))
-        .await;
-    assert!(saved.is_ok(), "save: {saved:?}");
-    let response = host
-        .dispatch(Call::AvailableModels(discover_request("custom-fresh")))
-        .await
-        .expect("获取");
-    let service::Response::AvailableModels(response) = response else {
-        panic!("expected AvailableModels");
-    };
-    assert!(response.live);
-    assert!(
-        fresh_ids(&response).is_empty(),
-        "自定义地址第一次没有可比的基准，一条都不标新"
-    );
-    let (ids, _) = stored_live(dir.path(), "custom-fresh");
-    assert_eq!(ids, vec!["custom-a", "custom-b"]);
+    for (id, preset) in [("builtin-fresh", Some("deepseek")), ("custom-fresh", None)] {
+        let saved = host
+            .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+                id: id.to_owned(),
+                name: id.to_owned(),
+                model: "deepseek-flash".to_owned(),
+                endpoint: server.uri(),
+                api_key: TEST_KEY.to_owned(),
+                preset: preset.map(str::to_owned),
+                ..Default::default()
+            }))
+            .await;
+        assert!(saved.is_ok(), "{id} save: {saved:?}");
+        let response = available_models(&host, discover_request(id)).await;
+        assert!(response.live, "{id} 厂商列表成功");
+        assert!(
+            fresh_ids(&response).is_empty(),
+            "{id} 第一次获取没有上一次的列表，一条都不标新"
+        );
+        assert_eq!(
+            stored_live(dir.path(), id).0,
+            vec!["deepseek-flash", "vendor-builtin"],
+            "{id} 存的是厂商这次给的列表"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1174,10 +1172,13 @@ async fn 只读查询不落盘也不推进新基准() {
     .await
     .expect("save");
 
-    // 打开选择器/设置页会问一次厂商（补价格、窗口、档）：这一次不能落盘。
+    // 打开选择器/设置页会问一次厂商（补价格、窗口、档）：这一次不能落盘，也不建立基准。
     let peeked = available_models(&host, query_request("peek")).await;
     assert!(peeked.live, "厂商列表拿到了");
-    assert!(fresh_of(&peeked, "vendor-new-1"), "基准是内置目录");
+    assert!(
+        fresh_ids(&peeked).is_empty(),
+        "第一次查询还没有上一次的列表，一条都不标新"
+    );
     assert!(
         !model::catalog::live_path(dir.path(), "peek").exists(),
         "只读查询不存厂商列表"
@@ -1272,7 +1273,10 @@ async fn 换端点后旧厂商列表作废获取后新表生效() {
 
     // 在新地址按获取：新表生效，旧表不再出现。
     let fetched = available_models(&host, discover_request("moved")).await;
-    assert!(fresh_of(&fetched, "new-vendor-model"), "按内置目录比是新");
+    assert!(
+        fresh_ids(&fetched).is_empty(),
+        "换到新地址后第一次获取没有基准，一条都不标新"
+    );
     assert_eq!(stored_live(dir.path(), "moved").0, vec!["new-vendor-model"]);
     assert_eq!(listed_ids(&host, "moved").await, vec!["new-vendor-model"]);
     assert_eq!(
@@ -1423,8 +1427,8 @@ async fn 保存换预设后旧厂商列表作废() {
 
     let fetched = available_models(&host, discover_request("preset-moved")).await;
     assert!(
-        fresh_of(&fetched, "preset-vendor-model"),
-        "内置目录里没有的算新"
+        fresh_ids(&fetched).is_empty(),
+        "换预设后旧表已删，第一次获取没有基准"
     );
     assert_eq!(
         listed_ids(&host, "preset-moved").await,
