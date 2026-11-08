@@ -19,9 +19,13 @@ pub(super) const INITIAL_RETRY_DELAY_MS: u64 = 500;
 pub(super) const MAX_RETRY_DELAY_MS: u64 = 10_000;
 pub(super) const RETRY_JITTER_RATIO: f64 = 0.1;
 
-/// spec 定的 5 个可重试码（排序后写进 policyKey，照 DSH retryPolicyKey）。
-pub(super) const RETRYABLE_CODES: [ErrorCode; 5] = [
+/// 可重试码：网络错误、空响应、408、429、5xx（排序后写进 policyKey，照 DSH retryPolicyKey）。
+///
+/// 408 是厂商侧的"请求超时"，和其它 4xx 一样按 HTTP 状态归类，但它是瞬时故障
+/// （`docs/05-执行.md` 第 10 节点名 408 要自动重试）。
+pub(super) const RETRYABLE_CODES: [ErrorCode; 6] = [
     ErrorCode::EmptyResponse,
+    ErrorCode::Http(408),
     ErrorCode::RateLimit,
     ErrorCode::Server,
     ErrorCode::Timeout,
@@ -49,7 +53,7 @@ pub(super) enum RetryDecision {
     Fatal,
 }
 
-/// 只认 spec 定的 5 个可重试码。
+/// 只认可重试码表里的码。
 pub(super) fn is_retryable(code: ErrorCode) -> bool {
     RETRYABLE_CODES.contains(&code)
 }
