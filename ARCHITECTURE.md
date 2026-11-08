@@ -23,12 +23,12 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 
 - **model**：provider 无关的消息 IR 与流式块、Anthropic Messages 适配器（anthropic/；厂商差异集中在 vendors.rs：思考档按模型目录的档位适配，序列化 thinking/output_config/max_tokens）、重试/取消、token 估算与请求派生、models.dev 目录（24h 缓存/内置快照/厂商列表合并）、本机地址不走代理的共享 HTTP client。
 - **session**：会话事件与格式版本、JSONL 追加与读取、折叠/恢复、单写者文件锁；session/model 是会话模型选择（连接/模型/想要的档）的 durable 事实，最近一条胜出（重开恢复）。
-- **tools**：Tool 接口与 ToolSet、工具批执行（独占屏障/并行池/按模型顺序提交）、内置文件工具与观察策略、spill、后台 job、bash。
+- **tools**：Tool 接口与 ToolSet、工具批执行（独占屏障/并行池/按模型顺序提交）、内置文件工具与观察策略、spill、后台 job、bash、canvas（画布）。
 - **agent**：轮次驱动、收件箱、能力注册表与各能力实现；唯一产品组装入口是 Agent::open；Agent::select 写 session/model 并只改下一轮。
 - **agent 能力**：compaction（自动/溢出/手动）、prune、instructions、skill、todo、ask、spill、reminder、jobs。
 - **credentials**：Keyring 真恢复；age 加密整份存储（0600/0700）、age 身份文件作钥匙（换位置/指回/重新开始）、连接描述不含 key 正文、每请求签发并只追加签发记录、变化通知；数据目录配置只存钥匙位置。model::CredentialSource 是模型出站的凭证接缝：每次 stream 前 issue 一次、只用一次；T012.6 起还带 auth_header（连接上记住的单头，None = 两个都发）与 remember_auth_header（适配器学到单头后回报产品层写回连接）；服务验证连接的凭证来源同样写回。
 - **service**：载体无关的宿主；对象固定 Kind 根会话，调用面 Call/Response，事件面 ServiceEvent；root 模块负责根会话找回、状态文件与不可用状态；shutdown 做停服务收尾；settings 模块管 <数据目录>/settings.json 的非密钥设置（上次模型选择）；session-model-select 写事件/上次选择，跨连接空闲时重建根 agent。
-- **web**：axum HTTP/WS 薄适配器与信任栅栏；/connect、/ 换签名 cookie，/api、/ws 只认 cookie；同源托管 web/dist 静态资源（SPA fallback）；ready 帧带协议版本、根状态与上下文。
+- **web**：axum HTTP/WS 薄适配器与信任栅栏；/connect、/ 换签名 cookie，/api、/ws 只认 cookie；同源托管 web/dist 静态资源（SPA fallback）；/canvas-frame 是画布 iframe 外壳（CSP），/local-file 是本地文件的只读出口（cookie + Host，只放会话工作目录）；ready 帧带协议版本、根状态与上下文。
 - **web/ 前端**：React 19 + Vite；Kind 对话页只走服务方法与事件；只显示接上内核的部分，不带演示开关/脚本；Kind 首次使用与设置 › 模型与连接接真 Keyring；e2e 用真 serve + 假 DeepSeek 回放。
 - **cli**：aios-dev 的 chat/run/serve；只把参数/env 变成普通配置数据，不构造模型/工具/存储；连接/模型/档的优先级是 命令行 > 会话日志选择（resume 恢复）> settings.json 上次选择 > 连接默认。
 
@@ -64,7 +64,7 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 - **工具调用先记日志再派发**：tool/call 在执行前写，tool/result 按模型顺序写；独占工具形成屏障，并行池结果按模型顺序提交。
 - **编辑前先读**：文件工具在 seam 调观察策略；未见/过期/缺失分别报 FS_NOT_OBSERVED / FS_STALE_VERSION / FS_NOT_FOUND；观察状态只在会话内。
 - **大结果先 spill**：超过阈值的大工具结果整份写进 spill 目录，日志与派生请求只放头尾 preview 与 locator。
-- **剪枝只在压缩事务**：只有自动压缩/溢出恢复会剪旧大结果；手动压缩不剪；剪枝写 shadow-price 事件，原事件保留可回放。
+- **剪枝只在压缩事务**：只有自动压缩/溢出恢复会剪旧大结果和画布旧版（参数/结果里的 html、edits 换成一句，标题与说明保留；最新版不剪）；手动压缩不剪；剪枝写 shadow-price 事件，原事件保留可回放。
 - **ask 问题与回答**：问题落 question/asked，整批答完写 question/answered + tool/result；重启后的迟到回答以 user-question-reply 消息接续。
 - **指令与 skill 根**：按会话数据目录/项目根/显式 roots 顺序发现；同名 skill 先出现的根胜出。
 - **todo 整表替换**：每次 todo_write 写完整列表与快照；状态三态，校验在工具层。
@@ -72,7 +72,7 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 - **取消与续接**：取消保留可见 text/reasoning 前缀为 interrupted；resume 先修复未收尾的 turn/tool 结果再接受输入。
 - **唤醒不丢**：轮次收尾检查与 settle 之间只有一个显式让出点；Running 时 wake 置 latch，输入不会滞留。
 - **服务对外只有三类值**：Call/Response 是调用面，ServiceEvent 是事件面；seq/type/data 直接来自日志事实，不另造序号；events 按轮对齐预算。
-- **根会话不可用时服务照常起**：ready 帧带 protocolVersion（v2：只增 WS agent 帧 text-delta/usage/retrying，不落日志）、根状态（ok/unavailable kind+path+line+message）和 context（used/window，页面不推算）。
+- **根会话不可用时服务照常起**：ready 帧带 protocolVersion（v8：只增 WS agent 帧 text-delta/usage/retrying，不落日志）、根状态（ok/unavailable kind+path+line+message）和 context（used/window，页面不推算）。
 - **Web 是薄适配器 + 信任栅栏**：启动令牌只在 / 与 /connect 换签名 cookie；
   - cookie 绑 hostname+port、HttpOnly/SameSite=Strict/过期；
   - /api、/ws 只认 cookie，Host/Origin 不对 403、未认证 401；
