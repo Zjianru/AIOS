@@ -67,6 +67,12 @@ export interface CardHost {
   answer: (answers: AnswerInput[]) => void;
   /** 提问卡：整批不答。 */
   dismiss: () => void;
+  /** 连接卡：保存密钥（走 Keyring 的保存）；返回保存下来的连接 id，失败由页面提示并返回 null。 */
+  saveConnection?: (providerId: string, key: string) => Promise<string | null>;
+  /** 连接卡：验证连接（走 Keyring 的验证）。 */
+  verifyConnection?: (connectionId: string) => Promise<void>;
+  /** 连接卡：连接可用后进入下一步（首次使用的「开始」）。 */
+  start?: () => void;
 }
 
 /** 卡片视图的 props：信封、校验过的槽位、程序操作。 */
@@ -174,6 +180,9 @@ function labelSlot(fallbackValue: LabelSlot) {
     .refine((text) => chars(text) <= LABEL_MAX, { message: '标签太长' })
     .catch(fallbackValue);
 }
+
+/** 不折的正文槽：一行字（连接卡的名字、时间、原因、工具卡的命令等）。 */
+const textSlot = z.string().catch('');
 
 const optionSlotSchema = z.object({
   label: bodySlot,
@@ -386,9 +395,111 @@ export interface ConnectionSlots {
   broken: boolean;
 }
 
-export function connectionCardOf(_fact: ConnectionCardFact): CardEnvelope<ConnectionSlots> | null {
-  return null;
+/** 每个连接槽位一条规则，都带 .catch：缺字段或坏字段只降级，不整卡报错。 */
+const providerSlotSchema = z
+  .object({
+    id: z.string().min(1),
+    name: labelSlot(''),
+  })
+  .nullable()
+  .catch(null);
+
+export const connectionSlotsSchema = z.object({
+  name: labelSlot(''),
+  providers: z
+    .array(providerSlotSchema)
+    .default([])
+    .transform((items) => items.filter((item): item is ConnectionProviderSlot => item !== null)),
+  provider: textSlot,
+  saved: z.boolean().catch(false),
+  savedAt: textSlot,
+  check: z.enum(['never', 'checking', 'ok', 'fail']).catch('never'),
+  checkedAt: textSlot,
+  reason: textSlot,
+  broken: z.boolean().catch(false),
+});
+
+const CONNECTION_FALLBACK_SLOTS: ConnectionSlots = {
+  name: '',
+  providers: [],
+  provider: '',
+  saved: false,
+  savedAt: '',
+  check: 'never',
+  checkedAt: '',
+  reason: '',
+  broken: false,
+};
+
+/**
+ * 连接的状态由 Keyring 决定（程序定，不由模型给）：
+ * 已保存是决定做完了，正在验证是 running，失败是 failed；还没保存是 pending。
+ */
+function connectionStateOf(fact: ConnectionCardFact): CardState {
+  if (fact.broken) return 'failed';
+  if (!fact.key?.saved) return 'pending';
+  switch (fact.check?.kind) {
+    case 'checking':
+      return 'running';
+    case 'fail':
+      return 'failed';
+    default:
+      return 'done';
+  }
 }
+
+/** 回执和状态对得上：已保存 / 可用是 success，失败是 failed；还没决定、验证中没有回执。 */
+function connectionReceiptOf(fact: ConnectionCardFact): CardReceipt | null {
+  if (fact.broken) return { outcome: 'failed', summary: 'Keyring 读不出来，这个连接暂时不能用' };
+  if (!fact.key?.saved) return null;
+  switch (fact.check?.kind) {
+    case 'ok':
+      return { outcome: 'success', summary: '连接可用' };
+    case 'fail': {
+      const reason = typeof fact.check.reason === 'string' ? fact.check.reason : '';
+      return { outcome: 'failed', summary: reason ? `连接不可用：${reason}` : '连接不可用' };
+    }
+    case 'checking':
+      return null;
+    default:
+      return { outcome: 'success', summary: '已保存到 Keyring' };
+  }
+}
+
+/** Keyring 状态 → 连接卡信封；没有连接 id（取不出事实）返回 null。 */
+export function connectionCardOf(fact: ConnectionCardFact): CardEnvelope<ConnectionSlots> | null {
+  if (!fact || typeof fact !== 'object') return null;
+  const id = typeof fact.id === 'string' ? fact.id : '';
+  if (!id) return null;
+  const parsed = connectionSlotsSchema.safeParse({
+    name: fact.name,
+    providers: fact.providers,
+    provider: fact.provider,
+    saved: fact.key?.saved === true,
+    savedAt: fact.key?.savedAt,
+    check: fact.check?.kind,
+    checkedAt: fact.check?.at,
+    reason: fact.check?.reason,
+    broken: fact.broken === true,
+  });
+  if (!parsed.success) return null;
+  const state = connectionStateOf(fact);
+  const receipt = connectionReceiptOf(fact);
+  return {
+    id,
+    type: 'connection',
+    role: 'decision',
+    state,
+    slots: parsed.data,
+    ...(receipt ? { receipt } : {}),
+  };
+}
+
+export const connectionCard: CardDefinition<ConnectionCardFact, ConnectionSlots> = {
+  schema: connectionSlotsSchema,
+  from: connectionCardOf,
+  fallback: CONNECTION_FALLBACK_SLOTS,
+};
 
 /* ───────── 工具卡（T017.3）：工具名 → 类型、槽位和信封 ───────── */
 
@@ -440,7 +551,6 @@ export interface TerminalSlots {
   signal: string | null;
 }
 
-const textSlot = z.string().catch('');
 const integerSlot = z.number().int().catch(0);
 const nullableNumberSlot = z.number().int().nullable().catch(null);
 
@@ -729,6 +839,7 @@ export const cardDefinitions = {
   read: readCard,
   search: searchCard,
   generic: genericCard,
+  connection: connectionCard,
 };
 
 /* ───────── 颜色（程序按角色和状态定） ───────── */

@@ -6,6 +6,7 @@
 import type { ReactElement } from 'react';
 import type { CardDefinition, CardEnvelope, CardHost, CardType, CardViewProps } from './model';
 import { cardDefinitions, normalizeEnvelope, resolveSlots } from './model';
+import { ConnectionCardView } from './ConnectionCardView';
 import { GenericCardView } from './GenericView';
 import { QuestionCardView } from './QuestionView';
 import { DiffCardView, ReadCardView, SearchCardView, TerminalCardView } from './ToolViews';
@@ -37,6 +38,7 @@ const registry: Partial<Record<CardType, RegisteredCard>> = {
   read: registered(cardDefinitions.read, ReadCardView),
   search: registered(cardDefinitions.search, SearchCardView),
   generic: registered(cardDefinitions.generic, GenericCardView),
+  connection: registered(cardDefinitions.connection, ConnectionCardView),
 };
 
 /** 工作过程的卡没有程序操作；这里的空操作只兜底，提问卡在对话里由 QuestionCard 给真 host。 */
