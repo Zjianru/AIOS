@@ -60,6 +60,22 @@ impl Default for SkillInvocation {
     }
 }
 
+/// 程序自带的一份 skill：正文编进二进制，来源没有目录，排在所有用户 skill 之后。
+///
+/// 重名时用户的赢（发现按来源顺序先到先得，用户根在 `skill_roots` 里排在前面）。
+struct BundledSkill {
+    /// 程序里的名字；发现时仍以正文 frontmatter 的 name 为准。
+    name: &'static str,
+    /// 正文（含 frontmatter），编译期从 `bundled/<name>/SKILL.md` 读进来。
+    raw: &'static str,
+}
+
+/// 随二进制发布、用户可以加载的 skill。
+const BUNDLED: &[BundledSkill] = &[BundledSkill {
+    name: "aios-settings",
+    raw: include_str!("../bundled/aios-settings/SKILL.md"),
+}];
+
 /// 一条发现警告（DSH 对非法 skill 打 logger.warn，不静默丢）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillWarning {
@@ -203,10 +219,18 @@ pub fn is_skill_name(name: &str) -> bool {
 
 /// 渲染 <skill_content> 块（加载工具返回给模型的正文 + 来源目录）。
 pub fn render_skill_content(skill: &SkillContent) -> String {
+    // 编进二进制的 skill 没有目录：不写「按基目录解析」这段，免得模型去解析一个空路径。
+    let resources = if skill.summary.base_dir.as_os_str().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<skill_resources>\nBase directory for this skill: {}\nResolve relative paths mentioned by this skill against the base directory before using them. Load referenced resources only as needed.\n</skill_resources>\n\n",
+            skill.summary.base_dir.display()
+        )
+    };
     format!(
-        "<skill_content name=\"{}\">\n<skill_resources>\nBase directory for this skill: {}\nResolve relative paths mentioned by this skill against the base directory before using them. Load referenced resources only as needed.\n</skill_resources>\n\n<skill_instructions>\n{}\n</skill_instructions>\n</skill_content>",
+        "<skill_content name=\"{}\">\n{resources}<skill_instructions>\n{}\n</skill_instructions>\n</skill_content>",
         skill.summary.name,
-        skill.summary.base_dir.display(),
         skill.body.trim_end()
     )
 }
@@ -346,6 +370,41 @@ fn discover(
                     message: format!("skill file {} ignored: {message}", skill_file.display()),
                 }),
             }
+        }
+    }
+    // 程序自带的 skill 排在最后：用户根的条目先插入，重名时用户的赢。
+    for bundled in BUNDLED {
+        match parse_skill_frontmatter(bundled.raw) {
+            Ok(frontmatter) => {
+                if found.contains_key(&frontmatter.name) {
+                    continue;
+                }
+                let body = split_frontmatter(bundled.raw)
+                    .map(|(_, body)| body.trim().to_owned())
+                    .unwrap_or_default();
+                found.insert(
+                    frontmatter.name.clone(),
+                    Discovered {
+                        summary: SkillSummary {
+                            name: frontmatter.name,
+                            description: frontmatter.description,
+                            when_to_use: frontmatter.when_to_use,
+                            invocation: frontmatter.invocation,
+                            metadata: frontmatter.metadata,
+                            // 编进二进制的 skill 没有目录：路径与基目录留空，
+                            // 渲染时不写「按基目录解析」的提示。
+                            path: PathBuf::new(),
+                            base_dir: PathBuf::new(),
+                        },
+                        body,
+                    },
+                );
+            }
+            // 二进制里的 skill 解析失败是构建期错误；仍走警告，不静默丢。
+            Err(message) => warnings.push(SkillWarning {
+                path: PathBuf::from(bundled.name),
+                message: format!("bundled skill {} ignored: {message}", bundled.name),
+            }),
         }
     }
     (found.into_values().collect(), warnings, incomplete)

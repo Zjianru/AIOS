@@ -514,6 +514,7 @@ pub(crate) fn event_context(kind: &EventKind) -> Option<(u64, u64)> {
         | EventKind::LlmRetryStarted { turn, step, .. }
         | EventKind::ToolCall { turn, step, .. }
         | EventKind::ToolResult { turn, step, .. }
+        | EventKind::ToolRegistry { turn, step, .. }
         | EventKind::QuestionAsked { turn, step, .. }
         | EventKind::QuestionAnswered { turn, step, .. }
         | EventKind::QuestionCancelled { turn, step, .. } => (*turn, *step),

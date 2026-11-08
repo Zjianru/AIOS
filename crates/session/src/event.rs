@@ -1,6 +1,6 @@
 //! 会话事件与 header。
 
-use model::{AssistantStreamRecord, ContentBlock, Message, Usage};
+use model::{AssistantStreamRecord, ContentBlock, Message, ToolSchema, Usage};
 use serde::{Deserialize, Serialize};
 
 use crate::SessionId;
@@ -440,6 +440,17 @@ pub enum EventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         meta: Option<serde_json::Value>,
     },
+    /// 本步新开出的工具（加载记录）：按名字和上一步比，有新增才记一条，带完整定义。
+    ///
+    /// 照 DSH agent-loop 的 tool-registry（`agent-loop-agent.ts:696-702`）。DSH 记的是名字，
+    /// 完整定义在 `request/header` 里；AIOS 不记请求头，所以这里直接带完整定义，恢复时
+    /// 从记录重建工具表。只加不减，没有移除记录。
+    #[serde(rename = "tool/registry")]
+    ToolRegistry {
+        turn: u64,
+        step: u64,
+        additions: Vec<ToolSchema>,
+    },
     /// 一个旧工具结果被修剪的 shadow-price 事件（T006.4，照 DSH
     /// compaction-tool-result-pruner/src/index.ts:164-169）：记录被替换节点的区间/seq 与
     /// 估算 token；真正的替换是紧随其后、带 envelope surfaceOp replace 的 tool/result 事件。
@@ -560,6 +571,7 @@ impl EventKind {
             Self::LlmRetryStarted { .. } => "llm/retry-started",
             Self::ToolCall { .. } => "tool/call",
             Self::ToolResult { .. } => "tool/result",
+            Self::ToolRegistry { .. } => "tool/registry",
             Self::CompactionPrune { .. } => "compaction/prune",
             Self::TodoWrite { .. } => "todo/write",
             Self::CompactionStart { .. } => "compaction/start",

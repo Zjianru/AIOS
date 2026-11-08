@@ -476,10 +476,10 @@ fn store_absolutizes_relative_data_dir() {
     assert!(reopened.path().is_absolute(), "写打开同样绝对化");
 }
 
-/// hook 取消原因进 turn/end 后 FORMAT_VERSION 升到 16；读取器仍从 14 起。
+/// 加载记录（tool/registry）进日志后 FORMAT_VERSION 升到 17；读取器仍从 14 起。
 #[test]
-fn format_version_bumps_to_16_after_hook_abort_cause() {
-    assert_eq!(crate::FORMAT_VERSION, 16);
+fn format_version_bumps_to_17_after_tool_registry() {
+    assert_eq!(crate::FORMAT_VERSION, 17);
     assert_eq!(crate::MIN_READ_VERSION, 14);
 }
 

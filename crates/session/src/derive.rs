@@ -46,6 +46,7 @@ pub(crate) fn derive_messages_with_seqs(events: &[Event]) -> Vec<(u64, Message)>
             | EventKind::StepStart { .. }
             | EventKind::StepEnd { .. }
             | EventKind::ToolCall { .. }
+            | EventKind::ToolRegistry { .. }
             | EventKind::CompactionPrune { .. }
             | EventKind::CompactionStart { .. }
             | EventKind::CompactionSummary { .. }

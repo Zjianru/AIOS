@@ -527,8 +527,8 @@ impl UserMessage {
     }
 }
 
-/// 一次请求可用的工具定义（模型可见的 schema）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 一次请求可用的工具定义（模型可见的 schema）。会话日志的加载记录也存它。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolSchema {
     pub name: String,
     pub description: String,

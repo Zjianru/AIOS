@@ -71,6 +71,8 @@ pub fn interrupted_turn_closers(events: &[Event]) -> Option<TurnClosers> {
             | EventKind::QuestionCancelled { .. } => {}
             EventKind::JobRegistered { .. } | EventKind::JobSettled { .. } => {}
             EventKind::SessionModel { .. } => {}
+            // 加载记录只记工具表的变化，不参与收尾。
+            EventKind::ToolRegistry { .. } => {}
             EventKind::AssistantMessage {
                 turn,
                 step,

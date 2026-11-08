@@ -255,6 +255,69 @@ fn user_invocation_names_follow_dsh_gesture() {
     );
 }
 
+/// T014.2：程序自带的 skill 排在用户 skill 后面；用户放一个同名的，目录里只有用户那份。
+#[tokio::test]
+async fn bundled_skills_come_after_user_skills() {
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join(".git")).unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let catalog = discover_skills(project.path(), data_dir.path(), &[]);
+    let bundled = catalog
+        .iter()
+        .find(|skill| skill.name == "aios-settings")
+        .expect("程序自带 aios-settings");
+    assert!(
+        !bundled.description.is_empty(),
+        "目录里要有这一句用途：{}",
+        bundled.description
+    );
+    assert!(
+        bundled.base_dir.as_os_str().is_empty(),
+        "编进二进制的 skill 没有目录"
+    );
+
+    // 用户放一份同名的：用户的赢，目录里只有一条，正文是用户的。
+    write(
+        &project.path().join(".agents/skills/aios-settings/SKILL.md"),
+        "---\nname: aios-settings\ndescription: 用户自己的。\n---\nUser body.\n",
+    );
+    let catalog = discover_skills(project.path(), data_dir.path(), &[]);
+    let matches: Vec<_> = catalog
+        .iter()
+        .filter(|skill| skill.name == "aios-settings")
+        .collect();
+    assert_eq!(matches.len(), 1, "重名时只留一条：{catalog:?}");
+    assert_eq!(matches[0].description, "用户自己的。", "重名时用户的赢");
+    let context = session_context(project.path(), data_dir.path());
+    let result = load_skill("aios-settings", &context).await;
+    assert!(!result.is_error, "{}", result.content);
+    assert!(
+        result.content.contains("User body."),
+        "加载到的是用户那份：{}",
+        result.content
+    );
+    assert!(
+        !result.content.contains("Base directory for this skill"),
+        "自带 skill 没有目录，不写按基目录解析的提示"
+    );
+}
+
+/// T014.2：自带 skill 的正文要写清什么时候查、什么时候提议、一轮一张卡、只说一句为什么。
+#[test]
+fn bundled_aios_settings_body_covers_the_four_rules() {
+    let cwd = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let skill = tools::load_skill(cwd.path(), data_dir.path(), &[], "aios-settings")
+        .expect("加载自带 aios-settings");
+    for needle in ["aios_query", "propose_action", "一轮", "为什么"] {
+        assert!(
+            skill.body.contains(needle),
+            "正文要写到 {needle}：\n{}",
+            skill.body
+        );
+    }
+}
+
 /// T006.11b：用户显式通道只认 user-invocable，不看 disable-model-invocation
 /// （DSH：这是隐藏 skill 的唯一入口）；未知名字静默返回 None。
 #[test]
