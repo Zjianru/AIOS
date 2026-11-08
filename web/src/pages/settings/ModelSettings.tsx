@@ -24,6 +24,7 @@ import {
 } from '@/data/service';
 import { cachedQuota, loadQuota } from '@/data/quota';
 import { CURRENCIES } from '@/lib/numbers';
+import { formatLocalDateTime } from '@/lib/time';
 import { useKindStore } from '@/pages/kind/kindStore';
 import type { ConnectionView, ModelRow, ModelSettingsView } from '@/data/fixtures/settings';
 import { PROTOCOL_LABEL } from '@/data/fixtures/settings';
@@ -72,7 +73,7 @@ function priceTitle(row: ModelRow): string {
     show(row.priceCacheRead) +
     ' / 缓存写 ' +
     show(row.priceCacheWrite) +
-    '。标价 = 目录价（空着就继承，会乘价格倍率）；自己填 = 覆盖价，不乘倍率。'
+    '。标价 = 目录价（空着就继承）；自己填 = 覆盖价。'
   );
 }
 
@@ -218,11 +219,11 @@ function StatusDot({ conn, broken }: { conn: ConnectionView; broken?: boolean })
 /** 密钥和连接状态的一句话（「已保存」「连接可用」分开说）。 */
 function keyStatus(conn: ConnectionView | null, broken?: boolean): { text: string; tone?: 'warn' | 'fail' | 'ok' } {
   if (!conn || !conn.key.saved) return { text: '还没有密钥。填上才能用这个提供商。', tone: 'warn' };
-  const saved = `已保存在 Keyring（${conn.key.savedAt}）`;
+  const saved = `已保存在 Keyring（${formatLocalDateTime(conn.key.savedAt)}）`;
   if (broken) return { text: `${saved} · 现在读不出来，暂时不能用`, tone: 'fail' };
   switch (conn.check.kind) {
     case 'ok':
-      return { text: `${saved} · 连接可用（${conn.check.at} 验证）`, tone: 'ok' };
+      return { text: `${saved} · 连接可用（${formatLocalDateTime(conn.check.at)} 验证）`, tone: 'ok' };
     case 'fail':
       return { text: `${saved} · 不可用：${modelErrorReason(conn.check.reason)}`, tone: 'fail' };
     case 'checking':
@@ -437,7 +438,7 @@ function ModelCatalog({ models, onChange, defaults, discover, required, connecti
             <span />
           </div>
           <div className="px-0.5 text-1 leading-4 text-ink-3" data-settings="price-help">
-            标价 = 目录价（空着就继承，按价格倍率算）；自己填 = 覆盖价，不乘倍率。
+            标价 = 目录价（空着就继承）；自己填 = 覆盖价。
           </div>
           {models.map((row, index) => (
             <div key={index}>
@@ -598,7 +599,6 @@ function ConnectionEditor({ conn, view, onDone, onView, onMask }: {
   const [key, setKey] = useState('');
   const [endpoint, setEndpoint] = useState(conn.endpoint);
   const [models, setModels] = useState<ModelRow[]>(conn.models);
-  const [priceRate, setPriceRate] = useState(String(conn.priceRate ?? 1));
   const [quota, setQuota] = useState<ServiceQuota | null>(() => cachedQuota(conn.id)?.quota ?? null);
   const [quotaAt, setQuotaAt] = useState<number | null>(() => cachedQuota(conn.id)?.at ?? null);
   const [quotaError, setQuotaError] = useState<string | null>(null);
@@ -631,15 +631,11 @@ function ConnectionEditor({ conn, view, onDone, onView, onMask }: {
     setSaving(true);
     try {
       const withKey = Boolean(key.trim());
-      // 空串 = 不传（保留原值）；非法/负数也不传，避免把「免费」误存成 0。
-      const trimmedRate = priceRate.trim();
-      const rate = trimmedRate === '' ? undefined : Number(trimmedRate);
       onView(
         await updateConnection(conn.id, {
           endpoint,
           models,
           key,
-          priceRate: rate !== undefined && Number.isFinite(rate) && rate >= 0 ? rate : undefined,
         }),
       );
       onDone();
@@ -694,17 +690,6 @@ function ConnectionEditor({ conn, view, onDone, onView, onMask }: {
           masked={view.disabledModels}
           onMask={onMask}
         />
-        <Field
-          label="价格倍率"
-          help="目录标价乘这个数算花费；1 = 原价，0 = 这个连接免费（例如 Coding Plan）。"
-        >
-          <input
-            className={cn(inputClass, 'brand-type')}
-            value={priceRate}
-            inputMode="decimal"
-            onChange={(event) => setPriceRate(event.target.value)}
-          />
-        </Field>
       </Collapsible>
       <div className="mt-4 border-t border-line pt-3" data-settings="quota">
         <div className="flex items-center gap-2">
@@ -1010,7 +995,7 @@ function KeyringSection({ view, onView }: { view: ModelSettingsView; onView: (vi
           <div className="flex items-center gap-2">
             <div className="min-w-0">
               <div className="text-3 text-ink">加密钥匙</div>
-              <div className="mt-0.5 text-1 text-ink-3">放在哪由你定。现在是一个文件，{view.keyFile.since}起放在这里。</div>
+              <div className="mt-0.5 text-1 text-ink-3">放在哪由你定。现在是一个文件，{formatLocalDateTime(view.keyFile.since)} 起放在这里。</div>
             </div>
             {moving || view.keyFile.problem ? null : <Btn kind="plain" className="ml-auto" onClick={() => setMoving(true)}>换位置</Btn>}
           </div>
@@ -1036,7 +1021,7 @@ function KeyringSection({ view, onView }: { view: ModelSettingsView; onView: (vi
             <div>
               <div className="text-3 text-ink">签发记录</div>
               <div className="mt-0.5 text-1 text-ink-3">
-                {view.issuedToday ? `今天签发 ${view.issuedToday} 次，最近一次 ${view.issues[0]?.at ?? '—'}。只记谁用、做什么，不记密钥。` : '今天还没有签发过。'}
+                {view.issuedToday ? `今天签发 ${view.issuedToday} 次，最近一次 ${formatLocalDateTime(view.issues[0]?.at)}。只记谁用、做什么，不记密钥。` : '今天还没有签发过。'}
               </div>
             </div>
             {view.issues.length ? (
@@ -1056,7 +1041,7 @@ function KeyringSection({ view, onView }: { view: ModelSettingsView; onView: (vi
               <tbody>
                 {view.issues.map((row) => (
                   <tr key={row.id} className="border-t border-line text-ink-2">
-                    <td className="brand-type py-1">{row.at}</td>
+                    <td className="brand-type py-1">{formatLocalDateTime(row.at)}</td>
                     <td className="py-1">{row.connection}</td>
                     <td className="py-1">{row.purpose}</td>
                     <td className="brand-type py-1">{row.until}</td>

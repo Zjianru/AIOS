@@ -57,8 +57,6 @@ export interface ConnectionView {
   models: ModelRow[];
   /** 跟着厂商走时选择器/小标签可选的模型（存下的厂商列表；没存过用内置目录）。 */
   availableModels?: ModelRow[];
-  /** T012.4：价格倍率（1 = 原价，0 = 免费）。 */
-  priceRate?: number;
   key: { saved: false } | { saved: true; savedAt: string };
   check: CheckState;
 }

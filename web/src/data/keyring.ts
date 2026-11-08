@@ -122,7 +122,6 @@ function mapConnection(info: ServiceConnectionInfo, listed?: WireRow[]): Connect
     models,
     // 跟着厂商走（models 为空）时，可选的是存下的厂商列表；没存过用内置目录。
     availableModels: listed ?? preset?.defaultModels ?? [],
-    priceRate: info.price_rate,
     key: info.key_saved ? { saved: true, savedAt: String(info.saved_at) } : { saved: false },
     check: mapCheck(info),
   };
@@ -215,7 +214,7 @@ export async function checkConnection(connectionId: string): Promise<ModelSettin
   return getModelSettings();
 }
 
-/** 设置页的编辑：地址/模型行/倍率一起保存；填了 key 就连 key 一起 upsert。 */
+/** 设置页的编辑：地址/模型行一起保存；填了 key 就连 key 一起 upsert。 */
 export async function updateConnection(
   connectionId: string,
   patch: {
@@ -231,7 +230,6 @@ export async function updateConnection(
       priceCacheWrite?: number;
     }[];
     key: string;
-    priceRate?: number;
   },
 ): Promise<ModelSettingsView> {
   const model = patch.models[0]?.id || 'deepseek-flash';
@@ -256,10 +254,9 @@ export async function updateConnection(
       endpoint,
       apiKey: patch.key,
       models: rows,
-      price_rate: patch.priceRate,
     });
   } else {
-    await updateConnectionInfo(connectionId, { endpoint, model, models: rows, price_rate: patch.priceRate });
+    await updateConnectionInfo(connectionId, { endpoint, model, models: rows });
   }
   return getModelSettings();
 }
