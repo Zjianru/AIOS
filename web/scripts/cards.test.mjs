@@ -5,6 +5,7 @@ import {
   BODY_MAX,
   LABEL_MAX,
   cardDefinitions,
+  connectionCardOf,
   normalizeEnvelope,
   questionCardOf,
   resolveSlots,
@@ -505,5 +506,148 @@ assert.equal(genericBad.title, '');
 assert.equal(genericBad.body.text, '');
 assert.equal(genericBad.input.text, '输入还在');
 assert.equal(genericBad.output, undefined);
+
+/* ───────── T017.4 连接卡（票面：三种 Keyring 状态 + 长/短/缺字段） ───────── */
+
+/** 连接卡的信封：出不来就是红（断言级，不是环境错）。 */
+function connectionEnvelope(fact) {
+  const envelope = connectionCardOf(fact);
+  assert.ok(envelope, '连接卡要能从 Keyring 状态出信封');
+  return envelope;
+}
+
+function connectionFact(overrides = {}) {
+  return {
+    id: 'deepseek',
+    name: 'DeepSeek',
+    provider: 'deepseek',
+    providers: [{ id: 'deepseek', name: 'DeepSeek' }],
+    key: { saved: false },
+    check: { kind: 'never' },
+    ...overrides,
+  };
+}
+
+/* 三种 Keyring 状态各一个信封：状态和回执对得上。 */
+const savedOnly = connectionEnvelope(
+  connectionFact({ key: { saved: true, savedAt: '2026-11-08 13:00' } }),
+);
+assert.equal(savedOnly.type, 'connection');
+assert.equal(savedOnly.role, 'decision', '连接卡是要用户做决定的卡');
+assert.equal(savedOnly.id, 'deepseek', 'id 用连接 id，不用数组下标');
+assert.equal(savedOnly.state, 'done', '已保存：决定做完（还差验证）');
+assert.deepEqual(savedOnly.receipt, { outcome: 'success', summary: '已保存到 Keyring' });
+assert.equal(savedOnly.slots.saved, true);
+assert.equal(savedOnly.slots.savedAt, '2026-11-08 13:00');
+assert.equal(savedOnly.slots.check, 'never', '还没验证过');
+
+const available = connectionEnvelope(
+  connectionFact({
+    key: { saved: true, savedAt: '2026-11-08 13:00' },
+    check: { kind: 'ok', at: '2026-11-08 13:01' },
+  }),
+);
+assert.equal(available.state, 'done');
+assert.deepEqual(available.receipt, { outcome: 'success', summary: '连接可用' });
+assert.equal(available.slots.check, 'ok');
+assert.equal(available.slots.checkedAt, '2026-11-08 13:01');
+
+const unavailable = connectionEnvelope(
+  connectionFact({
+    key: { saved: true, savedAt: '2026-11-08 13:00' },
+    check: { kind: 'fail', at: '2026-11-08 13:01', reason: '拒绝了这把密钥' },
+  }),
+);
+assert.equal(unavailable.state, 'failed');
+assert.deepEqual(unavailable.receipt, { outcome: 'failed', summary: '连接不可用：拒绝了这把密钥' });
+assert.equal(unavailable.slots.reason, '拒绝了这把密钥');
+
+// 还没保存：等用户填（pending），没有回执。
+const unsaved = connectionEnvelope(connectionFact());
+assert.equal(unsaved.state, 'pending');
+assert.equal(unsaved.receipt, undefined, '还没做决定就没有回执');
+
+// 正在验证：运行中，没有回执。
+const checking = connectionEnvelope(
+  connectionFact({ key: { saved: true }, check: { kind: 'checking' } }),
+);
+assert.equal(checking.state, 'running');
+assert.equal(checking.receipt, undefined);
+
+/* 长：多提供方、已保存、可用。 */
+const longConnection = connectionEnvelope(
+  connectionFact({
+    providers: [
+      { id: 'deepseek', name: 'DeepSeek' },
+      { id: 'minimax-cn', name: 'MiniMax（国内站）' },
+      { id: 'minimax', name: 'MiniMax（国际站）' },
+    ],
+    provider: 'minimax-cn',
+    key: { saved: true, savedAt: '2026-11-08 13:00' },
+    check: { kind: 'ok', at: '2026-11-08 13:01' },
+  }),
+);
+assert.equal(longConnection.slots.providers.length, 3);
+assert.deepEqual(
+  longConnection.slots.providers.map((provider) => provider.id),
+  ['deepseek', 'minimax-cn', 'minimax'],
+  '提供方保持目录顺序',
+);
+assert.equal(longConnection.slots.providers[1].name, 'MiniMax（国内站）');
+assert.equal(longConnection.slots.provider, 'minimax-cn');
+
+/* 短：单提供方、未保存。 */
+const shortConnection = connectionEnvelope(connectionFact());
+assert.equal(shortConnection.slots.providers.length, 1);
+assert.equal(shortConnection.slots.saved, false);
+assert.equal(shortConnection.receipt, undefined);
+
+/* 缺字段：可选字段缺失、列表为空，也照样出信封，不整卡报错。 */
+const missingFields = connectionEnvelope({ id: 'first-use' });
+assert.equal(missingFields.type, 'connection');
+assert.equal(missingFields.state, 'pending');
+assert.deepEqual(missingFields.slots.providers, []);
+assert.equal(missingFields.slots.name, '');
+assert.equal(missingFields.slots.provider, '');
+assert.equal(missingFields.slots.saved, false);
+assert.equal(missingFields.slots.savedAt, '');
+assert.equal(missingFields.slots.check, 'never');
+assert.equal(missingFields.slots.checkedAt, '');
+assert.equal(missingFields.slots.reason, '');
+assert.equal(missingFields.slots.broken, false);
+
+// Keyring 读不出来：整条连接按失败处理，别的字段照常降级。
+const brokenKeyring = connectionEnvelope(
+  connectionFact({ key: { saved: true }, broken: true }),
+);
+assert.equal(brokenKeyring.state, 'failed');
+assert.equal(brokenKeyring.slots.broken, true);
+assert.doesNotThrow(() => normalizeEnvelope(brokenKeyring), '连接卡的信封能过卡片入口');
+
+// 没有 id：出不了信封，由卡片入口退回通用卡。
+assert.equal(connectionCardOf({ id: '' }), null);
+
+// 槽位坏了逐项降级，不整卡报错。
+const connectionBad = resolveSlots(cardDefinitions.connection, {
+  name: 42,
+  providers: [{ id: 'deepseek', name: 42 }, 42, { name: '没有 id' }],
+  provider: 42,
+  saved: 'yes',
+  savedAt: 42,
+  check: 'weird',
+  checkedAt: 42,
+  reason: 42,
+  broken: 'yes',
+});
+assert.equal(connectionBad.name, '');
+assert.equal(connectionBad.providers.length, 1, '坏的那项去掉，好的留着');
+assert.equal(connectionBad.providers[0].name, '', '坏名字退回默认值');
+assert.equal(connectionBad.provider, '');
+assert.equal(connectionBad.saved, false);
+assert.equal(connectionBad.savedAt, '');
+assert.equal(connectionBad.check, 'never');
+assert.equal(connectionBad.checkedAt, '');
+assert.equal(connectionBad.reason, '');
+assert.equal(connectionBad.broken, false);
 
 console.log('cards.test.mjs: all assertions passed');

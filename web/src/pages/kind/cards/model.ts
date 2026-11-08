@@ -349,6 +349,47 @@ export const genericCard: CardDefinition<unknown, GenericSlots> = {
   fallback: GENERIC_FALLBACK_SLOTS,
 };
 
+/* ───────── 连接卡（T017.4）：从 Keyring 状态派生信封 ───────── */
+
+/** Keyring 里一个连接的当前状态（首次使用页和设置页共用；结构上等同 ConnectionView）。 */
+export interface ConnectionCardFact {
+  /** 连接 id；首次使用还没保存过时用固定值。 */
+  id: string;
+  name?: string;
+  /** 可选：还没接的提供方（首次使用页的按钮）。空列表也能出信封。 */
+  providers?: { id: string; name: string }[];
+  /** 当前选中的提供方。 */
+  provider?: string;
+  /** Keyring 里的密钥状态。 */
+  key?: { saved: boolean; savedAt?: string };
+  /** 最近一次验证。 */
+  check?: { kind: 'never' | 'checking' | 'ok' | 'fail'; at?: string; reason?: string };
+  /** Keyring 读不出来：所有连接一起停用（设置页）。 */
+  broken?: boolean;
+}
+
+export interface ConnectionProviderSlot {
+  id: string;
+  name: LabelSlot;
+}
+
+/** 连接卡的槽位：程序从 Keyring 状态填，模型的文字进不来。 */
+export interface ConnectionSlots {
+  name: LabelSlot;
+  providers: ConnectionProviderSlot[];
+  provider: string;
+  saved: boolean;
+  savedAt: string;
+  check: 'never' | 'checking' | 'ok' | 'fail';
+  checkedAt: string;
+  reason: string;
+  broken: boolean;
+}
+
+export function connectionCardOf(_fact: ConnectionCardFact): CardEnvelope<ConnectionSlots> | null {
+  return null;
+}
+
 /* ───────── 工具卡（T017.3）：工具名 → 类型、槽位和信封 ───────── */
 
 /**
