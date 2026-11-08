@@ -441,6 +441,41 @@ mod t006_19_serialize_defense_tests {
             "成对的 tool_use/tool_result 不能被误拒"
         );
     }
+
+    /// 历史里的 tool_use 参数不是 JSON 时，请求体不能静默变成空参数：报错并指名是哪次调用。
+    #[test]
+    fn bad_json_signal() {
+        let config = crate::DeepSeekConfig {
+            provider: "deepseek".to_owned(),
+            base_url: "https://api.deepseek.com/anthropic".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            max_tokens: 256_000,
+            context_window: 1_000_000,
+            effort: crate::Effort::new("low"),
+        };
+        let messages = vec![Message::assistant(
+            vec![ContentBlock::ToolCall {
+                id: "call_bad".to_owned(),
+                name: "bash".to_owned(),
+                arguments: "{not json".to_owned(),
+            }],
+            "deepseek",
+            "deepseek-flash",
+        )];
+        let error = match request_body(&config, &messages, &[], None, false) {
+            Ok(raw) => panic!(
+                "坏参数必须报错，不能静默变成空参数：{}",
+                String::from_utf8_lossy(&raw)
+            ),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, ErrorCode::InvalidRequest);
+        assert!(
+            error.message.contains("call_bad"),
+            "报错要指名是哪次工具调用：{}",
+            error.message
+        );
+    }
 }
 
 #[cfg(test)]
