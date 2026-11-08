@@ -16,6 +16,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { formatCacheHitPercent, formatCost, formatExactTokens, formatFxTime, formatPercent, formatTokens } from '@/lib/numbers';
 import { cn } from '@/lib/utils';
 import { useKindStore } from './kindStore';
+import { useSettingsState } from '@/lib/settingsState';
 
 /** 浅色的悬停卡片：和页面同一套底色、描边、阴影。 */
 export function Hint({
@@ -153,7 +154,7 @@ function UsagePill() {
 
 function CostPill() {
   const stats = useKindStore((state) => state.stats);
-  const money = useKindStore((state) => state.money);
+  const money = useSettingsState((state) => state.money);
   // 一个价格都没有：不显示花费（不按 0 算）。
   if (stats.cost === null) return null;
   return (

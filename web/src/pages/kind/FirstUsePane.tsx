@@ -17,8 +17,9 @@ import { addConnection, checkConnection, getModelSettings, KERNEL_PROVIDERS } fr
 import type { CatalogProvider, ConnectionView } from '@/data/keyring';
 import { toast } from 'sonner';
 import { Card } from './cards/Card';
-import { connectionCardOf } from './cards/model';
-import type { CardHost, ConnectionCardFact } from './cards/model';
+import { connectionCardOf } from '@/data/connectionCard';
+import type { ConnectionCardFact } from '@/data/connectionCard';
+import type { CardHost } from './cards/model';
 
 /** 首次使用页的事实：内置目录 + 选中的提供方 + Keyring 里已有的那个连接。 */
 function connectionFactOf(

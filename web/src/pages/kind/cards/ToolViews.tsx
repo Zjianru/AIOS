@@ -7,7 +7,6 @@
  */
 
 import { useState } from 'react';
-import type { ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import type {
   CardViewProps,
@@ -18,11 +17,7 @@ import type {
   TerminalSlots,
 } from './model';
 import { BodyPre } from './BodyText';
-
-/** 卡片外壳：代码块的底色、0.5px 边。 */
-export function Shell({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cn('overflow-hidden rounded-info border-[0.5px] border-line-2 bg-pane', className)}>{children}</div>;
-}
+import { Shell } from './Shell';
 
 /* ───────── 终端 ───────── */
 

@@ -1,15 +1,13 @@
 // T017.2：卡片信封和注册表（spec 测试清单 1–5、7 的 node 部分）。
 // 期望值来自 spec 的降级规则和现在页面上的回执文案，不来自组件输出。
 import assert from 'node:assert/strict';
+import { BODY_MAX, LABEL_MAX, resolveSlots } from '../src/lib/cardEnvelope.ts';
+import { connectionCardOf } from '../src/data/connectionCard.ts';
 import {
-  BODY_MAX,
-  LABEL_MAX,
   cardDefinitions,
-  connectionCardOf,
   normalizeEnvelope,
   questionCardEntryOf,
   questionCardOf,
-  resolveSlots,
   toolCardOf,
   toolCardTypeOf,
 } from '../src/pages/kind/cards/model.ts';

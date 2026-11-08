@@ -4,8 +4,8 @@
  */
 
 import { useState } from 'react';
-import type { BodySlot } from './model';
-import { BODY_MAX } from './model';
+import type { BodySlot } from '@/lib/cardEnvelope';
+import { BODY_MAX } from '@/lib/cardEnvelope';
 
 /** 折起来时显示的前面一段（原文完整保留在 slot.text 里）。 */
 export function previewOf(text: string): string {
