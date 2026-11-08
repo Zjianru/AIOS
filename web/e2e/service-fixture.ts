@@ -30,6 +30,7 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.toolTurn) return { file: 'tool' };
   if (options.codeBlock) return { file: 'tool-code' };
   if (options.t013Process) return { file: 'tool-process' };
+  if (options.toolCards) return { file: 'tool-cards' };
   if (options.t013Interrupted) return { file: 'tool-interrupted', paceMs: 800 };
   if (options.canvas) {
     // T015.5：streaming 把 canvas 的参数拆成几段慢慢流（页面画「正在画 · 标题」）；
@@ -118,6 +119,8 @@ export interface FixtureOptions {
   codeBlock?: boolean;
   /// T013.5：一轮里 write/apply_patch/bash 三个工具 + 最终文本（工作过程页的卡片用）。
   t013Process?: boolean;
+  /// T017.3：一轮里 glob + 一个不认识的工具（搜索卡与通用输入/输出卡用）。
+  toolCards?: boolean;
   /// T013.5：工具做完后被停下的一轮（工作过程页的「已停止」）。
   t013Interrupted?: boolean;
   /// T015.1：画布夹具。interactive 是拖滑块/换标签、内容超过 420px 的那张；cdn 验地址清单和隔离；
@@ -194,6 +197,11 @@ export async function startKernelFixture(
     await writeFile(path.join(dataDir, 'hello.txt'), 'hello from fixture\n');
     // T013.7：带空格的路径（@ 菜单插入要给引号用）。
     await writeFile(path.join(dataDir, 'with space.txt'), 'spaced file\n');
+  }
+  if (options.toolCards) {
+    // T017.3：让真实 glob 搜到两个文件（工具由内核执行，回放只重放模型流）。
+    await writeFile(path.join(dataDir, 'a.ts'), 'export const a = 1;\n');
+    await writeFile(path.join(dataDir, 'b.ts'), 'export const b = 2;\n');
   }
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const bin = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');

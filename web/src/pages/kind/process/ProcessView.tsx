@@ -6,7 +6,7 @@
  * - 行：图标、标题、圆点、摘要，后面跟退出码、NKB、+N -M；点开按内容出卡片。
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   AppWindow,
   ChevronDown,
@@ -28,13 +28,15 @@ import { cn } from '@/lib/utils';
 import { formatDurationMs } from '@/lib/numbers';
 import type { TurnStatus } from '@/data/types';
 import { Markdown } from '../Markdown';
-import { ToolCard, hasCard } from './ToolCards';
+import { Card } from '../cards/Card';
+import { toolCardOf } from '../cards/model';
 import {
   categoryOf,
   diffOf,
   diffTotals,
   doneSummary,
   firstLine,
+  hasCard,
   rowSummary,
   runningSummary,
   sizeSuffix,
@@ -175,11 +177,17 @@ function ToolRow({ step, cwd }: { step: ToolStepView; cwd: string }) {
       </button>
       {open ? (
         <div className="mb-2 mt-1 pl-[22px]">
-          <ToolCard step={step} cwd={cwd} />
+          <ToolCardBody step={step} cwd={cwd} />
         </div>
       ) : null}
     </div>
   );
+}
+
+/** 行展开后的卡片：页面只走卡片入口，信封由 tool/* 的事实派生（T017.3）。 */
+function ToolCardBody({ step, cwd }: { step: ToolStepView; cwd: string }) {
+  const envelope = useMemo(() => toolCardOf(step, cwd), [step, cwd]);
+  return <Card envelope={envelope} />;
 }
 
 /* ───────── 组 ───────── */

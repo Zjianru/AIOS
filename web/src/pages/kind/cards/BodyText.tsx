@@ -32,3 +32,25 @@ export function BodyText({ slot, className }: { slot: BodySlot; className?: stri
     </div>
   );
 }
+
+/** 正文槽放进 <pre> 时用（终端输出、通用卡的输入 / 输出）：超过上限一样先折起来。 */
+export function BodyPre({ slot, className }: { slot: BodySlot; className?: string }) {
+  const [open, setOpen] = useState(false);
+  if (!slot.text) return null;
+  const folded = slot.folded && !open;
+  return (
+    <>
+      <pre className={className}>{folded ? previewOf(slot.text) : slot.text}</pre>
+      {folded ? (
+        <button
+          type="button"
+          data-action="card-expand"
+          onClick={() => setOpen(true)}
+          className="mt-1 text-1 text-ink-3 transition-colors hover:text-ink"
+        >
+          展开全文
+        </button>
+      ) : null}
+    </>
+  );
+}

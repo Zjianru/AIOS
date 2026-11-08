@@ -229,6 +229,11 @@ export function sizeSuffix(step: ToolStepView): string | null {
   return Math.max(1, Math.ceil(length / 1024)) + 'KB';
 }
 
+/** 这一行有没有可展开的东西（没有就不给点）：还在跑的工具只有命令能看半截输出。 */
+export function hasCard(step: ToolStepView): boolean {
+  return step.state !== 'running' || step.name === 'bash';
+}
+
 /* ───────── 卡片 ───────── */
 
 export interface DiffLine {

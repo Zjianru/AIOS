@@ -8,10 +8,11 @@ import type { CardDefinition, CardEnvelope, CardHost, CardType, CardViewProps } 
 import { cardDefinitions, normalizeEnvelope, resolveSlots } from './model';
 import { GenericCardView } from './GenericView';
 import { QuestionCardView } from './QuestionView';
+import { DiffCardView, ReadCardView, SearchCardView, TerminalCardView } from './ToolViews';
 
 interface RegisteredCard {
   resolve: (slots: unknown) => unknown;
-  view: (props: { envelope: CardEnvelope; slots: unknown; host: CardHost }) => ReactElement;
+  view: (props: { envelope: CardEnvelope; slots: unknown; host: CardHost }) => ReactElement | null;
 }
 
 /**
@@ -21,7 +22,7 @@ interface RegisteredCard {
  */
 function registered<Fact, Slots>(
   definition: CardDefinition<Fact, Slots>,
-  View: (props: CardViewProps<Slots>) => ReactElement,
+  View: (props: CardViewProps<Slots>) => ReactElement | null,
 ): RegisteredCard {
   return {
     resolve: (slots) => resolveSlots(definition, slots),
@@ -31,16 +32,23 @@ function registered<Fact, Slots>(
 
 const registry: Partial<Record<CardType, RegisteredCard>> = {
   question: registered(cardDefinitions.question, QuestionCardView),
+  terminal: registered(cardDefinitions.terminal, TerminalCardView),
+  diff: registered(cardDefinitions.diff, DiffCardView),
+  read: registered(cardDefinitions.read, ReadCardView),
+  search: registered(cardDefinitions.search, SearchCardView),
   generic: registered(cardDefinitions.generic, GenericCardView),
 };
+
+/** 工作过程的卡没有程序操作；这里的空操作只兜底，提问卡在对话里由 QuestionCard 给真 host。 */
+const NO_CARD_HOST: CardHost = { answer: () => {}, dismiss: () => {} };
 
 /**
  * 唯一的卡片入口：给它信封（可以是不合法的），它查表选视图。
  * 信封不合法（类型不认识、没有 id）整卡退回 generic；不抛异常。
  */
-export function Card({ envelope, host }: { envelope: unknown; host: CardHost }): ReactElement | null {
+export function Card({ envelope, host }: { envelope: unknown; host?: CardHost }): ReactElement | null {
   const resolved = normalizeEnvelope(envelope);
   const entry = registry[resolved.type] ?? registry.generic;
   if (!entry) return null;
-  return entry.view({ envelope: resolved, slots: entry.resolve(resolved.slots), host });
+  return entry.view({ envelope: resolved, slots: entry.resolve(resolved.slots), host: host ?? NO_CARD_HOST });
 }
