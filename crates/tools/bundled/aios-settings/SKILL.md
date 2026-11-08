@@ -33,6 +33,10 @@ Offer no card in these cases:
 
 To propose, call `propose_action` once, with one option per choice the user can make. The card appears below your answer and nothing changes until the user clicks. Every option carries the everyday name in `label` and one sentence in `description`; AIOS fills in the before and after values, so do not write them yourself.
 
+## Actions
+
+- `select_model`: `details` is `{ "model": "<model id>" }`, optionally with `"connection": "<connection id>"` and `"effort": "<the model's own effort name>"` (leave effort out to keep the current one). Offer one option per model or effort the user could choose.
+
 ## One card per turn
 
 A turn shows at most one card. When the user asks for several changes, do the one they asked for first, mention the rest in one sentence, and do not promise a later card. A new card replaces an untouched older one.
