@@ -273,7 +273,9 @@ fn model_info(provider: &CatalogProvider, model: &CatalogModel) -> ModelInfo {
 
 /// 目录里写死的路由能力：models.dev 不声明 API 能力，DeepSeek 的官方 Flash 路由声明
 /// `addition-only`（同 DSH 默认目录的 deepseek-flash）；其余模型没有来源，按没声明算。
-fn declared_tool_update(provider_id: &str, model_id: &str) -> Option<ToolUpdate> {
+///
+/// 适配器每条请求都要问一次，所以这里不经过全局快照（不 clone 目录）。
+pub fn declared_tool_update(provider_id: &str, model_id: &str) -> Option<ToolUpdate> {
     (provider_id == "deepseek" && model_id == "deepseek-flash").then_some(ToolUpdate::AdditionOnly)
 }
 

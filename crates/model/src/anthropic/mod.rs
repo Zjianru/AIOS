@@ -392,16 +392,14 @@ impl DeepSeek {
     }
 
     /// 这条路由支持的对话中途工具更新模式：先看连接配置（选择时按模型信息解析），
-    /// 再看目录（deepseek-flash 写死 addition-only）。运行时换模型按新模型名重查目录。
+    /// 再看目录写死的那条（deepseek-flash = addition-only）。运行时换模型按新模型名重查。
     fn route_tool_update(&self, model: &str) -> Option<ToolUpdate> {
         if model == self.config.model
             && let Some(update) = self.config.tool_update
         {
             return Some(update);
         }
-        crate::catalog::global()
-            .unwrap_or_else(crate::catalog::snapshot)
-            .tool_update_for(&self.config.provider, model)
+        crate::catalog::declared_tool_update(&self.config.provider, model)
     }
 
     /// T012.6：本次请求该带哪些鉴权头（学到的内存优先，其次连接上记住的，默认两个都发）。
