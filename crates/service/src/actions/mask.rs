@@ -69,6 +69,24 @@ impl MaskAction {
         credentials::Keyring::open(&self.data_dir, self.identity.as_deref())
             .map_err(|error| format!("读不出 Keyring：{error}"))
     }
+
+    /// 现在的屏蔽表；文件读不出来时不当成空表。
+    fn rules(&self) -> Result<Vec<String>, String> {
+        let table = crate::disabled::table(&self.data_dir);
+        if table.unknown {
+            return Err("settings.json 读不出来，不知道现在的屏蔽表".to_owned());
+        }
+        Ok(table.models)
+    }
+}
+
+/// 这个模型现在的状态：可用、已屏蔽（规则「…」）；命中自己那条精确规则时只说已屏蔽。
+fn mask_state(rules: &[String], connection: &str, model: &str, exact: &str) -> String {
+    match crate::disabled::match_disabled(rules, connection, model) {
+        None => "可用".to_owned(),
+        Some(rule) if rule.trim() == exact => "已屏蔽".to_owned(),
+        Some(rule) => format!("已屏蔽（规则「{rule}」）"),
+    }
 }
 
 impl ActionKind for MaskAction {
@@ -91,21 +109,89 @@ impl ActionKind for MaskAction {
         }))
     }
 
-    fn describe(&self, _details: &Value, _env: &ActionEnv<'_>) -> Result<Vec<CardFact>, String> {
-        // 骨架：先把签名和登记立起来，事实与拒绝留到实现。
-        let _ = self.keyring()?;
-        Ok(Vec::new())
+    fn describe(&self, details: &Value, _env: &ActionEnv<'_>) -> Result<Vec<CardFact>, String> {
+        let parts = self.parts(details)?;
+        let keyring = self.keyring()?;
+        let view = keyring.view();
+        let connection = view
+            .connections
+            .iter()
+            .find(|connection| connection.id == parts.connection)
+            .ok_or_else(|| format!("找不到连接 {}", parts.connection))?;
+        let models = crate::models::selectable_models(&self.data_dir, connection);
+        if !models.iter().any(|info| info.id == parts.model) {
+            return Err(format!("这个连接里没有模型 {}", parts.model));
+        }
+        let rules = self.rules()?;
+        let exact = format!("{}/{}", parts.connection, parts.model);
+        let before = mask_state(&rules, &parts.connection, &parts.model, &exact);
+        let fact = |after: &str| CardFact {
+            name: "屏蔽状态".to_owned(),
+            value: format!("{before} → {after}"),
+        };
+        match self.direction {
+            Direction::Mask => {
+                if let Some(rule) =
+                    crate::disabled::match_disabled(&rules, &parts.connection, &parts.model)
+                {
+                    return Err(format!("这个模型已经屏蔽了（规则「{rule}」）"));
+                }
+                Ok(vec![fact("已屏蔽")])
+            }
+            Direction::Unmask => {
+                if !rules.iter().any(|rule| rule.trim() == exact) {
+                    return Err("没有单独屏蔽这个模型的规则".to_owned());
+                }
+                let remaining: Vec<String> = rules
+                    .iter()
+                    .filter(|rule| rule.trim() != exact)
+                    .cloned()
+                    .collect();
+                if let Some(rule) =
+                    crate::disabled::match_disabled(&remaining, &parts.connection, &parts.model)
+                {
+                    return Err(format!(
+                        "解除这一条以后仍被规则「{rule}」命中，去设置页改那条规则"
+                    ));
+                }
+                Ok(vec![fact("可用")])
+            }
+        }
     }
 
     fn act<'a>(
         &'a self,
-        _details: &'a Value,
-        _host: &'a RootHost,
+        details: &'a Value,
+        host: &'a RootHost,
     ) -> ActionFuture<'a, Result<ActionOutcome, String>> {
         Box::pin(async move {
+            let parts = self.parts(details)?;
+            let exact = format!("{}/{}", parts.connection, parts.model);
+            let settings = crate::settings::load_for_write(&self.data_dir)
+                .map_err(|reason| format!("读不出设置：{reason}"))?;
+            let mut models = settings.disabled_models;
+            let summary = match self.direction {
+                Direction::Mask => {
+                    models.push(exact.clone());
+                    format!("已屏蔽「{}」", parts.model)
+                }
+                Direction::Unmask => {
+                    models.retain(|rule| rule.trim() != exact);
+                    format!("已解除屏蔽「{}」", parts.model)
+                }
+            };
+            let response = host
+                .disabled_models_set(crate::protocol::DisabledModelsSetRequest { models })
+                .await
+                .map_err(|error| error.to_string())?;
             Ok(ActionOutcome {
-                summary: "还没做".to_owned(),
-                data: Value::Null,
+                summary,
+                data: json!({
+                    "connection": parts.connection,
+                    "model": parts.model,
+                    "rule": exact,
+                    "disabledModels": response.models,
+                }),
             })
         })
     }
