@@ -715,4 +715,3 @@ export function cardTone(role: CardRole, state: CardState): CardTone {
   if (state === 'pending' && role === 'decision') return WAIT_TONE;
   return NEUTRAL_TONE;
 }
-
