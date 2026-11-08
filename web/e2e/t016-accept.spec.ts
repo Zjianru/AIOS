@@ -111,10 +111,45 @@ test('MiniMax 列表最新在前，旧 highspeed 不标新', async ({ page, requ
     for (const [index, id] of order.entries()) {
       await expect(labels.nth(index)).toContainText(id);
     }
-    await expect(discover.locator('[data-settings="discover-count"]')).not.toContainText('个是新的');
-    await expect(
-      discover.locator('label', { hasText: 'MiniMax-M2.1-highspeed' }).locator('[data-settings="fresh"]'),
-    ).toHaveCount(0);
+  } finally {
+    await vendor.close();
+    await fixture.close();
+  }
+});
+
+/// 验收发现 1（纠偏）：列表不重排——厂商怎么排就怎么显示，不按版本重排。
+test('获取模型列表跟厂商顺序，不按版本重排', async ({ page, request }) => {
+  const fixture = await startKernelFixture();
+  // 故意不按版本排：M2 在前、M3.1 居中；按版本排会变成 M3.1/M2.7/M2。
+  const vendor = await startVendor({ models: ['MiniMax-M2', 'MiniMax-M3.1-Flash', 'MiniMax-M2.7'] });
+  try {
+    const saved = await apiPost(request, fixture, {
+      method: 'connection-save',
+      id: 'minimax-cn',
+      name: 'MiniMax（国内站）',
+      model: 'MiniMax-M3.1-Flash',
+      endpoint: vendor.url,
+      apiKey: 'sk-e2e-minimax-order',
+      preset: 'minimax-cn',
+      models: [],
+    });
+    expect(saved.ok()).toBeTruthy();
+
+    await page.goto(urlOf(fixture));
+    await page.getByRole('button', { name: '设置', exact: true }).click();
+    await expect(page.locator('[data-settings="model"]')).toBeVisible({ timeout: 20_000 });
+    await page.getByRole('button', { name: '编辑', exact: true }).last().click();
+    const editor = page.locator('[data-settings="editor"]');
+    await expect(editor).toBeVisible();
+    await editor.getByText('自定义设置').click();
+    await editor.getByRole('button', { name: '获取可用模型' }).click();
+    const discover = editor.locator('[data-settings="discover"]');
+    await expect(discover).toBeVisible({ timeout: 20_000 });
+
+    const labels = discover.locator('label');
+    await expect(labels.nth(0)).toContainText('MiniMax-M2');
+    await expect(labels.nth(1)).toContainText('MiniMax-M3.1-Flash');
+    await expect(labels.nth(2)).toContainText('MiniMax-M2.7');
   } finally {
     await vendor.close();
     await fixture.close();

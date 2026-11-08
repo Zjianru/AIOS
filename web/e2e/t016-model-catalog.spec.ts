@@ -39,9 +39,9 @@ test('设置页获取模型：目录窗口和四类价格都在', async ({ page 
     expect(priceTitle).toContain('输出 $1.98');
     expect(priceTitle).toContain('缓存读 $0.022');
     expect(priceTitle).toContain('缓存写');
-    expect(priceTitle).toContain('不乘倍率');
+    expect(priceTitle).toContain('覆盖价');
     await expect(editor.locator('[data-settings="price-help"]')).toContainText('标价 = 目录价');
-    await expect(editor.locator('[data-settings="price-help"]')).toContainText('不乘倍率');
+    await expect(editor.locator('[data-settings="price-help"]')).toContainText('覆盖价');
     await expect(editor.locator('input[value="1.048576M"]')).toHaveCount(1);
   } finally {
     await fixture.close();

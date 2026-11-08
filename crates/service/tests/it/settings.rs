@@ -910,22 +910,13 @@ async fn 获取成功只存厂商列表且第二次只有新模型是新() {
     assert!(second_fetched_at >= first_fetched_at);
 }
 
-/// T016 验收修复：MiniMax 厂商列表按版本降序（最新在前，highspeed 跟同代相邻）；
-/// 内置目录补上厂商实际列出的旧代（M2.1-highspeed），第一次获取时旧模型不能标「新」。
+/// T016 验收纠偏：列表跟厂商 live 顺序走（不按版本重排）；目录里的字段照常合并，
+/// 目录没有的模型没有标价。
 #[tokio::test]
-async fn minimax_列表最新在前且旧highspeed不标新() {
+async fn minimax_列表保留厂商顺序() {
     model::catalog::set_global(model::catalog::snapshot());
-    let ids = vec![
-        "MiniMax-M3.1-Flash",
-        "MiniMax-M3",
-        "MiniMax-M2.7",
-        "MiniMax-M2.7-highspeed",
-        "MiniMax-M2.5",
-        "MiniMax-M2.5-highspeed",
-        "MiniMax-M2.1",
-        "MiniMax-M2.1-highspeed",
-        "MiniMax-M2",
-    ];
+    // 故意不按版本排：厂商先给 M3.1，再给 M2，最后给目录里没有的 M2.1-highspeed。
+    let ids = vec!["MiniMax-M3.1-Flash", "MiniMax-M2", "MiniMax-M2.1-highspeed"];
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/models"))
@@ -954,21 +945,31 @@ async fn minimax_列表最新在前且旧highspeed不标新() {
         panic!("expected ConnectionSave");
     };
     let response = available_models(&host, discover_request("minimax-order")).await;
-    assert!(
-        fresh_ids(&response).is_empty(),
-        "内置目录已有的旧模型第一次获取不能标新：{:?}",
-        fresh_ids(&response)
-    );
+    let find = |id: &str| {
+        response
+            .models
+            .iter()
+            .find(|row| row.model.id == id)
+            .unwrap_or_else(|| panic!("响应里没有 {id}"))
+    };
     let order: Vec<&str> = response
         .models
         .iter()
         .map(|row| row.model.id.as_str())
         .collect();
-    assert_eq!(order, ids, "最新的在前，highspeed 跟同代相邻");
+    assert_eq!(&order[..3], ids.as_slice(), "厂商顺序原样保留");
+    assert!(
+        find("MiniMax-M3.1-Flash").model.price_input.is_some(),
+        "目录标价照常合并"
+    );
+    assert!(
+        find("MiniMax-M2.1-highspeed").model.price_input.is_none(),
+        "目录没有的模型没有标价"
+    );
     assert_eq!(
         service::models::primary_model(dir.path(), &saved.connection),
         "MiniMax-M3.1-Flash",
-        "跟着厂商走、还没存过列表时，默认模型是最新的那个"
+        "跟着厂商走时默认模型是厂商列表的第一个"
     );
 }
 

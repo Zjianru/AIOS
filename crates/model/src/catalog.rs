@@ -713,29 +713,40 @@ mod tests {
         );
     }
 
-    /// T016 验收修复：MiniMax 列表最新的在前；highspeed 跟同代相邻；
-    /// 内置目录要含厂商实际列出的旧代（M2.1-highspeed），否则第一次获取会把它误标「新」。
+    /// 列表跟厂商 live 顺序走：厂商怎么排就怎么显示，不按版本/目录重排；
+    /// 目录这次没给的模型排在后面，目录字段照常合并。
     #[test]
-    fn minimax_models_list_newest_first_with_highspeed_body() {
-        let ids: Vec<String> = snapshot()
-            .models_for("minimax-cn")
-            .into_iter()
-            .map(|model| model.id)
-            .collect();
+    fn live_merge_keeps_vendor_order() {
+        let info = |id: &str, price: f64| ModelInfo {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            context_window: Some(1_000),
+            max_tokens: None,
+            price_input: Some(price),
+            price_output: None,
+            price_cache_read: None,
+            price_cache_write: None,
+            thinks: true,
+            efforts: vec!["low".to_owned()],
+        };
+        let live = |id: &str| LiveModel {
+            id: id.to_owned(),
+            display_name: None,
+            context_window: Some(2_000),
+            max_tokens: None,
+        };
+        let merged = merge_live(
+            vec![info("catalog-a", 0.1), info("catalog-b", 0.2)],
+            vec![live("vendor-new"), live("catalog-b")],
+        );
+        let ids: Vec<&str> = merged.iter().map(|model| model.id.as_str()).collect();
         assert_eq!(
             ids,
-            vec![
-                "MiniMax-M3.1-Flash".to_owned(),
-                "MiniMax-M3".to_owned(),
-                "MiniMax-M2.7".to_owned(),
-                "MiniMax-M2.7-highspeed".to_owned(),
-                "MiniMax-M2.5".to_owned(),
-                "MiniMax-M2.5-highspeed".to_owned(),
-                "MiniMax-M2.1".to_owned(),
-                "MiniMax-M2.1-highspeed".to_owned(),
-                "MiniMax-M2".to_owned(),
-            ]
+            vec!["vendor-new", "catalog-b", "catalog-a"],
+            "厂商顺序在前，目录独有项在后"
         );
+        assert_eq!(merged[1].price_input, Some(0.2), "目录字段照常合并");
+        assert_eq!(merged[0].price_input, None, "目录没有的模型没有标价");
     }
 
     #[test]

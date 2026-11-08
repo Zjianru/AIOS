@@ -24,6 +24,8 @@ test('设置页从目录加 MiniMax 连接并保存', async ({ page }) => {
     // 没勾模型就是跟着厂商走：编辑器列内置目录的 9 个 MiniMax 模型（小标签），最新的在前。
     await page.getByRole('button', { name: '编辑', exact: true }).last().click();
     await page.locator('[data-settings="editor"]').getByText('自定义设置').click();
+    // provider 级价格倍率已删：编辑器里不再有这个输入。
+    await expect(page.locator('[data-settings="editor"]').getByText('价格倍率')).toHaveCount(0);
     await expect(page.locator('[data-settings="editor"]')).toContainText('跟着厂商的列表走', {
       timeout: 20_000,
     });
