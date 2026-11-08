@@ -235,8 +235,13 @@ async fn glob_tool_limits_and_errors() {
         100
     );
     assert!(result.content.ends_with(
-        "(Showing 100 of 120 paths. The complete result could not be saved; narrow pattern or path to see more.)"
+        "(Showing 100 paths; more matches were not read. Narrow pattern or path to see more.)"
     ));
+    assert!(
+        !result.content.contains(" of 120 "),
+        "达到上限即停：不再收全后报总数\n{}",
+        result.content
+    );
 
     // 错误码：非法 pattern、访问不到的搜索根
     let result = run(&tool, &context, json!({"pattern": "["})).await;
@@ -312,7 +317,14 @@ async fn grep_tool_limits_and_errors() {
     assert!(
         result
             .content
-            .starts_with("Found 250 of 300 matches\n\nmany.txt\nLine 1: ")
+            .starts_with("Found 250 matches\n\nmany.txt\nLine 1: "),
+        "达到上限即停：不再收全后报总数\n{}",
+        result.content
+    );
+    assert!(
+        !result.content.contains(" of 300 "),
+        "达到上限即停：不再收全后报总数\n{}",
+        result.content
     );
     assert!(result.content.contains(" (line truncated)"));
     assert!(result.content.ends_with(
