@@ -2,7 +2,7 @@
 
 import type { SendAttachmentRef, ServiceEvent } from '@/data/service';
 import type { AskAnswer, AskQuestion, FailureCause } from '@/data/fixtures/kindLive';
-import type { KindCard, TextElement, TurnStatus } from '@/data/types';
+import type { TextElement, TurnStatus } from '@/data/types';
 import { modelErrorReason, retryReason } from '@/data/errors';
 
 /** 被屏蔽的失败说明：失败块显示内核给的原文（模型名 + 命中的规则），去掉错误包装的前缀。 */
@@ -178,7 +178,6 @@ export interface TurnViewData {
   /** 思考全文（T013 验收 F5）；摘要和秒数页面不用，日志里也没有（T013 C1）。 */
   reasoning: { full: string } | null;
   tools: ToolStep[];
-  cards: KindCard[];
   answer: { text: string; elements: TextElement[] } | null;
   thinkingSeconds: number;
   tokens: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
@@ -620,7 +619,6 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       reasoning:
         raw.reasoningParts.length > 0 ? { full: raw.reasoningParts.join('\n\n') } : null,
       tools: raw.tools,
-      cards: [],
       answer: raw.answer ? { text: raw.answer, elements: [] } : null,
       thinkingSeconds: thinkingSecondsOf(raw.reasoningMs),
       tokens: {
