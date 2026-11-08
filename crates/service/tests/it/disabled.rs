@@ -792,7 +792,8 @@ async fn 打断判断用本轮冻结的连接和模型不用会变的当前选�
             ResponseTemplate::new(200)
                 .insert_header("content-type", "text/event-stream")
                 .set_body_string(TEXT_SSE)
-                .set_delay(Duration::from_secs(3)),
+                // 只要这一轮停在等模型上；给足余量，避免并行负载下 3s 内跑完导致断言时已 idle。
+                .set_delay(Duration::from_secs(30)),
         )
         .expect(1)
         .mount(&server)
