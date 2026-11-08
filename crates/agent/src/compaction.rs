@@ -521,11 +521,13 @@ async fn summarize(
 ) -> Result<SummaryOutcome, AgentError> {
     let mut input = prefix.to_vec();
     input.push(Message::user_text(COMPACTION_INSTRUCTION));
-    // 骨架：红阶段仍用全量工具表（K1 的 bug）。
-    let tool_request = model::ToolRequest {
-        tools: host.tools().definitions(),
-        history: None,
+    // K1：摘要请求与主请求同一个工具表/投影；没开出的工具不进摘要请求。
+    let (tools, history) = {
+        let store = host.session().lock().expect("agent 会话锁被毒化");
+        let derived = store.derive_messages_with_seqs();
+        crate::tool_gate::request_tools(host.tools(), store.events(), &derived)
     };
+    let tool_request = model::ToolRequest { tools, history };
     let cancel = model::CancelToken::new(
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         std::sync::Arc::new(tokio::sync::Notify::new()),
