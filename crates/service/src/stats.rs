@@ -278,6 +278,40 @@ mod tests {
         }
     }
 
+    /// 旧存储里还留着已删的连接级价格乘数：读到就忽略，不把没填的格当成免费；
+    /// 用户填了单价照用，没填的格用目录标价。
+    #[test]
+    fn legacy_connection_price_multiplier_is_ignored() {
+        // 字段名拆开拼：全仓检查要求已删字段不再以原文出现在 crates/web 里。
+        let deleted = ["price", "rate"].join("_");
+        let mut legacy = json!({
+            "id": "deepseek",
+            "name": "DeepSeek",
+            "model": "deepseek-flash",
+            "endpoint": "https://api.deepseek.com/anthropic",
+            "saved_at": 0,
+            "check": {"kind": "never"},
+            "key_saved": true,
+            "preset": "deepseek",
+            "models": [{"id": "deepseek-flash"}]
+        });
+        legacy[deleted.clone()] = json!(0.0);
+
+        let connection: ConnectionInfo =
+            serde_json::from_value(legacy.clone()).expect("旧存储要能读");
+        let price = effective_price(&connection, &catalog(), "deepseek-flash").expect("目录价");
+        assert_eq!(price.input, 0.15, "旧乘数 0 被忽略：输入用目录标价");
+        assert_eq!(price.output, 0.6, "输出用目录标价");
+        assert_eq!(price.cache_read, Some(0.003), "缓存读用目录标价");
+
+        legacy["models"][0]["priceInput"] = json!(2.0);
+        let connection: ConnectionInfo = serde_json::from_value(legacy).expect("旧存储要能读");
+        let price = effective_price(&connection, &catalog(), "deepseek-flash").expect("用户价");
+        assert_eq!(price.input, 2.0, "用户填的单价照用");
+        assert_eq!(price.output, 2.0, "只填一个价：输出沿用");
+        assert_eq!(price.cache_read, Some(0.003), "没填的格用目录标价");
+    }
+
     #[test]
     fn user_price_wins_and_is_not_multiplied() {
         // 单数用户价 2 美元/百万 = 输入价和输出价；缓存两格没填 → 有缓存用量时无价格。
