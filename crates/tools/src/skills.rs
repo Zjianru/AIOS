@@ -63,18 +63,24 @@ impl Default for SkillInvocation {
 /// 程序自带的一份 skill：正文编进二进制，来源没有目录，排在所有用户 skill 之后。
 ///
 /// 重名时用户的赢（发现按来源顺序先到先得，用户根在 `skill_roots` 里排在前面）。
-struct BundledSkill {
+/// 自带哪几份由产品装配决定（`Agent::open` 传 `bundled_skills()`）；发现和加载本身
+/// 不猜产品有什么。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BundledSkill {
     /// 程序里的名字；发现时仍以正文 frontmatter 的 name 为准。
-    name: &'static str,
+    pub name: &'static str,
     /// 正文（含 frontmatter），编译期从 `bundled/<name>/SKILL.md` 读进来。
-    raw: &'static str,
+    pub raw: &'static str,
 }
 
 /// 随二进制发布、用户可以加载的 skill。
-const BUNDLED: &[BundledSkill] = &[BundledSkill {
-    name: "aios-settings",
-    raw: include_str!("../bundled/aios-settings/SKILL.md"),
-}];
+pub fn bundled_skills() -> &'static [BundledSkill] {
+    const BUNDLED: &[BundledSkill] = &[BundledSkill {
+        name: "aios-settings",
+        raw: include_str!("../bundled/aios-settings/SKILL.md"),
+    }];
+    BUNDLED
+}
 
 /// 一条发现警告（DSH 对非法 skill 打 logger.warn，不静默丢）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,8 +125,13 @@ pub fn skill_roots(cwd: &Path, data_dir: &Path, configured: &[PathBuf]) -> Vec<P
 }
 
 /// 发现所有可用 skill（仅 model-invocable，供目录注入）。
-pub fn discover_skills(cwd: &Path, data_dir: &Path, configured: &[PathBuf]) -> Vec<SkillSummary> {
-    discover_skill_catalog(cwd, data_dir, configured).skills
+pub fn discover_skills(
+    cwd: &Path,
+    data_dir: &Path,
+    configured: &[PathBuf],
+    bundled: &[BundledSkill],
+) -> Vec<SkillSummary> {
+    discover_skill_catalog(cwd, data_dir, configured, bundled).skills
 }
 
 /// 发现 skill + 警告 + 完整性（T006.11：非法 skill 不再静默丢）。
@@ -128,8 +139,9 @@ pub fn discover_skill_catalog(
     cwd: &Path,
     data_dir: &Path,
     configured: &[PathBuf],
+    bundled: &[BundledSkill],
 ) -> SkillDiscovery {
-    let (found, warnings, incomplete) = discover(cwd, data_dir, configured);
+    let (found, warnings, incomplete) = discover(cwd, data_dir, configured, bundled);
     SkillDiscovery {
         skills: found
             .into_iter()
@@ -146,12 +158,13 @@ pub fn load_skill(
     cwd: &Path,
     data_dir: &Path,
     configured: &[PathBuf],
+    bundled: &[BundledSkill],
     name: &str,
 ) -> Result<SkillContent, ToolFailure> {
     if !is_skill_name(name) {
         return Err(ToolFailure::plain(format!("invalid skill name \"{name}\"")));
     }
-    let (found, _warnings, _incomplete) = discover(cwd, data_dir, configured);
+    let (found, _warnings, _incomplete) = discover(cwd, data_dir, configured, bundled);
     let Some(found) = found.into_iter().find(|found| found.summary.name == name) else {
         return Err(ToolFailure::plain(format!(
             "skill \"{name}\" is unknown or no longer available"
@@ -175,12 +188,13 @@ pub fn load_user_invocable_skill(
     cwd: &Path,
     data_dir: &Path,
     configured: &[PathBuf],
+    bundled: &[BundledSkill],
     name: &str,
 ) -> Option<SkillContent> {
     if !is_skill_name(name) {
         return None;
     }
-    let (found, _warnings, _incomplete) = discover(cwd, data_dir, configured);
+    let (found, _warnings, _incomplete) = discover(cwd, data_dir, configured, bundled);
     let found = found.into_iter().find(|found| found.summary.name == name)?;
     if !found.summary.invocation.user_invocable {
         return None;
@@ -285,6 +299,7 @@ fn discover(
     cwd: &Path,
     data_dir: &Path,
     configured: &[PathBuf],
+    bundled: &[BundledSkill],
 ) -> (Vec<Discovered>, Vec<SkillWarning>, bool) {
     let mut found: BTreeMap<String, Discovered> = BTreeMap::new();
     let mut warnings: Vec<SkillWarning> = Vec::new();
@@ -373,7 +388,7 @@ fn discover(
         }
     }
     // 程序自带的 skill 排在最后：用户根的条目先插入，重名时用户的赢。
-    for bundled in BUNDLED {
+    for bundled in bundled {
         match parse_skill_frontmatter(bundled.raw) {
             Ok(frontmatter) => {
                 if found.contains_key(&frontmatter.name) {
@@ -695,7 +710,7 @@ mod tests {
         .unwrap();
         let data = tempfile::tempdir().unwrap();
         let discovery =
-            discover_skill_catalog(dir.path(), data.path(), std::slice::from_ref(&root));
+            discover_skill_catalog(dir.path(), data.path(), std::slice::from_ref(&root), &[]);
         assert!(
             discovery.skills.iter().any(|skill| skill.name == "good"),
             "合法 skill 仍可用"
@@ -747,7 +762,7 @@ mod t006_19_warning_format_tests {
         let skills = dir.path().join("skills");
         std::fs::create_dir_all(skills.join("bad")).unwrap();
         std::fs::write(skills.join("bad").join(SKILL_FILE), "no frontmatter here").unwrap();
-        let discovery = discover_skill_catalog(dir.path(), dir.path(), &[skills]);
+        let discovery = discover_skill_catalog(dir.path(), dir.path(), &[skills], &[]);
         let warning = discovery
             .warnings
             .iter()

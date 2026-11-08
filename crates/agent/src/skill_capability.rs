@@ -22,23 +22,35 @@ use tools::{invoked_skill_names, load_user_invocable_skill, render_skill_content
 pub(crate) struct SkillCapability {
     state: Arc<Mutex<SkillCatalogState>>,
     roots: Vec<std::path::PathBuf>,
+    /// 程序自带的 skill 来源（排在用户根后面）。
+    bundled: Vec<tools::BundledSkill>,
 }
+
+/// 装载带回来的两样：目录状态 + 用户根；自带的来源由调用方另存（能力不重复持有）。
+type Loaded = (
+    Arc<Mutex<SkillCatalogState>>,
+    Vec<std::path::PathBuf>,
+    Vec<tools::BundledSkill>,
+);
 
 impl SkillCapability {
     /// T006.1e：从会话日志对账并装载 skill 目录状态（状态归能力）。
     pub(crate) fn load(
         store: &session::SessionStore,
         roots: Vec<std::path::PathBuf>,
-    ) -> (Arc<Mutex<SkillCatalogState>>, Vec<std::path::PathBuf>) {
+        bundled: Vec<tools::BundledSkill>,
+    ) -> Loaded {
         let mut state = SkillCatalogState::default();
         state.rehydrate(&store.derive_messages());
-        (Arc::new(Mutex::new(state)), roots)
+        (Arc::new(Mutex::new(state)), roots, bundled)
     }
 
-    pub(crate) fn new(
-        (state, roots): (Arc<Mutex<SkillCatalogState>>, Vec<std::path::PathBuf>),
-    ) -> Self {
-        Self { state, roots }
+    pub(crate) fn new((state, roots, bundled): Loaded) -> Self {
+        Self {
+            state,
+            roots,
+            bundled,
+        }
     }
 }
 
@@ -70,7 +82,7 @@ impl Capability for SkillCapability {
                 .state
                 .lock()
                 .expect("agent skill 目录锁被毒化")
-                .prepare(host.cwd(), host.data_dir(), &self.roots);
+                .prepare(host.cwd(), host.data_dir(), &self.roots, &self.bundled);
             if let Some(message) = catalog {
                 host.append(&[EventKind::UserMessage {
                     turn: event.turn(),
@@ -98,6 +110,7 @@ impl Capability for SkillCapability {
                             host.cwd(),
                             host.data_dir(),
                             &self.roots,
+                            &self.bundled,
                             &name,
                         ) else {
                             continue;

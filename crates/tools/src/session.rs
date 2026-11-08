@@ -69,6 +69,8 @@ pub struct ToolSessionState {
     data_dir: Option<PathBuf>,
     /// 配置的 skill 根（AgentConfig::skill_roots；T005.6）。
     skill_roots: Mutex<Vec<PathBuf>>,
+    /// 程序自带的 skill 来源（AgentConfig::bundled_skills）。
+    bundled_skills: Mutex<Vec<crate::skills::BundledSkill>>,
     /// 工具刚写入的 todo 列表快照（T005.7；driver 追加 todo/write 事件后取走）。
     todos: Mutex<Option<Vec<TodoItem>>>,
     /// 画布状态（T015.2）：建/续接会话时从日志折叠，canvas 工具每出一版更新。
@@ -85,6 +87,7 @@ impl ToolSessionState {
             session_id: Some(session_id.to_owned()),
             data_dir: Some(data_dir.to_path_buf()),
             skill_roots: Mutex::new(Vec::new()),
+            bundled_skills: Mutex::new(Vec::new()),
             todos: Mutex::new(None),
             canvases: Mutex::new(Vec::new()),
         }
@@ -144,6 +147,19 @@ impl ToolSessionState {
     /// 配置的 skill 根（skill 工具用）。
     pub(crate) fn skill_roots(&self) -> Vec<PathBuf> {
         self.skill_roots.lock().expect("skill 根锁被毒化").clone()
+    }
+
+    /// Agent 建/续接会话时写入程序自带的 skill 来源（排在用户根后面）。
+    pub fn set_bundled_skills(&self, bundled: Vec<crate::skills::BundledSkill>) {
+        *self.bundled_skills.lock().expect("自带 skill 锁被毒化") = bundled;
+    }
+
+    /// 程序自带的 skill 来源（skill 工具用）。
+    pub(crate) fn bundled_skills(&self) -> Vec<crate::skills::BundledSkill> {
+        self.bundled_skills
+            .lock()
+            .expect("自带 skill 锁被毒化")
+            .clone()
     }
 
     /// 会话 id（bash 受管环境变量用；detached 时 None）。

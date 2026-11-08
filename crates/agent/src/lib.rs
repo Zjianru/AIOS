@@ -19,6 +19,7 @@ mod skill_capability;
 mod skill_catalog;
 mod spill_capability;
 mod todo_capability;
+mod tool_gate;
 mod warn;
 
 use std::path::{Path, PathBuf};
@@ -79,6 +80,11 @@ pub struct AgentConfig {
     pub instruction_roots: Vec<PathBuf>,
     /// 用户级 skill 根目录；Agent 还会固定加入 <data-dir>/skills。默认 ~/.agents/skills。
     pub skill_roots: Vec<PathBuf>,
+    /// 程序自带的 skill（正文编在二进制里，排在用户根后面）。
+    ///
+    /// 默认空：自带什么由产品装配决定（`Agent::open` 填入 `tools::bundled_skills()`）；
+    /// 低层构造不替调用方猜产品资产。
+    pub bundled_skills: Vec<tools::BundledSkill>,
     /// todo_write 是否允许多个 in_progress（照 DSH tool-todo 的 allowParallelInProgress；
     /// DSH bundle/base 设为 true）。false 时工具描述改成「只留一个」，多于一个 in_progress 的
     /// 调用被拒。Agent 在 create/resume 时用它替换内置 todo_write（T006.12）。
@@ -104,6 +110,7 @@ impl Default for AgentConfig {
                 .as_ref()
                 .map(|home| vec![home.join("skills")])
                 .unwrap_or_default(),
+            bundled_skills: Vec::new(),
             instruction_roots: home.map(|home| vec![home]).unwrap_or_default(),
             allow_parallel_in_progress: true,
         }

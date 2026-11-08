@@ -348,6 +348,8 @@ pub(crate) struct CapabilityStates {
     pub reminder_chain: Arc<Mutex<Option<(String, usize)>>>,
     pub instruction_roots: Vec<PathBuf>,
     pub skill_roots: Vec<PathBuf>,
+    /// 程序自带的 skill 来源（产品装配填；排在用户根后面）。
+    pub bundled_skills: Vec<tools::BundledSkill>,
     pub spill_max_inline_tokens: usize,
 }
 /// 固定顺序的功能注册表；顺序=strategy §2 功能表的拆票顺序（compaction→…→jobs）。
@@ -369,6 +371,7 @@ impl CapabilityRegistry {
                 Box::new(SkillCapability::new((
                     states.skill_catalog,
                     states.skill_roots,
+                    states.bundled_skills,
                 ))),
                 Box::new(TodoCapability),
                 Box::new(AskCapability::new(states.ask)),

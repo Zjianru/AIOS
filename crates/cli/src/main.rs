@@ -461,6 +461,8 @@ async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
         config,
         credentials: Some(credentials),
         append_hook_factory: None,
+        // CLI 的对话不装服务独有的查询工具（Kind 的根会话才装）。
+        extra_tools: Vec::new(),
     })
     .await
     .map_err(open_error)?;

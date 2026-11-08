@@ -41,8 +41,9 @@ impl SkillCatalogState {
         cwd: &Path,
         data_dir: &Path,
         skill_roots: &[PathBuf],
+        bundled: &[tools::BundledSkill],
     ) -> Option<Message> {
-        let discovery = discover_skill_catalog(cwd, data_dir, skill_roots);
+        let discovery = discover_skill_catalog(cwd, data_dir, skill_roots, bundled);
         for warning in &discovery.warnings {
             // 警告文案在 tools 层已按 DSH skill-filesystem 的 logger.warn 形状生成
             // （`skill file <path> ignored: <reason>` 等），这里只做去重与落 stderr。

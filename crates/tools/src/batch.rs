@@ -133,11 +133,14 @@ pub async fn execute_batch(
     cancel: &AtomicBool,
 ) -> BatchOutcome {
     assert!(max_parallel >= 1, "max_parallel_tool_calls 必须是正整数");
+    // 没开出的工具和不存在的工具一样处理：都报「未知工具」，模型看不出差别。
     let plans: Vec<Planned<'_>> = calls
         .iter()
         .map(|call| Planned {
             call,
-            tool: tools.get(&call.name),
+            tool: tools
+                .get(&call.name)
+                .filter(|_tool| context.allows(&call.name)),
         })
         .collect();
     let mut results: Vec<Option<ToolResult>> = plans.iter().map(|_| None).collect();

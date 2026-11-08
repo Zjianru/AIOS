@@ -76,6 +76,7 @@ fn load(arguments: &str, context: &ToolContext) -> Result<String, ToolFailure> {
         ));
     };
     let roots = context.session().skill_roots();
-    let skill = load_skill(&context.cwd, data_dir, &roots, name)?;
+    let bundled = context.session().bundled_skills();
+    let skill = load_skill(&context.cwd, data_dir, &roots, &bundled, name)?;
     Ok(render_skill_content(&skill))
 }

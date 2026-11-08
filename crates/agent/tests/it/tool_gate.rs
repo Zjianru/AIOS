@@ -60,7 +60,18 @@ impl Tool for FakeQueryTool {
 }
 
 fn tool_set() -> ToolSet {
-    ToolSet::new(vec![Box::new(SkillTool::new()), Box::new(FakeQueryTool::new())])
+    ToolSet::new(vec![
+        Box::new(SkillTool::new()),
+        Box::new(FakeQueryTool::new()),
+    ])
+}
+
+/// 这一组测试的配置：自带 skill 由产品装配决定，这里显式给它一份，别的不碰用户环境。
+fn config(data_dir: &std::path::Path) -> agent::AgentConfig {
+    agent::AgentConfig {
+        bundled_skills: tools::bundled_skills().to_vec(),
+        ..crate::common::isolated_config(data_dir)
+    }
 }
 
 /// 四步脚本：没加载时调查询 → 加载 skill → 再调查询 → 收尾回答。
@@ -120,6 +131,32 @@ fn tool_result_text(body: &Value, call_id: &str) -> Option<String> {
     None
 }
 
+/// 临时数据目录上的 agent（自带 skill 显式给）。
+async fn setup(
+    server: &MockServer,
+    tools: ToolSet,
+) -> (Agent, tempfile::TempDir, tempfile::TempDir, SessionId) {
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = session::SessionStore::create(data_dir.path(), cwd.path()).unwrap();
+    let id = store.id().clone();
+    let agent = Agent::create(
+        config(data_dir.path()),
+        agent::Deps {
+            model: model::DeepSeek::with_credentials(
+                model_config(&server.uri()),
+                test_credential(),
+            )
+            .expect("模型"),
+            tools,
+            store,
+        },
+    )
+    .await
+    .expect("建 agent");
+    (agent, data_dir, cwd, id)
+}
+
 fn logged_events(data_dir: &std::path::Path, id: &SessionId) -> Vec<session::Event> {
     session::SessionStore::open_read_only(data_dir, id)
         .expect("读会话日志")
@@ -132,7 +169,9 @@ fn registry_records(events: &[session::Event]) -> Vec<(u64, Vec<String>)> {
     events
         .iter()
         .filter_map(|event| match &event.kind {
-            EventKind::ToolRegistry { step, additions, .. } => Some((
+            EventKind::ToolRegistry {
+                step, additions, ..
+            } => Some((
                 *step,
                 additions.iter().map(|tool| tool.name.clone()).collect(),
             )),
@@ -150,7 +189,7 @@ async fn query_tool_stays_closed_until_the_skill_loads() {
         .respond_with(SequenceResponder::new(four_step_responses()))
         .mount(&server)
         .await;
-    let (agent, _data_dir, _cwd, _id) = crate::common::setup_agent(&server.uri(), tool_set()).await;
+    let (agent, _data_dir, _cwd, _id) = setup(&server, tool_set()).await;
     agent
         .send(UserMessage::text("现在用的什么模型？"), Delivery::FollowUp)
         .await
@@ -197,7 +236,7 @@ async fn tool_registry_records_additions_once_and_restores() {
         .respond_with(SequenceResponder::new(responses))
         .mount(&server)
         .await;
-    let (agent, data_dir, cwd, id) = crate::common::setup_agent(&server.uri(), tool_set()).await;
+    let (agent, data_dir, cwd, id) = setup(&server, tool_set()).await;
     agent
         .send(UserMessage::text("现在用的什么模型？"), Delivery::FollowUp)
         .await
@@ -236,10 +275,13 @@ async fn tool_registry_records_additions_once_and_restores() {
     let store = session::SessionStore::open(data_dir.path(), &id).expect("重开日志");
     let resumed = Agent::resume(
         id.clone(),
-        crate::common::isolated_config(data_dir.path()),
+        config(data_dir.path()),
         agent::Deps {
-            model: model::DeepSeek::with_credentials(model_config(&server.uri()), test_credential())
-                .expect("模型"),
+            model: model::DeepSeek::with_credentials(
+                model_config(&server.uri()),
+                test_credential(),
+            )
+            .expect("模型"),
             tools: tool_set(),
             store,
         },

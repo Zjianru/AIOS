@@ -39,6 +39,7 @@ fn options(
         config: isolated_config(data_dir),
         credentials: Some(crate::common::test_credential()),
         append_hook_factory: None,
+        extra_tools: Vec::new(),
     }
 }
 
@@ -131,6 +132,7 @@ async fn open_rejects_invalid_config_before_creating_session() {
         config,
         credentials: Some(crate::common::test_credential()),
         append_hook_factory: None,
+        extra_tools: Vec::new(),
     })
     .await
     {

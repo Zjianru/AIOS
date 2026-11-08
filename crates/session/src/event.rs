@@ -45,10 +45,12 @@ use crate::SessionId;
 /// v16：turn/end 的 aborted 原因新增 hook（设置里屏蔽了正在跑的模型时由服务触发；
 /// reason 是稳定的钩子名）；旧版本读不了一条带 hook 原因的 turn/end，按 spec 升版本、
 /// 旧版本仍拒绝（不迁移）。
-pub const FORMAT_VERSION: u64 = 16;
+/// v17：新增 tool/registry 事件（工具加载记录：本步新开出的工具和它们的完整定义）；
+/// 旧版本读不了这条事件，按 spec 升版本、旧版本仍拒绝（不迁移）。旧日志照读。
+pub const FORMAT_VERSION: u64 = 17;
 
-/// 读取器最早能读的版本。14、15 版日志原样读、续写时 header 留原版本；
-/// 13 及以下、17 及以上拒绝（文件一字不改）。
+/// 读取器最早能读的版本。14–16 版日志原样读、续写时 header 留原版本；
+/// 13 及以下、18 及以上拒绝（文件一字不改）。
 pub const MIN_READ_VERSION: u64 = 14;
 
 /// JSONL 第一行的会话 header。

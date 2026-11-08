@@ -31,15 +31,12 @@ fn append_torn_line(store: &SessionStore) {
 }
 
 #[test]
-fn written_header_uses_format_version_16() {
+fn written_header_uses_format_version_17() {
     let (_data_dir, _cwd, store) = create_store();
     let text = fs::read_to_string(store.path()).unwrap();
     let header: Value =
         serde_json::from_str(text.lines().next().expect("日志有 header 行")).unwrap();
-    assert_eq!(
-        header["version"], 16,
-        "hook 取消原因让 FORMAT_VERSION 升到 16"
-    );
+    assert_eq!(header["version"], 17, "加载记录让 FORMAT_VERSION 升到 17");
 }
 
 /// 手写一份指定版本的日志（header + 一条 v15 兼容的 turn/start）。
@@ -87,6 +84,32 @@ fn version_14_logs_are_read_as_is_and_can_be_continued() {
     assert_eq!(snapshot.events().len(), 2);
 }
 
+/// 升到 17 之后，16 版日志仍然原样读；续写时 header 留 16（没有加载记录，工具表照常）。
+#[test]
+fn version_16_logs_are_read_as_is_and_can_be_continued() {
+    let (data_dir, _cwd, store) = create_store();
+    let id = store.id().clone();
+    let path = store.path().to_path_buf();
+    drop(store);
+    let legacy = legacy_log(&id, 16);
+    fs::write(&path, &legacy).unwrap();
+
+    let snapshot = SessionStore::open_read_only(data_dir.path(), &id).expect("17 读取器能读 16");
+    assert_eq!(snapshot.events().len(), 1, "16 版日志的事件原样读出来");
+
+    let mut opened = SessionStore::open(data_dir.path(), &id).expect("写打开也接受 16");
+    opened
+        .append(&[EventKind::TurnEnd {
+            turn: 1,
+            reason: TurnEndReason::Completed,
+        }])
+        .unwrap();
+    drop(opened);
+    let text = String::from_utf8(fs::read(&path).unwrap()).unwrap();
+    let header: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    assert_eq!(header["version"], 16, "在 16 版日志上续写时 header 留 16");
+}
+
 /// 升到 16 之后，15 版日志仍然原样读；续写时 header 留 15。
 #[test]
 fn version_15_logs_are_read_as_is_and_can_be_continued() {
@@ -116,9 +139,9 @@ fn version_15_logs_are_read_as_is_and_can_be_continued() {
     assert_eq!(header["version"], 15, "在 15 版日志上续写时 header 留 15");
 }
 
-/// T013.1 测试清单 2：13 及以下、16 及以上照旧拒绝，文件一字不改；更新的提示升级。
+/// T013.1 测试清单 2：13 及以下、18 及以上照旧拒绝，文件一字不改；更新的提示升级。
 #[test]
-fn format_versions_outside_14_through_16_are_rejected_without_touching_the_file() {
+fn format_versions_outside_14_through_17_are_rejected_without_touching_the_file() {
     let (data_dir, _cwd, store) = create_store();
     let id = store.id().clone();
     let path = store.path().to_path_buf();
@@ -137,13 +160,13 @@ fn format_versions_outside_14_through_16_are_rejected_without_touching_the_file(
                 SessionError::UnsupportedVersion {
                     version: got,
                     min: 14,
-                    max: 16
+                    max: 17
                 } if got == version
             ),
             "v{version} 要拒绝并写出范围，实际 {error}"
         );
         assert!(
-            error.to_string().contains("14–16"),
+            error.to_string().contains("14–17"),
             "报错要写出能读的范围：{error}"
         );
         assert_eq!(fs::read(&path).unwrap(), legacy, "拒绝旧版本不能改写它");
@@ -154,14 +177,14 @@ fn format_versions_outside_14_through_16_are_rejected_without_touching_the_file(
                 SessionError::UnsupportedVersion {
                     version: got,
                     min: 14,
-                    max: 16
+                    max: 17
                 } if got == version
             ),
             "只读路径同样拒绝 v{version}，实际 {read_error}"
         );
     }
 
-    for version in [17, 99] {
+    for version in [18, 99] {
         let legacy = legacy_log(&id, version);
         fs::write(&path, &legacy).unwrap();
         let error = match SessionStore::open(data_dir.path(), &id) {
@@ -174,14 +197,14 @@ fn format_versions_outside_14_through_16_are_rejected_without_touching_the_file(
                 SessionError::UnsupportedFutureVersion {
                     version: got,
                     min: 14,
-                    max: 16
+                    max: 17
                 } if got == version
             ),
             "更新版本要拒绝，实际 {error}"
         );
         assert!(
             error.to_string().contains("请升级"),
-            "比 16 新的要提示升级：{error}"
+            "比 17 新的要提示升级：{error}"
         );
         assert_eq!(fs::read(&path).unwrap(), legacy, "拒绝新版本不能改写它");
     }

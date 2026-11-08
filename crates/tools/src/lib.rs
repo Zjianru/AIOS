@@ -38,9 +38,9 @@ pub use session::{
     WriteIntent,
 };
 pub use skills::{
-    SKILL_FILE, SkillContent, SkillDiscovery, SkillFrontmatter, SkillInvocation, SkillSummary,
-    SkillWarning, catalog_description, discover_skill_catalog, discover_skills,
-    invoked_skill_names, is_skill_name, load_skill, load_user_invocable_skill,
+    BundledSkill, SKILL_FILE, SkillContent, SkillDiscovery, SkillFrontmatter, SkillInvocation,
+    SkillSummary, SkillWarning, bundled_skills, catalog_description, discover_skill_catalog,
+    discover_skills, invoked_skill_names, is_skill_name, load_skill, load_user_invocable_skill,
     parse_skill_frontmatter, render_skill_content, skill_roots,
 };
 pub use spill::{SpillRef, bound_result, estimate_text_tokens};
@@ -299,9 +299,11 @@ pub trait Tool: Send + Sync {
 }
 
 /// 一次请求可用的工具集合。
+///
+/// 内部持有 `Arc`：产品装配时要先造好工具再交给 Agent（`AgentOpenOptions` 可克隆）。
 #[derive(Default)]
 pub struct ToolSet {
-    tools: Vec<Box<dyn Tool>>,
+    tools: Vec<Arc<dyn Tool>>,
 }
 
 impl ToolSet {
@@ -310,7 +312,14 @@ impl ToolSet {
     }
 
     pub fn new(tools: Vec<Box<dyn Tool>>) -> Self {
-        Self { tools }
+        Self {
+            tools: tools.into_iter().map(Arc::from).collect(),
+        }
+    }
+
+    /// 加一个装配层已经造好的工具（产品的额外工具，例如服务的查询工具）。
+    pub fn push_shared(&mut self, tool: Arc<dyn Tool>) {
+        self.tools.push(tool);
     }
 
     /// 开发用的内置工具集。T006.6 起默认注册照 DSH：read、glob、grep，写类 write、edit
@@ -359,7 +368,7 @@ impl ToolSet {
             .position(|tool| tool.is_builtin_todo_write())
         {
             self.tools[index] =
-                Box::new(TodoWriteTool::new_with_parallel(allow_parallel_in_progress));
+                Arc::new(TodoWriteTool::new_with_parallel(allow_parallel_in_progress));
         }
     }
 
@@ -378,11 +387,37 @@ impl ToolSet {
     pub fn definitions(&self) -> Vec<ToolSchema> {
         self.tools
             .iter()
-            .map(|tool| ToolSchema {
-                name: tool.name().to_owned(),
-                description: tool.description().to_owned(),
-                parameters: tool.parameters().clone(),
-            })
+            .map(|tool| schema_of(tool.as_ref()))
             .collect()
+    }
+
+    /// 本步开出的工具名：每个工具的条件求值一次（照 DSH 的 `when`）。
+    pub fn enabled(
+        &self,
+        loaded_skills: &std::collections::BTreeSet<String>,
+    ) -> std::collections::BTreeSet<String> {
+        self.tools
+            .iter()
+            .filter(|tool| tool.condition().satisfied_by(loaded_skills))
+            .map(|tool| tool.name().to_owned())
+            .collect()
+    }
+
+    /// 本步的请求工具表：只含开出的工具，按注册顺序。
+    pub fn definitions_for(&self, enabled: &std::collections::BTreeSet<String>) -> Vec<ToolSchema> {
+        self.tools
+            .iter()
+            .filter(|tool| enabled.contains(tool.name()))
+            .map(|tool| schema_of(tool.as_ref()))
+            .collect()
+    }
+}
+
+/// 一个工具的模型可见定义。
+fn schema_of(tool: &dyn Tool) -> ToolSchema {
+    ToolSchema {
+        name: tool.name().to_owned(),
+        description: tool.description().to_owned(),
+        parameters: tool.parameters().clone(),
     }
 }
