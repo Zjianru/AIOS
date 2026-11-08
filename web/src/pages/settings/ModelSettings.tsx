@@ -33,6 +33,8 @@ import {
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 import { modelErrorReason } from '@/data/errors';
+import { connectionCardOf } from '@/pages/kind/cards/model';
+import type { CardEnvelope, ConnectionSlots } from '@/pages/kind/cards/model';
 
 /* ───────────────────────── 小部件 ───────────────────────── */
 
@@ -189,36 +191,38 @@ function Btn({ kind = 'plain', className, ...props }: React.ButtonHTMLAttributes
 }
 
 /** 一行的状态点：绿 = 可用；红 = 不可用；黄 = 没有密钥；蓝 = 正在验证；灰 = 有密钥但还没验证。 */
-function StatusDot({ conn, broken }: { conn: ConnectionView; broken?: boolean }) {
-  const color = broken && conn.key.saved
+function StatusDot({ card }: { card: CardEnvelope<ConnectionSlots> }) {
+  const slots = card.slots;
+  const color = slots.broken && slots.saved
     ? 'var(--fail)'
-    : !conn.key.saved
+    : !slots.saved
     ? 'var(--wait)'
-    : conn.check.kind === 'ok'
+    : slots.check === 'ok'
       ? 'var(--done)'
-      : conn.check.kind === 'fail'
+      : slots.check === 'fail'
         ? 'var(--fail)'
-        : conn.check.kind === 'checking'
+        : slots.check === 'checking'
           ? 'var(--run)'
           : 'var(--ink-3)';
   return (
     <span
-      className={cn('block size-2 shrink-0 rounded-full', conn.check.kind === 'checking' && 'animate-pulse')}
+      className={cn('block size-2 shrink-0 rounded-full', slots.check === 'checking' && 'animate-pulse')}
       style={{ backgroundColor: color }}
     />
   );
 }
 
-/** 密钥和连接状态的一句话（「已保存」「连接可用」分开说）。 */
-function keyStatus(conn: ConnectionView | null, broken?: boolean): { text: string; tone?: 'warn' | 'fail' | 'ok' } {
-  if (!conn || !conn.key.saved) return { text: '还没有密钥。填上才能用这个提供商。', tone: 'warn' };
-  const saved = `已保存在 Keyring（${formatLocalDateTime(conn.key.savedAt)}）`;
-  if (broken) return { text: `${saved} · 现在读不出来，暂时不能用`, tone: 'fail' };
-  switch (conn.check.kind) {
+/** 连接卡信封 → 密钥和连接状态的一句话（「已保存」「连接可用」分开说）。 */
+function keyStatus(card: CardEnvelope<ConnectionSlots> | null): { text: string; tone?: 'warn' | 'fail' | 'ok' } {
+  const slots = card?.slots;
+  if (!slots || !slots.saved) return { text: '还没有密钥。填上才能用这个提供商。', tone: 'warn' };
+  const saved = `已保存在 Keyring（${formatLocalDateTime(slots.savedAt)}）`;
+  if (slots.broken) return { text: `${saved} · 现在读不出来，暂时不能用`, tone: 'fail' };
+  switch (slots.check) {
     case 'ok':
-      return { text: `${saved} · 连接可用（${formatLocalDateTime(conn.check.at)} 验证）`, tone: 'ok' };
+      return { text: `${saved} · 连接可用（${formatLocalDateTime(slots.checkedAt)} 验证）`, tone: 'ok' };
     case 'fail':
-      return { text: `${saved} · 不可用：${modelErrorReason(conn.check.reason)}`, tone: 'fail' };
+      return { text: `${saved} · 不可用：${modelErrorReason(slots.reason)}`, tone: 'fail' };
     case 'checking':
       return { text: `${saved} · 正在验证…` };
     default:
@@ -226,14 +230,27 @@ function keyStatus(conn: ConnectionView | null, broken?: boolean): { text: strin
   }
 }
 
-function KeyInput({ id, value, onChange, conn }: {
+/** 设置页的连接状态也从连接卡信封取（和首次使用同一份事实和派生）。 */
+function cardOf(conn: ConnectionView | null, broken: boolean): CardEnvelope<ConnectionSlots> | null {
+  if (!conn) return null;
+  return connectionCardOf({
+    id: conn.id,
+    name: conn.name,
+    provider: conn.id,
+    key: conn.key,
+    check: conn.check,
+    broken,
+  });
+}
+
+function KeyInput({ id, value, onChange, card }: {
   id: string;
   value: string;
   onChange: (value: string) => void;
-  conn: ConnectionView | null;
+  card: CardEnvelope<ConnectionSlots> | null;
 }) {
   const [shown, setShown] = useState(false);
-  const status = keyStatus(conn);
+  const status = keyStatus(card);
   return (
     <Field
       label="API 密钥"
@@ -252,7 +269,7 @@ function KeyInput({ id, value, onChange, conn }: {
             onChange(event.target.value);
             setShown(false);
           }}
-          placeholder={conn?.key.saved ? '已保存一把；留空就继续用它' : '输入 API 密钥'}
+          placeholder={card?.slots.saved ? '已保存一把；留空就继续用它' : '输入 API 密钥'}
           className={cn(inputClass, value && 'pr-9')}
         />
         {value ? (
@@ -651,7 +668,7 @@ function ConnectionEditor({ conn, view, onDone, onView, onMask }: {
 
   return (
     <div className="mx-1 mb-2 rounded-card border border-line-2 bg-raised/60 p-4" data-settings="editor">
-      <KeyInput id={'key-' + conn.id} value={key} onChange={setKey} conn={conn} />
+      <KeyInput id={'key-' + conn.id} value={key} onChange={setKey} card={cardOf(conn, false)} />
       <Collapsible title="自定义设置" defaultOpen={conn.source === 'custom'}>
         <Field label="API 地址" hint={`协议：${PROTOCOL_LABEL[conn.protocol]}`}>
           <input
@@ -810,7 +827,7 @@ function CatalogPanel({ view, onCreated, onCancel }: { view: ModelSettingsView; 
           ))}
         </select>
       </Field>
-      <KeyInput id="add-catalog-key" value={key} onChange={setKey} conn={null} />
+      <KeyInput id="add-catalog-key" value={key} onChange={setKey} card={null} />
       <Collapsible title="自定义设置">
         <Field label="API 地址" hint={`协议：${PROTOCOL_LABEL[provider.protocol]}`}>
           <input className={inputClass} value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder={provider.defaultEndpoint} />
@@ -1362,14 +1379,16 @@ export function ModelSettings() {
             <p className="text-2 text-ink-3">还没有接任何模型。接上一个，Kind 才能开始做事。</p>
           ) : (
             <div className="rounded-card border border-line">
-              {rows.map((conn, index) => (
+              {rows.map((conn, index) => {
+                const card = cardOf(conn, broken);
+                return (
                 <div key={conn.id} className={cn(index > 0 && 'border-t border-line')}>
                   <div className="flex items-center gap-3 px-4 py-3">
-                    <StatusDot conn={conn} broken={broken} />
+                    {card ? <StatusDot card={card} /> : null}
                     <div className="min-w-0">
                       <div className="text-3 text-ink">{conn.name}</div>
-                      <div className="mt-0.5 truncate text-1 text-ink-3">
-                        {keyStatus(conn, broken).text}
+                      <div className="mt-0.5 truncate text-1 text-ink-3" data-card-state={card?.state}>
+                        {keyStatus(card).text}
                       </div>
                     </div>
                     <div className="ml-auto flex shrink-0 items-center gap-1">
@@ -1399,7 +1418,8 @@ export function ModelSettings() {
                     />
                   ) : null}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
