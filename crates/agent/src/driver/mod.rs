@@ -378,6 +378,10 @@ impl Inner {
         &self.log_path
     }
 
+    pub(crate) fn cwd(&self) -> &Path {
+        &self.cwd
+    }
+
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<AgentEvent> {
         self.events.subscribe()
     }

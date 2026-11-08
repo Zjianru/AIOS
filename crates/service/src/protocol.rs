@@ -720,10 +720,12 @@ pub struct ConnectionRevokeResponse {
 ///   `model-settings` 的 disabledModels / disabledUnknown / disabledHits / listed；
 ///   `available-models` 每行的 fresh；`FailureCause` 的 masked；
 ///   新错误码 settings/unreadable（码表 16）。全是只增字段/值，旧页忽略。
+/// - 9：status 带会话的 cwd（页面把工作过程里的路径显示成相对路径）；
+///   旧页忽略新增字段，旧服务的 status 没有它时页面照绝对路径显示。
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 8;
+pub const PROTOCOL_VERSION: u64 = 9;
 
 /// 根会话不可用的种类：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

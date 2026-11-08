@@ -569,4 +569,9 @@ impl Agent {
     pub fn log_path(&self) -> &Path {
         self.inner.log_path()
     }
+
+    /// 会话的工作目录（规范化后的；工具的路径相对它解析，页面用它显示相对路径）。
+    pub fn cwd(&self) -> &Path {
+        self.inner.cwd()
+    }
 }

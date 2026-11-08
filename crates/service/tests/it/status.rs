@@ -13,6 +13,16 @@ async fn status_carries_session_cwd() {
     let mut options = crate::common::options(&data);
     options.model = DeepSeekConfig::default();
     let host = RootHost::open(options, 1_000).await;
+    // status 会拉汇率，离线时要等 5 秒；预置未过期的缓存，测试不依赖网络。
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("系统时间")
+        .as_secs();
+    fs::write(
+        data.join(service::fx::FX_FILE),
+        format!(r#"{{"rate":7.2,"fetchedAt":{now}}}"#),
+    )
+    .expect("写汇率缓存");
     let response = host
         .dispatch(Call::Status(StatusRequest::default()))
         .await

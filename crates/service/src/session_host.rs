@@ -203,7 +203,7 @@ impl ServiceHost {
         })
     }
 
-    /// 被动状态第一版：对象 + 是否有一轮在跑 + 待答问题数。
+    /// 被动状态第一版：对象 + 是否有一轮在跑 + 待答问题数 + 会话工作目录。
     pub async fn status(&self, _request: StatusRequest) -> Result<StatusResponse, ServiceError> {
         Ok(StatusResponse {
             object: self.object(),
@@ -212,7 +212,7 @@ impl ServiceHost {
             stats: None,
             fx: None,
             currency: None,
-            cwd: None,
+            cwd: Some(self.agent.cwd().to_string_lossy().into_owned()),
         })
     }
 
