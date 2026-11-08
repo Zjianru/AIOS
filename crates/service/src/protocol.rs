@@ -577,7 +577,7 @@ pub struct SettingsUpdateResponse {
     pub currency: String,
 }
 
-/// 页面异常 / 事件流重连上报（T019.E）：只记 web 的 ops，不进会话日志；正文限长由载体截。
+/// 页面异常 / 事件流重连上报：只记 web 的 ops，不进会话日志；正文限长由载体截。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MonitorReportRequest {
     /// 上报种类；未知值按 page-error 记。

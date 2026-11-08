@@ -200,7 +200,7 @@ const voided = questionEnvelope(questionFact({ status: 'void' }));
 assert.equal(voided.state, 'stopped');
 assert.deepEqual(voided.receipt, { outcome: 'cancelled', summary: '这一轮停下了，问题没再等回答' });
 
-/* T019.E（B5）：提问卡取不出信封（null）时退回通用卡，不整卡消失、不抛异常。 */
+/* 提问卡取不出信封（null）时退回通用卡，不整卡消失、不抛异常。 */
 const questionFallback = questionCardEntryOf(null);
 assert.equal(questionFallback.type, 'generic', 'null 事实退回通用卡');
 assert.equal(normalizeEnvelope(questionFallback).type, 'generic', '能过卡片入口再校验');
@@ -256,7 +256,7 @@ for (const [name, expected] of Object.entries(TOOL_TYPES)) {
   assert.equal(toolCardTypeOf(name), expected, name + ' → ' + expected);
 }
 
-/* T019.E（B5）：工作过程里的待答提问卡读模型参数 multi_select（不是 multiSelect）。 */
+/* 工作过程里的待答提问卡读模型参数 multi_select（不是 multiSelect）。 */
 const askMulti = stepOf(
   {
     callId: 'call-ask-multi',
@@ -657,7 +657,7 @@ assert.doesNotThrow(() => normalizeEnvelope(brokenKeyring), '连接卡的信封�
 // 没有 id：出不了信封，由卡片入口退回通用卡。
 assert.equal(connectionCardOf({ id: '' }), null);
 
-/* T019.E（B1）：providers 是坏数组（不是数组）时退回空列表，连接卡仍出信封，不整卡 generic。 */
+/* providers 是坏数组（不是数组）时退回空列表，连接卡仍出信封，不整卡 generic。 */
 const badProviders = connectionEnvelope(connectionFact({ providers: { nope: true } }));
 assert.equal(badProviders.type, 'connection');
 assert.deepEqual(badProviders.slots.providers, []);

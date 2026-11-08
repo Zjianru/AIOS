@@ -1,4 +1,4 @@
-//! WebSocket 连接（T019.E 从 lib.rs 拆出）：线上帧、ready/补齐、live 事件和连接内 ops。
+//! WebSocket 连接：线上帧、ready/补齐、live 事件和连接内 ops。
 
 use std::sync::{Arc, Mutex};
 

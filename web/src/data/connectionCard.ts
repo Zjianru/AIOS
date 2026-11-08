@@ -1,5 +1,5 @@
 /**
- * 连接卡（T019.E，从 pages/kind/cards/model.ts 挪到数据层）：
+ * 连接卡：
  * 从 Keyring 状态派生卡片的信封和槽位。首次使用页和设置页共用；不依赖 React，
  * 也不再让设置页反向 import 对话页的 cards/model。
  */
@@ -64,7 +64,7 @@ export const connectionSlotsSchema = z.object({
     .array(providerSlotSchema)
     .default([])
     .transform((items) => items.filter((item): item is ConnectionProviderSlot => item !== null))
-    // T019.E（B1）：providers 是坏数组（不是数组）时回空列表，连接卡仍出信封，不整卡 generic。
+    // providers 是坏数组（不是数组）时回空列表，连接卡仍出信封，不整卡 generic。
     .catch([]),
   provider: textSlot,
   saved: z.boolean().catch(false),

@@ -1,4 +1,4 @@
-//! 信任栅栏与请求解析（T019.E 从 lib.rs 拆出）：绑定地址、Host/Origin、启动令牌和签名 cookie。
+//! 信任栅栏与请求解析：绑定地址、Host/Origin、启动令牌和签名 cookie。
 
 use std::net::IpAddr;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -310,7 +310,7 @@ fn decode_cookie(secret: &[u8; 32], value: &str) -> Option<CookiePayload> {
 
 fn read_cookie(header: &str, name: &str) -> Option<String> {
     for segment in header.split(';') {
-        // T019.E：没有 `=` 的段跳过（浏览器/代理可能塞别的段），不让它让整次认证失败。
+        // 没有 `=` 的段跳过（浏览器/代理可能塞别的段），不让它使整次认证失败。
         let Some((key, value)) = segment.trim().split_once('=') else {
             continue;
         };
@@ -459,7 +459,7 @@ mod cookie_red_tests {
         headers
     }
 
-    /// T019.E：cookie 头里夹着没有 `=` 的段（浏览器/代理可能塞别的段）时要跳过它，
+    /// cookie 头里夹着没有 `=` 的段（浏览器/代理可能塞别的段）时要跳过它，
     /// 不能因为段序让整次认证失败。
     #[test]
     fn read_cookie_skips_segments_without_equals() {

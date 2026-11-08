@@ -1,5 +1,5 @@
 /**
- * 卡片信封与槽位规则（T019.E，从 cards/model.ts 挪到共享层）：
+ * 卡片信封与槽位规则：
  * 信封的词汇（类型/角色/状态/回执）、槽位上限、逐槽位的 zod 规则和注册项形状。
  *
  * 设置页从 data/connectionCard 取连接卡，不再反向 import 对话页的 cards/model；

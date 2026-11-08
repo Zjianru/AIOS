@@ -1,4 +1,4 @@
-//! HTTP 路由与请求解析（T019.E 从 lib.rs 拆出）：/api、静态资源、画布外壳、/local-file，
+//! HTTP 路由与请求解析：/api、静态资源、画布外壳、/local-file，
 //! 以及每次调用 / 连接操作的监控 ops。
 
 use std::path::{Path, PathBuf};
@@ -340,7 +340,7 @@ async fn api_handler(
             return bad_request_response(format!("bad request: {error}"));
         }
     };
-    // T019.E：monitor-report 是 Call 的变体；监控记录留在 web（Monitor 在这里），
+    // monitor-report 是 Call 的变体；监控记录留在 web（Monitor 在这里），
     // 不再在解码前用方法名字符串截走。它不依赖根会话（页面报错时根可能正好不可用）。
     if let service::Call::MonitorReport(report) = &call {
         record_monitor_report(&state, report);
@@ -385,7 +385,7 @@ async fn api_handler(
     }
 }
 
-/// T011.6/T019.E：页面没接住的异常、事件流重连记 ops（内容限长，不阻塞页面）。
+/// 页面没接住的异常、事件流重连记 ops（内容限长，不阻塞页面）。
 fn record_monitor_report(state: &AppState, report: &service::MonitorReportRequest) {
     let op = match report.kind.as_deref() {
         Some("page-reconnect") => "page-reconnect",
@@ -1098,7 +1098,7 @@ mod t011_ops_tests {
         assert!(!text.contains("apiKey"), "监控里不能有请求体字段：{text}");
     }
 
-    /// T019.E：monitor-report 进 Call 后仍走 /api 一条路——限长后记 page-error，
+    /// monitor-report 进 Call 后仍走 /api 一条路——限长后记 page-error，
     /// 同时照 T011.4 记一条 api-call（以前字符串截走时跳过了）。
     #[tokio::test]
     async fn monitor_report_is_a_call_and_records_page_error() {

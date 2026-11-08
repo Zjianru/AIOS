@@ -1,4 +1,4 @@
-//! T019.E：/api 的方法集合必须是 service::Call 的子集。
+//! /api 的方法集合必须是 service::Call 的子集。
 //!
 //! 页面发 /api 的方法清单只有一处字面量：`web/src/data/service.ts` 的 `method: '...'`。
 //! 这里在编译期把那份源码带进来，逐条确认 serde 认识（不是 Call 的 unknown variant）。
