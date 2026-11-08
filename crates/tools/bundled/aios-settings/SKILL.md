@@ -36,6 +36,7 @@ To propose, call `propose_action` once, with one option per choice the user can 
 ## Actions
 
 - `select_model`: `details` is `{ "model": "<model id>" }`, optionally with `"connection": "<connection id>"` and `"effort": "<the model's own effort name>"` (leave effort out to keep the current one). Offer one option per model or effort the user could choose.
+- `mask_model` / `unmask_model`: `details` is `{ "connection": "<connection id>", "model": "<model id>" }`. Masking blocks that model on every request; unmasking removes the single rule for it. Offer one option, named the way the user names the model.
 
 ## One card per turn
 
