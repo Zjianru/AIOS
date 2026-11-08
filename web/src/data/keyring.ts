@@ -33,11 +33,18 @@ const DEEPSEEK_MODELS = [
   { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', contextWindow: 1_000_000 },
 ];
 
+// T016 验收修复：和内置目录一致（最新在前；highspeed 跟同代相邻；
+// M2.1-highspeed 厂商实际会列出，目录和页面都不能漏）。
 const MINIMAX_MODELS = [
   { id: 'MiniMax-M3.1-Flash', name: 'MiniMax-M3.1-Flash', contextWindow: 1_000_000 },
   { id: 'MiniMax-M3', name: 'MiniMax-M3', contextWindow: 1_000_000 },
   { id: 'MiniMax-M2.7', name: 'MiniMax-M2.7', contextWindow: 204_800 },
+  { id: 'MiniMax-M2.7-highspeed', name: 'MiniMax-M2.7-highspeed', contextWindow: 204_800 },
   { id: 'MiniMax-M2.5', name: 'MiniMax-M2.5', contextWindow: 204_800 },
+  { id: 'MiniMax-M2.5-highspeed', name: 'MiniMax-M2.5-highspeed', contextWindow: 204_800 },
+  { id: 'MiniMax-M2.1', name: 'MiniMax-M2.1', contextWindow: 204_800 },
+  { id: 'MiniMax-M2.1-highspeed', name: 'MiniMax-M2.1-highspeed', contextWindow: 204_800 },
+  { id: 'MiniMax-M2', name: 'MiniMax-M2', contextWindow: 204_800 },
 ];
 
 const CATALOG: CatalogProvider[] = [

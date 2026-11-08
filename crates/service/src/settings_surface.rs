@@ -458,6 +458,9 @@ impl RootHost {
                 });
             }
         }
+        // 最新的在前（MiniMax 按版本、highspeed 跟同代相邻；其他厂商按发布日期）。
+        // 页面拿到哪份列表都按同一个顺序显示，不再依赖目录的字母序。
+        catalog.sort_models(&provider_id, &mut models);
         let models = models
             .into_iter()
             .map(|model| {

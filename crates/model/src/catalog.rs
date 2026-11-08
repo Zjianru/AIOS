@@ -4,6 +4,7 @@
 //! T012.5 增加：models.dev 拉取/缓存/快照，目录字段（窗口/输出/价格/thinks/efforts），
 //! 以及和 GET /v1/models 的结果合并（厂商列表字段优先，用户填的不动由 service 覆盖）。
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
@@ -199,9 +200,10 @@ impl CatalogSnapshot {
         self.provider(provider_id)?.models.get(model_id)
     }
 
-    /// 这个 provider 的模型，字段来自目录。
+    /// 这个 provider 的模型，字段来自目录；顺序是最新在前（见 [`Self::sort_models`]）。
     pub fn models_for(&self, provider_id: &str) -> Vec<ModelInfo> {
-        self.provider(provider_id)
+        let mut models: Vec<ModelInfo> = self
+            .provider(provider_id)
             .map(|provider| {
                 provider
                     .models
@@ -209,7 +211,56 @@ impl CatalogSnapshot {
                     .map(|model| model_info(provider, model))
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
+        self.sort_models(provider_id, &mut models);
+        models
+    }
+
+    /// 列表展示顺序（T016 验收修复）：最新的在前。
+    ///
+    /// - MiniMax（国际/国内）：按 ID 里的 M<major>.<minor> 版本降序；同代里普通版在前、
+    ///   highspeed 紧跟在后（highspeed 跟同代相邻）。只看 ID，所以目录里没有的 live 模型
+    ///   也排在正确位置，不会因为目录缺条目被当成「新」或掉到最后。
+    /// - 其他厂商：按目录的 release_date 降序；目录没有日期的排在最后，同日期按 ID。
+    pub fn sort_models(&self, provider_id: &str, models: &mut [ModelInfo]) {
+        // 自定义地址没有版本/发布日期可依，保留厂商/目录原来的顺序，别按字母重排。
+        if provider_id == "custom" {
+            return;
+        }
+        if provider_id == "minimax" || provider_id == "minimax-cn" {
+            models.sort_by(|a, b| {
+                let key = |model: &ModelInfo| {
+                    (
+                        minimax_version(&model.id),
+                        model.id.to_ascii_lowercase().contains("highspeed"),
+                    )
+                };
+                let (version_a, highspeed_a) = key(a);
+                let (version_b, highspeed_b) = key(b);
+                match (version_a, version_b) {
+                    (Some(left), Some(right)) => right
+                        .cmp(&left)
+                        .then_with(|| highspeed_a.cmp(&highspeed_b))
+                        .then_with(|| a.id.cmp(&b.id)),
+                    (Some(_), None) => Ordering::Less,
+                    (None, Some(_)) => Ordering::Greater,
+                    (None, None) => a.id.cmp(&b.id),
+                }
+            });
+            return;
+        }
+        let provider = self.provider(provider_id);
+        let date_of = |id: &str| {
+            provider
+                .and_then(|provider| provider.models.get(id))
+                .map(|model| model.release_date.as_str())
+                .unwrap_or("")
+        };
+        models.sort_by(|a, b| {
+            let a_date = date_of(&a.id);
+            let b_date = date_of(&b.id);
+            b_date.cmp(a_date).then_with(|| a.id.cmp(&b.id))
+        });
     }
 
     /// 适配器需要的思考能力：会思考吗、能选哪些档。
@@ -241,6 +292,20 @@ fn model_info(provider: &CatalogProvider, model: &CatalogModel) -> ModelInfo {
         thinks: model.reasoning,
         efforts: levels(provider, model),
     }
+}
+
+/// MiniMax 模型 ID 的版本部分：MiniMax-M3.1-Flash -> (3, 1)，MiniMax-M2 -> (2, 0)。
+/// 不依赖目录条目，live 里新出现的模型也能按版本排。
+fn minimax_version(id: &str) -> Option<(u32, u32)> {
+    let rest = id.strip_prefix("MiniMax-M")?;
+    let token: String = rest
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit() || *ch == '.')
+        .collect();
+    let mut parts = token.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next().unwrap_or("0").parse().ok()?;
+    Some((major, minor))
 }
 
 /// 连接对应的目录 provider id：内置提供方用 preset，自定义地址按 endpoint 推断。

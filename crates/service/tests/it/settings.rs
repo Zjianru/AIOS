@@ -1416,8 +1416,8 @@ async fn 保存换预设后旧厂商列表作废() {
     assert!(listed_ids(&host, "preset-moved").await.is_empty());
     assert_eq!(
         service::models::primary_model(dir.path(), &connection_of(&host, "preset-moved").await),
-        "MiniMax-M2",
-        "回到 minimax 的内置目录"
+        "MiniMax-M3.1-Flash",
+        "回到 minimax 的内置目录（最新在前）"
     );
 
     let fetched = available_models(&host, discover_request("preset-moved")).await;
