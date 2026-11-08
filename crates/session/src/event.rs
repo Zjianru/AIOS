@@ -45,7 +45,8 @@ use crate::SessionId;
 /// v16：turn/end 的 aborted 原因新增 hook（设置里屏蔽了正在跑的模型时由服务触发；
 /// reason 是稳定的钩子名）；旧版本读不了一条带 hook 原因的 turn/end，按 spec 升版本、
 /// 旧版本仍拒绝（不迁移）。
-/// v17：新增 tool/registry 事件（工具加载记录：本步新开出的工具和它们的完整定义）；
+/// v17：新增 tool/registry 事件（工具加载记录：本步新开出的工具和它们的完整定义）和
+/// card/decision 事件（确认卡的决定；replaced 由日志推导，不写事件）；
 /// 旧版本读不了这条事件，按 spec 升版本、旧版本仍拒绝（不迁移）。旧日志照读。
 pub const FORMAT_VERSION: u64 = 17;
 

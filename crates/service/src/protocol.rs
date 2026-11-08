@@ -752,6 +752,8 @@ pub struct ConnectionRevokeResponse {
 ///   `available-models` 每行的 fresh；`FailureCause` 的 masked；
 ///   新错误码 settings/unreadable（码表 16）。全是只增字段/值，旧页忽略。
 /// - 9：status 带会话的 cwd（页面把工作过程里的路径显示成相对路径）；
+///   确认卡的 card-act 操作与 card/decision 事件也是只增的，跟着这个版本一起发
+///   （旧页不会发 card-act；旧服务读到这个操作按 request/invalid-json 拒绝）。
 ///   旧页忽略新增字段，旧服务的 status 没有它时页面照绝对路径显示。
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
