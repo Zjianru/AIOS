@@ -159,47 +159,51 @@ pub(super) fn request_body(
                 let content: Vec<WireBlock> = message
                     .content
                     .iter()
-                    .filter_map(|block| match block {
-                        ContentBlock::Text { text, .. } if !text.is_empty() => {
-                            Some(WireBlock::Text { text: text.clone() })
-                        }
-                        ContentBlock::Text { .. } => None,
-                        // T013.4：文件块投给模型时换成 fileHandleText（DSH 原句照抄）。
-                        ContentBlock::File {
-                            attachment_id,
-                            name,
-                            bytes,
-                            path,
-                        } if message.role == Role::User => Some(WireBlock::Text {
-                            text: file_handle_text(attachment_id, name, *bytes, path.as_deref()),
-                        }),
-                        ContentBlock::File { .. } => None,
-                        ContentBlock::Reasoning { text, signature }
-                            if message.role == Role::Assistant =>
-                        {
-                            Some(WireBlock::Thinking {
-                                thinking: text.clone(),
-                                signature: signature.clone(),
-                            })
-                        }
-                        ContentBlock::Reasoning { .. } => None,
-                        ContentBlock::ToolCall {
-                            id,
-                            name,
-                            arguments,
-                        } if message.role == Role::Assistant => {
-                            let input = serde_json::from_str::<Value>(arguments)
-                                .ok()
-                                .filter(Value::is_object)
-                                .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-                            Some(WireBlock::ToolUse {
+                    .map(|block| -> Result<Option<WireBlock>, ModelError> {
+                        Ok(match block {
+                            ContentBlock::Text { text, .. } if !text.is_empty() => {
+                                Some(WireBlock::Text { text: text.clone() })
+                            }
+                            ContentBlock::Text { .. } => None,
+                            // T013.4：文件块投给模型时换成 fileHandleText（DSH 原句照抄）。
+                            ContentBlock::File {
+                                attachment_id,
+                                name,
+                                bytes,
+                                path,
+                            } if message.role == Role::User => Some(WireBlock::Text {
+                                text: file_handle_text(
+                                    attachment_id,
+                                    name,
+                                    *bytes,
+                                    path.as_deref(),
+                                ),
+                            }),
+                            ContentBlock::File { .. } => None,
+                            ContentBlock::Reasoning { text, signature }
+                                if message.role == Role::Assistant =>
+                            {
+                                Some(WireBlock::Thinking {
+                                    thinking: text.clone(),
+                                    signature: signature.clone(),
+                                })
+                            }
+                            ContentBlock::Reasoning { .. } => None,
+                            ContentBlock::ToolCall {
+                                id,
+                                name,
+                                arguments,
+                            } if message.role == Role::Assistant => Some(WireBlock::ToolUse {
                                 id: id.clone(),
                                 name: name.clone(),
-                                input,
-                            })
-                        }
-                        ContentBlock::ToolCall { .. } => None,
+                                input: tool_input(id, arguments)?,
+                            }),
+                            ContentBlock::ToolCall { .. } => None,
+                        })
                     })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .flatten()
                     .collect();
                 if content.is_empty() {
                     continue;
@@ -358,6 +362,17 @@ fn validate_tool_pairing(messages: &[Message]) -> Result<(), ModelError> {
 
 fn invalid_request(message: &str) -> ModelError {
     ModelError::new(ErrorCode::InvalidRequest, message.to_owned())
+}
+
+/// 历史里的 tool_use 参数：必须是 JSON 对象。坏参数不能静默变成空参数——模型会以为工具
+/// 当时没收到参数，重放出来的请求也就不是这条历史了。
+fn tool_input(id: &str, arguments: &str) -> Result<Value, ModelError> {
+    match serde_json::from_str::<Value>(arguments) {
+        Ok(value) if value.is_object() => Ok(value),
+        _ => Err(invalid_request(&format!(
+            "工具调用 {id} 的 arguments 不是 JSON 对象，请求体不能忠实重建"
+        ))),
+    }
 }
 
 fn push_or_merge(messages: &mut Vec<WireMessage>, role: &'static str, content: Vec<WireBlock>) {

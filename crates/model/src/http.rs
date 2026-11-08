@@ -2,6 +2,7 @@
 //!
 //! 所有请求（模型、验证、目录、余额、余量、汇率）都用这里造的 client；socket 级细节不散落在业务里。
 //! 环境里的代理只在这一处读；本机地址（localhost、127.0.0.0/8、::1）不走代理（故事 9）。
+//! 代理地址解析失败直接报错，不把「坏地址」当成「没配代理」而静默直连。
 
 use std::sync::OnceLock;
 
@@ -43,17 +44,27 @@ fn first_non_empty(source: &impl Fn(&str) -> Option<String>, names: &[&str]) -> 
     })
 }
 
-fn proxy_url(raw: &str) -> Option<Url> {
+/// 解析一个代理变量。解析失败要报错（指名哪个变量），不能当成「没配代理」——那会静默直连。
+/// 报错只带变量名和解析原因，不带原值：代理地址里可能有密码。
+fn proxy_url(name: &str, raw: Option<&str>) -> Result<Option<Url>, ModelError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
     let text = raw.trim();
     if text.is_empty() {
-        return None;
+        return Ok(None);
     }
     let with_scheme = if text.contains("://") {
         text.to_owned()
     } else {
         format!("http://{text}")
     };
-    Url::parse(&with_scheme).ok()
+    Url::parse(&with_scheme).map(Some).map_err(|error| {
+        ModelError::new(
+            ErrorCode::Transport,
+            format!("代理地址解析失败（{name}）：{error}"),
+        )
+    })
 }
 
 /// 本机地址按主机名/IP 判：localhost、127.0.0.0/8、::1（故事 9）。
@@ -104,9 +115,9 @@ fn no_proxy_matches(url: &Url, no_proxy: Option<&str>) -> bool {
 }
 
 fn build_with_env(env: HttpEnv) -> Result<Client, ModelError> {
-    let http = env.http_proxy.as_deref().and_then(proxy_url);
-    let https = env.https_proxy.as_deref().and_then(proxy_url);
-    let all = env.all_proxy.as_deref().and_then(proxy_url);
+    let http = proxy_url("http_proxy", env.http_proxy.as_deref())?;
+    let https = proxy_url("https_proxy", env.https_proxy.as_deref())?;
+    let all = proxy_url("all_proxy", env.all_proxy.as_deref())?;
     let no_proxy = env.no_proxy.clone();
     Client::builder()
         // 代理只从 HttpEnv 来，避免 reqwest 自己再读一遍环境、绕开本机判断。
