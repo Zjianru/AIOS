@@ -85,6 +85,9 @@ struct ServeArgs {
     /// 前端构建产物目录（默认找 ./web/dist；也可用 AIOS_WEB_DIST）
     #[arg(long)]
     web_dist: Option<PathBuf>,
+    /// 仅开发/端到端测试用：覆盖 Exa 的根地址（默认 https://api.exa.ai）
+    #[arg(long)]
+    exa_base_url: Option<String>,
 }
 
 #[derive(Args, Clone)]
@@ -651,6 +654,7 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             append_hook_factory: Some(append_hook_factory),
             keyring_changed: Some(keyring_changed),
             actions,
+            exa_base_url: args.exa_base_url.clone(),
         },
         window,
     )

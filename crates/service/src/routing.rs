@@ -86,6 +86,11 @@ impl RootHost {
                 .connection_quota(request)
                 .await
                 .map(Response::ConnectionQuota),
+            // 设置页「联网搜索」：Exa 凭证的四个操作。
+            Call::ExaKey(_) => self.exa_key().await.map(Response::ExaKey),
+            Call::ExaKeySave(request) => self.exa_key_save(request).await.map(Response::ExaKeySave),
+            Call::ExaKeyCheck(_) => self.exa_key_check().await.map(Response::ExaKeyCheck),
+            Call::ExaKeyDelete(_) => self.exa_key_delete().await.map(Response::ExaKeyDelete),
             // 写非密钥设置。
             Call::SettingsUpdate(request) => self
                 .settings_update(request)

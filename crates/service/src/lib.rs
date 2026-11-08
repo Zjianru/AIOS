@@ -9,6 +9,7 @@ mod cards;
 pub mod disabled;
 mod error;
 mod events;
+mod exa;
 mod input;
 mod propose;
 mod protocol;
@@ -18,6 +19,7 @@ mod session_host;
 mod session_select;
 mod settings_surface;
 mod status;
+mod web;
 
 pub mod fx;
 pub mod models;
@@ -31,6 +33,7 @@ pub(crate) const SERVICE_EVENT_CHANNEL_CAPACITY: usize = 1024;
 
 pub use actions::{ActionEnv, ActionFuture, ActionKind, ActionOutcome, ActionRegistry, CardFact};
 pub use error::*;
+pub use exa::EXA_DEFAULT_BASE_URL;
 pub use protocol::*;
 pub use root::{
     KeyringChanged, ModelFactory, ROOT_STATE_FILE, RootError, RootSession, RootSessionOptions,

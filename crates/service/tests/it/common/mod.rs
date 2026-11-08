@@ -64,6 +64,7 @@ pub fn options(data_dir: &Path) -> RootSessionOptions {
         append_hook_factory: None,
         keyring_changed: None,
         actions: Arc::new(service::ActionRegistry::empty()),
+        exa_base_url: None,
     }
 }
 

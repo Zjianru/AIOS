@@ -652,7 +652,7 @@ pub(crate) fn auth_header_writeback_failure(connection: &str, reason: &str) -> S
     format!("连接 {connection} 的鉴权头没写回 Keyring：{reason}")
 }
 
-fn now_seconds() -> u64 {
+pub(crate) fn now_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())

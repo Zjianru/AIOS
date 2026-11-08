@@ -76,6 +76,14 @@ pub enum Call {
     CardAct(CardActRequest),
     /// 查询连接余额/套餐余量。
     ConnectionQuota(ConnectionQuotaRequest),
+    /// 设置页「联网搜索」：读 Exa 凭证（不含 key 正文）。
+    ExaKey(ExaKeyRequest),
+    /// 存/换 Exa 的 key。
+    ExaKeySave(ExaKeySaveRequest),
+    /// 用已存的 key 向 Exa 发一次最小搜索，结果写回 Keyring。
+    ExaKeyCheck(ExaKeyRequest),
+    /// 删 Exa 的 key。
+    ExaKeyDelete(ExaKeyRequest),
     /// 写非密钥设置（currency；只写 settings.json）。
     SettingsUpdate(SettingsUpdateRequest),
     /// 存一份文字附件（只读副本），返回 id。
@@ -110,6 +118,11 @@ pub enum Response {
     ConnectionVerify(ConnectionVerifyResponse),
     /// 连接余额/套餐余量。
     ConnectionQuota(ConnectionQuotaResponse),
+    /// Exa 凭证的视图（四个操作同一形状）。
+    ExaKey(ExaKeyResponse),
+    ExaKeySave(ExaKeyResponse),
+    ExaKeyCheck(ExaKeyResponse),
+    ExaKeyDelete(ExaKeyResponse),
     /// 写非密钥设置。
     SettingsUpdate(SettingsUpdateResponse),
     AvailableModels(AvailableModelsResponse),
@@ -571,6 +584,19 @@ pub struct ConnectionQuotaResponse {
     pub checked_at: u64,
 }
 
+/// 设置页「联网搜索」：读/验证/删 Exa 凭证（空请求体）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExaKeyRequest {}
+
+/// 存/换 Exa 的 key；只在这一次请求体里，任何响应不带正文。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExaKeySaveRequest {
+    pub key: String,
+}
+
+/// Exa 凭证的视图：存没存、保存时间、上次验证结果。没有 key 正文。
+pub type ExaKeyResponse = credentials::ToolKeyView;
+
 /// 写非密钥设置（settings.json）；只碰非密钥设置，不碰 Keyring/连接。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct SettingsUpdateRequest {
@@ -754,6 +780,8 @@ pub struct ConnectionRevokeResponse {
 /// - 9：status 带会话的 cwd（页面把工作过程里的路径显示成相对路径）；
 ///   确认卡的 card-act 操作与 card/decision 事件也是只增的，跟着这个版本一起发
 ///   （旧页不会发 card-act；旧服务读到这个操作按 request/invalid-json 拒绝）。
+///   Exa 凭证的四个操作（exa-key、exa-key-save、exa-key-check、exa-key-delete）和
+///   exa/no-key、exa/invalid-key 两个错误码同属只增面，也随这个版本发。
 ///   旧页忽略新增字段，旧服务的 status 没有它时页面照绝对路径显示。
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
