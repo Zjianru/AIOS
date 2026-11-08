@@ -182,6 +182,7 @@ async fn 验证成功写注册器且响应无正文() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+        .expect(1)
         .mount(&server)
         .await;
     let saved = host
@@ -219,6 +220,7 @@ async fn 验证失败写原因且响应无正文() {
         .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
             "error": {"message": "bad key", "type": "authentication_error"}
         })))
+        .expect(1)
         .mount(&server)
         .await;
     let saved = host
@@ -372,6 +374,7 @@ async fn 验证连接走模型适配器成功时记可用() {
                 .insert_header("content-type", "text/event-stream")
                 .set_body_string(""),
         )
+        .expect(1)
         .mount(&server)
         .await;
     let dir = tempdir().unwrap();
@@ -438,6 +441,7 @@ async fn 验证连接失败时注册器按码记() {
         .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
             "error": {"type": "authentication_error", "message": "bad key"}
         })))
+        .expect(1)
         .mount(&server)
         .await;
     let dir = tempdir().unwrap();
@@ -474,6 +478,7 @@ async fn 验证新形状用主模型且请求符合思考档规则() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+        .expect(1)
         .mount(&server)
         .await;
     let dir = tempdir().unwrap();
@@ -534,6 +539,7 @@ async fn 获取可用模型合并目录与厂商列表且用户字段不动() {
                 {"id": "deepseek-future", "display_name": "Future", "context_length": 3000}
             ]
         })))
+        .expect(1)
         .mount(&server)
         .await;
     let dir = tempdir().unwrap();
@@ -724,6 +730,7 @@ async fn 厂商列表只认小写bearer时默认两个鉴权头都发() {
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "data": [{"id": "vendor-bearer-only"}]
         })))
+        .expect(1)
         .mount(&server)
         .await;
     let dir = tempdir().unwrap();
@@ -1449,6 +1456,7 @@ async fn 获取可用模型时_anthropic_端点请求_chat_base_的列表() {
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "data": [{"id": "deepseek-flash", "display_name": "Chat base 列表"}]
         })))
+        .expect(1)
         .mount(&server)
         .await;
     let dir = tempdir().unwrap();
@@ -1512,6 +1520,7 @@ async fn 验证连接时学到的鉴权头写回连接() {
             ok.clone(),
             ok,
         ]))
+        .expect(4)
         .mount(&server)
         .await;
     let dir = tempdir().unwrap();
@@ -1711,6 +1720,7 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
                 .insert_header("content-type", "text/event-stream")
                 .set_body_string(USAGE_SSE),
         )
+        .expect(1)
         .mount(&server_a)
         .await;
     Mock::given(method("POST"))
@@ -1720,6 +1730,7 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
                 .insert_header("content-type", "text/event-stream")
                 .set_body_string("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
         )
+        .expect(1)
         .mount(&server_b)
         .await;
     let dir = tempdir().unwrap();
@@ -1989,6 +2000,7 @@ async fn 余额和余量按厂商形状查询且查不到不报错() {
             "is_available": true,
             "balance_infos": [{"currency": "CNY", "total_balance": "110.00"}]
         })))
+        .expect(1)
         .mount(&server)
         .await;
     Mock::given(method("GET"))
@@ -2001,6 +2013,7 @@ async fn 余额和余量按厂商形状查询且查不到不报错() {
             }],
             "base_resp": {"status_code": 0}
         })))
+        .expect(1)
         .mount(&server)
         .await;
     let dir = tempdir().unwrap();

@@ -183,6 +183,7 @@ async fn baseline_message_has_typed_source_and_baseline_identity() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .respond_with(SequenceResponder::new(vec![sse(FINAL_TEXT_SSE.to_owned())]))
+        .expect(1)
         .mount(&server)
         .await;
 

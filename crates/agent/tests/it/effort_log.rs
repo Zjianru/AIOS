@@ -62,6 +62,7 @@ async fn m31_flash_logs_actual_low_for_wanted_none() {
                 .insert_header("content-type", "text/event-stream")
                 .set_body_string(SSE),
         )
+        .expect(1)
         .mount(&server)
         .await;
     let (agent, data_dir, _cwd, _id) = setup_agent_with_model(

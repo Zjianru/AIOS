@@ -752,6 +752,7 @@ async fn 屏蔽一个不在用的模型时在跑的一轮照常跑完() {
                 .set_body_string(TEXT_SSE)
                 .set_delay(Duration::from_millis(300)),
         )
+        .expect(1)
         .mount(&server)
         .await;
     let dir = tempdir().unwrap();
@@ -793,6 +794,7 @@ async fn 打断判断用本轮冻结的连接和模型不用会变的当前选�
                 .set_body_string(TEXT_SSE)
                 .set_delay(Duration::from_secs(3)),
         )
+        .expect(1)
         .mount(&server)
         .await;
     let dir = tempdir().unwrap();
@@ -859,6 +861,7 @@ async fn 跨连接切换后屏蔽判断用根会话冻结的连接不用当前�
                 .set_body_string(TEXT_SSE)
                 .set_delay(Duration::from_secs(10)),
         )
+        .expect(1)
         .mount(&server)
         .await;
     let dir = tempdir().unwrap();
@@ -974,6 +977,7 @@ async fn 查询规则返回命中的模型和使用者() {
                 .set_body_string(TEXT_SSE)
                 .set_delay(Duration::from_secs(10)),
         )
+        .expect(1)
         .mount(&server)
         .await;
     let dir = tempdir().unwrap();

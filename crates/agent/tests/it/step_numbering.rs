@@ -58,6 +58,7 @@ async fn each_turn_starts_step_numbering_at_one() {
             sse(FINAL_TEXT_SSE.to_owned()),
             sse(FINAL_TEXT_SSE.to_owned()),
         ]))
+        .expect(5)
         .mount(&server)
         .await;
     let (started_tx, mut started) = mpsc::unbounded_channel();

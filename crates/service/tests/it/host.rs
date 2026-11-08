@@ -65,10 +65,11 @@ fn sse(body: &str) -> ResponseTemplate {
         .set_body_string(body.to_owned())
 }
 
-async fn mount(server: &MockServer, responses: Vec<ResponseTemplate>) {
+async fn mount(server: &MockServer, responses: Vec<ResponseTemplate>, expected: u64) {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .respond_with(crate::common::SequenceResponder::new(responses))
+        .expect(expected)
         .mount(server)
         .await;
 }
@@ -179,7 +180,7 @@ fn turn_ends(data_dir: &std::path::Path, id: &SessionId) -> Vec<session::TurnEnd
 #[tokio::test]
 async fn send_with_same_request_id_enters_once() {
     let server = MockServer::start().await;
-    mount(&server, vec![sse(FINAL_TEXT_SSE)]).await;
+    mount(&server, vec![sse(FINAL_TEXT_SSE)], 1).await;
     let (agent, data_dir, id) = setup(&server).await;
     let service = ServiceHost::new(agent.clone());
 
@@ -220,6 +221,7 @@ async fn cancel_interrupts_active_turn() {
     mount(
         &server,
         vec![sse(FINAL_TEXT_SSE).set_delay(Duration::from_secs(10))],
+        0,
     )
     .await;
     let (agent, data_dir, id) = setup(&server).await;
@@ -246,7 +248,7 @@ async fn cancel_interrupts_active_turn() {
 #[tokio::test]
 async fn answer_applies_whole_batch_with_selected_and_custom() {
     let server = MockServer::start().await;
-    mount(&server, vec![sse(ASK_TWO_SSE), sse(FINAL_TEXT_SSE)]).await;
+    mount(&server, vec![sse(ASK_TWO_SSE), sse(FINAL_TEXT_SSE)], 2).await;
     let (agent, _data_dir, _id) = setup(&server).await;
     let service = ServiceHost::new(agent.clone());
     let mut events = service.subscribe_events();
@@ -298,7 +300,7 @@ async fn answer_applies_whole_batch_with_selected_and_custom() {
 #[tokio::test]
 async fn dismiss_pending_questions_returns_ask_aborted_and_turn_continues() {
     let server = MockServer::start().await;
-    mount(&server, vec![sse(ASK_TWO_SSE), sse(FINAL_TEXT_SSE)]).await;
+    mount(&server, vec![sse(ASK_TWO_SSE), sse(FINAL_TEXT_SSE)], 2).await;
     let (agent, data_dir, id) = setup(&server).await;
     let service = ServiceHost::new(agent.clone());
     let mut events = service.subscribe_events();
@@ -387,7 +389,7 @@ async fn dismiss_pending_questions_returns_ask_aborted_and_turn_continues() {
 #[tokio::test]
 async fn dismiss_without_pending_questions_reports_nothing() {
     let server = MockServer::start().await;
-    mount(&server, vec![sse(FINAL_TEXT_SSE)]).await;
+    mount(&server, vec![sse(FINAL_TEXT_SSE)], 0).await;
     let (agent, _data_dir, _id) = setup(&server).await;
     let service = ServiceHost::new(agent.clone());
 
@@ -418,7 +420,7 @@ fn tool_result_payload(body: &str, call_id: &str) -> serde_json::Value {
 #[tokio::test]
 async fn compact_returns_first_version_shape() {
     let server = MockServer::start().await;
-    mount(&server, vec![sse(FINAL_TEXT_SSE)]).await;
+    mount(&server, vec![sse(FINAL_TEXT_SSE)], 0).await;
     let (agent, _data_dir, _id) = setup(&server).await;
     let service = ServiceHost::new(agent.clone());
     // 没有任何可压缩历史：方法要通、结果形状是 Option（None）。
@@ -436,6 +438,7 @@ async fn status_reports_object_phase_and_pending_questions() {
     mount(
         &server,
         vec![sse(FINAL_TEXT_SSE).set_delay(Duration::from_secs(10))],
+        0,
     )
     .await;
     let (agent, _data_dir, id) = setup(&server).await;
@@ -461,7 +464,7 @@ async fn status_reports_object_phase_and_pending_questions() {
 #[tokio::test]
 async fn events_carry_contiguous_seq_type_and_data() {
     let server = MockServer::start().await;
-    mount(&server, vec![sse(FINAL_TEXT_SSE)]).await;
+    mount(&server, vec![sse(FINAL_TEXT_SSE)], 1).await;
     let (agent, data_dir, id) = setup(&server).await;
     let service = ServiceHost::new(agent.clone());
     let mut events = service.subscribe_events();
@@ -513,7 +516,7 @@ async fn events_carry_contiguous_seq_type_and_data() {
 #[tokio::test]
 async fn follow_fills_from_last_seq_contiguously() {
     let server = MockServer::start().await;
-    mount(&server, vec![sse(FINAL_TEXT_SSE), sse(FINAL_TEXT_SSE)]).await;
+    mount(&server, vec![sse(FINAL_TEXT_SSE), sse(FINAL_TEXT_SSE)], 2).await;
     let (agent, _data_dir, _id) = setup(&server).await;
     let service = ServiceHost::new(agent.clone());
 
@@ -568,7 +571,7 @@ async fn follow_fills_from_last_seq_contiguously() {
 #[tokio::test]
 async fn events_page_is_turn_aligned_and_budgeted() {
     let server = MockServer::start().await;
-    mount(&server, vec![sse(FINAL_TEXT_SSE), sse(FINAL_TEXT_SSE)]).await;
+    mount(&server, vec![sse(FINAL_TEXT_SSE), sse(FINAL_TEXT_SSE)], 2).await;
     let (agent, _data_dir, _id) = setup(&server).await;
     let service = ServiceHost::new(agent.clone());
 
@@ -665,6 +668,7 @@ async fn shutdown_cancels_active_turn_and_keeps_log_resumable() {
     mount(
         &server,
         vec![sse(FINAL_TEXT_SSE).set_delay(Duration::from_secs(10))],
+        0,
     )
     .await;
     let (agent, data_dir, id) = setup(&server).await;

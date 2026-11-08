@@ -117,6 +117,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "rates": {"CNY": 7.3}
             })))
+            .expect(1)
             .mount(&server)
             .await;
         let dir = tempfile::tempdir().expect("dir");
@@ -155,6 +156,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "rates": {"CNY": 7.3}
             })))
+            .expect(1)
             .mount(&server)
             .await;
         let dir = tempfile::tempdir().expect("dir");

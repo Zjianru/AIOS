@@ -35,6 +35,7 @@ async fn agent_turn_records_run_and_turn_in_keyring() {
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .respond_with(sse(FINAL_TEXT_SSE.to_owned()))
+        .expect(1)
         .mount(&server)
         .await;
 

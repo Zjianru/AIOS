@@ -280,6 +280,7 @@ async fn foreground_bash_records_job_lifecycle_events() {
             )])),
             sse(FINAL_TEXT_SSE.to_owned()),
         ]))
+        .expect(2)
         .mount(&server)
         .await;
     let (agent, data_dir, _cwd, session_id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
@@ -745,6 +746,7 @@ async fn settled_event_may_follow_turn_end_for_background_job() {
             )])),
             sse(FINAL_TEXT_SSE.to_owned()),
         ]))
+        .expect(2)
         .mount(&server)
         .await;
     let (agent, data_dir, _cwd, session_id) = setup_agent(&server.uri(), ToolSet::builtin()).await;

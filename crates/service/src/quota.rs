@@ -256,6 +256,7 @@ mod tests {
                 "model_remains": [{"model_name": "general", "current_interval_remaining_percent": 99}],
                 "base_resp": {"status_code": 0}
             })))
+            .expect(1)
             .mount(&server)
             .await;
         let mut connection = connection_info("minimax-cn", &format!("{}/anthropic", server.uri()));

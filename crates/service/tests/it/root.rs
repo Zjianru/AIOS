@@ -40,11 +40,12 @@ fn sse() -> ResponseTemplate {
         .set_body_string(FINAL_TEXT_SSE.to_owned())
 }
 
-async fn mount(server: &MockServer) {
+async fn mount(server: &MockServer, expected: u64) {
     let template = sse();
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
         .respond_with(move |_: &wiremock::Request| template.clone())
+        .expect(expected)
         .mount(server)
         .await;
 }
@@ -93,7 +94,7 @@ fn turn_count(data_dir: &std::path::Path, id: &session::SessionId) -> usize {
 #[tokio::test]
 async fn root_created_on_first_start_and_recorded_atomically() {
     let server = MockServer::start().await;
-    mount(&server).await;
+    mount(&server, 0).await;
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
 
@@ -117,7 +118,7 @@ async fn root_created_on_first_start_and_recorded_atomically() {
 #[tokio::test]
 async fn root_restored_when_record_and_log_exist() {
     let server = MockServer::start().await;
-    mount(&server).await;
+    mount(&server, 0).await;
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let first = open_root_session(root_options(data_dir.path(), cwd.path(), &server.uri()))
@@ -137,7 +138,7 @@ async fn root_restored_when_record_and_log_exist() {
 #[tokio::test]
 async fn root_recorded_but_missing_log_reports_and_does_not_create() {
     let server = MockServer::start().await;
-    mount(&server).await;
+    mount(&server, 0).await;
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let root = open_root_session(root_options(data_dir.path(), cwd.path(), &server.uri()))
@@ -169,7 +170,7 @@ async fn root_recorded_but_missing_log_reports_and_does_not_create() {
 #[tokio::test]
 async fn root_corrupt_state_file_reports_and_does_not_create() {
     let server = MockServer::start().await;
-    mount(&server).await;
+    mount(&server, 0).await;
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -193,7 +194,7 @@ async fn root_corrupt_state_file_reports_and_does_not_create() {
 #[tokio::test]
 async fn root_half_written_tmp_does_not_break_existing_state() {
     let server = MockServer::start().await;
-    mount(&server).await;
+    mount(&server, 0).await;
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let first = open_root_session(root_options(data_dir.path(), cwd.path(), &server.uri()))
@@ -221,7 +222,7 @@ async fn root_half_written_tmp_does_not_break_existing_state() {
 #[tokio::test]
 async fn restart_claims_pending_inbox_exactly_once() {
     let server = MockServer::start().await;
-    mount(&server).await;
+    mount(&server, 1).await;
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
 
@@ -279,7 +280,7 @@ async fn restart_claims_pending_inbox_exactly_once() {
 #[tokio::test]
 async fn durable_rpc_id_is_idempotent_across_restart() {
     let server = MockServer::start().await;
-    mount(&server).await;
+    mount(&server, 2).await;
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
 
