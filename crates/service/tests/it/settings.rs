@@ -2302,6 +2302,7 @@ async fn assistant_message_provider(connection_id: &str, preset: &str, model_id:
                 .insert_header("content-type", "text/event-stream")
                 .set_body_string(USAGE_SSE),
         )
+        .expect(1)
         .mount(&server)
         .await;
     let dir = tempdir().unwrap();

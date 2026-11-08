@@ -432,6 +432,7 @@ async fn 屏蔽表整表替换规范化保存并发设置变化事件() {
     );
     let event = events.try_recv().expect("存好后发设置变化事件");
     assert_eq!(event.event_type, "keyring/changed", "设置变化事件");
+    assert_eq!(request_count(&server).await, 0, "设置变更不出站");
 }
 
 #[tokio::test]
@@ -475,6 +476,7 @@ async fn 模型设置响应旧字段照旧新字段只增() {
     );
     assert!(json["listed"].as_object().is_some());
     assert_eq!(host.protocol_version(), 8, "ready 帧的协议版本是 8");
+    assert_eq!(request_count(&server).await, 0, "读设置不出站");
 }
 
 /// 每条规则下面写「现在匹配 n 个」：`disabledHits` 与 `disabledModels` 等长同序，
@@ -531,6 +533,7 @@ async fn 屏蔽表的每条规则给出现在命中的连接和模型() {
         ],
         "每条规则给出现在命中的「连接/模型」，一条都不命中的给空表"
     );
+    assert_eq!(request_count(&server).await, 0, "保存连接与读设置不出站");
 }
 
 #[tokio::test]
@@ -556,6 +559,7 @@ async fn 查询规则返回形状() {
     assert_eq!(json["running"], true);
     let new_sessions = serde_json::to_value(service::DisabledModelUser::NewSessions).expect("json");
     assert_eq!(new_sessions["kind"], "new-sessions");
+    assert_eq!(request_count(&server).await, 0, "查询规则不出站");
 }
 
 /// 先回一次工具调用（read hello.txt），下一轮再回文字。
@@ -1202,6 +1206,7 @@ async fn 坏设置文件沿用各自路径上次读到的屏蔽表() {
         never_before,
         "读不能改文件"
     );
+    assert_eq!(request_count(&server).await, 0, "读坏设置不出站");
 }
 
 /// 文件不存在算空表：不是「不知道」，所有模型照常能用，也不会被读操作建出来。
@@ -1226,6 +1231,7 @@ async fn 设置文件不存在时屏蔽表为空也不当成不知道() {
         !service::settings::path(dir.path()).exists(),
         "读一遍不能把文件写出来"
     );
+    assert_eq!(request_count(&server).await, 0, "读设置不出站");
 }
 
 /// 坏文件上三个写设置的方法都拒绝（码 settings/unreadable），文件字节不变。
@@ -1266,6 +1272,7 @@ async fn 坏设置文件时三个写设置入口都拒绝且不写() {
         before,
         "写入口都不能写坏文件"
     );
+    assert_eq!(request_count(&server).await, 0, "被拒绝的写入口不出站");
 }
 
 /// 未接模型时 connection-save 会写 lastSelection：坏文件上同样拒绝，文件字节不变。
@@ -1326,4 +1333,5 @@ async fn 已接模型时坏设置文件上的连接保存不写也不报错() {
         before,
         "没有写 settings.json"
     );
+    assert_eq!(request_count(&server).await, 0, "连接保存不出站");
 }
