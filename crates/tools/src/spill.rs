@@ -283,16 +283,25 @@ impl SpillFile {
             return;
         }
         if self.bytes + chunk.len() > self.cap {
-            self.broken = true;
-            self.sink = None;
-            let _ = fs::remove_file(&self.locator);
-            self.bytes = 0;
+            self.discard();
             return;
         }
         if let Some(sink) = self.sink.as_mut() {
-            let _ = sink.write_chunk(chunk);
-            self.bytes += chunk.len();
+            // 写失败不能装作写完：残缺的文件不能当完整输出交出去，字节也不能累加。
+            if sink.write_chunk(chunk).is_err() {
+                self.discard();
+            } else {
+                self.bytes += chunk.len();
+            }
         }
+    }
+
+    /// 丢弃这份 spill：之后不再写，finish 返回 None（文件不完整就不留 locator）。
+    fn discard(&mut self) {
+        self.broken = true;
+        self.sink = None;
+        let _ = fs::remove_file(&self.locator);
+        self.bytes = 0;
     }
 
     /// 结束写入：fsync 后返回 locator/字节数；被上限丢弃时返回 None。

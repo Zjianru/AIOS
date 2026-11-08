@@ -316,12 +316,16 @@ impl SessionStore {
         }
         self.bytes = prior + buffer.len() as u64;
         let seqs = batch.iter().map(|event| event.seq).collect();
-        // T011.2：写成功之后交给钩子（监控）；钩子 panic 或报错不能影响业务。
+        // T011.2：写成功之后交给钩子（监控）。钩子 panic 不能挡住业务，但不能连信号一起吞：
+        // 事件已经落盘，这里降级成一条带原因的警告。
         if let Some(hook) = &self.append_hook
-            && std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| hook(&batch))).is_err()
+            && let Err(payload) =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| hook(&batch)))
         {
-            // 骨架：降级不吞信号，出口先接上；原因下一笔带。
-            let message = "[session] 追加之后钩子 panic".to_owned();
+            let message = format!(
+                "[session] 追加之后的钩子 panic，已跳过这一次记录：{}",
+                panic_message(payload.as_ref())
+            );
             match &self.warning_sink {
                 Some(sink) => sink(&message),
                 None => eprintln!("{message}"),
@@ -329,6 +333,17 @@ impl SessionStore {
         }
         self.events.extend(batch);
         Ok(seqs)
+    }
+}
+
+/// panic 载荷里的可读原因：钩子是外面装进来的，不保证用 &str/String 载消息。
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        text
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.as_str()
+    } else {
+        "未知原因"
     }
 }
 

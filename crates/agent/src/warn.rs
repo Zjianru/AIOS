@@ -22,6 +22,12 @@ pub(crate) fn warn(message: impl Into<String>) {
     }
 }
 
+/// 会话 store 的警告出口：钩子降级这类会话侧信号接到 agent 的警告通道
+/// （标准错误 + 服务装的监控钩子），和 agent 自己的警告走同一条路。
+pub(crate) fn session_store_sink() -> session::WarningSink {
+    Arc::new(|message: &str| warn(message.to_owned()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
