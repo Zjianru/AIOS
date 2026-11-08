@@ -43,6 +43,7 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.t014Query) return { file: 't014-query' };
   if (options.t014Confirm) return { file: 't014-confirm' };
   if (options.t014Mask) return { file: 't014-mask' };
+  if (options.t014Web) return { file: 't014-web' };
   return {
     file: 'text',
     paceMs: options.slowMs ? Math.max(1, Math.round(options.slowMs / 6)) : undefined,
@@ -113,6 +114,8 @@ export interface KernelFixture {
   paths?: { cwd: string; outside: string };
   /** 真 key fixture：serve 进程的 stderr。 */
   stderr?: () => string;
+  /** 设置页「联网搜索」用例：本地假 Exa 的根地址和收到的授权头。 */
+  exa?: { baseUrl: string; requests: () => string[] };
   dropProxy?: () => Promise<void>;
   restoreProxy?: () => Promise<void>;
   /// T007 #1：页面开着时重启同一个端口的服务（新进程=新 cookie 钥匙，旧页面会话失效）。
@@ -192,6 +195,12 @@ export interface FixtureOptions {
   t014Confirm?: boolean;
   /// T014.5：一张只有一个选项的屏蔽卡，回放只给模型流。
   t014Mask?: boolean;
+  /// T014.6：先加载 skill web，再收尾一句回答（联网搜索的目录/工具表用）。
+  t014Web?: boolean;
+  /// T014.6：起一个本地假 Exa；serve 用 --exa-base-url 指过去。
+  fakeExa?: boolean;
+  /// T014.6：把 EXA_API_KEY 放进 serve 的环境变量，用来证明 key 不从环境变量读。
+  envExaKey?: string;
   /// T014.2：起服务前先放一条旧格式（v16）的根会话日志，用来验旧日志照读。
   legacySession?: boolean;
 }
@@ -314,6 +323,44 @@ export async function startKernelFixture(
   const serviceEnv = { ...process.env };
   if (options.home) {
     serviceEnv.HOME = options.home === 'dataDir' ? dataDir : options.home;
+  }
+  // 设置页「联网搜索」：本地假 Exa（只认 /search；key 以 bad 开头就 401，照原型约定）。
+  let exaServer: Server | null = null;
+  let exaBaseUrl: string | null = null;
+  const exaRequests: string[] = [];
+  if (options.fakeExa) {
+    exaServer = createServer((request, response) => {
+      if (request.method !== 'POST' || request.url !== '/search') {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      let body = '';
+      request.on('data', (chunk: Buffer) => {
+        body += chunk.toString();
+      });
+      request.on('end', () => {
+        const authorization = String(request.headers.authorization ?? '');
+        exaRequests.push(authorization);
+        if (authorization.includes('bad')) {
+          response.writeHead(401, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ error: 'invalid api key' }));
+          return;
+        }
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ results: [] }));
+      });
+    });
+    await new Promise<void>((resolve) => {
+      exaServer!.listen(0, '127.0.0.1', () => resolve());
+    });
+    const port = (exaServer.address() as net.AddressInfo).port;
+    exaBaseUrl = 'http://127.0.0.1:' + String(port);
+    serveArgs.push('--exa-base-url', exaBaseUrl);
+  }
+  if (options.envExaKey) {
+    // 故意放一个值：产品不该读它（设置页仍是「还没有 key」）。
+    serviceEnv.EXA_API_KEY = options.envExaKey;
   }
   let holder: ReturnType<typeof spawn> | null = null;
   if (options.busyRoot) {
@@ -442,6 +489,7 @@ export async function startKernelFixture(
     token,
     dataDir,
     paths,
+    exa: exaBaseUrl ? { baseUrl: exaBaseUrl, requests: () => exaRequests } : undefined,
     fakeEndpoint: replayUrl,
     lastModel: async () => {
       try {
@@ -466,6 +514,7 @@ export async function startKernelFixture(
     restart,
     close: async () => {
       await dropProxy();
+      exaServer?.close();
       holder?.kill('SIGTERM');
       child.kill('SIGTERM');
       replay.child.kill('SIGTERM');

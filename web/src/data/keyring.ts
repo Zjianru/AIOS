@@ -1,9 +1,13 @@
 /** T008.4：把服务协议 v3 的 Keyring 视图映射成设置/首次使用页用的原型类型。 */
 import {
+  checkExaKey,
   deleteConnection,
+  deleteExaKey,
   discoverAvailableModels,
+  fetchExaKey,
   fetchModelSettings,
   revokeConnectionKey,
+  saveExaKey as saveExaKeyOnService,
   updateConnectionInfo,
   relocateKeyring,
   reopenKeyring,
@@ -14,6 +18,7 @@ import {
   type ServiceConnectionInfo,
   type ServiceKeyringView,
   type ServiceModelRow,
+  type ServiceToolKeyView,
 } from '@/data/service';
 /* ───────────── T017.1：设置/首次使用页的视图类型（原 fixtures/settings 的真类型） ───────────── */
 
@@ -78,6 +83,12 @@ export interface IssueRecord {
   connection: string;
   purpose: string;
   until: string;
+}
+
+/** 设置页「联网搜索」：Exa 凭证的存没存、验证结果（没有 key 正文）。 */
+export interface ToolKeyView {
+  key: { saved: false } | { saved: true; savedAt: string };
+  check: CheckState;
 }
 
 export interface ModelSettingsView {
@@ -391,4 +402,41 @@ export async function resetKeyring(): Promise<ModelSettingsView> {
   await restartKeyring();
   // 重启只换钥匙文件；屏蔽表还在 settings.json 里，跟着重读一次视图。
   return getModelSettings();
+}
+
+/* ───────────────────────── 设置页「联网搜索」（D73） ───────────────────────── */
+
+function mapToolKey(view: ServiceToolKeyView): ToolKeyView {
+  const key: ToolKeyView['key'] = view.key.saved
+    ? { saved: true, savedAt: String(view.key.savedAt ?? 0) }
+    : { saved: false };
+  let check: CheckState;
+  switch (view.check.kind) {
+    case 'never':
+      check = { kind: 'never' };
+      break;
+    case 'ok':
+      check = { kind: 'ok', at: String(view.check.at) };
+      break;
+    case 'fail':
+      check = { kind: 'fail', at: String(view.check.at), reason: view.check.reason };
+      break;
+  }
+  return { key, check };
+}
+
+export async function getExaKey(): Promise<ToolKeyView> {
+  return mapToolKey(await fetchExaKey());
+}
+
+export async function saveExaKey(key: string): Promise<ToolKeyView> {
+  return mapToolKey(await saveExaKeyOnService(key));
+}
+
+export async function verifyExaKey(): Promise<ToolKeyView> {
+  return mapToolKey(await checkExaKey());
+}
+
+export async function removeExaKey(): Promise<ToolKeyView> {
+  return mapToolKey(await deleteExaKey());
 }

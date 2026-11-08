@@ -469,6 +469,35 @@ export async function restartKeyring(): Promise<ServiceKeyringView> {
   return response.settings;
 }
 
+/* ───────────────── 设置页「联网搜索」：Exa 凭证（D73） ───────────────── */
+
+/** Exa 凭证的线上视图：存没存、保存时间、上次验证结果。没有 key 正文。 */
+export interface ServiceToolKeyView {
+  key: { saved: false } | { saved: true; savedAt?: number };
+  check:
+    | { kind: 'never' }
+    | { kind: 'ok'; at: number }
+    | { kind: 'fail'; at: number; reason: string };
+}
+
+export async function fetchExaKey(): Promise<ServiceToolKeyView> {
+  return post<ServiceToolKeyView>({ method: 'exa-key' });
+}
+
+/** 存/换 Exa 的 key；key 只在这一次请求体里，响应不带。 */
+export async function saveExaKey(key: string): Promise<ServiceToolKeyView> {
+  return post<ServiceToolKeyView>({ method: 'exa-key-save', key });
+}
+
+/** 用已存的 key 向 Exa 发一次最小搜索，结果写回 Keyring。 */
+export async function checkExaKey(): Promise<ServiceToolKeyView> {
+  return post<ServiceToolKeyView>({ method: 'exa-key-check' });
+}
+
+export async function deleteExaKey(): Promise<ServiceToolKeyView> {
+  return post<ServiceToolKeyView>({ method: 'exa-key-delete' });
+}
+
 export async function fetchIssues(): Promise<{ issuedToday: number; issues: ServiceIssueRecord[] }> {
   const response = await post<{ issuedToday: number; issues: ServiceIssueRecord[] }>({
     method: 'issues',
