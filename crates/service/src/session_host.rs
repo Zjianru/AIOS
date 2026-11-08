@@ -212,6 +212,7 @@ impl ServiceHost {
             stats: None,
             fx: None,
             currency: None,
+            cwd: None,
         })
     }
 

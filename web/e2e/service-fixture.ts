@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer, request as httpRequest, type Server } from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
@@ -47,11 +47,14 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
 }
 
 /** 起 aios-replay（打印一行 aios-replay: http://…）；每夹具一个进程。 */
-function startReplay(options: FixtureOptions): { child: ReturnType<typeof spawn>; url: Promise<string> } {
+function startReplay(
+  options: FixtureOptions,
+  replayFile?: string,
+): { child: ReturnType<typeof spawn>; url: Promise<string> } {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const bin = process.env.AIOS_REPLAY_BIN ?? path.join(repoRoot, 'target/debug/aios-replay');
   const selection = replaySelection(options);
-  const args = ['--file', path.join(FIXTURE_DIR, selection.file + '.jsonl')];
+  const args = ['--file', replayFile ?? path.join(FIXTURE_DIR, selection.file + '.jsonl')];
   if (selection.override) args.push('--override', path.join(FIXTURE_DIR, selection.override + '.json'));
   if (selection.paceMs) args.push('--pace-ms', String(selection.paceMs));
   args.push('--host', '127.0.0.1', '--port', '0');
@@ -103,6 +106,8 @@ export interface KernelFixture {
   lastModel: () => Promise<string | null>;
   /** T012.9：假 DeepSeek 最近一次请求的完整请求体（断言思考档用）。 */
   lastRequest: () => Promise<Record<string, unknown> | null>;
+  /** 路径显示用例：会话规范化后的工作目录，和它之外的一个临时目录。 */
+  paths?: { cwd: string; outside: string };
   /** 真 key fixture：serve 进程的 stderr。 */
   stderr?: () => string;
   dropProxy?: () => Promise<void>;
@@ -115,6 +120,8 @@ export interface KernelFixture {
 export interface FixtureOptions {
   /// first request 回一次工具调用（read hello.txt），拿到工具结果后再回最终文本。
   toolTurn?: boolean;
+  /// 路径显示：三步回放（cwd 内写、cwd 外写、最终文本）；夹具里的 __CWD__ / __OUTSIDE__ 起服务前换成真实目录。
+  pathsTurn?: boolean;
   /// T013.6：最终回答里带一个代码块（复制按钮用）。
   codeBlock?: boolean;
   /// T013.5：一轮里 write/apply_patch/bash 三个工具 + 最终文本（工作过程页的卡片用）。
@@ -182,9 +189,24 @@ export interface FixtureOptions {
 export async function startKernelFixture(
   options: FixtureOptions = {},
 ): Promise<KernelFixture> {
-  const replay = startReplay(options);
-  const replayUrl = await replay.url;
   const dataDir = await mkdtemp(path.join(tmpdir(), 'aios-t007-'));
+  // 路径夹具里的绝对路径要在起回放之前换成真实目录：工作目录内的那一份用规范化路径，
+  // 和会话 header 的 cwd（serve 会 canonicalize）一致；之外的一份单独建一个临时目录。
+  let paths: KernelFixture['paths'];
+  let replayFile: string | undefined;
+  if (options.pathsTurn) {
+    const outside = await mkdtemp(path.join(tmpdir(), 'aios-t014-outside-'));
+    const cwd = await realpath(dataDir);
+    const template = await readFile(path.join(FIXTURE_DIR, 'tool-paths.jsonl'), 'utf8');
+    replayFile = path.join(dataDir, 'replay-tool-paths.jsonl');
+    await writeFile(
+      replayFile,
+      template.split('__CWD__').join(cwd).split('__OUTSIDE__').join(outside),
+    );
+    paths = { cwd, outside };
+  }
+  const replay = startReplay(options, replayFile);
+  const replayUrl = await replay.url;
   if (options.rootFault === 'corrupt') {
     await writeFile(path.join(dataDir, 'kind-root.json'), '{"version":1, ');
   } else if (options.rootFault === 'lost') {
@@ -352,6 +374,7 @@ export async function startKernelFixture(
     baseUrl,
     token,
     dataDir,
+    paths,
     fakeEndpoint: replayUrl,
     lastModel: async () => {
       try {
@@ -380,6 +403,7 @@ export async function startKernelFixture(
       child.kill('SIGTERM');
       replay.child.kill('SIGTERM');
       await rm(dataDir, { recursive: true, force: true });
+      if (paths) await rm(paths.outside, { recursive: true, force: true });
     },
   };
 }

@@ -84,6 +84,7 @@ impl RootHost {
             stats: Some(stats),
             fx: Some(fx),
             currency: Some(settings.currency),
+            cwd: None,
         })
     }
 }

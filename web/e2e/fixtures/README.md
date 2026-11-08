@@ -44,6 +44,14 @@ T010.2 时用一次性 Playwright 录制器（已删除，不在仓库）跑改�
 
 手写：第一条 assistant/message 回一次 `ask_user_question` 工具调用（参数在 block-end 里），第二条回一句回答。空 label 的选项内核保留（`question/asked` 里是 `""`），缺 label 的选项内核在发事件之前就丢掉了（`crates/agent/src/ask_capability.rs` 的 filter_map）；页面只负责把空 label 那一项去掉。
 
+## 工作过程路径夹具（T014.1，模板）
+
+| 文件 | 场景 | 模型调用数 |
+|---|---|---|
+| tool-paths.jsonl | 工作过程路径：写 cwd 内的文件、写 cwd 外的文件、回答一句 | 3 |
+
+这是模板，不能直接当日志读：`__CWD__` 和 `__OUTSIDE__` 由 `service-fixture.ts` 在起回放前换成真实目录（前者用规范化路径，和会话 header 的 cwd 一致）。两个工具调用由真内核执行，页面显示的路径来自 `tool/call.arguments`。
+
 ## 真 key 夹具的来源（T010.5）
 
 real.jsonl 用真 key 录制（key 只在运行时注入 Keyring，不进文件/命令行/证据）：

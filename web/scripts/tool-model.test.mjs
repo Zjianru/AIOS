@@ -92,6 +92,7 @@ assert.deepEqual(totals, { added: 1, removed: 0 });
 
 // 行摘要与路径相对化、时长文案。
 assert.equal(displayPath('/w/src/a.ts', '/w'), 'src/a.ts');
+assert.equal(displayPath('/w/src/a.ts', ''), '/w/src/a.ts', '没有 cwd（旧状态消息）时原样显示');
 assert.equal(rowSummary(step('read', { file_path: '/w/src/a.ts' }, '', 'done', {}), '/w'), 'src/a.ts');
 assert.equal(formatDurationMs(1000), '1秒');
 assert.equal(formatDurationMs(61_000), '1分1秒');

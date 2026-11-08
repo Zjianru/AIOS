@@ -256,6 +256,9 @@ pub struct StatusResponse {
     /// 币种（settings.json：usd/cny）；裸宿主为 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
+    /// 会话的工作目录（工具的路径相对它解析）；页面用它把工作过程里的路径显示成相对路径。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 /// follow（DSH :607）：带上调用方最后看到的日志序号，服务补齐之后的事件。
