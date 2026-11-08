@@ -50,6 +50,57 @@ fn saved(view: &credentials::KeyringView) -> &ConnectionInfo {
     &view.connections[0]
 }
 
+/// 重填密钥（不带价格倍率）不能把已存的 0 倍率重置成默认 1.0：
+/// 免费/Coding Plan 连接重新保存后统计口径不变。
+#[test]
+fn 重填密钥不带价格倍率时沿用已存倍率() {
+    let fixture = Fixture::new();
+    let keyring = fixture.open();
+    keyring
+        .save_connection(NewConnection {
+            price_rate: Some(0.0),
+            ..connection()
+        })
+        .expect("save free connection");
+
+    let info = keyring
+        .save_connection(connection())
+        .expect("re-save with new key");
+    assert_eq!(info.price_rate, 0.0, "不带倍率保存要沿用已存的 0.0");
+    assert_eq!(saved(&keyring.view()).price_rate, 0.0, "读回仍是 0.0");
+}
+
+#[test]
+fn 新连接不带价格倍率时默认一倍率() {
+    let fixture = Fixture::new();
+    let keyring = fixture.open();
+    let info = keyring.save_connection(connection()).expect("save");
+    assert_eq!(info.price_rate, 1.0, "新连接默认一倍率");
+    assert_eq!(saved(&keyring.view()).price_rate, 1.0, "读回也是 1.0");
+}
+
+#[test]
+fn 显式价格倍率按显式值覆盖已存倍率() {
+    let fixture = Fixture::new();
+    let keyring = fixture.open();
+    keyring
+        .save_connection(NewConnection {
+            price_rate: Some(0.0),
+            ..connection()
+        })
+        .expect("save free connection");
+
+    // 显式给了倍率（包括显式 1.0）就按给的来，不被「沿用」拦下。
+    let info = keyring
+        .save_connection(NewConnection {
+            price_rate: Some(1.0),
+            ..connection()
+        })
+        .expect("save explicit rate");
+    assert_eq!(info.price_rate, 1.0, "显式倍率要覆盖已存的 0.0");
+    assert_eq!(saved(&keyring.view()).price_rate, 1.0, "读回是显式值");
+}
+
 #[test]
 fn 存进去后描述正确且不含正文() {
     let fixture = Fixture::new();

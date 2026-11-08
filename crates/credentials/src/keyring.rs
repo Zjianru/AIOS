@@ -116,6 +116,7 @@ pub struct ConnectionUpdate {
 /// 新建/覆盖一个连接时传入的内容（key 只在这一步进来）。
 ///
 /// models = None 时用 model 一行；Some([]) 是「跟着厂商走」，不再补 [model]。
+/// price_rate = None 表示没指定：覆盖已有连接时沿用存下的倍率，新连接默认 1.0。
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct NewConnection {
     pub id: String,
@@ -392,6 +393,15 @@ impl Keyring {
                     .map(|preset| preset.id.to_owned())
             })
             .unwrap_or_else(|| "custom".to_owned());
+        // 只重填 key 的保存不带 price_rate；这里沿用已存连接的值，不能把免费/
+        // Coding Plan 连接的 0 倍率重置成默认 1.0。新连接没给才用 1.0。
+        let price_rate = connection.price_rate.unwrap_or_else(|| {
+            store
+                .connections
+                .iter()
+                .find(|item| item.info.id == connection.id)
+                .map_or(1.0, |item| item.info.price_rate)
+        });
         let info = ConnectionInfo {
             id: connection.id.clone(),
             name: connection.name,
@@ -402,7 +412,7 @@ impl Keyring {
             key_saved: true,
             preset,
             models: Some(models),
-            price_rate: connection.price_rate.unwrap_or(1.0),
+            price_rate,
             auth_header: connection.auth_header,
         };
         let stored = StoredConnection {
