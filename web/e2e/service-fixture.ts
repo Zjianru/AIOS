@@ -708,3 +708,8 @@ export async function startT016DodFixture(caseName: string): Promise<KernelFixtu
     path.join(process.env.AIOS_T016_DOD_ROOT ?? '/tmp/aios-t016-dod', caseName),
   );
 }
+
+/** T017.5 DoD2：真 key（MiniMax）卡片机制三步——/tmp/aios-t017-dod 下的数据目录 + 小项目工作目录。 */
+export async function startT017DodFixture(): Promise<KernelFixture> {
+  return startDodConnectFixture(process.env.AIOS_T017_DOD_ROOT ?? '/tmp/aios-t017-dod');
+}
