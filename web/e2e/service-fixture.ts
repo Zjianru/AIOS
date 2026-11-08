@@ -25,6 +25,7 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.usageTurn) return { file: 'usage', paceMs: 400 };
   if (options.tinyPercent) return { file: 'usage-tiny', paceMs: 400 };
   if (options.usageReadOnly) return { file: 'usage-read-only', paceMs: 400 };
+  if (options.questionDegrade) return { file: 'question-degrade' };
   if (options.askTurn) return { file: 'ask', paceMs: options.askTurnPaceMs };
   if (options.toolTurn) return { file: 'tool' };
   if (options.codeBlock) return { file: 'tool-code' };
@@ -140,6 +141,8 @@ export interface FixtureOptions {
   slowMs?: number;
   /// first request 回一次 ask_user_question（两题：一题选项、一题自己写）。
   askTurn?: boolean;
+  /// T017.2：提问卡的降级回放（25 字小标题、空 label 选项、2233 字的问题）。
+  questionDegrade?: boolean;
   /// T007.13：让 question/asked 分批到达（毫秒/帧）。
   askTurnPaceMs?: number;
   /// 模型失败脚本：前两次 500 后成功 / 一直 500 / 401 凭证错误。
