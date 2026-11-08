@@ -2,6 +2,7 @@
 
 mod catalog_load;
 mod credential_source;
+mod disabled_admit;
 mod http_proxy;
 mod learning;
 mod model_select;

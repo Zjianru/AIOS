@@ -4,6 +4,14 @@ import type { SendAttachmentRef, ServiceEvent } from '@/data/service';
 import type { AskAnswer, AskQuestion, FailureCause } from '@/data/fixtures/kindLive';
 import type { KindCard, TextElement, TurnStatus } from '@/data/types';
 import { modelErrorReason, retryReason } from '@/data/errors';
+
+/** 被屏蔽的失败说明：失败块显示内核给的原文（模型名 + 命中的规则），去掉错误包装的前缀。 */
+function maskedReason(message: string | undefined): string {
+  if (!message) return modelErrorReason('MODEL_DISABLED');
+  const marker = 'MODEL_DISABLED: ';
+  const at = message.indexOf(marker);
+  return at >= 0 ? message.slice(at + marker.length) : message;
+}
 import { parseExitStatus } from './process/toolModel';
 import type { ProcessStep } from './process/toolModel';
 import { reasoningTextOf, reasoningTextOfStream } from './reasoning';
@@ -479,8 +487,10 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
             raw.status = 'completed';
             break;
           case 'aborted':
-          case 'interrupted':
-            raw.status = 'interrupted';
+          case 'interrupted': {
+            // 屏蔽打断的一轮走失败块（和 MODEL_DISABLED 同一类），不写「你停下了这一轮」。
+            const masked = event.cause === 'masked';
+            raw.status = masked ? 'failed' : 'interrupted';
             raw.stoppedAt = clock();
             for (const tool of raw.tools) {
               if (tool.state === 'running') tool.state = 'stopped';
@@ -488,16 +498,25 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
             if (raw.question && raw.question.status === 'pending') {
               raw.question = { status: 'void', questions: raw.question.questions };
             }
+            if (masked) {
+              raw.failure = { cause: 'masked', reason: '模型在设置里被屏蔽了' };
+            }
             break;
+          }
           case 'error': {
             raw.status = 'failed';
             const failure = reason.error as { message?: string; code?: string } | undefined;
             const connectionName = raw.modelId
               ? useKindStore.getState().connectionNames[raw.modelId]
               : undefined;
+            const cause = event.cause ?? 'model';
             raw.failure = {
-              cause: event.cause ?? 'model',
-              reason: modelErrorReason(failure?.code, connectionName),
+              cause,
+              // 被屏蔽的说明只有服务端知道（模型名 + 规则）；其余按错误码表写。
+              reason:
+                cause === 'masked'
+                  ? maskedReason(failure?.message)
+                  : modelErrorReason(failure?.code, connectionName),
               code: failure?.code,
             };
             break;

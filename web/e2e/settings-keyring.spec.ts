@@ -53,11 +53,22 @@ test('设置页换钥匙位置 + 签发记录', async ({ page }) => {
   const fixture = await startKernelFixture();
   try {
     await openSettings(page, fixture);
+    // Keyring 里的时间都显示成本地可读时间，不出现 epoch 秒。
+    const keyringSection = page.locator('[data-settings="keyring"]');
+    await expect(page.locator('[data-settings="model"]')).toContainText(
+      /已保存在 Keyring（\d{4}-\d{2}-\d{2} \d{2}:\d{2}）/,
+    );
+    await expect(keyringSection).toContainText(
+      /现在是一个文件，\d{4}-\d{2}-\d{2} \d{2}:\d{2} 起放在这里/,
+    );
     await page.getByRole('button', { name: '验证', exact: true }).click();
     await expect(page.getByText('连接可用', { exact: false })).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText('今天签发', { exact: false })).toBeVisible({ timeout: 20_000 });
     await page.getByRole('button', { name: '看最近的' }).click();
     await expect(page.getByText('connection-verify')).toBeVisible();
+    const issuedAt = keyringSection.locator('tbody tr').first().locator('td').first();
+    await expect(issuedAt).toHaveText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+    await expect(keyringSection).not.toContainText(/\b1[6-9]\d{8}\b/);
 
     const relocated = path.join(fixture.dataDir, 'relocated-identity.txt');
     await page.getByRole('button', { name: '换位置', exact: true }).click();

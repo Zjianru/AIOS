@@ -567,6 +567,7 @@ pub fn tool_calls_with_inputs_sse(calls: &[(&str, &str, serde_json::Value)]) -> 
 /// 测试共用：指向 mock 服务的模型配置（5 个测试文件原来各写一遍）。
 pub fn model_config(base_url: &str) -> model::DeepSeekConfig {
     model::DeepSeekConfig {
+        provider: "deepseek".to_owned(),
         base_url: base_url.to_owned(),
         model: "deepseek-flash".to_owned(),
         max_tokens: 2048,
@@ -629,6 +630,7 @@ pub async fn setup_agent_with_model(
     let id = store.id().clone();
     let model = model::DeepSeek::with_credentials(
         model::DeepSeekConfig {
+            provider: "deepseek".to_owned(),
             base_url: base_url.to_owned(),
             model: model_id.to_owned(),
             max_tokens: 64_000,

@@ -7,9 +7,11 @@
  * - 下面列已保存的连接和它们的模型；连接不可用的灰掉，说原因；
  * - 选了从下一轮开始用；正在跑的这一轮不换。模型只在用户自己选的时候换，出错也不自动换；
  * - 最下面一行去「设置 › 模型与连接」。
+ *
+ * 屏蔽（D67）：已屏蔽的模型照样列出、灰掉、标「已屏蔽」、选不了；当前模型被屏蔽时按钮上也标。
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { Check, ChevronDown } from 'lucide-react';
 import {
@@ -23,6 +25,7 @@ import {
 import { getModelSettings } from '@/data/keyring';
 import { selectSessionModel, ServiceHttpError } from '@/data/service';
 import type { ModelSettingsView } from '@/data/fixtures/settings';
+import { matchDisabled } from '@/data/disabled';
 import { go } from '@/app/navigate';
 import { useKindStore } from './kindStore';
 import { effortName } from './effortName';
@@ -61,39 +64,59 @@ export function EffortIcon({ effort, levels, className }: { effort?: string; lev
 
 export function ModelPicker() {
   const model = useKindStore((state) => state.model);
+  const masked = useKindStore((state) => state.masked);
+  const open = useKindStore((state) => state.pickerOpen);
+  const setPickerOpen = useKindStore((state) => state.setPickerOpen);
   const setEffort = useKindStore((state) => state.setEffort);
   const hydrateModel = useKindStore((state) => state.hydrateModel);
   const applySelection = useKindStore((state) => state.applySelection);
   const [view, setView] = useState<ModelSettingsView | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  // 打开时重读设置：点触发器打开和失败块的「换模型」程序化打开都要走到这里。
+  useEffect(() => {
+    if (!open) return;
+    setLoadError(false);
+    void getModelSettings()
+      .then((nextView) => {
+        setView(nextView);
+        // 同步进 store：选择器按钮和行上的「已屏蔽」立刻是对的。
+        useKindStore.setState({ masked: nextView.disabledModels });
+      })
+      .catch(() => setLoadError(true));
+    // 模型目录字段（档位/价格/窗口）还没到就补一次；不阻塞页面加载。
+    const current = useKindStore.getState().model;
+    if (!current.efforts?.length) {
+      void hydrateModel({
+        connectionId: current.connectionId,
+        modelId: current.modelId,
+        label: current.label,
+        effort: current.effort,
+      });
+    }
+  }, [open, hydrateModel]);
   // 用 store 的最新值（闭包里的 wantedEffort 可能还是上一次渲染的旧值）。
   const getWantedEffort = () => {
     const state = useKindStore.getState();
     return state.wantedEffort ?? state.model.effortActual ?? state.model.effort;
   };
+  const nowMasked = Boolean(matchDisabled(masked, model.connectionId, model.modelId));
 
   return (
     <DropdownMenu
-      onOpenChange={(open) => {
-        if (!open) return;
-        void getModelSettings().then(setView);
-        // T012.9：模型目录字段（档位/价格/窗口）还没到就补一次；不阻塞页面加载。
-        if (!model.efforts?.length) {
-          void hydrateModel({
-            connectionId: model.connectionId,
-            modelId: model.modelId,
-            label: model.label,
-            effort: model.effort,
-          });
-        }
-      }}
+      open={open}
+      onOpenChange={(next) => setPickerOpen(next)}
     >
       <DropdownMenuTrigger asChild>
         <button
           type="button"
           className="flex h-7 max-w-[240px] items-center gap-1.5 rounded-btn px-2 text-2 text-ink-2 transition-colors hover:bg-hover hover:text-ink data-[state=open]:bg-hover"
           data-kind="model-picker"
+          title={nowMasked ? '当前模型在设置里屏蔽了；换一个模型，或者去设置解除' : undefined}
         >
-          <span className="truncate">{model.label}</span>
+          <span className={nowMasked ? 'truncate text-ink-3 line-through' : 'truncate'}>{model.label}</span>
+          {nowMasked ? (
+            <span className="shrink-0 text-1 text-fail" data-kind="model-masked">已屏蔽</span>
+          ) : null}
           {model.effortActual ?? model.effort ? (
             <span className="flex shrink-0 items-center gap-1 text-ink-3" data-kind="effort-now">
               <span className="opacity-60">·</span>
@@ -135,7 +158,9 @@ export function ModelPicker() {
           从下一轮开始用；正在跑的这一轮不换。
         </p>
         <DropdownMenuSeparator />
-        {!view ? (
+        {loadError ? (
+          <div className="px-2 py-1.5 text-2 text-ink-3">读不到模型设置，关掉再开一次。</div>
+        ) : !view ? (
           <div className="px-2 py-1.5 text-2 text-ink-3">正在读取…</div>
         ) : view.connections.length === 0 ? (
           <div className="px-2 py-1.5 text-2 text-ink-3">还没有接任何模型</div>
@@ -144,7 +169,7 @@ export function ModelPicker() {
             const state = usable(view, conn.id);
             const rows = conn.models.length
               ? conn.models
-              : view.catalog.find((item) => item.id === conn.id)?.defaultModels ?? [];
+              : conn.availableModels ?? view.catalog.find((item) => item.id === conn.id)?.defaultModels ?? [];
             return (
               <div key={conn.id}>
                 <DropdownMenuLabel className="flex items-center gap-2 text-1 font-normal text-ink-3">
@@ -153,10 +178,11 @@ export function ModelPicker() {
                 </DropdownMenuLabel>
                 {rows.map((row) => {
                   const on = model.connectionId === conn.id && model.modelId === row.id;
+                  const blocked = Boolean(matchDisabled(view.disabledModels, conn.id, row.id));
                   return (
                     <DropdownMenuItem
                       key={row.id}
-                      disabled={!state.ok}
+                      disabled={!state.ok || blocked}
                       onSelect={() => {
                         if (on) return;
                         void selectSessionModel({
@@ -181,7 +207,14 @@ export function ModelPicker() {
                       }}
                       className="gap-2 text-2"
                     >
-                      <span className="min-w-0 flex-1 truncate">{row.name ?? row.id}</span>
+                      <span className={blocked ? 'min-w-0 flex-1 truncate text-ink-3 line-through' : 'min-w-0 flex-1 truncate'}>
+                        {row.name ?? row.id}
+                      </span>
+                      {blocked ? (
+                        <span className="shrink-0 text-1 text-fail" title="在设置里屏蔽了；解除屏蔽才能选">
+                          已屏蔽
+                        </span>
+                      ) : null}
                       {row.contextWindow ? (
                         <span className="brand-type text-1 text-ink-3">
                           {Math.round(row.contextWindow / 1000)}k

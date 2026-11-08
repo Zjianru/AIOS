@@ -21,18 +21,22 @@ test('设置页从目录加 MiniMax 连接并保存', async ({ page }) => {
     await add.locator('input:not([type="password"])').first().fill(fixture.fakeEndpoint);
     await add.getByRole('button', { name: '保存', exact: true }).click();
     await expect(page.getByText('MiniMax（国内站）').first()).toBeVisible({ timeout: 20_000 });
-    // 设置里也显示模型行（MiniMax M3.1 Flash 来自内置目录）；先展开自定义设置。
+    // 没勾模型就是跟着厂商走：编辑器列内置目录的 8 个 MiniMax 模型（小标签），顺序照目录。
+    // 这里还没 fetch 过：页面本地兜底表不能出现厂商已不列的旧 MiniMax-M2.1-highspeed。
     await page.getByRole('button', { name: '编辑', exact: true }).last().click();
     await page.locator('[data-settings="editor"]').getByText('自定义设置').click();
-    await expect(page.locator('[data-settings="editor"]')).toContainText('4 个模型', {
+    // provider 级价格倍率已删：编辑器里不再有这个输入。
+    await expect(page.locator('[data-settings="editor"]').getByText('价格倍率')).toHaveCount(0);
+    await expect(page.locator('[data-settings="editor"]')).toContainText('跟着厂商的列表走', {
       timeout: 20_000,
     });
-    await expect(
-      page.locator('[data-settings="editor"] input[value="MiniMax-M3.1-Flash"]'),
-    ).toHaveCount(2); // 模型 ID 和显示名称两个输入都是这个值
-    // 余额/余量查询入口在（假端点查不到，给「查不到」提示，不报错）。
-    await page.getByText('余额与套餐余量').click();
-    await page.getByRole('button', { name: '查询余额/余量' }).click();
+    const vendorModels = page.locator('[data-settings="editor"] [data-settings="vendor-model"]');
+    await expect(vendorModels).toHaveCount(8);
+    await expect(vendorModels.first()).toContainText('MiniMax-M3.1-Flash');
+    await expect(vendorModels.nth(3)).toContainText('MiniMax-M2.7-highspeed');
+    await expect(vendorModels.filter({ hasText: 'MiniMax-M2.1-highspeed' })).toHaveCount(0);
+    // 余额/余量常显：打开编辑器自动查（假端点查不到，给「查不到」提示，不报错）。
+    await expect(page.locator('[data-settings="quota"]')).toBeVisible();
     await expect(page.locator('[data-settings="quota"]')).toContainText('查不到', { timeout: 20_000 });
   } finally {
     await fixture.close();

@@ -9,7 +9,7 @@ export interface ServiceEvent {
   time: number;
   type: string;
   data: Record<string, unknown>;
-  cause?: 'credential' | 'model' | 'keyring';
+  cause?: 'credential' | 'model' | 'keyring' | 'masked';
 }
 
 export type ServiceRootState =
@@ -280,13 +280,13 @@ export interface ServiceKeyFileInfo {
   problem?: string;
 }
 
-/** T012.4：连接的新形状（服务端 snake_case）。 */
+/** T012.4：连接里的一行模型（服务端 `credentials::ModelRow`，线上一律 camelCase）。 */
 export interface ServiceModelRow {
   id: string;
   name?: string;
-  context_window?: number;
-  max_tokens?: number;
-  /** T012 F1：用户填的四类单价（美元/百万 token，不乘倍率；服务端 camelCase）。 */
+  contextWindow?: number;
+  maxTokens?: number;
+  /** T012 F1：用户填的四类单价（美元/百万 token，不乘倍率）。 */
   priceInput?: number;
   priceOutput?: number;
   priceCacheRead?: number;
@@ -327,6 +327,23 @@ export interface ServiceKeyringView {
   first_use: boolean;
 }
 
+/** 一个连接存下的厂商模型列表（页面小标签用）。 */
+export interface ServiceListedModels {
+  fetchedAt: number;
+  models: ServiceCatalogModel[];
+}
+
+/** 设置页响应：Keyring 视图（旧字段）+ 屏蔽表（只增字段）。 */
+export interface ServiceModelSettings {
+  settings: ServiceKeyringView;
+  disabledModels: string[];
+  disabledUnknown: boolean;
+  /** 与 disabledModels 等长同序：每条规则现在命中的「连接/模型」。 */
+  disabledHits: string[][];
+  /** 每个连接现在存下的厂商列表，键是连接 id。 */
+  listed: Record<string, ServiceListedModels>;
+}
+
 export interface SaveConnectionInput {
   id: string;
   name: string;
@@ -340,9 +357,29 @@ export interface SaveConnectionInput {
 }
 
 /** 设置页读取（不含 key 正文）。 */
-export async function fetchModelSettings(): Promise<ServiceKeyringView> {
-  const response = await post<{ settings: ServiceKeyringView }>({ method: 'model-settings' });
-  return response.settings;
+export async function fetchModelSettings(): Promise<ServiceModelSettings> {
+  return post<ServiceModelSettings>({ method: 'model-settings' });
+}
+
+/** 整表替换屏蔽规则；返回规范化后的整表（去空白/空规则/不分大小写去重，保持顺序）。 */
+export async function setDisabledModels(models: string[]): Promise<string[]> {
+  const response = await post<{ models: string[] }>({ method: 'disabled-models-set', models });
+  return response.models;
+}
+
+/** 谁在用：当前 Kind 对话（带是否在跑）与新会话（上一次选的）。 */
+export type DisabledModelUser =
+  | { kind: 'kind-chat'; running: boolean }
+  | { kind: 'new-sessions' };
+
+/** 一条规则现在匹配哪些模型、谁在用（确认框用；页面不自己匹配）。 */
+export interface DisabledModelsCheck {
+  hits: string[];
+  users: DisabledModelUser[];
+}
+
+export async function checkDisabledModels(pattern: string): Promise<DisabledModelsCheck> {
+  return post<DisabledModelsCheck>({ method: 'disabled-models-check', pattern });
 }
 
 /** 存/换连接；key 只在这一次请求体里。 */
@@ -508,19 +545,37 @@ export interface ServiceCatalogModel {
   name?: string;
   contextWindow?: number;
   maxTokens?: number;
-  /** 目录标价四类（服务端 ModelInfo 序列化是 snake_case）。 */
-  price_input?: number;
-  price_output?: number;
-  price_cache_read?: number;
-  price_cache_write?: number;
+  /** 和上一次存下的厂商列表比没见过（第一次获取的基准在服务端定）。 */
+  fresh?: boolean;
+  /** 目录标价四类（服务端 ModelInfo 是 camelCase）。 */
+  priceInput?: number;
+  priceOutput?: number;
+  priceCacheRead?: number;
+  priceCacheWrite?: number;
   thinks?: boolean;
   efforts?: string[];
 }
 
-export async function fetchAvailableModels(
+/** 只看一眼可用模型（打开选择器、补价格/窗口/档）：服务端不落盘，「新」的基准也不动。 */
+export async function peekAvailableModels(
   id: string,
 ): Promise<{ models: ServiceCatalogModel[]; live: boolean }> {
-  return post<{ models: ServiceCatalogModel[]; live: boolean }>({ method: 'available-models', id });
+  return post<{ models: ServiceCatalogModel[]; live: boolean }>({
+    method: 'available-models',
+    id,
+    mode: 'query',
+  });
+}
+
+/** 用户按了「获取可用模型」：厂商这次的列表由服务端存下，下次拿它当「新」的基准。 */
+export async function discoverAvailableModels(
+  id: string,
+): Promise<{ models: ServiceCatalogModel[]; live: boolean }> {
+  return post<{ models: ServiceCatalogModel[]; live: boolean }>({
+    method: 'available-models',
+    id,
+    mode: 'fetch',
+  });
 }
 
 /** T012.8b：连接余额（厂商币种）或套餐余量（MiniMax：5 小时窗口/每周剩余百分比）。 */

@@ -13,7 +13,7 @@ import { startKernelFixture, type KernelFixture } from './service-fixture';
  * T015.4（来自画布）：点画布里的按钮只把话放进输入框（带可移除标记，不替用户发）；
  * 用户发出去以后，气泡、日志块、请求体三处都带「来自画布」。
  * T015.5（正在画、出错、全屏、存成文件）：流式时有「正在画 · 标题」、日志里没有 tool-call-delta、
- * ready 帧协议 7；三种错误都出「出错了」；全屏能开能关；存下的 .html 单独打开能显示、清单外被拦。
+ * ready 帧协议 8（T016.2 升的）；三种错误都出「出错了」；全屏能开能关；存下的 .html 单独打开能显示、清单外被拦。
  *
  * 画布那一轮由真内核执行 canvas 工具产生（夹具只是假模型的回放脚本），所以页面看到的
  * HTML 一定来自日志里的 tool/result.meta.canvas。
@@ -709,13 +709,13 @@ async function readReady(page: Page): Promise<Record<string, unknown>> {
   );
 }
 
-/** 验收：ready 帧协议版本 7（T015.5），旧的 root/context 字段照旧。 */
-test('ready 帧：协议版本 7，旧的 root/context 字段不变', async ({ page }) => {
+/** 验收：ready 帧协议版本 8（T016.2 升的），旧的 root/context 字段照旧。 */
+test('ready 帧：协议版本 8，旧的 root/context 字段不变', async ({ page }) => {
   const fixture = await startKernelFixture({ canvas: 'interactive' });
   try {
     await page.goto(urlOf(fixture));
     const ready = await readReady(page);
-    expect(ready.protocolVersion).toBe(7);
+    expect(ready.protocolVersion).toBe(8);
     expect(ready.root).toEqual({ state: 'ok' });
     expect(ready.context).toEqual(expect.objectContaining({ window: expect.any(Number) }));
   } finally {

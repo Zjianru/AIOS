@@ -61,6 +61,7 @@ async fn setup_agent(base_url: &str) -> TestAgent {
         ..agent::AgentConfig::default()
     };
     let config_model = model::DeepSeekConfig {
+        provider: "deepseek".to_owned(),
         base_url: base_url.to_owned(),
         model: "deepseek-flash".to_owned(),
         max_tokens: 2048,

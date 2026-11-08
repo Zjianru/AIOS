@@ -628,6 +628,7 @@ mod tests {
         let (events, _receiver) = broadcast::channel(16);
         let model = model::DeepSeek::with_credentials(
             model::DeepSeekConfig {
+                provider: "deepseek".to_owned(),
                 base_url: "http://127.0.0.1:1".to_owned(),
                 model: "deepseek-flash".to_owned(),
                 max_tokens: 16,

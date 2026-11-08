@@ -20,6 +20,8 @@ export interface ModelRow {
   /** 上下文窗口，token。没填就是继承适配器的值。 */
   contextWindow?: number;
   maxTokens?: number;
+  /** 获取面板里厂商这次新给的模型（只在候选行上有；服务端算）。 */
+  fresh?: boolean;
   /** T012 F1：用户填的四类单价（美元/百万 token；不乘倍率；空=继承目录标价）。 */
   priceInput?: number;
   priceOutput?: number;
@@ -51,10 +53,10 @@ export interface ConnectionView {
   /** 用户改过的地址；空就是用默认地址。 */
   endpoint: string;
   defaultEndpoint: string;
-  /** 模型目录；空表示用适配器默认的模型。 */
+  /** 模型目录；空表示跟着厂商的列表走（可选 = availableModels）。 */
   models: ModelRow[];
-  /** T012.4：价格倍率（1 = 原价，0 = 免费）。 */
-  priceRate?: number;
+  /** 跟着厂商走时选择器/小标签可选的模型（存下的厂商列表；没存过用内置目录）。 */
+  availableModels?: ModelRow[];
   key: { saved: false } | { saved: true; savedAt: string };
   check: CheckState;
 }
@@ -79,6 +81,14 @@ export interface IssueRecord {
 export interface ModelSettingsView {
   connections: ConnectionView[];
   catalog: CatalogProvider[];
+  /** 服务端存下的厂商列表（按连接 id；页面小标签用它）。 */
+  listed?: Record<string, { fetchedAt: string; models: ModelRow[] }>;
+  /** 屏蔽的模型规则（通配；服务端保存的整表）。 */
+  disabledModels: string[];
+  /** 与 disabledModels 等长同序：每条规则现在命中的「连接/模型」（服务端算，页面不自己匹配）。 */
+  disabledHits: string[][];
+  /** settings.json 读不出来、而且这个进程从没读到过：不知道哪些被屏蔽。 */
+  disabledUnknown: boolean;
   /** problem：钥匙文件读不出来时的原因（不在原处、打不开、解不开）；读得出来就没有这个字段。 */
   keyFile: { path: string; since: string; problem?: string };
   issuedToday: number;
@@ -104,6 +114,9 @@ export const modelSettingsFixture: ModelSettingsView = {
       check: { kind: 'ok', at: '今天 11:42' },
     },
   ],
+  disabledModels: [],
+  disabledHits: [],
+  disabledUnknown: false,
   catalog: [
     {
       id: 'deepseek',

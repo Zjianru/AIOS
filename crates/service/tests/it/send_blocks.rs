@@ -27,6 +27,7 @@ fn options(data_dir: &Path, identity: &Path, cwd: &Path) -> RootSessionOptions {
         data_dir: data_dir.to_path_buf(),
         cwd: cwd.to_path_buf(),
         model: DeepSeekConfig {
+            provider: "deepseek".to_owned(),
             base_url: "http://127.0.0.1:1".to_owned(),
             model: "deepseek-flash".to_owned(),
             max_tokens: 2048,

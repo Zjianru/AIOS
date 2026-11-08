@@ -30,12 +30,14 @@ pub fn effective_price(
 ) -> Option<EffectivePrice> {
     // T012 F1：逐字段取价——用户填了的格原样用（不乘倍率），没填的格用目录标价 × 连接倍率；
     // 某格两边都没有就是 None（有这一类用量时这一轮无价格）。
-    let user = connection.models.iter().find(|row| row.id == model);
-    let provider = if connection.preset.is_empty() || connection.preset == "custom" {
-        model::catalog::provider_id_for_endpoint(&connection.endpoint)
-    } else {
-        connection.preset.clone()
-    };
+    let user = connection
+        .models
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .find(|row| row.id == model);
+    let provider =
+        model::catalog::provider_id_for_connection(&connection.preset, &connection.endpoint);
     let info = catalog
         .models_for(&provider)
         .into_iter()
@@ -217,7 +219,7 @@ mod tests {
             check: credentials::CheckState::Never,
             key_saved: true,
             preset: "deepseek".to_owned(),
-            models: vec![credentials::ModelRow {
+            models: Some(vec![credentials::ModelRow {
                 id: "deepseek-flash".to_owned(),
                 name: None,
                 context_window: None,
@@ -226,7 +228,7 @@ mod tests {
                 price_output: None,
                 price_cache_read: None,
                 price_cache_write: None,
-            }],
+            }]),
             price_rate,
             auth_header: None,
         }
@@ -358,7 +360,7 @@ mod tests {
             check: credentials::CheckState::Never,
             key_saved: true,
             preset: preset.to_owned(),
-            models: vec![credentials::ModelRow {
+            models: Some(vec![credentials::ModelRow {
                 id: "deepseek-flash".to_owned(),
                 name: None,
                 context_window: None,
@@ -367,10 +369,30 @@ mod tests {
                 price_output: None,
                 price_cache_read: None,
                 price_cache_write: None,
-            }],
+            }]),
             price_rate: rate,
             auth_header: None,
         }
+    }
+
+    /// 统计定价按连接的真实 provider 查目录：MiniMax 连接用 minimax 的价，不是 deepseek 的。
+    #[test]
+    fn minimax_connection_prices_use_minimax_catalog() {
+        let mut connection = connection_with(
+            "minimax",
+            "https://api.minimax.io/anthropic",
+            "minimax",
+            1.0,
+            None,
+        );
+        connection.model = "MiniMax-M2.7".to_owned();
+        connection.models.as_mut().expect("显式模型行")[0].id = "MiniMax-M2.7".to_owned();
+        let price =
+            effective_price(&connection, &catalog(), "MiniMax-M2.7").expect("minimax 目录价");
+        assert!((price.input - 0.3).abs() < 1e-9);
+        assert!((price.output - 1.2).abs() < 1e-9);
+        assert_eq!(price.cache_read, Some(0.06));
+        assert_eq!(price.cache_write, Some(0.375));
     }
 
     /// T012.8a 审计：两轮跨连接（DeepSeek 用户价 → MiniMax 倍率 0=免费）按各自连接定价。
@@ -631,7 +653,7 @@ mod tests {
     #[test]
     fn user_cache_read_price_fills_only_that_slot() {
         let mut conn = connection(2.0, None);
-        conn.models[0].price_cache_read = Some(100.0);
+        conn.models.as_mut().expect("显式模型行")[0].price_cache_read = Some(100.0);
         let price =
             effective_price(&conn, &catalog(), "deepseek-flash").expect("标价+用户缓存读价");
         assert_eq!(price.input, 0.15 * 2.0, "输入按标价×倍率");

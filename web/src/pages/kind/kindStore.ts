@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 import { toast } from 'sonner';
-import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchAvailableModels, fetchEventsPage, fetchFirstUse, fetchStatus, recheckRoot, reportMonitor, selectSessionModel, sendMessage, setUnauthorizedHandler, updateSettings } from '@/data/service';
+import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchEventsPage, fetchFirstUse, fetchStatus, peekAvailableModels, recheckRoot, reportMonitor, selectSessionModel, sendMessage, setUnauthorizedHandler, updateSettings } from '@/data/service';
 import type { ServiceCatalogModel } from '@/data/service';
 import type { Currency } from '@/lib/numbers';
 import { effortName } from './effortName';
@@ -164,6 +164,14 @@ interface KindState {
   modelInitialized: boolean;
   /** T012.9：币种与汇率（服务 settings.json + status.fx）。 */
   money: MoneyState;
+  /** 屏蔽的模型规则（服务端 settings.json 的整表）；选择器按它灰掉、标「已屏蔽」。 */
+  masked: string[];
+  /** 模型选择器开着没有（失败块的「换模型」要靠它打开）。 */
+  pickerOpen: boolean;
+  /** 打开/收起模型选择器。 */
+  setPickerOpen: (open: boolean) => void;
+  /** 重新读屏蔽表（设置变化事件或屏蔽操作以后；读不到就保留上一次的）。 */
+  refreshMasks: () => Promise<void>;
   /** T008.4：Kind 首屏引导：先看是不是空库（首次使用），否则加载对话。 */
   bootstrap: () => Promise<void>;
   loadInitial: () => Promise<void>;
@@ -421,6 +429,12 @@ function refreshTurn(turn: number): void {
 /** 压缩摘要：ContentBlock 数组里的 text 拼起来（日志事实）。 */
 /** 日志事件 live：追加进本轮事件，重建 view；turn/end 时收掉流式文本。 */
 function applyLiveEvent(event: ServiceEvent): void {
+  if (event.type === 'keyring/changed') {
+    // 设置变化是 seq=0 的合成事件：不进日志、不动 lastSeq；只把屏蔽表重读一遍，
+    // 让选择器的「已屏蔽」立刻跟上（不用刷新页面）。
+    void useKindStore.getState().refreshMasks();
+    return;
+  }
   if (event.seq <= lastSeq) return;
   lastSeq = event.seq;
   liveEvents.push(event);
@@ -595,6 +609,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
   model: DEMO_MODEL,
   stats: EMPTY_STATS,
   money: DEFAULT_MONEY,
+  masked: [],
+  pickerOpen: false,
   modelInitialized: false,
   canvasTracks: {},
   drawingCanvas: null,
@@ -620,7 +636,12 @@ export const useKindStore = create<KindState>()((set, get) => ({
           if (model.contextWindow) windows[model.id] = model.contextWindow;
         }
       }
-      set({ modelNames: names, modelWindows: windows, connectionNames });
+      set({
+        modelNames: names,
+        modelWindows: windows,
+        connectionNames,
+        masked: view.disabledModels,
+      });
     } catch {
       // 设置读不到时模型名退回 id、压缩占用不显示（日志里的事实还在）。
     }
@@ -755,6 +776,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
       if (root.state === 'ok') {
         useKindStore.setState({ gate: 'ok', gateDetail: null });
         await get().loadInitial();
+        // 恢复时服务端可能刚接上新连接：把当前模型/档同步到选择器（首次初始化才写）。
+        await get().refreshStats();
       }
     } catch {
       // 401 已由 service 请求层统一进令牌说明页；这里只标不可达，不覆盖 token。
@@ -843,7 +866,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
     let models = catalogCache.get(connectionId);
     if (models === undefined) {
       try {
-        models = (await fetchAvailableModels(connectionId)).models;
+        models = (await peekAvailableModels(connectionId)).models;
         catalogCache.set(connectionId, models);
       } catch {
         models = [];
@@ -857,12 +880,12 @@ export const useKindStore = create<KindState>()((set, get) => ({
         modelId,
         label: info?.name ?? label,
         price:
-          info?.price_input !== undefined
+          info?.priceInput !== undefined
             ? {
-                input: info.price_input,
-                output: info.price_output ?? info.price_input,
-                cacheRead: info.price_cache_read,
-                cacheWrite: info.price_cache_write,
+                input: info.priceInput,
+                output: info.priceOutput ?? info.priceInput,
+                cacheRead: info.priceCacheRead,
+                cacheWrite: info.priceCacheWrite,
               }
             : undefined,
         contextWindow: info?.contextWindow,
@@ -872,6 +895,16 @@ export const useKindStore = create<KindState>()((set, get) => ({
         effortActual: selection.effort ?? state.model.effortActual,
       },
     }));
+  },
+
+  setPickerOpen: (open) => set({ pickerOpen: open }),
+  refreshMasks: async () => {
+    try {
+      const view = await getModelSettings();
+      set({ masked: view.disabledModels });
+    } catch {
+      // 读不到设置时保留上一次的屏蔽表；服务端仍按文件里的规则拦。
+    }
   },
 
   refreshStats: async () => {
@@ -903,14 +936,15 @@ export const useKindStore = create<KindState>()((set, get) => ({
           },
         }));
       }
-      // T012.9：当前模型（连接/模型/档由服务 status 给；价格/窗口/档位来自模型目录）。
+      // 当前模型（连接/模型/档由服务 status 给；价格/窗口/档位来自模型目录）：
+      // 目录只是补字段，只读地问，不落盘、不动「新」的基准。
       // T012 F2：只在首次初始化时写 model；之后由 applySelection 维护，避免 refreshStats 异步回来覆盖用户刚做的选择。
       if (status.stats && !get().modelInitialized) {
         const stats = status.stats;
         let models = catalogCache.get(stats.connection);
         if (models === undefined) {
           try {
-            const catalog = await fetchAvailableModels(stats.connection);
+            const catalog = await peekAvailableModels(stats.connection);
             models = catalog.models;
             catalogCache.set(stats.connection, models);
           } catch {
@@ -924,12 +958,12 @@ export const useKindStore = create<KindState>()((set, get) => ({
             modelId: stats.model,
             label: info?.name ?? stats.model,
             price:
-              info?.price_input !== undefined
+              info?.priceInput !== undefined
                 ? {
-                    input: info.price_input,
-                    output: info.price_output ?? info.price_input,
-                    cacheRead: info.price_cache_read,
-                    cacheWrite: info.price_cache_write,
+                    input: info.priceInput,
+                    output: info.priceOutput ?? info.priceInput,
+                    cacheRead: info.priceCacheRead,
+                    cacheWrite: info.priceCacheWrite,
                   }
                 : undefined,
             contextWindow: info?.contextWindow,

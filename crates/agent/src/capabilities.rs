@@ -73,8 +73,9 @@ pub(crate) struct CompactionPolicy {
 }
 
 /// loop 对 Capability 暴露的访问面；由 driver 的 Inner 实现。
+/// 访问面按宿主完整形状定义；`log_path` 当前还没有能力读取。
+#[allow(dead_code)]
 /// 后续功能搬出去时只依赖这个 trait，不直接依赖 Inner 的私有字段。
-#[allow(dead_code)] // 1a 先定输入面，1b–1e 由功能实现读取
 pub(crate) trait LoopAccess: Send + Sync {
     fn session(&self) -> &Mutex<SessionStore>;
     fn events(&self) -> &broadcast::Sender<AgentEvent>;
@@ -118,7 +119,8 @@ pub(crate) trait LoopAccess: Send + Sync {
 }
 
 /// 每个挂点一份 typed 事件：host 访问面 + 该挂点可用的运行态数据。
-#[allow(dead_code)] // 1a 只定义每个挂点的 typed 数据面，1b–1e 读取
+/// 字段按挂点完整形状定义；`Request.messages` 当前还没有能力读取。
+#[allow(dead_code)]
 pub(crate) enum HookEvent<'a> {
     PreStep {
         turn: u64,
@@ -184,7 +186,6 @@ pub(crate) enum HookEvent<'a> {
     },
 }
 
-#[allow(dead_code)]
 impl HookEvent<'_> {
     pub(crate) fn hook(&self) -> HookPoint {
         match self {

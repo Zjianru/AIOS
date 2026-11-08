@@ -16,7 +16,7 @@ pub use anthropic::actual_effort;
 pub use anthropic::file_handle_text;
 pub use anthropic::{
     ChunkStream, DEFAULT_BASE_URL, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DeepSeek,
-    DeepSeekConfig,
+    DeepSeekConfig, default_effort_for,
 };
 pub use assistant_stream::{
     AssistantStreamAccumulator, AssistantStreamRecord, TimedStreamChunk, expand_assistant_stream,

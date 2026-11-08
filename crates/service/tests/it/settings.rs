@@ -8,13 +8,34 @@ use service::{
     Call, ConnectionDeleteRequest, ConnectionQuotaRequest, ConnectionRevokeRequest,
     ConnectionSaveRequest, ConnectionUpdateRequest, ConnectionVerifyRequest, FirstUseRequest,
     IssuesRequest, KeyringRelocateRequest, KeyringReopenRequest, KeyringRestartRequest,
-    ModelSettingsRequest, RootHost, RootSessionOptions, SessionModelSelectRequest,
+    ModelSettingsRequest, RootHost, RootSessionOptions, ServiceError, SessionModelSelectRequest,
 };
 use tempfile::tempdir;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 const TEST_KEY: &str = "sk-t008-service-0123456789";
+
+/// 一轮成功并报 usage 的 SSE：A→B 热切换要证明已用上下文没被归零。
+const USAGE_SSE: &str = r#"event: message_start
+data: {"type":"message_start","message":{"id":"m_usage","type":"message","role":"assistant","model":"deepseek-flash","content":[],"usage":{"input_tokens":9,"output_tokens":2}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"完成。"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":3}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+"#;
 
 /// T008.F9：测试凭证来源（产品不再有固定 key 构造入口，测试显式注入）。
 struct TestCredential;
@@ -61,6 +82,7 @@ fn options(data_dir: &Path, identity: &Path) -> RootSessionOptions {
         data_dir: data_dir.to_path_buf(),
         cwd: data_dir.to_path_buf(),
         model: DeepSeekConfig {
+            provider: "deepseek".to_owned(),
             base_url: "http://127.0.0.1:1".to_owned(),
             model: "deepseek-flash".to_owned(),
             max_tokens: 2048,
@@ -137,6 +159,36 @@ async fn 存连接删连接都无正文() {
         .await;
     assert!(deleted.is_ok(), "connection-delete 应成功：{deleted:?}");
     no_key(&serde_json::to_string(&deleted.unwrap()).unwrap());
+}
+
+/// 页面重填密钥走 connection-save，请求不带价格倍率：不能把已存的 0 倍率重置成 1.0。
+#[tokio::test]
+async fn 重填密钥不带价格倍率时沿用已存倍率() {
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let save = |price_rate: Option<f64>| ConnectionSaveRequest {
+        id: "free".to_owned(),
+        name: "Free".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        endpoint: "https://api.deepseek.com/anthropic".to_owned(),
+        api_key: TEST_KEY.to_owned(),
+        price_rate,
+        ..Default::default()
+    };
+    host.dispatch(Call::ConnectionSave(save(Some(0.0))))
+        .await
+        .expect("save free connection");
+    assert_eq!(connection_of(&host, "free").await.price_rate, 0.0);
+
+    // 页面重填 key：connection-save 不带 price_rate。
+    host.dispatch(Call::ConnectionSave(save(None)))
+        .await
+        .expect("re-save with new key");
+    assert_eq!(
+        connection_of(&host, "free").await.price_rate,
+        0.0,
+        "重填密钥不能把免费连接的价格倍率重置成 1.0"
+    );
 }
 
 #[tokio::test]
@@ -620,9 +672,7 @@ async fn 获取可用模型合并目录与厂商列表且用户字段不动() {
         .await;
     assert!(saved.is_ok(), "save: {saved:?}");
     let response = host
-        .dispatch(Call::AvailableModels(service::AvailableModelsRequest {
-            id: "list".to_owned(),
-        }))
+        .dispatch(Call::AvailableModels(discover_request("list")))
         .await
         .expect("available models");
     let service::Response::AvailableModels(response) = response else {
@@ -633,26 +683,858 @@ async fn 获取可用模型合并目录与厂商列表且用户字段不动() {
         response
             .models
             .iter()
-            .find(|model| model.id == id)
+            .find(|row| row.model.id == id)
             .expect(id)
     };
     let flash = find("deepseek-flash");
-    assert_eq!(flash.name, "我的名字", "用户填的名字不被厂商覆盖");
-    assert_eq!(flash.context_window, Some(42), "用户填的窗口不动");
-    assert_eq!(flash.max_tokens, Some(111), "用户填的输出上限不动");
-    assert_eq!(flash.price_input, Some(9.9), "用户价格不动");
-    assert!(flash.thinks, "thinks 来自目录");
-    assert!(flash.efforts.contains(&"none".to_owned()), "档来自目录");
+    assert_eq!(flash.model.name, "我的名字", "用户填的名字不被厂商覆盖");
+    assert_eq!(flash.model.context_window, Some(42), "用户填的窗口不动");
+    assert_eq!(flash.model.max_tokens, Some(111), "用户填的输出上限不动");
+    assert_eq!(flash.model.price_input, Some(9.9), "用户价格不动");
+    assert!(flash.model.thinks, "thinks 来自目录");
+    assert!(
+        flash.model.efforts.contains(&"none".to_owned()),
+        "档来自目录"
+    );
     let pro = find("deepseek-v4-pro");
-    assert_eq!(pro.name, "Vendor Pro", "厂商字段优先于目录");
-    assert_eq!(pro.context_window, Some(2000));
-    assert!(pro.price_input.is_some(), "目录价格仍在");
+    assert_eq!(pro.model.name, "Vendor Pro", "厂商字段优先于目录");
+    assert_eq!(pro.model.context_window, Some(2000));
+    assert!(pro.model.price_input.is_some(), "目录价格仍在");
     assert_eq!(
-        find("deepseek-future").context_window,
+        find("deepseek-future").model.context_window,
         Some(3000),
         "厂商多出的模型也列出"
     );
-    assert!(!find("my-only-model").thinks);
+    assert!(!find("my-only-model").model.thinks);
+}
+
+/// 「获取可用模型」（用户按了按钮）：服务端会把这一次的厂商列表存下来。
+fn discover_request(id: &str) -> service::AvailableModelsRequest {
+    service::AvailableModelsRequest {
+        id: id.to_owned(),
+        mode: service::AvailableModelsMode::Fetch,
+    }
+}
+
+/// 页面只是看一眼（补价格/窗口/档）：服务端不写盘，也不挪动「新」的基准。
+fn query_request(id: &str) -> service::AvailableModelsRequest {
+    service::AvailableModelsRequest {
+        id: id.to_owned(),
+        mode: service::AvailableModelsMode::Query,
+    }
+}
+
+/// 走接口问一次可用模型，返回整份响应。
+async fn available_models(
+    host: &RootHost,
+    request: service::AvailableModelsRequest,
+) -> service::AvailableModelsResponse {
+    let response = host
+        .dispatch(Call::AvailableModels(request))
+        .await
+        .expect("available models");
+    let service::Response::AvailableModels(response) = response else {
+        panic!("expected AvailableModels");
+    };
+    response
+}
+
+/// 设置页里某个连接存下的厂商列表（没有这个连接就是空表）。
+async fn listed_ids(host: &RootHost, id: &str) -> Vec<String> {
+    let response = host
+        .dispatch(Call::ModelSettings(ModelSettingsRequest {}))
+        .await
+        .expect("model-settings");
+    let service::Response::ModelSettings(settings) = response else {
+        panic!("expected ModelSettings");
+    };
+    settings
+        .listed
+        .get(id)
+        .map(|listed| listed.models.iter().map(|model| model.id.clone()).collect())
+        .unwrap_or_default()
+}
+
+/// 从 Keyring 视图里取一个连接（设置页看到的形状）。
+async fn connection_of(host: &RootHost, id: &str) -> credentials::ConnectionInfo {
+    let response = host
+        .dispatch(Call::ModelSettings(ModelSettingsRequest {}))
+        .await
+        .expect("model-settings");
+    let service::Response::ModelSettings(settings) = response else {
+        panic!("expected ModelSettings");
+    };
+    settings
+        .settings
+        .connections
+        .into_iter()
+        .find(|connection| connection.id == id)
+        .unwrap_or_else(|| panic!("没有连接 {id}"))
+}
+
+/// 把一次 available-models 响应里某个模型的 fresh 读出来。
+fn fresh_of(response: &service::AvailableModelsResponse, id: &str) -> bool {
+    response
+        .models
+        .iter()
+        .find(|row| row.model.id == id)
+        .unwrap_or_else(|| panic!("响应里没有 {id}"))
+        .fresh
+}
+
+fn fresh_ids(response: &service::AvailableModelsResponse) -> Vec<&str> {
+    response
+        .models
+        .iter()
+        .filter(|row| row.fresh)
+        .map(|row| row.model.id.as_str())
+        .collect()
+}
+
+/// 读出 live 列表文件里的模型 id 和 fetchedAt。
+fn stored_live(data_dir: &Path, connection: &str) -> (Vec<String>, u64) {
+    let path = model::catalog::live_path(data_dir, connection);
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("读不到存下的厂商列表 {}：{error}", path.display()));
+    assert!(!text.contains(TEST_KEY), "厂商列表文件里不能有 key：{text}");
+    let value: serde_json::Value = serde_json::from_str(&text).expect("列表 JSON");
+    let ids = value["models"]
+        .as_array()
+        .expect("models 数组")
+        .iter()
+        .map(|row| row["id"].as_str().expect("模型 id").to_owned())
+        .collect();
+    let fetched_at = value["fetchedAt"].as_u64().expect("fetchedAt");
+    (ids, fetched_at)
+}
+
+/// 厂商列表接口只认 Authorization（MiniMax 国内站真 key：messages 双头都过，列表只认 Bearer）：
+/// 连接没记过单个头时，列表请求要照 T012.6/Magpie 默认把两个头都发上，不能只发 x-api-key。
+#[tokio::test]
+async fn 厂商列表只认小写bearer时默认两个鉴权头都发() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .and(header(
+            "authorization",
+            format!("Bearer {TEST_KEY}").as_str(),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [{"id": "vendor-bearer-only"}]
+        })))
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "bearer".to_owned(),
+            name: "Bearer".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some("deepseek".to_owned()),
+            ..Default::default()
+        }))
+        .await;
+    assert!(saved.is_ok(), "save: {saved:?}");
+
+    let response = host
+        .dispatch(Call::AvailableModels(discover_request("bearer")))
+        .await
+        .expect("获取");
+    let service::Response::AvailableModels(response) = response else {
+        panic!("expected AvailableModels");
+    };
+    assert!(
+        response.live,
+        "只认 Bearer 的列表接口也要成功（默认两个头都发）"
+    );
+    let (ids, _) = stored_live(dir.path(), "bearer");
+    assert_eq!(ids, vec!["vendor-bearer-only".to_owned()]);
+}
+
+#[tokio::test]
+async fn 获取成功只存厂商列表且第二次只标新增() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    {"id": "deepseek-flash", "display_name": "Flash"},
+                    {"id": "vendor-new-1", "display_name": "New One"}
+                ]
+            })),
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    {"id": "deepseek-flash"},
+                    {"id": "vendor-new-1"},
+                    {"id": "vendor-new-2"}
+                ]
+            })),
+        ]))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "fresh".to_owned(),
+            name: "Fresh".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some("deepseek".to_owned()),
+            ..Default::default()
+        }))
+        .await;
+    assert!(saved.is_ok(), "save: {saved:?}");
+
+    let first = host
+        .dispatch(Call::AvailableModels(discover_request("fresh")))
+        .await
+        .expect("第一次获取");
+    let service::Response::AvailableModels(first) = first else {
+        panic!("expected AvailableModels");
+    };
+    assert!(first.live, "厂商列表成功");
+    assert!(
+        fresh_ids(&first).is_empty(),
+        "第一次获取没有上一次的列表可比较，一条都不标新"
+    );
+    assert!(
+        !fresh_of(&first, "deepseek-v4-pro"),
+        "目录独有项不是厂商这次给的"
+    );
+    let (ids, first_fetched_at) = stored_live(dir.path(), "fresh");
+    assert_eq!(
+        ids,
+        vec!["deepseek-flash", "vendor-new-1"],
+        "文件只含厂商这次给的模型（顺序也照厂商）"
+    );
+    assert!(first_fetched_at > 0);
+
+    let second = host
+        .dispatch(Call::AvailableModels(discover_request("fresh")))
+        .await
+        .expect("第二次获取");
+    let service::Response::AvailableModels(second) = second else {
+        panic!("expected AvailableModels");
+    };
+    assert_eq!(
+        fresh_ids(&second),
+        vec!["vendor-new-2"],
+        "第二次只有厂商新增的那一个是新"
+    );
+    let (ids, second_fetched_at) = stored_live(dir.path(), "fresh");
+    assert_eq!(
+        ids,
+        vec!["deepseek-flash", "vendor-new-1", "vendor-new-2"],
+        "第二次覆盖成新的厂商列表"
+    );
+    assert!(second_fetched_at >= first_fetched_at);
+}
+
+/// 列表跟厂商 live 顺序走（不按版本重排）；目录里的字段照常合并，目录没有的模型没有标价。
+#[tokio::test]
+async fn minimax_列表保留厂商顺序() {
+    model::catalog::set_global(model::catalog::snapshot());
+    // 故意不按版本排：厂商先给 M3.1，再给 M2，最后给目录里没有的 M2.1-highspeed。
+    let ids = vec!["MiniMax-M3.1-Flash", "MiniMax-M2", "MiniMax-M2.1-highspeed"];
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": ids.iter().map(|id| serde_json::json!({"id": id})).collect::<Vec<_>>()
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "minimax-order".to_owned(),
+            name: "MiniMax".to_owned(),
+            model: "MiniMax-M3.1-Flash".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some("minimax-cn".to_owned()),
+            models: Some(Vec::new()),
+            ..Default::default()
+        }))
+        .await
+        .expect("save");
+    let service::Response::ConnectionSave(saved) = saved else {
+        panic!("expected ConnectionSave");
+    };
+    let response = available_models(&host, discover_request("minimax-order")).await;
+    let find = |id: &str| {
+        response
+            .models
+            .iter()
+            .find(|row| row.model.id == id)
+            .unwrap_or_else(|| panic!("响应里没有 {id}"))
+    };
+    let order: Vec<&str> = response
+        .models
+        .iter()
+        .map(|row| row.model.id.as_str())
+        .collect();
+    assert_eq!(&order[..3], ids.as_slice(), "厂商顺序原样保留");
+    assert!(
+        find("MiniMax-M3.1-Flash").model.price_input.is_some(),
+        "目录标价照常合并"
+    );
+    assert!(
+        find("MiniMax-M2.1-highspeed").model.price_input.is_none(),
+        "目录没有的模型没有标价"
+    );
+    assert_eq!(
+        service::models::primary_model(dir.path(), &saved.connection),
+        "MiniMax-M3.1-Flash",
+        "跟着厂商走时默认模型是厂商列表的第一个"
+    );
+}
+
+#[tokio::test]
+async fn 第一次获取内置和自定义都一条都不标新() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [
+                {"id": "deepseek-flash", "display_name": "Flash"},
+                {"id": "vendor-builtin", "display_name": "Builtin"}
+            ]
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    for (id, preset) in [("builtin-fresh", Some("deepseek")), ("custom-fresh", None)] {
+        let saved = host
+            .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+                id: id.to_owned(),
+                name: id.to_owned(),
+                model: "deepseek-flash".to_owned(),
+                endpoint: server.uri(),
+                api_key: TEST_KEY.to_owned(),
+                preset: preset.map(str::to_owned),
+                ..Default::default()
+            }))
+            .await;
+        assert!(saved.is_ok(), "{id} save: {saved:?}");
+        let response = available_models(&host, discover_request(id)).await;
+        assert!(response.live, "{id} 厂商列表成功");
+        assert!(
+            fresh_ids(&response).is_empty(),
+            "{id} 第一次获取没有上一次的列表，一条都不标新"
+        );
+        assert_eq!(
+            stored_live(dir.path(), id).0,
+            vec!["deepseek-flash", "vendor-builtin"],
+            "{id} 存的是厂商这次给的列表"
+        );
+    }
+}
+
+#[tokio::test]
+async fn 显式空模型列表跟着厂商走且主模型取可选第一个() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"id": "zeta"}, {"id": "alpha"}]
+            })),
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"id": "omega"}, {"id": "alpha"}]
+            })),
+        ]))
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "follow".to_owned(),
+            name: "Follow".to_owned(),
+            model: "ignored".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some("deepseek".to_owned()),
+            models: Some(Vec::new()),
+            ..Default::default()
+        }))
+        .await
+        .expect("save");
+    let service::Response::ConnectionSave(saved) = saved else {
+        panic!("expected ConnectionSave");
+    };
+    assert_eq!(
+        saved.connection.models,
+        Some(Vec::new()),
+        "显式空表原样保存"
+    );
+    assert_eq!(
+        service::models::primary_model(dir.path(), &saved.connection),
+        "deepseek-flash",
+        "还没存过厂商列表时用内置目录的第一个"
+    );
+
+    host.dispatch(Call::AvailableModels(discover_request("follow")))
+        .await
+        .expect("第一次获取");
+    let settings = host
+        .dispatch(Call::ModelSettings(ModelSettingsRequest {}))
+        .await
+        .expect("model-settings");
+    let service::Response::ModelSettings(settings) = settings else {
+        panic!("expected ModelSettings");
+    };
+    let listed = settings.listed.get("follow").expect("listed 有 follow");
+    assert_eq!(
+        listed
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["zeta", "alpha"],
+        "listed 是存下的厂商列表"
+    );
+    let (ids, fetched_at) = stored_live(dir.path(), "follow");
+    assert_eq!(ids, vec!["zeta", "alpha"]);
+    assert_eq!(
+        listed.fetched_at, fetched_at,
+        "listed 的 fetchedAt 与文件一致"
+    );
+
+    let verified = host
+        .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
+            id: "follow".to_owned(),
+        }))
+        .await
+        .expect("verify");
+    let service::Response::ConnectionVerify(verified) = verified else {
+        panic!("expected ConnectionVerify");
+    };
+    assert!(matches!(verified.connection.check, CheckState::Ok { .. }));
+
+    // 厂商列表变了再获取：可选的跟着变，主模型是新列表的第一个。
+    host.dispatch(Call::AvailableModels(discover_request("follow")))
+        .await
+        .expect("第二次获取");
+    let verified = host
+        .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
+            id: "follow".to_owned(),
+        }))
+        .await
+        .expect("verify again");
+    let service::Response::ConnectionVerify(verified) = verified else {
+        panic!("expected ConnectionVerify");
+    };
+    assert!(matches!(verified.connection.check, CheckState::Ok { .. }));
+
+    let requests = server.received_requests().await.unwrap();
+    let models: Vec<String> = requests
+        .iter()
+        .filter(|request| !request.body.is_empty())
+        .map(|request| {
+            let body: serde_json::Value =
+                serde_json::from_slice(&request.body).expect("verify body");
+            body["model"].as_str().expect("model").to_owned()
+        })
+        .collect();
+    assert_eq!(
+        models,
+        vec!["zeta".to_owned(), "omega".to_owned()],
+        "验证请求的模型跟着可选的第一个变"
+    );
+}
+
+#[tokio::test]
+async fn 只读查询不落盘也不推进新基准() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"id": "deepseek-flash"}, {"id": "vendor-new-1"}]
+            })),
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"id": "deepseek-flash"}, {"id": "vendor-new-1"}]
+            })),
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"id": "deepseek-flash"}, {"id": "vendor-new-1"}, {"id": "vendor-new-2"}]
+            })),
+        ]))
+        .expect(3)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "peek".to_owned(),
+        name: "Peek".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        endpoint: server.uri(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some("deepseek".to_owned()),
+        models: Some(Vec::new()),
+        ..Default::default()
+    }))
+    .await
+    .expect("save");
+
+    // 打开选择器/设置页会问一次厂商（补价格、窗口、档）：这一次不能落盘，也不建立基准。
+    let peeked = available_models(&host, query_request("peek")).await;
+    assert!(peeked.live, "厂商列表拿到了");
+    assert!(
+        fresh_ids(&peeked).is_empty(),
+        "第一次查询还没有上一次的列表，一条都不标新"
+    );
+    assert!(
+        !model::catalog::live_path(dir.path(), "peek").exists(),
+        "只读查询不存厂商列表"
+    );
+
+    // 用户按「获取可用模型」：这一次才存下厂商列表。
+    available_models(&host, discover_request("peek")).await;
+    let (ids, fetched_at) = stored_live(dir.path(), "peek");
+    assert_eq!(ids, vec!["deepseek-flash", "vendor-new-1"]);
+
+    // 厂商多了一个再只看一眼：不落盘，也不推进「新」的基准。
+    let peeked = available_models(&host, query_request("peek")).await;
+    assert!(
+        fresh_of(&peeked, "vendor-new-2"),
+        "基准还是上一次存下的列表"
+    );
+    let (ids, peeked_fetched_at) = stored_live(dir.path(), "peek");
+    assert_eq!(
+        ids,
+        vec!["deepseek-flash", "vendor-new-1"],
+        "只读查询不改文件"
+    );
+    assert_eq!(peeked_fetched_at, fetched_at, "只读查询不刷新时间");
+}
+
+#[tokio::test]
+async fn 换端点后旧厂商列表作废获取后新表生效() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let old_vendor = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [{"id": "old-vendor-model"}]
+        })))
+        .expect(1)
+        .mount(&old_vendor)
+        .await;
+    let new_vendor = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [{"id": "new-vendor-model"}]
+        })))
+        .expect(1)
+        .mount(&new_vendor)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "moved".to_owned(),
+        name: "Moved".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        endpoint: old_vendor.uri(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some("deepseek".to_owned()),
+        models: Some(Vec::new()),
+        ..Default::default()
+    }))
+    .await
+    .expect("save");
+
+    // 旧地址的厂商列表存下了：跟厂商走时主模型是它的第一个。
+    available_models(&host, discover_request("moved")).await;
+    assert_eq!(stored_live(dir.path(), "moved").0, vec!["old-vendor-model"]);
+    assert_eq!(
+        service::models::primary_model(dir.path(), &connection_of(&host, "moved").await),
+        "old-vendor-model"
+    );
+
+    // 换 API 地址：旧地址存下的列表立刻作废，小标签和主模型回到内置目录。
+    host.dispatch(Call::ConnectionUpdate(ConnectionUpdateRequest {
+        id: "moved".to_owned(),
+        endpoint: new_vendor.uri(),
+        model: "deepseek-flash".to_owned(),
+        ..Default::default()
+    }))
+    .await
+    .expect("update");
+    assert!(
+        !model::catalog::live_path(dir.path(), "moved").exists(),
+        "换地址要清掉旧厂商列表"
+    );
+    assert!(
+        listed_ids(&host, "moved").await.is_empty(),
+        "设置页不再显示旧表"
+    );
+    assert_eq!(
+        service::models::primary_model(dir.path(), &connection_of(&host, "moved").await),
+        "deepseek-flash",
+        "回到内置目录的第一个"
+    );
+
+    // 在新地址按获取：新表生效，旧表不再出现。
+    let fetched = available_models(&host, discover_request("moved")).await;
+    assert!(
+        fresh_ids(&fetched).is_empty(),
+        "换到新地址后第一次获取没有基准，一条都不标新"
+    );
+    assert_eq!(stored_live(dir.path(), "moved").0, vec!["new-vendor-model"]);
+    assert_eq!(listed_ids(&host, "moved").await, vec!["new-vendor-model"]);
+    assert_eq!(
+        service::models::primary_model(dir.path(), &connection_of(&host, "moved").await),
+        "new-vendor-model"
+    );
+}
+
+/// 页面在编辑器里重填密钥、换 API 地址：保存走 connection-save。旧地址存下的厂商列表
+/// 不能留着；小标签和主模型回到这个连接自己的模型，直到在新地址按一次「获取可用模型」。
+#[tokio::test]
+async fn 重填密钥保存换地址后旧厂商列表作废获取后新表生效() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let old_vendor = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [{"id": "old-vendor-model"}]
+        })))
+        .expect(1)
+        .mount(&old_vendor)
+        .await;
+    let new_vendor = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [{"id": "new-vendor-model"}]
+        })))
+        .expect(1)
+        .mount(&new_vendor)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let save = |endpoint: &str| ConnectionSaveRequest {
+        id: "edited".to_owned(),
+        name: "Edited".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        endpoint: endpoint.to_owned(),
+        api_key: TEST_KEY.to_owned(),
+        models: Some(Vec::new()),
+        ..Default::default()
+    };
+
+    host.dispatch(Call::ConnectionSave(save(&old_vendor.uri())))
+        .await
+        .expect("save");
+    available_models(&host, discover_request("edited")).await;
+    assert_eq!(
+        stored_live(dir.path(), "edited").0,
+        vec!["old-vendor-model"]
+    );
+
+    // 只重填密钥、地址没换：存下的列表还在，不该顺手清掉。
+    host.dispatch(Call::ConnectionSave(save(&old_vendor.uri())))
+        .await
+        .expect("re-save");
+    assert_eq!(
+        listed_ids(&host, "edited").await,
+        vec!["old-vendor-model"],
+        "地址和预设都没变，旧列表要留着"
+    );
+
+    // 换地址：旧表当场作废。
+    host.dispatch(Call::ConnectionSave(save(&new_vendor.uri())))
+        .await
+        .expect("save moved");
+    assert!(
+        !model::catalog::live_path(dir.path(), "edited").exists(),
+        "换地址要清掉旧厂商列表"
+    );
+    assert!(
+        listed_ids(&host, "edited").await.is_empty(),
+        "设置页不再显示旧表"
+    );
+    assert_eq!(
+        service::models::primary_model(dir.path(), &connection_of(&host, "edited").await),
+        "deepseek-flash",
+        "回到连接自己的模型"
+    );
+
+    // 在新地址按获取：新表生效，旧表不再出现。
+    let fetched = available_models(&host, discover_request("edited")).await;
+    assert!(fetched.live, "新地址获取成功");
+    assert_eq!(
+        stored_live(dir.path(), "edited").0,
+        vec!["new-vendor-model"]
+    );
+    assert_eq!(listed_ids(&host, "edited").await, vec!["new-vendor-model"]);
+    assert_eq!(
+        service::models::primary_model(dir.path(), &connection_of(&host, "edited").await),
+        "new-vendor-model"
+    );
+}
+
+/// 同一个地址只换预设，也算换了厂商身份：旧表作废，小标签和主模型回到新预设的内置目录。
+#[tokio::test]
+async fn 保存换预设后旧厂商列表作废() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let vendor = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(SequenceResponder::new(vec![
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"id": "old-vendor-model"}]
+            })),
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [{"id": "preset-vendor-model"}]
+            })),
+        ]))
+        .expect(2)
+        .mount(&vendor)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let save = |preset: &str| ConnectionSaveRequest {
+        id: "preset-moved".to_owned(),
+        name: "Preset moved".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        endpoint: vendor.uri(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some(preset.to_owned()),
+        models: Some(Vec::new()),
+        ..Default::default()
+    };
+
+    host.dispatch(Call::ConnectionSave(save("deepseek")))
+        .await
+        .expect("save");
+    available_models(&host, discover_request("preset-moved")).await;
+    assert_eq!(
+        service::models::primary_model(dir.path(), &connection_of(&host, "preset-moved").await),
+        "old-vendor-model"
+    );
+
+    host.dispatch(Call::ConnectionSave(save("minimax")))
+        .await
+        .expect("save preset");
+    assert!(
+        !model::catalog::live_path(dir.path(), "preset-moved").exists(),
+        "换预设也要清掉旧厂商列表"
+    );
+    assert!(listed_ids(&host, "preset-moved").await.is_empty());
+    assert_eq!(
+        service::models::primary_model(dir.path(), &connection_of(&host, "preset-moved").await),
+        "MiniMax-M2",
+        "回到 minimax 的内置目录（目录原序）"
+    );
+
+    let fetched = available_models(&host, discover_request("preset-moved")).await;
+    assert!(
+        fresh_ids(&fetched).is_empty(),
+        "换预设后旧表已删，第一次获取没有基准"
+    );
+    assert_eq!(
+        listed_ids(&host, "preset-moved").await,
+        vec!["preset-vendor-model"]
+    );
+}
+
+/// 删连接时把存下的厂商列表一起删；同一个 id 再加回来，不能复活旧表。
+#[tokio::test]
+async fn 删除连接清掉旧厂商列表且同id重加不复活() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let vendor = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [{"id": "old-vendor-model"}]
+        })))
+        .expect(1)
+        .mount(&vendor)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let save = || ConnectionSaveRequest {
+        id: "gone".to_owned(),
+        name: "Gone".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        endpoint: vendor.uri(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some("deepseek".to_owned()),
+        models: Some(Vec::new()),
+        ..Default::default()
+    };
+    host.dispatch(Call::ConnectionSave(save()))
+        .await
+        .expect("save");
+    available_models(&host, discover_request("gone")).await;
+    assert_eq!(stored_live(dir.path(), "gone").0, vec!["old-vendor-model"]);
+
+    let deleted = host
+        .dispatch(Call::ConnectionDelete(ConnectionDeleteRequest {
+            id: "gone".to_owned(),
+        }))
+        .await
+        .expect("delete");
+    let service::Response::ConnectionDelete(deleted) = deleted else {
+        panic!("expected ConnectionDelete");
+    };
+    assert!(deleted.deleted);
+    assert!(
+        !model::catalog::live_path(dir.path(), "gone").exists(),
+        "删连接要一起删掉旧厂商列表"
+    );
+
+    // 同一个 id 再加回来：旧表不能复活。
+    host.dispatch(Call::ConnectionSave(save()))
+        .await
+        .expect("re-add");
+    assert!(listed_ids(&host, "gone").await.is_empty());
+    assert_eq!(
+        service::models::primary_model(dir.path(), &connection_of(&host, "gone").await),
+        "deepseek-flash"
+    );
+}
+
+/// 旧页面发 available-models 不带 mode：按「获取」读，行为跟以前一样。
+#[test]
+fn 旧页面不传mode时按获取处理() {
+    let call: Call = serde_json::from_value(serde_json::json!({
+        "method": "available-models",
+        "id": "deepseek",
+    }))
+    .expect("旧页面的 available-models 要读得出来");
+    let Call::AvailableModels(request) = call else {
+        panic!("expected AvailableModels");
+    };
+    assert_eq!(request.mode, service::AvailableModelsMode::Fetch);
 }
 
 #[tokio::test]
@@ -683,9 +1565,7 @@ async fn 获取可用模型时_anthropic_端点请求_chat_base_的列表() {
         .await;
     assert!(saved.is_ok(), "save: {saved:?}");
     let response = host
-        .dispatch(Call::AvailableModels(service::AvailableModelsRequest {
-            id: "list-chat-base".to_owned(),
-        }))
+        .dispatch(Call::AvailableModels(discover_request("list-chat-base")))
         .await
         .expect("available models");
     let service::Response::AvailableModels(response) = response else {
@@ -847,6 +1727,18 @@ async fn 选模型写会话日志事件并保存上次选择() {
     // settings.json：新会话默认用上一次选的。
     let settings = service::settings::load(dir.path());
     assert_eq!(settings.last_selection, Some(selection));
+    // 内存里的当前选择与它一致（status 从内存选择算）。
+    let status = host
+        .dispatch(Call::Status(service::StatusRequest {}))
+        .await
+        .expect("status");
+    let service::Response::Status(status) = status else {
+        panic!("expected Status");
+    };
+    let stats = status.stats.expect("stats");
+    assert_eq!(stats.connection, "deepseek");
+    assert_eq!(stats.model, "deepseek-pro", "内存选择跟 lastSelection 一致");
+    assert_eq!(stats.effort_wanted, "low");
 }
 
 #[tokio::test]
@@ -905,17 +1797,24 @@ async fn 重开会话从日志恢复模型选择() {
 async fn 空闲时跨连接切换重建根agent并走新连接() {
     let server_a = MockServer::start().await;
     let server_b = MockServer::start().await;
-    for server in [&server_a, &server_b] {
-        Mock::given(method("POST"))
-            .and(path("/v1/messages"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "text/event-stream")
-                    .set_body_string("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
-            )
-            .mount(server)
-            .await;
-    }
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(USAGE_SSE),
+        )
+        .mount(&server_a)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"),
+        )
+        .mount(&server_b)
+        .await;
     let dir = tempdir().unwrap();
     let identity = dir.path().join("identity.txt");
     let keyring = credentials::Keyring::open(dir.path(), Some(&identity)).unwrap();
@@ -954,16 +1853,18 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
             let connection = selection
                 .map(|selection| selection.connection.clone())
                 .unwrap_or_else(|| "deepseek".to_owned());
-            let (endpoint, model) = if connection == "minimax-cn" {
-                (uri_b.clone(), "MiniMax-M3.1-Flash")
+            let (endpoint, model, context_window) = if connection == "minimax-cn" {
+                (uri_b.clone(), "MiniMax-M3.1-Flash", 222_000)
             } else {
-                (uri_a.clone(), "deepseek-flash")
+                (uri_a.clone(), "deepseek-flash", 111_000)
             };
             Ok((
                 connection,
                 DeepSeekConfig {
+                    provider: "deepseek".to_owned(),
                     base_url: endpoint,
                     model: model.to_owned(),
+                    context_window,
                     ..DeepSeekConfig::default()
                 },
                 Some(test_credential()),
@@ -971,12 +1872,24 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
         });
     let mut options = options(dir.path(), &identity);
     options.model_factory = Some(factory);
+    let hook_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hook_calls_for_hook = std::sync::Arc::clone(&hook_calls);
+    options.keyring_changed = Some(std::sync::Arc::new(
+        move |_keyring: &credentials::Keyring| {
+            hook_calls_for_hook.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        },
+    ));
     seed_fx_cache(dir.path());
     let host = RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await;
     assert_eq!(
         *seen.lock().expect("seen"),
         vec![None],
         "新会话 factory 收到 None"
+    );
+    assert_eq!(
+        hook_calls.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "打开根会话不改 Keyring，不触发脱敏钩子"
     );
     // 先跑一轮：走连接 A（初始选择）。
     host.dispatch(Call::Send(service::SendRequest {
@@ -991,6 +1904,12 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
     .expect("send A");
     wait_for_requests(&server_a, 1).await;
     wait_host_idle(&host).await;
+    wait_context_used(&host, 9).await;
+    assert_eq!(
+        stats_of(&host).await.context_window,
+        111_000,
+        "初始连接 A 的窗口"
+    );
     assert_eq!(
         server_a.received_requests().await.unwrap().len(),
         1,
@@ -1017,6 +1936,15 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
             .map(|selection| selection.connection.as_str()),
         Some("minimax-cn"),
         "factory 收到新选择"
+    );
+    // 热切换只换窗口：已用上下文还是同一会话日志里的事实；Keyring 没动过，不能多触发钩子。
+    let stats = stats_of(&host).await;
+    assert_eq!(stats.context_window, 222_000, "热切换后窗口跟新模型");
+    assert_eq!(stats.context_used, 9, "热切换保留已用上下文，不归零");
+    assert_eq!(
+        hook_calls.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "Keyring 没变，热切换不触发脱敏钩子"
     );
     // 下一轮走连接 B。
     host.dispatch(Call::Send(service::SendRequest {
@@ -1084,7 +2012,29 @@ async fn wait_host_idle(host: &RootHost) {
     panic!("等待根会话空闲超时");
 }
 
-fn seed_fx_cache(dir: &std::path::Path) {
+/// 轮询上下文占用变成期望值（usage 事件由转发任务异步落进 context）。
+async fn wait_context_used(host: &RootHost, used: u64) {
+    for _ in 0..600 {
+        if stats_of(host).await.context_used == used {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("等待 context used 变成 {used} 超时");
+}
+
+async fn stats_of(host: &RootHost) -> service::stats::SessionStats {
+    let response = host
+        .dispatch(Call::Status(service::StatusRequest {}))
+        .await
+        .expect("status");
+    let service::Response::Status(status) = response else {
+        panic!("expected Status");
+    };
+    status.stats.expect("stats")
+}
+
+pub(crate) fn seed_fx_cache(dir: &std::path::Path) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
@@ -1259,4 +2209,286 @@ async fn 设置更新写币种且状态里带新币种() {
         .await;
     assert!(rejected.is_err(), "只接受 usd/cny");
     assert_eq!(service::settings::load(dir.path()).currency, "cny");
+}
+
+/// 编辑连接（地址/模型/价格）不动 settings.json 里的上次选择。
+#[tokio::test]
+async fn 编辑连接不改上次选择() {
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "deepseek".to_owned(),
+        name: "DeepSeek".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        endpoint: "http://127.0.0.1:1".to_owned(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some("deepseek".to_owned()),
+        ..ConnectionSaveRequest::default()
+    }))
+    .await
+    .expect("save");
+    host.dispatch(Call::SessionModelSelect(SessionModelSelectRequest {
+        connection: Some("deepseek".to_owned()),
+        model: Some("deepseek-pro".to_owned()),
+        effort_wanted: Some("low".to_owned()),
+    }))
+    .await
+    .expect("select");
+    let before = std::fs::read(service::settings::path(dir.path())).expect("settings.json");
+    host.dispatch(Call::ConnectionUpdate(ConnectionUpdateRequest {
+        id: "deepseek".to_owned(),
+        endpoint: "http://127.0.0.1:2".to_owned(),
+        model: "deepseek-v4-pro".to_owned(),
+        preset: Some("deepseek".to_owned()),
+        models: None,
+        price_rate: None,
+        auth_header: None,
+    }))
+    .await
+    .expect("connection-update");
+    let after = std::fs::read(service::settings::path(dir.path())).expect("settings.json");
+    assert_eq!(before, after, "编辑连接不能改上次选择");
+}
+
+/// 选模型时 settings.json 写不进去：报 settings/unavailable，内存选择和会话日志都不改。
+#[tokio::test]
+async fn 选模型写上次选择失败时报设置不可用且不改内存与日志() {
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    // 先正常选一次，让 settings.json 和日志里都已有上一次选择。
+    host.dispatch(Call::SessionModelSelect(SessionModelSelectRequest {
+        connection: Some("deepseek".to_owned()),
+        model: Some("deepseek-pro".to_owned()),
+        effort_wanted: Some("low".to_owned()),
+    }))
+    .await
+    .expect("第一次选择");
+    let id = root_session_id(dir.path());
+    let before = {
+        let snapshot = session::SessionStore::open_read_only(dir.path(), &id).expect("snapshot");
+        session::last_model_selection(snapshot.events()).expect("session/model")
+    };
+    let before_settings =
+        std::fs::read(service::settings::path(dir.path())).expect("settings.json");
+    // 原子的临时文件位置被目录占住，rename 前的写入一定失败。
+    std::fs::create_dir(dir.path().join("settings.json.tmp")).expect("tmp dir");
+    let result = host
+        .dispatch(Call::SessionModelSelect(SessionModelSelectRequest {
+            connection: Some("deepseek".to_owned()),
+            model: Some("deepseek-flash".to_owned()),
+            effort_wanted: Some("high".to_owned()),
+        }))
+        .await;
+    let Err(error) = result else {
+        panic!("写上次选择失败不能报成功");
+    };
+    assert_eq!(error.code().as_str(), "settings/unavailable");
+    assert!(matches!(error, ServiceError::SettingsInvalid(_)));
+    assert_eq!(
+        std::fs::read(service::settings::path(dir.path())).expect("settings.json"),
+        before_settings,
+        "settings.json 字节不变"
+    );
+    let after = {
+        let snapshot = session::SessionStore::open_read_only(dir.path(), &id).expect("snapshot");
+        session::last_model_selection(snapshot.events()).expect("session/model")
+    };
+    assert_eq!(after, before, "日志里的选择不变");
+    let status = host
+        .dispatch(Call::Status(service::StatusRequest {}))
+        .await
+        .expect("status");
+    let service::Response::Status(status) = status else {
+        panic!("expected Status");
+    };
+    let stats = status.stats.expect("stats");
+    assert_eq!(stats.model, before.model, "内存里的选择不变");
+    assert_eq!(stats.effort_wanted, before.effort_wanted);
+}
+
+/// 可用模型响应的字段是 camelCase，目录里的四类价格都在。
+#[tokio::test]
+async fn 可用模型响应字段是驼峰命名且四类价格都在() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "minimax".to_owned(),
+        name: "MiniMax".to_owned(),
+        model: "MiniMax-M2.7".to_owned(),
+        endpoint: "http://127.0.0.1:1/anthropic".to_owned(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some("minimax".to_owned()),
+        ..ConnectionSaveRequest::default()
+    }))
+    .await
+    .expect("save");
+    let response = host
+        .dispatch(Call::AvailableModels(query_request("minimax")))
+        .await
+        .expect("available models");
+    let service::Response::AvailableModels(response) = response else {
+        panic!("expected AvailableModels");
+    };
+    let row = response
+        .models
+        .iter()
+        .find(|row| row.model.id == "MiniMax-M2.7")
+        .expect("MiniMax-M2.7");
+    assert_eq!(row.model.context_window, Some(204_800));
+    assert_eq!(row.model.max_tokens, Some(131_072));
+    assert_eq!(row.model.price_input, Some(0.3));
+    assert_eq!(row.model.price_output, Some(1.2));
+    assert_eq!(row.model.price_cache_read, Some(0.06));
+    assert_eq!(row.model.price_cache_write, Some(0.375));
+    let json = serde_json::to_value(&response).expect("json");
+    let entry = json["models"]
+        .as_array()
+        .expect("models")
+        .iter()
+        .find(|model| model["id"] == "MiniMax-M2.7")
+        .expect("JSON 里的 MiniMax-M2.7");
+    for key in [
+        "contextWindow",
+        "maxTokens",
+        "priceInput",
+        "priceOutput",
+        "priceCacheRead",
+        "priceCacheWrite",
+        "fresh",
+    ] {
+        assert!(entry.get(key).is_some(), "缺 {key}: {entry}");
+    }
+    assert_eq!(entry["fresh"], false, "没取到厂商列表时谁都不标新");
+    for key in [
+        "context_window",
+        "max_tokens",
+        "price_input",
+        "price_output",
+        "price_cache_read",
+        "price_cache_write",
+    ] {
+        assert!(entry.get(key).is_none(), "旧字段 {key} 还在: {entry}");
+    }
+}
+
+/// 按连接身份发一轮消息，返回会话日志里 assistant/message 的 provider。
+async fn assistant_message_provider(connection_id: &str, preset: &str, model_id: &str) -> String {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(USAGE_SSE),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let identity = dir.path().join("identity.txt");
+    credentials::Keyring::open(dir.path(), Some(&identity))
+        .expect("keyring")
+        .save_connection(credentials::NewConnection {
+            id: connection_id.to_owned(),
+            name: connection_id.to_owned(),
+            model: model_id.to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some(preset.to_owned()),
+            ..credentials::NewConnection::default()
+        })
+        .expect("save connection");
+    let data = dir.path().to_path_buf();
+    let identity_for_factory = identity.clone();
+    // 和 cli 的 model_with_keyring 一样：连接的厂商 id 进模型配置。
+    let factory: service::ModelFactory =
+        std::sync::Arc::new(move |selection: Option<&session::ModelSelection>| {
+            let keyring = credentials::Keyring::open(data.clone(), Some(&identity_for_factory))
+                .map_err(|error| error.to_string())?;
+            let view = keyring.view();
+            let wanted = selection
+                .map(|selection| selection.connection.clone())
+                .or_else(|| {
+                    view.connections
+                        .first()
+                        .map(|connection| connection.id.clone())
+                })
+                .ok_or_else(|| "还没有接模型".to_owned())?;
+            let connection = view
+                .connections
+                .into_iter()
+                .find(|connection| connection.id == wanted)
+                .ok_or_else(|| "连接不在".to_owned())?;
+            let same = selection.is_some_and(|selection| selection.connection == connection.id);
+            let model = selection
+                .filter(|_| same)
+                .map(|selection| selection.model.clone())
+                .unwrap_or_else(|| connection.primary_model().to_owned());
+            let effort = selection
+                .filter(|_| same)
+                .map(|selection| selection.effort_wanted.clone())
+                .unwrap_or_else(|| "high".to_owned());
+            Ok((
+                connection.id.clone(),
+                DeepSeekConfig {
+                    provider: model::catalog::provider_id_for_connection(
+                        &connection.preset,
+                        &connection.endpoint,
+                    ),
+                    base_url: connection.endpoint.clone(),
+                    model,
+                    max_tokens: 2048,
+                    context_window: 111_000,
+                    effort: Effort::new(effort),
+                },
+                Some(test_credential()),
+            ))
+        });
+    let mut options = options(dir.path(), &identity);
+    options.model_factory = Some(factory);
+    let host = RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await;
+    host.dispatch(Call::Send(service::SendRequest {
+        request_id: "r1".to_owned(),
+        content: "hi".to_owned(),
+        delivery: service::DeliveryMode::FollowUp,
+        pastes: Vec::new(),
+        attachments: Vec::new(),
+        canvas: None,
+    }))
+    .await
+    .expect("send");
+    wait_for_requests(&server, 1).await;
+    wait_host_idle(&host).await;
+    let id = root_session_id(dir.path());
+    let snapshot = session::SessionStore::open_read_only(dir.path(), &id).expect("snapshot");
+    snapshot
+        .events()
+        .iter()
+        .rev()
+        .find_map(|event| match &event.kind {
+            session::EventKind::AssistantMessage { message, .. } => match &message.source {
+                model::MessageSource::Model { provider, .. } => Some(provider.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("assistant/message")
+}
+
+/// MiniMax 连接的助手消息按连接身份记厂商，不记成 deepseek。
+#[tokio::test]
+async fn minimax连接的助手消息记真实厂商() {
+    assert_eq!(
+        assistant_message_provider("minimax", "minimax", "MiniMax-M3.1-Flash").await,
+        "minimax"
+    );
+}
+
+/// DeepSeek 连接仍记 deepseek（厂商身份来自连接，不是写死的）。
+#[tokio::test]
+async fn deepseek连接的助手消息仍记deepseek() {
+    assert_eq!(
+        assistant_message_provider("deepseek", "deepseek", "deepseek-flash").await,
+        "deepseek"
+    );
 }

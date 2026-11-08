@@ -127,6 +127,7 @@ async fn setup(server: &MockServer) -> (Agent, tempfile::TempDir, SessionId) {
     };
     let model = DeepSeek::with_credentials(
         DeepSeekConfig {
+            provider: "deepseek".to_owned(),
             base_url: server.uri(),
             model: "deepseek-flash".to_owned(),
             max_tokens: 2048,

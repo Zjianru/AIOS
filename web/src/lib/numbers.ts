@@ -46,6 +46,15 @@ export function formatPercent(value: number): string {
   if (value > 0 && value < 1) return '不到 1%';
   return Math.round(value) + '%';
 }
+/** 模型行的紧凑单价（美元/百万 token）：常规两位小数，小于 0.01 用两位有效数字；0 写 $0。 */
+export function compactPrice(value: number): string {
+  // 0 价就是免费：直接写 $0，别让两位有效数字留下一个悬空的 "$0."。
+  if (value === 0) return '$0';
+  if (value >= 0.01) return '$' + value.toFixed(2);
+  // 缓存价可能小于 0.01，两小数会变成 0；用两位有效数字。
+  return '$' + value.toPrecision(2).replace(/0+$/, '');
+}
+
 /** 花费（美元）按币种显示；cnyPerUsd 是汇率（没取到时 7.2）；partial：有调用没价格，后面加「+」。 */
 export function formatCost(usd: number, currency: Currency, cnyPerUsd: number, partial = false): string {
   let amount = usd;

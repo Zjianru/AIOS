@@ -1283,6 +1283,13 @@ async fn ws_session(mut socket: WebSocket, state: Arc<AppState>, last_seq: u64) 
         tokio::select! {
             received = live.recv() => match received {
                 Ok(event) => {
+                    if event.seq == 0 {
+                        // 合成事件（设置变化）：不在日志里，不推进 lastSeq；页面收到后自己重拉设置。
+                        if !send_frame(&mut socket, &Frame::Event { event }).await {
+                            return;
+                        }
+                        continue;
+                    }
                     if event.seq <= last {
                         continue;
                     }
@@ -1570,6 +1577,7 @@ mod t012_attachment_http_tests {
             data_dir: data_dir.to_path_buf(),
             cwd: data_dir.to_path_buf(),
             model: DeepSeekConfig {
+                provider: "deepseek".to_owned(),
                 base_url: "http://127.0.0.1:1".to_owned(),
                 model: "deepseek-flash".to_owned(),
                 max_tokens: 2048,
@@ -1881,6 +1889,7 @@ mod t011_ops_tests {
 
     fn model_config() -> model::DeepSeekConfig {
         model::DeepSeekConfig {
+            provider: "deepseek".to_owned(),
             base_url: "http://127.0.0.1:1".to_owned(),
             model: "deepseek-flash".to_owned(),
             max_tokens: 2048,
@@ -2091,6 +2100,7 @@ mod t015_local_file_tests {
 
     fn model_config() -> model::DeepSeekConfig {
         model::DeepSeekConfig {
+            provider: "deepseek".to_owned(),
             base_url: "http://127.0.0.1:1".to_owned(),
             model: "deepseek-flash".to_owned(),
             max_tokens: 2048,

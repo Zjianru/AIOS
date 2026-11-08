@@ -28,6 +28,18 @@ use translate::Translator;
 
 use config::STREAM_IDLE_TIMEOUT;
 
+/// 模型自己的默认档：先按连接的真实厂商 id 查目录，查不到再用地址/模型名的内置表。
+/// 新连接没有用户选择时用它（不是写死 high）。
+pub fn default_effort_for(provider: &str, base_url: &str, model: &str) -> String {
+    if let Some((_thinks, efforts)) = crate::catalog::global()
+        .as_ref()
+        .and_then(|catalog| catalog.reasoning_for(provider, model))
+    {
+        return crate::default_effort(&efforts);
+    }
+    crate::default_effort(&vendors::reasoning(base_url, model).efforts)
+}
+
 /// DeepSeek 的 Messages 适配器。
 #[derive(Clone)]
 pub struct DeepSeek {
@@ -83,8 +95,11 @@ impl DeepSeek {
 
     /// T012.3：这个模型的 DefaultEffort（压缩摘要用）。
     pub fn default_effort(&self) -> Effort {
-        let profile = vendors::reasoning(&self.config.base_url, &self.config.model);
-        Effort::new(crate::default_effort(&profile.efforts))
+        Effort::new(default_effort_for(
+            &self.config.provider,
+            &self.config.base_url,
+            &self.config.model,
+        ))
     }
 
     /// T012.3：同一连接/模型换一个要的档（压缩摘要用；不改原实例）。
@@ -148,6 +163,23 @@ impl DeepSeek {
             .unwrap_or_else(|| self.config.model.clone())
     }
 
+    /// 本轮开始后冻结的模型；还没开始一轮、或上一轮已经收尾时为 None。
+    ///
+    /// 只读，不推进状态；服务用它判断「正在跑的一轮」到底在用哪个模型。
+    pub fn frozen_model(&self) -> Option<String> {
+        self.turn_model
+            .lock()
+            .ok()
+            .and_then(|current| current.clone())
+    }
+
+    /// 一轮收尾：清掉冻结的模型，服务不再把刚停下的那一轮当成在跑。
+    pub fn end_turn(&self) {
+        if let Ok(mut current) = self.turn_model.lock() {
+            *current = None;
+        }
+    }
+
     /// 换模型：只改下一轮；本轮冻结的模型在 begin_turn 时确定（D26）。
     pub fn set_model(&self, model: String) {
         if let Ok(mut current) = self.next_model.lock() {
@@ -164,13 +196,15 @@ impl DeepSeek {
 
     /// 本轮开始时冻结模型和档；stream 内不再读 next_*（D26）。
     pub fn begin_turn(&self) {
+        // 没有待切换的模型时冻结装配时的模型：本轮的实际请求模型就是它。
         let next = self
             .next_model
             .lock()
             .map(|model| model.clone())
-            .unwrap_or(None);
+            .unwrap_or(None)
+            .unwrap_or_else(|| self.config.model.clone());
         if let Ok(mut current) = self.turn_model.lock() {
-            *current = next;
+            *current = Some(next);
         }
         let next = self
             .next_effort
@@ -182,9 +216,9 @@ impl DeepSeek {
         }
     }
 
-    /// provider 路由 id（DSH 的 provider 名；AIOS 只接 DeepSeek）。
-    pub fn provider(&self) -> &'static str {
-        "deepseek"
+    /// 厂商路由 id（DSH 的 provider 名）：日志、统计和压缩策略都按它匹配。
+    pub fn provider(&self) -> &str {
+        &self.config.provider
     }
 
     /// 发一次流式请求。消息和工具定义按 Messages 协议序列化（system 单独成字段）。
@@ -227,7 +261,6 @@ impl DeepSeek {
             .lock()
             .map(|context| context.clone())
             .unwrap_or_default();
-        let api_key = self.credentials.issue("model-request", &context)?;
         let mut effective = self.config.clone();
         if let Ok(current) = self.turn_model.lock()
             && let Some(model) = current.as_deref()
@@ -240,6 +273,9 @@ impl DeepSeek {
         {
             effective.effort = crate::Effort::new(effort);
         }
+        // 出站之前先查屏蔽：被拒就不签发、不发请求（聊天、重试、摘要、验证共用这一处）。
+        self.credentials.admit(&effective.model)?;
+        let api_key = self.credentials.issue("model-request", &context)?;
         let base_url = effective.base_url.clone();
         // T012.6：学到的「关不掉思考」：要 none 也按最低非关档发（与内置 always_thinks 同行为）。
         if self.learned.thinking_required(&base_url, &effective.model) && effective.effort.is_off()

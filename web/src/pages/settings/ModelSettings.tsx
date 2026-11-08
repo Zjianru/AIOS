@@ -12,14 +12,19 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, Plus, X } from 'lucide-react';
+import { Ban, ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, Loader2, Plus, X } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   addConnection, checkConnection, discoverModels, getModelSettings, moveKeyFile, relinkKeyFile, removeConnection,
-  resetKeyring, revokeKey, updateConnection,
+  resetKeyring, revokeKey, setDisabledModels, updateConnection,
 } from '@/data/keyring';
-import { displayPath, fetchConnectionQuota, type ServiceQuota } from '@/data/service';
-import { CURRENCIES } from '@/lib/numbers';
+import { matchDisabled } from '@/data/disabled';
+import {
+  checkDisabledModels, displayPath, type DisabledModelUser, type ServiceQuota,
+} from '@/data/service';
+import { cachedQuota, loadQuota } from '@/data/quota';
+import { CURRENCIES, compactPrice } from '@/lib/numbers';
+import { formatLocalDateTime } from '@/lib/time';
 import { useKindStore } from '@/pages/kind/kindStore';
 import type { ConnectionView, ModelRow, ModelSettingsView } from '@/data/fixtures/settings';
 import { PROTOCOL_LABEL } from '@/data/fixtures/settings';
@@ -37,18 +42,41 @@ function parsePrice(text: string): number | undefined {
   return text.trim() !== '' && Number.isFinite(n) && n >= 0 ? n : undefined;
 }
 
-/** 模型行上的价格摘要：填了哪几格就写哪几格，没填写「标价」。 */
 function priceLabel(row: ModelRow): string {
-  const parts: string[] = [];
-  if (row.priceInput !== undefined) parts.push('in ' + row.priceInput);
-  if (row.priceOutput !== undefined) parts.push('out ' + row.priceOutput);
-  if (row.priceCacheRead !== undefined) parts.push('r ' + row.priceCacheRead);
-  if (row.priceCacheWrite !== undefined) parts.push('w ' + row.priceCacheWrite);
-  return parts.length === 0 ? '标价' : parts.join(' / ');
+  const pair: string[] = [];
+  if (row.priceInput !== undefined) pair.push(compactPrice(row.priceInput));
+  if (row.priceOutput !== undefined) pair.push(compactPrice(row.priceOutput));
+  if (pair.length) return pair.join(' / ');
+  // 只填了缓存价也让人看出来，不假装是「标价」。
+  const cache: string[] = [];
+  if (row.priceCacheRead !== undefined) cache.push(compactPrice(row.priceCacheRead));
+  if (row.priceCacheWrite !== undefined) cache.push(compactPrice(row.priceCacheWrite));
+  return cache.length ? '缓存 ' + cache.join(' / ') : '标价';
+}
+
+/** 价格按钮的 title：完整四类 + 标价/覆盖价的算法。 */
+function priceTitle(row: ModelRow): string {
+  const show = (value: number | undefined) => (value === undefined ? '未填' : '$' + value);
+  return (
+    '单价（美元/百万 token）：输入 ' +
+    show(row.priceInput) +
+    ' / 输出 ' +
+    show(row.priceOutput) +
+    ' / 缓存读 ' +
+    show(row.priceCacheRead) +
+    ' / 缓存写 ' +
+    show(row.priceCacheWrite) +
+    '。标价 = 目录价（空着就继承）；自己填 = 覆盖价。'
+  );
 }
 
 function formatPrice(value: number | undefined): string {
   return value === undefined ? '' : String(value);
+}
+
+/** 余量结果的时间，只到分钟。 */
+function formatQuotaTime(at: number): string {
+  return new Date(at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 }
 
 /** T012 F1：用户单价四格（照原型 PriceEditor）；空=继承目录标价，「恢复标价」清空四格。 */
@@ -184,11 +212,11 @@ function StatusDot({ conn, broken }: { conn: ConnectionView; broken?: boolean })
 /** 密钥和连接状态的一句话（「已保存」「连接可用」分开说）。 */
 function keyStatus(conn: ConnectionView | null, broken?: boolean): { text: string; tone?: 'warn' | 'fail' | 'ok' } {
   if (!conn || !conn.key.saved) return { text: '还没有密钥。填上才能用这个提供商。', tone: 'warn' };
-  const saved = `已保存在 Keyring（${conn.key.savedAt}）`;
+  const saved = `已保存在 Keyring（${formatLocalDateTime(conn.key.savedAt)}）`;
   if (broken) return { text: `${saved} · 现在读不出来，暂时不能用`, tone: 'fail' };
   switch (conn.check.kind) {
     case 'ok':
-      return { text: `${saved} · 连接可用（${conn.check.at} 验证）`, tone: 'ok' };
+      return { text: `${saved} · 连接可用（${formatLocalDateTime(conn.check.at)} 验证）`, tone: 'ok' };
     case 'fail':
       return { text: `${saved} · 不可用：${modelErrorReason(conn.check.reason)}`, tone: 'fail' };
     case 'checking':
@@ -258,27 +286,37 @@ function parseTokens(text: string): number | undefined {
 
 /* ───────────────────────── 模型目录 ───────────────────────── */
 
-function ModelCatalog({ models, onChange, defaults, discover, required }: {
+function ModelCatalog({ models, onChange, defaults, discover, required, connectionId, masked, onMask }: {
   models: ModelRow[];
   onChange: (models: ModelRow[]) => void;
-  /** 目录为空时用的默认模型（内置目录才有）。 */
+  /** 跟着厂商走时列出来的模型（存下的厂商列表；没存过用内置目录）。 */
   defaults?: ModelRow[];
-  discover: () => Promise<ModelRow[]>;
+  /** 已保存的连接才能向厂商要列表；新连接没有 keyring 记录，不给这个函数。 */
+  discover?: () => Promise<ModelRow[]>;
   required?: boolean;
+  /** 这批模型属于哪个连接（行上的屏蔽按钮用；新建连接还没有 id 时不给）。 */
+  connectionId?: string;
+  /** 已屏蔽的规则整表（服务端保存的）。 */
+  masked?: string[];
+  /** 点行上的屏蔽按钮（带简单确认）。 */
+  onMask?: (pattern: string) => void;
 }) {
   const [candidates, setCandidates] = useState<ModelRow[] | null>(null);
   const [priceOpen, setPriceOpen] = useState<number | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState('');
   const [asking, setAsking] = useState(false);
+  const blockedBy = (id: string) => (connectionId ? matchDisabled(masked ?? [], connectionId, id) : undefined);
 
   const ask = async () => {
+    if (!discover) return;
     setAsking(true);
     try {
       const list = await discover();
       setCandidates(list);
+      // 跟着厂商走（一个没勾）的打开还是一个没勾；勾过的打开是原来勾的。
       const configured = new Set(models.map((row) => row.id));
-      setPicked(new Set(models.length ? list.filter((row) => configured.has(row.id)).map((row) => row.id) : list.map((row) => row.id)));
+      setPicked(new Set(list.filter((row) => configured.has(row.id)).map((row) => row.id)));
     } catch (error) {
       toast.error((error as Error).message);
     } finally {
@@ -286,12 +324,22 @@ function ModelCatalog({ models, onChange, defaults, discover, required }: {
     }
   };
 
+  const needle = query.trim().toLowerCase();
   const visible = (candidates ?? []).filter(
-    (row) => !query || row.id.includes(query) || (row.name ?? '').toLowerCase().includes(query.toLowerCase()),
+    (row) => !needle || row.id.toLowerCase().includes(needle) || (row.name ?? '').toLowerCase().includes(needle),
   );
+  const freshCount = (candidates ?? []).filter((row) => row.fresh).length;
+  const followModels = models.length ? [] : defaults ?? [];
 
   const applyPicked = () => {
     if (!candidates) return;
+    // 一个都不勾：跟着厂商的列表走（照 Magpie：Models 为空）。
+    if (picked.size === 0) {
+      onChange([]);
+      setCandidates(null);
+      setQuery('');
+      return;
+    }
     const listed = new Set(candidates.map((row) => row.id));
     const kept = models.filter((row) => !listed.has(row.id) || picked.has(row.id));
     const have = new Set(kept.map((row) => row.id));
@@ -310,10 +358,16 @@ function ModelCatalog({ models, onChange, defaults, discover, required }: {
         <div>
           <div className="text-2 text-ink-2">模型目录</div>
           <div className="mt-0.5 text-1 text-ink-3">
-            {models.length ? `${models.length} 个模型` : defaults?.length ? '正在使用适配器默认模型' : '还没有模型'}
+            {models.length ? `只用勾的 ${models.length} 个` : followModels.length ? '跟着厂商的列表走' : '还没有模型'}
           </div>
         </div>
-        <Btn kind="quiet" className="ml-auto" disabled={asking} onClick={() => void ask()}>
+        <Btn
+          kind="quiet"
+          className="ml-auto"
+          disabled={asking || !discover}
+          title={discover ? undefined : '保存连接后，才能向厂商要真实列表'}
+          onClick={() => void ask()}
+        >
           {asking ? '正在询问…' : '获取可用模型'}
         </Btn>
       </div>
@@ -326,8 +380,12 @@ function ModelCatalog({ models, onChange, defaults, discover, required }: {
             placeholder="搜索模型"
             className={inputClass}
           />
-          <div className="mt-2 flex items-center gap-2 text-1 text-ink-3">
-            服务商回了 {candidates.length} 个
+          <div className="mt-2 flex items-center gap-2 text-1 text-ink-3" data-settings="discover-count">
+            <span>
+              列出 {candidates.length} 个
+              {freshCount ? <span className="font-medium text-ink">，{freshCount} 个是新的</span> : null}
+              {picked.size ? `，勾了 ${picked.size} 个` : '，一个没勾'}
+            </span>
             <button type="button" className="ml-auto hover:text-ink" onClick={() => setPicked((s) => new Set([...s, ...visible.map((r) => r.id)]))}>全选</button>
             <button type="button" className="hover:text-ink" onClick={() => setPicked((s) => new Set([...s].filter((id) => !visible.some((r) => r.id === id))))}>取消全选</button>
           </div>
@@ -347,20 +405,24 @@ function ModelCatalog({ models, onChange, defaults, discover, required }: {
                   }
                 />
                 <span className="brand-type truncate text-2 text-ink">{row.id}</span>
+                {row.fresh ? (
+                  <span className="shrink-0 rounded-btn bg-done-soft px-1 text-1 font-medium text-done" data-settings="fresh">新</span>
+                ) : null}
                 {row.contextWindow ? <span className="ml-auto text-1 text-ink-3">{formatTokens(row.contextWindow)}</span> : null}
               </label>
             ))}
           </div>
-          <div className="mt-2 flex justify-end gap-2">
-            <Btn kind="quiet" onClick={() => setCandidates(null)}>取消</Btn>
-            <Btn kind="primary" disabled={models.length > 0 && picked.size === 0} onClick={applyPicked}>更新列表</Btn>
+          <div className="mt-2 flex items-center gap-2">
+            <span className="text-1 leading-4 text-ink-3">一个都不勾：跟着厂商的列表走，新出的自动算进来。勾了就只用勾的。</span>
+            <Btn kind="quiet" className="ml-auto" onClick={() => setCandidates(null)}>取消</Btn>
+            <Btn kind="primary" disabled={Boolean(required) && picked.size === 0} onClick={applyPicked}>更新列表</Btn>
           </div>
         </div>
       ) : null}
 
       {models.length ? (
         <div className="mt-2 space-y-1.5">
-          <div className="grid grid-cols-[1fr_1fr_64px_64px_80px_24px] gap-1.5 px-0.5 text-1 text-ink-3">
+          <div className="grid grid-cols-[1fr_1fr_64px_64px_112px_24px] gap-1.5 px-0.5 text-1 text-ink-3">
             <span>模型 ID</span>
             <span>显示名称</span>
             <span>上下文</span>
@@ -368,33 +430,67 @@ function ModelCatalog({ models, onChange, defaults, discover, required }: {
             <span>单价 $/M</span>
             <span />
           </div>
+          <div className="px-0.5 text-1 leading-4 text-ink-3" data-settings="price-help">
+            标价 = 目录价（空着就继承）；自己填 = 覆盖价。
+          </div>
           {models.map((row, index) => (
             <div key={index}>
-            <div className="grid grid-cols-[1fr_1fr_64px_64px_80px_24px] items-center gap-1.5">
-              <input className={cn(inputClass, 'brand-type')} value={row.id} placeholder="model-id" onChange={(e) => setRow(index, { id: e.target.value })} />
+            <div className="grid grid-cols-[1fr_1fr_64px_64px_112px_24px] items-center gap-1.5">
+              <input
+                className={cn(inputClass, 'brand-type', blockedBy(row.id) && 'text-ink-3 line-through')}
+                value={row.id}
+                placeholder="model-id"
+                onChange={(e) => setRow(index, { id: e.target.value })}
+              />
               <input className={inputClass} value={row.name ?? ''} placeholder="可不填" onChange={(e) => setRow(index, { name: e.target.value || undefined })} />
               <input key={'cw' + index + ':' + row.contextWindow} className={inputClass} defaultValue={formatTokens(row.contextWindow)} placeholder="继承" onBlur={(e) => setRow(index, { contextWindow: parseTokens(e.target.value) })} />
               <input key={'mt' + index + ':' + row.maxTokens} className={inputClass} defaultValue={formatTokens(row.maxTokens)} placeholder="继承" onBlur={(e) => setRow(index, { maxTokens: parseTokens(e.target.value) })} />
               <button
                 type="button"
                 data-settings="model-price"
-                title="用户单价（四类）；填了就用它算花费，不乘倍率；空=继承目录标价"
+                title={priceTitle(row)}
                 onClick={() => setPriceOpen(priceOpen === index ? null : index)}
                 className={cn(
-                  'h-7 rounded-btn border border-line-2 px-1 text-2 transition-colors hover:bg-hover',
+                  'h-7 overflow-hidden text-ellipsis whitespace-nowrap rounded-btn border border-line-2 px-1 text-2 transition-colors hover:bg-hover',
                   priceOpen === index ? 'text-ink' : 'text-ink-2',
                 )}
               >
                 {priceLabel(row)}
               </button>
-              <button
-                type="button"
-                aria-label="删掉这个模型"
-                onClick={() => onChange(models.filter((_, i) => i !== index))}
-                className="grid size-6 place-items-center rounded-btn text-ink-3 hover:bg-hover hover:text-ink"
-              >
-                <X className="size-3.5" />
-              </button>
+              <div className="flex items-center">
+                {onMask && connectionId && row.id.trim() ? (
+                  blockedBy(row.id) ? (
+                    <span
+                      className="grid size-6 place-items-center text-fail"
+                      title={'已屏蔽（规则「' + blockedBy(row.id) + '」）；在下面「已屏蔽的模型」里解除'}
+                      data-settings="row-masked"
+                    >
+                      <Ban className="size-3.5" />
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      aria-label={'屏蔽 ' + row.id}
+                      title="屏蔽：立即不让用，不删除"
+                      onClick={() => onMask(connectionId + '/' + row.id)}
+                      className="grid size-6 place-items-center rounded-btn text-ink-3 hover:bg-[var(--fail-soft)] hover:text-[var(--fail)]"
+                      data-settings="mask"
+                    >
+                      <Ban className="size-3.5" />
+                    </button>
+                  )
+                ) : (
+                  <span className="size-6" />
+                )}
+                <button
+                  type="button"
+                  aria-label="删掉这个模型"
+                  onClick={() => onChange(models.filter((_, i) => i !== index))}
+                  className="grid size-6 place-items-center rounded-btn text-ink-3 hover:bg-hover hover:text-ink"
+                >
+                  <X className="size-3.5" />
+                </button>
+              </div>
             </div>
             {priceOpen === index ? (
               <PriceEditor
@@ -410,11 +506,55 @@ function ModelCatalog({ models, onChange, defaults, discover, required }: {
           className="mt-2 rounded-card border border-dashed border-line-2 px-3 py-3 text-center text-2 leading-5 text-ink-3"
           style={required ? { color: 'var(--wait)' } : undefined}
         >
-          {defaults?.length
-            ? `模型选择器里列出默认的 ${defaults.map((row) => row.id).join('、')}；要改就在这里加。`
-            : required
-              ? '自定义接口至少要写一个模型。'
-              : '模型选择器里不会列出模型；目录外的 ID 仍可直接发送。'}
+          {followModels.length ? (
+            <>
+              <div>跟着厂商的列表走，厂商新出的自动算进来。只想用其中几个，就「获取可用模型」勾上。</div>
+              <div className="mt-2 flex flex-wrap justify-center gap-1.5">
+                {followModels.map((row) => {
+                  const rule = blockedBy(row.id);
+                  return (
+                    <span
+                      key={row.id}
+                      className="inline-flex items-center gap-1 rounded-btn border border-line-2 py-0.5 pl-2 pr-0.5 brand-type text-1 text-ink-2"
+                      data-settings="vendor-model"
+                      title={row.name ?? row.id}
+                    >
+                      <span className={cn(rule && "line-through")}>{row.id}</span>
+                      {onMask && connectionId ? (
+                        rule ? (
+                          <span
+                            className="grid size-5 place-items-center text-fail"
+                            title={"已屏蔽（规则「" + rule + "」）"}
+                            data-settings="vendor-masked"
+                          >
+                            <Ban className="size-3" />
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            aria-label={"屏蔽 " + row.id}
+                            title="屏蔽：立即不让用，不删除"
+                            onClick={() => onMask(connectionId + "/" + row.id)}
+                            className="grid size-5 place-items-center rounded-btn text-ink-3 hover:bg-[var(--fail-soft)] hover:text-[var(--fail)]"
+                            data-settings="vendor-mask"
+                          >
+                            <Ban className="size-3" />
+                          </button>
+                        )
+                      ) : null}
+                    </span>
+                  );
+                })}
+              </div>
+              {!discover ? (
+                <div className="mt-2 text-1">保存连接后，才能向厂商要真实列表；现在列的是内置目录。</div>
+              ) : null}
+            </>
+          ) : required ? (
+            '自定义接口至少要写一个模型。'
+          ) : (
+            '模型选择器里不会列出模型；目录外的 ID 仍可直接发送。'
+          )}
         </div>
       )}
 
@@ -441,46 +581,54 @@ function Collapsible({ title, children, defaultOpen = false }: { title: string; 
 
 /* ───────────────────────── 已有提供方的编辑卡片 ───────────────────────── */
 
-function ConnectionEditor({ conn, view, onDone, onView }: {
+function ConnectionEditor({ conn, view, onDone, onView, onMask }: {
   conn: ConnectionView;
   view: ModelSettingsView;
   onDone: () => void;
   onView: (view: ModelSettingsView) => void;
+  /** 行上的屏蔽按钮：打开确认框，确认后立即保存（不经过这张卡片的保存）。 */
+  onMask: (pattern: string) => void;
 }) {
   const [key, setKey] = useState('');
   const [endpoint, setEndpoint] = useState(conn.endpoint);
   const [models, setModels] = useState<ModelRow[]>(conn.models);
-  const [priceRate, setPriceRate] = useState(String(conn.priceRate ?? 1));
-  const [quota, setQuota] = useState<ServiceQuota | null>(null);
+  const [quota, setQuota] = useState<ServiceQuota | null>(() => cachedQuota(conn.id)?.quota ?? null);
+  const [quotaAt, setQuotaAt] = useState<number | null>(() => cachedQuota(conn.id)?.at ?? null);
+  const [quotaError, setQuotaError] = useState<string | null>(null);
   const [askingQuota, setAskingQuota] = useState(false);
   const [saving, setSaving] = useState(false);
   const [confirm, setConfirm] = useState<'revoke' | 'remove' | null>(null);
   const catalog = view.catalog.find((item) => item.id === conn.id);
 
-  const askQuota = async () => {
+  const askQuota = useCallback(async (force = false) => {
     setAskingQuota(true);
+    setQuotaError(null);
     try {
-      setQuota(await fetchConnectionQuota(conn.id));
+      setQuota(await loadQuota(conn.id, { force }));
+      setQuotaAt(cachedQuota(conn.id)?.at ?? Date.now());
     } catch (error) {
-      toast.error((error as Error).message);
+      setQuotaError((error as Error).message);
     } finally {
       setAskingQuota(false);
     }
-  };
+  }, [conn.id]);
+
+  // 打开编辑器自动查一次；缓存/最小间隔内再打开直接用上次结果，不重复打厂商接口。
+  // 没保存密钥时查不了，别自动打出一个失败提示。
+  useEffect(() => {
+    if (!conn.key.saved) return;
+    void askQuota(false);
+  }, [askQuota, conn.key.saved]);
 
   const save = async () => {
     setSaving(true);
     try {
       const withKey = Boolean(key.trim());
-      // 空串 = 不传（保留原值）；非法/负数也不传，避免把「免费」误存成 0。
-      const trimmedRate = priceRate.trim();
-      const rate = trimmedRate === '' ? undefined : Number(trimmedRate);
       onView(
         await updateConnection(conn.id, {
           endpoint,
           models,
           key,
-          priceRate: rate !== undefined && Number.isFinite(rate) && rate >= 0 ? rate : undefined,
         }),
       );
       onDone();
@@ -511,56 +659,86 @@ function ConnectionEditor({ conn, view, onDone, onView }: {
       <KeyInput id={'key-' + conn.id} value={key} onChange={setKey} conn={conn} />
       <Collapsible title="自定义设置" defaultOpen={conn.source === 'custom'}>
         <Field label="API 地址" hint={`协议：${PROTOCOL_LABEL[conn.protocol]}`}>
-          <input className={inputClass} value={endpoint} onChange={(e) => setEndpoint(e.target.value)} placeholder={conn.defaultEndpoint} />
+          <input
+            className={inputClass}
+            data-settings="endpoint"
+            value={endpoint}
+            onChange={(e) => setEndpoint(e.target.value)}
+            placeholder={conn.defaultEndpoint}
+          />
         </Field>
         <ModelCatalog
           models={models}
           onChange={setModels}
-          defaults={catalog?.defaultModels}
+          // 跟着厂商走时的小标签/选择器用存下的厂商列表；没存过用内置目录。
+          defaults={view.listed?.[conn.id]?.models ?? catalog?.defaultModels}
           required={conn.source === 'custom'}
-          discover={() => discoverModels(conn.id)}
+          discover={async () => {
+            const list = await discoverModels(conn.id);
+            // 获取后服务端存下了厂商列表：把设置视图刷新一次，小标签/选择器立刻用它。
+            onView(await getModelSettings());
+            return list;
+          }}
+          connectionId={conn.id}
+          masked={view.disabledModels}
+          onMask={onMask}
         />
-        <Field
-          label="价格倍率"
-          help="目录标价乘这个数算花费；1 = 原价，0 = 这个连接免费（例如 Coding Plan）。"
-        >
-          <input
-            className={cn(inputClass, 'brand-type')}
-            value={priceRate}
-            inputMode="decimal"
-            onChange={(event) => setPriceRate(event.target.value)}
-          />
-        </Field>
       </Collapsible>
-      <Collapsible title="余额与套餐余量">
-        <div data-settings="quota">
-          <Btn kind="quiet" disabled={askingQuota} onClick={() => void askQuota()}>
-            {askingQuota ? '正在查询…' : '查询余额/余量'}
+      <div className="mt-4 border-t border-line pt-3" data-settings="quota">
+        <div className="flex items-center gap-2">
+          <span className="text-2 text-ink-2">余额与套餐余量</span>
+          <Btn kind="quiet" data-settings="quota-refresh" disabled={askingQuota} onClick={() => void askQuota(true)}>
+            {askingQuota ? (
+              <>
+                <Loader2 data-settings="quota-spinner" className="size-3.5 animate-spin" aria-hidden />
+                正在查询…
+              </>
+            ) : (
+              '刷新'
+            )}
           </Btn>
-          {quota ? (
-            <div className="mt-2 space-y-0.5 text-2 text-ink-2">
-              {quota.balance ? (
-                <div>
-                  余额：
-                  <span className="brand-type">
-                    {quota.balance.currency} {quota.balance.amount.toFixed(2)}
-                  </span>
-                </div>
-              ) : null}
-              {quota.plan ? (
-                <div>
-                  套餐余量：5 小时窗口{' '}
-                  <span className="brand-type">{quota.plan.intervalRemainingPercent ?? '—'}%</span> · 每周{' '}
-                  <span className="brand-type">{quota.plan.weeklyRemainingPercent ?? '—'}%</span>
-                </div>
-              ) : null}
-              {!quota.balance && !quota.plan ? (
-                <div className="text-ink-3">这个连接查不到余额/余量（只有 DeepSeek 与 MiniMax 官方地址支持）。</div>
-              ) : null}
-            </div>
+          {quotaAt && !askingQuota ? (
+            <span className="ml-auto text-1 text-ink-3">更新于 {formatQuotaTime(quotaAt)}</span>
           ) : null}
         </div>
-      </Collapsible>
+        {quotaError ? (
+          <div className="mt-2 text-2 text-fail" data-settings="quota-error">
+            查询失败：{quotaError}
+            <button
+              type="button"
+              className="ml-2 underline hover:text-ink"
+              onClick={() => void askQuota(true)}
+            >
+              重试
+            </button>
+          </div>
+        ) : quota ? (
+          <div className="mt-2 space-y-0.5 text-2 text-ink-2" data-settings="quota-value">
+            {quota.balance ? (
+              <div>
+                余额：
+                <span className="brand-type">
+                  {quota.balance.currency} {quota.balance.amount.toFixed(2)}
+                </span>
+              </div>
+            ) : null}
+            {quota.plan ? (
+              <div>
+                套餐余量：5 小时窗口{' '}
+                <span className="brand-type">{quota.plan.intervalRemainingPercent ?? '—'}%</span> · 每周{' '}
+                <span className="brand-type">{quota.plan.weeklyRemainingPercent ?? '—'}%</span>
+              </div>
+            ) : null}
+            {!quota.balance && !quota.plan ? (
+              <div className="text-ink-3">这个连接查不到余额/余量（只有 DeepSeek 与 MiniMax 官方地址支持）。</div>
+            ) : null}
+          </div>
+        ) : !conn.key.saved ? (
+          <div className="mt-2 text-2 text-ink-3">保存密钥后自动查询余额/余量。</div>
+        ) : (
+          <div className="mt-2 text-2 text-ink-3">正在查询…</div>
+        )}
+      </div>
       <div className="mt-5 flex items-center gap-2">
         {conn.key.saved ? <Btn kind="danger" onClick={() => setConfirm('revoke')}>撤销密钥</Btn> : null}
         <Btn kind="quiet" onClick={() => setConfirm('remove')}>删除这个提供商</Btn>
@@ -646,8 +824,8 @@ function CatalogPanel({ view, onCreated, onCancel }: { view: ModelSettingsView; 
           models={models}
           onChange={setModels}
           defaults={provider.defaultModels}
-          // 新连接还没有 id：先列内置目录的模型；保存后在「编辑」里能对真实厂商再拉一次。
-          discover={async () => provider.defaultModels ?? []}
+          // 新连接还没有 id/Keyring 记录：拿到列表的只可能是本地目录，所以不提供「获取」，
+          // 保存后在「编辑」里向厂商要真实列表。
         />
       </Collapsible>
       <div className="mt-5 flex justify-end gap-2">
@@ -810,7 +988,7 @@ function KeyringSection({ view, onView }: { view: ModelSettingsView; onView: (vi
           <div className="flex items-center gap-2">
             <div className="min-w-0">
               <div className="text-3 text-ink">加密钥匙</div>
-              <div className="mt-0.5 text-1 text-ink-3">放在哪由你定。现在是一个文件，{view.keyFile.since}起放在这里。</div>
+              <div className="mt-0.5 text-1 text-ink-3">放在哪由你定。现在是一个文件，{formatLocalDateTime(view.keyFile.since)} 起放在这里。</div>
             </div>
             {moving || view.keyFile.problem ? null : <Btn kind="plain" className="ml-auto" onClick={() => setMoving(true)}>换位置</Btn>}
           </div>
@@ -836,7 +1014,7 @@ function KeyringSection({ view, onView }: { view: ModelSettingsView; onView: (vi
             <div>
               <div className="text-3 text-ink">签发记录</div>
               <div className="mt-0.5 text-1 text-ink-3">
-                {view.issuedToday ? `今天签发 ${view.issuedToday} 次，最近一次 ${view.issues[0]?.at ?? '—'}。只记谁用、做什么，不记密钥。` : '今天还没有签发过。'}
+                {view.issuedToday ? `今天签发 ${view.issuedToday} 次，最近一次 ${formatLocalDateTime(view.issues[0]?.at)}。只记谁用、做什么，不记密钥。` : '今天还没有签发过。'}
               </div>
             </div>
             {view.issues.length ? (
@@ -856,7 +1034,7 @@ function KeyringSection({ view, onView }: { view: ModelSettingsView; onView: (vi
               <tbody>
                 {view.issues.map((row) => (
                   <tr key={row.id} className="border-t border-line text-ink-2">
-                    <td className="brand-type py-1">{row.at}</td>
+                    <td className="brand-type py-1">{formatLocalDateTime(row.at)}</td>
                     <td className="py-1">{row.connection}</td>
                     <td className="py-1">{row.purpose}</td>
                     <td className="brand-type py-1">{row.until}</td>
@@ -871,6 +1049,237 @@ function KeyringSection({ view, onView }: { view: ModelSettingsView; onView: (vi
   );
 }
 
+/* ───────────────────────── 屏蔽（D67） ───────────────────────── */
+
+/**
+ * 「已屏蔽的模型」：照原型 MaskSection。
+ *
+ * - 上面一行写规则：从已知模型里挑（datalist），也能写通配；
+ * - 每条规则下面写着「现在匹配 n 个：…」；一个都不匹配也留着（出现了照样拒）；
+ * - 先过确认框（MaskDialog）再保存；「解除屏蔽」立即生效；
+ * - 固定说明「读不出来时沿用上一次读到的；从没读到过就都不发。」；
+ *   从没读到过时动态写「settings.json 读不出来」（不写路径/服务端原因）。
+ *
+ * 匹配数只读服务给的 `disabledHits`（与规则等长同序），这里不自己匹配。
+ */
+function MaskSection({ view, onView, onMask }: {
+  view: ModelSettingsView;
+  onView: (view: ModelSettingsView) => void;
+  onMask: (pattern: string) => void;
+}) {
+  const refreshMasks = useKindStore((state) => state.refreshMasks);
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState<string | null>(null);
+  const duplicate = view.disabledModels.some(
+    (pattern) => pattern.toLowerCase() === draft.trim().toLowerCase(),
+  );
+  // 提示从已知模型里选：和选择器同一个口径（勾了的；没勾就是厂商列表/内置目录）。
+  const known = view.connections.flatMap((conn) =>
+    (conn.models.length
+      ? conn.models
+      : conn.availableModels ?? view.catalog.find((item) => item.id === conn.id)?.defaultModels ?? []
+    ).map((row) => conn.id + '/' + row.id),
+  );
+
+  const submit = () => {
+    const pattern = draft.trim();
+    if (!pattern || duplicate) return;
+    // 先过确认框；真正保存由确认框决定。
+    onMask(pattern);
+    setDraft('');
+  };
+
+  const unmask = async (pattern: string) => {
+    setBusy(pattern);
+    try {
+      onView(await setDisabledModels(view.disabledModels.filter((item) => item !== pattern)));
+      await refreshMasks();
+      toast('已解除屏蔽「' + pattern + '」');
+    } catch (error) {
+      toast.error((error as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <section className="mt-10" data-settings="masked">
+      <h2 className="text-3 font-medium text-ink">已屏蔽的模型</h2>
+      <p className="mt-1.5 text-2 leading-5 text-ink-2">
+        屏蔽的模型不让用：每次请求前查一遍，正在跑的一轮也会停下。模型选择器里照样列出，标「已屏蔽」，选不了。
+        屏蔽不是删除，历史和用量照常显示。
+      </p>
+      <p className="mt-1.5 text-1 leading-5 text-ink-3" data-settings="mask-note">
+        读不出来时沿用上一次读到的；从没读到过就都不发。
+      </p>
+      <div className="mt-3 rounded-card border border-line" data-settings="mask-list">
+        <div className="flex items-center gap-2 px-4 py-3">
+          <input
+            list="mask-models"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') submit();
+            }}
+            placeholder="挑一个模型，或者写通配，比如 *preview*"
+            className={cn(inputClass, 'brand-type')}
+            data-settings="mask-input"
+          />
+          <datalist id="mask-models">
+            {known.map((id) => (
+              <option key={id} value={id} />
+            ))}
+          </datalist>
+          <Btn
+            kind="plain"
+            disabled={!draft.trim() || duplicate}
+            title={duplicate ? '已经有这一条了' : undefined}
+            onClick={submit}
+          >
+            屏蔽…
+          </Btn>
+        </div>
+        {view.disabledUnknown ? (
+          <div className="border-t border-line px-4 py-3 text-2 text-fail" data-settings="mask-unknown">
+            settings.json 读不出来
+          </div>
+        ) : null}
+        {view.disabledModels.length === 0 ? (
+          view.disabledUnknown ? null : (
+            <div className="border-t border-line px-4 py-3 text-2 text-ink-3">还没有屏蔽任何模型。</div>
+          )
+        ) : (
+          view.disabledModels.map((pattern, index) => {
+            const hits = view.disabledHits[index] ?? [];
+            return (
+              <div
+                key={pattern}
+                className="flex items-center gap-3 border-t border-line px-4 py-3"
+                data-settings="mask-row"
+              >
+                <div className="min-w-0">
+                  <div className="brand-type truncate text-3 text-ink">{pattern}</div>
+                  <div className="mt-0.5 truncate text-1 text-ink-3">
+                    {hits.length
+                      ? '现在匹配 ' + hits.length + ' 个：' + hits.slice(0, 4).join('、') + (hits.length > 4 ? '…' : '')
+                      : '现在不匹配任何模型；出现了也会被拒'}
+                  </div>
+                </div>
+                <Btn
+                  kind="quiet"
+                  className="ml-auto"
+                  disabled={busy === pattern}
+                  onClick={() => void unmask(pattern)}
+                >
+                  解除屏蔽
+                </Btn>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * 屏蔽前先列出谁在用（照原型 MaskDialog）：命中的模型和使用者都由服务的
+ * disabled-models-check 给，页面不自己匹配。
+ */
+function MaskDialog({ pattern, busy, onCancel, onConfirm }: {
+  pattern: string;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: (wasRunning: boolean) => void;
+}) {
+  const [check, setCheck] = useState<{ hits: string[]; users: DisabledModelUser[] } | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let live = true;
+    setCheck(null);
+    setFailed(false);
+    void checkDisabledModels(pattern)
+      .then((next) => {
+        if (live) setCheck(next);
+      })
+      .catch(() => {
+        if (live) setFailed(true);
+      });
+    return () => {
+      live = false;
+    };
+  }, [pattern]);
+  const users = check?.users ?? [];
+  const running = users.some((item) => item.kind === 'kind-chat' && item.running);
+  const inUse = users.some((item) => item.kind === 'kind-chat');
+  return (
+    <Dialog open onOpenChange={(open) => (open ? null : onCancel())}>
+      <DialogContent data-settings="mask-confirm">
+        <DialogHeader>
+          <DialogTitle>屏蔽「{pattern}」？</DialogTitle>
+          <DialogDescription>
+            {check
+              ? check.hits.length
+                ? '现在匹配 ' + check.hits.length + ' 个：' + check.hits.join('、') + '。'
+                : '现在不匹配任何模型；以后出现了也会被拒。'
+              : failed
+                ? '读不到谁在用；先别动这条规则。'
+                : '正在查谁在用…'}
+            {' '}确认后立即不让用，不用再点保存。
+          </DialogDescription>
+        </DialogHeader>
+        <div className="text-2">
+          <div className="mb-1.5 text-ink-2">谁在用</div>
+          {failed ? (
+            <div className="text-ink-3">读不到谁在用；关掉重试。</div>
+          ) : !check ? (
+            <div className="text-ink-3">正在查…</div>
+          ) : users.length ? (
+            <div className="rounded-card border border-line">
+              {users.map((item, index) => (
+                <div
+                  key={item.kind}
+                  className={cn('flex gap-3 px-3 py-2', index > 0 && 'border-t border-line')}
+                  data-settings="mask-user"
+                >
+                  <span className="w-20 shrink-0 text-ink">{item.kind === 'kind-chat' ? 'Kind 对话' : '新会话'}</span>
+                  <span style={{ color: 'var(--' + (item.kind === 'kind-chat' && item.running ? 'fail' : 'wait') + ')' }}>
+                    {item.kind === 'kind-chat'
+                      ? item.running
+                        ? '这一轮还在跑，会立即停下'
+                        : '下一轮发不出去'
+                      : '会用上一次选的'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-ink-3">现在没有地方在用。</div>
+          )}
+          {inUse ? (
+            <p className="mt-2 text-1 leading-4 text-ink-3">
+              {running
+                ? '停下的那一轮已经做的留着；接着用哪个模型、从哪接，由你在对话里定。AIOS 不会自己换模型。'
+                : '接着用哪个模型由你在对话里选。AIOS 不会自己换模型。'}
+            </p>
+          ) : null}
+        </div>
+        <DialogFooter>
+          <Btn kind="plain" onClick={onCancel}>取消</Btn>
+          <Btn
+            kind="primary"
+            className="!bg-[var(--fail)] !text-white"
+            disabled={busy || !check}
+            onClick={() => onConfirm(running)}
+          >
+            {busy ? '正在保存…' : '屏蔽'}
+          </Btn>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /* ───────────────────────── 整组 ───────────────────────── */
 
 export function ModelSettings() {
@@ -881,6 +1290,10 @@ export function ModelSettings() {
   const [view, setView] = useState<ModelSettingsView | null>(null);
   /** 展开的是哪张卡片：连接 id、'add'，或者都不展开。一次只展开一张。 */
   const [open, setOpen] = useState<string | null>(null);
+  /** 正在确认屏蔽的规则；null = 没有对话框。 */
+  const [masking, setMasking] = useState<string | null>(null);
+  const [maskBusy, setMaskBusy] = useState(false);
+  const refreshMasks = useKindStore((state) => state.refreshMasks);
 
   const load = useCallback(async () => {
     const next = await getModelSettings();
@@ -905,6 +1318,23 @@ export function ModelSettings() {
       setView(await checkConnection(id));
     } catch (error) {
       toast.error((error as Error).message);
+    }
+  };
+
+  const mask = async (wasRunning: boolean) => {
+    if (!masking) return;
+    const pattern = masking;
+    setMaskBusy(true);
+    try {
+      setView(await setDisabledModels(view ? [...view.disabledModels, pattern] : [pattern]));
+      // 页面不用刷新：选择器上的「已屏蔽」立刻跟上。
+      await refreshMasks();
+      toast('已屏蔽「' + pattern + '」' + (wasRunning ? '；Kind 对话里在跑的一轮已经停下' : ''));
+      setMasking(null);
+    } catch (error) {
+      toast.error((error as Error).message);
+    } finally {
+      setMaskBusy(false);
     }
   };
 
@@ -964,7 +1394,14 @@ export function ModelSettings() {
                     </div>
                   </div>
                   {open === conn.id ? (
-                    <ConnectionEditor key={conn.id} conn={conn} view={view} onDone={() => setOpen(null)} onView={setView} />
+                    <ConnectionEditor
+                      key={conn.id}
+                      conn={conn}
+                      view={view}
+                      onDone={() => setOpen(null)}
+                      onView={setView}
+                      onMask={(pattern) => setMasking(pattern)}
+                    />
                   ) : null}
                 </div>
               ))}
@@ -982,8 +1419,18 @@ export function ModelSettings() {
         </div>
       </section>
 
+      <MaskSection view={view} onView={setView} onMask={(pattern) => setMasking(pattern)} />
+
       <KeyringSection view={view} onView={setView} />
 
+      {masking ? (
+        <MaskDialog
+          pattern={masking}
+          busy={maskBusy}
+          onCancel={() => setMasking(null)}
+          onConfirm={(wasRunning) => void mask(wasRunning)}
+        />
+      ) : null}
     </div>
   );
 }

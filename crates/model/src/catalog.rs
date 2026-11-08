@@ -166,7 +166,10 @@ pub fn levels(provider: &CatalogProvider, model: &CatalogModel) -> Vec<String> {
 }
 
 /// 目录给一个模型的可展示字段（T012.5）。
+///
+/// 线上字段用 camelCase：页面（设置页的获取面板、选择器）直接读，四类价格不另起名字。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
     pub id: String,
     pub name: String,
@@ -196,7 +199,8 @@ impl CatalogSnapshot {
         self.provider(provider_id)?.models.get(model_id)
     }
 
-    /// 这个 provider 的模型，字段来自目录。
+    /// 这个 provider 的模型，字段来自目录。顺序是 BTreeMap 的键序（按 id），
+    /// 不按版本或发布日期排序。
     pub fn models_for(&self, provider_id: &str) -> Vec<ModelInfo> {
         self.provider(provider_id)
             .map(|provider| {
@@ -237,6 +241,16 @@ fn model_info(provider: &CatalogProvider, model: &CatalogModel) -> ModelInfo {
         price_cache_write: model.cost.as_ref().and_then(|cost| cost.cache_write),
         thinks: model.reasoning,
         efforts: levels(provider, model),
+    }
+}
+
+/// 连接对应的目录 provider id：内置提供方用 preset，自定义地址按 endpoint 推断。
+/// 日志里的厂商身份、统计定价和压缩策略匹配都用同一个来源。
+pub fn provider_id_for_connection(preset: &str, endpoint: &str) -> String {
+    if preset.is_empty() || preset == "custom" {
+        provider_id_for_endpoint(endpoint)
+    } else {
+        preset.to_owned()
     }
 }
 
@@ -308,41 +322,122 @@ pub fn parse_live_models(value: &Value) -> Vec<LiveModel> {
         .collect()
 }
 
-/// 把目录模型和厂商列表合并：同一 id 厂商的 name/窗口/输出优先；目录价格/档保留；
-/// 厂商多出来的模型也列出来（目录没有的其他字段为空）。
+/// 把目录模型和厂商列表合并：顺序照厂商这次给的（不重排）；同一 id 厂商的 name/窗口/输出
+/// 优先，目录价格/档保留；目录独有、厂商这次没给的模型排在后面。
 pub fn merge_live(catalog_models: Vec<ModelInfo>, live: Vec<LiveModel>) -> Vec<ModelInfo> {
-    let mut live_by_id: BTreeMap<String, LiveModel> = live
+    let mut catalog_by_id: BTreeMap<String, ModelInfo> = catalog_models
         .into_iter()
         .map(|model| (model.id.clone(), model))
         .collect();
-    let mut merged = Vec::with_capacity(catalog_models.len() + live_by_id.len());
-    for mut info in catalog_models {
-        if let Some(live) = live_by_id.remove(&info.id) {
-            if let Some(name) = live.display_name {
-                info.name = name;
-            }
-            if live.context_window.is_some() {
-                info.context_window = live.context_window;
-            }
-            if live.max_tokens.is_some() {
-                info.max_tokens = live.max_tokens;
-            }
+    let mut merged = Vec::with_capacity(catalog_by_id.len() + live.len());
+    for live in live {
+        let mut info = catalog_by_id.remove(&live.id).unwrap_or_else(|| ModelInfo {
+            id: live.id.clone(),
+            name: live.id.clone(),
+            context_window: None,
+            max_tokens: None,
+            price_input: None,
+            price_output: None,
+            price_cache_read: None,
+            price_cache_write: None,
+            thinks: false,
+            efforts: Vec::new(),
+        });
+        if let Some(name) = live.display_name {
+            info.name = name;
+        }
+        if live.context_window.is_some() {
+            info.context_window = live.context_window;
+        }
+        if live.max_tokens.is_some() {
+            info.max_tokens = live.max_tokens;
         }
         merged.push(info);
     }
-    merged.extend(live_by_id.into_values().map(|live| ModelInfo {
-        id: live.id.clone(),
-        name: live.display_name.unwrap_or_else(|| live.id.clone()),
-        context_window: live.context_window,
-        max_tokens: live.max_tokens,
-        price_input: None,
-        price_output: None,
-        price_cache_read: None,
-        price_cache_write: None,
-        thinks: false,
-        efforts: Vec::new(),
-    }));
+    merged.extend(catalog_by_id.into_values());
     merged
+}
+
+/// 厂商这次给的列表转成可存的 ModelInfo：保持厂商顺序，字段只来自厂商。
+pub fn live_models_info(live: &[LiveModel]) -> Vec<ModelInfo> {
+    live.iter()
+        .map(|live| ModelInfo {
+            id: live.id.clone(),
+            name: live.display_name.clone().unwrap_or_else(|| live.id.clone()),
+            context_window: live.context_window,
+            max_tokens: live.max_tokens,
+            price_input: None,
+            price_output: None,
+            price_cache_read: None,
+            price_cache_write: None,
+            thinks: false,
+            efforts: Vec::new(),
+        })
+        .collect()
+}
+
+/// 一个连接存下的厂商 live 列表（照 Magpie catalog.LivePath 的形状）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LiveList {
+    /// 存下这份列表的时间（Unix 秒）。
+    pub fetched_at: u64,
+    /// 厂商 /v1/models 原样给的模型（不并目录、不写用户字段）。
+    pub models: Vec<ModelInfo>,
+}
+
+/// 存 live 列表的目录：<数据目录>/catalog/models（Magpie LivePath，键换成连接 id）。
+pub fn live_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("catalog").join("models")
+}
+
+/// 一个连接存下的 live 列表文件。连接 id 里可能有路径分隔符，文件名按字节转义。
+pub fn live_path(data_dir: &Path, connection_id: &str) -> PathBuf {
+    let mut name = String::with_capacity(connection_id.len());
+    for byte in connection_id.bytes() {
+        if byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' {
+            name.push(char::from(byte));
+        } else {
+            name.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    live_dir(data_dir).join(format!("{name}.json"))
+}
+
+/// 读一个连接上次存下的厂商列表；没有/读不出来都是 None。
+pub fn read_live(data_dir: &Path, connection_id: &str) -> Option<LiveList> {
+    let text = std::fs::read_to_string(live_path(data_dir, connection_id)).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// 存一个连接这次从厂商拿到的列表；空列表不写（也不动上一次的文件）。
+pub fn save_live(
+    data_dir: &Path,
+    connection_id: &str,
+    fetched_at: u64,
+    models: Vec<ModelInfo>,
+) -> Result<(), String> {
+    if models.is_empty() {
+        return Ok(());
+    }
+    let path = live_path(data_dir, connection_id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let json = serde_json::to_string(&LiveList { fetched_at, models })
+        .map_err(|error| error.to_string())?;
+    std::fs::write(path, json).map_err(|error| error.to_string())
+}
+
+/// 丢掉一个连接存下的厂商列表：换了厂商身份（地址或预设）以后，旧表不能再算数。
+///
+/// 没存过不算失败——那已经是「没有旧表」的状态。
+pub fn remove_live(data_dir: &Path, connection_id: &str) -> Result<(), String> {
+    match std::fs::remove_file(live_path(data_dir, connection_id)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 /// 目录来源（缓存/快照/网络）。
@@ -553,6 +648,42 @@ mod tests {
         );
     }
 
+    /// 列表跟厂商 live 顺序走：厂商怎么排就怎么显示，不按版本/目录重排；
+    /// 目录这次没给的模型排在后面，目录字段照常合并。
+    #[test]
+    fn live_merge_keeps_vendor_order() {
+        let info = |id: &str, price: f64| ModelInfo {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            context_window: Some(1_000),
+            max_tokens: None,
+            price_input: Some(price),
+            price_output: None,
+            price_cache_read: None,
+            price_cache_write: None,
+            thinks: true,
+            efforts: vec!["low".to_owned()],
+        };
+        let live = |id: &str| LiveModel {
+            id: id.to_owned(),
+            display_name: None,
+            context_window: Some(2_000),
+            max_tokens: None,
+        };
+        let merged = merge_live(
+            vec![info("catalog-a", 0.1), info("catalog-b", 0.2)],
+            vec![live("vendor-new"), live("catalog-b")],
+        );
+        let ids: Vec<&str> = merged.iter().map(|model| model.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["vendor-new", "catalog-b", "catalog-a"],
+            "厂商顺序在前，目录独有项在后"
+        );
+        assert_eq!(merged[1].price_input, Some(0.2), "目录字段照常合并");
+        assert_eq!(merged[0].price_input, None, "目录没有的模型没有标价");
+    }
+
     #[test]
     fn built_in_snapshot_has_the_three_vendors_and_fields() {
         let snapshot = snapshot();
@@ -703,5 +834,40 @@ mod tests {
             models_url("https://relay.example.com"),
             "https://relay.example.com/v1/models"
         );
+    }
+
+    #[test]
+    fn empty_live_list_is_not_written_and_keeps_the_previous_file() {
+        let dir = temp_dir("live-empty");
+        let saved = live_models_info(&[LiveModel {
+            id: "m1".to_owned(),
+            display_name: None,
+            context_window: None,
+            max_tokens: None,
+        }]);
+        save_live(&dir, "conn", 7, saved).expect("存列表");
+        save_live(&dir, "conn", 8, Vec::new()).expect("空表不写");
+        let live = read_live(&dir, "conn").expect("上一次的文件还在");
+        assert_eq!(live.fetched_at, 7, "空表不动上一次的时间");
+        assert_eq!(
+            live.models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["m1"]
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn unreadable_live_file_reads_as_missing() {
+        let dir = temp_dir("live-broken");
+        assert!(read_live(&dir, "conn").is_none(), "没存过是 None");
+        std::fs::create_dir_all(live_dir(&dir)).expect("列表目录");
+        std::fs::write(live_path(&dir, "conn"), "").expect("空文件");
+        assert!(read_live(&dir, "conn").is_none(), "空文件读不出来");
+        std::fs::write(live_path(&dir, "conn"), "{\"fetchedAt\":").expect("坏 JSON");
+        assert!(read_live(&dir, "conn").is_none(), "坏 JSON 读不出来");
+        std::fs::remove_dir_all(dir).ok();
     }
 }

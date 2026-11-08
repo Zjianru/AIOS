@@ -26,4 +26,12 @@ pub trait CredentialSource: Send + Sync {
     /// T012.6：适配器学到「只发某一个头」时回报；产品层写回连接的 `auth_header`。
     /// 测试来源可忽略；产品实现是 Keyring。
     fn remember_auth_header(&self, _header: &str) {}
+
+    /// 出站之前问一次：这个模型在设置里被屏蔽了没有（默认放行）。
+    ///
+    /// 适配器在签发与发请求之前调用，传本轮冻结的模型；被拒时返回
+    /// `MODEL_DISABLED`，这一请求不会再发出去，也不会重试。
+    fn admit(&self, _model: &str) -> Result<(), ModelError> {
+        Ok(())
+    }
 }

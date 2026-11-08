@@ -27,6 +27,7 @@ impl model::CredentialSource for TestCredential {
 
 fn deepseek_config() -> DeepSeekConfig {
     DeepSeekConfig {
+        provider: "deepseek".to_owned(),
         base_url: "http://127.0.0.1:1".to_owned(),
         model: "deepseek-flash".to_owned(),
         max_tokens: 2048,
@@ -47,8 +48,12 @@ fn factory(data_dir: &Path, identity: &Path) -> service::ModelFactory {
         if let Some(problem) = view.key_file.problem.clone() {
             return Err(format!("Keyring 读不出来：{problem}"));
         }
-        // 修法 A 之后 connection-save 会写 last_selection；空库时都没有 → 报「还没有接模型」。
-        let id = selection
+        // 和 cli 的 model_with_keyring 一样：会话选择 > settings 上次选择 > deepseek > 第一个连接。
+        let last = selection
+            .cloned()
+            .or_else(|| service::settings::load(&data).last_selection);
+        let id = last
+            .as_ref()
             .map(|selection| selection.connection.clone())
             .or_else(|| {
                 view.connections
@@ -61,17 +66,45 @@ fn factory(data_dir: &Path, identity: &Path) -> service::ModelFactory {
                     .first()
                     .map(|connection| connection.id.clone())
             });
-        match id.and_then(|id| view.connections.iter().find(|item| item.id == id).cloned()) {
-            Some(connection) => Ok((
-                connection.id,
-                deepseek_config(),
-                Some(Arc::new(TestCredential) as Arc<dyn model::CredentialSource>),
-            )),
-            None => Err(
+        let Some(connection) = id.and_then(|id| {
+            view.connections
+                .into_iter()
+                .find(|connection| connection.id == id)
+        }) else {
+            return Err(
                 "还没有接模型：先从页面接上，或运行 aios-dev keyring set（key 从标准输入读）"
                     .to_owned(),
-            ),
-        }
+            );
+        };
+        // 同一连接才沿用上次的模型/档；换了连接整组取连接默认（和 resolve_selection 一致）。
+        let same = last
+            .as_ref()
+            .is_some_and(|last| last.connection == connection.id);
+        let model = last
+            .as_ref()
+            .filter(|_| same)
+            .map(|last| last.model.clone())
+            .unwrap_or_else(|| connection.primary_model().to_owned());
+        let effort = last
+            .as_ref()
+            .filter(|_| same)
+            .map(|last| last.effort_wanted.clone())
+            .unwrap_or_else(|| "high".to_owned());
+        Ok((
+            connection.id.clone(),
+            DeepSeekConfig {
+                provider: model::catalog::provider_id_for_connection(
+                    &connection.preset,
+                    &connection.endpoint,
+                ),
+                base_url: connection.endpoint.clone(),
+                model,
+                max_tokens: 2048,
+                context_window: DEFAULT_CONTEXT_WINDOW,
+                effort: Effort::new(effort),
+            },
+            Some(Arc::new(TestCredential) as Arc<dyn model::CredentialSource>),
+        ))
     })
 }
 
@@ -190,5 +223,150 @@ async fn connection_save_keeps_existing_selection_after_root_ok() {
             .map(|selection| selection.connection),
         Some("deepseek".to_owned()),
         "root 已 Ok 时存第二连接不该改 last_selection"
+    );
+}
+
+fn save_request(id: &str, preset: &str, model: &str, endpoint: &str) -> ConnectionSaveRequest {
+    ConnectionSaveRequest {
+        id: id.to_owned(),
+        name: id.to_owned(),
+        model: model.to_owned(),
+        endpoint: endpoint.to_owned(),
+        api_key: "test-key".to_owned(),
+        preset: Some(preset.to_owned()),
+        models: None,
+        price_rate: None,
+        auth_header: None,
+    }
+}
+
+/// 空库新建连接：lastSelection 的档取模型自己的默认档（MiniMax-M3.1-Flash 是 medium，
+/// 不是写死的 high）；recheck 后的 current/ready/统计都落在它上面。
+#[tokio::test]
+async fn connection_save_uses_model_default_effort_and_recheck_reports_it() {
+    let data = tempdir().unwrap();
+    let cwd = tempdir().unwrap();
+    let identity = data.path().join("identity.txt");
+    let host = RootHost::open(
+        options(data.path(), &identity, cwd.path()),
+        DEFAULT_CONTEXT_WINDOW,
+    )
+    .await;
+    crate::settings::seed_fx_cache(data.path());
+    host.dispatch(Call::ConnectionSave(save_request(
+        "minimax",
+        "minimax",
+        "MiniMax-M3.1-Flash",
+        "http://127.0.0.1:1/anthropic",
+    )))
+    .await
+    .expect("connection-save");
+    let last = service::settings::load(data.path())
+        .last_selection
+        .expect("新建连接要成为上次选择");
+    assert_eq!(last.connection, "minimax");
+    assert_eq!(last.model, "MiniMax-M3.1-Flash");
+    assert_eq!(
+        last.effort_wanted, "medium",
+        "MiniMax-M3.1-Flash 的默认档是 medium"
+    );
+    let rechecked = host
+        .dispatch(Call::Recheck(RecheckRequest {}))
+        .await
+        .expect("recheck");
+    let json = serde_json::to_value(&rechecked).unwrap();
+    assert_eq!(json["root"]["state"], "ok", "recheck 要恢复根会话：{json}");
+    let status = host
+        .dispatch(Call::Status(service::StatusRequest {}))
+        .await
+        .expect("status");
+    let service::Response::Status(status) = status else {
+        panic!("expected Status");
+    };
+    let stats = status.stats.expect("stats");
+    assert_eq!(stats.connection, "minimax", "当前连接跟新连接一致");
+    assert_eq!(stats.model, "MiniMax-M3.1-Flash", "当前模型跟新连接一致");
+    assert_eq!(
+        stats.effort_wanted, "medium",
+        "内存选择跟 lastSelection 一致"
+    );
+}
+
+/// 新建连接后只改档：连接/模型沿用刚建的那个（内存 selection 与 lastSelection 是同一份事实）。
+#[tokio::test]
+async fn new_connection_is_current_selection_for_following_select() {
+    let data = tempdir().unwrap();
+    let cwd = tempdir().unwrap();
+    let identity = data.path().join("identity.txt");
+    let host = RootHost::open(
+        options(data.path(), &identity, cwd.path()),
+        DEFAULT_CONTEXT_WINDOW,
+    )
+    .await;
+    host.dispatch(Call::ConnectionSave(save_request(
+        "minimax",
+        "minimax",
+        "MiniMax-M3.1-Flash",
+        "http://127.0.0.1:1/anthropic",
+    )))
+    .await
+    .expect("connection-save");
+    // 根会话还没接上：选择本身是 durable 偏好，照写；但不能把当前连接退回 deepseek 占位。
+    let failed = host
+        .dispatch(Call::SessionModelSelect(
+            service::SessionModelSelectRequest {
+                connection: None,
+                model: None,
+                effort_wanted: Some("low".to_owned()),
+            },
+        ))
+        .await;
+    assert!(
+        matches!(failed, Err(ServiceError::RootUnavailable(_))),
+        "根会话还没接上：{failed:?}"
+    );
+    let last = service::settings::load(data.path())
+        .last_selection
+        .expect("上次选择还在");
+    assert_eq!(last.connection, "minimax");
+    assert_eq!(last.model, "MiniMax-M3.1-Flash");
+    assert_eq!(last.effort_wanted, "low");
+}
+
+/// 空库新建连接时 settings.json 写不进去：返回 settings/unavailable，不把选择当已保存。
+#[tokio::test]
+async fn connection_save_reports_when_selection_cannot_be_saved() {
+    let data = tempdir().unwrap();
+    let cwd = tempdir().unwrap();
+    let identity = data.path().join("identity.txt");
+    let host = RootHost::open(
+        options(data.path(), &identity, cwd.path()),
+        DEFAULT_CONTEXT_WINDOW,
+    )
+    .await;
+    // 原子的临时文件位置被目录占住，rename 前的写入一定失败。
+    std::fs::create_dir(data.path().join("settings.json.tmp")).expect("tmp dir");
+    let mut events = host.subscribe_events();
+    let result = host
+        .dispatch(Call::ConnectionSave(save_request(
+            "minimax",
+            "minimax",
+            "MiniMax-M3.1-Flash",
+            "http://127.0.0.1:1/anthropic",
+        )))
+        .await;
+    // 连接本身已进 Keyring：设置变化事件照发（页面刷新、监控脱敏列表都要知道 key 换了）。
+    let event = events.try_recv().expect("连接已保存，要有设置变化事件");
+    assert_eq!(event.event_type, "keyring/changed");
+    let Err(error) = result else {
+        panic!("写上次选择失败不能报成功");
+    };
+    assert_eq!(error.code().as_str(), "settings/unavailable");
+    assert!(matches!(error, ServiceError::SettingsInvalid(_)));
+    assert!(
+        service::settings::load(data.path())
+            .last_selection
+            .is_none(),
+        "没有把上次选择当成已保存"
     );
 }

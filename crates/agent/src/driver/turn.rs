@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use session::{AbortCause, EventKind, InboxTarget, LlmFailure, TurnEndReason};
 
@@ -88,6 +88,7 @@ pub(super) fn restart_kick(inner: &Arc<Inner>, turn: u64) {
     let mut state = inner.state.lock().expect("agent 状态锁被毒化");
     state.phase = Phase::Running {
         abort: Arc::new(AtomicBool::new(false)),
+        cause: Arc::new(Mutex::new(None)),
         turn,
     };
     drop(state);
@@ -95,10 +96,10 @@ pub(super) fn restart_kick(inner: &Arc<Inner>, turn: u64) {
 }
 
 pub(super) async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
-    let (current_turn, abort) = {
+    let (current_turn, abort, cause) = {
         let state = inner.state.lock().expect("agent 状态锁被毒化");
         match &state.phase {
-            Phase::Running { abort, turn } => (*turn, Arc::clone(abort)),
+            Phase::Running { abort, cause, turn } => (*turn, Arc::clone(abort), Arc::clone(cause)),
             Phase::Idle => return Ok(false),
         }
     };
@@ -115,7 +116,7 @@ pub(super) async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
     }
 
     let mut turn_end: Option<TurnEndReason> = None;
-    let steps = run_turn_steps(inner, turn, &mut step, &abort, &mut turn_end).await;
+    let steps = run_turn_steps(inner, turn, &mut step, &abort, &cause, &mut turn_end).await;
 
     let (reason, outcome) = match &steps {
         Ok(()) => {
@@ -149,6 +150,8 @@ pub(super) async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
     let appended = inner.append(&[EventKind::TurnEnd { turn, reason }]).await;
     let _ = inner.events.send(AgentEvent::TurnEnded { turn, outcome });
     appended?;
+    // 收尾之后不再算「本轮」：服务不会再拿刚停下的模型去判断在跑的一轮。
+    inner.model.end_turn();
     let mut result = match steps {
         Ok(()) => Ok(inner
             .inbox
@@ -178,14 +181,13 @@ pub(super) async fn run_turn_steps(
     turn: u64,
     step: &mut u64,
     abort: &Arc<AtomicBool>,
+    cause: &Arc<Mutex<Option<AbortCause>>>,
     turn_end: &mut Option<TurnEndReason>,
 ) -> Result<(), AgentError> {
     let mut target = InboxTarget::NextTurn;
     loop {
-        if abort.load(Ordering::SeqCst) {
-            *turn_end = Some(TurnEndReason::Aborted {
-                reason: AbortCause::User,
-            });
+        if let Some(reason) = take_abort_cause(abort, cause) {
+            *turn_end = Some(TurnEndReason::Aborted { reason });
             return Ok(());
         }
         let claimed = inner.claim_input(target, turn).await?;
@@ -242,9 +244,8 @@ pub(super) async fn run_turn_steps(
                 }
             }
             StepEnd::Aborted => {
-                *turn_end = Some(TurnEndReason::Aborted {
-                    reason: AbortCause::User,
-                });
+                let reason = take_abort_cause(abort, cause).unwrap_or(AbortCause::User);
+                *turn_end = Some(TurnEndReason::Aborted { reason });
             }
         }
         if turn_end.is_some()
@@ -258,4 +259,13 @@ pub(super) async fn run_turn_steps(
         }
         target = InboxTarget::NextStep;
     }
+}
+
+/// 取走这一轮的中断原因；abort 已置位但没有记录时按用户取消（兼容旧路径）。
+fn take_abort_cause(abort: &AtomicBool, cause: &Mutex<Option<AbortCause>>) -> Option<AbortCause> {
+    if !abort.load(Ordering::SeqCst) {
+        return None;
+    }
+    let mut slot = cause.lock().expect("agent 中断原因锁被毒化");
+    Some(slot.take().unwrap_or(AbortCause::User))
 }

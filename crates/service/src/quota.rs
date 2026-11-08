@@ -230,7 +230,7 @@ mod tests {
             check: credentials::CheckState::Never,
             key_saved: true,
             preset: id.to_owned(),
-            models: Vec::new(),
+            models: None,
             price_rate: 1.0,
             auth_header: None,
         }
