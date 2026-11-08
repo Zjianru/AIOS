@@ -285,6 +285,55 @@ async fn retryable_codes_are_retried_by_code() {
     );
 }
 
+/// `docs/05-执行.md` 第 10 节：408（请求超时）算瞬时故障，要自动重试一次再成功。
+#[tokio::test]
+async fn request_timeout_408_is_retried() {
+    let server = MockServer::start().await;
+    mount_responses(
+        &server,
+        vec![
+            http_error_after(408, "request_timeout", "0.005"),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ],
+    )
+    .await;
+    let (agent, data_dir, _cwd, id) = setup_agent(&server.uri(), ToolSet::empty()).await;
+    agent
+        .send(UserMessage::text("408 后重试"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    wait_idle(&agent, 10).await;
+
+    let rows = log_rows(data_dir.path(), &id);
+    let retries = events_of(&rows, "llm/retry");
+    assert_eq!(retries.len(), 1, "408 应排定一次重试：{retries:?}");
+    assert_eq!(retries[0]["failure"]["code"], "HTTP_408");
+    assert!(
+        retries[0]["policyKey"]
+            .as_str()
+            .is_some_and(|key| key.contains("HTTP_408")),
+        "408 要写进固定重试策略：{retries:?}"
+    );
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        2,
+        "首发 408 + 重试一次"
+    );
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    assert_eq!(
+        store
+            .events()
+            .iter()
+            .filter_map(|event| match &event.kind {
+                session::EventKind::TurnEnd { reason, .. } => Some(reason.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![TurnEndReason::Completed],
+        "重试成功后本轮完成"
+    );
+}
+
 #[tokio::test]
 async fn retry_after_streamed_content_matches_dsh() {
     // DSH agent.ts:544-564：流里已经流出文本也照样重试——半截内容只在 attempt 的 stream 里，
