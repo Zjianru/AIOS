@@ -82,4 +82,4 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 - **设置面协议 v3**：model-settings、connection-save/delete/verify、keyring-relocate/reopen/restart、issues、first-use、session-model-select 只增；设置由 RootHost 直接读 Keyring（根会话坏了也可读），key 只在 ConnectionSaveRequest.apiKey 请求体，响应/事件不含正文；connection-verify 发最小 Messages 请求并写注册器，session-model-select 收 connection/model/effortWanted 三个可选字段（只增）并覆盖下一轮请求（D26），设置变化发 keyring/changed 合成事件；RootHost 用 model_factory 按会话选择惰性解析 Keyring 连接（重开传日志里的选择），空库可起 serve、存连接后 recheck 重建 root agent。
 - **CLI/服务入口统一**：写锁冲突映射为 writer-held；停服务先停收新连接，再取消在跑一轮并等收尾，日志完整、锁随 Agent drop 释放。
 - **前端只显示能用的部分**：侧栏与路由固定为接上内核的产品状态，不保留演示开关/脚本；不可达页的假数据不进入真路径。
-- **原子写只有一处**：根状态、设置、汇率缓存、Keyring 私有文件都走 `credentials::atomic`（临时文件写 + fsync 文件 + rename + fsync 目录），失败向上返回。
+- **四类持久文件共用一处原子写**：根状态、设置、汇率缓存、Keyring 私有文件都走 `credentials::atomic`（临时文件写 + fsync 文件 + rename + fsync 目录），失败向上返回；tools/fs 的硬链接原子写另属工具写路径，没有目录 fsync，错误走 ToolFailure。
