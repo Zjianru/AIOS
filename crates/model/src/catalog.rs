@@ -272,9 +272,8 @@ fn model_info(provider: &CatalogProvider, model: &CatalogModel) -> ModelInfo {
 
 /// 目录里写死的路由能力：models.dev 不声明 API 能力，DeepSeek 的官方 Flash 路由声明
 /// `addition-only`（同 DSH 默认目录的 deepseek-flash）；其余模型没有来源，按没声明算。
-fn declared_tool_update(_provider_id: &str, _model_id: &str) -> Option<ToolUpdate> {
-    // 骨架：红阶段先不写死。
-    None
+fn declared_tool_update(provider_id: &str, model_id: &str) -> Option<ToolUpdate> {
+    (provider_id == "deepseek" && model_id == "deepseek-flash").then_some(ToolUpdate::AdditionOnly)
 }
 
 /// 连接对应的目录 provider id：内置提供方用 preset，自定义地址按 endpoint 推断。
@@ -351,14 +350,12 @@ pub fn parse_live_models(value: &Value) -> Vec<LiveModel> {
                 .pointer("/api_capabilities/anthropic_messages/tool_update")
                 .and_then(Value::as_str)
                 .and_then(ToolUpdate::parse);
-            // 骨架：红阶段先不读厂商字段。
-            let _ = tool_update;
             Some(LiveModel {
                 id,
                 display_name,
                 context_window,
                 max_tokens,
-                tool_update: None,
+                tool_update,
             })
         })
         .collect()

@@ -4,7 +4,7 @@
 //! 加载处插一条 system 角色的 `tool_addition`，请求头加 beta。没声明的路由发当前完整工具表，
 //! 不带这些。投影只依赖日志恢复出的 [`ToolHistory`]，所以续接前后同一步的请求逐字节相同。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -20,9 +20,7 @@ pub enum ToolUpdate {
 impl ToolUpdate {
     /// 从目录/厂商列表的字符串读能力；不认识的值读成 None（按不支持处理）。
     pub fn parse(raw: &str) -> Option<Self> {
-        // 骨架：红阶段先不认任何值。
-        let _ = raw;
-        None
+        (raw == "addition-only").then_some(Self::AdditionOnly)
     }
 }
 
@@ -63,13 +61,98 @@ pub(crate) struct ProjectedTools {
 
 /// 按路由能力投影一次请求。没声明能力的路由发当前完整工具表，不带 `defer_loading`。
 pub(crate) fn project(
-    _messages: &[Message],
+    messages: &[Message],
     request: &ToolRequest,
-    _update: Option<ToolUpdate>,
+    update: Option<ToolUpdate>,
 ) -> ProjectedTools {
-    // 骨架：红阶段先原样透传。
-    ProjectedTools {
-        tools: request.tools.clone(),
+    let immediate = || ProjectedTools {
+        tools: request
+            .tools
+            .iter()
+            .map(|tool| {
+                let mut tool = tool.clone();
+                tool.defer_loading = false;
+                tool
+            })
+            .collect(),
         insertions: BTreeMap::new(),
+    };
+    let Some(ToolUpdate::AdditionOnly) = update else {
+        return immediate();
+    };
+    let Some(history) = &request.history else {
+        return immediate();
+    };
+    // 加载点必须都在这次请求的消息里；辅助请求（压缩前缀）截掉了加载点时退回当前声明。
+    let positions: BTreeMap<&str, usize> = messages
+        .iter()
+        .enumerate()
+        .map(|(index, message)| (message.id.as_str(), index))
+        .collect();
+    if history.updates.iter().any(|addition| {
+        addition
+            .after
+            .as_ref()
+            .is_some_and(|after| !positions.contains_key(after.as_str()))
+    }) {
+        return immediate();
+    }
+
+    // 声明 = 基线 + 按加载顺序追加（后加载的带 defer_loading）；只保留当前有效的工具。
+    let mut declarations: Vec<ToolSchema> = Vec::new();
+    let mut declared: BTreeSet<String> = BTreeSet::new();
+    for tool in &history.baseline {
+        if declared.insert(tool.name.clone()) {
+            let mut tool = tool.clone();
+            tool.defer_loading = false;
+            declarations.push(tool);
+        }
+    }
+    for addition in &history.updates {
+        for tool in &addition.additions {
+            if declared.insert(tool.name.clone()) {
+                let mut tool = tool.clone();
+                tool.defer_loading = true;
+                declarations.push(tool);
+            }
+        }
+    }
+    let active: BTreeSet<&str> = request
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_str())
+        .collect();
+    declarations.retain(|tool| active.contains(tool.name.as_str()));
+
+    // 基线工具第一次请求就可用；每个加载点只报还没激活的声明。
+    let mut offered: BTreeSet<String> = history
+        .baseline
+        .iter()
+        .map(|tool| tool.name.clone())
+        .collect();
+    let mut insertions: BTreeMap<usize, Vec<String>> = BTreeMap::new();
+    for addition in &history.updates {
+        let Some(after) = &addition.after else {
+            continue;
+        };
+        let Some(index) = positions.get(after.as_str()).copied() else {
+            continue;
+        };
+        let names: Vec<String> = addition
+            .additions
+            .iter()
+            .filter(|tool| declared.contains(&tool.name) && !offered.contains(&tool.name))
+            .map(|tool| tool.name.clone())
+            .collect();
+        if names.is_empty() {
+            continue;
+        }
+        offered.extend(names.iter().cloned());
+        insertions.entry(index).or_default().extend(names);
+    }
+
+    ProjectedTools {
+        tools: declarations,
+        insertions,
     }
 }
