@@ -521,7 +521,7 @@ async fn summarize(
 ) -> Result<SummaryOutcome, AgentError> {
     let mut input = prefix.to_vec();
     input.push(Message::user_text(COMPACTION_INSTRUCTION));
-    // K1：摘要请求与主请求同一个工具表/投影；没开出的工具不进摘要请求。
+    // 摘要请求与主请求用同一份工具表/投影：没开出的工具不能进摘要请求。
     let (tools, history) = {
         let store = host.session().lock().expect("agent 会话锁被毒化");
         let derived = store.derive_messages_with_seqs();

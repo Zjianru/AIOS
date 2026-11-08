@@ -417,7 +417,7 @@ fn model_with_keyring(
     deepseek_config.model = model;
     deepseek_config.provider =
         model::catalog::provider_id_for_connection(&connection.preset, &connection.endpoint);
-    // T014.3：路由能力跟着模型信息走（厂商声明优先，其次目录写死的 deepseek-flash）。
+    // 路由能力跟着模型信息走（厂商声明优先，其次目录写死的 deepseek-flash）。
     deepseek_config.tool_update =
         service::models::tool_update_for(data_dir, &connection, &deepseek_config.model);
     let source = KeyringCredentialSource {

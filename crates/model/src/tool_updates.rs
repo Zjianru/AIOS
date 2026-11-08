@@ -89,12 +89,14 @@ pub(crate) fn project(
         .enumerate()
         .map(|(index, message)| (message.id.as_str(), index))
         .collect();
-    if history.updates.iter().any(|addition| {
-        addition
-            .after
-            .as_ref()
-            .is_some_and(|after| !positions.contains_key(after.as_str()))
-    }) {
+    if history
+        .updates
+        .iter()
+        .any(|addition| match &addition.after {
+            None => true,
+            Some(after) => !positions.contains_key(after.as_str()),
+        })
+    {
         return immediate();
     }
 
