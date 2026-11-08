@@ -5,7 +5,7 @@ import path from 'node:path';
 
 const src = path.resolve(process.cwd(), 'src');
 const patterns = [
-  'connectedOnly', 'setKernel', 'setKeyringBroken', 'setFirstUse', 'setLatency',
+  'connectedOnly', 'setKernel', 'setKeyringBroken', 'setFirstUse', 'setLatency', 'setMockLatency',
   'setDevStressFlow', 'devStressFlow',
   // T008.F12：死开关/空壳函数不得复活。
   'setKeyringProblem', 'syncKeyringEmpty', 'keyringBroken',

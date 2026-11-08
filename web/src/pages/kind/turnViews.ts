@@ -1,8 +1,8 @@
 /// T009.7：Kind 的轮次视图与从日志事件派生（只搬代码，行为不变）。
 
 import type { SendAttachmentRef, ServiceEvent } from '@/data/service';
-import type { AskAnswer, AskQuestion, FailureCause } from '@/data/fixtures/kindLive';
-import type { KindCard, TextElement, TurnStatus } from '@/data/types';
+import type { AskAnswer, AskQuestion, FailureCause } from '@/data/service';
+import type { TextElement, TurnStatus } from '@/data/types';
 import { modelErrorReason, retryReason } from '@/data/errors';
 
 /** 被屏蔽的失败说明：失败块显示内核给的原文（模型名 + 命中的规则），去掉错误包装的前缀。 */
@@ -46,12 +46,15 @@ export interface ToolStep {
   tool?: string;
 }
 
-/** 模型提问：等你答 → 答了 / 不答 / 这一轮被停了。 */
+/**
+ * 模型提问：等你答 → 答了 / 不答 / 这一轮被停了。
+ * T017.2：带问题批次 id（ask_user_question 调用的 call id），卡片信封的 id 用它，不用数组下标。
+ */
 export type QuestionView =
-  | { status: 'pending'; questions: AskQuestion[] }
-  | { status: 'answered'; questions: AskQuestion[]; answers: AskAnswer[] }
-  | { status: 'dismissed'; questions: AskQuestion[] }
-  | { status: 'void'; questions: AskQuestion[] };
+  | { status: 'pending'; batchId: string; questions: AskQuestion[] }
+  | { status: 'answered'; batchId: string; questions: AskQuestion[]; answers: AskAnswer[] }
+  | { status: 'dismissed'; batchId: string; questions: AskQuestion[] }
+  | { status: 'void'; batchId: string; questions: AskQuestion[] };
 
 /**
  * 画布（T015.1）：日志里 tool/result.meta.canvas 的那一版全文。
@@ -178,7 +181,6 @@ export interface TurnViewData {
   /** 思考全文（T013 验收 F5）；摘要和秒数页面不用，日志里也没有（T013 C1）。 */
   reasoning: { full: string } | null;
   tools: ToolStep[];
-  cards: KindCard[];
   answer: { text: string; elements: TextElement[] } | null;
   thinkingSeconds: number;
   tokens: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
@@ -496,7 +498,11 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
               if (tool.state === 'running') tool.state = 'stopped';
             }
             if (raw.question && raw.question.status === 'pending') {
-              raw.question = { status: 'void', questions: raw.question.questions };
+              raw.question = {
+                status: 'void',
+                batchId: raw.question.batchId,
+                questions: raw.question.questions,
+              };
             }
             if (masked) {
               raw.failure = { cause: 'masked', reason: '模型在设置里被屏蔽了' };
@@ -538,9 +544,10 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
             : undefined,
           multiSelect: Boolean(data.multi_select ?? data.multiSelect),
         };
+        const batchId = String(data.call_id ?? data.callId ?? '');
         const current = raw.question;
         if (!current || current.status !== 'pending') {
-          raw.question = { status: 'pending', questions: [asked] };
+          raw.question = { status: 'pending', batchId, questions: [asked] };
         } else if (!current.questions.some((question) => question.id === asked.id)) {
           current.questions.push(asked);
         }
@@ -553,22 +560,24 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
           selected: Array.isArray(data.selected) ? (data.selected as string[]) : [],
           custom: typeof data.custom === 'string' ? data.custom : undefined,
         });
-        const questions =
-          raw.question && raw.question.status !== 'dismissed' ? raw.question.questions : [];
+        const current = raw.question && raw.question.status !== 'dismissed' ? raw.question : null;
+        const questions = current ? current.questions : [];
+        const batchId = current?.batchId ?? String(data.call_id ?? data.callId ?? '');
         if (questions.length > 0 && raw.answered.length >= questions.length) {
-          raw.question = { status: 'answered', questions, answers: raw.answered };
+          raw.question = { status: 'answered', batchId, questions, answers: raw.answered };
         } else if (questions.length > 0) {
-          raw.question = { status: 'pending', questions };
+          raw.question = { status: 'pending', batchId, questions };
         }
         break;
       }
       case 'question/cancelled': {
         const raw = ensure(turn);
         raw.cancelled += 1;
-        const questions =
-          raw.question && raw.question.status !== 'answered' ? raw.question.questions : [];
+        const current = raw.question && raw.question.status !== 'answered' ? raw.question : null;
+        const questions = current ? current.questions : [];
+        const batchId = current?.batchId ?? String(data.call_id ?? data.callId ?? '');
         if (questions.length > 0 && raw.cancelled >= questions.length) {
-          raw.question = { status: 'dismissed', questions };
+          raw.question = { status: 'dismissed', batchId, questions };
         }
         break;
       }
@@ -620,7 +629,6 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       reasoning:
         raw.reasoningParts.length > 0 ? { full: raw.reasoningParts.join('\n\n') } : null,
       tools: raw.tools,
-      cards: [],
       answer: raw.answer ? { text: raw.answer, elements: [] } : null,
       thinkingSeconds: thinkingSecondsOf(raw.reasoningMs),
       tokens: {

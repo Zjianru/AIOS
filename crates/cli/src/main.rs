@@ -1385,7 +1385,6 @@ mod tests {
                 price_cache_read: None,
                 price_cache_write: None,
             }]),
-            price_rate: 1.0,
             auth_header: None,
         }
     }

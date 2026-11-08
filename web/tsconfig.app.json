@@ -7,7 +7,7 @@
     "jsx": "react-jsx",
     "useDefineForClassFields": true,
     "skipLibCheck": true,
-    "allowImportingTsExtensions": false,
+    "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,

@@ -24,7 +24,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { getModelSettings } from '@/data/keyring';
 import { selectSessionModel, ServiceHttpError } from '@/data/service';
-import type { ModelSettingsView } from '@/data/fixtures/settings';
+import type { ModelSettingsView } from '@/data/keyring';
 import { matchDisabled } from '@/data/disabled';
 import { go } from '@/app/navigate';
 import { useKindStore } from './kindStore';

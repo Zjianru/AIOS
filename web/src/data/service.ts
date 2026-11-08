@@ -3,13 +3,16 @@
 
 import { apiErrorReason } from './errors';
 
+/** T017.1：失败原因（原 data/fixtures/kindLive 的演示类型；事件与页面都在用）。 */
+export type FailureCause = 'credential' | 'keyring' | 'model' | 'masked';
+
 export interface ServiceEvent {
   seq: number;
   /** 日志事件发生时间（unix 毫秒；工作过程用）。 */
   time: number;
   type: string;
   data: Record<string, unknown>;
-  cause?: 'credential' | 'model' | 'keyring' | 'masked';
+  cause?: FailureCause;
 }
 
 export type ServiceRootState =
@@ -221,6 +224,27 @@ export async function cancelTurn(): Promise<void> {
   await post({ method: 'cancel' });
 }
 
+/** ask_user 的问题形状（T017.1：从 fixtures/kindLive 挪进正式数据模块）。 */
+export interface AskOption {
+  label: string;
+  description?: string;
+}
+
+export interface AskQuestion {
+  id: string;
+  header?: string;
+  question: string;
+  options?: AskOption[];
+  multiSelect?: boolean;
+}
+
+/** question/answered 的回答形状（按问题 id）；线上回答用 ServiceAnswer（questionId）。 */
+export interface AskAnswer {
+  id: string;
+  selected: string[];
+  custom?: string;
+}
+
 export interface ServiceAnswer {
   questionId: string;
   selected: string[];
@@ -286,7 +310,7 @@ export interface ServiceModelRow {
   name?: string;
   contextWindow?: number;
   maxTokens?: number;
-  /** T012 F1：用户填的四类单价（美元/百万 token，不乘倍率）。 */
+  /** T012 F1：用户填的四类单价（美元/百万 token；空=用目录标价）。 */
   priceInput?: number;
   priceOutput?: number;
   priceCacheRead?: number;
@@ -304,8 +328,6 @@ export interface ServiceConnectionInfo {
   preset?: string;
   /** 用户在这个连接里存的模型行（价格/窗口/输出上限）。 */
   models?: ServiceModelRow[];
-  /** T012.4：价格倍率（1 = 原价，0 = 免费）。 */
-  price_rate?: number;
   /** T012.6：学到的单头（x-api-key / authorization）。 */
   auth_header?: string | null;
   check: { kind: 'never' } | { kind: 'ok'; at: number } | { kind: 'fail'; at: number; reason: string };
@@ -350,10 +372,9 @@ export interface SaveConnectionInput {
   model: string;
   endpoint: string;
   apiKey: string;
-  /** T012.4：预设来源、模型行、倍率（只增）。 */
+  /** T012.4：预设来源、模型行（只增）。 */
   preset?: string;
   models?: ServiceModelRow[];
-  price_rate?: number;
 }
 
 /** 设置页读取（不含 key 正文）。 */
@@ -469,7 +490,7 @@ export function connectSession(
   return socket;
 }
 
-/** T008.3/T012.4：改连接（endpoint/model 必填；preset/models/price_rate 只增），保留已存 key。 */
+/** T008.3/T012.4：改连接（endpoint/model 必填；preset/models 只增），保留已存 key。 */
 export async function updateConnectionInfo(
   id: string,
   patch: {
@@ -477,7 +498,6 @@ export async function updateConnectionInfo(
     model: string;
     preset?: string;
     models?: ServiceModelRow[];
-    price_rate?: number;
   },
 ): Promise<ServiceConnectionInfo> {
   const response = await post<{ connection: ServiceConnectionInfo }>({

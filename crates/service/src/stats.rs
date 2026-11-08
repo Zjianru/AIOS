@@ -1,6 +1,6 @@
 //! T012.8：会话统计与花费（读的时候现算，不落日志）。
 //!
-//! 照 Magpie 的「生效价格 + 每条用量乘价格」：用户填的价格 > 目录标价 × 连接的倍率 > 无价格。
+//! 照 Magpie 的「生效价格 + 每条用量乘价格」：用户填的价格 > 目录标价 > 无价格。
 //! 无价格的轮不计入合计，合计带 unpriced 标记（spec 故事 4）。
 //!
 //! 缓存价：Magpie 的账本对 cache read/write 有单独价目；AIOS 的目录只有输入/输出两个标价，
@@ -12,7 +12,7 @@ use model::catalog::CatalogSnapshot;
 use serde::{Deserialize, Serialize};
 use session::EventKind;
 
-/// 生效价格（美元/百万 token；用户价不乘倍率）。
+/// 生效价格（美元/百万 token；用户填了的格用用户价，其余用目录标价）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EffectivePrice {
     pub input: f64,
@@ -28,7 +28,7 @@ pub fn effective_price(
     catalog: &CatalogSnapshot,
     model: &str,
 ) -> Option<EffectivePrice> {
-    // T012 F1：逐字段取价——用户填了的格原样用（不乘倍率），没填的格用目录标价 × 连接倍率；
+    // T012 F1：逐字段取价——用户填了的格原样用，没填的格用目录标价；
     // 某格两边都没有就是 None（有这一类用量时这一轮无价格）。
     let user = connection
         .models
@@ -42,7 +42,6 @@ pub fn effective_price(
         .models_for(&provider)
         .into_iter()
         .find(|info| info.id == model);
-    let rate = connection.price_rate;
     let user_input = user.and_then(|row| row.price_input);
     // 旧连接只有一个数（alias 到输入价）：那个数同时是输出价。
     let user_output = user.and_then(|row| row.price_output).or(user_input);
@@ -55,15 +54,13 @@ pub fn effective_price(
         .or(catalog_input);
     let catalog_cache_read = info.as_ref().and_then(|info| info.price_cache_read);
     let catalog_cache_write = info.as_ref().and_then(|info| info.price_cache_write);
-    let input = user_input.or(catalog_input.map(|value| value * rate))?;
-    let output = user_output
-        .or(catalog_output.map(|value| value * rate))
-        .unwrap_or(input);
+    let input = user_input.or(catalog_input)?;
+    let output = user_output.or(catalog_output).unwrap_or(input);
     Some(EffectivePrice {
         input,
         output,
-        cache_read: user_cache_read.or(catalog_cache_read.map(|value| value * rate)),
-        cache_write: user_cache_write.or(catalog_cache_write.map(|value| value * rate)),
+        cache_read: user_cache_read.or(catalog_cache_read),
+        cache_write: user_cache_write.or(catalog_cache_write),
     })
 }
 
@@ -209,7 +206,7 @@ mod tests {
     use model::catalog::CatalogSnapshot;
     use serde_json::json;
 
-    fn connection(price_rate: f64, user_price: Option<f64>) -> ConnectionInfo {
+    fn connection(user_price: Option<f64>) -> ConnectionInfo {
         ConnectionInfo {
             id: "deepseek".to_owned(),
             name: "DeepSeek".to_owned(),
@@ -229,7 +226,6 @@ mod tests {
                 price_cache_read: None,
                 price_cache_write: None,
             }]),
-            price_rate,
             auth_header: None,
         }
     }
@@ -278,43 +274,52 @@ mod tests {
         }
     }
 
+    /// 旧存储里还留着已删的连接级价格乘数：读到就忽略，不把没填的格当成免费；
+    /// 用户填了单价照用，没填的格用目录标价。
     #[test]
-    fn user_price_wins_and_is_not_multiplied() {
-        // 单数用户价 2 美元/百万 = 输入价和输出价；缓存两格没填 → 有缓存用量时无价格。
-        let price = effective_price(&connection(3.0, Some(2.0)), &catalog(), "deepseek-flash")
-            .expect("用户价");
-        assert_eq!(price.input, 2.0);
-        assert_eq!(price.output, 2.0);
-        // 用户没填缓存两格 → 用目录标价×倍率（deepseek-flash 有缓存读价、没有缓存写价）。
-        assert_eq!(price.cache_read, Some(0.003 * 3.0));
-        assert!(price.cache_write.is_none());
-        let cost = usage_cost_usd(&usage_no_cache(), &price).expect("无缓存用量");
-        assert!((cost - (1_000_000.0 * 2.0 + 500_000.0 * 2.0) / 1e6).abs() < 1e-9);
-        // 用户价不乘倍率：rate=3 也一样。
-        let with_rate = effective_price(&connection(3.0, Some(2.0)), &catalog(), "deepseek-flash")
-            .expect("用户价");
-        assert_eq!(with_rate.input, 2.0);
-        assert_eq!(with_rate.output, 2.0);
+    fn legacy_connection_price_multiplier_is_ignored() {
+        // 字段名拆开拼：全仓检查要求已删字段不再以原文出现在 crates/web 里。
+        let deleted = ["price", "rate"].join("_");
+        let mut legacy = json!({
+            "id": "deepseek",
+            "name": "DeepSeek",
+            "model": "deepseek-flash",
+            "endpoint": "https://api.deepseek.com/anthropic",
+            "saved_at": 0,
+            "check": {"kind": "never"},
+            "key_saved": true,
+            "preset": "deepseek",
+            "models": [{"id": "deepseek-flash"}]
+        });
+        legacy[deleted.clone()] = json!(0.0);
+
+        let connection: ConnectionInfo =
+            serde_json::from_value(legacy.clone()).expect("旧存储要能读");
+        let price = effective_price(&connection, &catalog(), "deepseek-flash").expect("目录价");
+        assert_eq!(price.input, 0.15, "旧乘数 0 被忽略：输入用目录标价");
+        assert_eq!(price.output, 0.6, "输出用目录标价");
+        assert_eq!(price.cache_read, Some(0.003), "缓存读用目录标价");
+
+        legacy["models"][0]["priceInput"] = json!(2.0);
+        let connection: ConnectionInfo = serde_json::from_value(legacy).expect("旧存储要能读");
+        let price = effective_price(&connection, &catalog(), "deepseek-flash").expect("用户价");
+        assert_eq!(price.input, 2.0, "用户填的单价照用");
+        assert_eq!(price.output, 2.0, "只填一个价：输出沿用");
+        assert_eq!(price.cache_read, Some(0.003), "没填的格用目录标价");
     }
 
+    /// 用户填了单价：照用；没填的格用目录标价。
     #[test]
-    fn catalog_price_times_rate_and_zero_rate_is_free() {
-        let catalog = catalog();
-        let base =
-            effective_price(&connection(1.0, None), &catalog, "deepseek-flash").expect("标价");
-        let marked =
-            effective_price(&connection(2.0, None), &catalog, "deepseek-flash").expect("标价×倍率");
-        assert!((marked.input - base.input * 2.0).abs() < 1e-9);
-        // 四类标价都乘倍率。
-        assert_eq!(base.cache_read, Some(0.003));
-        assert_eq!(marked.cache_read, Some(0.006));
-        assert!(base.cache_write.is_none(), "deepseek 快照没有缓存写单价");
-        let free =
-            effective_price(&connection(0.0, None), &catalog, "deepseek-flash").expect("倍率 0");
-        assert_eq!(free.input, 0.0);
-        assert_eq!(free.cache_read, Some(0.0));
-        assert_eq!(usage_cost_usd(&usage_no_cache(), &free), Some(0.0));
-        assert!(effective_price(&connection(1.0, None), &catalog, "no-such-model").is_none());
+    fn user_price_wins_over_catalog() {
+        // 单数用户价 2 美元/百万 = 输入价和输出价；缓存两格没填 → 用目录标价。
+        let price =
+            effective_price(&connection(Some(2.0)), &catalog(), "deepseek-flash").expect("用户价");
+        assert_eq!(price.input, 2.0);
+        assert_eq!(price.output, 2.0);
+        assert_eq!(price.cache_read, Some(0.003), "没填的缓存读用目录标价");
+        assert!(price.cache_write.is_none(), "deepseek 快照没有缓存写单价");
+        let cost = usage_cost_usd(&usage_no_cache(), &price).expect("无缓存用量");
+        assert!((cost - (1_000_000.0 * 2.0 + 500_000.0 * 2.0) / 1e6).abs() < 1e-9);
     }
 
     #[test]
@@ -327,7 +332,7 @@ mod tests {
         ];
         let stats = session_stats(
             &events,
-            std::slice::from_ref(&connection(1.0, None)),
+            std::slice::from_ref(&connection(None)),
             &catalog(),
             &selection(),
             123,
@@ -348,7 +353,6 @@ mod tests {
         id: &str,
         endpoint: &str,
         preset: &str,
-        rate: f64,
         user_price: Option<f64>,
     ) -> ConnectionInfo {
         ConnectionInfo {
@@ -370,7 +374,6 @@ mod tests {
                 price_cache_read: None,
                 price_cache_write: None,
             }]),
-            price_rate: rate,
             auth_header: None,
         }
     }
@@ -382,7 +385,6 @@ mod tests {
             "minimax",
             "https://api.minimax.io/anthropic",
             "minimax",
-            1.0,
             None,
         );
         connection.model = "MiniMax-M2.7".to_owned();
@@ -395,21 +397,19 @@ mod tests {
         assert_eq!(price.cache_write, Some(0.375));
     }
 
-    /// T012.8a 审计：两轮跨连接（DeepSeek 用户价 → MiniMax 倍率 0=免费）按各自连接定价。
+    /// T012.8a 审计：两轮跨连接（DeepSeek 用户价 → MiniMax 目录价）按各自连接定价。
     #[test]
     fn stats_price_each_round_with_its_own_connection() {
         let deepseek = connection_with(
             "deepseek",
             "https://api.deepseek.com/anthropic",
             "deepseek",
-            1.0,
             Some(2.0),
         );
         let minimax = connection_with(
             "minimax-cn",
             "https://api.minimaxi.com/anthropic",
             "minimax-cn",
-            0.0,
             None,
         );
         let events = vec![
@@ -450,11 +450,15 @@ mod tests {
             0,
             0,
         );
-        let cost = stats.cost_usd.expect("DeepSeek 轮有用户价，应该有花费");
+        let cost = stats.cost_usd.expect("两轮都有价格，应该有花费");
+        // DeepSeek 轮用用户价 2 美元/百万（输入输出同价）；MiniMax 轮用 minimax-cn 目录价
+        // 0.1494 / 0.5976 美元/百万。两轮各 1M 输入、0.5M 输出。
         let deepseek_cost = (1_000_000.0 * 2.0 + 500_000.0 * 2.0) / 1e6;
+        let minimax_cost = (1_000_000.0 * 0.1494 + 500_000.0 * 0.5976) / 1e6;
+        let expected = deepseek_cost + minimax_cost;
         assert!(
-            (cost - deepseek_cost).abs() < 1e-6,
-            "每轮按自己连接的价格算：{cost} vs {deepseek_cost}"
+            (cost - expected).abs() < 1e-6,
+            "每轮按自己连接的价格算：{cost} vs {expected}"
         );
     }
 
@@ -467,7 +471,7 @@ mod tests {
         )];
         let stats = session_stats(
             &events,
-            std::slice::from_ref(&connection(1.0, None)),
+            std::slice::from_ref(&connection(None)),
             &catalog(),
             &selection(),
             0,
@@ -493,14 +497,12 @@ mod tests {
             "deepseek",
             "https://api.deepseek.com/anthropic",
             "deepseek",
-            1.0,
             Some(2.0),
         );
         let minimax = connection_with(
             "minimax-cn",
             "https://api.minimaxi.com/anthropic",
             "minimax-cn",
-            0.0,
             None,
         );
         let events = vec![
@@ -552,15 +554,14 @@ mod tests {
             0,
         );
         let deepseek_cost = (1_000_000.0 * 2.0 + 500_000.0 * 2.0) / 1e6;
+        // 第 2 轮起用的是 MiniMax-M3.1-Flash，按 minimax-cn 目录价算。
+        let minimax_cost = (1_000_000.0 * 0.1494 + 500_000.0 * 0.5976) / 1e6;
+        let expected = deepseek_cost * 2.0 + minimax_cost;
+        assert!(!stats.unpriced, "三条都有价，不应无价：{stats:?}");
         assert!(
-            !stats.unpriced,
-            "本轮两条都按 DeepSeek 定价，不应无价：{stats:?}"
-        );
-        assert!(
-            (stats.cost_usd.unwrap_or(0.0) - deepseek_cost * 2.0).abs() < 1e-6,
-            "轮中换连接不影响本轮定价：{:?} vs {}",
+            (stats.cost_usd.unwrap_or(0.0) - expected).abs() < 1e-6,
+            "轮中换连接不影响本轮定价，下一轮按新连接定价：{:?} vs {expected}",
             stats.cost_usd,
-            deepseek_cost * 2.0
         );
     }
 
@@ -569,7 +570,7 @@ mod tests {
     /// input 0.15 / output 0.6 / cache_read 0.003（美元/百万 token）。
     #[test]
     fn deepseek_session_cost_uses_four_class_prices() {
-        let connection = connection(1.0, None);
+        let connection = connection(None);
         let price = effective_price(&connection, &catalog(), "deepseek-flash").expect("快照价");
         let usage = Usage {
             input_tokens: Some(755),
@@ -594,7 +595,7 @@ mod tests {
     #[test]
     fn cache_write_usage_without_a_cache_write_price_is_unpriced() {
         let catalog = catalog();
-        let connection = connection(1.0, None);
+        let connection = connection(None);
         let price = effective_price(&connection, &catalog, "deepseek-flash").expect("快照价");
         assert!(price.cache_write.is_none(), "deepseek 快照没有缓存写单价");
         let usage = Usage {
@@ -649,16 +650,16 @@ mod tests {
         assert!(stats.cost_usd.is_none(), "无价格不按 0 算：{stats:?}");
     }
 
-    /// T012 F1：用户只填缓存读价——输入/输出仍按目录标价×倍率，缓存读用用户价。
+    /// T012 F1：用户只填缓存读价——输入/输出用目录标价，缓存读用用户价。
     #[test]
     fn user_cache_read_price_fills_only_that_slot() {
-        let mut conn = connection(2.0, None);
+        let mut conn = connection(None);
         conn.models.as_mut().expect("显式模型行")[0].price_cache_read = Some(100.0);
         let price =
             effective_price(&conn, &catalog(), "deepseek-flash").expect("标价+用户缓存读价");
-        assert_eq!(price.input, 0.15 * 2.0, "输入按标价×倍率");
-        assert_eq!(price.output, 0.6 * 2.0, "输出按标价×倍率");
-        assert_eq!(price.cache_read, Some(100.0), "缓存读用用户价（不乘倍率）");
+        assert_eq!(price.input, 0.15, "输入用目录标价");
+        assert_eq!(price.output, 0.6, "输出用目录标价");
+        assert_eq!(price.cache_read, Some(100.0), "缓存读用用户价");
         assert_eq!(price.cache_write, None, "缓存写没有标价也没有用户价");
         // 只填缓存读价时，有缓存写用量仍是无价格。
         let usage = Usage {

@@ -19,7 +19,7 @@ import type { NowFixture } from './fixtures/now';
 import { COMPACTION_SUMMARY, DEMO_SCRIPTS, defaultScript } from './fixtures/kindLive';
 import type { LiveDemo, LiveScript } from './fixtures/kindLive';
 import { DISCOVERED_MODELS, modelSettingsFixture } from './fixtures/settings';
-import type { ConnectionView, ModelRow, ModelSettingsView, Protocol } from './fixtures/settings';
+import type { ConnectionView, ModelRow, ModelSettingsView, Protocol } from './keyring';
 import { board, projectDetail, readDoc, taskDetail } from './selectors';
 import type { BoardColumns, ProjectDetail, ReadDoc, TaskDetail } from './selectors';
 import { NEW_FLOW_DRAFTS, PALETTE_PARTS, SEED_FLOWS, TEMPLATE_OPTIONS, makeStressFlow } from './flows';
@@ -34,11 +34,6 @@ import type {
 
 export type MockLatency = 0 | 40 | 300;
 let latencyMs: MockLatency = 40;
-
-/** 设置里的开发开关用它（0 / 40 / 300）。 */
-export function setMockLatency(ms: MockLatency): void {
-  latencyMs = ms;
-}
 
 export function getMockLatency(): MockLatency {
   return latencyMs;
@@ -433,9 +428,6 @@ export async function moveKeyFile(path: string): Promise<ModelSettingsView> {
   keyring.keyFile = { path: clean, since: nowLabel() };
   return transmit(keyring);
 }
-
-/** 内核现在只会说 DeepSeek（D36）；只显示接上内核的部分时，目录里只有它，没有自定义。 */
-export const KERNEL_PROVIDERS: ReadonlySet<string> = new Set(['deepseek']);
 
 /** 用户把钥匙文件挪走过：告诉 AIOS 它现在在哪。不搬文件，只改指向。 */
 export async function relinkKeyFile(path: string): Promise<ModelSettingsView> {

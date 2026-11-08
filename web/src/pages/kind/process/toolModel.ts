@@ -229,6 +229,11 @@ export function sizeSuffix(step: ToolStepView): string | null {
   return Math.max(1, Math.ceil(length / 1024)) + 'KB';
 }
 
+/** 这一行有没有可展开的东西（没有就不给点）：还在跑的工具只有命令能看半截输出。 */
+export function hasCard(step: ToolStepView): boolean {
+  return step.state !== 'running' || step.name === 'bash';
+}
+
 /* ───────── 卡片 ───────── */
 
 export interface DiffLine {
@@ -457,17 +462,4 @@ export function parseExitStatus(output: string): { text: string; exitCode: numbe
     return { text: trimmed.slice(0, code.index).replace(/\n+$/, ''), exitCode: Number(code[1]), signal: null };
   }
   return { text: trimmed, exitCode: 0, signal: null };
-}
-
-/* ───────── 时长 ───────── */
-
-/** 「1分0秒」「12秒」「1小时3分」：不补前导零，最少 1 秒。 */
-export function formatDuration(ms: number): string {
-  const total = Math.max(1, Math.round(ms / 1000));
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const seconds = total % 60;
-  if (hours > 0) return hours + '小时' + minutes + '分';
-  if (minutes > 0) return minutes + '分' + seconds + '秒';
-  return seconds + '秒';
 }

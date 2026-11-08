@@ -25,8 +25,6 @@ test('设置页从目录加 MiniMax 连接并保存', async ({ page }) => {
     // 这里还没 fetch 过：页面本地兜底表不能出现厂商已不列的旧 MiniMax-M2.1-highspeed。
     await page.getByRole('button', { name: '编辑', exact: true }).last().click();
     await page.locator('[data-settings="editor"]').getByText('自定义设置').click();
-    // provider 级价格倍率已删：编辑器里不再有这个输入。
-    await expect(page.locator('[data-settings="editor"]').getByText('价格倍率')).toHaveCount(0);
     await expect(page.locator('[data-settings="editor"]')).toContainText('跟着厂商的列表走', {
       timeout: 20_000,
     });

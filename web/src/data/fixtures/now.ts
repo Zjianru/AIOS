@@ -9,7 +9,21 @@
  */
 
 import { tasks } from './workspace';
-import type { LineStationView } from '@/components/subway/LineRow';
+import type { TaskState } from './workspace';
+
+/** 一条地铁线上的站（T017.1：从 components/subway/LineRow 挪进 data；组件反过来从 data 取类型）。 */
+export interface LineStationView {
+  id: string;
+  title: string;
+  /** 谁在做（角色名）。 */
+  role?: string;
+  /** 第二行小字：备注/进度，如「3 类方案」「1 / 3 项」。 */
+  meta?: string;
+  state: TaskState;
+  /** 子任务进度；有它就画一条小进度条。 */
+  progress?: { done: number; total: number };
+  href?: string;
+}
 
 export type NowDecisionKind = 'askDecision' | 'artifact' | 'askWeb' | 'assignRole' | 'milestone';
 

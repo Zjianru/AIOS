@@ -90,8 +90,8 @@ pub struct ModelRow {
     pub context_window: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none", alias = "max_tokens")]
     pub max_tokens: Option<u32>,
-    /// T012 F1：用户填的四类单价（美元/百万 token，不乘倍率）。旧连接只有单数 `price`，
-    /// 读入时当作输入价和输出价（alias）；缓存两格可以不填。
+    /// T012 F1：用户填的四类单价（美元/百万 token；没填的格用目录标价）。旧连接只有
+    /// 单数 `price`，读入时当作输入价和输出价（alias）；缓存两格可以不填。
     #[serde(default, skip_serializing_if = "Option::is_none", alias = "price")]
     pub price_input: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -109,14 +109,12 @@ pub struct ConnectionUpdate {
     pub model: String,
     pub preset: Option<String>,
     pub models: Option<Vec<ModelRow>>,
-    pub price_rate: Option<f64>,
     pub auth_header: Option<String>,
 }
 
 /// 新建/覆盖一个连接时传入的内容（key 只在这一步进来）。
 ///
 /// models = None 时用 model 一行；Some([]) 是「跟着厂商走」，不再补 [model]。
-/// price_rate = None 表示没指定：覆盖已有连接时沿用存下的倍率，新连接默认 1.0。
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct NewConnection {
     pub id: String,
@@ -126,7 +124,6 @@ pub struct NewConnection {
     pub api_key: String,
     pub preset: Option<String>,
     pub models: Option<Vec<ModelRow>>,
-    pub price_rate: Option<f64>,
     pub auth_header: Option<String>,
 }
 
@@ -151,16 +148,9 @@ pub struct ConnectionInfo {
     /// Some([]) = 显式「跟着厂商的列表走」，不能再补成 [model]。
     #[serde(default)]
     pub models: Option<Vec<ModelRow>>,
-    /// T012.4：生效价格倍率（0 = 免费）。
-    #[serde(default = "default_price_rate")]
-    pub price_rate: f64,
     /// T012.4：学到的鉴权头（x-api-key / authorization）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_header: Option<String>,
-}
-
-fn default_price_rate() -> f64 {
-    1.0
 }
 
 impl ConnectionInfo {
@@ -393,15 +383,6 @@ impl Keyring {
                     .map(|preset| preset.id.to_owned())
             })
             .unwrap_or_else(|| "custom".to_owned());
-        // 只重填 key 的保存不带 price_rate；这里沿用已存连接的值，不能把免费/
-        // Coding Plan 连接的 0 倍率重置成默认 1.0。新连接没给才用 1.0。
-        let price_rate = connection.price_rate.unwrap_or_else(|| {
-            store
-                .connections
-                .iter()
-                .find(|item| item.info.id == connection.id)
-                .map_or(1.0, |item| item.info.price_rate)
-        });
         let info = ConnectionInfo {
             id: connection.id.clone(),
             name: connection.name,
@@ -412,7 +393,6 @@ impl Keyring {
             key_saved: true,
             preset,
             models: Some(models),
-            price_rate,
             auth_header: connection.auth_header,
         };
         let stored = StoredConnection {
@@ -689,9 +669,6 @@ impl Keyring {
             .and_then(|models| models.first_mut())
         {
             row.id = update.model;
-        }
-        if let Some(price_rate) = update.price_rate {
-            stored.info.price_rate = price_rate;
         }
         if update.auth_header.is_some() {
             stored.info.auth_header = update.auth_header;
@@ -970,7 +947,6 @@ mod shape_tests {
             key_saved: true,
             preset: String::new(),
             models: None,
-            price_rate: 0.0,
             auth_header: None,
         };
         normalize_info(&mut info);
@@ -1009,8 +985,7 @@ mod shape_tests {
             "saved_at": 1,
             "check": {"kind": "never"},
             "key_saved": true,
-            "preset": "deepseek",
-            "price_rate": 1.0
+            "preset": "deepseek"
         });
         let mut info: ConnectionInfo = serde_json::from_value(old).expect("旧存储");
         assert!(info.models.is_none(), "没有 models 键读成缺失");
@@ -1039,7 +1014,6 @@ mod shape_tests {
                 api_key: "test-key".to_owned(),
                 preset: Some("custom".to_owned()),
                 models: Some(Vec::new()),
-                price_rate: None,
                 auth_header: None,
             })
             .expect("save");
@@ -1066,7 +1040,6 @@ mod shape_tests {
             "check": {"kind": "never"},
             "key_saved": true,
             "preset": "deepseek",
-            "price_rate": 1.0,
             "models": []
         }))
         .expect("旧存储");
@@ -1133,13 +1106,11 @@ mod shape_tests {
                     price_cache_read: None,
                     price_cache_write: None,
                 }]),
-                price_rate: Some(0.0),
                 auth_header: None,
             })
             .expect("save");
         assert_eq!(info.preset, "minimax-cn");
         assert_eq!(info.models.as_deref().map(<[ModelRow]>::len), Some(1));
-        assert_eq!(info.price_rate, 0.0);
         let reopened = Keyring::open(data.path(), Some(&identity)).expect("reopen");
         let view = reopened.view();
         let saved = &view.connections[0];

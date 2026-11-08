@@ -9,14 +9,13 @@
  */
 
 import {
-  ARTIFACT_NAMES, APPROVAL_COMMANDS, CODE_BLOCK, DECISION_OPTIONS, LONG_MD, MARKDOWN_TABLE,
-  MEMORY_NOTES, PROBLEMS, SHORT_ANSWER, THINKING_FULL, THINKING_SUMMARY, TOOL_CALLS, TOOL_STEPS,
-  USER_SAY, WAKE_TEXTS, md,
+  CODE_BLOCK, LONG_MD, MARKDOWN_TABLE, SHORT_ANSWER, THINKING_FULL, THINKING_SUMMARY, TOOL_CALLS,
+  TOOL_STEPS, USER_SAY, md,
 } from './content';
-import { artifacts, kindLog, projects, rootTaskIds, tasks } from './fixtures/workspace';
+import { artifacts, kindLog, rootTaskIds, tasks } from './fixtures/workspace';
 import { hashSeed, intBetween, mulberry32, pick, pickN, seededAt } from './rng';
 import type {
-  AgentCardItem, KindCard, QuoteKind, TextElement, Thread, ThreadItem, Turn, TurnStatus,
+  QuoteKind, TextElement, Thread, ThreadItem, Turn, TurnStatus,
 } from './types';
 
 export const KIND_THREAD_ID = 'thread_kind_main';
@@ -94,124 +93,9 @@ function decorate(rnd: () => number, base: string): { text: string; elements: Te
   return { text, elements: [{ start, end: start + q.word.length, kind: q.kind, label: q.label, target: q.target }] };
 }
 
-/* ───────────────────────── 卡片（v10-tables §2.2 封闭类型表） ───────────────────────── */
-
-const originPool = [
-  { projectCode: 'W', projectName: projects.wsp.name, taskTitle: '多引擎实测', go: '#task:B2' },
-  { projectCode: 'W', projectName: projects.wsp.name, taskTitle: '可行性验证', go: '#task:C2' },
-  { projectCode: 'N', projectName: projects.news.name, taskTitle: '写说明', go: '#task:N3' },
-  { projectCode: '日', projectName: projects.daily.name, taskTitle: '核实来源', go: '#task:D2' },
-  { projectCode: null, projectName: null, taskTitle: null, go: null },
-];
-
-function timeLabel(ts: number): string {
-  const d = new Date(ts * 1000);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  return hh + ':' + mm;
-}
-
-function makeCard(rnd: () => number, seedIndex: number, ts: number): KindCard {
-  const typeIdx = Math.floor(rnd() * 14);
-  const origin = pick(rnd, originPool);
-  const id = 'card_' + seedIndex + '_' + Math.floor(rnd() * 1e6).toString(36);
-  const time = timeLabel(ts + intBetween(rnd, 3, 60));
-  const base = { id, origin, time, done: null } as Omit<KindCard, 'type' | 'title' | 'body' | 'actions'>;
-  const art = pick(rnd, ARTIFACT_NAMES);
-  switch (typeIdx) {
-    case 0:
-      return { ...base, type: 'routeDraft', title: '路线草稿：一件事拆成四站',
-        body: { kind: 'routeDraft',
-          stations: [
-            { role: '研究员', title: '竞争景观', what: '整理 3 类替代方案' },
-            { role: '评测员', title: '实证评测', what: '4 个引擎各跑 20 个查询' },
-            { role: '研究员', title: '可能性探索', what: '验证 4 个场景是否可行' },
-            { role: 'Kind', title: '价值判断', what: '给出继续 / 改造 / 放弃' },
-          ],
-          criterion: '覆盖 3 类以上替代方案；至少 3 个引擎的实测；给出判断与理由。',
-          estimate: '≈ 1 小时 20 分' },
-        actions: [{ label: '开工', primary: true, mutates: true }, { label: '改一下' }] };
-    case 1:
-      return { ...base, type: 'task', title: '多引擎实测正在跑',
-        body: { kind: 'task', progress: '3 / 4 引擎', running: 'Brave 的第 12 个查询' },
-        actions: [{ label: '去看 ›' }] };
-    case 2:
-      return { ...base, type: 'askDecision', title: 'Bing 缺 key，第 4 个引擎要不要补测',
-        body: { kind: 'askDecision', options: pick(rnd, DECISION_OPTIONS).map(o => ({ ...o })) },
-        actions: [] };
-    case 3: {
-      const command = pick(rnd, APPROVAL_COMMANDS);
-      // 不可逆的动作只给「允许这一次 / 不允许」；其余可以「加进范围」（D-27 晚 7 处冲突第 1 条）。
-      const irreversible = command.includes('rm -rf');
-      return {
-        ...base,
-        type: 'askApproval',
-        title: irreversible ? '要删掉引擎缓存目录（删了收不回）' : '要跑一条会写盘的命令',
-        body: { kind: 'askApproval', command, why: irreversible ? '缓存里是上一轮的原始结果，删掉后要重跑一遍。' : '这条命令会写盘，按规矩先问你。' },
-        actions: irreversible
-          ? [{ label: '允许这一次', primary: true, mutates: true }, { label: '不允许' }]
-          : [{ label: '允许这一次', primary: true, mutates: true }, { label: '加进范围', mutates: true }, { label: '不允许' }],
-      };
-    }
-    case 4:
-      return { ...base, type: 'askWeb', title: '要你在网页上完成登录授权',
-        body: { kind: 'askWeb', url: 'https://brave.com/search/api/', why: '需要你登录后把 key 贴回来，我读不到你的账号。' },
-        actions: [{ label: '去完成', primary: true }, { label: '不授权' }] };
-    case 5:
-      return { ...base, type: 'artifact', title: art + ' v2 写好了',
-        body: { kind: 'artifact', artifact: art, version: 'v2',
-          changes: ['去重后命中率从 21 / 20 修正为 18 / 20', '结论里注明缺 Bing 这一项'],
-          satisfied: [{ ok: true, text: '同一组 20 个查询，测 4 个引擎' }, { ok: false, text: '命中率和耗时按 §3 计算' }] },
-        actions: [{ label: '验收', primary: true, mutates: true }, { label: '打开' }] };
-    case 6: {
-      const m = pick(rnd, MEMORY_NOTES);
-      return { ...base, type: 'memory', title: '记下一条', body: { kind: 'memory', note: m.note, noteKind: m.noteKind },
-        actions: [{ label: '更正' }, { label: '忘记', mutates: true }] };
-    }
-    case 7: {
-      const w = pick(rnd, WAKE_TEXTS);
-      return { ...base, type: 'wake', title: '到点提醒你', body: { kind: 'wake', when: w.when, todo: w.todo },
-        actions: [{ label: '改时间' }, { label: '取消', mutates: true }] };
-    }
-    case 8:
-      return { ...base, type: 'roleJoin', title: '研究员加入了这件事',
-        body: { kind: 'roleJoin', role: '研究员', why: '这件事要读一手来源并做对比，研究员的经验刚好对得上。' },
-        actions: [{ label: '让他离开', mutates: true }] };
-    case 9:
-      return { ...base, type: 'planChanged', title: '计划变了：多引擎实测挪到并行',
-        body: { kind: 'planChanged',
-          before: ['竞争景观 → 实证评测 → 可能性探索'],
-          after: ['竞争景观 ∥ 实证评测 → 可能性探索'],
-          why: '两件事没有依赖，串行做多花 20 分钟。' },
-        actions: [{ label: '知道了', primary: true }, { label: '撤回这次改动', mutates: true }] };
-    case 10:
-      return { ...base, type: 'milestone', title: '里程碑「读懂仓库」4 条标准，3 条满足',
-        body: { kind: 'milestone', criteria: [
-          { ok: true, text: '说明技术栈与模块划分' },
-          { ok: true, text: '写清楚怎么运行' },
-          { ok: true, text: '评估完成度' },
-          { ok: false, text: '列出可改进点并排序（只列了 4 条，没有排序）' },
-        ] },
-        actions: [{ label: '通过', primary: true, mutates: true }, { label: '不通过' }] };
-    case 11:
-      return { ...base, type: 'assignRole', title: '推荐用评测员做这一站',
-        body: { kind: 'assignRole', role: '评测员', why: '这一站要真的把东西跑起来，评测员手上有一套现成的实测流程。' },
-        actions: [{ label: '确认', primary: true, mutates: true }, { label: '换人' }] };
-    case 12:
-      return { ...base, type: 'quotaAlert', title: '提醒线到了：这件事已用 68%',
-        body: { kind: 'quotaAlert', line: 'web-search-pro 研究 · 提醒线 70%', used: '68% · 约 6.8k tokens' },
-        actions: [{ label: '继续' }, { label: '暂停这件事', mutates: true }, { label: '调整提醒线' }] };
-    default: {
-      const p = pick(rnd, PROBLEMS);
-      return { ...base, type: 'problem', title: '出了问题：' + p.what, body: { kind: 'problem', what: p.what, handled: p.handled },
-        actions: [{ label: '去看 ›' }] };
-    }
-  }
-}
-
 /* ───────────────────────── Kind 主对话 ───────────────────────── */
 
-type Shape = 'quiet' | 'short' | 'long' | 'table' | 'code' | 'tool' | 'cards' | 'mixed';
+type Shape = 'quiet' | 'short' | 'long' | 'table' | 'code' | 'tool' | 'mixed';
 
 const SHAPES: readonly [Shape, number][] = [
   ['quiet', 0.2],
@@ -220,7 +104,6 @@ const SHAPES: readonly [Shape, number][] = [
   ['table', 0.08],
   ['code', 0.07],
   ['tool', 0.13],
-  ['cards', 0.16],
   ['mixed', 0.1],
 ];
 
@@ -233,7 +116,7 @@ function pickShape(rnd: () => number): Shape {
   return 'quiet';
 }
 
-function itemsForShape(rnd: () => number, index: number, ts: number, shape: Shape): ThreadItem[] {
+function itemsForShape(rnd: () => number, index: number, shape: Shape): ThreadItem[] {
   const items: ThreadItem[] = [];
   const say = decorate(rnd, pick(rnd, USER_SAY));
   items.push({
@@ -276,11 +159,6 @@ function itemsForShape(rnd: () => number, index: number, ts: number, shape: Shap
     items.push({ type: 'mcpToolCall', id: 'm_' + index + '_' + k, server: 'aios', tool: name, status: 'completed', arguments: { arg }, durationMs: intBetween(rnd, 60, 1800) });
   }
 
-  const cardCount = shape === 'cards' ? intBetween(rnd, 1, 3) : shape === 'quiet' ? 0 : rnd() < 0.22 ? 1 : 0;
-  for (let k = 0; k < cardCount; k++) {
-    items.push({ type: 'agentCard', id: 'c_' + index + '_' + k, card: makeCard(rnd, index * 7 + k, ts) } as AgentCardItem);
-  }
-
   if (shape !== 'quiet' || rnd() < 0.5) {
     items.push({ type: 'agentMessage', id: 'a_' + index, text: answer, phase: 'final_answer' });
   }
@@ -299,7 +177,7 @@ export function kindTurnAt(index: number): Turn {
   const rnd = seededAt(KIND_SEED, index);
   const ts = kindStarts[index];
   const shape = pickShape(rnd);
-  const items = itemsForShape(rnd, index, ts, shape);
+  const items = itemsForShape(rnd, index, shape);
   const status = turnStatus(index, KIND_TURN_COUNT);
   const dur = intBetween(rnd, 1200, 48000);
   return {

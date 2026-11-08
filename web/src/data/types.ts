@@ -62,7 +62,6 @@ export type ThreadItem =
   | CommandExecutionItem
   | McpToolCallItem
   | FileChangeItem
-  | AgentCardItem
   | ContextCompactionItem;
 
 /** 协议：ThreadItem::UserMessage。clientId 用于乐观发送时的本地关联。 */
@@ -131,17 +130,6 @@ export interface FileChangeItem {
   id: string;
   changes: { path: string; kind: 'add' | 'delete' | 'update' }[];
   status: 'completed' | 'failed';
-}
-
-/**
- * 未核实：卡片（v10-tables §2.2 的封闭类型表）在真实协议里怎么下发。
- * 产品现状是「Kind 做了/改了一个东西」由后台推对象状态，前端按类型渲染；
- * 这里先做成一类 item，接真接口时对齐。
- */
-export interface AgentCardItem {
-  type: 'agentCard';
-  id: string;
-  card: KindCard;
 }
 
 /** 协议：ThreadItem::ContextCompaction。字段未核实（只知道有这个变体，语义是「上下文压缩」）。 */
@@ -228,77 +216,6 @@ export interface TurnsListResponse {
   data: Turn[];
   nextCursor: string | null;
   backwardsCursor: string | null;
-}
-
-/* ───────────────────────────── 卡片（v10-tables §2.2 的封闭类型表） ───────────────────────────── */
-
-export type CardType =
-  | 'routeDraft'
-  | 'task'
-  | 'askDecision'
-  | 'askApproval'
-  | 'askWeb'
-  | 'artifact'
-  | 'memory'
-  | 'wake'
-  | 'roleJoin'
-  | 'planChanged'
-  | 'milestone'
-  | 'assignRole'
-  | 'quotaAlert'
-  | 'problem';
-
-/** 卡片头：「来自哪（项目 › 任务）」。项目用线路标：彩色圆角方块 + 代码字母（visual-plan-v12.md）。 */
-export interface CardOrigin {
-  projectCode: string | null;
-  projectName: string | null;
-  taskTitle: string | null;
-  /** 跳转用的 hash 路由。 */
-  go: string | null;
-}
-
-export interface CardOption {
-  label: string;
-  description: string;
-}
-
-/** 固定五格模板里的「主体」——按类型不同，可省。 */
-export type CardBody =
-  | { kind: 'routeDraft'; stations: { role: string; title: string; what: string }[]; criterion: string; estimate: string }
-  | { kind: 'task'; progress: string; running: string }
-  | { kind: 'askDecision'; options: CardOption[] }
-  | { kind: 'askApproval'; command: string; why: string }
-  | { kind: 'askWeb'; url: string; why: string }
-  | { kind: 'artifact'; artifact: string; version: string; changes: string[]; satisfied: { ok: boolean; text: string }[] }
-  | { kind: 'memory'; note: string; noteKind: '用户声明' | '事实' | '判断' | '假设' }
-  | { kind: 'wake'; when: string; todo: string }
-  | { kind: 'roleJoin'; role: string; why: string }
-  | { kind: 'planChanged'; before: string[]; after: string[]; why: string }
-  | { kind: 'milestone'; criteria: { ok: boolean; text: string }[] }
-  | { kind: 'assignRole'; role: string; why: string }
-  | { kind: 'quotaAlert'; line: string; used: string }
-  | { kind: 'problem'; what: string; handled: '已处理' | '处理中' | '已转为决定' };
-
-/** 卡片动作。词只能从 v10-tables §3.2 的固定动词表里取。 */
-export interface CardAction {
-  label: string;
-  /** 主操作实心（一张卡最多一个）。 */
-  primary?: boolean;
-  /** 点了会改变东西 → 给「撤销」提示条。 */
-  mutates?: boolean;
-}
-
-export interface KindCard {
-  id: string;
-  type: CardType;
-  origin: CardOrigin;
-  /** 协议/UI 时间：显示用，格式已按 v13 写好。 */
-  time: string;
-  title: string;
-  body: CardBody | null;
-  /** 办完收成一行：✓ 类型 · 结果 · 时间。 */
-  done: { line: string; at: string } | null;
-  actions: CardAction[];
 }
 
 /* ───────────────────────────── 流式（本地事件模拟） ───────────────────────────── */

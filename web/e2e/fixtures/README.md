@@ -36,6 +36,14 @@ T010.2 时用一次性 Playwright 录制器（已删除，不在仓库）跑改�
 
 这些是手写的，只放模型回放要的 `assistant/message`：第 1 条回一次 `canvas` 工具调用（HTML 在参数里），第 2 条回一句回答（versions 多一条第三轮）。**工具调用由真内核执行**，所以页面显示的画布一定来自日志的 `tool/result.meta.canvas`，不是夹具里写死的结果。`canvas-streaming` 只把 `tool-call-chunks` 的 args 拆成几段；完整参数（`message.content` 和 block-end）不变。
 
+## T017.2 提问卡降级夹具（手写）
+
+| 文件 | 场景 | 模型调用数 |
+|---|---|---|
+| question-degrade.jsonl | 提问卡降级：25 字小标题、2233 字的问题、选项里一个空 label 和一个缺 label（T017.2） | 2 |
+
+手写：第一条 assistant/message 回一次 `ask_user_question` 工具调用（参数在 block-end 里），第二条回一句回答。空 label 的选项内核保留（`question/asked` 里是 `""`），缺 label 的选项内核在发事件之前就丢掉了（`crates/agent/src/ask_capability.rs` 的 filter_map）；页面只负责把空 label 那一项去掉。
+
 ## 真 key 夹具的来源（T010.5）
 
 real.jsonl 用真 key 录制（key 只在运行时注入 Keyring，不进文件/命令行/证据）：

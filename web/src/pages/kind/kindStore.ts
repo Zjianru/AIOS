@@ -9,6 +9,7 @@ import { create } from 'zustand';
 import { toast } from 'sonner';
 import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchEventsPage, fetchFirstUse, fetchStatus, peekAvailableModels, recheckRoot, reportMonitor, selectSessionModel, sendMessage, setUnauthorizedHandler, updateSettings } from '@/data/service';
 import type { ServiceCatalogModel } from '@/data/service';
+import { dayLabelOf } from '@/lib/numbers';
 import type { Currency } from '@/lib/numbers';
 import { effortName } from './effortName';
 import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
@@ -18,7 +19,7 @@ import { contextPercent, contextTokens } from '@/data/turnUsage';
 import { getModelSettings } from '@/data/keyring';
 import { setHostHome } from '@/data/service';
 import { go } from '@/app/navigate';
-import type { AskAnswer } from '@/data/fixtures/kindLive';
+import type { AskAnswer } from '@/data/service';
 import { mark } from '@/lib/perf';
 import { canvasTracks, compactionViewOf, deriveTurnViews, mergeCanvasTracks } from './turnViews';
 import type { CanvasTrack, TurnViewData } from './turnViews';
@@ -28,19 +29,6 @@ export { deriveTurnViews } from './turnViews';
 export const PAGE_LAST = 5;
 export const PAGE_OLDER = 20;
 const FIRST_INDEX_BASE = 1_000_000;
-
-export function dayLabelOf(seconds: number | null): string {
-  if (!seconds) return '';
-  const date = new Date(seconds * 1000);
-  const now = new Date(2026, 9, 27, 14, 5, 0);
-  const sameDay = (a: Date, b: Date) =>
-    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-  const clock = String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0');
-  if (sameDay(date, now)) return '今天 ' + clock;
-  const yesterday = new Date(now.getTime() - 86400000);
-  if (sameDay(date, yesterday)) return '昨天 ' + clock;
-  return date.getMonth() + 1 + '月' + date.getDate() + '日 ' + clock;
-}
 
 function dayKeyOf(seconds: number | null): string {
   if (!seconds) return '';
@@ -145,7 +133,7 @@ interface KindState {
     connectionId: string;
     modelId: string;
     label: string;
-    /** 生效价格（美元/百万 token，已按连接倍率算好）；没有价格就是 undefined。 */
+    /** 生效价格（美元/百万 token，服务端按用户价或目录标价算好）；没有价格就是 undefined。 */
     price?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
     contextWindow?: number;
     thinks?: boolean;
@@ -298,7 +286,6 @@ function addUnsentView(
       user: { text, elements: [], pastes, files, canvas: canvas ?? null },
       reasoning: null,
       tools: [],
-      cards: [],
       answer: null,
       thinkingSeconds: 0,
       tokens: { input: 0, output: 0 },
@@ -373,7 +360,6 @@ let liveEvents: ServiceEvent[] = [];
 let contextWindow = 0;
 let pendingCompactionAuto = true;
 let livePendingCompaction: { id: string; window?: number } | null = null;
-(window as unknown as { __derive?: unknown }).__derive = (events: ServiceEvent[]) => deriveTurnViews(events);
 let liveTurn: number | null = null;
 let liveStream = '';
 /** T015.5：这一轮正在流的工具参数（callId → 名字 + 拼起来的参数）；只给「正在画」用，不落日志。 */
@@ -402,12 +388,6 @@ function refreshTurn(turn: number): void {
     derived.compaction || !existing?.compaction
       ? derived
       : { ...derived, compaction: existing.compaction };
-  (window as unknown as { __q?: unknown }).__q = {
-    turn,
-    questions: view.question && 'questions' in view.question ? view.question.questions.map((item) => item.question) : null,
-    status: view.question?.status,
-    asked: liveEvents.filter((item) => item.type === 'question/asked').map((item) => item.data.question),
-  };
   useKindStore.setState((state) => {
     const views = state.views.slice();
     const index = views.findIndex((item) => item.id === view.id);
@@ -475,7 +455,6 @@ function applyLiveEvent(event: ServiceEvent): void {
         user: null,
         reasoning: null,
         tools: [],
-        cards: [],
         answer: null,
         thinkingSeconds: 0,
         tokens: { input: 0, output: 0 },
@@ -601,7 +580,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   gateDetail: null,
   connection: { state: 'online' },
   sessionId: null,
-  usage: 46,
+  usage: 0,
   compacting: false,
   modelNames: {},
   modelWindows: {},

@@ -74,3 +74,41 @@ export function formatFxTime(fetchedAt: number): string | null {
   if (Number.isNaN(date.getTime())) return null;
   return date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
+
+/** 日期分隔的文案：今天 / 昨天 / 10月26日，后面带时分（T017.1：从 kindStore 抽成纯函数，now 可注入）。 */
+export function dayLabelOf(seconds: number | null, now: Date = new Date()): string {
+  if (!seconds) return '';
+  const date = new Date(seconds * 1000);
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  const clock = String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0');
+  if (sameDay(date, now)) return '今天 ' + clock;
+  const yesterday = new Date(now.getTime() - 86400000);
+  if (sameDay(date, yesterday)) return '昨天 ' + clock;
+  return date.getMonth() + 1 + '月' + date.getDate() + '日 ' + clock;
+}
+
+/** 设置页模型行的窗口/上限（T017.1：原 ModelSettings.tsx 的 formatTokens；口径不同，不并进 formatTokens）。 */
+export function formatModelTokens(value?: number): string {
+  if (!value) return '';
+  return value >= 1_000_000 ? value / 1_000_000 + 'M' : value >= 1_000 ? Math.round(value / 1_000) + 'K' : String(value);
+}
+
+/** 任务账上的时长（秒）：0 写「—」，不足 1 小时按分钟，整小时到分钟（T017.1：原 selectors.ts）。 */
+export function formatDurationSeconds(seconds: number): string {
+  if (!seconds) return '—';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return minutes + ' 分';
+  return Math.floor(minutes / 60) + ' 小时 ' + (minutes % 60) + ' 分';
+}
+
+/** 工作过程一步的用时（毫秒）：「1分0秒」「12秒」「1小时3分」（T017.1：原 toolModel.ts）。 */
+export function formatDurationMs(ms: number): string {
+  const total = Math.max(1, Math.round(ms / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours > 0) return hours + '小时' + minutes + '分';
+  if (minutes > 0) return minutes + '分' + seconds + '秒';
+  return seconds + '秒';
+}

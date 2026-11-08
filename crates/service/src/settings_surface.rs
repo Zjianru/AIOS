@@ -154,7 +154,6 @@ impl RootHost {
             api_key: request.api_key,
             preset: request.preset,
             models: request.models,
-            price_rate: request.price_rate,
             auth_header: request.auth_header,
         })?;
         // 覆盖已有连接且换了地址/预设：旧地址的厂商列表作废（同 connection_update）。
@@ -231,7 +230,6 @@ impl RootHost {
                 model: request.model,
                 preset: request.preset,
                 models: request.models,
-                price_rate: request.price_rate,
                 auth_header: request.auth_header,
             },
         )?;

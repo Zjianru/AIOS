@@ -161,36 +161,6 @@ async fn 存连接删连接都无正文() {
     no_key(&serde_json::to_string(&deleted.unwrap()).unwrap());
 }
 
-/// 页面重填密钥走 connection-save，请求不带价格倍率：不能把已存的 0 倍率重置成 1.0。
-#[tokio::test]
-async fn 重填密钥不带价格倍率时沿用已存倍率() {
-    let dir = tempdir().unwrap();
-    let host = host(dir.path()).await;
-    let save = |price_rate: Option<f64>| ConnectionSaveRequest {
-        id: "free".to_owned(),
-        name: "Free".to_owned(),
-        model: "deepseek-flash".to_owned(),
-        endpoint: "https://api.deepseek.com/anthropic".to_owned(),
-        api_key: TEST_KEY.to_owned(),
-        price_rate,
-        ..Default::default()
-    };
-    host.dispatch(Call::ConnectionSave(save(Some(0.0))))
-        .await
-        .expect("save free connection");
-    assert_eq!(connection_of(&host, "free").await.price_rate, 0.0);
-
-    // 页面重填 key：connection-save 不带 price_rate。
-    host.dispatch(Call::ConnectionSave(save(None)))
-        .await
-        .expect("re-save with new key");
-    assert_eq!(
-        connection_of(&host, "free").await.price_rate,
-        0.0,
-        "重填密钥不能把免费连接的价格倍率重置成 1.0"
-    );
-}
-
 #[tokio::test]
 async fn 换位置指回重新开始和记录() {
     let dir = tempdir().unwrap();
@@ -2241,7 +2211,6 @@ async fn 编辑连接不改上次选择() {
         model: "deepseek-v4-pro".to_owned(),
         preset: Some("deepseek".to_owned()),
         models: None,
-        price_rate: None,
         auth_header: None,
     }))
     .await

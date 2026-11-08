@@ -6,21 +6,9 @@
  * - 现在页的卡片用它；工作页/任务页 C 段沿用同一套站与连线画法（届时加竖排与分叉）。
  */
 
+import type { LineStationView } from '@/data/fixtures/now';
 import type { TaskState } from '@/data/fixtures/workspace';
 import { cn } from '@/lib/utils';
-
-export interface LineStationView {
-  id: string;
-  title: string;
-  /** 谁在做（角色名）。 */
-  role?: string;
-  /** 第二行小字：备注/进度，如「3 类方案」「1 / 3 项」。 */
-  meta?: string;
-  state: TaskState;
-  /** 子任务进度；有它就画一条小进度条。 */
-  progress?: { done: number; total: number };
-  href?: string;
-}
 
 export interface LineRowProps {
   color: string;
