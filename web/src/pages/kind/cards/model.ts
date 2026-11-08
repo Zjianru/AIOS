@@ -8,6 +8,7 @@
  */
 
 import { z } from 'zod';
+import type { ToolStepView } from '../process/toolModel';
 
 /* ───────── 信封 ───────── */
 
@@ -359,3 +360,18 @@ export function cardTone(role: CardRole, state: CardState): CardTone {
   if (state === 'pending' && role === 'decision') return WAIT_TONE;
   return NEUTRAL_TONE;
 }
+
+/* ───────── 工具卡（T017.3 骨架：先红，实现见下一笔） ───────── */
+
+/** 工具名 → 卡片类型（票面 .3）。没登记的工具退回通用卡。 */
+export function toolCardTypeOf(name: string): CardType {
+  void name;
+  return 'generic';
+}
+
+/** 工具调用 → 卡片信封（骨架：还不会派生，统一退回通用卡）。 */
+export function toolCardOf(step: ToolStepView, cwd: string): CardEnvelope {
+  void cwd;
+  return { id: step.id, type: 'generic', role: 'state', state: 'pending', slots: {} };
+}
+

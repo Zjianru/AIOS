@@ -8,7 +8,10 @@ import {
   normalizeEnvelope,
   questionCardOf,
   resolveSlots,
+  toolCardOf,
+  toolCardTypeOf,
 } from '../src/pages/kind/cards/model.ts';
+import { diffOf, parseExitStatus, readOf, searchOf, terminalOf } from '../src/pages/kind/process/toolModel.ts';
 
 /** 提问卡的信封：出不来就是红（断言级，不是环境错）。 */
 function questionEnvelope(fact) {
@@ -196,5 +199,311 @@ assert.equal(dismissed.slots.answers.length, 0);
 const voided = questionEnvelope(questionFact({ status: 'void' }));
 assert.equal(voided.state, 'stopped');
 assert.deepEqual(voided.receipt, { outcome: 'cancelled', summary: '这一轮停下了，问题没再等回答' });
+
+/* ───────── T017.3 工具卡（spec 清单 6、8；票面 15 份样例） ───────── */
+
+/**
+ * 工具调用 + 结果 → 页面用的工具步骤。
+ * 折法同 turnViews 的 tool/call、tool/result：参数从 arguments 解析，退出码从结果末尾取，
+ * 结果失败记 error，meta 原样带过来（不另造事件形状）。
+ */
+function stepOf(call, result) {
+  const output = result?.output ?? '';
+  const status = parseExitStatus(output);
+  return {
+    kind: 'tool',
+    id: call.callId,
+    name: call.name,
+    args: JSON.parse(call.arguments ?? '{}'),
+    output,
+    exitCode: result ? status.exitCode : null,
+    signal: result ? status.signal : null,
+    durationMs: result ? 1 : null,
+    state: result ? (result.error ? 'error' : 'done') : 'running',
+    meta: result?.meta ?? null,
+  };
+}
+
+const CWD = '/w';
+
+/** 工具步骤 → 信封 → 校验过的槽位；类型和 id 先断言，出不来直接红。 */
+function toolCardEnvelope(step, expectedType, label) {
+  const envelope = toolCardOf(step, CWD);
+  assert.equal(envelope.type, expectedType, label + '：卡片类型');
+  assert.equal(envelope.id, step.id, label + '：卡片 id 用调用 id，不用数组下标');
+  const slots = resolveSlots(cardDefinitions[envelope.type], envelope.slots);
+  return { envelope, slots };
+}
+
+// 清单 6：工具名映射逐条过；不认识的退回通用。
+const TOOL_TYPES = {
+  write: 'diff',
+  edit: 'diff',
+  apply_patch: 'diff',
+  bash: 'terminal',
+  read: 'read',
+  glob: 'search',
+  grep: 'search',
+  ask_user_question: 'question',
+  mystery: 'generic',
+};
+for (const [name, expected] of Object.entries(TOOL_TYPES)) {
+  assert.equal(toolCardTypeOf(name), expected, name + ' → ' + expected);
+}
+
+/* 终端：长 / 短 / 缺字段 */
+const bashShort = stepOf(
+  { callId: 'call-bash-1', name: 'bash', arguments: '{"command":"echo hi"}' },
+  { output: 'hi\n[exit code: 0]' },
+);
+const terminalShort = toolCardEnvelope(bashShort, 'terminal', '终端短');
+assert.equal(terminalShort.envelope.role, 'state');
+assert.equal(terminalShort.envelope.state, 'done');
+assert.equal(terminalShort.slots.command, 'echo hi');
+assert.equal(terminalShort.slots.output.text, 'hi');
+assert.equal(terminalShort.slots.output.folded, false);
+assert.equal(terminalShort.slots.exitCode, 0);
+// 槽位和派生函数给的一样。
+const terminalFact = terminalOf(bashShort);
+assert.equal(terminalShort.slots.command, terminalFact.command);
+assert.equal(terminalShort.slots.output.text, terminalFact.output);
+assert.equal(terminalShort.slots.exitCode, terminalFact.exitCode);
+assert.equal(terminalShort.slots.signal, terminalFact.signal);
+
+const longTerminalOutput = Array.from({ length: 120 }, (_, index) => '第 ' + String(index) + ' 行输出').join('\n');
+const bashLong = stepOf(
+  { callId: 'call-bash-2', name: 'bash', arguments: '{"command":"run"}' },
+  { output: longTerminalOutput },
+);
+const terminalLong = toolCardEnvelope(bashLong, 'terminal', '终端长');
+assert.equal(terminalLong.slots.output.folded, true, '正文槽超过 600 字折起来');
+assert.equal(terminalLong.slots.output.text, longTerminalOutput, '原文完整保留');
+assert.equal(terminalLong.slots.output.text, terminalOf(bashLong).output);
+
+const bashMissing = stepOf({ callId: 'call-bash-3', name: 'bash', arguments: '{}' }, { output: '' });
+const terminalMissing = toolCardEnvelope(bashMissing, 'terminal', '终端缺字段');
+assert.equal(terminalMissing.slots.command, '');
+assert.equal(terminalMissing.slots.output.text, '');
+assert.equal(terminalMissing.slots.output.folded, false);
+
+/* 差异：长 / 短 / 缺字段 */
+const writeShort = stepOf(
+  { callId: 'call-write-1', name: 'write', arguments: JSON.stringify({ file_path: '/w/notes.md', content: 'one\ntwo\n' }) },
+  { output: 'Updated notes.md' },
+);
+const diffShort = toolCardEnvelope(writeShort, 'diff', '差异短');
+assert.equal(diffShort.envelope.role, 'state');
+assert.equal(diffShort.envelope.state, 'done');
+assert.deepEqual(diffShort.slots.files, diffOf(writeShort, CWD));
+assert.equal(diffShort.slots.files.length, 1);
+assert.equal(diffShort.slots.files[0].path, 'notes.md', '路径相对会话工作目录');
+assert.equal(diffShort.slots.files[0].added, 2);
+
+const writeLong = stepOf(
+  {
+    callId: 'call-write-2',
+    name: 'write',
+    arguments: JSON.stringify({ file_path: '/w/long.md', content: Array.from({ length: 30 }, (_, index) => 'line ' + String(index)).join('\n') }),
+  },
+  { output: 'Updated long.md' },
+);
+const diffLong = toolCardEnvelope(writeLong, 'diff', '差异长');
+assert.equal(diffLong.slots.files[0].lines.length, 30);
+assert.equal(diffLong.slots.files[0].added, 30);
+
+const writeMissing = stepOf(
+  { callId: 'call-write-3', name: 'write', arguments: JSON.stringify({ file_path: '/w/empty.md' }) },
+  { output: 'Updated empty.md' },
+);
+const diffMissing = toolCardEnvelope(writeMissing, 'diff', '差异缺字段');
+assert.equal(diffMissing.slots.files[0].path, 'empty.md');
+assert.deepEqual(diffMissing.slots.files[0].lines, [], '缺 content 就是没有行，不整卡报错');
+
+/* 读文件：长 / 短 / 缺字段 */
+const readShort = stepOf(
+  { callId: 'call-read-1', name: 'read', arguments: JSON.stringify({ file_path: '/w/notes.md' }) },
+  { output: '<path>notes.md</path>\n<type>file</type>\n<content>\n1: one\n2: two\n</content>' },
+);
+const readShortCard = toolCardEnvelope(readShort, 'read', '读文件短');
+assert.deepEqual(readShortCard.slots, readOf(readShort, CWD));
+assert.equal(readShortCard.slots.path, 'notes.md');
+assert.equal(readShortCard.slots.lines.length, 2);
+
+const readLong = stepOf(
+  { callId: 'call-read-2', name: 'read', arguments: JSON.stringify({ file_path: '/w/long.md' }) },
+  {
+    output:
+      '<content>\n' +
+      Array.from({ length: 80 }, (_, index) => String(index + 1) + ': line ' + String(index)).join('\n') +
+      '\n</content>',
+  },
+);
+const readLongCard = toolCardEnvelope(readLong, 'read', '读文件长');
+assert.equal(readLongCard.slots.lines.length, 80);
+assert.deepEqual(readLongCard.slots, readOf(readLong, CWD));
+
+const readMissing = stepOf(
+  { callId: 'call-read-3', name: 'read', arguments: '{}' },
+  { output: '<content>\n(empty file)\n</content>' },
+);
+const readMissingCard = toolCardEnvelope(readMissing, 'read', '读文件缺字段');
+assert.equal(readMissingCard.slots.path, '');
+assert.deepEqual(readMissingCard.slots.lines, []);
+assert.equal(readMissingCard.slots.footer, '(empty file)');
+
+/* 搜索：长 / 短 / 缺字段 */
+const globShort = stepOf(
+  { callId: 'call-glob-1', name: 'glob', arguments: '{"pattern":"*.ts"}' },
+  { output: './a.ts\n./b.ts\n' },
+);
+const searchShort = toolCardEnvelope(globShort, 'search', '搜索短');
+assert.deepEqual(searchShort.slots, searchOf(globShort));
+assert.equal(searchShort.slots.header, '2 个文件');
+assert.deepEqual(searchShort.slots.groups.map((group) => group.path), ['a.ts', 'b.ts']);
+
+const globLong = stepOf(
+  { callId: 'call-glob-2', name: 'glob', arguments: '{"pattern":"*.ts"}' },
+  { output: Array.from({ length: 40 }, (_, index) => './f' + String(index) + '.ts').join('\n') },
+);
+const searchLong = toolCardEnvelope(globLong, 'search', '搜索长');
+assert.equal(searchLong.slots.header, '40 个文件');
+assert.equal(searchLong.slots.groups.length, 40);
+assert.deepEqual(searchLong.slots, searchOf(globLong));
+
+const grepMissing = stepOf(
+  { callId: 'call-grep-3', name: 'grep', arguments: '{"pattern":"nope"}' },
+  { output: 'no hits here' },
+);
+const searchMissing = toolCardEnvelope(grepMissing, 'search', '搜索缺字段');
+assert.equal(searchMissing.slots.header, 'no hits here');
+assert.deepEqual(searchMissing.slots.groups, []);
+
+/* 通用：长 / 短 / 缺字段（不认识的工具） */
+const mysteryShort = stepOf(
+  { callId: 'call-mystery-1', name: 'mystery', arguments: '{"foo":"bar"}' },
+  { output: 'done' },
+);
+const genericToolShort = toolCardEnvelope(mysteryShort, 'generic', '通用短');
+assert.equal(genericToolShort.envelope.role, 'state');
+assert.equal(genericToolShort.slots.title, '');
+assert.equal(genericToolShort.slots.input.text, JSON.stringify({ foo: 'bar' }, null, 2));
+assert.equal(genericToolShort.slots.output.text, 'done');
+assert.doesNotThrow(() => normalizeEnvelope(genericToolShort.envelope), '不认识的工具点开是通用卡，不报错');
+
+const mysteryLong = stepOf(
+  { callId: 'call-mystery-2', name: 'mystery', arguments: JSON.stringify({ text: 'x'.repeat(2000) }) },
+  { output: 'done' },
+);
+const genericToolLong = toolCardEnvelope(mysteryLong, 'generic', '通用长');
+assert.equal(genericToolLong.slots.input.folded, true);
+assert.equal(genericToolLong.slots.input.text, JSON.stringify({ text: 'x'.repeat(2000) }, null, 2));
+
+const mysteryMissing = stepOf({ callId: 'call-mystery-3', name: 'mystery', arguments: '{}' });
+const genericToolMissing = toolCardEnvelope(mysteryMissing, 'generic', '通用缺字段');
+assert.equal(genericToolMissing.envelope.state, 'running');
+assert.equal(genericToolMissing.slots.input.text, '{}');
+assert.equal(genericToolMissing.slots.output, undefined, '没有输出就不显示输出段');
+assert.equal(genericToolMissing.slots.title, '');
+assert.equal(genericToolMissing.slots.body.text, '');
+
+/* 工作过程那张提问卡：从 tool/* 事件派生，id 用调用 id。 */
+const askAnsweredStep = stepOf(
+  {
+    callId: 'call-ask-1',
+    name: 'ask_user_question',
+    arguments: JSON.stringify({
+      questions: [{ id: 'q1', question: '先做哪个？', options: [{ label: '甲' }, { label: '乙' }] }],
+    }),
+  },
+  { output: JSON.stringify({ answers: [{ id: 'q1', selected: ['甲'] }] }) },
+);
+const askAnswered = toolCardEnvelope(askAnsweredStep, 'question', '工作过程提问');
+assert.equal(askAnswered.envelope.role, 'decision');
+assert.equal(askAnswered.envelope.state, 'done');
+assert.deepEqual(askAnswered.envelope.receipt, { outcome: 'success', summary: '你回答了 Kind 的 1 个问题' });
+assert.equal(askAnswered.slots.questions[0].question.text, '先做哪个？');
+assert.equal(askAnswered.slots.answers[0].selected[0], '甲');
+
+const askDismissedStep = stepOf(
+  {
+    callId: 'call-ask-2',
+    name: 'ask_user_question',
+    arguments: JSON.stringify({ questions: [{ id: 'q1', question: '先做哪个？' }] }),
+  },
+  { output: 'ask_user_question was aborted before the user answered', error: true },
+);
+const askDismissed = toolCardEnvelope(askDismissedStep, 'question', '工作过程提问被撤');
+assert.equal(askDismissed.envelope.state, 'stopped');
+assert.deepEqual(askDismissed.envelope.receipt, {
+  outcome: 'cancelled',
+  summary: '你没回答 Kind 的问题；它知道你没答，照常收尾',
+});
+
+const askRunning = toolCardEnvelope(
+  stepOf({
+    callId: 'call-ask-3',
+    name: 'ask_user_question',
+    arguments: JSON.stringify({ questions: [{ id: 'q1', question: '先做哪个？' }] }),
+  }),
+  'question',
+  '工作过程提问还在等',
+);
+assert.equal(askRunning.envelope.state, 'pending');
+assert.equal(askRunning.envelope.receipt, undefined);
+
+/* 槽位坏了只降级，不整卡报错（规则同 .2）。 */
+const terminalBad = resolveSlots(cardDefinitions.terminal, {
+  command: 42,
+  output: { nope: true },
+  exitCode: 'x',
+  signal: 7,
+});
+assert.deepEqual(terminalBad, cardDefinitions.terminal.fallback);
+
+const diffBad = resolveSlots(cardDefinitions.diff, {
+  files: [
+    { path: 42, lines: [{ kind: 'weird', text: 9, number: 'x' }], added: 'x' },
+    'bad',
+  ],
+});
+assert.equal(diffBad.files.length, 1, '坏的那一项去掉，好的留着');
+assert.equal(diffBad.files[0].path, '');
+assert.equal(diffBad.files[0].lines[0].kind, 'ctx');
+assert.equal(diffBad.files[0].lines[0].text, '');
+assert.equal(diffBad.files[0].lines[0].number, null);
+assert.equal(diffBad.files[0].added, 0);
+
+const readBad = resolveSlots(cardDefinitions.read, {
+  path: 42,
+  lines: [42, { text: '还留着' }],
+  footer: 7,
+});
+assert.equal(readBad.path, '');
+assert.equal(readBad.footer, '');
+assert.equal(readBad.lines.length, 1);
+assert.equal(readBad.lines[0].text, '还留着');
+assert.equal(readBad.lines[0].number, 0);
+
+const searchBad = resolveSlots(cardDefinitions.search, {
+  header: 42,
+  groups: [{ path: 7, rows: [42, { number: 3 }] }, 42],
+});
+assert.equal(searchBad.header, '');
+assert.equal(searchBad.groups.length, 1);
+assert.equal(searchBad.groups[0].path, '');
+assert.equal(searchBad.groups[0].rows.length, 1);
+assert.equal(searchBad.groups[0].rows[0].number, 3);
+assert.equal(searchBad.groups[0].rows[0].text, '');
+
+const genericBad = resolveSlots(cardDefinitions.generic, {
+  title: 42,
+  body: 42,
+  input: { text: '输入还在' },
+  output: 42,
+});
+assert.equal(genericBad.title, '');
+assert.equal(genericBad.body.text, '');
+assert.equal(genericBad.input.text, '输入还在');
+assert.equal(genericBad.output, undefined);
 
 console.log('cards.test.mjs: all assertions passed');
