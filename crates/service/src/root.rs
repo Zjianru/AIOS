@@ -147,6 +147,14 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
     let state_path = RootSession::state_path(&options.data_dir);
     // 根会话独有的工具：`aios_query` 读服务里已存的数据，`propose_action` 出确认卡，
     // `web_search`/`web_fetch` 联网（要 Exa 的 key 且加载过 `web`）。CLI 的对话不装它们。
+    let web_search_config = crate::web::WebSearchConfig {
+        data_dir: options.data_dir.clone(),
+        identity: options.identity.clone(),
+        base_url: options
+            .exa_base_url
+            .clone()
+            .unwrap_or_else(|| crate::EXA_DEFAULT_BASE_URL.to_owned()),
+    };
     let extra_tools = vec![
         std::sync::Arc::new(crate::aios_query::QueryTool::new(
             options.data_dir.clone(),
@@ -157,7 +165,7 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
             options.data_dir.clone(),
             options.identity.clone(),
         )),
-        std::sync::Arc::new(crate::web::WebSearchTool::new()),
+        std::sync::Arc::new(crate::web::WebSearchTool::new(web_search_config)),
         std::sync::Arc::new(crate::web::WebFetchTool::new()),
     ];
     // 工具凭证的事实：每步只读检查 Keyring（不建任何文件）；读不出来按没存，

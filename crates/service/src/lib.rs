@@ -69,3 +69,6 @@ mod settings_path_tests;
 #[cfg(test)]
 #[path = "settings_surface_tests.rs"]
 mod settings_surface_tests;
+#[cfg(test)]
+#[path = "web_tests.rs"]
+mod web_tests;
