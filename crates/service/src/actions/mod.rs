@@ -4,6 +4,7 @@
 //! 点确认之前核对事实还成不成立（reconcile）、以及真正执行（act）。具体域的动作只加
 //! 登记，不碰卡片和提议工具的代码。
 
+mod mask;
 mod select_model;
 
 use std::collections::BTreeMap;
@@ -97,8 +98,14 @@ impl ActionRegistry {
     pub fn settings(data_dir: PathBuf, identity: Option<PathBuf>) -> Self {
         let mut registry = Self::empty();
         registry.register(Arc::new(select_model::SelectModelAction::new(
-            data_dir, identity,
+            data_dir.clone(),
+            identity.clone(),
         )));
+        registry.register(Arc::new(mask::MaskAction::mask(
+            data_dir.clone(),
+            identity.clone(),
+        )));
+        registry.register(Arc::new(mask::MaskAction::unmask(data_dir, identity)));
         registry
     }
 

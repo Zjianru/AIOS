@@ -150,6 +150,62 @@ async fn scenario(scripts: Vec<SseScript>, actions: Arc<ActionRegistry>) -> Scen
     }
 }
 
+/// 设置域测试共用的连接：一个 deepseek 连接，可选模型来自目录。
+fn seed_settings_connection(data_dir: &std::path::Path) -> std::path::PathBuf {
+    let identity = data_dir.join("identity.txt");
+    let keyring = credentials::Keyring::open(data_dir, Some(&identity)).expect("Keyring");
+    keyring
+        .save_connection(credentials::NewConnection {
+            id: "deepseek".to_owned(),
+            name: "DeepSeek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: "http://127.0.0.1:1".to_owned(),
+            api_key: "test-key".to_owned(),
+            preset: Some("deepseek".to_owned()),
+            // 跟着厂商走：可选模型来自目录。
+            models: Some(Vec::new()),
+            auth_header: None,
+        })
+        .expect("保存连接");
+    identity
+}
+
+/// 设置域的产品装配：数据目录、连接和动作登记表都用生产入口。
+async fn settings_scenario(scripts: Vec<SseScript>) -> Scenario {
+    let dir = tempdir().expect("临时目录");
+    let data_dir = dir.path().to_path_buf();
+    let identity = seed_settings_connection(&data_dir);
+    let server = ScriptedSseServer::start(scripts);
+    let mut options = common::options(&data_dir);
+    options.model.base_url = server.base_url();
+    options.config.instruction_roots = vec![data_dir.join("agents-home")];
+    options.config.skill_roots = vec![data_dir.join("skills-home")];
+    options.identity = Some(identity.clone());
+    options.actions = Arc::new(ActionRegistry::settings(data_dir.clone(), Some(identity)));
+    let host = common::open(options).await;
+    Scenario {
+        host,
+        data_dir,
+        _server: server,
+        _dir: dir,
+    }
+}
+
+fn settings_action(data_dir: &std::path::Path, name: &str) -> Arc<dyn ActionKind> {
+    ActionRegistry::settings(data_dir.to_path_buf(), Some(data_dir.join("identity.txt")))
+        .get(name)
+        .expect("动作已登记")
+        .clone()
+}
+
+fn action_env<'a>(data_dir: &'a std::path::Path, identity: &'a std::path::Path) -> ActionEnv<'a> {
+    ActionEnv {
+        data_dir,
+        identity: Some(identity),
+        events: &[],
+    }
+}
+
 async fn send(host: &RootHost, text: &str, serial: u32) {
     let response = host
         .dispatch(Call::Send(SendRequest {
@@ -280,6 +336,21 @@ fn options_json(choices: &[(&str, &str)]) -> String {
         "title": "选一个",
         "brief": "选了才会改。",
         "options": options,
+    })
+    .to_string()
+}
+
+fn mask_options_json(action: &str) -> String {
+    json!({
+        "title": "屏蔽还是解除",
+        "brief": "点了才改，设置页里看得到。",
+        "options": [{
+            "id": "one",
+            "action": action,
+            "label": "DeepSeek V4 Pro",
+            "description": "只动这一个模型的屏蔽状态",
+            "details": { "connection": "deepseek", "model": "deepseek-v4-pro" },
+        }],
     })
     .to_string()
 }
@@ -870,4 +941,145 @@ async fn act_failure_is_recorded_as_failed() {
     let decisions = card_decisions(&read_root_events(&scenario.data_dir));
     assert_eq!(decisions.len(), 1);
     assert_eq!(decisions[0].phase, session::CardDecisionPhase::Failed);
+}
+
+/// 屏蔽、解除屏蔽：事实是服务端读出的之前/之后；确认以后禁用表变了，
+/// 日志里有两条 card/decision confirmed。
+#[tokio::test]
+async fn mask_and_unmask_change_disabled_models_and_record_decisions() {
+    let scenario = settings_scenario(vec![
+        skill_script(),
+        tool_script(
+            1,
+            "call_card",
+            "propose_action",
+            &mask_options_json("mask_model"),
+        ),
+        answer_script("点确认才屏蔽。"),
+        skill_script(),
+        tool_script(
+            2,
+            "call_card_2",
+            "propose_action",
+            &mask_options_json("unmask_model"),
+        ),
+        answer_script("点确认就解除。"),
+    ])
+    .await;
+
+    send(scenario.host(), "把 V4 Pro 屏蔽掉", 1).await;
+    let events = wait_turns(scenario.host(), &scenario.data_dir, 1).await;
+    let card = card_meta(&events);
+    let options = card["options"].as_array().expect("选项数组");
+    assert_eq!(options.len(), 1, "屏蔽只有一个选项");
+    let facts = options[0]["facts"].as_array().expect("事实数组");
+    assert_eq!(facts.len(), 1, "只写这个模型的状态");
+    assert_eq!(facts[0]["name"], "屏蔽状态");
+    assert_eq!(facts[0]["value"], "可用 → 已屏蔽");
+
+    let response = scenario
+        .host()
+        .dispatch(Call::CardAct(CardActRequest {
+            call_id: "call_card".to_owned(),
+            verb: CardVerb::Confirm,
+            option: Some("one".to_owned()),
+        }))
+        .await
+        .expect("确认屏蔽");
+    let value = serde_json::to_value(response).expect("确认屏蔽 json");
+    assert_eq!(value["decision"]["phase"], "confirmed");
+    assert_eq!(
+        service::settings::load(&scenario.data_dir).disabled_models,
+        vec!["deepseek/deepseek-v4-pro".to_owned()],
+        "屏蔽以后禁用表里有这一条的精确规则"
+    );
+
+    send(scenario.host(), "再把 V4 Pro 解除屏蔽", 2).await;
+    let events = wait_turns(scenario.host(), &scenario.data_dir, 2).await;
+    let card = card_meta(&events);
+    let options = card["options"].as_array().expect("选项数组");
+    assert_eq!(options.len(), 1, "解除也只有一个选项");
+    let facts = options[0]["facts"].as_array().expect("事实数组");
+    assert_eq!(facts.len(), 1, "只写这个模型的状态");
+    assert_eq!(facts[0]["name"], "屏蔽状态");
+    assert_eq!(facts[0]["value"], "已屏蔽 → 可用");
+
+    scenario
+        .host()
+        .dispatch(Call::CardAct(CardActRequest {
+            call_id: "call_card_2".to_owned(),
+            verb: CardVerb::Confirm,
+            option: Some("one".to_owned()),
+        }))
+        .await
+        .expect("确认解除");
+    assert!(
+        service::settings::load(&scenario.data_dir)
+            .disabled_models
+            .is_empty(),
+        "解除以后禁用表空了"
+    );
+
+    let decisions = card_decisions(&read_root_events(&scenario.data_dir));
+    assert_eq!(decisions.len(), 2);
+    assert!(
+        decisions
+            .iter()
+            .all(|decision| decision.phase == session::CardDecisionPhase::Confirmed),
+        "两条都是 card/decision confirmed"
+    );
+    assert_eq!(decisions[0].action.as_deref(), Some("mask_model"));
+    assert_eq!(decisions[1].action.as_deref(), Some("unmask_model"));
+}
+
+/// 三种拒绝：模型不存在、已经屏蔽、解除时没有单独规则。
+#[test]
+fn mask_refuses_a_model_that_does_not_exist() {
+    let dir = tempdir().expect("临时目录");
+    let data_dir = dir.path().to_path_buf();
+    let identity = seed_settings_connection(&data_dir);
+    let action = settings_action(&data_dir, "mask_model");
+    let error = action
+        .describe(
+            &json!({ "connection": "deepseek", "model": "no-such-model" }),
+            &action_env(&data_dir, &identity),
+        )
+        .expect_err("模型不存在时不提议");
+    assert!(error.contains("没有模型"), "{error}");
+}
+
+#[test]
+fn mask_refuses_a_model_that_is_already_masked() {
+    let dir = tempdir().expect("临时目录");
+    let data_dir = dir.path().to_path_buf();
+    let identity = seed_settings_connection(&data_dir);
+    let mut settings = service::settings::load(&data_dir);
+    settings.disabled_models = vec!["deepseek/deepseek-v4-pro".to_owned()];
+    service::settings::save(&data_dir, &settings).expect("保存屏蔽表");
+    let action = settings_action(&data_dir, "mask_model");
+    let error = action
+        .describe(
+            &json!({ "connection": "deepseek", "model": "deepseek-v4-pro" }),
+            &action_env(&data_dir, &identity),
+        )
+        .expect_err("已经屏蔽时不提议");
+    assert!(error.contains("已经屏蔽"), "{error}");
+}
+
+#[test]
+fn unmask_refuses_without_an_exact_rule() {
+    let dir = tempdir().expect("临时目录");
+    let data_dir = dir.path().to_path_buf();
+    let identity = seed_settings_connection(&data_dir);
+    let mut settings = service::settings::load(&data_dir);
+    settings.disabled_models = vec!["deepseek/*".to_owned()];
+    service::settings::save(&data_dir, &settings).expect("保存屏蔽表");
+    let action = settings_action(&data_dir, "unmask_model");
+    let error = action
+        .describe(
+            &json!({ "connection": "deepseek", "model": "deepseek-v4-pro" }),
+            &action_env(&data_dir, &identity),
+        )
+        .expect_err("只有通配规则时不提议解除单个模型");
+    assert!(error.contains("没有单独屏蔽"), "{error}");
 }
