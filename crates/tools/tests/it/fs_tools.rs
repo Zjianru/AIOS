@@ -372,6 +372,44 @@ async fn edit_preserves_crlf_line_endings() {
     // D4：匹配按 LF 归一，写回恢复文件原来的 CRLF 行尾。
     assert_eq!(fs::read(&file).unwrap(), b"one\r\nTWO\r\nthree\r\n");
 }
+
+/// 编辑后文件读不回来（这里写进 NUL 让文件不再是文本）：差量不能画成整文件删除，
+/// 结果要标明差量不可用——编辑本身已经成功。
+#[tokio::test]
+async fn edit_read_fail() {
+    let dir = tempfile::tempdir().unwrap();
+    let context = ToolContext::new(dir.path());
+    let file = dir.path().join("a.txt");
+    fs::write(&file, "alpha\nbeta\ngamma\n").unwrap();
+    let read = run(
+        &tools::ReadTool::new(),
+        &context,
+        json!({"file_path": "a.txt"}),
+    )
+    .await;
+    assert!(!read.is_error, "{}", read.content);
+
+    let result = run(
+        &EditTool::new(),
+        &context,
+        json!({"file_path": "a.txt", "old_string": "beta", "new_string": "be\u{0}ta"}),
+    )
+    .await;
+    assert!(!result.is_error, "编辑本身成功了：{}", result.content);
+    assert_eq!(fs::read(&file).unwrap(), b"alpha\nbe\0ta\ngamma\n");
+    let diffs = result
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("diffs"))
+        .and_then(Value::as_array)
+        .expect("diffs 是数组");
+    assert!(diffs.is_empty(), "读不回来时不能画出整文件删除：{diffs:?}");
+    assert!(
+        result.content.contains("diff unavailable"),
+        "差量不可用要写进结果：{}",
+        result.content
+    );
+}
 async fn patch_run(arguments: Value, context: &ToolContext) -> ToolResult {
     run(&ApplyPatchTool::new(), context, arguments).await
 }

@@ -209,10 +209,27 @@ pub fn encode_spill_segment(raw: &str) -> String {
     out
 }
 
+/// 流式 spill 的输出端。生产实现是会话目录里的文件；单元测试用第二个实现注入写失败
+/// （照会话日志的 LogWriter：文件系统的失败在边界注入，不在产品代码里留测试开关）。
+trait SpillSink: Send {
+    fn write_chunk(&mut self, bytes: &[u8]) -> std::io::Result<()>;
+    fn sync_file(&mut self) -> std::io::Result<()>;
+}
+
+impl SpillSink for std::fs::File {
+    fn write_chunk(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        std::io::Write::write_all(self, bytes)
+    }
+
+    fn sync_file(&mut self) -> std::io::Result<()> {
+        std::fs::File::sync_all(self)
+    }
+}
+
 /// 流式 spill 文件：收集子进程输出时边收边写；单流超过整流体上限（DSH maxSpillBytes）
 /// 就丢弃不完整文件并返回 None（照 DSH subprocess：larger stream discards its now-incomplete spill）。
 pub struct SpillFile {
-    file: Option<std::fs::File>,
+    sink: Option<Box<dyn SpillSink>>,
     locator: PathBuf,
     bytes: usize,
     cap: usize,
@@ -252,7 +269,7 @@ impl SpillFile {
             ))
         })?;
         Ok(Self {
-            file: Some(file),
+            sink: Some(Box::new(file)),
             locator,
             bytes: 0,
             cap,
@@ -267,13 +284,13 @@ impl SpillFile {
         }
         if self.bytes + chunk.len() > self.cap {
             self.broken = true;
-            self.file = None;
+            self.sink = None;
             let _ = fs::remove_file(&self.locator);
             self.bytes = 0;
             return;
         }
-        if let Some(file) = self.file.as_mut() {
-            let _ = file.write_all(chunk);
+        if let Some(sink) = self.sink.as_mut() {
+            let _ = sink.write_chunk(chunk);
             self.bytes += chunk.len();
         }
     }
@@ -283,8 +300,8 @@ impl SpillFile {
         if self.broken {
             return None;
         }
-        let file = self.file.take()?;
-        if file.sync_all().is_err() {
+        let mut sink = self.sink.take()?;
+        if sink.sync_file().is_err() {
             let _ = fs::remove_file(&self.locator);
             return None;
         }
@@ -484,4 +501,60 @@ fn fit_suffix(text: &str, budget: usize) -> String {
 /// 文本的启发式 token 估计：每 4 个字符 1 token + 4 个块开销（照 DSH token-meter）。
 pub fn estimate_text_tokens(text: &str) -> usize {
     text.chars().count().div_ceil(4) + 4
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 第 n 次 write 之后失败；用来把文件系统的写失败搬进单元测试。
+    struct FailingSink {
+        calls: usize,
+        fail_at: usize,
+    }
+
+    impl SpillSink for FailingSink {
+        fn write_chunk(&mut self, _bytes: &[u8]) -> std::io::Result<()> {
+            self.calls += 1;
+            if self.calls >= self.fail_at {
+                Err(std::io::Error::other("注入的写失败"))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn sync_file(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn spill_file_with(dir: &Path, sink: Box<dyn SpillSink>) -> SpillFile {
+        SpillFile {
+            sink: Some(sink),
+            locator: dir.join("spill.txt"),
+            bytes: 0,
+            cap: 1024,
+            broken: false,
+        }
+    }
+
+    /// 写失败：不能把没写进去的字节算进来，也不能交出 locator 让模型以为拿到了全文。
+    #[test]
+    fn spill_write_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        let locator = dir.path().join("spill.txt");
+        std::fs::write(&locator, "").unwrap();
+        let mut spill = spill_file_with(
+            dir.path(),
+            Box::new(FailingSink {
+                calls: 0,
+                fail_at: 2,
+            }),
+        );
+        spill.write(b"first ");
+        spill.write(b"second");
+        assert_eq!(spill.bytes, 0, "写失败之后不能再累加字节");
+        assert!(spill.finish().is_none(), "写失败不能交出完整 locator");
+        assert!(!locator.exists(), "残缺的 spill 文件要删掉");
+    }
 }
