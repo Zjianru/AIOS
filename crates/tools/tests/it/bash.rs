@@ -145,18 +145,21 @@ fn bash_tool_is_registered_and_exclusive() {
     assert!(!bash.description().to_lowercase().contains("permission"));
 }
 const SCRUB_CHILD_ENV: &str = "AIOS_TEST_SCRUB_CHILD";
+const SCRUB_CHILD_HOME: &str = "AIOS_TEST_SCRUB_CHILD_HOME";
 
 #[tokio::test]
 async fn bash_does_not_leak_credential_env() {
     // 父进程环境里有假 DEEPSEEK_API_KEY / AIOS_LEAK_VALUE 时，子进程不能看到。
     // nextest 每个测试独立进程；这里通过 re-exec 当前测试二进制注入父环境。
     if std::env::var_os(SCRUB_CHILD_ENV).is_none() {
+        let home = tempfile::tempdir().unwrap();
         let exe = std::env::current_exe().unwrap();
         let output = std::process::Command::new(&exe)
-            .arg("bash_does_not_leak_credential_env")
+            .arg("bash::bash_does_not_leak_credential_env")
             .arg("--exact")
             .arg("--nocapture")
             .env(SCRUB_CHILD_ENV, "1")
+            .env(SCRUB_CHILD_HOME, home.path())
             .env("DEEPSEEK_API_KEY", "fake-key-not-real")
             .env("AIOS_LEAK_VALUE", "leak-not-allowed")
             .output()
@@ -167,12 +170,18 @@ async fn bash_does_not_leak_credential_env() {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "子进程必须真的跑到这条测试：{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
         return;
     }
+    let expected_home = std::env::var(SCRUB_CHILD_HOME).expect("父测试要传隔离 HOME 的期望值");
     let dir = tempfile::tempdir().unwrap();
     let context = session_context(dir.path(), dir.path());
     let result = run(
-        json!({"description": "test command", "command": "printf 'key=[%s] aios_leak=[%s] no_color=[%s] home=[%s]\\n' \"$DEEPSEEK_API_KEY\" \"$AIOS_LEAK_VALUE\" \"$NO_COLOR\" \"$HOME\"; printf 'path=[%s]\\n' \"${PATH:+set}\""}),
+        json!({"description": "test command", "command": "printf 'key=[%s] aios_leak=[%s] no_color=[%s] home=[%s] proxy=[%s]\\n' \"$DEEPSEEK_API_KEY\" \"$AIOS_LEAK_VALUE\" \"$NO_COLOR\" \"$HOME\" \"${http_proxy}\"; printf 'path=[%s]\\n' \"${PATH:+set}\""}),
         &context,
     )
     .await;
@@ -188,10 +197,10 @@ async fn bash_does_not_leak_credential_env() {
         result.content
     );
     assert!(
-        result
-            .content
-            .starts_with("key=[] aios_leak=[] no_color=[1] home=["),
-        "{}",
+        result.content.starts_with(&format!(
+            "key=[] aios_leak=[] no_color=[1] home=[{expected_home}] proxy=[]"
+        )),
+        "子进程不能读真实 HOME/代理: {}",
         result.content
     );
     assert!(

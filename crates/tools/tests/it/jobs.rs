@@ -169,7 +169,7 @@ async fn non_utf8_env_var_does_not_panic() {
         use std::os::unix::ffi::OsStringExt;
         let exe = std::env::current_exe().unwrap();
         let output = std::process::Command::new(&exe)
-            .arg("non_utf8_env_var_does_not_panic")
+            .arg("jobs::non_utf8_env_var_does_not_panic")
             .arg("--exact")
             .arg("--nocapture")
             .env(NON_UTF8_CHILD_ENV, "1")
@@ -184,6 +184,11 @@ async fn non_utf8_env_var_does_not_panic() {
             "子进程失败\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "子进程必须真的跑到这条测试：{}",
+            String::from_utf8_lossy(&output.stdout)
         );
         return;
     }

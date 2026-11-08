@@ -463,7 +463,7 @@ async fn default_config_without_home_is_valid() {
     if std::env::var_os(NO_HOME_CHILD_ENV).is_none() {
         let exe = std::env::current_exe().unwrap();
         let output = std::process::Command::new(&exe)
-            .arg("default_config_without_home_is_valid")
+            .arg("instructions::default_config_without_home_is_valid")
             .arg("--exact")
             .arg("--nocapture")
             .env_remove("HOME")
@@ -476,6 +476,11 @@ async fn default_config_without_home_is_valid() {
             "无 HOME 时默认配置不可用\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "子进程必须真的跑到这条测试：{}",
+            String::from_utf8_lossy(&output.stdout)
         );
         return;
     }
