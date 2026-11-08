@@ -52,6 +52,7 @@ const categories = {
   ask_user_question: 'questions',
   todo_write: 'plan',
   skill: 'tools',
+  aios_query: 'tools',
   job_list: 'tools',
   job_output: 'tools',
   job_kill: 'tools',
@@ -61,6 +62,7 @@ for (const [name, expected] of Object.entries(categories)) {
 }
 assert.equal(toolTitle('bash'), '运行命令');
 assert.equal(toolTitle('apply_patch'), '编辑');
+assert.equal(toolTitle('aios_query'), '查 AIOS');
 
 // diffOf：跑时按参数推，跑完优先用结果 meta，失败不出，停下只出 meta 里的实际改动。
 const writing = step('write', { file_path: '/w/a.txt', content: 'one\ntwo\n' }, '', 'running');

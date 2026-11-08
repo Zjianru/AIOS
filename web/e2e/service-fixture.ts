@@ -40,6 +40,7 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   }
   if (options.localFilePath) return { file: 'local-file-text' };
   if (options.highUsage) return { file: 'high-usage' };
+  if (options.t014Query) return { file: 't014-query' };
   return {
     file: 'text',
     paceMs: options.slowMs ? Math.max(1, Math.round(options.slowMs / 6)) : undefined,
@@ -183,6 +184,10 @@ export interface FixtureOptions {
   localFilePath?: boolean;
   /// T010.5：用真 key 录的夹具（多步工具/思考/缓存读/压缩）。
   realTurn?: boolean;
+  /// T014.2：先加载 skill aios-settings，再查 AIOS 的设置和用量，最后一句回答（回放）。
+  t014Query?: boolean;
+  /// T014.2：起服务前先放一条旧格式（v16）的根会话日志，用来验旧日志照读。
+  legacySession?: boolean;
 }
 
 /** 接缝 5：假 DeepSeek 脚本回放 + 真 aios-dev serve（页面也由它同源托管）。 */
@@ -239,6 +244,62 @@ export async function startKernelFixture(
   // T016.5：坏文件要在 serve 起来之前就在；不预置 Keyring 时也照写（坏文件与连接无关）。
   if (options.settingsFault === 'corrupt') {
     await writeFile(path.join(dataDir, 'settings.json'), '{"lastSelection": ');
+  }
+  // T014.2：旧格式（v16）的根会话日志——读取器要照读，不拒绝、不迁移。
+  if (options.legacySession) {
+    const legacyId = '00000000-0000-4000-8000-000000000146';
+    const sessions = path.join(dataDir, 'sessions');
+    await mkdir(sessions, { recursive: true });
+    const time = Date.now();
+    const legacyCwd = await realpath(dataDir);
+    const rows = [
+      { type: 'session', version: 16, id: legacyId, createdAt: time, cwd: legacyCwd },
+      {
+        type: 'user/message',
+        seq: 1,
+        time,
+        data: {
+          turn: 1,
+          step: 1,
+          message: {
+            id: 'msg-legacy-user',
+            role: 'user',
+            source: { kind: 'user' },
+            content: [{ text: '这条对话是 16 版日志写的。', type: 'text' }],
+          },
+        },
+      },
+      {
+        type: 'assistant/message',
+        seq: 2,
+        time,
+        data: {
+          turn: 1,
+          step: 1,
+          message: {
+            id: 'msg-legacy-assistant',
+            role: 'assistant',
+            source: { kind: 'model', model: 'deepseek-flash', provider: 'deepseek' },
+            content: [{ text: '（T014.2 旧日志）16 版写下的回答还在。', type: 'text' }],
+          },
+          stream: [
+            { chunk: { blockType: 'text', index: 0, type: 'block-start' }, time, type: 'chunk' },
+            { dt: [], index: 0, texts: ['（T014.2 旧日志）16 版写下的回答还在。'], time0: time, type: 'text-chunks' },
+            { chunk: { block: { text: '（T014.2 旧日志）16 版写下的回答还在。', type: 'text' }, index: 0, type: 'block-end' }, time, type: 'chunk' },
+            { chunk: { reason: { kind: 'stop' }, type: 'finish' }, time, type: 'chunk' },
+          ],
+          usage: { inputTokens: 10, outputTokens: 3 },
+        },
+      },
+    ];
+    await writeFile(
+      path.join(sessions, legacyId + '.jsonl'),
+      rows.map((row) => JSON.stringify(row)).join(String.fromCharCode(10)) + String.fromCharCode(10),
+    );
+    await writeFile(
+      path.join(dataDir, 'kind-root.json'),
+      JSON.stringify({ version: 1, sessionId: legacyId }),
+    );
   }
   const serveArgs = ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', dataDir, '--web-dist', path.join(repoRoot, 'web/dist')];
   if (options.contextWindow) {

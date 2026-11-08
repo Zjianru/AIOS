@@ -147,6 +147,7 @@ const TITLES: Record<string, string> = {
   ask_user_question: '提问',
   todo_write: '计划',
   skill: '能力',
+  aios_query: '查 AIOS',
   job_list: '任务列表',
   job_output: '任务输出',
   job_kill: '结束任务',
