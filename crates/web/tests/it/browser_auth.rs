@@ -5,20 +5,7 @@ use web::{
     check_origin,
 };
 
-fn trust() -> Trust {
-    Trust::new(
-        std::net::IpAddr::from([127, 0, 0, 1]),
-        1417,
-        "tok-1".to_owned(),
-        [7u8; 32],
-    )
-}
-
-fn headers(host: &str) -> axum::http::HeaderMap {
-    let mut headers = axum::http::HeaderMap::new();
-    headers.insert("host", host.parse().unwrap());
-    headers
-}
+use crate::common::{headers, trust};
 
 fn mint_with(trust: &Trust) -> ConnectGrant {
     authorize_connect(trust, Some("127.0.0.1:1417"), Some("tok-1"))

@@ -1,13 +1,9 @@
 //! T011.2 清单 1、2、9：ledger 挂在会话「追加之后」的钩子上（F1 后生产/测试共用 append_hook_factory）。
 
 use model::Message;
-use monitor::Monitor;
 use session::{EventKind, LlmFailure, SessionStore, ToolError, TurnEndReason};
 
-fn wire_ledger(monitor: &Monitor, store: &mut SessionStore) {
-    let factory = monitor.append_hook_factory();
-    store.set_append_hook(Some(factory(store.id())));
-}
+use crate::common::wire_ledger;
 
 fn tool_result(message: Message, error: Option<ToolError>) -> EventKind {
     EventKind::ToolResult {

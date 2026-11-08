@@ -5,6 +5,8 @@ use monitor::{Channel, Monitor, Record, Severity, SourceEvent};
 use serde_json::{Map, json};
 use session::{EventKind, SessionStore};
 
+use crate::common::wire_ledger;
+
 fn monitor_records(data: &std::path::Path) -> Vec<serde_json::Value> {
     let mut files: Vec<_> = std::fs::read_dir(data.join("monitor"))
         .expect("monitor 目录")
@@ -31,11 +33,6 @@ fn session_text(data: &std::path::Path) -> String {
         .iter()
         .map(|file| std::fs::read_to_string(file).expect("读会话日志"))
         .collect()
-}
-
-fn wire_ledger(monitor: &Monitor, store: &mut SessionStore) {
-    let factory = monitor.append_hook_factory();
-    store.set_append_hook(Some(factory(store.id())));
 }
 
 #[test]

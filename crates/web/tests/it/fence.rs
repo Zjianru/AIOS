@@ -8,14 +8,7 @@ use axum::http::{HeaderMap, header::HOST};
 use service::{ContextUsage, FollowResponse, HostInfo, RootState, ServiceEvent};
 use web::{Frame, Trust, authorize_connect, check_api_auth, check_bind_host, opening_frames};
 
-fn trust() -> Trust {
-    Trust::new(
-        std::net::IpAddr::from([127, 0, 0, 1]),
-        1417,
-        "tok-1".to_owned(),
-        [7u8; 32],
-    )
-}
+use crate::common::{headers, trust};
 
 fn event(seq: u64, event_type: &str) -> ServiceEvent {
     ServiceEvent {
@@ -216,12 +209,6 @@ fn reconnect_follows_from_last_seq_without_duplicates() {
 }
 
 // T006.F2 红测试：Origin / sec-fetch-site 栅栏（先骨架，随后实现）。
-fn headers(host: &str) -> axum::http::HeaderMap {
-    let mut headers = axum::http::HeaderMap::new();
-    headers.insert("host", host.parse().unwrap());
-    headers
-}
-
 #[test]
 fn cross_site_origin_is_rejected() {
     let mut headers = headers("127.0.0.1:1417");
