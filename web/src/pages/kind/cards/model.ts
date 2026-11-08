@@ -220,22 +220,28 @@ const envelopeSchema = z.object({
   role: z.enum(CARD_ROLES).catch('information'),
   state: z.enum(CARD_STATES).catch('pending'),
   slots: z.unknown(),
-  receipt: receiptSchema.optional(),
+  // 回执坏了只丢回执，不把整张卡打回 generic（「字段坏了也不整卡报错」）。
+  receipt: receiptSchema.optional().catch(undefined),
 });
 
-/** 通用卡：认不出的信封退回这里；也接受事实里已经写好的 slots（title/body）。 */
+/**
+ * 通用卡：认不出的信封退回这里。
+ * - 本来就是通用卡、只是 id 坏了：留它自己的 slots（用户还看得出是什么卡）；
+ * - 类型不认识或根本没信封：用通用卡自己的默认槽位，不把别类卡的槽位硬塞进来。
+ */
 export function genericCardOf(raw: unknown): CardEnvelope<GenericSlots> {
   const record =
     raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
   const id =
     typeof record.id === 'string' && record.id.length > 0 ? record.id : FALLBACK_CARD_ID;
   const parsed = genericSlotsSchema.safeParse(record.slots);
+  const carrySlots = record.type === 'generic' && parsed.success;
   return {
     id,
     type: 'generic',
     role: 'information',
     state: 'pending',
-    slots: parsed.success ? parsed.data : GENERIC_FALLBACK_SLOTS,
+    slots: carrySlots ? parsed.data : GENERIC_FALLBACK_SLOTS,
   };
 }
 
