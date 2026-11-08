@@ -4,7 +4,6 @@
 //! T012.5 增加：models.dev 拉取/缓存/快照，目录字段（窗口/输出/价格/thinks/efforts），
 //! 以及和 GET /v1/models 的结果合并（厂商列表字段优先，用户填的不动由 service 覆盖）。
 
-use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
@@ -200,10 +199,9 @@ impl CatalogSnapshot {
         self.provider(provider_id)?.models.get(model_id)
     }
 
-    /// 这个 provider 的模型，字段来自目录；顺序是最新在前（见 [`Self::sort_models`]）。
+    /// 这个 provider 的模型，字段来自目录。顺序就是快照里的顺序（不排序）。
     pub fn models_for(&self, provider_id: &str) -> Vec<ModelInfo> {
-        let mut models: Vec<ModelInfo> = self
-            .provider(provider_id)
+        self.provider(provider_id)
             .map(|provider| {
                 provider
                     .models
@@ -211,56 +209,7 @@ impl CatalogSnapshot {
                     .map(|model| model_info(provider, model))
                     .collect()
             })
-            .unwrap_or_default();
-        self.sort_models(provider_id, &mut models);
-        models
-    }
-
-    /// 列表展示顺序（T016 验收修复）：最新的在前。
-    ///
-    /// - MiniMax（国际/国内）：按 ID 里的 M<major>.<minor> 版本降序；同代里普通版在前、
-    ///   highspeed 紧跟在后（highspeed 跟同代相邻）。只看 ID，所以目录里没有的 live 模型
-    ///   也排在正确位置，不会因为目录缺条目被当成「新」或掉到最后。
-    /// - 其他厂商：按目录的 release_date 降序；目录没有日期的排在最后，同日期按 ID。
-    pub fn sort_models(&self, provider_id: &str, models: &mut [ModelInfo]) {
-        // 自定义地址没有版本/发布日期可依，保留厂商/目录原来的顺序，别按字母重排。
-        if provider_id == "custom" {
-            return;
-        }
-        if provider_id == "minimax" || provider_id == "minimax-cn" {
-            models.sort_by(|a, b| {
-                let key = |model: &ModelInfo| {
-                    (
-                        minimax_version(&model.id),
-                        model.id.to_ascii_lowercase().contains("highspeed"),
-                    )
-                };
-                let (version_a, highspeed_a) = key(a);
-                let (version_b, highspeed_b) = key(b);
-                match (version_a, version_b) {
-                    (Some(left), Some(right)) => right
-                        .cmp(&left)
-                        .then_with(|| highspeed_a.cmp(&highspeed_b))
-                        .then_with(|| a.id.cmp(&b.id)),
-                    (Some(_), None) => Ordering::Less,
-                    (None, Some(_)) => Ordering::Greater,
-                    (None, None) => a.id.cmp(&b.id),
-                }
-            });
-            return;
-        }
-        let provider = self.provider(provider_id);
-        let date_of = |id: &str| {
-            provider
-                .and_then(|provider| provider.models.get(id))
-                .map(|model| model.release_date.as_str())
-                .unwrap_or("")
-        };
-        models.sort_by(|a, b| {
-            let a_date = date_of(&a.id);
-            let b_date = date_of(&b.id);
-            b_date.cmp(a_date).then_with(|| a.id.cmp(&b.id))
-        });
+            .unwrap_or_default()
     }
 
     /// 适配器需要的思考能力：会思考吗、能选哪些档。
@@ -292,20 +241,6 @@ fn model_info(provider: &CatalogProvider, model: &CatalogModel) -> ModelInfo {
         thinks: model.reasoning,
         efforts: levels(provider, model),
     }
-}
-
-/// MiniMax 模型 ID 的版本部分：MiniMax-M3.1-Flash -> (3, 1)，MiniMax-M2 -> (2, 0)。
-/// 不依赖目录条目，live 里新出现的模型也能按版本排。
-fn minimax_version(id: &str) -> Option<(u32, u32)> {
-    let rest = id.strip_prefix("MiniMax-M")?;
-    let token: String = rest
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit() || *ch == '.')
-        .collect();
-    let mut parts = token.split('.');
-    let major = parts.next()?.parse().ok()?;
-    let minor = parts.next().unwrap_or("0").parse().ok()?;
-    Some((major, minor))
 }
 
 /// 连接对应的目录 provider id：内置提供方用 preset，自定义地址按 endpoint 推断。
@@ -386,40 +321,39 @@ pub fn parse_live_models(value: &Value) -> Vec<LiveModel> {
         .collect()
 }
 
-/// 把目录模型和厂商列表合并：同一 id 厂商的 name/窗口/输出优先；目录价格/档保留；
-/// 厂商多出来的模型也列出来（目录没有的其他字段为空）。
+/// 把目录模型和厂商列表合并：顺序照厂商这次给的（不重排）；同一 id 厂商的 name/窗口/输出
+/// 优先，目录价格/档保留；目录独有、厂商这次没给的模型排在后面。
 pub fn merge_live(catalog_models: Vec<ModelInfo>, live: Vec<LiveModel>) -> Vec<ModelInfo> {
-    let mut live_by_id: BTreeMap<String, LiveModel> = live
+    let mut catalog_by_id: BTreeMap<String, ModelInfo> = catalog_models
         .into_iter()
         .map(|model| (model.id.clone(), model))
         .collect();
-    let mut merged = Vec::with_capacity(catalog_models.len() + live_by_id.len());
-    for mut info in catalog_models {
-        if let Some(live) = live_by_id.remove(&info.id) {
-            if let Some(name) = live.display_name {
-                info.name = name;
-            }
-            if live.context_window.is_some() {
-                info.context_window = live.context_window;
-            }
-            if live.max_tokens.is_some() {
-                info.max_tokens = live.max_tokens;
-            }
+    let mut merged = Vec::with_capacity(catalog_by_id.len() + live.len());
+    for live in live {
+        let mut info = catalog_by_id.remove(&live.id).unwrap_or_else(|| ModelInfo {
+            id: live.id.clone(),
+            name: live.id.clone(),
+            context_window: None,
+            max_tokens: None,
+            price_input: None,
+            price_output: None,
+            price_cache_read: None,
+            price_cache_write: None,
+            thinks: false,
+            efforts: Vec::new(),
+        });
+        if let Some(name) = live.display_name {
+            info.name = name;
+        }
+        if live.context_window.is_some() {
+            info.context_window = live.context_window;
+        }
+        if live.max_tokens.is_some() {
+            info.max_tokens = live.max_tokens;
         }
         merged.push(info);
     }
-    merged.extend(live_by_id.into_values().map(|live| ModelInfo {
-        id: live.id.clone(),
-        name: live.display_name.unwrap_or_else(|| live.id.clone()),
-        context_window: live.context_window,
-        max_tokens: live.max_tokens,
-        price_input: None,
-        price_output: None,
-        price_cache_read: None,
-        price_cache_write: None,
-        thinks: false,
-        efforts: Vec::new(),
-    }));
+    merged.extend(catalog_by_id.into_values());
     merged
 }
 
