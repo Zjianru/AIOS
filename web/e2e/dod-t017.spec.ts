@@ -62,7 +62,7 @@ async function send(page: Page, text: string): Promise<void> {
 }
 
 /** 日志里已经有 N 个 turn/end：比只看停止按钮稳，避开按钮还没渲染出来的窗口。 */
-async function waitTurns(log: string, count: number): Promise<void> {
+async function waitTurns(page: Page, log: string, count: number): Promise<void> {
   await expect
     .poll(
       () => {
@@ -126,7 +126,7 @@ test('DoD2：真 key 三步（MiniMax）', async ({ page }) => {
     await expect(closed).toContainText('你回答了 Kind 的 1 个问题');
     await expect(closed).toContainText(chosen);
     const log = sessionLog(fixture.dataDir);
-    await waitTurns(log, 1);
+    await waitTurns(page, log, 1);
     summary.push('# ① 选中的选项：' + chosen);
     const askedOut = jq(
       ['-s', '-c', '[ .[] | select(.type=="question/asked") | {seq, questionId:.data.question_id, question:.data.question, options:.data.options} ]'],
@@ -156,7 +156,7 @@ test('DoD2：真 key 三步（MiniMax）', async ({ page }) => {
         '然后用 edit 工具把 notes.md 里的 DOD17-NOTES 改成 DOD17-EDITED。' +
         '必须使用 edit 工具改文件，禁止用 bash 写文件。最后回复我「完成」。不要做别的事。',
     );
-    await waitTurns(log, 2);
+    await waitTurns(page, log, 2);
     const turnTwo = await openProcess(page.locator('[data-kind="process"]').last());
     const bashRow = turnTwo.locator('[data-kind="tool-row"][data-tool="bash"]').first();
     const diffRow = turnTwo
