@@ -495,3 +495,170 @@ async fn summary_request_uses_the_same_enabled_tool_table() {
         "摘要请求与主请求同一工具表"
     );
 }
+
+/// 压缩把加载点 shadow 掉以后，加载点不在请求里：锚点退回当前完整工具表，
+/// 下一步主请求和之后的摘要请求都要能发出去（不再 INVALID_REQUEST）。
+#[tokio::test]
+async fn compaction_shadowing_the_load_point_still_sends_summary_and_main_requests() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(tool_calls_with_inputs_sse(&[(
+                "call_load",
+                "skill",
+                json!({"name": "aios-settings"}),
+            )])),
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = session::SessionStore::create(data_dir.path(), cwd.path()).unwrap();
+    let id = store.id().clone();
+    let agent = Agent::create(
+        agent::AgentConfig {
+            compaction_headroom_tokens: 1,
+            compaction_retain_ratio: 0.000001,
+            compaction_retries: 0,
+            ..config(data_dir.path())
+        },
+        agent::Deps {
+            model: model::DeepSeek::with_credentials(
+                model::DeepSeekConfig {
+                    context_window: 3000,
+                    max_tokens: 100,
+                    ..addition_only_config(&server.uri())
+                },
+                test_credential(),
+            )
+            .expect("模型"),
+            tools: tool_set(),
+            store,
+        },
+    )
+    .await
+    .expect("建 agent");
+
+    // 第 1 轮：调用 skill 加载 aios-settings；下一步查询工具开出来。
+    agent
+        .send(
+            UserMessage::text(format!("EARLY {}", "x".repeat(4000))),
+            Delivery::FollowUp,
+        )
+        .await
+        .expect("send");
+    wait_idle(&agent, 20).await;
+
+    // 第 2 轮：长消息触发自动压缩；加载点被 shadow 掉，压缩后的主请求仍要发得出去。
+    agent
+        .send(
+            UserMessage::text(format!("LATE {}", "y".repeat(6000))),
+            Delivery::FollowUp,
+        )
+        .await
+        .expect("send");
+    wait_idle(&agent, 20).await;
+
+    // 再压缩一次：这次摘要请求面对的派生历史里已经没有加载点。
+    let second_compaction = agent.compact(None).await;
+    agent
+        .send(UserMessage::text("接着来"), Delivery::FollowUp)
+        .await
+        .expect("send");
+    wait_idle(&agent, 20).await;
+
+    let bodies = bodies(&server).await;
+    drop(agent);
+    let errors: Vec<String> = logged_events(data_dir.path(), &id)
+        .into_iter()
+        .filter_map(|event| match event.kind {
+            EventKind::TurnEnd {
+                reason: session::TurnEndReason::Error { error },
+                ..
+            } => Some(format!("{}: {}", error.code, error.message)),
+            _ => None,
+        })
+        .collect();
+    assert!(errors.is_empty(), "三轮都不该以错误收尾：{errors:?}");
+    assert_eq!(
+        bodies.len(),
+        6,
+        "加载 2 次 + 两次压缩摘要 + 两次压缩后主请求都要发出去：{}",
+        bodies.len()
+    );
+    assert!(
+        second_compaction.is_ok(),
+        "加载点被 shadow 后的摘要请求也要发得出去"
+    );
+
+    // 加载后的普通请求仍然走声明路由：defer + 加载处的 tool_addition。
+    let loaded = &bodies[1];
+    assert_eq!(
+        tool_names(loaded),
+        vec!["skill", "aios_query"],
+        "加载后的工具表：{loaded}"
+    );
+    assert_eq!(
+        loaded["tools"][1]["defer_loading"], true,
+        "后加载的工具带 defer_loading：{loaded}"
+    );
+    assert!(
+        loaded.to_string().contains("tool_addition"),
+        "加载处有 tool_addition：{loaded}"
+    );
+
+    // 加载点还在摘要前缀里时，摘要请求照常带 tool_addition。
+    let first_summary = &bodies[2];
+    assert!(
+        first_summary.to_string().contains("compaction engine"),
+        "第 1 次摘要请求：{first_summary}"
+    );
+    assert!(
+        first_summary.to_string().contains("tool_addition"),
+        "加载点还在前缀里，摘要请求照常带 tool_addition：{first_summary}"
+    );
+
+    // 加载点被 shadow 后的两次主请求和第二次摘要请求：退回当前完整工具表，不插 tool_addition。
+    for (index, label) in [
+        (3, "压缩后的主请求"),
+        (4, "第二次摘要请求"),
+        (5, "第二次压缩后的主请求"),
+    ] {
+        let body = &bodies[index];
+        assert!(
+            !body.to_string().contains("tool_addition"),
+            "{label}里加载点已不在请求中，不应再有 tool_addition：{body}"
+        );
+        assert_eq!(
+            tool_names(body),
+            vec!["skill", "aios_query"],
+            "{label}的工具表：{body}"
+        );
+        for tool in body["tools"].as_array().expect("tools 数组") {
+            assert!(
+                tool.get("defer_loading").is_none(),
+                "{label}退回当前完整工具表，不带 defer_loading：{tool}"
+            );
+        }
+    }
+    assert!(
+        bodies[3].to_string().contains("<compacted-summary>"),
+        "压缩后的主请求带摘要：{}",
+        bodies[3]
+    );
+    assert!(
+        bodies[4].to_string().contains("compaction engine"),
+        "第 2 次摘要请求：{}",
+        bodies[4]
+    );
+    assert!(
+        bodies[5].to_string().contains("<compacted-summary>"),
+        "第二次压缩后的主请求带摘要：{}",
+        bodies[5]
+    );
+}
