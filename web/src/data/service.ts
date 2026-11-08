@@ -261,6 +261,36 @@ export async function dismissQuestions(): Promise<void> {
   await post({ method: 'dismiss-questions' });
 }
 
+/** 确认卡上的按钮：确认某一项，或者暂不。 */
+export type CardVerb = 'confirm' | 'dismiss';
+
+/** card/decision 事件的形状（服务在段尾回来一条；页面从日志事件也能收到同一条）。 */
+export interface CardDecision {
+  callId: string;
+  option?: string;
+  action?: string;
+  phase: 'confirmed' | 'dismissed' | 'refused' | 'failed';
+  data?: { summary?: string } & Record<string, unknown>;
+}
+
+export interface CardActResponse {
+  decision?: CardDecision;
+}
+
+/** 点确认卡：服务跑核对和执行，记一条 card/decision；重复点击返回已经记下的那条。 */
+export async function cardAct(
+  callId: string,
+  verb: CardVerb,
+  option?: string,
+): Promise<CardActResponse> {
+  return post<CardActResponse>({
+    method: 'card-act',
+    callId,
+    verb,
+    ...(option ? { option } : {}),
+  });
+}
+
 /** 手动压缩（T007.8）：把之前的对话换成一份摘要，原文留在日志里。 */
 export async function compactThread(commandId: string): Promise<void> {
   await post({ method: 'compact', commandId });

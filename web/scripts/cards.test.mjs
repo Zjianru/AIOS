@@ -5,6 +5,8 @@ import { BODY_MAX, LABEL_MAX, resolveSlots } from '../src/lib/cardEnvelope.ts';
 import { connectionCardOf } from '../src/data/connectionCard.ts';
 import {
   cardDefinitions,
+  confirmCardEntryOf,
+  confirmCardOf,
   normalizeEnvelope,
   questionCardEntryOf,
   questionCardOf,
@@ -685,5 +687,116 @@ assert.equal(connectionBad.check, 'never');
 assert.equal(connectionBad.checkedAt, '');
 assert.equal(connectionBad.reason, '');
 assert.equal(connectionBad.broken, false);
+
+
+/* ───────── 确认卡（T014.4）：单选、事实行、四种回执和派生 replaced ───────── */
+
+function confirmFact(overrides = {}) {
+  return {
+    callId: 'call-card-1',
+    proposal: {
+      title: '换成哪个模型',
+      brief: '选一个，点了才生效。',
+      options: [
+        {
+          id: 'a',
+          label: 'V4 Pro',
+          description: '更强一点的模型',
+          facts: [{ name: '模型', value: 'Flash → V4 Pro' }],
+        },
+        {
+          id: 'b',
+          label: 'Flash 最强思考',
+          facts: [{ name: '推理强度', value: 'high → max' }],
+        },
+        { id: 'c', label: '丙', facts: [] },
+      ],
+    },
+    decision: null,
+    replaced: false,
+    ...overrides,
+  };
+}
+
+function confirmEnvelope(fact) {
+  const envelope = confirmCardOf(fact);
+  assert.ok(envelope, '确认卡要能从事实出信封');
+  return envelope;
+}
+
+// 没点时：单选、三个选项、事实行来自服务端；卡片角色是 decision。
+const pending = confirmEnvelope(confirmFact());
+assert.equal(pending.type, 'confirm');
+assert.equal(pending.role, 'decision');
+assert.equal(pending.state, 'pending');
+assert.equal(pending.receipt, undefined);
+assert.equal(pending.slots.options.length, 3);
+assert.deepEqual(pending.slots.options[0].facts, [{ name: '模型', value: 'Flash → V4 Pro' }]);
+assert.equal(pending.slots.options[1].facts.length, 1);
+assert.equal(pending.slots.options[0].description.text, '更强一点的模型');
+
+// 确认：回执写选了哪一项和结果。
+const confirmed = confirmEnvelope(
+  confirmFact({
+    decision: { phase: 'confirmed', option: 'b', data: { summary: '下一轮用 Flash（思考 max）' } },
+  }),
+);
+assert.equal(confirmed.state, 'done');
+assert.equal(confirmed.receipt.outcome, 'success');
+assert.ok(confirmed.receipt.summary.includes('已执行'));
+assert.ok(confirmed.receipt.summary.includes('Flash 最强思考'));
+assert.ok(confirmed.receipt.summary.includes('下一轮用 Flash（思考 max）'));
+
+// 暂不 / 已经变了 / 失败：三种回执。
+const confirmDismissed = confirmEnvelope(confirmFact({ decision: { phase: 'dismissed' } }));
+assert.equal(confirmDismissed.receipt.outcome, 'cancelled');
+assert.ok(confirmDismissed.receipt.summary.includes('暂不'));
+assert.equal(confirmEnvelope(confirmFact({ decision: { phase: 'refused', data: { summary: '模型没了' } } })).receipt.summary, '已经变了，没执行：模型没了');
+const failed = confirmEnvelope(confirmFact({ decision: { phase: 'failed', data: { summary: '磁盘满了' } } }));
+assert.equal(failed.state, 'failed');
+assert.equal(failed.receipt.outcome, 'failed');
+assert.equal(failed.receipt.summary, '没做成：磁盘满了');
+
+// 派生 replaced：没动过的旧卡收成回执，不再能点。
+const replaced = confirmEnvelope(confirmFact({ replaced: true }));
+assert.equal(replaced.state, 'done');
+assert.equal(replaced.receipt.outcome, 'cancelled');
+assert.ok(replaced.receipt.summary.includes('替换'));
+
+// 有决定就不是 replaced（决定优先）。
+const decided = confirmEnvelope(
+  confirmFact({ replaced: true, decision: { phase: 'dismissed' } }),
+);
+assert.ok(decided.receipt.summary.includes('暂不'), '已经点过的卡不显示被替换');
+
+// 槽位降级：正文过长折起来；标签过长的选项去掉；坏的事实行去掉。
+const degraded = confirmEnvelope(
+  confirmFact({
+    proposal: {
+      title: '很长的标题'.repeat(10),
+      brief: '字'.repeat(BODY_MAX + 1),
+      options: [
+        { id: 'long', label: '长'.repeat(LABEL_MAX + 1), facts: [] },
+        { id: 'ok', label: '短', facts: [{ name: '名称', value: '值' }, { name: 42, value: '坏' }, 7] },
+      ],
+    },
+  }),
+);
+assert.equal(degraded.slots.title, '', '标题超过标签上限就不显示');
+assert.equal(degraded.slots.brief.folded, true, '长正文折起来');
+assert.equal(degraded.slots.brief.text.length, BODY_MAX + 1, '原文完整保留');
+assert.deepEqual(
+  degraded.slots.options.map((option) => option.id),
+  ['ok'],
+  '坏 label 的选项去掉，其余保持顺序',
+);
+assert.deepEqual(degraded.slots.options[0].facts, [{ name: '名称', value: '值' }], '坏的事实行去掉');
+
+// 整卡取不出：没有选项、不是对象；入口退回通用卡，不抛异常。
+assert.equal(confirmCardOf(confirmFact({ proposal: { title: '空', brief: '', options: [] } })), null);
+assert.equal(confirmCardOf(confirmFact({ proposal: '不是对象' })), null);
+assert.doesNotThrow(() => confirmCardEntryOf(confirmFact({ proposal: '不是对象' })));
+assert.equal(confirmCardEntryOf(confirmFact({ proposal: '不是对象' })).type, 'generic');
+assert.doesNotThrow(() => resolveSlots(cardDefinitions.confirm, { options: '不是数组' }));
 
 console.log('cards.test.mjs: all assertions passed');

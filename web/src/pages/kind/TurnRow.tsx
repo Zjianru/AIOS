@@ -15,6 +15,7 @@ import { QuoteChip } from './QuoteChip';
 import { FileReferenceChip } from './FileReferenceChip';
 import { fileMentions } from './atGrammar';
 import { QuestionCard } from './QuestionCard';
+import { ConfirmCard } from './ConfirmCard';
 import { useKindStore, useStreamStore } from './kindStore';
 import { processStepsOf } from './turnViews';
 import { ProcessView } from './process/ProcessView';
@@ -469,6 +470,8 @@ export const TurnRow = memo(function TurnRow({
               />
             ) : null}
           </div>
+
+          {view.card && view.answer ? <ConfirmCard card={view.card} /> : null}
 
           {view.status === 'interrupted' && view.stoppedAt ? (
             <div className="mt-1 flex items-center gap-1.5 text-2 text-ink-3" data-kind="stopped">

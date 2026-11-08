@@ -7,7 +7,7 @@
 
 import { create } from 'zustand';
 import { toast } from 'sonner';
-import { answerQuestions, cancelTurn, compactThread, connectSession, dismissQuestions, fetchEventsPage, fetchFirstUse, fetchStatus, peekAvailableModels, recheckRoot, reportMonitor, selectSessionModel, sendMessage, setUnauthorizedHandler } from '@/data/service';
+import { answerQuestions, cancelTurn, cardAct, compactThread, connectSession, dismissQuestions, fetchEventsPage, fetchFirstUse, fetchStatus, peekAvailableModels, recheckRoot, reportMonitor, selectSessionModel, sendMessage, setUnauthorizedHandler } from '@/data/service';
 import type { ServiceCatalogModel } from '@/data/service';
 import { dayLabelOf } from '@/lib/numbers';
 import { useSettingsState } from '@/lib/settingsState';
@@ -164,6 +164,10 @@ interface KindState {
   stop: () => void;
   answer: (turnId: string, answers: AskAnswer[]) => void;
   dismiss: (turnId: string) => void;
+  /** 确认卡：确认某一项（服务跑核对和执行，回执由 card/decision 事件回填）。 */
+  confirmCard: (callId: string, optionId: string) => void;
+  /** 确认卡：暂不（什么都不执行，记 dismissed）。 */
+  dismissCard: (callId: string) => void;
   compact: () => void;
   setModel: (model: KindState['model']) => void;
   /** T012.9：从服务刷新会话合计/汇率/币种。 */
@@ -280,6 +284,7 @@ function addUnsentView(
       question: null,
       compaction: null,
       canvas: null,
+      card: null,
       delivery: 'unsent',
       stoppedAt: null,
     };
@@ -360,10 +365,21 @@ function canvasTitleOf(partial: string): string {
   }
 }
 
+/** 有确认卡的提议/决定到达：重推所有轮（新卡会把没动过的旧卡标成 replaced）。 */
+function refreshCardViews(): void {
+  const derived = new Map(deriveTurnViews(liveEvents).map((view) => [view.id, view]));
+  useKindStore.setState((state) => {
+    const views = state.views.map((view) => derived.get(view.id) ?? view);
+    return { views, byId: indexOf(views), ...decorate(views) };
+  });
+}
+
 /** 一轮的最新日志事件 → 重建这一个 view（其它轮不动）。 */
 function refreshTurn(turn: number): void {
   const events = liveEvents.filter(
-    (event) => typeof event.data.turn === 'number' && Number(event.data.turn) === turn,
+    (event) =>
+      (typeof event.data.turn === 'number' && Number(event.data.turn) === turn) ||
+      event.type === 'card/decision',
   );
   const derived = deriveTurnViews(events)[0];
   if (!derived) return;
@@ -402,6 +418,36 @@ function applyLiveEvent(event: ServiceEvent): void {
   if (event.seq <= lastSeq) return;
   lastSeq = event.seq;
   liveEvents.push(event);
+  // 日志里的模型选择是权威的：设置页或确认卡在别处改了模型，选择器跟着换。
+  if (event.type === 'session/model') {
+    const connection = typeof event.data.connection === 'string' ? event.data.connection : '';
+    const model = typeof event.data.model === 'string' ? event.data.model : '';
+    const wanted =
+      typeof event.data.effortWanted === 'string' ? event.data.effortWanted : undefined;
+    if (connection && model) {
+      const label = useKindStore.getState().modelNames[model] ?? model;
+      void useKindStore
+        .getState()
+        .applySelection(
+          { connectionId: connection, modelId: model, label, effortWanted: wanted, effortActual: wanted },
+          false,
+        );
+    }
+    return;
+  }
+  // 卡片决定只带来回执：重推所有轮里的确认卡（被新卡替换的旧卡也在别的轮里）。
+  if (event.type === 'card/decision') {
+    refreshCardViews();
+    return;
+  }
+  if (
+    event.type === 'tool/result' &&
+    event.data.meta &&
+    typeof event.data.meta === 'object' &&
+    (event.data.meta as { card?: unknown }).card
+  ) {
+    refreshCardViews();
+  }
   // T015.2：画布版本从日志折叠（旧版缩成一行、标题栏切版本、点旧版跳最新都用它）。
   if (event.type === 'tool/result' && event.data.meta) {
     useKindStore.setState((state) => ({
@@ -449,6 +495,7 @@ function applyLiveEvent(event: ServiceEvent): void {
         question: null,
         compaction,
         canvas: null,
+        card: null,
         delivery: null,
         stoppedAt: null,
       };
@@ -772,6 +819,19 @@ export const useKindStore = create<KindState>()((set, get) => ({
     // T007.6：整批不答；模型收到用户没答后照常收尾。
     void dismissQuestions().catch(() => {
       toast('没送达', { description: '连上之后再试一次' });
+    });
+  },
+
+  confirmCard: (callId, optionId) => {
+    // 卡片状态和回执由 card/decision 事件回填（页面不先改，服务和日志说了算）。
+    void cardAct(callId, 'confirm', optionId).catch(() => {
+      toast('确认没送到内核', { description: '连上内核再试一次' });
+    });
+  },
+
+  dismissCard: (callId) => {
+    void cardAct(callId, 'dismiss').catch(() => {
+      toast('暂不没送到内核', { description: '连上内核再试一次' });
     });
   },
 

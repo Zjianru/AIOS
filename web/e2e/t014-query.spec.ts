@@ -71,7 +71,8 @@ test('问模型和花费：先加载 skill，再查 AIOS，回答下面没有卡
     const added = (registry[1].data as { additions: { name: string }[] }).additions.map(
       (tool) => tool.name,
     );
-    expect(added).toEqual(['aios_query']);
+    // 加载同一个 skill 也开出提议工具（有登记的动作以后才注册工具，T014.4 的合同）。
+    expect(added).toEqual(['aios_query', 'propose_action']);
   } finally {
     await fixture.close();
   }

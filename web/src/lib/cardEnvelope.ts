@@ -19,6 +19,7 @@ export const CARD_TYPES = [
   'search',
   'generic',
   'connection',
+  'confirm',
 ] as const;
 export type CardType = (typeof CARD_TYPES)[number];
 
