@@ -166,7 +166,15 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
             options.identity.clone(),
         )),
         std::sync::Arc::new(crate::web::WebSearchTool::new(web_search_config)),
-        std::sync::Arc::new(crate::web::WebFetchTool::new()),
+        std::sync::Arc::new(crate::web::WebFetchTool::new(
+            crate::web::WebFetchConfig {
+                data_dir: options.data_dir.clone(),
+                identity: options.identity.clone(),
+                self_addr: None,
+                http: model::http::HttpEnv::from_process(),
+                timeout: crate::web::WEB_FETCH_TIMEOUT,
+            },
+        )),
     ];
     // 工具凭证的事实：每步只读检查 Keyring（不建任何文件）；读不出来按没存，
     // 设置页另外报读不出的原因。

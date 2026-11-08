@@ -11,6 +11,8 @@ model = { path = "../model" }
 session = { path = "../session" }
 # T013.2：附件仓库（tools 层的 attachments 模块）
 tools = { path = "../tools" }
+htmd.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

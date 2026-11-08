@@ -424,13 +424,30 @@ fn collapse_whitespace(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// 读网页的网络超时；工具外层也按同一个数限时。
+pub(crate) const WEB_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// `web_fetch` 的装配：Keyring、AIOS 自己的监听地址、出站环境和超时。
+#[derive(Clone)]
+pub(crate) struct WebFetchConfig {
+    pub(crate) data_dir: PathBuf,
+    pub(crate) identity: Option<PathBuf>,
+    /// AIOS 自己监听的地址和端口；None = 服务还没开始监听。
+    pub(crate) self_addr: Option<std::net::SocketAddr>,
+    /// 出站 HTTP 的环境（代理）；生产读进程环境，测试从边界注入。
+    pub(crate) http: model::http::HttpEnv,
+    /// 网络读取超时；生产 30 秒，测试缩短以覆盖超时路径。
+    pub(crate) timeout: Duration,
+}
+
 /// 读网页工具。
-pub struct WebFetchTool {
+pub(crate) struct WebFetchTool {
     parameters: Value,
+    config: WebFetchConfig,
 }
 
 impl WebFetchTool {
-    pub fn new() -> Self {
+    pub(crate) fn new(config: WebFetchConfig) -> Self {
         Self {
             parameters: json!({
                 "type": "object",
@@ -442,13 +459,8 @@ impl WebFetchTool {
                 },
                 "required": ["url"]
             }),
+            config,
         }
-    }
-}
-
-impl Default for WebFetchTool {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
