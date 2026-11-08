@@ -42,6 +42,7 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.highUsage) return { file: 'high-usage' };
   if (options.t014Query) return { file: 't014-query' };
   if (options.t014Confirm) return { file: 't014-confirm' };
+  if (options.t014Mask) return { file: 't014-mask' };
   return {
     file: 'text',
     paceMs: options.slowMs ? Math.max(1, Math.round(options.slowMs / 6)) : undefined,
@@ -189,6 +190,8 @@ export interface FixtureOptions {
   t014Query?: boolean;
   /// T014.4：两轮各出一张确认卡（三个选项一张、一个选项一张），回放只给模型流。
   t014Confirm?: boolean;
+  /// T014.5：一张只有一个选项的屏蔽卡，回放只给模型流。
+  t014Mask?: boolean;
   /// T014.2：起服务前先放一条旧格式（v16）的根会话日志，用来验旧日志照读。
   legacySession?: boolean;
 }
