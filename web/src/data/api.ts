@@ -19,7 +19,7 @@ import type { NowFixture } from './fixtures/now';
 import { COMPACTION_SUMMARY, DEMO_SCRIPTS, defaultScript } from './fixtures/kindLive';
 import type { LiveDemo, LiveScript } from './fixtures/kindLive';
 import { DISCOVERED_MODELS, modelSettingsFixture } from './fixtures/settings';
-import type { ConnectionView, ModelRow, ModelSettingsView, Protocol } from './fixtures/settings';
+import type { ConnectionView, ModelRow, ModelSettingsView, Protocol } from './keyring';
 import { board, projectDetail, readDoc, taskDetail } from './selectors';
 import type { BoardColumns, ProjectDetail, ReadDoc, TaskDetail } from './selectors';
 import { NEW_FLOW_DRAFTS, PALETTE_PARTS, SEED_FLOWS, TEMPLATE_OPTIONS, makeStressFlow } from './flows';

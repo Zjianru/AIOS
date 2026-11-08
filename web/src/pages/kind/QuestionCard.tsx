@@ -9,7 +9,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Check, CircleHelp } from 'lucide-react';
-import type { AskAnswer, AskQuestion } from '@/data/fixtures/kindLive';
+import type { AskAnswer, AskQuestion } from '@/data/service';
 import type { QuestionView } from './kindStore';
 import { useKindStore } from './kindStore';
 import { cn } from '@/lib/utils';

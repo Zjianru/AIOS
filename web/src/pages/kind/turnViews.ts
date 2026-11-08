@@ -1,7 +1,7 @@
 /// T009.7：Kind 的轮次视图与从日志事件派生（只搬代码，行为不变）。
 
 import type { SendAttachmentRef, ServiceEvent } from '@/data/service';
-import type { AskAnswer, AskQuestion, FailureCause } from '@/data/fixtures/kindLive';
+import type { AskAnswer, AskQuestion, FailureCause } from '@/data/service';
 import type { TextElement, TurnStatus } from '@/data/types';
 import { modelErrorReason, retryReason } from '@/data/errors';
 

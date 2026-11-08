@@ -14,7 +14,7 @@ import { useEffect, useState } from 'react';
 import { Check, Eye, EyeOff, Loader2, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { addConnection, checkConnection, getModelSettings, KERNEL_PROVIDERS } from '@/data/keyring';
-import type { CatalogProvider, ConnectionView } from '@/data/fixtures/settings';
+import type { CatalogProvider, ConnectionView } from '@/data/keyring';
 import { cn } from '@/lib/utils';
 
 function KindOrb({ size = 34 }: { size?: number }) {

@@ -7,26 +7,7 @@
  * - 这些都是假的；真的事件由内核的服务推过来。
  */
 
-export interface AskOption {
-  label: string;
-  description?: string;
-}
-
-export interface AskQuestion {
-  id: string;
-  header?: string;
-  question: string;
-  options?: AskOption[];
-  multiSelect?: boolean;
-}
-
-export interface AskAnswer {
-  id: string;
-  selected: string[];
-  custom?: string;
-}
-
-export type FailureCause = 'credential' | 'keyring' | 'model' | 'masked';
+import type { AskQuestion, FailureCause } from '@/data/service';
 
 export type LiveStep =
   | { kind: 'tool'; command: string; ms: number; output: string }

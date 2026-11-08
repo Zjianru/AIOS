@@ -15,12 +15,87 @@ import {
   type ServiceKeyringView,
   type ServiceModelRow,
 } from '@/data/service';
-import type {
-  CatalogProvider,
-  CheckState,
-  ConnectionView,
-  ModelSettingsView,
-} from '@/data/fixtures/settings';
+/* ───────────── T017.1：设置/首次使用页的视图类型（原 fixtures/settings 的真类型） ───────────── */
+
+export type CheckState =
+  | { kind: 'never' }
+  | { kind: 'checking' }
+  | { kind: 'ok'; at: string }
+  | { kind: 'fail'; at: string; reason: string };
+
+export interface ModelRow {
+  id: string;
+  name?: string;
+  /** 上下文窗口，token。没填就是继承适配器的值。 */
+  contextWindow?: number;
+  maxTokens?: number;
+  /** 获取面板里厂商这次新给的模型（只在候选行上有；服务端算）。 */
+  fresh?: boolean;
+  /** T012 F1：用户填的四类单价（美元/百万 token；不乘倍率；空=继承目录标价）。 */
+  priceInput?: number;
+  priceOutput?: number;
+  priceCacheRead?: number;
+  priceCacheWrite?: number;
+}
+
+export type Protocol = 'anthropic-messages' | 'openai-chat' | 'openai-responses';
+
+export const PROTOCOL_LABEL: Record<Protocol, string> = {
+  'anthropic-messages': 'Anthropic Messages',
+  'openai-chat': 'OpenAI Chat Completions',
+  'openai-responses': 'OpenAI Responses',
+};
+
+export interface ConnectionView {
+  id: string;
+  name: string;
+  /** catalog：来自内置目录；custom：用户自己声明的接口。 */
+  source: 'catalog' | 'custom';
+  protocol: Protocol;
+  /** 用户改过的地址；空就是用默认地址。 */
+  endpoint: string;
+  defaultEndpoint: string;
+  /** 模型目录；空表示跟着厂商的列表走（可选 = availableModels）。 */
+  models: ModelRow[];
+  /** 跟着厂商走时选择器/小标签可选的模型（存下的厂商列表；没存过用内置目录）。 */
+  availableModels?: ModelRow[];
+  key: { saved: false } | { saved: true; savedAt: string };
+  check: CheckState;
+}
+
+/** 内置目录里的提供方（「第三方模型提供商」的下拉）。 */
+export interface CatalogProvider {
+  id: string;
+  name: string;
+  protocol: Protocol;
+  defaultEndpoint: string;
+  defaultModels: ModelRow[];
+}
+
+export interface IssueRecord {
+  id: string;
+  at: string;
+  connection: string;
+  purpose: string;
+  until: string;
+}
+
+export interface ModelSettingsView {
+  connections: ConnectionView[];
+  catalog: CatalogProvider[];
+  /** 服务端存下的厂商列表（按连接 id；页面小标签用它）。 */
+  listed?: Record<string, { fetchedAt: string; models: ModelRow[] }>;
+  /** 屏蔽的模型规则（通配；服务端保存的整表）。 */
+  disabledModels: string[];
+  /** 与 disabledModels 等长同序：每条规则现在命中的「连接/模型」（服务端算，页面不自己匹配）。 */
+  disabledHits: string[][];
+  /** settings.json 读不出来、而且这个进程从没读到过：不知道哪些被屏蔽。 */
+  disabledUnknown: boolean;
+  /** problem：钥匙文件读不出来时的原因（不在原处、打不开、解不开）；读得出来就没有这个字段。 */
+  keyFile: { path: string; since: string; problem?: string };
+  issuedToday: number;
+  issues: IssueRecord[];
+}
 
 /** T012.9：接上内核的提供方（D36 的 DeepSeek + T012 的 MiniMax 两家国内/国际站）。 */
 export const KERNEL_PROVIDERS: ReadonlySet<string> = new Set(['deepseek', 'minimax', 'minimax-cn']);

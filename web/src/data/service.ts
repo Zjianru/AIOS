@@ -3,13 +3,16 @@
 
 import { apiErrorReason } from './errors';
 
+/** T017.1：失败原因（原 data/fixtures/kindLive 的演示类型；事件与页面都在用）。 */
+export type FailureCause = 'credential' | 'keyring' | 'model' | 'masked';
+
 export interface ServiceEvent {
   seq: number;
   /** 日志事件发生时间（unix 毫秒；工作过程用）。 */
   time: number;
   type: string;
   data: Record<string, unknown>;
-  cause?: 'credential' | 'model' | 'keyring' | 'masked';
+  cause?: FailureCause;
 }
 
 export type ServiceRootState =
@@ -219,6 +222,27 @@ export async function sendMessage(
 /** 取消当前轮（T007.5 停止按钮 / Esc；服务端取消正在跑的一轮并保留已做的）。 */
 export async function cancelTurn(): Promise<void> {
   await post({ method: 'cancel' });
+}
+
+/** ask_user 的问题形状（T017.1：从 fixtures/kindLive 挪进正式数据模块）。 */
+export interface AskOption {
+  label: string;
+  description?: string;
+}
+
+export interface AskQuestion {
+  id: string;
+  header?: string;
+  question: string;
+  options?: AskOption[];
+  multiSelect?: boolean;
+}
+
+/** question/answered 的回答形状（按问题 id）；线上回答用 ServiceAnswer（questionId）。 */
+export interface AskAnswer {
+  id: string;
+  selected: string[];
+  custom?: string;
 }
 
 export interface ServiceAnswer {

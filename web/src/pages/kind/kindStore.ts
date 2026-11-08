@@ -18,7 +18,7 @@ import { contextPercent, contextTokens } from '@/data/turnUsage';
 import { getModelSettings } from '@/data/keyring';
 import { setHostHome } from '@/data/service';
 import { go } from '@/app/navigate';
-import type { AskAnswer } from '@/data/fixtures/kindLive';
+import type { AskAnswer } from '@/data/service';
 import { mark } from '@/lib/perf';
 import { canvasTracks, compactionViewOf, deriveTurnViews, mergeCanvasTracks } from './turnViews';
 import type { CanvasTrack, TurnViewData } from './turnViews';

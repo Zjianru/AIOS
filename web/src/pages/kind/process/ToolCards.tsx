@@ -6,7 +6,7 @@
 
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
-import type { AskQuestion } from '@/data/fixtures/kindLive';
+import type { AskQuestion } from '@/data/service';
 import { diffOf, readOf, searchOf, terminalOf } from './toolModel';
 import type { DiffFile, ToolStepView } from './toolModel';
 

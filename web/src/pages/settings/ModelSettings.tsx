@@ -26,8 +26,8 @@ import { cachedQuota, loadQuota } from '@/data/quota';
 import { CURRENCIES, compactPrice } from '@/lib/numbers';
 import { formatLocalDateTime } from '@/lib/time';
 import { useKindStore } from '@/pages/kind/kindStore';
-import type { ConnectionView, ModelRow, ModelSettingsView } from '@/data/fixtures/settings';
-import { PROTOCOL_LABEL } from '@/data/fixtures/settings';
+import { PROTOCOL_LABEL } from '@/data/keyring';
+import type { ConnectionView, ModelRow, ModelSettingsView } from '@/data/keyring';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
