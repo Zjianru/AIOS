@@ -354,18 +354,13 @@ impl RootHost {
         let provider_id =
             model::catalog::provider_id_for_connection(&connection.preset, &connection.endpoint);
         let catalog_models = catalog.models_for(&provider_id);
-        // 「新」的基准：上一次存下的厂商列表；从没存过时内置提供方以目录为基准，
-        // 自定义地址没有基准（第一条都不标新）。
+        // 「新」的基准只有上一次 fetch 成功存下的厂商列表（Magpie 的 AvailableCompare）。
+        // 这个连接第一次获取、或换地址/换预设后旧表已删，都没有基准：一条都不标新。
+        // query 不写盘，所以它读到的基准永远停在上一次 fetch 的那份列表上。
         let baseline: Option<std::collections::HashSet<String>> = match previous {
             Some(list) if !list.models.is_empty() => {
                 Some(list.models.into_iter().map(|model| model.id).collect())
             }
-            _ if provider_id != "custom" => Some(
-                catalog_models
-                    .iter()
-                    .map(|model| model.id.clone())
-                    .collect(),
-            ),
             _ => None,
         };
         let mut models = catalog_models;
@@ -461,7 +456,8 @@ impl RootHost {
         let models = models
             .into_iter()
             .map(|model| {
-                // 只有厂商这次给的、上一次没见过的才算「新」；目录独有项/用户行不算。
+                // 只有厂商这次给的、上一次 fetch 存下的列表里没有的才算「新」；
+                // 目录独有项、用户行、第一次获取都不算。
                 let fresh = live
                     && live_ids.contains(&model.id)
                     && baseline
