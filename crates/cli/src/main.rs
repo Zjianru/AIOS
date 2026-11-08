@@ -655,6 +655,7 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             keyring_changed: Some(keyring_changed),
             actions,
             exa_base_url: args.exa_base_url.clone(),
+            web_listen: None,
         },
         window,
     )

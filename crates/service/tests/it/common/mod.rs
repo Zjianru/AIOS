@@ -65,6 +65,7 @@ pub fn options(data_dir: &Path) -> RootSessionOptions {
         keyring_changed: None,
         actions: Arc::new(service::ActionRegistry::empty()),
         exa_base_url: None,
+        web_listen: None,
     }
 }
 

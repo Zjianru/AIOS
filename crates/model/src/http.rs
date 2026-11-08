@@ -167,6 +167,11 @@ pub fn client_with_env(env: HttpEnv) -> Result<Client, ModelError> {
     build_with_env(env)
 }
 
+/// 用给定环境造一个不跟重定向的 client；网页抓取要自己按跳检查地址和同源。
+pub fn client_with_env_without_redirects(env: HttpEnv) -> Result<Client, ModelError> {
+    build_without_redirects(env)
+}
+
 /// 进程内唯一的出站 client（按进程环境读一次代理配置）。
 pub fn client() -> Result<Client, ModelError> {
     static CLIENT: OnceLock<Result<Client, String>> = OnceLock::new();

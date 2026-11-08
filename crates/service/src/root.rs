@@ -77,6 +77,8 @@ pub struct RootSessionOptions {
     /// 仅开发/端到端测试用：覆盖 Exa 的根地址（默认 https://api.exa.ai）。
     /// 生产不设；验证 Exa key 的请求走它。
     pub exa_base_url: Option<String>,
+    /// AIOS 自己的监听地址；web::serve 绑定后填入。web_fetch 读它拒绝读自己。
+    pub web_listen: Option<std::sync::Arc<std::sync::OnceLock<std::net::SocketAddr>>>,
 }
 
 /// T008.3b/T012.7：按会话的模型选择解析 (连接 id, 模型配置, 凭证来源)。
@@ -122,6 +124,13 @@ impl std::fmt::Debug for RootSessionOptions {
             )
             .field("actions", &self.actions.skills())
             .field("exa_base_url", &self.exa_base_url)
+            .field(
+                "web_listen",
+                &self
+                    .web_listen
+                    .as_ref()
+                    .and_then(|cell| cell.get().copied()),
+            )
             .finish()
     }
 }
@@ -166,15 +175,13 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
             options.identity.clone(),
         )),
         std::sync::Arc::new(crate::web::WebSearchTool::new(web_search_config)),
-        std::sync::Arc::new(crate::web::WebFetchTool::new(
-            crate::web::WebFetchConfig {
-                data_dir: options.data_dir.clone(),
-                identity: options.identity.clone(),
-                self_addr: None,
-                http: model::http::HttpEnv::from_process(),
-                timeout: crate::web::WEB_FETCH_TIMEOUT,
-            },
-        )),
+        std::sync::Arc::new(crate::web::WebFetchTool::new(crate::web::WebFetchConfig {
+            data_dir: options.data_dir.clone(),
+            identity: options.identity.clone(),
+            self_addr: options.web_listen.clone(),
+            http: model::http::HttpEnv::from_process(),
+            timeout: crate::web::WEB_FETCH_TIMEOUT,
+        })),
     ];
     // 工具凭证的事实：每步只读检查 Keyring（不建任何文件）；读不出来按没存，
     // 设置页另外报读不出的原因。
