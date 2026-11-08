@@ -233,8 +233,9 @@ impl CatalogSnapshot {
     }
 
     /// 路由声明支持的对话中途工具更新模式（适配器按它选两条路）。
+    ///
+    /// 写死的路由不要求模型出现在目录里：厂商目录可能漏项或改名，官方写死的那条仍要生效。
     pub fn tool_update_for(&self, provider_id: &str, model_id: &str) -> Option<ToolUpdate> {
-        self.model(provider_id, model_id)?;
         declared_tool_update(provider_id, model_id)
     }
 
