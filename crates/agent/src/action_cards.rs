@@ -32,8 +32,6 @@ impl Capability for ActionCardCapability {
 
     fn on_hook<'a>(&'a self, event: &'a HookEvent<'a>) -> HookFuture<'a> {
         Box::pin(async move {
-            let _ = event;
-            return Ok(HookOutcome::Continue);
             let HookEvent::PreStep {
                 turn,
                 step,

@@ -165,8 +165,10 @@ impl Tool for ProposeActionTool {
             if !context.allows("propose_action") {
                 return ToolResult::error(call.id, ToolFailure::plain("unknown tool"));
             }
-            let _ = context;
-            ToolResult::error(call.id, ToolFailure::plain("propose_action 还没有实现"))
+            match self.propose(&call, context) {
+                Ok(result) => result,
+                Err(failure) => ToolResult::error(call.id, failure),
+            }
         })
     }
 }

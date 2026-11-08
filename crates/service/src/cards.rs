@@ -154,8 +154,6 @@ impl RootHost {
         &self,
         request: CardActRequest,
     ) -> Result<CardActResponse, ServiceError> {
-        let _ = request;
-        return Ok(CardActResponse { decision: None });
         let events = self.card_events().await?;
         let Some(proposal) = proposal_of(&events, &request.call_id) else {
             return Ok(CardActResponse { decision: None });

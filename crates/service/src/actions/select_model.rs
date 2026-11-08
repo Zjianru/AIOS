@@ -106,8 +106,6 @@ impl ActionKind for SelectModelAction {
         details: &Value,
         env: &ActionEnv<'_>,
     ) -> Result<Vec<CardFact>, String> {
-        let _ = (details, env);
-        return Err("换模型还没有实现".to_owned());
         let parts = self.parts(details)?;
         let current = self.current(env)?;
         let keyring = self.keyring()?;
@@ -171,8 +169,6 @@ impl ActionKind for SelectModelAction {
         details: &'a Value,
         host: &'a RootHost,
     ) -> ActionFuture<'a, Result<ActionOutcome, String>> {
-        let _ = (details, host);
-        return Box::pin(async { Err("换模型还没有实现".to_owned()) });
         Box::pin(async move {
             let parts = self.parts(details)?;
             let response = host
