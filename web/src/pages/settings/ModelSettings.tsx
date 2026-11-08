@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Ban, ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, Plus, X } from 'lucide-react';
+import { Ban, ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, Loader2, Plus, X } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   addConnection, checkConnection, discoverModels, getModelSettings, moveKeyFile, relinkKeyFile, removeConnection,
@@ -20,8 +20,9 @@ import {
 } from '@/data/keyring';
 import { matchDisabled } from '@/data/disabled';
 import {
-  checkDisabledModels, displayPath, fetchConnectionQuota, type DisabledModelUser, type ServiceQuota,
+  checkDisabledModels, displayPath, type DisabledModelUser, type ServiceQuota,
 } from '@/data/service';
+import { cachedQuota, loadQuota } from '@/data/quota';
 import { CURRENCIES } from '@/lib/numbers';
 import { useKindStore } from '@/pages/kind/kindStore';
 import type { ConnectionView, ModelRow, ModelSettingsView } from '@/data/fixtures/settings';
@@ -40,18 +41,48 @@ function parsePrice(text: string): number | undefined {
   return text.trim() !== '' && Number.isFinite(n) && n >= 0 ? n : undefined;
 }
 
-/** 模型行上的价格摘要：填了哪几格就写哪几格，没填写「标价」。 */
+/** 行上的紧凑价：只显示输入/输出；缓存两格和完整四类值放 title。 */
+function compactPrice(value: number): string {
+  if (value >= 0.01) return '$' + value.toFixed(2);
+  // 缓存价可能小于 0.01，两小数会变成 0；用两位有效数字。
+  return '$' + value.toPrecision(2).replace(/0+$/, '');
+}
+
 function priceLabel(row: ModelRow): string {
-  const parts: string[] = [];
-  if (row.priceInput !== undefined) parts.push('in ' + row.priceInput);
-  if (row.priceOutput !== undefined) parts.push('out ' + row.priceOutput);
-  if (row.priceCacheRead !== undefined) parts.push('r ' + row.priceCacheRead);
-  if (row.priceCacheWrite !== undefined) parts.push('w ' + row.priceCacheWrite);
-  return parts.length === 0 ? '标价' : parts.join(' / ');
+  const pair: string[] = [];
+  if (row.priceInput !== undefined) pair.push(compactPrice(row.priceInput));
+  if (row.priceOutput !== undefined) pair.push(compactPrice(row.priceOutput));
+  if (pair.length) return pair.join(' / ');
+  // 只填了缓存价也让人看出来，不假装是「标价」。
+  const cache: string[] = [];
+  if (row.priceCacheRead !== undefined) cache.push(compactPrice(row.priceCacheRead));
+  if (row.priceCacheWrite !== undefined) cache.push(compactPrice(row.priceCacheWrite));
+  return cache.length ? '缓存 ' + cache.join(' / ') : '标价';
+}
+
+/** 价格按钮的 title：完整四类 + 标价/覆盖价的算法。 */
+function priceTitle(row: ModelRow): string {
+  const show = (value: number | undefined) => (value === undefined ? '未填' : '$' + value);
+  return (
+    '单价（美元/百万 token）：输入 ' +
+    show(row.priceInput) +
+    ' / 输出 ' +
+    show(row.priceOutput) +
+    ' / 缓存读 ' +
+    show(row.priceCacheRead) +
+    ' / 缓存写 ' +
+    show(row.priceCacheWrite) +
+    '。标价 = 目录价（空着就继承，会乘价格倍率）；自己填 = 覆盖价，不乘倍率。'
+  );
 }
 
 function formatPrice(value: number | undefined): string {
   return value === undefined ? '' : String(value);
+}
+
+/** 余量结果的时间，只到分钟。 */
+function formatQuotaTime(at: number): string {
+  return new Date(at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 }
 
 /** T012 F1：用户单价四格（照原型 PriceEditor）；空=继承目录标价，「恢复标价」清空四格。 */
@@ -397,7 +428,7 @@ function ModelCatalog({ models, onChange, defaults, discover, required, connecti
 
       {models.length ? (
         <div className="mt-2 space-y-1.5">
-          <div className="grid grid-cols-[1fr_1fr_64px_64px_80px_24px] gap-1.5 px-0.5 text-1 text-ink-3">
+          <div className="grid grid-cols-[1fr_1fr_64px_64px_112px_24px] gap-1.5 px-0.5 text-1 text-ink-3">
             <span>模型 ID</span>
             <span>显示名称</span>
             <span>上下文</span>
@@ -405,9 +436,12 @@ function ModelCatalog({ models, onChange, defaults, discover, required, connecti
             <span>单价 $/M</span>
             <span />
           </div>
+          <div className="px-0.5 text-1 leading-4 text-ink-3" data-settings="price-help">
+            标价 = 目录价（空着就继承，按价格倍率算）；自己填 = 覆盖价，不乘倍率。
+          </div>
           {models.map((row, index) => (
             <div key={index}>
-            <div className="grid grid-cols-[1fr_1fr_64px_64px_80px_24px] items-center gap-1.5">
+            <div className="grid grid-cols-[1fr_1fr_64px_64px_112px_24px] items-center gap-1.5">
               <input
                 className={cn(inputClass, 'brand-type', blockedBy(row.id) && 'text-ink-3 line-through')}
                 value={row.id}
@@ -420,10 +454,10 @@ function ModelCatalog({ models, onChange, defaults, discover, required, connecti
               <button
                 type="button"
                 data-settings="model-price"
-                title="用户单价（四类）；填了就用它算花费，不乘倍率；空=继承目录标价"
+                title={priceTitle(row)}
                 onClick={() => setPriceOpen(priceOpen === index ? null : index)}
                 className={cn(
-                  'h-7 rounded-btn border border-line-2 px-1 text-2 transition-colors hover:bg-hover',
+                  'h-7 overflow-hidden text-ellipsis whitespace-nowrap rounded-btn border border-line-2 px-1 text-2 transition-colors hover:bg-hover',
                   priceOpen === index ? 'text-ink' : 'text-ink-2',
                 )}
               >
@@ -565,22 +599,33 @@ function ConnectionEditor({ conn, view, onDone, onView, onMask }: {
   const [endpoint, setEndpoint] = useState(conn.endpoint);
   const [models, setModels] = useState<ModelRow[]>(conn.models);
   const [priceRate, setPriceRate] = useState(String(conn.priceRate ?? 1));
-  const [quota, setQuota] = useState<ServiceQuota | null>(null);
+  const [quota, setQuota] = useState<ServiceQuota | null>(() => cachedQuota(conn.id)?.quota ?? null);
+  const [quotaAt, setQuotaAt] = useState<number | null>(() => cachedQuota(conn.id)?.at ?? null);
+  const [quotaError, setQuotaError] = useState<string | null>(null);
   const [askingQuota, setAskingQuota] = useState(false);
   const [saving, setSaving] = useState(false);
   const [confirm, setConfirm] = useState<'revoke' | 'remove' | null>(null);
   const catalog = view.catalog.find((item) => item.id === conn.id);
 
-  const askQuota = async () => {
+  const askQuota = useCallback(async (force = false) => {
     setAskingQuota(true);
+    setQuotaError(null);
     try {
-      setQuota(await fetchConnectionQuota(conn.id));
+      setQuota(await loadQuota(conn.id, { force }));
+      setQuotaAt(cachedQuota(conn.id)?.at ?? Date.now());
     } catch (error) {
-      toast.error((error as Error).message);
+      setQuotaError((error as Error).message);
     } finally {
       setAskingQuota(false);
     }
-  };
+  }, [conn.id]);
+
+  // 打开编辑器自动查一次；缓存/最小间隔内再打开直接用上次结果，不重复打厂商接口。
+  // 没保存密钥时查不了，别自动打出一个失败提示。
+  useEffect(() => {
+    if (!conn.key.saved) return;
+    void askQuota(false);
+  }, [askQuota, conn.key.saved]);
 
   const save = async () => {
     setSaving(true);
@@ -661,35 +706,61 @@ function ConnectionEditor({ conn, view, onDone, onView, onMask }: {
           />
         </Field>
       </Collapsible>
-      <Collapsible title="余额与套餐余量">
-        <div data-settings="quota">
-          <Btn kind="quiet" disabled={askingQuota} onClick={() => void askQuota()}>
-            {askingQuota ? '正在查询…' : '查询余额/余量'}
+      <div className="mt-4 border-t border-line pt-3" data-settings="quota">
+        <div className="flex items-center gap-2">
+          <span className="text-2 text-ink-2">余额与套餐余量</span>
+          <Btn kind="quiet" data-settings="quota-refresh" disabled={askingQuota} onClick={() => void askQuota(true)}>
+            {askingQuota ? (
+              <>
+                <Loader2 data-settings="quota-spinner" className="size-3.5 animate-spin" aria-hidden />
+                正在查询…
+              </>
+            ) : (
+              '刷新'
+            )}
           </Btn>
-          {quota ? (
-            <div className="mt-2 space-y-0.5 text-2 text-ink-2">
-              {quota.balance ? (
-                <div>
-                  余额：
-                  <span className="brand-type">
-                    {quota.balance.currency} {quota.balance.amount.toFixed(2)}
-                  </span>
-                </div>
-              ) : null}
-              {quota.plan ? (
-                <div>
-                  套餐余量：5 小时窗口{' '}
-                  <span className="brand-type">{quota.plan.intervalRemainingPercent ?? '—'}%</span> · 每周{' '}
-                  <span className="brand-type">{quota.plan.weeklyRemainingPercent ?? '—'}%</span>
-                </div>
-              ) : null}
-              {!quota.balance && !quota.plan ? (
-                <div className="text-ink-3">这个连接查不到余额/余量（只有 DeepSeek 与 MiniMax 官方地址支持）。</div>
-              ) : null}
-            </div>
+          {quotaAt && !askingQuota ? (
+            <span className="ml-auto text-1 text-ink-3">更新于 {formatQuotaTime(quotaAt)}</span>
           ) : null}
         </div>
-      </Collapsible>
+        {quotaError ? (
+          <div className="mt-2 text-2 text-fail" data-settings="quota-error">
+            查询失败：{quotaError}
+            <button
+              type="button"
+              className="ml-2 underline hover:text-ink"
+              onClick={() => void askQuota(true)}
+            >
+              重试
+            </button>
+          </div>
+        ) : quota ? (
+          <div className="mt-2 space-y-0.5 text-2 text-ink-2" data-settings="quota-value">
+            {quota.balance ? (
+              <div>
+                余额：
+                <span className="brand-type">
+                  {quota.balance.currency} {quota.balance.amount.toFixed(2)}
+                </span>
+              </div>
+            ) : null}
+            {quota.plan ? (
+              <div>
+                套餐余量：5 小时窗口{' '}
+                <span className="brand-type">{quota.plan.intervalRemainingPercent ?? '—'}%</span> · 每周{' '}
+                <span className="brand-type">{quota.plan.weeklyRemainingPercent ?? '—'}%</span>
+              </div>
+            ) : null}
+            {!quota.balance && !quota.plan ? (
+              <div className="text-ink-3">这个连接查不到余额/余量（只有 DeepSeek 与 MiniMax 官方地址支持）。</div>
+            ) : null}
+          </div>
+        ) : !conn.key.saved ? (
+          <div className="mt-2 text-2 text-ink-3">保存密钥后自动查询余额/余量。</div>
+        ) : (
+          <div className="mt-2 text-2 text-ink-3">正在查询…</div>
+        )}
+      </div>
       <div className="mt-5 flex items-center gap-2">
         {conn.key.saved ? <Btn kind="danger" onClick={() => setConfirm('revoke')}>撤销密钥</Btn> : null}
         <Btn kind="quiet" onClick={() => setConfirm('remove')}>删除这个提供商</Btn>
