@@ -652,9 +652,8 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
 /** 改一轮：按 id 换成新对象（TurnRow 用 memo 比引用，只有这一条重绘）。 */
 
 
-/** T013.5：把一轮的工具/思考折成工作过程的步骤（页面用；cwd 用于行上的路径相对化）。 */
-export function processStepsOf(view: TurnViewData, cwd: string): ProcessStep[] {
-  void cwd;
+/** 把一轮的工具/思考折成工作过程的步骤（页面用；路径相对化在 process 那一层做）。 */
+export function processStepsOf(view: TurnViewData): ProcessStep[] {
   const steps: ProcessStep[] = [];
   if (view.reasoning?.full) {
     steps.push({

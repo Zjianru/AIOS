@@ -64,10 +64,17 @@ test('旧的状态消息没有 cwd：路径原样显示，页面不报错', asyn
       await route.continue();
       return;
     }
-    const response = await route.fetch();
-    const json = (await response.json()) as Record<string, unknown>;
-    delete json.cwd;
-    await route.fulfill({ response, json });
+    // 旧服务（协议 8）的 status：没有 cwd，stats/fx/currency 也允许缺。
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        method: 'status',
+        object: { sessionId: 'old-status' },
+        running: false,
+        pendingQuestions: 0,
+      }),
+    });
   });
   try {
     await page.goto(urlOf(fixture));

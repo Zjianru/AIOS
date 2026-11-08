@@ -183,8 +183,9 @@ export function detailOf(args: Record<string, unknown>): string {
   return '';
 }
 
-/** 路径先相对会话工作目录（家目录展开留给后续票）。 */
+/** 路径先相对会话工作目录（家目录展开留给后续票）；没有 cwd（旧状态消息）时原样返回。 */
 export function displayPath(path: string, cwd: string): string {
+  if (!cwd) return path;
   if (path === cwd) return '.';
   if (path.startsWith(cwd + '/')) return path.slice(cwd.length + 1);
   return path;

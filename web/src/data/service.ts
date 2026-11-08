@@ -547,6 +547,8 @@ export interface ServiceStatus {
   stats?: ServiceSessionStats;
   fx?: ServiceFxInfo;
   currency?: string;
+  /** 会话的工作目录（页面把工作过程里的路径显示成相对路径；旧服务的 status 没有它）。 */
+  cwd?: string;
 }
 
 export async function fetchStatus(): Promise<ServiceStatus> {

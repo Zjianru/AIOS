@@ -108,6 +108,8 @@ interface KindState {
   connection: { state: 'online' } | { state: 'reconnecting'; attempt: number };
   /** T013.8：会话 id（ready 帧给；草稿 localStorage 的键用它）。 */
   sessionId: string | null;
+  /** 会话工作目录（status 给；空串=旧服务没给，路径照原样显示）。 */
+  cwd: string;
   /** 上下文占用（%），底栏悬停可见。 */
   usage: number;
   compacting: boolean;
@@ -562,6 +564,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   gateDetail: null,
   connection: { state: 'online' },
   sessionId: null,
+  cwd: '',
   usage: 0,
   compacting: false,
   modelNames: {},
@@ -861,6 +864,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
   refreshStats: async () => {
     try {
       const status = await fetchStatus();
+      // 工作过程里的路径按会话工作目录相对化；旧服务没给 cwd 时保持空串（照原样显示）。
+      set({ cwd: status.cwd ?? '' });
       if (status.stats) {
         const stats = status.stats;
         set({
