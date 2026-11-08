@@ -6,7 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use model::{Message, ToolAddition, ToolHistory, ToolSchema};
+use model::{Message, Role, ToolAddition, ToolHistory, ToolSchema};
 use session::{Event, EventKind};
 use tools::ToolSet;
 
@@ -69,7 +69,9 @@ pub(crate) fn request_tools(
 /// 从会话日志恢复请求投影要用的加载历史（主请求与压缩摘要请求共用）。
 ///
 /// 第一条 `tool/registry` 是第一次请求的声明（立即可用）；之后每条是某个加载点。
-/// 加载点用「它前面最后一条派生消息」定位：日志只追加，所以续接前后算出来一样。
+/// 加载点用「它前面最后一条可见的 user/tool 消息」定位：tool_addition 只能紧跟 user 或
+/// tool-result 回合，日志只追加，所以续接前后算出来一样。加载点被压缩 shadow 掉以后，
+/// 前面只剩 system，锚点为 None——投影退回当前完整工具表，不把 tool_addition 插到 system 后面。
 pub(crate) fn tool_history(events: &[Event], derived: &[(u64, Message)]) -> Option<ToolHistory> {
     let mut registries = events.iter().filter_map(|event| match &event.kind {
         EventKind::ToolRegistry { additions, .. } => Some((event.seq, additions)),
@@ -81,7 +83,9 @@ pub(crate) fn tool_history(events: &[Event], derived: &[(u64, Message)]) -> Opti
         let after = derived
             .iter()
             .rev()
-            .find(|(message_seq, _)| *message_seq < seq)
+            .find(|(message_seq, message)| {
+                *message_seq < seq && matches!(message.role, Role::User | Role::Tool)
+            })
             .map(|(_, message)| message.id.clone());
         updates.push(ToolAddition {
             after,

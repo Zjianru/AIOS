@@ -45,7 +45,7 @@ pub struct ToolHistory {
 /// 一次加载：在哪条消息之后、加了哪些工具。
 #[derive(Debug, Clone)]
 pub struct ToolAddition {
-    /// 加在哪条消息之后；None = 请求里还没有消息。
+    /// 加在哪条消息之后；None = 请求里没有可锚定的 user/tool 消息（还没有消息，或加载点被压缩 shadow）。
     pub after: Option<MessageId>,
     /// 这次新加的工具（完整定义）。
     pub additions: Vec<ToolSchema>,
@@ -83,7 +83,8 @@ pub(crate) fn project(
     let Some(history) = &request.history else {
         return immediate();
     };
-    // 加载点必须都在这次请求的消息里；辅助请求（压缩前缀）截掉了加载点时退回当前声明。
+    // 加载点必须都锚在请求里的 user/tool 消息上；辅助请求（压缩前缀）截掉了加载点、
+    // 或加载点被压缩 shadow 掉时，退回当前完整声明。
     let positions: BTreeMap<&str, usize> = messages
         .iter()
         .enumerate()
