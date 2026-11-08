@@ -506,7 +506,10 @@ fn decode_cookie(secret: &[u8; 32], value: &str) -> Option<CookiePayload> {
 
 fn read_cookie(header: &str, name: &str) -> Option<String> {
     for segment in header.split(';') {
-        let (key, value) = segment.trim().split_once('=')?;
+        // T019.E：没有 `=` 的段跳过（浏览器/代理可能塞别的段），不让它让整次认证失败。
+        let Some((key, value)) = segment.trim().split_once('=') else {
+            continue;
+        };
         if key == name {
             return Some(value.to_owned());
         }
@@ -968,42 +971,17 @@ async fn api_handler(
         .and_then(serde_json::Value::as_str)
         .unwrap_or("unknown")
         .to_owned();
-    // T011.6：页面没接住的异常/事件流重连经这里交给服务记 ops（内容限长，不阻塞页面）。
-    if method == "monitor-report" {
-        let kind = value
-            .get("kind")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("page-error");
-        let op = if kind == "page-reconnect" {
-            "page-reconnect"
-        } else {
-            "page-error"
-        };
-        let message: String = value
-            .get("message")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default()
-            .chars()
-            .take(512)
-            .collect();
-        record_ops(
-            &state,
-            op,
-            if op == "page-error" {
-                Severity::Warn
-            } else {
-                Severity::Info
-            },
-            vec![("message".to_owned(), serde_json::json!(message))],
-        );
-        return (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response();
-    }
     let call: service::Call = match serde_json::from_value(value.clone()) {
         Ok(call) => call,
         Err(error) => {
             return bad_request_response(format!("bad request: {error}"));
         }
     };
+    // T019.E：monitor-report 是 Call 的变体；监控记录留在 web（Monitor 在这里），
+    // 不再在解码前用方法名字符串截走。它不依赖根会话（页面报错时根可能正好不可用）。
+    if let service::Call::MonitorReport(report) = &call {
+        record_monitor_report(&state, report);
+    }
     let result = state.host.dispatch(call).await;
     let duration_ms = started.elapsed().as_millis() as u64;
     let (http_status, code, ok) = match &result {
@@ -1042,6 +1020,31 @@ async fn api_handler(
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(error) => api_error_response(error),
     }
+}
+
+/// T011.6/T019.E：页面没接住的异常、事件流重连记 ops（内容限长，不阻塞页面）。
+fn record_monitor_report(state: &AppState, report: &service::MonitorReportRequest) {
+    let op = match report.kind.as_deref() {
+        Some("page-reconnect") => "page-reconnect",
+        _ => "page-error",
+    };
+    let message: String = report
+        .message
+        .as_deref()
+        .unwrap_or_default()
+        .chars()
+        .take(512)
+        .collect();
+    record_ops(
+        state,
+        op,
+        if op == "page-error" {
+            Severity::Warn
+        } else {
+            Severity::Info
+        },
+        vec![("message".to_owned(), serde_json::json!(message))],
+    );
 }
 
 /// 一条 ops 记录（attributes 里带 telemetry.op；body 不写请求/响应内容）。
@@ -1490,6 +1493,16 @@ mod cookie_red_tests {
         let mut headers = HeaderMap::new();
         headers.insert(HOST, authority.to_owned().parse().unwrap());
         headers
+    }
+
+    /// T019.E：cookie 头里夹着没有 `=` 的段（浏览器/代理可能塞别的段）时要跳过它，
+    /// 不能因为段序让整次认证失败。
+    #[test]
+    fn read_cookie_skips_segments_without_equals() {
+        let name = "aios-auth-x";
+        let header = format!("no-equals;  {name}=v1.abc.def; other=1");
+        assert_eq!(read_cookie(&header, name), Some("v1.abc.def".to_owned()));
+        assert_eq!(read_cookie("no-equals; no-equals-2", name), None);
     }
 
     /// T006 r3 #3：401 正文照来源意思说「重新打开打印的地址」，不出现来源名字/令牌字样。
@@ -2090,6 +2103,61 @@ mod t011_ops_tests {
             "监控里不能有请求体里的 key：{text}"
         );
         assert!(!text.contains("apiKey"), "监控里不能有请求体字段：{text}");
+    }
+
+    /// T019.E：monitor-report 进 Call 后仍走 /api 一条路——限长后记 page-error，
+    /// 同时照 T011.4 记一条 api-call（以前字符串截走时跳过了）。
+    #[tokio::test]
+    async fn monitor_report_is_a_call_and_records_page_error() {
+        let (dir, state, headers) = setup().await;
+        let response = call(
+            &state,
+            &headers,
+            serde_json::json!({
+                "method": "monitor-report",
+                "kind": "page-error",
+                "message": "x".repeat(600),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let json: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
+        assert_eq!(json["method"], "monitor-report");
+        assert_eq!(json["ok"], true);
+        drop(state);
+
+        let mut text = String::new();
+        for entry in std::fs::read_dir(dir.path().join("monitor")).expect("monitor 目录") {
+            text.push_str(&std::fs::read_to_string(entry.expect("目录项").path()).expect("读监控"));
+        }
+        let records: Vec<serde_json::Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("JSON"))
+            .collect();
+        let errors: Vec<&serde_json::Value> = records
+            .iter()
+            .filter(|record| record["attributes"]["telemetry.op"] == "page-error")
+            .collect();
+        assert_eq!(errors.len(), 1, "一条 page-error：{text}");
+        let message = errors[0]["attributes"]["message"]
+            .as_str()
+            .unwrap_or_default();
+        assert_eq!(message.chars().count(), 512, "超长消息截到 512 字");
+        let api_calls: Vec<&serde_json::Value> = records
+            .iter()
+            .filter(|record| {
+                record["attributes"]["telemetry.op"] == "api-call"
+                    && record["attributes"]["method"] == "monitor-report"
+            })
+            .collect();
+        assert_eq!(
+            api_calls.len(),
+            1,
+            "monitor-report 也记一条 api-call：{text}"
+        );
     }
 }
 

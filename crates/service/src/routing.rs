@@ -1,7 +1,9 @@
 //! 根宿主的调用入口：把 Call 分派到根会话或裸宿主，并转发 follow/shutdown。
 
 use crate::error::ServiceError;
-use crate::protocol::{Call, FollowRequest, FollowResponse, RecheckResponse, Response};
+use crate::protocol::{
+    Call, FollowRequest, FollowResponse, MonitorReportResponse, RecheckResponse, Response,
+};
 use crate::root_lifecycle::RootHost;
 
 impl RootHost {
@@ -87,6 +89,10 @@ impl RootHost {
                 .settings_update(request)
                 .await
                 .map(Response::SettingsUpdate),
+            // 监控上报不依赖根会话（页面报错时根可能正好不可用）；记录在 web 载体。
+            Call::MonitorReport(_) => {
+                Ok(Response::MonitorReport(MonitorReportResponse { ok: true }))
+            }
             // 附件仓库（文字文件只读副本）。
             Call::AttachmentPut(request) => self
                 .attachment_put(request)

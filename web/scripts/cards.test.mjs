@@ -7,6 +7,7 @@ import {
   cardDefinitions,
   connectionCardOf,
   normalizeEnvelope,
+  questionCardEntryOf,
   questionCardOf,
   resolveSlots,
   toolCardOf,
@@ -201,6 +202,11 @@ const voided = questionEnvelope(questionFact({ status: 'void' }));
 assert.equal(voided.state, 'stopped');
 assert.deepEqual(voided.receipt, { outcome: 'cancelled', summary: '这一轮停下了，问题没再等回答' });
 
+/* T019.E（B5）：提问卡取不出信封（null）时退回通用卡，不整卡消失、不抛异常。 */
+const questionFallback = questionCardEntryOf(null);
+assert.equal(questionFallback.type, 'generic', 'null 事实退回通用卡');
+assert.equal(normalizeEnvelope(questionFallback).type, 'generic', '能过卡片入口再校验');
+
 /* ───────── T017.3 工具卡（spec 清单 6、8；票面 15 份样例） ───────── */
 
 /**
@@ -251,6 +257,28 @@ const TOOL_TYPES = {
 for (const [name, expected] of Object.entries(TOOL_TYPES)) {
   assert.equal(toolCardTypeOf(name), expected, name + ' → ' + expected);
 }
+
+/* T019.E（B5）：工作过程里的待答提问卡读模型参数 multi_select（不是 multiSelect）。 */
+const askMulti = stepOf(
+  {
+    callId: 'call-ask-multi',
+    name: 'ask_user_question',
+    arguments: JSON.stringify({
+      questions: [
+        {
+          id: 'q1',
+          question: '哪些都算？',
+          header: '',
+          options: [{ label: '甲' }, { label: '乙' }],
+          multi_select: true,
+        },
+      ],
+    }),
+  },
+  null,
+);
+const askMultiCard = toolCardEnvelope(askMulti, 'question', '提问卡多选');
+assert.equal(askMultiCard.slots.questions[0].multiSelect, true, 'multi_select 要映射成 multiSelect');
 
 /* 终端：长 / 短 / 缺字段 */
 const bashShort = stepOf(
@@ -630,6 +658,12 @@ assert.doesNotThrow(() => normalizeEnvelope(brokenKeyring), '连接卡的信封�
 
 // 没有 id：出不了信封，由卡片入口退回通用卡。
 assert.equal(connectionCardOf({ id: '' }), null);
+
+/* T019.E（B1）：providers 是坏数组（不是数组）时退回空列表，连接卡仍出信封，不整卡 generic。 */
+const badProviders = connectionEnvelope(connectionFact({ providers: { nope: true } }));
+assert.equal(badProviders.type, 'connection');
+assert.deepEqual(badProviders.slots.providers, []);
+assert.equal(badProviders.state, 'pending');
 
 // 槽位坏了逐项降级，不整卡报错。
 const connectionBad = resolveSlots(cardDefinitions.connection, {

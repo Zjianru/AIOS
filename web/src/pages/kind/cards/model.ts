@@ -305,7 +305,9 @@ function questionReceiptOf(fact: QuestionCardFact, count: number): CardReceipt |
   }
 }
 
-export function questionCardOf(fact: QuestionCardFact): CardEnvelope<QuestionSlots> | null {
+export function questionCardOf(
+  fact: QuestionCardFact | null | undefined,
+): CardEnvelope<QuestionSlots> | null {
   if (!fact || typeof fact !== 'object') return null;
   const parsed = questionSlotsSchema.safeParse({
     questions: fact.questions,
@@ -321,6 +323,11 @@ export function questionCardOf(fact: QuestionCardFact): CardEnvelope<QuestionSlo
     slots: parsed.data,
     ...(receipt ? { receipt } : {}),
   };
+}
+
+/** 对话里的提问卡：取不出信封（事实坏了）时退回通用卡，不整卡消失。 */
+export function questionCardEntryOf(fact: QuestionCardFact | null | undefined): CardEnvelope {
+  return questionCardOf(fact) ?? genericCardOf(fact);
 }
 
 /* ───────── 注册项 ───────── */
@@ -409,7 +416,9 @@ export const connectionSlotsSchema = z.object({
   providers: z
     .array(providerSlotSchema)
     .default([])
-    .transform((items) => items.filter((item): item is ConnectionProviderSlot => item !== null)),
+    .transform((items) => items.filter((item): item is ConnectionProviderSlot => item !== null))
+    // T019.E（B1）：providers 是坏数组（不是数组）时回空列表，连接卡仍出信封，不整卡 generic。
+    .catch([]),
   provider: textSlot,
   saved: z.boolean().catch(false),
   savedAt: textSlot,
@@ -753,9 +762,22 @@ function answersOf(output: string): unknown[] {
   return [];
 }
 
+/** 模型参数是 multi_select（snake_case）；卡片槽位用 multiSelect，工作过程的待答卡照多选显示。 */
+function questionsWithMultiSelect(raw: unknown): unknown {
+  if (!Array.isArray(raw)) return raw;
+  return raw.map((item) => {
+    if (!item || typeof item !== 'object') return item;
+    const record = item as Record<string, unknown>;
+    if (typeof record.multiSelect === 'boolean' || typeof record.multi_select !== 'boolean') {
+      return item;
+    }
+    return { ...record, multiSelect: record.multi_select };
+  });
+}
+
 export function askCardOf(step: ToolStepView): CardEnvelope<QuestionSlots> | null {
   const parsed = questionSlotsSchema.safeParse({
-    questions: step.args.questions,
+    questions: questionsWithMultiSelect(step.args.questions),
     answers: step.state === 'done' ? answersOf(step.output) : [],
   });
   if (!parsed.success || parsed.data.questions.length === 0) return null;
