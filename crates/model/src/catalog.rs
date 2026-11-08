@@ -609,6 +609,16 @@ pub fn global() -> Option<CatalogSnapshot> {
         .and_then(|lock| lock.read().ok().map(|guard| guard.clone()))
 }
 
+/// 模型自己声明的单次输出上限（目录 `limit.output`）；目录没有这个模型时 None。
+///
+/// T014.9：装配时的输出上限是全局默认（256k）。换到上限更小的模型（比如 MiniMax-M2.7）
+/// 以后照旧发，会被厂商按 400 拒绝（`max tokens > 196608`）；适配器组装请求时按这里再收一次。
+pub fn output_limit(provider_id: &str, model_id: &str) -> Option<u32> {
+    let catalog = global().unwrap_or_else(snapshot);
+    let output = catalog.model(provider_id, model_id)?.limit.output?;
+    u32::try_from(output).ok()
+}
+
 /// 启动时先用缓存/快照（不等网络），返回来源；随后由后台 refresh 换新。
 pub fn bootstrap_global(data_dir: &Path) -> CatalogSource {
     match read_cache(data_dir) {

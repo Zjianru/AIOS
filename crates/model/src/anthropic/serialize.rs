@@ -304,13 +304,19 @@ pub(super) fn request_body(
                 .collect(),
         )
     };
-    let wire = super::vendors::wire_effort(
+    let mut wire = super::vendors::wire_effort(
         &config.base_url,
         &config.model,
         effort,
         max_tokens,
         config.max_tokens,
     );
+    // T014.9：请求的输出上限不能超过这个模型自己声明的上限。装配时的全局上限（256k）
+    // 是初值；换到上限更小的模型（MiniMax-M2.7 这类）后照旧发会被厂商按 400 拒绝。
+    // 目录里没有这个模型（自定义连接）就不改。
+    if let Some(limit) = crate::catalog::output_limit(&config.provider, &config.model) {
+        wire.max_tokens = wire.max_tokens.min(limit);
+    }
     let thinking = wire.thinking.map(|thinking| match thinking {
         super::vendors::ThinkingWire::Disabled => WireThinking {
             kind: "disabled",
@@ -557,8 +563,18 @@ mod effort_wire_tests {
     use serde_json::Value;
 
     fn body(base_url: &str, model: &str, effort: &str, max_tokens: Option<u32>) -> Value {
+        with_provider("deepseek", base_url, model, effort, max_tokens)
+    }
+
+    fn with_provider(
+        provider: &str,
+        base_url: &str,
+        model: &str,
+        effort: &str,
+        max_tokens: Option<u32>,
+    ) -> Value {
         let config = DeepSeekConfig {
-            provider: "deepseek".to_owned(),
+            provider: provider.to_owned(),
             base_url: base_url.to_owned(),
             model: model.to_owned(),
             max_tokens: 256_000,
@@ -614,6 +630,28 @@ mod effort_wire_tests {
             assert_eq!(output_effort(&value), *output, "effort={effort}");
             assert_eq!(value["max_tokens"], 64_000);
         }
+    }
+
+    /// T014.9：换到输出上限更小的模型以后，请求的 max_tokens 不能超过目录给它的上限
+    /// （MiniMax-M2.7 会 400：max tokens > 196608）；上限更大的模型保持装配时的值。
+    #[test]
+    fn request_max_tokens_never_exceed_the_model_output_limit() {
+        let m27 = with_provider(
+            "minimax-cn",
+            "https://api.minimaxi.com/anthropic",
+            "MiniMax-M2.7",
+            "low",
+            None,
+        );
+        assert_eq!(m27["max_tokens"], 131_072);
+        let flash = with_provider(
+            "minimax-cn",
+            "https://api.minimaxi.com/anthropic",
+            "MiniMax-M3.1-Flash",
+            "low",
+            None,
+        );
+        assert_eq!(flash["max_tokens"], 256_000);
     }
 
     #[test]
