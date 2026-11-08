@@ -2,6 +2,7 @@
 //!
 //! 机制照 DSH 的 packages/core/agent-loop（strategy 第 1 节）。
 
+mod action_cards;
 mod ask_capability;
 mod assembly;
 mod capabilities;
@@ -393,6 +394,15 @@ impl Agent {
     /// T008.3：选模型（下一轮请求生效；正在跑的请求不受影响，D26）。
     pub fn select_model(&self, model: String) {
         self.inner.model.set_model(model);
+    }
+
+    /// 记一条确认卡决定（用户点了按钮之后的事实）。决定落日志，下一次请求前由
+    /// action-cards 能力通知模型；重开页面从同一条日志恢复回执。
+    pub async fn record_card_decision(
+        &self,
+        decision: &session::CardDecision,
+    ) -> Result<(), AgentError> {
+        self.inner.append(&[decision.event()]).await
     }
 
     /// T012.7：用户选择连接/模型/档（下一轮生效，D26）。选择是 durable 事实：写

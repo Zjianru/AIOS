@@ -47,7 +47,7 @@ impl Tool for FakeQueryTool {
     }
 
     fn condition(&self) -> ToolCondition {
-        ToolCondition::AfterSkill(&["aios-settings"])
+        ToolCondition::AfterSkill(vec!["aios-settings".to_owned()])
     }
 
     fn execute<'a>(

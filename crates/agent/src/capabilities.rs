@@ -15,6 +15,7 @@ use session::{EventKind, SessionStore};
 use tokio::sync::broadcast;
 use tools::{ToolCall, ToolResult, ToolSessionState, ToolSet};
 
+use crate::action_cards::ActionCardCapability;
 use crate::ask_capability::{AskCapability, AskState};
 use crate::compaction_capability::CompactionCapability;
 use crate::error::AgentError;
@@ -377,6 +378,7 @@ impl CapabilityRegistry {
                 Box::new(AskCapability::new(states.ask)),
                 Box::new(SpillCapability::new(states.spill_max_inline_tokens)),
                 Box::new(ReminderCapability::new(states.reminder_chain)),
+                Box::new(ActionCardCapability),
                 Box::new(Placeholder {
                     name: "jobs",
                     hooks: JOBS_HOOKS,
@@ -531,7 +533,8 @@ pub(crate) fn event_context(kind: &EventKind) -> Option<(u64, u64)> {
         | EventKind::JobSettled { .. }
         | EventKind::CompactionSummary { .. }
         | EventKind::CompactionPrune { .. }
-        | EventKind::SessionModel { .. } => return None,
+        | EventKind::SessionModel { .. }
+        | EventKind::CardDecision { .. } => return None,
     };
     Some(pair)
 }

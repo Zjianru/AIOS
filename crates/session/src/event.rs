@@ -526,6 +526,90 @@ pub enum EventKind {
         #[serde(rename = "effortWanted")]
         effort_wanted: String,
     },
+    /// 用户在确认卡上点了一个按钮之后留下的决定。卡片的提议本身是 propose_action 的
+    /// tool/call + tool/result（结果 meta 里带展示数据）；这里只记之后的事实，重开页面
+    /// 从同一条日志恢复回执。replaced 不是记下来的，是从「后面又有新卡」推导的。
+    #[serde(rename = "card/decision")]
+    CardDecision {
+        #[serde(rename = "callId")]
+        call_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        option: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
+        phase: CardDecisionPhase,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        data: Option<serde_json::Value>,
+    },
+}
+
+/// 确认卡决定的阶段。replaced 不在这里：它由「更新的卡已经出现」推导，不写日志。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CardDecisionPhase {
+    Confirmed,
+    Dismissed,
+    Refused,
+    Failed,
+}
+
+impl CardDecisionPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Confirmed => "confirmed",
+            Self::Dismissed => "dismissed",
+            Self::Refused => "refused",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// 一条确认卡决定的内容（写日志与通知模型共用的形状）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CardDecision {
+    #[serde(rename = "callId")]
+    pub call_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub option: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    pub phase: CardDecisionPhase,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+}
+
+impl CardDecision {
+    /// 写成一条日志事件（决定只由卡片动作记录，不允许记推导出来的 replaced）。
+    pub fn event(&self) -> EventKind {
+        EventKind::CardDecision {
+            call_id: self.call_id.clone(),
+            option: self.option.clone(),
+            action: self.action.clone(),
+            phase: self.phase,
+            data: self.data.clone(),
+        }
+    }
+
+    /// 从一条日志事件读回（不是 card/decision 返回 None）。
+    pub fn from_event(kind: &EventKind) -> Option<Self> {
+        let EventKind::CardDecision {
+            call_id,
+            option,
+            action,
+            phase,
+            data,
+        } = kind
+        else {
+            return None;
+        };
+        Some(Self {
+            call_id: call_id.clone(),
+            option: option.clone(),
+            action: action.clone(),
+            phase: *phase,
+            data: data.clone(),
+        })
+    }
 }
 
 /// 会话的模型选择（session/model 事件的内容；T012.7）。
@@ -582,6 +666,7 @@ impl EventKind {
             Self::JobRegistered { .. } => "job/registered",
             Self::JobSettled { .. } => "job/settled",
             Self::SessionModel { .. } => "session/model",
+            Self::CardDecision { .. } => "card/decision",
         }
     }
 }

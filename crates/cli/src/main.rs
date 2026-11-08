@@ -634,6 +634,11 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let append_hook_factory = monitor.append_hook_factory();
     // T007.2：根会话打不开时服务照样起；ready 报状态（path/line），方法一律拒绝，
     // 页面对应五种说明页；修好后页面调 recheck 再检查一次。
+    let identity = args.common.identity.clone();
+    let actions = std::sync::Arc::new(service::ActionRegistry::settings(
+        data_dir.clone(),
+        identity.clone(),
+    ));
     let host = RootHost::open(
         RootSessionOptions {
             data_dir,
@@ -641,10 +646,11 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             model: placeholder_config,
             config: agent_config,
             credentials: None,
-            identity: args.common.identity.clone(),
+            identity,
             model_factory: Some(model_factory),
             append_hook_factory: Some(append_hook_factory),
             keyring_changed: Some(keyring_changed),
+            actions,
         },
         window,
     )

@@ -72,6 +72,8 @@ pub struct RootSessionOptions {
     pub append_hook_factory: Option<session::AppendHookFactory>,
     /// F1：Keyring 变化时刷新监控脱敏用的 key 列表；None = 不刷新。
     pub keyring_changed: Option<KeyringChanged>,
+    /// 服务端登记的动作（确认卡背后能做的事）；空表时提议工具永远不开出。
+    pub actions: std::sync::Arc<crate::actions::ActionRegistry>,
 }
 
 /// T008.3b/T012.7：按会话的模型选择解析 (连接 id, 模型配置, 凭证来源)。
@@ -115,6 +117,7 @@ impl std::fmt::Debug for RootSessionOptions {
                 "credentials",
                 &self.credentials.as_ref().map(|_| "<source>"),
             )
+            .field("actions", &self.actions.skills())
             .finish()
     }
 }
@@ -138,11 +141,19 @@ impl RootSession {
 /// 找回或新建 Kind 根会话（T006.16b）：四态见 docs/02 篇第 1 节与 06 篇恢复链。
 pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSession, RootError> {
     let state_path = RootSession::state_path(&options.data_dir);
-    // 根会话独有的工具：`aios_query` 读服务里已存的数据（T014.2）。CLI 的对话不装它。
-    let extra_tools = vec![std::sync::Arc::new(crate::aios_query::QueryTool::new(
-        options.data_dir.clone(),
-        options.identity.clone(),
-    )) as std::sync::Arc<dyn tools::Tool>];
+    // 根会话独有的工具：`aios_query` 读服务里已存的数据，`propose_action` 出确认卡。
+    // CLI 的对话不装它们。
+    let extra_tools = vec![
+        std::sync::Arc::new(crate::aios_query::QueryTool::new(
+            options.data_dir.clone(),
+            options.identity.clone(),
+        )) as std::sync::Arc<dyn tools::Tool>,
+        std::sync::Arc::new(crate::propose::ProposeActionTool::new(
+            std::sync::Arc::clone(&options.actions),
+            options.data_dir.clone(),
+            options.identity.clone(),
+        )),
+    ];
     match std::fs::read(&state_path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             std::fs::create_dir_all(&options.data_dir)?;

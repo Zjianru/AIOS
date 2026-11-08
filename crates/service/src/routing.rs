@@ -77,6 +77,8 @@ impl RootHost {
                 .session_model_select(request)
                 .await
                 .map(Response::SessionModelSelect),
+            // 确认卡：自己取日志快照，不在持锁时跑动作（换模型可能重开根会话）。
+            Call::CardAct(request) => self.card_act(request).await.map(Response::CardAct),
             // 根宿主自己填统计/汇率/币种（需要 data_dir + Keyring）。
             Call::Status(request) => self.host_status(request).await.map(Response::Status),
             // 余额/余量需要 Keyring 签发 key。

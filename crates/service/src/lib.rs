@@ -3,11 +3,14 @@
 //! 协议形状、错误码、事件映射、根会话生命周期、设置面和输入解析各在自己的模块里；
 //! 本文件只声明模块并 re-export 对外面，载体（web/cli）只从 crate 根取名字。
 
+pub mod actions;
 pub mod aios_query;
+mod cards;
 pub mod disabled;
 mod error;
 mod events;
 mod input;
+mod propose;
 mod protocol;
 mod root_lifecycle;
 mod routing;
@@ -26,6 +29,7 @@ pub mod stats;
 /// 服务事件流容量（订阅者落后时用 Lagged）。
 pub(crate) const SERVICE_EVENT_CHANNEL_CAPACITY: usize = 1024;
 
+pub use actions::{ActionEnv, ActionFuture, ActionKind, ActionOutcome, ActionRegistry, CardFact};
 pub use error::*;
 pub use protocol::*;
 pub use root::{

@@ -666,16 +666,23 @@ fn all_event_kinds() -> Vec<EventKind> {
             model: "deepseek-flash".to_owned(),
             effort_wanted: "high".to_owned(),
         },
+        EventKind::CardDecision {
+            call_id: "call_card".to_owned(),
+            option: Some("b".to_owned()),
+            action: Some("some_action".to_owned()),
+            phase: crate::CardDecisionPhase::Confirmed,
+            data: Some(json!({"summary": "已执行"})),
+        },
     ]
 }
 
-/// 防未来漂移：EventKind 的 serde `type` 必须等于 `type_name`（当前 24/24 相等）。
+/// 防未来漂移：EventKind 的 serde `type` 必须等于 `type_name`。
 ///
 /// 首跑即绿，用来在新增/改名事件时抓住两处各写一份的漂移；新增变体要补进 all_event_kinds。
 #[test]
 fn event_kind_serde_tag_matches_type_name() {
     let kinds = all_event_kinds();
-    assert_eq!(kinds.len(), 24, "all_event_kinds 要覆盖全部变体");
+    assert_eq!(kinds.len(), 25, "all_event_kinds 要覆盖全部变体");
     for kind in kinds {
         let value = serde_json::to_value(&kind).expect("事件序列化");
         assert_eq!(

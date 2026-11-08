@@ -3,6 +3,7 @@
 use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use agent::AgentConfig;
 use model::{DEFAULT_CONTEXT_WINDOW, DeepSeekConfig, Effort};
@@ -62,11 +63,79 @@ pub fn options(data_dir: &Path) -> RootSessionOptions {
         model_factory: None,
         append_hook_factory: None,
         keyring_changed: None,
+        actions: Arc::new(service::ActionRegistry::empty()),
     }
 }
 
 pub async fn open(options: RootSessionOptions) -> RootHost {
     RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await
+}
+
+
+/// 一次工具调用的 SSE（参数走 input_json_delta，和真模型一样）。
+pub fn tool_use_sse(index: usize, call_id: &str, name: &str, arguments: &str) -> String {
+    let arguments = serde_json::json!(arguments).to_string();
+    format!(
+        "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_{index}\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"deepseek-flash\",\"content\":[],\"usage\":{{\"input_tokens\":10,\"output_tokens\":1}}}}}}\n\nevent: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"tool_use\",\"id\":\"{call_id}\",\"name\":\"{name}\",\"input\":{{}}}}}}\n\nevent: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"input_json_delta\",\"partial_json\":{arguments}}}}}\n\nevent: content_block_stop\ndata: {{\"type\":\"content_block_stop\",\"index\":0}}\n\nevent: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"tool_use\"}},\"usage\":{{\"output_tokens\":2}}}}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n"
+    )
+}
+
+/// 一句最终回答的 SSE（没有工具调用）。
+pub fn text_sse(text: &str) -> String {
+    let text = serde_json::json!(text).to_string();
+    format!(
+        "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_text\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"deepseek-flash\",\"content\":[],\"usage\":{{\"input_tokens\":50,\"output_tokens\":1}}}}}}\n\nevent: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\nevent: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":{text}}}}}\n\nevent: content_block_stop\ndata: {{\"type\":\"content_block_stop\",\"index\":0}}\n\nevent: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"end_turn\"}},\"usage\":{{\"output_tokens\":3}}}}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n"
+    )
+}
+
+/// 只读打开根会话日志（决定之类的事件在空闲时也会追加，用这个读回）。
+pub fn read_root_events(data_dir: &Path) -> Vec<session::Event> {
+    #[derive(serde::Deserialize)]
+    struct Record {
+        #[serde(rename = "sessionId")]
+        session_id: String,
+    }
+    let bytes = std::fs::read(data_dir.join(service::ROOT_STATE_FILE)).expect("根状态文件");
+    let record: Record = serde_json::from_slice(&bytes).expect("根状态 JSON");
+    let id = session::SessionId::parse(&record.session_id).expect("会话 id");
+    session::SessionStore::open_read_only(data_dir, &id)
+        .expect("只读打开根会话")
+        .events()
+        .to_vec()
+}
+
+/// 等这一条根会话日志里至少收尾了 turns 轮，返回当时的全部事件。
+pub async fn wait_turns(
+    host: &RootHost,
+    data_dir: &Path,
+    turns: usize,
+) -> Vec<session::Event> {
+    for _ in 0..600 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let status = host
+            .dispatch(service::Call::Status(service::StatusRequest {}))
+            .await
+            .expect("status");
+        let json = serde_json::to_value(&status).expect("status json");
+        let Some(session_id) = json["object"]["sessionId"].as_str() else {
+            continue;
+        };
+        let Ok(id) = session::SessionId::parse(session_id) else {
+            continue;
+        };
+        let Ok(store) = session::SessionStore::open_read_only(data_dir, &id) else {
+            continue;
+        };
+        let events = store.events().to_vec();
+        let ended = events
+            .iter()
+            .filter(|event| matches!(event.kind, session::EventKind::TurnEnd { .. }))
+            .count();
+        if ended >= turns {
+            return events;
+        }
+    }
+    panic!("等不到第 {turns} 轮收尾");
 }
 
 /// 按脚本顺序回放（第 N 次请求拿第 N 个响应；耗尽回 500，不静默复用）。

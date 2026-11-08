@@ -72,6 +72,8 @@ pub enum Call {
     FirstUse(FirstUseRequest),
     /// 选模型（下一轮生效，当前轮不换）。
     SessionModelSelect(SessionModelSelectRequest),
+    /// 确认卡上的按钮：确认某一项，或者暂不。
+    CardAct(CardActRequest),
     /// 查询连接余额/套餐余量。
     ConnectionQuota(ConnectionQuotaRequest),
     /// 写非密钥设置（currency；只写 settings.json）。
@@ -117,6 +119,8 @@ pub enum Response {
     Issues(IssuesResponse),
     FirstUse(FirstUseResponse),
     SessionModelSelect(SessionModelSelectResponse),
+    /// 确认卡动作的受理结果（已经有决定时原样返回那条决定）。
+    CardAct(CardActResponse),
     /// 附件仓库。
     AttachmentPut(AttachmentPutResponse),
     AttachmentGet(AttachmentGetResponse),
@@ -626,6 +630,33 @@ pub struct SessionModelSelectResponse {
     /// 这一轮实际会发的档（没有想要的档时是最近档；页面据此显示并告诉用户）。
     #[serde(rename = "effortActual")]
     pub effort_actual: String,
+}
+
+/// 确认卡上的一个动作：确认一项，或者暂不。
+///
+/// 卡片由 propose_action 的 call id 定位；option 是选项 id（暂不不需要）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CardActRequest {
+    #[serde(rename = "callId")]
+    pub call_id: String,
+    pub verb: CardVerb,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub option: Option<String>,
+}
+
+/// 确认卡上的两个按钮；按钮文案和动作由程序定，模型给不了。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CardVerb {
+    Confirm,
+    Dismiss,
+}
+
+/// 动作的受理结果：已经记过的决定原样带回（重复点击不重复执行）；没有动作时为 None。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CardActResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<session::CardDecision>,
 }
 
 /// 存一份文字附件（data 是 base64 的原始字节）。

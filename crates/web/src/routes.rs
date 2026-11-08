@@ -596,6 +596,7 @@ mod t012_attachment_http_tests {
             model_factory: None,
             append_hook_factory: None,
             keyring_changed: None,
+            actions: std::sync::Arc::new(service::ActionRegistry::empty()),
         }
     }
 
@@ -934,6 +935,7 @@ mod t011_ops_tests {
             model_factory: None,
             append_hook_factory: None,
             keyring_changed: None,
+            actions: std::sync::Arc::new(service::ActionRegistry::empty()),
         };
         let host = service::RootHost::open(options, model::DEFAULT_CONTEXT_WINDOW).await;
         let monitor = Monitor::open_with_capacity(dir.path(), 1024).expect("监控");
@@ -1260,6 +1262,7 @@ mod t015_local_file_tests {
             model_factory: None,
             append_hook_factory: None,
             keyring_changed: None,
+            actions: std::sync::Arc::new(service::ActionRegistry::empty()),
         };
         let host = service::RootHost::open(options, model::DEFAULT_CONTEXT_WINDOW).await;
         let trust = Trust::new(

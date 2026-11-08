@@ -13,8 +13,8 @@ use crate::protocol::{
     AnswerRequest, AnswerResponse, Call, CancelRequest, CancelResponse, CompactCounts,
     CompactRequest, CompactResponse, DeliveryMode, DismissQuestionsRequest,
     DismissQuestionsResponse, EventsRequest, EventsResponse, FollowRequest, FollowResponse,
-    HostLocation, MonitorReportResponse, Object, RecheckResponse, Response, RootState, SendRequest,
-    SendResponse, ServiceEvent, StatusRequest, StatusResponse,
+    CardActResponse, HostLocation, MonitorReportResponse, Object, RecheckResponse, Response,
+    RootState, SendRequest, SendResponse, ServiceEvent, StatusRequest, StatusResponse,
 };
 
 /// 与载体无关的服务宿主：绑定一个 Agent/会话，调用经 dispatch 进入，事件从广播流出。
@@ -96,6 +96,8 @@ impl ServiceHost {
             Call::MonitorReport(_) => {
                 Ok(Response::MonitorReport(MonitorReportResponse { ok: true }))
             }
+            // 裸宿主没有登记的动作，也就没有卡；点按钮什么也不发生。
+            Call::CardAct(_) => Ok(Response::CardAct(CardActResponse { decision: None })),
             // recheck 只对 RootHost 有意义；裸 ServiceHost 直接回根状态 ok（宿主不回退）。
             Call::Recheck(_) => Ok(Response::Recheck(RecheckResponse {
                 root: RootState::Ok,

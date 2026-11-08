@@ -151,20 +151,21 @@ impl ToolContext {
 /// 照 DSH core/tools 的 `when`（`core-tools-contracts.ts:123`、action-cards `:211`）：
 /// 条件挂在工具注册处，由宿主每步求值一次；AIOS 只有一种会变的条件——模型在本会话里
 /// 加载过哪个 skill。skill 名字是编进二进制的那几个，所以用静态切片，不另造类型。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolCondition {
     /// 总是开出（内置工具）。
     Always,
-    /// 本会话里 `skill` 工具成功加载过这些名字之一以后开出。
-    AfterSkill(&'static [&'static str]),
+    /// 本会话里 `skill` 工具成功加载过这些名字之一以后开出。名单由登记表算出来
+    /// （服务装配时定），所以是拥有的字符串而不是静态切片。
+    AfterSkill(Vec<String>),
 }
 
 impl ToolCondition {
     /// 条件在这一次求值里是否满足；`loaded` 是本会话已成功加载的 skill 名。
-    pub fn satisfied_by(self, loaded: &std::collections::BTreeSet<String>) -> bool {
+    pub fn satisfied_by(&self, loaded: &std::collections::BTreeSet<String>) -> bool {
         match self {
             Self::Always => true,
-            Self::AfterSkill(names) => names.iter().any(|name| loaded.contains(*name)),
+            Self::AfterSkill(names) => names.iter().any(|name| loaded.contains(name)),
         }
     }
 }
