@@ -522,7 +522,10 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         const callId = String(message.toolCallId ?? message.tool_call_id ?? '');
         const step = callId ? raw.tools.find((item) => item.id === callId) : undefined;
         if (step) {
-          step.state = data.error ? 'error' : 'done';
+          // 普通工具错误没有结构化 error，消息级的 isError 同样是失败。
+          const failed =
+            Boolean(data.error) || message.isError === true || message.is_error === true;
+          step.state = failed ? 'error' : 'done';
           const body = textOf(data.message) || textOfToolResult(data.message);
           step.output = body || String((data.error as { code?: string } | undefined)?.code ?? '');
           step.meta = (data.meta as Record<string, unknown> | undefined) ?? null;

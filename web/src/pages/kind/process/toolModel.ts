@@ -152,6 +152,7 @@ const TITLES: Record<string, string> = {
   job_output: '任务输出',
   job_kill: '结束任务',
   web_search: '搜网页',
+  web_fetch: '读网页',
 };
 
 export function toolTitle(name: string): string {

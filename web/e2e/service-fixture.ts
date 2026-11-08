@@ -45,6 +45,7 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.t014Mask) return { file: 't014-mask' };
   if (options.t014Web) return { file: 't014-web' };
   if (options.t014Search) return { file: 't014-search' };
+  if (options.t014Fetch) return { file: 't014-fetch' };
   return {
     file: 'text',
     paceMs: options.slowMs ? Math.max(1, Math.round(options.slowMs / 6)) : undefined,
@@ -117,6 +118,8 @@ export interface KernelFixture {
   stderr?: () => string;
   /** 设置页「联网搜索」用例：本地假 Exa 的根地址和收到的授权头。 */
   exa?: { baseUrl: string; requests: () => string[] };
+  /** 读网页用例：本地假网页代理收到的目标 URL（本机地址不该出现在这里）。 */
+  fetch?: { requests: () => string[] };
   dropProxy?: () => Promise<void>;
   restoreProxy?: () => Promise<void>;
   /// T007 #1：页面开着时重启同一个端口的服务（新进程=新 cookie 钥匙，旧页面会话失效）。
@@ -200,6 +203,8 @@ export interface FixtureOptions {
   t014Web?: boolean;
   /// T014.7：先加载 skill web，再 web_search 一次，最后回答引用来源 URL（联网搜索回放用）。
   t014Search?: boolean;
+  /// T014.8：先加载 skill web，再读一个网页、读一个本机地址，最后收尾（读网页回放用）。
+  t014Fetch?: boolean;
   /// T014.6：起一个本地假 Exa；serve 用 --exa-base-url 指过去。
   fakeExa?: boolean;
   /// T014.6：把 EXA_API_KEY 放进 serve 的环境变量，用来证明 key 不从环境变量读。
@@ -379,6 +384,48 @@ export async function startKernelFixture(
     exaBaseUrl = 'http://127.0.0.1:' + String(port);
     serveArgs.push('--exa-base-url', exaBaseUrl);
   }
+  // 读网页：本地假网页代理。被测服务的 http_proxy 指过来，公网 IP 的请求由它回正文；
+  // 本机地址在发请求之前就被拦下，不该到这里。
+  let fetchServer: Server | null = null;
+  const fetchRequests: string[] = [];
+  if (options.t014Fetch) {
+    fetchServer = createServer((request, response) => {
+      const target = request.url ?? '';
+      fetchRequests.push(target);
+      let pathname = target;
+      try {
+        pathname = new URL(target).pathname;
+      } catch {
+        // 相对形式（不该出现）就按原样比。
+      }
+      if (request.method !== 'GET' || pathname !== '/aios-fetch') {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(
+        '<!doctype html><html><head><title>样例</title><script>window.alert("脚本不该出现")</script></head><body><h1>读网页正文</h1><p>T014.8 e2e 正文</p></body></html>',
+      );
+    });
+    await new Promise<void>((resolve) => {
+      fetchServer!.listen(0, '127.0.0.1', () => resolve());
+    });
+    const port = (fetchServer.address() as net.AddressInfo).port;
+    const proxyUrl = 'http://127.0.0.1:' + String(port);
+    serviceEnv.http_proxy = proxyUrl;
+    serviceEnv.HTTP_PROXY = proxyUrl;
+    for (const name of [
+      'https_proxy',
+      'HTTPS_PROXY',
+      'all_proxy',
+      'ALL_PROXY',
+      'no_proxy',
+      'NO_PROXY',
+    ]) {
+      serviceEnv[name] = '';
+    }
+  }
   if (options.envExaKey) {
     // 故意放一个值：产品不该读它（设置页仍是「还没有 key」）。
     serviceEnv.EXA_API_KEY = options.envExaKey;
@@ -511,6 +558,7 @@ export async function startKernelFixture(
     dataDir,
     paths,
     exa: exaBaseUrl ? { baseUrl: exaBaseUrl, requests: () => exaRequests } : undefined,
+    fetch: fetchServer ? { requests: () => fetchRequests } : undefined,
     fakeEndpoint: replayUrl,
     lastModel: async () => {
       try {
@@ -536,6 +584,7 @@ export async function startKernelFixture(
     close: async () => {
       await dropProxy();
       exaServer?.close();
+      fetchServer?.close();
       holder?.kill('SIGTERM');
       child.kill('SIGTERM');
       replay.child.kill('SIGTERM');
