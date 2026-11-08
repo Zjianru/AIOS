@@ -315,6 +315,11 @@ async fn usage_event_marks_missing_fields_unknown() {
         .await
         .unwrap();
     wait_idle(&agent, 10).await;
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        1,
+        "一次请求拿到部分用量"
+    );
 
     let collected = drain_events(&mut events);
     let usage = collected

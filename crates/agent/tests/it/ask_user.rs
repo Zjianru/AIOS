@@ -283,6 +283,7 @@ async fn answer_continues_same_turn_and_logs_question() {
             .await
     );
     wait_idle(&agent, 20).await;
+    assert_eq!(bodies(&server).await.len(), 2, "提问与答完各一次请求");
     let store = session::SessionStore::open_read_only(data_dir.path(), &id).unwrap();
     let events = store.events();
     assert_eq!(
@@ -782,6 +783,7 @@ async fn cancel_turn_ends_aborted_not_error() {
     };
     agent.cancel().await.unwrap();
     wait_idle(&agent, 20).await;
+    assert_eq!(bodies(&server).await.len(), 1, "取消后不再发请求");
     let mut outcome: Option<TurnOutcome> = None;
     while let Ok(event) = events.try_recv() {
         if let AgentEvent::TurnEnded { outcome: ended, .. } = event {

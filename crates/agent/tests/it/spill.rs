@@ -246,6 +246,11 @@ async fn zero_spill_threshold_disables_spill() {
         .await
         .unwrap();
     agent.idle().await;
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        2,
+        "工具调用与下一步各一次请求"
+    );
 
     let stored = tool_result_text(
         &session::SessionStore::open_read_only(data_dir.path(), agent.id()).unwrap(),

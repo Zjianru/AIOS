@@ -406,6 +406,11 @@ async fn usage_absent_is_not_fabricated() {
         .await
         .unwrap();
     wait_idle(&agent, 10).await;
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        1,
+        "没有重试：只发一次请求"
+    );
 
     let mut usage_events = 0;
     while let Ok(event) = events.try_recv() {
