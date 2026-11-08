@@ -488,11 +488,9 @@ fn question_answered_matches_dsh_answer_item() {
     );
 }
 
-#[test]
-fn all_event_kinds_round_trip_under_dsh_envelope() {
-    let (data_dir, _cwd, mut store) = create_store();
-    let id = store.id().clone();
-    let kinds = vec![
+/// 全部 EventKind 变体各造一份，信封回归与 wire 名一致性共用。
+fn all_event_kinds() -> Vec<EventKind> {
+    vec![
         EventKind::TurnStart { turn: 1 },
         EventKind::StepStart { turn: 1, step: 1 },
         EventKind::SystemMessage {
@@ -642,7 +640,57 @@ fn all_event_kinds_round_trip_under_dsh_envelope() {
             turn: 1,
             reason: TurnEndReason::Completed,
         },
-    ];
+        EventKind::JobRegistered {
+            job_id: "job-1".to_owned(),
+            owner: None,
+            kind: "bash".to_owned(),
+            label: "后台任务".to_owned(),
+            started_at: 100,
+            tool_call: None,
+        },
+        EventKind::JobSettled {
+            job_id: "job-1".to_owned(),
+            owner: None,
+            kind: "bash".to_owned(),
+            label: "后台任务".to_owned(),
+            started_at: 100,
+            tool_call: None,
+            finished_at: 200,
+            status: "completed".to_owned(),
+            cause: "exit".to_owned(),
+            producer_reported: true,
+            detail: None,
+        },
+        EventKind::SessionModel {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            effort_wanted: "high".to_owned(),
+        },
+    ]
+}
+
+/// 防未来漂移：EventKind 的 serde `type` 必须等于 `type_name`（当前 24/24 相等）。
+///
+/// 首跑即绿，用来在新增/改名事件时抓住两处各写一份的漂移；新增变体要补进 all_event_kinds。
+#[test]
+fn event_kind_serde_tag_matches_type_name() {
+    let kinds = all_event_kinds();
+    assert_eq!(kinds.len(), 24, "all_event_kinds 要覆盖全部变体");
+    for kind in kinds {
+        let value = serde_json::to_value(&kind).expect("事件序列化");
+        assert_eq!(
+            value["type"].as_str(),
+            Some(kind.type_name()),
+            "serde tag 与 type_name 漂移：{value}"
+        );
+    }
+}
+
+#[test]
+fn all_event_kinds_round_trip_under_dsh_envelope() {
+    let (data_dir, _cwd, mut store) = create_store();
+    let id = store.id().clone();
+    let kinds = all_event_kinds();
     store.append(&kinds).unwrap();
 
     let (_header, rows) = log_rows(&store);
