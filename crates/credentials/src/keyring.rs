@@ -1,9 +1,8 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -287,7 +286,7 @@ impl Keyring {
         identity_path: Option<&Path>,
     ) -> Result<Self, KeyringError> {
         let data_dir = data_dir.into();
-        create_private_dir(&data_dir)?;
+        crate::atomic::create_private_dir(&data_dir)?;
         let config_path = data_dir.join("config.json");
         let since = if config_path.exists() {
             read_config(&config_path)?.since
@@ -825,38 +824,11 @@ fn create_identity_at(path: &Path, identity_text: &str) -> Result<(), KeyringErr
     write_private_file(path, identity_text.as_bytes())
 }
 
-fn create_private_dir(path: &Path) -> Result<(), KeyringError> {
-    fs::create_dir_all(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
-    Ok(())
-}
-
+/// 私有文件的原子写：目录 0700、文件 0600，临时文件 + fsync + rename + 目录 fsync
+/// 都在 credentials::atomic 一处（和根状态/设置/汇率缓存同一模块）。
 fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), KeyringError> {
-    if let Some(parent) = path.parent() {
-        create_private_dir(parent)?;
-    }
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let temp_path = path.with_extension(format!("tmp-{}-{sequence}", std::process::id()));
-    let result = (|| -> Result<(), KeyringError> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)?;
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        fs::set_permissions(&temp_path, fs::Permissions::from_mode(0o600))?;
-        fs::rename(&temp_path, path)?;
-        if let Some(parent) = path.parent() {
-            File::open(parent)?.sync_all()?;
-        }
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp_path);
-    }
-    result
+    crate::atomic::write(path, bytes, crate::atomic::TargetKind::Private)?;
+    Ok(())
 }
 
 /// T008.F11：cookie 签名钥匙的 hex 编码（存进 age 密文里的 Store）。

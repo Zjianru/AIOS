@@ -132,20 +132,16 @@ fn read_file(data_dir: &Path) -> Result<Settings, String> {
     }
 }
 
-/// 原子写设置：同目录临时文件 → fsync → rename 覆盖（照根会话状态文件）。
+/// 原子写设置：临时文件 + fsync + rename + 目录 fsync，失败向上返回（credentials::atomic）。
 pub fn save(data_dir: &Path, settings: &Settings) -> Result<(), String> {
-    use std::io::Write;
-    std::fs::create_dir_all(data_dir).map_err(|error| error.to_string())?;
-    let json = serde_json::to_vec(settings).map_err(|error| error.to_string())?;
-    let target = path(data_dir);
-    let tmp = target.with_extension("json.tmp");
-    {
-        let mut file = std::fs::File::create(&tmp).map_err(|error| error.to_string())?;
-        file.write_all(&json).map_err(|error| error.to_string())?;
-        file.write_all(b"\n").map_err(|error| error.to_string())?;
-        file.sync_all().map_err(|error| error.to_string())?;
-    }
-    std::fs::rename(&tmp, &target).map_err(|error| error.to_string())?;
+    let mut json = serde_json::to_vec(settings).map_err(|error| error.to_string())?;
+    json.push(b'\n');
+    credentials::atomic::write(
+        &path(data_dir),
+        &json,
+        credentials::atomic::TargetKind::Shared,
+    )
+    .map_err(|error| error.to_string())?;
     // 写成功也是「读到了」：文件里就是这份内容，坏了时沿用它。
     remember_last(data_dir, &settings.disabled_models);
     Ok(())
