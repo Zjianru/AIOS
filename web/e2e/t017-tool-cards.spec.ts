@@ -62,9 +62,12 @@ test('工作过程提问卡：从信封渲染，问题和回答都在', async ({
     await row.locator('button').first().click();
     // 收成回执：回执一行、问题 → 回答两行，都在这张工作过程卡里。
     await expect(row.getByText('你回答了 Kind 的 2 个问题')).toBeVisible();
-    await expect(row.getByText('先选一个？', { exact: false })).toBeVisible();
-    await expect(row.getByText('Yes', { exact: true })).toBeVisible();
-    await expect(row.getByText('我自己写的答', { exact: true })).toBeVisible();
+    const closedQuestion = row.locator('[data-kind="question-closed"]');
+    await expect(closedQuestion.locator('li')).toHaveCount(2);
+    await expect(closedQuestion.locator('li').nth(0)).toHaveText(/先选一个？\s*→\s*Yes/);
+    await expect(closedQuestion.locator('li').nth(1)).toHaveText(
+      /再自己写一句？\s*→\s*我自己写的答/,
+    );
   } finally {
     await fixture.close();
   }

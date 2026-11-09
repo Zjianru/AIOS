@@ -62,7 +62,7 @@ test('提问卡降级：超长小标题、空 label 的选项、2000 字的问�
   const closed = page.locator('[data-kind="question-closed"]');
   await expect(closed).toBeVisible();
   await expect(closed.getByText('你回答了 Kind 的 1 个问题')).toBeVisible();
-  await expect(closed.getByText('第一项', { exact: false })).toBeVisible();
+  await expect(closed.getByText('第一项', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '提交回答' })).toHaveCount(0);
 
   // 刷新后仍是回执，不能再改。
