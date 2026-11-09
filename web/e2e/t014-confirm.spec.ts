@@ -143,3 +143,65 @@ test('确认卡：选一项确认、刷新还在、模型选择器跟着换；�
     await fixture.close();
   }
 });
+
+/// 确认卡回执失败：按钮恢复、能再点，重试成功后才收成回执（不会永远卡在「处理中…」）。
+test('确认卡：card-act 失败后按钮恢复，重试才执行', async ({ page, request }) => {
+  const fixture = await startKernelFixture({ t014Confirm: true });
+  try {
+    // 卡里的三个模型选项都要能被连接解析（同主用例；缺一个整个提议会被拒）。
+    await apiPost(request, fixture, {
+      method: 'connection-save',
+      id: 'minimax-cn',
+      name: 'MiniMax（国内站）',
+      model: 'MiniMax-M2.7-highspeed',
+      endpoint: fixture.fakeEndpoint,
+      apiKey: 'test-key-minimax',
+      preset: 'minimax-cn',
+      models: [{ id: 'MiniMax-M2.7-highspeed' }],
+    });
+    await apiPost(request, fixture, {
+      method: 'connection-save',
+      id: 'deepseek',
+      name: 'DeepSeek',
+      model: 'deepseek-flash',
+      endpoint: fixture.fakeEndpoint,
+      apiKey: 'test-key',
+      preset: 'deepseek',
+      models: [],
+    });
+    let attempts = 0;
+    await page.route('**/api', async (route) => {
+      const body = route.request().postDataJSON() as { method?: string } | null;
+      if (body?.method === 'card-act') {
+        attempts += 1;
+        if (attempts === 1) {
+          await route.fulfill({ status: 500, contentType: 'application/json', body: '{}' });
+          return;
+        }
+      }
+      await route.continue();
+    });
+    await page.goto(urlOf(fixture));
+    await send(page, '换一个模型吧');
+    const card = page.locator('[data-kind="confirm-card"]').first();
+    await expect(card).toHaveAttribute('data-state', 'pending', { timeout: 30_000 });
+    await card.locator('[data-action="card-option"]').first().click();
+    const confirm = card.locator('[data-action="card-confirm"]');
+    await expect(confirm).toBeEnabled();
+    await confirm.click();
+    // 失败：给提示，按钮恢复成可点，卡还是 pending（没有假装已经执行）。
+    await expect(page.getByText('确认没送到内核')).toBeVisible({ timeout: 15_000 });
+    await expect(confirm).toBeEnabled();
+    await expect(confirm).toHaveText('确认');
+    await expect(card).toHaveAttribute('data-state', 'pending');
+    // 再点一次：这次到内核，收成回执；日志里只有一条决定。
+    await confirm.click();
+    await expect(card).toHaveAttribute('data-state', 'done', { timeout: 30_000 });
+    await expect(card.locator('[data-kind="confirm-receipt"]')).toContainText('已执行');
+    const log = await sessionLog(fixture);
+    const decisions = log.rows.filter((row) => row.type === 'card/decision');
+    expect(decisions).toHaveLength(1);
+  } finally {
+    await fixture.close();
+  }
+});

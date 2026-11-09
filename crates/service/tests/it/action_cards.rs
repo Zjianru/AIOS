@@ -954,6 +954,68 @@ async fn a_new_card_replaces_an_untouched_old_card() {
     assert_eq!(fake.choices(), vec!["乙".to_owned()]);
 }
 
+/// 不同卡的请求并发到达：各自拿各自的锁，不互相排队。会话里只有最新一张卡可执行，
+/// 旧卡已被替换（返回 None、不执行）；新卡执行一次。
+#[tokio::test]
+async fn concurrent_acts_on_different_cards_do_not_block_each_other() {
+    let fake = Arc::new(FakeAction::new());
+    *fake.act_delay.lock().expect("act 延迟锁") = Some(Duration::from_millis(100));
+    let scenario = scenario(
+        vec![
+            skill_script(),
+            tool_script(
+                1,
+                "call_card",
+                "propose_action",
+                &options_json(&[("a", "甲")]),
+            ),
+            answer_script("第一张。"),
+            skill_script(),
+            tool_script(
+                2,
+                "call_card_2",
+                "propose_action",
+                &options_json(&[("b", "乙")]),
+            ),
+            answer_script("第二张。"),
+        ],
+        registry(&fake),
+    )
+    .await;
+    send(scenario.host(), "第一张", 1).await;
+    wait_turns(scenario.host(), &scenario.data_dir, 1).await;
+    send(scenario.host(), "第二张", 2).await;
+    wait_turns(scenario.host(), &scenario.data_dir, 2).await;
+
+    let live = CardActRequest {
+        call_id: "call_card_2".to_owned(),
+        verb: CardVerb::Confirm,
+        option: Some("b".to_owned()),
+    };
+    let replaced = CardActRequest {
+        call_id: "call_card".to_owned(),
+        verb: CardVerb::Confirm,
+        option: Some("a".to_owned()),
+    };
+    let (live_result, replaced_result) = tokio::join!(
+        scenario.host().dispatch(Call::CardAct(live)),
+        scenario.host().dispatch(Call::CardAct(replaced)),
+    );
+    let live_value = serde_json::to_value(live_result.expect("新卡")).expect("新卡 json");
+    assert_eq!(live_value["decision"]["phase"], "confirmed");
+    assert_eq!(live_value["decision"]["option"], "b");
+    let replaced_value = serde_json::to_value(replaced_result.expect("旧卡")).expect("旧卡 json");
+    assert!(
+        replaced_value["decision"].is_null(),
+        "被替换的旧卡并发过来也不执行"
+    );
+    assert_eq!(fake.acts(), 1, "只有新卡执行一次");
+    assert_eq!(fake.choices(), vec!["乙".to_owned()]);
+    let decisions = card_decisions(&read_root_events(&scenario.data_dir));
+    assert_eq!(decisions.len(), 1, "日志里只有新卡那条决定");
+    assert_eq!(decisions[0].call_id, "call_card_2");
+}
+
 /// act 抛错：记 failed 回执，不重复执行。
 #[tokio::test]
 async fn act_failure_is_recorded_as_failed() {
