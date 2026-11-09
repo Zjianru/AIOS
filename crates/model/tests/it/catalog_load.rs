@@ -75,12 +75,14 @@ fn live_models_win_where_they_say_something() {
                 display_name: Some("Vendor Name".to_owned()),
                 context_window: Some(1234),
                 max_tokens: Some(5678),
+                tool_update: None,
             },
             LiveModel {
                 id: "deepseek-new".to_owned(),
                 display_name: Some("New".to_owned()),
                 context_window: Some(9000),
                 max_tokens: None,
+                tool_update: None,
             },
         ],
     );

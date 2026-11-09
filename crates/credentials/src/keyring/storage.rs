@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use age::secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 
-use super::{ConnectionInfo, IssueRecord, Keyring, KeyringError, normalize_info};
+use super::{
+    CheckState, ConnectionInfo, IssueRecord, Keyring, KeyringError, normalize_info, now_seconds,
+};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub(super) struct Store {
@@ -18,16 +20,54 @@ pub(super) struct Store {
     /// T008.F11：cookie 签名钥匙（hex 编码；age 密文落盘，不落明文）。
     #[serde(default)]
     pub(super) cookie_secret: Option<String>,
+    /// 工具凭证（D73）：这一期只有 Exa 的 key；age 密文落盘，不出现在任何视图里。
+    #[serde(default)]
+    pub(super) exa: Option<StoredToolKey>,
     #[serde(default)]
     pub(super) issues: Vec<IssueRecord>,
     #[serde(default)]
     pub(super) next_issue: u64,
 }
 
+/// 一种工具凭证的存储形状：正文 + 保存时间 + 最近一次验证结果。
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct StoredToolKey {
+    pub(super) api_key: String,
+    pub(super) saved_at: u64,
+    #[serde(default)]
+    pub(super) check: CheckState,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct StoredConnection {
     pub(super) info: ConnectionInfo,
     pub(super) api_key: String,
+}
+
+impl Store {
+    /// 记一条签发记录（只追加，只留最近 200 条）；不记正文。
+    pub(super) fn record_issue(
+        &mut self,
+        connection: &str,
+        purpose: &str,
+        run: Option<&str>,
+        turn: Option<u64>,
+    ) {
+        self.next_issue = self.next_issue.saturating_add(1);
+        let id = self.next_issue;
+        self.issues.push(IssueRecord {
+            id,
+            at: now_seconds(),
+            connection: connection.to_owned(),
+            purpose: purpose.to_owned(),
+            run: run.map(str::to_owned),
+            turn,
+        });
+        if self.issues.len() > 200 {
+            let excess = self.issues.len() - 200;
+            self.issues.drain(0..excess);
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

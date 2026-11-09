@@ -3,8 +3,8 @@
  *
  * - 分类、组头文案、行的标题/摘要/NKB/+N-M 照 DSH ui-tool 与 conversation-nodes；
  * - AIOS 的 tool 事件带 arguments（tool/call）和 tool/result.meta（T013.1 的 diffs/operation/stopped）；
- * - 工具名换成 AIOS 实际注册的十三个：read/glob/grep/write/edit/apply_patch/bash/
- *   job_list/job_output/job_kill/skill/todo_write/ask_user_question。
+ * - 工具名换成 AIOS 实际注册的：read/glob/grep/write/edit/apply_patch/bash/
+ *   job_list/job_output/job_kill/skill/todo_write/ask_user_question，以及联网工具。
  */
 
 export type ToolState = 'running' | 'done' | 'error' | 'stopped';
@@ -147,9 +147,12 @@ const TITLES: Record<string, string> = {
   ask_user_question: '提问',
   todo_write: '计划',
   skill: '能力',
+  aios_query: '查 AIOS',
   job_list: '任务列表',
   job_output: '任务输出',
   job_kill: '结束任务',
+  web_search: '搜网页',
+  web_fetch: '读网页',
 };
 
 export function toolTitle(name: string): string {
@@ -183,8 +186,9 @@ export function detailOf(args: Record<string, unknown>): string {
   return '';
 }
 
-/** 路径先相对会话工作目录（家目录展开留给后续票）。 */
+/** 路径先相对会话工作目录（家目录展开留给后续票）；没有 cwd（旧状态消息）时原样返回。 */
 export function displayPath(path: string, cwd: string): string {
+  if (!cwd) return path;
   if (path === cwd) return '.';
   if (path.startsWith(cwd + '/')) return path.slice(cwd.length + 1);
   return path;

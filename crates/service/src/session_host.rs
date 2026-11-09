@@ -10,8 +10,8 @@ use crate::SERVICE_EVENT_CHANNEL_CAPACITY;
 use crate::error::ServiceError;
 use crate::events::{page_events, service_event};
 use crate::protocol::{
-    AnswerRequest, AnswerResponse, Call, CancelRequest, CancelResponse, CompactCounts,
-    CompactRequest, CompactResponse, DeliveryMode, DismissQuestionsRequest,
+    AnswerRequest, AnswerResponse, Call, CancelRequest, CancelResponse, CardActResponse,
+    CompactCounts, CompactRequest, CompactResponse, DeliveryMode, DismissQuestionsRequest,
     DismissQuestionsResponse, EventsRequest, EventsResponse, FollowRequest, FollowResponse,
     HostLocation, MonitorReportResponse, Object, RecheckResponse, Response, RootState, SendRequest,
     SendResponse, ServiceEvent, StatusRequest, StatusResponse,
@@ -96,6 +96,8 @@ impl ServiceHost {
             Call::MonitorReport(_) => {
                 Ok(Response::MonitorReport(MonitorReportResponse { ok: true }))
             }
+            // 裸宿主没有登记的动作，也就没有卡；点按钮什么也不发生。
+            Call::CardAct(_) => Ok(Response::CardAct(CardActResponse { decision: None })),
             // recheck 只对 RootHost 有意义；裸 ServiceHost 直接回根状态 ok（宿主不回退）。
             Call::Recheck(_) => Ok(Response::Recheck(RecheckResponse {
                 root: RootState::Ok,
@@ -118,6 +120,10 @@ impl ServiceHost {
             | Call::FirstUse(_)
             | Call::SessionModelSelect(_)
             | Call::ConnectionQuota(_)
+            | Call::ExaKey(_)
+            | Call::ExaKeySave(_)
+            | Call::ExaKeyCheck(_)
+            | Call::ExaKeyDelete(_)
             | Call::SettingsUpdate(_)
             | Call::AttachmentPut(_)
             | Call::AttachmentGet(_)
@@ -203,7 +209,7 @@ impl ServiceHost {
         })
     }
 
-    /// 被动状态第一版：对象 + 是否有一轮在跑 + 待答问题数。
+    /// 被动状态第一版：对象 + 是否有一轮在跑 + 待答问题数 + 会话工作目录。
     pub async fn status(&self, _request: StatusRequest) -> Result<StatusResponse, ServiceError> {
         Ok(StatusResponse {
             object: self.object(),
@@ -212,6 +218,7 @@ impl ServiceHost {
             stats: None,
             fx: None,
             currency: None,
+            cwd: Some(self.agent.cwd().to_string_lossy().into_owned()),
         })
     }
 

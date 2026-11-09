@@ -106,6 +106,8 @@ pub async fn serve(options: ServeOptions, host: RootHost) -> Result<ServeHandle,
     let ip = check_bind_host(&options.host)?;
     let listener = tokio::net::TcpListener::bind(SocketAddr::new(ip, options.port)).await?;
     let addr = listener.local_addr()?;
+    // web_fetch 要知道 AIOS 自己监听在哪，读网页时拒绝读自己。
+    host.record_listen_address(addr);
     let state = Arc::new(AppState {
         host: Arc::new(host),
         trust: Trust::new(

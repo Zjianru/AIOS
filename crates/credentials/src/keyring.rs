@@ -4,8 +4,11 @@
 //! 三条路径都重新从文件读，不缓存，描述与记录里没有 key 正文。
 
 mod storage;
+mod tool_keys;
 mod update;
 mod view;
+
+pub use tool_keys::EXA_CHECK_PURPOSE;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -33,6 +36,8 @@ pub enum KeyringError {
     MissingConnection(String),
     #[error("连接的内容不完整：{0}")]
     InvalidConnection(String),
+    #[error("工具凭证不合法：{0}")]
+    InvalidToolKey(String),
 }
 
 /// 一次签发的凭证值。只在本次出站请求里用；Debug 不打印正文。
@@ -203,12 +208,18 @@ fn normalize_info(info: &mut ConnectionInfo) {
 }
 
 /// 「连接可用」的验证状态；已保存和最近一次验证分开记。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum CheckState {
+    #[default]
     Never,
-    Ok { at: u64 },
-    Fail { at: u64, reason: String },
+    Ok {
+        at: u64,
+    },
+    Fail {
+        at: u64,
+        reason: String,
+    },
 }
 
 /// 验证结果（由调用方在验证后写回注册器）。
@@ -238,6 +249,22 @@ pub struct KeyFileInfo {
     pub since: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
+}
+
+/// 工具凭证的「存没存」和保存时间；没有 key 正文。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolKeyInfo {
+    pub saved: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_at: Option<u64>,
+}
+
+/// 设置页「联网搜索」一节看到的事实：存没存、上次验证结果。没有 key 正文。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolKeyView {
+    pub key: ToolKeyInfo,
+    pub check: CheckState,
 }
 
 /// 设置页/CLI 看的视图；没有任何 key 正文。
@@ -300,6 +327,37 @@ impl Keyring {
 
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    /// 只读打开一份已有的 Keyring：不建目录、不建钥匙文件、不建配置。
+    ///
+    /// 每步求值的工具条件用它（不能因为读一次条件就改磁盘）。文件不齐直接报错，
+    /// 调用方按「没有凭证」处理，设置页另外报读不出的原因。
+    pub fn open_read_only(
+        data_dir: impl Into<PathBuf>,
+        identity_path: Option<&Path>,
+    ) -> Result<Self, KeyringError> {
+        let data_dir = data_dir.into();
+        let config_path = data_dir.join("config.json");
+        let (identity_path, since) = if config_path.exists() {
+            let config = read_config(&config_path)?;
+            (config.identity_path, config.since)
+        } else {
+            (
+                identity_path
+                    .map(Path::to_path_buf)
+                    .unwrap_or_else(|| default_identity_path(&data_dir)),
+                0,
+            )
+        };
+        if !identity_path.exists() {
+            return Err(KeyringError::KeyFileMissing(identity_path));
+        }
+        Ok(Self {
+            data_dir,
+            since,
+            changes: Mutex::new(Vec::new()),
+        })
     }
 
     /// 当前钥匙文件位置：每次从配置重读（进程内多个 Keyring 实例共享同一份配置）。

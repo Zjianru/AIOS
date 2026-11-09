@@ -72,6 +72,13 @@ pub struct RootSessionOptions {
     pub append_hook_factory: Option<session::AppendHookFactory>,
     /// F1：Keyring 变化时刷新监控脱敏用的 key 列表；None = 不刷新。
     pub keyring_changed: Option<KeyringChanged>,
+    /// 服务端登记的动作（确认卡背后能做的事）；空表时提议工具永远不开出。
+    pub actions: std::sync::Arc<crate::actions::ActionRegistry>,
+    /// 仅开发/端到端测试用：覆盖 Exa 的根地址（默认 https://api.exa.ai）。
+    /// 生产不设；验证 Exa key 的请求走它。
+    pub exa_base_url: Option<String>,
+    /// AIOS 自己的监听地址；web::serve 绑定后填入。web_fetch 读它拒绝读自己。
+    pub web_listen: Option<std::sync::Arc<std::sync::OnceLock<std::net::SocketAddr>>>,
 }
 
 /// T008.3b/T012.7：按会话的模型选择解析 (连接 id, 模型配置, 凭证来源)。
@@ -115,6 +122,15 @@ impl std::fmt::Debug for RootSessionOptions {
                 "credentials",
                 &self.credentials.as_ref().map(|_| "<source>"),
             )
+            .field("actions", &self.actions.skills())
+            .field("exa_base_url", &self.exa_base_url)
+            .field(
+                "web_listen",
+                &self
+                    .web_listen
+                    .as_ref()
+                    .and_then(|cell| cell.get().copied()),
+            )
             .finish()
     }
 }
@@ -138,6 +154,49 @@ impl RootSession {
 /// 找回或新建 Kind 根会话（T006.16b）：四态见 docs/02 篇第 1 节与 06 篇恢复链。
 pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSession, RootError> {
     let state_path = RootSession::state_path(&options.data_dir);
+    // 根会话独有的工具：`aios_query` 读服务里已存的数据，`propose_action` 出确认卡，
+    // `web_search`/`web_fetch` 联网（要 Exa 的 key 且加载过 `web`）。CLI 的对话不装它们。
+    let web_search_config = crate::web::WebSearchConfig {
+        data_dir: options.data_dir.clone(),
+        identity: options.identity.clone(),
+        base_url: options
+            .exa_base_url
+            .clone()
+            .unwrap_or_else(|| crate::EXA_DEFAULT_BASE_URL.to_owned()),
+    };
+    let extra_tools = vec![
+        std::sync::Arc::new(crate::aios_query::QueryTool::new(
+            options.data_dir.clone(),
+            options.identity.clone(),
+        )) as std::sync::Arc<dyn tools::Tool>,
+        std::sync::Arc::new(crate::propose::ProposeActionTool::new(
+            std::sync::Arc::clone(&options.actions),
+            options.data_dir.clone(),
+            options.identity.clone(),
+        )),
+        std::sync::Arc::new(crate::web::WebSearchTool::new(web_search_config)),
+        std::sync::Arc::new(crate::web::WebFetchTool::new(crate::web::WebFetchConfig {
+            data_dir: options.data_dir.clone(),
+            identity: options.identity.clone(),
+            self_addr: options.web_listen.clone(),
+            http: model::http::HttpEnv::from_process(),
+            timeout: crate::web::WEB_FETCH_TIMEOUT,
+        })),
+    ];
+    // 工具凭证的事实：每步只读检查 Keyring（不建任何文件）；读不出来按没存，
+    // 设置页另外报读不出的原因。
+    let key_data_dir = options.data_dir.clone();
+    let key_identity = options.identity.clone();
+    let mut config = options.config.clone();
+    config.tool_keys = tools::ToolKeySource::new(std::sync::Arc::new(move || {
+        let mut keys = std::collections::BTreeSet::new();
+        if credentials::Keyring::open_read_only(&key_data_dir, key_identity.as_deref())
+            .is_ok_and(|keyring| keyring.exa_key_saved())
+        {
+            keys.insert(tools::ToolKey::Exa);
+        }
+        keys
+    }));
     match std::fs::read(&state_path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             std::fs::create_dir_all(&options.data_dir)?;
@@ -146,9 +205,10 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
                 cwd: options.cwd,
                 resume: None,
                 model: options.model,
-                config: options.config,
+                config: config.clone(),
                 credentials: options.credentials.clone(),
                 append_hook_factory: options.append_hook_factory.clone(),
+                extra_tools: extra_tools.clone(),
             })
             .await?;
             let record = RootRecord {
@@ -199,9 +259,10 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
                 cwd: options.cwd,
                 resume: Some(id.clone()),
                 model: options.model,
-                config: options.config,
+                config,
                 credentials: options.credentials.clone(),
                 append_hook_factory: options.append_hook_factory.clone(),
+                extra_tools,
             })
             .await
             .map_err(|error| match &error {

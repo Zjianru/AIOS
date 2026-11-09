@@ -38,6 +38,27 @@ pub fn primary_model(data_dir: &Path, connection: &ConnectionInfo) -> String {
         .unwrap_or_else(|| connection.primary_model().to_owned())
 }
 
+/// 选择这个模型时该写进 `DeepSeekConfig.tool_update` 的能力：先看连接里存的模型信息
+/// （厂商列表按 `api_capabilities.anthropic_messages.tool_update` 读过），再看目录
+/// （deepseek-flash 写死 addition-only）。不是模型能力就不认。
+pub fn tool_update_for(
+    data_dir: &Path,
+    connection: &ConnectionInfo,
+    model: &str,
+) -> Option<model::ToolUpdate> {
+    let info = selectable_models(data_dir, connection)
+        .into_iter()
+        .find(|info| info.id == model)
+        .and_then(|info| info.tool_update);
+    info.or_else(|| {
+        let provider =
+            model::catalog::provider_id_for_connection(&connection.preset, &connection.endpoint);
+        model::catalog::global()
+            .unwrap_or_else(model::catalog::snapshot)
+            .tool_update_for(&provider, model)
+    })
+}
+
 fn info_from_row(row: &credentials::ModelRow) -> ModelInfo {
     ModelInfo {
         id: row.id.clone(),
@@ -50,5 +71,6 @@ fn info_from_row(row: &credentials::ModelRow) -> ModelInfo {
         price_cache_write: row.price_cache_write,
         thinks: false,
         efforts: Vec::new(),
+        tool_update: None,
     }
 }

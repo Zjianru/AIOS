@@ -15,6 +15,7 @@ use session::{EventKind, SessionStore};
 use tokio::sync::broadcast;
 use tools::{ToolCall, ToolResult, ToolSessionState, ToolSet};
 
+use crate::action_cards::ActionCardCapability;
 use crate::ask_capability::{AskCapability, AskState};
 use crate::compaction_capability::CompactionCapability;
 use crate::error::AgentError;
@@ -85,6 +86,8 @@ pub(crate) trait LoopAccess: Send + Sync {
     fn cwd(&self) -> &Path;
     fn data_dir(&self) -> &Path;
     fn log_path(&self) -> &Path;
+    /// 宿主现在已存的工具凭证；每步求值一次（产品装配提供，读不出来按没存）。
+    fn tool_keys(&self) -> std::collections::BTreeSet<tools::ToolKey>;
     fn compaction_policy(&self) -> CompactionPolicy;
     /// 写日志入口：内部走 `Inner::append`（落盘后逐事件派发 SessionEvent）；禁止直接锁
     /// `session()` 后 append 绕过 SessionEvent。
@@ -348,6 +351,8 @@ pub(crate) struct CapabilityStates {
     pub reminder_chain: Arc<Mutex<Option<(String, usize)>>>,
     pub instruction_roots: Vec<PathBuf>,
     pub skill_roots: Vec<PathBuf>,
+    /// 程序自带的 skill 来源（产品装配填；排在用户根后面）。
+    pub bundled_skills: Vec<tools::BundledSkill>,
     pub spill_max_inline_tokens: usize,
 }
 /// 固定顺序的功能注册表；顺序=strategy §2 功能表的拆票顺序（compaction→…→jobs）。
@@ -369,11 +374,13 @@ impl CapabilityRegistry {
                 Box::new(SkillCapability::new((
                     states.skill_catalog,
                     states.skill_roots,
+                    states.bundled_skills,
                 ))),
                 Box::new(TodoCapability),
                 Box::new(AskCapability::new(states.ask)),
                 Box::new(SpillCapability::new(states.spill_max_inline_tokens)),
                 Box::new(ReminderCapability::new(states.reminder_chain)),
+                Box::new(ActionCardCapability),
                 Box::new(Placeholder {
                     name: "jobs",
                     hooks: JOBS_HOOKS,
@@ -514,6 +521,7 @@ pub(crate) fn event_context(kind: &EventKind) -> Option<(u64, u64)> {
         | EventKind::LlmRetryStarted { turn, step, .. }
         | EventKind::ToolCall { turn, step, .. }
         | EventKind::ToolResult { turn, step, .. }
+        | EventKind::ToolRegistry { turn, step, .. }
         | EventKind::QuestionAsked { turn, step, .. }
         | EventKind::QuestionAnswered { turn, step, .. }
         | EventKind::QuestionCancelled { turn, step, .. } => (*turn, *step),
@@ -527,7 +535,8 @@ pub(crate) fn event_context(kind: &EventKind) -> Option<(u64, u64)> {
         | EventKind::JobSettled { .. }
         | EventKind::CompactionSummary { .. }
         | EventKind::CompactionPrune { .. }
-        | EventKind::SessionModel { .. } => return None,
+        | EventKind::SessionModel { .. }
+        | EventKind::CardDecision { .. } => return None,
     };
     Some(pair)
 }
@@ -563,6 +572,9 @@ mod dispatch_contract_tests {
             unimplemented!()
         }
         fn log_path(&self) -> &Path {
+            unimplemented!()
+        }
+        fn tool_keys(&self) -> std::collections::BTreeSet<tools::ToolKey> {
             unimplemented!()
         }
         fn compaction_policy(&self) -> CompactionPolicy {

@@ -17,12 +17,12 @@ use super::helpers::*;
 use super::retry::*;
 use super::*;
 
-use model::ToolSchema;
-
-/// 一次 step 的请求上下文：派生消息、工具表、取消令牌。
+/// 一次 step 的请求上下文：派生消息、工具请求、本步开出的工具名、取消令牌。
 pub(super) struct StepContext {
     messages: Vec<Message>,
-    tool_schemas: Vec<ToolSchema>,
+    tool_request: model::ToolRequest,
+    /// 本步按条件开出的工具名；没开出的既不在表里，也不能执行。
+    enabled: Arc<std::collections::BTreeSet<String>>,
     cancel: CancelToken,
 }
 
@@ -90,17 +90,59 @@ pub(super) async fn prepare_step(
             phase: crate::capabilities::PreStepPhase::Compact,
         })
         .await?;
-    let messages = inner
-        .store
-        .lock()
-        .expect("agent 会话锁被毒化")
-        .derive_messages();
-    let tool_schemas = inner.tools.definitions();
+    // T014.2：工具的条件每步算一次；本步新开出的工具记进日志（只在新增时记一条，带完整定义）。
+    // 条件里的工具凭证也每步查一次：设置页换了 key，下一步就跟着变。
+    let loaded_skills = {
+        let store = inner.store.lock().expect("agent 会话锁被毒化");
+        crate::tool_gate::loaded_skills(store.events())
+    };
+    let tool_keys = inner.tool_keys.present();
+    let enabled = {
+        let gate = inner.tool_gate.lock().expect("加载记录锁被毒化");
+        gate.enabled(&inner.tools, &loaded_skills, &tool_keys)
+    };
+    let additions = {
+        let gate = inner.tool_gate.lock().expect("加载记录锁被毒化");
+        gate.additions(&inner.tools, &enabled)
+    };
+    if !additions.is_empty() {
+        inner
+            .append(&[EventKind::ToolRegistry {
+                turn,
+                step,
+                additions: additions.clone(),
+            }])
+            .await?;
+        inner
+            .tool_gate
+            .lock()
+            .expect("加载记录锁被毒化")
+            .commit(&additions);
+    }
+    let tool_schemas = inner.tools.definitions_for(&enabled);
+    let enabled = Arc::new(enabled);
+    let (messages, tool_history) = {
+        let store = inner.store.lock().expect("agent 会话锁被毒化");
+        let derived = store.derive_messages_with_seqs();
+        let history = crate::tool_gate::tool_history(store.events(), &derived);
+        (
+            derived
+                .into_iter()
+                .map(|(_, message)| message)
+                .collect::<Vec<_>>(),
+            history,
+        )
+    };
+    let tool_request = model::ToolRequest {
+        tools: tool_schemas,
+        history: tool_history,
+    };
     // 取消令牌共用 agent 的 abort 标志 + Notify：等响应头阶段也能被打断。
     let cancel = CancelToken::new(Arc::clone(abort), Arc::clone(&inner.cancel_notify));
     Ok(Some(StepContext {
         messages,
-        tool_schemas,
+        tool_request,
+        enabled,
         cancel,
     }))
 }
@@ -119,7 +161,8 @@ pub(super) async fn run_step(
     };
     let StepContext {
         mut messages,
-        tool_schemas,
+        tool_request,
+        enabled,
         cancel,
     } = context;
     // 已完成的块按 index 存；打开中的 text/reasoning 块累计增量，取消时按 DSH
@@ -155,7 +198,7 @@ pub(super) async fn run_step(
             run: Some(inner.id().as_str().to_owned()),
             turn: Some(turn),
         });
-        let mut stream = match inner.model.stream(&messages, &tool_schemas, &cancel).await {
+        let mut stream = match inner.model.stream(&messages, &tool_request, &cancel).await {
             Ok(stream) => stream,
             Err(error) => {
                 if abort.load(Ordering::SeqCst) || error.code == ErrorCode::Aborted {
@@ -477,7 +520,21 @@ pub(super) async fn run_step(
             exec_indices.push(index);
         }
     }
-    let context = ToolContext::with_session(inner.cwd.clone(), Arc::clone(&inner.tool_session));
+    // 本步的工具表（条件）、会话日志的现读面都交给工具：查询类工具要算这条对话的用量。
+    let events_reader: tools::SessionEventsReader = {
+        let inner = Arc::clone(inner);
+        Arc::new(move || {
+            inner
+                .store
+                .lock()
+                .expect("agent 会话锁被毒化")
+                .events()
+                .to_vec()
+        })
+    };
+    let context = ToolContext::with_session(inner.cwd.clone(), Arc::clone(&inner.tool_session))
+        .gated(Arc::clone(&enabled))
+        .observing_session(events_reader);
     let mut outcome = execute_batch(
         &inner.tools,
         &exec_calls,

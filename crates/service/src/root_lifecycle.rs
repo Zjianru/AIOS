@@ -82,6 +82,9 @@ impl RootHost {
     /// 配置了 model_factory 时先解析当前 Keyring 连接；解析失败（空库/读不出）
     /// 仍返回宿主，状态报 Other，设置/首次使用方法照常可读。
     pub async fn open(mut options: RootSessionOptions, fallback_window: u64) -> Self {
+        if options.web_listen.is_none() {
+            options.web_listen = Some(Arc::new(std::sync::OnceLock::new()));
+        }
         let (events, _) = broadcast::channel(SERVICE_EVENT_CHANNEL_CAPACITY);
         let (agent_events, _) = broadcast::channel(SERVICE_EVENT_CHANNEL_CAPACITY);
         let mut factory_error = None;
@@ -154,6 +157,13 @@ impl RootHost {
             }
         }
         host
+    }
+
+    /// 服务绑定监听后记下实际地址；web_fetch 读它拒绝访问 AIOS 自己。
+    pub fn record_listen_address(&self, address: std::net::SocketAddr) {
+        if let Some(cell) = self.options.web_listen.as_ref() {
+            cell.set(address).unwrap_or(());
+        }
     }
 
     /// 接手一个已打开的 Agent：建 ServiceHost、把它的服务事件转发到本宿主的广播，

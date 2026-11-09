@@ -527,12 +527,16 @@ impl UserMessage {
     }
 }
 
-/// 一次请求可用的工具定义（模型可见的 schema）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 一次请求可用的工具定义（模型可见的 schema）。会话日志的加载记录也存它。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolSchema {
     pub name: String,
     pub description: String,
     pub parameters: Value,
+    /// 声明了能力的路由上，加载出来的工具带这个标记（先只报名字与 schema，历史里的
+    /// `tool_addition` 才让它可用）。只增可选字段：没声明能力的路由和旧日志都是 false。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub defer_loading: bool,
 }
 
 /// 一次请求的用量；厂商没给的项保持 None（显示为「未知」，不是 0）。

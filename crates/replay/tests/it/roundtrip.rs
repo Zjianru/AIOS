@@ -57,6 +57,7 @@ async fn setup_agent(base_url: &str) -> TestAgent {
         max_tokens: 2048,
         context_window: model::DEFAULT_CONTEXT_WINDOW,
         effort: model::Effort::new("high"),
+        tool_update: None,
     };
     let agent = Agent::create(
         config,

@@ -111,7 +111,7 @@ async fn invalid_frontmatter_skills_are_discarded() {
         "---\nname: badyaml\ndescription: Bad yaml.\nBody without closing fence.\n",
     );
     let data_dir = tempfile::tempdir().unwrap();
-    let discovered = discover_skills(project.path(), data_dir.path(), &[]);
+    let discovered = discover_skills(project.path(), data_dir.path(), &[], &[]);
     let names: Vec<&str> = discovered.iter().map(|skill| skill.name.as_str()).collect();
     assert_eq!(names, vec!["good"], "非法 frontmatter 的 skill 不应进目录");
 
@@ -160,7 +160,7 @@ async fn project_skill_shadows_user_skill_with_same_name() {
         &data_dir.path().join("skills/dup/SKILL.md"),
         "---\nname: dup\ndescription: From user.\n---\nUser body.\n",
     );
-    let discovered = discover_skills(cwd, data_dir.path(), &[]);
+    let discovered = discover_skills(cwd, data_dir.path(), &[], &[]);
     let dup = discovered.iter().find(|skill| skill.name == "dup");
     assert!(dup.is_some(), "dup 应被发现");
     assert_eq!(dup.unwrap().description, "From project.", "项目根优先");
@@ -175,7 +175,7 @@ async fn flat_markdown_skill_is_discovered() {
         "---\nname: flat-skill\ndescription: Flat file skill.\n---\nFlat body.\n",
     );
     let data_dir = tempfile::tempdir().unwrap();
-    let discovered = discover_skills(project.path(), data_dir.path(), &[]);
+    let discovered = discover_skills(project.path(), data_dir.path(), &[], &[]);
     assert!(
         discovered.iter().any(|skill| skill.name == "flat-skill"),
         "平铺 <name>.md 也应被发现"
@@ -224,7 +224,7 @@ async fn malformed_quotes_and_flow_frontmatter_are_discarded() {
         "---\nname: badflow\ndescription: [unclosed\n---\nBody.\n",
     );
     let data_dir = tempfile::tempdir().unwrap();
-    let discovered = discover_skills(project.path(), data_dir.path(), &[]);
+    let discovered = discover_skills(project.path(), data_dir.path(), &[], &[]);
     let names: Vec<&str> = discovered.iter().map(|skill| skill.name.as_str()).collect();
     assert_eq!(names, vec!["good"], "坏引号/坏 flow 的 skill 不应进目录");
 
@@ -255,6 +255,96 @@ fn user_invocation_names_follow_dsh_gesture() {
     );
 }
 
+/// T014.2：程序自带的 skill 排在用户 skill 后面；用户放一个同名的，目录里只有用户那份。
+#[tokio::test]
+async fn bundled_skills_come_after_user_skills() {
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join(".git")).unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let catalog = discover_skills(
+        project.path(),
+        data_dir.path(),
+        &[],
+        tools::bundled_skills(),
+    );
+    let bundled = catalog
+        .iter()
+        .find(|skill| skill.name == "aios-settings")
+        .expect("程序自带 aios-settings");
+    assert!(
+        !bundled.description.is_empty(),
+        "目录里要有这一句用途：{}",
+        bundled.description
+    );
+    assert!(
+        bundled.base_dir.as_os_str().is_empty(),
+        "编进二进制的 skill 没有目录"
+    );
+    let context = session_context(project.path(), data_dir.path());
+    context
+        .shared_session()
+        .set_bundled_skills(tools::bundled_skills().to_vec());
+    let result = load_skill("aios-settings", &context).await;
+    assert!(!result.is_error, "{}", result.content);
+    assert!(
+        !result.content.contains("Base directory for this skill"),
+        "自带 skill 没有目录，不写按基目录解析的提示：{}",
+        result.content
+    );
+
+    // 用户放一份同名的：用户的赢，目录里只有一条，正文是用户的。
+    write(
+        &project.path().join(".agents/skills/aios-settings/SKILL.md"),
+        "---\nname: aios-settings\ndescription: 用户自己的。\n---\nUser body.\n",
+    );
+    let catalog = discover_skills(
+        project.path(),
+        data_dir.path(),
+        &[],
+        tools::bundled_skills(),
+    );
+    let matches: Vec<_> = catalog
+        .iter()
+        .filter(|skill| skill.name == "aios-settings")
+        .collect();
+    assert_eq!(matches.len(), 1, "重名时只留一条：{catalog:?}");
+    assert_eq!(matches[0].description, "用户自己的。", "重名时用户的赢");
+    let result = load_skill("aios-settings", &context).await;
+    assert!(!result.is_error, "{}", result.content);
+    assert!(
+        result.content.contains("User body."),
+        "加载到的是用户那份：{}",
+        result.content
+    );
+}
+
+/// T014.2：自带 skill 的正文要写清什么时候查、什么时候提议、一轮一张卡、只说一句为什么。
+#[test]
+fn bundled_aios_settings_body_covers_the_four_rules() {
+    let cwd = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let skill = tools::load_skill(
+        cwd.path(),
+        data_dir.path(),
+        &[],
+        tools::bundled_skills(),
+        "aios-settings",
+    )
+    .expect("加载自带 aios-settings");
+    for needle in [
+        "aios_query",
+        "propose_action",
+        "One card per turn",
+        "one sentence on why",
+    ] {
+        assert!(
+            skill.body.contains(needle),
+            "正文要写到 {needle}：\n{}",
+            skill.body
+        );
+    }
+}
+
 /// T006.11b：用户显式通道只认 user-invocable，不看 disable-model-invocation
 /// （DSH：这是隐藏 skill 的唯一入口）；未知名字静默返回 None。
 #[test]
@@ -274,17 +364,61 @@ fn user_invocable_loader_ignores_model_policy_and_honors_user_policy() {
         "---\nname: normal\ndescription: N.\n---\nNormal body.\n",
     );
     let data_dir = tempfile::tempdir().unwrap();
-    let hidden = tools::load_user_invocable_skill(project.path(), data_dir.path(), &[], "hidden");
+    let hidden =
+        tools::load_user_invocable_skill(project.path(), data_dir.path(), &[], &[], "hidden");
     assert!(
         hidden.is_some(),
         "disable-model-invocation 不影响用户显式调用"
     );
-    let quiet = tools::load_user_invocable_skill(project.path(), data_dir.path(), &[], "quiet");
+    let quiet =
+        tools::load_user_invocable_skill(project.path(), data_dir.path(), &[], &[], "quiet");
     assert!(quiet.is_none(), "user-invocable: false 不注入");
     assert!(
-        tools::load_user_invocable_skill(project.path(), data_dir.path(), &[], "nope").is_none(),
+        tools::load_user_invocable_skill(project.path(), data_dir.path(), &[], &[], "nope")
+            .is_none(),
         "未知名字静默跳过"
     );
-    let normal = tools::load_user_invocable_skill(project.path(), data_dir.path(), &[], "normal");
+    let normal =
+        tools::load_user_invocable_skill(project.path(), data_dir.path(), &[], &[], "normal");
     assert_eq!(normal.unwrap().body, "Normal body.");
+}
+
+/// 程序自带的 web：要 Exa 的 key 才进目录；没 key 时留一句为什么、去哪里填。
+/// 正文写清什么时候搜、怎么读、内容不可信、引用 URL。
+#[test]
+fn bundled_web_skill_needs_the_exa_key_and_names_its_tools() {
+    let web = tools::bundled_skills()
+        .iter()
+        .find(|skill| skill.name == "web")
+        .expect("程序自带 web");
+    assert_eq!(web.requires, Some(tools::ToolKey::Exa));
+    assert!(
+        !web.available(&std::collections::BTreeSet::new()),
+        "没 key 不进目录"
+    );
+    assert!(web.available(&std::collections::BTreeSet::from([tools::ToolKey::Exa])));
+    assert!(
+        web.unavailable_hint
+            .contains("设置 › 模型与连接 › 联网搜索"),
+        "没 key 时告诉用户去哪里填：{}",
+        web.unavailable_hint
+    );
+
+    let cwd = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let skill = tools::load_skill(
+        cwd.path(),
+        data_dir.path(),
+        &[],
+        tools::bundled_skills(),
+        "web",
+    )
+    .expect("加载自带 web");
+    for needle in ["web_search", "web_fetch", "untrusted", "markdown link"] {
+        assert!(
+            skill.body.contains(needle),
+            "正文要写到 {needle}：\n{}",
+            skill.body
+        );
+    }
 }

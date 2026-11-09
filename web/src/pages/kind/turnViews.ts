@@ -16,6 +16,7 @@ import { parseExitStatus } from './process/toolModel';
 import type { ProcessStep } from './process/toolModel';
 import { reasoningTextOf, reasoningTextOfStream } from './reasoning';
 import { useKindStore } from './kindStore';
+import type { ConfirmCardFact, ConfirmDecision } from './cards/model';
 import {
   contextPercent,
   contextTokens,
@@ -195,6 +196,8 @@ export interface TurnViewData {
   compaction: CompactionView | null;
   /** 这一轮出的画布（日志里 tool/result.meta.canvas）。 */
   canvas: CanvasViewDoc | null;
+  /** 这一轮回答下面的确认卡（日志里 propose_action 的提议 + card/decision）。 */
+  card: ConfirmCardFact | null;
   /** 你的消息：发送中 / 没送到（重发用同一个请求编号，内核只收一次）。 */
   delivery: 'sending' | 'unsent' | null;
   /** 停下的时间（status 为 interrupted 时）。 */
@@ -239,11 +242,62 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     retry: TurnViewData['retry'];
     compaction: CompactionView | null;
     canvas: CanvasViewDoc | null;
+    card: ConfirmCardFact | null;
     answered: AskAnswer[];
     cancelled: number;
     stoppedAt: string | null;
   }
   const turns = new Map<number, Raw>();
+  // 确认卡：提议是 propose_action 的 tool/call + 成功结果（结果 meta.card），决定是
+  // card/decision 事件；replaced 由「后面还有一条被接受的新卡」推导，不单独记。
+  interface CardEntry {
+    turn: number;
+    seq: number;
+    proposal: unknown;
+  }
+  const cardEntries = new Map<string, CardEntry>();
+  const cardDecisions = new Map<string, ConfirmDecision>();
+  for (const event of events) {
+    const data = event.data ?? {};
+    if (event.type === 'tool/call' && data.name === 'propose_action') {
+      const callId = String(data.callId ?? data.call_id ?? '');
+      const turn = typeof data.turn === 'number' ? data.turn : null;
+      if (callId && turn !== null) {
+        cardEntries.set(callId, { turn, seq: event.seq, proposal: null });
+      }
+      continue;
+    }
+    if (event.type === 'tool/result') {
+      const message = (data.message ?? {}) as Record<string, unknown>;
+      const callId = String(message.toolCallId ?? message.tool_call_id ?? '');
+      const entry = cardEntries.get(callId);
+      const meta = data.meta as { card?: unknown } | undefined;
+      if (!entry || !meta?.card || data.error) continue;
+      entry.proposal = meta.card;
+      entry.seq = event.seq;
+      continue;
+    }
+    if (event.type !== 'card/decision') continue;
+    const callId = String(data.callId ?? data.call_id ?? '');
+    const phase = data.phase;
+    if (
+      !callId ||
+      (phase !== 'confirmed' && phase !== 'dismissed' && phase !== 'refused' && phase !== 'failed')
+    ) {
+      continue;
+    }
+    const payload = data.data && typeof data.data === 'object' ? data.data : undefined;
+    cardDecisions.set(callId, {
+      phase,
+      option: typeof data.option === 'string' ? data.option : undefined,
+      action: typeof data.action === 'string' ? data.action : undefined,
+      data: payload as ConfirmDecision['data'],
+    });
+  }
+  let latestCardSeq = 0;
+  for (const entry of cardEntries.values()) {
+    if (entry.proposal) latestCardSeq = Math.max(latestCardSeq, entry.seq);
+  }
   // T010.4：每次压缩摘要等「压缩后第一条响应」来算 after。
   const pendingCompaction = new Map<number, { view: CompactionView; window?: number }>();
   const ensure = (turn: number): Raw => {
@@ -266,6 +320,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         retry: null,
         compaction: null,
         canvas: null,
+        card: null,
         answered: [],
         cancelled: 0,
         stoppedAt: null,
@@ -467,7 +522,10 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         const callId = String(message.toolCallId ?? message.tool_call_id ?? '');
         const step = callId ? raw.tools.find((item) => item.id === callId) : undefined;
         if (step) {
-          step.state = data.error ? 'error' : 'done';
+          // 普通工具错误没有结构化 error，消息级的 isError 同样是失败。
+          const failed =
+            Boolean(data.error) || message.isError === true || message.is_error === true;
+          step.state = failed ? 'error' : 'done';
           const body = textOf(data.message) || textOfToolResult(data.message);
           step.output = body || String((data.error as { code?: string } | undefined)?.code ?? '');
           step.meta = (data.meta as Record<string, unknown> | undefined) ?? null;
@@ -615,6 +673,18 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         break;
     }
   }
+  for (const [callId, entry] of cardEntries) {
+    if (!entry.proposal) continue;
+    const raw = turns.get(entry.turn);
+    if (!raw) continue;
+    const decision = cardDecisions.get(callId) ?? null;
+    raw.card = {
+      callId,
+      proposal: entry.proposal,
+      decision,
+      replaced: decision === null && entry.seq < latestCardSeq,
+    };
+  }
   return [...turns.values()]
     .sort((left, right) => left.turn - right.turn)
     .map((raw) => ({
@@ -644,6 +714,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       failure: raw.failure,
       question: raw.question,
       canvas: raw.canvas,
+      card: raw.card,
       delivery: null,
       stoppedAt: raw.stoppedAt,
     }));
@@ -652,9 +723,8 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
 /** 改一轮：按 id 换成新对象（TurnRow 用 memo 比引用，只有这一条重绘）。 */
 
 
-/** T013.5：把一轮的工具/思考折成工作过程的步骤（页面用；cwd 用于行上的路径相对化）。 */
-export function processStepsOf(view: TurnViewData, cwd: string): ProcessStep[] {
-  void cwd;
+/** 把一轮的工具/思考折成工作过程的步骤（页面用；路径相对化在 process 那一层做）。 */
+export function processStepsOf(view: TurnViewData): ProcessStep[] {
   const steps: ProcessStep[] = [];
   if (view.reasoning?.full) {
     steps.push({

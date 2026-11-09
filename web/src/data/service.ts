@@ -261,6 +261,36 @@ export async function dismissQuestions(): Promise<void> {
   await post({ method: 'dismiss-questions' });
 }
 
+/** 确认卡上的按钮：确认某一项，或者暂不。 */
+export type CardVerb = 'confirm' | 'dismiss';
+
+/** card/decision 事件的形状（服务在段尾回来一条；页面从日志事件也能收到同一条）。 */
+export interface CardDecision {
+  callId: string;
+  option?: string;
+  action?: string;
+  phase: 'confirmed' | 'dismissed' | 'refused' | 'failed';
+  data?: { summary?: string } & Record<string, unknown>;
+}
+
+export interface CardActResponse {
+  decision?: CardDecision;
+}
+
+/** 点确认卡：服务跑核对和执行，记一条 card/decision；重复点击返回已经记下的那条。 */
+export async function cardAct(
+  callId: string,
+  verb: CardVerb,
+  option?: string,
+): Promise<CardActResponse> {
+  return post<CardActResponse>({
+    method: 'card-act',
+    callId,
+    verb,
+    ...(option ? { option } : {}),
+  });
+}
+
 /** 手动压缩（T007.8）：把之前的对话换成一份摘要，原文留在日志里。 */
 export async function compactThread(commandId: string): Promise<void> {
   await post({ method: 'compact', commandId });
@@ -439,6 +469,35 @@ export async function restartKeyring(): Promise<ServiceKeyringView> {
   return response.settings;
 }
 
+/* ───────────────── 设置页「联网搜索」：Exa 凭证（D73） ───────────────── */
+
+/** Exa 凭证的线上视图：存没存、保存时间、上次验证结果。没有 key 正文。 */
+export interface ServiceToolKeyView {
+  key: { saved: false } | { saved: true; savedAt?: number };
+  check:
+    | { kind: 'never' }
+    | { kind: 'ok'; at: number }
+    | { kind: 'fail'; at: number; reason: string };
+}
+
+export async function fetchExaKey(): Promise<ServiceToolKeyView> {
+  return post<ServiceToolKeyView>({ method: 'exa-key' });
+}
+
+/** 存/换 Exa 的 key；key 只在这一次请求体里，响应不带。 */
+export async function saveExaKey(key: string): Promise<ServiceToolKeyView> {
+  return post<ServiceToolKeyView>({ method: 'exa-key-save', key });
+}
+
+/** 用已存的 key 向 Exa 发一次最小搜索，结果写回 Keyring。 */
+export async function checkExaKey(): Promise<ServiceToolKeyView> {
+  return post<ServiceToolKeyView>({ method: 'exa-key-check' });
+}
+
+export async function deleteExaKey(): Promise<ServiceToolKeyView> {
+  return post<ServiceToolKeyView>({ method: 'exa-key-delete' });
+}
+
 export async function fetchIssues(): Promise<{ issuedToday: number; issues: ServiceIssueRecord[] }> {
   const response = await post<{ issuedToday: number; issues: ServiceIssueRecord[] }>({
     method: 'issues',
@@ -547,6 +606,8 @@ export interface ServiceStatus {
   stats?: ServiceSessionStats;
   fx?: ServiceFxInfo;
   currency?: string;
+  /** 会话的工作目录（页面把工作过程里的路径显示成相对路径；旧服务的 status 没有它）。 */
+  cwd?: string;
 }
 
 export async function fetchStatus(): Promise<ServiceStatus> {

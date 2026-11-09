@@ -54,9 +54,13 @@ pub(crate) struct Inner {
     cwd: PathBuf,
     /// 会话数据目录；也是固定的用户级指令根（T005.5）。
     data_dir: PathBuf,
+    /// 现在已存的工具凭证（产品装配注入；每步求值一次）。
+    tool_keys: tools::ToolKeySource,
 
     pub(crate) model: DeepSeek,
     pub(crate) tools: ToolSet,
+    /// 加载记录的状态（已经记过的工具名）；续接时从日志重建。
+    pub(crate) tool_gate: Mutex<crate::tool_gate::ToolRegistryState>,
     /// 会话级工具状态（观察表/spill/任务注册表）；续接时新建，不继承上一次。
     tool_session: Arc<ToolSessionState>,
     max_parallel_tool_calls: usize,
@@ -118,6 +122,9 @@ impl LoopAccess for Inner {
     }
     fn log_path(&self) -> &Path {
         &self.log_path
+    }
+    fn tool_keys(&self) -> std::collections::BTreeSet<tools::ToolKey> {
+        self.tool_keys.present()
     }
     fn compaction_policy(&self) -> CompactionPolicy {
         let provider = self.model.provider();
@@ -302,13 +309,21 @@ impl Inner {
         let (session_events, _) = broadcast::channel(SESSION_EVENT_CHANNEL_CAPACITY);
         let instruction_roots = config.instruction_roots.clone();
         let skill_roots = config.skill_roots.clone();
+        let tool_keys = config.tool_keys.clone();
         let spill_max_inline_tokens = config.spill_max_inline_tokens;
         tool_session.set_skill_roots(skill_roots.clone());
+        tool_session.set_bundled_skills(config.bundled_skills.clone());
+        tool_session.set_tool_keys(tool_keys.clone());
         // T006.1e：能力状态由能力模块装载/持有；driver 只做装配。
         let (instruction_state, instruction_roots) =
             crate::instructions_capability::InstructionsCapability::load(&store, instruction_roots);
-        let (skill_catalog, skill_roots) =
-            crate::skill_capability::SkillCapability::load(&store, skill_roots);
+        let bundled_skills = config.bundled_skills.clone();
+        let (skill_catalog, skill_roots, bundled_skills) =
+            crate::skill_capability::SkillCapability::load(
+                &store,
+                skill_roots,
+                bundled_skills.clone(),
+            );
         crate::todo_capability::TodoCapability::rehydrate(&tool_session, store.events());
         // T015.2：画布状态从日志折叠；重开会话后 canvas 工具接着改同一个画布。
         tool_session.set_canvases(session::canvases(store.events()));
@@ -318,13 +333,19 @@ impl Inner {
         crate::ask_capability::rehydrate(&ask_state, store.events());
         // T006.2a：续接/新建时从日志折叠输入队列；坏掉的 splice 让 resume 报错，不静默丢。
         let inbox = Inbox::restore(store.events())?;
+        // 加载记录从日志恢复：续接以后不再重复记，工具表照旧（T014.2）。
+        let tool_gate = Mutex::new(crate::tool_gate::ToolRegistryState::rehydrate(
+            store.events(),
+        ));
         let inner = Arc::new(Self {
             id,
             log_path,
             cwd,
             data_dir,
+            tool_keys,
             model,
             tools,
+            tool_gate,
             tool_session,
             max_parallel_tool_calls: config.max_parallel_tool_calls,
             compaction_threshold_ratio: config.compaction_threshold_ratio,
@@ -354,6 +375,7 @@ impl Inner {
                 reminder_chain: Arc::clone(&reminder_chain),
                 instruction_roots,
                 skill_roots,
+                bundled_skills,
                 spill_max_inline_tokens,
             }),
             #[cfg(test)]
@@ -376,6 +398,10 @@ impl Inner {
 
     pub(crate) fn log_path(&self) -> &Path {
         &self.log_path
+    }
+
+    pub(crate) fn cwd(&self) -> &Path {
+        &self.cwd
     }
 
     pub(crate) fn subscribe(&self) -> broadcast::Receiver<AgentEvent> {

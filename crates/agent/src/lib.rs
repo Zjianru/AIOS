@@ -2,6 +2,7 @@
 //!
 //! 机制照 DSH 的 packages/core/agent-loop（strategy 第 1 节）。
 
+mod action_cards;
 mod ask_capability;
 mod assembly;
 mod capabilities;
@@ -19,6 +20,7 @@ mod skill_capability;
 mod skill_catalog;
 mod spill_capability;
 mod todo_capability;
+mod tool_gate;
 mod warn;
 
 use std::path::{Path, PathBuf};
@@ -79,6 +81,15 @@ pub struct AgentConfig {
     pub instruction_roots: Vec<PathBuf>,
     /// 用户级 skill 根目录；Agent 还会固定加入 <data-dir>/skills。默认 ~/.agents/skills。
     pub skill_roots: Vec<PathBuf>,
+    /// 程序自带的 skill（正文编在二进制里，排在用户根后面）。
+    ///
+    /// 默认空：自带什么由产品装配决定（`Agent::open` 填入 `tools::bundled_skills()`）；
+    /// 低层构造不替调用方猜产品资产。
+    pub bundled_skills: Vec<tools::BundledSkill>,
+    /// 宿主现在已存的工具凭证（自带 skill 与工具的条件每步求值一次）。
+    ///
+    /// 默认空：低层构造不假设任何凭证；产品的服务装配在打开根会话时接上 Keyring。
+    pub tool_keys: tools::ToolKeySource,
     /// todo_write 是否允许多个 in_progress（照 DSH tool-todo 的 allowParallelInProgress；
     /// DSH bundle/base 设为 true）。false 时工具描述改成「只留一个」，多于一个 in_progress 的
     /// 调用被拒。Agent 在 create/resume 时用它替换内置 todo_write（T006.12）。
@@ -104,6 +115,8 @@ impl Default for AgentConfig {
                 .as_ref()
                 .map(|home| vec![home.join("skills")])
                 .unwrap_or_default(),
+            bundled_skills: Vec::new(),
+            tool_keys: tools::ToolKeySource::none(),
             instruction_roots: home.map(|home| vec![home]).unwrap_or_default(),
             allow_parallel_in_progress: true,
         }
@@ -388,6 +401,15 @@ impl Agent {
         self.inner.model.set_model(model);
     }
 
+    /// 记一条确认卡决定（用户点了按钮之后的事实）。决定落日志，下一次请求前由
+    /// action-cards 能力通知模型；重开页面从同一条日志恢复回执。
+    pub async fn record_card_decision(
+        &self,
+        decision: &session::CardDecision,
+    ) -> Result<(), AgentError> {
+        self.inner.append(&[decision.event()]).await
+    }
+
     /// T012.7：用户选择连接/模型/档（下一轮生效，D26）。选择是 durable 事实：写
     /// session/model 事件（重开会话从日志恢复）；本轮已冻结的 model/effort 不受影响。
     pub async fn select(&self, selection: &session::ModelSelection) -> Result<(), AgentError> {
@@ -568,5 +590,10 @@ impl Agent {
 
     pub fn log_path(&self) -> &Path {
         self.inner.log_path()
+    }
+
+    /// 会话的工作目录（规范化后的；工具的路径相对它解析，页面用它显示相对路径）。
+    pub fn cwd(&self) -> &Path {
+        self.inner.cwd()
     }
 }

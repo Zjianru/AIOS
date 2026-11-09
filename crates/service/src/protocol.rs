@@ -72,8 +72,18 @@ pub enum Call {
     FirstUse(FirstUseRequest),
     /// 选模型（下一轮生效，当前轮不换）。
     SessionModelSelect(SessionModelSelectRequest),
+    /// 确认卡上的按钮：确认某一项，或者暂不。
+    CardAct(CardActRequest),
     /// 查询连接余额/套餐余量。
     ConnectionQuota(ConnectionQuotaRequest),
+    /// 设置页「联网搜索」：读 Exa 凭证（不含 key 正文）。
+    ExaKey(ExaKeyRequest),
+    /// 存/换 Exa 的 key。
+    ExaKeySave(ExaKeySaveRequest),
+    /// 用已存的 key 向 Exa 发一次最小搜索，结果写回 Keyring。
+    ExaKeyCheck(ExaKeyRequest),
+    /// 删 Exa 的 key。
+    ExaKeyDelete(ExaKeyRequest),
     /// 写非密钥设置（currency；只写 settings.json）。
     SettingsUpdate(SettingsUpdateRequest),
     /// 存一份文字附件（只读副本），返回 id。
@@ -108,6 +118,11 @@ pub enum Response {
     ConnectionVerify(ConnectionVerifyResponse),
     /// 连接余额/套餐余量。
     ConnectionQuota(ConnectionQuotaResponse),
+    /// Exa 凭证的视图（四个操作同一形状）。
+    ExaKey(ExaKeyResponse),
+    ExaKeySave(ExaKeyResponse),
+    ExaKeyCheck(ExaKeyResponse),
+    ExaKeyDelete(ExaKeyResponse),
     /// 写非密钥设置。
     SettingsUpdate(SettingsUpdateResponse),
     AvailableModels(AvailableModelsResponse),
@@ -117,6 +132,8 @@ pub enum Response {
     Issues(IssuesResponse),
     FirstUse(FirstUseResponse),
     SessionModelSelect(SessionModelSelectResponse),
+    /// 确认卡动作的受理结果（已经有决定时原样返回那条决定）。
+    CardAct(CardActResponse),
     /// 附件仓库。
     AttachmentPut(AttachmentPutResponse),
     AttachmentGet(AttachmentGetResponse),
@@ -256,6 +273,9 @@ pub struct StatusResponse {
     /// 币种（settings.json：usd/cny）；裸宿主为 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
+    /// 会话的工作目录（工具的路径相对它解析）；页面用它把工作过程里的路径显示成相对路径。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
 }
 
 /// follow（DSH :607）：带上调用方最后看到的日志序号，服务补齐之后的事件。
@@ -564,6 +584,19 @@ pub struct ConnectionQuotaResponse {
     pub checked_at: u64,
 }
 
+/// 设置页「联网搜索」：读/验证/删 Exa 凭证（空请求体）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExaKeyRequest {}
+
+/// 存/换 Exa 的 key；只在这一次请求体里，任何响应不带正文。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExaKeySaveRequest {
+    pub key: String,
+}
+
+/// Exa 凭证的视图：存没存、保存时间、上次验证结果。没有 key 正文。
+pub type ExaKeyResponse = credentials::ToolKeyView;
+
 /// 写非密钥设置（settings.json）；只碰非密钥设置，不碰 Keyring/连接。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct SettingsUpdateRequest {
@@ -623,6 +656,33 @@ pub struct SessionModelSelectResponse {
     /// 这一轮实际会发的档（没有想要的档时是最近档；页面据此显示并告诉用户）。
     #[serde(rename = "effortActual")]
     pub effort_actual: String,
+}
+
+/// 确认卡上的一个动作：确认一项，或者暂不。
+///
+/// 卡片由 propose_action 的 call id 定位；option 是选项 id（暂不不需要）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CardActRequest {
+    #[serde(rename = "callId")]
+    pub call_id: String,
+    pub verb: CardVerb,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub option: Option<String>,
+}
+
+/// 确认卡上的两个按钮；按钮文案和动作由程序定，模型给不了。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CardVerb {
+    Confirm,
+    Dismiss,
+}
+
+/// 动作的受理结果：已经记过的决定原样带回（重复点击不重复执行）；没有动作时为 None。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CardActResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<session::CardDecision>,
 }
 
 /// 存一份文字附件（data 是 base64 的原始字节）。
@@ -717,10 +777,16 @@ pub struct ConnectionRevokeResponse {
 ///   `model-settings` 的 disabledModels / disabledUnknown / disabledHits / listed；
 ///   `available-models` 每行的 fresh；`FailureCause` 的 masked；
 ///   新错误码 settings/unreadable（码表 16）。全是只增字段/值，旧页忽略。
+/// - 9：status 带会话的 cwd（页面把工作过程里的路径显示成相对路径）；
+///   确认卡的 card-act 操作与 card/decision 事件也是只增的，跟着这个版本一起发
+///   （旧页不会发 card-act；旧服务读到这个操作按 request/invalid-json 拒绝）。
+///   Exa 凭证的四个操作（exa-key、exa-key-save、exa-key-check、exa-key-delete）和
+///   exa/no-key、exa/invalid-key 两个错误码同属只增面，也随这个版本发。
+///   旧页忽略新增字段，旧服务的 status 没有它时页面照绝对路径显示。
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 8;
+pub const PROTOCOL_VERSION: u64 = 9;
 
 /// 根会话不可用的种类：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

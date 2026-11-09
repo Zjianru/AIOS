@@ -64,6 +64,7 @@ async fn agent_turn_records_run_and_turn_in_keyring() {
             keyring: Arc::clone(&keyring),
         })),
         append_hook_factory: None,
+        extra_tools: Vec::new(),
     })
     .await
     .expect("open agent");

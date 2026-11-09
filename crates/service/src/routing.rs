@@ -77,6 +77,8 @@ impl RootHost {
                 .session_model_select(request)
                 .await
                 .map(Response::SessionModelSelect),
+            // 确认卡：自己取日志快照，不在持锁时跑动作（换模型可能重开根会话）。
+            Call::CardAct(request) => self.card_act(request).await.map(Response::CardAct),
             // 根宿主自己填统计/汇率/币种（需要 data_dir + Keyring）。
             Call::Status(request) => self.host_status(request).await.map(Response::Status),
             // 余额/余量需要 Keyring 签发 key。
@@ -84,6 +86,11 @@ impl RootHost {
                 .connection_quota(request)
                 .await
                 .map(Response::ConnectionQuota),
+            // 设置页「联网搜索」：Exa 凭证的四个操作。
+            Call::ExaKey(_) => self.exa_key().await.map(Response::ExaKey),
+            Call::ExaKeySave(request) => self.exa_key_save(request).await.map(Response::ExaKeySave),
+            Call::ExaKeyCheck(_) => self.exa_key_check().await.map(Response::ExaKeyCheck),
+            Call::ExaKeyDelete(_) => self.exa_key_delete().await.map(Response::ExaKeyDelete),
             // 写非密钥设置。
             Call::SettingsUpdate(request) => self
                 .settings_update(request)

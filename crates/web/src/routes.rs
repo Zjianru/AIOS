@@ -588,6 +588,7 @@ mod t012_attachment_http_tests {
                 max_tokens: 2048,
                 context_window: DEFAULT_CONTEXT_WINDOW,
                 effort: Effort::new("high"),
+                tool_update: None,
             },
             config: AgentConfig::default(),
             credentials: Some(std::sync::Arc::new(TestCredential)),
@@ -595,6 +596,9 @@ mod t012_attachment_http_tests {
             model_factory: None,
             append_hook_factory: None,
             keyring_changed: None,
+            actions: std::sync::Arc::new(service::ActionRegistry::empty()),
+            exa_base_url: None,
+            web_listen: None,
         }
     }
 
@@ -901,6 +905,7 @@ mod t011_ops_tests {
             max_tokens: 2048,
             context_window: model::DEFAULT_CONTEXT_WINDOW,
             effort: model::Effort::new("high"),
+            tool_update: None,
         }
     }
 
@@ -932,6 +937,9 @@ mod t011_ops_tests {
             model_factory: None,
             append_hook_factory: None,
             keyring_changed: None,
+            actions: std::sync::Arc::new(service::ActionRegistry::empty()),
+            exa_base_url: None,
+            web_listen: None,
         };
         let host = service::RootHost::open(options, model::DEFAULT_CONTEXT_WINDOW).await;
         let monitor = Monitor::open_with_capacity(dir.path(), 1024).expect("监控");
@@ -1215,6 +1223,7 @@ mod t015_local_file_tests {
             max_tokens: 2048,
             context_window: model::DEFAULT_CONTEXT_WINDOW,
             effort: model::Effort::new("high"),
+            tool_update: None,
         }
     }
 
@@ -1257,6 +1266,9 @@ mod t015_local_file_tests {
             model_factory: None,
             append_hook_factory: None,
             keyring_changed: None,
+            actions: std::sync::Arc::new(service::ActionRegistry::empty()),
+            exa_base_url: None,
+            web_listen: None,
         };
         let host = service::RootHost::open(options, model::DEFAULT_CONTEXT_WINDOW).await;
         let trust = Trust::new(

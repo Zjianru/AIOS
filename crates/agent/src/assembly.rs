@@ -35,6 +35,9 @@ pub struct AgentOpenOptions {
     pub credentials: Option<std::sync::Arc<dyn model::CredentialSource>>,
     /// T011.4：打开会话后按 id 造「追加之后」的钩子（监控 ledger）；None = 不记。
     pub append_hook_factory: Option<session::AppendHookFactory>,
+    /// 装配层自己造好的工具（服务独有的查询工具等）：加在内置工具集后面。
+    /// 它们照常挂开出条件，没加载对应 skill 之前不进工具表。
+    pub extra_tools: Vec<std::sync::Arc<dyn tools::Tool>>,
 }
 
 impl std::fmt::Debug for AgentOpenOptions {
@@ -54,6 +57,7 @@ impl std::fmt::Debug for AgentOpenOptions {
                 "credentials",
                 &self.credentials.as_ref().map(|_| "<source>"),
             )
+            .field("extra_tools", &self.extra_tools.len())
             .finish()
     }
 }
@@ -64,7 +68,7 @@ impl Agent {
     ///
     /// 失败语义照 DSH：返回 Err 时不留下已启动的驱动任务、不唤醒排队输入、不把
     /// 半装配状态交给调用方（初始化失败由 create/resume 的 Err 承担）。
-    pub async fn open(options: AgentOpenOptions) -> Result<Self, AgentError> {
+    pub async fn open(mut options: AgentOpenOptions) -> Result<Self, AgentError> {
         // 配置在装载时先失败（DSH docs/user/develop/basic/config.md「Fail loudly on invalid
         // configuration」）：不先物化会话文件，也不把半装配状态交给调用方。
         options.config.validate()?;
@@ -75,7 +79,12 @@ impl Agent {
             )));
         };
         let model = DeepSeek::with_credentials(options.model, credentials)?;
-        let tools = ToolSet::builtin();
+        // 程序自带的 skill 是产品资产：产品装配在这里填，内核不猜。
+        options.config.bundled_skills = tools::bundled_skills().to_vec();
+        let mut tools = ToolSet::builtin();
+        for tool in options.extra_tools {
+            tools.push_shared(tool);
+        }
         match options.resume {
             Some(id) => {
                 let mut store = SessionStore::open(&options.data_dir, &id)?;

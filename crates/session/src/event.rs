@@ -1,6 +1,6 @@
 //! 会话事件与 header。
 
-use model::{AssistantStreamRecord, ContentBlock, Message, Usage};
+use model::{AssistantStreamRecord, ContentBlock, Message, ToolSchema, Usage};
 use serde::{Deserialize, Serialize};
 
 use crate::SessionId;
@@ -45,10 +45,13 @@ use crate::SessionId;
 /// v16：turn/end 的 aborted 原因新增 hook（设置里屏蔽了正在跑的模型时由服务触发；
 /// reason 是稳定的钩子名）；旧版本读不了一条带 hook 原因的 turn/end，按 spec 升版本、
 /// 旧版本仍拒绝（不迁移）。
-pub const FORMAT_VERSION: u64 = 16;
+/// v17：新增 tool/registry 事件（工具加载记录：本步新开出的工具和它们的完整定义）和
+/// card/decision 事件（确认卡的决定；replaced 由日志推导，不写事件）；
+/// 旧版本读不了这条事件，按 spec 升版本、旧版本仍拒绝（不迁移）。旧日志照读。
+pub const FORMAT_VERSION: u64 = 17;
 
-/// 读取器最早能读的版本。14、15 版日志原样读、续写时 header 留原版本；
-/// 13 及以下、17 及以上拒绝（文件一字不改）。
+/// 读取器最早能读的版本。14–16 版日志原样读、续写时 header 留原版本；
+/// 13 及以下、18 及以上拒绝（文件一字不改）。
 pub const MIN_READ_VERSION: u64 = 14;
 
 /// JSONL 第一行的会话 header。
@@ -440,6 +443,17 @@ pub enum EventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         meta: Option<serde_json::Value>,
     },
+    /// 本步新开出的工具（加载记录）：按名字和上一步比，有新增才记一条，带完整定义。
+    ///
+    /// 照 DSH agent-loop 的 tool-registry（`agent-loop-agent.ts:696-702`）。DSH 记的是名字，
+    /// 完整定义在 `request/header` 里；AIOS 不记请求头，所以这里直接带完整定义，恢复时
+    /// 从记录重建工具表。只加不减，没有移除记录。
+    #[serde(rename = "tool/registry")]
+    ToolRegistry {
+        turn: u64,
+        step: u64,
+        additions: Vec<ToolSchema>,
+    },
     /// 一个旧工具结果被修剪的 shadow-price 事件（T006.4，照 DSH
     /// compaction-tool-result-pruner/src/index.ts:164-169）：记录被替换节点的区间/seq 与
     /// 估算 token；真正的替换是紧随其后、带 envelope surfaceOp replace 的 tool/result 事件。
@@ -513,6 +527,90 @@ pub enum EventKind {
         #[serde(rename = "effortWanted")]
         effort_wanted: String,
     },
+    /// 用户在确认卡上点了一个按钮之后留下的决定。卡片的提议本身是 propose_action 的
+    /// tool/call + tool/result（结果 meta 里带展示数据）；这里只记之后的事实，重开页面
+    /// 从同一条日志恢复回执。replaced 不是记下来的，是从「后面又有新卡」推导的。
+    #[serde(rename = "card/decision")]
+    CardDecision {
+        #[serde(rename = "callId")]
+        call_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        option: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
+        phase: CardDecisionPhase,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        data: Option<serde_json::Value>,
+    },
+}
+
+/// 确认卡决定的阶段。replaced 不在这里：它由「更新的卡已经出现」推导，不写日志。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CardDecisionPhase {
+    Confirmed,
+    Dismissed,
+    Refused,
+    Failed,
+}
+
+impl CardDecisionPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Confirmed => "confirmed",
+            Self::Dismissed => "dismissed",
+            Self::Refused => "refused",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// 一条确认卡决定的内容（写日志与通知模型共用的形状）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CardDecision {
+    #[serde(rename = "callId")]
+    pub call_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub option: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<String>,
+    pub phase: CardDecisionPhase,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+}
+
+impl CardDecision {
+    /// 写成一条日志事件（决定只由卡片动作记录，不允许记推导出来的 replaced）。
+    pub fn event(&self) -> EventKind {
+        EventKind::CardDecision {
+            call_id: self.call_id.clone(),
+            option: self.option.clone(),
+            action: self.action.clone(),
+            phase: self.phase,
+            data: self.data.clone(),
+        }
+    }
+
+    /// 从一条日志事件读回（不是 card/decision 返回 None）。
+    pub fn from_event(kind: &EventKind) -> Option<Self> {
+        let EventKind::CardDecision {
+            call_id,
+            option,
+            action,
+            phase,
+            data,
+        } = kind
+        else {
+            return None;
+        };
+        Some(Self {
+            call_id: call_id.clone(),
+            option: option.clone(),
+            action: action.clone(),
+            phase: *phase,
+            data: data.clone(),
+        })
+    }
 }
 
 /// 会话的模型选择（session/model 事件的内容；T012.7）。
@@ -560,6 +658,7 @@ impl EventKind {
             Self::LlmRetryStarted { .. } => "llm/retry-started",
             Self::ToolCall { .. } => "tool/call",
             Self::ToolResult { .. } => "tool/result",
+            Self::ToolRegistry { .. } => "tool/registry",
             Self::CompactionPrune { .. } => "compaction/prune",
             Self::TodoWrite { .. } => "todo/write",
             Self::CompactionStart { .. } => "compaction/start",
@@ -568,6 +667,7 @@ impl EventKind {
             Self::JobRegistered { .. } => "job/registered",
             Self::JobSettled { .. } => "job/settled",
             Self::SessionModel { .. } => "session/model",
+            Self::CardDecision { .. } => "card/decision",
         }
     }
 }

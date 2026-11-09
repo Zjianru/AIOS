@@ -1,6 +1,6 @@
 /// T009.2：页面唯一的错误对照表（spec v1.1）。
 ///
-/// 输入是两种码：/api 的 16 个码、日志里的模型错误码；输出中文原因、下一步和动作。
+/// 输入是两种码：/api 的 18 个码、日志里的模型错误码；输出中文原因、下一步和动作。
 /// 页面不显示原始码和状态数字；不认识的码给通用原因。
 
 export const API_ERROR_CODES = [
@@ -16,6 +16,8 @@ export const API_ERROR_CODES = [
   'request/invalid-json',
   'settings/unavailable',
   'settings/unreadable',
+  'exa/no-key',
+  'exa/invalid-key',
   'agent/internal',
   'attachment/invalid',
   'attachment/not-text',
@@ -83,6 +85,8 @@ const API_REASONS: Record<string, string> = {
   'request/invalid-json': '页面发给服务的内容，服务没看懂',
   'settings/unavailable': '现在还不能改设置',
   'settings/unreadable': '设置读不出来：先修好或恢复 settings.json',
+  'exa/no-key': '还没有 Exa 的 key',
+  'exa/invalid-key': 'Exa 的 key 不能为空',
   'agent/internal': '内核出错了，稍后再试',
   'attachment/invalid': '附件不对（名字或内容格式有问题）',
   'attachment/not-text': '只支持文字文件，这个附件是二进制',

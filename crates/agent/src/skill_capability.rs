@@ -22,23 +22,35 @@ use tools::{invoked_skill_names, load_user_invocable_skill, render_skill_content
 pub(crate) struct SkillCapability {
     state: Arc<Mutex<SkillCatalogState>>,
     roots: Vec<std::path::PathBuf>,
+    /// 程序自带的 skill 来源（排在用户根后面）。
+    bundled: Vec<tools::BundledSkill>,
 }
+
+/// 装载带回来的两样：目录状态 + 用户根；自带的来源由调用方另存（能力不重复持有）。
+type Loaded = (
+    Arc<Mutex<SkillCatalogState>>,
+    Vec<std::path::PathBuf>,
+    Vec<tools::BundledSkill>,
+);
 
 impl SkillCapability {
     /// T006.1e：从会话日志对账并装载 skill 目录状态（状态归能力）。
     pub(crate) fn load(
         store: &session::SessionStore,
         roots: Vec<std::path::PathBuf>,
-    ) -> (Arc<Mutex<SkillCatalogState>>, Vec<std::path::PathBuf>) {
+        bundled: Vec<tools::BundledSkill>,
+    ) -> Loaded {
         let mut state = SkillCatalogState::default();
         state.rehydrate(&store.derive_messages());
-        (Arc::new(Mutex::new(state)), roots)
+        (Arc::new(Mutex::new(state)), roots, bundled)
     }
 
-    pub(crate) fn new(
-        (state, roots): (Arc<Mutex<SkillCatalogState>>, Vec<std::path::PathBuf>),
-    ) -> Self {
-        Self { state, roots }
+    pub(crate) fn new((state, roots, bundled): Loaded) -> Self {
+        Self {
+            state,
+            roots,
+            bundled,
+        }
     }
 }
 
@@ -66,11 +78,18 @@ impl Capability for SkillCapability {
                 return Ok(HookOutcome::Continue);
             }
             let host = event.host();
+            let tool_keys = host.tool_keys();
             let catalog = self
                 .state
                 .lock()
                 .expect("agent skill 目录锁被毒化")
-                .prepare(host.cwd(), host.data_dir(), &self.roots);
+                .prepare(
+                    host.cwd(),
+                    host.data_dir(),
+                    &self.roots,
+                    &self.bundled,
+                    &tool_keys,
+                );
             if let Some(message) = catalog {
                 host.append(&[EventKind::UserMessage {
                     turn: event.turn(),
@@ -81,6 +100,13 @@ impl Capability for SkillCapability {
             }
 
             // T006.11b：用户显式 /name（只扫 source=user 的 claimed 消息，排除注入上下文）。
+            // 凭证没存的自带 skill 不进这条通道，和目录保持一致。
+            let available: Vec<tools::BundledSkill> = self
+                .bundled
+                .iter()
+                .copied()
+                .filter(|skill| skill.available(&tool_keys))
+                .collect();
             let mut injected: Vec<String> = Vec::new();
             for message in messages.iter() {
                 if !matches!(message.source, MessageSource::User { .. }) {
@@ -98,6 +124,7 @@ impl Capability for SkillCapability {
                             host.cwd(),
                             host.data_dir(),
                             &self.roots,
+                            &available,
                             &name,
                         ) else {
                             continue;

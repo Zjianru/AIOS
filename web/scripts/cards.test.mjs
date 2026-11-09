@@ -5,6 +5,8 @@ import { BODY_MAX, LABEL_MAX, resolveSlots } from '../src/lib/cardEnvelope.ts';
 import { connectionCardOf } from '../src/data/connectionCard.ts';
 import {
   cardDefinitions,
+  confirmCardEntryOf,
+  confirmCardOf,
   normalizeEnvelope,
   questionCardEntryOf,
   questionCardOf,
@@ -67,7 +69,7 @@ assert.equal(
   '缺说明就是不显示',
 );
 
-// 清单 2：小标题超过 20 字或不是字符串 → 默认值（空，不显示）。
+// 清单 2：小标题超过 20 字截断显示；不是字符串或空字符串 → 默认值（空，不显示）。
 const exactly20 = '一二三四五六七八九十一二三四五六七八九十';
 assert.equal([...exactly20].length, 20);
 assert.equal(LABEL_MAX, 20);
@@ -79,12 +81,20 @@ assert.equal(
 assert.equal(
   questionEnvelope(questionFact({ questions: [{ id: 'q1', header: exactly20 + '多', question: '超过 20 字' }] }))
     .slots.questions[0].header,
+  exactly20,
+  '超过 20 字截断到 20 字，不因为截断整段消失',
+);
+assert.equal(
+  questionEnvelope(questionFact({ questions: [{ id: 'q1', header: '', question: '空字符串' }] }))
+    .slots.questions[0].header,
   '',
+  '空字符串用默认值',
 );
 assert.equal(
   questionEnvelope(questionFact({ questions: [{ id: 'q1', header: 42, question: '不是字符串' }] }))
     .slots.questions[0].header,
   '',
+  '不是字符串用默认值',
 );
 
 // 清单 3：问题超过 600 字 → 标成折起来，原文完整保留。
@@ -626,6 +636,13 @@ assert.deepEqual(
 assert.equal(longConnection.slots.providers[1].name, 'MiniMax（国内站）');
 assert.equal(longConnection.slots.provider, 'minimax-cn');
 
+/* 连接名超过标签上限：截断到 20 字显示，不整段消失。 */
+const longNameConnection = connectionEnvelope(
+  connectionFact({ name: exactly20 + '多出来的连接名' }),
+);
+assert.equal(longNameConnection.slots.name, exactly20, '连接名超过 20 字截断到 20 字');
+assert.equal([...longNameConnection.slots.name].length, LABEL_MAX);
+
 /* 短：单提供方、未保存。 */
 const shortConnection = connectionEnvelope(connectionFact());
 assert.equal(shortConnection.slots.providers.length, 1);
@@ -685,5 +702,158 @@ assert.equal(connectionBad.check, 'never');
 assert.equal(connectionBad.checkedAt, '');
 assert.equal(connectionBad.reason, '');
 assert.equal(connectionBad.broken, false);
+
+
+/* ───────── 确认卡（T014.4）：单选、事实行、四种回执和派生 replaced ───────── */
+
+function confirmFact(overrides = {}) {
+  return {
+    callId: 'call-card-1',
+    proposal: {
+      title: '换成哪个模型',
+      brief: '选一个，点了才生效。',
+      options: [
+        {
+          id: 'a',
+          label: 'V4 Pro',
+          description: '更强一点的模型',
+          facts: [{ name: '模型', value: 'Flash → V4 Pro' }],
+        },
+        {
+          id: 'b',
+          label: 'Flash 最强思考',
+          facts: [{ name: '推理强度', value: 'high → max' }],
+        },
+        { id: 'c', label: '丙', facts: [] },
+      ],
+    },
+    decision: null,
+    replaced: false,
+    ...overrides,
+  };
+}
+
+function confirmEnvelope(fact) {
+  const envelope = confirmCardOf(fact);
+  assert.ok(envelope, '确认卡要能从事实出信封');
+  return envelope;
+}
+
+// 没点时：单选、三个选项、事实行来自服务端；卡片角色是 decision。
+const pending = confirmEnvelope(confirmFact());
+assert.equal(pending.type, 'confirm');
+assert.equal(pending.role, 'decision');
+assert.equal(pending.state, 'pending');
+assert.equal(pending.receipt, undefined);
+assert.equal(pending.slots.options.length, 3);
+assert.deepEqual(pending.slots.options[0].facts, [{ name: '模型', value: 'Flash → V4 Pro' }]);
+assert.equal(pending.slots.options[1].facts.length, 1);
+assert.equal(pending.slots.options[0].description.text, '更强一点的模型');
+
+// 确认：回执写选了哪一项和结果。
+const confirmed = confirmEnvelope(
+  confirmFact({
+    decision: { phase: 'confirmed', option: 'b', data: { summary: '下一轮用 Flash（思考 max）' } },
+  }),
+);
+assert.equal(confirmed.state, 'done');
+assert.equal(confirmed.receipt.outcome, 'success');
+assert.ok(confirmed.receipt.summary.includes('已执行'));
+assert.ok(confirmed.receipt.summary.includes('Flash 最强思考'));
+assert.ok(confirmed.receipt.summary.includes('下一轮用 Flash（思考 max）'));
+
+// 暂不 / 已经变了 / 失败：三种回执。
+const confirmDismissed = confirmEnvelope(confirmFact({ decision: { phase: 'dismissed' } }));
+assert.equal(confirmDismissed.receipt.outcome, 'cancelled');
+assert.ok(confirmDismissed.receipt.summary.includes('暂不'));
+assert.equal(confirmEnvelope(confirmFact({ decision: { phase: 'refused', data: { summary: '模型没了' } } })).receipt.summary, '已经变了，没执行：模型没了');
+const failed = confirmEnvelope(confirmFact({ decision: { phase: 'failed', data: { summary: '磁盘满了' } } }));
+assert.equal(failed.state, 'failed');
+assert.equal(failed.receipt.outcome, 'failed');
+assert.equal(failed.receipt.summary, '没做成：磁盘满了');
+
+// 派生 replaced：没动过的旧卡收成回执，不再能点。
+const replaced = confirmEnvelope(confirmFact({ replaced: true }));
+assert.equal(replaced.state, 'done');
+assert.equal(replaced.receipt.outcome, 'cancelled');
+assert.ok(replaced.receipt.summary.includes('替换'));
+
+// 有决定就不是 replaced（决定优先）。
+const decided = confirmEnvelope(
+  confirmFact({ replaced: true, decision: { phase: 'dismissed' } }),
+);
+assert.ok(decided.receipt.summary.includes('暂不'), '已经点过的卡不显示被替换');
+
+// 槽位降级：正文过长折起来；标签过长截断到上限、选项保留；坏的事实行去掉。
+const degraded = confirmEnvelope(
+  confirmFact({
+    proposal: {
+      title: exactly20 + '多出的标题',
+      brief: '字'.repeat(BODY_MAX + 1),
+      options: [
+        { id: 'long', label: '长'.repeat(LABEL_MAX + 1), facts: [] },
+        { id: 'ok', label: '短', facts: [{ name: '名称', value: '值' }, { name: 42, value: '坏' }, 7] },
+      ],
+    },
+  }),
+);
+assert.equal(degraded.slots.title, exactly20, '标题超过标签上限截断到 20 字，不退空');
+assert.equal([...degraded.slots.title].length, LABEL_MAX);
+assert.equal(degraded.slots.brief.folded, true, '长正文折起来');
+assert.equal(degraded.slots.brief.text.length, BODY_MAX + 1, '原文完整保留');
+assert.deepEqual(
+  degraded.slots.options.map((option) => option.id),
+  ['long', 'ok'],
+  '超长 label 的选项留下，空 label 才去掉',
+);
+assert.equal(degraded.slots.options[0].label, '长'.repeat(LABEL_MAX), '超长 label 截断到上限');
+assert.deepEqual(degraded.slots.options[1].facts, [{ name: '名称', value: '值' }], '坏的事实行去掉');
+
+// 回归：MiniMax-M2.7-highspeed（22 字）曾被标签槽退回空、整项丢掉。
+// 现在超长标签截断到 20 字显示，id / 说明 / 事实行都保留；空标签和非字符串才丢。
+const highspeedOption = {
+  id: 'minimax-highspeed',
+  label: 'MiniMax-M2.7-highspeed',
+  description: '同一代模型的高速版',
+  facts: [{ name: '模型', value: 'MiniMax-M3.1-Flash → MiniMax-M2.7-highspeed' }],
+};
+const clipped = confirmEnvelope(
+  confirmFact({
+    proposal: {
+      title: '换成哪个模型',
+      brief: '选一个。',
+      options: [
+        highspeedOption,
+        { id: 'blank', label: '   ', facts: [] },
+        { id: 'number', label: 42, facts: [] },
+        { id: 'short', label: 'V4 Pro', facts: [] },
+      ],
+    },
+  }),
+);
+assert.equal([...highspeedOption.label].length, 22, '回归样例是 22 字');
+assert.deepEqual(
+  clipped.slots.options.map((option) => option.id),
+  ['minimax-highspeed', 'short'],
+  '超长标签不丢；空标签和非字符串才丢',
+);
+const clippedOption = clipped.slots.options[0];
+assert.equal(clippedOption.label, 'MiniMax-M2.7-highspe', '显示截断后的 label');
+assert.equal([...clippedOption.label].length, LABEL_MAX);
+assert.equal(clippedOption.description.text, '同一代模型的高速版', '说明保留');
+assert.deepEqual(clippedOption.facts, highspeedOption.facts, '事实行保留');
+
+// 刚好 20 字原样显示，不多截一个。
+const exactly20Option = confirmEnvelope(
+  confirmFact({ proposal: { title: '', brief: '', options: [{ id: 'exact', label: exactly20 }] } }),
+);
+assert.equal(exactly20Option.slots.options[0].label, exactly20);
+
+// 整卡取不出：没有选项、不是对象；入口退回通用卡，不抛异常。
+assert.equal(confirmCardOf(confirmFact({ proposal: { title: '空', brief: '', options: [] } })), null);
+assert.equal(confirmCardOf(confirmFact({ proposal: '不是对象' })), null);
+assert.doesNotThrow(() => confirmCardEntryOf(confirmFact({ proposal: '不是对象' })));
+assert.equal(confirmCardEntryOf(confirmFact({ proposal: '不是对象' })).type, 'generic');
+assert.doesNotThrow(() => resolveSlots(cardDefinitions.confirm, { options: '不是数组' }));
 
 console.log('cards.test.mjs: all assertions passed');

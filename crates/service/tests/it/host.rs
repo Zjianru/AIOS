@@ -92,6 +92,7 @@ async fn setup(server: &MockServer) -> (Agent, tempfile::TempDir, SessionId) {
             max_tokens: 2048,
             context_window: model::DEFAULT_CONTEXT_WINDOW,
             effort: Effort::new("high"),
+            tool_update: None,
         },
         crate::common::test_credential(data_dir.path()),
     )

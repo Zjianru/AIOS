@@ -11,7 +11,10 @@ license = "MIT"
 # T013.1：diff 展示（spec 允许的唯一新依赖；tools crate 正式依赖）
 similar = "2.7.0"
 tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "io-std", "signal"] }
-reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"] }
+# charset：网页正文按 Content-Type 声明的编码解码。
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream", "charset"] }
+# 网页 HTML 转 Markdown；Apache-2.0，维护中的成熟实现。
+htmd = "0.5.6"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 clap = { version = "4.5", features = ["derive"] }

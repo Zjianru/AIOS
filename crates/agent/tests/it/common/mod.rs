@@ -668,6 +668,7 @@ pub fn model_config(base_url: &str) -> model::DeepSeekConfig {
         max_tokens: 2048,
         context_window: model::DEFAULT_CONTEXT_WINDOW,
         effort: model::Effort::new("high"),
+        tool_update: None,
     }
 }
 
@@ -731,6 +732,7 @@ pub async fn setup_agent_with_model(
             max_tokens: 64_000,
             context_window: 1_000_000,
             effort,
+            tool_update: None,
         },
         test_credential(),
     )

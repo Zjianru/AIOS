@@ -1,6 +1,6 @@
 //! Anthropic Messages 适配器的连接默认值。
 
-use crate::Effort;
+use crate::{Effort, ToolUpdate};
 
 /// 默认 Messages 端点（spec 实现决定）。
 pub const DEFAULT_BASE_URL: &str = "https://api.deepseek.com/anthropic";
@@ -29,6 +29,9 @@ pub struct DeepSeekConfig {
     pub context_window: u64,
     /// 推理强度。
     pub effort: Effort,
+    /// 这条路由声明支持的对话中途工具更新模式（模型信息里的 `tool_update`）；
+    /// None = 没声明，按 T014.2 的全量表发。运行时换模型时按目录再查一次。
+    pub tool_update: Option<ToolUpdate>,
 }
 
 impl Default for DeepSeekConfig {
@@ -40,6 +43,7 @@ impl Default for DeepSeekConfig {
             max_tokens: DEFAULT_MAX_TOKENS,
             context_window: DEFAULT_CONTEXT_WINDOW,
             effort: Effort::new("high"),
+            tool_update: None,
         }
     }
 }

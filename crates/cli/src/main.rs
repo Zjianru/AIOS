@@ -85,6 +85,9 @@ struct ServeArgs {
     /// 前端构建产物目录（默认找 ./web/dist；也可用 AIOS_WEB_DIST）
     #[arg(long)]
     web_dist: Option<PathBuf>,
+    /// 仅开发/端到端测试用：覆盖 Exa 的根地址（默认 https://api.exa.ai）
+    #[arg(long)]
+    exa_base_url: Option<String>,
 }
 
 #[derive(Args, Clone)]
@@ -238,6 +241,7 @@ fn config_from_args(
         max_tokens,
         context_window,
         effort,
+        tool_update: None,
     };
     Ok((config, agent))
 }
@@ -416,6 +420,9 @@ fn model_with_keyring(
     deepseek_config.model = model;
     deepseek_config.provider =
         model::catalog::provider_id_for_connection(&connection.preset, &connection.endpoint);
+    // 路由能力跟着模型信息走（厂商声明优先，其次目录写死的 deepseek-flash）。
+    deepseek_config.tool_update =
+        service::models::tool_update_for(data_dir, &connection, &deepseek_config.model);
     let source = KeyringCredentialSource {
         keyring,
         connection: connection.id.clone(),
@@ -461,6 +468,8 @@ async fn open_agent(common: &CommonArgs) -> Result<Agent, CliError> {
         config,
         credentials: Some(credentials),
         append_hook_factory: None,
+        // CLI 的对话不装服务独有的查询工具（Kind 的根会话才装）。
+        extra_tools: Vec::new(),
     })
     .await
     .map_err(open_error)?;
@@ -628,6 +637,11 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let append_hook_factory = monitor.append_hook_factory();
     // T007.2：根会话打不开时服务照样起；ready 报状态（path/line），方法一律拒绝，
     // 页面对应五种说明页；修好后页面调 recheck 再检查一次。
+    let identity = args.common.identity.clone();
+    let actions = std::sync::Arc::new(service::ActionRegistry::settings(
+        data_dir.clone(),
+        identity.clone(),
+    ));
     let host = RootHost::open(
         RootSessionOptions {
             data_dir,
@@ -635,10 +649,13 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             model: placeholder_config,
             config: agent_config,
             credentials: None,
-            identity: args.common.identity.clone(),
+            identity,
             model_factory: Some(model_factory),
             append_hook_factory: Some(append_hook_factory),
             keyring_changed: Some(keyring_changed),
+            actions,
+            exa_base_url: args.exa_base_url.clone(),
+            web_listen: None,
         },
         window,
     )

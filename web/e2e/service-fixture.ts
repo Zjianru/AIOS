@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer, request as httpRequest, type Server } from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
@@ -40,6 +40,12 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   }
   if (options.localFilePath) return { file: 'local-file-text' };
   if (options.highUsage) return { file: 'high-usage' };
+  if (options.t014Query) return { file: 't014-query' };
+  if (options.t014Confirm) return { file: 't014-confirm' };
+  if (options.t014Mask) return { file: 't014-mask' };
+  if (options.t014Web) return { file: 't014-web' };
+  if (options.t014Search) return { file: 't014-search' };
+  if (options.t014Fetch) return { file: 't014-fetch' };
   return {
     file: 'text',
     paceMs: options.slowMs ? Math.max(1, Math.round(options.slowMs / 6)) : undefined,
@@ -47,11 +53,14 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
 }
 
 /** 起 aios-replay（打印一行 aios-replay: http://…）；每夹具一个进程。 */
-function startReplay(options: FixtureOptions): { child: ReturnType<typeof spawn>; url: Promise<string> } {
+function startReplay(
+  options: FixtureOptions,
+  replayFile?: string,
+): { child: ReturnType<typeof spawn>; url: Promise<string> } {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const bin = process.env.AIOS_REPLAY_BIN ?? path.join(repoRoot, 'target/debug/aios-replay');
   const selection = replaySelection(options);
-  const args = ['--file', path.join(FIXTURE_DIR, selection.file + '.jsonl')];
+  const args = ['--file', replayFile ?? path.join(FIXTURE_DIR, selection.file + '.jsonl')];
   if (selection.override) args.push('--override', path.join(FIXTURE_DIR, selection.override + '.json'));
   if (selection.paceMs) args.push('--pace-ms', String(selection.paceMs));
   args.push('--host', '127.0.0.1', '--port', '0');
@@ -103,8 +112,14 @@ export interface KernelFixture {
   lastModel: () => Promise<string | null>;
   /** T012.9：假 DeepSeek 最近一次请求的完整请求体（断言思考档用）。 */
   lastRequest: () => Promise<Record<string, unknown> | null>;
+  /** 路径显示用例：会话规范化后的工作目录，和它之外的一个临时目录。 */
+  paths?: { cwd: string; outside: string };
   /** 真 key fixture：serve 进程的 stderr。 */
   stderr?: () => string;
+  /** 设置页「联网搜索」用例：本地假 Exa 的根地址和收到的授权头。 */
+  exa?: { baseUrl: string; requests: () => string[] };
+  /** 读网页用例：本地假网页代理收到的目标 URL（本机地址不该出现在这里）。 */
+  fetch?: { requests: () => string[] };
   dropProxy?: () => Promise<void>;
   restoreProxy?: () => Promise<void>;
   /// T007 #1：页面开着时重启同一个端口的服务（新进程=新 cookie 钥匙，旧页面会话失效）。
@@ -115,6 +130,8 @@ export interface KernelFixture {
 export interface FixtureOptions {
   /// first request 回一次工具调用（read hello.txt），拿到工具结果后再回最终文本。
   toolTurn?: boolean;
+  /// 路径显示：三步回放（cwd 内写、cwd 外写、最终文本）；夹具里的 __CWD__ / __OUTSIDE__ 起服务前换成真实目录。
+  pathsTurn?: boolean;
   /// T013.6：最终回答里带一个代码块（复制按钮用）。
   codeBlock?: boolean;
   /// T013.5：一轮里 write/apply_patch/bash 三个工具 + 最终文本（工作过程页的卡片用）。
@@ -176,15 +193,48 @@ export interface FixtureOptions {
   localFilePath?: boolean;
   /// T010.5：用真 key 录的夹具（多步工具/思考/缓存读/压缩）。
   realTurn?: boolean;
+  /// T014.2：先加载 skill aios-settings，再查 AIOS 的设置和用量，最后一句回答（回放）。
+  t014Query?: boolean;
+  /// T014.4：两轮各出一张确认卡（三个选项一张、一个选项一张），回放只给模型流。
+  t014Confirm?: boolean;
+  /// T014.5：一张只有一个选项的屏蔽卡，回放只给模型流。
+  t014Mask?: boolean;
+  /// T014.6：先加载 skill web，再收尾一句回答（联网搜索的目录/工具表用）。
+  t014Web?: boolean;
+  /// T014.7：先加载 skill web，再 web_search 一次，最后回答引用来源 URL（联网搜索回放用）。
+  t014Search?: boolean;
+  /// T014.8：先加载 skill web，再读一个网页、读一个本机地址，最后收尾（读网页回放用）。
+  t014Fetch?: boolean;
+  /// T014.6：起一个本地假 Exa；serve 用 --exa-base-url 指过去。
+  fakeExa?: boolean;
+  /// T014.6：把 EXA_API_KEY 放进 serve 的环境变量，用来证明 key 不从环境变量读。
+  envExaKey?: string;
+  /// T014.2：起服务前先放一条旧格式（v16）的根会话日志，用来验旧日志照读。
+  legacySession?: boolean;
 }
 
 /** 接缝 5：假 DeepSeek 脚本回放 + 真 aios-dev serve（页面也由它同源托管）。 */
 export async function startKernelFixture(
   options: FixtureOptions = {},
 ): Promise<KernelFixture> {
-  const replay = startReplay(options);
-  const replayUrl = await replay.url;
   const dataDir = await mkdtemp(path.join(tmpdir(), 'aios-t007-'));
+  // 路径夹具里的绝对路径要在起回放之前换成真实目录：工作目录内的那一份用规范化路径，
+  // 和会话 header 的 cwd（serve 会 canonicalize）一致；之外的一份单独建一个临时目录。
+  let paths: KernelFixture['paths'];
+  let replayFile: string | undefined;
+  if (options.pathsTurn) {
+    const outside = await mkdtemp(path.join(tmpdir(), 'aios-t014-outside-'));
+    const cwd = await realpath(dataDir);
+    const template = await readFile(path.join(FIXTURE_DIR, 'tool-paths.jsonl'), 'utf8');
+    replayFile = path.join(dataDir, 'replay-tool-paths.jsonl');
+    await writeFile(
+      replayFile,
+      template.split('__CWD__').join(cwd).split('__OUTSIDE__').join(outside),
+    );
+    paths = { cwd, outside };
+  }
+  const replay = startReplay(options, replayFile);
+  const replayUrl = await replay.url;
   if (options.rootFault === 'corrupt') {
     await writeFile(path.join(dataDir, 'kind-root.json'), '{"version":1, ');
   } else if (options.rootFault === 'lost') {
@@ -218,6 +268,62 @@ export async function startKernelFixture(
   if (options.settingsFault === 'corrupt') {
     await writeFile(path.join(dataDir, 'settings.json'), '{"lastSelection": ');
   }
+  // T014.2：旧格式（v16）的根会话日志——读取器要照读，不拒绝、不迁移。
+  if (options.legacySession) {
+    const legacyId = '00000000-0000-4000-8000-000000000146';
+    const sessions = path.join(dataDir, 'sessions');
+    await mkdir(sessions, { recursive: true });
+    const time = Date.now();
+    const legacyCwd = await realpath(dataDir);
+    const rows = [
+      { type: 'session', version: 16, id: legacyId, createdAt: time, cwd: legacyCwd },
+      {
+        type: 'user/message',
+        seq: 1,
+        time,
+        data: {
+          turn: 1,
+          step: 1,
+          message: {
+            id: 'msg-legacy-user',
+            role: 'user',
+            source: { kind: 'user' },
+            content: [{ text: '这条对话是 16 版日志写的。', type: 'text' }],
+          },
+        },
+      },
+      {
+        type: 'assistant/message',
+        seq: 2,
+        time,
+        data: {
+          turn: 1,
+          step: 1,
+          message: {
+            id: 'msg-legacy-assistant',
+            role: 'assistant',
+            source: { kind: 'model', model: 'deepseek-flash', provider: 'deepseek' },
+            content: [{ text: '（T014.2 旧日志）16 版写下的回答还在。', type: 'text' }],
+          },
+          stream: [
+            { chunk: { blockType: 'text', index: 0, type: 'block-start' }, time, type: 'chunk' },
+            { dt: [], index: 0, texts: ['（T014.2 旧日志）16 版写下的回答还在。'], time0: time, type: 'text-chunks' },
+            { chunk: { block: { text: '（T014.2 旧日志）16 版写下的回答还在。', type: 'text' }, index: 0, type: 'block-end' }, time, type: 'chunk' },
+            { chunk: { reason: { kind: 'stop' }, type: 'finish' }, time, type: 'chunk' },
+          ],
+          usage: { inputTokens: 10, outputTokens: 3 },
+        },
+      },
+    ];
+    await writeFile(
+      path.join(sessions, legacyId + '.jsonl'),
+      rows.map((row) => JSON.stringify(row)).join(String.fromCharCode(10)) + String.fromCharCode(10),
+    );
+    await writeFile(
+      path.join(dataDir, 'kind-root.json'),
+      JSON.stringify({ version: 1, sessionId: legacyId }),
+    );
+  }
   const serveArgs = ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', dataDir, '--web-dist', path.join(repoRoot, 'web/dist')];
   if (options.contextWindow) {
     serveArgs.push('--context-window', String(options.contextWindow));
@@ -225,6 +331,104 @@ export async function startKernelFixture(
   const serviceEnv = { ...process.env };
   if (options.home) {
     serviceEnv.HOME = options.home === 'dataDir' ? dataDir : options.home;
+  }
+  // 设置页「联网搜索」：本地假 Exa（只认 /search；key 以 bad 开头就 401，照原型约定）。
+  let exaServer: Server | null = null;
+  let exaBaseUrl: string | null = null;
+  const exaRequests: string[] = [];
+  if (options.fakeExa) {
+    exaServer = createServer((request, response) => {
+      if (request.method !== 'POST' || request.url !== '/search') {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      let body = '';
+      request.on('data', (chunk: Buffer) => {
+        body += chunk.toString();
+      });
+      request.on('end', () => {
+        const authorization = String(request.headers.authorization ?? '');
+        exaRequests.push(authorization);
+        if (authorization.includes('bad')) {
+          response.writeHead(401, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ error: 'invalid api key' }));
+          return;
+        }
+        // T014.7：搜索请求（numResults 8）回一条带摘要的结果；验证请求（numResults 1）照旧空结果。
+        let numResults: unknown;
+        try {
+          numResults = (JSON.parse(body) as { numResults?: unknown }).numResults;
+        } catch {
+          numResults = undefined;
+        }
+        const results =
+          numResults === 8
+            ? [
+                {
+                  url: 'https://example.com/aios-search',
+                  title: 'AIOS 原生工具',
+                  highlights: ['AIOS 的联网搜索结果样例。'],
+                  publishedDate: '2026-11-09',
+                },
+              ]
+            : [];
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(JSON.stringify({ results }));
+      });
+    });
+    await new Promise<void>((resolve) => {
+      exaServer!.listen(0, '127.0.0.1', () => resolve());
+    });
+    const port = (exaServer.address() as net.AddressInfo).port;
+    exaBaseUrl = 'http://127.0.0.1:' + String(port);
+    serveArgs.push('--exa-base-url', exaBaseUrl);
+  }
+  // 读网页：本地假网页代理。被测服务的 http_proxy 指过来，公网 IP 的请求由它回正文；
+  // 本机地址在发请求之前就被拦下，不该到这里。
+  let fetchServer: Server | null = null;
+  const fetchRequests: string[] = [];
+  if (options.t014Fetch) {
+    fetchServer = createServer((request, response) => {
+      const target = request.url ?? '';
+      fetchRequests.push(target);
+      let pathname = target;
+      try {
+        pathname = new URL(target).pathname;
+      } catch {
+        // 相对形式（不该出现）就按原样比。
+      }
+      if (request.method !== 'GET' || pathname !== '/aios-fetch') {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      response.end(
+        '<!doctype html><html><head><title>样例</title><script>window.alert("脚本不该出现")</script></head><body><h1>读网页正文</h1><p>T014.8 e2e 正文</p></body></html>',
+      );
+    });
+    await new Promise<void>((resolve) => {
+      fetchServer!.listen(0, '127.0.0.1', () => resolve());
+    });
+    const port = (fetchServer.address() as net.AddressInfo).port;
+    const proxyUrl = 'http://127.0.0.1:' + String(port);
+    serviceEnv.http_proxy = proxyUrl;
+    serviceEnv.HTTP_PROXY = proxyUrl;
+    for (const name of [
+      'https_proxy',
+      'HTTPS_PROXY',
+      'all_proxy',
+      'ALL_PROXY',
+      'no_proxy',
+      'NO_PROXY',
+    ]) {
+      serviceEnv[name] = '';
+    }
+  }
+  if (options.envExaKey) {
+    // 故意放一个值：产品不该读它（设置页仍是「还没有 key」）。
+    serviceEnv.EXA_API_KEY = options.envExaKey;
   }
   let holder: ReturnType<typeof spawn> | null = null;
   if (options.busyRoot) {
@@ -352,6 +556,9 @@ export async function startKernelFixture(
     baseUrl,
     token,
     dataDir,
+    paths,
+    exa: exaBaseUrl ? { baseUrl: exaBaseUrl, requests: () => exaRequests } : undefined,
+    fetch: fetchServer ? { requests: () => fetchRequests } : undefined,
     fakeEndpoint: replayUrl,
     lastModel: async () => {
       try {
@@ -376,10 +583,13 @@ export async function startKernelFixture(
     restart,
     close: async () => {
       await dropProxy();
+      exaServer?.close();
+      fetchServer?.close();
       holder?.kill('SIGTERM');
       child.kill('SIGTERM');
       replay.child.kill('SIGTERM');
       await rm(dataDir, { recursive: true, force: true });
+      if (paths) await rm(paths.outside, { recursive: true, force: true });
     },
   };
 }

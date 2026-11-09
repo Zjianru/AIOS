@@ -60,6 +60,50 @@ impl Default for SkillInvocation {
     }
 }
 
+/// 程序自带的一份 skill：正文编进二进制，来源没有目录，排在所有用户 skill 之后。
+///
+/// 重名时用户的赢（发现按来源顺序先到先得，用户根在 `skill_roots` 里排在前面）。
+/// 自带哪几份由产品装配决定（`Agent::open` 传 `bundled_skills()`）；发现和加载本身
+/// 不猜产品有什么。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BundledSkill {
+    /// 程序里的名字；发现时仍以正文 frontmatter 的 name 为准。
+    pub name: &'static str,
+    /// 正文（含 frontmatter），编译期从 `bundled/<name>/SKILL.md` 读进来。
+    pub raw: &'static str,
+    /// 进目录需要哪一种工具凭证；None = 总是可用。
+    pub requires: Option<crate::ToolKey>,
+    /// 凭证没存时目录里写给模型的一句话：说明它现在不可用、让用户去哪填。
+    /// 不需要条件的 skill 留空。
+    pub unavailable_hint: &'static str,
+}
+
+impl BundledSkill {
+    /// 这一次求值里这份自带 skill 能不能进目录（凭证已存或不需要凭证）。
+    pub fn available(&self, keys: &std::collections::BTreeSet<crate::ToolKey>) -> bool {
+        self.requires.is_none_or(|key| keys.contains(&key))
+    }
+}
+
+/// 随二进制发布、用户可以加载的 skill。
+pub fn bundled_skills() -> &'static [BundledSkill] {
+    const BUNDLED: &[BundledSkill] = &[
+        BundledSkill {
+            name: "aios-settings",
+            raw: include_str!("../bundled/aios-settings/SKILL.md"),
+            requires: None,
+            unavailable_hint: "",
+        },
+        BundledSkill {
+            name: "web",
+            raw: include_str!("../bundled/web/SKILL.md"),
+            requires: Some(crate::ToolKey::Exa),
+            unavailable_hint: "Web search and page reading are unavailable: no Exa API key is saved. If the user asks you to search the web or read a link, say you cannot yet and tell them to save an Exa API key in the settings page (设置 › 模型与连接 › 联网搜索), then ask them to try again.",
+        },
+    ];
+    BUNDLED
+}
+
 /// 一条发现警告（DSH 对非法 skill 打 logger.warn，不静默丢）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillWarning {
@@ -103,8 +147,13 @@ pub fn skill_roots(cwd: &Path, data_dir: &Path, configured: &[PathBuf]) -> Vec<P
 }
 
 /// 发现所有可用 skill（仅 model-invocable，供目录注入）。
-pub fn discover_skills(cwd: &Path, data_dir: &Path, configured: &[PathBuf]) -> Vec<SkillSummary> {
-    discover_skill_catalog(cwd, data_dir, configured).skills
+pub fn discover_skills(
+    cwd: &Path,
+    data_dir: &Path,
+    configured: &[PathBuf],
+    bundled: &[BundledSkill],
+) -> Vec<SkillSummary> {
+    discover_skill_catalog(cwd, data_dir, configured, bundled).skills
 }
 
 /// 发现 skill + 警告 + 完整性（T006.11：非法 skill 不再静默丢）。
@@ -112,8 +161,9 @@ pub fn discover_skill_catalog(
     cwd: &Path,
     data_dir: &Path,
     configured: &[PathBuf],
+    bundled: &[BundledSkill],
 ) -> SkillDiscovery {
-    let (found, warnings, incomplete) = discover(cwd, data_dir, configured);
+    let (found, warnings, incomplete) = discover(cwd, data_dir, configured, bundled);
     SkillDiscovery {
         skills: found
             .into_iter()
@@ -130,12 +180,13 @@ pub fn load_skill(
     cwd: &Path,
     data_dir: &Path,
     configured: &[PathBuf],
+    bundled: &[BundledSkill],
     name: &str,
 ) -> Result<SkillContent, ToolFailure> {
     if !is_skill_name(name) {
         return Err(ToolFailure::plain(format!("invalid skill name \"{name}\"")));
     }
-    let (found, _warnings, _incomplete) = discover(cwd, data_dir, configured);
+    let (found, _warnings, _incomplete) = discover(cwd, data_dir, configured, bundled);
     let Some(found) = found.into_iter().find(|found| found.summary.name == name) else {
         return Err(ToolFailure::plain(format!(
             "skill \"{name}\" is unknown or no longer available"
@@ -159,12 +210,13 @@ pub fn load_user_invocable_skill(
     cwd: &Path,
     data_dir: &Path,
     configured: &[PathBuf],
+    bundled: &[BundledSkill],
     name: &str,
 ) -> Option<SkillContent> {
     if !is_skill_name(name) {
         return None;
     }
-    let (found, _warnings, _incomplete) = discover(cwd, data_dir, configured);
+    let (found, _warnings, _incomplete) = discover(cwd, data_dir, configured, bundled);
     let found = found.into_iter().find(|found| found.summary.name == name)?;
     if !found.summary.invocation.user_invocable {
         return None;
@@ -203,10 +255,18 @@ pub fn is_skill_name(name: &str) -> bool {
 
 /// 渲染 <skill_content> 块（加载工具返回给模型的正文 + 来源目录）。
 pub fn render_skill_content(skill: &SkillContent) -> String {
+    // 编进二进制的 skill 没有目录：不写「按基目录解析」这段，免得模型去解析一个空路径。
+    let resources = if skill.summary.base_dir.as_os_str().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<skill_resources>\nBase directory for this skill: {}\nResolve relative paths mentioned by this skill against the base directory before using them. Load referenced resources only as needed.\n</skill_resources>\n\n",
+            skill.summary.base_dir.display()
+        )
+    };
     format!(
-        "<skill_content name=\"{}\">\n<skill_resources>\nBase directory for this skill: {}\nResolve relative paths mentioned by this skill against the base directory before using them. Load referenced resources only as needed.\n</skill_resources>\n\n<skill_instructions>\n{}\n</skill_instructions>\n</skill_content>",
+        "<skill_content name=\"{}\">\n{resources}<skill_instructions>\n{}\n</skill_instructions>\n</skill_content>",
         skill.summary.name,
-        skill.summary.base_dir.display(),
         skill.body.trim_end()
     )
 }
@@ -261,6 +321,7 @@ fn discover(
     cwd: &Path,
     data_dir: &Path,
     configured: &[PathBuf],
+    bundled: &[BundledSkill],
 ) -> (Vec<Discovered>, Vec<SkillWarning>, bool) {
     let mut found: BTreeMap<String, Discovered> = BTreeMap::new();
     let mut warnings: Vec<SkillWarning> = Vec::new();
@@ -346,6 +407,41 @@ fn discover(
                     message: format!("skill file {} ignored: {message}", skill_file.display()),
                 }),
             }
+        }
+    }
+    // 程序自带的 skill 排在最后：用户根的条目先插入，重名时用户的赢。
+    for bundled in bundled {
+        match parse_skill_frontmatter(bundled.raw) {
+            Ok(frontmatter) => {
+                if found.contains_key(&frontmatter.name) {
+                    continue;
+                }
+                let body = split_frontmatter(bundled.raw)
+                    .map(|(_, body)| body.trim().to_owned())
+                    .unwrap_or_default();
+                found.insert(
+                    frontmatter.name.clone(),
+                    Discovered {
+                        summary: SkillSummary {
+                            name: frontmatter.name,
+                            description: frontmatter.description,
+                            when_to_use: frontmatter.when_to_use,
+                            invocation: frontmatter.invocation,
+                            metadata: frontmatter.metadata,
+                            // 编进二进制的 skill 没有目录：路径与基目录留空，
+                            // 渲染时不写「按基目录解析」的提示。
+                            path: PathBuf::new(),
+                            base_dir: PathBuf::new(),
+                        },
+                        body,
+                    },
+                );
+            }
+            // 二进制里的 skill 解析失败是构建期错误；仍走警告，不静默丢。
+            Err(message) => warnings.push(SkillWarning {
+                path: PathBuf::from(bundled.name),
+                message: format!("bundled skill {} ignored: {message}", bundled.name),
+            }),
         }
     }
     (found.into_values().collect(), warnings, incomplete)
@@ -636,7 +732,7 @@ mod tests {
         .unwrap();
         let data = tempfile::tempdir().unwrap();
         let discovery =
-            discover_skill_catalog(dir.path(), data.path(), std::slice::from_ref(&root));
+            discover_skill_catalog(dir.path(), data.path(), std::slice::from_ref(&root), &[]);
         assert!(
             discovery.skills.iter().any(|skill| skill.name == "good"),
             "合法 skill 仍可用"
@@ -688,7 +784,7 @@ mod t006_19_warning_format_tests {
         let skills = dir.path().join("skills");
         std::fs::create_dir_all(skills.join("bad")).unwrap();
         std::fs::write(skills.join("bad").join(SKILL_FILE), "no frontmatter here").unwrap();
-        let discovery = discover_skill_catalog(dir.path(), dir.path(), &[skills]);
+        let discovery = discover_skill_catalog(dir.path(), dir.path(), &[skills], &[]);
         let warning = discovery
             .warnings
             .iter()

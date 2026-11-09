@@ -7,8 +7,8 @@ use std::path::Path;
 
 use super::storage::{StoredConnection, create_identity, create_identity_at};
 use super::{
-    CheckResult, CheckState, ConnectionInfo, ConnectionUpdate, IssueRecord, IssuedSecret, Keyring,
-    KeyringError, ModelRow, NewConnection, now_seconds,
+    CheckResult, CheckState, ConnectionInfo, ConnectionUpdate, IssuedSecret, Keyring, KeyringError,
+    ModelRow, NewConnection, now_seconds,
 };
 
 impl Keyring {
@@ -119,20 +119,7 @@ impl Keyring {
             )));
         }
         let secret = stored.api_key.clone();
-        store.next_issue = store.next_issue.saturating_add(1);
-        let id = store.next_issue;
-        store.issues.push(IssueRecord {
-            id,
-            at: now_seconds(),
-            connection: connection.to_owned(),
-            purpose: purpose.to_owned(),
-            run: run.map(str::to_owned),
-            turn,
-        });
-        if store.issues.len() > 200 {
-            let excess = store.issues.len() - 200;
-            store.issues.drain(0..excess);
-        }
+        store.record_issue(connection, purpose, run, turn);
         self.save_store(&store)?;
         self.notify();
         Ok(IssuedSecret {

@@ -20,6 +20,7 @@ fn deepseek_config() -> DeepSeekConfig {
         max_tokens: 2048,
         context_window: DEFAULT_CONTEXT_WINDOW,
         effort: Effort::new("high"),
+        tool_update: None,
     }
 }
 
@@ -89,6 +90,7 @@ fn factory(data_dir: &Path, identity: &Path) -> service::ModelFactory {
                 max_tokens: 2048,
                 context_window: DEFAULT_CONTEXT_WINDOW,
                 effort: Effort::new(effort),
+                tool_update: None,
             },
             Some(crate::common::test_credential(&data)),
         ))

@@ -6,7 +6,7 @@ use crate::root_lifecycle::RootHost;
 use crate::{fx, settings, stats};
 
 impl RootHost {
-    /// 状态（对象/在跑/待答问题）+ 会话统计（轮/步/token/缓存/上下文/花费）+ 汇率 + 币种。
+    /// 状态（对象/在跑/待答问题/工作目录）+ 会话统计（轮/步/token/缓存/上下文/花费）+ 汇率 + 币种。
     ///
     /// 统计和花费从日志现算（不落日志）：每轮模型取 assistant/message 的 message.source.model，
     /// 价格按当前连接 + 目录（用户价 > 目录标价 > 无价格；无价格的轮标 unpriced）。
@@ -84,6 +84,7 @@ impl RootHost {
             stats: Some(stats),
             fx: Some(fx),
             currency: Some(settings.currency),
+            cwd: Some(agent.cwd().to_string_lossy().into_owned()),
         })
     }
 }

@@ -180,6 +180,8 @@ async fn steer_enters_next_step_while_running() {
             "step/start",
             "system/message",
             "user/message",
+            // 本步开出的工具记一条加载记录（T014.2）
+            "tool/registry",
             "assistant/message",
             "tool/call",
             "agent/inbox/spliced",

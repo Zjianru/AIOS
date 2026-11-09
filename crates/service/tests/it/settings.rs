@@ -2361,6 +2361,7 @@ async fn assistant_message_provider(connection_id: &str, preset: &str, model_id:
                     max_tokens: 2048,
                     context_window: 111_000,
                     effort: Effort::new(effort),
+                    tool_update: None,
                 },
                 Some(crate::common::test_credential(&data)),
             ))

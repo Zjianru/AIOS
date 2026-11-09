@@ -107,6 +107,8 @@ async fn tool_round_trip() {
             "step/start",
             "system/message",
             "user/message",
+            // 本步开出的工具记一条加载记录（T014.2）
+            "tool/registry",
             "assistant/message",
             "tool/call",
             "tool/result",

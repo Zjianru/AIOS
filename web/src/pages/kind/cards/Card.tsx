@@ -8,6 +8,7 @@ import type { CardDefinition, CardEnvelope, CardType } from '@/lib/cardEnvelope'
 import { resolveSlots } from '@/lib/cardEnvelope';
 import type { CardHost, CardViewProps } from './model';
 import { cardDefinitions, normalizeEnvelope } from './model';
+import { ConfirmCardView } from './ConfirmView';
 import { ConnectionCardView } from './ConnectionCardView';
 import { GenericCardView } from './GenericView';
 import { QuestionCardView } from './QuestionView';
@@ -41,6 +42,7 @@ const registry: Partial<Record<CardType, RegisteredCard>> = {
   search: registered(cardDefinitions.search, SearchCardView),
   generic: registered(cardDefinitions.generic, GenericCardView),
   connection: registered(cardDefinitions.connection, ConnectionCardView),
+  confirm: registered(cardDefinitions.confirm, ConfirmCardView),
 };
 
 /** 工作过程的卡没有程序操作；这里的空操作只兜底，提问卡在对话里由 QuestionCard 给真 host。 */

@@ -57,6 +57,10 @@ export interface CardHost {
   verifyConnection?: (connectionId: string) => Promise<void>;
   /** 连接卡：连接可用后进入下一步（首次使用的「开始」）。 */
   start?: () => void;
+  /** 确认卡：选了这一项并确认（由页面向服务发 card-act）。 */
+  confirmCard?: (optionId: string) => void;
+  /** 确认卡：暂不（由页面向服务发 card-act）。 */
+  dismissCard?: () => void;
 }
 
 /** 卡片视图的 props：信封、校验过的槽位、程序操作。 */
@@ -278,6 +282,145 @@ export const genericCard: CardDefinition<unknown, GenericSlots> = {
   schema: genericSlotsSchema,
   from: genericCardOf,
   fallback: GENERIC_FALLBACK_SLOTS,
+};
+
+/* ───────── 确认卡：带确认意图的选项 ───────── */
+
+/** 服务端填的一行事实（名称：值）。 */
+export interface ConfirmFactSlot {
+  name: string;
+  value: string;
+}
+
+/** 一个可选的项：标签是标签槽，说明是正文槽，事实由服务端读当前状态填。 */
+export interface ConfirmOptionSlot {
+  id: string;
+  label: LabelSlot;
+  description?: BodySlot;
+  facts: ConfirmFactSlot[];
+}
+
+export interface ConfirmSlots {
+  title: LabelSlot;
+  brief: BodySlot;
+  options: ConfirmOptionSlot[];
+}
+
+/** 决定的阶段；replaced 是从日志推导的（后面又有新卡），不写日志。 */
+export type ConfirmPhase = 'confirmed' | 'dismissed' | 'refused' | 'failed' | 'replaced';
+
+/** 记录下来的决定（card/decision 事件）；还没点过就是 null。 */
+export interface ConfirmDecision {
+  phase: Exclude<ConfirmPhase, 'replaced'>;
+  option?: string;
+  action?: string;
+  data?: { summary?: string } & Record<string, unknown>;
+}
+
+/**
+ * 确认卡的事实：提议（propose_action 工具结果 meta.card）、决定和是否被新卡替换。
+ * 事实来自日志，刷新页面照样能推出来。
+ */
+export interface ConfirmCardFact {
+  callId: string;
+  proposal: unknown;
+  decision: ConfirmDecision | null;
+  replaced: boolean;
+}
+
+// 事实行是服务端填的；形状不对的整行去掉，不塞一个空名称。
+const confirmFactSchema = z.object({ name: z.string(), value: z.string() });
+
+const confirmOptionSchema = z.object({
+  id: z.string().min(1),
+  // 标签超长截断显示；空或非字符串才是默认值（空），下面把它和空标签一起丢掉。
+  label: labelSlot(''),
+  description: bodySlot.optional(),
+  facts: z
+    .array(confirmFactSchema.nullable().catch(null))
+    .default([])
+    .transform((items) => items.filter((item): item is ConfirmFactSlot => item !== null)),
+});
+
+export const confirmSlotsSchema = z.object({
+  title: labelSlot(''),
+  brief: bodySlot,
+  options: z
+    .array(confirmOptionSchema.nullable().catch(null))
+    .default([])
+    .transform((items) =>
+      items.filter(
+        (item): item is ConfirmOptionSlot => item !== null && item.label.trim() !== '',
+      ),
+    ),
+});
+
+const CONFIRM_FALLBACK_SLOTS: ConfirmSlots = { title: '', brief: EMPTY_BODY, options: [] };
+
+function confirmReceiptOf(
+  fact: ConfirmCardFact,
+  options: ConfirmOptionSlot[],
+): CardReceipt | null {
+  const decision = fact.decision;
+  if (!decision) {
+    return fact.replaced
+      ? { outcome: 'cancelled', summary: '这张卡没动过，已经被新卡片替换' }
+      : null;
+  }
+  const chosen = decision.option
+    ? options.find((option) => option.id === decision.option)
+    : undefined;
+  const label = chosen ? chosen.label : '';
+  const result = decision.data?.summary?.trim() ?? '';
+  switch (decision.phase) {
+    case 'confirmed':
+      return {
+        outcome: 'success',
+        summary: '已执行：选了「' + label + '」' + (result ? '；' + result : ''),
+      };
+    case 'dismissed':
+      return { outcome: 'cancelled', summary: '你点了「暂不」，什么都没执行' };
+    case 'refused':
+      return {
+        outcome: 'cancelled',
+        summary: '已经变了，没执行' + (result ? '：' + result : ''),
+      };
+    case 'failed':
+      return { outcome: 'failed', summary: '没做成' + (result ? '：' + result : '') };
+  }
+}
+
+function confirmStateOf(fact: ConfirmCardFact): CardState {
+  if (!fact.decision) return fact.replaced ? 'done' : 'pending';
+  return fact.decision.phase === 'failed' ? 'failed' : 'done';
+}
+
+export function confirmCardOf(
+  fact: ConfirmCardFact | null | undefined,
+): CardEnvelope<ConfirmSlots> | null {
+  if (!fact || typeof fact !== 'object') return null;
+  const parsed = confirmSlotsSchema.safeParse(fact.proposal);
+  if (!parsed.success || parsed.data.options.length === 0) return null;
+  const receipt = confirmReceiptOf(fact, parsed.data.options);
+  return {
+    id: typeof fact.callId === 'string' ? fact.callId : '',
+    type: 'confirm',
+    role: 'decision',
+    state: confirmStateOf(fact),
+    slots: parsed.data,
+    ...(receipt ? { receipt } : {}),
+  };
+}
+
+/** 对话里的确认卡：取不出信封时退回通用卡，不整卡消失。 */
+export function confirmCardEntryOf(fact: ConfirmCardFact | null | undefined): CardEnvelope {
+  return confirmCardOf(fact) ?? genericCardOf(fact);
+}
+
+export const confirmCard: CardDefinition<ConfirmCardFact, ConfirmSlots> = {
+  schema: confirmSlotsSchema,
+  from: (fact) => confirmCardOf(fact),
+  fallback: CONFIRM_FALLBACK_SLOTS,
 };
 
 /* ───────── 工具卡（T017.3）：工具名 → 类型、槽位和信封 ───────── */
@@ -632,6 +775,7 @@ export const cardDefinitions = {
   search: searchCard,
   generic: genericCard,
   connection: connectionCard,
+  confirm: confirmCard,
 };
 
 /* ───────── 颜色（程序按角色和状态定） ───────── */

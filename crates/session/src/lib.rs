@@ -14,9 +14,10 @@ mod store;
 
 pub use error::SessionError;
 pub use event::{
-    AbortCause, Event, EventKind, FORMAT_VERSION, InboxOutcome, InboxTarget, JobToolCallData,
-    LlmFailure, MIN_READ_VERSION, ModelSelection, RetryId, RetryMode, SessionHeader, ShadowedRange,
-    SurfaceOp, TodoItem, TodoStatus, ToolError, TurnEndReason, last_model_selection, last_todos,
+    AbortCause, CardDecision, CardDecisionPhase, Event, EventKind, FORMAT_VERSION, InboxOutcome,
+    InboxTarget, JobToolCallData, LlmFailure, MIN_READ_VERSION, ModelSelection, RetryId, RetryMode,
+    SessionHeader, ShadowedRange, SurfaceOp, TodoItem, TodoStatus, ToolError, TurnEndReason,
+    last_model_selection, last_todos,
 };
 pub use id::SessionId;
 pub use projection::{

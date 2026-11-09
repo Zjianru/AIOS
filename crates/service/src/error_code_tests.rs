@@ -64,6 +64,11 @@ fn variants() -> Vec<(&'static str, ServiceError)> {
         ),
         ("attachment/not-text", ServiceError::AttachmentNotText),
         ("request/invalid-message", ServiceError::MessageEmpty),
+        ("exa/no-key", ServiceError::ExaKeyMissing),
+        (
+            "exa/invalid-key",
+            ServiceError::Credentials(credentials::KeyringError::InvalidToolKey("x".to_owned())),
+        ),
     ]
 }
 
@@ -74,7 +79,7 @@ fn service_error_codes_cover_every_variant() {
     let pairs = variants();
     assert_eq!(
         pairs.len(),
-        16,
+        18,
         "ServiceError 的每个变体（Credentials 按子类拆）都有一项"
     );
     for (expected, error) in &pairs {
@@ -85,8 +90,8 @@ fn service_error_codes_cover_every_variant() {
     used.dedup();
     assert_eq!(
         ServiceErrorCode::ALL.len(),
-        16,
-        "码数 16（加了 settings/unreadable）"
+        18,
+        "码数 18（加了 Exa 的两个码）"
     );
     assert!(
         ServiceErrorCode::ALL
@@ -110,8 +115,8 @@ fn service_error_codes_cover_every_variant() {
 fn invalid_json_code_is_in_the_single_code_table() {
     assert_eq!(
         ServiceErrorCode::ALL.len(),
-        16,
-        "码数 16（settings/unreadable 进面）"
+        18,
+        "码数 18（Exa 的两个码进面）"
     );
     assert!(
         ServiceErrorCode::ALL

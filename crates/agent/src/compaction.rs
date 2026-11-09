@@ -521,7 +521,13 @@ async fn summarize(
 ) -> Result<SummaryOutcome, AgentError> {
     let mut input = prefix.to_vec();
     input.push(Message::user_text(COMPACTION_INSTRUCTION));
-    let tools = host.tools().definitions();
+    // 摘要请求与主请求用同一份工具表/投影：没开出的工具不能进摘要请求。
+    let (tools, history) = {
+        let store = host.session().lock().expect("agent 会话锁被毒化");
+        let derived = store.derive_messages_with_seqs();
+        crate::tool_gate::request_tools(host.tools(), store.events(), &derived, &host.tool_keys())
+    };
+    let tool_request = model::ToolRequest { tools, history };
     let cancel = model::CancelToken::new(
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         std::sync::Arc::new(tokio::sync::Notify::new()),
@@ -529,7 +535,7 @@ async fn summarize(
     // T012.3：摘要请求用这个模型的 DefaultEffort（生产调用点，不再用用户/CLI 档）。
     let summary_model = host.model().with_effort(host.model().default_effort());
     let mut stream = summary_model
-        .stream_with_max_tokens(&input, &tools, &cancel, Some(max_tokens))
+        .stream_with_max_tokens(&input, &tool_request, &cancel, Some(max_tokens))
         .await?;
     let mut text = String::new();
     let mut usage: Option<Usage> = None;
@@ -658,6 +664,7 @@ mod tests {
                 max_tokens: 16,
                 context_window: 1000,
                 effort: model::Effort::new("high"),
+                tool_update: None,
             },
             test_credential(),
         )
@@ -700,6 +707,9 @@ mod tests {
         }
         fn log_path(&self) -> &Path {
             Path::new("/tmp/aios-test.log")
+        }
+        fn tool_keys(&self) -> std::collections::BTreeSet<tools::ToolKey> {
+            std::collections::BTreeSet::new()
         }
         fn compaction_policy(&self) -> CompactionPolicy {
             self.policy

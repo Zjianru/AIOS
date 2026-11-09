@@ -15,6 +15,7 @@ import { QuoteChip } from './QuoteChip';
 import { FileReferenceChip } from './FileReferenceChip';
 import { fileMentions } from './atGrammar';
 import { QuestionCard } from './QuestionCard';
+import { ConfirmCard } from './ConfirmCard';
 import { useKindStore, useStreamStore } from './kindStore';
 import { processStepsOf } from './turnViews';
 import { ProcessView } from './process/ProcessView';
@@ -362,6 +363,8 @@ export const TurnRow = memo(function TurnRow({
   const drawing = useKindStore((state) =>
     state.drawingCanvas?.turnId === view.id ? state.drawingCanvas.title : null,
   );
+  // 工作过程里的路径相对会话工作目录显示（status 给）。
+  const cwd = useKindStore((state) => state.cwd);
   if (view.compaction) return <CompactionDivider compaction={view.compaction} />;
   const waitingForKernel = view.delivery !== null;
   return (
@@ -419,12 +422,12 @@ export const TurnRow = memo(function TurnRow({
         <>
           {streaming ? (
             <ProcessView
-              steps={processStepsOf(view, '')}
+              steps={processStepsOf(view)}
               status={view.status}
               live
               startedAt={view.startedAt}
               durationMs={view.durationMs}
-              cwd=""
+              cwd={cwd}
               answering={false}
               usage={view.tokens.input || view.tokens.output ? { model: view.model, ...view.tokens } : undefined}
               thinkingSeconds={view.thinkingSeconds}
@@ -440,12 +443,12 @@ export const TurnRow = memo(function TurnRow({
             view.status === 'failed') ? (
             <div className="mt-2">
               <ProcessView
-                steps={processStepsOf(view, '')}
+                steps={processStepsOf(view)}
                 status={view.status}
                 live={false}
                 startedAt={view.startedAt}
                 durationMs={view.durationMs}
-                cwd=""
+                cwd={cwd}
                 answering
                 usage={view.tokens.input || view.tokens.output ? { model: view.model, ...view.tokens } : undefined}
                 thinkingSeconds={view.thinkingSeconds}
@@ -467,6 +470,8 @@ export const TurnRow = memo(function TurnRow({
               />
             ) : null}
           </div>
+
+          {view.card && view.answer ? <ConfirmCard card={view.card} /> : null}
 
           {view.status === 'interrupted' && view.stoppedAt ? (
             <div className="mt-1 flex items-center gap-1.5 text-2 text-ink-3" data-kind="stopped">

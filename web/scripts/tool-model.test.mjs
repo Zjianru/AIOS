@@ -52,6 +52,7 @@ const categories = {
   ask_user_question: 'questions',
   todo_write: 'plan',
   skill: 'tools',
+  aios_query: 'tools',
   job_list: 'tools',
   job_output: 'tools',
   job_kill: 'tools',
@@ -61,6 +62,9 @@ for (const [name, expected] of Object.entries(categories)) {
 }
 assert.equal(toolTitle('bash'), '运行命令');
 assert.equal(toolTitle('apply_patch'), '编辑');
+assert.equal(toolTitle('aios_query'), '查 AIOS');
+assert.equal(toolTitle('web_search'), '搜网页');
+assert.equal(toolTitle('web_fetch'), '读网页');
 
 // diffOf：跑时按参数推，跑完优先用结果 meta，失败不出，停下只出 meta 里的实际改动。
 const writing = step('write', { file_path: '/w/a.txt', content: 'one\ntwo\n' }, '', 'running');
@@ -92,6 +96,7 @@ assert.deepEqual(totals, { added: 1, removed: 0 });
 
 // 行摘要与路径相对化、时长文案。
 assert.equal(displayPath('/w/src/a.ts', '/w'), 'src/a.ts');
+assert.equal(displayPath('/w/src/a.ts', ''), '/w/src/a.ts', '没有 cwd（旧状态消息）时原样显示');
 assert.equal(rowSummary(step('read', { file_path: '/w/src/a.ts' }, '', 'done', {}), '/w'), 'src/a.ts');
 assert.equal(formatDurationMs(1000), '1秒');
 assert.equal(formatDurationMs(61_000), '1分1秒');

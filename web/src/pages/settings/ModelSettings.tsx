@@ -15,8 +15,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Ban, ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, Loader2, Plus, X } from 'lucide-react';
 import { toast } from 'sonner';
 import {
-  addConnection, checkConnection, discoverModels, getModelSettings, moveKeyFile, relinkKeyFile, removeConnection,
-  resetKeyring, revokeKey, setDisabledModels, updateConnection,
+  addConnection, checkConnection, discoverModels, getExaKey, getModelSettings, moveKeyFile, relinkKeyFile,
+  removeConnection, removeExaKey, resetKeyring, revokeKey, saveExaKey, setDisabledModels, updateConnection,
+  verifyExaKey,
 } from '@/data/keyring';
 import { matchDisabled } from '@/data/disabled';
 import {
@@ -27,7 +28,7 @@ import { CURRENCIES, compactPrice, formatModelTokens } from '@/lib/numbers';
 import { formatLocalDateTime } from '@/lib/time';
 import { useSettingsState } from '@/lib/settingsState';
 import { PROTOCOL_LABEL } from '@/data/keyring';
-import type { ConnectionView, ModelRow, ModelSettingsView } from '@/data/keyring';
+import type { ConnectionView, ModelRow, ModelSettingsView, ToolKeyView } from '@/data/keyring';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
@@ -943,6 +944,212 @@ function KeyringBroken({ view, onView }: { view: ModelSettingsView; onView: (vie
   );
 }
 
+/* ───────────────────────── 联网搜索（D73） ───────────────────────── */
+
+/**
+ * Exa 的工具凭证：只写不读，存进 Keyring；「已保存」和「能用」分开说。
+ *
+ * - 没存：Kind 的能力目录里没有 `web`，问它要联网，它让你来这里填；
+ * - 保存以后自动验证一次；验证跑在服务端，页面只拿结果；
+ * - 不读环境变量；页面、日志和对话里都不出现 key 正文。
+ */
+function WebSearchSection({ broken, onChanged }: { broken: boolean; onChanged: () => void }) {
+  const [view, setView] = useState<ToolKeyView | null>(null);
+  const [draft, setDraft] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [shown, setShown] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (broken) return;
+    void getExaKey().then(setView).catch(() => setView(null));
+  }, [broken]);
+
+  const saved = view?.key.saved ?? false;
+  const checking = view?.check.kind === 'checking';
+  const savedAt = view && view.key.saved ? formatLocalDateTime(view.key.savedAt) : '';
+
+  const verify = async () => {
+    if (!view) return;
+    setView({ ...view, check: { kind: 'checking' } });
+    try {
+      setView(await verifyExaKey());
+      onChanged();
+    } catch (error) {
+      toast.error((error as Error).message);
+      setView(await getExaKey().catch(() => null));
+    }
+  };
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const next = await saveExaKey(draft);
+      setDraft('');
+      setEditing(false);
+      onChanged();
+      toast.success(saved ? 'key 换好了，进了 Keyring；正在验证' : 'key 进了 Keyring；Kind 下一轮就能联网，正在验证');
+      setView({ ...next, check: { kind: 'checking' } });
+      setView(await verifyExaKey());
+      onChanged();
+    } catch (error) {
+      toast.error((error as Error).message);
+      setView(await getExaKey().catch(() => null));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    try {
+      setView(await removeExaKey());
+      setConfirmDelete(false);
+      onChanged();
+      toast('Exa 的 key 删了；Kind 从下一轮起不能联网');
+    } catch (error) {
+      toast.error((error as Error).message);
+    }
+  };
+
+  const status: { text: string; tone?: 'warn' | 'fail' | 'ok' } = broken
+    ? { text: 'Keyring 现在读不出来，暂时不能联网', tone: 'fail' }
+    : !view
+      ? { text: '正在读取…' }
+      : !saved
+        ? { text: '还没有 key。Kind 现在不能搜网页、读链接。', tone: 'warn' }
+        : checking
+          ? { text: '已保存在 Keyring（' + savedAt + '）· 正在验证…' }
+          : view.check.kind === 'ok'
+            ? { text: '已保存在 Keyring（' + savedAt + '）· 能用（' + formatLocalDateTime(view.check.at) + ' 验证）', tone: 'ok' }
+            : view.check.kind === 'fail'
+              ? { text: '已保存在 Keyring（' + savedAt + '）· 不能用：' + view.check.reason, tone: 'fail' }
+              : { text: '已保存在 Keyring（' + savedAt + '）· 还没验证过' };
+
+  const dot = broken
+    ? 'var(--fail)'
+    : !saved
+      ? 'var(--wait)'
+      : checking
+        ? 'var(--run)'
+        : view?.check.kind === 'ok'
+          ? 'var(--done)'
+          : view?.check.kind === 'fail'
+            ? 'var(--fail)'
+            : 'var(--ink-3)';
+
+  return (
+    <section className="mt-10" data-settings="web-search">
+      <h2 className="text-3 font-medium text-ink">联网搜索</h2>
+      <p className="mt-1 text-2 leading-5 text-ink-2">
+        填上你自己的 Exa key，Kind 才能搜网页、读链接。网页的内容当作资料，不当作指令；读网页不访问本机和内网地址。
+      </p>
+
+      <div className="mt-3 rounded-card border border-line">
+        <div className="flex items-center gap-3 px-4 py-3">
+          <span
+            className={cn('block size-2 shrink-0 rounded-full', checking && 'animate-pulse')}
+            style={{ backgroundColor: dot }}
+          />
+          <div className="min-w-0">
+            <div className="text-3 text-ink">Exa</div>
+            <div
+              className="mt-0.5 truncate text-1"
+              data-settings="web-search-status"
+              style={status.tone ? { color: `var(--${status.tone === 'warn' ? 'wait' : status.tone === 'ok' ? 'done' : 'fail'})` } : undefined}
+            >
+              <span className={status.tone ? '' : 'text-ink-3'}>{status.text}</span>
+            </div>
+          </div>
+          <div className="ml-auto flex shrink-0 items-center gap-1">
+            {saved && !broken ? (
+              <Btn kind="quiet" disabled={checking} onClick={() => void verify()}>
+                {checking ? '正在验证…' : '验证'}
+              </Btn>
+            ) : null}
+            {saved && !editing && !broken ? (
+              <Btn kind="danger" onClick={() => setConfirmDelete(true)}>
+                删除
+              </Btn>
+            ) : null}
+            {(saved && !broken) || editing ? (
+              <Btn
+                kind="plain"
+                onClick={() => {
+                  setEditing((on) => !on);
+                  setDraft('');
+                }}
+              >
+                {editing ? '收起' : '换一把'}
+              </Btn>
+            ) : null}
+          </div>
+        </div>
+
+        {(!saved || editing) && !broken ? (
+          <div className="border-t border-line px-4 py-3" data-settings="exa-key">
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <input
+                  type={shown ? 'text' : 'password'}
+                  autoComplete="new-password"
+                  spellCheck={false}
+                  value={draft}
+                  onChange={(event) => {
+                    setDraft(event.target.value);
+                    setShown(false);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && draft.trim() && !busy) void save();
+                  }}
+                  placeholder={saved ? '新的 key；保存后替换掉旧的' : '输入 Exa 的 API key'}
+                  className={cn(inputClass, draft && 'pr-9')}
+                  data-settings="exa-key-input"
+                />
+                {draft ? (
+                  <button
+                    type="button"
+                    onClick={() => setShown((on) => !on)}
+                    aria-label={shown ? '隐藏 key' : '显示 key'}
+                    className="absolute right-1.5 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-btn text-ink-3 hover:bg-hover hover:text-ink"
+                  >
+                    {shown ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+                  </button>
+                ) : null}
+              </div>
+              <Btn kind="primary" disabled={!draft.trim() || busy} onClick={() => void save()}>
+                {busy ? '正在保存…' : '保存'}
+              </Btn>
+            </div>
+            <div className="mt-1.5 text-1 leading-4 text-ink-3">
+              在 <span className="brand-type">dashboard.exa.ai</span> 的 API Keys 里拿。保存以后页面、日志和对话里都不再出现；不从环境变量读。
+            </div>
+          </div>
+        ) : null}
+      </div>
+
+      <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>删除 Exa 的 key？</DialogTitle>
+            <DialogDescription>
+              立刻生效：Kind 从下一轮起不能搜网页、读链接，正在搜的那一次会失败。删除会留下记录，key 本身不留。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Btn kind="plain" onClick={() => setConfirmDelete(false)}>
+              取消
+            </Btn>
+            <Btn kind="danger" className="border border-[var(--fail)]/40" onClick={() => void remove()}>
+              删除
+            </Btn>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </section>
+  );
+}
+
 /* ───────────────────────── Keyring 一节 ───────────────────────── */
 
 /** T012.9：显示币种（settings.json 的 currency；价格和花费一律按美元存，显示时换算）。 */
@@ -1436,6 +1643,8 @@ export function ModelSettings() {
       </section>
 
       <MaskSection view={view} onView={setView} onMask={(pattern) => setMasking(pattern)} />
+
+      <WebSearchSection broken={broken} onChanged={() => void load()} />
 
       <KeyringSection view={view} onView={setView} />
 
