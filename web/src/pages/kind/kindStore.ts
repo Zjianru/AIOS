@@ -149,6 +149,8 @@ interface KindState {
   setPickerOpen: (open: boolean) => void;
   /** ：Kind 首屏引导：先看是不是空库（首次使用），否则加载对话。 */
   bootstrap: () => Promise<void>;
+  /** 离开 Kind 场景时主动断开：旧 socket 不在后台收帧（设置页往返不再叠第二条）。 */
+  disconnect: () => void;
   loadInitial: () => Promise<void>;
   loadOlder: () => Promise<void>;
   setAtBottom: (value: boolean) => void;
@@ -348,6 +350,21 @@ function openSocket(): void {
   );
   activeSocket = socket;
   if (previous && previous !== socket) previous.close();
+}
+
+/** 主动断开（离开 Kind 场景）：不触发重连；onClose 看到 activeSocket 已清就忽略。 */
+function closeSocket(): void {
+  const socket = activeSocket;
+  activeSocket = null;
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+  if (recheckTimer !== null) {
+    clearTimeout(recheckTimer);
+    recheckTimer = null;
+  }
+  socket?.close();
 }
 
 /** /4：本轮已收到的日志事件（首屏页 + live）；实时帧按轮重算 view。 */
@@ -795,6 +812,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
   },
 
   setAtBottom: (value) => set({ atBottom: value }),
+
+  disconnect: closeSocket,
 
   send: (text, options) => {
     // 真实发送；requestId 是幂等键（重发复用同一个）。
