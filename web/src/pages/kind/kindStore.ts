@@ -12,6 +12,7 @@ import type { ServiceCatalogModel } from '@/data/service';
 import { dayLabelOf } from '@/lib/numbers';
 import { useSettingsState } from '@/lib/settingsState';
 import { effortName } from './effortName';
+import { eventSelectionEffort, serviceSelectionEffort } from './effortSelection';
 import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
 import { reconnectDelayMs } from '@/data/reconnect';
 import type { GateDetail, GateState } from './KernelGate';
@@ -434,12 +435,21 @@ function applyLiveEvent(event: ServiceEvent): void {
       typeof event.data.effortWanted === 'string' ? event.data.effortWanted : undefined;
     if (connection && model) {
       const label = useKindStore.getState().modelNames[model] ?? model;
+      const effort = eventSelectionEffort(wanted);
       void useKindStore
         .getState()
         .applySelection(
-          { connectionId: connection, modelId: model, label, effortWanted: wanted, effortActual: wanted },
+          {
+            connectionId: connection,
+            modelId: model,
+            label,
+            effortWanted: effort.wanted,
+            effortActual: effort.actual,
+          },
           false,
         );
+      // 事件不带实际档：实际档由 card-act 回执或下一次 status 补，不在这里猜测；
+      // 也不在事件里现发 status——跨连接换模型会重建根 agent，并发 status 会占住会话写锁。
     }
     return;
   }
@@ -833,7 +843,47 @@ export const useKindStore = create<KindState>()((set, get) => ({
   confirmCard: (callId, optionId) => {
     // 卡片状态和回执由 card/decision 事件回填（页面不先改，服务和日志说了算）。
     return cardAct(callId, 'confirm', optionId).then(
-      () => {},
+      (response) => {
+        // 换模型的回执带实际档：卡路径没有 session-model-select 的响应，用这条回填选择器。
+        const decision = response.decision;
+        const data = decision?.phase === 'confirmed' ? decision.data : undefined;
+        const result =
+          data && typeof data.result === 'object' && data.result !== null
+            ? (data.result as Record<string, unknown>)
+            : null;
+        if (!result) return;
+        const { connection, model, effortWanted, effortActual } = result;
+        if (
+          typeof connection !== 'string' ||
+          typeof model !== 'string' ||
+          typeof effortActual !== 'string'
+        ) {
+          return;
+        }
+        const wanted = typeof effortWanted === 'string' ? effortWanted : undefined;
+        const label = get().modelNames[model] ?? model;
+        void get().applySelection(
+          {
+            connectionId: connection,
+            modelId: model,
+            label,
+            effortWanted: wanted,
+            effortActual,
+          },
+          false,
+        );
+        if (wanted && wanted !== effortActual) {
+          toast(
+            '下一轮开始用 ' +
+              label +
+              ' · 思考 ' +
+              effortName(effortActual) +
+              '（没有「' +
+              effortName(wanted) +
+              '」，按实际档）',
+          );
+        }
+      },
       (error: unknown) => {
         toast('确认没送到内核', { description: '连上内核再试一次' });
         throw error;
@@ -873,7 +923,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
   applySelection: async (selection, announce = true) => {
     const { connectionId, modelId, label, effortWanted, effortActual } = selection;
     const wanted = effortWanted ?? get().wantedEffort;
-    const actual = effortActual ?? effortWanted;
+    // 实际档只认调用方给的服务值；没有就是未知，不能拿 wanted 顶替。
+    const actual = serviceSelectionEffort(wanted, effortActual).actual;
     set((state) => ({
       wantedEffort: wanted,
       model: {
@@ -881,12 +932,17 @@ export const useKindStore = create<KindState>()((set, get) => ({
         connectionId,
         modelId,
         label,
-        effort: actual,
-        effortActual: actual,
+        effort: actual ?? state.model.effort,
+        effortActual: actual ?? state.model.effortActual,
       },
     }));
-    await get().hydrateModel({ connectionId, modelId, label, effort: actual });
-    if (!announce) return;
+    await get().hydrateModel({
+      connectionId,
+      modelId,
+      label,
+      effort: actual ?? get().model.effort,
+    });
+    if (!announce || !actual) return;
     // T012 F2：提示带档；实际档和想要的档对不上时写明「没有」。
     const wantedName = wanted ? effortName(wanted) : null;
     const actualName = actual ? effortName(actual) : null;
@@ -1006,6 +1062,24 @@ export const useKindStore = create<KindState>()((set, get) => ({
           wantedEffort: stats.effortWanted,
           modelInitialized: true,
         });
+      } else if (status.stats) {
+        // 事件换模型只带 wanted：同一 (连接, 模型, wanted) 的 status 回来时补权威实际档。
+        // wanted 对不上说明这是换档/换模型之前的旧回包，整块跳过（T021 同口径）。
+        const stats = status.stats;
+        const current = get().model;
+        if (
+          stats.connection === current.connectionId &&
+          stats.model === current.modelId &&
+          stats.effortWanted === get().wantedEffort
+        ) {
+          set((state) => ({
+            model: {
+              ...state.model,
+              effort: stats.effortActual,
+              effortActual: stats.effortActual,
+            },
+          }));
+        }
       }
     } catch {
       // 状态读不到时保留旧值（页面不显示假数据）。
