@@ -13,18 +13,21 @@ use tools::ToolSet;
 /// `skill` 工具名（加载成功是开出工具的依据）。
 const SKILL_TOOL: &str = "skill";
 
-/// 本会话里成功加载过的 skill 名。
+/// 成功加载过的 skill 名；`turn` 是 Some(n) 时只看第 n 轮，None 看整个会话。
 ///
 /// 只看 `skill` 调用的结果：失败的加载不算（工具结果 is_error，或带结构化错误）。
-pub(crate) fn loaded_skills(events: &[Event]) -> BTreeSet<String> {
+/// 工具条件按会话级求值，确认卡这类动作在同一轮执行时再按轮收紧，两处共用这一份解析。
+pub fn loaded_skills(events: &[Event], turn: Option<u64>) -> BTreeSet<String> {
     let mut requested: BTreeMap<&str, String> = BTreeMap::new();
     for event in events {
         if let EventKind::ToolCall {
+            turn: call_turn,
             call_id,
             name,
             arguments,
             ..
         } = &event.kind
+            && turn.is_none_or(|scope| *call_turn == scope)
             && name == SKILL_TOOL
             && let Some(skill) = skill_name_of(arguments)
         {
@@ -33,10 +36,19 @@ pub(crate) fn loaded_skills(events: &[Event]) -> BTreeSet<String> {
     }
     let mut loaded = BTreeSet::new();
     for event in events {
-        let EventKind::ToolResult { message, error, .. } = &event.kind else {
+        let EventKind::ToolResult {
+            turn: result_turn,
+            message,
+            error,
+            ..
+        } = &event.kind
+        else {
             continue;
         };
-        if message.is_error == Some(true) || error.is_some() {
+        if turn.is_some_and(|scope| *result_turn != scope)
+            || message.is_error == Some(true)
+            || error.is_some()
+        {
             continue;
         }
         let Some(call_id) = message.tool_call_id.as_deref() else {
@@ -58,7 +70,7 @@ pub(crate) fn request_tools(
     derived: &[(u64, Message)],
     tool_keys: &BTreeSet<tools::ToolKey>,
 ) -> (Vec<ToolSchema>, Option<ToolHistory>) {
-    let loaded = loaded_skills(events);
+    let loaded = loaded_skills(events, None);
     let registry = ToolRegistryState::rehydrate(events);
     let enabled = registry.enabled(tools, &loaded, tool_keys);
     (

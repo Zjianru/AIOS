@@ -67,23 +67,14 @@ pub(crate) fn resolve(context: &ToolContext, requested: &str) -> Result<Target, 
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let Some(name) = current.file_name().map(std::ffi::OsStr::to_os_string) else {
-                    return Err(ToolFailure::coded(
-                        "FS_NOT_FOUND",
-                        format!("cannot resolve \"{}\": not found", absolute.display()),
-                    ));
+                    return Err(not_found("resolve", &absolute.display().to_string()));
                 };
                 missing.push(name);
                 let Some(parent) = current.parent().map(Path::to_path_buf) else {
-                    return Err(ToolFailure::coded(
-                        "FS_NOT_FOUND",
-                        format!("cannot resolve \"{}\": not found", absolute.display()),
-                    ));
+                    return Err(not_found("resolve", &absolute.display().to_string()));
                 };
                 if parent == current {
-                    return Err(ToolFailure::coded(
-                        "FS_NOT_FOUND",
-                        format!("cannot resolve \"{}\": not found", absolute.display()),
-                    ));
+                    return Err(not_found("resolve", &absolute.display().to_string()));
                 }
                 current = parent;
             }
@@ -127,7 +118,7 @@ pub(crate) fn probe(target: &Target) -> Result<Option<FileInfo>, ToolFailure> {
     }
 }
 
-/// 登记一次「读过、且是这个版本」的观察（观察策略模块，T006.6）。
+/// 登记一次「读过、且是这个版本」的观察（观察策略模块）。
 pub(crate) fn record_present(context: &ToolContext, target: &Target, version: FileVersion) {
     context
         .session()
@@ -199,10 +190,7 @@ fn guard_version(
                     target.display()
                 ),
             ),
-            Missing::NotFound => ToolFailure::coded(
-                "FS_NOT_FOUND",
-                format!("cannot {verb} \"{}\": not found", target.display()),
-            ),
+            Missing::NotFound => not_found(verb, &target.display()),
         });
     };
     ensure_regular(&info, target, verb)?;
@@ -222,6 +210,14 @@ fn ensure_regular(info: &FileInfo, target: &Target, verb: &str) -> Result<(), To
         "FS_NOT_REGULAR_FILE",
         format!("cannot {verb} \"{}\": not a regular file", target.display()),
     ))
+}
+
+/// 统一的 not-found 文案；`display` 是给用户看的路径。
+pub(crate) fn not_found(verb: &str, display: &str) -> ToolFailure {
+    ToolFailure::coded(
+        "FS_NOT_FOUND",
+        format!("cannot {verb} \"{display}\": not found"),
+    )
 }
 
 fn stale_version(target: &Target, verb: &str) -> ToolFailure {
@@ -641,13 +637,7 @@ pub(crate) fn read_guarded_text(
 /// 读文本并 LF 归一（二进制/非法 UTF-8 按 verb 文案拒绝）。
 pub(crate) fn read_text_for_verb(target: &Target, verb: &str) -> Result<TextFile, ToolFailure> {
     let bytes = fs::read(&target.key).map_err(|error| match error.kind() {
-        std::io::ErrorKind::NotFound => ToolFailure::coded(
-            "FS_STALE_VERSION",
-            format!(
-                "cannot {verb} \"{}\": file changed since it was read",
-                target.display()
-            ),
-        ),
+        std::io::ErrorKind::NotFound => stale_version(target, verb),
         _ => io_failure("cannot read", &target.key, &error),
     })?;
     if bytes.contains(&0) {

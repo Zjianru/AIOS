@@ -66,7 +66,7 @@ struct WireText {
     text: String,
 }
 
-/// T013.4：文件块的模型可见文本（照 DSH \`llm/llm/src/content.ts\` 的 fileHandleText 原句）。
+/// 文件块的模型可见文本（照 DSH \`llm/llm/src/content.ts\` 的 fileHandleText 原句）。
 ///
 /// `path` 是只读副本的绝对路径；没有路径时用 DSH 的「环境不可读」分支。
 pub fn file_handle_text(attachment_id: &str, name: &str, bytes: u64, path: Option<&str>) -> String {
@@ -180,7 +180,7 @@ pub(super) fn request_body(
                                 Some(WireBlock::Text { text: text.clone() })
                             }
                             ContentBlock::Text { .. } => None,
-                            // T013.4：文件块投给模型时换成 fileHandleText（DSH 原句照抄）。
+                            // 文件块投给模型时换成 fileHandleText（DSH 原句照抄）。
                             ContentBlock::File {
                                 attachment_id,
                                 name,
@@ -311,7 +311,7 @@ pub(super) fn request_body(
         max_tokens,
         config.max_tokens,
     );
-    // T014.9：请求的输出上限不能超过这个模型自己声明的上限。装配时的全局上限（256k）
+    // 请求的输出上限不能超过这个模型自己声明的上限。装配时的全局上限（256k）
     // 是初值；换到上限更小的模型（MiniMax-M2.7 这类）后照旧发会被厂商按 400 拒绝。
     // 目录里没有这个模型（自定义连接）就不改。
     if let Some(limit) = crate::catalog::output_limit(&config.provider, &config.model) {
@@ -359,7 +359,7 @@ pub(super) struct PreparedRequest {
     pub tool_changes: bool,
 }
 
-/// DSH DeepSeek 序列化的三类防御校验（T006.19 照 llm-deepseek/src/serialize.ts:136-146）：
+/// DSH DeepSeek 序列化的三类防御校验（照 llm-deepseek/src/serialize.ts:136-146）
 /// 重复 tool call id、tool_result 没有匹配的调用、历史结束时仍有未决工具调用。
 fn validate_tool_pairing(messages: &[Message]) -> Result<(), ModelError> {
     // 压缩 checkpoint 存在时，surface 的替换/重排语义会让配对检查不再可靠
@@ -391,7 +391,7 @@ fn validate_tool_pairing(messages: &[Message]) -> Result<(), ModelError> {
                 let Some(index) = pending.iter().position(|id| *id == tool_use_id) else {
                     // AIOS 的压缩 checkpoint 会把旧区间从 surface 隐藏，而 pruner 替换节点
                     // 按 append 顺序落在 surface 末尾；因此压缩过的历史里可能出现「结果还在、
-                    // 对应调用已被 checkpoint 隐藏」的合法形状（T006.19 适配）。
+                    // 对应调用已被 checkpoint 隐藏」的合法形状（适配）。
                     if has_checkpoint {
                         continue;
                     }
@@ -444,7 +444,7 @@ fn unsupported(message: &str) -> ModelError {
     ModelError::new(ErrorCode::UnsupportedContent, message.to_owned())
 }
 
-/// T006.19 红测试：DSH DeepSeek 序列化的三类防御校验
+/// 红测试：DSH DeepSeek 序列化的三类防御校验
 /// （llm-deepseek/src/serialize.ts:136-146：重复 tool call id / tool_result 匹配 / 历史未决工具）。
 #[cfg(test)]
 mod t006_19_serialize_defense_tests {
@@ -632,7 +632,7 @@ mod effort_wire_tests {
         }
     }
 
-    /// T014.9：换到输出上限更小的模型以后，请求的 max_tokens 不能超过目录给它的上限
+    /// 换到输出上限更小的模型以后，请求的 max_tokens 不能超过目录给它的上限
     /// （MiniMax-M2.7 会 400：max tokens > 196608）；上限更大的模型保持装配时的值。
     #[test]
     fn request_max_tokens_never_exceed_the_model_output_limit() {
@@ -652,6 +652,22 @@ mod effort_wire_tests {
             None,
         );
         assert_eq!(flash["max_tokens"], 256_000);
+    }
+
+    /// 目录里没有这个模型（自定义连接）时不动装配时的输出上限。
+    #[test]
+    fn request_max_tokens_stay_when_catalog_has_no_model() {
+        let custom = with_provider(
+            "custom",
+            "http://127.0.0.1:1",
+            "private-model",
+            "low",
+            Some(64_000),
+        );
+        assert_eq!(custom["max_tokens"], 64_000, "目录没有该模型时不改请求上限");
+        let default_limit =
+            with_provider("custom", "http://127.0.0.1:1", "private-model", "low", None);
+        assert_eq!(default_limit["max_tokens"], 256_000);
     }
 
     #[test]
@@ -729,7 +745,7 @@ mod effort_wire_tests {
 mod t013_file_block_tests {
     use super::*;
 
-    /// T013.4：fileHandleText 原句（DSH llm/llm/src/content.ts:151-158 照抄）。
+    /// fileHandleText 原句（DSH llm/llm/src/content.ts:151-158 照抄）。
     #[test]
     fn file_handle_text_matches_dsh_verbatim() {
         let path = "/tmp/data/attachments/v1/files/ab/abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567/notes.txt";
@@ -757,7 +773,7 @@ mod t013_file_block_tests {
         );
     }
 
-    /// T013.4：粘贴块照原文进请求体；文件块换成 fileHandleText。
+    /// 粘贴块照原文进请求体；文件块换成 fileHandleText。
     #[test]
     fn request_body_keeps_pastes_verbatim_and_replaces_files_with_handle_text() {
         let config = DeepSeekConfig {

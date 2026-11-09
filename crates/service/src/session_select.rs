@@ -62,6 +62,14 @@ impl RootHost {
             .expect("selection 锁被毒化")
             .clone()
             .unwrap_or(target);
+        // 窗口跟实际生效的模型：同一连接换模型不重建根 agent，重开时 factory 才会换窗口。
+        if let Some(window) = self.model_context_window(&actual) {
+            self.context.lock().expect("context 锁被毒化").window = window;
+            let guard = self.inner.lock().await;
+            if let Some(host) = guard.as_ref() {
+                host.agent().set_context_window(window);
+            }
+        }
         let effort_actual = self
             .keyring()
             .ok()
@@ -80,4 +88,36 @@ impl RootHost {
             effort_actual,
         })
     }
+
+    /// 这个 (连接, 模型) 在 Keyring 当前视图里的上下文窗口；显式模型行优先，
+    /// 其次厂商存下的列表/内置目录。解析不出来时保留现有窗口。
+    fn model_context_window(&self, selection: &session::ModelSelection) -> Option<u64> {
+        model_context_window(
+            &self.options.data_dir,
+            self.options.identity.as_deref(),
+            selection,
+        )
+    }
+}
+
+/// 按 Keyring 当前视图解析 (连接, 模型) 的上下文窗口：显式模型行优先，其次厂商存下的
+/// 列表/内置目录。没有 Keyring/连接/模型信息时返回 None，调用方保留装配时的窗口。
+///
+/// 服务里两处都要用它：同连接换模型（下一轮生效）和打开/重开根会话（压缩阈值从第一轮
+/// 起就得按新模型算，不能等撞一次溢出）。
+pub(crate) fn model_context_window(
+    data_dir: &std::path::Path,
+    identity: Option<&std::path::Path>,
+    selection: &session::ModelSelection,
+) -> Option<u64> {
+    let keyring = credentials::Keyring::open(data_dir, identity).ok()?;
+    let view = keyring.view();
+    let connection = view
+        .connections
+        .iter()
+        .find(|connection| connection.id == selection.connection)?;
+    crate::models::selectable_models(data_dir, connection)
+        .into_iter()
+        .find(|info| info.id == selection.model)
+        .and_then(|info| info.context_window)
 }

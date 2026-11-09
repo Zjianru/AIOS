@@ -10,18 +10,34 @@ use service::Call;
 const SERVICE_TS: &str = include_str!("../../../../web/src/data/service.ts");
 
 fn page_methods() -> Vec<&'static str> {
-    const NEEDLE: &str = "method: '";
+    methods_in(SERVICE_TS)
+}
+
+/// 从源码里抽 `method: '值'`。`method:` 和引号之间允许换行/空白（格式化会把长调用折行），
+/// 不能只认单行字面量；小写/连字符过滤掉 HTTP 动词（`method: 'POST'`）。
+fn methods_in(source: &str) -> Vec<&str> {
+    const NEEDLE: &str = "method:";
     let mut methods = Vec::new();
-    for (index, _) in SERVICE_TS.match_indices(NEEDLE) {
-        let rest = &SERVICE_TS[index + NEEDLE.len()..];
+    for (index, _) in source.match_indices(NEEDLE) {
+        let rest = source[index + NEEDLE.len()..].trim_start();
+        let Some(rest) = rest.strip_prefix('\'') else {
+            continue;
+        };
         let Some(end) = rest.find('\'') else { continue };
         let method = &rest[..end];
-        // `method: 'POST'` 是 HTTP 动词，不是协议方法。
         if method.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
             methods.push(method);
         }
     }
     methods
+}
+
+#[test]
+fn method_parser_covers_line_breaks() {
+    // 折行写法（method: 与值不在同一行）也要解析出来；HTTP 动词照旧排除。
+    let source =
+        "post({ method:\n  'send' });\npost({ method: 'POST' });\npost({ method: 'card-act' });";
+    assert_eq!(methods_in(source), vec!["send", "card-act"]);
 }
 
 #[test]

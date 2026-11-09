@@ -18,7 +18,7 @@ use crate::inbox::{Delivery, Inbox};
 use crate::{AgentConfig, AgentEvent, CompactionTrigger, Deps};
 
 const EVENT_CHANNEL_CAPACITY: usize = 256;
-/// 服务事件面（T006.16a）：会话事件的 live 广播；容量照订阅者可能落后的距离取 1024。
+/// 服务事件面：会话事件的 live 广播；容量照订阅者可能落后的距离取 1024。
 const SESSION_EVENT_CHANNEL_CAPACITY: usize = 1024;
 
 /// 驱动阶段。
@@ -52,7 +52,7 @@ pub(crate) struct Inner {
     id: SessionId,
     log_path: PathBuf,
     cwd: PathBuf,
-    /// 会话数据目录；也是固定的用户级指令根（T005.5）。
+    /// 会话数据目录；也是固定的用户级指令根。
     data_dir: PathBuf,
     /// 现在已存的工具凭证（产品装配注入；每步求值一次）。
     tool_keys: tools::ToolKeySource,
@@ -64,36 +64,36 @@ pub(crate) struct Inner {
     /// 会话级工具状态（观察表/spill/任务注册表）；续接时新建，不继承上一次。
     tool_session: Arc<ToolSessionState>,
     max_parallel_tool_calls: usize,
-    /// 压缩阈值比例（T005.8a）。
+    /// 压缩阈值比例。
     pub(crate) compaction_threshold_ratio: f64,
-    /// 压缩后保留的近期上下文比例（T005.8a）。
+    /// 压缩后保留的近期上下文比例。
     pub(crate) compaction_retain_ratio: f64,
-    /// 压缩阈值公式里的预留输出 token（T005.8a）。
+    /// 压缩阈值公式里的预留输出 token。
     pub(crate) compaction_headroom_tokens: u64,
-    /// 摘要输出 token 上限；None 时按 DSH 默认取 headroom（T006.3）。
+    /// 摘要输出 token 上限；None 时按 DSH 默认取 headroom。
     compaction_summary_max_tokens: Option<u32>,
-    /// 仍超阈值时最多再压几次（T006.3，DSH compactionRetries）。
+    /// 仍超阈值时最多再压几次（DSH compactionRetries）。
     compaction_retries: u32,
-    /// 上下文溢出恢复最多重试几次（T006.3，DSH maxOverflowRetries）。
+    /// 上下文溢出恢复最多重试几次（DSH maxOverflowRetries）。
     compaction_max_overflow_retries: u32,
-    /// 按 provider/model 覆盖压缩策略（T006.3，DSH modelPolicies）。
+    /// 按 provider/model 覆盖压缩策略（DSH modelPolicies）。
     compaction_model_policies: Vec<crate::CompactionModelPolicy>,
-    /// 固定挂点与功能注册表（T006.1a；能力状态 per-Agent 在能力里，T006.1e）。
+    /// 固定挂点与功能注册表（能力状态 per-Agent 在能力里）。
     pub(crate) capabilities: CapabilityRegistry,
     pub(crate) store: Mutex<SessionStore>,
     inbox: Mutex<Inbox>,
-    /// 串行化 inbox 变更：保证日志里的 splice 顺序 = 内存队列的应用顺序（T006.2a）。
+    /// 串行化 inbox 变更：保证日志里的 splice 顺序 = 内存队列的应用顺序。
     inbox_mutations: tokio::sync::Mutex<()>,
     state: Mutex<RunState>,
     pub(crate) events: broadcast::Sender<AgentEvent>,
-    /// T006.16a：日志事件的 live 广播（服务事件面；seq/type/data 直接来自日志事实）。
+    /// 日志事件的 live 广播（服务事件面；seq/type/data 直接来自日志事实）。
     session_events: broadcast::Sender<session::Event>,
-    /// T006.F1：自引用（迟到回答的 durable 投递需要唤醒驱动）。
+    /// 自引用（迟到回答的 durable 投递需要唤醒驱动）。
     self_ref: std::sync::OnceLock<std::sync::Weak<Inner>>,
     idle_notify: Notify,
     /// 取消时唤醒正在等模型流的 step（让流读取立刻停下）。
     cancel_notify: Arc<Notify>,
-    /// 仅测试可见：settle_idle 预检之后、最终临界区之前的同步缝（T005.8b 边界单测）。
+    /// 仅测试可见：settle_idle 预检之后、最终临界区之前的同步缝（边界单测）。
     #[cfg(test)]
     settle_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
@@ -119,9 +119,6 @@ impl LoopAccess for Inner {
     }
     fn data_dir(&self) -> &Path {
         &self.data_dir
-    }
-    fn log_path(&self) -> &Path {
-        &self.log_path
     }
     fn tool_keys(&self) -> std::collections::BTreeSet<tools::ToolKey> {
         self.tool_keys.present()
@@ -314,7 +311,7 @@ impl Inner {
         tool_session.set_skill_roots(skill_roots.clone());
         tool_session.set_bundled_skills(config.bundled_skills.clone());
         tool_session.set_tool_keys(tool_keys.clone());
-        // T006.1e：能力状态由能力模块装载/持有；driver 只做装配。
+        // 能力状态由能力模块装载/持有；driver 只做装配。
         let (instruction_state, instruction_roots) =
             crate::instructions_capability::InstructionsCapability::load(&store, instruction_roots);
         let bundled_skills = config.bundled_skills.clone();
@@ -325,15 +322,15 @@ impl Inner {
                 bundled_skills.clone(),
             );
         crate::todo_capability::TodoCapability::rehydrate(&tool_session, store.events());
-        // T015.2：画布状态从日志折叠；重开会话后 canvas 工具接着改同一个画布。
+        // 画布状态从日志折叠；重开会话后 canvas 工具接着改同一个画布。
         tool_session.set_canvases(session::canvases(store.events()));
         let reminder_chain: Arc<Mutex<Option<(String, usize)>>> = Arc::new(Mutex::new(None));
         let ask_state = crate::ask_capability::new_state();
-        // T006.13（D45）：从中断修复后的日志折出仍待答的问题；回答走 Agent::answer 的迟到回答。
+        // （D45）：从中断修复后的日志折出仍待答的问题；回答走 Agent::answer 的迟到回答。
         crate::ask_capability::rehydrate(&ask_state, store.events());
-        // T006.2a：续接/新建时从日志折叠输入队列；坏掉的 splice 让 resume 报错，不静默丢。
+        // 续接/新建时从日志折叠输入队列；坏掉的 splice 让 resume 报错，不静默丢。
         let inbox = Inbox::restore(store.events())?;
-        // 加载记录从日志恢复：续接以后不再重复记，工具表照旧（T014.2）。
+        // 加载记录从日志恢复：续接以后不再重复记，工具表照旧。
         let tool_gate = Mutex::new(crate::tool_gate::ToolRegistryState::rehydrate(
             store.events(),
         ));
@@ -381,13 +378,13 @@ impl Inner {
             #[cfg(test)]
             settle_hook: Mutex::new(None),
         });
-        // T006.F1：迟到回答投递要唤醒驱动，先记下自引用。
+        // 迟到回答投递要唤醒驱动，先记下自引用。
         #[expect(
             clippy::let_underscore_must_use,
             reason = "自引用只设置一次；重复构造保留第一个弱引用"
         )]
         let _ = inner.self_ref.set(Arc::downgrade(&inner));
-        // T006.1e：结算回调与完成通知投递移入 jobs_capability 模块。
+        // 结算回调与完成通知投递移入 jobs_capability 模块。
         crate::jobs_capability::install(&inner);
         Ok(inner)
     }
@@ -408,7 +405,7 @@ impl Inner {
         self.events.subscribe()
     }
 
-    /// 投递一条消息到输入队列（T006.2a 起落日志：发送返回即已收下）。
+    /// 投递一条消息到输入队列（先落日志：发送返回即已收下）。
     pub(crate) async fn send(
         self: &Arc<Self>,
         message: UserMessage,
@@ -417,7 +414,7 @@ impl Inner {
         self.send_message(message.into_message(), delivery).await
     }
 
-    /// T006.16b：带 requestId 的发送；durable rpcId 幂等（inbox 或日志里已有同 id 就不再进）。
+    /// 带 requestId 的发送；durable rpcId 幂等（inbox 或日志里已有同 id 就不再进）。
     pub(crate) async fn send_with_request_id(
         self: &Arc<Self>,
         request_id: &str,
@@ -435,7 +432,7 @@ impl Inner {
         Ok(crate::SendAdmission::Admitted)
     }
 
-    /// T006.16b：inbox 或已落日志的 user/message 里有没有这个 rpcId（DSH hasPromptRequest）。
+    /// inbox 或已落日志的 user/message 里有没有这个 rpcId（DSH hasPromptRequest）。
     fn has_request_id(&self, request_id: &str) -> bool {
         if self
             .inbox
@@ -458,7 +455,7 @@ impl Inner {
         })
     }
 
-    /// T006.16b：重启后领取 pending inbox（把排队的输入转成 turn）；返回是否领取了东西。
+    /// 重启后领取 pending inbox（把排队的输入转成 turn）；返回是否领取了东西。
     pub(crate) fn claim_pending(self: &Arc<Self>) -> bool {
         let pending = self
             .inbox
@@ -471,7 +468,7 @@ impl Inner {
         pending
     }
 
-    /// T006.16b：follow/events 的日志读面（seq > after_seq，按日志顺序）。
+    /// follow/events 的日志读面（seq > after_seq，按日志顺序）。
     pub(crate) fn session_events_from(&self, after_seq: u64) -> Vec<session::Event> {
         self.store
             .lock()
@@ -483,7 +480,7 @@ impl Inner {
             .collect()
     }
 
-    /// T006.16b：日志最后一条事件的 seq（空日志为 0）。
+    /// 日志最后一条事件的 seq（空日志为 0）。
     pub(crate) fn last_seq(&self) -> u64 {
         self.store
             .lock()
@@ -494,7 +491,7 @@ impl Inner {
             .unwrap_or(0)
     }
 
-    /// 真正落日志的发送路径（T006.2a：先写 splice 再唤醒）。
+    /// 真正落日志的发送路径（先写 splice 再唤醒）。
     async fn send_message(
         self: &Arc<Self>,
         message: model::Message,
@@ -523,7 +520,7 @@ impl Inner {
         Ok(())
     }
 
-    /// 领取一个 step 的输入（T006.2a：从日志恢复的队列上领取，领取也落日志）。
+    /// 领取一个 step 的输入（从日志恢复的队列上领取，领取也落日志）。
     ///
     /// 照 DSH claim（inbox.ts:108-113）：先领全部 next-step，target=next-turn 时再领
     /// 一条 next-turn；claimed 通知带 owning turn。
@@ -555,7 +552,7 @@ impl Inner {
         Ok(claimed)
     }
 
-    /// 取消：清空输入队列并中止正在跑的一轮（T006.2a 起取消也落日志）。
+    /// 取消：清空输入队列并中止正在跑的一轮（取消也落日志）。
     pub(crate) async fn cancel(&self) -> Result<(), AgentError> {
         // 照 DSH clear（inbox.ts:96-100）：先清 next-step、再清 next-turn，普通删除带 canceled。
         {
@@ -651,8 +648,8 @@ impl Inner {
 
     /// 一次 step 的工具批之后推进重复链，命中阈值（3/5/8，照 DSH）返回一条提醒文本。
     /// todo_write 不跟踪（DSH 基础组合包默认排除）；每步最多一条提醒。
-    /// T005.10/T006.1d2：回答问题；question_id 必须匹配当前等待的问题且未答过。
-    /// T006.13：答案照 DSH 形状（selected 选项标签 + 可选 custom 文本）。等待中的批由 hook
+    /// 回答问题；question_id 必须匹配当前等待的问题且未答过。
+    /// 答案照 DSH 形状（selected 选项标签 + 可选 custom 文本）。等待中的批由 hook
     /// 收尾；重启恢复的批整批答完后写 question/answered 并投递 DSH 的迟到回答消息。
     pub(crate) async fn answer(
         self: &Arc<Self>,
@@ -665,28 +662,28 @@ impl Inner {
             .await
     }
 
-    /// T006.13：撤销一条待答问题（提问服务路径；恢复批的事件编排在 ask 能力里）。
+    /// 撤销一条待答问题（提问服务路径；恢复批的事件编排在 ask 能力里）。
     pub(crate) async fn cancel_question(&self, question_id: &str) -> bool {
         self.capabilities.cancel_question(self, question_id).await
     }
 
-    /// T006.13：当前待答问题（含重启恢复）。
+    /// 当前待答问题（含重启恢复）。
     pub(crate) fn pending_questions(&self) -> Vec<crate::Question> {
         self.capabilities.pending_questions()
     }
 
-    /// T006.1e：jobs_capability 安装结算回调用（任务注册表在 tools 层）。
+    /// jobs_capability 安装结算回调用（任务注册表在 tools 层）。
     pub(crate) fn job_session(&self) -> &Arc<ToolSessionState> {
         &self.tool_session
     }
 
-    /// T006.1e：结算回调回到 runtime 上下文后唤醒驱动。
+    /// 结算回调回到 runtime 上下文后唤醒驱动。
     pub(crate) fn wake(self: &Arc<Self>) {
         self.wake_driver();
     }
     /// 起驱动或在 Running 时置 latch。
     ///
-    /// T004.1 审计 known-weakness 3：收尾检查与 settle 快照之间来的 FollowUp/Steer
+    /// 审计 known-weakness 3：收尾检查与 settle 快照之间来的 FollowUp/Steer
     /// 过去会被丢掉。Running 时无条件 latch，settle 看到 wake && pending 会重开驱动。
     fn wake_driver(self: &Arc<Self>) {
         let mut state = self.state.lock().expect("agent 状态锁被毒化");
@@ -722,7 +719,7 @@ impl Inner {
         }
     }
 
-    /// 写日志并派发 SessionEvent 挂点（T006.1a：日志先落盘，钩子随后执行；
+    /// 写日志并派发 SessionEvent 挂点（日志先落盘，钩子随后执行；
     /// 钩子返回 Err 时日志已提交，调用方按错误收尾）。
     pub(crate) async fn append(&self, kinds: &[EventKind]) -> Result<(), AgentError> {
         let before = {
@@ -743,9 +740,9 @@ impl Inner {
         Ok(())
     }
 
-    /// T006.16a：把 [before] 之后新落的日志事件广播到服务事件面（seq/type/data 都来自日志事实）。
+    /// 把 [before] 之后新落的日志事件广播到服务事件面（seq/type/data 都来自日志事实）。
     ///
-    /// 订阅者落后由容量兜底（Lagged 时按 DSH 的 follow 语义重新跟随，见 T006.16b）。
+    /// 订阅者落后由容量兜底（Lagged 时按 DSH 的 follow 语义重新跟随，见服务事件面的跟随语义。
     fn publish_appended_session_events(&self, before: usize) {
         let store = self.store.lock().expect("agent 会话锁被毒化");
         let events = store.events();
@@ -758,12 +755,12 @@ impl Inner {
         }
     }
 
-    /// T006.16a：服务事件面的订阅端（服务宿主转发给载体）。
+    /// 服务事件面的订阅端（服务宿主转发给载体）。
     pub(crate) fn subscribe_session_events(&self) -> broadcast::Receiver<session::Event> {
         self.session_events.subscribe()
     }
 
-    /// T006.16a：被动状态用的运行态（有正在跑的轮次）。
+    /// 被动状态用的运行态（有正在跑的轮次）。
     pub(crate) fn is_running(&self) -> bool {
         matches!(
             self.state.lock().expect("agent 状态锁被毒化").phase,
@@ -771,7 +768,7 @@ impl Inner {
         )
     }
 
-    /// 手动 /compact（T006.F1）：入口在 compaction 能力，driver 只派发（DoD1）。
+    /// 手动 /compact：入口在 compaction 能力，driver 只派发（DoD1）。
     pub(crate) async fn compact_manual(
         self: &Arc<Self>,
         source_command_id: Option<String>,

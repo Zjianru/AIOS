@@ -34,6 +34,7 @@ pub use assembly::AgentOpenOptions;
 pub use error::{AgentError, ManualCompactionErrorCode};
 pub use inbox::Delivery;
 pub use instructions::{MAX_CHAIN_BYTES, MAX_SOURCE_BYTES};
+pub use tool_gate::loaded_skills;
 pub use warn::{WarningHook, set_warning_hook};
 
 /// 按 provider/model 覆盖压缩策略（DSH compaction-basic 的 modelPolicies；只覆盖显式给出的字段）。
@@ -92,7 +93,7 @@ pub struct AgentConfig {
     pub tool_keys: tools::ToolKeySource,
     /// todo_write 是否允许多个 in_progress（照 DSH tool-todo 的 allowParallelInProgress；
     /// DSH bundle/base 设为 true）。false 时工具描述改成「只留一个」，多于一个 in_progress 的
-    /// 调用被拒。Agent 在 create/resume 时用它替换内置 todo_write（T006.12）。
+    /// 调用被拒。Agent 在 create/resume 时用它替换内置 todo_write。
     pub allow_parallel_in_progress: bool,
 }
 
@@ -253,7 +254,7 @@ impl From<&TurnEndReason> for TurnOutcome {
             TurnEndReason::Completed => Self::Completed,
             TurnEndReason::MaxTokens => Self::MaxTokens,
             TurnEndReason::Aborted { .. } => Self::Aborted,
-            // 续接修复补的收尾不是一次实时跑完的轮次，订阅者事件里没有它（T006.5a）。
+            // 续接修复补的收尾不是一次实时跑完的轮次，订阅者事件里没有它。
             TurnEndReason::Interrupted => Self::Aborted,
             TurnEndReason::Error { error } => Self::Error {
                 code: error.code.clone(),
@@ -311,7 +312,7 @@ pub struct CompactionOutcome {
 pub enum AgentEvent {
     /// 一段模型流出的文本（CLI 据此显示）。
     AssistantTextDelta { text: String },
-    /// 工具调用参数的增量（T015.5 照 DSH tool-call-delta）：只给订阅者，不落日志。
+    /// 工具调用参数的增量（照 DSH tool-call-delta）：只给订阅者，不落日志。
     /// 同一 callId 的后续帧沿用首帧的 name（模型流里的 name 只在起始帧给）。
     ToolCallDelta {
         call_id: String,
@@ -327,9 +328,9 @@ pub enum AgentEvent {
     },
     /// 一次回答的用量（厂商没给的项是 None，显示「未知」）。
     UsageReported { usage: Usage },
-    /// 模型需要用户回答一组问题（T005.10 引入，T005.12 起携带全部问题；CLI 逐个问）。
+    /// 模型需要用户回答一组问题（引入，起携带全部问题；CLI 逐个问）。
     QuestionAsked { questions: Vec<Question> },
-    /// 一次压缩开始（T005.8a/T005.8b 发）。
+    /// 一次压缩开始（发）。
     CompactionStarted {
         compaction_id: String,
         trigger: CompactionTrigger,
@@ -339,7 +340,7 @@ pub enum AgentEvent {
         compaction_id: String,
         error: Option<String>,
     },
-    /// 一个后台任务完成（T005.4 发；完成通知另外以下一步输入送达）。
+    /// 一个后台任务完成（发；完成通知另外以下一步输入送达）。
     JobCompleted {
         job_id: String,
         status: JobStatus,
@@ -362,7 +363,7 @@ pub struct Deps {
     pub store: SessionStore,
 }
 
-/// T006.7：Agent 启动时照 DSH spill-local 的 cleanupPeriodDays 一次性清理过期 spill 文件。
+/// Agent 启动时照 DSH spill-local 的 cleanupPeriodDays 一次性清理过期 spill 文件。
 /// best-effort（DSH 也是启动时异步 sweep、失败只 warn）：不阻塞/不打断会话启动。
 fn cleanup_spill_files(store: &SessionStore, period_days: u64) {
     if period_days == 0 {
@@ -379,7 +380,7 @@ fn cleanup_spill_files(store: &SessionStore, period_days: u64) {
     let _ = tools::spill::sweep_spill_root(&data_dir.join("spill"), cutoff);
 }
 
-/// T006.16b：带 requestId 的发送受理结果（durable rpcId 幂等）。
+/// 带 requestId 的发送受理结果（durable rpcId 幂等）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SendAdmission {
     /// 新消息已进收件箱并唤醒（或排队）。
@@ -388,7 +389,7 @@ pub enum SendAdmission {
     Duplicate,
 }
 
-/// T004 的 agent。产品组装入口是 Agent::open（crates/agent/src/assembly.rs）；
+/// 的 agent。产品组装入口是 Agent::open（crates/agent/src/assembly.rs）；
 /// create/resume 是 deps 注入的低层构造，留给测试/定制工具集或已有 Store 的调用方。
 #[derive(Clone)]
 pub struct Agent {
@@ -396,9 +397,14 @@ pub struct Agent {
 }
 
 impl Agent {
-    /// T008.3：选模型（下一轮请求生效；正在跑的请求不受影响，D26）。
+    /// 选模型（下一轮请求生效；正在跑的请求不受影响，D26）。
     pub fn select_model(&self, model: String) {
         self.inner.model.set_model(model);
+    }
+
+    /// 换模型的上下文窗口（下一轮生效）：压缩阈值按它算，不按装配时的旧模型。
+    pub fn set_context_window(&self, window: u64) {
+        self.inner.model.set_context_window(window);
     }
 
     /// 记一条确认卡决定（用户点了按钮之后的事实）。决定落日志，下一次请求前由
@@ -410,7 +416,7 @@ impl Agent {
         self.inner.append(&[decision.event()]).await
     }
 
-    /// T012.7：用户选择连接/模型/档（下一轮生效，D26）。选择是 durable 事实：写
+    /// 用户选择连接/模型/档（下一轮生效，D26）。选择是 durable 事实：写
     /// session/model 事件（重开会话从日志恢复）；本轮已冻结的 model/effort 不受影响。
     pub async fn select(&self, selection: &session::ModelSelection) -> Result<(), AgentError> {
         self.inner
@@ -478,12 +484,12 @@ impl Agent {
     }
 
     /// 投递一条用户消息。delivery 决定它进入下一轮还是下一步。
-    /// T006.2a：返回时消息已经写进会话日志（重启后队列还在）。
+    /// 返回时消息已经写进会话日志（重启后队列还在）。
     pub async fn send(&self, message: UserMessage, delivery: Delivery) -> Result<(), AgentError> {
         self.inner.send(message, delivery).await
     }
 
-    /// T006.16b：带调用方 requestId 的发送（DSH prompt 的 requestId；durable 幂等）。
+    /// 带调用方 requestId 的发送（DSH prompt 的 requestId；durable 幂等）。
     /// 同一个 id 已进 inbox 或已落日志时返回 Duplicate，不再插入、不再唤醒。
     pub async fn send_with_request_id(
         &self,
@@ -496,23 +502,23 @@ impl Agent {
             .await
     }
 
-    /// T006.16b：重启后领取 pending inbox（有排队输入就开一轮）；返回是否领取了东西。
+    /// 重启后领取 pending inbox（有排队输入就开一轮）；返回是否领取了东西。
     /// 只由重启路径显式调用（2a 的 resume 只恢复、不唤醒）。
     pub fn claim_pending(&self) -> bool {
         self.inner.claim_pending()
     }
 
-    /// T006.16b：follow/events 的日志读面（seq > after_seq，按日志顺序）。
+    /// follow/events 的日志读面（seq > after_seq，按日志顺序）。
     pub fn session_events_from(&self, after_seq: u64) -> Vec<session::Event> {
         self.inner.session_events_from(after_seq)
     }
 
-    /// T006.16b：日志最后一条事件的 seq（空日志为 0）。
+    /// 日志最后一条事件的 seq（空日志为 0）。
     pub fn last_seq(&self) -> u64 {
         self.inner.last_seq()
     }
 
-    /// 取消：清空收件箱并中止正在跑的一轮；清空也写进会话日志（T006.2a）。
+    /// 取消：清空收件箱并中止正在跑的一轮；清空也写进会话日志。
     pub async fn cancel(&self) -> Result<(), AgentError> {
         self.inner.cancel().await
     }
@@ -529,8 +535,8 @@ impl Agent {
         self.inner.model.frozen_model()
     }
 
-    /// T005.10：回答问题。question_id 必须是当前等待的问题；返回是否送达。
-    /// T006.13 起答案照 DSH 形状：selected 是选中的选项标签（可多个），custom 是自由文本
+    /// 回答问题。question_id 必须是当前等待的问题；返回是否送达。
+    /// 起答案照 DSH 形状：selected 是选中的选项标签（可多个），custom 是自由文本
     /// （K14；DSH `tool-ask-user/src/index.ts:111-116`）。
     pub async fn answer(
         &self,
@@ -541,14 +547,14 @@ impl Agent {
         self.inner.answer(question_id, selected, custom).await
     }
 
-    /// T006.13：撤销一条待答问题（提问服务路径）。等待中的问题让这一批以 DSH 的
+    /// 撤销一条待答问题（提问服务路径）。等待中的问题让这一批以 DSH 的
     /// ASK_ABORTED 工具错误收尾、本轮继续；重启恢复的问题写 question/cancelled 后移除。
     /// 返回是否确实撤销了待答问题。
     pub async fn cancel_question(&self, question_id: &str) -> bool {
         self.inner.cancel_question(question_id).await
     }
 
-    /// T006.13：当前待答问题（等待中 + 重启恢复）；界面服务 T006.16a 从这里接。
+    /// 当前待答问题（等待中 + 重启恢复）；界面服务 从这里接。
     pub fn pending_questions(&self) -> Vec<Question> {
         self.inner.pending_questions()
     }
@@ -558,13 +564,13 @@ impl Agent {
         self.inner.subscribe()
     }
 
-    /// T006.16a：日志事件的 live 订阅（服务事件面）：每条带日志 seq/type/data，
-    /// 由服务宿主转发给载体；容量兜底用 Lagged（重新跟随在 T006.16b）。
+    /// 日志事件的 live 订阅（服务事件面）：每条带日志 seq/type/data，
+    /// 由服务宿主转发给载体；容量兜底用 Lagged（重新跟随在）。
     pub fn subscribe_session_events(&self) -> tokio::sync::broadcast::Receiver<session::Event> {
         self.inner.subscribe_session_events()
     }
 
-    /// T006.16a：被动状态用的运行态（有一轮在跑）。
+    /// 被动状态用的运行态（有一轮在跑）。
     pub fn is_running(&self) -> bool {
         self.inner.is_running()
     }

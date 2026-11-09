@@ -12,6 +12,7 @@ import type { ServiceCatalogModel } from '@/data/service';
 import { dayLabelOf } from '@/lib/numbers';
 import { useSettingsState } from '@/lib/settingsState';
 import { effortName } from './effortName';
+import { eventSelectionEffort, serviceSelectionEffort } from './effortSelection';
 import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
 import { reconnectDelayMs } from '@/data/reconnect';
 import type { GateDetail, GateState } from './KernelGate';
@@ -55,7 +56,7 @@ function decorate(views: TurnViewData[]): {
   return { dayLabels, lastSeenId, lastSeenCounts: { moved: 3, waiting: 5 } };
 }
 
-/** T012.9：会话合计（服务 status.stats 给；页面不自己加）。 */
+/** ：会话合计（服务 status.stats 给；页面不自己加）。 */
 export interface SessionStats {
   turns: number;
   steps: number;
@@ -98,15 +99,15 @@ interface KindState {
   dayLabels: Map<string, string>;
   lastSeenId: string | null;
   lastSeenCounts: { moved: number; waiting: number };
-  /** T008.4：还没有接模型（空库）；true 时 Kind 首屏是第一次填 key。 */
+  /** ：还没有接模型（空库）；true 时 Kind 首屏是第一次填 key。 */
   firstUse: boolean;
-  /** 根会话不可用时的整页说明（T007.10）；ok = 正常对话。 */
+  /** 根会话不可用时的整页说明；ok = 正常对话。 */
   gate: GateState | 'ok';
   gateDetail: GateDetail | null;
   recheck: () => Promise<void>;
   /** 和内核的连接：断了就自动重连，期间不能发。 */
   connection: { state: 'online' } | { state: 'reconnecting'; attempt: number };
-  /** T013.8：会话 id（ready 帧给；草稿 localStorage 的键用它）。 */
+  /** ：会话 id（ready 帧给；草稿 localStorage 的键用它）。 */
   sessionId: string | null;
   /** 会话工作目录（status 给；空串=旧服务没给，路径照原样显示）。 */
   cwd: string;
@@ -114,13 +115,13 @@ interface KindState {
   usage: number;
   compacting: boolean;
   /** 演示用：下一条消息送不到。 */
-  /** T010.3：模型 id → 显示名（来自模型设置；拿不到就用 id）。 */
+  /** ：模型 id → 显示名（来自模型设置；拿不到就用 id）。 */
   modelNames: Record<string, string>;
-  /** T010.4：模型 id → contextWindow（模型设置里的窗口；拿不到就不显示压缩占用）。 */
+  /** ：模型 id → contextWindow（模型设置里的窗口；拿不到就不显示压缩占用）。 */
   modelWindows: Record<string, number>;
-  /** T009.2：模型 id → 连接显示名（错误原因里用；取不到写「模型服务」）。 */
+  /** ：模型 id → 连接显示名（错误原因里用；取不到写「模型服务」）。 */
   connectionNames: Record<string, string>;
-  /** 当前用的模型（底栏的模型选择，T008；T012.9 加价格/窗口/思考档）。 */
+  /** 当前用的模型（底栏的模型选择，； 加价格/窗口/思考档）。 */
   model: {
     connectionId: string;
     modelId: string;
@@ -131,22 +132,22 @@ interface KindState {
     thinks?: boolean;
     /** 这个模型能选的档（厂商自己的叫法）；没有就是不能调。 */
     efforts?: string[];
-    /** 下一轮实际要发的档（T012 F2：服务端内核算好的实际档；没有想要的档时是最近档）。 */
+    /** 下一轮实际要发的档（F2：服务端内核算好的实际档；没有想要的档时是最近档）。 */
     effort?: string;
-    /** T012 F2：用户要的档（选择器显示实际档，提示时对比）。 */
+    /**  F2：用户要的档（选择器显示实际档，提示时对比）。 */
     effortActual?: string;
   };
-  /** T012.9：用户最后选的档（换到不能调的模型也记着）。 */
+  /** ：用户最后选的档（换到不能调的模型也记着）。 */
   wantedEffort?: string;
-  /** T012.9：会话合计（服务 status.stats）。 */
+  /** ：会话合计（服务 status.stats）。 */
   stats: SessionStats;
-  /** T012 F2：模型信息是否已从服务初始化过（之后 refreshStats 不覆盖用户的选择，避免异步竞态）。 */
+  /**  F2：模型信息是否已从服务初始化过（之后 refreshStats 不覆盖用户的选择，避免异步竞态）。 */
   modelInitialized: boolean;
   /** 模型选择器开着没有（失败块的「换模型」要靠它打开）。 */
   pickerOpen: boolean;
   /** 打开/收起模型选择器。 */
   setPickerOpen: (open: boolean) => void;
-  /** T008.4：Kind 首屏引导：先看是不是空库（首次使用），否则加载对话。 */
+  /** ：Kind 首屏引导：先看是不是空库（首次使用），否则加载对话。 */
   bootstrap: () => Promise<void>;
   loadInitial: () => Promise<void>;
   loadOlder: () => Promise<void>;
@@ -156,7 +157,7 @@ interface KindState {
     options?: {
       pastes?: string[];
       attachments?: { id: string; name: string; bytes: number }[];
-      /** T015.4：画布放进来的那一句带着画布身份（id + 标题）。 */
+      /** ：画布放进来的那一句带着画布身份（id + 标题）。 */
       canvas?: { id: string; title: string };
     },
   ) => Promise<boolean>;
@@ -165,16 +166,16 @@ interface KindState {
   answer: (turnId: string, answers: AskAnswer[]) => void;
   dismiss: (turnId: string) => void;
   /** 确认卡：确认某一项（服务跑核对和执行，回执由 card/decision 事件回填）。 */
-  confirmCard: (callId: string, optionId: string) => void;
+  confirmCard: (callId: string, optionId: string) => Promise<void>;
   /** 确认卡：暂不（什么都不执行，记 dismissed）。 */
-  dismissCard: (callId: string) => void;
+  dismissCard: (callId: string) => Promise<void>;
   compact: () => void;
   setModel: (model: KindState['model']) => void;
-  /** T012.9：从服务刷新会话合计/汇率/币种。 */
+  /** ：从服务刷新会话合计/汇率/币种。 */
   refreshStats: () => Promise<void>;
-  /** T012.9：换思考档（下一轮生效）。 */
+  /** ：换思考档（下一轮生效）。 */
   setEffort: (effort: string) => Promise<void>;
-  /** T012 F2：应用一次服务端选择（wanted/actual 都由服务给），补目录字段并提示。 */
+  /**  F2：应用一次服务端选择（wanted/actual 都由服务给），补目录字段并提示。 */
   applySelection: (
     selection: {
       connectionId: string;
@@ -185,18 +186,18 @@ interface KindState {
     },
     announce?: boolean,
   ) => Promise<void>;
-  /** T012.9：选中模型后补目录字段（档位/价格/窗口），让档位选择立刻可用。 */
+  /** ：选中模型后补目录字段（档位/价格/窗口），让档位选择立刻可用。 */
   hydrateModel: (selection: {
     connectionId: string;
     modelId: string;
     label: string;
     effort?: string;
   }) => Promise<void>;
-  /** T015.2：每个画布出过的版本和最新版在哪一轮（从日志折叠）。 */
+  /** ：每个画布出过的版本和最新版在哪一轮（从日志折叠）。 */
   canvasTracks: Record<string, CanvasTrack>;
-  /** T015.5：正在流式收到的画布标题（工作过程里画「正在画 · 标题」）；没在画是 null。 */
+  /** ：正在流式收到的画布标题（工作过程里画「正在画 · 标题」）；没在画是 null。 */
   drawingCanvas: { turnId: string; title: string } | null;
-  /** T015.2：点了旧版画布那一行要跳到的那一轮（只影响滚动，不改日志）。 */
+  /** ：点了旧版画布那一行要跳到的那一轮（只影响滚动，不改日志）。 */
   reveal: { turnId: string; at: number } | null;
   revealTurn: (turnId: string) => void;
 }
@@ -231,7 +232,7 @@ function applyRootState(root: {
   useKindStore.setState({ gate: mapped, gateDetail: { path: root.path, line: root.line } });
 }
 
-/** T007.9：当前连接 + 重连状态；lastSeq 是页面已处理到的日志序号（重连补齐去重用）。 */
+/** ：当前连接 + 重连状态；lastSeq 是页面已处理到的日志序号（重连补齐去重用）。 */
 let activeSocket: WebSocket | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let recheckTimer: ReturnType<typeof setTimeout> | null = null;
@@ -305,7 +306,7 @@ function openSocket(): void {
         const reconnects = reconnectAttempt;
         reconnectAttempt = 0;
         if (reconnects > 0) {
-          // T011.6：重连成功后把「断过几次」报给服务记监控。
+          // 重连成功后把「断过几次」报给服务记监控。
           void reportMonitor('page-reconnect', 'attempts=' + String(reconnects));
         }
         if (recheckTimer !== null) {
@@ -323,7 +324,7 @@ function openSocket(): void {
       useKindStore.setState({
         connection: { state: 'reconnecting', attempt: reconnectAttempt },
       });
-      // T007 #1：断线 5 秒还没连回来时做一次 recheck，把「服务换了令牌」与「服务连不上」分开：
+      // #1：断线 5 秒还没连回来时做一次 recheck，把「服务换了令牌」与「服务连不上」分开
       // recheck 收到 401 时页面进入令牌说明页（页面开着、服务重启后的下一次调用）；
       // 短暂断线由横幅+重连补齐，不打断页面（reconnect.spec）。
       if (recheckTimer === null) {
@@ -344,7 +345,7 @@ function openSocket(): void {
   activeSocket = socket;
 }
 
-/** T007.3/4：本轮已收到的日志事件（首屏页 + live）；实时帧按轮重算 view。 */
+/** /4：本轮已收到的日志事件（首屏页 + live）；实时帧按轮重算 view。 */
 let liveEvents: ServiceEvent[] = [];
 let contextWindow = 0;
 let pendingCompactionAuto = true;
@@ -352,14 +353,19 @@ let livePendingCompaction: { id: string; window?: number } | null = null;
 let liveTurn: number | null = null;
 let liveStream = '';
 /**
- * T021：status 只认最新一次请求的回包。
+ * status 只认最新一次请求的回包。
  * 首屏、turn/end、recheck 三处都会刷 status，前一次（旧）的回包可能后到；
  * 每次发起领一个单调序号，回来时不是最新就整份丢掉（stats/cwd/币种/模型都不写），
  * 免得旧数据盖掉新状态。用序号不用 AbortController：被取代的那次也照样发出去了，
  * 服务端要答完，掐断只是把「旧回包」换成「被中断」，判定还得靠序号。
  */
 let statusRequest = 0;
-/** T015.5：这一轮正在流的工具参数（callId → 名字 + 拼起来的参数）；只给「正在画」用，不落日志。 */
+/**
+ * 选择器的选择版本：applySelection 一变就 +1。首屏 status 可能在用户刚换完模型之后才回来，
+ * 那次初始化不能把新选择盖回旧模型（和 statusRequest 同类的旧回包问题）。
+ */
+let selectionEpoch = 0;
+/** ：这一轮正在流的工具参数（callId → 名字 + 拼起来的参数）；只给「正在画」用，不落日志。 */
 const liveToolCalls = new Map<string, { name: string; arguments: string }>();
 
 /** 从还没流完的参数 JSON 里取 canvas 的 title；还没流到（或半个转义）就先给空串。 */
@@ -434,12 +440,21 @@ function applyLiveEvent(event: ServiceEvent): void {
       typeof event.data.effortWanted === 'string' ? event.data.effortWanted : undefined;
     if (connection && model) {
       const label = useKindStore.getState().modelNames[model] ?? model;
+      const effort = eventSelectionEffort(wanted);
       void useKindStore
         .getState()
         .applySelection(
-          { connectionId: connection, modelId: model, label, effortWanted: wanted, effortActual: wanted },
+          {
+            connectionId: connection,
+            modelId: model,
+            label,
+            effortWanted: effort.wanted,
+            effortActual: effort.actual,
+          },
           false,
         );
+      // 事件不带实际档：实际档由 card-act 回执或下一次 status 补，不在这里猜测；
+      // 也不在事件里现发 status——跨连接换模型会重建根 agent，并发 status 会占住会话写锁。
     }
     return;
   }
@@ -456,13 +471,13 @@ function applyLiveEvent(event: ServiceEvent): void {
   ) {
     refreshCardViews();
   }
-  // T015.2：画布版本从日志折叠（旧版缩成一行、标题栏切版本、点旧版跳最新都用它）。
+  // 画布版本从日志折叠（旧版缩成一行、标题栏切版本、点旧版跳最新都用它）。
   if (event.type === 'tool/result' && event.data.meta) {
     useKindStore.setState((state) => ({
       canvasTracks: mergeCanvasTracks(state.canvasTracks, [event]),
     }));
   }
-  // T015.5：工具结果回来，这一版已经能显示了；「正在画」那一行收掉（参数增量也不再留）。
+  // 工具结果回来，这一版已经能显示了；「正在画」那一行收掉（参数增量也不再留）。
   if (event.type === 'tool/result') {
     liveToolCalls.clear();
     useKindStore.setState({ drawingCanvas: null });
@@ -517,7 +532,7 @@ function applyLiveEvent(event: ServiceEvent): void {
     return;
   }
   if (turn === null) return;
-  // T010.4：压缩后第一条 assistant/message 算「压缩后」占用。
+  // 压缩后第一条 assistant/message 算「压缩后」占用。
   if (event.type === 'assistant/message' && livePendingCompaction) {
     const pending = livePendingCompaction;
     livePendingCompaction = null;
@@ -538,7 +553,7 @@ function applyLiveEvent(event: ServiceEvent): void {
     liveToolCalls.clear();
     useKindStore.setState({ drawingCanvas: null });
     useStreamStore.setState({ turnId: null, itemId: null, text: '' });
-    // T012.9：一轮结束后从服务刷新统计（轮/步/token/花费由内核从日志算好）。
+    // 一轮结束后从服务刷新统计（轮/步/token/花费由内核从日志算好）。
     void useKindStore.getState().refreshStats();
   }
   refreshTurn(turn);
@@ -546,7 +561,7 @@ function applyLiveEvent(event: ServiceEvent): void {
 
 /** agent 帧 live：流式文本先写进 useStreamStore（TurnRow 的 Answer 只重绘这一条）。 */
 function applyAgentEvent(event: AgentFrame['event']): void {
-  // T015.5：canvas 的参数增量到了就先画「正在画 · 标题」；title 可能还没流到，先只画「正在画」。
+  // canvas 的参数增量到了就先画「正在画 · 标题」；title 可能还没流到，先只画「正在画」。
   // 帧不落日志（日志里只有 assistant stream 的 tool-call-chunks 记录）。
   if (event.type === 'tool-call-delta') {
     if (typeof event.callId !== 'string' || !event.callId) return;
@@ -580,7 +595,7 @@ function applyAgentEvent(event: AgentFrame['event']): void {
 
 function applyFrame(frame: Frame): void {
   if (frame.type === 'ready') {
-    // T009.5：记住宿主的 home，页面显示路径时缩写成 ~/…。
+    // 记住宿主的 home，页面显示路径时缩写成 ~/…。
     setHostHome(frame.host?.home);
     contextWindow = frame.context.window;
     const usage =
@@ -597,7 +612,7 @@ function applyFrame(frame: Frame): void {
   applyAgentEvent(frame.event);
 }
 
-/** 从日志事实派生界面的一轮（T007.3：打开/历史/往上翻；其余能力逐票补）。 */
+/** 从日志事实派生界面的一轮（打开/历史/往上翻；其余能力逐票补）。 */
 const DEMO_MODEL = { connectionId: 'deepseek', modelId: 'deepseek-chat', label: 'DeepSeek Chat' };
 
 export const useKindStore = create<KindState>()((set, get) => ({
@@ -672,7 +687,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
       // 首次使用状态读不到时继续走对话加载；真正原因由 loadInitial 的 gate/横幅呈现。
     }
     await get().loadInitial();
-    // T012.9：统计/模型信息异步补（不让目录网络请求拖慢页面首屏）。
+    // 统计/模型信息异步补（不让目录网络请求拖慢页面首屏）。
     void get().refreshStats();
   },
 
@@ -749,9 +764,9 @@ export const useKindStore = create<KindState>()((set, get) => ({
   setAtBottom: (value) => set({ atBottom: value }),
 
   send: (text, options) => {
-    // T007.4：真实发送；requestId 是幂等键（T007.9 的重发复用同一个）。
-    // T013.7：pastes/attachments 跟着发（服务端拼成用户消息的块）。
-    // T013.8：返回是否受理成功（草稿只在成功时清）。
+    // 真实发送；requestId 是幂等键（重发复用同一个）。
+    // pastes/attachments 跟着发（服务端拼成用户消息的块）。
+    // 返回是否受理成功（草稿只在成功时清）。
     const requestId = globalThis.crypto.randomUUID();
     const viewId = 'turn-999-unsent-' + requestId;
     // F1：没送到的那条也把粘贴和文件带着，重发时原样再发一次。
@@ -804,14 +819,14 @@ export const useKindStore = create<KindState>()((set, get) => ({
   },
 
   stop: () => {
-    // T007.5：真实取消；页面状态由日志 turn/end(aborted) 驱动（不本地猜）。
+    // 真实取消；页面状态由日志 turn/end(aborted) 驱动（不本地猜）。
     void cancelTurn().catch(() => {
       toast('停不下来', { description: '连上内核再试；或等这一轮自己结束' });
     });
   },
 
   answer: (_turnId, answers) => {
-    // T007.6：整批真实回答；问题卡状态由 question/answered 事件回填。
+    // 整批真实回答；问题卡状态由 question/answered 事件回填。
     void answerQuestions(
       answers.map((answer) => ({
         questionId: answer.id,
@@ -824,7 +839,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   },
 
   dismiss: () => {
-    // T007.6：整批不答；模型收到用户没答后照常收尾。
+    // 整批不答；模型收到用户没答后照常收尾。
     void dismissQuestions().catch(() => {
       toast('没送达', { description: '连上之后再试一次' });
     });
@@ -832,19 +847,67 @@ export const useKindStore = create<KindState>()((set, get) => ({
 
   confirmCard: (callId, optionId) => {
     // 卡片状态和回执由 card/decision 事件回填（页面不先改，服务和日志说了算）。
-    void cardAct(callId, 'confirm', optionId).catch(() => {
-      toast('确认没送到内核', { description: '连上内核再试一次' });
-    });
+    return cardAct(callId, 'confirm', optionId).then(
+      (response) => {
+        // 换模型的回执带实际档：卡路径没有 session-model-select 的响应，用这条回填选择器。
+        const decision = response.decision;
+        const data = decision?.phase === 'confirmed' ? decision.data : undefined;
+        const result =
+          data && typeof data.result === 'object' && data.result !== null
+            ? (data.result as Record<string, unknown>)
+            : null;
+        if (!result) return;
+        const { connection, model, effortWanted, effortActual } = result;
+        if (
+          typeof connection !== 'string' ||
+          typeof model !== 'string' ||
+          typeof effortActual !== 'string'
+        ) {
+          return;
+        }
+        const wanted = typeof effortWanted === 'string' ? effortWanted : undefined;
+        const label = get().modelNames[model] ?? model;
+        void get().applySelection(
+          {
+            connectionId: connection,
+            modelId: model,
+            label,
+            effortWanted: wanted,
+            effortActual,
+          },
+          false,
+        );
+        if (wanted && wanted !== effortActual) {
+          toast(
+            '下一轮开始用 ' +
+              label +
+              ' · 思考 ' +
+              effortName(effortActual) +
+              '（没有「' +
+              effortName(wanted) +
+              '」，按实际档）',
+          );
+        }
+      },
+      (error: unknown) => {
+        toast('确认没送到内核', { description: '连上内核再试一次' });
+        throw error;
+      },
+    );
   },
 
   dismissCard: (callId) => {
-    void cardAct(callId, 'dismiss').catch(() => {
-      toast('暂不没送到内核', { description: '连上内核再试一次' });
-    });
+    return cardAct(callId, 'dismiss').then(
+      () => {},
+      (error: unknown) => {
+        toast('暂不没送到内核', { description: '连上内核再试一次' });
+        throw error;
+      },
+    );
   },
 
   compact: () => {
-    // T007.8：真实手动压缩；分隔线由 compaction/* 日志事件回填（页面不预览假摘要）。
+    // 真实手动压缩；分隔线由 compaction/* 日志事件回填（页面不预览假摘要）。
     void compactThread(globalThis.crypto.randomUUID()).catch(() => {
       toast('压缩没成功', { description: '连上内核再试；原文都还在日志里' });
     });
@@ -852,7 +915,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
 
   setModel: (model) => {
     set((state) => ({ model: { ...state.model, ...model } }));
-    // T012.9：换模型后马上补目录字段（档位/价格/窗口），不等下一轮 refreshStats。
+    // 换模型后马上补目录字段（档位/价格/窗口），不等下一轮 refreshStats。
     void get().hydrateModel({
       connectionId: model.connectionId,
       modelId: model.modelId,
@@ -863,9 +926,11 @@ export const useKindStore = create<KindState>()((set, get) => ({
   },
 
   applySelection: async (selection, announce = true) => {
+    selectionEpoch += 1;
     const { connectionId, modelId, label, effortWanted, effortActual } = selection;
     const wanted = effortWanted ?? get().wantedEffort;
-    const actual = effortActual ?? effortWanted;
+    // 实际档只认调用方给的服务值；没有就是未知，不能拿 wanted 顶替。
+    const actual = serviceSelectionEffort(wanted, effortActual).actual;
     set((state) => ({
       wantedEffort: wanted,
       model: {
@@ -873,13 +938,18 @@ export const useKindStore = create<KindState>()((set, get) => ({
         connectionId,
         modelId,
         label,
-        effort: actual,
-        effortActual: actual,
+        effort: actual ?? state.model.effort,
+        effortActual: actual ?? state.model.effortActual,
       },
     }));
-    await get().hydrateModel({ connectionId, modelId, label, effort: actual });
-    if (!announce) return;
-    // T012 F2：提示带档；实际档和想要的档对不上时写明「没有」。
+    await get().hydrateModel({
+      connectionId,
+      modelId,
+      label,
+      effort: actual ?? get().model.effort,
+    });
+    if (!announce || !actual) return;
+    // F2：提示带档；实际档和想要的档对不上时写明「没有」。
     const wantedName = wanted ? effortName(wanted) : null;
     const actualName = actual ? effortName(actual) : null;
     if (wantedName && actualName && wanted !== actual) {
@@ -932,9 +1002,10 @@ export const useKindStore = create<KindState>()((set, get) => ({
   refreshStats: async () => {
     statusRequest += 1;
     const request = statusRequest;
+    const epoch = selectionEpoch;
     try {
       const status = await fetchStatus();
-      // T021：这次已经被后来的请求取代了：整份丢掉，一点旧数据都不写。
+      // 这次已经被后来的请求取代了：整份丢掉，一点旧数据都不写。
       if (request !== statusRequest) return;
       // 工作过程里的路径按会话工作目录相对化；旧服务没给 cwd 时保持空串（照原样显示）。
       set({ cwd: status.cwd ?? '' });
@@ -959,7 +1030,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
       useSettingsState.getState().applyStatus(status);
       // 当前模型（连接/模型/档由服务 status 给；价格/窗口/档位来自模型目录）：
       // 目录只是补字段，只读地问，不落盘、不动「新」的基准。
-      // T012 F2：只在首次初始化时写 model；之后由 applySelection 维护，避免 refreshStats 异步回来覆盖用户刚做的选择。
+      // F2：只在首次初始化时写 model；之后由 applySelection 维护，避免 refreshStats 异步回来覆盖用户刚做的选择。
       if (status.stats && !get().modelInitialized) {
         const stats = status.stats;
         let models = catalogCache.get(stats.connection);
@@ -972,8 +1043,13 @@ export const useKindStore = create<KindState>()((set, get) => ({
             models = [];
           }
         }
-        // T021：补目录字段期间可能又刷了一次 status；被取代就别再写模型（旧回包不覆盖新状态）。
+        // 补目录字段期间可能又刷了一次 status；被取代就别再写模型（旧回包不覆盖新状态）。
         if (request !== statusRequest) return;
+        // 期间用户已经换过模型（事件/确认卡/选择器）：这次首屏初始化不能再写 model。
+        if (selectionEpoch !== epoch) {
+          set({ modelInitialized: true });
+          return;
+        }
         const info = models.find((model) => model.id === stats.model);
         set({
           model: {
@@ -998,6 +1074,24 @@ export const useKindStore = create<KindState>()((set, get) => ({
           wantedEffort: stats.effortWanted,
           modelInitialized: true,
         });
+      } else if (status.stats) {
+        // 事件换模型只带 wanted：同一 (连接, 模型, wanted) 的 status 回来时补权威实际档。
+        // wanted 对不上说明这是换档/换模型之前的旧回包，整块跳过（同口径）。
+        const stats = status.stats;
+        const current = get().model;
+        if (
+          stats.connection === current.connectionId &&
+          stats.model === current.modelId &&
+          stats.effortWanted === get().wantedEffort
+        ) {
+          set((state) => ({
+            model: {
+              ...state.model,
+              effort: stats.effortActual,
+              effortActual: stats.effortActual,
+            },
+          }));
+        }
       }
     } catch {
       // 状态读不到时保留旧值（页面不显示假数据）。
@@ -1012,7 +1106,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
         model: state.model.modelId,
         effortWanted: effort,
       });
-      // T012 F2：实际档由服务给（模型没有这一档时是最近档）；换档不弹提示。
+      // F2：实际档由服务给（模型没有这一档时是最近档）；换档不弹提示。
       await get().applySelection(
         {
           connectionId: selected.connection,
@@ -1029,7 +1123,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   },
 
 }));
-/** T012.9：连接 id → 模型目录（第一次用到时拉一次；价格/窗口/思考档从这里来）。 */
+/** ：连接 id → 模型目录（第一次用到时拉一次；价格/窗口/思考档从这里来）。 */
 const catalogCache = new Map<string, ServiceCatalogModel[]>();
 
 /** 流式文本单独放一个 store：只有最后一条在重绘，别的消息不跟着重建。 */
@@ -1039,7 +1133,7 @@ export const useStreamStore = create<{ turnId: string | null; itemId: string | n
   text: '',
 }));
 
-// T008 r4 #1：任何调用拿到 401（service 请求层唯一判断）→ 令牌说明页，先于第一次使用页。
+// r4 #1：任何调用拿到 401（service 请求层唯一判断）→ 令牌说明页，先于第一次使用页。
 setUnauthorizedHandler(() => {
   useKindStore.setState({
     gate: 'token',

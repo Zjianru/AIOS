@@ -360,7 +360,7 @@ async fn grep_tool_limits_and_errors() {
     assert!(result.content.contains("negated patterns"));
 }
 
-/// T006.6：默认注册照 DSH tool-fs（applyPatch 默认 false，显式开启才注册）。
+/// 默认注册照 DSH tool-fs（applyPatch 默认 false，显式开启才注册）。
 #[test]
 fn builtin_default_registration_matches_dsh_apply_patch_default() {
     let default = ToolSet::builtin();
@@ -372,11 +372,8 @@ fn builtin_default_registration_matches_dsh_apply_patch_default() {
         "DSH tool-fs 的 applyPatch 默认 false：默认工具集不注册 apply_patch"
     );
     assert!(
-        !default
-            .definitions()
-            .iter()
-            .any(|schema| schema.name == "apply_patch"),
-        "默认请求的 tools 列表也不带 apply_patch"
+        !default.names().contains(&"apply_patch"),
+        "默认工具集不注册 apply_patch"
     );
     let with_patch = ToolSet::builtin_with_patch();
     assert!(
@@ -384,8 +381,8 @@ fn builtin_default_registration_matches_dsh_apply_patch_default() {
         "显式开启（等价 applyPatch: true）才注册 apply_patch"
     );
     assert_eq!(
-        with_patch.definitions().len(),
-        default.definitions().len() + 1,
+        with_patch.names().len(),
+        default.names().len() + 1,
         "其余默认工具不变"
     );
 }

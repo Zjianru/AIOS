@@ -65,6 +65,7 @@ export function EffortIcon({ effort, levels, className }: { effort?: string; lev
 
 export function ModelPicker() {
   const model = useKindStore((state) => state.model);
+  const wantedEffort = useKindStore((state) => state.wantedEffort);
   const masked = useSettingsState((state) => state.masked);
   const open = useKindStore((state) => state.pickerOpen);
   const setPickerOpen = useKindStore((state) => state.setPickerOpen);
@@ -101,6 +102,10 @@ export function ModelPicker() {
     return state.wantedEffort ?? state.model.effortActual ?? state.model.effort;
   };
   const nowMasked = Boolean(matchDisabled(masked, model.connectionId, model.modelId));
+  // 目标模型没有用户要的档时，按钮显示服务给的实际档，并标「按实际档」。
+  const effortFallback = Boolean(
+    wantedEffort && model.effortActual && wantedEffort !== model.effortActual,
+  );
 
   return (
     <DropdownMenu
@@ -123,6 +128,15 @@ export function ModelPicker() {
               <span className="opacity-60">·</span>
               <EffortIcon effort={model.effortActual ?? model.effort} levels={model.efforts ?? []} />
               {effortName(model.effortActual ?? model.effort ?? '')}
+              {effortFallback ? (
+                <span
+                  data-kind="effort-fallback"
+                  className="shrink-0 rounded bg-hover px-1 text-1 text-ink-3"
+                  title={'目标模型没有「' + effortName(wantedEffort ?? '') + '」，按实际档'}
+                >
+                  按实际档
+                </span>
+              ) : null}
             </span>
           ) : null}
           <ChevronDown className="size-3 shrink-0 opacity-60" />

@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 pub use config::{DEFAULT_BASE_URL, DEFAULT_CONTEXT_WINDOW, DEFAULT_MAX_TOKENS, DeepSeekConfig};
 pub use serialize::file_handle_text;
-/// T012 F2：这一轮实际会发的档（内核规则；页面不另抄表）。
+/// F2：这一轮实际会发的档（内核规则；页面不另抄表）。
 pub use vendors::actual_effort;
 
 use crate::Effort;
@@ -55,11 +55,15 @@ pub struct DeepSeek {
     next_model: Arc<Mutex<Option<String>>>,
     /// 本轮冻结的模型；begin_turn 时从 next_model 复制，stream 只读这里。
     turn_model: Arc<Mutex<Option<String>>>,
-    /// T012.7：下一轮要用的思考档（set_effort 只写这里）。
+    /// 下一轮要用的思考档（set_effort 只写这里）。
     next_effort: Arc<Mutex<Option<String>>>,
     /// 本轮冻结的档；begin_turn 时从 next_effort 复制，stream 只读这里。
     turn_effort: Arc<Mutex<Option<String>>>,
-    /// T012.6：学到的连接事实（关不掉思考、通过的鉴权头），同实例的 clone 共享。
+    /// 下一轮要用的上下文窗口（换模型时写这里）。
+    next_context_window: Arc<Mutex<Option<u64>>>,
+    /// 本轮冻结的上下文窗口；begin_turn 时从 next_context_window 复制。
+    turn_context_window: Arc<Mutex<Option<u64>>>,
+    /// 学到的连接事实（关不掉思考、通过的鉴权头），同实例的 clone 共享。
     learned: Arc<Learned>,
 }
 
@@ -74,13 +78,13 @@ impl fmt::Debug for DeepSeek {
 }
 
 impl DeepSeek {
-    /// 用外部凭证来源构造（T008.2：每次出站前申请一次；产品由 Keyring 适配器提供）。
+    /// 用外部凭证来源构造（每次出站前申请一次；产品由 Keyring 适配器提供）。
     pub fn with_credentials(
         config: DeepSeekConfig,
         credentials: Arc<dyn CredentialSource>,
     ) -> Result<Self, ModelError> {
         let url = messages_url(&config.base_url)?;
-        // T012.1：出站 client 只在 model::http 一处造。
+        // 出站 client 只在 model::http 一处造。
         let http = crate::http::client()?;
         Ok(Self {
             http,
@@ -92,11 +96,13 @@ impl DeepSeek {
             turn_model: Arc::new(Mutex::new(None)),
             next_effort: Arc::new(Mutex::new(None)),
             turn_effort: Arc::new(Mutex::new(None)),
+            next_context_window: Arc::new(Mutex::new(None)),
+            turn_context_window: Arc::new(Mutex::new(None)),
             learned: Arc::new(Learned::default()),
         })
     }
 
-    /// T012.3：这个模型的 DefaultEffort（压缩摘要用）。
+    /// 这个模型的 DefaultEffort（压缩摘要用）。
     pub fn default_effort(&self) -> Effort {
         Effort::new(default_effort_for(
             &self.config.provider,
@@ -105,8 +111,8 @@ impl DeepSeek {
         ))
     }
 
-    /// T012.3：同一连接/模型换一个要的档（压缩摘要用；不改原实例）。
-    /// T012.7：克隆不继承运行时冻结的档（压缩摘要用 config.effort）。
+    /// 同一连接/模型换一个要的档（压缩摘要用；不改原实例）。
+    /// 克隆不继承运行时冻结的档（压缩摘要用 config.effort）。
     pub fn with_effort(&self, effort: Effort) -> Self {
         let mut clone = self.clone();
         clone.config.effort = effort;
@@ -115,9 +121,9 @@ impl DeepSeek {
         clone
     }
 
-    /// T012.3/T012.6：这一轮实际发的档和用户要的档（日志用；与实际请求一致）。
+    /// 这一轮实际发的档和用户要的档（日志用；与实际请求一致）。
     ///
-    /// T012.6 P2：本轮模型以 begin_turn 冻结的为准（与请求体一致）；学到「关不掉思考」后，
+    /// P2：本轮模型以 begin_turn 冻结的为准（与请求体一致）；学到「关不掉思考」后，
     /// 要 none 时实际发最低非关档（与 stream 的重发一致），日志不能记旧 actual。
     pub fn effort_state(&self) -> (String, String) {
         let model = self
@@ -126,7 +132,7 @@ impl DeepSeek {
             .ok()
             .and_then(|current| current.clone())
             .unwrap_or_else(|| self.config.model.clone());
-        // T012.7：本轮要的档以 begin_turn 冻结的为准（中途换档不影响本轮日志）。
+        // 本轮要的档以 begin_turn 冻结的为准（中途换档不影响本轮日志）。
         let wanted = self
             .turn_effort
             .lock()
@@ -157,7 +163,7 @@ impl DeepSeek {
         }
     }
 
-    /// T012.7/T012.8a：本轮冻结的模型（begin_turn 之后的实际请求模型；没有冻结时用 config）。
+    /// 本轮冻结的模型（begin_turn 之后的实际请求模型；没有冻结时用 config）。
     pub fn current_model(&self) -> String {
         self.turn_model
             .lock()
@@ -190,11 +196,29 @@ impl DeepSeek {
         }
     }
 
-    /// T012.7：换思考档：只改下一轮；本轮冻结的档在 begin_turn 时确定（D26）。
+    /// 换思考档：只改下一轮；本轮冻结的档在 begin_turn 时确定（D26）。
     pub fn set_effort(&self, effort: Effort) {
         if let Ok(mut current) = self.next_effort.lock() {
             *current = Some(effort.as_str().to_owned());
         }
+    }
+
+    /// 换模型的上下文窗口：只改下一轮；本轮冻结的窗口在 begin_turn 时确定。
+    ///
+    /// 压缩阈值按本轮实际请求的模型算，换到窗口更小的模型后不能继续按旧窗口估。
+    pub fn set_context_window(&self, window: u64) {
+        if let Ok(mut current) = self.next_context_window.lock() {
+            *current = Some(window);
+        }
+    }
+
+    /// 这一轮实际使用的上下文窗口：本轮冻结优先，否则用装配时的窗口。
+    pub fn context_window(&self) -> u64 {
+        self.turn_context_window
+            .lock()
+            .ok()
+            .and_then(|current| *current)
+            .unwrap_or(self.config.context_window)
     }
 
     /// 本轮开始时冻结模型和档；stream 内不再读 next_*（D26）。
@@ -217,6 +241,14 @@ impl DeepSeek {
         if let Ok(mut current) = self.turn_effort.lock() {
             *current = next;
         }
+        let next = self
+            .next_context_window
+            .lock()
+            .map(|window| *window)
+            .unwrap_or(None);
+        if let Ok(mut current) = self.turn_context_window.lock() {
+            *current = next;
+        }
     }
 
     /// 厂商路由 id（DSH 的 provider 名）：日志、统计和压缩策略都按它匹配。
@@ -235,9 +267,9 @@ impl DeepSeek {
         self.stream_inner(messages, tools, cancel, None, true).await
     }
 
-    /// 同 `stream`，但这一次请求覆盖输出上限（T006.3：摘要请求的 maxTokens 上限；DSH GenerateOptions.maxTokens）。
+    /// 同 `stream`，但这一次请求覆盖输出上限（摘要请求的 maxTokens 上限；DSH GenerateOptions.maxTokens）。
     ///
-    /// T006.19：摘要请求的输入是**被截断的历史前缀**（压缩事务要摘的就是这段前缀），
+    /// 摘要请求的输入是**被截断的历史前缀**（压缩事务要摘的就是这段前缀），
     /// 里面可能留下没有配对的 tool_use/tool_result；DSH 的三类防御校验针对完整对话请求，
     /// 不能套在摘要前缀上（否则合法的截断前缀会被误拒）。所以这里跳过配对防御校验。
     pub async fn stream_with_max_tokens(
@@ -270,7 +302,7 @@ impl DeepSeek {
         {
             effective.model = model.to_owned();
         }
-        // T012.7：本轮冻结的档（用户中途换档不影响正在跑的轮）。
+        // 本轮冻结的档（用户中途换档不影响正在跑的轮）。
         if let Ok(current) = self.turn_effort.lock()
             && let Some(effort) = current.as_deref()
         {
@@ -280,7 +312,7 @@ impl DeepSeek {
         self.credentials.admit(&effective.model)?;
         let api_key = self.credentials.issue("model-request", &context)?;
         let base_url = effective.base_url.clone();
-        // T012.6：学到的「关不掉思考」：要 none 也按最低非关档发（与内置 always_thinks 同行为）。
+        // 学到的「关不掉思考」：要 none 也按最低非关档发（与内置 always_thinks 同行为）。
         if self.learned.thinking_required(&base_url, &effective.model) && effective.effort.is_off()
         {
             effective.effort =
@@ -308,7 +340,7 @@ impl DeepSeek {
         if let Some(response) = attempt.response {
             return Ok(ChunkStream::new(response, cancel.clone()));
         }
-        // T012.6-A：400 拒绝关掉思考 → 学到 + 本轮立即按最低非关档重发一次。
+        // -A：400 拒绝关掉思考 → 学到 + 本轮立即按最低非关档重发一次。
         if attempt.status == reqwest::StatusCode::BAD_REQUEST
             && transport::refuses_thinking_off(&attempt.raw)
         {
@@ -342,7 +374,7 @@ impl DeepSeek {
                 )),
             };
         }
-        // T012.6-B：401 拒绝双头 → 各试一次单头（x-api-key 先、Authorization 后），记住通过的。
+        // -B：401 拒绝双头 → 各试一次单头（x-api-key 先、Authorization 后），记住通过的。
         if attempt.status == reqwest::StatusCode::UNAUTHORIZED
             && choice == AuthChoice::Both
             && transport::both_auth_refused(401, &attempt.raw)
@@ -402,7 +434,7 @@ impl DeepSeek {
         crate::catalog::declared_tool_update(&self.config.provider, model)
     }
 
-    /// T012.6：本次请求该带哪些鉴权头（学到的内存优先，其次连接上记住的，默认两个都发）。
+    /// 本次请求该带哪些鉴权头（学到的内存优先，其次连接上记住的，默认两个都发）。
     fn auth_choice(&self, base_url: &str) -> AuthChoice {
         if let Some(header) = self.learned.auth_header(base_url) {
             return AuthChoice::from_learned(&header);
@@ -413,7 +445,7 @@ impl DeepSeek {
         }
     }
 
-    /// T012.6：发一次 Messages 请求。成功返回响应；失败返回状态/头/错误体（重发判定用）。
+    /// 发一次 Messages 请求。成功返回响应；失败返回状态/头/错误体（重发判定用）。
     async fn post_messages(
         &self,
         body: Vec<u8>,
@@ -477,7 +509,7 @@ impl DeepSeek {
     }
 }
 
-/// T012.6：一次出站尝试。成功时 response 留给 ChunkStream；失败时带状态/头/错误体（重发判定用）。
+/// 一次出站尝试。成功时 response 留给 ChunkStream；失败时带状态/头/错误体（重发判定用）。
 struct Attempt {
     status: reqwest::StatusCode,
     headers: reqwest::header::HeaderMap,

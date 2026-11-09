@@ -1,5 +1,5 @@
 /**
- * 卡片机制（T017.2）：逐槽位的校验和降级、每类卡的注册项（schema / from / fallback）的纯数据模型。
+ * 卡片机制：逐槽位的校验和降级、每类卡的注册项（schema / from / fallback）的纯数据模型。
  *
  * - 信封的词汇、槽位上限和规则在 lib/cardEnvelope（设置页也从那里取，不反向 import 这里）。
  * - 连接卡的派生在 data/connectionCard（设置页和首次使用共用）；这里只把它登记进注册表。
@@ -57,10 +57,10 @@ export interface CardHost {
   verifyConnection?: (connectionId: string) => Promise<void>;
   /** 连接卡：连接可用后进入下一步（首次使用的「开始」）。 */
   start?: () => void;
-  /** 确认卡：选了这一项并确认（由页面向服务发 card-act）。 */
-  confirmCard?: (optionId: string) => void;
-  /** 确认卡：暂不（由页面向服务发 card-act）。 */
-  dismissCard?: () => void;
+  /** 确认卡：选了这一项并确认（由页面向服务发 card-act）；HTTP 失败时 reject，视图恢复按钮。 */
+  confirmCard?: (optionId: string) => Promise<void> | void;
+  /** 确认卡：暂不（由页面向服务发 card-act）；HTTP 失败时 reject，视图恢复按钮。 */
+  dismissCard?: () => Promise<void> | void;
 }
 
 /** 卡片视图的 props：信封、校验过的槽位、程序操作。 */
@@ -116,7 +116,7 @@ export interface QuestionCardFact {
 export interface GenericSlots {
   title: LabelSlot;
   body: BodySlot;
-  /** 工具卡（T017.3）：不认识的工具展开后的输入 / 输出；认不出的信封没有这两项。 */
+  /** 工具卡：不认识的工具展开后的输入 / 输出；认不出的信封没有这两项。 */
   input?: BodySlot;
   output?: BodySlot;
 }
@@ -423,7 +423,7 @@ export const confirmCard: CardDefinition<ConfirmCardFact, ConfirmSlots> = {
   fallback: CONFIRM_FALLBACK_SLOTS,
 };
 
-/* ───────── 工具卡（T017.3）：工具名 → 类型、槽位和信封 ───────── */
+/* ───────── 工具卡：工具名 → 类型、槽位和信封 ───────── */
 
 /**
  * 工具名 → 卡片类型（spec 实现决定：另有一张工具名对应卡片类型的表）。

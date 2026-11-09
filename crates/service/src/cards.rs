@@ -3,6 +3,8 @@
 //! 提议本身是 propose_action 的 tool/call + tool/result（结果 meta 里带展示数据）；
 //! 决定是 card/decision 事件。replaced 不落日志，由「后面又有被接受的新卡」推导。
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -147,12 +149,64 @@ pub(crate) fn card_meta(title: &str, brief: &str, options: Vec<CardMetaOption>) 
     serde_json::json!({ "card": meta })
 }
 
+/// 一张确认卡的串行锁：正常结束（有决定/没这张卡/被替换）就从表里摘掉自己，
+/// 出错时保留——同一张卡的失败重试仍然串行，不放出两个请求同时重跑动作。
+struct CardLockSlot<'a> {
+    host: &'a RootHost,
+    call_id: String,
+    lock: Arc<tokio::sync::Mutex<()>>,
+    keep: bool,
+}
+
+impl Drop for CardLockSlot<'_> {
+    fn drop(&mut self) {
+        if self.keep {
+            return;
+        }
+        let mut locks = self.host.card_locks.lock().expect("card locks 锁被毒化");
+        if locks
+            .get(&self.call_id)
+            .is_some_and(|current| Arc::ptr_eq(current, &self.lock))
+        {
+            locks.remove(&self.call_id);
+        }
+    }
+}
+
 impl RootHost {
     /// 用户点了确认卡上的按钮：核对提议、跑 reconcile、执行、记决定。
     ///
     /// 未知的卡、被新卡替换的旧卡不执行也不记（返回 None）；已经有决定的卡返回那条决定，
     /// 重复点击不重复执行。
     pub async fn card_act(&self, request: CardActRequest) -> Result<CardActResponse, ServiceError> {
+        // 同一张卡并发/连点只让一个请求进：第一个写决定，后面的读到决定后原样返回。
+        // 不同 call_id 各有各的锁，不互相排队；正常结束后把锁摘掉，表不随 call_id 无界增长。
+        let mut slot = self.card_lock(&request.call_id);
+        let _guard = Arc::clone(&slot.lock).lock_owned().await;
+        let result = self.card_act_serialized(&request).await;
+        slot.keep = result.is_err();
+        result
+    }
+
+    /// 取（或建）这张卡的串行锁；返回值在请求结束时负责清理表里的条目。
+    fn card_lock(&self, call_id: &str) -> CardLockSlot<'_> {
+        let lock = {
+            let mut locks = self.card_locks.lock().expect("card locks 锁被毒化");
+            Arc::clone(locks.entry(call_id.to_owned()).or_default())
+        };
+        CardLockSlot {
+            host: self,
+            call_id: call_id.to_owned(),
+            lock,
+            keep: false,
+        }
+    }
+
+    /// 拿到这张卡的锁之后才执行：读日志、核对、执行、记决定。
+    async fn card_act_serialized(
+        &self,
+        request: &CardActRequest,
+    ) -> Result<CardActResponse, ServiceError> {
         let events = self.card_events().await?;
         let Some(proposal) = proposal_of(&events, &request.call_id) else {
             return Ok(CardActResponse { decision: None });

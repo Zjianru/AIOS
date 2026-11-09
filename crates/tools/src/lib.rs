@@ -40,14 +40,14 @@ pub use session::{
 };
 pub use skills::{
     BundledSkill, SKILL_FILE, SkillContent, SkillDiscovery, SkillFrontmatter, SkillInvocation,
-    SkillSummary, SkillWarning, bundled_skills, catalog_description, discover_skill_catalog,
-    discover_skills, invoked_skill_names, is_skill_name, load_skill, load_user_invocable_skill,
-    parse_skill_frontmatter, render_skill_content, skill_roots,
+    SkillSummary, SkillWarning, bundled_skills, bundled_skills_for, catalog_description,
+    discover_skill_catalog, discover_skills, invoked_skill_names, is_skill_name, load_skill,
+    load_user_invocable_skill, parse_skill_frontmatter, render_skill_content, skill_roots,
 };
 pub use spill::{SpillRef, bound_result, estimate_text_tokens};
 
 /// 工具调用的规范化参数：JSON 深度 key 排序后序列化，属性顺序不同也视为同一调用。
-/// 重复调用提醒（T005.9）用它构造身份键；解析失败的原始字符串直接参与比较。
+/// 重复调用提醒用它构造身份键；解析失败的原始字符串直接参与比较。
 pub fn canonical_arguments(arguments: &str) -> String {
     fn sort(value: serde_json::Value) -> serde_json::Value {
         match value {
@@ -281,7 +281,7 @@ pub struct ToolResult {
     pub content: String,
     pub is_error: bool,
     pub error_code: Option<String>,
-    /// T013.1：展示用元信息（diff 卡片等）；落进会话日志的 tool/result.meta。
+    /// 展示用元信息（diff 卡片等）；落进会话日志的 tool/result.meta。
     pub meta: Option<serde_json::Value>,
 }
 
@@ -296,7 +296,7 @@ impl ToolResult {
         }
     }
 
-    /// 带展示元信息的成功结果（T013.1：write/edit/apply_patch 的 diff）。
+    /// 带展示元信息的成功结果（write/edit/apply_patch 的 diff）。
     pub fn success_with_meta(
         call_id: impl Into<String>,
         content: impl Into<String>,
@@ -344,7 +344,7 @@ pub trait Tool: Send + Sync {
         ToolConcurrency::Exclusive
     }
 
-    /// 是否为内置 todo_write（T006.12：Agent 按 AgentConfig.allow_parallel_in_progress
+    /// 是否为内置 todo_write（Agent 按 AgentConfig.allow_parallel_in_progress
     /// 在装配时替换它的描述与校验策略；自定义同名工具默认 false，不被替换）。
     fn is_builtin_todo_write(&self) -> bool {
         false
@@ -387,7 +387,7 @@ impl ToolSet {
         self.tools.push(tool);
     }
 
-    /// 开发用的内置工具集。T006.6 起默认注册照 DSH：read、glob、grep，写类 write、edit
+    /// 开发用的内置工具集。起默认注册照 DSH：read、glob、grep，写类 write、edit
     /// （apply_patch 不默认注册，DSH tool-fs 的 applyPatch 默认 false），bash，和后台任务三件。
     pub fn builtin() -> Self {
         Self::builtin_tools(false)
@@ -406,7 +406,7 @@ impl ToolSet {
             Box::new(WriteTool::new()),
             Box::new(EditTool::new()),
         ];
-        // T006.6：默认注册照 DSH tool-fs（applyPatch 默认 false，显式配置才注册）。
+        // 默认注册照 DSH tool-fs（applyPatch 默认 false，显式配置才注册）。
         if include_patch {
             tools.push(Box::new(ApplyPatchTool::new()));
         }
@@ -418,13 +418,13 @@ impl ToolSet {
             Box::new(SkillTool::new()),
             Box::new(TodoWriteTool::new()),
             Box::new(AskUserQuestionTool::new()),
-            // T015.1：画布（D58）；默认注册，Kind 自己决定什么时候画。
+            // 画布（D58）；默认注册，Kind 自己决定什么时候画。
             Box::new(CanvasTool::new()),
         ]);
         Self::new(tools)
     }
 
-    /// T006.12：按部署配置替换内置 todo_write 的并行策略（Agent 在 create/resume 时按
+    /// 按部署配置替换内置 todo_write 的并行策略（Agent 在 create/resume 时按
     /// AgentConfig.allow_parallel_in_progress 调；自定义 todo 工具不受影响）。
     pub fn set_todo_parallel(&mut self, allow_parallel_in_progress: bool) {
         if let Some(index) = self
@@ -448,12 +448,23 @@ impl ToolSet {
             .map(AsRef::as_ref)
     }
 
-    /// 模型可见的工具定义（请求体里的 tools 字段）。
-    pub fn definitions(&self) -> Vec<ToolSchema> {
-        self.tools
-            .iter()
-            .map(|tool| schema_of(tool.as_ref()))
-            .collect()
+    /// 注册的工具名（按注册顺序）。测试/诊断用；不带 schema，避免把无条件全表
+    /// 当成请求工具表。请求要的工具定义走 `definitions_for`。
+    pub fn names(&self) -> Vec<&str> {
+        self.tools.iter().map(|tool| tool.name()).collect()
+    }
+
+    /// 估算全部注册工具的 schema token（压缩阈值用）。
+    ///
+    /// 这是唯一保留的无条件全表读取面，名字写明了用途；不要拿它拼请求。
+    pub fn estimate_schema_tokens(&self) -> u64 {
+        let mut total = 0_usize;
+        for tool in &self.tools {
+            total += tool.name().chars().count();
+            total += tool.description().chars().count();
+            total += tool.parameters().to_string().chars().count();
+        }
+        (total.div_ceil(4) + 4) as u64
     }
 
     /// 本步开出的工具名：每个工具的条件求值一次（照 DSH 的 `when`）。

@@ -16,7 +16,8 @@
     "test:disabled": "node scripts/disabled.test.mjs",
     "test:turn-usage": "node scripts/turn-usage.test.mjs",
     "test:reasoning": "node scripts/reasoning.test.mjs",
-    "test:local-file": "node scripts/local-file.test.mjs"
+    "test:local-file": "node scripts/local-file.test.mjs",
+    "test:effort-selection": "node scripts/effort-selection.test.mjs"
   },
   "dependencies": {
     "@fontsource-variable/overpass": "5.3.0",
@@ -53,5 +54,5 @@
     "typescript": "7.0.2",
     "vite": "8.3.4"
   },
-  "description": "AIOS Web：Kind 对话页面（T007 起进入仓库门禁）"
+  "description": "AIOS Web：Kind 对话页面（进入仓库门禁）"
 }

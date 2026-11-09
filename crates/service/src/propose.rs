@@ -78,7 +78,7 @@ impl ProposeActionTool {
         }
         let events = context.session_events();
         let turn = current_turn(&events);
-        let loaded = skills_loaded_in_turn(&events, turn);
+        let loaded = agent::loaded_skills(&events, Some(turn));
         if earlier_card_in_turn(&events, turn, &call.id) {
             return Err(ToolFailure::plain(
                 "One card per turn; the earlier card stands.",
@@ -179,48 +179,6 @@ fn current_turn(events: &[session::Event]) -> u64 {
         })
         .next_back()
         .unwrap_or(0)
-}
-
-/// 这一轮里成功加载过的 skill。
-fn skills_loaded_in_turn(events: &[session::Event], turn: u64) -> BTreeSet<String> {
-    let mut requested = std::collections::BTreeMap::new();
-    for event in events {
-        if let session::EventKind::ToolCall {
-            turn: call_turn,
-            call_id,
-            name,
-            arguments,
-            ..
-        } = &event.kind
-            && *call_turn == turn
-            && name == "skill"
-            && let Ok(value) = serde_json::from_str::<Value>(arguments)
-            && let Some(skill) = value.get("name").and_then(Value::as_str)
-        {
-            requested.insert(call_id.as_str(), skill.to_owned());
-        }
-    }
-    let mut loaded = BTreeSet::new();
-    for event in events {
-        let session::EventKind::ToolResult {
-            turn: result_turn,
-            message,
-            error,
-            ..
-        } = &event.kind
-        else {
-            continue;
-        };
-        if *result_turn != turn || message.is_error == Some(true) || error.is_some() {
-            continue;
-        }
-        if let Some(call_id) = message.tool_call_id.as_deref()
-            && let Some(skill) = requested.get(call_id)
-        {
-            loaded.insert(skill.clone());
-        }
-    }
-    loaded
 }
 
 /// 这一轮是不是已经有一张被接受的卡（同一步里先发出的调用还没结果，也算）。

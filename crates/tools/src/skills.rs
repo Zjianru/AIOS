@@ -1,4 +1,4 @@
-//! skill 发现、frontmatter 解析与加载（T006.11 照 DSH skill/skill-filesystem 改回）。
+//! skill 发现、frontmatter 解析与加载（照 DSH skill/skill-filesystem 改回）。
 //!
 //! 根优先级（后者被前者遮蔽）：项目根 /.agents/skills、<data-dir>/skills、配置的 skill_roots；
 //! 不读 ~/.dsh。完整 YAML frontmatter（yaml-rust2 0.13，default-features=false：skill 文件按 UTF-8
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use yaml_rust2::yaml::Hash;
 use yaml_rust2::{Yaml, YamlLoader};
 
-use crate::ToolFailure;
+use crate::{ToolFailure, ToolSet};
 
 /// skill bundle 的入口文件名。
 pub const SKILL_FILE: &str = "SKILL.md";
@@ -73,6 +73,9 @@ pub struct BundledSkill {
     pub raw: &'static str,
     /// 进目录需要哪一种工具凭证；None = 总是可用。
     pub requires: Option<crate::ToolKey>,
+    /// 正文提到的工具；这些工具不在装配出来的工具集里时，skill 不进目录。
+    /// 自带 skill 不能指向一个不存在的工具（CLI 没有服务独有的查询/联网工具）。
+    pub tools: &'static [&'static str],
     /// 凭证没存时目录里写给模型的一句话：说明它现在不可用、让用户去哪填。
     /// 不需要条件的 skill 留空。
     pub unavailable_hint: &'static str,
@@ -92,16 +95,30 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
             name: "aios-settings",
             raw: include_str!("../bundled/aios-settings/SKILL.md"),
             requires: None,
+            tools: &["aios_query", "propose_action"],
             unavailable_hint: "",
         },
         BundledSkill {
             name: "web",
             raw: include_str!("../bundled/web/SKILL.md"),
             requires: Some(crate::ToolKey::Exa),
+            tools: &["web_search", "web_fetch"],
             unavailable_hint: "Web search and page reading are unavailable: no Exa API key is saved. If the user asks you to search the web or read a link, say you cannot yet and tell them to save an Exa API key in the settings page (设置 › 模型与连接 › 联网搜索), then ask them to try again.",
         },
     ];
     BUNDLED
+}
+
+/// 这次装配实际可用的自带 skill：正文提到的工具都在工具集里。
+///
+/// CLI 的 extra_tools 是空的，所以 aios-settings/web 不会出现在它的目录里；
+/// 服务的根会话装了四个工具，两份都照常可用。
+pub fn bundled_skills_for(tools: &ToolSet) -> Vec<BundledSkill> {
+    bundled_skills()
+        .iter()
+        .copied()
+        .filter(|skill| skill.tools.iter().all(|name| tools.get(name).is_some()))
+        .collect()
 }
 
 /// 一条发现警告（DSH 对非法 skill 打 logger.warn，不静默丢）。
@@ -156,7 +173,7 @@ pub fn discover_skills(
     discover_skill_catalog(cwd, data_dir, configured, bundled).skills
 }
 
-/// 发现 skill + 警告 + 完整性（T006.11：非法 skill 不再静默丢）。
+/// 发现 skill + 警告 + 完整性（非法 skill 不再静默丢）。
 pub fn discover_skill_catalog(
     cwd: &Path,
     data_dir: &Path,
@@ -203,7 +220,7 @@ pub fn load_skill(
     })
 }
 
-/// 用户显式 /name 调用通道（T006.11b 照 DSH tool-skill 的 /name gesture）：
+/// 用户显式 /name 调用通道（照 DSH tool-skill 的 /name gesture）
 /// 只认 user-invocable 的 skill；未知或 user-invocable=false 的名字静默跳过（DSH：仍是普通文本）。
 /// 不做模型调用策略检查——这条通道正是 disable-model-invocation skill 的唯一入口。
 pub fn load_user_invocable_skill(
@@ -641,7 +658,7 @@ mod tests {
         }
     }
 
-    // ---- T006.11 红：完整 YAML / DSH 字段 / 警告（skeleton 上这些断言应失败）----
+    // ---- 红：完整 YAML / DSH 字段 / 警告（skeleton 上这些断言应失败）----
 
     fn full_yaml_doc() -> &'static str {
         "---\nname: pdf-tools\ndescription: |\n  Multi\n  line\nwhenToUse: >\n  Use when\n  needed\nmetadata:\n  owner: aios\n  tags:\n    - one\n    - two\ndisable-model-invocation: yes\nuser-invocable: 'false'\n---\n# Body\n"
@@ -772,7 +789,7 @@ mod tests {
     }
 }
 
-/// T006.19 红测试：非法 skill 的警告文案照 DSH skill-filesystem 的 logger.warn 形状
+/// 红测试：非法 skill 的警告文案照 DSH skill-filesystem 的 logger.warn 形状
 /// （`skill file <path> ignored: <reason>`，skill-filesystem/src/index.ts:904-926）。
 #[cfg(test)]
 mod t006_19_warning_format_tests {

@@ -1,15 +1,73 @@
 //! 接缝 2：skill 发现与加载（测试清单第 6 条）。
 
 use std::path::Path;
+use std::sync::{Arc, LazyLock};
 
-use serde_json::json;
-use tools::{SkillTool, ToolContext, ToolResult, discover_skills};
+use serde_json::{Value, json};
+use tools::{
+    SkillTool, Tool, ToolCall, ToolContext, ToolFuture, ToolResult, ToolSet, bundled_skills_for,
+    discover_skills,
+};
 
 use crate::common::{run, session_context};
 
 fn write(path: &Path, content: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, content).unwrap();
+}
+
+/// 只给自带 skill 过滤用例的工具：名字够用，不执行。
+struct NamedTool(&'static str);
+
+static EMPTY_PARAMS: LazyLock<Value> = LazyLock::new(|| json!({"type": "object"}));
+
+impl Tool for NamedTool {
+    fn name(&self) -> &str {
+        self.0
+    }
+
+    fn description(&self) -> &str {
+        ""
+    }
+
+    fn parameters(&self) -> &Value {
+        &EMPTY_PARAMS
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: ToolCall,
+        _context: &'a ToolContext,
+    ) -> ToolFuture<'a, ToolResult> {
+        Box::pin(async move { ToolResult::success(call.id, "") })
+    }
+}
+
+/// 自带 skill 跟着装配出来的工具走：CLI 没有服务独有的工具，两份都不进目录；
+/// 根的四个工具齐了才进，web 的凭证提示保持原文。
+#[test]
+fn bundled_skills_follow_the_assembled_tools() {
+    let cli = ToolSet::builtin();
+    let cli_names: Vec<&str> = bundled_skills_for(&cli)
+        .iter()
+        .map(|skill| skill.name)
+        .collect();
+    assert!(!cli_names.contains(&"aios-settings"), "{cli_names:?}");
+    assert!(!cli_names.contains(&"web"), "{cli_names:?}");
+
+    let mut root = ToolSet::builtin();
+    for name in ["aios_query", "propose_action", "web_search", "web_fetch"] {
+        root.push_shared(Arc::new(NamedTool(name)));
+    }
+    let skills = bundled_skills_for(&root);
+    let names: Vec<&str> = skills.iter().map(|skill| skill.name).collect();
+    assert_eq!(names, vec!["aios-settings", "web"]);
+    let web = skills.iter().find(|skill| skill.name == "web").unwrap();
+    assert!(
+        web.unavailable_hint
+            .contains("设置 › 模型与连接 › 联网搜索"),
+        "web 的凭证提示保持"
+    );
 }
 
 async fn load_skill(name: &str, context: &ToolContext) -> ToolResult {
@@ -240,7 +298,7 @@ async fn malformed_quotes_and_flow_frontmatter_are_discarded() {
     }
 }
 
-/// T006.11b：/name 手势照 DSH SKILL_GESTURE——空白边界、kebab-case 名字；
+/// /name 手势照 DSH SKILL_GESTURE——空白边界、kebab-case 名字；
 /// /usr/bin、5/8、大小写不合法与重复都不算/去重。
 #[test]
 fn user_invocation_names_follow_dsh_gesture() {
@@ -255,7 +313,7 @@ fn user_invocation_names_follow_dsh_gesture() {
     );
 }
 
-/// T014.2：程序自带的 skill 排在用户 skill 后面；用户放一个同名的，目录里只有用户那份。
+/// 程序自带的 skill 排在用户 skill 后面；用户放一个同名的，目录里只有用户那份。
 #[tokio::test]
 async fn bundled_skills_come_after_user_skills() {
     let project = tempfile::tempdir().unwrap();
@@ -318,7 +376,7 @@ async fn bundled_skills_come_after_user_skills() {
     );
 }
 
-/// T014.2：自带 skill 的正文要写清什么时候查、什么时候提议、一轮一张卡、只说一句为什么。
+/// 自带 skill 的正文要写清什么时候查、什么时候提议、一轮一张卡、只说一句为什么。
 #[test]
 fn bundled_aios_settings_body_covers_the_four_rules() {
     let cwd = tempfile::tempdir().unwrap();
@@ -345,7 +403,7 @@ fn bundled_aios_settings_body_covers_the_four_rules() {
     }
 }
 
-/// T006.11b：用户显式通道只认 user-invocable，不看 disable-model-invocation
+/// 用户显式通道只认 user-invocable，不看 disable-model-invocation
 /// （DSH：这是隐藏 skill 的唯一入口）；未知名字静默返回 None。
 #[test]
 fn user_invocable_loader_ignores_model_policy_and_honors_user_policy() {

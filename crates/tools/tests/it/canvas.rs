@@ -1,4 +1,4 @@
-//! T015.1/T015.2 接缝 1（tools 公开边界）：新建、重写、局部改、四个错误码、meta 形状。
+//! 接缝 1（tools 公开边界）：新建、重写、局部改、四个错误码、meta 形状。
 
 use serde_json::{Value, json};
 use tools::{CanvasTool, Tool, ToolCall, ToolContext, ToolResult, ToolSet};
@@ -316,10 +316,5 @@ fn description_has_when_to_use_what_an_artifact_is_not_hosts_and_aios_send() {
 fn canvas_is_registered_by_default() {
     let set = ToolSet::builtin();
     assert!(set.get("canvas").is_some(), "默认工具集缺 canvas");
-    assert!(
-        set.definitions()
-            .iter()
-            .any(|schema| schema.name == "canvas"),
-        "请求的 tools 列表里要有 canvas"
-    );
+    assert!(set.names().contains(&"canvas"), "默认工具集要有 canvas");
 }

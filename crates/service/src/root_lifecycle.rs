@@ -64,7 +64,6 @@ pub struct RootHost {
     session_id: Mutex<Option<String>>,
     pub(crate) context: Arc<Mutex<ContextUsage>>,
     pub(crate) options: RootSessionOptions,
-    pub(crate) window: Mutex<u64>,
     pub(crate) events: broadcast::Sender<ServiceEvent>,
     agent_events: broadcast::Sender<agent::AgentEvent>,
     forward: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -72,6 +71,8 @@ pub struct RootHost {
     /// 当前生效的模型选择（连接/模型/想要的档）；session/model 的 durable 事实
     /// 在会话日志里，这里只是进程内缓存（重开从日志恢复）。
     pub(crate) selection: Mutex<Option<session::ModelSelection>>,
+    /// 每张确认卡一把锁：同一 call_id 的并发/连点串行，第二个请求读得到第一条决定。
+    pub(crate) card_locks: Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// 根会话装配时用的连接 id；只在安装/重建时更新，运行中不跟着 selection 变。
     pub(crate) root_connection: Mutex<Option<String>>,
 }
@@ -112,8 +113,22 @@ impl RootHost {
                 effort_wanted: options.model.effort.as_str().to_owned(),
             });
         }
+        // 窗口跟当前选中的模型走：工厂配置里的 context_window 是 CLI 的值，等于产品
+        // 默认值就表示「没显式指定」，按 Keyring 的模型信息解析真实窗口；解析不出来
+        // 才退回装配配置。非默认值是显式覆盖（开发/DoD 的 --context-window），保留它
+        // （e2e 靠它压小窗口）。无工厂的定制宿主沿用 fallback_window。
         let window = if options.model_factory.is_some() {
-            options.model.context_window
+            explicit_context_window(&options.model)
+                .or_else(|| {
+                    selection.as_ref().and_then(|selection| {
+                        crate::session_select::model_context_window(
+                            &options.data_dir,
+                            options.identity.as_deref(),
+                            selection,
+                        )
+                    })
+                })
+                .unwrap_or(options.model.context_window)
         } else {
             fallback_window
         };
@@ -125,12 +140,12 @@ impl RootHost {
             session_id: Mutex::new(None),
             context: Arc::new(Mutex::new(ContextUsage { used: 0, window })),
             options,
-            window: Mutex::new(window),
             events,
             agent_events,
             forward: Mutex::new(None),
             agent_forward: Mutex::new(None),
             selection: Mutex::new(selection),
+            card_locks: Mutex::new(std::collections::HashMap::new()),
             root_connection: Mutex::new(None),
         };
         if let Some(message) = factory_error {
@@ -143,6 +158,8 @@ impl RootHost {
         } else {
             match open_root_session(host.options.clone()).await {
                 Ok(root) => {
+                    // 压缩阈值从第一轮起就按解析出的窗口算：先设到 agent 上，再装宿主。
+                    root.agent.set_context_window(window);
                     match ensure_initial_selection(&root.agent, initial_selection.as_ref()).await {
                         Ok(()) => host.install(root.agent).await,
                         Err(state) => {
@@ -211,14 +228,13 @@ impl RootHost {
         let mut source = service_host.subscribe_events();
         let tx = self.events.clone();
         let context = Arc::clone(&self.context);
-        let window = *self.window.lock().expect("window 锁被毒化");
         let forward = tokio::spawn(async move {
             loop {
                 match source.recv().await {
                     Ok(event) => {
                         if let Some(used) = context_used(&event) {
-                            *context.lock().expect("context 锁被毒化") =
-                                ContextUsage { used, window };
+                            // 只更新占用；窗口是换模型时更新的另一个事实，旧事件不能盖回去。
+                            context.lock().expect("context 锁被毒化").used = used;
                         }
                         #[expect(
                             clippy::let_underscore_must_use,
@@ -324,10 +340,28 @@ impl RootHost {
             }
         }
         // 新连接可能换模型/窗口；恢复时窗口和占用一起重置，热切换只换窗口。
-        let window = options.model.context_window;
+        // 和 open 同口径：先看显式覆盖，再按 Keyring 里当前选择解析模型窗口。
+        let window = if options.model_factory.is_some() {
+            explicit_context_window(&options.model)
+                .or_else(|| {
+                    self.selection
+                        .lock()
+                        .expect("selection 锁被毒化")
+                        .as_ref()
+                        .and_then(|selection| {
+                            crate::session_select::model_context_window(
+                                &options.data_dir,
+                                options.identity.as_deref(),
+                                selection,
+                            )
+                        })
+                })
+                .unwrap_or(options.model.context_window)
+        } else {
+            options.model.context_window
+        };
         if matches!(mode, ReopenMode::Restore) {
             self.notify_keyring_changed();
-            *self.window.lock().expect("window 锁被毒化") = window;
             *self.context.lock().expect("context 锁被毒化") = ContextUsage { used: 0, window };
         }
         // 先放掉旧 Agent（释放会话写锁）再重开同一会话；recheck 时通常已经是 None。
@@ -335,6 +369,8 @@ impl RootHost {
         drop(old);
         match open_root_session(options).await {
             Ok(root) => {
+                // 重开后的第一轮也要按新窗口算压缩阈值，不能等 agent 撞一次溢出。
+                root.agent.set_context_window(window);
                 let current = self.selection.lock().expect("selection 锁被毒化").clone();
                 if let Err(state) = ensure_initial_selection(&root.agent, current.as_ref()).await {
                     *self.state.lock().expect("root state 锁被毒化") = state.clone();
@@ -342,7 +378,6 @@ impl RootHost {
                 }
                 if matches!(mode, ReopenMode::HotSwitch) {
                     // 占用是同一会话日志里的事实，换连接的窗口只影响之后算比例。
-                    *self.window.lock().expect("window 锁被毒化") = window;
                     self.context.lock().expect("context 锁被毒化").window = window;
                 }
                 self.install(root.agent).await;
@@ -355,6 +390,12 @@ impl RootHost {
             }
         }
     }
+}
+
+/// 工厂返回的窗口是 CLI 配置：等于产品默认值时视为「没有显式指定」，调用方按
+/// Keyring 里的模型信息解析真实窗口；非默认值是开发/DoD 的显式覆盖，优先保留。
+fn explicit_context_window(config: &model::DeepSeekConfig) -> Option<u64> {
+    (config.context_window != model::DEFAULT_CONTEXT_WINDOW).then_some(config.context_window)
 }
 
 /// 初始模型选择写不进会话日志时的可见状态：recheck/ready 会带着原因拒绝方法。

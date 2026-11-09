@@ -1,4 +1,4 @@
-//! 文件观察策略（T006.6，照 DSH packages/fs/fs-observation-policy）。
+//! 文件观察策略（照 DSH packages/fs/fs-observation-policy）。
 //!
 //! 单独模块：观察状态（present/absent）、写意图、edit/delete 的先读护栏都只在这里；
 //! fs 工具在工具执行 seam 调用它（read 成功后 observe，写类先取 intent 再 observe），
@@ -58,10 +58,7 @@ impl ObservationPolicy {
     ) -> Result<FileVersion, ToolFailure> {
         match self.files.get(key) {
             Some(ObservedFile::Present(version)) => Ok(version.clone()),
-            Some(ObservedFile::Absent) => Err(ToolFailure::coded(
-                "FS_NOT_FOUND",
-                format!("cannot {verb} \"{display}\": not found"),
-            )),
+            Some(ObservedFile::Absent) => Err(crate::fs::not_found(verb, display)),
             None => Err(ToolFailure::coded(
                 "FS_NOT_OBSERVED",
                 format!("{verb} requires reading \"{display}\" first"),
@@ -84,7 +81,7 @@ impl ObservationPolicy {
         self.files.clear();
     }
 
-    /// 已观察的文件路径（T005.5 指令刷新用：读到更深目录时补指令）。
+    /// 已观察的文件路径（指令刷新用：读到更深目录时补指令）。
     pub fn paths(&self) -> impl Iterator<Item = &PathBuf> {
         self.files.keys()
     }

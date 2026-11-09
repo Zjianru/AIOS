@@ -28,7 +28,7 @@ async function askedOptions(request: APIRequestContext): Promise<string[]> {
     .flatMap((event) => event.data?.options ?? []);
 }
 
-/// T017.2 清单 10：降级在页面上生效——卡片不报错、超长小标题截断显示、坏选项不显示、问题能展开、提交收成回执、刷新后仍是回执。
+/// 清单 10：降级在页面上生效——卡片不报错、超长小标题截断显示、坏选项不显示、问题能展开、提交收成回执、刷新后仍是回执。
 test('提问卡降级：超长小标题、空 label 的选项、2000 字的问题', async ({ page, request }) => {
   await page.goto(urlOf());
   await page.getByPlaceholder('和 Kind 说…').fill('问我一个很难的问题');
@@ -58,11 +58,11 @@ test('提问卡降级：超长小标题、空 label 的选项、2000 字的问�
   // 提交：收成回执，不能再改。
   await card.getByRole('radio', { name: /第一项/ }).click();
   await card.getByRole('button', { name: '提交回答' }).click();
-  await expect(page.getByText('（T017 e2e 假回放）')).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText('（e2e 假回放）')).toBeVisible({ timeout: 20_000 });
   const closed = page.locator('[data-kind="question-closed"]');
   await expect(closed).toBeVisible();
   await expect(closed.getByText('你回答了 Kind 的 1 个问题')).toBeVisible();
-  await expect(closed.getByText('第一项', { exact: false })).toBeVisible();
+  await expect(closed.getByText('第一项', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '提交回答' })).toHaveCount(0);
 
   // 刷新后仍是回执，不能再改。

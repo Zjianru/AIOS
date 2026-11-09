@@ -60,8 +60,7 @@ impl SelectModelAction {
 
     /// 这条对话现在用的连接/模型/档：会话日志最后一条，没有就用 settings.json 的上次选择。
     fn current(&self, env: &ActionEnv<'_>) -> Result<session::ModelSelection, String> {
-        session::last_model_selection(env.events)
-            .or_else(|| crate::settings::load(&self.data_dir).last_selection)
+        crate::settings::current_selection(&self.data_dir, env.events)
             .ok_or_else(|| "这条对话还没有选过模型".to_owned())
     }
 

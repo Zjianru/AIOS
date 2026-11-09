@@ -1,4 +1,4 @@
-//! T006.5a：事件记录照 DSH 的 SessionEvent：`{type, seq, time, data}`，data 放该事件字段。
+//! 事件记录照 DSH 的 SessionEvent：`{type, seq, time, data}`，data 放该事件字段。
 //!
 //! DSH 依据：`packages/core/session/src/index.ts:826-836`（事件的 type/seq/time/data）、
 //! `packages/session/session-format-v1-to-v2/src/codec.ts:21`（物理行的必填键）、
@@ -6,7 +6,7 @@
 
 use std::fs;
 
-use model::{AssistantStreamRecord, ContentBlock, Message, Role, StreamChunk, Usage};
+use model::{AssistantStreamRecord, ContentBlock, Message, Role, StreamChunk, ToolSchema, Usage};
 use serde_json::{Value, json};
 
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
     RetryMode, SessionStore, ShadowedRange, TodoItem, TodoStatus, ToolError, TurnEndReason,
 };
 
-/// T012.7：session/model 事件的日志形状（type/data/effortWanted）与最近选择折叠。
+/// session/model 事件的日志形状（type/data/effortWanted）与最近选择折叠。
 #[test]
 fn session_model_event_shape_and_last_selection() {
     let events = vec![
@@ -457,7 +457,7 @@ fn retry_events_match_dsh() {
     assert_eq!(derived.len(), 1);
     assert_eq!(derived[0].role, Role::User);
 }
-/// T006.13：question/answered 的 data 是一条 DSH 答案项（tool-ask-user 的
+/// question/answered 的 data 是一条 DSH 答案项（tool-ask-user 的
 /// AskUserQuestionAnswerItem：id + selected[] + 可选 custom），落日志时再带问题定位。
 #[test]
 fn question_answered_matches_dsh_answer_item() {
@@ -578,6 +578,16 @@ fn all_event_kinds() -> Vec<EventKind> {
             error: None,
             meta: None,
         },
+        EventKind::ToolRegistry {
+            turn: 1,
+            step: 1,
+            additions: vec![ToolSchema {
+                name: "read".to_owned(),
+                description: "读文件".to_owned(),
+                parameters: json!({"type": "object"}),
+                defer_loading: false,
+            }],
+        },
         EventKind::CompactionPrune {
             shadowed_range: ShadowedRange { start: 2, end: 2 },
             shadowed_seqs: vec![2],
@@ -676,13 +686,50 @@ fn all_event_kinds() -> Vec<EventKind> {
     ]
 }
 
+/// 编译期穷举：EventKind 新增变体而这里没写，本文件直接编不过。
+///
+/// 运行时只验证「清单长度/内容由人补」，所以再加一条 len 断言；两处一起漏才会失守。
+fn every_variant_is_named(kind: &EventKind) {
+    match kind {
+        EventKind::TurnStart { .. }
+        | EventKind::TurnEnd { .. }
+        | EventKind::StepStart { .. }
+        | EventKind::StepEnd { .. }
+        | EventKind::SystemMessage { .. }
+        | EventKind::UserMessage { .. }
+        | EventKind::QuestionAsked { .. }
+        | EventKind::QuestionAnswered { .. }
+        | EventKind::QuestionCancelled { .. }
+        | EventKind::InboxSpliced { .. }
+        | EventKind::JobRegistered { .. }
+        | EventKind::JobSettled { .. }
+        | EventKind::AssistantMessage { .. }
+        | EventKind::AssistantAttempt { .. }
+        | EventKind::LlmRetry { .. }
+        | EventKind::LlmRetryStarted { .. }
+        | EventKind::ToolCall { .. }
+        | EventKind::ToolResult { .. }
+        | EventKind::ToolRegistry { .. }
+        | EventKind::CompactionPrune { .. }
+        | EventKind::TodoWrite { .. }
+        | EventKind::CompactionStart { .. }
+        | EventKind::CompactionSummary { .. }
+        | EventKind::CompactionEnd { .. }
+        | EventKind::SessionModel { .. }
+        | EventKind::CardDecision { .. } => {}
+    }
+}
+
 /// 防未来漂移：EventKind 的 serde `type` 必须等于 `type_name`。
 ///
 /// 首跑即绿，用来在新增/改名事件时抓住两处各写一份的漂移；新增变体要补进 all_event_kinds。
 #[test]
 fn event_kind_serde_tag_matches_type_name() {
     let kinds = all_event_kinds();
-    assert_eq!(kinds.len(), 25, "all_event_kinds 要覆盖全部变体");
+    for kind in &kinds {
+        every_variant_is_named(kind);
+    }
+    assert_eq!(kinds.len(), 26, "all_event_kinds 要覆盖全部变体");
     for kind in kinds {
         let value = serde_json::to_value(&kind).expect("事件序列化");
         assert_eq!(
@@ -928,7 +975,7 @@ fn compaction_replacement_is_logged_message_with_surface_op() {
     );
 }
 
-/// T006.4：compaction/prune 照 DSH shadow-price 形状（区间/seqs/估算 token）；修剪替换是
+/// compaction/prune 照 DSH shadow-price 形状（区间/seqs/估算 token）；修剪替换是
 /// 一条带 surfaceOp replace 的 tool/result，派生只读替换消息。
 #[test]
 fn compaction_prune_matches_dsh() {
@@ -1005,7 +1052,7 @@ fn compaction_prune_matches_dsh() {
     );
 }
 
-/// T006.9：job/registered、job/settled 照 DSH SessionEventMap 的 JobRegisteredData /
+/// job/registered、job/settled 照 DSH SessionEventMap 的 JobRegisteredData /
 /// JobSettledData（docs/subsystems/jobs.zh.md），FORMAT_VERSION 升到 7；派生视图忽略它们。
 #[test]
 fn job_lifecycle_events_match_dsh() {
@@ -1044,7 +1091,7 @@ fn job_lifecycle_events_match_dsh() {
     assert_eq!(
         header["version"],
         crate::FORMAT_VERSION,
-        "版本断言跟 FORMAT_VERSION 常量（T006.10 后为 8）"
+        "版本断言跟 FORMAT_VERSION 常量"
     );
     assert_eq!(rows.len(), 2);
     assert_envelope(&rows[0]);
@@ -1110,7 +1157,7 @@ fn job_lifecycle_events_match_dsh() {
     );
 }
 
-/// T006.14：assistant stream 的 tool-call-delta 帧与 tool-call-chunks 记录照 DSH
+/// assistant stream 的 tool-call-delta 帧与 tool-call-chunks 记录照 DSH
 /// （StreamChunk types.ts:500；assistant-stream.ts:35-43）。
 #[test]
 fn tool_call_stream_records_match_dsh() {
