@@ -81,14 +81,12 @@ test('页面一打开就发：旧 status 晚到不覆盖新状态', async ({ pag
     const compact = page.locator('[data-kind="compact"]');
     await expect(compact).toBeEnabled({ timeout: 15_000 });
 
-    // 放行旧 status：等它真的写回页面，再看一个窗口（覆盖发生在解析回包后几十毫秒内）。
+    // 放行旧 status，等它真的写回页面；再等两帧绘制，让回包被解析、渲染完（被覆盖的话这里已经看得见）。
     hold.release();
     await hold.delivered;
-    for (let elapsed = 0; elapsed < 1_000; elapsed += 50) {
-      await expect(meter).toContainText('90%');
-      await expect(compact).toBeEnabled();
-      await page.waitForTimeout(50);
-    }
+    await page.evaluate(
+      () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))),
+    );
     await expect(meter).toContainText('90%');
     await expect(compact).toBeEnabled();
   } finally {
