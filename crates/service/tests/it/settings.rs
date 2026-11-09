@@ -2007,6 +2007,185 @@ async fn 同连接换模型窗口跟新模型() {
     assert_eq!(body["model"], "model-b", "下一轮请求用新模型");
 }
 
+/// 两个模型的连接（model-a 1M、model-b 204800）+ 模拟 CLI 的工厂：只填 model，
+/// 窗口是 CLI 的值（默认 1M；传 5000 模拟显式 --context-window）。
+fn two_model_options(
+    dir: &std::path::Path,
+    uri: String,
+    window: u64,
+) -> service::RootSessionOptions {
+    let identity = dir.join("identity.txt");
+    let keyring = credentials::Keyring::open(dir, Some(&identity)).unwrap();
+    keyring
+        .save_connection(credentials::NewConnection {
+            id: "deepseek".to_owned(),
+            name: "DeepSeek".to_owned(),
+            model: "model-a".to_owned(),
+            endpoint: uri.clone(),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some("deepseek".to_owned()),
+            models: Some(vec![
+                model_row("model-a", 1_000_000),
+                model_row("model-b", 204_800),
+            ]),
+            ..credentials::NewConnection::default()
+        })
+        .expect("save connection");
+    let data = dir.to_path_buf();
+    let endpoint = uri.clone();
+    let factory: service::ModelFactory =
+        std::sync::Arc::new(move |selection: Option<&session::ModelSelection>| {
+            Ok((
+                "deepseek".to_owned(),
+                DeepSeekConfig {
+                    base_url: endpoint.clone(),
+                    model: selection
+                        .map(|selection| selection.model.clone())
+                        .unwrap_or_else(|| "model-a".to_owned()),
+                    context_window: window,
+                    ..DeepSeekConfig::default()
+                },
+                Some(crate::common::test_credential(&data)),
+            ))
+        });
+    let mut options = crate::common::options(dir);
+    options.model.base_url = uri;
+    options.credentials = None;
+    options.identity = Some(identity);
+    options.model_factory = Some(factory);
+    options
+}
+
+/// 重开根会话：窗口按会话日志里的选择从 Keyring 解析，不回到装配时的 1M。
+#[tokio::test]
+async fn 重开根会话窗口跟已选模型() {
+    let server = MockServer::start().await;
+    let dir = tempdir().unwrap();
+    let options = two_model_options(dir.path(), server.uri(), DEFAULT_CONTEXT_WINDOW);
+    let host = RootHost::open(options.clone(), DEFAULT_CONTEXT_WINDOW).await;
+    assert_eq!(
+        stats_of(&host).await.context_window,
+        1_000_000,
+        "初始模型 model-a 的窗口"
+    );
+    host.dispatch(Call::SessionModelSelect(SessionModelSelectRequest {
+        connection: Some("deepseek".to_owned()),
+        model: Some("model-b".to_owned()),
+        effort_wanted: None,
+    }))
+    .await
+    .expect("换到 model-b");
+    assert_eq!(stats_of(&host).await.context_window, 204_800);
+    drop(host);
+    tokio::task::yield_now().await;
+    let reopened = RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await;
+    assert_eq!(
+        stats_of(&reopened).await.context_window,
+        204_800,
+        "重开后窗口跟已选模型（不是装配时的 1M）"
+    );
+}
+
+/// 显式 --context-window 是开发覆盖：重开也不被 Keyring 的模型窗口盖掉（e2e 压小窗口靠它）。
+#[tokio::test]
+async fn 显式窗口覆盖在重开后仍生效() {
+    let server = MockServer::start().await;
+    let dir = tempdir().unwrap();
+    let options = two_model_options(dir.path(), server.uri(), 5_000);
+    let host = RootHost::open(options.clone(), DEFAULT_CONTEXT_WINDOW).await;
+    assert_eq!(stats_of(&host).await.context_window, 5_000);
+    drop(host);
+    tokio::task::yield_now().await;
+    let reopened = RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await;
+    assert_eq!(
+        stats_of(&reopened).await.context_window,
+        5_000,
+        "显式覆盖优先于 Keyring 模型窗口"
+    );
+}
+
+/// 重开根会话后长对话按已选模型的小窗口先压缩：不是先撞溢出再重试。
+#[tokio::test]
+async fn 重开后续轮按新窗口先压缩() {
+    let server = MockServer::start().await;
+    let sse = |body: String| {
+        ResponseTemplate::new(200)
+            .insert_header("content-type", "text/event-stream")
+            .set_body_string(body)
+    };
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(USAGE_SSE.to_owned()),
+            sse(crate::common::text_sse("压缩摘要")),
+            sse(USAGE_SSE.to_owned()),
+        ]))
+        .expect(3)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let mut options = two_model_options(dir.path(), server.uri(), DEFAULT_CONTEXT_WINDOW);
+    // 0.16 阈值、0.05 保留：model-a（1M）下 16 万 token 才压，model-b（204800）下 3.2 万就压。
+    options.config.compaction_threshold_ratio = 0.16;
+    options.config.compaction_retain_ratio = 0.05;
+    let host = RootHost::open(options.clone(), DEFAULT_CONTEXT_WINDOW).await;
+    // 约 5 万 token 的历史：按 1M 窗口不压，换到 model-b 就过阈值。
+    host.dispatch(Call::Send(service::SendRequest {
+        request_id: "reopen-big".to_owned(),
+        content: format!("EARLY-BIG {}", "x".repeat(200_000)),
+        delivery: service::DeliveryMode::FollowUp,
+        pastes: Vec::new(),
+        attachments: Vec::new(),
+        canvas: None,
+    }))
+    .await
+    .expect("send 长历史");
+    wait_for_requests(&server, 1).await;
+    wait_host_idle(&host).await;
+    host.dispatch(Call::SessionModelSelect(SessionModelSelectRequest {
+        connection: Some("deepseek".to_owned()),
+        model: Some("model-b".to_owned()),
+        effort_wanted: None,
+    }))
+    .await
+    .expect("换到 model-b");
+    drop(host);
+    tokio::task::yield_now().await;
+    let reopened = RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await;
+    assert_eq!(
+        stats_of(&reopened).await.context_window,
+        204_800,
+        "重开后窗口跟 model-b"
+    );
+    reopened
+        .dispatch(Call::Send(service::SendRequest {
+            request_id: "reopen-after".to_owned(),
+            content: "AFTER-SWITCH".to_owned(),
+            delivery: service::DeliveryMode::FollowUp,
+            pastes: Vec::new(),
+            attachments: Vec::new(),
+            canvas: None,
+        }))
+        .await
+        .expect("send 重开后那一轮");
+    // 一轮结束就说明这一轮的请求（含压缩摘要）都已经发完，不用再等计数。
+    wait_host_idle(&reopened).await;
+    let requests = server.received_requests().await.unwrap();
+    let bodies: Vec<String> = requests
+        .iter()
+        .map(|request| String::from_utf8_lossy(&request.body).into_owned())
+        .collect();
+    assert_eq!(bodies.len(), 3, "第一轮 + 摘要 + 压缩后的下一轮");
+    assert!(
+        bodies[1].contains("compaction engine"),
+        "重开后下一轮先发摘要请求"
+    );
+    assert!(
+        bodies[2].contains("<compacted-summary>") && bodies[2].contains("AFTER-SWITCH"),
+        "下一轮请求由摘要 + 新消息组成"
+    );
+}
+
 fn model_row(id: &str, context_window: u64) -> credentials::ModelRow {
     credentials::ModelRow {
         id: id.to_owned(),
