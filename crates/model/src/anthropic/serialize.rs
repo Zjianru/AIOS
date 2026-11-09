@@ -654,6 +654,22 @@ mod effort_wire_tests {
         assert_eq!(flash["max_tokens"], 256_000);
     }
 
+    /// 目录里没有这个模型（自定义连接）时不动装配时的输出上限。
+    #[test]
+    fn request_max_tokens_stay_when_catalog_has_no_model() {
+        let custom = with_provider(
+            "custom",
+            "http://127.0.0.1:1",
+            "private-model",
+            "low",
+            Some(64_000),
+        );
+        assert_eq!(custom["max_tokens"], 64_000, "目录没有该模型时不改请求上限");
+        let default_limit =
+            with_provider("custom", "http://127.0.0.1:1", "private-model", "low", None);
+        assert_eq!(default_limit["max_tokens"], 256_000);
+    }
+
     #[test]
     fn minimax_m31_always_thinks_but_uses_lowest_level_for_none() {
         let value = body(

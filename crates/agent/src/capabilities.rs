@@ -75,7 +75,6 @@ pub(crate) struct CompactionPolicy {
 
 /// loop 对 Capability 暴露的访问面；由 driver 的 Inner 实现。
 /// 访问面按宿主完整形状定义；`log_path` 当前还没有能力读取。
-#[allow(dead_code)]
 /// 后续功能搬出去时只依赖这个 trait，不直接依赖 Inner 的私有字段。
 pub(crate) trait LoopAccess: Send + Sync {
     fn session(&self) -> &Mutex<SessionStore>;
@@ -85,7 +84,6 @@ pub(crate) trait LoopAccess: Send + Sync {
     fn model(&self) -> &DeepSeek;
     fn cwd(&self) -> &Path;
     fn data_dir(&self) -> &Path;
-    fn log_path(&self) -> &Path;
     /// 宿主现在已存的工具凭证；每步求值一次（产品装配提供，读不出来按没存）。
     fn tool_keys(&self) -> std::collections::BTreeSet<tools::ToolKey>;
     fn compaction_policy(&self) -> CompactionPolicy;
@@ -122,14 +120,12 @@ pub(crate) trait LoopAccess: Send + Sync {
 }
 
 /// 每个挂点一份 typed 事件：host 访问面 + 该挂点可用的运行态数据。
-/// 字段按挂点完整形状定义；`Request.messages` 当前还没有能力读取。
-#[allow(dead_code)]
 pub(crate) enum HookEvent<'a> {
     PreStep {
         turn: u64,
         step: u64,
         host: &'a dyn LoopAccess,
-        /// 这一步 claim 到的 user 消息（T006.11b：skill 的 /name 只扫 source=user 的消息）。
+        /// 这一步 claim 到的 user 消息（skill 的 /name 只扫 source=user 的消息）。
         messages: &'a [Message],
         /// None = 每步自动检查；Some(Manual) = 手动 /compact 入口（强制压缩）。
         trigger: Option<CompactionTrigger>,
@@ -140,7 +136,6 @@ pub(crate) enum HookEvent<'a> {
         turn: u64,
         step: u64,
         host: &'a dyn LoopAccess,
-        messages: &'a [Message],
     },
     RequestError {
         turn: u64,
@@ -569,9 +564,6 @@ mod dispatch_contract_tests {
             unimplemented!()
         }
         fn data_dir(&self) -> &Path {
-            unimplemented!()
-        }
-        fn log_path(&self) -> &Path {
             unimplemented!()
         }
         fn tool_keys(&self) -> std::collections::BTreeSet<tools::ToolKey> {

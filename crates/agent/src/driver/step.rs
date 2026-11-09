@@ -191,7 +191,6 @@ pub(super) async fn run_step(
                 turn,
                 step,
                 host: inner.as_ref(),
-                messages: &messages,
             })
             .await?;
         inner.model.set_issue_context(CredentialContext {

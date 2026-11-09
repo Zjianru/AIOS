@@ -120,9 +120,6 @@ impl LoopAccess for Inner {
     fn data_dir(&self) -> &Path {
         &self.data_dir
     }
-    fn log_path(&self) -> &Path {
-        &self.log_path
-    }
     fn tool_keys(&self) -> std::collections::BTreeSet<tools::ToolKey> {
         self.tool_keys.present()
     }

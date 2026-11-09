@@ -138,14 +138,7 @@ fn estimate_messages(messages: &[Message]) -> u64 {
 }
 
 fn estimate_schemas(host: &dyn LoopAccess) -> u64 {
-    let schemas = host.tools().definitions();
-    let mut total = 0_usize;
-    for schema in &schemas {
-        total += schema.name.chars().count();
-        total += schema.description.chars().count();
-        total += schema.parameters.to_string().chars().count();
-    }
-    (total.div_ceil(4) + 4) as u64
+    host.tools().estimate_schema_tokens()
 }
 
 fn measure(host: &dyn LoopAccess) -> u64 {
@@ -704,9 +697,6 @@ mod tests {
         }
         fn data_dir(&self) -> &Path {
             &self.data_dir
-        }
-        fn log_path(&self) -> &Path {
-            Path::new("/tmp/aios-test.log")
         }
         fn tool_keys(&self) -> std::collections::BTreeSet<tools::ToolKey> {
             std::collections::BTreeSet::new()

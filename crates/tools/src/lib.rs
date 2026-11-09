@@ -448,12 +448,23 @@ impl ToolSet {
             .map(AsRef::as_ref)
     }
 
-    /// 模型可见的工具定义（请求体里的 tools 字段）。
-    pub fn definitions(&self) -> Vec<ToolSchema> {
-        self.tools
-            .iter()
-            .map(|tool| schema_of(tool.as_ref()))
-            .collect()
+    /// 注册的工具名（按注册顺序）。测试/诊断用；不带 schema，避免把无条件全表
+    /// 当成请求工具表。请求要的工具定义走 `definitions_for`。
+    pub fn names(&self) -> Vec<&str> {
+        self.tools.iter().map(|tool| tool.name()).collect()
+    }
+
+    /// 估算全部注册工具的 schema token（压缩阈值用）。
+    ///
+    /// 这是唯一保留的无条件全表读取面，名字写明了用途；不要拿它拼请求。
+    pub fn estimate_schema_tokens(&self) -> u64 {
+        let mut total = 0_usize;
+        for tool in &self.tools {
+            total += tool.name().chars().count();
+            total += tool.description().chars().count();
+            total += tool.parameters().to_string().chars().count();
+        }
+        (total.div_ceil(4) + 4) as u64
     }
 
     /// 本步开出的工具名：每个工具的条件求值一次（照 DSH 的 `when`）。
