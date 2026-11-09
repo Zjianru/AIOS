@@ -14,21 +14,24 @@ impl RootHost {
         &self,
         _request: StatusRequest,
     ) -> Result<StatusResponse, ServiceError> {
-        let (object, running, pending_questions, agent) = {
+        // 日志快照和工作目录只在这把锁里取：Agent 一旦被克隆带出去，会话写锁就会跟着
+        // 跨过下面的 await（fx 可能拉网络），重开根会话时被误报 writer-held。
+        let (object, running, pending_questions, events, cwd) = {
             let guard = self.inner.lock().await;
             let Some(host) = guard.as_ref() else {
                 return Err(ServiceError::RootUnavailable(
                     self.state.lock().expect("root state 锁被毒化").clone(),
                 ));
             };
+            let agent = host.agent();
             (
                 host.object(),
-                host.agent().is_running(),
-                host.agent().pending_questions().len(),
-                host.agent().clone(),
+                agent.is_running(),
+                agent.pending_questions().len(),
+                agent.session_events_from(0),
+                agent.cwd().to_string_lossy().into_owned(),
             )
         };
-        let events = agent.session_events_from(0);
         let current = self
             .selection
             .lock()
@@ -84,7 +87,7 @@ impl RootHost {
             stats: Some(stats),
             fx: Some(fx),
             currency: Some(settings.currency),
-            cwd: Some(agent.cwd().to_string_lossy().into_owned()),
+            cwd: Some(cwd),
         })
     }
 }
