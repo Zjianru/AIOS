@@ -40,9 +40,9 @@ pub use session::{
 };
 pub use skills::{
     BundledSkill, SKILL_FILE, SkillContent, SkillDiscovery, SkillFrontmatter, SkillInvocation,
-    SkillSummary, SkillWarning, bundled_skills, catalog_description, discover_skill_catalog,
-    discover_skills, invoked_skill_names, is_skill_name, load_skill, load_user_invocable_skill,
-    parse_skill_frontmatter, render_skill_content, skill_roots,
+    SkillSummary, SkillWarning, bundled_skills, bundled_skills_for, catalog_description,
+    discover_skill_catalog, discover_skills, invoked_skill_names, is_skill_name, load_skill,
+    load_user_invocable_skill, parse_skill_frontmatter, render_skill_content, skill_roots,
 };
 pub use spill::{SpillRef, bound_result, estimate_text_tokens};
 

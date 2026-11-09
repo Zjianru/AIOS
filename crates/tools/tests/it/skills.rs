@@ -1,15 +1,73 @@
 //! 接缝 2：skill 发现与加载（测试清单第 6 条）。
 
 use std::path::Path;
+use std::sync::{Arc, LazyLock};
 
-use serde_json::json;
-use tools::{SkillTool, ToolContext, ToolResult, discover_skills};
+use serde_json::{Value, json};
+use tools::{
+    SkillTool, Tool, ToolCall, ToolContext, ToolFuture, ToolResult, ToolSet, bundled_skills_for,
+    discover_skills,
+};
 
 use crate::common::{run, session_context};
 
 fn write(path: &Path, content: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, content).unwrap();
+}
+
+/// 只给自带 skill 过滤用例的工具：名字够用，不执行。
+struct NamedTool(&'static str);
+
+static EMPTY_PARAMS: LazyLock<Value> = LazyLock::new(|| json!({"type": "object"}));
+
+impl Tool for NamedTool {
+    fn name(&self) -> &str {
+        self.0
+    }
+
+    fn description(&self) -> &str {
+        ""
+    }
+
+    fn parameters(&self) -> &Value {
+        &EMPTY_PARAMS
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: ToolCall,
+        _context: &'a ToolContext,
+    ) -> ToolFuture<'a, ToolResult> {
+        Box::pin(async move { ToolResult::success(call.id, "") })
+    }
+}
+
+/// 自带 skill 跟着装配出来的工具走：CLI 没有服务独有的工具，两份都不进目录；
+/// 根的四个工具齐了才进，web 的凭证提示保持原文。
+#[test]
+fn bundled_skills_follow_the_assembled_tools() {
+    let cli = ToolSet::builtin();
+    let cli_names: Vec<&str> = bundled_skills_for(&cli)
+        .iter()
+        .map(|skill| skill.name)
+        .collect();
+    assert!(!cli_names.contains(&"aios-settings"), "{cli_names:?}");
+    assert!(!cli_names.contains(&"web"), "{cli_names:?}");
+
+    let mut root = ToolSet::builtin();
+    for name in ["aios_query", "propose_action", "web_search", "web_fetch"] {
+        root.push_shared(Arc::new(NamedTool(name)));
+    }
+    let skills = bundled_skills_for(&root);
+    let names: Vec<&str> = skills.iter().map(|skill| skill.name).collect();
+    assert_eq!(names, vec!["aios-settings", "web"]);
+    let web = skills.iter().find(|skill| skill.name == "web").unwrap();
+    assert!(
+        web.unavailable_hint
+            .contains("设置 › 模型与连接 › 联网搜索"),
+        "web 的凭证提示保持"
+    );
 }
 
 async fn load_skill(name: &str, context: &ToolContext) -> ToolResult {

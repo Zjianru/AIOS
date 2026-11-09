@@ -79,12 +79,13 @@ impl Agent {
             )));
         };
         let model = DeepSeek::with_credentials(options.model, credentials)?;
-        // 程序自带的 skill 是产品资产：产品装配在这里填，内核不猜。
-        options.config.bundled_skills = tools::bundled_skills().to_vec();
         let mut tools = ToolSet::builtin();
         for tool in options.extra_tools {
             tools.push_shared(tool);
         }
+        // 程序自带的 skill 是产品资产：产品装配在这里填，内核不猜。
+        // 正文指向的工具不在这次装配里时整份不进目录（CLI 没有服务独有的工具）。
+        options.config.bundled_skills = tools::bundled_skills_for(&tools);
         match options.resume {
             Some(id) => {
                 let mut store = SessionStore::open(&options.data_dir, &id)?;
