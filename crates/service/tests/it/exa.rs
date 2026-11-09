@@ -172,14 +172,17 @@ async fn exa_key_round_trip_matches_the_settings_page() {
 
 /// 环境变量里有 EXA_API_KEY 也不算数：工具凭证只从 Keyring 读（和模型密钥同一条规矩）。
 ///
-/// 门禁用 `EXA_API_KEY=env-should-not-be-read` 跑这条（测试不改进程环境，同慢测试的写法）；
-/// 不带这个变量时直接返回，等于没跑——证据见 handback 的命令。
+/// 不依赖外部环境：这个变量没设、设空、有值三种都跑（空 Keyring 下网页工具都不该进表）。
+/// 门禁分别用 `env -u EXA_API_KEY`、`EXA_API_KEY=`、`EXA_API_KEY=env-should-not-be-read`
+/// 各跑一次；有值那次如果网页工具进表，就是产品开始读环境变量了。
+/// 测试不改进程环境（工作区 `unsafe_code = "forbid"`），也不对变量的值做假设。
 #[tokio::test]
 async fn an_exa_key_in_the_environment_is_not_used() {
-    let Some(sentinel) = std::env::var_os("EXA_API_KEY") else {
-        return;
+    let env_state = match std::env::var_os("EXA_API_KEY") {
+        None => "未设",
+        Some(value) if value.is_empty() => "设空",
+        Some(_) => "有值",
     };
-    assert_eq!(sentinel.to_string_lossy(), "env-should-not-be-read");
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     std::fs::create_dir_all(&data).unwrap();
@@ -216,9 +219,15 @@ async fn an_exa_key_in_the_environment_is_not_used() {
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
-    assert!(!names.contains(&"web_search") && !names.contains(&"web_fetch"));
+    assert!(
+        !names.contains(&"web_search") && !names.contains(&"web_fetch"),
+        "网页工具不进表（EXA_API_KEY {env_state}）"
+    );
     let text = body.to_string();
-    assert!(text.contains("(unavailable)"), "目录里仍写清没有 key");
+    assert!(
+        text.contains("(unavailable)"),
+        "目录里仍写清没有 key（EXA_API_KEY {env_state}）"
+    );
 }
 
 /// 没 key：目录里没有 web、写着为什么、工具表里没有网页工具；存了 key 并加载 web：

@@ -1,11 +1,14 @@
 import { spawnSync } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
 import { apiPost, startRealKernelFixture, type KernelFixture } from './service-fixture';
 
-const EVIDENCE = process.env.AIOS_DOD_EVIDENCE ?? '/Users/codez/develop/aios-work/T009/evidence/dod';
-const BIN = process.env.AIOS_BIN ?? '/Users/codez/develop/aios/target/debug/aios-dev';
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const EVIDENCE = process.env.AIOS_DOD_EVIDENCE ?? path.join(tmpdir(), 'aios-t009-dod-evidence');
+const BIN = process.env.AIOS_BIN ?? path.join(repoRoot, 'target/debug/aios-dev');
 
 async function shot(page: Page, name: string) {
   await mkdir(EVIDENCE, { recursive: true });

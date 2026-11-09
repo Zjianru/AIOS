@@ -1,9 +1,10 @@
 import { test, expect, type APIRequestContext } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { apiPost, startKernelFixture, type KernelFixture } from './service-fixture';
 
-const EVIDENCE = process.env.AIOS_DOD_EVIDENCE ?? '/Users/codez/develop/aios-work/T010/evidence/dod';
+const EVIDENCE = process.env.AIOS_DOD_EVIDENCE ?? path.join(tmpdir(), 'aios-t010-replay-evidence');
 
 async function eventsOf(request: APIRequestContext, fixture: KernelFixture) {
   const response = await apiPost(request, fixture, { method: 'follow', lastSeq: 0 });

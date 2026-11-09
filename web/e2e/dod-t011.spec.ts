@@ -1,9 +1,10 @@
 import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { apiPost, startRealKernelFixture, type KernelFixture } from './service-fixture';
 
-const EVIDENCE = process.env.AIOS_DOD_EVIDENCE ?? '/Users/codez/develop/aios-work/T011/evidence/dod';
+const EVIDENCE = process.env.AIOS_DOD_EVIDENCE ?? path.join(tmpdir(), 'aios-t011-dod-evidence');
 const DOD_ROOT = process.env.AIOS_DOD_ROOT ?? '/tmp/aios-t011-dod';
 
 async function eventsOf(request: APIRequestContext, fixture: KernelFixture) {
