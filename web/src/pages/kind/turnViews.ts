@@ -343,6 +343,44 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
   };
 
   /**
+   * T023 补修：assistant/message 的正文里有没有工具调用块。
+   * 带工具调用的正文是这一步的工具前说明，不是这一轮的最终回答。
+   */
+  const hasToolCall = (message: unknown): boolean => {
+    if (!message || typeof message !== 'object') return false;
+    const content = (message as { content?: unknown }).content;
+    if (!Array.isArray(content)) return false;
+    return content.some(
+      (block) =>
+        block !== null &&
+        typeof block === 'object' &&
+        (block as { type?: string }).type === 'tool-call',
+    );
+  };
+
+  /**
+   * T023 补修：这次尝试的流记录里有没有工具调用块。
+   * 取消收尾时内核会丢掉 tool-call 块、只留 text 并带 interrupted=true，所以
+   * 「这段正文是不是工具前说明」要看流记录；只看消息内容会把被屏蔽打断的半截
+   * 回答也一起丢掉。
+   */
+  const streamHasToolCall = (stream: unknown): boolean => {
+    if (!Array.isArray(stream)) return false;
+    return stream.some((record) => {
+      if (!record || typeof record !== 'object') return false;
+      const typed = record as {
+        type?: string;
+        chunk?: { type?: string; blockType?: string; block?: { type?: string } };
+      };
+      if (typed.type === 'tool-call-chunks') return true;
+      if (!typed.chunk) return false;
+      if (typed.chunk.type === 'block-start') return typed.chunk.blockType === 'tool-call';
+      if (typed.chunk.type === 'block-end') return typed.chunk.block?.type === 'tool-call';
+      return false;
+    });
+  };
+
+  /**
    * T013 F1：你的消息按块拆开——正文只留打的字；paste 块各是一段粘贴；file 块各是一个文件。
    * 粘贴原文不进正文（Claude F1：气泡上是一排卡片，不是一大段字）。
    */
@@ -469,7 +507,14 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       case 'assistant/message': {
         const raw = ensure(turn);
         const text = textOf(data.message);
-        if (text) raw.answer = text;
+        // T023 补修：工具前说明不能进回答区，否则 turn/end 后回答区会回退显示它。
+        // 正常完成时它和 tool-call 块在同一条消息里；取消收尾时内核摘掉 tool-call、
+        // 只留 text 并带 interrupted=true，要从 stream 记录里认出这次尝试本来要调工具。
+        // 只有 text 流的中断（被屏蔽打断的半截回答）照旧留在回答区。
+        const preTool =
+          hasToolCall(data.message) ||
+          (data.interrupted === true && streamHasToolCall(data.stream));
+        if (text && !preTool) raw.answer = text;
         raw.usage = mergeUsage(raw.usage, data.usage);
         raw.modelId = modelIdOf(data.message) ?? raw.modelId;
         raw.reasoningMs += reasoningSpanMs(data.stream);
