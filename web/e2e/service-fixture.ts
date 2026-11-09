@@ -120,11 +120,24 @@ export interface KernelFixture {
   exa?: { baseUrl: string; requests: () => string[] };
   /** 读网页用例：本地假网页代理收到的目标 URL（本机地址不该出现在这里）。 */
   fetch?: { requests: () => string[] };
+  /** T022：钉住汇率请求的本地代理，用来等 status 真的卡在 fx 的 await 里。 */
+  fx?: FxGate;
   dropProxy?: () => Promise<void>;
   restoreProxy?: () => Promise<void>;
   /// T007 #1：页面开着时重启同一个端口的服务（新进程=新 cookie 钥匙，旧页面会话失效）。
   restart?: () => Promise<void>;
   close(): Promise<void>;
+}
+
+/** T022：兑换汇率（fx）请求的闸门。只拦 open.er-api.com；别的 HTTPS 立刻 502。 */
+export interface FxGate {
+  /** 第一次汇率请求到达（首屏 status 拉汇率）。 */
+  firstConnect: Promise<void>;
+  /** hold(true) 之后的下一次汇率请求已被扣住：服务正卡在 status 的 fx await 里。 */
+  held: Promise<void>;
+  hold(on: boolean): void;
+  /** 放行被扣住的那次请求（回 502，服务走后备汇率），之后不再扣。 */
+  release(): void;
 }
 
 export interface FixtureOptions {
@@ -211,6 +224,8 @@ export interface FixtureOptions {
   envExaKey?: string;
   /// T014.2：起服务前先放一条旧格式（v16）的根会话日志，用来验旧日志照读。
   legacySession?: boolean;
+  /// T022：把服务的汇率请求指到本地代理，测试可以等 status 进了 fx 的 await 再动作。
+  slowFx?: boolean;
 }
 
 /** 接缝 5：假 DeepSeek 脚本回放 + 真 aios-dev serve（页面也由它同源托管）。 */
@@ -430,6 +445,73 @@ export async function startKernelFixture(
     // 故意放一个值：产品不该读它（设置页仍是「还没有 key」）。
     serviceEnv.EXA_API_KEY = options.envExaKey;
   }
+  // T022：把汇率请求钉在本地代理上。模型请求走 127.0.0.1，产品本来就绕过代理；
+  // 这里只把 open.er-api.com 的 CONNECT 拦下来，测「status 正在 fx 的 await 里」这一态。
+  let fxServer: Server | null = null;
+  let fxGate: FxGate | null = null;
+  if (options.slowFx) {
+    let holding = false;
+    let fxConnects = 0;
+    let heldSocket: net.Socket | null = null;
+    let firstResolve!: () => void;
+    let heldResolve!: () => void;
+    const firstConnect = new Promise<void>((resolve) => {
+      firstResolve = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      heldResolve = resolve;
+    });
+    const server = createServer((_request, response) => {
+      response.writeHead(502);
+      response.end();
+    });
+    server.on('connect', (request, socket) => {
+      socket.on('error', () => {});
+      const host = (request.url ?? '').split(':', 1)[0];
+      if (host !== 'open.er-api.com') {
+        socket.end('HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\n\r\n');
+        return;
+      }
+      fxConnects += 1;
+      if (fxConnects === 1) firstResolve();
+      if (holding) {
+        heldSocket = socket;
+        heldResolve();
+        return;
+      }
+      // 平时也让 fx 失败（不写缓存），这样每次 status 都会重新来拉。
+      setTimeout(() => {
+        if (!socket.destroyed) {
+          socket.end('HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\n\r\n');
+        }
+      }, 30);
+    });
+    await new Promise<void>((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+    const port = (server.address() as net.AddressInfo).port;
+    const proxyUrl = 'http://127.0.0.1:' + String(port);
+    serviceEnv.https_proxy = proxyUrl;
+    serviceEnv.HTTPS_PROXY = proxyUrl;
+    serviceEnv.all_proxy = '';
+    serviceEnv.ALL_PROXY = '';
+    serviceEnv.no_proxy = '';
+    serviceEnv.NO_PROXY = '';
+    fxServer = server;
+    fxGate = {
+      firstConnect,
+      held,
+      hold: (on) => {
+        holding = on;
+      },
+      release: () => {
+        holding = false;
+        const socket = heldSocket;
+        heldSocket = null;
+        socket?.end('HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\n\r\n');
+      },
+    };
+  }
   let holder: ReturnType<typeof spawn> | null = null;
   if (options.busyRoot) {
     holder = spawn(bin, ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', dataDir], {
@@ -559,6 +641,7 @@ export async function startKernelFixture(
     paths,
     exa: exaBaseUrl ? { baseUrl: exaBaseUrl, requests: () => exaRequests } : undefined,
     fetch: fetchServer ? { requests: () => fetchRequests } : undefined,
+    fx: fxGate ?? undefined,
     fakeEndpoint: replayUrl,
     lastModel: async () => {
       try {
@@ -583,6 +666,8 @@ export async function startKernelFixture(
     restart,
     close: async () => {
       await dropProxy();
+      fxGate?.release();
+      fxServer?.close();
       exaServer?.close();
       fetchServer?.close();
       holder?.kill('SIGTERM');
