@@ -5,11 +5,42 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tools::{
-    BashTool, JobKillTool, JobListTool, JobOutputTool, JobSpec, ToolContext, ToolResult,
-    ToolSessionState,
+    BashTool, JobKillTool, JobListTool, JobOutputRead, JobOutputTool, JobSpec, JobStatus, JobView,
+    ToolContext, ToolResult, ToolSessionState, render_model_delta,
 };
 
 use crate::common::{run, session_context_with_id as session_context, truncated_path};
+
+/// 输出文件写失败不能只留在读线程里：模型读 job 输出时要看到一行原因。
+#[test]
+fn model_delta_reports_output_file_error() {
+    let read = JobOutputRead {
+        view: JobView {
+            id: "bash-1".to_owned(),
+            kind: "bash",
+            label: "test".to_owned(),
+            status: JobStatus::Completed,
+            exit_code: Some(0),
+            signal: None,
+            started_at: 0,
+            finished_at: Some(1),
+            detail: None,
+        },
+        stdout: "hello\n".to_owned(),
+        stderr: String::new(),
+        lossy: false,
+        stdout_path: "/tmp/job.out".into(),
+        stderr_path: "/tmp/job.err".into(),
+        stdout_error: Some("写输出文件 /tmp/job.out 失败：No space left on device".to_owned()),
+        stderr_error: None,
+    };
+    let body = render_model_delta(&read);
+    assert!(body.contains("hello"), "正常输出还在：{body}");
+    assert!(
+        body.contains("[output file error: 写输出文件 /tmp/job.out 失败：No space left on device]"),
+        "写失败要进模型可见输出：{body}"
+    );
+}
 
 async fn bash(arguments: Value, context: &ToolContext) -> ToolResult {
     run(&BashTool::new(), arguments, context).await

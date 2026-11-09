@@ -165,6 +165,9 @@ pub struct JobOutputRead {
     pub lossy: bool,
     pub stdout_path: PathBuf,
     pub stderr_path: PathBuf,
+    /// 输出文件建不出或写失败的原因；有值时模型可见的正文里会带一行提示。
+    pub stdout_error: Option<String>,
+    pub stderr_error: Option<String>,
 }
 
 /// 前台 bash 的流式 spill 目标（T006.8 照 DSH subprocess spill：完整流边收边写）。
@@ -185,6 +188,9 @@ struct JobState {
     stderr: Vec<u8>,
     stdout_dropped: bool,
     stderr_dropped: bool,
+    /// 输出文件建不出或写失败的原因；读线程只标记，读时进 JobOutputRead。
+    stdout_error: Option<String>,
+    stderr_error: Option<String>,
     kill_requested: bool,
     /// 前台 bash 在 start 时标记：结算时不再发完成通知（照 DSH awaited）。
     awaited: bool,
@@ -410,6 +416,8 @@ impl TaskRegistry {
                 stderr: Vec::new(),
                 stdout_dropped: false,
                 stderr_dropped: false,
+                stdout_error: None,
+                stderr_error: None,
                 kill_requested: false,
                 awaited: foreground,
                 notified: false,
@@ -881,39 +889,44 @@ fn spawn_reader(
             record.stderr_path.clone()
         };
         // 每个 job 的输出文件唯一：create/truncate + 0600，绝不 append 旧文件。
-        let mut options = OpenOptions::new();
-        options.create(true).truncate(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&path).ok();
-        #[cfg(unix)]
-        if let Some(file) = file.as_ref() {
-            use std::os::unix::fs::PermissionsExt;
-            #[expect(
-                clippy::let_underscore_must_use,
-                reason = "创建时已带 0600；再钉一次失败不改变已写内容"
-            )]
-            let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
-        }
+        let mut file = match open_output(&path) {
+            Ok(file) => Some(file),
+            Err(error) => {
+                let mut state = record.state.lock().expect("job 状态锁被毒化");
+                if is_stdout {
+                    state.stdout_error = Some(error);
+                } else {
+                    state.stderr_error = Some(error);
+                }
+                None
+            }
+        };
         let mut buffer = [0_u8; 8192];
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(read) => {
-                    if let Some(file) = file.as_mut() {
-                        #[expect(
-                            clippy::let_underscore_must_use,
-                            reason = "读线程没有向上返回错误的通道；落盘失败时仍保留内存窗口与已写文件"
-                        )]
-                        let _ = file.write_all(&buffer[..read]);
+                    let write_error = file.as_mut().and_then(|target| {
+                        target
+                            .write_all(&buffer[..read])
+                            .err()
+                            .map(|error| format!("写输出文件 {} 失败：{error}", path.display()))
+                    });
+                    // 后面再写也只会继续失败；停在这里，内存窗口照常保留。
+                    if write_error.is_some() {
+                        file = None;
                     }
                     if let Some(spill) = spill.as_mut() {
                         spill.write(&buffer[..read]);
                     }
                     let mut state = record.state.lock().expect("job 状态锁被毒化");
+                    if let Some(error) = write_error {
+                        if is_stdout {
+                            state.stdout_error = Some(error);
+                        } else {
+                            state.stderr_error = Some(error);
+                        }
+                    }
                     if is_stdout {
                         state.stdout_total += read;
                     } else {
@@ -945,6 +958,32 @@ fn spawn_reader(
         )]
         let _ = done.send(ReaderDone { is_stdout, spill });
     });
+}
+
+/// 建一个 job 的输出文件：create/truncate + 0600，绝不 append 旧文件。
+///
+/// 失败原因要能回到读输出的人眼前，不能像以前那样被 open().ok() 吞掉。
+fn open_output(path: &Path) -> Result<std::fs::File, String> {
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(path)
+        .map_err(|error| format!("建不出输出文件 {}：{error}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "创建时已带 0600；再钉一次失败不改变已写内容"
+        )]
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(file)
 }
 
 /// bash 结算照 DSH shell/tool-bash background.ts 的 processOutcome：只有 killed 与 completed 两类
@@ -1095,6 +1134,8 @@ fn cursor_read(record: &JobRecord, state: &JobState) -> JobOutputRead {
         lossy,
         stdout_path: record.stdout_path.clone(),
         stderr_path: record.stderr_path.clone(),
+        stdout_error: state.stdout_error.clone(),
+        stderr_error: state.stderr_error.clone(),
     }
 }
 
@@ -1118,6 +1159,15 @@ pub fn render_model_delta(read: &JobOutputRead) -> String {
             read.stdout_path.display(),
             read.stderr_path.display()
         ));
+    }
+    for error in [&read.stdout_error, &read.stderr_error]
+        .into_iter()
+        .flatten()
+    {
+        if !body.is_empty() && !body.ends_with('\n') {
+            body.push('\n');
+        }
+        body.push_str(&format!("[output file error: {error}]"));
     }
     body
 }
@@ -1192,7 +1242,15 @@ pub fn child_env(context: &ToolContext) -> Vec<(String, String)> {
 }
 #[cfg(test)]
 mod tests {
-    use super::is_sensitive_env_var;
+    use super::{is_sensitive_env_var, open_output};
+
+    #[test]
+    fn output_file_open_failures_are_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        // 目录不能当输出文件打开：以前 open().ok() 把原因吞成 None，现在要留下原因。
+        let error = open_output(dir.path()).expect_err("目录当输出文件应失败");
+        assert!(error.contains("建不出输出文件"), "{error}");
+    }
 
     #[test]
     fn credential_names_are_sensitive() {
