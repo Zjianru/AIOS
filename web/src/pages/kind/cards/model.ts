@@ -29,7 +29,6 @@ import {
   bodySlot,
   labelSlot,
   optionalBodySlot,
-  optionLabelSlot,
   textSlot,
 } from '../../../lib/cardEnvelope.ts';
 import { connectionCard } from '../../../data/connectionCard.ts';
@@ -334,7 +333,8 @@ const confirmFactSchema = z.object({ name: z.string(), value: z.string() });
 
 const confirmOptionSchema = z.object({
   id: z.string().min(1),
-  label: optionLabelSlot(''),
+  // 标签超长截断显示；空或非字符串才是默认值（空），下面把它和空标签一起丢掉。
+  label: labelSlot(''),
   description: bodySlot.optional(),
   facts: z
     .array(confirmFactSchema.nullable().catch(null))

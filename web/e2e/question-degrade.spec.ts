@@ -28,7 +28,7 @@ async function askedOptions(request: APIRequestContext): Promise<string[]> {
     .flatMap((event) => event.data?.options ?? []);
 }
 
-/// T017.2 清单 10：降级在页面上生效——卡片不报错、小标题不显示、坏选项不显示、问题能展开、提交收成回执、刷新后仍是回执。
+/// T017.2 清单 10：降级在页面上生效——卡片不报错、超长小标题截断显示、坏选项不显示、问题能展开、提交收成回执、刷新后仍是回执。
 test('提问卡降级：超长小标题、空 label 的选项、2000 字的问题', async ({ page, request }) => {
   await page.goto(urlOf());
   await page.getByPlaceholder('和 Kind 说…').fill('问我一个很难的问题');
@@ -37,7 +37,9 @@ test('提问卡降级：超长小标题、空 label 的选项、2000 字的问�
   const card = page.locator('[data-kind="question"]');
   await expect(card).toBeVisible({ timeout: 20_000 });
 
-  // 小标题超过 20 字：不显示；问题照常显示。
+  // 小标题超过 20 字：截断到 20 字显示，不整段消失；问题照常显示。
+  const headerShown = '这是一个特别长的小标题超过二十个字所以不';
+  await expect(card.getByText(headerShown, { exact: true }).first()).toBeVisible();
   await expect(page.getByText(HEADER, { exact: false })).toHaveCount(0);
   await expect(card.getByText('很长的问题', { exact: false })).toBeVisible();
 

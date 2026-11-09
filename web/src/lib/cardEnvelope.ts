@@ -61,7 +61,7 @@ export interface BodySlot {
   folded: boolean;
 }
 
-/** 标签槽：小标题；不合法或超长退回默认值（默认值由每个槽位自己定，通常是空＝不显示）。 */
+/** 标签槽：小标题；不是字符串或空串退回默认值，超过上限截断显示（默认值由每个槽位自己定，通常是空＝不显示）。 */
 export type LabelSlot = string;
 
 export const EMPTY_BODY: BodySlot = { text: '', folded: false };
@@ -89,25 +89,18 @@ export const bodySlot = bodyInput.catch(EMPTY_BODY);
 /** 可缺的正文槽：不合法就是没有这一项，不塞一个空段（工具卡的输入 / 输出用）。 */
 export const optionalBodySlot = bodyInput.optional().catch(undefined);
 
-/** 标签槽：不是字符串或超过 LABEL_MAX 字，退回这个槽位的默认值。 */
+/**
+ * 标签槽：不是字符串或空串退回这个槽位的默认值；超过 LABEL_MAX 字截断到上限再显示。
+ * 小标题、标题、连接名、选项标签都放不下时截断，不因为超长整段消失。
+ */
 export function labelSlot(fallbackValue: LabelSlot) {
   return z
     .string()
-    .refine((text) => chars(text) <= LABEL_MAX, { message: '标签太长' })
+    .transform((text) => {
+      if (text === '') return fallbackValue;
+      return chars(text) > LABEL_MAX ? [...text].slice(0, LABEL_MAX).join('') : text;
+    })
     .catch(fallbackValue);
-}
-
-/**
- * 选项标签槽：不是字符串退回默认值；超过 LABEL_MAX 字截断到上限（显示用），不丢这一项。
- * 小标题放不下可以不显示（labelSlot），选项的标签放不下不能连选项一起消失。
- */
-export function optionLabelSlot(fallbackValue: LabelSlot) {
-  return z
-    .string()
-    .catch(fallbackValue)
-    .transform((text) =>
-      chars(text) > LABEL_MAX ? [...text].slice(0, LABEL_MAX).join('') : text,
-    );
 }
 
 /** 不折的正文槽：一行字（连接卡的名字、时间、原因、工具卡的命令等）。 */

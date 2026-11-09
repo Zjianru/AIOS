@@ -69,7 +69,7 @@ assert.equal(
   '缺说明就是不显示',
 );
 
-// 清单 2：小标题超过 20 字或不是字符串 → 默认值（空，不显示）。
+// 清单 2：小标题超过 20 字截断显示；不是字符串或空字符串 → 默认值（空，不显示）。
 const exactly20 = '一二三四五六七八九十一二三四五六七八九十';
 assert.equal([...exactly20].length, 20);
 assert.equal(LABEL_MAX, 20);
@@ -81,12 +81,20 @@ assert.equal(
 assert.equal(
   questionEnvelope(questionFact({ questions: [{ id: 'q1', header: exactly20 + '多', question: '超过 20 字' }] }))
     .slots.questions[0].header,
+  exactly20,
+  '超过 20 字截断到 20 字，不因为截断整段消失',
+);
+assert.equal(
+  questionEnvelope(questionFact({ questions: [{ id: 'q1', header: '', question: '空字符串' }] }))
+    .slots.questions[0].header,
   '',
+  '空字符串用默认值',
 );
 assert.equal(
   questionEnvelope(questionFact({ questions: [{ id: 'q1', header: 42, question: '不是字符串' }] }))
     .slots.questions[0].header,
   '',
+  '不是字符串用默认值',
 );
 
 // 清单 3：问题超过 600 字 → 标成折起来，原文完整保留。
@@ -628,6 +636,13 @@ assert.deepEqual(
 assert.equal(longConnection.slots.providers[1].name, 'MiniMax（国内站）');
 assert.equal(longConnection.slots.provider, 'minimax-cn');
 
+/* 连接名超过标签上限：截断到 20 字显示，不整段消失。 */
+const longNameConnection = connectionEnvelope(
+  connectionFact({ name: exactly20 + '多出来的连接名' }),
+);
+assert.equal(longNameConnection.slots.name, exactly20, '连接名超过 20 字截断到 20 字');
+assert.equal([...longNameConnection.slots.name].length, LABEL_MAX);
+
 /* 短：单提供方、未保存。 */
 const shortConnection = connectionEnvelope(connectionFact());
 assert.equal(shortConnection.slots.providers.length, 1);
@@ -773,7 +788,7 @@ assert.ok(decided.receipt.summary.includes('暂不'), '已经点过的卡不显�
 const degraded = confirmEnvelope(
   confirmFact({
     proposal: {
-      title: '很长的标题'.repeat(10),
+      title: exactly20 + '多出的标题',
       brief: '字'.repeat(BODY_MAX + 1),
       options: [
         { id: 'long', label: '长'.repeat(LABEL_MAX + 1), facts: [] },
@@ -782,7 +797,8 @@ const degraded = confirmEnvelope(
     },
   }),
 );
-assert.equal(degraded.slots.title, '', '标题超过标签上限就不显示');
+assert.equal(degraded.slots.title, exactly20, '标题超过标签上限截断到 20 字，不退空');
+assert.equal([...degraded.slots.title].length, LABEL_MAX);
 assert.equal(degraded.slots.brief.folded, true, '长正文折起来');
 assert.equal(degraded.slots.brief.text.length, BODY_MAX + 1, '原文完整保留');
 assert.deepEqual(
