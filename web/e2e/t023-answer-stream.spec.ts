@@ -50,6 +50,35 @@ async function snapshotsOf(page: Page): Promise<Snap[]> {
   );
 }
 
+/** 刷新会清空页面状态；每次导航前装观察器，刷新后从第一帧记录回答区。 */
+async function installAnswerObserverOnLoad(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const state: { snapshots: Snap[]; last: string } = { snapshots: [], last: '__start__' };
+    (window as unknown as { __t023Reload: typeof state }).__t023Reload = state;
+    const record = () => {
+      const answers = document.querySelectorAll('[data-kind="assistant-answer"]');
+      const lastAnswer = answers[answers.length - 1];
+      const text = lastAnswer ? lastAnswer.textContent : null;
+      const mark = String(text);
+      if (mark === state.last) return;
+      state.last = mark;
+      state.snapshots.push({ text });
+    };
+    new MutationObserver(record).observe(document, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+    record();
+  });
+}
+
+async function reloadSnapshotsOf(page: Page): Promise<Snap[]> {
+  return page.evaluate(
+    () => (window as unknown as { __t023Reload: { snapshots: Snap[] } }).__t023Reload.snapshots,
+  );
+}
+
 test('工具前说明不进实时回答；结束后等于最终答案；刷新一致、无重复', async ({ page }) => {
   const fixture = await startKernelFixture({ pretextTurn: true });
   try {
@@ -111,6 +140,63 @@ test('工具前说明不进实时回答；结束后等于最终答案；刷新�
   }
 });
 
+test('工具调用一开始就停止：turn/end(aborted) 后回答区不显示工具前说明', async ({ page }) => {
+  const fixture = await startKernelFixture({ pretextSlowTurn: true });
+  try {
+    await page.goto(urlOf(fixture));
+    await page.getByPlaceholder('和 Kind 说…').fill('你现在都能做什么卡片');
+    await page.locator('[data-kind="send"]').click();
+
+    const answer = page.locator('[data-kind="assistant-answer"]');
+    // 先看到工具前说明，等工具调用一开始把它清掉，就在这一刻按停止。
+    await expect(answer.last()).toContainText(PRETEXT.slice(0, 6), { timeout: 30_000 });
+    await expect
+      .poll(async () => (await answer.allTextContents()).join(''), { timeout: 20_000 })
+      .toBe('');
+    await page.locator('[data-kind="stop"]').click();
+
+    // turn/end(aborted)：停止行出现，回答区可以空，不能回退成工具前说明。
+    await expect(page.locator('[data-kind="stopped"]')).toBeVisible({ timeout: 20_000 });
+    const afterStop = (await answer.allTextContents()).join('');
+    expect(afterStop).not.toContain(PRETEXT);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('中途刷新：工具前说明不回到回答区，最终答案照常到达', async ({ page }) => {
+  const fixture = await startKernelFixture({ pretextSlowTurn: true });
+  try {
+    await installAnswerObserverOnLoad(page);
+    await page.goto(urlOf(fixture));
+    await page.getByPlaceholder('和 Kind 说…').fill('你现在都能做什么卡片');
+    await page.locator('[data-kind="send"]').click();
+
+    const answer = page.locator('[data-kind="assistant-answer"]');
+    // 工具调用一开始回答区清空（此刻日志里只有工具前说明）；就在这一刻刷新。
+    await expect(answer.last()).toContainText(PRETEXT.slice(0, 6), { timeout: 30_000 });
+    await expect
+      .poll(async () => (await answer.allTextContents()).join(''), { timeout: 20_000 })
+      .toBe('');
+    await page.reload();
+
+    // 刷新后这一轮还在跑：回答区从最终答案的流式段续上，最终等于完整答案。
+    await expect(page.locator('[data-kind="assistant-answer"]').last()).toHaveText(ANSWER, {
+      timeout: 30_000,
+    });
+    const texts = (await reloadSnapshotsOf(page)).map((snap) => snap.text ?? '');
+    // 日志里只有工具前说明时，回答区不能把它显示成回答。
+    expect(texts.some((text) => text.includes(PRETEXT))).toBe(false);
+    // 前提：刷新落在最终答案流完之前，否则只测到结束后刷新。
+    expect(
+      texts.some((text) => text.length > 0 && text.length < ANSWER.length && ANSWER.includes(text)),
+      '刷新后应看到最终答案的流式段：' + JSON.stringify(texts),
+    ).toBe(true);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test('设置页往返后实时文字只追加一次', async ({ page }) => {
   const fixture = await startKernelFixture({ pretextSlowTurn: true });
   try {
@@ -139,7 +225,9 @@ test('设置页往返后实时文字只追加一次', async ({ page }) => {
       .map((snap) => snap.text ?? '');
     // 往返回来时这一轮还在流（实时文字是最终答案的一段，不是结束后一次性出现）。
     expect(
-      textAfterReturn.some((text) => text.length > 0 && text.length < ANSWER.length),
+      textAfterReturn.some(
+        (text) => text.length > 0 && text.length < ANSWER.length && ANSWER.startsWith(text),
+      ),
       '设置页回来应看到还在流式的回答',
     ).toBe(true);
     // 每条 text-delta 只追加一次：同一段最终答案不得在一次渲染里出现两遍。
