@@ -197,6 +197,7 @@ async fn web_search_fails_the_whole_batch_when_any_query_fails() {
                 {"url": "https://alpha.example/1", "title": "Alpha 1", "highlights": ["alpha one"]}
             ]
         })))
+        .expect(1)
         .mount(&server)
         .await;
     Mock::given(method("POST"))

@@ -395,6 +395,7 @@ async fn web_fetch_times_out() {
                 .set_delay(Duration::from_millis(500))
                 .set_body_raw("慢".as_bytes().to_vec(), "text/plain; charset=utf-8"),
         )
+        .expect(1)
         .mount(&server)
         .await;
     let mut config = config(data, &server);
