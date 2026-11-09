@@ -351,6 +351,14 @@ let pendingCompactionAuto = true;
 let livePendingCompaction: { id: string; window?: number } | null = null;
 let liveTurn: number | null = null;
 let liveStream = '';
+/**
+ * T021：status 只认最新一次请求的回包。
+ * 首屏、turn/end、recheck 三处都会刷 status，前一次（旧）的回包可能后到；
+ * 每次发起领一个单调序号，回来时不是最新就整份丢掉（stats/cwd/币种/模型都不写），
+ * 免得旧数据盖掉新状态。用序号不用 AbortController：被取代的那次也照样发出去了，
+ * 服务端要答完，掐断只是把「旧回包」换成「被中断」，判定还得靠序号。
+ */
+let statusRequest = 0;
 /** T015.5：这一轮正在流的工具参数（callId → 名字 + 拼起来的参数）；只给「正在画」用，不落日志。 */
 const liveToolCalls = new Map<string, { name: string; arguments: string }>();
 
@@ -922,8 +930,12 @@ export const useKindStore = create<KindState>()((set, get) => ({
   setPickerOpen: (open) => set({ pickerOpen: open }),
 
   refreshStats: async () => {
+    statusRequest += 1;
+    const request = statusRequest;
     try {
       const status = await fetchStatus();
+      // T021：这次已经被后来的请求取代了：整份丢掉，一点旧数据都不写。
+      if (request !== statusRequest) return;
       // 工作过程里的路径按会话工作目录相对化；旧服务没给 cwd 时保持空串（照原样显示）。
       set({ cwd: status.cwd ?? '' });
       if (status.stats) {
@@ -960,6 +972,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
             models = [];
           }
         }
+        // T021：补目录字段期间可能又刷了一次 status；被取代就别再写模型（旧回包不覆盖新状态）。
+        if (request !== statusRequest) return;
         const info = models.find((model) => model.id === stats.model);
         set({
           model: {
