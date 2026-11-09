@@ -12,6 +12,8 @@ session = { path = "../session" }
 # T013.2：附件仓库（tools 层的 attachments 模块）
 tools = { path = "../tools" }
 htmd.workspace = true
+# reqwest 0.12.28 已经带同一版本（不是新 crate）；受限正文先按字节截断，再按 charset 解码。
+encoding_rs = "0.8.44"
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

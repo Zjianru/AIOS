@@ -4,6 +4,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use encoding_rs::Encoding;
 use reqwest::Url;
 use reqwest::header::{CONTENT_TYPE, LOCATION};
 use serde_json::{Value, json};
@@ -148,6 +149,8 @@ impl Tool for WebFetchTool {
 
 /// 正文最多留 20 万字；超出的截掉并写明。
 const WEB_FETCH_MAX_BODY_CHARS: usize = 200_000;
+/// 响应正文最多读 5 MiB：先于 charset 解码和字符截断，避免整包读进内存。
+const WEB_FETCH_MAX_BODY_BYTES: usize = 5 * 1024 * 1024;
 /// 截断时照抄 DSH 的说明。
 const FETCH_TRUNCATION_FOOTER: &str =
     "\n\n(Content truncated. Fetch a more specific URL or section for the full text.)";
@@ -219,7 +222,14 @@ async fn render_response(response: reqwest::Response, url: &Url) -> Result<Strin
         )
         .into_failure()
     })?;
-    let decoded = response.text().await.map_err(map_request_error)?;
+    // 先按字节封顶再解码；charset 仍按 Content-Type 声明（和 reqwest::Response::text 一致）。
+    let (raw, byte_truncated) = read_body_limited(response, WEB_FETCH_MAX_BODY_BYTES).await?;
+    let charset = content_type
+        .as_deref()
+        .and_then(charset_of)
+        .unwrap_or("utf-8");
+    let encoding = Encoding::for_label(charset.as_bytes()).unwrap_or(encoding_rs::UTF_8);
+    let (decoded, _, _) = encoding.decode(&raw);
     let (source, source_truncated) = take_chars(&decoded, WEB_FETCH_MAX_BODY_CHARS);
     let (body, converted_truncated) = match kind {
         FetchKind::Html => {
@@ -233,7 +243,37 @@ async fn render_response(response: reqwest::Response, url: &Url) -> Result<Strin
         status,
         &body,
         source_truncated || converted_truncated,
+        byte_truncated,
     ))
+}
+
+/// 从 Content-Type 里取 charset（大小写不敏感）。
+fn charset_of(content_type: &str) -> Option<&str> {
+    content_type.split(';').skip(1).find_map(|part| {
+        let (name, value) = part.split_once('=')?;
+        name.trim()
+            .eq_ignore_ascii_case("charset")
+            .then(|| value.trim().trim_matches('"').trim())
+    })
+}
+
+/// 流式读正文，最多读 `max` 字节；返回是否因为超过上限而停下。
+///
+/// 只多读一个已经到手的 chunk 来判断「恰好 max」和「超过 max」，不把整包读进内存。
+async fn read_body_limited(
+    mut response: reqwest::Response,
+    max: usize,
+) -> Result<(Vec<u8>, bool), ToolFailure> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(map_request_error)? {
+        let room = max.saturating_sub(body.len());
+        if chunk.len() > room {
+            body.extend_from_slice(&chunk[..room]);
+            return Ok((body, true));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok((body, false))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -295,12 +335,19 @@ fn format_fetch_output(
     status: reqwest::StatusCode,
     body: &str,
     truncated: bool,
+    byte_truncated: bool,
 ) -> String {
     let status = status.as_u16();
     let mut output =
         format!("Fetched {url} (HTTP {status})\n\n{EXTERNAL_WEB_CONTENT_NOTICE}\n\n{body}");
     if truncated {
         output.push_str(FETCH_TRUNCATION_FOOTER);
+    }
+    if byte_truncated {
+        output.push_str(&format!(
+            "\n\n(Response body stopped at the {} MB limit.)",
+            WEB_FETCH_MAX_BODY_BYTES / (1024 * 1024)
+        ));
     }
     output
 }

@@ -2329,6 +2329,7 @@ version = "0.0.0"
 dependencies = [
  "agent",
  "credentials",
+ "encoding_rs",
  "htmd",
  "model",
  "reqwest",

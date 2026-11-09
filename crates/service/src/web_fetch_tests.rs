@@ -192,6 +192,11 @@ async fn web_fetch_rejects_urls_outside_the_http_policy() {
         ("http://[fe80::1]/".to_owned(), "链路本地"),
         ("http://[fc00::1]/".to_owned(), "内网"),
         ("http://[::]/".to_owned(), "未指定"),
+        // v4-mapped：IPv4 地址包在 IPv6 里也要按 IPv4 规则拒绝。
+        ("http://[::ffff:127.0.0.1]/".to_owned(), "本机"),
+        ("http://[::ffff:10.0.0.1]/".to_owned(), "内网"),
+        ("http://[::ffff:169.254.1.1]/".to_owned(), "链路本地"),
+        ("http://[::ffff:0.0.0.0]/".to_owned(), "未指定"),
     ];
 
     for (url, needle) in cases {
@@ -245,6 +250,72 @@ async fn web_fetch_rejects_the_aios_listener_itself() {
             .len(),
         0,
         "被拒绝的 URL 一条请求都不发"
+    );
+}
+
+/// 同源重定向最多跟 5 跳；第 6 跳不再发请求，明确说次数太多。
+#[tokio::test]
+async fn web_fetch_stops_after_five_same_origin_redirects() {
+    let dir = tempfile::tempdir().expect("临时目录");
+    let data = dir.path();
+    save_key(data);
+    let server = MockServer::start().await;
+    for hop in 1..=6 {
+        Mock::given(method("GET"))
+            .and(path(format!("/hop{hop}")))
+            .respond_with(
+                ResponseTemplate::new(302).insert_header("location", format!("/hop{}", hop + 1)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    // 第 7 跳不该被请求。
+    Mock::given(method("GET"))
+        .and(path("/hop7"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("should not reach"))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let tool = WebFetchTool::new(config(data, &server));
+    let result = run(&tool, data, "http://203.0.113.10/hop1").await;
+    assert!(result.is_error, "第 6 跳要拒绝：{}", result.content);
+    assert!(
+        result.content.contains("重定向次数太多（超过 5 次）"),
+        "{}",
+        result.content
+    );
+    let requests = server.received_requests().await.expect("假代理的请求");
+    assert_eq!(requests.len(), 6, "只发 hop1..hop6 六次");
+    assert!(
+        requests.iter().all(|request| request.url.path() != "/hop7"),
+        "第 6 跳没有发出去"
+    );
+}
+
+/// 响应正文按字节先封顶（5 MiB），再按 charset 解码、按字数截断；模型能看到字节上限的提示。
+#[tokio::test]
+async fn web_fetch_caps_the_raw_response_body_before_decoding() {
+    let dir = tempfile::tempdir().expect("临时目录");
+    let data = dir.path();
+    save_key(data);
+    let server = MockServer::start().await;
+    let body = "字".repeat(2_000_000);
+    html_mock(&server, "/big", "text/plain; charset=utf-8", &body).await;
+
+    let tool = WebFetchTool::new(config(data, &server));
+    let result = run(&tool, data, "http://203.0.113.10/big").await;
+    assert!(!result.is_error, "大正文不该报错：{}", result.content);
+    assert!(
+        result.content.contains("stopped at the 5 MB limit"),
+        "字节上限要可观察：{}",
+        result.content
+    );
+    assert_eq!(
+        result.content.matches('字').count(),
+        200_000,
+        "字符截断仍是 20 万字"
     );
 }
 
