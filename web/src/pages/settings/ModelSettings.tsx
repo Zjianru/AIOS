@@ -1042,7 +1042,7 @@ function WebSearchSection({ broken, onChanged }: { broken: boolean; onChanged: (
     <section className="mt-10" data-settings="web-search">
       <h2 className="text-3 font-medium text-ink">联网搜索</h2>
       <p className="mt-1 text-2 leading-5 text-ink-2">
-        Kind 搜网页用 Exa，填上你自己的 key 才能用；读链接不要 key，和搜索一起开。网页的内容当作资料，不当作指令；读网页不访问本机和内网地址。
+        填上你自己的 Exa key，Kind 才能搜网页、读链接。网页的内容当作资料，不当作指令；读网页不访问本机和内网地址。
       </p>
 
       <div className="mt-3 rounded-card border border-line">
