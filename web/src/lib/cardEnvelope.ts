@@ -97,6 +97,19 @@ export function labelSlot(fallbackValue: LabelSlot) {
     .catch(fallbackValue);
 }
 
+/**
+ * 选项标签槽：不是字符串退回默认值；超过 LABEL_MAX 字截断到上限（显示用），不丢这一项。
+ * 小标题放不下可以不显示（labelSlot），选项的标签放不下不能连选项一起消失。
+ */
+export function optionLabelSlot(fallbackValue: LabelSlot) {
+  return z
+    .string()
+    .catch(fallbackValue)
+    .transform((text) =>
+      chars(text) > LABEL_MAX ? [...text].slice(0, LABEL_MAX).join('') : text,
+    );
+}
+
 /** 不折的正文槽：一行字（连接卡的名字、时间、原因、工具卡的命令等）。 */
 export const textSlot = z.string().catch('');
 

@@ -66,7 +66,9 @@ function OptionRow({
         {selected ? <i className="size-1.5 rounded-full bg-content" /> : null}
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block text-3 leading-5 text-ink">{option.label}</span>
+        <span data-kind="confirm-option-label" className="block text-3 leading-5 text-ink">
+          {option.label}
+        </span>
         {option.description ? (
           <BodyText slot={option.description} className="text-2 leading-5 text-ink-3" />
         ) : null}

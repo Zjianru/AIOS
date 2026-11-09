@@ -29,6 +29,7 @@ import {
   bodySlot,
   labelSlot,
   optionalBodySlot,
+  optionLabelSlot,
   textSlot,
 } from '../../../lib/cardEnvelope.ts';
 import { connectionCard } from '../../../data/connectionCard.ts';
@@ -333,7 +334,7 @@ const confirmFactSchema = z.object({ name: z.string(), value: z.string() });
 
 const confirmOptionSchema = z.object({
   id: z.string().min(1),
-  label: labelSlot(''),
+  label: optionLabelSlot(''),
   description: bodySlot.optional(),
   facts: z
     .array(confirmFactSchema.nullable().catch(null))

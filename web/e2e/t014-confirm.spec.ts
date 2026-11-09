@@ -33,6 +33,18 @@ test('确认卡：选一项确认、刷新还在、模型选择器跟着换；�
   }) => {
   const fixture = await startKernelFixture({ t014Confirm: true });
   try {
+    // 第三项指向 MiniMax 高速版：先存一个只有这个模型的连接，服务端才认得这个选项。
+    const minimax = await apiPost(request, fixture, {
+      method: 'connection-save',
+      id: 'minimax-cn',
+      name: 'MiniMax（国内站）',
+      model: 'MiniMax-M2.7-highspeed',
+      endpoint: fixture.fakeEndpoint,
+      apiKey: 'test-key-minimax',
+      preset: 'minimax-cn',
+      models: [{ id: 'MiniMax-M2.7-highspeed' }],
+    });
+    expect(minimax.ok()).toBeTruthy();
     // 夹具的连接只勾了一个模型；重存成「跟着厂商走」，可选模型才来自目录
     // （设置页上的连接就是这样存的）。这是测试准备，不走产品的新路径。
     await apiPost(request, fixture, {
@@ -52,15 +64,20 @@ test('确认卡：选一项确认、刷新还在、模型选择器跟着换；�
     await expect(first).toBeVisible({ timeout: 30_000 });
     await expect(first).toHaveAttribute('data-state', 'pending');
     const options = first.locator('[data-action="card-option"]');
+    // 三项都在；第三项 label 是 22 字的 MiniMax 高速版，超长只截断显示、不丢选项。
     await expect(options).toHaveCount(3);
-    // 每个选项下面有服务端填的事实行；第三个选项只有强度变了，未变的模型行不显示。
+    await expect(options.nth(2).locator('[data-kind="confirm-option-label"]')).toHaveText(
+      'MiniMax-M2.7-highspe',
+    );
+    // 每个选项下面有服务端填的事实行；换模型有模型行，模型和强度都换时两行。
     await expect(options.nth(0).locator('[data-kind="confirm-fact"]')).toHaveCount(1);
     await expect(options.nth(0)).toContainText('模型');
     await expect(options.nth(0)).toContainText('→');
+    await expect(options.nth(1).locator('[data-kind="confirm-fact"]')).toHaveCount(2);
+    await expect(options.nth(1)).toContainText('推理强度');
     await expect(options.nth(2).locator('[data-kind="confirm-fact"]')).toHaveCount(1);
-    const effortFact = options.nth(2).locator('[data-kind="confirm-fact"]').first();
-    await expect(effortFact).toContainText('推理强度');
-    await expect(effortFact).not.toContainText('模型');
+    await expect(options.nth(2)).toContainText('模型');
+    await expect(options.nth(2)).not.toContainText('推理强度');
 
     await options.nth(1).click();
     await first.getByRole('button', { name: '确认', exact: true }).click();
@@ -86,6 +103,13 @@ test('确认卡：选一项确认、刷新还在、模型选择器跟着换；�
     await expect(page.locator('[data-kind="confirm-card"]')).toHaveCount(2, { timeout: 30_000 });
     const second = page.locator('[data-kind="confirm-card"]').last();
     await expect(second).toHaveAttribute('data-state', 'pending');
+    // 模型没变、只换强度：只有推理强度一行，未变的模型行不显示。
+    const secondOption = second.locator('[data-action="card-option"]');
+    await expect(secondOption).toHaveCount(1);
+    const secondFact = secondOption.locator('[data-kind="confirm-fact"]');
+    await expect(secondFact).toHaveCount(1);
+    await expect(secondFact).toContainText('推理强度');
+    await expect(secondFact).not.toContainText('模型');
     await second.getByRole('button', { name: '暂不', exact: true }).click();
     await expect(second).toHaveAttribute('data-state', 'done', { timeout: 30_000 });
     await expect(second.locator('[data-kind="confirm-receipt"]')).toContainText('暂不');

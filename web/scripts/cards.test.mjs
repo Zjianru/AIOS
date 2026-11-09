@@ -769,7 +769,7 @@ const decided = confirmEnvelope(
 );
 assert.ok(decided.receipt.summary.includes('暂不'), '已经点过的卡不显示被替换');
 
-// 槽位降级：正文过长折起来；标签过长的选项去掉；坏的事实行去掉。
+// 槽位降级：正文过长折起来；标签过长截断到上限、选项保留；坏的事实行去掉。
 const degraded = confirmEnvelope(
   confirmFact({
     proposal: {
@@ -787,10 +787,51 @@ assert.equal(degraded.slots.brief.folded, true, '长正文折起来');
 assert.equal(degraded.slots.brief.text.length, BODY_MAX + 1, '原文完整保留');
 assert.deepEqual(
   degraded.slots.options.map((option) => option.id),
-  ['ok'],
-  '坏 label 的选项去掉，其余保持顺序',
+  ['long', 'ok'],
+  '超长 label 的选项留下，空 label 才去掉',
 );
-assert.deepEqual(degraded.slots.options[0].facts, [{ name: '名称', value: '值' }], '坏的事实行去掉');
+assert.equal(degraded.slots.options[0].label, '长'.repeat(LABEL_MAX), '超长 label 截断到上限');
+assert.deepEqual(degraded.slots.options[1].facts, [{ name: '名称', value: '值' }], '坏的事实行去掉');
+
+// 回归：MiniMax-M2.7-highspeed（22 字）曾被标签槽退回空、整项丢掉。
+// 现在超长标签截断到 20 字显示，id / 说明 / 事实行都保留；空标签和非字符串才丢。
+const highspeedOption = {
+  id: 'minimax-highspeed',
+  label: 'MiniMax-M2.7-highspeed',
+  description: '同一代模型的高速版',
+  facts: [{ name: '模型', value: 'MiniMax-M3.1-Flash → MiniMax-M2.7-highspeed' }],
+};
+const clipped = confirmEnvelope(
+  confirmFact({
+    proposal: {
+      title: '换成哪个模型',
+      brief: '选一个。',
+      options: [
+        highspeedOption,
+        { id: 'blank', label: '   ', facts: [] },
+        { id: 'number', label: 42, facts: [] },
+        { id: 'short', label: 'V4 Pro', facts: [] },
+      ],
+    },
+  }),
+);
+assert.equal([...highspeedOption.label].length, 22, '回归样例是 22 字');
+assert.deepEqual(
+  clipped.slots.options.map((option) => option.id),
+  ['minimax-highspeed', 'short'],
+  '超长标签不丢；空标签和非字符串才丢',
+);
+const clippedOption = clipped.slots.options[0];
+assert.equal(clippedOption.label, 'MiniMax-M2.7-highspe', '显示截断后的 label');
+assert.equal([...clippedOption.label].length, LABEL_MAX);
+assert.equal(clippedOption.description.text, '同一代模型的高速版', '说明保留');
+assert.deepEqual(clippedOption.facts, highspeedOption.facts, '事实行保留');
+
+// 刚好 20 字原样显示，不多截一个。
+const exactly20Option = confirmEnvelope(
+  confirmFact({ proposal: { title: '', brief: '', options: [{ id: 'exact', label: exactly20 }] } }),
+);
+assert.equal(exactly20Option.slots.options[0].label, exactly20);
 
 // 整卡取不出：没有选项、不是对象；入口退回通用卡，不抛异常。
 assert.equal(confirmCardOf(confirmFact({ proposal: { title: '空', brief: '', options: [] } })), null);
