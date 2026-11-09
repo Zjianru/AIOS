@@ -156,6 +156,20 @@ async fn wait_host_idle(host: &RootHost) {
     panic!("等待根会话空闲超时");
 }
 
+/// 等 agent 明确发出某一轮的结束事件（`idle()` 返回之前一定已经发出）。
+async fn wait_turn_ended(
+    events: &mut tokio::sync::broadcast::Receiver<agent::AgentEvent>,
+    turn: u64,
+) {
+    loop {
+        match events.recv().await {
+            Ok(agent::AgentEvent::TurnEnded { turn: ended, .. }) if ended == turn => return,
+            Ok(_) => {}
+            Err(error) => panic!("agent 事件通道关闭：{error}"),
+        }
+    }
+}
+
 async fn wait_host_running(host: &RootHost) {
     for _ in 0..600 {
         let response = host.dispatch(Call::Status(StatusRequest {})).await;
@@ -639,9 +653,16 @@ async fn 屏蔽正在跑的一轮时以钩子停下并保留已做的和排队�
     // 排一句话：钩子取消不清理输入队列，它要在下一轮被领取。
     send(&root, "r2", "排队的一句").await;
     set_disabled(&root, vec!["deepseek/deepseek-flash"]).await;
-    // 被打断的一轮要自己停下；不等连接关闭（否则分不清「停下」和「流断了」）。
-    let stopped = tokio::time::timeout(Duration::from_secs(2), wait_host_idle(&root)).await;
+    // 被打断的一轮要自己停下：等 agent 的轮次结束事件（idle() 返回前必发），
+    // 不靠 2 秒墙钟；10 秒只是失败护栏。也不等连接关闭（否则分不清「停下」和「流断了」）。
+    let stopped = tokio::time::timeout(
+        Duration::from_secs(10),
+        wait_turn_ended(&mut agent_events, 1),
+    )
+    .await;
     assert!(stopped.is_ok(), "屏蔽正在跑的模型后这一轮要停下");
+    // 轮次事件之后 host 可能还在收尾；读日志前沿用空闲屏障（无墙钟超时）。
+    wait_host_idle(&root).await;
     server.release();
 
     let id = root_session_id(dir.path());
@@ -791,23 +812,18 @@ async fn 屏蔽一个不在用的模型时在跑的一轮照常跑完() {
 /// 判断只用本轮冻结的连接 × 模型，不看会变的当前选择。
 #[tokio::test]
 async fn 打断判断用本轮冻结的连接和模型不用会变的当前选择() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "text/event-stream")
-                .set_body_string(TEXT_SSE)
-                // 只要这一轮停在等模型上；给足余量，避免并行负载下 3s 内跑完导致断言时已 idle。
-                .set_delay(Duration::from_secs(30)),
-        )
-        .expect(1)
-        .mount(&server)
-        .await;
+    // 只写出流的一部分然后挂住：这一轮停在等模型上，等测试显式放行（可观察的释放信号），
+    // 不靠固定 30s 延时赌「并行负载下还没跑完」。
+    let mut server = ScriptedSseServer::start(vec![SseScript {
+        frames: partial_text_sse().to_owned(),
+        hold: true,
+    }]);
     let dir = tempdir().unwrap();
-    let root = host(dir.path(), &server.uri()).await;
+    let root = host(dir.path(), &server.base_url()).await;
 
     send(&root, "r1", "用 A 跑一轮").await;
     wait_host_running(&root).await;
+    server.wait_ready().await;
     let selected = root
         .dispatch(Call::SessionModelSelect(SessionModelSelectRequest {
             connection: None,
@@ -850,9 +866,11 @@ async fn 打断判断用本轮冻结的连接和模型不用会变的当前选�
         } => assert_eq!(reason, "model-disabled"),
         other => panic!("屏蔽 A 之后这一轮应以 hook 停下：{other:?}"),
     }
-    let requests = server.received_requests().await.expect("请求记录");
-    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("body json");
+    let requests = server.request_bodies();
+    assert_eq!(requests.len(), 1, "这一轮只发了一次请求");
+    let body: serde_json::Value = serde_json::from_slice(&requests[0]).expect("body json");
     assert_eq!(body["model"], "deepseek-flash", "跑着的一轮一直用冻结的 A");
+    server.release();
 }
 
 /// 跨连接：A 跑着时切到 B 只记选择、不重建；屏蔽 B 不能停 A，屏蔽 A 才以 hook 停。

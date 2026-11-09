@@ -1,7 +1,17 @@
 import { test, expect, type APIRequestContext } from '@playwright/test';
 import { apiPost, startKernelFixture, type KernelFixture } from './service-fixture';
 
+async function waitForBootstrap(page: import('@playwright/test').Page) {
+  // 首屏 refreshStats() 是异步的：它和 turn/end 触发的刷新是两次独立请求，
+  // 首屏那次（turns=0/contextUsed=0）可能后到并覆盖新值，压缩按钮就一直禁用。
+  // 模型名从演示占位换成目录名 = 首屏那次 status 已经落地，此时再发消息。
+  await expect(page.locator('[data-kind="model-picker"]')).toContainText(/DeepSeek V4/, {
+    timeout: 30_000,
+  });
+}
+
 async function openAndSend(page: import('@playwright/test').Page, fixture: KernelFixture, text: string) {
+  await waitForBootstrap(page);
   await page.getByPlaceholder('和 Kind 说…').fill(text);
   await page.getByRole('button', { name: '发送' }).click();
   await expect(page.getByText('（T007 e2e 假回放）').last()).toBeVisible({ timeout: 30_000 });
@@ -18,17 +28,19 @@ test('手动压缩：分隔线出现，点开是摘要', async ({ page, request 
   try {
     await page.goto(`${fixture.baseUrl}/?token=${encodeURIComponent(fixture.token)}#kind`);
     await openAndSend(page, fixture, '写点东西，我要手动压缩');
-    // 等这一轮真的结束（压缩按钮在该轮跑着时是禁用的；并发跑时常比 15s 慢）。
+    // 等这一轮真的结束：压缩按钮在该轮跑着时是禁用的、文案也不同。
     await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 60_000 });
     // T012.9：压缩入口在输入框下的上下文圆环里。
     await page.locator('[data-kind="context-meter"]').click();
     const compact = page.locator('[data-kind="compact"]');
-    await expect(compact).toBeEnabled({ timeout: 60_000 });
+    await expect(compact).toBeEnabled({ timeout: 15_000 });
     await compact.click();
-    const events = await followEvents(request, fixture);
-    expect(events.filter((event) => event.type === 'compaction/summary').length).toBeGreaterThanOrEqual(1);
+    // 先等压缩事件到（分隔线来自 live 事件），再读一次日志断言 summary；
+    // 点击后立刻 follow 会抢在落盘之前。
     const divider = page.locator('[data-kind="compaction"]').last();
     await expect(divider).toBeVisible({ timeout: 20_000 });
+    const events = await followEvents(request, fixture);
+    expect(events.filter((event) => event.type === 'compaction/summary').length).toBeGreaterThanOrEqual(1);
     await expect(divider.getByText('你手动', { exact: false })).toBeVisible();
     // T010.4：手动压缩是这个测试里最后一次模型请求，压缩后没有请求 → 不显示「占用」。
     await expect(divider.getByText('占用', { exact: false })).toHaveCount(0);
