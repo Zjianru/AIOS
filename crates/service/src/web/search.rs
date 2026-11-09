@@ -22,9 +22,19 @@ const EXA_SEARCH_PURPOSE: &str = "网页搜索";
 /// 照抄 DSH 的引用说明。
 const CITE_INSTRUCTION: &str = "Cite the relevant URLs above as markdown links in your answer.";
 
-const NO_KEY: &str =
-    "web_search 需要 Exa 的 key：去设置页填（设置 › 模型与连接 › 联网搜索），再试一次";
-const KEY_UNREADABLE: &str = "Exa 的 key 读不出来；去设置页看一眼（设置 › 模型与连接 › 联网搜索）";
+fn no_key() -> String {
+    format!(
+        "web_search 需要 Exa 的 key：去设置页填（{}），再试一次",
+        super::EXA_SETTINGS_PATH
+    )
+}
+
+fn key_unreadable() -> String {
+    format!(
+        "Exa 的 key 读不出来；去设置页看一眼（{}）",
+        super::EXA_SETTINGS_PATH
+    )
+}
 
 /// `web_search` 的装配：Keyring 位置和 Exa 根地址；服务启动/重开根会话时注入。
 #[derive(Clone)]
@@ -181,17 +191,17 @@ fn parse_queries(arguments: &str) -> Result<Vec<String>, ToolFailure> {
 /// 从 Keyring 现取一次 Exa 的 key；没存、读不出来都明确报，不静默跳过。
 fn issue_search_key(config: &WebSearchConfig) -> Result<String, ToolFailure> {
     let keyring = credentials::Keyring::open(config.data_dir.clone(), config.identity.as_deref())
-        .map_err(|_| ToolFailure::plain(KEY_UNREADABLE))?;
+        .map_err(|_| ToolFailure::plain(key_unreadable()))?;
     let view = keyring
         .exa_key_view()
-        .map_err(|_| ToolFailure::plain(KEY_UNREADABLE))?;
+        .map_err(|_| ToolFailure::plain(key_unreadable()))?;
     if !view.key.saved {
-        return Err(ToolFailure::plain(NO_KEY));
+        return Err(ToolFailure::plain(no_key()));
     }
     keyring
         .issue_exa_key(EXA_SEARCH_PURPOSE)
         .map(credentials::IssuedSecret::into_secret)
-        .map_err(|_| ToolFailure::plain(KEY_UNREADABLE))
+        .map_err(|_| ToolFailure::plain(key_unreadable()))
 }
 /// 每条查询的结果按名次轮流取，URL 去重，总量不超过 8 条；返回是否还有被截掉的。
 fn merge_sources(per_query: Vec<Vec<SearchSource>>) -> (Vec<SearchSource>, bool) {

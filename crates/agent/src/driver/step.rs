@@ -94,7 +94,7 @@ pub(super) async fn prepare_step(
     // 条件里的工具凭证也每步查一次：设置页换了 key，下一步就跟着变。
     let loaded_skills = {
         let store = inner.store.lock().expect("agent 会话锁被毒化");
-        crate::tool_gate::loaded_skills(store.events())
+        crate::tool_gate::loaded_skills(store.events(), None)
     };
     let tool_keys = inner.tool_keys.present();
     let enabled = {

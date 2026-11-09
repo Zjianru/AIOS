@@ -152,10 +152,19 @@ const WEB_FETCH_MAX_BODY_CHARS: usize = 200_000;
 const FETCH_TRUNCATION_FOOTER: &str =
     "\n\n(Content truncated. Fetch a more specific URL or section for the full text.)";
 
-const NO_FETCH_KEY: &str =
-    "web_fetch 需要 Exa 的 key：去设置页填（设置 › 模型与连接 › 联网搜索），再试一次";
-const FETCH_KEY_UNREADABLE: &str =
-    "Exa 的 key 读不出来；去设置页看一眼（设置 › 模型与连接 › 联网搜索）";
+fn no_fetch_key() -> String {
+    format!(
+        "web_fetch 需要 Exa 的 key：去设置页填（{}），再试一次",
+        super::EXA_SETTINGS_PATH
+    )
+}
+
+fn fetch_key_unreadable() -> String {
+    format!(
+        "Exa 的 key 读不出来；去设置页看一眼（{}）",
+        super::EXA_SETTINGS_PATH
+    )
+}
 
 /// 解析模型给的参数：一个非空 URL 字符串。
 fn parse_fetch_arguments(arguments: &str) -> Result<String, ToolFailure> {
@@ -177,11 +186,11 @@ fn parse_fetch_arguments(arguments: &str) -> Result<String, ToolFailure> {
 fn ensure_exa_key(config: &WebFetchConfig) -> Result<(), ToolFailure> {
     let keyring =
         credentials::Keyring::open_read_only(config.data_dir.clone(), config.identity.as_deref())
-            .map_err(|_| ToolFailure::plain(FETCH_KEY_UNREADABLE))?;
+            .map_err(|_| ToolFailure::plain(fetch_key_unreadable()))?;
     if keyring.exa_key_saved() {
         Ok(())
     } else {
-        Err(ToolFailure::plain(NO_FETCH_KEY))
+        Err(ToolFailure::plain(no_fetch_key()))
     }
 }
 

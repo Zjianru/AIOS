@@ -7,10 +7,9 @@
 //!
 //! 挂在 skill `aios-settings` 后面：本会话加载过它以后，下一步才开出这个工具（T014.2）。
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde_json::{Value, json};
-use session::ModelSelection;
 use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
 
 /// 查询的五个主题。
@@ -78,24 +77,10 @@ impl QueryTool {
             .map_err(|error| ToolFailure::plain(format!("读不出 Keyring 的视图：{error}")))
     }
 
-    /// 这条对话现在用的连接/模型/档：会话日志里最后一条 session/model，
-    /// 没有就用 settings.json 的上次选择。
-    fn current_selection(
-        data_dir: &Path,
-        events: &[session::Event],
-    ) -> Result<ModelSelection, ToolFailure> {
-        if let Some(selection) = session::last_model_selection(events) {
-            return Ok(selection);
-        }
-        let settings = crate::settings::load(data_dir);
-        settings
-            .last_selection
-            .ok_or_else(|| ToolFailure::plain("这条对话还没有选过模型，也没有上次的选择可读"))
-    }
-
     fn settings(&self, context: &ToolContext) -> Result<Value, ToolFailure> {
         let settings = crate::settings::load(&self.data_dir);
-        let current = Self::current_selection(&self.data_dir, &context.session_events())?;
+        let current = crate::settings::current_selection(&self.data_dir, &context.session_events())
+            .ok_or_else(|| ToolFailure::plain("这条对话还没有选过模型，也没有上次的选择可读"))?;
         let next = settings.last_selection.map_or(Value::Null, |selection| {
             json!({
                 "connection": selection.connection,
@@ -178,7 +163,8 @@ impl QueryTool {
         }
         let view = self.keyring()?.view();
         let catalog = model::catalog::global().unwrap_or_else(model::catalog::snapshot);
-        let current = Self::current_selection(&self.data_dir, &events)?;
+        let current = crate::settings::current_selection(&self.data_dir, &events)
+            .ok_or_else(|| ToolFailure::plain("这条对话还没有选过模型，也没有上次的选择可读"))?;
         let stats =
             crate::stats::session_stats(&events, &view.connections, &catalog, &current, 0, 0);
         Ok(json!({

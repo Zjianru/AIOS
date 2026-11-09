@@ -49,6 +49,15 @@ pub fn path(data_dir: &Path) -> PathBuf {
     data_dir.join(SETTINGS_FILE)
 }
 
+/// 这条对话现在用的连接/模型/档：会话日志里最后一条 session/model，
+/// 没有就用 settings.json 的上次选择。查询工具和设置动作共用这一份口径。
+pub(crate) fn current_selection(
+    data_dir: &Path,
+    events: &[session::Event],
+) -> Option<session::ModelSelection> {
+    session::last_model_selection(events).or_else(|| load(data_dir).last_selection)
+}
+
 /// 带检查的读法结果（屏蔽表和写入口用）。
 pub(crate) enum Read {
     /// 读到：文件存在且能解析，或者文件不存在/空文件（按空设置算）。
