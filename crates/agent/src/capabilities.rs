@@ -1,4 +1,4 @@
-//! loop 的固定挂点、功能注册表与 Capability 输入面（T006.1a 骨架，行为不变）。
+//! loop 的固定挂点、功能注册表与 Capability 输入面（骨架，行为不变）。
 //!
 //! 挂点照 strategy §1；Rust 接法是编译期固定 trait 列表 + 固定顺序注册表（无运行时加载）。
 //! 1a 的 Capability 全是 no-op 占位，但输入面按 1b–1e 的需要定：异步、可返回错误、
@@ -30,7 +30,7 @@ use crate::todo_capability::TodoCapability;
 use crate::{AgentEvent, CompactionTrigger};
 
 /// PreStep 的两阶段：Inject = 注入指令/skill（在 prune 之前）；Compact = 压缩自动检查（在 prune 之后）。
-/// 拆分是为了保持 T005 的旧顺序：注入 → prune → 压缩，同时不新增挂点。
+/// 拆分是为了保持旧顺序：注入 → prune → 压缩，同时不新增挂点。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PreStepPhase {
     Inject,
@@ -54,7 +54,7 @@ pub(crate) enum HookPoint {
     ToolResult,
     /// 工具执行后：落盘收尾/后处理。
     ToolAfter,
-    /// 压缩触发：剪枝只在压缩触发时发生（T006.4）。
+    /// 压缩触发：剪枝只在压缩触发时发生。
     Compaction,
     /// 状态变化：对外推送（服务接入后使用）。
     Status,
@@ -62,7 +62,7 @@ pub(crate) enum HookPoint {
     TurnStopping,
 }
 
-/// 解析后的压缩策略（DSH ResolvedTargetPolicy 的 AIOS 子集；T006.3）。
+/// 解析后的压缩策略（DSH ResolvedTargetPolicy 的 AIOS 子集）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct CompactionPolicy {
     pub threshold_ratio: f64,
@@ -90,7 +90,7 @@ pub(crate) trait LoopAccess: Send + Sync {
     /// 写日志入口：内部走 `Inner::append`（落盘后逐事件派发 SessionEvent）；禁止直接锁
     /// `session()` 后 append 绕过 SessionEvent。
     fn append<'a>(&'a self, kinds: &'a [EventKind]) -> HookFuture<'a>;
-    /// 追加一批事件并返回分配的 seq（T006.3：压缩要拿 start/summary 的 seq 拼 sourceEventSeqs）。
+    /// 追加一批事件并返回分配的 seq（压缩要拿 start/summary 的 seq 拼 sourceEventSeqs）。
     fn append_with_seqs<'a>(&'a self, kinds: &'a [EventKind]) -> BoxedFuture<'a, Vec<u64>>;
     /// 追加一条 message-producing 事件并带上 envelope 的 surfaceOp/sourceEventSeqs（压缩替换）。
     fn append_surface<'a>(
@@ -109,9 +109,9 @@ pub(crate) trait LoopAccess: Send + Sync {
     /// 当前轮次的 abort 标志（ask 能力等待答案时要检查取消；Running 时总有）。
     fn current_abort(&self) -> Option<Arc<AtomicBool>>;
     /// 把一段上下文消息投进会话（后台任务结算通知用；按 phase 选 NextStep/NextTurn）。
-    /// T006.2a 起走同一条 durable splice（返回 future，调用方 await 落盘后再 wake）。
+    /// 此后走同一条 durable splice（返回 future，调用方 await 落盘后再 wake）。
     fn enqueue_context<'a>(&'a self, text: String) -> BoxedFuture<'a, ()>;
-    /// T006.F1：投递一条已构造好的消息（提问迟到回答用）；落盘后负责唤醒驱动。
+    /// 投递一条已构造好的消息（提问迟到回答用）；落盘后负责唤醒驱动。
     fn enqueue_message<'a>(&'a self, message: Message) -> BoxedFuture<'a, bool>;
     /// 当前是否有一轮在跑（手动压缩 busy 判定）。
     fn is_running(&self) -> bool;
@@ -245,7 +245,7 @@ impl HookEvent<'_> {
     }
 }
 
-/// 挂点返回值（四变体，T006.1d2）：Content 只允许 ToolResult 阶段，Override 只允许
+/// 挂点返回值（四变体）：Content 只允许 ToolResult 阶段，Override 只允许
 /// ToolBefore 阶段；AbortStep 表示本 step 应 aborted 收尾（不是 error）。
 #[derive(Clone)]
 pub(crate) enum HookOutcome {
@@ -253,7 +253,7 @@ pub(crate) enum HookOutcome {
     /// ToolResult 挂点用：用落盘后的 preview+locator 替换内联 content。
     ToolResultContent(String),
     /// ToolBefore 挂点用：这些 index 的调用不执行，直接用给定结果（批内顺序不变；
-    /// T006.13b 起批量返回，批内多个 ask 依次拦截）。
+    /// 此后批量返回，批内多个 ask 依次拦截）。
     ToolResultOverrides {
         overrides: Vec<(usize, ToolResult)>,
     },
@@ -282,8 +282,8 @@ pub(crate) trait Capability: Send + Sync {
     fn name(&self) -> &'static str;
     fn hooks(&self) -> &'static [HookPoint];
     fn on_hook<'a>(&'a self, event: &'a HookEvent<'a>) -> HookFuture<'a>;
-    // 以下为 loop 少量非挂点入口（默认 no-op，由对应能力实现；T006.1e 把状态收回能力）。
-    /// 回答一条待答问题（T006.F1：迟到回答的 durable 编排也在能力里；driver 只派发）。
+    // 以下为 loop 少量非挂点入口（默认 no-op，由对应能力实现；把状态收回能力）。
+    /// 回答一条待答问题（迟到回答的 durable 编排也在能力里；driver 只派发）。
     fn answer_with<'a>(
         &'a self,
         _host: &'a dyn LoopAccess,
@@ -293,7 +293,7 @@ pub(crate) trait Capability: Send + Sync {
     ) -> BoxedFuture<'a, bool> {
         Box::pin(async { Ok(false) })
     }
-    /// 撤销一条待答问题（T006.F1：恢复批的事件编排也在能力里；driver 只派发）。
+    /// 撤销一条待答问题（恢复批的事件编排也在能力里；driver 只派发）。
     fn cancel_question_with<'a>(
         &'a self,
         _host: &'a dyn LoopAccess,
@@ -301,7 +301,7 @@ pub(crate) trait Capability: Send + Sync {
     ) -> BoxedFuture<'a, bool> {
         Box::pin(async { Ok(false) })
     }
-    /// T006.F1：手动压缩入口（照 command-compact busy；不排队）。None = 本能力不处理。
+    /// 手动压缩入口（照 command-compact busy；不排队）。None = 本能力不处理。
     fn compact_manual_with<'a>(
         &'a self,
         _host: &'a dyn LoopAccess,
@@ -309,7 +309,7 @@ pub(crate) trait Capability: Send + Sync {
     ) -> BoxedFuture<'a, Option<Result<Option<crate::CompactionOutcome>, AgentError>>> {
         Box::pin(async { Ok(None) })
     }
-    /// 当前待答问题（T006.13，含重启恢复；UI 服务 T006.16a 用）。
+    /// 当前待答问题（含重启恢复；UI 服务用）。
     fn pending_questions(&self) -> Vec<crate::Question> {
         Vec::new()
     }
@@ -337,10 +337,10 @@ impl Capability for Placeholder {
 
 const JOBS_HOOKS: &[HookPoint] = &[HookPoint::Status];
 
-/// per-Agent 能力状态包（T006.1e：状态由能力模块持有，driver 只装配一次）。
+/// per-Agent 能力状态包（状态由能力模块持有，driver 只装配一次）。
 pub(crate) struct CapabilityStates {
     pub ask: Arc<AskState>,
-    /// T006.10：prepare 异步读指令文件，状态用 tokio Mutex 以便持锁跨 await。
+    /// prepare 异步读指令文件，状态用 tokio Mutex 以便持锁跨 await。
     pub instructions: Arc<tokio::sync::Mutex<InstructionState>>,
     pub skill_catalog: Arc<Mutex<SkillCatalogState>>,
     pub reminder_chain: Arc<Mutex<Option<(String, usize)>>>,
@@ -351,7 +351,7 @@ pub(crate) struct CapabilityStates {
     pub spill_max_inline_tokens: usize,
 }
 /// 固定顺序的功能注册表；顺序=strategy §2 功能表的拆票顺序（compaction→…→jobs）。
-/// per-Agent 构造（T006.1d2）：ZST 能力每 Agent Box 一份，ask 能力持有该 Agent 的 AskState。
+/// per-Agent 构造：ZST 能力每 Agent Box 一份，ask 能力持有该 Agent 的 AskState。
 pub(crate) struct CapabilityRegistry {
     capabilities: Vec<Box<dyn Capability>>,
 }

@@ -118,7 +118,7 @@ pub(crate) fn probe(target: &Target) -> Result<Option<FileInfo>, ToolFailure> {
     }
 }
 
-/// 登记一次「读过、且是这个版本」的观察（观察策略模块，T006.6）。
+/// 登记一次「读过、且是这个版本」的观察（观察策略模块）。
 pub(crate) fn record_present(context: &ToolContext, target: &Target, version: FileVersion) {
     context
         .session()

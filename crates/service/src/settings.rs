@@ -1,7 +1,7 @@
-//! T012.7：不是密钥的设置（`<数据目录>/settings.json`）。Keyring 只放连接和 key。
+//! 不是密钥的设置（`<数据目录>/settings.json`）。Keyring 只放连接和 key。
 //!
 //! 现有：上一次的模型选择（新会话默认用；story 2「新会话默认用我上一次选的」）。
-//! T012.8 起同一个文件还放币种（只增字段）。
+//! 起同一个文件还放币种（只增字段）。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -15,14 +15,14 @@ pub const SETTINGS_FILE: &str = "settings.json";
 /// 不是密钥的设置。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
-    /// 上一次的模型选择（T012.7）。
+    /// 上一次的模型选择。
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         rename = "lastSelection"
     )]
     pub last_selection: Option<session::ModelSelection>,
-    /// 币种（T012.8）：`usd` 或 `cny`；默认 usd。
+    /// 币种：`usd` 或 `cny`；默认 usd。
     #[serde(default = "default_currency")]
     pub currency: String,
     /// 屏蔽的模型规则（通配；空表 = 都不屏蔽）。改了立即生效。

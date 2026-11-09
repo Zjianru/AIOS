@@ -716,7 +716,7 @@ fn stored_live(data_dir: &Path, connection: &str) -> (Vec<String>, u64) {
 }
 
 /// 厂商列表接口只认 Authorization（MiniMax 国内站真 key：messages 双头都过，列表只认 Bearer）：
-/// 连接没记过单个头时，列表请求要照 T012.6/Magpie 默认把两个头都发上，不能只发 x-api-key。
+/// 连接没记过单个头时，列表请求要照 Magpie 默认把两个头都发上，不能只发 x-api-key。
 #[tokio::test]
 async fn 厂商列表只认小写bearer时默认两个鉴权头都发() {
     model::catalog::set_global(model::catalog::snapshot());
@@ -1447,7 +1447,7 @@ fn 旧页面不传mode时按获取处理() {
 
 #[tokio::test]
 async fn 获取可用模型时_anthropic_端点请求_chat_base_的列表() {
-    // 审计 T012.5 fix-now 1：endpoint 是 …/anthropic 时，列表必须请求 Chat base 的
+    // 审计 fix-now 1：endpoint 是 …/anthropic 时，列表必须请求 Chat base 的
     // /v1/models（不是 …/anthropic/v1/models）；用带 /anthropic 的 endpoint 断言路径。
     model::catalog::set_global(model::catalog::snapshot());
     let server = MockServer::start().await;
@@ -1496,7 +1496,7 @@ async fn 获取可用模型时_anthropic_端点请求_chat_base_的列表() {
 
 #[tokio::test]
 async fn 验证连接时学到的鉴权头写回连接() {
-    // T012.6：验证走真实适配器；双头被拒后各试一次单头，记住通过的那个并写回连接。
+    // 验证走真实适配器；双头被拒后各试一次单头，记住通过的那个并写回连接。
     let server = MockServer::start().await;
     let both_refused = ResponseTemplate::new(401).set_body_json(serde_json::json!({
         "type": "error",
@@ -1570,7 +1570,7 @@ async fn 验证连接时学到的鉴权头写回连接() {
         "再只试 authorization"
     );
 
-    // T012.6 P2：第二次验证读连接上记住的 auth_header，第一次请求就只带 authorization。
+    // P2：第二次验证读连接上记住的 auth_header，第一次请求就只带 authorization。
     let again = host
         .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
             id: "learn-auth".to_owned(),
@@ -1605,7 +1605,7 @@ fn root_session_id(dir: &std::path::Path) -> session::SessionId {
 
 #[tokio::test]
 async fn 选模型写会话日志事件并保存上次选择() {
-    // T012.7 故事 2/8：选择是 durable 事实（session/model 事件 + settings 上次选择）。
+    // 故事 2/8：选择是 durable 事实（session/model 事件 + settings 上次选择）。
     let dir = tempdir().unwrap();
     let host = host(dir.path()).await;
     let response = host
@@ -1653,7 +1653,7 @@ async fn 选模型写会话日志事件并保存上次选择() {
 
 #[tokio::test]
 async fn 重开会话从日志恢复模型选择() {
-    // T012.7 故事 2：重开会话还是它（工厂收到日志里的选择）。
+    // 故事 2：重开会话还是它（工厂收到日志里的选择）。
     fn recording_factory(
         seen: std::sync::Arc<std::sync::Mutex<Option<session::ModelSelection>>>,
         data_dir: std::path::PathBuf,
@@ -1707,7 +1707,7 @@ async fn 重开会话从日志恢复模型选择() {
     );
 }
 
-/// T012.7 审计：空闲时跨连接切换重建根 agent——factory 收到新选择、下一轮走新连接、
+/// 审计：空闲时跨连接切换重建根 agent——factory 收到新选择、下一轮走新连接、
 /// settings 的上次选择同步。（运行中跨连接的 known：不打断本轮，见 handback。）
 #[tokio::test]
 async fn 空闲时跨连接切换重建根agent并走新连接() {
@@ -2088,7 +2088,7 @@ pub(crate) fn seed_fx_cache(dir: &std::path::Path) {
     .expect("fx cache");
 }
 
-/// T012.8a：status 带会话统计（轮/步/token/上下文/花费字段）、汇率与币种。
+/// status 带会话统计（轮/步/token/上下文/花费字段）、汇率与币种。
 #[tokio::test]
 async fn 状态带统计汇率与币种() {
     let dir = tempdir().unwrap();
@@ -2112,7 +2112,7 @@ async fn 状态带统计汇率与币种() {
     assert_eq!(status.currency.as_deref(), Some("usd"), "默认币种 usd");
 }
 
-/// T012.8b：余额/余量按厂商形状查询（DeepSeek /user/balance、MiniMax /v1/token_plan/remains）；
+/// 余额/余量按厂商形状查询（DeepSeek /user/balance、MiniMax /v1/token_plan/remains）；
 /// 自定义地址不查（字段为空）、查不到不报错。
 #[tokio::test]
 async fn 余额和余量按厂商形状查询且查不到不报错() {
@@ -2202,7 +2202,7 @@ async fn 余额和余量按厂商形状查询且查不到不报错() {
     assert!(response.balance.is_none() && response.plan.is_none());
 }
 
-/// T012.8 审计：打开会话时把初始模型选择写成 durable 事实（session/model），
+/// 审计：打开会话时把初始模型选择写成 durable 事实（session/model），
 /// 重开时第一条 session/model 就是真正初始选择（stats 定价用）。
 #[tokio::test]
 async fn 打开会话写初始模型选择事件() {
@@ -2216,7 +2216,7 @@ async fn 打开会话写初始模型选择事件() {
     assert_eq!(selection.model, "deepseek-flash");
 }
 
-/// T012.9：写非密钥设置（currency）——settings.json 生效，status 也带新币种。
+/// 写非密钥设置（currency）——settings.json 生效，status 也带新币种。
 #[tokio::test]
 async fn 设置更新写币种且状态里带新币种() {
     let dir = tempdir().unwrap();

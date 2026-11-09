@@ -235,7 +235,7 @@ async fn pressure_triggers_compaction_and_next_request_uses_summary() {
         .map(|event| event.kind.type_name())
         .filter(|name| name.starts_with("compaction/"))
         .collect();
-    // T006.3 照 DSH：compactionRetries 默认 1——这次压缩后估算仍超阈值，会再压一次，
+    // 照 DSH：compactionRetries 默认 1——这次压缩后估算仍超阈值，会再压一次，
     // 每次都是一组 start/summary/end。
     assert_eq!(
         kinds,

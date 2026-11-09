@@ -1,4 +1,4 @@
-//! T015.1/T015.2 接缝 1（tools 公开边界）：新建、重写、局部改、四个错误码、meta 形状。
+//! 接缝 1（tools 公开边界）：新建、重写、局部改、四个错误码、meta 形状。
 
 use serde_json::{Value, json};
 use tools::{CanvasTool, Tool, ToolCall, ToolContext, ToolResult, ToolSet};

@@ -1,4 +1,4 @@
-//! 自动压缩与上下文溢出恢复（T006.3 照 DSH compaction-basic 改回）。
+//! 自动压缩与上下文溢出恢复（照 DSH compaction-basic 改回）。
 //!
 //! 触发：请求前用 token 估算检查是否越过预算阈值；模型报 CONTEXT_WINDOW_EXCEEDED 时强制
 //! 压缩后重试；手动 /compact 在两次 turn 之间独立压缩。
@@ -16,7 +16,7 @@ use crate::capabilities::{CompactionPolicy, LoopAccess};
 use crate::error::ManualCompactionErrorCode;
 use crate::{AgentError, AgentEvent, CompactionOutcome, CompactionTrigger};
 
-/// 手动压缩失败分类（T006.F1 起不排队；Agent::compact 转为 AgentError::ManualCompaction）。
+/// 手动压缩失败分类（不排队；Agent::compact 转为 AgentError::ManualCompaction）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManualCompactionFailure {
     pub(crate) code: ManualCompactionErrorCode,
@@ -107,7 +107,7 @@ impl Budget {
     }
 }
 
-/// 估算一条消息的 token（照 T005.2/DSH token-meter 的 chars/4+4 近似）。
+/// 估算一条消息的 token（照 DSH token-meter 的 chars/4+4 近似）。
 pub(crate) fn estimate_message(message: &Message) -> u64 {
     let mut total = 4_u64;
     for block in &message.content {
@@ -214,7 +214,7 @@ pub(crate) async fn compact_if_needed(
             return Ok(None);
         };
         // 只在 select_split 成功（真的有一个事务要提交）之后派发 Compaction 挂点：
-        // T006.4 的 prune 必须只在真实压缩事务里跑；每次真实事务派发一次（重试事务也算）。
+        // prune 必须只在真实压缩事务里跑；每次真实事务派发一次（重试事务也算）。
         if notify_compaction {
             host.dispatch_compaction(turn, step, trigger).await?;
         }
@@ -307,7 +307,7 @@ async fn compact_once(
     let prefix: Vec<Message> = selected[..split].to_vec();
     let shadowed_token_count = estimate_messages(&prefix);
 
-    // id 带进程/纳秒成分：续接或新进程都不会和旧 id 撞车（T005.8b）。
+    // id 带进程/纳秒成分：续接或新进程都不会和旧 id 撞车。
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.subsec_nanos());
@@ -525,7 +525,7 @@ async fn summarize(
         std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         std::sync::Arc::new(tokio::sync::Notify::new()),
     );
-    // T012.3：摘要请求用这个模型的 DefaultEffort（生产调用点，不再用用户/CLI 档）。
+    // 摘要请求用这个模型的 DefaultEffort（生产调用点，不再用用户/CLI 档）。
     let summary_model = host.model().with_effort(host.model().default_effort());
     let mut stream = summary_model
         .stream_with_max_tokens(&input, &tool_request, &cancel, Some(max_tokens))
@@ -574,7 +574,7 @@ async fn summarize(
 
 #[cfg(test)]
 mod tests {
-    /// T008.F9：本 crate 单测的凭证来源（产品不再有固定 key 构造入口）。
+    /// 本 crate 单测的凭证来源（产品不再有固定 key 构造入口）。
     struct TestCredential;
 
     impl model::CredentialSource for TestCredential {
@@ -774,7 +774,7 @@ mod tests {
         }
     }
 
-    /// 阈值过但没有可压缩前缀（messages<3）：不能派发 Compaction 挂点（T006.4 的 prune
+    /// 阈值过但没有可压缩前缀（messages<3）：不能派发 Compaction 挂点（prune
     /// 只能跑在真实压缩事务里），也不写 compaction/* 事件。
     #[tokio::test]
     async fn threshold_over_without_compactable_prefix_does_not_dispatch_compaction() {

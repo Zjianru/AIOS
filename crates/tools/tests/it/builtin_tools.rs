@@ -360,7 +360,7 @@ async fn grep_tool_limits_and_errors() {
     assert!(result.content.contains("negated patterns"));
 }
 
-/// T006.6：默认注册照 DSH tool-fs（applyPatch 默认 false，显式开启才注册）。
+/// 默认注册照 DSH tool-fs（applyPatch 默认 false，显式开启才注册）。
 #[test]
 fn builtin_default_registration_matches_dsh_apply_patch_default() {
     let default = ToolSet::builtin();

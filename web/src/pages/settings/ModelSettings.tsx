@@ -83,7 +83,7 @@ function formatQuotaTime(at: number): string {
   return new Date(at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
 }
 
-/** T012 F1：用户单价四格（照原型 PriceEditor）；空=继承目录标价，「恢复标价」清空四格。 */
+/**  F1：用户单价四格（照原型 PriceEditor）；空=继承目录标价，「恢复标价」清空四格。 */
 function PriceEditor({ price, onChange }: { price: ModelRow; onChange: (patch: Partial<ModelRow>) => void }) {
   const fields: { key: 'priceInput' | 'priceCacheRead' | 'priceCacheWrite' | 'priceOutput'; label: string }[] = [
     { key: 'priceInput', label: '输入' },
@@ -1152,7 +1152,7 @@ function WebSearchSection({ broken, onChanged }: { broken: boolean; onChanged: (
 
 /* ───────────────────────── Keyring 一节 ───────────────────────── */
 
-/** T012.9：显示币种（settings.json 的 currency；价格和花费一律按美元存，显示时换算）。 */
+/** ：显示币种（settings.json 的 currency；价格和花费一律按美元存，显示时换算）。 */
 function CurrencySection() {
   const money = useSettingsState((state) => state.money);
   const setCurrency = useSettingsState((state) => state.setCurrency);
@@ -1504,7 +1504,7 @@ function MaskDialog({ pattern, busy, onCancel, onConfirm }: {
 
 export function ModelSettings() {
   useEffect(() => {
-    // T012.9：直接打开设置页（不经 Kind 页）时也要拿币种/汇率。
+    // 直接打开设置页（不经 Kind 页）时也要拿币种/汇率。
     void useSettingsState.getState().refreshMoney();
   }, []);
   const [view, setView] = useState<ModelSettingsView | null>(null);

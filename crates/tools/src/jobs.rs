@@ -1,7 +1,7 @@
 //! 后台任务注册表：进程内、按会话隔离（照 DSH jobs/jobs-local 与 jobs/tool-jobs 的最小语义）。
 //!
 //! 每个任务是独立的 bash 子进程：stdout/stderr 由线程流式收集（内存保留尾部 + 完整流落
-//! <data-dir>/jobs/session-<id>/<job>.{out,err}）。T006.9 照 DSH：
+//! <data-dir>/jobs/session-<id>/<job>.{out,err}）。照 DSH
 //! - id 是 `<kind>-<16 位小写十六进制 uuid>`（jobs/jobs/README.zh.md:32）；
 //! - 注册/结算各通知一次生命周期回调（agent 写 job/registered、job/settled 会话事件）；
 //! - 模型读输出按游标推进（DSH registry read），重复读不重复返回；
@@ -170,7 +170,7 @@ pub struct JobOutputRead {
     pub stderr_error: Option<String>,
 }
 
-/// 前台 bash 的流式 spill 目标（T006.8 照 DSH subprocess spill：完整流边收边写）。
+/// 前台 bash 的流式 spill 目标（照 DSH subprocess spill：完整流边收边写）。
 pub struct JobSpill {
     pub store: SpillStore,
     pub stdout_name: String,
@@ -215,7 +215,7 @@ struct JobRecord {
     cond: Condvar,
     /// 创建 job 的工具调用（job/registered、job/settled 用）。
     tool_call: Option<JobToolCall>,
-    /// settle 线程唤醒异步等待者（T006.8：wait_async 不阻塞 runtime）。
+    /// settle 线程唤醒异步等待者（wait_async 不阻塞 runtime）。
     notify: Notify,
     stdout_path: PathBuf,
     stderr_path: PathBuf,
@@ -229,7 +229,7 @@ pub struct TaskRegistry {
     on_registered: Mutex<Option<JobRegisteredCallback>>,
     on_settled: Mutex<Option<JobSettledCallback>>,
     on_notify: Mutex<Option<JobNotifyCallback>>,
-    /// T006.9c：注册时同步入队的 job/registered（driver 在 tool/result 提交前取走并落日志，
+    /// 注册时同步入队的 job/registered（driver 在 tool/result 提交前取走并落日志，
     /// 照 DSH registry.start 在工具执行内同步 session.append 的提交时点）。
     registered_pending: Mutex<Vec<JobRegistered>>,
     /// DSH tool-jobs 的 killedByModel 集合（跨层共享；判定在通知投递方，不进 session 事件）。
@@ -286,7 +286,7 @@ impl TaskRegistry {
             .remove(id)
     }
 
-    /// T006.9c：取走工具执行期间同步登记的 job/registered（driver 在提交 tool/result 前落日志）。
+    /// 取走工具执行期间同步登记的 job/registered（driver 在提交 tool/result 前落日志）。
     pub fn take_registered_pending(&self) -> Vec<JobRegistered> {
         std::mem::take(
             &mut *self
@@ -316,7 +316,7 @@ impl TaskRegistry {
         self.start_inner(spec, foreground, None, RETAIN_BYTES)
     }
 
-    /// T006.8：前台 bash 用流式 spill。每个流内存只留 retain_bytes 尾部，完整流边收边写进
+    /// 前台 bash 用流式 spill。每个流内存只留 retain_bytes 尾部，完整流边收边写进
     /// <data-dir>/spill/session-<hash>/ 的 spill 文件（照 DSH subprocess collect + bash-local）。
     pub fn start_with_spill(
         &self,
@@ -375,7 +375,7 @@ impl TaskRegistry {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        // T006.8：子进程自成一个进程组，SIGTERM/SIGKILL 能连子孙一起收（照 DSH subprocess 的 range kill）。
+        // 子进程自成一个进程组，SIGTERM/SIGKILL 能连子孙一起收（照 DSH subprocess 的 range kill）。
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -449,7 +449,7 @@ impl TaskRegistry {
                 tool_call: spec.tool_call.clone(),
             }
         };
-        // T006.9c：先同步入队（driver 在 tool/result 提交前取走落日志，照 DSH
+        // 先同步入队（driver 在 tool/result 提交前取走落日志，照 DSH
         // registry.start 在工具执行内同步 session.append 的时点），再通知订阅回调。
         self.registered_pending
             .lock()
@@ -611,7 +611,7 @@ impl TaskRegistry {
         Ok(read_of(&record))
     }
 
-    /// T006.8：异步等结算（tokio Notify；不阻塞 runtime）。
+    /// 异步等结算（tokio Notify；不阻塞 runtime）。
     pub async fn wait_async(&self, id: &str, timeout: Duration) -> Result<JobRead, ToolFailure> {
         let record = self.record(id)?;
         let deadline = tokio::time::Instant::now() + timeout;
@@ -693,7 +693,7 @@ impl TaskRegistry {
         Ok(read_of(&record))
     }
 
-    /// 结束任务（请求取消 + 等终止的组合；T006.8 起的旧入口保留，行为不变）。
+    /// 结束任务（请求取消 + 等终止的组合；旧入口保留，行为不变）。
     /// grace 期间读线程继续收输出，退出信号按进程实际终止信号记录。
     pub async fn terminate(
         &self,
@@ -868,7 +868,7 @@ fn prepare_jobs_root(root: &Path) {
     }
 }
 
-/// 读线程结束时的 spill 结果（T006.8）。
+/// 读线程结束时的 spill 结果。
 struct ReaderDone {
     is_stdout: bool,
     spill: Option<crate::spill::SpillRef>,
@@ -988,7 +988,7 @@ fn open_output(path: &Path) -> Result<std::fs::File, String> {
 
 /// bash 结算照 DSH shell/tool-bash background.ts 的 processOutcome：只有 killed 与 completed 两类
 /// （命令跑了非零退出仍是 completed，退出码进 detail）；没有退出码也没有信号才是基础设施失败。
-/// 子进程信号名（DSH jobs-local 的 producer 事实写成 `signal: SIGTERM`，不是数字；T006.19）。
+/// 子进程信号名（DSH jobs-local 的 producer 事实写成 `signal: SIGTERM`，不是数字）。
 pub fn signal_name(signal: i32) -> String {
     let name = match signal {
         1 => "SIGHUP",
@@ -1285,7 +1285,7 @@ mod tests {
     }
 }
 
-/// T006.19 红测试：job 结算 detail 的 signal 用名字（DSH jobs-local `signal: SIGTERM`）。
+/// 红测试：job 结算 detail 的 signal 用名字（DSH jobs-local `signal: SIGTERM`）。
 #[cfg(test)]
 mod t006_19_signal_tests {
     use super::*;

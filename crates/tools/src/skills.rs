@@ -1,4 +1,4 @@
-//! skill 发现、frontmatter 解析与加载（T006.11 照 DSH skill/skill-filesystem 改回）。
+//! skill 发现、frontmatter 解析与加载（照 DSH skill/skill-filesystem 改回）。
 //!
 //! 根优先级（后者被前者遮蔽）：项目根 /.agents/skills、<data-dir>/skills、配置的 skill_roots；
 //! 不读 ~/.dsh。完整 YAML frontmatter（yaml-rust2 0.13，default-features=false：skill 文件按 UTF-8
@@ -173,7 +173,7 @@ pub fn discover_skills(
     discover_skill_catalog(cwd, data_dir, configured, bundled).skills
 }
 
-/// 发现 skill + 警告 + 完整性（T006.11：非法 skill 不再静默丢）。
+/// 发现 skill + 警告 + 完整性（非法 skill 不再静默丢）。
 pub fn discover_skill_catalog(
     cwd: &Path,
     data_dir: &Path,
@@ -220,7 +220,7 @@ pub fn load_skill(
     })
 }
 
-/// 用户显式 /name 调用通道（T006.11b 照 DSH tool-skill 的 /name gesture）：
+/// 用户显式 /name 调用通道（照 DSH tool-skill 的 /name gesture）
 /// 只认 user-invocable 的 skill；未知或 user-invocable=false 的名字静默跳过（DSH：仍是普通文本）。
 /// 不做模型调用策略检查——这条通道正是 disable-model-invocation skill 的唯一入口。
 pub fn load_user_invocable_skill(
@@ -658,7 +658,7 @@ mod tests {
         }
     }
 
-    // ---- T006.11 红：完整 YAML / DSH 字段 / 警告（skeleton 上这些断言应失败）----
+    // ---- 红：完整 YAML / DSH 字段 / 警告（skeleton 上这些断言应失败）----
 
     fn full_yaml_doc() -> &'static str {
         "---\nname: pdf-tools\ndescription: |\n  Multi\n  line\nwhenToUse: >\n  Use when\n  needed\nmetadata:\n  owner: aios\n  tags:\n    - one\n    - two\ndisable-model-invocation: yes\nuser-invocable: 'false'\n---\n# Body\n"
@@ -789,7 +789,7 @@ mod tests {
     }
 }
 
-/// T006.19 红测试：非法 skill 的警告文案照 DSH skill-filesystem 的 logger.warn 形状
+/// 红测试：非法 skill 的警告文案照 DSH skill-filesystem 的 logger.warn 形状
 /// （`skill file <path> ignored: <reason>`，skill-filesystem/src/index.ts:904-926）。
 #[cfg(test)]
 mod t006_19_warning_format_tests {

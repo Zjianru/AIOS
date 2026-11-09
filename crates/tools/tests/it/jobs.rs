@@ -554,7 +554,7 @@ async fn foreground_fast_settlement_without_wait_does_not_notify() {
 async fn promote_after_settlement_still_notifies() {
     // 构造 fix-now 1 的竞态：wait 超时返回 running 之后、promote 之前任务已结算。
     // 旧语义：wait 置 awaited=true，unawait 只清零不补发 → 通知永久丢。
-    // T006.9：结算照旧写生命周期回调一次；promote 只补完成通知，不重复结算。
+    // 结算照旧写生命周期回调一次；promote 只补完成通知，不重复结算。
     use std::sync::Mutex;
     use std::sync::mpsc;
     use std::time::Duration as StdDuration;
@@ -636,7 +636,7 @@ async fn existing_jobs_dir_permissions_are_fixed_on_start() {
     assert_eq!(file_mode, 0o600, "旧输出文件应被 chmod 0600（保留归档）");
 }
 
-/// T006.9b 照 DSH tool-jobs 的 killedByModel：模型自己经 job_kill 请求取消（requested）时
+/// 照 DSH tool-jobs 的 killedByModel：模型自己经 job_kill 请求取消（requested）时
 /// 打 killedByModel 标记；抑制完成通知的判定在通知投递方（agent::jobs 的集成测试），
 /// 这里测注册表层的 requested 判定与标记；job/settled 生命周期记录照写（status=killed/cause=kill）。
 #[tokio::test]
@@ -704,7 +704,7 @@ async fn job_kill_of_finished_job_does_not_mark_killed_by_model() {
     );
 }
 
-/// T006.9b fix-now：request_kill(by_model=true) 在同一个 state 锁内置 kill_requested 与
+/// fix-now：request_kill(by_model=true) 在同一个 state 锁内置 kill_requested 与
 /// killedByModel 标记；任务在 kill 请求后**立刻自然完成**（不等 SIGTERM 生效）时，结算回调
 /// 也必须看得到标记（没有“两把锁之间”的窗口），通知投递方才能抑制重复通知。
 #[tokio::test]
@@ -775,7 +775,7 @@ async fn request_kill_marks_killed_by_model_atomically_on_fast_natural_finish() 
     );
 }
 
-/// T006.9b：非模型发起的 kill（直接走注册表 terminate，模拟用户/操作方取消）照旧投完成通知；
+/// 非模型发起的 kill（直接走注册表 terminate，模拟用户/操作方取消）照旧投完成通知；
 /// DSH 只对 tool-jobs 的 killedByModel 标记抑制。
 #[tokio::test]
 async fn operator_kill_still_notifies() {
@@ -844,7 +844,7 @@ async fn job_kill_uses_sigterm_grace_then_sigkill() {
             ready = true;
             break;
         }
-        // T009.H6：等后台子进程输出 ready；轮询间隔
+        // 等后台子进程输出 ready；轮询间隔
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(ready, "先等子进程输出 ready");
@@ -892,7 +892,7 @@ async fn job_kill_grace_lets_sigterm_handler_run() {
         if registry.output(&job_id).unwrap().stdout.contains("ready") {
             break;
         }
-        // T009.H6：等后台子进程输出 ready；轮询间隔
+        // 等后台子进程输出 ready；轮询间隔
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let began = Instant::now();
@@ -959,7 +959,7 @@ async fn job_output_reads_model_cursor_once() {
             first = out.content;
             break;
         }
-        // T009.H6：等后台子进程输出 first；轮询间隔
+        // 等后台子进程输出 first；轮询间隔
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     assert!(first.contains("first"), "第一次游标读拿到 first：{first}");
@@ -997,7 +997,7 @@ async fn wait_until(mut predicate: impl FnMut() -> bool) {
     }
 }
 
-/// T006.9 照 DSH jobs-local：注册回调带 jobId/owner/kind/label/startedAt/toolCall，
+/// 照 DSH jobs-local：注册回调带 jobId/owner/kind/label/startedAt/toolCall，
 /// 前台命令（有 registry 时也注册）同样记一条。
 #[tokio::test]
 async fn registered_callback_reports_dsh_registration() {
@@ -1052,7 +1052,7 @@ async fn registered_callback_reports_dsh_registration() {
     wait_until(|| records.lock().expect("注册记录锁被毒化").len() == 2).await;
 }
 
-/// T006.9 照 DSH jobs-local：结算回调每次结算都记一条（前台被等到的结算也记），
+/// 照 DSH jobs-local：结算回调每次结算都记一条（前台被等到的结算也记），
 /// 完成通知只发给没有被调用方收走的结算。
 #[tokio::test]
 async fn settled_callback_records_foreground_settlement_without_notice() {
@@ -1105,7 +1105,7 @@ async fn settled_callback_records_foreground_settlement_without_notice() {
     );
 }
 
-/// T006.9：后台结算按「注册 → 结算 → 通知」各一次，顺序由同一条回调链保证。
+/// 后台结算按「注册 → 结算 → 通知」各一次，顺序由同一条回调链保证。
 #[tokio::test]
 async fn background_settlement_records_then_notifies_in_order() {
     use std::sync::Mutex;
@@ -1165,7 +1165,7 @@ async fn background_settlement_records_then_notifies_in_order() {
     );
 }
 
-/// T006.9：job_output 按 DSH renderModelDelta 渲染 stderr 段，状态行带 detail。
+/// job_output 按 DSH renderModelDelta 渲染 stderr 段，状态行带 detail。
 #[tokio::test]
 async fn job_output_renders_stderr_section_and_status_detail() {
     let dir = tempfile::tempdir().unwrap();
@@ -1194,7 +1194,7 @@ async fn job_output_renders_stderr_section_and_status_detail() {
     );
 }
 
-/// T006.9：bash 非零退出照 DSH processOutcome 仍是 completed，退出码进 detail。
+/// bash 非零退出照 DSH processOutcome 仍是 completed，退出码进 detail。
 #[tokio::test]
 async fn non_zero_exit_is_completed_with_exit_code_detail() {
     let dir = tempfile::tempdir().unwrap();
@@ -1220,7 +1220,7 @@ async fn non_zero_exit_is_completed_with_exit_code_detail() {
     );
 }
 
-/// T006.9c 红：注册要在工具执行内同步进入待提交队列（DSH registry.start 同步 append 的落点），
+/// 红：注册要在工具执行内同步进入待提交队列（DSH registry.start 同步 append 的落点），
 /// 供 driver 在对应 tool/result 之前落 job/registered。
 #[tokio::test]
 async fn registration_is_queued_synchronously_for_commit() {

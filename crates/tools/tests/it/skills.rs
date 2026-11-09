@@ -298,7 +298,7 @@ async fn malformed_quotes_and_flow_frontmatter_are_discarded() {
     }
 }
 
-/// T006.11b：/name 手势照 DSH SKILL_GESTURE——空白边界、kebab-case 名字；
+/// /name 手势照 DSH SKILL_GESTURE——空白边界、kebab-case 名字；
 /// /usr/bin、5/8、大小写不合法与重复都不算/去重。
 #[test]
 fn user_invocation_names_follow_dsh_gesture() {
@@ -313,7 +313,7 @@ fn user_invocation_names_follow_dsh_gesture() {
     );
 }
 
-/// T014.2：程序自带的 skill 排在用户 skill 后面；用户放一个同名的，目录里只有用户那份。
+/// 程序自带的 skill 排在用户 skill 后面；用户放一个同名的，目录里只有用户那份。
 #[tokio::test]
 async fn bundled_skills_come_after_user_skills() {
     let project = tempfile::tempdir().unwrap();
@@ -376,7 +376,7 @@ async fn bundled_skills_come_after_user_skills() {
     );
 }
 
-/// T014.2：自带 skill 的正文要写清什么时候查、什么时候提议、一轮一张卡、只说一句为什么。
+/// 自带 skill 的正文要写清什么时候查、什么时候提议、一轮一张卡、只说一句为什么。
 #[test]
 fn bundled_aios_settings_body_covers_the_four_rules() {
     let cwd = tempfile::tempdir().unwrap();
@@ -403,7 +403,7 @@ fn bundled_aios_settings_body_covers_the_four_rules() {
     }
 }
 
-/// T006.11b：用户显式通道只认 user-invocable，不看 disable-model-invocation
+/// 用户显式通道只认 user-invocable，不看 disable-model-invocation
 /// （DSH：这是隐藏 skill 的唯一入口）；未知名字静默返回 None。
 #[test]
 fn user_invocable_loader_ignores_model_policy_and_honors_user_policy() {

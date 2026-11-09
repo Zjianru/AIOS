@@ -62,8 +62,8 @@ pub(super) async fn prepare_step(
             .await?;
     }
 
-    // T006.1c：PreStep 两阶段——Inject（instructions/skill 注入）在旧位置，再派发 Compact
-    // （压缩自动检查）。prune 已挂到 Compaction 挂点（T006.4），不再每请求剪、也不参与
+    // PreStep 两阶段——Inject（instructions/skill 注入）在旧位置，再派发 Compact
+    // （压缩自动检查）。prune 已挂到 Compaction 挂点，不再每请求剪、也不参与
     // PreStep 顺序；真正的修剪只发生在压缩事务里。
     inner
         .capabilities
@@ -76,8 +76,8 @@ pub(super) async fn prepare_step(
             phase: crate::capabilities::PreStepPhase::Inject,
         })
         .await?;
-    // T005.8a：请求前检查 token 压力；越过阈值就压缩较早历史（失败不打断本轮，事件已记录）。
-    // T006.1b：压缩实现已移出 loop，这里只派发固定挂点；压缩能力在 should_trigger/
+    // 请求前检查 token 压力；越过阈值就压缩较早历史（失败不打断本轮，事件已记录）。
+    // 压缩实现已移出 loop，这里只派发固定挂点；压缩能力在 should_trigger/
     // select_split 确认后才会真正压缩，否则 no-op。
     inner
         .capabilities
@@ -90,7 +90,7 @@ pub(super) async fn prepare_step(
             phase: crate::capabilities::PreStepPhase::Compact,
         })
         .await?;
-    // T014.2：工具的条件每步算一次；本步新开出的工具记进日志（只在新增时记一条，带完整定义）。
+    // 工具的条件每步算一次；本步新开出的工具记进日志（只在新增时记一条，带完整定义）。
     // 条件里的工具凭证也每步查一次：设置页换了 key，下一步就跟着变。
     let loaded_skills = {
         let store = inner.store.lock().expect("agent 会话锁被毒化");
@@ -170,7 +170,7 @@ pub(super) async fn run_step(
     // tool-call 丢弃）。
     let mut blocks: BTreeMap<usize, ContentBlock> = BTreeMap::new();
     let mut open: BTreeMap<usize, (BlockType, String)> = BTreeMap::new();
-    // T015.5：模型流里的 name 只在工具调用的起始帧给；同一 index 的后续增量沿用它。
+    // 模型流里的 name 只在工具调用的起始帧给；同一 index 的后续增量沿用它。
     let mut tool_names: BTreeMap<usize, String> = BTreeMap::new();
     let mut usage: Option<Usage> = None;
     let mut finish: Option<FinishReason> = None;
@@ -204,8 +204,8 @@ pub(super) async fn run_step(
                     // 请求还没开始流出（DSH agent.ts:488-500：started=false 不落 attempt）。
                     return Ok(StepEnd::Aborted);
                 }
-                // T005.8a：上下文溢出先压缩再重试一次；压缩不了或第二次溢出按正常错误收尾。
-                // T006.1b：压缩由 RequestError 挂点里的压缩能力执行；它压缩不了时返回
+                // 上下文溢出先压缩再重试一次；压缩不了或第二次溢出按正常错误收尾。
+                // 压缩由 RequestError 挂点里的压缩能力执行；它压缩不了时返回
                 // 原始错误，这里 `?` 直接收尾（行为与旧路径一致）。
                 if error.code == ErrorCode::ContextWindowExceeded {
                     // DSH maxOverflowRetries（默认 1）：每次溢出前压缩恢复；次数用尽后
@@ -342,8 +342,8 @@ pub(super) async fn run_step(
                         buffer.push_str(&text);
                     }
                 }
-                // 工具参数增量：照 DSH tool-call-delta 往订阅者发（T015.5，页面画「正在画 · 标题」）；
-                // 同时照 T006.14 留在 stream 记录里。帧本身不落日志。
+                // 工具参数增量：照 DSH tool-call-delta 往订阅者发（页面画「正在画 · 标题」）；
+                // 同时照 留在 stream 记录里。帧本身不落日志。
                 Ok(StreamChunk::ToolCallDelta {
                     index,
                     id,
@@ -452,7 +452,7 @@ pub(super) async fn run_step(
         .cloned()
         .collect();
     // 成功结算一律写 assistant/message（DSH agent.ts:566-584）：content 裁空也要写，
-    // 让 usage 落日志（T004 K9）；派生历史会跳过空消息（session/surface.ts:140）。
+    // 让 usage 落日志（K9）；派生历史会跳过空消息（session/surface.ts:140）。
     let message = assistant_message(inner, content.clone());
     let (effort_wanted, effort) = inner.model.effort_state();
     inner
@@ -484,7 +484,7 @@ pub(super) async fn run_step(
     if calls.is_empty() {
         return Ok(StepEnd::Completed);
     }
-    // 先把 tool/call 作为持久事实写进日志，再派发（T004.4 的修复要靠它）。
+    // 先把 tool/call 作为持久事实写进日志，再派发（修复要靠它）。
     let mut call_events = Vec::with_capacity(calls.len());
     for call in &calls {
         call_events.push(EventKind::ToolCall {
@@ -496,7 +496,7 @@ pub(super) async fn run_step(
         });
     }
     inner.append(&call_events).await?;
-    // T006.1d2：ToolBefore 挂点可返回 ToolResultOverride（ask 拦截）或 AbortStep（取消）。
+    // ToolBefore 挂点可返回 ToolResultOverride（ask 拦截）或 AbortStep（取消）。
     // override 的 index 对应调用跳过实际执行，结果按 calls 顺序并回。
     let dispatch = inner
         .capabilities
@@ -557,7 +557,7 @@ pub(super) async fn run_step(
         .into_iter()
         .map(|result| result.expect("每个调用都有结果（执行或 override）"))
         .collect();
-    // T006.9c（照 DSH registry.start 的同步 append）：工具执行期间登记的后台任务先把
+    // （照 DSH registry.start 的同步 append）：工具执行期间登记的后台任务先把
     // job/registered 落日志，再提交本批 tool/result；job/settled 仍由异步通道结算时写
     // （DSH jobs docs 允许晚于 turn/end）。
     let registered = inner.tool_session().tasks().take_registered_pending();
@@ -570,7 +570,7 @@ pub(super) async fn run_step(
         let Some(call) = calls.iter().find(|call| call.id == result.call_id) else {
             continue;
         };
-        // T006.1d：落盘/内容变换由 ToolResult 挂点（spill 能力）决定；Continue 时用原文。
+        // 落盘/内容变换由 ToolResult 挂点（spill 能力）决定；Continue 时用原文。
         let dispatch = inner
             .capabilities
             .dispatch(&HookEvent::ToolResult {
@@ -593,7 +593,7 @@ pub(super) async fn run_step(
                     name: "HarnessError".to_owned(),
                     code: code.clone(),
                 }),
-                // T013.1：工具结果的展示元信息原样落盘（不进模型消息）。
+                // 工具结果的展示元信息原样落盘（不进模型消息）。
                 meta: result.meta.clone(),
             }])
             .await?;

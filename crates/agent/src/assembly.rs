@@ -1,9 +1,9 @@
-//! T006.15：Agent 的唯一产品组装入口（照 DSH bundle/base 的 agent-loop 组合：
+//! Agent 的唯一产品组装入口（照 DSH bundle/base 的 agent-loop 组合
 //! packages/bundle/base/cordis.patch.yml:516-517 的 agent-loop 行；create/resume 装配与
 //! 初始化失败不唤醒的回滚语义照 packages/core/agent-loop/src/index.ts:557,668,717,754 与
 //! :601-647）。
 //!
-//! 产品调用方（CLI chat/run、后续服务 T006.16a）只调 Agent::open：模型、工具集、会话存储
+//! 产品调用方（CLI chat/run、后续服务）只调 Agent::open：模型、工具集、会话存储
 //! 的构造集中在这里，再交接给 create/resume；per-Agent 的 capability 注册与 inbox 恢复仍在
 //! driver::Inner::start（单一位置，不重复装配）。
 
@@ -31,9 +31,9 @@ pub struct AgentOpenOptions {
     pub model: model::DeepSeekConfig,
     /// Agent 行为配置（并发、压缩、spill、指令/skill 根、todo 策略）。
     pub config: AgentConfig,
-    /// T008.2：凭证来源（Keyring 适配器）。None = 没有来源，组装直接失败（F9：不再有固定 key 旧路径）。
+    /// 凭证来源（Keyring 适配器）。None = 没有来源，组装直接失败（F9：不再有固定 key 旧路径）。
     pub credentials: Option<std::sync::Arc<dyn model::CredentialSource>>,
-    /// T011.4：打开会话后按 id 造「追加之后」的钩子（监控 ledger）；None = 不记。
+    /// 打开会话后按 id 造「追加之后」的钩子（监控 ledger）；None = 不记。
     pub append_hook_factory: Option<session::AppendHookFactory>,
     /// 装配层自己造好的工具（服务独有的查询工具等）：加在内置工具集后面。
     /// 它们照常挂开出条件，没加载对应 skill 之前不进工具表。
