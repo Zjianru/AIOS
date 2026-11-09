@@ -348,8 +348,9 @@ async fn status_does_not_hold_the_session_writer_across_fx() {
     let (phase, summary) = decision_phase(card.expect("status 占着会话读时换模型也要成功"));
     assert_eq!(phase, "confirmed", "summary={summary}");
     let stats = stats_of(status.expect("status 最终要回 Ok"));
-    // 这次 status 的日志快照在换模型之前取；这里只要求它没有因为重开拿不到写锁
-    // 而报 Busy，最终能回一份完整的 status。
+    // 这次 status 的日志快照在换模型之前取；它要读到这一轮的收尾，且没有因为
+    // 重开拿不到写锁而报 Busy。
+    assert_eq!(stats.turns, 1, "status 快照要读到这一轮");
     assert!(!stats.connection.is_empty());
 }
 
