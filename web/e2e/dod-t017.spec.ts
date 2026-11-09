@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -92,6 +92,11 @@ async function openProcess(process: ReturnType<Page['locator']>) {
   return process;
 }
 
+/** 回执里的答案：问题文本也含选项词，整卡 toContainText(chosen) 会假过；断答案那一段的全文。 */
+async function expectReceiptAnswer(closed: Locator, chosen: string): Promise<void> {
+  await expect(closed.getByText(chosen, { exact: true })).toBeVisible();
+}
+
 /// DoD2 ①②③：真 key 走一条对话——提问回执、终端/差异卡、刷新后都还在。
 test('DoD2：真 key 三步（MiniMax）', async ({ page }) => {
   const fixture = await startT017DodFixture();
@@ -124,7 +129,7 @@ test('DoD2：真 key 三步（MiniMax）', async ({ page }) => {
     const closed = page.locator('[data-kind="question-closed"]').last();
     await expect(closed).toBeVisible({ timeout: 120_000 });
     await expect(closed).toContainText('你回答了 Kind 的 1 个问题');
-    await expect(closed).toContainText(chosen);
+    await expectReceiptAnswer(closed, chosen);
     const log = sessionLog(fixture.dataDir);
     await waitTurns(page, log, 1);
     summary.push('# ① 选中的选项：' + chosen);
@@ -203,7 +208,7 @@ test('DoD2：真 key 三步（MiniMax）', async ({ page }) => {
     const closedAfter = page.locator('[data-kind="question-closed"]').last();
     await expect(closedAfter, '刷新后提问卡还是回执').toBeVisible({ timeout: 120_000 });
     await expect(closedAfter).toContainText('你回答了 Kind 的 1 个问题');
-    await expect(closedAfter).toContainText(chosen);
+    await expectReceiptAnswer(closedAfter, chosen);
     const turnTwoAfter = await openProcess(page.locator('[data-kind="process"]').last());
     const bashRowAfter = turnTwoAfter.locator('[data-kind="tool-row"][data-tool="bash"]').first();
     const diffRowAfter = turnTwoAfter
