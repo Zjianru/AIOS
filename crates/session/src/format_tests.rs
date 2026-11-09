@@ -6,7 +6,7 @@
 
 use std::fs;
 
-use model::{AssistantStreamRecord, ContentBlock, Message, Role, StreamChunk, Usage};
+use model::{AssistantStreamRecord, ContentBlock, Message, Role, StreamChunk, ToolSchema, Usage};
 use serde_json::{Value, json};
 
 use crate::{
@@ -578,6 +578,16 @@ fn all_event_kinds() -> Vec<EventKind> {
             error: None,
             meta: None,
         },
+        EventKind::ToolRegistry {
+            turn: 1,
+            step: 1,
+            additions: vec![ToolSchema {
+                name: "read".to_owned(),
+                description: "读文件".to_owned(),
+                parameters: json!({"type": "object"}),
+                defer_loading: false,
+            }],
+        },
         EventKind::CompactionPrune {
             shadowed_range: ShadowedRange { start: 2, end: 2 },
             shadowed_seqs: vec![2],
@@ -676,13 +686,50 @@ fn all_event_kinds() -> Vec<EventKind> {
     ]
 }
 
+/// 编译期穷举：EventKind 新增变体而这里没写，本文件直接编不过。
+///
+/// 运行时只验证「清单长度/内容由人补」，所以再加一条 len 断言；两处一起漏才会失守。
+fn every_variant_is_named(kind: &EventKind) {
+    match kind {
+        EventKind::TurnStart { .. }
+        | EventKind::TurnEnd { .. }
+        | EventKind::StepStart { .. }
+        | EventKind::StepEnd { .. }
+        | EventKind::SystemMessage { .. }
+        | EventKind::UserMessage { .. }
+        | EventKind::QuestionAsked { .. }
+        | EventKind::QuestionAnswered { .. }
+        | EventKind::QuestionCancelled { .. }
+        | EventKind::InboxSpliced { .. }
+        | EventKind::JobRegistered { .. }
+        | EventKind::JobSettled { .. }
+        | EventKind::AssistantMessage { .. }
+        | EventKind::AssistantAttempt { .. }
+        | EventKind::LlmRetry { .. }
+        | EventKind::LlmRetryStarted { .. }
+        | EventKind::ToolCall { .. }
+        | EventKind::ToolResult { .. }
+        | EventKind::ToolRegistry { .. }
+        | EventKind::CompactionPrune { .. }
+        | EventKind::TodoWrite { .. }
+        | EventKind::CompactionStart { .. }
+        | EventKind::CompactionSummary { .. }
+        | EventKind::CompactionEnd { .. }
+        | EventKind::SessionModel { .. }
+        | EventKind::CardDecision { .. } => {}
+    }
+}
+
 /// 防未来漂移：EventKind 的 serde `type` 必须等于 `type_name`。
 ///
 /// 首跑即绿，用来在新增/改名事件时抓住两处各写一份的漂移；新增变体要补进 all_event_kinds。
 #[test]
 fn event_kind_serde_tag_matches_type_name() {
     let kinds = all_event_kinds();
-    assert_eq!(kinds.len(), 25, "all_event_kinds 要覆盖全部变体");
+    for kind in &kinds {
+        every_variant_is_named(kind);
+    }
+    assert_eq!(kinds.len(), 26, "all_event_kinds 要覆盖全部变体");
     for kind in kinds {
         let value = serde_json::to_value(&kind).expect("事件序列化");
         assert_eq!(
