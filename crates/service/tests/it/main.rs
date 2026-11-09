@@ -4,6 +4,7 @@ mod action_cards;
 mod aios_query;
 mod attachments;
 mod common;
+mod cross_connection;
 mod disabled;
 mod exa;
 mod file_references;

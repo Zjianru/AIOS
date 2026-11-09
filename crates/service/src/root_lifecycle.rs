@@ -186,6 +186,13 @@ impl RootHost {
     /// 接手一个已打开的 Agent：建 ServiceHost、把它的服务事件转发到本宿主的广播，
     /// 同时更新上下文占用（页面要的 context 只从日志事实算）。
     async fn install(&self, agent: Agent) {
+        let mut slot = self.inner.lock().await;
+        self.install_into(&mut slot, agent);
+    }
+
+    /// 在调用方已经拿住的根会话槽里装宿主。重开时槽要一直拿着，等装完才让别的调用看见
+    /// 新宿主（不然 status 会撞见 take 与 install 之间的空窗）。
+    fn install_into(&self, slot: &mut Option<ServiceHost>, agent: Agent) {
         let session_id = agent.id().as_str().to_owned();
         // 这一份根会话绑定的连接：之后运行中换选择不改它，直到下次安装/重建。
         let root_connection = self
@@ -255,7 +262,7 @@ impl RootHost {
         {
             handle.abort();
         }
-        *self.inner.lock().await = Some(service_host);
+        *slot = Some(service_host);
         *self.state.lock().expect("root state 锁被毒化") = RootState::Ok;
         *self.session_id.lock().expect("session id 锁被毒化") = Some(session_id);
     }
@@ -364,8 +371,10 @@ impl RootHost {
             self.notify_keyring_changed();
             *self.context.lock().expect("context 锁被毒化") = ContextUsage { used: 0, window };
         }
-        // 先放掉旧 Agent（释放会话写锁）再重开同一会话；recheck 时通常已经是 None。
-        let old = self.inner.lock().await.take();
+        // 先放掉旧 Agent（释放会话写锁）再重开同一会话；交换期间一直拿着根会话槽：
+        // 别的调用（尤其 status）等装完再读，不会撞见 take 与 install 之间的 inner=None。
+        let mut slot = self.inner.lock().await;
+        let old = slot.take();
         drop(old);
         match open_root_session(options).await {
             Ok(root) => {
@@ -380,7 +389,7 @@ impl RootHost {
                     // 占用是同一会话日志里的事实，换连接的窗口只影响之后算比例。
                     self.context.lock().expect("context 锁被毒化").window = window;
                 }
-                self.install(root.agent).await;
+                self.install_into(&mut slot, root.agent);
                 Ok(())
             }
             Err(error) => {
