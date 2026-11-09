@@ -42,7 +42,6 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.highUsage) return { file: 'high-usage' };
   if (options.t014Query) return { file: 't014-query' };
   if (options.t014Confirm) return { file: 't014-confirm' };
-  if (options.t020Effort) return { file: 't020-effort' };
   if (options.t014Mask) return { file: 't014-mask' };
   if (options.t014Web) return { file: 't014-web' };
   if (options.t014Search) return { file: 't014-search' };
@@ -198,8 +197,6 @@ export interface FixtureOptions {
   t014Query?: boolean;
   /// T014.4：两轮各出一张确认卡（三个选项一张、一个选项一张），回放只给模型流。
   t014Confirm?: boolean;
-  /// 确认卡换到缺当前档的模型（MiniMax-M3.1-Flash 没有 none 档）的回放，页面选择器实际档用例。
-  t020Effort?: boolean;
   /// T014.5：一张只有一个选项的屏蔽卡，回放只给模型流。
   t014Mask?: boolean;
   /// T014.6：先加载 skill web，再收尾一句回答（联网搜索的目录/工具表用）。
