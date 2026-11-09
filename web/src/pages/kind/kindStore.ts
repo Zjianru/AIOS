@@ -298,6 +298,10 @@ function addUnsentView(
 
 /** 按已处理到的 lastSeq 重连；失败后指数退避，横幅显示第几次。 */
 function openSocket(): void {
+  // 同一时刻只留一条连接：recheck → loadInitial 撞上已经连着的旧 socket 时，两条连接
+  // 会把同一帧各收一次（实时文字因此重复）。旧连接先关掉，它的 onClose 看到
+  // activeSocket 已经换人就直接忽略。
+  const previous = activeSocket;
   const socket = connectSession(
     lastSeq,
     (frame) => {
@@ -343,6 +347,7 @@ function openSocket(): void {
     },
   );
   activeSocket = socket;
+  if (previous && previous !== socket) previous.close();
 }
 
 /** /4：本轮已收到的日志事件（首屏页 + live）；实时帧按轮重算 view。 */
@@ -420,7 +425,21 @@ function refreshTurn(turn: number): void {
   });
 }
 
-/** 压缩摘要：ContentBlock 数组里的 text 拼起来（日志事实）。 */
+/**
+ * 清掉「当前这一段」的实时文字，并把它钉在指定的一轮上。
+ * 工具调用/重试开始时，前面流出来的只是这一步的说明，不是回答：清空后回答区不会把它
+ * 累计进去，也不会回退显示 view.answer（那一段同样是工具前说明）。turn 为 null 表示
+ * 本轮结束，解除钉住，回答区回到日志里的最终 assistant text。
+ */
+function resetLiveStream(turn: number | null): void {
+  liveStream = '';
+  useStreamStore.setState({
+    turnId: turn === null ? null : 'turn-' + String(turn),
+    itemId: null,
+    text: '',
+  });
+}
+
 /** 日志事件 live：追加进本轮事件，重建 view；turn/end 时收掉流式文本。 */
 function applyLiveEvent(event: ServiceEvent): void {
   if (event.type === 'keyring/changed') {
@@ -547,12 +566,17 @@ function applyLiveEvent(event: ServiceEvent): void {
   }
   if (event.type === 'turn/start') {
     liveTurn = turn;
+    resetLiveStream(turn);
+  }
+  // 工具调用开始：这一步已经流出来的话只是「说明」，不能累计成回答。
+  if (event.type === 'tool/call' && turn !== null && turn === liveTurn) {
+    resetLiveStream(turn);
   }
   if (event.type === 'turn/end') {
-    liveStream = '';
+    liveTurn = null;
     liveToolCalls.clear();
     useKindStore.setState({ drawingCanvas: null });
-    useStreamStore.setState({ turnId: null, itemId: null, text: '' });
+    resetLiveStream(null);
     // 一轮结束后从服务刷新统计（轮/步/token/花费由内核从日志算好）。
     void useKindStore.getState().refreshStats();
   }
@@ -565,6 +589,10 @@ function applyAgentEvent(event: AgentFrame['event']): void {
   // 帧不落日志（日志里只有 assistant stream 的 tool-call-chunks 记录）。
   if (event.type === 'tool-call-delta') {
     if (typeof event.callId !== 'string' || !event.callId) return;
+    if (!liveToolCalls.has(event.callId)) {
+      // 工具调用开始：这一步已经流出来的文字是「说明」，清掉当前段，别拼进回答。
+      resetLiveStream(liveTurn);
+    }
     const call = liveToolCalls.get(event.callId) ?? { name: '', arguments: '' };
     if (typeof event.name === 'string' && event.name) call.name = event.name;
     if (typeof event.argumentsDelta === 'string') call.arguments += event.argumentsDelta;
@@ -573,6 +601,11 @@ function applyAgentEvent(event: AgentFrame['event']): void {
     useKindStore.setState({
       drawingCanvas: { turnId: 'turn-' + String(liveTurn), title: canvasTitleOf(call.arguments) },
     });
+    return;
+  }
+  if (event.type === 'retrying') {
+    // 一次尝试失败准备重试：失败那次的半截文字不算回答，重试从空段重新流。
+    resetLiveStream(liveTurn);
     return;
   }
   if (event.type === 'usage') {
