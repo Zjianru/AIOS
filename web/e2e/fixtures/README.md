@@ -36,6 +36,15 @@ T010.2 时用一次性 Playwright 录制器（已删除，不在仓库）跑改�
 
 这些是手写的，只放模型回放要的 `assistant/message`：第 1 条回一次 `canvas` 工具调用（HTML 在参数里），第 2 条回一句回答（versions 多一条第三轮）。**工具调用由真内核执行**，所以页面显示的画布一定来自日志的 `tool/result.meta.canvas`，不是夹具里写死的结果。`canvas-streaming` 只把 `tool-call-chunks` 的 args 拆成几段；完整参数（`message.content` 和 block-end）不变。
 
+## T023 回答区流式夹具（手写）
+
+| 文件 | 场景 | 模型调用数 |
+|---|---|---|
+| t023-pretext.jsonl | 工具前说明 → read hello.txt → 最终答案（回放 pace 150ms） | 2 |
+| t023-pretext-slow.jsonl | 同上，最终答案 8 段、回放 pace 400ms，设置页往返后还有实时流 | 2 |
+
+手写：第 1 条 assistant/message 先流一段「工具前说明」再回一次 `read` 工具调用，第 2 条回最终答案。工具由真内核执行；页面实时阶段停在「工具调用之后、最终答案之前」的时间由 pace 拉开，e2e 才能看到实时回答。
+
 ## T017.2 提问卡降级夹具（手写）
 
 | 文件 | 场景 | 模型调用数 |
