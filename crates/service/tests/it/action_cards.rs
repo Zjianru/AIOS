@@ -9,6 +9,7 @@ use service::{
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tempfile::tempdir;
 
 use crate::common::{self, read_root_events, text_sse, tool_use_sse, wait_turns};
@@ -24,6 +25,8 @@ struct FakeAction {
     state: Mutex<String>,
     describe_error: Mutex<Option<String>>,
     act_error: Mutex<Option<String>>,
+    /// 只给并发用例：执行前停一下，把「两个请求同时读到没有决定」的窗口拉大。
+    act_delay: Mutex<Option<Duration>>,
     acts: AtomicUsize,
     choices: Mutex<Vec<String>>,
 }
@@ -36,6 +39,7 @@ impl FakeAction {
             state: Mutex::new("旧状态".to_owned()),
             describe_error: Mutex::new(None),
             act_error: Mutex::new(None),
+            act_delay: Mutex::new(None),
             acts: AtomicUsize::new(0),
             choices: Mutex::new(Vec::new()),
         }
@@ -94,6 +98,10 @@ impl ActionKind for FakeAction {
         Box::pin(async move {
             if let Some(reason) = self.act_error.lock().expect("act 错误锁").clone() {
                 return Err(reason);
+            }
+            let delay = *self.act_delay.lock().expect("act 延迟锁");
+            if let Some(delay) = delay {
+                tokio::time::sleep(delay).await;
             }
             let choice = details
                 .get("choice")
@@ -436,6 +444,48 @@ async fn three_options_confirm_only_the_chosen_one() {
         card_decisions(&read_root_events(&scenario.data_dir)).len(),
         1
     );
+}
+
+/// 同一张卡的两个确认并发到达：只执行一次，两边都拿到同一条回执。
+#[tokio::test]
+async fn concurrent_confirm_on_the_same_card_acts_once() {
+    let fake = Arc::new(FakeAction::new());
+    *fake.act_delay.lock().expect("act 延迟锁") = Some(Duration::from_millis(100));
+    let scenario = scenario(
+        vec![
+            skill_script(),
+            tool_script(
+                1,
+                "call_card",
+                "propose_action",
+                &options_json(&[("a", "甲")]),
+            ),
+            answer_script("选一个。"),
+        ],
+        registry(&fake),
+    )
+    .await;
+    send(scenario.host(), "改一下", 1).await;
+    wait_turns(scenario.host(), &scenario.data_dir, 1).await;
+
+    let request = || CardActRequest {
+        call_id: "call_card".to_owned(),
+        verb: CardVerb::Confirm,
+        option: Some("a".to_owned()),
+    };
+    let (first, second) = tokio::join!(
+        scenario.host().dispatch(Call::CardAct(request())),
+        scenario.host().dispatch(Call::CardAct(request())),
+    );
+    for response in [first.expect("第一个确认"), second.expect("第二个确认")] {
+        let value = serde_json::to_value(response).expect("确认卡 json");
+        assert_eq!(value["decision"]["phase"], "confirmed", "两边都拿到回执");
+        assert_eq!(value["decision"]["option"], "a");
+    }
+    assert_eq!(fake.acts(), 1, "并发确认只执行一次");
+    assert_eq!(fake.choices(), vec!["甲".to_owned()]);
+    let decisions = card_decisions(&read_root_events(&scenario.data_dir));
+    assert_eq!(decisions.len(), 1, "日志里只有一条决定");
 }
 
 /// 六种拒绝：没加载对应 skill、同一轮第二次、动作没登记、details 不合法、

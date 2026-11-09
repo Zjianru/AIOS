@@ -271,6 +271,71 @@ async fn pressure_triggers_compaction_and_next_request_uses_summary() {
     assert!(ended, "应发 CompactionEnded 事件");
 }
 
+/// 换到窗口更小的模型后，下一轮在出站前就按新窗口压缩；不先撞溢出再重试。
+#[tokio::test]
+async fn 换小窗口后下一轮按新窗口先压缩() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+    let harness = setup(&server, 1_000_000, 2048, 65_536, 0.16).await;
+    // 约 14 万 token：按 1M 窗口不压，按 204800 窗口越过阈值（137216）。
+    harness
+        .agent
+        .send(
+            UserMessage::text(format!("EARLY-BIG {}", "x".repeat(560_000))),
+            Delivery::FollowUp,
+        )
+        .await
+        .unwrap();
+    harness.agent.idle().await;
+    let store = SessionStore::open_read_only(harness.data_dir.path(), &harness.id).unwrap();
+    assert!(
+        !store
+            .events()
+            .iter()
+            .any(|event| event.kind.type_name().starts_with("compaction/")),
+        "1M 窗口下不该压缩"
+    );
+
+    harness.agent.set_context_window(204_800);
+    harness
+        .agent
+        .send(UserMessage::text("AFTER-SWITCH"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    harness.agent.idle().await;
+
+    let requests = server.received_requests().await.unwrap();
+    let bodies: Vec<String> = requests
+        .iter()
+        .map(|request| String::from_utf8_lossy(&request.body).into_owned())
+        .collect();
+    assert_eq!(bodies.len(), 3, "第一轮 + 摘要 + 压缩后的第二轮");
+    assert!(
+        bodies[1].contains("compaction engine"),
+        "换小窗口后下一轮先发摘要请求"
+    );
+    assert!(
+        bodies[2].contains("<compacted-summary>") && bodies[2].contains("AFTER-SWITCH"),
+        "第二轮请求由摘要 + 新消息组成"
+    );
+    let store = SessionStore::open_read_only(harness.data_dir.path(), &harness.id).unwrap();
+    assert!(
+        store
+            .events()
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::CompactionEnd { error: None, .. })),
+        "先压缩并写完整的压缩事件"
+    );
+}
+
 #[tokio::test]
 async fn overflow_compacts_then_retries_once() {
     let server = MockServer::start().await;

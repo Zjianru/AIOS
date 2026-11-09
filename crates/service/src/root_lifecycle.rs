@@ -64,7 +64,6 @@ pub struct RootHost {
     session_id: Mutex<Option<String>>,
     pub(crate) context: Arc<Mutex<ContextUsage>>,
     pub(crate) options: RootSessionOptions,
-    pub(crate) window: Mutex<u64>,
     pub(crate) events: broadcast::Sender<ServiceEvent>,
     agent_events: broadcast::Sender<agent::AgentEvent>,
     forward: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -72,6 +71,8 @@ pub struct RootHost {
     /// 当前生效的模型选择（连接/模型/想要的档）；session/model 的 durable 事实
     /// 在会话日志里，这里只是进程内缓存（重开从日志恢复）。
     pub(crate) selection: Mutex<Option<session::ModelSelection>>,
+    /// 每张确认卡一把锁：同一 call_id 的并发/连点串行，第二个请求读得到第一条决定。
+    pub(crate) card_locks: Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// 根会话装配时用的连接 id；只在安装/重建时更新，运行中不跟着 selection 变。
     pub(crate) root_connection: Mutex<Option<String>>,
 }
@@ -125,12 +126,12 @@ impl RootHost {
             session_id: Mutex::new(None),
             context: Arc::new(Mutex::new(ContextUsage { used: 0, window })),
             options,
-            window: Mutex::new(window),
             events,
             agent_events,
             forward: Mutex::new(None),
             agent_forward: Mutex::new(None),
             selection: Mutex::new(selection),
+            card_locks: Mutex::new(std::collections::HashMap::new()),
             root_connection: Mutex::new(None),
         };
         if let Some(message) = factory_error {
@@ -211,14 +212,13 @@ impl RootHost {
         let mut source = service_host.subscribe_events();
         let tx = self.events.clone();
         let context = Arc::clone(&self.context);
-        let window = *self.window.lock().expect("window 锁被毒化");
         let forward = tokio::spawn(async move {
             loop {
                 match source.recv().await {
                     Ok(event) => {
                         if let Some(used) = context_used(&event) {
-                            *context.lock().expect("context 锁被毒化") =
-                                ContextUsage { used, window };
+                            // 只更新占用；窗口是换模型时更新的另一个事实，旧事件不能盖回去。
+                            context.lock().expect("context 锁被毒化").used = used;
                         }
                         #[expect(
                             clippy::let_underscore_must_use,
@@ -327,7 +327,6 @@ impl RootHost {
         let window = options.model.context_window;
         if matches!(mode, ReopenMode::Restore) {
             self.notify_keyring_changed();
-            *self.window.lock().expect("window 锁被毒化") = window;
             *self.context.lock().expect("context 锁被毒化") = ContextUsage { used: 0, window };
         }
         // 先放掉旧 Agent（释放会话写锁）再重开同一会话；recheck 时通常已经是 None。
@@ -342,7 +341,6 @@ impl RootHost {
                 }
                 if matches!(mode, ReopenMode::HotSwitch) {
                     // 占用是同一会话日志里的事实，换连接的窗口只影响之后算比例。
-                    *self.window.lock().expect("window 锁被毒化") = window;
                     self.context.lock().expect("context 锁被毒化").window = window;
                 }
                 self.install(root.agent).await;

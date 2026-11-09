@@ -79,9 +79,9 @@ pub(crate) struct Budget {
 impl Budget {
     /// 用解析后的策略、模型窗口和输出预留算阈值/保留预算。
     pub(crate) fn resolve(host: &dyn LoopAccess) -> Self {
-        let config = host.model().config();
-        let window = config.context_window;
-        let output = u64::from(config.max_tokens);
+        let model = host.model();
+        let window = model.context_window();
+        let output = u64::from(model.config().max_tokens);
         let policy = host.compaction_policy();
         let headroom = policy.headroom_tokens;
         let message_budget = window.saturating_sub(output);

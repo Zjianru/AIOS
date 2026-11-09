@@ -83,6 +83,13 @@ function PendingCard({ envelope, slots, host }: CardViewProps<ConfirmSlots>) {
   const [selected, setSelected] = useState<string | null>(() =>
     slots.options.length === 1 ? (slots.options[0]?.id ?? null) : null,
   );
+  // 点了以后先置灰，等 card/decision 回执把它换成回执卡；请求失败就恢复，能再点。
+  const [submitting, setSubmitting] = useState(false);
+  const submit = (action: (() => Promise<void> | void) | undefined) => {
+    if (submitting || !action) return;
+    setSubmitting(true);
+    void Promise.resolve(action()).catch(() => setSubmitting(false));
+  };
   const tone = cardTone(envelope.role, envelope.state);
   return (
     <div
@@ -115,22 +122,27 @@ function PendingCard({ envelope, slots, host }: CardViewProps<ConfirmSlots>) {
         <button
           type="button"
           data-action="card-dismiss"
-          onClick={() => host.dismissCard?.()}
-          className="ml-auto rounded-btn px-2.5 py-1 text-2 text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+          disabled={submitting}
+          onClick={() => submit(host.dismissCard)}
+          className="ml-auto rounded-btn px-2.5 py-1 text-2 text-ink-2 transition-colors hover:bg-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
         >
           暂不
         </button>
         <button
           type="button"
           data-action="card-confirm"
-          disabled={!selected}
-          onClick={() => selected && host.confirmCard?.(selected)}
+          disabled={!selected || submitting}
+          onClick={() => {
+            if (selected) submit(() => host.confirmCard?.(selected));
+          }}
           className={cn(
             'rounded-btn px-3 py-1 text-2 transition-opacity',
-            selected ? 'bg-ink text-content hover:opacity-90' : 'cursor-not-allowed bg-hover text-ink-3',
+            selected && !submitting
+              ? 'bg-ink text-content hover:opacity-90'
+              : 'cursor-not-allowed bg-hover text-ink-3',
           )}
         >
-          确认
+          {submitting ? '处理中…' : '确认'}
         </button>
       </div>
     </div>

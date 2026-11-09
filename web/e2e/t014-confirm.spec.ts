@@ -57,6 +57,16 @@ test('确认卡：选一项确认、刷新还在、模型选择器跟着换；�
       preset: 'deepseek',
       models: [],
     });
+    // 把 card-act 的响应延迟一点：点完按钮到回执之间有一段可观察的等待。
+    let cardActs = 0;
+    await page.route('**/api', async (route) => {
+      const body = route.request().postDataJSON() as { method?: string } | null;
+      if (body?.method === 'card-act') {
+        cardActs += 1;
+        await new Promise((resolve) => setTimeout(resolve, 400));
+      }
+      await route.continue();
+    });
     await page.goto(urlOf(fixture));
     await send(page, '把这条对话换成 V4 Pro 试试');
 
@@ -80,8 +90,14 @@ test('确认卡：选一项确认、刷新还在、模型选择器跟着换；�
     await expect(options.nth(2)).not.toContainText('推理强度');
 
     await options.nth(1).click();
-    await first.getByRole('button', { name: '确认', exact: true }).click();
+    const confirmButton = first.locator('[data-action="card-confirm"]');
+    // 双击：第一下之后按钮就置灰，第二下不该再发请求；回执到之前一直是 pending。
+    await confirmButton.dblclick();
+    await expect(confirmButton).toBeDisabled();
+    await expect(confirmButton).toHaveText('处理中…');
+    await expect(first).toHaveAttribute('data-state', 'pending');
     await expect(first).toHaveAttribute('data-state', 'done', { timeout: 30_000 });
+    expect(cardActs).toBe(1);
     await expect(first.locator('[data-kind="confirm-receipt"]')).toContainText('已执行');
     await expect(first.locator('[data-kind="confirm-receipt"]')).toContainText('V4 Pro · 最强思考');
 

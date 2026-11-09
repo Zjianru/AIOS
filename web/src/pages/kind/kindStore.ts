@@ -165,9 +165,9 @@ interface KindState {
   answer: (turnId: string, answers: AskAnswer[]) => void;
   dismiss: (turnId: string) => void;
   /** 确认卡：确认某一项（服务跑核对和执行，回执由 card/decision 事件回填）。 */
-  confirmCard: (callId: string, optionId: string) => void;
+  confirmCard: (callId: string, optionId: string) => Promise<void>;
   /** 确认卡：暂不（什么都不执行，记 dismissed）。 */
-  dismissCard: (callId: string) => void;
+  dismissCard: (callId: string) => Promise<void>;
   compact: () => void;
   setModel: (model: KindState['model']) => void;
   /** T012.9：从服务刷新会话合计/汇率/币种。 */
@@ -832,15 +832,23 @@ export const useKindStore = create<KindState>()((set, get) => ({
 
   confirmCard: (callId, optionId) => {
     // 卡片状态和回执由 card/decision 事件回填（页面不先改，服务和日志说了算）。
-    void cardAct(callId, 'confirm', optionId).catch(() => {
-      toast('确认没送到内核', { description: '连上内核再试一次' });
-    });
+    return cardAct(callId, 'confirm', optionId).then(
+      () => {},
+      (error: unknown) => {
+        toast('确认没送到内核', { description: '连上内核再试一次' });
+        throw error;
+      },
+    );
   },
 
   dismissCard: (callId) => {
-    void cardAct(callId, 'dismiss').catch(() => {
-      toast('暂不没送到内核', { description: '连上内核再试一次' });
-    });
+    return cardAct(callId, 'dismiss').then(
+      () => {},
+      (error: unknown) => {
+        toast('暂不没送到内核', { description: '连上内核再试一次' });
+        throw error;
+      },
+    );
   },
 
   compact: () => {

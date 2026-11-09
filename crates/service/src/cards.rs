@@ -3,6 +3,8 @@
 //! 提议本身是 propose_action 的 tool/call + tool/result（结果 meta 里带展示数据）；
 //! 决定是 card/decision 事件。replaced 不落日志，由「后面又有被接受的新卡」推导。
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -153,6 +155,13 @@ impl RootHost {
     /// 未知的卡、被新卡替换的旧卡不执行也不记（返回 None）；已经有决定的卡返回那条决定，
     /// 重复点击不重复执行。
     pub async fn card_act(&self, request: CardActRequest) -> Result<CardActResponse, ServiceError> {
+        // 同一张卡并发/连点只让一个请求进：第一个写决定，后面的读到决定后原样返回。
+        // 不同 call_id 各有各的锁，不互相排队。
+        let lock = {
+            let mut locks = self.card_locks.lock().expect("card locks 锁被毒化");
+            Arc::clone(locks.entry(request.call_id.clone()).or_default())
+        };
+        let _guard = lock.lock().await;
         let events = self.card_events().await?;
         let Some(proposal) = proposal_of(&events, &request.call_id) else {
             return Ok(CardActResponse { decision: None });

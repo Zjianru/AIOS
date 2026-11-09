@@ -1897,6 +1897,129 @@ async fn 空闲时跨连接切换重建根agent并走新连接() {
     );
 }
 
+/// 同一连接内换模型：窗口跟新模型走，下一轮请求用新模型（不先撞溢出再压缩）。
+#[tokio::test]
+async fn 同连接换模型窗口跟新模型() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(USAGE_SSE),
+        )
+        .expect(2)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let identity = dir.path().join("identity.txt");
+    let keyring = credentials::Keyring::open(dir.path(), Some(&identity)).unwrap();
+    keyring
+        .save_connection(credentials::NewConnection {
+            id: "deepseek".to_owned(),
+            name: "DeepSeek".to_owned(),
+            model: "model-a".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some("deepseek".to_owned()),
+            models: Some(vec![
+                model_row("model-a", 1_000_000),
+                model_row("model-b", 204_800),
+            ]),
+            ..credentials::NewConnection::default()
+        })
+        .expect("save connection");
+    let data = dir.path().to_path_buf();
+    let uri = server.uri();
+    let factory: service::ModelFactory =
+        std::sync::Arc::new(move |selection: Option<&session::ModelSelection>| {
+            Ok((
+                "deepseek".to_owned(),
+                DeepSeekConfig {
+                    base_url: uri.clone(),
+                    model: selection
+                        .map(|selection| selection.model.clone())
+                        .unwrap_or_else(|| "model-a".to_owned()),
+                    context_window: DEFAULT_CONTEXT_WINDOW,
+                    ..DeepSeekConfig::default()
+                },
+                Some(crate::common::test_credential(&data)),
+            ))
+        });
+    let mut options = crate::common::options(dir.path());
+    options.model.base_url = server.uri();
+    options.credentials = None;
+    options.identity = Some(identity);
+    options.model_factory = Some(factory);
+    let host = RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await;
+    assert_eq!(
+        stats_of(&host).await.context_window,
+        1_000_000,
+        "初始模型 model-a 的窗口"
+    );
+
+    host.dispatch(Call::Send(service::SendRequest {
+        request_id: "window-r1".to_owned(),
+        content: "第一轮".to_owned(),
+        delivery: service::DeliveryMode::FollowUp,
+        pastes: Vec::new(),
+        attachments: Vec::new(),
+        canvas: None,
+    }))
+    .await
+    .expect("send 第一轮");
+    wait_for_requests(&server, 1).await;
+    wait_host_idle(&host).await;
+
+    let selected = host
+        .dispatch(Call::SessionModelSelect(SessionModelSelectRequest {
+            connection: Some("deepseek".to_owned()),
+            model: Some("model-b".to_owned()),
+            effort_wanted: None,
+        }))
+        .await
+        .expect("换到 model-b");
+    let service::Response::SessionModelSelect(selected) = selected else {
+        panic!("expected SessionModelSelect");
+    };
+    assert_eq!(selected.model, "model-b");
+    assert_eq!(
+        stats_of(&host).await.context_window,
+        204_800,
+        "同一连接换模型后窗口跟着新模型"
+    );
+
+    host.dispatch(Call::Send(service::SendRequest {
+        request_id: "window-r2".to_owned(),
+        content: "第二轮".to_owned(),
+        delivery: service::DeliveryMode::FollowUp,
+        pastes: Vec::new(),
+        attachments: Vec::new(),
+        canvas: None,
+    }))
+    .await
+    .expect("send 第二轮");
+    wait_for_requests(&server, 2).await;
+    wait_host_idle(&host).await;
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value =
+        serde_json::from_slice(&requests[1].body).expect("第二轮请求 JSON");
+    assert_eq!(body["model"], "model-b", "下一轮请求用新模型");
+}
+
+fn model_row(id: &str, context_window: u64) -> credentials::ModelRow {
+    credentials::ModelRow {
+        id: id.to_owned(),
+        name: None,
+        context_window: Some(context_window),
+        max_tokens: None,
+        price_input: None,
+        price_output: None,
+        price_cache_read: None,
+        price_cache_write: None,
+    }
+}
+
 /// 轮询 mock 收到至少 n 个请求（D57：不拿固定 sleep 等结果）。
 async fn wait_for_requests(server: &MockServer, n: usize) {
     for _ in 0..600 {

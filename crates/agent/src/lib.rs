@@ -401,6 +401,11 @@ impl Agent {
         self.inner.model.set_model(model);
     }
 
+    /// 换模型的上下文窗口（下一轮生效）：压缩阈值按它算，不按装配时的旧模型。
+    pub fn set_context_window(&self, window: u64) {
+        self.inner.model.set_context_window(window);
+    }
+
     /// 记一条确认卡决定（用户点了按钮之后的事实）。决定落日志，下一次请求前由
     /// action-cards 能力通知模型；重开页面从同一条日志恢复回执。
     pub async fn record_card_decision(

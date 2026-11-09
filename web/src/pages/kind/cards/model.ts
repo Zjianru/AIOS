@@ -57,10 +57,10 @@ export interface CardHost {
   verifyConnection?: (connectionId: string) => Promise<void>;
   /** 连接卡：连接可用后进入下一步（首次使用的「开始」）。 */
   start?: () => void;
-  /** 确认卡：选了这一项并确认（由页面向服务发 card-act）。 */
-  confirmCard?: (optionId: string) => void;
-  /** 确认卡：暂不（由页面向服务发 card-act）。 */
-  dismissCard?: () => void;
+  /** 确认卡：选了这一项并确认（由页面向服务发 card-act）；HTTP 失败时 reject，视图恢复按钮。 */
+  confirmCard?: (optionId: string) => Promise<void> | void;
+  /** 确认卡：暂不（由页面向服务发 card-act）；HTTP 失败时 reject，视图恢复按钮。 */
+  dismissCard?: () => Promise<void> | void;
 }
 
 /** 卡片视图的 props：信封、校验过的槽位、程序操作。 */

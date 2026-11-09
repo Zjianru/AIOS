@@ -59,6 +59,10 @@ pub struct DeepSeek {
     next_effort: Arc<Mutex<Option<String>>>,
     /// 本轮冻结的档；begin_turn 时从 next_effort 复制，stream 只读这里。
     turn_effort: Arc<Mutex<Option<String>>>,
+    /// 下一轮要用的上下文窗口（换模型时写这里）。
+    next_context_window: Arc<Mutex<Option<u64>>>,
+    /// 本轮冻结的上下文窗口；begin_turn 时从 next_context_window 复制。
+    turn_context_window: Arc<Mutex<Option<u64>>>,
     /// T012.6：学到的连接事实（关不掉思考、通过的鉴权头），同实例的 clone 共享。
     learned: Arc<Learned>,
 }
@@ -92,6 +96,8 @@ impl DeepSeek {
             turn_model: Arc::new(Mutex::new(None)),
             next_effort: Arc::new(Mutex::new(None)),
             turn_effort: Arc::new(Mutex::new(None)),
+            next_context_window: Arc::new(Mutex::new(None)),
+            turn_context_window: Arc::new(Mutex::new(None)),
             learned: Arc::new(Learned::default()),
         })
     }
@@ -197,6 +203,24 @@ impl DeepSeek {
         }
     }
 
+    /// 换模型的上下文窗口：只改下一轮；本轮冻结的窗口在 begin_turn 时确定。
+    ///
+    /// 压缩阈值按本轮实际请求的模型算，换到窗口更小的模型后不能继续按旧窗口估。
+    pub fn set_context_window(&self, window: u64) {
+        if let Ok(mut current) = self.next_context_window.lock() {
+            *current = Some(window);
+        }
+    }
+
+    /// 这一轮实际使用的上下文窗口：本轮冻结优先，否则用装配时的窗口。
+    pub fn context_window(&self) -> u64 {
+        self.turn_context_window
+            .lock()
+            .ok()
+            .and_then(|current| *current)
+            .unwrap_or(self.config.context_window)
+    }
+
     /// 本轮开始时冻结模型和档；stream 内不再读 next_*（D26）。
     pub fn begin_turn(&self) {
         // 没有待切换的模型时冻结装配时的模型：本轮的实际请求模型就是它。
@@ -215,6 +239,14 @@ impl DeepSeek {
             .map(|effort| effort.clone())
             .unwrap_or(None);
         if let Ok(mut current) = self.turn_effort.lock() {
+            *current = next;
+        }
+        let next = self
+            .next_context_window
+            .lock()
+            .map(|window| *window)
+            .unwrap_or(None);
+        if let Ok(mut current) = self.turn_context_window.lock() {
             *current = next;
         }
     }
