@@ -113,8 +113,22 @@ impl RootHost {
                 effort_wanted: options.model.effort.as_str().to_owned(),
             });
         }
+        // 窗口跟当前选中的模型走：工厂配置里的 context_window 是 CLI 的值，等于产品
+        // 默认值就表示「没显式指定」，按 Keyring 的模型信息解析真实窗口；解析不出来
+        // 才退回装配配置。非默认值是显式覆盖（开发/DoD 的 --context-window），保留它
+        // （e2e 靠它压小窗口）。无工厂的定制宿主沿用 fallback_window。
         let window = if options.model_factory.is_some() {
-            options.model.context_window
+            explicit_context_window(&options.model)
+                .or_else(|| {
+                    selection.as_ref().and_then(|selection| {
+                        crate::session_select::model_context_window(
+                            &options.data_dir,
+                            options.identity.as_deref(),
+                            selection,
+                        )
+                    })
+                })
+                .unwrap_or(options.model.context_window)
         } else {
             fallback_window
         };
@@ -144,6 +158,8 @@ impl RootHost {
         } else {
             match open_root_session(host.options.clone()).await {
                 Ok(root) => {
+                    // 压缩阈值从第一轮起就按解析出的窗口算：先设到 agent 上，再装宿主。
+                    root.agent.set_context_window(window);
                     match ensure_initial_selection(&root.agent, initial_selection.as_ref()).await {
                         Ok(()) => host.install(root.agent).await,
                         Err(state) => {
@@ -324,7 +340,26 @@ impl RootHost {
             }
         }
         // 新连接可能换模型/窗口；恢复时窗口和占用一起重置，热切换只换窗口。
-        let window = options.model.context_window;
+        // 和 open 同口径：先看显式覆盖，再按 Keyring 里当前选择解析模型窗口。
+        let window = if options.model_factory.is_some() {
+            explicit_context_window(&options.model)
+                .or_else(|| {
+                    self.selection
+                        .lock()
+                        .expect("selection 锁被毒化")
+                        .as_ref()
+                        .and_then(|selection| {
+                            crate::session_select::model_context_window(
+                                &options.data_dir,
+                                options.identity.as_deref(),
+                                selection,
+                            )
+                        })
+                })
+                .unwrap_or(options.model.context_window)
+        } else {
+            options.model.context_window
+        };
         if matches!(mode, ReopenMode::Restore) {
             self.notify_keyring_changed();
             *self.context.lock().expect("context 锁被毒化") = ContextUsage { used: 0, window };
@@ -334,6 +369,8 @@ impl RootHost {
         drop(old);
         match open_root_session(options).await {
             Ok(root) => {
+                // 重开后的第一轮也要按新窗口算压缩阈值，不能等 agent 撞一次溢出。
+                root.agent.set_context_window(window);
                 let current = self.selection.lock().expect("selection 锁被毒化").clone();
                 if let Err(state) = ensure_initial_selection(&root.agent, current.as_ref()).await {
                     *self.state.lock().expect("root state 锁被毒化") = state.clone();
@@ -353,6 +390,12 @@ impl RootHost {
             }
         }
     }
+}
+
+/// 工厂返回的窗口是 CLI 配置：等于产品默认值时视为「没有显式指定」，调用方按
+/// Keyring 里的模型信息解析真实窗口；非默认值是开发/DoD 的显式覆盖，优先保留。
+fn explicit_context_window(config: &model::DeepSeekConfig) -> Option<u64> {
+    (config.context_window != model::DEFAULT_CONTEXT_WINDOW).then_some(config.context_window)
 }
 
 /// 初始模型选择写不进会话日志时的可见状态：recheck/ready 会带着原因拒绝方法。
