@@ -30,6 +30,8 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.toolTurn) return { file: 'tool' };
   // T023：工具前说明 → read hello.txt → 最终答案；pace 150 让实时阶段能被观察到。
   if (options.pretextTurn) return { file: 't023-pretext', paceMs: 150 };
+  // T023：同一轮放慢到 400ms/帧，设置页往返后还有一段实时流可观察。
+  if (options.pretextSlowTurn) return { file: 't023-pretext-slow', paceMs: 400 };
   if (options.codeBlock) return { file: 'tool-code' };
   if (options.t013Process) return { file: 'tool-process' };
   if (options.toolCards) return { file: 'tool-cards' };
@@ -148,6 +150,8 @@ export interface FixtureOptions {
   /// T023：第一步先流一段「工具前说明」再调 read hello.txt，第二步回最终答案。
   /// 回放 pace 150ms，让「工具之后、最终答案之前」的实时阶段能被 e2e 观察到。
   pretextTurn?: boolean;
+  /// T023：同上，但 pace 400ms、最终答案 8 段，设置页往返后还有实时流可观察。
+  pretextSlowTurn?: boolean;
   /// 路径显示：三步回放（cwd 内写、cwd 外写、最终文本）；夹具里的 __CWD__ / __OUTSIDE__ 起服务前换成真实目录。
   pathsTurn?: boolean;
   /// T013.6：最终回答里带一个代码块（复制按钮用）。
@@ -263,7 +267,12 @@ export async function startKernelFixture(
       JSON.stringify({ version: 1, sessionId: randomUUID() }),
     );
   }
-  if (options.toolTurn || options.t013Process || options.pretextTurn) {
+  if (
+    options.toolTurn ||
+    options.t013Process ||
+    options.pretextTurn ||
+    options.pretextSlowTurn
+  ) {
     await writeFile(path.join(dataDir, 'hello.txt'), 'hello from fixture\n');
     // T013.7：带空格的路径（@ 菜单插入要给引号用）。
     await writeFile(path.join(dataDir, 'with space.txt'), 'spaced file\n');
