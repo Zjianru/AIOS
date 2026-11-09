@@ -1290,15 +1290,16 @@ async fn settled_output_is_trimmed_and_removal_reclaims_job_files() {
         before_read.stderr_dropped,
         "超过 256 KiB 的 stderr 应标 dropped"
     );
-    assert!(
-        before_read.stdout.len() <= 262_144,
-        "单流内存不得超过 RETAIN_BYTES：{}",
-        before_read.stdout.len()
+    // 结算裁剪取 max(settledRetainBytes, 游标未读字节)：模型还没读，262144 > 16384，不裁。
+    assert_eq!(
+        before_read.stdout.len(),
+        262_144,
+        "结算时游标未读的字节要优先保留，不能被裁到 settledRetainBytes"
     );
-    assert!(
-        before_read.stderr.len() <= 262_144,
-        "单流内存不得超过 RETAIN_BYTES：{}",
-        before_read.stderr.len()
+    assert_eq!(
+        before_read.stderr.len(),
+        262_144,
+        "结算时游标未读的字节要优先保留，不能被裁到 settledRetainBytes"
     );
 
     // 终态读把模型游标推到末尾，此后裁到结算保留量（DSH 默认 16384）。

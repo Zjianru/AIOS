@@ -1200,7 +1200,7 @@ function KeyringSection({ view, onView }: { view: ModelSettingsView; onView: (vi
     <section className="mt-10" data-settings="keyring">
       <h2 className="text-3 font-medium text-ink">Keyring</h2>
       <p className="mt-1 text-2 leading-5 text-ink-2">
-        上面存的密钥都在这里，加密保存。Kind 和模型从不拿到密钥本身：每次请求由内核向 Keyring 申请一次，只在发出的那一刻展开。
+        上面存的模型密钥和联网搜索的 key 都在这里，加密保存。Kind 和模型从不拿到密钥本身：每次请求由内核向 Keyring 申请一次，只在发出的那一刻展开。
       </p>
 
       <div className="mt-3 divide-y divide-line rounded-card border border-line">

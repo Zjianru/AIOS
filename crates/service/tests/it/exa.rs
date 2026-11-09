@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use service::{Call, ExaKeyRequest, ExaKeySaveRequest, Response, RootHost, RootSessionOptions};
-use wiremock::matchers::method;
+use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::common::{SequenceResponder, open, text_sse, tool_use_sse, wait_turns};
@@ -343,4 +343,48 @@ async fn web_skill_and_tools_follow_the_exa_key_in_the_root_session() {
         .and_then(|tools| tools.iter().find(|tool| tool["name"] == "web_fetch"))
         .expect("web_fetch 定义");
     assert_eq!(fetch["input_schema"]["required"][0], "url");
+}
+
+/// verify 接线：302 不跟，key 不会被带到重定向目标；验证按 302 记失败。
+#[tokio::test]
+async fn exa_verify_does_not_follow_redirects() {
+    let target = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"results": []})))
+        .expect(0)
+        .mount(&target)
+        .await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/search"))
+        .respond_with(
+            ResponseTemplate::new(302)
+                .insert_header("location", format!("{}/search", target.uri())),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    let host = open(exa_options(&data, server.uri())).await;
+    dispatch_exa(
+        &host,
+        Call::ExaKeySave(ExaKeySaveRequest {
+            key: EXA_ONE.to_owned(),
+        }),
+    )
+    .await;
+    let view = dispatch_exa(&host, Call::ExaKeyCheck(ExaKeyRequest {})).await;
+    match &view.check {
+        credentials::CheckState::Fail { reason, .. } => {
+            assert!(reason.contains("302"), "验证按 302 记失败：{reason}");
+        }
+        other => panic!("302 应记失败，实际 {other:?}"),
+    }
+    assert_eq!(
+        target.received_requests().await.unwrap().len(),
+        0,
+        "验证不跟重定向：不能把 key 带到另一个主机"
+    );
 }

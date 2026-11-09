@@ -58,10 +58,7 @@ impl ObservationPolicy {
     ) -> Result<FileVersion, ToolFailure> {
         match self.files.get(key) {
             Some(ObservedFile::Present(version)) => Ok(version.clone()),
-            Some(ObservedFile::Absent) => Err(ToolFailure::coded(
-                "FS_NOT_FOUND",
-                format!("cannot {verb} \"{display}\": not found"),
-            )),
+            Some(ObservedFile::Absent) => Err(crate::fs::not_found(verb, display)),
             None => Err(ToolFailure::coded(
                 "FS_NOT_OBSERVED",
                 format!("{verb} requires reading \"{display}\" first"),
