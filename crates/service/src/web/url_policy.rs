@@ -55,6 +55,31 @@ pub(super) async fn check_fetch_address(
     Ok(())
 }
 
+/// URL 里直接写 IP 的请求照旧在请求前判：reqwest 对 IP 字面量不调解析器，
+/// 直连路径没有解析器这一道；域名不在这里解析。
+pub(super) fn check_literal_address(
+    url: &Url,
+    self_addr: Option<&std::sync::OnceLock<SocketAddr>>,
+) -> Result<(), FetchError> {
+    let host = url.host_str().ok_or(FetchError::InvalidUrl)?;
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    let Ok(address) = host.parse::<IpAddr>() else {
+        return Ok(());
+    };
+    let port = url.port_or_known_default().ok_or(FetchError::InvalidUrl)?;
+    if let Some(blocked) = classify_address(address) {
+        return Err(FetchError::Blocked(blocked));
+    }
+    let self_addr = self_addr.and_then(|cell| cell.get().copied());
+    if is_self_address(address, port, self_addr) {
+        return Err(FetchError::SelfAddress);
+    }
+    Ok(())
+}
+
 /// 域名解析成所有候选地址；解析不出来要报错，不静默跳过。
 async fn resolve_addresses(url: &Url, port: u16) -> Result<Vec<IpAddr>, FetchError> {
     let host = url.host_str().ok_or(FetchError::InvalidUrl)?;
