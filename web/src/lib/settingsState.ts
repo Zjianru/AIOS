@@ -9,7 +9,7 @@ import { create } from 'zustand';
 import { toast } from 'sonner';
 import type { Currency } from '@/lib/numbers';
 import { fetchStatus, updateSettings } from '@/data/service';
-import type { ServiceStatus } from '@/data/service';
+import type { StatusResponse } from '@/data/service';
 import { getModelSettings } from '@/data/keyring';
 
 /** 显示币种与汇率（服务 settings.json + status.fx；页面只显示和切换）。 */
@@ -23,7 +23,7 @@ export interface MoneyState {
 const DEFAULT_MONEY: MoneyState = { currency: 'usd', cnyPerUsd: 7.2, fxAt: 0 };
 
 /** status 里的币种/汇率并进现有值；字段缺失时保留上一次。 */
-function moneyOfStatus(status: ServiceStatus, previous: MoneyState): MoneyState {
+function moneyOfStatus(status: StatusResponse, previous: MoneyState): MoneyState {
   if (!status.fx && !status.currency) return previous;
   return {
     currency: (status.currency as Currency | undefined) ?? previous.currency,
@@ -41,7 +41,7 @@ interface SettingsState {
   /** 重新读币种/汇率（直接打开设置页时用）。 */
   refreshMoney: () => Promise<void>;
   /** 把一次 status 的币种/汇率并进来（kindStore 的 refreshStats 也走这里，只有一处换算）。 */
-  applyStatus: (status: ServiceStatus) => void;
+  applyStatus: (status: StatusResponse) => void;
   /** 切币种（写 settings.json）。 */
   setCurrency: (currency: Currency) => Promise<void>;
 }

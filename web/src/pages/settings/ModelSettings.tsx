@@ -21,7 +21,7 @@ import {
 } from '@/data/keyring';
 import { matchDisabled } from '@/data/disabled';
 import {
-  checkDisabledModels, displayPath, type DisabledModelUser, type ServiceQuota,
+  checkDisabledModels, displayPath, type DisabledModelUser, type ConnectionQuotaResponse,
 } from '@/data/service';
 import { cachedQuota, loadQuota } from '@/data/quota';
 import { CURRENCIES, compactPrice, formatModelTokens } from '@/lib/numbers';
@@ -606,7 +606,7 @@ function ConnectionEditor({ conn, view, onDone, onView, onMask }: {
   const [key, setKey] = useState('');
   const [endpoint, setEndpoint] = useState(conn.endpoint);
   const [models, setModels] = useState<ModelRow[]>(conn.models);
-  const [quota, setQuota] = useState<ServiceQuota | null>(() => cachedQuota(conn.id)?.quota ?? null);
+  const [quota, setQuota] = useState<ConnectionQuotaResponse | null>(() => cachedQuota(conn.id)?.quota ?? null);
   const [quotaAt, setQuotaAt] = useState<number | null>(() => cachedQuota(conn.id)?.at ?? null);
   const [quotaError, setQuotaError] = useState<string | null>(null);
   const [askingQuota, setAskingQuota] = useState(false);

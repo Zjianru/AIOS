@@ -8,12 +8,15 @@
 import { create } from 'zustand';
 import { toast } from 'sonner';
 import { answerQuestions, cancelTurn, cardAct, compactThread, connectSession, dismissQuestions, fetchEventsPage, fetchFirstUse, fetchStatus, peekAvailableModels, recheckRoot, reportMonitor, selectSessionModel, sendMessage, setUnauthorizedHandler } from '@/data/service';
-import type { ServiceCatalogModel } from '@/data/service';
+import type { AvailableModelRow } from '@/data/service';
 import { dayLabelOf } from '@/lib/numbers';
 import { useSettingsState } from '@/lib/settingsState';
 import { effortName } from './effortName';
 import { eventSelectionEffort, serviceSelectionEffort } from './effortSelection';
-import type { AgentFrame, Frame, ServiceEvent } from '@/data/service';
+import type { Frame, RootState, ServiceEvent } from '@/data/service';
+
+/** agent 帧是 Frame 的一个分支（线上帧类型由 Rust 生成）。 */
+type AgentFrame = Extract<Frame, { type: 'agent' }>;
 import { reconnectDelayMs } from '@/data/reconnect';
 import type { GateDetail, GateState } from './KernelGate';
 import { contextPercent, contextTokens } from '@/data/turnUsage';
@@ -210,12 +213,7 @@ function indexOf(views: TurnViewData[]): Map<string, TurnViewData> {
   return map;
 }
 
-function applyRootState(root: {
-  state: string;
-  kind?: string;
-  path?: string;
-  line?: number;
-}): void {
+function applyRootState(root: RootState): void {
   if (root.state === 'ok') {
     const gate = useKindStore.getState().gate;
     if (gate !== 'unreachable' && gate !== 'token') {
@@ -231,7 +229,7 @@ function applyRootState(root: {
         : root.kind === 'busy'
           ? 'busy'
           : 'unreachable';
-  useKindStore.setState({ gate: mapped, gateDetail: { path: root.path, line: root.line } });
+  useKindStore.setState({ gate: mapped, gateDetail: { path: root.path ?? undefined, line: root.line ?? undefined } });
 }
 
 /** ：当前连接 + 重连状态；lastSeq 是页面已处理到的日志序号（重连补齐去重用）。 */
@@ -1032,15 +1030,15 @@ export const useKindStore = create<KindState>()((set, get) => ({
         modelId,
         label: info?.name ?? label,
         price:
-          info?.priceInput !== undefined
+          info?.priceInput != null
             ? {
                 input: info.priceInput,
                 output: info.priceOutput ?? info.priceInput,
-                cacheRead: info.priceCacheRead,
-                cacheWrite: info.priceCacheWrite,
+                cacheRead: info.priceCacheRead ?? undefined,
+                cacheWrite: info.priceCacheWrite ?? undefined,
               }
             : undefined,
-        contextWindow: info?.contextWindow,
+        contextWindow: info?.contextWindow ?? undefined,
         thinks: info?.thinks,
         efforts: info?.efforts,
         effort: selection.effort ?? state.model.effort,
@@ -1109,15 +1107,15 @@ export const useKindStore = create<KindState>()((set, get) => ({
             modelId: stats.model,
             label: info?.name ?? stats.model,
             price:
-              info?.priceInput !== undefined
+              info?.priceInput != null
                 ? {
                     input: info.priceInput,
                     output: info.priceOutput ?? info.priceInput,
-                    cacheRead: info.priceCacheRead,
-                    cacheWrite: info.priceCacheWrite,
+                    cacheRead: info.priceCacheRead ?? undefined,
+                    cacheWrite: info.priceCacheWrite ?? undefined,
                   }
                 : undefined,
-            contextWindow: info?.contextWindow,
+            contextWindow: info?.contextWindow ?? undefined,
             thinks: info?.thinks,
             efforts: info?.efforts,
             effort: stats.effortActual ?? stats.effortWanted,
@@ -1176,7 +1174,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
 
 }));
 /** ：连接 id → 模型目录（第一次用到时拉一次；价格/窗口/思考档从这里来）。 */
-const catalogCache = new Map<string, ServiceCatalogModel[]>();
+const catalogCache = new Map<string, AvailableModelRow[]>();
 
 /** 流式文本单独放一个 store：只有最后一条在重绘，别的消息不跟着重建。 */
 export const useStreamStore = create<{ turnId: string | null; itemId: string | null; text: string }>(() => ({

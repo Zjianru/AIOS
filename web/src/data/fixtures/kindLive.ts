@@ -7,7 +7,8 @@
  * - 这些都是假的；真的事件由内核的服务推过来。
  */
 
-import type { AskQuestion, FailureCause } from '@/data/service';
+import type { FailureCause } from '@/data/service';
+import type { AskQuestion } from '@/data/questionView';
 
 export type LiveStep =
   | { kind: 'tool'; command: string; ms: number; output: string }
