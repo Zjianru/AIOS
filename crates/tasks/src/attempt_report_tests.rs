@@ -392,3 +392,34 @@ fn rejects_invalid_report_fields() {
         Err(TaskError::QuestionTooLong(1001))
     ));
 }
+
+#[test]
+fn blocked_and_failed_also_replace_a_synthesized_waiting_report() {
+    for state in [ReportState::Blocked, ReportState::Failed] {
+        let (_directory, store) = open_store();
+        let (task, attempt) = task_with_attempt(&store);
+        let waiting = store
+            .record_report(
+                &task.id,
+                attempt,
+                report(ReportState::Waiting, "turn 结束，还没上报"),
+                T0 + 2,
+            )
+            .unwrap();
+        let terminal = store
+            .record_report(&task.id, attempt, report(state, "终态"), T0 + 3)
+            .unwrap();
+        assert_ne!(terminal, waiting, "{state:?} 要自己一条报告");
+        let loaded = store.task(&task.id).unwrap().unwrap();
+        assert_eq!(
+            loaded.latest_report().map(|report| report.state),
+            Some(state)
+        );
+        assert!(
+            store
+                .effect_pending(EffectKind::Relay, terminal.as_str())
+                .unwrap(),
+            "{state:?} 要排 relay"
+        );
+    }
+}
