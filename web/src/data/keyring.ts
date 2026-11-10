@@ -15,10 +15,10 @@ import {
   saveConnection,
   setDisabledModels as setDisabledModelsOnService,
   verifyConnection,
-  type ServiceConnectionInfo,
-  type ServiceKeyringView,
-  type ServiceModelRow,
-  type ServiceToolKeyView,
+  type ConnectionInfo as ServiceConnectionInfo,
+  type KeyringView as ServiceKeyringView,
+  type ModelRow as ServiceModelRow,
+  type ToolKeyView as ServiceToolKeyView,
 } from '@/data/service';
 /* ───────────── T017.1：设置/首次使用页的视图类型（原 fixtures/settings 的真类型） ───────────── */
 
@@ -166,29 +166,30 @@ function mapCheck(info: ServiceConnectionInfo): CheckState {
 /** 线上模型行/目录行（都是 camelCase）映射成页面行。 */
 type WireRow = {
   id: string;
-  name?: string;
-  contextWindow?: number;
-  maxTokens?: number;
-  priceInput?: number;
-  priceOutput?: number;
-  priceCacheRead?: number;
-  priceCacheWrite?: number;
+  name?: string | null;
+  contextWindow?: number | null;
+  maxTokens?: number | null;
+  priceInput?: number | null;
+  priceOutput?: number | null;
+  priceCacheRead?: number | null;
+  priceCacheWrite?: number | null;
 };
 
-function mapRow(row: WireRow): WireRow {
+/** 线上可空字段（null）收成页面类型的可选字段（undefined）。 */
+function mapRow(row: WireRow): ModelRow {
   return {
     id: row.id,
-    name: row.name,
-    contextWindow: row.contextWindow,
-    maxTokens: row.maxTokens,
-    priceInput: row.priceInput,
-    priceOutput: row.priceOutput,
-    priceCacheRead: row.priceCacheRead,
-    priceCacheWrite: row.priceCacheWrite,
+    name: row.name ?? undefined,
+    contextWindow: row.contextWindow ?? undefined,
+    maxTokens: row.maxTokens ?? undefined,
+    priceInput: row.priceInput ?? undefined,
+    priceOutput: row.priceOutput ?? undefined,
+    priceCacheRead: row.priceCacheRead ?? undefined,
+    priceCacheWrite: row.priceCacheWrite ?? undefined,
   };
 }
 
-function mapConnection(info: ServiceConnectionInfo, listed?: WireRow[]): ConnectionView {
+function mapConnection(info: ServiceConnectionInfo, listed?: ModelRow[]): ConnectionView {
   const preset = CATALOG.find((item) => item.id === info.preset);
   const models = (info.models ?? []).map((row) => {
     const known = CATALOG.flatMap((item) => item.defaultModels).find((model) => model.id === row.id);
@@ -220,7 +221,7 @@ function mapView(
   disabledHits: string[][] = [],
   disabledUnknown = false,
 ): ModelSettingsView {
-  const mappedListed: Record<string, { fetchedAt: string; models: WireRow[] }> = {};
+  const mappedListed: Record<string, { fetchedAt: string; models: ModelRow[] }> = {};
   for (const [id, entry] of Object.entries(listed)) {
     mappedListed[id] = { fetchedAt: String(entry.fetchedAt), models: entry.models.map(mapRow) };
   }
@@ -234,7 +235,7 @@ function mapView(
     keyFile: {
       path: view.key_file.path,
       since: String(view.key_file.since),
-      problem: view.key_file.problem,
+      problem: view.key_file.problem ?? undefined,
     },
     issuedToday: view.issued_today,
     issues: view.issues.map((issue) => ({
@@ -375,12 +376,12 @@ export async function discoverModels(connectionId: string): Promise<
   return models.map((row) => ({
     id: row.id,
     name: row.name,
-    contextWindow: row.contextWindow,
+    contextWindow: row.contextWindow ?? undefined,
     fresh: row.fresh,
-    priceInput: row.priceInput,
-    priceOutput: row.priceOutput,
-    priceCacheRead: row.priceCacheRead,
-    priceCacheWrite: row.priceCacheWrite,
+    priceInput: row.priceInput ?? undefined,
+    priceOutput: row.priceOutput ?? undefined,
+    priceCacheRead: row.priceCacheRead ?? undefined,
+    priceCacheWrite: row.priceCacheWrite ?? undefined,
   }));
 }
 

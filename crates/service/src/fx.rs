@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// 默认汇率来源（Magpie fx.go:26）。
 pub const FX_URL: &str = "https://open.er-api.com/v6/latest/USD";
@@ -19,7 +20,7 @@ const CACHE_TTL_SECS: u64 = 12 * 60 * 60;
 pub const FX_FILE: &str = "fx.json";
 
 /// 汇率信息：1 USD = rate CNY；fetchedAt = 拉到的时间（Unix 秒，0 = 从没拉到过）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct FxInfo {
     pub rate: f64,
     #[serde(rename = "fetchedAt")]

@@ -4,3 +4,4 @@ mod api_surface;
 mod browser_auth;
 mod common;
 mod fence;
+mod ts_types;

@@ -11,6 +11,7 @@ use model::Usage;
 use model::catalog::CatalogSnapshot;
 use serde::{Deserialize, Serialize};
 use session::EventKind;
+use ts_rs::TS;
 
 /// 生效价格（美元/百万 token；用户填了的格用用户价，其余用目录标价）。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -95,7 +96,7 @@ pub fn actual_effort_of(
 }
 
 /// 会话合计（status 的统计字段；规格见 DSH StatsPills/ContextMeter 与 spec 故事 4）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
 pub struct SessionStats {
     pub turns: u64,
     pub steps: u64,

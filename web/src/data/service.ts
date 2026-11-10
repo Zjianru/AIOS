@@ -1,73 +1,55 @@
 // T007.3/4：页面与 aios-dev serve 的线上客户端（只加页面要用的方法/帧）。
 // 协议事实：POST /api {method,...} → Response；WS /ws 先 ready 再事件/agent 帧。
+// T025：线上类型由 Rust 生成（crates/service/src/protocol.rs、crates/web/src/connection.rs），
+// 生成物在 ./generated/；这里只留页面自己的输入形状和请求胶水，不再手写协议字段。
 
 import { apiErrorReason } from './errors';
+import type { AttachmentGetResponse } from './generated/AttachmentGetResponse';
+import type { AttachmentPutResponse } from './generated/AttachmentPutResponse';
+import type { AvailableModelsResponse } from './generated/AvailableModelsResponse';
+import type { Call } from './generated/Call';
+import type { CardActResponse } from './generated/CardActResponse';
+import type { CardVerb } from './generated/CardVerb';
+import type { ConnectionInfo } from './generated/ConnectionInfo';
+import type { ConnectionQuotaResponse } from './generated/ConnectionQuotaResponse';
+import type { ConnectionSaveRequest } from './generated/ConnectionSaveRequest';
+import type { ConnectionUpdateRequest } from './generated/ConnectionUpdateRequest';
+import type { DisabledModelsCheckResponse } from './generated/DisabledModelsCheckResponse';
+import type { EventsResponse } from './generated/EventsResponse';
+import type { FileReferenceEntry } from './generated/FileReferenceEntry';
+import type { FirstUseResponse } from './generated/FirstUseResponse';
+import type { Frame } from './generated/Frame';
+import type { IssuesResponse } from './generated/IssuesResponse';
+import type { KeyringView } from './generated/KeyringView';
+import type { ModelSettingsResponse } from './generated/ModelSettingsResponse';
+import type { Response } from './generated/Response';
+import type { RootState } from './generated/RootState';
+import type { ServiceAnswer } from './generated/ServiceAnswer';
+import type { SessionModelSelectRequest } from './generated/SessionModelSelectRequest';
+import type { SessionModelSelectResponse } from './generated/SessionModelSelectResponse';
+import type { SettingsUpdateRequest } from './generated/SettingsUpdateRequest';
+import type { StatusResponse } from './generated/StatusResponse';
+import type { ToolKeyView } from './generated/ToolKeyView';
 
-/** T017.1：失败原因（原 data/fixtures/kindLive 的演示类型；事件与页面都在用）。 */
-export type FailureCause = 'credential' | 'keyring' | 'model' | 'masked';
-
-export interface ServiceEvent {
-  seq: number;
-  /** 日志事件发生时间（unix 毫秒；工作过程用）。 */
-  time: number;
-  type: string;
-  data: Record<string, unknown>;
-  cause?: FailureCause;
-}
-
-export type ServiceRootState =
-  | { state: 'ok' }
-  | {
-      state: 'unavailable';
-      kind: 'lost' | 'corrupt' | 'busy' | 'other';
-      path?: string;
-      line?: number;
-      message?: string;
-    };
-
-export interface ServiceContext {
-  used: number;
-  window: number;
-}
-
-export interface ReadyFrame {
-  type: 'ready';
-  sessionId?: string;
-  protocolVersion: number;
-  root: ServiceRootState;
-  context: ServiceContext;
-  /** T009.5：宿主位置；页面只把它用于缩写显示的路径。 */
-  host?: { home?: string };
-}
-
-export interface EventFrame {
-  type: 'event';
-  event: ServiceEvent;
-}
-
-export interface AgentWireEvent {
-  type: 'text-delta' | 'usage' | 'retrying' | 'tool-call-delta';
-  text?: string;
-  /** T015.5：工具参数增量（不落日志）；callId/name/argumentsDelta。 */
-  callId?: string;
-  name?: string;
-  argumentsDelta?: string;
-  attempt?: number;
-  maxAttempts?: number;
-  delayMs?: number;
-  code?: string;
-  inputTokens?: number;
-  outputTokens?: number;
-  cacheReadTokens?: number;
-  cacheWriteTokens?: number;
-}
-
-export interface AgentFrame {
-  type: 'agent';
-  event: AgentWireEvent;
-}
-
-export type Frame = ReadyFrame | EventFrame | AgentFrame;
+// 页面从这里按名字取线上类型；类型本体只有 Rust 一份。
+export type { AvailableModelRow } from './generated/AvailableModelRow';
+export type { CardDecision } from './generated/CardDecision';
+export type { DisabledModelUser } from './generated/DisabledModelUser';
+export type { FailureCause } from './generated/FailureCause';
+export type { KeyFileInfo } from './generated/KeyFileInfo';
+export type { ModelRow } from './generated/ModelRow';
+export type { RootState } from './generated/RootState';
+export type { ServiceEvent } from './generated/ServiceEvent';
+export type { CardVerb };
+export type { ConnectionInfo };
+export type { ConnectionQuotaResponse };
+export type { FileReferenceEntry };
+export type { Frame };
+export type { KeyringView };
+export type { ModelSettingsResponse };
+export type { ServiceAnswer };
+export type { StatusResponse };
+export type { ToolKeyView };
 
 // T009.5：ready 帧给的宿主 home；页面把显示的路径缩写成 ~/…，不改服务端事实。
 let hostHomeValue: string | null = null;
@@ -113,7 +95,11 @@ export function serviceTarget(): ServiceTarget {
   return { origin: window.location.origin, token: '' };
 }
 
-async function post<T>(body: Record<string, unknown>): Promise<T> {
+/** 按方法从生成的调用面取请求/返回；方法名或字段写错，tsc 直接报。 */
+type CallOf<M extends Call['method']> = Extract<Call, { method: M }>;
+type ResponseOf<M extends Call['method']> = Extract<Response, { method: M }>;
+
+async function post<M extends Call['method']>(body: CallOf<M>): Promise<ResponseOf<M>> {
   const target = serviceTarget();
   const response = await fetch(`${target.origin}/api`, {
     method: 'POST',
@@ -136,7 +122,8 @@ async function post<T>(body: Record<string, unknown>): Promise<T> {
     }
     throw new ServiceHttpError(response.status, apiErrorReason(code), code);
   }
-  return (await response.json()) as T;
+  // 线上入口的断言之一：响应体就是 Response 里这个方法的分支。
+  return (await response.json()) as ResponseOf<M>;
 }
 
 /** T011.6：页面没接住的异常、事件流重连，报给服务记监控（限长；失败静默，不阻塞页面）。 */
@@ -169,38 +156,19 @@ export interface SendOptions {
 }
 
 /** T013.7：把一段文字文件存进附件仓库（base64）；二进制会拒收。 */
-export interface AttachmentPutResult {
-  id: string;
-  name: string;
-  bytes: number;
-}
-
-export async function attachmentPut(name: string, base64Data: string): Promise<AttachmentPutResult> {
-  const response = await post({ method: 'attachment-put', name, data: base64Data });
-  return response as unknown as AttachmentPutResult;
+export async function attachmentPut(name: string, base64Data: string): Promise<AttachmentPutResponse> {
+  return post({ method: 'attachment-put', name, data: base64Data });
 }
 
 /** T013.7：按 id 读回附件（文字文件给全文；二进制 text 为空）。 */
-export interface AttachmentGetResult {
-  name: string;
-  bytes: number;
-  text?: string;
-}
-
-export async function attachmentGet(id: string): Promise<AttachmentGetResult> {
-  const response = await post({ method: 'attachment-get', id });
-  return response as unknown as AttachmentGetResult;
+export async function attachmentGet(id: string): Promise<AttachmentGetResponse> {
+  return post({ method: 'attachment-get', id });
 }
 
 /** T013.7：按打的字列 @ 文件候选（服务端 BFS + 排序）。 */
-export interface FileReferenceEntry {
-  path: string;
-  bytes: number;
-}
-
 export async function fileReferences(query: string): Promise<FileReferenceEntry[]> {
   const response = await post({ method: 'file-references-list', query });
-  return (response as unknown as { references?: FileReferenceEntry[] }).references ?? [];
+  return response.references;
 }
 
 export async function sendMessage(
@@ -212,6 +180,8 @@ export async function sendMessage(
     method: 'send',
     requestId,
     content,
+    // 服务端缺省就是 follow-up；显式给，生成的请求类型要求这个字段。
+    delivery: 'follow-up',
     pastes: options.pastes ?? [],
     attachments: options.attachments ?? [],
     // 没有标记就不带这个字段（服务端缺省就是用户自己写的）。
@@ -224,29 +194,9 @@ export async function cancelTurn(): Promise<void> {
   await post({ method: 'cancel' });
 }
 
-/** ask_user 的问题形状（T017.1：从 fixtures/kindLive 挪进正式数据模块）。 */
-export interface AskOption {
-  label: string;
-  description?: string;
-}
-
-export interface AskQuestion {
-  id: string;
-  header?: string;
-  question: string;
-  options?: AskOption[];
-  multiSelect?: boolean;
-}
-
 /** question/answered 的回答形状（按问题 id）；线上回答用 ServiceAnswer（questionId）。 */
 export interface AskAnswer {
   id: string;
-  selected: string[];
-  custom?: string;
-}
-
-export interface ServiceAnswer {
-  questionId: string;
   selected: string[];
   custom?: string;
 }
@@ -261,29 +211,13 @@ export async function dismissQuestions(): Promise<void> {
   await post({ method: 'dismiss-questions' });
 }
 
-/** 确认卡上的按钮：确认某一项，或者暂不。 */
-export type CardVerb = 'confirm' | 'dismiss';
-
-/** card/decision 事件的形状（服务在段尾回来一条；页面从日志事件也能收到同一条）。 */
-export interface CardDecision {
-  callId: string;
-  option?: string;
-  action?: string;
-  phase: 'confirmed' | 'dismissed' | 'refused' | 'failed';
-  data?: { summary?: string } & Record<string, unknown>;
-}
-
-export interface CardActResponse {
-  decision?: CardDecision;
-}
-
 /** 点确认卡：服务跑核对和执行，记一条 card/decision；重复点击返回已经记下的那条。 */
 export async function cardAct(
   callId: string,
   verb: CardVerb,
   option?: string,
 ): Promise<CardActResponse> {
-  return post<CardActResponse>({
+  return post({
     method: 'card-act',
     callId,
     verb,
@@ -296,18 +230,11 @@ export async function compactThread(commandId: string): Promise<void> {
   await post({ method: 'compact', commandId });
 }
 
-export async function recheckRoot(): Promise<ServiceRootState> {
-  const response = await post<{ root: ServiceRootState; host?: { home?: string } }>({
-    method: 'recheck',
-  });
+export async function recheckRoot(): Promise<RootState> {
+  const response = await post({ method: 'recheck' });
   // T009.5：根不可用时页面没有 ready 帧；recheck 也带 host.home，说明页的路径照样缩写。
-  setHostHome(response.host?.home);
+  setHostHome(response.host.home);
   return response.root;
-}
-
-export interface EventsPage {
-  events: ServiceEvent[];
-  hasMore: boolean;
 }
 
 /** events：往回翻一页日志（T006.16c 的轮对齐预算；打开/往上翻用）。 */
@@ -316,143 +243,42 @@ export async function fetchEventsPage(options: {
   maxMessages?: number;
   minMessages?: number;
   minTurns?: number;
-}): Promise<EventsPage> {
-  const response = await post<{ events: ServiceEvent[]; hasMore: boolean }>({
-    method: 'events',
-    ...options,
-  });
-  return { events: response.events, hasMore: response.hasMore };
+}): Promise<EventsResponse> {
+  return post({ method: 'events', ...options });
 }
-
 
 /* ───────────────────────── T008 设置 › 模型与连接（Keyring） ───────────────────────── */
 
-/** 与 service 协议 v4 对应的 Keyring 类型（响应里没有 key 正文）。 */
-export interface ServiceKeyFileInfo {
-  path: string;
-  since: number;
-  problem?: string;
-}
-
-/** T012.4：连接里的一行模型（服务端 `credentials::ModelRow`，线上一律 camelCase）。 */
-export interface ServiceModelRow {
-  id: string;
-  name?: string;
-  contextWindow?: number;
-  maxTokens?: number;
-  /** T012 F1：用户填的四类单价（美元/百万 token；空=用目录标价）。 */
-  priceInput?: number;
-  priceOutput?: number;
-  priceCacheRead?: number;
-  priceCacheWrite?: number;
-}
-
-export interface ServiceConnectionInfo {
-  id: string;
-  name: string;
-  model: string;
-  endpoint: string;
-  saved_at: number;
-  key_saved: boolean;
-  /** T012.4：来源预设（deepseek/minimax/minimax-cn；空/未知 = 自定义）。 */
-  preset?: string;
-  /** 用户在这个连接里存的模型行（价格/窗口/输出上限）。 */
-  models?: ServiceModelRow[];
-  /** T012.6：学到的单头（x-api-key / authorization）。 */
-  auth_header?: string | null;
-  check: { kind: 'never' } | { kind: 'ok'; at: number } | { kind: 'fail'; at: number; reason: string };
-}
-
-export interface ServiceIssueRecord {
-  id: number;
-  at: number;
-  connection: string;
-  purpose: string;
-  run?: string;
-}
-
-export interface ServiceKeyringView {
-  connections: ServiceConnectionInfo[];
-  key_file: ServiceKeyFileInfo;
-  issued_today: number;
-  issues: ServiceIssueRecord[];
-  first_use: boolean;
-}
-
-/** 一个连接存下的厂商模型列表（页面小标签用）。 */
-export interface ServiceListedModels {
-  fetchedAt: number;
-  models: ServiceCatalogModel[];
-}
-
-/** 设置页响应：Keyring 视图（旧字段）+ 屏蔽表（只增字段）。 */
-export interface ServiceModelSettings {
-  settings: ServiceKeyringView;
-  disabledModels: string[];
-  disabledUnknown: boolean;
-  /** 与 disabledModels 等长同序：每条规则现在命中的「连接/模型」。 */
-  disabledHits: string[][];
-  /** 每个连接现在存下的厂商列表，键是连接 id。 */
-  listed: Record<string, ServiceListedModels>;
-}
-
-export interface SaveConnectionInput {
-  id: string;
-  name: string;
-  model: string;
-  endpoint: string;
-  apiKey: string;
-  /** T012.4：预设来源、模型行（只增）。 */
-  preset?: string;
-  models?: ServiceModelRow[];
-}
-
 /** 设置页读取（不含 key 正文）。 */
-export async function fetchModelSettings(): Promise<ServiceModelSettings> {
-  return post<ServiceModelSettings>({ method: 'model-settings' });
+export async function fetchModelSettings(): Promise<ModelSettingsResponse> {
+  return post({ method: 'model-settings' });
 }
 
 /** 整表替换屏蔽规则；返回规范化后的整表（去空白/空规则/不分大小写去重，保持顺序）。 */
 export async function setDisabledModels(models: string[]): Promise<string[]> {
-  const response = await post<{ models: string[] }>({ method: 'disabled-models-set', models });
+  const response = await post({ method: 'disabled-models-set', models });
   return response.models;
 }
 
-/** 谁在用：当前 Kind 对话（带是否在跑）与新会话（上一次选的）。 */
-export type DisabledModelUser =
-  | { kind: 'kind-chat'; running: boolean }
-  | { kind: 'new-sessions' };
-
 /** 一条规则现在匹配哪些模型、谁在用（确认框用；页面不自己匹配）。 */
-export interface DisabledModelsCheck {
-  hits: string[];
-  users: DisabledModelUser[];
-}
-
-export async function checkDisabledModels(pattern: string): Promise<DisabledModelsCheck> {
-  return post<DisabledModelsCheck>({ method: 'disabled-models-check', pattern });
+export async function checkDisabledModels(pattern: string): Promise<DisabledModelsCheckResponse> {
+  return post({ method: 'disabled-models-check', pattern });
 }
 
 /** 存/换连接；key 只在这一次请求体里。 */
-export async function saveConnection(input: SaveConnectionInput): Promise<ServiceConnectionInfo> {
-  const response = await post<{ connection: ServiceConnectionInfo }>({
-    method: 'connection-save',
-    ...input,
-  });
+export async function saveConnection(input: ConnectionSaveRequest): Promise<ConnectionInfo> {
+  const response = await post({ method: 'connection-save', ...input });
   return response.connection;
 }
 
 export async function deleteConnection(id: string): Promise<boolean> {
-  const response = await post<{ deleted: boolean }>({ method: 'connection-delete', id });
+  const response = await post({ method: 'connection-delete', id });
   return response.deleted;
 }
 
 /** 验证连接；结果落在注册器（响应不带 key）。 */
-export async function verifyConnection(id: string): Promise<ServiceConnectionInfo> {
-  const response = await post<{ connection: ServiceConnectionInfo }>({
-    method: 'connection-verify',
-    id,
-  });
+export async function verifyConnection(id: string): Promise<ConnectionInfo> {
+  const response = await post({ method: 'connection-verify', id });
   return response.connection;
 }
 
@@ -464,67 +290,45 @@ export async function reopenKeyring(at: string): Promise<void> {
   await post({ method: 'keyring-reopen', at });
 }
 
-export async function restartKeyring(): Promise<ServiceKeyringView> {
-  const response = await post<{ settings: ServiceKeyringView }>({ method: 'keyring-restart' });
+export async function restartKeyring(): Promise<KeyringView> {
+  const response = await post({ method: 'keyring-restart' });
   return response.settings;
 }
 
 /* ───────────────── 设置页「联网搜索」：Exa 凭证（D73） ───────────────── */
 
 /** Exa 凭证的线上视图：存没存、保存时间、上次验证结果。没有 key 正文。 */
-export interface ServiceToolKeyView {
-  key: { saved: false } | { saved: true; savedAt?: number };
-  check:
-    | { kind: 'never' }
-    | { kind: 'ok'; at: number }
-    | { kind: 'fail'; at: number; reason: string };
-}
-
-export async function fetchExaKey(): Promise<ServiceToolKeyView> {
-  return post<ServiceToolKeyView>({ method: 'exa-key' });
+export async function fetchExaKey(): Promise<ToolKeyView> {
+  return post({ method: 'exa-key' });
 }
 
 /** 存/换 Exa 的 key；key 只在这一次请求体里，响应不带。 */
-export async function saveExaKey(key: string): Promise<ServiceToolKeyView> {
-  return post<ServiceToolKeyView>({ method: 'exa-key-save', key });
+export async function saveExaKey(key: string): Promise<ToolKeyView> {
+  return post({ method: 'exa-key-save', key });
 }
 
 /** 用已存的 key 向 Exa 发一次最小搜索，结果写回 Keyring。 */
-export async function checkExaKey(): Promise<ServiceToolKeyView> {
-  return post<ServiceToolKeyView>({ method: 'exa-key-check' });
+export async function checkExaKey(): Promise<ToolKeyView> {
+  return post({ method: 'exa-key-check' });
 }
 
-export async function deleteExaKey(): Promise<ServiceToolKeyView> {
-  return post<ServiceToolKeyView>({ method: 'exa-key-delete' });
+export async function deleteExaKey(): Promise<ToolKeyView> {
+  return post({ method: 'exa-key-delete' });
 }
 
-export async function fetchIssues(): Promise<{ issuedToday: number; issues: ServiceIssueRecord[] }> {
-  const response = await post<{ issuedToday: number; issues: ServiceIssueRecord[] }>({
-    method: 'issues',
-  });
-  return response;
+export async function fetchIssues(): Promise<IssuesResponse> {
+  return post({ method: 'issues' });
 }
 
-export async function fetchFirstUse(): Promise<{ firstUse: boolean; keyFile: ServiceKeyFileInfo }> {
-  const response = await post<{ firstUse: boolean; keyFile: ServiceKeyFileInfo }>({
-    method: 'first-use',
-  });
-  return response;
+export async function fetchFirstUse(): Promise<FirstUseResponse> {
+  return post({ method: 'first-use' });
 }
 
 /** 选模型/思考档：下一轮生效，正在跑的轮不换（D26）。T012.9：可同时给连接/模型/想要的档。 */
-export interface SessionModelSelectInput {
-  connection?: string;
-  model?: string;
-  effortWanted?: string;
-}
 export async function selectSessionModel(
-  input: SessionModelSelectInput,
-): Promise<{ connection: string; model: string; effortWanted: string; effortActual: string }> {
-  return post<{ connection: string; model: string; effortWanted: string; effortActual: string }>({
-    method: 'session-model-select',
-    ...input,
-  });
+  input: SessionModelSelectRequest,
+): Promise<SessionModelSelectResponse> {
+  return post({ method: 'session-model-select', ...input });
 }
 
 /** 连 WS：ready → 补齐/直播的日志事件（event）与不落日志的 agent 帧（流式文本等）。 */
@@ -539,6 +343,7 @@ export function connectSession(
   );
   socket.onmessage = (message) => {
     try {
+      // 线上入口的断言之二：WS 帧就是生成的 Frame。
       onFrame(JSON.parse(String(message.data)) as Frame);
     } catch {
       // 坏帧不打断页面；真正缺事件由重连补齐（T007.9）。
@@ -552,120 +357,41 @@ export function connectSession(
 /** T008.3/T012.4：改连接（endpoint/model 必填；preset/models 只增），保留已存 key。 */
 export async function updateConnectionInfo(
   id: string,
-  patch: {
-    endpoint: string;
-    model: string;
-    preset?: string;
-    models?: ServiceModelRow[];
-  },
-): Promise<ServiceConnectionInfo> {
-  const response = await post<{ connection: ServiceConnectionInfo }>({
-    method: 'connection-update',
-    id,
-    ...patch,
-  });
+  patch: Omit<ConnectionUpdateRequest, 'id'>,
+): Promise<ConnectionInfo> {
+  const response = await post({ method: 'connection-update', id, ...patch });
   return response.connection;
 }
 
 /** T008.3 增补：撤销 key（连接保留）。 */
-export async function revokeConnectionKey(id: string): Promise<ServiceConnectionInfo> {
-  const response = await post<{ connection: ServiceConnectionInfo }>({
-    method: 'connection-revoke',
-    id,
-  });
+export async function revokeConnectionKey(id: string): Promise<ConnectionInfo> {
+  const response = await post({ method: 'connection-revoke', id });
   return response.connection;
 }
 
 /* ───────────────── T012.9：统计 / 模型目录 / 余额余量 / 设置 ───────────────── */
 
-/** 会话统计（服务 status.stats；从日志现算，页面不自己加）。 */
-export interface ServiceSessionStats {
-  turns: number;
-  steps: number;
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheWriteTokens: number;
-  contextUsed: number;
-  contextWindow: number;
-  costUsd?: number;
-  unpriced: boolean;
-  connection: string;
-  model: string;
-  effortWanted: string;
-  /** T012 F2：这一轮实际会发的档（服务端内核算好）。 */
-  effortActual?: string;
-}
-
-export interface ServiceFxInfo {
-  rate: number;
-  fetchedAt: number;
-}
-
-export interface ServiceStatus {
-  stats?: ServiceSessionStats;
-  fx?: ServiceFxInfo;
-  currency?: string;
-  /** 会话的工作目录（页面把工作过程里的路径显示成相对路径；旧服务的 status 没有它）。 */
-  cwd?: string;
-}
-
-export async function fetchStatus(): Promise<ServiceStatus> {
-  return post<ServiceStatus>({ method: 'status' });
+export async function fetchStatus(): Promise<StatusResponse> {
+  return post({ method: 'status' });
 }
 
 /** T012.9：写非密钥设置（目前只有 currency）；返回生效的币种。 */
-export async function updateSettings(input: { currency?: string }): Promise<string> {
-  const response = await post<{ currency: string }>({ method: 'settings-update', ...input });
+export async function updateSettings(input: SettingsUpdateRequest): Promise<string> {
+  const response = await post({ method: 'settings-update', ...input });
   return response.currency;
 }
 
-/** 模型目录（服务把 models.dev 目录和厂商列表合并后给的；efforts 是这个模型自己的档）。 */
-export interface ServiceCatalogModel {
-  id: string;
-  name?: string;
-  contextWindow?: number;
-  maxTokens?: number;
-  /** 和上一次存下的厂商列表比没见过（第一次获取的基准在服务端定）。 */
-  fresh?: boolean;
-  /** 目录标价四类（服务端 ModelInfo 是 camelCase）。 */
-  priceInput?: number;
-  priceOutput?: number;
-  priceCacheRead?: number;
-  priceCacheWrite?: number;
-  thinks?: boolean;
-  efforts?: string[];
-}
-
 /** 只看一眼可用模型（打开选择器、补价格/窗口/档）：服务端不落盘，「新」的基准也不动。 */
-export async function peekAvailableModels(
-  id: string,
-): Promise<{ models: ServiceCatalogModel[]; live: boolean }> {
-  return post<{ models: ServiceCatalogModel[]; live: boolean }>({
-    method: 'available-models',
-    id,
-    mode: 'query',
-  });
+export async function peekAvailableModels(id: string): Promise<AvailableModelsResponse> {
+  return post({ method: 'available-models', id, mode: 'query' });
 }
 
 /** 用户按了「获取可用模型」：厂商这次的列表由服务端存下，下次拿它当「新」的基准。 */
-export async function discoverAvailableModels(
-  id: string,
-): Promise<{ models: ServiceCatalogModel[]; live: boolean }> {
-  return post<{ models: ServiceCatalogModel[]; live: boolean }>({
-    method: 'available-models',
-    id,
-    mode: 'fetch',
-  });
+export async function discoverAvailableModels(id: string): Promise<AvailableModelsResponse> {
+  return post({ method: 'available-models', id, mode: 'fetch' });
 }
 
 /** T012.8b：连接余额（厂商币种）或套餐余量（MiniMax：5 小时窗口/每周剩余百分比）。 */
-export interface ServiceQuota {
-  balance?: { currency: string; amount: number };
-  plan?: { intervalRemainingPercent?: number; weeklyRemainingPercent?: number };
-  checkedAt: number;
-}
-
-export async function fetchConnectionQuota(id: string): Promise<ServiceQuota> {
-  return post<ServiceQuota>({ method: 'connection-quota', id });
+export async function fetchConnectionQuota(id: string): Promise<ConnectionQuotaResponse> {
+  return post({ method: 'connection-quota', id });
 }

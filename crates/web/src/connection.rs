@@ -12,12 +12,13 @@ use service::{
     ContextUsage, FollowRequest, FollowResponse, HostInfo, HostLocation, PROTOCOL_VERSION,
     RootState, ServiceEvent,
 };
+use ts_rs::TS;
 
 use crate::routes::{AppState, record_ops, trust_error_response};
 use crate::trust::authorize_api_request;
 
 /// 线上帧：ready 必须先于事件；事件帧包着 service 的日志事件（seq/type/data 来自日志事实）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum Frame {
     /// 连接建立后的第一帧（DSH 的 {type:'ready',...}）；T007.2 起带协议版本、根会话状态、上下文占用。
@@ -38,7 +39,7 @@ pub enum Frame {
 }
 
 /// AgentEvent 的线上形状（只挑页面要的；只增不改）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum AgentEventWire {
     TextDelta {

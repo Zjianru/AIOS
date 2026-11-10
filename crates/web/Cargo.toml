@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+ts-rs.workspace = true
 agent = { path = "../agent" }
 model = { path = "../model" }
 monitor = { path = "../monitor" }
