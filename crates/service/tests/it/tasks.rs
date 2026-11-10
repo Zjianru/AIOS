@@ -1225,14 +1225,15 @@ async fn stopping_a_running_task_persists_the_stop_before_cancelling_and_relays_
     );
 
     // 顺序：取消的收尾写日志时，库里停止事实已提交、relay 已排队。
-    let seen = seen.lock().unwrap();
-    assert_eq!(seen.len(), 1, "只应观察到一次取消收尾：{seen:?}");
-    assert_eq!(
-        seen[0],
-        (Some(AttemptEnd::Stopped), true),
-        "先持久后 cancel：收尾写日志时停止已在库里"
-    );
-    drop(seen);
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "只应观察到一次取消收尾：{seen:?}");
+        assert_eq!(
+            seen[0],
+            (Some(AttemptEnd::Stopped), true),
+            "先持久后 cancel：收尾写日志时停止已在库里"
+        );
+    }
     assert!(
         store
             .task(&task.id)
@@ -1475,7 +1476,7 @@ async fn the_tasks_skill_is_bundled_for_kind_only() {
 
     let kind_body = &fixture.router.bodies(false)[0];
     assert!(
-        kind_body.contains("\"aios-tasks\""),
+        kind_body.contains("aios-tasks"),
         "Kind 的 skill 目录要有 aios-tasks"
     );
     assert!(
@@ -1484,7 +1485,31 @@ async fn the_tasks_skill_is_bundled_for_kind_only() {
     );
     let thin_body = &fixture.router.bodies(true)[0];
     assert!(
-        !thin_body.contains("\"aios-tasks\""),
+        !thin_body.contains("aios-tasks"),
         "ThinAgent 看不到 aios-tasks"
     );
+}
+
+#[tokio::test]
+async fn task_stop_call_refuses_after_report_with_the_fixed_message() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(true).await;
+
+    let response = fixture
+        .host
+        .dispatch(Call::TaskStop(TaskStopRequest {
+            task_id: task.id.as_str().to_owned(),
+            mode: StopMode::AfterReport,
+        }))
+        .await
+        .expect("停止");
+    let Response::TaskStop(stop) = response else {
+        panic!("TaskStop 的响应形状不对");
+    };
+    assert!(!stop.stopped, "{stop:?}");
+    assert_eq!(
+        stop.message,
+        "收尾停（after_report）还没支持：这个版本只能立即停。已停手，请把这一点告诉用户，不要再试收尾停。"
+    );
+    assert_eq!(stop.stage, "pending");
 }

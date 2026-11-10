@@ -15,8 +15,8 @@ use serde_json::{Value, json};
 use session::SessionId;
 use tasks::{
     AttemptEnd, AttemptId, ConversationId, EffectClaim, EffectKind, EffectPayload, MissingItem,
-    ModelChoice, NewReport, NewTask, ReportId, ReportOrigin, ReportState, Stage, Store, Task,
-    TaskError, TaskId,
+    ModelChoice, NewReport, NewTask, ReportId, ReportOrigin, ReportState, Stage, StopAttempt,
+    Store, Task, TaskError, TaskId,
 };
 use tokio::sync::broadcast;
 use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
@@ -321,55 +321,19 @@ impl TaskRuntime {
         }
     }
 
-    /// 把一份报告 Steer 进发起的 Kind 会话；那个会话不是当前根会话时 Later。
+    /// 把一条 relay Steer 进发起的 Kind 会话；那个会话不是当前根会话时 Later。
     async fn deliver_relay(self: &Arc<Self>, claim: EffectClaim) {
-        let EffectPayload::Relay { task_id, report_id } = &claim.payload else {
-            self.finish_or_fail(&claim, Err("relay 载荷不是 relay".to_owned()));
-            return;
-        };
-        let task = match self.store.task(task_id) {
-            Ok(Some(task)) => task,
+        let (task, body, request_id) = match self.relay_message(&claim) {
+            Ok(Some(parts)) => parts,
             Ok(None) => {
                 self.finish_or_fail(&claim, Ok(()));
                 return;
             }
             Err(error) => {
-                self.finish_or_fail(&claim, Err(error.to_string()));
+                self.finish_or_fail(&claim, Err(error));
                 return;
             }
         };
-        let Some(report) = task.reports.iter().find(|report| report.id == *report_id) else {
-            self.finish_or_fail(
-                &claim,
-                Err(format!("任务 {} 没有报告 {report_id}", task.id)),
-            );
-            return;
-        };
-        let stage = match self.store.stage(&task.id) {
-            Ok(stage) => stage,
-            Err(error) => {
-                self.finish_or_fail(&claim, Err(error.to_string()));
-                return;
-            }
-        };
-        let (summary, chars) = relay_summary(&report.summary);
-        let mut body = json!({
-            "kind": "task_report",
-            "task": {
-                "id": task.id.as_str(),
-                "title": task.title,
-                "stage": stage_key(stage),
-            },
-            "origin": report_origin_key(report.origin),
-            "state": report_state_key(report.state),
-            "summary": summary,
-        });
-        if let Some(chars) = chars {
-            body["chars"] = json!(chars);
-        }
-        if let Some(question) = &report.question {
-            body["question"] = json!(question);
-        }
         // 测试钩子：在 Kind append 前模拟进程停掉，效果行原样留给下一次启动。
         if self.crash_before_relay.swap(false, Ordering::SeqCst) {
             self.shutting_down.store(true, Ordering::SeqCst);
@@ -391,7 +355,6 @@ impl TaskRuntime {
             self.later(&claim);
             return;
         }
-        let request_id = format!("task-report:{}:{}", task.id, report.id);
         let message = UserMessage::text(body.to_string());
         let sent = host
             .send_message(&request_id, message, DeliveryMode::Steer)
@@ -404,6 +367,77 @@ impl TaskRuntime {
                 self.store
                     .fail_effect(&claim, &error.to_string(), Self::now()),
             ),
+        }
+    }
+
+    /// 拼一条 relay 的正文和 request id；报告和停止共用 task_report 的形状。
+    ///
+    /// 返回 Ok(None)：载荷指向的任务已经不在了，效果行直接收掉。
+    fn relay_message(&self, claim: &EffectClaim) -> Result<Option<(Task, Value, String)>, String> {
+        let task_id = match &claim.payload {
+            EffectPayload::Relay { task_id, .. } | EffectPayload::Stop { task_id, .. } => task_id,
+            EffectPayload::Launch { .. } => {
+                return Err("relay 载荷不是 relay".to_owned());
+            }
+        };
+        let Some(task) = self
+            .store
+            .task(task_id)
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(None);
+        };
+        let stage = self
+            .store
+            .stage(&task.id)
+            .map_err(|error| error.to_string())?;
+        match &claim.payload {
+            EffectPayload::Relay { report_id, .. } => {
+                let Some(report) = task.reports.iter().find(|report| report.id == *report_id)
+                else {
+                    return Err(format!("任务 {} 没有报告 {report_id}", task.id));
+                };
+                let (summary, chars) = relay_summary(&report.summary);
+                let mut body = json!({
+                    "kind": "task_report",
+                    "task": {
+                        "id": task.id.as_str(),
+                        "title": task.title,
+                        "stage": stage_key(stage),
+                    },
+                    "origin": report_origin_key(report.origin),
+                    "state": report_state_key(report.state),
+                    "summary": summary,
+                });
+                if let Some(chars) = chars {
+                    body["chars"] = json!(chars);
+                }
+                if let Some(question) = &report.question {
+                    body["question"] = json!(question);
+                }
+                let request_id = format!("task-report:{}:{}", task.id, report.id);
+                Ok(Some((task, body, request_id)))
+            }
+            EffectPayload::Stop { attempt_id, .. } => {
+                let summary = format!(
+                    "用户立即停了任务 {} 的第 {} 次 Attempt。",
+                    task.id, attempt_id
+                );
+                let body = json!({
+                    "kind": "task_report",
+                    "task": {
+                        "id": task.id.as_str(),
+                        "title": task.title,
+                        "stage": stage_key(stage),
+                    },
+                    "origin": "executor",
+                    "state": "stopped",
+                    "summary": summary,
+                });
+                let request_id = format!("task-stop:{}:{}", task.id, attempt_id);
+                Ok(Some((task, body, request_id)))
+            }
+            EffectPayload::Launch { .. } => Err("relay 载荷不是 relay".to_owned()),
         }
     }
 
@@ -794,6 +828,13 @@ impl TaskRuntime {
         if task.latest_attempt().map(|attempt| attempt.id) != Some(attempt_id) {
             return;
         }
+        // 停止已经把这个 Attempt 的结果定死：取消后的收尾不再合成 waiting。
+        if task
+            .latest_attempt()
+            .is_some_and(|attempt| attempt.ended_at.is_some())
+        {
+            return;
+        }
         if task.latest_report().is_some_and(|report| {
             matches!(
                 report.state,
@@ -1005,11 +1046,63 @@ impl TaskRuntime {
         task_id: &str,
         mode: StopMode,
     ) -> Result<TaskStopResponse, ServiceError> {
-        let _ = (task_id, mode);
-        Ok(TaskStopResponse {
+        let id = TaskId::from(task_id);
+        let task = self
+            .store
+            .task(&id)
+            .map_err(|error| ServiceError::TaskUnavailable(format!("任务读不出来：{error}")))?
+            .ok_or_else(|| ServiceError::TaskUnavailable(format!("找不到这个任务：{task_id}")))?;
+        let stage = self
+            .store
+            .stage(&id)
+            .map_err(|error| ServiceError::TaskUnavailable(format!("阶段读不出来：{error}")))?;
+        let not_running = || TaskStopResponse {
             stopped: false,
-            stage: "pending".to_owned(),
-            message: "未支持".to_owned(),
+            stage: stage_key(stage).to_owned(),
+            message: NOT_RUNNING.to_owned(),
+        };
+        if mode == StopMode::AfterReport {
+            return Ok(TaskStopResponse {
+                stopped: false,
+                stage: stage_key(stage).to_owned(),
+                message: AFTER_REPORT_UNSUPPORTED.to_owned(),
+            });
+        }
+        let Some(attempt) = task.latest_attempt() else {
+            return Ok(not_running());
+        };
+        if attempt.ended_at.is_some() {
+            return Ok(not_running());
+        }
+        let Some(running) = self.running_for(&id, attempt.id) else {
+            return Ok(not_running());
+        };
+        let attempt_id = attempt.id;
+        let outcome = self
+            .store
+            .stop_attempt(&id, attempt_id, Self::now())
+            .map_err(|error| ServiceError::TaskUnavailable(format!("停止没写进任务库：{error}")))?;
+        match outcome {
+            StopAttempt::Stopped => {}
+            StopAttempt::AlreadyStopped | StopAttempt::AlreadyEnded => return Ok(not_running()),
+        }
+        // 06 篇 4.2 第 1 步：先持久保存停止要求，再掐断会话。让出一次，使取消之前提交的
+        // 停止事实对效果泵和日志观察者可见；先后顺序因此能被分辨，而不是同一 poll 里两件事。
+        tokio::task::yield_now().await;
+        running.host.agent().cancel_with(session::AbortCause::User);
+        self.running
+            .lock()
+            .expect("thinagent 表锁被毒化")
+            .remove(running.host.agent().id().as_str());
+        self.wake();
+        let stage = self
+            .store
+            .stage(&id)
+            .map_err(|error| ServiceError::TaskUnavailable(format!("阶段读不出来：{error}")))?;
+        Ok(TaskStopResponse {
+            stopped: true,
+            stage: stage_key(stage).to_owned(),
+            message: format!("已立即停：任务 {task_id}（阶段：{}）。", stage_label(stage)),
         })
     }
 
@@ -1314,6 +1407,10 @@ impl Tool for TaskStopTool {
                 }
             };
             match self.runtime.stop_task(task_id, mode).await {
+                // 收尾停还没实现：明确报错，让 Kind 停手并告诉用户，而不是假装停成了。
+                Ok(result) if mode == StopMode::AfterReport => {
+                    ToolResult::error(call.id, ToolFailure::plain(result.message))
+                }
                 Ok(result) => ToolResult::success(call.id, result.message),
                 Err(error) => ToolResult::error(call.id, ToolFailure::plain(error.to_string())),
             }
