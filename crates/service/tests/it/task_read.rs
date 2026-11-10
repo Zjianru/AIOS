@@ -229,13 +229,14 @@ fn seed_plain_session(data: &Path, cwd: &Path, turns: u64) -> SessionId {
 }
 
 #[tokio::test]
-async fn fits_the_whole_log_when_it_is_under_the_page_budget() {
+async fn the_tail_page_starts_at_a_turn_boundary_instead_of_cutting_at_fifty_messages() {
     let data = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let host = open_host(data.path()).await;
     host.task_runtime().expect("任务执行者").set_paused(true);
 
-    // 三轮共 52 条消息：在 500 的预算内，第一页应一次给全，而不是在 50 条处切开。
+    // 三轮共 52 条消息：50 条消息的下限落在第 2 轮开头，页首必须是一轮的 turn/start，
+    // 不能像 maxMessages=50 那样在第 50 条消息处从一轮中间切开。
     let conversation = seed_session(data.path(), cwd.path(), 3);
     let task_id = seed_task(data.path(), cwd.path(), conversation.as_str(), "一整页");
     let all = SessionStore::open_read_only(data.path(), &conversation)
@@ -246,9 +247,36 @@ async fn fits_the_whole_log_when_it_is_under_the_page_budget() {
     let Response::TaskRead(page) = read(&host, &task_id, None).await else {
         panic!("task-read 响应");
     };
-    assert_eq!(page.events.len(), all.len(), "预算内一次给全");
-    assert_eq!(page.events.first().unwrap().seq, all[0].seq);
     assert_eq!(page.last_seq, all.last().unwrap().seq);
+    assert_eq!(
+        page.events.first().expect("第一页非空").event_type,
+        "turn/start",
+        "页首落在轮起点，不从一轮中间切"
+    );
+    assert_eq!(
+        page.events
+            .iter()
+            .filter(|event| event.event_type == "assistant/message")
+            .count(),
+        50,
+        "按 50 条消息、2 轮的下限对齐"
+    );
+    let first_seq = page.events.first().unwrap().seq;
+    assert!(first_seq > all[0].seq, "更早的第一轮在这一页之外");
+
+    let Response::TaskRead(second) = read(&host, &task_id, Some(first_seq)).await else {
+        panic!("task-read 响应");
+    };
+    assert!(!second.events.is_empty(), "更早的一页非空");
+    assert!(
+        second.events.iter().all(|event| event.seq < first_seq),
+        "beforeSeq 不含本条，两页不重叠"
+    );
+    assert_eq!(
+        second.events.last().expect("更早的一页").seq,
+        first_seq - 1,
+        "第二页紧接第一页"
+    );
 }
 
 #[tokio::test]
@@ -309,11 +337,20 @@ async fn pages_backwards_at_turn_boundaries_and_last_seq_stays_at_the_log_end() 
     );
 
     let second_first = second.events.first().expect("第二页").seq;
-    let Response::TaskRead(empty) = read(&host, &task_id, Some(second_first)).await else {
+    let Response::TaskRead(third) = read(&host, &task_id, Some(second_first)).await else {
         panic!("task-read 响应");
     };
-    assert!(empty.events.is_empty(), "日志起点以前没有事件");
-    assert_eq!(empty.last_seq, log_end);
+    assert!(!third.events.is_empty(), "600 轮的日志还有更早的一页");
+    assert_eq!(
+        third.events.first().expect("第三页").event_type,
+        "turn/start",
+        "每一页都落在轮起点"
+    );
+    assert!(
+        third.events.iter().all(|event| event.seq < second_first),
+        "beforeSeq 不含本条，两页不重叠"
+    );
+    assert_eq!(third.last_seq, log_end);
 }
 
 #[tokio::test]
