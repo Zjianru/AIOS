@@ -507,6 +507,8 @@ async fn a_missing_credential_opens_no_task_session_and_relays_what_is_missing()
     assert_eq!(relays.len(), 1, "{relays:?}");
     assert_eq!(relays[0].1["state"], "blocked");
     assert_eq!(relays[0].1["task"]["stage"], "needs_conditions");
+    // 程序按任务包缺项写的 blocked：origin=package；缺项文本在程序写好的摘要里。
+    assert_eq!(relays[0].1["origin"], "package");
     let summary = relays[0].1["summary"].as_str().unwrap();
     assert!(summary.contains("任务包缺"), "{summary}");
     assert!(summary.contains("deepseek-flash"), "{summary}");
@@ -713,8 +715,14 @@ async fn a_blocked_report_carries_its_question() {
     assert_eq!(relays[0].1["state"], "blocked");
     assert_eq!(relays[0].1["question"], "用哪个版本？");
     assert_eq!(relays[0].1["task"]["stage"], "needs_conditions");
+    // 缺项报告同样是 blocked + needs_conditions；.4 只靠 origin 区分「卡住了」和「没开跑」。
+    assert_eq!(relays[0].1["origin"], "agent");
     let store = tasks_store(fixture.data());
     assert_eq!(store.stage(&task.id).unwrap(), Stage::NeedsConditions);
+    assert!(
+        store.task(&task.id).unwrap().unwrap().missing.is_empty(),
+        "agent 报的 blocked 不是任务包缺项"
+    );
 }
 
 #[tokio::test]
