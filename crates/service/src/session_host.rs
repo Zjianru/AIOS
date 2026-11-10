@@ -78,6 +78,11 @@ impl ServiceHost {
         self.events.subscribe()
     }
 
+    /// 不落日志的 AgentEvent 订阅端（流式文本、用量等）；任务对话的 live 帧用它。
+    pub fn subscribe_agent_events(&self) -> broadcast::Receiver<agent::AgentEvent> {
+        self.agent.subscribe()
+    }
+
     /// 唯一的调用入口：载体把线上请求解码成 Call，结果编码回 Response。
     pub async fn dispatch(&self, call: Call) -> Result<Response, ServiceError> {
         match call {

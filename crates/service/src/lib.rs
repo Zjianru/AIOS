@@ -35,7 +35,7 @@ pub(crate) const SERVICE_EVENT_CHANNEL_CAPACITY: usize = 1024;
 pub use actions::{ActionEnv, ActionFuture, ActionKind, ActionOutcome, ActionRegistry, CardFact};
 pub use error::*;
 pub use exa::EXA_DEFAULT_BASE_URL;
-pub use executor::{TASKS_DB_FILE, THIN_TOOLS, TaskRuntime};
+pub use executor::{TASKS_DB_FILE, THIN_TOOLS, TaskLive, TaskRuntime, TaskStream};
 pub use protocol::*;
 pub use root::{
     KeyringChanged, ModelFactory, ROOT_STATE_FILE, RootError, RootSession, RootSessionOptions,

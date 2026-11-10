@@ -3,8 +3,10 @@
  *
  * - 头部是任务事实（TaskRead 的 task：标题、要求、DoD、cwd、冻结的模型、Attempt 数）。
  * - 轮次复用 Kind 对话的 TurnRow；第一条 assignment 是程序消息，不画成用户气泡。
- * - 本票没有输入框、不能发送、不能停止；不连 /ws，翻页用 task-read 的 beforeSeq。
- * - 会话日志缺失/损坏时给固定的降级说明，原因照服务给的事实写，页面不编。
+ * - 没有输入框、不能发送、不能停止；打开时 TaskRead 拿头部和第一页，再用 lastSeq 连
+ *   `/ws?task=` 收实时帧；翻页用 task-read 的 beforeSeq。
+ * - 离开/换任务就关连接，旧连接的帧按 socket 身份丢掉；会话日志缺失/损坏时给固定的
+ *   降级说明，原因照服务给的事实写，页面不编。
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -12,11 +14,18 @@ import { ArrowLeft, ChevronRight, FolderOpen } from 'lucide-react';
 import { toast } from 'sonner';
 import { go } from '@/app/navigate';
 import { useRouteStore } from '@/app/routeStore';
-import { displayPath, ServiceHttpError, taskRead } from '@/data/service';
-import type { ServiceEvent } from '@/data/service';
+import {
+  connectTaskSession,
+  displayPath,
+  ServiceHttpError,
+  taskRead,
+} from '@/data/service';
+import type { Frame, ServiceEvent } from '@/data/service';
 import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
+import { useStreamStore } from '@/pages/kind/kindStore';
 import { TurnRow } from '@/pages/kind/TurnRow';
 import { deriveTurnViews } from '@/pages/kind/turnViews';
+import { mergeLiveEvent, withReportedCompletion } from './taskLive';
 import { cn } from '@/lib/utils';
 
 const NO_CANVAS = () => {};
@@ -127,9 +136,18 @@ export function TaskChatScene() {
   const bottomPinned = useRef(false);
   const loadingOlderRef = useRef(false);
   const restoreRef = useRef<{ height: number; top: number } | null>(null);
+  const socketRef = useRef<WebSocket | null>(null);
+  const lastSeqRef = useRef(0);
+  const liveTurnRef = useRef<number | null>(null);
+  const streamTextRef = useRef('');
+  const followBottomRef = useRef(true);
 
   useEffect(() => {
     const token = ++requestToken.current;
+    let disposed = false;
+    let reconnectAttempt = 0;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
     setPhase('loading');
     setTask(null);
     setEvents([]);
@@ -139,24 +157,118 @@ export function TaskChatScene() {
     loadingOlderRef.current = false;
     bottomPinned.current = false;
     restoreRef.current = null;
+    followBottomRef.current = true;
+    lastSeqRef.current = 0;
+    liveTurnRef.current = null;
+    streamTextRef.current = '';
+    const previous = socketRef.current;
+    socketRef.current = null;
+    previous?.close();
+    useStreamStore.setState({ turnId: null, itemId: null, text: '' });
+
     if (!taskId) {
       setError('地址里没有任务 id');
       setPhase('error');
       return;
     }
+
+    /** 清掉当前这一段实时文字，并钉在指定的一轮上；工具调用开始时前面的说明不算回答。 */
+    const resetStream = (turn: number | null) => {
+      streamTextRef.current = '';
+      liveTurnRef.current = turn;
+      useStreamStore.setState({
+        turnId: turn === null ? null : 'turn-' + String(turn),
+        itemId: null,
+        text: '',
+      });
+    };
+
+    /** 用户停在底部时跟着新事件走；往上翻的人不被打断。 */
+    const stickToBottom = () => {
+      const scroller = scrollRef.current;
+      followBottomRef.current =
+        scroller === null ||
+        scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
+    };
+
+    const onFrame = (frame: Frame) => {
+      if (disposed) return;
+      if (frame.type === 'event') {
+        const event = frame.event;
+        // seq=0 是设置变化的合成事件：不在任务日志里，和任务对话无关。
+        if (event.seq === 0 || event.seq <= lastSeqRef.current) return;
+        lastSeqRef.current = event.seq;
+        const turn = typeof event.data?.turn === 'number' ? Number(event.data.turn) : null;
+        if (event.type === 'turn/start') resetStream(turn);
+        if (event.type === 'tool/call') resetStream(liveTurnRef.current);
+        if (event.type === 'turn/end') resetStream(null);
+        stickToBottom();
+        setEvents((current) => mergeLiveEvent(current, event));
+        return;
+      }
+      if (frame.type !== 'agent') return;
+      if (frame.event.type === 'tool-call-delta' || frame.event.type === 'retrying') {
+        resetStream(liveTurnRef.current);
+        return;
+      }
+      if (frame.event.type !== 'text-delta' || liveTurnRef.current === null) return;
+      streamTextRef.current += frame.event.text;
+      stickToBottom();
+      useStreamStore.setState({
+        turnId: 'turn-' + String(liveTurnRef.current),
+        itemId: null,
+        text: streamTextRef.current,
+      });
+    };
+
+    const connect = () => {
+      if (disposed) return;
+      reconnectTimer = null;
+      let socket: WebSocket;
+      socket = connectTaskSession(taskId, lastSeqRef.current, onFrame, () => {
+        // 离开/换任务时旧 socket 的关闭不算断线；只有当前连接断了才重新跟。
+        if (disposed || socketRef.current !== socket) return;
+        socketRef.current = null;
+        reconnectAttempt += 1;
+        const delay = Math.min(1000 * reconnectAttempt, 5000);
+        reconnectTimer = setTimeout(connect, delay);
+      });
+      socketRef.current = socket;
+    };
+
     void taskRead(taskId)
       .then((response) => {
-        if (token !== requestToken.current) return;
+        if (disposed || token !== requestToken.current) return;
         setTask(response.task);
         setEvents(response.events);
         setHasOlder(response.events.length > 0);
+        lastSeqRef.current = response.lastSeq;
+        // 第一页末尾可能正处在一轮中间：把流式文字钉到这一轮上。
+        let running: number | null = null;
+        for (const event of response.events) {
+          const turn = typeof event.data?.turn === 'number' ? Number(event.data.turn) : null;
+          if (turn === null) continue;
+          if (event.type === 'turn/start') running = turn;
+          if (event.type === 'turn/end' && running === turn) running = null;
+        }
+        liveTurnRef.current = running;
         setPhase('ready');
+        connect();
       })
       .catch((reason: unknown) => {
-        if (token !== requestToken.current) return;
+        if (disposed || token !== requestToken.current) return;
         setError(reasonOf(reason));
         setPhase('error');
       });
+
+    return () => {
+      disposed = true;
+      if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+      const socket = socketRef.current;
+      socketRef.current = null;
+      socket?.close();
+      useStreamStore.setState({ turnId: null, itemId: null, text: '' });
+    };
   }, [taskId]);
 
   // 首屏落到最新一条。
@@ -177,20 +289,19 @@ export function TaskChatScene() {
     scroller.scrollTop = scroller.scrollHeight - restore.height + restore.top;
   }, [events]);
 
-  // 终态/Waiting 报告之后执行者会立刻关掉会话，日志可能没有 turn/end；
-  // 头部带来的 reportedAt 是「这次 Attempt 交过报告」的事实，据此把最后一轮收成已完成。
-  const views = useMemo(() => {
-    const derived = deriveTurnViews(visibleTaskEvents(events));
-    const reportedAt = task?.reportedAt;
-    if (reportedAt === undefined || reportedAt === null || derived.length === 0) return derived;
-    const last = derived.length - 1;
-    if (derived[last].status !== 'inProgress') return derived;
-    const startedAt = derived[last].startedAt;
-    const durationMs = startedAt === null ? null : Math.max(0, reportedAt - startedAt * 1000);
-    return derived.map((view, index) =>
-      index === last ? { ...view, status: 'completed' as const, durationMs } : view,
-    );
-  }, [events, task]);
+  // live 新事件：用户停在底部时跟着走。
+  useLayoutEffect(() => {
+    if (!followBottomRef.current) return;
+    const scroller = scrollRef.current;
+    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+  }, [events]);
+
+  // 终态报告之后执行者会立刻关掉会话，日志可能没有 turn/end；头部带来的 reportedAt
+  // 只收尾它之前开始的那一轮（waiting 报告之后的新一轮不能被标成已完成）。
+  const views = useMemo(
+    () => withReportedCompletion(deriveTurnViews(visibleTaskEvents(events)), task?.reportedAt),
+    [events, task],
+  );
 
   async function loadOlder() {
     if (loadingOlderRef.current || !hasOlder || events.length === 0) return;
@@ -223,7 +334,10 @@ export function TaskChatScene() {
 
   function onScroll() {
     const scroller = scrollRef.current;
-    if (!scroller || phase !== 'ready' || scroller.scrollTop > 64) return;
+    if (!scroller) return;
+    followBottomRef.current =
+      scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
+    if (phase !== 'ready' || scroller.scrollTop > 64) return;
     void loadOlder();
   }
 

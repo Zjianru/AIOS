@@ -26,6 +26,8 @@ struct RouterState {
     thin: Mutex<VecDeque<String>>,
     bodies: Mutex<Vec<(bool, String)>>,
     unexpected: Mutex<Vec<(bool, String)>>,
+    /// ThinAgent 的响应延迟：live 测试要在任务还在跑时接上事件流。
+    thin_delay: Mutex<Option<Duration>>,
 }
 
 impl Router {
@@ -36,8 +38,13 @@ impl Router {
                 thin: Mutex::new(VecDeque::new()),
                 bodies: Mutex::new(Vec::new()),
                 unexpected: Mutex::new(Vec::new()),
+                thin_delay: Mutex::new(None),
             }),
         }
+    }
+
+    fn set_thin_delay(&self, delay: Duration) {
+        *self.state.thin_delay.lock().unwrap() = Some(delay);
     }
 
     fn push_kind(&self, body: impl Into<String>) {
@@ -79,9 +86,13 @@ impl Respond for Router {
                 .push((thin, body.chars().take(400).collect()));
             return ResponseTemplate::new(500);
         };
-        ResponseTemplate::new(200)
+        let template = ResponseTemplate::new(200)
             .insert_header("content-type", "text/event-stream")
-            .set_body_string(sse)
+            .set_body_string(sse);
+        match (thin, *self.state.thin_delay.lock().unwrap()) {
+            (true, Some(delay)) => template.set_delay(delay),
+            _ => template,
+        }
     }
 }
 
@@ -964,4 +975,70 @@ async fn kind_refuses_the_four_waits_and_runs_a_short_command() {
     let (text, is_error) = &results["call-1"];
     assert!(!is_error.unwrap_or(false), "echo sleep 不误判：{text}");
     assert!(text.contains("sleep 5"), "{text}");
+}
+
+#[tokio::test]
+async fn task_stream_is_live_while_the_task_is_running() {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    // ThinAgent 的响应慢一点，让测试能在任务跑着的时候接上 live。
+    router.set_thin_delay(Duration::from_millis(800));
+    mount(&server, &router).await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let host = open_host(&server, data.path(), cwd.path()).await;
+
+    let args = serde_json::json!({
+        "title": "查一下 hello",
+        "requirement": "读 hello.txt",
+        "dod": "说出内容"
+    })
+    .to_string();
+    router.push_kind(crate::common::tool_use_sse(
+        0,
+        "call-accept",
+        "task_accept",
+        &args,
+    ));
+    router.push_kind(crate::common::text_sse("已派出"));
+    router.push_thin(crate::common::tool_use_sse(
+        1,
+        "call-read",
+        "read",
+        &serde_json::json!({"file_path": "hello.txt"}).to_string(),
+    ));
+    router.push_thin(crate::common::text_sse("查完了"));
+
+    host.dispatch(Call::Send(send(&host, "kind-live", "查一下 hello")))
+        .await
+        .expect("发送");
+    let store = tasks_store(data.path());
+    wait_until("任务建好", || {
+        store.task_ids().map(|ids| ids.len()).unwrap_or(0) == 1
+    })
+    .await;
+    let mut ids = store.task_ids().unwrap();
+    let task_id = ids.remove(0);
+
+    let mut opened = None;
+    for _ in 0..200 {
+        if let Ok(stream) = host.task_stream(task_id.as_str(), 0).await
+            && let Some(live) = stream.live
+        {
+            opened = Some((stream.follow.last_seq, live));
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (last, mut live) = opened.expect("任务在跑时要能接上 live 订阅");
+
+    let event = tokio::time::timeout(Duration::from_secs(5), live.events.recv())
+        .await
+        .expect("在跑的任务要送来 live 事件")
+        .expect("live 订阅还开着");
+    assert!(
+        event.seq > last,
+        "live 事件在打开时的补齐之后：{} <= {last}",
+        event.seq
+    );
 }

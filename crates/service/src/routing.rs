@@ -133,6 +133,20 @@ impl RootHost {
         }
     }
 
+    /// `/ws?task=`：任务当前 Attempt 的补齐与 live 订阅（任务库在任务执行者手里）。
+    pub async fn task_stream(
+        &self,
+        task_id: &str,
+        last_seq: u64,
+    ) -> Result<crate::TaskStream, ServiceError> {
+        match self.task_runtime() {
+            Some(runtime) => runtime.task_stream(task_id, last_seq).await,
+            None => Err(ServiceError::TaskUnavailable(
+                "任务库没开，任务对话看不了".to_owned(),
+            )),
+        }
+    }
+
     pub async fn follow(&self, request: FollowRequest) -> Result<FollowResponse, ServiceError> {
         let guard = self.inner.lock().await;
         match guard.as_ref() {

@@ -211,15 +211,83 @@ async fn returns_the_header_and_the_tail_page() {
     assert_eq!(read.last_seq, read.events.last().unwrap().seq);
 }
 
+/// 一条只有 turn/start + 一条回答 + turn/end 的会话；用来把日志撑过一页的预算。
+fn seed_plain_session(data: &Path, cwd: &Path, turns: u64) -> SessionId {
+    let mut store = SessionStore::create(data, cwd).expect("建会话");
+    let id = store.id().clone();
+    let mut kinds = Vec::new();
+    for turn in 1..=turns {
+        kinds.push(EventKind::TurnStart { turn });
+        kinds.push(answer(turn, 1, &format!("第 {turn} 轮回答")));
+        kinds.push(EventKind::TurnEnd {
+            turn,
+            reason: TurnEndReason::Completed,
+        });
+    }
+    store.append(&kinds).expect("写会话事件");
+    id
+}
+
 #[tokio::test]
-async fn pages_backwards_and_last_seq_stays_at_the_log_end() {
+async fn the_tail_page_starts_at_a_turn_boundary_instead_of_cutting_at_fifty_messages() {
     let data = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let host = open_host(data.path()).await;
     host.task_runtime().expect("任务执行者").set_paused(true);
 
-    // 三轮共 76 条消息；一页 50 条，所以第一页只到日志尾部，往回翻才能看到第一轮。
+    // 三轮共 52 条消息：50 条消息的下限落在第 2 轮开头，页首必须是一轮的 turn/start，
+    // 不能像 maxMessages=50 那样在第 50 条消息处从一轮中间切开。
     let conversation = seed_session(data.path(), cwd.path(), 3);
+    let task_id = seed_task(data.path(), cwd.path(), conversation.as_str(), "一整页");
+    let all = SessionStore::open_read_only(data.path(), &conversation)
+        .expect("只读打开")
+        .events()
+        .to_vec();
+
+    let Response::TaskRead(page) = read(&host, &task_id, None).await else {
+        panic!("task-read 响应");
+    };
+    assert_eq!(page.last_seq, all.last().unwrap().seq);
+    assert_eq!(
+        page.events.first().expect("第一页非空").event_type,
+        "turn/start",
+        "页首落在轮起点，不从一轮中间切"
+    );
+    assert_eq!(
+        page.events
+            .iter()
+            .filter(|event| event.event_type == "assistant/message")
+            .count(),
+        50,
+        "按 50 条消息、2 轮的下限对齐"
+    );
+    let first_seq = page.events.first().unwrap().seq;
+    assert!(first_seq > all[0].seq, "更早的第一轮在这一页之外");
+
+    let Response::TaskRead(second) = read(&host, &task_id, Some(first_seq)).await else {
+        panic!("task-read 响应");
+    };
+    assert!(!second.events.is_empty(), "更早的一页非空");
+    assert!(
+        second.events.iter().all(|event| event.seq < first_seq),
+        "beforeSeq 不含本条，两页不重叠"
+    );
+    assert_eq!(
+        second.events.last().expect("更早的一页").seq,
+        first_seq - 1,
+        "第二页紧接第一页"
+    );
+}
+
+#[tokio::test]
+async fn pages_backwards_at_turn_boundaries_and_last_seq_stays_at_the_log_end() {
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let host = open_host(data.path()).await;
+    host.task_runtime().expect("任务执行者").set_paused(true);
+
+    // 600 轮、每轮一条消息：一页回到「50 条消息 / 2 轮」的对齐点，页首必须是一轮的 turn/start。
+    let conversation = seed_plain_session(data.path(), cwd.path(), 600);
     let task_id = seed_task(data.path(), cwd.path(), conversation.as_str(), "分页");
     let all = SessionStore::open_read_only(data.path(), &conversation)
         .expect("只读打开")
@@ -231,18 +299,33 @@ async fn pages_backwards_and_last_seq_stays_at_the_log_end() {
         panic!("task-read 响应");
     };
     assert_eq!(first.last_seq, log_end);
-    assert!(
-        !first.events.iter().any(|event| event.seq == all[0].seq),
-        "第一页不该包含日志最早的事件"
+    let first_event = first.events.first().expect("第一页非空");
+    assert_eq!(
+        first_event.event_type, "turn/start",
+        "页首落在轮起点，不从一轮中间切"
     );
-    let first_seq = first.events.first().expect("第一页非空").seq;
-    assert!(first_seq > all[0].seq);
+    assert!(first_event.seq > all[0].seq, "600 轮的日志不该一页给全");
+    assert_eq!(
+        first
+            .events
+            .iter()
+            .filter(|event| event.event_type == "assistant/message")
+            .count(),
+        50,
+        "一页按 50 条消息、2 轮的下限对齐"
+    );
+    let first_seq = first_event.seq;
 
     let Response::TaskRead(second) = read(&host, &task_id, Some(first_seq)).await else {
         panic!("task-read 响应");
     };
     assert_eq!(second.last_seq, log_end, "往上翻页不改日志末端");
     assert!(!second.events.is_empty(), "更早的一页非空");
+    assert_eq!(
+        second.events.first().expect("第二页").event_type,
+        "turn/start",
+        "每一页都落在轮起点"
+    );
     assert!(
         second.events.iter().all(|event| event.seq < first_seq),
         "beforeSeq 不含本条，两页不重叠"
@@ -252,28 +335,62 @@ async fn pages_backwards_and_last_seq_stays_at_the_log_end() {
         first_seq - 1,
         "第二页紧接第一页"
     );
-    assert!(
-        second
-            .events
-            .iter()
-            .any(|event| event.event_type == "user/message"
-                && event.data["message"]["source"]["rpcId"] == "assignment:task-seed"),
-        "往回翻能看到第一轮的 assignment"
-    );
-    assert!(
-        second
-            .events
-            .iter()
-            .any(|event| event.event_type == "tool/call" && event.data["name"] == "read"),
-        "往回翻能看到工具调用"
-    );
 
     let second_first = second.events.first().expect("第二页").seq;
-    let Response::TaskRead(empty) = read(&host, &task_id, Some(second_first)).await else {
+    let Response::TaskRead(third) = read(&host, &task_id, Some(second_first)).await else {
         panic!("task-read 响应");
     };
-    assert!(empty.events.is_empty(), "日志起点以前没有事件");
-    assert_eq!(empty.last_seq, log_end);
+    assert!(!third.events.is_empty(), "600 轮的日志还有更早的一页");
+    assert_eq!(
+        third.events.first().expect("第三页").event_type,
+        "turn/start",
+        "每一页都落在轮起点"
+    );
+    assert!(
+        third.events.iter().all(|event| event.seq < second_first),
+        "beforeSeq 不含本条，两页不重叠"
+    );
+    assert_eq!(third.last_seq, log_end);
+}
+
+#[tokio::test]
+async fn waiting_report_does_not_close_the_turn_for_the_page() {
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let host = open_host(data.path()).await;
+    host.task_runtime().expect("任务执行者").set_paused(true);
+
+    let conversation = seed_session(data.path(), cwd.path(), 1);
+    let task_id = seed_task(data.path(), cwd.path(), conversation.as_str(), "等报告");
+    let store = Store::open(data.path().join(TASKS_DB_FILE)).expect("任务库");
+    let attempt = store
+        .task(&task_id)
+        .expect("读任务")
+        .expect("任务存在")
+        .latest_attempt()
+        .expect("Attempt")
+        .id;
+    store
+        .record_report(
+            &task_id,
+            attempt,
+            NewReport {
+                state: ReportState::Waiting,
+                origin: ReportOrigin::Executor,
+                summary: "我还在查，别急。".to_owned(),
+                question: None,
+            },
+            2_000,
+        )
+        .expect("写等待报告");
+
+    let Response::TaskRead(read) = read(&host, &task_id, None).await else {
+        panic!("task-read 响应");
+    };
+    assert_eq!(
+        read.task.reported_at, None,
+        "waiting 不是终态：之后的 task_status 会起新的一轮，页面不能拿它收掉本轮"
+    );
 }
 
 #[tokio::test]
@@ -374,6 +491,81 @@ async fn corrupt_session_is_a_readable_error() {
     assert_eq!(error.code().as_str(), "task/unavailable");
     assert!(
         error.to_string().contains("任务对话打不开"),
+        "错误要能读：{error}"
+    );
+}
+
+#[tokio::test]
+async fn task_stream_replays_after_last_seq_and_is_not_live_when_the_task_is_not_running() {
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let host = open_host(data.path()).await;
+    host.task_runtime().expect("任务执行者").set_paused(true);
+
+    let conversation = seed_session(data.path(), cwd.path(), 2);
+    let task_id = seed_task(data.path(), cwd.path(), conversation.as_str(), "流");
+    let all = SessionStore::open_read_only(data.path(), &conversation)
+        .expect("只读打开")
+        .events()
+        .to_vec();
+    let after = all[all.len() - 3].seq;
+
+    let stream = host
+        .task_stream(task_id.as_str(), after)
+        .await
+        .expect("任务流要能打开");
+    assert_eq!(stream.session_id, conversation.as_str());
+    assert!(stream.live.is_none(), "任务没在跑：只补齐，不出 live 帧");
+    assert!(
+        stream.follow.events.iter().all(|event| event.seq > after),
+        "只补 lastSeq 之后的事件"
+    );
+    assert_eq!(stream.follow.last_seq, all.last().unwrap().seq);
+    assert_eq!(
+        stream.follow.events.last().unwrap().seq,
+        all.last().unwrap().seq,
+        "补齐到日志末端"
+    );
+}
+
+#[tokio::test]
+async fn task_stream_for_a_missing_task_is_a_readable_error() {
+    let data = tempfile::tempdir().unwrap();
+    let host = open_host(data.path()).await;
+    host.task_runtime().expect("任务执行者").set_paused(true);
+
+    let error = match host.task_stream("no-such-task", 0).await {
+        Ok(_) => panic!("不存在的任务要报错"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code().as_str(), "task/unavailable");
+    assert!(
+        error.to_string().contains("找不到这个任务"),
+        "错误要能读：{error}"
+    );
+}
+
+#[tokio::test]
+async fn task_stream_for_an_unopened_task_is_a_readable_error() {
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let host = open_host(data.path()).await;
+    host.task_runtime().expect("任务执行者").set_paused(true);
+
+    let store = Store::open(data.path().join(TASKS_DB_FILE)).expect("任务库");
+    let task = store
+        .create_task(
+            draft(&ConversationId::new("kind-test"), cwd.path(), "还没开跑"),
+            1_000,
+        )
+        .expect("建任务");
+    let error = match host.task_stream(task.id.as_str(), 0).await {
+        Ok(_) => panic!("没有 Attempt 的任务要报错"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code().as_str(), "task/unavailable");
+    assert!(
+        error.to_string().contains("还没开跑"),
         "错误要能读：{error}"
     );
 }

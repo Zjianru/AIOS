@@ -18,11 +18,15 @@ use tasks::{
     ModelChoice, NewReport, NewTask, ReportId, ReportOrigin, ReportState, Stage, Store, Task,
     TaskError, TaskId,
 };
+use tokio::sync::broadcast;
 use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
 
 use crate::error::ServiceError;
 use crate::events::{page_events, service_event};
-use crate::protocol::{DeliveryMode, TaskReadHeader, TaskReadRequest, TaskReadResponse};
+use crate::protocol::{
+    DeliveryMode, FollowRequest, FollowResponse, ServiceEvent, TaskReadHeader, TaskReadRequest,
+    TaskReadResponse,
+};
 use crate::root::RootSessionOptions;
 use crate::session_host::ServiceHost;
 
@@ -63,6 +67,24 @@ struct RunningThin {
     host: Arc<ServiceHost>,
     task_id: TaskId,
     attempt_id: AttemptId,
+}
+
+/// 任务事件流的打开结果：当前 Attempt 的会话 id、打开时要补的日志事件，
+/// 以及任务还在跑时的 live 订阅面（不在跑就只补，不出 live 帧）。
+pub struct TaskStream {
+    pub session_id: String,
+    pub follow: FollowResponse,
+    pub live: Option<TaskLive>,
+}
+
+/// 在跑任务的 live 订阅面。
+///
+/// 宿主句柄也放在这里：拿到流之后即使执行者已经把这个 Attempt 从「在跑」表里摘掉，
+/// 事件仍会从同一个宿主送到连接关闭；不会因为收尾而把半轮事件截断。
+pub struct TaskLive {
+    pub host: Arc<ServiceHost>,
+    pub events: broadcast::Receiver<ServiceEvent>,
+    pub agent_events: broadcast::Receiver<AgentEvent>,
 }
 
 /// 任务执行者：效果泵、ThinAgent 会话和任务工具的共享状态。
@@ -113,31 +135,19 @@ impl TaskRuntime {
     /// 任务对话的只读快照：头部来自任务聚合，事件来自当前 Attempt 的会话日志。
     ///
     /// 只读打开：不创建会话、不拿写者锁；会话日志缺失/损坏时把原因带进可读错误。
-    /// 分页照 events 的预算（50 条消息/2 轮/500 上限），`lastSeq` 始终是日志末端。
+    /// 分页照 events 的预算（500 条消息/2 轮/50 条下限），`lastSeq` 始终是日志末端。
     pub(crate) fn task_read(
         &self,
         request: TaskReadRequest,
     ) -> Result<TaskReadResponse, ServiceError> {
-        let task = self
-            .store
-            .task(&TaskId::from(request.task_id.as_str()))
-            .map_err(|error| ServiceError::TaskUnavailable(format!("任务读不出来：{error}")))?
-            .ok_or_else(|| {
-                ServiceError::TaskUnavailable(format!("找不到这个任务：{}", request.task_id))
-            })?;
-        let conversation = task
-            .latest_attempt()
-            .and_then(|attempt| attempt.conversation.as_ref())
-            .ok_or_else(|| {
-                ServiceError::TaskUnavailable("这个任务还没开跑，没有可看的对话".to_owned())
-            })?;
+        let (task, _attempt, conversation) = self.task_attempt(&request.task_id)?;
         let session_id = SessionId::parse(conversation.as_str()).map_err(|error| {
             ServiceError::TaskUnavailable(format!("任务对话的会话 id 不合法：{error}"))
         })?;
         let snapshot = session::SessionStore::open_read_only(&self.data_dir, &session_id)
             .map_err(|error| ServiceError::TaskUnavailable(format!("任务对话打不开：{error}")))?;
         let all = snapshot.events();
-        let (selected, _) = page_events(all, request.before_seq, 50, None, None);
+        let (selected, _) = page_events(all, request.before_seq, 500, None, None);
         Ok(TaskReadResponse {
             task: TaskReadHeader {
                 id: task.id.as_str().to_owned(),
@@ -148,10 +158,89 @@ impl TaskRuntime {
                 model: task.model.model.clone(),
                 tools: task.tools.clone(),
                 attempts: task.runs.iter().map(|run| run.attempts.len() as u64).sum(),
-                reported_at: task.latest_report().map(|report| report.at),
+                // waiting 不是终态：report 只把会话移出「在跑」，之后 task_status 会起新的一轮；
+                // 页面只能拿终态报告的时间收尾没有 turn/end 的最后一轮。
+                reported_at: task
+                    .latest_report()
+                    .filter(|report| {
+                        matches!(
+                            report.state,
+                            ReportState::Ready | ReportState::Blocked | ReportState::Failed
+                        )
+                    })
+                    .map(|report| report.at),
             },
             events: selected.iter().map(|event| service_event(event)).collect(),
             last_seq: all.last().map(|event| event.seq).unwrap_or(0),
+        })
+    }
+
+    /// 任务当前 Attempt 的会话：读任务聚合、取最近一次 Attempt 和它的会话。
+    fn task_attempt(
+        &self,
+        task_id: &str,
+    ) -> Result<(Task, AttemptId, ConversationId), ServiceError> {
+        let task = self
+            .store
+            .task(&TaskId::from(task_id))
+            .map_err(|error| ServiceError::TaskUnavailable(format!("任务读不出来：{error}")))?
+            .ok_or_else(|| ServiceError::TaskUnavailable(format!("找不到这个任务：{task_id}")))?;
+        let (attempt_id, conversation) = {
+            let attempt = task.latest_attempt().ok_or_else(|| {
+                ServiceError::TaskUnavailable("这个任务还没开跑，没有可看的对话".to_owned())
+            })?;
+            let conversation = attempt.conversation.clone().ok_or_else(|| {
+                ServiceError::TaskUnavailable("这个任务还没开跑，没有可看的对话".to_owned())
+            })?;
+            (attempt.id, conversation)
+        };
+        Ok((task, attempt_id, conversation))
+    }
+
+    /// `/ws?task=` 的打开面：补齐 `lastSeq` 之后的日志；任务还在跑时带上 live 订阅。
+    ///
+    /// 先订阅、再 follow：补齐和 live 之间不留缝；同一段事件由调用方按 seq 去重。
+    /// 任务不在「在跑」表里（终态收尾 / 未开跑）时只读补齐，不出 live 帧。
+    pub async fn task_stream(
+        &self,
+        task_id: &str,
+        last_seq: u64,
+    ) -> Result<TaskStream, ServiceError> {
+        let (task, attempt, conversation) = self.task_attempt(task_id)?;
+        let session_id = SessionId::parse(conversation.as_str()).map_err(|error| {
+            ServiceError::TaskUnavailable(format!("任务对话的会话 id 不合法：{error}"))
+        })?;
+        if let Some(running) = self.running_for(&task.id, attempt) {
+            let host = running.host;
+            let events = host.subscribe_events();
+            let agent_events = host.subscribe_agent_events();
+            let follow = host.follow(FollowRequest { last_seq }).await?;
+            return Ok(TaskStream {
+                session_id: conversation.as_str().to_owned(),
+                follow,
+                live: Some(TaskLive {
+                    host,
+                    events,
+                    agent_events,
+                }),
+            });
+        }
+        let snapshot = session::SessionStore::open_read_only(&self.data_dir, &session_id)
+            .map_err(|error| ServiceError::TaskUnavailable(format!("任务对话打不开：{error}")))?;
+        let events: Vec<ServiceEvent> = snapshot
+            .events()
+            .iter()
+            .filter(|event| event.seq > last_seq)
+            .map(service_event)
+            .collect();
+        let end = events.last().map(|event| event.seq).unwrap_or(last_seq);
+        Ok(TaskStream {
+            session_id: conversation.as_str().to_owned(),
+            follow: FollowResponse {
+                events,
+                last_seq: end,
+            },
+            live: None,
         })
     }
 
