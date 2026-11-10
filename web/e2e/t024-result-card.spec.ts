@@ -55,6 +55,10 @@ test('结果卡 ready：有结果、标题截到 20 字、刷新还在、Kind �
     await expect(card).toContainText(READY_SUMMARY);
     await expect(card.getByRole('button', { name: /打开任务对话/ })).toBeVisible();
     await expect(card).not.toContainText('完成');
+    // relay 自己的消息气泡被卡片代替，原始 JSON 不再出现在页面上。
+    await expect(
+      page.locator('[data-kind="user-bubble"]').filter({ hasText: 'task_report' }),
+    ).toHaveCount(0);
 
     // relay 之后 Kind 的回答不能把 relay JSON 或摘要整段复述出来。
     const answer = page.locator('[data-kind="assistant-answer"]').last();
@@ -129,7 +133,7 @@ test('结果卡 waiting：等报告，摘要用 ThinAgent 最后那句话', asyn
   }
 });
 
-test('结果卡 缺项：没开跑，摘要由程序写、写明缺什么', async ({ page }) => {
+test('结果卡 缺项：没开跑，摘要写明缺什么', async ({ page }) => {
   const fixture = await startKernelFixture({ taskResult: 'missing' });
   try {
     await page.goto(urlOf(fixture));

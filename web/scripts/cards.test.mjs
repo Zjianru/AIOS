@@ -917,6 +917,17 @@ const cardBlockedPackage = taskEnvelope(
 assert.equal(cardBlockedPackage.slots.status, '没开跑', '同样是 blocked，origin=package 是没开跑');
 assert.equal(cardBlockedPackage.slots.question, undefined);
 
+// 同一段文字换了 origin 就换状态：卡片不读摘要内容去判状态（D73）。
+const sameAgent = taskEnvelope(
+  relayMessage({ state: 'blocked', origin: 'agent', summary: '同一段话' }),
+);
+const samePackage = taskEnvelope(
+  relayMessage({ state: 'blocked', origin: 'package', summary: '同一段话' }),
+);
+assert.equal(sameAgent.slots.status, '卡住了');
+assert.equal(samePackage.slots.status, '没开跑');
+assert.equal(sameAgent.slots.summary.text, samePackage.slots.summary.text);
+
 const cardFailed = taskEnvelope(
   relayMessage({ state: 'failed', origin: 'agent', summary: '文档站打不开，已经试过两次。' }),
 );
