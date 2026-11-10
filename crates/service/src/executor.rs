@@ -1144,7 +1144,7 @@ impl TaskRuntime {
         let attempt_id = attempt.id;
         if mode == StopMode::AfterReport {
             let conversation = running.host.agent().id().clone();
-            let request_id = format!("task-stop:{}:{}", id, attempt_id);
+            let request_id = format!("task-stop:{id}:{attempt_id}");
             running
                 .host
                 .send_message(
