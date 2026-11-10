@@ -166,7 +166,7 @@ fn stage_ignores_a_late_report_from_an_older_attempt() {
     finish_launch(&store);
     let first = store.begin_attempt(&task.id, T0 + 1).unwrap();
     store
-        .end_attempt(&task.id, first, T0 + 2, AttemptEnd::Ended)
+        .end_attempt(&task.id, first, T0 + 2, AttemptEnd::Reported)
         .unwrap();
     let second = store.begin_attempt(&task.id, T0 + 3).unwrap();
     store
@@ -203,4 +203,40 @@ fn stage_needs_conditions_when_missing_outranks_a_ready_report() {
         .unwrap();
 
     assert_eq!(store.stage(&task.id).unwrap(), Stage::NeedsConditions);
+}
+
+#[test]
+fn stage_needs_conditions_after_a_stopped_attempt() {
+    let (_directory, store) = open_store();
+    let task = create(&store);
+    finish_launch(&store);
+    let attempt = store.begin_attempt(&task.id, T0 + 1).unwrap();
+    store
+        .end_attempt(&task.id, attempt, T0 + 2, AttemptEnd::Stopped)
+        .unwrap();
+
+    assert_eq!(
+        store.stage(&task.id).unwrap(),
+        Stage::NeedsConditions,
+        "最近 Attempt 以 stopped 结束且没有新 Attempt → 待补足条件（已停止）"
+    );
+}
+
+#[test]
+fn stage_recovers_when_a_new_attempt_starts_after_a_stop() {
+    let (_directory, store) = open_store();
+    let task = create(&store);
+    finish_launch(&store);
+    let first = store.begin_attempt(&task.id, T0 + 1).unwrap();
+    store
+        .end_attempt(&task.id, first, T0 + 2, AttemptEnd::Stopped)
+        .unwrap();
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::NeedsConditions);
+
+    store.begin_attempt(&task.id, T0 + 3).unwrap();
+    assert_eq!(
+        store.stage(&task.id).unwrap(),
+        Stage::Running,
+        "新 Attempt 后不再算已停止"
+    );
 }
