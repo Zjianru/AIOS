@@ -511,3 +511,19 @@ fn schema_of(tool: &dyn Tool) -> ToolSchema {
         defer_loading: false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{ToolContext, ToolSessionState};
+    use std::sync::Arc;
+
+    #[test]
+    fn tool_context_exposes_the_session_id_read_only() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let context = ToolContext::with_session(
+            data_dir.path(),
+            Arc::new(ToolSessionState::new(data_dir.path(), "session-1")),
+        );
+        assert_eq!(context.session_id(), Some("session-1"));
+    }
+}
