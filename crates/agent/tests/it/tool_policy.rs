@@ -188,3 +188,33 @@ async fn unknown_names_in_only_are_invalid_config() {
         "组装失败不留下会话文件"
     );
 }
+
+#[tokio::test]
+async fn policy_prompt_is_appended_at_the_end_of_the_system_prompt() {
+    let server = MockServer::start().await;
+    mount(&server, vec![FINAL_TEXT_SSE.to_owned()]).await;
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let policy = "Product rule: you route work and never execute it yourself.";
+    let mut open = options(
+        data_dir.path(),
+        cwd.path(),
+        &server.uri(),
+        None,
+        ToolPolicy::default(),
+    );
+    open.policy_prompt = Some(policy.to_owned());
+
+    let agent = Agent::open(open).await.expect("追加规则不影响组装");
+    agent
+        .send(UserMessage::text("你好"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    wait_idle(&agent, 10).await;
+    let body = request_body(&server, 0).await;
+    let system = body["system"].as_str().expect("请求带系统提示");
+    assert!(
+        system.ends_with(&format!("\n\n{policy}")),
+        "产品规则要在系统提示末尾：{system}"
+    );
+}
