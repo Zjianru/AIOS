@@ -9,16 +9,17 @@
 
 use credentials::ConnectionInfo;
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// 厂商币种的余额（原样用厂商给的币种）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct BalanceInfo {
     pub currency: String,
     pub amount: f64,
 }
 
 /// 套餐余量（MiniMax Coding Plan：5 小时窗口 / 每周的剩余百分比）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct PlanQuota {
     /// 当前 5 小时窗口剩余百分比（0–100）。
     #[serde(

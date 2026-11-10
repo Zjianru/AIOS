@@ -17,6 +17,8 @@ reqwest = { version = "0.12.28", default-features = false, features = ["rustls-t
 htmd = "0.5.6"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# 从 Rust 的线上类型生成页面的 .ts（只做 derive 与导出；MIT，维护中）。
+ts-rs = { version = "=12.0.1", features = ["serde-compat", "serde-json-impl", "no-serde-warnings"] }
 clap = { version = "4.5", features = ["derive"] }
 uuid = { version = "1.26", features = ["v4"] }
 thiserror = "2.0"

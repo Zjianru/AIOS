@@ -7,11 +7,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::{Message, MessageId, ToolSchema};
 
 /// 路由声明支持的对话中途工具更新模式。AIOS 只认 `addition-only`（不做移除/in-history）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
 pub enum ToolUpdate {
     AdditionOnly,

@@ -16,6 +16,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 use zeroize::Zeroize;
 
 use crate::atomic::create_private_dir;
@@ -88,7 +89,7 @@ impl std::fmt::Debug for IssuedSecret {
 ///
 /// 线上和存储都用 camelCase，和目录的 `ModelInfo` 是同一套字段名，页面读一处就够。
 /// 旧存储的 `context_window`/`max_tokens` 和旧连接的 `price` 用 alias 照读，老数据不用迁移。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelRow {
     pub id: String,
@@ -140,7 +141,7 @@ pub struct NewConnection {
 }
 
 /// 连接的描述，不含 key 正文。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConnectionInfo {
     pub id: String,
     pub name: String,
@@ -208,7 +209,7 @@ fn normalize_info(info: &mut ConnectionInfo) {
 }
 
 /// 「连接可用」的验证状态；已保存和最近一次验证分开记。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum CheckState {
     #[default]
@@ -230,7 +231,7 @@ pub enum CheckResult {
 }
 
 /// 一条签发记录：只追加，不记正文。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct IssueRecord {
     pub id: u64,
     pub at: u64,
@@ -243,7 +244,7 @@ pub struct IssueRecord {
 }
 
 /// 钥匙文件的位置和当前问题（读不出来时才有 problem）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct KeyFileInfo {
     pub path: PathBuf,
     pub since: u64,
@@ -252,7 +253,7 @@ pub struct KeyFileInfo {
 }
 
 /// 工具凭证的「存没存」和保存时间；没有 key 正文。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolKeyInfo {
     pub saved: bool,
@@ -261,14 +262,14 @@ pub struct ToolKeyInfo {
 }
 
 /// 设置页「联网搜索」一节看到的事实：存没存、上次验证结果。没有 key 正文。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ToolKeyView {
     pub key: ToolKeyInfo,
     pub check: CheckState,
 }
 
 /// 设置页/CLI 看的视图；没有任何 key 正文。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct KeyringView {
     pub connections: Vec<ConnectionInfo>,
     pub key_file: KeyFileInfo,

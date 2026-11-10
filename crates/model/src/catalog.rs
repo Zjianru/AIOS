@@ -11,6 +11,7 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+use ts_rs::TS;
 
 use crate::ToolUpdate;
 
@@ -170,7 +171,7 @@ pub fn levels(provider: &CatalogProvider, model: &CatalogModel) -> Vec<String> {
 /// 目录给一个模型的可展示字段（T012.5）。
 ///
 /// 线上字段用 camelCase：页面（设置页的获取面板、选择器）直接读，四类价格不另起名字。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
     pub id: String,

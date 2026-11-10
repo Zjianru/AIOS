@@ -2,18 +2,19 @@
 //! 只放数据形状和序列化，不放行为。
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::{fx, quota, stats};
 
 /// 服务对象：固定 Kind 根会话（16b 换成根会话实体）；第一版用会话 id 表达。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct Object {
     #[serde(rename = "sessionId")]
     pub session_id: String,
 }
 
 /// 投递方式（服务协议里用稳定的 kebab-case 名）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
 pub enum DeliveryMode {
     /// 下一轮：这一轮结束后自动开新一轮。
@@ -35,7 +36,7 @@ impl From<DeliveryMode> for agent::Delivery {
 }
 
 /// 一次调用（载体把线上请求解码成它）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "method", rename_all = "kebab-case")]
 pub enum Call {
     Send(SendRequest),
@@ -95,7 +96,7 @@ pub enum Call {
 }
 
 /// 调用的结果（与 Call 一一对应）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "method", rename_all = "kebab-case")]
 pub enum Response {
     Send(SendResponse),
@@ -142,7 +143,7 @@ pub enum Response {
 }
 
 /// 发消息（DSH session-controller 的 prompt）。requestId 是幂等键：同一 id 只进一次。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct SendRequest {
     #[serde(rename = "requestId")]
     pub request_id: String,
@@ -161,7 +162,7 @@ pub struct SendRequest {
 }
 
 /// 发送消息时引用的一个附件（服务端解析成只读副本路径）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct SendAttachment {
     pub id: String,
     pub name: String,
@@ -169,7 +170,7 @@ pub struct SendAttachment {
 }
 
 /// 画布放进输入框的那一句带来的画布（页面从日志的 meta.canvas 拿 id 和标题）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct SendCanvas {
     pub id: String,
     pub title: String,
@@ -180,7 +181,7 @@ fn default_delivery() -> DeliveryMode {
 }
 
 /// 发消息的受理回执（重复 requestId 返回原始受理，duplicate=true）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct SendResponse {
     #[serde(rename = "requestId")]
     pub request_id: String,
@@ -189,16 +190,16 @@ pub struct SendResponse {
 }
 
 /// 取消当前轮（不丢 pending inbox）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 pub struct CancelRequest {}
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct CancelResponse {
     pub cancelled: bool,
 }
 
 /// 一条答案（{id, selected[], custom?}）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceAnswer {
     #[serde(rename = "questionId")]
     pub question_id: String,
@@ -208,12 +209,12 @@ pub struct ServiceAnswer {
 }
 
 /// 回答整批（一次调用覆盖一批问题；逐题走 Agent::answer，全部被接受才算成功）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct AnswerRequest {
     pub answers: Vec<ServiceAnswer>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct AnswerResponse {
     pub applied: usize,
 }
@@ -223,24 +224,24 @@ pub struct AnswerResponse {
 /// 再写 question/cancelled 并移除。DSH 没有对应的 Remote 方法（关闭面板不发请求，靠
 /// timed wait 超时；见 user-questions README 第 35、40 行），
 /// 这里是按撤销语义做的适配，不假装与 DSH 相同。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 pub struct DismissQuestionsRequest {}
 
 /// 关掉不答的回执：是否确实有待答问题被撤掉（没有待答问题时 false）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct DismissQuestionsResponse {
     pub dismissed: bool,
 }
 
 /// 手动压缩（DSH command-compact）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 pub struct CompactRequest {
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "commandId")]
     pub command_id: Option<String>,
 }
 
 /// 压缩计数（有可压缩历史才 Some）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct CompactCounts {
     #[serde(rename = "shadowedItems")]
     pub shadowed_items: usize,
@@ -248,17 +249,17 @@ pub struct CompactCounts {
     pub shadowed_tokens: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct CompactResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compacted: Option<CompactCounts>,
 }
 
 /// 被动状态（DSH state 的第一版子集）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 pub struct StatusRequest {}
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct StatusResponse {
     pub object: Object,
     pub running: bool,
@@ -279,14 +280,14 @@ pub struct StatusResponse {
 }
 
 /// follow（DSH :607）：带上调用方最后看到的日志序号，服务补齐之后的事件。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 pub struct FollowRequest {
     /// 调用方已持有的最后序号（0 = 从头补齐）。
     #[serde(default, rename = "lastSeq")]
     pub last_seq: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct FollowResponse {
     /// seq > last_seq 的事件（按日志顺序、连续、不重复）。
     pub events: Vec<ServiceEvent>,
@@ -296,7 +297,7 @@ pub struct FollowResponse {
 }
 
 /// events（DSH :540）：往回翻一页日志，按轮对齐、有预算（默认 50/2/500）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 pub struct EventsRequest {
     /// 页的末端（不含本条）；省略 = 当前日志末端之后。
     #[serde(default, skip_serializing_if = "Option::is_none", rename = "beforeSeq")]
@@ -320,10 +321,10 @@ pub struct EventsRequest {
     pub min_turns: Option<usize>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 pub struct RecheckRequest {}
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct RecheckResponse {
     pub root: RootState,
     /// 根不可用时没有 ready 帧，页面靠这里的 host.home 缩写说明页里的路径。
@@ -331,7 +332,7 @@ pub struct RecheckResponse {
     pub host: HostLocation,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct EventsResponse {
     /// 这一页事件（按日志顺序；页首通常是 turn/start，除非预算或日志耗尽先到）。
     pub events: Vec<ServiceEvent>,
@@ -341,7 +342,7 @@ pub struct EventsResponse {
 }
 
 /// 失败原因分类：页面失败块按这个分类写文案，不按 code 猜。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
 pub enum FailureCause {
     /// 凭证问题（401 / 没配 key）；Keyring 问题另算。
@@ -357,23 +358,25 @@ pub enum FailureCause {
 /// 服务事件：严格来自会话日志事实（seq 连续、type 是日志事件类型、data 是事件字段）。
 /// cause 是只增的派生字段：只有 turn/end 的 error 事件带，取值来自日志里的 code，
 /// 页面拿它选失败块文案，不在页面上推算。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ServiceEvent {
     pub seq: u64,
     /// 日志事件发生时间（unix 毫秒；页面工作过程开始时间从这里取）。
     pub time: u64,
     #[serde(rename = "type")]
     pub event_type: String,
+    // 日志事件的 data 由各事件类型决定，页面按未知字段读；不把 serde_json::Value 导成联合类型。
+    #[ts(type = "Record<string, unknown>")]
     pub data: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cause: Option<FailureCause>,
 }
 
 /// 设置页读模型连接（空请求体）。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ModelSettingsRequest {}
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ModelSettingsResponse {
     /// Keyring 视图：旧字段原样保留，页面照旧读。
     pub settings: credentials::KeyringView,
@@ -392,7 +395,7 @@ pub struct ModelSettingsResponse {
 }
 
 /// 一个连接存下的厂商模型列表（获取时按连接存；页面小标签用它）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ListedModels {
     /// 存下这份列表的时间（Unix 秒）。
     #[serde(rename = "fetchedAt")]
@@ -401,26 +404,26 @@ pub struct ListedModels {
 }
 
 /// 整表替换屏蔽规则（空表 = 都不屏蔽）。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct DisabledModelsSetRequest {
     #[serde(default)]
     pub models: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct DisabledModelsSetResponse {
     /// 规范化后的整表：去首尾空白、丢空规则、不分大小写去重，保持原来的顺序。
     pub models: Vec<String>,
 }
 
 /// 查一条规则现在匹配到哪些模型、谁在用。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct DisabledModelsCheckRequest {
     #[serde(default)]
     pub pattern: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct DisabledModelsCheckResponse {
     /// 现在匹配到的「连接/模型」。
     pub hits: Vec<String>,
@@ -428,7 +431,7 @@ pub struct DisabledModelsCheckResponse {
 }
 
 /// 谁在用（只列当前 Kind 对话与新会话；任务、角色、日历以后加）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum DisabledModelUser {
     /// 当前 Kind 对话；`running` = 有一轮正在跑。
@@ -438,7 +441,8 @@ pub enum DisabledModelUser {
 }
 
 /// 存/换连接；apiKey 只在请求体里，任何响应不带。
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
+#[ts(optional_fields)]
 pub struct ConnectionSaveRequest {
     pub id: String,
     pub name: String,
@@ -454,7 +458,7 @@ pub struct ConnectionSaveRequest {
     pub auth_header: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConnectionSaveResponse {
     pub connection: credentials::ConnectionInfo,
 }
@@ -464,7 +468,7 @@ pub struct ConnectionSaveResponse {
 /// 看一眼只补目录字段（价格、窗口、档）：不写盘，也不挪动「新」的基准；获取成功才把这次
 /// 的厂商列表存下来。两者混在一起的话，打开选择器或设置页就会把列表存掉，用户看不到「新」。
 /// 缺这个字段的旧页面按「获取」处理：它们只有「获取」这一个入口，行为不变。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 #[serde(rename_all = "kebab-case")]
 pub enum AvailableModelsMode {
     /// 用户按了「获取可用模型」：厂商返回成功就存下这次的列表，下一次拿它当基准。
@@ -475,7 +479,7 @@ pub enum AvailableModelsMode {
 }
 
 /// 获取某连接的可用模型。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 pub struct AvailableModelsRequest {
     pub id: String,
     /// 看一眼还是获取；见 [`AvailableModelsMode`]。
@@ -483,7 +487,7 @@ pub struct AvailableModelsRequest {
     pub mode: AvailableModelsMode,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct AvailableModelsResponse {
     pub models: Vec<AvailableModelRow>,
     /// 厂商 /v1/models 是否成功；失败时只给目录/用户模型。
@@ -491,7 +495,7 @@ pub struct AvailableModelsResponse {
 }
 
 /// 可用模型的一行：目录字段（camelCase）不变，另加这次的「新」。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct AvailableModelRow {
     #[serde(flatten)]
     pub model: model::catalog::ModelInfo,
@@ -500,54 +504,54 @@ pub struct AvailableModelRow {
     pub fresh: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConnectionDeleteRequest {
     pub id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConnectionDeleteResponse {
     pub deleted: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct KeyringRelocateRequest {
     pub to: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct KeyringRelocateResponse {}
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct KeyringReopenRequest {
     pub at: String,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct KeyringReopenResponse {}
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct KeyringRestartRequest {}
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct KeyringRestartResponse {
     pub settings: credentials::KeyringView,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct IssuesRequest {}
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct IssuesResponse {
     #[serde(rename = "issuedToday")]
     pub issued_today: u64,
     pub issues: Vec<credentials::IssueRecord>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct FirstUseRequest {}
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct FirstUseResponse {
     #[serde(rename = "firstUse")]
     pub first_use: bool,
@@ -556,24 +560,24 @@ pub struct FirstUseResponse {
 }
 
 /// 验证一个连接（空 = 用注册器里的 endpoint/key 发最小请求）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConnectionVerifyRequest {
     pub id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConnectionVerifyResponse {
     pub connection: credentials::ConnectionInfo,
 }
 
 /// 查询连接余额/套餐余量（查不到不报错，字段为空）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ConnectionQuotaRequest {
     pub id: String,
 }
 
 /// 余额（厂商币种）与套餐余量（MiniMax：5 小时窗口/每周剩余百分比）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConnectionQuotaResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub balance: Option<quota::BalanceInfo>,
@@ -585,11 +589,11 @@ pub struct ConnectionQuotaResponse {
 }
 
 /// 设置页「联网搜索」：读/验证/删 Exa 凭证（空请求体）。
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ExaKeyRequest {}
 
 /// 存/换 Exa 的 key；只在这一次请求体里，任何响应不带正文。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ExaKeySaveRequest {
     pub key: String,
 }
@@ -598,20 +602,20 @@ pub struct ExaKeySaveRequest {
 pub type ExaKeyResponse = credentials::ToolKeyView;
 
 /// 写非密钥设置（settings.json）；只碰非密钥设置，不碰 Keyring/连接。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
 pub struct SettingsUpdateRequest {
     /// 币种（usd/cny）；None = 不改。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct SettingsUpdateResponse {
     pub currency: String,
 }
 
 /// 页面异常 / 事件流重连上报：只记 web 的 ops，不进会话日志；正文限长由载体截。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct MonitorReportRequest {
     /// 上报种类；未知值按 page-error 记。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -621,7 +625,7 @@ pub struct MonitorReportRequest {
 }
 
 /// 上报结果（页面不读内容；ok = 已记下）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct MonitorReportResponse {
     pub ok: bool,
 }
@@ -629,7 +633,7 @@ pub struct MonitorReportResponse {
 /// 选模型（连接、模型、想要的档）；只影响下一轮（D26）。
 ///
 /// 三个字段都可选（协议只增）：None = 保持当前值。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
 pub struct SessionModelSelectRequest {
     /// 连接 id（Keyring 里的连接）；None = 保持当前连接。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -647,7 +651,7 @@ pub struct SessionModelSelectRequest {
 }
 
 /// 选择结果：生效的目标选择（下一轮开始用）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct SessionModelSelectResponse {
     pub connection: String,
     pub model: String,
@@ -661,7 +665,7 @@ pub struct SessionModelSelectResponse {
 /// 确认卡上的一个动作：确认一项，或者暂不。
 ///
 /// 卡片由 propose_action 的 call id 定位；option 是选项 id（暂不不需要）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct CardActRequest {
     #[serde(rename = "callId")]
     pub call_id: String,
@@ -671,7 +675,7 @@ pub struct CardActRequest {
 }
 
 /// 确认卡上的两个按钮；按钮文案和动作由程序定，模型给不了。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
 pub enum CardVerb {
     Confirm,
@@ -679,14 +683,14 @@ pub enum CardVerb {
 }
 
 /// 动作的受理结果：已经记过的决定原样带回（重复点击不重复执行）；没有动作时为 None。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct CardActResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<session::CardDecision>,
 }
 
 /// 存一份文字附件（data 是 base64 的原始字节）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct AttachmentPutRequest {
     pub name: String,
     /// base64 编码的内容；不规范直接拒收（request/invalid）。
@@ -694,7 +698,7 @@ pub struct AttachmentPutRequest {
 }
 
 /// 存好后的附件 id（sha256:<64hex>）与字节数。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct AttachmentPutResponse {
     pub id: String,
     pub name: String,
@@ -702,13 +706,13 @@ pub struct AttachmentPutResponse {
 }
 
 /// 按 id 读回附件。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct AttachmentGetRequest {
     pub id: String,
 }
 
 /// 读回的附件（文字文件附全文；二进制不进仓库，text 为 None 兼容旧数据）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct AttachmentGetResponse {
     pub name: String,
     pub bytes: u64,
@@ -717,27 +721,28 @@ pub struct AttachmentGetResponse {
 }
 
 /// @ 文件候选（query 是 @ 后面那段；空就是列前面的）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
 pub struct FileReferencesListRequest {
     #[serde(default)]
     pub query: String,
 }
 
 /// 一个候选（相对工作目录的路径 + 内容字节数）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct FileReferenceEntry {
     pub path: String,
     pub bytes: u64,
 }
 
 /// @ 文件候选列表。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
 pub struct FileReferencesListResponse {
     pub references: Vec<FileReferenceEntry>,
 }
 
 /// 编辑连接，只改 endpoint/model（不换 key）。
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, TS)]
+#[ts(optional_fields)]
 pub struct ConnectionUpdateRequest {
     pub id: String,
     pub endpoint: String,
@@ -750,18 +755,18 @@ pub struct ConnectionUpdateRequest {
     pub auth_header: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConnectionUpdateResponse {
     pub connection: credentials::ConnectionInfo,
 }
 
 /// 撤销 key（连接保留，之后签发失败）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConnectionRevokeRequest {
     pub id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConnectionRevokeResponse {
     pub connection: credentials::ConnectionInfo,
 }
@@ -789,7 +794,7 @@ pub struct ConnectionRevokeResponse {
 pub const PROTOCOL_VERSION: u64 = 9;
 
 /// 根会话不可用的种类：服务照常起，ready 报出来，方法一律拒绝。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
 pub enum RootUnavailableKind {
     /// 状态文件记过会话 id，但会话日志不见了。
@@ -803,7 +808,7 @@ pub enum RootUnavailableKind {
 }
 
 /// 根会话状态：ready 里原样给页面，用于五种说明页。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "state", rename_all = "kebab-case")]
 pub enum RootState {
     Ok,
@@ -818,14 +823,14 @@ pub enum RootState {
 }
 
 /// 上下文占用：服务从日志里的 usage + 模型配置的窗口算，页面不推算。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ContextUsage {
     pub used: u64,
     pub window: u64,
 }
 
 /// 宿主机的位置（ready 帧的 host）：页面只用 home 把路径缩写成 ~/…。
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, TS)]
 pub struct HostLocation {
     /// 宿主进程的 HOME（没有就不给；页面只在有值时缩写）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -833,7 +838,7 @@ pub struct HostLocation {
 }
 
 /// ready/status 里给页面的宿主信息（协议版本 + 根会话状态 + 上下文占用 + 宿主位置）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct HostInfo {
     #[serde(rename = "protocolVersion")]
     pub protocol_version: u64,

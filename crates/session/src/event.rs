@@ -2,6 +2,7 @@
 
 use model::{AssistantStreamRecord, ContentBlock, Message, ToolSchema, Usage};
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 use crate::SessionId;
 
@@ -545,7 +546,7 @@ pub enum EventKind {
 }
 
 /// 确认卡决定的阶段。replaced 不在这里：它由「更新的卡已经出现」推导，不写日志。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
 pub enum CardDecisionPhase {
     Confirmed,
@@ -566,7 +567,7 @@ impl CardDecisionPhase {
 }
 
 /// 一条确认卡决定的内容（写日志与通知模型共用的形状）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct CardDecision {
     #[serde(rename = "callId")]
     pub call_id: String,
@@ -576,6 +577,7 @@ pub struct CardDecision {
     pub action: Option<String>,
     pub phase: CardDecisionPhase,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "Record<string, unknown>")]
     pub data: Option<serde_json::Value>,
 }
 

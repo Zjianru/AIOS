@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+ts-rs.workspace = true
 model = { path = "../model" }
 serde.workspace = true
 serde_json.workspace = true
