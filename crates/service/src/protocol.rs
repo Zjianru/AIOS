@@ -47,6 +47,8 @@ pub enum Call {
     Status(StatusRequest),
     Follow(FollowRequest),
     Events(EventsRequest),
+    /// 只读打开一个任务当前 Attempt 的会话（头部 + 一页事件）。
+    TaskRead(TaskReadRequest),
     /// 页面没接住的异常 / 事件流重连（只记 web 监控 ops，不进会话日志）。
     MonitorReport(MonitorReportRequest),
     /// 再检查一次根会话（修好 missing/corrupt/busy 之后回到对话）。
@@ -107,6 +109,8 @@ pub enum Response {
     Status(StatusResponse),
     Follow(FollowResponse),
     Events(EventsResponse),
+    /// 任务对话的头部与一页事件。
+    TaskRead(TaskReadResponse),
     MonitorReport(MonitorReportResponse),
     Recheck(RecheckResponse),
     ModelSettings(ModelSettingsResponse),
@@ -339,6 +343,42 @@ pub struct EventsResponse {
     /// 还有更早的事件（下一轮用 beforeSeq = 页首 seq 往回翻，不含本条）。
     #[serde(rename = "hasMore")]
     pub has_more: bool,
+}
+
+/// task-read：任务对话的头部（任务事实；从 tasks 库读，不从会话日志推）。
+///
+/// 这是页面头部的全部事实：标题、要求、DoD、cwd、冻结的模型、工具名单、Attempt 数。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct TaskReadHeader {
+    pub id: String,
+    pub title: String,
+    pub requirement: String,
+    pub dod: String,
+    pub cwd: String,
+    /// 创建任务时冻结的模型（只给显示名，切换模型不影响它）。
+    pub model: String,
+    pub tools: Vec<String>,
+    pub attempts: u64,
+}
+
+/// task-read：打开任务当前 Attempt 的会话，拿头部和一页事件。
+///
+/// `beforeSeq` 的语义和 events 一样：页的末端（不含本条）；省略 = 日志末端之后。
+/// `lastSeq` 始终是这条会话日志的末端序号（=0 表示日志为空），往上翻页不改它。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct TaskReadRequest {
+    #[serde(rename = "taskId")]
+    pub task_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "beforeSeq")]
+    pub before_seq: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct TaskReadResponse {
+    pub task: TaskReadHeader,
+    pub events: Vec<ServiceEvent>,
+    #[serde(rename = "lastSeq")]
+    pub last_seq: u64,
 }
 
 /// 失败原因分类：页面失败块按这个分类写文案，不按 code 猜。

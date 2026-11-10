@@ -894,6 +894,8 @@ assert.equal(cardReady.slots.status, '有结果');
 assert.equal(cardReady.slots.summary.text, '判重用的是原始链接。');
 assert.equal(cardReady.slots.question, undefined);
 assert.equal(cardReady.slots.at, 100);
+// 「打开任务对话」要用任务 id；它来自 relay 的前缀和 JSON，不进模型槽。
+assert.equal(cardReady.slots.taskId, 'task-1');
 
 // blocked 只看 origin：package 是没开跑，agent 是卡住了；问题进正文槽。
 const cardBlockedAgent = taskEnvelope(

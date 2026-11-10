@@ -1,0 +1,13 @@
+{
+  "routes": [
+    {
+      "contains": "\"name\":\"task_accept\"",
+      "file": "t024-kind.jsonl"
+    },
+    {
+      "contains": "\"name\":\"task_report\"",
+      "file": "t024-thin-chat.jsonl",
+      "paceMs": 80
+    }
+  ]
+}

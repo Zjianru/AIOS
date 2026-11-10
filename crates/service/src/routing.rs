@@ -96,6 +96,8 @@ impl RootHost {
                 .settings_update(request)
                 .await
                 .map(Response::SettingsUpdate),
+            // task-read：任务对话的只读快照（实现前的占位，红测试先编译）。
+            Call::TaskRead(_) => Err(ServiceError::InvalidPath("task-read 尚未实现".to_owned())),
             // 监控上报不依赖根会话（页面报错时根可能正好不可用）；记录在 web 载体。
             Call::MonitorReport(_) => {
                 Ok(Response::MonitorReport(MonitorReportResponse { ok: true }))
