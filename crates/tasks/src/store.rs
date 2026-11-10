@@ -421,8 +421,41 @@ impl Store {
         attempt_id: AttemptId,
         now: i64,
     ) -> Result<StopAttempt, TaskError> {
-        let _ = (id, attempt_id, now);
-        Ok(StopAttempt::AlreadyStopped)
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, id)?;
+        let attempt = task
+            .runs
+            .iter_mut()
+            .flat_map(|run| run.attempts.iter_mut())
+            .find(|attempt| attempt.id == attempt_id)
+            .ok_or_else(|| TaskError::AttemptNotFound {
+                task: id.to_string(),
+                attempt: attempt_id.0,
+            })?;
+        // 旧库可能只有 ended_at、没有 end（end 是后加的值）；那样也算已经结束，不再改写。
+        if attempt.ended_at.is_some() {
+            let outcome = if attempt.end == Some(AttemptEnd::Stopped) {
+                StopAttempt::AlreadyStopped
+            } else {
+                StopAttempt::AlreadyEnded
+            };
+            transaction.commit()?;
+            return Ok(outcome);
+        }
+        attempt.ended_at = Some(now);
+        attempt.end = Some(AttemptEnd::Stopped);
+        save_task(&transaction, &task)?;
+        self.enqueue_effect_in(
+            &transaction,
+            &EffectPayload::Stop {
+                task_id: id.clone(),
+                attempt_id,
+            },
+            now,
+        )?;
+        transaction.commit()?;
+        Ok(StopAttempt::Stopped)
     }
 
     /// 收尾崩溃留下的、没有会话 id 的 Attempt；返回收尾了几个。
