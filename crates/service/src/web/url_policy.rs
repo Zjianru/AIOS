@@ -87,7 +87,7 @@ pub(super) enum BlockedAddress {
 }
 
 impl BlockedAddress {
-    fn message(self) -> &'static str {
+    pub(super) fn message(self) -> &'static str {
         match self {
             Self::Loopback => "这个链接指向本机地址，不能读",
             Self::Private => "这个链接指向内网地址，不能读",
@@ -97,7 +97,7 @@ impl BlockedAddress {
     }
 }
 
-fn classify_address(address: IpAddr) -> Option<BlockedAddress> {
+pub(super) fn classify_address(address: IpAddr) -> Option<BlockedAddress> {
     match address {
         IpAddr::V4(address) => classify_v4(address),
         IpAddr::V6(address) => {

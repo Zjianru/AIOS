@@ -1,8 +1,10 @@
 //! \`web_fetch\` 的行为：URL 规则、地址拦截、同源重定向、charset、HTML 转 Markdown、
 //! 正文截断、超时，以及执行时现查 Keyring（票面测试清单 12、14、故事 10）。
 
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use model::http::HttpEnv;
@@ -26,6 +28,17 @@ fn config(dir: &Path, proxy: &MockServer) -> WebFetchConfig {
             all_proxy: None,
             no_proxy: None,
         },
+        timeout: WEB_FETCH_TIMEOUT,
+    }
+}
+
+/// 直连用的配置：不给代理，域名只能走解析器。
+fn direct_config(dir: &Path) -> WebFetchConfig {
+    WebFetchConfig {
+        data_dir: dir.to_path_buf(),
+        identity: Some(dir.join("identity.txt")),
+        self_addr: None,
+        http: HttpEnv::default(),
         timeout: WEB_FETCH_TIMEOUT,
     }
 }
@@ -476,4 +489,186 @@ async fn web_fetch_times_out() {
     let result = run(&tool, data, "http://203.0.113.10/slow").await;
     assert!(result.is_error, "要报超时：{}", result.content);
     assert!(result.content.contains("超时"), "{}", result.content);
+}
+/// 直连：解析出的地址全过分类才连接；私网地址直接拒绝，查询只做一次。
+#[tokio::test]
+async fn web_fetch_rejects_a_direct_host_that_resolves_to_a_private_address() {
+    let dir = tempfile::tempdir().expect("临时目录");
+    let data = dir.path();
+    save_key(data);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let lookup_calls = Arc::clone(&calls);
+    let tool = WebFetchTool::with_lookup(direct_config(data), move |_host| {
+        let calls = Arc::clone(&lookup_calls);
+        async move {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![IpAddr::from(Ipv4Addr::new(10, 0, 0, 1))])
+        }
+    });
+
+    let result = run(&tool, data, "http://rebind.test/").await;
+    assert!(result.is_error, "直连到内网要拒绝：{}", result.content);
+    assert!(
+        result.content.contains("内网"),
+        "要报内网：{}",
+        result.content
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "域名只查一次");
+}
+
+/// 直连：多个地址里混一个私网，整组拒绝，不交给 reqwest 去挑。
+#[tokio::test]
+async fn web_fetch_rejects_a_direct_host_with_any_private_address() {
+    let dir = tempfile::tempdir().expect("临时目录");
+    let data = dir.path();
+    save_key(data);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let lookup_calls = Arc::clone(&calls);
+    let tool = WebFetchTool::with_lookup(direct_config(data), move |_host| {
+        let calls = Arc::clone(&lookup_calls);
+        async move {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![
+                IpAddr::from(Ipv4Addr::new(203, 0, 113, 9)),
+                IpAddr::from(Ipv4Addr::new(10, 0, 0, 1)),
+            ])
+        }
+    });
+
+    let result = run(&tool, data, "http://mixed.test/").await;
+    assert!(result.is_error, "混一个私网也要拒绝：{}", result.content);
+    assert!(
+        result.content.contains("内网"),
+        "要报内网：{}",
+        result.content
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "域名只查一次");
+}
+
+/// 直连：解析器给的公网地址过了分类，连接确实用这份结果——
+/// 报连不上或超时，不报解析不出来；查询只做一次。
+#[tokio::test]
+async fn web_fetch_connects_with_the_address_from_the_direct_resolver() {
+    let dir = tempfile::tempdir().expect("临时目录");
+    let data = dir.path();
+    save_key(data);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let lookup_calls = Arc::clone(&calls);
+    let mut config = direct_config(data);
+    config.timeout = Duration::from_secs(1);
+    let tool = WebFetchTool::with_lookup(config, move |_host| {
+        let calls = Arc::clone(&lookup_calls);
+        async move {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![IpAddr::from(Ipv4Addr::new(203, 0, 113, 9))])
+        }
+    });
+
+    let result = run(&tool, data, "http://connect.test/").await;
+    assert!(result.is_error, "测试网地址连不上：{}", result.content);
+    assert!(
+        !result.content.contains("解析不出来"),
+        "连接用的是解析器给的地址，不是再查一次：{}",
+        result.content
+    );
+    assert!(
+        result.content.contains("连不上") || result.content.contains("超时"),
+        "要报连接失败或超时：{}",
+        result.content
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1, "域名只查一次");
+}
+
+/// 走代理时域名由代理解析，程序只能在请求前解析一次；查不到就报解析不出来，不发请求。
+#[tokio::test]
+async fn web_fetch_still_resolves_before_using_a_proxy() {
+    let dir = tempfile::tempdir().expect("临时目录");
+    let data = dir.path();
+    save_key(data);
+    let server = MockServer::start().await;
+    let tool = WebFetchTool::new(config(data, &server));
+
+    let result = run(&tool, data, "http://unresolvable.test/").await;
+    assert!(result.is_error, "查不到的域名要拒绝：{}", result.content);
+    assert!(
+        result.content.contains("解析不出来"),
+        "走代理时预检还在：{}",
+        result.content
+    );
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .expect("假代理的请求")
+            .len(),
+        0,
+        "预检失败一条请求都不发"
+    );
+}
+
+/// 保留地址（含 IPv4-mapped、IPv6 组播）用统一文案拒绝；0.0.0.0/8 仍算未指定。
+#[tokio::test]
+async fn web_fetch_rejects_reserved_addresses() {
+    let dir = tempfile::tempdir().expect("临时目录");
+    let data = dir.path();
+    save_key(data);
+    let server = MockServer::start().await;
+    let tool = WebFetchTool::new(config(data, &server));
+    let cases = [
+        ("http://100.64.0.1/", "保留地址"),
+        ("http://192.0.0.1/", "保留地址"),
+        ("http://198.18.0.1/", "保留地址"),
+        ("http://224.0.0.1/", "保留地址"),
+        ("http://240.0.0.1/", "保留地址"),
+        ("http://255.255.255.255/", "保留地址"),
+        ("http://[ff02::1]/", "保留地址"),
+        ("http://[::ffff:100.64.0.1]/", "保留地址"),
+        ("http://[::ffff:198.18.0.1]/", "保留地址"),
+        ("http://0.0.0.1/", "未指定"),
+        ("http://[::ffff:0.0.0.1]/", "未指定"),
+    ];
+
+    for (url, needle) in cases {
+        let result = run(&tool, data, url).await;
+        assert!(result.is_error, "{url} 应该被拒绝：{}", result.content);
+        assert!(
+            result.content.contains(needle),
+            "{url} 的拒绝原因要有「{needle}」：{}",
+            result.content
+        );
+    }
+    assert_eq!(
+        server
+            .received_requests()
+            .await
+            .expect("假代理的请求")
+            .len(),
+        0,
+        "被拒绝的 URL 一条请求都不发"
+    );
+}
+
+/// 文档地址（TEST-NET）不在拒绝表里，照常请求。
+#[tokio::test]
+async fn web_fetch_allows_documentation_addresses() {
+    let dir = tempfile::tempdir().expect("临时目录");
+    let data = dir.path();
+    save_key(data);
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/doc"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw("ok".as_bytes().to_vec(), "text/plain; charset=utf-8"),
+        )
+        .expect(3)
+        .mount(&server)
+        .await;
+    let tool = WebFetchTool::new(config(data, &server));
+
+    for host in ["192.0.2.5", "198.51.100.7", "203.0.113.10"] {
+        let result = run(&tool, data, &format!("http://{host}/doc")).await;
+        assert!(!result.is_error, "{host} 该放行：{}", result.content);
+        assert!(result.content.contains("HTTP 200"), "{}", result.content);
+    }
 }

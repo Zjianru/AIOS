@@ -12,6 +12,7 @@ use tools::{
     Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolKey, ToolResult,
 };
 
+use super::resolver::PublicResolver;
 use super::url_policy::{
     FetchError, WEB_FETCH_MAX_REDIRECTS, check_fetch_address, is_followable_redirect,
     parse_fetch_url, same_origin, validate_parsed_url,
@@ -38,6 +39,8 @@ pub(crate) struct WebFetchConfig {
 pub(crate) struct WebFetchTool {
     parameters: Value,
     config: WebFetchConfig,
+    /// 直连时钉住 DNS 的解析器；测试里可以换查询函数（分类照做）。
+    resolver: PublicResolver,
 }
 
 impl WebFetchTool {
@@ -54,7 +57,20 @@ impl WebFetchTool {
                 "required": ["url"]
             }),
             config,
+            resolver: PublicResolver::new(),
         }
+    }
+
+    /// 测试用：换掉解析器的查询函数，分类照做。
+    #[cfg(test)]
+    pub(crate) fn with_lookup<F, Fut>(config: WebFetchConfig, lookup: F) -> Self
+    where
+        F: Fn(String) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = std::io::Result<Vec<std::net::IpAddr>>> + Send + 'static,
+    {
+        let mut tool = Self::new(config);
+        tool.resolver = PublicResolver::with_lookup(lookup);
+        tool
     }
 
     /// 读一个链接：先过 URL 规则，再按跳解析地址并拦截，最后抓取、解码、转 Markdown。

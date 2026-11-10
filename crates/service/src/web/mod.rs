@@ -10,6 +10,7 @@
 
 mod exa;
 mod fetch;
+mod resolver;
 mod search;
 mod url_policy;
 
