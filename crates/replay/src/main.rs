@@ -7,12 +7,15 @@ use replay::{ReplayScript, start_replay_server};
 #[derive(Debug, Parser)]
 #[command(name = "aios-replay", about = "不花 key 的模型回放（T010）")]
 struct Args {
-    /// 会话日志（JSONL）
+    /// 会话日志（JSONL）；与 --routes 一起用时是不匹配任何路由时的默认脚本
     #[arg(long)]
-    file: PathBuf,
+    file: Option<PathBuf>,
     /// 覆盖文件（可选，默认找同目录 replay.override.json）
     #[arg(long)]
     r#override: Option<PathBuf>,
+    /// 按请求体路由的文件（两个会话的请求交错时各回各的脚本）
+    #[arg(long)]
+    routes: Option<PathBuf>,
     /// 帧之间等多少毫秒（可选）
     #[arg(long)]
     pace_ms: Option<u64>,
@@ -25,8 +28,22 @@ struct Args {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
-    let mut script = ReplayScript::from_log_with_override(&args.file, args.r#override.as_deref())
-        .unwrap_or_else(|error| fail(&error.to_string()));
+    let mut script = match (&args.file, &args.routes) {
+        (Some(file), routes) => {
+            let mut script = ReplayScript::from_log_with_override(file, args.r#override.as_deref())
+                .unwrap_or_else(|error| fail(&error.to_string()));
+            if let Some(routes) = routes {
+                let routed = ReplayScript::from_routes_file(routes)
+                    .unwrap_or_else(|error| fail(&error.to_string()));
+                script.routes = routed.routes;
+            }
+            script
+        }
+        (None, Some(routes)) => {
+            ReplayScript::from_routes_file(routes).unwrap_or_else(|error| fail(&error.to_string()))
+        }
+        (None, None) => fail("需要 --file 或 --routes"),
+    };
     script.pace_ms = args.pace_ms;
     let server = start_replay_server(script)
         .await

@@ -50,8 +50,45 @@ pub struct ReplayScript {
 impl ReplayScript {
     /// 从一份路由文件读脚本：每条路由写 `contains` 和一份会话日志（相对路径按路由文件所在目录解析）。
     pub fn from_routes_file(path: &Path) -> Result<Self, ReplayError> {
-        let _ = path;
-        Err(ReplayError::Format("路由文件还没读".to_owned()))
+        let text = std::fs::read_to_string(path)?;
+        let value: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|error| ReplayError::Format(format!("路由文件不是合法 JSON：{error}")))?;
+        let entries = value
+            .get("routes")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| ReplayError::Format("路由文件缺少 routes 数组".to_owned()))?;
+        if entries.is_empty() {
+            return Err(ReplayError::Format("路由文件的 routes 是空的".to_owned()));
+        }
+        let base = path.parent().unwrap_or_else(|| Path::new("."));
+        let mut routes = Vec::with_capacity(entries.len());
+        for (index, entry) in entries.iter().enumerate() {
+            let number = index + 1;
+            let contains = entry
+                .get("contains")
+                .and_then(serde_json::Value::as_str)
+                .filter(|text| !text.is_empty())
+                .ok_or_else(|| ReplayError::Format(format!("第 {number} 条路由缺少 contains")))?;
+            let file = entry
+                .get("file")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| ReplayError::Format(format!("第 {number} 条路由缺少 file")))?;
+            let override_path = entry
+                .get("override")
+                .and_then(serde_json::Value::as_str)
+                .map(|raw| base.join(raw));
+            let log = Self::from_log_with_override(&base.join(file), override_path.as_deref())?;
+            routes.push(ReplayRoute {
+                contains: contains.to_owned(),
+                calls: log.calls,
+                pace_ms: entry.get("paceMs").and_then(serde_json::Value::as_u64),
+            });
+        }
+        Ok(Self {
+            calls: Vec::new(),
+            pace_ms: None,
+            routes,
+        })
     }
 
     /// 从一份会话日志推脚本（没有覆盖文件）。
