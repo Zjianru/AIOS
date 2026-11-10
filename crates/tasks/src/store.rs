@@ -200,9 +200,18 @@ impl Store {
     /// 记执行者在起跑前查到的任务包缺项；空表示包齐。
     pub fn record_package_check(
         &self,
-        _id: &TaskId,
-        _missing: Vec<MissingItem>,
+        id: &TaskId,
+        missing: Vec<MissingItem>,
     ) -> Result<(), TaskError> {
+        if missing.iter().any(|item| item.as_str().trim().is_empty()) {
+            return Err(TaskError::EmptyMissing);
+        }
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, id)?;
+        task.missing = missing;
+        save_task(&transaction, &task)?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -400,13 +409,26 @@ impl Store {
     }
 
     /// 从任务和效果表派生阶段。
-    pub fn stage(&self, _id: &TaskId) -> Result<Stage, TaskError> {
-        Ok(Stage::Pending)
+    pub fn stage(&self, id: &TaskId) -> Result<Stage, TaskError> {
+        let conn = self.lock()?;
+        let task = load_task_required(&conn, id)?;
+        let launch_queued = effect_pending_in(&conn, EffectKind::Launch, id.as_str())?;
+        Ok(task.stage(launch_queued))
     }
 
     /// 删除一条与 claim 的 seq/generation 仍相等的效果行；返回是否删到。
-    pub fn complete_effect(&self, _claim: &EffectClaim) -> Result<bool, TaskError> {
-        Ok(false)
+    pub fn complete_effect(&self, claim: &EffectClaim) -> Result<bool, TaskError> {
+        let conn = self.lock()?;
+        let changed = conn.execute(
+            "DELETE FROM effect WHERE kind = ?1 AND key = ?2 AND seq = ?3 AND generation = ?4",
+            params![
+                claim.payload.kind().as_str(),
+                claim.key,
+                claim.seq,
+                claim.generation
+            ],
+        )?;
+        Ok(changed > 0)
     }
 }
 
