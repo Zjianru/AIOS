@@ -60,6 +60,8 @@ pub(crate) struct Inner {
     policy_prompt: Option<String>,
     /// 统一工具入口是否拒绝会等待的调用（Kind 用；默认关）。
     no_wait: bool,
+    /// 收尾停标记：统一工具入口除 task_report 外全拒。只活这个 Agent 实例（一次 Attempt）。
+    stop_after_report: AtomicBool,
 
     pub(crate) model: DeepSeek,
     pub(crate) tools: ToolSet,
@@ -347,6 +349,7 @@ impl Inner {
             tool_keys,
             policy_prompt,
             no_wait: config.no_wait,
+            stop_after_report: AtomicBool::new(false),
             model,
             tools,
             tool_gate,
@@ -571,6 +574,16 @@ impl Inner {
         }
         self.cancel_with(AbortCause::User);
         Ok(())
+    }
+
+    /// 打收尾停标记：统一工具入口之后只放行 task_report。
+    pub(crate) fn set_stop_after_report(&self) {
+        self.stop_after_report.store(true, Ordering::SeqCst);
+    }
+
+    /// 这个会话有没有收尾停标记（服务在 turn 收尾时据此记 stopped）。
+    pub(crate) fn stop_after_report_requested(&self) -> bool {
+        self.stop_after_report.load(Ordering::SeqCst)
     }
 
     /// 取消当前一轮，不动输入队列（钩子取消用）；cause 写进 turn/end。

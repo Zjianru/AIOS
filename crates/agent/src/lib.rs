@@ -545,7 +545,12 @@ impl Agent {
     ///
     /// 标记只活这个 Agent 实例（一次 Attempt）；下一次 Attempt 开的是新会话，不带标记。
     pub fn stop_after_report(&self) {
-        // 骨架：统一工具入口的拒绝规则还没接上，标记暂不生效。
+        self.inner.set_stop_after_report();
+    }
+
+    /// 这个会话有没有收尾停标记。
+    pub fn stop_after_report_requested(&self) -> bool {
+        self.inner.stop_after_report_requested()
     }
 
     /// 本轮冻结的模型（适配器在 begin_turn 时确定）；没有正在跑的一轮时为 None。

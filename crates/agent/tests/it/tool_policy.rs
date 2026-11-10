@@ -10,7 +10,9 @@ use crate::common::{
     FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse,
     tool_calls_with_inputs_sse, wait_idle,
 };
-use agent::{Agent, AgentError, AgentOpenOptions, Delivery, NO_WAIT, STOP_AFTER_REPORT, ToolPolicy};
+use agent::{
+    Agent, AgentError, AgentOpenOptions, Delivery, NO_WAIT, STOP_AFTER_REPORT, ToolPolicy,
+};
 use model::{ContentBlock, UserMessage};
 use session::{EventKind, SessionStore};
 use tools::{Tool, ToolCall, ToolContext, ToolFuture, ToolResult};
@@ -55,7 +57,7 @@ impl Tool for ProbeTool {
         call: ToolCall,
         _context: &'a ToolContext,
     ) -> ToolFuture<'a, ToolResult> {
-        Box::pin(async move { ToolResult::success(call.id, "probe") })
+        Box::pin(async move { ToolResult::success(call.id, call.name) })
     }
 }
 
@@ -425,7 +427,12 @@ async fn stop_after_report_records_each_call_then_denies_everything_but_task_rep
                 }
                 _ => false,
             })
-            .unwrap_or_else(|| panic!("日志里要有 {call_id} 的 tool/{}", if call { "call" } else { "result" }))
+            .unwrap_or_else(|| {
+                panic!(
+                    "日志里要有 {call_id} 的 tool/{}",
+                    if call { "call" } else { "result" }
+                )
+            })
     };
     for call_id in ["call_read", "call_probe", "call_report"] {
         assert!(
@@ -454,7 +461,7 @@ async fn stop_after_report_records_each_call_then_denies_everything_but_task_rep
     }
     let (text, is_error) = result_text("call_report");
     assert_eq!(is_error, None, "task_report 放行");
-    assert_eq!(text.as_deref(), Some("reported"));
+    assert_eq!(text.as_deref(), Some("task_report"));
 }
 
 #[tokio::test]
@@ -535,7 +542,8 @@ async fn a_new_session_does_not_inherit_the_after_report_stop() {
     let (text, is_error) = read_result.expect("下一会话有 read 的结果");
     assert_eq!(is_error, None, "新会话不继承收尾标记");
     assert!(
-        text.as_deref().is_some_and(|text| text.contains("readable")),
+        text.as_deref()
+            .is_some_and(|text| text.contains("readable")),
         "{text:?}"
     );
 }
