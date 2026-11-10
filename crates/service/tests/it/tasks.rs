@@ -1362,7 +1362,11 @@ async fn stopping_a_running_task_persists_the_stop_before_cancelling_and_relays_
     let Response::TaskRead(read) = read else {
         panic!("TaskRead 的响应形状不对");
     };
-    assert!(read.task.running, "在跑的 Attempt 页头是执行中：{:?}", read.task);
+    assert!(
+        read.task.running,
+        "在跑的 Attempt 页头是执行中：{:?}",
+        read.task
+    );
     assert!(!read.task.stopped, "还没停下：{:?}", read.task);
 
     // relay 先不投递：停止后能查效果行还在排队。

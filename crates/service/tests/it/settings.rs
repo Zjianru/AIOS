@@ -2448,7 +2448,9 @@ async fn 设置更新读写执行设置且拒绝越界席位() {
 
     // 页面打开时用全空请求读当前值，不写文件。
     let response = host
-        .dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest::default()))
+        .dispatch(Call::SettingsUpdate(
+            service::SettingsUpdateRequest::default(),
+        ))
         .await
         .expect("读执行设置");
     let service::Response::SettingsUpdate(response) = response else {
