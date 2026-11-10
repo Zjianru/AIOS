@@ -6,7 +6,7 @@
  * 「打开任务对话」用 relay 带来的任务 id 走任务对话路由；卡片自己的状态/文字仍由程序事实决定。
  */
 
-import { ArrowUpRight, CirclePause, CircleX, Hourglass, SearchCheck } from 'lucide-react';
+import { ArrowUpRight, CirclePause, CircleX, Hourglass, SearchCheck, Square } from 'lucide-react';
 import { go } from '@/app/navigate';
 import type { LucideIcon } from 'lucide-react';
 import type { TaskReportState, TaskResultSlots } from '@/data/taskResult';
@@ -20,6 +20,7 @@ const STATE_TONE: Record<TaskReportState, { icon: LucideIcon; tone: string }> = 
   blocked: { icon: CirclePause, tone: 'bg-wait-soft text-wait' },
   failed: { icon: CircleX, tone: 'bg-fail-soft text-fail' },
   waiting: { icon: Hourglass, tone: 'bg-run-soft text-run' },
+  stopped: { icon: Square, tone: 'bg-hover text-ink-2' },
 };
 
 function timeOf(seconds: number): string {

@@ -27,8 +27,12 @@ import type { RootState } from './generated/RootState';
 import type { ServiceAnswer } from './generated/ServiceAnswer';
 import type { SessionModelSelectRequest } from './generated/SessionModelSelectRequest';
 import type { SessionModelSelectResponse } from './generated/SessionModelSelectResponse';
+import type { ExecSettingsView } from './generated/ExecSettingsView';
 import type { SettingsUpdateRequest } from './generated/SettingsUpdateRequest';
+import type { SettingsUpdateResponse } from './generated/SettingsUpdateResponse';
 import type { StatusResponse } from './generated/StatusResponse';
+import type { StopMode } from './generated/StopMode';
+import type { TaskStopResponse } from './generated/TaskStopResponse';
 import type { ToolKeyView } from './generated/ToolKeyView';
 
 // 页面从这里按名字取线上类型；类型本体只有 Rust 一份。
@@ -43,8 +47,11 @@ export type { ServiceEvent } from './generated/ServiceEvent';
 export type { CardVerb };
 export type { ConnectionInfo };
 export type { ConnectionQuotaResponse };
+export type { ExecSettingsView };
 export type { FileReferenceEntry };
 export type { Frame };
+export type { StopMode };
+export type { TaskStopResponse };
 export type { KeyringView };
 export type { ModelSettingsResponse };
 export type { ServiceAnswer };
@@ -251,6 +258,11 @@ export async function taskRead(taskId: string, beforeSeq?: number) {
   });
 }
 
+/** 停一个任务；Kind 的 task_stop 走同一个服务方法。 */
+export async function taskStop(taskId: string, mode: StopMode): Promise<TaskStopResponse> {
+  return post({ method: 'task-stop', taskId, mode });
+}
+
 /** events：往回翻一页日志（T006.16c 的轮对齐预算；打开/往上翻用）。 */
 export async function fetchEventsPage(options: {
   beforeSeq?: number;
@@ -410,10 +422,22 @@ export async function fetchStatus(): Promise<StatusResponse> {
   return post({ method: 'status' });
 }
 
-/** T012.9：写非密钥设置（目前只有 currency）；返回生效的币种。 */
-export async function updateSettings(input: SettingsUpdateRequest): Promise<string> {
-  const response = await post({ method: 'settings-update', ...input });
-  return response.currency;
+/** T012.9：写非密钥设置；返回生效的值（币种 + 执行设置）。 */
+export async function updateSettings(input: SettingsUpdateRequest): Promise<SettingsUpdateResponse> {
+  return post({ method: 'settings-update', ...input });
+}
+
+/** 设置 › 执行：读当前值（全空请求只读，不写文件）。 */
+export async function loadExecSettings(): Promise<ExecSettingsView> {
+  return (await post({ method: 'settings-update' })).exec;
+}
+
+/** 设置 › 执行：只改给出的项；返回生效后的值。 */
+export async function saveExecSettings(patch: {
+  paused?: boolean;
+  seats?: number;
+}): Promise<ExecSettingsView> {
+  return (await post({ method: 'settings-update', ...patch })).exec;
 }
 
 /** 只看一眼可用模型（打开选择器、补价格/窗口/档）：服务端不落盘，「新」的基准也不动。 */
