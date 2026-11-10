@@ -69,8 +69,8 @@ export const useSettingsState = create<SettingsState>()((set, get) => ({
   },
   setCurrency: async (currency) => {
     try {
-      const saved = (await updateSettings({ currency })) as Currency;
-      set((state) => ({ money: { ...state.money, currency: saved } }));
+      const { currency: saved } = await updateSettings({ currency });
+      set((state) => ({ money: { ...state.money, currency: saved as Currency } }));
     } catch {
       toast('币种没保存', { description: '连上内核再试一次' });
     }

@@ -2,9 +2,19 @@
 
 /**
  * 写非密钥设置（settings.json）；只碰非密钥设置，不碰 Keyring/连接。
+ *
+ * 全部字段为 None 时只读当前值（设置页打开时用），不写文件。
  */
 export type SettingsUpdateRequest = {
 /**
  * 币种（usd/cny）；None = 不改。
  */
-currency?: string | null, };
+currency?: string | null,
+/**
+ * 全局暂停；None = 不改。
+ */
+paused?: boolean | null,
+/**
+ * 席位（1–16）；None = 不改。越界由服务拒绝，不写文件。
+ */
+seats?: number | null, };

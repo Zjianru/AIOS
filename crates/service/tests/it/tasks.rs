@@ -10,7 +10,7 @@ use model::DEFAULT_CONTEXT_WINDOW;
 use serde_json::Value;
 use service::{
     Call, CardActRequest, CardVerb, DeliveryMode, DisabledModelsSetRequest, Response, RootHost,
-    SendRequest, SessionModelSelectRequest, StopMode, TaskStopRequest,
+    SendRequest, SessionModelSelectRequest, StopMode, TaskReadRequest, TaskStopRequest,
 };
 use tasks::{AttemptEnd, EffectKind, ReportState, Stage, Store, Task};
 use wiremock::matchers::{method, path};
@@ -1351,6 +1351,24 @@ async fn stopping_a_running_task_persists_the_stop_before_cancelling_and_relays_
     })
     .await;
 
+    // 页头事实：这次 Attempt 正在跑、还没停；这决定「任务」菜单能不能点。
+    let read = host
+        .dispatch(Call::TaskRead(TaskReadRequest {
+            task_id: task.id.as_str().to_owned(),
+            before_seq: None,
+        }))
+        .await
+        .expect("task-read");
+    let Response::TaskRead(read) = read else {
+        panic!("TaskRead 的响应形状不对");
+    };
+    assert!(
+        read.task.running,
+        "在跑的 Attempt 页头是执行中：{:?}",
+        read.task
+    );
+    assert!(!read.task.stopped, "还没停下：{:?}", read.task);
+
     // relay 先不投递：停止后能查效果行还在排队。
     host.task_runtime().expect("runtime").set_pump_paused(true);
     let response = host
@@ -1365,6 +1383,20 @@ async fn stopping_a_running_task_persists_the_stop_before_cancelling_and_relays_
     };
     assert!(stop.stopped, "{stop:?}");
     assert_eq!(stop.stage, "needs_conditions");
+
+    // 停下落库后页头固定：「已停止」、不再在跑；刷新也读得到。
+    let read = host
+        .dispatch(Call::TaskRead(TaskReadRequest {
+            task_id: task.id.as_str().to_owned(),
+            before_seq: None,
+        }))
+        .await
+        .expect("task-read");
+    let Response::TaskRead(read) = read else {
+        panic!("TaskRead 的响应形状不对");
+    };
+    assert!(!read.task.running, "停了就不再跑：{:?}", read.task);
+    assert!(read.task.stopped, "页头固定已停止：{:?}", read.task);
 
     let task = store.task(&task.id).unwrap().unwrap();
     let attempt = task.latest_attempt().expect("Attempt");
@@ -2442,6 +2474,65 @@ fn attempt_in_flight(store: &Store, task_id: &tasks::TaskId) -> bool {
     };
     task.latest_attempt()
         .is_some_and(|attempt| attempt.ended_at.is_none() && attempt.conversation.is_some())
+}
+
+/// 设置 › 执行 的暂停入口（SettingsUpdate）真的关闸：开着时派的任务只排队、不开会话；
+/// 关掉后按排队顺序开跑。不是只写 settings.json。
+#[tokio::test]
+async fn settings_update_pauses_launch_admission() {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    mount(&server, &router).await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let host = open_host(&server, data.path(), cwd.path()).await;
+    let store = tasks_store(data.path());
+
+    host.dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
+        paused: Some(true),
+        ..Default::default()
+    }))
+    .await
+    .expect("暂停");
+
+    let task = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-a",
+        "call-accept-a",
+        1,
+        "甲",
+    )
+    .await;
+    assert!(task.latest_attempt().is_none(), "暂停时不开跑");
+    assert!(
+        store
+            .effect_pending(EffectKind::Launch, task.id.as_str())
+            .unwrap(),
+        "暂停时 launch 留在队列里"
+    );
+    assert!(router.bodies(true).is_empty(), "暂停时不开任务会话");
+
+    for script in ready_scripts() {
+        router.push_thin_for(task.id.as_str(), script);
+    }
+    router.push_kind(crate::common::text_sse("收到"));
+    host.dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
+        paused: Some(false),
+        ..Default::default()
+    }))
+    .await
+    .expect("开闸");
+    wait_until("开闸后任务开跑", || {
+        store
+            .task(&task.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .is_some()
+    })
+    .await;
 }
 
 /// 席位 1：后两个任务在各自前一个报完前只排队，排队不算效果失败；

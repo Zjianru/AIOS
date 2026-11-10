@@ -1282,6 +1282,7 @@ async fn 坏设置文件时三个写设置入口都拒绝且不写() {
     let update = host
         .dispatch(Call::SettingsUpdate(SettingsUpdateRequest {
             currency: Some("cny".to_owned()),
+            ..SettingsUpdateRequest::default()
         }))
         .await;
     assert_settings_unreadable(update);

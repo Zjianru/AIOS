@@ -1,5 +1,6 @@
 /**
- * 任务结果卡：relay 消息（Kind 会话里 request id 以 `task-report:` 开头的 user/message）→ 卡片信封。
+ * 任务结果卡：relay 消息（Kind 会话里 request id 以 `task-report:` 或 `task-stop:` 开头的
+ * user/message）→ 卡片信封。停止 relay 走同一种 JSON 形状，只是 request id 前缀和 state 不同。
  *
  * relay 正文是程序写的 JSON（任务、来源、状态、摘要、问题）。页面只认前缀和 JSON 的形状：
  * 解析不出来就退回普通文本气泡。状态文字由程序按 state + origin 给固定词，卡片不读摘要内容
@@ -17,8 +18,10 @@ import { EMPTY_BODY, bodySlot, labelSlot, optionalBodySlot, textSlot } from '../
 
 /** relay 消息的 request id 前缀（`task-report:<taskId>:<reportId>`）。 */
 export const TASK_REPORT_PREFIX = 'task-report:';
+/** 停止 relay 的 request id 前缀（`task-stop:<taskId>:<attemptId>`）。 */
+export const TASK_STOP_PREFIX = 'task-stop:';
 
-export const TASK_REPORT_STATES = ['ready', 'blocked', 'failed', 'waiting'] as const;
+export const TASK_REPORT_STATES = ['ready', 'blocked', 'failed', 'waiting', 'stopped'] as const;
 export type TaskReportState = (typeof TASK_REPORT_STATES)[number];
 
 export const TASK_REPORT_ORIGINS = ['package', 'agent', 'executor'] as const;
@@ -82,6 +85,9 @@ export function taskStatusOf(state: TaskReportState, origin: TaskReportOrigin): 
       return '失败';
     case 'waiting':
       return '等报告';
+    case 'stopped':
+      // 停止是程序给的固定结果，和 stopping 的那一轮无关（D62、D68）。
+      return '已停止';
     case 'blocked':
       // 包缺项是没开跑；其余 blocked（agent 卡住、执行者派发失败）都算卡住了。
       return origin === 'package' ? '没开跑' : '卡住了';
@@ -97,6 +103,8 @@ function envelopeStateOf(state: TaskReportState): 'pending' | 'running' | 'done'
       return 'failed';
     case 'waiting':
       return 'running';
+    case 'stopped':
+      return 'pending';
     case 'blocked':
       return 'pending';
   }
@@ -145,9 +153,15 @@ export function parseTaskRelay(message: unknown, at: number): TaskResultFact | n
   const source = message.source;
   if (!isRecord(source) || source.kind !== 'user') return null;
   const rpcId = source.rpcId;
-  if (typeof rpcId !== 'string' || !rpcId.startsWith(TASK_REPORT_PREFIX)) return null;
-  // request id 的形状是 task-report:<taskId>:<reportId>，两段都不能空。
-  const parts = rpcId.slice(TASK_REPORT_PREFIX.length).split(':');
+  if (typeof rpcId !== 'string') return null;
+  const prefix = rpcId.startsWith(TASK_REPORT_PREFIX)
+    ? TASK_REPORT_PREFIX
+    : rpcId.startsWith(TASK_STOP_PREFIX)
+      ? TASK_STOP_PREFIX
+      : null;
+  if (prefix === null) return null;
+  // 两种前缀后面都是 <taskId>:<reportId|attemptId>，两段都不能空。
+  const parts = rpcId.slice(prefix.length).split(':');
   if (parts.length < 2 || parts[0] === '' || parts[1] === '') return null;
 
   const content = message.content;

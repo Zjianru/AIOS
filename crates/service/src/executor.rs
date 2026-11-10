@@ -161,7 +161,7 @@ impl TaskRuntime {
         &self,
         request: TaskReadRequest,
     ) -> Result<TaskReadResponse, ServiceError> {
-        let (task, _attempt, conversation) = self.task_attempt(&request.task_id)?;
+        let (task, attempt_id, conversation) = self.task_attempt(&request.task_id)?;
         let session_id = SessionId::parse(conversation.as_str()).map_err(|error| {
             ServiceError::TaskUnavailable(format!("任务对话的会话 id 不合法：{error}"))
         })?;
@@ -179,6 +179,13 @@ impl TaskRuntime {
                 model: task.model.model.clone(),
                 tools: task.tools.clone(),
                 attempts: task.runs.iter().map(|run| run.attempts.len() as u64).sum(),
+                // 在跑表里还开着、而且这一轮真的在跑，菜单才可点；只开着等报告的会话不算。
+                running: self
+                    .running_for(&task.id, attempt_id)
+                    .is_some_and(|running| running.host.agent().is_running()),
+                stopped: task
+                    .latest_attempt()
+                    .is_some_and(|attempt| attempt.end == Some(AttemptEnd::Stopped)),
                 // waiting 不是终态：report 只把会话移出「在跑」，之后 task_status 会起新的一轮；
                 // 页面只能拿终态报告的时间收尾没有 turn/end 的最后一轮。
                 reported_at: task

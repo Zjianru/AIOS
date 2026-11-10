@@ -10,7 +10,7 @@
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ChevronRight, FolderOpen } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, FolderOpen, Square } from 'lucide-react';
 import { toast } from 'sonner';
 import { go } from '@/app/navigate';
 import { useRouteStore } from '@/app/routeStore';
@@ -19,7 +19,14 @@ import {
   displayPath,
   ServiceHttpError,
   taskRead,
+  taskStop,
 } from '@/data/service';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import type { Frame, ServiceEvent } from '@/data/service';
 import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
 import { useStreamStore } from '@/pages/kind/kindStore';
@@ -110,6 +117,79 @@ function Brief({ task }: { task: TaskReadHeader }) {
   );
 }
 
+/** 头部「任务」菜单（D81）：立即停、收尾停；任务没在跑时两项都灰。 */
+function TaskMenu({
+  running,
+  winding,
+  onStopNow,
+  onStopAfterReport,
+}: {
+  running: boolean;
+  winding: boolean;
+  onStopNow: () => void;
+  onStopAfterReport: () => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className="mt-[1px] flex shrink-0 items-center gap-0.5 rounded-btn border border-line-2 px-2 py-0.5 text-2 text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+          data-kind="task-menu"
+        >
+          任务
+          <ChevronDown className="size-3" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-[280px]">
+        <DropdownMenuItem
+          disabled={!running}
+          onSelect={onStopNow}
+          className="flex-col items-start gap-0"
+        >
+          <span>立即停</span>
+          <span className="text-1 text-ink-3">马上掐断，这次 Attempt 记成已停止</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          disabled={!running || winding}
+          onSelect={onStopAfterReport}
+          className="flex-col items-start gap-0"
+        >
+          <span>收尾停</span>
+          <span className="text-1 text-ink-3">做完手上这一步、交一份报告就结束</span>
+        </DropdownMenuItem>
+        {running ? null : <div className="px-2 py-1.5 text-1 text-ink-3">现在没在跑。</div>}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** 页头状态：在跑显示执行中（收尾停后带「收尾」），停下后固定「已停止」。 */
+function TaskState({ running, winding, stopped }: { running: boolean; winding: boolean; stopped: boolean }) {
+  if (running) {
+    return (
+      <span
+        className="mt-[3px] inline-flex shrink-0 items-center gap-1 rounded-badge bg-run-soft px-1.5 py-[1px] text-1 text-run"
+        data-kind="task-state"
+      >
+        {winding ? '执行中 · 收尾' : '执行中'}
+      </span>
+    );
+  }
+  if (stopped) {
+    return (
+      <span
+        className="mt-[3px] inline-flex shrink-0 items-center gap-1 rounded-badge bg-hover px-1.5 py-[1px] text-1 text-ink-2"
+        data-kind="task-state"
+      >
+        <Square className="size-3 shrink-0" />
+        已停止
+      </span>
+    );
+  }
+  return null;
+}
+
 function BackToKind() {
   return (
     <button
@@ -127,6 +207,7 @@ export function TaskChatScene() {
   const taskId = useRouteStore((state) => state.route.id);
   const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading');
   const [task, setTask] = useState<TaskReadHeader | null>(null);
+  const [winding, setWinding] = useState(false);
   const [events, setEvents] = useState<ServiceEvent[]>([]);
   const [error, setError] = useState('');
   const [hasOlder, setHasOlder] = useState(false);
@@ -150,6 +231,7 @@ export function TaskChatScene() {
 
     setPhase('loading');
     setTask(null);
+    setWinding(false);
     setEvents([]);
     setError('');
     setHasOlder(false);
@@ -199,9 +281,16 @@ export function TaskChatScene() {
         if (event.seq === 0 || event.seq <= lastSeqRef.current) return;
         lastSeqRef.current = event.seq;
         const turn = typeof event.data?.turn === 'number' ? Number(event.data.turn) : null;
-        if (event.type === 'turn/start') resetStream(turn);
+        // 页头的「在跑」跟着这一轮的起止走；停止后的收尾 turn/end 也会到这里。
+        if (event.type === 'turn/start') {
+          setTask((current) => (current ? { ...current, running: true } : current));
+          resetStream(turn);
+        }
         if (event.type === 'tool/call') resetStream(liveTurnRef.current);
-        if (event.type === 'turn/end') resetStream(null);
+        if (event.type === 'turn/end') {
+          setTask((current) => (current ? { ...current, running: false } : current));
+          resetStream(null);
+        }
         stickToBottom();
         setEvents((current) => mergeLiveEvent(current, event));
         return;
@@ -303,6 +392,57 @@ export function TaskChatScene() {
     [events, task],
   );
 
+  /** 停止请求成功后只刷新页头事实：running/stopped 以任务库为准，过程仍走 live/日志。 */
+  async function refreshHeader() {
+    try {
+      const response = await taskRead(taskId);
+      setTask((current) =>
+        current
+          ? { ...current, running: response.task.running, stopped: response.task.stopped }
+          : response.task,
+      );
+    } catch {
+      // 停止的持久事实已由 TaskStop 确认；头部刷新失败不把「已停止」改回去。
+    }
+  }
+
+  async function stopNow() {
+    try {
+      const response = await taskStop(taskId, 'now');
+      if (!response.stopped) {
+        toast('这个任务没在跑', { description: response.message });
+        await refreshHeader();
+        return;
+      }
+      setWinding(false);
+      // 先按响应把页头定成已停止，再以任务库为准刷新；菜单立刻变灰。
+      setTask((current) =>
+        current ? { ...current, running: false, stopped: true } : current,
+      );
+      await refreshHeader();
+    } catch (error) {
+      toast('没停下来', { description: reasonOf(error) });
+    }
+  }
+
+  async function stopAfterReport() {
+    try {
+      const response = await taskStop(taskId, 'after_report');
+      if (!response.stopped) {
+        toast('这个任务没在跑', { description: response.message });
+        await refreshHeader();
+        return;
+      }
+      setWinding(true);
+      toast('收尾停已插进去', {
+        description: '做完手上这一步、交一份报告就结束；之前别的工具一律拒绝',
+      });
+      await refreshHeader();
+    } catch (error) {
+      toast('收尾停没插进去', { description: reasonOf(error) });
+    }
+  }
+
   async function loadOlder() {
     if (loadingOlderRef.current || !hasOlder || events.length === 0) return;
     const token = requestToken.current;
@@ -391,6 +531,13 @@ export function TaskChatScene() {
             >
               {task.title}
             </h1>
+            <TaskState running={task.running} winding={winding} stopped={task.stopped} />
+            <TaskMenu
+              running={task.running}
+              winding={winding}
+              onStopNow={() => void stopNow()}
+              onStopAfterReport={() => void stopAfterReport()}
+            />
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-2 text-ink-3">
             <span>调查任务 · 只读</span>

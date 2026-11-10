@@ -363,6 +363,12 @@ pub struct TaskReadHeader {
     pub model: String,
     pub tools: Vec<String>,
     pub attempts: u64,
+    /// 这个 Attempt 的会话现在真的在跑一轮（不是只开着等报告）；任务菜单只在为 true 时可点。
+    #[serde(default)]
+    pub running: bool,
+    /// 最近的 Attempt 以「停止」结束、之后没有新的 Attempt：页头固定显示「已停止」。
+    #[serde(default)]
+    pub stopped: bool,
     /// 当前 Attempt 最近一份报告的写入时间（unix 毫秒）；None = 这次 Attempt 还没交报告。
     /// 终态报告后执行者会立刻关掉会话，日志可能没有 turn/end：页面据此判断最后一轮不再在跑。
     #[serde(
@@ -680,16 +686,33 @@ pub struct ExaKeySaveRequest {
 pub type ExaKeyResponse = credentials::ToolKeyView;
 
 /// 写非密钥设置（settings.json）；只碰非密钥设置，不碰 Keyring/连接。
+///
+/// 全部字段为 None 时只读当前值（设置页打开时用），不写文件。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, TS)]
 pub struct SettingsUpdateRequest {
     /// 币种（usd/cny）；None = 不改。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
+    /// 全局暂停；None = 不改。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused: Option<bool>,
+    /// 席位（1–16）；None = 不改。越界由服务拒绝，不写文件。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seats: Option<u8>,
+}
+
+/// 设置 › 执行 的当前值（页面读回用；席位已夹在 1–16）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ExecSettingsView {
+    pub paused: bool,
+    pub seats: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct SettingsUpdateResponse {
     pub currency: String,
+    #[serde(rename = "exec")]
+    pub exec: ExecSettingsView,
 }
 
 /// 页面异常 / 事件流重连上报：只记 web 的 ops，不进会话日志；正文限长由载体截。
