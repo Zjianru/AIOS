@@ -25,6 +25,7 @@ struct RouterState {
     kind: Mutex<VecDeque<String>>,
     thin: Mutex<VecDeque<String>>,
     bodies: Mutex<Vec<(bool, String)>>,
+    unexpected: Mutex<Vec<(bool, String)>>,
 }
 
 impl Router {
@@ -34,6 +35,7 @@ impl Router {
                 kind: Mutex::new(VecDeque::new()),
                 thin: Mutex::new(VecDeque::new()),
                 bodies: Mutex::new(Vec::new()),
+                unexpected: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -63,13 +65,18 @@ impl Respond for Router {
         let body = String::from_utf8_lossy(&request.body).to_string();
         let thin =
             !body.contains("\"name\":\"task_accept\"") && body.contains("\"name\":\"task_report\"");
-        self.state.bodies.lock().unwrap().push((thin, body));
+        self.state.bodies.lock().unwrap().push((thin, body.clone()));
         let queue = if thin {
             &self.state.thin
         } else {
             &self.state.kind
         };
         let Some(sse) = queue.lock().unwrap().pop_front() else {
+            self.state
+                .unexpected
+                .lock()
+                .unwrap()
+                .push((thin, body.chars().take(400).collect()));
             return ResponseTemplate::new(500);
         };
         ResponseTemplate::new(200)
@@ -352,35 +359,33 @@ async fn task_status_returns_the_full_report_and_attempts() {
     let cwd = tempfile::tempdir().unwrap();
     let host = open_host(&server, data.path(), cwd.path()).await;
 
-    let args = serde_json::json!({
-        "title": "查一下",
-        "requirement": "找答案",
-        "dod": "有答案"
-    })
-    .to_string();
-    router.push_kind(crate::common::tool_use_sse(
-        0,
-        "call-accept",
-        "task_accept",
-        &args,
-    ));
-    router.push_kind(crate::common::text_sse("已派出"));
+    // 任务的发起会话不是根会话，relay 会 Later，不会在断言前 Steer 醒 Kind。
     router.push_thin(crate::common::tool_use_sse(
-        1,
+        0,
         "call-report",
         "task_report",
-        &serde_json::json!({"state": "ready", "summary": "完整答案：第一行
-第二行"})
-        .to_string(),
+        &serde_json::json!({"state": "ready", "summary": "完整答案：第一行\n第二行"}).to_string(),
     ));
     router.push_thin(crate::common::text_sse(""));
-    host.dispatch(Call::Send(send(&host, "kind-1", "查一下")))
-        .await
-        .expect("发送");
-    crate::common::wait_turns(&host, data.path(), 1).await;
-
     let store = tasks_store(data.path());
-    let task = one_task(&store);
+    let task = store
+        .create_task(
+            tasks::NewTask {
+                title: "查一下".to_owned(),
+                requirement: "找答案".to_owned(),
+                dod: "有答案".to_owned(),
+                cwd: data.path().to_path_buf(),
+                conversation: tasks::ConversationId::new("another-kind-session"),
+                model: tasks::ModelChoice {
+                    connection: "deepseek".to_owned(),
+                    model: "deepseek-flash".to_owned(),
+                    effort_wanted: "high".to_owned(),
+                },
+                tools: service::THIN_TOOLS.map(str::to_owned).to_vec(),
+            },
+            1_700_000_000_000,
+        )
+        .unwrap();
     wait_until("ready 报告", || {
         store
             .task(&task.id)
@@ -393,19 +398,16 @@ async fn task_status_returns_the_full_report_and_attempts() {
 
     let status_args = serde_json::json!({"task_id": task.id.as_str()}).to_string();
     router.push_kind(crate::common::tool_use_sse(
-        2,
+        1,
         "call-status",
         "task_status",
         &status_args,
     ));
     router.push_kind(crate::common::text_sse("我看一下"));
-    // relay 可能 Steer 进下一 step，多备两段回复，别让假模型回 500 拖慢收尾。
-    router.push_kind(crate::common::text_sse("收到"));
-    router.push_kind(crate::common::text_sse("收到"));
-    host.dispatch(Call::Send(send(&host, "kind-2", "任务怎么样了")))
+    host.dispatch(Call::Send(send(&host, "kind-1", "任务怎么样了")))
         .await
         .expect("发送");
-    crate::common::wait_turns(&host, data.path(), 2).await;
+    crate::common::wait_turns(&host, data.path(), 1).await;
 
     let events = crate::common::read_root_events(data.path());
     let result = events
@@ -424,12 +426,11 @@ async fn task_status_returns_the_full_report_and_attempts() {
         .expect("task_status 结果");
     assert!(result.contains("阶段：待检查"), "{result}");
     assert!(result.contains("Attempt 数：1"), "{result}");
+    assert!(result.contains("完整答案：第一行\n第二行"), "{result}");
+    let unexpected = router.state.unexpected.lock().unwrap();
     assert!(
-        result.contains(
-            "完整答案：第一行
-第二行"
-        ),
-        "{result}"
+        unexpected.is_empty(),
+        "假模型收到没有安排的请求：{unexpected:?}"
     );
 }
 

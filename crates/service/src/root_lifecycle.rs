@@ -144,7 +144,7 @@ impl RootHost {
         let task_runtime = match crate::executor::TaskRuntime::new(
             &options,
             Arc::clone(&selection),
-            Arc::clone(&inner),
+            Arc::downgrade(&inner),
         ) {
             Ok(runtime) => Some(Arc::new(runtime)),
             Err(error) => {
@@ -481,10 +481,6 @@ impl Drop for RootHost {
         }
         if let Some(handle) = self.task_pump.lock().expect("task pump 锁被毒化").take() {
             handle.abort();
-        }
-        // 任务工具持有 TaskRuntime，TaskRuntime 又拿着根会话槽：不在这里清掉槽会成环。
-        if let Ok(mut slot) = self.inner.try_lock() {
-            let _ = slot.take();
         }
     }
 }

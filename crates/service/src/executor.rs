@@ -5,9 +5,8 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use agent::{AgentEvent, AgentOpenOptions, ToolPolicy};
@@ -70,8 +69,9 @@ pub struct TaskRuntime {
     options: RootSessionOptions,
     /// 根会话当前的选择；task_accept 在这一刻冻结它（D26、D74）。
     selection: Arc<Mutex<Option<session::ModelSelection>>>,
-    /// 根宿主的会话槽：relay 只走它，不拿卡锁。
-    inner: Arc<tokio::sync::Mutex<Option<ServiceHost>>>,
+    /// 根宿主的会话槽：relay 只走它，不拿卡锁。弱引用，免得任务工具和它成环；
+    /// 根宿主没了就升级失败，relay 留到下次启动。
+    inner: Weak<tokio::sync::Mutex<Option<ServiceHost>>>,
     notify: Arc<tokio::sync::Notify>,
     shutting_down: Arc<AtomicBool>,
     paused: AtomicBool,
@@ -85,7 +85,7 @@ impl TaskRuntime {
     pub(crate) fn new(
         options: &RootSessionOptions,
         selection: Arc<Mutex<Option<session::ModelSelection>>>,
-        inner: Arc<tokio::sync::Mutex<Option<ServiceHost>>>,
+        inner: Weak<tokio::sync::Mutex<Option<ServiceHost>>>,
     ) -> Result<Self, TaskError> {
         let store = Store::open(options.data_dir.join(TASKS_DB_FILE))?;
         Ok(Self {
@@ -232,7 +232,11 @@ impl TaskRuntime {
             return;
         }
         let target = task.conversation.as_str();
-        let guard = self.inner.lock().await;
+        let Some(inner) = self.inner.upgrade() else {
+            self.later(&claim);
+            return;
+        };
+        let guard = inner.lock().await;
         let Some(host) = guard.as_ref() else {
             drop(guard);
             self.later(&claim);
