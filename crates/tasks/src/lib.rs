@@ -6,6 +6,7 @@
 mod effect;
 mod error;
 mod id;
+mod slots;
 mod stage;
 mod store;
 mod task;
@@ -15,6 +16,7 @@ pub use effect::{
 };
 pub use error::TaskError;
 pub use id::{AttemptId, ConversationId, ReportId, RunId, TaskId};
+pub use slots::{Later, SlotKind, WorkerSlots};
 pub use stage::Stage;
 pub use store::{SCHEMA_VERSION, Store};
 pub use task::{
