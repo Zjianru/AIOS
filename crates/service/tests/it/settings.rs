@@ -2404,6 +2404,7 @@ async fn 设置更新写币种且状态里带新币种() {
     let response = host
         .dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
             currency: Some("cny".to_owned()),
+            ..Default::default()
         }))
         .await
         .expect("settings-update 应成功");
@@ -2428,10 +2429,71 @@ async fn 设置更新写币种且状态里带新币种() {
     let rejected = host
         .dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
             currency: Some("eur".to_owned()),
+            ..Default::default()
         }))
         .await;
     assert!(rejected.is_err(), "只接受 usd/cny");
     assert_eq!(service::settings::load(dir.path()).currency, "cny");
+}
+
+/// 设置 › 执行：全空请求只读；暂停/席位保存后回送、落盘；0/17 拒存且不改旧值。
+#[tokio::test]
+async fn 设置更新读写执行设置且拒绝越界席位() {
+    let dir = tempdir().unwrap();
+    let mut saved = service::settings::load(dir.path());
+    saved.exec.paused = true;
+    saved.exec.seats = 1;
+    service::settings::save(dir.path(), &saved).expect("预置执行设置");
+    let host = host(dir.path()).await;
+
+    // 页面打开时用全空请求读当前值，不写文件。
+    let response = host
+        .dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest::default()))
+        .await
+        .expect("读执行设置");
+    let service::Response::SettingsUpdate(response) = response else {
+        panic!("expected SettingsUpdate");
+    };
+    assert_eq!(response.currency, "usd");
+    assert!(response.exec.paused);
+    assert_eq!(response.exec.seats, 1);
+
+    // 一次保存暂停和席位：响应和 settings.json 都是新值；币种不跟着改。
+    let response = host
+        .dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
+            paused: Some(false),
+            seats: Some(16),
+            ..Default::default()
+        }))
+        .await
+        .expect("保存执行设置");
+    let service::Response::SettingsUpdate(response) = response else {
+        panic!("expected SettingsUpdate");
+    };
+    assert_eq!(response.currency, "usd");
+    assert!(!response.exec.paused);
+    assert_eq!(response.exec.seats, 16);
+    let file = service::settings::load(dir.path());
+    assert_eq!(file.currency, "usd");
+    assert!(!file.exec.paused);
+    assert_eq!(file.exec.seats, 16);
+
+    // 越界席位拒存，已保存的值不动。
+    for seats in [0_u8, 17] {
+        let error = host
+            .dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
+                seats: Some(seats),
+                ..Default::default()
+            }))
+            .await
+            .expect_err("越界拒存");
+        assert!(error.to_string().contains("1–16"), "{error}");
+        assert_eq!(
+            service::settings::load(dir.path()).exec.seats,
+            16,
+            "拒存不改已保存的值"
+        );
+    }
 }
 
 /// 编辑连接（地址/模型/价格）不动 settings.json 里的上次选择。

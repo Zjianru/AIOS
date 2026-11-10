@@ -10,8 +10,8 @@ use crate::protocol::{
     ConnectionSaveResponse, ConnectionUpdateRequest, ConnectionUpdateResponse,
     ConnectionVerifyRequest, ConnectionVerifyResponse, FirstUseResponse, IssuesResponse,
     KeyringRelocateRequest, KeyringRelocateResponse, KeyringReopenRequest, KeyringReopenResponse,
-    KeyringRestartResponse, ModelSettingsResponse, RootState, ServiceEvent, SettingsUpdateRequest,
-    SettingsUpdateResponse,
+    ExecSettingsView, KeyringRestartResponse, ModelSettingsResponse, RootState, ServiceEvent,
+    SettingsUpdateRequest, SettingsUpdateResponse,
 };
 use crate::root_lifecycle::RootHost;
 use crate::{quota, settings};
@@ -581,6 +581,11 @@ impl RootHost {
         settings::save(&self.options.data_dir, &settings).map_err(ServiceError::SettingsInvalid)?;
         Ok(SettingsUpdateResponse {
             currency: settings.currency,
+            // 骨架：实现里读 settings.json 的 exec 并回送。
+            exec: ExecSettingsView {
+                paused: false,
+                seats: settings::DEFAULT_SEATS,
+            },
         })
     }
 

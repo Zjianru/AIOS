@@ -179,6 +179,9 @@ impl TaskRuntime {
                 model: task.model.model.clone(),
                 tools: task.tools.clone(),
                 attempts: task.runs.iter().map(|run| run.attempts.len() as u64).sum(),
+                // 骨架：实现里由在跑表和最近 Attempt 的结束原因填。
+                running: false,
+                stopped: false,
                 // waiting 不是终态：report 只把会话移出「在跑」，之后 task_status 会起新的一轮；
                 // 页面只能拿终态报告的时间收尾没有 turn/end 的最后一轮。
                 reported_at: task
