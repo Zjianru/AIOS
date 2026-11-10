@@ -240,3 +240,32 @@ fn stage_recovers_when_a_new_attempt_starts_after_a_stop() {
         "新 Attempt 后不再算已停止"
     );
 }
+
+#[test]
+fn stopped_outranks_a_ready_report_and_a_queued_launch() {
+    let (_directory, store) = open_store();
+    let task = create(&store);
+    let attempt = store.begin_attempt(&task.id, T0 + 1).unwrap();
+    store
+        .record_report(
+            &task.id,
+            attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "有结果了".to_owned(),
+                question: None,
+            },
+            T0 + 2,
+        )
+        .unwrap();
+    store
+        .end_attempt(&task.id, attempt, T0 + 3, AttemptEnd::Stopped)
+        .unwrap();
+
+    assert_eq!(
+        store.stage(&task.id).unwrap(),
+        Stage::NeedsConditions,
+        "已停止排在待检查、待执行前面"
+    );
+}
