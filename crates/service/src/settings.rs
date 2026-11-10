@@ -33,16 +33,43 @@ pub struct Settings {
     pub exec: ExecSettings,
 }
 
+/// 席位的默认值（D66）。
+pub const DEFAULT_SEATS: u8 = 3;
+/// 席位下限。
+pub const MIN_SEATS: u8 = 1;
+/// 席位上限，照 DSH 的 maxWorkers。
+pub const MAX_SEATS: u8 = 16;
+
 /// 执行域的设置（设置 › 执行）。
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecSettings {
     /// 全局暂停：打开时新的 Attempt 排队，在跑的一轮跑完；relay/notice 照送。
     /// 关掉后新任务按排队顺序接着走（不取消、不清队）。
     #[serde(default)]
     pub paused: bool,
     /// 同时执行的 ThinAgent 上限（1–16）。缺省 3。
-    #[serde(default)]
+    #[serde(default = "default_seats")]
     pub seats: u8,
+}
+
+impl Default for ExecSettings {
+    fn default() -> Self {
+        Self {
+            paused: false,
+            seats: DEFAULT_SEATS,
+        }
+    }
+}
+
+impl ExecSettings {
+    /// 生效的席位数：手改文件写出 0 或 17 时夹回 1–16，不让人为的坏值把准入卡死。
+    pub fn seat_limit(&self) -> usize {
+        usize::from(self.seats.clamp(MIN_SEATS, MAX_SEATS))
+    }
+}
+
+fn default_seats() -> u8 {
+    DEFAULT_SEATS
 }
 
 fn default_currency() -> String {
