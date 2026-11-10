@@ -436,26 +436,81 @@ impl Store {
     /// 记一次失败：连续失败次数 +1，按指数退避排下一次。
     pub fn fail_effect(
         &self,
-        _claim: &EffectClaim,
-        _error: &str,
-        _now: i64,
+        claim: &EffectClaim,
+        error: &str,
+        now: i64,
     ) -> Result<bool, TaskError> {
-        Ok(false)
+        let (initial, maximum) = claim.payload.kind().retry();
+        let delay = initial
+            .saturating_mul(1_i64 << claim.attempts.min(16))
+            .min(maximum);
+        let due = now.saturating_add(delay);
+        let error: String = error.chars().take(1000).collect();
+        let conn = self.lock()?;
+        let changed = conn.execute(
+            "UPDATE effect SET attempts = attempts + 1, error = ?1, due = ?2
+             WHERE kind = ?3 AND key = ?4 AND seq = ?5 AND generation = ?6",
+            params![
+                error,
+                due,
+                claim.payload.kind().as_str(),
+                claim.key,
+                claim.seq,
+                claim.generation
+            ],
+        )?;
+        Ok(changed > 0)
     }
 
     /// 现在不能跑：不算失败，按初值推迟。
-    pub fn defer_effect(&self, _claim: &EffectClaim, _now: i64) -> Result<bool, TaskError> {
-        Ok(false)
+    pub fn defer_effect(&self, claim: &EffectClaim, now: i64) -> Result<bool, TaskError> {
+        let (initial, _) = claim.payload.kind().retry();
+        let conn = self.lock()?;
+        let changed = conn.execute(
+            "UPDATE effect SET due = ?1
+             WHERE kind = ?2 AND key = ?3 AND seq = ?4 AND generation = ?5",
+            params![
+                now.saturating_add(initial),
+                claim.payload.kind().as_str(),
+                claim.key,
+                claim.seq,
+                claim.generation
+            ],
+        )?;
+        Ok(changed > 0)
     }
 
     /// 从 effect 表现算一个种类的健康状态。
-    pub fn effect_health(&self, _kind: EffectKind) -> Result<EffectHealth, TaskError> {
+    pub fn effect_health(&self, kind: EffectKind) -> Result<EffectHealth, TaskError> {
+        let conn = self.lock()?;
+        let (waiting, since, attempts, last_error) = conn.query_row(
+            "SELECT COUNT(*), MIN(since), MAX(attempts),
+                    (SELECT error FROM effect WHERE kind = ?1 AND attempts > 0
+                     ORDER BY seq DESC LIMIT 1)
+             FROM effect WHERE kind = ?1",
+            params![kind.as_str()],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                ))
+            },
+        )?;
+        let waiting = u32::try_from(waiting).unwrap_or(u32::MAX);
+        let attempts = u32::try_from(attempts.unwrap_or(0)).unwrap_or(u32::MAX);
+        let state = if waiting > 0 && attempts >= FAILURES_BEFORE_ERROR {
+            EffectState::Error
+        } else {
+            EffectState::Ready
+        };
         Ok(EffectHealth {
-            state: EffectState::Ready,
-            waiting: 0,
-            attempts: 0,
-            since: None,
-            last_error: None,
+            state,
+            waiting,
+            attempts,
+            since,
+            last_error: if attempts > 0 { last_error } else { None },
         })
     }
 }
