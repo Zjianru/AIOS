@@ -58,8 +58,21 @@ fn collect<T: TS + 'static + ?Sized>(collector: &mut Collector<'_>) {
     };
     let content = T::export_to_string(collector.config)
         .unwrap_or_else(|error| panic!("生成 {} 失败：{error}", path.display()));
-    collector.files.insert(path, content);
+    collector
+        .files
+        .insert(path, trim_trailing_whitespace(content));
     T::visit_dependencies(collector);
+}
+
+/// ts-rs 在跨行类型后面留行尾空格；统一去掉，生成物过 `git diff --check`。
+fn trim_trailing_whitespace(content: String) -> String {
+    let mut trimmed = content
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n");
+    trimmed.push('\n');
+    trimmed
 }
 
 fn read_generated_dir() -> BTreeMap<PathBuf, String> {
