@@ -7,6 +7,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
+use crate::Stage;
 use crate::TaskError;
 use crate::effect::{EffectClaim, EffectKind, EffectPayload};
 use crate::id::{AttemptId, ConversationId, ReportId, TaskId};
@@ -397,6 +398,16 @@ impl Store {
         transaction.commit()?;
         Ok(report_id)
     }
+
+    /// 从任务和效果表派生阶段。
+    pub fn stage(&self, _id: &TaskId) -> Result<Stage, TaskError> {
+        Ok(Stage::Pending)
+    }
+
+    /// 删除一条与 claim 的 seq/generation 仍相等的效果行；返回是否删到。
+    pub fn complete_effect(&self, _claim: &EffectClaim) -> Result<bool, TaskError> {
+        Ok(false)
+    }
 }
 
 fn generate_id(connection: &Connection) -> Result<String, TaskError> {
@@ -517,6 +528,9 @@ fn stored_schema_version(conn: &Connection) -> Result<Option<u64>, TaskError> {
 #[cfg(test)]
 #[path = "attempt_report_tests.rs"]
 mod attempt_report_tests;
+#[cfg(test)]
+#[path = "stage_tests.rs"]
+mod stage_tests;
 #[cfg(test)]
 #[path = "store_tests.rs"]
 mod tests;
