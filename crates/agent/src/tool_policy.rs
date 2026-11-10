@@ -7,6 +7,9 @@
 /// 命中的拒绝语（照 DSH 的 NO_WAIT）：等的东西会自己送到，结束这一轮。
 pub const NO_WAIT: &str = "Reports, follow_up notices, new candidates and a background job's end with its output arrive by themselves as messages; end the turn instead of waiting for them.";
 
+/// 收尾停的拒绝语：打了收尾标记的会话里，除 task_report 以外的调用一律拒绝。
+pub const STOP_AFTER_REPORT: &str = "已收尾停，只能用 task_report 上报";
+
 /// bash 没给 timeoutMs、也没要求后台时的提醒（照 DSH 的 DEFAULT_WAIT，等待时长改成 AIOS
 /// bash 的默认 120 秒）：给不超过 30000 的超时，或者转后台。
 pub const DEFAULT_WAIT: &str = "This shell waits up to 120 seconds by default: pass timeoutMs of at most 30000, or run_in_background, as a waiting step holds back the user's next message.";

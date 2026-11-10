@@ -36,7 +36,7 @@ pub use error::{AgentError, ManualCompactionErrorCode};
 pub use inbox::Delivery;
 pub use instructions::{MAX_CHAIN_BYTES, MAX_SOURCE_BYTES};
 pub use tool_gate::loaded_skills;
-pub use tool_policy::{DEFAULT_WAIT, NO_WAIT};
+pub use tool_policy::{DEFAULT_WAIT, NO_WAIT, STOP_AFTER_REPORT};
 pub use warn::{WarningHook, set_warning_hook};
 
 /// 按 provider/model 覆盖压缩策略（DSH compaction-basic 的 modelPolicies；只覆盖显式给出的字段）。
@@ -539,6 +539,13 @@ impl Agent {
     /// `cause` 写进 turn/end 的 aborted 原因（例如内核钩子 model-disabled）。
     pub fn cancel_with(&self, cause: session::AbortCause) {
         self.inner.cancel_with(cause);
+    }
+
+    /// 收尾停：给这个会话打收尾标记，下一次工具调用只放行 task_report。
+    ///
+    /// 标记只活这个 Agent 实例（一次 Attempt）；下一次 Attempt 开的是新会话，不带标记。
+    pub fn stop_after_report(&self) {
+        // 骨架：统一工具入口的拒绝规则还没接上，标记暂不生效。
     }
 
     /// 本轮冻结的模型（适配器在 begin_turn 时确定）；没有正在跑的一轮时为 None。

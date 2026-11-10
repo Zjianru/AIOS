@@ -10,7 +10,7 @@ use crate::common::{
     FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse,
     tool_calls_with_inputs_sse, wait_idle,
 };
-use agent::{Agent, AgentError, AgentOpenOptions, Delivery, NO_WAIT, ToolPolicy};
+use agent::{Agent, AgentError, AgentOpenOptions, Delivery, NO_WAIT, STOP_AFTER_REPORT, ToolPolicy};
 use model::{ContentBlock, UserMessage};
 use session::{EventKind, SessionStore};
 use tools::{Tool, ToolCall, ToolContext, ToolFuture, ToolResult};
@@ -19,12 +19,19 @@ use wiremock::{Mock, MockServer};
 
 /// 服务装配才会传的额外工具；用来证明 only 名单覆盖 builtin 与 extra_tools 的并集。
 struct ProbeTool {
+    name: &'static str,
     parameters: serde_json::Value,
 }
 
 impl ProbeTool {
     fn new() -> Self {
+        Self::named("probe")
+    }
+
+    /// 同名替身：收尾停的放行名单按名字判，测试要一个 task_report。
+    fn named(name: &'static str) -> Self {
         Self {
+            name,
             parameters: serde_json::json!({"type": "object", "properties": {}}),
         }
     }
@@ -32,7 +39,7 @@ impl ProbeTool {
 
 impl Tool for ProbeTool {
     fn name(&self) -> &str {
-        "probe"
+        self.name
     }
 
     fn description(&self) -> &str {
@@ -69,6 +76,24 @@ fn options(
     resume: Option<session::SessionId>,
     tool_policy: ToolPolicy,
 ) -> AgentOpenOptions {
+    options_with(
+        data_dir,
+        cwd,
+        base_url,
+        resume,
+        tool_policy,
+        vec![Arc::new(ProbeTool::new())],
+    )
+}
+
+fn options_with(
+    data_dir: &Path,
+    cwd: &Path,
+    base_url: &str,
+    resume: Option<session::SessionId>,
+    tool_policy: ToolPolicy,
+    extra_tools: Vec<Arc<dyn Tool>>,
+) -> AgentOpenOptions {
     AgentOpenOptions {
         data_dir: data_dir.to_path_buf(),
         cwd: cwd.to_path_buf(),
@@ -77,7 +102,7 @@ fn options(
         config: isolated_config(data_dir),
         credentials: Some(crate::common::test_credential()),
         append_hook_factory: None,
-        extra_tools: vec![Arc::new(ProbeTool::new())],
+        extra_tools,
         tool_policy,
         policy_prompt: None,
     }
@@ -339,4 +364,178 @@ async fn no_wait_records_the_call_then_returns_an_error_result_without_running_i
         .and_then(ContentBlock::as_text)
         .expect("tool/result 里是文本");
     assert!(echo_text.contains("policy-pass"), "{echo_text}");
+}
+
+#[tokio::test]
+async fn stop_after_report_records_each_call_then_denies_everything_but_task_report() {
+    let server = MockServer::start().await;
+    mount(
+        &server,
+        vec![
+            tool_calls_with_inputs_sse(&[
+                (
+                    "call_read",
+                    "read",
+                    serde_json::json!({"file_path": "README.md"}),
+                ),
+                ("call_probe", "probe", serde_json::json!({})),
+                (
+                    "call_report",
+                    "task_report",
+                    serde_json::json!({"state": "ready", "summary": "查完了"}),
+                ),
+            ]),
+            FINAL_TEXT_SSE.to_owned(),
+        ],
+    )
+    .await;
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let agent = Agent::open(options_with(
+        data_dir.path(),
+        cwd.path(),
+        &server.uri(),
+        None,
+        ToolPolicy::default(),
+        vec![
+            Arc::new(ProbeTool::new()),
+            Arc::new(ProbeTool::named("task_report")),
+        ],
+    ))
+    .await
+    .expect("收尾标记不影响组装");
+    agent.stop_after_report();
+    let id = agent.id().clone();
+    agent
+        .send(UserMessage::text("收尾停之前的一步"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    wait_idle(&agent, 10).await;
+    drop(agent);
+
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    let events = store.events();
+    let position = |call_id: &str, call: bool| {
+        events
+            .iter()
+            .position(|event| match &event.kind {
+                EventKind::ToolCall { call_id: id, .. } if call => id == call_id,
+                EventKind::ToolResult { message, .. } if !call => {
+                    message.tool_call_id.as_deref() == Some(call_id)
+                }
+                _ => false,
+            })
+            .unwrap_or_else(|| panic!("日志里要有 {call_id} 的 tool/{}", if call { "call" } else { "result" }))
+    };
+    for call_id in ["call_read", "call_probe", "call_report"] {
+        assert!(
+            position(call_id, true) < position(call_id, false),
+            "{call_id}：先记 tool/call，再给 tool/result"
+        );
+    }
+    let result_text = |call_id: &str| {
+        let index = position(call_id, false);
+        match &events[index].kind {
+            EventKind::ToolResult { message, .. } => (
+                message
+                    .content
+                    .first()
+                    .and_then(ContentBlock::as_text)
+                    .map(str::to_owned),
+                message.is_error,
+            ),
+            other => panic!("期望 tool/result，得到 {}", other.type_name()),
+        }
+    };
+    for call_id in ["call_read", "call_probe"] {
+        let (text, is_error) = result_text(call_id);
+        assert_eq!(is_error, Some(true), "{call_id} 要被拒绝");
+        assert_eq!(text, Some(format!("Error: {STOP_AFTER_REPORT}")));
+    }
+    let (text, is_error) = result_text("call_report");
+    assert_eq!(is_error, None, "task_report 放行");
+    assert_eq!(text.as_deref(), Some("reported"));
+}
+
+#[tokio::test]
+async fn a_new_session_does_not_inherit_the_after_report_stop() {
+    let server = MockServer::start().await;
+    mount(
+        &server,
+        vec![
+            tool_calls_with_inputs_sse(&[(
+                "call_read",
+                "read",
+                serde_json::json!({"file_path": "README.md"}),
+            )]),
+            FINAL_TEXT_SSE.to_owned(),
+            tool_calls_with_inputs_sse(&[(
+                "call_read",
+                "read",
+                serde_json::json!({"file_path": "README.md"}),
+            )]),
+            FINAL_TEXT_SSE.to_owned(),
+        ],
+    )
+    .await;
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    std::fs::write(cwd.path().join("README.md"), "readable").unwrap();
+
+    let stopped = Agent::open(options(
+        data_dir.path(),
+        cwd.path(),
+        &server.uri(),
+        None,
+        ToolPolicy::default(),
+    ))
+    .await
+    .expect("组装");
+    stopped.stop_after_report();
+    stopped
+        .send(UserMessage::text("收尾停的一轮"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    wait_idle(&stopped, 10).await;
+    drop(stopped);
+
+    // 下一次 Attempt 是另一个 Agent/会话：收尾标记不跟着走。
+    let next = Agent::open(options(
+        data_dir.path(),
+        cwd.path(),
+        &server.uri(),
+        None,
+        ToolPolicy::default(),
+    ))
+    .await
+    .expect("组装下一个会话");
+    let id = next.id().clone();
+    next.send(UserMessage::text("下一轮"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    wait_idle(&next, 10).await;
+    drop(next);
+
+    let store = SessionStore::open_read_only(data_dir.path(), &id).unwrap();
+    let read_result = store.events().iter().find_map(|event| match &event.kind {
+        EventKind::ToolResult { message, .. }
+            if message.tool_call_id.as_deref() == Some("call_read") =>
+        {
+            Some((
+                message
+                    .content
+                    .first()
+                    .and_then(ContentBlock::as_text)
+                    .map(str::to_owned),
+                message.is_error,
+            ))
+        }
+        _ => None,
+    });
+    let (text, is_error) = read_result.expect("下一会话有 read 的结果");
+    assert_eq!(is_error, None, "新会话不继承收尾标记");
+    assert!(
+        text.as_deref().is_some_and(|text| text.contains("readable")),
+        "{text:?}"
+    );
 }
