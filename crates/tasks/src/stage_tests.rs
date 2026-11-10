@@ -184,8 +184,7 @@ fn stage_ignores_a_late_report_from_an_older_attempt() {
     assert_eq!(
         store.stage(&task.id).unwrap(),
         Stage::Running,
-        "最新 Attempt {} 没有报告，旧报告不能把阶段推到待检查",
-        second
+        "最新 Attempt {second} 没有报告，旧报告不能把阶段推到待检查"
     );
 }
 

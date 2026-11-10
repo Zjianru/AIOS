@@ -1,10 +1,7 @@
 //! 效果表：同键合并、代次、Later、退避和健康错误；时间全部注入。
 
 use super::Store;
-use crate::{
-    EffectClaim, EffectHealth, EffectKind, EffectPayload, EffectState, FAILURES_BEFORE_ERROR,
-    ReportId, TaskId,
-};
+use crate::{EffectClaim, EffectHealth, EffectKind, EffectPayload, EffectState, ReportId, TaskId};
 
 const T0: i64 = 1_700_000_000_000;
 
@@ -103,7 +100,7 @@ fn three_failures_report_an_effect_error() {
     let (_directory, store) = open_store();
     store.enqueue_effect(launch("a"), T0).unwrap();
     let mut now = T0;
-    for attempt in 0..FAILURES_BEFORE_ERROR {
+    for attempt in 0..3 {
         let claim = claim(&store, EffectKind::Launch, now);
         assert!(store.fail_effect(&claim, "boom", now).unwrap());
         now += 5_000 * (1_i64 << attempt);
@@ -114,7 +111,7 @@ fn three_failures_report_an_effect_error() {
         EffectHealth {
             state: EffectState::Error,
             waiting: 1,
-            attempts: FAILURES_BEFORE_ERROR,
+            attempts: 3,
             since: Some(T0),
             last_error: Some("boom".to_owned()),
         }
@@ -126,6 +123,30 @@ fn three_failures_report_an_effect_error() {
         store.effect_health(EffectKind::Launch).unwrap(),
         ready_health(0)
     );
+}
+
+#[test]
+fn relay_uses_its_own_first_retry_delay() {
+    let (_directory, store) = open_store();
+    store
+        .enqueue_effect(
+            EffectPayload::Relay {
+                task_id: TaskId::from("task-1"),
+                report_id: ReportId::from("report-1"),
+            },
+            T0,
+        )
+        .unwrap();
+    let first = claim(&store, EffectKind::Relay, T0);
+    assert!(store.fail_effect(&first, "boom", T0).unwrap());
+
+    assert_eq!(
+        store.claim_effect(EffectKind::Relay, T0 + 1_999).unwrap(),
+        None
+    );
+    let retry = claim(&store, EffectKind::Relay, T0 + 2_000);
+    assert_eq!(retry.attempts, 1);
+    assert_eq!(retry.due, T0 + 2_000);
 }
 
 #[test]
