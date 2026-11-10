@@ -1,20 +1,24 @@
 //! `web_fetch` 的模型面与执行：抓取、解码、HTML 转 Markdown、截断。
 
+use std::error::Error;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use encoding_rs::Encoding;
 use reqwest::Url;
 use reqwest::header::{CONTENT_TYPE, LOCATION};
+use reqwest::redirect::Policy;
 use serde_json::{Value, json};
 use tools::{
     Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolKey, ToolResult,
 };
 
+use super::resolver::{PublicResolver, ResolveFailure};
 use super::url_policy::{
-    FetchError, WEB_FETCH_MAX_REDIRECTS, check_fetch_address, is_followable_redirect,
-    parse_fetch_url, same_origin, validate_parsed_url,
+    FetchError, WEB_FETCH_MAX_REDIRECTS, check_fetch_address, check_literal_address,
+    is_followable_redirect, parse_fetch_url, same_origin, validate_parsed_url,
 };
 use super::{EXTERNAL_WEB_CONTENT_NOTICE, WEB_TOOL_TIMEOUT_MS};
 
@@ -38,6 +42,8 @@ pub(crate) struct WebFetchConfig {
 pub(crate) struct WebFetchTool {
     parameters: Value,
     config: WebFetchConfig,
+    /// 直连时钉住 DNS 的解析器；测试里可以换查询函数（分类照做）。
+    resolver: PublicResolver,
 }
 
 impl WebFetchTool {
@@ -54,18 +60,47 @@ impl WebFetchTool {
                 "required": ["url"]
             }),
             config,
+            resolver: PublicResolver::new(),
         }
     }
 
-    /// 读一个链接：先过 URL 规则，再按跳解析地址并拦截，最后抓取、解码、转 Markdown。
+    /// 测试用：换掉解析器的查询函数，分类照做。
+    #[cfg(test)]
+    pub(crate) fn with_lookup<F, Fut>(config: WebFetchConfig, lookup: F) -> Self
+    where
+        F: Fn(String) -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<Output = std::io::Result<Vec<std::net::IpAddr>>> + Send + 'static,
+    {
+        let mut tool = Self::new(config);
+        tool.resolver = PublicResolver::with_lookup(lookup);
+        tool
+    }
+
+    /// 读一个链接：先过 URL 规则；直连时由解析器钉住 DNS，走代理时请求前解析一次；
+    /// 每一跳重定向后再按当前模式判地址，最后抓取、解码、转 Markdown。
     async fn fetch(&self, input: &str) -> Result<String, ToolFailure> {
         let original = parse_fetch_url(input).map_err(FetchError::into_failure)?;
         ensure_exa_key(&self.config)?;
-        check_fetch_address(&original, self.config.self_addr.as_deref())
-            .await
-            .map_err(FetchError::into_failure)?;
-        let client = model::http::client_with_env_without_redirects(self.config.http.clone())
-            .map_err(|_| FetchError::Client.into_failure())?;
+        let proxied = self
+            .config
+            .http
+            .proxy_for(&original)
+            .map_err(|_| FetchError::Client.into_failure())?
+            .is_some();
+        let client = if proxied {
+            // 走代理时域名由代理解析，程序只能请求前解析一次、逐个查地址。
+            check_fetch_address(&original, self.config.self_addr.as_deref())
+                .await
+                .map_err(FetchError::into_failure)?;
+            model::http::client_with_env_without_redirects(self.config.http.clone())
+                .map_err(|_| FetchError::Client.into_failure())?
+        } else {
+            // 直连时解析和分类都在解析器里做，连接用的就是查过的那份地址；
+            // IP 字面量不经过解析器，照旧在请求前判。
+            check_literal_address(&original, self.config.self_addr.as_deref())
+                .map_err(FetchError::into_failure)?;
+            direct_client(self.resolver.clone())?
+        };
         let mut current = original.clone();
         let mut redirects = 0_u8;
         loop {
@@ -90,10 +125,15 @@ impl WebFetchTool {
                     .join(location)
                     .map_err(|_| FetchError::InvalidUrl.into_failure())?;
                 validate_parsed_url(&next).map_err(FetchError::into_failure)?;
-                // 每一跳都重新查地址：重定向不能把请求带到本机或内网。
-                check_fetch_address(&next, self.config.self_addr.as_deref())
-                    .await
-                    .map_err(FetchError::into_failure)?;
+                // 只跟同源重定向，走不走代理不随跳变化；直连的下一跳由解析器在连接时判。
+                if proxied {
+                    check_fetch_address(&next, self.config.self_addr.as_deref())
+                        .await
+                        .map_err(FetchError::into_failure)?;
+                } else {
+                    check_literal_address(&next, self.config.self_addr.as_deref())
+                        .map_err(FetchError::into_failure)?;
+                }
                 if !same_origin(&original, &next) {
                     return Err(FetchError::CrossOrigin(next.to_string()).into_failure());
                 }
@@ -198,6 +238,9 @@ fn ensure_exa_key(config: &WebFetchConfig) -> Result<(), ToolFailure> {
 }
 
 fn map_request_error(error: reqwest::Error) -> ToolFailure {
+    if let Some(failure) = resolve_failure(&error) {
+        return failure.into_failure();
+    }
     if error.is_timeout() {
         FetchError::Timeout.into_failure()
     } else if error.is_connect() {
@@ -205,6 +248,28 @@ fn map_request_error(error: reqwest::Error) -> ToolFailure {
     } else {
         FetchError::Transport.into_failure()
     }
+}
+
+/// 解析器拒掉的地址藏在连接错误的 source 链里；认出来报分类文案，不报「连不上」。
+fn resolve_failure(error: &reqwest::Error) -> Option<FetchError> {
+    let mut source = error.source();
+    while let Some(current) = source {
+        if let Some(failure) = current.downcast_ref::<ResolveFailure>() {
+            return Some(failure.to_fetch_error());
+        }
+        source = current.source();
+    }
+    None
+}
+
+/// 直连的 client：不读环境代理、不跟重定向；域名交给钉住 DNS 的解析器。
+fn direct_client(resolver: PublicResolver) -> Result<reqwest::Client, ToolFailure> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .redirect(Policy::none())
+        .dns_resolver(Arc::new(resolver))
+        .build()
+        .map_err(|_| FetchError::Client.into_failure())
 }
 
 async fn render_response(response: reqwest::Response, url: &Url) -> Result<String, ToolFailure> {

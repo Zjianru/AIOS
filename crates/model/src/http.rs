@@ -2,6 +2,7 @@
 //!
 //! 所有请求（模型、验证、目录、余额、余量、汇率）都用这里造的 client；socket 级细节不散落在业务里。
 //! 环境里的代理只在这一处读；本机地址（localhost、127.0.0.0/8、::1）不走代理（故事 9）。
+//! 网页抓取判断走不走代理也调 `HttpEnv::proxy_for`，和 client 用同一条规则。
 //! 代理地址解析失败直接报错，不把「坏地址」当成「没配代理」而静默直连。
 
 use std::sync::OnceLock;
@@ -24,6 +25,14 @@ impl HttpEnv {
     /// 从进程环境读一次（生产入口）。
     pub fn from_process() -> Self {
         Self::from_source(|key| std::env::var(key).ok())
+    }
+
+    /// 这条 URL 该走哪个代理：本机地址和 `no_proxy` 命中直连，其余按协议挑。
+    ///
+    /// 和 client 的 `Proxy::custom` 共用 `ProxySelection::for_url`。代理地址解析失败要报错，
+    /// 不能当成「没配代理」而静默直连。
+    pub fn proxy_for(&self, url: &Url) -> Result<Option<Url>, ModelError> {
+        Ok(ProxySelection::parse(self)?.for_url(url))
     }
 
     /// 从给定来源读（测试注入用；键名与真实环境变量一致）。
@@ -130,27 +139,45 @@ fn build_without_redirects(env: HttpEnv) -> Result<Client, ModelError> {
     build(env, Redirects::Never)
 }
 
+/// 已经解析好的代理设置：client 建一次，web_fetch 按 URL 选一次。
+struct ProxySelection {
+    http: Option<Url>,
+    https: Option<Url>,
+    all: Option<Url>,
+    no_proxy: Option<String>,
+}
+
+impl ProxySelection {
+    fn parse(env: &HttpEnv) -> Result<Self, ModelError> {
+        Ok(Self {
+            http: proxy_url("http_proxy", env.http_proxy.as_deref())?,
+            https: proxy_url("https_proxy", env.https_proxy.as_deref())?,
+            all: proxy_url("all_proxy", env.all_proxy.as_deref())?,
+            no_proxy: env.no_proxy.clone(),
+        })
+    }
+
+    fn for_url(&self, url: &Url) -> Option<Url> {
+        if is_loopback(url) {
+            return None;
+        }
+        if no_proxy_matches(url, self.no_proxy.as_deref()) {
+            return None;
+        }
+        match url.scheme() {
+            "https" => self.https.clone().or_else(|| self.all.clone()),
+            "http" => self.http.clone().or_else(|| self.all.clone()),
+            _ => None,
+        }
+    }
+}
+
 fn build(env: HttpEnv, redirects: Redirects) -> Result<Client, ModelError> {
-    let http = proxy_url("http_proxy", env.http_proxy.as_deref())?;
-    let https = proxy_url("https_proxy", env.https_proxy.as_deref())?;
-    let all = proxy_url("all_proxy", env.all_proxy.as_deref())?;
-    let no_proxy = env.no_proxy.clone();
+    let proxies = ProxySelection::parse(&env)?;
     let mut builder = Client::builder()
         // 代理只从 HttpEnv 来，避免 reqwest 自己再读一遍环境、绕开本机判断。
         .no_proxy()
-        .proxy(Proxy::custom(move |url: &Url| {
-            if is_loopback(url) {
-                return None;
-            }
-            if no_proxy_matches(url, no_proxy.as_deref()) {
-                return None;
-            }
-            match url.scheme() {
-                "https" => https.clone().or_else(|| all.clone()),
-                "http" => http.clone().or_else(|| all.clone()),
-                _ => None,
-            }
-        }));
+        .proxy(Proxy::custom(move |url: &Url| proxies.for_url(url)));
     if redirects == Redirects::Never {
         builder = builder.redirect(Policy::none());
     }
