@@ -99,6 +99,13 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
             unavailable_hint: "",
         },
         BundledSkill {
+            name: "investigator",
+            raw: include_str!("../bundled/investigator/SKILL.md"),
+            requires: None,
+            tools: &["task_report"],
+            unavailable_hint: "",
+        },
+        BundledSkill {
             name: "web",
             raw: include_str!("../bundled/web/SKILL.md"),
             requires: Some(crate::ToolKey::Exa),

@@ -480,3 +480,31 @@ fn bundled_web_skill_needs_the_exa_key_and_names_its_tools() {
         );
     }
 }
+
+/// 默认角色的 skill 只在有 task_report 的会话里出现：Kind 没有这个工具，看不见；
+/// ThinAgent 有，才看得到。其余自带 skill 也照工具表过滤。
+#[test]
+fn investigator_skill_is_only_visible_where_task_report_is_assembled() {
+    let mut thin = ToolSet::builtin();
+    for name in ["web_search", "web_fetch", "task_report"] {
+        thin.push_shared(Arc::new(NamedTool(name)));
+    }
+    let names: Vec<&str> = bundled_skills_for(&thin)
+        .iter()
+        .map(|skill| skill.name)
+        .collect();
+    assert!(names.contains(&"investigator"), "{names:?}");
+    assert!(names.contains(&"web"), "{names:?}");
+    assert!(!names.contains(&"aios-settings"), "{names:?}");
+
+    let mut kind = ToolSet::builtin();
+    for name in ["aios_query", "propose_action", "web_search", "web_fetch"] {
+        kind.push_shared(Arc::new(NamedTool(name)));
+    }
+    let names: Vec<&str> = bundled_skills_for(&kind)
+        .iter()
+        .map(|skill| skill.name)
+        .collect();
+    assert!(!names.contains(&"investigator"), "{names:?}");
+}
+
