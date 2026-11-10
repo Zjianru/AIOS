@@ -3,10 +3,11 @@
  *
  * 分工照 D68：类型、状态、颜色、按钮由程序定；模型只填标题、摘要、问题这些文字槽。
  * 状态文字只取固定词（有结果 / 没开跑 / 卡住了 / 失败 / 等报告），不拼具体内容，也永远不写「完成」。
- * 本票只渲染「打开任务对话」，打开任务的动作留给下一票。
+ * 「打开任务对话」用 relay 带来的任务 id 走任务对话路由；卡片自己的状态/文字仍由程序事实决定。
  */
 
 import { ArrowUpRight, CirclePause, CircleX, Hourglass, SearchCheck } from 'lucide-react';
+import { go } from '@/app/navigate';
 import type { LucideIcon } from 'lucide-react';
 import type { TaskReportState, TaskResultSlots } from '@/data/taskResult';
 import type { CardViewProps } from './model';
@@ -76,7 +77,9 @@ export function TaskResultCardView({ slots }: CardViewProps<TaskResultSlots>) {
         <button
           type="button"
           data-kind="open-task"
-          className="ml-auto flex items-center gap-1 rounded-btn border border-line-2 px-2.5 py-1 text-2 text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+          disabled={!slots.taskId}
+          onClick={() => go('taskchat:' + slots.taskId)}
+          className="ml-auto flex items-center gap-1 rounded-btn border border-line-2 px-2.5 py-1 text-2 text-ink-2 transition-colors hover:bg-hover hover:text-ink disabled:opacity-50"
         >
           打开任务对话
           <ArrowUpRight className="size-3.5" />

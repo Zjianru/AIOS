@@ -359,6 +359,14 @@ pub struct TaskReadHeader {
     pub model: String,
     pub tools: Vec<String>,
     pub attempts: u64,
+    /// 当前 Attempt 最近一份报告的写入时间（unix 毫秒）；None = 这次 Attempt 还没交报告。
+    /// 终态报告后执行者会立刻关掉会话，日志可能没有 turn/end：页面据此判断最后一轮不再在跑。
+    #[serde(
+        default,
+        rename = "reportedAt",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reported_at: Option<i64>,
 }
 
 /// task-read：打开任务当前 Attempt 的会话，拿头部和一页事件。

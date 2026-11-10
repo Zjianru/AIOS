@@ -71,10 +71,13 @@ export function displayPath(raw: string | null | undefined): string {
 export class ServiceHttpError extends Error {
   status: number;
   code?: string;
-  constructor(status: number, message: string, code?: string) {
+  /** 服务端 error body 的 message（给「原因」这类要带事实的降级文案用）。 */
+  detail?: string;
+  constructor(status: number, message: string, code?: string, detail?: string) {
     super(message);
     this.status = status;
     this.code = code;
+    this.detail = detail;
   }
 }
 
@@ -114,13 +117,15 @@ async function post<M extends Call['method']>(body: CallOf<M>): Promise<Response
   if (!response.ok) {
     // T009.2：/api 错误体是 {code,message,details?}；页面只显示对照表的中文原因，不显示码/状态。
     let code: string | undefined;
+    let detail: string | undefined;
     try {
-      const body = (await response.json()) as { code?: unknown };
+      const body = (await response.json()) as { code?: unknown; message?: unknown };
       if (typeof body.code === 'string') code = body.code;
+      if (typeof body.message === 'string') detail = body.message;
     } catch {
       // 非 JSON 错误体：走通用原因。
     }
-    throw new ServiceHttpError(response.status, apiErrorReason(code), code);
+    throw new ServiceHttpError(response.status, apiErrorReason(code), code, detail);
   }
   // 线上入口的断言之一：响应体就是 Response 里这个方法的分支。
   return (await response.json()) as ResponseOf<M>;
@@ -235,6 +240,15 @@ export async function recheckRoot(): Promise<RootState> {
   // T009.5：根不可用时页面没有 ready 帧；recheck 也带 host.home，说明页的路径照样缩写。
   setHostHome(response.host.home);
   return response.root;
+}
+
+/** task-read：任务对话的头部 + 一页事件（只读；beforeSeq 往回翻，省略 = 日志末端）。 */
+export async function taskRead(taskId: string, beforeSeq?: number) {
+  return post({
+    method: 'task-read',
+    taskId,
+    ...(beforeSeq === undefined ? {} : { beforeSeq }),
+  });
 }
 
 /** events：往回翻一页日志（T006.16c 的轮对齐预算；打开/往上翻用）。 */

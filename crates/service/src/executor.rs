@@ -20,7 +20,9 @@ use tasks::{
 };
 use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
 
-use crate::protocol::DeliveryMode;
+use crate::error::ServiceError;
+use crate::events::{page_events, service_event};
+use crate::protocol::{DeliveryMode, TaskReadHeader, TaskReadRequest, TaskReadResponse};
 use crate::root::RootSessionOptions;
 use crate::session_host::ServiceHost;
 
@@ -106,6 +108,51 @@ impl TaskRuntime {
     /// 任务库（测试和诊断读同一份事实）。
     pub fn store(&self) -> &Arc<Store> {
         &self.store
+    }
+
+    /// 任务对话的只读快照：头部来自任务聚合，事件来自当前 Attempt 的会话日志。
+    ///
+    /// 只读打开：不创建会话、不拿写者锁；会话日志缺失/损坏时把原因带进可读错误。
+    /// 分页照 events 的预算（50 条消息/2 轮/500 上限），`lastSeq` 始终是日志末端。
+    pub(crate) fn task_read(
+        &self,
+        request: TaskReadRequest,
+    ) -> Result<TaskReadResponse, ServiceError> {
+        let task = self
+            .store
+            .task(&TaskId::from(request.task_id.as_str()))
+            .map_err(|error| ServiceError::TaskUnavailable(format!("任务读不出来：{error}")))?
+            .ok_or_else(|| {
+                ServiceError::TaskUnavailable(format!("找不到这个任务：{}", request.task_id))
+            })?;
+        let conversation = task
+            .latest_attempt()
+            .and_then(|attempt| attempt.conversation.as_ref())
+            .ok_or_else(|| {
+                ServiceError::TaskUnavailable("这个任务还没开跑，没有可看的对话".to_owned())
+            })?;
+        let session_id = SessionId::parse(conversation.as_str()).map_err(|error| {
+            ServiceError::TaskUnavailable(format!("任务对话的会话 id 不合法：{error}"))
+        })?;
+        let snapshot = session::SessionStore::open_read_only(&self.data_dir, &session_id)
+            .map_err(|error| ServiceError::TaskUnavailable(format!("任务对话打不开：{error}")))?;
+        let all = snapshot.events();
+        let (selected, _) = page_events(all, request.before_seq, 50, None, None);
+        Ok(TaskReadResponse {
+            task: TaskReadHeader {
+                id: task.id.as_str().to_owned(),
+                title: task.title.clone(),
+                requirement: task.requirement.clone(),
+                dod: task.dod.clone(),
+                cwd: task.cwd.to_string_lossy().into_owned(),
+                model: task.model.model.clone(),
+                tools: task.tools.clone(),
+                attempts: task.runs.iter().map(|run| run.attempts.len() as u64).sum(),
+                reported_at: task.latest_report().map(|report| report.at),
+            },
+            events: selected.iter().map(|event| service_event(event)).collect(),
+            last_seq: all.last().map(|event| event.seq).unwrap_or(0),
+        })
     }
 
     /// 测试用：暂停效果泵（launch/relay 都不跑）。

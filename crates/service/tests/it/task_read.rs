@@ -5,7 +5,9 @@ use std::path::Path;
 use model::{ContentBlock, Message, MessageId, MessageSource, Role, UserMessage};
 use service::{Call, Response, RootHost, TASKS_DB_FILE, THIN_TOOLS, TaskReadRequest};
 use session::{EventKind, SessionId, SessionStore, TurnEndReason};
-use tasks::{ConversationId, ModelChoice, NewTask, Store, TaskId};
+use tasks::{
+    ConversationId, ModelChoice, NewReport, NewTask, ReportOrigin, ReportState, Store, TaskId,
+};
 
 async fn open_host(data: &Path) -> RootHost {
     crate::common::open(crate::common::options(data)).await
@@ -66,7 +68,7 @@ fn answer(turn: u64, step: u64, text: &str) -> EventKind {
     }
 }
 
-/// 一条带工具调用和最后回答的会话；返回会话 id 和「工具/回答」写入前的日志末端。
+/// 一条带工具调用和最后回答的会话；返回会话 id。
 fn seed_session(data: &Path, cwd: &Path, turns: u64) -> SessionId {
     let mut store = SessionStore::create(data, cwd).expect("建会话");
     let id = store.id().clone();
@@ -82,7 +84,7 @@ fn seed_session(data: &Path, cwd: &Path, turns: u64) -> SessionId {
                 step: 1,
                 call_id: "call-read-1".to_owned(),
                 name: "read".to_owned(),
-                arguments: "{\"path\":\"hello.txt\"}".to_owned(),
+                arguments: "{\"file_path\":\"hello.txt\"}".to_owned(),
             });
             let mut result = Message::with_source(
                 MessageId::generate(),
@@ -139,6 +141,27 @@ async fn returns_the_header_and_the_tail_page() {
         conversation.as_str(),
         "查一下新闻归档里重复链接的判重规则",
     );
+    let store = Store::open(data.path().join(TASKS_DB_FILE)).expect("任务库");
+    let attempt = store
+        .task(&task_id)
+        .expect("读任务")
+        .expect("任务存在")
+        .latest_attempt()
+        .expect("Attempt")
+        .id;
+    store
+        .record_report(
+            &task_id,
+            attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "判重用的是原始链接。".to_owned(),
+                question: None,
+            },
+            2_000,
+        )
+        .expect("写报告");
 
     let Response::TaskRead(read) = read(&host, &task_id, None).await else {
         panic!("task-read 响应");
@@ -152,6 +175,11 @@ async fn returns_the_header_and_the_tail_page() {
     assert_eq!(read.task.model, "deepseek-flash");
     assert_eq!(read.task.tools, THIN_TOOLS.map(str::to_owned).to_vec());
     assert_eq!(read.task.attempts, 1);
+    assert_eq!(
+        read.task.reported_at,
+        Some(2_000),
+        "头部带最近一份报告的写入时间（页面据此收起还没 turn/end 的最后一轮）"
+    );
 
     // 一页事件按日志顺序：assignment（页面负责不画成气泡）、工具调用、最后回答都在。
     let types: Vec<&str> = read

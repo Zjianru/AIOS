@@ -9,4 +9,9 @@ export type TaskReadHeader = { id: string, title: string, requirement: string, d
 /**
  * 创建任务时冻结的模型（只给显示名，切换模型不影响它）。
  */
-model: string, tools: Array<string>, attempts: number, };
+model: string, tools: Array<string>, attempts: number,
+/**
+ * 当前 Attempt 最近一份报告的写入时间（unix 毫秒）；None = 这次 Attempt 还没交报告。
+ * 终态报告后执行者会立刻关掉会话，日志可能没有 turn/end：页面据此判断最后一轮不再在跑。
+ */
+reportedAt?: number | null, };

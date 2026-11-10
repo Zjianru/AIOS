@@ -26,6 +26,7 @@ import { ProjectScene } from '@/pages/project/ProjectScene';
 import { ReadScene } from '@/pages/read/ReadScene';
 import { TaskScene } from '@/pages/task/TaskScene';
 import { TraceScene } from '@/pages/task/TraceScene';
+import { TaskChatScene } from '@/pages/taskchat/TaskChatScene';
 import { SettingsScene } from '@/pages/settings/SettingsScene';
 import { PeriodPage } from '@/pages/placeholder/PeriodPage';
 
@@ -57,9 +58,9 @@ export function AppShell() {
     else delete document.documentElement.dataset.reducedMotion;
   }, [theme, reduced]);
 
-  // 只显示接上内核的部分：其他场景还没接上，回到 Kind。
+  // 只显示接上内核的部分：其他场景还没接上，回到 Kind（任务对话是结果卡打开的只读页）。
   useEffect(() => {
-    if (scene !== 'kind' && scene !== 'settings') go('kind');
+    if (scene !== 'kind' && scene !== 'settings' && scene !== 'taskchat') go('kind');
   }, [scene]);
 
   // 路由切换：起点 mark + 画完 mark（Kind 页自己会再打细的 mark）
@@ -84,6 +85,7 @@ export function AppShell() {
       if (scene === 'project' && route.kind === 'project') return <ProjectScene pane={paneId} />;
       if (scene === 'read') return <ReadScene pane={paneId} />;
       if (scene === 'task') return <TaskScene />;
+      if (scene === 'taskchat') return <TaskChatScene />;
       if (scene === 'trace') return <TraceScene />;
       if (scene === 'empty' && route.id === 'now') return <EmptyNow />;
       if (scene === 'settings' && route.kind === 'settings') return <SettingsScene />;

@@ -103,13 +103,24 @@ test('结果卡打开任务对话：工具调用和最后回答都在，刷新�
     await expect(pane.locator('[data-kind="user-bubble"]')).toHaveCount(0);
     await expect(pane).not.toContainText('"task_id"');
 
-    // 工作过程和最后回答：点开这一轮和这一组才看到工具行（Kind 的渲染默认收起）。
+    // 工作过程：点开这一轮和这一组才看到工具行（Kind 的渲染默认收起）。
+    // 终态报告后执行者立刻关掉会话，日志没有 turn/end；页面据 reportedAt 把最后一轮收成已完成。
     const process = pane.locator('[data-kind="process"]').first();
+    await expect(process).toContainText('已完成');
+    await expect(pane).not.toContainText('工作中');
     await process.locator('button').first().click();
     await process.locator('[data-kind="process-group"] button').first().click();
-    await expect(pane.locator('[data-kind="tool-row"][data-tool="read"]')).toBeVisible();
-    await expect(pane.locator('[data-kind="tool-row"][data-tool="read"]')).toContainText('hello from fixture');
-    await expect(pane.locator('[data-kind="assistant-answer"]').last()).toContainText('已经上报。');
+
+    const readRow = pane.locator('[data-kind="tool-row"][data-tool="read"]');
+    await expect(readRow).toBeVisible();
+    await readRow.locator('button').first().click();
+    await expect(pane.getByText('hello from fixture')).toBeVisible();
+
+    // ThinAgent 的最后内容就是那份报告：在 task_report 这一行的卡片里能看到摘要。
+    const reportRow = pane.locator('[data-kind="tool-row"][data-tool="task_report"]');
+    await expect(reportRow).toBeVisible();
+    await reportRow.locator('button').first().click();
+    await expect(pane.getByText(/判重用的是原始链接/)).toBeVisible();
 
     // 只读：没有输入框、发送、停止。
     await expect(page.locator('[data-kind="composer"]')).toHaveCount(0);
@@ -122,9 +133,32 @@ test('结果卡打开任务对话：工具调用和最后回答都在，刷新�
     await expect(again.locator('[data-kind="task-full-title"]')).toHaveText(TITLE, {
       timeout: 20_000,
     });
-    await expect(again.locator('[data-kind="assistant-answer"]').last()).toContainText('已经上报。');
+    await expect(again).toContainText('已完成');
+    await expect(again).not.toContainText('工作中');
     await expect(again.locator('[data-kind="user-bubble"]')).toHaveCount(0);
     expect(errors).toEqual([]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('任务没在跑时静态可看：waiting 的最后一段回答', async ({ page }) => {
+  const fixture = await startKernelFixture({ taskResult: 'waiting' });
+  try {
+    await page.goto(urlOf(fixture));
+    await send(page, '帮我查一下新闻归档里的判重规则');
+    const card = resultCard(page);
+    await expect(card).toBeVisible({ timeout: 30_000 });
+
+    await card.getByRole('button', { name: /打开任务对话/ }).click();
+    const pane = taskPane(page);
+    await expect(pane).toBeVisible({ timeout: 20_000 });
+    // waiting 是执行者在一轮结束时合成的：这一轮有 turn/end，最后一段回答照日志显示。
+    await expect(pane.locator('[data-kind="assistant-answer"]').last()).toContainText(
+      '我还在查，别急。',
+    );
+    await expect(page.locator('[data-kind="composer"]')).toHaveCount(0);
+    await expect(page.locator('[data-kind="stop"]')).toHaveCount(0);
   } finally {
     await fixture.close();
   }

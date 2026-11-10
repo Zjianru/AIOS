@@ -99,7 +99,9 @@ impl ServiceHost {
             // 裸宿主没有登记的动作，也就没有卡；点按钮什么也不发生。
             Call::CardAct(_) => Ok(Response::CardAct(CardActResponse { decision: None })),
             // task-read 只能由根宿主打开（任务库在根宿主手里）。
-            Call::TaskRead(_) => Err(ServiceError::SettingsOnBareHost),
+            Call::TaskRead(_) => Err(ServiceError::TaskUnavailable(
+                "任务对话只能由根宿主打开".to_owned(),
+            )),
             // recheck 只对 RootHost 有意义；裸 ServiceHost 直接回根状态 ok（宿主不回退）。
             Call::Recheck(_) => Ok(Response::Recheck(RecheckResponse {
                 root: RootState::Ok,
