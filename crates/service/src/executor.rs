@@ -65,8 +65,9 @@ const WAITING_FALLBACK: &str = "ThinAgent 没上报，用 task_status 去问";
 /// 任务没在跑时的固定原因；页面和 Kind 工具用同一句话。
 const NOT_RUNNING: &str = "这个任务没在跑";
 
-/// 收尾停本票只回这句固定说明，不假装可用。
-const AFTER_REPORT_UNSUPPORTED: &str = "收尾停（after_report）还没支持：这个版本只能立即停。已停手，请把这一点告诉用户，不要再试收尾停。";
+/// 收尾停插进 ThinAgent 会话的固定说明（spec v1:44）；request id 是 task-stop:<taskId>:<attemptId>。
+const AFTER_REPORT_STOP: &str =
+    "用户要求收尾停：做完手上这一步，用 task_report 报一次当前结果，然后结束。不再调其他工具。";
 
 /// 执行者的一个已开会话；task_status 向 waiting 的 ThinAgent 要报告时用它。
 struct RunningThin {
@@ -843,6 +844,26 @@ impl TaskRuntime {
         }) {
             return;
         }
+        // 收尾停：turn 结束还没报，先走 T024 的 waiting 合成，再把这个 Attempt 记成 stopped。
+        if self.after_report_requested(conversation) {
+            self.settle_after_report(task_id, attempt_id, conversation);
+            return;
+        }
+        self.record_waiting(task_id, attempt_id, conversation);
+        self.wake();
+    }
+
+    /// 这个会话有没有收尾停标记（在跑表里查；会话摘掉之后就是 false）。
+    fn after_report_requested(&self, conversation: &SessionId) -> bool {
+        self.running
+            .lock()
+            .expect("thinagent 表锁被毒化")
+            .get(conversation.as_str())
+            .is_some_and(|entry| entry.host.agent().stop_after_report_requested())
+    }
+
+    /// turn 结束还没报：照 T024 合成 waiting（有最后一段回复就带它，没有就提示去问）。
+    fn record_waiting(&self, task_id: &TaskId, attempt_id: AttemptId, conversation: &SessionId) {
         let said = self.last_assistant_text(conversation);
         let summary = if said.trim().is_empty() {
             WAITING_FALLBACK.to_owned()
@@ -862,6 +883,49 @@ impl TaskRuntime {
         ) {
             eprintln!("任务 {task_id} 的等待报告没写进去：{error}");
         }
+    }
+
+    /// 收尾停的收尾：waiting 合成之后把这个 Attempt 记成 stopped，并从在跑表摘掉会话。
+    ///
+    /// 幂等：Attempt 已经结束、已经有终态报告、或已经不是最新 Attempt 时什么都不做。
+    fn settle_after_report(
+        &self,
+        task_id: &TaskId,
+        attempt_id: AttemptId,
+        conversation: &SessionId,
+    ) {
+        let Ok(Some(task)) = self.store.task(task_id) else {
+            return;
+        };
+        if task.latest_attempt().map(|attempt| attempt.id) != Some(attempt_id) {
+            return;
+        }
+        if task
+            .latest_attempt()
+            .is_some_and(|attempt| attempt.ended_at.is_some())
+        {
+            return;
+        }
+        if task.latest_report().is_some_and(|report| {
+            matches!(
+                report.state,
+                ReportState::Ready | ReportState::Blocked | ReportState::Failed
+            )
+        }) {
+            return;
+        }
+        self.record_waiting(task_id, attempt_id, conversation);
+        if let Err(error) =
+            self.store
+                .end_attempt(task_id, attempt_id, Self::now(), AttemptEnd::Stopped)
+        {
+            eprintln!("任务 {task_id} 的收尾停没记进任务库：{error}");
+            return;
+        }
+        self.running
+            .lock()
+            .expect("thinagent 表锁被毒化")
+            .remove(conversation.as_str());
         self.wake();
     }
 
@@ -887,7 +951,7 @@ impl TaskRuntime {
             .unwrap_or_default()
     }
 
-    /// ThinAgent 报了一份报告：同事务写报告 + 排 relay；终态后关掉会话。
+    /// ThinAgent 报了一份报告：同事务写报告 + 排 relay；终态就是这次 Attempt 的结束，关掉会话。
     fn report(
         &self,
         task_id: &TaskId,
@@ -904,16 +968,23 @@ impl TaskRuntime {
         let id = self
             .store
             .record_report(task_id, attempt_id, report, Self::now())?;
-        self.wake();
         if matches!(
             state,
             ReportState::Ready | ReportState::Blocked | ReportState::Failed
         ) {
+            // 照 spec：报了以后 Attempt 以 reported 结束，卡照报的状态出。报告已经落库，
+            // 结束原因写失败不该把它变成工具错误（报过的结果不能被重报）。
+            best_effort(
+                "task_report 的 Attempt 没收尾",
+                self.store
+                    .end_attempt(task_id, attempt_id, Self::now(), AttemptEnd::Reported),
+            );
             self.running
                 .lock()
                 .expect("thinagent 表锁被毒化")
                 .remove(conversation);
         }
+        self.wake();
         Ok((id, duplicate))
     }
 
@@ -1038,11 +1109,11 @@ impl TaskRuntime {
         Ok(lines.join("\n"))
     }
 
-    /// 停一个任务：立即停走「先持久、再取消」；收尾停本票只回固定未支持。
+    /// 停一个任务：立即停走「先持久、再取消」；收尾停走「插固定说明、打标记、等报」。
     ///
     /// 页面（Call::TaskStop）和 Kind 的 task_stop 都调到这一个方法。
     pub(crate) async fn stop_task(
-        &self,
+        self: &Arc<Self>,
         task_id: &str,
         mode: StopMode,
     ) -> Result<TaskStopResponse, ServiceError> {
@@ -1061,13 +1132,6 @@ impl TaskRuntime {
             stage: stage_key(stage).to_owned(),
             message: NOT_RUNNING.to_owned(),
         };
-        if mode == StopMode::AfterReport {
-            return Ok(TaskStopResponse {
-                stopped: false,
-                stage: stage_key(stage).to_owned(),
-                message: AFTER_REPORT_UNSUPPORTED.to_owned(),
-            });
-        }
         let Some(attempt) = task.latest_attempt() else {
             return Ok(not_running());
         };
@@ -1078,6 +1142,54 @@ impl TaskRuntime {
             return Ok(not_running());
         };
         let attempt_id = attempt.id;
+        if mode == StopMode::AfterReport {
+            let conversation = running.host.agent().id().clone();
+            let request_id = format!("task-stop:{id}:{attempt_id}");
+            running
+                .host
+                .send_message(
+                    &request_id,
+                    UserMessage::text(AFTER_REPORT_STOP),
+                    DeliveryMode::Inject,
+                )
+                .await
+                .map_err(|error| {
+                    ServiceError::TaskUnavailable(format!("收尾停没插进会话：{error}"))
+                })?;
+            running.host.agent().stop_after_report();
+            // 这一轮已经结束、没有下一步可等：照「turn 结束还没报」当场记 waiting + stopped。
+            let idle = !running.host.agent().is_running();
+            if idle {
+                self.settle_after_report(&id, attempt_id, &conversation);
+            }
+            // 停止落在刚收尾的那一轮上时，is_running 可能还没翻成 false，而那次 turn 结束早已
+            // 走过 turn_ended：等会话空闲后再收一次。settle 幂等，重复调用什么都不改。
+            let runtime = Arc::clone(self);
+            let agent = running.host.agent().clone();
+            let task = id.clone();
+            let settled_conversation = conversation.clone();
+            tokio::spawn(async move {
+                agent.idle().await;
+                runtime.settle_after_report(&task, attempt_id, &settled_conversation);
+            });
+            let stage = self
+                .store
+                .stage(&id)
+                .map_err(|error| ServiceError::TaskUnavailable(format!("阶段读不出来：{error}")))?;
+            let how = if idle {
+                "这一轮已经结束且还没报结果，任务已停"
+            } else {
+                "做完手上这一步、用 task_report 报一次就结束"
+            };
+            return Ok(TaskStopResponse {
+                stopped: true,
+                stage: stage_key(stage).to_owned(),
+                message: format!(
+                    "已收尾停：{how}（任务 {task_id}，阶段：{}）。",
+                    stage_label(stage)
+                ),
+            });
+        }
         let outcome = self
             .store
             .stop_attempt(&id, attempt_id, Self::now())
@@ -1357,7 +1469,7 @@ impl TaskStopTool {
                     "mode": {
                         "type": "string",
                         "enum": ["now", "after_report"],
-                        "description": "now stops the running Attempt immediately. after_report stops after the next report, which this version does not support yet."
+                        "description": "now stops the running Attempt immediately. after_report lets it finish the current step, then only task_report is allowed until it reports and ends."
                     }
                 },
                 "required": ["task_id", "mode"]
@@ -1372,7 +1484,7 @@ impl Tool for TaskStopTool {
     }
 
     fn description(&self) -> &str {
-        "Stop a running task. mode=now cancels its current Attempt immediately. Call it only when the user explicitly asks to stop a task; mode=after_report is not supported yet and says so instead of pretending."
+        "Stop a running task. mode=now cancels its current Attempt immediately. mode=after_report lets it finish the current step and report once, then it ends; from then on only task_report is allowed. Call it only when the user explicitly asks to stop a task."
     }
 
     fn parameters(&self) -> &Value {
@@ -1407,10 +1519,6 @@ impl Tool for TaskStopTool {
                 }
             };
             match self.runtime.stop_task(task_id, mode).await {
-                // 收尾停还没实现：明确报错，让 Kind 停手并告诉用户，而不是假装停成了。
-                Ok(result) if mode == StopMode::AfterReport => {
-                    ToolResult::error(call.id, ToolFailure::plain(result.message))
-                }
                 Ok(result) => ToolResult::success(call.id, result.message),
                 Err(error) => ToolResult::error(call.id, ToolFailure::plain(error.to_string())),
             }

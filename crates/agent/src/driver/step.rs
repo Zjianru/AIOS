@@ -530,6 +530,24 @@ pub(super) async fn run_step(
             }
         }
     }
+    // 收尾停标记也在统一入口判：tool/call 已经落盘，除 task_report 以外的调用不执行，
+    // 直接给一条固定拒绝语的错误 tool/result（照 D81：插入后除了上报别的都不能做）。
+    if inner.stop_after_report_requested() {
+        for (index, call) in calls.iter().enumerate() {
+            if call.name == "task_report"
+                || overrides.iter().any(|(existing, _)| *existing == index)
+            {
+                continue;
+            }
+            overrides.push((
+                index,
+                tools::ToolResult::error(
+                    call.id.clone(),
+                    tools::ToolFailure::plain(crate::tool_policy::STOP_AFTER_REPORT),
+                ),
+            ));
+        }
+    }
     let mut exec_calls: Vec<ToolCall> = Vec::new();
     let mut exec_indices: Vec<usize> = Vec::new();
     for (index, call) in calls.iter().enumerate() {
