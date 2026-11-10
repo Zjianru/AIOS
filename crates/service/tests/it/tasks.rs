@@ -9,9 +9,10 @@ use agent::AgentConfig;
 use model::DEFAULT_CONTEXT_WINDOW;
 use serde_json::Value;
 use service::{
-    Call, DeliveryMode, DisabledModelsSetRequest, RootHost, SendRequest, SessionModelSelectRequest,
+    Call, DeliveryMode, DisabledModelsSetRequest, Response, RootHost, SendRequest,
+    SessionModelSelectRequest, StopMode, TaskStopRequest,
 };
-use tasks::{ReportState, Stage, Store, Task};
+use tasks::{AttemptEnd, EffectKind, ReportState, Stage, Store, Task};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
@@ -105,6 +106,15 @@ async fn mount(server: &MockServer, router: &Router) {
 }
 
 async fn open_host(server: &MockServer, data: &Path, cwd: &Path) -> RootHost {
+    open_host_with(server, data, cwd, |_| {}).await
+}
+
+async fn open_host_with(
+    server: &MockServer,
+    data: &Path,
+    cwd: &Path,
+    configure: impl FnOnce(&mut service::RootSessionOptions),
+) -> RootHost {
     let mut options = crate::common::options(data);
     options.cwd = cwd.to_path_buf();
     options.model.base_url = server.uri();
@@ -113,6 +123,7 @@ async fn open_host(server: &MockServer, data: &Path, cwd: &Path) -> RootHost {
         skill_roots: vec![data.join("skills-home")],
         ..AgentConfig::default()
     };
+    configure(&mut options);
     RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await
 }
 
@@ -179,6 +190,38 @@ fn relay_messages(events: &[session::Event]) -> Vec<(String, Value)> {
             Some((rpc_id.to_owned(), serde_json::from_str(&text).ok()?))
         })
         .collect()
+}
+
+/// Kind 收到的停止 relay：rpc id 是 task-stop:<taskId>:<attemptId>。
+fn stopped_relays(events: &[session::Event]) -> Vec<(String, Value)> {
+    events
+        .iter()
+        .filter_map(|event| {
+            let session::EventKind::UserMessage { message, .. } = &event.kind else {
+                return None;
+            };
+            let model::MessageSource::User { rpc_id } = &message.source else {
+                return None;
+            };
+            let rpc_id = rpc_id.as_deref()?;
+            if !rpc_id.starts_with("task-stop:") {
+                return None;
+            }
+            let text: String = message
+                .content
+                .iter()
+                .filter_map(model::ContentBlock::as_text)
+                .collect();
+            Some((rpc_id.to_owned(), serde_json::from_str(&text).ok()?))
+        })
+        .collect()
+}
+
+fn last_turn_end(events: &[session::Event]) -> Option<session::TurnEndReason> {
+    events.iter().rev().find_map(|event| match &event.kind {
+        session::EventKind::TurnEnd { reason, .. } => Some(reason.clone()),
+        _ => None,
+    })
 }
 
 #[tokio::test]
@@ -1040,5 +1083,408 @@ async fn task_stream_is_live_while_the_task_is_running() {
         event.seq > last,
         "live 事件在打开时的补齐之后：{} <= {last}",
         event.seq
+    );
+}
+
+#[tokio::test]
+async fn stopping_a_running_task_persists_the_stop_before_cancelling_and_relays_once() {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    mount(&server, &router).await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+
+    // 钩子观察：ThinAgent 的取消收尾写进日志时，任务库里已经能读到停止事实。
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let task_slot: Arc<Mutex<Option<tasks::TaskId>>> = Arc::new(Mutex::new(None));
+    let hook_data = data.path().to_path_buf();
+    let hook_seen = Arc::clone(&seen);
+    let hook_task = Arc::clone(&task_slot);
+    let hook: session::AppendHookFactory = Arc::new(move |_id| {
+        let data = hook_data.clone();
+        let seen = Arc::clone(&hook_seen);
+        let task_slot = Arc::clone(&hook_task);
+        Arc::new(move |events: &[session::Event]| {
+            let aborted = events.iter().any(|event| {
+                matches!(
+                    &event.kind,
+                    session::EventKind::TurnEnd {
+                        reason: session::TurnEndReason::Aborted { .. },
+                        ..
+                    }
+                )
+            });
+            if !aborted {
+                return;
+            }
+            let Some(task_id) = task_slot.lock().unwrap().clone() else {
+                return;
+            };
+            let Ok(store) = Store::open(data.join(service::TASKS_DB_FILE)) else {
+                return;
+            };
+            let Ok(Some(task)) = store.task(&task_id) else {
+                return;
+            };
+            let Some(attempt) = task.latest_attempt() else {
+                return;
+            };
+            let key = format!("stop:{task_id}:{}", attempt.id);
+            let pending = store
+                .effect_pending(EffectKind::Relay, &key)
+                .unwrap_or(false);
+            seen.lock().unwrap().push((attempt.end, pending));
+        })
+    });
+
+    let host = open_host_with(&server, data.path(), cwd.path(), |options| {
+        options.append_hook_factory = Some(hook);
+    })
+    .await;
+    // 第一轮响应慢一点：停止要在 ThinAgent 真正跑着的时候发生。
+    router.set_thin_delay(Duration::from_millis(2_000));
+    router.push_thin(crate::common::text_sse("我还在查"));
+
+    let args = serde_json::json!({
+        "title": "查一下",
+        "requirement": "找答案",
+        "dod": "有答案"
+    })
+    .to_string();
+    router.push_kind(crate::common::tool_use_sse(
+        0,
+        "call-accept",
+        "task_accept",
+        &args,
+    ));
+    router.push_kind(crate::common::text_sse("已派出"));
+    host.dispatch(Call::Send(send(&host, "kind-stop-1", "查一下")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&host, data.path(), 1).await;
+
+    let store = tasks_store(data.path());
+    let task = one_task(&store);
+    *task_slot.lock().unwrap() = Some(task.id.clone());
+    wait_until("ThinAgent 的请求在途", || {
+        !router.bodies(true).is_empty()
+    })
+    .await;
+
+    // relay 先不投递：停止后能查效果行还在排队。
+    host.task_runtime().expect("runtime").set_paused(true);
+    let response = host
+        .dispatch(Call::TaskStop(TaskStopRequest {
+            task_id: task.id.as_str().to_owned(),
+            mode: StopMode::Now,
+        }))
+        .await
+        .expect("停止");
+    let Response::TaskStop(stop) = response else {
+        panic!("TaskStop 的响应形状不对");
+    };
+    assert!(stop.stopped, "{stop:?}");
+    assert_eq!(stop.stage, "needs_conditions");
+
+    let task = store.task(&task.id).unwrap().unwrap();
+    let attempt = task.latest_attempt().expect("Attempt");
+    assert_eq!(attempt.end, Some(AttemptEnd::Stopped));
+    assert_eq!(
+        store.stage(&task.id).unwrap(),
+        Stage::NeedsConditions,
+        "停止后阶段是待补足条件"
+    );
+    assert!(
+        store
+            .effect_pending(
+                EffectKind::Relay,
+                &format!("stop:{}:{}", task.id, attempt.id)
+            )
+            .unwrap(),
+        "停止 relay 还在排队"
+    );
+
+    // 取消后的收尾：ThinAgent 最后一轮是 aborted。
+    let conversation = attempt.conversation.clone().expect("会话 id");
+    let session_id = session::SessionId::parse(conversation.as_str()).unwrap();
+    wait_until("ThinAgent 的轮收尾", || {
+        session::SessionStore::open_read_only(data.path(), &session_id).is_ok_and(|store| {
+            store
+                .events()
+                .iter()
+                .any(|event| matches!(&event.kind, session::EventKind::TurnEnd { .. }))
+        })
+    })
+    .await;
+    let thin = session::SessionStore::open_read_only(data.path(), &session_id).unwrap();
+    assert_eq!(
+        last_turn_end(thin.events()),
+        Some(session::TurnEndReason::Aborted {
+            reason: session::AbortCause::User
+        })
+    );
+
+    // 顺序：取消的收尾写日志时，库里停止事实已提交、relay 已排队。
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "只应观察到一次取消收尾：{seen:?}");
+    assert_eq!(
+        seen[0],
+        (Some(AttemptEnd::Stopped), true),
+        "先持久后 cancel：收尾写日志时停止已在库里"
+    );
+    drop(seen);
+    assert!(
+        store
+            .task(&task.id)
+            .unwrap()
+            .unwrap()
+            .latest_report()
+            .is_none(),
+        "停止不合成 waiting 报告"
+    );
+
+    host.task_runtime().expect("runtime").set_paused(false);
+    router.push_kind(crate::common::text_sse("收到"));
+    wait_until("Kind 收到停止 relay", || {
+        stopped_relays(&crate::common::read_root_events(data.path())).len() == 1
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let relays = stopped_relays(&crate::common::read_root_events(data.path()));
+    assert_eq!(relays.len(), 1, "Kind 只收到一条停止 relay：{relays:?}");
+    let body = &relays[0].1;
+    assert_eq!(body["kind"], "task_report");
+    assert_eq!(body["state"], "stopped");
+    assert_eq!(body["origin"], "executor");
+    assert_eq!(body["task"]["id"], task.id.as_str());
+    assert_eq!(body["task"]["stage"], "needs_conditions");
+    assert!(
+        body["summary"]
+            .as_str()
+            .is_some_and(|text| text.contains("立即停")),
+        "{body:?}"
+    );
+}
+
+#[tokio::test]
+async fn kind_task_stop_now_stops_the_running_attempt_like_the_page() {
+    let fixture = Fixture::new().await;
+    fixture.router.set_thin_delay(Duration::from_millis(2_000));
+    fixture
+        .router
+        .push_thin(crate::common::text_sse("我还在查"));
+    let task = fixture.accept(false).await;
+    wait_until("ThinAgent 的请求在途", || {
+        !fixture.router.bodies(true).is_empty()
+    })
+    .await;
+
+    let args = serde_json::json!({"task_id": task.id.as_str(), "mode": "now"}).to_string();
+    fixture.router.push_kind(crate::common::tool_use_sse(
+        1,
+        "call-stop",
+        "task_stop",
+        &args,
+    ));
+    fixture.router.push_kind(crate::common::text_sse("停了"));
+    // 停止 relay 可能在这轮之后才到，预置它唤醒的那一轮的回复。
+    fixture.router.push_kind(crate::common::text_sse("收到"));
+    fixture
+        .host
+        .dispatch(Call::Send(send(&fixture.host, "kind-stop-2", "把任务停了")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&fixture.host, fixture.data(), 2).await;
+
+    let events = crate::common::read_root_events(fixture.data());
+    let (text, is_error) = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            session::EventKind::ToolResult { message, .. }
+                if message.tool_call_id.as_deref() == Some("call-stop") =>
+            {
+                Some((
+                    message
+                        .content
+                        .iter()
+                        .filter_map(model::ContentBlock::as_text)
+                        .collect::<String>(),
+                    message.is_error,
+                ))
+            }
+            _ => None,
+        })
+        .expect("task_stop 的 tool/result");
+    assert!(!is_error.unwrap_or(false), "{text}");
+    assert!(text.contains("已立即停"), "{text}");
+
+    let store = tasks_store(fixture.data());
+    let task = store.task(&task.id).unwrap().unwrap();
+    let attempt = task.latest_attempt().expect("Attempt");
+    assert_eq!(attempt.end, Some(AttemptEnd::Stopped));
+    let conversation = attempt.conversation.clone().expect("会话 id");
+    let session_id = session::SessionId::parse(conversation.as_str()).unwrap();
+    wait_until("ThinAgent 的轮收尾", || {
+        session::SessionStore::open_read_only(fixture.data(), &session_id).is_ok_and(|store| {
+            store
+                .events()
+                .iter()
+                .any(|event| matches!(&event.kind, session::EventKind::TurnEnd { .. }))
+        })
+    })
+    .await;
+    let thin = session::SessionStore::open_read_only(fixture.data(), &session_id).unwrap();
+    assert_eq!(
+        last_turn_end(thin.events()),
+        Some(session::TurnEndReason::Aborted {
+            reason: session::AbortCause::User
+        })
+    );
+
+    wait_until("Kind 收到停止 relay", || {
+        stopped_relays(&crate::common::read_root_events(fixture.data())).len() == 1
+    })
+    .await;
+    assert_eq!(
+        stopped_relays(&crate::common::read_root_events(fixture.data()))[0].1["state"],
+        "stopped"
+    );
+}
+
+#[tokio::test]
+async fn task_stop_for_a_task_that_is_not_running_reports_the_fixed_reason() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(true).await;
+
+    let response = fixture
+        .host
+        .dispatch(Call::TaskStop(TaskStopRequest {
+            task_id: task.id.as_str().to_owned(),
+            mode: StopMode::Now,
+        }))
+        .await
+        .expect("停止");
+    let Response::TaskStop(stop) = response else {
+        panic!("TaskStop 的响应形状不对");
+    };
+    assert!(!stop.stopped, "{stop:?}");
+    assert_eq!(stop.message, "这个任务没在跑");
+    assert_eq!(stop.stage, "pending");
+
+    let store = tasks_store(fixture.data());
+    let task = store.task(&task.id).unwrap().unwrap();
+    assert!(
+        task.latest_attempt().is_none(),
+        "没开跑的任务不该有 Attempt"
+    );
+}
+
+#[tokio::test]
+async fn kind_task_stop_reports_not_running_and_refuses_after_report() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(true).await;
+
+    let now_args = serde_json::json!({"task_id": task.id.as_str(), "mode": "now"}).to_string();
+    let after_args =
+        serde_json::json!({"task_id": task.id.as_str(), "mode": "after_report"}).to_string();
+    fixture.router.push_kind(crate::common::tool_use_sse(
+        1,
+        "call-stop-now",
+        "task_stop",
+        &now_args,
+    ));
+    fixture.router.push_kind(crate::common::tool_use_sse(
+        2,
+        "call-stop-after",
+        "task_stop",
+        &after_args,
+    ));
+    fixture.router.push_kind(crate::common::text_sse("没停成"));
+    fixture
+        .host
+        .dispatch(Call::Send(send(&fixture.host, "kind-stop-3", "停一下")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&fixture.host, fixture.data(), 2).await;
+
+    let events = crate::common::read_root_events(fixture.data());
+    let result = |call: &str| {
+        events
+            .iter()
+            .find_map(|event| match &event.kind {
+                session::EventKind::ToolResult { message, .. }
+                    if message.tool_call_id.as_deref() == Some(call) =>
+                {
+                    Some((
+                        message
+                            .content
+                            .iter()
+                            .filter_map(model::ContentBlock::as_text)
+                            .collect::<String>(),
+                        message.is_error,
+                    ))
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{call} 的 tool/result"))
+    };
+    let (not_running, is_error) = result("call-stop-now");
+    assert!(!is_error.unwrap_or(false), "{not_running}");
+    assert_eq!(not_running, "这个任务没在跑");
+
+    let (unsupported, is_error) = result("call-stop-after");
+    assert!(
+        is_error.unwrap_or(false),
+        "收尾停未支持要明确报错：{unsupported}"
+    );
+    assert_eq!(
+        unsupported.strip_prefix("Error: ").unwrap_or(&unsupported),
+        "收尾停（after_report）还没支持：这个版本只能立即停。已停手，请把这一点告诉用户，不要再试收尾停。"
+    );
+}
+
+#[tokio::test]
+async fn the_tasks_skill_is_bundled_for_kind_only() {
+    let fixture = Fixture::new().await;
+    fixture.router.push_thin(crate::common::text_sse("查完"));
+    let args = serde_json::json!({
+        "title": "查一下",
+        "requirement": "找答案",
+        "dod": "有答案"
+    })
+    .to_string();
+    fixture.router.push_kind(crate::common::tool_use_sse(
+        0,
+        "call-accept",
+        "task_accept",
+        &args,
+    ));
+    fixture.router.push_kind(crate::common::text_sse("已派出"));
+    // ThinAgent 的 waiting relay 可能插进受理这一轮，也可能之后唤醒一轮；预置一条回复。
+    fixture.router.push_kind(crate::common::text_sse("收到"));
+    fixture
+        .host
+        .dispatch(Call::Send(send(&fixture.host, "kind-skill", "查一下")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&fixture.host, fixture.data(), 1).await;
+    wait_until("ThinAgent 请求", || {
+        !fixture.router.bodies(true).is_empty()
+    })
+    .await;
+
+    let kind_body = &fixture.router.bodies(false)[0];
+    assert!(
+        kind_body.contains("\"aios-tasks\""),
+        "Kind 的 skill 目录要有 aios-tasks"
+    );
+    assert!(
+        tool_names(kind_body).contains(&"task_stop".to_owned()),
+        "Kind 的工具表要有 task_stop"
+    );
+    let thin_body = &fixture.router.bodies(true)[0];
+    assert!(
+        !thin_body.contains("\"aios-tasks\""),
+        "ThinAgent 看不到 aios-tasks"
     );
 }

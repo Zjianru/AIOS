@@ -183,6 +183,9 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
         extra_tools.push(std::sync::Arc::new(crate::executor::TaskStatusTool::new(
             std::sync::Arc::clone(runtime),
         )));
+        extra_tools.push(std::sync::Arc::new(crate::executor::TaskStopTool::new(
+            std::sync::Arc::clone(runtime),
+        )));
     }
     // 工具凭证的事实：每步只读检查 Keyring（不建任何文件）；读不出来按没存，
     // 设置页另外报读不出的原因。ThinAgent 用同一份来源。

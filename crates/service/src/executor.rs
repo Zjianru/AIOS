@@ -24,8 +24,8 @@ use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture,
 use crate::error::ServiceError;
 use crate::events::{page_events, service_event};
 use crate::protocol::{
-    DeliveryMode, FollowRequest, FollowResponse, ServiceEvent, TaskReadHeader, TaskReadRequest,
-    TaskReadResponse,
+    DeliveryMode, FollowRequest, FollowResponse, ServiceEvent, StopMode, TaskReadHeader,
+    TaskReadRequest, TaskReadResponse, TaskStopResponse,
 };
 use crate::root::RootSessionOptions;
 use crate::session_host::ServiceHost;
@@ -61,6 +61,12 @@ const STATUS_REQUEST: &str = "Report the current task status with task_report. T
 
 /// 一轮结束但 ThinAgent 什么都没说时的 relay 摘要（照 spec 的提示）。
 const WAITING_FALLBACK: &str = "ThinAgent 没上报，用 task_status 去问";
+
+/// 任务没在跑时的固定原因；页面和 Kind 工具用同一句话。
+const NOT_RUNNING: &str = "这个任务没在跑";
+
+/// 收尾停本票只回这句固定说明，不假装可用。
+const AFTER_REPORT_UNSUPPORTED: &str = "收尾停（after_report）还没支持：这个版本只能立即停。已停手，请把这一点告诉用户，不要再试收尾停。";
 
 /// 执行者的一个已开会话；task_status 向 waiting 的 ThinAgent 要报告时用它。
 struct RunningThin {
@@ -991,6 +997,22 @@ impl TaskRuntime {
         Ok(lines.join("\n"))
     }
 
+    /// 停一个任务：立即停走「先持久、再取消」；收尾停本票只回固定未支持。
+    ///
+    /// 页面（Call::TaskStop）和 Kind 的 task_stop 都调到这一个方法。
+    pub(crate) async fn stop_task(
+        &self,
+        task_id: &str,
+        mode: StopMode,
+    ) -> Result<TaskStopResponse, ServiceError> {
+        let _ = (task_id, mode);
+        Ok(TaskStopResponse {
+            stopped: false,
+            stage: "pending".to_owned(),
+            message: "未支持".to_owned(),
+        })
+    }
+
     /// task_report 的实际落点：写报告 + 排 relay（store 同一事务），返回回执。
     fn report_from_tool(
         &self,
@@ -1220,6 +1242,80 @@ impl Tool for TaskStatusTool {
             match self.runtime.status_text(task_id).await {
                 Ok(text) => ToolResult::success(call.id, text),
                 Err(failure) => ToolResult::error(call.id, failure),
+            }
+        })
+    }
+}
+
+/// Kind 的 task_stop：页面 TaskStop 调的是同一个 stop_task。
+pub(crate) struct TaskStopTool {
+    runtime: Arc<TaskRuntime>,
+    parameters: Value,
+}
+
+impl TaskStopTool {
+    pub(crate) fn new(runtime: Arc<TaskRuntime>) -> Self {
+        Self {
+            runtime,
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "Task id returned by task_accept."},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["now", "after_report"],
+                        "description": "now stops the running Attempt immediately. after_report stops after the next report, which this version does not support yet."
+                    }
+                },
+                "required": ["task_id", "mode"]
+            }),
+        }
+    }
+}
+
+impl Tool for TaskStopTool {
+    fn name(&self) -> &str {
+        "task_stop"
+    }
+
+    fn description(&self) -> &str {
+        "Stop a running task. mode=now cancels its current Attempt immediately. Call it only when the user explicitly asks to stop a task; mode=after_report is not supported yet and says so instead of pretending."
+    }
+
+    fn parameters(&self) -> &Value {
+        &self.parameters
+    }
+
+    fn condition(&self) -> ToolCondition {
+        ToolCondition::Always
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: ToolCall,
+        _context: &'a ToolContext,
+    ) -> ToolFuture<'a, ToolResult> {
+        Box::pin(async move {
+            let args = match parse_object(&call.arguments) {
+                Ok(args) => args,
+                Err(failure) => return ToolResult::error(call.id, failure),
+            };
+            let Some(task_id) = args.get("task_id").and_then(Value::as_str) else {
+                return ToolResult::error(call.id, ToolFailure::plain("task_id 不能为空"));
+            };
+            let mode = match args.get("mode").and_then(Value::as_str) {
+                Some("now") => StopMode::Now,
+                Some("after_report") => StopMode::AfterReport,
+                _ => {
+                    return ToolResult::error(
+                        call.id,
+                        ToolFailure::plain("mode 必须是 now 或 after_report"),
+                    );
+                }
+            };
+            match self.runtime.stop_task(task_id, mode).await {
+                Ok(result) => ToolResult::success(call.id, result.message),
+                Err(error) => ToolResult::error(call.id, ToolFailure::plain(error.to_string())),
             }
         })
     }

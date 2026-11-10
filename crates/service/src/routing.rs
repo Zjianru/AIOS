@@ -103,6 +103,16 @@ impl RootHost {
                     "任务库没开，任务对话看不了".to_owned(),
                 )),
             },
+            // task-stop：停任务要任务库和执行者的在跑表，都在根宿主。
+            Call::TaskStop(request) => match self.task_runtime() {
+                Some(runtime) => runtime
+                    .stop_task(&request.task_id, request.mode)
+                    .await
+                    .map(Response::TaskStop),
+                None => Err(ServiceError::TaskUnavailable(
+                    "任务库没开，停不了任务".to_owned(),
+                )),
+            },
             // 监控上报不依赖根会话（页面报错时根可能正好不可用）；记录在 web 载体。
             Call::MonitorReport(_) => {
                 Ok(Response::MonitorReport(MonitorReportResponse { ok: true }))

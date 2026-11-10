@@ -107,6 +107,10 @@ impl ServiceHost {
             Call::TaskRead(_) => Err(ServiceError::TaskUnavailable(
                 "任务对话只能由根宿主打开".to_owned(),
             )),
+            // 停任务同样要根宿主手里的事实（任务库和在跑表）。
+            Call::TaskStop(_) => Err(ServiceError::TaskUnavailable(
+                "停任务只能由根宿主做".to_owned(),
+            )),
             // recheck 只对 RootHost 有意义；裸 ServiceHost 直接回根状态 ok（宿主不回退）。
             Call::Recheck(_) => Ok(Response::Recheck(RecheckResponse {
                 root: RootState::Ok,
