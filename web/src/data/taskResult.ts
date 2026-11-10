@@ -98,16 +98,94 @@ function envelopeStateOf(state: TaskReportState): 'pending' | 'running' | 'done'
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isState(value: unknown): value is TaskReportState {
+  return TASK_REPORT_STATES.includes(value as TaskReportState);
+}
+
+function isOrigin(value: unknown): value is TaskReportOrigin {
+  return TASK_REPORT_ORIGINS.includes(value as TaskReportOrigin);
+}
+
 /** 事实 → 卡片信封；形状不对返回 null（调用方退回文本），不抛异常。 */
 export function taskResultCardOf(
   fact: TaskResultFact | null | undefined,
 ): CardEnvelope<TaskResultSlots> | null {
-  return null;
+  if (!fact || typeof fact !== 'object') return null;
+  if (!fact.id || !isState(fact.state) || !isOrigin(fact.origin)) return null;
+  const parsed = taskResultSlotsSchema.safeParse({
+    title: fact.title,
+    status: taskStatusOf(fact.state, fact.origin),
+    state: fact.state,
+    summary: fact.summary,
+    ...(fact.question === undefined ? {} : { question: fact.question }),
+    at: fact.at,
+  });
+  if (!parsed.success) return null;
+  return {
+    id: fact.id,
+    type: 'task-result',
+    role: 'state',
+    state: envelopeStateOf(fact.state),
+    slots: parsed.data,
+  };
 }
 
 /** 从一条 user/message 认 relay：request id 前缀 + JSON 形状；任一步不对都返回 null。 */
-export function parseTaskRelay(_message: unknown, _at: number): TaskResultFact | null {
-  return null;
+export function parseTaskRelay(message: unknown, at: number): TaskResultFact | null {
+  if (!isRecord(message)) return null;
+  const source = message.source;
+  if (!isRecord(source) || source.kind !== 'user') return null;
+  const rpcId = source.rpcId;
+  if (typeof rpcId !== 'string' || !rpcId.startsWith(TASK_REPORT_PREFIX)) return null;
+  // request id 的形状是 task-report:<taskId>:<reportId>，两段都不能空。
+  const parts = rpcId.slice(TASK_REPORT_PREFIX.length).split(':');
+  if (parts.length < 2 || parts[0] === '' || parts[1] === '') return null;
+
+  const content = message.content;
+  if (!Array.isArray(content)) return null;
+  const text = content
+    .map((block) =>
+      isRecord(block) && block.type === 'text' && typeof block.text === 'string' ? block.text : '',
+    )
+    .join('');
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!isRecord(body) || body.kind !== 'task_report') return null;
+  const task = body.task;
+  if (!isRecord(task)) return null;
+  const taskId = task.id;
+  const title = task.title;
+  if (typeof taskId !== 'string' || taskId === '') return null;
+  if (typeof title !== 'string' || title === '') return null;
+  const state = body.state;
+  const origin = body.origin;
+  if (!isState(state) || !isOrigin(origin)) return null;
+  const summary = body.summary;
+  if (typeof summary !== 'string') return null;
+  const question = body.question;
+  if (question !== undefined && typeof question !== 'string') return null;
+  const chars = body.chars;
+  if (chars !== undefined && typeof chars !== 'number') return null;
+
+  return {
+    id: rpcId,
+    taskId,
+    title,
+    state,
+    origin,
+    summary,
+    ...(question === undefined ? {} : { question }),
+    ...(chars === undefined ? {} : { chars }),
+    at: Number.isFinite(at) ? Math.floor(at) : 0,
+  };
 }
 
 export const taskResultCard: CardDefinition<TaskResultFact, TaskResultSlots> = {

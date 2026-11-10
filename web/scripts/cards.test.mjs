@@ -890,10 +890,10 @@ assert.equal(cardReady.id, 'task-report:task-1:report-1');
 assert.equal(cardReady.role, 'state');
 assert.equal(cardReady.state, 'done');
 assert.equal(cardReady.slots.title, '查一下重复链接的判重规则');
-assert.equal(ready.slots.status, '有结果');
-assert.equal(ready.slots.summary.text, '判重用的是原始链接。');
-assert.equal(ready.slots.question, undefined);
-assert.equal(ready.slots.at, 100);
+assert.equal(cardReady.slots.status, '有结果');
+assert.equal(cardReady.slots.summary.text, '判重用的是原始链接。');
+assert.equal(cardReady.slots.question, undefined);
+assert.equal(cardReady.slots.at, 100);
 
 // blocked 只看 origin：package 是没开跑，agent 是卡住了；问题进正文槽。
 const cardBlockedAgent = taskEnvelope(
