@@ -17,6 +17,13 @@ fn launch(id: &str) -> EffectPayload {
     }
 }
 
+fn relay(report: &str) -> EffectPayload {
+    EffectPayload::Relay {
+        task_id: TaskId::from("task-1"),
+        report_id: ReportId::from(report),
+    }
+}
+
 fn claim(store: &Store, kind: EffectKind, now: i64) -> EffectClaim {
     store
         .claim_effect(kind, now)
@@ -179,6 +186,32 @@ fn backoff_doubles_and_caps_at_the_kind_maximum() {
         store.effect_health(EffectKind::Launch).unwrap().attempts,
         delays.len() as u32
     );
+}
+
+#[test]
+fn relay_backoff_caps_at_sixty_seconds() {
+    let (_directory, store) = open_store();
+    store.enqueue_effect(relay("report-1"), T0).unwrap();
+    let delays = [2_000_i64, 4_000, 8_000, 16_000, 32_000, 60_000];
+    let mut now = T0;
+    for delay in delays {
+        let claim = claim(&store, EffectKind::Relay, now);
+        assert!(store.fail_effect(&claim, "boom", now).unwrap());
+        assert_eq!(
+            store
+                .claim_effect(EffectKind::Relay, now + delay - 1)
+                .unwrap(),
+            None,
+            "退避没到不能领"
+        );
+        now += delay;
+        assert!(
+            store
+                .claim_effect(EffectKind::Relay, now)
+                .unwrap()
+                .is_some()
+        );
+    }
 }
 
 #[test]
