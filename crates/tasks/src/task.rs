@@ -57,13 +57,20 @@ pub struct Attempt {
     pub end: Option<AttemptEnd>,
 }
 
-/// Attempt 的结束原因。
+/// Attempt 的结束原因。时间由调用方传入，库内不读时钟。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptEnd {
+    /// ThinAgent 报过终态，Attempt 随报告结束。
+    /// 兼容 T024 落库的 `ended`：只读旧值，新值写 `reported`。
+    #[serde(alias = "ended")]
+    Reported,
+    /// 立即停；停了之后这次 Attempt 不再接受报告。
+    Stopped,
+    /// 重启打断，留给恢复链收尾。
+    Interrupted,
     /// 崩溃留下的、没开成会话的 Attempt 被收尾。
     NotOpened,
-    Ended,
 }
 
 /// ThinAgent 报的终态；`Waiting` 是执行者在 turn 结束时合成的，不是模型报的。

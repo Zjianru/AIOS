@@ -584,7 +584,7 @@ impl TaskRuntime {
             best_effort(
                 "派发失败的 Attempt 没收尾",
                 self.store
-                    .end_attempt(&task.id, attempt_id, Self::now(), AttemptEnd::Ended),
+                    .end_attempt(&task.id, attempt_id, Self::now(), AttemptEnd::Reported),
             );
             self.finish_or_fail(&claim, Ok(()));
             return;

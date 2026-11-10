@@ -330,7 +330,7 @@ fn latest_report_uses_the_latest_attempt_only() {
     let task = store.create_task(draft(), T0).unwrap();
     let first = store.begin_attempt(&task.id, T0 + 1).unwrap();
     store
-        .end_attempt(&task.id, first, T0 + 2, AttemptEnd::Ended)
+        .end_attempt(&task.id, first, T0 + 2, AttemptEnd::Reported)
         .unwrap();
     let second = store.begin_attempt(&task.id, T0 + 3).unwrap();
 
@@ -437,4 +437,117 @@ fn blocked_and_failed_also_replace_a_synthesized_waiting_report() {
             "{state:?} 要排 relay"
         );
     }
+}
+
+#[test]
+fn writes_and_reads_each_attempt_end_reason() {
+    for (end, wire) in [
+        (AttemptEnd::Reported, "reported"),
+        (AttemptEnd::Stopped, "stopped"),
+        (AttemptEnd::Interrupted, "interrupted"),
+        (AttemptEnd::NotOpened, "not_opened"),
+    ] {
+        let (_directory, store) = open_store();
+        let (task, attempt) = task_with_attempt(&store);
+        store.end_attempt(&task.id, attempt, T0 + 2, end).unwrap();
+
+        let loaded = store.task(&task.id).unwrap().unwrap();
+        let row = loaded.attempt(attempt).expect("Attempt 还在");
+        assert_eq!(row.ended_at, Some(T0 + 2), "{wire}");
+        assert_eq!(row.end, Some(end), "{wire}");
+
+        let raw: String = store
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT value FROM task WHERE id = ?1",
+                [task.id.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(
+            value["runs"][0]["attempts"][0]["end"],
+            serde_json::json!(wire),
+            "落库的值要和 spec 的四个名字一致"
+        );
+    }
+}
+
+#[test]
+fn reads_the_old_ended_value_as_reported() {
+    let (_directory, store) = open_store();
+    let (task, attempt) = task_with_attempt(&store);
+    store
+        .end_attempt(&task.id, attempt, T0 + 2, AttemptEnd::Reported)
+        .unwrap();
+    store
+        .conn
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE task SET value = replace(value, '\"end\":\"reported\"', '\"end\":\"ended\"')
+             WHERE id = ?1",
+            [task.id.as_str()],
+        )
+        .unwrap();
+
+    let loaded = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(
+        loaded.attempt(attempt).map(|attempt| attempt.end),
+        Some(Some(AttemptEnd::Reported)),
+        "T024 落库的 ended 还要读成 reported"
+    );
+}
+
+#[test]
+fn refuses_a_report_after_the_attempt_was_stopped() {
+    let (_directory, store) = open_store();
+    let (task, attempt) = task_with_attempt(&store);
+    store
+        .end_attempt(&task.id, attempt, T0 + 2, AttemptEnd::Stopped)
+        .unwrap();
+
+    let result = store.record_report(
+        &task.id,
+        attempt,
+        report(ReportState::Ready, "停后才报"),
+        T0 + 3,
+    );
+    assert!(
+        matches!(
+            result,
+            Err(TaskError::AttemptEnded { attempt: ended, .. }) if ended == attempt.0
+        ),
+        "停了以后这次 Attempt 不再接受报告: {result:?}"
+    );
+    let loaded = store.task(&task.id).unwrap().unwrap();
+    assert!(loaded.reports.is_empty(), "被拒的报告不落库");
+    assert_eq!(store.claim_effect(EffectKind::Relay, T0 + 3).unwrap(), None);
+}
+
+#[test]
+fn accepts_a_report_for_a_new_attempt_after_a_stop() {
+    let (_directory, store) = open_store();
+    let (task, first) = task_with_attempt(&store);
+    store
+        .end_attempt(&task.id, first, T0 + 2, AttemptEnd::Stopped)
+        .unwrap();
+    let second = store.begin_attempt(&task.id, T0 + 3).unwrap();
+
+    store
+        .record_report(
+            &task.id,
+            second,
+            report(ReportState::Ready, "接着做完了"),
+            T0 + 4,
+        )
+        .unwrap();
+
+    let loaded = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(
+        loaded.latest_report().map(|report| report.state),
+        Some(ReportState::Ready)
+    );
 }

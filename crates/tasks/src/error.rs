@@ -27,7 +27,7 @@ pub enum TaskError {
     TaskNotFound(String),
     #[error("任务 {task} 的 Attempt {attempt} 不存在")]
     AttemptNotFound { task: String, attempt: u64 },
-    #[error("任务 {task} 的 Attempt {attempt} 已结束")]
+    #[error("这次 Attempt 已结束（任务 {task} 的第 {attempt} 次）")]
     AttemptEnded { task: String, attempt: u64 },
     #[error("任务 {task} 还有没结束的 Attempt {attempt}，不能开新的")]
     AttemptStillOpen { task: String, attempt: u64 },

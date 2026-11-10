@@ -23,7 +23,7 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 
 - **model**：provider 无关的消息 IR 与流式块、Anthropic Messages 适配器（anthropic/；厂商差异集中在 vendors.rs：思考档按模型目录的档位适配，序列化 thinking/output_config/max_tokens）、重试/取消、token 估算与请求派生、models.dev 目录（24h 缓存/内置快照/厂商列表合并）、本机地址不走代理的共享 HTTP client。
 - **session**：会话事件与格式版本、JSONL 追加与读取、折叠/恢复、单写者文件锁；session/model 是会话模型选择（连接/模型/想要的档）的 durable 事实，最近一条胜出（重开恢复）。
-- **tasks**：任务聚合（Task、Run、Attempt、报告、执行者写入的缺项）与 SQLite 存储（kv/task/effect）；持久效果表（launch/relay，同键合并、代次、退避、健康）和阶段派生；不依赖 agent 和 session。
+- **tasks**：任务聚合（Task、Run、Attempt、报告、执行者写入的缺项）与 SQLite 存储（kv/task/effect）；持久效果表（launch/relay，同键合并、代次、退避、健康）、阶段派生和席位计数（起跑预约 + 在跑集合，照 DSH WorkerSlots）；不依赖 agent 和 session。
 - **tools**：Tool 接口与 ToolSet、工具批执行（独占屏障/并行池/按模型顺序提交）、内置文件工具与观察策略、spill、后台 job、bash、canvas（画布）。
 - **agent**：轮次驱动、收件箱、能力注册表与各能力实现；唯一产品组装入口是 Agent::open；Agent::select 写 session/model 并只改下一轮。
 - **agent 能力**：compaction（自动/溢出/手动）、prune、instructions、skill、todo、ask、spill、reminder、jobs。
