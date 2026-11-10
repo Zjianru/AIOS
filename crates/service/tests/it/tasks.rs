@@ -55,6 +55,10 @@ impl Router {
         *self.state.thin_delay.lock().unwrap() = Some(delay);
     }
 
+    fn clear_thin_delay(&self) {
+        *self.state.thin_delay.lock().unwrap() = None;
+    }
+
     fn push_kind(&self, body: impl Into<String>) {
         self.state.kind.lock().unwrap().push_back(body.into());
     }
@@ -2440,8 +2444,8 @@ fn attempt_in_flight(store: &Store, task_id: &tasks::TaskId) -> bool {
         .is_some_and(|attempt| attempt.ended_at.is_none() && attempt.conversation.is_some())
 }
 
-/// 席位 1：第二个任务在第一个报完前只排队，排队不算效果失败。
-/// 席位从 settings.json 重启读回，再进 launch 准入。
+/// 席位 1：后两个任务在各自前一个报完前只排队，排队不算效果失败；
+/// 释放后按受理顺序开跑。席位从 settings.json 重启读回，再进 launch 准入。
 #[tokio::test]
 async fn seats_one_holds_the_second_task_until_the_first_reports() {
     let server = MockServer::start().await;
@@ -2454,8 +2458,8 @@ async fn seats_one_holds_the_second_task_until_the_first_reports() {
     service::settings::save(data.path(), &saved).expect("保存席位");
     let host = open_host(&server, data.path(), cwd.path()).await;
     let store = tasks_store(data.path());
-    router.set_thin_delay(Duration::from_millis(900));
-    for title in ["甲", "乙"] {
+    router.set_thin_delay(Duration::from_millis(1_500));
+    for title in ["甲", "乙", "丙"] {
         for script in ready_scripts() {
             router.push_thin_for_title(title, script);
         }
@@ -2511,8 +2515,36 @@ async fn seats_one_holds_the_second_task_until_the_first_reports() {
         "第二个任务还没开会话"
     );
 
-    router.push_kind(crate::common::text_sse("收到"));
-    router.push_kind(crate::common::text_sse("收到"));
+    let third = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-c",
+        "call-accept-c",
+        3,
+        "丙",
+    )
+    .await;
+    assert!(
+        third.latest_attempt().is_none(),
+        "席位 1 时第三个任务也排队"
+    );
+    assert!(
+        store
+            .effect_pending(EffectKind::Launch, third.id.as_str())
+            .unwrap(),
+        "第三个任务的 launch 还在队列里"
+    );
+    assert!(
+        !router.bodies(true).iter().any(|body| body.contains("丙")),
+        "第三个任务还没开会话"
+    );
+
+    for _ in 0..3 {
+        router.push_kind(crate::common::text_sse("收到"));
+    }
+    // 第一个任务的回复已经在途（延迟在请求时定住）；后面的任务不必再慢。
+    router.clear_thin_delay();
     wait_until("第一个任务报 ready", || {
         reported_ready(&store, &first.id)
     })
@@ -2544,15 +2576,49 @@ async fn seats_one_holds_the_second_task_until_the_first_reports() {
         second_started_at >= first_report_at,
         "第二个任务在第一个报完之后才开：{second_started_at} / {first_report_at}"
     );
-    wait_until("两个任务都报 ready", || {
-        reported_ready(&store, &first.id) && reported_ready(&store, &second.id)
+    wait_until("第二个任务报 ready", || {
+        reported_ready(&store, &second.id)
     })
     .await;
-    wait_until("两条 relay 到 Kind", || {
-        relay_messages(&crate::common::read_root_events(data.path())).len() == 2
+    let second_report_at = store
+        .task(&second.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .map(|report| report.at)
+        .expect("第二个任务的报告");
+    wait_until("第三个任务开跑", || {
+        store
+            .task(&third.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .is_some()
+    })
+    .await;
+    let third_started_at = store
+        .task(&third.id)
+        .unwrap()
+        .unwrap()
+        .latest_attempt()
+        .map(|attempt| attempt.started_at)
+        .expect("第三个任务开跑");
+    assert!(
+        third_started_at >= second_report_at,
+        "释放后按受理顺序开跑：{third_started_at} / {second_report_at}"
+    );
+    wait_until("三个任务都报 ready", || {
+        reported_ready(&store, &first.id)
+            && reported_ready(&store, &second.id)
+            && reported_ready(&store, &third.id)
+    })
+    .await;
+    wait_until("三条 relay 到 Kind", || {
+        relay_messages(&crate::common::read_root_events(data.path())).len() == 3
     })
     .await;
     assert_eq!(attempt_end(&store, &second.id), Some(AttemptEnd::Reported));
+    assert_eq!(attempt_end(&store, &third.id), Some(AttemptEnd::Reported));
 }
 
 /// 改小席位不掐断在跑的任务，只影响之后的准入：两个在跑的照常报完，
