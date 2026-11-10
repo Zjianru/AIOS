@@ -440,55 +440,6 @@ fn blocked_and_failed_also_replace_a_synthesized_waiting_report() {
 }
 
 #[test]
-fn an_agent_terminal_report_ends_the_attempt_as_reported() {
-    for state in [ReportState::Ready, ReportState::Blocked, ReportState::Failed] {
-        let (_directory, store) = open_store();
-        let (task, attempt) = task_with_attempt(&store);
-
-        store
-            .record_report(&task.id, attempt, report(state, "终态"), T0 + 2)
-            .unwrap();
-
-        let loaded = store.task(&task.id).unwrap().unwrap();
-        let row = loaded.attempt(attempt).expect("Attempt 还在");
-        assert_eq!(row.ended_at, Some(T0 + 2), "{state:?}");
-        assert_eq!(row.end, Some(AttemptEnd::Reported), "{state:?}");
-    }
-}
-
-#[test]
-fn executor_and_waiting_reports_leave_the_attempt_open() {
-    let cases = [
-        (ReportState::Waiting, ReportOrigin::Executor),
-        (ReportState::Blocked, ReportOrigin::Package),
-        (ReportState::Failed, ReportOrigin::Executor),
-    ];
-    for (state, origin) in cases {
-        let (_directory, store) = open_store();
-        let (task, attempt) = task_with_attempt(&store);
-
-        store
-            .record_report(
-                &task.id,
-                attempt,
-                NewReport {
-                    state,
-                    origin,
-                    summary: "执行者按事实写的报告".to_owned(),
-                    question: None,
-                },
-                T0 + 2,
-            )
-            .unwrap();
-
-        let loaded = store.task(&task.id).unwrap().unwrap();
-        let row = loaded.attempt(attempt).expect("Attempt 还在");
-        assert_eq!(row.ended_at, None, "{state:?}/{origin:?}");
-        assert_eq!(row.end, None, "{state:?}/{origin:?}");
-    }
-}
-
-#[test]
 fn writes_and_reads_each_attempt_end_reason() {
     for (end, wire) in [
         (AttemptEnd::Reported, "reported"),

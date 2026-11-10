@@ -410,7 +410,7 @@ pub struct TaskStopRequest {
 }
 
 /// 停任务的结果。没在跑时 stopped 为 false，message 是固定原因；
-/// 收尾停还没实现时同样是 false 加固定说明。
+/// 收尾停插进去之后 stopped 为 true，message 是停法和当前阶段。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct TaskStopResponse {
     pub stopped: bool,

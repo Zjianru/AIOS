@@ -225,11 +225,7 @@ fn last_turn_end(events: &[session::Event]) -> Option<session::TurnEndReason> {
 }
 
 /// 页面和 Kind 的 task_stop 都走这一个调用；测试只关心响应。
-async fn stop_task(
-    fixture: &Fixture,
-    task: &Task,
-    mode: StopMode,
-) -> service::TaskStopResponse {
+async fn stop_task(fixture: &Fixture, task: &Task, mode: StopMode) -> service::TaskStopResponse {
     let response = fixture
         .host
         .dispatch(Call::TaskStop(TaskStopRequest {
@@ -675,6 +671,14 @@ impl Fixture {
 
     /// 让 Kind 受理一个任务，返回任务；pause 时 launch 先不跑。
     async fn accept(&self, pause: bool) -> Task {
+        self.accept_with_kind_replies(pause, 0).await
+    }
+
+    /// 同上；受理这一轮的回复后面再排几段 Kind 的备用回复。
+    ///
+    /// 备用回复必须在派发之前进队列：受理之后 launch 立刻开跑，ThinAgent 的 waiting relay
+    /// 可能赶在测试推队列之前 Steer 进 Kind，假模型就会收到没有脚本的请求。
+    async fn accept_with_kind_replies(&self, pause: bool, spares: usize) -> Task {
         if pause {
             self.host.task_runtime().expect("runtime").set_paused(true);
         }
@@ -691,6 +695,9 @@ impl Fixture {
             &args,
         ));
         self.router.push_kind(crate::common::text_sse("已派出"));
+        for _ in 0..spares {
+            self.router.push_kind(crate::common::text_sse("收到"));
+        }
         self.host
             .dispatch(Call::Send(send(&self.host, "kind-1", "查一下")))
             .await
@@ -1591,9 +1598,8 @@ async fn after_report_stop_injects_the_note_denies_other_tools_and_ends_reported
         None,
     ));
     fixture.router.push_thin(crate::common::text_sse("报完了"));
-    let task = fixture.accept(false).await;
-    // ready relay 会 Steer 进 Kind：备一段回复。
-    fixture.router.push_kind(crate::common::text_sse("收到"));
+    // ready relay 会 Steer 进 Kind：备用回复在受理派发前就排好。
+    let task = fixture.accept_with_kind_replies(false, 1).await;
     wait_until("ThinAgent 的请求在途", || {
         !fixture.router.bodies(true).is_empty()
     })
@@ -1688,10 +1694,13 @@ async fn after_report_stop_injects_the_note_denies_other_tools_and_ends_reported
 async fn after_report_stop_without_a_report_synthesizes_waiting_then_records_stopped() {
     let fixture = Fixture::new().await;
     fixture.router.set_thin_delay(Duration::from_millis(600));
-    fixture.router.push_thin(crate::common::text_sse("我还在查，别急"));
-    let task = fixture.accept(false).await;
-    // waiting relay 会 Steer 进 Kind：备一段回复。
-    fixture.router.push_kind(crate::common::text_sse("收到"));
+    fixture
+        .router
+        .push_thin(crate::common::text_sse("我还在查，别急"));
+    // 插进去的说明会开下一步；这一步 ThinAgent 没报，turn 才收尾。
+    fixture.router.push_thin(crate::common::text_sse("不报了"));
+    // waiting relay 会 Steer 进 Kind：备用回复在受理派发前就排好。
+    let task = fixture.accept_with_kind_replies(false, 1).await;
     wait_until("ThinAgent 的请求在途", || {
         !fixture.router.bodies(true).is_empty()
     })
@@ -1708,7 +1717,7 @@ async fn after_report_stop_without_a_report_synthesizes_waiting_then_records_sto
     let task_row = store.task(&task.id).unwrap().unwrap();
     let latest = task_row.latest_report().expect("waiting 报告");
     assert_eq!(latest.state, ReportState::Waiting, "没报就走 waiting 合成");
-    assert_eq!(latest.summary, "我还在查，别急");
+    assert_eq!(latest.summary, "不报了");
     assert_eq!(store.stage(&task.id).unwrap(), Stage::NeedsConditions);
 
     wait_until("Kind 收到 waiting relay", || {
@@ -1725,9 +1734,8 @@ async fn after_report_stop_without_a_report_synthesizes_waiting_then_records_sto
 async fn after_report_stop_on_an_idle_task_records_stopped_without_another_relay() {
     let fixture = Fixture::new().await;
     fixture.router.push_thin(crate::common::text_sse("还在查"));
-    let task = fixture.accept(false).await;
-    // waiting relay 会 Steer 进 Kind：备一段回复。
-    fixture.router.push_kind(crate::common::text_sse("收到"));
+    // waiting relay 会 Steer 进 Kind：备用回复在受理派发前就排好，免得撞上没脚本的请求。
+    let task = fixture.accept_with_kind_replies(false, 1).await;
     wait_until("waiting relay", || {
         !relay_messages(&crate::common::read_root_events(fixture.data())).is_empty()
     })
@@ -1755,6 +1763,10 @@ async fn after_report_stop_on_an_idle_task_records_stopped_without_another_relay
         1,
         "没多出一条 relay"
     );
+    assert!(
+        fixture.router.state.unexpected.lock().unwrap().is_empty(),
+        "没有请求落在脚本之外"
+    );
 }
 
 #[tokio::test]
@@ -1762,9 +1774,10 @@ async fn stopping_after_report_twice_injects_the_fixed_note_once() {
     let fixture = Fixture::new().await;
     fixture.router.set_thin_delay(Duration::from_millis(600));
     fixture.router.push_thin(crate::common::text_sse("还在查"));
-    let task = fixture.accept(false).await;
-    // waiting relay 会 Steer 进 Kind：备一段回复。
-    fixture.router.push_kind(crate::common::text_sse("收到"));
+    // 插进去的说明会开下一步；这一步 ThinAgent 没报，turn 才收尾。
+    fixture.router.push_thin(crate::common::text_sse("不报了"));
+    // waiting relay 会 Steer 进 Kind：备用回复在受理派发前就排好。
+    let task = fixture.accept_with_kind_replies(false, 1).await;
     wait_until("ThinAgent 的请求在途", || {
         !fixture.router.bodies(true).is_empty()
     })
@@ -1795,9 +1808,8 @@ async fn stopping_now_after_an_after_report_stop_uses_the_immediate_stop() {
     let fixture = Fixture::new().await;
     fixture.router.set_thin_delay(Duration::from_millis(2_000));
     fixture.router.push_thin(crate::common::text_sse("还在查"));
-    let task = fixture.accept(false).await;
-    // 立即停的 relay 会 Steer 进 Kind：备一段回复。
-    fixture.router.push_kind(crate::common::text_sse("收到"));
+    // 立即停的 relay 会 Steer 进 Kind：备用回复在受理派发前就排好。
+    let task = fixture.accept_with_kind_replies(false, 1).await;
     wait_until("ThinAgent 的请求在途", || {
         !fixture.router.bodies(true).is_empty()
     })
@@ -1843,6 +1855,8 @@ async fn kind_task_stop_after_report_stops_after_the_next_turn() {
     let fixture = Fixture::new().await;
     fixture.router.set_thin_delay(Duration::from_millis(600));
     fixture.router.push_thin(crate::common::text_sse("还在查"));
+    // 插进去的说明会开下一步；这一步 ThinAgent 没报，turn 才收尾。
+    fixture.router.push_thin(crate::common::text_sse("不报了"));
     let task = fixture.accept(false).await;
     wait_until("ThinAgent 的请求在途", || {
         !fixture.router.bodies(true).is_empty()
