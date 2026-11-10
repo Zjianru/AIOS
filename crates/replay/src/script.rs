@@ -48,6 +48,12 @@ pub struct ReplayScript {
 }
 
 impl ReplayScript {
+    /// 从一份路由文件读脚本：每条路由写 `contains` 和一份会话日志（相对路径按路由文件所在目录解析）。
+    pub fn from_routes_file(path: &Path) -> Result<Self, ReplayError> {
+        let _ = path;
+        Err(ReplayError::Format("路由文件还没读".to_owned()))
+    }
+
     /// 从一份会话日志推脚本（没有覆盖文件）。
     pub fn from_log(path: &Path) -> Result<Self, ReplayError> {
         Self::from_log_with_override(path, None)
