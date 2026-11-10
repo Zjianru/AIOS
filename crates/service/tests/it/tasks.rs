@@ -228,6 +228,10 @@ async fn accept_freezes_the_task_and_the_launch_uses_it() {
     assert!(names.contains(&"task_accept".to_owned()), "{names:?}");
     assert!(names.contains(&"task_status".to_owned()), "{names:?}");
     assert!(!names.contains(&"task_report".to_owned()), "{names:?}");
+    assert!(
+        !kind_bodies[0].contains("investigator"),
+        "默认角色的 skill 不能进 Kind"
+    );
 
     // 受理后改默认模型；launch 仍要用受理时冻结的那个。
     host.dispatch(Call::SessionModelSelect(SessionModelSelectRequest {
@@ -311,6 +315,10 @@ async fn accept_freezes_the_task_and_the_launch_uses_it() {
     let first_names = tool_names(&thin_bodies[0]);
     assert!(!first_names.contains(&"bash".to_owned()), "{first_names:?}");
     assert!(!first_names.contains(&"write".to_owned()), "{first_names:?}");
+    assert!(
+        thin_bodies[0].contains("investigator"),
+        "默认角色的 skill 要进 ThinAgent"
+    );
 
     let relays = relay_messages(&crate::common::read_root_events(data.path()));
     assert_eq!(relays.len(), 1, "Kind 只收到一条 relay：{relays:?}");
@@ -367,6 +375,9 @@ async fn task_status_returns_the_full_report_and_attempts() {
     let status_args = serde_json::json!({"task_id": task.id.as_str()}).to_string();
     router.push_kind(crate::common::tool_use_sse(2, "call-status", "task_status", &status_args));
     router.push_kind(crate::common::text_sse("我看一下"));
+    // relay 可能 Steer 进下一 step，多备两段回复，别让假模型回 500 拖慢收尾。
+    router.push_kind(crate::common::text_sse("收到"));
+    router.push_kind(crate::common::text_sse("收到"));
     host.dispatch(Call::Send(send(&host, "kind-2", "任务怎么样了")))
         .await
         .expect("发送");
@@ -463,3 +474,403 @@ async fn a_missing_credential_opens_no_task_session_and_relays_what_is_missing()
     assert!(summary.contains("任务包缺"), "{summary}");
     assert!(summary.contains("deepseek-flash"), "{summary}");
 }
+
+struct Fixture {
+    _server: MockServer,
+    data: tempfile::TempDir,
+    cwd: tempfile::TempDir,
+    router: Router,
+    host: RootHost,
+}
+
+impl Fixture {
+    async fn new() -> Self {
+        let server = MockServer::start().await;
+        let router = Router::new();
+        mount(&server, &router).await;
+        let data = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let host = open_host(&server, data.path(), cwd.path()).await;
+        Self {
+            _server: server,
+            data,
+            cwd,
+            router,
+            host,
+        }
+    }
+
+    fn data(&self) -> &Path {
+        self.data.path()
+    }
+
+    /// 让 Kind 受理一个任务，返回任务；pause 时 launch 先不跑。
+    async fn accept(&self, pause: bool) -> Task {
+        if pause {
+            self.host.task_runtime().expect("runtime").set_paused(true);
+        }
+        let args = serde_json::json!({
+            "title": "查一下",
+            "requirement": "找答案",
+            "dod": "有答案"
+        })
+        .to_string();
+        self.router
+            .push_kind(crate::common::tool_use_sse(0, "call-accept", "task_accept", &args));
+        self.router
+            .push_kind(crate::common::text_sse("已派出"));
+        self.host
+            .dispatch(Call::Send(send(&self.host, "kind-1", "查一下")))
+            .await
+            .expect("发送");
+        crate::common::wait_turns(&self.host, self.data(), 1).await;
+        let store = tasks_store(self.data());
+        one_task(&store)
+    }
+}
+
+fn report_sse(index: usize, call: &str, state: &str, summary: &str, question: Option<&str>) -> String {
+    let mut args = serde_json::json!({"state": state, "summary": summary});
+    if let Some(question) = question {
+        args["question"] = serde_json::json!(question);
+    }
+    crate::common::tool_use_sse(index, call, "task_report", &args.to_string())
+}
+
+fn waiting_relays(data: &Path) -> Vec<(String, Value)> {
+    relay_messages(&crate::common::read_root_events(data))
+}
+
+#[tokio::test]
+async fn a_turn_end_with_a_reply_synthesizes_waiting_then_a_status_report_replaces_it() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(false).await;
+    fixture
+        .router
+        .push_thin(crate::common::text_sse("我还在查，别急"));
+    wait_until("waiting relay", || !waiting_relays(fixture.data()).is_empty()).await;
+
+    let relays = waiting_relays(fixture.data());
+    assert_eq!(relays.len(), 1, "{relays:?}");
+    assert_eq!(relays[0].1["state"], "waiting");
+    assert_eq!(relays[0].1["summary"], "我还在查，别急");
+    assert_eq!(relays[0].1["task"]["stage"], "running");
+    let store = tasks_store(fixture.data());
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::Running);
+
+    // 要状态那次 turn 直接报 ready：waiting 能被终态覆盖，不报冲突。
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-report", "ready", "答案在第二行
+有出处", None));
+    fixture
+        .router
+        .push_thin(crate::common::text_sse("done"));
+    let status_args = serde_json::json!({"task_id": task.id.as_str()}).to_string();
+    fixture
+        .router
+        .push_kind(crate::common::tool_use_sse(2, "call-status-1", "task_status", &status_args));
+    fixture
+        .router
+        .push_kind(crate::common::tool_use_sse(3, "call-status-2", "task_status", &status_args));
+    fixture
+        .router
+        .push_kind(crate::common::text_sse("好"));
+    // relay 可能 Steer 进下一 step，多备一段回复。
+    fixture
+        .router
+        .push_kind(crate::common::text_sse("收到"));
+
+    fixture
+        .host
+        .dispatch(Call::Send(send(&fixture.host, "kind-2", "怎么样了")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&fixture.host, fixture.data(), 2).await;
+    wait_until("ready relay", || waiting_relays(fixture.data()).len() == 2).await;
+
+    let relays = waiting_relays(fixture.data());
+    assert_eq!(relays[1].1["state"], "ready");
+    assert_eq!(relays[1].1["summary"], "答案在第二行
+有出处");
+    assert_eq!(relays[1].1["task"]["stage"], "ready_for_review");
+
+    // 同一个 Attempt 只要一次报告：Kind 的两次 task_status 只落一条 status 请求。
+    let task = store.task(&task.id).unwrap().unwrap();
+    let attempt = task.latest_attempt().unwrap();
+    let id = session::SessionId::parse(attempt.conversation.as_ref().unwrap().as_str()).unwrap();
+    let thin = session::SessionStore::open_read_only(fixture.data(), &id).unwrap();
+    let status_requests = thin
+        .events()
+        .iter()
+        .filter(|event| {
+            matches!(
+                &event.kind,
+                session::EventKind::UserMessage { message, .. }
+                    if matches!(&message.source, model::MessageSource::User { rpc_id: Some(rpc) } if rpc == &format!("status:{}:{}", task.id, attempt.id))
+            )
+        })
+        .count();
+    assert_eq!(status_requests, 1, "同一个 Attempt 只有一条状态请求");
+
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::ReadyForReview);
+}
+
+#[tokio::test]
+async fn a_turn_end_without_a_reply_relays_the_status_hint() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(false).await;
+    fixture
+        .router
+        .push_thin(crate::common::text_sse(""));
+    wait_until("waiting relay", || !waiting_relays(fixture.data()).is_empty()).await;
+    let relays = waiting_relays(fixture.data());
+    assert_eq!(relays.len(), 1, "{relays:?}");
+    assert_eq!(relays[0].1["state"], "waiting");
+    assert_eq!(relays[0].1["summary"], "ThinAgent 没上报，用 task_status 去问");
+    let store = tasks_store(fixture.data());
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::Running);
+}
+
+#[tokio::test]
+async fn a_blocked_report_carries_its_question() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(false).await;
+    fixture.router.push_thin(report_sse(
+        1,
+        "call-report",
+        "blocked",
+        "缺一份只有你能给的版本号",
+        Some("用哪个版本？"),
+    ));
+    fixture
+        .router
+        .push_thin(crate::common::text_sse("等回答"));
+    wait_until("blocked relay", || !waiting_relays(fixture.data()).is_empty()).await;
+    let relays = waiting_relays(fixture.data());
+    assert_eq!(relays.len(), 1, "{relays:?}");
+    assert_eq!(relays[0].1["state"], "blocked");
+    assert_eq!(relays[0].1["question"], "用哪个版本？");
+    assert_eq!(relays[0].1["task"]["stage"], "needs_conditions");
+    let store = tasks_store(fixture.data());
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::NeedsConditions);
+}
+
+#[tokio::test]
+async fn a_failed_report_relays_and_leaves_the_task_open() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(false).await;
+    let long = "文档站打不开，已经试过两次。".repeat(70);
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-report", "failed", &long, None));
+    fixture
+        .router
+        .push_thin(crate::common::text_sse("失败"));
+    wait_until("failed relay", || !waiting_relays(fixture.data()).is_empty()).await;
+    let relays = waiting_relays(fixture.data());
+    assert_eq!(relays.len(), 1, "{relays:?}");
+    assert_eq!(relays[0].1["state"], "failed");
+    assert_eq!(relays[0].1["task"]["stage"], "needs_conditions");
+    let summary = relays[0].1["summary"].as_str().unwrap();
+    assert_eq!(summary.chars().count(), 600, "摘要截到 600 字");
+    assert_eq!(relays[0].1["chars"].as_u64(), Some(long.chars().count() as u64));
+    let store = tasks_store(fixture.data());
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::NeedsConditions);
+    assert!(store.task(&task.id).unwrap().is_some(), "failed 不关闭任务");
+}
+
+
+#[tokio::test]
+async fn a_relay_for_another_kind_conversation_stays_later() {
+    let fixture = Fixture::new().await;
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-report", "ready", "另一个对话的答案", None));
+    fixture
+        .router
+        .push_thin(crate::common::text_sse("done"));
+    let store = tasks_store(fixture.data());
+    let draft = tasks::NewTask {
+        title: "另一个对话派的任务".to_owned(),
+        requirement: "找答案".to_owned(),
+        dod: "有答案".to_owned(),
+        cwd: fixture.data().to_path_buf(),
+        conversation: tasks::ConversationId::new("another-kind-session"),
+        model: tasks::ModelChoice {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            effort_wanted: "high".to_owned(),
+        },
+        tools: service::THIN_TOOLS.map(str::to_owned).to_vec(),
+    };
+    let task = store.create_task(draft, 1_700_000_000_000).unwrap();
+    wait_until("report ready", || {
+        store
+            .task(&task.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_report().map(|report| report.state))
+            == Some(ReportState::Ready)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        waiting_relays(fixture.data()).is_empty(),
+        "发起的 Kind 会话不是当前根会话：先 Later"
+    );
+    let task = store.task(&task.id).unwrap().unwrap();
+    let report = task.latest_report().unwrap();
+    assert!(
+        store
+            .effect_pending(tasks::EffectKind::Relay, report.id.as_str())
+            .unwrap(),
+        "relay 还在等 Kind 打开"
+    );
+}
+
+#[tokio::test]
+async fn a_relay_interrupted_before_kind_append_is_delivered_once_after_restart() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(true).await;
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-report", "ready", "重启后只送一次的答案", None));
+    fixture
+        .router
+        .push_thin(crate::common::text_sse("done"));
+    fixture
+        .host
+        .task_runtime()
+        .expect("runtime")
+        .crash_before_next_relay();
+    fixture.host.task_runtime().expect("runtime").set_paused(false);
+    wait_until("report ready", || {
+        let store = tasks_store(fixture.data());
+        store
+            .task(&task.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_report().map(|report| report.state))
+            == Some(ReportState::Ready)
+    })
+    .await;
+    let store = tasks_store(fixture.data());
+    let report = store
+        .task(&task.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .unwrap()
+        .id
+        .clone();
+    wait_until("relay left queued", || {
+        store
+            .effect_pending(tasks::EffectKind::Relay, report.as_str())
+            .unwrap()
+    })
+    .await;
+    assert!(waiting_relays(fixture.data()).is_empty(), "崩溃前不能送到");
+
+    let Fixture {
+        _server: server,
+        data,
+        cwd,
+        router,
+        host,
+    } = fixture;
+    drop(host);
+    router.push_kind(crate::common::text_sse("收到"));
+    let host = open_host(&server, data.path(), cwd.path()).await;
+    wait_until("restart relay", || waiting_relays(data.path()).len() == 1).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(waiting_relays(data.path()).len(), 1, "重启后仍然只有一条");
+    assert_eq!(
+        waiting_relays(data.path())[0].1["summary"],
+        "重启后只送一次的答案"
+    );
+    let store = tasks_store(data.path());
+    assert!(!store.effect_pending(tasks::EffectKind::Relay, report.as_str()).unwrap());
+    drop(host);
+}
+
+#[tokio::test]
+async fn kind_refuses_the_four_waits_and_runs_a_short_command() {
+    let fixture = Fixture::new().await;
+    let calls = [
+        serde_json::json!({"description": "wait", "command": "sleep 5", "timeoutMs": 20000}).to_string(),
+        serde_json::json!({"description": "echo", "command": "echo sleep 5", "timeoutMs": 20000}).to_string(),
+        serde_json::json!({"description": "long", "command": "echo hi", "timeoutMs": 30001}).to_string(),
+        serde_json::json!({"description": "default", "command": "echo hi"}).to_string(),
+        serde_json::json!({"job_id": "job-1", "wait": true}).to_string(),
+    ];
+    for (index, args) in calls.iter().enumerate() {
+        fixture.router.push_kind(crate::common::tool_use_sse(
+            index,
+            &format!("call-{index}"),
+            if index == 4 { "job_output" } else { "bash" },
+            args,
+        ));
+    }
+    fixture
+        .router
+        .push_kind(crate::common::text_sse("跑完了"));
+    fixture
+        .host
+        .dispatch(Call::Send(send(&fixture.host, "kind-1", "跑几个命令")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&fixture.host, fixture.data(), 1).await;
+
+    let events = crate::common::read_root_events(fixture.data());
+    let mut order = Vec::new();
+    let mut results = std::collections::HashMap::new();
+    for (index, event) in events.iter().enumerate() {
+        match &event.kind {
+            session::EventKind::ToolCall { call_id, .. } => {
+                order.push(("call", call_id.clone(), index));
+            }
+            session::EventKind::ToolResult { message, .. } => {
+                order.push(("result", message.tool_call_id.clone().unwrap_or_default(), index));
+                let text: String = message
+                    .content
+                    .iter()
+                    .filter_map(model::ContentBlock::as_text)
+                    .collect();
+                results.insert(message.tool_call_id.clone().unwrap(), (text, message.is_error));
+            }
+            _ => {}
+        }
+    }
+    for call_id in ["call-0", "call-1", "call-2", "call-3", "call-4"] {
+        let call = order
+            .iter()
+            .find(|(kind, id, _)| *kind == "call" && id == call_id)
+            .expect("有 tool/call");
+        let result = order
+            .iter()
+            .find(|(kind, id, _)| *kind == "result" && id == call_id)
+            .expect("有 tool/result");
+        assert!(call.2 < result.2, "{call_id} 先记调用再记结果");
+    }
+    for call_id in ["call-0", "call-2", "call-4"] {
+        let (text, is_error) = &results[call_id];
+        assert!(is_error.unwrap_or(false), "{call_id}");
+        assert_eq!(
+            text.strip_prefix("Error: ").unwrap_or(text),
+            agent::NO_WAIT,
+            "{call_id} 的拒绝语逐字一致"
+        );
+    }
+    let (text, is_error) = &results["call-3"];
+    assert!(is_error.unwrap_or(false));
+    assert_eq!(
+        text.strip_prefix("Error: ").unwrap_or(text),
+        agent::DEFAULT_WAIT,
+        "没给超时也没转后台的提示"
+    );
+    let (text, is_error) = &results["call-1"];
+    assert_eq!(is_error.unwrap_or(false), false, "echo sleep 不误判：{text}");
+    assert!(text.contains("sleep 5"), "{text}");
+}
+
