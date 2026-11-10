@@ -209,6 +209,8 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
                 credentials: options.credentials.clone(),
                 append_hook_factory: options.append_hook_factory.clone(),
                 extra_tools: extra_tools.clone(),
+                tool_policy: agent::ToolPolicy::default(),
+                policy_prompt: None,
             })
             .await?;
             let record = RootRecord {
@@ -263,6 +265,8 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
                 credentials: options.credentials.clone(),
                 append_hook_factory: options.append_hook_factory.clone(),
                 extra_tools,
+                tool_policy: agent::ToolPolicy::default(),
+                policy_prompt: None,
             })
             .await
             .map_err(|error| match &error {
