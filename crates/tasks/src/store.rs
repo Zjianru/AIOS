@@ -10,7 +10,7 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use crate::TaskError;
 use crate::effect::{EffectClaim, EffectKind, EffectPayload};
 use crate::id::{AttemptId, ConversationId, ReportId, TaskId};
-use crate::task::{AttemptEnd, MissingItem, NewReport, NewTask, Task};
+use crate::task::{Attempt, AttemptEnd, MissingItem, NewReport, NewTask, Report, Run, Task};
 
 /// 任务库 schema 版本；比这新的库拒绝打开。
 pub const SCHEMA_VERSION: u64 = 1;
@@ -206,45 +206,196 @@ impl Store {
     }
 
     /// 开一个新的 Attempt（没有 Run 时先开 Run）。
-    pub fn begin_attempt(&self, _id: &TaskId, _now: i64) -> Result<AttemptId, TaskError> {
-        Ok(AttemptId(0))
+    pub fn begin_attempt(&self, id: &TaskId, now: i64) -> Result<AttemptId, TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, id)?;
+        if let Some(open) = task
+            .runs
+            .iter()
+            .flat_map(|run| run.attempts.iter())
+            .find(|attempt| attempt.ended_at.is_none())
+        {
+            return Err(TaskError::AttemptStillOpen {
+                task: id.to_string(),
+                attempt: open.id.0,
+            });
+        }
+        let attempt_id = AttemptId(
+            task.runs
+                .iter()
+                .map(|run| run.attempts.len() as u64)
+                .sum::<u64>()
+                + 1,
+        );
+        let attempt = Attempt {
+            id: attempt_id,
+            conversation: None,
+            started_at: now,
+            ended_at: None,
+            end: None,
+        };
+        if let Some(run) = task.runs.last_mut() {
+            run.attempts.push(attempt);
+        } else {
+            task.runs.push(Run {
+                id: crate::RunId(1),
+                started_at: now,
+                attempts: vec![attempt],
+            });
+        }
+        save_task(&transaction, &task)?;
+        transaction.commit()?;
+        Ok(attempt_id)
     }
 
     /// 会话真的开出来之后，把会话 id 写回 Attempt。
     pub fn attach_session(
         &self,
-        _id: &TaskId,
-        _attempt: AttemptId,
-        _conversation: ConversationId,
+        id: &TaskId,
+        attempt_id: AttemptId,
+        conversation: ConversationId,
     ) -> Result<(), TaskError> {
+        if conversation.as_str().trim().is_empty() {
+            return Err(TaskError::EmptyConversation);
+        }
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, id)?;
+        let attempt = task
+            .runs
+            .iter_mut()
+            .flat_map(|run| run.attempts.iter_mut())
+            .find(|attempt| attempt.id == attempt_id)
+            .ok_or_else(|| TaskError::AttemptNotFound {
+                task: id.to_string(),
+                attempt: attempt_id.0,
+            })?;
+        if attempt.ended_at.is_some() {
+            return Err(TaskError::AttemptEnded {
+                task: id.to_string(),
+                attempt: attempt_id.0,
+            });
+        }
+        match &attempt.conversation {
+            Some(existing) if existing == &conversation => return Ok(()),
+            Some(existing) => {
+                return Err(TaskError::AttemptSessionConflict {
+                    attempt: attempt_id.0,
+                    existing: existing.to_string(),
+                    requested: conversation.to_string(),
+                });
+            }
+            None => attempt.conversation = Some(conversation),
+        }
+        save_task(&transaction, &task)?;
+        transaction.commit()?;
         Ok(())
     }
 
-    /// 结束一个 Attempt。
+    /// 结束一个 Attempt；已经结束的再结束一次不产生变化。
     pub fn end_attempt(
         &self,
-        _id: &TaskId,
-        _attempt: AttemptId,
-        _now: i64,
-        _end: AttemptEnd,
+        id: &TaskId,
+        attempt_id: AttemptId,
+        now: i64,
+        end: AttemptEnd,
     ) -> Result<(), TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, id)?;
+        let attempt = task
+            .runs
+            .iter_mut()
+            .flat_map(|run| run.attempts.iter_mut())
+            .find(|attempt| attempt.id == attempt_id)
+            .ok_or_else(|| TaskError::AttemptNotFound {
+                task: id.to_string(),
+                attempt: attempt_id.0,
+            })?;
+        if attempt.ended_at.is_none() {
+            attempt.ended_at = Some(now);
+            attempt.end = Some(end);
+            save_task(&transaction, &task)?;
+        }
+        transaction.commit()?;
         Ok(())
     }
 
     /// 收尾崩溃留下的、没有会话 id 的 Attempt；返回收尾了几个。
-    pub fn close_unopened_attempts(&self, _id: &TaskId, _now: i64) -> Result<usize, TaskError> {
-        Ok(0)
+    pub fn close_unopened_attempts(&self, id: &TaskId, now: i64) -> Result<usize, TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, id)?;
+        let mut closed = 0;
+        for attempt in task.runs.iter_mut().flat_map(|run| run.attempts.iter_mut()) {
+            if attempt.conversation.is_none() && attempt.ended_at.is_none() {
+                attempt.ended_at = Some(now);
+                attempt.end = Some(AttemptEnd::NotOpened);
+                closed += 1;
+            }
+        }
+        if closed > 0 {
+            save_task(&transaction, &task)?;
+        }
+        transaction.commit()?;
+        Ok(closed)
     }
 
     /// 记一份报告并在同一个事务里排 relay。
     pub fn record_report(
         &self,
-        _id: &TaskId,
-        _attempt: AttemptId,
-        _report: NewReport,
-        _now: i64,
+        id: &TaskId,
+        attempt_id: AttemptId,
+        report: NewReport,
+        now: i64,
     ) -> Result<ReportId, TaskError> {
-        Ok(ReportId::from("stub"))
+        report.validate()?;
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, id)?;
+        if task.attempt(attempt_id).is_none() {
+            return Err(TaskError::AttemptNotFound {
+                task: id.to_string(),
+                attempt: attempt_id.0,
+            });
+        }
+        if let Some(existing) = task
+            .reports
+            .iter()
+            .find(|existing| existing.attempt_id == attempt_id)
+        {
+            if existing.state == report.state {
+                let id = existing.id.clone();
+                transaction.commit()?;
+                return Ok(id);
+            }
+            return Err(TaskError::ReportConflict {
+                attempt: attempt_id.0,
+                existing: existing.state,
+                requested: report.state,
+            });
+        }
+        let report_id = ReportId::from(generate_id(&transaction)?);
+        task.reports.push(Report {
+            id: report_id.clone(),
+            attempt_id,
+            state: report.state,
+            summary: report.summary,
+            question: report.question,
+            at: now,
+        });
+        save_task(&transaction, &task)?;
+        self.enqueue_effect_in(
+            &transaction,
+            &EffectPayload::Relay {
+                task_id: id.clone(),
+                report_id: report_id.clone(),
+            },
+            now,
+        )?;
+        transaction.commit()?;
+        Ok(report_id)
     }
 }
 
@@ -265,6 +416,21 @@ fn load_task(connection: &Connection, id: &TaskId) -> Result<Option<Task>, TaskE
         Some(value) => Ok(Some(serde_json::from_str(&value)?)),
         None => Ok(None),
     }
+}
+
+fn load_task_required(connection: &Connection, id: &TaskId) -> Result<Task, TaskError> {
+    load_task(connection, id)?.ok_or_else(|| TaskError::TaskNotFound(id.to_string()))
+}
+
+fn save_task(connection: &Connection, task: &Task) -> Result<(), TaskError> {
+    let changed = connection.execute(
+        "UPDATE task SET value = ?1 WHERE id = ?2",
+        params![serde_json::to_string(task)?, task.id.as_str()],
+    )?;
+    if changed != 1 {
+        return Err(TaskError::TaskNotFound(task.id.to_string()));
+    }
+    Ok(())
 }
 
 fn claim_effect_in(
