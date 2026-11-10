@@ -51,17 +51,40 @@ impl ActionKind for SetPausedAction {
     }
 
     fn describe(&self, details: &Value, _env: &ActionEnv<'_>) -> Result<Vec<CardFact>, String> {
-        self.paused(details)?;
-        self.current()?;
-        // 骨架：事实行还没接上（红阶段）。
-        Ok(Vec::new())
+        let after = self.paused(details)?;
+        let before = self.current()?;
+        if before == after {
+            return Err(if after {
+                "全局暂停已经打开，不用再开".to_owned()
+            } else {
+                "全局暂停已经关着，不用再关".to_owned()
+            });
+        }
+        let label = |paused: bool| if paused { "开" } else { "关" };
+        Ok(vec![CardFact {
+            name: "全局暂停".to_owned(),
+            value: format!("{} → {}", label(before), label(after)),
+        }])
     }
 
     fn act<'a>(
         &'a self,
-        _details: &'a Value,
-        _host: &'a RootHost,
+        details: &'a Value,
+        host: &'a RootHost,
     ) -> ActionFuture<'a, Result<ActionOutcome, String>> {
-        Box::pin(async { Err("全局暂停还没接上".to_owned()) })
+        Box::pin(async move {
+            let paused = self.paused(details)?;
+            host.set_exec_paused(paused)
+                .map_err(|error| error.to_string())?;
+            let summary = if paused {
+                "全局暂停已打开：新任务排队，在跑的这一轮跑完"
+            } else {
+                "全局暂停已关掉：排队的任务按原顺序开跑"
+            };
+            Ok(ActionOutcome {
+                summary: summary.to_owned(),
+                data: json!({ "paused": paused }),
+            })
+        })
     }
 }

@@ -28,7 +28,7 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 - **agent**：轮次驱动、收件箱、能力注册表与各能力实现；唯一产品组装入口是 Agent::open；Agent::select 写 session/model 并只改下一轮。
 - **agent 能力**：compaction（自动/溢出/手动）、prune、instructions、skill、todo、ask、spill、reminder、jobs。
 - **credentials**：Keyring 真恢复；age 加密整份存储（0600/0700）、age 身份文件作钥匙（换位置/指回/重新开始）、连接描述不含 key 正文、每请求签发并只追加签发记录、变化通知；数据目录配置只存钥匙位置。model::CredentialSource 是模型出站的凭证接缝：每次 stream 前 issue 一次、只用一次；此后还带 auth_header（连接上记住的单头，None = 两个都发）与 remember_auth_header（适配器学到单头后回报产品层写回连接）；服务验证连接的凭证来源同样写回。
-- **service**：载体无关的宿主；对象固定 Kind 根会话，调用面 Call/Response，事件面 ServiceEvent；root 模块负责根会话找回、状态文件与不可用状态；shutdown 做停服务收尾；settings 模块管 <数据目录>/settings.json 的非密钥设置（上次模型选择）；session-model-select 写事件/上次选择，跨连接空闲时重建根 agent；executor 模块泵 launch/relay 效果、按冻结的任务包开 ThinAgent、把报告和停止事实 Steer 回发起的 Kind 会话、立即停（先记 stopped 和停止 relay，再取消 ThinAgent 的轮）、收尾停（插固定停止说明并给会话打标记，除 task_report 外的工具一律拒绝；turn 结束还没报就 waiting 合成后记 stopped）。
+- **service**：载体无关的宿主；对象固定 Kind 根会话，调用面 Call/Response，事件面 ServiceEvent；root 模块负责根会话找回、状态文件与不可用状态；shutdown 做停服务收尾；settings 模块管 <数据目录>/settings.json 的非密钥设置（上次模型选择、币种、exec.paused 全局暂停）；session-model-select 写事件/上次选择，跨连接空闲时重建根 agent；executor 模块泵 launch/relay 效果、按冻结的任务包开 ThinAgent、把报告和停止事实 Steer 回发起的 Kind 会话、立即停（先记 stopped 和停止 relay，再取消 ThinAgent 的轮）、收尾停（插固定停止说明并给会话打标记，除 task_report 外的工具一律拒绝；turn 结束还没报就 waiting 合成后记 stopped）；全局暂停只关 launch 准入（在跑的一轮跑完，relay/notice 照送，开闸后按效果表原序接着跑）。
 - **web**：axum HTTP/WS 薄适配器与信任栅栏；/connect、/ 换签名 cookie，/api、/ws 只认 cookie；同源托管 web/dist 静态资源（SPA fallback）；/canvas-frame 是画布 iframe 外壳（CSP），/local-file 是本地文件的只读出口（cookie + Host，只放会话工作目录）；ready 帧带协议版本、根状态与上下文。
 - **web/ 前端**：React 19 + Vite；Kind 对话页只走服务方法与事件；卡片走注册表 + 信封，槽位按项降级、认不出才退 generic；会话工作目录里的路径显示成相对路径，链接走 /local-file；只显示接上内核的部分，不带演示开关/脚本；Kind 首次使用与设置 › 模型与连接接真 Keyring；e2e 用真 serve + 假 DeepSeek 回放。
 - **cli**：aios-dev 的 chat/run/serve；只把参数/env 变成普通配置数据，不构造模型/工具/存储；连接/模型/档的优先级是 命令行 > 会话日志选择（resume 恢复）> settings.json 上次选择 > 连接默认。
@@ -36,7 +36,7 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 ## 工具、确认卡与根会话
 
 - **条件工具**：工具带 `ToolCondition`，每步求值一次——本会话成功加载过对应 skill、且宿主已存所需工具凭证，才进这一步的工具表。条件之外还看加载记录（`tool/registry` / `ToolRegistry`）：新增工具连同完整定义记进会话日志，恢复时从日志重建，只加不减。
-- **根会话专属工具**：Kind 的根会话另装 `aios_query`（只读查设置/连接/模型/用量）、`propose_action`（确认卡）、`web_search`/`web_fetch`（要 Exa key 且加载过 `web`）、`task_accept`/`task_status`（派只读调查、查报告）、`task_stop`（立即停 / 收尾停；自带 skill `aios-tasks` 只在这里可见）；CLI 对话不装这些，也不列依赖它们的自带 skill。ThinAgent 的 `task_report` 只在它自己的任务会话里，回执照 launch/relay 效果送到发起会话。
+- **根会话专属工具**：Kind 的根会话另装 `aios_query`（只读查设置/连接/模型/用量）、`propose_action`（确认卡）、`web_search`/`web_fetch`（要 Exa key 且加载过 `web`）、`task_accept`/`task_status`（派只读调查、查报告）、`task_stop`（立即停 / 收尾停）和 `set_paused` 确认卡（全局暂停；两者都挂在自带 skill `aios-tasks`，只在这里可见）；CLI 对话不装这些，也不列依赖它们的自带 skill。ThinAgent 的 `task_report` 只在它自己的任务会话里，回执照 launch/relay 效果送到发起会话。
 - **确认卡**：模型经 `propose_action` 出卡；选项对应动作登记表（ActionRegistry，负责 details/describe/act）；用户点了才写 `card/decision`（confirmed/refused/failed/dismissed），重开从日志恢复回执；同一张卡的并发/连点只执行一次，回执到之前按钮置灰。
 
 ## 依赖方向
