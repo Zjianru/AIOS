@@ -237,6 +237,54 @@ fn repeating_the_same_terminal_report_returns_the_first_report() {
 }
 
 #[test]
+fn a_ready_report_replaces_a_synthesized_waiting_report() {
+    let (_directory, store) = open_store();
+    let (task, attempt) = task_with_attempt(&store);
+    let waiting = store
+        .record_report(
+            &task.id,
+            attempt,
+            report(ReportState::Waiting, "turn 结束，还没上报"),
+            T0 + 2,
+        )
+        .unwrap();
+    let ready = store
+        .record_report(
+            &task.id,
+            attempt,
+            report(ReportState::Ready, "有结果了"),
+            T0 + 3,
+        )
+        .unwrap();
+    let repeated = store
+        .record_report(
+            &task.id,
+            attempt,
+            report(ReportState::Ready, "有结果了（重发）"),
+            T0 + 4,
+        )
+        .unwrap();
+
+    assert_ne!(
+        ready, waiting,
+        "终态要自己一条 relay（request id 带报告 id），不能复用 waiting 的报告 id"
+    );
+    assert_eq!(repeated, ready, "同终态幂等，返回该终态的报告 id");
+    let loaded = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(loaded.reports.len(), 2, "合成的 waiting 留作历史");
+    assert_eq!(
+        loaded.latest_report().map(|report| report.state),
+        Some(ReportState::Ready)
+    );
+    assert!(
+        store
+            .effect_pending(EffectKind::Relay, ready.as_str())
+            .unwrap(),
+        "终态报告要排 relay"
+    );
+}
+
+#[test]
 fn refuses_a_different_terminal_report_for_the_same_attempt() {
     let (_directory, store) = open_store();
     let (task, attempt) = task_with_attempt(&store);
