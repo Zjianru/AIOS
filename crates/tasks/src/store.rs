@@ -433,8 +433,15 @@ impl Store {
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load_task_required(&transaction, id)?;
-        if task.attempt(attempt_id).is_none() {
-            return Err(TaskError::AttemptNotFound {
+        let attempt = task
+            .attempt(attempt_id)
+            .ok_or_else(|| TaskError::AttemptNotFound {
+                task: id.to_string(),
+                attempt: attempt_id.0,
+            })?;
+        // 停止之后这次 Attempt 的结果已经定死，晚到的报告一律拒绝。
+        if attempt.end == Some(AttemptEnd::Stopped) {
+            return Err(TaskError::AttemptEnded {
                 task: id.to_string(),
                 attempt: attempt_id.0,
             });
