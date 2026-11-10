@@ -2517,6 +2517,13 @@ async fn seats_one_holds_the_second_task_until_the_first_reports() {
         reported_ready(&store, &first.id)
     })
     .await;
+    let first_report_at = store
+        .task(&first.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .map(|report| report.at)
+        .expect("第一个任务的报告");
     wait_until("第二个任务开跑", || {
         store
             .task(&second.id)
@@ -2526,6 +2533,17 @@ async fn seats_one_holds_the_second_task_until_the_first_reports() {
             .is_some()
     })
     .await;
+    let second_started_at = store
+        .task(&second.id)
+        .unwrap()
+        .unwrap()
+        .latest_attempt()
+        .map(|attempt| attempt.started_at)
+        .expect("第二个任务开跑");
+    assert!(
+        second_started_at >= first_report_at,
+        "第二个任务在第一个报完之后才开：{second_started_at} / {first_report_at}"
+    );
     wait_until("两个任务都报 ready", || {
         reported_ready(&store, &first.id) && reported_ready(&store, &second.id)
     })
