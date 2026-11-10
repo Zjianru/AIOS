@@ -163,12 +163,22 @@ fn rejects_a_title_outside_one_to_two_hundred_chars() {
         Err(TaskError::InvalidTitle(0))
     ));
 
+    let mut at_limit = draft();
+    at_limit.title = "字".repeat(200);
+    assert!(store.create_task(at_limit, T0).is_ok());
+
     let mut too_long = draft();
     too_long.title = "字".repeat(201);
     assert!(matches!(
         store.create_task(too_long, T0),
         Err(TaskError::InvalidTitle(201))
     ));
+}
+
+#[test]
+fn store_is_send_and_sync() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Store>();
 }
 
 #[test]
