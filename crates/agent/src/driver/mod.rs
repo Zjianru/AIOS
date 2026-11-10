@@ -58,6 +58,8 @@ pub(crate) struct Inner {
     tool_keys: tools::ToolKeySource,
     /// 追加在系统提示末尾的产品规则；只在建系统提示那一次用到。
     policy_prompt: Option<String>,
+    /// 统一工具入口是否拒绝会等待的调用（Kind 用；默认关）。
+    no_wait: bool,
 
     pub(crate) model: DeepSeek,
     pub(crate) tools: ToolSet,
@@ -344,6 +346,7 @@ impl Inner {
             data_dir,
             tool_keys,
             policy_prompt,
+            no_wait: config.no_wait,
             model,
             tools,
             tool_gate,

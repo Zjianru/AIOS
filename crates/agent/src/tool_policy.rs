@@ -12,10 +12,115 @@ pub const NO_WAIT: &str = "Reports, follow_up notices, new candidates and a back
 pub const DEFAULT_WAIT: &str = "This shell waits up to 120 seconds by default: pass timeoutMs of at most 30000, or run_in_background, as a waiting step holds back the user's next message.";
 
 /// 一次调用会不会等待；命中返回拒绝语。
-#[allow(dead_code)]
-pub(crate) fn no_wait_reason(_name: &str, _arguments: &str) -> Option<&'static str> {
-    None
+pub(crate) fn no_wait_reason(name: &str, arguments: &str) -> Option<&'static str> {
+    let value: serde_json::Value = serde_json::from_str(arguments).ok()?;
+    let args = value.as_object()?;
+    match name {
+        "bash" => {
+            let sleeps = args
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(sleep_at_command_position);
+            let timeout = args.get("timeoutMs");
+            let too_long = timeout
+                .and_then(serde_json::Value::as_f64)
+                .is_some_and(|milliseconds| milliseconds > 30_000.0);
+            if sleeps || too_long {
+                return Some(NO_WAIT);
+            }
+            let background = args
+                .get("run_in_background")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true);
+            if timeout.is_none() && !background {
+                return Some(DEFAULT_WAIT);
+            }
+            None
+        }
+        "job_output" => {
+            if args.get("wait").and_then(serde_json::Value::as_bool) != Some(true) {
+                return None;
+            }
+            let timeout = args.get("timeout_ms");
+            let too_long = timeout
+                .and_then(serde_json::Value::as_f64)
+                .is_some_and(|milliseconds| milliseconds > 5_000.0);
+            if timeout.is_none() || too_long {
+                return Some(NO_WAIT);
+            }
+            None
+        }
+        _ => None,
+    }
 }
+
+/// 命令位置上的 `sleep`（照 DSH 的 SLEEP 正则）：行首、命令分隔符之后、
+/// 关键字之后，允许前面带路径；`echo sleep` 这类参数位置不算。
+fn sleep_at_command_position(command: &str) -> bool {
+    let bytes = command.as_bytes();
+    let mut offset = 0;
+    while let Some(found) = command[offset..].find("sleep") {
+        let start = offset + found;
+        let end = start + "sleep".len();
+        if !bytes.get(end).is_some_and(|byte| is_word_byte(*byte))
+            && is_command_position(bytes, start)
+        {
+            return true;
+        }
+        offset = end;
+    }
+    false
+}
+
+fn is_command_position(bytes: &[u8], sleep_start: usize) -> bool {
+    // 命令前可以带路径（DSH 的 `(?:\S*\/)?` 分组）；带路径时把整段 token 当作候选命令。
+    let mut start = sleep_start;
+    if sleep_start > 0 && bytes[sleep_start - 1] == b'/' {
+        while start > 0
+            && !bytes[start - 1].is_ascii_whitespace()
+            && !is_separator(bytes[start - 1])
+        {
+            start -= 1;
+        }
+    }
+    // 命令位置必须紧跟行首、空白或命令分隔符；参数中间的 `x=sleep` 不算。
+    if start > 0 && !bytes[start - 1].is_ascii_whitespace() && !is_separator(bytes[start - 1]) {
+        return false;
+    }
+    // 跳过空白；空白里有换行时，换行本身就是命令分隔符。
+    let mut cursor = start;
+    let mut newline = false;
+    while cursor > 0 && bytes[cursor - 1].is_ascii_whitespace() {
+        newline |= bytes[cursor - 1] == b'\n';
+        cursor -= 1;
+    }
+    if newline || cursor == 0 {
+        return true;
+    }
+    if is_separator(bytes[cursor - 1]) {
+        return true;
+    }
+    // 关键字后面跟空白：do/then/else/elif/if/while/until/time/exec/nohup/command/env。
+    let mut word_start = cursor;
+    while word_start > 0 && is_word_byte(bytes[word_start - 1]) {
+        word_start -= 1;
+    }
+    COMMAND_KEYWORDS
+        .iter()
+        .any(|keyword| keyword.as_bytes() == &bytes[word_start..cursor])
+}
+
+fn is_word_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn is_separator(byte: u8) -> bool {
+    matches!(byte, b';' | b'&' | b'|' | b'(' | b'{' | b'!' | b'`' | b'\n')
+}
+
+const COMMAND_KEYWORDS: [&str; 12] = [
+    "do", "then", "else", "elif", "if", "while", "until", "time", "exec", "nohup", "command", "env",
+];
 
 #[cfg(test)]
 mod tests {
