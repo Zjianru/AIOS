@@ -6,15 +6,35 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
-use crate::{ReplayCall, ReplayError, ReplayScript, encode_sse, encode_sse_cut};
+use crate::{ReplayCall, ReplayError, ReplayRoute, ReplayScript, encode_sse, encode_sse_cut};
 
 struct Shared {
     calls: Vec<ReplayCall>,
     pace_ms: Option<u64>,
     cursor: usize,
+    routes: Vec<RouteState>,
     last_model: Option<String>,
     /// T012.9：最近一次请求的完整请求体（e2e 断言思考档用）。
     last_request: Option<serde_json::Value>,
+}
+
+/// 一条路由的运行状态：匹配串和这条会话自己的游标。
+struct RouteState {
+    contains: String,
+    calls: Vec<ReplayCall>,
+    pace_ms: Option<u64>,
+    cursor: usize,
+}
+
+impl RouteState {
+    fn new(route: ReplayRoute) -> Self {
+        Self {
+            contains: route.contains,
+            calls: route.calls,
+            pace_ms: route.pace_ms,
+            cursor: 0,
+        }
+    }
 }
 
 /// 起好的回放服务（地址 + 后台任务）。
@@ -41,6 +61,7 @@ pub async fn start_replay_server(script: ReplayScript) -> Result<ReplayServer, R
         calls: script.calls,
         pace_ms: script.pace_ms,
         cursor: 0,
+        routes: script.routes.into_iter().map(RouteState::new).collect(),
         last_model: None,
         last_request: None,
     }));
@@ -109,7 +130,8 @@ async fn handle(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> std::io::R
         .get("model")
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned);
-    let (call, pace_ms) = {
+    let body_text = String::from_utf8_lossy(&body);
+    let picked = {
         let mut state = shared.lock().await;
         if let Some(model) = requested_model {
             state.last_model = Some(model);
@@ -117,9 +139,33 @@ async fn handle(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> std::io::R
         if !body_value.is_null() {
             state.last_request = Some(body_value.clone());
         }
-        let index = state.cursor;
-        state.cursor += 1;
-        (state.calls.get(index).cloned(), state.pace_ms)
+        if state.routes.is_empty() {
+            let index = state.cursor;
+            state.cursor += 1;
+            Some((state.calls.get(index).cloned(), state.pace_ms))
+        } else {
+            // 两个会话的请求会交错：先按请求体认会话，各用各的游标。
+            state
+                .routes
+                .iter_mut()
+                .find(|route| body_text.contains(&route.contains))
+                .map(|route| {
+                    let index = route.cursor;
+                    route.cursor += 1;
+                    (route.calls.get(index).cloned(), route.pace_ms)
+                })
+        }
+    };
+    let Some((call, pace_ms)) = picked else {
+        return write_response(
+            &mut stream,
+            500,
+            "application/json",
+            "{\"error\":{\"message\":\"没有匹配的路由\"}}"
+                .as_bytes()
+                .to_vec(),
+        )
+        .await;
     };
     let Some(call) = call else {
         return write_response(
