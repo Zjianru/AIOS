@@ -42,7 +42,11 @@ pub(super) async fn prepare_step(
         .expect("agent 会话锁被毒化")
         .has_system_message();
     if !has_system {
-        let message = Message::system_prompt(system_prompt(&inner.cwd, &inner.tools));
+        let message = Message::system_prompt(system_prompt(
+            &inner.cwd,
+            &inner.tools,
+            inner.policy_prompt.as_deref(),
+        ));
         inner
             .append(&[EventKind::SystemMessage {
                 turn,
