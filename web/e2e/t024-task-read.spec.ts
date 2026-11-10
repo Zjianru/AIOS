@@ -200,21 +200,23 @@ test('上翻 beforeSeq：更早的轮次按需加载', async ({ page }) => {
     const card = resultCard(page);
     await expect(card).toBeVisible({ timeout: 30_000 });
 
-    // 任务会话后面补 60 轮（76 条消息）；一页 50 条，所以第一页看不到第 2 轮。
-    await appendTurns(await thinSessionFile(fixture), 2, 60);
+    // 任务会话后面补 550 轮（每轮一条消息）：一页按 50 条消息/2 轮的对齐点往回走，
+    // 所以第一页只到日志尾部，往上翻才能看到更早的轮次。
+    await appendTurns(await thinSessionFile(fixture), 2, 550);
 
     await card.getByRole('button', { name: /打开任务对话/ }).click();
     const pane = taskPane(page);
-    await expect(pane.getByText('第 61 步完成。')).toBeVisible({ timeout: 20_000 });
+    await expect(pane.getByText('第 551 步完成。')).toBeVisible({ timeout: 20_000 });
+    await expect(pane.getByText('第 500 步完成。')).toHaveCount(0);
     await expect(pane.getByText('第 2 步完成。')).toHaveCount(0);
 
-    // 上翻：滚到顶部触发 beforeSeq，更早的轮次进来后才出现。
+    // 上翻：滚到顶部触发 beforeSeq，更早的一页进来后才出现。
     await pane.locator('[data-kind="task-scroll"]').evaluate((element) => {
       element.scrollTop = 0;
       element.dispatchEvent(new Event('scroll', { bubbles: true }));
     });
-    await expect(pane.getByText('第 2 步完成。')).toHaveCount(1, { timeout: 20_000 });
-    await expect(pane.getByText('第 61 步完成。')).toHaveCount(1);
+    await expect(pane.getByText('第 500 步完成。')).toHaveCount(1, { timeout: 20_000 });
+    await expect(pane.getByText('第 551 步完成。')).toHaveCount(1);
   } finally {
     await fixture.close();
   }

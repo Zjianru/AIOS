@@ -18,11 +18,14 @@ use tasks::{
     ModelChoice, NewReport, NewTask, ReportId, ReportOrigin, ReportState, Stage, Store, Task,
     TaskError, TaskId,
 };
+use tokio::sync::broadcast;
 use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
 
 use crate::error::ServiceError;
 use crate::events::{page_events, service_event};
-use crate::protocol::{DeliveryMode, TaskReadHeader, TaskReadRequest, TaskReadResponse};
+use crate::protocol::{
+    DeliveryMode, FollowResponse, ServiceEvent, TaskReadHeader, TaskReadRequest, TaskReadResponse,
+};
 use crate::root::RootSessionOptions;
 use crate::session_host::ServiceHost;
 
@@ -63,6 +66,24 @@ struct RunningThin {
     host: Arc<ServiceHost>,
     task_id: TaskId,
     attempt_id: AttemptId,
+}
+
+/// 任务事件流的打开结果：当前 Attempt 的会话 id、打开时要补的日志事件，
+/// 以及任务还在跑时的 live 订阅面（不在跑就只补，不出 live 帧）。
+pub struct TaskStream {
+    pub session_id: String,
+    pub follow: FollowResponse,
+    pub live: Option<TaskLive>,
+}
+
+/// 在跑任务的 live 订阅面。
+///
+/// 宿主句柄也放在这里：拿到流之后即使执行者已经把这个 Attempt 从「在跑」表里摘掉，
+/// 事件仍会从同一个宿主送到连接关闭；不会因为收尾而把半轮事件截断。
+pub struct TaskLive {
+    pub host: Arc<ServiceHost>,
+    pub events: broadcast::Receiver<ServiceEvent>,
+    pub agent_events: broadcast::Receiver<AgentEvent>,
 }
 
 /// 任务执行者：效果泵、ThinAgent 会话和任务工具的共享状态。
@@ -153,6 +174,17 @@ impl TaskRuntime {
             events: selected.iter().map(|event| service_event(event)).collect(),
             last_seq: all.last().map(|event| event.seq).unwrap_or(0),
         })
+    }
+
+    /// `/ws?task=` 的打开面：补齐 `lastSeq` 之后的日志，任务还在跑时再挂 live 订阅。
+    pub async fn task_stream(
+        &self,
+        _task_id: &str,
+        _last_seq: u64,
+    ) -> Result<TaskStream, ServiceError> {
+        Err(ServiceError::TaskUnavailable(
+            "任务实时流还没接上".to_owned(),
+        ))
     }
 
     /// 测试用：暂停效果泵（launch/relay 都不跑）。

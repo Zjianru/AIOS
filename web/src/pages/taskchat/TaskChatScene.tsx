@@ -17,6 +17,7 @@ import type { ServiceEvent } from '@/data/service';
 import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
 import { TurnRow } from '@/pages/kind/TurnRow';
 import { deriveTurnViews } from '@/pages/kind/turnViews';
+import { withReportedCompletion } from './taskLive';
 import { cn } from '@/lib/utils';
 
 const NO_CANVAS = () => {};
@@ -177,20 +178,12 @@ export function TaskChatScene() {
     scroller.scrollTop = scroller.scrollHeight - restore.height + restore.top;
   }, [events]);
 
-  // 终态/Waiting 报告之后执行者会立刻关掉会话，日志可能没有 turn/end；
-  // 头部带来的 reportedAt 是「这次 Attempt 交过报告」的事实，据此把最后一轮收成已完成。
-  const views = useMemo(() => {
-    const derived = deriveTurnViews(visibleTaskEvents(events));
-    const reportedAt = task?.reportedAt;
-    if (reportedAt === undefined || reportedAt === null || derived.length === 0) return derived;
-    const last = derived.length - 1;
-    if (derived[last].status !== 'inProgress') return derived;
-    const startedAt = derived[last].startedAt;
-    const durationMs = startedAt === null ? null : Math.max(0, reportedAt - startedAt * 1000);
-    return derived.map((view, index) =>
-      index === last ? { ...view, status: 'completed' as const, durationMs } : view,
-    );
-  }, [events, task]);
+  // 终态报告之后执行者会立刻关掉会话，日志可能没有 turn/end；头部带来的 reportedAt
+  // 只收尾它之前开始的那一轮（waiting 报告之后的新一轮不能被标成已完成）。
+  const views = useMemo(
+    () => withReportedCompletion(deriveTurnViews(visibleTaskEvents(events)), task?.reportedAt),
+    [events, task],
+  );
 
   async function loadOlder() {
     if (loadingOlderRef.current || !hasOlder || events.length === 0) return;

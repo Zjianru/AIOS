@@ -242,9 +242,18 @@ export interface FixtureOptions {
   legacySession?: boolean;
   /// T022：把服务的汇率请求指到本地代理，测试可以等 status 进了 fx 的 await 再动作。
   slowFx?: boolean;
-  /// T024.4：任务结果卡。前四种跑真 Kind + ThinAgent 两个会话（按请求体路由）；
+  /// T024.4：任务结果卡。前几种跑真 Kind + ThinAgent 两个会话（按请求体路由）；
   /// missing / bad-json 用预写好的根会话日志直接验卡与退回文本。
-  taskResult?: 'ready' | 'blocked' | 'failed' | 'waiting' | 'missing' | 'bad-json' | 'chat';
+  /// live：同一个任务脚本放慢帧间隔，供「在跑时打开任务对话」的实时用例观察。
+  taskResult?:
+    | 'ready'
+    | 'blocked'
+    | 'failed'
+    | 'waiting'
+    | 'missing'
+    | 'bad-json'
+    | 'chat'
+    | 'live';
 }
 
 /** T024.4：双会话回放用哪份按请求体路由的文件；预写会话的两种不需要。 */
@@ -304,7 +313,8 @@ export async function startKernelFixture(
     options.t013Process ||
     options.pretextTurn ||
     options.pretextSlowTurn ||
-    options.taskResult === 'chat'
+    options.taskResult === 'chat' ||
+    options.taskResult === 'live'
   ) {
     await writeFile(path.join(dataDir, 'hello.txt'), 'hello from fixture\n');
     // T013.7：带空格的路径（@ 菜单插入要给引号用）。

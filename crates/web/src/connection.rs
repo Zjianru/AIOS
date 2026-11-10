@@ -149,6 +149,9 @@ pub fn opening_frames(info: &HostInfo, follow: FollowResponse) -> Vec<Frame> {
 pub(crate) struct WsQuery {
     #[serde(default, rename = "lastSeq")]
     last_seq: Option<u64>,
+    /// 只读任务对话：连这个任务当前 Attempt 的会话；省略时连根会话（旧页面行为不变）。
+    #[serde(default)]
+    task: Option<String>,
 }
 
 /// T011.4：事件流的连上/断开记录（reason 在 Drop 兜底写）。
@@ -209,7 +212,8 @@ pub(crate) async fn ws_handler(
         return trust_error_response(error);
     }
     let last_seq = query.last_seq.unwrap_or(0);
-    upgrade.on_upgrade(move |socket| ws_session(socket, state, last_seq))
+    let task = query.task;
+    upgrade.on_upgrade(move |socket| ws_session(socket, state, last_seq, task))
 }
 
 async fn send_value(socket: &mut WebSocket, value: &serde_json::Value) -> bool {
@@ -226,8 +230,25 @@ async fn send_frame(socket: &mut WebSocket, frame: &Frame) -> bool {
     }
 }
 
-/// 一个 WebSocket 连接：ready → 补齐（lastSeq 之后）→ live（seq 去重；Lagged 时重新 follow 补齐）。
-async fn ws_session(mut socket: WebSocket, state: Arc<AppState>, last_seq: u64) {
+/// 一个 WebSocket 连接：带 task 时进任务对话，否则是根会话（旧页面行为不变）。
+async fn ws_session(
+    mut socket: WebSocket,
+    state: Arc<AppState>,
+    last_seq: u64,
+    task: Option<String>,
+) {
+    let Some(task_id) = task else {
+        ws_root_session(socket, state, last_seq).await;
+        return;
+    };
+    let _stream_ops = StreamOps::open(&state);
+    let value =
+        serde_json::json!({"type": "error", "message": format!("任务实时流还没接上：{task_id}")});
+    let _ = send_value(&mut socket, &value).await;
+}
+
+/// 根会话的连接：ready → 补齐（lastSeq 之后）→ live（seq 去重；Lagged 时重新 follow 补齐）。
+async fn ws_root_session(mut socket: WebSocket, state: Arc<AppState>, last_seq: u64) {
     let _stream_ops = StreamOps::open(&state);
     let info = state.host.info();
     let mut live = state.host.subscribe_events();
