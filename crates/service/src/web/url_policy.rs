@@ -36,7 +36,7 @@ pub(super) fn validate_parsed_url(url: &Url) -> Result<(), FetchError> {
     Ok(())
 }
 
-/// 解析目标主机，回环、内网、链路本地、未指定地址和 AIOS 自己的监听地址都拒绝。
+/// 解析目标主机，回环、内网、链路本地、未指定地址、保留地址和 AIOS 自己的监听地址都拒绝。
 pub(super) async fn check_fetch_address(
     url: &Url,
     self_addr: Option<&std::sync::OnceLock<SocketAddr>>,
@@ -84,6 +84,7 @@ pub(super) enum BlockedAddress {
     Private,
     LinkLocal,
     Unspecified,
+    Reserved,
 }
 
 impl BlockedAddress {
@@ -93,6 +94,7 @@ impl BlockedAddress {
             Self::Private => "这个链接指向内网地址，不能读",
             Self::LinkLocal => "这个链接指向链路本地地址，不能读",
             Self::Unspecified => "这个链接指向未指定地址，不能读",
+            Self::Reserved => "这个链接指向保留地址，不能读",
         }
     }
 }
@@ -112,6 +114,8 @@ pub(super) fn classify_address(address: IpAddr) -> Option<BlockedAddress> {
                 Some(BlockedAddress::LinkLocal)
             } else if address.is_unspecified() {
                 Some(BlockedAddress::Unspecified)
+            } else if address.is_multicast() {
+                Some(BlockedAddress::Reserved)
             } else {
                 None
             }
@@ -120,14 +124,28 @@ pub(super) fn classify_address(address: IpAddr) -> Option<BlockedAddress> {
 }
 
 fn classify_v4(address: Ipv4Addr) -> Option<BlockedAddress> {
+    let octets = address.octets();
     if address.is_loopback() {
         Some(BlockedAddress::Loopback)
     } else if address.is_private() {
         Some(BlockedAddress::Private)
     } else if address.is_link_local() {
         Some(BlockedAddress::LinkLocal)
-    } else if address.is_unspecified() {
+    } else if octets[0] == 0 {
+        // 0.0.0.0/8：本网络，沿用「未指定」这一类。
         Some(BlockedAddress::Unspecified)
+    } else if address.is_multicast() || octets[0] >= 240 {
+        // 224/4 组播；240/4 含 255.255.255.255 广播。
+        Some(BlockedAddress::Reserved)
+    } else if octets[0] == 100 && (64..=127).contains(&octets[1]) {
+        // 100.64/10：运营商级 NAT。
+        Some(BlockedAddress::Reserved)
+    } else if octets[0] == 192 && octets[1] == 0 && octets[2] == 0 {
+        // 192.0.0.0/24：IETF 协议分配。
+        Some(BlockedAddress::Reserved)
+    } else if octets[0] == 198 && (octets[1] == 18 || octets[1] == 19) {
+        // 198.18/15：基准测试。
+        Some(BlockedAddress::Reserved)
     } else {
         None
     }

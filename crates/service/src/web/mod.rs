@@ -2,8 +2,8 @@
 //!
 //! `web_search` 走 Exa：加载过 `web` 且 Keyring 里有 Exa 的 key 才开出；每次执行现读 key，
 //! 1–4 条查询去重后并发、轮流合并成最多 8 条来源（没有摘要的结果丢掉）。
-//! `web_fetch` 只读 http/https，只跟同源重定向；回环、内网、链路本地、未指定地址和 AIOS
-//! 自己的监听地址都拒绝。HTML 用 htmd 转 Markdown，正文按 charset 解码并截到 20 万字。
+//! `web_fetch` 只读 http/https，只跟同源重定向；回环、内网、链路本地、未指定地址、保留地址和
+//! AIOS 自己的监听地址都拒绝。HTML 用 htmd 转 Markdown，正文按 charset 解码并截到 20 万字。
 //!
 //! 按职责分：`search`（模型面与结果排版）、`exa`（Exa 请求与响应）、`fetch`（读网页）、
 //! `url_policy`（URL/地址/重定向规则）。
