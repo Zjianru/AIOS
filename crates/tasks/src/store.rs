@@ -9,8 +9,8 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::TaskError;
 use crate::effect::{EffectClaim, EffectKind, EffectPayload};
-use crate::id::TaskId;
-use crate::task::{NewTask, Task};
+use crate::id::{AttemptId, ConversationId, ReportId, TaskId};
+use crate::task::{AttemptEnd, MissingItem, NewReport, NewTask, Task};
 
 /// 任务库 schema 版本；比这新的库拒绝打开。
 pub const SCHEMA_VERSION: u64 = 1;
@@ -195,6 +195,57 @@ impl Store {
         let conn = self.lock()?;
         effect_pending_in(&conn, kind, key)
     }
+
+    /// 记执行者在起跑前查到的任务包缺项；空表示包齐。
+    pub fn record_package_check(
+        &self,
+        _id: &TaskId,
+        _missing: Vec<MissingItem>,
+    ) -> Result<(), TaskError> {
+        Ok(())
+    }
+
+    /// 开一个新的 Attempt（没有 Run 时先开 Run）。
+    pub fn begin_attempt(&self, _id: &TaskId, _now: i64) -> Result<AttemptId, TaskError> {
+        Ok(AttemptId(0))
+    }
+
+    /// 会话真的开出来之后，把会话 id 写回 Attempt。
+    pub fn attach_session(
+        &self,
+        _id: &TaskId,
+        _attempt: AttemptId,
+        _conversation: ConversationId,
+    ) -> Result<(), TaskError> {
+        Ok(())
+    }
+
+    /// 结束一个 Attempt。
+    pub fn end_attempt(
+        &self,
+        _id: &TaskId,
+        _attempt: AttemptId,
+        _now: i64,
+        _end: AttemptEnd,
+    ) -> Result<(), TaskError> {
+        Ok(())
+    }
+
+    /// 收尾崩溃留下的、没有会话 id 的 Attempt；返回收尾了几个。
+    pub fn close_unopened_attempts(&self, _id: &TaskId, _now: i64) -> Result<usize, TaskError> {
+        Ok(0)
+    }
+
+    /// 记一份报告并在同一个事务里排 relay。
+    pub fn record_report(
+        &self,
+        _id: &TaskId,
+        _attempt: AttemptId,
+        _report: NewReport,
+        _now: i64,
+    ) -> Result<ReportId, TaskError> {
+        Ok(ReportId::from("stub"))
+    }
 }
 
 fn generate_id(connection: &Connection) -> Result<String, TaskError> {
@@ -297,6 +348,9 @@ fn stored_schema_version(conn: &Connection) -> Result<Option<u64>, TaskError> {
         .map_err(|_| TaskError::CorruptSchema(value))
 }
 
+#[cfg(test)]
+#[path = "attempt_report_tests.rs"]
+mod attempt_report_tests;
 #[cfg(test)]
 #[path = "store_tests.rs"]
 mod tests;
