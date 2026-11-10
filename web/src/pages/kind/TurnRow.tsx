@@ -385,10 +385,7 @@ export const TurnRow = memo(function TurnRow({
         </div>
       ) : null}
 
-      {view.taskResult ? (
-        // relay 消息是程序生成的：画成结果卡，代替你的消息气泡。
-        <TaskResultCard fact={view.taskResult} />
-      ) : view.user ? (
+      {view.user ? (
         <div className="mb-2 mt-3 flex flex-col items-end gap-1.5" data-kind="user-message-row">
           {view.user.canvas ? <FromCanvasChip title={view.user.canvas.title} /> : null}
           {view.user.pastes.length > 0 || view.user.files.length > 0 ? <UserCards user={view.user} /> : null}
@@ -405,12 +402,17 @@ export const TurnRow = memo(function TurnRow({
             </div>
           ) : null}
         </div>
-      ) : (
+      ) : view.taskResult ? null : (
         <div className="mb-2 mt-3 flex items-center gap-1.5 text-2 text-ink-3">
           <span className="inline-block size-2 rounded-full bg-brand" />
           Kind · {timeOf(view.startedAt)}
         </div>
       )}
+
+      {view.taskResult ? (
+        // relay 消息是程序生成的：画成结果卡，代替 relay 自己的消息气泡。
+        <TaskResultCard fact={view.taskResult} />
+      ) : null}
 
       <DeliveryLine view={view} />
 
