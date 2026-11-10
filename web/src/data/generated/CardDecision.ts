@@ -4,4 +4,4 @@ import type { CardDecisionPhase } from "./CardDecisionPhase";
 /**
  * 一条确认卡决定的内容（写日志与通知模型共用的形状）。
  */
-export type CardDecision = { callId: string, option: string | null, action: string | null, phase: CardDecisionPhase, data?: Record<string, unknown>, };
+export type CardDecision = { callId: string, option?: string, action?: string, phase: CardDecisionPhase, data?: Record<string, unknown>, };

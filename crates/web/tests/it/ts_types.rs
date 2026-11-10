@@ -136,6 +136,18 @@ fn generated_types_match() {
         event.contains("cause?:"),
         "ServiceEvent.cause 要生成可选字段：{event}"
     );
+
+    let decision = expected
+        .get(Path::new("CardDecision.ts"))
+        .expect("生成树里要有 CardDecision.ts");
+    assert!(
+        decision.contains("option?:"),
+        "CardDecision.option 要生成可选字段：{decision}"
+    );
+    assert!(
+        decision.contains("action?:"),
+        "CardDecision.action 要生成可选字段：{decision}"
+    );
 }
 
 #[test]

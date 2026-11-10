@@ -365,7 +365,6 @@ pub struct ServiceEvent {
     pub time: u64,
     #[serde(rename = "type")]
     pub event_type: String,
-    // 日志事件的 data 由各事件类型决定，页面按未知字段读；不把 serde_json::Value 导成联合类型。
     #[ts(type = "Record<string, unknown>")]
     pub data: serde_json::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]

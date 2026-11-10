@@ -572,8 +572,10 @@ pub struct CardDecision {
     #[serde(rename = "callId")]
     pub call_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub option: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub action: Option<String>,
     pub phase: CardDecisionPhase,
     #[serde(skip_serializing_if = "Option::is_none")]
