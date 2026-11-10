@@ -26,6 +26,8 @@ export function withReportedCompletion(
   if (views[last].status !== 'inProgress') return views;
   const startedAt = views[last].startedAt;
   if (startedAt === null) return views;
+  // waiting 报告之后 task_status 会起新一轮：报告早于本轮开始时不能拿它收尾。
+  if (reportedAt < startedAt * 1000) return views;
   const durationMs = Math.max(0, reportedAt - startedAt * 1000);
   return views.map((view, index) =>
     index === last ? { ...view, status: 'completed' as const, durationMs } : view,

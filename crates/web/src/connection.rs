@@ -10,8 +10,9 @@ use monitor::{Channel, Monitor, Record, Severity};
 use serde::{Deserialize, Serialize};
 use service::{
     ContextUsage, FollowRequest, FollowResponse, HostInfo, HostLocation, PROTOCOL_VERSION,
-    RootState, ServiceEvent,
+    RootHost, RootState, ServiceError, ServiceEvent, ServiceHost, TaskLive,
 };
+use tokio::sync::broadcast;
 use ts_rs::TS;
 
 use crate::routes::{AppState, record_ops, trust_error_response};
@@ -237,29 +238,67 @@ async fn ws_session(
     last_seq: u64,
     task: Option<String>,
 ) {
-    let Some(task_id) = task else {
-        ws_root_session(socket, state, last_seq).await;
+    let _stream_ops = StreamOps::open(&state);
+    match task {
+        Some(task_id) => ws_task_session(&mut socket, &state, &task_id, last_seq).await,
+        None => ws_root_session(&mut socket, &state, last_seq).await,
+    }
+}
+
+async fn send_error(socket: &mut WebSocket, message: &str) -> bool {
+    send_value(
+        socket,
+        &serde_json::json!({"type": "error", "message": message}),
+    )
+    .await
+}
+
+/// 任务对话的连接：同样是 ready → 补齐 → live；live 没接上时只补齐，不出 live 帧。
+async fn ws_task_session(socket: &mut WebSocket, state: &AppState, task_id: &str, last_seq: u64) {
+    let stream = match state.host.task_stream(task_id, last_seq).await {
+        Ok(stream) => stream,
+        Err(error) => {
+            let _ = send_error(socket, &error.to_string()).await;
+            return;
+        }
+    };
+    let mut info = state.host.info();
+    info.session_id = Some(stream.session_id.clone());
+    let last = last_seq.max(stream.follow.last_seq);
+    for frame in opening_frames(&info, stream.follow) {
+        if !send_frame(socket, &frame).await {
+            return;
+        }
+    }
+    let Some(live) = stream.live else {
+        // 任务没在跑：只补齐，不出 live 帧；连接留到页面离开。
+        while let Some(Ok(message)) = socket.recv().await {
+            if matches!(message, Message::Close(_)) {
+                return;
+            }
+        }
         return;
     };
-    let _stream_ops = StreamOps::open(&state);
-    let value =
-        serde_json::json!({"type": "error", "message": format!("任务实时流还没接上：{task_id}")});
-    let _ = send_value(&mut socket, &value).await;
+    let TaskLive {
+        host,
+        events,
+        agent_events,
+    } = live;
+    let source = FollowSource::Task(&host);
+    live_loop(socket, &source, events, agent_events, last).await;
 }
 
 /// 根会话的连接：ready → 补齐（lastSeq 之后）→ live（seq 去重；Lagged 时重新 follow 补齐）。
-async fn ws_root_session(mut socket: WebSocket, state: Arc<AppState>, last_seq: u64) {
-    let _stream_ops = StreamOps::open(&state);
+async fn ws_root_session(socket: &mut WebSocket, state: &AppState, last_seq: u64) {
     let info = state.host.info();
-    let mut live = state.host.subscribe_events();
-    let mut agent_live = state.host.subscribe_agent_events();
+    let live = state.host.subscribe_events();
+    let agent_live = state.host.subscribe_agent_events();
     let root_available = info.root == RootState::Ok;
     let follow = if root_available {
         match state.host.follow(FollowRequest { last_seq }).await {
             Ok(follow) => follow,
             Err(error) => {
-                let value = serde_json::json!({"type": "error", "message": error.to_string()});
-                let _ = send_value(&mut socket, &value).await;
+                let _ = send_error(socket, &error.to_string()).await;
                 return;
             }
         }
@@ -274,7 +313,7 @@ async fn ws_root_session(mut socket: WebSocket, state: Arc<AppState>, last_seq: 
         last = last.max(seq);
     }
     for frame in opening_frames(&info, follow) {
-        if !send_frame(&mut socket, &frame).await {
+        if !send_frame(socket, &frame).await {
             return;
         }
     }
@@ -288,13 +327,25 @@ async fn ws_root_session(mut socket: WebSocket, state: Arc<AppState>, last_seq: 
         }
         return;
     }
+    let source = FollowSource::Root(state.host.as_ref());
+    live_loop(socket, &source, live, agent_live, last).await;
+}
+
+/// 已补齐之后的 live 帧：日志事件按 seq 去重，流式文字照发；Lagged 时重新 follow。
+async fn live_loop(
+    socket: &mut WebSocket,
+    source: &FollowSource<'_>,
+    mut live: broadcast::Receiver<ServiceEvent>,
+    mut agent_live: broadcast::Receiver<agent::AgentEvent>,
+    mut last: u64,
+) {
     loop {
         tokio::select! {
             received = live.recv() => match received {
                 Ok(event) => {
                     if event.seq == 0 {
                         // 合成事件（设置变化）：不在日志里，不推进 lastSeq；页面收到后自己重拉设置。
-                        if !send_frame(&mut socket, &Frame::Event { event }).await {
+                        if !send_frame(socket, &Frame::Event { event }).await {
                             return;
                         }
                         continue;
@@ -303,36 +354,36 @@ async fn ws_root_session(mut socket: WebSocket, state: Arc<AppState>, last_seq: 
                         continue;
                     }
                     last = event.seq;
-                    if !send_frame(&mut socket, &Frame::Event { event }).await {
+                    if !send_frame(socket, &Frame::Event { event }).await {
                         return;
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                    if let Ok(follow) = state.host.follow(FollowRequest { last_seq: last }).await {
+                Err(broadcast::error::RecvError::Lagged(_)) => {
+                    if let Ok(follow) = source.follow(last).await {
                         for event in follow.events {
                             if event.seq <= last {
                                 continue;
                             }
                             last = event.seq;
-                            if !send_frame(&mut socket, &Frame::Event { event }).await {
+                            if !send_frame(socket, &Frame::Event { event }).await {
                                 return;
                             }
                         }
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                Err(broadcast::error::RecvError::Closed) => return,
             },
             agent_received = agent_live.recv() => match agent_received {
                 Ok(event) => {
                     let Some(wire) = AgentEventWire::from_event(&event) else {
                         continue;
                     };
-                    if !send_frame(&mut socket, &Frame::Agent { event: wire }).await {
+                    if !send_frame(socket, &Frame::Agent { event: wire }).await {
                         return;
                     }
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => return,
             },
             incoming = socket.recv() => match incoming {
                 Some(Ok(message)) => {
@@ -343,6 +394,22 @@ async fn ws_root_session(mut socket: WebSocket, state: Arc<AppState>, last_seq: 
                 }
                 _ => return,
             },
+        }
+    }
+}
+
+/// live 循环的补齐来源：根会话或任务 Attempt。Lagged 时用它重新 follow。
+enum FollowSource<'a> {
+    Root(&'a RootHost),
+    Task(&'a ServiceHost),
+}
+
+impl FollowSource<'_> {
+    async fn follow(&self, last: u64) -> Result<FollowResponse, ServiceError> {
+        let request = FollowRequest { last_seq: last };
+        match self {
+            Self::Root(host) => host.follow(request).await,
+            Self::Task(host) => host.follow(request).await,
         }
     }
 }

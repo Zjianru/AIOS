@@ -345,27 +345,48 @@ export async function selectSessionModel(
   return post({ method: 'session-model-select', ...input });
 }
 
-/** 连 WS：ready → 补齐/直播的日志事件（event）与不落日志的 agent 帧（流式文本等）。 */
-export function connectSession(
-  lastSeq: number,
+/** 连 WS 的本体：ready → 补齐/直播的日志事件（event）与不落日志的 agent 帧（流式文本等）。 */
+function openSocket(
+  path: string,
   onFrame: (frame: Frame) => void,
   onClose: () => void,
-): WebSocket | null {
+): WebSocket {
   const target = serviceTarget();
-  const socket = new WebSocket(
-    `${target.origin.replace('http', 'ws')}/ws?lastSeq=${lastSeq}`,
-  );
+  const socket = new WebSocket(target.origin.replace('http', 'ws') + path);
   socket.onmessage = (message) => {
     try {
       // 线上入口的断言之二：WS 帧就是生成的 Frame。
       onFrame(JSON.parse(String(message.data)) as Frame);
     } catch {
-      // 坏帧不打断页面；真正缺事件由重连补齐（T007.9）。
+      // 坏帧不打断页面；真正缺事件由重连补齐。
     }
   };
   socket.onclose = onClose;
   socket.onerror = onClose;
   return socket;
+}
+
+/** 连根会话：Kind 对话。 */
+export function connectSession(
+  lastSeq: number,
+  onFrame: (frame: Frame) => void,
+  onClose: () => void,
+): WebSocket | null {
+  return openSocket(`/ws?lastSeq=${lastSeq}`, onFrame, onClose);
+}
+
+/** 连任务对话：服务端把它接到这个任务当前 Attempt 的会话；没在跑时只补齐。 */
+export function connectTaskSession(
+  taskId: string,
+  lastSeq: number,
+  onFrame: (frame: Frame) => void,
+  onClose: () => void,
+): WebSocket {
+  return openSocket(
+    `/ws?task=${encodeURIComponent(taskId)}&lastSeq=${lastSeq}`,
+    onFrame,
+    onClose,
+  );
 }
 
 /** T008.3/T012.4：改连接（endpoint/model 必填；preset/models 只增），保留已存 key。 */

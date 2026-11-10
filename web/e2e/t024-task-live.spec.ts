@@ -98,26 +98,33 @@ test('在跑时打开：新工具调用和回答不用刷新出现，各只一�
     await waitUntilTaskReadable(request, fixture, taskId);
 
     const reads = watchTaskReads(page);
+    const frames: string[] = [];
+    page.on('websocket', (socket) => {
+      socket.on('framereceived', (event) => frames.push(String(event.payload)));
+    });
     const pane = await openTaskChat(page, fixture, taskId, reads);
 
     // 打开时这份快照必须早于工具调用和最后回答；否则「后来出现」不能证明是实时帧。
     expect(reads[0]).not.toContain('"tool/call"');
     expect(reads[0]).not.toContain(FINAL);
 
-    // 工具调用：工作过程组出现，点开能看到 read 这一行。
-    const process = pane.locator('[data-kind="process"]').first();
-    await expect(process).toBeVisible({ timeout: 30_000 });
-    await process.locator('[data-kind="process-group"] button').first().click();
-    await expect(pane.locator('[data-kind="tool-row"][data-tool="read"]')).toBeVisible({
-      timeout: 30_000,
-    });
-
     // 回答：流式文字随后落成日志里的最后一条，刷新之外不用点任何东西。
     await expect(pane.getByText(FINAL, { exact: true })).toHaveCount(1, {
       timeout: 30_000,
     });
     await expect(pane.getByText('工作中')).toHaveCount(0, { timeout: 30_000 });
+    const process = pane.locator('[data-kind="process"]').first();
     await expect(process).toContainText('已完成', { timeout: 20_000 });
+
+    // 工具调用：打开时快照里没有；这一页没重拉快照，展开过程就能看到 read 和 task_report。
+    await process.locator('button').first().click();
+    await process.locator('[data-kind="process-group"] button').first().click();
+    await expect(pane.locator('[data-kind="tool-row"][data-tool="read"]')).toHaveCount(1);
+    await expect(pane.locator('[data-kind="tool-row"][data-tool="task_report"]')).toHaveCount(1);
+
+    // 两种帧都送到了：日志事件（工具调用/轮次）和流式文字（不落日志的 agent 帧）。
+    expect(frames.some((frame) => frame.includes('\"type\":\"event\"'))).toBe(true);
+    expect(frames.some((frame) => frame.includes('\"type\":\"text-delta\"'))).toBe(true);
 
     // 一次连接、一次 TaskRead：期间没有重拉快照，也没有「刷新」按钮。
     expect(reads.length, reads.join('\n---\n')).toBe(1);
@@ -128,6 +135,8 @@ test('在跑时打开：新工具调用和回答不用刷新出现，各只一�
     await pane.getByRole('button', { name: /回 Kind 对话/ }).click();
     await expect(page).toHaveURL(/#kind/);
     await page.goto(fixture.baseUrl + '/#taskchat:' + taskId);
+    // 刷新浏览器重开：整页重载后 TaskRead + 新连接各来一次，不靠内存里的旧状态。
+    await page.reload();
     const again = taskPane(page);
     await expect(again.locator('[data-kind="task-full-title"]')).toHaveText(TITLE, {
       timeout: 20_000,
@@ -139,7 +148,7 @@ test('在跑时打开：新工具调用和回答不用刷新出现，各只一�
     await expect(againProcess).toContainText('已完成');
     await againProcess.locator('button').first().click();
     await againProcess.locator('[data-kind="process-group"] button').first().click();
-    await expect(again.locator('[data-kind="tool-row"][data-tool="task_report"]')).toBeVisible();
+    await expect(again.locator('[data-kind="tool-row"][data-tool="task_report"]')).toHaveCount(1);
     await expect(again.getByText(FINAL, { exact: true })).toHaveCount(1);
     expect(errors).toEqual([]);
   } finally {
