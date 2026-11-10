@@ -76,6 +76,13 @@ pub enum ReportState {
     Waiting,
 }
 
+impl ReportState {
+    /// 终态是 ThinAgent 报的三种；`Waiting` 是执行者 turn 结束合成的，不是终态。
+    pub(crate) fn is_terminal(self) -> bool {
+        matches!(self, Self::Ready | Self::Blocked | Self::Failed)
+    }
+}
+
 /// 一份任务报告。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Report {

@@ -372,21 +372,27 @@ impl Store {
                 attempt: attempt_id.0,
             });
         }
-        if let Some(existing) = task
+        // 合成的 waiting 之后，同一个 Attempt 还能报终态：报告按时间追加，最新的那条
+        // 决定阶段。终态另起一条报告：relay 的键是报告 id，复用 waiting 的 id 会被下游
+        // 按 request id 去重，终态就送不出去。只有旧、新都是终态且不同才冲突；同态幂等。
+        let existing = task
             .reports
             .iter()
-            .find(|existing| existing.attempt_id == attempt_id)
-        {
+            .rev()
+            .find(|existing| existing.attempt_id == attempt_id);
+        if let Some(existing) = existing {
             if existing.state == report.state {
                 let id = existing.id.clone();
                 transaction.commit()?;
                 return Ok(id);
             }
-            return Err(TaskError::ReportConflict {
-                attempt: attempt_id.0,
-                existing: existing.state,
-                requested: report.state,
-            });
+            if existing.state.is_terminal() && report.state.is_terminal() {
+                return Err(TaskError::ReportConflict {
+                    attempt: attempt_id.0,
+                    existing: existing.state,
+                    requested: report.state,
+                });
+            }
         }
         let report_id = ReportId::from(generate_id(&transaction)?);
         task.reports.push(Report {
