@@ -7,7 +7,7 @@ use crate::task::{AttemptEnd, ReportState, Task};
 /// 「任务要求已满足」和「已关闭」归质量门和停止票，本票不返回。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
-    /// 任务包缺项，或最近报告 blocked/failed。
+    /// 任务包缺项，最近报告 blocked/failed，或最近 Attempt 以 stopped 结束。
     NeedsConditions,
     /// 没有 Attempt，或 launch 还在排队。
     Pending,
