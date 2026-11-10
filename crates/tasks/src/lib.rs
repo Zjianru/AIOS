@@ -18,7 +18,7 @@ pub use error::TaskError;
 pub use id::{AttemptId, ConversationId, ReportId, RunId, TaskId};
 pub use slots::{Later, SlotKind, WorkerSlots};
 pub use stage::Stage;
-pub use store::{SCHEMA_VERSION, Store};
+pub use store::{SCHEMA_VERSION, StopAttempt, Store};
 pub use task::{
     Attempt, AttemptEnd, MissingItem, ModelChoice, NewReport, NewTask, Report, ReportOrigin,
     ReportState, Run, Task,

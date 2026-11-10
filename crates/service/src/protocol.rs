@@ -49,6 +49,8 @@ pub enum Call {
     Events(EventsRequest),
     /// 只读打开一个任务当前 Attempt 的会话（头部 + 一页事件）。
     TaskRead(TaskReadRequest),
+    /// 停一个任务（和 Kind 的 task_stop 走同一个服务方法）。
+    TaskStop(TaskStopRequest),
     /// 页面没接住的异常 / 事件流重连（只记 web 监控 ops，不进会话日志）。
     MonitorReport(MonitorReportRequest),
     /// 再检查一次根会话（修好 missing/corrupt/busy 之后回到对话）。
@@ -111,6 +113,8 @@ pub enum Response {
     Events(EventsResponse),
     /// 任务对话的头部与一页事件。
     TaskRead(TaskReadResponse),
+    /// 停任务的结果：是否真的停下、停下后的阶段、给页面的固定说明。
+    TaskStop(TaskStopResponse),
     MonitorReport(MonitorReportResponse),
     Recheck(RecheckResponse),
     ModelSettings(ModelSettingsResponse),
@@ -387,6 +391,33 @@ pub struct TaskReadResponse {
     pub events: Vec<ServiceEvent>,
     #[serde(rename = "lastSeq")]
     pub last_seq: u64,
+}
+
+/// 停法：立即停，或做完手上这一步再停（D81）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum StopMode {
+    Now,
+    AfterReport,
+}
+
+/// 停一个任务；和 Kind 的 task_stop 走同一个服务方法。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct TaskStopRequest {
+    #[serde(rename = "taskId")]
+    pub task_id: String,
+    pub mode: StopMode,
+}
+
+/// 停任务的结果。没在跑时 stopped 为 false，message 是固定原因；
+/// 收尾停还没实现时同样是 false 加固定说明。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct TaskStopResponse {
+    pub stopped: bool,
+    /// 停下之后的阶段（needs_conditions 等），没停下时是当前阶段。
+    pub stage: String,
+    /// 给页面和 Kind 的完整说明；原因句是固定的。
+    pub message: String,
 }
 
 /// 失败原因分类：页面失败块按这个分类写文案，不按 code 猜。

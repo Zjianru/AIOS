@@ -32,6 +32,17 @@ const CREATE_TABLES: &str = "
     CREATE INDEX IF NOT EXISTS effect_due ON effect(kind, due, seq);
 ";
 
+/// 立即停在库里的结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopAttempt {
+    /// 这次写下了 stopped，并排了一条停止 relay。
+    Stopped,
+    /// 之前已经停过；没有重排第二条 relay。
+    AlreadyStopped,
+    /// 这次 Attempt 已经以别的理由结束；没有改动。
+    AlreadyEnded,
+}
+
 /// 任务库。一个 SQLite 连接放在锁后；所有方法同步。
 pub struct Store {
     pub(crate) conn: Mutex<Connection>,
@@ -401,6 +412,52 @@ impl Store {
         Ok(())
     }
 
+    /// 立即停：在一个事务里把 Attempt 记成 stopped，并排一条停止 relay。
+    ///
+    /// 已经停过时不再排第二条；已经以别的理由结束时不改动，交调用方按「没在跑」处理。
+    pub fn stop_attempt(
+        &self,
+        id: &TaskId,
+        attempt_id: AttemptId,
+        now: i64,
+    ) -> Result<StopAttempt, TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, id)?;
+        let attempt = task
+            .runs
+            .iter_mut()
+            .flat_map(|run| run.attempts.iter_mut())
+            .find(|attempt| attempt.id == attempt_id)
+            .ok_or_else(|| TaskError::AttemptNotFound {
+                task: id.to_string(),
+                attempt: attempt_id.0,
+            })?;
+        // 旧库可能只有 ended_at、没有 end（end 是后加的值）；那样也算已经结束，不再改写。
+        if attempt.ended_at.is_some() {
+            let outcome = if attempt.end == Some(AttemptEnd::Stopped) {
+                StopAttempt::AlreadyStopped
+            } else {
+                StopAttempt::AlreadyEnded
+            };
+            transaction.commit()?;
+            return Ok(outcome);
+        }
+        attempt.ended_at = Some(now);
+        attempt.end = Some(AttemptEnd::Stopped);
+        save_task(&transaction, &task)?;
+        self.enqueue_effect_in(
+            &transaction,
+            &EffectPayload::Stop {
+                task_id: id.clone(),
+                attempt_id,
+            },
+            now,
+        )?;
+        transaction.commit()?;
+        Ok(StopAttempt::Stopped)
+    }
+
     /// 收尾崩溃留下的、没有会话 id 的 Attempt；返回收尾了几个。
     pub fn close_unopened_attempts(&self, id: &TaskId, now: i64) -> Result<usize, TaskError> {
         let mut conn = self.lock()?;
@@ -740,6 +797,9 @@ mod effect_tests;
 #[cfg(test)]
 #[path = "stage_tests.rs"]
 mod stage_tests;
+#[cfg(test)]
+#[path = "stop_tests.rs"]
+mod stop_tests;
 #[cfg(test)]
 #[path = "store_tests.rs"]
 mod tests;

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::id::{ReportId, TaskId};
+use crate::id::{AttemptId, ReportId, TaskId};
 
 /// 连续失败到几次算效果种类报健康错误。
 pub const FAILURES_BEFORE_ERROR: u32 = 3;
@@ -43,21 +43,31 @@ pub enum EffectPayload {
         task_id: TaskId,
         report_id: ReportId,
     },
+    /// 停止事实的 relay：和报告同一条 Kind 投递通路，但没有报告 id。
+    /// 键里带任务 id：Attempt 编号只在任务内唯一，单用编号会让两个任务的停止互相覆盖。
+    Stop {
+        task_id: TaskId,
+        attempt_id: AttemptId,
+    },
 }
 
 impl EffectPayload {
     pub fn kind(&self) -> EffectKind {
         match self {
             Self::Launch { .. } => EffectKind::Launch,
-            Self::Relay { .. } => EffectKind::Relay,
+            Self::Relay { .. } | Self::Stop { .. } => EffectKind::Relay,
         }
     }
 
-    /// launch 的键是任务 id，relay 的键是报告 id。
+    /// launch 的键是任务 id，relay 的键是报告 id，停止的键是任务 id + Attempt 编号。
     pub fn key(&self) -> String {
         match self {
             Self::Launch { task_id } => task_id.to_string(),
             Self::Relay { report_id, .. } => report_id.to_string(),
+            Self::Stop {
+                task_id,
+                attempt_id,
+            } => format!("stop:{task_id}:{attempt_id}"),
         }
     }
 }
