@@ -22,6 +22,7 @@ export const API_ERROR_CODES = [
   'attachment/invalid',
   'attachment/not-text',
   'request/invalid-message',
+  'task/unavailable',
 ] as const;
 
 export const MODEL_ERROR_CODES = [
@@ -91,6 +92,8 @@ const API_REASONS: Record<string, string> = {
   'attachment/invalid': '附件不对（名字或内容格式有问题）',
   'attachment/not-text': '只支持文字文件，这个附件是二进制',
   'request/invalid-message': '消息是空的（写点字、贴一段或者拖个文件）',
+  // 任务对话打不开（任务不存在、还没开跑、会话日志缺失/损坏）；具体原因用服务给的 message。
+  'task/unavailable': '任务对话打不开',
 };
 
 const API_ACTIONS: Record<string, 'settings' | 'retry'> = {

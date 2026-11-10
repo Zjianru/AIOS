@@ -42,6 +42,8 @@ export interface TaskResultFact {
 }
 
 export interface TaskResultSlots {
+  /** 打开任务对话要用的任务 id（来自 relay 的 request id 和 JSON，不是模型文字槽）。 */
+  taskId: string;
   title: LabelSlot;
   /** 固定状态文字（有结果 / 没开跑 / 卡住了 / 失败 / 等报告）。 */
   status: LabelSlot;
@@ -53,6 +55,7 @@ export interface TaskResultSlots {
 }
 
 export const taskResultSlotsSchema = z.object({
+  taskId: textSlot,
   title: labelSlot(''),
   status: textSlot,
   state: z.enum(TASK_REPORT_STATES).catch('waiting'),
@@ -62,6 +65,7 @@ export const taskResultSlotsSchema = z.object({
 });
 
 const TASK_RESULT_FALLBACK_SLOTS: TaskResultSlots = {
+  taskId: '',
   title: '',
   status: '等报告',
   state: 'waiting',
@@ -117,6 +121,7 @@ export function taskResultCardOf(
   if (!fact || typeof fact !== 'object') return null;
   if (!fact.id || !isState(fact.state) || !isOrigin(fact.origin)) return null;
   const parsed = taskResultSlotsSchema.safeParse({
+    taskId: fact.taskId,
     title: fact.title,
     status: taskStatusOf(fact.state, fact.origin),
     state: fact.state,

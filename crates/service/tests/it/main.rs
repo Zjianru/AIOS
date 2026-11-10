@@ -17,4 +17,5 @@ mod scripted_sse;
 mod send_blocks;
 mod settings;
 mod status;
+mod task_read;
 mod tasks;

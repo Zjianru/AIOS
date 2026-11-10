@@ -40,6 +40,7 @@ const SCENE_OF: Record<string, string> = {
   work: 'work',
   project: 'project',
   task: 'task',
+  taskchat: 'taskchat',
   trace: 'trace',
   team: 'team',
   role: 'team',
@@ -69,6 +70,8 @@ export function navOf(route: ParsedRoute): string | null {
     case 'project':
     case 'projset':
       return 'project:' + route.id;
+    case 'taskchat':
+      return 'kind';
     case 'task':
     case 'trace':
       return 'project';
@@ -132,6 +135,7 @@ export function crumbOf(route: ParsedRoute): string {
     flow: '流程',
     project: '项目',
     task: '任务',
+    taskchat: '任务对话',
     trace: '原始记录',
     role: '角色',
     read: '阅读',

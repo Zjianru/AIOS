@@ -244,7 +244,7 @@ export interface FixtureOptions {
   slowFx?: boolean;
   /// T024.4：任务结果卡。前四种跑真 Kind + ThinAgent 两个会话（按请求体路由）；
   /// missing / bad-json 用预写好的根会话日志直接验卡与退回文本。
-  taskResult?: 'ready' | 'blocked' | 'failed' | 'waiting' | 'missing' | 'bad-json';
+  taskResult?: 'ready' | 'blocked' | 'failed' | 'waiting' | 'missing' | 'bad-json' | 'chat';
 }
 
 /** T024.4：双会话回放用哪份按请求体路由的文件；预写会话的两种不需要。 */
@@ -303,7 +303,8 @@ export async function startKernelFixture(
     options.toolTurn ||
     options.t013Process ||
     options.pretextTurn ||
-    options.pretextSlowTurn
+    options.pretextSlowTurn ||
+    options.taskResult === 'chat'
   ) {
     await writeFile(path.join(dataDir, 'hello.txt'), 'hello from fixture\n');
     // T013.7：带空格的路径（@ 菜单插入要给引号用）。

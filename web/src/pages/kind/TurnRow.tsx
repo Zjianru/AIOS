@@ -229,13 +229,18 @@ function RetryLine({ retry }: { retry: NonNullable<TurnViewData['retry']> }) {
 }
 
 /** 这一轮没做完：原因原样给出；密钥类给「去设置」，被屏蔽的给「换模型」「去设置」。 */
-function FailureBlock({ view }: { view: TurnViewData }) {
+function FailureBlock({ view, readOnly }: { view: TurnViewData; readOnly: boolean }) {
   const send = useKindStore((state) => state.send);
   const streaming = useKindStore((state) => state.streamingTurnId);
   const setPickerOpen = useKindStore((state) => state.setPickerOpen);
   const failure = view.failure;
   if (!failure) return null;
   const masked = failure.cause === 'masked';
+  // 任务对话是只读的：失败原因照写，但不给换模型/去设置/再发一次这些会动 Kind 的按钮。
+  const showPick = !readOnly && masked;
+  const showSettings =
+    !readOnly && (failure.cause === 'keyring' || failure.cause === 'credential' || masked);
+  const showResend = !readOnly && Boolean(view.user) && !masked;
   return (
     <div className="mt-2 flex items-start gap-2 rounded-card border border-fail/40 bg-fail-soft/50 px-3 py-2 text-2" data-kind="failure">
       <CircleAlert className="mt-[2px] size-3.5 shrink-0 text-fail" />
@@ -251,7 +256,7 @@ function FailureBlock({ view }: { view: TurnViewData }) {
                 : '内核已经按规矩重试过了。过一会儿再发一次，或者换个模型。'}
         </div>
       </div>
-      {masked ? (
+      {showPick ? (
         <button
           type="button"
           data-kind="failure-pick"
@@ -261,7 +266,7 @@ function FailureBlock({ view }: { view: TurnViewData }) {
           换模型
         </button>
       ) : null}
-      {failure.cause === 'keyring' || failure.cause === 'credential' || masked ? (
+      {showSettings ? (
         <button
           type="button"
           onClick={() => go('settings:model')}
@@ -270,7 +275,7 @@ function FailureBlock({ view }: { view: TurnViewData }) {
           去设置 ›
         </button>
       ) : null}
-      {view.user && !masked ? (
+      {showResend ? (
         <button
           type="button"
           disabled={Boolean(streaming)}
@@ -348,6 +353,12 @@ interface TurnProps {
   /** 「上次查看之后」的分隔线画在这一轮上面。 */
   showLastSeen: boolean;
   lastSeenCounts: { moved: number; waiting: number };
+  /** 谁在说：Kind 对话默认 Kind；任务对话是 ThinAgent。 */
+  actor?: string;
+  /** 只读（任务对话）：不画换模型/去设置/再发一次/答题这些会动 Kind 的控件。 */
+  readOnly?: boolean;
+  /** 工作目录：任务对话用任务头部的 cwd；Kind 用 status 给的会话 cwd。 */
+  cwd?: string;
   /** T015.4：画布里的按钮交上来的一句话（带画布 id 和标题）。 */
   onCanvasMessage: (text: string, canvas: { id: string; title: string }) => void;
 }
@@ -357,6 +368,9 @@ export const TurnRow = memo(function TurnRow({
   dayLabel,
   showLastSeen,
   lastSeenCounts,
+  actor = 'Kind',
+  readOnly = false,
+  cwd: cwdOverride,
   onCanvasMessage,
 }: TurnProps) {
   const streaming = view.status === 'inProgress';
@@ -364,8 +378,9 @@ export const TurnRow = memo(function TurnRow({
   const drawing = useKindStore((state) =>
     state.drawingCanvas?.turnId === view.id ? state.drawingCanvas.title : null,
   );
-  // 工作过程里的路径相对会话工作目录显示（status 给）。
-  const cwd = useKindStore((state) => state.cwd);
+  // 工作过程里的路径相对会话工作目录显示（Kind 用 status 给的 cwd；任务对话用任务头部）。
+  const kindCwd = useKindStore((state) => state.cwd);
+  const cwd = cwdOverride ?? kindCwd;
   if (view.compaction) return <CompactionDivider compaction={view.compaction} />;
   const waitingForKernel = view.delivery !== null;
   return (
@@ -405,7 +420,7 @@ export const TurnRow = memo(function TurnRow({
       ) : view.taskResult ? null : (
         <div className="mb-2 mt-3 flex items-center gap-1.5 text-2 text-ink-3">
           <span className="inline-block size-2 rounded-full bg-brand" />
-          Kind · {timeOf(view.startedAt)}
+          {actor} · {timeOf(view.startedAt)}
         </div>
       )}
 
@@ -419,7 +434,7 @@ export const TurnRow = memo(function TurnRow({
       {(view.user || view.taskResult) && !waitingForKernel ? (
         <div className="mb-1 flex items-center gap-1.5 text-2 text-ink-3">
           <span className="inline-block size-2 rounded-full bg-brand" />
-          Kind
+          {actor}
           <span className="brand-type">{timeOf(view.startedAt)}</span>
         </div>
       ) : null}
@@ -464,7 +479,7 @@ export const TurnRow = memo(function TurnRow({
           ) : null}
           {view.canvas ? <CanvasBlock doc={view.canvas} onCanvasMessage={onCanvasMessage} /> : null}
 
-          {view.question ? <QuestionCard turnId={view.id} question={view.question} /> : null}
+          {view.question && !readOnly ? <QuestionCard turnId={view.id} question={view.question} /> : null}
           {view.retry ? <RetryLine retry={view.retry} /> : null}
 
           <div className={cn('group/answer relative mt-1', streaming && 'min-h-[24px]')} data-kind="answer">
@@ -477,7 +492,7 @@ export const TurnRow = memo(function TurnRow({
             ) : null}
           </div>
 
-          {view.card && view.answer ? <ConfirmCard card={view.card} /> : null}
+          {view.card && view.answer && !readOnly ? <ConfirmCard card={view.card} /> : null}
 
           {view.status === 'interrupted' && view.stoppedAt ? (
             <div className="mt-1 flex items-center gap-1.5 text-2 text-ink-3" data-kind="stopped">
@@ -485,7 +500,7 @@ export const TurnRow = memo(function TurnRow({
               你在 <span className="brand-type">{view.stoppedAt}</span> 停下了这一轮，已经做的留着
             </div>
           ) : null}
-          <FailureBlock view={view} />
+          <FailureBlock view={view} readOnly={readOnly} />
         </>
       )}
     </div>
