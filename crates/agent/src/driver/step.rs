@@ -42,7 +42,11 @@ pub(super) async fn prepare_step(
         .expect("agent 会话锁被毒化")
         .has_system_message();
     if !has_system {
-        let message = Message::system_prompt(system_prompt(&inner.cwd, &inner.tools));
+        let message = Message::system_prompt(system_prompt(
+            &inner.cwd,
+            &inner.tools,
+            inner.policy_prompt.as_deref(),
+        ));
         inner
             .append(&[EventKind::SystemMessage {
                 turn,
@@ -510,7 +514,22 @@ pub(super) async fn run_step(
     if dispatch.abort {
         return Ok(StepEnd::Aborted);
     }
-    let overrides = dispatch.overrides;
+    let mut overrides = dispatch.overrides;
+    // no_wait 在统一入口判：tool/call 已经落盘，命中的调用不当成工具执行，直接给一条
+    // 错误 tool/result（照 DSH 的 tools.guard + NO_WAIT）。超时、后台和短等待照常执行。
+    if inner.no_wait {
+        for (index, call) in calls.iter().enumerate() {
+            if overrides.iter().any(|(existing, _)| *existing == index) {
+                continue;
+            }
+            if let Some(reason) = crate::tool_policy::no_wait_reason(&call.name, &call.arguments) {
+                overrides.push((
+                    index,
+                    tools::ToolResult::error(call.id.clone(), tools::ToolFailure::plain(reason)),
+                ));
+            }
+        }
+    }
     let mut exec_calls: Vec<ToolCall> = Vec::new();
     let mut exec_indices: Vec<usize> = Vec::new();
     for (index, call) in calls.iter().enumerate() {

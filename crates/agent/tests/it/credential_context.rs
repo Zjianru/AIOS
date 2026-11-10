@@ -65,6 +65,8 @@ async fn agent_turn_records_run_and_turn_in_keyring() {
         })),
         append_hook_factory: None,
         extra_tools: Vec::new(),
+        tool_policy: agent::ToolPolicy::default(),
+        policy_prompt: None,
     })
     .await
     .expect("open agent");

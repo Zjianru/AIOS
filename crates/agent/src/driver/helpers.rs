@@ -142,7 +142,7 @@ pub(super) fn interrupted_content(
 /// 去掉讲目录的那半句：AIOS 的 @ 候选不列目录）。
 pub(crate) const FILE_REFERENCE_PROMPT: &str = "Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root; absolute paths identify files or directories on the host. Anything else is a file: use the read tool when its contents are needed, and do not claim to have inspected it before reading. @\"...\" quotes a path containing spaces.";
 
-pub(super) fn system_prompt(cwd: &Path, tools: &ToolSet) -> String {
+pub(super) fn system_prompt(cwd: &Path, tools: &ToolSet, policy_prompt: Option<&str>) -> String {
     let mut prompt = format!(
         "You are AIOS, a coding agent. Your working directory is {}.",
         cwd.display()
@@ -181,6 +181,14 @@ pub(super) fn system_prompt(cwd: &Path, tools: &ToolSet) -> String {
             "\n\nPrefer apply_patch over separate edit calls for changes across files or separated regions. Read a file before updating, deleting, or moving it, unless you just created or edited it in this session. The whole patch is checked first and a rejected patch changes nothing; once applying starts, operations run in order, stop at the first failure, and are not rolled back, so re-read affected files before retrying when needed.",
         );
     }
+    // 产品规则照 DSH systemPrompt.section 放在最后（order 9999）：工具指导句之后，
+    // 不塞进固定文字里；None/空白不追加。
+    if let Some(policy) = policy_prompt
+        && !policy.trim().is_empty()
+    {
+        prompt.push_str("\n\n");
+        prompt.push_str(policy);
+    }
     prompt
 }
 
@@ -189,7 +197,7 @@ mod t013_file_reference_prompt_tests {
     use super::*;
 
     fn prompt_with(tools: &ToolSet) -> String {
-        system_prompt(std::path::Path::new("/tmp/workspace"), tools)
+        system_prompt(std::path::Path::new("/tmp/workspace"), tools, None)
     }
 
     #[test]

@@ -152,6 +152,8 @@ async fn accepts_valid_non_default_values() {
         bundled_skills: Vec::new(),
         tool_keys: tools::ToolKeySource::none(),
         allow_parallel_in_progress: true,
+        no_wait: false,
+        policy_prompt: None,
     };
     let agent = create_result(config).await.unwrap();
     agent.idle().await;

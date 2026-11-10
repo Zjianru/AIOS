@@ -40,6 +40,8 @@ fn options(
         credentials: Some(crate::common::test_credential()),
         append_hook_factory: None,
         extra_tools: Vec::new(),
+        tool_policy: agent::ToolPolicy::default(),
+        policy_prompt: None,
     }
 }
 
@@ -133,6 +135,8 @@ async fn open_rejects_invalid_config_before_creating_session() {
         credentials: Some(crate::common::test_credential()),
         append_hook_factory: None,
         extra_tools: Vec::new(),
+        tool_policy: agent::ToolPolicy::default(),
+        policy_prompt: None,
     })
     .await
     {

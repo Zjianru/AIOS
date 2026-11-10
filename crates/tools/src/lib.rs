@@ -142,6 +142,12 @@ impl ToolContext {
         &self.session
     }
 
+    /// 当前会话 id（只读）。工具要按会话做幂等或回执时读它；没有会话日志的
+    /// 构造方（单元测试、单独驱动一个工具）拿到 None。
+    pub fn session_id(&self) -> Option<&str> {
+        self.session.session_id()
+    }
+
     pub fn shared_session(&self) -> Arc<ToolSessionState> {
         Arc::clone(&self.session)
     }
@@ -448,6 +454,11 @@ impl ToolSet {
             .map(AsRef::as_ref)
     }
 
+    /// 只保留名字在 `keep` 里的工具（构造期收窄工具面）；注册顺序不变。
+    pub fn retain_named(&mut self, keep: &BTreeSet<String>) {
+        self.tools.retain(|tool| keep.contains(tool.name()));
+    }
+
     /// 注册的工具名（按注册顺序）。测试/诊断用；不带 schema，避免把无条件全表
     /// 当成请求工具表。请求要的工具定义走 `definitions_for`。
     pub fn names(&self) -> Vec<&str> {
@@ -497,5 +508,21 @@ fn schema_of(tool: &dyn Tool) -> ToolSchema {
         description: tool.description().to_owned(),
         parameters: tool.parameters().clone(),
         defer_loading: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ToolContext, ToolSessionState};
+    use std::sync::Arc;
+
+    #[test]
+    fn tool_context_exposes_the_session_id_read_only() {
+        let data_dir = tempfile::tempdir().unwrap();
+        let context = ToolContext::with_session(
+            data_dir.path(),
+            Arc::new(ToolSessionState::new(data_dir.path(), "session-1")),
+        );
+        assert_eq!(context.session_id(), Some("session-1"));
     }
 }

@@ -21,6 +21,7 @@ mod skill_catalog;
 mod spill_capability;
 mod todo_capability;
 mod tool_gate;
+mod tool_policy;
 mod warn;
 
 use std::path::{Path, PathBuf};
@@ -30,11 +31,12 @@ use model::{DeepSeek, Message, Usage, UserMessage};
 use session::{SessionId, SessionStore, TurnEndReason};
 use tools::ToolSet;
 
-pub use assembly::AgentOpenOptions;
+pub use assembly::{AgentOpenOptions, ToolPolicy};
 pub use error::{AgentError, ManualCompactionErrorCode};
 pub use inbox::Delivery;
 pub use instructions::{MAX_CHAIN_BYTES, MAX_SOURCE_BYTES};
 pub use tool_gate::loaded_skills;
+pub use tool_policy::{DEFAULT_WAIT, NO_WAIT};
 pub use warn::{WarningHook, set_warning_hook};
 
 /// 按 provider/model 覆盖压缩策略（DSH compaction-basic 的 modelPolicies；只覆盖显式给出的字段）。
@@ -95,6 +97,13 @@ pub struct AgentConfig {
     /// DSH bundle/base 设为 true）。false 时工具描述改成「只留一个」，多于一个 in_progress 的
     /// 调用被拒。Agent 在 create/resume 时用它替换内置 todo_write。
     pub allow_parallel_in_progress: bool,
+    /// 是否拒绝会等待的工具调用（照 DSH noWait）：命中的调用先记 tool/call，再回错误
+    /// tool/result，不执行。默认 false（CLI、现有测试不变）；Agent::open 从
+    /// `tool_policy.no_wait` 填入。
+    pub no_wait: bool,
+    /// 追加在系统提示末尾的产品规则（照 DSH systemPrompt.section）；None = 不追加。
+    /// 只在会话第一次请求建系统提示时生效；续接沿用日志里的系统提示。
+    pub policy_prompt: Option<String>,
 }
 
 impl Default for AgentConfig {
@@ -120,6 +129,8 @@ impl Default for AgentConfig {
             tool_keys: tools::ToolKeySource::none(),
             instruction_roots: home.map(|home| vec![home]).unwrap_or_default(),
             allow_parallel_in_progress: true,
+            no_wait: false,
+            policy_prompt: None,
         }
     }
 }

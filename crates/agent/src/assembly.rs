@@ -7,6 +7,7 @@
 //! 的构造集中在这里，再交接给 create/resume；per-Agent 的 capability 注册与 inbox 恢复仍在
 //! driver::Inner::start（单一位置，不重复装配）。
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use model::DeepSeek;
@@ -14,6 +15,18 @@ use session::{SessionId, SessionStore};
 use tools::ToolSet;
 
 use crate::{Agent, AgentConfig, AgentError, Deps};
+
+/// 工具策略：构造期决定工具面，运行期决定哪些调用会因为等待被拒。
+///
+/// 默认（None / false）保持 Kind 之外的现有调用方原样：全部工具、不拒绝等待。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolPolicy {
+    /// None = 全部工具；Some(名单) = 只保留名单里的工具（在 builtin 与 extra_tools 的
+    /// 并集里构造期过滤）。名单里有不认识的名字时组装返回 InvalidConfig。
+    pub only: Option<Vec<String>>,
+    /// true = 统一工具入口拒绝会等待的调用：先记 tool/call，再给错误 tool/result。
+    pub no_wait: bool,
+}
 
 /// 一次 Agent 组装的全部输入（对应 DSH bundle 里 agent-loop 行 + provider/会话配置）。
 ///
@@ -38,6 +51,10 @@ pub struct AgentOpenOptions {
     /// 装配层自己造好的工具（服务独有的查询工具等）：加在内置工具集后面。
     /// 它们照常挂开出条件，没加载对应 skill 之前不进工具表。
     pub extra_tools: Vec<std::sync::Arc<dyn tools::Tool>>,
+    /// 工具策略（Kind 用；CLI 不传时保持全部工具、不拒绝等待）。
+    pub tool_policy: ToolPolicy,
+    /// 追加在系统提示末尾的产品规则（Kind 用；None = 不追加）。
+    pub policy_prompt: Option<String>,
 }
 
 impl std::fmt::Debug for AgentOpenOptions {
@@ -58,6 +75,11 @@ impl std::fmt::Debug for AgentOpenOptions {
                 &self.credentials.as_ref().map(|_| "<source>"),
             )
             .field("extra_tools", &self.extra_tools.len())
+            .field("tool_policy", &self.tool_policy)
+            .field(
+                "policy_prompt",
+                &self.policy_prompt.as_ref().map(|_| "<prompt>"),
+            )
             .finish()
     }
 }
@@ -82,6 +104,33 @@ impl Agent {
         let mut tools = ToolSet::builtin();
         for tool in options.extra_tools {
             tools.push_shared(tool);
+        }
+        // only 在构造期过滤 builtin 与 extra_tools 的并集：工具闸门只加不减，别处不能
+        // 再收窄；续接也不从日志里把过滤掉的工具找回来。未知名字按配置错误失败。
+        if let Some(only) = &options.tool_policy.only {
+            let known: BTreeSet<&str> = tools.names().into_iter().collect();
+            let mut unknown: Vec<&str> = only
+                .iter()
+                .map(String::as_str)
+                .filter(|name| !known.contains(name))
+                .collect();
+            if !unknown.is_empty() {
+                unknown.sort_unstable();
+                unknown.dedup();
+                return Err(AgentError::InvalidConfig {
+                    field: "tool_policy.only",
+                    message: format!("未知工具：{}", unknown.join(", ")),
+                });
+            }
+            let keep: BTreeSet<String> = only.iter().cloned().collect();
+            tools.retain_named(&keep);
+        }
+        // 工具策略从产品入口下沉到 AgentConfig（低层 create/resume 也能直接给）。
+        // 两处合并而不是覆盖：任一处要求不等待就打开；系统规则优先用入口给的，
+        // 没给才沿用 config 里已经设好的。
+        options.config.no_wait |= options.tool_policy.no_wait;
+        if options.policy_prompt.is_some() {
+            options.config.policy_prompt = options.policy_prompt.take();
         }
         // 程序自带的 skill 是产品资产：产品装配在这里填，内核不猜。
         // 正文指向的工具不在这次装配里时整份不进目录（CLI 没有服务独有的工具）。
