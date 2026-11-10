@@ -7,6 +7,7 @@
 //! 的构造集中在这里，再交接给 create/resume；per-Agent 的 capability 注册与 inbox 恢复仍在
 //! driver::Inner::start（单一位置，不重复装配）。
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use model::DeepSeek;
@@ -103,6 +104,26 @@ impl Agent {
         let mut tools = ToolSet::builtin();
         for tool in options.extra_tools {
             tools.push_shared(tool);
+        }
+        // only 在构造期过滤 builtin 与 extra_tools 的并集：工具闸门只加不减，别处不能
+        // 再收窄；续接也不从日志里把过滤掉的工具找回来。未知名字按配置错误失败。
+        if let Some(only) = &options.tool_policy.only {
+            let known: BTreeSet<&str> = tools.names().into_iter().collect();
+            let mut unknown: Vec<&str> = only
+                .iter()
+                .map(String::as_str)
+                .filter(|name| !known.contains(name))
+                .collect();
+            if !unknown.is_empty() {
+                unknown.sort_unstable();
+                unknown.dedup();
+                return Err(AgentError::InvalidConfig {
+                    field: "tool_policy.only",
+                    message: format!("未知工具：{}", unknown.join(", ")),
+                });
+            }
+            let keep: BTreeSet<String> = only.iter().cloned().collect();
+            tools.retain_named(&keep);
         }
         // 工具策略从产品入口下沉到 AgentConfig（低层 create/resume 也能直接给）。
         options.config.no_wait = options.tool_policy.no_wait;

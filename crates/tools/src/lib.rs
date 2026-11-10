@@ -455,6 +455,11 @@ impl ToolSet {
             .map(AsRef::as_ref)
     }
 
+    /// 只保留名字在 `keep` 里的工具（构造期收窄工具面）；注册顺序不变。
+    pub fn retain_named(&mut self, keep: &BTreeSet<String>) {
+        self.tools.retain(|tool| keep.contains(tool.name()));
+    }
+
     /// 注册的工具名（按注册顺序）。测试/诊断用；不带 schema，避免把无条件全表
     /// 当成请求工具表。请求要的工具定义走 `definitions_for`。
     pub fn names(&self) -> Vec<&str> {
