@@ -15,7 +15,8 @@ use serde_json::{Value, json};
 use session::SessionId;
 use tasks::{
     AttemptEnd, AttemptId, ConversationId, EffectClaim, EffectKind, EffectPayload, MissingItem,
-    ModelChoice, NewReport, NewTask, ReportId, ReportState, Stage, Store, Task, TaskError, TaskId,
+    ModelChoice, NewReport, NewTask, ReportId, ReportOrigin, ReportState, Stage, Store, Task,
+    TaskError, TaskId,
 };
 use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
 
@@ -217,6 +218,7 @@ impl TaskRuntime {
                 "title": task.title,
                 "stage": stage_key(stage),
             },
+            "origin": report_origin_key(report.origin),
             "state": report_state_key(report.state),
             "summary": summary,
         });
@@ -349,6 +351,7 @@ impl TaskRuntime {
                         attempt_id,
                         NewReport {
                             state: ReportState::Failed,
+                            origin: ReportOrigin::Executor,
                             summary: format!("任务会话没开成：{error}"),
                             question: None,
                         },
@@ -435,6 +438,7 @@ impl TaskRuntime {
                     attempt_id,
                     NewReport {
                         state: ReportState::Failed,
+                        origin: ReportOrigin::Executor,
                         summary: format!("任务派发没送进 ThinAgent：{error}"),
                         question: None,
                     },
@@ -480,6 +484,7 @@ impl TaskRuntime {
                 attempt,
                 NewReport {
                     state: ReportState::Blocked,
+                    origin: ReportOrigin::Package,
                     summary,
                     question: None,
                 },
@@ -666,6 +671,7 @@ impl TaskRuntime {
             attempt_id,
             NewReport {
                 state: ReportState::Waiting,
+                origin: ReportOrigin::Executor,
                 summary,
                 question: None,
             },
@@ -905,6 +911,14 @@ fn stage_label(stage: Stage) -> &'static str {
         Stage::Pending => "待执行",
         Stage::Running => "执行中",
         Stage::ReadyForReview => "待检查",
+    }
+}
+
+fn report_origin_key(origin: ReportOrigin) -> &'static str {
+    match origin {
+        ReportOrigin::Package => "package",
+        ReportOrigin::Agent => "agent",
+        ReportOrigin::Executor => "executor",
     }
 }
 
@@ -1155,6 +1169,7 @@ impl Tool for TaskReportTool {
             let conversation = context.session_id().unwrap_or_default().to_owned();
             let report = NewReport {
                 state,
+                origin: ReportOrigin::Agent,
                 summary,
                 question,
             };

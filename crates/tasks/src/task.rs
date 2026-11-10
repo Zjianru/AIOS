@@ -83,12 +83,24 @@ impl ReportState {
     }
 }
 
+/// 报告是谁写的：缺项报告由执行者按任务包检查的事实写，终态来自 ThinAgent 的
+/// task_report，waiting 和开会话、派发失败由执行者合成。relay 用它区分「没开跑」
+/// 和「卡住了」，不让卡片去读摘要文字。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportOrigin {
+    Package,
+    Agent,
+    Executor,
+}
+
 /// 一份任务报告。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Report {
     pub id: ReportId,
     pub attempt_id: AttemptId,
     pub state: ReportState,
+    pub origin: ReportOrigin,
     pub summary: String,
     pub question: Option<String>,
     pub at: i64,
@@ -157,6 +169,7 @@ impl NewTask {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewReport {
     pub state: ReportState,
+    pub origin: ReportOrigin,
     pub summary: String,
     pub question: Option<String>,
 }

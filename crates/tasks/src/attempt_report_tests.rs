@@ -7,7 +7,7 @@ use rusqlite::Connection;
 use super::Store;
 use crate::{
     AttemptEnd, AttemptId, ConversationId, EffectKind, EffectPayload, ModelChoice, NewReport,
-    NewTask, ReportState, Task, TaskError,
+    NewTask, ReportOrigin, ReportState, Task, TaskError,
 };
 
 const T0: i64 = 1_700_000_000_000;
@@ -43,6 +43,12 @@ fn task_with_attempt(store: &Store) -> (Task, AttemptId) {
 fn report(state: ReportState, summary: &str) -> NewReport {
     NewReport {
         state,
+        // waiting 只有执行者会合成；其余报告在存储边界的单测里按 ThinAgent 的报告取。
+        origin: if state == ReportState::Waiting {
+            ReportOrigin::Executor
+        } else {
+            ReportOrigin::Agent
+        },
         summary: summary.to_owned(),
         question: None,
     }
@@ -143,6 +149,7 @@ fn records_a_report_and_queues_relay_in_one_transaction() {
             attempt,
             NewReport {
                 state: ReportState::Blocked,
+                origin: ReportOrigin::Package,
                 summary: "缺 Exa key".to_owned(),
                 question: Some("要我去设置里填吗？".to_owned()),
             },
@@ -154,6 +161,11 @@ fn records_a_report_and_queues_relay_in_one_transaction() {
     let loaded = store.task(&task.id).unwrap().unwrap();
     assert_eq!(loaded.reports.len(), 1);
     assert_eq!(loaded.reports[0].state, ReportState::Blocked);
+    assert_eq!(
+        loaded.reports[0].origin,
+        ReportOrigin::Package,
+        "报告来源要随报告一起落库"
+    );
     assert_eq!(loaded.reports[0].attempt_id, attempt);
     assert_eq!(loaded.reports[0].at, T0 + 2);
     assert_eq!(
@@ -358,6 +370,7 @@ fn rejects_invalid_report_fields() {
             attempt,
             NewReport {
                 state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
                 summary: " ".to_owned(),
                 question: None,
             },
@@ -371,6 +384,7 @@ fn rejects_invalid_report_fields() {
             attempt,
             NewReport {
                 state: ReportState::Blocked,
+                origin: ReportOrigin::Agent,
                 summary: "缺条件".to_owned(),
                 question: Some(" ".to_owned()),
             },
@@ -384,6 +398,7 @@ fn rejects_invalid_report_fields() {
             attempt,
             NewReport {
                 state: ReportState::Blocked,
+                origin: ReportOrigin::Agent,
                 summary: "缺条件".to_owned(),
                 question: Some("问".repeat(1001)),
             },

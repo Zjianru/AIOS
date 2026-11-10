@@ -466,6 +466,7 @@ impl Store {
             id: report_id.clone(),
             attempt_id,
             state: report.state,
+            origin: report.origin,
             summary: report.summary,
             question: report.question,
             at: now,
