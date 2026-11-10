@@ -599,6 +599,7 @@ mod t012_attachment_http_tests {
             actions: std::sync::Arc::new(service::ActionRegistry::empty()),
             exa_base_url: None,
             web_listen: None,
+            task_runtime: None,
         }
     }
 
@@ -940,6 +941,7 @@ mod t011_ops_tests {
             actions: std::sync::Arc::new(service::ActionRegistry::empty()),
             exa_base_url: None,
             web_listen: None,
+            task_runtime: None,
         };
         let host = service::RootHost::open(options, model::DEFAULT_CONTEXT_WINDOW).await;
         let monitor = Monitor::open_with_capacity(dir.path(), 1024).expect("监控");
@@ -1269,6 +1271,7 @@ mod t015_local_file_tests {
             actions: std::sync::Arc::new(service::ActionRegistry::empty()),
             exa_base_url: None,
             web_listen: None,
+            task_runtime: None,
         };
         let host = service::RootHost::open(options, model::DEFAULT_CONTEXT_WINDOW).await;
         let trust = Trust::new(

@@ -47,6 +47,8 @@ pub enum TaskError {
     EmptyCwd,
     #[error("会话 id 不能为空")]
     EmptyConversation,
+    #[error("受理幂等键不能为空")]
+    EmptyAcceptKey,
     #[error("模型选择缺 {0}")]
     IncompleteModel(&'static str),
     #[error("任务包缺项描述不能为空")]

@@ -2391,6 +2391,7 @@ dependencies = [
  "serde",
  "serde_json",
  "session",
+ "tasks",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

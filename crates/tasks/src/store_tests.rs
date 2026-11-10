@@ -218,3 +218,49 @@ fn task_id_is_stable_across_reopen() {
     let loaded: Option<Task> = store.task(&id).unwrap();
     assert!(loaded.is_some());
 }
+
+#[test]
+fn accepts_a_tool_call_key_once_and_returns_the_same_task() {
+    let (_directory, store) = open_store();
+    let (first, created) = store
+        .create_task_once(draft(), "kind-session-1:call-1", T0)
+        .unwrap();
+    assert!(created, "第一次受理要建任务");
+    let (again, created) = store
+        .create_task_once(draft(), "kind-session-1:call-1", T0 + 5)
+        .unwrap();
+    assert!(!created, "同一个键再来不建新任务");
+    assert_eq!(again.id, first.id);
+
+    // 只排了一条 launch：幂等受理不能重排效果。
+    let launch = store
+        .claim_effect(EffectKind::Launch, T0 + 5)
+        .unwrap()
+        .expect("launch");
+    assert_eq!(
+        launch.payload,
+        EffectPayload::Launch {
+            task_id: first.id.clone()
+        }
+    );
+    assert!(store.complete_effect(&launch).unwrap());
+    assert_eq!(
+        store.claim_effect(EffectKind::Launch, T0 + 5).unwrap(),
+        None
+    );
+    // 不同的调用键是另一个任务。
+    let (other, created) = store
+        .create_task_once(draft(), "kind-session-1:call-2", T0 + 6)
+        .unwrap();
+    assert!(created);
+    assert_ne!(other.id, first.id);
+}
+
+#[test]
+fn refuses_an_empty_accept_key() {
+    let (_directory, store) = open_store();
+    assert!(matches!(
+        store.create_task_once(draft(), "  ", T0),
+        Err(TaskError::EmptyAcceptKey)
+    ));
+}

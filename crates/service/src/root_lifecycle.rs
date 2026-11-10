@@ -59,7 +59,8 @@ pub(crate) enum ReopenMode {
 /// 根会话宿主：根会话可用时转发一个 ServiceHost；不可用时服务照常起，
 /// ready 报状态、方法一律拒绝，recheck 修好后接管。协议方法只增不改。
 pub struct RootHost {
-    pub(crate) inner: tokio::sync::Mutex<Option<ServiceHost>>,
+    /// 根会话槽；TaskRuntime 的 relay 也拿这一份，好按「Kind 是不是当前根会话」决定 Later。
+    pub(crate) inner: Arc<tokio::sync::Mutex<Option<ServiceHost>>>,
     pub(crate) state: Mutex<RootState>,
     session_id: Mutex<Option<String>>,
     pub(crate) context: Arc<Mutex<ContextUsage>>,
@@ -68,9 +69,12 @@ pub struct RootHost {
     agent_events: broadcast::Sender<agent::AgentEvent>,
     forward: Mutex<Option<tokio::task::JoinHandle<()>>>,
     agent_forward: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// T024.3 的任务执行者；None = 任务库打不开（根会话照常可用，但没有任务工具）。
+    task_runtime: Option<Arc<crate::executor::TaskRuntime>>,
+    task_pump: Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// 当前生效的模型选择（连接/模型/想要的档）；session/model 的 durable 事实
     /// 在会话日志里，这里只是进程内缓存（重开从日志恢复）。
-    pub(crate) selection: Mutex<Option<session::ModelSelection>>,
+    pub(crate) selection: Arc<Mutex<Option<session::ModelSelection>>>,
     /// 每张确认卡一把锁：同一 call_id 的并发/连点串行，第二个请求读得到第一条决定。
     pub(crate) card_locks: Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// 根会话装配时用的连接 id；只在安装/重建时更新，运行中不跟着 selection 变。
@@ -134,8 +138,23 @@ impl RootHost {
         };
         // 把初始选择写成 durable 事实（open/首次打开时若日志里没有）。
         let initial_selection = selection.clone();
+        let inner = Arc::new(tokio::sync::Mutex::new(None));
+        let selection = Arc::new(Mutex::new(selection));
+        // 任务执行者和根会话共用选择与根会话槽；任务库打不开不影响 Kind 的对话。
+        let task_runtime = match crate::executor::TaskRuntime::new(
+            &options,
+            Arc::clone(&selection),
+            Arc::downgrade(&inner),
+        ) {
+            Ok(runtime) => Some(Arc::new(runtime)),
+            Err(error) => {
+                eprintln!("任务库打不开，任务工具不装：{error}");
+                None
+            }
+        };
+        options.task_runtime = task_runtime.clone();
         let host = Self {
-            inner: tokio::sync::Mutex::new(None),
+            inner,
             state: Mutex::new(RootState::Ok),
             session_id: Mutex::new(None),
             context: Arc::new(Mutex::new(ContextUsage { used: 0, window })),
@@ -144,7 +163,9 @@ impl RootHost {
             agent_events,
             forward: Mutex::new(None),
             agent_forward: Mutex::new(None),
-            selection: Mutex::new(selection),
+            task_runtime: task_runtime.clone(),
+            task_pump: Mutex::new(None),
+            selection,
             card_locks: Mutex::new(std::collections::HashMap::new()),
             root_connection: Mutex::new(None),
         };
@@ -173,7 +194,17 @@ impl RootHost {
                 }
             }
         }
+        if let Some(runtime) = task_runtime {
+            let pump = runtime.start_pump();
+            *host.task_pump.lock().expect("task pump 锁被毒化") = Some(pump);
+        }
         host
+    }
+
+    /// T024.3 的任务执行者（测试用：暂停泵、模拟 relay 前停机）。
+    #[doc(hidden)]
+    pub fn task_runtime(&self) -> Option<&Arc<crate::executor::TaskRuntime>> {
+        self.task_runtime.as_ref()
     }
 
     /// 服务绑定监听后记下实际地址；web_fetch 读它拒绝访问 AIOS 自己。
@@ -438,6 +469,17 @@ async fn ensure_initial_selection(
 impl Drop for RootHost {
     fn drop(&mut self) {
         if let Some(handle) = self.forward.lock().expect("forward 锁被毒化").take() {
+            handle.abort();
+        }
+        if let Some(handle) = self
+            .agent_forward
+            .lock()
+            .expect("agent forward 锁被毒化")
+            .take()
+        {
+            handle.abort();
+        }
+        if let Some(handle) = self.task_pump.lock().expect("task pump 锁被毒化").take() {
             handle.abort();
         }
     }

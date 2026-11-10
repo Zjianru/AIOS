@@ -99,6 +99,13 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
             unavailable_hint: "",
         },
         BundledSkill {
+            name: "investigator",
+            raw: include_str!("../bundled/investigator/SKILL.md"),
+            requires: None,
+            tools: &["task_report"],
+            unavailable_hint: "",
+        },
+        BundledSkill {
             name: "web",
             raw: include_str!("../bundled/web/SKILL.md"),
             requires: Some(crate::ToolKey::Exa),
@@ -111,8 +118,9 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
 
 /// 这次装配实际可用的自带 skill：正文提到的工具都在工具集里。
 ///
-/// CLI 的 extra_tools 是空的，所以 aios-settings/web 不会出现在它的目录里；
-/// 服务的根会话装了四个工具，两份都照常可用。
+/// CLI 的 extra_tools 是空的，所以这几份都不会出现在它的目录里；服务的根会话装了
+/// aios_query/propose_action/web，aios-settings 和 web 照常可用；investigator 只要
+/// task_report，也就是只有 ThinAgent 看得到。
 pub fn bundled_skills_for(tools: &ToolSet) -> Vec<BundledSkill> {
     bundled_skills()
         .iter()

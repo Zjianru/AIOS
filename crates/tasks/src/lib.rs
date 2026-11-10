@@ -18,6 +18,6 @@ pub use id::{AttemptId, ConversationId, ReportId, RunId, TaskId};
 pub use stage::Stage;
 pub use store::{SCHEMA_VERSION, Store};
 pub use task::{
-    Attempt, AttemptEnd, MissingItem, ModelChoice, NewReport, NewTask, Report, ReportState, Run,
-    Task,
+    Attempt, AttemptEnd, MissingItem, ModelChoice, NewReport, NewTask, Report, ReportOrigin,
+    ReportState, Run, Task,
 };

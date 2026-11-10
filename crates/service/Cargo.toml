@@ -10,6 +10,8 @@ agent = { path = "../agent" }
 credentials = { path = "../credentials" }
 model = { path = "../model" }
 session = { path = "../session" }
+# T024.3：任务聚合、效果表和执行者要读的任务事实。
+tasks = { path = "../tasks" }
 # 附件仓库（tools 层的 attachments 模块）
 tools = { path = "../tools" }
 htmd.workspace = true

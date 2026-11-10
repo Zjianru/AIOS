@@ -113,8 +113,53 @@ impl Store {
         draft.validate()?;
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let task = self.insert_task_in(&transaction, draft, now)?;
+        transaction.commit()?;
+        Ok(task)
+    }
+
+    /// 按受理幂等键建任务：同一个键再来返回同一个任务，不建第二行、不重排效果。
+    /// 建任务和记下键在同一个事务里，崩在中间不会留下「任务建了但键没记」。
+    pub fn create_task_once(
+        &self,
+        draft: NewTask,
+        accept_key: &str,
+        now: i64,
+    ) -> Result<(Task, bool), TaskError> {
+        draft.validate()?;
+        if accept_key.trim().is_empty() {
+            return Err(TaskError::EmptyAcceptKey);
+        }
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let key = format!("task-accept:{accept_key}");
+        let existing: Option<String> = transaction
+            .query_row("SELECT value FROM kv WHERE key = ?1", params![key], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        if let Some(id) = existing {
+            let task = load_task_required(&transaction, &TaskId::from(id))?;
+            transaction.commit()?;
+            return Ok((task, false));
+        }
+        let task = self.insert_task_in(&transaction, draft, now)?;
+        transaction.execute(
+            "INSERT INTO kv (key, value) VALUES (?1, ?2)",
+            params![key, task.id.as_str()],
+        )?;
+        transaction.commit()?;
+        Ok((task, true))
+    }
+
+    fn insert_task_in(
+        &self,
+        connection: &Connection,
+        draft: NewTask,
+        now: i64,
+    ) -> Result<Task, TaskError> {
         let task = Task {
-            id: TaskId::from(generate_id(&transaction)?),
+            id: TaskId::from(generate_id(connection)?),
             title: draft.title,
             requirement: draft.requirement,
             dod: draft.dod,
@@ -129,19 +174,30 @@ impl Store {
             missing: Vec::new(),
             created_at: now,
         };
-        transaction.execute(
+        connection.execute(
             "INSERT INTO task (id, value) VALUES (?1, ?2)",
             params![task.id.as_str(), serde_json::to_string(&task)?],
         )?;
         self.enqueue_effect_in(
-            &transaction,
+            connection,
             &EffectPayload::Launch {
                 task_id: task.id.clone(),
             },
             now,
         )?;
-        transaction.commit()?;
         Ok(task)
+    }
+
+    /// 列出全部任务 id（测试与诊断用；不按创建时间排序）。
+    pub fn task_ids(&self) -> Result<Vec<TaskId>, TaskError> {
+        let conn = self.lock()?;
+        let mut statement = conn.prepare("SELECT id FROM task")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(TaskId::from(row?));
+        }
+        Ok(ids)
     }
 
     /// 读一个任务。
@@ -183,14 +239,25 @@ impl Store {
         Ok(())
     }
 
-    /// 领一条到期的效果。
+    /// 领一条到期的效果（同一种类里按队列位置最先的到期行）。
     pub fn claim_effect(
         &self,
         kind: EffectKind,
         now: i64,
     ) -> Result<Option<EffectClaim>, TaskError> {
         let conn = self.lock()?;
-        claim_effect_in(&conn, kind, now)
+        claim_effect_in(&conn, kind, now, false)
+    }
+
+    /// 按 ordered 语义领一条效果：先看这条种类里队列最前的一行，没到期就谁也不领，
+    /// 后面的行不能越队（照 DSH effects 的 ordered 处理）。
+    pub fn claim_effect_ordered(
+        &self,
+        kind: EffectKind,
+        now: i64,
+    ) -> Result<Option<EffectClaim>, TaskError> {
+        let conn = self.lock()?;
+        claim_effect_in(&conn, kind, now, true)
     }
 
     /// 这个键的效果还在不在排队。
@@ -399,6 +466,7 @@ impl Store {
             id: report_id.clone(),
             attempt_id,
             state: report.state,
+            origin: report.origin,
             summary: report.summary,
             question: report.question,
             at: now,
@@ -555,32 +623,52 @@ fn save_task(connection: &Connection, task: &Task) -> Result<(), TaskError> {
     Ok(())
 }
 
+type EffectRow = (String, String, i64, i64, i64, i64, i64);
+
+fn effect_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EffectRow> {
+    Ok((
+        row.get::<_, String>(0)?,
+        row.get::<_, String>(1)?,
+        row.get::<_, i64>(2)?,
+        row.get::<_, i64>(3)?,
+        row.get::<_, i64>(4)?,
+        row.get::<_, i64>(5)?,
+        row.get::<_, i64>(6)?,
+    ))
+}
+
 fn claim_effect_in(
     connection: &Connection,
     kind: EffectKind,
     now: i64,
+    ordered: bool,
 ) -> Result<Option<EffectClaim>, TaskError> {
-    let row = connection
-        .query_row(
-            "SELECT key, value, seq, generation, attempts, due, since
-             FROM effect WHERE kind = ?1 AND due <= ?2 ORDER BY seq LIMIT 1",
-            params![kind.as_str(), now],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, i64>(5)?,
-                    row.get::<_, i64>(6)?,
-                ))
-            },
-        )
-        .optional()?;
+    // ordered 种类先只按队列位置取最前一行；它还没到期时整队都不动。
+    let row = if ordered {
+        connection
+            .query_row(
+                "SELECT key, value, seq, generation, attempts, due, since
+                 FROM effect WHERE kind = ?1 ORDER BY seq LIMIT 1",
+                params![kind.as_str()],
+                effect_row,
+            )
+            .optional()?
+    } else {
+        connection
+            .query_row(
+                "SELECT key, value, seq, generation, attempts, due, since
+                 FROM effect WHERE kind = ?1 AND due <= ?2 ORDER BY seq LIMIT 1",
+                params![kind.as_str(), now],
+                effect_row,
+            )
+            .optional()?
+    };
     let Some((key, value, seq, generation, attempts, due, since)) = row else {
         return Ok(None);
     };
+    if due > now {
+        return Ok(None);
+    }
     let payload: EffectPayload = serde_json::from_str(&value)?;
     if payload.kind() != kind || payload.key() != key {
         return Err(TaskError::CorruptEffect {

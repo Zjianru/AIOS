@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use super::Store;
 use crate::{
     AttemptEnd, ConversationId, EffectKind, MissingItem, ModelChoice, NewReport, NewTask,
-    ReportState, Stage, Task,
+    ReportOrigin, ReportState, Stage, Task,
 };
 
 const T0: i64 = 1_700_000_000_000;
@@ -53,6 +53,7 @@ fn record(store: &Store, task: &Task, state: ReportState) {
             attempt,
             NewReport {
                 state,
+                origin: ReportOrigin::Agent,
                 summary: "报告".to_owned(),
                 question: None,
             },
@@ -174,6 +175,7 @@ fn stage_ignores_a_late_report_from_an_older_attempt() {
             first,
             NewReport {
                 state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
                 summary: "旧 Attempt 的迟到报告".to_owned(),
                 question: None,
             },
