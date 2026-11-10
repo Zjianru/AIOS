@@ -106,7 +106,10 @@ pub struct TaskRuntime {
     inner: Weak<tokio::sync::Mutex<Option<ServiceHost>>>,
     notify: Arc<tokio::sync::Notify>,
     shutting_down: Arc<AtomicBool>,
-    paused: AtomicBool,
+    /// 测试钩子：暂停整个效果泵（launch/relay 都不跑）。
+    pump_paused: AtomicBool,
+    /// 全局暂停（settings.json 的 `exec.paused`）：只挡 launch 准入，relay 照送。
+    exec_paused: AtomicBool,
     /// 还活着的 ThinAgent（按会话 id）；终态报告后移除，释放会话写锁。
     running: Mutex<std::collections::HashMap<String, RunningThin>>,
     /// 测试钩子：下一次 relay 在 Kind append 前「崩掉」——留下效果行，泵退出。
@@ -120,6 +123,8 @@ impl TaskRuntime {
         inner: Weak<tokio::sync::Mutex<Option<ServiceHost>>>,
     ) -> Result<Self, TaskError> {
         let store = Store::open(options.data_dir.join(TASKS_DB_FILE))?;
+        // 重启后暂停还在：启动时读一次设置文件，缺了按默认（不暂停）。
+        let exec_paused = crate::settings::load(&options.data_dir).exec.paused;
         Ok(Self {
             data_dir: options.data_dir.clone(),
             store: Arc::new(store),
@@ -128,7 +133,8 @@ impl TaskRuntime {
             inner,
             notify: Arc::new(tokio::sync::Notify::new()),
             shutting_down: Arc::new(AtomicBool::new(false)),
-            paused: AtomicBool::new(false),
+            pump_paused: AtomicBool::new(false),
+            exec_paused: AtomicBool::new(exec_paused),
             running: Mutex::new(std::collections::HashMap::new()),
             crash_before_relay: AtomicBool::new(false),
         })
@@ -251,10 +257,18 @@ impl TaskRuntime {
         })
     }
 
-    /// 测试用：暂停效果泵（launch/relay 都不跑）。
+    /// 测试用：暂停整个效果泵（launch/relay 都不跑）。
     #[doc(hidden)]
-    pub fn set_paused(&self, paused: bool) {
-        self.paused.store(paused, Ordering::SeqCst);
+    pub fn set_pump_paused(&self, paused: bool) {
+        self.pump_paused.store(paused, Ordering::SeqCst);
+        self.wake();
+    }
+
+    /// 全局暂停的闸门：RootHost 先写设置文件，再改这里的内存值。
+    ///
+    /// 只挡 launch 准入；relay/notice 照送。排队的效果留在库里，开闸后按原顺序领取。
+    pub(crate) fn set_exec_paused(&self, paused: bool) {
+        self.exec_paused.store(paused, Ordering::SeqCst);
         self.wake();
     }
 
@@ -287,7 +301,7 @@ impl TaskRuntime {
             if self.shutting_down.load(Ordering::SeqCst) {
                 return;
             }
-            if !self.paused.load(Ordering::SeqCst) {
+            if !self.pump_paused.load(Ordering::SeqCst) {
                 let mut worked = false;
                 match self
                     .store
@@ -303,13 +317,16 @@ impl TaskRuntime {
                 if self.shutting_down.load(Ordering::SeqCst) {
                     return;
                 }
-                match self.store.claim_effect(EffectKind::Launch, Self::now()) {
-                    Ok(Some(claim)) => {
-                        worked = true;
-                        self.launch(claim).await;
+                // 全局暂停只关 launch 这一道闸门：relay 已经送完了，队里的 launch 不领。
+                if !self.exec_paused.load(Ordering::SeqCst) {
+                    match self.store.claim_effect(EffectKind::Launch, Self::now()) {
+                        Ok(Some(claim)) => {
+                            worked = true;
+                            self.launch(claim).await;
+                        }
+                        Ok(None) => {}
+                        Err(error) => eprintln!("任务 launch 领取失败：{error}"),
                     }
-                    Ok(None) => {}
-                    Err(error) => eprintln!("任务 launch 领取失败：{error}"),
                 }
                 if worked {
                     continue;

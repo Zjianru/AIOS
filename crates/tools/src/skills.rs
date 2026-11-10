@@ -102,7 +102,7 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
             name: "aios-tasks",
             raw: include_str!("../bundled/aios-tasks/SKILL.md"),
             requires: None,
-            tools: &["task_stop"],
+            tools: &["task_stop", "propose_action"],
             unavailable_hint: "",
         },
         BundledSkill {

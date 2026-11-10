@@ -522,6 +522,22 @@ impl RootHost {
         })
     }
 
+    /// 全局暂停：先落 settings.json，再改任务效果泵的准入闸门。
+    ///
+    /// 顺序和 remember_selection 一样：写盘失败就不改内存，页面看到错误，不会以为已经生效。
+    /// 只挡 launch 准入；relay/notice 照送，排队的效果不取消、不清队。
+    pub(crate) fn set_exec_paused(&self, paused: bool) -> Result<(), ServiceError> {
+        let mut settings = settings::load_for_write(&self.options.data_dir)
+            .map_err(ServiceError::SettingsUnreadable)?;
+        settings.exec.paused = paused;
+        settings::save(&self.options.data_dir, &settings).map_err(ServiceError::SettingsInvalid)?;
+        if let Some(runtime) = self.task_runtime() {
+            runtime.set_exec_paused(paused);
+        }
+        self.emit_settings_changed();
+        Ok(())
+    }
+
     /// 写非密钥设置（目前只有 currency）。只碰 settings.json，不碰 Keyring/连接。
     pub async fn settings_update(
         &self,
