@@ -195,3 +195,34 @@ test('换任务：旧连接的帧不进新页面', async ({ page, request }) => 
     await fixture.close();
   }
 });
+
+test('断线后重连：按 lastSeq 补齐，回答只出现一次', async ({ page, request }) => {
+  const fixture = await startKernelFixture({ taskResult: 'live', proxy: true });
+  try {
+    await page.goto(urlOf(fixture));
+    await send(page, '帮我查一下新闻归档里的判重规则');
+    const taskId = await taskIdOf(fixture);
+    await waitUntilTaskReadable(request, fixture, taskId);
+    const reads = watchTaskReads(page);
+    const pane = await openTaskChat(page, fixture, taskId, reads);
+    await expect(pane.locator('[data-kind="process"]').first()).toBeVisible({
+      timeout: 30_000,
+    });
+
+    // 断开页面与服务之间的连接；任务在服务端照常跑，恢复后页面按 lastSeq 补齐。
+    await page.waitForTimeout(500);
+    await fixture.dropProxy?.();
+    await page.waitForTimeout(2500);
+    await fixture.restoreProxy?.();
+
+    await expect(pane.getByText(FINAL, { exact: true })).toHaveCount(1, {
+      timeout: 40_000,
+    });
+    await expect(pane.getByText('工作中')).toHaveCount(0, { timeout: 20_000 });
+    // 重连走 WS 的 follow，不重拉 TaskRead。
+    expect(reads.length).toBe(1);
+  } finally {
+    await fixture.close();
+  }
+});
+
