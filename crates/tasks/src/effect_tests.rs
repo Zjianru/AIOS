@@ -246,3 +246,31 @@ fn health_is_ready_with_nothing_waiting() {
         ready_health(0)
     );
 }
+
+#[test]
+fn ordered_claim_waits_behind_the_oldest_row_even_when_a_later_row_is_due() {
+    let (_directory, store) = open_store();
+    store.enqueue_effect(relay("a"), T0).unwrap();
+    store.enqueue_effect(relay("b"), T0).unwrap();
+    let first = claim(&store, EffectKind::Relay, T0);
+    store.fail_effect(&first, "boom", T0).unwrap();
+
+    // a 退避到 T0+2000；b 早就到期，但 ordered 只能先领 a。
+    assert_eq!(
+        store.claim_effect_ordered(EffectKind::Relay, T0 + 1_000).unwrap(),
+        None,
+        "旧的没到期时，后面到期的也不能越队"
+    );
+    let retried = store
+        .claim_effect_ordered(EffectKind::Relay, T0 + 2_000)
+        .unwrap()
+        .expect("a 到期后先领 a");
+    assert_eq!(retried.key, "a");
+    assert!(store.complete_effect(&retried).unwrap());
+    let next = store
+        .claim_effect_ordered(EffectKind::Relay, T0 + 2_000)
+        .unwrap()
+        .expect("a 完成后才轮到 b");
+    assert_eq!(next.key, "b");
+}
+
