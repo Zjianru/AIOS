@@ -141,15 +141,17 @@ impl RootHost {
         let inner = Arc::new(tokio::sync::Mutex::new(None));
         let selection = Arc::new(Mutex::new(selection));
         // 任务执行者和根会话共用选择与根会话槽；任务库打不开不影响 Kind 的对话。
-        let task_runtime =
-            match crate::executor::TaskRuntime::new(&options, Arc::clone(&selection), Arc::clone(&inner))
-            {
-                Ok(runtime) => Some(Arc::new(runtime)),
-                Err(error) => {
-                    eprintln!("任务库打不开，任务工具不装：{error}");
-                    None
-                }
-            };
+        let task_runtime = match crate::executor::TaskRuntime::new(
+            &options,
+            Arc::clone(&selection),
+            Arc::clone(&inner),
+        ) {
+            Ok(runtime) => Some(Arc::new(runtime)),
+            Err(error) => {
+                eprintln!("任务库打不开，任务工具不装：{error}");
+                None
+            }
+        };
         options.task_runtime = task_runtime.clone();
         let host = Self {
             inner,
@@ -469,7 +471,12 @@ impl Drop for RootHost {
         if let Some(handle) = self.forward.lock().expect("forward 锁被毒化").take() {
             handle.abort();
         }
-        if let Some(handle) = self.agent_forward.lock().expect("agent forward 锁被毒化").take() {
+        if let Some(handle) = self
+            .agent_forward
+            .lock()
+            .expect("agent forward 锁被毒化")
+            .take()
+        {
             handle.abort();
         }
         if let Some(handle) = self.task_pump.lock().expect("task pump 锁被毒化").take() {

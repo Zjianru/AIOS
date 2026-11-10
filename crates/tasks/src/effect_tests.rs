@@ -257,7 +257,9 @@ fn ordered_claim_waits_behind_the_oldest_row_even_when_a_later_row_is_due() {
 
     // a 退避到 T0+2000；b 早就到期，但 ordered 只能先领 a。
     assert_eq!(
-        store.claim_effect_ordered(EffectKind::Relay, T0 + 1_000).unwrap(),
+        store
+            .claim_effect_ordered(EffectKind::Relay, T0 + 1_000)
+            .unwrap(),
         None,
         "旧的没到期时，后面到期的也不能越队"
     );
@@ -273,4 +275,3 @@ fn ordered_claim_waits_behind_the_oldest_row_even_when_a_later_row_is_due() {
         .expect("a 完成后才轮到 b");
     assert_eq!(next.key, "b");
 }
-

@@ -134,11 +134,9 @@ impl Store {
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let key = format!("task-accept:{accept_key}");
         let existing: Option<String> = transaction
-            .query_row(
-                "SELECT value FROM kv WHERE key = ?1",
-                params![key],
-                |row| row.get(0),
-            )
+            .query_row("SELECT value FROM kv WHERE key = ?1", params![key], |row| {
+                row.get(0)
+            })
             .optional()?;
         if let Some(id) = existing {
             let task = load_task_required(&transaction, &TaskId::from(id))?;

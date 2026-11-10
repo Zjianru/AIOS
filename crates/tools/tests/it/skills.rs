@@ -507,4 +507,3 @@ fn investigator_skill_is_only_visible_where_task_report_is_assembled() {
         .collect();
     assert!(!names.contains(&"investigator"), "{names:?}");
 }
-

@@ -244,7 +244,10 @@ fn accepts_a_tool_call_key_once_and_returns_the_same_task() {
         }
     );
     assert!(store.complete_effect(&launch).unwrap());
-    assert_eq!(store.claim_effect(EffectKind::Launch, T0 + 5).unwrap(), None);
+    assert_eq!(
+        store.claim_effect(EffectKind::Launch, T0 + 5).unwrap(),
+        None
+    );
     // 不同的调用键是另一个任务。
     let (other, created) = store
         .create_task_once(draft(), "kind-session-1:call-2", T0 + 6)
@@ -261,4 +264,3 @@ fn refuses_an_empty_accept_key() {
         Err(TaskError::EmptyAcceptKey)
     ));
 }
-

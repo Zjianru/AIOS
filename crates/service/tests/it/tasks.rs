@@ -61,8 +61,8 @@ impl Router {
 impl Respond for Router {
     fn respond(&self, request: &Request) -> ResponseTemplate {
         let body = String::from_utf8_lossy(&request.body).to_string();
-        let thin = !body.contains("\"name\":\"task_accept\"")
-            && body.contains("\"name\":\"task_report\"");
+        let thin =
+            !body.contains("\"name\":\"task_accept\"") && body.contains("\"name\":\"task_report\"");
         self.state.bodies.lock().unwrap().push((thin, body));
         let queue = if thin {
             &self.state.thin
@@ -184,9 +184,19 @@ async fn accept_freezes_the_task_and_the_launch_uses_it() {
         "dod": "给出例子和出处"
     })
     .to_string();
-    router.push_kind(crate::common::tool_use_sse(0, "call-accept", "task_accept", &args));
+    router.push_kind(crate::common::tool_use_sse(
+        0,
+        "call-accept",
+        "task_accept",
+        &args,
+    ));
     // 同一个 ToolCall id 再放一次：受理要幂等。
-    router.push_kind(crate::common::tool_use_sse(1, "call-accept", "task_accept", &args));
+    router.push_kind(crate::common::tool_use_sse(
+        1,
+        "call-accept",
+        "task_accept",
+        &args,
+    ));
     router.push_kind(crate::common::text_sse("已派出"));
 
     host.dispatch(Call::Send(send(&host, "kind-1", "查一下 Exa 怎么用")))
@@ -314,7 +324,10 @@ async fn accept_freezes_the_task_and_the_launch_uses_it() {
     assert_eq!(names, expected, "ThinAgent 的工具表正好 8 件");
     let first_names = tool_names(&thin_bodies[0]);
     assert!(!first_names.contains(&"bash".to_owned()), "{first_names:?}");
-    assert!(!first_names.contains(&"write".to_owned()), "{first_names:?}");
+    assert!(
+        !first_names.contains(&"write".to_owned()),
+        "{first_names:?}"
+    );
     assert!(
         thin_bodies[0].contains("investigator"),
         "默认角色的 skill 要进 ThinAgent"
@@ -345,14 +358,20 @@ async fn task_status_returns_the_full_report_and_attempts() {
         "dod": "有答案"
     })
     .to_string();
-    router.push_kind(crate::common::tool_use_sse(0, "call-accept", "task_accept", &args));
+    router.push_kind(crate::common::tool_use_sse(
+        0,
+        "call-accept",
+        "task_accept",
+        &args,
+    ));
     router.push_kind(crate::common::text_sse("已派出"));
     router.push_thin(crate::common::tool_use_sse(
         1,
         "call-report",
         "task_report",
         &serde_json::json!({"state": "ready", "summary": "完整答案：第一行
-第二行"}).to_string(),
+第二行"})
+        .to_string(),
     ));
     router.push_thin(crate::common::text_sse(""));
     host.dispatch(Call::Send(send(&host, "kind-1", "查一下")))
@@ -373,7 +392,12 @@ async fn task_status_returns_the_full_report_and_attempts() {
     .await;
 
     let status_args = serde_json::json!({"task_id": task.id.as_str()}).to_string();
-    router.push_kind(crate::common::tool_use_sse(2, "call-status", "task_status", &status_args));
+    router.push_kind(crate::common::tool_use_sse(
+        2,
+        "call-status",
+        "task_status",
+        &status_args,
+    ));
     router.push_kind(crate::common::text_sse("我看一下"));
     // relay 可能 Steer 进下一 step，多备两段回复，别让假模型回 500 拖慢收尾。
     router.push_kind(crate::common::text_sse("收到"));
@@ -400,8 +424,13 @@ async fn task_status_returns_the_full_report_and_attempts() {
         .expect("task_status 结果");
     assert!(result.contains("阶段：待检查"), "{result}");
     assert!(result.contains("Attempt 数：1"), "{result}");
-    assert!(result.contains("完整答案：第一行
-第二行"), "{result}");
+    assert!(
+        result.contains(
+            "完整答案：第一行
+第二行"
+        ),
+        "{result}"
+    );
 }
 
 #[tokio::test]
@@ -420,7 +449,12 @@ async fn a_missing_credential_opens_no_task_session_and_relays_what_is_missing()
         "dod": "有答案"
     })
     .to_string();
-    router.push_kind(crate::common::tool_use_sse(0, "call-accept", "task_accept", &args));
+    router.push_kind(crate::common::tool_use_sse(
+        0,
+        "call-accept",
+        "task_accept",
+        &args,
+    ));
     router.push_kind(crate::common::text_sse("已派出"));
     host.dispatch(Call::Send(send(&host, "kind-1", "查一下")))
         .await
@@ -452,7 +486,9 @@ async fn a_missing_credential_opens_no_task_session_and_relays_what_is_missing()
     let task = store.task(&task.id).unwrap().unwrap();
     assert_eq!(store.stage(&task.id).unwrap(), Stage::NeedsConditions);
     assert!(
-        task.missing.iter().any(|item| item.as_str().contains("凭证")),
+        task.missing
+            .iter()
+            .any(|item| item.as_str().contains("凭证")),
         "{:?}",
         task.missing
     );
@@ -515,10 +551,13 @@ impl Fixture {
             "dod": "有答案"
         })
         .to_string();
-        self.router
-            .push_kind(crate::common::tool_use_sse(0, "call-accept", "task_accept", &args));
-        self.router
-            .push_kind(crate::common::text_sse("已派出"));
+        self.router.push_kind(crate::common::tool_use_sse(
+            0,
+            "call-accept",
+            "task_accept",
+            &args,
+        ));
+        self.router.push_kind(crate::common::text_sse("已派出"));
         self.host
             .dispatch(Call::Send(send(&self.host, "kind-1", "查一下")))
             .await
@@ -529,7 +568,13 @@ impl Fixture {
     }
 }
 
-fn report_sse(index: usize, call: &str, state: &str, summary: &str, question: Option<&str>) -> String {
+fn report_sse(
+    index: usize,
+    call: &str,
+    state: &str,
+    summary: &str,
+    question: Option<&str>,
+) -> String {
     let mut args = serde_json::json!({"state": state, "summary": summary});
     if let Some(question) = question {
         args["question"] = serde_json::json!(question);
@@ -548,7 +593,10 @@ async fn a_turn_end_with_a_reply_synthesizes_waiting_then_a_status_report_replac
     fixture
         .router
         .push_thin(crate::common::text_sse("我还在查，别急"));
-    wait_until("waiting relay", || !waiting_relays(fixture.data()).is_empty()).await;
+    wait_until("waiting relay", || {
+        !waiting_relays(fixture.data()).is_empty()
+    })
+    .await;
 
     let relays = waiting_relays(fixture.data());
     assert_eq!(relays.len(), 1, "{relays:?}");
@@ -559,27 +607,31 @@ async fn a_turn_end_with_a_reply_synthesizes_waiting_then_a_status_report_replac
     assert_eq!(store.stage(&task.id).unwrap(), Stage::Running);
 
     // 要状态那次 turn 直接报 ready：waiting 能被终态覆盖，不报冲突。
-    fixture
-        .router
-        .push_thin(report_sse(1, "call-report", "ready", "答案在第二行
-有出处", None));
-    fixture
-        .router
-        .push_thin(crate::common::text_sse("done"));
+    fixture.router.push_thin(report_sse(
+        1,
+        "call-report",
+        "ready",
+        "答案在第二行
+有出处",
+        None,
+    ));
+    fixture.router.push_thin(crate::common::text_sse("done"));
     let status_args = serde_json::json!({"task_id": task.id.as_str()}).to_string();
-    fixture
-        .router
-        .push_kind(crate::common::tool_use_sse(2, "call-status-1", "task_status", &status_args));
-    fixture
-        .router
-        .push_kind(crate::common::tool_use_sse(3, "call-status-2", "task_status", &status_args));
-    fixture
-        .router
-        .push_kind(crate::common::text_sse("好"));
+    fixture.router.push_kind(crate::common::tool_use_sse(
+        2,
+        "call-status-1",
+        "task_status",
+        &status_args,
+    ));
+    fixture.router.push_kind(crate::common::tool_use_sse(
+        3,
+        "call-status-2",
+        "task_status",
+        &status_args,
+    ));
+    fixture.router.push_kind(crate::common::text_sse("好"));
     // relay 可能 Steer 进下一 step，多备一段回复。
-    fixture
-        .router
-        .push_kind(crate::common::text_sse("收到"));
+    fixture.router.push_kind(crate::common::text_sse("收到"));
 
     fixture
         .host
@@ -591,8 +643,11 @@ async fn a_turn_end_with_a_reply_synthesizes_waiting_then_a_status_report_replac
 
     let relays = waiting_relays(fixture.data());
     assert_eq!(relays[1].1["state"], "ready");
-    assert_eq!(relays[1].1["summary"], "答案在第二行
-有出处");
+    assert_eq!(
+        relays[1].1["summary"],
+        "答案在第二行
+有出处"
+    );
     assert_eq!(relays[1].1["task"]["stage"], "ready_for_review");
 
     // 同一个 Attempt 只要一次报告：Kind 的两次 task_status 只落一条 status 请求。
@@ -620,14 +675,18 @@ async fn a_turn_end_with_a_reply_synthesizes_waiting_then_a_status_report_replac
 async fn a_turn_end_without_a_reply_relays_the_status_hint() {
     let fixture = Fixture::new().await;
     let task = fixture.accept(false).await;
-    fixture
-        .router
-        .push_thin(crate::common::text_sse(""));
-    wait_until("waiting relay", || !waiting_relays(fixture.data()).is_empty()).await;
+    fixture.router.push_thin(crate::common::text_sse(""));
+    wait_until("waiting relay", || {
+        !waiting_relays(fixture.data()).is_empty()
+    })
+    .await;
     let relays = waiting_relays(fixture.data());
     assert_eq!(relays.len(), 1, "{relays:?}");
     assert_eq!(relays[0].1["state"], "waiting");
-    assert_eq!(relays[0].1["summary"], "ThinAgent 没上报，用 task_status 去问");
+    assert_eq!(
+        relays[0].1["summary"],
+        "ThinAgent 没上报，用 task_status 去问"
+    );
     let store = tasks_store(fixture.data());
     assert_eq!(store.stage(&task.id).unwrap(), Stage::Running);
 }
@@ -643,10 +702,11 @@ async fn a_blocked_report_carries_its_question() {
         "缺一份只有你能给的版本号",
         Some("用哪个版本？"),
     ));
-    fixture
-        .router
-        .push_thin(crate::common::text_sse("等回答"));
-    wait_until("blocked relay", || !waiting_relays(fixture.data()).is_empty()).await;
+    fixture.router.push_thin(crate::common::text_sse("等回答"));
+    wait_until("blocked relay", || {
+        !waiting_relays(fixture.data()).is_empty()
+    })
+    .await;
     let relays = waiting_relays(fixture.data());
     assert_eq!(relays.len(), 1, "{relays:?}");
     assert_eq!(relays[0].1["state"], "blocked");
@@ -664,32 +724,37 @@ async fn a_failed_report_relays_and_leaves_the_task_open() {
     fixture
         .router
         .push_thin(report_sse(1, "call-report", "failed", &long, None));
-    fixture
-        .router
-        .push_thin(crate::common::text_sse("失败"));
-    wait_until("failed relay", || !waiting_relays(fixture.data()).is_empty()).await;
+    fixture.router.push_thin(crate::common::text_sse("失败"));
+    wait_until("failed relay", || {
+        !waiting_relays(fixture.data()).is_empty()
+    })
+    .await;
     let relays = waiting_relays(fixture.data());
     assert_eq!(relays.len(), 1, "{relays:?}");
     assert_eq!(relays[0].1["state"], "failed");
     assert_eq!(relays[0].1["task"]["stage"], "needs_conditions");
     let summary = relays[0].1["summary"].as_str().unwrap();
     assert_eq!(summary.chars().count(), 600, "摘要截到 600 字");
-    assert_eq!(relays[0].1["chars"].as_u64(), Some(long.chars().count() as u64));
+    assert_eq!(
+        relays[0].1["chars"].as_u64(),
+        Some(long.chars().count() as u64)
+    );
     let store = tasks_store(fixture.data());
     assert_eq!(store.stage(&task.id).unwrap(), Stage::NeedsConditions);
     assert!(store.task(&task.id).unwrap().is_some(), "failed 不关闭任务");
 }
 
-
 #[tokio::test]
 async fn a_relay_for_another_kind_conversation_stays_later() {
     let fixture = Fixture::new().await;
-    fixture
-        .router
-        .push_thin(report_sse(1, "call-report", "ready", "另一个对话的答案", None));
-    fixture
-        .router
-        .push_thin(crate::common::text_sse("done"));
+    fixture.router.push_thin(report_sse(
+        1,
+        "call-report",
+        "ready",
+        "另一个对话的答案",
+        None,
+    ));
+    fixture.router.push_thin(crate::common::text_sse("done"));
     let store = tasks_store(fixture.data());
     let draft = tasks::NewTask {
         title: "另一个对话派的任务".to_owned(),
@@ -733,18 +798,24 @@ async fn a_relay_for_another_kind_conversation_stays_later() {
 async fn a_relay_interrupted_before_kind_append_is_delivered_once_after_restart() {
     let fixture = Fixture::new().await;
     let task = fixture.accept(true).await;
-    fixture
-        .router
-        .push_thin(report_sse(1, "call-report", "ready", "重启后只送一次的答案", None));
-    fixture
-        .router
-        .push_thin(crate::common::text_sse("done"));
+    fixture.router.push_thin(report_sse(
+        1,
+        "call-report",
+        "ready",
+        "重启后只送一次的答案",
+        None,
+    ));
+    fixture.router.push_thin(crate::common::text_sse("done"));
     fixture
         .host
         .task_runtime()
         .expect("runtime")
         .crash_before_next_relay();
-    fixture.host.task_runtime().expect("runtime").set_paused(false);
+    fixture
+        .host
+        .task_runtime()
+        .expect("runtime")
+        .set_paused(false);
     wait_until("report ready", || {
         let store = tasks_store(fixture.data());
         store
@@ -790,7 +861,11 @@ async fn a_relay_interrupted_before_kind_append_is_delivered_once_after_restart(
         "重启后只送一次的答案"
     );
     let store = tasks_store(data.path());
-    assert!(!store.effect_pending(tasks::EffectKind::Relay, report.as_str()).unwrap());
+    assert!(
+        !store
+            .effect_pending(tasks::EffectKind::Relay, report.as_str())
+            .unwrap()
+    );
     drop(host);
 }
 
@@ -798,9 +873,12 @@ async fn a_relay_interrupted_before_kind_append_is_delivered_once_after_restart(
 async fn kind_refuses_the_four_waits_and_runs_a_short_command() {
     let fixture = Fixture::new().await;
     let calls = [
-        serde_json::json!({"description": "wait", "command": "sleep 5", "timeoutMs": 20000}).to_string(),
-        serde_json::json!({"description": "echo", "command": "echo sleep 5", "timeoutMs": 20000}).to_string(),
-        serde_json::json!({"description": "long", "command": "echo hi", "timeoutMs": 30001}).to_string(),
+        serde_json::json!({"description": "wait", "command": "sleep 5", "timeoutMs": 20000})
+            .to_string(),
+        serde_json::json!({"description": "echo", "command": "echo sleep 5", "timeoutMs": 20000})
+            .to_string(),
+        serde_json::json!({"description": "long", "command": "echo hi", "timeoutMs": 30001})
+            .to_string(),
         serde_json::json!({"description": "default", "command": "echo hi"}).to_string(),
         serde_json::json!({"job_id": "job-1", "wait": true}).to_string(),
     ];
@@ -812,9 +890,7 @@ async fn kind_refuses_the_four_waits_and_runs_a_short_command() {
             args,
         ));
     }
-    fixture
-        .router
-        .push_kind(crate::common::text_sse("跑完了"));
+    fixture.router.push_kind(crate::common::text_sse("跑完了"));
     fixture
         .host
         .dispatch(Call::Send(send(&fixture.host, "kind-1", "跑几个命令")))
@@ -831,13 +907,20 @@ async fn kind_refuses_the_four_waits_and_runs_a_short_command() {
                 order.push(("call", call_id.clone(), index));
             }
             session::EventKind::ToolResult { message, .. } => {
-                order.push(("result", message.tool_call_id.clone().unwrap_or_default(), index));
+                order.push((
+                    "result",
+                    message.tool_call_id.clone().unwrap_or_default(),
+                    index,
+                ));
                 let text: String = message
                     .content
                     .iter()
                     .filter_map(model::ContentBlock::as_text)
                     .collect();
-                results.insert(message.tool_call_id.clone().unwrap(), (text, message.is_error));
+                results.insert(
+                    message.tool_call_id.clone().unwrap(),
+                    (text, message.is_error),
+                );
             }
             _ => {}
         }
@@ -870,7 +953,6 @@ async fn kind_refuses_the_four_waits_and_runs_a_short_command() {
         "没给超时也没转后台的提示"
     );
     let (text, is_error) = &results["call-1"];
-    assert_eq!(is_error.unwrap_or(false), false, "echo sleep 不误判：{text}");
+    assert!(!is_error.unwrap_or(false), "echo sleep 不误判：{text}");
     assert!(text.contains("sleep 5"), "{text}");
 }
-

@@ -66,7 +66,7 @@ pub fn options(data_dir: &Path) -> RootSessionOptions {
         actions: Arc::new(service::ActionRegistry::empty()),
         exa_base_url: None,
         web_listen: None,
-            task_runtime: None,
+        task_runtime: None,
     }
 }
 

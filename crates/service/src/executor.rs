@@ -145,7 +145,10 @@ impl TaskRuntime {
             }
             if !self.paused.load(Ordering::SeqCst) {
                 let mut worked = false;
-                match self.store.claim_effect_ordered(EffectKind::Relay, Self::now()) {
+                match self
+                    .store
+                    .claim_effect_ordered(EffectKind::Relay, Self::now())
+                {
                     Ok(Some(claim)) => {
                         worked = true;
                         self.deliver_relay(claim).await;
@@ -193,7 +196,10 @@ impl TaskRuntime {
             }
         };
         let Some(report) = task.reports.iter().find(|report| report.id == *report_id) else {
-            self.finish_or_fail(&claim, Err(format!("任务 {} 没有报告 {report_id}", task.id)));
+            self.finish_or_fail(
+                &claim,
+                Err(format!("任务 {} 没有报告 {report_id}", task.id)),
+            );
             return;
         };
         let stage = match self.store.stage(&task.id) {
@@ -244,27 +250,29 @@ impl TaskRuntime {
             .await;
         drop(guard);
         match sent {
-            Ok(_) => {
-                let _ = self.store.complete_effect(&claim);
-            }
-            Err(error) => {
-                let _ = self.store.fail_effect(&claim, &error.to_string(), Self::now());
-            }
+            Ok(_) => best_effort("relay 完成没写进任务库", self.store.complete_effect(&claim)),
+            Err(error) => best_effort(
+                "relay 失败没写进任务库",
+                self.store
+                    .fail_effect(&claim, &error.to_string(), Self::now()),
+            ),
         }
     }
 
     fn later(&self, claim: &EffectClaim) {
-        let _ = self.store.defer_effect(claim, Self::now());
+        best_effort(
+            "relay 推迟没写进任务库",
+            self.store.defer_effect(claim, Self::now()),
+        );
     }
 
     fn finish_or_fail(&self, claim: &EffectClaim, result: Result<(), String>) {
         match result {
-            Ok(()) => {
-                let _ = self.store.complete_effect(claim);
-            }
-            Err(error) => {
-                let _ = self.store.fail_effect(claim, &error, Self::now());
-            }
+            Ok(()) => best_effort("效果完成没写进任务库", self.store.complete_effect(claim)),
+            Err(error) => best_effort(
+                "效果失败没写进任务库",
+                self.store.fail_effect(claim, &error, Self::now()),
+            ),
         }
     }
 
@@ -330,21 +338,27 @@ impl TaskRuntime {
         let host = match self.open_thin(&task, attempt_id, prepared).await {
             Ok(host) => Arc::new(host),
             Err(error) => {
-                let _ = self.store.record_report(
-                    &task.id,
-                    attempt_id,
-                    NewReport {
-                        state: ReportState::Failed,
-                        summary: format!("任务会话没开成：{error}"),
-                        question: None,
-                    },
-                    Self::now(),
+                best_effort(
+                    "任务会话没开成的失败报告没写进去",
+                    self.store.record_report(
+                        &task.id,
+                        attempt_id,
+                        NewReport {
+                            state: ReportState::Failed,
+                            summary: format!("任务会话没开成：{error}"),
+                            question: None,
+                        },
+                        Self::now(),
+                    ),
                 );
-                let _ = self.store.end_attempt(
-                    &task.id,
-                    attempt_id,
-                    Self::now(),
-                    AttemptEnd::NotOpened,
+                best_effort(
+                    "没开成的 Attempt 没收尾",
+                    self.store.end_attempt(
+                        &task.id,
+                        attempt_id,
+                        Self::now(),
+                        AttemptEnd::NotOpened,
+                    ),
                 );
                 self.finish_or_fail(&claim, Ok(()));
                 return;
@@ -361,11 +375,10 @@ impl TaskRuntime {
                 == Some(attempt_id);
         if !current {
             host.shutdown().await;
-            let _ = self.store.end_attempt(
-                &task.id,
-                attempt_id,
-                Self::now(),
-                AttemptEnd::NotOpened,
+            best_effort(
+                "重查后失效的 Attempt 没收尾",
+                self.store
+                    .end_attempt(&task.id, attempt_id, Self::now(), AttemptEnd::NotOpened),
             );
             return;
         }
@@ -379,8 +392,18 @@ impl TaskRuntime {
             self.finish_or_fail(&claim, Err(error.to_string()));
             return;
         }
-        // 先订阅再发：turn 结束的事实不能漏。
+        // 先订阅、登记、再发：turn 结束的事实和「会话还开着」都在第一条消息之前就位，
+        // 免得报得比登记快的终态报告留下一个永远不释放的会话。
         let events = host.agent().subscribe();
+        self.running.lock().expect("thinagent 表锁被毒化").insert(
+            conversation.as_str().to_owned(),
+            RunningThin {
+                host: Arc::clone(&host),
+                task_id: task.id.clone(),
+                attempt_id,
+            },
+        );
+        self.monitor(task.id.clone(), attempt_id, conversation.clone(), events);
         let assignment = json!({
             "task_id": task.id.as_str(),
             "title": task.title,
@@ -396,10 +419,14 @@ impl TaskRuntime {
                 DeliveryMode::FollowUp,
             )
             .await;
-        match sent {
-            Ok(_) => {}
-            Err(error) => {
-                let _ = self.store.record_report(
+        if let Err(error) = sent {
+            self.running
+                .lock()
+                .expect("thinagent 表锁被毒化")
+                .remove(conversation.as_str());
+            best_effort(
+                "派发失败的失败报告没写进去",
+                self.store.record_report(
                     &task.id,
                     attempt_id,
                     NewReport {
@@ -408,26 +435,16 @@ impl TaskRuntime {
                         question: None,
                     },
                     Self::now(),
-                );
-                let _ = self.store.end_attempt(
-                    &task.id,
-                    attempt_id,
-                    Self::now(),
-                    AttemptEnd::NotOpened,
-                );
-                self.finish_or_fail(&claim, Ok(()));
-                return;
-            }
+                ),
+            );
+            best_effort(
+                "派发失败的 Attempt 没收尾",
+                self.store
+                    .end_attempt(&task.id, attempt_id, Self::now(), AttemptEnd::Ended),
+            );
+            self.finish_or_fail(&claim, Ok(()));
+            return;
         }
-        self.running.lock().expect("thinagent 表锁被毒化").insert(
-            conversation.as_str().to_owned(),
-            RunningThin {
-                host: Arc::clone(&host),
-                task_id: task.id.clone(),
-                attempt_id,
-            },
-        );
-        self.monitor(task.id.clone(), attempt_id, conversation, events);
         self.finish_or_fail(&claim, Ok(()));
     }
 
@@ -452,21 +469,23 @@ impl TaskRuntime {
                 return;
             }
         };
-        let _ = self.store.record_report(
-            &task.id,
-            attempt,
-            NewReport {
-                state: ReportState::Blocked,
-                summary,
-                question: None,
-            },
-            Self::now(),
+        best_effort(
+            "任务包缺项报告没写进去",
+            self.store.record_report(
+                &task.id,
+                attempt,
+                NewReport {
+                    state: ReportState::Blocked,
+                    summary,
+                    question: None,
+                },
+                Self::now(),
+            ),
         );
-        let _ = self.store.end_attempt(
-            &task.id,
-            attempt,
-            Self::now(),
-            AttemptEnd::NotOpened,
+        best_effort(
+            "任务包缺项的 Attempt 没收尾",
+            self.store
+                .end_attempt(&task.id, attempt, Self::now(), AttemptEnd::NotOpened),
         );
     }
 
@@ -475,6 +494,8 @@ impl TaskRuntime {
         &self,
         task: &Task,
     ) -> Result<(model::DeepSeekConfig, Arc<dyn model::CredentialSource>), Vec<MissingItem>> {
+        // 默认角色的 skill、规则和账本（写「无」）是编进本 crate 的常量：缺了是产品装配
+        // 错误，不是任务事实，这里不拿常量自证。下面查的是任务本身和凭证的事实。
         let mut missing = Vec::new();
         if task.requirement.trim().is_empty() {
             missing.push(missing_item("任务要求"));
@@ -531,10 +552,7 @@ impl TaskRuntime {
             self.options.credentials.clone()
         };
         let Some(credentials) = credentials else {
-            return Err(vec![missing_item(format!(
-                "{} 的凭证",
-                task.model.model
-            ))]);
+            return Err(vec![missing_item(format!("{} 的凭证", task.model.model))]);
         };
         if let Err(error) = credentials.admit(&task.model.model) {
             return Err(vec![missing_item(format!(
@@ -605,7 +623,9 @@ impl TaskRuntime {
             loop {
                 match events.recv().await {
                     Ok(AgentEvent::TurnEnded { .. }) => {
-                        runtime.turn_ended(&task_id, attempt_id, &conversation).await;
+                        runtime
+                            .turn_ended(&task_id, attempt_id, &conversation)
+                            .await;
                     }
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
@@ -623,10 +643,12 @@ impl TaskRuntime {
         if task.latest_attempt().map(|attempt| attempt.id) != Some(attempt_id) {
             return;
         }
-        if task
-            .latest_report()
-            .is_some_and(|report| matches!(report.state, ReportState::Ready | ReportState::Blocked | ReportState::Failed))
-        {
+        if task.latest_report().is_some_and(|report| {
+            matches!(
+                report.state,
+                ReportState::Ready | ReportState::Blocked | ReportState::Failed
+            )
+        }) {
             return;
         }
         let said = self.last_assistant_text(conversation);
@@ -686,7 +708,9 @@ impl TaskRuntime {
             .task(task_id)?
             .and_then(|task| task.latest_report().map(|latest| latest.state))
             == Some(state);
-        let id = self.store.record_report(task_id, attempt_id, report, Self::now())?;
+        let id = self
+            .store
+            .record_report(task_id, attempt_id, report, Self::now())?;
         self.wake();
         if matches!(
             state,
@@ -751,7 +775,7 @@ impl TaskRuntime {
             },
             tools: THIN_TOOLS.iter().map(|name| (*name).to_owned()).collect(),
         };
-        let key = format!("{}:{}", conversation, call_id);
+        let key = format!("{conversation}:{call_id}");
         let (task, created) = self
             .store
             .create_task_once(draft, &key, Self::now())
@@ -848,6 +872,13 @@ impl TaskRuntime {
 impl Drop for TaskRuntime {
     fn drop(&mut self) {
         self.shutting_down.store(true, Ordering::SeqCst);
+    }
+}
+
+/// 记一条不该打断效果泵的失败：留信号，不把主流程吞掉。
+fn best_effort<T>(what: &str, result: Result<T, TaskError>) {
+    if let Err(error) = result {
+        eprintln!("{what}：{error}");
     }
 }
 
@@ -1151,4 +1182,3 @@ fn string_arg(args: &serde_json::Map<String, Value>, key: &str) -> Option<String
         .filter(|value| !value.trim().is_empty())
         .map(str::to_owned)
 }
-

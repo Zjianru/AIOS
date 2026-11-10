@@ -134,7 +134,10 @@ impl std::fmt::Debug for RootSessionOptions {
                     .as_ref()
                     .and_then(|cell| cell.get().copied()),
             )
-            .field("task_runtime", &self.task_runtime.as_ref().map(|_| "<runtime>"))
+            .field(
+                "task_runtime",
+                &self.task_runtime.as_ref().map(|_| "<runtime>"),
+            )
             .finish()
     }
 }
@@ -313,7 +316,9 @@ fn write_root_state_atomic(path: &Path, record: &RootRecord) -> Result<(), RootE
 }
 
 /// 根会话和 ThinAgent 共用的联网工具（两件都挂 AfterSkillWithKey，构造方式只此一处）。
-pub(crate) fn web_extra_tools(options: &RootSessionOptions) -> Vec<std::sync::Arc<dyn tools::Tool>> {
+pub(crate) fn web_extra_tools(
+    options: &RootSessionOptions,
+) -> Vec<std::sync::Arc<dyn tools::Tool>> {
     let web_search_config = crate::web::WebSearchConfig {
         data_dir: options.data_dir.clone(),
         identity: options.identity.clone(),
@@ -334,7 +339,6 @@ pub(crate) fn web_extra_tools(options: &RootSessionOptions) -> Vec<std::sync::Ar
     ]
 }
 
-
 /// 工具凭证的求值面：每步只读 Keyring；读不出来按没存（设置页另报原因）。
 pub(crate) fn tool_key_source(options: &RootSessionOptions) -> tools::ToolKeySource {
     let data_dir = options.data_dir.clone();
@@ -349,4 +353,3 @@ pub(crate) fn tool_key_source(options: &RootSessionOptions) -> tools::ToolKeySou
         keys
     }))
 }
-
