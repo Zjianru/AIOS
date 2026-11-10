@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { BODY_MAX, LABEL_MAX, resolveSlots } from '../src/lib/cardEnvelope.ts';
 import { connectionCardOf } from '../src/data/connectionCard.ts';
+import { parseTaskRelay, taskResultCardOf } from '../src/data/taskResult.ts';
 import {
   cardDefinitions,
   confirmCardEntryOf,
@@ -855,5 +856,141 @@ assert.equal(confirmCardOf(confirmFact({ proposal: '不是对象' })), null);
 assert.doesNotThrow(() => confirmCardEntryOf(confirmFact({ proposal: '不是对象' })));
 assert.equal(confirmCardEntryOf(confirmFact({ proposal: '不是对象' })).type, 'generic');
 assert.doesNotThrow(() => resolveSlots(cardDefinitions.confirm, { options: '不是数组' }));
+
+// ───────── 任务结果卡：relay JSON → 卡片信封 ─────────
+
+function relayMessage(overrides = {}) {
+  const body = {
+    kind: 'task_report',
+    task: { id: 'task-1', title: '查一下重复链接的判重规则', stage: 'ready_for_review' },
+    origin: 'agent',
+    state: 'ready',
+    summary: '判重用的是原始链接。',
+    ...overrides,
+  };
+  return {
+    id: 'msg-relay-1',
+    role: 'user',
+    source: { kind: 'user', rpcId: 'task-report:task-1:report-1' },
+    content: [{ type: 'text', text: JSON.stringify(body) }],
+  };
+}
+
+function taskEnvelope(message, at = 100) {
+  const fact = parseTaskRelay(message, at);
+  assert.ok(fact, '合法的 relay 要解析出事实');
+  const envelope = taskResultCardOf(fact);
+  assert.ok(envelope, '结果卡要能从事实出信封');
+  return envelope;
+}
+
+const cardReady = taskEnvelope(relayMessage());
+assert.equal(cardReady.type, 'task-result');
+assert.equal(cardReady.id, 'task-report:task-1:report-1');
+assert.equal(cardReady.role, 'state');
+assert.equal(cardReady.state, 'done');
+assert.equal(cardReady.slots.title, '查一下重复链接的判重规则');
+assert.equal(cardReady.slots.status, '有结果');
+assert.equal(cardReady.slots.summary.text, '判重用的是原始链接。');
+assert.equal(cardReady.slots.question, undefined);
+assert.equal(cardReady.slots.at, 100);
+
+// blocked 只看 origin：package 是没开跑，agent 是卡住了；问题进正文槽。
+const cardBlockedAgent = taskEnvelope(
+  relayMessage({
+    state: 'blocked',
+    origin: 'agent',
+    summary: '缺一份只有你能给的版本号',
+    question: '用哪个版本？',
+  }),
+);
+assert.equal(cardBlockedAgent.slots.status, '卡住了');
+assert.equal(cardBlockedAgent.slots.question.text, '用哪个版本？');
+
+const cardBlockedPackage = taskEnvelope(
+  relayMessage({
+    state: 'blocked',
+    origin: 'package',
+    summary: '任务包缺：deepseek-flash 的凭证',
+  }),
+);
+assert.equal(cardBlockedPackage.slots.status, '没开跑', '同样是 blocked，origin=package 是没开跑');
+assert.equal(cardBlockedPackage.slots.question, undefined);
+
+// 同一段文字换了 origin 就换状态：卡片不读摘要内容去判状态（D73）。
+const sameAgent = taskEnvelope(
+  relayMessage({ state: 'blocked', origin: 'agent', summary: '同一段话' }),
+);
+const samePackage = taskEnvelope(
+  relayMessage({ state: 'blocked', origin: 'package', summary: '同一段话' }),
+);
+assert.equal(sameAgent.slots.status, '卡住了');
+assert.equal(samePackage.slots.status, '没开跑');
+assert.equal(sameAgent.slots.summary.text, samePackage.slots.summary.text);
+
+const cardFailed = taskEnvelope(
+  relayMessage({ state: 'failed', origin: 'agent', summary: '文档站打不开，已经试过两次。' }),
+);
+assert.equal(cardFailed.slots.status, '失败');
+assert.equal(failed.state, 'failed');
+
+const cardWaiting = taskEnvelope(
+  relayMessage({ state: 'waiting', origin: 'executor', summary: '我还在查，别急' }),
+);
+assert.equal(cardWaiting.slots.status, '等报告');
+assert.equal(cardWaiting.state, 'running');
+
+// 卡片任何时候都不写「完成」。
+for (const envelope of [cardReady, cardBlockedAgent, cardBlockedPackage, cardFailed, cardWaiting]) {
+  assert.ok(!envelope.slots.status.includes('完成'));
+  assert.ok(!envelope.slots.status.includes('成功'));
+}
+
+// 标题是标签槽：超过 20 字截断，不整段消失。
+const longTitle = '一二三四五六七八九十一二三四五六七八九十多一点';
+assert.equal([...longTitle].length, 23);
+const cardLong = taskEnvelope(
+  relayMessage({
+    task: { id: 'task-2', title: longTitle, stage: 'needs_conditions' },
+    summary: '字'.repeat(650),
+  }),
+);
+assert.equal([...cardLong.slots.title].length, LABEL_MAX);
+assert.equal(cardLong.slots.title, [...longTitle].slice(0, LABEL_MAX).join(''));
+assert.equal(cardLong.slots.summary.folded, true, '超过正文上限标成折起来');
+assert.equal([...cardLong.slots.summary.text].length, 650, '原文完整保留');
+
+// 坏 JSON、没有前缀、不是 task_report、缺必填字段：退回文本（null），不抛异常。
+const badJson = { ...relayMessage(), content: [{ type: 'text', text: '{"kind":"task_report",' }] };
+assert.equal(parseTaskRelay(badJson, 1), null);
+
+assert.equal(
+  parseTaskRelay({ ...relayMessage(), source: { kind: 'user', rpcId: 'task-report-prefix-only' } }, 1),
+  null,
+  '不是 task-report: 前缀的不是结果卡',
+);
+assert.equal(
+  parseTaskRelay({ ...relayMessage(), source: { kind: 'user', rpcId: 'other:1:2' } }, 1),
+  null,
+);
+const otherKind = JSON.parse(relayMessage().content[0].text);
+otherKind.kind = 'not_a_report';
+assert.equal(
+  parseTaskRelay({ ...relayMessage(), content: [{ type: 'text', text: JSON.stringify(otherKind) }] }, 1),
+  null,
+);
+assert.equal(
+  parseTaskRelay({
+    ...relayMessage(),
+    content: [{ type: 'text', text: '{"kind":"task_report","task":{},"origin":"agent","state":"ready","summary":"x"}' }],
+  }, 1),
+  null,
+  '缺 task.id/title 的 JSON 画不出卡',
+);
+assert.equal(parseTaskRelay(null, 1), null);
+
+// 登记表里有这张卡；槽位坏了只降级，不抛异常。
+assert.ok(cardDefinitions['task-result']);
+assert.doesNotThrow(() => resolveSlots(cardDefinitions['task-result'], { summary: '不是正文槽' }));
 
 console.log('cards.test.mjs: all assertions passed');

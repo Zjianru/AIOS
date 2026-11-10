@@ -61,6 +61,17 @@ T010.2 时用一次性 Playwright 录制器（已删除，不在仓库）跑改�
 
 手写：第 1 条回 `skill`（加载 `web`），第 2 条回一次 `web_search`，第 3 条回一句引用来源 URL 的回答。工具调用由真内核执行，搜索请求打到 `service-fixture.ts` 的本地假 Exa（`--exa-base-url`）；页面上的来源 URL 来自假 Exa 的响应，不是夹具里写死的工具结果。
 
+## T024.4 结果卡双会话夹具（手写）
+
+| 文件 | 场景 |
+|---|---|
+| t024-kind.jsonl | Kind 侧三条：受理任务、已派出、relay 叫起来后的回答（四种场景共用） |
+| t024-thin-ready.jsonl / -blocked / -failed / -waiting | ThinAgent 侧：上报 ready / blocked（带问题）/ failed，或什么都不报（turn 结束合成 waiting） |
+| t024-routes-*.json | 按请求体路由：带 `"name":"task_accept"` 的请求走 Kind，带 `"name":"task_report"` 的走对应 ThinAgent |
+| t024-missing.jsonl / t024-bad-json.jsonl | 预写的根会话日志：缺项（blocked + package）的卡、坏 JSON 退回文本 |
+
+前四种场景有 Kind 和 ThinAgent 两个真会话同时发模型请求；`aios-replay --routes` 按请求体给每条会话自己的游标（见 `crates/replay`）。ThinAgent 那一路放慢 120–200ms，让 Kind 先结束「已派出」那一轮，relay 才会叫起新的一轮。缺项不会开任务会话（没有第二条会话），用预写日志验卡片；摘要文本照程序写出的格式，真实缺项路径由 service 的用例覆盖。
+
 ## 工作过程路径夹具（T014.1，模板）
 
 | 文件 | 场景 | 模型调用数 |

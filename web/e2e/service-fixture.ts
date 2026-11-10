@@ -63,10 +63,17 @@ function startReplay(
 ): { child: ReturnType<typeof spawn>; url: Promise<string> } {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const bin = process.env.AIOS_REPLAY_BIN ?? path.join(repoRoot, 'target/debug/aios-replay');
-  const selection = replaySelection(options);
-  const args = ['--file', replayFile ?? path.join(FIXTURE_DIR, selection.file + '.jsonl')];
-  if (selection.override) args.push('--override', path.join(FIXTURE_DIR, selection.override + '.json'));
-  if (selection.paceMs) args.push('--pace-ms', String(selection.paceMs));
+  // 双会话（Kind + ThinAgent）按请求体各回各的脚本；路由文件里帧间隔逐条给。
+  const routeFile = taskResultRouteFile(options);
+  const args: string[] = [];
+  if (routeFile) {
+    args.push('--routes', path.join(FIXTURE_DIR, routeFile));
+  } else {
+    const selection = replaySelection(options);
+    args.push('--file', replayFile ?? path.join(FIXTURE_DIR, selection.file + '.jsonl'));
+    if (selection.override) args.push('--override', path.join(FIXTURE_DIR, selection.override + '.json'));
+    if (selection.paceMs) args.push('--pace-ms', String(selection.paceMs));
+  }
   args.push('--host', '127.0.0.1', '--port', '0');
   const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
   const url = new Promise<string>((resolve, reject) => {
@@ -235,6 +242,16 @@ export interface FixtureOptions {
   legacySession?: boolean;
   /// T022：把服务的汇率请求指到本地代理，测试可以等 status 进了 fx 的 await 再动作。
   slowFx?: boolean;
+  /// T024.4：任务结果卡。前四种跑真 Kind + ThinAgent 两个会话（按请求体路由）；
+  /// missing / bad-json 用预写好的根会话日志直接验卡与退回文本。
+  taskResult?: 'ready' | 'blocked' | 'failed' | 'waiting' | 'missing' | 'bad-json';
+}
+
+/** T024.4：双会话回放用哪份按请求体路由的文件；预写会话的两种不需要。 */
+function taskResultRouteFile(options: FixtureOptions): string | null {
+  const scenario = options.taskResult;
+  if (!scenario || scenario === 'missing' || scenario === 'bad-json') return null;
+  return 't024-routes-' + scenario + '.json';
 }
 
 /** 接缝 5：假 DeepSeek 脚本回放 + 真 aios-dev serve（页面也由它同源托管）。 */
@@ -256,6 +273,21 @@ export async function startKernelFixture(
       template.split('__CWD__').join(cwd).split('__OUTSIDE__').join(outside),
     );
     paths = { cwd, outside };
+  }
+  // 缺项和坏 JSON 的根会话日志直接写好（不发模型请求），serve 打开就能看卡/文本。
+  if (options.taskResult === 'missing' || options.taskResult === 'bad-json') {
+    const name = options.taskResult === 'missing' ? 't024-missing.jsonl' : 't024-bad-json.jsonl';
+    const template = await readFile(path.join(FIXTURE_DIR, name), 'utf8');
+    const cwd = await realpath(dataDir);
+    const rows = template.split('__DATA_DIR__').join(cwd);
+    const header = JSON.parse(rows.split(String.fromCharCode(10), 1)[0]) as { id: string };
+    const sessions = path.join(dataDir, 'sessions');
+    await mkdir(sessions, { recursive: true });
+    await writeFile(path.join(sessions, header.id + '.jsonl'), rows);
+    await writeFile(
+      path.join(dataDir, 'kind-root.json'),
+      JSON.stringify({ version: 1, sessionId: header.id }),
+    );
   }
   const replay = startReplay(options, replayFile);
   const replayUrl = await replay.url;

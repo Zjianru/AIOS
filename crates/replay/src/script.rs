@@ -27,14 +27,70 @@ pub enum ReplayCall {
     Hang,
 }
 
-/// 一份回放脚本：按调用顺序排列的条目 + 可选的帧间隔。
+/// 一条按请求体路由的回放：请求体里含 `contains` 时用这一条脚本。
+///
+/// 两个会话（Kind 和它派出的任务会话）同时发请求时，全局游标会串台；路由让每条会话
+/// 各按自己的顺序回放。`contains` 是请求体里的原文片段（测试夹具用工具名这类稳定标记）。
 #[derive(Debug, Clone)]
-pub struct ReplayScript {
+pub struct ReplayRoute {
+    pub contains: String,
     pub calls: Vec<ReplayCall>,
     pub pace_ms: Option<u64>,
 }
 
+/// 一份回放脚本：按调用顺序排列的条目 + 可选的帧间隔 + 可选的按请求体路由。
+#[derive(Debug, Clone)]
+pub struct ReplayScript {
+    pub calls: Vec<ReplayCall>,
+    pub pace_ms: Option<u64>,
+    /// 非空时先按请求体匹配路由；没有一条匹配就不回放（不落到默认脚本，免得串台）。
+    pub routes: Vec<ReplayRoute>,
+}
+
 impl ReplayScript {
+    /// 从一份路由文件读脚本：每条路由写 `contains` 和一份会话日志（相对路径按路由文件所在目录解析）。
+    pub fn from_routes_file(path: &Path) -> Result<Self, ReplayError> {
+        let text = std::fs::read_to_string(path)?;
+        let value: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|error| ReplayError::Format(format!("路由文件不是合法 JSON：{error}")))?;
+        let entries = value
+            .get("routes")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| ReplayError::Format("路由文件缺少 routes 数组".to_owned()))?;
+        if entries.is_empty() {
+            return Err(ReplayError::Format("路由文件的 routes 是空的".to_owned()));
+        }
+        let base = path.parent().unwrap_or_else(|| Path::new("."));
+        let mut routes = Vec::with_capacity(entries.len());
+        for (index, entry) in entries.iter().enumerate() {
+            let number = index + 1;
+            let contains = entry
+                .get("contains")
+                .and_then(serde_json::Value::as_str)
+                .filter(|text| !text.is_empty())
+                .ok_or_else(|| ReplayError::Format(format!("第 {number} 条路由缺少 contains")))?;
+            let file = entry
+                .get("file")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| ReplayError::Format(format!("第 {number} 条路由缺少 file")))?;
+            let override_path = entry
+                .get("override")
+                .and_then(serde_json::Value::as_str)
+                .map(|raw| base.join(raw));
+            let log = Self::from_log_with_override(&base.join(file), override_path.as_deref())?;
+            routes.push(ReplayRoute {
+                contains: contains.to_owned(),
+                calls: log.calls,
+                pace_ms: entry.get("paceMs").and_then(serde_json::Value::as_u64),
+            });
+        }
+        Ok(Self {
+            calls: Vec::new(),
+            pace_ms: None,
+            routes,
+        })
+    }
+
     /// 从一份会话日志推脚本（没有覆盖文件）。
     pub fn from_log(path: &Path) -> Result<Self, ReplayError> {
         Self::from_log_with_override(path, None)
@@ -87,6 +143,7 @@ impl ReplayScript {
         let mut script = Self {
             calls,
             pace_ms: None,
+            routes: Vec::new(),
         };
         if let Some(override_path) = override_path {
             script.apply_override(override_path)?;

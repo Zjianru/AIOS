@@ -32,6 +32,7 @@ async fn replays_calls_in_order_then_reports_exhaustion() {
             ReplayCall::Stream(vec![chunk("第二段")]),
         ],
         pace_ms: None,
+        routes: Vec::new(),
     };
     let server = start_replay_server(script).await.expect("起回放服务");
     let url = format!("{}/v1/messages", server.url());
@@ -68,6 +69,7 @@ async fn throw_returns_status_and_body() {
             body: serde_json::json!({"error": {"message": "太频繁"}}),
         }],
         pace_ms: None,
+        routes: Vec::new(),
     };
     let server = start_replay_server(script).await.expect("起回放服务");
     let response = post(&format!("{}/messages", server.url())).await;
@@ -82,6 +84,7 @@ async fn hang_does_not_answer() {
     let script = ReplayScript {
         calls: vec![ReplayCall::Hang],
         pace_ms: None,
+        routes: Vec::new(),
     };
     let server = start_replay_server(script).await.expect("起回放服务");
     let url = format!("{}/messages", server.url());
@@ -95,6 +98,7 @@ async fn pace_ms_delays_frames() {
     let script = ReplayScript {
         calls: vec![ReplayCall::Stream(vec![chunk("慢一点")])],
         pace_ms: Some(40),
+        routes: Vec::new(),
     };
     let server = start_replay_server(script).await.expect("起回放服务");
     let started = Instant::now();

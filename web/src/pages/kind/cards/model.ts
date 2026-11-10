@@ -32,6 +32,7 @@ import {
   textSlot,
 } from '../../../lib/cardEnvelope.ts';
 import { connectionCard } from '../../../data/connectionCard.ts';
+import { taskResultCard } from '../../../data/taskResult.ts';
 // 工具卡的槽位从现有的派生函数来（terminalOf/diffOf/readOf/searchOf），不另写一份。
 // 这个模块要被 node 单测直接 import：Node 的相对导入必须写扩展名，tsconfig 因此打开了
 // allowImportingTsExtensions（只影响类型检查，不产出文件）。
@@ -776,6 +777,7 @@ export const cardDefinitions = {
   generic: genericCard,
   connection: connectionCard,
   confirm: confirmCard,
+  'task-result': taskResultCard,
 };
 
 /* ───────── 颜色（程序按角色和状态定） ───────── */

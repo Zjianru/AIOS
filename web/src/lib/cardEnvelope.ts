@@ -20,6 +20,7 @@ export const CARD_TYPES = [
   'generic',
   'connection',
   'confirm',
+  'task-result',
 ] as const;
 export type CardType = (typeof CARD_TYPES)[number];
 
