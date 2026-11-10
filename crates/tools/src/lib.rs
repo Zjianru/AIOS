@@ -145,8 +145,7 @@ impl ToolContext {
     /// 当前会话 id（只读）。工具要按会话做幂等或回执时读它；没有会话日志的
     /// 构造方（单元测试、单独驱动一个工具）拿到 None。
     pub fn session_id(&self) -> Option<&str> {
-        let _ = self.session.session_id();
-        None
+        self.session.session_id()
     }
 
     pub fn shared_session(&self) -> Arc<ToolSessionState> {
