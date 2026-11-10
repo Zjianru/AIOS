@@ -11,6 +11,14 @@ export type TaskReadHeader = { id: string, title: string, requirement: string, d
  */
 model: string, tools: Array<string>, attempts: number,
 /**
+ * 这个 Attempt 的会话现在真的在跑一轮（不是只开着等报告）；任务菜单只在为 true 时可点。
+ */
+running: boolean,
+/**
+ * 最近的 Attempt 以「停止」结束、之后没有新的 Attempt：页头固定显示「已停止」。
+ */
+stopped: boolean,
+/**
  * 当前 Attempt 最近一份报告的写入时间（unix 毫秒）；None = 这次 Attempt 还没交报告。
  * 终态报告后执行者会立刻关掉会话，日志可能没有 turn/end：页面据此判断最后一轮不再在跑。
  */
