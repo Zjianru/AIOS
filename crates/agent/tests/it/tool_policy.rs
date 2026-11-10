@@ -1,4 +1,4 @@
-//! T024.2：Agent 的工具策略（only 名单、no_wait 拒绝）与系统提示追加规则。
+//! Agent 的工具策略：only 名单过滤、no_wait 拒绝，以及追加在系统提示末尾的产品规则。
 //!
 //! 机制层照 DSH 的 noWait（`app/sessions.ts:73-87`）与 systemPrompt.section（`:244`）；
 //! 测试只走产品的组装入口 Agent::open，模型 HTTP 在边界用 mock 服务替换。
