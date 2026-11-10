@@ -63,7 +63,7 @@ function startReplay(
 ): { child: ReturnType<typeof spawn>; url: Promise<string> } {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const bin = process.env.AIOS_REPLAY_BIN ?? path.join(repoRoot, 'target/debug/aios-replay');
-  // T024.4：双会话（Kind + ThinAgent）按请求体各回各的脚本；路由文件里帧间隔逐条给。
+  // 双会话（Kind + ThinAgent）按请求体各回各的脚本；路由文件里帧间隔逐条给。
   const routeFile = taskResultRouteFile(options);
   const args: string[] = [];
   if (routeFile) {
@@ -274,7 +274,7 @@ export async function startKernelFixture(
     );
     paths = { cwd, outside };
   }
-  // T024.4：缺项和坏 JSON 的根会话日志直接写好（不发模型请求），serve 打开就能看卡/文本。
+  // 缺项和坏 JSON 的根会话日志直接写好（不发模型请求），serve 打开就能看卡/文本。
   if (options.taskResult === 'missing' || options.taskResult === 'bad-json') {
     const name = options.taskResult === 'missing' ? 't024-missing.jsonl' : 't024-bad-json.jsonl';
     const template = await readFile(path.join(FIXTURE_DIR, name), 'utf8');

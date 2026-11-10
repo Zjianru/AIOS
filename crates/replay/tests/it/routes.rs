@@ -59,11 +59,7 @@ async fn routes_pick_scripts_by_request_body() {
         r#"{"tools":[{"name":"task_accept"}],"messages":[{"content":"kind-2"}]}"#,
     )
     .await;
-    assert_eq!(
-        kind.status(),
-        200,
-        "Kind 的第二次请求不能串到别的路由"
-    );
+    assert_eq!(kind.status(), 200, "Kind 的第二次请求不能串到别的路由");
     let body = kind.text().await.expect("读 Kind 第二段");
     assert!(body.contains("kind-2"), "Kind 第二段不对：{body}");
 

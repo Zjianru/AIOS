@@ -18,6 +18,8 @@ import type { ProcessStep } from './process/toolModel';
 import { reasoningTextOf, reasoningTextOfStream } from './reasoning';
 import { useKindStore } from './kindStore';
 import type { ConfirmCardFact, ConfirmDecision } from './cards/model';
+import type { TaskResultFact } from '@/data/taskResult';
+import { parseTaskRelay } from '@/data/taskResult';
 import {
   contextPercent,
   contextTokens,
@@ -180,6 +182,8 @@ export interface TurnViewData {
   durationMs: number | null;
   status: TurnStatus;
   user: TurnUserView | null;
+  /** 任务结果的 relay 消息：这一轮是 relay 叫起来的，卡代替你的消息气泡。 */
+  taskResult: TaskResultFact | null;
   /** 思考全文（T013 验收 F5）；摘要和秒数页面不用，日志里也没有（T013 C1）。 */
   reasoning: { full: string } | null;
   tools: ToolStep[];
@@ -230,6 +234,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
     startedAt: number | null;
     endedAt: number | null;
     user: TurnUserView | null;
+    taskResult: TaskResultFact | null;
     answer: string | null;
     status: TurnStatus;
     tools: ToolStep[];
@@ -309,6 +314,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         startedAt: null,
         endedAt: null,
         user: null,
+        taskResult: null,
         answer: null,
         status: 'inProgress',
         tools: [],
@@ -495,6 +501,11 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         break;
       }
       case 'user/message': {
+        const relay = parseTaskRelay(data.message, event.time / 1000);
+        if (relay) {
+          ensure(turn).taskResult = relay;
+          break;
+        }
         const source = data.message as
           | { source?: string | { kind?: string } }
           | undefined;
@@ -742,6 +753,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
           : Math.max(0, raw.endedAt - raw.startedAt),
       status: raw.status,
       user: raw.user,
+      taskResult: raw.taskResult,
       reasoning:
         raw.reasoningParts.length > 0 ? { full: raw.reasoningParts.join('\n\n') } : null,
       tools: raw.tools,
