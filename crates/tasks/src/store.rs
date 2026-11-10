@@ -9,7 +9,9 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::Stage;
 use crate::TaskError;
-use crate::effect::{EffectClaim, EffectKind, EffectPayload};
+use crate::effect::{
+    EffectClaim, EffectHealth, EffectKind, EffectPayload, EffectState, FAILURES_BEFORE_ERROR,
+};
 use crate::id::{AttemptId, ConversationId, ReportId, TaskId};
 use crate::task::{Attempt, AttemptEnd, MissingItem, NewReport, NewTask, Report, Run, Task};
 
@@ -430,6 +432,32 @@ impl Store {
         )?;
         Ok(changed > 0)
     }
+
+    /// 记一次失败：连续失败次数 +1，按指数退避排下一次。
+    pub fn fail_effect(
+        &self,
+        _claim: &EffectClaim,
+        _error: &str,
+        _now: i64,
+    ) -> Result<bool, TaskError> {
+        Ok(false)
+    }
+
+    /// 现在不能跑：不算失败，按初值推迟。
+    pub fn defer_effect(&self, _claim: &EffectClaim, _now: i64) -> Result<bool, TaskError> {
+        Ok(false)
+    }
+
+    /// 从 effect 表现算一个种类的健康状态。
+    pub fn effect_health(&self, _kind: EffectKind) -> Result<EffectHealth, TaskError> {
+        Ok(EffectHealth {
+            state: EffectState::Ready,
+            waiting: 0,
+            attempts: 0,
+            since: None,
+            last_error: None,
+        })
+    }
 }
 
 fn generate_id(connection: &Connection) -> Result<String, TaskError> {
@@ -550,6 +578,9 @@ fn stored_schema_version(conn: &Connection) -> Result<Option<u64>, TaskError> {
 #[cfg(test)]
 #[path = "attempt_report_tests.rs"]
 mod attempt_report_tests;
+#[cfg(test)]
+#[path = "effect_tests.rs"]
+mod effect_tests;
 #[cfg(test)]
 #[path = "stage_tests.rs"]
 mod stage_tests;
