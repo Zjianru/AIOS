@@ -1,0 +1,9 @@
+{"type":"session","version":17,"id":"00000000-0000-4000-8000-000000000424","createdAt":1794310000000,"cwd":"__DATA_DIR__"}
+{"type":"turn/start","seq":1,"time":1794310000001,"data":{"turn":1}}
+{"type":"user/message","seq":2,"time":1794310000002,"data":{"turn":1,"step":1,"message":{"id":"u-2","role":"user","source":{"kind":"user","rpcId":"seed-kind-1"},"content":[{"type":"text","text":"查一下新闻归档里重复链接的判重规则"}]}}}
+{"type":"assistant/message","seq":3,"time":1794310000003,"data":{"turn":1,"step":1,"message":{"id":"a-3","role":"assistant","source":{"kind":"model","provider":"deepseek","model":"deepseek-flash"},"content":[{"type":"text","text":"好，我派出去查。"}]},"stream":[],"usage":{"inputTokens":10,"outputTokens":3}}}
+{"type":"turn/end","seq":4,"time":1794310000004,"data":{"turn":1,"reason":{"kind":"completed"}}}
+{"type":"turn/start","seq":5,"time":1794310000005,"data":{"turn":2}}
+{"type":"user/message","seq":6,"time":1794310000006,"data":{"turn":2,"step":1,"message":{"id":"u-6","role":"user","source":{"kind":"user","rpcId":"task-report:task-seed-1:report-seed-1"},"content":[{"type":"text","text":"{\"kind\":\"task_report\",\"task\":{\"id\":\"task-seed-1\",\"title\":\"查一下新闻归档里重复链接的判重规则和影响范围\",\"stage\":\"needs_conditions\"},\"origin\":\"package\",\"state\":\"blocked\",\"summary\":\"任务包缺：deepseek-flash 的凭证\"}"}]}}}
+{"type":"assistant/message","seq":7,"time":1794310000007,"data":{"turn":2,"step":1,"message":{"id":"a-7","role":"assistant","source":{"kind":"model","provider":"deepseek","model":"deepseek-flash"},"content":[{"type":"text","text":"这张卡是程序写的：没开跑，缺什么写在摘要里。"}]},"stream":[],"usage":{"inputTokens":10,"outputTokens":3}}}
+{"type":"turn/end","seq":8,"time":1794310000008,"data":{"turn":2,"reason":{"kind":"completed"}}}
