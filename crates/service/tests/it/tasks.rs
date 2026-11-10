@@ -1,6 +1,6 @@
 //! T024.3：Kind 派发、ThinAgent 执行、上报 relay 的后端闭环（假模型、两个真会话）。
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -25,6 +25,9 @@ struct Router {
 struct RouterState {
     kind: Mutex<VecDeque<String>>,
     thin: Mutex<VecDeque<String>>,
+    /// 按任务的 ThinAgent 脚本：多任务同时跑时，各自按 assignment 里的 task_id 取。
+    thin_by_task: Mutex<HashMap<String, VecDeque<String>>>,
+
     bodies: Mutex<Vec<(bool, String)>>,
     unexpected: Mutex<Vec<(bool, String)>>,
     /// ThinAgent 的响应延迟：live 测试要在任务还在跑时接上事件流。
@@ -37,6 +40,7 @@ impl Router {
             state: Arc::new(RouterState {
                 kind: Mutex::new(VecDeque::new()),
                 thin: Mutex::new(VecDeque::new()),
+                thin_by_task: Mutex::new(HashMap::new()),
                 bodies: Mutex::new(Vec::new()),
                 unexpected: Mutex::new(Vec::new()),
                 thin_delay: Mutex::new(None),
@@ -54,6 +58,17 @@ impl Router {
 
     fn push_thin(&self, body: impl Into<String>) {
         self.state.thin.lock().unwrap().push_back(body.into());
+    }
+
+    /// 只给这个任务的 ThinAgent 排回复（按 assignment 里的 task_id 分）。
+    fn push_thin_for(&self, task_id: &str, body: impl Into<String>) {
+        self.state
+            .thin_by_task
+            .lock()
+            .unwrap()
+            .entry(task_id.to_owned())
+            .or_default()
+            .push_back(body.into());
     }
 
     fn bodies(&self, thin: bool) -> Vec<String> {
@@ -74,18 +89,37 @@ impl Respond for Router {
         let thin =
             !body.contains("\"name\":\"task_accept\"") && body.contains("\"name\":\"task_report\"");
         self.state.bodies.lock().unwrap().push((thin, body.clone()));
-        let queue = if thin {
-            &self.state.thin
+        // 多任务同时跑：先按 assignment 的 task_id 取这个任务自己的脚本；没有就落到公共队列。
+        let per_task = if thin {
+            assignment_task_id(&body).and_then(|task_id| {
+                self.state
+                    .thin_by_task
+                    .lock()
+                    .unwrap()
+                    .get_mut(&task_id)
+                    .and_then(VecDeque::pop_front)
+            })
         } else {
-            &self.state.kind
+            None
         };
-        let Some(sse) = queue.lock().unwrap().pop_front() else {
-            self.state
-                .unexpected
-                .lock()
-                .unwrap()
-                .push((thin, body.chars().take(400).collect()));
-            return ResponseTemplate::new(500);
+        let sse = match per_task {
+            Some(sse) => sse,
+            None => {
+                let queue = if thin {
+                    &self.state.thin
+                } else {
+                    &self.state.kind
+                };
+                let Some(sse) = queue.lock().unwrap().pop_front() else {
+                    self.state
+                        .unexpected
+                        .lock()
+                        .unwrap()
+                        .push((thin, body.chars().take(400).collect()));
+                    return ResponseTemplate::new(500);
+                };
+                sse
+            }
         };
         let template = ResponseTemplate::new(200)
             .insert_header("content-type", "text/event-stream")
@@ -95,6 +129,25 @@ impl Respond for Router {
             _ => template,
         }
     }
+}
+
+/// 从 ThinAgent 请求里第一条 assignment 取出任务 id；别的请求没有就是 None。
+fn assignment_task_id(body: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(body).ok()?;
+    for message in value["messages"].as_array()? {
+        for block in message["content"].as_array()? {
+            let Some(text) = block["text"].as_str() else {
+                continue;
+            };
+            let Ok(assignment) = serde_json::from_str::<Value>(text) else {
+                continue;
+            };
+            if let Some(id) = assignment["task_id"].as_str() {
+                return Some(id.to_owned());
+            }
+        }
+    }
+    None
 }
 
 async fn mount(server: &MockServer, router: &Router) {
@@ -309,7 +362,9 @@ async fn accept_freezes_the_task_and_the_launch_uses_it() {
         .save_exa_key("test-exa-key")
         .unwrap();
     let host = open_host(&server, data.path(), cwd.path()).await;
-    host.task_runtime().expect("任务执行者").set_paused(true);
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(true);
 
     let args = serde_json::json!({
         "title": "查一下 Exa 怎么用",
@@ -384,7 +439,9 @@ async fn accept_freezes_the_task_and_the_launch_uses_it() {
     }))
     .await
     .expect("换模型");
-    host.task_runtime().expect("任务执行者").set_paused(false);
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(false);
     router.push_thin(crate::common::tool_use_sse(
         2,
         "call-skill",
@@ -568,7 +625,9 @@ async fn a_missing_credential_opens_no_task_session_and_relays_what_is_missing()
     let data = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let host = open_host(&server, data.path(), cwd.path()).await;
-    host.task_runtime().expect("任务执行者").set_paused(true);
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(true);
 
     let args = serde_json::json!({
         "title": "查一下",
@@ -595,7 +654,9 @@ async fn a_missing_credential_opens_no_task_session_and_relays_what_is_missing()
     }))
     .await
     .expect("屏蔽模型");
-    host.task_runtime().expect("任务执行者").set_paused(false);
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(false);
 
     wait_until("缺项报告", || {
         store
@@ -680,7 +741,10 @@ impl Fixture {
     /// 可能赶在测试推队列之前 Steer 进 Kind，假模型就会收到没有脚本的请求。
     async fn accept_with_kind_replies(&self, pause: bool, spares: usize) -> Task {
         if pause {
-            self.host.task_runtime().expect("runtime").set_paused(true);
+            self.host
+                .task_runtime()
+                .expect("runtime")
+                .set_pump_paused(true);
         }
         let args = serde_json::json!({
             "title": "查一下",
@@ -961,7 +1025,7 @@ async fn a_relay_interrupted_before_kind_append_is_delivered_once_after_restart(
         .host
         .task_runtime()
         .expect("runtime")
-        .set_paused(false);
+        .set_pump_paused(false);
     wait_until("report ready", || {
         let store = tasks_store(fixture.data());
         store
@@ -1255,7 +1319,7 @@ async fn stopping_a_running_task_persists_the_stop_before_cancelling_and_relays_
     .await;
 
     // relay 先不投递：停止后能查效果行还在排队。
-    host.task_runtime().expect("runtime").set_paused(true);
+    host.task_runtime().expect("runtime").set_pump_paused(true);
     let response = host
         .dispatch(Call::TaskStop(TaskStopRequest {
             task_id: task.id.as_str().to_owned(),
@@ -1327,7 +1391,7 @@ async fn stopping_a_running_task_persists_the_stop_before_cancelling_and_relays_
         "停止不合成 waiting 报告"
     );
 
-    host.task_runtime().expect("runtime").set_paused(false);
+    host.task_runtime().expect("runtime").set_pump_paused(false);
     router.push_kind(crate::common::text_sse("收到"));
     wait_until("Kind 收到停止 relay", || {
         stopped_relays(&crate::common::read_root_events(data.path())).len() == 1
@@ -2117,12 +2181,12 @@ async fn global_pause_holds_new_tasks_then_runs_the_queue_in_acceptance_order() 
         "没起跑就没有 relay"
     );
 
-    // 关掉暂停；排队的按受理顺序开跑。两条 relay 的 Kind 轮预先备好回复。
+    // 关掉暂停；排队的按受理顺序开跑。两个任务各自的回复、两条 relay 的 Kind 轮都先排好。
     for script in ready_scripts() {
-        router.push_thin(script);
+        router.push_thin_for(first.id.as_str(), script);
     }
     for script in ready_scripts() {
-        router.push_thin(script);
+        router.push_thin_for(second.id.as_str(), script);
     }
     kind_turn(
         &host,
@@ -2161,15 +2225,26 @@ async fn global_pause_holds_new_tasks_then_runs_the_queue_in_acceptance_order() 
     .await;
 
     let bodies = router.bodies(true);
-    let first_start = bodies.iter().position(|body| body.contains("甲"));
-    let second_start = bodies.iter().position(|body| body.contains("乙"));
     assert!(
-        first_start.is_some() && second_start.is_some(),
+        bodies.iter().any(|body| body.contains("甲"))
+            && bodies.iter().any(|body| body.contains("乙")),
         "两个任务都开了会话：{bodies:?}"
     );
+    // 请求到达的先后由假模型的两个会话各自排程，不能当开跑顺序；开跑顺序看库里
+    // 每次 Attempt 的开始时间（效果泵按效果表 seq 逐个领取、逐个开）。
+    let started = |task: &Task| {
+        store
+            .task(&task.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .map(|attempt| attempt.started_at)
+    };
+    let first_started = started(&first).expect("甲有 Attempt");
+    let second_started = started(&second).expect("乙有 Attempt");
     assert!(
-        first_start < second_start,
-        "按受理顺序开跑：{first_start:?} / {second_start:?}"
+        first_started <= second_started,
+        "按受理顺序开跑：{first_started} / {second_started}"
     );
     let relays = relay_messages(&crate::common::read_root_events(data.path()));
     assert!(
@@ -2225,6 +2300,9 @@ async fn global_pause_lets_the_running_turn_finish_and_relays_still_arrive() {
     let store = tasks_store(data.path());
     // 让 ThinAgent 的回复慢到暂停确认之后，好在「这一轮在跑」时按下暂停。
     router.set_thin_delay(Duration::from_millis(1_500));
+    for script in ready_scripts() {
+        router.push_thin(script);
+    }
 
     let first = accept_task(
         &host,
@@ -2297,7 +2375,7 @@ async fn global_pause_lets_the_running_turn_finish_and_relays_still_arrive() {
         data.path(),
         "kind-b",
         "call-accept-b",
-        3,
+        4,
         "乙",
     )
     .await;

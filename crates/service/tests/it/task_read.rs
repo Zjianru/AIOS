@@ -132,7 +132,9 @@ async fn returns_the_header_and_the_tail_page() {
     let cwd = tempfile::tempdir().unwrap();
     let host = open_host(data.path()).await;
     // 任务泵停下：不要再开真的 ThinAgent，TaskRead 只读我们写好的会话。
-    host.task_runtime().expect("任务执行者").set_paused(true);
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(true);
 
     let conversation = seed_session(data.path(), cwd.path(), 1);
     let task_id = seed_task(
@@ -233,7 +235,9 @@ async fn the_tail_page_starts_at_a_turn_boundary_instead_of_cutting_at_fifty_mes
     let data = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let host = open_host(data.path()).await;
-    host.task_runtime().expect("任务执行者").set_paused(true);
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(true);
 
     // 三轮共 52 条消息：50 条消息的下限落在第 2 轮开头，页首必须是一轮的 turn/start，
     // 不能像 maxMessages=50 那样在第 50 条消息处从一轮中间切开。
@@ -284,7 +288,9 @@ async fn pages_backwards_at_turn_boundaries_and_last_seq_stays_at_the_log_end() 
     let data = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let host = open_host(data.path()).await;
-    host.task_runtime().expect("任务执行者").set_paused(true);
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(true);
 
     // 600 轮、每轮一条消息：一页回到「50 条消息 / 2 轮」的对齐点，页首必须是一轮的 turn/start。
     let conversation = seed_plain_session(data.path(), cwd.path(), 600);
@@ -358,7 +364,9 @@ async fn waiting_report_does_not_close_the_turn_for_the_page() {
     let data = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let host = open_host(data.path()).await;
-    host.task_runtime().expect("任务执行者").set_paused(true);
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(true);
 
     let conversation = seed_session(data.path(), cwd.path(), 1);
     let task_id = seed_task(data.path(), cwd.path(), conversation.as_str(), "等报告");
@@ -397,7 +405,9 @@ async fn waiting_report_does_not_close_the_turn_for_the_page() {
 async fn missing_task_is_a_readable_error() {
     let data = tempfile::tempdir().unwrap();
     let host = open_host(data.path()).await;
-    host.task_runtime().expect("任务执行者").set_paused(true);
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(true);
 
     let error = host
         .dispatch(Call::TaskRead(TaskReadRequest {
@@ -418,7 +428,9 @@ async fn unopened_task_is_a_readable_error() {
     let data = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let host = open_host(data.path()).await;
-    host.task_runtime().expect("任务执行者").set_paused(true);
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(true);
 
     let store = Store::open(data.path().join(TASKS_DB_FILE)).expect("任务库");
     let task = store
@@ -446,7 +458,9 @@ async fn missing_session_is_a_readable_error() {
     let data = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let host = open_host(data.path()).await;
-    host.task_runtime().expect("任务执行者").set_paused(true);
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(true);
 
     // 合法的会话 id，但文件不存在。
     let missing = "11111111-1111-4111-8111-111111111111";
@@ -474,7 +488,9 @@ async fn corrupt_session_is_a_readable_error() {
     let data = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let host = open_host(data.path()).await;
-    host.task_runtime().expect("任务执行者").set_paused(true);
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(true);
 
     let conversation = "22222222-2222-4222-8222-222222222222";
     let sessions = data.path().join("sessions");
@@ -500,7 +516,9 @@ async fn task_stream_replays_after_last_seq_and_is_not_live_when_the_task_is_not
     let data = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let host = open_host(data.path()).await;
-    host.task_runtime().expect("任务执行者").set_paused(true);
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(true);
 
     let conversation = seed_session(data.path(), cwd.path(), 2);
     let task_id = seed_task(data.path(), cwd.path(), conversation.as_str(), "流");
@@ -532,7 +550,9 @@ async fn task_stream_replays_after_last_seq_and_is_not_live_when_the_task_is_not
 async fn task_stream_for_a_missing_task_is_a_readable_error() {
     let data = tempfile::tempdir().unwrap();
     let host = open_host(data.path()).await;
-    host.task_runtime().expect("任务执行者").set_paused(true);
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(true);
 
     let error = match host.task_stream("no-such-task", 0).await {
         Ok(_) => panic!("不存在的任务要报错"),
@@ -550,7 +570,9 @@ async fn task_stream_for_an_unopened_task_is_a_readable_error() {
     let data = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let host = open_host(data.path()).await;
-    host.task_runtime().expect("任务执行者").set_paused(true);
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(true);
 
     let store = Store::open(data.path().join(TASKS_DB_FILE)).expect("任务库");
     let task = store
