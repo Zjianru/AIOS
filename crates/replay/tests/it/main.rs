@@ -2,5 +2,6 @@
 
 mod common;
 mod roundtrip;
+mod routes;
 mod script;
 mod server;

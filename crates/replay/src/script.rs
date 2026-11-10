@@ -27,11 +27,24 @@ pub enum ReplayCall {
     Hang,
 }
 
-/// 一份回放脚本：按调用顺序排列的条目 + 可选的帧间隔。
+/// 一条按请求体路由的回放：请求体里含 `contains` 时用这一条脚本。
+///
+/// 两个会话（Kind 和它派出的任务会话）同时发请求时，全局游标会串台；路由让每条会话
+/// 各按自己的顺序回放。`contains` 是请求体里的原文片段（测试夹具用工具名这类稳定标记）。
+#[derive(Debug, Clone)]
+pub struct ReplayRoute {
+    pub contains: String,
+    pub calls: Vec<ReplayCall>,
+    pub pace_ms: Option<u64>,
+}
+
+/// 一份回放脚本：按调用顺序排列的条目 + 可选的帧间隔 + 可选的按请求体路由。
 #[derive(Debug, Clone)]
 pub struct ReplayScript {
     pub calls: Vec<ReplayCall>,
     pub pace_ms: Option<u64>,
+    /// 非空时先按请求体匹配路由；没有一条匹配就不回放（不落到默认脚本，免得串台）。
+    pub routes: Vec<ReplayRoute>,
 }
 
 impl ReplayScript {
@@ -87,6 +100,7 @@ impl ReplayScript {
         let mut script = Self {
             calls,
             pace_ms: None,
+            routes: Vec::new(),
         };
         if let Some(override_path) = override_path {
             script.apply_override(override_path)?;
