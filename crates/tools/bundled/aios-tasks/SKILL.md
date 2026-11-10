@@ -1,6 +1,6 @@
 ---
 name: aios-tasks
-description: Stop a running task when the user explicitly asks. mode=now records the stop and cancels the current Attempt; the after-report stop is not supported yet.
+description: Stop a running task when the user explicitly asks. mode=now cancels the current Attempt immediately; mode=after_report lets it finish the current step, report once, then end.
 ---
 
 # AIOS tasks
@@ -18,8 +18,13 @@ Call `task_stop` once with `{"task_id": "<the id task_accept returned>", "mode":
 
 ## After-report stop
 
-`mode: "after_report"` is not supported in this version; the tool answers with a fixed "not supported" error. If the user asks for it, tell them it is not supported yet and that the only stop available now is stopping immediately. Do not pretend it worked.
+Call `task_stop` with `mode: "after_report"` when the user wants the task to finish what it is doing and report once instead of being cut off.
+
+- The task gets a fixed stop note: finish the current step, report once with `task_report`, then end. Once the note is in, only `task_report` is allowed; other tool calls are refused.
+- The Attempt ends with whatever it reports; if it ends the turn without reporting, it is recorded as stopped with the waiting state.
+- The user can still switch to `mode: "now"` afterwards; that cancels the Attempt immediately.
+- Say in one sentence that the stop is in and that it will report before ending. If the result says the task is not running, say that plainly and do not retry.
 
 ## Pause
 
-The global pause is a separate gate: new Attempts wait while the running turn finishes. It is not available in this version; do not promise it. When the user wants one task to stop, use `task_stop` with `mode: "now"`.
+The global pause is a separate gate: new Attempts wait while the running turn finishes. It is not available in this version; do not promise it. When the user wants one task to stop, use `task_stop`.
