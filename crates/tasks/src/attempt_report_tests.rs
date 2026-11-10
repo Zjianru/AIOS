@@ -118,6 +118,21 @@ fn closes_attempts_that_never_got_a_session_after_reopen() {
 }
 
 #[test]
+fn keeps_an_attempt_with_a_session_open_when_closing_unopened() {
+    let (_directory, store) = open_store();
+    let (task, attempt) = task_with_attempt(&store);
+    store
+        .attach_session(&task.id, attempt, ConversationId::new("thin-session-1"))
+        .unwrap();
+
+    assert_eq!(store.close_unopened_attempts(&task.id, T0 + 2).unwrap(), 0);
+    let loaded = store.task(&task.id).unwrap().unwrap();
+    let attempt_row = loaded.attempt(attempt).expect("Attempt 还在");
+    assert_eq!(attempt_row.ended_at, None);
+    assert_eq!(attempt_row.end, None);
+}
+
+#[test]
 fn records_a_report_and_queues_relay_in_one_transaction() {
     let (_directory, store) = open_store();
     let (task, attempt) = task_with_attempt(&store);
