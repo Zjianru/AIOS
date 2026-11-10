@@ -40,6 +40,9 @@ pub struct ExecSettings {
     /// 关掉后新任务按排队顺序接着走（不取消、不清队）。
     #[serde(default)]
     pub paused: bool,
+    /// 同时执行的 ThinAgent 上限（1–16）。缺省 3。
+    #[serde(default)]
+    pub seats: u8,
 }
 
 fn default_currency() -> String {
@@ -198,6 +201,7 @@ mod tests {
         .expect("write");
         let settings = load(dir.path());
         assert!(!settings.exec.paused);
+        assert_eq!(settings.exec.seats, 3, "缺 exec 节按默认 3 个席位");
         assert_eq!(settings.currency, "cny");
     }
 
@@ -205,16 +209,36 @@ mod tests {
     fn exec_paused_round_trips() {
         let dir = tempfile::tempdir().expect("dir");
         let mut settings = Settings {
-            exec: ExecSettings { paused: true },
+            exec: ExecSettings {
+                paused: true,
+                ..ExecSettings::default()
+            },
             ..Settings::default()
         };
         save(dir.path(), &settings).expect("save");
         assert!(load(dir.path()).exec.paused);
         let text = std::fs::read_to_string(path(dir.path())).expect("read");
-        assert!(text.contains(r#""exec":{"paused":true}"#), "{text}");
+        assert!(text.contains(r#""paused":true"#), "{text}");
+        assert!(text.contains(r#""seats":3"#), "{text}");
         settings.exec.paused = false;
         save(dir.path(), &settings).expect("save");
         assert!(!load(dir.path()).exec.paused);
+    }
+
+    #[test]
+    fn exec_seats_default_to_three_and_round_trip() {
+        let dir = tempfile::tempdir().expect("dir");
+        assert_eq!(Settings::default().exec.seats, 3);
+        // 旧文件只有 exec.paused：席位数按默认读。
+        std::fs::write(path(dir.path()), br#"{"exec":{"paused":true}}"#).expect("write");
+        assert_eq!(load(dir.path()).exec.seats, 3);
+        // 1–16 的两端都能落盘、读回。
+        for seats in [1_u8, 16] {
+            let mut settings = load(dir.path());
+            settings.exec.seats = seats;
+            save(dir.path(), &settings).expect("save");
+            assert_eq!(load(dir.path()).exec.seats, seats);
+        }
     }
 
     #[test]

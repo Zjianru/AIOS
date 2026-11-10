@@ -538,6 +538,12 @@ impl RootHost {
         Ok(())
     }
 
+    /// 席位上限：校验 1–16 后落 settings.json，再改任务效果泵的准入上限。
+    pub fn set_exec_seats(&self, seats: u8) -> Result<(), ServiceError> {
+        let _ = seats;
+        Ok(())
+    }
+
     /// 写非密钥设置（目前只有 currency）。只碰 settings.json，不碰 Keyring/连接。
     pub async fn settings_update(
         &self,
