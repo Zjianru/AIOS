@@ -1,0 +1,1154 @@
+//! T024.3：任务执行者（launch）、ThinAgent 的 task_report、上报 relay，以及 Kind 的两个任务工具。
+//!
+//! 事实边界：任务聚合和效果表在 tasks；这里把效果泵成真实动作（开 ThinAgent 会话、
+//! 把报告 Steer 回发起的 Kind 会话），不自己保存任务状态。
+
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use agent::{AgentEvent, AgentOpenOptions, ToolPolicy};
+use model::{Effort, UserMessage};
+use serde_json::{Value, json};
+use session::SessionId;
+use tasks::{
+    AttemptEnd, AttemptId, ConversationId, EffectClaim, EffectKind, EffectPayload, MissingItem,
+    ModelChoice, NewReport, NewTask, ReportId, ReportState, Stage, Store, Task, TaskError, TaskId,
+};
+use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
+
+use crate::protocol::DeliveryMode;
+use crate::root::RootSessionOptions;
+use crate::session_host::ServiceHost;
+
+/// 任务库文件名（数据目录下）。
+pub const TASKS_DB_FILE: &str = "tasks.sqlite";
+
+/// ThinAgent 的完整工具名单（构造期 only 过滤；顺序就是名单顺序）。
+pub const THIN_TOOLS: [&str; 8] = [
+    "read",
+    "glob",
+    "grep",
+    "skill",
+    "todo_write",
+    "web_search",
+    "web_fetch",
+    "task_report",
+];
+
+/// 默认角色的规则（ThinAgent 的 policy_prompt，追加在系统提示末尾；Kind 不装）。
+pub const THIN_POLICY: &str = "\
+You are a ThinAgent: the execution carrier for one read-only investigation task. \
+The task's requirement and DoD are the whole scope; work inside them and inside the task's working directory.
+You can read, search, load skills, keep a todo list, read the web, and call task_report. \
+You cannot write files, run shell commands, start background work, delegate, or ask a person a question directly.
+When the work is done, report ready with the answer and the evidence it rests on. \
+When you cannot continue without a missing tool, permission, file, credential or an answer, report blocked with exactly what is missing and what the user must do; put a direct question in question when only the user can answer it. \
+When the work cannot produce the result, report failed with what failed and what you already found. \
+Report once, when it is a result: do not report progress, and do not claim work you did not do.";
+
+/// 向 ThinAgent 要状态时的输入（照 DSH STATUS_REQUEST）。
+const STATUS_REQUEST: &str = "Report the current task status with task_report. This is a status-only request: do not resume implementation or perform external actions.";
+
+/// 一轮结束但 ThinAgent 什么都没说时的 relay 摘要（照 spec 的提示）。
+const WAITING_FALLBACK: &str = "ThinAgent 没上报，用 task_status 去问";
+
+/// 执行者的一个已开会话；task_status 向 waiting 的 ThinAgent 要报告时用它。
+struct RunningThin {
+    host: Arc<ServiceHost>,
+    task_id: TaskId,
+    attempt_id: AttemptId,
+}
+
+/// 任务执行者：效果泵、ThinAgent 会话和任务工具的共享状态。
+pub struct TaskRuntime {
+    data_dir: PathBuf,
+    store: Arc<Store>,
+    options: RootSessionOptions,
+    /// 根会话当前的选择；task_accept 在这一刻冻结它（D26、D74）。
+    selection: Arc<Mutex<Option<session::ModelSelection>>>,
+    /// 根宿主的会话槽：relay 只走它，不拿卡锁。
+    inner: Arc<tokio::sync::Mutex<Option<ServiceHost>>>,
+    notify: Arc<tokio::sync::Notify>,
+    shutting_down: Arc<AtomicBool>,
+    paused: AtomicBool,
+    /// 还活着的 ThinAgent（按会话 id）；终态报告后移除，释放会话写锁。
+    running: Mutex<std::collections::HashMap<String, RunningThin>>,
+    /// 测试钩子：下一次 relay 在 Kind append 前「崩掉」——留下效果行，泵退出。
+    crash_before_relay: AtomicBool,
+}
+
+impl TaskRuntime {
+    pub(crate) fn new(
+        options: &RootSessionOptions,
+        selection: Arc<Mutex<Option<session::ModelSelection>>>,
+        inner: Arc<tokio::sync::Mutex<Option<ServiceHost>>>,
+    ) -> Result<Self, TaskError> {
+        let store = Store::open(options.data_dir.join(TASKS_DB_FILE))?;
+        Ok(Self {
+            data_dir: options.data_dir.clone(),
+            store: Arc::new(store),
+            options: options.clone(),
+            selection,
+            inner,
+            notify: Arc::new(tokio::sync::Notify::new()),
+            shutting_down: Arc::new(AtomicBool::new(false)),
+            paused: AtomicBool::new(false),
+            running: Mutex::new(std::collections::HashMap::new()),
+            crash_before_relay: AtomicBool::new(false),
+        })
+    }
+
+    /// 任务库（测试和诊断读同一份事实）。
+    pub fn store(&self) -> &Arc<Store> {
+        &self.store
+    }
+
+    /// 测试用：暂停效果泵（launch/relay 都不跑）。
+    #[doc(hidden)]
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::SeqCst);
+        self.wake();
+    }
+
+    /// 测试用：下一次 relay 在 Kind 收到之前「崩掉」（留下效果行，泵退出）。
+    #[doc(hidden)]
+    pub fn crash_before_next_relay(&self) {
+        self.crash_before_relay.store(true, Ordering::SeqCst);
+        self.wake();
+    }
+
+    fn wake(&self) {
+        self.notify.notify_one();
+    }
+
+    fn now() -> i64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
+            .unwrap_or_default()
+    }
+
+    /// 开效果泵；一个泵顺序处理，relay 的 ordered/独占就是这一条循环。
+    pub(crate) fn start_pump(self: &Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let runtime = Arc::clone(self);
+        tokio::spawn(async move { runtime.pump().await })
+    }
+
+    async fn pump(self: Arc<Self>) {
+        loop {
+            if self.shutting_down.load(Ordering::SeqCst) {
+                return;
+            }
+            if !self.paused.load(Ordering::SeqCst) {
+                let mut worked = false;
+                match self.store.claim_effect_ordered(EffectKind::Relay, Self::now()) {
+                    Ok(Some(claim)) => {
+                        worked = true;
+                        self.deliver_relay(claim).await;
+                    }
+                    Ok(None) => {}
+                    Err(error) => eprintln!("任务 relay 领取失败：{error}"),
+                }
+                if self.shutting_down.load(Ordering::SeqCst) {
+                    return;
+                }
+                match self.store.claim_effect(EffectKind::Launch, Self::now()) {
+                    Ok(Some(claim)) => {
+                        worked = true;
+                        self.launch(claim).await;
+                    }
+                    Ok(None) => {}
+                    Err(error) => eprintln!("任务 launch 领取失败：{error}"),
+                }
+                if worked {
+                    continue;
+                }
+            }
+            tokio::select! {
+                _ = self.notify.notified() => {}
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+            }
+        }
+    }
+
+    /// 把一份报告 Steer 进发起的 Kind 会话；那个会话不是当前根会话时 Later。
+    async fn deliver_relay(self: &Arc<Self>, claim: EffectClaim) {
+        let EffectPayload::Relay { task_id, report_id } = &claim.payload else {
+            self.finish_or_fail(&claim, Err("relay 载荷不是 relay".to_owned()));
+            return;
+        };
+        let task = match self.store.task(task_id) {
+            Ok(Some(task)) => task,
+            Ok(None) => {
+                self.finish_or_fail(&claim, Ok(()));
+                return;
+            }
+            Err(error) => {
+                self.finish_or_fail(&claim, Err(error.to_string()));
+                return;
+            }
+        };
+        let Some(report) = task.reports.iter().find(|report| report.id == *report_id) else {
+            self.finish_or_fail(&claim, Err(format!("任务 {} 没有报告 {report_id}", task.id)));
+            return;
+        };
+        let stage = match self.store.stage(&task.id) {
+            Ok(stage) => stage,
+            Err(error) => {
+                self.finish_or_fail(&claim, Err(error.to_string()));
+                return;
+            }
+        };
+        let (summary, chars) = relay_summary(&report.summary);
+        let mut body = json!({
+            "kind": "task_report",
+            "task": {
+                "id": task.id.as_str(),
+                "title": task.title,
+                "stage": stage_key(stage),
+            },
+            "state": report_state_key(report.state),
+            "summary": summary,
+        });
+        if let Some(chars) = chars {
+            body["chars"] = json!(chars);
+        }
+        if let Some(question) = &report.question {
+            body["question"] = json!(question);
+        }
+        // 测试钩子：在 Kind append 前模拟进程停掉，效果行原样留给下一次启动。
+        if self.crash_before_relay.swap(false, Ordering::SeqCst) {
+            self.shutting_down.store(true, Ordering::SeqCst);
+            return;
+        }
+        let target = task.conversation.as_str();
+        let guard = self.inner.lock().await;
+        let Some(host) = guard.as_ref() else {
+            drop(guard);
+            self.later(&claim);
+            return;
+        };
+        if host.agent().id().as_str() != target {
+            drop(guard);
+            self.later(&claim);
+            return;
+        }
+        let request_id = format!("task-report:{}:{}", task.id, report.id);
+        let message = UserMessage::text(body.to_string());
+        let sent = host
+            .send_message(&request_id, message, DeliveryMode::Steer)
+            .await;
+        drop(guard);
+        match sent {
+            Ok(_) => {
+                let _ = self.store.complete_effect(&claim);
+            }
+            Err(error) => {
+                let _ = self.store.fail_effect(&claim, &error.to_string(), Self::now());
+            }
+        }
+    }
+
+    fn later(&self, claim: &EffectClaim) {
+        let _ = self.store.defer_effect(claim, Self::now());
+    }
+
+    fn finish_or_fail(&self, claim: &EffectClaim, result: Result<(), String>) {
+        match result {
+            Ok(()) => {
+                let _ = self.store.complete_effect(claim);
+            }
+            Err(error) => {
+                let _ = self.store.fail_effect(claim, &error, Self::now());
+            }
+        }
+    }
+
+    /// 执行一次 launch：重查、查任务包、开 ThinAgent、写回会话 id、发 assignment。
+    async fn launch(self: &Arc<Self>, claim: EffectClaim) {
+        let EffectPayload::Launch { task_id } = &claim.payload else {
+            self.finish_or_fail(&claim, Err("launch 载荷不是 launch".to_owned()));
+            return;
+        };
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
+        let mut task = match self.store.task(task_id) {
+            Ok(Some(task)) => task,
+            Ok(None) => {
+                self.finish_or_fail(&claim, Ok(()));
+                return;
+            }
+            Err(error) => {
+                self.finish_or_fail(&claim, Err(error.to_string()));
+                return;
+            }
+        };
+        // 上一次已经开成会话：重跑的效果只把行收掉；被重启打断的 Attempt 留给第 4 张票。
+        if task
+            .latest_attempt()
+            .is_some_and(|attempt| attempt.conversation.is_some())
+        {
+            self.finish_or_fail(&claim, Ok(()));
+            return;
+        }
+        // 崩溃留下的、没有会话 id 的 Attempt 先收尾，再开新的。
+        if let Err(error) = self.store.close_unopened_attempts(&task.id, Self::now()) {
+            self.finish_or_fail(&claim, Err(error.to_string()));
+            return;
+        }
+        if let Ok(Some(reloaded)) = self.store.task(&task.id) {
+            task = reloaded;
+        }
+
+        let prepared = match self.prepare(&task) {
+            Ok(prepared) => prepared,
+            Err(missing) => {
+                self.record_missing(&task, missing);
+                self.finish_or_fail(&claim, Ok(()));
+                return;
+            }
+        };
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return;
+        }
+        if let Err(error) = self.store.record_package_check(&task.id, Vec::new()) {
+            self.finish_or_fail(&claim, Err(error.to_string()));
+            return;
+        }
+        let attempt_id = match self.store.begin_attempt(&task.id, Self::now()) {
+            Ok(attempt_id) => attempt_id,
+            Err(error) => {
+                self.finish_or_fail(&claim, Err(error.to_string()));
+                return;
+            }
+        };
+        let host = match self.open_thin(&task, attempt_id, prepared).await {
+            Ok(host) => Arc::new(host),
+            Err(error) => {
+                let _ = self.store.record_report(
+                    &task.id,
+                    attempt_id,
+                    NewReport {
+                        state: ReportState::Failed,
+                        summary: format!("任务会话没开成：{error}"),
+                        question: None,
+                    },
+                    Self::now(),
+                );
+                let _ = self.store.end_attempt(
+                    &task.id,
+                    attempt_id,
+                    Self::now(),
+                    AttemptEnd::NotOpened,
+                );
+                self.finish_or_fail(&claim, Ok(()));
+                return;
+            }
+        };
+        // 每次 await 之后重查：没在关机、任务还在、这次仍是最新的 Attempt。
+        let current = !self.shutting_down.load(Ordering::SeqCst)
+            && self
+                .store
+                .task(&task.id)
+                .ok()
+                .flatten()
+                .and_then(|stored| stored.latest_attempt().map(|attempt| attempt.id))
+                == Some(attempt_id);
+        if !current {
+            host.shutdown().await;
+            let _ = self.store.end_attempt(
+                &task.id,
+                attempt_id,
+                Self::now(),
+                AttemptEnd::NotOpened,
+            );
+            return;
+        }
+        let conversation = host.agent().id().clone();
+        if let Err(error) = self.store.attach_session(
+            &task.id,
+            attempt_id,
+            ConversationId::new(conversation.as_str()),
+        ) {
+            host.shutdown().await;
+            self.finish_or_fail(&claim, Err(error.to_string()));
+            return;
+        }
+        // 先订阅再发：turn 结束的事实不能漏。
+        let events = host.agent().subscribe();
+        let assignment = json!({
+            "task_id": task.id.as_str(),
+            "title": task.title,
+            "requirement": task.requirement,
+            "dod": task.dod,
+            "cwd": task.cwd.to_string_lossy(),
+        })
+        .to_string();
+        let sent = host
+            .send_message(
+                &format!("assignment:{}", task.id),
+                UserMessage::text(assignment),
+                DeliveryMode::FollowUp,
+            )
+            .await;
+        match sent {
+            Ok(_) => {}
+            Err(error) => {
+                let _ = self.store.record_report(
+                    &task.id,
+                    attempt_id,
+                    NewReport {
+                        state: ReportState::Failed,
+                        summary: format!("任务派发没送进 ThinAgent：{error}"),
+                        question: None,
+                    },
+                    Self::now(),
+                );
+                let _ = self.store.end_attempt(
+                    &task.id,
+                    attempt_id,
+                    Self::now(),
+                    AttemptEnd::NotOpened,
+                );
+                self.finish_or_fail(&claim, Ok(()));
+                return;
+            }
+        }
+        self.running.lock().expect("thinagent 表锁被毒化").insert(
+            conversation.as_str().to_owned(),
+            RunningThin {
+                host: Arc::clone(&host),
+                task_id: task.id.clone(),
+                attempt_id,
+            },
+        );
+        self.monitor(task.id.clone(), attempt_id, conversation, events);
+        self.finish_or_fail(&claim, Ok(()));
+    }
+
+    /// 任务包缺项先记事实、再按程序事实写一张 blocked 报告并排 relay；不开任务会话。
+    fn record_missing(&self, task: &Task, missing: Vec<MissingItem>) {
+        let summary = format!(
+            "任务包缺：{}",
+            missing
+                .iter()
+                .map(MissingItem::as_str)
+                .collect::<Vec<_>>()
+                .join("；")
+        );
+        if let Err(error) = self.store.record_package_check(&task.id, missing) {
+            eprintln!("任务 {} 的任务包缺项没写进去：{error}", task.id);
+            return;
+        }
+        let attempt = match self.store.begin_attempt(&task.id, Self::now()) {
+            Ok(attempt) => attempt,
+            Err(error) => {
+                eprintln!("任务 {} 记缺项 Attempt 失败：{error}", task.id);
+                return;
+            }
+        };
+        let _ = self.store.record_report(
+            &task.id,
+            attempt,
+            NewReport {
+                state: ReportState::Blocked,
+                summary,
+                question: None,
+            },
+            Self::now(),
+        );
+        let _ = self.store.end_attempt(
+            &task.id,
+            attempt,
+            Self::now(),
+            AttemptEnd::NotOpened,
+        );
+    }
+
+    /// 起跑前的任务包检查：返回解析好的模型配置和凭证；缺项时返回缺的每一项。
+    fn prepare(
+        &self,
+        task: &Task,
+    ) -> Result<(model::DeepSeekConfig, Arc<dyn model::CredentialSource>), Vec<MissingItem>> {
+        let mut missing = Vec::new();
+        if task.requirement.trim().is_empty() {
+            missing.push(missing_item("任务要求"));
+        }
+        if task.dod.trim().is_empty() {
+            missing.push(missing_item("DoD"));
+        }
+        if !task.cwd.is_dir() {
+            missing.push(missing_item(format!(
+                "工作目录不存在：{}",
+                task.cwd.display()
+            )));
+        }
+        if !task.writes.is_empty() {
+            missing.push(missing_item("写集（只读任务必须为空）"));
+        }
+        if task.code_mode {
+            missing.push(missing_item("CodeMode（只读任务必须为否）"));
+        }
+        let expected: BTreeSet<&str> = THIN_TOOLS.into_iter().collect();
+        let actual: BTreeSet<&str> = task.tools.iter().map(String::as_str).collect();
+        if actual != expected {
+            missing.push(missing_item("工具名单（不是只读调查的 8 件）"));
+        }
+        if task.model.connection.trim().is_empty()
+            || task.model.model.trim().is_empty()
+            || task.model.effort_wanted.trim().is_empty()
+        {
+            missing.push(missing_item("模型选择"));
+        }
+        if !missing.is_empty() {
+            return Err(missing);
+        }
+
+        let selection = session::ModelSelection {
+            connection: task.model.connection.clone(),
+            model: task.model.model.clone(),
+            effort_wanted: task.model.effort_wanted.clone(),
+        };
+        let mut config = self.options.model.clone();
+        config.model = selection.model.clone();
+        config.effort = Effort::new(selection.effort_wanted.clone());
+        let credentials = if let Some(factory) = &self.options.model_factory {
+            match factory(Some(&selection)) {
+                Ok((_connection, resolved, credentials)) => {
+                    config = resolved;
+                    credentials
+                }
+                Err(message) => {
+                    return Err(vec![missing_item(format!("模型连接：{message}"))]);
+                }
+            }
+        } else {
+            self.options.credentials.clone()
+        };
+        let Some(credentials) = credentials else {
+            return Err(vec![missing_item(format!(
+                "{} 的凭证",
+                task.model.model
+            ))]);
+        };
+        if let Err(error) = credentials.admit(&task.model.model) {
+            return Err(vec![missing_item(format!(
+                "{} 的凭证（{}）",
+                task.model.model, error
+            ))]);
+        }
+        Ok((config, credentials))
+    }
+
+    /// 用冻结的模型选择、任务 cwd、8 件只读工具和角色规则开一个 ThinAgent。
+    async fn open_thin(
+        self: &Arc<Self>,
+        task: &Task,
+        attempt_id: AttemptId,
+        (model_config, credentials): (model::DeepSeekConfig, Arc<dyn model::CredentialSource>),
+    ) -> Result<ServiceHost, String> {
+        let mut extra_tools = crate::root::web_extra_tools(&self.options);
+        extra_tools.push(Arc::new(TaskReportTool::new(
+            Arc::clone(self),
+            task.id.clone(),
+            attempt_id,
+        )));
+        let mut agent_config = self.options.config.clone();
+        agent_config.tool_keys = crate::root::tool_key_source(&self.options);
+        let agent = agent::Agent::open(AgentOpenOptions {
+            data_dir: self.data_dir.clone(),
+            cwd: task.cwd.clone(),
+            resume: None,
+            model: model_config,
+            config: agent_config,
+            credentials: Some(credentials),
+            append_hook_factory: self.options.append_hook_factory.clone(),
+            extra_tools,
+            tool_policy: ToolPolicy {
+                only: Some(THIN_TOOLS.iter().map(|name| (*name).to_owned()).collect()),
+                no_wait: false,
+            },
+            policy_prompt: Some(THIN_POLICY.to_owned()),
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+        Ok(ServiceHost::new(agent))
+    }
+
+    /// 一个 Attempt 的会话在本进程里还开着（task_status 要状态用）。
+    fn running_for(&self, task_id: &TaskId, attempt_id: AttemptId) -> Option<RunningThin> {
+        let running = self.running.lock().expect("thinagent 表锁被毒化");
+        running
+            .values()
+            .find(|entry| entry.task_id == *task_id && entry.attempt_id == attempt_id)
+            .map(|entry| RunningThin {
+                host: Arc::clone(&entry.host),
+                task_id: entry.task_id.clone(),
+                attempt_id: entry.attempt_id,
+            })
+    }
+
+    fn monitor(
+        self: &Arc<Self>,
+        task_id: TaskId,
+        attempt_id: AttemptId,
+        conversation: SessionId,
+        mut events: tokio::sync::broadcast::Receiver<AgentEvent>,
+    ) {
+        let runtime = Arc::clone(self);
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(AgentEvent::TurnEnded { .. }) => {
+                        runtime.turn_ended(&task_id, attempt_id, &conversation).await;
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                }
+            }
+        });
+    }
+
+    /// turn 结束但还没上报：照 DSH 合成 waiting；有最后一段回复就带它，没有就提示去问。
+    async fn turn_ended(&self, task_id: &TaskId, attempt_id: AttemptId, conversation: &SessionId) {
+        let Ok(Some(task)) = self.store.task(task_id) else {
+            return;
+        };
+        if task.latest_attempt().map(|attempt| attempt.id) != Some(attempt_id) {
+            return;
+        }
+        if task
+            .latest_report()
+            .is_some_and(|report| matches!(report.state, ReportState::Ready | ReportState::Blocked | ReportState::Failed))
+        {
+            return;
+        }
+        let said = self.last_assistant_text(conversation);
+        let summary = if said.trim().is_empty() {
+            WAITING_FALLBACK.to_owned()
+        } else {
+            said
+        };
+        if let Err(error) = self.store.record_report(
+            task_id,
+            attempt_id,
+            NewReport {
+                state: ReportState::Waiting,
+                summary,
+                question: None,
+            },
+            Self::now(),
+        ) {
+            eprintln!("任务 {task_id} 的等待报告没写进去：{error}");
+        }
+        self.wake();
+    }
+
+    /// ThinAgent 会话里最后一段助手文字（turn 结束时的最后回复）。
+    fn last_assistant_text(&self, conversation: &SessionId) -> String {
+        let Ok(store) = session::SessionStore::open_read_only(&self.data_dir, conversation) else {
+            return String::new();
+        };
+        store
+            .events()
+            .iter()
+            .rev()
+            .find_map(|event| match &event.kind {
+                session::EventKind::AssistantMessage { message, .. } => Some(
+                    message
+                        .content
+                        .iter()
+                        .filter_map(model::ContentBlock::as_text)
+                        .collect::<String>(),
+                ),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// ThinAgent 报了一份报告：同事务写报告 + 排 relay；终态后关掉会话。
+    fn report(
+        &self,
+        task_id: &TaskId,
+        attempt_id: AttemptId,
+        conversation: &str,
+        report: NewReport,
+    ) -> Result<(ReportId, bool), TaskError> {
+        let state = report.state;
+        let duplicate = self
+            .store
+            .task(task_id)?
+            .and_then(|task| task.latest_report().map(|latest| latest.state))
+            == Some(state);
+        let id = self.store.record_report(task_id, attempt_id, report, Self::now())?;
+        self.wake();
+        if matches!(
+            state,
+            ReportState::Ready | ReportState::Blocked | ReportState::Failed
+        ) {
+            self.running
+                .lock()
+                .expect("thinagent 表锁被毒化")
+                .remove(conversation);
+        }
+        Ok((id, duplicate))
+    }
+
+    /// Kind 的 task_accept：冻结模型选择、落任务和 launch、回任务 id。
+    fn accept(
+        &self,
+        context: &ToolContext,
+        call_id: &str,
+        title: String,
+        requirement: String,
+        dod: String,
+        cwd: Option<String>,
+    ) -> Result<(Task, bool), ToolFailure> {
+        let conversation = context
+            .session_id()
+            .ok_or_else(|| ToolFailure::plain("没有会话 id，不能受理任务"))?
+            .to_owned();
+        let cwd = match cwd {
+            Some(raw) => {
+                let path = PathBuf::from(raw);
+                let path = if path.is_absolute() {
+                    path
+                } else {
+                    context.cwd.join(path)
+                };
+                if !path.is_dir() {
+                    return Err(ToolFailure::plain(format!(
+                        "cwd 不是已存在的目录：{}",
+                        path.display()
+                    )));
+                }
+                std::fs::canonicalize(&path).unwrap_or(path)
+            }
+            None => context.cwd.clone(),
+        };
+        let selection = self
+            .selection
+            .lock()
+            .expect("selection 锁被毒化")
+            .clone()
+            .ok_or_else(|| ToolFailure::plain("还没有可用的模型选择，不能派出任务"))?;
+        let draft = NewTask {
+            title,
+            requirement,
+            dod,
+            cwd,
+            conversation: ConversationId::new(conversation.as_str()),
+            model: ModelChoice {
+                connection: selection.connection,
+                model: selection.model,
+                effort_wanted: selection.effort_wanted,
+            },
+            tools: THIN_TOOLS.iter().map(|name| (*name).to_owned()).collect(),
+        };
+        let key = format!("{}:{}", conversation, call_id);
+        let (task, created) = self
+            .store
+            .create_task_once(draft, &key, Self::now())
+            .map_err(|error| ToolFailure::plain(error.to_string()))?;
+        self.wake();
+        Ok((task, created))
+    }
+
+    /// Kind 的 task_status：阶段、最近报告全文、Attempt 数；waiting 时向 ThinAgent 要一次。
+    async fn status_text(&self, task_id: &str) -> Result<String, ToolFailure> {
+        let id = TaskId::from(task_id);
+        let task = self
+            .store
+            .task(&id)
+            .map_err(|error| ToolFailure::plain(error.to_string()))?
+            .ok_or_else(|| ToolFailure::plain(format!("任务不存在：{task_id}")))?;
+        let stage = self
+            .store
+            .stage(&id)
+            .map_err(|error| ToolFailure::plain(error.to_string()))?;
+        let attempts = task
+            .runs
+            .iter()
+            .map(|run| run.attempts.len())
+            .sum::<usize>();
+        let latest = task.latest_report().cloned();
+        let mut lines = vec![
+            format!("任务 {}：{}", task.id, task.title),
+            format!("阶段：{}", stage_label(stage)),
+            format!("Attempt 数：{attempts}"),
+        ];
+        if let Some(report) = &latest {
+            lines.push(format!("最近报告（{}）：", report_state_key(report.state)));
+            lines.push(report.summary.clone());
+            if let Some(question) = &report.question {
+                lines.push(format!("问题：{question}"));
+            }
+        } else {
+            lines.push("最近报告：无".to_owned());
+        }
+        if latest
+            .as_ref()
+            .is_some_and(|report| report.state == ReportState::Waiting)
+            && let Some(attempt) = task.latest_attempt()
+        {
+            let request_id = format!("status:{}:{}", task.id, attempt.id);
+            if let Some(running) = self.running_for(&task.id, attempt.id) {
+                match running
+                    .host
+                    .send_message(
+                        &request_id,
+                        UserMessage::text(STATUS_REQUEST),
+                        DeliveryMode::Steer,
+                    )
+                    .await
+                {
+                    Ok(response) if response.duplicate => {
+                        lines.push("已经向这个 Attempt 要过一次报告".to_owned());
+                    }
+                    Ok(_) => lines.push("已向 ThinAgent 要了一次报告".to_owned()),
+                    Err(error) => lines.push(format!("要状态没送进去：{error}")),
+                }
+            } else {
+                lines.push("任务会话没在跑，没要到报告".to_owned());
+            }
+        }
+        Ok(lines.join("\n"))
+    }
+
+    /// task_report 的实际落点：写报告 + 排 relay（store 同一事务），返回回执。
+    fn report_from_tool(
+        &self,
+        task_id: &TaskId,
+        attempt_id: AttemptId,
+        conversation: &str,
+        report: NewReport,
+    ) -> Result<String, ToolFailure> {
+        let state = report.state;
+        let (id, duplicate) = self
+            .report(task_id, attempt_id, conversation, report)
+            .map_err(|error| ToolFailure::plain(error.to_string()))?;
+        if duplicate {
+            Ok(format!(
+                "这个 Attempt 已经报过 {state:?}（报告 {id}）；没有重复上报。"
+            ))
+        } else {
+            Ok(format!(
+                "已上报 {state:?}（报告 {id}）。结果会作为 task_report 消息送到 Kind。"
+            ))
+        }
+    }
+}
+
+impl Drop for TaskRuntime {
+    fn drop(&mut self) {
+        self.shutting_down.store(true, Ordering::SeqCst);
+    }
+}
+
+fn missing_item(text: impl Into<String>) -> MissingItem {
+    MissingItem::new(text).expect("缺项描述非空")
+}
+
+fn stage_key(stage: Stage) -> &'static str {
+    match stage {
+        Stage::NeedsConditions => "needs_conditions",
+        Stage::Pending => "pending",
+        Stage::Running => "running",
+        Stage::ReadyForReview => "ready_for_review",
+    }
+}
+
+fn stage_label(stage: Stage) -> &'static str {
+    match stage {
+        Stage::NeedsConditions => "待补足条件",
+        Stage::Pending => "待执行",
+        Stage::Running => "执行中",
+        Stage::ReadyForReview => "待检查",
+    }
+}
+
+fn report_state_key(state: ReportState) -> &'static str {
+    match state {
+        ReportState::Ready => "ready",
+        ReportState::Blocked => "blocked",
+        ReportState::Failed => "failed",
+        ReportState::Waiting => "waiting",
+    }
+}
+
+/// relay 摘要最多 600 字；更长时带原始字数（照 DSH resultRelay）。
+fn relay_summary(text: &str) -> (String, Option<usize>) {
+    let chars = text.chars().count();
+    if chars > 600 {
+        (text.chars().take(600).collect(), Some(chars))
+    } else {
+        (text.to_owned(), None)
+    }
+}
+
+/// Kind 的 task_accept。
+pub(crate) struct TaskAcceptTool {
+    runtime: Arc<TaskRuntime>,
+    parameters: Value,
+}
+
+impl TaskAcceptTool {
+    pub(crate) fn new(runtime: Arc<TaskRuntime>) -> Self {
+        Self {
+            runtime,
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Short label for the card (at most 200 characters)."},
+                    "requirement": {"type": "string", "description": "What the investigation must find out, in the user's words."},
+                    "dod": {"type": "string", "description": "How the result will be judged complete."},
+                    "cwd": {"type": "string", "description": "Directory to work in; omit to use this conversation's directory. It must already exist."}
+                },
+                "required": ["title", "requirement", "dod"]
+            }),
+        }
+    }
+}
+
+impl Tool for TaskAcceptTool {
+    fn name(&self) -> &str {
+        "task_accept"
+    }
+
+    fn description(&self) -> &str {
+        "Dispatch a read-only investigation task to a ThinAgent and return its task id. The result arrives later as a task_report message; the user already sees a card, so answer only what is needed now and do not wait for the result."
+    }
+
+    fn parameters(&self) -> &Value {
+        &self.parameters
+    }
+
+    fn condition(&self) -> ToolCondition {
+        ToolCondition::Always
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: ToolCall,
+        context: &'a ToolContext,
+    ) -> ToolFuture<'a, ToolResult> {
+        Box::pin(async move {
+            let args = match parse_object(&call.arguments) {
+                Ok(args) => args,
+                Err(failure) => return ToolResult::error(call.id, failure),
+            };
+            let Some(title) = string_arg(&args, "title") else {
+                return ToolResult::error(call.id, ToolFailure::plain("title 不能为空"));
+            };
+            let Some(requirement) = string_arg(&args, "requirement") else {
+                return ToolResult::error(call.id, ToolFailure::plain("requirement 不能为空"));
+            };
+            let Some(dod) = string_arg(&args, "dod") else {
+                return ToolResult::error(call.id, ToolFailure::plain("dod 不能为空"));
+            };
+            let cwd = args
+                .get("cwd")
+                .and_then(Value::as_str)
+                .filter(|cwd| !cwd.trim().is_empty())
+                .map(str::to_owned);
+            match self
+                .runtime
+                .accept(context, &call.id, title, requirement, dod, cwd)
+            {
+                Ok((task, true)) => ToolResult::success(
+                    call.id,
+                    format!(
+                        "已派出任务 {}。结果会作为 task_report 消息送来；用户已经看到卡片，只按需回答。",
+                        task.id
+                    ),
+                ),
+                Ok((task, false)) => ToolResult::success(
+                    call.id,
+                    format!(
+                        "已受理过（Already accepted as {}）；没有重复派出。结果会作为 task_report 消息送来。",
+                        task.id
+                    ),
+                ),
+                Err(failure) => ToolResult::error(call.id, failure),
+            }
+        })
+    }
+}
+
+/// Kind 的 task_status。
+pub(crate) struct TaskStatusTool {
+    runtime: Arc<TaskRuntime>,
+    parameters: Value,
+}
+
+impl TaskStatusTool {
+    pub(crate) fn new(runtime: Arc<TaskRuntime>) -> Self {
+        Self {
+            runtime,
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "Task id returned by task_accept."}
+                },
+                "required": ["task_id"]
+            }),
+        }
+    }
+}
+
+impl Tool for TaskStatusTool {
+    fn name(&self) -> &str {
+        "task_status"
+    }
+
+    fn description(&self) -> &str {
+        "Read a task's stage, its latest report in full, and its Attempt count. While the task is waiting for a report, this also asks its ThinAgent once for a status report."
+    }
+
+    fn parameters(&self) -> &Value {
+        &self.parameters
+    }
+
+    fn condition(&self) -> ToolCondition {
+        ToolCondition::Always
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: ToolCall,
+        _context: &'a ToolContext,
+    ) -> ToolFuture<'a, ToolResult> {
+        Box::pin(async move {
+            let args = match parse_object(&call.arguments) {
+                Ok(args) => args,
+                Err(failure) => return ToolResult::error(call.id, failure),
+            };
+            let Some(task_id) = args.get("task_id").and_then(Value::as_str) else {
+                return ToolResult::error(call.id, ToolFailure::plain("task_id 不能为空"));
+            };
+            match self.runtime.status_text(task_id).await {
+                Ok(text) => ToolResult::success(call.id, text),
+                Err(failure) => ToolResult::error(call.id, failure),
+            }
+        })
+    }
+}
+
+/// ThinAgent 的 task_report：一次调用写一条报告并排一条 relay。
+struct TaskReportTool {
+    runtime: Arc<TaskRuntime>,
+    task_id: TaskId,
+    attempt_id: AttemptId,
+    parameters: Value,
+}
+
+impl TaskReportTool {
+    fn new(runtime: Arc<TaskRuntime>, task_id: TaskId, attempt_id: AttemptId) -> Self {
+        Self {
+            runtime,
+            task_id,
+            attempt_id,
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "state": {"type": "string", "enum": ["ready", "blocked", "failed"], "description": "ready: the DoD is met; blocked: cannot continue without the user or a missing condition; failed: the work cannot produce the result."},
+                    "summary": {"type": "string", "description": "The answer or the reason, with the evidence it rests on."},
+                    "question": {"type": "string", "description": "One concrete question for the user, only with state=blocked and only when the user must answer it (at most 1000 characters)."}
+                },
+                "required": ["state", "summary"]
+            }),
+        }
+    }
+}
+
+impl Tool for TaskReportTool {
+    fn name(&self) -> &str {
+        "task_report"
+    }
+
+    fn description(&self) -> &str {
+        "Report the task's final state once: ready with the result, blocked with what is missing and what the user must do, or failed with what failed. Do not report progress. The user sees it as a card and the Kind conversation receives it as a message."
+    }
+
+    fn parameters(&self) -> &Value {
+        &self.parameters
+    }
+
+    fn condition(&self) -> ToolCondition {
+        ToolCondition::Always
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: ToolCall,
+        context: &'a ToolContext,
+    ) -> ToolFuture<'a, ToolResult> {
+        Box::pin(async move {
+            let args = match parse_object(&call.arguments) {
+                Ok(args) => args,
+                Err(failure) => return ToolResult::error(call.id, failure),
+            };
+            let state = match args.get("state").and_then(Value::as_str) {
+                Some("ready") => ReportState::Ready,
+                Some("blocked") => ReportState::Blocked,
+                Some("failed") => ReportState::Failed,
+                _ => {
+                    return ToolResult::error(
+                        call.id,
+                        ToolFailure::plain("state 必须是 ready、blocked 或 failed"),
+                    );
+                }
+            };
+            let Some(summary) = args
+                .get("summary")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+            else {
+                return ToolResult::error(call.id, ToolFailure::plain("summary 不能为空"));
+            };
+            let question = args
+                .get("question")
+                .and_then(Value::as_str)
+                .filter(|question| !question.trim().is_empty())
+                .map(str::to_owned);
+            let conversation = context.session_id().unwrap_or_default().to_owned();
+            let report = NewReport {
+                state,
+                summary,
+                question,
+            };
+            match self.runtime.report_from_tool(
+                &self.task_id,
+                self.attempt_id,
+                &conversation,
+                report,
+            ) {
+                Ok(text) => ToolResult::success(call.id, text),
+                Err(failure) => ToolResult::error(call.id, failure),
+            }
+        })
+    }
+}
+
+fn parse_object(arguments: &str) -> Result<serde_json::Map<String, Value>, ToolFailure> {
+    let value: Value = serde_json::from_str(arguments)
+        .map_err(|error| ToolFailure::plain(format!("arguments must be a JSON object: {error}")))?;
+    value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| ToolFailure::plain("arguments must be a JSON object"))
+}
+
+fn string_arg(args: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+}
+

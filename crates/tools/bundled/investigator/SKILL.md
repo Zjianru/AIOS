@@ -1,6 +1,6 @@
 ---
 name: investigator
-description: Work one read-only investigation task: find out what was asked, keep to the task's DoD and directory, and report ready, blocked or failed with evidence.
+description: Work one read-only investigation task. Find out what the task asks, stay inside its DoD and directory, and report ready, blocked or failed with evidence.
 ---
 
 # Investigator

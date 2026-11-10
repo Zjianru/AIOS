@@ -190,6 +190,18 @@ impl Store {
         Ok(task)
     }
 
+    /// 列出全部任务 id（测试与诊断用；不按创建时间排序）。
+    pub fn task_ids(&self) -> Result<Vec<TaskId>, TaskError> {
+        let conn = self.lock()?;
+        let mut statement = conn.prepare("SELECT id FROM task")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(TaskId::from(row?));
+        }
+        Ok(ids)
+    }
+
     /// 读一个任务。
     pub fn task(&self, id: &TaskId) -> Result<Option<Task>, TaskError> {
         let conn = self.lock()?;

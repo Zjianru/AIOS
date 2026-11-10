@@ -1,0 +1,465 @@
+//! T024.3：Kind 派发、ThinAgent 执行、上报 relay 的后端闭环（假模型、两个真会话）。
+
+use std::collections::VecDeque;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use agent::AgentConfig;
+use model::DEFAULT_CONTEXT_WINDOW;
+use serde_json::Value;
+use service::{
+    Call, DeliveryMode, DisabledModelsSetRequest, RootHost, SendRequest, SessionModelSelectRequest,
+};
+use tasks::{ReportState, Stage, Store, Task};
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
+
+/// 假模型按请求体路由：工具表里有 task_accept 的是 Kind，有 task_report 的是 ThinAgent。
+#[derive(Clone)]
+struct Router {
+    state: Arc<RouterState>,
+}
+
+struct RouterState {
+    kind: Mutex<VecDeque<String>>,
+    thin: Mutex<VecDeque<String>>,
+    bodies: Mutex<Vec<(bool, String)>>,
+}
+
+impl Router {
+    fn new() -> Self {
+        Self {
+            state: Arc::new(RouterState {
+                kind: Mutex::new(VecDeque::new()),
+                thin: Mutex::new(VecDeque::new()),
+                bodies: Mutex::new(Vec::new()),
+            }),
+        }
+    }
+
+    fn push_kind(&self, body: impl Into<String>) {
+        self.state.kind.lock().unwrap().push_back(body.into());
+    }
+
+    fn push_thin(&self, body: impl Into<String>) {
+        self.state.thin.lock().unwrap().push_back(body.into());
+    }
+
+    fn bodies(&self, thin: bool) -> Vec<String> {
+        self.state
+            .bodies
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(is_thin, _)| *is_thin == thin)
+            .map(|(_, body)| body.clone())
+            .collect()
+    }
+}
+
+impl Respond for Router {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body = String::from_utf8_lossy(&request.body).to_string();
+        let thin = !body.contains("\"name\":\"task_accept\"")
+            && body.contains("\"name\":\"task_report\"");
+        self.state.bodies.lock().unwrap().push((thin, body));
+        let queue = if thin {
+            &self.state.thin
+        } else {
+            &self.state.kind
+        };
+        let Some(sse) = queue.lock().unwrap().pop_front() else {
+            return ResponseTemplate::new(500);
+        };
+        ResponseTemplate::new(200)
+            .insert_header("content-type", "text/event-stream")
+            .set_body_string(sse)
+    }
+}
+
+async fn mount(server: &MockServer, router: &Router) {
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(router.clone())
+        .mount(server)
+        .await;
+}
+
+async fn open_host(server: &MockServer, data: &Path, cwd: &Path) -> RootHost {
+    let mut options = crate::common::options(data);
+    options.cwd = cwd.to_path_buf();
+    options.model.base_url = server.uri();
+    options.config = AgentConfig {
+        instruction_roots: vec![data.join("agents-home")],
+        skill_roots: vec![data.join("skills-home")],
+        ..AgentConfig::default()
+    };
+    RootHost::open(options, DEFAULT_CONTEXT_WINDOW).await
+}
+
+fn send(_host: &RootHost, request_id: &str, text: &str) -> SendRequest {
+    SendRequest {
+        request_id: request_id.to_owned(),
+        content: text.to_owned(),
+        delivery: DeliveryMode::FollowUp,
+        pastes: Vec::new(),
+        attachments: Vec::new(),
+        canvas: None,
+    }
+}
+
+fn tasks_store(data: &Path) -> Store {
+    Store::open(data.join(service::TASKS_DB_FILE)).expect("任务库")
+}
+
+fn one_task(store: &Store) -> Task {
+    let ids = store.task_ids().expect("任务 id");
+    assert_eq!(ids.len(), 1, "只应有一个任务：{ids:?}");
+    store.task(&ids[0]).expect("读任务").expect("任务存在")
+}
+
+async fn wait_until(label: &str, mut check: impl FnMut() -> bool) {
+    for _ in 0..300 {
+        if check() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("等不到：{label}");
+}
+
+fn tool_names(body: &str) -> Vec<String> {
+    let value: Value = serde_json::from_str(body).expect("请求体 JSON");
+    value["tools"]
+        .as_array()
+        .expect("tools 数组")
+        .iter()
+        .filter_map(|tool| tool["name"].as_str().map(str::to_owned))
+        .collect()
+}
+
+fn relay_messages(events: &[session::Event]) -> Vec<(String, Value)> {
+    events
+        .iter()
+        .filter_map(|event| {
+            let session::EventKind::UserMessage { message, .. } = &event.kind else {
+                return None;
+            };
+            let model::MessageSource::User { rpc_id } = &message.source else {
+                return None;
+            };
+            let rpc_id = rpc_id.as_deref()?;
+            if !rpc_id.starts_with("task-report:") {
+                return None;
+            }
+            let text: String = message
+                .content
+                .iter()
+                .filter_map(model::ContentBlock::as_text)
+                .collect();
+            Some((rpc_id.to_owned(), serde_json::from_str(&text).ok()?))
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn accept_freezes_the_task_and_the_launch_uses_it() {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    mount(&server, &router).await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    // 存 Exa key 只是为了加载 web skill 后两件联网工具能开出（条件照旧），不真的联网。
+    credentials::Keyring::open(data.path(), Some(&data.path().join("identity.txt")))
+        .unwrap()
+        .save_exa_key("test-exa-key")
+        .unwrap();
+    let host = open_host(&server, data.path(), cwd.path()).await;
+    host.task_runtime().expect("任务执行者").set_paused(true);
+
+    let args = serde_json::json!({
+        "title": "查一下 Exa 怎么用",
+        "requirement": "读官方文档，给出能操作的例子",
+        "dod": "给出例子和出处"
+    })
+    .to_string();
+    router.push_kind(crate::common::tool_use_sse(0, "call-accept", "task_accept", &args));
+    // 同一个 ToolCall id 再放一次：受理要幂等。
+    router.push_kind(crate::common::tool_use_sse(1, "call-accept", "task_accept", &args));
+    router.push_kind(crate::common::text_sse("已派出"));
+
+    host.dispatch(Call::Send(send(&host, "kind-1", "查一下 Exa 怎么用")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&host, data.path(), 1).await;
+
+    let store = tasks_store(data.path());
+    let task = one_task(&store);
+    let root_id = host.info().session_id.expect("根会话 id");
+    assert_eq!(task.conversation.as_str(), root_id);
+    assert_eq!(task.cwd, std::fs::canonicalize(cwd.path()).unwrap());
+    assert_eq!(task.model.model, "deepseek-flash");
+    assert_eq!(task.tools, service::THIN_TOOLS.map(str::to_owned).to_vec());
+
+    let events = crate::common::read_root_events(data.path());
+    let results: Vec<String> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            session::EventKind::ToolResult { message, .. } => Some(
+                message
+                    .content
+                    .iter()
+                    .filter_map(model::ContentBlock::as_text)
+                    .collect::<String>(),
+            ),
+            _ => None,
+        })
+        .collect();
+    assert!(results[0].contains("已派出任务"), "{results:?}");
+    assert!(
+        results[1].contains("Already accepted as") && results[1].contains(task.id.as_str()),
+        "{results:?}"
+    );
+
+    // Kind 的工具表：有 task_accept/task_status，没有 task_report。
+    let kind_bodies = router.bodies(false);
+    let names = tool_names(&kind_bodies[0]);
+    assert!(names.contains(&"task_accept".to_owned()), "{names:?}");
+    assert!(names.contains(&"task_status".to_owned()), "{names:?}");
+    assert!(!names.contains(&"task_report".to_owned()), "{names:?}");
+
+    // 受理后改默认模型；launch 仍要用受理时冻结的那个。
+    host.dispatch(Call::SessionModelSelect(SessionModelSelectRequest {
+        connection: None,
+        model: Some("deepseek-pro".to_owned()),
+        effort_wanted: None,
+    }))
+    .await
+    .expect("换模型");
+    host.task_runtime().expect("任务执行者").set_paused(false);
+    router.push_thin(crate::common::tool_use_sse(
+        2,
+        "call-skill",
+        "skill",
+        &serde_json::json!({"name": "web"}).to_string(),
+    ));
+    router.push_thin(crate::common::tool_use_sse(
+        3,
+        "call-report",
+        "task_report",
+        &serde_json::json!({"state": "ready", "summary": "官方文档给了一个例子。"}).to_string(),
+    ));
+    router.push_thin(crate::common::text_sse("done"));
+
+    let store = tasks_store(data.path());
+    wait_until("ready 报告", || {
+        let task = store.task(&task.id).ok().flatten();
+        task.and_then(|task| task.latest_report().map(|report| report.state))
+            == Some(ReportState::Ready)
+    })
+    .await;
+    wait_until("Kind 收到 relay", || {
+        !relay_messages(&crate::common::read_root_events(data.path())).is_empty()
+    })
+    .await;
+
+    let task = store.task(&task.id).unwrap().unwrap();
+    let attempt = task.latest_attempt().expect("Attempt");
+    let conversation = attempt.conversation.clone().expect("会话 id");
+    let id = session::SessionId::parse(conversation.as_str()).unwrap();
+    let thin_session = session::SessionStore::open_read_only(data.path(), &id).expect("会话日志");
+    let header: Value = serde_json::from_str(
+        std::fs::read_to_string(thin_session.path())
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        header["cwd"],
+        std::fs::canonicalize(cwd.path()).unwrap().to_str().unwrap()
+    );
+    assert!(
+        thin_session.events().iter().any(|event| {
+            matches!(
+                &event.kind,
+                session::EventKind::UserMessage { message, .. }
+                    if matches!(&message.source, model::MessageSource::User { rpc_id: Some(id) } if id == &format!("assignment:{}", task.id))
+            )
+        }),
+        "第一条消息的 request id 是 assignment:<taskId>"
+    );
+
+    let thin_bodies = router.bodies(true);
+    assert!(!thin_bodies.is_empty(), "ThinAgent 至少发了一次请求");
+    for body in &thin_bodies {
+        let request: Value = serde_json::from_str(body).unwrap();
+        assert_eq!(request["model"], "deepseek-flash", "冻结的模型");
+    }
+    // 第一份请求只开出无条件的 6 件；加载 web skill（Exa key 已存）后开出 8 件。
+    let loaded = thin_bodies
+        .iter()
+        .find(|body| body.contains("\"name\":\"web_search\""))
+        .expect("加载 web 后的请求");
+    let mut names = tool_names(loaded);
+    names.sort();
+    let mut expected: Vec<String> = service::THIN_TOOLS.map(str::to_owned).to_vec();
+    expected.sort();
+    assert_eq!(names, expected, "ThinAgent 的工具表正好 8 件");
+    let first_names = tool_names(&thin_bodies[0]);
+    assert!(!first_names.contains(&"bash".to_owned()), "{first_names:?}");
+    assert!(!first_names.contains(&"write".to_owned()), "{first_names:?}");
+
+    let relays = relay_messages(&crate::common::read_root_events(data.path()));
+    assert_eq!(relays.len(), 1, "Kind 只收到一条 relay：{relays:?}");
+    let body = &relays[0].1;
+    assert_eq!(body["kind"], "task_report");
+    assert_eq!(body["state"], "ready");
+    assert_eq!(body["task"]["id"], task.id.as_str());
+    assert_eq!(body["task"]["stage"], "ready_for_review");
+    assert_eq!(body["summary"], "官方文档给了一个例子。");
+}
+
+#[tokio::test]
+async fn task_status_returns_the_full_report_and_attempts() {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    mount(&server, &router).await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let host = open_host(&server, data.path(), cwd.path()).await;
+
+    let args = serde_json::json!({
+        "title": "查一下",
+        "requirement": "找答案",
+        "dod": "有答案"
+    })
+    .to_string();
+    router.push_kind(crate::common::tool_use_sse(0, "call-accept", "task_accept", &args));
+    router.push_kind(crate::common::text_sse("已派出"));
+    router.push_thin(crate::common::tool_use_sse(
+        1,
+        "call-report",
+        "task_report",
+        &serde_json::json!({"state": "ready", "summary": "完整答案：第一行
+第二行"}).to_string(),
+    ));
+    router.push_thin(crate::common::text_sse(""));
+    host.dispatch(Call::Send(send(&host, "kind-1", "查一下")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&host, data.path(), 1).await;
+
+    let store = tasks_store(data.path());
+    let task = one_task(&store);
+    wait_until("ready 报告", || {
+        store
+            .task(&task.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_report().map(|report| report.state))
+            == Some(ReportState::Ready)
+    })
+    .await;
+
+    let status_args = serde_json::json!({"task_id": task.id.as_str()}).to_string();
+    router.push_kind(crate::common::tool_use_sse(2, "call-status", "task_status", &status_args));
+    router.push_kind(crate::common::text_sse("我看一下"));
+    host.dispatch(Call::Send(send(&host, "kind-2", "任务怎么样了")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&host, data.path(), 2).await;
+
+    let events = crate::common::read_root_events(data.path());
+    let result = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            session::EventKind::ToolResult { message, .. } => Some(
+                message
+                    .content
+                    .iter()
+                    .filter_map(model::ContentBlock::as_text)
+                    .collect::<String>(),
+            ),
+            _ => None,
+        })
+        .find(|text| text.contains("Attempt 数"))
+        .expect("task_status 结果");
+    assert!(result.contains("阶段：待检查"), "{result}");
+    assert!(result.contains("Attempt 数：1"), "{result}");
+    assert!(result.contains("完整答案：第一行
+第二行"), "{result}");
+}
+
+#[tokio::test]
+async fn a_missing_credential_opens_no_task_session_and_relays_what_is_missing() {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    mount(&server, &router).await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let host = open_host(&server, data.path(), cwd.path()).await;
+    host.task_runtime().expect("任务执行者").set_paused(true);
+
+    let args = serde_json::json!({
+        "title": "查一下",
+        "requirement": "找答案",
+        "dod": "有答案"
+    })
+    .to_string();
+    router.push_kind(crate::common::tool_use_sse(0, "call-accept", "task_accept", &args));
+    router.push_kind(crate::common::text_sse("已派出"));
+    host.dispatch(Call::Send(send(&host, "kind-1", "查一下")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&host, data.path(), 1).await;
+
+    let store = tasks_store(data.path());
+    let task = one_task(&store);
+    host.dispatch(Call::DisabledModelsSet(DisabledModelsSetRequest {
+        models: vec!["deepseek-flash".to_owned()],
+    }))
+    .await
+    .expect("屏蔽模型");
+    host.task_runtime().expect("任务执行者").set_paused(false);
+
+    wait_until("缺项报告", || {
+        store
+            .task(&task.id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| !task.missing.is_empty())
+    })
+    .await;
+    wait_until("缺项 relay", || {
+        !relay_messages(&crate::common::read_root_events(data.path())).is_empty()
+    })
+    .await;
+
+    let task = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::NeedsConditions);
+    assert!(
+        task.missing.iter().any(|item| item.as_str().contains("凭证")),
+        "{:?}",
+        task.missing
+    );
+    assert!(router.bodies(true).is_empty(), "缺项不能开任务会话");
+    let session_files = std::fs::read_dir(data.path().join("sessions"))
+        .unwrap()
+        .filter(|entry| {
+            entry
+                .as_ref()
+                .is_ok_and(|entry| entry.path().extension().is_some_and(|ext| ext == "jsonl"))
+        })
+        .count();
+    assert_eq!(session_files, 1, "只有 Kind 的根会话");
+    let relays = relay_messages(&crate::common::read_root_events(data.path()));
+    assert_eq!(relays.len(), 1, "{relays:?}");
+    assert_eq!(relays[0].1["state"], "blocked");
+    assert_eq!(relays[0].1["task"]["stage"], "needs_conditions");
+    let summary = relays[0].1["summary"].as_str().unwrap();
+    assert!(summary.contains("任务包缺"), "{summary}");
+    assert!(summary.contains("deepseek-flash"), "{summary}");
+}

@@ -10,6 +10,7 @@ pub mod disabled;
 mod error;
 mod events;
 mod exa;
+mod executor;
 mod input;
 mod propose;
 mod protocol;
@@ -34,6 +35,7 @@ pub(crate) const SERVICE_EVENT_CHANNEL_CAPACITY: usize = 1024;
 pub use actions::{ActionEnv, ActionFuture, ActionKind, ActionOutcome, ActionRegistry, CardFact};
 pub use error::*;
 pub use exa::EXA_DEFAULT_BASE_URL;
+pub use executor::{TASKS_DB_FILE, THIN_TOOLS, TaskRuntime};
 pub use protocol::*;
 pub use root::{
     KeyringChanged, ModelFactory, ROOT_STATE_FILE, RootError, RootSession, RootSessionOptions,

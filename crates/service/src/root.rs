@@ -79,6 +79,9 @@ pub struct RootSessionOptions {
     pub exa_base_url: Option<String>,
     /// AIOS 自己的监听地址；web::serve 绑定后填入。web_fetch 读它拒绝读自己。
     pub web_listen: Option<std::sync::Arc<std::sync::OnceLock<std::net::SocketAddr>>>,
+    /// T024.3：任务执行者（服务装配；测试可借它暂停效果泵）。None = 不开任务工具。
+    #[doc(hidden)]
+    pub task_runtime: Option<std::sync::Arc<crate::executor::TaskRuntime>>,
 }
 
 /// T008.3b/T012.7：按会话的模型选择解析 (连接 id, 模型配置, 凭证来源)。
@@ -131,6 +134,7 @@ impl std::fmt::Debug for RootSessionOptions {
                     .as_ref()
                     .and_then(|cell| cell.get().copied()),
             )
+            .field("task_runtime", &self.task_runtime.as_ref().map(|_| "<runtime>"))
             .finish()
     }
 }
@@ -155,16 +159,9 @@ impl RootSession {
 pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSession, RootError> {
     let state_path = RootSession::state_path(&options.data_dir);
     // 根会话独有的工具：`aios_query` 读服务里已存的数据，`propose_action` 出确认卡，
-    // `web_search`/`web_fetch` 联网（要 Exa 的 key 且加载过 `web`）。CLI 的对话不装它们。
-    let web_search_config = crate::web::WebSearchConfig {
-        data_dir: options.data_dir.clone(),
-        identity: options.identity.clone(),
-        base_url: options
-            .exa_base_url
-            .clone()
-            .unwrap_or_else(|| crate::EXA_DEFAULT_BASE_URL.to_owned()),
-    };
-    let extra_tools = vec![
+    // `web_search`/`web_fetch` 联网（要 Exa 的 key 且加载过 `web`），任务工具
+    // `task_accept`/`task_status` 派只读调查。CLI 的对话不装它们。
+    let mut extra_tools = vec![
         std::sync::Arc::new(crate::aios_query::QueryTool::new(
             options.data_dir.clone(),
             options.identity.clone(),
@@ -174,29 +171,20 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
             options.data_dir.clone(),
             options.identity.clone(),
         )),
-        std::sync::Arc::new(crate::web::WebSearchTool::new(web_search_config)),
-        std::sync::Arc::new(crate::web::WebFetchTool::new(crate::web::WebFetchConfig {
-            data_dir: options.data_dir.clone(),
-            identity: options.identity.clone(),
-            self_addr: options.web_listen.clone(),
-            http: model::http::HttpEnv::from_process(),
-            timeout: crate::web::WEB_FETCH_TIMEOUT,
-        })),
     ];
+    extra_tools.extend(web_extra_tools(&options));
+    if let Some(runtime) = &options.task_runtime {
+        extra_tools.push(std::sync::Arc::new(crate::executor::TaskAcceptTool::new(
+            std::sync::Arc::clone(runtime),
+        )));
+        extra_tools.push(std::sync::Arc::new(crate::executor::TaskStatusTool::new(
+            std::sync::Arc::clone(runtime),
+        )));
+    }
     // 工具凭证的事实：每步只读检查 Keyring（不建任何文件）；读不出来按没存，
-    // 设置页另外报读不出的原因。
-    let key_data_dir = options.data_dir.clone();
-    let key_identity = options.identity.clone();
+    // 设置页另外报读不出的原因。ThinAgent 用同一份来源。
     let mut config = options.config.clone();
-    config.tool_keys = tools::ToolKeySource::new(std::sync::Arc::new(move || {
-        let mut keys = std::collections::BTreeSet::new();
-        if credentials::Keyring::open_read_only(&key_data_dir, key_identity.as_deref())
-            .is_ok_and(|keyring| keyring.exa_key_saved())
-        {
-            keys.insert(tools::ToolKey::Exa);
-        }
-        keys
-    }));
+    config.tool_keys = tool_key_source(&options);
     match std::fs::read(&state_path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             std::fs::create_dir_all(&options.data_dir)?;
@@ -209,7 +197,11 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
                 credentials: options.credentials.clone(),
                 append_hook_factory: options.append_hook_factory.clone(),
                 extra_tools: extra_tools.clone(),
-                tool_policy: agent::ToolPolicy::default(),
+                // T024.3：Kind 不原地等，等的东西会自己送到（四类拒绝在统一工具入口）。
+                tool_policy: agent::ToolPolicy {
+                    only: None,
+                    no_wait: true,
+                },
                 policy_prompt: None,
             })
             .await?;
@@ -265,7 +257,11 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
                 credentials: options.credentials.clone(),
                 append_hook_factory: options.append_hook_factory.clone(),
                 extra_tools,
-                tool_policy: agent::ToolPolicy::default(),
+                // T024.3：Kind 不原地等，等的东西会自己送到（四类拒绝在统一工具入口）。
+                tool_policy: agent::ToolPolicy {
+                    only: None,
+                    no_wait: true,
+                },
                 policy_prompt: None,
             })
             .await
@@ -315,3 +311,42 @@ fn write_root_state_atomic(path: &Path, record: &RootRecord) -> Result<(), RootE
     credentials::atomic::write(path, &json, credentials::atomic::TargetKind::Shared)?;
     Ok(())
 }
+
+/// 根会话和 ThinAgent 共用的联网工具（两件都挂 AfterSkillWithKey，构造方式只此一处）。
+pub(crate) fn web_extra_tools(options: &RootSessionOptions) -> Vec<std::sync::Arc<dyn tools::Tool>> {
+    let web_search_config = crate::web::WebSearchConfig {
+        data_dir: options.data_dir.clone(),
+        identity: options.identity.clone(),
+        base_url: options
+            .exa_base_url
+            .clone()
+            .unwrap_or_else(|| crate::EXA_DEFAULT_BASE_URL.to_owned()),
+    };
+    vec![
+        std::sync::Arc::new(crate::web::WebSearchTool::new(web_search_config)),
+        std::sync::Arc::new(crate::web::WebFetchTool::new(crate::web::WebFetchConfig {
+            data_dir: options.data_dir.clone(),
+            identity: options.identity.clone(),
+            self_addr: options.web_listen.clone(),
+            http: model::http::HttpEnv::from_process(),
+            timeout: crate::web::WEB_FETCH_TIMEOUT,
+        })),
+    ]
+}
+
+
+/// 工具凭证的求值面：每步只读 Keyring；读不出来按没存（设置页另报原因）。
+pub(crate) fn tool_key_source(options: &RootSessionOptions) -> tools::ToolKeySource {
+    let data_dir = options.data_dir.clone();
+    let identity = options.identity.clone();
+    tools::ToolKeySource::new(std::sync::Arc::new(move || {
+        let mut keys = std::collections::BTreeSet::new();
+        if credentials::Keyring::open_read_only(&data_dir, identity.as_deref())
+            .is_ok_and(|keyring| keyring.exa_key_saved())
+        {
+            keys.insert(tools::ToolKey::Exa);
+        }
+        keys
+    }))
+}
+

@@ -658,6 +658,7 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
             actions,
             exa_base_url: args.exa_base_url.clone(),
             web_listen: None,
+            task_runtime: None,
         },
         window,
     )
