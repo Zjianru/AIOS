@@ -1195,3 +1195,52 @@ fn unmask_refuses_without_an_exact_rule() {
         .expect_err("只有通配规则时不提议解除单个模型");
     assert!(error.contains("没有单独屏蔽"), "{error}");
 }
+
+/// set_paused 的事实行是设置文件里的之前、之后。
+#[test]
+fn set_paused_reports_the_before_and_after() {
+    let dir = tempdir().expect("临时目录");
+    let data_dir = dir.path().to_path_buf();
+    let identity = data_dir.join("identity.txt");
+    let action = settings_action(&data_dir, "set_paused");
+    let facts = action
+        .describe(
+            &json!({ "paused": true }),
+            &action_env(&data_dir, &identity),
+        )
+        .expect("可以打开暂停");
+    assert_eq!(
+        facts,
+        vec![service::CardFact {
+            name: "全局暂停".to_owned(),
+            value: "关 → 开".to_owned(),
+        }]
+    );
+}
+
+/// 已经是这个状态时不再提议；反方向照常给事实行。
+#[test]
+fn set_paused_refuses_when_already_in_that_state() {
+    let dir = tempdir().expect("临时目录");
+    let data_dir = dir.path().to_path_buf();
+    let identity = data_dir.join("identity.txt");
+    let mut settings = service::settings::load(&data_dir);
+    settings.exec.paused = true;
+    service::settings::save(&data_dir, &settings).expect("保存暂停");
+    let action = settings_action(&data_dir, "set_paused");
+    let error = action
+        .describe(
+            &json!({ "paused": true }),
+            &action_env(&data_dir, &identity),
+        )
+        .expect_err("已经打开时不提议");
+    assert!(error.contains("已经打开"), "{error}");
+    let facts = action
+        .describe(
+            &json!({ "paused": false }),
+            &action_env(&data_dir, &identity),
+        )
+        .expect("可以关掉暂停");
+    assert_eq!(facts[0].name, "全局暂停");
+    assert_eq!(facts[0].value, "开 → 关");
+}

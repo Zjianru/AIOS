@@ -28,6 +28,18 @@ pub struct Settings {
     /// 屏蔽的模型规则（通配；空表 = 都不屏蔽）。改了立即生效。
     #[serde(default, rename = "disabledModels")]
     pub disabled_models: Vec<String>,
+    /// 执行域的设置；文件里缺这一节按默认值读。
+    #[serde(default)]
+    pub exec: ExecSettings,
+}
+
+/// 执行域的设置（设置 › 执行）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ExecSettings {
+    /// 全局暂停：打开时新的 Attempt 排队，在跑的一轮跑完；relay/notice 照送。
+    /// 关掉后新任务按排队顺序接着走（不取消、不清队）。
+    #[serde(default)]
+    pub paused: bool,
 }
 
 fn default_currency() -> String {
@@ -40,6 +52,7 @@ impl Default for Settings {
             last_selection: None,
             currency: default_currency(),
             disabled_models: Vec::new(),
+            exec: ExecSettings::default(),
         }
     }
 }
@@ -172,6 +185,36 @@ mod tests {
     fn missing_settings_read_as_default() {
         let dir = tempfile::tempdir().expect("dir");
         assert_eq!(load(dir.path()), Settings::default());
+    }
+
+    #[test]
+    fn missing_exec_settings_read_as_not_paused() {
+        let dir = tempfile::tempdir().expect("dir");
+        // 旧设置文件没有 exec 这一节：按默认值读（不暂停）。
+        std::fs::write(
+            path(dir.path()),
+            br#"{"currency":"cny","disabledModels":[]}"#,
+        )
+        .expect("write");
+        let settings = load(dir.path());
+        assert!(!settings.exec.paused);
+        assert_eq!(settings.currency, "cny");
+    }
+
+    #[test]
+    fn exec_paused_round_trips() {
+        let dir = tempfile::tempdir().expect("dir");
+        let mut settings = Settings {
+            exec: ExecSettings { paused: true },
+            ..Settings::default()
+        };
+        save(dir.path(), &settings).expect("save");
+        assert!(load(dir.path()).exec.paused);
+        let text = std::fs::read_to_string(path(dir.path())).expect("read");
+        assert!(text.contains(r#""exec":{"paused":true}"#), "{text}");
+        settings.exec.paused = false;
+        save(dir.path(), &settings).expect("save");
+        assert!(!load(dir.path()).exec.paused);
     }
 
     #[test]

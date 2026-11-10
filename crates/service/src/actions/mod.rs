@@ -6,6 +6,7 @@
 
 mod mask;
 mod select_model;
+mod set_paused;
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -105,7 +106,11 @@ impl ActionRegistry {
             data_dir.clone(),
             identity.clone(),
         )));
-        registry.register(Arc::new(mask::MaskAction::unmask(data_dir, identity)));
+        registry.register(Arc::new(mask::MaskAction::unmask(
+            data_dir.clone(),
+            identity,
+        )));
+        registry.register(Arc::new(set_paused::SetPausedAction::new(data_dir)));
         registry
     }
 

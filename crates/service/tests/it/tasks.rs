@@ -9,8 +9,8 @@ use agent::AgentConfig;
 use model::DEFAULT_CONTEXT_WINDOW;
 use serde_json::Value;
 use service::{
-    Call, DeliveryMode, DisabledModelsSetRequest, Response, RootHost, SendRequest,
-    SessionModelSelectRequest, StopMode, TaskStopRequest,
+    Call, CardActRequest, CardVerb, DeliveryMode, DisabledModelsSetRequest, Response, RootHost,
+    SendRequest, SessionModelSelectRequest, StopMode, TaskStopRequest,
 };
 use tasks::{AttemptEnd, EffectKind, ReportState, Stage, Store, Task};
 use wiremock::matchers::{method, path};
@@ -1898,4 +1898,418 @@ async fn kind_task_stop_after_report_stops_after_the_next_turn() {
         "没报：waiting 合成后记 stopped"
     );
     assert_eq!(store.stage(&task.id).unwrap(), Stage::NeedsConditions);
+}
+
+fn skill_sse(call_id: &str, name: &str) -> String {
+    crate::common::tool_use_sse(
+        0,
+        call_id,
+        "skill",
+        &serde_json::json!({ "name": name }).to_string(),
+    )
+}
+
+/// Kind 的 set_paused 确认卡：详情只有一个布尔，事实行由服务端填。
+fn pause_card_sse(call_id: &str, paused: bool) -> String {
+    let args = serde_json::json!({
+        "title": "全局暂停",
+        "brief": if paused {
+            "打开以后新任务先排队，在跑的这一轮跑完。"
+        } else {
+            "关掉以后排队的任务按原顺序开跑。"
+        },
+        "options": [{
+            "id": "one",
+            "action": "set_paused",
+            "label": if paused { "暂停新任务" } else { "继续开跑" },
+            "details": { "paused": paused },
+        }],
+    })
+    .to_string();
+    crate::common::tool_use_sse(1, call_id, "propose_action", &args)
+}
+
+/// 走一轮 Kind：先把这一轮的回复排好，再发消息，等 turn 收尾。
+async fn kind_turn(
+    host: &RootHost,
+    router: &Router,
+    data: &Path,
+    request_id: &str,
+    text: &str,
+    turns: usize,
+    scripts: Vec<String>,
+) {
+    for script in scripts {
+        router.push_kind(script);
+    }
+    host.dispatch(Call::Send(send(host, request_id, text)))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(host, data, turns).await;
+}
+
+async fn confirm_pause_card(host: &RootHost, call_id: &str) -> Value {
+    let response = host
+        .dispatch(Call::CardAct(CardActRequest {
+            call_id: call_id.to_owned(),
+            verb: CardVerb::Confirm,
+            option: Some("one".to_owned()),
+        }))
+        .await
+        .expect("确认暂停卡");
+    serde_json::to_value(response).expect("确认暂停卡 json")["decision"].clone()
+}
+
+/// 从提议工具结果的 meta 里取第一项的事实行。
+fn card_facts(events: &[session::Event], call_id: &str) -> Vec<Value> {
+    let meta = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            session::EventKind::ToolResult {
+                message,
+                meta: Some(meta),
+                ..
+            } if message.tool_call_id.as_deref() == Some(call_id) => Some(meta.clone()),
+            _ => None,
+        })
+        .expect("提议工具结果带 meta");
+    meta["card"]["options"][0]["facts"]
+        .as_array()
+        .expect("事实数组")
+        .clone()
+}
+
+/// 受理一个任务并返回它。
+async fn accept_task(
+    host: &RootHost,
+    router: &Router,
+    data: &Path,
+    request_id: &str,
+    call_id: &str,
+    turns: usize,
+    title: &str,
+) -> Task {
+    let args = serde_json::json!({
+        "title": title,
+        "requirement": "找答案",
+        "dod": "有答案",
+    })
+    .to_string();
+    kind_turn(
+        host,
+        router,
+        data,
+        request_id,
+        "派一个任务",
+        turns,
+        vec![
+            crate::common::tool_use_sse(0, call_id, "task_accept", &args),
+            crate::common::text_sse("已派出"),
+        ],
+    )
+    .await;
+    let store = tasks_store(data);
+    store
+        .task_ids()
+        .expect("任务 id")
+        .into_iter()
+        .filter_map(|id| store.task(&id).ok().flatten())
+        .find(|task| task.title == title)
+        .expect("刚受理的任务")
+}
+
+/// 暂停测试的宿主：动作登记表走产品装配（set_paused 属于 aios-tasks）。
+async fn open_pause_host(server: &MockServer, data: &Path, cwd: &Path) -> RootHost {
+    open_host_with(server, data, cwd, |options| {
+        options.actions = Arc::new(service::ActionRegistry::settings(
+            data.to_path_buf(),
+            options.identity.clone(),
+        ));
+    })
+    .await
+}
+
+/// 任务上报 ready 的两步回复（工具调用 + 最终回答）。
+fn ready_scripts() -> [String; 2] {
+    [
+        crate::common::tool_use_sse(
+            2,
+            "call-report",
+            "task_report",
+            &serde_json::json!({"state": "ready", "summary": "查好了"}).to_string(),
+        ),
+        crate::common::text_sse("done"),
+    ]
+}
+
+/// 全局暂停：Kind 用确认卡开/关。开着时派的两个任务都不起跑、排队不清；
+/// 关掉后按受理顺序开跑，relay 照常送到 Kind。
+#[tokio::test]
+async fn global_pause_holds_new_tasks_then_runs_the_queue_in_acceptance_order() {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    mount(&server, &router).await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let host = open_pause_host(&server, data.path(), cwd.path()).await;
+    let store = tasks_store(data.path());
+
+    // 第一轮：Kind 加载 aios-tasks，出确认卡；事实行是 关 → 开。
+    kind_turn(
+        &host,
+        &router,
+        data.path(),
+        "kind-pause",
+        "暂停新任务",
+        1,
+        vec![
+            skill_sse("call-load-tasks", "aios-tasks"),
+            pause_card_sse("call-pause", true),
+            crate::common::text_sse("暂停了。"),
+        ],
+    )
+    .await;
+    let events = crate::common::read_root_events(data.path());
+    assert_eq!(
+        card_facts(&events, "call-pause"),
+        vec![serde_json::json!({ "name": "全局暂停", "value": "关 → 开" })]
+    );
+    let decision = confirm_pause_card(&host, "call-pause").await;
+    assert_eq!(decision["phase"], "confirmed");
+    assert!(
+        service::settings::load(data.path()).exec.paused,
+        "确认后设置文件里是开"
+    );
+
+    // 暂停时派两个任务：都只留 launch 效果，不开会话。
+    let first = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-a",
+        "call-accept-a",
+        2,
+        "甲",
+    )
+    .await;
+    let second = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-b",
+        "call-accept-b",
+        3,
+        "乙",
+    )
+    .await;
+    assert!(router.bodies(true).is_empty(), "暂停时不能开任务会话");
+    for task in [&first, &second] {
+        assert!(task.latest_attempt().is_none(), "暂停时不能记 Attempt");
+        assert!(
+            store
+                .effect_pending(EffectKind::Launch, task.id.as_str())
+                .unwrap(),
+            "排队留着，不取消不清队"
+        );
+    }
+    assert!(
+        relay_messages(&crate::common::read_root_events(data.path())).is_empty(),
+        "没起跑就没有 relay"
+    );
+
+    // 关掉暂停；排队的按受理顺序开跑。两条 relay 的 Kind 轮预先备好回复。
+    for script in ready_scripts() {
+        router.push_thin(script);
+    }
+    for script in ready_scripts() {
+        router.push_thin(script);
+    }
+    kind_turn(
+        &host,
+        &router,
+        data.path(),
+        "kind-resume",
+        "继续开跑",
+        4,
+        vec![
+            skill_sse("call-load-tasks", "aios-tasks"),
+            pause_card_sse("call-resume", false),
+            crate::common::text_sse("开跑了。"),
+            crate::common::text_sse("收到"),
+            crate::common::text_sse("收到"),
+        ],
+    )
+    .await;
+    let decision = confirm_pause_card(&host, "call-resume").await;
+    assert_eq!(decision["phase"], "confirmed");
+    assert!(!service::settings::load(data.path()).exec.paused);
+
+    wait_until("两个任务都报 ready", || {
+        [&first, &second].iter().all(|task| {
+            store
+                .task(&task.id)
+                .ok()
+                .flatten()
+                .and_then(|task| task.latest_report().map(|report| report.state))
+                == Some(ReportState::Ready)
+        })
+    })
+    .await;
+    wait_until("两条 relay 到 Kind", || {
+        relay_messages(&crate::common::read_root_events(data.path())).len() == 2
+    })
+    .await;
+
+    let bodies = router.bodies(true);
+    let first_start = bodies.iter().position(|body| body.contains("甲"));
+    let second_start = bodies.iter().position(|body| body.contains("乙"));
+    assert!(
+        first_start.is_some() && second_start.is_some(),
+        "两个任务都开了会话：{bodies:?}"
+    );
+    assert!(
+        first_start < second_start,
+        "按受理顺序开跑：{first_start:?} / {second_start:?}"
+    );
+    let relays = relay_messages(&crate::common::read_root_events(data.path()));
+    assert!(
+        relays.iter().all(|(_, body)| body["state"] == "ready"),
+        "{relays:?}"
+    );
+}
+
+/// 保存在 settings.json 里的暂停在重启后生效：任务只排队，不开会话。
+#[tokio::test]
+async fn a_saved_pause_holds_launches_after_a_restart() {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    mount(&server, &router).await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let mut saved = service::settings::load(data.path());
+    saved.exec.paused = true;
+    service::settings::save(data.path(), &saved).expect("保存暂停设置");
+    let host = open_pause_host(&server, data.path(), cwd.path()).await;
+
+    let task = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-a",
+        "call-accept-a",
+        1,
+        "甲",
+    )
+    .await;
+    assert!(task.latest_attempt().is_none());
+    assert!(router.bodies(true).is_empty(), "重启后暂停仍然生效");
+    let store = tasks_store(data.path());
+    assert!(
+        store
+            .effect_pending(EffectKind::Launch, task.id.as_str())
+            .unwrap(),
+        "任务在排队"
+    );
+}
+
+/// 全局暂停不掐断在跑的一轮：暂停时这一轮照常交出报告，relay 也照常送到 Kind；
+/// 暂停期间新派的任务排队。
+#[tokio::test]
+async fn global_pause_lets_the_running_turn_finish_and_relays_still_arrive() {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    mount(&server, &router).await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let host = open_pause_host(&server, data.path(), cwd.path()).await;
+    let store = tasks_store(data.path());
+    // 让 ThinAgent 的回复慢到暂停确认之后，好在「这一轮在跑」时按下暂停。
+    router.set_thin_delay(Duration::from_millis(1_500));
+
+    let first = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-a",
+        "call-accept-a",
+        1,
+        "甲",
+    )
+    .await;
+    wait_until("ThinAgent 的请求在途", || {
+        !router.bodies(true).is_empty()
+    })
+    .await;
+
+    kind_turn(
+        &host,
+        &router,
+        data.path(),
+        "kind-pause",
+        "暂停新任务",
+        2,
+        vec![
+            skill_sse("call-load-tasks", "aios-tasks"),
+            pause_card_sse("call-pause", true),
+            crate::common::text_sse("暂停了。"),
+            // 这一轮的 relay 会 Steer 进 Kind，备一条回复。
+            crate::common::text_sse("收到"),
+        ],
+    )
+    .await;
+    let decision = confirm_pause_card(&host, "call-pause").await;
+    assert_eq!(decision["phase"], "confirmed");
+
+    // 确认暂停时这一轮还没交出报告：暂停没有取消它。
+    let in_flight = store.task(&first.id).unwrap().unwrap();
+    assert!(
+        in_flight
+            .latest_attempt()
+            .and_then(|attempt| attempt.conversation.clone())
+            .is_some(),
+        "任务会话还开着"
+    );
+    assert_eq!(attempt_end(&store, &first.id), None, "这一轮还没结束");
+
+    wait_until("Kind 收到 relay", || {
+        relay_messages(&crate::common::read_root_events(data.path())).len() == 1
+    })
+    .await;
+    assert!(
+        service::settings::load(data.path()).exec.paused,
+        "relay 到达时暂停还开着"
+    );
+    assert_eq!(attempt_end(&store, &first.id), Some(AttemptEnd::Reported));
+    assert_eq!(
+        store
+            .task(&first.id)
+            .unwrap()
+            .unwrap()
+            .latest_report()
+            .map(|report| report.state),
+        Some(ReportState::Ready)
+    );
+
+    // 暂停期间再派一个任务：照样排队，不开会话。
+    let second = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-b",
+        "call-accept-b",
+        3,
+        "乙",
+    )
+    .await;
+    assert!(second.latest_attempt().is_none());
+    assert!(
+        store
+            .effect_pending(EffectKind::Launch, second.id.as_str())
+            .unwrap(),
+        "暂停期间的任务在排队"
+    );
+    assert!(
+        !router.bodies(true).iter().any(|body| body.contains("乙")),
+        "暂停期间没有第二个任务会话"
+    );
 }
