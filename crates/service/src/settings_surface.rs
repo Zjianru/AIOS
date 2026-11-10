@@ -538,6 +538,29 @@ impl RootHost {
         Ok(())
     }
 
+    /// 席位上限：校验 1–16 后落 settings.json，再改任务效果泵的准入上限。
+    ///
+    /// 和 set_exec_paused 一样先写盘再改内存：写不进去就不改运行时，页面能看到错误。
+    /// 改小不掐断在跑的任务，只影响之后的 launch 准入。
+    pub fn set_exec_seats(&self, seats: u8) -> Result<(), ServiceError> {
+        if !(settings::MIN_SEATS..=settings::MAX_SEATS).contains(&seats) {
+            return Err(ServiceError::SettingsInvalid(format!(
+                "席位必须在 {}–{} 之间：{seats}",
+                settings::MIN_SEATS,
+                settings::MAX_SEATS
+            )));
+        }
+        let mut settings = settings::load_for_write(&self.options.data_dir)
+            .map_err(ServiceError::SettingsUnreadable)?;
+        settings.exec.seats = seats;
+        settings::save(&self.options.data_dir, &settings).map_err(ServiceError::SettingsInvalid)?;
+        if let Some(runtime) = self.task_runtime() {
+            runtime.set_exec_seats(seats);
+        }
+        self.emit_settings_changed();
+        Ok(())
+    }
+
     /// 写非密钥设置（目前只有 currency）。只碰 settings.json，不碰 Keyring/连接。
     pub async fn settings_update(
         &self,

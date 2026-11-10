@@ -27,6 +27,8 @@ struct RouterState {
     thin: Mutex<VecDeque<String>>,
     /// 按任务的 ThinAgent 脚本：多任务同时跑时，各自按 assignment 里的 task_id 取。
     thin_by_task: Mutex<HashMap<String, VecDeque<String>>>,
+    /// 任务 id 要受理后才知道；测试先按标题排脚本（assignment 里也有标题）。
+    thin_by_title: Mutex<HashMap<String, VecDeque<String>>>,
 
     bodies: Mutex<Vec<(bool, String)>>,
     unexpected: Mutex<Vec<(bool, String)>>,
@@ -41,6 +43,7 @@ impl Router {
                 kind: Mutex::new(VecDeque::new()),
                 thin: Mutex::new(VecDeque::new()),
                 thin_by_task: Mutex::new(HashMap::new()),
+                thin_by_title: Mutex::new(HashMap::new()),
                 bodies: Mutex::new(Vec::new()),
                 unexpected: Mutex::new(Vec::new()),
                 thin_delay: Mutex::new(None),
@@ -50,6 +53,10 @@ impl Router {
 
     fn set_thin_delay(&self, delay: Duration) {
         *self.state.thin_delay.lock().unwrap() = Some(delay);
+    }
+
+    fn clear_thin_delay(&self) {
+        *self.state.thin_delay.lock().unwrap() = None;
     }
 
     fn push_kind(&self, body: impl Into<String>) {
@@ -71,6 +78,37 @@ impl Router {
             .push_back(body.into());
     }
 
+    /// 按标题排 ThinAgent 回复；受理前就能排，第一个请求不会落空。
+    fn push_thin_for_title(&self, title: &str, body: impl Into<String>) {
+        self.state
+            .thin_by_title
+            .lock()
+            .unwrap()
+            .entry(title.to_owned())
+            .or_default()
+            .push_back(body.into());
+    }
+
+    fn take_thin_script(&self, body: &str) -> Option<String> {
+        let (task_id, title) = assignment_identity(body)?;
+        if let Some(script) = self
+            .state
+            .thin_by_task
+            .lock()
+            .unwrap()
+            .get_mut(&task_id)
+            .and_then(VecDeque::pop_front)
+        {
+            return Some(script);
+        }
+        self.state
+            .thin_by_title
+            .lock()
+            .unwrap()
+            .get_mut(&title)
+            .and_then(VecDeque::pop_front)
+    }
+
     fn bodies(&self, thin: bool) -> Vec<String> {
         self.state
             .bodies
@@ -89,16 +127,9 @@ impl Respond for Router {
         let thin =
             !body.contains("\"name\":\"task_accept\"") && body.contains("\"name\":\"task_report\"");
         self.state.bodies.lock().unwrap().push((thin, body.clone()));
-        // 多任务同时跑：先按 assignment 的 task_id 取这个任务自己的脚本；没有就落到公共队列。
+        // 多任务同时跑：先按 assignment 的 task_id、再按标题取这个任务的脚本；没有就落到公共队列。
         let per_task = if thin {
-            assignment_task_id(&body).and_then(|task_id| {
-                self.state
-                    .thin_by_task
-                    .lock()
-                    .unwrap()
-                    .get_mut(&task_id)
-                    .and_then(VecDeque::pop_front)
-            })
+            self.take_thin_script(&body)
         } else {
             None
         };
@@ -131,8 +162,8 @@ impl Respond for Router {
     }
 }
 
-/// 从 ThinAgent 请求里第一条 assignment 取出任务 id；别的请求没有就是 None。
-fn assignment_task_id(body: &str) -> Option<String> {
+/// 从 ThinAgent 请求里第一条 assignment 取出任务 id 和标题；别的请求没有就是 None。
+fn assignment_identity(body: &str) -> Option<(String, String)> {
     let value: Value = serde_json::from_str(body).ok()?;
     for message in value["messages"].as_array()? {
         for block in message["content"].as_array()? {
@@ -142,8 +173,10 @@ fn assignment_task_id(body: &str) -> Option<String> {
             let Ok(assignment) = serde_json::from_str::<Value>(text) else {
                 continue;
             };
-            if let Some(id) = assignment["task_id"].as_str() {
-                return Some(id.to_owned());
+            if let (Some(id), Some(title)) =
+                (assignment["task_id"].as_str(), assignment["title"].as_str())
+            {
+                return Some((id.to_owned(), title.to_owned()));
             }
         }
     }
@@ -2390,4 +2423,337 @@ async fn global_pause_lets_the_running_turn_finish_and_relays_still_arrive() {
         !router.bodies(true).iter().any(|body| body.contains("乙")),
         "暂停期间没有第二个任务会话"
     );
+}
+
+/// 任务最近一份报告是不是 ready。
+fn reported_ready(store: &Store, task_id: &tasks::TaskId) -> bool {
+    store
+        .task(task_id)
+        .ok()
+        .flatten()
+        .and_then(|task| task.latest_report().map(|report| report.state))
+        == Some(ReportState::Ready)
+}
+
+/// 任务当前 Attempt 还开着，而且已经有任务会话。
+fn attempt_in_flight(store: &Store, task_id: &tasks::TaskId) -> bool {
+    let Ok(Some(task)) = store.task(task_id) else {
+        return false;
+    };
+    task.latest_attempt()
+        .is_some_and(|attempt| attempt.ended_at.is_none() && attempt.conversation.is_some())
+}
+
+/// 席位 1：后两个任务在各自前一个报完前只排队，排队不算效果失败；
+/// 释放后按受理顺序开跑。席位从 settings.json 重启读回，再进 launch 准入。
+#[tokio::test]
+async fn seats_one_holds_the_second_task_until_the_first_reports() {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    mount(&server, &router).await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let mut saved = service::settings::load(data.path());
+    saved.exec.seats = 1;
+    service::settings::save(data.path(), &saved).expect("保存席位");
+    let host = open_host(&server, data.path(), cwd.path()).await;
+    let store = tasks_store(data.path());
+    router.set_thin_delay(Duration::from_millis(1_500));
+    for title in ["甲", "乙", "丙"] {
+        for script in ready_scripts() {
+            router.push_thin_for_title(title, script);
+        }
+    }
+
+    let first = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-a",
+        "call-accept-a",
+        1,
+        "甲",
+    )
+    .await;
+    wait_until("第一个任务开跑", || {
+        store
+            .task(&first.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .is_some()
+    })
+    .await;
+
+    let second = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-b",
+        "call-accept-b",
+        2,
+        "乙",
+    )
+    .await;
+    assert!(
+        second.latest_attempt().is_none(),
+        "席位满时第二个任务只排队"
+    );
+    assert!(
+        store
+            .effect_pending(EffectKind::Launch, second.id.as_str())
+            .unwrap(),
+        "第二个任务的 launch 还在队列里"
+    );
+    assert_eq!(
+        store.effect_health(EffectKind::Launch).unwrap().attempts,
+        0,
+        "满席位返回 Later，不算效果失败"
+    );
+    assert!(
+        !router.bodies(true).iter().any(|body| body.contains("乙")),
+        "第二个任务还没开会话"
+    );
+
+    let third = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-c",
+        "call-accept-c",
+        3,
+        "丙",
+    )
+    .await;
+    assert!(
+        third.latest_attempt().is_none(),
+        "席位 1 时第三个任务也排队"
+    );
+    assert!(
+        store
+            .effect_pending(EffectKind::Launch, third.id.as_str())
+            .unwrap(),
+        "第三个任务的 launch 还在队列里"
+    );
+    assert!(
+        !router.bodies(true).iter().any(|body| body.contains("丙")),
+        "第三个任务还没开会话"
+    );
+
+    for _ in 0..3 {
+        router.push_kind(crate::common::text_sse("收到"));
+    }
+    // 第一个任务的回复已经在途（延迟在请求时定住）；后面的任务不必再慢。
+    router.clear_thin_delay();
+    wait_until("第一个任务报 ready", || {
+        reported_ready(&store, &first.id)
+    })
+    .await;
+    let first_report_at = store
+        .task(&first.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .map(|report| report.at)
+        .expect("第一个任务的报告");
+    wait_until("第二个任务开跑", || {
+        store
+            .task(&second.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .is_some()
+    })
+    .await;
+    let second_started_at = store
+        .task(&second.id)
+        .unwrap()
+        .unwrap()
+        .latest_attempt()
+        .map(|attempt| attempt.started_at)
+        .expect("第二个任务开跑");
+    assert!(
+        second_started_at >= first_report_at,
+        "第二个任务在第一个报完之后才开：{second_started_at} / {first_report_at}"
+    );
+    wait_until("第二个任务报 ready", || {
+        reported_ready(&store, &second.id)
+    })
+    .await;
+    let second_report_at = store
+        .task(&second.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .map(|report| report.at)
+        .expect("第二个任务的报告");
+    wait_until("第三个任务开跑", || {
+        store
+            .task(&third.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .is_some()
+    })
+    .await;
+    let third_started_at = store
+        .task(&third.id)
+        .unwrap()
+        .unwrap()
+        .latest_attempt()
+        .map(|attempt| attempt.started_at)
+        .expect("第三个任务开跑");
+    assert!(
+        third_started_at >= second_report_at,
+        "释放后按受理顺序开跑：{third_started_at} / {second_report_at}"
+    );
+    wait_until("三个任务都报 ready", || {
+        reported_ready(&store, &first.id)
+            && reported_ready(&store, &second.id)
+            && reported_ready(&store, &third.id)
+    })
+    .await;
+    wait_until("三条 relay 到 Kind", || {
+        relay_messages(&crate::common::read_root_events(data.path())).len() == 3
+    })
+    .await;
+    assert_eq!(attempt_end(&store, &second.id), Some(AttemptEnd::Reported));
+    assert_eq!(attempt_end(&store, &third.id), Some(AttemptEnd::Reported));
+}
+
+/// 改小席位不掐断在跑的任务，只影响之后的准入：两个在跑的照常报完，
+/// 改小后派的第三个按新上限排队。
+#[tokio::test]
+async fn lowering_seats_does_not_stop_running_tasks_and_gates_the_next_launch() {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    mount(&server, &router).await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let host = open_host(&server, data.path(), cwd.path()).await;
+    let store = tasks_store(data.path());
+    router.set_thin_delay(Duration::from_millis(900));
+    for title in ["甲", "乙", "丙"] {
+        for script in ready_scripts() {
+            router.push_thin_for_title(title, script);
+        }
+    }
+
+    let first = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-a",
+        "call-accept-a",
+        1,
+        "甲",
+    )
+    .await;
+    let second = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-b",
+        "call-accept-b",
+        2,
+        "乙",
+    )
+    .await;
+    wait_until("两个任务都开跑", || {
+        store
+            .task(&first.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .is_some()
+            && store
+                .task(&second.id)
+                .unwrap()
+                .unwrap()
+                .latest_attempt()
+                .is_some()
+    })
+    .await;
+
+    host.set_exec_seats(1).expect("改小席位");
+    assert!(
+        attempt_in_flight(&store, &first.id) && attempt_in_flight(&store, &second.id),
+        "改小席位不掐断在跑的两个任务"
+    );
+
+    let third = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-c",
+        "call-accept-c",
+        3,
+        "丙",
+    )
+    .await;
+    assert!(
+        third.latest_attempt().is_none(),
+        "改小后新任务按 1 个席位准入"
+    );
+    assert!(
+        store
+            .effect_pending(EffectKind::Launch, third.id.as_str())
+            .unwrap(),
+        "第三个任务在排队"
+    );
+
+    for _ in 0..3 {
+        router.push_kind(crate::common::text_sse("收到"));
+    }
+    wait_until("在跑的两个都报 ready", || {
+        reported_ready(&store, &first.id) && reported_ready(&store, &second.id)
+    })
+    .await;
+    wait_until("最后一个任务开跑", || {
+        store
+            .task(&third.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .is_some()
+    })
+    .await;
+    wait_until("三个任务都报 ready", || {
+        reported_ready(&store, &first.id)
+            && reported_ready(&store, &second.id)
+            && reported_ready(&store, &third.id)
+    })
+    .await;
+    wait_until("三条 relay 到 Kind", || {
+        relay_messages(&crate::common::read_root_events(data.path())).len() == 3
+    })
+    .await;
+    assert_eq!(attempt_end(&store, &first.id), Some(AttemptEnd::Reported));
+    assert_eq!(attempt_end(&store, &second.id), Some(AttemptEnd::Reported));
+}
+
+/// 席位只收 1–16：越界拒存，已有的值不动。
+#[tokio::test]
+async fn set_exec_seats_accepts_one_through_sixteen_and_rejects_outside() {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    mount(&server, &router).await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let host = open_host(&server, data.path(), cwd.path()).await;
+
+    host.set_exec_seats(1).expect("保存 1 个席位");
+    assert_eq!(service::settings::load(data.path()).exec.seats, 1);
+    host.set_exec_seats(16).expect("保存 16 个席位");
+    assert_eq!(service::settings::load(data.path()).exec.seats, 16);
+
+    for seats in [0_u8, 17] {
+        let error = host.set_exec_seats(seats).expect_err("越界拒存");
+        assert!(error.to_string().contains("1–16"), "{error}");
+        assert_eq!(
+            service::settings::load(data.path()).exec.seats,
+            16,
+            "拒存不改已保存的值"
+        );
+    }
 }

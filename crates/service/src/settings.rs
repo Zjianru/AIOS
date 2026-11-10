@@ -33,13 +33,43 @@ pub struct Settings {
     pub exec: ExecSettings,
 }
 
+/// 席位的默认值（D66）。
+pub const DEFAULT_SEATS: u8 = 3;
+/// 席位下限。
+pub const MIN_SEATS: u8 = 1;
+/// 席位上限，照 DSH 的 maxWorkers。
+pub const MAX_SEATS: u8 = 16;
+
 /// 执行域的设置（设置 › 执行）。
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExecSettings {
     /// 全局暂停：打开时新的 Attempt 排队，在跑的一轮跑完；relay/notice 照送。
     /// 关掉后新任务按排队顺序接着走（不取消、不清队）。
     #[serde(default)]
     pub paused: bool,
+    /// 同时执行的 ThinAgent 上限（1–16）。缺省 3。
+    #[serde(default = "default_seats")]
+    pub seats: u8,
+}
+
+impl Default for ExecSettings {
+    fn default() -> Self {
+        Self {
+            paused: false,
+            seats: DEFAULT_SEATS,
+        }
+    }
+}
+
+impl ExecSettings {
+    /// 生效的席位数：手改文件写出 0 或 17 时夹回 1–16，不让人为的坏值把准入卡死。
+    pub fn seat_limit(&self) -> usize {
+        usize::from(self.seats.clamp(MIN_SEATS, MAX_SEATS))
+    }
+}
+
+fn default_seats() -> u8 {
+    DEFAULT_SEATS
 }
 
 fn default_currency() -> String {
@@ -198,6 +228,7 @@ mod tests {
         .expect("write");
         let settings = load(dir.path());
         assert!(!settings.exec.paused);
+        assert_eq!(settings.exec.seats, 3, "缺 exec 节按默认 3 个席位");
         assert_eq!(settings.currency, "cny");
     }
 
@@ -205,16 +236,36 @@ mod tests {
     fn exec_paused_round_trips() {
         let dir = tempfile::tempdir().expect("dir");
         let mut settings = Settings {
-            exec: ExecSettings { paused: true },
+            exec: ExecSettings {
+                paused: true,
+                ..ExecSettings::default()
+            },
             ..Settings::default()
         };
         save(dir.path(), &settings).expect("save");
         assert!(load(dir.path()).exec.paused);
         let text = std::fs::read_to_string(path(dir.path())).expect("read");
-        assert!(text.contains(r#""exec":{"paused":true}"#), "{text}");
+        assert!(text.contains(r#""paused":true"#), "{text}");
+        assert!(text.contains(r#""seats":3"#), "{text}");
         settings.exec.paused = false;
         save(dir.path(), &settings).expect("save");
         assert!(!load(dir.path()).exec.paused);
+    }
+
+    #[test]
+    fn exec_seats_default_to_three_and_round_trip() {
+        let dir = tempfile::tempdir().expect("dir");
+        assert_eq!(Settings::default().exec.seats, 3);
+        // 旧文件只有 exec.paused：席位数按默认读。
+        std::fs::write(path(dir.path()), br#"{"exec":{"paused":true}}"#).expect("write");
+        assert_eq!(load(dir.path()).exec.seats, 3);
+        // 1–16 的两端都能落盘、读回。
+        for seats in [1_u8, 16] {
+            let mut settings = load(dir.path());
+            settings.exec.seats = seats;
+            save(dir.path(), &settings).expect("save");
+            assert_eq!(load(dir.path()).exec.seats, seats);
+        }
     }
 
     #[test]

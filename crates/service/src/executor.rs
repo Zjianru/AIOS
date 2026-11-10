@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -15,8 +15,8 @@ use serde_json::{Value, json};
 use session::SessionId;
 use tasks::{
     AttemptEnd, AttemptId, ConversationId, EffectClaim, EffectKind, EffectPayload, MissingItem,
-    ModelChoice, NewReport, NewTask, ReportId, ReportOrigin, ReportState, Stage, StopAttempt,
-    Store, Task, TaskError, TaskId,
+    ModelChoice, NewReport, NewTask, ReportId, ReportOrigin, ReportState, SlotKind, Stage,
+    StopAttempt, Store, Task, TaskError, TaskId, WorkerSlots,
 };
 use tokio::sync::broadcast;
 use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
@@ -110,6 +110,10 @@ pub struct TaskRuntime {
     pump_paused: AtomicBool,
     /// 全局暂停（settings.json 的 `exec.paused`）：只挡 launch 准入，relay 照送。
     exec_paused: AtomicBool,
+    /// 席位上限（settings.json 的 `exec.seats`），默认 3；改小只影响之后的准入。
+    exec_seats: AtomicUsize,
+    /// 起跑预约，按任务 id 和在跑集合合并计数；launch 成功前占住席位。
+    slots: Mutex<WorkerSlots>,
     /// 还活着的 ThinAgent（按会话 id）；终态报告后移除，释放会话写锁。
     running: Mutex<std::collections::HashMap<String, RunningThin>>,
     /// 测试钩子：下一次 relay 在 Kind append 前「崩掉」——留下效果行，泵退出。
@@ -123,8 +127,10 @@ impl TaskRuntime {
         inner: Weak<tokio::sync::Mutex<Option<ServiceHost>>>,
     ) -> Result<Self, TaskError> {
         let store = Store::open(options.data_dir.join(TASKS_DB_FILE))?;
-        // 重启后暂停还在：启动时读一次设置文件，缺了按默认（不暂停）。
-        let exec_paused = crate::settings::load(&options.data_dir).exec.paused;
+        // 重启后暂停和席位还在：启动时读一次设置文件，缺了按默认。
+        let exec = crate::settings::load(&options.data_dir).exec;
+        let exec_paused = exec.paused;
+        let exec_seats = exec.seat_limit();
         Ok(Self {
             data_dir: options.data_dir.clone(),
             store: Arc::new(store),
@@ -135,6 +141,8 @@ impl TaskRuntime {
             shutting_down: Arc::new(AtomicBool::new(false)),
             pump_paused: AtomicBool::new(false),
             exec_paused: AtomicBool::new(exec_paused),
+            exec_seats: AtomicUsize::new(exec_seats),
+            slots: Mutex::new(WorkerSlots::new()),
             running: Mutex::new(std::collections::HashMap::new()),
             crash_before_relay: AtomicBool::new(false),
         })
@@ -272,6 +280,49 @@ impl TaskRuntime {
         self.wake();
     }
 
+    /// 席位上限的闸门：RootHost 先写设置文件，再改这里的内存值。
+    ///
+    /// 只改之后的准入：已经在跑的任务不掐断；改大后排着的 launch 立刻再试。
+    pub(crate) fn set_exec_seats(&self, seats: u8) {
+        self.exec_seats.store(usize::from(seats), Ordering::SeqCst);
+        self.wake();
+    }
+
+    /// 正在跑一轮的任务（按任务 id）。turn 结束的不算——席位在轮次结束时释放。
+    fn running_tasks(&self) -> Vec<String> {
+        self.running
+            .lock()
+            .expect("thinagent 表锁被毒化")
+            .values()
+            .filter(|entry| entry.host.agent().is_running())
+            .map(|entry| entry.task_id.as_str().to_owned())
+            .collect()
+    }
+
+    /// 现在还能不能再起一个 launch：在跑 + 起跑预约（person 可多占 1 个）没占满。
+    fn has_launch_room(&self) -> bool {
+        let running = self.running_tasks();
+        let used = self.slots.lock().expect("席位表锁被毒化").used(&running);
+        used < self.exec_seats.load(Ordering::SeqCst)
+    }
+
+    /// 占一个起跑席位；同键重试幂等。占不到返回 false，调用方按 Later 处理，不计失败。
+    fn reserve_launch(&self, task_id: &str) -> bool {
+        let running = self.running_tasks();
+        let max = self.exec_seats.load(Ordering::SeqCst);
+        self.slots
+            .lock()
+            .expect("席位表锁被毒化")
+            .reserve(task_id, SlotKind::Launch, &running, max)
+            .is_ok()
+    }
+
+    /// 释放一个任务的起跑席位，并叫醒效果泵去领下一条排队的效果。
+    fn release_seat(&self, task_id: &str) {
+        self.slots.lock().expect("席位表锁被毒化").free(task_id);
+        self.wake();
+    }
+
     /// 测试用：下一次 relay 在 Kind 收到之前「崩掉」（留下效果行，泵退出）。
     #[doc(hidden)]
     pub fn crash_before_next_relay(&self) {
@@ -318,11 +369,22 @@ impl TaskRuntime {
                     return;
                 }
                 // 全局暂停只关 launch 这一道闸门：relay 已经送完了，队里的 launch 不领。
-                if !self.exec_paused.load(Ordering::SeqCst) {
+                // 席位满时也不领：效果原样留在库里（Later，不算失败），释放后按 seq 再领。
+                if !self.exec_paused.load(Ordering::SeqCst) && self.has_launch_room() {
                     match self.store.claim_effect(EffectKind::Launch, Self::now()) {
                         Ok(Some(claim)) => {
-                            worked = true;
-                            self.launch(claim).await;
+                            let task_id = claim.key.clone();
+                            if self.reserve_launch(&task_id) {
+                                worked = true;
+                                // 开了会话就留到轮次结束/终态报告，补上「已开好、轮还没开始」
+                                // 的窗口；没开成（缺项、任务没了、派发失败）当场释放预约。
+                                if !self.launch(claim).await {
+                                    self.release_seat(&task_id);
+                                }
+                            } else {
+                                // 检查之后、预约之前席位被改小：按 Later 处理，不算失败。
+                                self.later(&claim);
+                            }
                         }
                         Ok(None) => {}
                         Err(error) => eprintln!("任务 launch 领取失败：{error}"),
@@ -477,23 +539,26 @@ impl TaskRuntime {
     }
 
     /// 执行一次 launch：重查、查任务包、开 ThinAgent、写回会话 id、发 assignment。
-    async fn launch(self: &Arc<Self>, claim: EffectClaim) {
+    ///
+    /// 返回 true 表示开了会话并把 assignment 送进去了（席位留到轮次结束）；
+    /// 其余情况返回 false，由调用方释放起跑预约。
+    async fn launch(self: &Arc<Self>, claim: EffectClaim) -> bool {
         let EffectPayload::Launch { task_id } = &claim.payload else {
             self.finish_or_fail(&claim, Err("launch 载荷不是 launch".to_owned()));
-            return;
+            return false;
         };
         if self.shutting_down.load(Ordering::SeqCst) {
-            return;
+            return false;
         }
         let mut task = match self.store.task(task_id) {
             Ok(Some(task)) => task,
             Ok(None) => {
                 self.finish_or_fail(&claim, Ok(()));
-                return;
+                return false;
             }
             Err(error) => {
                 self.finish_or_fail(&claim, Err(error.to_string()));
-                return;
+                return false;
             }
         };
         // 上一次已经开成会话：重跑的效果只把行收掉；被重启打断的 Attempt 留给第 4 张票。
@@ -502,12 +567,12 @@ impl TaskRuntime {
             .is_some_and(|attempt| attempt.conversation.is_some())
         {
             self.finish_or_fail(&claim, Ok(()));
-            return;
+            return false;
         }
         // 崩溃留下的、没有会话 id 的 Attempt 先收尾，再开新的。
         if let Err(error) = self.store.close_unopened_attempts(&task.id, Self::now()) {
             self.finish_or_fail(&claim, Err(error.to_string()));
-            return;
+            return false;
         }
         if let Ok(Some(reloaded)) = self.store.task(&task.id) {
             task = reloaded;
@@ -518,21 +583,21 @@ impl TaskRuntime {
             Err(missing) => {
                 self.record_missing(&task, missing);
                 self.finish_or_fail(&claim, Ok(()));
-                return;
+                return false;
             }
         };
         if self.shutting_down.load(Ordering::SeqCst) {
-            return;
+            return false;
         }
         if let Err(error) = self.store.record_package_check(&task.id, Vec::new()) {
             self.finish_or_fail(&claim, Err(error.to_string()));
-            return;
+            return false;
         }
         let attempt_id = match self.store.begin_attempt(&task.id, Self::now()) {
             Ok(attempt_id) => attempt_id,
             Err(error) => {
                 self.finish_or_fail(&claim, Err(error.to_string()));
-                return;
+                return false;
             }
         };
         let host = match self.open_thin(&task, attempt_id, prepared).await {
@@ -562,7 +627,7 @@ impl TaskRuntime {
                     ),
                 );
                 self.finish_or_fail(&claim, Ok(()));
-                return;
+                return false;
             }
         };
         // 每次 await 之后重查：没在关机、任务还在、这次仍是最新的 Attempt。
@@ -581,7 +646,7 @@ impl TaskRuntime {
                 self.store
                     .end_attempt(&task.id, attempt_id, Self::now(), AttemptEnd::NotOpened),
             );
-            return;
+            return false;
         }
         let conversation = host.agent().id().clone();
         if let Err(error) = self.store.attach_session(
@@ -591,7 +656,7 @@ impl TaskRuntime {
         ) {
             host.shutdown().await;
             self.finish_or_fail(&claim, Err(error.to_string()));
-            return;
+            return false;
         }
         // 先订阅、登记、再发：turn 结束的事实和「会话还开着」都在第一条消息之前就位，
         // 免得报得比登记快的终态报告留下一个永远不释放的会话。
@@ -645,9 +710,10 @@ impl TaskRuntime {
                     .end_attempt(&task.id, attempt_id, Self::now(), AttemptEnd::Reported),
             );
             self.finish_or_fail(&claim, Ok(()));
-            return;
+            return false;
         }
         self.finish_or_fail(&claim, Ok(()));
+        true
     }
 
     /// 任务包缺项先记事实、再按程序事实写一张 blocked 报告并排 relay；不开任务会话。
@@ -846,6 +912,8 @@ impl TaskRuntime {
         if task.latest_attempt().map(|attempt| attempt.id) != Some(attempt_id) {
             return;
         }
+        // 轮次结束就释放席位；终态报告/停止也走这里，释放幂等。
+        self.release_seat(task_id.as_str());
         // 停止已经把这个 Attempt 的结果定死：取消后的收尾不再合成 waiting。
         if task
             .latest_attempt()
@@ -943,6 +1011,7 @@ impl TaskRuntime {
             .lock()
             .expect("thinagent 表锁被毒化")
             .remove(conversation.as_str());
+        self.release_seat(task_id.as_str());
         self.wake();
     }
 
@@ -1000,6 +1069,7 @@ impl TaskRuntime {
                 .lock()
                 .expect("thinagent 表锁被毒化")
                 .remove(conversation);
+            self.release_seat(task_id.as_str());
         }
         self.wake();
         Ok((id, duplicate))
@@ -1223,6 +1293,7 @@ impl TaskRuntime {
             .lock()
             .expect("thinagent 表锁被毒化")
             .remove(running.host.agent().id().as_str());
+        self.release_seat(task_id);
         self.wake();
         let stage = self
             .store
