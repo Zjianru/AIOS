@@ -1071,7 +1071,9 @@ async fn task_handback_twice_returns_already_handed_back_without_a_second_relay(
         "task_handback",
         &serde_json::json!({"reason": "第二次也要交回"}).to_string(),
     ));
-    fixture.router.push_thin(crate::common::text_sse("交回了两次"));
+    fixture
+        .router
+        .push_thin(crate::common::text_sse("交回了两次"));
     wait_until("第二次交回的回执", || {
         let store = tasks_store(fixture.data());
         let Some(task_row) = store.task(&task.id).ok().flatten() else {
@@ -1117,13 +1119,9 @@ async fn task_handback_twice_returns_already_handed_back_without_a_second_relay(
 #[tokio::test]
 async fn thin_agent_handback_rule_and_tool_stay_off_kind() {
     let fixture = Fixture::new().await;
-    fixture.router.push_thin(report_sse(
-        1,
-        "call-report",
-        "ready",
-        "查完了",
-        None,
-    ));
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-report", "ready", "查完了", None));
     fixture.accept_with_kind_replies(false, 1).await;
     wait_until("ThinAgent 请求", || {
         !fixture.router.bodies(true).is_empty()
