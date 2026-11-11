@@ -36,7 +36,7 @@ use crate::session_host::ServiceHost;
 pub const TASKS_DB_FILE: &str = "tasks.sqlite";
 
 /// ThinAgent 的完整工具名单（构造期 only 过滤；顺序就是名单顺序）。
-pub const THIN_TOOLS: [&str; 8] = [
+pub const THIN_TOOLS: [&str; 9] = [
     "read",
     "glob",
     "grep",
@@ -45,13 +45,16 @@ pub const THIN_TOOLS: [&str; 8] = [
     "web_search",
     "web_fetch",
     "task_report",
+    "task_handback",
 ];
 
 /// 默认角色的规则（ThinAgent 的 policy_prompt，追加在系统提示末尾；Kind 不装）。
 pub const THIN_POLICY: &str = "\
 You are a ThinAgent: the execution carrier for one read-only investigation task. \
 The task's requirement and DoD are the whole scope; work inside them and inside the task's working directory.
-You can read, search, load skills, keep a todo list, read the web, and call task_report. \
+If the user says something outside this task's scope, asks for a different task, or asks to change the requirement or the DoD, call task_handback once with one sentence saying what exceeded the task; do not do that work yourself.
+If the user only thanks you or acknowledges the result, do not reply.
+You can read, search, load skills, keep a todo list, read the web, and call task_report or task_handback. \
 You cannot write files, run shell commands, start background work, delegate, or ask a person a question directly.
 When the work is done, report ready with the answer and the evidence it rests on. \
 When you cannot continue without a missing tool, permission, file, credential or an answer, report blocked with exactly what is missing and what the user must do; put a direct question in question when only the user can answer it. \
@@ -70,6 +73,9 @@ const NOT_RUNNING: &str = "这个任务没在跑";
 /// 收尾停插进 ThinAgent 会话的固定说明（spec v1:44）；request id 是 task-stop:<taskId>:<attemptId>。
 const AFTER_REPORT_STOP: &str =
     "用户要求收尾停：做完手上这一步，用 task_report 报一次当前结果，然后结束。不再调其他工具。";
+
+/// 交回时程序写死的唯一问题（spec v1 T028.4）；Kind 收到 relay 后怎么问由 Kind 自己说。
+const HANDBACK_QUESTION: &str = "这超出了任务范围，要不要改任务？";
 
 /// 执行者的一个已开会话；task_status 向 waiting 的 ThinAgent 要报告时用它。
 struct RunningThin {
@@ -1202,7 +1208,7 @@ impl TaskRuntime {
         let expected: BTreeSet<&str> = THIN_TOOLS.into_iter().collect();
         let actual: BTreeSet<&str> = task.tools.iter().map(String::as_str).collect();
         if actual != expected {
-            missing.push(missing_item("工具名单（不是只读调查的 8 件）"));
+            missing.push(missing_item("工具名单（不是只读调查的 9 件）"));
         }
         if task.model.connection.trim().is_empty()
             || task.model.model.trim().is_empty()
@@ -1247,7 +1253,7 @@ impl TaskRuntime {
         Ok((config, credentials))
     }
 
-    /// 用冻结的模型选择、任务 cwd、8 件只读工具和角色规则开一个 ThinAgent。
+    /// 用冻结的模型选择、任务 cwd、9 件只读工具和角色规则开一个 ThinAgent。
     ///
     /// `resume` 是接着做的原会话；会话 id 不变，日志里的历史照常进这次请求。
     async fn open_thin(
@@ -1259,6 +1265,11 @@ impl TaskRuntime {
     ) -> Result<ServiceHost, String> {
         let mut extra_tools = crate::root::web_extra_tools(&self.options);
         extra_tools.push(Arc::new(TaskReportTool::new(
+            Arc::clone(self),
+            task.id.clone(),
+            attempt_id,
+        )));
+        extra_tools.push(Arc::new(TaskHandbackTool::new(
             Arc::clone(self),
             task.id.clone(),
             attempt_id,
@@ -1516,6 +1527,46 @@ impl TaskRuntime {
         }
         self.wake();
         Ok((id, duplicate))
+    }
+
+    /// ThinAgent 交回：同事务写一份 blocked 报告（问题由程序写死）并排 relay；
+    /// 这个 Attempt 以 reported 结束。Kind 收到 relay 以后怎么问，由 Kind 自己说。
+    fn handback(
+        &self,
+        task_id: &TaskId,
+        attempt_id: AttemptId,
+        conversation: &str,
+        reason: String,
+    ) -> Result<String, ToolFailure> {
+        let report = NewReport {
+            state: ReportState::Blocked,
+            origin: ReportOrigin::Agent,
+            summary: reason,
+            question: Some(HANDBACK_QUESTION.to_owned()),
+        };
+        let (id, created) = self
+            .store
+            .record_handback_report(task_id, attempt_id, report, Self::now())
+            .map_err(|error| ToolFailure::plain(error.to_string()))?;
+        // 同一个 Attempt 只交回一次：已有 blocked 报告（含并行的第一次交回）就是「已交回」。
+        if !created {
+            return Ok("已交回".to_owned());
+        }
+        // 和 task_report 一样：报告落库后结束这个 Attempt；结束写失败不改写工具回执。
+        best_effort(
+            "交回的 Attempt 没收尾",
+            self.store
+                .end_attempt(task_id, attempt_id, Self::now(), AttemptEnd::Reported),
+        );
+        self.running
+            .lock()
+            .expect("thinagent 表锁被毒化")
+            .remove(conversation);
+        self.release_seat(task_id.as_str());
+        self.wake();
+        Ok(format!(
+            "已交回 Kind（报告 {id}）。Kind 会问用户怎么办；不要再自己做这件事。"
+        ))
     }
 
     /// Kind 的 task_accept：冻结模型选择、落任务和 launch、回任务 id。
@@ -2089,6 +2140,84 @@ impl Tool for TaskStopTool {
             match self.runtime.stop_task(task_id, mode).await {
                 Ok(result) => ToolResult::success(call.id, result.message),
                 Err(error) => ToolResult::error(call.id, ToolFailure::plain(error.to_string())),
+            }
+        })
+    }
+}
+
+/// ThinAgent 的 task_handback：把超出任务范围、属于别的任务或要改要求/DoD 的话交回 Kind。
+///
+/// 只 ThinAgent 装；Kind 的工具表里没有它。
+struct TaskHandbackTool {
+    runtime: Arc<TaskRuntime>,
+    task_id: TaskId,
+    attempt_id: AttemptId,
+    parameters: Value,
+}
+
+impl TaskHandbackTool {
+    fn new(runtime: Arc<TaskRuntime>, task_id: TaskId, attempt_id: AttemptId) -> Self {
+        Self {
+            runtime,
+            task_id,
+            attempt_id,
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "reason": {"type": "string", "maxLength": 300, "description": "One sentence saying what the user asked for that is outside this task's scope (at most 300 characters)."}
+                },
+                "required": ["reason"]
+            }),
+        }
+    }
+}
+
+impl Tool for TaskHandbackTool {
+    fn name(&self) -> &str {
+        "task_handback"
+    }
+
+    fn description(&self) -> &str {
+        "Hand this task back to Kind when what the user asks is outside the task's scope, belongs to another task, or asks to change the requirement or the DoD. Give one sentence saying what exceeded the task. Do not do that work yourself; the user decides with Kind what happens next."
+    }
+
+    fn parameters(&self) -> &Value {
+        &self.parameters
+    }
+
+    fn condition(&self) -> ToolCondition {
+        ToolCondition::Always
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: ToolCall,
+        context: &'a ToolContext,
+    ) -> ToolFuture<'a, ToolResult> {
+        Box::pin(async move {
+            let args = match parse_object(&call.arguments) {
+                Ok(args) => args,
+                Err(failure) => return ToolResult::error(call.id, failure),
+            };
+            let Some(reason) = args
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|reason| !reason.is_empty())
+                .map(str::to_owned)
+            else {
+                return ToolResult::error(call.id, ToolFailure::plain("reason 不能为空"));
+            };
+            if reason.chars().count() > 300 {
+                return ToolResult::error(call.id, ToolFailure::plain("reason 最多 300 字"));
+            }
+            let conversation = context.session_id().unwrap_or_default().to_owned();
+            match self
+                .runtime
+                .handback(&self.task_id, self.attempt_id, &conversation, reason)
+            {
+                Ok(text) => ToolResult::success(call.id, text),
+                Err(failure) => ToolResult::error(call.id, failure),
             }
         })
     }

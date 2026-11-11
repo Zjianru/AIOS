@@ -562,6 +562,29 @@ impl Store {
         report: NewReport,
         now: i64,
     ) -> Result<ReportId, TaskError> {
+        self.record_report_in(id, attempt_id, report, now)
+            .map(|(report_id, _)| report_id)
+    }
+
+    /// 交回专用：同一个事务里写报告并排 relay，返回报告 id 和「这次是否新写」。
+    /// 同一个 Attempt 已有同态报告时不再写、也不再排 relay；交回靠它把第二次变成「已交回」。
+    pub fn record_handback_report(
+        &self,
+        id: &TaskId,
+        attempt_id: AttemptId,
+        report: NewReport,
+        now: i64,
+    ) -> Result<(ReportId, bool), TaskError> {
+        self.record_report_in(id, attempt_id, report, now)
+    }
+
+    fn record_report_in(
+        &self,
+        id: &TaskId,
+        attempt_id: AttemptId,
+        report: NewReport,
+        now: i64,
+    ) -> Result<(ReportId, bool), TaskError> {
         report.validate()?;
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -591,7 +614,7 @@ impl Store {
             if existing.state == report.state {
                 let id = existing.id.clone();
                 transaction.commit()?;
-                return Ok(id);
+                return Ok((id, false));
             }
             if existing.state.is_terminal() && report.state.is_terminal() {
                 return Err(TaskError::ReportConflict {
@@ -621,7 +644,7 @@ impl Store {
             now,
         )?;
         transaction.commit()?;
-        Ok(report_id)
+        Ok((report_id, true))
     }
 
     /// 从任务和效果表派生阶段。
