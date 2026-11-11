@@ -4953,6 +4953,121 @@ async fn talking_in_the_task_dialog_before_confirming_says_already_resumed() {
     drop(host);
 }
 
+/// 被打断后先在任务对话里说一句：新 Attempt 的 trigger 是 resume，第一条消息
+/// 恢复说明在前、用户的话在后，判重键是 resume:<taskId>:<attemptId>，页头不再带停止标记。
+#[tokio::test]
+async fn saying_after_an_interruption_resumes_with_the_recovery_note_before_the_user_words() {
+    let (server, router, data, cwd) = restart_setup().await;
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+    host.task_runtime().expect("runtime").set_pump_paused(true);
+    let task = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-a",
+        "call-accept-a",
+        1,
+        "甲",
+    )
+    .await;
+    crash_while_running(&router, data.path(), host, std::slice::from_ref(&task)).await;
+
+    let store = tasks_store(data.path());
+    let crashed = reload_tasks(&store, &[task]);
+    let first = crashed[0]
+        .latest_attempt()
+        .cloned()
+        .expect("第一次 Attempt");
+    let conversation = first.conversation.clone().expect("会话 id");
+    let task_refs: Vec<&Task> = crashed.iter().collect();
+    router.clear_thin_delay();
+    push_restart_turn(&router, "call-restart-card", &task_refs, "甲被打断了。");
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+    let interrupted = store.task(&crashed[0].id).unwrap().unwrap();
+    assert_eq!(
+        interrupted.latest_attempt().unwrap().end,
+        Some(AttemptEnd::Interrupted),
+        "启动扫描先把上次的 Attempt 收尾"
+    );
+    wait_until("Kind 收到重启汇报", || {
+        !restart_messages(&crate::common::read_root_events(data.path())).is_empty()
+    })
+    .await;
+
+    router.push_thin_for(crashed[0].id.as_str(), crate::common::text_sse("接着做"));
+    let said = say_in_task_dialog(&host, &crashed[0], "把剩下两个线索查完").await;
+    assert_eq!(said.new_attempt, Some(first.id.0 + 1));
+    wait_until("说话开了新 Attempt", || {
+        store
+            .task(&crashed[0].id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| attempt_count(&task) == 2)
+    })
+    .await;
+    let resumed = store.task(&crashed[0].id).unwrap().unwrap();
+    let second = resumed.latest_attempt().cloned().expect("第二次 Attempt");
+    assert_eq!(second.trigger, tasks::AttemptTrigger::Resume);
+    assert_eq!(
+        second.conversation.as_ref(),
+        Some(&conversation),
+        "会话 id 不变"
+    );
+    assert!(second.ended_at.is_none());
+
+    wait_until("恢复说明进了任务会话", || {
+        recovery_notes(&thin_events(data.path(), &second)).len() == 1
+    })
+    .await;
+    let notes = recovery_notes(&thin_events(data.path(), &second));
+    assert_eq!(
+        notes[0].0,
+        format!("resume:{}:{}", crashed[0].id, second.id),
+        "恢复说明的判重键"
+    );
+    let note_at = notes[0]
+        .1
+        .find(RECOVERY_NOTE)
+        .expect("恢复说明在同一条消息里");
+    let words_at = notes[0]
+        .1
+        .find("把剩下两个线索查完")
+        .expect("用户的话在同一条消息里");
+    assert!(note_at < words_at, "恢复说明在用户的话前面：{}", notes[0].1);
+
+    wait_until("下一次请求带着恢复说明和用户的话", || {
+        router
+            .bodies(true)
+            .last()
+            .is_some_and(|body| body.contains(RECOVERY_NOTE) && body.contains("把剩下两个线索查完"))
+    })
+    .await;
+    let body = router.bodies(true).last().cloned().expect("接续请求");
+    let note_at = body.find(RECOVERY_NOTE).expect("恢复说明在请求里");
+    let words_at = body.find("把剩下两个线索查完").expect("用户的话在请求里");
+    assert!(note_at < words_at, "请求体里恢复说明在用户的话前面");
+
+    // 新 Attempt 已经开跑：页头不再带上一 Attempt 的停止标记，阶段也不是被打断了。
+    let read = host
+        .dispatch(Call::TaskRead(TaskReadRequest {
+            task_id: crashed[0].id.as_str().to_owned(),
+            before_seq: None,
+        }))
+        .await
+        .expect("task-read");
+    let Response::TaskRead(read) = read else {
+        panic!("TaskRead 的响应形状不对");
+    };
+    assert!(!read.task.stopped, "不残留停止标记：{:?}", read.task);
+    assert_eq!(read.task.attempts, 2);
+    assert_ne!(
+        resumed.stage(false),
+        Stage::NeedsConditions,
+        "新 Attempt 开跑后不再是被打断了"
+    );
+    drop(host);
+}
+
 /// 全局暂停开着时重启：汇报不送；开闸后送一条，而且只有一条。
 #[tokio::test]
 async fn a_paused_restart_waits_for_the_gate_then_reports_once() {
