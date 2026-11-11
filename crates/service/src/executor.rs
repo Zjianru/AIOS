@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use agent::{AgentEvent, AgentOpenOptions, ToolPolicy};
-use model::{Effort, UserMessage};
+use model::{ContentBlock, Effort, UserMessage};
 use serde_json::{Value, json};
 use session::SessionId;
 use tasks::{
@@ -95,6 +95,15 @@ struct RunningThin {
 struct OpenedResume {
     host: Arc<ServiceHost>,
     attempt_id: AttemptId,
+}
+
+/// 任务没在跑时接着开一次的方式：普通说话，或重启打断后的接续。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResumeMode {
+    /// 停/结束之后的普通说话：trigger user_message，person 席位。
+    Say,
+    /// 重启打断后的说话：trigger resume，wake 席位，第一条输入先放恢复说明。
+    Interrupted,
 }
 
 /// 接不上原会话的原因；说话接续和确认卡接续按各自的方式处理。
@@ -705,18 +714,38 @@ impl TaskRuntime {
             self.finish_or_fail(&claim, Ok(()));
             return;
         };
+        // 最近一次 Attempt 是重启打断的：这次说话就是接续（trigger resume、wake 席位、
+        // 先放恢复说明）。别的结束原因照 T028 的说话接续走。
+        let mode = if task.is_interrupted() {
+            ResumeMode::Interrupted
+        } else {
+            ResumeMode::Say
+        };
+        let mut recovery_attempt = None;
         let host = match self.running_for(task_id, attempt.id) {
             Some(running) => running.host,
             // 没在跑：停/结束之后在任务对话里说话，接着原会话开新一轮（T028.2）。
-            None => match self.resume_for_delivery(&claim, &task, attempt).await {
-                Some(host) => host,
+            None => match self.resume_for_delivery(&claim, &task, attempt, mode).await {
+                Some(opened) => {
+                    if matches!(mode, ResumeMode::Interrupted) {
+                        recovery_attempt = Some(opened.attempt_id);
+                    }
+                    opened.host
+                }
                 None => return,
             },
         };
         let mut sent = Ok(());
-        for input in &task.inputs {
-            let request_id = format!("task-say:{}", input.id.as_str());
-            let message = match self.say_message(input) {
+        let inputs = task.inputs.len();
+        for (index, input) in task.inputs.iter().enumerate() {
+            // 打断后的第一句话：恢复说明和用户的话同一条消息，恢复说明在前；
+            // request id 记在这次接续上。
+            let recovery = recovery_attempt.filter(|_| index + 1 == inputs);
+            let request_id = match recovery {
+                Some(attempt_id) => format!("resume:{task_id}:{attempt_id}"),
+                None => format!("task-say:{}", input.id.as_str()),
+            };
+            let mut message = match self.say_message(input) {
                 Ok(message) => message,
                 Err(error) => {
                     sent = Err(format!(
@@ -726,6 +755,11 @@ impl TaskRuntime {
                     break;
                 }
             };
+            if recovery.is_some() {
+                let mut blocks = message.into_message().content;
+                blocks.insert(0, ContentBlock::text(RESUME_NOTE));
+                message = UserMessage::new(blocks);
+            }
             if let Err(error) = host
                 .send_message(&request_id, message, DeliveryMode::Steer)
                 .await
@@ -776,21 +810,23 @@ impl TaskRuntime {
         Ok(UserMessage::new(blocks))
     }
 
-    /// 停/结束之后有人说话：占 person 席位，在原会话里接着开一次 Attempt，把输入送进去。
+    /// 停/结束之后有人说话：按 mode 占席位，在原会话里接着开一次 Attempt，把输入送进去。
     ///
-    /// 返回 Some(host)：会话已开好、登记在跑表里，调用方负责 Steer 输入并收效果行。
+    /// 返回 Some(opened)：会话已开好、登记在跑表里，调用方负责 Steer 输入并收效果行。
     /// 返回 None：已经推迟/失败/完成，调用方直接返回。
     async fn resume_for_delivery(
         self: &Arc<Self>,
         claim: &EffectClaim,
         task: &Task,
         attempt: &Attempt,
-    ) -> Option<Arc<ServiceHost>> {
-        match self
-            .open_resume(task, attempt, AttemptTrigger::UserMessage, SlotKind::Person)
-            .await
-        {
-            Ok(opened) => Some(opened.host),
+        mode: ResumeMode,
+    ) -> Option<OpenedResume> {
+        let (trigger, slot) = match mode {
+            ResumeMode::Say => (AttemptTrigger::UserMessage, SlotKind::Person),
+            ResumeMode::Interrupted => (AttemptTrigger::Resume, SlotKind::Wake),
+        };
+        match self.open_resume(task, attempt, trigger, slot).await {
+            Ok(opened) => Some(opened),
             Err(ResumeBlock::Later | ResumeBlock::AlreadyStarted) => {
                 self.later(claim);
                 None

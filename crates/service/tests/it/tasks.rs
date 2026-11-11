@@ -4927,10 +4927,10 @@ async fn talking_in_the_task_dialog_before_confirming_says_already_resumed() {
     })
     .await;
 
-    // 用户在任务对话里先说一句：T028 的路开新 Attempt。
+    // 用户在任务对话里先说一句：打断后的说话按接续开新 Attempt，第一条带着恢复说明。
     router.push_thin_for(crashed[0].id.as_str(), crate::common::text_sse("收到"));
     router.push_kind(crate::common::text_sse("收到"));
-    say_in_task_dialog(&host, &crashed[0], "继续").await;
+    say_in_task_dialog(&host, &crashed[0], "把没跑完的补上").await;
     wait_until("任务对话先接上了", || {
         store
             .task(&crashed[0].id)
@@ -4939,6 +4939,28 @@ async fn talking_in_the_task_dialog_before_confirming_says_already_resumed() {
             .is_some_and(|task| attempt_count(&task) == 2)
     })
     .await;
+    let resumed = store.task(&crashed[0].id).unwrap().unwrap();
+    let attempt = resumed.latest_attempt().cloned().expect("新 Attempt");
+    assert_eq!(attempt.trigger, tasks::AttemptTrigger::Resume);
+    wait_until("恢复说明进了任务会话", || {
+        recovery_notes(&thin_events(data.path(), &attempt)).len() == 1
+    })
+    .await;
+    let notes = recovery_notes(&thin_events(data.path(), &attempt));
+    assert_eq!(
+        notes[0].0,
+        format!("resume:{}:{}", crashed[0].id, attempt.id),
+        "恢复说明的判重键"
+    );
+    let note_at = notes[0]
+        .1
+        .find(RECOVERY_NOTE)
+        .expect("恢复说明在同一条消息里");
+    let words_at = notes[0]
+        .1
+        .find("把没跑完的补上")
+        .expect("用户的话在同一条消息里");
+    assert!(note_at < words_at, "恢复说明在用户的话前面：{}", notes[0].1);
 
     let decision = confirm_card_option(&host, "call-restart-card", crashed[0].id.as_str()).await;
     assert_eq!(decision["phase"], "refused", "{decision}");
@@ -5065,6 +5087,119 @@ async fn saying_after_an_interruption_resumes_with_the_recovery_note_before_the_
         Stage::NeedsConditions,
         "新 Attempt 开跑后不再是被打断了"
     );
+    drop(host);
+}
+
+/// 打断后的说话接续占 wake 席位，不额外多占：席位满时那句留在库里，腾出来再接。
+#[tokio::test]
+async fn saying_after_an_interruption_uses_a_wake_seat_and_waits_when_all_are_taken() {
+    let (server, router, data, cwd) = restart_setup().await;
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+    host.task_runtime().expect("runtime").set_pump_paused(true);
+    let first = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-a",
+        "call-accept-a",
+        1,
+        "甲",
+    )
+    .await;
+    crash_while_running(&router, data.path(), host, std::slice::from_ref(&first)).await;
+
+    let store = tasks_store(data.path());
+    let crashed = reload_tasks(&store, &[first]);
+    // 重启前把席位改成 1：唤醒接续占满以后，说话只能等。
+    let mut saved = service::settings::load(data.path());
+    saved.exec.seats = 1;
+    service::settings::save(data.path(), &saved).expect("保存席位");
+    router.clear_thin_delay();
+    let task_refs: Vec<&Task> = crashed.iter().collect();
+    push_restart_turn(&router, "call-restart-card", &task_refs, "甲被打断了。");
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+    assert_eq!(
+        store
+            .task(&crashed[0].id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .unwrap()
+            .end,
+        Some(AttemptEnd::Interrupted)
+    );
+    wait_until("Kind 收到重启汇报", || {
+        !restart_messages(&crate::common::read_root_events(data.path())).is_empty()
+    })
+    .await;
+    wait_until("接续卡出来，这一轮收尾", || {
+        !card_options(
+            &crate::common::read_root_events(data.path()),
+            "call-restart-card",
+        )
+        .is_empty()
+    })
+    .await;
+
+    // 新派一个任务占掉唯一的席位，这一轮挂住不结束。
+    router.set_thin_delay(Duration::from_secs(30));
+    router.push_thin_for_title("乙", crate::common::text_sse("还在做"));
+    let filler = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-b",
+        "call-accept-b",
+        3,
+        "乙",
+    )
+    .await;
+    wait_until("乙占住席位", || attempt_in_flight(&store, &filler.id)).await;
+
+    // 甲说话：wake 不超席位，Attempt 不增加，delivery 留在库里等。
+    let said = say_in_task_dialog(&host, &crashed[0], "甲先把没跑完的补上").await;
+    assert_eq!(said.new_attempt, Some(2), "回执只是预览，不代表真开");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let waiting = store.task(&crashed[0].id).unwrap().unwrap();
+    assert_eq!(attempt_count(&waiting), 1, "席位满时打断接续不开 Attempt");
+    assert!(
+        store
+            .effect_pending(EffectKind::Delivery, crashed[0].id.as_str())
+            .unwrap(),
+        "甲的 delivery 留在库里等席位"
+    );
+    assert_eq!(
+        store.effect_health(EffectKind::Delivery).unwrap().attempts,
+        0,
+        "Later 不算失败"
+    );
+
+    // 乙停下放出席位：甲的那句被重新领取，按 resume 接上。
+    router.push_kind(crate::common::text_sse("收到"));
+    router.push_thin_for(crashed[0].id.as_str(), crate::common::text_sse("甲接着做"));
+    let response = host
+        .dispatch(Call::TaskStop(TaskStopRequest {
+            task_id: filler.id.as_str().to_owned(),
+            mode: StopMode::Now,
+        }))
+        .await
+        .expect("停止");
+    let Response::TaskStop(stop) = response else {
+        panic!("TaskStop 的响应形状不对");
+    };
+    assert!(stop.stopped, "{stop:?}");
+    wait_until("甲接上", || {
+        store
+            .task(&crashed[0].id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| attempt_count(&task) == 2)
+    })
+    .await;
+    let resumed = store.task(&crashed[0].id).unwrap().unwrap();
+    let attempt = resumed.latest_attempt().cloned().expect("甲的新 Attempt");
+    assert_eq!(attempt.trigger, tasks::AttemptTrigger::Resume);
+    assert!(attempt.ended_at.is_none());
     drop(host);
 }
 
