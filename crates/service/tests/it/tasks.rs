@@ -590,7 +590,7 @@ async fn accept_freezes_the_task_and_the_launch_uses_it() {
         let request: Value = serde_json::from_str(body).unwrap();
         assert_eq!(request["model"], "deepseek-flash", "冻结的模型");
     }
-    // 第一份请求只开出无条件的 6 件；加载 web skill（Exa key 已存）后开出 8 件。
+    // 第一份请求只开出无条件的 7 件；加载 web skill（Exa key 已存）后开出 9 件。
     let loaded = thin_bodies
         .iter()
         .find(|body| body.contains("\"name\":\"web_search\""))
@@ -599,7 +599,7 @@ async fn accept_freezes_the_task_and_the_launch_uses_it() {
     names.sort();
     let mut expected: Vec<String> = service::THIN_TOOLS.map(str::to_owned).to_vec();
     expected.sort();
-    assert_eq!(names, expected, "ThinAgent 的工具表正好 8 件");
+    assert_eq!(names, expected, "ThinAgent 的工具表正好 9 件");
     let first_names = tool_names(&thin_bodies[0]);
     assert!(!first_names.contains(&"bash".to_owned()), "{first_names:?}");
     assert!(
@@ -1011,6 +1011,246 @@ async fn a_blocked_report_carries_its_question() {
     assert!(
         store.task(&task.id).unwrap().unwrap().missing.is_empty(),
         "agent 报的 blocked 不是任务包缺项"
+    );
+}
+
+#[tokio::test]
+async fn task_handback_relays_one_blocked_card_with_the_fixed_question() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(false).await;
+    fixture.router.push_thin(crate::common::tool_use_sse(
+        1,
+        "call-handback",
+        "task_handback",
+        &serde_json::json!({"reason": "用户要改任务要求，这超出了任务范围"}).to_string(),
+    ));
+    fixture.router.push_thin(crate::common::text_sse("交回了"));
+    wait_until("ThinAgent 的下一步请求", || {
+        fixture.router.bodies(true).len() >= 2
+    })
+    .await;
+
+    let relays = relay_messages(&crate::common::read_root_events(fixture.data()));
+    assert_eq!(relays.len(), 1, "交回只出恰一条 relay：{relays:?}");
+    let body = &relays[0].1;
+    assert_eq!(body["kind"], "task_report");
+    assert_eq!(body["state"], "blocked");
+    // 页面按 origin=agent 把 blocked 画成「卡住了」；包缺项才是「没开跑」。
+    assert_eq!(body["origin"], "agent");
+    assert_eq!(body["question"], "这超出了任务范围，要不要改任务？");
+    assert_eq!(body["summary"], "用户要改任务要求，这超出了任务范围");
+    assert_eq!(body["task"]["stage"], "needs_conditions");
+
+    let store = tasks_store(fixture.data());
+    let task_row = store.task(&task.id).unwrap().unwrap();
+    let attempt = task_row.latest_attempt().expect("Attempt").clone();
+    assert_eq!(
+        attempt.end,
+        Some(AttemptEnd::Reported),
+        "交回也以 reported 结束这个 Attempt"
+    );
+    let events = thin_events(fixture.data(), &attempt);
+    let (text, error) = tool_result(&events, "call-handback");
+    assert_eq!(error, None, "{text}");
+    assert!(text.contains("已交回"), "{text}");
+}
+
+#[tokio::test]
+async fn task_handback_twice_returns_already_handed_back_without_a_second_relay() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(false).await;
+    fixture.router.push_thin(crate::common::tool_use_sse(
+        1,
+        "call-handback-1",
+        "task_handback",
+        &serde_json::json!({"reason": "第一次超出了任务范围"}).to_string(),
+    ));
+    fixture.router.push_thin(crate::common::tool_use_sse(
+        2,
+        "call-handback-2",
+        "task_handback",
+        &serde_json::json!({"reason": "第二次也要交回"}).to_string(),
+    ));
+    fixture
+        .router
+        .push_thin(crate::common::text_sse("交回了两次"));
+    wait_until("第二次交回的回执", || {
+        let store = tasks_store(fixture.data());
+        let Some(task_row) = store.task(&task.id).ok().flatten() else {
+            return false;
+        };
+        let Some(attempt) = task_row.latest_attempt() else {
+            return false;
+        };
+        if attempt.conversation.is_none() {
+            return false;
+        }
+        thin_events(fixture.data(), attempt).iter().any(|event| {
+            matches!(
+                &event.kind,
+                session::EventKind::ToolResult { message, .. }
+                    if message.tool_call_id.as_deref() == Some("call-handback-2")
+            )
+        })
+    })
+    .await;
+
+    let relays = relay_messages(&crate::common::read_root_events(fixture.data()));
+    assert_eq!(relays.len(), 1, "第二次交回不再出 relay：{relays:?}");
+    let store = tasks_store(fixture.data());
+    let task_row = store.task(&task.id).unwrap().unwrap();
+    let attempt = task_row.latest_attempt().expect("Attempt").clone();
+    let events = thin_events(fixture.data(), &attempt);
+    let (first, first_error) = tool_result(&events, "call-handback-1");
+    assert_eq!(first_error, None, "{first}");
+    assert!(first.contains("已交回"), "{first}");
+    let (second, second_error) = tool_result(&events, "call-handback-2");
+    assert_eq!(second_error, None, "{second}");
+    assert_eq!(second, "已交回");
+    let reports: Vec<&tasks::Report> = task_row
+        .reports
+        .iter()
+        .filter(|report| report.attempt_id == attempt.id)
+        .collect();
+    assert_eq!(reports.len(), 1, "同一个 Attempt 只留一份报告：{reports:?}");
+    assert_ne!(reports[0].summary, "第二次也要交回");
+}
+
+#[tokio::test]
+async fn thin_agent_handback_rule_and_tool_stay_off_kind() {
+    let fixture = Fixture::new().await;
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-report", "ready", "查完了", None));
+    fixture.accept_with_kind_replies(false, 1).await;
+    wait_until("ThinAgent 请求", || {
+        !fixture.router.bodies(true).is_empty()
+    })
+    .await;
+
+    let thin_bodies = fixture.router.bodies(true);
+    let thin: Value = serde_json::from_str(&thin_bodies[0]).unwrap();
+    let thin_tools = tool_names(&thin_bodies[0]);
+    assert!(
+        thin_tools.contains(&"task_handback".to_owned()),
+        "{thin_tools:?}"
+    );
+    let thin_system = thin["system"].as_str().expect("ThinAgent 系统提示");
+    assert!(
+        thin_system.contains("outside this task's scope"),
+        "交回规则要进 ThinAgent 的 policy_prompt：{thin_system}"
+    );
+    assert!(
+        thin_system.contains("do not do that work yourself"),
+        "规则要写明不自己做：{thin_system}"
+    );
+    assert!(
+        !thin_system.contains("这超出了任务范围，要不要改任务？"),
+        "固定问句只能由程序写进 relay，不能抄进角色规则"
+    );
+
+    let kind_bodies = fixture.router.bodies(false);
+    let kind_tools = tool_names(&kind_bodies[0]);
+    assert!(
+        !kind_tools.contains(&"task_handback".to_owned()),
+        "task_handback 只给 ThinAgent：{kind_tools:?}"
+    );
+    let kind: Value = serde_json::from_str(&kind_bodies[0]).unwrap();
+    let kind_system = kind["system"].as_str().expect("Kind 系统提示");
+    assert!(!kind_system.contains("task_handback"), "{kind_system}");
+    assert!(!kind_system.contains("这超出了任务范围，要不要改任务？"));
+    assert_eq!(service::THIN_TOOLS.len(), 9, "ThinAgent 的工具表 9 件");
+}
+
+#[tokio::test]
+async fn task_handback_rejects_a_reason_longer_than_300_characters() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(false).await;
+    let too_long = "长".repeat(301);
+    fixture.router.push_thin(crate::common::tool_use_sse(
+        1,
+        "call-handback-long",
+        "task_handback",
+        &serde_json::json!({"reason": too_long}).to_string(),
+    ));
+    fixture.router.push_thin(crate::common::text_sse("没交回"));
+    wait_until("超长交回的回执", || {
+        let store = tasks_store(fixture.data());
+        let Some(task_row) = store.task(&task.id).ok().flatten() else {
+            return false;
+        };
+        let Some(attempt) = task_row.latest_attempt() else {
+            return false;
+        };
+        if attempt.conversation.is_none() {
+            return false;
+        }
+        thin_events(fixture.data(), attempt).iter().any(|event| {
+            matches!(
+                &event.kind,
+                session::EventKind::ToolResult { message, .. }
+                    if message.tool_call_id.as_deref() == Some("call-handback-long")
+            )
+        })
+    })
+    .await;
+
+    let store = tasks_store(fixture.data());
+    let task_row = store.task(&task.id).unwrap().unwrap();
+    let attempt = task_row.latest_attempt().expect("Attempt").clone();
+    let events = thin_events(fixture.data(), &attempt);
+    let (text, error) = tool_result(&events, "call-handback-long");
+    assert_eq!(error, Some(true), "超长理由要当工具错误：{text}");
+    assert!(text.contains("300"), "{text}");
+    assert!(
+        !task_row
+            .reports
+            .iter()
+            .any(|report| report.attempt_id == attempt.id && report.state == ReportState::Blocked),
+        "超长理由不能写成交回报告"
+    );
+    assert_eq!(attempt.end, None, "没交回，Attempt 不结束");
+}
+
+#[tokio::test]
+async fn a_task_frozen_with_the_eight_tool_list_still_launches() {
+    let fixture = Fixture::new().await;
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-report", "ready", "旧任务也能跑", None));
+    let store = tasks_store(fixture.data());
+    let mut tools: Vec<String> = service::THIN_TOOLS.map(str::to_owned).to_vec();
+    tools.retain(|name| name != "task_handback");
+    let draft = tasks::NewTask {
+        title: "升级前受理的任务".to_owned(),
+        requirement: "找答案".to_owned(),
+        dod: "有答案".to_owned(),
+        cwd: fixture.data().to_path_buf(),
+        conversation: tasks::ConversationId::new("legacy-kind-session"),
+        model: tasks::ModelChoice {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            effort_wanted: "high".to_owned(),
+        },
+        tools,
+    };
+    let task = store.create_task(draft, 1_700_000_000_000).unwrap();
+    wait_until("升级前任务开跑", || {
+        store.task(&task.id).ok().flatten().is_some_and(|task| {
+            !task.missing.is_empty()
+                || task.latest_report().map(|report| report.state) == Some(ReportState::Ready)
+        })
+    })
+    .await;
+    let task_row = store.task(&task.id).unwrap().unwrap();
+    assert!(
+        task_row.missing.is_empty(),
+        "旧任务冻结的 8 件工具不能算缺项：{:?}",
+        task_row.missing
+    );
+    assert_eq!(
+        task_row.latest_report().map(|report| report.state),
+        Some(ReportState::Ready)
     );
 }
 
