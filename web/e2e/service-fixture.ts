@@ -263,9 +263,9 @@ export interface FixtureOptions {
     | 'handback'
     /// T028.5：两个任务、席位 1，验证叫醒停任务可以多占 1 个。
     | 'seats'
-    /// T031：两个任务在同一轮报回（两张结果卡、刷新同序）。
+    /// 两个任务在同一轮报回（两张结果卡、刷新同序）。
     | 'two'
-    /// T031：ThinAgent 先说话再调工具（任务对话的 say 步）。
+    /// ThinAgent 先说话再调工具（任务对话的 say 步）。
     | 'pretext';
 }
 
@@ -282,7 +282,7 @@ function taskResultRouteFile(options: FixtureOptions): string | null {
   ) {
     return 't028-routes-' + scenario + '.json';
   }
-  // T031：同轮两张卡、任务对话的 say 步。
+  // 同轮两张卡、任务对话的 say 步。
   if (scenario === 'two' || scenario === 'pretext') {
     return 't031-routes-' + scenario + '.json';
   }

@@ -706,7 +706,7 @@ function mergeCcViews(views: TurnViewData[], events: ServiceEvent[]): TurnViewDa
 /** 从日志事实派生界面的一轮（打开/历史/往上翻；其余能力逐票补）。 */
 const DEMO_MODEL = { connectionId: 'deepseek', modelId: 'deepseek-chat', label: 'DeepSeek Chat' };
 
-/** T031：派生只拿事件和显示名表；node 用例不装 store 也能跑 turnViews。 */
+/** 派生只拿事件和显示名表；node 用例不装 store 也能跑 turnViews。 */
 export function turnLabels(): TurnLabels {
   const state = useKindStore.getState();
   return {

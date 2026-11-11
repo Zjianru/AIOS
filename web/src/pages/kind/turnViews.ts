@@ -312,7 +312,7 @@ export interface TaskCcView {
   chars?: number;
 }
 
-/** 页面上显示名字用的表（T031：纯派生不直接读 store，node 用例只给事件也能跑）。 */
+/** 页面上显示名字用的表（纯派生不直接读 store，node 用例只给事件也能跑）。 */
 export interface TurnLabels {
   connectionNames?: Record<string, string>;
   modelWindows?: Record<string, number>;
@@ -335,9 +335,9 @@ export interface TurnViewData {
   user: TurnUserView | null;
   /** T028.5：抄送行不是一轮回答；有它时只画虚线一行，不画用户气泡和 Kind 的回复。 */
   cc?: TaskCcView | null;
-  /** 任务结果的 relay 消息：这一轮可能被 relay 叫起来；按到达顺序各出一张卡（T031）。 */
+  /** 任务结果的 relay 消息：这一轮可能被 relay 叫起来；按到达顺序各出一张卡。 */
   taskResults: TaskResultFact[];
-  /** T031/D89：工具前说明，按日志先后插进工作过程，回答区不显示。 */
+  /** D89：工具前说明，按日志先后插进工作过程，回答区不显示。 */
   says: InterimSay[];
   /** 思考全文（T013 验收 F5）；摘要和秒数页面不用，日志里也没有（T013 C1）。 */
   reasoning: { full: string } | null;
@@ -663,7 +663,7 @@ export function deriveTurnViews(
       case 'user/message': {
         const relay = parseTaskRelay(data.message, event.time / 1000);
         if (relay) {
-          // T031：同一轮可能被多条 relay 叫起来，按日志到达顺序各留一张卡。
+          // 同一轮可能被多条 relay 叫起来：按日志到达顺序各留一张卡，不互相覆盖。
           ensure(turn).taskResults.push(relay);
           break;
         }
@@ -690,7 +690,7 @@ export function deriveTurnViews(
           hasToolCall(data.message) ||
           (data.interrupted === true && streamHasToolCall(data.stream));
         if (text && preTool) {
-          // T031/D89：工具前说明按日志先后进工作过程，不进回答区。
+          // D89：工具前说明按日志先后进工作过程，不进回答区。
           if (text.trim()) {
             raw.says.push({ id: 'say-' + event.seq, text, seq: event.seq });
           }
@@ -964,7 +964,7 @@ export function processStepsOf(view: TurnViewData): ProcessStep[] {
       streaming: view.status === 'inProgress' && view.tools.some((tool) => tool.state === 'running' && tool.id === view.tools[view.tools.length - 1]?.id) === false && view.tools.length === 0,
     });
   }
-  // T031/D89：工具前说明和工具步按日志 seq 排先后；没有 seq 的旧数据排在最后，
+  // D89：工具前说明和工具步按日志 seq 排先后；没有 seq 的旧数据排在最后，
   // 保持工具之间的原顺序。
   const ordered: { seq: number; step: ProcessStep }[] = [
     ...view.tools.map((tool) => ({

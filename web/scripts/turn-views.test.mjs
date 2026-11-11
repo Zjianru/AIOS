@@ -1,4 +1,4 @@
-// T031：一轮的轮次派生（turnViews）——同轮多张结果卡。
+// 一轮的轮次派生（turnViews）：同轮多张结果卡、工具前说明进过程。
 // 只喂日志事件，不装页面 store：派生是纯函数，Kind 与任务对话共用这一份。
 import assert from 'node:assert/strict';
 import { deriveTurnViews, processStepsOf } from '../src/pages/kind/turnViews.ts';
@@ -110,7 +110,7 @@ function toolResultEvent(callId, output) {
   );
 }
 
-// —— T024 K2：同轮用户消息 + relay，气泡和卡都在（DOM 先后由 e2e 断言） ——
+// —— 同轮用户消息 + relay：气泡和卡都在（DOM 先后由 e2e 断言） ——
 {
   seq = 0;
   const views = deriveTurnViews([
