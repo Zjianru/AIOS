@@ -110,6 +110,16 @@ impl RootHost {
                     "任务库没开，任务对话说不了".to_owned(),
                 )),
             },
+            // task-interrupt：停下这一轮也要任务库和执行者的在跑表。
+            Call::TaskInterrupt(request) => match self.task_runtime() {
+                Some(runtime) => runtime
+                    .interrupt_task(&request.task_id)
+                    .await
+                    .map(Response::TaskInterrupt),
+                None => Err(ServiceError::TaskUnavailable(
+                    "任务库没开，停不了这一轮".to_owned(),
+                )),
+            },
             // task-stop：停任务要任务库和执行者的在跑表，都在根宿主。
             Call::TaskStop(request) => match self.task_runtime() {
                 Some(runtime) => runtime
