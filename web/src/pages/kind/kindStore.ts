@@ -36,7 +36,6 @@ import {
 } from './turnViews';
 import type { CanvasTrack, TurnLabels, TurnViewData } from './turnViews';
 export type { CompactionView, QuestionView, ToolStep, TurnUserView, TurnViewData } from './turnViews';
-export { deriveTurnViews } from './turnViews';
 
 export const PAGE_LAST = 5;
 export const PAGE_OLDER = 20;
