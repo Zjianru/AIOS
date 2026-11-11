@@ -17,7 +17,7 @@ use tasks::{
     Attempt, AttemptEnd, AttemptId, AttemptTrigger, BootId, BootScan, ConversationId, EffectClaim,
     EffectKind, EffectPayload, Input, InputAttachment, MissingItem, ModelChoice, NewInput,
     NewReport, NewTask, ReportId, ReportOrigin, ReportState, SlotKind, Stage, StopAttempt, Store,
-    Task, TaskError, TaskId, WorkerSlots,
+    Task, TaskError, TaskId, TaskPolicy, WorkerSlots,
 };
 use tokio::sync::broadcast;
 use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
@@ -36,7 +36,7 @@ use crate::session_host::ServiceHost;
 /// 任务库文件名（数据目录下）。
 pub const TASKS_DB_FILE: &str = "tasks.sqlite";
 
-/// ThinAgent 的完整工具名单（构造期 only 过滤；顺序就是名单顺序）。
+/// ThinAgent 的只读工具名单（构造期 only 过滤；顺序就是名单顺序）。
 pub const THIN_TOOLS: [&str; 9] = [
     "read",
     "glob",
@@ -49,14 +49,30 @@ pub const THIN_TOOLS: [&str; 9] = [
     "task_handback",
 ];
 
+/// 写任务的 ThinAgent 工具名单：只读 9 件加 write、edit（D85）。
+pub const THIN_WRITE_TOOLS: [&str; 11] = [
+    "read",
+    "glob",
+    "grep",
+    "write",
+    "edit",
+    "skill",
+    "todo_write",
+    "web_search",
+    "web_fetch",
+    "task_report",
+    "task_handback",
+];
+
 /// 默认角色的规则（ThinAgent 的 policy_prompt，追加在系统提示末尾；Kind 不装）。
 pub const THIN_POLICY: &str = "\
-You are a ThinAgent: the execution carrier for one read-only investigation task. \
+You are a ThinAgent: the execution carrier for one task. \
 The task's requirement and DoD are the whole scope; work inside them and inside the task's working directory.
 If the user says something outside this task's scope, asks for a different task, or asks to change the requirement or the DoD, call task_handback once with one sentence saying what exceeded the task; do not do that work yourself.
 If the user only thanks you or acknowledges the result, do not reply.
 You can read, search, load skills, keep a todo list, read the web, and call task_report or task_handback. \
-You cannot write files, run shell commands, start background work, delegate, or ask a person a question directly.
+When the assignment has a write_scope, you also have write and edit, and they only work inside that scope; if what the user asks needs a path outside it, call task_handback instead of trying to get around it. \
+You cannot run shell commands, start background work, delegate, or ask a person a question directly.
 When the work is done, report ready with the answer and the evidence it rests on. \
 When you cannot continue without a missing tool, permission, file, credential or an answer, report blocked with exactly what is missing and what the user must do; put a direct question in question when only the user can answer it. \
 When the work cannot produce the result, report failed with what failed and what you already found. \
@@ -95,6 +111,16 @@ struct RunningThin {
 struct OpenedResume {
     host: Arc<ServiceHost>,
     attempt_id: AttemptId,
+}
+
+/// Kind 的 task_accept 解析后的参数：建任务并冻结执行策略需要的全部字段。
+struct TaskAcceptArgs {
+    title: String,
+    requirement: String,
+    dod: String,
+    cwd: Option<String>,
+    write_scope: Option<String>,
+    worktree: bool,
 }
 
 /// 任务没在跑时接着开一次的方式：普通说话，或重启打断后的接续。
@@ -1405,14 +1431,18 @@ impl TaskRuntime {
             },
         );
         self.monitor(task.id.clone(), attempt_id, conversation.clone(), events);
-        let assignment = json!({
+        let mut assignment = json!({
             "task_id": task.id.as_str(),
             "title": task.title,
             "requirement": task.requirement,
             "dod": task.dod,
             "cwd": task.cwd.to_string_lossy(),
-        })
-        .to_string();
+        });
+        // 写任务的模型要知道自己能在哪个路径里改；范围本身由工具在执行时核。
+        if let Some(scope) = &task.write_scope {
+            assignment["write_scope"] = json!(scope.to_string_lossy());
+        }
+        let assignment = assignment.to_string();
         let sent = host
             .send_message(
                 &format!("assignment:{}", task.id),
@@ -1519,16 +1549,22 @@ impl TaskRuntime {
         if task.code_mode {
             missing.push(missing_item("CodeMode（只读任务必须为否）"));
         }
-        let expected: BTreeSet<&str> = THIN_TOOLS.into_iter().collect();
-        // T028.4 加 task_handback 之前受理的任务冻结的是 8 件；升级后要能接着做，
-        // 不因为少这一件新加的工具就判任务包缺项。新任务仍按 9 件冻结。
-        let legacy: BTreeSet<&str> = THIN_TOOLS
-            .into_iter()
-            .filter(|name| *name != "task_handback")
-            .collect();
+        // 工具名单跟着任务的写入范围走：只读 9 件，写任务 11 件。
+        // T028.4 加 task_handback 之前受理的只读任务冻结的是 8 件；升级后要能接着做，
+        // 不因为少这一件新加的工具就判任务包缺项。
+        let (expected, legacy): (BTreeSet<&str>, Option<BTreeSet<&str>>) =
+            if task.write_scope.is_some() {
+                (THIN_WRITE_TOOLS.into_iter().collect(), None)
+            } else {
+                let legacy = THIN_TOOLS
+                    .into_iter()
+                    .filter(|name| *name != "task_handback")
+                    .collect();
+                (THIN_TOOLS.into_iter().collect(), Some(legacy))
+            };
         let actual: BTreeSet<&str> = task.tools.iter().map(String::as_str).collect();
-        if actual != expected && actual != legacy {
-            missing.push(missing_item("工具名单（不是只读调查的 9 件）"));
+        if actual != expected && legacy.as_ref() != Some(&actual) {
+            missing.push(missing_item("工具名单（和写入范围不符）"));
         }
         if task.model.connection.trim().is_empty()
             || task.model.model.trim().is_empty()
@@ -1573,8 +1609,9 @@ impl TaskRuntime {
         Ok((config, credentials))
     }
 
-    /// 用冻结的模型选择、任务 cwd、9 件只读工具和角色规则开一个 ThinAgent。
+    /// 用冻结的模型选择、任务 cwd、冻结的工具名单和角色规则开一个 ThinAgent。
     ///
+    /// 写任务把冻结的写入范围交给 AgentConfig，写类工具在 resolve 之后用它核目标。
     /// `resume` 是接着做的原会话；会话 id 不变，日志里的历史照常进这次请求。
     async fn open_thin(
         self: &Arc<Self>,
@@ -1596,6 +1633,7 @@ impl TaskRuntime {
         )));
         let mut agent_config = self.options.config.clone();
         agent_config.tool_keys = crate::root::tool_key_source(&self.options);
+        agent_config.write_scope = task.write_scope.clone();
         let agent = agent::Agent::open(AgentOpenOptions {
             data_dir: self.data_dir.clone(),
             cwd: task.cwd.clone(),
@@ -1606,7 +1644,7 @@ impl TaskRuntime {
             append_hook_factory: self.options.append_hook_factory.clone(),
             extra_tools,
             tool_policy: ToolPolicy {
-                only: Some(THIN_TOOLS.iter().map(|name| (*name).to_owned()).collect()),
+                only: Some(task.tools.clone()),
                 no_wait: false,
             },
             policy_prompt: Some(THIN_POLICY.to_owned()),
@@ -1889,16 +1927,25 @@ impl TaskRuntime {
         ))
     }
 
-    /// Kind 的 task_accept：冻结模型选择、落任务和 launch、回任务 id。
+    /// Kind 的 task_accept：冻结模型选择与执行策略、落任务和 launch、回任务 id。
+    ///
+    /// 写入范围为空 = 只读调查（9 件工具）；有范围 = 写任务（加 write、edit）。
+    /// bash 开关不在 task_accept 字段里，由服务在创建时按设置冻结；本票先按关冻结
+    /// （开关归 T030.2b）。
     fn accept(
         &self,
         context: &ToolContext,
         call_id: &str,
-        title: String,
-        requirement: String,
-        dod: String,
-        cwd: Option<String>,
+        args: TaskAcceptArgs,
     ) -> Result<(Task, bool), ToolFailure> {
+        let TaskAcceptArgs {
+            title,
+            requirement,
+            dod,
+            cwd,
+            write_scope,
+            worktree,
+        } = args;
         let conversation = context
             .session_id()
             .ok_or_else(|| ToolFailure::plain("没有会话 id，不能受理任务"))?
@@ -1927,6 +1974,17 @@ impl TaskRuntime {
             .expect("selection 锁被毒化")
             .clone()
             .ok_or_else(|| ToolFailure::plain("还没有可用的模型选择，不能派出任务"))?;
+        let writing = write_scope
+            .as_deref()
+            .is_some_and(|scope| !scope.trim().is_empty());
+        let tools = if writing {
+            THIN_WRITE_TOOLS
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect()
+        } else {
+            THIN_TOOLS.iter().map(|name| (*name).to_owned()).collect()
+        };
         let draft = NewTask {
             title,
             requirement,
@@ -1938,15 +1996,127 @@ impl TaskRuntime {
                 model: selection.model,
                 effort_wanted: selection.effort_wanted,
             },
-            tools: THIN_TOOLS.iter().map(|name| (*name).to_owned()).collect(),
+            tools,
+        };
+        let policy = TaskPolicy {
+            write_scope,
+            worktree,
+            bash: false,
         };
         let key = format!("{conversation}:{call_id}");
         let (task, created) = self
             .store
-            .create_task_once(draft, &key, Self::now())
+            .create_task_once_with(draft, policy, &key, Self::now())
             .map_err(|error| ToolFailure::plain(error.to_string()))?;
         self.wake();
         Ok((task, created))
+    }
+
+    /// Kind 的 task_update：换写入范围、追加要求版本，然后在原会话开新 Attempt。
+    ///
+    /// 只在用户于 Kind 对话里同意扩大范围后用；本票只改写入范围（D83）。
+    async fn update_scope(
+        self: &Arc<Self>,
+        task_id: &str,
+        write_scope: String,
+    ) -> Result<String, ToolFailure> {
+        let id = TaskId::from(task_id);
+        let task = self
+            .store
+            .task(&id)
+            .map_err(|error| ToolFailure::plain(error.to_string()))?
+            .ok_or_else(|| ToolFailure::plain(format!("任务不存在：{task_id}")))?;
+        if task.write_scope.is_none() {
+            return Err(ToolFailure::plain(
+                "这个任务是只读调查，没有写入范围；要让它写文件，请重新派一个带写入范围的写任务",
+            ));
+        }
+        let Some(attempt) = task.latest_attempt().cloned() else {
+            return Err(ToolFailure::plain(
+                "这个任务还没开跑，没有可接着做的会话；请重新派任务",
+            ));
+        };
+        if attempt.ended_at.is_none() {
+            return Err(ToolFailure::plain(
+                "这个任务这一轮还在跑；等它结束（或先停下）再改写入范围",
+            ));
+        }
+        let updated = self
+            .store
+            .update_write_scope(&id, &write_scope, Self::now())
+            .map_err(|error| ToolFailure::plain(error.to_string()))?;
+        let scope = updated
+            .write_scope
+            .clone()
+            .expect("update_write_scope 不接受空范围");
+        let version = updated.requirement_version();
+        let opened = match self
+            .open_resume(
+                &updated,
+                &attempt,
+                AttemptTrigger::RequirementChanged,
+                SlotKind::Wake,
+            )
+            .await
+        {
+            Ok(opened) => opened,
+            Err(ResumeBlock::Later) => {
+                return Err(ToolFailure::plain(format!(
+                    "写入范围已改成 {}（要求第 {version} 版），但任务现在接不上（会话在收尾或没有空位）；稍后再在任务对话里说一句就能接着做",
+                    scope.display()
+                )));
+            }
+            Err(ResumeBlock::AlreadyStarted) => {
+                return Err(ToolFailure::plain(format!(
+                    "写入范围已改成 {}（要求第 {version} 版）；任务已经接着开了新的 Attempt",
+                    scope.display()
+                )));
+            }
+            Err(ResumeBlock::PackageMissing) => {
+                return Err(ToolFailure::plain(
+                    "写入范围已更新，但任务包缺东西，接不上；看任务里的缺项",
+                ));
+            }
+            Err(ResumeBlock::NoSession(reason)) => {
+                return Err(ToolFailure::plain(format!(
+                    "写入范围已改成 {}（要求第 {version} 版），但接不上原会话：{reason}",
+                    scope.display()
+                )));
+            }
+        };
+        // 第一条输入写明新范围：新 Attempt 的模型从这条消息知道现在能写哪里。
+        let note = format!(
+            "AIOS：用户在 Kind 对话里同意把写入范围改成 {}（要求第 {version} 版）。先看当前的文件再继续；只在这个范围里写，范围外的调 task_handback。",
+            scope.display()
+        );
+        let request_id = format!("task-update:{id}:{}", opened.attempt_id);
+        let sent = opened
+            .host
+            .send_message(&request_id, UserMessage::text(note), DeliveryMode::Steer)
+            .await;
+        if let Err(error) = sent {
+            // 说明没送出去：别留一个没人做的空 Attempt。
+            opened.host.shutdown().await;
+            self.running
+                .lock()
+                .expect("thinagent 表锁被毒化")
+                .remove(opened.host.agent().id().as_str());
+            best_effort(
+                "改范围后的说明没送出去的 Attempt 没收尾",
+                self.store
+                    .end_attempt(&id, opened.attempt_id, Self::now(), AttemptEnd::NotOpened),
+            );
+            self.release_seat(id.as_str());
+            return Err(ToolFailure::plain(format!(
+                "写入范围已改成 {}（要求第 {version} 版），但新 Attempt 的说明没送进去：{error}",
+                scope.display()
+            )));
+        }
+        self.wake();
+        Ok(format!(
+            "写入范围已改成 {}（要求第 {version} 版）；已在原会话开新的 Attempt，第一条输入写明新范围。",
+            scope.display()
+        ))
     }
 
     /// Kind 的 task_status：阶段、最近报告全文、Attempt 数；waiting 时向 ThinAgent 要一次。
@@ -2257,9 +2427,11 @@ impl TaskAcceptTool {
                 "type": "object",
                 "properties": {
                     "title": {"type": "string", "description": "Short label for the card (at most 200 characters)."},
-                    "requirement": {"type": "string", "description": "What the investigation must find out, in the user's words."},
+                    "requirement": {"type": "string", "description": "What the task must do, in the user's words."},
                     "dod": {"type": "string", "description": "How the result will be judged complete."},
-                    "cwd": {"type": "string", "description": "Directory to work in; omit to use this conversation's directory. It must already exist."}
+                    "cwd": {"type": "string", "description": "Directory to work in; omit to use this conversation's directory. It must already exist."},
+                    "write_scope": {"type": "string", "description": "One path this task may write: a file, or a directory and everything under it. Relative paths resolve against cwd. Omit for a read-only investigation."},
+                    "worktree": {"type": "boolean", "description": "Run the task in a new git worktree under the data directory. Only when the user explicitly asks for a worktree. Defaults to false."}
                 },
                 "required": ["title", "requirement", "dod"]
             }),
@@ -2273,7 +2445,7 @@ impl Tool for TaskAcceptTool {
     }
 
     fn description(&self) -> &str {
-        "Dispatch a read-only investigation task to a ThinAgent and return its task id. The result arrives later as a task_report message; the user already sees a card, so answer only what is needed now and do not wait for the result."
+        "Dispatch a task to a ThinAgent and return its task id. Omit write_scope for a read-only investigation; pass one path for a writing task (a file, or a directory and everything under it). Pass worktree=true only when the user explicitly asked to work in a git worktree. The result arrives later as a task_report message; the user already sees a card, so answer only what is needed now and do not wait for the result."
     }
 
     fn parameters(&self) -> &Value {
@@ -2308,10 +2480,37 @@ impl Tool for TaskAcceptTool {
                 .and_then(Value::as_str)
                 .filter(|cwd| !cwd.trim().is_empty())
                 .map(str::to_owned);
-            match self
-                .runtime
-                .accept(context, &call.id, title, requirement, dod, cwd)
-            {
+            let write_scope = match args.get("write_scope") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(value)) => {
+                    Some(value.clone()).filter(|value| !value.trim().is_empty())
+                }
+                Some(_) => {
+                    return ToolResult::error(
+                        call.id,
+                        ToolFailure::plain("write_scope 必须是字符串"),
+                    );
+                }
+            };
+            let worktree = match args.get("worktree") {
+                None => false,
+                Some(Value::Bool(value)) => *value,
+                Some(_) => {
+                    return ToolResult::error(call.id, ToolFailure::plain("worktree 必须是布尔值"));
+                }
+            };
+            match self.runtime.accept(
+                context,
+                &call.id,
+                TaskAcceptArgs {
+                    title,
+                    requirement,
+                    dod,
+                    cwd,
+                    write_scope,
+                    worktree,
+                },
+            ) {
                 Ok((task, true)) => ToolResult::success(
                     call.id,
                     format!(
@@ -2460,6 +2659,75 @@ impl Tool for TaskStopTool {
             match self.runtime.stop_task(task_id, mode).await {
                 Ok(result) => ToolResult::success(call.id, result.message),
                 Err(error) => ToolResult::error(call.id, ToolFailure::plain(error.to_string())),
+            }
+        })
+    }
+}
+
+/// Kind 的 task_update：用户同意后换写入范围，出新要求版本并接回原任务会话。
+pub(crate) struct TaskUpdateTool {
+    runtime: Arc<TaskRuntime>,
+    parameters: Value,
+}
+
+impl TaskUpdateTool {
+    pub(crate) fn new(runtime: Arc<TaskRuntime>) -> Self {
+        Self {
+            runtime,
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "Task id returned by task_accept."},
+                    "write_scope": {"type": "string", "description": "One path the task may now write: a file, or a directory and everything under it. Relative paths resolve against the task's cwd."}
+                },
+                "required": ["task_id", "write_scope"]
+            }),
+        }
+    }
+}
+
+impl Tool for TaskUpdateTool {
+    fn name(&self) -> &str {
+        "task_update"
+    }
+
+    fn description(&self) -> &str {
+        "Change a writing task's write scope after the user agreed in this Kind conversation. Records a new requirement version and resumes the task in its own conversation with the new scope. Only the write scope can change; anything else needs a new task."
+    }
+
+    fn parameters(&self) -> &Value {
+        &self.parameters
+    }
+
+    fn condition(&self) -> ToolCondition {
+        ToolCondition::Always
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: ToolCall,
+        _context: &'a ToolContext,
+    ) -> ToolFuture<'a, ToolResult> {
+        Box::pin(async move {
+            let args = match parse_object(&call.arguments) {
+                Ok(args) => args,
+                Err(failure) => return ToolResult::error(call.id, failure),
+            };
+            let Some(task_id) = args.get("task_id").and_then(Value::as_str) else {
+                return ToolResult::error(call.id, ToolFailure::plain("task_id 不能为空"));
+            };
+            let Some(write_scope) = args
+                .get("write_scope")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|scope| !scope.is_empty())
+                .map(str::to_owned)
+            else {
+                return ToolResult::error(call.id, ToolFailure::plain("write_scope 不能为空"));
+            };
+            match self.runtime.update_scope(task_id, write_scope).await {
+                Ok(text) => ToolResult::success(call.id, text),
+                Err(failure) => ToolResult::error(call.id, failure),
             }
         })
     }

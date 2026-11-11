@@ -60,6 +60,8 @@ pub(crate) struct Inner {
     policy_prompt: Option<String>,
     /// 统一工具入口是否拒绝会等待的调用（Kind 用；默认关）。
     no_wait: bool,
+    /// 工具写入范围（D85）；None = 不限。
+    write_scope: Option<PathBuf>,
     /// 收尾停标记：统一工具入口除 task_report 外全拒。只活这个 Agent 实例（一次 Attempt）。
     stop_after_report: AtomicBool,
 
@@ -349,6 +351,7 @@ impl Inner {
             tool_keys,
             policy_prompt,
             no_wait: config.no_wait,
+            write_scope: config.write_scope.clone(),
             stop_after_report: AtomicBool::new(false),
             model,
             tools,

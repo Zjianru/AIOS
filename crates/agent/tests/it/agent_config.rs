@@ -154,6 +154,7 @@ async fn accepts_valid_non_default_values() {
         allow_parallel_in_progress: true,
         no_wait: false,
         policy_prompt: None,
+        write_scope: None,
     };
     let agent = create_result(config).await.unwrap();
     agent.idle().await;

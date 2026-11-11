@@ -5565,7 +5565,7 @@ async fn a_write_task_freezes_the_scope_and_eleven_tools() {
         .iter()
         .find(|tool| tool["name"] == "task_accept")
         .expect("task_accept 的工具定义");
-    let properties = &accept["parameters"]["properties"];
+    let properties = &accept["input_schema"]["properties"];
     assert!(properties.get("write_scope").is_some(), "{properties}");
     assert!(properties.get("worktree").is_some(), "{properties}");
     assert!(
@@ -5615,8 +5615,6 @@ async fn kind_has_no_write_shell_or_background_tools() {
         "task_status",
         "task_stop",
         "task_update",
-        "aios_query",
-        "propose_action",
         "ask_user_question",
         "canvas",
     ] {
@@ -5672,11 +5670,9 @@ async fn an_out_of_scope_write_is_refused_unchanged_and_hands_back() {
         "拒绝原文固定"
     );
     let code = events.iter().find_map(|event| match &event.kind {
-        session::EventKind::ToolResult {
-            message: message,
-            error,
-            ..
-        } if message.tool_call_id.as_deref() == Some("call-write") => {
+        session::EventKind::ToolResult { message, error, .. }
+            if message.tool_call_id.as_deref() == Some("call-write") =>
+        {
             error.as_ref().map(|error| error.code.clone())
         }
         _ => None,
@@ -5756,7 +5752,9 @@ async fn task_update_records_a_new_version_and_resumes_with_the_new_scope() {
     .await;
     crate::common::wait_turns(&fixture.host, fixture.data(), 2).await;
 
-    let scope = std::fs::canonicalize(&outside).unwrap();
+    let scope = std::fs::canonicalize(fixture.cwd.path())
+        .unwrap()
+        .join("outside.py");
     let update_args = serde_json::json!({
         "task_id": task.id.as_str(),
         "write_scope": "outside.py"

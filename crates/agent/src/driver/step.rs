@@ -570,7 +570,8 @@ pub(super) async fn run_step(
     };
     let context = ToolContext::with_session(inner.cwd.clone(), Arc::clone(&inner.tool_session))
         .gated(Arc::clone(&enabled))
-        .observing_session(events_reader);
+        .observing_session(events_reader)
+        .with_write_scope(inner.write_scope.clone());
     let mut outcome = execute_batch(
         &inner.tools,
         &exec_calls,

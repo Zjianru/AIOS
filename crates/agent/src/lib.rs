@@ -104,6 +104,9 @@ pub struct AgentConfig {
     /// 追加在系统提示末尾的产品规则（照 DSH systemPrompt.section）；None = 不追加。
     /// 只在会话第一次请求建系统提示时生效；续接沿用日志里的系统提示。
     pub policy_prompt: Option<String>,
+    /// 工具写入范围（D85）：写类工具只允许写这个前缀下的路径；None = 不限。
+    /// 服务给写任务的 ThinAgent 填；Kind、CLI 不填。
+    pub write_scope: Option<PathBuf>,
 }
 
 impl Default for AgentConfig {
@@ -131,6 +134,7 @@ impl Default for AgentConfig {
             allow_parallel_in_progress: true,
             no_wait: false,
             policy_prompt: None,
+            write_scope: None,
         }
     }
 }

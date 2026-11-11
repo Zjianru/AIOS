@@ -158,6 +158,42 @@ impl RootSession {
     }
 }
 
+/// Kind 的工具面（D63）：只读、skill、todo、提问、画布、查询、确认卡、联网。
+///
+/// 写、改、跑命令和三件后台任务不在里面；这些活派给 ThinAgent。任务工具看
+/// `task_runtime` 有没有装配，由 `kind_tool_policy` 追加。
+const KIND_TOOLS: [&str; 11] = [
+    "read",
+    "glob",
+    "grep",
+    "skill",
+    "todo_write",
+    "ask_user_question",
+    "canvas",
+    "aios_query",
+    "propose_action",
+    "web_search",
+    "web_fetch",
+];
+
+/// Kind 的构造期工具策略：上面那份名单，有任务执行者时再加四个任务工具。
+///
+/// `no_wait` 照 T024.3 留着；Kind 已经没有 bash 和后台任务，这条策略现在基本用不到。
+fn kind_tool_policy(options: &RootSessionOptions) -> agent::ToolPolicy {
+    let mut only: Vec<String> = KIND_TOOLS.iter().map(|name| (*name).to_owned()).collect();
+    if options.task_runtime.is_some() {
+        only.extend(
+            ["task_accept", "task_status", "task_stop", "task_update"]
+                .into_iter()
+                .map(str::to_owned),
+        );
+    }
+    agent::ToolPolicy {
+        only: Some(only),
+        no_wait: true,
+    }
+}
+
 /// 找回或新建 Kind 根会话（T006.16b）：四态见 docs/02 篇第 1 节与 06 篇恢复链。
 pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSession, RootError> {
     let state_path = RootSession::state_path(&options.data_dir);
@@ -186,7 +222,11 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
         extra_tools.push(std::sync::Arc::new(crate::executor::TaskStopTool::new(
             std::sync::Arc::clone(runtime),
         )));
+        extra_tools.push(std::sync::Arc::new(crate::executor::TaskUpdateTool::new(
+            std::sync::Arc::clone(runtime),
+        )));
     }
+    let tool_policy = kind_tool_policy(&options);
     // 工具凭证的事实：每步只读检查 Keyring（不建任何文件）；读不出来按没存，
     // 设置页另外报读不出的原因。ThinAgent 用同一份来源。
     let mut config = options.config.clone();
@@ -203,11 +243,8 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
                 credentials: options.credentials.clone(),
                 append_hook_factory: options.append_hook_factory.clone(),
                 extra_tools: extra_tools.clone(),
-                // T024.3：Kind 不原地等，等的东西会自己送到（四类拒绝在统一工具入口）。
-                tool_policy: agent::ToolPolicy {
-                    only: None,
-                    no_wait: true,
-                },
+                // Kind 的工具面：写/改/跑命令交给 ThinAgent；不原地等（D63、T024.3）。
+                tool_policy: tool_policy.clone(),
                 policy_prompt: None,
             })
             .await?;
@@ -263,11 +300,8 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
                 credentials: options.credentials.clone(),
                 append_hook_factory: options.append_hook_factory.clone(),
                 extra_tools,
-                // T024.3：Kind 不原地等，等的东西会自己送到（四类拒绝在统一工具入口）。
-                tool_policy: agent::ToolPolicy {
-                    only: None,
-                    no_wait: true,
-                },
+                // Kind 的工具面：写/改/跑命令交给 ThinAgent；不原地等（D63、T024.3）。
+                tool_policy: tool_policy.clone(),
                 policy_prompt: None,
             })
             .await
