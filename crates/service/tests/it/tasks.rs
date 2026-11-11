@@ -2960,6 +2960,8 @@ async fn a_person_wake_uses_the_extra_seat_and_the_second_stopped_task_waits() {
             router.push_thin_for_title(title, script);
         }
     }
+    // 派发先压住：三次受理的 Kind 轮次会互相挤脚本，脚本都排好了再一起开跑。
+    host.task_runtime().expect("runtime").set_pump_paused(true);
     let first = accept_task(
         &host,
         &router,
@@ -2993,6 +2995,7 @@ async fn a_person_wake_uses_the_extra_seat_and_the_second_stopped_task_waits() {
     for _ in 0..3 {
         router.push_kind(crate::common::text_sse("收到"));
     }
+    host.task_runtime().expect("runtime").set_pump_paused(false);
     wait_until("三个任务都报 ready", || {
         reported_ready(&store, &first.id)
             && reported_ready(&store, &second.id)
