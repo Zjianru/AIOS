@@ -10,15 +10,26 @@
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ChevronDown, ChevronRight, FolderOpen, Square } from 'lucide-react';
+import {
+  ArrowLeft,
+  ChevronDown,
+  ChevronRight,
+  FolderOpen,
+  PauseCircle,
+  SendHorizontal,
+  Square,
+} from 'lucide-react';
 import { toast } from 'sonner';
 import { go } from '@/app/navigate';
 import { useRouteStore } from '@/app/routeStore';
 import {
   connectTaskSession,
   displayPath,
+  loadExecSettings,
   ServiceHttpError,
+  taskInterrupt,
   taskRead,
+  taskSay,
   taskStop,
 } from '@/data/service';
 import {
@@ -27,11 +38,14 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import type { Frame, ServiceEvent } from '@/data/service';
+import type { Frame, SendAttachmentRef, ServiceEvent } from '@/data/service';
 import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
 import { useStreamStore } from '@/pages/kind/kindStore';
-import { TurnRow } from '@/pages/kind/TurnRow';
+import { TurnRow, UserCards } from '@/pages/kind/TurnRow';
 import { deriveTurnViews } from '@/pages/kind/turnViews';
+import type { TurnUserView } from '@/pages/kind/turnViews';
+import { Composer } from '@/pages/kind/composer/Composer';
+import type { ComposerHandle, ComposerSendOptions } from '@/pages/kind/composer/Composer';
 import { mergeLiveEvent, withReportedCompletion } from './taskLive';
 import { cn } from '@/lib/utils';
 
@@ -50,7 +64,11 @@ const THIN_TOOLS = new Set([
   'web_search',
   'web_fetch',
   'task_report',
+  'task_handback',
 ]);
+
+/** 任务对话里说的一句话的 request id 前缀（服务端 task-say:<inputId>）。 */
+const TASK_SAY_PREFIX = 'task-say:';
 
 function rpcIdOf(event: ServiceEvent): string | null {
   const message = event.data?.message;
@@ -78,7 +96,7 @@ function reasonOf(error: unknown): string {
 
 function toolsText(tools: string[]): string {
   if (tools.length === THIN_TOOLS.size && tools.every((tool) => THIN_TOOLS.has(tool))) {
-    return '只读：读、搜文件、能力、计划、搜网页、读网页、上报';
+    return '只读：读、搜文件、能力、计划、搜网页、读网页、上报、交回';
   }
   return tools.join('、');
 }
@@ -212,12 +230,27 @@ export function TaskChatScene() {
   const [error, setError] = useState('');
   const [hasOlder, setHasOlder] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  /** T028.5：全局暂停（横幅；消息先排着）。 */
+  const [paused, setPaused] = useState(false);
+  /** T028.5：说的是不是正在送；送的时候按钮不重复触发。 */
+  const [saying, setSaying] = useState(false);
+  /** T028.5：已经受理、还没出现在会话日志里的输入（排队或正在送）。 */
+  const [queued, setQueued] = useState<
+    { inputId: string; text: string; pastes: string[]; attachments: SendAttachmentRef[] }[]
+  >([]);
+  const composerRef = useRef<ComposerHandle | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const requestToken = useRef(0);
   const bottomPinned = useRef(false);
   const loadingOlderRef = useRef(false);
+  /** 到顶时上一页还没装好：装好后按新的位置再判一次，不把这次到顶丢掉。 */
+  const pendingOlderRef = useRef(false);
   const restoreRef = useRef<{ height: number; top: number } | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  /** 主动断开时等 onclose（放开服务端的会话写者）。 */
+  const socketClosedRef = useRef<(() => void) | null>(null);
+  /** 当前的连接函数（停下来以后说一句话：先断、发完再接）。 */
+  const connectRef = useRef<(() => void) | null>(null);
   const lastSeqRef = useRef(0);
   const liveTurnRef = useRef<number | null>(null);
   const streamTextRef = useRef('');
@@ -236,7 +269,9 @@ export function TaskChatScene() {
     setError('');
     setHasOlder(false);
     setLoadingOlder(false);
+    setQueued([]);
     loadingOlderRef.current = false;
+    pendingOlderRef.current = false;
     bottomPinned.current = false;
     restoreRef.current = null;
     followBottomRef.current = true;
@@ -312,9 +347,16 @@ export function TaskChatScene() {
 
     const connect = () => {
       if (disposed) return;
-      reconnectTimer = null;
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       let socket: WebSocket;
       socket = connectTaskSession(taskId, lastSeqRef.current, onFrame, () => {
+        // 主动断开时先放行等待的人（发送前要让服务端放开会话写者）。
+        const released = socketClosedRef.current;
+        socketClosedRef.current = null;
+        released?.();
         // 离开/换任务时旧 socket 的关闭不算断线；只有当前连接断了才重新跟。
         if (disposed || socketRef.current !== socket) return;
         socketRef.current = null;
@@ -323,6 +365,7 @@ export function TaskChatScene() {
         reconnectTimer = setTimeout(connect, delay);
       });
       socketRef.current = socket;
+      connectRef.current = connect;
     };
 
     void taskRead(taskId)
@@ -353,9 +396,13 @@ export function TaskChatScene() {
     return () => {
       disposed = true;
       if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+      connectRef.current = null;
       const socket = socketRef.current;
       socketRef.current = null;
       socket?.close();
+      const released = socketClosedRef.current;
+      socketClosedRef.current = null;
+      released?.();
       useStreamStore.setState({ turnId: null, itemId: null, text: '' });
     };
   }, [taskId]);
@@ -368,7 +415,7 @@ export function TaskChatScene() {
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
   }, [phase]);
 
-  // 往上翻：新页插在前面，保持原来的阅读位置。
+  // 往上翻：新页插在前面，保持原来的阅读位置；装好后再消化一次加载期间收到的「到顶了」。
   useLayoutEffect(() => {
     const restore = restoreRef.current;
     if (!restore) return;
@@ -376,6 +423,10 @@ export function TaskChatScene() {
     const scroller = scrollRef.current;
     if (!scroller) return;
     scroller.scrollTop = scroller.scrollHeight - restore.height + restore.top;
+    if (pendingOlderRef.current) {
+      pendingOlderRef.current = false;
+      if (scroller.scrollTop <= 64) void loadOlder();
+    }
   }, [events]);
 
   // live 新事件：用户停在底部时跟着走。
@@ -391,6 +442,150 @@ export function TaskChatScene() {
     () => withReportedCompletion(deriveTurnViews(visibleTaskEvents(events)), task?.reportedAt),
     [events, task],
   );
+
+  // T028.5：全局暂停从执行设置读（横幅 + 排队提示）；设置页改完回到本页也能读到。
+  useEffect(() => {
+    let live = true;
+    void loadExecSettings()
+      .then((view) => {
+        if (live) setPaused(view.paused);
+      })
+      .catch(() => {
+        // 读不到就不显示横幅；发送照旧由服务端闸门决定。
+      });
+    return () => {
+      live = false;
+    };
+  }, [taskId, saying]);
+
+  // T028.5：已经受理、日志里还没出现的输入（暂停时排队、没暂停时只是在送）。
+  const queuedVisible = useMemo(() => {
+    const seen = new Set<string>();
+    for (const event of events) {
+      const rpcId = rpcIdOf(event);
+      if (rpcId?.startsWith(TASK_SAY_PREFIX)) seen.add(rpcId.slice(TASK_SAY_PREFIX.length));
+    }
+    return queued.filter((item) => !seen.has(item.inputId));
+  }, [events, queued]);
+
+  // T028.5：在跑时按 Esc 只停下这一轮（和 Kind 对话一样；任务不算停）。
+  useEffect(() => {
+    if (!task?.running) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (document.querySelector('[role="dialog"],[role="menu"]')) return;
+      event.preventDefault();
+      void stopTurn();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // stopTurn 只用 taskId，跟着 running 重新挂。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [task?.running, taskId]);
+
+  /**
+   * T028.5：停下来以后说一句话之前，先放掉任务对话的连接。
+   *
+   * 任务在跑时页面这条 WS 订阅着这次 Attempt 的会话主机；Attempt 结束后服务端已经把
+   * 它摘出在跑表，但连接还握着一个 Arc，会话写者不放开——这时「接着做」要在原会话
+   * 开新 Attempt，会被写者挡住。先断开、发完再按 lastSeq 重新接上。
+   */
+  function releaseTaskSocket(): Promise<void> {
+    const socket = socketRef.current;
+    if (!socket) return Promise.resolve();
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (socketClosedRef.current === finish) socketClosedRef.current = null;
+        resolve();
+      };
+      socketClosedRef.current = finish;
+      // 等不到关闭也不卡住用户；服务端接着做时自己还会短暂等写者。
+      setTimeout(finish, 500);
+      socketRef.current = null;
+      try {
+        socket.close();
+      } catch {
+        finish();
+      }
+    });
+  }
+
+  /**
+   * T028.5：新 Attempt 起来以后再接回实时帧。
+   *
+   * 发完立刻重连会撞上「Attempt 还没登记在跑表」：服务端只给一份只读快照、
+   * 不出 live 帧，新 Attempt 的过程就永远不进来。这里短轮询 TaskRead 直到看见
+   * running（或超时），顺带把轮询读到的日志补进列表，再接 WS。
+   */
+  async function reopenTaskStream(token: number) {
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      if (token !== requestToken.current) return;
+      try {
+        const response = await taskRead(taskId);
+        if (token !== requestToken.current) return;
+        setTask(response.task);
+        const fresh = response.events.filter((event) => event.seq > lastSeqRef.current);
+        if (fresh.length > 0) {
+          lastSeqRef.current = fresh[fresh.length - 1].seq;
+          setEvents((current) => current.concat(fresh));
+        }
+        if (response.task.running) break;
+      } catch {
+        // 读不到就下一轮再试；超时后照样重新接连接。
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    if (token !== requestToken.current) return;
+    connectRef.current?.();
+  }
+
+  /** T028.5：说一句（Composer 的发送；粘贴和附件照 Kind 对话一起送；成功才清草稿）。 */
+  async function say(text: string, options: ComposerSendOptions) {
+    if (!taskId || saying) return false;
+    setSaying(true);
+    try {
+      // 停了/失败了的任务：先放开这条连接，服务端才能重新打开同一个会话。
+      if (!task?.running) await releaseTaskSocket();
+      const pastes = options.pastes;
+      const attachments = options.attachments;
+      const response = await taskSay(taskId, text, { pastes, attachments });
+      // 说了以后（尤其新 Attempt）等它真的跑起来再接回实时帧。
+      if (!socketRef.current) void reopenTaskStream(requestToken.current);
+      setQueued((current) =>
+        current.concat({ inputId: response.inputId, text, pastes, attachments }),
+      );
+      if (typeof response.newAttempt === 'number') {
+        const attempt = response.newAttempt;
+        setTask((current) => (current ? { ...current, attempts: attempt } : current));
+      }
+      // 暂停时消息先压着：横幅之外，刚说的那句以「排队中」的样子留在对话里。
+      if (paused) {
+        toast('先说上了，先排着', { description: '全局暂停中；开闸后送到 ThinAgent' });
+      }
+      return true;
+    } catch (error) {
+      toast('这句话没送到', { description: reasonOf(error) });
+      return false;
+    } finally {
+      setSaying(false);
+    }
+  }
+
+  /** T028.5：停下这一轮（不结束 Attempt、不出卡）；再说一句还是这次 Attempt 接着做。 */
+  async function stopTurn() {
+    try {
+      const response = await taskInterrupt(taskId);
+      if (!response.interrupted) {
+        toast('这个任务没在跑', { description: response.message });
+      }
+      await refreshHeader();
+    } catch (error) {
+      toast('这一轮没停下来', { description: reasonOf(error) });
+    }
+  }
 
   /** 停止请求成功后只刷新页头事实：running/stopped 以任务库为准，过程仍走 live/日志。 */
   async function refreshHeader() {
@@ -444,7 +639,12 @@ export function TaskChatScene() {
   }
 
   async function loadOlder() {
-    if (loadingOlderRef.current || !hasOlder || events.length === 0) return;
+    // 这一页还在读：记下这次到顶，装好（或失败）后由恢复滚动的那一步再判。
+    if (loadingOlderRef.current) {
+      pendingOlderRef.current = true;
+      return;
+    }
+    if (!hasOlder || events.length === 0) return;
     const token = requestToken.current;
     const scroller = scrollRef.current;
     const before = { height: scroller?.scrollHeight ?? 0, top: scroller?.scrollTop ?? 0 };
@@ -461,6 +661,7 @@ export function TaskChatScene() {
       restoreRef.current = before;
       setEvents((current) => [...response.events, ...current]);
     } catch (reason) {
+      pendingOlderRef.current = false;
       if (token === requestToken.current) {
         toast('更早的记录没读出来', { description: reasonOf(reason) });
       }
@@ -546,10 +747,23 @@ export function TaskChatScene() {
               <span className="process-path">{displayPath(task.cwd)}</span>
             </span>
             <span>ThinAgent · {task.model}</span>
+            {task.attempts > 1 ? (
+              <span data-kind="task-attempt">第 {task.attempts} 次 Attempt</span>
+            ) : null}
           </div>
           <Brief task={task} />
         </div>
       </div>
+
+      {paused ? (
+        <div
+          className="flex shrink-0 items-center gap-2 border-b border-wait/30 bg-wait-soft px-6 py-2 text-2 text-wait"
+          data-kind="paused"
+        >
+          <PauseCircle className="size-3.5" />
+          全局暂停中：你的消息会先排着；开闸后送到
+        </div>
+      ) : null}
 
       <div
         className="min-h-0 flex-1 overflow-y-auto"
@@ -577,11 +791,91 @@ export function TaskChatScene() {
               />
             ))
           )}
+          {queuedVisible.map((item) => {
+            const hasCards = item.pastes.length > 0 || item.attachments.length > 0;
+            const user: TurnUserView = {
+              text: '',
+              elements: [],
+              pastes: item.pastes,
+              files: item.attachments,
+              canvas: null,
+            };
+            return (
+              <div
+                key={item.inputId}
+                className="px-6 pb-2"
+                data-kind="task-queued"
+                data-state={paused ? 'paused' : 'sending'}
+              >
+                <div className="mt-3 flex flex-col items-end gap-1">
+                  {hasCards ? <UserCards user={user} /> : null}
+                  {item.text ? (
+                    <div
+                      className={cn(
+                        'max-w-[82%] rounded-2xl rounded-br-md border border-line-2 bg-raised/60 px-3.5 py-2 text-4 leading-6 text-ink-2',
+                        paused && 'border-dashed',
+                      )}
+                    >
+                      {item.text}
+                    </div>
+                  ) : null}
+                  <div className="text-1 text-ink-3">
+                    {paused ? '排队中：全局暂停，开闸后送到' : '发送中…'}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
           {loadingOlder ? (
             <div className="px-6 py-2 text-center text-1 text-ink-3" data-kind="task-loading-older">
               正在读更早的记录…
             </div>
           ) : null}
+        </div>
+      </div>
+
+      <div className="shrink-0 border-t border-line px-6 pb-2 pt-3">
+        <div className="mx-auto w-full max-w-[680px]">
+          <Composer
+            ref={composerRef}
+            offline={false}
+            draftKey={'task-' + taskId}
+            placeholder={
+              task.running
+                ? '插一句给 ThinAgent（这一轮里就会看到）…'
+                : '和 ThinAgent 说，它就接着做…'
+            }
+            onSend={say}
+            onCanSendChange={() => undefined}
+          >
+            {task.running ? (
+              <button
+                type="button"
+                onClick={() => void stopTurn()}
+                title="停下这一轮（Esc）：任务不算停，接着说就接着做"
+                aria-label="停下这一轮"
+                data-kind="task-stop-turn"
+                className="grid size-7 place-items-center rounded-full bg-ink text-content transition-opacity hover:opacity-90"
+              >
+                <Square className="size-3 fill-current" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => composerRef.current?.submit()}
+                title="发送"
+                aria-label="发送"
+                data-kind="task-send"
+                className="grid size-7 place-items-center rounded-full bg-ink text-content transition-opacity hover:opacity-90"
+              >
+                <SendHorizontal className="size-3.5" />
+              </button>
+            )}
+          </Composer>
+          <p className="mt-1 text-1 leading-4 text-ink-3" data-kind="task-footer">
+            你在这里说的直接给 ThinAgent，同时抄送 Kind（不叫醒它）。要改任务要求或 DoD，回 Kind
+            对话说。
+          </p>
         </div>
       </div>
     </div>

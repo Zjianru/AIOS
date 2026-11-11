@@ -6,6 +6,10 @@ import type { SendAttachment } from "./SendAttachment";
  */
 export type TaskSayRequest = { taskId: string, text: string,
 /**
+ * 用户粘贴的段；和 Kind 对话的 SendRequest 同名同形。
+ */
+pastes?: Array<string>,
+/**
  * 用户拖进来的文件（已经存进附件仓库）；规则和 Kind 对话一样。
  */
 attachments?: Array<SendAttachment>, };

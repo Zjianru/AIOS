@@ -444,6 +444,9 @@ pub struct TaskSayRequest {
     #[serde(rename = "taskId")]
     pub task_id: String,
     pub text: String,
+    /// 用户粘贴的段；和 Kind 对话的 SendRequest 同名同形。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pastes: Vec<String>,
     /// 用户拖进来的文件（已经存进附件仓库）；规则和 Kind 对话一样。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<SendAttachment>,

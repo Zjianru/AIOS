@@ -51,7 +51,8 @@ function QuoteBlock({ lines }: { lines: string[] }) {
  * 你的消息带着的东西（T013 F1，照原型 app-v14 TurnRow UserBubble）：
  * 气泡上面一排卡片——粘贴卡和文件卡用输入框里的同一张卡；点开看全文。
  */
-function UserCards({ user }: { user: TurnUserView }) {
+/** 你的消息里的粘贴卡和文件卡（Kind 的待发消息和任务对话的排队行共用）。 */
+export function UserCards({ user }: { user: TurnUserView }) {
   const [openPaste, setOpenPaste] = useState<number | null>(null);
   const [openFile, setOpenFile] = useState<{ name: string; text: string } | null>(null);
   return (
@@ -381,6 +382,32 @@ export const TurnRow = memo(function TurnRow({
   // 工作过程里的路径相对会话工作目录显示（Kind 用 status 给的 cwd；任务对话用任务头部）。
   const kindCwd = useKindStore((state) => state.cwd);
   const cwd = cwdOverride ?? kindCwd;
+  // T028.5：抄送 Kind 的一行（D83）——不是用户气泡，下面也没有 Kind 的回答；点开任务对话。
+  if (view.cc) {
+    const cc = view.cc;
+    const trimmed = typeof cc.chars === 'number' && cc.chars > cc.text.length;
+    return (
+      <div className="px-6 pb-2" data-kind="task-cc">
+        <div className="mt-4 flex justify-end">
+          <button
+            type="button"
+            onClick={() => go('taskchat:' + cc.taskId)}
+            className="max-w-[82%] rounded-card border border-dashed border-line-2 px-3 py-1.5 text-left text-2 leading-5 transition-colors hover:bg-hover"
+            data-kind="task-cc-open"
+          >
+            <span className="text-1 text-ink-3">
+              你对 <span className="text-ink-2">{cc.title}</span> 说：
+            </span>
+            <span className="mt-0.5 block whitespace-pre-wrap break-words text-ink-2">
+              {cc.text || '（没有文字，只有粘贴或附件）'}
+              {trimmed ? '…' : ''}
+            </span>
+            <span className="mt-0.5 block text-1 text-ink-3">抄送 Kind，不叫醒它</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
   if (view.compaction) return <CompactionDivider compaction={view.compaction} />;
   const waitingForKernel = view.delivery !== null;
   return (

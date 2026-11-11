@@ -32,6 +32,8 @@ import type { SettingsUpdateRequest } from './generated/SettingsUpdateRequest';
 import type { SettingsUpdateResponse } from './generated/SettingsUpdateResponse';
 import type { StatusResponse } from './generated/StatusResponse';
 import type { StopMode } from './generated/StopMode';
+import type { TaskInterruptResponse } from './generated/TaskInterruptResponse';
+import type { TaskSayResponse } from './generated/TaskSayResponse';
 import type { TaskStopResponse } from './generated/TaskStopResponse';
 import type { ToolKeyView } from './generated/ToolKeyView';
 
@@ -261,6 +263,34 @@ export async function taskRead(taskId: string, beforeSeq?: number) {
 /** 停一个任务；Kind 的 task_stop 走同一个服务方法。 */
 export async function taskStop(taskId: string, mode: StopMode): Promise<TaskStopResponse> {
   return post({ method: 'task-stop', taskId, mode });
+}
+
+/** T028.5：任务对话里的粘贴段与附件（和 Kind 对话的 SendOptions 同名同形）。 */
+export type TaskSayOptions = Pick<SendOptions, 'pastes' | 'attachments'>;
+
+/**
+ * T028.5：在任务对话里说一句。在跑时插进这一轮；停了/失败了就在原会话开新 Attempt。
+ * 全局暂停时服务端先把这句话排着（响应照收）。
+ */
+export async function taskSay(
+  taskId: string,
+  text: string,
+  options: TaskSayOptions = {},
+): Promise<TaskSayResponse> {
+  const pastes = options.pastes ?? [];
+  const attachments = options.attachments ?? [];
+  return post({
+    method: 'task-say',
+    taskId,
+    text,
+    ...(pastes.length > 0 ? { pastes } : {}),
+    ...(attachments.length > 0 ? { attachments } : {}),
+  });
+}
+
+/** T028.5：停下这一轮（不结束 Attempt，不出卡）；Esc 和输入框旁的停止都走这里。 */
+export async function taskInterrupt(taskId: string): Promise<TaskInterruptResponse> {
+  return post({ method: 'task-interrupt', taskId });
 }
 
 /** events：往回翻一页日志（T006.16c 的轮对齐预算；打开/往上翻用）。 */

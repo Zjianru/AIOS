@@ -25,7 +25,15 @@ import { setHostHome } from '@/data/service';
 import { go } from '@/app/navigate';
 import type { AskAnswer } from '@/data/service';
 import { mark } from '@/lib/perf';
-import { canvasTracks, compactionViewOf, deriveTurnViews, mergeCanvasTracks } from './turnViews';
+import {
+  canvasTracks,
+  ccViewOf,
+  compactionViewOf,
+  deriveTurnViews,
+  mergeCanvasTracks,
+  prependOlderViews,
+  taskCcFacts,
+} from './turnViews';
 import type { CanvasTrack, TurnViewData } from './turnViews';
 export type { CompactionView, QuestionView, ToolStep, TurnUserView, TurnViewData } from './turnViews';
 export { deriveTurnViews } from './turnViews';
@@ -467,6 +475,17 @@ function applyLiveEvent(event: ServiceEvent): void {
   if (event.seq <= lastSeq) return;
   lastSeq = event.seq;
   liveEvents.push(event);
+  // T028.5：抄送 Kind 的行（inbox/spliced 或领取后的 user/message）单独成行，不是一轮。
+  if (event.type === 'agent/inbox/spliced' || event.type === 'user/message') {
+    const facts = taskCcFacts([event]);
+    if (facts.length > 0) {
+      useKindStore.setState((current) => {
+        const views = mergeCcViews(current.views, [event]);
+        if (views === current.views) return {};
+        return { views, byId: indexOf(views), ...decorate(views) };
+      });
+    }
+  }
   // 日志里的模型选择是权威的：设置页或确认卡在别处改了模型，选择器跟着换。
   if (event.type === 'session/model') {
     const connection = typeof event.data.connection === 'string' ? event.data.connection : '';
@@ -662,6 +681,26 @@ function applyFrame(frame: Frame): void {
   applyAgentEvent(frame.event);
 }
 
+/**
+ * T028.5：把抄送 Kind 的行按时间插进列表。
+ *
+ * 抄送不是一轮：单独一条 view（cc 字段），按发生时间插在第一个更晚的轮之前；
+ * 同一条 request id 只成一行（inbox/spliced 与领取后的 user/message 都收）。
+ */
+function mergeCcViews(views: TurnViewData[], events: ServiceEvent[]): TurnViewData[] {
+  const facts = taskCcFacts(events);
+  if (facts.length === 0) return views;
+  let next = views;
+  for (const { cc, at } of facts) {
+    const id = 'task-cc-' + cc.inputId;
+    if (next.some((view) => view.id === id)) continue;
+    const view = ccViewOf(cc, at);
+    const index = next.findIndex((item) => item.startedAt !== null && item.startedAt > at);
+    next = index < 0 ? next.concat(view) : next.slice(0, index).concat(view, next.slice(index));
+  }
+  return next;
+}
+
 /** 从日志事实派生界面的一轮（打开/历史/往上翻；其余能力逐票补）。 */
 const DEMO_MODEL = { connectionId: 'deepseek', modelId: 'deepseek-chat', label: 'DeepSeek Chat' };
 
@@ -744,7 +783,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   loadInitial: async () => {
     try {
       const page = await fetchEventsPage({ maxMessages: 100, minMessages: 10, minTurns: 5 });
-      const views = deriveTurnViews(page.events);
+      const views = mergeCcViews(deriveTurnViews(page.events), page.events);
       const lastSeqOfPage = page.events[page.events.length - 1]?.seq ?? 0;
       const oldestSeq = page.events[0]?.seq ?? null;
       liveEvents = page.events.slice();
@@ -790,16 +829,17 @@ export const useKindStore = create<KindState>()((set, get) => ({
         minMessages: 100,
         minTurns: 20,
       });
-      const older = deriveTurnViews(page.events);
+      const older = mergeCcViews(deriveTurnViews(page.events), page.events);
       const oldestSeq = page.events[0]?.seq ?? state.oldestSeq;
       set((current) => {
-        const views = older.concat(current.views);
+        // 跨页的同一行（抄送的 spliced 与领取后的 user/message）只留已经在列表里的那条。
+        const views = prependOlderViews(older, current.views);
         return {
           views,
           byId: indexOf(views),
           ...decorate(views),
           canvasTracks: mergeCanvasTracks(current.canvasTracks, page.events),
-          firstItemIndex: current.firstItemIndex - older.length,
+          firstItemIndex: current.firstItemIndex - (views.length - current.views.length),
           oldestSeq,
           hasOlder: page.hasMore,
           loadingOlder: false,

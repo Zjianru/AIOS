@@ -1,0 +1,18 @@
+{
+  "routes": [
+    {
+      "contains": "\"name\":\"task_accept\"",
+      "file": "t024-kind.jsonl"
+    },
+    {
+      "contains": "接着做吧",
+      "file": "t028-thin-attempt2.jsonl",
+      "paceMs": 120
+    },
+    {
+      "contains": "\"name\":\"task_report\"",
+      "file": "t028-thin-say.jsonl",
+      "paceMs": 2000
+    }
+  ]
+}

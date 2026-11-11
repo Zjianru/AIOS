@@ -381,6 +381,23 @@ async fn stop_task(fixture: &Fixture, task: &Task, mode: StopMode) -> service::T
     stop
 }
 
+/// 这次 Attempt 的会话最后一件事是 turn/end：报告之后那段收尾也结束了，会话写者马上放开。
+fn session_turn_ended(data: &Path, attempt: &tasks::Attempt) -> bool {
+    let Some(conversation) = attempt.conversation.clone() else {
+        return false;
+    };
+    let Ok(id) = session::SessionId::parse(conversation.as_str()) else {
+        return false;
+    };
+    let Ok(store) = session::SessionStore::open_read_only(data, &id) else {
+        return false;
+    };
+    matches!(
+        store.events().last().map(|event| &event.kind),
+        Some(session::EventKind::TurnEnd { .. })
+    )
+}
+
 /// 一个 Attempt 的 ThinAgent 会话日志（只读）。
 fn thin_events(data: &Path, attempt: &tasks::Attempt) -> Vec<session::Event> {
     let conversation = attempt.conversation.clone().expect("会话 id");
@@ -3441,6 +3458,7 @@ async fn say_in_task_dialog(host: &RootHost, task: &Task, text: &str) -> service
         .dispatch(Call::TaskSay(service::TaskSayRequest {
             task_id: task.id.as_str().to_owned(),
             text: text.to_owned(),
+            pastes: Vec::new(),
             attachments: Vec::new(),
         }))
         .await
@@ -3610,9 +3628,27 @@ async fn a_person_wake_uses_the_extra_seat_and_the_second_stopped_task_waits() {
     })
     .await;
 
+    // 报告那一轮之后执行者还要写最后一段回答；那段没跑完，会话写者不放开，叫醒的投递会一直 Later。
+    for task in [&first, &second, &third] {
+        let attempt = store
+            .task(&task.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .cloned()
+            .expect("报告过的 Attempt");
+        wait_until("报告那一轮收尾", || {
+            session_turn_ended(data.path(), &attempt)
+        })
+        .await;
+    }
+
     host.set_exec_seats(1).expect("席位改成 1");
-    // 甲、乙被叫醒后的这一轮慢慢跑：丙说进来时必须看见席位已经占满。
-    router.set_thin_delay(Duration::from_millis(1_500));
+    // 甲、乙被叫醒后的这两轮要一直挂在跑：席位在 turn 结束就放（turn_ended），
+    // 丙的那句必须落进「两个人都在跑」的窗口。泵串行开两个会话本身可能要 1–2s，
+    // 用固定 1.5s 延迟时丙会合法地占上空出来的席位（并行跑偶发红）；这里挂 30s，
+    // 收尾直接立刻停掉这两轮，不等延迟。
+    router.set_thin_delay(Duration::from_secs(30));
     router.push_thin_for(first.id.as_str(), crate::common::text_sse("接着做甲"));
     router.push_thin_for(second.id.as_str(), crate::common::text_sse("接着做乙"));
 
@@ -3655,17 +3691,21 @@ async fn a_person_wake_uses_the_extra_seat_and_the_second_stopped_task_waits() {
         "满席位是 Later，不算效果失败"
     );
 
-    // 收尾：甲、乙这两轮跑完（waiting relay 进 Kind），别把延迟中的请求留到测试关服务器。
+    // 收尾：立刻停掉甲、乙，把挂着的模型请求掐掉，不等 30s 的延迟。
     for _ in 0..2 {
         router.push_kind(crate::common::text_sse("收到"));
     }
-    wait_until("甲、乙两轮跑完", || {
-        let waiting = |task: &Task| {
-            task.latest_report()
-                .is_some_and(|report| report.state == ReportState::Waiting)
-        };
-        waiting(&store.task(&first.id).unwrap().unwrap())
-            && waiting(&store.task(&second.id).unwrap().unwrap())
+    for task in [&first, &second] {
+        host.dispatch(Call::TaskStop(TaskStopRequest {
+            task_id: task.id.as_str().to_owned(),
+            mode: StopMode::Now,
+        }))
+        .await
+        .expect("停止");
+    }
+    wait_until("甲、乙停下", || {
+        attempt_end(&store, &first.id) == Some(AttemptEnd::Stopped)
+            && attempt_end(&store, &second.id) == Some(AttemptEnd::Stopped)
     })
     .await;
 }
@@ -4021,6 +4061,7 @@ async fn a_task_say_attachment_is_validated_and_lands_in_the_thin_request() {
         .dispatch(Call::TaskSay(TaskSayRequest {
             task_id: task.id.as_str().to_owned(),
             text: "看附件".to_owned(),
+            pastes: Vec::new(),
             attachments: vec![missing],
         }))
         .await
@@ -4053,6 +4094,7 @@ async fn a_task_say_attachment_is_validated_and_lands_in_the_thin_request() {
         .dispatch(Call::TaskSay(TaskSayRequest {
             task_id: task.id.as_str().to_owned(),
             text: "看附件".to_owned(),
+            pastes: Vec::new(),
             attachments: vec![SendAttachment {
                 id: attachment_id.clone(),
                 name: "notes.txt".to_owned(),
@@ -4120,6 +4162,80 @@ async fn a_task_say_attachment_is_validated_and_lands_in_the_thin_request() {
         path.as_deref()
             .is_some_and(|path| path.contains("attachments/v1/files")),
         "附件走只读副本路径：{path:?}"
+    );
+}
+
+/// 只有粘贴、没有文字也算一句：ThinAgent 的请求带着粘贴原文，任务会话里是 paste 块。
+#[tokio::test]
+async fn a_paste_only_task_say_lands_as_a_paste_block() {
+    let fixture = Fixture::new().await;
+    let task = first_report_fixture(&fixture, 2).await;
+    let store = tasks_store(fixture.data());
+    fixture
+        .router
+        .push_thin_for(task.id.as_str(), crate::common::text_sse("收到粘贴"));
+    fixture.router.push_kind(crate::common::text_sse("收到"));
+
+    let response = fixture
+        .host
+        .dispatch(Call::TaskSay(TaskSayRequest {
+            task_id: task.id.as_str().to_owned(),
+            text: String::new(),
+            pastes: vec!["只有粘贴的一段".to_owned()],
+            attachments: Vec::new(),
+        }))
+        .await
+        .expect("只有粘贴也算一句");
+    let Response::TaskSay(said) = response else {
+        panic!("TaskSay 的响应形状不对");
+    };
+
+    wait_until("ThinAgent 请求带着粘贴", || {
+        fixture
+            .router
+            .bodies(true)
+            .iter()
+            .any(|body| body.contains("只有粘贴的一段"))
+    })
+    .await;
+
+    let attempt = store
+        .task(&task.id)
+        .unwrap()
+        .unwrap()
+        .latest_attempt()
+        .cloned()
+        .expect("接着做的 Attempt");
+    let request_id = format!("task-say:{}", said.input_id);
+    let message = thin_events(fixture.data(), &attempt)
+        .iter()
+        .find_map(|event| match &event.kind {
+            session::EventKind::UserMessage { message, .. } => match &message.source {
+                model::MessageSource::User {
+                    rpc_id: Some(rpc_id),
+                } if rpc_id == &request_id => Some(message.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("任务会话里有这条输入");
+    let paste = message
+        .content
+        .iter()
+        .find_map(|block| match block {
+            model::ContentBlock::Text {
+                text, paste: true, ..
+            } => Some(text.clone()),
+            _ => None,
+        })
+        .expect("输入里是粘贴块，不是普通文字");
+    assert_eq!(paste, "只有粘贴的一段");
+    assert!(
+        message
+            .content
+            .iter()
+            .all(|block| !matches!(block, model::ContentBlock::Text { paste: false, .. })),
+        "没有文字块：这句话只有粘贴"
     );
 }
 

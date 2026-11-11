@@ -47,6 +47,13 @@ interface ComposerProps {
   onCanSendChange: (value: boolean) => void;
   /** 右侧控件（模型选择 + 发送/停止）。 */
   children?: React.ReactNode;
+  /**
+   * T028.5：草稿的作用域（默认 Kind 会话 id）。任务对话传 task-<taskId>，
+   * 草稿按任务分开存，切走再回来还在。
+   */
+  draftKey?: string;
+  /** T028.5：占位文字（任务对话在跑/没在跑时不同）。 */
+  placeholder?: string;
 }
 
 /** 本地记录文件的 MIME（发送时只带 id/name/bytes；预览用）。 */
@@ -100,7 +107,7 @@ function quotedLines(quote: string): string {
 }
 
 export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Composer(
-  { offline, onSend, onCanSendChange, children },
+  { offline, onSend, onCanSendChange, children, draftKey, placeholder },
   ref,
 ) {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -120,7 +127,9 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const cardsRef = useRef<HTMLDivElement | null>(null);
   const highlightRef = useRef<HTMLDivElement | null>(null);
   // T013.8：草稿按会话存 localStorage（键 aios.kind.draft.<会话 id>）。
+  // T028.5：任务对话用 draftKey=task-<taskId>，草稿按任务分开存。
   const sessionId = useKindStore((state) => state.sessionId);
+  const draftScope = draftKey ?? sessionId;
   const draftLoadedRef = useRef<string | null>(null);
   const touchedRef = useRef(false);
   const changedDuringSendRef = useRef(false);
@@ -210,11 +219,23 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   // T013.8：会话 id 就绪后读一次草稿（读不出当空）。
   useEffect(() => {
-    if (!sessionId || draftLoadedRef.current === sessionId) return;
-    draftLoadedRef.current = sessionId;
+    if (!draftScope || draftLoadedRef.current === draftScope) return;
+    // T028.5：草稿作用域换了（任务 A → 任务 B）先清空，别把上一个任务的草稿带过去；
+    // 第一次拿到会话 id（Kind）不算换作用域，用户已经打的字要留着。
+    if (draftLoadedRef.current !== null) {
+      setText('');
+      setQuotes([]);
+      setPastes([]);
+      setAttachments([]);
+      setFromCanvas(null);
+      setQuote('');
+      touchedRef.current = false;
+      changedDuringSendRef.current = false;
+    }
+    draftLoadedRef.current = draftScope;
     if (touchedRef.current) return; // ready 前已经输入：以用户输入为准，草稿不覆盖
     try {
-      const raw = localStorage.getItem('aios.kind.draft.' + sessionId);
+      const raw = localStorage.getItem('aios.kind.draft.' + draftScope);
       if (!raw) return;
       const draft = JSON.parse(raw) as {
         text?: unknown;
@@ -250,11 +271,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     } catch {
       // 读不出或格式不对：当空草稿，不打扰用户。
     }
-  }, [sessionId]);
+  }, [draftScope]);
 
   // 草稿变化就写（读完之后才写，避免把刚读到的覆盖成空）。
   useEffect(() => {
-    if (!sessionId || draftLoadedRef.current !== sessionId) return;
+    if (!draftScope || draftLoadedRef.current !== draftScope) return;
     const draft = {
       text,
       quotes,
@@ -263,11 +284,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       canvas: fromCanvas,
     };
     try {
-      localStorage.setItem('aios.kind.draft.' + sessionId, JSON.stringify(draft));
+      localStorage.setItem('aios.kind.draft.' + draftScope, JSON.stringify(draft));
     } catch {
       // 存不下（隐私模式）就算了。
     }
-  }, [attachments, fromCanvas, pastes, quotes, sessionId, text]);
+  }, [attachments, draftScope, fromCanvas, pastes, quotes, text]);
 
   const pruneAtMenu = useCallback((value: string, caret: number) => {
     const before = value.slice(0, caret);
@@ -381,11 +402,11 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       return;
     }
     try {
-      if (sessionId) localStorage.removeItem('aios.kind.draft.' + sessionId);
+      if (draftScope) localStorage.removeItem('aios.kind.draft.' + draftScope);
     } catch {
       // 忽略。
     }
-  }, [attachments, fromCanvas, offline, onSend, pastes, quote, quotes, resize, sessionId, text]);
+  }, [attachments, draftScope, fromCanvas, offline, onSend, pastes, quote, quotes, resize, text]);
 
   useImperativeHandle(
     ref,
@@ -558,7 +579,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             ref={inputRef}
             rows={1}
             data-kind="composer-input"
-            placeholder={offline ? '连上之后再发…' : '和 Kind 说…'}
+            placeholder={offline ? '连上之后再发…' : (placeholder ?? '和 Kind 说…')}
             value={text}
             onChange={onInput}
             onKeyDown={onKeyDown}

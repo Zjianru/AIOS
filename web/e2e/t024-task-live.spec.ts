@@ -129,7 +129,9 @@ test('在跑时打开：新工具调用和回答不用刷新出现，各只一�
     // 一次连接、一次 TaskRead：期间没有重拉快照，也没有「刷新」按钮。
     expect(reads.length, reads.join('\n---\n')).toBe(1);
     await expect(pane.getByRole('button', { name: /刷新/ })).toHaveCount(0);
-    await expect(page.locator('[data-kind="composer"]')).toHaveCount(0);
+    // T028.5：任务对话有输入框了（不再只读）。
+    await expect(page.locator('[data-kind="composer"]')).toHaveCount(1);
+    await expect(page.locator('[data-kind="task-footer"]')).toBeVisible();
 
     // 离开再进：任务已经收尾，只补齐快照；内容各只出现一次。
     await pane.getByRole('button', { name: /回 Kind 对话/ }).click();
