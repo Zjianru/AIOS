@@ -112,6 +112,7 @@ fn a_running_attempt_without_a_report_is_interrupted_with_one_restart() {
         }
     );
     assert_eq!(restart.key, "boot-1");
+    assert!(store.complete_effect(&restart).unwrap());
     assert_eq!(
         store.claim_effect(EffectKind::Restart, T0 + 10).unwrap(),
         None,
@@ -227,6 +228,44 @@ fn the_question_on_the_latest_report_is_kept() {
 }
 
 #[test]
+fn one_boot_queues_a_single_restart_for_all_interrupted_tasks() {
+    let (_directory, store) = open_store();
+    let first = create(&store, "甲");
+    let second = create(&store, "乙");
+    let untouched = create(&store, "没开跑");
+    open_attempt(&store, &first);
+    open_attempt(&store, &second);
+
+    let scan = store.scan_at_boot(&BootId::new("boot-1"), T0 + 10).unwrap();
+
+    assert_eq!(scan.interrupted.len(), 2);
+    assert!(scan.interrupted.contains(&first.id));
+    assert!(scan.interrupted.contains(&second.id));
+    assert!(!scan.interrupted.contains(&untouched.id));
+    assert_eq!(
+        store.effect_health(EffectKind::Restart).unwrap().waiting,
+        1,
+        "同一次启动的多个任务合成一条 restart（键是 bootId）"
+    );
+    let restart = store
+        .claim_effect(EffectKind::Restart, T0 + 10)
+        .unwrap()
+        .expect("要有一条 restart");
+    assert_eq!(
+        restart.payload,
+        EffectPayload::Restart {
+            boot_id: BootId::new("boot-1")
+        }
+    );
+    assert!(store.complete_effect(&restart).unwrap());
+    assert_eq!(
+        store.claim_effect(EffectKind::Restart, T0 + 10).unwrap(),
+        None,
+        "同一次启动只排一条 restart"
+    );
+}
+
+#[test]
 fn an_unsent_input_before_the_report_keeps_its_delivery_effect() {
     let (_directory, store) = open_store();
     let task = create(&store, "有没送出的输入");
@@ -297,6 +336,7 @@ fn a_second_boot_leaves_a_finished_attempt_alone() {
         .unwrap()
         .expect("第一次启动排的 restart 还在");
     assert_eq!(restart.key, "boot-1");
+    assert!(store.complete_effect(&restart).unwrap());
     assert_eq!(
         store.claim_effect(EffectKind::Restart, T0 + 20).unwrap(),
         None,
