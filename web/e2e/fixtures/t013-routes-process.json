@@ -1,0 +1,13 @@
+{
+  "routes": [
+    {
+      "contains": "\"name\":\"task_accept\"",
+      "file": "t013-kind-process.jsonl"
+    },
+    {
+      "contains": "\"name\":\"task_report\"",
+      "file": "t013-thin-process.jsonl",
+      "paceMs": 60
+    }
+  ]
+}

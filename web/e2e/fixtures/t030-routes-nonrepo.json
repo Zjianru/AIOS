@@ -1,0 +1,8 @@
+{
+  "routes": [
+    {
+      "contains": "\"name\":\"task_accept\"",
+      "file": "t030-kind-nonrepo.jsonl"
+    }
+  ]
+}

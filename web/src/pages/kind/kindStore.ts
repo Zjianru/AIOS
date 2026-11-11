@@ -181,6 +181,8 @@ interface KindState {
   confirmCard: (callId: string, optionId: string) => Promise<void>;
   /** 确认卡：暂不（什么都不执行，记 dismissed）。 */
   dismissCard: (callId: string) => Promise<void>;
+  /** 结果卡：接受（服务登记当前版本+报告，回执由 card/decision 事件回填）。 */
+  acceptTaskResult: (callId: string) => Promise<void>;
   compact: () => void;
   setModel: (model: KindState['model']) => void;
   /** ：从服务刷新会话合计/汇率/币种。 */
@@ -1004,6 +1006,26 @@ export const useKindStore = create<KindState>()((set, get) => ({
       () => {},
       (error: unknown) => {
         toast('暂不没送到内核', { description: '连上内核再试一次' });
+        throw error;
+      },
+    );
+  },
+
+  acceptTaskResult: (callId) => {
+    // 卡片状态不先改：服务登记后由 card/decision 事件回填「你已接受」。
+    return cardAct(callId, 'confirm').then(
+      (response) => {
+        const decision = response.decision;
+        if (decision?.phase === 'confirmed') return;
+        const summary =
+          decision && typeof decision.data?.summary === 'string'
+            ? decision.data.summary
+            : '内核没有记下这次接受';
+        toast('没接受成', { description: summary });
+        throw new Error(summary);
+      },
+      (error: unknown) => {
+        toast('接受没送到内核', { description: '连上内核再试一次' });
         throw error;
       },
     );

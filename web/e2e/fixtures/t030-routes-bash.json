@@ -1,0 +1,13 @@
+{
+  "routes": [
+    {
+      "contains": "\"name\":\"task_accept\"",
+      "file": "t030-kind-bash.jsonl"
+    },
+    {
+      "contains": "\"name\":\"task_report\"",
+      "file": "t030-thin-bash.jsonl",
+      "paceMs": 60
+    }
+  ]
+}

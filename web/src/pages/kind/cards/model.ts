@@ -62,6 +62,8 @@ export interface CardHost {
   confirmCard?: (optionId: string) => Promise<void> | void;
   /** 确认卡：暂不（由页面向服务发 card-act）；HTTP 失败时 reject，视图恢复按钮。 */
   dismissCard?: () => Promise<void> | void;
+  /** 结果卡：接受当前要求版本的结果（由页面向服务发 card-act）；HTTP 失败时 reject，视图恢复按钮。 */
+  acceptResult?: (callId: string) => Promise<void> | void;
 }
 
 /** 卡片视图的 props：信封、校验过的槽位、程序操作。 */

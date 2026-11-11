@@ -1,33 +1,77 @@
 import { test, expect } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { startKernelFixture } from './service-fixture';
 
-const urlOf = (fixture: { baseUrl: string; token: string }) =>
-  fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind';
+const urlOf = (fixture: { baseUrl: string; token: string }, hash = '#kind') =>
+  fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + hash;
+
+/** 根会话日志里的 task_accept 回执带任务 id（Kind 派出的写任务）。 */
+async function taskIdOf(fixture: { dataDir: string }): Promise<string> {
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    try {
+      const root = JSON.parse(
+        await readFile(path.join(fixture.dataDir, 'kind-root.json'), 'utf8'),
+      ) as { sessionId: string };
+      const text = await readFile(
+        path.join(fixture.dataDir, 'sessions', root.sessionId + '.jsonl'),
+        'utf8',
+      );
+      const match = /已派出任务 ([0-9a-f]+)。/.exec(text);
+      if (match) return match[1];
+    } catch {
+      // 会话文件还没写出来；继续等。
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error('根会话日志里等不到 task_accept 的任务 id');
+}
 
 /// T013.5 清单 11/3：工作过程行（图标/标题）、卡片（diff/终端）、真实退出码、开合规则。
-test('工作过程：行/卡片/退出码/开合（write + apply_patch + bash 回放）', async ({ page }) => {
-  const fixture = await startKernelFixture({ t013Process: true });
+/// T030.2a 收窄 Kind 的工具面后，Kind 没有 write/edit/bash；写和跑命令的步骤改由
+/// 写任务的 ThinAgent 合法产生。原三条步骤、退出码、diff/终端卡、刷新断言都在，
+/// 另加 ThinAgent 的 task_report 收尾行（共 4 行）。
+test('工作过程：行/卡片/退出码/开合（写任务 ThinAgent 回放 write + edit + bash）', async ({
+  page,
+}) => {
+  const fixture = await startKernelFixture({ t013ProcessTask: true });
   try {
+    // 先在 Kind 里派一个写任务，再打开它的任务对话看过程。
     await page.goto(urlOf(fixture));
     await page.getByPlaceholder('和 Kind 说…').fill('先写文件，再改一下，最后跑个命令');
     await page.getByRole('button', { name: '发送', exact: true }).click();
-    await expect(page.getByText('（T007 e2e 假回放）').last()).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 60_000 });
+    const taskId = await taskIdOf(fixture);
 
-    const process = page.locator('[data-kind="process"]').last();
+    await page.goto(urlOf(fixture, '#taskchat:' + taskId));
+    const pane = page.locator('[data-pane="task-conversation"]');
+    await expect(pane).toBeVisible({ timeout: 20_000 });
+    await expect(pane.locator('[data-kind="task-full-title"]')).toHaveText(
+      '先写文件，再改一下，最后跑个命令',
+      { timeout: 20_000 },
+    );
+    // 这一轮做完了：任务对话不再显示「停下这一轮」。
+    await expect(page.locator('[data-kind="task-stop-turn"]')).toHaveCount(0, {
+      timeout: 60_000,
+    });
+
+    const process = pane.locator('[data-kind="process"]').first();
     // 做完的一轮收成「已完成，用时 X」，默认收起（组不显示）。
-    await expect(process.locator('button').first()).toContainText(/已完成，用时/, { timeout: 15_000 });
+    await expect(process.locator('button').first()).toContainText(/已完成，用时/, {
+      timeout: 30_000,
+    });
     await expect(process.locator('[data-kind="process-group"]')).toHaveCount(0);
     await process.locator('button').first().click();
     const group = process.locator('[data-kind="process-group"] button').first();
     await expect(group).toContainText(/已写入文件|修改了文件|执行了命令/);
     await group.click();
     const rows = process.locator('[data-kind="tool-row"]');
-    await expect(rows).toHaveCount(3);
+    // write/edit/bash 是过程的三步；task_report 是 ThinAgent 合法的收尾工具。
+    await expect(rows).toHaveCount(4);
     await expect(rows.nth(0)).toContainText('写入');
     await expect(rows.nth(1)).toContainText('编辑');
     await expect(rows.nth(2)).toContainText('运行命令');
     await expect(rows.nth(2)).toContainText('退出码 2');
+    await expect(rows.nth(3)).toContainText('工具调用');
     await expect(rows.nth(0)).toContainText('+2');
     // write 行 → diff 卡片（跑完用结果 meta 的实际改动）。
     await rows.nth(0).locator('button').first().click();
@@ -40,13 +84,17 @@ test('工作过程：行/卡片/退出码/开合（write + apply_patch + bash �
     await expect(process.getByText('退出码 2', { exact: false })).toHaveCount(2);
     // 刷新页面，行与 diff 还在（都来自日志事件/meta）。
     await page.reload();
-    await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0, { timeout: 60_000 });
-    const process2 = page.locator('[data-kind="process"]').last();
-    await expect(process2.locator('button').first()).toContainText(/已完成，用时/, { timeout: 15_000 });
+    await expect(page.locator('[data-kind="task-stop-turn"]')).toHaveCount(0, {
+      timeout: 60_000,
+    });
+    const process2 = pane.locator('[data-kind="process"]').first();
+    await expect(process2.locator('button').first()).toContainText(/已完成，用时/, {
+      timeout: 15_000,
+    });
     await process2.locator('button').first().click();
     await process2.locator('[data-kind="process-group"] button').first().click();
     const rows2 = process2.locator('[data-kind="tool-row"]');
-    await expect(rows2).toHaveCount(3);
+    await expect(rows2).toHaveCount(4);
     await expect(rows2.nth(0)).toContainText('写入');
     await expect(rows2.nth(2)).toContainText('退出码 2');
   } finally {
@@ -59,11 +107,13 @@ test('工作过程中途停：整轮一直展开、不能收、标已停止', as
   const fixture = await startKernelFixture({ t013Interrupted: true });
   try {
     await page.goto(urlOf(fixture));
-    await page.getByPlaceholder('和 Kind 说…').fill('写文件、改文件、跑命令，然后停下');
+    await page.getByPlaceholder('和 Kind 说…').fill('读文件、搜文件，然后停下');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     // 回放放慢：等在跑的整轮出现（「Kind 工作中」），再点停止。
     const process = page.locator('[data-kind="process"]').last();
-    await expect(process.locator('button').first()).toContainText(/Kind 工作中|已停止/, { timeout: 30_000 });
+    await expect(process.locator('button').first()).toContainText(/Kind 工作中|已停止/, {
+      timeout: 30_000,
+    });
     const stop = page.getByRole('button', { name: '停止', exact: true });
     if (await stop.count()) await stop.click();
     // 停下的一轮：整轮行写「已停止」，一直展开（data-open=true），点也不收起。

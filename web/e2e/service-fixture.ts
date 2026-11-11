@@ -33,9 +33,9 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   // T023：同一轮放慢到 400ms/帧，设置页往返后还有一段实时流可观察。
   if (options.pretextSlowTurn) return { file: 't023-pretext-slow', paceMs: 400 };
   if (options.codeBlock) return { file: 'tool-code' };
-  if (options.t013Process) return { file: 'tool-process' };
   if (options.toolCards) return { file: 'tool-cards' };
-  if (options.t013Interrupted) return { file: 'tool-interrupted', paceMs: 800 };
+  // 只保留 Kind 现有工具（read/glob/grep）：T030.2a 收窄后 Kind 没有 write/edit/bash。
+  if (options.t013Interrupted) return { file: 'tool-interrupted-legal', paceMs: 800 };
   if (options.canvas) {
     // T015.5：streaming 把 canvas 的参数拆成几段慢慢流（页面画「正在画 · 标题」）；
     // errors 是三个错误触发按钮的画布。
@@ -74,7 +74,13 @@ function startReplay(
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const bin = process.env.AIOS_REPLAY_BIN ?? path.join(repoRoot, 'target/debug/aios-replay');
   // 双会话（Kind + ThinAgent）按请求体各回各的脚本；路由文件里帧间隔逐条给。
-  const routeFile = routesFile === undefined ? (restartRouteFile(options) ?? taskResultRouteFile(options)) : routesFile;
+  const routeFile =
+    routesFile === undefined
+      ? (restartRouteFile(options) ??
+        t030RouteFile(options) ??
+        t013RouteFile(options) ??
+        taskResultRouteFile(options))
+      : routesFile;
   const args: string[] = [];
   if (routeFile) {
     args.push('--routes', path.isAbsolute(routeFile) ? routeFile : path.join(FIXTURE_DIR, routeFile));
@@ -176,8 +182,9 @@ export interface FixtureOptions {
   pathsTurn?: boolean;
   /// T013.6：最终回答里带一个代码块（复制按钮用）。
   codeBlock?: boolean;
-  /// T013.5：一轮里 write/apply_patch/bash 三个工具 + 最终文本（工作过程页的卡片用）。
-  t013Process?: boolean;
+  /// T013.5 修复：经写任务 ThinAgent 产生 write/edit/bash + task_report 一轮（工作过程页的
+  /// 卡片用）。T030.2a 收窄后 Kind 没有写/改/跑命令，过程只能由 ThinAgent 合法产生。
+  t013ProcessTask?: boolean;
   /// T017.3：一轮里 glob + 一个不认识的工具（搜索卡与通用输入/输出卡用）。
   toolCards?: boolean;
   /// T013.5：工具做完后被停下的一轮（工作过程页的「已停止」）。
@@ -283,6 +290,10 @@ export interface FixtureOptions {
   /// T029.3：重启接续夹具。main 四个任务（两个被打断、一个 ready、一个待答），
   /// single 一个被打断的任务；重启那一轮的路由由测试拿到真实任务 id 后再生成。
   t029Restart?: 'main' | 'single';
+  /// T030：写任务、接受、bash 开关、工作树、非仓库和改错字的真服务夹具。
+  /// worktree 场景会在起服务前把数据目录做成一个 git 仓库；expand 的第二段路由由测试
+  /// 拿到真实任务 id 后再生成。
+  t030?: 'write' | 'ask' | 'expand' | 'bash' | 'worktree' | 'nonrepo' | 'typo';
 }
 
 /** T024.4：双会话回放用哪份按请求体路由的文件；预写会话的两种不需要。 */
@@ -303,6 +314,18 @@ function taskResultRouteFile(options: FixtureOptions): string | null {
     return 't031-routes-' + scenario + '.json';
   }
   return 't024-routes-' + scenario + '.json';
+}
+
+/** T030：写任务/接受/bash/工作树这些场景的回放路由。 */
+function t030RouteFile(options: FixtureOptions): string | null {
+  if (!options.t030) return null;
+  return 't030-routes-' + options.t030 + '.json';
+}
+
+/** T013.5 修复：写任务 ThinAgent 的合法生产回放（write/edit/bash + task_report）。 */
+function t013RouteFile(options: FixtureOptions): string | null {
+  if (!options.t013ProcessTask) return null;
+  return 't013-routes-process.json';
 }
 
 /** 接缝 5：假 DeepSeek 脚本回放 + 真 aios-dev serve（页面也由它同源托管）。 */
@@ -354,7 +377,7 @@ export async function startKernelFixture(
   }
   if (
     options.toolTurn ||
-    options.t013Process ||
+    options.t013ProcessTask ||
     options.pretextTurn ||
     options.pretextSlowTurn ||
     options.taskResult === 'chat' ||
@@ -365,11 +388,30 @@ export async function startKernelFixture(
     options.taskResult === 'seats' ||
     options.taskResult === 'two' ||
     options.taskResult === 'pretext' ||
-    options.t029Restart !== undefined
+    options.t029Restart !== undefined ||
+    options.t030 !== undefined
   ) {
     await writeFile(path.join(dataDir, 'hello.txt'), 'hello from fixture\n');
     // T013.7：带空格的路径（@ 菜单插入要给引号用）。
     await writeFile(path.join(dataDir, 'with space.txt'), 'spaced file\n');
+  }
+  if (options.t030 === 'worktree') {
+    // T030：工作树用例要一个真的 git 仓库；数据目录同时是任务 cwd（serve --cwd）。
+    const gitEnv = {
+      ...process.env,
+      HOME: dataDir,
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_AUTHOR_NAME: 'AIOS e2e',
+      GIT_AUTHOR_EMAIL: 'aios-e2e@local',
+      GIT_COMMITTER_NAME: 'AIOS e2e',
+      GIT_COMMITTER_EMAIL: 'aios-e2e@local',
+    };
+    for (const args of [['init', '-q'], ['add', 'hello.txt'], ['commit', '-qm', 'fixture']]) {
+      const done = spawnSync('git', args, { cwd: dataDir, env: gitEnv, encoding: 'utf8' });
+      if (done.status !== 0) {
+        throw new Error('git ' + args.join(' ') + ' 失败：' + String(done.stderr));
+      }
+    }
   }
   if (options.toolCards) {
     // T017.3：让真实 glob 搜到两个文件（工具由内核执行，回放只重放模型流）。
@@ -386,6 +428,13 @@ export async function startKernelFixture(
       { input: 'test-key' + String.fromCharCode(10), encoding: 'utf8' },
     );
     if (seed.status !== 0) throw new Error('seed keyring failed: ' + String(seed.stderr));
+  }
+  // T013.5 修复：写任务要有 bash 才能产生「运行命令」步骤；任务创建时冻结这份设置。
+  if (options.t013ProcessTask) {
+    await writeFile(
+      path.join(dataDir, 'settings.json'),
+      JSON.stringify({ exec: { bash: true } }),
+    );
   }
   // T016.5：坏文件要在 serve 起来之前就在；不预置 Keyring 时也照写（坏文件与连接无关）。
   if (options.settingsFault === 'corrupt') {
