@@ -663,8 +663,8 @@ export function deriveTurnViews(
       case 'user/message': {
         const relay = parseTaskRelay(data.message, event.time / 1000);
         if (relay) {
-          // 骨架：先照旧的「一轮一个槽」收，下一提交改成按到达顺序追加（T031）。
-          ensure(turn).taskResults = [relay];
+          // T031：同一轮可能被多条 relay 叫起来，按日志到达顺序各留一张卡。
+          ensure(turn).taskResults.push(relay);
           break;
         }
         // T028.5：抄送 Kind 的那条不是用户气泡，单独由 taskCcFacts/ccViewOf 成行。
