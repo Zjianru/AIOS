@@ -1,9 +1,11 @@
 /**
- * 设置 › 执行：席位、全局暂停。
+ * 设置 › 执行：席位、全局暂停、默认角色的 bash 开关。
  *
  * 值来自 settings.json（settings-update 全空请求只读），保存走同一个入口；暂停/席位
  * 在服务端同时更新任务运行时的准入闸门，页面显示的就是生效值。席位只收 1–16（D66），
  * 0/17 和非法输入当场拒绝，不写文件；写盘失败保留旧值并说原因。
+ * bash 是单独的一项大授权（D85）：默认关，只影响以后派的任务；开了以后写入范围管不住
+ * bash，后果由用户承担，写任务的卡上照实标明。
  */
 
 import { useEffect, useState } from 'react';
@@ -37,6 +39,8 @@ export function ExecSettings() {
   const [draft, setDraft] = useState('3');
   const [paused, setPaused] = useState(false);
   const [savingPause, setSavingPause] = useState(false);
+  const [bash, setBash] = useState(false);
+  const [savingBash, setSavingBash] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -46,6 +50,7 @@ export function ExecSettings() {
         setSeats(view.seats);
         setDraft(String(view.seats));
         setPaused(view.paused);
+        setBash(view.bash);
       })
       .catch((error: unknown) => {
         if (live) toast('执行设置没读出来', { description: reasonOf(error) });
@@ -87,6 +92,18 @@ export function ExecSettings() {
     }
   }
 
+  async function toggleBash(next: boolean) {
+    setSavingBash(true);
+    try {
+      const saved = await saveExecSettings({ bash: next });
+      setBash(saved.bash);
+    } catch (error) {
+      toast(next ? 'bash 开关没打开' : 'bash 开关没关掉', { description: reasonOf(error) });
+    } finally {
+      setSavingBash(false);
+    }
+  }
+
   return (
     <div className="mt-4" data-kind="exec-settings">
       <Row
@@ -121,6 +138,17 @@ export function ExecSettings() {
           disabled={savingPause}
           onCheckedChange={(next) => void togglePause(next)}
           data-kind="global-pause"
+        />
+      </Row>
+      <Row
+        title="默认角色可以跑命令（bash）"
+        hint="默认关。打开以后，写任务的 ThinAgent 能跑任意命令，写入范围管不住 bash。改动和后果由你自己承担。只影响以后派的任务。"
+      >
+        <Switch
+          checked={bash}
+          disabled={savingBash}
+          onCheckedChange={(next) => void toggleBash(next)}
+          data-kind="bash-toggle"
         />
       </Row>
     </div>

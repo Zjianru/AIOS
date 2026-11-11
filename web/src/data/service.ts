@@ -466,6 +466,8 @@ export async function loadExecSettings(): Promise<ExecSettingsView> {
 export async function saveExecSettings(patch: {
   paused?: boolean;
   seats?: number;
+  /** D85：默认角色的 bash 开关；只影响之后派的任务。 */
+  bash?: boolean;
 }): Promise<ExecSettingsView> {
   return (await post({ method: 'settings-update', ...patch })).exec;
 }

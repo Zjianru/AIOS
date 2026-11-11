@@ -923,6 +923,13 @@ export function deriveTurnViews(
       replaced: decision === null && entry.seq < latestCardSeq,
     };
   }
+  // 结果卡的接受决定：card/decision 的 callId 就是 relay 的 request id；刷新后从日志重推。
+  for (const raw of turns.values()) {
+    for (const fact of raw.taskResults) {
+      const decision = cardDecisions.get(fact.id);
+      if (decision) fact.decision = { phase: decision.phase };
+    }
+  }
   return [...turns.values()]
     .sort((left, right) => left.turn - right.turn)
     .map((raw) => ({

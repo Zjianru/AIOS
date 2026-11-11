@@ -3,8 +3,9 @@
  * user/message）→ 卡片信封。停止 relay 走同一种 JSON 形状，只是 request id 前缀和 state 不同。
  *
  * relay 正文是程序写的 JSON（任务、来源、状态、摘要、问题）。页面只认前缀和 JSON 的形状：
- * 解析不出来就退回普通文本气泡。状态文字由程序按 state + origin 给固定词，卡片不读摘要内容
- * 去改状态、文字或按钮（D73）；任何时候都不写「完成」（ready 只说「有结果」）。
+ * 解析不出来就退回普通文本气泡。状态文字由程序按 state + origin 给固定词（写任务当前
+ * 要求版本的 ready 给「待你核」，Task 阶段仍是「待检查」），卡片不读摘要内容去改状态、
+ * 文字或按钮（D73）；任何时候都不写「完成」。
  */
 
 import { z } from 'zod';
@@ -34,6 +35,10 @@ export const TASK_REPORT_STATES = [
 ] as const;
 export type TaskReportState = (typeof TASK_REPORT_STATES)[number];
 
+/** 卡上的状态：报告状态 + 写任务当前版本 ready 的「待你核」（卡状态，不是 Task 阶段）。 */
+export const TASK_CARD_STATES = [...TASK_REPORT_STATES, 'review'] as const;
+export type TaskCardState = (typeof TASK_CARD_STATES)[number];
+
 export const TASK_REPORT_ORIGINS = ['package', 'agent', 'executor'] as const;
 export type TaskReportOrigin = (typeof TASK_REPORT_ORIGINS)[number];
 
@@ -52,29 +57,64 @@ export interface TaskResultFact {
   chars?: number;
   /** 事件时间（秒）；卡上显示到达时间。 */
   at: number;
+  /** 写任务的写入范围（相对任务 cwd 显示）；没有 = 只读调查任务。 */
+  writeScope?: string;
+  /** 写任务改过的文件（相对执行 cwd，服务去重后给）。 */
+  changed?: string[];
+  /** 服务给的固定一行「改了 N 个文件（写入范围 X）」。 */
+  changedLine?: string;
+  /** 开了 bash 的写任务，卡上的固定说明（服务给原文）。 */
+  bashNote?: string;
+  /** 工作树根路径（开了工作树的任务）。 */
+  worktreePath?: string;
+  /** 卡状态：写任务当前要求版本的 ready 报告给 review（卡上「待你核」）。 */
+  cardState?: 'review';
+  /** 接受决定（card/decision 事件派生）；还没点过是 undefined。 */
+  decision?: { phase: 'confirmed' | 'dismissed' | 'refused' | 'failed' };
 }
 
 export interface TaskResultSlots {
   /** 打开任务对话要用的任务 id（来自 relay 的 request id 和 JSON，不是模型文字槽）。 */
   taskId: string;
   title: LabelSlot;
-  /** 固定状态文字（有结果 / 没开跑 / 卡住了 / 失败 / 等报告）。 */
+  /** 固定状态文字（有结果 / 待你核 / 没开跑 / 卡住了 / 失败 / 等报告）。 */
   status: LabelSlot;
   /** 程序用的状态键，视图按它选颜色和图标。 */
-  state: TaskReportState;
+  state: TaskCardState;
   summary: BodySlot;
   question?: BodySlot;
   at: number;
+  /** 写任务：小标题「写任务」、清单和固定行都看它；调查任务是 false。 */
+  write: boolean;
+  /** 写入范围（服务显示用，相对任务 cwd）；只读任务为空串。 */
+  writeScope: string;
+  /** 改过的文件（服务去重后给）；只读任务为空。 */
+  changed: string[];
+  /** 固定一行；只读任务为空串。 */
+  changedLine: string;
+  /** 开了 bash 的固定说明；没开为空串。 */
+  bashNote: string;
+  /** 工作树路径；没开为空串。 */
+  worktreePath: string;
+  /** 这轮结果已经被用户接受（card/decision 的 confirmed）。 */
+  accepted: boolean;
 }
 
 export const taskResultSlotsSchema = z.object({
   taskId: textSlot,
   title: labelSlot(''),
   status: textSlot,
-  state: z.enum(TASK_REPORT_STATES).catch('waiting'),
+  state: z.enum(TASK_CARD_STATES).catch('waiting'),
   summary: bodySlot,
   question: optionalBodySlot,
   at: z.number().int().catch(0),
+  write: z.boolean().catch(false),
+  writeScope: textSlot,
+  changed: z.array(z.string()).catch([]),
+  changedLine: textSlot,
+  bashNote: textSlot,
+  worktreePath: textSlot,
+  accepted: z.boolean().catch(false),
 });
 
 const TASK_RESULT_FALLBACK_SLOTS: TaskResultSlots = {
@@ -84,10 +124,23 @@ const TASK_RESULT_FALLBACK_SLOTS: TaskResultSlots = {
   state: 'waiting',
   summary: EMPTY_BODY,
   at: 0,
+  write: false,
+  writeScope: '',
+  changed: [],
+  changedLine: '',
+  bashNote: '',
+  worktreePath: '',
+  accepted: false,
 };
 
 /** relay 的 state + origin → 卡上的固定状态文字；不读摘要内容（D73）。 */
-export function taskStatusOf(state: TaskReportState, origin: TaskReportOrigin): string {
+export function taskStatusOf(
+  state: TaskReportState,
+  origin: TaskReportOrigin,
+  cardState?: 'review',
+): string {
+  // 写任务当前要求版本的 ready：卡状态是「待你核」，Task 阶段仍是「待检查」。
+  if (cardState === 'review') return '待你核';
   switch (state) {
     case 'ready':
       return '有结果';
@@ -108,9 +161,10 @@ export function taskStatusOf(state: TaskReportState, origin: TaskReportOrigin): 
 }
 
 /** 卡片信封的状态：只影响外框颜色，按程序事实给。 */
-function envelopeStateOf(state: TaskReportState): 'pending' | 'running' | 'done' | 'failed' {
+function envelopeStateOf(state: TaskCardState): 'pending' | 'running' | 'done' | 'failed' {
   switch (state) {
     case 'ready':
+    case 'review':
       return 'done';
     case 'failed':
       return 'failed';
@@ -123,6 +177,11 @@ function envelopeStateOf(state: TaskReportState): 'pending' | 'running' | 'done'
     case 'blocked':
       return 'pending';
   }
+}
+
+/** 卡上固定一行：改了 N 个文件（写入范围 X）。服务没给时按同一句话拼。 */
+function changedLineOf(count: number, scope: string): string {
+  return `改了 ${count} 个文件（写入范围 ${scope}）`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -143,21 +202,34 @@ export function taskResultCardOf(
 ): CardEnvelope<TaskResultSlots> | null {
   if (!fact || typeof fact !== 'object') return null;
   if (!fact.id || !isState(fact.state) || !isOrigin(fact.origin)) return null;
+  const writeScope = fact.writeScope ?? '';
+  const changed = fact.changed ?? [];
+  const cardState = fact.cardState === 'review' ? 'review' : undefined;
+  const state = cardState ?? fact.state;
   const parsed = taskResultSlotsSchema.safeParse({
     taskId: fact.taskId,
     title: fact.title,
-    status: taskStatusOf(fact.state, fact.origin),
-    state: fact.state,
+    status: taskStatusOf(fact.state, fact.origin, cardState),
+    state,
     summary: fact.summary,
     ...(fact.question === undefined ? {} : { question: fact.question }),
     at: fact.at,
+    write: writeScope !== '',
+    writeScope,
+    changed,
+    // 服务给的固定行优先；旧数据没有就按同一句话拼。
+    changedLine:
+      writeScope === '' ? '' : (fact.changedLine ?? changedLineOf(changed.length, writeScope)),
+    bashNote: fact.bashNote ?? '',
+    worktreePath: fact.worktreePath ?? '',
+    accepted: fact.decision?.phase === 'confirmed',
   });
   if (!parsed.success) return null;
   return {
     id: fact.id,
     type: 'task-result',
     role: 'state',
-    state: envelopeStateOf(fact.state),
+    state: envelopeStateOf(state),
     slots: parsed.data,
   };
 }
@@ -208,6 +280,17 @@ export function parseTaskRelay(message: unknown, at: number): TaskResultFact | n
   if (question !== undefined && typeof question !== 'string') return null;
   const chars = body.chars;
   if (chars !== undefined && typeof chars !== 'number') return null;
+  // 写任务的卡数据（T030）：服务给什么画什么；坏字段逐项当没有，不整卡退回文本。
+  const writeScope =
+    typeof body.write_scope === 'string' && body.write_scope !== '' ? body.write_scope : undefined;
+  const changed = Array.isArray(body.changed)
+    ? body.changed.filter((path): path is string => typeof path === 'string')
+    : undefined;
+  const changedLine = typeof body.changed_line === 'string' ? body.changed_line : undefined;
+  const bashNote = typeof body.bash_note === 'string' ? body.bash_note : undefined;
+  const worktreePath =
+    typeof body.worktree_path === 'string' ? body.worktree_path : undefined;
+  const cardState = body.card_state === 'review' ? ('review' as const) : undefined;
 
   return {
     id: rpcId,
@@ -219,6 +302,12 @@ export function parseTaskRelay(message: unknown, at: number): TaskResultFact | n
     ...(question === undefined ? {} : { question }),
     ...(chars === undefined ? {} : { chars }),
     at: Number.isFinite(at) ? Math.floor(at) : 0,
+    ...(writeScope === undefined ? {} : { writeScope }),
+    ...(changed === undefined ? {} : { changed }),
+    ...(changedLine === undefined ? {} : { changedLine }),
+    ...(bashNote === undefined ? {} : { bashNote }),
+    ...(worktreePath === undefined ? {} : { worktreePath }),
+    ...(cardState === undefined ? {} : { cardState }),
   };
 }
 
