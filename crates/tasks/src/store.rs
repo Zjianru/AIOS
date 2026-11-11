@@ -14,8 +14,9 @@ use crate::effect::{
 };
 use crate::id::{AttemptId, BootId, ConversationId, InputId, ReportId, TaskId};
 use crate::task::{
-    Attempt, AttemptEnd, AttemptTrigger, Input, InputAttachment, InputSource, MissingItem,
-    NewInput, NewReport, NewTask, Report, Run, SayOutcome, Task,
+    Acceptance, Attempt, AttemptEnd, AttemptTrigger, FrozenPolicy, Input, InputAttachment,
+    InputSource, MissingItem, NewInput, NewReport, NewTask, Report, RequirementVersion, Run,
+    SayOutcome, Task, TaskPolicy, VersionSource, resolve_write_scope,
 };
 
 /// 任务库 schema 版本；比这新的库拒绝打开。
@@ -135,10 +136,21 @@ impl Store {
 
     /// 建任务并在同一个事务里排 launch。
     pub fn create_task(&self, draft: NewTask, now: i64) -> Result<Task, TaskError> {
+        self.create_task_with(draft, TaskPolicy::default(), now)
+    }
+
+    /// 建任务，带创建时冻结的执行策略（写入范围、bash 开关、工作树）。
+    pub fn create_task_with(
+        &self,
+        draft: NewTask,
+        policy: TaskPolicy,
+        now: i64,
+    ) -> Result<Task, TaskError> {
         draft.validate()?;
+        let frozen = policy.freeze(&draft.cwd)?;
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let task = self.insert_task_in(&transaction, draft, now)?;
+        let task = self.insert_task_in(&transaction, draft, &frozen, now)?;
         transaction.commit()?;
         Ok(task)
     }
@@ -151,10 +163,22 @@ impl Store {
         accept_key: &str,
         now: i64,
     ) -> Result<(Task, bool), TaskError> {
+        self.create_task_once_with(draft, TaskPolicy::default(), accept_key, now)
+    }
+
+    /// 同 `create_task_once`，并冻结创建时的执行策略。
+    pub fn create_task_once_with(
+        &self,
+        draft: NewTask,
+        policy: TaskPolicy,
+        accept_key: &str,
+        now: i64,
+    ) -> Result<(Task, bool), TaskError> {
         draft.validate()?;
         if accept_key.trim().is_empty() {
             return Err(TaskError::EmptyAcceptKey);
         }
+        let frozen = policy.freeze(&draft.cwd)?;
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let key = format!("task-accept:{accept_key}");
@@ -168,7 +192,7 @@ impl Store {
             transaction.commit()?;
             return Ok((task, false));
         }
-        let task = self.insert_task_in(&transaction, draft, now)?;
+        let task = self.insert_task_in(&transaction, draft, &frozen, now)?;
         transaction.execute(
             "INSERT INTO kv (key, value) VALUES (?1, ?2)",
             params![key, task.id.as_str()],
@@ -181,8 +205,14 @@ impl Store {
         &self,
         connection: &Connection,
         draft: NewTask,
+        policy: &FrozenPolicy,
         now: i64,
     ) -> Result<Task, TaskError> {
+        let versions = vec![RequirementVersion {
+            write_scope: policy.write_scope.clone(),
+            at: now,
+            source: VersionSource::TaskAccept,
+        }];
         let task = Task {
             id: TaskId::from(generate_id(connection)?),
             title: draft.title,
@@ -192,11 +222,16 @@ impl Store {
             conversation: draft.conversation,
             model: draft.model,
             tools: draft.tools,
+            write_scope: policy.write_scope.clone(),
+            bash: policy.bash,
+            worktree: policy.worktree,
             writes: Vec::new(),
             code_mode: false,
             runs: Vec::new(),
             reports: Vec::new(),
             inputs: Vec::new(),
+            versions,
+            acceptance: None,
             missing: Vec::new(),
             created_at: now,
         };
@@ -817,6 +852,50 @@ impl Store {
         Ok((report_id, true))
     }
 
+    /// 用户接受当前版本和最近一份报告；只记接受，不改阶段（03 篇 5.1、5.4）。
+    pub fn accept(&self, id: &TaskId, now: i64) -> Result<Acceptance, TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, id)?;
+        let Some(report_id) = task.latest_report().map(|report| report.id.clone()) else {
+            return Err(TaskError::NoReportToAccept);
+        };
+        let acceptance = Acceptance {
+            version: task.requirement_version(),
+            report_id,
+            at: now,
+        };
+        task.acceptance = Some(acceptance.clone());
+        save_task(&transaction, &task)?;
+        transaction.commit()?;
+        Ok(acceptance)
+    }
+
+    /// task_update：把写入范围换成新的并追加一条要求版本（D16）；返回更新后的任务。
+    /// 只在 Kind 对话里用户同意后用；本票只改写入范围。
+    pub fn update_write_scope(
+        &self,
+        id: &TaskId,
+        write_scope: &str,
+        now: i64,
+    ) -> Result<Task, TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, id)?;
+        let Some(scope) = resolve_write_scope(&task.cwd, Some(write_scope))? else {
+            return Err(TaskError::EmptyWriteScope);
+        };
+        task.write_scope = Some(scope.clone());
+        task.versions.push(RequirementVersion {
+            write_scope: Some(scope),
+            at: now,
+            source: VersionSource::UserAgreed,
+        });
+        save_task(&transaction, &task)?;
+        transaction.commit()?;
+        Ok(task)
+    }
+
     /// 从任务和效果表派生阶段。
     pub fn stage(&self, id: &TaskId) -> Result<Stage, TaskError> {
         let conn = self.lock()?;
@@ -1141,6 +1220,9 @@ mod effect_tests;
 #[cfg(test)]
 #[path = "say_tests.rs"]
 mod say_tests;
+#[cfg(test)]
+#[path = "scope_tests.rs"]
+mod scope_tests;
 #[cfg(test)]
 #[path = "stage_tests.rs"]
 mod stage_tests;

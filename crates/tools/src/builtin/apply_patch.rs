@@ -139,11 +139,19 @@ fn plan(operations: Vec<PatchOp>, context: &ToolContext) -> (Vec<Planned>, Vec<R
             }
         };
         record.path = target.display();
+        if let Err(failure) = crate::fs::check_write(context, &target.key) {
+            refusals.push(Refusal { record, failure });
+            continue;
+        }
         let move_target = match &move_to {
             Some(destination) => match crate::fs::resolve(context, destination) {
                 Ok(destination) => {
                     record.kind = "move";
                     record.destination = Some(destination.display());
+                    if let Err(failure) = crate::fs::check_write(context, &destination.key) {
+                        refusals.push(Refusal { record, failure });
+                        continue;
+                    }
                     Some(destination)
                 }
                 Err(failure) => {

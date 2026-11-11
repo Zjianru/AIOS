@@ -77,6 +77,7 @@ fn write(arguments: &str, context: &ToolContext) -> Result<(String, Value), Tool
         .and_then(Value::as_str)
         .ok_or_else(|| ToolFailure::plain("content must be a string"))?;
     let target = crate::fs::resolve(context, file_path)?;
+    crate::fs::check_write(context, &target.key)?;
     let display = target.display();
     // T013.1：覆盖要有改动前的文本才能算 diff（新建没有旧文本，diff 为空）。
     let before = crate::fs::read_text_for_verb(&target, "write")

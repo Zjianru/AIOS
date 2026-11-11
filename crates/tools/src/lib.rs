@@ -16,7 +16,7 @@ pub mod spill;
 
 use std::collections::BTreeSet;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -29,6 +29,7 @@ pub use builtin::{
     JobKillTool, JobListTool, JobOutputTool, ReadTool, SkillTool, TodoWriteTool, WriteTool,
 };
 pub use diff::{DIFF_CONTEXT, FileDiff, compute_hunk_diffs};
+pub use fs::check_write;
 pub use jobs::{
     JobCause, JobNotifyCallback, JobOutputRead, JobRead, JobRegistered, JobRegisteredCallback,
     JobSettled, JobSettledCallback, JobSpec, JobStatus, JobToolCall, JobView, MAX_WAIT_MS,
@@ -91,6 +92,9 @@ pub struct ToolContext {
     enabled: Option<Arc<std::collections::BTreeSet<String>>>,
     /// 会话日志的读取面；没有会话日志时返回空。
     session_events: SessionEventsReader,
+    /// 写入范围（已 canonicalize 的绝对路径）；None = 不限（Kind、CLI 照旧）。
+    /// 写任务由服务按任务行填；写类工具在 resolve 之后用它核目标。
+    write_scope: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -111,6 +115,7 @@ impl ToolContext {
             session,
             enabled: None,
             session_events: Arc::new(Vec::new),
+            write_scope: None,
         }
     }
 
@@ -150,6 +155,18 @@ impl ToolContext {
 
     pub fn shared_session(&self) -> Arc<ToolSessionState> {
         Arc::clone(&self.session)
+    }
+
+    /// 设写入范围（写任务由服务按任务行填）。调用方负责 canonicalize：
+    /// 范围可以指向还不存在的文件，所以本方法不自己做 canonicalize。
+    pub fn with_write_scope(mut self, write_scope: Option<PathBuf>) -> Self {
+        self.write_scope = write_scope;
+        self
+    }
+
+    /// 写入范围；None = 不限。
+    pub fn write_scope(&self) -> Option<&Path> {
+        self.write_scope.as_deref()
     }
 }
 

@@ -92,6 +92,30 @@ pub(crate) fn resolve(context: &ToolContext, requested: &str) -> Result<Target, 
     }
 }
 
+/// 写类工具在 resolve 之后核写入范围（D85）：目标必须落在范围内，
+/// 且不在范围下的 `.git` 里（照 Codex default_read_only_subpaths_for_writable_root）。
+///
+/// `target` 必须是 `resolve` 出来的真实路径（存在的部分已 canonicalize），不是模型
+/// 给的原始串。None = 不限（Kind、CLI 照旧）。拒绝时码固定为 `WRITE_OUT_OF_SCOPE`，
+/// 文案固定，指明写入范围和交回方式。
+pub fn check_write(context: &ToolContext, target: &Path) -> Result<(), ToolFailure> {
+    let Some(scope) = context.write_scope() else {
+        return Ok(());
+    };
+    // 前缀按路径段比（`/a/bc` 不在 `/a/b` 下）；范围下的 .git 一律不放行，
+    // 目录和指针文件都算。
+    if !target.starts_with(scope) || target.starts_with(scope.join(".git")) {
+        return Err(ToolFailure::coded(
+            "WRITE_OUT_OF_SCOPE",
+            format!(
+                "这个路径不在写入范围里（写入范围：{}）。要改范围外的，调 task_handback。",
+                scope.display()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// 一次 stat 的结果：版本 token + mode + 是否普通文件。
 #[derive(Debug, Clone)]
 pub(crate) struct FileInfo {

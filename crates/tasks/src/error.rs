@@ -71,4 +71,14 @@ pub enum TaskError {
     },
     #[error("effect 行内容与键不一致: {kind}/{key}")]
     CorruptEffect { kind: &'static str, key: String },
+    #[error("写入范围不能是文件系统根目录")]
+    WriteScopeIsRoot,
+    #[error("写入范围不能是用户主目录本身")]
+    WriteScopeIsHome,
+    #[error("写入范围解析不了：{0}")]
+    WriteScopeUnresolvable(String),
+    #[error("task_update 的写入范围不能为空")]
+    EmptyWriteScope,
+    #[error("任务还没有可以接受的结果报告")]
+    NoReportToAccept,
 }
