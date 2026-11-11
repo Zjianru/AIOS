@@ -64,6 +64,11 @@ async function expectSayBeforeTool(
   await expect(say).toBeVisible();
   await expect(process).toHaveAttribute('data-open', 'false');
   await process.locator('button').first().click();
+  // 组默认也收着：把每一组的行展开，才看得到工具行。
+  const groups = process.locator('[data-kind="process-group"]');
+  for (let index = 0; index < (await groups.count()); index += 1) {
+    await groups.nth(index).locator('button').first().click();
+  }
   const row = process.locator('[data-kind="tool-row"][data-tool="' + tool + '"]');
   await expect(row).toHaveCount(1);
   const sayBox = await say.boundingBox();
