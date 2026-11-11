@@ -590,7 +590,7 @@ async fn accept_freezes_the_task_and_the_launch_uses_it() {
         let request: Value = serde_json::from_str(body).unwrap();
         assert_eq!(request["model"], "deepseek-flash", "冻结的模型");
     }
-    // 第一份请求只开出无条件的 6 件；加载 web skill（Exa key 已存）后开出 8 件。
+    // 第一份请求只开出无条件的 7 件；加载 web skill（Exa key 已存）后开出 9 件。
     let loaded = thin_bodies
         .iter()
         .find(|body| body.contains("\"name\":\"web_search\""))
@@ -599,7 +599,7 @@ async fn accept_freezes_the_task_and_the_launch_uses_it() {
     names.sort();
     let mut expected: Vec<String> = service::THIN_TOOLS.map(str::to_owned).to_vec();
     expected.sort();
-    assert_eq!(names, expected, "ThinAgent 的工具表正好 8 件");
+    assert_eq!(names, expected, "ThinAgent 的工具表正好 9 件");
     let first_names = tool_names(&thin_bodies[0]);
     assert!(!first_names.contains(&"bash".to_owned()), "{first_names:?}");
     assert!(
@@ -1112,6 +1112,50 @@ async fn task_handback_twice_returns_already_handed_back_without_a_second_relay(
         .collect();
     assert_eq!(reports.len(), 1, "同一个 Attempt 只留一份报告：{reports:?}");
     assert_ne!(reports[0].summary, "第二次也要交回");
+}
+
+#[tokio::test]
+async fn thin_agent_handback_rule_and_tool_stay_off_kind() {
+    let fixture = Fixture::new().await;
+    fixture.router.push_thin(crate::common::text_sse(""));
+    fixture.accept(false).await;
+    wait_until("ThinAgent 请求", || {
+        !fixture.router.bodies(true).is_empty()
+    })
+    .await;
+
+    let thin_bodies = fixture.router.bodies(true);
+    let thin: Value = serde_json::from_str(&thin_bodies[0]).unwrap();
+    let thin_tools = tool_names(&thin_bodies[0]);
+    assert!(
+        thin_tools.contains(&"task_handback".to_owned()),
+        "{thin_tools:?}"
+    );
+    let thin_system = thin["system"].as_str().expect("ThinAgent 系统提示");
+    assert!(
+        thin_system.contains("outside this task's scope"),
+        "交回规则要进 ThinAgent 的 policy_prompt：{thin_system}"
+    );
+    assert!(
+        thin_system.contains("do not do that work yourself"),
+        "规则要写明不自己做：{thin_system}"
+    );
+    assert!(
+        !thin_system.contains("这超出了任务范围，要不要改任务？"),
+        "固定问句只能由程序写进 relay，不能抄进角色规则"
+    );
+
+    let kind_bodies = fixture.router.bodies(false);
+    let kind_tools = tool_names(&kind_bodies[0]);
+    assert!(
+        !kind_tools.contains(&"task_handback".to_owned()),
+        "task_handback 只给 ThinAgent：{kind_tools:?}"
+    );
+    let kind: Value = serde_json::from_str(&kind_bodies[0]).unwrap();
+    let kind_system = kind["system"].as_str().expect("Kind 系统提示");
+    assert!(!kind_system.contains("task_handback"), "{kind_system}");
+    assert!(!kind_system.contains("这超出了任务范围，要不要改任务？"));
+    assert_eq!(service::THIN_TOOLS.len(), 9, "ThinAgent 的工具表 9 件");
 }
 
 #[tokio::test]
