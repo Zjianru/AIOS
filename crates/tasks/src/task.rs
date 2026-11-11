@@ -81,6 +81,19 @@ pub struct Input {
     pub at: i64,
     pub source: InputSource,
     pub text: String,
+    /// 和这句话一起发来的附件；旧任务行没有这个字段时按空读。
+    ///
+    /// 只记附件仓库里的 id、名字和字节数；投递时再按 id 解析只读副本路径。
+    #[serde(default)]
+    pub attachments: Vec<InputAttachment>,
+}
+
+/// 一条输入里引用的附件（规则和 Kind 对话一样）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputAttachment {
+    pub id: String,
+    pub name: String,
+    pub bytes: u64,
 }
 
 /// 输入是谁说的。

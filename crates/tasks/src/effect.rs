@@ -35,6 +35,14 @@ impl EffectKind {
             Self::Relay | Self::Delivery | Self::Notice => (2_000, 60_000),
         }
     }
+
+    /// 连续失败不报健康错误（DSH app/effects.ts 的 handler 选项 quiet：
+    /// 失败已经在任务上体现时，不把效果种类的健康项标成 error）。
+    ///
+    /// delivery 照 DSH 注册为 quiet（executor/dsh.ts:234-235）；其余种类照旧。
+    pub fn quiet(self) -> bool {
+        matches!(self, Self::Delivery)
+    }
 }
 
 /// 效果行里存的 JSON 载荷；键由载荷自己给出。

@@ -111,6 +111,10 @@ impl ServiceHost {
             Call::TaskStop(_) => Err(ServiceError::TaskUnavailable(
                 "停任务只能由根宿主做".to_owned(),
             )),
+            // 在任务对话里说话同样走根宿主（任务库和效果泵）。
+            Call::TaskSay(_) => Err(ServiceError::TaskUnavailable(
+                "任务对话只能由根宿主说".to_owned(),
+            )),
             // recheck 只对 RootHost 有意义；裸 ServiceHost 直接回根状态 ok（宿主不回退）。
             Call::Recheck(_) => Ok(Response::Recheck(RecheckResponse {
                 root: RootState::Ok,

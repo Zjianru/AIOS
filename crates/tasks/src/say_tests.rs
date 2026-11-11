@@ -6,9 +6,9 @@ use rusqlite::Connection;
 
 use super::Store;
 use crate::{
-    AttemptEnd, AttemptId, AttemptTrigger, ConversationId, EffectKind, EffectPayload, InputId,
-    InputSource, ModelChoice, NewReport, NewTask, ReportOrigin, ReportState, SlotKind, Task,
-    TaskError, WorkerSlots,
+    AttemptEnd, AttemptId, AttemptTrigger, ConversationId, EffectKind, EffectPayload,
+    InputAttachment, InputId, InputSource, ModelChoice, NewReport, NewTask, ReportOrigin,
+    ReportState, SlotKind, Task, TaskError, WorkerSlots,
 };
 
 const T0: i64 = 1_700_000_000_000;
@@ -106,6 +106,31 @@ fn records_the_input_delivery_and_notice_in_one_transaction() {
         }
     );
     assert_eq!(notice.key, format!("cc:{}", outcome.input_id));
+}
+
+#[test]
+fn records_attachments_with_the_input_and_accepts_an_attachment_only_message() {
+    let (_directory, store) = open_store();
+    let (task, _attempt) = running_task(&store);
+    let attachment = InputAttachment {
+        id: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+        name: "notes.txt".to_owned(),
+        bytes: 5,
+    };
+
+    let outcome = store
+        .say_with_attachments(&task.id, "", std::slice::from_ref(&attachment), T0 + 10)
+        .unwrap();
+    let loaded = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(loaded.inputs.len(), 1);
+    assert_eq!(loaded.inputs[0].id, outcome.input_id);
+    assert_eq!(loaded.inputs[0].text, "", "只有附件也算一句");
+    assert_eq!(loaded.inputs[0].attachments, vec![attachment]);
+
+    assert!(matches!(
+        store.say_with_attachments(&task.id, "  ", &[], T0 + 11),
+        Err(TaskError::EmptyInput)
+    ));
 }
 
 #[test]
@@ -236,8 +261,21 @@ fn the_woken_attempt_keeps_the_session_and_records_the_user_message_trigger() {
     let (task, first_attempt) = reported_task(&store);
 
     let outcome = store.say(&task.id, "接着做吧", T0 + 30).unwrap();
+    assert_eq!(
+        outcome.new_attempt,
+        Some(AttemptId(2)),
+        "回报接着做会开第 2 次"
+    );
+    assert_eq!(
+        store.task(&task.id).unwrap().unwrap().runs[0]
+            .attempts
+            .len(),
+        1,
+        "投递接上会话之前不落 Attempt"
+    );
 
-    assert_eq!(outcome.new_attempt, Some(AttemptId(2)));
+    let second_id = store.begin_followup(&task.id, T0 + 31).unwrap();
+    assert_eq!(second_id, Some(AttemptId(2)));
     let loaded = store.task(&task.id).unwrap().unwrap();
     assert_eq!(loaded.runs.len(), 1, "新 Attempt 还在同一个 Run 里");
     assert_eq!(loaded.runs[0].attempts.len(), 2);
@@ -250,7 +288,7 @@ fn the_woken_attempt_keeps_the_session_and_records_the_user_message_trigger() {
         "会话 id 不变"
     );
     assert_eq!(second.trigger, AttemptTrigger::UserMessage);
-    assert_eq!(second.started_at, T0 + 30);
+    assert_eq!(second.started_at, T0 + 31);
     assert_eq!(second.ended_at, None);
     assert_eq!(
         loaded.runs[0].attempts[0].trigger,
@@ -265,6 +303,10 @@ fn a_wake_can_take_one_extra_person_seat_when_every_seat_is_full() {
     let (task, _attempt) = reported_task(&store);
     let outcome = store.say(&task.id, "接着做吧", T0 + 30).unwrap();
     assert!(outcome.new_attempt.is_some(), "先叫醒一个停了的任务");
+    assert_eq!(
+        store.begin_followup(&task.id, T0 + 31).unwrap(),
+        Some(AttemptId(2))
+    );
 
     let mut slots = WorkerSlots::new();
     let running = vec!["another-task".to_owned()];

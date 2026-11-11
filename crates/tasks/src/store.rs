@@ -14,8 +14,8 @@ use crate::effect::{
 };
 use crate::id::{AttemptId, ConversationId, InputId, ReportId, TaskId};
 use crate::task::{
-    Attempt, AttemptEnd, AttemptTrigger, Input, InputSource, MissingItem, NewReport, NewTask,
-    Report, Run, SayOutcome, Task,
+    Attempt, AttemptEnd, AttemptTrigger, Input, InputAttachment, InputSource, MissingItem,
+    NewReport, NewTask, Report, Run, SayOutcome, Task,
 };
 
 /// 任务库 schema 版本；比这新的库拒绝打开。
@@ -347,7 +347,18 @@ impl Store {
     /// 用户在任务对话里说一句：在一个事务里记输入、排 delivery 和 notice；
     /// 上一 Attempt 已结束了就接着开一次 Attempt（会话不变）。
     pub fn say(&self, id: &TaskId, text: &str, now: i64) -> Result<SayOutcome, TaskError> {
-        if text.trim().is_empty() {
+        self.say_with_attachments(id, text, &[], now)
+    }
+
+    /// 和 say 一样，再记下随这句话一起发来的附件；只有附件、没有文字也算一句。
+    pub fn say_with_attachments(
+        &self,
+        id: &TaskId,
+        text: &str,
+        attachments: &[InputAttachment],
+        now: i64,
+    ) -> Result<SayOutcome, TaskError> {
+        if text.trim().is_empty() && attachments.is_empty() {
             return Err(TaskError::EmptyInput);
         }
         let mut conn = self.lock()?;
@@ -359,8 +370,11 @@ impl Store {
             at: now,
             source: InputSource::User,
             text: text.to_owned(),
+            attachments: attachments.to_vec(),
         });
-        let new_attempt = begin_followup_attempt(&mut task, now);
+        // 只回报「接着做会开第几次 Attempt」；Attempt 行等投递真的接上会话再落，
+        // 免得投递只 Later 时留下一个没有会话的空 Attempt。
+        let new_attempt = followup_preview(&task);
         save_task(&transaction, &task)?;
         self.enqueue_effect_in(
             &transaction,
@@ -382,6 +396,23 @@ impl Store {
             input_id,
             new_attempt,
         })
+    }
+
+    /// 投递接上原会话之后，再落一条「接着做」的 Attempt（会话不变）。
+    ///
+    /// 返回 None：没有可接着做的 Attempt（还在跑、没开成会话、或没有上一个）。
+    /// 放在投递成功路径上，是为了不出现「Attempt 已开、会话却没接上」的空行。
+    pub fn begin_followup(&self, id: &TaskId, now: i64) -> Result<Option<AttemptId>, TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, id)?;
+        let Some(attempt_id) = begin_followup_attempt(&mut task, now) else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+        save_task(&transaction, &task)?;
+        transaction.commit()?;
+        Ok(Some(attempt_id))
     }
 
     /// 会话真的开出来之后，把会话 id 写回 Attempt。
@@ -683,7 +714,8 @@ impl Store {
         )?;
         let waiting = u32::try_from(waiting).unwrap_or(u32::MAX);
         let attempts = u32::try_from(attempts.unwrap_or(0)).unwrap_or(u32::MAX);
-        let state = if waiting > 0 && attempts >= FAILURES_BEFORE_ERROR {
+        // quiet 的种类（delivery）失败已经在任务上体现，不把健康项标成 error。
+        let state = if waiting > 0 && attempts >= FAILURES_BEFORE_ERROR && !kind.quiet() {
             EffectState::Error
         } else {
             EffectState::Ready
@@ -702,6 +734,20 @@ impl Store {
 ///
 /// 旧库可能只有 ended_at、没有 end；那也是已结束，照样接着做。没开成的 Attempt
 /// 没有会话可送，不算「可以接着做」。
+fn followup_preview(task: &Task) -> Option<AttemptId> {
+    let latest = task.latest_attempt()?;
+    if latest.ended_at.is_none() || latest.end == Some(AttemptEnd::NotOpened) {
+        return None;
+    }
+    Some(AttemptId(
+        task.runs
+            .iter()
+            .map(|run| run.attempts.len() as u64)
+            .sum::<u64>()
+            + 1,
+    ))
+}
+
 fn begin_followup_attempt(task: &mut Task, now: i64) -> Option<AttemptId> {
     let latest = task.latest_attempt()?;
     if latest.ended_at.is_none() || latest.end == Some(AttemptEnd::NotOpened) {
