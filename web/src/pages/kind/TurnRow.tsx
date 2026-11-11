@@ -51,7 +51,8 @@ function QuoteBlock({ lines }: { lines: string[] }) {
  * 你的消息带着的东西（T013 F1，照原型 app-v14 TurnRow UserBubble）：
  * 气泡上面一排卡片——粘贴卡和文件卡用输入框里的同一张卡；点开看全文。
  */
-function UserCards({ user }: { user: TurnUserView }) {
+/** 你的消息里的粘贴卡和文件卡（Kind 的待发消息和任务对话的排队行共用）。 */
+export function UserCards({ user }: { user: TurnUserView }) {
   const [openPaste, setOpenPaste] = useState<number | null>(null);
   const [openFile, setOpenFile] = useState<{ name: string; text: string } | null>(null);
   return (
@@ -398,7 +399,7 @@ export const TurnRow = memo(function TurnRow({
               你对 <span className="text-ink-2">{cc.title}</span> 说：
             </span>
             <span className="mt-0.5 block whitespace-pre-wrap break-words text-ink-2">
-              {cc.text}
+              {cc.text || '（没有文字，只有粘贴或附件）'}
               {trimmed ? '…' : ''}
             </span>
             <span className="mt-0.5 block text-1 text-ink-3">抄送 Kind，不叫醒它</span>

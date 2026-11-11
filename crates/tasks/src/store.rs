@@ -378,7 +378,11 @@ impl Store {
         input: NewInput,
         now: i64,
     ) -> Result<SayOutcome, TaskError> {
-        if input.text.trim().is_empty() && input.attachments.is_empty() {
+        // 只有粘贴或只有附件、没有文字，也算一句；空粘贴段和空白文字不算内容。
+        if input.text.trim().is_empty()
+            && input.pastes.iter().all(String::is_empty)
+            && input.attachments.is_empty()
+        {
             return Err(TaskError::EmptyInput);
         }
         let mut conn = self.lock()?;
@@ -390,8 +394,7 @@ impl Store {
             at: now,
             source: InputSource::User,
             text: input.text,
-            // 骨架：粘贴段还没接进任务行和投递。
-            pastes: Vec::new(),
+            pastes: input.pastes,
             attachments: input.attachments,
         });
         // 只回报「接着做会开第几次 Attempt」；Attempt 行等投递真的接上会话再落，

@@ -38,13 +38,14 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import type { Frame, ServiceEvent } from '@/data/service';
+import type { Frame, SendAttachmentRef, ServiceEvent } from '@/data/service';
 import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
 import { useStreamStore } from '@/pages/kind/kindStore';
-import { TurnRow } from '@/pages/kind/TurnRow';
+import { TurnRow, UserCards } from '@/pages/kind/TurnRow';
 import { deriveTurnViews } from '@/pages/kind/turnViews';
+import type { TurnUserView } from '@/pages/kind/turnViews';
 import { Composer } from '@/pages/kind/composer/Composer';
-import type { ComposerHandle } from '@/pages/kind/composer/Composer';
+import type { ComposerHandle, ComposerSendOptions } from '@/pages/kind/composer/Composer';
 import { mergeLiveEvent, withReportedCompletion } from './taskLive';
 import { cn } from '@/lib/utils';
 
@@ -233,8 +234,10 @@ export function TaskChatScene() {
   const [paused, setPaused] = useState(false);
   /** T028.5：说的是不是正在送；送的时候按钮不重复触发。 */
   const [saying, setSaying] = useState(false);
-  /** T028.5：已经受理、还没出现在会话日志里的输入（暂停时排队显示）。 */
-  const [queued, setQueued] = useState<{ inputId: string; text: string }[]>([]);
+  /** T028.5：已经受理、还没出现在会话日志里的输入（排队或正在送）。 */
+  const [queued, setQueued] = useState<
+    { inputId: string; text: string; pastes: string[]; attachments: SendAttachmentRef[] }[]
+  >([]);
   const composerRef = useRef<ComposerHandle | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const requestToken = useRef(0);
@@ -532,17 +535,21 @@ export function TaskChatScene() {
     connectRef.current?.();
   }
 
-  /** T028.5：说一句（Composer 的发送；成功才清草稿）。 */
-  async function say(text: string) {
+  /** T028.5：说一句（Composer 的发送；粘贴和附件照 Kind 对话一起送；成功才清草稿）。 */
+  async function say(text: string, options: ComposerSendOptions) {
     if (!taskId || saying) return false;
     setSaying(true);
     try {
       // 停了/失败了的任务：先放开这条连接，服务端才能重新打开同一个会话。
       if (!task?.running) await releaseTaskSocket();
-      const response = await taskSay(taskId, text);
+      const pastes = options.pastes;
+      const attachments = options.attachments;
+      const response = await taskSay(taskId, text, { pastes, attachments });
       // 说了以后（尤其新 Attempt）等它真的跑起来再接回实时帧。
       if (!socketRef.current) void reopenTaskStream(requestToken.current);
-      setQueued((current) => current.concat({ inputId: response.inputId, text }));
+      setQueued((current) =>
+        current.concat({ inputId: response.inputId, text, pastes, attachments }),
+      );
       if (typeof response.newAttempt === 'number') {
         const attempt = response.newAttempt;
         setTask((current) => (current ? { ...current, attempts: attempt } : current));
@@ -771,16 +778,41 @@ export function TaskChatScene() {
               />
             ))
           )}
-          {queuedVisible.map((item) => (
-            <div key={item.inputId} className="px-6 pb-2" data-kind="task-queued">
-              <div className="mt-3 flex flex-col items-end gap-1">
-                <div className="max-w-[82%] rounded-2xl rounded-br-md border border-dashed border-line-2 bg-raised/60 px-3.5 py-2 text-4 leading-6 text-ink-2">
-                  {item.text}
+          {queuedVisible.map((item) => {
+            const hasCards = item.pastes.length > 0 || item.attachments.length > 0;
+            const user: TurnUserView = {
+              text: '',
+              elements: [],
+              pastes: item.pastes,
+              files: item.attachments,
+              canvas: null,
+            };
+            return (
+              <div
+                key={item.inputId}
+                className="px-6 pb-2"
+                data-kind="task-queued"
+                data-state={paused ? 'paused' : 'sending'}
+              >
+                <div className="mt-3 flex flex-col items-end gap-1">
+                  {hasCards ? <UserCards user={user} /> : null}
+                  {item.text ? (
+                    <div
+                      className={cn(
+                        'max-w-[82%] rounded-2xl rounded-br-md border border-line-2 bg-raised/60 px-3.5 py-2 text-4 leading-6 text-ink-2',
+                        paused && 'border-dashed',
+                      )}
+                    >
+                      {item.text}
+                    </div>
+                  ) : null}
+                  <div className="text-1 text-ink-3">
+                    {paused ? '排队中：全局暂停，开闸后送到' : '发送中…'}
+                  </div>
                 </div>
-                <div className="text-1 text-ink-3">排队中：全局暂停，开闸后送到</div>
               </div>
-            </div>
-          ))}
+            );
+          })}
           {loadingOlder ? (
             <div className="px-6 py-2 text-center text-1 text-ink-3" data-kind="task-loading-older">
               正在读更早的记录…

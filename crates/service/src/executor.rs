@@ -15,8 +15,9 @@ use serde_json::{Value, json};
 use session::SessionId;
 use tasks::{
     Attempt, AttemptEnd, AttemptId, ConversationId, EffectClaim, EffectKind, EffectPayload, Input,
-    InputAttachment, MissingItem, ModelChoice, NewReport, NewTask, ReportId, ReportOrigin,
-    ReportState, SlotKind, Stage, StopAttempt, Store, Task, TaskError, TaskId, WorkerSlots,
+    InputAttachment, MissingItem, ModelChoice, NewInput, NewReport, NewTask, ReportId,
+    ReportOrigin, ReportState, SlotKind, Stage, StopAttempt, Store, Task, TaskError, TaskId,
+    WorkerSlots,
 };
 use tokio::sync::broadcast;
 use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
@@ -179,7 +180,15 @@ impl TaskRuntime {
         let id = TaskId::from(request.task_id);
         let outcome = self
             .store
-            .say_with_attachments(&id, &request.text, &attachments, Self::now())
+            .say_input(
+                &id,
+                NewInput {
+                    text: request.text,
+                    pastes: request.pastes,
+                    attachments,
+                },
+                Self::now(),
+            )
             .map_err(|error| match error {
                 TaskError::EmptyInput => ServiceError::MessageEmpty,
                 other => ServiceError::TaskUnavailable(format!("这句话没记进任务库：{other}")),
@@ -592,7 +601,7 @@ impl TaskRuntime {
         }
     }
 
-    /// 一条任务输入发给 ThinAgent 的消息：文字在前，附件照记下的 id/名字/字节数还原成文件块。
+    /// 一条任务输入发给 ThinAgent 的消息：文字、粘贴段、附件，照 Kind 对话的拼法。
     ///
     /// 附件路径在投递时从附件仓库解析（和 Kind 对话一样是只读副本）；空输入在记库阶段
     /// 就拒了，这里不会拼出空消息。
@@ -600,6 +609,11 @@ impl TaskRuntime {
         let mut blocks = Vec::new();
         if !input.text.is_empty() {
             blocks.push(model::ContentBlock::text(input.text.clone()));
+        }
+        for paste in &input.pastes {
+            if !paste.is_empty() {
+                blocks.push(model::ContentBlock::paste(paste.clone()));
+            }
         }
         for attachment in &input.attachments {
             let stored = tools::attachments::read(&self.data_dir, &attachment.id)

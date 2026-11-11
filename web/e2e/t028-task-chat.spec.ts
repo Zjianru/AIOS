@@ -178,6 +178,61 @@ test('在跑时在任务对话里说话：任务出现用户气泡，Kind 出现
   }
 });
 
+test('在跑时只发粘贴、没有文字：任务对话出现粘贴卡，日志里是 paste 块，Kind 抄送不空', async ({
+  page,
+  request,
+}) => {
+  const fixture = await startKernelFixture({ taskResult: 'say' });
+  try {
+    const taskId = await launchTask(page, fixture, request);
+    const pane = await openTaskChat(page, fixture, taskId);
+    await expect(pane.locator('[data-kind="task-state"]')).toHaveText('执行中', {
+      timeout: 20_000,
+    });
+
+    // 粘贴超过 1000 字：折成粘贴卡，textarea 里没有字。
+    const pasted = '第一行\n' + '字'.repeat(1100);
+    await pane.locator('[data-kind="composer-input"]').evaluate((element, value) => {
+      const data = new DataTransfer();
+      data.setData('text/plain', value);
+      element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true }));
+    }, pasted);
+    await expect(pane.locator('[data-kind="paste-card"]')).toHaveCount(1);
+    // 只有粘贴、没有文字：Enter 照样发得出去（不报空输入）。
+    await pane.locator('[data-kind="composer-input"]').press('Enter');
+
+    // 任务对话里这一句以粘贴卡呈现，不画空用户气泡。
+    await expect(
+      pane.locator('[data-kind="user-message-row"] [data-kind="paste-card"]'),
+    ).toHaveCount(1, { timeout: 20_000 });
+    await expect(pane.locator('[data-kind="user-bubble"]')).toHaveCount(0);
+
+    // 日志里是 paste 块（不是文字块），说明服务把它当成一句话送给了 ThinAgent。
+    const read = await apiPost(request, fixture, { method: 'task-read', taskId });
+    expect(read.ok()).toBe(true);
+    const events = (await read.json()).events as {
+      type: string;
+      data: { message?: { content?: { type?: string; text?: string; paste?: boolean }[] } };
+    }[];
+    const saidMessage = events.find(
+      (event) =>
+        event.type === 'user/message' &&
+        (event.data.message?.content ?? []).some((block) => block.paste === true),
+    );
+    expect(saidMessage, '任务日志里有一条粘贴块的用户消息').toBeTruthy();
+    expect(saidMessage?.data.message?.content?.some((block) => block.text === pasted)).toBe(true);
+
+    // Kind 里的抄送行不空：没有文字时给一句固定说明。
+    await page.goto(urlOf(fixture));
+    const cc = page.locator('[data-kind="task-cc"]').last();
+    await expect(cc).toBeVisible({ timeout: 20_000 });
+    await expect(cc).toContainText('你对 ' + TITLE + ' 说：');
+    await expect(cc).toContainText('（没有文字，只有粘贴或附件）');
+  } finally {
+    await fixture.close();
+  }
+});
+
 test('停了以后说「接着做吧」：第 2 次 Attempt，原会话接着做，Kind 出新卡', async ({
   page,
   request,

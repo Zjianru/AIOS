@@ -265,6 +265,9 @@ export async function taskStop(taskId: string, mode: StopMode): Promise<TaskStop
   return post({ method: 'task-stop', taskId, mode });
 }
 
+/** T028.5：任务对话里的粘贴段与附件（和 Kind 对话的 SendOptions 同名同形）。 */
+export type TaskSayOptions = Pick<SendOptions, 'pastes' | 'attachments'>;
+
 /**
  * T028.5：在任务对话里说一句。在跑时插进这一轮；停了/失败了就在原会话开新 Attempt。
  * 全局暂停时服务端先把这句话排着（响应照收）。
@@ -272,12 +275,15 @@ export async function taskStop(taskId: string, mode: StopMode): Promise<TaskStop
 export async function taskSay(
   taskId: string,
   text: string,
-  attachments: SendAttachmentRef[] = [],
+  options: TaskSayOptions = {},
 ): Promise<TaskSayResponse> {
+  const pastes = options.pastes ?? [];
+  const attachments = options.attachments ?? [];
   return post({
     method: 'task-say',
     taskId,
     text,
+    ...(pastes.length > 0 ? { pastes } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
   });
 }
