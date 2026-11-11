@@ -286,16 +286,6 @@ test('重启接续：汇报与每任务一项的卡，勾一项接续、没勾�
     expect(listed.some((task) => task.id === taskC || task.id === taskD)).toBe(false);
 
     // Kind 对话：两张「被打断了」结果卡，每张都能打开任务对话；丙/丁不在里面。
-    if (process.env.AIOS_DEBUG_T029) {
-      const text = await rootLog(fixture);
-      console.log(
-        text
-          .split(String.fromCharCode(10))
-          .filter((line) => line.includes('restart:') || line.includes('tasks_interrupted'))
-          .join(String.fromCharCode(10))
-          .slice(0, 4000),
-      );
-    }
     await page.goto(urlOf(fixture));
     const interrupted = page.locator('[data-kind="task-result"][data-state="interrupted"]');
     await expect(interrupted).toHaveCount(2, { timeout: 30_000 });

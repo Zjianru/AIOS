@@ -995,4 +995,80 @@ assert.equal(parseTaskRelay(null, 1), null);
 assert.ok(cardDefinitions['task-result']);
 assert.doesNotThrow(() => resolveSlots(cardDefinitions['task-result'], { summary: '不是正文槽' }));
 
+// ───────── 写任务结果卡：待你核、清单、bash 说明、工作树路径、接受 ─────────
+const WRITE_BODY = {
+  write_scope: 'hello.txt',
+  changed: ['hello.txt'],
+  changed_line: '改了 1 个文件（写入范围 hello.txt）',
+  card_state: 'review',
+};
+
+const cardReview = taskEnvelope(relayMessage(WRITE_BODY));
+assert.equal(cardReview.state, 'done', '待你核也是 ready 报告画的卡，外框照常');
+assert.equal(cardReview.slots.state, 'review');
+assert.equal(cardReview.slots.status, '待你核');
+assert.equal(cardReview.slots.write, true);
+assert.equal(cardReview.slots.writeScope, 'hello.txt');
+assert.deepEqual(cardReview.slots.changed, ['hello.txt']);
+assert.equal(cardReview.slots.changedLine, '改了 1 个文件（写入范围 hello.txt）');
+// 槽位用空串表示「没有这一项」：卡上不画那一行。
+assert.equal(cardReview.slots.bashNote, '');
+assert.equal(cardReview.slots.worktreePath, '');
+assert.equal(cardReview.slots.accepted, false, '还没点接受');
+// 卡上任何时候不写「完成」。
+assert.ok(!JSON.stringify(cardReview.slots).includes('完成'));
+
+// 接受是 card/decision 的事实：刷新后从日志重推，不靠页面本地状态。
+const acceptedFact = parseTaskRelay(relayMessage(WRITE_BODY), 100);
+assert.ok(acceptedFact);
+acceptedFact.decision = { phase: 'confirmed', summary: '你已接受' };
+const cardAccepted = taskResultCardOf(acceptedFact);
+assert.ok(cardAccepted);
+assert.equal(cardAccepted.slots.accepted, true);
+assert.equal(cardAccepted.slots.status, '待你核', '接受不改卡片状态，仍待你核');
+assert.ok(!JSON.stringify(cardAccepted.slots).includes('完成'));
+
+// 开了 bash 的写任务：固定说明原文照服务给；工作树路径也照服务给。
+const cardBash = taskEnvelope(
+  relayMessage({
+    ...WRITE_BODY,
+    bash_note: '这个任务开了 bash，bash 的改动不在清单里',
+    worktree_path: '/tmp/aios/worktrees/task-1',
+  }),
+);
+assert.equal(cardBash.slots.bashNote, '这个任务开了 bash，bash 的改动不在清单里');
+assert.equal(cardBash.slots.worktreePath, '/tmp/aios/worktrees/task-1');
+assert.equal(cardBash.slots.status, '待你核');
+
+// 调查任务没有写任务这些字段：还是「有结果」，不显示清单。
+assert.equal(cardReady.slots.write, false);
+assert.equal(cardReady.slots.state, 'ready');
+assert.equal(cardReady.slots.changed.length, 0);
+
+// 服务没给 changed_line 时按「改了 N 个文件（写入范围 X）」兜底；坏字段逐项降级。
+const cardFallback = taskEnvelope(
+  relayMessage({ write_scope: 'hello.txt', changed: ['a.txt', 'b.txt'] }),
+);
+assert.equal(cardFallback.slots.changedLine, '改了 2 个文件（写入范围 hello.txt）');
+const cardDegraded = taskEnvelope(
+  relayMessage({
+    write_scope: 'hello.txt',
+    changed: '不是数组',
+    changed_line: 7,
+    card_state: '别的词',
+    bash_note: {},
+  }),
+);
+assert.deepEqual(cardDegraded.slots.changed, []);
+assert.equal(cardDegraded.slots.changedLine, '改了 0 个文件（写入范围 hello.txt）');
+assert.equal(cardDegraded.slots.state, 'ready', 'card_state 只认 review');
+assert.equal(cardDegraded.slots.status, '有结果');
+assert.equal(cardDegraded.slots.bashNote, '');
+assert.equal(cardDegraded.slots.write, true);
+
+// 空写入范围 = 只读任务（和 task_accept 的省略同义）。
+const cardEmptyScope = taskEnvelope(relayMessage({ write_scope: '', changed: [] }));
+assert.equal(cardEmptyScope.slots.write, false);
+assert.equal(cardEmptyScope.slots.status, '有结果');
+
 console.log('cards.test.mjs: all assertions passed');
