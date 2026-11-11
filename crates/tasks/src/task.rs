@@ -72,6 +72,8 @@ pub enum AttemptTrigger {
     Launch,
     /// 用户在任务对话里说话，接着做。
     UserMessage,
+    /// 重启打断后，用户确认接续。
+    Resume,
 }
 
 /// 一条用户输入；来源目前只有用户本人。
