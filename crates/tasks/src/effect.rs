@@ -1,4 +1,4 @@
-//! 持久效果表：launch、relay、delivery 和 notice，以及它们的重试与健康事实。
+//! 持久效果表：launch、relay、delivery、notice 和 restart，以及它们的重试与健康事实。
 
 use serde::{Deserialize, Serialize};
 
@@ -95,7 +95,7 @@ impl EffectPayload {
     }
 
     /// launch 和 delivery 的键是任务 id，relay 的键是报告 id，停止的键是任务 id +
-    /// Attempt 编号，抄送的键是输入 id。
+    /// Attempt 编号，抄送的键是输入 id，restart 的键是启动 id。
     pub fn key(&self) -> String {
         match self {
             Self::Launch { task_id } | Self::Delivery { task_id } => task_id.to_string(),

@@ -579,8 +579,80 @@ impl Store {
         if boot_id.as_str().trim().is_empty() {
             return Err(TaskError::EmptyBootId);
         }
-        let _ = now;
-        Ok(BootScan::default())
+        let mut scan = BootScan::default();
+        for task_id in self.task_ids()? {
+            self.scan_task_at_boot(&task_id, boot_id, now, &mut scan)?;
+        }
+        Ok(scan)
+    }
+
+    /// 扫一个任务：只收尾最近一次 Attempt；每个任务和它的 restart 效果在同一个事务里。
+    fn scan_task_at_boot(
+        &self,
+        id: &TaskId,
+        boot_id: &BootId,
+        now: i64,
+        scan: &mut BootScan,
+    ) -> Result<(), TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(mut task) = load_task(&transaction, id)? else {
+            transaction.commit()?;
+            return Ok(());
+        };
+        // 旧库可能只有 ended_at、没有 end；没有 end 的 Attempt 按没结束读。
+        let Some(attempt) = task
+            .latest_attempt()
+            .filter(|attempt| attempt.end.is_none())
+        else {
+            transaction.commit()?;
+            return Ok(());
+        };
+        let attempt_id = attempt.id;
+        let opened = attempt.conversation.is_some();
+        let report_at = task.latest_report().map(|report| report.at);
+        let decision = if !opened {
+            Decision::NotOpened
+        } else if let Some(report_at) = report_at {
+            // 报告之后又记下了输入：那次输入还没送进去，这次 Attempt 不能记「已交结果」。
+            if task.inputs.iter().any(|input| input.at >= report_at) {
+                Decision::Interrupted
+            } else {
+                Decision::Reported
+            }
+        } else {
+            Decision::Interrupted
+        };
+        let attempt = task
+            .runs
+            .iter_mut()
+            .flat_map(|run| run.attempts.iter_mut())
+            .find(|attempt| attempt.id == attempt_id)
+            .ok_or_else(|| TaskError::AttemptNotFound {
+                task: id.to_string(),
+                attempt: attempt_id.0,
+            })?;
+        if attempt.ended_at.is_none() {
+            attempt.ended_at = Some(now);
+        }
+        attempt.end = Some(decision.end());
+        save_task(&transaction, &task)?;
+        if decision == Decision::Interrupted {
+            self.enqueue_effect_in(
+                &transaction,
+                &EffectPayload::Restart {
+                    boot_id: boot_id.clone(),
+                },
+                now,
+            )?;
+        }
+        transaction.commit()?;
+        match decision {
+            Decision::Interrupted => scan.interrupted.push(id.clone()),
+            Decision::Reported => scan.reported.push(id.clone()),
+            Decision::NotOpened => scan.not_opened.push(id.clone()),
+        }
+        Ok(())
     }
 
     /// 收尾崩溃留下的、没有会话 id 的 Attempt；返回收尾了几个。
@@ -799,6 +871,27 @@ impl Store {
             since,
             last_error: if attempts > 0 { last_error } else { None },
         })
+    }
+}
+
+/// 启动扫描对一个没结束的 Attempt 的收尾方式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Decision {
+    /// 在跑、没交出结果，或报告之后又有了新输入。
+    Interrupted,
+    /// 报告之后没有新输入：这次 Attempt 已经交出结果。
+    Reported,
+    /// 崩溃前没开出会话。
+    NotOpened,
+}
+
+impl Decision {
+    fn end(self) -> AttemptEnd {
+        match self {
+            Self::Interrupted => AttemptEnd::Interrupted,
+            Self::Reported => AttemptEnd::Reported,
+            Self::NotOpened => AttemptEnd::NotOpened,
+        }
     }
 }
 
