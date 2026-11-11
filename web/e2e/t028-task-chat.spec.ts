@@ -51,14 +51,58 @@ async function waitUntilTaskReadable(
   throw new Error('TaskRead 一直打不开：' + taskId);
 }
 
-async function openTaskChat(page: Page, fixture: KernelFixture, taskId: string) {
+async function openTaskChat(
+  page: Page,
+  fixture: KernelFixture,
+  taskId: string,
+  title = TITLE,
+) {
   await page.goto(urlOf(fixture, '#taskchat:' + taskId));
   const pane = taskPane(page);
   await expect(pane).toBeVisible({ timeout: 20_000 });
-  await expect(pane.locator('[data-kind="task-full-title"]')).toHaveText(TITLE, {
+  await expect(pane.locator('[data-kind="task-full-title"]')).toHaveText(title, {
     timeout: 20_000,
   });
   return pane;
+}
+
+/** 根会话日志里所有 task_accept 回执带的任务 id（按派出顺序）。 */
+async function taskIdsOf(fixture: KernelFixture, count: number): Promise<string[]> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      const root = JSON.parse(
+        await readFile(path.join(fixture.dataDir, 'kind-root.json'), 'utf8'),
+      ) as { sessionId: string };
+      const text = await readFile(
+        path.join(fixture.dataDir, 'sessions', root.sessionId + '.jsonl'),
+        'utf8',
+      );
+      const ids = [...text.matchAll(/已派出任务 ([0-9a-f]+)。/g)].map((match) => match[1]);
+      if (ids.length >= count) return ids.slice(0, count);
+    } catch {
+      // 会话文件还没写出来；继续等。
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error('根会话日志里等不到 ' + count + ' 个任务 id');
+}
+
+/** 等一个任务真的在跑（席位放开后它才开始）。 */
+async function waitTaskRunning(
+  request: Parameters<typeof apiPost>[0],
+  fixture: KernelFixture,
+  taskId: string,
+) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    try {
+      const response = await apiPost(request, fixture, { method: 'task-read', taskId });
+      if (response.ok() && (await response.json()).task.running === true) return;
+    } catch {
+      // 还没开出来；继续等。
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error('任务一直没跑起来：' + taskId);
 }
 
 /** Kind 根会话里的轮数（抄送只用 inject，不能叫醒 Kind 开新的轮）。 */
@@ -241,6 +285,45 @@ test('ThinAgent 交回：Kind 出现「卡住了」的卡，带固定问题', as
     await expect(card).toHaveAttribute('data-state', 'blocked');
     await expect(card).toContainText('卡住了');
     await expect(card).toContainText('这超出了任务范围，要不要改任务？');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('席位 1、另一个任务在跑时，叫醒停了的任务照样开跑', async ({ page, request }) => {
+  const fixture = await startKernelFixture({ taskResult: 'seats' });
+  try {
+    const saved = await apiPost(request, fixture, { method: 'settings-update', seats: 1 });
+    expect(saved.ok()).toBe(true);
+    await page.goto(urlOf(fixture));
+    await sendKind(page, '帮我派两个任务');
+    const [firstTask, secondTask] = await taskIdsOf(fixture, 2);
+
+    // 甲先跑完：Kind 里出现第一张卡；席位放开后乙才开始跑。
+    await expect(page.locator('[data-kind="task-result"]').last()).toBeVisible({
+      timeout: 30_000,
+    });
+    await waitTaskRunning(request, fixture, secondTask);
+
+    // 乙占着唯一的席位；去甲的任务对话说「接着做吧」——person 可以多占 1 个。
+    const pane = await openTaskChat(page, fixture, firstTask, '任务甲：查判重规则');
+    await pane.locator('[data-kind="composer-input"]').fill('接着做吧');
+    await pane.locator('[data-kind="task-send"]').click();
+    await expect(
+      pane.locator('[data-kind="user-bubble"]').filter({ hasText: '接着做吧' }),
+    ).toHaveCount(1, { timeout: 30_000 });
+    await expect(pane.locator('[data-kind="task-attempt"]')).toHaveText('第 2 次 Attempt', {
+      timeout: 30_000,
+    });
+
+    // 真正的证明：乙还在跑，甲的新结果卡已经出来（不是被 Later 压住）。
+    const second = await apiPost(request, fixture, { method: 'task-read', taskId: secondTask });
+    expect(second.ok()).toBe(true);
+    expect((await second.json()).task.running).toBe(true);
+    await page.goto(urlOf(fixture));
+    await expect(page.locator('[data-kind="task-result"]')).toHaveCount(2, {
+      timeout: 30_000,
+    });
   } finally {
     await fixture.close();
   }
