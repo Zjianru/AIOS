@@ -242,6 +242,9 @@ export interface FixtureOptions {
   legacySession?: boolean;
   /// T022：把服务的汇率请求指到本地代理，测试可以等 status 进了 fx 的 await 再动作。
   slowFx?: boolean;
+  /// T028.5：起服务前先写好根会话日志（翻页夹具）。cc-pages：同一条抄送的
+  /// agent/inbox/spliced 落在上一页末尾、领取后的 user/message 落在下一页开头。
+  kindHistory?: 'cc-pages';
   /// T024.4：任务结果卡。前几种跑真 Kind + ThinAgent 两个会话（按请求体路由）；
   /// missing / bad-json 用预写好的根会话日志直接验卡与退回文本。
   /// live：同一个任务脚本放慢帧间隔，供「在跑时打开任务对话」的实时用例观察。
@@ -358,6 +361,88 @@ export async function startKernelFixture(
   // T016.5：坏文件要在 serve 起来之前就在；不预置 Keyring 时也照写（坏文件与连接无关）。
   if (options.settingsFault === 'corrupt') {
     await writeFile(path.join(dataDir, 'settings.json'), '{"lastSelection": ');
+  }
+  if (options.kindHistory === 'cc-pages') {
+    // T028.5：抄送跨两页——spliced 在第 1 轮后面（上一页末尾），领取后的 user/message
+    // 在第 2 轮开头（下一页第一项）；两处 request id 相同，页面只能画一行。
+    const sessionId = '00000000-0000-4000-8000-000000000285';
+    const sessions = path.join(dataDir, 'sessions');
+    await mkdir(sessions, { recursive: true });
+    const startedAt = Date.now();
+    const cwd = await realpath(dataDir);
+    const ccMessage = {
+      id: 'msg-cc-pages',
+      role: 'user',
+      source: { kind: 'user', rpcId: 'task-cc:input-pages' },
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            kind: 'task_cc',
+            task: {
+              id: 'task-cc-pages',
+              title: '查一下新闻归档里重复链接的判重规则和影响范围',
+            },
+            text: '这条抄送跨两页',
+          }),
+        },
+      ],
+    };
+    let seq = 0;
+    let at = 0;
+    const rows: Record<string, unknown>[] = [];
+    const next = (type: string, data: Record<string, unknown>) => {
+      seq += 1;
+      at += 1;
+      rows.push({ type, seq, time: startedAt + at, data });
+    };
+    const assistant = (turn: number, text: string) => {
+      next('assistant/message', {
+        turn,
+        step: 1,
+        message: {
+          id: 'msg-syn-' + String(turn),
+          role: 'assistant',
+          source: { kind: 'model', provider: 'deepseek', model: 'deepseek-flash' },
+          content: [{ type: 'text', text }],
+        },
+        stream: [],
+        usage: { inputTokens: 10, outputTokens: 3 },
+      });
+    };
+    next('turn/start', { turn: 1 });
+    next('user/message', {
+      turn: 1,
+      step: 1,
+      message: {
+        id: 'msg-first',
+        role: 'user',
+        source: { kind: 'user' },
+        content: [{ type: 'text', text: '先问一句' }],
+      },
+    });
+    assistant(1, '第一轮好了。');
+    next('turn/end', { turn: 1, reason: { kind: 'completed' } });
+    next('agent/inbox/spliced', { target: 'next-turn', start: 0, inserted: [ccMessage] });
+    next('turn/start', { turn: 2 });
+    next('user/message', { turn: 2, step: 1, message: ccMessage });
+    assistant(2, '第 2 步完成。');
+    next('turn/end', { turn: 2, reason: { kind: 'completed' } });
+    for (let turn = 3; turn <= 12; turn += 1) {
+      next('turn/start', { turn });
+      assistant(turn, '第 ' + String(turn) + ' 步完成。');
+      next('turn/end', { turn, reason: { kind: 'completed' } });
+    }
+    const header = { type: 'session', version: 17, id: sessionId, createdAt: startedAt, cwd };
+    await writeFile(
+      path.join(sessions, sessionId + '.jsonl'),
+      [header, ...rows].map((row) => JSON.stringify(row)).join(String.fromCharCode(10)) +
+        String.fromCharCode(10),
+    );
+    await writeFile(
+      path.join(dataDir, 'kind-root.json'),
+      JSON.stringify({ version: 1, sessionId }),
+    );
   }
   // T014.2：旧格式（v16）的根会话日志——读取器要照读，不拒绝、不迁移。
   if (options.legacySession) {

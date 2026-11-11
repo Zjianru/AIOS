@@ -295,12 +295,41 @@ test('暂停横幅与排队；草稿按任务分开，切走回来还在', async
     const again = await openTaskChat(page, fixture, taskId);
     await expect(again.locator('[data-kind="composer-input"]')).toHaveValue(draft);
 
-    // 发送：受理后以排队的样式留在对话里，输入框清空。
+    // 发送：受理后以排队的样式留在对话里，输入框清空；真暂停时队列写明原因。
     await again.locator('[data-kind="task-send"]').click();
-    await expect(again.locator('[data-kind="task-queued"]')).toContainText(draft, {
+    const queued = again.locator('[data-kind="task-queued"]');
+    await expect(queued).toContainText(draft, { timeout: 20_000 });
+    await expect(queued).toHaveAttribute('data-state', 'paused');
+    await expect(queued).toContainText('排队中：全局暂停，开闸后送到');
+    await expect(again.locator('[data-kind="composer-input"]')).toHaveValue('');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('没暂停时受理的消息是「发送中…」，不写全局暂停', async ({ page, request }) => {
+  const fixture = await startKernelFixture({ taskResult: 'say' });
+  try {
+    const taskId = await launchTask(page, fixture, request);
+    // 掐掉任务对话的实时帧：受理后的消息不会立刻出现在页面上，排队行停在「发送中」。
+    // （exec.paused 为假；这一行只是在等日志。）
+    await page.routeWebSocket(/\/ws\?task=/, () => {});
+    const pane = await openTaskChat(page, fixture, taskId);
+    await expect(pane.locator('[data-kind="task-state"]')).toHaveText('执行中', {
       timeout: 20_000,
     });
-    await expect(again.locator('[data-kind="composer-input"]')).toHaveValue('');
+
+    await pane.locator('[data-kind="composer-input"]').fill('这句在送');
+    await pane.locator('[data-kind="composer-input"]').press('Enter');
+
+    const queued = pane.locator('[data-kind="task-queued"]');
+    await expect(queued).toHaveCount(1, { timeout: 20_000 });
+    await expect(queued).toHaveAttribute('data-state', 'sending');
+    await expect(queued).toContainText('这句在送');
+    await expect(queued).toContainText('发送中…');
+    await expect(queued).not.toContainText('排队中');
+    await expect(queued).not.toContainText('全局暂停');
+    await expect(pane.locator('[data-kind="paused"]')).toHaveCount(0);
   } finally {
     await fixture.close();
   }
@@ -340,6 +369,35 @@ test('ThinAgent 交回：Kind 出现「卡住了」的卡，带固定问题', as
     await expect(card).toHaveAttribute('data-state', 'blocked');
     await expect(card).toContainText('卡住了');
     await expect(card).toContainText('这超出了任务范围，要不要改任务？');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('抄送行跨分页只一行：spliced 和领取后的 user/message 分在两页', async ({ page }) => {
+  const fixture = await startKernelFixture({ kindHistory: 'cc-pages' });
+  try {
+    await page.goto(urlOf(fixture));
+    // 初始页（尾页）只有领取后的 user/message：一行抄送。
+    const cc = page.locator('[data-kind="task-cc"]');
+    await expect(cc).toHaveCount(1, { timeout: 20_000 });
+    await expect(cc).toContainText('这条抄送跨两页');
+    await expect(page.getByText('第 12 步完成。')).toBeVisible();
+
+    // 往上翻到第 1 轮：spliced 在它后面、上一页末尾，同一行不能变成两行。
+    await page.locator('[data-pane="conversation"]').hover();
+    await expect
+      .poll(
+        async () => {
+          if ((await page.getByText('第一轮好了。').count()) > 0) return true;
+          await page.mouse.wheel(0, -3000);
+          return false;
+        },
+        { timeout: 30_000, intervals: [200, 400] },
+      )
+      .toBe(true);
+    await expect(page.getByText('第一轮好了。')).toBeVisible();
+    await expect(cc).toHaveCount(1);
   } finally {
     await fixture.close();
   }

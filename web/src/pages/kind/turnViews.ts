@@ -163,6 +163,22 @@ export function taskCcFacts(events: ServiceEvent[]): { cc: TaskCcView; at: numbe
   return [...found.values()];
 }
 
+/**
+ * 往上翻时把更早的一页接在前面：同一行（id）已经在列表里的不再加一遍。
+ *
+ * 抄送有两种日志事实（inbox/spliced 和领取后的 user/message），恰好分在两页时同一条
+ * request id 会各成一行；按 id 去重后跨分页仍然只画一行。
+ */
+export function prependOlderViews(
+  older: TurnViewData[],
+  current: TurnViewData[],
+): TurnViewData[] {
+  if (older.length === 0) return current;
+  const existing = new Set(current.map((view) => view.id));
+  const fresh = older.filter((view) => !existing.has(view.id));
+  return fresh.length === 0 ? current : fresh.concat(current);
+}
+
 /** T028.5：一条抄送事实 → 对话里的单独一行（不是一轮，关联字段全空）。 */
 export function ccViewOf(cc: TaskCcView, at: number): TurnViewData {
   return {

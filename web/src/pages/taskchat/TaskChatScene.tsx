@@ -243,6 +243,8 @@ export function TaskChatScene() {
   const requestToken = useRef(0);
   const bottomPinned = useRef(false);
   const loadingOlderRef = useRef(false);
+  /** 到顶时上一页还没装好：装好后按新的位置再判一次，不把这次到顶丢掉。 */
+  const pendingOlderRef = useRef(false);
   const restoreRef = useRef<{ height: number; top: number } | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   /** 主动断开时等 onclose（放开服务端的会话写者）。 */
@@ -269,6 +271,7 @@ export function TaskChatScene() {
     setLoadingOlder(false);
     setQueued([]);
     loadingOlderRef.current = false;
+    pendingOlderRef.current = false;
     bottomPinned.current = false;
     restoreRef.current = null;
     followBottomRef.current = true;
@@ -412,7 +415,7 @@ export function TaskChatScene() {
     if (scroller) scroller.scrollTop = scroller.scrollHeight;
   }, [phase]);
 
-  // 往上翻：新页插在前面，保持原来的阅读位置。
+  // 往上翻：新页插在前面，保持原来的阅读位置；装好后再消化一次加载期间收到的「到顶了」。
   useLayoutEffect(() => {
     const restore = restoreRef.current;
     if (!restore) return;
@@ -420,6 +423,10 @@ export function TaskChatScene() {
     const scroller = scrollRef.current;
     if (!scroller) return;
     scroller.scrollTop = scroller.scrollHeight - restore.height + restore.top;
+    if (pendingOlderRef.current) {
+      pendingOlderRef.current = false;
+      if (scroller.scrollTop <= 64) void loadOlder();
+    }
   }, [events]);
 
   // live 新事件：用户停在底部时跟着走。
@@ -451,7 +458,7 @@ export function TaskChatScene() {
     };
   }, [taskId, saying]);
 
-  // T028.5：已经受理、日志里还没出现的输入（暂停时排队的那些）。
+  // T028.5：已经受理、日志里还没出现的输入（暂停时排队、没暂停时只是在送）。
   const queuedVisible = useMemo(() => {
     const seen = new Set<string>();
     for (const event of events) {
@@ -632,7 +639,12 @@ export function TaskChatScene() {
   }
 
   async function loadOlder() {
-    if (loadingOlderRef.current || !hasOlder || events.length === 0) return;
+    // 这一页还在读：记下这次到顶，装好（或失败）后由恢复滚动的那一步再判。
+    if (loadingOlderRef.current) {
+      pendingOlderRef.current = true;
+      return;
+    }
+    if (!hasOlder || events.length === 0) return;
     const token = requestToken.current;
     const scroller = scrollRef.current;
     const before = { height: scroller?.scrollHeight ?? 0, top: scroller?.scrollTop ?? 0 };
@@ -649,6 +661,7 @@ export function TaskChatScene() {
       restoreRef.current = before;
       setEvents((current) => [...response.events, ...current]);
     } catch (reason) {
+      pendingOlderRef.current = false;
       if (token === requestToken.current) {
         toast('更早的记录没读出来', { description: reasonOf(reason) });
       }

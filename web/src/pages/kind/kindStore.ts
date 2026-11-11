@@ -25,7 +25,15 @@ import { setHostHome } from '@/data/service';
 import { go } from '@/app/navigate';
 import type { AskAnswer } from '@/data/service';
 import { mark } from '@/lib/perf';
-import { canvasTracks, ccViewOf, compactionViewOf, deriveTurnViews, mergeCanvasTracks, taskCcFacts } from './turnViews';
+import {
+  canvasTracks,
+  ccViewOf,
+  compactionViewOf,
+  deriveTurnViews,
+  mergeCanvasTracks,
+  prependOlderViews,
+  taskCcFacts,
+} from './turnViews';
 import type { CanvasTrack, TurnViewData } from './turnViews';
 export type { CompactionView, QuestionView, ToolStep, TurnUserView, TurnViewData } from './turnViews';
 export { deriveTurnViews } from './turnViews';
@@ -824,13 +832,14 @@ export const useKindStore = create<KindState>()((set, get) => ({
       const older = mergeCcViews(deriveTurnViews(page.events), page.events);
       const oldestSeq = page.events[0]?.seq ?? state.oldestSeq;
       set((current) => {
-        const views = older.concat(current.views);
+        // 跨页的同一行（抄送的 spliced 与领取后的 user/message）只留已经在列表里的那条。
+        const views = prependOlderViews(older, current.views);
         return {
           views,
           byId: indexOf(views),
           ...decorate(views),
           canvasTracks: mergeCanvasTracks(current.canvasTracks, page.events),
-          firstItemIndex: current.firstItemIndex - older.length,
+          firstItemIndex: current.firstItemIndex - (views.length - current.views.length),
           oldestSeq,
           hasOlder: page.hasMore,
           loadingOlder: false,

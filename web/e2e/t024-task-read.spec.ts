@@ -34,6 +34,32 @@ async function thinSessionFile(fixture: KernelFixture): Promise<string> {
   return path.join(dir, files[0]);
 }
 
+/**
+ * 等任务会话的写者收工：终态报告落库之后，执行者还要写最后一段回答和 turn/end。
+ * 对着还在长的日志追加分页夹具，会和服务的 seq 撞车（日志变成 19..1668 后接 19），
+ * 之后任何 task-read 都报 seq 不连续——这是全量偶发红的真原因，不是页面丢滚动。
+ */
+async function waitSessionQuiet(file: string): Promise<void> {
+  let previous = -1;
+  let stable = 0;
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const raw = await readFile(file, 'utf8');
+    const lines = raw.trimEnd().split(String.fromCharCode(10));
+    let ended = false;
+    try {
+      ended = (JSON.parse(lines[lines.length - 1]) as { type?: string }).type === 'turn/end';
+    } catch {
+      ended = false;
+    }
+    stable = raw.length === previous ? stable + 1 : 0;
+    previous = raw.length;
+    // 这一轮已经 turn/end，而且 200ms 没有新字节：写者收工，可以补夹具了。
+    if (ended && stable >= 4) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error('任务会话一直没写完，不能补分页夹具');
+}
+
 /** 在真实任务会话后面追加若干轮回答（分页夹具；只动测试现场日志）。 */
 async function appendTurns(file: string, fromTurn: number, count: number): Promise<void> {
   const raw = await readFile(file, 'utf8');
@@ -201,9 +227,12 @@ test('上翻 beforeSeq：更早的轮次按需加载', async ({ page }) => {
     const card = resultCard(page);
     await expect(card).toBeVisible({ timeout: 30_000 });
 
+    // 终态报告落库之后，执行者还要写最后一段回答和 turn/end：等会话真的收工再补分页夹具。
+    const session = await thinSessionFile(fixture);
+    await waitSessionQuiet(session);
     // 任务会话后面补 550 轮（每轮一条消息）：一页按 50 条消息/2 轮的对齐点往回走，
     // 所以第一页只到日志尾部，往上翻才能看到更早的轮次。
-    await appendTurns(await thinSessionFile(fixture), 2, 550);
+    await appendTurns(session, 2, 550);
 
     await card.getByRole('button', { name: /打开任务对话/ }).click();
     const pane = taskPane(page);
@@ -211,20 +240,12 @@ test('上翻 beforeSeq：更早的轮次按需加载', async ({ page }) => {
     await expect(pane.getByText('第 500 步完成。')).toHaveCount(0);
     await expect(pane.getByText('第 2 步完成。')).toHaveCount(0);
 
-    // 上翻：滚到顶部触发 beforeSeq，更早的一页进来后才出现。
-    // 并行跑时一次合成 scroll 可能正好撞上正在加载（loadingOlderRef 挡住），所以轮询着重发。
-    await expect
-      .poll(
-        async () => {
-          await pane.locator('[data-kind="task-scroll"]').evaluate((element) => {
-            element.scrollTop = 0;
-            element.dispatchEvent(new Event('scroll', { bubbles: true }));
-          });
-          return pane.getByText('第 500 步完成。').count();
-        },
-        { timeout: 20_000 },
-      )
-      .toBe(1);
+    // 上翻：一次合成的 scroll 就该取回更早的一页（页面不丢加载期间收到的到顶信号）。
+    await pane.locator('[data-kind="task-scroll"]').evaluate((element) => {
+      element.scrollTop = 0;
+      element.dispatchEvent(new Event('scroll', { bubbles: true }));
+    });
+    await expect(pane.getByText('第 500 步完成。')).toHaveCount(1, { timeout: 20_000 });
     await expect(pane.getByText('第 551 步完成。')).toHaveCount(1);
   } finally {
     await fixture.close();
