@@ -10,8 +10,9 @@ use model::DEFAULT_CONTEXT_WINDOW;
 use serde_json::Value;
 use service::{
     AttachmentPutRequest, Call, CardActRequest, CardVerb, DeliveryMode, DisabledModelsSetRequest,
-    Response, RootHost, SendAttachment, SendRequest, SessionModelSelectRequest, StopMode,
-    TaskInterruptRequest, TaskReadRequest, TaskSayRequest, TaskStopRequest,
+    Response, RootHost, SendAttachment, SendRequest, SessionModelSelectRequest,
+    SettingsUpdateRequest, StopMode, TaskInterruptRequest, TaskReadRequest, TaskSayRequest,
+    TaskStopRequest,
 };
 use tasks::{AttemptEnd, EffectKind, EffectState, ReportState, Stage, Store, Task};
 use wiremock::matchers::{method, path};
@@ -2803,8 +2804,8 @@ async fn dispatch_task(
         .expect("刚受理的任务")
 }
 
-/// 暂停测试的宿主：动作登记表走产品装配（set_paused 属于 aios-tasks）。
-async fn open_pause_host(server: &MockServer, data: &Path, cwd: &Path) -> RootHost {
+/// 卡片测试的宿主：动作登记表走产品装配（set_paused、resume_task 属于 aios-tasks）。
+async fn open_actions_host(server: &MockServer, data: &Path, cwd: &Path) -> RootHost {
     open_host_with(server, data, cwd, |options| {
         options.actions = Arc::new(service::ActionRegistry::settings(
             data.to_path_buf(),
@@ -2836,7 +2837,7 @@ async fn global_pause_holds_new_tasks_then_runs_the_queue_in_acceptance_order() 
     mount(&server, &router).await;
     let data = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
-    let host = open_pause_host(&server, data.path(), cwd.path()).await;
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
     let store = tasks_store(data.path());
 
     // 第一轮：Kind 加载 aios-tasks，出确认卡；事实行是 关 → 开。
@@ -2985,7 +2986,7 @@ async fn a_saved_pause_holds_launches_after_a_restart() {
     let mut saved = service::settings::load(data.path());
     saved.exec.paused = true;
     service::settings::save(data.path(), &saved).expect("保存暂停设置");
-    let host = open_pause_host(&server, data.path(), cwd.path()).await;
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
 
     let task = accept_task(
         &host,
@@ -3017,7 +3018,7 @@ async fn global_pause_lets_the_running_turn_finish_and_relays_still_arrive() {
     mount(&server, &router).await;
     let data = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
-    let host = open_pause_host(&server, data.path(), cwd.path()).await;
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
     let store = tasks_store(data.path());
     // 让 ThinAgent 的回复慢到暂停确认之后，好在「这一轮在跑」时按下暂停。
     router.set_thin_delay(Duration::from_millis(1_500));
@@ -4466,4 +4467,798 @@ async fn a_delivery_retry_does_not_repeat_the_same_input() {
         )),
         "输入用 task-say:<inputId> 做判重键"
     );
+}
+
+// ===== T029.2a：重启汇报与接续卡 =====
+
+/// spec v1 的恢复说明原文：确认接续后第一条输入就是它。
+const RECOVERY_NOTE: &str = "AIOS 在这个任务进行中重启了。先看当前的文件和状态再继续；已经做完的外部动作不要再做一遍。把原来的任务做完，然后用 task_report 上报。";
+
+/// 起一个假模型服务和两个临时目录：重启测试的起点。
+async fn restart_setup() -> (MockServer, Router, tempfile::TempDir, tempfile::TempDir) {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    mount(&server, &router).await;
+    (
+        server,
+        router,
+        tempfile::tempdir().unwrap(),
+        tempfile::tempdir().unwrap(),
+    )
+}
+
+/// 重开一次根宿主：模拟进程退出后根会话写锁还要一点时间才放开。
+///
+/// 写锁没放开时 `RootHost::open` 报 Busy，那次启动按设计不扫描；重开直到接管成功，
+/// 才算一次真正的启动。
+async fn reopen_actions_host(server: &MockServer, data: &Path, cwd: &Path) -> RootHost {
+    for _ in 0..250 {
+        let host = open_actions_host(server, data, cwd).await;
+        if matches!(host.info().root, service::RootState::Ok) {
+            return host;
+        }
+        drop(host);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("根会话写锁一直没放开");
+}
+
+/// 放开效果泵，等每个任务都开好会话、还没交结果，然后「杀掉服务」（drop 宿主）。
+///
+/// ThinAgent 的回复压后 10 秒：进程停掉前不会合成 waiting，Attempt 以「在跑没报」留在库里。
+async fn crash_while_running(router: &Router, data: &Path, host: RootHost, tasks: &[Task]) {
+    for task in tasks {
+        router.push_thin_for_title(&task.title, crate::common::text_sse("还在做"));
+    }
+    router.set_thin_delay(Duration::from_secs(10));
+    host.task_runtime().expect("runtime").set_pump_paused(false);
+    let store = tasks_store(data);
+    wait_until("任务都在跑", || {
+        tasks.iter().all(|task| {
+            store
+                .task(&task.id)
+                .ok()
+                .flatten()
+                .and_then(|task| task.latest_attempt().cloned())
+                .is_some_and(|attempt| attempt.conversation.is_some() && attempt.ended_at.is_none())
+        })
+    })
+    .await;
+    // 模拟进程退出：会话写锁要真的放开，重启后的接续才开得出原会话。
+    host.task_runtime().expect("runtime").crash();
+    drop(host);
+}
+
+/// 重新读当前的任务聚合（启动扫描收尾之后）。
+fn reload_tasks(store: &Store, tasks: &[Task]) -> Vec<Task> {
+    tasks
+        .iter()
+        .map(|task| store.task(&task.id).expect("读任务").expect("任务存在"))
+        .collect()
+}
+
+/// Kind 收到的重启汇报：rpc id 是 restart:<bootId>，正文是 tasks_interrupted JSON。
+fn restart_messages(events: &[session::Event]) -> Vec<(String, Value)> {
+    events
+        .iter()
+        .filter_map(|event| {
+            let session::EventKind::UserMessage { message, .. } = &event.kind else {
+                return None;
+            };
+            let model::MessageSource::User { rpc_id } = &message.source else {
+                return None;
+            };
+            let rpc_id = rpc_id.as_deref()?;
+            if !rpc_id.starts_with("restart:") {
+                return None;
+            }
+            let text: String = message
+                .content
+                .iter()
+                .filter_map(model::ContentBlock::as_text)
+                .collect();
+            Some((rpc_id.to_owned(), serde_json::from_str(&text).ok()?))
+        })
+        .collect()
+}
+
+/// 接续的第一条输入：rpc id 是 resume:<taskId>:<attemptId>。
+///
+/// 消息在日志里可能出现两次（inbox/spliced 插入 + 领取后的 user/message），按 rpc id 去重。
+fn recovery_notes(events: &[session::Event]) -> Vec<(String, String)> {
+    let mut found: Vec<(String, String)> = Vec::new();
+    for event in events {
+        let messages: Vec<&model::Message> = match &event.kind {
+            session::EventKind::UserMessage { message, .. } => vec![message],
+            session::EventKind::InboxSpliced { inserted, .. } => inserted.iter().collect(),
+            _ => continue,
+        };
+        for message in messages {
+            let model::MessageSource::User { rpc_id } = &message.source else {
+                continue;
+            };
+            let Some(rpc_id) = rpc_id.as_deref() else {
+                continue;
+            };
+            if !rpc_id.starts_with("resume:") {
+                continue;
+            }
+            let text: String = message
+                .content
+                .iter()
+                .filter_map(model::ContentBlock::as_text)
+                .collect();
+            if !found.iter().any(|(id, _)| id == rpc_id) {
+                found.push((rpc_id.to_owned(), text));
+            }
+        }
+    }
+    found
+}
+
+/// 一张卡的全部选项（id/label/facts）。
+fn card_options(events: &[session::Event], call_id: &str) -> Vec<Value> {
+    events
+        .iter()
+        .find_map(|event| match &event.kind {
+            session::EventKind::ToolResult {
+                message,
+                meta: Some(meta),
+                ..
+            } if message.tool_call_id.as_deref() == Some(call_id) => Some(
+                meta["card"]["options"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// 点确认卡上的一个选项；返回写下的决定。
+async fn confirm_card_option(host: &RootHost, call_id: &str, option: &str) -> Value {
+    let response = host
+        .dispatch(Call::CardAct(CardActRequest {
+            call_id: call_id.to_owned(),
+            verb: CardVerb::Confirm,
+            option: Some(option.to_owned()),
+        }))
+        .await
+        .expect("确认接续卡");
+    serde_json::to_value(response).expect("确认卡 json")["decision"].clone()
+}
+
+/// 点卡片上的「暂不」。
+async fn dismiss_card(host: &RootHost, call_id: &str) -> Value {
+    let response = host
+        .dispatch(Call::CardAct(CardActRequest {
+            call_id: call_id.to_owned(),
+            verb: CardVerb::Dismiss,
+            option: None,
+        }))
+        .await
+        .expect("暂不接续");
+    serde_json::to_value(response).expect("暂不 json")["decision"].clone()
+}
+
+/// Kind 重启汇报这一轮的回复：加载 aios-tasks、出一张每任务一项的接续卡、说一句。
+fn push_restart_turn(router: &Router, call_id: &str, tasks: &[&Task], reply: &str) {
+    let options: Vec<Value> = tasks
+        .iter()
+        .map(|task| {
+            serde_json::json!({
+                "id": task.id.as_str(),
+                "action": "resume_task",
+                "label": task.title,
+                "details": { "task_id": task.id.as_str() },
+            })
+        })
+        .collect();
+    let args = serde_json::json!({
+        "title": "接着做被打断的任务",
+        "brief": "每个任务一项：勾一个就接着做，不勾就继续停着。",
+        "options": options,
+    })
+    .to_string();
+    router.push_kind(skill_sse("call-load-tasks", "aios-tasks"));
+    router.push_kind(crate::common::tool_use_sse(
+        1,
+        call_id,
+        "propose_action",
+        &args,
+    ));
+    router.push_kind(crate::common::text_sse(reply));
+}
+
+/// 重启后 Kind 收到恰好一条汇报、出一张每任务一项的接续卡；确认一项只接这一项。
+#[tokio::test]
+async fn a_restart_reports_interrupted_tasks_and_resumes_the_confirmed_one() {
+    let (server, router, data, cwd) = restart_setup().await;
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+    host.task_runtime().expect("runtime").set_pump_paused(true);
+    let first = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-a",
+        "call-accept-a",
+        1,
+        "甲",
+    )
+    .await;
+    let second = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-b",
+        "call-accept-b",
+        2,
+        "乙",
+    )
+    .await;
+    crash_while_running(&router, data.path(), host, &[first.clone(), second.clone()]).await;
+
+    let store = tasks_store(data.path());
+    let crashed = reload_tasks(&store, &[first, second]);
+    let conversations: Vec<_> = crashed
+        .iter()
+        .map(|task| task.latest_attempt().unwrap().conversation.clone())
+        .collect();
+    let task_refs: Vec<&Task> = crashed.iter().collect();
+
+    router.clear_thin_delay();
+    push_restart_turn(&router, "call-restart-card", &task_refs, "甲乙都被打断了。");
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+
+    // 启动扫描在效果循环之前收尾：两个 Attempt 都记成 interrupted。
+    for task in &crashed {
+        let stored = store.task(&task.id).unwrap().unwrap();
+        assert_eq!(
+            stored.latest_attempt().unwrap().end,
+            Some(AttemptEnd::Interrupted),
+            "{}",
+            task.title
+        );
+        assert_eq!(stored.stage(false), Stage::NeedsConditions);
+    }
+
+    wait_until("Kind 收到重启汇报", || {
+        !restart_messages(&crate::common::read_root_events(data.path())).is_empty()
+    })
+    .await;
+    wait_until("接续卡出来", || {
+        !card_options(
+            &crate::common::read_root_events(data.path()),
+            "call-restart-card",
+        )
+        .is_empty()
+    })
+    .await;
+
+    let events = crate::common::read_root_events(data.path());
+    let reports = restart_messages(&events);
+    assert_eq!(reports.len(), 1, "同一次启动只送一条 restart：{reports:?}");
+    assert_eq!(reports[0].1["kind"], "tasks_interrupted");
+    let listed = reports[0].1["tasks"].as_array().expect("tasks 数组");
+    assert_eq!(listed.len(), 2, "{}", reports[0].1);
+    for task in &crashed {
+        let entry = listed
+            .iter()
+            .find(|entry| entry["id"] == task.id.as_str())
+            .expect("任务在汇报里");
+        assert_eq!(entry["title"], task.title);
+        assert_eq!(entry["attempts"], 1);
+    }
+    let options = card_options(&events, "call-restart-card");
+    assert_eq!(options.len(), 2, "{options:?}");
+    let fixed = serde_json::json!([{ "name": "状态", "value": "被打断了 → 新的 Attempt，接着做" }]);
+    for task in &crashed {
+        let option = options
+            .iter()
+            .find(|option| option["id"] == task.id.as_str())
+            .expect("每个任务一项");
+        assert_eq!(option["label"], task.title);
+        assert_eq!(option["facts"], fixed);
+    }
+
+    // 确认甲：新 Attempt、trigger resume、会话不变；没勾的仍是「被打断了」。
+    let first_id = crashed[0].id.as_str().to_owned();
+    router.push_thin_for(&first_id, crate::common::text_sse("接着做"));
+    router.push_kind(crate::common::text_sse("收到"));
+    let decision = confirm_card_option(&host, "call-restart-card", &first_id).await;
+    assert_eq!(decision["phase"], "confirmed", "{decision}");
+    wait_until("甲开了第二次 Attempt", || {
+        store
+            .task(&crashed[0].id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| attempt_count(&task) == 2)
+    })
+    .await;
+    let resumed = store.task(&crashed[0].id).unwrap().unwrap();
+    let second_attempt = resumed.latest_attempt().unwrap().clone();
+    assert_eq!(second_attempt.trigger, tasks::AttemptTrigger::Resume);
+    assert_eq!(
+        second_attempt.conversation, conversations[0],
+        "会话 id 不变"
+    );
+    assert!(second_attempt.ended_at.is_none());
+    let untouched = store.task(&crashed[1].id).unwrap().unwrap();
+    assert_eq!(
+        untouched.latest_attempt().unwrap().end,
+        Some(AttemptEnd::Interrupted)
+    );
+    assert_eq!(attempt_count(&untouched), 1);
+
+    // 第一条输入是恢复说明，原文照 spec；请求真的把它送到 ThinAgent。
+    wait_until("恢复说明进了任务会话", || {
+        recovery_notes(&thin_events(data.path(), &second_attempt)).len() == 1
+    })
+    .await;
+    let notes = recovery_notes(&thin_events(data.path(), &second_attempt));
+    assert_eq!(
+        notes[0].0,
+        format!("resume:{first_id}:{}", second_attempt.id),
+        "恢复说明的判重键"
+    );
+    assert_eq!(notes[0].1, RECOVERY_NOTE);
+    wait_until("接续请求带上恢复说明", || {
+        router
+            .bodies(true)
+            .last()
+            .is_some_and(|body| body.contains(RECOVERY_NOTE))
+    })
+    .await;
+
+    // 同一张卡再点一次不重复执行。
+    let again = confirm_card_option(&host, "call-restart-card", &first_id).await;
+    assert_eq!(again, decision);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        attempt_count(&store.task(&crashed[0].id).unwrap().unwrap()),
+        2
+    );
+    drop(host);
+}
+
+/// 点「暂不」：任务继续停着，之后不再有新的 restart 汇报。
+#[tokio::test]
+async fn dismissing_the_restart_card_leaves_the_task_interrupted_without_another_restart() {
+    let (server, router, data, cwd) = restart_setup().await;
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+    host.task_runtime().expect("runtime").set_pump_paused(true);
+    let task = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-a",
+        "call-accept-a",
+        1,
+        "甲",
+    )
+    .await;
+    crash_while_running(&router, data.path(), host, std::slice::from_ref(&task)).await;
+
+    let store = tasks_store(data.path());
+    let crashed = reload_tasks(&store, &[task]);
+    let task_refs: Vec<&Task> = crashed.iter().collect();
+    router.clear_thin_delay();
+    push_restart_turn(&router, "call-restart-card", &task_refs, "甲被打断了。");
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+    assert_eq!(
+        store
+            .task(&crashed[0].id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .unwrap()
+            .end,
+        Some(AttemptEnd::Interrupted),
+        "启动扫描先把上次的 Attempt 收尾"
+    );
+    wait_until("接续卡出来", || {
+        !card_options(
+            &crate::common::read_root_events(data.path()),
+            "call-restart-card",
+        )
+        .is_empty()
+    })
+    .await;
+
+    let decision = dismiss_card(&host, "call-restart-card").await;
+    assert_eq!(decision["phase"], "dismissed", "{decision}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        restart_messages(&crate::common::read_root_events(data.path())).len(),
+        1,
+        "暂不之后不再有新的 restart"
+    );
+    let stored = store.task(&crashed[0].id).unwrap().unwrap();
+    assert_eq!(
+        stored.latest_attempt().unwrap().end,
+        Some(AttemptEnd::Interrupted)
+    );
+    assert_eq!(attempt_count(&stored), 1, "暂不不开新 Attempt");
+    drop(host);
+}
+
+/// 先在任务对话里说话，再点卡上那一项：reconcile 回「已经接着做了」，只跑一个 Attempt。
+#[tokio::test]
+async fn talking_in_the_task_dialog_before_confirming_says_already_resumed() {
+    let (server, router, data, cwd) = restart_setup().await;
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+    host.task_runtime().expect("runtime").set_pump_paused(true);
+    let task = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-a",
+        "call-accept-a",
+        1,
+        "甲",
+    )
+    .await;
+    crash_while_running(&router, data.path(), host, std::slice::from_ref(&task)).await;
+
+    let store = tasks_store(data.path());
+    let crashed = reload_tasks(&store, &[task]);
+    let task_refs: Vec<&Task> = crashed.iter().collect();
+    router.clear_thin_delay();
+    push_restart_turn(&router, "call-restart-card", &task_refs, "甲被打断了。");
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+    assert_eq!(
+        store
+            .task(&crashed[0].id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .unwrap()
+            .end,
+        Some(AttemptEnd::Interrupted),
+        "启动扫描先把上次的 Attempt 收尾"
+    );
+    wait_until("接续卡出来", || {
+        !card_options(
+            &crate::common::read_root_events(data.path()),
+            "call-restart-card",
+        )
+        .is_empty()
+    })
+    .await;
+
+    // 用户在任务对话里先说一句：T028 的路开新 Attempt。
+    router.push_thin_for(crashed[0].id.as_str(), crate::common::text_sse("收到"));
+    router.push_kind(crate::common::text_sse("收到"));
+    say_in_task_dialog(&host, &crashed[0], "继续").await;
+    wait_until("任务对话先接上了", || {
+        store
+            .task(&crashed[0].id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| attempt_count(&task) == 2)
+    })
+    .await;
+
+    let decision = confirm_card_option(&host, "call-restart-card", crashed[0].id.as_str()).await;
+    assert_eq!(decision["phase"], "refused", "{decision}");
+    let summary = decision["data"]["summary"].as_str().expect("拒绝原因");
+    assert!(summary.contains("已经接着做了"), "{summary}");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        attempt_count(&store.task(&crashed[0].id).unwrap().unwrap()),
+        2,
+        "只跑一个 Attempt"
+    );
+    drop(host);
+}
+
+/// 全局暂停开着时重启：汇报不送；开闸后送一条，而且只有一条。
+#[tokio::test]
+async fn a_paused_restart_waits_for_the_gate_then_reports_once() {
+    let (server, router, data, cwd) = restart_setup().await;
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+    host.task_runtime().expect("runtime").set_pump_paused(true);
+    let task = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-a",
+        "call-accept-a",
+        1,
+        "甲",
+    )
+    .await;
+    crash_while_running(&router, data.path(), host, std::slice::from_ref(&task)).await;
+
+    let store = tasks_store(data.path());
+    let crashed = reload_tasks(&store, &[task]);
+    let task_refs: Vec<&Task> = crashed.iter().collect();
+    let requests_before = router.bodies(false).len();
+    let mut saved = service::settings::load(data.path());
+    saved.exec.paused = true;
+    service::settings::save(data.path(), &saved).expect("保存暂停");
+    router.clear_thin_delay();
+    push_restart_turn(&router, "call-restart-card", &task_refs, "甲被打断了。");
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+
+    // 扫描照做；效果不送。
+    assert_eq!(
+        store
+            .task(&crashed[0].id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .unwrap()
+            .end,
+        Some(AttemptEnd::Interrupted)
+    );
+    wait_until("restart 留在库里", || {
+        store
+            .effect_health(EffectKind::Restart)
+            .expect("效果健康")
+            .waiting
+            == 1
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        restart_messages(&crate::common::read_root_events(data.path())).is_empty(),
+        "暂停时不送 restart"
+    );
+    assert_eq!(
+        router.bodies(false).len(),
+        requests_before,
+        "暂停时不叫模型"
+    );
+
+    host.dispatch(Call::SettingsUpdate(SettingsUpdateRequest {
+        currency: None,
+        paused: Some(false),
+        seats: None,
+    }))
+    .await
+    .expect("开闸");
+    wait_until("开闸后汇报", || {
+        restart_messages(&crate::common::read_root_events(data.path())).len() == 1
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        restart_messages(&crate::common::read_root_events(data.path())).len(),
+        1
+    );
+    drop(host);
+}
+
+/// 模型不可用时汇报按 Later 留在库里：不算失败，不发请求，等模型恢复。
+#[tokio::test]
+async fn a_restart_report_stays_later_while_the_model_is_unavailable() {
+    let (server, router, data, cwd) = restart_setup().await;
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+    host.task_runtime().expect("runtime").set_pump_paused(true);
+    let task = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-a",
+        "call-accept-a",
+        1,
+        "甲",
+    )
+    .await;
+    crash_while_running(&router, data.path(), host, std::slice::from_ref(&task)).await;
+
+    let store = tasks_store(data.path());
+    let crashed = reload_tasks(&store, &[task]);
+    let requests_before = router.bodies(false).len();
+    let factory: service::ModelFactory = Arc::new(|_selection| Err("还没有接模型".to_owned()));
+    let host = open_host_with(&server, data.path(), cwd.path(), |options| {
+        options.actions = Arc::new(service::ActionRegistry::settings(
+            data.path().to_path_buf(),
+            options.identity.clone(),
+        ));
+        options.model_factory = Some(factory.clone());
+    })
+    .await;
+    assert!(
+        !matches!(host.info().root, service::RootState::Ok),
+        "模型不可用：根会话起不来"
+    );
+    assert_eq!(
+        store
+            .task(&crashed[0].id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .unwrap()
+            .end,
+        Some(AttemptEnd::Interrupted),
+        "扫描照做"
+    );
+    wait_until("restart 留在库里", || {
+        store
+            .effect_health(EffectKind::Restart)
+            .expect("效果健康")
+            .waiting
+            == 1
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let health = store.effect_health(EffectKind::Restart).expect("效果健康");
+    assert_eq!(health.waiting, 1, "Later 不丢效果");
+    assert_eq!(health.attempts, 0, "Later 不算失败");
+    assert_eq!(
+        router.bodies(false).len(),
+        requests_before,
+        "模型不可用不发请求"
+    );
+    assert!(restart_messages(&crate::common::read_root_events(data.path())).is_empty());
+    drop(host);
+}
+
+/// 汇报里的 last_report 是最近一份报告，超过 300 字截断；attempts 是总次数。
+#[tokio::test]
+async fn a_restart_report_carries_the_last_report_capped_at_300_characters() {
+    let (server, router, data, cwd) = restart_setup().await;
+    let store = tasks_store(data.path());
+    let long = "报".repeat(400);
+    let draft = tasks::NewTask {
+        title: "有旧报告的".to_owned(),
+        requirement: "找答案".to_owned(),
+        dod: "有答案".to_owned(),
+        cwd: data.path().to_path_buf(),
+        conversation: tasks::ConversationId::new("kind-root"),
+        model: tasks::ModelChoice {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            effort_wanted: "high".to_owned(),
+        },
+        tools: service::THIN_TOOLS.map(str::to_owned).to_vec(),
+    };
+    let task = store.create_task(draft, 1_700_000_000_000).unwrap();
+    let attempt = store.begin_attempt(&task.id, 1_700_000_000_001).unwrap();
+    store
+        .attach_session(
+            &task.id,
+            attempt,
+            tasks::ConversationId::new("task-session"),
+        )
+        .unwrap();
+    store
+        .record_report(
+            &task.id,
+            attempt,
+            tasks::NewReport {
+                state: ReportState::Waiting,
+                origin: tasks::ReportOrigin::Executor,
+                summary: long.clone(),
+                question: None,
+            },
+            1_700_000_000_002,
+        )
+        .unwrap();
+    // 报告之后又记了输入：启动扫描按「报告后又输入」记 interrupted。
+    store
+        .say_input(
+            &task.id,
+            tasks::NewInput {
+                text: "继续".to_owned(),
+                ..tasks::NewInput::default()
+            },
+            1_700_000_000_003,
+        )
+        .unwrap();
+
+    router.push_kind(crate::common::text_sse("收到"));
+    let _host = open_host(&server, data.path(), cwd.path()).await;
+    wait_until("Kind 收到重启汇报", || {
+        !restart_messages(&crate::common::read_root_events(data.path())).is_empty()
+    })
+    .await;
+    let reports = restart_messages(&crate::common::read_root_events(data.path()));
+    assert_eq!(reports.len(), 1);
+    let entry = &reports[0].1["tasks"][0];
+    assert_eq!(entry["id"], task.id.as_str());
+    assert_eq!(entry["attempts"], 1);
+    let summary = entry["last_report"].as_str().expect("最近报告");
+    assert_eq!(summary.chars().count(), 300, "最多 300 字");
+    assert!(summary.chars().all(|ch| ch == '报'));
+}
+
+/// 第二次启动只报这次扫描打断的任务：上次已暂不的甲不再上卡，仍停在「被打断了」。
+#[tokio::test]
+async fn a_second_restart_reports_only_the_tasks_its_scan_interrupted() {
+    let (server, router, data, cwd) = restart_setup().await;
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+    host.task_runtime().expect("runtime").set_pump_paused(true);
+    let first = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-a",
+        "call-accept-a",
+        1,
+        "甲",
+    )
+    .await;
+    crash_while_running(&router, data.path(), host, std::slice::from_ref(&first)).await;
+
+    let store = tasks_store(data.path());
+    let interrupted = reload_tasks(&store, &[first]);
+    let first_id = interrupted[0].id.clone();
+    let task_refs: Vec<&Task> = interrupted.iter().collect();
+    router.clear_thin_delay();
+    push_restart_turn(&router, "call-restart-a", &task_refs, "甲被打断了。");
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+    wait_until("第一次重启的卡出来", || {
+        !card_options(
+            &crate::common::read_root_events(data.path()),
+            "call-restart-a",
+        )
+        .is_empty()
+    })
+    .await;
+    // 用户点「暂不」：甲继续停着，Kind 不再追问。
+    dismiss_card(&host, "call-restart-a").await;
+
+    // 第二次启动的服务里乙跑着，进程停掉时它还没交结果。
+    let second = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-b",
+        "call-accept-b",
+        3,
+        "乙",
+    )
+    .await;
+    crash_while_running(&router, data.path(), host, std::slice::from_ref(&second)).await;
+
+    let interrupted = reload_tasks(&store, &[second]);
+    let second_id = interrupted[0].id.clone();
+    let task_refs: Vec<&Task> = interrupted.iter().collect();
+    push_restart_turn(&router, "call-restart-b", &task_refs, "乙被打断了。");
+    let host = reopen_actions_host(&server, data.path(), cwd.path()).await;
+
+    wait_until("第二次重启汇报", || {
+        restart_messages(&crate::common::read_root_events(data.path())).len() == 2
+    })
+    .await;
+    wait_until("第二次重启的卡出来", || {
+        !card_options(
+            &crate::common::read_root_events(data.path()),
+            "call-restart-b",
+        )
+        .is_empty()
+    })
+    .await;
+    let events = crate::common::read_root_events(data.path());
+    let reports = restart_messages(&events);
+    let latest = &reports[1].1;
+    let listed: Vec<&str> = latest["tasks"]
+        .as_array()
+        .expect("tasks 数组")
+        .iter()
+        .map(|entry| entry["id"].as_str().expect("任务 id"))
+        .collect();
+    assert_eq!(
+        listed,
+        vec![second_id.as_str()],
+        "只报这次扫描打断的乙：{latest}"
+    );
+
+    // 甲没有被再问一次，也没有被悄悄再接续：仍是一次 interrupted 的 Attempt。
+    let stored_first = store.task(&first_id).unwrap().unwrap();
+    assert_eq!(
+        stored_first.latest_attempt().unwrap().end,
+        Some(AttemptEnd::Interrupted)
+    );
+    assert_eq!(attempt_count(&stored_first), 1);
+    assert_eq!(stored_first.stage(false), Stage::NeedsConditions);
+
+    let options = card_options(&events, "call-restart-b");
+    assert_eq!(options.len(), 1, "{options:?}");
+    assert_eq!(options[0]["id"], second_id.as_str());
+    drop(host);
 }

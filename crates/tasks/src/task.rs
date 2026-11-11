@@ -72,6 +72,8 @@ pub enum AttemptTrigger {
     Launch,
     /// 用户在任务对话里说话，接着做。
     UserMessage,
+    /// 重启打断后，用户确认接续。
+    Resume,
 }
 
 /// 一条用户输入；来源目前只有用户本人。
@@ -291,5 +293,19 @@ impl Task {
             .iter()
             .flat_map(|run| run.attempts.iter())
             .find(|attempt| attempt.id == id)
+    }
+
+    /// 最近的 Attempt 以 interrupted 结束、之后没有新的 Attempt：任务「被打断了」。
+    pub fn is_interrupted(&self) -> bool {
+        self.latest_attempt()
+            .is_some_and(|attempt| attempt.end == Some(AttemptEnd::Interrupted))
+    }
+
+    /// 任务曾经被打断过：任意一次 Attempt 以 interrupted 结束。
+    pub fn was_interrupted(&self) -> bool {
+        self.runs
+            .iter()
+            .flat_map(|run| run.attempts.iter())
+            .any(|attempt| attempt.end == Some(AttemptEnd::Interrupted))
     }
 }

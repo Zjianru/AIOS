@@ -1244,3 +1244,135 @@ fn set_paused_refuses_when_already_in_that_state() {
     assert_eq!(facts[0].name, "全局暂停");
     assert_eq!(facts[0].value, "开 → 关");
 }
+
+/// 接续动作的产品装配入口：resume_task 登记在 aios-tasks 名下。
+fn resume_action(data_dir: &std::path::Path) -> Arc<dyn ActionKind> {
+    let registry =
+        ActionRegistry::settings(data_dir.to_path_buf(), Some(data_dir.join("identity.txt")));
+    assert!(
+        registry.get("resume_task").is_some(),
+        "resume_task 要登记在 aios-tasks 名下"
+    );
+    registry.get("resume_task").unwrap().clone()
+}
+
+const T0: i64 = 1_700_000_000_000;
+
+fn task_store(data_dir: &std::path::Path) -> tasks::Store {
+    tasks::Store::open(data_dir.join(service::TASKS_DB_FILE)).expect("任务库")
+}
+
+fn seed_task(store: &tasks::Store, data_dir: &std::path::Path, title: &str) -> tasks::Task {
+    store
+        .create_task(
+            tasks::NewTask {
+                title: title.to_owned(),
+                requirement: "找答案".to_owned(),
+                dod: "有答案".to_owned(),
+                cwd: data_dir.to_path_buf(),
+                conversation: tasks::ConversationId::new("kind-session"),
+                model: tasks::ModelChoice {
+                    connection: "deepseek".to_owned(),
+                    model: "deepseek-flash".to_owned(),
+                    effort_wanted: "high".to_owned(),
+                },
+                tools: service::THIN_TOOLS.map(str::to_owned).to_vec(),
+            },
+            T0,
+        )
+        .expect("建任务")
+}
+
+/// 一个被打断的任务：开过会话，最近 Attempt 以 interrupted 结束。
+fn interrupted_task(store: &tasks::Store, data_dir: &std::path::Path, title: &str) -> tasks::Task {
+    let task = seed_task(store, data_dir, title);
+    let attempt = store.begin_attempt(&task.id, T0 + 1).expect("Attempt");
+    store
+        .attach_session(
+            &task.id,
+            attempt,
+            tasks::ConversationId::new("task-session"),
+        )
+        .expect("写会话");
+    store
+        .end_attempt(&task.id, attempt, T0 + 2, tasks::AttemptEnd::Interrupted)
+        .expect("收尾");
+    store.task(&task.id).expect("读任务").expect("任务")
+}
+
+/// 不是「被打断了」的任务不能提议接续。
+#[test]
+fn resume_task_refuses_a_task_that_is_not_interrupted() {
+    let dir = tempdir().expect("临时目录");
+    let data_dir = dir.path();
+    let store = task_store(data_dir);
+    let task = seed_task(&store, data_dir, "还没开跑");
+    let action = resume_action(data_dir);
+    let error = action
+        .describe(
+            &json!({ "task_id": task.id.as_str() }),
+            &action_env(data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect_err("没被打断的任务不能接");
+    assert!(error.contains("打断"), "{error}");
+}
+
+/// 被打断的任务：事实行固定；还没接续时 reconcile 通过。
+#[test]
+fn resume_task_describes_the_fixed_interrupted_fact() {
+    let dir = tempdir().expect("临时目录");
+    let data_dir = dir.path();
+    let store = task_store(data_dir);
+    let task = interrupted_task(&store, data_dir, "断了");
+    let action = resume_action(data_dir);
+    let details = json!({ "task_id": task.id.as_str() });
+    let facts = action
+        .describe(
+            &details,
+            &action_env(data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect("可以接");
+    assert_eq!(
+        facts,
+        vec![service::CardFact {
+            name: "状态".to_owned(),
+            value: "被打断了 → 新的 Attempt，接着做".to_owned(),
+        }]
+    );
+    action
+        .reconcile(
+            &details,
+            &facts,
+            &action_env(data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect("还没接续，核对通过");
+}
+
+/// 已经接着做了：reconcile 回「已经接着做了」，这一项不再执行。
+#[test]
+fn resume_task_reconcile_refuses_after_the_task_already_resumed() {
+    let dir = tempdir().expect("临时目录");
+    let data_dir = dir.path();
+    let store = task_store(data_dir);
+    let task = interrupted_task(&store, data_dir, "断了");
+    let action = resume_action(data_dir);
+    let details = json!({ "task_id": task.id.as_str() });
+    let facts = action
+        .describe(
+            &details,
+            &action_env(data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect("可以接");
+    store
+        .begin_followup(&task.id, T0 + 3)
+        .expect("接着做")
+        .expect("新 Attempt");
+    let error = action
+        .reconcile(
+            &details,
+            &facts,
+            &action_env(data_dir, &data_dir.join("identity.txt")),
+        )
+        .expect_err("已经接上了");
+    assert_eq!(error, "已经接着做了");
+}
