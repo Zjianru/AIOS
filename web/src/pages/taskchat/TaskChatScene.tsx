@@ -40,7 +40,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import type { Frame, SendAttachmentRef, ServiceEvent } from '@/data/service';
 import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
-import { useStreamStore } from '@/pages/kind/kindStore';
+import { turnLabels, useStreamStore } from '@/pages/kind/kindStore';
 import { TurnRow, UserCards } from '@/pages/kind/TurnRow';
 import { deriveTurnViews } from '@/pages/kind/turnViews';
 import type { TurnUserView } from '@/pages/kind/turnViews';
@@ -439,7 +439,8 @@ export function TaskChatScene() {
   // 终态报告之后执行者会立刻关掉会话，日志可能没有 turn/end；头部带来的 reportedAt
   // 只收尾它之前开始的那一轮（waiting 报告之后的新一轮不能被标成已完成）。
   const views = useMemo(
-    () => withReportedCompletion(deriveTurnViews(visibleTaskEvents(events)), task?.reportedAt),
+    () =>
+      withReportedCompletion(deriveTurnViews(visibleTaskEvents(events), turnLabels()), task?.reportedAt),
     [events, task],
   );
 

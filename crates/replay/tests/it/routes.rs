@@ -77,6 +77,33 @@ async fn routes_pick_scripts_by_request_body() {
     server.shutdown();
 }
 
+/// 给了 --file 又给了 --routes：两份都在，但没有路由匹配时不能回落到 --file 的脚本。
+#[tokio::test]
+async fn routes_do_not_fall_back_to_the_file_script() {
+    let script = ReplayScript {
+        calls: vec![stream("来自 --file")],
+        pace_ms: None,
+        routes: vec![ReplayRoute {
+            contains: "KIND".to_owned(),
+            calls: vec![stream("kind-1")],
+            pace_ms: None,
+        }],
+    };
+    let server = start_replay_server(script).await.expect("起回放服务");
+    let url = format!("{}/v1/messages", server.url());
+
+    let kind = post(&url, r#"{"session":"KIND"}"#).await;
+    assert_eq!(kind.status(), 200);
+    let body = kind.text().await.expect("读 Kind 一段");
+    assert!(body.contains("kind-1"), "Kind 一段不对：{body}");
+
+    let other = post(&url, r#"{"session":"OTHER"}"#).await;
+    assert_eq!(other.status(), 500, "没有路由匹配不能回落到 --file");
+    let body = other.text().await.expect("读没有路由的说明");
+    assert!(body.contains("没有匹配的路由"), "缺路由说明：{body}");
+    server.shutdown();
+}
+
 /// 一条能推出回放的会话日志行：assistant/message + 一段文本流。
 fn event_line(text: &str) -> String {
     let value = serde_json::json!({

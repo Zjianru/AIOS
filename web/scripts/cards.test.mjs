@@ -934,7 +934,7 @@ const cardFailed = taskEnvelope(
   relayMessage({ state: 'failed', origin: 'agent', summary: '文档站打不开，已经试过两次。' }),
 );
 assert.equal(cardFailed.slots.status, '失败');
-assert.equal(failed.state, 'failed');
+assert.equal(cardFailed.state, 'failed', '结果卡失败的信封状态是 failed（不是上面确认卡的 failed）');
 
 const cardWaiting = taskEnvelope(
   relayMessage({ state: 'waiting', origin: 'executor', summary: '我还在查，别急' }),

@@ -2750,6 +2750,59 @@ async fn accept_task(
         .expect("刚受理的任务")
 }
 
+/// 派一个任务并等它出现在任务库；不等 Kind 那一轮收尾。
+///
+/// ThinAgent 轮次结束会合成等待报告、把 relay Steer 回 Kind，Kind 那一轮可能因此多一步；
+/// 只断言任务自己的 Attempt 和效果时不该被这个时序拖住。
+async fn dispatch_task(
+    host: &RootHost,
+    router: &Router,
+    data: &Path,
+    request_id: &str,
+    call_id: &str,
+    title: &str,
+) -> Task {
+    let args = serde_json::json!({
+        "title": title,
+        "requirement": "找答案",
+        "dod": "有答案",
+    })
+    .to_string();
+    router.push_kind(crate::common::tool_use_sse(
+        0,
+        call_id,
+        "task_accept",
+        &args,
+    ));
+    router.push_kind(crate::common::text_sse("已派出"));
+    host.dispatch(Call::Send(send(host, request_id, "派一个任务")))
+        .await
+        .expect("发送");
+    let store = tasks_store(data);
+    wait_until("任务出现在任务库", || {
+        store
+            .task_ids()
+            .map(|ids| {
+                ids.iter().any(|id| {
+                    store
+                        .task(id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|task| task.title == title)
+                })
+            })
+            .unwrap_or(false)
+    })
+    .await;
+    store
+        .task_ids()
+        .expect("任务 id")
+        .into_iter()
+        .filter_map(|id| store.task(&id).ok().flatten())
+        .find(|task| task.title == title)
+        .expect("刚受理的任务")
+}
+
 /// 暂停测试的宿主：动作登记表走产品装配（set_paused 属于 aios-tasks）。
 async fn open_pause_host(server: &MockServer, data: &Path, cwd: &Path) -> RootHost {
     open_host_with(server, data, cwd, |options| {
@@ -3450,6 +3503,96 @@ async fn set_exec_seats_accepts_one_through_sixteen_and_rejects_outside() {
             "拒存不改已保存的值"
         );
     }
+}
+
+/// 设置写不进去时只报错、不改内存闸门：暂停没生效，任务照常开跑。
+#[tokio::test]
+async fn a_failed_settings_write_keeps_the_pause_gate_open() {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    mount(&server, &router).await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    // 设置文件本身可读；临时文件路径被目录占住，原子写一定失败（不靠权限位）。
+    let saved = service::settings::load(data.path());
+    service::settings::save(data.path(), &saved).expect("先写一份可读的设置");
+    std::fs::create_dir(data.path().join("settings.json.tmp")).expect("占住临时文件路径");
+    let host = open_host(&server, data.path(), cwd.path()).await;
+    let store = tasks_store(data.path());
+    router.push_thin_for_title("甲", crate::common::text_sse("还没上报"));
+
+    let error = host
+        .dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
+            paused: Some(true),
+            ..Default::default()
+        }))
+        .await
+        .expect_err("写盘失败要报错");
+    assert!(error.to_string().contains("设置没保存"), "{error}");
+    assert!(
+        !service::settings::load(data.path()).exec.paused,
+        "文件没被改"
+    );
+
+    // 内存里也没改成暂停：写盘失败后派的第一个任务照常开跑。
+    let task = dispatch_task(&host, &router, data.path(), "kind-a", "call-accept-a", "甲").await;
+    wait_until("写盘失败后任务照常开跑", || {
+        store
+            .task(&task.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .is_some()
+    })
+    .await;
+}
+
+/// 席位写不进去时只报错、不改内存上限：还是 1 个席位，第二个任务排队。
+#[tokio::test]
+async fn a_failed_settings_write_keeps_the_seat_limit() {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    mount(&server, &router).await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let mut saved = service::settings::load(data.path());
+    saved.exec.seats = 1;
+    service::settings::save(data.path(), &saved).expect("先保存 1 个席位");
+    std::fs::create_dir(data.path().join("settings.json.tmp")).expect("占住临时文件路径");
+    let host = open_host(&server, data.path(), cwd.path()).await;
+    let store = tasks_store(data.path());
+    router.set_thin_delay(Duration::from_millis(3_000));
+    router.push_thin_for_title("甲", crate::common::text_sse("还没上报"));
+
+    let error = host.set_exec_seats(2).expect_err("写盘失败要报错");
+    assert!(error.to_string().contains("设置没保存"), "{error}");
+    assert_eq!(
+        service::settings::load(data.path()).exec.seats,
+        1,
+        "文件没被改"
+    );
+
+    let first = dispatch_task(&host, &router, data.path(), "kind-a", "call-accept-a", "甲").await;
+    wait_until("第一个任务开跑", || {
+        store
+            .task(&first.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .is_some()
+    })
+    .await;
+    let second = dispatch_task(&host, &router, data.path(), "kind-b", "call-accept-b", "乙").await;
+    assert!(
+        second.latest_attempt().is_none(),
+        "内存上限还是 1 个席位，第二个任务只排队"
+    );
+    assert!(
+        store
+            .effect_pending(EffectKind::Launch, second.id.as_str())
+            .unwrap(),
+        "第二个任务的 launch 留在队列里"
+    );
 }
 
 /// 在任务对话里说一句（和页面同一个调用）。

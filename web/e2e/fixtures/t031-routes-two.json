@@ -1,0 +1,18 @@
+{
+  "routes": [
+    {
+      "contains": "\"name\":\"task_accept\"",
+      "file": "t031-kind-two.jsonl",
+      "paceMs": 120
+    },
+    {
+      "contains": "任务甲",
+      "file": "t031-thin-a.jsonl"
+    },
+    {
+      "contains": "任务乙",
+      "file": "t031-thin-b.jsonl",
+      "paceMs": 120
+    }
+  ]
+}

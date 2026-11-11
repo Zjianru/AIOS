@@ -262,7 +262,11 @@ export interface FixtureOptions {
     | 'resume'
     | 'handback'
     /// T028.5：两个任务、席位 1，验证叫醒停任务可以多占 1 个。
-    | 'seats';
+    | 'seats'
+    /// 两个任务在同一轮报回（两张结果卡、刷新同序）。
+    | 'two'
+    /// ThinAgent 先说话再调工具（任务对话的 say 步）。
+    | 'pretext';
 }
 
 /** T024.4：双会话回放用哪份按请求体路由的文件；预写会话的两种不需要。 */
@@ -277,6 +281,10 @@ function taskResultRouteFile(options: FixtureOptions): string | null {
     scenario === 'seats'
   ) {
     return 't028-routes-' + scenario + '.json';
+  }
+  // 同轮两张卡、任务对话的 say 步。
+  if (scenario === 'two' || scenario === 'pretext') {
+    return 't031-routes-' + scenario + '.json';
   }
   return 't024-routes-' + scenario + '.json';
 }
@@ -336,7 +344,9 @@ export async function startKernelFixture(
     options.taskResult === 'say' ||
     options.taskResult === 'resume' ||
     options.taskResult === 'handback' ||
-    options.taskResult === 'seats'
+    options.taskResult === 'seats' ||
+    options.taskResult === 'two' ||
+    options.taskResult === 'pretext'
   ) {
     await writeFile(path.join(dataDir, 'hello.txt'), 'hello from fixture\n');
     // T013.7：带空格的路径（@ 菜单插入要给引号用）。

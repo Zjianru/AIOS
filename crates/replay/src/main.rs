@@ -7,7 +7,8 @@ use replay::{ReplayScript, start_replay_server};
 #[derive(Debug, Parser)]
 #[command(name = "aios-replay", about = "不花 key 的模型回放（T010）")]
 struct Args {
-    /// 会话日志（JSONL）；与 --routes 一起用时是不匹配任何路由时的默认脚本
+    /// 会话日志（JSONL）；不配 --routes 时按它顺序回放。配了 --routes 后按请求体选路，
+    /// 它只做读取校验、不参与回放（没有路由匹配就报错，不回落）
     #[arg(long)]
     file: Option<PathBuf>,
     /// 覆盖文件（可选，默认找同目录 replay.override.json）
