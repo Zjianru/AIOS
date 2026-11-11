@@ -2768,7 +2768,12 @@ async fn dispatch_task(
         "dod": "有答案",
     })
     .to_string();
-    router.push_kind(crate::common::tool_use_sse(0, call_id, "task_accept", &args));
+    router.push_kind(crate::common::tool_use_sse(
+        0,
+        call_id,
+        "task_accept",
+        &args,
+    ));
     router.push_kind(crate::common::text_sse("已派出"));
     host.dispatch(Call::Send(send(host, request_id, "派一个任务")))
         .await
@@ -3524,7 +3529,10 @@ async fn a_failed_settings_write_keeps_the_pause_gate_open() {
         .await
         .expect_err("写盘失败要报错");
     assert!(error.to_string().contains("设置没保存"), "{error}");
-    assert!(!service::settings::load(data.path()).exec.paused, "文件没被改");
+    assert!(
+        !service::settings::load(data.path()).exec.paused,
+        "文件没被改"
+    );
 
     // 内存里也没改成暂停：写盘失败后派的第一个任务照常开跑。
     let task = dispatch_task(&host, &router, data.path(), "kind-a", "call-accept-a", "甲").await;
@@ -3558,7 +3566,11 @@ async fn a_failed_settings_write_keeps_the_seat_limit() {
 
     let error = host.set_exec_seats(2).expect_err("写盘失败要报错");
     assert!(error.to_string().contains("设置没保存"), "{error}");
-    assert_eq!(service::settings::load(data.path()).exec.seats, 1, "文件没被改");
+    assert_eq!(
+        service::settings::load(data.path()).exec.seats,
+        1,
+        "文件没被改"
+    );
 
     let first = dispatch_task(&host, &router, data.path(), "kind-a", "call-accept-a", "甲").await;
     wait_until("第一个任务开跑", || {
