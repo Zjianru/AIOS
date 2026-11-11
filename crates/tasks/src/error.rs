@@ -79,6 +79,8 @@ pub enum TaskError {
     WriteScopeUnresolvable(String),
     #[error("task_update 的写入范围不能为空")]
     EmptyWriteScope,
+    #[error("写入范围不在工作树对应的仓库里：{0}")]
+    WriteScopeOutsideWorktree(String),
     #[error("任务还没有可以接受的结果报告")]
     NoReportToAccept,
 }

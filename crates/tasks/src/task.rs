@@ -38,6 +38,9 @@ pub struct Task {
     /// 是否在新 git 工作树里做；旧任务行按 false 读（D86）。
     #[serde(default)]
     pub worktree: bool,
+    /// 第一次 Attempt 起跑前开出来的工作树；之后每个 Attempt 都用它。旧任务行按 None 读。
+    #[serde(default)]
+    pub worktree_state: Option<Worktree>,
     /// 写集；只读任务固定为空。旧任务行没有这个字段时按空读。
     #[serde(default)]
     pub writes: Vec<String>,
@@ -57,6 +60,17 @@ pub struct Task {
     /// 执行者在起跑前查到的缺项；空表示任务包齐。
     pub missing: Vec<MissingItem>,
     pub created_at: i64,
+}
+
+/// 一次任务开出来的 git 工作树：第一次 Attempt 前落下，之后沿用，不自动合并/清理（D86）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Worktree {
+    /// 工作树根（绝对、canonical）：<数据目录>/worktrees/<taskId>。
+    pub root: PathBuf,
+    /// 原仓库根（绝对、canonical）；写入范围按仓库内的相对位置换算。
+    pub repo: PathBuf,
+    /// ThinAgent 的 cwd（绝对、canonical）：工作树里和原 cwd 对应的子目录。
+    pub cwd: PathBuf,
 }
 
 /// 建任务时冻结的执行策略：写入范围、bash 开关、工作树（D85、D86）。
@@ -423,6 +437,28 @@ impl Task {
 
     pub fn has_attempt(&self) -> bool {
         self.runs.iter().any(|run| !run.attempts.is_empty())
+    }
+
+    /// ThinAgent 实际使用的工作目录：开了工作树的用工作树里对应的子目录。
+    pub fn effective_cwd(&self) -> &Path {
+        match &self.worktree_state {
+            Some(worktree) => &worktree.cwd,
+            None => &self.cwd,
+        }
+    }
+
+    /// 这次执行真正生效的写入范围：开着工作树时按仓库内的相对位置换算。
+    ///
+    /// 范围不在原仓库里时保持原样：它不是从原 cwd 换出来的，工作树里也没有对应位置。
+    pub fn effective_write_scope(&self) -> Option<PathBuf> {
+        let scope = self.write_scope.as_deref()?;
+        let Some(worktree) = &self.worktree_state else {
+            return Some(scope.to_path_buf());
+        };
+        match scope.strip_prefix(&worktree.repo) {
+            Ok(relative) => Some(worktree.root.join(relative)),
+            Err(_) => Some(scope.to_path_buf()),
+        }
     }
 
     pub fn latest_attempt(&self) -> Option<&Attempt> {

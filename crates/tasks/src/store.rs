@@ -16,7 +16,7 @@ use crate::id::{AttemptId, BootId, ConversationId, InputId, ReportId, TaskId};
 use crate::task::{
     Acceptance, Attempt, AttemptEnd, AttemptTrigger, FrozenPolicy, Input, InputAttachment,
     InputSource, MissingItem, NewInput, NewReport, NewTask, Report, RequirementVersion, Run,
-    SayOutcome, Task, TaskPolicy, VersionSource, resolve_write_scope,
+    SayOutcome, Task, TaskPolicy, VersionSource, Worktree, resolve_write_scope,
 };
 
 /// 任务库 schema 版本；比这新的库拒绝打开。
@@ -225,6 +225,7 @@ impl Store {
             write_scope: policy.write_scope.clone(),
             bash: policy.bash,
             worktree: policy.worktree,
+            worktree_state: None,
             writes: Vec::new(),
             code_mode: false,
             runs: Vec::new(),
@@ -562,6 +563,19 @@ impl Store {
         Ok(())
     }
 
+    /// 记下第一次 Attempt 起跑前开出来的工作树；已经记过时保持原样（重试幂等）。
+    pub fn attach_worktree(&self, id: &TaskId, worktree: Worktree) -> Result<Task, TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, id)?;
+        if task.worktree_state.is_none() {
+            task.worktree_state = Some(worktree);
+            save_task(&transaction, &task)?;
+        }
+        transaction.commit()?;
+        Ok(task)
+    }
+
     /// 结束一个 Attempt；已经结束的再结束一次不产生变化。
     pub fn end_attempt(
         &self,
@@ -885,6 +899,14 @@ impl Store {
         let Some(scope) = resolve_write_scope(&task.cwd, Some(write_scope))? else {
             return Err(TaskError::EmptyWriteScope);
         };
+        // 工作树任务的新范围必须还在原仓库里，否则换算后落不到工作树里。
+        if let Some(worktree) = &task.worktree_state
+            && !scope.starts_with(&worktree.repo)
+        {
+            return Err(TaskError::WriteScopeOutsideWorktree(
+                scope.display().to_string(),
+            ));
+        }
         task.write_scope = Some(scope.clone());
         task.versions.push(RequirementVersion {
             write_scope: Some(scope),
