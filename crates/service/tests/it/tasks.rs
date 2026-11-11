@@ -4487,6 +4487,22 @@ async fn restart_setup() -> (MockServer, Router, tempfile::TempDir, tempfile::Te
     )
 }
 
+/// 重开一次根宿主：模拟进程退出后根会话写锁还要一点时间才放开。
+///
+/// 写锁没放开时 `RootHost::open` 报 Busy，那次启动按设计不扫描；重开直到接管成功，
+/// 才算一次真正的启动。
+async fn reopen_actions_host(server: &MockServer, data: &Path, cwd: &Path) -> RootHost {
+    for _ in 0..250 {
+        let host = open_actions_host(server, data, cwd).await;
+        if matches!(host.info().root, service::RootState::Ok) {
+            return host;
+        }
+        drop(host);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("根会话写锁一直没放开");
+}
+
 /// 放开效果泵，等每个任务都开好会话、还没交结果，然后「杀掉服务」（drop 宿主）。
 ///
 /// ThinAgent 的回复压后 10 秒：进程停掉前不会合成 waiting，Attempt 以「在跑没报」留在库里。
@@ -5148,4 +5164,101 @@ async fn a_restart_report_carries_the_last_report_capped_at_300_characters() {
     let summary = entry["last_report"].as_str().expect("最近报告");
     assert_eq!(summary.chars().count(), 300, "最多 300 字");
     assert!(summary.chars().all(|ch| ch == '报'));
+}
+
+/// 第二次启动只报这次扫描打断的任务：上次已暂不的甲不再上卡，仍停在「被打断了」。
+#[tokio::test]
+async fn a_second_restart_reports_only_the_tasks_its_scan_interrupted() {
+    let (server, router, data, cwd) = restart_setup().await;
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+    host.task_runtime().expect("runtime").set_pump_paused(true);
+    let first = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-a",
+        "call-accept-a",
+        1,
+        "甲",
+    )
+    .await;
+    crash_while_running(&router, data.path(), host, std::slice::from_ref(&first)).await;
+
+    let store = tasks_store(data.path());
+    let interrupted = reload_tasks(&store, &[first]);
+    let first_id = interrupted[0].id.clone();
+    let task_refs: Vec<&Task> = interrupted.iter().collect();
+    router.clear_thin_delay();
+    push_restart_turn(&router, "call-restart-a", &task_refs, "甲被打断了。");
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+    wait_until("第一次重启的卡出来", || {
+        !card_options(
+            &crate::common::read_root_events(data.path()),
+            "call-restart-a",
+        )
+        .is_empty()
+    })
+    .await;
+    // 用户点「暂不」：甲继续停着，Kind 不再追问。
+    dismiss_card(&host, "call-restart-a").await;
+
+    // 第二次启动的服务里乙跑着，进程停掉时它还没交结果。
+    let second = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-b",
+        "call-accept-b",
+        3,
+        "乙",
+    )
+    .await;
+    crash_while_running(&router, data.path(), host, std::slice::from_ref(&second)).await;
+
+    let interrupted = reload_tasks(&store, &[second]);
+    let second_id = interrupted[0].id.clone();
+    let task_refs: Vec<&Task> = interrupted.iter().collect();
+    push_restart_turn(&router, "call-restart-b", &task_refs, "乙被打断了。");
+    let host = reopen_actions_host(&server, data.path(), cwd.path()).await;
+
+    wait_until("第二次重启汇报", || {
+        restart_messages(&crate::common::read_root_events(data.path())).len() == 2
+    })
+    .await;
+    wait_until("第二次重启的卡出来", || {
+        !card_options(
+            &crate::common::read_root_events(data.path()),
+            "call-restart-b",
+        )
+        .is_empty()
+    })
+    .await;
+    let events = crate::common::read_root_events(data.path());
+    let reports = restart_messages(&events);
+    let latest = &reports[1].1;
+    let listed: Vec<&str> = latest["tasks"]
+        .as_array()
+        .expect("tasks 数组")
+        .iter()
+        .map(|entry| entry["id"].as_str().expect("任务 id"))
+        .collect();
+    assert_eq!(
+        listed,
+        vec![second_id.as_str()],
+        "只报这次扫描打断的乙：{latest}"
+    );
+
+    // 甲没有被再问一次，也没有被悄悄再接续：仍是一次 interrupted 的 Attempt。
+    let stored_first = store.task(&first_id).unwrap().unwrap();
+    assert_eq!(
+        stored_first.latest_attempt().unwrap().end,
+        Some(AttemptEnd::Interrupted)
+    );
+    assert_eq!(attempt_count(&stored_first), 1);
+    assert_eq!(stored_first.stage(false), Stage::NeedsConditions);
+
+    let options = card_options(&events, "call-restart-b");
+    assert_eq!(options.len(), 1, "{options:?}");
+    assert_eq!(options[0]["id"], second_id.as_str());
+    drop(host);
 }
