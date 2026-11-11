@@ -15,10 +15,10 @@ pub use effect::{
     EffectClaim, EffectHealth, EffectKind, EffectPayload, EffectState, FAILURES_BEFORE_ERROR,
 };
 pub use error::TaskError;
-pub use id::{AttemptId, ConversationId, InputId, ReportId, RunId, TaskId};
+pub use id::{AttemptId, BootId, ConversationId, InputId, ReportId, RunId, TaskId};
 pub use slots::{Later, SlotKind, WorkerSlots};
 pub use stage::Stage;
-pub use store::{SCHEMA_VERSION, StopAttempt, Store};
+pub use store::{BootScan, SCHEMA_VERSION, StopAttempt, Store};
 pub use task::{
     Attempt, AttemptEnd, AttemptTrigger, Input, InputAttachment, InputSource, MissingItem,
     ModelChoice, NewInput, NewReport, NewTask, Report, ReportOrigin, ReportState, Run, SayOutcome,

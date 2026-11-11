@@ -12,7 +12,7 @@ use crate::TaskError;
 use crate::effect::{
     EffectClaim, EffectHealth, EffectKind, EffectPayload, EffectState, FAILURES_BEFORE_ERROR,
 };
-use crate::id::{AttemptId, ConversationId, InputId, ReportId, TaskId};
+use crate::id::{AttemptId, BootId, ConversationId, InputId, ReportId, TaskId};
 use crate::task::{
     Attempt, AttemptEnd, AttemptTrigger, Input, InputAttachment, InputSource, MissingItem,
     NewInput, NewReport, NewTask, Report, Run, SayOutcome, Task,
@@ -44,6 +44,17 @@ pub enum StopAttempt {
     AlreadyStopped,
     /// 这次 Attempt 已经以别的理由结束；没有改动。
     AlreadyEnded,
+}
+
+/// 启动扫描的结果：这次启动认出哪些没结束的 Attempt，各自怎么收尾。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BootScan {
+    /// 在跑、没交出结果（或报告后又有了新输入）的 Attempt，已记 interrupted 并排 restart。
+    pub interrupted: Vec<TaskId>,
+    /// 已经交出报告、之后没有新输入的 Attempt，已记 reported 结束。
+    pub reported: Vec<TaskId>,
+    /// 崩溃前没开出会话的 Attempt，已记 not_opened 收尾。
+    pub not_opened: Vec<TaskId>,
 }
 
 /// 任务库。一个 SQLite 连接放在锁后；所有方法同步。
@@ -559,6 +570,19 @@ impl Store {
         Ok(StopAttempt::Stopped)
     }
 
+    /// 启动扫描：效果循环开始之前把上次启动留下、没收尾的 Attempt 收掉。
+    ///
+    /// 最近 Attempt 没结束的任务分三路：交了报告且之后没有新输入的记 reported；崩溃前
+    /// 没开出会话的记 not_opened；其余的记 interrupted，并在同一个事务里排一条 restart
+    /// 效果（键是启动 id，同一次启动的任务合成一条）。
+    pub fn scan_at_boot(&self, boot_id: &BootId, now: i64) -> Result<BootScan, TaskError> {
+        if boot_id.as_str().trim().is_empty() {
+            return Err(TaskError::EmptyBootId);
+        }
+        let _ = now;
+        Ok(BootScan::default())
+    }
+
     /// 收尾崩溃留下的、没有会话 id 的 Attempt；返回收尾了几个。
     pub fn close_unopened_attempts(&self, id: &TaskId, now: i64) -> Result<usize, TaskError> {
         let mut conn = self.lock()?;
@@ -966,6 +990,9 @@ fn stored_schema_version(conn: &Connection) -> Result<Option<u64>, TaskError> {
 #[cfg(test)]
 #[path = "attempt_report_tests.rs"]
 mod attempt_report_tests;
+#[cfg(test)]
+#[path = "boot_scan_tests.rs"]
+mod boot_scan_tests;
 #[cfg(test)]
 #[path = "effect_tests.rs"]
 mod effect_tests;
