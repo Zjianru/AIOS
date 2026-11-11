@@ -1,0 +1,38 @@
+{
+  "routes": [
+    {
+      "contains": "用 2.1 版",
+      "file": "t029-thin-resume.jsonl",
+      "paceMs": 120
+    },
+    {
+      "contains": "AIOS 在这个任务进行中重启了",
+      "file": "t029-thin-resume.jsonl",
+      "paceMs": 120
+    },
+    {
+      "contains": "\"name\":\"task_accept\"",
+      "file": "t029-kind-single.jsonl"
+    },
+    {
+      "contains": "任务甲",
+      "file": "t029-thin-long.jsonl",
+      "paceMs": 800
+    },
+    {
+      "contains": "任务乙",
+      "file": "t029-thin-long.jsonl",
+      "paceMs": 800
+    },
+    {
+      "contains": "任务丙",
+      "file": "t029-thin-ready.jsonl",
+      "paceMs": 120
+    },
+    {
+      "contains": "任务丁",
+      "file": "t029-thin-question.jsonl",
+      "paceMs": 120
+    }
+  ]
+}

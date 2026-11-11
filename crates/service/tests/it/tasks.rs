@@ -5347,6 +5347,87 @@ async fn a_restart_report_stays_later_while_the_model_is_unavailable() {
     drop(host);
 }
 
+/// TaskRead 的头部事实（只读；测试里读页头用）。
+async fn task_read_header(host: &RootHost, task_id: &tasks::TaskId) -> service::TaskReadHeader {
+    let request = TaskReadRequest {
+        task_id: task_id.as_str().to_owned(),
+        before_seq: None,
+    };
+    match host
+        .dispatch(Call::TaskRead(request))
+        .await
+        .expect("task-read")
+    {
+        Response::TaskRead(read) => read.task,
+        _ => panic!("task-read 响应"),
+    }
+}
+
+/// 页头事实：启动扫描打断后一直「被打断了」；给 Kind 的 restart 还在队里时
+/// restartPending 为真，送到后转假（横幅消失，任务不自动跑）。
+#[tokio::test]
+async fn task_read_reports_interrupted_and_restart_pending_until_kind_is_told() {
+    let (server, router, data, cwd) = restart_setup().await;
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+    host.task_runtime().expect("runtime").set_pump_paused(true);
+    let task = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-a",
+        "call-accept-a",
+        1,
+        "甲",
+    )
+    .await;
+    crash_while_running(&router, data.path(), host, std::slice::from_ref(&task)).await;
+
+    let store = tasks_store(data.path());
+    let crashed = reload_tasks(&store, &[task]);
+    let task_refs: Vec<&Task> = crashed.iter().collect();
+    let mut saved = service::settings::load(data.path());
+    saved.exec.paused = true;
+    service::settings::save(data.path(), &saved).expect("保存暂停");
+    router.clear_thin_delay();
+    push_restart_turn(&router, "call-restart-card", &task_refs, "甲被打断了。");
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+
+    // 扫描照做，restart 不送：页头同时是「被打断了」和「待 Kind 核实」。
+    wait_until("restart 留在库里", || {
+        store
+            .effect_health(EffectKind::Restart)
+            .expect("效果健康")
+            .waiting
+            == 1
+    })
+    .await;
+    let before = task_read_header(&host, &crashed[0].id).await;
+    assert!(before.interrupted, "扫描后页头要固定「被打断了」");
+    assert!(
+        before.restart_pending,
+        "Kind 还没收到 restart：页头要「待 Kind 核实，尚未接续」"
+    );
+    assert_eq!(before.attempts, 1, "没自动重跑");
+
+    host.dispatch(Call::SettingsUpdate(SettingsUpdateRequest {
+        currency: None,
+        paused: Some(false),
+        seats: None,
+    }))
+    .await
+    .expect("开闸");
+    wait_until("Kind 收到重启汇报", || {
+        restart_messages(&crate::common::read_root_events(data.path())).len() == 1
+    })
+    .await;
+
+    let after = task_read_header(&host, &crashed[0].id).await;
+    assert!(after.interrupted, "restart 送到后任务仍是「被打断了」");
+    assert!(!after.restart_pending, "restart 送到后横幅消失");
+    assert_eq!(after.attempts, 1, "送汇报不自动开新的 Attempt");
+    drop(host);
+}
+
 /// 汇报里的 last_report 是最近一份报告，超过 300 字截断；attempts 是总次数。
 #[tokio::test]
 async fn a_restart_report_carries_the_last_report_capped_at_300_characters() {

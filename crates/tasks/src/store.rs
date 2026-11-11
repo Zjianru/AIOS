@@ -292,6 +292,28 @@ impl Store {
         effect_pending_in(&conn, kind, key)
     }
 
+    /// 这个任务有没有一条还没送出去的 restart 汇报。
+    ///
+    /// 启动扫描把要报的任务并进同一次启动的一条效果；旧库里的行没有任务名单时按
+    /// 「全部还被打断的」算（和投递方的回退一致），不能因为缺字段漏掉待核实。
+    pub fn restart_pending(&self, id: &TaskId) -> Result<bool, TaskError> {
+        let conn = self.lock()?;
+        let mut statement = conn.prepare("SELECT value FROM effect WHERE kind = ?1")?;
+        let rows = statement.query_map(params![EffectKind::Restart.as_str()], |row| {
+            row.get::<_, String>(0)
+        })?;
+        for row in rows {
+            let payload: EffectPayload = serde_json::from_str(&row?)?;
+            let EffectPayload::Restart { task_ids, .. } = payload else {
+                continue;
+            };
+            if task_ids.is_empty() || task_ids.contains(id) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// 记执行者在起跑前查到的任务包缺项；空表示包齐。
     pub fn record_package_check(
         &self,

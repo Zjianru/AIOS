@@ -19,6 +19,15 @@ running: boolean,
  */
 stopped: boolean,
 /**
+ * 最近的 Attempt 以「打断」结束、之后没有新的 Attempt：页头固定显示「被打断了」（D84）。
+ */
+interrupted: boolean,
+/**
+ * 这次任务被启动扫描打断、给 Kind 的 restart 汇报还没送出去：页头显示
+ * 「待 Kind 核实，尚未接续」；送到之后横幅消失，任务仍是「被打断了」。
+ */
+restartPending: boolean,
+/**
  * 当前 Attempt 最近一份报告的写入时间（unix 毫秒）；None = 这次 Attempt 还没交报告。
  * 终态报告后执行者会立刻关掉会话，日志可能没有 turn/end：页面据此判断最后一轮不再在跑。
  */

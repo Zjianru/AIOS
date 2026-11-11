@@ -16,6 +16,7 @@ import {
   ChevronRight,
   FolderOpen,
   PauseCircle,
+  PlugZap,
   SendHorizontal,
   Square,
 } from 'lucide-react';
@@ -182,8 +183,18 @@ function TaskMenu({
   );
 }
 
-/** 页头状态：在跑显示执行中（收尾停后带「收尾」），停下后固定「已停止」。 */
-function TaskState({ running, winding, stopped }: { running: boolean; winding: boolean; stopped: boolean }) {
+/** 页头状态：在跑显示执行中（收尾停后带「收尾」），停下后固定「已停止」，被打断固定「被打断了」。 */
+function TaskState({
+  running,
+  winding,
+  stopped,
+  interrupted,
+}: {
+  running: boolean;
+  winding: boolean;
+  stopped: boolean;
+  interrupted: boolean;
+}) {
   if (running) {
     return (
       <span
@@ -202,6 +213,17 @@ function TaskState({ running, winding, stopped }: { running: boolean; winding: b
       >
         <Square className="size-3 shrink-0" />
         已停止
+      </span>
+    );
+  }
+  if (interrupted) {
+    return (
+      <span
+        className="mt-[3px] inline-flex shrink-0 items-center gap-1 rounded-badge bg-wait-soft px-1.5 py-[1px] text-1 text-wait"
+        data-kind="task-state"
+      >
+        <PlugZap className="size-3 shrink-0" />
+        被打断了
       </span>
     );
   }
@@ -444,6 +466,15 @@ export function TaskChatScene() {
     [events, task],
   );
 
+  // 重启汇报送到以后横幅自己消失（任务仍是「被打断了」）；只在待核实时轻轮询页头事实。
+  useEffect(() => {
+    if (!task?.restartPending) return;
+    const timer = window.setInterval(() => void refreshHeader(), 1000);
+    return () => window.clearInterval(timer);
+    // refreshHeader 只用 taskId；跟着 restartPending 重新挂。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [task?.restartPending, taskId]);
+
   // T028.5：全局暂停从执行设置读（横幅 + 排队提示）；设置页改完回到本页也能读到。
   useEffect(() => {
     let live = true;
@@ -594,7 +625,13 @@ export function TaskChatScene() {
       const response = await taskRead(taskId);
       setTask((current) =>
         current
-          ? { ...current, running: response.task.running, stopped: response.task.stopped }
+          ? {
+              ...current,
+              running: response.task.running,
+              stopped: response.task.stopped,
+              interrupted: response.task.interrupted,
+              restartPending: response.task.restartPending,
+            }
           : response.task,
       );
     } catch {
@@ -733,7 +770,12 @@ export function TaskChatScene() {
             >
               {task.title}
             </h1>
-            <TaskState running={task.running} winding={winding} stopped={task.stopped} />
+            <TaskState
+              running={task.running}
+              winding={winding}
+              stopped={task.stopped}
+              interrupted={task.interrupted}
+            />
             <TaskMenu
               running={task.running}
               winding={winding}
@@ -763,6 +805,16 @@ export function TaskChatScene() {
         >
           <PauseCircle className="size-3.5" />
           全局暂停中：你的消息会先排着；开闸后送到
+        </div>
+      ) : null}
+
+      {task.restartPending ? (
+        <div
+          className="flex shrink-0 items-center gap-2 border-b border-wait/30 bg-wait-soft px-6 py-2 text-2 text-wait"
+          data-kind="await-kind"
+        >
+          <PlugZap className="size-3.5" />
+          被打断了 · 待 Kind 核实，尚未接续
         </div>
       ) : null}
 
