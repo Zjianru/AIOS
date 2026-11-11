@@ -1015,6 +1015,47 @@ async fn a_blocked_report_carries_its_question() {
 }
 
 #[tokio::test]
+async fn task_handback_relays_one_blocked_card_with_the_fixed_question() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(false).await;
+    fixture.router.push_thin(crate::common::tool_use_sse(
+        1,
+        "call-handback",
+        "task_handback",
+        &serde_json::json!({"reason": "用户要改任务要求，这超出了任务范围"}).to_string(),
+    ));
+    fixture.router.push_thin(crate::common::text_sse("交回了"));
+    wait_until("ThinAgent 的下一步请求", || {
+        fixture.router.bodies(true).len() >= 2
+    })
+    .await;
+
+    let relays = relay_messages(&crate::common::read_root_events(fixture.data()));
+    assert_eq!(relays.len(), 1, "交回只出恰一条 relay：{relays:?}");
+    let body = &relays[0].1;
+    assert_eq!(body["kind"], "task_report");
+    assert_eq!(body["state"], "blocked");
+    // 页面按 origin=agent 把 blocked 画成「卡住了」；包缺项才是「没开跑」。
+    assert_eq!(body["origin"], "agent");
+    assert_eq!(body["question"], "这超出了任务范围，要不要改任务？");
+    assert_eq!(body["summary"], "用户要改任务要求，这超出了任务范围");
+    assert_eq!(body["task"]["stage"], "needs_conditions");
+
+    let store = tasks_store(fixture.data());
+    let task_row = store.task(&task.id).unwrap().unwrap();
+    let attempt = task_row.latest_attempt().expect("Attempt").clone();
+    assert_eq!(
+        attempt.end,
+        Some(AttemptEnd::Reported),
+        "交回也以 reported 结束这个 Attempt"
+    );
+    let events = thin_events(fixture.data(), &attempt);
+    let (text, error) = tool_result(&events, "call-handback");
+    assert_eq!(error, None, "{text}");
+    assert!(text.contains("已交回"), "{text}");
+}
+
+#[tokio::test]
 async fn a_failed_report_relays_and_leaves_the_task_open() {
     let fixture = Fixture::new().await;
     let task = fixture.accept(false).await;
