@@ -3178,3 +3178,74 @@ async fn saying_while_running_steers_the_next_step_without_a_new_attempt() {
         "还是同一个 Attempt 在跑"
     );
 }
+
+/// 全局暂停时说的这句压着不送（不算失败），开闸后按原输入送进原会话。
+#[tokio::test]
+async fn a_paused_task_dialog_holds_the_input_until_the_gate_opens() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(false).await;
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-report", "ready", "第一轮的答案", None));
+    fixture
+        .router
+        .push_thin(crate::common::text_sse("第一轮收尾"));
+    for _ in 0..2 {
+        fixture.router.push_kind(crate::common::text_sse("收到"));
+    }
+    let store = tasks_store(fixture.data());
+    wait_until("第一轮报 ready", || reported_ready(&store, &task.id)).await;
+    let attempts_before = attempt_count(&store.task(&task.id).unwrap().unwrap());
+
+    fixture
+        .host
+        .dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
+            paused: Some(true),
+            ..Default::default()
+        }))
+        .await
+        .expect("暂停");
+    let said = say_in_task_dialog(&fixture.host, &task, "暂停时说的").await;
+    assert_eq!(said.new_attempt, Some(attempts_before as u64 + 1));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let held = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(attempt_count(&held), attempts_before, "暂停时不接着开");
+    assert!(
+        store
+            .effect_pending(EffectKind::Delivery, task.id.as_str())
+            .unwrap(),
+        "delivery 留在库里等开闸"
+    );
+    assert!(
+        !fixture
+            .router
+            .bodies(true)
+            .iter()
+            .any(|body| body.contains("暂停时说的")),
+        "暂停时这句话没送进任务会话"
+    );
+
+    fixture
+        .router
+        .push_thin_for(task.id.as_str(), crate::common::text_sse("开闸后接着做"));
+    fixture
+        .host
+        .dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
+            paused: Some(false),
+            ..Default::default()
+        }))
+        .await
+        .expect("开闸");
+    wait_until("开闸后开新 Attempt", || {
+        attempt_count(&store.task(&task.id).unwrap().unwrap()) > attempts_before
+    })
+    .await;
+    wait_until("开闸后请求带上这句话", || {
+        fixture
+            .router
+            .bodies(true)
+            .last()
+            .is_some_and(|body| body.contains("暂停时说的"))
+    })
+    .await;
+}
