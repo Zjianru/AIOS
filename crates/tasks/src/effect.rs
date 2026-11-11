@@ -78,8 +78,12 @@ pub enum EffectPayload {
     /// 启动扫描认出这次启动有被打断的任务，请投递方叫 Kind 汇报并出确认卡。
     ///
     /// 键是启动 id：同一次启动认出的任务合并成一条效果，Kind 一次汇报完。
+    /// 载荷里记下这次扫描打断的任务：投递时只报这些，跨启动不重复追问。
+    /// 旧库里的行没有这个字段，按空读；投递方退回「全部还被打断的」，不吞掉那次汇报。
     Restart {
         boot_id: BootId,
+        #[serde(default)]
+        task_ids: Vec<TaskId>,
     },
 }
 
@@ -105,7 +109,7 @@ impl EffectPayload {
                 attempt_id,
             } => format!("stop:{task_id}:{attempt_id}"),
             Self::Notice { input_id, .. } => format!("cc:{input_id}"),
-            Self::Restart { boot_id } => boot_id.to_string(),
+            Self::Restart { boot_id, .. } => boot_id.to_string(),
         }
     }
 }

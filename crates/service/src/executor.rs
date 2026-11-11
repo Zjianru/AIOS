@@ -592,15 +592,15 @@ impl TaskRuntime {
         }
     }
 
-    /// 把一条 restart Steer 进 Kind 根会话：请 Kind 汇报哪些任务被打断了、出接续卡。
+    /// 把一条 restart Steer 进 Kind 根会话：汇报这次启动打断、还没接续的任务，出接续卡。
     ///
     /// 根会话不可用（模型/凭证没接上）时 Later：效果留在库里，根会话好了再送。
     async fn deliver_restart(self: &Arc<Self>, claim: EffectClaim) {
-        let EffectPayload::Restart { boot_id } = &claim.payload else {
+        let EffectPayload::Restart { boot_id, task_ids } = &claim.payload else {
             self.finish_or_fail(&claim, Err("restart 载荷不是 restart".to_owned()));
             return;
         };
-        let tasks = match self.interrupted_facts() {
+        let tasks = match self.interrupted_facts(task_ids) {
             Ok(tasks) => tasks,
             Err(error) => {
                 self.finish_or_fail(&claim, Err(error));
@@ -644,10 +644,18 @@ impl TaskRuntime {
         }
     }
 
-    /// 此刻还「被打断了」的任务事实，按任务库顺序；只给 Kind 事实，不给判断。
-    fn interrupted_facts(&self) -> Result<Vec<Value>, String> {
+    /// 这次启动扫描打断、此刻还「被打断了」的任务事实，按扫描顺序；只给 Kind 事实，不给判断。
+    ///
+    /// 只认载荷里的任务：上次启动问过、用户暂不的任务不再上卡。旧库里没带任务 id 的
+    /// restart 载荷退回「全部还被打断的」——不能因为缺字段把那次汇报吞掉。
+    fn interrupted_facts(&self, task_ids: &[TaskId]) -> Result<Vec<Value>, String> {
+        let ids = if task_ids.is_empty() {
+            self.store.task_ids().map_err(|error| error.to_string())?
+        } else {
+            task_ids.to_vec()
+        };
         let mut facts = Vec::new();
-        for task_id in self.store.task_ids().map_err(|error| error.to_string())? {
+        for task_id in ids {
             let Some(task) = self
                 .store
                 .task(&task_id)

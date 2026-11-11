@@ -108,7 +108,8 @@ fn a_running_attempt_without_a_report_is_interrupted_with_one_restart() {
     assert_eq!(
         restart.payload,
         EffectPayload::Restart {
-            boot_id: BootId::new("boot-1")
+            boot_id: BootId::new("boot-1"),
+            task_ids: vec![task.id.clone()],
         }
     );
     assert_eq!(restart.key, "boot-1");
@@ -251,18 +252,60 @@ fn one_boot_queues_a_single_restart_for_all_interrupted_tasks() {
         .claim_effect(EffectKind::Restart, T0 + 10)
         .unwrap()
         .expect("要有一条 restart");
-    assert_eq!(
-        restart.payload,
-        EffectPayload::Restart {
-            boot_id: BootId::new("boot-1")
-        }
-    );
+    let EffectPayload::Restart { task_ids, .. } = &restart.payload else {
+        panic!("restart 载荷不是 restart");
+    };
+    assert_eq!(task_ids.len(), 2, "{task_ids:?}");
+    assert!(task_ids.contains(&first.id));
+    assert!(task_ids.contains(&second.id));
     assert!(store.complete_effect(&restart).unwrap());
     assert_eq!(
         store.claim_effect(EffectKind::Restart, T0 + 10).unwrap(),
         None,
         "同一次启动只排一条 restart"
     );
+}
+
+#[test]
+fn a_second_boot_queues_only_the_tasks_it_interrupted() {
+    let (_directory, store) = open_store();
+    let first = create(&store, "甲");
+    let second = create(&store, "乙");
+    open_attempt(&store, &first);
+    store.scan_at_boot(&BootId::new("boot-1"), T0 + 10).unwrap();
+
+    open_attempt(&store, &second);
+    store.scan_at_boot(&BootId::new("boot-2"), T0 + 20).unwrap();
+
+    let first_restart = store
+        .claim_effect(EffectKind::Restart, T0 + 20)
+        .unwrap()
+        .expect("第一次启动的 restart");
+    assert_eq!(first_restart.key, "boot-1");
+    assert_eq!(
+        first_restart.payload,
+        EffectPayload::Restart {
+            boot_id: BootId::new("boot-1"),
+            task_ids: vec![first.id.clone()],
+        },
+        "第一次启动只记自己打断的甲"
+    );
+    assert!(store.complete_effect(&first_restart).unwrap());
+
+    let second_restart = store
+        .claim_effect(EffectKind::Restart, T0 + 20)
+        .unwrap()
+        .expect("第二次启动的 restart");
+    assert_eq!(second_restart.key, "boot-2");
+    assert_eq!(
+        second_restart.payload,
+        EffectPayload::Restart {
+            boot_id: BootId::new("boot-2"),
+            task_ids: vec![second.id.clone()],
+        },
+        "第二次启动只记自己打断的乙，不带上甲"
+    );
+    assert!(store.complete_effect(&second_restart).unwrap());
 }
 
 #[test]

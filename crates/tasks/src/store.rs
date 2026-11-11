@@ -648,10 +648,27 @@ impl Store {
         attempt.end = Some(decision.end());
         save_task(&transaction, &task)?;
         if decision == Decision::Interrupted {
+            // 同一次启动只合并一条 restart：把这次扫到的任务并进去，投递时只报这些。
+            let existing: Option<String> = transaction
+                .query_row(
+                    "SELECT value FROM effect WHERE kind = ?1 AND key = ?2",
+                    params![EffectKind::Restart.as_str(), boot_id.to_string()],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let mut task_ids = match existing {
+                Some(value) => match serde_json::from_str(&value)? {
+                    EffectPayload::Restart { task_ids, .. } => task_ids,
+                    _ => Vec::new(),
+                },
+                None => Vec::new(),
+            };
+            task_ids.push(id.clone());
             self.enqueue_effect_in(
                 &transaction,
                 &EffectPayload::Restart {
                     boot_id: boot_id.clone(),
+                    task_ids,
                 },
                 now,
             )?;
