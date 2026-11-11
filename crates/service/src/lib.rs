@@ -21,6 +21,7 @@ mod session_select;
 mod settings_surface;
 mod status;
 mod web;
+mod worktree;
 
 pub mod fx;
 pub mod models;

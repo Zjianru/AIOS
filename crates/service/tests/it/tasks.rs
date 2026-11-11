@@ -6254,3 +6254,853 @@ async fn immediately_stopping_a_task_kills_its_background_jobs() {
         "后台命令收到 TERM 后落了文件"
     );
 }
+
+/// 在临时目录里建一个带一次提交的 git 仓库：sub/app.py 和 root.py 都已跟踪。
+fn init_git_repo(root: &Path) {
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    std::fs::write(root.join("sub").join("app.py"), "old\n").unwrap();
+    std::fs::write(root.join("root.py"), "root\n").unwrap();
+    git(root, &["init", "-q", "-b", "main"]);
+    git(root, &["add", "-A"]);
+    git(
+        root,
+        &[
+            "-c",
+            "user.name=AIOS Test",
+            "-c",
+            "user.email=aios@example.test",
+            "commit",
+            "-q",
+            "-m",
+            "init",
+        ],
+    );
+}
+
+/// 在仓库里跑一条 git；测试的提交配置和用户全局配置隔开（不读用户的签名设置）。
+fn git(dir: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        // 关掉 auto-gc：它会自己起后台进程，测试结束时可能还没退，被当成泄漏的进程。
+        .args(["-c", "gc.auto=0"])
+        .args(args)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .output()
+        .expect("跑 git");
+    assert!(
+        output.status.success(),
+        "git {args:?} 失败：{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// 仓库里登记的工作树路径（canonical）。
+fn listed_worktrees(repo: &Path) -> Vec<std::path::PathBuf> {
+    git(repo, &["worktree", "list", "--porcelain"])
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| std::path::PathBuf::from(path)))
+        .collect()
+}
+
+/// ThinAgent 收到的 assignment（第一条 user 消息就是 JSON）。
+fn assignment(events: &[session::Event]) -> Value {
+    events
+        .iter()
+        .find_map(|event| {
+            let session::EventKind::UserMessage { message, .. } = &event.kind else {
+                return None;
+            };
+            let text: String = message
+                .content
+                .iter()
+                .filter_map(model::ContentBlock::as_text)
+                .collect();
+            let value: Value = serde_json::from_str(&text).ok()?;
+            value["task_id"].is_string().then_some(value)
+        })
+        .expect("ThinAgent 的 assignment")
+}
+
+/// 请求体系统提示里的工作目录。
+fn request_working_directory(body: &str) -> String {
+    let value: Value = serde_json::from_str(body).expect("请求体 JSON");
+    let system = value["system"].as_str().expect("system");
+    let prefix = "You are AIOS, a coding agent. Your working directory is ";
+    let line = system
+        .lines()
+        .find_map(|line| line.strip_prefix(prefix))
+        .expect("system 里的工作目录");
+    line.strip_suffix('.').expect("工作目录句号").to_owned()
+}
+
+/// 受理前就能按标题排队 ThinAgent 回复的写任务参数：cwd 用仓库里的 sub，
+/// 写入范围是 sub/app.py，开工作树。
+fn worktree_task_args() -> Value {
+    serde_json::json!({
+        "title": "改一下判重",
+        "requirement": "把重复判断改成按 url",
+        "dod": "同一个 url 只留一条",
+        "cwd": "sub",
+        "write_scope": "app.py",
+        "worktree": true
+    })
+}
+
+/// 任务开出来的工作树根：测试先断言它真的开出来了，再拿 canonical 路径。
+fn worktree_root(fixture: &Fixture, task: &Task) -> std::path::PathBuf {
+    let root = fixture.data().join("worktrees").join(task.id.as_str());
+    assert!(root.is_dir(), "工作树目录没开出来：{}", root.display());
+    std::fs::canonicalize(&root).expect("canonicalize 工作树根")
+}
+
+/// 工作树里和原 cwd（仓库的 sub）对应的子目录。
+fn worktree_cwd(fixture: &Fixture, task: &Task) -> std::path::PathBuf {
+    let cwd = worktree_root(fixture, task).join("sub");
+    assert!(cwd.is_dir(), "工作树里没有对应的 sub：{}", cwd.display());
+    std::fs::canonicalize(&cwd).expect("canonicalize 工作树 cwd")
+}
+
+/// worktree:true：第一次 Attempt 起跑前在 cwd 所在的仓库开工作树，ThinAgent 的 cwd
+/// 换到工作树里对应的 sub；写落到工作树，原目录不动；卡数据带工作树路径。
+#[tokio::test]
+async fn a_worktree_task_runs_in_the_worktree_and_writes_only_there() {
+    let fixture = Fixture::new().await;
+    init_git_repo(fixture.cwd.path());
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        crate::common::tool_use_sse(
+            1,
+            "call-read",
+            "read",
+            &serde_json::json!({"file_path": "app.py"}).to_string(),
+        ),
+    );
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        crate::common::tool_use_sse(
+            2,
+            "call-write",
+            "write",
+            &serde_json::json!({"file_path": "app.py", "content": "changed\n"}).to_string(),
+        ),
+    );
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        report_sse(2, "call-report", "ready", "改好了", None),
+    );
+    fixture
+        .router
+        .push_thin_for_title("改一下判重", crate::common::text_sse("done"));
+    let task = fixture.accept_args(false, worktree_task_args(), 1).await;
+    let store = tasks_store(fixture.data());
+    wait_until("worktree ready", || reported_ready(&store, &task.id)).await;
+    wait_until("ready relay", || {
+        relay_messages(&crate::common::read_root_events(fixture.data()))
+            .iter()
+            .any(|(_, body)| body["state"] == "ready")
+    })
+    .await;
+
+    let worktree_root = worktree_root(&fixture, &task);
+    let worktree_cwd = worktree_cwd(&fixture, &task);
+    assert_eq!(
+        worktree_cwd.strip_prefix(&worktree_root).unwrap(),
+        Path::new("sub"),
+        "工作树里的子目录对应原 cwd 的相对位置"
+    );
+
+    let stored = store.task(&task.id).unwrap().unwrap();
+    let attempt = stored.latest_attempt().expect("Attempt").clone();
+    let events = thin_events(fixture.data(), &attempt);
+    let assignment = assignment(&events);
+    assert_eq!(
+        assignment["cwd"],
+        serde_json::json!(worktree_cwd.display().to_string()),
+        "assignment 的 cwd 在工作树里"
+    );
+    assert_eq!(
+        assignment["write_scope"],
+        serde_json::json!(worktree_cwd.join("app.py").display().to_string()),
+        "写入范围按同样的相对位置换算"
+    );
+    let bodies = fixture.router.bodies(true);
+    assert!(
+        bodies
+            .iter()
+            .any(|body| request_working_directory(body) == worktree_cwd.display().to_string()),
+        "ThinAgent 请求的工作目录在工作树里：{bodies:?}"
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(fixture.cwd.path().join("sub").join("app.py")).unwrap(),
+        "old\n",
+        "原目录文件不改"
+    );
+    assert_eq!(
+        std::fs::read_to_string(worktree_cwd.join("app.py")).unwrap(),
+        "changed\n",
+        "写落在工作树里"
+    );
+
+    let repo = fixture.cwd.path();
+    let listed = listed_worktrees(repo);
+    assert_eq!(listed.len(), 2, "原仓库加一个工作树：{listed:?}");
+    assert!(
+        listed.contains(&worktree_root),
+        "工作树登记在这个仓库里：{listed:?}"
+    );
+    let branches = git(repo, &["branch", "--list", &format!("aios/{}", task.id)]);
+    assert_eq!(
+        branches.matches(&format!("aios/{}", task.id)).count(),
+        1,
+        "工作树分支只有一条：{branches}"
+    );
+
+    let relays = relay_messages(&crate::common::read_root_events(fixture.data()));
+    let (_, ready) = relays
+        .iter()
+        .find(|(_, body)| body["state"] == "ready")
+        .expect("ready relay");
+    assert_eq!(ready["task"]["stage"], "ready_for_review");
+    assert_eq!(
+        ready["worktree_path"],
+        serde_json::json!(worktree_root.display().to_string()),
+        "卡数据带工作树路径"
+    );
+}
+
+/// 工作树任务报 ready 之后在任务对话里说话：新 Attempt 还在同一个工作树，
+/// 不再 git worktree add，也不回原目录写。
+#[tokio::test]
+async fn saying_again_keeps_the_worktree_task_in_the_same_worktree() {
+    let fixture = Fixture::new().await;
+    init_git_repo(fixture.cwd.path());
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        crate::common::tool_use_sse(
+            1,
+            "call-read-1",
+            "read",
+            &serde_json::json!({"file_path": "app.py"}).to_string(),
+        ),
+    );
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        crate::common::tool_use_sse(
+            2,
+            "call-write-1",
+            "write",
+            &serde_json::json!({"file_path": "app.py", "content": "first\n"}).to_string(),
+        ),
+    );
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        report_sse(2, "call-report-1", "ready", "第一轮", None),
+    );
+    fixture
+        .router
+        .push_thin_for_title("改一下判重", crate::common::text_sse("done"));
+    let task = fixture.accept_args(false, worktree_task_args(), 2).await;
+    let store = tasks_store(fixture.data());
+    wait_until("worktree 第一轮 ready", || {
+        reported_ready(&store, &task.id)
+    })
+    .await;
+    let before = store.task(&task.id).unwrap().unwrap();
+    let first_attempt = before.latest_attempt().cloned().expect("第一个 Attempt");
+    let (first_write, first_error) =
+        tool_result(&thin_events(fixture.data(), &first_attempt), "call-write-1");
+    assert_eq!(first_error, None, "第一个 Attempt 写失败：{first_write}");
+    let first = before.latest_attempt().cloned().expect("第一个 Attempt");
+    let worktree_cwd = worktree_cwd(&fixture, &task);
+    let listed_before = listed_worktrees(fixture.cwd.path());
+    let branches_before = git(
+        fixture.cwd.path(),
+        &["branch", "--list", &format!("aios/{}", task.id)],
+    );
+    assert_eq!(listed_before.len(), 2, "{listed_before:?}");
+    // 第一轮的收尾请求可能还没跑完；等它结束再排第二轮的脚本，免得被收尾请求领走。
+    wait_until("第一轮收尾", || {
+        session_turn_ended(fixture.data(), &first)
+    })
+    .await;
+
+    // 停了再说话：第二个 Attempt 继续改同一个文件。
+    fixture.router.push_thin_for(
+        task.id.as_str(),
+        crate::common::tool_use_sse(
+            3,
+            "call-read-2",
+            "read",
+            &serde_json::json!({"file_path": "app.py"}).to_string(),
+        ),
+    );
+    fixture.router.push_thin_for(
+        task.id.as_str(),
+        crate::common::tool_use_sse(
+            4,
+            "call-write-2",
+            "write",
+            &serde_json::json!({"file_path": "app.py", "content": "second\n"}).to_string(),
+        ),
+    );
+    fixture.router.push_thin_for(
+        task.id.as_str(),
+        report_sse(4, "call-report-2", "ready", "第二轮", None),
+    );
+    fixture
+        .router
+        .push_thin_for(task.id.as_str(), crate::common::text_sse("done"));
+    let said = say_in_task_dialog(&fixture.host, &task, "再改一下").await;
+    assert_eq!(said.new_attempt, Some(first.id.0 + 1));
+    wait_until("第二个 Attempt 报 ready", || {
+        store.task(&task.id).ok().flatten().is_some_and(|task| {
+            attempt_count(&task) == 2
+                && task.latest_report().map(|report| report.state) == Some(ReportState::Ready)
+        })
+    })
+    .await;
+
+    let after = store.task(&task.id).unwrap().unwrap();
+    let second = after.latest_attempt().expect("第二个 Attempt");
+    assert_eq!(second.trigger, tasks::AttemptTrigger::UserMessage);
+    assert_eq!(
+        second.conversation.as_ref(),
+        first.conversation.as_ref(),
+        "还在原任务会话里"
+    );
+    wait_until("接着做的请求", || {
+        fixture
+            .router
+            .bodies(true)
+            .iter()
+            .any(|body| body.contains("再改一下"))
+    })
+    .await;
+    let resumed = fixture
+        .router
+        .bodies(true)
+        .into_iter()
+        .find(|body| body.contains("再改一下"))
+        .expect("接着做的请求");
+    assert_eq!(
+        request_working_directory(&resumed),
+        worktree_cwd.display().to_string(),
+        "新 Attempt 的 cwd 仍在工作树里"
+    );
+    let second_events = thin_events(fixture.data(), second);
+    let (second_write, second_error) = tool_result(&second_events, "call-write-2");
+    assert_eq!(second_error, None, "第二个 Attempt 写失败：{second_write}");
+    assert_eq!(
+        std::fs::read_to_string(worktree_cwd.join("app.py")).unwrap(),
+        "second\n",
+        "第二个 Attempt 写进同一个工作树"
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.cwd.path().join("sub").join("app.py")).unwrap(),
+        "old\n",
+        "原目录文件不改"
+    );
+    assert_eq!(
+        listed_worktrees(fixture.cwd.path()),
+        listed_before,
+        "不再 git worktree add"
+    );
+    assert_eq!(
+        git(
+            fixture.cwd.path(),
+            &["branch", "--list", &format!("aios/{}", task.id)]
+        ),
+        branches_before,
+        "工作树分支没有多出来"
+    );
+}
+
+/// 工作树任务跨一次服务重启：任务行里的工作树还在，停后说话仍开在同一棵树，不再 add。
+#[tokio::test]
+async fn a_worktree_task_keeps_its_tree_across_a_service_restart() {
+    let fixture = Fixture::new().await;
+    init_git_repo(fixture.cwd.path());
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        crate::common::tool_use_sse(
+            1,
+            "call-read-1",
+            "read",
+            &serde_json::json!({"file_path": "app.py"}).to_string(),
+        ),
+    );
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        crate::common::tool_use_sse(
+            2,
+            "call-write-1",
+            "write",
+            &serde_json::json!({"file_path": "app.py", "content": "first\n"}).to_string(),
+        ),
+    );
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        report_sse(3, "call-report-1", "ready", "第一轮", None),
+    );
+    fixture
+        .router
+        .push_thin_for_title("改一下判重", crate::common::text_sse("done"));
+    let task = fixture.accept_args(false, worktree_task_args(), 1).await;
+    let store = tasks_store(fixture.data.path());
+    wait_until("worktree 第一轮 ready", || {
+        reported_ready(&store, &task.id)
+    })
+    .await;
+    let before = store.task(&task.id).unwrap().unwrap();
+    let first = before.latest_attempt().cloned().expect("第一个 Attempt");
+    let worktree_cwd = worktree_cwd(&fixture, &task);
+    let listed_before = listed_worktrees(fixture.cwd.path());
+    wait_until("第一轮收尾", || {
+        session_turn_ended(fixture.data.path(), &first)
+    })
+    .await;
+    wait_until("ready relay", || {
+        !relay_messages(&crate::common::read_root_events(fixture.data.path())).is_empty()
+    })
+    .await;
+
+    // 模拟进程退出：换一个新根宿主，任务行里的工作树要还在。
+    fixture.host.task_runtime().expect("runtime").crash();
+    drop(fixture.host);
+    let host = reopen_actions_host(&fixture._server, fixture.data.path(), fixture.cwd.path()).await;
+
+    fixture.router.push_thin_for(
+        task.id.as_str(),
+        crate::common::tool_use_sse(
+            4,
+            "call-read-2",
+            "read",
+            &serde_json::json!({"file_path": "app.py"}).to_string(),
+        ),
+    );
+    fixture.router.push_thin_for(
+        task.id.as_str(),
+        crate::common::tool_use_sse(
+            5,
+            "call-write-2",
+            "write",
+            &serde_json::json!({"file_path": "app.py", "content": "second\n"}).to_string(),
+        ),
+    );
+    fixture.router.push_thin_for(
+        task.id.as_str(),
+        report_sse(6, "call-report-2", "ready", "第二轮", None),
+    );
+    fixture
+        .router
+        .push_thin_for(task.id.as_str(), crate::common::text_sse("done"));
+    fixture.router.push_kind(crate::common::text_sse("收到"));
+    let said = say_in_task_dialog(&host, &task, "再改一下").await;
+    assert_eq!(said.new_attempt, Some(first.id.0 + 1));
+    wait_until("重启后的第二个 Attempt 报 ready", || {
+        store.task(&task.id).ok().flatten().is_some_and(|task| {
+            attempt_count(&task) == 2
+                && task.latest_report().map(|report| report.state) == Some(ReportState::Ready)
+        })
+    })
+    .await;
+
+    let after = store.task(&task.id).unwrap().unwrap();
+    let second = after.latest_attempt().expect("第二个 Attempt");
+    assert_eq!(second.trigger, tasks::AttemptTrigger::UserMessage);
+    wait_until("重启后接着做的请求", || {
+        fixture
+            .router
+            .bodies(true)
+            .iter()
+            .any(|body| body.contains("再改一下"))
+    })
+    .await;
+    let resumed = fixture
+        .router
+        .bodies(true)
+        .into_iter()
+        .find(|body| body.contains("再改一下"))
+        .expect("接着做的请求");
+    assert_eq!(
+        request_working_directory(&resumed),
+        worktree_cwd.display().to_string(),
+        "重启后的新 Attempt 的 cwd 仍在工作树里"
+    );
+    let second_events = thin_events(fixture.data.path(), second);
+    let (write_text, write_error) = tool_result(&second_events, "call-write-2");
+    assert_eq!(write_error, None, "重启后写失败：{write_text}");
+    assert_eq!(
+        std::fs::read_to_string(worktree_cwd.join("app.py")).unwrap(),
+        "second\n",
+        "重启后写进同一个工作树"
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.cwd.path().join("sub").join("app.py")).unwrap(),
+        "old\n",
+        "原目录文件不改"
+    );
+    assert_eq!(
+        listed_worktrees(fixture.cwd.path()),
+        listed_before,
+        "重启后不再 git worktree add"
+    );
+}
+
+/// 确认卡接续被打断的工作树任务：新 Attempt 还在同一棵树，不再 add。
+#[tokio::test]
+async fn confirming_an_interrupted_worktree_task_resumes_in_the_same_worktree() {
+    let (server, router, data, cwd) = restart_setup().await;
+    init_git_repo(cwd.path());
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+    host.task_runtime().expect("runtime").set_pump_paused(true);
+    kind_turn(
+        &host,
+        &router,
+        data.path(),
+        "kind-a",
+        "派一个任务",
+        1,
+        vec![
+            crate::common::tool_use_sse(
+                0,
+                "call-accept-a",
+                "task_accept",
+                &worktree_task_args().to_string(),
+            ),
+            crate::common::text_sse("已派出"),
+        ],
+    )
+    .await;
+    let store = tasks_store(data.path());
+    let task = one_task(&store);
+
+    router.push_thin_for_title("改一下判重", crate::common::text_sse("还在做"));
+    router.set_thin_delay(Duration::from_secs(10));
+    host.task_runtime().expect("runtime").set_pump_paused(false);
+    wait_until("工作树任务在跑", || {
+        store
+            .task(&task.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().cloned())
+            .is_some_and(|attempt| attempt.conversation.is_some() && attempt.ended_at.is_none())
+    })
+    .await;
+    let worktree_root = std::fs::canonicalize(data.path().join("worktrees").join(task.id.as_str()))
+        .expect("工作树目录");
+    let worktree_cwd = std::fs::canonicalize(worktree_root.join("sub")).expect("工作树 cwd");
+    let listed_before = listed_worktrees(cwd.path());
+    assert_eq!(listed_before.len(), 2, "{listed_before:?}");
+
+    host.task_runtime().expect("runtime").crash();
+    drop(host);
+    router.clear_thin_delay();
+    push_restart_turn(&router, "call-restart-card", &[&task], "被打断了。");
+    let host = reopen_actions_host(&server, data.path(), cwd.path()).await;
+    wait_until("接续卡出来", || {
+        !card_options(
+            &crate::common::read_root_events(data.path()),
+            "call-restart-card",
+        )
+        .is_empty()
+    })
+    .await;
+
+    router.push_thin_for(task.id.as_str(), crate::common::text_sse("接着做"));
+    router.push_kind(crate::common::text_sse("收到"));
+    let decision = confirm_card_option(&host, "call-restart-card", task.id.as_str()).await;
+    assert_eq!(decision["phase"], "confirmed", "{decision}");
+    wait_until("接续开了新的 Attempt", || {
+        store
+            .task(&task.id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| attempt_count(&task) == 2)
+    })
+    .await;
+    let resumed = store.task(&task.id).unwrap().unwrap();
+    let second = resumed.latest_attempt().unwrap().clone();
+    assert_eq!(second.trigger, tasks::AttemptTrigger::Resume);
+    wait_until("接续请求带上恢复说明", || {
+        router
+            .bodies(true)
+            .iter()
+            .any(|body| body.contains(RECOVERY_NOTE))
+    })
+    .await;
+    let body = router
+        .bodies(true)
+        .into_iter()
+        .find(|body| body.contains(RECOVERY_NOTE))
+        .expect("接续请求");
+    assert_eq!(
+        request_working_directory(&body),
+        worktree_cwd.display().to_string(),
+        "接续的新 Attempt 的 cwd 仍在工作树里"
+    );
+    assert_eq!(
+        listed_worktrees(cwd.path()),
+        listed_before,
+        "不再 git worktree add"
+    );
+    drop(host);
+}
+
+/// cwd 不是 git 仓库：不开会话，进待补足条件，卡上写固定的说明。
+#[tokio::test]
+async fn a_worktree_task_outside_a_repository_waits_for_conditions() {
+    let fixture = Fixture::new().await;
+    let mut args = worktree_task_args();
+    args["cwd"] = serde_json::json!(".");
+    let task = fixture.accept_args(false, args, 1).await;
+    let store = tasks_store(fixture.data());
+    wait_until("非仓库卡", || {
+        relay_messages(&crate::common::read_root_events(fixture.data()))
+            .iter()
+            .any(|(_, body)| body["state"] == "blocked")
+    })
+    .await;
+
+    let stored = store.task(&task.id).unwrap().unwrap();
+    assert!(
+        stored
+            .missing
+            .iter()
+            .any(|item| item.as_str() == "这个目录不是 git 仓库，开不了工作树"),
+        "缺项原文固定：{:?}",
+        stored.missing
+    );
+    let attempt = stored.latest_attempt().expect("缺项 Attempt");
+    assert_eq!(attempt.end, Some(AttemptEnd::NotOpened));
+    assert_eq!(attempt.conversation, None, "非仓库不开会话");
+    assert!(
+        !fixture
+            .data()
+            .join("worktrees")
+            .join(task.id.as_str())
+            .exists(),
+        "没开出工作树"
+    );
+    assert!(
+        fixture.router.bodies(true).is_empty(),
+        "非仓库不该给 ThinAgent 发请求"
+    );
+    assert_eq!(
+        store.stage(&task.id).unwrap(),
+        Stage::NeedsConditions,
+        "进待补足条件"
+    );
+
+    let relays = relay_messages(&crate::common::read_root_events(fixture.data()));
+    let (_, card) = relays
+        .iter()
+        .find(|(_, body)| body["state"] == "blocked")
+        .expect("blocked 卡");
+    assert_eq!(card["origin"], "package");
+    assert_eq!(card["task"]["stage"], "needs_conditions");
+    assert_eq!(
+        card["summary"], "任务包缺：这个目录不是 git 仓库，开不了工作树",
+        "卡上写固定说明"
+    );
+}
+
+/// 工作树任务交回、用户在 Kind 对话里同意扩大范围：新 Attempt 还在同一个工作树，
+/// 新范围按同样的相对位置换算，第一条输入写明换算后的范围。
+#[tokio::test]
+async fn task_update_in_a_worktree_resumes_with_the_converted_scope() {
+    let fixture = Fixture::new().await;
+    init_git_repo(fixture.cwd.path());
+    // 第一个 Attempt：越界写被拒、交回。
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        crate::common::tool_use_sse(
+            1,
+            "call-write-1",
+            "write",
+            &serde_json::json!({"file_path": "outside.py", "content": "changed\n"}).to_string(),
+        ),
+    );
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        crate::common::tool_use_sse(
+            2,
+            "call-handback",
+            "task_handback",
+            &serde_json::json!({"reason": "outside.py 不在写入范围里"}).to_string(),
+        ),
+    );
+    fixture
+        .router
+        .push_thin_for_title("改一下判重", crate::common::text_sse("交回"));
+    // 第二个 Attempt：范围扩大后写成功、报 ready。
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        crate::common::tool_use_sse(
+            3,
+            "call-write-2",
+            "write",
+            &serde_json::json!({"file_path": "outside.py", "content": "changed\n"}).to_string(),
+        ),
+    );
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        report_sse(4, "call-report", "ready", "改完了", None),
+    );
+    fixture
+        .router
+        .push_thin_for_title("改一下判重", crate::common::text_sse("done"));
+
+    let task = fixture.accept_args(true, worktree_task_args(), 0).await;
+    // 交回 relay 会叫醒 Kind 一轮。
+    fixture.router.push_kind(crate::common::text_sse("收到卡"));
+    fixture
+        .host
+        .task_runtime()
+        .expect("runtime")
+        .set_pump_paused(false);
+    wait_until("交回 relay", || {
+        !relay_messages(&crate::common::read_root_events(fixture.data())).is_empty()
+    })
+    .await;
+    crate::common::wait_turns(&fixture.host, fixture.data(), 2).await;
+    let worktree_cwd = worktree_cwd(&fixture, &task);
+    let scope = worktree_cwd.join("outside.py");
+
+    // 用户在 Kind 对话里同意扩大范围。
+    let update_args = serde_json::json!({
+        "task_id": task.id.as_str(),
+        "write_scope": "outside.py"
+    })
+    .to_string();
+    fixture.router.push_kind(crate::common::tool_use_sse(
+        5,
+        "call-update",
+        "task_update",
+        &update_args,
+    ));
+    fixture
+        .router
+        .push_kind(crate::common::text_sse("好，范围扩大了"));
+    fixture
+        .router
+        .push_kind(crate::common::text_sse("收到结果"));
+    fixture
+        .host
+        .dispatch(Call::Send(send(
+            &fixture.host,
+            "kind-2",
+            "我同意把写入范围扩大到 outside.py",
+        )))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&fixture.host, fixture.data(), 3).await;
+
+    let store = tasks_store(fixture.data());
+    wait_until("第二个 Attempt 报 ready", || {
+        store.task(&task.id).ok().flatten().is_some_and(|task| {
+            task.requirement_version() == 2
+                && attempt_count(&task) == 2
+                && task.latest_report().map(|report| report.state) == Some(ReportState::Ready)
+        })
+    })
+    .await;
+
+    let updated = store.task(&task.id).unwrap().unwrap();
+    let second = updated.latest_attempt().expect("第二个 Attempt").clone();
+    assert_eq!(second.trigger, tasks::AttemptTrigger::RequirementChanged);
+    let events = thin_events(fixture.data(), &second);
+    let request_id = format!("task-update:{}:{}", updated.id, second.id);
+    let note = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            session::EventKind::UserMessage { message, .. } => match &message.source {
+                model::MessageSource::User { rpc_id: Some(id) } if id == &request_id => Some(
+                    message
+                        .content
+                        .iter()
+                        .filter_map(model::ContentBlock::as_text)
+                        .collect::<String>(),
+                ),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("新 Attempt 的第一条输入");
+    assert!(
+        note.contains(&scope.display().to_string()),
+        "第一条输入写明换算后的范围：{note}"
+    );
+    assert!(note.contains("写入范围"), "{note}");
+
+    let (write_text, write_error) = tool_result(&events, "call-write-2");
+    assert_eq!(write_error, None, "{write_text}");
+    assert_eq!(
+        std::fs::read_to_string(&scope).unwrap(),
+        "changed\n",
+        "新范围里的文件在工作树里写成"
+    );
+    assert!(
+        !fixture.cwd.path().join("sub").join("outside.py").exists(),
+        "原目录没多出文件"
+    );
+    assert_eq!(
+        std::fs::read_to_string(fixture.cwd.path().join("sub").join("app.py")).unwrap(),
+        "old\n",
+        "原目录文件不改"
+    );
+    assert_eq!(listed_worktrees(fixture.cwd.path()).len(), 2);
+}
+
+/// 工作树任务的写入范围在原仓库外面：换算不进工作树，按缺项停机，不悄悄写回原目录。
+#[tokio::test]
+async fn a_worktree_task_with_an_outside_scope_waits_for_conditions() {
+    let fixture = Fixture::new().await;
+    init_git_repo(fixture.cwd.path());
+    let outside = fixture.data().join("outside.txt");
+    let mut args = worktree_task_args();
+    args["write_scope"] = serde_json::json!(outside.to_string_lossy());
+    let task = fixture.accept_args(false, args, 1).await;
+    let store = tasks_store(fixture.data());
+    wait_until("范围换算不了卡", || {
+        relay_messages(&crate::common::read_root_events(fixture.data()))
+            .iter()
+            .any(|(_, body)| body["state"] == "blocked")
+    })
+    .await;
+
+    let stored = store.task(&task.id).unwrap().unwrap();
+    assert!(
+        stored
+            .missing
+            .iter()
+            .any(|item| item.as_str().contains("工作树换算会落到工作树外面")),
+        "缺项说明范围换算不了：{:?}",
+        stored.missing
+    );
+    assert_eq!(
+        stored
+            .latest_attempt()
+            .and_then(|attempt| attempt.conversation.clone()),
+        None,
+        "换算不了就不开会话"
+    );
+    assert!(
+        !fixture
+            .data()
+            .join("worktrees")
+            .join(task.id.as_str())
+            .exists(),
+        "没开出工作树"
+    );
+    assert!(
+        fixture.router.bodies(true).is_empty(),
+        "不该给 ThinAgent 发请求"
+    );
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::NeedsConditions);
+}

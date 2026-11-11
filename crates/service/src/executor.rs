@@ -127,6 +127,9 @@ const HANDBACK_QUESTION: &str = "这超出了任务范围，要不要改任务�
 /// 开了 bash 的写任务，结果卡上的固定说明（spec 故事 7；原文进卡数据，由结果卡渲染）。
 const BASH_NOTE: &str = "这个任务开了 bash，bash 的改动不在清单里";
 
+/// cwd 不是 git 仓库时开不了工作树的固定说明（卡上照实写）。
+const WORKTREE_NOT_A_REPO: &str = "这个目录不是 git 仓库，开不了工作树";
+
 /// 立即停任务时写给后台命令的取消原因（进 job 的 detail，给人和日志看）。
 const STOPPED_JOB_REASON: &str = "任务被立即停了";
 
@@ -1304,6 +1307,10 @@ impl TaskRuntime {
                 if task.bash {
                     body["bash_note"] = json!(BASH_NOTE);
                 }
+                // 开了工作树：卡上写路径，用户和 Kind 去核时知道改动在哪。
+                if let Some(worktree) = &task.worktree_state {
+                    body["worktree_path"] = json!(worktree.root.to_string_lossy());
+                }
                 let request_id = format!("task-report:{}:{}", task.id, report.id);
                 Ok(Some((task, body, request_id)))
             }
@@ -1401,6 +1408,32 @@ impl TaskRuntime {
         if self.shutting_down.load(Ordering::SeqCst) {
             return false;
         }
+        // 工作树只在第一次 Attempt 起跑前开一次；之后每个 Attempt 都用任务行里记下的
+        // 那一份，不再 git worktree add。
+        if task.worktree && task.worktree_state.is_none() {
+            match crate::worktree::create_for(&task, &self.data_dir).await {
+                Ok(worktree) => match self.store.attach_worktree(&task.id, worktree) {
+                    Ok(updated) => task = updated,
+                    Err(error) => {
+                        self.finish_or_fail(&claim, Err(error.to_string()));
+                        return false;
+                    }
+                },
+                Err(crate::worktree::WorktreeIssue::NotRepository) => {
+                    self.record_missing(&task, vec![missing_item(WORKTREE_NOT_A_REPO)]);
+                    self.finish_or_fail(&claim, Ok(()));
+                    return false;
+                }
+                Err(crate::worktree::WorktreeIssue::Failed(message)) => {
+                    self.record_missing(&task, vec![missing_item(message)]);
+                    self.finish_or_fail(&claim, Ok(()));
+                    return false;
+                }
+            }
+        }
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return false;
+        }
         if let Err(error) = self.store.record_package_check(&task.id, Vec::new()) {
             self.finish_or_fail(&claim, Err(error.to_string()));
             return false;
@@ -1487,10 +1520,10 @@ impl TaskRuntime {
             "title": task.title,
             "requirement": task.requirement,
             "dod": task.dod,
-            "cwd": task.cwd.to_string_lossy(),
+            "cwd": task.effective_cwd().to_string_lossy(),
         });
-        // 写任务的模型要知道自己能在哪个路径里改；范围本身由工具在执行时核。
-        if let Some(scope) = &task.write_scope {
+        // 写任务的模型要知道自己能在哪个路径里改；开了工作树时这里写换算后的范围。
+        if let Some(scope) = task.effective_write_scope() {
             assignment["write_scope"] = json!(scope.to_string_lossy());
         }
         let assignment = assignment.to_string();
@@ -1588,10 +1621,11 @@ impl TaskRuntime {
         if task.dod.trim().is_empty() {
             missing.push(missing_item("DoD"));
         }
-        if !task.cwd.is_dir() {
+        // 开了工作树的任务看工作树里那个 cwd；第一次起跑前工作树还没开，看到的是原 cwd。
+        if !task.effective_cwd().is_dir() {
             missing.push(missing_item(format!(
                 "工作目录不存在：{}",
-                task.cwd.display()
+                task.effective_cwd().display()
             )));
         }
         if !task.writes.is_empty() {
@@ -1665,7 +1699,8 @@ impl TaskRuntime {
 
     /// 用冻结的模型选择、任务 cwd、冻结的工具名单和角色规则开一个 ThinAgent。
     ///
-    /// 写任务把冻结的写入范围交给 AgentConfig，写类工具在 resolve 之后用它核目标。
+    /// 开了工作树的任务用工作树里对应的子目录；写类工具拿换算后的写入范围，
+    /// 在 resolve 之后用它核目标。
     /// `resume` 是接着做的原会话；会话 id 不变，日志里的历史照常进这次请求。
     async fn open_thin(
         self: &Arc<Self>,
@@ -1687,10 +1722,10 @@ impl TaskRuntime {
         )));
         let mut agent_config = self.options.config.clone();
         agent_config.tool_keys = crate::root::tool_key_source(&self.options);
-        agent_config.write_scope = task.write_scope.clone();
+        agent_config.write_scope = task.effective_write_scope();
         let agent = agent::Agent::open(AgentOpenOptions {
             data_dir: self.data_dir.clone(),
-            cwd: task.cwd.clone(),
+            cwd: task.effective_cwd().to_path_buf(),
             resume,
             model: model_config,
             config: agent_config,
@@ -2108,6 +2143,10 @@ impl TaskRuntime {
             .write_scope
             .clone()
             .expect("update_write_scope 不接受空范围");
+        // 给 ThinAgent 的说明用换算进工作树的范围；给 Kind 的回执仍用用户同意的原路径。
+        let note_scope = updated
+            .effective_write_scope()
+            .unwrap_or_else(|| scope.clone());
         let version = updated.requirement_version();
         let opened = match self
             .open_resume(
@@ -2146,7 +2185,7 @@ impl TaskRuntime {
         // 第一条输入写明新范围：新 Attempt 的模型从这条消息知道现在能写哪里。
         let note = format!(
             "AIOS：用户在 Kind 对话里同意把写入范围改成 {}（要求第 {version} 版）。先看当前的文件再继续；只在这个范围里写，范围外的调 task_handback。",
-            scope.display()
+            note_scope.display()
         );
         let request_id = format!("task-update:{id}:{}", opened.attempt_id);
         let sent = opened

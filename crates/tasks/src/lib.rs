@@ -22,5 +22,5 @@ pub use store::{BootScan, SCHEMA_VERSION, StopAttempt, Store};
 pub use task::{
     Acceptance, Attempt, AttemptEnd, AttemptTrigger, Input, InputAttachment, InputSource,
     MissingItem, ModelChoice, NewInput, NewReport, NewTask, Report, ReportOrigin, ReportState,
-    RequirementVersion, Run, SayOutcome, Task, TaskPolicy, VersionSource,
+    RequirementVersion, Run, SayOutcome, Task, TaskPolicy, VersionSource, Worktree,
 };

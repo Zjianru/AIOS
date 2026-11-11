@@ -8,7 +8,7 @@ use rusqlite::params;
 use super::Store;
 use crate::{
     Acceptance, ConversationId, ModelChoice, NewReport, NewTask, ReportOrigin, ReportState,
-    RequirementVersion, Stage, TaskError, TaskPolicy, VersionSource,
+    RequirementVersion, Stage, TaskError, TaskPolicy, VersionSource, Worktree,
 };
 
 const T0: i64 = 1_700_000_000_000;
@@ -269,6 +269,40 @@ fn accepting_without_a_report_is_refused() {
 }
 
 #[test]
+fn updating_a_worktree_task_to_an_outside_scope_is_refused() {
+    let (_directory, store) = open_store();
+    let (_cwd_directory, cwd) = task_cwd();
+    let (_outside_directory, outside) = task_cwd();
+    let task = store
+        .create_task_with(draft(&cwd), policy(Some("notes")), T0)
+        .unwrap();
+    let task = store
+        .attach_worktree(
+            &task.id,
+            Worktree {
+                root: cwd.join("worktree"),
+                repo: cwd.clone(),
+                cwd: cwd.join("worktree"),
+            },
+        )
+        .unwrap();
+    let before = task.write_scope.clone();
+
+    let result = store.update_write_scope(
+        &task.id,
+        outside.join("outside.txt").to_str().unwrap(),
+        T0 + 1,
+    );
+    assert!(
+        matches!(result, Err(TaskError::WriteScopeOutsideWorktree(_))),
+        "{result:?}"
+    );
+    let after = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(after.write_scope, before, "范围没被改掉");
+    assert_eq!(after.requirement_version(), 1, "没追加版本");
+}
+
+#[test]
 fn old_task_rows_without_the_new_fields_read_as_empty() {
     let (_directory, store) = open_store();
     let (_cwd_directory, cwd) = task_cwd();
@@ -289,7 +323,14 @@ fn old_task_rows_without_the_new_fields_read_as_empty() {
             )
             .unwrap();
         let mut value: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        for key in ["write_scope", "bash", "worktree", "versions", "acceptance"] {
+        for key in [
+            "write_scope",
+            "bash",
+            "worktree",
+            "worktree_state",
+            "versions",
+            "acceptance",
+        ] {
             value.as_object_mut().unwrap().remove(key);
         }
         conn.execute(
@@ -303,6 +344,7 @@ fn old_task_rows_without_the_new_fields_read_as_empty() {
     assert_eq!(loaded.write_scope, None);
     assert!(!loaded.bash);
     assert!(!loaded.worktree);
+    assert!(loaded.worktree_state.is_none());
     assert!(loaded.versions.is_empty());
     assert_eq!(loaded.acceptance, None);
     assert_eq!(loaded.requirement_version(), 0);
