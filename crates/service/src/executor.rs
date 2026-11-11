@@ -64,6 +64,25 @@ pub const THIN_WRITE_TOOLS: [&str; 11] = [
     "task_handback",
 ];
 
+/// 开了 bash 的写任务：写任务 11 件再加 bash 和后台任务三件（D85）。
+pub const THIN_WRITE_BASH_TOOLS: [&str; 15] = [
+    "read",
+    "glob",
+    "grep",
+    "write",
+    "edit",
+    "bash",
+    "job_output",
+    "job_list",
+    "job_kill",
+    "skill",
+    "todo_write",
+    "web_search",
+    "web_fetch",
+    "task_report",
+    "task_handback",
+];
+
 /// 默认角色的规则（ThinAgent 的 policy_prompt，追加在系统提示末尾；Kind 不装）。
 pub const THIN_POLICY: &str = "\
 You are a ThinAgent: the execution carrier for one task. \
@@ -93,6 +112,9 @@ const AFTER_REPORT_STOP: &str =
 
 /// 交回时程序写死的唯一问题（spec v1 T028.4）；Kind 收到 relay 后怎么问由 Kind 自己说。
 const HANDBACK_QUESTION: &str = "这超出了任务范围，要不要改任务？";
+
+/// 开了 bash 的写任务，结果卡上的固定说明（spec 故事 7；原文进卡数据，由结果卡渲染）。
+const BASH_NOTE: &str = "这个任务开了 bash，bash 的改动不在清单里";
 
 /// 确认接续后给 ThinAgent 的第一条输入（照 DSH RECOVERY_NOTE，换成 AIOS 的话；spec v1）。
 const RESUME_NOTE: &str = "AIOS 在这个任务进行中重启了。先看当前的文件和状态再继续；已经做完的外部动作不要再做一遍。把原来的任务做完，然后用 task_report 上报。";
@@ -180,6 +202,8 @@ pub struct TaskRuntime {
     exec_paused: AtomicBool,
     /// 席位上限（settings.json 的 `exec.seats`），默认 3；改小只影响之后的准入。
     exec_seats: AtomicUsize,
+    /// 默认角色的 bash 开关（settings.json 的 `exec.bash`），默认关；任务受理时读它冻结。
+    exec_bash: AtomicBool,
     /// 起跑预约，按任务 id 和在跑集合合并计数；launch 成功前占住席位。
     slots: Mutex<WorkerSlots>,
     /// 还活着的 ThinAgent（按会话 id）；终态报告后移除，释放会话写锁。
@@ -199,6 +223,7 @@ impl TaskRuntime {
         let exec = crate::settings::load(&options.data_dir).exec;
         let exec_paused = exec.paused;
         let exec_seats = exec.seat_limit();
+        let exec_bash = exec.bash;
         Ok(Self {
             data_dir: options.data_dir.clone(),
             store: Arc::new(store),
@@ -210,6 +235,7 @@ impl TaskRuntime {
             pump_paused: AtomicBool::new(false),
             exec_paused: AtomicBool::new(exec_paused),
             exec_seats: AtomicUsize::new(exec_seats),
+            exec_bash: AtomicBool::new(exec_bash),
             slots: Mutex::new(WorkerSlots::new()),
             running: Mutex::new(std::collections::HashMap::new()),
             crash_before_relay: AtomicBool::new(false),
@@ -411,6 +437,13 @@ impl TaskRuntime {
     pub(crate) fn set_exec_seats(&self, seats: u8) {
         self.exec_seats.store(usize::from(seats), Ordering::SeqCst);
         self.wake();
+    }
+
+    /// bash 开关：RootHost 先写设置文件，再改这里的内存值。
+    ///
+    /// 只在受理任务时读：已经派出去的任务冻结了自己的值，不跟着开关变。
+    pub(crate) fn set_exec_bash(&self, bash: bool) {
+        self.exec_bash.store(bash, Ordering::SeqCst);
     }
 
     /// 正在跑一轮的任务（按任务 id）。turn 结束的不算——席位在轮次结束时释放。
@@ -1253,6 +1286,10 @@ impl TaskRuntime {
                 if let Some(question) = &report.question {
                     body["question"] = json!(question);
                 }
+                // 开了 bash 的写任务：卡上照实标明 bash 的改动不在写集清单里（D85）。
+                if task.bash {
+                    body["bash_note"] = json!(BASH_NOTE);
+                }
                 let request_id = format!("task-report:{}:{}", task.id, report.id);
                 Ok(Some((task, body, request_id)))
             }
@@ -1549,18 +1586,21 @@ impl TaskRuntime {
         if task.code_mode {
             missing.push(missing_item("CodeMode（只读任务必须为否）"));
         }
-        // 工具名单跟着任务的写入范围走：只读 9 件，写任务 11 件。
+        // 工具名单跟着任务的写入范围和 bash 开关走：只读 9 件，写任务 11 件，
+        // 开了 bash 的写任务 15 件。
         // T028.4 加 task_handback 之前受理的只读任务冻结的是 8 件；升级后要能接着做，
         // 不因为少这一件新加的工具就判任务包缺项。
         let (expected, legacy): (BTreeSet<&str>, Option<BTreeSet<&str>>) =
-            if task.write_scope.is_some() {
-                (THIN_WRITE_TOOLS.into_iter().collect(), None)
-            } else {
-                let legacy = THIN_TOOLS
-                    .into_iter()
-                    .filter(|name| *name != "task_handback")
-                    .collect();
-                (THIN_TOOLS.into_iter().collect(), Some(legacy))
+            match (task.write_scope.is_some(), task.bash) {
+                (true, true) => (THIN_WRITE_BASH_TOOLS.into_iter().collect(), None),
+                (true, false) => (THIN_WRITE_TOOLS.into_iter().collect(), None),
+                (false, _) => {
+                    let legacy = THIN_TOOLS
+                        .into_iter()
+                        .filter(|name| *name != "task_handback")
+                        .collect();
+                    (THIN_TOOLS.into_iter().collect(), Some(legacy))
+                }
             };
         let actual: BTreeSet<&str> = task.tools.iter().map(String::as_str).collect();
         if actual != expected && legacy.as_ref() != Some(&actual) {
@@ -1930,8 +1970,8 @@ impl TaskRuntime {
     /// Kind 的 task_accept：冻结模型选择与执行策略、落任务和 launch、回任务 id。
     ///
     /// 写入范围为空 = 只读调查（9 件工具）；有范围 = 写任务（加 write、edit）。
-    /// bash 开关不在 task_accept 字段里，由服务在创建时按设置冻结；本票先按关冻结
-    /// （开关归 T030.2b）。
+    /// bash 开关不在 task_accept 字段里，由服务在创建时按设置冻结：只读任务不给；
+    /// 写任务打开时再加 bash 和后台任务三件（15 件）。
     fn accept(
         &self,
         context: &ToolContext,
@@ -1977,13 +2017,18 @@ impl TaskRuntime {
         let writing = write_scope
             .as_deref()
             .is_some_and(|scope| !scope.trim().is_empty());
-        let tools = if writing {
-            THIN_WRITE_TOOLS
+        // 只读任务不给写的手段，也不给 bash：开关只对写任务生效。
+        let bash = writing && self.exec_bash.load(Ordering::SeqCst);
+        let tools = match (writing, bash) {
+            (true, true) => THIN_WRITE_BASH_TOOLS
                 .iter()
                 .map(|name| (*name).to_owned())
-                .collect()
-        } else {
-            THIN_TOOLS.iter().map(|name| (*name).to_owned()).collect()
+                .collect(),
+            (true, false) => THIN_WRITE_TOOLS
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+            (false, _) => THIN_TOOLS.iter().map(|name| (*name).to_owned()).collect(),
         };
         let draft = NewTask {
             title,
@@ -2001,7 +2046,7 @@ impl TaskRuntime {
         let policy = TaskPolicy {
             write_scope,
             worktree,
-            bash: false,
+            bash,
         };
         let key = format!("{conversation}:{call_id}");
         let (task, created) = self

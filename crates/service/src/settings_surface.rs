@@ -561,10 +561,27 @@ impl RootHost {
         Ok(())
     }
 
+    /// 默认角色的 bash 开关：先落 settings.json，再改任务运行时的内存值。
+    ///
+    /// 和 set_exec_seats 一样先写盘再改内存：写不进去就不改运行时，页面能看到错误。
+    /// 只影响之后派的任务；已派的任务冻结着自己的值（D85）。
+    pub fn set_exec_bash(&self, bash: bool) -> Result<(), ServiceError> {
+        let mut settings = settings::load_for_write(&self.options.data_dir)
+            .map_err(ServiceError::SettingsUnreadable)?;
+        settings.exec.bash = bash;
+        settings::save(&self.options.data_dir, &settings).map_err(ServiceError::SettingsInvalid)?;
+        if let Some(runtime) = self.task_runtime() {
+            runtime.set_exec_bash(bash);
+        }
+        self.emit_settings_changed();
+        Ok(())
+    }
+
     /// 写非密钥设置（币种、执行设置）。只碰 settings.json，不碰 Keyring/连接。
     ///
     /// 全部字段为 None 时只读当前值，不写文件。执行设置不是只写文件：改完文件再走
-    /// set_exec_paused / set_exec_seats 更新任务运行时的准入闸门，页面看到的就是生效值。
+    /// set_exec_paused / set_exec_seats / set_exec_bash 更新任务运行时的状态，
+    /// 页面看到的就是生效值。
     pub async fn settings_update(
         &self,
         request: SettingsUpdateRequest,
@@ -591,8 +608,10 @@ impl RootHost {
         // 读一次严格口径：文件坏了，读和写都拒绝，页面看到原因。
         let current = settings::load_for_write(&self.options.data_dir)
             .map_err(ServiceError::SettingsUnreadable)?;
-        let changed =
-            request.currency.is_some() || request.paused.is_some() || request.seats.is_some();
+        let changed = request.currency.is_some()
+            || request.paused.is_some()
+            || request.seats.is_some()
+            || request.bash.is_some();
         if let Some(currency) = request.currency {
             let mut settings = settings::load_for_write(&self.options.data_dir)
                 .map_err(ServiceError::SettingsUnreadable)?;
@@ -605,6 +624,9 @@ impl RootHost {
         }
         if let Some(seats) = request.seats {
             self.set_exec_seats(seats)?;
+        }
+        if let Some(bash) = request.bash {
+            self.set_exec_bash(bash)?;
         }
 
         let settings = if changed {

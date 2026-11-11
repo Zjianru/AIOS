@@ -36,7 +36,8 @@ pub use actions::{ActionEnv, ActionFuture, ActionKind, ActionOutcome, ActionRegi
 pub use error::*;
 pub use exa::EXA_DEFAULT_BASE_URL;
 pub use executor::{
-    TASKS_DB_FILE, THIN_TOOLS, THIN_WRITE_TOOLS, TaskLive, TaskRuntime, TaskStream,
+    TASKS_DB_FILE, THIN_TOOLS, THIN_WRITE_BASH_TOOLS, THIN_WRITE_TOOLS, TaskLive, TaskRuntime,
+    TaskStream,
 };
 pub use protocol::*;
 pub use root::{
