@@ -1,7 +1,7 @@
 //! 接续（属于 aios-tasks）：重启打断的任务由用户确认后，在原会话里开一次新 Attempt。
 //!
 //! 提议只在「最近 Attempt 被打断了」时成立；点确认前重算，任务已经接着做了就回
-//! 「已经接着做了」，这一项不再执行。开会话和首条恢复说明由任务执行者写。
+//! 「已经接着做了」，这一项不再执行。开会话、写首条恢复说明由任务执行者负责。
 
 use std::path::PathBuf;
 
@@ -11,7 +11,7 @@ use tasks::TaskId;
 use super::{ActionEnv, ActionFuture, ActionKind, ActionOutcome, CardFact};
 use crate::root_lifecycle::RootHost;
 
-/// 接续一把被打断的任务。
+/// 接续一个被打断的任务。
 pub(crate) struct ResumeTaskAction {
     data_dir: PathBuf,
 }
