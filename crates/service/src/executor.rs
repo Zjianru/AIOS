@@ -903,9 +903,10 @@ impl TaskRuntime {
         // 终态报告在工具调用里落库，那一轮可能还在写最后一段回答：会话写者没让出来
         // 之前不落新 Attempt（T028.5 e2e：报完立刻说「接着做」会撞上收尾）。
         // 效果留到下一次泵再领，攒够 2s 退避也不丢；不能在这里记一份「没开成」的失败报告。
-        match session::SessionStore::open(&self.data_dir, &resume) {
-            Err(session::SessionError::AlreadyOwned { .. }) => return Err(ResumeBlock::Later),
-            _ => {}
+        if let Err(session::SessionError::AlreadyOwned { .. }) =
+            session::SessionStore::open(&self.data_dir, &resume)
+        {
+            return Err(ResumeBlock::Later);
         }
         let key = task.id.as_str().to_owned();
         let running = self.running_tasks();
