@@ -212,11 +212,19 @@ test('上翻 beforeSeq：更早的轮次按需加载', async ({ page }) => {
     await expect(pane.getByText('第 2 步完成。')).toHaveCount(0);
 
     // 上翻：滚到顶部触发 beforeSeq，更早的一页进来后才出现。
-    await pane.locator('[data-kind="task-scroll"]').evaluate((element) => {
-      element.scrollTop = 0;
-      element.dispatchEvent(new Event('scroll', { bubbles: true }));
-    });
-    await expect(pane.getByText('第 500 步完成。')).toHaveCount(1, { timeout: 20_000 });
+    // 并行跑时一次合成 scroll 可能正好撞上正在加载（loadingOlderRef 挡住），所以轮询着重发。
+    await expect
+      .poll(
+        async () => {
+          await pane.locator('[data-kind="task-scroll"]').evaluate((element) => {
+            element.scrollTop = 0;
+            element.dispatchEvent(new Event('scroll', { bubbles: true }));
+          });
+          return pane.getByText('第 500 步完成。').count();
+        },
+        { timeout: 20_000 },
+      )
+      .toBe(1);
     await expect(pane.getByText('第 551 步完成。')).toHaveCount(1);
   } finally {
     await fixture.close();
