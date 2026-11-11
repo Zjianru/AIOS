@@ -1213,6 +1213,52 @@ async fn task_handback_rejects_a_reason_longer_than_300_characters() {
 }
 
 #[tokio::test]
+async fn a_task_frozen_with_the_eight_tool_list_still_launches() {
+    let fixture = Fixture::new().await;
+    fixture.router.push_thin(report_sse(
+        1,
+        "call-report",
+        "ready",
+        "旧任务也能跑",
+        None,
+    ));
+    let store = tasks_store(fixture.data());
+    let mut tools: Vec<String> = service::THIN_TOOLS.map(str::to_owned).to_vec();
+    tools.retain(|name| name != "task_handback");
+    let draft = tasks::NewTask {
+        title: "升级前受理的任务".to_owned(),
+        requirement: "找答案".to_owned(),
+        dod: "有答案".to_owned(),
+        cwd: fixture.data().to_path_buf(),
+        conversation: tasks::ConversationId::new("legacy-kind-session"),
+        model: tasks::ModelChoice {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            effort_wanted: "high".to_owned(),
+        },
+        tools,
+    };
+    let task = store.create_task(draft, 1_700_000_000_000).unwrap();
+    wait_until("升级前任务开跑", || {
+        store.task(&task.id).ok().flatten().is_some_and(|task| {
+            !task.missing.is_empty()
+                || task.latest_report().map(|report| report.state) == Some(ReportState::Ready)
+        })
+    })
+    .await;
+    let task_row = store.task(&task.id).unwrap().unwrap();
+    assert!(
+        task_row.missing.is_empty(),
+        "旧任务冻结的 8 件工具不能算缺项：{:?}",
+        task_row.missing
+    );
+    assert_eq!(
+        task_row.latest_report().map(|report| report.state),
+        Some(ReportState::Ready)
+    );
+}
+
+#[tokio::test]
 async fn a_failed_report_relays_and_leaves_the_task_open() {
     let fixture = Fixture::new().await;
     let task = fixture.accept(false).await;
