@@ -6471,6 +6471,16 @@ async fn a_worktree_task_runs_in_the_worktree_and_writes_only_there() {
         serde_json::json!(worktree_root.display().to_string()),
         "卡数据带工作树路径"
     );
+    assert_eq!(ready["card_state"], "review", "{ready}");
+    assert_eq!(
+        ready["changed"],
+        serde_json::json!(["app.py"]),
+        "清单相对工作树里的 cwd：{ready}"
+    );
+    assert_eq!(
+        ready["changed_line"], "改了 1 个文件（写入范围 app.py）",
+        "{ready}"
+    );
 }
 
 /// 工作树任务报 ready 之后在任务对话里说话：新 Attempt 还在同一个工作树，
@@ -7103,4 +7113,310 @@ async fn a_worktree_task_with_an_outside_scope_waits_for_conditions() {
         "不该给 ThinAgent 发请求"
     );
     assert_eq!(store.stage(&task.id).unwrap(), Stage::NeedsConditions);
+}
+
+/// 写任务按标题先排好 ThinAgent 回复，暂停受理后开闸；返回任务。
+async fn run_write_task(fixture: &Fixture, args: Value, scripts: Vec<String>) -> Task {
+    let title = args["title"].as_str().expect("标题").to_owned();
+    for script in scripts {
+        fixture.router.push_thin_for_title(&title, script);
+    }
+    let task = fixture.accept_args(true, args, 1).await;
+    fixture
+        .host
+        .task_runtime()
+        .expect("runtime")
+        .set_pump_paused(false);
+    task
+}
+
+/// 等第一条 ready relay，返回它的 request id 和正文。
+async fn ready_relay(fixture: &Fixture) -> (String, Value) {
+    wait_until("ready relay", || {
+        relay_messages(&crate::common::read_root_events(fixture.data()))
+            .iter()
+            .any(|(_, body)| body["state"] == "ready")
+    })
+    .await;
+    relay_messages(&crate::common::read_root_events(fixture.data()))
+        .into_iter()
+        .find(|(_, body)| body["state"] == "ready")
+        .expect("ready relay")
+}
+
+fn write_file_sse(call_id: &str, file_path: &str, content: &str) -> String {
+    crate::common::tool_use_sse(
+        1,
+        call_id,
+        "write",
+        &serde_json::json!({"file_path": file_path, "content": content}).to_string(),
+    )
+}
+
+fn read_file_sse(call_id: &str, file_path: &str) -> String {
+    crate::common::tool_use_sse(
+        1,
+        call_id,
+        "read",
+        &serde_json::json!({"file_path": file_path}).to_string(),
+    )
+}
+
+fn edit_file_sse(call_id: &str, file_path: &str, old_string: &str, new_string: &str) -> String {
+    crate::common::tool_use_sse(
+        1,
+        call_id,
+        "edit",
+        &serde_json::json!({
+            "file_path": file_path,
+            "old_string": old_string,
+            "new_string": new_string
+        })
+        .to_string(),
+    )
+}
+
+/// 写入范围是任务 cwd 的写任务参数（清单可以有多个文件）。
+fn scoped_write_args() -> Value {
+    serde_json::json!({
+        "title": "改一下判重",
+        "requirement": "把重复判断改成按 url",
+        "dod": "同一个 url 只留一条",
+        "write_scope": "."
+    })
+}
+
+/// 点结果卡上的「接受」（卡 id 是 relay 的 request id）。
+async fn accept_result_card(host: &RootHost, call_id: &str) -> Value {
+    let response = host
+        .dispatch(Call::CardAct(CardActRequest {
+            call_id: call_id.to_owned(),
+            verb: CardVerb::Confirm,
+            option: None,
+        }))
+        .await
+        .expect("接受结果卡");
+    serde_json::to_value(response).expect("接受结果卡 json")["decision"].clone()
+}
+
+fn card_decisions(events: &[session::Event], call_id: &str) -> Vec<session::CardDecision> {
+    events
+        .iter()
+        .filter_map(|event| session::CardDecision::from_event(&event.kind))
+        .filter(|decision| decision.call_id == call_id)
+        .collect()
+}
+
+/// 写任务 ready：卡状态固定「待你核」的键（review），阶段仍是待检查；
+/// 清单来自所有 Attempt 的写类工具成功 diffs，去重、相对 cwd；固定一行 N/范围。
+#[tokio::test]
+async fn a_write_task_ready_card_is_review_with_deduped_relative_changes() {
+    let fixture = Fixture::new().await;
+    let outside = fixture.data().join("outside.py");
+    let task = run_write_task(
+        &fixture,
+        scoped_write_args(),
+        vec![
+            write_file_sse("call-w1", "a.py", "one\n"),
+            write_file_sse("call-w2", "b.py", "b\n"),
+            read_file_sse("call-read", "a.py"),
+            edit_file_sse("call-edit", "a.py", "one", "two"),
+            write_file_sse("call-outside", &outside.to_string_lossy(), "no\n"),
+            report_sse(2, "call-report", "ready", "改好了", None),
+            crate::common::text_sse("done"),
+        ],
+    )
+    .await;
+
+    let (_, body) = ready_relay(&fixture).await;
+    assert_eq!(body["state"], "ready", "{body}");
+    assert_eq!(body["task"]["stage"], "ready_for_review", "阶段仍是待检查");
+    assert_eq!(body["card_state"], "review", "写任务 ready 的卡状态");
+    assert_eq!(body["write_scope"], ".", "{body}");
+    assert_eq!(
+        body["changed"],
+        serde_json::json!(["a.py", "b.py"]),
+        "两次写同一文件与一次编辑只算一条；范围外的失败写不进清单：{body}"
+    );
+    assert_eq!(body["changed_line"], "改了 2 个文件（写入范围 .）");
+    assert!(!body.to_string().contains("完成"), "卡上不写完成：{body}");
+    assert!(body.get("bash_note").is_none(), "{body}");
+    assert!(body.get("worktree_path").is_none(), "{body}");
+
+    let store = tasks_store(fixture.data());
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::ReadyForReview);
+    let stored = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(stored.acceptance, None, "还没接受");
+    let attempt = stored.latest_attempt().expect("Attempt").clone();
+    let events = thin_events(fixture.data(), &attempt);
+    assert_eq!(
+        tool_result(&events, "call-outside").1,
+        Some(true),
+        "范围外的写确实失败"
+    );
+}
+
+/// 调查任务不变：ready 的卡上没有写任务的卡状态和清单字段。
+#[tokio::test]
+async fn an_investigation_ready_card_has_no_write_card_data() {
+    let fixture = Fixture::new().await;
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-report", "ready", "查好了", None));
+    fixture.router.push_thin(crate::common::text_sse("done"));
+    let _task = fixture.accept(true).await;
+    fixture
+        .host
+        .task_runtime()
+        .expect("runtime")
+        .set_pump_paused(false);
+
+    let (_, body) = ready_relay(&fixture).await;
+    assert_eq!(body["state"], "ready", "{body}");
+    assert_eq!(body["task"]["stage"], "ready_for_review");
+    for key in [
+        "write_scope",
+        "changed",
+        "changed_line",
+        "card_state",
+        "bash_note",
+        "worktree_path",
+    ] {
+        assert!(body.get(key).is_none(), "调查任务卡上没有 {key}：{body}");
+    }
+}
+
+/// 接受写任务的结果：服务端记下版本和报告，卡变「你已接受」，阶段不变；重复点击幂等。
+#[tokio::test]
+async fn accepting_a_ready_write_result_records_once_and_keeps_the_stage() {
+    let fixture = Fixture::new().await;
+    let task = run_write_task(
+        &fixture,
+        scoped_write_args(),
+        vec![
+            write_file_sse("call-w1", "a.py", "one\n"),
+            report_sse(2, "call-report", "ready", "改好了", None),
+            crate::common::text_sse("done"),
+        ],
+    )
+    .await;
+
+    let (relay_id, body) = ready_relay(&fixture).await;
+    assert_eq!(body["card_state"], "review", "{body}");
+    assert!(!body.to_string().contains("完成"), "卡上不写完成：{body}");
+    let report_id = relay_id
+        .strip_prefix("task-report:")
+        .and_then(|rest| rest.split_once(':'))
+        .map(|(_, report)| report.to_owned())
+        .expect("结果卡的 report id");
+
+    let decision = accept_result_card(&fixture.host, &relay_id).await;
+    assert_eq!(decision["phase"], "confirmed", "{decision}");
+    assert_eq!(decision["action"], "accept_task_result", "{decision}");
+    assert_eq!(decision["data"]["summary"], "你已接受", "{decision}");
+    assert_eq!(decision["data"]["version"], 1, "{decision}");
+    assert_eq!(decision["data"]["report_id"], report_id, "{decision}");
+    assert!(!decision.to_string().contains("完成"));
+
+    let store = tasks_store(fixture.data());
+    let stored = store.task(&task.id).unwrap().unwrap();
+    let acceptance = stored.acceptance.clone().expect("接受记录");
+    assert_eq!(acceptance.version, 1);
+    assert_eq!(acceptance.report_id.as_str(), report_id);
+    assert_eq!(
+        store.stage(&task.id).unwrap(),
+        Stage::ReadyForReview,
+        "接受不是阶段"
+    );
+    assert_eq!(
+        card_decisions(&crate::common::read_root_events(fixture.data()), &relay_id).len(),
+        1,
+        "决定记进 Kind 的日志"
+    );
+
+    let second = accept_result_card(&fixture.host, &relay_id).await;
+    assert_eq!(second, decision, "重复点击返回同一条决定");
+    let after = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(after.acceptance, stored.acceptance, "重复点击不改接受记录");
+    assert_eq!(
+        card_decisions(&crate::common::read_root_events(fixture.data()), &relay_id).len(),
+        1,
+        "重复点击不再记决定"
+    );
+}
+
+/// 要求版本变过以后，旧版本的报告不能接受：卡上的「接受」回拒绝，接受记录不落，阶段不变。
+#[tokio::test]
+async fn a_report_from_before_a_requirement_change_is_refused() {
+    let fixture = Fixture::new().await;
+    let task = run_write_task(
+        &fixture,
+        scoped_write_args(),
+        vec![
+            write_file_sse("call-w1", "a.py", "one\n"),
+            report_sse(2, "call-report", "ready", "改好了", None),
+            crate::common::text_sse("done"),
+        ],
+    )
+    .await;
+
+    let (relay_id, _) = ready_relay(&fixture).await;
+    let store = tasks_store(fixture.data());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    store
+        .update_write_scope(&task.id, "other.py", now + 1)
+        .expect("改写入范围");
+
+    let decision = accept_result_card(&fixture.host, &relay_id).await;
+    assert_eq!(decision["phase"], "refused", "{decision}");
+    let summary = decision["data"]["summary"].as_str().unwrap_or_default();
+    assert!(summary.contains("版本"), "拒绝原因写明版本：{summary}");
+    let stored = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(stored.requirement_version(), 2);
+    assert_eq!(stored.acceptance, None, "旧版本的报告不写接受记录");
+    assert_eq!(
+        store.stage(&task.id).unwrap(),
+        Stage::ReadyForReview,
+        "拒绝也不改阶段"
+    );
+
+    let again = accept_result_card(&fixture.host, &relay_id).await;
+    assert_eq!(again, decision, "拒绝也幂等");
+    assert_eq!(
+        card_decisions(&crate::common::read_root_events(fixture.data()), &relay_id).len(),
+        1
+    );
+}
+
+/// 开了 bash 的写任务：卡上有固定说明，也有改过的文件清单和 N/范围一行。
+#[tokio::test]
+async fn a_bash_write_task_card_notes_bash_and_lists_the_changes() {
+    let fixture = Fixture::new().await;
+    set_bash(&fixture.host, true).await;
+    let task = run_write_task(
+        &fixture,
+        scoped_write_args(),
+        vec![
+            write_file_sse("call-w1", "a.py", "one\n"),
+            report_sse(2, "call-report", "ready", "改好了", None),
+            crate::common::text_sse("done"),
+        ],
+    )
+    .await;
+    assert!(task.bash, "受理时冻结了 bash");
+
+    let (_, body) = ready_relay(&fixture).await;
+    assert_eq!(
+        body["bash_note"], "这个任务开了 bash，bash 的改动不在清单里",
+        "{body}"
+    );
+    assert_eq!(body["changed"], serde_json::json!(["a.py"]), "{body}");
+    assert_eq!(
+        body["changed_line"], "改了 1 个文件（写入范围 .）",
+        "{body}"
+    );
+    assert_eq!(body["card_state"], "review", "{body}");
 }
