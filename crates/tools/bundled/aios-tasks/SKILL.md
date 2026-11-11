@@ -1,6 +1,6 @@
 ---
 name: aios-tasks
-description: Stop a running task, or hold and resume new tasks globally, when the user explicitly asks. mode=now cancels the current Attempt immediately; mode=after_report lets it finish the current step, report once, then end.
+description: Stop a running task, hold and resume new tasks globally, or offer to continue tasks a restart interrupted. mode=now cancels the current Attempt immediately; mode=after_report lets it finish the current step, report once, then end.
 ---
 
 # AIOS tasks
@@ -24,6 +24,18 @@ Call `task_stop` with `mode: "after_report"` when the user wants the task to fin
 - The Attempt ends with whatever it reports; if it ends the turn without reporting, it is recorded as stopped with the waiting state.
 - The user can still switch to `mode: "now"` afterwards; that cancels the Attempt immediately.
 - Say in one sentence that the stop is in and that it will report before ending. If the result says the task is not running, say that plainly and do not retry.
+
+## After a restart
+
+When a message with `kind: "tasks_interrupted"` arrives, the service restarted while those tasks were running. `tasks` lists each one with its id, title, the last report (if there was one, possibly shortened) and how many Attempts it had.
+
+- Say what happened and where each task got to, using only what the list says. Do not make up a result it did not report.
+- Say what is kept: the task conversation, the work already done, and any question that was waiting for the user.
+- Suggest how to pick up: a task continues in its own conversation as a new Attempt and is told to look at the current files and state before doing anything.
+- Then call `propose_action` once with one option per task:
+  - `resume_task`: `details` is `{ "task_id": "<the task id>" }`; label the option with the task title. The card fills in the status line; do not write that yourself.
+  - "Not now" is the card's dismiss. Do not add an option for it.
+- If the result says the task already resumed, say so in one sentence and do not propose again. If the user dismisses the card, the tasks stay interrupted: do not ask again on your own.
 
 ## Hold and resume new tasks
 

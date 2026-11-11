@@ -195,6 +195,24 @@ impl RootHost {
             }
         }
         if let Some(runtime) = task_runtime {
+            // 另一个活着的服务占着根会话（writer-held）时这不算一次启动：在跑的任务还在它手里，
+            // 不能扫成打断。其余情况（含模型/凭证没接上）照扫，restart 效果留在库里等根会话好了再送。
+            let busy = matches!(
+                *host.state.lock().expect("root state 锁被毒化"),
+                RootState::Unavailable {
+                    kind: RootUnavailableKind::Busy,
+                    ..
+                }
+            );
+            if !busy {
+                match runtime.scan_at_boot(&new_boot_id()) {
+                    Ok(scan) if !scan.interrupted.is_empty() => {
+                        eprintln!("启动扫描：{} 个任务被打断", scan.interrupted.len());
+                    }
+                    Ok(_) => {}
+                    Err(error) => eprintln!("启动扫描失败：{error}"),
+                }
+            }
             let pump = runtime.start_pump();
             *host.task_pump.lock().expect("task pump 锁被毒化") = Some(pump);
         }
@@ -430,6 +448,20 @@ impl RootHost {
             }
         }
     }
+}
+
+/// 本次启动的 id：restart 效果的键和 Kind 汇报的 request id 用它。
+///
+/// 时间 + 进程内序号；不需要全局唯一，只要两次启动不同就会各排一条 restart。
+fn new_boot_id() -> tasks::BootId {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    let serial = NEXT.fetch_add(1, Ordering::Relaxed);
+    tasks::BootId::new(format!("boot-{millis}-{serial}"))
 }
 
 /// 工厂返回的窗口是 CLI 配置：等于产品默认值时视为「没有显式指定」，调用方按

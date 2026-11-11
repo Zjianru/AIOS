@@ -4508,6 +4508,8 @@ async fn crash_while_running(router: &Router, data: &Path, host: RootHost, tasks
         })
     })
     .await;
+    // 模拟进程退出：会话写锁要真的放开，重启后的接续才开得出原会话。
+    host.task_runtime().expect("runtime").crash();
     drop(host);
 }
 
@@ -4956,6 +4958,7 @@ async fn a_paused_restart_waits_for_the_gate_then_reports_once() {
     let store = tasks_store(data.path());
     let crashed = reload_tasks(&store, &[task]);
     let task_refs: Vec<&Task> = crashed.iter().collect();
+    let requests_before = router.bodies(false).len();
     let mut saved = service::settings::load(data.path());
     saved.exec.paused = true;
     service::settings::save(data.path(), &saved).expect("保存暂停");
@@ -4987,7 +4990,11 @@ async fn a_paused_restart_waits_for_the_gate_then_reports_once() {
         restart_messages(&crate::common::read_root_events(data.path())).is_empty(),
         "暂停时不送 restart"
     );
-    assert!(router.bodies(false).is_empty(), "暂停时不叫模型");
+    assert_eq!(
+        router.bodies(false).len(),
+        requests_before,
+        "暂停时不叫模型"
+    );
 
     host.dispatch(Call::SettingsUpdate(SettingsUpdateRequest {
         currency: None,
@@ -5028,6 +5035,7 @@ async fn a_restart_report_stays_later_while_the_model_is_unavailable() {
 
     let store = tasks_store(data.path());
     let crashed = reload_tasks(&store, &[task]);
+    let requests_before = router.bodies(false).len();
     let factory: service::ModelFactory = Arc::new(|_selection| Err("还没有接模型".to_owned()));
     let host = open_host_with(&server, data.path(), cwd.path(), |options| {
         options.actions = Arc::new(service::ActionRegistry::settings(
@@ -5064,7 +5072,11 @@ async fn a_restart_report_stays_later_while_the_model_is_unavailable() {
     let health = store.effect_health(EffectKind::Restart).expect("效果健康");
     assert_eq!(health.waiting, 1, "Later 不丢效果");
     assert_eq!(health.attempts, 0, "Later 不算失败");
-    assert!(router.bodies(false).is_empty(), "模型不可用不发请求");
+    assert_eq!(
+        router.bodies(false).len(),
+        requests_before,
+        "模型不可用不发请求"
+    );
     assert!(restart_messages(&crate::common::read_root_events(data.path())).is_empty());
     drop(host);
 }

@@ -14,10 +14,10 @@ use model::{Effort, UserMessage};
 use serde_json::{Value, json};
 use session::SessionId;
 use tasks::{
-    Attempt, AttemptEnd, AttemptId, ConversationId, EffectClaim, EffectKind, EffectPayload, Input,
-    InputAttachment, MissingItem, ModelChoice, NewInput, NewReport, NewTask, ReportId,
-    ReportOrigin, ReportState, SlotKind, Stage, StopAttempt, Store, Task, TaskError, TaskId,
-    WorkerSlots,
+    Attempt, AttemptEnd, AttemptId, AttemptTrigger, BootId, BootScan, ConversationId, EffectClaim,
+    EffectKind, EffectPayload, Input, InputAttachment, MissingItem, ModelChoice, NewInput,
+    NewReport, NewTask, ReportId, ReportOrigin, ReportState, SlotKind, Stage, StopAttempt, Store,
+    Task, TaskError, TaskId, WorkerSlots,
 };
 use tokio::sync::broadcast;
 use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
@@ -78,11 +78,35 @@ const AFTER_REPORT_STOP: &str =
 /// 交回时程序写死的唯一问题（spec v1 T028.4）；Kind 收到 relay 后怎么问由 Kind 自己说。
 const HANDBACK_QUESTION: &str = "这超出了任务范围，要不要改任务？";
 
+/// 确认接续后给 ThinAgent 的第一条输入（照 DSH RECOVERY_NOTE，换成 AIOS 的话；spec v1）。
+const RESUME_NOTE: &str = "AIOS 在这个任务进行中重启了。先看当前的文件和状态再继续；已经做完的外部动作不要再做一遍。把原来的任务做完，然后用 task_report 上报。";
+
+/// 重启汇报里一份最近报告最多带多少字（spec v1：last_report ≤ 300）。
+const RESTART_REPORT_CHARS: usize = 300;
+
 /// 执行者的一个已开会话；task_status 向 waiting 的 ThinAgent 要报告时用它。
 struct RunningThin {
     host: Arc<ServiceHost>,
     task_id: TaskId,
     attempt_id: AttemptId,
+}
+
+/// 接上原会话的结果：新 Attempt 和它的宿主；第一条消息由调用方送。
+struct OpenedResume {
+    host: Arc<ServiceHost>,
+    attempt_id: AttemptId,
+}
+
+/// 接不上原会话的原因；说话接续和确认卡接续按各自的方式处理。
+enum ResumeBlock {
+    /// 现在接不上，晚点再来（会话写者没让出、没席位、正在关机）。
+    Later,
+    /// 另一个 Attempt 已经先接上了。
+    AlreadyStarted,
+    /// 没有可续的会话；原因给用户看。
+    NoSession(String),
+    /// 任务包缺项；缺项报告已经写好。
+    PackageMissing,
 }
 
 /// 任务事件流的打开结果：当前 Attempt 的会话 id、打开时要补的日志事件，
@@ -319,6 +343,11 @@ impl TaskRuntime {
         })
     }
 
+    /// 启动扫描：效果循环开始之前收掉上次启动留下的 Attempt，并排 restart（T029）。
+    pub(crate) fn scan_at_boot(&self, boot_id: &BootId) -> Result<BootScan, TaskError> {
+        self.store.scan_at_boot(boot_id, Self::now())
+    }
+
     /// 测试用：暂停整个效果泵（launch/relay 都不跑）。
     #[doc(hidden)]
     pub fn set_pump_paused(&self, paused: bool) {
@@ -384,6 +413,16 @@ impl TaskRuntime {
         self.wake();
     }
 
+    /// 测试用：模拟进程退出——丢掉还开着的 ThinAgent（放开会话写锁），效果泵不再领取。
+    ///
+    /// 生产里进程退出由操作系统回收；测试要复现「重启后会话写者已经放开」。
+    #[doc(hidden)]
+    pub fn crash(&self) {
+        self.shutting_down.store(true, Ordering::SeqCst);
+        self.running.lock().expect("thinagent 表锁被毒化").clear();
+        self.wake();
+    }
+
     fn wake(&self) {
         self.notify.notify_one();
     }
@@ -418,6 +457,23 @@ impl TaskRuntime {
                     }
                     Ok(None) => {}
                     Err(error) => eprintln!("任务 relay 领取失败：{error}"),
+                }
+                if self.shutting_down.load(Ordering::SeqCst) {
+                    return;
+                }
+                // restart 汇报要叫模型，受全局暂停管：暂停时不领，开闸后按 seq 再领。
+                if !self.exec_paused.load(Ordering::SeqCst) {
+                    match self
+                        .store
+                        .claim_effect_ordered(EffectKind::Restart, Self::now())
+                    {
+                        Ok(Some(claim)) => {
+                            worked = true;
+                            self.deliver_restart(claim).await;
+                        }
+                        Ok(None) => {}
+                        Err(error) => eprintln!("任务 restart 领取失败：{error}"),
+                    }
                 }
                 if self.shutting_down.load(Ordering::SeqCst) {
                     return;
@@ -536,6 +592,90 @@ impl TaskRuntime {
         }
     }
 
+    /// 把一条 restart Steer 进 Kind 根会话：请 Kind 汇报哪些任务被打断了、出接续卡。
+    ///
+    /// 根会话不可用（模型/凭证没接上）时 Later：效果留在库里，根会话好了再送。
+    async fn deliver_restart(self: &Arc<Self>, claim: EffectClaim) {
+        let EffectPayload::Restart { boot_id } = &claim.payload else {
+            self.finish_or_fail(&claim, Err("restart 载荷不是 restart".to_owned()));
+            return;
+        };
+        let tasks = match self.interrupted_facts() {
+            Ok(tasks) => tasks,
+            Err(error) => {
+                self.finish_or_fail(&claim, Err(error));
+                return;
+            }
+        };
+        // 送之前已经被接续的任务不再报；没有要报的就收掉这条效果。
+        if tasks.is_empty() {
+            self.finish_or_fail(&claim, Ok(()));
+            return;
+        }
+        let Some(inner) = self.inner.upgrade() else {
+            self.later(&claim);
+            return;
+        };
+        let guard = inner.lock().await;
+        let Some(host) = guard.as_ref() else {
+            drop(guard);
+            self.later(&claim);
+            return;
+        };
+        let body = json!({ "kind": "tasks_interrupted", "tasks": tasks });
+        let sent = host
+            .send_message(
+                &format!("restart:{boot_id}"),
+                UserMessage::text(body.to_string()),
+                DeliveryMode::Steer,
+            )
+            .await;
+        drop(guard);
+        match sent {
+            Ok(_) => best_effort(
+                "restart 完成没写进任务库",
+                self.store.complete_effect(&claim),
+            ),
+            Err(error) => best_effort(
+                "restart 失败没写进任务库",
+                self.store
+                    .fail_effect(&claim, &error.to_string(), Self::now()),
+            ),
+        }
+    }
+
+    /// 此刻还「被打断了」的任务事实，按任务库顺序；只给 Kind 事实，不给判断。
+    fn interrupted_facts(&self) -> Result<Vec<Value>, String> {
+        let mut facts = Vec::new();
+        for task_id in self.store.task_ids().map_err(|error| error.to_string())? {
+            let Some(task) = self
+                .store
+                .task(&task_id)
+                .map_err(|error| error.to_string())?
+            else {
+                continue;
+            };
+            if !task.is_interrupted() {
+                continue;
+            }
+            let mut entry = json!({
+                "id": task.id.as_str(),
+                "title": task.title,
+                "attempts": task
+                    .runs
+                    .iter()
+                    .map(|run| run.attempts.len() as u64)
+                    .sum::<u64>(),
+            });
+            if let Some(report) = task.latest_report() {
+                let summary: String = report.summary.chars().take(RESTART_REPORT_CHARS).collect();
+                entry["last_report"] = json!(summary);
+            }
+            facts.push(entry);
+        }
+        Ok(facts)
+    }
+
     /// 把任务里还没送出的用户输入 Steer 进任务会话；request id task-say:<inputId> 判重。
     async fn deliver_delivery(self: &Arc<Self>, claim: EffectClaim) {
         let EffectPayload::Delivery { task_id } = &claim.payload else {
@@ -632,44 +772,139 @@ impl TaskRuntime {
     ///
     /// 返回 Some(host)：会话已开好、登记在跑表里，调用方负责 Steer 输入并收效果行。
     /// 返回 None：已经推迟/失败/完成，调用方直接返回。
-    ///
-    /// 先占席位再落 Attempt：席位不够按 Later 处理，不能留下没有会话的空 Attempt。
     async fn resume_for_delivery(
         self: &Arc<Self>,
         claim: &EffectClaim,
         task: &Task,
         attempt: &Attempt,
     ) -> Option<Arc<ServiceHost>> {
+        match self
+            .open_resume(task, attempt, AttemptTrigger::UserMessage, SlotKind::Person)
+            .await
+        {
+            Ok(opened) => Some(opened.host),
+            Err(ResumeBlock::Later | ResumeBlock::AlreadyStarted) => {
+                self.later(claim);
+                None
+            }
+            Err(ResumeBlock::PackageMissing) => {
+                self.finish_or_fail(claim, Ok(()));
+                None
+            }
+            Err(ResumeBlock::NoSession(reason)) => {
+                self.finish_or_fail(claim, Err(reason));
+                None
+            }
+        }
+    }
+
+    /// 确认卡「接续」：在原会话开一次新 Attempt（trigger resume），第一条输入是恢复说明。
+    ///
+    /// 返回新 Attempt 的编号；接不上时返回给用户看的原因。
+    pub(crate) async fn resume_task(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+    ) -> Result<AttemptId, String> {
+        let Some(task) = self
+            .store
+            .task(task_id)
+            .map_err(|error| error.to_string())?
+        else {
+            return Err(format!("找不到这个任务：{task_id}"));
+        };
+        let Some(attempt) = task.latest_attempt().cloned() else {
+            return Err("这个任务还没开跑，没有可接的会话".to_owned());
+        };
+        if !task.is_interrupted() {
+            return Err(if task.was_interrupted() {
+                "已经接着做了".to_owned()
+            } else {
+                "这个任务现在不是被打断了".to_owned()
+            });
+        }
+        let opened = match self
+            .open_resume(&task, &attempt, AttemptTrigger::Resume, SlotKind::Wake)
+            .await
+        {
+            Ok(opened) => opened,
+            Err(ResumeBlock::Later) => {
+                return Err("现在接不上这个任务（没有空位或会话还在收尾），稍后再点一次".to_owned());
+            }
+            Err(ResumeBlock::AlreadyStarted) => return Err("已经接着做了".to_owned()),
+            Err(ResumeBlock::PackageMissing) => {
+                return Err("任务包缺了东西，接不上；看任务里的缺项".to_owned());
+            }
+            Err(ResumeBlock::NoSession(reason)) => return Err(reason),
+        };
+        let request_id = format!("resume:{task_id}:{}", opened.attempt_id);
+        let sent = opened
+            .host
+            .send_message(
+                &request_id,
+                UserMessage::text(RESUME_NOTE),
+                DeliveryMode::Steer,
+            )
+            .await;
+        if let Err(error) = sent {
+            // 恢复说明没送出去：别留一个没人做的空 Attempt。
+            opened.host.shutdown().await;
+            self.running
+                .lock()
+                .expect("thinagent 表锁被毒化")
+                .remove(opened.host.agent().id().as_str());
+            best_effort(
+                "接续说明没送出去的 Attempt 没收尾",
+                self.store.end_attempt(
+                    task_id,
+                    opened.attempt_id,
+                    Self::now(),
+                    AttemptEnd::NotOpened,
+                ),
+            );
+            self.release_seat(task_id.as_str());
+            return Err(format!("恢复说明没送进任务会话：{error}"));
+        }
+        self.wake();
+        Ok(opened.attempt_id)
+    }
+
+    /// 在原会话里接一次 Attempt（T028 的说话接续和确认卡接续共用）。
+    ///
+    /// 只做「占席位、落 Attempt、开回原会话、登记在跑表」；第一条消息由调用方送。
+    /// 先占席位再落 Attempt：席位不够按 Later 处理，不能留下没有会话的空 Attempt。
+    async fn open_resume(
+        self: &Arc<Self>,
+        task: &Task,
+        attempt: &Attempt,
+        trigger: AttemptTrigger,
+        slot: SlotKind,
+    ) -> Result<OpenedResume, ResumeBlock> {
         // 崩溃/重启留下的、还没收尾的 Attempt 不在这里抢（留给恢复链）。
         if attempt.ended_at.is_none() {
-            self.later(claim);
-            return None;
+            return Err(ResumeBlock::Later);
         }
         // 没开成会话的 Attempt 没有历史可续：说明了再失败，别一直压着。
         if attempt.end == Some(AttemptEnd::NotOpened) {
-            self.finish_or_fail(
-                claim,
-                Err("上一次 Attempt 没开成会话，接不上；任务要重新派发".to_owned()),
-            );
-            return None;
+            return Err(ResumeBlock::NoSession(
+                "上一次 Attempt 没开成会话，接不上；任务要重新派发".to_owned(),
+            ));
         }
         let Some(conversation) = attempt.conversation.clone() else {
-            self.finish_or_fail(claim, Err("这个任务没有可接着做的会话".to_owned()));
-            return None;
+            return Err(ResumeBlock::NoSession(
+                "这个任务没有可接着做的会话".to_owned(),
+            ));
         };
         // 会话 id 先解析：续接入口要的是 SessionId，不是不透明字符串。
         let Ok(resume) = SessionId::parse(conversation.as_str()) else {
-            self.finish_or_fail(claim, Err(format!("原会话 id 不合法：{conversation}")));
-            return None;
+            return Err(ResumeBlock::NoSession(format!(
+                "原会话 id 不合法：{conversation}"
+            )));
         };
         // 终态报告在工具调用里落库，那一轮可能还在写最后一段回答：会话写者没让出来
         // 之前不落新 Attempt（T028.5 e2e：报完立刻说「接着做」会撞上收尾）。
         // 效果留到下一次泵再领，攒够 2s 退避也不丢；不能在这里记一份「没开成」的失败报告。
         match session::SessionStore::open(&self.data_dir, &resume) {
-            Err(session::SessionError::AlreadyOwned { .. }) => {
-                self.later(claim);
-                return None;
-            }
+            Err(session::SessionError::AlreadyOwned { .. }) => return Err(ResumeBlock::Later),
             _ => {}
         }
         let key = task.id.as_str().to_owned();
@@ -679,24 +914,26 @@ impl TaskRuntime {
             .slots
             .lock()
             .expect("席位表锁被毒化")
-            .reserve(&key, SlotKind::Person, &running, max)
+            .reserve(&key, slot, &running, max)
             .is_err()
         {
-            // 席位满（含 person 多占的那 1 个）：效果留在库里，腾出来再领。
-            self.later(claim);
-            return None;
+            // 席位满（说话接续含 person 多占的那 1 个）：效果留在库里，腾出来再领。
+            return Err(ResumeBlock::Later);
         }
-        let attempt_id = match self.store.begin_followup(&task.id, Self::now()) {
+        let attempt_id = match self
+            .store
+            .begin_followup_with(&task.id, trigger, Self::now())
+        {
             Ok(Some(attempt_id)) => attempt_id,
             Ok(None) => {
                 self.release_seat(&key);
-                self.later(claim);
-                return None;
+                return Err(ResumeBlock::AlreadyStarted);
             }
             Err(error) => {
                 self.release_seat(&key);
-                self.finish_or_fail(claim, Err(format!("接着做没写进任务库：{error}")));
-                return None;
+                return Err(ResumeBlock::NoSession(format!(
+                    "接着做没写进任务库：{error}"
+                )));
             }
         };
         let prepared = match self.prepare(task) {
@@ -713,8 +950,7 @@ impl TaskRuntime {
                     ),
                 );
                 self.release_seat(&key);
-                self.finish_or_fail(claim, Ok(()));
-                return None;
+                return Err(ResumeBlock::PackageMissing);
             }
         };
         if self.shutting_down.load(Ordering::SeqCst) {
@@ -724,7 +960,7 @@ impl TaskRuntime {
                     .end_attempt(&task.id, attempt_id, Self::now(), AttemptEnd::NotOpened),
             );
             self.release_seat(&key);
-            return None;
+            return Err(ResumeBlock::Later);
         }
         // 上一轮可能还在收尾：会话写锁没让出来之前开不出续接会话，先短暂等它。
         // 只等写者持有这一种；别的错误交给 open 报。
@@ -766,8 +1002,9 @@ impl TaskRuntime {
                     ),
                 );
                 self.release_seat(&key);
-                self.finish_or_fail(claim, Err(format!("接着做时会话没开成：{error}")));
-                return None;
+                return Err(ResumeBlock::NoSession(format!(
+                    "接着做时会话没开成：{error}"
+                )));
             }
         };
         // 每次 await 之后重查：没在关机、任务还在、这次仍是最新的 Attempt。
@@ -787,7 +1024,7 @@ impl TaskRuntime {
                     .end_attempt(&task.id, attempt_id, Self::now(), AttemptEnd::NotOpened),
             );
             self.release_seat(&key);
-            return None;
+            return Err(ResumeBlock::Later);
         }
         let conversation = host.agent().id().clone();
         if let Err(error) = self.store.attach_session(
@@ -802,8 +1039,7 @@ impl TaskRuntime {
                     .end_attempt(&task.id, attempt_id, Self::now(), AttemptEnd::NotOpened),
             );
             self.release_seat(&key);
-            self.finish_or_fail(claim, Err(format!("会话没接上：{error}")));
-            return None;
+            return Err(ResumeBlock::NoSession(format!("会话没接上：{error}")));
         }
         // 先订阅、登记、再交给调用方发：和 launch 一样，终态报告赶在第一条消息之前也不会漏。
         let events = host.agent().subscribe();
@@ -816,7 +1052,7 @@ impl TaskRuntime {
             },
         );
         self.monitor(task.id.clone(), attempt_id, conversation, events);
-        Some(host)
+        Ok(OpenedResume { host, attempt_id })
     }
 
     /// 抄送 Kind：Inject 进发起任务的 Kind 会话，不唤醒；不在当前根会话时 Later。

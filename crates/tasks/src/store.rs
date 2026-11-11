@@ -439,10 +439,20 @@ impl Store {
     /// 返回 None：没有可接着做的 Attempt（还在跑、没开成会话、或没有上一个）。
     /// 放在投递成功路径上，是为了不出现「Attempt 已开、会话却没接上」的空行。
     pub fn begin_followup(&self, id: &TaskId, now: i64) -> Result<Option<AttemptId>, TaskError> {
+        self.begin_followup_with(id, AttemptTrigger::UserMessage, now)
+    }
+
+    /// 同 begin_followup，触发原因由调用方给：说话接续是 user_message，确认卡接续是 resume。
+    pub fn begin_followup_with(
+        &self,
+        id: &TaskId,
+        trigger: AttemptTrigger,
+        now: i64,
+    ) -> Result<Option<AttemptId>, TaskError> {
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load_task_required(&transaction, id)?;
-        let Some(attempt_id) = begin_followup_attempt(&mut task, now) else {
+        let Some(attempt_id) = begin_followup_attempt(&mut task, trigger, now) else {
             transaction.commit()?;
             return Ok(None);
         };
@@ -913,7 +923,7 @@ fn followup_preview(task: &Task) -> Option<AttemptId> {
     ))
 }
 
-fn begin_followup_attempt(task: &mut Task, now: i64) -> Option<AttemptId> {
+fn begin_followup_attempt(task: &mut Task, trigger: AttemptTrigger, now: i64) -> Option<AttemptId> {
     let latest = task.latest_attempt()?;
     if latest.ended_at.is_none() || latest.end == Some(AttemptEnd::NotOpened) {
         return None;
@@ -929,7 +939,7 @@ fn begin_followup_attempt(task: &mut Task, now: i64) -> Option<AttemptId> {
     let attempt = Attempt {
         id: attempt_id,
         conversation,
-        trigger: AttemptTrigger::UserMessage,
+        trigger,
         started_at: now,
         ended_at: None,
         end: None,

@@ -5,6 +5,7 @@
 //! 登记，不碰卡片和提议工具的代码。
 
 mod mask;
+mod resume_task;
 mod select_model;
 mod set_paused;
 
@@ -110,7 +111,8 @@ impl ActionRegistry {
             data_dir.clone(),
             identity,
         )));
-        registry.register(Arc::new(set_paused::SetPausedAction::new(data_dir)));
+        registry.register(Arc::new(set_paused::SetPausedAction::new(data_dir.clone())));
+        registry.register(Arc::new(resume_task::ResumeTaskAction::new(data_dir)));
         registry
     }
 
