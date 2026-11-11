@@ -439,6 +439,40 @@ fn blocked_and_failed_also_replace_a_synthesized_waiting_report() {
     }
 }
 
+/// 补回 T027.3a 删掉的 tasks 层用例（service 只是间接覆盖）：执行者的 waiting、
+/// 包缺项和失败的中间报告都不结束 Attempt；终态收尾归 service 的 report()。
+#[test]
+fn executor_and_waiting_reports_leave_the_attempt_open() {
+    let cases = [
+        (ReportState::Waiting, ReportOrigin::Executor),
+        (ReportState::Blocked, ReportOrigin::Package),
+        (ReportState::Failed, ReportOrigin::Executor),
+    ];
+    for (state, origin) in cases {
+        let (_directory, store) = open_store();
+        let (task, attempt) = task_with_attempt(&store);
+
+        store
+            .record_report(
+                &task.id,
+                attempt,
+                NewReport {
+                    state,
+                    origin,
+                    summary: "执行者按事实写的报告".to_owned(),
+                    question: None,
+                },
+                T0 + 2,
+            )
+            .unwrap();
+
+        let loaded = store.task(&task.id).unwrap().unwrap();
+        let row = loaded.attempt(attempt).expect("Attempt 还在");
+        assert_eq!(row.ended_at, None, "{state:?}/{origin:?}");
+        assert_eq!(row.end, None, "{state:?}/{origin:?}");
+    }
+}
+
 #[test]
 fn writes_and_reads_each_attempt_end_reason() {
     for (end, wire) in [
