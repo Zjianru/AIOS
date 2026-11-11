@@ -25,7 +25,7 @@ use crate::error::ServiceError;
 use crate::events::{page_events, service_event};
 use crate::protocol::{
     DeliveryMode, FollowRequest, FollowResponse, ServiceEvent, StopMode, TaskReadHeader,
-    TaskReadRequest, TaskReadResponse, TaskStopResponse,
+    TaskReadRequest, TaskReadResponse, TaskSayRequest, TaskSayResponse, TaskStopResponse,
 };
 use crate::root::RootSessionOptions;
 use crate::session_host::ServiceHost;
@@ -151,6 +151,31 @@ impl TaskRuntime {
     /// 任务库（测试和诊断读同一份事实）。
     pub fn store(&self) -> &Arc<Store> {
         &self.store
+    }
+
+    /// 在任务对话里说一句：记输入、排 delivery 和 notice，然后叫醒效果泵。
+    pub(crate) async fn say_task(
+        &self,
+        request: TaskSayRequest,
+    ) -> Result<TaskSayResponse, ServiceError> {
+        if !request.attachments.is_empty() {
+            return Err(ServiceError::TaskUnavailable(
+                "任务对话的附件还没接（T028.2 WIP）".to_owned(),
+            ));
+        }
+        let id = TaskId::from(request.task_id);
+        let outcome =
+            self.store
+                .say(&id, &request.text, Self::now())
+                .map_err(|error| match error {
+                    TaskError::EmptyInput => ServiceError::MessageEmpty,
+                    other => ServiceError::TaskUnavailable(format!("这句话没记进任务库：{other}")),
+                })?;
+        self.wake();
+        Ok(TaskSayResponse {
+            input_id: outcome.input_id.as_str().to_owned(),
+            new_attempt: outcome.new_attempt.map(|attempt| attempt.0),
+        })
     }
 
     /// 任务对话的只读快照：头部来自任务聚合，事件来自当前 Attempt 的会话日志。
@@ -375,6 +400,38 @@ impl TaskRuntime {
                 if self.shutting_down.load(Ordering::SeqCst) {
                     return;
                 }
+                // 抄送 Kind 不受全局暂停影响：notice 照送，不唤醒。
+                match self
+                    .store
+                    .claim_effect_ordered(EffectKind::Notice, Self::now())
+                {
+                    Ok(Some(claim)) => {
+                        worked = true;
+                        self.deliver_notice(claim).await;
+                    }
+                    Ok(None) => {}
+                    Err(error) => eprintln!("任务 notice 领取失败：{error}"),
+                }
+                if self.shutting_down.load(Ordering::SeqCst) {
+                    return;
+                }
+                // delivery 受全局暂停管：暂停时上限 0，效果留在库里，开闸后按 seq 再领。
+                if !self.exec_paused.load(Ordering::SeqCst) {
+                    match self
+                        .store
+                        .claim_effect_ordered(EffectKind::Delivery, Self::now())
+                    {
+                        Ok(Some(claim)) => {
+                            worked = true;
+                            self.deliver_delivery(claim).await;
+                        }
+                        Ok(None) => {}
+                        Err(error) => eprintln!("任务 delivery 领取失败：{error}"),
+                    }
+                }
+                if self.shutting_down.load(Ordering::SeqCst) {
+                    return;
+                }
                 // 全局暂停只关 launch 这一道闸门：relay 已经送完了，队里的 launch 不领。
                 // 席位满时也不领：效果原样留在库里（Later，不算失败），释放后按 seq 再领。
                 if !self.exec_paused.load(Ordering::SeqCst) && self.has_launch_room() {
@@ -451,6 +508,135 @@ impl TaskRuntime {
             Ok(_) => best_effort("relay 完成没写进任务库", self.store.complete_effect(&claim)),
             Err(error) => best_effort(
                 "relay 失败没写进任务库",
+                self.store
+                    .fail_effect(&claim, &error.to_string(), Self::now()),
+            ),
+        }
+    }
+
+    /// 把任务里还没送出的用户输入 Steer 进任务会话；request id task-say:<inputId> 判重。
+    async fn deliver_delivery(self: &Arc<Self>, claim: EffectClaim) {
+        let EffectPayload::Delivery { task_id } = &claim.payload else {
+            self.finish_or_fail(&claim, Err("delivery 载荷不是 delivery".to_owned()));
+            return;
+        };
+        let task = match self.store.task(task_id) {
+            Ok(Some(task)) => task,
+            Ok(None) => {
+                self.finish_or_fail(&claim, Ok(()));
+                return;
+            }
+            Err(error) => {
+                self.finish_or_fail(&claim, Err(error.to_string()));
+                return;
+            }
+        };
+        let Some(attempt) = task.latest_attempt() else {
+            self.finish_or_fail(&claim, Ok(()));
+            return;
+        };
+        let Some(running) = self.running_for(task_id, attempt.id) else {
+            // 没在跑：叫醒停了的任务、在原会话开新 Attempt 还没接线（T028.2 WIP）。
+            self.later(&claim);
+            return;
+        };
+        let mut sent = Ok(());
+        for input in &task.inputs {
+            let request_id = format!("task-say:{}", input.id.as_str());
+            if let Err(error) = running
+                .host
+                .send_message(
+                    &request_id,
+                    UserMessage::text(input.text.clone()),
+                    DeliveryMode::Steer,
+                )
+                .await
+            {
+                sent = Err(format!(
+                    "输入 {} 没送进任务会话：{error}",
+                    input.id.as_str()
+                ));
+                break;
+            }
+        }
+        match sent {
+            Ok(()) => best_effort(
+                "delivery 完成没写进任务库",
+                self.store.complete_effect(&claim),
+            ),
+            Err(error) => best_effort(
+                "delivery 失败没写进任务库",
+                self.store.fail_effect(&claim, &error, Self::now()),
+            ),
+        }
+    }
+
+    /// 抄送 Kind：Inject 进发起任务的 Kind 会话，不唤醒；不在当前根会话时 Later。
+    async fn deliver_notice(self: &Arc<Self>, claim: EffectClaim) {
+        let EffectPayload::Notice { task_id, input_id } = &claim.payload else {
+            self.finish_or_fail(&claim, Err("notice 载荷不是 notice".to_owned()));
+            return;
+        };
+        let task = match self.store.task(task_id) {
+            Ok(Some(task)) => task,
+            Ok(None) => {
+                self.finish_or_fail(&claim, Ok(()));
+                return;
+            }
+            Err(error) => {
+                self.finish_or_fail(&claim, Err(error.to_string()));
+                return;
+            }
+        };
+        let Some(input) = task
+            .inputs
+            .iter()
+            .find(|input| input.id.as_str() == input_id.as_str())
+        else {
+            self.finish_or_fail(&claim, Ok(()));
+            return;
+        };
+        let (text, chars) = relay_summary(&input.text);
+        let mut body = json!({
+            "kind": "task_cc",
+            "task": {"id": task.id.as_str(), "title": task.title},
+            "text": text,
+        });
+        if let Some(chars) = chars {
+            body["chars"] = json!(chars);
+        }
+        let request_id = format!("task-cc:{}", input.id.as_str());
+        let target = task.conversation.as_str();
+        let Some(inner) = self.inner.upgrade() else {
+            self.later(&claim);
+            return;
+        };
+        let guard = inner.lock().await;
+        let Some(host) = guard.as_ref() else {
+            drop(guard);
+            self.later(&claim);
+            return;
+        };
+        if host.agent().id().as_str() != target {
+            drop(guard);
+            self.later(&claim);
+            return;
+        }
+        let sent = host
+            .send_message(
+                &request_id,
+                UserMessage::text(body.to_string()),
+                DeliveryMode::Inject,
+            )
+            .await;
+        drop(guard);
+        match sent {
+            Ok(_) => best_effort(
+                "notice 完成没写进任务库",
+                self.store.complete_effect(&claim),
+            ),
+            Err(error) => best_effort(
+                "notice 失败没写进任务库",
                 self.store
                     .fail_effect(&claim, &error.to_string(), Self::now()),
             ),

@@ -51,6 +51,8 @@ pub enum Call {
     TaskRead(TaskReadRequest),
     /// 停一个任务（和 Kind 的 task_stop 走同一个服务方法）。
     TaskStop(TaskStopRequest),
+    /// 在任务对话里说一句：记输入、排 delivery 和 notice。
+    TaskSay(TaskSayRequest),
     /// 页面没接住的异常 / 事件流重连（只记 web 监控 ops，不进会话日志）。
     MonitorReport(MonitorReportRequest),
     /// 再检查一次根会话（修好 missing/corrupt/busy 之后回到对话）。
@@ -115,6 +117,8 @@ pub enum Response {
     TaskRead(TaskReadResponse),
     /// 停任务的结果：是否真的停下、停下后的阶段、给页面的固定说明。
     TaskStop(TaskStopResponse),
+    /// 说一句的结果：记下的输入 id，和没在跑时新开的 Attempt 编号。
+    TaskSay(TaskSayResponse),
     MonitorReport(MonitorReportResponse),
     Recheck(RecheckResponse),
     ModelSettings(ModelSettingsResponse),
@@ -413,6 +417,30 @@ pub struct TaskStopRequest {
     #[serde(rename = "taskId")]
     pub task_id: String,
     pub mode: StopMode,
+}
+
+/// 任务对话里说一句。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct TaskSayRequest {
+    #[serde(rename = "taskId")]
+    pub task_id: String,
+    pub text: String,
+    /// 用户拖进来的文件（已经存进附件仓库）；规则和 Kind 对话一样。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<SendAttachment>,
+}
+
+/// 说一句的结果：输入 id 和新 Attempt 编号（在跑时没有新 Attempt）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct TaskSayResponse {
+    #[serde(rename = "inputId")]
+    pub input_id: String,
+    #[serde(
+        default,
+        rename = "newAttempt",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub new_attempt: Option<u64>,
 }
 
 /// 停任务的结果。没在跑时 stopped 为 false，message 是固定原因；

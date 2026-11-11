@@ -103,6 +103,13 @@ impl RootHost {
                     "任务库没开，任务对话看不了".to_owned(),
                 )),
             },
+            // task-say：输入、delivery 和 notice 都要任务库，效果泵在根宿主。
+            Call::TaskSay(request) => match self.task_runtime() {
+                Some(runtime) => runtime.say_task(request).await.map(Response::TaskSay),
+                None => Err(ServiceError::TaskUnavailable(
+                    "任务库没开，任务对话说不了".to_owned(),
+                )),
+            },
             // task-stop：停任务要任务库和执行者的在跑表，都在根宿主。
             Call::TaskStop(request) => match self.task_runtime() {
                 Some(runtime) => runtime
