@@ -83,19 +83,30 @@ pub const THIN_WRITE_BASH_TOOLS: [&str; 15] = [
     "task_handback",
 ];
 
-/// 默认角色的规则（ThinAgent 的 policy_prompt，追加在系统提示末尾；Kind 不装）。
-pub const THIN_POLICY: &str = "\
-You are a ThinAgent: the execution carrier for one task. \
+/// bash 关着时的角色规则（ThinAgent 的 policy_prompt，追加在系统提示末尾；Kind 不装）。
+///
+/// bash 开关决定 shell/后台那一段的说法（D85）：关着时没有跑命令的手段；开着时
+/// 明说 bash 和后台任务在，且写集不约束它们——命令按用户的完全权限跑。
+fn thin_policy(bash: bool) -> String {
+    let shell = if bash {
+        "You also have bash and the background job tools; the write scope does not constrain them, and commands run with the user's full permissions. Use them only for this task. You cannot delegate or ask a person a question directly."
+    } else {
+        "You cannot run shell commands, start background work, delegate, or ask a person a question directly."
+    };
+    format!(
+        "You are a ThinAgent: the execution carrier for one task. \
 The task's requirement and DoD are the whole scope; work inside them and inside the task's working directory.
 If the user says something outside this task's scope, asks for a different task, or asks to change the requirement or the DoD, call task_handback once with one sentence saying what exceeded the task; do not do that work yourself.
 If the user only thanks you or acknowledges the result, do not reply.
 You can read, search, load skills, keep a todo list, read the web, and call task_report or task_handback. \
 When the assignment has a write_scope, you also have write and edit, and they only work inside that scope; if what the user asks needs a path outside it, call task_handback instead of trying to get around it. \
-You cannot run shell commands, start background work, delegate, or ask a person a question directly.
+{shell}
 When the work is done, report ready with the answer and the evidence it rests on. \
 When you cannot continue without a missing tool, permission, file, credential or an answer, report blocked with exactly what is missing and what the user must do; put a direct question in question when only the user can answer it. \
 When the work cannot produce the result, report failed with what failed and what you already found. \
-Report once, when it is a result: do not report progress, and do not claim work you did not do.";
+Report once, when it is a result: do not report progress, and do not claim work you did not do."
+    )
+}
 
 /// 向 ThinAgent 要状态时的输入（照 DSH STATUS_REQUEST）。
 const STATUS_REQUEST: &str = "Report the current task status with task_report. This is a status-only request: do not resume implementation or perform external actions.";
@@ -115,6 +126,9 @@ const HANDBACK_QUESTION: &str = "这超出了任务范围，要不要改任务�
 
 /// 开了 bash 的写任务，结果卡上的固定说明（spec 故事 7；原文进卡数据，由结果卡渲染）。
 const BASH_NOTE: &str = "这个任务开了 bash，bash 的改动不在清单里";
+
+/// 立即停任务时写给后台命令的取消原因（进 job 的 detail，给人和日志看）。
+const STOPPED_JOB_REASON: &str = "任务被立即停了";
 
 /// 确认接续后给 ThinAgent 的第一条输入（照 DSH RECOVERY_NOTE，换成 AIOS 的话；spec v1）。
 const RESUME_NOTE: &str = "AIOS 在这个任务进行中重启了。先看当前的文件和状态再继续；已经做完的外部动作不要再做一遍。把原来的任务做完，然后用 task_report 上报。";
@@ -1687,7 +1701,7 @@ impl TaskRuntime {
                 only: Some(task.tools.clone()),
                 no_wait: false,
             },
-            policy_prompt: Some(THIN_POLICY.to_owned()),
+            policy_prompt: Some(thin_policy(task.bash)),
         })
         .await
         .map_err(|error| error.to_string())?;
@@ -2354,7 +2368,10 @@ impl TaskRuntime {
         // 06 篇 4.2 第 1 步：先持久保存停止要求，再掐断会话。让出一次，使取消之前提交的
         // 停止事实对效果泵和日志观察者可见；先后顺序因此能被分辨，而不是同一 poll 里两件事。
         tokio::task::yield_now().await;
-        running.host.agent().cancel_with(session::AbortCause::User);
+        let agent = running.host.agent();
+        agent.cancel_with(session::AbortCause::User);
+        // 开了 bash 的任务：后台命令也一起停，收到 SIGTERM 而不是留到任务结束之后（D85）。
+        agent.stop_background_jobs(STOPPED_JOB_REASON).await;
         self.running
             .lock()
             .expect("thinagent 表锁被毒化")

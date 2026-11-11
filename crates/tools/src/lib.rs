@@ -32,8 +32,8 @@ pub use diff::{DIFF_CONTEXT, FileDiff, compute_hunk_diffs};
 pub use fs::check_write;
 pub use jobs::{
     JobCause, JobNotifyCallback, JobOutputRead, JobRead, JobRegistered, JobRegisteredCallback,
-    JobSettled, JobSettledCallback, JobSpec, JobStatus, JobToolCall, JobView, MAX_WAIT_MS,
-    TaskRegistry, render_model_delta,
+    JobSettled, JobSettledCallback, JobSpec, JobStatus, JobToolCall, JobView, KILL_GRACE,
+    MAX_WAIT_MS, TaskRegistry, render_model_delta,
 };
 pub use session::{
     FileVersion, ObservationPolicy, ObservedFile, SharedToolSession, SpillStore, ToolSessionState,

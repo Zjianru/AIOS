@@ -6001,6 +6001,16 @@ async fn a_write_task_without_bash_gets_eleven_tools_and_no_bash_note() {
 
     let names = sorted(tool_names(&loaded_request(&fixture.router)));
     assert_eq!(names, sorted(WRITE_TOOLS), "ThinAgent 的工具表正好 11 件");
+
+    let bodies = fixture.router.bodies(true);
+    assert!(
+        bodies[0].contains("You cannot run shell commands"),
+        "关着 bash 的角色规则说明没有跑命令的手段"
+    );
+    assert!(
+        !bodies[0].contains("You also have bash and the background job tools"),
+        "关着 bash 不给跑命令的说法"
+    );
 }
 
 /// 开关打开：受理时冻结 15 件；之后关掉开关不影响已派的任务（起跑仍用 15 件）。
@@ -6070,6 +6080,16 @@ async fn the_bash_switch_on_freezes_fifteen_tools_into_the_write_task() {
         names,
         sorted(WRITE_BASH_TOOLS),
         "ThinAgent 的工具表正好 15 件"
+    );
+
+    let bodies = fixture.router.bodies(true);
+    assert!(
+        bodies[0].contains("You also have bash and the background job tools"),
+        "开着 bash 的角色规则说清楚能跑命令"
+    );
+    assert!(
+        !bodies[0].contains("You cannot run shell commands"),
+        "开着 bash 不能再说不许跑命令"
     );
 }
 
