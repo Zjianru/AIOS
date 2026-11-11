@@ -4822,7 +4822,7 @@ async fn dismissing_the_restart_card_leaves_the_task_interrupted_without_another
         "甲",
     )
     .await;
-    crash_while_running(&router, data.path(), host, &[task.clone()]).await;
+    crash_while_running(&router, data.path(), host, std::slice::from_ref(&task)).await;
 
     let store = tasks_store(data.path());
     let crashed = reload_tasks(&store, &[task]);
@@ -4883,7 +4883,7 @@ async fn talking_in_the_task_dialog_before_confirming_says_already_resumed() {
         "甲",
     )
     .await;
-    crash_while_running(&router, data.path(), host, &[task.clone()]).await;
+    crash_while_running(&router, data.path(), host, std::slice::from_ref(&task)).await;
 
     let store = tasks_store(data.path());
     let crashed = reload_tasks(&store, &[task]);
@@ -4953,7 +4953,7 @@ async fn a_paused_restart_waits_for_the_gate_then_reports_once() {
         "甲",
     )
     .await;
-    crash_while_running(&router, data.path(), host, &[task.clone()]).await;
+    crash_while_running(&router, data.path(), host, std::slice::from_ref(&task)).await;
 
     let store = tasks_store(data.path());
     let crashed = reload_tasks(&store, &[task]);
@@ -5031,7 +5031,7 @@ async fn a_restart_report_stays_later_while_the_model_is_unavailable() {
         "甲",
     )
     .await;
-    crash_while_running(&router, data.path(), host, &[task.clone()]).await;
+    crash_while_running(&router, data.path(), host, std::slice::from_ref(&task)).await;
 
     let store = tasks_store(data.path());
     let crashed = reload_tasks(&store, &[task]);
