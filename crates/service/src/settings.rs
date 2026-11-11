@@ -50,6 +50,11 @@ pub struct ExecSettings {
     /// 同时执行的 ThinAgent 上限（1–16）。缺省 3。
     #[serde(default = "default_seats")]
     pub seats: u8,
+    /// 默认角色的 bash 开关：写任务的 ThinAgent 能不能跑命令（D85）。缺省关。
+    ///
+    /// 任务创建时读这里的值冻结进任务行；之后改开关不影响已派的任务。
+    #[serde(default)]
+    pub bash: bool,
 }
 
 impl Default for ExecSettings {
@@ -57,6 +62,7 @@ impl Default for ExecSettings {
         Self {
             paused: false,
             seats: DEFAULT_SEATS,
+            bash: false,
         }
     }
 }

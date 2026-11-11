@@ -622,6 +622,7 @@ impl RootHost {
                     .exec
                     .seats
                     .clamp(settings::MIN_SEATS, settings::MAX_SEATS),
+                bash: settings.exec.bash,
             },
         })
     }

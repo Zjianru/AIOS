@@ -756,6 +756,9 @@ pub struct SettingsUpdateRequest {
     /// 席位（1–16）；None = 不改。越界由服务拒绝，不写文件。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seats: Option<u8>,
+    /// 默认角色的 bash 开关（D85）；None = 不改。只影响之后派的任务。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bash: Option<bool>,
 }
 
 /// 设置 › 执行 的当前值（页面读回用；席位已夹在 1–16）。
@@ -763,6 +766,8 @@ pub struct SettingsUpdateRequest {
 pub struct ExecSettingsView {
     pub paused: bool,
     pub seats: u8,
+    /// 默认角色的 bash 开关（D85）；默认关。
+    pub bash: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
