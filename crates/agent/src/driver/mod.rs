@@ -15,6 +15,7 @@ use crate::capabilities::{
 };
 use crate::error::AgentError;
 use crate::inbox::{Delivery, Inbox};
+use crate::warn::warn;
 use crate::{AgentConfig, AgentEvent, CompactionTrigger, Deps};
 
 const EVENT_CHANNEL_CAPACITY: usize = 256;
@@ -698,6 +699,39 @@ impl Inner {
     /// jobs_capability 安装结算回调用（任务注册表在 tools 层）。
     pub(crate) fn job_session(&self) -> &Arc<ToolSessionState> {
         &self.tool_session
+    }
+
+    /// 停掉这个会话所有还在跑的后台任务（立即停照 DSH stop：连后台命令一起停）。
+    ///
+    /// 每个任务先请求取消再等进程退出；请求时打上 killedByModel 标记，结算不再投
+    /// 完成通知——已经停下的会话不该因为收后台任务再开一轮。单个任务停不下来留警告，
+    /// 不挡住其余任务。
+    pub(crate) async fn stop_background_jobs(&self, reason: &str) {
+        let tasks = self.job_session().tasks();
+        let running: Vec<String> = tasks
+            .list()
+            .into_iter()
+            .filter(|job| !job.status.is_terminal())
+            .map(|job| job.id)
+            .collect();
+        for id in running {
+            match tasks.request_kill(&id, Some(reason.to_owned()), true) {
+                Ok(true) => {
+                    if let Err(error) = tasks.await_termination(&id, tools::KILL_GRACE).await {
+                        warn(format!(
+                            "[jobs] failed to stop background job {id}: {}",
+                            error.message
+                        ));
+                    }
+                }
+                // 请求前已经结算：没有要停的。
+                Ok(false) => {}
+                Err(error) => warn(format!(
+                    "[jobs] failed to request stop for job {id}: {}",
+                    error.message
+                )),
+            }
+        }
     }
 
     /// 结算回调回到 runtime 上下文后唤醒驱动。

@@ -5193,6 +5193,7 @@ async fn a_paused_restart_waits_for_the_gate_then_reports_once() {
         currency: None,
         paused: Some(false),
         seats: None,
+        bash: None,
     }))
     .await
     .expect("开闸");
@@ -5340,6 +5341,7 @@ async fn task_read_reports_interrupted_and_restart_pending_until_kind_is_told() 
         currency: None,
         paused: Some(false),
         seats: None,
+        bash: None,
     }))
     .await
     .expect("开闸");
@@ -5854,5 +5856,401 @@ async fn task_update_records_a_new_version_and_resumes_with_the_new_scope() {
     assert!(
         update_text.contains(&scope.display().to_string()),
         "{update_text}"
+    );
+}
+
+/// 写任务工具表里和 bash 有关的四件（D85：角色开关打开才给）。
+const BASH_JOB_TOOLS: [&str; 4] = ["bash", "job_output", "job_list", "job_kill"];
+
+/// 只读 9 件：T030.2b 里开关打开也不能给只读任务加。
+const READ_ONLY_TOOLS: [&str; 9] = [
+    "read",
+    "glob",
+    "grep",
+    "skill",
+    "todo_write",
+    "web_search",
+    "web_fetch",
+    "task_report",
+    "task_handback",
+];
+
+/// 写任务 11 件（关着 bash）。
+const WRITE_TOOLS: [&str; 11] = [
+    "read",
+    "glob",
+    "grep",
+    "write",
+    "edit",
+    "skill",
+    "todo_write",
+    "web_search",
+    "web_fetch",
+    "task_report",
+    "task_handback",
+];
+
+/// 写任务 15 件（开着 bash：11 件加 bash 和后台任务三件）。
+const WRITE_BASH_TOOLS: [&str; 15] = [
+    "read",
+    "glob",
+    "grep",
+    "write",
+    "edit",
+    "bash",
+    "job_output",
+    "job_list",
+    "job_kill",
+    "skill",
+    "todo_write",
+    "web_search",
+    "web_fetch",
+    "task_report",
+    "task_handback",
+];
+
+fn sorted(names: impl IntoIterator<Item = impl Into<String>>) -> Vec<String> {
+    let mut names: Vec<String> = names.into_iter().map(Into::into).collect();
+    names.sort();
+    names
+}
+
+/// 存一个假的 Exa key：加载 web skill 后两件联网工具才开得出来，工具表才数得准（不联网）。
+fn save_exa_key(data: &Path) {
+    credentials::Keyring::open(data, Some(&data.join("identity.txt")))
+        .expect("keyring")
+        .save_exa_key("test-exa-key")
+        .expect("存 Exa key");
+}
+
+async fn set_bash(host: &RootHost, bash: bool) {
+    host.dispatch(Call::SettingsUpdate(SettingsUpdateRequest {
+        bash: Some(bash),
+        ..Default::default()
+    }))
+    .await
+    .expect("改 bash 开关");
+}
+
+fn write_task_args() -> Value {
+    serde_json::json!({
+        "title": "改一下判重",
+        "requirement": "把重复判断改成按 url",
+        "dod": "同一个 url 只留一条",
+        "write_scope": "target.py"
+    })
+}
+
+/// 请求里加载 web skill 之后的那一份（工具表已经开出条件工具）。
+fn loaded_request(router: &Router) -> String {
+    router
+        .bodies(true)
+        .into_iter()
+        .find(|body| body.contains("\"name\":\"web_search\""))
+        .expect("加载 web skill 后的请求")
+}
+
+/// bash 关着：写任务还是 11 件、没有 bash 和后台任务，结果卡数据里也没有 bash 说明。
+#[tokio::test]
+async fn a_write_task_without_bash_gets_eleven_tools_and_no_bash_note() {
+    let fixture = Fixture::new().await;
+    save_exa_key(fixture.data());
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        crate::common::tool_use_sse(
+            1,
+            "call-skill",
+            "skill",
+            &serde_json::json!({"name": "web"}).to_string(),
+        ),
+    );
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        report_sse(2, "call-report", "ready", "改好了", None),
+    );
+    fixture
+        .router
+        .push_thin_for_title("改一下判重", crate::common::text_sse("done"));
+
+    let task = fixture.accept_args(true, write_task_args(), 1).await;
+    assert!(!task.bash, "默认关：写任务不冻结 bash");
+    assert_eq!(
+        sorted(task.tools.clone()),
+        sorted(WRITE_TOOLS),
+        "写任务 11 件"
+    );
+
+    fixture
+        .host
+        .task_runtime()
+        .expect("runtime")
+        .set_pump_paused(false);
+    wait_until("ready relay", || {
+        relay_messages(&crate::common::read_root_events(fixture.data()))
+            .iter()
+            .any(|(_, body)| body["state"] == "ready")
+    })
+    .await;
+    let relays = relay_messages(&crate::common::read_root_events(fixture.data()));
+    let body = &relays[0].1;
+    assert_eq!(body["state"], "ready", "{body}");
+    assert!(
+        body.get("bash_note").is_none(),
+        "关着 bash 不写说明：{body}"
+    );
+
+    let names = sorted(tool_names(&loaded_request(&fixture.router)));
+    assert_eq!(names, sorted(WRITE_TOOLS), "ThinAgent 的工具表正好 11 件");
+
+    let bodies = fixture.router.bodies(true);
+    assert!(
+        bodies[0].contains("You cannot run shell commands"),
+        "关着 bash 的角色规则说明没有跑命令的手段"
+    );
+    assert!(
+        !bodies[0].contains("You also have bash and the background job tools"),
+        "关着 bash 不给跑命令的说法"
+    );
+}
+
+/// 开关打开：受理时冻结 15 件；之后关掉开关不影响已派的任务（起跑仍用 15 件）。
+#[tokio::test]
+async fn the_bash_switch_on_freezes_fifteen_tools_into_the_write_task() {
+    let fixture = Fixture::new().await;
+    save_exa_key(fixture.data());
+    set_bash(&fixture.host, true).await;
+    assert!(
+        service::settings::load(fixture.data()).exec.bash,
+        "开关写进设置文件"
+    );
+
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        crate::common::tool_use_sse(
+            1,
+            "call-skill",
+            "skill",
+            &serde_json::json!({"name": "web"}).to_string(),
+        ),
+    );
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        report_sse(2, "call-report", "ready", "改好了", None),
+    );
+    fixture
+        .router
+        .push_thin_for_title("改一下判重", crate::common::text_sse("done"));
+
+    let task = fixture.accept_args(true, write_task_args(), 1).await;
+    assert!(task.bash, "创建时冻结打开");
+    assert_eq!(
+        sorted(task.tools.clone()),
+        sorted(WRITE_BASH_TOOLS),
+        "开了 bash 的写任务冻结 15 件"
+    );
+    for name in BASH_JOB_TOOLS {
+        assert!(
+            task.tools.iter().any(|tool| tool == name),
+            "冻结名单要有 {name}：{:?}",
+            task.tools
+        );
+    }
+
+    // 创建之后关掉开关：任务行不跟着变，起跑也用冻结的 15 件。
+    set_bash(&fixture.host, false).await;
+    assert!(!service::settings::load(fixture.data()).exec.bash);
+    let frozen = tasks_store(fixture.data()).task(&task.id).unwrap().unwrap();
+    assert!(frozen.bash, "已派任务的 bash 不跟着开关变");
+    assert_eq!(sorted(frozen.tools.clone()), sorted(WRITE_BASH_TOOLS));
+
+    fixture
+        .host
+        .task_runtime()
+        .expect("runtime")
+        .set_pump_paused(false);
+    wait_until("ready relay", || {
+        relay_messages(&crate::common::read_root_events(fixture.data()))
+            .iter()
+            .any(|(_, body)| body["state"] == "ready")
+    })
+    .await;
+
+    let names = sorted(tool_names(&loaded_request(&fixture.router)));
+    assert_eq!(
+        names,
+        sorted(WRITE_BASH_TOOLS),
+        "ThinAgent 的工具表正好 15 件"
+    );
+
+    let bodies = fixture.router.bodies(true);
+    assert!(
+        bodies[0].contains("You also have bash and the background job tools"),
+        "开着 bash 的角色规则说清楚能跑命令"
+    );
+    assert!(
+        !bodies[0].contains("You cannot run shell commands"),
+        "开着 bash 不能再说不许跑命令"
+    );
+}
+
+/// 开了 bash 的写任务，结果卡数据带固定说明（原文来自 spec 故事 7）。
+#[tokio::test]
+async fn a_bash_task_card_carries_the_fixed_note() {
+    let fixture = Fixture::new().await;
+    set_bash(&fixture.host, true).await;
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        report_sse(1, "call-report", "ready", "改好了", None),
+    );
+    fixture
+        .router
+        .push_thin_for_title("改一下判重", crate::common::text_sse("done"));
+
+    let task = fixture.accept_args(false, write_task_args(), 1).await;
+    wait_until("ready relay", || {
+        relay_messages(&crate::common::read_root_events(fixture.data()))
+            .iter()
+            .any(|(_, body)| body["state"] == "ready")
+    })
+    .await;
+    let relays = relay_messages(&crate::common::read_root_events(fixture.data()));
+    let body = &relays[0].1;
+    assert_eq!(body["task"]["id"], task.id.as_str(), "{body}");
+    assert_eq!(
+        body["bash_note"], "这个任务开了 bash，bash 的改动不在清单里",
+        "说明原文进卡数据"
+    );
+}
+
+/// 只读任务：开关打开也不加 bash 和后台任务，还是 9 件。
+#[tokio::test]
+async fn a_read_only_task_never_gets_bash_even_when_the_switch_is_on() {
+    let fixture = Fixture::new().await;
+    save_exa_key(fixture.data());
+    set_bash(&fixture.host, true).await;
+    assert!(service::settings::load(fixture.data()).exec.bash);
+
+    fixture.router.push_thin_for_title(
+        "查一下",
+        crate::common::tool_use_sse(
+            1,
+            "call-skill",
+            "skill",
+            &serde_json::json!({"name": "web"}).to_string(),
+        ),
+    );
+    fixture.router.push_thin_for_title(
+        "查一下",
+        report_sse(2, "call-report", "ready", "查好了", None),
+    );
+    fixture
+        .router
+        .push_thin_for_title("查一下", crate::common::text_sse("done"));
+
+    let task = fixture
+        .accept_args(
+            true,
+            serde_json::json!({
+                "title": "查一下",
+                "requirement": "找答案",
+                "dod": "有答案"
+            }),
+            1,
+        )
+        .await;
+    assert!(!task.bash, "只读任务不冻结 bash");
+    assert_eq!(
+        sorted(task.tools.clone()),
+        sorted(READ_ONLY_TOOLS),
+        "只读任务还是 9 件"
+    );
+
+    fixture
+        .host
+        .task_runtime()
+        .expect("runtime")
+        .set_pump_paused(false);
+    wait_until("ready relay", || {
+        relay_messages(&crate::common::read_root_events(fixture.data()))
+            .iter()
+            .any(|(_, body)| body["state"] == "ready")
+    })
+    .await;
+    let names = sorted(tool_names(&loaded_request(&fixture.router)));
+    assert_eq!(
+        names,
+        sorted(READ_ONLY_TOOLS),
+        "只读任务给 ThinAgent 的工具表正好 9 件"
+    );
+    for name in BASH_JOB_TOOLS {
+        assert!(
+            !names.iter().any(|tool| tool == name),
+            "只读任务不给 {name}：{names:?}"
+        );
+    }
+}
+
+/// 立即停：连这个任务的后台命令一起停（进程收到 SIGTERM 并退出）。
+///
+/// 后台命令把收到 TERM 写成 cwd 里的文件；没被杀掉时它会自己睡完 60 秒，
+/// 所以红的时候这里等不到文件，也不会留下一个永远不退的进程。
+#[tokio::test]
+async fn immediately_stopping_a_task_kills_its_background_jobs() {
+    let fixture = Fixture::new().await;
+    set_bash(&fixture.host, true).await;
+    // 第一轮回复慢一点：任务要在后台命令起来、第二轮还在途的时候被停。
+    fixture.router.set_thin_delay(Duration::from_millis(2_000));
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        crate::common::tool_use_sse(
+            1,
+            "call-bash",
+            "bash",
+            &serde_json::json!({
+                "description": "等停止信号",
+                "command": "trap 'echo stopped > killed.txt' TERM; sleep 60",
+                "run_in_background": true
+            })
+            .to_string(),
+        ),
+    );
+    fixture
+        .router
+        .push_thin_for_title("改一下判重", crate::common::text_sse("还在等"));
+
+    let task = fixture.accept_args(false, write_task_args(), 1).await;
+    let store = tasks_store(fixture.data());
+    wait_until("后台任务登记", || {
+        store
+            .task(&task.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().cloned())
+            .is_some_and(|attempt| {
+                let Some(conversation) = attempt.conversation else {
+                    return false;
+                };
+                let Ok(id) = session::SessionId::parse(conversation.as_str()) else {
+                    return false;
+                };
+                session::SessionStore::open_read_only(fixture.data(), &id).is_ok_and(|session| {
+                    session.events().iter().any(|event| {
+                        matches!(&event.kind, session::EventKind::JobRegistered { .. })
+                    })
+                })
+            })
+    })
+    .await;
+
+    let stop = stop_task(&fixture, &task, StopMode::Now).await;
+    assert!(stop.stopped, "{stop:?}");
+    wait_until("后台命令收到 SIGTERM", || {
+        fixture.cwd.path().join("killed.txt").exists()
+    })
+    .await;
+    assert_eq!(
+        std::fs::read_to_string(fixture.cwd.path().join("killed.txt")).unwrap(),
+        "stopped\n",
+        "后台命令收到 TERM 后落了文件"
     );
 }

@@ -17,4 +17,8 @@ paused?: boolean | null,
 /**
  * 席位（1–16）；None = 不改。越界由服务拒绝，不写文件。
  */
-seats?: number | null, };
+seats?: number | null,
+/**
+ * 默认角色的 bash 开关（D85）；None = 不改。只影响之后派的任务。
+ */
+bash?: boolean | null, };

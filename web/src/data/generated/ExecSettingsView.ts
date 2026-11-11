@@ -3,4 +3,8 @@
 /**
  * 设置 › 执行 的当前值（页面读回用；席位已夹在 1–16）。
  */
-export type ExecSettingsView = { paused: boolean, seats: number, };
+export type ExecSettingsView = { paused: boolean, seats: number,
+/**
+ * 默认角色的 bash 开关（D85）；默认关。
+ */
+bash: boolean, };

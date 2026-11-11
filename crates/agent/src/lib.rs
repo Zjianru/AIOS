@@ -545,6 +545,14 @@ impl Agent {
         self.inner.cancel_with(cause);
     }
 
+    /// 停掉这个会话还在跑的后台任务：立即停任务时连后台命令一起停（D85）。
+    ///
+    /// 请求取消后等进程退出（SIGTERM → 宽限期 → SIGKILL）；结算不再投完成通知。
+    /// 返回时这些任务已经不再跑（单个停不下来的留一条警告，不挡住其余任务）。
+    pub async fn stop_background_jobs(&self, reason: &str) {
+        self.inner.stop_background_jobs(reason).await;
+    }
+
     /// 收尾停：给这个会话打收尾标记，下一次工具调用只放行 task_report。
     ///
     /// 标记只活这个 Agent 实例（一次 Attempt）；下一次 Attempt 开的是新会话，不带标记。

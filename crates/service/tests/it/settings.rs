@@ -2780,3 +2780,63 @@ async fn deepseek连接的助手消息仍记deepseek() {
         "deepseek"
     );
 }
+
+/// 设置 › 执行 的 bash 开关：默认关、旧文件缺字段按关读、保存后响应和文件都是新值。
+#[tokio::test]
+async fn 设置更新读写执行设置的bash开关() {
+    let dir = tempdir().unwrap();
+    // 旧设置文件没有 exec.bash：按默认关读。
+    std::fs::write(
+        dir.path().join("settings.json"),
+        r#"{"currency":"usd","exec":{"paused":false,"seats":3}}"#,
+    )
+    .expect("旧设置文件");
+    assert!(
+        !service::settings::load(dir.path()).exec.bash,
+        "旧文件缺 bash 按关读"
+    );
+
+    let host = host(dir.path()).await;
+    let response = host
+        .dispatch(Call::SettingsUpdate(
+            service::SettingsUpdateRequest::default(),
+        ))
+        .await
+        .expect("读执行设置");
+    let service::Response::SettingsUpdate(response) = response else {
+        panic!("expected SettingsUpdate");
+    };
+    assert!(!response.exec.bash, "默认关");
+
+    let response = host
+        .dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
+            bash: Some(true),
+            ..Default::default()
+        }))
+        .await
+        .expect("打开 bash");
+    let service::Response::SettingsUpdate(response) = response else {
+        panic!("expected SettingsUpdate");
+    };
+    assert!(response.exec.bash);
+    assert!(
+        service::settings::load(dir.path()).exec.bash,
+        "打开了写进文件"
+    );
+
+    let response = host
+        .dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
+            bash: Some(false),
+            ..Default::default()
+        }))
+        .await
+        .expect("关掉 bash");
+    let service::Response::SettingsUpdate(response) = response else {
+        panic!("expected SettingsUpdate");
+    };
+    assert!(!response.exec.bash);
+    assert!(
+        !service::settings::load(dir.path()).exec.bash,
+        "关掉了写进文件"
+    );
+}
