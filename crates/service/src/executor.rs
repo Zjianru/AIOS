@@ -1347,6 +1347,10 @@ impl TaskRuntime {
         }) {
             return;
         }
+        // 用户自己停下这一轮：不算 ThinAgent 没上报，不合成 waiting，Attempt 留着接着做。
+        if self.last_turn_was_user_aborted(conversation) {
+            return;
+        }
         // 收尾停：turn 结束还没报，先走 T024 的 waiting 合成，再把这个 Attempt 记成 stopped。
         if self.after_report_requested(conversation) {
             self.settle_after_report(task_id, attempt_id, conversation);
@@ -1354,6 +1358,27 @@ impl TaskRuntime {
         }
         self.record_waiting(task_id, attempt_id, conversation);
         self.wake();
+    }
+
+    /// 这个会话最后一轮是不是用户取消的（停下这一轮；立即停会先把 Attempt 记成结束，走不到这里）。
+    fn last_turn_was_user_aborted(&self, conversation: &SessionId) -> bool {
+        let Ok(store) = session::SessionStore::open_read_only(&self.data_dir, conversation) else {
+            return false;
+        };
+        store
+            .events()
+            .iter()
+            .rev()
+            .find_map(|event| match &event.kind {
+                session::EventKind::TurnEnd { reason, .. } => Some(matches!(
+                    reason,
+                    session::TurnEndReason::Aborted {
+                        reason: session::AbortCause::User
+                    }
+                )),
+                _ => None,
+            })
+            .unwrap_or(false)
     }
 
     /// 这个会话有没有收尾停标记（在跑表里查；会话摘掉之后就是 false）。
@@ -1627,10 +1652,27 @@ impl TaskRuntime {
             .task(&id)
             .map_err(|error| ServiceError::TaskUnavailable(format!("任务读不出来：{error}")))?
             .ok_or_else(|| ServiceError::TaskUnavailable(format!("找不到这个任务：{task_id}")))?;
-        let _ = task;
-        Ok(TaskInterruptResponse {
+        let not_running = || TaskInterruptResponse {
             interrupted: false,
             message: NOT_RUNNING.to_owned(),
+        };
+        let Some(attempt) = task.latest_attempt() else {
+            return Ok(not_running());
+        };
+        if attempt.ended_at.is_some() {
+            return Ok(not_running());
+        }
+        let Some(running) = self.running_for(&id, attempt.id) else {
+            return Ok(not_running());
+        };
+        // 只取消正在跑的一轮：cancel_with 不动输入队列，也不写 Attempt 结果。
+        if !running.host.agent().is_running() {
+            return Ok(not_running());
+        }
+        running.host.agent().cancel_with(session::AbortCause::User);
+        Ok(TaskInterruptResponse {
+            interrupted: true,
+            message: "已停下这一轮".to_owned(),
         })
     }
 

@@ -352,10 +352,7 @@ fn last_turn_end(events: &[session::Event]) -> Option<session::TurnEndReason> {
 }
 
 /// 页面「停下这一轮」的调用；测试只关心响应。
-async fn interrupt_task(
-    host: &RootHost,
-    task: &Task,
-) -> service::TaskInterruptResponse {
+async fn interrupt_task(host: &RootHost, task: &Task) -> service::TaskInterruptResponse {
     let response = host
         .dispatch(Call::TaskInterrupt(TaskInterruptRequest {
             task_id: task.id.as_str().to_owned(),
@@ -1765,7 +1762,10 @@ async fn interrupting_a_running_turn_keeps_the_attempt_and_the_next_sentence_con
     let kept = after.latest_attempt().cloned().expect("Attempt 还在");
     assert_eq!(kept.id, attempt.id);
     assert!(kept.ended_at.is_none(), "停下这一轮不写 Attempt 结束");
-    assert!(after.latest_report().is_none(), "停下这一轮不合成 waiting 报告");
+    assert!(
+        after.latest_report().is_none(),
+        "停下这一轮不合成 waiting 报告"
+    );
     assert_eq!(store.stage(&task.id).unwrap(), Stage::Running);
     let root_events = crate::common::read_root_events(fixture.data());
     assert!(
@@ -1793,9 +1793,10 @@ async fn interrupting_a_running_turn_keeps_the_attempt_and_the_next_sentence_con
     // 再说一句：同一 Attempt 接着做，请求里带着下一句。
     fixture.router.clear_thin_delay();
     fixture.router.push_kind(crate::common::text_sse("收到"));
-    fixture
-        .router
-        .push_thin_for(task.id.as_str(), report_sse(1, "call-report", "ready", "接着做完了", None));
+    fixture.router.push_thin_for(
+        task.id.as_str(),
+        report_sse(1, "call-report", "ready", "接着做完了", None),
+    );
     fixture
         .router
         .push_thin_for(task.id.as_str(), crate::common::text_sse("收尾"));
