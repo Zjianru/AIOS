@@ -1056,6 +1056,65 @@ async fn task_handback_relays_one_blocked_card_with_the_fixed_question() {
 }
 
 #[tokio::test]
+async fn task_handback_twice_returns_already_handed_back_without_a_second_relay() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(false).await;
+    fixture.router.push_thin(crate::common::tool_use_sse(
+        1,
+        "call-handback-1",
+        "task_handback",
+        &serde_json::json!({"reason": "第一次超出了任务范围"}).to_string(),
+    ));
+    fixture.router.push_thin(crate::common::tool_use_sse(
+        2,
+        "call-handback-2",
+        "task_handback",
+        &serde_json::json!({"reason": "第二次也要交回"}).to_string(),
+    ));
+    fixture.router.push_thin(crate::common::text_sse("交回了两次"));
+    wait_until("第二次交回的回执", || {
+        let store = tasks_store(fixture.data());
+        let Some(task_row) = store.task(&task.id).ok().flatten() else {
+            return false;
+        };
+        let Some(attempt) = task_row.latest_attempt() else {
+            return false;
+        };
+        if attempt.conversation.is_none() {
+            return false;
+        }
+        thin_events(fixture.data(), attempt).iter().any(|event| {
+            matches!(
+                &event.kind,
+                session::EventKind::ToolResult { message, .. }
+                    if message.tool_call_id.as_deref() == Some("call-handback-2")
+            )
+        })
+    })
+    .await;
+
+    let relays = relay_messages(&crate::common::read_root_events(fixture.data()));
+    assert_eq!(relays.len(), 1, "第二次交回不再出 relay：{relays:?}");
+    let store = tasks_store(fixture.data());
+    let task_row = store.task(&task.id).unwrap().unwrap();
+    let attempt = task_row.latest_attempt().expect("Attempt").clone();
+    let events = thin_events(fixture.data(), &attempt);
+    let (first, first_error) = tool_result(&events, "call-handback-1");
+    assert_eq!(first_error, None, "{first}");
+    assert!(first.contains("已交回"), "{first}");
+    let (second, second_error) = tool_result(&events, "call-handback-2");
+    assert_eq!(second_error, None, "{second}");
+    assert_eq!(second, "已交回");
+    let reports: Vec<&tasks::Report> = task_row
+        .reports
+        .iter()
+        .filter(|report| report.attempt_id == attempt.id)
+        .collect();
+    assert_eq!(reports.len(), 1, "同一个 Attempt 只留一份报告：{reports:?}");
+    assert_ne!(reports[0].summary, "第二次也要交回");
+}
+
+#[tokio::test]
 async fn a_failed_report_relays_and_leaves_the_task_open() {
     let fixture = Fixture::new().await;
     let task = fixture.accept(false).await;
