@@ -360,7 +360,9 @@ impl Store {
             source: InputSource::User,
             text: text.to_owned(),
         });
-        let new_attempt = begin_followup_attempt(&mut task, now);
+        // 只回报「接着做会开第几次 Attempt」；Attempt 行等投递真的接上会话再落，
+        // 免得投递只 Later 时留下一个没有会话的空 Attempt。
+        let new_attempt = followup_preview(&task);
         save_task(&transaction, &task)?;
         self.enqueue_effect_in(
             &transaction,
@@ -382,6 +384,23 @@ impl Store {
             input_id,
             new_attempt,
         })
+    }
+
+    /// 投递接上原会话之后，再落一条「接着做」的 Attempt（会话不变）。
+    ///
+    /// 返回 None：没有可接着做的 Attempt（还在跑、没开成会话、或没有上一个）。
+    /// 放在投递成功路径上，是为了不出现「Attempt 已开、会话却没接上」的空行。
+    pub fn begin_followup(&self, id: &TaskId, now: i64) -> Result<Option<AttemptId>, TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, id)?;
+        let Some(attempt_id) = begin_followup_attempt(&mut task, now) else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+        save_task(&transaction, &task)?;
+        transaction.commit()?;
+        Ok(Some(attempt_id))
     }
 
     /// 会话真的开出来之后，把会话 id 写回 Attempt。
@@ -702,6 +721,20 @@ impl Store {
 ///
 /// 旧库可能只有 ended_at、没有 end；那也是已结束，照样接着做。没开成的 Attempt
 /// 没有会话可送，不算「可以接着做」。
+fn followup_preview(task: &Task) -> Option<AttemptId> {
+    let latest = task.latest_attempt()?;
+    if latest.ended_at.is_none() || latest.end == Some(AttemptEnd::NotOpened) {
+        return None;
+    }
+    Some(AttemptId(
+        task.runs
+            .iter()
+            .map(|run| run.attempts.len() as u64)
+            .sum::<u64>()
+            + 1,
+    ))
+}
+
 fn begin_followup_attempt(task: &mut Task, now: i64) -> Option<AttemptId> {
     let latest = task.latest_attempt()?;
     if latest.ended_at.is_none() || latest.end == Some(AttemptEnd::NotOpened) {
