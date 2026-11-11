@@ -83,4 +83,6 @@ pub enum TaskError {
     WriteScopeOutsideWorktree(String),
     #[error("任务还没有可以接受的结果报告")]
     NoReportToAccept,
+    #[error("这份报告是要求第 {report} 版的结果，当前是第 {current} 版；旧版本不能接受")]
+    ReportNotCurrentVersion { report: u32, current: u32 },
 }

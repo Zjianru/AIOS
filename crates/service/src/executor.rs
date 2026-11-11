@@ -14,10 +14,10 @@ use model::{ContentBlock, Effort, UserMessage};
 use serde_json::{Value, json};
 use session::SessionId;
 use tasks::{
-    Attempt, AttemptEnd, AttemptId, AttemptTrigger, BootId, BootScan, ConversationId, EffectClaim,
-    EffectKind, EffectPayload, Input, InputAttachment, MissingItem, ModelChoice, NewInput,
-    NewReport, NewTask, ReportId, ReportOrigin, ReportState, SlotKind, Stage, StopAttempt, Store,
-    Task, TaskError, TaskId, TaskPolicy, WorkerSlots,
+    Acceptance, Attempt, AttemptEnd, AttemptId, AttemptTrigger, BootId, BootScan, ConversationId,
+    EffectClaim, EffectKind, EffectPayload, Input, InputAttachment, MissingItem, ModelChoice,
+    NewInput, NewReport, NewTask, ReportId, ReportOrigin, ReportState, SlotKind, Stage,
+    StopAttempt, Store, Task, TaskError, TaskId, TaskPolicy, WorkerSlots,
 };
 use tokio::sync::broadcast;
 use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
@@ -300,6 +300,40 @@ impl TaskRuntime {
             input_id: outcome.input_id.as_str().to_owned(),
             new_attempt: outcome.new_attempt.map(|attempt| attempt.0),
         })
+    }
+
+    /// 用户接受一张结果卡：只接受这张卡指向的、当前要求版本的 ready 报告。
+    ///
+    /// 返回接受记录；重复接受由 store 保证返回同一条。错误文字直接给卡片看。
+    pub(crate) fn accept_result(
+        &self,
+        task_id: &str,
+        report_id: &str,
+    ) -> Result<Acceptance, String> {
+        let id = TaskId::from(task_id);
+        let task = self
+            .store
+            .task(&id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("找不到这个任务：{task_id}"))?;
+        let Some(report) = task.latest_report() else {
+            return Err("这个任务还没有可以接受的结果".to_owned());
+        };
+        if report.id.as_str() != report_id {
+            return Err("这份结果已经不是任务的最新报告，不能再接受".to_owned());
+        }
+        if report.version != task.requirement_version() {
+            return Err(format!(
+                "要求已经改过，旧版本（第 {} 版）的报告不能接受",
+                report.version
+            ));
+        }
+        if report.state != ReportState::Ready {
+            return Err("这份结果不是可以接受的状态".to_owned());
+        }
+        self.store
+            .accept(&id, Self::now())
+            .map_err(|error| error.to_string())
     }
 
     /// 任务对话的只读快照：头部来自任务聚合，事件来自当前 Attempt 的会话日志。
@@ -1302,6 +1336,20 @@ impl TaskRuntime {
                 }
                 if let Some(question) = &report.question {
                     body["question"] = json!(question);
+                }
+                // 写任务的结果卡：写入范围、改动清单和固定一行。只有当前版本的 ready 报告
+                // 才给「待你核」的卡状态（阶段仍由 task.stage 报待检查）。
+                if let Some(scope) = crate::result_cards::write_scope_display(&task) {
+                    let changed = crate::result_cards::changed_files(&self.data_dir, &task);
+                    body["changed_line"] =
+                        json!(crate::result_cards::changed_line(changed.len(), &scope));
+                    body["changed"] = json!(changed);
+                    body["write_scope"] = json!(scope);
+                    if report.state == ReportState::Ready
+                        && report.version == task.requirement_version()
+                    {
+                        body["card_state"] = json!("review");
+                    }
                 }
                 // 开了 bash 的写任务：卡上照实标明 bash 的改动不在写集清单里（D85）。
                 if task.bash {

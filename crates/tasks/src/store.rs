@@ -852,6 +852,7 @@ impl Store {
             summary: report.summary,
             question: report.question,
             at: now,
+            version: task.requirement_version(),
         });
         save_task(&transaction, &task)?;
         self.enqueue_effect_in(
@@ -867,15 +868,34 @@ impl Store {
     }
 
     /// 用户接受当前版本和最近一份报告；只记接受，不改阶段（03 篇 5.1、5.4）。
+    ///
+    /// 只接受当前要求版本的报告：task_update 之前的旧报告不因为「最新」就绑到新版本上。
+    /// 同一份报告重复接受返回同一条记录，不改时间，也不另存一条。
     pub fn accept(&self, id: &TaskId, now: i64) -> Result<Acceptance, TaskError> {
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load_task_required(&transaction, id)?;
-        let Some(report_id) = task.latest_report().map(|report| report.id.clone()) else {
+        let Some(report) = task.latest_report() else {
             return Err(TaskError::NoReportToAccept);
         };
+        let report_id = report.id.clone();
+        let report_version = report.version;
+        if let Some(existing) = &task.acceptance
+            && existing.report_id == report_id
+            && existing.version == report_version
+        {
+            transaction.commit()?;
+            return Ok(existing.clone());
+        }
+        let current = task.requirement_version();
+        if report_version != current {
+            return Err(TaskError::ReportNotCurrentVersion {
+                report: report_version,
+                current,
+            });
+        }
         let acceptance = Acceptance {
-            version: task.requirement_version(),
+            version: current,
             report_id,
             at: now,
         };
