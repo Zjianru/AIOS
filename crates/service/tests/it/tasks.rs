@@ -3452,6 +3452,89 @@ async fn set_exec_seats_accepts_one_through_sixteen_and_rejects_outside() {
     }
 }
 
+/// 设置写不进去时只报错、不改内存闸门：暂停没生效，任务照常开跑。
+#[tokio::test]
+async fn a_failed_settings_write_keeps_the_pause_gate_open() {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    mount(&server, &router).await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    // 设置文件本身可读；临时文件路径被目录占住，原子写一定失败（不靠权限位）。
+    let saved = service::settings::load(data.path());
+    service::settings::save(data.path(), &saved).expect("先写一份可读的设置");
+    std::fs::create_dir(data.path().join("settings.json.tmp")).expect("占住临时文件路径");
+    let host = open_host(&server, data.path(), cwd.path()).await;
+    let store = tasks_store(data.path());
+    router.push_thin_for_title("甲", crate::common::text_sse("还没上报"));
+
+    let error = host
+        .dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
+            paused: Some(true),
+            ..Default::default()
+        }))
+        .await
+        .expect_err("写盘失败要报错");
+    assert!(error.to_string().contains("设置没保存"), "{error}");
+    assert!(!service::settings::load(data.path()).exec.paused, "文件没被改");
+
+    // 内存里也没改成暂停：写盘失败后派的第一个任务照常开跑。
+    let task = accept_task(&host, &router, data.path(), "kind-a", "call-accept-a", 1, "甲").await;
+    wait_until("写盘失败后任务照常开跑", || {
+        store
+            .task(&task.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .is_some()
+    })
+    .await;
+}
+
+/// 席位写不进去时只报错、不改内存上限：还是 1 个席位，第二个任务排队。
+#[tokio::test]
+async fn a_failed_settings_write_keeps_the_seat_limit() {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    mount(&server, &router).await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let mut saved = service::settings::load(data.path());
+    saved.exec.seats = 1;
+    service::settings::save(data.path(), &saved).expect("先保存 1 个席位");
+    std::fs::create_dir(data.path().join("settings.json.tmp")).expect("占住临时文件路径");
+    let host = open_host(&server, data.path(), cwd.path()).await;
+    let store = tasks_store(data.path());
+    router.set_thin_delay(Duration::from_millis(3_000));
+    router.push_thin_for_title("甲", crate::common::text_sse("还没上报"));
+
+    let error = host.set_exec_seats(2).expect_err("写盘失败要报错");
+    assert!(error.to_string().contains("设置没保存"), "{error}");
+    assert_eq!(service::settings::load(data.path()).exec.seats, 1, "文件没被改");
+
+    let first = accept_task(&host, &router, data.path(), "kind-a", "call-accept-a", 1, "甲").await;
+    wait_until("第一个任务开跑", || {
+        store
+            .task(&first.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .is_some()
+    })
+    .await;
+    let second = accept_task(&host, &router, data.path(), "kind-b", "call-accept-b", 2, "乙").await;
+    assert!(
+        second.latest_attempt().is_none(),
+        "内存上限还是 1 个席位，第二个任务只排队"
+    );
+    assert!(
+        store
+            .effect_pending(EffectKind::Launch, second.id.as_str())
+            .unwrap(),
+        "第二个任务的 launch 留在队列里"
+    );
+}
+
 /// 在任务对话里说一句（和页面同一个调用）。
 async fn say_in_task_dialog(host: &RootHost, task: &Task, text: &str) -> service::TaskSayResponse {
     let response = host
