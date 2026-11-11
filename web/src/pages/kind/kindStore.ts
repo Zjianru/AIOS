@@ -34,7 +34,7 @@ import {
   prependOlderViews,
   taskCcFacts,
 } from './turnViews';
-import type { CanvasTrack, TurnViewData } from './turnViews';
+import type { CanvasTrack, TurnLabels, TurnViewData } from './turnViews';
 export type { CompactionView, QuestionView, ToolStep, TurnUserView, TurnViewData } from './turnViews';
 export { deriveTurnViews } from './turnViews';
 
@@ -281,7 +281,8 @@ function addUnsentView(
       durationMs: null,
       status: 'completed',
       user: { text, elements: [], pastes, files, canvas: canvas ?? null },
-      taskResult: null,
+      taskResults: [],
+      says: [],
       reasoning: null,
       tools: [],
       answer: null,
@@ -410,7 +411,7 @@ function canvasTitleOf(partial: string): string {
 
 /** 有确认卡的提议/决定到达：重推所有轮（新卡会把没动过的旧卡标成 replaced）。 */
 function refreshCardViews(): void {
-  const derived = new Map(deriveTurnViews(liveEvents).map((view) => [view.id, view]));
+  const derived = new Map(deriveTurnViews(liveEvents, turnLabels()).map((view) => [view.id, view]));
   useKindStore.setState((state) => {
     const views = state.views.map((view) => derived.get(view.id) ?? view);
     return { views, byId: indexOf(views), ...decorate(views) };
@@ -424,7 +425,7 @@ function refreshTurn(turn: number): void {
       (typeof event.data.turn === 'number' && Number(event.data.turn) === turn) ||
       event.type === 'card/decision',
   );
-  const derived = deriveTurnViews(events)[0];
+  const derived = deriveTurnViews(events, turnLabels())[0];
   if (!derived) return;
   const existing = useKindStore.getState().byId.get(derived.id);
   const view =
@@ -560,7 +561,8 @@ function applyLiveEvent(event: ServiceEvent): void {
         durationMs: null,
         status: 'completed',
         user: null,
-        taskResult: null,
+        taskResults: [],
+        says: [],
         reasoning: null,
         tools: [],
         answer: null,
@@ -704,6 +706,16 @@ function mergeCcViews(views: TurnViewData[], events: ServiceEvent[]): TurnViewDa
 /** 从日志事实派生界面的一轮（打开/历史/往上翻；其余能力逐票补）。 */
 const DEMO_MODEL = { connectionId: 'deepseek', modelId: 'deepseek-chat', label: 'DeepSeek Chat' };
 
+/** T031：派生只拿事件和显示名表；node 用例不装 store 也能跑 turnViews。 */
+export function turnLabels(): TurnLabels {
+  const state = useKindStore.getState();
+  return {
+    connectionNames: state.connectionNames,
+    modelWindows: state.modelWindows,
+    modelNames: state.modelNames,
+  };
+}
+
 export const useKindStore = create<KindState>()((set, get) => ({
   views: [],
   byId: new Map(),
@@ -783,7 +795,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   loadInitial: async () => {
     try {
       const page = await fetchEventsPage({ maxMessages: 100, minMessages: 10, minTurns: 5 });
-      const views = mergeCcViews(deriveTurnViews(page.events), page.events);
+      const views = mergeCcViews(deriveTurnViews(page.events, turnLabels()), page.events);
       const lastSeqOfPage = page.events[page.events.length - 1]?.seq ?? 0;
       const oldestSeq = page.events[0]?.seq ?? null;
       liveEvents = page.events.slice();
@@ -829,7 +841,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
         minMessages: 100,
         minTurns: 20,
       });
-      const older = mergeCcViews(deriveTurnViews(page.events), page.events);
+      const older = mergeCcViews(deriveTurnViews(page.events, turnLabels()), page.events);
       const oldestSeq = page.events[0]?.seq ?? state.oldestSeq;
       set((current) => {
         // 跨页的同一行（抄送的 spliced 与领取后的 user/message）只留已经在列表里的那条。

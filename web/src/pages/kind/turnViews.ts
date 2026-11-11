@@ -4,7 +4,7 @@ import type { SendAttachmentRef, ServiceEvent } from '@/data/service';
 import type { AskAnswer, FailureCause } from '@/data/service';
 import type { AskQuestion } from '@/data/questionView';
 import type { TextElement, TurnStatus } from '@/data/types';
-import { modelErrorReason, retryReason } from '@/data/errors';
+import { modelErrorReason, retryReason } from '../../data/errors.ts';
 
 /** 被屏蔽的失败说明：失败块显示内核给的原文（模型名 + 命中的规则），去掉错误包装的前缀。 */
 function maskedReason(message: string | undefined): string {
@@ -13,13 +13,11 @@ function maskedReason(message: string | undefined): string {
   const at = message.indexOf(marker);
   return at >= 0 ? message.slice(at + marker.length) : message;
 }
-import { parseExitStatus } from './process/toolModel';
-import type { ProcessStep } from './process/toolModel';
-import { reasoningTextOf, reasoningTextOfStream } from './reasoning';
-import { useKindStore } from './kindStore';
+import { parseExitStatus } from './process/toolModel.ts';
+import type { ProcessStep } from './process/toolModel.ts';
+import { reasoningTextOf, reasoningTextOfStream } from './reasoning.ts';
 import type { ConfirmCardFact, ConfirmDecision } from './cards/model';
-import type { TaskResultFact } from '@/data/taskResult';
-import { parseTaskRelay } from '@/data/taskResult';
+import { parseTaskRelay, type TaskResultFact } from '../../data/taskResult.ts';
 import {
   contextPercent,
   contextTokens,
@@ -29,7 +27,7 @@ import {
   reasoningSpanMs,
   thinkingSeconds as thinkingSecondsOf,
   type UsageTotals,
-} from '@/data/turnUsage';
+} from '../../data/turnUsage.ts';
 
 export interface ToolStep {
   id: string;
@@ -47,6 +45,8 @@ export interface ToolStep {
   meta?: Record<string, unknown> | null;
   /** 调用事件的时间（算这一步用时）。 */
   startedAtMs?: number | null;
+  /** 日志 seq：和工具前说明（D89 的 say 步）一起排先后。 */
+  seq?: number;
   tool?: string;
 }
 
@@ -188,7 +188,8 @@ export function ccViewOf(cc: TaskCcView, at: number): TurnViewData {
     status: 'completed',
     user: null,
     cc,
-    taskResult: null,
+    taskResults: [],
+    says: [],
     reasoning: null,
     tools: [],
     answer: null,
@@ -311,6 +312,21 @@ export interface TaskCcView {
   chars?: number;
 }
 
+/** 页面上显示名字用的表（T031：纯派生不直接读 store，node 用例只给事件也能跑）。 */
+export interface TurnLabels {
+  connectionNames?: Record<string, string>;
+  modelWindows?: Record<string, number>;
+  modelNames?: Record<string, string>;
+}
+
+/** 工具前的说明（D89）：带工具调用的那条 assistant/message 的文字，按日志先后进工作过程。 */
+export interface InterimSay {
+  id: string;
+  text: string;
+  /** 日志 seq，和工具步一起排先后。 */
+  seq: number;
+}
+
 export interface TurnViewData {
   id: string;
   startedAt: number | null;
@@ -319,8 +335,10 @@ export interface TurnViewData {
   user: TurnUserView | null;
   /** T028.5：抄送行不是一轮回答；有它时只画虚线一行，不画用户气泡和 Kind 的回复。 */
   cc?: TaskCcView | null;
-  /** 任务结果的 relay 消息：这一轮是 relay 叫起来的，卡代替你的消息气泡。 */
-  taskResult: TaskResultFact | null;
+  /** 任务结果的 relay 消息：这一轮可能被 relay 叫起来；按到达顺序各出一张卡（T031）。 */
+  taskResults: TaskResultFact[];
+  /** T031/D89：工具前说明，按日志先后插进工作过程，回答区不显示。 */
+  says: InterimSay[];
   /** 思考全文（T013 验收 F5）；摘要和秒数页面不用，日志里也没有（T013 C1）。 */
   reasoning: { full: string } | null;
   tools: ToolStep[];
@@ -365,13 +383,17 @@ export function compactionViewOf(data: Record<string, unknown>, auto: boolean): 
   return { auto, summary: summaryTextOf(data) };
 }
 
-export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
+export function deriveTurnViews(
+  events: ServiceEvent[],
+  labels: TurnLabels = {},
+): TurnViewData[] {
   interface Raw {
     turn: number;
     startedAt: number | null;
     endedAt: number | null;
     user: TurnUserView | null;
-    taskResult: TaskResultFact | null;
+    taskResults: TaskResultFact[];
+    says: InterimSay[];
     answer: string | null;
     status: TurnStatus;
     tools: ToolStep[];
@@ -451,7 +473,8 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         startedAt: null,
         endedAt: null,
         user: null,
-        taskResult: null,
+        taskResults: [],
+        says: [],
         answer: null,
         status: 'inProgress',
         tools: [],
@@ -640,7 +663,8 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
       case 'user/message': {
         const relay = parseTaskRelay(data.message, event.time / 1000);
         if (relay) {
-          ensure(turn).taskResult = relay;
+          // 骨架：先照旧的「一轮一个槽」收，下一提交改成按到达顺序追加（T031）。
+          ensure(turn).taskResults = [relay];
           break;
         }
         // T028.5：抄送 Kind 的那条不是用户气泡，单独由 taskCcFacts/ccViewOf 成行。
@@ -767,7 +791,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
             raw.status = 'failed';
             const failure = reason.error as { message?: string; code?: string } | undefined;
             const connectionName = raw.modelId
-              ? useKindStore.getState().connectionNames[raw.modelId]
+              ? labels.connectionNames?.[raw.modelId]
               : undefined;
             const cause = event.cause ?? 'model';
             raw.failure = {
@@ -840,7 +864,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         const delayMs = typeof data.delayMs === 'number' ? data.delayMs : typeof data.delay_ms === 'number' ? data.delay_ms : 0;
         const failure = (data.failure ?? {}) as { message?: string; code?: string };
         const connectionName = raw.modelId
-          ? useKindStore.getState().connectionNames[raw.modelId]
+          ? labels.connectionNames?.[raw.modelId]
           : undefined;
         raw.retry = {
           attempt: typeof data.retry === 'number' ? data.retry : 1,
@@ -859,7 +883,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         const auto =
           data.sourceCommandId === undefined || data.sourceCommandId === null;
         const view = compactionViewOf(data, auto);
-        const window = useKindStore.getState().modelWindows[String(data.model ?? '')];
+        const window = labels.modelWindows?.[String(data.model ?? '')];
         view.before = contextPercent(contextTokens(data.usage), window) ?? undefined;
         raw.compaction = view;
         pendingCompaction.set(turn, { view, window });
@@ -892,7 +916,8 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
           : Math.max(0, raw.endedAt - raw.startedAt),
       status: raw.status,
       user: raw.user,
-      taskResult: raw.taskResult,
+      taskResults: raw.taskResults,
+      says: raw.says,
       reasoning:
         raw.reasoningParts.length > 0 ? { full: raw.reasoningParts.join('\n\n') } : null,
       tools: raw.tools,
@@ -904,7 +929,7 @@ export function deriveTurnViews(events: ServiceEvent[]): TurnViewData[] {
         cacheRead: raw.usage.cacheRead,
         cacheWrite: raw.usage.cacheWrite,
       },
-      model: modelLabel(raw.modelId, useKindStore.getState().modelNames),
+      model: modelLabel(raw.modelId, labels.modelNames ?? {}),
       cost: null,
       retry: raw.retry,
       compaction: raw.compaction,

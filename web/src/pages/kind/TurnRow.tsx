@@ -444,21 +444,21 @@ export const TurnRow = memo(function TurnRow({
             </div>
           ) : null}
         </div>
-      ) : view.taskResult ? null : (
+      ) : view.taskResults.length > 0 ? null : (
         <div className="mb-2 mt-3 flex items-center gap-1.5 text-2 text-ink-3">
           <span className="inline-block size-2 rounded-full bg-brand" />
           {actor} · {timeOf(view.startedAt)}
         </div>
       )}
 
-      {view.taskResult ? (
-        // relay 消息是程序生成的：画成结果卡，代替 relay 自己的消息气泡。
-        <TaskResultCard fact={view.taskResult} />
-      ) : null}
+      {view.taskResults.map((fact) => (
+        // relay 消息是程序生成的：按日志到达顺序各画一张结果卡，代替 relay 自己的消息气泡。
+        <TaskResultCard key={fact.id} fact={fact} />
+      ))}
 
       <DeliveryLine view={view} />
 
-      {(view.user || view.taskResult) && !waitingForKernel ? (
+      {(view.user || view.taskResults.length > 0) && !waitingForKernel ? (
         <div className="mb-1 flex items-center gap-1.5 text-2 text-ink-3">
           <span className="inline-block size-2 rounded-full bg-brand" />
           {actor}
