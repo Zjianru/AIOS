@@ -12,7 +12,7 @@ use crate::TaskError;
 use crate::effect::{
     EffectClaim, EffectHealth, EffectKind, EffectPayload, EffectState, FAILURES_BEFORE_ERROR,
 };
-use crate::id::{AttemptId, ConversationId, InputId, ReportId, TaskId};
+use crate::id::{AttemptId, BootId, ConversationId, InputId, ReportId, TaskId};
 use crate::task::{
     Attempt, AttemptEnd, AttemptTrigger, Input, InputAttachment, InputSource, MissingItem,
     NewInput, NewReport, NewTask, Report, Run, SayOutcome, Task,
@@ -44,6 +44,17 @@ pub enum StopAttempt {
     AlreadyStopped,
     /// 这次 Attempt 已经以别的理由结束；没有改动。
     AlreadyEnded,
+}
+
+/// 启动扫描的结果：这次启动认出哪些没结束的 Attempt，各自怎么收尾。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BootScan {
+    /// 在跑、没交出结果（或报告后又有了新输入）的 Attempt，已记 interrupted 并排 restart。
+    pub interrupted: Vec<TaskId>,
+    /// 已经交出报告、之后没有新输入的 Attempt，已记 reported 结束。
+    pub reported: Vec<TaskId>,
+    /// 崩溃前没开出会话的 Attempt，已记 not_opened 收尾。
+    pub not_opened: Vec<TaskId>,
 }
 
 /// 任务库。一个 SQLite 连接放在锁后；所有方法同步。
@@ -203,7 +214,7 @@ impl Store {
         Ok(task)
     }
 
-    /// 列出全部任务 id（测试与诊断用；不按创建时间排序）。
+    /// 列出全部任务 id（启动扫描与诊断用；不按创建时间排序）。
     pub fn task_ids(&self) -> Result<Vec<TaskId>, TaskError> {
         let conn = self.lock()?;
         let mut statement = conn.prepare("SELECT id FROM task")?;
@@ -559,6 +570,91 @@ impl Store {
         Ok(StopAttempt::Stopped)
     }
 
+    /// 启动扫描：效果循环开始之前把上次启动留下、没收尾的 Attempt 收掉。
+    ///
+    /// 最近 Attempt 没结束的任务分三路：交了报告且之后没有新输入的记 reported；崩溃前
+    /// 没开出会话的记 not_opened；其余的记 interrupted，并在同一个事务里排一条 restart
+    /// 效果（键是启动 id，同一次启动的任务合成一条）。
+    pub fn scan_at_boot(&self, boot_id: &BootId, now: i64) -> Result<BootScan, TaskError> {
+        if boot_id.as_str().trim().is_empty() {
+            return Err(TaskError::EmptyBootId);
+        }
+        let mut scan = BootScan::default();
+        for task_id in self.task_ids()? {
+            self.scan_task_at_boot(&task_id, boot_id, now, &mut scan)?;
+        }
+        Ok(scan)
+    }
+
+    /// 扫一个任务：只收尾最近一次 Attempt；每个任务和它的 restart 效果在同一个事务里。
+    fn scan_task_at_boot(
+        &self,
+        id: &TaskId,
+        boot_id: &BootId,
+        now: i64,
+        scan: &mut BootScan,
+    ) -> Result<(), TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let Some(mut task) = load_task(&transaction, id)? else {
+            transaction.commit()?;
+            return Ok(());
+        };
+        // 旧库可能只有 ended_at、没有 end；没有 end 的 Attempt 按没结束读。
+        let Some(attempt) = task
+            .latest_attempt()
+            .filter(|attempt| attempt.end.is_none())
+        else {
+            transaction.commit()?;
+            return Ok(());
+        };
+        let attempt_id = attempt.id;
+        let opened = attempt.conversation.is_some();
+        let report_at = task.latest_report().map(|report| report.at);
+        let decision = if !opened {
+            Decision::NotOpened
+        } else if let Some(report_at) = report_at {
+            // 报告之后又记下了输入：那次输入还没送进去，这次 Attempt 不能记「已交结果」。
+            if task.inputs.iter().any(|input| input.at >= report_at) {
+                Decision::Interrupted
+            } else {
+                Decision::Reported
+            }
+        } else {
+            Decision::Interrupted
+        };
+        let attempt = task
+            .runs
+            .iter_mut()
+            .flat_map(|run| run.attempts.iter_mut())
+            .find(|attempt| attempt.id == attempt_id)
+            .ok_or_else(|| TaskError::AttemptNotFound {
+                task: id.to_string(),
+                attempt: attempt_id.0,
+            })?;
+        if attempt.ended_at.is_none() {
+            attempt.ended_at = Some(now);
+        }
+        attempt.end = Some(decision.end());
+        save_task(&transaction, &task)?;
+        if decision == Decision::Interrupted {
+            self.enqueue_effect_in(
+                &transaction,
+                &EffectPayload::Restart {
+                    boot_id: boot_id.clone(),
+                },
+                now,
+            )?;
+        }
+        transaction.commit()?;
+        match decision {
+            Decision::Interrupted => scan.interrupted.push(id.clone()),
+            Decision::Reported => scan.reported.push(id.clone()),
+            Decision::NotOpened => scan.not_opened.push(id.clone()),
+        }
+        Ok(())
+    }
+
     /// 收尾崩溃留下的、没有会话 id 的 Attempt；返回收尾了几个。
     pub fn close_unopened_attempts(&self, id: &TaskId, now: i64) -> Result<usize, TaskError> {
         let mut conn = self.lock()?;
@@ -778,6 +874,27 @@ impl Store {
     }
 }
 
+/// 启动扫描对一个没结束的 Attempt 的收尾方式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Decision {
+    /// 在跑、没交出结果，或报告之后又有了新输入。
+    Interrupted,
+    /// 报告之后没有新输入：这次 Attempt 已经交出结果。
+    Reported,
+    /// 崩溃前没开出会话。
+    NotOpened,
+}
+
+impl Decision {
+    fn end(self) -> AttemptEnd {
+        match self {
+            Self::Interrupted => AttemptEnd::Interrupted,
+            Self::Reported => AttemptEnd::Reported,
+            Self::NotOpened => AttemptEnd::NotOpened,
+        }
+    }
+}
+
 /// 上一 Attempt 已结束时，在同一个会话里接着开一次 Attempt。
 ///
 /// 旧库可能只有 ended_at、没有 end；那也是已结束，照样接着做。没开成的 Attempt
@@ -966,6 +1083,9 @@ fn stored_schema_version(conn: &Connection) -> Result<Option<u64>, TaskError> {
 #[cfg(test)]
 #[path = "attempt_report_tests.rs"]
 mod attempt_report_tests;
+#[cfg(test)]
+#[path = "boot_scan_tests.rs"]
+mod boot_scan_tests;
 #[cfg(test)]
 #[path = "effect_tests.rs"]
 mod effect_tests;

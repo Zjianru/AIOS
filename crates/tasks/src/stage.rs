@@ -1,4 +1,4 @@
-//! 阶段派生：按 docs/03 5.1 的顺序取第一个命中的，只覆盖 T024.1/T027.1 可达的值。
+//! 阶段派生：按 docs/03 5.1 的顺序取第一个命中的，只覆盖当前能派生出来的值。
 
 use crate::task::{AttemptEnd, ReportState, Task};
 
@@ -7,7 +7,7 @@ use crate::task::{AttemptEnd, ReportState, Task};
 /// 「任务要求已满足」和「已关闭」归质量门和停止票，本票不返回。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
-    /// 任务包缺项，最近报告 blocked/failed，或最近 Attempt 以 stopped 结束。
+    /// 任务包缺项，最近报告 blocked/failed，或最近 Attempt 以 stopped/interrupted 结束。
     NeedsConditions,
     /// 没有 Attempt，或 launch 还在排队。
     Pending,
@@ -34,6 +34,12 @@ impl Task {
         if self
             .latest_attempt()
             .is_some_and(|attempt| attempt.end == Some(AttemptEnd::Stopped))
+        {
+            return Stage::NeedsConditions;
+        }
+        if self
+            .latest_attempt()
+            .is_some_and(|attempt| attempt.end == Some(AttemptEnd::Interrupted))
         {
             return Stage::NeedsConditions;
         }

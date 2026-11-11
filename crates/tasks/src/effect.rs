@@ -1,8 +1,8 @@
-//! 持久效果表：launch、relay、delivery 和 notice，以及它们的重试与健康事实。
+//! 持久效果表：launch、relay、delivery、notice 和 restart，以及它们的重试与健康事实。
 
 use serde::{Deserialize, Serialize};
 
-use crate::id::{AttemptId, InputId, ReportId, TaskId};
+use crate::id::{AttemptId, BootId, InputId, ReportId, TaskId};
 
 /// 连续失败到几次算效果种类报健康错误。
 pub const FAILURES_BEFORE_ERROR: u32 = 3;
@@ -15,6 +15,7 @@ pub enum EffectKind {
     Relay,
     Delivery,
     Notice,
+    Restart,
 }
 
 impl EffectKind {
@@ -24,6 +25,7 @@ impl EffectKind {
             Self::Relay => "relay",
             Self::Delivery => "delivery",
             Self::Notice => "notice",
+            Self::Restart => "restart",
         }
     }
 
@@ -32,7 +34,7 @@ impl EffectKind {
     pub fn retry(self) -> (i64, i64) {
         match self {
             Self::Launch => (5_000, 300_000),
-            Self::Relay | Self::Delivery | Self::Notice => (2_000, 60_000),
+            Self::Relay | Self::Delivery | Self::Notice | Self::Restart => (2_000, 60_000),
         }
     }
 
@@ -73,6 +75,12 @@ pub enum EffectPayload {
         task_id: TaskId,
         input_id: InputId,
     },
+    /// 启动扫描认出这次启动有被打断的任务，请投递方叫 Kind 汇报并出确认卡。
+    ///
+    /// 键是启动 id：同一次启动认出的任务合并成一条效果，Kind 一次汇报完。
+    Restart {
+        boot_id: BootId,
+    },
 }
 
 impl EffectPayload {
@@ -82,11 +90,12 @@ impl EffectPayload {
             Self::Relay { .. } | Self::Stop { .. } => EffectKind::Relay,
             Self::Delivery { .. } => EffectKind::Delivery,
             Self::Notice { .. } => EffectKind::Notice,
+            Self::Restart { .. } => EffectKind::Restart,
         }
     }
 
     /// launch 和 delivery 的键是任务 id，relay 的键是报告 id，停止的键是任务 id +
-    /// Attempt 编号，抄送的键是输入 id。
+    /// Attempt 编号，抄送的键是输入 id，restart 的键是启动 id。
     pub fn key(&self) -> String {
         match self {
             Self::Launch { task_id } | Self::Delivery { task_id } => task_id.to_string(),
@@ -96,6 +105,7 @@ impl EffectPayload {
                 attempt_id,
             } => format!("stop:{task_id}:{attempt_id}"),
             Self::Notice { input_id, .. } => format!("cc:{input_id}"),
+            Self::Restart { boot_id } => boot_id.to_string(),
         }
     }
 }

@@ -242,6 +242,71 @@ fn stage_recovers_when_a_new_attempt_starts_after_a_stop() {
 }
 
 #[test]
+fn stage_needs_conditions_after_an_interrupted_attempt() {
+    let (_directory, store) = open_store();
+    let task = create(&store);
+    finish_launch(&store);
+    let attempt = store.begin_attempt(&task.id, T0 + 1).unwrap();
+    store
+        .end_attempt(&task.id, attempt, T0 + 2, AttemptEnd::Interrupted)
+        .unwrap();
+
+    assert_eq!(
+        store.stage(&task.id).unwrap(),
+        Stage::NeedsConditions,
+        "最近 Attempt 以 interrupted 结束且没有新 Attempt → 待补足条件（被打断了）"
+    );
+}
+
+#[test]
+fn stage_recovers_when_a_new_attempt_starts_after_an_interruption() {
+    let (_directory, store) = open_store();
+    let task = create(&store);
+    finish_launch(&store);
+    let first = store.begin_attempt(&task.id, T0 + 1).unwrap();
+    store
+        .end_attempt(&task.id, first, T0 + 2, AttemptEnd::Interrupted)
+        .unwrap();
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::NeedsConditions);
+
+    store.begin_attempt(&task.id, T0 + 3).unwrap();
+    assert_eq!(
+        store.stage(&task.id).unwrap(),
+        Stage::Running,
+        "新 Attempt 后不再算被打断"
+    );
+}
+
+#[test]
+fn interrupted_outranks_a_ready_report_and_a_queued_launch() {
+    let (_directory, store) = open_store();
+    let task = create(&store);
+    let attempt = store.begin_attempt(&task.id, T0 + 1).unwrap();
+    store
+        .record_report(
+            &task.id,
+            attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "有结果了".to_owned(),
+                question: None,
+            },
+            T0 + 2,
+        )
+        .unwrap();
+    store
+        .end_attempt(&task.id, attempt, T0 + 3, AttemptEnd::Interrupted)
+        .unwrap();
+
+    assert_eq!(
+        store.stage(&task.id).unwrap(),
+        Stage::NeedsConditions,
+        "打断排在待检查、待执行前面"
+    );
+}
+
+#[test]
 fn stopped_outranks_a_ready_report_and_a_queued_launch() {
     let (_directory, store) = open_store();
     let task = create(&store);

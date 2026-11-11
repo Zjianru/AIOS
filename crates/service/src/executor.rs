@@ -899,7 +899,8 @@ impl TaskRuntime {
             EffectPayload::Relay { task_id, .. } | EffectPayload::Stop { task_id, .. } => task_id,
             EffectPayload::Launch { .. }
             | EffectPayload::Delivery { .. }
-            | EffectPayload::Notice { .. } => {
+            | EffectPayload::Notice { .. }
+            | EffectPayload::Restart { .. } => {
                 return Err("relay 载荷不是 relay".to_owned());
             }
         };
@@ -962,7 +963,8 @@ impl TaskRuntime {
             }
             EffectPayload::Launch { .. }
             | EffectPayload::Delivery { .. }
-            | EffectPayload::Notice { .. } => Err("relay 载荷不是 relay".to_owned()),
+            | EffectPayload::Notice { .. }
+            | EffectPayload::Restart { .. } => Err("relay 载荷不是 relay".to_owned()),
         }
     }
 
