@@ -1,6 +1,7 @@
 //! Task 聚合：任务、Run、Attempt、报告和执行者写入的缺项。
 
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -70,6 +71,93 @@ pub struct TaskPolicy {
     pub worktree: bool,
     /// 创建时冻结的 bash 开关；默认关（D85）。
     pub bash: bool,
+}
+
+/// 解析并冻结后的建任务策略：写入范围已按 cwd 解析成绝对路径。
+pub(crate) struct FrozenPolicy {
+    pub(crate) write_scope: Option<PathBuf>,
+    pub(crate) bash: bool,
+    pub(crate) worktree: bool,
+}
+
+impl TaskPolicy {
+    /// 按 cwd 解析写入范围。空白当没有范围；根目录、用户主目录本身拒绝。
+    pub(crate) fn freeze(&self, cwd: &Path) -> Result<FrozenPolicy, TaskError> {
+        Ok(FrozenPolicy {
+            write_scope: resolve_write_scope(cwd, self.write_scope.as_deref())?,
+            bash: self.bash,
+            worktree: self.worktree,
+        })
+    }
+}
+
+/// 写入范围解析：相对路径按 cwd；存在的前缀 canonicalize，缺失的后缀原样接上
+/// （范围可以指向还不存在的文件或目录）。空白等于没有范围。
+///
+/// 根目录和用户主目录本身拒绝：那是整台机器或整个家目录，不是一项任务该拿到的授权。
+pub(crate) fn resolve_write_scope(
+    cwd: &Path,
+    raw: Option<&str>,
+) -> Result<Option<PathBuf>, TaskError> {
+    let Some(raw) = raw.filter(|raw| !raw.trim().is_empty()) else {
+        return Ok(None);
+    };
+    let path = Path::new(raw);
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    let resolved = canonicalize_existing_prefix(&absolute)?;
+    if resolved.parent().is_none() {
+        return Err(TaskError::WriteScopeIsRoot);
+    }
+    if home_directory().as_deref() == Some(resolved.as_path()) {
+        return Err(TaskError::WriteScopeIsHome);
+    }
+    Ok(Some(resolved))
+}
+
+/// 用户主目录；取不到 HOME 时不做这一项校验。
+fn home_directory() -> Option<PathBuf> {
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    Some(fs::canonicalize(&home).unwrap_or(home))
+}
+
+/// 存在的前缀 canonicalize，缺失的后缀接回去；和 tools 的 resolve 同语义。
+fn canonicalize_existing_prefix(path: &Path) -> Result<PathBuf, TaskError> {
+    let mut missing: Vec<std::ffi::OsString> = Vec::new();
+    let mut current = path.to_path_buf();
+    loop {
+        match fs::canonicalize(&current) {
+            Ok(mut real) => {
+                for part in missing.iter().rev() {
+                    real.push(part);
+                }
+                return Ok(real);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let Some(name) = current.file_name().map(std::ffi::OsStr::to_os_string) else {
+                    return Err(TaskError::WriteScopeUnresolvable(
+                        path.display().to_string(),
+                    ));
+                };
+                missing.push(name);
+                let Some(parent) = current.parent().map(Path::to_path_buf) else {
+                    return Err(TaskError::WriteScopeUnresolvable(
+                        path.display().to_string(),
+                    ));
+                };
+                current = parent;
+            }
+            Err(error) => {
+                return Err(TaskError::WriteScopeUnresolvable(format!(
+                    "{}: {error}",
+                    current.display()
+                )));
+            }
+        }
+    }
 }
 
 /// 一条要求版本：写入范围、时间、来源（D16）。
