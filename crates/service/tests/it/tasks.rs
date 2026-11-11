@@ -1215,13 +1215,9 @@ async fn task_handback_rejects_a_reason_longer_than_300_characters() {
 #[tokio::test]
 async fn a_task_frozen_with_the_eight_tool_list_still_launches() {
     let fixture = Fixture::new().await;
-    fixture.router.push_thin(report_sse(
-        1,
-        "call-report",
-        "ready",
-        "旧任务也能跑",
-        None,
-    ));
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-report", "ready", "旧任务也能跑", None));
     let store = tasks_store(fixture.data());
     let mut tools: Vec<String> = service::THIN_TOOLS.map(str::to_owned).to_vec();
     tools.retain(|name| name != "task_handback");
