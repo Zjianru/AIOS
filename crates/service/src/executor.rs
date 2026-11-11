@@ -463,7 +463,9 @@ impl TaskRuntime {
     fn relay_message(&self, claim: &EffectClaim) -> Result<Option<(Task, Value, String)>, String> {
         let task_id = match &claim.payload {
             EffectPayload::Relay { task_id, .. } | EffectPayload::Stop { task_id, .. } => task_id,
-            EffectPayload::Launch { .. } => {
+            EffectPayload::Launch { .. }
+            | EffectPayload::Delivery { .. }
+            | EffectPayload::Notice { .. } => {
                 return Err("relay 载荷不是 relay".to_owned());
             }
         };
@@ -524,7 +526,9 @@ impl TaskRuntime {
                 let request_id = format!("task-stop:{}:{}", task.id, attempt_id);
                 Ok(Some((task, body, request_id)))
             }
-            EffectPayload::Launch { .. } => Err("relay 载荷不是 relay".to_owned()),
+            EffectPayload::Launch { .. }
+            | EffectPayload::Delivery { .. }
+            | EffectPayload::Notice { .. } => Err("relay 载荷不是 relay".to_owned()),
         }
     }
 
