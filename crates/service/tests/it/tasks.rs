@@ -1840,6 +1840,82 @@ async fn interrupting_a_running_turn_keeps_the_attempt_and_the_next_sentence_con
     );
 }
 
+/// 停下这一轮不丢已经排队的输入：取消前 Steer 进去的那句，下一句来时一起被领取。
+#[tokio::test]
+async fn interrupting_keeps_the_queued_sentence_for_the_next_turn() {
+    let fixture = Fixture::new().await;
+    fixture.router.set_thin_delay(Duration::from_millis(500));
+    fixture
+        .router
+        .push_thin(crate::common::text_sse("我还在查"));
+    let task = fixture.accept(false).await;
+    let store = tasks_store(fixture.data());
+    wait_until("第一轮开跑", || attempt_in_flight(&store, &task.id)).await;
+    let attempt = store
+        .task(&task.id)
+        .unwrap()
+        .unwrap()
+        .latest_attempt()
+        .cloned()
+        .expect("第一轮 Attempt");
+
+    // 在跑时说一句：delivery 把它 Steer 进当前这一轮的输入队列。
+    fixture
+        .router
+        .push_thin_for(task.id.as_str(), crate::common::text_sse("收到排队的那句"));
+    let said = say_in_task_dialog(&fixture.host, &task, "排队的一句").await;
+    assert_eq!(said.new_attempt, None);
+    wait_until("这句话已经送进会话输入队列", || {
+        !store
+            .effect_pending(EffectKind::Delivery, task.id.as_str())
+            .unwrap()
+    })
+    .await;
+
+    let interrupt = interrupt_task(&fixture.host, &task).await;
+    assert!(interrupt.interrupted, "{interrupt:?}");
+    let conversation = attempt.conversation.clone().expect("会话 id");
+    let session_id = session::SessionId::parse(conversation.as_str()).unwrap();
+    wait_until("这一轮以用户取消收尾", || {
+        session::SessionStore::open_read_only(fixture.data(), &session_id).is_ok_and(|store| {
+            store.events().iter().any(|event| {
+                matches!(
+                    &event.kind,
+                    session::EventKind::TurnEnd {
+                        reason: session::TurnEndReason::Aborted {
+                            reason: session::AbortCause::User,
+                        },
+                        ..
+                    }
+                )
+            })
+        })
+    })
+    .await;
+
+    // 取消不会把排队的那句冲掉：下一句进来时，两句话一起进请求；Attempt 还是同一个。
+    fixture.router.clear_thin_delay();
+    fixture
+        .router
+        .push_thin_for(task.id.as_str(), crate::common::text_sse("收到两句"));
+    let said = say_in_task_dialog(&fixture.host, &task, "再接着说").await;
+    assert_eq!(said.new_attempt, None, "还是同一个 Attempt");
+    wait_until("下一句进来时排队的那句也一起送到", || {
+        fixture
+            .router
+            .bodies(true)
+            .last()
+            .is_some_and(|body| body.contains("排队的一句") && body.contains("再接着说"))
+    })
+    .await;
+    let after = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(attempt_count(&after), 1, "不丢输入也不开新 Attempt");
+    assert_eq!(
+        after.latest_attempt().map(|attempt| attempt.id),
+        Some(attempt.id)
+    );
+}
+
 /// 没在跑时停下这一轮：返回固定原因，不动任务。
 #[tokio::test]
 async fn interrupting_a_task_that_is_not_running_reports_the_fixed_reason() {
