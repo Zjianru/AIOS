@@ -253,13 +253,21 @@ export interface FixtureOptions {
     | 'missing'
     | 'bad-json'
     | 'chat'
-    | 'live';
+    | 'live'
+    /// T028.5：任务对话输入框/抄送/暂停/Attempt 的夹具。
+    | 'say'
+    | 'resume'
+    | 'handback';
 }
 
 /** T024.4：双会话回放用哪份按请求体路由的文件；预写会话的两种不需要。 */
 function taskResultRouteFile(options: FixtureOptions): string | null {
   const scenario = options.taskResult;
   if (!scenario || scenario === 'missing' || scenario === 'bad-json') return null;
+  // T028.5：三份新场景各有自己的路由文件；其余沿用 T024 的。
+  if (scenario === 'say' || scenario === 'resume' || scenario === 'handback') {
+    return 't028-routes-' + scenario + '.json';
+  }
   return 't024-routes-' + scenario + '.json';
 }
 
@@ -314,7 +322,10 @@ export async function startKernelFixture(
     options.pretextTurn ||
     options.pretextSlowTurn ||
     options.taskResult === 'chat' ||
-    options.taskResult === 'live'
+    options.taskResult === 'live' ||
+    options.taskResult === 'say' ||
+    options.taskResult === 'resume' ||
+    options.taskResult === 'handback'
   ) {
     await writeFile(path.join(dataDir, 'hello.txt'), 'hello from fixture\n');
     // T013.7：带空格的路径（@ 菜单插入要给引号用）。

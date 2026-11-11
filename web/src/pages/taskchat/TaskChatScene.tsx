@@ -10,15 +10,26 @@
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ChevronDown, ChevronRight, FolderOpen, Square } from 'lucide-react';
+import {
+  ArrowLeft,
+  ChevronDown,
+  ChevronRight,
+  FolderOpen,
+  PauseCircle,
+  SendHorizontal,
+  Square,
+} from 'lucide-react';
 import { toast } from 'sonner';
 import { go } from '@/app/navigate';
 import { useRouteStore } from '@/app/routeStore';
 import {
   connectTaskSession,
   displayPath,
+  loadExecSettings,
   ServiceHttpError,
+  taskInterrupt,
   taskRead,
+  taskSay,
   taskStop,
 } from '@/data/service';
 import {
@@ -32,6 +43,8 @@ import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
 import { useStreamStore } from '@/pages/kind/kindStore';
 import { TurnRow } from '@/pages/kind/TurnRow';
 import { deriveTurnViews } from '@/pages/kind/turnViews';
+import { Composer } from '@/pages/kind/composer/Composer';
+import type { ComposerHandle } from '@/pages/kind/composer/Composer';
 import { mergeLiveEvent, withReportedCompletion } from './taskLive';
 import { cn } from '@/lib/utils';
 
@@ -50,7 +63,11 @@ const THIN_TOOLS = new Set([
   'web_search',
   'web_fetch',
   'task_report',
+  'task_handback',
 ]);
+
+/** 任务对话里说的一句话的 request id 前缀（服务端 task-say:<inputId>）。 */
+const TASK_SAY_PREFIX = 'task-say:';
 
 function rpcIdOf(event: ServiceEvent): string | null {
   const message = event.data?.message;
@@ -78,7 +95,7 @@ function reasonOf(error: unknown): string {
 
 function toolsText(tools: string[]): string {
   if (tools.length === THIN_TOOLS.size && tools.every((tool) => THIN_TOOLS.has(tool))) {
-    return '只读：读、搜文件、能力、计划、搜网页、读网页、上报';
+    return '只读：读、搜文件、能力、计划、搜网页、读网页、上报、交回';
   }
   return tools.join('、');
 }
@@ -212,6 +229,13 @@ export function TaskChatScene() {
   const [error, setError] = useState('');
   const [hasOlder, setHasOlder] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  /** T028.5：全局暂停（横幅；消息先排着）。 */
+  const [paused, setPaused] = useState(false);
+  /** T028.5：说的是不是正在送；送的时候按钮不重复触发。 */
+  const [saying, setSaying] = useState(false);
+  /** T028.5：已经受理、还没出现在会话日志里的输入（暂停时排队显示）。 */
+  const [queued, setQueued] = useState<{ inputId: string; text: string }[]>([]);
+  const composerRef = useRef<ComposerHandle | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const requestToken = useRef(0);
   const bottomPinned = useRef(false);
@@ -236,6 +260,7 @@ export function TaskChatScene() {
     setError('');
     setHasOlder(false);
     setLoadingOlder(false);
+    setQueued([]);
     loadingOlderRef.current = false;
     bottomPinned.current = false;
     restoreRef.current = null;
@@ -392,6 +417,83 @@ export function TaskChatScene() {
     [events, task],
   );
 
+  // T028.5：全局暂停从执行设置读（横幅 + 排队提示）；设置页改完回到本页也能读到。
+  useEffect(() => {
+    let live = true;
+    void loadExecSettings()
+      .then((view) => {
+        if (live) setPaused(view.paused);
+      })
+      .catch(() => {
+        // 读不到就不显示横幅；发送照旧由服务端闸门决定。
+      });
+    return () => {
+      live = false;
+    };
+  }, [taskId, saying]);
+
+  // T028.5：已经受理、日志里还没出现的输入（暂停时排队的那些）。
+  const queuedVisible = useMemo(() => {
+    const seen = new Set<string>();
+    for (const event of events) {
+      const rpcId = rpcIdOf(event);
+      if (rpcId?.startsWith(TASK_SAY_PREFIX)) seen.add(rpcId.slice(TASK_SAY_PREFIX.length));
+    }
+    return queued.filter((item) => !seen.has(item.inputId));
+  }, [events, queued]);
+
+  // T028.5：在跑时按 Esc 只停下这一轮（和 Kind 对话一样；任务不算停）。
+  useEffect(() => {
+    if (!task?.running) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      if (document.querySelector('[role="dialog"],[role="menu"]')) return;
+      event.preventDefault();
+      void stopTurn();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // stopTurn 只用 taskId，跟着 running 重新挂。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [task?.running, taskId]);
+
+  /** T028.5：说一句（Composer 的发送；成功才清草稿）。 */
+  async function say(text: string) {
+    if (!taskId || saying) return false;
+    setSaying(true);
+    try {
+      const response = await taskSay(taskId, text);
+      setQueued((current) => current.concat({ inputId: response.inputId, text }));
+      if (typeof response.newAttempt === 'number') {
+        const attempt = response.newAttempt;
+        setTask((current) => (current ? { ...current, attempts: attempt } : current));
+      }
+      // 暂停时消息先压着：横幅之外，刚说的那句以「排队中」的样子留在对话里。
+      if (paused) {
+        toast('先说上了，先排着', { description: '全局暂停中；开闸后送到 ThinAgent' });
+      }
+      return true;
+    } catch (error) {
+      toast('这句话没送到', { description: reasonOf(error) });
+      return false;
+    } finally {
+      setSaying(false);
+    }
+  }
+
+  /** T028.5：停下这一轮（不结束 Attempt、不出卡）；再说一句还是这次 Attempt 接着做。 */
+  async function stopTurn() {
+    try {
+      const response = await taskInterrupt(taskId);
+      if (!response.interrupted) {
+        toast('这个任务没在跑', { description: response.message });
+      }
+      await refreshHeader();
+    } catch (error) {
+      toast('这一轮没停下来', { description: reasonOf(error) });
+    }
+  }
+
   /** 停止请求成功后只刷新页头事实：running/stopped 以任务库为准，过程仍走 live/日志。 */
   async function refreshHeader() {
     try {
@@ -546,10 +648,23 @@ export function TaskChatScene() {
               <span className="process-path">{displayPath(task.cwd)}</span>
             </span>
             <span>ThinAgent · {task.model}</span>
+            {task.attempts > 1 ? (
+              <span data-kind="task-attempt">第 {task.attempts} 次 Attempt</span>
+            ) : null}
           </div>
           <Brief task={task} />
         </div>
       </div>
+
+      {paused ? (
+        <div
+          className="flex shrink-0 items-center gap-2 border-b border-wait/30 bg-wait-soft px-6 py-2 text-2 text-wait"
+          data-kind="paused"
+        >
+          <PauseCircle className="size-3.5" />
+          全局暂停中：你的消息会先排着；开闸后送到
+        </div>
+      ) : null}
 
       <div
         className="min-h-0 flex-1 overflow-y-auto"
@@ -577,11 +692,66 @@ export function TaskChatScene() {
               />
             ))
           )}
+          {queuedVisible.map((item) => (
+            <div key={item.inputId} className="px-6 pb-2" data-kind="task-queued">
+              <div className="mt-3 flex flex-col items-end gap-1">
+                <div className="max-w-[82%] rounded-2xl rounded-br-md border border-dashed border-line-2 bg-raised/60 px-3.5 py-2 text-4 leading-6 text-ink-2">
+                  {item.text}
+                </div>
+                <div className="text-1 text-ink-3">排队中：全局暂停，开闸后送到</div>
+              </div>
+            </div>
+          ))}
           {loadingOlder ? (
             <div className="px-6 py-2 text-center text-1 text-ink-3" data-kind="task-loading-older">
               正在读更早的记录…
             </div>
           ) : null}
+        </div>
+      </div>
+
+      <div className="shrink-0 border-t border-line px-6 pb-2 pt-3">
+        <div className="mx-auto w-full max-w-[680px]">
+          <Composer
+            ref={composerRef}
+            offline={false}
+            draftKey={'task-' + taskId}
+            placeholder={
+              task.running
+                ? '插一句给 ThinAgent（这一轮里就会看到）…'
+                : '和 ThinAgent 说，它就接着做…'
+            }
+            onSend={say}
+            onCanSendChange={() => undefined}
+          >
+            {task.running ? (
+              <button
+                type="button"
+                onClick={() => void stopTurn()}
+                title="停下这一轮（Esc）：任务不算停，接着说就接着做"
+                aria-label="停下这一轮"
+                data-kind="task-stop-turn"
+                className="grid size-7 place-items-center rounded-full bg-ink text-content transition-opacity hover:opacity-90"
+              >
+                <Square className="size-3 fill-current" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => composerRef.current?.submit()}
+                title="发送"
+                aria-label="发送"
+                data-kind="task-send"
+                className="grid size-7 place-items-center rounded-full bg-ink text-content transition-opacity hover:opacity-90"
+              >
+                <SendHorizontal className="size-3.5" />
+              </button>
+            )}
+          </Composer>
+          <p className="mt-1 text-1 leading-4 text-ink-3" data-kind="task-footer">
+            你在这里说的直接给 ThinAgent，同时抄送 Kind（不叫醒它）。要改任务要求或 DoD，回 Kind
+            对话说。
+          </p>
         </div>
       </div>
     </div>
