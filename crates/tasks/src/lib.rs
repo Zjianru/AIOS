@@ -20,6 +20,6 @@ pub use slots::{Later, SlotKind, WorkerSlots};
 pub use stage::Stage;
 pub use store::{SCHEMA_VERSION, StopAttempt, Store};
 pub use task::{
-    Attempt, AttemptEnd, AttemptTrigger, Input, InputSource, MissingItem, ModelChoice, NewReport,
-    NewTask, Report, ReportOrigin, ReportState, Run, SayOutcome, Task,
+    Attempt, AttemptEnd, AttemptTrigger, Input, InputAttachment, InputSource, MissingItem,
+    ModelChoice, NewReport, NewTask, Report, ReportOrigin, ReportState, Run, SayOutcome, Task,
 };

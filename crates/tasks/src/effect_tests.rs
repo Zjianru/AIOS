@@ -133,6 +133,39 @@ fn three_failures_report_an_effect_error() {
 }
 
 #[test]
+fn quiet_delivery_failures_do_not_report_an_effect_error() {
+    let (_directory, store) = open_store();
+    store
+        .enqueue_effect(
+            EffectPayload::Delivery {
+                task_id: TaskId::from("task-1"),
+            },
+            T0,
+        )
+        .unwrap();
+    let mut now = T0;
+    for attempt in 0..3 {
+        let claim = claim(&store, EffectKind::Delivery, now);
+        assert!(store.fail_effect(&claim, "boom", now).unwrap());
+        now += 2_000 * (1_i64 << attempt);
+    }
+
+    let health = store.effect_health(EffectKind::Delivery).unwrap();
+    assert_eq!(
+        health.state,
+        EffectState::Ready,
+        "delivery 是 quiet，不报健康错误"
+    );
+    assert_eq!(health.waiting, 1);
+    assert_eq!(health.attempts, 3);
+    assert_eq!(
+        health.last_error.as_deref(),
+        Some("boom"),
+        "失败本身仍留在行上"
+    );
+}
+
+#[test]
 fn relay_uses_its_own_first_retry_delay() {
     let (_directory, store) = open_store();
     store

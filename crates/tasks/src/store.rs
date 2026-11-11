@@ -14,8 +14,8 @@ use crate::effect::{
 };
 use crate::id::{AttemptId, ConversationId, InputId, ReportId, TaskId};
 use crate::task::{
-    Attempt, AttemptEnd, AttemptTrigger, Input, InputSource, MissingItem, NewReport, NewTask,
-    Report, Run, SayOutcome, Task,
+    Attempt, AttemptEnd, AttemptTrigger, Input, InputAttachment, InputSource, MissingItem,
+    NewReport, NewTask, Report, Run, SayOutcome, Task,
 };
 
 /// 任务库 schema 版本；比这新的库拒绝打开。
@@ -347,7 +347,18 @@ impl Store {
     /// 用户在任务对话里说一句：在一个事务里记输入、排 delivery 和 notice；
     /// 上一 Attempt 已结束了就接着开一次 Attempt（会话不变）。
     pub fn say(&self, id: &TaskId, text: &str, now: i64) -> Result<SayOutcome, TaskError> {
-        if text.trim().is_empty() {
+        self.say_with_attachments(id, text, &[], now)
+    }
+
+    /// 和 say 一样，再记下随这句话一起发来的附件；只有附件、没有文字也算一句。
+    pub fn say_with_attachments(
+        &self,
+        id: &TaskId,
+        text: &str,
+        attachments: &[InputAttachment],
+        now: i64,
+    ) -> Result<SayOutcome, TaskError> {
+        if text.trim().is_empty() && attachments.is_empty() {
             return Err(TaskError::EmptyInput);
         }
         let mut conn = self.lock()?;
@@ -359,6 +370,7 @@ impl Store {
             at: now,
             source: InputSource::User,
             text: text.to_owned(),
+            attachments: attachments.to_vec(),
         });
         // 只回报「接着做会开第几次 Attempt」；Attempt 行等投递真的接上会话再落，
         // 免得投递只 Later 时留下一个没有会话的空 Attempt。
@@ -702,7 +714,8 @@ impl Store {
         )?;
         let waiting = u32::try_from(waiting).unwrap_or(u32::MAX);
         let attempts = u32::try_from(attempts.unwrap_or(0)).unwrap_or(u32::MAX);
-        let state = if waiting > 0 && attempts >= FAILURES_BEFORE_ERROR {
+        // quiet 的种类（delivery）失败已经在任务上体现，不把健康项标成 error。
+        let state = if waiting > 0 && attempts >= FAILURES_BEFORE_ERROR && !kind.quiet() {
             EffectState::Error
         } else {
             EffectState::Ready

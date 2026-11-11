@@ -10,7 +10,7 @@ use crate::protocol::{
 use crate::root_lifecycle::RootHost;
 
 /// 把附件错误映射成服务错误码。
-fn attachment_error(error: tools::attachments::AttachmentError) -> ServiceError {
+pub(crate) fn attachment_error(error: tools::attachments::AttachmentError) -> ServiceError {
     use tools::attachments::AttachmentError;
     match error {
         AttachmentError::NotText => ServiceError::AttachmentNotText,

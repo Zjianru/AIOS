@@ -1,6 +1,6 @@
 //! T024.3：Kind 派发、ThinAgent 执行、上报 relay 的后端闭环（假模型、两个真会话）。
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -9,10 +9,11 @@ use agent::AgentConfig;
 use model::DEFAULT_CONTEXT_WINDOW;
 use serde_json::Value;
 use service::{
-    Call, CardActRequest, CardVerb, DeliveryMode, DisabledModelsSetRequest, Response, RootHost,
-    SendRequest, SessionModelSelectRequest, StopMode, TaskReadRequest, TaskStopRequest,
+    AttachmentPutRequest, Call, CardActRequest, CardVerb, DeliveryMode, DisabledModelsSetRequest,
+    Response, RootHost, SendAttachment, SendRequest, SessionModelSelectRequest, StopMode,
+    TaskReadRequest, TaskSayRequest, TaskStopRequest,
 };
-use tasks::{AttemptEnd, EffectKind, ReportState, Stage, Store, Task};
+use tasks::{AttemptEnd, EffectKind, EffectState, ReportState, Stage, Store, Task};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
@@ -276,6 +277,46 @@ fn relay_messages(events: &[session::Event]) -> Vec<(String, Value)> {
             Some((rpc_id.to_owned(), serde_json::from_str(&text).ok()?))
         })
         .collect()
+}
+
+/// Kind 收到的抄送：rpc id 是 task-cc:<inputId>，正文是 task_cc JSON。
+///
+/// Inject 不唤醒时消息只落 agent/inbox/spliced（还没领取），被下一次请求领走后才
+/// 变成 user/message；两处都收，按 rpc id 去重。
+fn cc_messages(events: &[session::Event]) -> Vec<(String, Value)> {
+    let mut found: Vec<(String, Value)> = Vec::new();
+    for event in events {
+        let messages: Vec<&model::Message> = match &event.kind {
+            session::EventKind::UserMessage { message, .. } => vec![message],
+            session::EventKind::InboxSpliced { inserted, .. } => inserted.iter().collect(),
+            _ => continue,
+        };
+        for message in messages {
+            let model::MessageSource::User { rpc_id } = &message.source else {
+                continue;
+            };
+            let Some(rpc_id) = rpc_id.as_deref() else {
+                continue;
+            };
+            if !rpc_id.starts_with("task-cc:") {
+                continue;
+            }
+            let text: String = message
+                .content
+                .iter()
+                .filter_map(model::ContentBlock::as_text)
+                .collect();
+            let Ok(body) = serde_json::from_str(&text) else {
+                continue;
+            };
+            if let Some(entry) = found.iter_mut().find(|(id, _)| id == rpc_id) {
+                entry.1 = body;
+            } else {
+                found.push((rpc_id.to_owned(), body));
+            }
+        }
+    }
+    found
 }
 
 /// Kind 收到的停止 relay：rpc id 是 task-stop:<taskId>:<attemptId>。
@@ -1965,6 +2006,14 @@ async fn stopping_now_after_an_after_report_stop_uses_the_immediate_stop() {
     // 立即停照 T027.2：会话最后一轮以取消收尾，不再合成 waiting 报告。
     let task_row = store.task(&task.id).unwrap().unwrap();
     let attempt = task_row.latest_attempt().expect("Attempt").clone();
+    // 取消的收尾由会话驱动异步写日志：等它落盘再读，别抢在停止 relay 前面。
+    wait_until("会话这一轮以取消收尾", || {
+        last_turn_end(&thin_events(fixture.data(), &attempt))
+            == Some(session::TurnEndReason::Aborted {
+                reason: session::AbortCause::User,
+            })
+    })
+    .await;
     let events = thin_events(fixture.data(), &attempt);
     assert_eq!(
         last_turn_end(&events),
@@ -2869,6 +2918,27 @@ fn attempt_count(task: &Task) -> usize {
     task.runs.iter().map(|run| run.attempts.len()).sum()
 }
 
+/// 受理一个任务并跑完第一轮 ready 报告；说话类测试的起点。
+async fn first_report_fixture(fixture: &Fixture, kind_spares: usize) -> Task {
+    fixture.router.push_thin_for_title(
+        "查一下",
+        report_sse(2, "call-report", "ready", "第一轮答案", None),
+    );
+    fixture
+        .router
+        .push_thin_for_title("查一下", crate::common::text_sse("第一轮收尾"));
+    let task = fixture.accept_with_kind_replies(false, kind_spares).await;
+    let store = tasks_store(fixture.data());
+    wait_until("第一轮报 ready", || reported_ready(&store, &task.id)).await;
+    wait_until("Kind 收到第一轮 relay", || {
+        !relay_messages(&crate::common::read_root_events(fixture.data())).is_empty()
+    })
+    .await;
+    // 给 relay 叫醒的 Kind 轮一点时间收尾，之后说话时 Kind 应当是空闲的。
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    task
+}
+
 /// 停/结束后在任务对话里说话：接在原会话上开新 Attempt，请求带着原来的历史。
 #[tokio::test]
 async fn saying_after_a_report_resumes_the_same_conversation_and_carries_history() {
@@ -3248,4 +3318,356 @@ async fn a_paused_task_dialog_holds_the_input_until_the_gate_opens() {
             .is_some_and(|body| body.contains("暂停时说的"))
     })
     .await;
+}
+
+/// 抄送正文照 spec：{kind: task_cc, task:{id,title}, text<=600} + chars；
+/// 用 Inject 进 Kind 日志但不叫醒它；全局暂停也照送。
+#[tokio::test]
+async fn a_task_cc_carries_the_task_and_truncated_text_without_waking_kind() {
+    let fixture = Fixture::new().await;
+    let task = first_report_fixture(&fixture, 2).await;
+    fixture
+        .host
+        .dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
+            paused: Some(true),
+            ..Default::default()
+        }))
+        .await
+        .expect("暂停");
+    let kind_before = fixture.router.bodies(false).len();
+
+    // 650 字：正文截到 600，chars 报原始字数；头尾不同的字便于确认截的是头。
+    let long = format!("前{}后", "中".repeat(648));
+    assert_eq!(long.chars().count(), 650);
+    let said = say_in_task_dialog(&fixture.host, &task, &long).await;
+    let request_id = format!("task-cc:{}", said.input_id);
+    wait_until("Kind 日志里有 task-cc", || {
+        cc_messages(&crate::common::read_root_events(fixture.data()))
+            .iter()
+            .any(|(id, _)| id == &request_id)
+    })
+    .await;
+
+    let events = crate::common::read_root_events(fixture.data());
+    let body = cc_messages(&events)
+        .into_iter()
+        .find(|(id, _)| id == &request_id)
+        .map(|(_, body)| body)
+        .expect("task-cc 正文");
+    assert_eq!(body["kind"], "task_cc");
+    assert_eq!(body["task"]["id"], task.id.as_str());
+    assert_eq!(body["task"]["title"], "查一下");
+    assert_eq!(
+        body["text"].as_str().unwrap(),
+        format!("前{}", "中".repeat(599)),
+        "正文最多 600 字"
+    );
+    assert_eq!(body["chars"], 650, "超出的字数单独报");
+    assert!(
+        tasks_store(fixture.data())
+            .effect_pending(EffectKind::Delivery, task.id.as_str())
+            .unwrap(),
+        "全局暂停时 delivery 压着"
+    );
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        fixture.router.bodies(false).len(),
+        kind_before,
+        "Inject 不唤醒 Kind：没有新请求"
+    );
+    assert!(
+        !crate::common::read_root_events(fixture.data())
+            .iter()
+            .any(|event| matches!(
+                &event.kind,
+                session::EventKind::UserMessage { message, .. }
+                    if matches!(
+                        &message.source,
+                        model::MessageSource::User { rpc_id: Some(id) } if id == &request_id
+                    )
+            )),
+        "没被叫醒，消息还压在 Kind 的下一步队列里"
+    );
+
+    // 另一条普通消息叫醒 Kind：请求里要带着这条抄送。
+    fixture
+        .router
+        .push_kind(crate::common::text_sse("看到抄送了"));
+    fixture
+        .host
+        .dispatch(Call::Send(send(&fixture.host, "kind-2", "叫醒一下")))
+        .await
+        .expect("叫醒 Kind");
+    wait_until("叫醒后的请求带着抄送", || {
+        fixture
+            .router
+            .bodies(false)
+            .last()
+            .is_some_and(|body| body.contains("task_cc"))
+    })
+    .await;
+    wait_until(
+        "抄送被领取后变成 Kind 日志里的用户消息",
+        || {
+            crate::common::read_root_events(fixture.data())
+                .iter()
+                .any(|event| {
+                    matches!(
+                        &event.kind,
+                        session::EventKind::UserMessage { message, .. }
+                            if matches!(
+                                &message.source,
+                                model::MessageSource::User { rpc_id: Some(id) } if id == &request_id
+                            )
+                    )
+                })
+        },
+    )
+    .await;
+}
+
+/// 发起的 Kind 会话不是当前根会话：notice 按 Later 留在库里，不投送、不算失败。
+#[tokio::test]
+async fn a_task_cc_stays_later_when_its_kind_conversation_is_not_the_root() {
+    let fixture = Fixture::new().await;
+    let store = tasks_store(fixture.data());
+    let task = store
+        .create_task(
+            tasks::NewTask {
+                title: "另一个对话派的任务".to_owned(),
+                requirement: "找答案".to_owned(),
+                dod: "有答案".to_owned(),
+                cwd: fixture.data().to_path_buf(),
+                conversation: tasks::ConversationId::new("another-kind-session"),
+                model: tasks::ModelChoice {
+                    connection: "deepseek".to_owned(),
+                    model: "deepseek-flash".to_owned(),
+                    effort_wanted: "high".to_owned(),
+                },
+                tools: service::THIN_TOOLS.map(str::to_owned).to_vec(),
+            },
+            1_700_000_000_000,
+        )
+        .unwrap();
+
+    let said = say_in_task_dialog(&fixture.host, &task, "给另一个 Kind 的抄送").await;
+    let key = format!("cc:{}", said.input_id);
+    wait_until("notice 留在库里", || {
+        store.effect_pending(EffectKind::Notice, &key).unwrap()
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        cc_messages(&crate::common::read_root_events(fixture.data())).is_empty(),
+        "发起的 Kind 不是当前根会话：不投送"
+    );
+    let health = store.effect_health(EffectKind::Notice).unwrap();
+    assert_eq!(health.state, EffectState::Ready);
+    assert_eq!(health.attempts, 0, "Later 不算失败");
+}
+
+/// 任务对话的附件：校验同 Kind（坏 id 拒收），投递到 ThinAgent 时文字块和文件块都在。
+#[tokio::test]
+async fn a_task_say_attachment_is_validated_and_lands_in_the_thin_request() {
+    let fixture = Fixture::new().await;
+    let task = first_report_fixture(&fixture, 3).await;
+    let store = tasks_store(fixture.data());
+
+    let missing = SendAttachment {
+        id: "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_owned(),
+        name: "missing.txt".to_owned(),
+        bytes: 1,
+    };
+    let error = fixture
+        .host
+        .dispatch(Call::TaskSay(TaskSayRequest {
+            task_id: task.id.as_str().to_owned(),
+            text: "看附件".to_owned(),
+            attachments: vec![missing],
+        }))
+        .await
+        .expect_err("不存在的附件要拒收");
+    assert_eq!(error.code().as_str(), "attachment/invalid");
+    assert_eq!(
+        store.task(&task.id).unwrap().unwrap().inputs.len(),
+        0,
+        "拒收不改任务行"
+    );
+
+    let put = fixture
+        .host
+        .dispatch(Call::AttachmentPut(AttachmentPutRequest {
+            name: "notes.txt".to_owned(),
+            data: "aGVsbG8=".to_owned(),
+        }))
+        .await
+        .expect("存附件");
+    let put = serde_json::to_value(&put).unwrap();
+    let attachment_id = put["id"].as_str().unwrap().to_owned();
+    let bytes = put["bytes"].as_u64().unwrap();
+
+    fixture
+        .router
+        .push_thin_for(task.id.as_str(), crate::common::text_sse("收到附件"));
+    fixture.router.push_kind(crate::common::text_sse("收到"));
+    let response = fixture
+        .host
+        .dispatch(Call::TaskSay(TaskSayRequest {
+            task_id: task.id.as_str().to_owned(),
+            text: "看附件".to_owned(),
+            attachments: vec![SendAttachment {
+                id: attachment_id.clone(),
+                name: "notes.txt".to_owned(),
+                bytes,
+            }],
+        }))
+        .await
+        .expect("带附件说一句");
+    let Response::TaskSay(said) = response else {
+        panic!("TaskSay 的响应形状不对");
+    };
+
+    wait_until("ThinAgent 请求带着附件", || {
+        fixture.router.bodies(true).iter().any(|body| {
+            body.contains("看附件")
+                && body.contains("notes.txt")
+                && body.contains("verbatim read-only copy saved at")
+        })
+    })
+    .await;
+
+    let attempt = store
+        .task(&task.id)
+        .unwrap()
+        .unwrap()
+        .latest_attempt()
+        .cloned()
+        .expect("接着做的 Attempt");
+    let request_id = format!("task-say:{}", said.input_id);
+    let message = thin_events(fixture.data(), &attempt)
+        .iter()
+        .find_map(|event| match &event.kind {
+            session::EventKind::UserMessage { message, .. } => match &message.source {
+                model::MessageSource::User {
+                    rpc_id: Some(rpc_id),
+                } if rpc_id == &request_id => Some(message.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("任务会话里有这条输入");
+    assert!(
+        message
+            .content
+            .iter()
+            .any(|block| block.as_text() == Some("看附件"))
+    );
+    let (id, name, file_bytes, path) = message
+        .content
+        .iter()
+        .find_map(|block| match block {
+            model::ContentBlock::File {
+                attachment_id,
+                name,
+                bytes,
+                path,
+            } => Some((attachment_id.clone(), name.clone(), *bytes, path.clone())),
+            _ => None,
+        })
+        .expect("输入里带着附件块");
+    assert_eq!(id, attachment_id);
+    assert_eq!(name, "notes.txt");
+    assert_eq!(file_bytes, bytes);
+    assert!(
+        path.as_deref()
+            .is_some_and(|path| path.contains("attachments/v1/files")),
+        "附件走只读副本路径：{path:?}"
+    );
+}
+
+/// 同一条输入的 delivery 再跑一次（重试/重领）：request id 判重，会话里只留一条。
+#[tokio::test]
+async fn a_delivery_retry_does_not_repeat_the_same_input() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(true).await;
+    fixture.router.set_thin_delay(Duration::from_millis(2_000));
+    fixture
+        .router
+        .push_thin(crate::common::text_sse("第一步收尾"));
+    fixture
+        .host
+        .task_runtime()
+        .expect("runtime")
+        .set_pump_paused(false);
+    let store = tasks_store(fixture.data());
+    wait_until("第一轮开跑", || attempt_in_flight(&store, &task.id)).await;
+
+    let said = say_in_task_dialog(&fixture.host, &task, "只该出现一次的话").await;
+    wait_until("下一步请求带上这句话", || {
+        fixture
+            .router
+            .bodies(true)
+            .last()
+            .is_some_and(|body| body.contains("只该出现一次的话"))
+    })
+    .await;
+
+    let runtime = fixture.host.task_runtime().expect("runtime");
+    runtime
+        .store()
+        .enqueue_effect(
+            tasks::EffectPayload::Delivery {
+                task_id: task.id.clone(),
+            },
+            0,
+        )
+        .unwrap();
+    runtime.set_pump_paused(false);
+    wait_until("重跑的 delivery 收掉", || {
+        !store
+            .effect_pending(EffectKind::Delivery, task.id.as_str())
+            .unwrap()
+    })
+    .await;
+
+    let attempt = store
+        .task(&task.id)
+        .unwrap()
+        .unwrap()
+        .latest_attempt()
+        .cloned()
+        .expect("Attempt");
+    let request_id = format!("task-say:{}", said.input_id);
+    let events = thin_events(fixture.data(), &attempt);
+    // 一条消息在日志里会出现两次（inbox/spliced 插入 + 领取后的 user/message）；
+    // 按稳定 message id 去重，重复投递才是两条。
+    let mut repeated = HashSet::new();
+    for event in &events {
+        let messages: Vec<&model::Message> = match &event.kind {
+            session::EventKind::UserMessage { message, .. } => vec![message],
+            session::EventKind::InboxSpliced { inserted, .. } => inserted.iter().collect(),
+            _ => continue,
+        };
+        for message in messages {
+            if message
+                .content
+                .iter()
+                .filter_map(model::ContentBlock::as_text)
+                .collect::<String>()
+                == "只该出现一次的话"
+            {
+                repeated.insert(message.id.clone());
+            }
+        }
+    }
+    assert_eq!(repeated.len(), 1, "同一条输入只进会话一次");
+    assert!(
+        events.iter().any(|event| matches!(
+            &event.kind,
+            session::EventKind::UserMessage { message, .. }
+                if matches!(&message.source, model::MessageSource::User { rpc_id: Some(id) } if id == &request_id)
+        )),
+        "输入用 task-say:<inputId> 做判重键"
+    );
 }

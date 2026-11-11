@@ -14,15 +14,16 @@ use model::{Effort, UserMessage};
 use serde_json::{Value, json};
 use session::SessionId;
 use tasks::{
-    Attempt, AttemptEnd, AttemptId, ConversationId, EffectClaim, EffectKind, EffectPayload,
-    MissingItem, ModelChoice, NewReport, NewTask, ReportId, ReportOrigin, ReportState, SlotKind,
-    Stage, StopAttempt, Store, Task, TaskError, TaskId, WorkerSlots,
+    Attempt, AttemptEnd, AttemptId, ConversationId, EffectClaim, EffectKind, EffectPayload, Input,
+    InputAttachment, MissingItem, ModelChoice, NewReport, NewTask, ReportId, ReportOrigin,
+    ReportState, SlotKind, Stage, StopAttempt, Store, Task, TaskError, TaskId, WorkerSlots,
 };
 use tokio::sync::broadcast;
 use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
 
 use crate::error::ServiceError;
 use crate::events::{page_events, service_event};
+use crate::input::attachment_error;
 use crate::protocol::{
     DeliveryMode, FollowRequest, FollowResponse, ServiceEvent, StopMode, TaskReadHeader,
     TaskReadRequest, TaskReadResponse, TaskSayRequest, TaskSayResponse, TaskStopResponse,
@@ -158,19 +159,24 @@ impl TaskRuntime {
         &self,
         request: TaskSayRequest,
     ) -> Result<TaskSayResponse, ServiceError> {
-        if !request.attachments.is_empty() {
-            return Err(ServiceError::TaskUnavailable(
-                "任务对话的附件还没接（T028.2 WIP）".to_owned(),
-            ));
+        // 附件和 Kind 对话共用仓库与校验：先按 id 读回只读副本，错就按同一套错误码返回。
+        let mut attachments = Vec::with_capacity(request.attachments.len());
+        for attachment in &request.attachments {
+            tools::attachments::read(&self.data_dir, &attachment.id).map_err(attachment_error)?;
+            attachments.push(InputAttachment {
+                id: attachment.id.clone(),
+                name: attachment.name.clone(),
+                bytes: attachment.bytes,
+            });
         }
         let id = TaskId::from(request.task_id);
-        let outcome =
-            self.store
-                .say(&id, &request.text, Self::now())
-                .map_err(|error| match error {
-                    TaskError::EmptyInput => ServiceError::MessageEmpty,
-                    other => ServiceError::TaskUnavailable(format!("这句话没记进任务库：{other}")),
-                })?;
+        let outcome = self
+            .store
+            .say_with_attachments(&id, &request.text, &attachments, Self::now())
+            .map_err(|error| match error {
+                TaskError::EmptyInput => ServiceError::MessageEmpty,
+                other => ServiceError::TaskUnavailable(format!("这句话没记进任务库：{other}")),
+            })?;
         self.wake();
         Ok(TaskSayResponse {
             input_id: outcome.input_id.as_str().to_owned(),
@@ -546,12 +552,18 @@ impl TaskRuntime {
         let mut sent = Ok(());
         for input in &task.inputs {
             let request_id = format!("task-say:{}", input.id.as_str());
+            let message = match self.say_message(input) {
+                Ok(message) => message,
+                Err(error) => {
+                    sent = Err(format!(
+                        "输入 {} 的附件没读回来：{error}",
+                        input.id.as_str()
+                    ));
+                    break;
+                }
+            };
             if let Err(error) = host
-                .send_message(
-                    &request_id,
-                    UserMessage::text(input.text.clone()),
-                    DeliveryMode::Steer,
-                )
+                .send_message(&request_id, message, DeliveryMode::Steer)
                 .await
             {
                 sent = Err(format!(
@@ -571,6 +583,28 @@ impl TaskRuntime {
                 self.store.fail_effect(&claim, &error, Self::now()),
             ),
         }
+    }
+
+    /// 一条任务输入发给 ThinAgent 的消息：文字在前，附件照记下的 id/名字/字节数还原成文件块。
+    ///
+    /// 附件路径在投递时从附件仓库解析（和 Kind 对话一样是只读副本）；空输入在记库阶段
+    /// 就拒了，这里不会拼出空消息。
+    fn say_message(&self, input: &Input) -> Result<UserMessage, String> {
+        let mut blocks = Vec::new();
+        if !input.text.is_empty() {
+            blocks.push(model::ContentBlock::text(input.text.clone()));
+        }
+        for attachment in &input.attachments {
+            let stored = tools::attachments::read(&self.data_dir, &attachment.id)
+                .map_err(|error| error.to_string())?;
+            blocks.push(model::ContentBlock::File {
+                attachment_id: attachment.id.clone(),
+                name: attachment.name.clone(),
+                bytes: attachment.bytes,
+                path: Some(stored.path.to_string_lossy().into_owned()),
+            });
+        }
+        Ok(UserMessage::new(blocks))
     }
 
     /// 停/结束之后有人说话：占 person 席位，在原会话里接着开一次 Attempt，把输入送进去。

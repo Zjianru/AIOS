@@ -6,9 +6,9 @@ use rusqlite::Connection;
 
 use super::Store;
 use crate::{
-    AttemptEnd, AttemptId, AttemptTrigger, ConversationId, EffectKind, EffectPayload, InputId,
-    InputSource, ModelChoice, NewReport, NewTask, ReportOrigin, ReportState, SlotKind, Task,
-    TaskError, WorkerSlots,
+    AttemptEnd, AttemptId, AttemptTrigger, ConversationId, EffectKind, EffectPayload,
+    InputAttachment, InputId, InputSource, ModelChoice, NewReport, NewTask, ReportOrigin,
+    ReportState, SlotKind, Task, TaskError, WorkerSlots,
 };
 
 const T0: i64 = 1_700_000_000_000;
@@ -106,6 +106,31 @@ fn records_the_input_delivery_and_notice_in_one_transaction() {
         }
     );
     assert_eq!(notice.key, format!("cc:{}", outcome.input_id));
+}
+
+#[test]
+fn records_attachments_with_the_input_and_accepts_an_attachment_only_message() {
+    let (_directory, store) = open_store();
+    let (task, _attempt) = running_task(&store);
+    let attachment = InputAttachment {
+        id: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+        name: "notes.txt".to_owned(),
+        bytes: 5,
+    };
+
+    let outcome = store
+        .say_with_attachments(&task.id, "", std::slice::from_ref(&attachment), T0 + 10)
+        .unwrap();
+    let loaded = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(loaded.inputs.len(), 1);
+    assert_eq!(loaded.inputs[0].id, outcome.input_id);
+    assert_eq!(loaded.inputs[0].text, "", "只有附件也算一句");
+    assert_eq!(loaded.inputs[0].attachments, vec![attachment]);
+
+    assert!(matches!(
+        store.say_with_attachments(&task.id, "  ", &[], T0 + 11),
+        Err(TaskError::EmptyInput)
+    ));
 }
 
 #[test]
