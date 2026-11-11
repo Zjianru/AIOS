@@ -1,11 +1,21 @@
 ---
 name: aios-tasks
-description: Stop a running task, hold and resume new tasks globally, or offer to continue tasks a restart interrupted. mode=now cancels the current Attempt immediately; mode=after_report lets it finish the current step, report once, then end.
+description: Stop a running task, hold and resume new tasks globally, offer to continue tasks a restart interrupted, and choose or widen a writing task's write scope. mode=now cancels the current Attempt immediately; mode=after_report lets it finish the current step, report once, then end.
 ---
 
 # AIOS tasks
 
-Use this when the user asks to stop a task they had you dispatch — "stop that task", "别查了", "把它停了" — or to hold new tasks — "暂停新任务", "先别开新的", "继续跑". Do not call it otherwise; work that is still useful should keep going.
+Use this when the user asks to stop a task they had you dispatch — "stop that task", "别查了", "把它停了" — or to hold new tasks — "暂停新任务", "先别开新的", "继续跑" — or when you dispatch a writing task or its write scope needs to change. Do not call it otherwise; work that is still useful should keep going.
+
+## Writing tasks and the write scope
+
+`task_accept` takes `write_scope`: one path. A file means only that file may change; a directory means anything under it may change. The scope is frozen into the task, and the task's write and edit calls are refused outside it. Omit it only for a read-only investigation.
+
+- If the user named the file or directory, pass it as `write_scope` and dispatch directly.
+- If you inferred the path or cannot find it, ask the user first and give one concrete path to approve. Do not dispatch until they answer.
+- The Kind conversation's directory is not the write scope. Never pass the cwd just because the work happens there.
+- Set `worktree: true` only when the user explicitly asks to work in a git worktree.
+- When a task hands back because it needs a wider scope, ask the user. After they agree, call `task_update` with `{ "task_id": "<the id task_accept returned>", "write_scope": "<path>" }`: it records a new requirement version and resumes the task with the new scope.
 
 ## Stop now
 
