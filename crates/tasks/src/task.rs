@@ -341,6 +341,10 @@ pub struct Report {
     pub summary: String,
     pub question: Option<String>,
     pub at: i64,
+    /// 这份报告答复的要求版本（1 起）；旧任务行没有这个字段时按 0 读。
+    /// 接受只接受当前版本的报告。
+    #[serde(default)]
+    pub version: u32,
 }
 
 /// 任务包缺的一项；执行者写什么，store 就存什么，不改写成卡片状态。

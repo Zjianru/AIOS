@@ -13,6 +13,9 @@ use crate::error::ServiceError;
 use crate::protocol::{CardActRequest, CardActResponse, CardVerb};
 use crate::root_lifecycle::RootHost;
 
+/// 结果卡「接受」这个动作的名字（进 card/decision 的 action）。
+const ACCEPT_RESULT_ACTION: &str = "accept_task_result";
+
 /// 模型传给 propose_action 的参数。
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct ProposeArgs {
@@ -208,6 +211,12 @@ impl RootHost {
         request: &CardActRequest,
     ) -> Result<CardActResponse, ServiceError> {
         let events = self.card_events().await?;
+        // 任务结果卡（relay 的 request id）走接受，不是 propose_action 的确认卡。
+        if let Some((task_id, report_id)) = crate::result_cards::parse_relay_id(&request.call_id) {
+            return self
+                .accept_result_card(request, task_id, report_id, &events)
+                .await;
+        }
         let Some(proposal) = proposal_of(&events, &request.call_id) else {
             return Ok(CardActResponse { decision: None });
         };
@@ -236,6 +245,59 @@ impl RootHost {
                     None => return Ok(CardActResponse { decision: None }),
                 }
             }
+        };
+        self.record_decision(&decision).await?;
+        Ok(CardActResponse {
+            decision: Some(decision),
+        })
+    }
+
+    /// 结果卡上的「接受」：只认真的送到 Kind 对话里的那张卡，记下当前版本和报告。
+    ///
+    /// 重复点击返回同一条决定；旧版本/不是最新的报告回 refused，不写接受记录。
+    async fn accept_result_card(
+        &self,
+        request: &CardActRequest,
+        task_id: &str,
+        report_id: &str,
+        events: &[session::Event],
+    ) -> Result<CardActResponse, ServiceError> {
+        if let Some(decision) = decision_of(events, &request.call_id) {
+            return Ok(CardActResponse {
+                decision: Some(decision),
+            });
+        }
+        // 结果卡只有「接受」；没有暂不这个动作。
+        if request.verb != CardVerb::Confirm {
+            return Ok(CardActResponse { decision: None });
+        }
+        if crate::result_cards::relay_card(events, &request.call_id, task_id).is_none() {
+            return Ok(CardActResponse { decision: None });
+        }
+        let Some(runtime) = self.task_runtime() else {
+            return Err(ServiceError::TaskUnavailable(
+                "任务库没开，接受不了结果".to_owned(),
+            ));
+        };
+        let decision = match runtime.accept_result(task_id, report_id) {
+            Ok(acceptance) => session::CardDecision {
+                call_id: request.call_id.clone(),
+                option: None,
+                action: Some(ACCEPT_RESULT_ACTION.to_owned()),
+                phase: session::CardDecisionPhase::Confirmed,
+                data: Some(serde_json::json!({
+                    "summary": "你已接受",
+                    "version": acceptance.version,
+                    "report_id": acceptance.report_id.as_str(),
+                })),
+            },
+            Err(reason) => session::CardDecision {
+                call_id: request.call_id.clone(),
+                option: None,
+                action: Some(ACCEPT_RESULT_ACTION.to_owned()),
+                phase: session::CardDecisionPhase::Refused,
+                data: Some(serde_json::json!({ "summary": reason })),
+            },
         };
         self.record_decision(&decision).await?;
         Ok(CardActResponse {

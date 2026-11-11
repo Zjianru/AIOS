@@ -7,8 +7,8 @@ use rusqlite::params;
 
 use super::Store;
 use crate::{
-    Acceptance, ConversationId, ModelChoice, NewReport, NewTask, ReportOrigin, ReportState,
-    RequirementVersion, Stage, TaskError, TaskPolicy, VersionSource, Worktree,
+    Acceptance, AttemptEnd, ConversationId, ModelChoice, NewReport, NewTask, ReportOrigin,
+    ReportState, RequirementVersion, Stage, TaskError, TaskPolicy, VersionSource, Worktree,
 };
 
 const T0: i64 = 1_700_000_000_000;
@@ -233,21 +233,72 @@ fn acceptance_binds_the_current_version_and_the_report_without_changing_the_stag
 }
 
 #[test]
-fn accepting_after_a_task_update_binds_the_new_version() {
+fn a_report_from_before_a_task_update_is_not_acceptable() {
     let (_directory, store) = open_store();
     let (_cwd_directory, cwd) = task_cwd();
     let task = store
         .create_task_with(draft(&cwd), policy(Some("notes")), T0)
         .unwrap();
     let attempt = store.begin_attempt(&task.id, T0 + 1).unwrap();
-    let report = store
+    store
         .record_report(&task.id, attempt, ready_report(), T0 + 2)
         .unwrap();
     store.update_write_scope(&task.id, "rank", T0 + 3).unwrap();
 
-    let acceptance = store.accept(&task.id, T0 + 4).unwrap();
+    let result = store.accept(&task.id, T0 + 4);
+    let message = result.expect_err("旧版本的报告不能接受").to_string();
+    assert!(message.contains("版本"), "拒绝原因写明版本：{message}");
+    let stored = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(stored.acceptance, None, "旧报告不绑新版本");
+    assert_eq!(stored.requirement_version(), 2);
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::ReadyForReview);
+}
+
+#[test]
+fn a_new_report_after_a_task_update_binds_the_new_version() {
+    let (_directory, store) = open_store();
+    let (_cwd_directory, cwd) = task_cwd();
+    let task = store
+        .create_task_with(draft(&cwd), policy(Some("notes")), T0)
+        .unwrap();
+    let first_attempt = store.begin_attempt(&task.id, T0 + 1).unwrap();
+    let first_report = store
+        .record_report(&task.id, first_attempt, ready_report(), T0 + 2)
+        .unwrap();
+    store
+        .end_attempt(&task.id, first_attempt, T0 + 3, AttemptEnd::Reported)
+        .unwrap();
+    store.update_write_scope(&task.id, "rank", T0 + 4).unwrap();
+
+    let second_attempt = store.begin_attempt(&task.id, T0 + 5).unwrap();
+    let second_report = store
+        .record_report(&task.id, second_attempt, ready_report(), T0 + 6)
+        .unwrap();
+    assert_ne!(first_report, second_report);
+
+    let acceptance = store.accept(&task.id, T0 + 7).unwrap();
     assert_eq!(acceptance.version, 2);
-    assert_eq!(acceptance.report_id, report);
+    assert_eq!(acceptance.report_id, second_report);
+}
+
+#[test]
+fn accepting_the_same_report_twice_returns_the_same_record() {
+    let (_directory, store) = open_store();
+    let (_cwd_directory, cwd) = task_cwd();
+    let task = store
+        .create_task_with(draft(&cwd), policy(Some("notes")), T0)
+        .unwrap();
+    let attempt = store.begin_attempt(&task.id, T0 + 1).unwrap();
+    store
+        .record_report(&task.id, attempt, ready_report(), T0 + 2)
+        .unwrap();
+
+    let first = store.accept(&task.id, T0 + 3).unwrap();
+    let second = store.accept(&task.id, T0 + 9).unwrap();
+    assert_eq!(second, first, "重复接受不另记一条");
+    let stored = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(stored.acceptance, Some(first));
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::ReadyForReview);
 }
 
 #[test]

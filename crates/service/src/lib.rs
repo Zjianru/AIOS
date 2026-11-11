@@ -14,6 +14,7 @@ mod executor;
 mod input;
 mod propose;
 mod protocol;
+mod result_cards;
 mod root_lifecycle;
 mod routing;
 mod session_host;
@@ -66,6 +67,9 @@ mod history_pagination_tests;
 #[cfg(test)]
 #[path = "protocol_version_tests.rs"]
 mod protocol_version_tests;
+#[cfg(test)]
+#[path = "result_cards_tests.rs"]
+mod result_cards_tests;
 #[cfg(test)]
 #[path = "root_lifecycle_tests.rs"]
 mod root_lifecycle_tests;
