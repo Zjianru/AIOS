@@ -689,7 +689,14 @@ export function deriveTurnViews(
         const preTool =
           hasToolCall(data.message) ||
           (data.interrupted === true && streamHasToolCall(data.stream));
-        if (text && !preTool) raw.answer = text;
+        if (text && preTool) {
+          // T031/D89：工具前说明按日志先后进工作过程，不进回答区。
+          if (text.trim()) {
+            raw.says.push({ id: 'say-' + event.seq, text, seq: event.seq });
+          }
+        } else if (text) {
+          raw.answer = text;
+        }
         raw.usage = mergeUsage(raw.usage, data.usage);
         raw.modelId = modelIdOf(data.message) ?? raw.modelId;
         raw.reasoningMs += reasoningSpanMs(data.stream);
@@ -732,6 +739,7 @@ export function deriveTurnViews(
           durationMs: null,
           state: 'running',
           startedAtMs: event.time,
+          seq: event.seq,
         });
         break;
       }
@@ -956,19 +964,30 @@ export function processStepsOf(view: TurnViewData): ProcessStep[] {
       streaming: view.status === 'inProgress' && view.tools.some((tool) => tool.state === 'running' && tool.id === view.tools[view.tools.length - 1]?.id) === false && view.tools.length === 0,
     });
   }
-  for (const tool of view.tools) {
-    steps.push({
-      kind: 'tool',
-      id: tool.id,
-      name: tool.name,
-      args: tool.args,
-      output: tool.output,
-      exitCode: tool.exitCode,
-      signal: tool.signal ?? null,
-      durationMs: tool.durationMs,
-      state: tool.state,
-      meta: tool.meta ?? null,
-    });
-  }
+  // T031/D89：工具前说明和工具步按日志 seq 排先后；没有 seq 的旧数据排在最后，
+  // 保持工具之间的原顺序。
+  const ordered: { seq: number; step: ProcessStep }[] = [
+    ...view.tools.map((tool) => ({
+      seq: tool.seq ?? Number.MAX_SAFE_INTEGER,
+      step: {
+        kind: 'tool' as const,
+        id: tool.id,
+        name: tool.name,
+        args: tool.args,
+        output: tool.output,
+        exitCode: tool.exitCode,
+        signal: tool.signal ?? null,
+        durationMs: tool.durationMs,
+        state: tool.state,
+        meta: tool.meta ?? null,
+      },
+    })),
+    ...view.says.map((say) => ({
+      seq: say.seq,
+      step: { kind: 'say' as const, id: say.id, text: say.text },
+    })),
+  ];
+  ordered.sort((left, right) => left.seq - right.seq);
+  for (const item of ordered) steps.push(item.step);
   return steps;
 }
