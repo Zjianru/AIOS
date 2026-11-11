@@ -214,7 +214,7 @@ impl Store {
         Ok(task)
     }
 
-    /// 列出全部任务 id（测试与诊断用；不按创建时间排序）。
+    /// 列出全部任务 id（启动扫描与诊断用；不按创建时间排序）。
     pub fn task_ids(&self) -> Result<Vec<TaskId>, TaskError> {
         let conn = self.lock()?;
         let mut statement = conn.prepare("SELECT id FROM task")?;
