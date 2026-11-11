@@ -1,8 +1,8 @@
-//! 持久效果表：launch 和 relay 两种效果，以及它们的重试与健康事实。
+//! 持久效果表：launch、relay、delivery 和 notice，以及它们的重试与健康事实。
 
 use serde::{Deserialize, Serialize};
 
-use crate::id::{AttemptId, ReportId, TaskId};
+use crate::id::{AttemptId, InputId, ReportId, TaskId};
 
 /// 连续失败到几次算效果种类报健康错误。
 pub const FAILURES_BEFORE_ERROR: u32 = 3;
@@ -13,6 +13,8 @@ pub const FAILURES_BEFORE_ERROR: u32 = 3;
 pub enum EffectKind {
     Launch,
     Relay,
+    Delivery,
+    Notice,
 }
 
 impl EffectKind {
@@ -20,14 +22,17 @@ impl EffectKind {
         match self {
             Self::Launch => "launch",
             Self::Relay => "relay",
+            Self::Delivery => "delivery",
+            Self::Notice => "notice",
         }
     }
 
-    /// 初值和上限的退避毫秒，照 DSH：launch 5s/300s，relay 2s/60s。
+    /// 初值和上限的退避毫秒，照 DSH：launch 5s/300s，relay 2s/60s；
+    /// delivery 和 notice 是即时投递，跟 relay 同一档。
     pub fn retry(self) -> (i64, i64) {
         match self {
             Self::Launch => (5_000, 300_000),
-            Self::Relay => (2_000, 60_000),
+            Self::Relay | Self::Delivery | Self::Notice => (2_000, 60_000),
         }
     }
 }
@@ -49,6 +54,17 @@ pub enum EffectPayload {
         task_id: TaskId,
         attempt_id: AttemptId,
     },
+    /// 任务里有了新输入，叫投递方把还没送的那些送进任务会话。
+    ///
+    /// 键是任务 id：同一个任务的新输入合并成一条效果，投递方按输入 id 逐条判重。
+    Delivery {
+        task_id: TaskId,
+    },
+    /// 抄送 Kind：键里带输入 id，每条输入各送一次。
+    Notice {
+        task_id: TaskId,
+        input_id: InputId,
+    },
 }
 
 impl EffectPayload {
@@ -56,18 +72,22 @@ impl EffectPayload {
         match self {
             Self::Launch { .. } => EffectKind::Launch,
             Self::Relay { .. } | Self::Stop { .. } => EffectKind::Relay,
+            Self::Delivery { .. } => EffectKind::Delivery,
+            Self::Notice { .. } => EffectKind::Notice,
         }
     }
 
-    /// launch 的键是任务 id，relay 的键是报告 id，停止的键是任务 id + Attempt 编号。
+    /// launch 和 delivery 的键是任务 id，relay 的键是报告 id，停止的键是任务 id +
+    /// Attempt 编号，抄送的键是输入 id。
     pub fn key(&self) -> String {
         match self {
-            Self::Launch { task_id } => task_id.to_string(),
+            Self::Launch { task_id } | Self::Delivery { task_id } => task_id.to_string(),
             Self::Relay { report_id, .. } => report_id.to_string(),
             Self::Stop {
                 task_id,
                 attempt_id,
             } => format!("stop:{task_id}:{attempt_id}"),
+            Self::Notice { input_id, .. } => format!("cc:{input_id}"),
         }
     }
 }

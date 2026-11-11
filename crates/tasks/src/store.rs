@@ -12,8 +12,11 @@ use crate::TaskError;
 use crate::effect::{
     EffectClaim, EffectHealth, EffectKind, EffectPayload, EffectState, FAILURES_BEFORE_ERROR,
 };
-use crate::id::{AttemptId, ConversationId, ReportId, TaskId};
-use crate::task::{Attempt, AttemptEnd, MissingItem, NewReport, NewTask, Report, Run, Task};
+use crate::id::{AttemptId, ConversationId, InputId, ReportId, TaskId};
+use crate::task::{
+    Attempt, AttemptEnd, AttemptTrigger, Input, InputSource, MissingItem, NewReport, NewTask,
+    Report, Run, SayOutcome, Task,
+};
 
 /// 任务库 schema 版本；比这新的库拒绝打开。
 pub const SCHEMA_VERSION: u64 = 1;
@@ -182,6 +185,7 @@ impl Store {
             code_mode: false,
             runs: Vec::new(),
             reports: Vec::new(),
+            inputs: Vec::new(),
             missing: Vec::new(),
             created_at: now,
         };
@@ -321,6 +325,7 @@ impl Store {
         let attempt = Attempt {
             id: attempt_id,
             conversation: None,
+            trigger: AttemptTrigger::Launch,
             started_at: now,
             ended_at: None,
             end: None,
@@ -337,6 +342,46 @@ impl Store {
         save_task(&transaction, &task)?;
         transaction.commit()?;
         Ok(attempt_id)
+    }
+
+    /// 用户在任务对话里说一句：在一个事务里记输入、排 delivery 和 notice；
+    /// 上一 Attempt 已结束了就接着开一次 Attempt（会话不变）。
+    pub fn say(&self, id: &TaskId, text: &str, now: i64) -> Result<SayOutcome, TaskError> {
+        if text.trim().is_empty() {
+            return Err(TaskError::EmptyInput);
+        }
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, id)?;
+        let input_id = InputId::from(generate_id(&transaction)?);
+        task.inputs.push(Input {
+            id: input_id.clone(),
+            at: now,
+            source: InputSource::User,
+            text: text.to_owned(),
+        });
+        let new_attempt = begin_followup_attempt(&mut task, now);
+        save_task(&transaction, &task)?;
+        self.enqueue_effect_in(
+            &transaction,
+            &EffectPayload::Delivery {
+                task_id: task.id.clone(),
+            },
+            now,
+        )?;
+        self.enqueue_effect_in(
+            &transaction,
+            &EffectPayload::Notice {
+                task_id: task.id.clone(),
+                input_id: input_id.clone(),
+            },
+            now,
+        )?;
+        transaction.commit()?;
+        Ok(SayOutcome {
+            input_id,
+            new_attempt,
+        })
     }
 
     /// 会话真的开出来之后，把会话 id 写回 Attempt。
@@ -653,6 +698,42 @@ impl Store {
     }
 }
 
+/// 上一 Attempt 已结束时，在同一个会话里接着开一次 Attempt。
+///
+/// 旧库可能只有 ended_at、没有 end；那也是已结束，照样接着做。没开成的 Attempt
+/// 没有会话可送，不算「可以接着做」。
+fn begin_followup_attempt(task: &mut Task, now: i64) -> Option<AttemptId> {
+    let latest = task.latest_attempt()?;
+    if latest.ended_at.is_none() || latest.end == Some(AttemptEnd::NotOpened) {
+        return None;
+    }
+    let conversation = latest.conversation.clone();
+    let attempt_id = AttemptId(
+        task.runs
+            .iter()
+            .map(|run| run.attempts.len() as u64)
+            .sum::<u64>()
+            + 1,
+    );
+    let attempt = Attempt {
+        id: attempt_id,
+        conversation,
+        trigger: AttemptTrigger::UserMessage,
+        started_at: now,
+        ended_at: None,
+        end: None,
+    };
+    match task.runs.last_mut() {
+        Some(run) => run.attempts.push(attempt),
+        None => task.runs.push(Run {
+            id: crate::RunId(1),
+            started_at: now,
+            attempts: vec![attempt],
+        }),
+    }
+    Some(attempt_id)
+}
+
 fn generate_id(connection: &Connection) -> Result<String, TaskError> {
     let id = connection.query_row("SELECT lower(hex(randomblob(16)))", [], |row| row.get(0))?;
     Ok(id)
@@ -794,6 +875,9 @@ mod attempt_report_tests;
 #[cfg(test)]
 #[path = "effect_tests.rs"]
 mod effect_tests;
+#[cfg(test)]
+#[path = "say_tests.rs"]
+mod say_tests;
 #[cfg(test)]
 #[path = "stage_tests.rs"]
 mod stage_tests;

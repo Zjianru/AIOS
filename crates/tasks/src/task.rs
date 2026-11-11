@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::TaskError;
-use crate::id::{AttemptId, ConversationId, ReportId, RunId, TaskId};
+use crate::id::{AttemptId, ConversationId, InputId, ReportId, RunId, TaskId};
 
 /// 创建任务时冻结的模型选择；之后改默认模型不影响这个任务。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +34,9 @@ pub struct Task {
     pub code_mode: bool,
     pub runs: Vec<Run>,
     pub reports: Vec<Report>,
+    /// 用户在任务对话里说过的话；旧任务行没有这个字段时按空读。
+    #[serde(default)]
+    pub inputs: Vec<Input>,
     /// 执行者在起跑前查到的缺项；空表示任务包齐。
     pub missing: Vec<MissingItem>,
     pub created_at: i64,
@@ -52,9 +55,47 @@ pub struct Run {
 pub struct Attempt {
     pub id: AttemptId,
     pub conversation: Option<ConversationId>,
+    /// 这次 Attempt 是怎么开始的；旧任务行没有这个字段时按派发读。
+    #[serde(default)]
+    pub trigger: AttemptTrigger,
     pub started_at: i64,
     pub ended_at: Option<i64>,
     pub end: Option<AttemptEnd>,
+}
+
+/// 一次 Attempt 是怎么开始的。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttemptTrigger {
+    /// 任务派发（launch）。
+    #[default]
+    Launch,
+    /// 用户在任务对话里说话，接着做。
+    UserMessage,
+}
+
+/// 一条用户输入；来源目前只有用户本人。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Input {
+    pub id: InputId,
+    pub at: i64,
+    pub source: InputSource,
+    pub text: String,
+}
+
+/// 输入是谁说的。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputSource {
+    User,
+}
+
+/// 说一句的结果：记下的输入，和没在跑时叫醒的新 Attempt。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SayOutcome {
+    pub input_id: InputId,
+    /// 上一 Attempt 已结束时新开的 Attempt；还在跑或从没开跑时为 None。
+    pub new_attempt: Option<AttemptId>,
 }
 
 /// Attempt 的结束原因。时间由调用方传入，库内不读时钟。
