@@ -33,9 +33,9 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   // T023：同一轮放慢到 400ms/帧，设置页往返后还有一段实时流可观察。
   if (options.pretextSlowTurn) return { file: 't023-pretext-slow', paceMs: 400 };
   if (options.codeBlock) return { file: 'tool-code' };
-  if (options.t013Process) return { file: 'tool-process' };
   if (options.toolCards) return { file: 'tool-cards' };
-  if (options.t013Interrupted) return { file: 'tool-interrupted', paceMs: 800 };
+  // 只保留 Kind 现有工具（read/glob/grep）：T030.2a 收窄后 Kind 没有 write/edit/bash。
+  if (options.t013Interrupted) return { file: 'tool-interrupted-legal', paceMs: 800 };
   if (options.canvas) {
     // T015.5：streaming 把 canvas 的参数拆成几段慢慢流（页面画「正在画 · 标题」）；
     // errors 是三个错误触发按钮的画布。
@@ -76,7 +76,10 @@ function startReplay(
   // 双会话（Kind + ThinAgent）按请求体各回各的脚本；路由文件里帧间隔逐条给。
   const routeFile =
     routesFile === undefined
-      ? (restartRouteFile(options) ?? t030RouteFile(options) ?? taskResultRouteFile(options))
+      ? (restartRouteFile(options) ??
+        t030RouteFile(options) ??
+        t013RouteFile(options) ??
+        taskResultRouteFile(options))
       : routesFile;
   const args: string[] = [];
   if (routeFile) {
@@ -179,8 +182,9 @@ export interface FixtureOptions {
   pathsTurn?: boolean;
   /// T013.6：最终回答里带一个代码块（复制按钮用）。
   codeBlock?: boolean;
-  /// T013.5：一轮里 write/apply_patch/bash 三个工具 + 最终文本（工作过程页的卡片用）。
-  t013Process?: boolean;
+  /// T013.5 修复：经写任务 ThinAgent 产生 write/edit/bash + task_report 一轮（工作过程页的
+  /// 卡片用）。T030.2a 收窄后 Kind 没有写/改/跑命令，过程只能由 ThinAgent 合法产生。
+  t013ProcessTask?: boolean;
   /// T017.3：一轮里 glob + 一个不认识的工具（搜索卡与通用输入/输出卡用）。
   toolCards?: boolean;
   /// T013.5：工具做完后被停下的一轮（工作过程页的「已停止」）。
@@ -318,6 +322,12 @@ function t030RouteFile(options: FixtureOptions): string | null {
   return 't030-routes-' + options.t030 + '.json';
 }
 
+/** T013.5 修复：写任务 ThinAgent 的合法生产回放（write/edit/bash + task_report）。 */
+function t013RouteFile(options: FixtureOptions): string | null {
+  if (!options.t013ProcessTask) return null;
+  return 't013-routes-process.json';
+}
+
 /** 接缝 5：假 DeepSeek 脚本回放 + 真 aios-dev serve（页面也由它同源托管）。 */
 export async function startKernelFixture(
   options: FixtureOptions = {},
@@ -367,7 +377,7 @@ export async function startKernelFixture(
   }
   if (
     options.toolTurn ||
-    options.t013Process ||
+    options.t013ProcessTask ||
     options.pretextTurn ||
     options.pretextSlowTurn ||
     options.taskResult === 'chat' ||
@@ -418,6 +428,13 @@ export async function startKernelFixture(
       { input: 'test-key' + String.fromCharCode(10), encoding: 'utf8' },
     );
     if (seed.status !== 0) throw new Error('seed keyring failed: ' + String(seed.stderr));
+  }
+  // T013.5 修复：写任务要有 bash 才能产生「运行命令」步骤；任务创建时冻结这份设置。
+  if (options.t013ProcessTask) {
+    await writeFile(
+      path.join(dataDir, 'settings.json'),
+      JSON.stringify({ exec: { bash: true } }),
+    );
   }
   // T016.5：坏文件要在 serve 起来之前就在；不预置 Keyring 时也照写（坏文件与连接无关）。
   if (options.settingsFault === 'corrupt') {
