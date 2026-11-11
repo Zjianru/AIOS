@@ -1206,8 +1206,14 @@ impl TaskRuntime {
             missing.push(missing_item("CodeMode（只读任务必须为否）"));
         }
         let expected: BTreeSet<&str> = THIN_TOOLS.into_iter().collect();
+        // T028.4 加 task_handback 之前受理的任务冻结的是 8 件；升级后要能接着做，
+        // 不因为少这一件新加的工具就判任务包缺项。新任务仍按 9 件冻结。
+        let legacy: BTreeSet<&str> = THIN_TOOLS
+            .into_iter()
+            .filter(|name| *name != "task_handback")
+            .collect();
         let actual: BTreeSet<&str> = task.tools.iter().map(String::as_str).collect();
-        if actual != expected {
+        if actual != expected && actual != legacy {
             missing.push(missing_item("工具名单（不是只读调查的 9 件）"));
         }
         if task.model.connection.trim().is_empty()
