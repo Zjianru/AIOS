@@ -220,6 +220,18 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   // T013.8：会话 id 就绪后读一次草稿（读不出当空）。
   useEffect(() => {
     if (!draftScope || draftLoadedRef.current === draftScope) return;
+    // T028.5：草稿作用域换了（任务 A → 任务 B）先清空，别把上一个任务的草稿带过去；
+    // 第一次拿到会话 id（Kind）不算换作用域，用户已经打的字要留着。
+    if (draftLoadedRef.current !== null) {
+      setText('');
+      setQuotes([]);
+      setPastes([]);
+      setAttachments([]);
+      setFromCanvas(null);
+      setQuote('');
+      touchedRef.current = false;
+      changedDuringSendRef.current = false;
+    }
     draftLoadedRef.current = draftScope;
     if (touchedRef.current) return; // ready 前已经输入：以用户输入为准，草稿不覆盖
     try {

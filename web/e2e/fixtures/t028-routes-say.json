@@ -11,8 +11,8 @@
     },
     {
       "contains": "\"name\":\"task_report\"",
-      "file": "t024-thin-chat.jsonl",
-      "paceMs": 1800
+      "file": "t028-thin-say.jsonl",
+      "paceMs": 2000
     }
   ]
 }

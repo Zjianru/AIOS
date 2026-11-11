@@ -61,8 +61,8 @@ async function openTaskChat(page: Page, fixture: KernelFixture, taskId: string) 
   return pane;
 }
 
-/** Kind 根会话里已经写下的模型回答条数（抄送不能叫醒 Kind 新开一轮）。 */
-async function kindAnswers(fixture: KernelFixture): Promise<number> {
+/** Kind 根会话里的轮数（抄送只用 inject，不能叫醒 Kind 开新的轮）。 */
+async function kindTurns(fixture: KernelFixture): Promise<number> {
   const root = JSON.parse(
     await readFile(path.join(fixture.dataDir, 'kind-root.json'), 'utf8'),
   ) as { sessionId: string };
@@ -70,7 +70,7 @@ async function kindAnswers(fixture: KernelFixture): Promise<number> {
     path.join(fixture.dataDir, 'sessions', root.sessionId + '.jsonl'),
     'utf8',
   );
-  return text.split('"type":"assistant/message"').length - 1;
+  return text.split('"type":"turn/start"').length - 1;
 }
 
 async function launchTask(page: Page, fixture: KernelFixture, request: Parameters<typeof apiPost>[0]) {
@@ -98,11 +98,13 @@ test('在跑时在任务对话里说话：任务出现用户气泡，Kind 出现
     await expect(pane.locator('[data-kind="task-footer"]')).toContainText(
       '你在这里说的直接给 ThinAgent，同时抄送 Kind（不叫醒它）。',
     );
-    const before = await kindAnswers(fixture);
+    const before = await kindTurns(fixture);
 
     const said = '先只看新闻归档，别看测试目录';
     await pane.locator('[data-kind="composer-input"]').fill(said);
-    await pane.locator('[data-kind="task-send"]').click();
+    // 在跑时输入框旁是「停下这一轮」，发送走 Enter（和 Kind 对话一样）。
+    await expect(pane.locator('[data-kind="task-stop-turn"]')).toBeVisible();
+    await pane.locator('[data-kind="composer-input"]').press('Enter');
 
     // 任务的第 1 次 Attempt 不变；用户气泡是正面断言。
     await expect(
@@ -118,7 +120,7 @@ test('在跑时在任务对话里说话：任务出现用户气泡，Kind 出现
     await expect(cc).toContainText(said);
     await expect(cc).toContainText('抄送 Kind，不叫醒它');
     await expect(page.locator('[data-kind="task-cc"] [data-kind="user-bubble"]')).toHaveCount(0);
-    expect(await kindAnswers(fixture), '抄送不能叫醒 Kind').toBe(before);
+    expect(await kindTurns(fixture), '抄送不能叫醒 Kind').toBe(before);
 
     // 点抄送行回到任务对话。
     await cc.locator('[data-kind="task-cc-open"]').click();
@@ -162,7 +164,7 @@ test('停了以后说「接着做吧」：第 2 次 Attempt，原会话接着做
       timeout: 30_000,
     });
     await expect(page.locator('[data-kind="task-result"]').last()).toContainText(
-      '照你说的补上了',
+      '照你在任务对话里说的补上了',
     );
   } finally {
     await fixture.close();

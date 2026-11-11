@@ -242,6 +242,10 @@ export function TaskChatScene() {
   const loadingOlderRef = useRef(false);
   const restoreRef = useRef<{ height: number; top: number } | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
+  /** 主动断开时等 onclose（放开服务端的会话写者）。 */
+  const socketClosedRef = useRef<(() => void) | null>(null);
+  /** 当前的连接函数（停下来以后说一句话：先断、发完再接）。 */
+  const connectRef = useRef<(() => void) | null>(null);
   const lastSeqRef = useRef(0);
   const liveTurnRef = useRef<number | null>(null);
   const streamTextRef = useRef('');
@@ -337,9 +341,16 @@ export function TaskChatScene() {
 
     const connect = () => {
       if (disposed) return;
-      reconnectTimer = null;
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       let socket: WebSocket;
       socket = connectTaskSession(taskId, lastSeqRef.current, onFrame, () => {
+        // 主动断开时先放行等待的人（发送前要让服务端放开会话写者）。
+        const released = socketClosedRef.current;
+        socketClosedRef.current = null;
+        released?.();
         // 离开/换任务时旧 socket 的关闭不算断线；只有当前连接断了才重新跟。
         if (disposed || socketRef.current !== socket) return;
         socketRef.current = null;
@@ -348,6 +359,7 @@ export function TaskChatScene() {
         reconnectTimer = setTimeout(connect, delay);
       });
       socketRef.current = socket;
+      connectRef.current = connect;
     };
 
     void taskRead(taskId)
@@ -378,9 +390,13 @@ export function TaskChatScene() {
     return () => {
       disposed = true;
       if (reconnectTimer !== null) clearTimeout(reconnectTimer);
+      connectRef.current = null;
       const socket = socketRef.current;
       socketRef.current = null;
       socket?.close();
+      const released = socketClosedRef.current;
+      socketClosedRef.current = null;
+      released?.();
       useStreamStore.setState({ turnId: null, itemId: null, text: '' });
     };
   }, [taskId]);
@@ -457,12 +473,75 @@ export function TaskChatScene() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [task?.running, taskId]);
 
+  /**
+   * T028.5：停下来以后说一句话之前，先放掉任务对话的连接。
+   *
+   * 任务在跑时页面这条 WS 订阅着这次 Attempt 的会话主机；Attempt 结束后服务端已经把
+   * 它摘出在跑表，但连接还握着一个 Arc，会话写者不放开——这时「接着做」要在原会话
+   * 开新 Attempt，会被写者挡住。先断开、发完再按 lastSeq 重新接上。
+   */
+  function releaseTaskSocket(): Promise<void> {
+    const socket = socketRef.current;
+    if (!socket) return Promise.resolve();
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (socketClosedRef.current === finish) socketClosedRef.current = null;
+        resolve();
+      };
+      socketClosedRef.current = finish;
+      // 等不到关闭也不卡住用户；服务端接着做时自己还会短暂等写者。
+      setTimeout(finish, 500);
+      socketRef.current = null;
+      try {
+        socket.close();
+      } catch {
+        finish();
+      }
+    });
+  }
+
+  /**
+   * T028.5：新 Attempt 起来以后再接回实时帧。
+   *
+   * 发完立刻重连会撞上「Attempt 还没登记在跑表」：服务端只给一份只读快照、
+   * 不出 live 帧，新 Attempt 的过程就永远不进来。这里短轮询 TaskRead 直到看见
+   * running（或超时），顺带把轮询读到的日志补进列表，再接 WS。
+   */
+  async function reopenTaskStream(token: number) {
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      if (token !== requestToken.current) return;
+      try {
+        const response = await taskRead(taskId);
+        if (token !== requestToken.current) return;
+        setTask(response.task);
+        const fresh = response.events.filter((event) => event.seq > lastSeqRef.current);
+        if (fresh.length > 0) {
+          lastSeqRef.current = fresh[fresh.length - 1].seq;
+          setEvents((current) => current.concat(fresh));
+        }
+        if (response.task.running) break;
+      } catch {
+        // 读不到就下一轮再试；超时后照样重新接连接。
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    if (token !== requestToken.current) return;
+    connectRef.current?.();
+  }
+
   /** T028.5：说一句（Composer 的发送；成功才清草稿）。 */
   async function say(text: string) {
     if (!taskId || saying) return false;
     setSaying(true);
     try {
+      // 停了/失败了的任务：先放开这条连接，服务端才能重新打开同一个会话。
+      if (!task?.running) await releaseTaskSocket();
       const response = await taskSay(taskId, text);
+      // 说了以后（尤其新 Attempt）等它真的跑起来再接回实时帧。
+      if (!socketRef.current) void reopenTaskStream(requestToken.current);
       setQueued((current) => current.concat({ inputId: response.inputId, text }));
       if (typeof response.newAttempt === 'number') {
         const attempt = response.newAttempt;

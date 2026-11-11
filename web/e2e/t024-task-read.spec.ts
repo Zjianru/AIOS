@@ -122,10 +122,11 @@ test('结果卡打开任务对话：工具调用和最后回答都在，刷新�
     await reportRow.locator('button').first().click();
     await expect(pane.getByText(/判重用的是原始链接/)).toBeVisible();
 
-    // 只读：没有输入框、发送、停止。
-    await expect(page.locator('[data-kind="composer"]')).toHaveCount(0);
-    await expect(page.locator('[data-kind="send"]')).toHaveCount(0);
-    await expect(page.locator('[data-kind="stop"]')).toHaveCount(0);
+    // T028.5：任务对话现在有输入框（复用 Kind 的 Composer）；没在跑时没有「停下这一轮」。
+    await expect(page.locator('[data-kind="composer"]')).toHaveCount(1);
+    await expect(page.locator('[data-kind="task-send"]')).toHaveCount(1);
+    await expect(page.locator('[data-kind="task-stop-turn"]')).toHaveCount(0);
+    await expect(page.locator('[data-kind="task-footer"]')).toBeVisible();
 
     // 刷新浏览器：同一个路由重新拿一次 TaskRead，内容还在。
     await page.reload();
@@ -157,8 +158,8 @@ test('任务没在跑时静态可看：waiting 的最后一段回答', async ({ 
     await expect(pane.locator('[data-kind="assistant-answer"]').last()).toContainText(
       '我还在查，别急。',
     );
-    await expect(page.locator('[data-kind="composer"]')).toHaveCount(0);
-    await expect(page.locator('[data-kind="stop"]')).toHaveCount(0);
+    await expect(page.locator('[data-kind="composer"]')).toHaveCount(1);
+    await expect(page.locator('[data-kind="task-stop-turn"]')).toHaveCount(0);
   } finally {
     await fixture.close();
   }
