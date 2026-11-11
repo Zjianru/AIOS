@@ -42,19 +42,47 @@ function userEvent(text) {
   });
 }
 
-function assistantEvent(text) {
+function assistantEvent(text, extraContent = [], options = {}) {
+  const toolBlocks = extraContent.filter((block) => block.type === 'tool-call');
   return event('assistant/message', {
     message: {
       id: 'msg-assistant-' + seq,
       role: 'assistant',
       source: { kind: 'model', provider: 'deepseek', model: 'deepseek-flash' },
-      content: [{ type: 'text', text }],
+      content: [{ type: 'text', text }, ...extraContent],
     },
     stream: [
       { type: 'chunk', chunk: { type: 'block-start', index: 0, blockType: 'text' } },
       { type: 'text-chunks', time0: 1, index: 0, dt: [], texts: [text] },
+      ...toolBlocks.map((block, index) => ({
+        type: 'tool-call-chunks',
+        time0: 1,
+        index: index + 1,
+        dt: [],
+        id: block.id,
+        name: block.name,
+        args: [block.arguments],
+      })),
     ],
     usage: { inputTokens: 10, outputTokens: 4 },
+    ...options,
+  });
+}
+
+function toolCallEvent(callId, name, args) {
+  return event('tool/call', {
+    call_id: callId,
+    name,
+    arguments: JSON.stringify(args),
+  });
+}
+
+function toolResultEvent(callId, output) {
+  return event('tool/result', {
+    message: {
+      toolCallId: callId,
+      content: [{ type: 'text', text: output }],
+    },
   });
 }
 
@@ -109,6 +137,99 @@ function assistantEvent(text) {
   assert.deepEqual(views[0].taskResults, []);
   assert.deepEqual(views[0].says, []);
   assert.equal(processStepsOf(views[0]).length, 0);
+}
+
+// —— 故事 3：工具前说明进过程，在该工具步之前，回答区没有它 ——
+{
+  seq = 0;
+  const say1 = '我先看一下 hello.txt。';
+  const say2 = '再看一下第二个文件。';
+  const views = deriveTurnViews([
+    event('turn/start', {}),
+    userEvent('帮我看两个文件'),
+    assistantEvent(say1, [
+      { type: 'tool-call', id: 'call-1', name: 'read', arguments: '{"file_path":"hello.txt"}' },
+    ]),
+    toolCallEvent('call-1', 'read', { file_path: 'hello.txt' }),
+    toolResultEvent('call-1', 'hello from fixture'),
+    assistantEvent(say2, [
+      { type: 'tool-call', id: 'call-2', name: 'glob', arguments: '{"pattern":"*.txt"}' },
+    ]),
+    toolCallEvent('call-2', 'glob', { pattern: '*.txt' }),
+    toolResultEvent('call-2', 'a.txt'),
+    assistantEvent('看完了，两个文件都在。'),
+    event('turn/end', { reason: { kind: 'completed' } }),
+  ]);
+  assert.equal(views.length, 1);
+  const view = views[0];
+  assert.deepEqual(
+    view.says.map((say) => say.text),
+    [say1, say2],
+    '两句工具前说明按日志先后都留下',
+  );
+  assert.equal(view.answer.text, '看完了，两个文件都在。', '回答区只有最终回答');
+  assert.ok(!view.answer.text.includes(say1), '工具前说明不进回答区');
+  const steps = processStepsOf(view);
+  assert.deepEqual(
+    steps.map((step) => (step.kind === 'say' ? 'say:' + step.text : step.kind + ':' + step.name)),
+    ['say:' + say1, 'tool:read', 'say:' + say2, 'tool:glob'],
+    '过程里 say 步按先后插在各自工具步前面',
+  );
+}
+
+// —— 取消收尾：tool-call 块被摘掉、只留 interrupted 的文字，同样进过程 ——
+{
+  seq = 0;
+  const say = '我先确认一下你系统里对卡片的定义。';
+  const views = deriveTurnViews([
+    event('turn/start', {}),
+    userEvent('你现在都能做什么卡片'),
+    assistantEvent(say, [], {
+      interrupted: true,
+      stream: [
+        { type: 'chunk', chunk: { type: 'block-start', index: 0, blockType: 'text' } },
+        { type: 'text-chunks', time0: 1, index: 0, dt: [], texts: [say] },
+        {
+          type: 'tool-call-chunks',
+          time0: 1,
+          index: 1,
+          dt: [],
+          id: 'call-1',
+          name: 'read',
+          args: ['{"file_path":"hello.txt"}'],
+        },
+      ],
+    }),
+    event('turn/end', { reason: { kind: 'aborted' } }),
+  ]);
+  assert.equal(views.length, 1);
+  const view = views[0];
+  assert.equal(view.status, 'interrupted');
+  assert.deepEqual(view.says.map((item) => item.text), [say], '取消收尾的工具前说明也进过程');
+  assert.equal(view.answer, null, '回答区不显示被丢掉的那句');
+  assert.deepEqual(
+    processStepsOf(view).map((step) => step.kind),
+    ['say'],
+  );
+}
+
+// —— 只有文字的中断（被屏蔽打断的半截回答）照旧留在回答区，不当成工具前说明 ——
+{
+  seq = 0;
+  const views = deriveTurnViews([
+    event('turn/start', {}),
+    userEvent('写一段话'),
+    assistantEvent('我只写了一半', [], {
+      interrupted: true,
+      stream: [
+        { type: 'chunk', chunk: { type: 'block-start', index: 0, blockType: 'text' } },
+        { type: 'text-chunks', time0: 1, index: 0, dt: [], texts: ['我只写了一半'] },
+      ],
+    }),
+    event('turn/end', { reason: { kind: 'aborted' } }),
+  ]);
+  assert.equal(views[0].says.length, 0);
+  assert.equal(views[0].answer.text, '我只写了一半');
 }
 
 console.log('turn-views.test.mjs: all assertions passed');
