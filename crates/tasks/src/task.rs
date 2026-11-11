@@ -221,6 +221,8 @@ pub enum AttemptTrigger {
     UserMessage,
     /// 重启打断后，用户确认接续。
     Resume,
+    /// 用户在 Kind 对话里同意改要求（task_update）：原会话开新 Attempt。
+    RequirementChanged,
 }
 
 /// 一条用户输入；来源目前只有用户本人。

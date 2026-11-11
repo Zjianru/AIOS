@@ -846,35 +846,50 @@ impl Fixture {
     /// 备用回复必须在派发之前进队列：受理之后 launch 立刻开跑，ThinAgent 的 waiting relay
     /// 可能赶在测试推队列之前 Steer 进 Kind，假模型就会收到没有脚本的请求。
     async fn accept_with_kind_replies(&self, pause: bool, spares: usize) -> Task {
+        let args = serde_json::json!({
+            "title": "查一下",
+            "requirement": "找答案",
+            "dod": "有答案"
+        });
+        self.accept_args(pause, args, spares).await
+    }
+
+    /// 用给定的 task_accept 参数受理一个任务（写任务带 write_scope）。
+    async fn accept_args(&self, pause: bool, args: serde_json::Value, spares: usize) -> Task {
         if pause {
             self.host
                 .task_runtime()
                 .expect("runtime")
                 .set_pump_paused(true);
         }
-        let args = serde_json::json!({
-            "title": "查一下",
-            "requirement": "找答案",
-            "dod": "有答案"
-        })
-        .to_string();
         self.router.push_kind(crate::common::tool_use_sse(
             0,
             "call-accept",
             "task_accept",
-            &args,
+            &args.to_string(),
         ));
         self.router.push_kind(crate::common::text_sse("已派出"));
         for _ in 0..spares {
             self.router.push_kind(crate::common::text_sse("收到"));
         }
         self.host
-            .dispatch(Call::Send(send(&self.host, "kind-1", "查一下")))
+            .dispatch(Call::Send(send(&self.host, "kind-1", "改一下")))
             .await
             .expect("发送");
         crate::common::wait_turns(&self.host, self.data(), 1).await;
         let store = tasks_store(self.data());
         one_task(&store)
+    }
+
+    /// 受理一个写任务；write_scope 是相对任务 cwd 的一个路径。
+    async fn accept_write(&self, pause: bool, write_scope: &str) -> Task {
+        let args = serde_json::json!({
+            "title": "改一下判重",
+            "requirement": "把重复判断改成按 url",
+            "dod": "同一个 url 只留一条",
+            "write_scope": write_scope
+        });
+        self.accept_args(pause, args, 0).await
     }
 }
 
@@ -1423,94 +1438,6 @@ async fn a_relay_interrupted_before_kind_append_is_delivered_once_after_restart(
             .unwrap()
     );
     drop(host);
-}
-
-#[tokio::test]
-async fn kind_refuses_the_four_waits_and_runs_a_short_command() {
-    let fixture = Fixture::new().await;
-    let calls = [
-        serde_json::json!({"description": "wait", "command": "sleep 5", "timeoutMs": 20000})
-            .to_string(),
-        serde_json::json!({"description": "echo", "command": "echo sleep 5", "timeoutMs": 20000})
-            .to_string(),
-        serde_json::json!({"description": "long", "command": "echo hi", "timeoutMs": 30001})
-            .to_string(),
-        serde_json::json!({"description": "default", "command": "echo hi"}).to_string(),
-        serde_json::json!({"job_id": "job-1", "wait": true}).to_string(),
-    ];
-    for (index, args) in calls.iter().enumerate() {
-        fixture.router.push_kind(crate::common::tool_use_sse(
-            index,
-            &format!("call-{index}"),
-            if index == 4 { "job_output" } else { "bash" },
-            args,
-        ));
-    }
-    fixture.router.push_kind(crate::common::text_sse("跑完了"));
-    fixture
-        .host
-        .dispatch(Call::Send(send(&fixture.host, "kind-1", "跑几个命令")))
-        .await
-        .expect("发送");
-    crate::common::wait_turns(&fixture.host, fixture.data(), 1).await;
-
-    let events = crate::common::read_root_events(fixture.data());
-    let mut order = Vec::new();
-    let mut results = std::collections::HashMap::new();
-    for (index, event) in events.iter().enumerate() {
-        match &event.kind {
-            session::EventKind::ToolCall { call_id, .. } => {
-                order.push(("call", call_id.clone(), index));
-            }
-            session::EventKind::ToolResult { message, .. } => {
-                order.push((
-                    "result",
-                    message.tool_call_id.clone().unwrap_or_default(),
-                    index,
-                ));
-                let text: String = message
-                    .content
-                    .iter()
-                    .filter_map(model::ContentBlock::as_text)
-                    .collect();
-                results.insert(
-                    message.tool_call_id.clone().unwrap(),
-                    (text, message.is_error),
-                );
-            }
-            _ => {}
-        }
-    }
-    for call_id in ["call-0", "call-1", "call-2", "call-3", "call-4"] {
-        let call = order
-            .iter()
-            .find(|(kind, id, _)| *kind == "call" && id == call_id)
-            .expect("有 tool/call");
-        let result = order
-            .iter()
-            .find(|(kind, id, _)| *kind == "result" && id == call_id)
-            .expect("有 tool/result");
-        assert!(call.2 < result.2, "{call_id} 先记调用再记结果");
-    }
-    for call_id in ["call-0", "call-2", "call-4"] {
-        let (text, is_error) = &results[call_id];
-        assert!(is_error.unwrap_or(false), "{call_id}");
-        assert_eq!(
-            text.strip_prefix("Error: ").unwrap_or(text),
-            agent::NO_WAIT,
-            "{call_id} 的拒绝语逐字一致"
-        );
-    }
-    let (text, is_error) = &results["call-3"];
-    assert!(is_error.unwrap_or(false));
-    assert_eq!(
-        text.strip_prefix("Error: ").unwrap_or(text),
-        agent::DEFAULT_WAIT,
-        "没给超时也没转后台的提示"
-    );
-    let (text, is_error) = &results["call-1"];
-    assert!(!is_error.unwrap_or(false), "echo sleep 不误判：{text}");
-    assert!(text.contains("sleep 5"), "{text}");
 }
 
 #[tokio::test]
@@ -5592,4 +5519,342 @@ async fn a_second_restart_reports_only_the_tasks_its_scan_interrupted() {
     assert_eq!(options.len(), 1, "{options:?}");
     assert_eq!(options[0]["id"], second_id.as_str());
     drop(host);
+}
+
+/// 写任务：写入范围落库、工具名单正好 11 件（+write/edit）；task_accept 的 schema
+/// 有 write_scope/worktree，没有 bash 字段（bash 开关归另一张票）。
+#[tokio::test]
+async fn a_write_task_freezes_the_scope_and_eleven_tools() {
+    let fixture = Fixture::new().await;
+    let target = fixture.cwd.path().join("target.py");
+    std::fs::write(&target, "old\n").unwrap();
+    let task = fixture.accept_write(true, "target.py").await;
+
+    let scope = std::fs::canonicalize(&target).unwrap();
+    assert_eq!(task.write_scope.as_deref(), Some(scope.as_path()));
+    assert_eq!(task.requirement_version(), 1);
+    assert_eq!(
+        task.versions[0].write_scope.as_deref(),
+        Some(scope.as_path()),
+        "第一条要求版本带着写入范围"
+    );
+
+    let mut tools = task.tools.clone();
+    tools.sort();
+    let mut expected = vec![
+        "edit",
+        "glob",
+        "grep",
+        "read",
+        "skill",
+        "task_handback",
+        "task_report",
+        "todo_write",
+        "web_fetch",
+        "web_search",
+        "write",
+    ];
+    expected.sort();
+    assert_eq!(tools, expected, "写任务冻结 11 件工具");
+
+    let kind_body = fixture.router.bodies(false).remove(0);
+    let request: Value = serde_json::from_str(&kind_body).unwrap();
+    let accept = request["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "task_accept")
+        .expect("task_accept 的工具定义");
+    let properties = &accept["parameters"]["properties"];
+    assert!(properties.get("write_scope").is_some(), "{properties}");
+    assert!(properties.get("worktree").is_some(), "{properties}");
+    assert!(
+        properties.get("bash").is_none(),
+        "bash 不能成为 task_accept 字段：{properties}"
+    );
+}
+
+/// Kind 的工具面：能读、能派/问/停/改任务，没有写、改、跑命令和三件后台任务。
+#[tokio::test]
+async fn kind_has_no_write_shell_or_background_tools() {
+    let fixture = Fixture::new().await;
+    fixture.router.push_kind(crate::common::text_sse("好"));
+    fixture
+        .host
+        .dispatch(Call::Send(send(
+            &fixture.host,
+            "kind-1",
+            "看一下你能做什么",
+        )))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&fixture.host, fixture.data(), 1).await;
+
+    let body = fixture.router.bodies(false).remove(0);
+    let names = tool_names(&body);
+    for banned in [
+        "write",
+        "edit",
+        "apply_patch",
+        "bash",
+        "job_output",
+        "job_list",
+        "job_kill",
+    ] {
+        assert!(
+            !names.iter().any(|name| name == banned),
+            "Kind 不该有 {banned}：{names:?}"
+        );
+    }
+    for required in [
+        "read",
+        "glob",
+        "grep",
+        "skill",
+        "task_accept",
+        "task_status",
+        "task_stop",
+        "task_update",
+        "aios_query",
+        "propose_action",
+        "ask_user_question",
+        "canvas",
+    ] {
+        assert!(
+            names.iter().any(|name| name == required),
+            "Kind 要有 {required}：{names:?}"
+        );
+    }
+}
+
+/// 写入范围外的写被拒：错误码和原文固定、文件内容与 mtime 都没变，之后能交回 Kind。
+#[tokio::test]
+async fn an_out_of_scope_write_is_refused_unchanged_and_hands_back() {
+    let fixture = Fixture::new().await;
+    let target = fixture.cwd.path().join("target.py");
+    let outside = fixture.cwd.path().join("outside.py");
+    std::fs::write(&target, "inside\n").unwrap();
+    std::fs::write(&outside, "outside\n").unwrap();
+    let outside_mtime = std::fs::metadata(&outside).unwrap().modified().unwrap();
+
+    fixture.router.push_thin(crate::common::tool_use_sse(
+        1,
+        "call-write",
+        "write",
+        &serde_json::json!({"file_path": "outside.py", "content": "changed\n"}).to_string(),
+    ));
+    fixture.router.push_thin(crate::common::tool_use_sse(
+        2,
+        "call-handback",
+        "task_handback",
+        &serde_json::json!({"reason": "用户要改写入范围外的文件"}).to_string(),
+    ));
+    fixture.router.push_thin(crate::common::text_sse("交回"));
+    let task = fixture.accept_write(false, "target.py").await;
+    wait_until("交回 relay", || {
+        !relay_messages(&crate::common::read_root_events(fixture.data())).is_empty()
+    })
+    .await;
+
+    let store = tasks_store(fixture.data());
+    let task_row = store.task(&task.id).unwrap().unwrap();
+    let attempt = task_row.latest_attempt().expect("Attempt").clone();
+    let events = thin_events(fixture.data(), &attempt);
+    let (text, error) = tool_result(&events, "call-write");
+    let scope = std::fs::canonicalize(&target).unwrap();
+    assert_eq!(error, Some(true), "{text}");
+    assert_eq!(
+        text,
+        format!(
+            "Error: 这个路径不在写入范围里（写入范围：{}）。要改范围外的，调 task_handback。",
+            scope.display()
+        ),
+        "拒绝原文固定"
+    );
+    let code = events.iter().find_map(|event| match &event.kind {
+        session::EventKind::ToolResult {
+            message: message,
+            error,
+            ..
+        } if message.tool_call_id.as_deref() == Some("call-write") => {
+            error.as_ref().map(|error| error.code.clone())
+        }
+        _ => None,
+    });
+    assert_eq!(code.as_deref(), Some("WRITE_OUT_OF_SCOPE"), "拒绝码固定");
+    assert_eq!(
+        std::fs::read_to_string(&outside).unwrap(),
+        "outside\n",
+        "越界写不能改文件内容"
+    );
+    assert_eq!(
+        std::fs::metadata(&outside).unwrap().modified().unwrap(),
+        outside_mtime,
+        "越界写连 mtime 都不能动"
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "inside\n");
+
+    let relays = relay_messages(&crate::common::read_root_events(fixture.data()));
+    assert_eq!(relays.len(), 1, "{relays:?}");
+    assert_eq!(relays[0].1["state"], "blocked");
+    assert_eq!(relays[0].1["origin"], "agent");
+    assert_eq!(relays[0].1["summary"], "用户要改写入范围外的文件");
+    assert_eq!(relays[0].1["question"], "这超出了任务范围，要不要改任务？");
+    assert_eq!(
+        attempt.end,
+        Some(AttemptEnd::Reported),
+        "交回结束这个 Attempt"
+    );
+}
+
+/// 越界交回后，用户在 Kind 对话里同意改范围：task_update 落第 2 版要求，
+/// 原会话开新 Attempt（trigger requirement_changed），第一条输入写明新范围，新范围能写。
+#[tokio::test]
+async fn task_update_records_a_new_version_and_resumes_with_the_new_scope() {
+    let fixture = Fixture::new().await;
+    let target = fixture.cwd.path().join("target.py");
+    let outside = fixture.cwd.path().join("outside.py");
+    std::fs::write(&target, "inside\n").unwrap();
+
+    // 第一个 Attempt：越界写被拒，交回。
+    fixture.router.push_thin(crate::common::tool_use_sse(
+        1,
+        "call-write-1",
+        "write",
+        &serde_json::json!({"file_path": "outside.py", "content": "changed\n"}).to_string(),
+    ));
+    fixture.router.push_thin(crate::common::tool_use_sse(
+        2,
+        "call-handback",
+        "task_handback",
+        &serde_json::json!({"reason": "outside.py 不在写入范围里"}).to_string(),
+    ));
+    fixture.router.push_thin(crate::common::text_sse("交回"));
+    // 第二个 Attempt：范围扩大后写成功、报 ready。
+    fixture.router.push_thin(crate::common::tool_use_sse(
+        3,
+        "call-write-2",
+        "write",
+        &serde_json::json!({"file_path": "outside.py", "content": "changed\n"}).to_string(),
+    ));
+    fixture
+        .router
+        .push_thin(report_sse(4, "call-report", "ready", "改完了", None));
+    fixture.router.push_thin(crate::common::text_sse("done"));
+
+    let task = fixture.accept_write(true, "target.py").await;
+    // 交回 relay 会叫醒 Kind 一轮；先给它一条备用回复。
+    fixture.router.push_kind(crate::common::text_sse("收到卡"));
+    fixture
+        .host
+        .task_runtime()
+        .expect("runtime")
+        .set_pump_paused(false);
+    wait_until("交回 relay", || {
+        !relay_messages(&crate::common::read_root_events(fixture.data())).is_empty()
+    })
+    .await;
+    crate::common::wait_turns(&fixture.host, fixture.data(), 2).await;
+
+    let scope = std::fs::canonicalize(&outside).unwrap();
+    let update_args = serde_json::json!({
+        "task_id": task.id.as_str(),
+        "write_scope": "outside.py"
+    })
+    .to_string();
+    fixture.router.push_kind(crate::common::tool_use_sse(
+        5,
+        "call-update",
+        "task_update",
+        &update_args,
+    ));
+    fixture
+        .router
+        .push_kind(crate::common::text_sse("好，范围扩大了"));
+    // 新 Attempt 报 ready 之后还会叫醒 Kind 一轮。
+    fixture
+        .router
+        .push_kind(crate::common::text_sse("收到结果"));
+    fixture
+        .host
+        .dispatch(Call::Send(send(
+            &fixture.host,
+            "kind-2",
+            "我同意把写入范围扩大到 outside.py",
+        )))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&fixture.host, fixture.data(), 3).await;
+
+    let store = tasks_store(fixture.data());
+    wait_until("第二个 Attempt 报 ready", || {
+        store.task(&task.id).ok().flatten().is_some_and(|task| {
+            task.requirement_version() == 2
+                && attempt_count(&task) == 2
+                && task.latest_report().map(|report| report.state) == Some(ReportState::Ready)
+        })
+    })
+    .await;
+
+    let updated = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(updated.versions.len(), 2, "{:?}", updated.versions);
+    assert_eq!(
+        updated.versions[1].write_scope.as_deref(),
+        Some(scope.as_path())
+    );
+    assert_eq!(
+        updated.versions[1].source,
+        tasks::VersionSource::UserAgreed,
+        "第 2 版来自用户在 Kind 对话里的同意"
+    );
+    let first = updated.runs[0].attempts[0].clone();
+    let second = updated.latest_attempt().expect("新 Attempt").clone();
+    assert_eq!(second.id.0, first.id.0 + 1);
+    assert_eq!(second.trigger, tasks::AttemptTrigger::RequirementChanged);
+    assert_eq!(
+        second.conversation, first.conversation,
+        "还在原任务会话里接着做"
+    );
+
+    let events = thin_events(fixture.data(), &second);
+    let request_id = format!("task-update:{}:{}", updated.id, second.id);
+    let note = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            session::EventKind::UserMessage { message, .. } => match &message.source {
+                model::MessageSource::User { rpc_id: Some(id) } if id == &request_id => Some(
+                    message
+                        .content
+                        .iter()
+                        .filter_map(model::ContentBlock::as_text)
+                        .collect::<String>(),
+                ),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("新 Attempt 的第一条输入");
+    assert!(
+        note.contains(&scope.display().to_string()),
+        "第一条输入写明新范围：{note}"
+    );
+    assert!(note.contains("写入范围"), "{note}");
+
+    let (write_text, write_error) = tool_result(&events, "call-write-2");
+    assert_eq!(write_error, None, "{write_text}");
+    assert_eq!(
+        std::fs::read_to_string(&outside).unwrap(),
+        "changed\n",
+        "新范围里的文件写成了"
+    );
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "inside\n");
+
+    let root_events = crate::common::read_root_events(fixture.data());
+    let (update_text, update_error) = tool_result(&root_events, "call-update");
+    assert_eq!(update_error, None, "{update_text}");
+    assert!(update_text.contains("第 2 版"), "{update_text}");
+    assert!(
+        update_text.contains(&scope.display().to_string()),
+        "{update_text}"
+    );
 }

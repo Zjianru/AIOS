@@ -403,6 +403,35 @@ fn bundled_aios_settings_body_covers_the_four_rules() {
     }
 }
 
+/// aios-tasks 的 D85 段：点名的直接派；推测或找不到的先问、给一个具体路径；
+/// Kind 对话所在的目录不自动当写入范围。
+#[test]
+fn bundled_aios_tasks_requires_a_concrete_path_before_dispatching_a_write_task() {
+    let cwd = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let skill = tools::load_skill(
+        cwd.path(),
+        data_dir.path(),
+        &[],
+        tools::bundled_skills(),
+        "aios-tasks",
+    )
+    .expect("加载自带 aios-tasks");
+    for needle in [
+        "named the file or directory",
+        "ask the user first",
+        "one concrete path",
+        "is not the write scope",
+        "task_update",
+    ] {
+        assert!(
+            skill.body.contains(needle),
+            "正文要写到 {needle}：\n{}",
+            skill.body
+        );
+    }
+}
+
 /// 用户显式通道只认 user-invocable，不看 disable-model-invocation
 /// （DSH：这是隐藏 skill 的唯一入口）；未知名字静默返回 None。
 #[test]
