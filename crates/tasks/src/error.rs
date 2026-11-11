@@ -53,6 +53,8 @@ pub enum TaskError {
     IncompleteModel(&'static str),
     #[error("任务包缺项描述不能为空")]
     EmptyMissing,
+    #[error("任务对话里的输入不能为空")]
+    EmptyInput,
     #[error("报告摘要不能为空")]
     EmptySummary,
     #[error("报告问题不能为空（没有问题时留空）")]
