@@ -56,18 +56,28 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   };
 }
 
-/** 起 aios-replay（打印一行 aios-replay: http://…）；每夹具一个进程。 */
+/** T029.3：重启接续夹具的初始路由文件（不含重启那一轮；测试拿到任务 id 后再生成完整路由）。 */
+function restartRouteFile(options: FixtureOptions): string | null {
+  if (!options.t029Restart) return null;
+  return 't029-routes-' + options.t029Restart + '.json';
+}
+
+/** 起 aios-replay（打印一行 aios-replay: http://…）；每夹具一个进程。
+ *
+ * T029.3：显式 routesFile 和 port 用于服务重启前换回放脚本（同一个端口，连接不用改）。
+ */
 function startReplay(
   options: FixtureOptions,
   replayFile?: string,
+  routesFile?: string | null,
 ): { child: ReturnType<typeof spawn>; url: Promise<string> } {
   const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
   const bin = process.env.AIOS_REPLAY_BIN ?? path.join(repoRoot, 'target/debug/aios-replay');
   // 双会话（Kind + ThinAgent）按请求体各回各的脚本；路由文件里帧间隔逐条给。
-  const routeFile = taskResultRouteFile(options);
+  const routeFile = routesFile === undefined ? (restartRouteFile(options) ?? taskResultRouteFile(options)) : routesFile;
   const args: string[] = [];
   if (routeFile) {
-    args.push('--routes', path.join(FIXTURE_DIR, routeFile));
+    args.push('--routes', path.isAbsolute(routeFile) ? routeFile : path.join(FIXTURE_DIR, routeFile));
   } else {
     const selection = replaySelection(options);
     args.push('--file', replayFile ?? path.join(FIXTURE_DIR, selection.file + '.jsonl'));
@@ -137,6 +147,9 @@ export interface KernelFixture {
   restoreProxy?: () => Promise<void>;
   /// T007 #1：页面开着时重启同一个端口的服务（新进程=新 cookie 钥匙，旧页面会话失效）。
   restart?: () => Promise<void>;
+  /// T029.3：再起一个假模型回放（新端口、新路由文件），返回新地址；老进程留着继续服务在跑的任务。
+  /// 测试把连接的 endpoint 换到新地址后再重启 serve——重启汇报的卡就能带真实任务 id。
+  switchReplay?: (routesFile: string) => Promise<string>;
   close(): Promise<void>;
 }
 
@@ -267,6 +280,9 @@ export interface FixtureOptions {
     | 'two'
     /// ThinAgent 先说话再调工具（任务对话的 say 步）。
     | 'pretext';
+  /// T029.3：重启接续夹具。main 四个任务（两个被打断、一个 ready、一个待答），
+  /// single 一个被打断的任务；重启那一轮的路由由测试拿到真实任务 id 后再生成。
+  t029Restart?: 'main' | 'single';
 }
 
 /** T024.4：双会话回放用哪份按请求体路由的文件；预写会话的两种不需要。 */
@@ -326,6 +342,8 @@ export async function startKernelFixture(
   }
   const replay = startReplay(options, replayFile);
   const replayUrl = await replay.url;
+  // T029.3：换路由时再起一个回放进程；老进程继续服务在跑的任务，收尾时一起杀。
+  const extraReplayChildren: ReturnType<typeof spawn>[] = [];
   if (options.rootFault === 'corrupt') {
     await writeFile(path.join(dataDir, 'kind-root.json'), '{"version":1, ');
   } else if (options.rootFault === 'lost') {
@@ -346,7 +364,8 @@ export async function startKernelFixture(
     options.taskResult === 'handback' ||
     options.taskResult === 'seats' ||
     options.taskResult === 'two' ||
-    options.taskResult === 'pretext'
+    options.taskResult === 'pretext' ||
+    options.t029Restart !== undefined
   ) {
     await writeFile(path.join(dataDir, 'hello.txt'), 'hello from fixture\n');
     // T013.7：带空格的路径（@ 菜单插入要给引号用）。
@@ -743,6 +762,12 @@ export async function startKernelFixture(
     const next = await waitForUrl(child);
     token = next.token;
   };
+  /** T029.3：再起一个回放、换一份路由文件，返回新地址（老回放不杀，在跑的任务还连着它）。 */
+  const switchReplay = async (routesFile: string): Promise<string> => {
+    const next = startReplay(options, replayFile, routesFile);
+    extraReplayChildren.push(next.child);
+    return next.url;
+  };
   let baseUrl = parsed.baseUrl;
   const proxyState: {
     server: Server | null;
@@ -807,7 +832,10 @@ export async function startKernelFixture(
   return {
     ...parsed,
     baseUrl,
-    token,
+    // restart 会换新令牌：读属性要拿当前值，不能是启动时的快照。
+    get token() {
+      return token;
+    },
     dataDir,
     paths,
     exa: exaBaseUrl ? { baseUrl: exaBaseUrl, requests: () => exaRequests } : undefined,
@@ -835,6 +863,7 @@ export async function startKernelFixture(
     dropProxy,
     restoreProxy,
     restart,
+    switchReplay,
     close: async () => {
       await dropProxy();
       fxGate?.release();
@@ -844,6 +873,7 @@ export async function startKernelFixture(
       holder?.kill('SIGTERM');
       child.kill('SIGTERM');
       replay.child.kill('SIGTERM');
+      for (const extra of extraReplayChildren) extra.kill('SIGTERM');
       await rm(dataDir, { recursive: true, force: true });
       if (paths) await rm(paths.outside, { recursive: true, force: true });
     },

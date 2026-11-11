@@ -266,6 +266,13 @@ impl TaskRuntime {
                 stopped: task
                     .latest_attempt()
                     .is_some_and(|attempt| attempt.end == Some(AttemptEnd::Stopped)),
+                interrupted: task.is_interrupted(),
+                // 启动扫描已经打断、但给 Kind 的 restart 汇报还在队里：横幅「待 Kind 核实」。
+                // 汇报送到或被收掉以后，任务仍是「被打断了」。
+                restart_pending: task.is_interrupted()
+                    && self.store.restart_pending(&task.id).map_err(|error| {
+                        ServiceError::TaskUnavailable(format!("重启汇报的状态读不出来：{error}"))
+                    })?,
                 // waiting 不是终态：report 只把会话移出「在跑」，之后 task_status 会起新的一轮；
                 // 页面只能拿终态报告的时间收尾没有 turn/end 的最后一轮。
                 reported_at: task

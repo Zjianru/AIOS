@@ -17,7 +17,11 @@ import { parseExitStatus } from './process/toolModel.ts';
 import type { ProcessStep } from './process/toolModel.ts';
 import { reasoningTextOf, reasoningTextOfStream } from './reasoning.ts';
 import type { ConfirmCardFact, ConfirmDecision } from './cards/model';
-import { parseTaskRelay, type TaskResultFact } from '../../data/taskResult.ts';
+import {
+  parseRestartNotice,
+  parseTaskRelay,
+  type TaskResultFact,
+} from '../../data/taskResult.ts';
 import {
   contextPercent,
   contextTokens,
@@ -661,6 +665,12 @@ export function deriveTurnViews(
         break;
       }
       case 'user/message': {
+        // 启动扫描的重启汇报：一张卡一个被打断的任务，代替程序消息的原文 JSON。
+        const restarted = parseRestartNotice(data.message, event.time / 1000);
+        if (restarted.length > 0) {
+          ensure(turn).taskResults.push(...restarted);
+          break;
+        }
         const relay = parseTaskRelay(data.message, event.time / 1000);
         if (relay) {
           // 同一轮可能被多条 relay 叫起来：按日志到达顺序各留一张卡，不互相覆盖。

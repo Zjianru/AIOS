@@ -20,8 +20,18 @@ import { EMPTY_BODY, bodySlot, labelSlot, optionalBodySlot, textSlot } from '../
 export const TASK_REPORT_PREFIX = 'task-report:';
 /** 停止 relay 的 request id 前缀（`task-stop:<taskId>:<attemptId>`）。 */
 export const TASK_STOP_PREFIX = 'task-stop:';
+/** 启动扫描发给 Kind 的重启汇报的前缀（`restart:<bootId>`）。 */
+export const TASK_RESTART_PREFIX = 'restart:';
 
-export const TASK_REPORT_STATES = ['ready', 'blocked', 'failed', 'waiting', 'stopped'] as const;
+export const TASK_REPORT_STATES = [
+  'ready',
+  'blocked',
+  'failed',
+  'waiting',
+  'stopped',
+  // 启动扫描打断、Kind 还没核实/用户还没确认：卡片和任务对话都用固定词「被打断了」。
+  'interrupted',
+] as const;
 export type TaskReportState = (typeof TASK_REPORT_STATES)[number];
 
 export const TASK_REPORT_ORIGINS = ['package', 'agent', 'executor'] as const;
@@ -88,6 +98,9 @@ export function taskStatusOf(state: TaskReportState, origin: TaskReportOrigin): 
     case 'stopped':
       // 停止是程序给的固定结果，和 stopping 的那一轮无关（D62、D68）。
       return '已停止';
+    case 'interrupted':
+      // 重启打断也是程序给的固定结果；不自动重跑（D84）。
+      return '被打断了';
     case 'blocked':
       // 包缺项是没开跑；其余 blocked（agent 卡住、执行者派发失败）都算卡住了。
       return origin === 'package' ? '没开跑' : '卡住了';
@@ -104,6 +117,8 @@ function envelopeStateOf(state: TaskReportState): 'pending' | 'running' | 'done'
     case 'waiting':
       return 'running';
     case 'stopped':
+      return 'pending';
+    case 'interrupted':
       return 'pending';
     case 'blocked':
       return 'pending';
@@ -205,6 +220,81 @@ export function parseTaskRelay(message: unknown, at: number): TaskResultFact | n
     ...(chars === undefined ? {} : { chars }),
     at: Number.isFinite(at) ? Math.floor(at) : 0,
   };
+}
+
+/** 重启汇报里一条被打断的任务（服务只给事实：标题、最后报到哪、第几次 Attempt）。 */
+export interface RestartTaskFact {
+  id: string;
+  title: string;
+  attempts: number;
+  lastReport?: string;
+}
+
+/** 没有旧报告时卡上的固定摘要（程序事实，不是模型写的）。 */
+export const INTERRUPTED_SUMMARY = 'AIOS 重启时这次 Attempt 还在跑，没交出结果。';
+
+function restartTaskOf(value: unknown): RestartTaskFact | null {
+  if (!isRecord(value)) return null;
+  const id = value.id;
+  const title = value.title;
+  const attempts = value.attempts;
+  const lastReport = value.last_report;
+  if (typeof id !== 'string' || id === '') return null;
+  if (typeof title !== 'string' || title === '') return null;
+  if (typeof attempts !== 'number' || !Number.isFinite(attempts)) return null;
+  if (lastReport !== undefined && typeof lastReport !== 'string') return null;
+  return {
+    id,
+    title,
+    attempts,
+    ...(lastReport === undefined ? {} : { lastReport }),
+  };
+}
+
+/**
+ * 启动扫描发给 Kind 的 restart 消息 → 每个被打断的任务一张结果卡。
+ *
+ * 消息形状是 `{kind:"tasks_interrupted", tasks:[{id,title,attempts,last_report?}]}`；
+ * 解析不出来返回空数组，调用方照普通用户消息显示（和坏 relay 一样，不吞原文）。
+ */
+export function parseRestartNotice(message: unknown, at: number): TaskResultFact[] {
+  if (!isRecord(message)) return [];
+  const source = message.source;
+  if (!isRecord(source) || source.kind !== 'user') return [];
+  const rpcId = source.rpcId;
+  if (typeof rpcId !== 'string' || !rpcId.startsWith(TASK_RESTART_PREFIX)) return [];
+  const content = message.content;
+  if (!Array.isArray(content)) return [];
+  const text = content
+    .map((block) =>
+      isRecord(block) && block.type === 'text' && typeof block.text === 'string' ? block.text : '',
+    )
+    .join('');
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  if (!isRecord(body) || body.kind !== 'tasks_interrupted') return [];
+  const tasks = body.tasks;
+  if (!Array.isArray(tasks)) return [];
+  const atSeconds = Number.isFinite(at) ? Math.floor(at) : 0;
+  const facts: TaskResultFact[] = [];
+  for (const value of tasks) {
+    const task = restartTaskOf(value);
+    if (!task) continue;
+    facts.push({
+      id: rpcId + ':' + task.id,
+      taskId: task.id,
+      title: task.title,
+      state: 'interrupted',
+      origin: 'executor',
+      summary: task.lastReport ?? INTERRUPTED_SUMMARY,
+      at: atSeconds,
+    });
+  }
+  return facts;
 }
 
 export const taskResultCard: CardDefinition<TaskResultFact, TaskResultSlots> = {
