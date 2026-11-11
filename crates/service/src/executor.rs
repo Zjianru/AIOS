@@ -14,9 +14,9 @@ use model::{Effort, UserMessage};
 use serde_json::{Value, json};
 use session::SessionId;
 use tasks::{
-    AttemptEnd, AttemptId, ConversationId, EffectClaim, EffectKind, EffectPayload, MissingItem,
-    ModelChoice, NewReport, NewTask, ReportId, ReportOrigin, ReportState, SlotKind, Stage,
-    StopAttempt, Store, Task, TaskError, TaskId, WorkerSlots,
+    Attempt, AttemptEnd, AttemptId, ConversationId, EffectClaim, EffectKind, EffectPayload,
+    MissingItem, ModelChoice, NewReport, NewTask, ReportId, ReportOrigin, ReportState, SlotKind,
+    Stage, StopAttempt, Store, Task, TaskError, TaskId, WorkerSlots,
 };
 use tokio::sync::broadcast;
 use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
@@ -535,16 +535,18 @@ impl TaskRuntime {
             self.finish_or_fail(&claim, Ok(()));
             return;
         };
-        let Some(running) = self.running_for(task_id, attempt.id) else {
-            // 没在跑：叫醒停了的任务、在原会话开新 Attempt 还没接线（T028.2 WIP）。
-            self.later(&claim);
-            return;
+        let host = match self.running_for(task_id, attempt.id) {
+            Some(running) => running.host,
+            // 没在跑：停/结束之后在任务对话里说话，接着原会话开新一轮（T028.2）。
+            None => match self.resume_for_delivery(&claim, &task, attempt).await {
+                Some(host) => host,
+                None => return,
+            },
         };
         let mut sent = Ok(());
         for input in &task.inputs {
             let request_id = format!("task-say:{}", input.id.as_str());
-            if let Err(error) = running
-                .host
+            if let Err(error) = host
                 .send_message(
                     &request_id,
                     UserMessage::text(input.text.clone()),
@@ -569,6 +571,187 @@ impl TaskRuntime {
                 self.store.fail_effect(&claim, &error, Self::now()),
             ),
         }
+    }
+
+    /// 停/结束之后有人说话：占 person 席位，在原会话里接着开一次 Attempt，把输入送进去。
+    ///
+    /// 返回 Some(host)：会话已开好、登记在跑表里，调用方负责 Steer 输入并收效果行。
+    /// 返回 None：已经推迟/失败/完成，调用方直接返回。
+    ///
+    /// 先占席位再落 Attempt：席位不够按 Later 处理，不能留下没有会话的空 Attempt。
+    async fn resume_for_delivery(
+        self: &Arc<Self>,
+        claim: &EffectClaim,
+        task: &Task,
+        attempt: &Attempt,
+    ) -> Option<Arc<ServiceHost>> {
+        // 崩溃/重启留下的、还没收尾的 Attempt 不在这里抢（留给恢复链）。
+        if attempt.ended_at.is_none() {
+            self.later(claim);
+            return None;
+        }
+        // 没开成会话的 Attempt 没有历史可续：说明了再失败，别一直压着。
+        if attempt.end == Some(AttemptEnd::NotOpened) {
+            self.finish_or_fail(
+                claim,
+                Err("上一次 Attempt 没开成会话，接不上；任务要重新派发".to_owned()),
+            );
+            return None;
+        }
+        let Some(conversation) = attempt.conversation.clone() else {
+            self.finish_or_fail(claim, Err("这个任务没有可接着做的会话".to_owned()));
+            return None;
+        };
+        // 会话 id 先解析：续接入口要的是 SessionId，不是不透明字符串。
+        let Ok(resume) = SessionId::parse(conversation.as_str()) else {
+            self.finish_or_fail(claim, Err(format!("原会话 id 不合法：{conversation}")));
+            return None;
+        };
+        let key = task.id.as_str().to_owned();
+        let running = self.running_tasks();
+        let max = self.exec_seats.load(Ordering::SeqCst);
+        if self
+            .slots
+            .lock()
+            .expect("席位表锁被毒化")
+            .reserve(&key, SlotKind::Person, &running, max)
+            .is_err()
+        {
+            // 席位满（含 person 多占的那 1 个）：效果留在库里，腾出来再领。
+            self.later(claim);
+            return None;
+        }
+        let attempt_id = match self.store.begin_followup(&task.id, Self::now()) {
+            Ok(Some(attempt_id)) => attempt_id,
+            Ok(None) => {
+                self.release_seat(&key);
+                self.later(claim);
+                return None;
+            }
+            Err(error) => {
+                self.release_seat(&key);
+                self.finish_or_fail(claim, Err(format!("接着做没写进任务库：{error}")));
+                return None;
+            }
+        };
+        let prepared = match self.prepare(task) {
+            Ok(prepared) => prepared,
+            Err(missing) => {
+                self.record_missing(task, missing);
+                best_effort(
+                    "接不上的 Attempt 没收尾",
+                    self.store.end_attempt(
+                        &task.id,
+                        attempt_id,
+                        Self::now(),
+                        AttemptEnd::NotOpened,
+                    ),
+                );
+                self.release_seat(&key);
+                self.finish_or_fail(claim, Ok(()));
+                return None;
+            }
+        };
+        if self.shutting_down.load(Ordering::SeqCst) {
+            best_effort(
+                "关机时没开的 Attempt 没收尾",
+                self.store
+                    .end_attempt(&task.id, attempt_id, Self::now(), AttemptEnd::NotOpened),
+            );
+            self.release_seat(&key);
+            return None;
+        }
+        // 上一轮可能还在收尾：会话写锁没让出来之前开不出续接会话，先短暂等它。
+        // 只等写者持有这一种；别的错误交给 open 报。
+        for _ in 0..100 {
+            match session::SessionStore::open(&self.data_dir, &resume) {
+                Err(session::SessionError::AlreadyOwned { .. }) => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                _ => break,
+            }
+        }
+        let host = match self
+            .open_thin(task, attempt_id, prepared, Some(resume))
+            .await
+        {
+            Ok(host) => Arc::new(host),
+            Err(error) => {
+                best_effort(
+                    "接着做的会话没开成的失败报告没写进去",
+                    self.store.record_report(
+                        &task.id,
+                        attempt_id,
+                        NewReport {
+                            state: ReportState::Failed,
+                            origin: ReportOrigin::Executor,
+                            summary: format!("接着做时任务会话没开成：{error}"),
+                            question: None,
+                        },
+                        Self::now(),
+                    ),
+                );
+                best_effort(
+                    "接着做没开成的 Attempt 没收尾",
+                    self.store.end_attempt(
+                        &task.id,
+                        attempt_id,
+                        Self::now(),
+                        AttemptEnd::NotOpened,
+                    ),
+                );
+                self.release_seat(&key);
+                self.finish_or_fail(claim, Err(format!("接着做时会话没开成：{error}")));
+                return None;
+            }
+        };
+        // 每次 await 之后重查：没在关机、任务还在、这次仍是最新的 Attempt。
+        let current = !self.shutting_down.load(Ordering::SeqCst)
+            && self
+                .store
+                .task(&task.id)
+                .ok()
+                .flatten()
+                .and_then(|stored| stored.latest_attempt().map(|attempt| attempt.id))
+                == Some(attempt_id);
+        if !current {
+            host.shutdown().await;
+            best_effort(
+                "重查后失效的 Attempt 没收尾",
+                self.store
+                    .end_attempt(&task.id, attempt_id, Self::now(), AttemptEnd::NotOpened),
+            );
+            self.release_seat(&key);
+            return None;
+        }
+        let conversation = host.agent().id().clone();
+        if let Err(error) = self.store.attach_session(
+            &task.id,
+            attempt_id,
+            ConversationId::new(conversation.as_str()),
+        ) {
+            host.shutdown().await;
+            best_effort(
+                "会话没接上的 Attempt 没收尾",
+                self.store
+                    .end_attempt(&task.id, attempt_id, Self::now(), AttemptEnd::NotOpened),
+            );
+            self.release_seat(&key);
+            self.finish_or_fail(claim, Err(format!("会话没接上：{error}")));
+            return None;
+        }
+        // 先订阅、登记、再交给调用方发：和 launch 一样，终态报告赶在第一条消息之前也不会漏。
+        let events = host.agent().subscribe();
+        self.running.lock().expect("thinagent 表锁被毒化").insert(
+            conversation.as_str().to_owned(),
+            RunningThin {
+                host: Arc::clone(&host),
+                task_id: task.id.clone(),
+                attempt_id,
+            },
+        );
+        self.monitor(task.id.clone(), attempt_id, conversation, events);
+        Some(host)
     }
 
     /// 抄送 Kind：Inject 进发起任务的 Kind 会话，不唤醒；不在当前根会话时 Later。
@@ -797,7 +980,7 @@ impl TaskRuntime {
                 return false;
             }
         };
-        let host = match self.open_thin(&task, attempt_id, prepared).await {
+        let host = match self.open_thin(&task, attempt_id, prepared, None).await {
             Ok(host) => Arc::new(host),
             Err(error) => {
                 best_effort(
@@ -1030,11 +1213,14 @@ impl TaskRuntime {
     }
 
     /// 用冻结的模型选择、任务 cwd、8 件只读工具和角色规则开一个 ThinAgent。
+    ///
+    /// `resume` 是接着做的原会话；会话 id 不变，日志里的历史照常进这次请求。
     async fn open_thin(
         self: &Arc<Self>,
         task: &Task,
         attempt_id: AttemptId,
         (model_config, credentials): (model::DeepSeekConfig, Arc<dyn model::CredentialSource>),
+        resume: Option<SessionId>,
     ) -> Result<ServiceHost, String> {
         let mut extra_tools = crate::root::web_extra_tools(&self.options);
         extra_tools.push(Arc::new(TaskReportTool::new(
@@ -1047,7 +1233,7 @@ impl TaskRuntime {
         let agent = agent::Agent::open(AgentOpenOptions {
             data_dir: self.data_dir.clone(),
             cwd: task.cwd.clone(),
-            resume: None,
+            resume,
             model: model_config,
             config: agent_config,
             credentials: Some(credentials),

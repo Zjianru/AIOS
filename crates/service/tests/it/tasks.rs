@@ -2848,3 +2848,330 @@ async fn set_exec_seats_accepts_one_through_sixteen_and_rejects_outside() {
         );
     }
 }
+
+/// 在任务对话里说一句（和页面同一个调用）。
+async fn say_in_task_dialog(host: &RootHost, task: &Task, text: &str) -> service::TaskSayResponse {
+    let response = host
+        .dispatch(Call::TaskSay(service::TaskSayRequest {
+            task_id: task.id.as_str().to_owned(),
+            text: text.to_owned(),
+            attachments: Vec::new(),
+        }))
+        .await
+        .expect("任务对话里说一句");
+    let Response::TaskSay(said) = response else {
+        panic!("TaskSay 的响应形状不对");
+    };
+    said
+}
+
+fn attempt_count(task: &Task) -> usize {
+    task.runs.iter().map(|run| run.attempts.len()).sum()
+}
+
+/// 停/结束后在任务对话里说话：接在原会话上开新 Attempt，请求带着原来的历史。
+#[tokio::test]
+async fn saying_after_a_report_resumes_the_same_conversation_and_carries_history() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(false).await;
+    for _ in 0..3 {
+        fixture.router.push_kind(crate::common::text_sse("收到"));
+    }
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-report", "ready", "第一轮的答案", None));
+    fixture
+        .router
+        .push_thin(crate::common::text_sse("第一轮收尾"));
+    let store = tasks_store(fixture.data());
+    wait_until("第一轮报 ready", || reported_ready(&store, &task.id)).await;
+
+    let before = store.task(&task.id).unwrap().unwrap();
+    let first = before.latest_attempt().cloned().expect("第一轮 Attempt");
+    let conversation = first.conversation.clone().expect("会话 id");
+    let attempts_before = attempt_count(&before);
+
+    fixture
+        .router
+        .push_thin_for(task.id.as_str(), crate::common::text_sse("接着做"));
+    let said = say_in_task_dialog(&fixture.host, &task, "再接着找").await;
+    assert_eq!(
+        said.new_attempt,
+        Some(first.id.0 + 1),
+        "回执预览下一次 Attempt"
+    );
+
+    wait_until("接着做开了新 Attempt", || {
+        store
+            .task(&task.id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| attempt_count(&task) > attempts_before)
+    })
+    .await;
+    let after = store.task(&task.id).unwrap().unwrap();
+    let second = after.latest_attempt().expect("第 2 次 Attempt");
+    assert_eq!(second.id.0, first.id.0 + 1);
+    assert_eq!(
+        second.conversation.as_ref(),
+        Some(&conversation),
+        "会话 id 不变"
+    );
+    assert_eq!(second.trigger, tasks::AttemptTrigger::UserMessage);
+    assert!(
+        second.ended_at.is_none(),
+        "新 Attempt 还没结束（{:?} / {:?}）",
+        second.end,
+        store.effect_health(EffectKind::Delivery).unwrap()
+    );
+
+    wait_until("接着做的请求带上新句子", || {
+        fixture
+            .router
+            .bodies(true)
+            .last()
+            .is_some_and(|body| body.contains("再接着找"))
+    })
+    .await;
+    let resumed = fixture
+        .router
+        .bodies(true)
+        .last()
+        .cloned()
+        .expect("接着做的请求");
+    assert!(
+        resumed.contains("第一轮的答案"),
+        "接着做的请求带着原来的历史"
+    );
+}
+
+/// 席位 1 时 person 叫醒能用多出来的 1 个席位；第二个停任务按 Later 留在库里。
+#[tokio::test]
+async fn a_person_wake_uses_the_extra_seat_and_the_second_stopped_task_waits() {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    mount(&server, &router).await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let host = open_host(&server, data.path(), cwd.path()).await;
+    let store = tasks_store(data.path());
+    for title in ["甲", "乙", "丙"] {
+        for script in ready_scripts() {
+            router.push_thin_for_title(title, script);
+        }
+    }
+    let first = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-a",
+        "call-accept-a",
+        1,
+        "甲",
+    )
+    .await;
+    let second = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-b",
+        "call-accept-b",
+        2,
+        "乙",
+    )
+    .await;
+    let third = accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-c",
+        "call-accept-c",
+        3,
+        "丙",
+    )
+    .await;
+    for _ in 0..3 {
+        router.push_kind(crate::common::text_sse("收到"));
+    }
+    wait_until("三个任务都报 ready", || {
+        reported_ready(&store, &first.id)
+            && reported_ready(&store, &second.id)
+            && reported_ready(&store, &third.id)
+    })
+    .await;
+
+    host.set_exec_seats(1).expect("席位改成 1");
+    // 甲、乙被叫醒后的这一轮慢慢跑：丙说进来时必须看见席位已经占满。
+    router.set_thin_delay(Duration::from_millis(1_500));
+    router.push_thin_for(first.id.as_str(), crate::common::text_sse("接着做甲"));
+    router.push_thin_for(second.id.as_str(), crate::common::text_sse("接着做乙"));
+
+    let said = say_in_task_dialog(&host, &first, "甲接着做").await;
+    assert_eq!(said.new_attempt, Some(2));
+    wait_until("甲被叫醒", || attempt_in_flight(&store, &first.id)).await;
+
+    let said = say_in_task_dialog(&host, &second, "乙接着做").await;
+    assert_eq!(said.new_attempt, Some(2));
+    wait_until("乙用多出来的席位起来", || {
+        attempt_in_flight(&store, &second.id)
+    })
+    .await;
+
+    let third_before = store.task(&third.id).unwrap().unwrap();
+    let said = say_in_task_dialog(&host, &third, "丙接着做").await;
+    assert_eq!(said.new_attempt, Some(2), "回执只是预览，不代表真开");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let third_after = store.task(&third.id).unwrap().unwrap();
+    assert_eq!(
+        attempt_count(&third_after),
+        attempt_count(&third_before),
+        "席位满的丙不开新 Attempt"
+    );
+    assert!(
+        third_after
+            .latest_attempt()
+            .is_some_and(|attempt| attempt.ended_at.is_some()),
+        "丙还停在上一轮结束的状态"
+    );
+    assert!(
+        store
+            .effect_pending(EffectKind::Delivery, third.id.as_str())
+            .unwrap(),
+        "丙的 delivery 留在库里等席位腾出来"
+    );
+    assert_eq!(
+        store.effect_health(EffectKind::Delivery).unwrap().attempts,
+        0,
+        "满席位是 Later，不算效果失败"
+    );
+
+    // 收尾：甲、乙这两轮跑完（waiting relay 进 Kind），别把延迟中的请求留到测试关服务器。
+    for _ in 0..2 {
+        router.push_kind(crate::common::text_sse("收到"));
+    }
+    wait_until("甲、乙两轮跑完", || {
+        let waiting = |task: &Task| {
+            task.latest_report()
+                .is_some_and(|report| report.state == ReportState::Waiting)
+        };
+        waiting(&store.task(&first.id).unwrap().unwrap())
+            && waiting(&store.task(&second.id).unwrap().unwrap())
+    })
+    .await;
+}
+
+/// 立即停之后在任务对话里说话：新 Attempt 接在原会话上，请求带着停之前的历史。
+#[tokio::test]
+async fn saying_after_a_stop_resumes_the_same_conversation() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(true).await;
+    // 第一轮一直挂着，好在跑着的时候立即停。
+    fixture.router.set_thin_delay(Duration::from_millis(800));
+    fixture
+        .host
+        .task_runtime()
+        .expect("runtime")
+        .set_pump_paused(false);
+    let store = tasks_store(fixture.data());
+    wait_until("第一轮开跑", || attempt_in_flight(&store, &task.id)).await;
+    fixture.router.push_kind(crate::common::text_sse("收到"));
+    let stop = stop_task(&fixture, &task, StopMode::Now).await;
+    assert!(stop.stopped, "{stop:?}");
+    fixture.router.clear_thin_delay();
+    wait_until("第一轮停住", || {
+        attempt_end(&store, &task.id) == Some(AttemptEnd::Stopped)
+    })
+    .await;
+    let stopped = store
+        .task(&task.id)
+        .unwrap()
+        .unwrap()
+        .latest_attempt()
+        .cloned()
+        .expect("停住的 Attempt");
+    let conversation = stopped.conversation.clone().expect("会话 id");
+
+    fixture
+        .router
+        .push_thin_for(task.id.as_str(), crate::common::text_sse("接着做"));
+    let said = say_in_task_dialog(&fixture.host, &task, "停后再说一句").await;
+    assert_eq!(said.new_attempt, Some(stopped.id.0 + 1));
+    wait_until("停后说话开了新 Attempt", || {
+        attempt_end(&store, &task.id).is_none()
+    })
+    .await;
+    let resumed = store
+        .task(&task.id)
+        .unwrap()
+        .unwrap()
+        .latest_attempt()
+        .cloned()
+        .expect("新 Attempt");
+    assert_eq!(resumed.id.0, stopped.id.0 + 1);
+    assert_eq!(
+        resumed.conversation.as_ref(),
+        Some(&conversation),
+        "停后接着做还是原会话"
+    );
+    assert_eq!(resumed.trigger, tasks::AttemptTrigger::UserMessage);
+    assert!(resumed.ended_at.is_none());
+
+    wait_until("停后的请求带上新句子", || {
+        fixture
+            .router
+            .bodies(true)
+            .last()
+            .is_some_and(|body| body.contains("停后再说一句"))
+    })
+    .await;
+    let last = fixture
+        .router
+        .bodies(true)
+        .last()
+        .cloned()
+        .expect("停后的请求");
+    assert!(last.contains("找答案"), "停后的请求带着原来的历史");
+}
+
+/// 在跑的时候说一句：Steer 进下一步，Attempt 数不变。
+#[tokio::test]
+async fn saying_while_running_steers_the_next_step_without_a_new_attempt() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(true).await;
+    fixture.router.set_thin_delay(Duration::from_millis(1_000));
+    fixture
+        .router
+        .push_thin(crate::common::text_sse("第一步收尾"));
+    fixture
+        .host
+        .task_runtime()
+        .expect("runtime")
+        .set_pump_paused(false);
+    let store = tasks_store(fixture.data());
+    wait_until("第一轮开跑", || attempt_in_flight(&store, &task.id)).await;
+    let attempts_before = attempt_count(&store.task(&task.id).unwrap().unwrap());
+
+    let said = say_in_task_dialog(&fixture.host, &task, "插一句").await;
+    assert_eq!(said.new_attempt, None, "在跑时说话不预览新 Attempt");
+
+    wait_until("下一步请求带上这句话", || {
+        fixture
+            .router
+            .bodies(true)
+            .last()
+            .is_some_and(|body| body.contains("插一句"))
+    })
+    .await;
+    let after = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(
+        attempt_count(&after),
+        attempts_before,
+        "在跑时说话不开新 Attempt"
+    );
+    assert!(
+        after
+            .latest_attempt()
+            .is_some_and(|attempt| attempt.ended_at.is_none()),
+        "还是同一个 Attempt 在跑"
+    );
+}
