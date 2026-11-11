@@ -204,14 +204,8 @@ impl RootHost {
                     ..
                 }
             );
-            if !busy {
-                match runtime.scan_at_boot(&new_boot_id()) {
-                    Ok(scan) if !scan.interrupted.is_empty() => {
-                        eprintln!("启动扫描：{} 个任务被打断", scan.interrupted.len());
-                    }
-                    Ok(_) => {}
-                    Err(error) => eprintln!("启动扫描失败：{error}"),
-                }
+            if !busy && let Err(error) = runtime.scan_at_boot(&new_boot_id()) {
+                eprintln!("启动扫描失败：{error}");
             }
             let pump = runtime.start_pump();
             *host.task_pump.lock().expect("task pump 锁被毒化") = Some(pump);
