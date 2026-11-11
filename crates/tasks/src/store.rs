@@ -15,7 +15,7 @@ use crate::effect::{
 use crate::id::{AttemptId, ConversationId, InputId, ReportId, TaskId};
 use crate::task::{
     Attempt, AttemptEnd, AttemptTrigger, Input, InputAttachment, InputSource, MissingItem,
-    NewReport, NewTask, Report, Run, SayOutcome, Task,
+    NewInput, NewReport, NewTask, Report, Run, SayOutcome, Task,
 };
 
 /// 任务库 schema 版本；比这新的库拒绝打开。
@@ -358,7 +358,27 @@ impl Store {
         attachments: &[InputAttachment],
         now: i64,
     ) -> Result<SayOutcome, TaskError> {
-        if text.trim().is_empty() && attachments.is_empty() {
+        self.say_input(
+            id,
+            NewInput {
+                text: text.to_owned(),
+                pastes: Vec::new(),
+                attachments: attachments.to_vec(),
+            },
+            now,
+        )
+    }
+
+    /// 记下用户在任务对话里说的一句话（文字、粘贴段、附件）。
+    ///
+    /// 输入、delivery 和 notice 同事务；上一 Attempt 已结束了就接着开一次 Attempt（会话不变）。
+    pub fn say_input(
+        &self,
+        id: &TaskId,
+        input: NewInput,
+        now: i64,
+    ) -> Result<SayOutcome, TaskError> {
+        if input.text.trim().is_empty() && input.attachments.is_empty() {
             return Err(TaskError::EmptyInput);
         }
         let mut conn = self.lock()?;
@@ -369,8 +389,10 @@ impl Store {
             id: input_id.clone(),
             at: now,
             source: InputSource::User,
-            text: text.to_owned(),
-            attachments: attachments.to_vec(),
+            text: input.text,
+            // 骨架：粘贴段还没接进任务行和投递。
+            pastes: Vec::new(),
+            attachments: input.attachments,
         });
         // 只回报「接着做会开第几次 Attempt」；Attempt 行等投递真的接上会话再落，
         // 免得投递只 Later 时留下一个没有会话的空 Attempt。

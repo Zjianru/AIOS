@@ -3441,6 +3441,7 @@ async fn say_in_task_dialog(host: &RootHost, task: &Task, text: &str) -> service
         .dispatch(Call::TaskSay(service::TaskSayRequest {
             task_id: task.id.as_str().to_owned(),
             text: text.to_owned(),
+            pastes: Vec::new(),
             attachments: Vec::new(),
         }))
         .await
@@ -4021,6 +4022,7 @@ async fn a_task_say_attachment_is_validated_and_lands_in_the_thin_request() {
         .dispatch(Call::TaskSay(TaskSayRequest {
             task_id: task.id.as_str().to_owned(),
             text: "看附件".to_owned(),
+            pastes: Vec::new(),
             attachments: vec![missing],
         }))
         .await
@@ -4053,6 +4055,7 @@ async fn a_task_say_attachment_is_validated_and_lands_in_the_thin_request() {
         .dispatch(Call::TaskSay(TaskSayRequest {
             task_id: task.id.as_str().to_owned(),
             text: "看附件".to_owned(),
+            pastes: Vec::new(),
             attachments: vec![SendAttachment {
                 id: attachment_id.clone(),
                 name: "notes.txt".to_owned(),
@@ -4120,6 +4123,80 @@ async fn a_task_say_attachment_is_validated_and_lands_in_the_thin_request() {
         path.as_deref()
             .is_some_and(|path| path.contains("attachments/v1/files")),
         "附件走只读副本路径：{path:?}"
+    );
+}
+
+/// 只有粘贴、没有文字也算一句：ThinAgent 的请求带着粘贴原文，任务会话里是 paste 块。
+#[tokio::test]
+async fn a_paste_only_task_say_lands_as_a_paste_block() {
+    let fixture = Fixture::new().await;
+    let task = first_report_fixture(&fixture, 2).await;
+    let store = tasks_store(fixture.data());
+    fixture
+        .router
+        .push_thin_for(task.id.as_str(), crate::common::text_sse("收到粘贴"));
+    fixture.router.push_kind(crate::common::text_sse("收到"));
+
+    let response = fixture
+        .host
+        .dispatch(Call::TaskSay(TaskSayRequest {
+            task_id: task.id.as_str().to_owned(),
+            text: String::new(),
+            pastes: vec!["只有粘贴的一段".to_owned()],
+            attachments: Vec::new(),
+        }))
+        .await
+        .expect("只有粘贴也算一句");
+    let Response::TaskSay(said) = response else {
+        panic!("TaskSay 的响应形状不对");
+    };
+
+    wait_until("ThinAgent 请求带着粘贴", || {
+        fixture
+            .router
+            .bodies(true)
+            .iter()
+            .any(|body| body.contains("只有粘贴的一段"))
+    })
+    .await;
+
+    let attempt = store
+        .task(&task.id)
+        .unwrap()
+        .unwrap()
+        .latest_attempt()
+        .cloned()
+        .expect("接着做的 Attempt");
+    let request_id = format!("task-say:{}", said.input_id);
+    let message = thin_events(fixture.data(), &attempt)
+        .iter()
+        .find_map(|event| match &event.kind {
+            session::EventKind::UserMessage { message, .. } => match &message.source {
+                model::MessageSource::User {
+                    rpc_id: Some(rpc_id),
+                } if rpc_id == &request_id => Some(message.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+        .expect("任务会话里有这条输入");
+    let paste = message
+        .content
+        .iter()
+        .find_map(|block| match block {
+            model::ContentBlock::Text {
+                text, paste: true, ..
+            } => Some(text.clone()),
+            _ => None,
+        })
+        .expect("输入里是粘贴块，不是普通文字");
+    assert_eq!(paste, "只有粘贴的一段");
+    assert!(
+        message
+            .content
+            .iter()
+            .all(|block| !matches!(block, model::ContentBlock::Text { paste: false, .. })),
+        "没有文字块：这句话只有粘贴"
     );
 }
 

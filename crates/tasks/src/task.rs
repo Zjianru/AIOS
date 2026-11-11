@@ -81,10 +81,21 @@ pub struct Input {
     pub at: i64,
     pub source: InputSource,
     pub text: String,
+    /// 和这句话一起发来的粘贴段（照原文）；旧任务行没有这个字段时按空读。
+    #[serde(default)]
+    pub pastes: Vec<String>,
     /// 和这句话一起发来的附件；旧任务行没有这个字段时按空读。
     ///
     /// 只记附件仓库里的 id、名字和字节数；投递时再按 id 解析只读副本路径。
     #[serde(default)]
+    pub attachments: Vec<InputAttachment>,
+}
+
+/// 用户在任务对话里说的一句话：文字、粘贴段、附件至少有一项。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NewInput {
+    pub text: String,
+    pub pastes: Vec<String>,
     pub attachments: Vec<InputAttachment>,
 }
 

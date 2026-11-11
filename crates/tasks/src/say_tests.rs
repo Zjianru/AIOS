@@ -7,7 +7,7 @@ use rusqlite::Connection;
 use super::Store;
 use crate::{
     AttemptEnd, AttemptId, AttemptTrigger, ConversationId, EffectKind, EffectPayload,
-    InputAttachment, InputId, InputSource, ModelChoice, NewReport, NewTask, ReportOrigin,
+    InputAttachment, InputId, InputSource, ModelChoice, NewInput, NewReport, NewTask, ReportOrigin,
     ReportState, SlotKind, Task, TaskError, WorkerSlots,
 };
 
@@ -129,6 +129,43 @@ fn records_attachments_with_the_input_and_accepts_an_attachment_only_message() {
 
     assert!(matches!(
         store.say_with_attachments(&task.id, "  ", &[], T0 + 11),
+        Err(TaskError::EmptyInput)
+    ));
+}
+
+#[test]
+fn records_pastes_with_the_input_and_accepts_a_paste_only_message() {
+    let (_directory, store) = open_store();
+    let (task, _attempt) = running_task(&store);
+
+    let outcome = store
+        .say_input(
+            &task.id,
+            NewInput {
+                text: String::new(),
+                pastes: vec!["第一段".to_owned(), String::new()],
+                attachments: Vec::new(),
+            },
+            T0 + 10,
+        )
+        .expect("只有粘贴也算一句");
+    let loaded = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(loaded.inputs.len(), 1);
+    assert_eq!(loaded.inputs[0].id, outcome.input_id);
+    assert_eq!(loaded.inputs[0].text, "", "只有粘贴，没有文字");
+    assert_eq!(loaded.inputs[0].pastes, vec!["第一段", ""]);
+
+    // 空的粘贴段不算内容：空白文字 + 空粘贴仍然拒收。
+    assert!(matches!(
+        store.say_input(
+            &task.id,
+            NewInput {
+                text: "  ".to_owned(),
+                pastes: vec![String::new()],
+                attachments: Vec::new(),
+            },
+            T0 + 11,
+        ),
         Err(TaskError::EmptyInput)
     ));
 }
