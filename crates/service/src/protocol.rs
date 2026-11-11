@@ -51,6 +51,8 @@ pub enum Call {
     TaskRead(TaskReadRequest),
     /// 停一个任务（和 Kind 的 task_stop 走同一个服务方法）。
     TaskStop(TaskStopRequest),
+    /// 停下任务当前这一轮：不结束 Attempt，下一句话仍在这个 Attempt 里接着做。
+    TaskInterrupt(TaskInterruptRequest),
     /// 在任务对话里说一句：记输入、排 delivery 和 notice。
     TaskSay(TaskSayRequest),
     /// 页面没接住的异常 / 事件流重连（只记 web 监控 ops，不进会话日志）。
@@ -117,6 +119,8 @@ pub enum Response {
     TaskRead(TaskReadResponse),
     /// 停任务的结果：是否真的停下、停下后的阶段、给页面的固定说明。
     TaskStop(TaskStopResponse),
+    /// 停下这一轮的结果：是否真的中断了，以及给页面的固定说明。
+    TaskInterrupt(TaskInterruptResponse),
     /// 说一句的结果：记下的输入 id，和没在跑时新开的 Attempt 编号。
     TaskSay(TaskSayResponse),
     MonitorReport(MonitorReportResponse),
@@ -417,6 +421,21 @@ pub struct TaskStopRequest {
     #[serde(rename = "taskId")]
     pub task_id: String,
     pub mode: StopMode,
+}
+
+/// 停下任务当前这一轮；任务和 Attempt 都留着。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct TaskInterruptRequest {
+    #[serde(rename = "taskId")]
+    pub task_id: String,
+}
+
+/// 停下这一轮的结果。没在跑时 interrupted 为 false，message 是固定原因。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct TaskInterruptResponse {
+    pub interrupted: bool,
+    /// 给页面的固定说明。
+    pub message: String,
 }
 
 /// 任务对话里说一句。

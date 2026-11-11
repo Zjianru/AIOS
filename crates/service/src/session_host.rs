@@ -111,6 +111,10 @@ impl ServiceHost {
             Call::TaskStop(_) => Err(ServiceError::TaskUnavailable(
                 "停任务只能由根宿主做".to_owned(),
             )),
+            // 停下这一轮也一样。
+            Call::TaskInterrupt(_) => Err(ServiceError::TaskUnavailable(
+                "停这一轮只能由根宿主做".to_owned(),
+            )),
             // 在任务对话里说话同样走根宿主（任务库和效果泵）。
             Call::TaskSay(_) => Err(ServiceError::TaskUnavailable(
                 "任务对话只能由根宿主说".to_owned(),

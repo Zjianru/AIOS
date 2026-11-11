@@ -11,7 +11,7 @@ use serde_json::Value;
 use service::{
     AttachmentPutRequest, Call, CardActRequest, CardVerb, DeliveryMode, DisabledModelsSetRequest,
     Response, RootHost, SendAttachment, SendRequest, SessionModelSelectRequest, StopMode,
-    TaskReadRequest, TaskSayRequest, TaskStopRequest,
+    TaskInterruptRequest, TaskReadRequest, TaskSayRequest, TaskStopRequest,
 };
 use tasks::{AttemptEnd, EffectKind, EffectState, ReportState, Stage, Store, Task};
 use wiremock::matchers::{method, path};
@@ -349,6 +349,23 @@ fn last_turn_end(events: &[session::Event]) -> Option<session::TurnEndReason> {
         session::EventKind::TurnEnd { reason, .. } => Some(reason.clone()),
         _ => None,
     })
+}
+
+/// 页面「停下这一轮」的调用；测试只关心响应。
+async fn interrupt_task(
+    host: &RootHost,
+    task: &Task,
+) -> service::TaskInterruptResponse {
+    let response = host
+        .dispatch(Call::TaskInterrupt(TaskInterruptRequest {
+            task_id: task.id.as_str().to_owned(),
+        }))
+        .await
+        .expect("停下这一轮");
+    let Response::TaskInterrupt(interrupt) = response else {
+        panic!("TaskInterrupt 的响应形状不对");
+    };
+    interrupt
 }
 
 /// 页面和 Kind 的 task_stop 都走这一个调用；测试只关心响应。
@@ -1690,6 +1707,209 @@ async fn kind_task_stop_reports_not_running_for_both_modes() {
     let (after_report, is_error) = result("call-stop-after");
     assert!(!is_error.unwrap_or(false), "{after_report}");
     assert_eq!(after_report, "这个任务没在跑");
+}
+
+/// 停下这一轮：会话这一轮 aborted、Attempt 没结束、不出 relay/waiting；
+/// 再说一句还是同一个 Attempt，接着原会话跑。
+#[tokio::test]
+async fn interrupting_a_running_turn_keeps_the_attempt_and_the_next_sentence_continues_it() {
+    let fixture = Fixture::new().await;
+    fixture.router.set_thin_delay(Duration::from_millis(1_000));
+    fixture
+        .router
+        .push_thin(crate::common::text_sse("我还在查"));
+    let task = fixture.accept(false).await;
+    let store = tasks_store(fixture.data());
+    wait_until("第一轮开跑", || attempt_in_flight(&store, &task.id)).await;
+    let attempt = store
+        .task(&task.id)
+        .unwrap()
+        .unwrap()
+        .latest_attempt()
+        .cloned()
+        .expect("第一轮 Attempt");
+
+    let interrupt = interrupt_task(&fixture.host, &task).await;
+    assert!(interrupt.interrupted, "{interrupt:?}");
+    assert_eq!(interrupt.message, "已停下这一轮");
+
+    let conversation = attempt.conversation.clone().expect("会话 id");
+    let session_id = session::SessionId::parse(conversation.as_str()).unwrap();
+    wait_until("这一轮以用户取消收尾", || {
+        session::SessionStore::open_read_only(fixture.data(), &session_id).is_ok_and(|store| {
+            store.events().iter().any(|event| {
+                matches!(
+                    &event.kind,
+                    session::EventKind::TurnEnd {
+                        reason: session::TurnEndReason::Aborted {
+                            reason: session::AbortCause::User,
+                        },
+                        ..
+                    }
+                )
+            })
+        })
+    })
+    .await;
+    let thin = session::SessionStore::open_read_only(fixture.data(), &session_id).unwrap();
+    assert_eq!(
+        last_turn_end(thin.events()),
+        Some(session::TurnEndReason::Aborted {
+            reason: session::AbortCause::User
+        })
+    );
+
+    // 只停这一轮：Attempt 不结束、不合成 waiting、不排 relay。
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let after = store.task(&task.id).unwrap().unwrap();
+    let kept = after.latest_attempt().cloned().expect("Attempt 还在");
+    assert_eq!(kept.id, attempt.id);
+    assert!(kept.ended_at.is_none(), "停下这一轮不写 Attempt 结束");
+    assert!(after.latest_report().is_none(), "停下这一轮不合成 waiting 报告");
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::Running);
+    let root_events = crate::common::read_root_events(fixture.data());
+    assert!(
+        relay_messages(&root_events).is_empty(),
+        "停下这一轮不出结果 relay"
+    );
+    assert!(
+        stopped_relays(&root_events).is_empty(),
+        "停下这一轮不是立即停，没有停止 relay"
+    );
+    let read = fixture
+        .host
+        .dispatch(Call::TaskRead(TaskReadRequest {
+            task_id: task.id.as_str().to_owned(),
+            before_seq: None,
+        }))
+        .await
+        .expect("task-read");
+    let Response::TaskRead(read) = read else {
+        panic!("TaskRead 的响应形状不对");
+    };
+    assert!(!read.task.running, "这一轮已经停下");
+    assert!(!read.task.stopped, "任务没停，只是停下这一轮");
+
+    // 再说一句：同一 Attempt 接着做，请求里带着下一句。
+    fixture.router.clear_thin_delay();
+    fixture.router.push_kind(crate::common::text_sse("收到"));
+    fixture
+        .router
+        .push_thin_for(task.id.as_str(), report_sse(1, "call-report", "ready", "接着做完了", None));
+    fixture
+        .router
+        .push_thin_for(task.id.as_str(), crate::common::text_sse("收尾"));
+    let said = say_in_task_dialog(&fixture.host, &task, "再接着说").await;
+    assert_eq!(said.new_attempt, None, "同一个 Attempt 接着做，不开新的");
+    wait_until("下一句进了任务请求", || {
+        fixture
+            .router
+            .bodies(true)
+            .last()
+            .is_some_and(|body| body.contains("再接着说"))
+    })
+    .await;
+    let resumed = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(attempt_count(&resumed), 1, "Attempt 数不变");
+    let resumed_attempt = resumed.latest_attempt().cloned().expect("Attempt");
+    assert_eq!(resumed_attempt.id, attempt.id);
+    assert_eq!(
+        resumed_attempt.conversation.as_ref(),
+        Some(&conversation),
+        "还是原会话"
+    );
+    wait_until("接着做的这一轮报 ready", || {
+        reported_ready(&store, &task.id)
+    })
+    .await;
+    wait_until("Kind 收到结果 relay", || {
+        relay_messages(&crate::common::read_root_events(fixture.data())).len() == 1
+    })
+    .await;
+    let final_task = store.task(&task.id).unwrap().unwrap();
+    let states: Vec<_> = final_task
+        .reports
+        .iter()
+        .map(|report| report.state)
+        .collect();
+    assert_eq!(
+        states,
+        vec![ReportState::Ready],
+        "停下这一轮没有留下 waiting 报告"
+    );
+}
+
+/// 没在跑时停下这一轮：返回固定原因，不动任务。
+#[tokio::test]
+async fn interrupting_a_task_that_is_not_running_reports_the_fixed_reason() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(true).await;
+
+    let interrupt = interrupt_task(&fixture.host, &task).await;
+    assert!(!interrupt.interrupted, "{interrupt:?}");
+    assert_eq!(interrupt.message, "这个任务没在跑");
+
+    let store = tasks_store(fixture.data());
+    let task = store.task(&task.id).unwrap().unwrap();
+    assert!(
+        task.latest_attempt().is_none(),
+        "没开跑的任务不该多出 Attempt"
+    );
+    assert!(task.latest_report().is_none(), "没在跑不写报告");
+}
+
+/// 立即停仍走 T027.2：停下这一轮之后点立即停，Attempt 照样结束并排停止 relay。
+#[tokio::test]
+async fn stopping_now_after_an_interrupt_still_ends_the_attempt_and_relays() {
+    let fixture = Fixture::new().await;
+    fixture.router.set_thin_delay(Duration::from_millis(1_000));
+    fixture
+        .router
+        .push_thin(crate::common::text_sse("我还在查"));
+    let task = fixture.accept(false).await;
+    let store = tasks_store(fixture.data());
+    wait_until("第一轮开跑", || attempt_in_flight(&store, &task.id)).await;
+
+    let interrupt = interrupt_task(&fixture.host, &task).await;
+    assert!(interrupt.interrupted, "{interrupt:?}");
+    let attempt = store
+        .task(&task.id)
+        .unwrap()
+        .unwrap()
+        .latest_attempt()
+        .cloned()
+        .expect("Attempt");
+    let conversation = attempt.conversation.clone().expect("会话 id");
+    let session_id = session::SessionId::parse(conversation.as_str()).unwrap();
+    wait_until("这一轮以用户取消收尾", || {
+        session::SessionStore::open_read_only(fixture.data(), &session_id).is_ok_and(|store| {
+            store.events().iter().any(|event| {
+                matches!(
+                    &event.kind,
+                    session::EventKind::TurnEnd {
+                        reason: session::TurnEndReason::Aborted {
+                            reason: session::AbortCause::User,
+                        },
+                        ..
+                    }
+                )
+            })
+        })
+    })
+    .await;
+
+    fixture.router.push_kind(crate::common::text_sse("收到"));
+    let stop = stop_task(&fixture, &task, StopMode::Now).await;
+    assert!(stop.stopped, "{stop:?}");
+    assert_eq!(
+        attempt_end(&store, &task.id),
+        Some(AttemptEnd::Stopped),
+        "立即停照样结束 Attempt"
+    );
+    wait_until("Kind 收到停止 relay", || {
+        stopped_relays(&crate::common::read_root_events(fixture.data())).len() == 1
+    })
+    .await;
 }
 
 #[tokio::test]

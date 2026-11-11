@@ -25,8 +25,9 @@ use crate::error::ServiceError;
 use crate::events::{page_events, service_event};
 use crate::input::attachment_error;
 use crate::protocol::{
-    DeliveryMode, FollowRequest, FollowResponse, ServiceEvent, StopMode, TaskReadHeader,
-    TaskReadRequest, TaskReadResponse, TaskSayRequest, TaskSayResponse, TaskStopResponse,
+    DeliveryMode, FollowRequest, FollowResponse, ServiceEvent, StopMode, TaskInterruptResponse,
+    TaskReadHeader, TaskReadRequest, TaskReadResponse, TaskSayRequest, TaskSayResponse,
+    TaskStopResponse,
 };
 use crate::root::RootSessionOptions;
 use crate::session_host::ServiceHost;
@@ -1611,6 +1612,26 @@ impl TaskRuntime {
             }
         }
         Ok(lines.join("\n"))
+    }
+
+    /// 停下任务当前这一轮：只取消会话这一轮，不写 Attempt 结束、不排 relay。
+    ///
+    /// 下一句话进来时任务库还看到同一个未结束的 Attempt，投递会 Steer 进原会话接着做。
+    pub(crate) async fn interrupt_task(
+        &self,
+        task_id: &str,
+    ) -> Result<TaskInterruptResponse, ServiceError> {
+        let id = TaskId::from(task_id);
+        let task = self
+            .store
+            .task(&id)
+            .map_err(|error| ServiceError::TaskUnavailable(format!("任务读不出来：{error}")))?
+            .ok_or_else(|| ServiceError::TaskUnavailable(format!("找不到这个任务：{task_id}")))?;
+        let _ = task;
+        Ok(TaskInterruptResponse {
+            interrupted: false,
+            message: NOT_RUNNING.to_owned(),
+        })
     }
 
     /// 停一个任务：立即停走「先持久、再取消」；收尾停走「插固定说明、打标记、等报」。
