@@ -83,7 +83,7 @@ pub const THIN_WRITE_BASH_TOOLS: [&str; 15] = [
     "task_handback",
 ];
 
-/// bash 关着时的角色规则（ThinAgent 的 policy_prompt，追加在系统提示末尾；Kind 不装）。
+/// 默认角色的规则（ThinAgent 的 policy_prompt，追加在系统提示末尾；Kind 不装）。
 ///
 /// bash 开关决定 shell/后台那一段的说法（D85）：关着时没有跑命令的手段；开着时
 /// 明说 bash 和后台任务在，且写集不约束它们——命令按用户的完全权限跑。
