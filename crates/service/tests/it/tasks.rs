@@ -1159,6 +1159,56 @@ async fn thin_agent_handback_rule_and_tool_stay_off_kind() {
 }
 
 #[tokio::test]
+async fn task_handback_rejects_a_reason_longer_than_300_characters() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(false).await;
+    let too_long = "长".repeat(301);
+    fixture.router.push_thin(crate::common::tool_use_sse(
+        1,
+        "call-handback-long",
+        "task_handback",
+        &serde_json::json!({"reason": too_long}).to_string(),
+    ));
+    fixture.router.push_thin(crate::common::text_sse("没交回"));
+    wait_until("超长交回的回执", || {
+        let store = tasks_store(fixture.data());
+        let Some(task_row) = store.task(&task.id).ok().flatten() else {
+            return false;
+        };
+        let Some(attempt) = task_row.latest_attempt() else {
+            return false;
+        };
+        if attempt.conversation.is_none() {
+            return false;
+        }
+        thin_events(fixture.data(), attempt).iter().any(|event| {
+            matches!(
+                &event.kind,
+                session::EventKind::ToolResult { message, .. }
+                    if message.tool_call_id.as_deref() == Some("call-handback-long")
+            )
+        })
+    })
+    .await;
+
+    let store = tasks_store(fixture.data());
+    let task_row = store.task(&task.id).unwrap().unwrap();
+    let attempt = task_row.latest_attempt().expect("Attempt").clone();
+    let events = thin_events(fixture.data(), &attempt);
+    let (text, error) = tool_result(&events, "call-handback-long");
+    assert_eq!(error, Some(true), "超长理由要当工具错误：{text}");
+    assert!(text.contains("300"), "{text}");
+    assert!(
+        !task_row
+            .reports
+            .iter()
+            .any(|report| report.attempt_id == attempt.id && report.state == ReportState::Blocked),
+        "超长理由不能写成交回报告"
+    );
+    assert_eq!(attempt.end, None, "没交回，Attempt 不结束");
+}
+
+#[tokio::test]
 async fn a_failed_report_relays_and_leaves_the_task_open() {
     let fixture = Fixture::new().await;
     let task = fixture.accept(false).await;
