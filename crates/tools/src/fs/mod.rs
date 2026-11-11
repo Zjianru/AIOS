@@ -92,6 +92,16 @@ pub(crate) fn resolve(context: &ToolContext, requested: &str) -> Result<Target, 
     }
 }
 
+/// 写类工具在 resolve 之后核写入范围（D85）：目标必须落在范围内，
+/// 且不在范围下的 `.git` 里（照 Codex default_read_only_subpaths_for_writable_root）。
+///
+/// `target` 必须是 `resolve` 出来的真实路径（存在的部分已 canonicalize），不是模型
+/// 给的原始串。None = 不限（Kind、CLI 照旧）。
+pub fn check_write(context: &ToolContext, target: &Path) -> Result<(), ToolFailure> {
+    let _ = (context, target);
+    Ok(())
+}
+
 /// 一次 stat 的结果：版本 token + mode + 是否普通文件。
 #[derive(Debug, Clone)]
 pub(crate) struct FileInfo {

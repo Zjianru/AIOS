@@ -28,7 +28,17 @@ pub struct Task {
     pub model: ModelChoice,
     /// 允许这个任务用的工具名单。
     pub tools: Vec<String>,
-    /// T024 的写集固定为空；写任务的票才允许非空。
+    /// 当前写入范围（已按 cwd 解析的绝对路径）；None = 只读调查任务（D85）。
+    #[serde(default)]
+    pub write_scope: Option<PathBuf>,
+    /// 创建时冻结的 bash 开关；旧任务行按 false 读（D85）。
+    #[serde(default)]
+    pub bash: bool,
+    /// 是否在新 git 工作树里做；旧任务行按 false 读（D86）。
+    #[serde(default)]
+    pub worktree: bool,
+    /// 写集；只读任务固定为空。旧任务行没有这个字段时按空读。
+    #[serde(default)]
     pub writes: Vec<String>,
     /// T024 不允许 CodeMode；字段随聚合保存，给后面的票用。
     pub code_mode: bool,
@@ -37,9 +47,58 @@ pub struct Task {
     /// 用户在任务对话里说过的话；旧任务行没有这个字段时按空读。
     #[serde(default)]
     pub inputs: Vec<Input>,
+    /// 要求版本；建任务时记第一条，task_update 追加。旧任务行按空读。
+    #[serde(default)]
+    pub versions: Vec<RequirementVersion>,
+    /// 用户接受记录；旧任务行按空读。接受不是阶段（03 篇 5.1、5.4）。
+    #[serde(default)]
+    pub acceptance: Option<Acceptance>,
     /// 执行者在起跑前查到的缺项；空表示任务包齐。
     pub missing: Vec<MissingItem>,
     pub created_at: i64,
+}
+
+/// 建任务时冻结的执行策略：写入范围、bash 开关、工作树（D85、D86）。
+///
+/// 写入范围和工作树来自 `task_accept` 的参数；bash 由服务在创建时从设置读出
+/// 冻结，不是 `task_accept` 的字段。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskPolicy {
+    /// 写入范围原文：相对路径按任务 cwd 解析；None 或空白 = 只读调查任务。
+    pub write_scope: Option<String>,
+    /// 用户明说要工作树才开（D86）。
+    pub worktree: bool,
+    /// 创建时冻结的 bash 开关；默认关（D85）。
+    pub bash: bool,
+}
+
+/// 一条要求版本：写入范围、时间、来源（D16）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequirementVersion {
+    pub write_scope: Option<PathBuf>,
+    pub at: i64,
+    pub source: VersionSource,
+}
+
+/// 一条要求版本是怎么来的。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VersionSource {
+    /// 任务受理（task_accept）时定下的第一条要求。
+    TaskAccept,
+    /// 用户在 Kind 对话里同意扩大写入范围（task_update）。
+    UserAgreed,
+}
+
+/// 用户对某份结果的接受：绑所看的要求版本和报告（03 篇 5.4）。
+///
+/// 接受不是 Task 阶段，记下来不改阶段。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Acceptance {
+    /// 接受时看的要求版本号（1 起）；旧任务行没有版本记录，记 0。
+    pub version: u32,
+    pub report_id: ReportId,
+    pub at: i64,
 }
 
 /// 一次执行推进；首个 Attempt 会开出第一个 Run。
@@ -267,6 +326,11 @@ impl NewReport {
 }
 
 impl Task {
+    /// 当前要求版本号（1 起）；旧任务行没有版本记录时为 0。
+    pub fn requirement_version(&self) -> u32 {
+        u32::try_from(self.versions.len()).unwrap_or(u32::MAX)
+    }
+
     pub fn has_attempt(&self) -> bool {
         self.runs.iter().any(|run| !run.attempts.is_empty())
     }

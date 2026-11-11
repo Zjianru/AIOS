@@ -14,8 +14,8 @@ use crate::effect::{
 };
 use crate::id::{AttemptId, BootId, ConversationId, InputId, ReportId, TaskId};
 use crate::task::{
-    Attempt, AttemptEnd, AttemptTrigger, Input, InputAttachment, InputSource, MissingItem,
-    NewInput, NewReport, NewTask, Report, Run, SayOutcome, Task,
+    Acceptance, Attempt, AttemptEnd, AttemptTrigger, Input, InputAttachment, InputSource,
+    MissingItem, NewInput, NewReport, NewTask, Report, Run, SayOutcome, Task, TaskPolicy,
 };
 
 /// 任务库 schema 版本；比这新的库拒绝打开。
@@ -135,6 +135,16 @@ impl Store {
 
     /// 建任务并在同一个事务里排 launch。
     pub fn create_task(&self, draft: NewTask, now: i64) -> Result<Task, TaskError> {
+        self.create_task_with(draft, TaskPolicy::default(), now)
+    }
+
+    /// 建任务，带创建时冻结的执行策略（写入范围、bash 开关、工作树）。
+    pub fn create_task_with(
+        &self,
+        draft: NewTask,
+        _policy: TaskPolicy,
+        now: i64,
+    ) -> Result<Task, TaskError> {
         draft.validate()?;
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -148,6 +158,17 @@ impl Store {
     pub fn create_task_once(
         &self,
         draft: NewTask,
+        accept_key: &str,
+        now: i64,
+    ) -> Result<(Task, bool), TaskError> {
+        self.create_task_once_with(draft, TaskPolicy::default(), accept_key, now)
+    }
+
+    /// 同 `create_task_once`，并冻结创建时的执行策略。
+    pub fn create_task_once_with(
+        &self,
+        draft: NewTask,
+        _policy: TaskPolicy,
         accept_key: &str,
         now: i64,
     ) -> Result<(Task, bool), TaskError> {
@@ -192,11 +213,16 @@ impl Store {
             conversation: draft.conversation,
             model: draft.model,
             tools: draft.tools,
+            write_scope: None,
+            bash: false,
+            worktree: false,
             writes: Vec::new(),
             code_mode: false,
             runs: Vec::new(),
             reports: Vec::new(),
             inputs: Vec::new(),
+            versions: Vec::new(),
+            acceptance: None,
             missing: Vec::new(),
             created_at: now,
         };
@@ -817,6 +843,27 @@ impl Store {
         Ok((report_id, true))
     }
 
+    /// 用户接受当前版本和最近一份报告；只记接受，不改阶段（03 篇 5.1、5.4）。
+    pub fn accept(&self, _id: &TaskId, now: i64) -> Result<Acceptance, TaskError> {
+        Ok(Acceptance {
+            version: 0,
+            report_id: ReportId::from("skeleton"),
+            at: now,
+        })
+    }
+
+    /// task_update：把写入范围换成新的并追加一条要求版本（D16）；返回更新后的任务。
+    /// 只在 Kind 对话里用户同意后用；本票只改写入范围。
+    pub fn update_write_scope(
+        &self,
+        id: &TaskId,
+        _write_scope: &str,
+        _now: i64,
+    ) -> Result<Task, TaskError> {
+        let conn = self.lock()?;
+        load_task_required(&conn, id)
+    }
+
     /// 从任务和效果表派生阶段。
     pub fn stage(&self, id: &TaskId) -> Result<Stage, TaskError> {
         let conn = self.lock()?;
@@ -1141,6 +1188,9 @@ mod effect_tests;
 #[cfg(test)]
 #[path = "say_tests.rs"]
 mod say_tests;
+#[cfg(test)]
+#[path = "scope_tests.rs"]
+mod scope_tests;
 #[cfg(test)]
 #[path = "stage_tests.rs"]
 mod stage_tests;

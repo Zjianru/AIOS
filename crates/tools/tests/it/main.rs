@@ -13,3 +13,4 @@ mod skills;
 mod spill;
 mod todo;
 mod tool_timeout;
+mod write_scope;

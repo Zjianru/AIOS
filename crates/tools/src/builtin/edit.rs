@@ -95,6 +95,7 @@ fn edit(arguments: &str, context: &ToolContext) -> Result<(String, Value), ToolF
             .ok_or_else(|| ToolFailure::plain("replace_all must be a boolean"))?,
     };
     let target = crate::fs::resolve(context, file_path)?;
+    crate::fs::check_write(context, &target.key)?;
     let display = target.display();
     // T013.1：编辑前后文本算 diff（编辑前读失败就让 edit_file 走它自己的错误）。
     let before = crate::fs::read_text_for_verb(&target, "edit")
