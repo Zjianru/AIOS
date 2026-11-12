@@ -50,6 +50,7 @@ fn snapshot_keeps_models_dev_status() {
         "MiniMax-M2.5-highspeed",
         "MiniMax-M2.7",
         "MiniMax-M2.7-highspeed",
+        "MiniMax-M2.1-highspeed",
     ] {
         assert_eq!(
             snapshot
@@ -82,6 +83,7 @@ fn merge_live_drops_catalog_deprecated_and_keeps_unknown_ids() {
             live("MiniMax-M2.7-highspeed"),
             live("MiniMax-M3.1-Flash"),
             live("MiniMax-M2"),
+            live("MiniMax-M2.1-highspeed"),
             live("vendor-future"),
         ],
     );
