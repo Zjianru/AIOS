@@ -346,7 +346,7 @@ impl RootHost {
         let mut live = false;
         let mut live_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
         // 没记过单个头时两个都发：MiniMax 国内站的 /v1/models 只认 Bearer（messages 双头
-        // 都能过，所以验证不会学到单头）；照 T012.6/Magpie 的默认，列表也两个头一起发。
+        // 都能过，所以列表请求不会把连接收窄成单头）；照 T012.6/Magpie 的默认，列表也两个头一起发。
         if let VendorModels::Models(live_models) =
             fetch_vendor_models(&connection, key.into_secret(), AVAILABLE_MODELS_TIMEOUT).await
             && !live_models.is_empty()

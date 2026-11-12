@@ -257,7 +257,7 @@ struct KeyringCredentialSource {
 }
 
 impl model::CredentialSource for KeyringCredentialSource {
-    /// 出站前查一次屏蔽表：被拒就不签发、不发请求（和 service 的验证走同一份规则）。
+    /// 出站前查一次屏蔽表：被拒就不签发、不发请求（和 service 出站前查的是同一份屏蔽表）。
     fn admit(&self, model: &str) -> Result<(), model::ModelError> {
         service::disabled::admit(&self.data_dir, &self.connection, model)
     }

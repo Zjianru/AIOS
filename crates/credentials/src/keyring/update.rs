@@ -12,7 +12,7 @@ use super::{
 };
 
 impl Keyring {
-    /// 存/覆盖一个连接；saved_at 更新，验证状态重置为 Never。
+    /// 存/覆盖一个连接；saved_at 更新，check 状态重置为 Never。
     pub fn save_connection(
         &self,
         connection: NewConnection,
@@ -128,7 +128,7 @@ impl Keyring {
         })
     }
 
-    /// 验证之后写回注册器。
+    /// 拉厂商列表之后写回连接的 check。
     pub fn record_check(&self, connection: &str, result: CheckResult) -> Result<(), KeyringError> {
         let _lock = self.lock()?;
         let mut store = self.load_store()?;
