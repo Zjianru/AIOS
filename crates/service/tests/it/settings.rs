@@ -526,6 +526,175 @@ async fn 验证新形状用主模型且请求符合思考档规则() {
     let budget = body["thinking"]["budget_tokens"].as_u64().expect("budget");
     assert!(budget > 1, "budget 不能被 max_tokens=1 压到 1：{body}");
 }
+
+#[tokio::test]
+async fn 指定模型验证只回报本次结果且不写连接() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(""),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "verify-model".to_owned(),
+            name: "Verify model".to_owned(),
+            model: "MiniMax-M2".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some("custom".to_owned()),
+            models: Some(Vec::new()),
+            ..Default::default()
+        }))
+        .await
+        .expect("save");
+    let service::Response::ConnectionSave(saved) = saved else {
+        panic!("expected ConnectionSave");
+    };
+    assert_eq!(
+        saved.connection.check,
+        CheckState::Never,
+        "保存后还没有验证记录"
+    );
+    let selection_before = service::settings::load(dir.path()).last_selection;
+
+    // 页面走线上 JSON：新页面多带 model，旧协议读得出来，不看 Rust 字段名。
+    let call: Call = serde_json::from_value(serde_json::json!({
+        "method": "connection-verify",
+        "id": "verify-model",
+        "model": "MiniMax-M3.1-Flash",
+    }))
+    .expect("带 model 的 verify 请求");
+    let verified = host.dispatch(call).await.expect("verify 返回");
+    let json = serde_json::to_value(&verified).expect("json");
+    assert_eq!(
+        json["result"]["model"], "MiniMax-M3.1-Flash",
+        "响应带回这次验证的模型：{json}"
+    );
+    assert_eq!(json["result"]["ok"], true, "成功：{json}");
+    assert!(
+        json["result"].get("reason").is_none(),
+        "成功没有失败原因：{json}"
+    );
+    assert_eq!(
+        json["connection"]["check"]["kind"], "never",
+        "指定模型的验证不写连接 check：{json}"
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "验证必须只发一条最小请求");
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json");
+    assert_eq!(
+        body["model"], "MiniMax-M3.1-Flash",
+        "验证请求用用户选的模型：{body}"
+    );
+    assert_eq!(
+        service::settings::load(dir.path()).last_selection,
+        selection_before,
+        "验证不改最近选择"
+    );
+    let keyring =
+        credentials::Keyring::open(dir.path(), Some(&dir.path().join("identity.txt"))).unwrap();
+    let connection = keyring
+        .view()
+        .connections
+        .into_iter()
+        .find(|connection| connection.id == "verify-model")
+        .expect("connection");
+    assert_eq!(connection.check, CheckState::Never, "持久层也不写 check");
+}
+
+#[tokio::test]
+async fn 指定模型验证失败不覆盖连接状态() {
+    let server = MockServer::start().await;
+    let ok = ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_string("");
+    let not_found = ResponseTemplate::new(404).set_body_json(serde_json::json!({
+        "type": "error",
+        "error": {"type": "invalid_request_error", "message": "model MiniMax-M2 not found"}
+    }));
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![ok, not_found]))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "verify-model-fail".to_owned(),
+        name: "Verify model fail".to_owned(),
+        model: "MiniMax-M2".to_owned(),
+        endpoint: server.uri(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some("custom".to_owned()),
+        models: Some(Vec::new()),
+        ..Default::default()
+    }))
+    .await
+    .expect("save");
+    let selection_before = service::settings::load(dir.path()).last_selection;
+
+    // 旧调用不带 model：仍用旧回退，并把结果写进连接 check。
+    let old: Call = serde_json::from_value(serde_json::json!({
+        "method": "connection-verify",
+        "id": "verify-model-fail",
+    }))
+    .expect("旧 verify 请求");
+    let old = host.dispatch(old).await.expect("旧 verify 返回");
+    let old_json = serde_json::to_value(&old).expect("json");
+    assert_eq!(
+        old_json["connection"]["check"]["kind"], "ok",
+        "旧路径仍记录连接可用：{old_json}"
+    );
+
+    // 指定模型失败：只回报这一次，不覆盖刚才的连接 check。
+    let chosen: Call = serde_json::from_value(serde_json::json!({
+        "method": "connection-verify",
+        "id": "verify-model-fail",
+        "model": "MiniMax-M3.1-Flash",
+    }))
+    .expect("带 model 的 verify 请求");
+    let chosen = host.dispatch(chosen).await.expect("verify 返回");
+    let json = serde_json::to_value(&chosen).expect("json");
+    assert_eq!(json["result"]["model"], "MiniMax-M3.1-Flash", "{json}");
+    assert_eq!(json["result"]["ok"], false, "失败要回报失败：{json}");
+    let reason = json["result"]["reason"].as_str().expect("失败原因");
+    assert!(
+        reason.contains("model MiniMax-M2 not found"),
+        "带回厂商的失败原因：{reason}"
+    );
+    assert_eq!(
+        json["connection"]["check"]["kind"], "ok",
+        "指定模型失败不覆盖已记录的连接 check：{json}"
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2, "旧路径一条 + 指定模型一条");
+    let old_body: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json");
+    let chosen_body: serde_json::Value = serde_json::from_slice(&requests[1].body).expect("json");
+    assert_eq!(
+        old_body["model"], "MiniMax-M2",
+        "旧路径仍用旧回退：{old_body}"
+    );
+    assert_eq!(
+        chosen_body["model"], "MiniMax-M3.1-Flash",
+        "新路径用选的模型：{chosen_body}"
+    );
+    assert_eq!(
+        service::settings::load(dir.path()).last_selection,
+        selection_before,
+        "验证不改最近选择"
+    );
+}
 #[tokio::test]
 async fn 获取可用模型合并目录与厂商列表且用户字段不动() {
     model::catalog::set_global(model::catalog::snapshot());
