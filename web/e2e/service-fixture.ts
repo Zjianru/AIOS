@@ -293,7 +293,7 @@ export interface FixtureOptions {
   /// T030：写任务、接受、bash 开关、工作树、非仓库和改错字的真服务夹具。
   /// worktree 场景会在起服务前把数据目录做成一个 git 仓库；expand 的第二段路由由测试
   /// 拿到真实任务 id 后再生成。
-  t030?: 'write' | 'ask' | 'expand' | 'bash' | 'worktree' | 'nonrepo' | 'typo';
+  t030?: 'write' | 'ask' | 'expand' | 'bash' | 'worktree' | 'nonrepo' | 'typo' | 'scope';
 }
 
 /** T024.4：双会话回放用哪份按请求体路由的文件；预写会话的两种不需要。 */
@@ -392,6 +392,10 @@ export async function startKernelFixture(
     options.t030 !== undefined
   ) {
     await writeFile(path.join(dataDir, 'hello.txt'), 'hello from fixture\n');
+    // 页头写入范围用例：任务目录里的另一个文件。
+    if (options.t030 === 'scope') {
+      await writeFile(path.join(dataDir, 'notes.md'), '# 项目笔记\n\n第一行：原样\n');
+    }
     // T013.7：带空格的路径（@ 菜单插入要给引号用）。
     await writeFile(path.join(dataDir, 'with space.txt'), 'spaced file\n');
   }

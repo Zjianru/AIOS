@@ -124,6 +124,8 @@ test('结果卡打开任务对话：工具调用和最后回答都在，刷新�
     await expect(pane).toBeVisible({ timeout: 20_000 });
     await expect(pane.locator('[data-kind="task-full-title"]')).toHaveText(TITLE);
     await expect(pane).toContainText('调查任务 · 只读');
+    // 只有写任务才有页头写入范围；调查任务页头不出现这条。
+    await expect(pane.locator('[data-kind="task-write-scope"]')).toHaveCount(0);
 
     // 第一条 assignment 不画成用户气泡，任务要求只在头部。
     await expect(pane.locator('[data-kind="user-bubble"]')).toHaveCount(0);

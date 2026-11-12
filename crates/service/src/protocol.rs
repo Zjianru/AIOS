@@ -367,6 +367,16 @@ pub struct TaskReadHeader {
     pub requirement: String,
     pub dod: String,
     pub cwd: String,
+    /// 当前要求版本的写入范围，相对任务 cwd 显示；None = 只读调查任务。
+    #[serde(
+        default,
+        rename = "writeScope",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub write_scope: Option<String>,
+    /// 创建任务时冻结的 bash 开关；旧任务行按 false 读。
+    #[serde(default)]
+    pub bash: bool,
     /// 创建任务时冻结的模型（只给显示名，切换模型不影响它）。
     pub model: String,
     pub tools: Vec<String>,
