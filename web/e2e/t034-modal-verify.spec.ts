@@ -106,7 +106,7 @@ test('弹窗默认选连接当前的模型（不是模型列表第一个）', as
     const select = dialog.locator('[data-verify="model-select"]');
     await expect(select).toHaveValue(CHAT_MODEL);
     const options = await select.locator('option').allTextContents();
-    expect(options[0], '列表第一个是勾选的 M2').toContain('MiniMax-M2');
+    expect(options[0], '列表框第一个是厂商列表里的 M2').toContain('MiniMax-M2');
     expect(options.join(' ')).toContain(CHAT_MODEL);
   } finally {
     await fixture.close();
