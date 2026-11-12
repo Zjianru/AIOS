@@ -1,5 +1,6 @@
 //! 连接的可选模型：显式勾的模型行；显式空表（跟着厂商走）时用存下的 live 列表，
-//! 还没存过就用内置目录。可选的第一个就是连接的默认模型（新会话、验证、余额查询用）。
+//! 还没存过就用内置目录。默认模型（新会话、验证、保存路径、余额查询用）按
+//! 显式第一行 → live 第一个 → 连接上的 model → 内置目录第一个的顺序取。
 //!
 //! 页面小标签/选择器从 `model-settings` 的 `listed` 和内置目录自己映射（页面不读磁盘）。
 
@@ -20,6 +21,11 @@ pub fn selectable_models(data_dir: &Path, connection: &ConnectionInfo) -> Vec<Mo
     {
         return live.models;
     }
+    catalog_models(connection)
+}
+
+/// 内置目录里这个连接能选的模型；自定义厂商没有目录行。
+fn catalog_models(connection: &ConnectionInfo) -> Vec<ModelInfo> {
     let provider =
         model::catalog::provider_id_for_connection(&connection.preset, &connection.endpoint);
     if provider == "custom" {
@@ -30,12 +36,28 @@ pub fn selectable_models(data_dir: &Path, connection: &ConnectionInfo) -> Vec<Mo
         .models_for(&provider)
 }
 
-/// 连接现在的默认模型：显式勾的第一个，或者跟厂商走时可选的第一个。
+/// 连接现在的默认模型：显式勾的第一行；跟厂商走时存下的 live 列表第一个；
+/// 都没有就用连接上的 model 字段（用户选的那个，不落到目录里已下线的旧模型）；
+/// 再没有才用内置目录第一个。
 pub fn primary_model(data_dir: &Path, connection: &ConnectionInfo) -> String {
-    selectable_models(data_dir, connection)
+    if let Some(rows) = connection.models.as_deref()
+        && let Some(row) = rows.first()
+    {
+        return row.id.clone();
+    }
+    if let Some(live) = model::catalog::read_live(data_dir, &connection.id)
+        && let Some(first) = live.models.first()
+    {
+        return first.id.clone();
+    }
+    let selected = connection.primary_model();
+    if !selected.is_empty() {
+        return selected.to_owned();
+    }
+    catalog_models(connection)
         .first()
-        .map(|model| model.id.clone())
-        .unwrap_or_else(|| connection.primary_model().to_owned())
+        .map(|info| info.id.clone())
+        .unwrap_or_default()
 }
 
 /// 选择这个模型时该写进 `DeepSeekConfig.tool_update` 的能力：先看连接里存的模型信息
