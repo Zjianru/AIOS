@@ -109,9 +109,10 @@ test('第一次获取不标新，第二次只标新增，不勾跟着厂商走',
     const discover = editor.locator('[data-settings="discover"]');
     await expect(discover).toBeVisible({ timeout: 20_000 });
 
-    // 第一次获取没有上一次的列表可比较：目录 + 厂商合并列出 5 个，一个都不标新。
+    // 第一次获取没有上一次的列表可比较：目录 + 厂商合并列出 3 个（目录标了下线的两条不算），
+    // 一个都不标新。
     const count = discover.locator('[data-settings="discover-count"]');
-    await expect(count).toContainText('列出 5 个');
+    await expect(count).toContainText('列出 3 个');
     await expect(count).not.toContainText('个是新的');
     await expect(
       discover.locator('label', { hasText: 'vendor-future' }).locator('[data-settings="fresh"]'),
@@ -120,7 +121,7 @@ test('第一次获取不标新，第二次只标新增，不勾跟着厂商走',
     // 厂商多给一个，再获取一次：只有新的那个标「新」，之前见过的都不标。
     vendor.setModels(['deepseek-flash', 'vendor-future', 'vendor-newer']);
     await editor.getByRole('button', { name: '获取可用模型' }).click();
-    await expect(count).toContainText('列出 6 个');
+    await expect(count).toContainText('列出 4 个');
     await expect(count).toContainText('1 个是新的');
     await expect(
       discover.locator('label', { hasText: 'vendor-newer' }).locator('[data-settings="fresh"]'),
@@ -248,8 +249,8 @@ test('隐式查询不存厂商列表，按获取才存下', async ({ page, reque
     await editor.getByRole('button', { name: '获取可用模型' }).click();
     const discover = editor.locator('[data-settings="discover"]');
     await expect(discover).toBeVisible({ timeout: 20_000 });
-    // 隐式查询没写盘，第一次获取还是没有基准：目录 + 厂商 5 个，一条都不标新。
-    await expect(discover.locator('[data-settings="discover-count"]')).toContainText('列出 5 个');
+    // 隐式查询没写盘，第一次获取还是没有基准：目录 + 厂商 3 个（下线模型不算），一条都不标新。
+    await expect(discover.locator('[data-settings="discover-count"]')).toContainText('列出 3 个');
     await expect(discover.locator('[data-settings="discover-count"]')).not.toContainText('个是新的');
     await expect(discover.locator('[data-settings="fresh"]')).toHaveCount(0);
 
@@ -314,8 +315,8 @@ test('换 API 地址后旧厂商列表作废，获取后新表生效', async ({ 
     await editor.getByRole('button', { name: '获取可用模型' }).click();
     const discover = editor.locator('[data-settings="discover"]');
     await expect(discover).toBeVisible({ timeout: 20_000 });
-    // 换了地址后第一次获取，旧表已删，一条都不标新。
-    await expect(discover.locator('[data-settings="discover-count"]')).toContainText('列出 5 个');
+    // 换了地址后第一次获取，旧表已删，一条都不标新（目录 + 厂商 3 个）。
+    await expect(discover.locator('[data-settings="discover-count"]')).toContainText('列出 3 个');
     await expect(discover.locator('[data-settings="fresh"]')).toHaveCount(0);
     await expect(discover.locator('label', { hasText: 'vendor-new' })).toBeVisible();
     await expect(discover.locator('label', { hasText: 'vendor-old' })).toHaveCount(0);

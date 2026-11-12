@@ -1107,7 +1107,7 @@ async fn 获取成功只存厂商列表且第二次只标新增() {
 async fn minimax_列表保留厂商顺序() {
     model::catalog::set_global(model::catalog::snapshot());
     // 故意不按版本排：厂商先给 M3.1，再给已下线的 M2，最后给目录里没有的 M2.1-highspeed。
-    let vendor_ids = vec!["MiniMax-M3.1-Flash", "MiniMax-M2", "MiniMax-M2.1-highspeed"];
+    let vendor_ids = ["MiniMax-M3.1-Flash", "MiniMax-M2", "MiniMax-M2.1-highspeed"];
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/models"))

@@ -4,7 +4,7 @@
 //! T012.5 增加：models.dev 拉取/缓存/快照，目录字段（窗口/输出/价格/thinks/efforts），
 //! 以及和 GET /v1/models 的结果合并（厂商列表字段优先，用户填的不动由 service 覆盖）。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, SystemTime};
@@ -65,6 +65,12 @@ pub struct CatalogModel {
     /// models.dev 的 status；`deprecated` 表示厂商不再通过公开 API 提供这个模型。
     #[serde(default)]
     pub status: Option<String>,
+}
+
+impl CatalogModel {
+    fn is_deprecated(&self) -> bool {
+        self.status.as_deref() == Some("deprecated")
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -222,14 +228,32 @@ impl CatalogSnapshot {
         self.provider(provider_id)?.models.get(model_id)
     }
 
-    /// 这个 provider 的模型，字段来自目录。顺序是 BTreeMap 的键序（按 id），
-    /// 不按版本或发布日期排序。
+    /// 单个模型的展示字段；和 models_for 不同，不过滤 deprecated——显式模型行和
+    /// 统计定价仍要用目录里的事实（D71：用户显式选/填的不动）。
+    pub fn model_for(&self, provider_id: &str, model_id: &str) -> Option<ModelInfo> {
+        let provider = self.provider(provider_id)?;
+        let model = provider.models.get(model_id)?;
+        Some(model_info(provider, model))
+    }
+
+    /// 这个 provider 的可选模型：跳过 models.dev 标了 `deprecated` 的；其余按
+    /// release_date 从新到旧排，同一天按 id，保证结果稳定（Magpie catalog.go 的 provider）。
     pub fn models_for(&self, provider_id: &str) -> Vec<ModelInfo> {
         self.provider(provider_id)
             .map(|provider| {
-                provider
+                let mut models: Vec<&CatalogModel> = provider
                     .models
                     .values()
+                    .filter(|model| !model.is_deprecated())
+                    .collect();
+                models.sort_by(|left, right| {
+                    right
+                        .release_date
+                        .cmp(&left.release_date)
+                        .then_with(|| left.id.cmp(&right.id))
+                });
+                models
+                    .into_iter()
                     .map(|model| model_info(provider, model))
                     .collect()
             })
@@ -379,6 +403,17 @@ pub fn merge_live(
     provider_id: &str,
     live: Vec<LiveModel>,
 ) -> Vec<ModelInfo> {
+    let deprecated: HashSet<&str> = catalog
+        .provider(provider_id)
+        .map(|provider| {
+            provider
+                .models
+                .values()
+                .filter(|model| model.is_deprecated())
+                .map(|model| model.id.as_str())
+                .collect()
+        })
+        .unwrap_or_default();
     let mut catalog_by_id: BTreeMap<String, ModelInfo> = catalog
         .models_for(provider_id)
         .into_iter()
@@ -386,6 +421,9 @@ pub fn merge_live(
         .collect();
     let mut merged = Vec::with_capacity(catalog_by_id.len() + live.len());
     for live in live {
+        if deprecated.contains(live.id.as_str()) {
+            continue;
+        }
         let mut info = catalog_by_id.remove(&live.id).unwrap_or_else(|| ModelInfo {
             id: live.id.clone(),
             name: live.id.clone(),
@@ -913,8 +951,8 @@ mod tests {
         assert_eq!(flash.tool_update, Some(ToolUpdate::AdditionOnly));
         let plain = models
             .iter()
-            .find(|model| model.id == "deepseek-v4-flash")
-            .expect("deepseek-v4-flash");
+            .find(|model| model.id == "deepseek-v4-pro")
+            .expect("deepseek-v4-pro");
         assert_eq!(plain.tool_update, None, "没写死的模型不声明能力");
         assert!(
             snapshot

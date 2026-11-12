@@ -39,10 +39,7 @@ pub fn effective_price(
         .find(|row| row.id == model);
     let provider =
         model::catalog::provider_id_for_connection(&connection.preset, &connection.endpoint);
-    let info = catalog
-        .models_for(&provider)
-        .into_iter()
-        .find(|info| info.id == model);
+    let info = catalog.model_for(&provider, model);
     let user_input = user.and_then(|row| row.price_input);
     // 旧连接只有一个数（alias 到输入价）：那个数同时是输出价。
     let user_output = user.and_then(|row| row.price_output).or(user_input);

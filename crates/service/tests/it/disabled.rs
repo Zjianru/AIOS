@@ -539,11 +539,7 @@ async fn 屏蔽表的每条规则给出现在命中的连接和模型() {
     assert_eq!(
         response.disabled_hits,
         vec![
-            vec![
-                "deepseek/deepseek-flash".to_owned(),
-                "deepseek/deepseek-v4-flash".to_owned(),
-                "deepseek/deepseek-v4-flash-vision-exp".to_owned(),
-            ],
+            vec!["deepseek/deepseek-flash".to_owned()],
             Vec::new(),
             vec!["other/sonnet-x".to_owned()],
         ],

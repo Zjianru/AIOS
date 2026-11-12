@@ -96,8 +96,9 @@ test('获取面板按厂商顺序列出未下线模型，第一次不标新', as
     await expect(discover).toBeVisible({ timeout: 20_000 });
 
     const labels = discover.locator('label');
-    await expect(labels).toHaveCount(2);
-    const order = ['MiniMax-M3.1-Flash', 'MiniMax-M3'];
+    // M2.1-highspeed 不在 models.dev 目录里（目录没有的保留）；目录标了 deprecated 的六条去掉。
+    await expect(labels).toHaveCount(3);
+    const order = ['MiniMax-M3.1-Flash', 'MiniMax-M3', 'MiniMax-M2.1-highspeed'];
     for (const [index, id] of order.entries()) {
       await expect(labels.nth(index)).toContainText(id);
     }
