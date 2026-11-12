@@ -8,10 +8,10 @@ use crate::protocol::{
     ConnectionDeleteResponse, ConnectionQuotaRequest, ConnectionQuotaResponse,
     ConnectionRevokeRequest, ConnectionRevokeResponse, ConnectionSaveRequest,
     ConnectionSaveResponse, ConnectionUpdateRequest, ConnectionUpdateResponse,
-    ConnectionVerifyRequest, ConnectionVerifyResponse, ExecSettingsView, FirstUseResponse,
-    IssuesResponse, KeyringRelocateRequest, KeyringRelocateResponse, KeyringReopenRequest,
-    KeyringReopenResponse, KeyringRestartResponse, ModelSettingsResponse, RootState, ServiceEvent,
-    SettingsUpdateRequest, SettingsUpdateResponse,
+    ConnectionVerifyRequest, ConnectionVerifyResponse, ConnectionVerifyResult, ExecSettingsView,
+    FirstUseResponse, IssuesResponse, KeyringRelocateRequest, KeyringRelocateResponse,
+    KeyringReopenRequest, KeyringReopenResponse, KeyringRestartResponse, ModelSettingsResponse,
+    RootState, ServiceEvent, SettingsUpdateRequest, SettingsUpdateResponse,
 };
 use crate::root_lifecycle::RootHost;
 use crate::{quota, settings};
@@ -252,7 +252,10 @@ impl RootHost {
         Ok(ConnectionRevokeResponse { connection })
     }
 
-    /// 验证连接：从 Keyring 取一次签发，发最小 Messages 请求，把结果写进注册器。
+    /// 验证连接：从 Keyring 取一次签发，发最小 Messages 请求。
+    ///
+    /// 不带 model 时沿用旧回退，并把结果写进注册器；带 model 时只用它发这一次，
+    /// 结果只在响应里返回，不改连接 check，也不动最近选择。
     pub async fn connection_verify(
         &self,
         request: ConnectionVerifyRequest,
@@ -272,14 +275,19 @@ impl RootHost {
             .issue(&request.id, "connection-verify", None, None)?
             .into_secret();
         // 验证走模型适配器（和对话同一条请求路径/同一组头），不再手写 reqwest。
+        let explicit_model = request.model.is_some();
+        let model_id = request
+            .model
+            .clone()
+            .unwrap_or_else(|| crate::models::primary_model(&self.options.data_dir, &connection));
         let config = model::DeepSeekConfig {
             provider: model::catalog::provider_id_for_connection(
                 &connection.preset,
                 &connection.endpoint,
             ),
             base_url: connection.endpoint.clone(),
-            // K3：验证用连接所选模型；跟厂商走时用可选的第一个。
-            model: crate::models::primary_model(&self.options.data_dir, &connection),
+            // 指定了只影响这一次请求；没指定才沿用连接的默认模型和旧记录行为。
+            model: model_id.clone(),
             max_tokens: 1,
             context_window: model::DEFAULT_CONTEXT_WINDOW,
             effort: model::Effort::new("off"),
@@ -293,7 +301,7 @@ impl RootHost {
         let at = now_seconds();
         // 验证也必须能把学到的鉴权头写回连接，所以把 Keyring 的 Arc 交给来源。
         let keyring = std::sync::Arc::new(keyring);
-        let result = match model::DeepSeek::with_credentials(
+        let outcome = match model::DeepSeek::with_credentials(
             config,
             std::sync::Arc::new(VerifyCredential {
                 api_key,
@@ -302,23 +310,29 @@ impl RootHost {
                 data_dir: self.options.data_dir.clone(),
             }),
         ) {
-            Err(error) => credentials::CheckResult::Fail {
-                at,
-                reason: error.code.as_str().to_owned(),
-            },
-            Ok(model) => match model
+            Err(error) => Err(error),
+            Ok(model) => model
                 .stream(&messages, &model::ToolRequest::default(), &cancel)
                 .await
-            {
-                Ok(_) => credentials::CheckResult::Ok { at },
+                .map(|_| ()),
+        };
+        let result = ConnectionVerifyResult {
+            model: model_id,
+            ok: outcome.is_ok(),
+            reason: outcome.as_ref().err().map(ToString::to_string),
+        };
+        // 指定模型只回报本次结果：不写连接 check，也不动最近选择。
+        if !explicit_model {
+            let check = match &outcome {
+                Ok(()) => credentials::CheckResult::Ok { at },
                 Err(error) => credentials::CheckResult::Fail {
                     at,
                     reason: error.code.as_str().to_owned(),
                 },
-            },
-        };
-        keyring.record_check(&request.id, result)?;
-        self.emit_settings_changed();
+            };
+            keyring.record_check(&request.id, check)?;
+            self.emit_settings_changed();
+        }
         let connection = keyring
             .view()
             .connections
@@ -329,7 +343,10 @@ impl RootHost {
                     request.id.clone(),
                 ))
             })?;
-        Ok(ConnectionVerifyResponse { connection })
+        Ok(ConnectionVerifyResponse {
+            connection,
+            result: explicit_model.then_some(result),
+        })
     }
 
     /// 目录 + 厂商 GET /v1/models 合并；用户填的字段最后覆盖。

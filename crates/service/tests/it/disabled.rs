@@ -399,6 +399,7 @@ async fn 验证连接遇到屏蔽不发出请求() {
     let response = host
         .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
             id: "deepseek".to_owned(),
+            model: None,
         }))
         .await
         .expect("验证调用本身应返回（结果写进注册器）");

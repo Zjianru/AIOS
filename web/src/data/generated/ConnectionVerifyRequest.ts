@@ -3,4 +3,8 @@
 /**
  * 验证一个连接（空 = 用注册器里的 endpoint/key 发最小请求）。
  */
-export type ConnectionVerifyRequest = { id: string, };
+export type ConnectionVerifyRequest = { id: string,
+/**
+ * 这次用哪个模型验证；None = 旧回退，结果仍写进连接 check。
+ */
+model?: string | null, };

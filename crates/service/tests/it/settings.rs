@@ -199,6 +199,7 @@ async fn 验证成功写注册器且响应无正文() {
     let verified = host
         .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
             id: "deepseek".to_owned(),
+            model: None,
         }))
         .await;
     assert!(
@@ -237,6 +238,7 @@ async fn 验证失败写原因且响应无正文() {
     let verified = host
         .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
             id: "deepseek".to_owned(),
+            model: None,
         }))
         .await;
     assert!(verified.is_ok(), "verify 结果应返回：{verified:?}");
@@ -393,6 +395,7 @@ async fn 验证连接走模型适配器成功时记可用() {
     let verified = host
         .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
             id: "verify-ok".to_owned(),
+            model: None,
         }))
         .await;
     let service::Response::ConnectionVerify(response) = verified.expect("verify 应成功") else {
@@ -459,6 +462,7 @@ async fn 验证连接失败时注册器按码记() {
     let verified = host
         .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
             id: "verify-bad".to_owned(),
+            model: None,
         }))
         .await;
     let service::Response::ConnectionVerify(response) = verified.expect("verify 返回响应")
@@ -507,6 +511,7 @@ async fn 验证新形状用主模型且请求符合思考档规则() {
     let verified = host
         .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
             id: "k3".to_owned(),
+            model: None,
         }))
         .await;
     let service::Response::ConnectionVerify(response) = verified.expect("verify 返回") else {
@@ -1204,6 +1209,7 @@ async fn 显式空模型列表跟着厂商走且主模型取可选第一个() {
     let verified = host
         .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
             id: "follow".to_owned(),
+            model: None,
         }))
         .await
         .expect("verify");
@@ -1219,6 +1225,7 @@ async fn 显式空模型列表跟着厂商走且主模型取可选第一个() {
     let verified = host
         .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
             id: "follow".to_owned(),
+            model: None,
         }))
         .await
         .expect("verify again");
@@ -1708,6 +1715,7 @@ async fn 验证连接时学到的鉴权头写回连接() {
     let verified = host
         .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
             id: "learn-auth".to_owned(),
+            model: None,
         }))
         .await;
     let service::Response::ConnectionVerify(response) = verified.expect("verify 返回") else {
@@ -1743,6 +1751,7 @@ async fn 验证连接时学到的鉴权头写回连接() {
     let again = host
         .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
             id: "learn-auth".to_owned(),
+            model: None,
         }))
         .await;
     let service::Response::ConnectionVerify(again) = again.expect("verify 返回") else {
