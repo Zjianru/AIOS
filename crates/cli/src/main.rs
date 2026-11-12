@@ -384,9 +384,15 @@ fn resolve_selection(
 /// 不能把请求的选择压回去（否则页面换连接后每轮还是启动参数那个模型）。
 fn startup_common_for_requested_selection(
     common: &CommonArgs,
-    _requested: Option<&session::ModelSelection>,
+    requested: Option<&session::ModelSelection>,
 ) -> CommonArgs {
-    common.clone()
+    let mut resolved = common.clone();
+    if let Some(selection) = requested {
+        resolved.connection = Some(selection.connection.clone());
+        resolved.model = Some(selection.model.clone());
+        resolved.effort = Some(selection.effort_wanted.clone());
+    }
+    resolved
 }
 
 /// 打开数据目录的 Keyring，按会话选择解析 (连接 id, 模型配置, 上次选择的 Agent 配置, 凭证来源)。
