@@ -15,13 +15,19 @@ pub fn selectable_models(data_dir: &Path, connection: &ConnectionInfo) -> Vec<Mo
     {
         return rows.iter().map(info_from_row).collect();
     }
+    let provider =
+        model::catalog::provider_id_for_connection(&connection.preset, &connection.endpoint);
     if let Some(live) = model::catalog::read_live(data_dir, &connection.id)
         && !live.models.is_empty()
     {
-        return live.models;
+        // 存下的厂商列表照原样存；读出来再按目录 status 过滤（厂商列表不标下线）。
+        let catalog = model::catalog::global().unwrap_or_else(model::catalog::snapshot);
+        return live
+            .models
+            .into_iter()
+            .filter(|row| !catalog.is_deprecated(&provider, &row.id))
+            .collect();
     }
-    let provider =
-        model::catalog::provider_id_for_connection(&connection.preset, &connection.endpoint);
     if provider == "custom" {
         return Vec::new();
     }

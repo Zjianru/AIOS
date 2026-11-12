@@ -448,7 +448,6 @@ fn record_domain_op(
     let op = match method {
         "connection-save"
         | "connection-delete"
-        | "connection-verify"
         | "connection-update"
         | "connection-revoke"
         | "session-model-select" => "connection",
@@ -991,7 +990,6 @@ mod t011_ops_tests {
                 "endpoint": "http://127.0.0.1:1",
                 "apiKey": "sk-monitor-secret"
             }),
-            serde_json::json!({"method": "connection-verify", "id": "missing-conn"}),
             serde_json::json!({"method": "connection-delete", "id": "missing-conn"}),
             serde_json::json!({"method": "connection-update", "id": "missing-conn", "endpoint": "http://127.0.0.1:1", "model": "deepseek-flash"}),
             serde_json::json!({"method": "connection-revoke", "id": "missing-conn"}),
@@ -1009,7 +1007,6 @@ mod t011_ops_tests {
             "issues",
             "model-settings",
             "connection-save",
-            "connection-verify",
             "connection-delete",
             "connection-update",
             "connection-revoke",
@@ -1072,12 +1069,12 @@ mod t011_ops_tests {
             effort_call["attributes"]["effort"], "max",
             "带档请求记 effort：{text}"
         );
-        let verify = api_calls
+        let missing = api_calls
             .iter()
-            .find(|record| record["attributes"]["method"] == "connection-verify")
-            .expect("verify 记录");
+            .find(|record| record["attributes"]["method"] == "connection-revoke")
+            .expect("revoke 记录");
         assert_eq!(
-            verify["attributes"]["code"], "connection/missing",
+            missing["attributes"]["code"], "connection/missing",
             "码与 T009 码表一致"
         );
 
@@ -1085,7 +1082,7 @@ mod t011_ops_tests {
             .iter()
             .filter(|record| record["attributes"]["telemetry.op"] == "connection")
             .collect();
-        assert_eq!(connections.len(), 6, "连接操作各一条");
+        assert_eq!(connections.len(), 5, "连接操作各一条");
         let keyring_ops: Vec<&serde_json::Value> = records
             .iter()
             .filter(|record| record["attributes"]["telemetry.op"] == "keyring")

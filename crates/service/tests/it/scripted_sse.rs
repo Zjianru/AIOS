@@ -38,7 +38,16 @@ impl ScriptedSseServer {
         let bodies_in_thread = std::sync::Arc::clone(&bodies);
         let mut ready_tx = Some(ready_tx);
         let handle = std::thread::spawn(move || {
-            for script in scripts {
+            let mut scripts = scripts.into_iter();
+            let mut pending: Option<SseScript> = None;
+            loop {
+                let script = match pending.take() {
+                    Some(script) => script,
+                    None => match scripts.next() {
+                        Some(script) => script,
+                        None => return,
+                    },
+                };
                 let Some(mut stream) = accept_while_running(&listener, &stopped_in_thread) else {
                     return;
                 };
@@ -48,12 +57,25 @@ impl ScriptedSseServer {
                     reason = "测试辅助的 socket/通道失败不影响断言"
                 )]
                 let _ = stream.set_nonblocking(false);
-                if let Some(body) = read_request(&mut stream) {
-                    bodies_in_thread
-                        .lock()
-                        .expect("测试 SSE 请求记录锁被毒化")
-                        .push(body);
+                let Some((head, body)) = read_request(&mut stream) else {
+                    // 没读到请求：这次连接不算一次模型请求，脚本留着。
+                    pending = Some(script);
+                    continue;
+                };
+                // 假厂商只服务 /v1/messages：保存连接会请求 /v1/models，回 404 且不消耗脚本。
+                if !is_messages_request(&head) {
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "测试辅助的 404 写不出去只断开这条连接，脚本不消耗"
+                    )]
+                    let _ = write_not_found(&mut stream);
+                    pending = Some(script);
+                    continue;
                 }
+                bodies_in_thread
+                    .lock()
+                    .expect("测试 SSE 请求记录锁被毒化")
+                    .push(body);
                 let header = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n";
                 if stream.write_all(header.as_bytes()).is_err() {
                     continue;
@@ -163,7 +185,27 @@ fn accept_while_running(
     }
 }
 
-fn read_request(stream: &mut std::net::TcpStream) -> Option<Vec<u8>> {
+/// 假厂商只服务 Messages：请求行是 POST /v1/messages。
+fn is_messages_request(head: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(head);
+    let Some(line) = text.lines().next() else {
+        return false;
+    };
+    line.starts_with("POST ") && line.contains("/v1/messages")
+}
+
+fn write_not_found(stream: &mut std::net::TcpStream) -> std::io::Result<()> {
+    let body = br#"{"error":{"message":"fixture only serves /v1/messages"}}"#;
+    let head = format!(
+        "HTTP/1.1 404 Not Found\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(head.as_bytes())?;
+    stream.write_all(body)?;
+    stream.flush()
+}
+
+fn read_request(stream: &mut std::net::TcpStream) -> Option<(Vec<u8>, Vec<u8>)> {
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(5)))
         .ok()?;
@@ -203,5 +245,5 @@ fn read_request(stream: &mut std::net::TcpStream) -> Option<Vec<u8>> {
             }
         }
     }
-    Some(buffer[header_end..].to_vec())
+    Some((buffer[..header_end].to_vec(), buffer[header_end..].to_vec()))
 }

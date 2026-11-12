@@ -3,13 +3,12 @@
 use std::path::Path;
 use std::time::Duration;
 
-use credentials::CheckState;
 use model::{DEFAULT_CONTEXT_WINDOW, DeepSeekConfig, Effort};
 use service::{
-    Call, CancelRequest, CompactRequest, ConnectionSaveRequest, ConnectionVerifyRequest,
-    DeliveryMode, DisabledModelUser, DisabledModelsCheckRequest, DisabledModelsSetRequest,
-    FollowRequest, ModelSettingsRequest, Response, RootHost, RootSessionOptions, SendRequest,
-    ServiceError, SessionModelSelectRequest, SettingsUpdateRequest, StatusRequest,
+    Call, CancelRequest, CompactRequest, ConnectionSaveRequest, DeliveryMode, DisabledModelUser,
+    DisabledModelsCheckRequest, DisabledModelsSetRequest, FollowRequest, ModelSettingsRequest,
+    Response, RootHost, RootSessionOptions, SendRequest, ServiceError, SessionModelSelectRequest,
+    SettingsUpdateRequest, StatusRequest,
 };
 
 use crate::scripted_sse::{ScriptedSseServer, SseScript};
@@ -378,42 +377,6 @@ async fn 压缩摘要遇到屏蔽不发出请求() {
 }
 
 #[tokio::test]
-async fn 验证连接遇到屏蔽不发出请求() {
-    let server = MockServer::start().await;
-    mock_turn(&server).await;
-    let dir = tempdir().unwrap();
-    let host = host(dir.path(), &server.uri()).await;
-    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
-        id: "deepseek".to_owned(),
-        name: "DeepSeek".to_owned(),
-        model: "deepseek-flash".to_owned(),
-        endpoint: server.uri(),
-        api_key: "sk-test-not-a-real-key".to_owned(),
-        preset: Some("deepseek".to_owned()),
-        ..ConnectionSaveRequest::default()
-    }))
-    .await
-    .expect("save");
-
-    set_disabled(&host, vec!["deepseek/*"]).await;
-    let response = host
-        .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
-            id: "deepseek".to_owned(),
-            model: None,
-        }))
-        .await
-        .expect("验证调用本身应返回（结果写进注册器）");
-    let Response::ConnectionVerify(response) = response else {
-        panic!("expected ConnectionVerify");
-    };
-    match response.connection.check {
-        CheckState::Fail { reason, .. } => assert_eq!(reason, "MODEL_DISABLED", "验证结果是被屏蔽"),
-        other => panic!("应记成失败：{other:?}"),
-    }
-    assert_eq!(request_count(&server).await, 0, "验证的请求也不出站");
-}
-
-#[tokio::test]
 async fn 屏蔽表整表替换规范化保存并发设置变化事件() {
     let server = MockServer::start().await;
     mock_turn(&server).await;
@@ -491,7 +454,7 @@ async fn 模型设置响应旧字段照旧新字段只增() {
         "线上是空表数组，页面只读这个字段"
     );
     assert!(json["listed"].as_object().is_some());
-    assert_eq!(host.protocol_version(), 9, "ready 帧的协议版本是 9");
+    assert_eq!(host.protocol_version(), 10, "ready 帧的协议版本是 10");
     assert_eq!(request_count(&server).await, 0, "读设置不出站");
 }
 
@@ -545,7 +508,8 @@ async fn 屏蔽表的每条规则给出现在命中的连接和模型() {
         ],
         "每条规则给出现在命中的「连接/模型」，一条都不命中的给空表"
     );
-    assert_eq!(request_count(&server).await, 0, "保存连接与读设置不出站");
+    // 两次保存各拉一次厂商列表；读设置不出站。
+    assert_eq!(request_count(&server).await, 2, "保存时只拉厂商列表");
 }
 
 #[tokio::test]
@@ -1350,5 +1314,9 @@ async fn 已接模型时坏设置文件上的连接保存不写也不报错() {
         before,
         "没有写 settings.json"
     );
-    assert_eq!(request_count(&server).await, 0, "连接保存不出站");
+    assert_eq!(
+        request_count(&server).await,
+        1,
+        "保存只拉一次厂商列表，不写 settings.json"
+    );
 }

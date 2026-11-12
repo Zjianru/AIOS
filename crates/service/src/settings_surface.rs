@@ -1,4 +1,4 @@
-//! 设置面：Keyring 连接、模型设置、验证与余额；所有方法经 RootHost 的 Keyring/设置。
+//! 设置面：Keyring 连接、模型设置与余额；所有方法经 RootHost 的 Keyring/设置。
 
 use std::path::{Path, PathBuf};
 
@@ -7,8 +7,7 @@ use crate::protocol::{
     AvailableModelsMode, AvailableModelsRequest, AvailableModelsResponse, ConnectionDeleteRequest,
     ConnectionDeleteResponse, ConnectionQuotaRequest, ConnectionQuotaResponse,
     ConnectionRevokeRequest, ConnectionRevokeResponse, ConnectionSaveRequest,
-    ConnectionSaveResponse, ConnectionUpdateRequest, ConnectionUpdateResponse,
-    ConnectionVerifyRequest, ConnectionVerifyResponse, ConnectionVerifyResult, ExecSettingsView,
+    ConnectionSaveResponse, ConnectionUpdateRequest, ConnectionUpdateResponse, ExecSettingsView,
     FirstUseResponse, IssuesResponse, KeyringRelocateRequest, KeyringRelocateResponse,
     KeyringReopenRequest, KeyringReopenResponse, KeyringRestartResponse, ModelSettingsResponse,
     RootState, ServiceEvent, SettingsUpdateRequest, SettingsUpdateResponse,
@@ -133,6 +132,47 @@ impl RootHost {
             .map_err(|error| ServiceError::SettingsInvalid(format!("旧的模型列表没清掉：{error}")))
     }
 
+    /// 保存连接时问一次厂商列表（照 Magpie：新连接/换 key 时拉），结果写进 check。
+    ///
+    /// 拉不到不挡保存：HTTP/网络问题只写 check。返回错误只表示列表拿到了却存不下，
+    /// 或者 check 写不进 Keyring——那已经不是「拉列表失败」。
+    async fn fetch_models_on_save(
+        &self,
+        keyring: &credentials::Keyring,
+        connection: &credentials::ConnectionInfo,
+    ) -> Result<(), ServiceError> {
+        let secret = keyring
+            .issue(&connection.id, "models-list", None, None)?
+            .into_secret();
+        let at = now_seconds();
+        let check = match fetch_vendor_models(connection, secret, SAVE_MODELS_TIMEOUT).await {
+            // 2xx 但空表、解析不出：什么都不改（保存已把 check 重置成 Never）。
+            VendorModels::Models(models) if models.is_empty() => return Ok(()),
+            VendorModels::Models(models) => {
+                model::catalog::save_live(
+                    &self.options.data_dir,
+                    &connection.id,
+                    at,
+                    model::catalog::live_models_info(&models),
+                )
+                .map_err(|error| {
+                    ServiceError::SettingsInvalid(format!("模型列表没保存：{error}"))
+                })?;
+                credentials::CheckResult::Ok { at }
+            }
+            VendorModels::Status(status) => credentials::CheckResult::Fail {
+                at,
+                reason: list_failure_reason(status),
+            },
+            VendorModels::Unreachable => credentials::CheckResult::Fail {
+                at,
+                reason: format!("连不上 {}", endpoint_host(&connection.endpoint)),
+            },
+        };
+        keyring.record_check(&connection.id, check)?;
+        Ok(())
+    }
+
     /// 存/换连接。
     ///
     /// 覆盖已有连接且换了地址或预设：旧地址的厂商列表作废，主模型和小标签回到内置目录。
@@ -160,6 +200,9 @@ impl RootHost {
         if let Some(before) = before {
             self.forget_stale_live(&before, &connection)?;
         }
+        // 保存带 key（新连接或换 key）：先拉一次厂商列表，再写 last_selection——
+        // 默认模型要按新列表算。拉不到只写 check，不挡保存。
+        self.fetch_models_on_save(&keyring, &connection).await?;
         // 把刚保存的连接设为当前选择。
         // RootHost 的 recheck 走 model_factory → resolve_selection，只认 CLI 参数 /
         // settings.last_selection / id=="deepseek"；页面/HTTP 建连接（如 minimax-cn）
@@ -252,105 +295,6 @@ impl RootHost {
         Ok(ConnectionRevokeResponse { connection })
     }
 
-    /// 验证连接：从 Keyring 取一次签发，发最小 Messages 请求。
-    ///
-    /// 不带 model 时沿用旧回退，并把结果写进注册器；带 model 时只用它发这一次，
-    /// 结果只在响应里返回，不改连接 check、最近选择，也不写适配器学到的鉴权头。
-    pub async fn connection_verify(
-        &self,
-        request: ConnectionVerifyRequest,
-    ) -> Result<ConnectionVerifyResponse, ServiceError> {
-        let keyring = self.keyring()?;
-        let view = keyring.view();
-        let connection = view
-            .connections
-            .into_iter()
-            .find(|connection| connection.id == request.id)
-            .ok_or_else(|| {
-                ServiceError::Credentials(credentials::KeyringError::MissingConnection(
-                    request.id.clone(),
-                ))
-            })?;
-        let api_key = keyring
-            .issue(&request.id, "connection-verify", None, None)?
-            .into_secret();
-        // 验证走模型适配器（和对话同一条请求路径/同一组头），不再手写 reqwest。
-        let explicit_model = request.model.is_some();
-        let model_id = request
-            .model
-            .clone()
-            .unwrap_or_else(|| crate::models::primary_model(&self.options.data_dir, &connection));
-        let config = model::DeepSeekConfig {
-            provider: model::catalog::provider_id_for_connection(
-                &connection.preset,
-                &connection.endpoint,
-            ),
-            base_url: connection.endpoint.clone(),
-            // 指定了只影响这一次请求；没指定才沿用连接的默认模型和旧记录行为。
-            model: model_id.clone(),
-            max_tokens: 1,
-            context_window: model::DEFAULT_CONTEXT_WINDOW,
-            effort: model::Effort::new("off"),
-            tool_update: None,
-        };
-        let cancel = model::CancelToken::new(
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            std::sync::Arc::new(tokio::sync::Notify::new()),
-        );
-        let messages = vec![model::Message::user_text("ping")];
-        let at = now_seconds();
-        // 旧回退的验证要把学到的鉴权头写回连接，所以把 Keyring 的 Arc 交给来源；
-        // 显式模型的验证只读连接状态，学到的头不写回。
-        let keyring = std::sync::Arc::new(keyring);
-        let outcome = match model::DeepSeek::with_credentials(
-            config,
-            std::sync::Arc::new(VerifyCredential {
-                api_key,
-                keyring: std::sync::Arc::clone(&keyring),
-                connection: request.id.clone(),
-                persist_learned_auth_header: !explicit_model,
-                data_dir: self.options.data_dir.clone(),
-            }),
-        ) {
-            Err(error) => Err(error),
-            Ok(model) => model
-                .stream(&messages, &model::ToolRequest::default(), &cancel)
-                .await
-                .map(|_| ()),
-        };
-        let result = ConnectionVerifyResult {
-            model: model_id,
-            ok: outcome.is_ok(),
-            reason: outcome.as_ref().err().map(ToString::to_string),
-        };
-        // 指定模型只回报本次结果：不写连接 check，也不动最近选择。
-        if !explicit_model {
-            let check = match &outcome {
-                Ok(()) => credentials::CheckResult::Ok { at },
-                Err(error) => credentials::CheckResult::Fail {
-                    at,
-                    reason: error.code.as_str().to_owned(),
-                },
-            };
-            keyring.record_check(&request.id, check)?;
-            self.emit_settings_changed();
-        }
-        let connection = keyring
-            .view()
-            .connections
-            .into_iter()
-            .find(|connection| connection.id == request.id)
-            .ok_or_else(|| {
-                ServiceError::Credentials(credentials::KeyringError::MissingConnection(
-                    request.id.clone(),
-                ))
-            })?;
-        Ok(ConnectionVerifyResponse {
-            connection,
-            result: explicit_model.then_some(result),
-        })
-    }
-
     /// 目录 + 厂商 GET /v1/models 合并；用户填的字段最后覆盖。
     pub async fn available_models(
         &self,
@@ -387,52 +331,29 @@ impl RootHost {
         let mut models = catalog_models;
         let mut live = false;
         let mut live_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
-        if let Ok(client) = model::http::client() {
-            // endpoint 以 /anthropic 结尾时列表在 Chat base 的 /v1/models。
-            let url = model::catalog::models_url(&connection.endpoint);
-            let mut request = client.get(url).timeout(std::time::Duration::from_secs(5));
-            // 没记过单个头时两个都发：MiniMax 国内站的 /v1/models 只认 Bearer（messages 双头
-            // 都能过，所以验证不会学到单头）；照 T012.6/Magpie 的默认，列表也两个头一起发。
-            let secret = key.into_secret();
-            match connection.auth_header.as_deref() {
-                Some("authorization") => {
-                    request = request.header("authorization", format!("Bearer {secret}"));
-                }
-                Some("x-api-key") => {
-                    request = request.header("x-api-key", secret);
-                }
-                _ => {
-                    request = request
-                        .header("x-api-key", secret.clone())
-                        .header("authorization", format!("Bearer {secret}"));
-                }
+        // 没记过单个头时两个都发：MiniMax 国内站的 /v1/models 只认 Bearer（messages 双头
+        // 都能过，所以验证不会学到单头）；照 T012.6/Magpie 的默认，列表也两个头一起发。
+        if let VendorModels::Models(live_models) =
+            fetch_vendor_models(&connection, key.into_secret(), AVAILABLE_MODELS_TIMEOUT).await
+            && !live_models.is_empty()
+        {
+            // 只有用户按了「获取可用模型」才落盘。打开选择器/设置页也会走到这里，
+            // 那一次落盘会把「新」的基准推着走，设置页就再也看不到「新」。
+            // 存的是厂商这次给的列表（没并目录、没写用户字段）；空表不写。
+            if mode == AvailableModelsMode::Fetch {
+                model::catalog::save_live(
+                    &self.options.data_dir,
+                    &connection.id,
+                    now_seconds(),
+                    model::catalog::live_models_info(&live_models),
+                )
+                .map_err(|error| {
+                    ServiceError::SettingsInvalid(format!("模型列表没保存：{error}"))
+                })?;
             }
-            if let Ok(response) = request.send().await
-                && response.status().is_success()
-                && let Ok(bytes) = response.bytes().await
-                && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
-            {
-                let live_models = model::catalog::parse_live_models(&value);
-                if !live_models.is_empty() {
-                    // 只有用户按了「获取可用模型」才落盘。打开选择器/设置页也会走到这里，
-                    // 那一次落盘会把「新」的基准推着走，设置页就再也看不到「新」。
-                    // 存的是厂商这次给的列表（没并目录、没写用户字段）；空表不写。
-                    if mode == AvailableModelsMode::Fetch {
-                        model::catalog::save_live(
-                            &self.options.data_dir,
-                            &connection.id,
-                            now_seconds(),
-                            model::catalog::live_models_info(&live_models),
-                        )
-                        .map_err(|error| {
-                            ServiceError::SettingsInvalid(format!("模型列表没保存：{error}"))
-                        })?;
-                    }
-                    live_ids = live_models.iter().map(|model| model.id.clone()).collect();
-                    models = model::catalog::merge_live(&catalog, &provider_id, live_models);
-                    live = true;
-                }
-            }
+            live_ids = live_models.iter().map(|model| model.id.clone()).collect();
+            models = model::catalog::merge_live(&catalog, &provider_id, live_models);
+            live = true;
         }
         // 显式模型行不过滤：目录标了下线的也照样列；先补上目录字段，用户字段在下面覆盖。
         for row in connection.models.as_deref().unwrap_or_default() {
@@ -718,75 +639,75 @@ impl RootHost {
         let _delivered = self.events.send(event).unwrap_or(0);
     }
 }
-/// 验证连接的固定 key 来源（key 只在内存里；签发记录仍由 Keyring 记）。
-/// 旧回退的验证把学到的鉴权头写回连接（和对话路径同一接缝）；显式模型的验证只读。
-struct VerifyCredential {
-    api_key: String,
-    keyring: std::sync::Arc<credentials::Keyring>,
-    connection: String,
-    /// 适配器学到的鉴权头要不要写回连接；显式模型的验证只回报本次结果，不写。
-    persist_learned_auth_header: bool,
-    /// 验证和聊天共用同一条出站接缝：被屏蔽的模型不发请求。
-    data_dir: std::path::PathBuf,
+/// 保存时拉厂商列表的超时：照 Magpie 的 8 秒；「获取可用模型」原来的 5 秒不动。
+const SAVE_MODELS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+const AVAILABLE_MODELS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// 一次厂商 /v1/models 请求的结果（保存和「获取」共用这一段出站形状）。
+enum VendorModels {
+    /// 2xx；解析不出也当空表（按「没拿到模型」处理）。
+    Models(Vec<model::catalog::LiveModel>),
+    /// 非 2xx；状态码照实带回。
+    Status(reqwest::StatusCode),
+    /// 网络错、超时、出站 client 建不出来。
+    Unreachable,
 }
 
-impl model::CredentialSource for VerifyCredential {
-    fn issue(
-        &self,
-        _purpose: &str,
-        _context: &model::CredentialContext,
-    ) -> Result<String, model::ModelError> {
-        Ok(self.api_key.clone())
-    }
-
-    /// 连接上记住的鉴权头（第二次验证直接用它，不再从双头开始）。
-    fn auth_header(&self) -> Option<String> {
-        self.keyring
-            .view()
-            .connections
-            .into_iter()
-            .find(|connection| connection.id == self.connection)
-            .and_then(|connection| connection.auth_header)
-    }
-
-    /// 验证连接也走屏蔽检查：被屏蔽时记录失败（MODEL_DISABLED），不发出请求。
-    fn admit(&self, model: &str) -> Result<(), model::ModelError> {
-        crate::disabled::admit(&self.data_dir, &self.connection, model)
-    }
-
-    fn remember_auth_header(&self, header: &str) {
-        if !self.persist_learned_auth_header {
-            return;
+/// 问一次厂商 /v1/models：同一个 URL、同样的两个鉴权头，超时由调用方给。
+async fn fetch_vendor_models(
+    connection: &credentials::ConnectionInfo,
+    secret: String,
+    timeout: std::time::Duration,
+) -> VendorModels {
+    let Ok(client) = model::http::client() else {
+        return VendorModels::Unreachable;
+    };
+    let mut request = client
+        .get(model::catalog::models_url(&connection.endpoint))
+        .timeout(timeout);
+    match connection.auth_header.as_deref() {
+        Some("authorization") => {
+            request = request.header("authorization", format!("Bearer {secret}"));
         }
-        let Some(connection) = self
-            .keyring
-            .view()
-            .connections
-            .into_iter()
-            .find(|connection| connection.id == self.connection)
-        else {
-            return;
-        };
-        if let Err(error) = self.keyring.update_connection_details(
-            &self.connection,
-            credentials::ConnectionUpdate {
-                endpoint: connection.endpoint.clone(),
-                model: connection.primary_model().to_owned(),
-                auth_header: Some(header.to_owned()),
-                ..credentials::ConnectionUpdate::default()
-            },
-        ) {
-            eprintln!(
-                "{}",
-                auth_header_writeback_failure(&self.connection, &error.to_string())
-            );
+        Some("x-api-key") => {
+            request = request.header("x-api-key", secret);
         }
+        _ => {
+            request = request
+                .header("x-api-key", secret.clone())
+                .header("authorization", format!("Bearer {secret}"));
+        }
+    }
+    let Ok(response) = request.send().await else {
+        return VendorModels::Unreachable;
+    };
+    if !response.status().is_success() {
+        return VendorModels::Status(response.status());
+    }
+    let Ok(bytes) = response.bytes().await else {
+        return VendorModels::Unreachable;
+    };
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return VendorModels::Models(Vec::new());
+    };
+    VendorModels::Models(model::catalog::parse_live_models(&value))
+}
+
+/// 拉列表失败的人话原因：401/403 说密钥不对，其余只说厂商回了几号。
+fn list_failure_reason(status: reqwest::StatusCode) -> String {
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        format!("密钥不对（{}）", status.as_u16())
+    } else {
+        format!("厂商回了 {}", status.as_u16())
     }
 }
 
-/// 鉴权头写回 Keyring 失败时的一行可见日志：连接 id + 原因（key 不进日志）。
-pub(crate) fn auth_header_writeback_failure(connection: &str, reason: &str) -> String {
-    format!("连接 {connection} 的鉴权头没写回 Keyring：{reason}")
+/// endpoint 的 host；解析不出来就照原样写（不吞掉人看得懂的部分）。
+fn endpoint_host(endpoint: &str) -> String {
+    reqwest::Url::parse(endpoint)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_owned))
+        .unwrap_or_else(|| endpoint.to_owned())
 }
 
 pub(crate) fn now_seconds() -> u64 {

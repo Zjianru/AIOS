@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn protocol_version_is_9() {
+fn protocol_version_is_10() {
     assert_eq!(
-        PROTOCOL_VERSION, 9,
-        "status 带会话 cwd 把协议升到 9（ready 帧带 9；旧页忽略新增字段）"
+        PROTOCOL_VERSION, 10,
+        "删了 connection-verify（只删不是只增），协议升到 10"
     );
 }

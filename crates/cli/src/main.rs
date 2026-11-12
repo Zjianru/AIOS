@@ -1654,9 +1654,11 @@ fn keyring(args: KeyringArgs) -> Result<u8, CliError> {
             }
             for connection in &view.connections {
                 let check = match &connection.check {
-                    credentials::CheckState::Never => "还没验证".to_owned(),
-                    credentials::CheckState::Ok { .. } => "连接可用".to_owned(),
-                    credentials::CheckState::Fail { reason, .. } => format!("验证失败：{reason}"),
+                    credentials::CheckState::Never => "还没拉过列表".to_owned(),
+                    credentials::CheckState::Ok { .. } => "已拿到模型列表".to_owned(),
+                    credentials::CheckState::Fail { reason, .. } => {
+                        format!("拉不到模型列表：{reason}")
+                    }
                 };
                 println!(
                     "{}（{}） · {} · {} · {check}",

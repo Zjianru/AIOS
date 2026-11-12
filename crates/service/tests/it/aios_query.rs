@@ -171,7 +171,8 @@ async fn aios_query_topics_match_service_reads() {
         );
     }
     let topic = |index: usize| -> Value {
-        serde_json::from_str(&results[index]).expect("查询结果是 JSON")
+        serde_json::from_str(&results[index])
+            .unwrap_or_else(|error| panic!("查询结果是 JSON（{error}）：{results:?}"))
     };
 
     // 设置：这条对话的模型、强度和币种，和 status 一致。
