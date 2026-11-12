@@ -246,7 +246,8 @@ test('停了以后说「接着做吧」：第 2 次 Attempt，原会话接着做
     await expect(first).toHaveAttribute('data-state', 'ready');
 
     const pane = await openTaskChat(page, fixture, taskId);
-    await expect(pane.locator('[data-kind="task-state"]')).toHaveCount(0);
+    // T039：交过报告、不在跑 → 页头写「已汇报 · 待你核」，不再空白。
+    await expect(pane.locator('[data-kind="task-state"]')).toContainText('已汇报 · 待你核');
     await pane.locator('[data-kind="composer-input"]').fill('接着做吧');
     await pane.locator('[data-kind="task-send"]').click();
 
@@ -349,11 +350,14 @@ test('Esc 停下这一轮：任务不算停、不出新卡，输入框还在', a
     // 没有新卡：Kind 对话里一张结果卡都没有。
     await page.goto(urlOf(fixture));
     await expect(page.locator('[data-kind="task-result"]')).toHaveCount(0);
-    // 任务没被记成停止：任务对话还有输入框，菜单两项可用状态由页头事实决定。
+    // 任务没被记成停止：任务对话还有输入框；T039 后页头任何时刻都有状态词，
+    // 但不能是「已停止」（Esc 只停这一轮）。
     await page.goto(urlOf(fixture, '#taskchat:' + taskId));
     const again = taskPane(page);
     await expect(again.locator('[data-kind="composer-input"]')).toBeVisible({ timeout: 20_000 });
-    await expect(again.locator('[data-kind="task-state"]')).toHaveCount(0);
+    const state = again.locator('[data-kind="task-state"]');
+    await expect(state).toHaveCount(1);
+    await expect(state).not.toContainText('已停止');
   } finally {
     await fixture.close();
   }
