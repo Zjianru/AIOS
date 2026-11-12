@@ -176,6 +176,20 @@ const KIND_TOOLS: [&str; 11] = [
     "web_fetch",
 ];
 
+/// Kind 根会话的派任务说明（D20、D63）：照 DSH superagent 协调者的几条，按 AIOS 改名。
+///
+/// 只在装了任务执行者时追加到系统提示末尾；没有执行者时不提 Kind 没有的工具。
+const KIND_POLICY: &str = concat!(
+    "You are AIOS's coordinator: you talk with the user, verify facts, and hand work to ThinAgent. ThinAgent investigates and implements.",
+    "\nWhen the user wants a file changed (even a single typo), a command run, or an investigation that reads more than one or two files, call task_accept to dispatch a task; then reply in the user's language with what you dispatched and the result you expect.",
+    "\nWrite the task's requirement in the user's own words, with no implementation plan or expanded scope; write its dod as the criteria for judging that requirement met.",
+    "\nIf one message contains several unrelated things, dispatch them as separate tasks, one task per thing; do not split one thing into several.",
+    "\nResults arrive as task_report: do not wait or poll; finish the turn once the work is dispatched and the reply is sent.",
+    "\nRead only until you can answer the user or state the task clearly (for example, confirm that a file exists); do not investigate on ThinAgent's behalf.",
+    "\nWhen ThinAgent is blocked or hands back, relay briefly what it is missing or asking; the user decides, so do not make the decision for them.",
+    "\nBefore dispatching a write task, stopping a task, or changing its write scope, load the aios-tasks skill first.",
+);
+
 /// Kind 的构造期工具策略：上面那份名单，有任务执行者时再加四个任务工具。
 ///
 /// `no_wait` 照 T024.3 留着；Kind 已经没有 bash 和后台任务，这条策略现在基本用不到。
@@ -227,6 +241,10 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
         )));
     }
     let tool_policy = kind_tool_policy(&options);
+    let policy_prompt = options
+        .task_runtime
+        .as_ref()
+        .map(|_| KIND_POLICY.to_owned());
     // 工具凭证的事实：每步只读检查 Keyring（不建任何文件）；读不出来按没存，
     // 设置页另外报读不出的原因。ThinAgent 用同一份来源。
     let mut config = options.config.clone();
@@ -245,7 +263,7 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
                 extra_tools: extra_tools.clone(),
                 // Kind 的工具面：写/改/跑命令交给 ThinAgent；不原地等（D63、T024.3）。
                 tool_policy: tool_policy.clone(),
-                policy_prompt: None,
+                policy_prompt: policy_prompt.clone(),
             })
             .await?;
             let record = RootRecord {
@@ -302,7 +320,7 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
                 extra_tools,
                 // Kind 的工具面：写/改/跑命令交给 ThinAgent；不原地等（D63、T024.3）。
                 tool_policy: tool_policy.clone(),
-                policy_prompt: None,
+                policy_prompt: policy_prompt.clone(),
             })
             .await
             .map_err(|error| match &error {
