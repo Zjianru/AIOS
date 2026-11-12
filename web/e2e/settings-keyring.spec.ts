@@ -2,6 +2,7 @@ import { existsSync, renameSync } from 'node:fs';
 import path from 'node:path';
 import { test, expect, type Page } from '@playwright/test';
 import { startKernelFixture, type KernelFixture } from './service-fixture';
+import { openVerifyDialog, selectVerifyModel } from './verify-dialog';
 
 async function openSettings(page: Page, fixture: KernelFixture): Promise<void> {
   await page.goto(`${fixture.baseUrl}/?token=${encodeURIComponent(fixture.token)}#kind`);
@@ -61,11 +62,13 @@ test('设置页换钥匙位置 + 签发记录', async ({ page }) => {
     await expect(keyringSection).toContainText(
       /现在是一个文件，\d{4}-\d{2}-\d{2} \d{2}:\d{2} 起放在这里/,
     );
-    // 手动「验证」走弹窗：默认用连接当前的模型，成功是弹窗里的对勾动画。
-    await page.getByRole('button', { name: '验证', exact: true }).click();
-    const dialog = page.getByRole('dialog');
-    await expect(dialog).toBeVisible();
-    await expect(dialog.locator('[data-verify="model-select"]')).toHaveValue('deepseek-flash');
+    // 手动「验证」走弹窗：没有预选，选一个再验证，成功是弹窗里的对勾动画。
+    const dialog = await openVerifyDialog(page);
+    const select = dialog.locator('[data-verify="model-select"]');
+    await expect(select).toHaveValue('');
+    await expect(dialog.getByRole('button', { name: '验证', exact: true })).toBeDisabled();
+    await selectVerifyModel(dialog, 'deepseek-flash');
+    await expect(dialog.getByRole('button', { name: '验证', exact: true })).toBeEnabled();
     await dialog.getByRole('button', { name: '验证', exact: true }).click();
     await expect(dialog.locator('[data-verify="ok"]')).toBeVisible({ timeout: 20_000 });
     await expect(dialog.locator('[data-verify="check"]')).toHaveCSS('animation-name', 'verify-check-pop');

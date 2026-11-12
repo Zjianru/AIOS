@@ -1,16 +1,20 @@
-import { test, expect, type Page, type Route } from '@playwright/test';
+import { test, expect, type Locator, type Page, type Route } from '@playwright/test';
 import { apiPost, startKernelFixture, type KernelFixture } from './service-fixture';
-import { connectionRow, openVerifyDialog } from './verify-dialog';
+import {
+  connectionRow, openVerifyDialog, selectVerifyModel, waitVerifyModels,
+} from './verify-dialog';
 
 /**
- * T034.2：连接的「验证」走弹窗——先选模型再验证。
- * - 模型列表按 连接勾的模型 → 厂商列表 → 目录；默认选连接当前的 model。
- * - 成功是放大的绿对勾；失败是抖动的红叉 + 本次模型和厂商原因。
- * - 这条路径只回报这一次：不写连接 check、不改聊天里的模型、不阻止发消息。
+ * T034.2（spec v3）：连接验证走弹窗——保存连接后自动打开，也能从行上的「验证」打开。
+ * - 列表由弹窗自己去 available-models 拉（连接 models/live/目录），**不预选**；
+ *   没选模型时「验证」点不了，选了才发这一次请求。
+ * - 成功是放大的绿对勾；失败是抖动的红叉 + 本次模型和可读原因。
+ * - 这条路径只回报这一次：不写连接 check、不改聊天里的模型、不阻止发消息；
+ *   保存连接后的旧自动验证（不带 model）照旧，不在本票改。
  */
 
 const MINIMAX = 'minimax-cn';
-const CHAT_MODEL = 'MiniMax-M3.1-Flash';
+const M31 = 'MiniMax-M3.1-Flash';
 
 interface ChatModel {
   connection: string;
@@ -19,14 +23,14 @@ interface ChatModel {
 
 /**
  * 给夹具加一条 MiniMax 连接：跟厂商的列表走（models 空），存下的厂商列表把 M2 排在最前；
- * 连接当前模型是 M3.1（建连接时存下的）。弹窗默认该选 M3.1，而不是列表第一个 M2。
+ * 连接当前模型是 M3.1（建连接时存下的）。
  */
 async function seedMinimax(request: Parameters<typeof apiPost>[0], fixture: KernelFixture): Promise<void> {
   const saved = await apiPost(request, fixture, {
     method: 'connection-save',
     id: MINIMAX,
     name: 'MiniMax（国内站）',
-    model: CHAT_MODEL,
+    model: M31,
     endpoint: fixture.fakeEndpoint,
     apiKey: 'test-key',
     preset: MINIMAX,
@@ -51,10 +55,10 @@ async function selectChatModel(page: Page, request: Parameters<typeof apiPost>[0
   const item = page.getByRole('menuitem', { name: /MiniMax-M3\.1-Flash/ });
   await expect(item).toBeVisible({ timeout: 30_000 });
   await item.click({ force: true });
-  await expect(picker).toContainText(CHAT_MODEL, { timeout: 15_000 });
+  await expect(picker).toContainText(M31, { timeout: 15_000 });
   await expect
     .poll(async () => (await chatModel(request, fixture)).model, { timeout: 15_000 })
-    .toBe(CHAT_MODEL);
+    .toBe(M31);
 }
 
 async function openSettings(page: Page, fixture: KernelFixture): Promise<void> {
@@ -94,7 +98,14 @@ async function connectionCheck(
   return { kind: connection!.check.kind, model: connection!.model };
 }
 
-test('弹窗默认选连接当前的模型（不是模型列表第一个）', async ({ page, request }) => {
+/** 弹窗里的模型下拉：没有预选、按钮先置灰，选了才让点。 */
+async function expectNoPreselection(dialog: Locator): Promise<void> {
+  const select = dialog.locator('[data-verify="model-select"]');
+  await expect(select).toHaveValue('');
+  await expect(dialog.getByRole('button', { name: '验证', exact: true })).toBeDisabled();
+}
+
+test('保存连接后弹窗自动打开：列表是拉来的，没有默认选中', async ({ page, request }) => {
   const fixture = await startKernelFixture({ t034Verify: true });
   try {
     await seedMinimax(request, fixture);
@@ -102,18 +113,40 @@ test('弹窗默认选连接当前的模型（不是模型列表第一个）', as
     await expect(page.locator('[data-kind="model-picker"]')).toBeVisible({ timeout: 30_000 });
     await openSettings(page, fixture);
 
-    const dialog = await openVerifyDialog(page, MINIMAX);
+    // 弹窗要自己去服务要列表：记下保存之后页面发的 available-models。
+    const asked: string[] = [];
+    page.on('request', (sent) => {
+      const body = sent.postData() ?? '';
+      if (body.includes('"method":"available-models"')) asked.push(body);
+    });
+    await connectionRow(page, MINIMAX).getByRole('button', { name: '编辑', exact: true }).click();
+    await page.locator('#key-minimax-cn').fill('new-key');
+    await page.locator('[data-settings="editor"]').getByRole('button', { name: '保存', exact: true }).click();
+
+    // 保存成功后弹窗立刻出现，不用再点「验证」。
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('[data-settings="editor"]')).toHaveCount(0);
+    await waitVerifyModels(dialog);
+
+    // 列表真的来自 available-models（连接 models/live/目录），而且只是「看一眼」，不落盘。
+    expect(asked.join(' '), '保存后要问服务要这次能用的模型').toContain('"method":"available-models"');
+    expect(asked.join(' '), '弹窗只是看一眼：不能把这次列表存成「新」的基准').toContain('"mode":"query"');
     const select = dialog.locator('[data-verify="model-select"]');
-    await expect(select).toHaveValue(CHAT_MODEL);
     const options = await select.locator('option').allTextContents();
-    expect(options[0], '列表框第一个是厂商列表里的 M2').toContain('MiniMax-M2');
-    expect(options.join(' ')).toContain(CHAT_MODEL);
+    expect(options.join(' | ')).toContain(M31);
+    expect(options.some((text) => text.trim() === 'MiniMax-M2'), '列表要有 M2').toBe(true);
+
+    // 不默认 M3.1、不默认目录第一个：停在占位项，验证按钮点不了。
+    await expectNoPreselection(dialog);
+    await selectVerifyModel(dialog, M31);
+    await expect(dialog.getByRole('button', { name: '验证', exact: true })).toBeEnabled();
   } finally {
     await fixture.close();
   }
 });
 
-test('验证成功：绿色对勾放大，连接行和聊天模型都不变', async ({ page, request }) => {
+test('选 M3.1 验证成功：绿勾放大，聊天模型和连接行都不变；「验证」还能再开同一个弹窗', async ({ page, request }) => {
   const fixture = await startKernelFixture({ t034Verify: true });
   try {
     await seedMinimax(request, fixture);
@@ -125,13 +158,15 @@ test('验证成功：绿色对勾放大，连接行和聊天模型都不变', as
 
     await openSettings(page, fixture);
     const dialog = await openVerifyDialog(page, MINIMAX);
+    await expectNoPreselection(dialog);
+    await selectVerifyModel(dialog, M31);
     const release = await holdVerifyRequest(page);
     await dialog.getByRole('button', { name: '验证', exact: true }).click();
     await expect(dialog.locator('[data-verify="checking"]')).toBeVisible();
     release();
     await expect(dialog.locator('[data-verify="ok"]')).toBeVisible({ timeout: 20_000 });
     await expect(dialog.locator('[data-verify="check"]')).toHaveCSS('animation-name', 'verify-check-pop');
-    await expect(dialog.locator('[data-verify="model"]')).toContainText(CHAT_MODEL);
+    await expect(dialog.locator('[data-verify="model"]')).toContainText(M31);
 
     // 验证会签发一次凭证：设置页的签发记录要跟上，但连接 check 不动。
     await expect(page.locator('[data-settings="keyring"]')).toContainText('今天签发', { timeout: 20_000 });
@@ -141,6 +176,13 @@ test('验证成功：绿色对勾放大，连接行和聊天模型都不变', as
 
     await dialog.getByRole('button', { name: '关闭', exact: true }).click();
     await expect(dialog).toHaveCount(0);
+
+    // 行上的「验证」打开的是同一个弹窗：再开一次还是没有预选。
+    const again = await openVerifyDialog(page, MINIMAX);
+    await expectNoPreselection(again);
+    await again.getByRole('button', { name: '取消', exact: true }).click();
+    await expect(again).toHaveCount(0);
+
     expect(await chatModel(request, fixture)).toEqual(modelBefore);
     await backToKind(page);
     expect(await page.locator('[data-kind="model-picker"]').textContent()).toBe(pickerLabel);
@@ -149,7 +191,7 @@ test('验证成功：绿色对勾放大，连接行和聊天模型都不变', as
   }
 });
 
-test('验证失败：红叉抖动 + 本次模型和原因，连接行和聊天模型都不变，照样能发消息', async ({ page, request }) => {
+test('选 M2 验证失败：红叉抖动 + 本次模型和原因，连接行和聊天模型都不变，照样能发消息', async ({ page, request }) => {
   const fixture = await startKernelFixture({ t034Verify: true });
   try {
     await seedMinimax(request, fixture);
@@ -161,7 +203,8 @@ test('验证失败：红叉抖动 + 本次模型和原因，连接行和聊天�
 
     await openSettings(page, fixture);
     const dialog = await openVerifyDialog(page, MINIMAX);
-    await dialog.locator('[data-verify="model-select"]').selectOption('MiniMax-M2');
+    await expectNoPreselection(dialog);
+    await selectVerifyModel(dialog, 'MiniMax-M2');
     const release = await holdVerifyRequest(page);
     await dialog.getByRole('button', { name: '验证', exact: true }).click();
     await expect(dialog.locator('[data-verify="checking"]')).toBeVisible();

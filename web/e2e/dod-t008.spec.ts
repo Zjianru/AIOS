@@ -82,9 +82,13 @@ test('DoD4 真 key：删 key 凭证失败、挪钥匙 Keyring 失败、指回恢
       .locator('[data-settings="editor"]')
       .getByRole('button', { name: '保存', exact: true })
       .click();
-    // 保存新 key 后的自动验证仍走旧路径（写连接 check）：手动「验证」现在是弹窗。
+    // 保存新 key 后的自动验证仍走旧路径（写连接 check）；同时弹出选模型的验证弹窗。
     await expect(page.locator('[data-settings="editor"]')).toHaveCount(0, { timeout: 20_000 });
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText('连接可用', { exact: false })).toBeVisible({ timeout: 120_000 });
+    await dialog.getByRole('button', { name: '取消', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
     await page.screenshot({ path: path.join(evidence, 'dod4-settings-issues.png'), fullPage: true });
 
     // 挪走钥匙文件，再发：失败块说 Keyring。

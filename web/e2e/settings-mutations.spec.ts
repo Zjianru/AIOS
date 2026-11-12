@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { startKernelFixture } from './service-fixture';
-import { verifyConnectionViaDialog } from './verify-dialog';
+import { verifyConnectionViaDialog, waitVerifyModels } from './verify-dialog';
 
 async function openSettings(page: Parameters<typeof test>[1] extends never ? never : import('@playwright/test').Page, fixture: import('./service-fixture').KernelFixture) {
   await page.goto(`${fixture.baseUrl}/?token=${encodeURIComponent(fixture.token)}#kind`);
@@ -35,7 +35,7 @@ test('设置页删除提供商：列表变空', async ({ page }) => {
   }
 });
 
-test('设置页换 key：保存后可以验证', async ({ page }) => {
+test('设置页换 key：保存后自动弹窗选模型，旧的自动验证照旧', async ({ page }) => {
   const fixture = await startKernelFixture();
   try {
     await page.goto(`${fixture.baseUrl}/?token=${encodeURIComponent(fixture.token)}#kind`);
@@ -48,10 +48,17 @@ test('设置页换 key：保存后可以验证', async ({ page }) => {
       .locator('[data-settings="editor"]')
       .getByRole('button', { name: '保存', exact: true })
       .click();
-    // 保存新 key 后的自动验证仍走旧路径：连接行变成可用。
+    // 保存新 key 后：验证弹窗自动打开（还没有预选），不用再点行上的「验证」。
     await expect(page.locator('[data-settings="editor"]')).toHaveCount(0, { timeout: 20_000 });
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 20_000 });
+    await waitVerifyModels(dialog);
+    await expect(dialog.locator('[data-verify="model-select"]')).toHaveValue('');
+    // 保存新 key 后的自动验证仍走旧路径：连接行变成可用。
     await expect(page.getByText('连接可用', { exact: false })).toBeVisible({ timeout: 20_000 });
-    // 手动「验证」走弹窗；这次成功不改上面那条连接状态。
+    // 关掉弹窗，再从行上的「验证」打开同一个弹窗；这次成功不改上面那条连接状态。
+    await dialog.getByRole('button', { name: '取消', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
     await verifyConnectionViaDialog(page);
     await expect(page.getByText('连接可用', { exact: false })).toBeVisible();
   } finally {
