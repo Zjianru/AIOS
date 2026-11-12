@@ -17,7 +17,7 @@ async function expectFinalAnswer(page: Page, text: string): Promise<void> {
   await expect(page.getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
 }
 
-test('DoD3 真 key：页面第一次填 key → 接上 → 空对话 → bash 只读 /tmp/aios-t008-dod/work 并回答', async ({ page }) => {
+test('DoD3 真 key：页面第一次填 key → 接上 → 空对话 → read 只读 /tmp/aios-t008-dod/work 并回答', async ({ page }) => {
   test.setTimeout(240_000);
   const fixture = await startRealDodFixture();
   try {
@@ -34,7 +34,7 @@ test('DoD3 真 key：页面第一次填 key → 接上 → 空对话 → bash �
     await page.screenshot({ path: path.join(evidence, 'dod3-empty.png'), fullPage: true });
 
     await page.getByPlaceholder('和 Kind 说…').fill(
-      '请只用 bash 工具、只读地查看 /tmp/aios-t008-dod/work/hello.txt 的内容，把文件内容原样回复我。不要写任何文件。',
+      '请只用 read 工具、只读地查看 /tmp/aios-t008-dod/work/hello.txt 的内容，把文件内容原样回复我。不要写任何文件。',
     );
     await page.getByRole('button', { name: '发送', exact: true }).click();
     await expect(page.getByText('DOD-T008-OK', { exact: false })).toBeVisible({ timeout: 180_000 });

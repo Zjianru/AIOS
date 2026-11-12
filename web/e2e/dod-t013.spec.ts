@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startT013DodFixture } from './service-fixture';
@@ -21,6 +22,51 @@ const EVIDENCE = process.env.AIOS_DOD_EVIDENCE ?? path.join(repoRoot, '../aios-w
 test.skip(!process.env.MINIMAX_API_KEY, '需要 MINIMAX_API_KEY（T013.9 真 key DoD）');
 test.setTimeout(600_000);
 
+/** 根会话日志（Kind 派任务的那条）。 */
+function rootLog(dataDir: string): string {
+  const root = JSON.parse(readFileSync(path.join(dataDir, 'kind-root.json'), 'utf8')) as {
+    sessionId: string;
+  };
+  return path.join(dataDir, 'sessions', root.sessionId + '.jsonl');
+}
+
+/** 根会话日志里 task_accept 回执带的任务 id（Kind 派出的写任务）。 */
+async function taskIdOf(dataDir: string): Promise<string> {
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    try {
+      const match = /已派出任务 ([0-9a-f]+)。/.exec(readFileSync(rootLog(dataDir), 'utf8'));
+      if (match) return match[1];
+    } catch {
+      // 根会话文件还没写出来；继续等。
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error('根会话日志里等不到 task_accept 的任务 id');
+}
+
+/** 任务当前 Attempt 的会话日志；任务对话里的工具调用和差异事实都在这里。 */
+function taskSessionLog(dataDir: string, taskId: string): string {
+  const db = new DatabaseSync(path.join(dataDir, 'tasks.sqlite'), { readOnly: true });
+  try {
+    const row = db.prepare('SELECT value FROM task WHERE id = ?').get(taskId) as
+      | { value: string }
+      | undefined;
+    if (!row) throw new Error('任务库里没有 ' + taskId);
+    const task = JSON.parse(row.value) as {
+      runs?: { attempts?: { conversation?: string | null }[] }[];
+    };
+    const conversations = (task.runs ?? [])
+      .flatMap((run) => run.attempts ?? [])
+      .map((attempt) => attempt.conversation)
+      .filter((value): value is string => typeof value === 'string' && value.length > 0);
+    const conversation = conversations[conversations.length - 1];
+    if (!conversation) throw new Error('任务会话还没建：' + taskId);
+    return path.join(dataDir, 'sessions', conversation + '.jsonl');
+  } finally {
+    db.close();
+  }
+}
+
 function jq(lines: string[], args: string[], label: string): string {
   const out = execFileSync('jq', args, { encoding: 'utf8' }).trim();
   lines.push('$ jq ' + renderCommand(args) + '  # ' + label + String.fromCharCode(10) + out);
@@ -28,8 +74,7 @@ function jq(lines: string[], args: string[], label: string): string {
 }
 
 /** DoD2 的四条都要的日志事实：user/message 的块、tool/call、tool/result.meta。 */
-function jqExamples(dataDir: string, tag: string, lines: string[]): void {
-  const log = sessionLog(dataDir);
+function jqExamples(log: string, tag: string, lines: string[]): void {
   jq(lines, ['-c', 'select(.type=="user/message") | .data.message.content', log], tag + ' user/message 块');
   jq(lines, ['-c', 'select(.type=="tool/call") | {name: .data.name, arguments: .data.arguments}', log], tag + ' tool/call');
   jq(lines, ['-c', 'select(.type=="tool/result") | .data.meta.diffs', log], tag + ' tool/result.meta');
@@ -136,7 +181,7 @@ test('DoD2①：@ 文件问内容（回答之前 read notes.md）', async ({ pag
     await waitTurnEnd(page);
     await assertReadBeforeAnswer({ log: sessionLog(fixture.dataDir), marker: 'DOD13-NOTES', needle: 'notes.md', tag, lines });
   } finally {
-    jqExamples(fixture.dataDir, tag, lines);
+    jqExamples(sessionLog(fixture.dataDir), tag, lines);
     recordCase('1-at-file', lines);
     await fixture.close();
   }
@@ -169,7 +214,7 @@ test('DoD2②：拖文件问内容（回答之前 read 副本路径）', async (
       lines,
     });
   } finally {
-    jqExamples(fixture.dataDir, tag, lines);
+    jqExamples(sessionLog(fixture.dataDir), tag, lines);
     recordCase('2-dropped-file', lines);
     await fixture.close();
   }
@@ -200,51 +245,91 @@ test('DoD2③：大段粘贴问内容（气泡上是卡片）', async ({ page })
     await expect(row.locator('[data-kind="paste-card"]')).toHaveCount(1);
     await expect(row.locator('[data-kind="user-bubble"]')).not.toContainText('x'.repeat(40));
   } finally {
-    jqExamples(fixture.dataDir, tag, lines);
+    jqExamples(sessionLog(fixture.dataDir), tag, lines);
     recordCase('3-large-paste', lines);
     await fixture.close();
   }
 });
 
-/// DoD2④：让它改文件——diff 卡片出来，刷新后还在。
+/// DoD2④：派一个写任务改文件——diff 卡片出来，刷新后还在。
 test('DoD2④：改文件（diff 卡片，刷新后还在）', async ({ page }) => {
   const fixture = await startT013DodFixture('4-edit-file');
   const lines: string[] = [];
   const tag = '④ 改文件';
+  let taskId = '';
   try {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#kind');
     await connectMinimax(page);
-    await send(page, '必须使用 edit 或 apply_patch 工具修改文件；禁止用 bash/shell 写文件；改完用 read 工具确认修改结果。任务：把 notes.md 里的 DOD13-NOTES 改成 DOD13-EDITED，只改这一处，别做别的。');
+    await send(page, '派一个写任务：把 notes.md 里的 DOD13-NOTES 改成 DOD13-EDITED，只改这一处，别做别的。');
+    taskId = await taskIdOf(fixture.dataDir);
+    await waitTurnEnd(page);
+    // Kind 没有 edit：写和改由写任务的 ThinAgent 做，diff 卡在任务对话的过程里。
+    await page.goto(fixture.baseUrl + '/#taskchat:' + taskId);
+    const pane = page.locator('[data-pane="task-conversation"]');
+    await expect(pane).toBeVisible({ timeout: 20_000 });
+    const process = pane.locator('[data-kind="process"]').first();
+    await expect(process.locator('button').first()).toContainText(/已完成，用时/, { timeout: 180_000 });
+    await process.locator('button').first().click();
+    const groups = process.locator('[data-kind="process-group"] button');
+    for (let index = 0; index < (await groups.count()); index += 1) {
+      if ((await groups.nth(index).getAttribute('aria-expanded')) !== 'true') {
+        await groups.nth(index).click();
+      }
+    }
+    const diffRow = process
+      .locator(
+        '[data-kind="tool-row"][data-tool="edit"], [data-kind="tool-row"][data-tool="apply_patch"], [data-kind="tool-row"][data-tool="write"]',
+      )
+      .first();
+    await expect(diffRow, '工作过程里有写/改文件那一行').toHaveCount(1);
+    await diffRow.locator('button').first().click();
+    // diff 卡片（「编辑 notes.md +N -N」）出现在展开的工作过程里。
+    await expect(process.getByText('notes.md').first()).toBeVisible({ timeout: 30_000 });
+    // 日志里的差异事实：任务会话的 tool/result.meta.diffs 有新文本。
     await expect
       .poll(async () => {
-        const log = sessionLog(fixture.dataDir);
-        // jq 输出的是 diffs 数组本身；判空 + 新文本才算真的改到了文件。
-        const output = execFileSync('jq', ['-c', 'select(.type=="tool/result") | .data.meta.diffs', log], { encoding: 'utf8' });
-        const hasDiffs = output
-          .split(String.fromCharCode(10))
-          .map((line) => line.trim())
-          .filter((line) => line.length > 0 && line !== 'null')
-          .length;
-        return hasDiffs > 0 && output.includes('DOD13-EDITED') ? 1 : 0;
+        try {
+          // jq 输出的是 diffs 数组本身；判空 + 新文本才算真的改到了文件。
+          const output = execFileSync(
+            'jq',
+            ['-c', 'select(.type=="tool/result") | .data.meta.diffs', taskSessionLog(fixture.dataDir, taskId)],
+            { encoding: 'utf8' },
+          );
+          const hasDiffs = output
+            .split(String.fromCharCode(10))
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0 && line !== 'null')
+            .length;
+          return hasDiffs > 0 && output.includes('DOD13-EDITED') ? 1 : 0;
+        } catch {
+          return 0;
+        }
       }, { timeout: 180_000 })
       .toBeGreaterThanOrEqual(1);
-    await waitTurnEnd(page);
-    const process = page.locator('[data-kind="process"]').last();
-    await process.locator('button').first().click();
-    const group = process.locator('[data-kind="process-group"] button').first();
-    if (await group.count()) await group.click();
-    await page.waitForTimeout(800);
-    // diff 卡片（「编辑 notes.md +N -N」）出现在展开的工作过程里；刷新后再断言一次。
-    await expect(process.getByText('notes.md').first()).toBeVisible({ timeout: 30_000 });
+    // 刷新后还在。
     await page.reload();
-    await expect(page.locator('[data-kind="process"]').last()).toBeVisible({ timeout: 60_000 });
-    const process2 = page.locator('[data-kind="process"]').last();
+    await expect(page.locator('[data-pane="task-conversation"]')).toBeVisible({ timeout: 60_000 });
+    const process2 = page.locator('[data-pane="task-conversation"] [data-kind="process"]').first();
+    await expect(process2.locator('button').first()).toContainText(/已完成，用时/, { timeout: 60_000 });
     await process2.locator('button').first().click();
-    const group2 = process2.locator('[data-kind="process-group"] button').first();
-    if (await group2.count()) await group2.click();
+    const groups2 = process2.locator('[data-kind="process-group"] button');
+    for (let index = 0; index < (await groups2.count()); index += 1) {
+      if ((await groups2.nth(index).getAttribute('aria-expanded')) !== 'true') {
+        await groups2.nth(index).click();
+      }
+    }
     await expect(process2.getByText('notes.md').first()).toBeVisible({ timeout: 30_000 });
   } finally {
-    jqExamples(fixture.dataDir, tag, lines);
+    if (taskId) {
+      jqExamples(rootLog(fixture.dataDir), tag + ' 根会话', lines);
+      try {
+        jqExamples(taskSessionLog(fixture.dataDir, taskId), tag + ' 任务会话', lines);
+      } catch {
+        // 任务没开出来时只留根会话证据。
+      }
+    } else {
+      jqExamples(sessionLog(fixture.dataDir), tag, lines);
+    }
     recordCase('4-edit-file', lines);
     await fixture.close();
   }
