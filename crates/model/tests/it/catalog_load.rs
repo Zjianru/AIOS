@@ -66,9 +66,10 @@ async fn network_cache_and_snapshot_give_the_same_fields() {
 
 #[test]
 fn live_models_win_where_they_say_something() {
-    let catalog = snapshot().models_for("deepseek");
+    let catalog = snapshot();
     let merged = merge_live(
-        catalog,
+        &catalog,
+        "deepseek",
         vec![
             LiveModel {
                 id: "deepseek-flash".to_owned(),

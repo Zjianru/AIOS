@@ -62,6 +62,9 @@ pub struct CatalogModel {
     pub limit: Limit,
     #[serde(default)]
     pub cost: Option<Cost>,
+    /// models.dev 的 status；`deprecated` 表示厂商不再通过公开 API 提供这个模型。
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -367,8 +370,17 @@ pub fn parse_live_models(value: &Value) -> Vec<LiveModel> {
 
 /// 把目录模型和厂商列表合并：顺序照厂商这次给的（不重排）；同一 id 厂商的 name/窗口/输出
 /// 优先，目录价格/档保留；目录独有、厂商这次没给的模型排在后面。
-pub fn merge_live(catalog_models: Vec<ModelInfo>, live: Vec<LiveModel>) -> Vec<ModelInfo> {
-    let mut catalog_by_id: BTreeMap<String, ModelInfo> = catalog_models
+///
+/// 目录标了 `deprecated` 的 id 不进合并结果；目录没有的 id 保留（厂商新出的模型
+/// models.dev 可能还没收）。过滤依据是目录 status，不是厂商列表——MiniMax 的
+/// `/v1/models` 仍会返回已下线的 M2.x。
+pub fn merge_live(
+    catalog: &CatalogSnapshot,
+    provider_id: &str,
+    live: Vec<LiveModel>,
+) -> Vec<ModelInfo> {
+    let mut catalog_by_id: BTreeMap<String, ModelInfo> = catalog
+        .models_for(provider_id)
         .into_iter()
         .map(|model| (model.id.clone(), model))
         .collect();
@@ -673,6 +685,22 @@ mod tests {
         dir
     }
 
+    /// 只给合并测试用的小目录：provider id 固定为 `test`，模型只有 id/价格/窗口。
+    fn catalog_with(models: &[(&str, f64)]) -> CatalogSnapshot {
+        let entries: Vec<String> = models
+            .iter()
+            .map(|(id, price)| {
+                format!(
+                    r#""{id}":{{"id":"{id}","name":"{id}","release_date":"2026-01-01","reasoning":true,"reasoning_options":[{{"type":"effort","values":["low"]}}],"limit":{{"context":1000}},"cost":{{"input":{price}}}}}"#
+                )
+            })
+            .collect();
+        deserialize_snapshot(&format!(
+            r#"{{"providers":{{"test":{{"id":"test","models":{{{}}}}}}}}}"#,
+            entries.join(",")
+        ))
+    }
+
     #[test]
     fn toggle_adds_none_only_for_deepseek() {
         let snapshot = serde_json::from_str(SNAPSHOT).expect("snapshot");
@@ -718,19 +746,6 @@ mod tests {
     /// 目录这次没给的模型排在后面，目录字段照常合并。
     #[test]
     fn live_merge_keeps_vendor_order() {
-        let info = |id: &str, price: f64| ModelInfo {
-            id: id.to_owned(),
-            name: id.to_owned(),
-            context_window: Some(1_000),
-            max_tokens: None,
-            price_input: Some(price),
-            price_output: None,
-            price_cache_read: None,
-            price_cache_write: None,
-            thinks: true,
-            efforts: vec!["low".to_owned()],
-            tool_update: None,
-        };
         let live = |id: &str| LiveModel {
             id: id.to_owned(),
             display_name: None,
@@ -738,8 +753,10 @@ mod tests {
             max_tokens: None,
             tool_update: None,
         };
+        let catalog = catalog_with(&[("catalog-a", 0.1), ("catalog-b", 0.2)]);
         let merged = merge_live(
-            vec![info("catalog-a", 0.1), info("catalog-b", 0.2)],
+            &catalog,
+            "test",
             vec![live("vendor-new"), live("catalog-b")],
         );
         let ids: Vec<&str> = merged.iter().map(|model| model.id.as_str()).collect();
@@ -832,7 +849,7 @@ mod tests {
 
     #[test]
     fn live_merge_lets_vendor_fields_win_and_keeps_catalog_price() {
-        let catalog = snapshot().models_for("deepseek");
+        let catalog = snapshot();
         let live = vec![
             LiveModel {
                 id: "deepseek-flash".to_owned(),
@@ -849,7 +866,7 @@ mod tests {
                 tool_update: None,
             },
         ];
-        let merged = merge_live(catalog, live);
+        let merged = merge_live(&catalog, "deepseek", live);
         let flash = merged
             .iter()
             .find(|model| model.id == "deepseek-flash")
@@ -944,13 +961,10 @@ mod tests {
     /// 厂商字段写进合并后的模型信息；厂商这次没声明时保留目录的能力。
     #[test]
     fn live_merge_carries_vendor_tool_update() {
-        let flash = snapshot()
-            .models_for("deepseek")
-            .into_iter()
-            .find(|model| model.id == "deepseek-flash")
-            .expect("deepseek-flash");
+        let catalog = snapshot();
         let merged = merge_live(
-            vec![flash],
+            &catalog,
+            "deepseek",
             vec![LiveModel {
                 id: "deepseek-flash".to_owned(),
                 display_name: None,
@@ -965,7 +979,8 @@ mod tests {
             "厂商没声明时保留目录能力"
         );
         let merged = merge_live(
-            Vec::new(),
+            &catalog,
+            "deepseek",
             vec![LiveModel {
                 id: "deepseek-new".to_owned(),
                 display_name: None,

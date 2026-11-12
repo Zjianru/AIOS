@@ -54,9 +54,9 @@ async function startVendor(options: { models?: string[]; balanceDelayMs?: number
   };
 }
 
-/// 获取面板按厂商给的顺序原样列出（含厂商仍会给的旧 highspeed）；第一次获取没有基准，
-/// 一条都不标新。
-test('获取面板按厂商顺序原样列出，第一次不标新', async ({ page, request }) => {
+/// 获取面板按厂商给的顺序原样列出，但目录标了 deprecated 的旧 MiniMax（厂商 /v1/models
+/// 仍会给）不列；第一次获取没有基准，一条都不标新。
+test('获取面板按厂商顺序列出未下线模型，第一次不标新', async ({ page, request }) => {
   const fixture = await startKernelFixture();
   const vendor = await startVendor({
     models: [
@@ -96,18 +96,8 @@ test('获取面板按厂商顺序原样列出，第一次不标新', async ({ pa
     await expect(discover).toBeVisible({ timeout: 20_000 });
 
     const labels = discover.locator('label');
-    await expect(labels).toHaveCount(9);
-    const order = [
-      'MiniMax-M3.1-Flash',
-      'MiniMax-M3',
-      'MiniMax-M2.7',
-      'MiniMax-M2.7-highspeed',
-      'MiniMax-M2.5',
-      'MiniMax-M2.5-highspeed',
-      'MiniMax-M2.1',
-      'MiniMax-M2.1-highspeed',
-      'MiniMax-M2',
-    ];
+    await expect(labels).toHaveCount(2);
+    const order = ['MiniMax-M3.1-Flash', 'MiniMax-M3'];
     for (const [index, id] of order.entries()) {
       await expect(labels.nth(index)).toContainText(id);
     }
@@ -122,8 +112,8 @@ test('获取面板按厂商顺序原样列出，第一次不标新', async ({ pa
 /// 验收发现 1（纠偏）：列表不重排——厂商怎么排就怎么显示，不按版本重排。
 test('获取模型列表跟厂商顺序，不按版本重排', async ({ page, request }) => {
   const fixture = await startKernelFixture();
-  // 故意不按版本排：M2 在前、M3.1 居中；按版本排会变成 M3.1/M2.7/M2。
-  const vendor = await startVendor({ models: ['MiniMax-M2', 'MiniMax-M3.1-Flash', 'MiniMax-M2.7'] });
+  // 故意不按版本/发布日期排：M3 在前、M3.1-Flash 在后；按版本排会变成 M3.1/M3。
+  const vendor = await startVendor({ models: ['MiniMax-M3', 'MiniMax-M3.1-Flash'] });
   try {
     const saved = await apiPost(request, fixture, {
       method: 'connection-save',
@@ -149,9 +139,9 @@ test('获取模型列表跟厂商顺序，不按版本重排', async ({ page, re
     await expect(discover).toBeVisible({ timeout: 20_000 });
 
     const labels = discover.locator('label');
-    await expect(labels.nth(0)).toContainText('MiniMax-M2');
+    await expect(labels).toHaveCount(2);
+    await expect(labels.nth(0)).toContainText('MiniMax-M3');
     await expect(labels.nth(1)).toContainText('MiniMax-M3.1-Flash');
-    await expect(labels.nth(2)).toContainText('MiniMax-M2.7');
   } finally {
     await vendor.close();
     await fixture.close();

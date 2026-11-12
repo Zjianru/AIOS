@@ -429,7 +429,7 @@ impl RootHost {
                         })?;
                     }
                     live_ids = live_models.iter().map(|model| model.id.clone()).collect();
-                    models = model::catalog::merge_live(models, live_models);
+                    models = model::catalog::merge_live(&catalog, &provider_id, live_models);
                     live = true;
                 }
             }
