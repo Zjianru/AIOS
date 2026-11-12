@@ -1178,6 +1178,10 @@ async fn thin_agent_handback_rule_and_tool_stay_off_kind() {
         "规则要写明不自己做：{thin_system}"
     );
     assert!(
+        !thin_system.contains("You are AIOS's coordinator"),
+        "Kind 的派任务说明不能进 ThinAgent：{thin_system}"
+    );
+    assert!(
         !thin_system.contains("这超出了任务范围，要不要改任务？"),
         "固定问句只能由程序写进 relay，不能抄进角色规则"
     );
@@ -1193,6 +1197,83 @@ async fn thin_agent_handback_rule_and_tool_stay_off_kind() {
     assert!(!kind_system.contains("task_handback"), "{kind_system}");
     assert!(!kind_system.contains("这超出了任务范围，要不要改任务？"));
     assert_eq!(service::THIN_TOOLS.len(), 9, "ThinAgent 的工具表 9 件");
+}
+
+/// spec v1「实现决定」对照表逐条写成的英文；快照按它断言，多一句少一句都算红。
+const EXPECTED_KIND_POLICY: &str = concat!(
+    "You are AIOS's coordinator: you talk with the user, verify facts, and hand work to ThinAgent. ThinAgent investigates and implements.",
+    "\nWhen the user wants a file changed (even a single typo), a command run, or an investigation that reads more than one or two files, call task_accept to dispatch a task; then reply in the user's language with what you dispatched and the result you expect.",
+    "\nWrite the task's requirement in the user's own words, with no implementation plan or expanded scope; write its dod as the criteria for judging that requirement met.",
+    "\nIf one message contains several unrelated things, dispatch them as separate tasks, one task per thing; do not split one thing into several.",
+    "\nResults arrive as task_report: do not wait or poll; finish the turn once the work is dispatched and the reply is sent.",
+    "\nRead only until you can answer the user or state the task clearly (for example, confirm that a file exists); do not investigate on ThinAgent's behalf.",
+    "\nWhen ThinAgent is blocked or hands back, relay briefly what it is missing or asking; the user decides, so do not make the decision for them.",
+    "\nBefore dispatching a write task, stopping a task, or changing its write scope, load the aios-tasks skill first.",
+);
+
+/// 装了任务执行者：Kind 第一个请求的 system 以派任务说明结尾。
+#[tokio::test]
+async fn the_kind_system_prompt_ends_with_the_task_policy() {
+    let fixture = Fixture::new().await;
+    fixture.router.push_kind(crate::common::text_sse("好"));
+    fixture
+        .host
+        .dispatch(Call::Send(send(&fixture.host, "kind-1", "你好")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&fixture.host, fixture.data(), 1).await;
+
+    let bodies = fixture.router.bodies(false);
+    assert_eq!(bodies.len(), 1, "Kind 第一个请求");
+    let system = request_system(&bodies[0]);
+    assert!(
+        system.ends_with(EXPECTED_KIND_POLICY),
+        "Kind 的系统提示要以内核策略结尾：{system}"
+    );
+}
+
+/// 没装任务执行者（CLI/老测试）：不给这段说明，它提到 Kind 没有的工具。
+#[tokio::test]
+async fn a_root_session_without_a_task_runtime_has_no_task_policy() {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    mount(&server, &router).await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let mut options = crate::common::options(data.path());
+    options.cwd = cwd.path().to_path_buf();
+    options.model.base_url = server.uri();
+    options.config = AgentConfig {
+        instruction_roots: vec![data.path().join("agents-home")],
+        skill_roots: vec![data.path().join("skills-home")],
+        ..AgentConfig::default()
+    };
+    let root = service::open_root_session(options).await.expect("根会话");
+    let host = service::ServiceHost::new(root.agent.clone());
+    router.push_kind(crate::common::text_sse("好"));
+    host.send(SendRequest {
+        request_id: "kind-1".to_owned(),
+        content: "你好".to_owned(),
+        delivery: DeliveryMode::FollowUp,
+        pastes: Vec::new(),
+        attachments: Vec::new(),
+        canvas: None,
+    })
+    .await
+    .expect("发送");
+    root.agent.idle().await;
+
+    let bodies = router.bodies(false);
+    assert_eq!(bodies.len(), 1, "根会话只发一次请求");
+    let system = request_system(&bodies[0]);
+    assert!(
+        !system.contains("You are AIOS's coordinator"),
+        "没有任务执行者时不能提派任务：{system}"
+    );
+    assert!(
+        system.starts_with("You are AIOS, a coding agent. Your working directory is "),
+        "系统提示开头不动：{system}"
+    );
 }
 
 #[tokio::test]
@@ -6323,6 +6404,12 @@ fn assignment(events: &[session::Event]) -> Value {
             value["task_id"].is_string().then_some(value)
         })
         .expect("ThinAgent 的 assignment")
+}
+
+/// 请求体系统提示里的 system 正文。
+fn request_system(body: &str) -> String {
+    let value: Value = serde_json::from_str(body).expect("请求体 JSON");
+    value["system"].as_str().expect("system").to_owned()
 }
 
 /// 请求体系统提示里的工作目录。
