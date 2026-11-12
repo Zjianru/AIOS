@@ -40,6 +40,9 @@ const STATE_TONE: Record<TaskCardState, { icon: LucideIcon; tone: string }> = {
   waiting: { icon: Hourglass, tone: 'bg-run-soft text-run' },
   stopped: { icon: Square, tone: 'bg-hover text-ink-2' },
   interrupted: { icon: PlugZap, tone: 'bg-wait-soft text-wait' },
+  // T038：派发卡（程序从 task_accept 的 tool/call + tool/result 派生）。
+  dispatching: { icon: Hourglass, tone: 'bg-run-soft text-run' },
+  dispatched: { icon: Hourglass, tone: 'bg-run-soft text-run' },
 };
 
 function timeOf(seconds: number): string {

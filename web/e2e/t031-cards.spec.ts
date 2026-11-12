@@ -54,14 +54,21 @@ test('一轮两张结果卡：按到达顺序、气泡在前、刷新同序', as
     ).toHaveCount(0);
 
     // 同轮：两条 relay 的 turn 相同，而且就是用户这句所在的轮。
-    const events = await rootEvents(fixture);
-    const relayTurns = events
-      .filter(
-        (event) =>
-          event.type === 'user/message' &&
-          String(event.data?.message?.source?.rpcId ?? '').startsWith('task-report:'),
-      )
-      .map((event) => event.data.turn as number);
+    // T038：派发卡在派出时就出现，卡片到齐不再隐含 relay 已到；这里等日志里真的两条 relay。
+    let events = await rootEvents(fixture);
+    let relayTurns: number[] = [];
+    for (let attempt = 0; attempt < 600; attempt += 1) {
+      events = await rootEvents(fixture);
+      relayTurns = events
+        .filter(
+          (event) =>
+            event.type === 'user/message' &&
+            String(event.data?.message?.source?.rpcId ?? '').startsWith('task-report:'),
+        )
+        .map((event) => event.data.turn as number);
+      if (relayTurns.length === 2) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     const userTurns = events
       .filter(
         (event) =>

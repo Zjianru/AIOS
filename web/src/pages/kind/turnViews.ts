@@ -18,8 +18,10 @@ import type { ProcessStep } from './process/toolModel.ts';
 import { reasoningTextOf, reasoningTextOfStream } from './reasoning.ts';
 import type { ConfirmCardFact, ConfirmDecision } from './cards/model';
 import {
+  dispatchedTaskIdOf,
   parseRestartNotice,
   parseTaskRelay,
+  taskDispatchFactOf,
   type TaskResultFact,
 } from '../../data/taskResult.ts';
 import {
@@ -500,6 +502,30 @@ export function deriveTurnViews(
     }
     return raw;
   };
+  // T038：派发卡。task_accept 的 tool/call 派生一张「派出中→进行中」的卡；tool/result 里
+  // 的「已派出任务 <id>」补上 task id；之后的 relay（task-report/task-stop/tasks_interrupted）
+  // 按 task id 归并到同一张卡上更新状态，不另起第二张（跨轮折叠照画布的先例）。
+  const dispatchCards = new Map<string, { turn: number; index: number }>();
+  const dispatchByTaskId = new Map<string, string>();
+  const mergeRelayIntoDispatch = (fact: TaskResultFact): boolean => {
+    const callId = dispatchByTaskId.get(fact.taskId);
+    const position = callId === undefined ? undefined : dispatchCards.get(callId);
+    const raw = position === undefined ? undefined : turns.get(position.turn);
+    const existing = raw && position ? raw.taskResults[position.index] : undefined;
+    if (!raw || !position || !existing) return false;
+    // 只把「派发后第一条 relay」并回派发卡；之后的报告（新版本、第 2 次 Attempt 等）
+    // 仍各出一张卡——旧行为和有结果卡接受/回执的用例都按这个来。
+    if (existing.state !== 'dispatching' && existing.state !== 'dispatched') return false;
+    // 同一张卡更新成 relay 的事实（状态、摘要、问题、写入范围、回填接受决定都用 relay 的 id）。
+    raw.taskResults[position.index] = {
+      ...fact,
+      fromDispatch: true,
+      ...(fact.writeScope === undefined && existing.writeScope !== undefined
+        ? { writeScope: existing.writeScope }
+        : {}),
+    };
+    return true;
+  };
   const textOf = (message: unknown): string => {
     if (!message || typeof message !== 'object') return '';
     const content = (message as { content?: unknown }).content;
@@ -668,13 +694,17 @@ export function deriveTurnViews(
         // 启动扫描的重启汇报：一张卡一个被打断的任务，代替程序消息的原文 JSON。
         const restarted = parseRestartNotice(data.message, event.time / 1000);
         if (restarted.length > 0) {
-          ensure(turn).taskResults.push(...restarted);
+          // T038：派出过的任务把被打断的状态并回那张派发卡；找不到派发卡的照旧各画一张。
+          for (const fact of restarted) {
+            if (!mergeRelayIntoDispatch(fact)) ensure(turn).taskResults.push(fact);
+          }
           break;
         }
         const relay = parseTaskRelay(data.message, event.time / 1000);
         if (relay) {
           // 同一轮可能被多条 relay 叫起来：按日志到达顺序各留一张卡，不互相覆盖。
-          ensure(turn).taskResults.push(relay);
+          // T038：派出过的任务并回那张派发卡（一张任务只渲染一张卡）。
+          if (!mergeRelayIntoDispatch(relay)) ensure(turn).taskResults.push(relay);
           break;
         }
         // T028.5：抄送 Kind 的那条不是用户气泡，单独由 taskCcFacts/ccViewOf 成行。
@@ -740,8 +770,9 @@ export function deriveTurnViews(
             args = {};
           }
         }
+        const callId = String(data.call_id ?? data.callId ?? '');
         raw.tools.push({
-          id: String(data.call_id ?? data.callId ?? ''),
+          id: callId,
           name: String(data.name ?? ''),
           args,
           output: '',
@@ -751,6 +782,14 @@ export function deriveTurnViews(
           startedAtMs: event.time,
           seq: event.seq,
         });
+        // T038：Kind 的 task_accept 一发起就先出一张派发卡（这时还没有 task id：派出中）。
+        if (String(data.name ?? '') === 'task_accept') {
+          const dispatch = taskDispatchFactOf(callId, args, event.time / 1000);
+          if (dispatch) {
+            dispatchCards.set(callId, { turn, index: raw.taskResults.length });
+            raw.taskResults.push(dispatch);
+          }
+        }
         break;
       }
       case 'tool/result': {
@@ -773,6 +812,18 @@ export function deriveTurnViews(
           step.exitCode = status.exitCode;
           step.signal = status.signal;
           if (step.startedAtMs) step.durationMs = Math.max(0, event.time - step.startedAtMs);
+        }
+        // T038：task_accept 的回执带任务 id → 派发卡从「派出中」变「进行中」，并记下 id 供 relay 归并。
+        const dispatch = callId ? dispatchCards.get(callId) : undefined;
+        if (dispatch) {
+          const body = textOf(data.message) || textOfToolResult(data.message);
+          const taskId = dispatchedTaskIdOf(body);
+          const fact = turns.get(dispatch.turn)?.taskResults[dispatch.index];
+          if (fact && taskId) {
+            fact.taskId = taskId;
+            fact.state = 'dispatched';
+            dispatchByTaskId.set(taskId, callId);
+          }
         }
         break;
       }
@@ -968,6 +1019,49 @@ export function deriveTurnViews(
 }
 
 /** 改一轮：按 id 换成新对象（TurnRow 用 memo 比引用，只有这一条重绘）。 */
+
+/**
+ * T038：把同一任务的多张结果卡折成一张（跨轮、跨页用）。
+ *
+ * 派发卡在派出那一轮；之后的 relay 可能落在别的轮（live 逐轮重推、历史按页派生，
+ * 一次 derive 看不到另一轮的派发卡），这里按 task id 把后面的 relay 并回那张派发卡：
+ * 保留最早一张的位置、换成后面的事实（状态/摘要/问题/回填 id），后面那张删掉不重复渲染。
+ * 只有先有派发卡的任务才折；纯 relay 的任务保持原样（一条 relay 一张卡）。
+ */
+export function reconcileTaskCards(views: TurnViewData[]): TurnViewData[] {
+  const homes = new Map<string, { viewIndex: number; factIndex: number }>();
+  const drops = new Set<string>();
+  const replacements = new Map<string, TaskResultFact>();
+  views.forEach((view, viewIndex) => {
+    view.taskResults.forEach((fact, factIndex) => {
+      if (!fact.taskId) return;
+      const home = homes.get(fact.taskId);
+      if (!home) {
+        if (fact.fromDispatch) homes.set(fact.taskId, { viewIndex, factIndex });
+        return;
+      }
+      const current = views[home.viewIndex].taskResults[home.factIndex];
+      // 派发卡还没被报告更新过才并；之后的报告各出一张卡（第 2 次 Attempt、新版本等）。
+      if (current.state !== 'dispatching' && current.state !== 'dispatched') return;
+      drops.add(fact.id);
+      replacements.set(
+        home.viewIndex + ':' + String(home.factIndex),
+        { ...fact, fromDispatch: true },
+      );
+    });
+  });
+  if (drops.size === 0) return views;
+  const replaced = views.map((view, viewIndex) => ({
+    ...view,
+    taskResults: view.taskResults.map(
+      (fact, factIndex) => replacements.get(viewIndex + ':' + String(factIndex)) ?? fact,
+    ),
+  }));
+  return replaced.map((view) => {
+    const taskResults = view.taskResults.filter((fact) => !drops.has(fact.id));
+    return taskResults.length === view.taskResults.length ? view : { ...view, taskResults };
+  });
+}
 
 
 /** 把一轮的工具/思考折成工作过程的步骤（页面用；路径相对化在 process 那一层做）。 */
