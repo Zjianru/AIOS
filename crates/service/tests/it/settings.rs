@@ -1128,8 +1128,8 @@ async fn 显式空模型列表跟着厂商走且主模型取可选第一个() {
         .collect();
     assert_eq!(
         models,
-        vec!["ignored".to_owned(), "ignored".to_owned()],
-        "验证用连接上的旧 model 字段（这里故意存 ignored），不跟着厂商可选列表变"
+        vec!["zeta".to_owned(), "omega".to_owned()],
+        "有厂商 live 列表时验证跟 live 第一个走（zeta；列表更新后 omega）"
     );
 }
 
