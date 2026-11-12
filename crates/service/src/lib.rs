@@ -65,6 +65,9 @@ mod failure_cause_code_tests;
 #[path = "history_pagination_tests.rs"]
 mod history_pagination_tests;
 #[cfg(test)]
+#[path = "models_tests.rs"]
+mod models_tests;
+#[cfg(test)]
 #[path = "protocol_version_tests.rs"]
 mod protocol_version_tests;
 #[cfg(test)]
