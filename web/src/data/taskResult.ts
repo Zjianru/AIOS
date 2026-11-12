@@ -35,8 +35,12 @@ export const TASK_REPORT_STATES = [
 ] as const;
 export type TaskReportState = (typeof TASK_REPORT_STATES)[number];
 
-/** 卡上的状态：报告状态 + 写任务当前版本 ready 的「待你核」（卡状态，不是 Task 阶段）。 */
-export const TASK_CARD_STATES = [...TASK_REPORT_STATES, 'review'] as const;
+/** 派发卡的状态键（不是 relay 的报告状态）：拿到 task id 前「派出中」，之后「进行中」。 */
+export const TASK_DISPATCH_STATES = ['dispatching', 'dispatched'] as const;
+export type TaskDispatchState = (typeof TASK_DISPATCH_STATES)[number];
+
+/** 卡上的状态：报告状态 + 写任务当前版本 ready 的「待你核」（卡状态，不是 Task 阶段）+ 派发卡两态。 */
+export const TASK_CARD_STATES = [...TASK_REPORT_STATES, 'review', ...TASK_DISPATCH_STATES] as const;
 export type TaskCardState = (typeof TASK_CARD_STATES)[number];
 
 export const TASK_REPORT_ORIGINS = ['package', 'agent', 'executor'] as const;
@@ -49,7 +53,8 @@ export interface TaskResultFact {
   taskId: string;
   /** 全文；卡上按标签槽截到 20 字，全文留给任务对话。 */
   title: string;
-  state: TaskReportState;
+  /** relay 报告状态；派发卡在拿到 task id 前是 dispatching、之后是 dispatched。 */
+  state: TaskReportState | TaskDispatchState;
   origin: TaskReportOrigin;
   summary: string;
   question?: string;
@@ -71,6 +76,8 @@ export interface TaskResultFact {
   cardState?: 'review';
   /** 接受决定（card/decision 事件派生）；还没点过是 undefined。 */
   decision?: { phase: 'confirmed' | 'dismissed' | 'refused' | 'failed' };
+  /** 这张卡最初是 task_accept 派生的派发卡（跨轮/跨页折卡时认它）。 */
+  fromDispatch?: boolean;
 }
 
 export interface TaskResultSlots {
@@ -135,12 +142,14 @@ const TASK_RESULT_FALLBACK_SLOTS: TaskResultSlots = {
 
 /** relay 的 state + origin → 卡上的固定状态文字；不读摘要内容（D73）。 */
 export function taskStatusOf(
-  state: TaskReportState,
+  state: TaskReportState | TaskDispatchState,
   origin: TaskReportOrigin,
   cardState?: 'review',
 ): string {
   // 写任务当前要求版本的 ready：卡状态是「待你核」，Task 阶段仍是「待检查」。
   if (cardState === 'review') return '待你核';
+  if (state === 'dispatching') return '派出中';
+  if (state === 'dispatched') return '进行中';
   switch (state) {
     case 'ready':
       return '有结果';
@@ -163,6 +172,10 @@ export function taskStatusOf(
 /** 卡片信封的状态：只影响外框颜色，按程序事实给。 */
 function envelopeStateOf(state: TaskCardState): 'pending' | 'running' | 'done' | 'failed' {
   switch (state) {
+    case 'dispatching':
+    case 'dispatched':
+      // 派发卡一出现就是活的（任务是程序接下的，不是等报告才有）。
+      return 'running';
     case 'ready':
     case 'review':
       return 'done';
@@ -192,6 +205,11 @@ function isState(value: unknown): value is TaskReportState {
   return TASK_REPORT_STATES.includes(value as TaskReportState);
 }
 
+/** 卡状态的表：relay 只认报告状态，卡片事实还认派发卡两态。 */
+function isCardState(value: unknown): value is TaskCardState {
+  return TASK_CARD_STATES.includes(value as TaskCardState);
+}
+
 function isOrigin(value: unknown): value is TaskReportOrigin {
   return TASK_REPORT_ORIGINS.includes(value as TaskReportOrigin);
 }
@@ -201,7 +219,7 @@ export function taskResultCardOf(
   fact: TaskResultFact | null | undefined,
 ): CardEnvelope<TaskResultSlots> | null {
   if (!fact || typeof fact !== 'object') return null;
-  if (!fact.id || !isState(fact.state) || !isOrigin(fact.origin)) return null;
+  if (!fact.id || !isCardState(fact.state) || !isOrigin(fact.origin)) return null;
   const writeScope = fact.writeScope ?? '';
   const changed = fact.changed ?? [];
   const cardState = fact.cardState === 'review' ? 'review' : undefined;
@@ -384,6 +402,45 @@ export function parseRestartNotice(message: unknown, at: number): TaskResultFact
     });
   }
   return facts;
+}
+
+/** 派发卡的 id 前缀（`task-dispatch:<callId>`）；relay 到达后同一张卡改用 relay 的 id。 */
+export const TASK_DISPATCH_PREFIX = 'task-dispatch:';
+
+/**
+ * task_accept 的 tool/call 参数 → 派发卡事实：标题、写范围、要求都取自工具参数。
+ * 任务 id 要等 tool/result 才拿得到，所以此时 state='dispatching'（派出中）。
+ * 参数形状不对返回 null（调用方按普通工具调用显示，不吞错误）。
+ */
+export function taskDispatchFactOf(
+  callId: string,
+  args: Record<string, unknown>,
+  at: number,
+): TaskResultFact | null {
+  const title = typeof args.title === 'string' ? args.title.trim() : '';
+  if (!callId || !title) return null;
+  const writeScope =
+    typeof args.write_scope === 'string' && args.write_scope !== ''
+      ? args.write_scope
+      : undefined;
+  const requirement = typeof args.requirement === 'string' ? args.requirement : '';
+  return {
+    id: TASK_DISPATCH_PREFIX + callId,
+    taskId: '',
+    title,
+    state: 'dispatching',
+    origin: 'executor',
+    summary: requirement,
+    at: Number.isFinite(at) ? Math.floor(at) : 0,
+    ...(writeScope === undefined ? {} : { writeScope }),
+    fromDispatch: true,
+  };
+}
+
+/** task_accept 的 tool/result 文本里取任务 id：服务回执是「已派出任务 <id>。…」。 */
+export function dispatchedTaskIdOf(output: string): string | null {
+  const match = /已派出任务\s+([0-9a-zA-Z_-]+)/.exec(output);
+  return match ? match[1] : null;
 }
 
 export const taskResultCard: CardDefinition<TaskResultFact, TaskResultSlots> = {

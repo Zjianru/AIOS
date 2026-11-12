@@ -18,10 +18,13 @@ import type { ProcessStep } from './process/toolModel.ts';
 import { reasoningTextOf, reasoningTextOfStream } from './reasoning.ts';
 import type { ConfirmCardFact, ConfirmDecision } from './cards/model';
 import {
+  dispatchedTaskIdOf,
   parseRestartNotice,
   parseTaskRelay,
+  taskDispatchFactOf,
   type TaskResultFact,
 } from '../../data/taskResult.ts';
+import { foldedTaskCard } from './taskCardFold.ts';
 import {
   contextPercent,
   contextTokens,
@@ -500,6 +503,24 @@ export function deriveTurnViews(
     }
     return raw;
   };
+  // T038：派发卡。task_accept 的 tool/call 派生一张「派出中→进行中」的卡；tool/result 里
+  // 的「已派出任务 <id>」补上 task id；之后的 relay（task-report/task-stop/tasks_interrupted）
+  // 按 task id 归并到同一张卡上更新状态，不另起第二张（跨轮折叠照画布的先例）。
+  const dispatchCards = new Map<string, { turn: number; index: number }>();
+  const dispatchByTaskId = new Map<string, string>();
+  const mergeRelayIntoDispatch = (fact: TaskResultFact): boolean => {
+    const callId = dispatchByTaskId.get(fact.taskId);
+    const position = callId === undefined ? undefined : dispatchCards.get(callId);
+    const raw = position === undefined ? undefined : turns.get(position.turn);
+    const existing = raw && position ? raw.taskResults[position.index] : undefined;
+    if (!raw || !position || !existing) return false;
+    // 只把「派发后第一条 relay」并回派发卡；判定和跨轮折卡共用 foldedTaskCard，别分叉。
+    const merged = foldedTaskCard(existing, fact);
+    if (!merged) return false;
+    // 同一张卡更新成 relay 的事实（状态、摘要、问题、写入范围、回填接受决定都用 relay 的 id）。
+    raw.taskResults[position.index] = merged;
+    return true;
+  };
   const textOf = (message: unknown): string => {
     if (!message || typeof message !== 'object') return '';
     const content = (message as { content?: unknown }).content;
@@ -668,13 +689,17 @@ export function deriveTurnViews(
         // 启动扫描的重启汇报：一张卡一个被打断的任务，代替程序消息的原文 JSON。
         const restarted = parseRestartNotice(data.message, event.time / 1000);
         if (restarted.length > 0) {
-          ensure(turn).taskResults.push(...restarted);
+          // T038：派出过的任务把被打断的状态并回那张派发卡；找不到派发卡的照旧各画一张。
+          for (const fact of restarted) {
+            if (!mergeRelayIntoDispatch(fact)) ensure(turn).taskResults.push(fact);
+          }
           break;
         }
         const relay = parseTaskRelay(data.message, event.time / 1000);
         if (relay) {
           // 同一轮可能被多条 relay 叫起来：按日志到达顺序各留一张卡，不互相覆盖。
-          ensure(turn).taskResults.push(relay);
+          // T038：派出过的任务并回那张派发卡（一张任务只渲染一张卡）。
+          if (!mergeRelayIntoDispatch(relay)) ensure(turn).taskResults.push(relay);
           break;
         }
         // T028.5：抄送 Kind 的那条不是用户气泡，单独由 taskCcFacts/ccViewOf 成行。
@@ -740,8 +765,9 @@ export function deriveTurnViews(
             args = {};
           }
         }
+        const callId = String(data.call_id ?? data.callId ?? '');
         raw.tools.push({
-          id: String(data.call_id ?? data.callId ?? ''),
+          id: callId,
           name: String(data.name ?? ''),
           args,
           output: '',
@@ -751,6 +777,14 @@ export function deriveTurnViews(
           startedAtMs: event.time,
           seq: event.seq,
         });
+        // T038：Kind 的 task_accept 一发起就先出一张派发卡（这时还没有 task id：派出中）。
+        if (String(data.name ?? '') === 'task_accept') {
+          const dispatch = taskDispatchFactOf(callId, args, event.time / 1000);
+          if (dispatch) {
+            dispatchCards.set(callId, { turn, index: raw.taskResults.length });
+            raw.taskResults.push(dispatch);
+          }
+        }
         break;
       }
       case 'tool/result': {
@@ -773,6 +807,18 @@ export function deriveTurnViews(
           step.exitCode = status.exitCode;
           step.signal = status.signal;
           if (step.startedAtMs) step.durationMs = Math.max(0, event.time - step.startedAtMs);
+        }
+        // T038：task_accept 的回执带任务 id → 派发卡从「派出中」变「进行中」，并记下 id 供 relay 归并。
+        const dispatch = callId ? dispatchCards.get(callId) : undefined;
+        if (dispatch) {
+          const body = textOf(data.message) || textOfToolResult(data.message);
+          const taskId = dispatchedTaskIdOf(body);
+          const fact = turns.get(dispatch.turn)?.taskResults[dispatch.index];
+          if (fact && taskId) {
+            fact.taskId = taskId;
+            fact.state = 'dispatched';
+            dispatchByTaskId.set(taskId, callId);
+          }
         }
         break;
       }
@@ -968,6 +1014,9 @@ export function deriveTurnViews(
 }
 
 /** 改一轮：按 id 换成新对象（TurnRow 用 memo 比引用，只有这一条重绘）。 */
+
+// T038：跨轮/跨页折卡在 taskCardFold.ts（纯函数，node 用例直接跑这份）。
+export { reconcileTaskCards } from './taskCardFold.ts';
 
 
 /** 把一轮的工具/思考折成工作过程的步骤（页面用；路径相对化在 process 那一层做）。 */

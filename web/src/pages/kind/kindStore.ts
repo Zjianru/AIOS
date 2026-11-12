@@ -32,6 +32,7 @@ import {
   deriveTurnViews,
   mergeCanvasTracks,
   prependOlderViews,
+  reconcileTaskCards,
   taskCcFacts,
 } from './turnViews';
 import type { CanvasTrack, TurnLabels, TurnViewData } from './turnViews';
@@ -414,7 +415,7 @@ function canvasTitleOf(partial: string): string {
 function refreshCardViews(): void {
   const derived = new Map(deriveTurnViews(liveEvents, turnLabels()).map((view) => [view.id, view]));
   useKindStore.setState((state) => {
-    const views = state.views.map((view) => derived.get(view.id) ?? view);
+    const views = reconcileTaskCards(state.views.map((view) => derived.get(view.id) ?? view));
     return { views, byId: indexOf(views), ...decorate(views) };
   });
 }
@@ -442,10 +443,12 @@ function refreshTurn(turn: number): void {
       views.push(view);
       views.sort((left, right) => Number(left.id.split('-')[1]) - Number(right.id.split('-')[1]));
     }
+    // T038：本轮新到的 relay 卡并回派发卡（派发卡在别的轮里，单轮 derive 看不到它）。
+    const reconciled = reconcileTaskCards(views);
     return {
-      views,
-      byId: indexOf(views),
-      ...decorate(views),
+      views: reconciled,
+      byId: indexOf(reconciled),
+      ...decorate(reconciled),
       streamingTurnId: view.status === 'inProgress' ? view.id : null,
     };
   });
@@ -796,7 +799,9 @@ export const useKindStore = create<KindState>()((set, get) => ({
   loadInitial: async () => {
     try {
       const page = await fetchEventsPage({ maxMessages: 100, minMessages: 10, minTurns: 5 });
-      const views = mergeCcViews(deriveTurnViews(page.events, turnLabels()), page.events);
+      const views = reconcileTaskCards(
+        mergeCcViews(deriveTurnViews(page.events, turnLabels()), page.events),
+      );
       const lastSeqOfPage = page.events[page.events.length - 1]?.seq ?? 0;
       const oldestSeq = page.events[0]?.seq ?? null;
       liveEvents = page.events.slice();
@@ -846,7 +851,8 @@ export const useKindStore = create<KindState>()((set, get) => ({
       const oldestSeq = page.events[0]?.seq ?? state.oldestSeq;
       set((current) => {
         // 跨页的同一行（抄送的 spliced 与领取后的 user/message）只留已经在列表里的那条。
-        const views = prependOlderViews(older, current.views);
+        // T038：同一任务的派发卡可能在更早的页里，relay 卡要并回去。
+        const views = reconcileTaskCards(prependOlderViews(older, current.views));
         return {
           views,
           byId: indexOf(views),
