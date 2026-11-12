@@ -80,7 +80,7 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 - **取消与续接**：取消保留可见 text/reasoning 前缀为 interrupted；resume 先修复未收尾的 turn/tool 结果再接受输入。
 - **唤醒不丢**：轮次收尾检查与 settle 之间只有一个显式让出点；Running 时 wake 置 latch，输入不会滞留。
 - **服务对外只有三类值**：Call/Response 是调用面，ServiceEvent 是事件面；seq/type/data 直接来自日志事实，不另造序号；events 按轮对齐预算。
-- **根会话不可用时服务照常起**：ready 帧带 protocolVersion（v9：屏蔽的模型——disabled-models-set/check 与 masked 失败原因，只增字段/值）、根状态（ok/unavailable kind+path+line+message）和 context（used/window，页面不推算）。
+- **根会话不可用时服务照常起**：ready 帧带 protocolVersion（v10：屏蔽的模型用 disabled-models-set/check 与 masked 失败原因表达，只增字段/值）、根状态（ok/unavailable kind+path+line+message）和 context（used/window，页面不推算）。
 - **Web 是薄适配器 + 信任栅栏**：启动令牌只在 / 与 /connect 换签名 cookie；
   - cookie 绑 hostname+port、HttpOnly/SameSite=Strict/过期；
   - /api、/ws 只认 cookie，Host/Origin 不对 403、未认证 401；
