@@ -123,7 +123,8 @@ export function verifyFailureReason(reason: string, connectionName?: string): st
   const text = reason.trim();
   if (!text) return modelErrorReason(undefined, connectionName);
   const separator = text.indexOf(': ');
-  const code = separator > 0 ? text.slice(0, separator) : text;
+  // 只有码时 Display 是「码: 」，trim 后只剩「码:」——去掉尾冒号再查表。
+  const code = (separator > 0 ? text.slice(0, separator) : text).replace(/:$/, '').trim();
   const detail = separator > 0 ? text.slice(separator + 2).trim() : '';
   if (!isInternalErrorCode(code)) return text;
   const mapped = modelErrorReason(code, connectionName);
