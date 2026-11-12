@@ -295,6 +295,8 @@ export interface FixtureOptions {
   /// T029.3：重启接续夹具。main 四个任务（两个被打断、一个 ready、一个待答），
   /// single 一个被打断的任务；重启那一轮的路由由测试拿到真实任务 id 后再生成。
   t029Restart?: 'main' | 'single';
+  /// T037：serve 的启动参数（模拟 ds 预检单的 run.sh：`--connection`/`--model` 只当初始默认）。
+  startupSelection?: { connection: string; model: string; effort?: string };
   /// T030：写任务、接受、bash 开关、工作树、非仓库和改错字的真服务夹具。
   /// worktree 场景会在起服务前把数据目录做成一个 git 仓库；expand 的第二段路由由测试
   /// 拿到真实任务 id 后再生成。
@@ -590,6 +592,17 @@ export async function startKernelFixture(
   const serveArgs = ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', dataDir, '--web-dist', path.join(repoRoot, 'web/dist')];
   if (options.contextWindow) {
     serveArgs.push('--context-window', String(options.contextWindow));
+  }
+  if (options.startupSelection) {
+    serveArgs.push(
+      '--connection',
+      options.startupSelection.connection,
+      '--model',
+      options.startupSelection.model,
+    );
+    if (options.startupSelection.effort) {
+      serveArgs.push('--effort', options.startupSelection.effort);
+    }
   }
   const serviceEnv = { ...process.env };
   if (options.home) {

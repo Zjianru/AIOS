@@ -377,9 +377,28 @@ fn resolve_selection(
     Some((connection, model, effort))
 }
 
+/// serve 的启动参数只在没有请求选择时当默认：请求的选择（会话日志/settings 上次选择）赢。
+///
+/// serve 的 model_factory 收到的 `requested` 就是请求的选择：RootHost::open 打开时的上一次选择、
+/// 跨连接热切换 reopen 时的目标选择。`--connection/`--model`/`--effort` 是给空数据目录起的默认值，
+/// 不能把请求的选择压回去（否则页面换连接后每轮还是启动参数那个模型）。
+fn startup_common_for_requested_selection(
+    common: &CommonArgs,
+    requested: Option<&session::ModelSelection>,
+) -> CommonArgs {
+    let mut resolved = common.clone();
+    if let Some(selection) = requested {
+        resolved.connection = Some(selection.connection.clone());
+        resolved.model = Some(selection.model.clone());
+        resolved.effort = Some(selection.effort_wanted.clone());
+    }
+    resolved
+}
+
 /// 打开数据目录的 Keyring，按会话选择解析 (连接 id, 模型配置, 上次选择的 Agent 配置, 凭证来源)。
 ///
 /// T012.7：优先级 命令行 > 会话日志的选择（重开恢复）> settings.json 上次选择 > 连接默认。
+/// serve 这一路不走「命令行最优先」：请求的选择由 startup_common_for_requested_selection 先盖掉启动参数。
 fn model_with_keyring(
     common: &CommonArgs,
     data_dir: &PathBuf,
@@ -620,8 +639,9 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         {
             refresh_monitor_secrets(&monitor_for_recheck, &keyring);
         }
+        let common = startup_common_for_requested_selection(&factory_common, selection);
         model_with_keyring(
-            &factory_common,
+            &common,
             &factory_data_dir,
             Some(&monitor_for_recheck),
             selection,
@@ -1468,6 +1488,43 @@ mod tests {
                 .expect("resolved");
         assert_eq!(model, "explicit-model");
         assert_eq!(effort, "max");
+    }
+
+    /// T037：serve 带 --connection/--model 启动时，请求的选择（会话日志/上次选择）优先于启动参数。
+    #[test]
+    fn requested_selection_overrides_serve_startup_flags() {
+        let mut startup = dev_common();
+        startup.connection = Some("deepseek".to_owned());
+        startup.model = Some("deepseek-flash".to_owned());
+        startup.effort = Some("high".to_owned());
+        startup.context_window = Some(1234);
+        let requested = session::ModelSelection {
+            connection: "minimax-cn".to_owned(),
+            model: "MiniMax-M3.1-Flash".to_owned(),
+            effort_wanted: "medium".to_owned(),
+        };
+        let resolved = crate::startup_common_for_requested_selection(&startup, Some(&requested));
+        assert_eq!(resolved.connection.as_deref(), Some("minimax-cn"));
+        assert_eq!(resolved.model.as_deref(), Some("MiniMax-M3.1-Flash"));
+        assert_eq!(resolved.effort.as_deref(), Some("medium"));
+        assert_eq!(
+            resolved.context_window,
+            Some(1234),
+            "只盖连接/模型/档，其余 CLI 参数不动"
+        );
+    }
+
+    /// T037：空数据目录没有请求选择时，启动参数原样当默认（开发/预检用法不变）。
+    #[test]
+    fn serve_startup_flags_are_default_without_stored_selection() {
+        let mut startup = dev_common();
+        startup.connection = Some("deepseek".to_owned());
+        startup.model = Some("deepseek-flash".to_owned());
+        startup.effort = Some("high".to_owned());
+        let resolved = crate::startup_common_for_requested_selection(&startup, None);
+        assert_eq!(resolved.connection.as_deref(), Some("deepseek"));
+        assert_eq!(resolved.model.as_deref(), Some("deepseek-flash"));
+        assert_eq!(resolved.effort.as_deref(), Some("high"));
     }
 
     #[test]
