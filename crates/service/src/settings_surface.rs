@@ -429,9 +429,18 @@ impl RootHost {
                         })?;
                     }
                     live_ids = live_models.iter().map(|model| model.id.clone()).collect();
-                    models = model::catalog::merge_live(models, live_models);
+                    models = model::catalog::merge_live(&catalog, &provider_id, live_models);
                     live = true;
                 }
+            }
+        }
+        // 显式模型行不过滤：目录标了下线的也照样列；先补上目录字段，用户字段在下面覆盖。
+        for row in connection.models.as_deref().unwrap_or_default() {
+            if models.iter().any(|info| info.id == row.id) {
+                continue;
+            }
+            if let Some(info) = catalog.model_for(&provider_id, &row.id) {
+                models.push(info);
             }
         }
         // 用户填过的字段不动：同名覆盖 name/窗口/输出/用户价格；目录没有的也列出来。

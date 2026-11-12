@@ -1101,17 +1101,18 @@ async fn 获取成功只存厂商列表且第二次只标新增() {
     assert!(second_fetched_at >= first_fetched_at);
 }
 
-/// 列表跟厂商 live 顺序走（不按版本重排）；目录里的字段照常合并，目录没有的模型没有标价。
+/// 列表跟厂商 live 顺序走（不按版本重排）；目录标 deprecated 的去掉，目录没有的保留；
+/// 目录里的字段照常合并，目录没有的模型没有标价。
 #[tokio::test]
 async fn minimax_列表保留厂商顺序() {
     model::catalog::set_global(model::catalog::snapshot());
-    // 故意不按版本排：厂商先给 M3.1，再给 M2，最后给目录里没有的 M2.1-highspeed。
-    let ids = vec!["MiniMax-M3.1-Flash", "MiniMax-M2", "MiniMax-M2.1-highspeed"];
+    // 故意不按版本排：厂商先给 M3.1，再给已下线的 M2，最后给目录里没有的 M2.1-highspeed。
+    let vendor_ids = ["MiniMax-M3.1-Flash", "MiniMax-M2", "MiniMax-M2.1-highspeed"];
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/models"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "data": ids.iter().map(|id| serde_json::json!({"id": id})).collect::<Vec<_>>()
+            "data": vendor_ids.iter().map(|id| serde_json::json!({"id": id})).collect::<Vec<_>>()
         })))
         .expect(1)
         .mount(&server)
@@ -1147,7 +1148,11 @@ async fn minimax_列表保留厂商顺序() {
         .iter()
         .map(|row| row.model.id.as_str())
         .collect();
-    assert_eq!(&order[..3], ids.as_slice(), "厂商顺序原样保留");
+    assert_eq!(
+        order,
+        vec!["MiniMax-M3.1-Flash", "MiniMax-M2.1-highspeed", "MiniMax-M3"],
+        "厂商顺序原样保留（M2 已下线被去掉），目录独有项排在后"
+    );
     assert!(
         find("MiniMax-M3.1-Flash").model.price_input.is_some(),
         "目录标价照常合并"
@@ -1615,8 +1620,8 @@ async fn 保存换预设后旧厂商列表作废() {
     assert!(listed_ids(&host, "preset-moved").await.is_empty());
     assert_eq!(
         service::models::primary_model(dir.path(), &connection_of(&host, "preset-moved").await),
-        "MiniMax-M2",
-        "回到 minimax 的内置目录（目录原序）"
+        "MiniMax-M3.1-Flash",
+        "回到 minimax 的内置目录（已下线的不算，按发布日期从新到旧）"
     );
 
     let fetched = available_models(&host, discover_request("preset-moved")).await;
