@@ -11,6 +11,9 @@ const cases = [
   ['HTTP_404', 'MiniMax（国内站）', 'MiniMax（国内站） 返回了意外的错误'],
   ['PROVIDER_BUSY: try later', 'DeepSeek', 'DeepSeek 返回了意外的错误：try later'],
   ['AUTH', 'DeepSeek', 'DeepSeek 拒绝了这把密钥'],
+  // 厂商消息为空时 Display 是「码: 」（trim 后只剩「码:」），同样不能回显码。
+  ['AUTH:', 'DeepSeek', 'DeepSeek 拒绝了这把密钥'],
+  ['HTTP_404: ', 'MiniMax（国内站）', 'MiniMax（国内站） 返回了意外的错误'],
   ['AUTH: invalid x-api-key', 'DeepSeek', 'DeepSeek 拒绝了这把密钥：invalid x-api-key'],
   ['', 'DeepSeek', 'DeepSeek 返回了意外的错误'],
   // 没有「码: 」形状的是厂商/浏览器原文，原样保留。
