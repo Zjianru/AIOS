@@ -70,7 +70,7 @@ pub enum Call {
     ConnectionUpdate(ConnectionUpdateRequest),
     /// 撤销 key，连接保留。
     ConnectionRevoke(ConnectionRevokeRequest),
-    /// 验证连接（最小请求）；结果写进注册器。
+    /// 验证连接（最小请求）；不指定 model 时结果写进注册器。
     ConnectionVerify(ConnectionVerifyRequest),
     /// 获取可用模型（目录 + 厂商列表）。
     AvailableModels(AvailableModelsRequest),
@@ -714,11 +714,27 @@ pub struct FirstUseResponse {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConnectionVerifyRequest {
     pub id: String,
+    /// 这次用哪个模型验证；None = 旧回退，结果仍写进连接 check。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// 指定模型的验证结果：只回报这一次，不写连接 check、最近选择，也不写学到的鉴权头。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct ConnectionVerifyResult {
+    pub model: String,
+    pub ok: bool,
+    /// 失败时的原因（错误码 + 厂商消息）；成功没有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct ConnectionVerifyResponse {
     pub connection: credentials::ConnectionInfo,
+    /// 指定 model 验证时的本次结果；旧回退验证不返回（形状和以前一样）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<ConnectionVerifyResult>,
 }
 
 /// 查询连接余额/套餐余量（查不到不报错，字段为空）。
