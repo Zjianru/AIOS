@@ -644,9 +644,7 @@ function ConnectionEditor({ conn, view, onDone, onView, onMask }: {
       );
       onDone();
       toast.success(
-        withKey
-          ? `已保存；${conn.name} 的新密钥进了 Keyring，已去拉模型列表`
-          : '已保存',
+        withKey ? `已保存；${conn.name} 的新密钥进了 Keyring` : '已保存',
       );
     } catch (error) {
       toast.error((error as Error).message);

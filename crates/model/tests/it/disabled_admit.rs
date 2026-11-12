@@ -1,7 +1,7 @@
 //! 出站之前查屏蔽（模型公开边界）：被拒时一个请求都不发，错误码是 `MODEL_DISABLED`。
 //!
 //! 来源：Magpie 在往上游发请求之前拦（`gateway/disabled.go` 的 `modelOff`）；AIOS 把这一拦
-//! 放在适配器的 `stream_inner` 里、签发之前，所以聊天、重试、压缩摘要、验证连接共用一处。
+//! 放在适配器的 `stream_inner` 里、签发之前，所以聊天、重试、压缩摘要共用一处。
 
 use std::sync::Arc;
 
