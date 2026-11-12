@@ -2972,6 +2972,58 @@ async fn 可选列表用目录里的显示名() {
     );
 }
 
+/// `model-settings` 的 listed 和默认模型那一路用同一份目录过滤：厂商列表里已下线的
+/// 不进设置页、选择器和首次使用的计数。假厂商照 MiniMax 国内站真实顺序回 9 个 id；
+/// M2.1-highspeed 目录没有收录，照列（D90）。
+#[tokio::test]
+async fn listed_去掉目录标了下线的模型() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(vendor_models(&[
+            "MiniMax-M3.1-Flash",
+            "MiniMax-M3",
+            "MiniMax-M2.7",
+            "MiniMax-M2.7-highspeed",
+            "MiniMax-M2.5",
+            "MiniMax-M2.5-highspeed",
+            "MiniMax-M2.1",
+            "MiniMax-M2.1-highspeed",
+            "MiniMax-M2",
+        ]))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = empty_root_host(dir.path()).await;
+    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "listed-filtered".to_owned(),
+        name: "MiniMax（国内站）".to_owned(),
+        model: "ignored".to_owned(),
+        endpoint: server.uri(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some("minimax-cn".to_owned()),
+        models: Some(Vec::new()),
+        ..Default::default()
+    }))
+    .await
+    .expect("save");
+
+    let listed = listed_ids(&host, "listed-filtered").await;
+    assert_eq!(
+        listed,
+        vec!["MiniMax-M3.1-Flash", "MiniMax-M3", "MiniMax-M2.1-highspeed"],
+        "listed 只留目录没标下线的；厂商顺序和目录没收录的照旧"
+    );
+    let connection = connection_of(&host, "listed-filtered").await;
+    let selectable: Vec<String> = service::models::selectable_models(dir.path(), &connection)
+        .into_iter()
+        .map(|row| row.id)
+        .collect();
+    assert_eq!(listed, selectable, "listed 和默认模型那一路共用同一份过滤");
+}
+
 /// 协议里没有 connection-verify 了：按未知方法拒绝。
 #[test]
 fn 协议里没有connection_verify了() {
