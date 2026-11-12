@@ -46,12 +46,16 @@ test.skip(!process.env.DEEPSEEK_API_KEY, 'T009 DoD：需要 DEEPSEEK_API_KEY（�
 test('DoD3 真 key 对和错：验证、对话、中文原因', async ({ page, request }) => {
   const fixture = await startRealKernelFixture();
   try {
-    // 对 key：设置页验证可用。
+    // 对 key：设置页保存一次（connection-save 顺手拉厂商列表）。
     await openKind(page, fixture);
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#settings');
-    await expect(page.getByRole('button', { name: '验证', exact: true })).toBeVisible({ timeout: 30_000 });
-    await page.getByRole('button', { name: '验证', exact: true }).click();
-    await expect(page.getByText('连接可用', { exact: false })).toBeVisible({ timeout: 60_000 });
+    await page.getByRole('button', { name: '编辑', exact: true }).click();
+    await page.locator('#key-deepseek').fill(process.env.DEEPSEEK_API_KEY ?? '');
+    await page
+      .locator('[data-settings="editor"]')
+      .getByRole('button', { name: '保存', exact: true })
+      .click();
+    await expect(page.getByText(/已拿到模型列表/)).toBeVisible({ timeout: 60_000 });
     await shot(page, 't009-dod3-verify-ok.png');
 
     // 对 key：发一条，拿到回答。
@@ -72,10 +76,15 @@ test('DoD3 真 key 对和错：验证、对话、中文原因', async ({ page, r
     );
     expect(seeded.status, String(seeded.stderr)).toBe(0);
 
-    // 错 key：设置页验证 → 中文「被拒」原因。
+    // 错 key：设置页保存 → 拉列表被拒，中文原因。
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#settings');
-    await page.getByRole('button', { name: '验证', exact: true }).click();
-    await expect(page.getByText('拒绝了这把密钥', { exact: false })).toBeVisible({ timeout: 60_000 });
+    await page.getByRole('button', { name: '编辑', exact: true }).click();
+    await page.locator('#key-deepseek').fill(wrong);
+    await page
+      .locator('[data-settings="editor"]')
+      .getByRole('button', { name: '保存', exact: true })
+      .click();
+    await expect(page.getByText('拉不到模型列表：密钥不对（401）')).toBeVisible({ timeout: 60_000 });
     await shot(page, 't009-dod3-verify-bad.png');
 
     // 错 key：发一条 → 失败块中文原因 + 去设置。

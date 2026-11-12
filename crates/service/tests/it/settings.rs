@@ -2932,6 +2932,46 @@ async fn 获取可用模型不写连接检查() {
     );
 }
 
+/// 存下的厂商列表只给了 id：可选列表用目录里的显示名（页面和卡片事实不显示裸 id）。
+#[tokio::test]
+async fn 可选列表用目录里的显示名() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(vendor_models(&["deepseek-flash"]))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = empty_root_host(dir.path()).await;
+    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "named".to_owned(),
+        name: "Named".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        endpoint: server.uri(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some("deepseek".to_owned()),
+        models: Some(Vec::new()),
+        ..Default::default()
+    }))
+    .await
+    .expect("save");
+    let connection = connection_of(&host, "named").await;
+    let selectable = service::models::selectable_models(dir.path(), &connection);
+    assert_eq!(
+        selectable.first().map(|row| row.name.as_str()),
+        Some("DeepSeek V4.1 Flash 1017"),
+        "显示名从目录补：{selectable:?}"
+    );
+    assert!(
+        selectable
+            .first()
+            .is_some_and(|row| row.price_input.is_some()),
+        "目录价格也补上"
+    );
+}
+
 /// 协议里没有 connection-verify 了：按未知方法拒绝。
 #[test]
 fn 协议里没有connection_verify了() {

@@ -208,7 +208,7 @@ fn normalize_info(info: &mut ConnectionInfo) {
     }
 }
 
-/// 「连接可用」的验证状态；已保存和最近一次验证分开记。
+/// 一次检查的结果（连接的模型列表 / Exa 的 key 检查）；已保存和最近一次检查分开记。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum CheckState {
@@ -223,7 +223,7 @@ pub enum CheckState {
     },
 }
 
-/// 验证结果（由调用方在验证后写回注册器）。
+/// 检查结果（由调用方在检查后写回注册器）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckResult {
     Ok { at: u64 },

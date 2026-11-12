@@ -329,7 +329,7 @@ test('换 API 地址后旧厂商列表作废，获取后新表生效', async ({ 
 });
 
 /// 页面编辑器里换 API 地址、重填密钥再保存：这条走 connection-save（不是 connection-update），
-/// 旧地址存下的厂商列表也要当场作废；在新地址按「获取可用模型」才用新表。
+/// 旧地址存下的厂商列表当场作废；这次保存带的 key 从新地址直接拉到新表。
 test('编辑器换地址重填密钥后旧厂商列表作废，获取后新表生效', async ({ page, request }) => {
   const fixture = await startKernelFixture();
   const first = await startVendor(['deepseek-flash', 'vendor-old']);
@@ -369,11 +369,11 @@ test('编辑器换地址重填密钥后旧厂商列表作废，获取后新表�
     await editor.locator('[data-settings="endpoint"]').fill(second.url);
     await editor.locator('#key-deepseek').fill('sk-e2e-rewritten-key');
     await editor.getByRole('button', { name: '保存', exact: true }).click();
-    // 保存成功后编辑器关掉；旧地址存下的列表不能还在。
+    // 保存成功后编辑器关掉；旧地址的列表作废，保存时已从新地址拉到新表。
     await expect(editor).toHaveCount(0, { timeout: 20_000 });
-    await expect.poll(listedIds, { timeout: 20_000 }).toEqual([]);
+    expect(await listedIds()).toEqual(['deepseek-flash', 'vendor-new']);
 
-    // 在新地址按获取：新表生效，旧厂商的模型不再出现。
+    // 在新地址再按获取：新表仍是这份，旧厂商的模型不再出现。
     await edit.click();
     await expect(editor).toBeVisible();
     await openCustom();

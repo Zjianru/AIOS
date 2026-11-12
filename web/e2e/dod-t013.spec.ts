@@ -136,13 +136,13 @@ async function waitTurnEnd(page: import('@playwright/test').Page): Promise<void>
   await expect(page.locator('[data-kind="stop"]')).toHaveCount(0, { timeout: 180_000 });
 }
 
-/** 空库里走首次使用页（T008 流程）：选 MiniMax（国内站）→ 填 key → 接上 → 连接可用 → 开始。 */
+/** 空库里走首次使用页（T008 流程）：选 MiniMax（国内站）→ 填 key → 接上 → 已保存到 Keyring → 开始。 */
 async function connectMinimax(page: import('@playwright/test').Page): Promise<void> {
   await expect(page.locator('[data-first-use="connect"]')).toBeVisible({ timeout: 60_000 });
   await page.getByRole('button', { name: 'MiniMax（国内站）' }).click();
   await page.locator('#first-use-key').fill(process.env.MINIMAX_API_KEY ?? '');
   await page.getByRole('button', { name: '接上', exact: true }).click();
-  await expect(page.getByText('连接可用', { exact: false })).toBeVisible({ timeout: 180_000 });
+  await expect(page.getByText('已保存到 Keyring', { exact: false })).toBeVisible({ timeout: 180_000 });
   await page.getByRole('button', { name: '开始', exact: true }).click();
   // 进空对话；若 RootHost 还没恢复，页面是「内核不可用」说明页 → 点「现在重试」。
   const composerInput = page.locator('[data-kind="composer-input"]');

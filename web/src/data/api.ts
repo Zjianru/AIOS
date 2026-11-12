@@ -307,28 +307,6 @@ export async function getModelSettings(): Promise<ModelSettingsView> {
   return transmit(keyring);
 }
 
-/** 用已保存的密钥发一次最小请求，看服务商认不认。 */
-export async function checkConnection(connectionId: string): Promise<ModelSettingsView> {
-  const conn = findConnection(connectionId);
-  if (!conn.key.saved) throw new Error('还没有密钥');
-  conn.check = { kind: 'checking' };
-  await new Promise((resolve) => setTimeout(resolve, 900));
-  const problem = keyring.keyFile.problem;
-  const rejected = Boolean(problem) || keyWillFail.has(connectionId);
-  conn.check = problem
-    ? { kind: 'fail', at: nowLabel(), reason: '读不到密钥：' + problem }
-    : rejected
-      ? { kind: 'fail', at: nowLabel(), reason: conn.name + ' 拒绝了这把密钥（401）' }
-      : { kind: 'ok', at: nowLabel() };
-  if (!rejected) {
-    keyring.issuedToday += 1;
-    const t = nowLabel().replace('今天 ', '');
-    keyring.issues.unshift({ id: 'i' + Date.now(), at: t, connection: conn.name, purpose: '设置 · 验证连接', until: t });
-    keyring.issues = keyring.issues.slice(0, 20);
-  }
-  return transmit(keyring);
-}
-
 export interface ConnectionDraft {
   source: 'catalog' | 'custom';
   /** catalog 时是目录里的 id；custom 时是用户填的 Provider ID。 */
@@ -343,7 +321,7 @@ export interface ConnectionDraft {
 
 const PROVIDER_ID = /^[a-z][a-z0-9-]*$/;
 
-/** 新建一个连接；有密钥就同时存进 Keyring 并开始验证。 */
+/** 新建一个连接；有密钥就同时存进 Keyring，并按假厂商的列表记一次检查结果。 */
 export async function addConnection(draft: ConnectionDraft): Promise<ModelSettingsView> {
   if (!PROVIDER_ID.test(draft.id)) throw new Error('Provider ID 要以小写字母开头，只用小写字母、数字和 -');
   if (keyring.connections.some((item) => item.id === draft.id)) throw new Error('已经有一个叫 ' + draft.id + ' 的连接');
@@ -367,7 +345,10 @@ export async function addConnection(draft: ConnectionDraft): Promise<ModelSettin
   if (draft.key.trim()) {
     markKey(conn.id, draft.key);
     conn.key = { saved: true, savedAt: nowLabel() };
-    conn.check = { kind: 'checking' };
+    conn.check = keyWillFail.has(conn.id)
+      ? { kind: 'fail', at: nowLabel(), reason: conn.name + ' 拒绝了这把密钥（401）' }
+      : { kind: 'ok', at: nowLabel() };
+    conn.availableModels = catalog?.defaultModels ?? conn.models;
   }
   return transmit(keyring);
 }
@@ -385,7 +366,11 @@ export async function updateConnection(
   if (patch.key.trim()) {
     markKey(conn.id, patch.key);
     conn.key = { saved: true, savedAt: nowLabel() };
-    conn.check = { kind: 'checking' };
+    conn.check = keyWillFail.has(conn.id)
+      ? { kind: 'fail', at: nowLabel(), reason: conn.name + ' 拒绝了这把密钥（401）' }
+      : { kind: 'ok', at: nowLabel() };
+    const catalog = keyring.catalog.find((item) => item.id === conn.id);
+    conn.availableModels = catalog?.defaultModels ?? conn.models;
   }
   return transmit(keyring);
 }

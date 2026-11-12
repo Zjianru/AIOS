@@ -332,12 +332,6 @@ export async function deleteConnection(id: string): Promise<boolean> {
   return response.deleted;
 }
 
-/** 验证连接；结果落在注册器（响应不带 key）。 */
-export async function verifyConnection(id: string): Promise<ConnectionInfo> {
-  const response = await post({ method: 'connection-verify', id });
-  return response.connection;
-}
-
 export async function relocateKeyring(to: string): Promise<void> {
   await post({ method: 'keyring-relocate', to });
 }

@@ -25,8 +25,10 @@ export interface ConnectionCardFact {
   provider?: string;
   /** Keyring 里的密钥状态。 */
   key?: { saved: boolean; savedAt?: string };
-  /** 最近一次验证。 */
-  check?: { kind: 'never' | 'checking' | 'ok' | 'fail'; at?: string; reason?: string };
+  /** 最近一次保存时拉到的模型列表结果。 */
+  check?: { kind: 'never' | 'ok' | 'fail'; at?: string; reason?: string };
+  /** 保存时拉到了几个模型（ok 时第一行下面写「已拿到 N 个模型」）。 */
+  modelCount?: number;
   /** Keyring 读不出来：所有连接一起停用（设置页）。 */
   broken?: boolean;
 }
@@ -43,8 +45,9 @@ export interface ConnectionSlots {
   provider: string;
   saved: boolean;
   savedAt: string;
-  check: 'never' | 'checking' | 'ok' | 'fail';
+  check: 'never' | 'ok' | 'fail';
   checkedAt: string;
+  modelCount: number;
   reason: string;
   broken: boolean;
 }
@@ -69,8 +72,9 @@ export const connectionSlotsSchema = z.object({
   provider: textSlot,
   saved: z.boolean().catch(false),
   savedAt: textSlot,
-  check: z.enum(['never', 'checking', 'ok', 'fail']).catch('never'),
+  check: z.enum(['never', 'ok', 'fail']).catch('never'),
   checkedAt: textSlot,
+  modelCount: z.number().int().nonnegative().catch(0),
   reason: textSlot,
   broken: z.boolean().catch(false),
 });
@@ -83,40 +87,32 @@ const CONNECTION_FALLBACK_SLOTS: ConnectionSlots = {
   savedAt: '',
   check: 'never',
   checkedAt: '',
+  modelCount: 0,
   reason: '',
   broken: false,
 };
 
 /**
  * 连接的状态由 Keyring 决定（程序定，不由模型给）：
- * 已保存是决定做完了，正在验证是 running；失败是 failed；还没保存是 pending。
+ * 已保存是决定做完了，拉不到模型列表是 failed；还没保存是 pending。
  */
 function connectionStateOf(fact: ConnectionCardFact): CardState {
   if (fact.broken) return 'failed';
   if (!fact.key?.saved) return 'pending';
-  switch (fact.check?.kind) {
-    case 'checking':
-      return 'running';
-    case 'fail':
-      return 'failed';
-    default:
-      return 'done';
-  }
+  return fact.check?.kind === 'fail' ? 'failed' : 'done';
 }
 
-/** 回执和状态对得上：已保存 / 可用是 success，失败是 failed；还没决定、验证中没有回执。 */
+/** 回执和状态对得上：已保存 / 已拿到列表是 success，拉不到是 failed；还没保存没有回执。 */
 function connectionReceiptOf(fact: ConnectionCardFact): CardReceipt | null {
   if (fact.broken) return { outcome: 'failed', summary: 'Keyring 读不出来，这个连接暂时不能用' };
   if (!fact.key?.saved) return null;
   switch (fact.check?.kind) {
     case 'ok':
-      return { outcome: 'success', summary: '连接可用' };
+      return { outcome: 'success', summary: '已拿到模型列表' };
     case 'fail': {
       const reason = typeof fact.check.reason === 'string' ? fact.check.reason : '';
-      return { outcome: 'failed', summary: reason ? `连接不可用：${reason}` : '连接不可用' };
+      return { outcome: 'failed', summary: reason ? `拉不到模型列表：${reason}` : '拉不到模型列表' };
     }
-    case 'checking':
-      return null;
     default:
       return { outcome: 'success', summary: '已保存到 Keyring' };
   }
@@ -136,6 +132,7 @@ export function connectionCardOf(fact: ConnectionCardFact): CardEnvelope<Connect
     check: fact.check?.kind,
     checkedAt: fact.check?.at,
     reason: fact.check?.reason,
+    modelCount: fact.modelCount,
     broken: fact.broken === true,
   });
   if (!parsed.success) return null;

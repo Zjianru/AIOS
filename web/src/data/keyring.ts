@@ -14,7 +14,6 @@ import {
   restartKeyring,
   saveConnection,
   setDisabledModels as setDisabledModelsOnService,
-  verifyConnection,
   type ConnectionInfo as ServiceConnectionInfo,
   type KeyringView as ServiceKeyringView,
   type ModelRow as ServiceModelRow,
@@ -27,6 +26,12 @@ export type CheckState =
   | { kind: 'checking' }
   | { kind: 'ok'; at: string }
   | { kind: 'fail'; at: string; reason: string };
+
+/**
+ * 连接的检查结果：只有「没拉过列表 / 已拿到列表 / 拉不到」三种。
+ * checking 只留给联网搜索的页面态；连接的检查结果只有 never/ok/fail。
+ */
+export type ConnectionCheckState = Exclude<CheckState, { kind: 'checking' }>;
 
 export interface ModelRow {
   id: string;
@@ -65,7 +70,7 @@ export interface ConnectionView {
   /** 跟着厂商走时选择器/小标签可选的模型（存下的厂商列表；没存过用内置目录）。 */
   availableModels?: ModelRow[];
   key: { saved: false } | { saved: true; savedAt: string };
-  check: CheckState;
+  check: ConnectionCheckState;
 }
 
 /** 内置目录里的提供方（「第三方模型提供商」的下拉）。 */
@@ -114,23 +119,14 @@ export const KERNEL_PROVIDERS: ReadonlySet<string> = new Set(['deepseek', 'minim
 /** T012.9：与服务内置目录一致的模型名（菜单/添加连接先列这些；真名单以「获取可用模型」为准）。 */
 const DEEPSEEK_MODELS = [
   { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash', contextWindow: 1_000_000 },
-  { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', contextWindow: 1_000_000 },
-  { id: 'deepseek-v4-flash-vision-exp', name: 'DeepSeek V4 Flash Vision Exp', contextWindow: 1_000_000 },
   { id: 'deepseek-v4-pro', name: 'DeepSeek-V4-Pro', contextWindow: 1_000_000 },
 ];
 
-// 和内核内置目录一致（8 条）：没 fetch 过时菜单/小标签只列这些，并原样沿用目录顺序。
-// MiniMax-M2.1-highspeed 是厂商早先给过的旧模型，目录已不收；没 fetch 过时不预先显示，
-// 厂商 live 里真给了的话，获取后照常出现。
+// 和内核内置目录一致（2 条）：没 fetch 过时菜单/小标签只列这些，并原样沿用目录顺序。
+// models.dev 标了 deprecated 的不预先显示；厂商 live 里真给了的话，获取后照常出现（目录没有的保留）。
 const MINIMAX_MODELS = [
   { id: 'MiniMax-M3.1-Flash', name: 'MiniMax-M3.1-Flash', contextWindow: 1_000_000 },
   { id: 'MiniMax-M3', name: 'MiniMax-M3', contextWindow: 1_000_000 },
-  { id: 'MiniMax-M2.7', name: 'MiniMax-M2.7', contextWindow: 204_800 },
-  { id: 'MiniMax-M2.7-highspeed', name: 'MiniMax-M2.7-highspeed', contextWindow: 204_800 },
-  { id: 'MiniMax-M2.5', name: 'MiniMax-M2.5', contextWindow: 204_800 },
-  { id: 'MiniMax-M2.5-highspeed', name: 'MiniMax-M2.5-highspeed', contextWindow: 204_800 },
-  { id: 'MiniMax-M2.1', name: 'MiniMax-M2.1', contextWindow: 204_800 },
-  { id: 'MiniMax-M2', name: 'MiniMax-M2', contextWindow: 204_800 },
 ];
 
 const CATALOG: CatalogProvider[] = [
@@ -157,7 +153,7 @@ const CATALOG: CatalogProvider[] = [
   },
 ];
 
-function mapCheck(info: ServiceConnectionInfo): CheckState {
+function mapCheck(info: ServiceConnectionInfo): ConnectionCheckState {
   if (info.check.kind === 'never') return { kind: 'never' };
   if (info.check.kind === 'ok') return { kind: 'ok', at: String(info.check.at) };
   return { kind: 'fail', at: String(info.check.at), reason: info.check.reason };
@@ -292,12 +288,6 @@ export async function addConnection(draft: ConnectionDraft): Promise<ModelSettin
   const model = rows[0]?.id || fallback[0]?.id || 'deepseek-flash';
   const endpoint = draft.endpoint || CATALOG.find((item) => item.id === draft.id)?.defaultEndpoint || CATALOG[0]?.defaultEndpoint || '';
   await saveConnection({ id: draft.id, name: draft.name, model, endpoint, apiKey: draft.key, preset, models: rows });
-  return getModelSettings();
-}
-
-/** 验证连接；结果由服务写进注册器。 */
-export async function checkConnection(connectionId: string): Promise<ModelSettingsView> {
-  await verifyConnection(connectionId);
   return getModelSettings();
 }
 

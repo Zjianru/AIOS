@@ -34,7 +34,7 @@ test('设置页删除提供商：列表变空', async ({ page }) => {
   }
 });
 
-test('设置页换 key：保存后可以验证', async ({ page }) => {
+test('设置页换 key：保存时拉模型列表', async ({ page }) => {
   const fixture = await startKernelFixture();
   try {
     await page.goto(`${fixture.baseUrl}/?token=${encodeURIComponent(fixture.token)}#kind`);
@@ -48,8 +48,8 @@ test('设置页换 key：保存后可以验证', async ({ page }) => {
       .getByRole('button', { name: '保存', exact: true })
       .click();
     await expect(page.locator('[data-settings="editor"]')).toHaveCount(0, { timeout: 20_000 });
-    await page.getByRole('button', { name: '验证', exact: true }).click();
-    await expect(page.getByText('连接可用', { exact: false })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(/已拿到模型列表（/)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole('button', { name: '验证', exact: true })).toHaveCount(0);
   } finally {
     await fixture.close();
   }

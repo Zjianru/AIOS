@@ -21,7 +21,7 @@ impl Keyring {
         Ok(view_of(store.exa.as_ref()))
     }
 
-    /// 存/换 Exa 的 key：保存时间更新，验证结果重置为还没验证。
+    /// 存/换 Exa 的 key：保存时间更新，检查结果重置为还没检查。
     pub fn save_exa_key(&self, key: &str) -> Result<ToolKeyView, KeyringError> {
         if key.trim().is_empty() {
             return Err(KeyringError::InvalidToolKey("key 不能为空".to_owned()));

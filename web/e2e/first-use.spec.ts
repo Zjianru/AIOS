@@ -29,7 +29,8 @@ test('第一次填 key：接上后是空对话', async ({ page }) => {
     await expect(page.getByText('先接一个模型，我们就能开始了')).toBeVisible();
     await page.locator('#first-use-key').fill('good-key');
     await page.getByRole('button', { name: '接上', exact: true }).click();
-    await expect(page.getByText('连接可用')).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText('已保存到 Keyring')).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText('已拿到 2 个模型')).toBeVisible({ timeout: 20_000 });
     await page.getByRole('button', { name: '开始', exact: true }).click();
     await expect(page.locator('[data-kind="empty"]')).toBeVisible({ timeout: 20_000 });
   } finally {
@@ -40,7 +41,10 @@ test('第一次填 key：接上后是空对话', async ({ page }) => {
 /// 第一次接 MiniMax（国际站）：它成为当前模型，档取模型自己的默认档（medium），
 /// 页面状态与选择器都跟着新连接。
 test('第一次填 key：MiniMax 连接成为当前模型并用模型默认档', async ({ page, request }) => {
-  const fixture = await startKernelFixture({ emptyKeyring: true });
+  const fixture = await startKernelFixture({
+    emptyKeyring: true,
+    vendorModels: ['MiniMax-M3.1-Flash', 'MiniMax-M3'],
+  });
   try {
     await rewriteConnectionEndpoint(page, fixture);
     await page.goto(`${fixture.baseUrl}/?token=${encodeURIComponent(fixture.token)}#kind`);
@@ -48,7 +52,7 @@ test('第一次填 key：MiniMax 连接成为当前模型并用模型默认档',
     await page.getByRole('button', { name: 'MiniMax（国际站）', exact: true }).click();
     await page.locator('#first-use-key').fill('good-key');
     await page.getByRole('button', { name: '接上', exact: true }).click();
-    await expect(page.getByText('连接可用')).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText('已拿到 2 个模型')).toBeVisible({ timeout: 20_000 });
     await page.getByRole('button', { name: '开始', exact: true }).click();
     await expect(page.locator('[data-kind="empty"]')).toBeVisible({ timeout: 20_000 });
     // 选择器显示新连接上的模型和它自己的默认档（中 = medium，不是写死的 high）。
@@ -75,11 +79,13 @@ test('第一次填 key：错 key 显示原因并可再试', async ({ page }) => 
     await expect(page.locator('[data-first-use="connect"]')).toBeVisible({ timeout: 20_000 });
     await page.locator('#first-use-key').fill('bad-key');
     await page.getByRole('button', { name: '接上', exact: true }).click();
-    await expect(page.getByText('连接不可用', { exact: false })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText('拉不到模型列表：密钥不对（401）')).toBeVisible({ timeout: 20_000 });
     await expect(page.getByRole('button', { name: '再试一次', exact: true })).toBeVisible();
+    // 拉不到列表不挡聊天：保存完就能开始。
+    await expect(page.getByRole('button', { name: '开始', exact: true })).toBeVisible();
     await page.locator('#first-use-key').fill('good-key');
     await page.getByRole('button', { name: '再试一次', exact: true }).click();
-    await expect(page.getByText('连接可用')).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText('已拿到 2 个模型')).toBeVisible({ timeout: 20_000 });
     await page.getByRole('button', { name: '开始', exact: true }).click();
     await expect(page.locator('[data-kind="empty"]')).toBeVisible({ timeout: 20_000 });
   } finally {

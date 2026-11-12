@@ -5,7 +5,7 @@
  *   「添加模型提供商」分两种方式：第三方模型提供商（内置目录）、自定义模型 API。
  * - 密钥正文从不出现在这里，也不出现在任何返回值里：界面只拿「有没有配、可不可用」。
  *   没有环境变量后备（D34），密钥只走 Keyring。
- * - 「已保存」和「连接可用」是两件事，分开记（docs 10 篇第 2 节）。
+ * - 「已保存」和「模型列表」是两件事，分开记（docs 10 篇第 2 节）。
  */
 
 import type { ModelRow, ModelSettingsView } from '@/data/keyring';
@@ -52,7 +52,7 @@ export const modelSettingsFixture: ModelSettingsView = {
       name: 'MiniMax',
       protocol: 'anthropic-messages',
       defaultEndpoint: 'https://api.minimaxi.com/anthropic',
-      defaultModels: [{ id: 'MiniMax-M2', name: 'MiniMax M2', contextWindow: 200000 }],
+      defaultModels: [{ id: 'MiniMax-M3.1-Flash', name: 'MiniMax M3.1 Flash', contextWindow: 1000000 }],
     },
     {
       id: 'openai',
@@ -76,7 +76,7 @@ export const modelSettingsFixture: ModelSettingsView = {
     { id: 'i5', at: '13:58', connection: 'DeepSeek', purpose: 'Kind 对话 · 模型请求', until: '14:03' },
     { id: 'i4', at: '13:58', connection: 'DeepSeek', purpose: 'Kind 对话 · 压缩摘要', until: '14:03' },
     { id: 'i3', at: '13:41', connection: 'DeepSeek', purpose: 'Kind 对话 · 模型请求', until: '13:46' },
-    { id: 'i2', at: '11:42', connection: 'DeepSeek', purpose: '设置 · 验证连接', until: '11:43' },
+    { id: 'i2', at: '11:42', connection: 'DeepSeek', purpose: '设置 · 模型列表', until: '11:43' },
   ],
 };
 
@@ -87,7 +87,7 @@ export const DISCOVERED_MODELS: Record<string, ModelRow[]> = {
     { id: 'kimi-k2', name: 'Kimi K2', contextWindow: 256000 },
     { id: 'kimi-k2-turbo', name: 'Kimi K2 Turbo', contextWindow: 256000 },
   ],
-  minimax: [{ id: 'MiniMax-M2', name: 'MiniMax M2', contextWindow: 200000 }],
+  minimax: [{ id: 'MiniMax-M3.1-Flash', name: 'MiniMax M3.1 Flash', contextWindow: 1000000 }],
   openai: [
     { id: 'gpt-5', name: 'GPT-5', contextWindow: 400000, maxTokens: 128000 },
     { id: 'gpt-5-mini', name: 'GPT-5 mini', contextWindow: 400000, maxTokens: 128000 },
