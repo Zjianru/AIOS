@@ -128,7 +128,7 @@ async fn 空库起服务存连接后recheck用新模型() {
             id: "deepseek".to_owned(),
             name: "DeepSeek".to_owned(),
             model: "deepseek-pro".to_owned(),
-            endpoint: "https://api.deepseek.com/anthropic".to_owned(),
+            endpoint: "http://127.0.0.1:1/anthropic".to_owned(),
             api_key: TEST_KEY.to_owned(),
             ..Default::default()
         }))

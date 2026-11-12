@@ -15,7 +15,7 @@ test('空库加连接后 root 恢复：Kind 有 composer 能发消息', async ({
     await page.locator('#first-use-key').fill(process.env.MINIMAX_API_KEY ?? '');
     await page.getByRole('button', { name: '接上', exact: true }).click();
     // 保存（修法 A：root 还 unavailable，所以新连接会被设为当前选择）。
-    await expect(page.getByText('连接可用', { exact: false })).toBeVisible({ timeout: 180_000 });
+    await expect(page.getByText('已保存到 Keyring', { exact: false })).toBeVisible({ timeout: 180_000 });
     // 修法 C：onConnected → recheck → root Ok。
     await page.getByRole('button', { name: '开始', exact: true }).click();
     const retry = page.getByRole('button', { name: '现在重试' });

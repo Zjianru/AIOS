@@ -4,7 +4,7 @@
 //! T012.5 增加：models.dev 拉取/缓存/快照，目录字段（窗口/输出/价格/thinks/efforts），
 //! 以及和 GET /v1/models 的结果合并（厂商列表字段优先，用户填的不动由 service 覆盖）。
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, SystemTime};
@@ -236,6 +236,40 @@ impl CatalogSnapshot {
         Some(model_info(provider, model))
     }
 
+    /// 目录是否把这个模型标成下线。存的厂商列表、可选列表按它过滤；显式模型行不看。
+    pub fn is_deprecated(&self, provider_id: &str, model_id: &str) -> bool {
+        self.model(provider_id, model_id)
+            .is_some_and(CatalogModel::is_deprecated)
+    }
+
+    /// 用目录字段补一份存下的厂商列表：厂商给的显示名优先（存下来的兜底名就是 id 时
+    /// 不算「给过」），窗口/输出/价格/档从目录补；目录标了下线的不进结果，目录没有的保留。
+    /// 顺序照存下的列表（厂商顺序）。
+    pub fn enrich_live(&self, provider_id: &str, models: Vec<ModelInfo>) -> Vec<ModelInfo> {
+        models
+            .into_iter()
+            .filter(|model| !self.is_deprecated(provider_id, &model.id))
+            .map(|model| {
+                let Some(mut info) = self.model_for(provider_id, &model.id) else {
+                    return model;
+                };
+                if !model.name.is_empty() && model.name != model.id {
+                    info.name = model.name;
+                }
+                if model.context_window.is_some() {
+                    info.context_window = model.context_window;
+                }
+                if model.max_tokens.is_some() {
+                    info.max_tokens = model.max_tokens;
+                }
+                if model.tool_update.is_some() {
+                    info.tool_update = model.tool_update;
+                }
+                info
+            })
+            .collect()
+    }
+
     /// 这个 provider 的可选模型：跳过 models.dev 标了 `deprecated` 的；其余按
     /// release_date 从新到旧排，同一天按 id，保证结果稳定（Magpie catalog.go 的 provider）。
     pub fn models_for(&self, provider_id: &str) -> Vec<ModelInfo> {
@@ -403,17 +437,6 @@ pub fn merge_live(
     provider_id: &str,
     live: Vec<LiveModel>,
 ) -> Vec<ModelInfo> {
-    let deprecated: HashSet<&str> = catalog
-        .provider(provider_id)
-        .map(|provider| {
-            provider
-                .models
-                .values()
-                .filter(|model| model.is_deprecated())
-                .map(|model| model.id.as_str())
-                .collect()
-        })
-        .unwrap_or_default();
     let mut catalog_by_id: BTreeMap<String, ModelInfo> = catalog
         .models_for(provider_id)
         .into_iter()
@@ -421,7 +444,7 @@ pub fn merge_live(
         .collect();
     let mut merged = Vec::with_capacity(catalog_by_id.len() + live.len());
     for live in live {
-        if deprecated.contains(live.id.as_str()) {
+        if catalog.is_deprecated(provider_id, &live.id) {
             continue;
         }
         let mut info = catalog_by_id.remove(&live.id).unwrap_or_else(|| ModelInfo {

@@ -52,11 +52,9 @@ export interface CardHost {
   answer: (answers: AnswerInput[]) => void;
   /** 提问卡：整批不答。 */
   dismiss: () => void;
-  /** 连接卡：保存密钥（走 Keyring 的保存）；返回保存下来的连接 id，失败由页面提示并返回 null。 */
+  /** 连接卡：保存密钥（走 Keyring 的保存，服务端顺手拉一次厂商列表）；返回保存下来的连接 id，失败由页面提示并返回 null。 */
   saveConnection?: (providerId: string, key: string) => Promise<string | null>;
-  /** 连接卡：验证连接（走 Keyring 的验证）。 */
-  verifyConnection?: (connectionId: string) => Promise<void>;
-  /** 连接卡：连接可用后进入下一步（首次使用的「开始」）。 */
+  /** 连接卡：保存后进入下一步（首次使用的「开始」；列表没拿到也可以先试）。 */
   start?: () => void;
   /** 确认卡：选了这一项并确认（由页面向服务发 card-act）；HTTP 失败时 reject，视图恢复按钮。 */
   confirmCard?: (optionId: string) => Promise<void> | void;

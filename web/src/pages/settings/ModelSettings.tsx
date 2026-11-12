@@ -6,7 +6,7 @@
  *   两边的草稿各自保留，切换方式不丢；
  * - 密钥框只写不读：初始为空，保存后从不回显；留空就是不动已保存的那一把；
  * - 和 DSH 不同的地方：没有环境变量后备（D34），在这里存的密钥全部进 Keyring；
- *   「已保存」和「连接可用」分开显示（docs 10 篇第 2 节）。
+ *   「已保存」和「模型列表」分开显示（docs 10 篇第 2 节）。
  *
  * 下面的「Keyring」一节：加密钥匙放在哪（用户定，D24、D41）、签发记录（docs 09 篇 7.1）。
  */
@@ -15,7 +15,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Ban, ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, Loader2, Plus, X } from 'lucide-react';
 import { toast } from 'sonner';
 import {
-  addConnection, checkConnection, discoverModels, getExaKey, getModelSettings, moveKeyFile, relinkKeyFile,
+  addConnection, discoverModels, getExaKey, getModelSettings, moveKeyFile, relinkKeyFile,
   removeConnection, removeExaKey, resetKeyring, revokeKey, saveExaKey, setDisabledModels, updateConnection,
   verifyExaKey,
 } from '@/data/keyring';
@@ -33,7 +33,6 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
-import { modelErrorReason } from '@/data/errors';
 import { connectionCardOf } from '@/data/connectionCard';
 import type { ConnectionSlots } from '@/data/connectionCard';
 import type { CardEnvelope } from '@/lib/cardEnvelope';
@@ -192,7 +191,7 @@ function Btn({ kind = 'plain', className, ...props }: React.ButtonHTMLAttributes
   );
 }
 
-/** 一行的状态点：绿 = 可用；红 = 不可用；黄 = 没有密钥；蓝 = 正在验证；灰 = 有密钥但还没验证。 */
+/** 一行的状态点：绿 = 已拿到模型列表；红 = 拉不到；黄 = 没有密钥；灰 = 已保存、还没拉过列表。 */
 function StatusDot({ card }: { card: CardEnvelope<ConnectionSlots> }) {
   const slots = card.slots;
   const color = slots.broken && slots.saved
@@ -203,18 +202,11 @@ function StatusDot({ card }: { card: CardEnvelope<ConnectionSlots> }) {
       ? 'var(--done)'
       : slots.check === 'fail'
         ? 'var(--fail)'
-        : slots.check === 'checking'
-          ? 'var(--run)'
-          : 'var(--ink-3)';
-  return (
-    <span
-      className={cn('block size-2 shrink-0 rounded-full', slots.check === 'checking' && 'animate-pulse')}
-      style={{ backgroundColor: color }}
-    />
-  );
+        : 'var(--ink-3)';
+  return <span className="block size-2 shrink-0 rounded-full" style={{ backgroundColor: color }} />;
 }
 
-/** 连接卡信封 → 密钥和连接状态的一句话（「已保存」「连接可用」分开说）。 */
+/** 连接卡信封 → 密钥和模型列表状态的一句话（「已保存」「模型列表」分开说）。 */
 function keyStatus(card: CardEnvelope<ConnectionSlots> | null): { text: string; tone?: 'warn' | 'fail' | 'ok' } {
   const slots = card?.slots;
   if (!slots || !slots.saved) return { text: '还没有密钥。填上才能用这个提供商。', tone: 'warn' };
@@ -222,13 +214,18 @@ function keyStatus(card: CardEnvelope<ConnectionSlots> | null): { text: string; 
   if (slots.broken) return { text: `${saved} · 现在读不出来，暂时不能用`, tone: 'fail' };
   switch (slots.check) {
     case 'ok':
-      return { text: `${saved} · 连接可用（${formatLocalDateTime(slots.checkedAt)} 验证）`, tone: 'ok' };
+      return {
+        text: `${saved} · 已拿到模型列表（${formatLocalDateTime(slots.checkedAt)}）`,
+        tone: 'ok',
+      };
     case 'fail':
-      return { text: `${saved} · 不可用：${modelErrorReason(slots.reason)}`, tone: 'fail' };
-    case 'checking':
-      return { text: `${saved} · 正在验证…` };
+      return {
+        // check.reason 是服务写的现成人话（「密钥不对（401）」「厂商回了 404」），不再过错误码表。
+        text: `${saved} · 拉不到模型列表：${slots.reason}`,
+        tone: 'fail',
+      };
     default:
-      return { text: `${saved} · 还没验证过` };
+      return { text: saved };
   }
 }
 
@@ -646,8 +643,9 @@ function ConnectionEditor({ conn, view, onDone, onView, onMask }: {
         }),
       );
       onDone();
-      toast.success(withKey ? `已保存；${conn.name} 的新密钥进了 Keyring，正在验证` : '已保存');
-      if (withKey) onView(await checkConnection(conn.id));
+      toast.success(
+        withKey ? `已保存；${conn.name} 的新密钥进了 Keyring` : '已保存',
+      );
     } catch (error) {
       toast.error((error as Error).message);
     } finally {
@@ -989,7 +987,7 @@ function WebSearchSection({ broken, onChanged }: { broken: boolean; onChanged: (
       setDraft('');
       setEditing(false);
       onChanged();
-      toast.success(saved ? 'key 换好了，进了 Keyring；正在验证' : 'key 进了 Keyring；Kind 下一轮就能联网，正在验证');
+      toast.success(saved ? 'key 换好了，进了 Keyring；正在检查' : 'key 进了 Keyring；Kind 下一轮就能联网，正在检查');
       setView({ ...next, check: { kind: 'checking' } });
       setView(await verifyExaKey());
       onChanged();
@@ -1019,12 +1017,12 @@ function WebSearchSection({ broken, onChanged }: { broken: boolean; onChanged: (
       : !saved
         ? { text: '还没有 key。Kind 现在不能搜网页、读链接。', tone: 'warn' }
         : checking
-          ? { text: '已保存在 Keyring（' + savedAt + '）· 正在验证…' }
+          ? { text: '已保存在 Keyring（' + savedAt + '）· 正在检查…' }
           : view.check.kind === 'ok'
             ? { text: '已保存在 Keyring（' + savedAt + '）· 能用（' + formatLocalDateTime(view.check.at) + ' 验证）', tone: 'ok' }
             : view.check.kind === 'fail'
               ? { text: '已保存在 Keyring（' + savedAt + '）· 不能用：' + view.check.reason, tone: 'fail' }
-              : { text: '已保存在 Keyring（' + savedAt + '）· 还没验证过' };
+              : { text: '已保存在 Keyring（' + savedAt + '）· 还没检查过' };
 
   const dot = broken
     ? 'var(--fail)'
@@ -1064,7 +1062,7 @@ function WebSearchSection({ broken, onChanged }: { broken: boolean; onChanged: (
           <div className="ml-auto flex shrink-0 items-center gap-1">
             {saved && !broken ? (
               <Btn kind="quiet" disabled={checking} onClick={() => void verify()}>
-                {checking ? '正在验证…' : '验证'}
+                {checking ? '正在检查…' : '验证'}
               </Btn>
             ) : null}
             {saved && !editing && !broken ? (
@@ -1526,21 +1524,6 @@ export function ModelSettings() {
     void load();
   }, [load]);
 
-  const verify = async (id: string) => {
-    // 先把这一行标成「正在验证」，结果回来再换
-    setView((current) =>
-      current && {
-        ...current,
-        connections: current.connections.map((conn) => (conn.id === id ? { ...conn, check: { kind: 'checking' } } : conn)),
-      },
-    );
-    try {
-      setView(await checkConnection(id));
-    } catch (error) {
-      toast.error((error as Error).message);
-    }
-  };
-
   const mask = async (wasRunning: boolean) => {
     if (!masking) return;
     const pattern = masking;
@@ -1558,11 +1541,10 @@ export function ModelSettings() {
     }
   };
 
-  const onCreated = async (id: string, withKey: boolean, next: ModelSettingsView) => {
+  const onCreated = async (_id: string, withKey: boolean, next: ModelSettingsView) => {
     setView(next);
     setOpen(null);
-    toast.success(withKey ? '已添加；密钥进了 Keyring，正在验证' : '已添加；填上密钥才能用');
-    if (withKey) setView(await checkConnection(id));
+    toast.success(withKey ? '已添加；密钥进了 Keyring' : '已添加；填上密钥才能用');
   };
 
   const rows = useMemo(() => view?.connections ?? [], [view]);
@@ -1600,16 +1582,6 @@ export function ModelSettings() {
                       </div>
                     </div>
                     <div className="ml-auto flex shrink-0 items-center gap-1">
-                      {conn.key.saved ? (
-                        <Btn
-                          kind="quiet"
-                          disabled={broken || conn.check.kind === 'checking'}
-                          title={broken ? '先让 Keyring 能读出来' : undefined}
-                          onClick={() => void verify(conn.id)}
-                        >
-                          {conn.check.kind === 'checking' ? '正在验证…' : '验证'}
-                        </Btn>
-                      ) : null}
                       <Btn kind="plain" onClick={() => setOpen(open === conn.id ? null : conn.id)}>
                         {open === conn.id ? '收起' : '编辑'}
                       </Btn>

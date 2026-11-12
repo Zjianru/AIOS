@@ -194,7 +194,8 @@ test('厂商模型小标签上的屏蔽按钮打开同一个确认框', async ({
 test('写通配规则：确认框列出命中，保存后每条写着现在匹配几个，解除后那一行消失', async ({ page, request }) => {
   const fixture = await startKernelFixture();
   try {
-    // 跟着厂商走：可选的是内置目录里的四个 deepseek 模型，`*flash*` 命中三个。
+    // 跟着厂商走：可选的是内置目录里未下线的 deepseek 模型（两条标了 deprecated 的不算），
+    // `*flash*` 只命中 deepseek-flash 一个。
     await apiPost(request, fixture, {
       method: 'connection-update', id: 'deepseek', endpoint: fixture.fakeEndpoint,
       model: 'deepseek-flash', models: [],
@@ -214,20 +215,14 @@ test('写通配规则：确认框列出命中，保存后每条写着现在匹�
     await section.getByRole('button', { name: '屏蔽…' }).click();
     const confirm = page.locator('[data-settings="mask-confirm"]');
     await expect(confirm).toBeVisible();
-    await expect(confirm).toContainText('现在匹配 3 个');
-    for (const hit of [
-      'deepseek/deepseek-flash',
-      'deepseek/deepseek-v4-flash',
-      'deepseek/deepseek-v4-flash-vision-exp',
-    ]) {
-      await expect(confirm).toContainText(hit);
-    }
+    await expect(confirm).toContainText('现在匹配 1 个');
+    await expect(confirm).toContainText('deepseek/deepseek-flash');
     await confirm.getByRole('button', { name: '屏蔽', exact: true }).click();
 
-    // 保存后那一条下面写着「现在匹配 3 个」和命中的「连接/模型」。
+    // 保存后那一条下面写着「现在匹配 1 个」和命中的「连接/模型」。
     const flashRow = section.locator('[data-settings="mask-row"]').filter({ hasText: '*flash*' });
-    await expect(flashRow).toContainText('现在匹配 3 个');
-    await expect(flashRow).toContainText('deepseek/deepseek-v4-flash-vision-exp');
+    await expect(flashRow).toContainText('现在匹配 1 个');
+    await expect(flashRow).toContainText('deepseek/deepseek-flash');
 
     // 一条都不匹配的规则照样能存；写着出现了也会被拒。
     await input.fill('*gpt-9*');

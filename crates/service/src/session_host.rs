@@ -130,7 +130,6 @@ impl ServiceHost {
             | Call::DisabledModelsCheck(_)
             | Call::ConnectionSave(_)
             | Call::ConnectionDelete(_)
-            | Call::ConnectionVerify(_)
             | Call::AvailableModels(_)
             | Call::ConnectionUpdate(_)
             | Call::ConnectionRevoke(_)

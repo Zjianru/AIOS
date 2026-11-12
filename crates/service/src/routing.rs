@@ -46,10 +46,6 @@ impl RootHost {
                 .connection_delete(request)
                 .await
                 .map(Response::ConnectionDelete),
-            Call::ConnectionVerify(request) => self
-                .connection_verify(request)
-                .await
-                .map(Response::ConnectionVerify),
             Call::AvailableModels(request) => self
                 .available_models(request)
                 .await

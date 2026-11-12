@@ -156,7 +156,7 @@ pub fn refusal(model: &str, pattern: &str) -> String {
 
 /// 出站之前查一次：被屏蔽就返回 `MODEL_DISABLED`，不发请求（也不重试）。
 ///
-/// 这一层不区分是谁在发：聊天、重试、压缩摘要、验证连接都经过同一条出站接缝。
+/// 这一层不区分是谁在发：聊天、重试、压缩摘要都经过同一条出站接缝。
 pub fn admit(data_dir: &Path, connection: &str, model: &str) -> Result<(), model::ModelError> {
     let table = table(data_dir);
     if table.unknown {

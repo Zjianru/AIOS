@@ -4,7 +4,7 @@
  * 照原型 app-v14 1f0c920：
  * - 放在输入框里、发送键旁边：按钮上是「模型 · 思考强度」；
  * - 上面一段选思考强度：列的是当前模型自己的档、厂商自己的叫法，从弱到强；
- * - 下面列已保存的连接和它们的模型；连接不可用的灰掉，说原因；
+ * - 下面列已保存的连接和它们的模型；没存 key 的灰掉，说原因（列表拉不到不影响聊天）；
  * - 选了从下一轮开始用；正在跑的这一轮不换。模型只在用户自己选的时候换，出错也不自动换；
  * - 最下面一行去「设置 › 模型与连接」。
  *
@@ -35,7 +35,6 @@ function usable(view: ModelSettingsView, connectionId: string): { ok: true } | {
   if (view.keyFile.problem) return { ok: false, why: '读不到 Keyring' };
   const conn = view.connections.find((item) => item.id === connectionId);
   if (!conn || !conn.key.saved) return { ok: false, why: '还没有密钥' };
-  if (conn.check.kind === 'fail') return { ok: false, why: '连接不可用' };
   return { ok: true };
 }
 

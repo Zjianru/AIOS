@@ -3,7 +3,7 @@
  *
  * 两步都在对话里完成，不跳设置页：
  * 1) 接模型：选提供方、填密钥。密钥交给 Keyring（和「设置 › 模型与连接」同一套：
- *    同一份提供方目录、同一个保存和验证）；「已保存」和「连接可用」分两步显示；
+ *    同一份提供方目录、同一个保存和拉列表）；「已保存」和「模型列表」分两步显示；
  * 2) 接好后 Kind 说一句；起手卡由当前能力决定（不固定张数），每张对应一个真实能力，点一张它说明这次按哪档做；
  *    再可选问一句「你主要用我做什么」，按回答推荐内置流程和角色——只推荐、不自动采用。
  * 打开开发开关「首次使用（空库）」时显示，数据从 api 取，不 import 样例。
@@ -13,7 +13,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { addConnection, checkConnection, getModelSettings, KERNEL_PROVIDERS } from '@/data/keyring';
+import { addConnection, getModelSettings, KERNEL_PROVIDERS } from '@/data/keyring';
 import type { CatalogProvider, ConnectionView } from '@/data/keyring';
 import { toast } from 'sonner';
 import { Card } from './cards/Card';
@@ -32,7 +32,9 @@ function connectionFactOf(
     name: conn?.name,
     providers: catalog.map((item) => ({ id: item.id, name: item.name })),
     provider: conn?.id ?? provider,
-    ...(conn ? { key: conn.key, check: conn.check } : {}),
+    ...(conn
+      ? { key: conn.key, check: conn.check, modelCount: conn.availableModels?.length ?? 0 }
+      : {}),
   };
 }
 
@@ -81,21 +83,10 @@ export function FirstUsePane({ onConnected }: { onConnected: () => void }) {
     }
   };
 
-  /** 验证走现有的 Keyring 验证；结果换成新的连接状态，卡片跟着重出信封。 */
-  const verifyConnection = async (connectionId: string): Promise<void> => {
-    try {
-      const checked = await checkConnection(connectionId);
-      setConn(checked.connections.find((item) => item.id === connectionId) ?? null);
-    } catch (error) {
-      toast.error((error as Error).message);
-    }
-  };
-
   const host: CardHost = {
     answer: () => {},
     dismiss: () => {},
     saveConnection,
-    verifyConnection,
     start: onConnected,
   };
   const envelope = connectionCardOf(connectionFactOf(catalog, provider, conn));

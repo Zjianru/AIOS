@@ -2,7 +2,7 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 
 use clap::Parser;
-use replay::{ReplayScript, start_replay_server};
+use replay::{ReplayScript, start_replay_server_with_models};
 
 #[derive(Debug, Parser)]
 #[command(name = "aios-replay", about = "不花 key 的模型回放（T010）")]
@@ -20,6 +20,9 @@ struct Args {
     /// 帧之间等多少毫秒（可选）
     #[arg(long)]
     pace_ms: Option<u64>,
+    /// 假厂商的 /v1/models 列表（逗号分隔）；不给就 404。保存连接会来拉一次。
+    #[arg(long, value_delimiter = ',')]
+    vendor_models: Vec<String>,
     #[arg(long, default_value = "127.0.0.1")]
     host: IpAddr,
     #[arg(long, default_value_t = 0)]
@@ -46,7 +49,7 @@ async fn main() {
         (None, None) => fail("需要 --file 或 --routes"),
     };
     script.pace_ms = args.pace_ms;
-    let server = start_replay_server(script)
+    let server = start_replay_server_with_models(script, args.vendor_models)
         .await
         .unwrap_or_else(|error| fail(&error.to_string()));
     println!("aios-replay: {}", server.url());

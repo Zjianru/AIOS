@@ -70,8 +70,6 @@ pub enum Call {
     ConnectionUpdate(ConnectionUpdateRequest),
     /// 撤销 key，连接保留。
     ConnectionRevoke(ConnectionRevokeRequest),
-    /// 验证连接（最小请求）；不指定 model 时结果写进注册器。
-    ConnectionVerify(ConnectionVerifyRequest),
     /// 获取可用模型（目录 + 厂商列表）。
     AvailableModels(AvailableModelsRequest),
     KeyringRelocate(KeyringRelocateRequest),
@@ -132,7 +130,6 @@ pub enum Response {
     ConnectionDelete(ConnectionDeleteResponse),
     ConnectionUpdate(ConnectionUpdateResponse),
     ConnectionRevoke(ConnectionRevokeResponse),
-    ConnectionVerify(ConnectionVerifyResponse),
     /// 连接余额/套餐余量。
     ConnectionQuota(ConnectionQuotaResponse),
     /// Exa 凭证的视图（四个操作同一形状）。
@@ -710,33 +707,6 @@ pub struct FirstUseResponse {
     pub key_file: credentials::KeyFileInfo,
 }
 
-/// 验证一个连接（空 = 用注册器里的 endpoint/key 发最小请求）。
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-pub struct ConnectionVerifyRequest {
-    pub id: String,
-    /// 这次用哪个模型验证；None = 旧回退，结果仍写进连接 check。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-}
-
-/// 指定模型的验证结果：只回报这一次，不写连接 check、最近选择，也不写学到的鉴权头。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-pub struct ConnectionVerifyResult {
-    pub model: String,
-    pub ok: bool,
-    /// 失败时的原因（错误码 + 厂商消息）；成功没有。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-pub struct ConnectionVerifyResponse {
-    pub connection: credentials::ConnectionInfo,
-    /// 指定 model 验证时的本次结果；旧回退验证不返回（形状和以前一样）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result: Option<ConnectionVerifyResult>,
-}
-
 /// 查询连接余额/套餐余量（查不到不报错，字段为空）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ConnectionQuotaRequest {
@@ -977,10 +947,12 @@ pub struct ConnectionRevokeResponse {
 ///   Exa 凭证的四个操作（exa-key、exa-key-save、exa-key-check、exa-key-delete）和
 ///   exa/no-key、exa/invalid-key 两个错误码同属只增面，也随这个版本发。
 ///   旧页忽略新增字段，旧服务的 status 没有它时页面照绝对路径显示。
+/// - 10：删 connection-verify；连接的 check 改由保存时拉一次厂商列表写
+///   （新连接/换 key 才拉；旧页发这个方法按未知方法拒绝）。
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 9;
+pub const PROTOCOL_VERSION: u64 = 10;
 
 /// 根会话不可用的种类：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

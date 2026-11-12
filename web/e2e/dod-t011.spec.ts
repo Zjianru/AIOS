@@ -85,10 +85,15 @@ test('DoD2/3/5/6 真 key：监控覆盖全部环节、日志副本、key/思考�
         timeout: 180_000,
       })
       .toBeTruthy();
-    // 设置页验证一次连接。
+    // 设置页保存一次连接：保存时拉厂商列表（不再单独验证）。
     await page.getByRole('button', { name: '设置', exact: true }).click();
-    await page.getByRole('button', { name: '验证', exact: true }).click();
-    await expect(page.getByText('连接可用', { exact: false })).toBeVisible({ timeout: 60_000 });
+    await page.getByRole('button', { name: '编辑', exact: true }).click();
+    await page.locator('#key-deepseek').fill(process.env.DEEPSEEK_API_KEY ?? '');
+    await page
+      .locator('[data-settings="editor"]')
+      .getByRole('button', { name: '保存', exact: true })
+      .click();
+    await expect(page.getByText(/已拿到模型列表/)).toBeVisible({ timeout: 60_000 });
     await shot(page, 't011-dod-settings.png');
     // 关掉页面让事件流断开，才能看到 stream-close。
     await page.close();

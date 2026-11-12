@@ -16,6 +16,8 @@ struct Shared {
     last_model: Option<String>,
     /// T012.9：最近一次请求的完整请求体（e2e 断言思考档用）。
     last_request: Option<serde_json::Value>,
+    /// 假厂商的 /v1/models：空表照旧 404；非空时回这个列表（保存连接会来拉一次）。
+    vendor_models: Vec<String>,
 }
 
 /// 一条路由的运行状态：匹配串和这条会话自己的游标。
@@ -55,6 +57,14 @@ impl ReplayServer {
 
 /// 起一个本机回放服务：说 Messages 协议，第 N 次请求回第 N 份脚本。
 pub async fn start_replay_server(script: ReplayScript) -> Result<ReplayServer, ReplayError> {
+    start_replay_server_with_models(script, Vec::new()).await
+}
+
+/// 同 start_replay_server，外加假厂商的 /v1/models 列表（空表照旧 404）。
+pub async fn start_replay_server_with_models(
+    script: ReplayScript,
+    vendor_models: Vec<String>,
+) -> Result<ReplayServer, ReplayError> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let addr = listener.local_addr()?;
     let shared = Arc::new(Mutex::new(Shared {
@@ -64,6 +74,7 @@ pub async fn start_replay_server(script: ReplayScript) -> Result<ReplayServer, R
         routes: script.routes.into_iter().map(RouteState::new).collect(),
         last_model: None,
         last_request: None,
+        vendor_models,
     }));
     let task = tokio::spawn(async move {
         loop {
@@ -103,10 +114,23 @@ async fn handle(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> std::io::R
         )
         .await;
     }
-    // T012.9：available-models 会请求厂商 /v1/models；测试夹具没有模型列表，404 不消耗回放脚本。
+    // 保存连接/available-models 会请求厂商 /v1/models：夹具按给定列表回，空表 404，不消耗回放脚本。
     if path.contains("/v1/models") {
-        let body = br#"{"error":{"message":"fixture has no /v1/models"}}"#.to_vec();
-        return write_response(&mut stream, 404, "application/json", body).await;
+        let vendor_models = shared.lock().await.vendor_models.clone();
+        if vendor_models.is_empty() {
+            let body = br#"{"error":{"message":"fixture has no /v1/models"}}"#.to_vec();
+            return write_response(&mut stream, 404, "application/json", body).await;
+        }
+        let body = serde_json::json!({
+            "data": vendor_models
+                .iter()
+                // 不带 display_name：合并时保留目录里的显示名（e2e 断言目录名）。
+                .map(|id| serde_json::json!({"id": id, "object": "model"}))
+                .collect::<Vec<_>>()
+        })
+        .to_string()
+        .into_bytes();
+        return write_response(&mut stream, 200, "application/json", body).await;
     }
     // T010.2：测试夹具要断言下一轮用的模型；控制端点回最近一次请求的 model。
     // T012.9：测试夹具要断言下一轮请求的思考档；控制端点回最近一次请求的完整 body。

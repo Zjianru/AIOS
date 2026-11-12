@@ -28,7 +28,7 @@ test('DoD3 真 key：页面第一次填 key → 接上 → 空对话 → read �
     await expect(input).toHaveAttribute('type', 'password');
     await input.fill(process.env.DEEPSEEK_API_KEY ?? '');
     await page.getByRole('button', { name: '接上', exact: true }).click();
-    await expect(page.getByText('连接可用')).toBeVisible({ timeout: 120_000 });
+    await expect(page.getByText('已保存到 Keyring')).toBeVisible({ timeout: 120_000 });
     await page.getByRole('button', { name: '开始', exact: true }).click();
     await expect(page.locator('[data-kind="empty"]')).toBeVisible({ timeout: 60_000 });
     await page.screenshot({ path: path.join(evidence, 'dod3-empty.png'), fullPage: true });
@@ -56,7 +56,7 @@ test('DoD4 真 key：删 key 凭证失败、挪钥匙 Keyring 失败、指回恢
     await expect(page.locator('[data-first-use="connect"]')).toBeVisible({ timeout: 30_000 });
     await page.locator('#first-use-key').fill(process.env.DEEPSEEK_API_KEY ?? '');
     await page.getByRole('button', { name: '接上', exact: true }).click();
-    await expect(page.getByText('连接可用')).toBeVisible({ timeout: 120_000 });
+    await expect(page.getByText('已保存到 Keyring')).toBeVisible({ timeout: 120_000 });
     await page.getByRole('button', { name: '开始', exact: true }).click();
     await expect(page.locator('[data-kind="empty"]')).toBeVisible({ timeout: 60_000 });
 
@@ -83,8 +83,8 @@ test('DoD4 真 key：删 key 凭证失败、挪钥匙 Keyring 失败、指回恢
       .getByRole('button', { name: '保存', exact: true })
       .click();
     await expect(page.locator('[data-settings="editor"]')).toHaveCount(0, { timeout: 20_000 });
-    await page.getByRole('button', { name: '验证', exact: true }).click();
-    await expect(page.getByText('连接可用', { exact: false })).toBeVisible({ timeout: 120_000 });
+    // 保存带 key：connection-save 顺手拉厂商列表。
+    await expect(page.getByText(/已拿到模型列表/)).toBeVisible({ timeout: 120_000 });
     await page.screenshot({ path: path.join(evidence, 'dod4-settings-issues.png'), fullPage: true });
 
     // 挪走钥匙文件，再发：失败块说 Keyring。

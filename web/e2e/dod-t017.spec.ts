@@ -109,7 +109,7 @@ async function connectMinimax(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'MiniMax（国内站）' }).click();
   await page.locator('#first-use-key').fill(process.env.MINIMAX_API_KEY ?? '');
   await page.getByRole('button', { name: '接上', exact: true }).click();
-  await expect(page.getByText('连接可用', { exact: false })).toBeVisible({ timeout: 180_000 });
+  await expect(page.getByText('已保存到 Keyring', { exact: false })).toBeVisible({ timeout: 180_000 });
   await page.getByRole('button', { name: '开始', exact: true }).click();
   await expect(page.locator('[data-kind="composer-input"]')).toBeVisible({ timeout: 60_000 });
 }

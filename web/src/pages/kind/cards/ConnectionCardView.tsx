@@ -23,7 +23,7 @@ function KindOrb({ size = 34 }: { size?: number }) {
   );
 }
 
-/** 两步各一行：已保存 / 连接可用。 */
+/** 两步各一行：已保存 / 模型列表。 */
 function StepLine({ state, children }: { state: 'wait' | 'run' | 'ok' | 'fail'; children: React.ReactNode }) {
   return (
     <div className="flex items-start gap-2 text-2 leading-5">
@@ -60,7 +60,8 @@ export function ConnectionCardView({ envelope, slots, host }: CardViewProps<Conn
   const active = activeProviderOf(slots, selected);
   const saved = slots.saved && !dismissed;
   const ok = saved && slots.check === 'ok';
-  const failed = saved && slots.check === 'fail' ? slots.reason : null;
+  const failed = saved && slots.check === 'fail';
+  const listMissing = saved && !ok;
 
   const submit = async () => {
     if (!active || !key.trim() || busy || !host.saveConnection) return;
@@ -71,7 +72,6 @@ export function ConnectionCardView({ envelope, slots, host }: CardViewProps<Conn
       setDismissed(false);
       setKey('');
       setShown(false);
-      await host.verifyConnection?.(savedId);
     } finally {
       setBusy(false);
     }
@@ -118,7 +118,7 @@ export function ConnectionCardView({ envelope, slots, host }: CardViewProps<Conn
             ))}
           </div>
 
-          {ok ? null : (
+          {ok || (saved && !failed) ? null : (
             <>
               <label className="mt-4 block text-1 text-ink-3" htmlFor="first-use-key">
                 {active?.name ?? '提供方'} 的 API 密钥
@@ -160,22 +160,43 @@ export function ConnectionCardView({ envelope, slots, host }: CardViewProps<Conn
 
           {saved ? (
             <div className="mt-4 space-y-1" data-first-use="status">
-              <StepLine state={slots.saved ? 'ok' : 'wait'}>已保存到 Keyring</StepLine>
-              <StepLine state={ok ? 'ok' : failed ? 'fail' : 'run'}>
-                {ok ? '连接可用' : failed ? `连接不可用：${failed}` : `正在向 ${slots.name || active?.name || '提供方'} 验证…`}
-              </StepLine>
+              <StepLine state="ok">已保存到 Keyring</StepLine>
+              {ok ? (
+                <StepLine state="ok">已拿到 {slots.modelCount} 个模型</StepLine>
+              ) : failed ? (
+                <StepLine state="fail">
+                  拉不到模型列表：{slots.reason || '厂商没给原因'}
+                </StepLine>
+              ) : (
+                <StepLine state="wait">还没拿到模型列表</StepLine>
+              )}
             </div>
           ) : null}
 
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            {ok ? (
-              <button
-                type="button"
-                onClick={() => host.start?.()}
-                className="rounded-btn bg-ink px-3 py-1.5 text-2 text-content transition-opacity hover:opacity-90"
-              >
-                开始
-              </button>
+            {saved ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => host.start?.()}
+                  className="rounded-btn bg-ink px-3 py-1.5 text-2 text-content transition-opacity hover:opacity-90"
+                >
+                  开始
+                </button>
+                {failed ? (
+                  <button
+                    type="button"
+                    disabled={!key.trim() || busy}
+                    onClick={() => void submit()}
+                    className={cn(
+                      'rounded-btn px-3 py-1.5 text-2 transition-opacity',
+                      key.trim() && !busy ? 'bg-ink text-content hover:opacity-90' : 'cursor-not-allowed bg-hover text-ink-3',
+                    )}
+                  >
+                    {busy ? '正在接…' : '再试一次'}
+                  </button>
+                ) : null}
+              </>
             ) : (
               <button
                 type="button"
@@ -186,10 +207,13 @@ export function ConnectionCardView({ envelope, slots, host }: CardViewProps<Conn
                   key.trim() && !busy ? 'bg-ink text-content hover:opacity-90' : 'cursor-not-allowed bg-hover text-ink-3',
                 )}
               >
-                {busy ? '正在接…' : failed ? '再试一次' : '接上'}
+                {busy ? '正在接…' : '接上'}
               </button>
             )}
           </div>
+          {listMissing ? (
+            <p className="mt-2 text-1 text-ink-3">模型列表没拿到，也可以先试着发一句</p>
+          ) : null}
         </div>
       </div>
     </div>

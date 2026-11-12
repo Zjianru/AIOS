@@ -13,4 +13,4 @@ mod server;
 
 pub use encode::{encode_sse, encode_sse_cut};
 pub use script::{ReplayCall, ReplayError, ReplayRoute, ReplayScript};
-pub use server::{ReplayServer, start_replay_server};
+pub use server::{ReplayServer, start_replay_server, start_replay_server_with_models};

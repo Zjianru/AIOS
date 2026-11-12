@@ -90,6 +90,9 @@ function startReplay(
     if (selection.override) args.push('--override', path.join(FIXTURE_DIR, selection.override + '.json'));
     if (selection.paceMs) args.push('--pace-ms', String(selection.paceMs));
   }
+  // 假厂商也回一份 /v1/models：保存连接会来拉一次（默认按 DeepSeek 的真实模型配）。
+  const vendorModels = options.vendorModels ?? ['deepseek-flash', 'deepseek-v4-pro'];
+  if (vendorModels.length > 0) args.push('--vendor-models', vendorModels.join(','));
   args.push('--host', '127.0.0.1', '--port', '0');
   const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
   const url = new Promise<string>((resolve, reject) => {
@@ -228,6 +231,8 @@ export interface FixtureOptions {
   busyRoot?: boolean;
   /// T008.4：不预置 Keyring 连接（首次使用用例）；serve 仍能起（T008.3b）。
   emptyKeyring?: boolean;
+  /// T035.2：假厂商 /v1/models 回的模型列表（保存连接会拉一次）。默认 DeepSeek 的两条。
+  vendorModels?: string[];
   /// T016.5：启动前把 settings.json 写成坏文件；serve 仍要能起（读设置是宽松的）。
   settingsFault?: 'corrupt';
   /// T009.5：serve 进程的 HOME；传 'dataDir' 用数据目录（页面路径缩写用例）。
