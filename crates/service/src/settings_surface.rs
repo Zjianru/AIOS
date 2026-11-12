@@ -210,6 +210,13 @@ impl RootHost {
         // 保存带 key（新连接或换 key）：先拉一次厂商列表，再写 last_selection——
         // 默认模型要按新列表算。拉不到只写 check，不挡保存。
         self.fetch_models_on_save(&keyring, &connection).await?;
+        // 拉列表把 check 写进了 Keyring：响应要带回保存后的最新连接，不是保存那一刻的旧值。
+        let refreshed = keyring
+            .view()
+            .connections
+            .into_iter()
+            .find(|saved| saved.id == connection.id);
+        let connection = refreshed.unwrap_or(connection);
         // 把刚保存的连接设为当前选择。
         // RootHost 的 recheck 走 model_factory → resolve_selection，只认 CLI 参数 /
         // settings.last_selection / id=="deepseek"；页面/HTTP 建连接（如 minimax-cn）
