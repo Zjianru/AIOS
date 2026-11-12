@@ -700,6 +700,86 @@ async fn 指定模型验证失败不覆盖连接状态() {
         "验证不改最近选择"
     );
 }
+
+#[tokio::test]
+async fn 指定模型验证不写学到的鉴权头() {
+    // 第一次双头被拒、再各试一次单头后，适配器会学到通过的 authorization。
+    // 显式模型的验证只回报本次结果，不能把学到的头写回连接：否则下一次聊天/旧验证
+    // 的连接状态被这次测试改掉。断言 3 次请求，证明学习路径真的走到了。
+    let server = MockServer::start().await;
+    let both_refused = ResponseTemplate::new(401).set_body_json(serde_json::json!({
+        "type": "error",
+        "error": {
+            "type": "authentication_error",
+            "message": "x-api-key 和 Authorization 不可以同时存在，只能使用一个"
+        }
+    }));
+    let unauthorized = ResponseTemplate::new(401).set_body_json(serde_json::json!({
+        "type": "error",
+        "error": {"type": "authentication_error", "message": "bad key"}
+    }));
+    let ok = ResponseTemplate::new(200)
+        .insert_header("content-type", "text/event-stream")
+        .set_body_string("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![both_refused, unauthorized, ok]))
+        .expect(3)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "verify-model-auth".to_owned(),
+        name: "Verify model auth".to_owned(),
+        model: "MiniMax-M2".to_owned(),
+        endpoint: server.uri(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some("custom".to_owned()),
+        models: Some(Vec::new()),
+        ..Default::default()
+    }))
+    .await
+    .expect("save");
+    let before = credentials::Keyring::open(dir.path(), Some(&dir.path().join("identity.txt")))
+        .unwrap()
+        .view()
+        .connections
+        .into_iter()
+        .find(|connection| connection.id == "verify-model-auth")
+        .expect("保存后的连接");
+
+    let verified = host
+        .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
+            id: "verify-model-auth".to_owned(),
+            model: Some("MiniMax-M3.1-Flash".to_owned()),
+        }))
+        .await
+        .expect("verify 返回");
+    let service::Response::ConnectionVerify(response) = verified else {
+        panic!("expected ConnectionVerify");
+    };
+    assert_eq!(
+        response.result.as_ref().map(|result| result.ok),
+        Some(true),
+        "单头轮换后验证本身成功：{:?}",
+        response.result
+    );
+    assert_eq!(
+        response.connection.auth_header, None,
+        "显式模型的验证不把学到的鉴权头写回连接"
+    );
+    assert_eq!(
+        response.connection, before,
+        "显式模型的验证不改连接状态（auth_header 字节也不变）"
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(
+        requests.len(),
+        3,
+        "双头被拒 + 两个单头各试一次，学习路径确实走到"
+    );
+}
 #[tokio::test]
 async fn 获取可用模型合并目录与厂商列表且用户字段不动() {
     model::catalog::set_global(model::catalog::snapshot());
