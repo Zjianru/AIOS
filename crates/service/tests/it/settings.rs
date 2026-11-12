@@ -3103,3 +3103,434 @@ async fn 设置更新读写执行设置的bash开关() {
         "关掉了写进文件"
     );
 }
+
+/* ───────────── 保存时拉厂商列表（T035.2 接缝2） ───────────── */
+
+/// 假厂商的 /v1/models 列表（照厂商顺序，原样返回）。
+fn vendor_models(ids: &[&str]) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "data": ids
+            .iter()
+            .map(|id| serde_json::json!({ "id": id, "display_name": id }))
+            .collect::<Vec<_>>()
+    }))
+}
+
+/// 保存一个新连接：拉一次厂商列表，列表落盘、check 是 Ok、默认模型取列表里第一个没下线的。
+#[tokio::test]
+async fn 保存新连接拉一次厂商列表并写check和默认模型() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let server = MockServer::start().await;
+    // 照 MiniMax 国内站真实列表顺序：M3.1、M3，然后已下线的 M2.7、M2。
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(vendor_models(&[
+            "MiniMax-M3.1-Flash",
+            "MiniMax-M3",
+            "MiniMax-M2.7",
+            "MiniMax-M2",
+        ]))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "saved-list".to_owned(),
+            name: "MiniMax".to_owned(),
+            model: "ignored".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some("minimax-cn".to_owned()),
+            models: Some(Vec::new()),
+            ..Default::default()
+        }))
+        .await;
+    assert!(saved.is_ok(), "拉列表不能挡保存：{saved:?}");
+
+    // 磁盘上照厂商原样存（含已下线）；过滤在读的时候做。
+    assert_eq!(
+        stored_live(dir.path(), "saved-list").0,
+        vec!["MiniMax-M3.1-Flash", "MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2"],
+        "厂商列表原样落盘"
+    );
+    let connection = connection_of(&host, "saved-list").await;
+    assert!(
+        matches!(connection.check, CheckState::Ok { .. }),
+        "2xx 且解析出模型 → Ok：{:?}",
+        connection.check
+    );
+    assert_eq!(
+        service::settings::load(dir.path())
+            .last_selection
+            .expect("保存后写了上次选择")
+            .model,
+        "MiniMax-M3.1-Flash",
+        "默认模型取列表里第一个没下线的"
+    );
+    let selectable: Vec<String> =
+        service::models::selectable_models(dir.path(), &connection)
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+    assert_eq!(
+        selectable,
+        vec!["MiniMax-M3.1-Flash", "MiniMax-M3"],
+        "live 分支去掉目录标了 deprecated 的"
+    );
+}
+
+/// 厂商列表里已下线的排在前面：默认模型、可选列表都跳过它。
+#[tokio::test]
+async fn 厂商列表里下线的排前面也不当默认() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(vendor_models(&["MiniMax-M2.7", "MiniMax-M3.1-Flash"]))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "deprecated-first".to_owned(),
+        name: "MiniMax".to_owned(),
+        model: "ignored".to_owned(),
+        endpoint: server.uri(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some("minimax-cn".to_owned()),
+        models: Some(Vec::new()),
+        ..Default::default()
+    }))
+    .await
+    .expect("save");
+    let connection = connection_of(&host, "deprecated-first").await;
+    assert_eq!(
+        service::models::selectable_models(dir.path(), &connection)
+            .first()
+            .map(|row| row.id.as_str()),
+        Some("MiniMax-M3.1-Flash"),
+        "已下线的不进可选列表"
+    );
+    assert_eq!(
+        service::settings::load(dir.path())
+            .last_selection
+            .expect("上次选择")
+            .model,
+        "MiniMax-M3.1-Flash"
+    );
+}
+
+/// 401：check 写成人话原因，保存照样成功。
+#[tokio::test]
+async fn 保存时密钥不对写Fail原因但不挡保存() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+            "error": {"type": "authentication_error", "message": "invalid api key"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "bad-key".to_owned(),
+            name: "Bad".to_owned(),
+            model: "ignored".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some("minimax-cn".to_owned()),
+            models: Some(Vec::new()),
+            ..Default::default()
+        }))
+        .await;
+    assert!(saved.is_ok(), "401 也不能挡保存：{saved:?}");
+    let connection = connection_of(&host, "bad-key").await;
+    match connection.check {
+        CheckState::Fail { reason, .. } => {
+            assert!(reason.contains("密钥不对"), "原因要说人话：{reason}");
+            assert!(reason.contains("401"), "状态码照实填：{reason}");
+        }
+        other => panic!("401 应记 Fail：{other:?}"),
+    }
+    assert!(
+        !model::catalog::live_path(dir.path(), "bad-key").exists(),
+        "拉不到列表不落盘"
+    );
+    assert_eq!(
+        service::settings::load(dir.path())
+            .last_selection
+            .expect("上次选择")
+            .model,
+        "MiniMax-M3.1-Flash",
+        "没拉到列表就退回目录里第一个没下线的"
+    );
+}
+
+/// 其他非 2xx：原因是「厂商回了 <码>」。
+#[tokio::test]
+async fn 保存时厂商回404写Fail原因() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "not-found".to_owned(),
+        name: "Custom".to_owned(),
+        model: "vendor-model".to_owned(),
+        endpoint: server.uri(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some("custom".to_owned()),
+        ..Default::default()
+    }))
+    .await
+    .expect("save");
+    match connection_of(&host, "not-found").await.check {
+        CheckState::Fail { reason, .. } => assert_eq!(reason, "厂商回了 404"),
+        other => panic!("404 应记 Fail：{other:?}"),
+    }
+}
+
+/// 网络不通：原因是「连不上 <host>」。
+#[tokio::test]
+async fn 保存时连不上厂商写Fail连不上host() {
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "unreachable".to_owned(),
+        name: "Unreachable".to_owned(),
+        model: "ignored".to_owned(),
+        endpoint: "http://127.0.0.1:1/anthropic".to_owned(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some("deepseek".to_owned()),
+        models: Some(Vec::new()),
+        ..Default::default()
+    }))
+    .await
+    .expect("save");
+    match connection_of(&host, "unreachable").await.check {
+        CheckState::Fail { reason, .. } => {
+            assert_eq!(reason, "连不上 127.0.0.1", "原因带 host：{reason}");
+        }
+        other => panic!("连不上应记 Fail：{other:?}"),
+    }
+}
+
+/// 2xx 但空表：不算失败，check 保持 Never，也不落盘。
+#[tokio::test]
+async fn 保存时厂商回空表保持Never() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": []
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "empty-list".to_owned(),
+        name: "Empty".to_owned(),
+        model: "ignored".to_owned(),
+        endpoint: server.uri(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some("minimax-cn".to_owned()),
+        models: Some(Vec::new()),
+        ..Default::default()
+    }))
+    .await
+    .expect("save");
+    assert_eq!(
+        connection_of(&host, "empty-list").await.check,
+        CheckState::Never,
+        "空表不算失败，什么都不改"
+    );
+    assert!(
+        !model::catalog::live_path(dir.path(), "empty-list").exists(),
+        "空表不落盘"
+    );
+}
+
+/// 只改地址的 connection-update 不带 key：不打厂商列表。
+#[tokio::test]
+async fn 只改地址的更新不拉厂商列表() {
+    let vendor = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(vendor_models(&["deepseek-flash"]))
+        .expect(1)
+        .mount(&vendor)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "edited".to_owned(),
+        name: "Edited".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        endpoint: vendor.uri(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some("deepseek".to_owned()),
+        ..Default::default()
+    }))
+    .await
+    .expect("save");
+    let moved = MockServer::start().await;
+    host.dispatch(Call::ConnectionUpdate(ConnectionUpdateRequest {
+        id: "edited".to_owned(),
+        endpoint: moved.uri(),
+        model: "deepseek-flash".to_owned(),
+        ..Default::default()
+    }))
+    .await
+    .expect("update");
+    assert!(
+        moved.received_requests().await.unwrap().is_empty(),
+        "不带 key 的更新不打 /v1/models"
+    );
+}
+
+/// 重新保存带 key：再拉一次厂商列表。
+#[tokio::test]
+async fn 带key重新保存再拉一次厂商列表() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(vendor_models(&["deepseek-flash"]))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let save = || ConnectionSaveRequest {
+        id: "rekey".to_owned(),
+        name: "Rekey".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        endpoint: server.uri(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some("deepseek".to_owned()),
+        ..Default::default()
+    };
+    host.dispatch(Call::ConnectionSave(save()))
+        .await
+        .expect("save");
+    host.dispatch(Call::ConnectionSave(save()))
+        .await
+        .expect("re-save");
+    assert!(
+        matches!(
+            connection_of(&host, "rekey").await.check,
+            CheckState::Ok { .. }
+        ),
+        "第二次保存也写 check"
+    );
+}
+
+/// 显式模型行是用户自己填的：目录标了下线也不过滤，默认还是它。
+#[tokio::test]
+async fn 显式模型行里的下线模型不过滤() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(vendor_models(&["MiniMax-M3.1-Flash"]))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    host.dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+        id: "explicit".to_owned(),
+        name: "Explicit".to_owned(),
+        model: "MiniMax-M2".to_owned(),
+        endpoint: server.uri(),
+        api_key: TEST_KEY.to_owned(),
+        preset: Some("minimax-cn".to_owned()),
+        models: Some(vec![credentials::ModelRow {
+            id: "MiniMax-M2".to_owned(),
+            name: None,
+            context_window: None,
+            max_tokens: None,
+            price_input: None,
+            price_output: None,
+            price_cache_read: None,
+            price_cache_write: None,
+        }]),
+        ..Default::default()
+    }))
+    .await
+    .expect("save");
+    let connection = connection_of(&host, "explicit").await;
+    assert_eq!(
+        service::models::primary_model(dir.path(), &connection),
+        "MiniMax-M2",
+        "用户显式填的不动"
+    );
+    assert_eq!(
+        service::settings::load(dir.path())
+            .last_selection
+            .expect("上次选择")
+            .model,
+        "MiniMax-M2"
+    );
+}
+
+/// 「获取」只读列表，不写连接 check：check 只在保存时写。
+#[tokio::test]
+async fn 获取可用模型不写连接check() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(vendor_models(&["deepseek-flash"]))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    // 直接写 Keyring（跳过 connection-save），check 保持 Never。
+    let keyring = credentials::Keyring::open(dir.path(), Some(&dir.path().join("identity.txt")))
+        .expect("keyring");
+    keyring
+        .save_connection(credentials::NewConnection {
+            id: "peek".to_owned(),
+            name: "Peek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some("deepseek".to_owned()),
+            models: Some(Vec::new()),
+            auth_header: None,
+        })
+        .expect("save connection");
+    let host = host(dir.path()).await;
+    available_models(&host, discover_request("peek")).await;
+    assert_eq!(
+        connection_of(&host, "peek").await.check,
+        CheckState::Never,
+        "获取不写 check"
+    );
+}
+
+/// 协议里没有 connection-verify 了：按未知方法拒绝。
+#[test]
+fn 协议里没有connection_verify了() {
+    let parsed = serde_json::from_value::<Call>(serde_json::json!({
+        "method": "connection-verify",
+        "id": "deepseek",
+    }));
+    assert!(
+        parsed.is_err(),
+        "connection-verify 要按未知方法拒绝：{parsed:?}"
+    );
+}
+
