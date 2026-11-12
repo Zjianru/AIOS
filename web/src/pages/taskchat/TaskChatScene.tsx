@@ -16,6 +16,7 @@ import {
   ChevronRight,
   FilePen,
   FolderOpen,
+  Hourglass,
   PauseCircle,
   PlugZap,
   SendHorizontal,
@@ -185,17 +186,23 @@ function TaskMenu({
   );
 }
 
-/** 页头状态：在跑显示执行中（收尾停后带「收尾」），停下后固定「已停止」，被打断固定「被打断了」。 */
+/**
+ * 页头状态：在跑显示执行中（收尾停后带「收尾」），停下后固定「已停止」，被打断固定「被打断了」，
+ * 汇报后显示「已汇报 · 待你核」；任何时刻都有状态词（T039：不让用户猜是不是做完了）。
+ */
 function TaskState({
   running,
   winding,
   stopped,
   interrupted,
+  reportedAt,
 }: {
   running: boolean;
   winding: boolean;
   stopped: boolean;
   interrupted: boolean;
+  /** 当前 Attempt 最近一份报告的写入时间（unix 毫秒）；null = 还没交报告。 */
+  reportedAt: number | null;
 }) {
   if (running) {
     return (
@@ -229,7 +236,26 @@ function TaskState({
       </span>
     );
   }
-  return null;
+  if (reportedAt !== null) {
+    return (
+      <span
+        className="mt-[3px] inline-flex shrink-0 items-center gap-1 rounded-badge bg-wait-soft px-1.5 py-[1px] text-1 text-wait"
+        data-kind="task-state"
+      >
+        <Hourglass className="size-3 shrink-0" />
+        已汇报 · 待你核
+      </span>
+    );
+  }
+  // 兜底：任务已派出但还没开跑/在排队时也要有状态词，页头不空白。
+  return (
+    <span
+      className="mt-[3px] inline-flex shrink-0 items-center gap-1 rounded-badge bg-hover px-1.5 py-[1px] text-1 text-ink-2"
+      data-kind="task-state"
+    >
+      等待中
+    </span>
+  );
 }
 
 function BackToKind() {
@@ -266,6 +292,8 @@ export function TaskChatScene() {
   const composerRef = useRef<ComposerHandle | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const requestToken = useRef(0);
+  /** T039：页头事实请求的序号——断线重连可能连拉几次，只认最新一次的回包。 */
+  const headerRequest = useRef(0);
   const bottomPinned = useRef(false);
   const loadingOlderRef = useRef(false);
   /** 到顶时上一页还没装好：装好后按新的位置再判一次，不把这次到顶丢掉。 */
@@ -335,6 +363,9 @@ export function TaskChatScene() {
         scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
     };
 
+    // T039：任务会话里 task_report/task_handback 是终态事件；它们落盘后立刻重拉页头事实。
+    const toolNameOfCall = new Map<string, string>();
+
     const onFrame = (frame: Frame) => {
       if (disposed) return;
       if (frame.type === 'event') {
@@ -348,10 +379,29 @@ export function TaskChatScene() {
           setTask((current) => (current ? { ...current, running: true } : current));
           resetStream(turn);
         }
-        if (event.type === 'tool/call') resetStream(liveTurnRef.current);
+        if (event.type === 'tool/call') {
+          const callId = String(event.data?.call_id ?? event.data?.callId ?? '');
+          if (callId) toolNameOfCall.set(callId, String(event.data?.name ?? ''));
+          resetStream(liveTurnRef.current);
+        }
+        if (event.type === 'tool/result') {
+          const callId = String(
+            (event.data?.message as { toolCallId?: string; tool_call_id?: string } | undefined)
+              ?.toolCallId ??
+              (event.data?.message as { tool_call_id?: string } | undefined)?.tool_call_id ??
+              '',
+          );
+          const name = callId ? toolNameOfCall.get(callId) : undefined;
+          if (name === 'task_report' || name === 'task_handback') {
+            // 报告落库后执行者会关掉会话（可能没有 turn/end），这里补一次刷新。
+            setTimeout(() => void refreshHeader(), 200);
+          }
+        }
         if (event.type === 'turn/end') {
           setTask((current) => (current ? { ...current, running: false } : current));
           resetStream(null);
+          // T039：一轮结束不能只信页面自己攒的事件：以任务库为准重拉一次页头事实。
+          void refreshHeader();
         }
         stickToBottom();
         setEvents((current) => mergeLiveEvent(current, event));
@@ -387,11 +437,19 @@ export function TaskChatScene() {
         // 离开/换任务时旧 socket 的关闭不算断线；只有当前连接断了才重新跟。
         if (disposed || socketRef.current !== socket) return;
         socketRef.current = null;
+        // T039：断线先按任务库刷一次（服务真没了就是失败，refreshHeader 自己吞掉）；
+        // 断线期间任务被停/被打断/交报告，页面不靠重新打开也能自愈。
+        void refreshHeader();
         reconnectAttempt += 1;
         const delay = Math.min(1000 * reconnectAttempt, 5000);
         reconnectTimer = setTimeout(connect, delay);
       });
       socketRef.current = socket;
+      // T039：连上（含重启后的重连成功）先拉一次任务库事实，别等下一条日志事件。
+      socket.addEventListener('open', () => {
+        if (disposed || socketRef.current !== socket) return;
+        void refreshHeader();
+      });
       connectRef.current = connect;
     };
 
@@ -414,6 +472,15 @@ export function TaskChatScene() {
         liveTurnRef.current = running;
         setPhase('ready');
         connect();
+        // T039：任务已交报告但会话可能还在收尾（终态报告后执行者立刻关会话，最后一句
+        // 话/turn/end 可能晚几拍落盘）：分几次补拉，只把新 seq 并回事件流（幂等）。
+        if (response.task.reportedAt != null && !response.task.running) {
+          for (const delay of [600, 1600, 3200]) {
+            setTimeout(() => {
+              if (!disposed) void refreshHeader();
+            }, delay);
+          }
+        }
       })
       .catch((reason: unknown) => {
         if (disposed || token !== requestToken.current) return;
@@ -626,10 +693,24 @@ export function TaskChatScene() {
     }
   }
 
-  /** 停止请求成功后只刷新页头事实：running/stopped 以任务库为准，过程仍走 live/日志。 */
+  /**
+   * 刷新页头事实：running/stopped/interrupted/reportedAt 一律以任务库为准，页面不自己猜。
+   * 断线重连可能连拉几次，只认最新一次的回包（旧回包不把新状态盖回去）。
+   */
   async function refreshHeader() {
+    const seq = ++headerRequest.current;
     try {
       const response = await taskRead(taskId);
+      if (seq !== headerRequest.current) return;
+      // 重拉不只是页头：断线/关会话后晚落盘的尾巴（最后一句话、turn/end）也在这份里，
+      // 按 seq 把缺口并回事件流（和 WS follow 的补齐幂等，重复的自然丢掉）。
+      const fresh = response.events.filter((event) => event.seq > lastSeqRef.current);
+      if (fresh.length > 0) {
+        lastSeqRef.current = Math.max(lastSeqRef.current, response.lastSeq);
+        setEvents((current) =>
+          fresh.reduce((acc, event) => mergeLiveEvent(acc, event), current),
+        );
+      }
       setTask((current) =>
         current
           ? {
@@ -638,11 +719,12 @@ export function TaskChatScene() {
               stopped: response.task.stopped,
               interrupted: response.task.interrupted,
               restartPending: response.task.restartPending,
+              reportedAt: response.task.reportedAt,
             }
           : response.task,
       );
     } catch {
-      // 停止的持久事实已由 TaskStop 确认；头部刷新失败不把「已停止」改回去。
+      // 服务没回来/读失败：保持现状（不清空、不覆盖成错误状态），等重连再拉。
     }
   }
 
@@ -782,6 +864,7 @@ export function TaskChatScene() {
               winding={winding}
               stopped={task.stopped}
               interrupted={task.interrupted}
+              reportedAt={task.reportedAt ?? null}
             />
             <TaskMenu
               running={task.running}

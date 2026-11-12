@@ -126,8 +126,9 @@ test('在跑时打开：新工具调用和回答不用刷新出现，各只一�
     expect(frames.some((frame) => frame.includes('\"type\":\"event\"'))).toBe(true);
     expect(frames.some((frame) => frame.includes('\"type\":\"text-delta\"'))).toBe(true);
 
-    // 一次连接、一次 TaskRead：期间没有重拉快照，也没有「刷新」按钮。
-    expect(reads.length, reads.join('\n---\n')).toBe(1);
+    // T039：页头事实会随轮末/终态报告重拉 task-read（自愈用），正文内容仍走 live 补齐；
+    // 这里不再卡「只读一次」，只要求没有「刷新」按钮、快照仍是打开时那份。
+    expect(reads.length).toBeGreaterThanOrEqual(1);
     await expect(pane.getByRole('button', { name: /刷新/ })).toHaveCount(0);
     // T028.5：任务对话有输入框了（不再只读）。
     await expect(page.locator('[data-kind="composer"]')).toHaveCount(1);
@@ -221,8 +222,8 @@ test('断线后重连：按 lastSeq 补齐，回答只出现一次', async ({ pa
       timeout: 40_000,
     });
     await expect(pane.getByText('工作中')).toHaveCount(0, { timeout: 20_000 });
-    // 重连走 WS 的 follow，不重拉 TaskRead。
-    expect(reads.length).toBe(1);
+    // T039：重连自愈要主动重拉一次任务事实（页头 running 以任务库为准）；正文仍按 lastSeq 补齐。
+    expect(reads.length).toBeGreaterThan(1);
   } finally {
     await fixture.close();
   }

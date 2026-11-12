@@ -145,9 +145,11 @@ export function taskStatusOf(
   state: TaskReportState | TaskDispatchState,
   origin: TaskReportOrigin,
   cardState?: 'review',
+  accepted?: boolean,
 ): string {
   // 写任务当前要求版本的 ready：卡状态是「待你核」，Task 阶段仍是「待检查」。
-  if (cardState === 'review') return '待你核';
+  // 用户接受以后状态词换成「已接受」（回执从 card/decision 回填）。
+  if (cardState === 'review') return accepted ? '已接受' : '待你核';
   if (state === 'dispatching') return '派出中';
   if (state === 'dispatched') return '进行中';
   switch (state) {
@@ -227,7 +229,7 @@ export function taskResultCardOf(
   const parsed = taskResultSlotsSchema.safeParse({
     taskId: fact.taskId,
     title: fact.title,
-    status: taskStatusOf(fact.state, fact.origin, cardState),
+    status: taskStatusOf(fact.state, fact.origin, cardState, fact.decision?.phase === 'confirmed'),
     state,
     summary: fact.summary,
     ...(fact.question === undefined ? {} : { question: fact.question }),

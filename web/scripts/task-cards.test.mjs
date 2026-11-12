@@ -90,4 +90,18 @@ const view = (id, taskResults) => ({ id, taskResults });
   assert.equal(foldedTaskCard(relay(), relay({ id: 'task-report:t1:r2' })), null, '已成报告的卡不再并');
 }
 
+// 7）逐轮重推：同一张 relay 在下一页又被派生一遍（id 相同）→ 重复那份丢掉，只剩主卡（T039 回归）。
+{
+  const foldedOnce = reconcileTaskCards([view('turn-1', [dispatch()]), view('turn-2', [relay()])]);
+  // refreshTurn 重新派生 turn-2：同一张 relay 又出现在新视图里。
+  const rederived = foldedOnce.map((item) =>
+    item.id === 'turn-2' ? { ...item, taskResults: [relay()] } : item,
+  );
+  const out = reconcileTaskCards(rederived);
+  const cards = out.flatMap((item) => item.taskResults);
+  assert.equal(cards.length, 1, '重复的 relay 卡丢掉，只剩主卡');
+  assert.equal(cards[0].id, 'task-report:t1:r1');
+  assert.equal(cards[0].state, 'ready');
+}
+
 console.log('task-cards ok');
