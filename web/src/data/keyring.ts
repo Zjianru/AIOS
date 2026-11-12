@@ -4,6 +4,7 @@ import {
   deleteConnection,
   deleteExaKey,
   discoverAvailableModels,
+  peekAvailableModels,
   fetchExaKey,
   fetchModelSettings,
   revokeConnectionKey,
@@ -15,6 +16,7 @@ import {
   saveConnection,
   setDisabledModels as setDisabledModelsOnService,
   verifyConnection,
+  type AvailableModelRow,
   type ConnectionInfo as ServiceConnectionInfo,
   type ConnectionVerifyResult,
   type KeyringView as ServiceKeyringView,
@@ -373,21 +375,9 @@ export async function revokeKey(connectionId: string): Promise<ModelSettingsView
   return getModelSettings();
 }
 
-/** 用户按「获取可用模型」：从服务问这个连接现在可用的模型（目录 + 厂商列表合并；带窗口/标价）。 */
-export async function discoverModels(connectionId: string): Promise<
-  {
-    id: string;
-    name?: string;
-    contextWindow?: number;
-    fresh?: boolean;
-    priceInput?: number;
-    priceOutput?: number;
-    priceCacheRead?: number;
-    priceCacheWrite?: number;
-  }[]
-> {
-  const { models } = await discoverAvailableModels(connectionId);
-  return models.map((row) => ({
+/** available-models 的一行 → 页面行（带「新」和四类价）。 */
+function mapAvailableRow(row: AvailableModelRow): ModelRow {
+  return {
     id: row.id,
     name: row.name,
     contextWindow: row.contextWindow ?? undefined,
@@ -396,7 +386,19 @@ export async function discoverModels(connectionId: string): Promise<
     priceOutput: row.priceOutput ?? undefined,
     priceCacheRead: row.priceCacheRead ?? undefined,
     priceCacheWrite: row.priceCacheWrite ?? undefined,
-  }));
+  };
+}
+
+/** 用户按「获取可用模型」：从服务问这个连接现在可用的模型（目录 + 厂商列表合并；带窗口/标价）。 */
+export async function discoverModels(connectionId: string): Promise<ModelRow[]> {
+  const { models } = await discoverAvailableModels(connectionId);
+  return models.map(mapAvailableRow);
+}
+
+/** 验证弹窗打开时「看一眼」这个连接能用的模型：只读，不落盘，不动「新」的基准。 */
+export async function peekModels(connectionId: string): Promise<ModelRow[]> {
+  const { models } = await peekAvailableModels(connectionId);
+  return models.map(mapAvailableRow);
 }
 
 export async function moveKeyFile(path: string): Promise<ModelSettingsView> {

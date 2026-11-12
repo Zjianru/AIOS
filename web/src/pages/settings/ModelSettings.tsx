@@ -15,9 +15,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Ban, Check, ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, Loader2, Plus, X } from 'lucide-react';
 import { toast } from 'sonner';
 import {
-  addConnection, checkConnection, discoverModels, getExaKey, getModelSettings, moveKeyFile, relinkKeyFile,
-  removeConnection, removeExaKey, resetKeyring, revokeKey, saveExaKey, setDisabledModels, updateConnection,
-  verifyConnectionForModel, verifyExaKey,
+  addConnection, checkConnection, discoverModels, getExaKey, getModelSettings, moveKeyFile, peekModels,
+  relinkKeyFile, removeConnection, removeExaKey, resetKeyring, revokeKey, saveExaKey, setDisabledModels,
+  updateConnection, verifyConnectionForModel, verifyExaKey,
 } from '@/data/keyring';
 import { matchDisabled } from '@/data/disabled';
 import {
@@ -595,13 +595,15 @@ function Collapsible({ title, children, defaultOpen = false }: { title: string; 
 
 /* ───────────────────────── 已有提供方的编辑卡片 ───────────────────────── */
 
-function ConnectionEditor({ conn, view, onDone, onView, onMask }: {
+function ConnectionEditor({ conn, view, onDone, onView, onMask, onVerify }: {
   conn: ConnectionView;
   view: ModelSettingsView;
   onDone: () => void;
   onView: (view: ModelSettingsView) => void;
   /** 行上的屏蔽按钮：打开确认框，确认后立即保存（不经过这张卡片的保存）。 */
   onMask: (pattern: string) => void;
+  /** 保存带新密钥后打开验证弹窗（spec v3：保存连接 → 自己选模型验证）。 */
+  onVerify: (id: string) => void;
 }) {
   const [key, setKey] = useState('');
   const [endpoint, setEndpoint] = useState(conn.endpoint);
@@ -646,8 +648,13 @@ function ConnectionEditor({ conn, view, onDone, onView, onMask }: {
         }),
       );
       onDone();
-      toast.success(withKey ? `已保存；${conn.name} 的新密钥进了 Keyring，正在验证` : '已保存');
-      if (withKey) onView(await checkConnection(conn.id));
+      toast.success(withKey ? `已保存；${conn.name} 的新密钥进了 Keyring，选一个模型验证一下` : '已保存');
+      if (withKey) {
+        // 保存连接后立刻打开验证弹窗（spec v3）；旧的自动验证（不带 model）照旧跑，
+        // 连接行仍由它更新，不在本票改。
+        onVerify(conn.id);
+        onView(await checkConnection(conn.id));
+      }
     } catch (error) {
       toast.error((error as Error).message);
     } finally {
@@ -791,7 +798,7 @@ type VerifyState =
   | { kind: 'ok'; model: string }
   | { kind: 'fail'; model: string; reason: string };
 
-/** 候选模型：连接勾的 → 厂商列表 → 内置目录；连接当前用的模型总要能选。 */
+/** 本页认识的候选模型：连接勾的 → 存下的厂商列表 → 内置目录（弹窗先列服务给的名单，这份兜底）。 */
 function verifyModelRows(conn: ConnectionView, view: ModelSettingsView): ModelRow[] {
   const catalog = view.catalog.find((item) => item.id === conn.id)?.defaultModels ?? [];
   const rows = conn.models.length
@@ -799,10 +806,7 @@ function verifyModelRows(conn: ConnectionView, view: ModelSettingsView): ModelRo
     : conn.availableModels?.length
       ? conn.availableModels
       : catalog;
-  const unique = rows.filter((row, index) => rows.findIndex((other) => other.id === row.id) === index);
-  if (unique.some((row) => row.id === conn.model)) return unique;
-  const known = view.catalog.flatMap((item) => item.defaultModels).find((row) => row.id === conn.model);
-  return [{ id: conn.model, name: known?.name }, ...unique];
+  return rows.filter((row, index) => rows.findIndex((other) => other.id === row.id) === index);
 }
 
 /** 选一个模型验证一次：成功放大的绿对勾、失败抖动的红叉 + 本次模型和厂商原因。 */
@@ -813,11 +817,38 @@ function VerifyDialog({ conn, view, onClose, onVerified }: {
   /** 验证发过一次凭证；刷新设置视图里的签发记录，但不碰连接行。 */
   onVerified: () => void;
 }) {
-  const models = useMemo(() => verifyModelRows(conn, view), [conn, view]);
-  const [model, setModel] = useState(conn.model || models[0]?.id || '');
+  const known = useMemo(() => verifyModelRows(conn, view), [conn, view]);
+  /** 服务 available-models 给的名单（连接 models/live/目录）；null = 还在拿。 */
+  const [listed, setListed] = useState<ModelRow[] | null>(null);
+  const [listFailed, setListFailed] = useState(false);
+  /** 用户选的模型；空 = 还没选。打开弹窗不替用户挑一个（spec v3）。 */
+  const [model, setModel] = useState('');
   const [state, setState] = useState<VerifyState>({ kind: 'idle' });
   const busy = state.kind === 'checking';
   const result = state.kind === 'ok' || state.kind === 'fail' ? state : null;
+  const loading = listed === null && !listFailed;
+
+  // 打开就去服务要这个连接现在能用的模型（available-models：连接 models/live/目录）。
+  // 只是「看一眼」，不落盘；拿不到才退回本页认识的名单，并且把这件事说清楚。
+  useEffect(() => {
+    let live = true;
+    void peekModels(conn.id)
+      .then((rows) => {
+        if (live) setListed(rows);
+      })
+      .catch(() => {
+        if (live) setListFailed(true);
+      });
+    return () => {
+      live = false;
+    };
+  }, [conn.id]);
+
+  /** 服务给的打底，本页认识的也留着；同一个模型只出现一次。 */
+  const models = useMemo(() => {
+    const rows = [...(listed ?? []), ...known];
+    return rows.filter((row, index) => rows.findIndex((other) => other.id === row.id) === index);
+  }, [listed, known]);
 
   const run = async () => {
     if (busy || !model) return;
@@ -876,14 +907,15 @@ function VerifyDialog({ conn, view, onClose, onVerified }: {
           </div>
         ) : (
           <>
-            <Field label="用哪个模型验证" help="默认是这个连接当前用的模型；换一个只看这一次。">
+            <Field label="用哪个模型验证" help="列表是这个连接现在能用的模型；选一个，只发这一次最小请求。">
               <select
                 data-verify="model-select"
                 className={inputClass}
                 value={model}
                 onChange={(event) => setModel(event.target.value)}
-                disabled={busy}
+                disabled={busy || loading}
               >
+                <option value="">选一个模型</option>
                 {models.map((row) => (
                   <option key={row.id} value={row.id}>
                     {row.name ?? row.id}
@@ -892,8 +924,23 @@ function VerifyDialog({ conn, view, onClose, onVerified }: {
                 ))}
               </select>
             </Field>
+            {loading ? (
+              <div className="mt-2 flex items-center gap-2 text-2 text-ink-3" data-verify="list-loading">
+                <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                正在拿模型列表…
+              </div>
+            ) : listFailed ? (
+              <p className="mt-2 text-1 leading-4 text-ink-3" data-verify="list-fallback">
+                没能从服务拿到列表；上面列的是设置里认识的模型。关掉再打开可以再试一次。
+              </p>
+            ) : null}
+            {!loading && models.length === 0 ? (
+              <p className="mt-2 text-1 leading-4" style={{ color: 'var(--wait)' }} data-verify="list-empty">
+                这个连接现在没有可选的模型。先「获取可用模型」，或者去「自定义设置」里加一个。
+              </p>
+            ) : null}
             {busy ? (
-              <div className="flex items-center gap-2 text-2 text-ink-3" data-verify="checking">
+              <div className="mt-2 flex items-center gap-2 text-2 text-ink-3" data-verify="checking">
                 <Loader2 className="size-3.5 animate-spin" aria-hidden />
                 正在验证 {model}…
               </div>
@@ -907,7 +954,7 @@ function VerifyDialog({ conn, view, onClose, onVerified }: {
           ) : (
             <>
               <Btn kind="plain" disabled={busy} onClick={onClose}>取消</Btn>
-              <Btn kind="primary" disabled={busy || !model} onClick={() => void run()}>
+              <Btn kind="primary" disabled={busy || loading || !model} onClick={() => void run()}>
                 {busy ? '正在验证…' : '验证'}
               </Btn>
             </>
@@ -1693,8 +1740,12 @@ export function ModelSettings() {
   const onCreated = async (id: string, withKey: boolean, next: ModelSettingsView) => {
     setView(next);
     setOpen(null);
-    toast.success(withKey ? '已添加；密钥进了 Keyring，正在验证' : '已添加；填上密钥才能用');
-    if (withKey) setView(await checkConnection(id));
+    toast.success(withKey ? '已添加；密钥进了 Keyring，选一个模型验证一下' : '已添加；填上密钥才能用');
+    if (withKey) {
+      // 保存新连接后立刻打开验证弹窗；旧的自动验证（不带 model）照旧。
+      setVerifyId(id);
+      setView(await checkConnection(id));
+    }
   };
 
   const rows = useMemo(() => view?.connections ?? [], [view]);
@@ -1764,6 +1815,7 @@ export function ModelSettings() {
                       onDone={() => setOpen(null)}
                       onView={setView}
                       onMask={(pattern) => setMasking(pattern)}
+                      onVerify={setVerifyId}
                     />
                   ) : null}
                 </div>

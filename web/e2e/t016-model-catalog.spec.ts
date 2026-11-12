@@ -368,8 +368,13 @@ test('编辑器换地址重填密钥后旧厂商列表作废，获取后新表�
     await editor.locator('[data-settings="endpoint"]').fill(second.url);
     await editor.locator('#key-deepseek').fill('sk-e2e-rewritten-key');
     await editor.getByRole('button', { name: '保存', exact: true }).click();
-    // 保存成功后编辑器关掉；旧地址存下的列表不能还在。
+    // 保存成功后编辑器关掉；带新密钥保存会弹出验证弹窗，先关掉再继续。
     await expect(editor).toHaveCount(0, { timeout: 20_000 });
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 20_000 });
+    await dialog.getByRole('button', { name: '取消', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    // 旧地址存下的列表不能还在（弹窗只是「看一眼」，不会把它存回来）。
     await expect.poll(listedIds, { timeout: 20_000 }).toEqual([]);
 
     // 在新地址按获取：新表生效，旧厂商的模型不再出现。
