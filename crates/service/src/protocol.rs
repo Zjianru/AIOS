@@ -719,7 +719,7 @@ pub struct ConnectionVerifyRequest {
     pub model: Option<String>,
 }
 
-/// 指定模型的验证结果：只回报这一次，不写连接 check，也不动最近选择。
+/// 指定模型的验证结果：只回报这一次，不写连接 check、最近选择，也不写学到的鉴权头。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct ConnectionVerifyResult {
     pub model: String,

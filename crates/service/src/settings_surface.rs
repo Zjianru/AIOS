@@ -255,7 +255,7 @@ impl RootHost {
     /// 验证连接：从 Keyring 取一次签发，发最小 Messages 请求。
     ///
     /// 不带 model 时沿用旧回退，并把结果写进注册器；带 model 时只用它发这一次，
-    /// 结果只在响应里返回，不改连接 check，也不动最近选择。
+    /// 结果只在响应里返回，不改连接 check、最近选择，也不写适配器学到的鉴权头。
     pub async fn connection_verify(
         &self,
         request: ConnectionVerifyRequest,
@@ -299,7 +299,8 @@ impl RootHost {
         );
         let messages = vec![model::Message::user_text("ping")];
         let at = now_seconds();
-        // 验证也必须能把学到的鉴权头写回连接，所以把 Keyring 的 Arc 交给来源。
+        // 旧回退的验证要把学到的鉴权头写回连接，所以把 Keyring 的 Arc 交给来源；
+        // 显式模型的验证只读连接状态，学到的头不写回。
         let keyring = std::sync::Arc::new(keyring);
         let outcome = match model::DeepSeek::with_credentials(
             config,
@@ -307,6 +308,7 @@ impl RootHost {
                 api_key,
                 keyring: std::sync::Arc::clone(&keyring),
                 connection: request.id.clone(),
+                persist_learned_auth_header: !explicit_model,
                 data_dir: self.options.data_dir.clone(),
             }),
         ) {
@@ -708,11 +710,13 @@ impl RootHost {
     }
 }
 /// 验证连接的固定 key 来源（key 只在内存里；签发记录仍由 Keyring 记）。
-/// 验证时学到的鉴权头也写回连接（和对话路径同一接缝）。
+/// 旧回退的验证把学到的鉴权头写回连接（和对话路径同一接缝）；显式模型的验证只读。
 struct VerifyCredential {
     api_key: String,
     keyring: std::sync::Arc<credentials::Keyring>,
     connection: String,
+    /// 适配器学到的鉴权头要不要写回连接；显式模型的验证只回报本次结果，不写。
+    persist_learned_auth_header: bool,
     /// 验证和聊天共用同一条出站接缝：被屏蔽的模型不发请求。
     data_dir: std::path::PathBuf,
 }
@@ -742,6 +746,9 @@ impl model::CredentialSource for VerifyCredential {
     }
 
     fn remember_auth_header(&self, header: &str) {
+        if !self.persist_learned_auth_header {
+            return;
+        }
         let Some(connection) = self
             .keyring
             .view()
