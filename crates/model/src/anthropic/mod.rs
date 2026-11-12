@@ -308,7 +308,7 @@ impl DeepSeek {
         {
             effective.effort = crate::Effort::new(effort);
         }
-        // 出站之前先查屏蔽：被拒就不签发、不发请求（聊天、重试、摘要、验证共用这一处）。
+        // 出站之前先查屏蔽：被拒就不签发、不发请求（聊天、重试、摘要共用这一处）。
         self.credentials.admit(&effective.model)?;
         let api_key = self.credentials.issue("model-request", &context)?;
         let base_url = effective.base_url.clone();

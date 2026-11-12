@@ -95,6 +95,14 @@ test('保存连接拉一次厂商列表：没有验证按钮，获取面板不�
     await expect(discover).not.toContainText('MiniMax-M2.7');
     await expect(discover).toContainText('MiniMax-M3.1-Flash');
     expect(vendor.modelsRequests()).toBe(2);
+
+    // 选择器（跟着厂商走时用的是 listed）里也不列目录标了下线的 M2.7。
+    await page.getByRole('button', { name: 'Kind', exact: true }).click();
+    await page.locator('[data-kind="model-picker"]').click();
+    await expect(page.getByRole('menuitem', { name: /MiniMax-M3\.1-Flash/ })).toBeVisible({
+      timeout: 20_000,
+    });
+    await expect(page.getByRole('menuitem', { name: /MiniMax-M2\.7/ })).toHaveCount(0);
   } finally {
     await vendor.close();
     await fixture.close();

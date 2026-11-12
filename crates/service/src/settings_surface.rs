@@ -85,14 +85,21 @@ impl RootHost {
     /// 页面写「现在匹配 n 个」只读它，不自己匹配。
     pub async fn model_settings(&self) -> Result<ModelSettingsResponse, ServiceError> {
         let view = self.keyring()?.view();
+        let catalog = model::catalog::global().unwrap_or_else(model::catalog::snapshot);
         let mut listed = std::collections::BTreeMap::new();
         for connection in &view.connections {
             if let Some(live) = model::catalog::read_live(&self.options.data_dir, &connection.id) {
+                // 和默认模型那一路（selectable_models）共用目录过滤：目录标了下线的不给页面，
+                // 目录没收录的照列；顺序照厂商给的列表。
+                let provider = model::catalog::provider_id_for_connection(
+                    &connection.preset,
+                    &connection.endpoint,
+                );
                 listed.insert(
                     connection.id.clone(),
                     crate::protocol::ListedModels {
                         fetched_at: live.fetched_at,
-                        models: live.models,
+                        models: catalog.enrich_live(&provider, live.models),
                     },
                 );
             }
@@ -203,6 +210,13 @@ impl RootHost {
         // 保存带 key（新连接或换 key）：先拉一次厂商列表，再写 last_selection——
         // 默认模型要按新列表算。拉不到只写 check，不挡保存。
         self.fetch_models_on_save(&keyring, &connection).await?;
+        // 拉列表把 check 写进了 Keyring：响应要带回保存后的最新连接，不是保存那一刻的旧值。
+        let refreshed = keyring
+            .view()
+            .connections
+            .into_iter()
+            .find(|saved| saved.id == connection.id);
+        let connection = refreshed.unwrap_or(connection);
         // 把刚保存的连接设为当前选择。
         // RootHost 的 recheck 走 model_factory → resolve_selection，只认 CLI 参数 /
         // settings.last_selection / id=="deepseek"；页面/HTTP 建连接（如 minimax-cn）
@@ -332,7 +346,7 @@ impl RootHost {
         let mut live = false;
         let mut live_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
         // 没记过单个头时两个都发：MiniMax 国内站的 /v1/models 只认 Bearer（messages 双头
-        // 都能过，所以验证不会学到单头）；照 T012.6/Magpie 的默认，列表也两个头一起发。
+        // 都能过，所以列表请求不会把连接收窄成单头）；照 T012.6/Magpie 的默认，列表也两个头一起发。
         if let VendorModels::Models(live_models) =
             fetch_vendor_models(&connection, key.into_secret(), AVAILABLE_MODELS_TIMEOUT).await
             && !live_models.is_empty()
