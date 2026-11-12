@@ -6,11 +6,15 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use credentials::CheckState;
 use model::{DEFAULT_CONTEXT_WINDOW, DeepSeekConfig, Effort};
 use service::{
-    Call, ConnectionSaveRequest, RecheckRequest, RootHost, RootSessionOptions, ServiceError,
+    Call, ConnectionSaveRequest, ConnectionVerifyRequest, RecheckRequest, RootHost,
+    RootSessionOptions, ServiceError,
 };
 use tempfile::tempdir;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn deepseek_config() -> DeepSeekConfig {
     DeepSeekConfig {
@@ -205,6 +209,75 @@ async fn connection_save_keeps_existing_selection_after_root_ok() {
             .map(|selection| selection.connection),
         Some("deepseek".to_owned()),
         "root 已 Ok 时存第二连接不该改 last_selection"
+    );
+}
+
+/// 连接跟着厂商走（models=[]）但还没存过厂商列表：保存写下的 lastSelection 和验证请求
+/// 都用连接上的 model（M3.1-Flash），不能落到目录第一个（已下线的 M2）。
+#[tokio::test]
+async fn 没有厂商列表时保存和验证都用连接上的模型() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let data = tempdir().unwrap();
+    let cwd = tempdir().unwrap();
+    let identity = data.path().join("identity.txt");
+    let host = RootHost::open(
+        hotfix_options(data.path(), &identity, cwd.path()),
+        DEFAULT_CONTEXT_WINDOW,
+    )
+    .await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "minimax-cn".to_owned(),
+            name: "MiniMax（国内站）".to_owned(),
+            model: "MiniMax-M3.1-Flash".to_owned(),
+            endpoint: server.uri(),
+            api_key: "test-key".to_owned(),
+            preset: Some("minimax-cn".to_owned()),
+            models: Some(Vec::new()),
+            auth_header: None,
+        }))
+        .await
+        .expect("connection-save");
+    let service::Response::ConnectionSave(saved) = saved else {
+        panic!("expected ConnectionSave");
+    };
+    let last = service::settings::load(data.path())
+        .last_selection
+        .expect("空库保存要写下上次选择");
+    assert_eq!(last.connection, "minimax-cn");
+    assert_eq!(
+        last.model, "MiniMax-M3.1-Flash",
+        "保存路径的 lastSelection.model 与验证用同一个结果"
+    );
+    assert_eq!(
+        service::models::primary_model(data.path(), &saved.connection),
+        "MiniMax-M3.1-Flash",
+        "没有厂商列表时主模型用连接上的 model，不落到目录第一个 M2"
+    );
+
+    let verified = host
+        .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
+            id: "minimax-cn".to_owned(),
+        }))
+        .await
+        .expect("verify");
+    let service::Response::ConnectionVerify(verified) = verified else {
+        panic!("expected ConnectionVerify");
+    };
+    assert!(matches!(verified.connection.check, CheckState::Ok { .. }));
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "验证只发一条最小请求");
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json");
+    assert_eq!(
+        body["model"], "MiniMax-M3.1-Flash",
+        "验证请求的 model 也用连接上的那个：{body}"
     );
 }
 

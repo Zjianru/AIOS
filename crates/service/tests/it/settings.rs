@@ -563,8 +563,8 @@ async fn 验证跟厂商走时用连接选中的模型() {
     );
     assert_eq!(
         service::models::primary_model(dir.path(), &saved.connection),
-        "MiniMax-M2",
-        "跟着厂商走时目录第一个是 M2；验证不能拿它"
+        "MiniMax-M3.1-Flash",
+        "没有厂商列表时主模型用连接上的 model，共用回退不再落到目录第一个 M2"
     );
 
     let verified = host
@@ -1059,8 +1059,8 @@ async fn 显式空模型列表跟着厂商走且主模型取可选第一个() {
     );
     assert_eq!(
         service::models::primary_model(dir.path(), &saved.connection),
-        "deepseek-flash",
-        "还没存过厂商列表时用内置目录的第一个"
+        "ignored",
+        "还没存过厂商列表时用连接上的 model 字段（这里故意存 ignored）"
     );
 
     host.dispatch(Call::AvailableModels(discover_request("follow")))
@@ -1417,8 +1417,8 @@ async fn 保存换预设后旧厂商列表作废() {
     assert!(listed_ids(&host, "preset-moved").await.is_empty());
     assert_eq!(
         service::models::primary_model(dir.path(), &connection_of(&host, "preset-moved").await),
-        "MiniMax-M2",
-        "回到 minimax 的内置目录（目录原序）"
+        "deepseek-flash",
+        "没有厂商列表时主模型用连接上的 model 字段（这里仍是 deepseek-flash）"
     );
 
     let fetched = available_models(&host, discover_request("preset-moved")).await;
