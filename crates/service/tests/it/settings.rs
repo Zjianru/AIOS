@@ -2683,6 +2683,87 @@ async fn 保存时密钥不对写失败原因但不挡保存() {
     );
 }
 
+/// 保存连接的响应带本次拉列表写下的 check：不是保存那一刻的旧状态（协议给出的事实）。
+#[tokio::test]
+async fn 保存连接的响应带拉列表后的检查结果() {
+    model::catalog::set_global(model::catalog::snapshot());
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(vendor_models(&["deepseek-flash"]))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = empty_root_host(dir.path()).await;
+    let response = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "save-response".to_owned(),
+            name: "DeepSeek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some("deepseek".to_owned()),
+            models: Some(Vec::new()),
+            ..Default::default()
+        }))
+        .await
+        .expect("save");
+    let service::Response::ConnectionSave(response) = response else {
+        panic!("expected ConnectionSave");
+    };
+    assert!(
+        matches!(response.connection.check, CheckState::Ok { .. }),
+        "响应里的 check 要反映这次拉列表：{:?}",
+        response.connection.check
+    );
+    let settings = connection_of(&host, "save-response").await;
+    assert_eq!(
+        response.connection.check, settings.check,
+        "响应和设置页读到的是同一份事实"
+    );
+}
+
+/// 密钥不对时保存响应里的 check 是 fail 且原因可读，不是保存那一刻的 Never。
+#[tokio::test]
+async fn 保存时密钥不对的响应带失败原因() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+            "error": {"type": "authentication_error", "message": "invalid api key"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = empty_root_host(dir.path()).await;
+    let response = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "save-response-bad".to_owned(),
+            name: "Bad".to_owned(),
+            model: "ignored".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some("minimax-cn".to_owned()),
+            models: Some(Vec::new()),
+            ..Default::default()
+        }))
+        .await
+        .expect("save");
+    let service::Response::ConnectionSave(response) = response else {
+        panic!("expected ConnectionSave");
+    };
+    let CheckState::Fail { reason, .. } = response.connection.check else {
+        panic!(
+            "401 时响应里的 check 应是 fail：{:?}",
+            response.connection.check
+        );
+    };
+    assert!(reason.contains("密钥不对"), "原因要说人话：{reason}");
+    assert!(reason.contains("401"), "状态码照实填：{reason}");
+}
+
 /// 其他非 2xx：原因是「厂商回了 <码>」。
 #[tokio::test]
 async fn 保存时厂商回404写失败原因() {
