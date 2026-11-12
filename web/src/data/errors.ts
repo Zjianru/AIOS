@@ -116,6 +116,17 @@ export function modelErrorReason(code: string | undefined, connectionName?: stri
   return `${name} 返回了意外的错误`;
 }
 
+/** 验证结果里的 reason（「错误码: 厂商消息」）→ 页面能读的原因；认不出的码原样带回。 */
+export function verifyFailureReason(reason: string, connectionName?: string): string {
+  const separator = reason.indexOf(': ');
+  if (separator <= 0) return reason;
+  const code = reason.slice(0, separator);
+  if (!(MODEL_ERROR_CODES as readonly string[]).includes(code)) return reason;
+  const detail = reason.slice(separator + 2).trim();
+  const mapped = modelErrorReason(code, connectionName);
+  return detail ? `${mapped}：${detail}` : mapped;
+}
+
 /** 重试行原因：和失败块同一张表。 */
 export function retryReason(code: string | undefined, connectionName?: string): string {
   const name = connectionLabel(connectionName);

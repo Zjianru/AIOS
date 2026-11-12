@@ -452,6 +452,25 @@ export async function startKernelFixture(
   if (options.settingsFault === 'corrupt') {
     await writeFile(path.join(dataDir, 'settings.json'), '{"lastSelection": ');
   }
+  // T034.2：模拟「这个连接存过厂商列表」——M2 排最前；连接当前模型另存为 M3.1，
+  // 用来验证弹窗默认取 connection.model，而不是列表第一个。
+  if (options.t034Verify) {
+    const live = path.join(dataDir, 'catalog', 'models');
+    await mkdir(live, { recursive: true });
+    await writeFile(
+      path.join(live, 'minimax-cn.json'),
+      JSON.stringify({
+        fetchedAt: Math.floor(Date.now() / 1000),
+        models: ['MiniMax-M2', 'MiniMax-M2.7', 'MiniMax-M3.1-Flash'].map((id) => ({
+          id,
+          name: id,
+          contextWindow: id === 'MiniMax-M3.1-Flash' ? 1_000_000 : 204_800,
+          thinks: false,
+          efforts: [],
+        })),
+      }),
+    );
+  }
   if (options.kindHistory === 'cc-pages') {
     // T028.5：抄送跨两页——spliced 在第 1 轮后面（上一页末尾），领取后的 user/message
     // 在第 2 轮开头（下一页第一项）；两处 request id 相同，页面只能画一行。

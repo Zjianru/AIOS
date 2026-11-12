@@ -12,12 +12,12 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Ban, ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, Loader2, Plus, X } from 'lucide-react';
+import { Ban, Check, ChevronDown, ChevronRight, CircleAlert, Eye, EyeOff, Loader2, Plus, X } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   addConnection, checkConnection, discoverModels, getExaKey, getModelSettings, moveKeyFile, relinkKeyFile,
   removeConnection, removeExaKey, resetKeyring, revokeKey, saveExaKey, setDisabledModels, updateConnection,
-  verifyExaKey,
+  verifyConnectionForModel, verifyExaKey,
 } from '@/data/keyring';
 import { matchDisabled } from '@/data/disabled';
 import {
@@ -33,7 +33,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
-import { modelErrorReason } from '@/data/errors';
+import { modelErrorReason, verifyFailureReason } from '@/data/errors';
 import { connectionCardOf } from '@/data/connectionCard';
 import type { ConnectionSlots } from '@/data/connectionCard';
 import type { CardEnvelope } from '@/lib/cardEnvelope';
@@ -782,6 +782,142 @@ function ConnectionEditor({ conn, view, onDone, onView, onMask }: {
   );
 }
 
+/* ───────────────────────── 验证弹窗 ───────────────────────── */
+
+/** 弹窗状态：idle → checking → ok/fail。结果只活在这一层，不写连接、不写聊天选择。 */
+type VerifyState =
+  | { kind: 'idle' }
+  | { kind: 'checking' }
+  | { kind: 'ok'; model: string }
+  | { kind: 'fail'; model: string; reason: string };
+
+/** 候选模型：连接勾的 → 厂商列表 → 内置目录；连接当前用的模型总要能选。 */
+function verifyModelRows(conn: ConnectionView, view: ModelSettingsView): ModelRow[] {
+  const catalog = view.catalog.find((item) => item.id === conn.id)?.defaultModels ?? [];
+  const rows = conn.models.length
+    ? conn.models
+    : conn.availableModels?.length
+      ? conn.availableModels
+      : catalog;
+  const unique = rows.filter((row, index) => rows.findIndex((other) => other.id === row.id) === index);
+  if (unique.some((row) => row.id === conn.model)) return unique;
+  const known = view.catalog.flatMap((item) => item.defaultModels).find((row) => row.id === conn.model);
+  return [{ id: conn.model, name: known?.name }, ...unique];
+}
+
+/** 选一个模型验证一次：成功放大的绿对勾、失败抖动的红叉 + 本次模型和厂商原因。 */
+function VerifyDialog({ conn, view, onClose, onVerified }: {
+  conn: ConnectionView;
+  view: ModelSettingsView;
+  onClose: () => void;
+  /** 验证发过一次凭证；刷新设置视图里的签发记录，但不碰连接行。 */
+  onVerified: () => void;
+}) {
+  const models = useMemo(() => verifyModelRows(conn, view), [conn, view]);
+  const [model, setModel] = useState(conn.model || models[0]?.id || '');
+  const [state, setState] = useState<VerifyState>({ kind: 'idle' });
+  const busy = state.kind === 'checking';
+  const result = state.kind === 'ok' || state.kind === 'fail' ? state : null;
+
+  const run = async () => {
+    if (busy || !model) return;
+    setState({ kind: 'checking' });
+    let next: VerifyState;
+    try {
+      const result = await verifyConnectionForModel(conn.id, model);
+      next = result.ok
+        ? { kind: 'ok', model: result.model }
+        : { kind: 'fail', model: result.model, reason: result.reason ?? '没有给出原因' };
+    } catch (error) {
+      next = { kind: 'fail', model, reason: (error as Error).message };
+    }
+    setState(next);
+    onVerified();
+  };
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !busy) onClose();
+      }}
+    >
+      <DialogContent data-settings="verify-dialog" showCloseButton={!busy}>
+        <DialogHeader>
+          <DialogTitle>验证 {conn.name}</DialogTitle>
+          <DialogDescription>
+            选一个模型发一次最小请求。只验证这一次：不改连接状态，也不改聊天里用的模型。
+          </DialogDescription>
+        </DialogHeader>
+
+        {result ? (
+          <div data-verify={result.kind} className="flex flex-col items-center gap-1 py-3 text-center">
+            {result.kind === 'ok' ? (
+              <>
+                <span className="grid size-16 place-items-center rounded-full bg-done-soft">
+                  <Check data-verify="check" className="verify-check-pop size-9 text-done" strokeWidth={3} aria-hidden />
+                </span>
+                <div className="mt-1 text-3 text-ink">这次验证通过</div>
+                <div className="text-2 text-ink-2" data-verify="model">{result.model} 通过了验证</div>
+              </>
+            ) : (
+              <>
+                <span className="grid size-16 place-items-center rounded-full bg-fail-soft">
+                  <X data-verify="cross" className="verify-cross-shake size-9 text-fail" strokeWidth={3} aria-hidden />
+                </span>
+                <div className="mt-1 text-3 text-ink">这次没通过</div>
+                <div className="text-2 text-ink-2" data-verify="model">{result.model}</div>
+                <p className="text-2 leading-5 text-fail" data-verify="reason">
+                  {verifyFailureReason(result.reason, conn.name)}
+                </p>
+              </>
+            )}
+            <p className="mt-1 text-1 leading-4 text-ink-3">连接状态和聊天里的模型都没改。</p>
+          </div>
+        ) : (
+          <>
+            <Field label="用哪个模型验证" help="默认是这个连接当前用的模型；换一个只看这一次。">
+              <select
+                data-verify="model-select"
+                className={inputClass}
+                value={model}
+                onChange={(event) => setModel(event.target.value)}
+                disabled={busy}
+              >
+                {models.map((row) => (
+                  <option key={row.id} value={row.id}>
+                    {row.name ?? row.id}
+                    {row.id === conn.model ? '（当前）' : ''}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {busy ? (
+              <div className="flex items-center gap-2 text-2 text-ink-3" data-verify="checking">
+                <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                正在验证 {model}…
+              </div>
+            ) : null}
+          </>
+        )}
+
+        <DialogFooter>
+          {result ? (
+            <Btn kind="plain" onClick={onClose}>关闭</Btn>
+          ) : (
+            <>
+              <Btn kind="plain" disabled={busy} onClick={onClose}>取消</Btn>
+              <Btn kind="primary" disabled={busy || !model} onClick={() => void run()}>
+                {busy ? '正在验证…' : '验证'}
+              </Btn>
+            </>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /* ───────────────────────── 添加模型提供商 ───────────────────────── */
 
 
@@ -1513,6 +1649,8 @@ export function ModelSettings() {
   /** 正在确认屏蔽的规则；null = 没有对话框。 */
   const [masking, setMasking] = useState<string | null>(null);
   const [maskBusy, setMaskBusy] = useState(false);
+  /** 正在验证哪条连接；null = 弹窗关着。 */
+  const [verifyId, setVerifyId] = useState<string | null>(null);
   const refreshMasks = useSettingsState((state) => state.refreshMasks);
 
   const load = useCallback(async () => {
@@ -1526,20 +1664,14 @@ export function ModelSettings() {
     void load();
   }, [load]);
 
-  const verify = async (id: string) => {
-    // 先把这一行标成「正在验证」，结果回来再换
-    setView((current) =>
-      current && {
-        ...current,
-        connections: current.connections.map((conn) => (conn.id === id ? { ...conn, check: { kind: 'checking' } } : conn)),
-      },
-    );
+  /** 弹窗验证会从 Keyring 签发一次凭证：刷新签发记录；连接行是服务事实，这次验证不写它。 */
+  const refreshAfterVerify = useCallback(async () => {
     try {
-      setView(await checkConnection(id));
+      setView(await getModelSettings());
     } catch (error) {
       toast.error((error as Error).message);
     }
-  };
+  }, []);
 
   const mask = async (wasRunning: boolean) => {
     if (!masking) return;
@@ -1566,6 +1698,10 @@ export function ModelSettings() {
   };
 
   const rows = useMemo(() => view?.connections ?? [], [view]);
+  const verifyConn = useMemo(
+    () => (verifyId ? view?.connections.find((conn) => conn.id === verifyId) ?? null : null),
+    [view, verifyId],
+  );
 
   if (!view) return <div className="mt-6 text-2 text-ink-3">正在读取…</div>;
   const broken = Boolean(view.keyFile.problem);
@@ -1590,7 +1726,12 @@ export function ModelSettings() {
               {rows.map((conn, index) => {
                 const card = cardOf(conn, broken);
                 return (
-                <div key={conn.id} className={cn(index > 0 && 'border-t border-line')}>
+                <div
+                  key={conn.id}
+                  data-settings="connection"
+                  data-connection={conn.id}
+                  className={cn(index > 0 && 'border-t border-line')}
+                >
                   <div className="flex items-center gap-3 px-4 py-3">
                     {card ? <StatusDot card={card} /> : null}
                     <div className="min-w-0">
@@ -1603,11 +1744,11 @@ export function ModelSettings() {
                       {conn.key.saved ? (
                         <Btn
                           kind="quiet"
-                          disabled={broken || conn.check.kind === 'checking'}
-                          title={broken ? '先让 Keyring 能读出来' : undefined}
-                          onClick={() => void verify(conn.id)}
+                          disabled={broken}
+                          title={broken ? '先让 Keyring 能读出来' : '选一个模型，只验证这一次'}
+                          onClick={() => setVerifyId(conn.id)}
                         >
-                          {conn.check.kind === 'checking' ? '正在验证…' : '验证'}
+                          验证
                         </Btn>
                       ) : null}
                       <Btn kind="plain" onClick={() => setOpen(open === conn.id ? null : conn.id)}>
@@ -1643,6 +1784,16 @@ export function ModelSettings() {
       </section>
 
       <MaskSection view={view} onView={setView} onMask={(pattern) => setMasking(pattern)} />
+
+      {verifyConn ? (
+        <VerifyDialog
+          key={verifyConn.id}
+          conn={verifyConn}
+          view={view}
+          onClose={() => setVerifyId(null)}
+          onVerified={() => void refreshAfterVerify()}
+        />
+      ) : null}
 
       <WebSearchSection broken={broken} onChanged={() => void load()} />
 

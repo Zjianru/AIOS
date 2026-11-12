@@ -291,6 +291,46 @@
     scroll-behavior: auto !important;
   }
 }
+/* ── 连接验证弹窗：成功对勾放大、失败红叉抖动（轻、短；减少动效时由上面的规则压到 1ms） ── */
+@keyframes verify-check-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.35);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes verify-cross-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  20% {
+    transform: translateX(-5px);
+  }
+  40% {
+    transform: translateX(5px);
+  }
+  60% {
+    transform: translateX(-3px);
+  }
+  80% {
+    transform: translateX(2px);
+  }
+}
+.verify-check-pop {
+  animation: verify-check-pop 320ms var(--ease) both;
+}
+.verify-cross-shake {
+  animation: verify-cross-shake 420ms var(--ease) both;
+}
+
 /* ── dockview：把它的可变量接到我们的 token 上（只改颜色与尺寸，不改行为） ── */
 .dv-theme {
   --dv-group-view-background-color: var(--content);

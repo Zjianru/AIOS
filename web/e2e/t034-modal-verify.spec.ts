@@ -17,7 +17,10 @@ interface ChatModel {
   model: string;
 }
 
-/** 给夹具加一条 MiniMax 连接：勾了三个模型（M2 排最前），连接当前模型是 M3.1。 */
+/**
+ * 给夹具加一条 MiniMax 连接：跟厂商的列表走（models 空），存下的厂商列表把 M2 排在最前；
+ * 连接当前模型是 M3.1（建连接时存下的）。弹窗默认该选 M3.1，而不是列表第一个 M2。
+ */
 async function seedMinimax(request: Parameters<typeof apiPost>[0], fixture: KernelFixture): Promise<void> {
   const saved = await apiPost(request, fixture, {
     method: 'connection-save',
@@ -27,7 +30,7 @@ async function seedMinimax(request: Parameters<typeof apiPost>[0], fixture: Kern
     endpoint: fixture.fakeEndpoint,
     apiKey: 'test-key',
     preset: MINIMAX,
-    models: [{ id: 'MiniMax-M2' }, { id: 'MiniMax-M2.7' }, { id: CHAT_MODEL }],
+    models: [],
   });
   expect(saved.ok()).toBeTruthy();
 }

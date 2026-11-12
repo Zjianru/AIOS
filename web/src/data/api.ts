@@ -359,6 +359,7 @@ export async function addConnection(draft: ConnectionDraft): Promise<ModelSettin
     protocol: draft.protocol,
     endpoint: draft.endpoint.trim(),
     defaultEndpoint: catalog?.defaultEndpoint ?? draft.endpoint.trim(),
+    model: draft.models[0]?.id ?? '',
     models: draft.models.filter((row) => row.id.trim()),
     key: { saved: false },
     check: { kind: 'never' },

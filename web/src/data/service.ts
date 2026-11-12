@@ -14,6 +14,7 @@ import type { ConnectionInfo } from './generated/ConnectionInfo';
 import type { ConnectionQuotaResponse } from './generated/ConnectionQuotaResponse';
 import type { ConnectionSaveRequest } from './generated/ConnectionSaveRequest';
 import type { ConnectionUpdateRequest } from './generated/ConnectionUpdateRequest';
+import type { ConnectionVerifyResponse } from './generated/ConnectionVerifyResponse';
 import type { DisabledModelsCheckResponse } from './generated/DisabledModelsCheckResponse';
 import type { EventsResponse } from './generated/EventsResponse';
 import type { FileReferenceEntry } from './generated/FileReferenceEntry';
@@ -49,6 +50,8 @@ export type { ServiceEvent } from './generated/ServiceEvent';
 export type { CardVerb };
 export type { ConnectionInfo };
 export type { ConnectionQuotaResponse };
+export type { ConnectionVerifyResponse };
+export type { ConnectionVerifyResult } from './generated/ConnectionVerifyResult';
 export type { ExecSettingsView };
 export type { FileReferenceEntry };
 export type { Frame };
@@ -332,10 +335,9 @@ export async function deleteConnection(id: string): Promise<boolean> {
   return response.deleted;
 }
 
-/** 验证连接；结果落在注册器（响应不带 key）。 */
-export async function verifyConnection(id: string): Promise<ConnectionInfo> {
-  const response = await post({ method: 'connection-verify', id });
-  return response.connection;
+/** 验证连接；不带 model 是旧路径（结果落进注册器），带 model 只回报这一次（响应不带 key）。 */
+export async function verifyConnection(id: string, model?: string): Promise<ConnectionVerifyResponse> {
+  return post({ method: 'connection-verify', id, ...(model ? { model } : {}) });
 }
 
 export async function relocateKeyring(to: string): Promise<void> {

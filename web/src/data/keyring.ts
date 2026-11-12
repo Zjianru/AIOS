@@ -16,6 +16,7 @@ import {
   setDisabledModels as setDisabledModelsOnService,
   verifyConnection,
   type ConnectionInfo as ServiceConnectionInfo,
+  type ConnectionVerifyResult,
   type KeyringView as ServiceKeyringView,
   type ModelRow as ServiceModelRow,
   type ToolKeyView as ServiceToolKeyView,
@@ -60,6 +61,8 @@ export interface ConnectionView {
   /** 用户改过的地址；空就是用默认地址。 */
   endpoint: string;
   defaultEndpoint: string;
+  /** 连接当前用的模型（服务端存的旧字段 model）。验证弹窗默认选它。 */
+  model: string;
   /** 模型目录；空表示跟着厂商的列表走（可选 = availableModels）。 */
   models: ModelRow[];
   /** 跟着厂商走时选择器/小标签可选的模型（存下的厂商列表；没存过用内置目录）。 */
@@ -206,6 +209,7 @@ function mapConnection(info: ServiceConnectionInfo, listed?: ModelRow[]): Connec
     protocol: 'anthropic-messages',
     endpoint: info.endpoint,
     defaultEndpoint: preset?.defaultEndpoint ?? CATALOG[0]?.defaultEndpoint ?? 'https://api.deepseek.com/anthropic',
+    model: info.model,
     models,
     // 跟着厂商走（models 为空）时，可选的是存下的厂商列表；没存过用内置目录。
     availableModels: listed ?? preset?.defaultModels ?? [],
@@ -295,10 +299,20 @@ export async function addConnection(draft: ConnectionDraft): Promise<ModelSettin
   return getModelSettings();
 }
 
-/** 验证连接；结果由服务写进注册器。 */
+/** 验证连接；不带 model 是旧路径，结果由服务写进注册器。 */
 export async function checkConnection(connectionId: string): Promise<ModelSettingsView> {
   await verifyConnection(connectionId);
   return getModelSettings();
+}
+
+/** 弹窗路径：只验证选中的模型，结果只在这一次返回，不写连接状态。 */
+export async function verifyConnectionForModel(
+  connectionId: string,
+  model: string,
+): Promise<ConnectionVerifyResult> {
+  const { result } = await verifyConnection(connectionId, model);
+  if (!result) throw new Error('服务没有返回这次验证的结果');
+  return result;
 }
 
 /** 设置页的编辑：地址/模型行一起保存；填了 key 就连 key 一起 upsert。 */

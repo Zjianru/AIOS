@@ -24,6 +24,7 @@ export const modelSettingsFixture: ModelSettingsView = {
       protocol: 'anthropic-messages',
       endpoint: '',
       defaultEndpoint: 'https://api.deepseek.com/anthropic',
+      model: 'deepseek-chat',
       models: [],
       key: { saved: true, savedAt: '10月31日 21:08' },
       check: { kind: 'ok', at: '今天 11:42' },
