@@ -85,14 +85,21 @@ impl RootHost {
     /// 页面写「现在匹配 n 个」只读它，不自己匹配。
     pub async fn model_settings(&self) -> Result<ModelSettingsResponse, ServiceError> {
         let view = self.keyring()?.view();
+        let catalog = model::catalog::global().unwrap_or_else(model::catalog::snapshot);
         let mut listed = std::collections::BTreeMap::new();
         for connection in &view.connections {
             if let Some(live) = model::catalog::read_live(&self.options.data_dir, &connection.id) {
+                // 和默认模型那一路（selectable_models）共用目录过滤：目录标了下线的不给页面，
+                // 目录没收录的照列；顺序照厂商给的列表。
+                let provider = model::catalog::provider_id_for_connection(
+                    &connection.preset,
+                    &connection.endpoint,
+                );
                 listed.insert(
                     connection.id.clone(),
                     crate::protocol::ListedModels {
                         fetched_at: live.fetched_at,
-                        models: live.models,
+                        models: catalog.enrich_live(&provider, live.models),
                     },
                 );
             }
