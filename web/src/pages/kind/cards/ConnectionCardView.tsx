@@ -7,6 +7,7 @@
 import { useState } from 'react';
 import { Check, Eye, EyeOff, Loader2, X } from 'lucide-react';
 import type { ConnectionProviderSlot, ConnectionSlots } from '@/data/connectionCard';
+import { modelErrorReason } from '@/data/errors';
 import type { CardViewProps } from './model';
 import { cn } from '@/lib/utils';
 
@@ -60,7 +61,7 @@ export function ConnectionCardView({ envelope, slots, host }: CardViewProps<Conn
   const active = activeProviderOf(slots, selected);
   const saved = slots.saved && !dismissed;
   const ok = saved && slots.check === 'ok';
-  const failed = saved && slots.check === 'fail' ? slots.reason : null;
+  const failed = saved && slots.check === 'fail' ? modelErrorReason(slots.reason, slots.name) : null;
 
   const submit = async () => {
     if (!active || !key.trim() || busy || !host.saveConnection) return;

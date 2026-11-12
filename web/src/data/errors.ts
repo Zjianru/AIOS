@@ -116,15 +116,23 @@ export function modelErrorReason(code: string | undefined, connectionName?: stri
   return `${name} 返回了意外的错误`;
 }
 
-/** 验证结果里的 reason（「错误码: 厂商消息」）→ 页面能读的原因；认不出的码原样带回。 */
+/** 验证结果里的 reason（「错误码: 厂商消息」）→ 页面能读的原因。
+ *  认得出的码按对照表；不认识的码（含 HTTP_<状态>）只留通用中文原因 + 厂商消息，
+ *  不把内部码/状态数字带到页面。没有「码: 」形状的才是厂商/浏览器原文。 */
 export function verifyFailureReason(reason: string, connectionName?: string): string {
-  const separator = reason.indexOf(': ');
-  if (separator <= 0) return reason;
-  const code = reason.slice(0, separator);
-  if (!(MODEL_ERROR_CODES as readonly string[]).includes(code)) return reason;
-  const detail = reason.slice(separator + 2).trim();
+  const text = reason.trim();
+  if (!text) return modelErrorReason(undefined, connectionName);
+  const separator = text.indexOf(': ');
+  const code = separator > 0 ? text.slice(0, separator) : text;
+  const detail = separator > 0 ? text.slice(separator + 2).trim() : '';
+  if (!isInternalErrorCode(code)) return text;
   const mapped = modelErrorReason(code, connectionName);
   return detail ? `${mapped}：${detail}` : mapped;
+}
+
+/** 内部错误码的形状：对照表里的码、HTTP_<状态>，以及日志/适配器将来新增的大写码。 */
+function isInternalErrorCode(code: string): boolean {
+  return (MODEL_ERROR_CODES as readonly string[]).includes(code) || /^[A-Z][A-Z0-9_]*$/.test(code);
 }
 
 /** 重试行原因：和失败块同一张表。 */

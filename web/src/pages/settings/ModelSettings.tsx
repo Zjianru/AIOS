@@ -224,7 +224,7 @@ function keyStatus(card: CardEnvelope<ConnectionSlots> | null): { text: string; 
     case 'ok':
       return { text: `${saved} · 连接可用（${formatLocalDateTime(slots.checkedAt)} 验证）`, tone: 'ok' };
     case 'fail':
-      return { text: `${saved} · 不可用：${modelErrorReason(slots.reason)}`, tone: 'fail' };
+      return { text: `${saved} · 不可用：${modelErrorReason(slots.reason, slots.name)}`, tone: 'fail' };
     case 'checking':
       return { text: `${saved} · 正在验证…` };
     default:
