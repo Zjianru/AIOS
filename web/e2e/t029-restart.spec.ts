@@ -84,10 +84,22 @@ async function waitTaskRunning(
   });
 }
 
+/** 等 Kind 会话里领取了任务报告（user/message）。卡片的来源是领取后的消息，不是落盘的 inbox。
+ *
+ * 只 grep 原始日志里的 task-report: 会命中 agent/inbox/spliced——那时 Kind 还没领取，
+ * 重启接续用例若在这时杀服务，报告要等重启后的 Kind 轮次才变成 user/message，
+ * 卡住卡就会晚到；全套负载下原来的 10 秒等法偶发超时（T036.3）。
+ */
 async function waitTaskReported(fixture: KernelFixture, taskId: string) {
-  await waitFor('任务报回：' + taskId, async () => {
-    const text = await rootLog(fixture);
-    return text.includes('task-report:' + taskId + ':') ? true : null;
+  const prefix = 'task-report:' + taskId + ':';
+  await waitFor('Kind 领取任务报告：' + taskId, async () => {
+    const events = await rootEvents(fixture);
+    const arrived = events.some((event) => {
+      if (event.type !== 'user/message') return false;
+      const rpcId = (event.data?.message as { source?: { rpcId?: string } } | undefined)?.source?.rpcId;
+      return typeof rpcId === 'string' && rpcId.startsWith(prefix);
+    });
+    return arrived ? true : null;
   });
 }
 
@@ -299,8 +311,8 @@ test('重启接续：汇报与每任务一项的卡，勾一项接续、没勾�
     const questionCard = page
       .locator('[data-kind="task-result"][data-state="blocked"]')
       .filter({ hasText: TITLE_D });
-    await expect(questionCard).toHaveCount(1);
-    await expect(questionCard).toContainText('用哪个版本？');
+    await expect(questionCard).toHaveCount(1, { timeout: 30_000 });
+    await expect(questionCard).toContainText('用哪个版本？', { timeout: 30_000 });
 
     // Kind 出接续卡：两个选项，事实行固定；没勾之前任务在页头仍是「被打断了」。
     const card = page.locator('[data-kind="confirm-card"]').last();

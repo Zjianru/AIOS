@@ -1058,8 +1058,10 @@ async fn task_handback_relays_one_blocked_card_with_the_fixed_question() {
         &serde_json::json!({"reason": "用户要改任务要求，这超出了任务范围"}).to_string(),
     ));
     fixture.router.push_thin(crate::common::text_sse("交回了"));
-    wait_until("ThinAgent 的下一步请求", || {
-        fixture.router.bodies(true).len() >= 2
+    // 交回的 relay 由效果泵异步送进 Kind 根会话：等 relay 本身落进根日志再断言。
+    // 不等 ThinAgent 的第二次请求——那时 relay 可能还没写，读到的会是 0 条（时红时绿）。
+    wait_until("交回的 relay", || {
+        !waiting_relays(fixture.data()).is_empty()
     })
     .await;
 
