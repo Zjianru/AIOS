@@ -170,6 +170,10 @@ test('验证失败：红叉抖动 + 本次模型和原因，连接行和聊天�
     await expect(dialog.locator('[data-verify="cross"]')).toHaveCSS('animation-name', 'verify-cross-shake');
     await expect(dialog.locator('[data-verify="model"]')).toContainText('MiniMax-M2');
     await expect(dialog.locator('[data-verify="reason"]')).toContainText('model MiniMax-M2 not found');
+    // T009 故事 3/4、测试 5：页面不显示内部码和状态数字；未知码给通用中文原因。
+    await expect(dialog.locator('[data-verify="reason"]')).not.toContainText('HTTP_');
+    await expect(dialog.locator('[data-verify="reason"]')).not.toContainText('404');
+    await expect(dialog.locator('[data-verify="reason"]')).toContainText('返回了意外的错误');
 
     expect(await connectionCheck(request, fixture)).toEqual(checkBefore);
     await expect(connectionRow(page, MINIMAX)).toContainText('还没验证过');

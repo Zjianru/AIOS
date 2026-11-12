@@ -76,6 +76,9 @@ test('第一次填 key：错 key 显示原因并可再试', async ({ page }) => 
     await page.locator('#first-use-key').fill('bad-key');
     await page.getByRole('button', { name: '接上', exact: true }).click();
     await expect(page.getByText('连接不可用', { exact: false })).toBeVisible({ timeout: 20_000 });
+    // 同族入口：连接卡也不显示原始码（AUTH），用中文原因。
+    await expect(page.locator('[data-first-use="status"]')).not.toContainText('AUTH');
+    await expect(page.locator('[data-first-use="status"]')).toContainText('拒绝了这把密钥');
     await expect(page.getByRole('button', { name: '再试一次', exact: true })).toBeVisible();
     await page.locator('#first-use-key').fill('good-key');
     await page.getByRole('button', { name: '再试一次', exact: true }).click();
