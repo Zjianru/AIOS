@@ -352,6 +352,35 @@ test('写任务：越界卡住、文件没改；同意扩大后版本 2 在新�
   }
 });
 
+test('写任务页头：有写入范围写「写任务 · 写入范围 notes.md」，没开 bash 不加后半句', async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const fixture = await startKernelFixture({ t030: 'scope' });
+  try {
+    await page.goto(urlOf(fixture));
+    await sendKind(page, '把 notes.md 的第一行改成「走查用」');
+
+    const card = reviewCard(page);
+    await expect(card).toBeVisible({ timeout: 30_000 });
+    await expect(card.getByText('写任务')).toBeVisible();
+    await expect(card.locator('[data-kind="task-changed"]')).toContainText(
+      '改了 1 个文件（写入范围 notes.md）',
+    );
+
+    await card.getByRole('button', { name: /打开任务对话/ }).click();
+    await expect(page).toHaveURL(/#taskchat:/);
+    const pane = page.locator('[data-pane="task-conversation"]');
+    await expect(pane).toBeVisible({ timeout: 20_000 });
+    const scope = pane.locator('[data-kind="task-write-scope"]');
+    await expect(scope).toContainText('写任务 · 写入范围 notes.md');
+    await expect(scope).not.toContainText('开了 bash');
+    await expect(pane.getByText('调查任务 · 只读')).toHaveCount(0);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test('bash 开关：打开后刷新还在；写任务 15 件、卡上说明；关掉不影响已派的任务', async ({
   page,
   request,
@@ -419,6 +448,15 @@ test('bash 开关：打开后刷新还在；写任务 15 件、卡上说明；�
     expect((await taskHeader(request, fixture, taskId)).tools).toHaveLength(15);
     await page.goto(urlOf(fixture));
     await expect(reviewCard(page)).toContainText(BASH_NOTE);
+
+    // 页头：同一个写入范围，开了 bash 的任务多后半句。
+    await reviewCard(page).getByRole('button', { name: /打开任务对话/ }).click();
+    await expect(page).toHaveURL(/#taskchat:/);
+    const pane = page.locator('[data-pane="task-conversation"]');
+    await expect(pane).toBeVisible({ timeout: 20_000 });
+    const scope = pane.locator('[data-kind="task-write-scope"]');
+    await expect(scope).toContainText('写任务 · 写入范围 hello.txt');
+    await expect(scope).toContainText('开了 bash（不受写入范围约束）');
   } finally {
     await fixture.close();
   }
