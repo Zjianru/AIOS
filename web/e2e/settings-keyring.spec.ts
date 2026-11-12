@@ -72,7 +72,8 @@ test('设置页换钥匙位置 + 签发记录', async ({ page }) => {
     await expect(page.getByText(/已拿到模型列表（/)).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText('今天签发', { exact: false })).toBeVisible({ timeout: 20_000 });
     await page.getByRole('button', { name: '看最近的' }).click();
-    await expect(page.getByText('models-list')).toBeVisible();
+    // 页面打开时补模型目录也会签发一次（同一个用途），这里只看有这条记录。
+    await expect(page.getByText('models-list').first()).toBeVisible();
     const issuedAt = keyringSection.locator('tbody tr').first().locator('td').first();
     await expect(issuedAt).toHaveText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
     await expect(keyringSection).not.toContainText(/\b1[6-9]\d{8}\b/);
