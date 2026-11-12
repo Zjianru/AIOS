@@ -121,8 +121,15 @@ test('保存时厂商回 401：保存照样成功，行上写密钥不对', asyn
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await expect(page.locator('[data-settings="model"]')).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText(/拉不到模型列表：密钥不对（401）/)).toBeVisible({ timeout: 20_000 });
-    // 拉不到列表不挡聊天：模型选择器里照样能选这个连接。
     await expect(page.getByRole('button', { name: '验证', exact: true })).toHaveCount(0);
+
+    // 拉不到列表不挡聊天：选择器里这个连接的模型照样能选。
+    await page.getByRole('button', { name: 'Kind', exact: true }).click();
+    await page.locator('[data-kind="model-picker"]').click();
+    await expect(page.getByText('Bad key')).toBeVisible({ timeout: 20_000 });
+    await expect(
+      page.getByRole('menuitem', { name: /MiniMax-M3.1-Flash/ }).last(),
+    ).not.toHaveAttribute('aria-disabled', 'true');
   } finally {
     await vendor.close();
     await fixture.close();
