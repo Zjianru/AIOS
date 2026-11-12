@@ -61,8 +61,17 @@ test('设置页换钥匙位置 + 签发记录', async ({ page }) => {
     await expect(keyringSection).toContainText(
       /现在是一个文件，\d{4}-\d{2}-\d{2} \d{2}:\d{2} 起放在这里/,
     );
+    // 手动「验证」走弹窗：默认用连接当前的模型，成功是弹窗里的对勾动画。
     await page.getByRole('button', { name: '验证', exact: true }).click();
-    await expect(page.getByText('连接可用', { exact: false })).toBeVisible({ timeout: 20_000 });
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator('[data-verify="model-select"]')).toHaveValue('deepseek-flash');
+    await dialog.getByRole('button', { name: '验证', exact: true }).click();
+    await expect(dialog.locator('[data-verify="ok"]')).toBeVisible({ timeout: 20_000 });
+    await expect(dialog.locator('[data-verify="check"]')).toHaveCSS('animation-name', 'verify-check-pop');
+    // 弹窗路径不写连接 check：关掉后这一行还是「还没验证过」。
+    await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+    await expect(page.getByText('还没验证过')).toBeVisible();
     await expect(page.getByText('今天签发', { exact: false })).toBeVisible({ timeout: 20_000 });
     await page.getByRole('button', { name: '看最近的' }).click();
     await expect(page.getByText('connection-verify')).toBeVisible();

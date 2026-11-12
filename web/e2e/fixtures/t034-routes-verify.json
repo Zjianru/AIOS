@@ -1,0 +1,17 @@
+{
+  "routes": [
+    {
+      "contains": "\"model\":\"MiniMax-M2\"",
+      "file": "text.jsonl",
+      "override": "t034-m2-gone.json"
+    },
+    {
+      "contains": "\"model\":\"MiniMax-M3.1-Flash\"",
+      "file": "text.jsonl"
+    },
+    {
+      "contains": "\"model\":\"deepseek-flash\"",
+      "file": "text.jsonl"
+    }
+  ]
+}

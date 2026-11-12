@@ -1,5 +1,6 @@
 import { test, expect, type Page, type Route } from '@playwright/test';
 import { startKernelFixture, type KernelFixture } from './service-fixture';
+import { verifyConnectionViaDialog } from './verify-dialog';
 
 /**
  * T017.4：连接卡从信封渲染。
@@ -49,12 +50,13 @@ test('设置页：连接状态行从连接卡信封取', async ({ page }) => {
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await expect(page.locator('[data-settings="model"]')).toBeVisible({ timeout: 20_000 });
     const status = page.locator('[data-settings="model"] [data-card-state]').first();
-    // 预置连接已保存、还没验证：信封是 done（已保存），验证后才换成可用。
+    // 预置连接已保存、还没验证：信封是 done（已保存）。
     await expect(status).toHaveAttribute('data-card-state', 'done');
     await expect(page.getByText('还没验证过')).toBeVisible();
-    await page.getByRole('button', { name: '验证', exact: true }).click();
-    await expect(page.getByText('连接可用', { exact: false })).toBeVisible({ timeout: 20_000 });
+    // 手动「验证」走弹窗，成功只体现在弹窗里：连接行仍是 done / 还没验证过。
+    await verifyConnectionViaDialog(page);
     await expect(status).toHaveAttribute('data-card-state', 'done');
+    await expect(page.getByText('还没验证过')).toBeVisible();
   } finally {
     await fixture.close();
   }

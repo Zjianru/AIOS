@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { startKernelFixture } from './service-fixture';
+import { verifyConnectionViaDialog } from './verify-dialog';
 
 test('设置页读真实 Keyring：空库没有连接', async ({ page }) => {
   const fixture = await startKernelFixture({ emptyKeyring: true });
@@ -13,15 +14,16 @@ test('设置页读真实 Keyring：空库没有连接', async ({ page }) => {
   }
 });
 
-test('设置页验证连接：真服务写注册器', async ({ page }) => {
+test('设置页验证连接：弹窗选模型，结果只在弹窗里', async ({ page }) => {
   const fixture = await startKernelFixture();
   try {
     await page.goto(`${fixture.baseUrl}/?token=${encodeURIComponent(fixture.token)}#kind`);
     await page.getByRole('button', { name: '设置', exact: true }).click();
     await expect(page.locator('[data-settings="model"]')).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText('还没验证过')).toBeVisible();
-    await page.getByRole('button', { name: '验证', exact: true }).click();
-    await expect(page.getByText('连接可用', { exact: false })).toBeVisible({ timeout: 20_000 });
+    await verifyConnectionViaDialog(page);
+    // 弹窗路径不写连接 check。
+    await expect(page.getByText('还没验证过')).toBeVisible();
   } finally {
     await fixture.close();
   }

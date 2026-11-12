@@ -3,6 +3,7 @@ import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { apiPost, startRealKernelFixture, type KernelFixture } from './service-fixture';
+import { verifyConnectionViaDialog } from './verify-dialog';
 
 const EVIDENCE = process.env.AIOS_DOD_EVIDENCE ?? path.join(tmpdir(), 'aios-t011-dod-evidence');
 const DOD_ROOT = process.env.AIOS_DOD_ROOT ?? '/tmp/aios-t011-dod';
@@ -85,10 +86,9 @@ test('DoD2/3/5/6 真 key：监控覆盖全部环节、日志副本、key/思考�
         timeout: 180_000,
       })
       .toBeTruthy();
-    // 设置页验证一次连接。
+    // 设置页验证一次连接（手动验证走弹窗，结果只在弹窗里）。
     await page.getByRole('button', { name: '设置', exact: true }).click();
-    await page.getByRole('button', { name: '验证', exact: true }).click();
-    await expect(page.getByText('连接可用', { exact: false })).toBeVisible({ timeout: 60_000 });
+    await verifyConnectionViaDialog(page);
     await shot(page, 't011-dod-settings.png');
     // 关掉页面让事件流断开，才能看到 stream-close。
     await page.close();

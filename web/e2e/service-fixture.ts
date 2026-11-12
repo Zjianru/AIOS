@@ -77,6 +77,7 @@ function startReplay(
   const routeFile =
     routesFile === undefined
       ? (restartRouteFile(options) ??
+        t034RouteFile(options) ??
         t030RouteFile(options) ??
         t013RouteFile(options) ??
         taskResultRouteFile(options))
@@ -294,6 +295,8 @@ export interface FixtureOptions {
   /// worktree 场景会在起服务前把数据目录做成一个 git 仓库；expand 的第二段路由由测试
   /// 拿到真实任务 id 后再生成。
   t030?: 'write' | 'ask' | 'expand' | 'bash' | 'worktree' | 'nonrepo' | 'typo' | 'scope';
+  /// T034.2：验证弹窗的按模型分流回放（MiniMax-M2 回 404，M3.1 和 DeepSeek 正常回流）。
+  t034Verify?: boolean;
 }
 
 /** T024.4：双会话回放用哪份按请求体路由的文件；预写会话的两种不需要。 */
@@ -314,6 +317,11 @@ function taskResultRouteFile(options: FixtureOptions): string | null {
     return 't031-routes-' + scenario + '.json';
   }
   return 't024-routes-' + scenario + '.json';
+}
+
+/** T034.2：验证弹窗按请求体里的模型分流；失败那条回 404，其余照常回文本。 */
+function t034RouteFile(options: FixtureOptions): string | null {
+  return options.t034Verify ? 't034-routes-verify.json' : null;
 }
 
 /** T030：写任务/接受/bash/工作树这些场景的回放路由。 */

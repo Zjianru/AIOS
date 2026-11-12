@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { startKernelFixture } from './service-fixture';
+import { verifyConnectionViaDialog } from './verify-dialog';
 
 async function openSettings(page: Parameters<typeof test>[1] extends never ? never : import('@playwright/test').Page, fixture: import('./service-fixture').KernelFixture) {
   await page.goto(`${fixture.baseUrl}/?token=${encodeURIComponent(fixture.token)}#kind`);
@@ -47,9 +48,12 @@ test('设置页换 key：保存后可以验证', async ({ page }) => {
       .locator('[data-settings="editor"]')
       .getByRole('button', { name: '保存', exact: true })
       .click();
+    // 保存新 key 后的自动验证仍走旧路径：连接行变成可用。
     await expect(page.locator('[data-settings="editor"]')).toHaveCount(0, { timeout: 20_000 });
-    await page.getByRole('button', { name: '验证', exact: true }).click();
     await expect(page.getByText('连接可用', { exact: false })).toBeVisible({ timeout: 20_000 });
+    // 手动「验证」走弹窗；这次成功不改上面那条连接状态。
+    await verifyConnectionViaDialog(page);
+    await expect(page.getByText('连接可用', { exact: false })).toBeVisible();
   } finally {
     await fixture.close();
   }
