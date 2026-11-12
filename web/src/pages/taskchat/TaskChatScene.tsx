@@ -24,6 +24,7 @@ import {
 import { toast } from 'sonner';
 import { go } from '@/app/navigate';
 import { useRouteStore } from '@/app/routeStore';
+import { useTaskChromeStore } from '@/app/taskChrome';
 import {
   connectTaskSession,
   displayPath,
@@ -246,6 +247,7 @@ function BackToKind() {
 
 export function TaskChatScene() {
   const taskId = useRouteStore((state) => state.route.id);
+  const setTaskTitle = useTaskChromeStore((state) => state.setTaskTitle);
   const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading');
   const [task, setTask] = useState<TaskReadHeader | null>(null);
   const [winding, setWinding] = useState(false);
@@ -287,6 +289,8 @@ export function TaskChatScene() {
 
     setPhase('loading');
     setTask(null);
+    // 标题要等 TaskRead 的事实；加载前先清掉，免得还带着上一个任务的名字。
+    setTaskTitle(null);
     setWinding(false);
     setEvents([]);
     setError('');
@@ -395,6 +399,7 @@ export function TaskChatScene() {
       .then((response) => {
         if (disposed || token !== requestToken.current) return;
         setTask(response.task);
+        setTaskTitle(response.task.title);
         setEvents(response.events);
         setHasOlder(response.events.length > 0);
         lastSeqRef.current = response.lastSeq;
@@ -426,6 +431,7 @@ export function TaskChatScene() {
       const released = socketClosedRef.current;
       socketClosedRef.current = null;
       released?.();
+      setTaskTitle(null);
       useStreamStore.setState({ turnId: null, itemId: null, text: '' });
     };
   }, [taskId]);
