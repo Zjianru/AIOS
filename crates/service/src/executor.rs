@@ -359,6 +359,8 @@ impl TaskRuntime {
                 requirement: task.requirement.clone(),
                 dod: task.dod.clone(),
                 cwd: task.cwd.to_string_lossy().into_owned(),
+                write_scope: crate::result_cards::write_scope_display(&task),
+                bash: task.bash,
                 model: task.model.model.clone(),
                 tools: task.tools.clone(),
                 attempts: task.runs.iter().map(|run| run.attempts.len() as u64).sum(),

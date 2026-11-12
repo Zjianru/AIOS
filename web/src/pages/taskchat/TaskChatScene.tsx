@@ -14,6 +14,7 @@ import {
   ArrowLeft,
   ChevronDown,
   ChevronRight,
+  FilePen,
   FolderOpen,
   PauseCircle,
   PlugZap,
@@ -784,7 +785,18 @@ export function TaskChatScene() {
             />
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-2 text-ink-3">
-            <span>调查任务 · 只读</span>
+            {task.writeScope ? (
+              <span
+                className="flex items-center gap-1 rounded-badge bg-wait-soft px-1.5 text-wait"
+                data-kind="task-write-scope"
+              >
+                <FilePen className="size-3.5" />
+                写任务 · 写入范围 <span className="process-path">{task.writeScope}</span>
+                {task.bash ? ' · 开了 bash（不受写入范围约束）' : ''}
+              </span>
+            ) : (
+              <span>调查任务 · 只读</span>
+            )}
             <span className="flex items-center gap-1">
               <FolderOpen className="size-3.5" />
               <span className="process-path">{displayPath(task.cwd)}</span>

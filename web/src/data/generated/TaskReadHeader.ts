@@ -7,6 +7,14 @@
  */
 export type TaskReadHeader = { id: string, title: string, requirement: string, dod: string, cwd: string,
 /**
+ * 当前要求版本的写入范围，相对任务 cwd 显示；None = 只读调查任务。
+ */
+writeScope?: string | null,
+/**
+ * 创建任务时冻结的 bash 开关；旧任务行按 false 读。
+ */
+bash: boolean,
+/**
  * 创建任务时冻结的模型（只给显示名，切换模型不影响它）。
  */
 model: string, tools: Array<string>, attempts: number,
