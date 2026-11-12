@@ -24,6 +24,7 @@ import {
   taskDispatchFactOf,
   type TaskResultFact,
 } from '../../data/taskResult.ts';
+import { foldedTaskCard } from './taskCardFold.ts';
 import {
   contextPercent,
   contextTokens,
@@ -513,17 +514,11 @@ export function deriveTurnViews(
     const raw = position === undefined ? undefined : turns.get(position.turn);
     const existing = raw && position ? raw.taskResults[position.index] : undefined;
     if (!raw || !position || !existing) return false;
-    // 只把「派发后第一条 relay」并回派发卡；之后的报告（新版本、第 2 次 Attempt 等）
-    // 仍各出一张卡——旧行为和有结果卡接受/回执的用例都按这个来。
-    if (existing.state !== 'dispatching' && existing.state !== 'dispatched') return false;
+    // 只把「派发后第一条 relay」并回派发卡；判定和跨轮折卡共用 foldedTaskCard，别分叉。
+    const merged = foldedTaskCard(existing, fact);
+    if (!merged) return false;
     // 同一张卡更新成 relay 的事实（状态、摘要、问题、写入范围、回填接受决定都用 relay 的 id）。
-    raw.taskResults[position.index] = {
-      ...fact,
-      fromDispatch: true,
-      ...(fact.writeScope === undefined && existing.writeScope !== undefined
-        ? { writeScope: existing.writeScope }
-        : {}),
-    };
+    raw.taskResults[position.index] = merged;
     return true;
   };
   const textOf = (message: unknown): string => {
@@ -1020,48 +1015,8 @@ export function deriveTurnViews(
 
 /** 改一轮：按 id 换成新对象（TurnRow 用 memo 比引用，只有这一条重绘）。 */
 
-/**
- * T038：把同一任务的多张结果卡折成一张（跨轮、跨页用）。
- *
- * 派发卡在派出那一轮；之后的 relay 可能落在别的轮（live 逐轮重推、历史按页派生，
- * 一次 derive 看不到另一轮的派发卡），这里按 task id 把后面的 relay 并回那张派发卡：
- * 保留最早一张的位置、换成后面的事实（状态/摘要/问题/回填 id），后面那张删掉不重复渲染。
- * 只有先有派发卡的任务才折；纯 relay 的任务保持原样（一条 relay 一张卡）。
- */
-export function reconcileTaskCards(views: TurnViewData[]): TurnViewData[] {
-  const homes = new Map<string, { viewIndex: number; factIndex: number }>();
-  const drops = new Set<string>();
-  const replacements = new Map<string, TaskResultFact>();
-  views.forEach((view, viewIndex) => {
-    view.taskResults.forEach((fact, factIndex) => {
-      if (!fact.taskId) return;
-      const home = homes.get(fact.taskId);
-      if (!home) {
-        if (fact.fromDispatch) homes.set(fact.taskId, { viewIndex, factIndex });
-        return;
-      }
-      const current = views[home.viewIndex].taskResults[home.factIndex];
-      // 派发卡还没被报告更新过才并；之后的报告各出一张卡（第 2 次 Attempt、新版本等）。
-      if (current.state !== 'dispatching' && current.state !== 'dispatched') return;
-      drops.add(fact.id);
-      replacements.set(
-        home.viewIndex + ':' + String(home.factIndex),
-        { ...fact, fromDispatch: true },
-      );
-    });
-  });
-  if (drops.size === 0) return views;
-  const replaced = views.map((view, viewIndex) => ({
-    ...view,
-    taskResults: view.taskResults.map(
-      (fact, factIndex) => replacements.get(viewIndex + ':' + String(factIndex)) ?? fact,
-    ),
-  }));
-  return replaced.map((view) => {
-    const taskResults = view.taskResults.filter((fact) => !drops.has(fact.id));
-    return taskResults.length === view.taskResults.length ? view : { ...view, taskResults };
-  });
-}
+// T038：跨轮/跨页折卡在 taskCardFold.ts（纯函数，node 用例直接跑这份）。
+export { reconcileTaskCards } from './taskCardFold.ts';
 
 
 /** 把一轮的工具/思考折成工作过程的步骤（页面用；路径相对化在 process 那一层做）。 */

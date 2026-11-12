@@ -61,9 +61,13 @@ test('派任务后立刻出进行中卡，汇报后同一张卡更新、不重�
     for (const title of [TITLE_A, TITLE_B, TITLE_C, TITLE_D]) {
       await expect(cards.filter({ hasText: title })).toHaveCount(1);
     }
-    // A/B 还没交报告：仍是进行中（relay 没把它们改成别的状态）。
-    await expect(dispatched.filter({ hasText: TITLE_A })).toHaveCount(1);
-    await expect(dispatched.filter({ hasText: TITLE_B })).toHaveCount(1);
+    // A/B 还没交终态报告：卡还在、各只一张（进行中；长流跑完会被自动「等报告」relay 更新成等报告）。
+    for (const title of [TITLE_A, TITLE_B]) {
+      const card = cards.filter({ hasText: title });
+      await expect(card).toHaveCount(1);
+      const state = await card.getAttribute('data-state');
+      expect(['dispatched', 'waiting']).toContain(state);
+    }
   } finally {
     await fixture.close();
   }
