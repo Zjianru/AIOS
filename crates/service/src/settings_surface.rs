@@ -46,6 +46,16 @@ pub(crate) fn expand_user_path(raw: &str, home: Option<&Path>) -> Result<PathBuf
     Ok(expanded)
 }
 
+/// 验证用连接选中的模型；连接没有选中模型（旧存储/外部写入的模型为空）才退回目录第一个。
+pub(crate) fn verify_model(data_dir: &Path, connection: &credentials::ConnectionInfo) -> String {
+    let selected = connection.primary_model();
+    if selected.is_empty() {
+        crate::models::primary_model(data_dir, connection)
+    } else {
+        selected.to_owned()
+    }
+}
+
 impl RootHost {
     /// 每次设置操作重新打开 Keyring（不缓存；换 key/换位置立即生效）。
     /// Keyring 变化后把当前持有的 key 交给装配层的刷新钩子（监控脱敏用）。
@@ -278,8 +288,8 @@ impl RootHost {
                 &connection.endpoint,
             ),
             base_url: connection.endpoint.clone(),
-            // K3：验证用连接所选模型；跟厂商走时用可选的第一个。
-            model: crate::models::primary_model(&self.options.data_dir, &connection),
+            // 验证用连接所选模型；连接没有选中模型时才退回目录第一个。
+            model: verify_model(&self.options.data_dir, &connection),
             max_tokens: 1,
             context_window: model::DEFAULT_CONTEXT_WINDOW,
             effort: model::Effort::new("off"),

@@ -527,6 +527,64 @@ async fn 验证新形状用主模型且请求符合思考档规则() {
     assert!(budget > 1, "budget 不能被 max_tokens=1 压到 1：{body}");
 }
 #[tokio::test]
+async fn 验证跟厂商走时用连接选中的模型() {
+    // 连接 model=MiniMax-M3.1-Flash、models=[]（跟着厂商走）；目录第一个是已下线的 M2。
+    // 验证必须发连接选中的 M3.1-Flash，不能拿目录第一个。
+    model::catalog::set_global(model::catalog::snapshot());
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempdir().unwrap();
+    let host = host(dir.path()).await;
+    let saved = host
+        .dispatch(Call::ConnectionSave(ConnectionSaveRequest {
+            id: "minimax-cn".to_owned(),
+            name: "MiniMax".to_owned(),
+            model: "MiniMax-M3.1-Flash".to_owned(),
+            endpoint: server.uri(),
+            api_key: TEST_KEY.to_owned(),
+            preset: Some("minimax-cn".to_owned()),
+            models: Some(Vec::new()),
+            ..Default::default()
+        }))
+        .await
+        .expect("save");
+    let service::Response::ConnectionSave(saved) = saved else {
+        panic!("expected ConnectionSave");
+    };
+    assert_eq!(
+        saved.connection.primary_model(),
+        "MiniMax-M3.1-Flash",
+        "连接选中的是 M3.1-Flash"
+    );
+    assert_eq!(
+        service::models::primary_model(dir.path(), &saved.connection),
+        "MiniMax-M2",
+        "跟着厂商走时目录第一个是 M2；验证不能拿它"
+    );
+
+    let verified = host
+        .dispatch(Call::ConnectionVerify(ConnectionVerifyRequest {
+            id: "minimax-cn".to_owned(),
+        }))
+        .await;
+    let service::Response::ConnectionVerify(verified) = verified.expect("verify 返回") else {
+        panic!("expected ConnectionVerify");
+    };
+    assert!(matches!(verified.connection.check, CheckState::Ok { .. }));
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "验证必须只发一条最小请求");
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("json");
+    assert_eq!(
+        body["model"], "MiniMax-M3.1-Flash",
+        "验证请求的 model 必须是连接选中的那个：{body}"
+    );
+}
+#[tokio::test]
 async fn 获取可用模型合并目录与厂商列表且用户字段不动() {
     model::catalog::set_global(model::catalog::snapshot());
     let server = MockServer::start().await;
@@ -1070,8 +1128,8 @@ async fn 显式空模型列表跟着厂商走且主模型取可选第一个() {
         .collect();
     assert_eq!(
         models,
-        vec!["zeta".to_owned(), "omega".to_owned()],
-        "验证请求的模型跟着可选的第一个变"
+        vec!["ignored".to_owned(), "ignored".to_owned()],
+        "验证用连接上的旧 model 字段（这里故意存 ignored），不跟着厂商可选列表变"
     );
 }
 
