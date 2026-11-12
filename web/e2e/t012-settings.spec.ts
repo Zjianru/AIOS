@@ -21,6 +21,11 @@ test('设置页从目录加 MiniMax 连接并保存', async ({ page }) => {
     await add.locator('input:not([type="password"])').first().fill(fixture.fakeEndpoint);
     await add.getByRole('button', { name: '保存', exact: true }).click();
     await expect(page.getByText('MiniMax（国内站）').first()).toBeVisible({ timeout: 20_000 });
+    // 带密钥保存后自动弹出验证弹窗（T034.2 v3）：这条只验连接保存和目录，先关掉。
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible({ timeout: 20_000 });
+    await dialog.getByRole('button', { name: '取消', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
     // 没勾模型就是跟着厂商走：编辑器列内置目录的 8 个 MiniMax 模型（小标签），顺序照目录。
     // 这里还没 fetch 过：页面本地兜底表不能出现厂商已不列的旧 MiniMax-M2.1-highspeed。
     await page.getByRole('button', { name: '编辑', exact: true }).last().click();
