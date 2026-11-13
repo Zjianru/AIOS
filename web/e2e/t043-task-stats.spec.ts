@@ -199,10 +199,15 @@ test('模型价格/窗口匹配不到：对应项隐藏，只留可靠统计', a
         await route.continue();
         return;
       }
-      const response = await route.fetch();
-      const json = (await response.json()) as { task?: { model?: string } };
-      if (json.task) json.task.model = '不存在的模型（T043 测试）';
-      await route.fulfill({ response, json });
+      try {
+        const response = await route.fetch();
+        const json = (await response.json()) as { task?: { model?: string } };
+        if (json.task) json.task.model = '不存在的模型（T043 测试）';
+        await route.fulfill({ response, json });
+      } catch {
+        // 测试收尾时夹具已关：把还没回来的请求直接断掉，不让它把用例判红。
+        await route.abort().catch(() => undefined);
+      }
     });
     await page.goto(urlOf(fixture, '#taskchat:' + taskId));
     await expect(statsDock(page)).toBeVisible({ timeout: 20_000 });
@@ -211,6 +216,7 @@ test('模型价格/窗口匹配不到：对应项隐藏，只留可靠统计', a
     await expect(dock.locator('[data-kind="stats-usage"]')).toBeVisible();
     await expect(dock.locator('[data-kind="stats-cost"]')).toHaveCount(0);
     await expect(dock.locator('[data-kind="context-meter"]')).toHaveCount(0);
+    await page.unroute('**/api');
   } finally {
     await fixture.close();
   }
