@@ -51,6 +51,8 @@ import type { TurnUserView } from '@/pages/kind/turnViews';
 import { Composer } from '@/pages/kind/composer/Composer';
 import type { ComposerHandle, ComposerSendOptions } from '@/pages/kind/composer/Composer';
 import { mergeLiveEvent, withReportedCompletion } from './taskLive';
+import { TaskStatsDock } from './TaskStatsDock';
+import { lastPromptUsed, taskAttemptStatsOf } from './taskStats';
 import { cn } from '@/lib/utils';
 
 const NO_CANVAS = () => {};
@@ -534,6 +536,10 @@ export function TaskChatScene() {
 
   // 终态报告之后执行者会立刻关掉会话，日志可能没有 turn/end；头部带来的 reportedAt
   // 只收尾它之前开始的那一轮（waiting 报告之后的新一轮不能被标成已完成）。
+  // T043：输入框下的任务级统计——只算当前 Attempt 的事件（task-read 给的就是这个 Attempt 的会话）。
+  const taskStats = useMemo(() => taskAttemptStatsOf(events), [events]);
+  const contextUsed = useMemo(() => lastPromptUsed(events), [events]);
+
   const views = useMemo(
     () =>
       withReportedCompletion(deriveTurnViews(visibleTaskEvents(events), turnLabels()), task?.reportedAt),
@@ -1026,6 +1032,14 @@ export function TaskChatScene() {
               </button>
             )}
           </Composer>
+          <TaskStatsDock
+            turns={taskStats.turns}
+            steps={taskStats.steps}
+            usage={taskStats.usage}
+            model={task.model}
+            contextUsed={contextUsed}
+            attempts={task.attempts}
+          />
           <p className="mt-1 text-1 leading-4 text-ink-3" data-kind="task-footer">
             你在这里说的直接给 ThinAgent，同时抄送 Kind（不叫醒它）。要改任务要求或 DoD，回 Kind
             对话说。

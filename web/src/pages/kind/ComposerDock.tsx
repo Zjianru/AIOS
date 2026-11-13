@@ -14,6 +14,7 @@ import type { LucideIcon } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatCacheHitPercent, formatCost, formatExactTokens, formatFxTime, formatPercent, formatTokens } from '@/lib/numbers';
+import { displayedInput, type UsageTotals } from '@/data/turnUsage';
 import { cn } from '@/lib/utils';
 import { useKindStore } from './kindStore';
 import { useSettingsState } from '@/lib/settingsState';
@@ -44,7 +45,7 @@ export function Hint({
 }
 
 /** 悬停卡片里的一行：左边名字，右边数字（等宽对齐）。 */
-function Row({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
+export function Row({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
   return (
     <div className="flex items-baseline justify-between gap-6 py-[1px]">
       <span className={strong ? 'text-ink' : 'text-ink-3'}>{label}</span>
@@ -53,11 +54,11 @@ function Row({ label, value, strong }: { label: string; value: string; strong?: 
   );
 }
 
-const pill =
+export const pill =
   'flex h-6 items-center gap-1.5 rounded-full px-2 text-ink-3 tabular-nums transition-colors hover:bg-hover hover:text-ink-2';
 
 /** 分隔点：flex 项自己垂直居中，左右间距统一交给父级 gap。 */
-function Dot() {
+export function Dot() {
   return (
     <span data-kind="stat-sep" className="flex shrink-0 items-center justify-center opacity-50" aria-hidden>
       ·
@@ -66,7 +67,7 @@ function Dot() {
 }
 
 /** 数字 + 单位：同一组、同一字体，数字只加 tabular-nums 保证位宽对齐。 */
-function Unit({ value, unit }: { value: string; unit: string }) {
+export function Unit({ value, unit }: { value: string; unit: string }) {
   return (
     <span className="inline-flex items-center gap-1">
       <span data-kind="stat-number" className="tabular-nums">
@@ -78,7 +79,7 @@ function Unit({ value, unit }: { value: string; unit: string }) {
 }
 
 /** ↑/↓ + 数字：图标和数字同一组；图标统一 14px，与文字同一垂直中心。 */
-function TokenGroup({ icon: Icon, value }: { icon: LucideIcon; value: string }) {
+export function TokenGroup({ icon: Icon, value }: { icon: LucideIcon; value: string }) {
   return (
     <span className="inline-flex items-center gap-1">
       <Icon className="size-3.5 shrink-0" aria-hidden />
@@ -89,9 +90,8 @@ function TokenGroup({ icon: Icon, value }: { icon: LucideIcon; value: string }) 
   );
 }
 
-function ActivityPill() {
-  const turns = useKindStore((state) => state.stats.turns);
-  const steps = useKindStore((state) => state.stats.steps);
+/** T043：Kind 与任务对话共用同一套「轮/步」pill；数据从 props 进来。 */
+export function ActivityPill({ turns, steps }: { turns: number; steps: number }) {
   return (
     <Hint
       content={
@@ -114,28 +114,32 @@ function ActivityPill() {
   );
 }
 
-function UsagePill() {
-  const stats = useKindStore((state) => state.stats);
-  const prompt = stats.input + stats.cacheRead + stats.cacheWrite;
-  // 没命中过缓存（0）就不显示「缓存命中 0%」；命中过才显示。
-  const hit = stats.cacheRead > 0 ? formatCacheHitPercent(stats.cacheRead, prompt) : null;
+/** T043：token pill 也共用；usage 用 turnUsage 的聚合（任务对话只传当前 Attempt 的）。 */
+export function UsagePill({ usage }: { usage: UsageTotals }) {
+  const prompt = displayedInput(usage);
+  // 没命中过缓存（0）就不显示「缓存命中 0%」；命中过才显示（保留「不到 1%」的写法）。
+  const cacheRead = usage.cacheReadMissing ? undefined : usage.cacheRead;
+  const hit =
+    cacheRead !== undefined && cacheRead > 0 ? formatCacheHitPercent(cacheRead, prompt) : null;
   return (
     <Hint
       content={
         <>
-          <Row label="输入（没命中缓存）" value={formatExactTokens(stats.input)} />
-          <Row label="输入（命中缓存）" value={formatExactTokens(stats.cacheRead)} />
-          {stats.cacheWrite > 0 ? <Row label="写入缓存" value={formatExactTokens(stats.cacheWrite)} /> : null}
-          <Row label="输出" value={formatExactTokens(stats.output)} />
+          <Row label="输入（没命中缓存）" value={formatExactTokens(usage.input)} />
+          <Row label="输入（命中缓存）" value={formatExactTokens(usage.cacheRead ?? 0)} />
+          {(usage.cacheWrite ?? 0) > 0 ? (
+            <Row label="写入缓存" value={formatExactTokens(usage.cacheWrite ?? 0)} />
+          ) : null}
+          <Row label="输出" value={formatExactTokens(usage.output)} />
           <div className="my-1 border-t border-line" />
-          <Row label="合计" value={formatExactTokens(prompt + stats.output)} strong />
+          <Row label="合计" value={formatExactTokens(prompt + usage.output)} strong />
           {hit === null ? null : <Row label="缓存命中" value={hit} />}
         </>
       }
     >
       <span className={pill} data-kind="stats-usage">
         <TokenGroup icon={ArrowUp} value={formatTokens(prompt)} />
-        <TokenGroup icon={ArrowDown} value={formatTokens(stats.output)} />
+        <TokenGroup icon={ArrowDown} value={formatTokens(usage.output)} />
         {hit === null ? null : (
           <>
             <Dot />
@@ -152,19 +156,19 @@ function UsagePill() {
   );
 }
 
-function CostPill() {
-  const stats = useKindStore((state) => state.stats);
+/** T043：花费 pill 共用；Kind 用服务算好的 stats，任务对话用当前 Attempt 的聚合。 */
+export function CostPill({ cost, unpriced }: { cost: number | null; unpriced: boolean }) {
   const money = useSettingsState((state) => state.money);
   // 一个价格都没有：不显示花费（不按 0 算）。
-  if (stats.cost === null) return null;
+  if (cost === null) return null;
   return (
     <Hint
       content={
         <>
-          <Row label="这个会话的花费" value={formatCost(stats.cost, money.currency, money.cnyPerUsd, stats.unpriced)} strong />
+          <Row label="这个会话的花费" value={formatCost(cost, money.currency, money.cnyPerUsd, unpriced)} strong />
           <p className="mt-1.5 max-w-[240px] text-1 leading-4 text-ink-3">
             按每个模型的价格算（设置 › 模型与连接）。
-            {stats.unpriced ? '有的轮用的模型没有价格，没算进来，所以后面带「+」。' : null}
+            {unpriced ? '有的轮用的模型没有价格，没算进来，所以后面带「+」。' : null}
             {money.currency === 'cny'
               ? ' 价格按美元记，这里按 1 美元 = ' +
                 money.cnyPerUsd +
@@ -179,7 +183,7 @@ function CostPill() {
       <span className={pill} data-kind="stats-cost">
         <Wallet className="size-3.5 shrink-0" aria-hidden />
         <span data-kind="stat-number" className="tabular-nums">
-          {formatCost(stats.cost, money.currency, money.cnyPerUsd, stats.unpriced)}
+          {formatCost(cost, money.currency, money.cnyPerUsd, unpriced)}
         </span>
       </span>
     </Hint>
@@ -187,14 +191,14 @@ function CostPill() {
 }
 
 /** 占用到多少换颜色：70% 起提醒，90% 起要压缩了。 */
-function meterTone(percent: number): string {
+export function meterTone(percent: number): string {
   if (percent >= 90) return 'text-fail';
   if (percent >= 70) return 'text-wait';
   return 'text-ink-2';
 }
 
 /** 上下文圆环（照 DSH ContextMeter：14px 的环，按百分比描一段，从 12 点钟方向开始）。 */
-function Ring({ percent, className }: { percent: number; className?: string }) {
+export function Ring({ percent, className }: { percent: number; className?: string }) {
   const r = 5.5;
   const length = 2 * Math.PI * r;
   return (
@@ -308,12 +312,20 @@ export function ComposerDock({
   waitingQuestion: boolean;
   onJumpToQuestion: () => void;
 }) {
+  const stats = useKindStore((state) => state.stats);
   return (
     <TooltipProvider delayDuration={150}>
       <div className="mt-1.5 flex items-center gap-1 text-1" data-kind="composer-dock">
-        <ActivityPill />
-        <UsagePill />
-        <CostPill />
+        <ActivityPill turns={stats.turns} steps={stats.steps} />
+        <UsagePill
+          usage={{
+            input: stats.input,
+            output: stats.output,
+            cacheRead: stats.cacheRead,
+            cacheWrite: stats.cacheWrite,
+          }}
+        />
+        <CostPill cost={stats.cost} unpriced={stats.unpriced} />
         <span className="ml-auto" />
         {waitingQuestion ? (
           <button
