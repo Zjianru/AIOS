@@ -79,6 +79,7 @@ function startReplay(
       ? (restartRouteFile(options) ??
         t030RouteFile(options) ??
         t013RouteFile(options) ??
+        t052RouteFile(options) ??
         taskResultRouteFile(options))
       : routesFile;
   const args: string[] = [];
@@ -303,6 +304,9 @@ export interface FixtureOptions {
   /// worktree 场景会在起服务前把数据目录做成一个 git 仓库；expand 的第二段路由由测试
   /// 拿到真实任务 id 后再生成。
   t030?: 'write' | 'ask' | 'expand' | 'bash' | 'worktree' | 'nonrepo' | 'typo' | 'scope';
+  /// T052：任务图夹具——Kind 先 skill 再 task_graph_propose，再 propose_action 出确认卡；
+  /// 卡上的 task_id 用 __GRAPH_ID__ 占位，由回放从请求体里换成真图 id。
+  t052Graph?: boolean;
 }
 
 /** T024.4：双会话回放用哪份按请求体路由的文件；预写会话的两种不需要。 */
@@ -323,6 +327,12 @@ function taskResultRouteFile(options: FixtureOptions): string | null {
     return 't031-routes-' + scenario + '.json';
   }
   return 't024-routes-' + scenario + '.json';
+}
+
+/** T052：任务图场景的回放路由（Kind 建图/出卡，ThinAgent 报 ready）。 */
+function t052RouteFile(options: FixtureOptions): string | null {
+  if (!options.t052Graph) return null;
+  return 't052-routes-graph.json';
 }
 
 /** T030：写任务/接受/bash/工作树这些场景的回放路由。 */

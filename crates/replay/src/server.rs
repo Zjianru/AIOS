@@ -208,11 +208,11 @@ async fn handle(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> std::io::R
             write_response(&mut stream, status, "application/json", body).await
         }
         ReplayCall::Stream(records) => {
-            let frames = encode_sse(&records);
+            let frames = substitute_graph_id(encode_sse(&records), body_text.as_ref());
             write_sse(&mut stream, &frames, pace_ms).await
         }
         ReplayCall::Cut(records) => {
-            let frames = encode_sse_cut(&records);
+            let frames = substitute_graph_id(encode_sse_cut(&records), body_text.as_ref());
             write_sse(&mut stream, &frames, pace_ms).await
         }
         ReplayCall::Hang => loop {
@@ -263,6 +263,27 @@ fn header_value(head: &[u8], name: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// T052：任务图的图 id 只有运行时才知道；脚本里用 __GRAPH_ID__ 占位，回放时从请求体里换成真 id。
+fn substitute_graph_id(frames: Vec<String>, request_body: &str) -> Vec<String> {
+    if !frames.iter().any(|frame| frame.contains("__GRAPH_ID__")) {
+        return frames;
+    }
+    let Some(rest) = request_body.split("已建任务图 ").nth(1) else {
+        return frames;
+    };
+    let id: String = rest
+        .chars()
+        .take_while(|value| value.is_ascii_hexdigit())
+        .collect();
+    if id.is_empty() {
+        return frames;
+    }
+    frames
+        .into_iter()
+        .map(|frame| frame.replace("__GRAPH_ID__", &id))
+        .collect()
 }
 
 fn request_path(head: &[u8]) -> String {

@@ -8,6 +8,7 @@ mod mask;
 mod resume_task;
 mod select_model;
 mod set_paused;
+mod start_task_graph;
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -112,7 +113,12 @@ impl ActionRegistry {
             identity,
         )));
         registry.register(Arc::new(set_paused::SetPausedAction::new(data_dir.clone())));
-        registry.register(Arc::new(resume_task::ResumeTaskAction::new(data_dir)));
+        registry.register(Arc::new(resume_task::ResumeTaskAction::new(
+            data_dir.clone(),
+        )));
+        registry.register(Arc::new(start_task_graph::StartTaskGraphAction::new(
+            data_dir,
+        )));
         registry
     }
 

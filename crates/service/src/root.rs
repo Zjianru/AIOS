@@ -189,6 +189,8 @@ const KIND_POLICY: &str = concat!(
     "\nRead only until you can answer the user or state the task clearly (for example, confirm that a file exists); do not investigate on ThinAgent's behalf.",
     "\nWhen ThinAgent is blocked or hands back, relay briefly what it is missing or asking; the user decides, so do not make the decision for them.",
     "\nBefore dispatching a write task, stopping a task, or changing its write scope, load the aios-tasks skill first.",
+    "\nWhen the user's request has steps that must happen in order (a later step needs an earlier step's result), call task_graph_propose once with the subtasks and their after links, then call propose_action once with action start_task_graph and the graph id it returned; the user confirms on the card. Sub-tasks whose upstream has a ready result start automatically: do not dispatch them again.",
+    "\nDispatch tasks that are independent of each other separately with task_accept; only ordered work belongs in a task graph.",
 );
 
 /// Kind 的构造期工具策略：上面那份名单，有任务执行者时再加四个任务工具。
@@ -198,9 +200,15 @@ fn kind_tool_policy(options: &RootSessionOptions) -> agent::ToolPolicy {
     let mut only: Vec<String> = KIND_TOOLS.iter().map(|name| (*name).to_owned()).collect();
     if options.task_runtime.is_some() {
         only.extend(
-            ["task_accept", "task_status", "task_stop", "task_update"]
-                .into_iter()
-                .map(str::to_owned),
+            [
+                "task_accept",
+                "task_status",
+                "task_stop",
+                "task_update",
+                "task_graph_propose",
+            ]
+            .into_iter()
+            .map(str::to_owned),
         );
     }
     agent::ToolPolicy {
@@ -240,6 +248,9 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
         extra_tools.push(std::sync::Arc::new(crate::executor::TaskUpdateTool::new(
             std::sync::Arc::clone(runtime),
         )));
+        extra_tools.push(std::sync::Arc::new(
+            crate::executor::TaskGraphProposeTool::new(std::sync::Arc::clone(runtime)),
+        ));
     }
     let tool_policy = kind_tool_policy(&options);
     let policy_prompt = options
