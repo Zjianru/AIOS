@@ -518,7 +518,13 @@ async fn summarize(
     let (tools, history) = {
         let store = host.session().lock().expect("agent 会话锁被毒化");
         let derived = store.derive_messages_with_seqs();
-        crate::tool_gate::request_tools(host.tools(), store.events(), &derived, &host.tool_keys())
+        crate::tool_gate::request_tools(
+            host.tools(),
+            store.events(),
+            &derived,
+            &host.tool_keys(),
+            host.model().config().tool_update,
+        )
     };
     let tool_request = model::ToolRequest { tools, history };
     let cancel = model::CancelToken::new(

@@ -75,7 +75,13 @@ pub(crate) fn request_tools(
     events: &[Event],
     derived: &[(u64, Message)],
     tool_keys: &BTreeSet<tools::ToolKey>,
+    tool_update: Option<model::ToolUpdate>,
 ) -> (Vec<ToolSchema>, Option<ToolHistory>) {
+    // T046：未声明 addition-only 的路由，工具表从第一轮起就是该角色 ToolSet 全量；压缩摘要请求
+    // 必须和主请求同一份（全量 + 无加载历史），否则摘要时工具表变小、前缀断掉整段 miss。
+    if tool_update.is_none() {
+        return (tools.definitions_for(&all_tool_names(tools)), None);
+    }
     let loaded = loaded_skills(events, None);
     let registry = ToolRegistryState::rehydrate(events);
     let enabled = registry.enabled(tools, &loaded, tool_keys);
@@ -263,5 +269,130 @@ mod t046_stable_tool_tests {
         let names = all_tool_names(&thin_write);
         assert!(names.contains("write") && names.contains("edit"));
         assert!(!names.contains("bash"));
+    }
+}
+
+/// T046 审计 fix-now：压缩摘要请求与主请求的工具表同源（None 路由全量固定；addition-only 路由按 gate）。
+#[cfg(test)]
+mod t046_summary_tools_tests {
+    use std::sync::LazyLock;
+
+    use serde_json::{Value, json};
+    use session::{Event, EventKind};
+    use tools::{
+        SkillTool, Tool, ToolCall, ToolCondition, ToolContext, ToolFuture, ToolResult, ToolSet,
+    };
+
+    use super::*;
+
+    struct GatedTool {
+        parameters: LazyLock<Value>,
+    }
+
+    impl GatedTool {
+        fn new() -> Self {
+            Self {
+                parameters: LazyLock::new(|| json!({"type": "object", "properties": {}})),
+            }
+        }
+    }
+
+    impl Tool for GatedTool {
+        fn name(&self) -> &str {
+            "gated"
+        }
+
+        fn description(&self) -> &str {
+            "gated tool (T046 test)"
+        }
+
+        fn parameters(&self) -> &Value {
+            &self.parameters
+        }
+
+        fn condition(&self) -> ToolCondition {
+            ToolCondition::AfterSkill(vec!["web".to_owned()])
+        }
+
+        fn execute<'a>(
+            &'a self,
+            call: ToolCall,
+            _context: &'a ToolContext,
+        ) -> ToolFuture<'a, ToolResult> {
+            Box::pin(async move { ToolResult::success(call.id, "ok") })
+        }
+    }
+
+    fn tools() -> ToolSet {
+        ToolSet::new(vec![Box::new(SkillTool::new()), Box::new(GatedTool::new())])
+    }
+
+    fn skill_loaded_events() -> Vec<Event> {
+        vec![
+            Event::new(
+                1,
+                1,
+                EventKind::ToolCall {
+                    turn: 1,
+                    step: 1,
+                    call_id: "call-1".to_owned(),
+                    name: "skill".to_owned(),
+                    arguments: "{\"name\":\"web\"}".to_owned(),
+                },
+            ),
+            Event::new(
+                2,
+                2,
+                EventKind::ToolResult {
+                    turn: 1,
+                    step: 1,
+                    message: model::Message::tool_result("call-1", "loaded", false),
+                    error: None,
+                    meta: None,
+                },
+            ),
+        ]
+    }
+
+    fn names(tools: &[model::ToolSchema]) -> Vec<String> {
+        tools.iter().map(|tool| tool.name.clone()).collect()
+    }
+
+    /// None 路由：摘要请求工具表 == 主请求工具表（ToolSet 全量），且 skill 加载前后不变、无加载历史。
+    #[test]
+    fn undeclared_route_summary_tools_equal_main_and_ignore_skill_loads() {
+        let set = tools();
+        let keys = std::collections::BTreeSet::new();
+        let full: Vec<String> = set.names().into_iter().map(str::to_owned).collect();
+        let (main_tools, main_history) = request_tools(&set, &[], &[], &keys, None);
+        assert_eq!(names(&main_tools), full, "主请求是全量工具表");
+        assert!(main_history.is_none(), "全量固定路由没有加载历史");
+        let (after_skill, after_history) =
+            request_tools(&set, &skill_loaded_events(), &[], &keys, None);
+        assert_eq!(names(&after_skill), full, "加载 skill 前后工具表完全一致");
+        assert!(after_history.is_none());
+        assert_eq!(
+            names(&main_tools),
+            names(&after_skill),
+            "摘要请求与主请求同一份工具表"
+        );
+    }
+
+    /// addition-only 路由保持每步 gate：加载 skill 后条件工具才进表，并且有加载历史。
+    #[test]
+    fn addition_only_route_still_gates_and_tracks_history() {
+        let set = tools();
+        let keys = std::collections::BTreeSet::new();
+        let (before, _) =
+            request_tools(&set, &[], &[], &keys, Some(model::ToolUpdate::AdditionOnly));
+        let (after, _) = request_tools(
+            &set,
+            &skill_loaded_events(),
+            &[],
+            &keys,
+            Some(model::ToolUpdate::AdditionOnly),
+        );
+        assert_eq!(names(&before), vec!["skill".to_owned()]);
+        assert_eq!(names(&after), vec!["skill".to_owned(), "gated".to_owned()]);
     }
 }
