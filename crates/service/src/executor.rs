@@ -2564,6 +2564,9 @@ fn relay_summary(text: &str) -> (String, Option<usize>) {
     }
 }
 
+/// task_accept 的 title 参数说明（T048）：卡片标题的硬上限写进 schema，模型生成时就被约束。
+pub(crate) const TASK_ACCEPT_TITLE_DESCRIPTION: &str = "Short label for the card title: at most 20 characters (Chinese characters count as one); this is the card title; longer titles are truncated.";
+
 /// Kind 的 task_accept。
 pub(crate) struct TaskAcceptTool {
     runtime: Arc<TaskRuntime>,
@@ -2577,7 +2580,7 @@ impl TaskAcceptTool {
             parameters: json!({
                 "type": "object",
                 "properties": {
-                    "title": {"type": "string", "description": "Short label for the card (at most 200 characters)."},
+                    "title": {"type": "string", "description": TASK_ACCEPT_TITLE_DESCRIPTION},
                     "requirement": {"type": "string", "description": "What the task must do, in the user's words."},
                     "dod": {"type": "string", "description": "How the result will be judged complete."},
                     "cwd": {"type": "string", "description": "Directory to work in; omit to use this conversation's directory. It must already exist."},
@@ -3073,4 +3076,30 @@ fn string_arg(args: &serde_json::Map<String, Value>, key: &str) -> Option<String
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .map(str::to_owned)
+}
+
+/// T048：task_accept 的 title 说明必须明确给出卡片标题字数上限（生成时就约束，UI 截断只是兜底）。
+#[cfg(test)]
+mod t048_title_limit_tests {
+    use super::TASK_ACCEPT_TITLE_DESCRIPTION;
+
+    #[test]
+    fn task_accept_title_description_states_the_card_title_limit() {
+        assert!(
+            TASK_ACCEPT_TITLE_DESCRIPTION.contains("at most 20 characters"),
+            "title 说明要写明确上限 20 characters：{TASK_ACCEPT_TITLE_DESCRIPTION}"
+        );
+        assert!(
+            TASK_ACCEPT_TITLE_DESCRIPTION.contains("Chinese characters count as one"),
+            "中文按一字计：{TASK_ACCEPT_TITLE_DESCRIPTION}"
+        );
+        assert!(
+            TASK_ACCEPT_TITLE_DESCRIPTION.contains("card title"),
+            "说明这是卡片标题：{TASK_ACCEPT_TITLE_DESCRIPTION}"
+        );
+        assert!(
+            TASK_ACCEPT_TITLE_DESCRIPTION.contains("truncated"),
+            "超长会被截断：{TASK_ACCEPT_TITLE_DESCRIPTION}"
+        );
+    }
 }
