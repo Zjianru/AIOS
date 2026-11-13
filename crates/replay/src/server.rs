@@ -273,10 +273,7 @@ fn substitute_graph_id(frames: Vec<String>, request_body: &str) -> Vec<String> {
     let Some(rest) = request_body.split("已建任务图 ").nth(1) else {
         return frames;
     };
-    let id: String = rest
-        .chars()
-        .take_while(|value| value.is_ascii_hexdigit())
-        .collect();
+    let id: String = rest.chars().take_while(char::is_ascii_hexdigit).collect();
     if id.is_empty() {
         return frames;
     }
