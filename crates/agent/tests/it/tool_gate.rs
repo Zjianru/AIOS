@@ -860,3 +860,41 @@ async fn web_skill_and_tools_open_only_with_the_exa_key() {
         "加载成功给的是 web 的正文：{loaded}"
     );
 }
+
+/// T046：**未声明** addition-only 的路由（tool_update=None，MiniMax 等）：第一轮起工具表就是
+/// 该会话 ToolSet 全量，加载 skill 前后完全不变；调用条件工具也不再是「未知工具」。
+#[tokio::test]
+async fn unsupported_route_declares_all_tools_from_the_first_step() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(SequenceResponder::new(four_step_responses()))
+        .mount(&server)
+        .await;
+    let model = model::DeepSeekConfig {
+        tool_update: None,
+        ..model_config(&server.uri())
+    };
+    let (agent, _data_dir, _cwd, _id) = setup_with_model(&server, tool_set(), model).await;
+    agent
+        .send(UserMessage::text("现在用的什么模型？"), Delivery::FollowUp)
+        .await
+        .expect("send");
+    crate::common::wait_idle(&agent, 10).await;
+
+    let bodies = bodies(&server).await;
+    assert_eq!(bodies.len(), 4, "四步各发一次请求");
+    let expected = vec!["skill".to_owned(), "aios_query".to_owned()];
+    for (index, body) in bodies.iter().enumerate() {
+        assert_eq!(
+            tool_names(body),
+            expected,
+            "未声明 addition-only 的路由，第 {index} 步工具表都该是全量固定"
+        );
+    }
+    // 条件工具在未加载 skill 时也能执行（不再是 TOOL_NOT_FOUND）。
+    assert_eq!(
+        tool_result_text(&bodies[1], "call_closed").as_deref(),
+        Some("queried"),
+        "全量固定后，条件工具在第一轮的实际调用应当能执行"
+    );
+}

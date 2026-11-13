@@ -61,6 +61,12 @@ pub fn loaded_skills(events: &[Event], turn: Option<u64>) -> BTreeSet<String> {
     loaded
 }
 
+/// T046：未声明 addition-only 的路由，本步工具表 = 该会话角色 ToolSet 的全量成员（技能条件不再改变
+/// 工具表）。角色/安全边界在构造期 retain_named 已收窄，这里只按 ToolSet 成员开，不会跨边界。
+pub(crate) fn all_tool_names(tools: &ToolSet) -> BTreeSet<String> {
+    tools.names().into_iter().map(str::to_owned).collect()
+}
+
 /// 一次请求的工具表与加载历史：条件开出的工具 + 从日志重建的声明序列。
 ///
 /// 主请求与压缩摘要请求共用这一份计算（压缩请求不能带没开出的工具）。
@@ -69,7 +75,13 @@ pub(crate) fn request_tools(
     events: &[Event],
     derived: &[(u64, Message)],
     tool_keys: &BTreeSet<tools::ToolKey>,
+    tool_update: Option<model::ToolUpdate>,
 ) -> (Vec<ToolSchema>, Option<ToolHistory>) {
+    // T046：未声明 addition-only 的路由，工具表从第一轮起就是该角色 ToolSet 全量；压缩摘要请求
+    // 必须和主请求同一份（全量 + 无加载历史），否则摘要时工具表变小、前缀断掉整段 miss。
+    if tool_update.is_none() {
+        return (tools.definitions_for(&all_tool_names(tools)), None);
+    }
     let loaded = loaded_skills(events, None);
     let registry = ToolRegistryState::rehydrate(events);
     let enabled = registry.enabled(tools, &loaded, tool_keys);
@@ -169,5 +181,218 @@ impl ToolRegistryState {
         for tool in additions {
             self.recorded.insert(tool.name.clone());
         }
+    }
+}
+
+/// T046：未声明 addition-only 的路由，工具表从第一轮起就是该会话角色 ToolSet 的全量成员。
+#[cfg(test)]
+mod t046_stable_tool_tests {
+    use std::collections::BTreeSet;
+
+    use tools::ToolSet;
+
+    use super::*;
+
+    fn retained(names: &[&str]) -> ToolSet {
+        let mut tools = ToolSet::builtin();
+        let keep: BTreeSet<String> = names.iter().map(|name| (*name).to_owned()).collect();
+        tools.retain_named(&keep);
+        tools
+    }
+
+    /// 同一会话跨轮 + 加载 skill 前后：不支持 addition-only 的路由，工具名列表不变（全量固定）。
+    #[test]
+    fn fixed_selection_ignores_loaded_skills_and_turns() {
+        let tools = ToolSet::builtin();
+        let before = all_tool_names(&tools);
+        assert_eq!(
+            before,
+            tools
+                .names()
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<BTreeSet<_>>()
+        );
+        // 加载过 skill 的那一轮，gate 的 enabled 会变；固定选择不看它。
+        let mut skills = BTreeSet::new();
+        skills.insert("web".to_owned());
+        let after = all_tool_names(&tools);
+        assert_eq!(before, after, "加载 skill 前后工具名列表必须一致");
+    }
+
+    /// 角色/安全边界在构造期 retain 之后仍然成立：全开只开该角色 ToolSet 里的成员。
+    #[test]
+    fn full_open_never_crosses_the_role_boundary() {
+        // Kind 的 only 名单里没有 write/edit/bash/job_*（root.rs KIND_TOOLS）。
+        let kind_like = retained(&[
+            "read",
+            "glob",
+            "grep",
+            "skill",
+            "todo_write",
+            "ask_user_question",
+            "canvas",
+        ]);
+        let names = all_tool_names(&kind_like);
+        for forbidden in [
+            "write",
+            "edit",
+            "bash",
+            "job_output",
+            "job_list",
+            "job_kill",
+        ] {
+            assert!(
+                !names.contains(forbidden),
+                "Kind 全开后不能出现 {forbidden}: {names:?}"
+            );
+        }
+        // ThinAgent 只读任务：没有 write/edit/bash/job_*。
+        let thin_read = retained(&["read", "glob", "grep", "skill", "todo_write"]);
+        let names = all_tool_names(&thin_read);
+        for forbidden in ["write", "edit", "bash", "job_output"] {
+            assert!(
+                !names.contains(forbidden),
+                "ThinAgent 只读全开后不能出现 {forbidden}"
+            );
+        }
+        // 写任务名单有 write/edit，但没有 bash/job_*。
+        let thin_write = retained(&[
+            "read",
+            "glob",
+            "grep",
+            "write",
+            "edit",
+            "skill",
+            "todo_write",
+        ]);
+        let names = all_tool_names(&thin_write);
+        assert!(names.contains("write") && names.contains("edit"));
+        assert!(!names.contains("bash"));
+    }
+}
+
+/// T046 审计 fix-now：压缩摘要请求与主请求的工具表同源（None 路由全量固定；addition-only 路由按 gate）。
+#[cfg(test)]
+mod t046_summary_tools_tests {
+    use std::sync::LazyLock;
+
+    use serde_json::{Value, json};
+    use session::{Event, EventKind};
+    use tools::{
+        SkillTool, Tool, ToolCall, ToolCondition, ToolContext, ToolFuture, ToolResult, ToolSet,
+    };
+
+    use super::*;
+
+    struct GatedTool {
+        parameters: LazyLock<Value>,
+    }
+
+    impl GatedTool {
+        fn new() -> Self {
+            Self {
+                parameters: LazyLock::new(|| json!({"type": "object", "properties": {}})),
+            }
+        }
+    }
+
+    impl Tool for GatedTool {
+        fn name(&self) -> &str {
+            "gated"
+        }
+
+        fn description(&self) -> &str {
+            "gated tool (T046 test)"
+        }
+
+        fn parameters(&self) -> &Value {
+            &self.parameters
+        }
+
+        fn condition(&self) -> ToolCondition {
+            ToolCondition::AfterSkill(vec!["web".to_owned()])
+        }
+
+        fn execute<'a>(
+            &'a self,
+            call: ToolCall,
+            _context: &'a ToolContext,
+        ) -> ToolFuture<'a, ToolResult> {
+            Box::pin(async move { ToolResult::success(call.id, "ok") })
+        }
+    }
+
+    fn tools() -> ToolSet {
+        ToolSet::new(vec![Box::new(SkillTool::new()), Box::new(GatedTool::new())])
+    }
+
+    fn skill_loaded_events() -> Vec<Event> {
+        vec![
+            Event::new(
+                1,
+                1,
+                EventKind::ToolCall {
+                    turn: 1,
+                    step: 1,
+                    call_id: "call-1".to_owned(),
+                    name: "skill".to_owned(),
+                    arguments: "{\"name\":\"web\"}".to_owned(),
+                },
+            ),
+            Event::new(
+                2,
+                2,
+                EventKind::ToolResult {
+                    turn: 1,
+                    step: 1,
+                    message: model::Message::tool_result("call-1", "loaded", false),
+                    error: None,
+                    meta: None,
+                },
+            ),
+        ]
+    }
+
+    fn names(tools: &[model::ToolSchema]) -> Vec<String> {
+        tools.iter().map(|tool| tool.name.clone()).collect()
+    }
+
+    /// None 路由：摘要请求工具表 == 主请求工具表（ToolSet 全量），且 skill 加载前后不变、无加载历史。
+    #[test]
+    fn undeclared_route_summary_tools_equal_main_and_ignore_skill_loads() {
+        let set = tools();
+        let keys = std::collections::BTreeSet::new();
+        let full: Vec<String> = set.names().into_iter().map(str::to_owned).collect();
+        let (main_tools, main_history) = request_tools(&set, &[], &[], &keys, None);
+        assert_eq!(names(&main_tools), full, "主请求是全量工具表");
+        assert!(main_history.is_none(), "全量固定路由没有加载历史");
+        let (after_skill, after_history) =
+            request_tools(&set, &skill_loaded_events(), &[], &keys, None);
+        assert_eq!(names(&after_skill), full, "加载 skill 前后工具表完全一致");
+        assert!(after_history.is_none());
+        assert_eq!(
+            names(&main_tools),
+            names(&after_skill),
+            "摘要请求与主请求同一份工具表"
+        );
+    }
+
+    /// addition-only 路由保持每步 gate：加载 skill 后条件工具才进表，并且有加载历史。
+    #[test]
+    fn addition_only_route_still_gates_and_tracks_history() {
+        let set = tools();
+        let keys = std::collections::BTreeSet::new();
+        let (before, _) =
+            request_tools(&set, &[], &[], &keys, Some(model::ToolUpdate::AdditionOnly));
+        let (after, _) = request_tools(
+            &set,
+            &skill_loaded_events(),
+            &[],
+            &keys,
+            Some(model::ToolUpdate::AdditionOnly),
+        );
+        assert_eq!(names(&before), vec!["skill".to_owned()]);
+        assert_eq!(names(&after), vec!["skill".to_owned(), "gated".to_owned()]);
     }
 }

@@ -668,7 +668,9 @@ pub fn model_config(base_url: &str) -> model::DeepSeekConfig {
         max_tokens: 2048,
         context_window: model::DEFAULT_CONTEXT_WINDOW,
         effort: model::Effort::new("high"),
-        tool_update: None,
+        // T046：测试辅助默认模拟生产 DeepSeek 路由（声明 addition-only）；要测「未声明路由」的
+        // 全量固定语义时，用 model_config 再显式把 tool_update 设成 None。
+        tool_update: Some(model::ToolUpdate::AdditionOnly),
     }
 }
 

@@ -297,6 +297,8 @@ export interface FixtureOptions {
   t029Restart?: 'main' | 'single';
   /// T037：serve 的启动参数（模拟 ds 预检单的 run.sh：`--connection`/`--model` 只当初始默认）。
   startupSelection?: { connection: string; model: string; effort?: string };
+  /// T046：用 catalog 里不存在的模型 id 起会话，让 route_tool_update 返回 None（测工具表全量固定）。
+  routeModel?: string;
   /// T030：写任务、接受、bash 开关、工作树、非仓库和改错字的真服务夹具。
   /// worktree 场景会在起服务前把数据目录做成一个 git 仓库；expand 的第二段路由由测试
   /// 拿到真实任务 id 后再生成。
@@ -435,7 +437,7 @@ export async function startKernelFixture(
   if (!options.emptyKeyring) {
     const seed = spawnSync(
       bin,
-      ['keyring', '--data-dir', dataDir, '--identity', identityPath, 'set', '--id', 'deepseek', '--name', 'DeepSeek', '--preset', 'deepseek', '--model', 'deepseek-flash', '--endpoint', replayUrl],
+      ['keyring', '--data-dir', dataDir, '--identity', identityPath, 'set', '--id', 'deepseek', '--name', 'DeepSeek', '--preset', 'deepseek', '--model', options.routeModel ?? 'deepseek-flash', '--endpoint', replayUrl],
       { input: 'test-key' + String.fromCharCode(10), encoding: 'utf8' },
     );
     if (seed.status !== 0) throw new Error('seed keyring failed: ' + String(seed.stderr));
@@ -590,6 +592,9 @@ export async function startKernelFixture(
     );
   }
   const serveArgs = ['serve', '--data-dir', dataDir, '--identity', identityPath, '--cwd', dataDir, '--web-dist', path.join(repoRoot, 'web/dist')];
+  if (options.routeModel) {
+    serveArgs.push('--connection', 'deepseek', '--model', options.routeModel);
+  }
   if (options.contextWindow) {
     serveArgs.push('--context-window', String(options.contextWindow));
   }
