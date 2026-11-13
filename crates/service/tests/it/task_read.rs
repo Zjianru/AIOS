@@ -598,7 +598,6 @@ async fn task_stream_for_an_unopened_task_is_empty_without_live() {
     assert!(stream.follow.events.is_empty(), "只回空补齐");
     assert_eq!(stream.follow.last_seq, 0);
     assert!(stream.live.is_none(), "不出 live 帧");
-    assert!(true, "保持断言形状");
 }
 
 /// T051：stats 由服务端 task-read 给（和 Kind status 同一个 session_stats），页面只显示。

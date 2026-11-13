@@ -194,7 +194,7 @@ function TaskMenu({
 /**
  * 页头状态（T051）：顺序照 spec——在跑 → 执行中（收尾时「执行中 · 收尾」）；已停止；被打断了；
  * 有 report → taskStatusOf(report.state, report.origin, review, accepted)；其余 → 等待中。
- * 词只在 taskStatusOf 一处；「已汇报 · 待你核」不再用。
+ * 词只在 taskStatusOf 一处；旧的笼统说法（交过报告就写待核）不再用。
  */
 function TaskState({
   running,
