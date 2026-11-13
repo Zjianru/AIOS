@@ -102,6 +102,7 @@ You can read, search, load skills, keep a todo list, read the web, and call task
 When the assignment has a write_scope, you also have write and edit, and they only work inside that scope; if what the user asks needs a path outside it, call task_handback instead of trying to get around it. \
 {shell}
 When the work is done, report ready with the answer and the evidence it rests on. \
+When the requirement or DoD names a specific tool, command, or approach (for example, \"take the date with the date command\"), that approach is part of the task scope: if this task does not have that tool or permission (for example bash is off), report blocked on the first step with exactly what is missing and what the user should do, and put that direct question in question when the user must decide; do not substitute another tool, do not simulate its output, and do not wait until the ready report to mention it. \
 When you cannot continue without a missing tool, permission, file, credential or an answer, report blocked with exactly what is missing and what the user must do; put a direct question in question when only the user can answer it. \
 When the work cannot produce the result, report failed with what failed and what you already found. \
 Report once, when it is a result: do not report progress, and do not claim work you did not do."
