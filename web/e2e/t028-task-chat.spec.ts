@@ -438,9 +438,36 @@ test('席位 1、另一个任务在跑时，叫醒停了的任务照样开跑', 
     expect(second.ok()).toBe(true);
     expect((await second.json()).task.running).toBe(true);
     await page.goto(urlOf(fixture));
-    await expect(page.locator('[data-kind="task-result"]')).toHaveCount(2, {
-      timeout: 30_000,
-    });
+    // T040：不再锁死「总共 2 张卡」。按任务/内容断言语义：
+    // - 此时只有甲有卡（乙还在跑）：卡标题都是甲；
+    // - 甲第 1 次 Attempt 可能 1 张，也可能 2 张（T038 已记 known：同一 Attempt 的 waiting→ready
+    //   两条 relay 各出一张卡，需 relay 带 attempt/version 才能彻底修，后续票）；
+    // - 第 2 次 Attempt 的新卡必须在：总卡数 2..=3；
+    // - 真重复卡仍要抓：同一任务的卡不允许出现两张正文完全一样的。
+    const cards = page.locator('[data-kind="task-result"]');
+    // 回 Kind 后连接/视图会重挂：每次轮询重新读卡片正文，等甲的卡稳定在 2 张以上（known 双卡时 3 张），
+    // 避免「刚数到数量、视图又被重挂清空」的竞态。
+    const jiaTexts = async () =>
+      (await cards.allInnerTexts()).filter((text) => text.includes('任务甲'));
+    // 用例真正要证明的点：乙还在跑时，甲第 2 次 Attempt 的新结果卡已经出来（不是被 Later 压住）。
+    // 先等这张卡出现（attempt2 relay 的固定正文），再做数量/唯一性断言——否则两只卡正好是
+    // known waiting→ready 双卡时，会漏掉 attempt2 根本没出来的回归。
+    await expect
+      .poll(async () => (await jiaTexts()).some((text) => text.includes('接着之前的结果做完')), {
+        timeout: 30_000,
+        intervals: [200, 500],
+      })
+      .toBe(true);
+    const texts = await cards.allInnerTexts();
+    // 这张用例的证明点是甲：第 1 次 Attempt 的卡（正常 1 张；T038 known 双卡时 2 张）+ 第 2 次 Attempt
+    // 的新卡必须在。乙的卡可能已收尾出现（也可能还在跑），不锁总卡数、不要求此时只有甲。
+    const jia = texts.filter((text) => text.includes('任务甲'));
+    const yi = texts.filter((text) => text.includes('任务乙'));
+    expect(jia.length, '甲：第 1 次 Attempt 1 张（known 双卡时 2 张）+ 第 2 次 Attempt 1 张').toBeGreaterThanOrEqual(2);
+    expect(jia.length).toBeLessThanOrEqual(3);
+    expect(yi.length, '乙：若已收尾可能 1 张（known 双卡时 2 张），不会更多').toBeLessThanOrEqual(2);
+    expect(texts.length, '每张卡都能归到甲或乙').toBe(jia.length + yi.length);
+    expect(new Set(texts).size, '同一任务不能出现两张内容完全相同的卡').toBe(texts.length);
   } finally {
     await fixture.close();
   }
