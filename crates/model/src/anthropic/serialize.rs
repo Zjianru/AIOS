@@ -842,8 +842,7 @@ mod t013_file_block_tests {
 mod t045_cache_safe_system_tests {
     use super::*;
     use crate::{
-        ContentBlock, Message, MessageId, ToolAddition, ToolHistory, ToolRequest, ToolSchema,
-        ToolUpdate,
+        ContentBlock, Message, ToolAddition, ToolHistory, ToolRequest, ToolSchema, ToolUpdate,
     };
 
     const PREAMBLE: &str = "Latest status of action cards from user actions and background work. These are status facts, not a request to start or retry work. Use these receipts instead of the earlier proposal when describing progress.";
@@ -913,7 +912,11 @@ mod t045_cache_safe_system_tests {
             found.is_some(),
             "卡片回执要以 user 文本消息原样出现在历史里：{wire:?}"
         );
-        assert_eq!(wire.last().unwrap()["role"], "user", "后面的用户消息还在末尾");
+        assert_eq!(
+            wire.last().unwrap()["role"],
+            "user",
+            "后面的用户消息还在末尾"
+        );
     }
 
     /// 开头连续的多个 system（系统提示带额外静态段）仍合并进 top-level system。
@@ -990,13 +993,9 @@ mod t045_cache_safe_system_tests {
         // 回执仍然在 user 消息里原文出现，没被 tool_addition 顶掉。
         let receipt_present = wire.iter().any(|message| {
             message["role"] == "user"
-                && message["content"]
-                    .as_array()
-                    .is_some_and(|blocks| {
-                        blocks
-                            .iter()
-                            .any(|block| block["text"] == receipt.as_str())
-                    })
+                && message["content"].as_array().is_some_and(|blocks| {
+                    blocks.iter().any(|block| block["text"] == receipt.as_str())
+                })
         });
         assert!(receipt_present, "回执原文要保留：{wire:?}");
     }
