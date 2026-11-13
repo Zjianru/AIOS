@@ -121,9 +121,11 @@ enum WireBlock {
 
 /// 序列化一次请求。
 ///
-/// 系统消息合并成 system 字段；tool_call / tool_result 分别走 wire 的 tool_use /
-/// tool_result 块；用户、助手、工具消息按 wire 角色合并相邻项（照 DSH 的 serialize）；
-/// 空文本块和空消息跳过。
+/// 开头的静态 system 消息（第一个非 system 消息之前）合并成 system 字段；之后历史中段的
+/// 动态 system（卡片状态回执等）按原位置落成 user 角色的文本消息——system 全程不变、
+/// 对话前缀字节稳定，缓存不会因为一条回执整段重算（T045）。
+/// tool_call / tool_result 分别走 wire 的 tool_use / tool_result 块；用户、助手、工具消息
+/// 按 wire 角色合并相邻项（照 DSH 的 serialize）；空文本块和空消息跳过。
 pub(super) fn request_body(
     config: &DeepSeekConfig,
     messages: &[Message],
@@ -138,7 +140,12 @@ pub(super) fn request_body(
     let projected = crate::tool_updates::project(messages, tools, tool_update);
     let mut system = String::new();
     let mut wire_messages: Vec<WireMessage> = Vec::new();
+    // T045：第一个非 system 消息之后的 system 是动态回执，不再并进 top-level system。
+    let mut seen_non_system = false;
     for (index, message) in messages.iter().enumerate() {
+        if !matches!(message.role, Role::System) {
+            seen_non_system = true;
+        }
         match message.role {
             Role::System => {
                 let mut text = String::new();
@@ -155,10 +162,16 @@ pub(super) fn request_body(
                 if text.is_empty() {
                     continue;
                 }
-                if !system.is_empty() {
-                    system.push_str("\n\n");
+                if seen_non_system {
+                    // 历史中段的动态 system（卡片状态回执）：按原位置换成 user 文本，
+                    // 内容逐字保留；top-level system 不再增长。
+                    push_or_merge(&mut wire_messages, "user", vec![WireBlock::Text { text }]);
+                } else {
+                    if !system.is_empty() {
+                        system.push_str("\n\n");
+                    }
+                    system.push_str(&text);
                 }
-                system.push_str(&text);
             }
             // DSH 的 developer 消息目前是 log-only（工具增删记录），AIOS 还没有生产者；
             // 真出现也不进请求，按不支持内容报错。
