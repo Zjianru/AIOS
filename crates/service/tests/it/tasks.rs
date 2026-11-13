@@ -8536,3 +8536,200 @@ async fn graph_crash_after_ready_releases_downstream_exactly_once_after_restart(
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+
+/// T052.2 F1：上游二次 ready 更新摘要后，下游第二次 Attempt 的会话里随接续带上「上游结果（最新）」。
+#[tokio::test]
+async fn resume_attempt_rehands_the_latest_upstream_result() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    router.enable_graph_kind();
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    host.dispatch(Call::Send(send(&host, "kind-1", "先查再写")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&host, data.path(), 1).await;
+    wait_until("建图并出卡", || {
+        tasks_store(data.path())
+            .task_ids()
+            .map(|ids| ids.len() == 3)
+            .unwrap_or(false)
+    })
+    .await;
+    let store = tasks_store(data.path());
+    let root = graph_root(&store);
+    let children = store.children(&root.id).expect("子任务");
+    host.dispatch(Call::CardAct(CardActRequest {
+        call_id: "call-graph-card".to_owned(),
+        verb: CardVerb::Confirm,
+        option: Some("confirm".to_owned()),
+    }))
+    .await
+    .expect("确认");
+
+    let report_a1 = crate::common::tool_use_sse(
+        2,
+        "call-a1-report",
+        "task_report",
+        r#"{"state":"ready","summary":"第一次结果：notes.md 有 3 行"}"#,
+    );
+    let report_b1 = crate::common::tool_use_sse(
+        2,
+        "call-b1-report",
+        "task_report",
+        r#"{"state":"ready","summary":"第一版写好了"}"#,
+    );
+    router.push_thin_for(children[0].id.as_str(), report_a1);
+    router.push_thin_for(children[0].id.as_str(), crate::common::text_sse("好"));
+    router.push_thin_for(children[1].id.as_str(), report_b1);
+    router.push_thin_for(children[1].id.as_str(), crate::common::text_sse("好"));
+    for _ in 0..10 {
+        router.push_kind(crate::common::text_sse("收到"));
+    }
+    wait_until("A1 ready", || {
+        tasks_store(data.path())
+            .task(&children[0].id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_report().map(|report| report.state))
+            == Some(ReportState::Ready)
+    })
+    .await;
+    wait_until("B1 开跑", || {
+        tasks_store(data.path())
+            .task(&children[1].id)
+            .ok()
+            .flatten()
+            .and_then(|task| {
+                task.latest_attempt()
+                    .and_then(|attempt| attempt.conversation.clone())
+            })
+            .is_some()
+    })
+    .await;
+    wait_until("A1 轮结束", || {
+        tasks_store(data.path())
+            .task(&children[0].id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().cloned())
+            .is_some_and(|attempt| session_turn_ended(data.path(), &attempt))
+    })
+    .await;
+
+    // A 第二次 ready：更新交接摘要。
+    let report_a2 = crate::common::tool_use_sse(
+        2,
+        "call-a2-report",
+        "task_report",
+        r#"{"state":"ready","summary":"第二次结果：notes.md 现在 5 行"}"#,
+    );
+    router.push_thin_for(children[0].id.as_str(), report_a2);
+    router.push_thin_for(children[0].id.as_str(), crate::common::text_sse("好"));
+    host.dispatch(Call::TaskSay(service::TaskSayRequest {
+        task_id: children[0].id.as_str().to_owned(),
+        text: "再查一遍".to_owned(),
+        pastes: Vec::new(),
+        attachments: Vec::new(),
+    }))
+    .await
+    .expect("A2 输入");
+    wait_until("A2 ready 且摘要更新", || {
+        tasks_store(data.path())
+            .task(&children[0].id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| {
+                task.runs
+                    .iter()
+                    .map(|run| run.attempts.len())
+                    .sum::<usize>()
+                    == 2
+                    && task
+                        .latest_report()
+                        .is_some_and(|report| report.summary.contains("5 行"))
+            })
+    })
+    .await;
+
+    // B 第二次 Attempt：接续时应该带上最新的上游结果。
+    wait_until("B1 轮结束", || {
+        tasks_store(data.path())
+            .task(&children[1].id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().cloned())
+            .is_some_and(|attempt| session_turn_ended(data.path(), &attempt))
+    })
+    .await;
+    let report_b2 = crate::common::tool_use_sse(
+        2,
+        "call-b2-report",
+        "task_report",
+        r#"{"state":"ready","summary":"照最新的 5 行写好了"}"#,
+    );
+    router.push_thin_for(children[1].id.as_str(), report_b2);
+    router.push_thin_for(children[1].id.as_str(), crate::common::text_sse("好"));
+    host.dispatch(Call::TaskSay(service::TaskSayRequest {
+        task_id: children[1].id.as_str().to_owned(),
+        text: "照最新的再写一遍".to_owned(),
+        pastes: Vec::new(),
+        attachments: Vec::new(),
+    }))
+    .await
+    .expect("B2 输入");
+    wait_until("B2 开跑", || {
+        tasks_store(data.path())
+            .task(&children[1].id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| {
+                task.runs
+                    .iter()
+                    .map(|run| run.attempts.len())
+                    .sum::<usize>()
+                    == 2
+            })
+    })
+    .await;
+    let b = tasks_store(data.path())
+        .task(&children[1].id)
+        .expect("读任务")
+        .expect("B");
+    assert_eq!(
+        b.runs.iter().map(|run| run.attempts.len()).sum::<usize>(),
+        2,
+        "A2 不再重新放 B（只有两次 Attempt）"
+    );
+    let conversation = b
+        .latest_attempt()
+        .and_then(|attempt| attempt.conversation.clone())
+        .expect("B2 会话");
+    let session_id = session::SessionId::parse(conversation.as_str()).expect("会话 id");
+    let session = session::SessionStore::open_read_only(data.path(), &session_id).expect("B2 日志");
+    let texts: Vec<String> = session
+        .events()
+        .iter()
+        .filter_map(|event| match &event.kind {
+            session::EventKind::UserMessage { message, .. } => Some(
+                message
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        model::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>(),
+            ),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.contains("上游结果（最新）") && text.contains("5 行")),
+        "B2 会话里要有最新的上游结果：{texts:?}"
+    );
+}

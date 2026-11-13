@@ -1001,11 +1001,13 @@ impl TaskRuntime {
             ResumeMode::Say
         };
         let mut recovery_attempt = None;
+        let mut opened_attempt = None;
         let host = match self.running_for(task_id, attempt.id) {
             Some(running) => running.host,
             // 没在跑：停/结束之后在任务对话里说话，接着原会话开新一轮（T028.2）。
             None => match self.resume_for_delivery(&claim, &task, attempt, mode).await {
                 Some(opened) => {
+                    opened_attempt = Some(opened.attempt_id);
                     if matches!(mode, ResumeMode::Interrupted) {
                         recovery_attempt = Some(opened.attempt_id);
                     }
@@ -1014,6 +1016,12 @@ impl TaskRuntime {
                 None => return,
             },
         };
+        // T052：新开的接续 Attempt 先交最新的上游结果，再送用户的话（顺序由 Steer 队列保证）。
+        if let Some(attempt_id) = opened_attempt
+            && let Err(error) = self.send_upstream_note(&host, &task, attempt_id).await
+        {
+            eprintln!("上游结果没送进任务会话：{error}");
+        }
         let mut sent = Ok(());
         let inputs = task.inputs.len();
         for (index, input) in task.inputs.iter().enumerate() {
@@ -1159,6 +1167,13 @@ impl TaskRuntime {
             }
             Err(ResumeBlock::NoSession(reason)) => return Err(reason),
         };
+        // T052：接续前先把最新的上游结果交进会话（图子任务才有一段）。
+        if let Err(error) = self
+            .send_upstream_note(&opened.host, &task, opened.attempt_id)
+            .await
+        {
+            eprintln!("上游结果没送进任务会话：{error}");
+        }
         let request_id = format!("resume:{task_id}:{}", opened.attempt_id);
         let sent = opened
             .host
@@ -1769,27 +1784,8 @@ impl TaskRuntime {
         if let Some(scope) = task.effective_write_scope() {
             assignment["write_scope"] = json!(scope.to_string_lossy());
         }
-        // T052：下游子任务的任务包里带「上游结果」：每个上游的标题、要求版本和摘要。
-        let mut upstream_results = Vec::new();
-        for need in &task.needs {
-            let Some(handoff) = &need.handoff else {
-                continue;
-            };
-            let upstream_title = self
-                .store
-                .task(&need.from)
-                .ok()
-                .flatten()
-                .map(|upstream| upstream.title)
-                .unwrap_or_default();
-            upstream_results.push(json!({
-                "task_id": need.from.as_str(),
-                "title": upstream_title,
-                "report_id": handoff.report_id.as_str(),
-                "requirement_version": handoff.requirement_version,
-                "summary": handoff.summary,
-            }));
-        }
+        // T052：下游子任务的任务包里带「上游结果」（和接续共用同一段构造，arg 里现查最新 ready）。
+        let upstream_results = self.upstream_results_for(&task);
         if !upstream_results.is_empty() {
             assignment["upstream_results"] = json!(upstream_results);
         }
@@ -1872,6 +1868,66 @@ impl TaskRuntime {
             self.store
                 .end_attempt(&task.id, attempt, Self::now(), AttemptEnd::NotOpened),
         );
+    }
+
+    /// T052：任务包里「上游结果」一段——按库里上游最新的 ready 报告现查（不只看 needs 上的交接），
+    /// launch 和接续 Attempt 共用同一段构造。
+    fn upstream_results_for(&self, task: &Task) -> Vec<Value> {
+        let mut results = Vec::new();
+        for need in &task.needs {
+            let Ok(Some(upstream)) = self.store.task(&need.from) else {
+                continue;
+            };
+            let Some(report) = upstream
+                .reports
+                .iter()
+                .rev()
+                .find(|report| report.state == ReportState::Ready)
+            else {
+                continue;
+            };
+            results.push(json!({
+                "task_id": need.from.as_str(),
+                "title": upstream.title,
+                "report_id": report.id.as_str(),
+                "requirement_version": report.version,
+                "summary": report.summary,
+            }));
+        }
+        results
+    }
+
+    /// T052：接续 Attempt 打开以后，把「上游结果（最新）」随恢复说明送进会话。
+    ///
+    /// 下游以后的 Attempt 不重发 assignment，靠这条消息重新交接；同一个 Attempt 只送一次
+    /// （request id 带 Attempt 编号，重复触发会被会话判重）。
+    async fn send_upstream_note(
+        &self,
+        host: &ServiceHost,
+        task: &Task,
+        attempt_id: AttemptId,
+    ) -> Result<(), String> {
+        let results = self.upstream_results_for(task);
+        if results.is_empty() {
+            return Ok(());
+        }
+        let mut lines = vec!["上游结果（最新）：".to_owned()];
+        for item in results {
+            lines.push(format!(
+                "- {}（要求第 {} 版）：{}",
+                item["title"].as_str().unwrap_or_default(),
+                item["requirement_version"],
+                item["summary"].as_str().unwrap_or_default()
+            ));
+        }
+        host.send_message(
+            &format!("upstream:{}:{}", task.id, attempt_id.0),
+            UserMessage::text(lines.join("\n")),
+            DeliveryMode::Steer,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
     }
 
     /// 起跑前的任务包检查：返回解析好的模型配置和凭证；缺项时返回缺的每一项。

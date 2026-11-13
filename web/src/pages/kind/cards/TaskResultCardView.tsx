@@ -143,6 +143,11 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
         slot={slots.summary}
         className="mt-2 whitespace-pre-wrap break-words text-2 leading-5 text-ink-2"
       />
+      {slots.autoStarted.length > 0 ? (
+        <div className="mt-1 text-1 text-done" data-kind="task-auto-started">
+          已自动开跑：{slots.autoStarted.join('、')}
+        </div>
+      ) : null}
       {slots.write ? <Changed slots={slots} /> : null}
       <div className="mt-3 flex items-center gap-2">
         {slots.state === 'review' ? (

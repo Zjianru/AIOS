@@ -479,3 +479,146 @@ fn crash_after_ready_release_keeps_downstream_launch_queued_exactly_once() {
         "只放一次"
     );
 }
+
+#[test]
+fn second_ready_updates_handoff_without_relaunching_or_repeating_released() {
+    let (directory, store) = open_store();
+    let cwd = directory.path();
+    let (root, children) = create_two(&store, cwd);
+    store.confirm_graph(&root.id, T0 + 1).unwrap();
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 2)
+        .unwrap()
+        .expect("A launch");
+    store.complete_effect(&claim).unwrap();
+    // A 第一次 ready：放出 B。
+    let a1 = store.begin_attempt(&children[0].id, T0 + 3).unwrap();
+    store
+        .record_report(
+            &children[0].id,
+            a1,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "第一次结果".to_owned(),
+                question: None,
+            },
+            T0 + 4,
+        )
+        .unwrap();
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 5)
+        .unwrap()
+        .expect("B launch");
+    store.complete_effect(&claim).unwrap();
+    let b1 = store.begin_attempt(&children[1].id, T0 + 6).unwrap();
+    let _ = b1;
+    // 收掉 A 第一次 ready 的 relay（带 released），再看第二次 ready。
+    let relay = store
+        .claim_effect(EffectKind::Relay, T0 + 7)
+        .unwrap()
+        .expect("A 第一次的 relay");
+    store.complete_effect(&relay).unwrap();
+    // A 第二次 ready：只刷新交接，不再放 B、不再重复说 released。
+    store
+        .end_attempt(&children[0].id, a1, T0 + 7, AttemptEnd::Reported)
+        .unwrap();
+    let a2 = store.begin_attempt(&children[0].id, T0 + 8).unwrap();
+    store
+        .record_report(
+            &children[0].id,
+            a2,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "第二次结果：3 行".to_owned(),
+                question: None,
+            },
+            T0 + 9,
+        )
+        .unwrap();
+
+    let downstream = store.task(&children[1].id).unwrap().unwrap();
+    let handoff = downstream.needs[0].handoff.clone().expect("交接");
+    assert!(
+        handoff.summary.contains("第二次结果"),
+        "交接刷新为最新 ready：{handoff:?}"
+    );
+    assert!(
+        store
+            .claim_effect(EffectKind::Launch, T0 + 12)
+            .unwrap()
+            .is_none(),
+        "上游二次 ready 不能重新放 B"
+    );
+    let relay = store
+        .claim_effect(EffectKind::Relay, T0 + 13)
+        .unwrap()
+        .expect("A 第二次的 relay");
+    let EffectPayload::Relay { released, .. } = relay.payload.clone() else {
+        panic!("relay 载荷");
+    };
+    assert!(released.is_empty(), "第二次不再说已自动开跑：{released:?}");
+}
+
+#[test]
+fn blocked_report_does_not_release_downstream() {
+    let (directory, store) = open_store();
+    let cwd = directory.path();
+    let (root, children) = create_two(&store, cwd);
+    store.confirm_graph(&root.id, T0 + 1).unwrap();
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 2)
+        .unwrap()
+        .expect("A launch");
+    store.complete_effect(&claim).unwrap();
+    let attempt = store.begin_attempt(&children[0].id, T0 + 3).unwrap();
+    store
+        .record_report(
+            &children[0].id,
+            attempt,
+            NewReport {
+                state: ReportState::Blocked,
+                origin: ReportOrigin::Agent,
+                summary: "卡住了".to_owned(),
+                question: Some("怎么办".to_owned()),
+            },
+            T0 + 4,
+        )
+        .unwrap();
+    let downstream = store.task(&children[1].id).unwrap().unwrap();
+    assert!(downstream.needs[0].handoff.is_none(), "blocked 不写交接");
+    assert!(
+        store
+            .claim_effect(EffectKind::Launch, T0 + 6)
+            .unwrap()
+            .is_none(),
+        "blocked 不放下游"
+    );
+}
+
+#[test]
+fn stopped_attempt_does_not_release_downstream() {
+    let (directory, store) = open_store();
+    let cwd = directory.path();
+    let (root, children) = create_two(&store, cwd);
+    store.confirm_graph(&root.id, T0 + 1).unwrap();
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 2)
+        .unwrap()
+        .expect("A launch");
+    store.complete_effect(&claim).unwrap();
+    let attempt = store.begin_attempt(&children[0].id, T0 + 3).unwrap();
+    store
+        .stop_attempt(&children[0].id, attempt, T0 + 4)
+        .unwrap();
+    let downstream = store.task(&children[1].id).unwrap().unwrap();
+    assert!(downstream.needs[0].handoff.is_none(), "stopped 不写交接");
+    assert!(
+        store
+            .claim_effect(EffectKind::Launch, T0 + 6)
+            .unwrap()
+            .is_none(),
+        "stopped 不放下游"
+    );
+}

@@ -34,14 +34,18 @@ test('任务图：先查再写 → 确认卡两行事实 → 确认 → 第一�
     // 第一项开跑并报回：Kind 对话里出现它的结果卡（标题「先查行数」）。
     const firstCard = page
       .locator('[data-kind="task-result"]')
-      .filter({ hasText: '先查行数' })
+      .filter({ has: page.locator('[data-kind="task-title"]', { hasText: '先查行数' }) })
       .first();
     await expect(firstCard).toBeVisible({ timeout: 60_000 });
-    // 第二项由第一项的 ready 结果自动放出：它的卡也出现。
+    // 卡上程序事实一行：这张 ready 报告自动放出了哪个下游。
+    await expect(firstCard.locator('[data-kind="task-auto-started"]')).toContainText(
+      '已自动开跑：再写结果',
+    );
+    // 第二项由第一项的 ready 结果自动放出：它的卡也出现（按卡标题认，A 卡上有「已自动开跑」字样）。
     const secondCard = page
       .locator('[data-kind="task-result"]')
-      .filter({ hasText: '再写结果' })
-      .first();
+      .filter({ has: page.locator('[data-kind="task-title"]', { hasText: '再写结果' }) })
+      .last();
     await expect(secondCard).toBeVisible({ timeout: 60_000 });
 
     // 打开第二项的任务对话：任务包里有「上游结果」一段（第一项的标题和摘要）。

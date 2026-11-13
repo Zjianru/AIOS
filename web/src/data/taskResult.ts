@@ -75,6 +75,8 @@ export interface TaskResultFact {
   bashNote?: string;
   /** 工作树根路径（开了工作树的任务）。 */
   worktreePath?: string;
+  /** T052：这份 ready 报告自动放出的下游标题（卡上固定一行「已自动开跑」）。 */
+  autoStarted?: string[];
   /** 卡状态：写任务当前要求版本的 ready 报告给 review（卡上「待你核」）。 */
   cardState?: 'review';
   /** 接受决定（card/decision 事件派生）；还没点过是 undefined。 */
@@ -106,6 +108,8 @@ export interface TaskResultSlots {
   bashNote: string;
   /** 工作树路径；没开为空串。 */
   worktreePath: string;
+  /** T052：自动开跑的下游标题；没有为空数组。 */
+  autoStarted: string[];
   /** 这轮结果已经被用户接受（card/decision 的 confirmed）。 */
   accepted: boolean;
 }
@@ -124,6 +128,7 @@ export const taskResultSlotsSchema = z.object({
   changedLine: textSlot,
   bashNote: textSlot,
   worktreePath: textSlot,
+  autoStarted: z.array(z.string()).catch([]),
   accepted: z.boolean().catch(false),
 });
 
@@ -140,6 +145,7 @@ const TASK_RESULT_FALLBACK_SLOTS: TaskResultSlots = {
   changedLine: '',
   bashNote: '',
   worktreePath: '',
+  autoStarted: [],
   accepted: false,
 };
 
@@ -249,6 +255,7 @@ export function taskResultCardOf(
       writeScope === '' ? '' : (fact.changedLine ?? changedLineOf(changed.length, writeScope)),
     bashNote: fact.bashNote ?? '',
     worktreePath: fact.worktreePath ?? '',
+    autoStarted: fact.autoStarted ?? [],
     accepted: fact.decision?.phase === 'confirmed',
   });
   if (!parsed.success) return null;
@@ -317,6 +324,12 @@ export function parseTaskRelay(message: unknown, at: number): TaskResultFact | n
   const bashNote = typeof body.bash_note === 'string' ? body.bash_note : undefined;
   const worktreePath =
     typeof body.worktree_path === 'string' ? body.worktree_path : undefined;
+  // T052：程序事实「已自动开跑：<下游标题>」；坏字段当没有。
+  const autoStarted = Array.isArray(body.auto_started)
+    ? body.auto_started.filter(
+        (item): item is string => typeof item === 'string' && item !== '',
+      )
+    : undefined;
   const cardState = body.card_state === 'review' ? ('review' as const) : undefined;
 
   return {
@@ -334,6 +347,7 @@ export function parseTaskRelay(message: unknown, at: number): TaskResultFact | n
     ...(changedLine === undefined ? {} : { changedLine }),
     ...(bashNote === undefined ? {} : { bashNote }),
     ...(worktreePath === undefined ? {} : { worktreePath }),
+    ...(autoStarted === undefined ? {} : { autoStarted }),
     ...(cardState === undefined ? {} : { cardState }),
   };
 }

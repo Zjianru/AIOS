@@ -305,18 +305,23 @@ impl Store {
             if !ready {
                 continue;
             }
+            // 首次交接才放出下游：上游第二次 ready 只刷新交接（下游以后的 Attempt 按最新结果走），
+            // 不重新放 launch、也不再重复说「已自动开跑」。
+            let first_release = child.needs.iter().any(|need| need.handoff.is_none());
             for (need, handoff) in child.needs.iter_mut().zip(handoffs) {
                 need.handoff = Some(handoff);
             }
             save_task(connection, &child)?;
-            self.enqueue_effect_in(
-                connection,
-                &EffectPayload::Launch {
-                    task_id: child.id.clone(),
-                },
-                now,
-            )?;
-            released.push(child.title.clone());
+            if first_release {
+                self.enqueue_effect_in(
+                    connection,
+                    &EffectPayload::Launch {
+                        task_id: child.id.clone(),
+                    },
+                    now,
+                )?;
+                released.push(child.title.clone());
+            }
         }
         Ok(released)
     }
