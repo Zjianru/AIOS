@@ -68,8 +68,16 @@ pub(crate) fn full_tool_names(
     tools: &ToolSet,
     tool_keys: &BTreeSet<tools::ToolKey>,
 ) -> BTreeSet<String> {
-    let _ = tool_keys;
-    tools.names().into_iter().map(str::to_owned).collect()
+    tools
+        .names()
+        .into_iter()
+        .filter(|name| {
+            tools
+                .get(name)
+                .is_some_and(|tool| tool.condition().satisfied_by_keys(tool_keys))
+        })
+        .map(str::to_owned)
+        .collect()
 }
 
 /// 一次请求的工具表与加载历史：条件开出的工具 + 从日志重建的声明序列。
