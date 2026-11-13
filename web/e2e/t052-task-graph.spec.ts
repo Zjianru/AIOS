@@ -37,11 +37,21 @@ test('任务图：先查再写 → 确认卡两行事实 → 确认 → 第一�
       .filter({ hasText: '先查行数' })
       .first();
     await expect(firstCard).toBeVisible({ timeout: 60_000 });
-    // 第二项不会在没有上游结果时自己跑：它的张数还不能出现（只有第一项有卡）。
-    const secondCards = page
+    // 第二项由第一项的 ready 结果自动放出：它的卡也出现。
+    const secondCard = page
       .locator('[data-kind="task-result"]')
-      .filter({ hasText: '再写结果' });
-    await expect(secondCards).toHaveCount(0);
+      .filter({ hasText: '再写结果' })
+      .first();
+    await expect(secondCard).toBeVisible({ timeout: 60_000 });
+
+    // 打开第二项的任务对话：任务包里有「上游结果」一段（第一项的标题和摘要）。
+    await secondCard.getByRole('button', { name: /打开任务对话/ }).click();
+    const pane = page.locator('[data-pane="task-conversation"]');
+    await expect(pane).toBeVisible({ timeout: 20_000 });
+    const upstream = pane.locator('[data-kind="upstream-results"]');
+    await expect(upstream).toBeVisible({ timeout: 20_000 });
+    await expect(upstream).toContainText('先查行数');
+    await expect(upstream).toContainText('判重用的是原始链接');
   } finally {
     await fixture.close();
   }

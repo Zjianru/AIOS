@@ -572,6 +572,32 @@ export function TaskChatScene() {
     [events, task],
   );
 
+  // T052：下游子任务的任务包里有「上游结果」一段（assignment 里由内核写好）；任务对话里显示它。
+  const upstreamResults = useMemo(() => {
+    for (const event of events) {
+      if (event.type !== 'user/message') continue;
+      const message = event.data?.message as
+        | { source?: { rpcId?: string }; content?: { type?: string; text?: string }[] }
+        | undefined;
+      if (!String(message?.source?.rpcId ?? '').startsWith(ASSIGNMENT_PREFIX)) continue;
+      const text = (message?.content ?? []).map((block) => block?.text ?? '').join('');
+      try {
+        const parsed = JSON.parse(text) as {
+          upstream_results?: {
+            task_id: string;
+            title: string;
+            requirement_version: number;
+            summary: string;
+          }[];
+        };
+        return parsed.upstream_results ?? [];
+      } catch {
+        return [];
+      }
+    }
+    return [];
+  }, [events]);
+
   // 重启汇报送到以后横幅自己消失（任务仍是「被打断了」）；只在待核实时轻轮询页头事实。
   useEffect(() => {
     if (!task?.restartPending) return;
@@ -954,6 +980,23 @@ export function TaskChatScene() {
         >
           <PlugZap className="size-3.5" />
           被打断了 · 待 Kind 核实，尚未接续
+        </div>
+      ) : null}
+
+      {upstreamResults.length > 0 ? (
+        <div className="shrink-0 border-b border-line bg-hover px-6 py-2" data-kind="upstream-results">
+          <div className="mx-auto w-full max-w-[680px]">
+            <div className="text-1 text-ink-3">上游结果</div>
+            <ul className="mt-1 space-y-1 text-2 leading-5 text-ink-2">
+              {upstreamResults.map((item) => (
+                <li key={item.task_id}>
+                  <span className="text-ink">{item.title}</span>
+                  <span className="text-ink-3">（要求第 {item.requirement_version} 版）</span>{' '}
+                  {item.summary}
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       ) : null}
 

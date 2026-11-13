@@ -15,7 +15,7 @@ use crate::effect::{
 use crate::id::{AttemptId, BootId, ConversationId, InputId, ReportId, TaskId};
 use crate::task::{
     Acceptance, Arrangement, Attempt, AttemptEnd, AttemptTrigger, Confirmation, FrozenPolicy,
-    Input, InputAttachment, InputSource, MissingItem, Need, NewGraph, NewInput, NewReport,
+    Handoff, Input, InputAttachment, InputSource, MissingItem, Need, NewGraph, NewInput, NewReport,
     NewSubtask, NewTask, Report, ReportState, RequirementVersion, Run, SayOutcome, Task,
     TaskPolicy, VersionSource, Worktree, resolve_write_scope,
 };
@@ -264,6 +264,61 @@ impl Store {
         }
         transaction.commit()?;
         Ok(launched)
+    }
+
+    /// T052：这个子任务的 ready 报告落库后，放出上游全有 ready 结果的下游。
+    ///
+    /// 只处理同一个总任务下的兄弟；交接（报告 id、要求版本、摘要）写进下游的 needs，
+    /// launch 效果在同一个事务里排（恰好一次由效果表的键保证）。
+    fn release_downstream_in(
+        &self,
+        connection: &Connection,
+        task: &Task,
+        now: i64,
+    ) -> Result<Vec<String>, TaskError> {
+        let Some(parent) = &task.parent else {
+            return Ok(Vec::new());
+        };
+        let mut released = Vec::new();
+        for mut child in children_in(connection, parent)? {
+            if !child.needs.iter().any(|need| &need.from == &task.id) {
+                continue;
+            }
+            let mut handoffs = Vec::with_capacity(child.needs.len());
+            let mut ready = true;
+            for need in &child.needs {
+                let upstream = load_task_required(connection, &need.from)?;
+                let Some(report) = upstream.latest_report() else {
+                    ready = false;
+                    break;
+                };
+                if report.state != ReportState::Ready {
+                    ready = false;
+                    break;
+                }
+                handoffs.push(Handoff {
+                    report_id: report.id.clone(),
+                    requirement_version: report.version,
+                    summary: report.summary.clone(),
+                });
+            }
+            if !ready {
+                continue;
+            }
+            for (need, handoff) in child.needs.iter_mut().zip(handoffs) {
+                need.handoff = Some(handoff);
+            }
+            save_task(connection, &child)?;
+            self.enqueue_effect_in(
+                connection,
+                &EffectPayload::Launch {
+                    task_id: child.id.clone(),
+                },
+                now,
+            )?;
+            released.push(child.title.clone());
+        }
+        Ok(released)
     }
 
     /// 从任务和效果表派生阶段。
@@ -935,6 +990,7 @@ impl Store {
                 });
             }
         }
+        let report_state = report.state;
         let report_id = ReportId::from(generate_id(&transaction)?);
         task.reports.push(Report {
             id: report_id.clone(),
@@ -947,11 +1003,19 @@ impl Store {
             version: task.requirement_version(),
         });
         save_task(&transaction, &task)?;
+        // T052：ready 报告落库的同一个事务里放出下游：上游全有 ready 结果的下游，
+        // 把交接写进它的 needs 并排 launch（效果表，崩溃重放恰好一次，D94）。
+        let released = if report_state == ReportState::Ready {
+            self.release_downstream_in(&transaction, &task, now)?
+        } else {
+            Vec::new()
+        };
         self.enqueue_effect_in(
             &transaction,
             &EffectPayload::Relay {
                 task_id: id.clone(),
                 report_id: report_id.clone(),
+                released,
             },
             now,
         )?;

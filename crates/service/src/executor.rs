@@ -1476,7 +1476,11 @@ impl TaskRuntime {
             .stage(&task.id)
             .map_err(|error| error.to_string())?;
         match &claim.payload {
-            EffectPayload::Relay { report_id, .. } => {
+            EffectPayload::Relay {
+                report_id,
+                released,
+                ..
+            } => {
                 let Some(report) = task.reports.iter().find(|report| report.id == *report_id)
                 else {
                     return Err(format!("任务 {} 没有报告 {report_id}", task.id));
@@ -1498,6 +1502,10 @@ impl TaskRuntime {
                 }
                 if let Some(question) = &report.question {
                     body["question"] = json!(question);
+                }
+                // T052：这份 ready 报告自动放出的下游（程序事实一行）。
+                if !released.is_empty() {
+                    body["auto_started"] = json!(released);
                 }
                 // 写任务的结果卡：写入范围、改动清单和固定一行。只有当前版本的 ready 报告
                 // 才给「待你核」的卡状态（阶段仍由 task.stage 报待检查）。
@@ -1760,6 +1768,30 @@ impl TaskRuntime {
         // 写任务的模型要知道自己能在哪个路径里改；开了工作树时这里写换算后的范围。
         if let Some(scope) = task.effective_write_scope() {
             assignment["write_scope"] = json!(scope.to_string_lossy());
+        }
+        // T052：下游子任务的任务包里带「上游结果」：每个上游的标题、要求版本和摘要。
+        let mut upstream_results = Vec::new();
+        for need in &task.needs {
+            let Some(handoff) = &need.handoff else {
+                continue;
+            };
+            let upstream_title = self
+                .store
+                .task(&need.from)
+                .ok()
+                .flatten()
+                .map(|upstream| upstream.title)
+                .unwrap_or_default();
+            upstream_results.push(json!({
+                "task_id": need.from.as_str(),
+                "title": upstream_title,
+                "report_id": handoff.report_id.as_str(),
+                "requirement_version": handoff.requirement_version,
+                "summary": handoff.summary,
+            }));
+        }
+        if !upstream_results.is_empty() {
+            assignment["upstream_results"] = json!(upstream_results);
         }
         let assignment = assignment.to_string();
         let sent = host

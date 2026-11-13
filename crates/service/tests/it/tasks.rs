@@ -147,10 +147,11 @@ impl Respond for Router {
         if !thin
             && let Some(step) = {
                 let mut phase = self.state.graph_kind.lock().unwrap();
-                phase.take().map(|step| {
+                let step = phase.take();
+                if let Some(step) = step {
                     *phase = Some(step + 1);
-                    step
-                })
+                }
+                step
             }
         {
             let sse = match step {
@@ -236,10 +237,7 @@ impl Respond for Router {
 /// T052：从 Kind 请求体里「已建任务图 <id>」取出图 id（动态回放用）。
 fn graph_root_id(body: &str) -> Option<String> {
     let rest = body.split("已建任务图 ").nth(1)?;
-    let id: String = rest
-        .chars()
-        .take_while(|value| value.is_ascii_hexdigit())
-        .collect();
+    let id: String = rest.chars().take_while(char::is_ascii_hexdigit).collect();
     (!id.is_empty()).then_some(id)
 }
 
@@ -8048,4 +8046,161 @@ async fn launch_gate_blocks_graph_root_and_unconfirmed_children() {
             .is_empty(),
         "没确认/上游没结果的下游不跑"
     );
+}
+
+/// T052.2：A 的 ready 报告落库的同一事务放出 B；B 开跑时任务包里有「上游结果」，needs 上记交接。
+#[tokio::test]
+async fn graph_ready_releases_downstream_with_the_upstream_result() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    router.enable_graph_kind();
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    let runtime = host.task_runtime().expect("任务执行者");
+    runtime.set_pump_paused(true);
+
+    host.dispatch(Call::Send(send(&host, "kind-1", "先查再写")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&host, data.path(), 1).await;
+    wait_until("建图并出卡", || {
+        tasks_store(data.path())
+            .task_ids()
+            .map(|ids| ids.len() == 3)
+            .unwrap_or(false)
+    })
+    .await;
+    let store = tasks_store(data.path());
+    let root = graph_root(&store);
+    let children = store.children(&root.id).expect("子任务");
+    // 确认：A 进 launch，B 等 A 的 ready。
+    let Response::CardAct(response) = host
+        .dispatch(Call::CardAct(CardActRequest {
+            call_id: "call-graph-card".to_owned(),
+            verb: CardVerb::Confirm,
+            option: Some("confirm".to_owned()),
+        }))
+        .await
+        .expect("确认")
+    else {
+        panic!("card-act 响应");
+    };
+    assert!(response.decision.is_some());
+
+    // ThinAgent 脚本按任务排：A 报 ready，B 报 ready；Kind 的后续轮多备几段文本。
+    let report_a = crate::common::tool_use_sse(
+        2,
+        "call-a-report",
+        "task_report",
+        r#"{"state":"ready","summary":"查完了：notes.md 有 3 行"}"#,
+    );
+    let report_b = crate::common::tool_use_sse(
+        2,
+        "call-b-report",
+        "task_report",
+        r#"{"state":"ready","summary":"写好了：other.txt 里是 3 行"}"#,
+    );
+    let text = crate::common::text_sse("好");
+    router.push_thin_for(children[0].id.as_str(), report_a.clone());
+    router.push_thin_for(children[0].id.as_str(), text.clone());
+    router.push_thin_for(children[1].id.as_str(), report_b);
+    router.push_thin_for(children[1].id.as_str(), text);
+    for _ in 0..6 {
+        router.push_kind(crate::common::text_sse("收到"));
+    }
+    runtime.set_pump_paused(false);
+
+    wait_until("A 报 ready", || {
+        tasks_store(data.path())
+            .task(&children[0].id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_report().map(|report| report.state))
+            == Some(ReportState::Ready)
+    })
+    .await;
+    wait_until("B 自动开跑", || {
+        tasks_store(data.path())
+            .task(&children[1].id)
+            .ok()
+            .flatten()
+            .and_then(|task| {
+                task.latest_attempt()
+                    .and_then(|attempt| attempt.conversation.clone())
+            })
+            .is_some()
+    })
+    .await;
+
+    let downstream = tasks_store(data.path())
+        .task(&children[1].id)
+        .expect("读任务")
+        .expect("B 存在");
+    let handoff = downstream.needs[0]
+        .handoff
+        .clone()
+        .expect("B 开跑前解析出交接");
+    assert!(handoff.summary.contains("3 行"));
+    let upstream = tasks_store(data.path())
+        .task(&children[0].id)
+        .expect("读任务")
+        .expect("A 存在");
+    assert_eq!(
+        handoff.report_id,
+        upstream.latest_report().expect("A ready").id
+    );
+
+    // B 的任务包（assignment）里有「上游结果」一段：标题、要求版本、摘要。
+    let conversation = downstream
+        .latest_attempt()
+        .and_then(|attempt| attempt.conversation.clone())
+        .expect("B 的会话");
+    let session_id = session::SessionId::parse(conversation.as_str()).expect("B 会话 id");
+    let session =
+        session::SessionStore::open_read_only(data.path(), &session_id).expect("B 的会话日志");
+    let assignment = session
+        .events()
+        .iter()
+        .find_map(|event| match &event.kind {
+            session::EventKind::UserMessage { message, .. } => {
+                let text: String = message
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        model::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                serde_json::from_str::<Value>(&text).ok()
+            }
+            _ => None,
+        })
+        .expect("B 的 assignment");
+    let upstream_results = assignment["upstream_results"]
+        .as_array()
+        .expect("上游结果一段");
+    assert_eq!(upstream_results.len(), 1);
+    assert!(
+        upstream_results[0]["title"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("先查行数")
+    );
+    assert_eq!(upstream_results[0]["requirement_version"], 1);
+    assert!(
+        upstream_results[0]["summary"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("3 行")
+    );
+
+    wait_until("B 也报 ready、总任务待检查", || {
+        tasks_store(data.path())
+            .stage(&root.id)
+            .map(|stage| stage == Stage::ReadyForReview)
+            .unwrap_or(false)
+    })
+    .await;
 }

@@ -282,3 +282,88 @@ fn old_task_rows_without_graph_fields_read_as_single_tasks() {
     assert!(old.arrangement.is_none());
     assert!(!old.is_graph_root());
 }
+
+#[test]
+fn ready_report_releases_downstream_with_handoff_exactly_once() {
+    let (directory, store) = open_store();
+    let cwd = directory.path();
+    let (root, children) = create_two(&store, cwd);
+    store.confirm_graph(&root.id, T0 + 1).unwrap();
+    // A 的 launch 排上了；收掉它，模拟 A 已经跑完（报告走 record_report 的同一事务放出逻辑）。
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 2)
+        .unwrap()
+        .expect("A launch");
+    store.complete_effect(&claim).unwrap();
+    record_ready(&store, &children[0], "查完了：notes.md 有 3 行");
+
+    let downstream = store.task(&children[1].id).unwrap().unwrap();
+    let handoff = downstream.needs[0].handoff.clone().expect("开跑前解析交接");
+    let upstream = store.task(&children[0].id).unwrap().unwrap();
+    let report = upstream.latest_report().expect("A 的 ready 报告");
+    assert_eq!(handoff.report_id, report.id, "交接绑上游报告");
+    assert_eq!(handoff.requirement_version, report.version);
+    assert!(handoff.summary.contains("3 行"), "交接带摘要：{handoff:?}");
+
+    // 下游的 launch 只排了一条；relay 里带「已自动开跑」的标题。
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 3)
+        .unwrap()
+        .expect("B launch");
+    let EffectPayload::Launch { task_id } = claim.payload.clone() else {
+        panic!("launch 载荷");
+    };
+    assert_eq!(task_id, children[1].id);
+    store.complete_effect(&claim).unwrap();
+    assert!(
+        store
+            .claim_effect(EffectKind::Launch, T0 + 4)
+            .unwrap()
+            .is_none(),
+        "只放一次"
+    );
+    let relay = store
+        .claim_effect(EffectKind::Relay, T0 + 5)
+        .unwrap()
+        .expect("A 的 relay");
+    let EffectPayload::Relay { released, .. } = relay.payload.clone() else {
+        panic!("relay 载荷");
+    };
+    assert_eq!(released, vec!["再写结果".to_owned()]);
+}
+
+#[test]
+fn failed_report_does_not_release_downstream() {
+    let (directory, store) = open_store();
+    let cwd = directory.path();
+    let (root, children) = create_two(&store, cwd);
+    store.confirm_graph(&root.id, T0 + 1).unwrap();
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 2)
+        .unwrap()
+        .expect("A launch");
+    store.complete_effect(&claim).unwrap();
+    let attempt = store.begin_attempt(&children[0].id, T0 + 3).unwrap();
+    store
+        .record_report(
+            &children[0].id,
+            attempt,
+            NewReport {
+                state: ReportState::Failed,
+                origin: ReportOrigin::Agent,
+                summary: "跑挂了".to_owned(),
+                question: None,
+            },
+            T0 + 4,
+        )
+        .unwrap();
+    let downstream = store.task(&children[1].id).unwrap().unwrap();
+    assert!(downstream.needs[0].handoff.is_none(), "失败不写交接");
+    assert!(
+        store
+            .claim_effect(EffectKind::Launch, T0 + 6)
+            .unwrap()
+            .is_none(),
+        "失败不放下游"
+    );
+}

@@ -181,6 +181,7 @@ fn records_a_report_and_queues_relay_in_one_transaction() {
             EffectPayload::Relay {
                 task_id: task.id.clone(),
                 report_id: report_id.clone(),
+                released: Vec::new(),
             }
         ))
     );
