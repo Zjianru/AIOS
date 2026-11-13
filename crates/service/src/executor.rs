@@ -449,7 +449,8 @@ impl TaskRuntime {
                 ..crate::stats::SessionStats::default()
             },
         };
-        let fx = crate::fx::usd_to_cny(&self.data_dir).await;
+        // 页面热路径：只读汇率缓存，不发起网络请求（status 那边负责刷新缓存）。
+        let fx = crate::fx::cached_or_fallback(&self.data_dir);
         let attempt_id = attempt.as_ref().map(|attempt| attempt.id);
         let latest_report = attempt_id.and_then(|attempt_id| {
             task.reports
