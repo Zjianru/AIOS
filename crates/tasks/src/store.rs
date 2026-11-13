@@ -281,7 +281,7 @@ impl Store {
         };
         let mut released = Vec::new();
         for mut child in children_in(connection, parent)? {
-            if !child.needs.iter().any(|need| &need.from == &task.id) {
+            if !child.needs.iter().any(|need| need.from == task.id) {
                 continue;
             }
             let mut handoffs = Vec::with_capacity(child.needs.len());
