@@ -7,12 +7,14 @@ import { apiPost, startKernelFixture, type KernelFixture } from './service-fixtu
  */
 
 const TITLE = '查一下新闻归档里重复链接的判重规则和影响范围';
+// 卡片标题槽截到 20 字：按前缀过滤（整串仍给发送语用）。
+const CARD_TEXT = '查一下新闻归档里重复链接';
 
 const urlOf = (fixture: KernelFixture, hash = '#kind') =>
   fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + hash;
 
 function cardOf(page: import('@playwright/test').Page) {
-  return page.locator('[data-kind="task-result"]').filter({ hasText: TITLE }).first();
+  return page.locator('[data-kind="task-result"]').filter({ hasText: CARD_TEXT }).first();
 }
 
 function taskStateOf(page: import('@playwright/test').Page) {
