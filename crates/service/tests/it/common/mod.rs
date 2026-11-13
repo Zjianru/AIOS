@@ -55,7 +55,8 @@ pub fn options(data_dir: &Path) -> RootSessionOptions {
             max_tokens: 2048,
             context_window: DEFAULT_CONTEXT_WINDOW,
             effort: Effort::new("high"),
-            tool_update: None,
+            // T046：测试辅助默认模拟生产 DeepSeek 路由（声明 addition-only）；测「未声明路由」语义时显式设 None。
+            tool_update: Some(model::ToolUpdate::AdditionOnly),
         },
         config: AgentConfig::default(),
         credentials: Some(test_credential(data_dir)),
