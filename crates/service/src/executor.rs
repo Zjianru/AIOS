@@ -102,6 +102,7 @@ You can read, search, load skills, keep a todo list, read the web, and call task
 When the assignment has a write_scope, you also have write and edit, and they only work inside that scope; if what the user asks needs a path outside it, call task_handback instead of trying to get around it. \
 {shell}
 When the work is done, report ready with the answer and the evidence it rests on. \
+When the requirement or DoD names a specific tool, command, or approach (for example, \"take the date with the date command\"), that approach is part of the task scope: if this task does not have that tool or permission (for example bash is off), report blocked on the first step with exactly what is missing and what the user should do, and put that direct question in question when the user must decide; do not substitute another tool, do not simulate its output, and do not wait until the ready report to mention it. \
 When you cannot continue without a missing tool, permission, file, credential or an answer, report blocked with exactly what is missing and what the user must do; put a direct question in question when only the user can answer it. \
 When the work cannot produce the result, report failed with what failed and what you already found. \
 Report once, when it is a result: do not report progress, and do not claim work you did not do."
@@ -3101,5 +3102,42 @@ mod t048_title_limit_tests {
             TASK_ACCEPT_TITLE_DESCRIPTION.contains("truncated"),
             "超长会被截断：{TASK_ACCEPT_TITLE_DESCRIPTION}"
         );
+    }
+}
+
+/// T049：requirement/DoD 指名的具体工具/命令/做法属于任务范围；缺工具（如 bash 关着）要在第一步就报
+/// blocked，不许用别的工具替代或模拟它的输出，也不许替代完成后才在 ready 报告里附一句说明。
+#[cfg(test)]
+mod t049_missing_tool_policy_tests {
+    use super::thin_policy;
+
+    fn assert_missing_tool_rule(policy: &str) {
+        for needle in [
+            "names a specific tool, command, or approach",
+            "report blocked on the first step",
+            "do not substitute another tool",
+            "do not simulate its output",
+            "do not wait until the ready report",
+        ] {
+            assert!(
+                policy.contains(needle),
+                "thin_policy 缺关键句「{needle}」：{policy}"
+            );
+        }
+    }
+
+    #[test]
+    fn bash_off_policy_makes_a_missing_tool_a_first_step_blocked() {
+        let policy = thin_policy(false);
+        assert!(
+            policy.contains("You cannot run shell commands"),
+            "bash 关着的事实还在"
+        );
+        assert_missing_tool_rule(&policy);
+    }
+
+    #[test]
+    fn bash_on_policy_states_the_same_rule_for_other_missing_tools() {
+        assert_missing_tool_rule(&thin_policy(true));
     }
 }
