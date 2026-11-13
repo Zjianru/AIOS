@@ -171,3 +171,63 @@ impl ToolRegistryState {
         }
     }
 }
+
+/// T046：未声明 addition-only 的路由，工具表从第一轮起就是该会话角色 ToolSet 的全量成员。
+#[cfg(test)]
+mod t046_stable_tool_tests {
+    use std::collections::BTreeSet;
+
+    use tools::ToolSet;
+
+    use super::*;
+
+    fn retained(names: &[&str]) -> ToolSet {
+        let mut tools = ToolSet::builtin();
+        let keep: BTreeSet<String> = names.iter().map(|name| (*name).to_owned()).collect();
+        tools.retain_named(&keep);
+        tools
+    }
+
+    /// 同一会话跨轮 + 加载 skill 前后：不支持 addition-only 的路由，工具名列表不变（全量固定）。
+    #[test]
+    fn fixed_selection_ignores_loaded_skills_and_turns() {
+        let tools = ToolSet::builtin();
+        let before = all_tool_names(&tools);
+        assert_eq!(before, tools.names().into_iter().map(str::to_owned).collect::<BTreeSet<_>>());
+        // 加载过 skill 的那一轮，gate 的 enabled 会变；固定选择不看它。
+        let mut skills = BTreeSet::new();
+        skills.insert("web".to_owned());
+        let after = all_tool_names(&tools);
+        assert_eq!(before, after, "加载 skill 前后工具名列表必须一致");
+    }
+
+    /// 角色/安全边界在构造期 retain 之后仍然成立：全开只开该角色 ToolSet 里的成员。
+    #[test]
+    fn full_open_never_crosses_the_role_boundary() {
+        // Kind 的 only 名单里没有 write/edit/bash/job_*（root.rs KIND_TOOLS）。
+        let kind_like = retained(&[
+            "read",
+            "glob",
+            "grep",
+            "skill",
+            "todo_write",
+            "ask_user_question",
+            "canvas",
+        ]);
+        let names = all_tool_names(&kind_like);
+        for forbidden in ["write", "edit", "bash", "job_output", "job_list", "job_kill"] {
+            assert!(!names.contains(forbidden), "Kind 全开后不能出现 {forbidden}: {names:?}");
+        }
+        // ThinAgent 只读任务：没有 write/edit/bash/job_*。
+        let thin_read = retained(&["read", "glob", "grep", "skill", "todo_write"]);
+        let names = all_tool_names(&thin_read);
+        for forbidden in ["write", "edit", "bash", "job_output"] {
+            assert!(!names.contains(forbidden), "ThinAgent 只读全开后不能出现 {forbidden}");
+        }
+        // 写任务名单有 write/edit，但没有 bash/job_*。
+        let thin_write = retained(&["read", "glob", "grep", "write", "edit", "skill", "todo_write"]);
+        let names = all_tool_names(&thin_write);
+        assert!(names.contains("write") && names.contains("edit"));
+        assert!(!names.contains("bash"));
+    }
+}
