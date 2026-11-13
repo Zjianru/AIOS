@@ -385,7 +385,11 @@ fn resolve_selection(
 fn startup_common_for_requested_selection(
     common: &CommonArgs,
     requested: Option<&session::ModelSelection>,
+    connections: &[credentials::ConnectionInfo],
 ) -> CommonArgs {
+    // T051.5：只有请求的选择指向「现在还在 Keyring 里」的连接时才盖启动参数；连接已被删时
+    // 三样（连接/模型/思考档）都不盖，按启动参数和上次选择走（D74）。
+    let _ = connections;
     let mut resolved = common.clone();
     if let Some(selection) = requested {
         resolved.connection = Some(selection.connection.clone());
@@ -634,12 +638,20 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
     let factory_data_dir = data_dir.clone();
     let monitor_for_recheck = monitor.clone();
     let model_factory: service::ModelFactory = std::sync::Arc::new(move |selection| {
-        if let Ok(keyring) =
-            credentials::Keyring::open(factory_data_dir.clone(), factory_common.identity.as_deref())
-        {
-            refresh_monitor_secrets(&monitor_for_recheck, &keyring);
+        let keyring = credentials::Keyring::open(
+            factory_data_dir.clone(),
+            factory_common.identity.as_deref(),
+        )
+        .ok();
+        if let Some(keyring) = &keyring {
+            refresh_monitor_secrets(&monitor_for_recheck, keyring);
         }
-        let common = startup_common_for_requested_selection(&factory_common, selection);
+        let connections = keyring
+            .as_ref()
+            .map(|keyring| keyring.view().connections)
+            .unwrap_or_default();
+        let common =
+            startup_common_for_requested_selection(&factory_common, selection, &connections);
         model_with_keyring(
             &common,
             &factory_data_dir,
@@ -1503,7 +1515,9 @@ mod tests {
             model: "MiniMax-M3.1-Flash".to_owned(),
             effort_wanted: "medium".to_owned(),
         };
-        let resolved = crate::startup_common_for_requested_selection(&startup, Some(&requested));
+        let connections = vec![connection_info("minimax-cn", "MiniMax-M3.1-Flash")];
+        let resolved =
+            crate::startup_common_for_requested_selection(&startup, Some(&requested), &connections);
         assert_eq!(resolved.connection.as_deref(), Some("minimax-cn"));
         assert_eq!(resolved.model.as_deref(), Some("MiniMax-M3.1-Flash"));
         assert_eq!(resolved.effort.as_deref(), Some("medium"));
@@ -1514,6 +1528,30 @@ mod tests {
         );
     }
 
+    /// T051.5：请求的选择指向已删连接（Keyring 里没有）时，三样都不盖，按启动参数走（D74）。
+    #[test]
+    fn requested_selection_naming_a_deleted_connection_keeps_startup_flags() {
+        let mut startup = dev_common();
+        startup.connection = Some("deepseek".to_owned());
+        startup.model = Some("deepseek-flash".to_owned());
+        startup.effort = Some("high".to_owned());
+        let requested = session::ModelSelection {
+            connection: "gone".to_owned(),
+            model: "gone-model".to_owned(),
+            effort_wanted: "low".to_owned(),
+        };
+        let connections = vec![connection_info("deepseek", "deepseek-flash")];
+        let resolved =
+            crate::startup_common_for_requested_selection(&startup, Some(&requested), &connections);
+        assert_eq!(
+            resolved.connection.as_deref(),
+            Some("deepseek"),
+            "已删连接不盖启动参数"
+        );
+        assert_eq!(resolved.model.as_deref(), Some("deepseek-flash"));
+        assert_eq!(resolved.effort.as_deref(), Some("high"));
+    }
+
     /// T037：空数据目录没有请求选择时，启动参数原样当默认（开发/预检用法不变）。
     #[test]
     fn serve_startup_flags_are_default_without_stored_selection() {
@@ -1521,7 +1559,7 @@ mod tests {
         startup.connection = Some("deepseek".to_owned());
         startup.model = Some("deepseek-flash".to_owned());
         startup.effort = Some("high".to_owned());
-        let resolved = crate::startup_common_for_requested_selection(&startup, None);
+        let resolved = crate::startup_common_for_requested_selection(&startup, None, &[]);
         assert_eq!(resolved.connection.as_deref(), Some("deepseek"));
         assert_eq!(resolved.model.as_deref(), Some("deepseek-flash"));
         assert_eq!(resolved.effort.as_deref(), Some("high"));
