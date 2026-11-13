@@ -450,21 +450,21 @@ impl TaskRuntime {
         })
     }
 
-/// T051：上下文占用 = 当前 Attempt 日志末尾最近一次 assistant/message 的 prompt 用量
-/// （输入 + 缓存读写）；还没有请求就是 0。
-fn context_used_of(events: &[session::Event]) -> u64 {
-    for event in events.iter().rev() {
-        if let session::EventKind::AssistantMessage {
-            usage: Some(usage), ..
-        } = &event.kind
-        {
-            return usage.input_tokens.unwrap_or(0)
-                + usage.cache_read_input_tokens.unwrap_or(0)
-                + usage.cache_creation_input_tokens.unwrap_or(0);
+    /// T051：上下文占用 = 当前 Attempt 日志末尾最近一次 assistant/message 的 prompt 用量
+    /// （输入 + 缓存读写）；还没有请求就是 0。
+    fn context_used_of(events: &[session::Event]) -> u64 {
+        for event in events.iter().rev() {
+            if let session::EventKind::AssistantMessage {
+                usage: Some(usage), ..
+            } = &event.kind
+            {
+                return usage.input_tokens.unwrap_or(0)
+                    + usage.cache_read_input_tokens.unwrap_or(0)
+                    + usage.cache_creation_input_tokens.unwrap_or(0);
+            }
         }
+        0
     }
-    0
-}
 
     /// 任务当前 Attempt 的会话：读任务聚合、取最近一次 Attempt 和它的会话。
     fn task_attempt(
