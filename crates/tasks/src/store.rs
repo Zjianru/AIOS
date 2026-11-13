@@ -14,9 +14,10 @@ use crate::effect::{
 };
 use crate::id::{AttemptId, BootId, ConversationId, InputId, ReportId, TaskId};
 use crate::task::{
-    Acceptance, Attempt, AttemptEnd, AttemptTrigger, FrozenPolicy, Input, InputAttachment,
-    InputSource, MissingItem, NewInput, NewReport, NewTask, Report, RequirementVersion, Run,
-    SayOutcome, Task, TaskPolicy, VersionSource, Worktree, resolve_write_scope,
+    Acceptance, Arrangement, Attempt, AttemptEnd, AttemptTrigger, Confirmation, FrozenPolicy,
+    Input, InputAttachment, InputSource, MissingItem, Need, NewGraph, NewInput, NewReport,
+    NewSubtask, NewTask, Report, ReportState, RequirementVersion, Run, SayOutcome, Task,
+    TaskPolicy, VersionSource, Worktree, resolve_write_scope,
 };
 
 /// 任务库 schema 版本；比这新的库拒绝打开。
@@ -155,6 +156,123 @@ impl Store {
         Ok(task)
     }
 
+    /// T052：把一张任务图在一个事务里落库：总任务 + 子任务 + needs。
+    ///
+    /// 图不在这里开跑：确认卡上点「确认」才把没有 needs 的子任务放进 launch 队列。
+    pub fn create_graph(&self, graph: NewGraph, now: i64) -> Result<Task, TaskError> {
+        graph.root.validate()?;
+        for subtask in &graph.subtasks {
+            subtask.task.validate()?;
+        }
+        let frozen = graph
+            .subtasks
+            .iter()
+            .map(|subtask| subtask.policy.freeze(&subtask.task.cwd))
+            .collect::<Result<Vec<_>, _>>()?;
+        validate_graph(&graph.subtasks, &frozen)?;
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let root = task_row(
+            &transaction,
+            None,
+            graph.root,
+            &FrozenPolicy {
+                write_scope: None,
+                bash: false,
+                worktree: false,
+            },
+            now,
+            None,
+            Vec::new(),
+            Some(Arrangement {
+                version: 1,
+                confirmed: None,
+            }),
+        )?;
+        insert_task_row(&transaction, &root)?;
+        let ids = (0..graph.subtasks.len())
+            .map(|_| generate_id(&transaction).map(TaskId::from))
+            .collect::<Result<Vec<_>, _>>()?;
+        for (index, subtask) in graph.subtasks.iter().enumerate() {
+            let needs = subtask
+                .after
+                .iter()
+                .map(|after| Need {
+                    from: ids[*after].clone(),
+                    handoff: None,
+                })
+                .collect();
+            let task = task_row(
+                &transaction,
+                Some(ids[index].clone()),
+                subtask.task.clone(),
+                &frozen[index],
+                now,
+                Some(root.id.clone()),
+                needs,
+                None,
+            )?;
+            insert_task_row(&transaction, &task)?;
+        }
+        transaction.commit()?;
+        Ok(root)
+    }
+
+    /// T052：总任务的子任务（按落库顺序）。
+    pub fn children(&self, parent: &TaskId) -> Result<Vec<Task>, TaskError> {
+        let conn = self.lock()?;
+        children_in(&conn, parent)
+    }
+
+    /// T052：这个子任务的上游是不是都有了 ready 报告（阶段派生和 launch 入口共用）。
+    pub fn needs_ready(&self, task: &Task) -> Result<bool, TaskError> {
+        let conn = self.lock()?;
+        needs_ready_in(&conn, task)
+    }
+
+    /// T052：确认任务图：同一个事务里记确认，并把没有 needs 的子任务放进 launch 队列。
+    pub fn confirm_graph(&self, root: &TaskId, now: i64) -> Result<usize, TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut root_task = load_task_required(&transaction, root)?;
+        let Some(arrangement) = root_task.arrangement.clone() else {
+            return Err(TaskError::NotGraphRoot);
+        };
+        if arrangement.confirmed.is_some() {
+            return Err(TaskError::GraphAlreadyConfirmed);
+        }
+        root_task.arrangement = Some(Arrangement {
+            version: arrangement.version,
+            confirmed: Some(Confirmation {
+                version: arrangement.version,
+                at: now,
+            }),
+        });
+        save_task(&transaction, &root_task)?;
+        let mut launched = 0_usize;
+        for child in children_in(&transaction, root)? {
+            if child.needs.is_empty() {
+                self.enqueue_effect_in(
+                    &transaction,
+                    &EffectPayload::Launch {
+                        task_id: child.id.clone(),
+                    },
+                    now,
+                )?;
+                launched += 1;
+            }
+        }
+        transaction.commit()?;
+        Ok(launched)
+    }
+
+    /// 从任务和效果表派生阶段。
+    pub fn stage(&self, id: &TaskId) -> Result<Stage, TaskError> {
+        let conn = self.lock()?;
+        let task = load_task_required(&conn, id)?;
+        stage_with_graph(&conn, &task)
+    }
+
     /// 按受理幂等键建任务：同一个键再来返回同一个任务，不建第二行、不重排效果。
     /// 建任务和记下键在同一个事务里，崩在中间不会留下「任务建了但键没记」。
     pub fn create_task_once(
@@ -208,38 +326,8 @@ impl Store {
         policy: &FrozenPolicy,
         now: i64,
     ) -> Result<Task, TaskError> {
-        let versions = vec![RequirementVersion {
-            write_scope: policy.write_scope.clone(),
-            at: now,
-            source: VersionSource::TaskAccept,
-        }];
-        let task = Task {
-            id: TaskId::from(generate_id(connection)?),
-            title: draft.title,
-            requirement: draft.requirement,
-            dod: draft.dod,
-            cwd: draft.cwd,
-            conversation: draft.conversation,
-            model: draft.model,
-            tools: draft.tools,
-            write_scope: policy.write_scope.clone(),
-            bash: policy.bash,
-            worktree: policy.worktree,
-            worktree_state: None,
-            writes: Vec::new(),
-            code_mode: false,
-            runs: Vec::new(),
-            reports: Vec::new(),
-            inputs: Vec::new(),
-            versions,
-            acceptance: None,
-            missing: Vec::new(),
-            created_at: now,
-        };
-        connection.execute(
-            "INSERT INTO task (id, value) VALUES (?1, ?2)",
-            params![task.id.as_str(), serde_json::to_string(&task)?],
-        )?;
+        let task = task_row(connection, None, draft, policy, now, None, Vec::new(), None)?;
+        insert_task_row(connection, &task)?;
         self.enqueue_effect_in(
             connection,
             &EffectPayload::Launch {
@@ -373,6 +461,10 @@ impl Store {
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load_task_required(&transaction, id)?;
+        // T052：总任务没有执行承载，任何路径都不能给它开 Attempt。
+        if task.is_graph_root() {
+            return Err(TaskError::GraphRootCannotRun);
+        }
         if let Some(open) = task
             .runs
             .iter()
@@ -938,14 +1030,6 @@ impl Store {
         Ok(task)
     }
 
-    /// 从任务和效果表派生阶段。
-    pub fn stage(&self, id: &TaskId) -> Result<Stage, TaskError> {
-        let conn = self.lock()?;
-        let task = load_task_required(&conn, id)?;
-        let launch_queued = effect_pending_in(&conn, EffectKind::Launch, id.as_str())?;
-        Ok(task.stage(launch_queued))
-    }
-
     /// 删除一条与 claim 的 seq/generation 仍相等的效果行；返回是否删到。
     pub fn complete_effect(&self, claim: &EffectClaim) -> Result<bool, TaskError> {
         let conn = self.lock()?;
@@ -1115,6 +1199,199 @@ fn begin_followup_attempt(task: &mut Task, trigger: AttemptTrigger, now: i64) ->
     Some(attempt_id)
 }
 
+/// T052：按聚合字段建一行 Task（不落库）；单派与建图共用。
+#[allow(clippy::too_many_arguments)]
+fn task_row(
+    connection: &Connection,
+    id: Option<TaskId>,
+    draft: NewTask,
+    policy: &FrozenPolicy,
+    now: i64,
+    parent: Option<TaskId>,
+    needs: Vec<Need>,
+    arrangement: Option<Arrangement>,
+) -> Result<Task, TaskError> {
+    let versions = vec![RequirementVersion {
+        write_scope: policy.write_scope.clone(),
+        at: now,
+        source: VersionSource::TaskAccept,
+    }];
+    let id = match id {
+        Some(id) => id,
+        None => TaskId::from(generate_id(connection)?),
+    };
+    Ok(Task {
+        id,
+        title: draft.title,
+        requirement: draft.requirement,
+        dod: draft.dod,
+        cwd: draft.cwd,
+        conversation: draft.conversation,
+        model: draft.model,
+        tools: draft.tools,
+        write_scope: policy.write_scope.clone(),
+        bash: policy.bash,
+        worktree: policy.worktree,
+        worktree_state: None,
+        writes: Vec::new(),
+        code_mode: false,
+        runs: Vec::new(),
+        reports: Vec::new(),
+        inputs: Vec::new(),
+        versions,
+        acceptance: None,
+        parent,
+        needs,
+        arrangement,
+        missing: Vec::new(),
+        created_at: now,
+    })
+}
+
+fn insert_task_row(connection: &Connection, task: &Task) -> Result<(), TaskError> {
+    connection.execute(
+        "INSERT INTO task (id, value) VALUES (?1, ?2)",
+        params![task.id.as_str(), serde_json::to_string(task)?],
+    )?;
+    Ok(())
+}
+
+/// T052：任务图的提议校验：至少两项、after 只指本次提议、无环（Kahn）、
+/// 没有先后关系的两项写入范围不能重叠（会同时跑，D15 单写者）。
+fn validate_graph(subtasks: &[NewSubtask], frozen: &[FrozenPolicy]) -> Result<(), TaskError> {
+    if subtasks.len() < 2 {
+        return Err(TaskError::GraphTooFewSubtasks(subtasks.len()));
+    }
+    // deps[i] = 第 i 项等哪些项（i 依赖它们）。
+    let mut deps: Vec<Vec<usize>> = vec![Vec::new(); subtasks.len()];
+    for (index, subtask) in subtasks.iter().enumerate() {
+        for after in &subtask.after {
+            if *after >= subtasks.len() {
+                return Err(TaskError::GraphAfterOutOfRange {
+                    subtask: index,
+                    after: *after,
+                });
+            }
+            if !deps[index].contains(after) {
+                deps[index].push(*after);
+            }
+        }
+    }
+    // Kahn 拓扑排序：处理不完就是有环。
+    let mut indegree: Vec<usize> = deps.iter().map(Vec::len).collect();
+    let mut ready: Vec<usize> = (0..subtasks.len())
+        .filter(|index| indegree[*index] == 0)
+        .collect();
+    let mut seen = 0_usize;
+    while let Some(node) = ready.pop() {
+        seen += 1;
+        for (index, node_deps) in deps.iter().enumerate() {
+            if node_deps.contains(&node) {
+                indegree[index] -= 1;
+                if indegree[index] == 0 {
+                    ready.push(index);
+                }
+            }
+        }
+    }
+    if seen != subtasks.len() {
+        return Err(TaskError::GraphHasCycle);
+    }
+    // 传递闭包：a 是不是（间接）等 b。
+    let depends_on = |a: usize, b: usize| -> bool {
+        let mut stack = vec![a];
+        let mut visited = vec![false; subtasks.len()];
+        while let Some(node) = stack.pop() {
+            for dep in &deps[node] {
+                if *dep == b {
+                    return true;
+                }
+                if !visited[*dep] {
+                    visited[*dep] = true;
+                    stack.push(*dep);
+                }
+            }
+        }
+        false
+    };
+    for a in 0..subtasks.len() {
+        for b in (a + 1)..subtasks.len() {
+            if depends_on(a, b) || depends_on(b, a) {
+                continue;
+            }
+            let (Some(scope_a), Some(scope_b)) = (
+                frozen[a].write_scope.as_ref(),
+                frozen[b].write_scope.as_ref(),
+            ) else {
+                continue;
+            };
+            if scope_a == scope_b || scope_a.starts_with(scope_b) || scope_b.starts_with(scope_a) {
+                return Err(TaskError::GraphWriteScopeOverlap {
+                    a,
+                    b,
+                    scope_a: scope_a.display().to_string(),
+                    scope_b: scope_b.display().to_string(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// T052：总任务的子任务（按落库顺序；图很小，扫全表）。
+fn children_in(connection: &Connection, parent: &TaskId) -> Result<Vec<Task>, TaskError> {
+    let mut statement = connection.prepare("SELECT value FROM task ORDER BY rowid")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+    let mut children = Vec::new();
+    for row in rows {
+        let task: Task = serde_json::from_str(&row?)?;
+        if task.parent.as_ref() == Some(parent) {
+            children.push(task);
+        }
+    }
+    Ok(children)
+}
+
+/// T052：上游是不是都有 ready 报告（交接能否解析、下游能不能放出）。
+fn needs_ready_in(connection: &Connection, task: &Task) -> Result<bool, TaskError> {
+    for need in &task.needs {
+        let upstream = load_task_required(connection, &need.from)?;
+        if upstream.latest_report().map(|report| report.state) != Some(ReportState::Ready) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// T052：阶段派生（含图）：总任务按子任务汇总；子任务图没确认/上游没结果 = 待补足条件。
+fn stage_with_graph(connection: &Connection, task: &Task) -> Result<Stage, TaskError> {
+    if task.is_graph_root() {
+        let children = children_in(connection, &task.id)?;
+        let mut aggregate: Option<Stage> = None;
+        for child in &children {
+            let stage = stage_with_graph(connection, child)?;
+            aggregate = Some(match aggregate {
+                Some(current) if current.rank() <= stage.rank() => current,
+                _ => stage,
+            });
+        }
+        return Ok(aggregate.unwrap_or(Stage::Pending));
+    }
+    if let Some(parent) = &task.parent {
+        let root = load_task_required(connection, parent)?;
+        let confirmed = root
+            .arrangement
+            .as_ref()
+            .and_then(|arrangement| arrangement.confirmed.as_ref())
+            .is_some();
+        if !confirmed || !needs_ready_in(connection, task)? {
+            return Ok(Stage::NeedsConditions);
+        }
+    }
+    let launch_queued = effect_pending_in(connection, EffectKind::Launch, task.id.as_str())?;
+    Ok(task.stage(launch_queued))
+}
+
 fn generate_id(connection: &Connection) -> Result<String, TaskError> {
     let id = connection.query_row("SELECT lower(hex(randomblob(16)))", [], |row| row.get(0))?;
     Ok(id)
@@ -1259,6 +1536,9 @@ mod boot_scan_tests;
 #[cfg(test)]
 #[path = "effect_tests.rs"]
 mod effect_tests;
+#[cfg(test)]
+#[path = "graph_tests.rs"]
+mod graph_tests;
 #[cfg(test)]
 #[path = "say_tests.rs"]
 mod say_tests;

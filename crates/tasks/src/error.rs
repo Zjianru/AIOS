@@ -85,4 +85,23 @@ pub enum TaskError {
     NoReportToAccept,
     #[error("这份报告是要求第 {report} 版的结果，当前是第 {current} 版；旧版本不能接受")]
     ReportNotCurrentVersion { report: u32, current: u32 },
+    #[error("任务图至少要两个子任务，实际 {0} 个")]
+    GraphTooFewSubtasks(usize),
+    #[error("任务图第 {subtask} 项的 after 指向本次提议之外的子任务：{after}")]
+    GraphAfterOutOfRange { subtask: usize, after: usize },
+    #[error("任务图的先后关系有环")]
+    GraphHasCycle,
+    #[error("任务图里没有先后的第 {a} 项和第 {b} 项写入范围重叠：{scope_a} 与 {scope_b}")]
+    GraphWriteScopeOverlap {
+        a: usize,
+        b: usize,
+        scope_a: String,
+        scope_b: String,
+    },
+    #[error("总任务不跑执行，不能开 Attempt")]
+    GraphRootCannotRun,
+    #[error("这个任务不是任务图的总任务")]
+    NotGraphRoot,
+    #[error("这张任务图已经确认过了")]
+    GraphAlreadyConfirmed,
 }

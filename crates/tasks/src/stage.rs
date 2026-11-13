@@ -17,6 +17,18 @@ pub enum Stage {
     ReadyForReview,
 }
 
+impl Stage {
+    /// 表序（docs/03 5.1）：数字越小越靠前；总任务汇总取最靠前的子任务阶段。
+    pub(crate) fn rank(self) -> u8 {
+        match self {
+            Self::NeedsConditions => 0,
+            Self::Pending => 1,
+            Self::Running => 2,
+            Self::ReadyForReview => 3,
+        }
+    }
+}
+
 impl Task {
     /// 按 spec 的表序派生阶段。launch 是否排队由调用方从效果表查出来传进来。
     pub fn stage(&self, launch_queued: bool) -> Stage {
