@@ -5,8 +5,8 @@ use std::path::Path;
 use tempfile::TempDir;
 
 use crate::{
-    ConversationId, EffectKind, EffectPayload, ModelChoice, NewGraph, NewReport, NewSubtask,
-    NewTask, ReportOrigin, ReportState, Stage, Store, Task, TaskError, TaskPolicy,
+    AttemptEnd, ConversationId, EffectKind, EffectPayload, ModelChoice, NewGraph, NewReport,
+    NewSubtask, NewTask, ReportOrigin, ReportState, Stage, Store, Task, TaskError, TaskPolicy,
 };
 
 const T0: i64 = 1_700_000_000_000;
@@ -365,5 +365,117 @@ fn failed_report_does_not_release_downstream() {
             .unwrap()
             .is_none(),
         "失败不放下游"
+    );
+}
+
+#[test]
+fn boot_scan_interrupts_running_child_but_not_graph_root_or_waiting_sibling() {
+    let (directory, store) = open_store();
+    let cwd = directory.path();
+    let (root, children) = create_two(&store, cwd);
+    store.confirm_graph(&root.id, T0 + 1).unwrap();
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 2)
+        .unwrap()
+        .expect("A launch");
+    store.complete_effect(&claim).unwrap();
+    let attempt = store.begin_attempt(&children[0].id, T0 + 3).unwrap();
+    store
+        .attach_session(
+            &children[0].id,
+            attempt,
+            ConversationId::new("task-a-session"),
+        )
+        .unwrap();
+
+    let scan = store
+        .scan_at_boot(&crate::BootId::new("boot-graph"), T0 + 10)
+        .unwrap();
+    assert_eq!(
+        scan.interrupted,
+        vec![children[0].id.clone()],
+        "只有真正在跑的子任务算被打断"
+    );
+    let running = store.task(&children[0].id).unwrap().unwrap();
+    assert_eq!(
+        running.latest_attempt().and_then(|attempt| attempt.end),
+        Some(AttemptEnd::Interrupted)
+    );
+    let waiting = store.task(&children[1].id).unwrap().unwrap();
+    assert!(waiting.latest_attempt().is_none(), "B 没开跑，不出被打断");
+    assert!(!waiting.is_interrupted());
+    let total = store.task(&root.id).unwrap().unwrap();
+    assert!(total.latest_attempt().is_none(), "总任务没有 Attempt");
+    assert!(!total.is_interrupted());
+    assert_eq!(
+        store.stage(&children[1].id).unwrap(),
+        Stage::NeedsConditions
+    );
+    assert_eq!(store.stage(&root.id).unwrap(), Stage::NeedsConditions);
+}
+
+#[test]
+fn crash_after_ready_release_keeps_downstream_launch_queued_exactly_once() {
+    let (directory, store) = open_store();
+    let path = directory.path().join("tasks.sqlite");
+    let cwd = directory.path();
+    let (root, children) = create_two(&store, cwd);
+    store.confirm_graph(&root.id, T0 + 1).unwrap();
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 2)
+        .unwrap()
+        .expect("A launch");
+    store.complete_effect(&claim).unwrap();
+    let attempt = store.begin_attempt(&children[0].id, T0 + 3).unwrap();
+    store
+        .attach_session(
+            &children[0].id,
+            attempt,
+            ConversationId::new("task-a-session"),
+        )
+        .unwrap();
+    store
+        .record_report(
+            &children[0].id,
+            attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "查完了：notes.md 有 3 行".to_owned(),
+                question: None,
+            },
+            T0 + 4,
+        )
+        .unwrap();
+    // 模拟崩溃：直接丢掉连接、重新打开同一个库。
+    drop(store);
+    let store = Store::open(&path).unwrap();
+
+    // A 的 ready 报告和「放出 B」的 launch 都已经落库；重启扫描只把 A 记成 reported，不是 interrupted。
+    let scan = store
+        .scan_at_boot(&crate::BootId::new("boot-crash"), T0 + 20)
+        .unwrap();
+    assert!(scan.interrupted.is_empty(), "ready 的 A 不算被打断");
+    assert_eq!(scan.reported, vec![children[0].id.clone()]);
+    let waiting = store.task(&children[1].id).unwrap().unwrap();
+    assert!(waiting.latest_attempt().is_none());
+    assert!(waiting.needs[0].handoff.is_some(), "交接已持久化");
+
+    // 重启后 B 的 launch 还在，恰好一条；收掉以后不会再排。
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 30)
+        .unwrap()
+        .expect("重启后 B 的 launch 还在");
+    let EffectPayload::Launch { task_id } = claim.payload.clone() else {
+        panic!("launch 载荷");
+    };
+    assert_eq!(task_id, children[1].id);
+    store.complete_effect(&claim).unwrap();
+    assert!(
+        store
+            .claim_effect(EffectKind::Launch, T0 + 31)
+            .unwrap()
+            .is_none(),
+        "只放一次"
     );
 }
