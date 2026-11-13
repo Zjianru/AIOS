@@ -255,6 +255,15 @@ impl ToolCondition {
             }
         }
     }
+
+    /// T050：不看 skill、只看凭证的那一半（未声明 addition-only 的路由从第一轮起全量发工具表时用）：
+    /// Always / AfterSkill 都算满足（技能条件不再筛工具），AfterSkillWithKey 只要求宿主存了那种 key。
+    pub fn satisfied_by_keys(&self, keys: &BTreeSet<ToolKey>) -> bool {
+        match self {
+            Self::Always | Self::AfterSkill(_) => true,
+            Self::AfterSkillWithKey { key, .. } => keys.contains(key),
+        }
+    }
 }
 
 /// 工具的并发类别：独占调用是屏障，并行安全的调用进有界滚动池。
@@ -532,6 +541,27 @@ fn schema_of(tool: &dyn Tool) -> ToolSchema {
 mod tests {
     use super::{ToolContext, ToolSessionState};
     use std::sync::Arc;
+
+    #[test]
+    fn condition_satisfied_by_keys_ignores_skills_but_requires_keys() {
+        use std::collections::BTreeSet;
+
+        use super::{ToolCondition, ToolKey};
+
+        let no_keys = BTreeSet::new();
+        let with_key = BTreeSet::from([ToolKey::Exa]);
+        assert!(ToolCondition::Always.satisfied_by_keys(&no_keys));
+        assert!(ToolCondition::AfterSkill(vec!["web".to_owned()]).satisfied_by_keys(&no_keys));
+        let keyed = ToolCondition::AfterSkillWithKey {
+            skills: vec!["web".to_owned()],
+            key: ToolKey::Exa,
+        };
+        assert!(!keyed.satisfied_by_keys(&no_keys), "没 key 不满足");
+        assert!(
+            keyed.satisfied_by_keys(&with_key),
+            "有 key 满足，不看 skill"
+        );
+    }
 
     #[test]
     fn tool_context_exposes_the_session_id_read_only() {

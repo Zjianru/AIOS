@@ -35,7 +35,7 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 
 ## 工具、确认卡与根会话
 
-- **条件工具**：工具带 `ToolCondition`（`AfterSkill` / `AfterSkillWithKey`），是否进请求工具表取决于路由能力（T046）：声明了 `addition-only` 的路由（DeepSeek-flash）按条件每步求值一次——本会话成功加载过对应 skill、且宿主已存所需工具凭证，才进这一步的工具表，新增工具连同完整定义记进会话日志（`tool/registry` / `ToolRegistry`），恢复时从日志重建、只加不减，并用 `defer_loading` + `tool_addition` 保持前缀稳定；未声明该能力的路由（MiniMax 等）从第一轮起就把该会话角色 ToolSet 的全部工具声明进请求（条件不再筛工具、skill 只加载内容），整场工具表固定，压缩摘要请求与主请求同一份——角色与安全边界在会话构造期按 `tool_policy.only` 收窄（Kind 不含 write/edit/bash/job_*，ThinAgent 按任务类型 9/11/15 件），此处的全量不放宽边界。
+- **条件工具**：工具带 `ToolCondition`（`AfterSkill` / `AfterSkillWithKey`），是否进请求工具表取决于路由能力（T046）：声明了 `addition-only` 的路由（DeepSeek-flash）按条件每步求值一次——本会话成功加载过对应 skill、且宿主已存所需工具凭证，才进这一步的工具表，新增工具连同完整定义记进会话日志（`tool/registry` / `ToolRegistry`），恢复时从日志重建、只加不减，并用 `defer_loading` + `tool_addition` 保持前缀稳定；未声明该能力的路由（MiniMax 等）从第一轮起就把该会话角色 ToolSet 的全部工具声明进请求（条件不再筛工具、skill 只加载内容），整场工具表固定，压缩摘要请求与主请求同一份——角色与安全边界在会话构造期按 `tool_policy.only` 收窄（Kind 不含 write/edit/bash/job_*，ThinAgent 按任务类型 9/11/15 件），此处的全量不放宽边界。未声明路由的全量仍按 key 条件过滤：没填 Exa key 时 web_search/web_fetch 不进表，存 key 后下一轮起才出现（D73）。
 - **根会话专属工具**：Kind 的根会话另装 `aios_query`（只读查设置/连接/模型/用量）、`propose_action`（确认卡）、`web_search`/`web_fetch`（要 Exa key 且加载过 `web`）、`task_accept`/`task_status`（派只读调查、查报告）、`task_stop`（立即停 / 收尾停）、`set_paused` 确认卡（全局暂停）和 `resume_task` 确认卡（接续被打断的任务；三者都挂在自带 skill `aios-tasks`，只在这里可见）；CLI 对话不装这些，也不列依赖它们的自带 skill。ThinAgent 的 `task_report` 只在它自己的任务会话里，回执照 launch/relay 效果送到发起会话。
 - **确认卡**：模型经 `propose_action` 出卡；选项对应动作登记表（ActionRegistry，负责 details/describe/act）；用户点了才写 `card/decision`（confirmed/refused/failed/dismissed），重开从日志恢复回执；同一张卡的并发/连点只执行一次，回执到之前按钮置灰。
 

@@ -236,6 +236,34 @@ async fn setup_with_keys(
     (agent, data_dir, cwd, id)
 }
 
+/// T050：未声明 addition-only 的路由（tool_update=None）+ 指定凭证来源，测全量工具表的 key 条件。
+async fn setup_full_route(
+    server: &MockServer,
+    tools: ToolSet,
+    tool_keys: tools::ToolKeySource,
+) -> (Agent, tempfile::TempDir, tempfile::TempDir, SessionId) {
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = session::SessionStore::create(data_dir.path(), cwd.path()).unwrap();
+    let id = store.id().clone();
+    let config = config_with_keys(data_dir.path(), tool_keys);
+    let model = model::DeepSeekConfig {
+        tool_update: None,
+        ..model_config(&server.uri())
+    };
+    let agent = Agent::create(
+        config,
+        agent::Deps {
+            model: model::DeepSeek::with_credentials(model, test_credential()).expect("模型"),
+            tools,
+            store,
+        },
+    )
+    .await
+    .expect("建 agent");
+    (agent, data_dir, cwd, id)
+}
+
 /// 同 setup，但模型配置由调用方给（要测声明了能力的路由时用）。
 async fn setup_with_model(
     _server: &MockServer,
@@ -896,5 +924,84 @@ async fn unsupported_route_declares_all_tools_from_the_first_step() {
         tool_result_text(&bodies[1], "call_closed").as_deref(),
         Some("queried"),
         "全量固定后，条件工具在第一轮的实际调用应当能执行"
+    );
+}
+
+/// T050：未声明 addition-only 的路由（全量工具表）仍保留 key 条件：没 Exa key 时 web_search 不进表，
+/// 加载 skill 也不进；有 key 时第一轮就在。
+#[tokio::test]
+async fn unsupported_route_full_tools_still_respect_the_exa_key() {
+    // 没 key：第一轮只有 skill；硬加载 web（未知 skill）后本轮工具表仍然不含 web_search。
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(tool_calls_with_inputs_sse(&[(
+                "call_web",
+                "skill",
+                json!({"name": "web"}),
+            )])),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+    let (agent, _d, _c, _i) =
+        setup_full_route(&server, web_tool_set(), tools::ToolKeySource::none()).await;
+    agent
+        .send(
+            UserMessage::text("帮我搜一下今天的新闻"),
+            Delivery::FollowUp,
+        )
+        .await
+        .expect("send");
+    wait_idle(&agent, 10).await;
+    let no_key = bodies(&server).await;
+    assert_eq!(no_key.len(), 2, "加载失败以后还要收尾一步");
+    assert_eq!(
+        tool_names(&no_key[0]),
+        vec!["skill".to_owned()],
+        "没 key 时全量工具表里不能有 web_search"
+    );
+    assert_eq!(
+        tool_names(&no_key[1]),
+        vec!["skill".to_owned()],
+        "加载失败后仍然没有 web_search"
+    );
+
+    // 有 key：第一轮就是 skill + web_search（全量固定），加载后不变。
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(tool_calls_with_inputs_sse(&[(
+                "call_web",
+                "skill",
+                json!({"name": "web"}),
+            )])),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+    let keys = tools::ToolKeySource::new(std::sync::Arc::new(|| {
+        std::collections::BTreeSet::from([tools::ToolKey::Exa])
+    }));
+    let (agent, _d, _c, _i) = setup_full_route(&server, web_tool_set(), keys).await;
+    agent
+        .send(
+            UserMessage::text("帮我搜一下今天的新闻"),
+            Delivery::FollowUp,
+        )
+        .await
+        .expect("send");
+    wait_idle(&agent, 10).await;
+    let with_key = bodies(&server).await;
+    assert_eq!(with_key.len(), 2);
+    assert_eq!(
+        tool_names(&with_key[0]),
+        vec!["skill".to_owned(), "web_search".to_owned()],
+        "有 key 时第一轮全量工具表就带 web_search"
+    );
+    assert_eq!(
+        tool_names(&with_key[1]),
+        vec!["skill".to_owned(), "web_search".to_owned()],
+        "加载 skill 后工具表不变"
     );
 }
