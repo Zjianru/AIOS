@@ -199,7 +199,14 @@ mod t046_stable_tool_tests {
     fn fixed_selection_ignores_loaded_skills_and_turns() {
         let tools = ToolSet::builtin();
         let before = all_tool_names(&tools);
-        assert_eq!(before, tools.names().into_iter().map(str::to_owned).collect::<BTreeSet<_>>());
+        assert_eq!(
+            before,
+            tools
+                .names()
+                .into_iter()
+                .map(str::to_owned)
+                .collect::<BTreeSet<_>>()
+        );
         // 加载过 skill 的那一轮，gate 的 enabled 会变；固定选择不看它。
         let mut skills = BTreeSet::new();
         skills.insert("web".to_owned());
@@ -221,17 +228,38 @@ mod t046_stable_tool_tests {
             "canvas",
         ]);
         let names = all_tool_names(&kind_like);
-        for forbidden in ["write", "edit", "bash", "job_output", "job_list", "job_kill"] {
-            assert!(!names.contains(forbidden), "Kind 全开后不能出现 {forbidden}: {names:?}");
+        for forbidden in [
+            "write",
+            "edit",
+            "bash",
+            "job_output",
+            "job_list",
+            "job_kill",
+        ] {
+            assert!(
+                !names.contains(forbidden),
+                "Kind 全开后不能出现 {forbidden}: {names:?}"
+            );
         }
         // ThinAgent 只读任务：没有 write/edit/bash/job_*。
         let thin_read = retained(&["read", "glob", "grep", "skill", "todo_write"]);
         let names = all_tool_names(&thin_read);
         for forbidden in ["write", "edit", "bash", "job_output"] {
-            assert!(!names.contains(forbidden), "ThinAgent 只读全开后不能出现 {forbidden}");
+            assert!(
+                !names.contains(forbidden),
+                "ThinAgent 只读全开后不能出现 {forbidden}"
+            );
         }
         // 写任务名单有 write/edit，但没有 bash/job_*。
-        let thin_write = retained(&["read", "glob", "grep", "write", "edit", "skill", "todo_write"]);
+        let thin_write = retained(&[
+            "read",
+            "glob",
+            "grep",
+            "write",
+            "edit",
+            "skill",
+            "todo_write",
+        ]);
         let names = all_tool_names(&thin_write);
         assert!(names.contains("write") && names.contains("edit"));
         assert!(!names.contains("bash"));
