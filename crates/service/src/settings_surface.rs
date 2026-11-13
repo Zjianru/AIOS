@@ -216,7 +216,14 @@ impl RootHost {
             .connections
             .into_iter()
             .find(|saved| saved.id == connection.id);
-        let connection = refreshed.unwrap_or(connection);
+        // T051.5：刚保存的连接重读不到是异常（并发改动/落盘失败），不能静默退回保存那一刻的旧值——
+        // 那样 check 会回到 never、页面以为保存成功却看不到真实状态。返回错误让用户重试。
+        let connection = refreshed.ok_or_else(|| {
+            ServiceError::SettingsUnreadable(format!(
+                "刚保存的连接 {} 重读不到，请重试",
+                connection.id
+            ))
+        })?;
         // 把刚保存的连接设为当前选择。
         // RootHost 的 recheck 走 model_factory → resolve_selection，只认 CLI 参数 /
         // settings.last_selection / id=="deepseek"；页面/HTTP 建连接（如 minimax-cn）

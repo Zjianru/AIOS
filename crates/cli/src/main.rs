@@ -389,12 +389,17 @@ fn startup_common_for_requested_selection(
 ) -> CommonArgs {
     // T051.5：只有请求的选择指向「现在还在 Keyring 里」的连接时才盖启动参数；连接已被删时
     // 三样（连接/模型/思考档）都不盖，按启动参数和上次选择走（D74）。
-    let _ = connections;
     let mut resolved = common.clone();
     if let Some(selection) = requested {
-        resolved.connection = Some(selection.connection.clone());
-        resolved.model = Some(selection.model.clone());
-        resolved.effort = Some(selection.effort_wanted.clone());
+        // T051.5：连接已经不在 Keyring 里（被删/换过）：三样都不盖，按启动参数和上次选择走（D74）。
+        let known = connections
+            .iter()
+            .any(|connection| connection.id == selection.connection);
+        if known {
+            resolved.connection = Some(selection.connection.clone());
+            resolved.model = Some(selection.model.clone());
+            resolved.effort = Some(selection.effort_wanted.clone());
+        }
     }
     resolved
 }
