@@ -155,7 +155,15 @@ test('A/B 任务切换：统计数字跟着当前任务走', async ({ page, requ
     const [first, third] = [ids[0], ids[2]];
     await waitUntilReadable(request, fixture, first);
     await waitUntilReadable(request, fixture, third);
-
+    // 等甲真的跑出几步、丙收尾：两边事件不同了再比（刚派出时都还是 1 轮 1 步）。
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      const read = await apiPost(request, fixture, { method: 'task-read', taskId: first });
+      if (read.ok()) {
+        const body = (await read.json()) as { events: { type: string }[] };
+        if (body.events.filter((event) => event.type === 'step/start').length >= 2) break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
     await page.goto(urlOf(fixture, '#taskchat:' + first));
     await expect(statsDock(page)).toBeVisible({ timeout: 20_000 });
     const firstText = (await statsDock(page).locator('[data-kind="stats-activity"]').innerText()).trim();
@@ -175,14 +183,27 @@ test('A/B 任务切换：统计数字跟着当前任务走', async ({ page, requ
 
 test('模型价格/窗口匹配不到：对应项隐藏，只留可靠统计', async ({ page, request }) => {
   test.setTimeout(180_000);
-  // 设置文件坏掉时读不到模型目录：价格/窗口必须隐藏，轮/步/token 照常显示。
-  const fixture = await startKernelFixture({ taskResult: 'live', settingsFault: 'corrupt' });
+  const fixture = await startKernelFixture({ taskResult: 'live' });
   try {
     await page.goto(urlOf(fixture));
     await page.getByPlaceholder('和 Kind 说…').fill('查一下新闻归档里重复链接的判重规则和影响范围');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     const [taskId] = await taskIdOf(fixture);
     await waitUntilReadable(request, fixture, taskId);
+
+    // 任务头只给模型显示名：把 task-read 回包里的名字换成目录里没有的，模拟「匹配不到」。
+    // 其余字段原样放行（轮/步/token 仍来自真实事件）。
+    await page.route('**/api', async (route) => {
+      const postData = route.request().postData() ?? '';
+      if (!postData.includes('"method":"task-read"')) {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch();
+      const json = (await response.json()) as { task?: { model?: string } };
+      if (json.task) json.task.model = '不存在的模型（T043 测试）';
+      await route.fulfill({ response, json });
+    });
     await page.goto(urlOf(fixture, '#taskchat:' + taskId));
     await expect(statsDock(page)).toBeVisible({ timeout: 20_000 });
     const dock = statsDock(page);
