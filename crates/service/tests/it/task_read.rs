@@ -424,7 +424,7 @@ async fn missing_task_is_a_readable_error() {
 }
 
 #[tokio::test]
-async fn unopened_task_is_a_readable_error() {
+async fn unopened_task_reads_as_a_waiting_header_with_no_events() {
     let data = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let host = open_host(data.path()).await;
@@ -439,18 +439,27 @@ async fn unopened_task_is_a_readable_error() {
             1_000,
         )
         .expect("建任务");
-    let error = host
+    let Response::TaskRead(read) = host
         .dispatch(Call::TaskRead(TaskReadRequest {
             task_id: task.id.as_str().to_owned(),
             before_seq: None,
         }))
         .await
-        .expect_err("没有 Attempt 的任务要报错");
-    assert_eq!(error.code().as_str(), "task/unavailable");
-    assert!(
-        error.to_string().contains("还没开跑"),
-        "错误要能读：{error}"
-    );
+        .expect("没开跑的任务也能读")
+    else {
+        panic!("task-read 响应");
+    };
+    assert_eq!(read.task.id, task.id.as_str());
+    assert_eq!(read.task.title, "还没开跑");
+    assert_eq!(read.task.attempts, 0, "attempts: 0");
+    assert!(!read.task.running && !read.task.stopped && !read.task.interrupted);
+    assert!(read.task.report.is_none(), "没报告");
+    assert!(!read.task.review && !read.task.accepted);
+    assert!(read.events.is_empty(), "事件为空");
+    assert_eq!(read.last_seq, 0, "lastSeq 为 0");
+    let stats = read.stats.expect("未开跑也带 stats");
+    assert_eq!(stats.turns, 0);
+    assert_eq!(stats.steps, 0);
 }
 
 #[tokio::test]
@@ -566,7 +575,7 @@ async fn task_stream_for_a_missing_task_is_a_readable_error() {
 }
 
 #[tokio::test]
-async fn task_stream_for_an_unopened_task_is_a_readable_error() {
+async fn task_stream_for_an_unopened_task_is_empty_without_live() {
     let data = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let host = open_host(data.path()).await;
@@ -581,15 +590,14 @@ async fn task_stream_for_an_unopened_task_is_a_readable_error() {
             1_000,
         )
         .expect("建任务");
-    let error = match host.task_stream(task.id.as_str(), 0).await {
-        Ok(_) => panic!("没有 Attempt 的任务要报错"),
-        Err(error) => error,
-    };
-    assert_eq!(error.code().as_str(), "task/unavailable");
-    assert!(
-        error.to_string().contains("还没开跑"),
-        "错误要能读：{error}"
-    );
+    let stream = host
+        .task_stream(task.id.as_str(), 0)
+        .await
+        .expect("没开跑的任务也能打开任务流");
+    assert!(stream.follow.events.is_empty(), "只回空补齐");
+    assert_eq!(stream.follow.last_seq, 0);
+    assert!(stream.live.is_none(), "不出 live 帧");
+    assert!(true, "保持断言形状");
 }
 
 /// T051：stats 由服务端 task-read 给（和 Kind status 同一个 session_stats），页面只显示。

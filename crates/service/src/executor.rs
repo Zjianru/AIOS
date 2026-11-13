@@ -16,7 +16,7 @@ use session::SessionId;
 use tasks::{
     Acceptance, Attempt, AttemptEnd, AttemptId, AttemptTrigger, BootId, BootScan, ConversationId,
     EffectClaim, EffectKind, EffectPayload, Input, InputAttachment, MissingItem, ModelChoice,
-    NewInput, NewReport, NewTask, ReportId, ReportOrigin, ReportState, SlotKind, Stage,
+    NewInput, NewReport, NewTask, Report, ReportId, ReportOrigin, ReportState, SlotKind, Stage,
     StopAttempt, Store, Task, TaskError, TaskId, TaskPolicy, WorkerSlots,
 };
 use tokio::sync::broadcast;
@@ -27,8 +27,8 @@ use crate::events::{page_events, service_event};
 use crate::input::attachment_error;
 use crate::protocol::{
     DeliveryMode, FollowRequest, FollowResponse, ServiceEvent, StopMode, TaskInterruptResponse,
-    TaskReadHeader, TaskReadRequest, TaskReadResponse, TaskSayRequest, TaskSayResponse,
-    TaskStopResponse,
+    TaskReadHeader, TaskReadReport, TaskReadReportOrigin, TaskReadReportState, TaskReadRequest,
+    TaskReadResponse, TaskSayRequest, TaskSayResponse, TaskStopResponse,
 };
 use crate::root::RootSessionOptions;
 use crate::session_host::ServiceHost;
@@ -202,6 +202,34 @@ pub struct TaskLive {
     pub agent_events: broadcast::Receiver<AgentEvent>,
 }
 
+/// T051：写任务当前要求版本的 ready 报告 → 结果卡「待你核」/页头 review。
+///
+/// relay 给结果卡加 card_state:review、task-read 给页头 review 共用这一处判断。
+fn is_review_report(task: &Task, report: &Report) -> bool {
+    report.state == ReportState::Ready
+        && report.version == task.requirement_version()
+        && crate::result_cards::write_scope_display(task).is_some()
+}
+
+/// T051：报告状态映射到协议视图（页头只在 taskStatusOf 一处把词定出来）。
+fn task_read_report_state(state: ReportState) -> TaskReadReportState {
+    match state {
+        ReportState::Ready => TaskReadReportState::Ready,
+        ReportState::Blocked => TaskReadReportState::Blocked,
+        ReportState::Failed => TaskReadReportState::Failed,
+        ReportState::Waiting => TaskReadReportState::Waiting,
+    }
+}
+
+/// T051：报告来源映射到协议视图（package 的 blocked 是「没开跑」，agent 的是「卡住了」）。
+fn task_read_report_origin(origin: ReportOrigin) -> TaskReadReportOrigin {
+    match origin {
+        ReportOrigin::Package => TaskReadReportOrigin::Package,
+        ReportOrigin::Agent => TaskReadReportOrigin::Agent,
+        ReportOrigin::Executor => TaskReadReportOrigin::Executor,
+    }
+}
+
 /// 任务执行者：效果泵、ThinAgent 会话和任务工具的共享状态。
 pub struct TaskRuntime {
     data_dir: PathBuf,
@@ -341,18 +369,36 @@ impl TaskRuntime {
     ///
     /// 只读打开：不创建会话、不拿写者锁；会话日志缺失/损坏时把原因带进可读错误。
     /// 分页照 events 的预算（500 条消息/2 轮/50 条下限），`lastSeq` 始终是日志末端。
+    /// T051：还没开跑的任务也能读：头部照给（attempts: 0），事件为空、lastSeq 为 0；
+    /// 统计照冻结模型算空日志（轮/步/token 都是 0）。
     pub(crate) async fn task_read(
         &self,
         request: TaskReadRequest,
     ) -> Result<TaskReadResponse, ServiceError> {
-        let (task, attempt_id, conversation) = self.task_attempt(&request.task_id)?;
-        let session_id = SessionId::parse(conversation.as_str()).map_err(|error| {
-            ServiceError::TaskUnavailable(format!("任务对话的会话 id 不合法：{error}"))
-        })?;
-        let snapshot = session::SessionStore::open_read_only(&self.data_dir, &session_id)
-            .map_err(|error| ServiceError::TaskUnavailable(format!("任务对话打不开：{error}")))?;
-        let all = snapshot.events();
-        let (selected, _) = page_events(all, request.before_seq, 500, None, None);
+        let task = self.task(&request.task_id)?;
+        let attempt = task
+            .latest_attempt()
+            .filter(|attempt| attempt.conversation.is_some())
+            .cloned();
+        let (all, selected, last_seq) = match &attempt {
+            Some(attempt) => {
+                let conversation = attempt.conversation.clone().expect("上面筛过");
+                let session_id = SessionId::parse(conversation.as_str()).map_err(|error| {
+                    ServiceError::TaskUnavailable(format!("任务对话的会话 id 不合法：{error}"))
+                })?;
+                let snapshot = session::SessionStore::open_read_only(&self.data_dir, &session_id)
+                    .map_err(|error| {
+                    ServiceError::TaskUnavailable(format!("任务对话打不开：{error}"))
+                })?;
+                let all = snapshot.events().to_vec();
+                let (selected, _) = page_events(&all, request.before_seq, 500, None, None);
+                let events: Vec<ServiceEvent> =
+                    selected.iter().map(|event| service_event(event)).collect();
+                let last_seq = all.last().map(|event| event.seq).unwrap_or(0);
+                (all, events, last_seq)
+            }
+            None => (Vec::new(), Vec::new(), 0),
+        };
         // T051：统计由服务端算（和 Kind status 同一个 session_stats），用任务冻结的模型；
         // 对当前 Attempt 会话的全部事件算，不受分页影响。上下文窗口按冻结连接/模型查，
         // 查不到给 0（页面照旧隐藏占比）。
@@ -369,7 +415,7 @@ impl TaskRuntime {
             &selection,
         )
         .unwrap_or(0);
-        let context_used = Self::context_used_of(all);
+        let context_used = Self::context_used_of(&all);
         let stats = match credentials::Keyring::open_read_only(
             self.data_dir.clone(),
             self.options.identity.as_deref(),
@@ -379,7 +425,7 @@ impl TaskRuntime {
             Some(keyring) => {
                 let view = keyring.view();
                 let mut stats = crate::stats::session_stats(
-                    all,
+                    &all,
                     &view.connections,
                     &catalog,
                     &selection,
@@ -404,6 +450,28 @@ impl TaskRuntime {
             },
         };
         let fx = crate::fx::usd_to_cny(&self.data_dir).await;
+        let attempt_id = attempt.as_ref().map(|attempt| attempt.id);
+        let latest_report = attempt_id.and_then(|attempt_id| {
+            task.reports
+                .iter()
+                .rev()
+                .find(|report| report.attempt_id == attempt_id)
+        });
+        let report = latest_report.map(|report| TaskReadReport {
+            state: task_read_report_state(report.state),
+            origin: task_read_report_origin(report.origin),
+        });
+        let review = latest_report.is_some_and(|report| is_review_report(&task, report));
+        let accepted = latest_report.is_some_and(|report| {
+            task.acceptance.as_ref().is_some_and(|acceptance| {
+                acceptance.report_id == report.id
+                    && acceptance.version == task.requirement_version()
+            })
+        });
+        let running = attempt_id.is_some_and(|attempt_id| {
+            self.running_for(&task.id, attempt_id)
+                .is_some_and(|running| running.host.agent().is_running())
+        });
         Ok(TaskReadResponse {
             task: TaskReadHeader {
                 id: task.id.as_str().to_owned(),
@@ -416,24 +484,16 @@ impl TaskRuntime {
                 model: task.model.model.clone(),
                 tools: task.tools.clone(),
                 attempts: task.runs.iter().map(|run| run.attempts.len() as u64).sum(),
-                // 在跑表里还开着、而且这一轮真的在跑，菜单才可点；只开着等报告的会话不算。
-                running: self
-                    .running_for(&task.id, attempt_id)
-                    .is_some_and(|running| running.host.agent().is_running()),
+                running,
                 stopped: task
                     .latest_attempt()
                     .is_some_and(|attempt| attempt.end == Some(AttemptEnd::Stopped)),
                 interrupted: task.is_interrupted(),
-                // 启动扫描已经打断、但给 Kind 的 restart 汇报还在队里：横幅「待 Kind 核实」。
-                // 汇报送到或被收掉以后，任务仍是「被打断了」。
                 restart_pending: task.is_interrupted()
                     && self.store.restart_pending(&task.id).map_err(|error| {
                         ServiceError::TaskUnavailable(format!("重启汇报的状态读不出来：{error}"))
                     })?,
-                // waiting 不是终态：report 只把会话移出「在跑」，之后 task_status 会起新的一轮；
-                // 页面只能拿终态报告的时间收尾没有 turn/end 的最后一轮。
-                reported_at: task
-                    .latest_report()
+                reported_at: latest_report
                     .filter(|report| {
                         matches!(
                             report.state,
@@ -441,13 +501,42 @@ impl TaskRuntime {
                         )
                     })
                     .map(|report| report.at),
+                report,
+                review,
+                accepted,
             },
-            events: selected.iter().map(|event| service_event(event)).collect(),
-            last_seq: all.last().map(|event| event.seq).unwrap_or(0),
+            events: selected,
+            last_seq,
             stats: Some(stats),
             fx: Some(fx),
             currency: Some(settings.currency),
         })
+    }
+
+    /// 任务聚合：读任务库；找不到/读不出来都带可读原因。
+    fn task(&self, task_id: &str) -> Result<Task, ServiceError> {
+        self.store
+            .task(&TaskId::from(task_id))
+            .map_err(|error| ServiceError::TaskUnavailable(format!("任务读不出来：{error}")))?
+            .ok_or_else(|| ServiceError::TaskUnavailable(format!("找不到这个任务：{task_id}")))
+    }
+
+    /// 任务当前 Attempt 的会话：读任务聚合、取最近一次 Attempt 和它的会话。
+    fn task_attempt(
+        &self,
+        task_id: &str,
+    ) -> Result<(Task, AttemptId, ConversationId), ServiceError> {
+        let task = self.task(task_id)?;
+        let (attempt_id, conversation) = {
+            let attempt = task.latest_attempt().ok_or_else(|| {
+                ServiceError::TaskUnavailable("这个任务还没开跑，没有可看的对话".to_owned())
+            })?;
+            let conversation = attempt.conversation.clone().ok_or_else(|| {
+                ServiceError::TaskUnavailable("这个任务还没开跑，没有可看的对话".to_owned())
+            })?;
+            (attempt.id, conversation)
+        };
+        Ok((task, attempt_id, conversation))
     }
 
     /// T051：上下文占用 = 当前 Attempt 日志末尾最近一次 assistant/message 的 prompt 用量
@@ -466,28 +555,6 @@ impl TaskRuntime {
         0
     }
 
-    /// 任务当前 Attempt 的会话：读任务聚合、取最近一次 Attempt 和它的会话。
-    fn task_attempt(
-        &self,
-        task_id: &str,
-    ) -> Result<(Task, AttemptId, ConversationId), ServiceError> {
-        let task = self
-            .store
-            .task(&TaskId::from(task_id))
-            .map_err(|error| ServiceError::TaskUnavailable(format!("任务读不出来：{error}")))?
-            .ok_or_else(|| ServiceError::TaskUnavailable(format!("找不到这个任务：{task_id}")))?;
-        let (attempt_id, conversation) = {
-            let attempt = task.latest_attempt().ok_or_else(|| {
-                ServiceError::TaskUnavailable("这个任务还没开跑，没有可看的对话".to_owned())
-            })?;
-            let conversation = attempt.conversation.clone().ok_or_else(|| {
-                ServiceError::TaskUnavailable("这个任务还没开跑，没有可看的对话".to_owned())
-            })?;
-            (attempt.id, conversation)
-        };
-        Ok((task, attempt_id, conversation))
-    }
-
     /// `/ws?task=` 的打开面：补齐 `lastSeq` 之后的日志；任务还在跑时带上 live 订阅。
     ///
     /// 先订阅、再 follow：补齐和 live 之间不留缝；同一段事件由调用方按 seq 去重。
@@ -497,7 +564,23 @@ impl TaskRuntime {
         task_id: &str,
         last_seq: u64,
     ) -> Result<TaskStream, ServiceError> {
-        let (task, attempt, conversation) = self.task_attempt(task_id)?;
+        let task = self.task(task_id)?;
+        // T051：还没开跑的任务没有会话：只回空补齐、不出 live 帧。
+        let empty = || TaskStream {
+            session_id: String::new(),
+            follow: FollowResponse {
+                events: Vec::new(),
+                last_seq,
+            },
+            live: None,
+        };
+        let Some(attempt) = task.latest_attempt() else {
+            return Ok(empty());
+        };
+        let Some(conversation) = attempt.conversation.clone() else {
+            return Ok(empty());
+        };
+        let attempt = attempt.id;
         let session_id = SessionId::parse(conversation.as_str()).map_err(|error| {
             ServiceError::TaskUnavailable(format!("任务对话的会话 id 不合法：{error}"))
         })?;
@@ -1418,9 +1501,7 @@ impl TaskRuntime {
                         json!(crate::result_cards::changed_line(changed.len(), &scope));
                     body["changed"] = json!(changed);
                     body["write_scope"] = json!(scope);
-                    if report.state == ReportState::Ready
-                        && report.version == task.requirement_version()
-                    {
+                    if is_review_report(&task, &report) {
                         body["card_state"] = json!("review");
                     }
                 }

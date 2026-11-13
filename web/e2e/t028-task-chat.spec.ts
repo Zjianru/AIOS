@@ -246,8 +246,8 @@ test('停了以后说「接着做吧」：第 2 次 Attempt，原会话接着做
     await expect(first).toHaveAttribute('data-state', 'ready');
 
     const pane = await openTaskChat(page, fixture, taskId);
-    // T039：交过报告、不在跑 → 页头写「已汇报 · 待你核」，不再空白。
-    await expect(pane.locator('[data-kind="task-state"]')).toContainText('已汇报 · 待你核');
+    // T051：交过 ready 报告、不在跑 → 页头用 taskStatusOf 的词（只读任务 ready = 有结果）。
+    await expect(pane.locator('[data-kind="task-state"]')).toContainText('有结果');
     await pane.locator('[data-kind="composer-input"]').fill('接着做吧');
     await pane.locator('[data-kind="task-send"]').click();
 

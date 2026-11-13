@@ -44,8 +44,10 @@ import {
 } from '@/components/ui/dropdown-menu';
 import type { Frame, SendAttachmentRef, ServiceEvent } from '@/data/service';
 import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
+import type { TaskReadReport } from '@/data/generated/TaskReadReport';
 import type { SessionStats } from '@/data/generated/SessionStats';
 import type { FxInfo } from '@/data/generated/FxInfo';
+import { taskStatusOf } from '@/data/taskResult';
 import { turnLabels, useStreamStore } from '@/pages/kind/kindStore';
 import { TurnRow, UserCards } from '@/pages/kind/TurnRow';
 import { deriveTurnViews } from '@/pages/kind/turnViews';
@@ -190,22 +192,29 @@ function TaskMenu({
 }
 
 /**
- * 页头状态：在跑显示执行中（收尾停后带「收尾」），停下后固定「已停止」，被打断固定「被打断了」，
- * 汇报后显示「已汇报 · 待你核」；任何时刻都有状态词（T039：不让用户猜是不是做完了）。
+ * 页头状态（T051）：顺序照 spec——在跑 → 执行中（收尾时「执行中 · 收尾」）；已停止；被打断了；
+ * 有 report → taskStatusOf(report.state, report.origin, review, accepted)；其余 → 等待中。
+ * 词只在 taskStatusOf 一处；「已汇报 · 待你核」不再用。
  */
 function TaskState({
   running,
   winding,
   stopped,
   interrupted,
-  reportedAt,
+  report,
+  review,
+  accepted,
 }: {
   running: boolean;
   winding: boolean;
   stopped: boolean;
   interrupted: boolean;
-  /** 当前 Attempt 最近一份报告的写入时间（unix 毫秒）；null = 还没交报告。 */
-  reportedAt: number | null;
+  /** 当前 Attempt 最近一份报告的 { state, origin }；null = 还没交报告。 */
+  report: TaskReadReport | null;
+  /** 写任务当前版本的 ready（和 Kind 卡「待你核」同一判断）。 */
+  review: boolean;
+  /** 用户接受记录绑的就是当前版本和这份报告。 */
+  accepted: boolean;
 }) {
   if (running) {
     return (
@@ -239,14 +248,25 @@ function TaskState({
       </span>
     );
   }
-  if (reportedAt !== null) {
+  if (report !== null) {
+    const word = taskStatusOf(
+      report.state,
+      report.origin,
+      review ? 'review' : undefined,
+      accepted,
+    );
+    const failed = word === '失败';
     return (
       <span
-        className="mt-[3px] inline-flex shrink-0 items-center gap-1 rounded-badge bg-wait-soft px-1.5 py-[1px] text-1 text-wait"
+        className={
+          failed
+            ? 'mt-[3px] inline-flex shrink-0 items-center gap-1 rounded-badge bg-fail-soft px-1.5 py-[1px] text-1 text-fail'
+            : 'mt-[3px] inline-flex shrink-0 items-center gap-1 rounded-badge bg-wait-soft px-1.5 py-[1px] text-1 text-wait'
+        }
         data-kind="task-state"
       >
         <Hourglass className="size-3 shrink-0" />
-        已汇报 · 待你核
+        {word}
       </span>
     );
   }
@@ -879,7 +899,9 @@ export function TaskChatScene() {
               winding={winding}
               stopped={task.stopped}
               interrupted={task.interrupted}
-              reportedAt={task.reportedAt ?? null}
+              report={task.report ?? null}
+              review={task.review}
+              accepted={task.accepted}
             />
             <TaskMenu
               running={task.running}
