@@ -271,12 +271,13 @@ function TaskState({
     );
   }
   // 兜底：任务已派出但还没开跑/在排队时也要有状态词，页头不空白。
+  // T051.2 note：词只从 taskStatusOf 一处出（pending 派发态就是「等待中」），这里不再写字面量。
   return (
     <span
       className="mt-[3px] inline-flex shrink-0 items-center gap-1 rounded-badge bg-hover px-1.5 py-[1px] text-1 text-ink-2"
       data-kind="task-state"
     >
-      等待中
+      {taskStatusOf('pending', 'executor')}
     </span>
   );
 }
