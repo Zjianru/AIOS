@@ -16,8 +16,9 @@ use session::SessionId;
 use tasks::{
     Acceptance, Attempt, AttemptEnd, AttemptId, AttemptTrigger, BootId, BootScan, ConversationId,
     EffectClaim, EffectKind, EffectPayload, Input, InputAttachment, MissingItem, ModelChoice,
-    NewInput, NewReport, NewTask, Report, ReportId, ReportOrigin, ReportState, SlotKind, Stage,
-    StopAttempt, Store, Task, TaskError, TaskId, TaskPolicy, WorkerSlots,
+    NewGraph, NewInput, NewReport, NewSubtask, NewTask, Report, ReportId, ReportOrigin,
+    ReportState, SlotKind, Stage, StopAttempt, Store, Task, TaskError, TaskId, TaskPolicy,
+    WorkerSlots,
 };
 use tokio::sync::broadcast;
 use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
@@ -161,6 +162,28 @@ struct TaskAcceptArgs {
     cwd: Option<String>,
     write_scope: Option<String>,
     worktree: bool,
+}
+
+/// T052：task_graph_propose 的一个子任务参数。
+#[derive(Debug)]
+struct GraphSubtaskArgs {
+    title: String,
+    requirement: String,
+    dod: String,
+    write_scope: Option<String>,
+    worktree: bool,
+    /// 本提议里其他子任务的下标（0 起）。
+    after: Vec<usize>,
+}
+
+/// T052：task_graph_propose 的参数：总任务 + 至少两个子任务。
+#[derive(Debug)]
+struct TaskGraphArgs {
+    title: String,
+    requirement: String,
+    dod: String,
+    cwd: Option<String>,
+    subtasks: Vec<GraphSubtaskArgs>,
 }
 
 /// 任务没在跑时接着开一次的方式：普通说话，或重启打断后的接续。
@@ -978,11 +1001,13 @@ impl TaskRuntime {
             ResumeMode::Say
         };
         let mut recovery_attempt = None;
+        let mut opened_attempt = None;
         let host = match self.running_for(task_id, attempt.id) {
             Some(running) => running.host,
             // 没在跑：停/结束之后在任务对话里说话，接着原会话开新一轮（T028.2）。
             None => match self.resume_for_delivery(&claim, &task, attempt, mode).await {
                 Some(opened) => {
+                    opened_attempt = Some(opened.attempt_id);
                     if matches!(mode, ResumeMode::Interrupted) {
                         recovery_attempt = Some(opened.attempt_id);
                     }
@@ -991,6 +1016,12 @@ impl TaskRuntime {
                 None => return,
             },
         };
+        // T052：新开的接续 Attempt 先交最新的上游结果，再送用户的话（顺序由 Steer 队列保证）。
+        if let Some(attempt_id) = opened_attempt
+            && let Err(error) = self.send_upstream_note(&host, &task, attempt_id).await
+        {
+            eprintln!("上游结果没送进任务会话：{error}");
+        }
         let mut sent = Ok(());
         let inputs = task.inputs.len();
         for (index, input) in task.inputs.iter().enumerate() {
@@ -1136,6 +1167,13 @@ impl TaskRuntime {
             }
             Err(ResumeBlock::NoSession(reason)) => return Err(reason),
         };
+        // T052：接续前先把最新的上游结果交进会话（图子任务才有一段）。
+        if let Err(error) = self
+            .send_upstream_note(&opened.host, &task, opened.attempt_id)
+            .await
+        {
+            eprintln!("上游结果没送进任务会话：{error}");
+        }
         let request_id = format!("resume:{task_id}:{}", opened.attempt_id);
         let sent = opened
             .host
@@ -1453,7 +1491,11 @@ impl TaskRuntime {
             .stage(&task.id)
             .map_err(|error| error.to_string())?;
         match &claim.payload {
-            EffectPayload::Relay { report_id, .. } => {
+            EffectPayload::Relay {
+                report_id,
+                released,
+                ..
+            } => {
                 let Some(report) = task.reports.iter().find(|report| report.id == *report_id)
                 else {
                     return Err(format!("任务 {} 没有报告 {report_id}", task.id));
@@ -1475,6 +1517,10 @@ impl TaskRuntime {
                 }
                 if let Some(question) = &report.question {
                     body["question"] = json!(question);
+                }
+                // T052：这份 ready 报告自动放出的下游（程序事实一行）。
+                if !released.is_empty() {
+                    body["auto_started"] = json!(released);
                 }
                 // 写任务的结果卡：写入范围、改动清单和固定一行。只有当前版本的 ready 报告
                 // 才给「待你核」的卡状态（阶段仍由 task.stage 报待检查）。
@@ -1565,6 +1611,33 @@ impl TaskRuntime {
                 return false;
             }
         };
+        // T052：总任务不跑；图没确认、或上游还没全有 ready 结果的子任务不跑。
+        // 重启扫描、开闸、崩溃重放都走这个入口，所以只挡这一处。
+        if task.is_graph_root() {
+            self.finish_or_fail(&claim, Ok(()));
+            return false;
+        }
+        if let Some(parent) = task.parent.clone() {
+            let confirmed = self
+                .store
+                .task(&parent)
+                .ok()
+                .flatten()
+                .and_then(|root| root.arrangement)
+                .and_then(|arrangement| arrangement.confirmed)
+                .is_some();
+            let ready = match self.store.needs_ready(&task) {
+                Ok(ready) => ready,
+                Err(error) => {
+                    self.finish_or_fail(&claim, Err(error.to_string()));
+                    return false;
+                }
+            };
+            if !confirmed || !ready {
+                self.finish_or_fail(&claim, Ok(()));
+                return false;
+            }
+        }
         // 上一次已经开成会话：重跑的效果只把行收掉；被重启打断的 Attempt 留给第 4 张票。
         if task
             .latest_attempt()
@@ -1711,6 +1784,11 @@ impl TaskRuntime {
         if let Some(scope) = task.effective_write_scope() {
             assignment["write_scope"] = json!(scope.to_string_lossy());
         }
+        // T052：下游子任务的任务包里带「上游结果」（和接续共用同一段构造，arg 里现查最新 ready）。
+        let upstream_results = self.upstream_results_for(&task);
+        if !upstream_results.is_empty() {
+            assignment["upstream_results"] = json!(upstream_results);
+        }
         let assignment = assignment.to_string();
         let sent = host
             .send_message(
@@ -1790,6 +1868,66 @@ impl TaskRuntime {
             self.store
                 .end_attempt(&task.id, attempt, Self::now(), AttemptEnd::NotOpened),
         );
+    }
+
+    /// T052：任务包里「上游结果」一段——按库里上游最新的 ready 报告现查（不只看 needs 上的交接），
+    /// launch 和接续 Attempt 共用同一段构造。
+    fn upstream_results_for(&self, task: &Task) -> Vec<Value> {
+        let mut results = Vec::new();
+        for need in &task.needs {
+            let Ok(Some(upstream)) = self.store.task(&need.from) else {
+                continue;
+            };
+            let Some(report) = upstream
+                .reports
+                .iter()
+                .rev()
+                .find(|report| report.state == ReportState::Ready)
+            else {
+                continue;
+            };
+            results.push(json!({
+                "task_id": need.from.as_str(),
+                "title": upstream.title,
+                "report_id": report.id.as_str(),
+                "requirement_version": report.version,
+                "summary": report.summary,
+            }));
+        }
+        results
+    }
+
+    /// T052：接续 Attempt 打开以后，把「上游结果（最新）」随恢复说明送进会话。
+    ///
+    /// 下游以后的 Attempt 不重发 assignment，靠这条消息重新交接；同一个 Attempt 只送一次
+    /// （request id 带 Attempt 编号，重复触发会被会话判重）。
+    async fn send_upstream_note(
+        &self,
+        host: &ServiceHost,
+        task: &Task,
+        attempt_id: AttemptId,
+    ) -> Result<(), String> {
+        let results = self.upstream_results_for(task);
+        if results.is_empty() {
+            return Ok(());
+        }
+        let mut lines = vec!["上游结果（最新）：".to_owned()];
+        for item in results {
+            lines.push(format!(
+                "- {}（要求第 {} 版）：{}",
+                item["title"].as_str().unwrap_or_default(),
+                item["requirement_version"],
+                item["summary"].as_str().unwrap_or_default()
+            ));
+        }
+        host.send_message(
+            &format!("upstream:{}:{}", task.id, attempt_id.0),
+            UserMessage::text(lines.join("\n")),
+            DeliveryMode::Steer,
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
     }
 
     /// 起跑前的任务包检查：返回解析好的模型配置和凭证；缺项时返回缺的每一项。
@@ -2291,6 +2429,120 @@ impl TaskRuntime {
         Ok((task, created))
     }
 
+    /// T052：Kind 的 task_graph_propose：冻结每个子任务的策略、校验并建图；这一步不启动。
+    fn propose_graph(
+        &self,
+        context: &ToolContext,
+        _call_id: &str,
+        args: TaskGraphArgs,
+    ) -> Result<(Task, usize), ToolFailure> {
+        let TaskGraphArgs {
+            title,
+            requirement,
+            dod,
+            cwd,
+            subtasks,
+        } = args;
+        let conversation = context
+            .session_id()
+            .ok_or_else(|| ToolFailure::plain("没有会话 id，不能建任务图"))?
+            .to_owned();
+        let cwd = match cwd {
+            Some(raw) => {
+                let path = PathBuf::from(raw);
+                let path = if path.is_absolute() {
+                    path
+                } else {
+                    context.cwd.join(path)
+                };
+                if !path.is_dir() {
+                    return Err(ToolFailure::plain(format!(
+                        "cwd 不是已存在的目录：{}",
+                        path.display()
+                    )));
+                }
+                std::fs::canonicalize(&path).unwrap_or(path)
+            }
+            None => context.cwd.clone(),
+        };
+        let selection = self
+            .selection
+            .lock()
+            .expect("selection 锁被毒化")
+            .clone()
+            .ok_or_else(|| ToolFailure::plain("还没有可用的模型选择，不能建任务图"))?;
+        let model = ModelChoice {
+            connection: selection.connection,
+            model: selection.model,
+            effort_wanted: selection.effort_wanted,
+        };
+        let count = subtasks.len();
+        let mut frozen_subtasks = Vec::with_capacity(count);
+        for item in subtasks {
+            let writing = item
+                .write_scope
+                .as_deref()
+                .is_some_and(|scope| !scope.trim().is_empty());
+            let bash = writing && self.exec_bash.load(Ordering::SeqCst);
+            let tools = match (writing, bash) {
+                (true, true) => THIN_WRITE_BASH_TOOLS
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect(),
+                (true, false) => THIN_WRITE_TOOLS
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect(),
+                (false, _) => THIN_TOOLS.iter().map(|name| (*name).to_owned()).collect(),
+            };
+            frozen_subtasks.push(NewSubtask {
+                task: NewTask {
+                    title: item.title,
+                    requirement: item.requirement,
+                    dod: item.dod,
+                    cwd: cwd.clone(),
+                    conversation: ConversationId::new(conversation.as_str()),
+                    model: model.clone(),
+                    tools,
+                },
+                policy: TaskPolicy {
+                    write_scope: item.write_scope,
+                    worktree: item.worktree,
+                    bash,
+                },
+                after: item.after,
+            });
+        }
+        let graph = NewGraph {
+            root: NewTask {
+                title,
+                requirement,
+                dod,
+                cwd,
+                conversation: ConversationId::new(conversation.as_str()),
+                model,
+                tools: Vec::new(),
+            },
+            subtasks: frozen_subtasks,
+        };
+        let root = self
+            .store
+            .create_graph(graph, Self::now())
+            .map_err(|error| ToolFailure::plain(error.to_string()))?;
+        self.wake();
+        Ok((root, count))
+    }
+
+    /// T052：确认任务图：同一个事务里记确认并把没有 needs 的子任务放进 launch。
+    pub(crate) fn confirm_graph(&self, root: &TaskId) -> Result<usize, String> {
+        let launched = self
+            .store
+            .confirm_graph(root, Self::now())
+            .map_err(|error| error.to_string())?;
+        self.wake();
+        Ok(launched)
+    }
+
     /// Kind 的 task_update：换写入范围、追加要求版本，然后在原会话开新 Attempt。
     ///
     /// 只在用户于 Kind 对话里同意扩大范围后用；本票只改写入范围（D83）。
@@ -2410,6 +2662,40 @@ impl TaskRuntime {
             .task(&id)
             .map_err(|error| ToolFailure::plain(error.to_string()))?
             .ok_or_else(|| ToolFailure::plain(format!("任务不存在：{task_id}")))?;
+        // T052：总任务没有执行承载，只报汇总阶段和每个子任务的事实。
+        if task.is_graph_root() {
+            let stage = self
+                .store
+                .stage(&id)
+                .map_err(|error| ToolFailure::plain(error.to_string()))?;
+            let children = self
+                .store
+                .children(&id)
+                .map_err(|error| ToolFailure::plain(error.to_string()))?;
+            let mut lines = vec![
+                format!("任务 {}（任务图）：{}", task.id, task.title),
+                format!("阶段：{}", stage_label(stage)),
+                format!("子任务数：{}", children.len()),
+            ];
+            for (index, child) in children.iter().enumerate() {
+                let child_stage = self
+                    .store
+                    .stage(&child.id)
+                    .map_err(|error| ToolFailure::plain(error.to_string()))?;
+                let report = child
+                    .latest_report()
+                    .map(|report| report_state_key(report.state))
+                    .unwrap_or("无");
+                lines.push(format!(
+                    "{}. {}：{}；最近报告：{}",
+                    index + 1,
+                    child.title,
+                    stage_label(child_stage),
+                    report
+                ));
+            }
+            return Ok(lines.join("\n"));
+        }
         let stage = self
             .store
             .stage(&id)
@@ -2820,6 +3106,95 @@ impl Tool for TaskAcceptTool {
     }
 }
 
+/// Kind 的 task_graph_propose（T052）：有先后的几件事建一张任务图。
+///
+/// 校验（至少两项、after 只指本提议、无环、没有先后的写入范围不重叠）在 tasks 里；
+/// 校验过了建图并回图 id，Kind 再调 propose_action（action=start_task_graph）出确认卡。
+pub(crate) struct TaskGraphProposeTool {
+    runtime: Arc<TaskRuntime>,
+    parameters: Value,
+}
+
+impl TaskGraphProposeTool {
+    pub(crate) fn new(runtime: Arc<TaskRuntime>) -> Self {
+        Self {
+            runtime,
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": TASK_ACCEPT_TITLE_DESCRIPTION},
+                    "requirement": {"type": "string", "description": "What the whole graph must achieve, in the user's words."},
+                    "dod": {"type": "string", "description": "How the whole graph will be judged complete."},
+                    "cwd": {"type": "string", "description": "Directory to work in; omit to use this conversation's directory. It must already exist."},
+                    "subtasks": {
+                        "type": "array",
+                        "minItems": 2,
+                        "description": "The tasks in order. Put the step that must happen first earlier or link it with after.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string", "description": TASK_ACCEPT_TITLE_DESCRIPTION},
+                                "requirement": {"type": "string", "description": "What this step must do, in the user's words."},
+                                "dod": {"type": "string", "description": "How this step will be judged complete."},
+                                "write_scope": {"type": "string", "description": "One path this step may write; omit for a read-only step."},
+                                "worktree": {"type": "boolean", "description": "Only when the user explicitly asks for a worktree. Defaults to false."},
+                                "after": {"type": "array", "items": {"type": "integer"}, "description": "Indexes (0-based) of subtasks in this proposal that must have a result before this step starts."}
+                            },
+                            "required": ["title", "requirement", "dod"]
+                        }
+                    }
+                },
+                "required": ["title", "requirement", "dod", "subtasks"]
+            }),
+        }
+    }
+}
+
+impl Tool for TaskGraphProposeTool {
+    fn name(&self) -> &str {
+        "task_graph_propose"
+    }
+
+    fn description(&self) -> &str {
+        "Propose one ordered task graph when the user's request has steps that must run in order. Creates the graph and returns its id; then call propose_action once with action start_task_graph and that id so the user confirms on the card. Independent work belongs in task_accept, not here."
+    }
+
+    fn parameters(&self) -> &Value {
+        &self.parameters
+    }
+
+    fn condition(&self) -> ToolCondition {
+        ToolCondition::Always
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: ToolCall,
+        context: &'a ToolContext,
+    ) -> ToolFuture<'a, ToolResult> {
+        Box::pin(async move {
+            let args = match parse_object(&call.arguments) {
+                Ok(args) => args,
+                Err(failure) => return ToolResult::error(call.id, failure),
+            };
+            let parsed = match parse_graph_args(&args) {
+                Ok(parsed) => parsed,
+                Err(failure) => return ToolResult::error(call.id, failure),
+            };
+            match self.runtime.propose_graph(context, &call.id, parsed) {
+                Ok((root, count)) => ToolResult::success(
+                    call.id,
+                    format!(
+                        "已建任务图 {}（{} 项）。现在调用 propose_action 一次：options 里一项 action=start_task_graph，details.task_id 填 {}；确认和暂自由用户在卡片上点。确认后没有先后的子任务先跑，等上游的子任务会自动开跑，不要再单独派它们。",
+                        root.id, count, root.id
+                    ),
+                ),
+                Err(failure) => ToolResult::error(call.id, failure),
+            }
+        })
+    }
+}
+
 /// Kind 的 task_status。
 pub(crate) struct TaskStatusTool {
     runtime: Arc<TaskRuntime>,
@@ -3211,6 +3586,95 @@ fn string_arg(args: &serde_json::Map<String, Value>, key: &str) -> Option<String
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .map(str::to_owned)
+}
+
+/// T052：解析 task_graph_propose 的参数（字段检查照 task_accept；图语义由 tasks 校验）。
+fn parse_graph_args(args: &serde_json::Map<String, Value>) -> Result<TaskGraphArgs, ToolFailure> {
+    let title = string_arg(args, "title").ok_or_else(|| ToolFailure::plain("title 不能为空"))?;
+    let requirement = string_arg(args, "requirement")
+        .ok_or_else(|| ToolFailure::plain("requirement 不能为空"))?;
+    let dod = string_arg(args, "dod").ok_or_else(|| ToolFailure::plain("dod 不能为空"))?;
+    let cwd = args
+        .get("cwd")
+        .and_then(Value::as_str)
+        .filter(|cwd| !cwd.trim().is_empty())
+        .map(str::to_owned);
+    let raw_subtasks = args
+        .get("subtasks")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ToolFailure::plain("subtasks 必须是数组"))?;
+    if raw_subtasks.len() < 2 {
+        return Err(ToolFailure::plain("任务图至少要两个子任务"));
+    }
+    let mut subtasks = Vec::with_capacity(raw_subtasks.len());
+    for (index, value) in raw_subtasks.iter().enumerate() {
+        let object = value
+            .as_object()
+            .ok_or_else(|| ToolFailure::plain(format!("subtasks[{index}] 必须是对象")))?;
+        let subtask_title = string_arg(object, "title")
+            .ok_or_else(|| ToolFailure::plain(format!("subtasks[{index}].title 不能为空")))?;
+        let subtask_requirement = string_arg(object, "requirement")
+            .ok_or_else(|| ToolFailure::plain(format!("subtasks[{index}].requirement 不能为空")))?;
+        let subtask_dod = string_arg(object, "dod")
+            .ok_or_else(|| ToolFailure::plain(format!("subtasks[{index}].dod 不能为空")))?;
+        let write_scope = match object.get("write_scope") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(value)) => {
+                Some(value.clone()).filter(|value| !value.trim().is_empty())
+            }
+            Some(_) => {
+                return Err(ToolFailure::plain(format!(
+                    "subtasks[{index}].write_scope 必须是字符串"
+                )));
+            }
+        };
+        let worktree = match object.get("worktree") {
+            None => false,
+            Some(Value::Bool(value)) => *value,
+            Some(_) => {
+                return Err(ToolFailure::plain(format!(
+                    "subtasks[{index}].worktree 必须是布尔值"
+                )));
+            }
+        };
+        let after = match object.get("after") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(items)) => {
+                let mut after = Vec::with_capacity(items.len());
+                for item in items {
+                    let Some(value) = item.as_u64() else {
+                        return Err(ToolFailure::plain(format!(
+                            "subtasks[{index}].after 里的项必须是整数"
+                        )));
+                    };
+                    after.push(usize::try_from(value).map_err(|_| {
+                        ToolFailure::plain(format!("subtasks[{index}].after 里的下标太大：{value}"))
+                    })?);
+                }
+                after
+            }
+            Some(_) => {
+                return Err(ToolFailure::plain(format!(
+                    "subtasks[{index}].after 必须是数组"
+                )));
+            }
+        };
+        subtasks.push(GraphSubtaskArgs {
+            title: subtask_title,
+            requirement: subtask_requirement,
+            dod: subtask_dod,
+            write_scope,
+            worktree,
+            after,
+        });
+    }
+    Ok(TaskGraphArgs {
+        title,
+        requirement,
+        dod,
+        cwd,
+        subtasks,
+    })
 }
 
 /// T048：task_accept 的 title 说明必须明确给出卡片标题字数上限（生成时就约束，UI 截断只是兜底）。

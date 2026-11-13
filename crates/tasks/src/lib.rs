@@ -20,7 +20,8 @@ pub use slots::{Later, SlotKind, WorkerSlots};
 pub use stage::Stage;
 pub use store::{BootScan, SCHEMA_VERSION, StopAttempt, Store};
 pub use task::{
-    Acceptance, Attempt, AttemptEnd, AttemptTrigger, Input, InputAttachment, InputSource,
-    MissingItem, ModelChoice, NewInput, NewReport, NewTask, Report, ReportOrigin, ReportState,
-    RequirementVersion, Run, SayOutcome, Task, TaskPolicy, VersionSource, Worktree,
+    Acceptance, Arrangement, Attempt, AttemptEnd, AttemptTrigger, Confirmation, Handoff, Input,
+    InputAttachment, InputSource, MissingItem, ModelChoice, Need, NewGraph, NewInput, NewReport,
+    NewSubtask, NewTask, Report, ReportOrigin, ReportState, RequirementVersion, Run, SayOutcome,
+    Task, TaskPolicy, VersionSource, Worktree,
 };

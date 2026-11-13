@@ -21,6 +21,7 @@ fn relay(report: &str) -> EffectPayload {
     EffectPayload::Relay {
         task_id: TaskId::from("task-1"),
         report_id: ReportId::from(report),
+        released: Vec::new(),
     }
 }
 
@@ -173,6 +174,7 @@ fn relay_uses_its_own_first_retry_delay() {
             EffectPayload::Relay {
                 task_id: TaskId::from("task-1"),
                 report_id: ReportId::from("report-1"),
+                released: Vec::new(),
             },
             T0,
         )
@@ -258,6 +260,7 @@ fn queued_effects_survive_reopen() {
                 EffectPayload::Relay {
                     task_id: TaskId::from("task-1"),
                     report_id: ReportId::from("report-1"),
+                    released: Vec::new(),
                 },
                 T0,
             )

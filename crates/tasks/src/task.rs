@@ -16,6 +16,54 @@ pub struct ModelChoice {
     pub effort_wanted: String,
 }
 
+/// T052：任务图里一个子任务等的一个兄弟子任务；开跑那一刻解析出交接。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Need {
+    /// 上游兄弟任务。
+    pub from: TaskId,
+    /// 开跑时解析的上游 ready 报告事实；还没解析就是 None（旧任务行按 None 读）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handoff: Option<Handoff>,
+}
+
+/// T052：上游交给下游的「上游结果」事实（04 篇 3.5、3.6）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Handoff {
+    pub report_id: ReportId,
+    pub requirement_version: u32,
+    pub summary: String,
+}
+
+/// T052：总任务上的安排记录：图版本与本票唯一一次确认。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Arrangement {
+    pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirmed: Option<Confirmation>,
+}
+
+/// T052：用户的确认记录（只由确认卡上的 card-act 写）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Confirmation {
+    pub version: u32,
+    pub at: i64,
+}
+
+/// T052：Kind 提的一张任务图：总任务 + 至少两个子任务 + 先后边。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewGraph {
+    pub root: NewTask,
+    pub subtasks: Vec<NewSubtask>,
+}
+
+/// T052：图里的一个子任务；after 是同一提议里其他子任务的下标（0 起）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewSubtask {
+    pub task: NewTask,
+    pub policy: TaskPolicy,
+    pub after: Vec<usize>,
+}
+
 /// 一个 Task 的完整聚合，整行存在 task 表。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Task {
@@ -57,6 +105,15 @@ pub struct Task {
     /// 用户接受记录；旧任务行按空读。接受不是阶段（03 篇 5.1、5.4）。
     #[serde(default)]
     pub acceptance: Option<Acceptance>,
+    /// T052：任务图里这个子任务的总任务；单派任务和总任务为 None。旧任务行按 None 读。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<TaskId>,
+    /// T052：这个子任务等哪些兄弟子任务（开跑时把交接解析进每项）。旧任务行按空读。
+    #[serde(default)]
+    pub needs: Vec<Need>,
+    /// T052：总任务上的安排（图版本 + 用户确认）；子任务和单派任务为 None。旧任务行按 None 读。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arrangement: Option<Arrangement>,
     /// 执行者在起跑前查到的缺项；空表示任务包齐。
     pub missing: Vec<MissingItem>,
     pub created_at: i64,
@@ -463,6 +520,11 @@ impl Task {
             Ok(relative) => Some(worktree.root.join(relative)),
             Err(_) => Some(scope.to_path_buf()),
         }
+    }
+
+    /// T052：总任务（有安排记录、不跑执行）。
+    pub fn is_graph_root(&self) -> bool {
+        self.arrangement.is_some()
     }
 
     pub fn latest_attempt(&self) -> Option<&Attempt> {

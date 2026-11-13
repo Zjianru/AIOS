@@ -57,6 +57,9 @@ pub enum EffectPayload {
     Relay {
         task_id: TaskId,
         report_id: ReportId,
+        /// T052：这份 ready 报告自动放出的下游子任务标题（relay 给 Kind 的一行程序事实）。
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        released: Vec<String>,
     },
     /// 停止事实的 relay：和报告同一条 Kind 投递通路，但没有报告 id。
     /// 键里带任务 id：Attempt 编号只在任务内唯一，单用编号会让两个任务的停止互相覆盖。

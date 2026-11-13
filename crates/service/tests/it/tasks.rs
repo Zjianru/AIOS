@@ -36,6 +36,8 @@ struct RouterState {
     unexpected: Mutex<Vec<(bool, String)>>,
     /// ThinAgent 的响应延迟：live 测试要在任务还在跑时接上事件流。
     thin_delay: Mutex<Option<Duration>>,
+    /// T052：Kind 的动态脚本阶段（0=出确认卡、1=task_status、2=收尾）；None = 用静态队列。
+    graph_kind: Mutex<Option<u8>>,
 }
 
 impl Router {
@@ -49,8 +51,14 @@ impl Router {
                 bodies: Mutex::new(Vec::new()),
                 unexpected: Mutex::new(Vec::new()),
                 thin_delay: Mutex::new(None),
+                graph_kind: Mutex::new(None),
             }),
         }
+    }
+
+    /// T052：让 Kind 的第二轮起用动态脚本（先 propose_action 出卡，再 task_status，最后收尾）。
+    fn enable_graph_kind(&self) {
+        *self.state.graph_kind.lock().unwrap() = Some(0);
     }
 
     fn set_thin_delay(&self, delay: Duration) {
@@ -135,6 +143,68 @@ impl Respond for Router {
         } else {
             None
         };
+        // T052：任务图的动态 Kind 轮：图 id 在 task_graph_propose 的工具结果里，静态回放拿不到。
+        if !thin
+            && let Some(step) = {
+                let mut phase = self.state.graph_kind.lock().unwrap();
+                let step = phase.take();
+                if let Some(step) = step {
+                    *phase = Some(step + 1);
+                }
+                step
+            }
+        {
+            let sse = match step {
+                0 => crate::common::tool_use_sse(
+                    0,
+                    "call-graph-skill",
+                    "skill",
+                    &serde_json::json!({"name": "aios-tasks"}).to_string(),
+                ),
+                1 => {
+                    let graph = serde_json::json!({
+                        "title": "查行数再写结果",
+                        "requirement": "先查 notes.md 有几行，再把行数写进 other.txt",
+                        "dod": "other.txt 里写着行数",
+                        "subtasks": [
+                            {"title": "先查行数", "requirement": "查 notes.md 有几行", "dod": "给出行数"},
+                            {"title": "再写结果", "requirement": "把行数写进 other.txt", "dod": "other.txt 里是行数", "write_scope": "other.txt", "after": [0]}
+                        ]
+                    })
+                    .to_string();
+                    crate::common::tool_use_sse(
+                        1,
+                        "call-graph-propose",
+                        "task_graph_propose",
+                        &graph,
+                    )
+                }
+                2 => {
+                    let root = graph_root_id(&body).expect("请求里要有「已建任务图 <id>」");
+                    let args = serde_json::json!({
+                        "title": "任务图",
+                        "brief": "两步按先后顺序跑；确认后第一项开跑，第二项等第一项的结果。",
+                        "options": [{
+                            "id": "confirm",
+                            "action": "start_task_graph",
+                            "label": "确认并开跑",
+                            "details": {"task_id": root}
+                        }]
+                    })
+                    .to_string();
+                    crate::common::tool_use_sse(2, "call-graph-card", "propose_action", &args)
+                }
+                3 => {
+                    let root = graph_root_id(&body).expect("请求里要有「已建任务图 <id>」");
+                    let args = serde_json::json!({"task_id": root}).to_string();
+                    crate::common::tool_use_sse(3, "call-graph-status", "task_status", &args)
+                }
+                _ => crate::common::text_sse("任务图已确认。"),
+            };
+            return ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(sse);
+        }
         let sse = match per_task {
             Some(sse) => sse,
             None => {
@@ -162,6 +232,13 @@ impl Respond for Router {
             _ => template,
         }
     }
+}
+
+/// T052：从 Kind 请求体里「已建任务图 <id>」取出图 id（动态回放用）。
+fn graph_root_id(body: &str) -> Option<String> {
+    let rest = body.split("已建任务图 ").nth(1)?;
+    let id: String = rest.chars().take_while(char::is_ascii_hexdigit).collect();
+    (!id.is_empty()).then_some(id)
 }
 
 /// 从 ThinAgent 请求里第一条 assignment 取出任务 id 和标题；别的请求没有就是 None。
@@ -1212,6 +1289,8 @@ const EXPECTED_KIND_POLICY: &str = concat!(
     "\nRead only until you can answer the user or state the task clearly (for example, confirm that a file exists); do not investigate on ThinAgent's behalf.",
     "\nWhen ThinAgent is blocked or hands back, relay briefly what it is missing or asking; the user decides, so do not make the decision for them.",
     "\nBefore dispatching a write task, stopping a task, or changing its write scope, load the aios-tasks skill first.",
+    "\nWhen the user's request has steps that must happen in order (a later step needs an earlier step's result), call task_graph_propose once with the subtasks and their after links, then call propose_action once with action start_task_graph and the graph id it returned; the user confirms on the card. Sub-tasks whose upstream has a ready result start automatically: do not dispatch them again.",
+    "\nDispatch tasks that are independent of each other separately with task_accept; only ordered work belongs in a task graph.",
 );
 
 /// 装了任务执行者：Kind 第一个请求的 system 以派任务说明结尾。
@@ -7509,4 +7588,1154 @@ async fn a_bash_write_task_card_notes_bash_and_lists_the_changes() {
         "{body}"
     );
     assert_eq!(body["card_state"], "review", "{body}");
+}
+
+// ===== T052.1：任务图：提议 → 确认卡 → 确认 → 第一项开跑 =====
+
+/// T052：取一条消息里的纯文本（工具结果正文）。
+fn message_text(message: &model::Message) -> String {
+    message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            model::ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 打开带确认动作登记表的 host（确认卡上的动作要真的登记过）。
+async fn open_graph_host(server: &MockServer, data: &Path, cwd: &Path) -> RootHost {
+    let actions = Arc::new(service::ActionRegistry::settings(data.to_path_buf(), None));
+    open_host_with(server, data, cwd, move |options| {
+        options.actions = actions;
+        // 图流程要真的加载 aios-tasks skill（propose_action 的动作开出条件）。
+        options.config.bundled_skills = tools::bundled_skills().to_vec();
+    })
+    .await
+}
+
+fn graph_root(store: &Store) -> Task {
+    let ids = store.task_ids().expect("任务 id");
+    let mut roots: Vec<Task> = ids
+        .into_iter()
+        .filter_map(|id| store.task(&id).expect("读任务"))
+        .filter(Task::is_graph_root)
+        .collect();
+    assert_eq!(roots.len(), 1, "只应有一个总任务：{roots:?}");
+    roots.pop().expect("总任务")
+}
+
+/// 从根日志里取任务图的确认卡（动态 Kind 轮出的那张）。
+fn graph_card(data: &Path) -> Value {
+    let events = crate::common::read_root_events(data);
+    let card = events.iter().find_map(|event| match &event.kind {
+        session::EventKind::ToolResult {
+            message,
+            meta: Some(meta),
+            error: None,
+            ..
+        } if message.tool_call_id.as_deref() == Some("call-graph-card") => {
+            meta.get("card").cloned()
+        }
+        _ => None,
+    });
+    if let Some(card) = card {
+        return card;
+    }
+    let calls: Vec<String> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            session::EventKind::ToolCall { call_id, name, .. } => Some(format!("{call_id}:{name}")),
+            _ => None,
+        })
+        .collect();
+    let results: Vec<String> = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            session::EventKind::ToolResult {
+                message,
+                error,
+                meta,
+                ..
+            } => Some(format!(
+                "{:?} err={error:?} meta={}",
+                message.tool_call_id,
+                meta.is_some()
+            )),
+            _ => None,
+        })
+        .collect();
+    panic!("没有确认卡：calls={calls:?} results={results:?}");
+}
+
+/// 提议两项 A→B → 出确认卡（两行事实）→ 确认 → 只放 A；再确认不重复执行。
+#[tokio::test]
+async fn graph_propose_card_confirm_launches_first_subtask_only() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    router.enable_graph_kind();
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(true);
+
+    host.dispatch(Call::Send(send(
+        &host,
+        "kind-1",
+        "先查 notes.md 有几行，再把行数写进 other.txt",
+    )))
+    .await
+    .expect("发送");
+    wait_until("建图并出卡", || {
+        let store = tasks_store(data.path());
+        let ids = store.task_ids().unwrap_or_default();
+        ids.len() == 3
+            && crate::common::read_root_events(data.path())
+                .iter()
+                .any(|event| matches!(&event.kind, session::EventKind::ToolResult { message, meta: Some(_), .. } if message.tool_call_id.as_deref() == Some("call-graph-card")))
+    })
+    .await;
+
+    let store = tasks_store(data.path());
+    let root = graph_root(&store);
+    let children = store.children(&root.id).expect("子任务");
+    assert_eq!(children.len(), 2);
+    assert_eq!(children[1].needs.len(), 1);
+    assert_eq!(children[1].needs[0].from, children[0].id);
+
+    // Kind 工具表里有 task_graph_propose。
+    let kind_body = router.bodies(false).into_iter().next().expect("Kind 请求");
+    assert!(
+        tool_names(&kind_body)
+            .iter()
+            .any(|name| name == "task_graph_propose"),
+        "Kind 工具表：{:?}",
+        tool_names(&kind_body)
+    );
+
+    // 确认卡：一个选项、每个子任务一行事实（标题/等谁/写入范围）。
+    let card = graph_card(data.path());
+    let options = card["options"].as_array().expect("options");
+    assert_eq!(options.len(), 1);
+    let facts = options[0]["facts"].as_array().expect("facts");
+    assert_eq!(facts.len(), 2, "每项一行事实：{facts:?}");
+    assert!(
+        facts[1]["name"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("写结果"),
+        "第二行是下游子任务：{facts:?}"
+    );
+    assert!(
+        facts[0]["value"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("等：无"),
+        "第一项不等人：{facts:?}"
+    );
+    assert!(
+        facts[1]["value"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("等：先查行数"),
+        "第二项写明等谁：{facts:?}"
+    );
+    assert!(
+        facts[1]["value"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("写入范围：other.txt"),
+        "第二项写明写入范围：{facts:?}"
+    );
+
+    let confirm = Call::CardAct(CardActRequest {
+        call_id: "call-graph-card".to_owned(),
+        verb: CardVerb::Confirm,
+        option: Some("confirm".to_owned()),
+    });
+    let Response::CardAct(response) = host.dispatch(confirm.clone()).await.expect("确认") else {
+        panic!("card-act 响应");
+    };
+    assert!(
+        response
+            .decision
+            .as_ref()
+            .is_some_and(|decision| decision.phase == session::CardDecisionPhase::Confirmed),
+        "确认成功：{response:?}"
+    );
+
+    // 只放没有 needs 的第一项。
+    let claim = store
+        .claim_effect(EffectKind::Launch, i64::MAX / 2)
+        .expect("取效果")
+        .expect("A 的 launch");
+    let tasks::EffectPayload::Launch { task_id } = claim.payload.clone() else {
+        panic!("launch 载荷");
+    };
+    assert_eq!(task_id, children[0].id);
+    store.complete_effect(&claim).expect("完成 launch");
+    assert!(
+        store
+            .claim_effect(EffectKind::Launch, i64::MAX / 2)
+            .expect("取效果")
+            .is_none(),
+        "B 不能启动"
+    );
+    assert_eq!(
+        store.stage(&children[1].id).expect("阶段"),
+        Stage::NeedsConditions
+    );
+    assert_eq!(
+        store.stage(&root.id).expect("阶段"),
+        Stage::NeedsConditions,
+        "总任务汇总取最靠前的子任务阶段"
+    );
+
+    // 重复确认：原样返回已记的决定，不再执行。
+    let Response::CardAct(again) = host.dispatch(confirm).await.expect("再确认") else {
+        panic!("card-act 响应");
+    };
+    assert!(again.decision.is_some());
+    assert!(
+        store
+            .claim_effect(EffectKind::Launch, i64::MAX / 2)
+            .expect("取效果")
+            .is_none(),
+        "重复确认不重复启动"
+    );
+
+    // 卡片出了以后 Kind 这一轮就结束了；再发一句，下一轮动态脚本读 task_status 的总任务汇总。
+    host.dispatch(Call::Send(send(&host, "kind-2", "看一下任务图的状态")))
+        .await
+        .expect("发送第二句");
+    crate::common::wait_turns(&host, data.path(), 2).await;
+    // Kind 那一轮跑了 task_status 读总任务：汇总阶段 + 子任务行。
+    let status_result = crate::common::read_root_events(data.path())
+        .iter()
+        .find_map(|event| match &event.kind {
+            session::EventKind::ToolResult {
+                message,
+                error: None,
+                ..
+            } if message.tool_call_id.as_deref() == Some("call-graph-status") => {
+                Some(message_text(message))
+            }
+            _ => None,
+        })
+        .expect("task_status 的结果");
+    assert!(status_result.contains("任务图"), "汇总：{status_result}");
+    assert!(
+        status_result.contains("子任务数：2"),
+        "汇总：{status_result}"
+    );
+    assert!(status_result.contains("先查行数"), "汇总：{status_result}");
+
+    // task-read 读总任务：attempts 0、事件空（T051 的空态）。
+    let Response::TaskRead(read) = host
+        .dispatch(Call::TaskRead(TaskReadRequest {
+            task_id: root.id.as_str().to_owned(),
+            before_seq: None,
+        }))
+        .await
+        .expect("task-read 总任务")
+    else {
+        panic!("task-read 响应");
+    };
+    assert_eq!(read.task.attempts, 0);
+    assert!(read.events.is_empty());
+    assert_eq!(read.last_seq, 0);
+}
+
+/// 提议不合法（有环）：工具结果回可读原因，任务库不留半张图。
+#[tokio::test]
+async fn graph_propose_rejects_invalid_graph_with_reason() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(true);
+    let bad = serde_json::json!({
+        "title": "有环的图",
+        "requirement": "r",
+        "dod": "d",
+        "subtasks": [
+            {"title": "A", "requirement": "r", "dod": "d", "after": [1]},
+            {"title": "B", "requirement": "r", "dod": "d", "after": [0]}
+        ]
+    })
+    .to_string();
+    router.push_kind(crate::common::tool_use_sse(
+        1,
+        "call-graph",
+        "task_graph_propose",
+        &bad,
+    ));
+    router.push_kind(crate::common::text_sse("好"));
+    host.dispatch(Call::Send(send(&host, "kind-1", "先查再改")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&host, data.path(), 1).await;
+    let result = crate::common::read_root_events(data.path())
+        .iter()
+        .find_map(|event| match &event.kind {
+            session::EventKind::ToolResult { message, error, .. }
+                if message.tool_call_id.as_deref() == Some("call-graph") =>
+            {
+                Some((message.is_error, message_text(message), error.is_some()))
+            }
+            _ => None,
+        })
+        .expect("工具结果");
+    assert!(result.0 == Some(true) || result.2, "要报错：{result:?}");
+    assert!(result.1.contains("有环"), "原因可读：{}", result.1);
+    assert!(
+        tasks_store(data.path())
+            .task_ids()
+            .expect("任务 id")
+            .is_empty(),
+        "不合格的图不落库"
+    );
+}
+
+/// 暂不：图留着、不跑；没有 launch 效果，子任务都是待补足条件。
+#[tokio::test]
+async fn graph_dismiss_card_keeps_it_unconfirmed_and_launches_nothing() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    router.enable_graph_kind();
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(true);
+    host.dispatch(Call::Send(send(&host, "kind-1", "先查再改")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&host, data.path(), 1).await;
+    wait_until("建图并出卡", || {
+        tasks_store(data.path())
+            .task_ids()
+            .map(|ids| ids.len() == 3)
+            .unwrap_or(false)
+            && crate::common::read_root_events(data.path()).iter().any(|event| {
+                matches!(&event.kind, session::EventKind::ToolResult { message, meta: Some(_), .. } if message.tool_call_id.as_deref() == Some("call-graph-card"))
+            })
+    })
+    .await;
+    let store = tasks_store(data.path());
+    let root = graph_root(&store);
+    let children = store.children(&root.id).expect("子任务");
+    let Response::CardAct(response) = host
+        .dispatch(Call::CardAct(CardActRequest {
+            call_id: "call-graph-card".to_owned(),
+            verb: CardVerb::Dismiss,
+            option: None,
+        }))
+        .await
+        .expect("暂不")
+    else {
+        panic!("card-act 响应");
+    };
+    assert!(
+        response
+            .decision
+            .as_ref()
+            .is_some_and(|decision| decision.phase == session::CardDecisionPhase::Dismissed)
+    );
+    let reloaded = graph_root(&store);
+    assert!(
+        reloaded
+            .arrangement
+            .as_ref()
+            .expect("安排记录")
+            .confirmed
+            .is_none(),
+        "暂不不算确认"
+    );
+    assert!(
+        store
+            .claim_effect(EffectKind::Launch, i64::MAX / 2)
+            .expect("取效果")
+            .is_none(),
+        "什么都不跑"
+    );
+    for child in children {
+        assert_eq!(
+            store.stage(&child.id).expect("阶段"),
+            Stage::NeedsConditions
+        );
+    }
+}
+
+/// launch 入口统一挡：总任务不跑；没确认的图里的子任务不跑。
+#[tokio::test]
+async fn launch_gate_blocks_graph_root_and_unconfirmed_children() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    router.enable_graph_kind();
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    let runtime = host.task_runtime().expect("任务执行者");
+    runtime.set_pump_paused(true);
+    host.dispatch(Call::Send(send(&host, "kind-1", "先查再改")))
+        .await
+        .expect("发送");
+    wait_until("建图", || {
+        tasks_store(data.path())
+            .task_ids()
+            .map(|ids| ids.len() == 3)
+            .unwrap_or(false)
+    })
+    .await;
+    let store = tasks_store(data.path());
+    let root = graph_root(&store);
+    let children = store.children(&root.id).expect("子任务");
+    // 手动替总任务和下游子任务各排一条 launch（模拟重启扫描/异常重放），launch 入口必须挡掉。
+    store
+        .enqueue_effect(
+            tasks::EffectPayload::Launch {
+                task_id: root.id.clone(),
+            },
+            1,
+        )
+        .expect("排总任务 launch");
+    store
+        .enqueue_effect(
+            tasks::EffectPayload::Launch {
+                task_id: children[1].id.clone(),
+            },
+            1,
+        )
+        .expect("排下游 launch");
+    runtime.set_pump_paused(false);
+    wait_until("launch 效果被收掉", || {
+        tasks_store(data.path())
+            .claim_effect(EffectKind::Launch, i64::MAX / 2)
+            .expect("取效果")
+            .is_none()
+    })
+    .await;
+    let store = tasks_store(data.path());
+    assert!(
+        store
+            .task(&root.id)
+            .expect("读任务")
+            .expect("总任务")
+            .runs
+            .is_empty(),
+        "总任务不跑"
+    );
+    assert!(
+        store
+            .task(&children[1].id)
+            .expect("读任务")
+            .expect("子任务")
+            .runs
+            .is_empty(),
+        "没确认/上游没结果的下游不跑"
+    );
+}
+
+/// T052.2：A 的 ready 报告落库的同一事务放出 B；B 开跑时任务包里有「上游结果」，needs 上记交接。
+#[tokio::test]
+async fn graph_ready_releases_downstream_with_the_upstream_result() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    router.enable_graph_kind();
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    let runtime = host.task_runtime().expect("任务执行者");
+    runtime.set_pump_paused(true);
+
+    host.dispatch(Call::Send(send(&host, "kind-1", "先查再写")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&host, data.path(), 1).await;
+    wait_until("建图并出卡", || {
+        tasks_store(data.path())
+            .task_ids()
+            .map(|ids| ids.len() == 3)
+            .unwrap_or(false)
+    })
+    .await;
+    let store = tasks_store(data.path());
+    let root = graph_root(&store);
+    let children = store.children(&root.id).expect("子任务");
+    // 确认：A 进 launch，B 等 A 的 ready。
+    let Response::CardAct(response) = host
+        .dispatch(Call::CardAct(CardActRequest {
+            call_id: "call-graph-card".to_owned(),
+            verb: CardVerb::Confirm,
+            option: Some("confirm".to_owned()),
+        }))
+        .await
+        .expect("确认")
+    else {
+        panic!("card-act 响应");
+    };
+    assert!(response.decision.is_some());
+
+    // ThinAgent 脚本按任务排：A 报 ready，B 报 ready；Kind 的后续轮多备几段文本。
+    let report_a = crate::common::tool_use_sse(
+        2,
+        "call-a-report",
+        "task_report",
+        r#"{"state":"ready","summary":"查完了：notes.md 有 3 行"}"#,
+    );
+    let report_b = crate::common::tool_use_sse(
+        2,
+        "call-b-report",
+        "task_report",
+        r#"{"state":"ready","summary":"写好了：other.txt 里是 3 行"}"#,
+    );
+    let text = crate::common::text_sse("好");
+    router.push_thin_for(children[0].id.as_str(), report_a.clone());
+    router.push_thin_for(children[0].id.as_str(), text.clone());
+    router.push_thin_for(children[1].id.as_str(), report_b);
+    router.push_thin_for(children[1].id.as_str(), text);
+    for _ in 0..6 {
+        router.push_kind(crate::common::text_sse("收到"));
+    }
+    runtime.set_pump_paused(false);
+
+    wait_until("A 报 ready", || {
+        tasks_store(data.path())
+            .task(&children[0].id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_report().map(|report| report.state))
+            == Some(ReportState::Ready)
+    })
+    .await;
+    wait_until("B 自动开跑", || {
+        tasks_store(data.path())
+            .task(&children[1].id)
+            .ok()
+            .flatten()
+            .and_then(|task| {
+                task.latest_attempt()
+                    .and_then(|attempt| attempt.conversation.clone())
+            })
+            .is_some()
+    })
+    .await;
+
+    let downstream = tasks_store(data.path())
+        .task(&children[1].id)
+        .expect("读任务")
+        .expect("B 存在");
+    let handoff = downstream.needs[0]
+        .handoff
+        .clone()
+        .expect("B 开跑前解析出交接");
+    assert!(handoff.summary.contains("3 行"));
+    let upstream = tasks_store(data.path())
+        .task(&children[0].id)
+        .expect("读任务")
+        .expect("A 存在");
+    assert_eq!(
+        handoff.report_id,
+        upstream.latest_report().expect("A ready").id
+    );
+
+    // B 的任务包（assignment）里有「上游结果」一段：标题、要求版本、摘要。
+    let conversation = downstream
+        .latest_attempt()
+        .and_then(|attempt| attempt.conversation.clone())
+        .expect("B 的会话");
+    let session_id = session::SessionId::parse(conversation.as_str()).expect("B 会话 id");
+    let session =
+        session::SessionStore::open_read_only(data.path(), &session_id).expect("B 的会话日志");
+    let assignment = session
+        .events()
+        .iter()
+        .find_map(|event| match &event.kind {
+            session::EventKind::UserMessage { message, .. } => {
+                let text: String = message
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        model::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                serde_json::from_str::<Value>(&text).ok()
+            }
+            _ => None,
+        })
+        .expect("B 的 assignment");
+    let upstream_results = assignment["upstream_results"]
+        .as_array()
+        .expect("上游结果一段");
+    assert_eq!(upstream_results.len(), 1);
+    assert!(
+        upstream_results[0]["title"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("先查行数")
+    );
+    assert_eq!(upstream_results[0]["requirement_version"], 1);
+    assert!(
+        upstream_results[0]["summary"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("3 行")
+    );
+
+    wait_until("B 也报 ready、总任务待检查", || {
+        tasks_store(data.path())
+            .stage(&root.id)
+            .map(|stage| stage == Stage::ReadyForReview)
+            .unwrap_or(false)
+    })
+    .await;
+}
+
+/// T052.3：全局暂停时确认任务图——先都排着，开闸后按先后跑（A 先，B 等 A 的 ready）。
+#[tokio::test]
+async fn graph_confirm_while_paused_queues_then_runs_in_order_after_unpause() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    router.enable_graph_kind();
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    let runtime = host.task_runtime().expect("任务执行者");
+    runtime.set_pump_paused(true);
+    host.dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
+        paused: Some(true),
+        ..Default::default()
+    }))
+    .await
+    .expect("暂停");
+
+    host.dispatch(Call::Send(send(&host, "kind-1", "先查再写")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&host, data.path(), 1).await;
+    wait_until("建图并出卡", || {
+        tasks_store(data.path())
+            .task_ids()
+            .map(|ids| ids.len() == 3)
+            .unwrap_or(false)
+    })
+    .await;
+    let store = tasks_store(data.path());
+    let root = graph_root(&store);
+    let children = store.children(&root.id).expect("子任务");
+    let Response::CardAct(response) = host
+        .dispatch(Call::CardAct(CardActRequest {
+            call_id: "call-graph-card".to_owned(),
+            verb: CardVerb::Confirm,
+            option: Some("confirm".to_owned()),
+        }))
+        .await
+        .expect("确认")
+    else {
+        panic!("card-act 响应");
+    };
+    assert!(response.decision.is_some());
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let store = tasks_store(data.path());
+    assert!(
+        store
+            .task(&children[0].id)
+            .expect("读任务")
+            .expect("A")
+            .latest_attempt()
+            .is_none(),
+        "暂停时确认也不开跑"
+    );
+    assert!(router.bodies(true).is_empty(), "暂停时不开任务会话");
+    assert!(
+        store
+            .effect_pending(EffectKind::Launch, children[0].id.as_str())
+            .expect("效果")
+            || store
+                .task(&children[0].id)
+                .expect("读任务")
+                .expect("A")
+                .stage(false)
+                == Stage::Pending,
+        "A 的 launch 还排着"
+    );
+
+    // 开闸前备好两个子任务的 ThinAgent 脚本与 Kind 后续文本。
+    router.push_thin_for(
+        children[0].id.as_str(),
+        crate::common::tool_use_sse(
+            2,
+            "call-a-report",
+            "task_report",
+            r#"{"state":"ready","summary":"查完了：notes.md 有 3 行"}"#,
+        ),
+    );
+    router.push_thin_for(
+        children[1].id.as_str(),
+        crate::common::tool_use_sse(
+            2,
+            "call-b-report",
+            "task_report",
+            r#"{"state":"ready","summary":"写好了：other.txt 里是 3 行"}"#,
+        ),
+    );
+    for _ in 0..6 {
+        router.push_kind(crate::common::text_sse("收到"));
+    }
+    runtime.set_pump_paused(false);
+    host.dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
+        paused: Some(false),
+        ..Default::default()
+    }))
+    .await
+    .expect("开闸");
+
+    wait_until("A 开跑", || {
+        tasks_store(data.path())
+            .task(&children[0].id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().map(|attempt| attempt.started_at))
+            .is_some()
+    })
+    .await;
+    wait_until("B 自动开跑", || {
+        tasks_store(data.path())
+            .task(&children[1].id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().map(|attempt| attempt.started_at))
+            .is_some()
+    })
+    .await;
+    let store = tasks_store(data.path());
+    let a_started = store
+        .task(&children[0].id)
+        .expect("读任务")
+        .expect("A")
+        .latest_attempt()
+        .expect("A Attempt")
+        .started_at;
+    let b_started = store
+        .task(&children[1].id)
+        .expect("读任务")
+        .expect("B")
+        .latest_attempt()
+        .expect("B Attempt")
+        .started_at;
+    assert!(a_started <= b_started, "开闸后按先后跑：A 先于 B");
+    let total = store.task(&root.id).expect("读任务").expect("总任务");
+    assert!(total.latest_attempt().is_none(), "总任务始终不跑");
+}
+
+/// T052.3：A 跑着时重启——A 被打断；B 和总任务不出被打断，B 仍是待补足条件。
+#[tokio::test]
+async fn graph_restart_interrupts_running_child_but_not_root_or_waiting_sibling() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    router.enable_graph_kind();
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    let runtime = host.task_runtime().expect("任务执行者");
+    runtime.set_pump_paused(true);
+    host.dispatch(Call::Send(send(&host, "kind-1", "先查再写")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&host, data.path(), 1).await;
+    wait_until("建图", || {
+        tasks_store(data.path())
+            .task_ids()
+            .map(|ids| ids.len() == 3)
+            .unwrap_or(false)
+    })
+    .await;
+    let store = tasks_store(data.path());
+    let root = graph_root(&store);
+    let children = store.children(&root.id).expect("子任务");
+    host.dispatch(Call::CardAct(CardActRequest {
+        call_id: "call-graph-card".to_owned(),
+        verb: CardVerb::Confirm,
+        option: Some("confirm".to_owned()),
+    }))
+    .await
+    .expect("确认");
+    // A 的 ThinAgent 压后 10 秒，进程退出前它会一直挂着。
+    router.push_thin_for(children[0].id.as_str(), crate::common::text_sse("还在做"));
+    router.set_thin_delay(Duration::from_secs(10));
+    runtime.set_pump_paused(false);
+    wait_until("A 在跑", || {
+        tasks_store(data.path())
+            .task(&children[0].id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().cloned())
+            .is_some_and(|attempt| attempt.conversation.is_some() && attempt.ended_at.is_none())
+    })
+    .await;
+    runtime.crash();
+    drop(host);
+    for _ in 0..6 {
+        router.push_kind(crate::common::text_sse("收到"));
+    }
+    let mut reopened = false;
+    for _ in 0..250 {
+        let host = open_graph_host(&server, data.path(), cwd.path()).await;
+        if matches!(host.info().root, service::RootState::Ok) {
+            reopened = true;
+            let store = tasks_store(data.path());
+            wait_until("启动扫描收尾", || {
+                store
+                    .task(&children[0].id)
+                    .ok()
+                    .flatten()
+                    .and_then(|task| task.latest_attempt().cloned())
+                    .is_some_and(|attempt| attempt.end.is_some())
+            })
+            .await;
+            let store = tasks_store(data.path());
+            let a = store.task(&children[0].id).expect("读任务").expect("A");
+            assert_eq!(
+                a.latest_attempt().and_then(|attempt| attempt.end),
+                Some(tasks::AttemptEnd::Interrupted),
+                "A 被打断了"
+            );
+            let b = store.task(&children[1].id).expect("读任务").expect("B");
+            assert!(b.latest_attempt().is_none(), "B 没开跑，不出被打断");
+            assert!(!b.is_interrupted());
+            let total = store.task(&root.id).expect("读任务").expect("总任务");
+            assert!(total.latest_attempt().is_none(), "总任务没有 Attempt");
+            assert!(!total.is_interrupted());
+            assert_eq!(
+                store.stage(&children[1].id).expect("阶段"),
+                Stage::NeedsConditions
+            );
+            assert_eq!(store.stage(&root.id).expect("阶段"), Stage::NeedsConditions);
+            drop(host);
+            break;
+        }
+        drop(host);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(reopened, "重开根宿主 250 次都没到 RootState::Ok");
+}
+
+/// T052.3：A 报回 ready 的那一刻崩溃——重启后 B 照样被放出，且只放一次（效果表重放）。
+#[tokio::test]
+async fn graph_crash_after_ready_releases_downstream_exactly_once_after_restart() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    router.enable_graph_kind();
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    let runtime = host.task_runtime().expect("任务执行者");
+    runtime.set_pump_paused(true);
+    host.dispatch(Call::Send(send(&host, "kind-1", "先查再写")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&host, data.path(), 1).await;
+    wait_until("建图", || {
+        tasks_store(data.path())
+            .task_ids()
+            .map(|ids| ids.len() == 3)
+            .unwrap_or(false)
+    })
+    .await;
+    let store = tasks_store(data.path());
+    let root = graph_root(&store);
+    let children = store.children(&root.id).expect("子任务");
+    host.dispatch(Call::CardAct(CardActRequest {
+        call_id: "call-graph-card".to_owned(),
+        verb: CardVerb::Confirm,
+        option: Some("confirm".to_owned()),
+    }))
+    .await
+    .expect("确认");
+    router.push_thin_for(
+        children[0].id.as_str(),
+        crate::common::tool_use_sse(
+            2,
+            "call-a-report",
+            "task_report",
+            r#"{"state":"ready","summary":"查完了：notes.md 有 3 行"}"#,
+        ),
+    );
+    router.push_thin_for(
+        children[1].id.as_str(),
+        crate::common::tool_use_sse(
+            2,
+            "call-b-report",
+            "task_report",
+            r#"{"state":"ready","summary":"写好了：other.txt 里是 3 行"}"#,
+        ),
+    );
+    // A 的报告和「放出 B」的 launch 已经落库；relay 还没投递就崩溃。
+    runtime.crash_before_next_relay();
+    runtime.set_pump_paused(false);
+    wait_until("A 的 ready 落库", || {
+        tasks_store(data.path())
+            .task(&children[0].id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_report().map(|report| report.state))
+            == Some(ReportState::Ready)
+    })
+    .await;
+    wait_until("B 的 launch 留在队列里", || {
+        tasks_store(data.path())
+            .effect_pending(EffectKind::Launch, children[1].id.as_str())
+            .unwrap_or(false)
+    })
+    .await;
+    drop(host);
+    for _ in 0..8 {
+        router.push_kind(crate::common::text_sse("收到"));
+    }
+    let mut reopened = false;
+    for _ in 0..250 {
+        let host = open_graph_host(&server, data.path(), cwd.path()).await;
+        if matches!(host.info().root, service::RootState::Ok) {
+            reopened = true;
+            wait_until("重启后 B 开跑", || {
+                tasks_store(data.path())
+                    .task(&children[1].id)
+                    .ok()
+                    .flatten()
+                    .and_then(|task| task.latest_attempt().cloned())
+                    .is_some_and(|attempt| attempt.conversation.is_some())
+            })
+            .await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let store = tasks_store(data.path());
+            let b = store.task(&children[1].id).expect("读任务").expect("B");
+            let attempts = b.runs.iter().map(|run| run.attempts.len()).sum::<usize>();
+            assert_eq!(attempts, 1, "崩溃重放只放一次");
+            assert!(
+                !store
+                    .effect_pending(EffectKind::Launch, children[1].id.as_str())
+                    .unwrap_or(false),
+                "没有残留的 launch"
+            );
+            drop(host);
+            break;
+        }
+        drop(host);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(reopened, "重开根宿主 250 次都没到 RootState::Ok");
+}
+
+/// T052.2 F1：上游二次 ready 更新摘要后，下游第二次 Attempt 的会话里随接续带上「上游结果（最新）」。
+#[tokio::test]
+async fn resume_attempt_rehands_the_latest_upstream_result() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    router.enable_graph_kind();
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    host.dispatch(Call::Send(send(&host, "kind-1", "先查再写")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&host, data.path(), 1).await;
+    wait_until("建图并出卡", || {
+        tasks_store(data.path())
+            .task_ids()
+            .map(|ids| ids.len() == 3)
+            .unwrap_or(false)
+    })
+    .await;
+    let store = tasks_store(data.path());
+    let root = graph_root(&store);
+    let children = store.children(&root.id).expect("子任务");
+    host.dispatch(Call::CardAct(CardActRequest {
+        call_id: "call-graph-card".to_owned(),
+        verb: CardVerb::Confirm,
+        option: Some("confirm".to_owned()),
+    }))
+    .await
+    .expect("确认");
+
+    let report_a1 = crate::common::tool_use_sse(
+        2,
+        "call-a1-report",
+        "task_report",
+        r#"{"state":"ready","summary":"第一次结果：notes.md 有 3 行"}"#,
+    );
+    let report_b1 = crate::common::tool_use_sse(
+        2,
+        "call-b1-report",
+        "task_report",
+        r#"{"state":"ready","summary":"第一版写好了"}"#,
+    );
+    router.push_thin_for(children[0].id.as_str(), report_a1);
+    router.push_thin_for(children[0].id.as_str(), crate::common::text_sse("好"));
+    router.push_thin_for(children[1].id.as_str(), report_b1);
+    router.push_thin_for(children[1].id.as_str(), crate::common::text_sse("好"));
+    for _ in 0..10 {
+        router.push_kind(crate::common::text_sse("收到"));
+    }
+    wait_until("A1 ready", || {
+        tasks_store(data.path())
+            .task(&children[0].id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_report().map(|report| report.state))
+            == Some(ReportState::Ready)
+    })
+    .await;
+    wait_until("B1 开跑", || {
+        tasks_store(data.path())
+            .task(&children[1].id)
+            .ok()
+            .flatten()
+            .and_then(|task| {
+                task.latest_attempt()
+                    .and_then(|attempt| attempt.conversation.clone())
+            })
+            .is_some()
+    })
+    .await;
+    wait_until("A1 轮结束", || {
+        tasks_store(data.path())
+            .task(&children[0].id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().cloned())
+            .is_some_and(|attempt| session_turn_ended(data.path(), &attempt))
+    })
+    .await;
+
+    // A 第二次 ready：更新交接摘要。
+    let report_a2 = crate::common::tool_use_sse(
+        2,
+        "call-a2-report",
+        "task_report",
+        r#"{"state":"ready","summary":"第二次结果：notes.md 现在 5 行"}"#,
+    );
+    router.push_thin_for(children[0].id.as_str(), report_a2);
+    router.push_thin_for(children[0].id.as_str(), crate::common::text_sse("好"));
+    host.dispatch(Call::TaskSay(service::TaskSayRequest {
+        task_id: children[0].id.as_str().to_owned(),
+        text: "再查一遍".to_owned(),
+        pastes: Vec::new(),
+        attachments: Vec::new(),
+    }))
+    .await
+    .expect("A2 输入");
+    wait_until("A2 ready 且摘要更新", || {
+        tasks_store(data.path())
+            .task(&children[0].id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| {
+                task.runs
+                    .iter()
+                    .map(|run| run.attempts.len())
+                    .sum::<usize>()
+                    == 2
+                    && task
+                        .latest_report()
+                        .is_some_and(|report| report.summary.contains("5 行"))
+            })
+    })
+    .await;
+
+    // B 第二次 Attempt：接续时应该带上最新的上游结果。
+    wait_until("B1 轮结束", || {
+        tasks_store(data.path())
+            .task(&children[1].id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().cloned())
+            .is_some_and(|attempt| session_turn_ended(data.path(), &attempt))
+    })
+    .await;
+    let report_b2 = crate::common::tool_use_sse(
+        2,
+        "call-b2-report",
+        "task_report",
+        r#"{"state":"ready","summary":"照最新的 5 行写好了"}"#,
+    );
+    router.push_thin_for(children[1].id.as_str(), report_b2);
+    router.push_thin_for(children[1].id.as_str(), crate::common::text_sse("好"));
+    host.dispatch(Call::TaskSay(service::TaskSayRequest {
+        task_id: children[1].id.as_str().to_owned(),
+        text: "照最新的再写一遍".to_owned(),
+        pastes: Vec::new(),
+        attachments: Vec::new(),
+    }))
+    .await
+    .expect("B2 输入");
+    wait_until("B2 开跑", || {
+        tasks_store(data.path())
+            .task(&children[1].id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| {
+                task.runs
+                    .iter()
+                    .map(|run| run.attempts.len())
+                    .sum::<usize>()
+                    == 2
+            })
+    })
+    .await;
+    let b = tasks_store(data.path())
+        .task(&children[1].id)
+        .expect("读任务")
+        .expect("B");
+    assert_eq!(
+        b.runs.iter().map(|run| run.attempts.len()).sum::<usize>(),
+        2,
+        "A2 不再重新放 B（只有两次 Attempt）"
+    );
+    let conversation = b
+        .latest_attempt()
+        .and_then(|attempt| attempt.conversation.clone())
+        .expect("B2 会话");
+    let session_id = session::SessionId::parse(conversation.as_str()).expect("会话 id");
+    let session = session::SessionStore::open_read_only(data.path(), &session_id).expect("B2 日志");
+    let texts: Vec<String> = session
+        .events()
+        .iter()
+        .filter_map(|event| match &event.kind {
+            session::EventKind::UserMessage { message, .. } => Some(
+                message
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        model::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<String>(),
+            ),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.contains("上游结果（最新）") && text.contains("5 行")),
+        "B2 会话里要有最新的上游结果：{texts:?}"
+    );
 }
