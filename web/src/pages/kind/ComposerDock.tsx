@@ -14,7 +14,7 @@ import type { LucideIcon } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { formatCacheHitPercent, formatCost, formatExactTokens, formatFxTime, formatPercent, formatTokens } from '@/lib/numbers';
-import { cacheHitPercent, displayedInput, type UsageTotals } from '@/data/turnUsage';
+import { displayedInput, type UsageTotals } from '@/data/turnUsage';
 import { cn } from '@/lib/utils';
 import { useKindStore } from './kindStore';
 import { useSettingsState } from '@/lib/settingsState';
@@ -117,8 +117,10 @@ export function ActivityPill({ turns, steps }: { turns: number; steps: number })
 /** T043：token pill 也共用；usage 用 turnUsage 的聚合（任务对话只传当前 Attempt 的）。 */
 export function UsagePill({ usage }: { usage: UsageTotals }) {
   const prompt = displayedInput(usage);
-  const hitPercent = cacheHitPercent(usage);
-  const hit = hitPercent === null ? null : formatCacheHitPercent(hitPercent, 100);
+  // 没命中过缓存（0）就不显示「缓存命中 0%」；命中过才显示（保留「不到 1%」的写法）。
+  const cacheRead = usage.cacheReadMissing ? undefined : usage.cacheRead;
+  const hit =
+    cacheRead !== undefined && cacheRead > 0 ? formatCacheHitPercent(cacheRead, prompt) : null;
   return (
     <Hint
       content={
@@ -131,7 +133,7 @@ export function UsagePill({ usage }: { usage: UsageTotals }) {
           <Row label="输出" value={formatExactTokens(usage.output)} />
           <div className="my-1 border-t border-line" />
           <Row label="合计" value={formatExactTokens(prompt + usage.output)} strong />
-          {hitPercent === null ? null : <Row label="缓存命中" value={hitPercent + '%'} />}
+          {hit === null ? null : <Row label="缓存命中" value={hit} />}
         </>
       }
     >
