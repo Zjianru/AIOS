@@ -6,7 +6,8 @@ use model::{ContentBlock, Message, MessageId, MessageSource, Role, UserMessage};
 use service::{Call, Response, RootHost, TASKS_DB_FILE, THIN_TOOLS, TaskReadRequest};
 use session::{EventKind, SessionId, SessionStore, TurnEndReason};
 use tasks::{
-    ConversationId, ModelChoice, NewReport, NewTask, ReportOrigin, ReportState, Store, TaskId,
+    AttemptId, ConversationId, ModelChoice, NewReport, NewTask, ReportOrigin, ReportState, Store,
+    TaskId, TaskPolicy,
 };
 
 async fn open_host(data: &Path) -> RootHost {
@@ -722,4 +723,170 @@ async fn stats_are_computed_from_all_events_and_catalog_prices() {
     assert_eq!(stats.cache_write_tokens, expected.cache_write_tokens);
     assert_eq!(stats.cost_usd, expected.cost_usd, "花费和 Kind 同一算法");
     assert_eq!(stats.unpriced, expected.unpriced);
+}
+
+/// T051：页头词表要的事实由服务端给：report/review/accepted。review 与 relay 的 card_state:review
+/// 共用 is_review_report；accepted 只认「当前版本 + 这份报告」的接受记录。
+async fn read_for_report(host: &RootHost, task_id: &TaskId) -> service::TaskReadResponse {
+    let Response::TaskRead(read) = read(host, task_id, None).await else {
+        panic!("task-read 响应");
+    };
+    read
+}
+
+fn seed_write_task(data: &Path, cwd: &Path, conversation: &str) -> (TaskId, AttemptId) {
+    let store = Store::open(data.join(TASKS_DB_FILE)).expect("任务库");
+    let conversation = ConversationId::new(conversation.to_owned());
+    let task = store
+        .create_task_with(
+            draft(&conversation, cwd, "写任务"),
+            TaskPolicy {
+                write_scope: Some("notes.md".to_owned()),
+                worktree: false,
+                bash: false,
+            },
+            1_000,
+        )
+        .expect("建写任务");
+    let attempt = store.begin_attempt(&task.id, 1_001).expect("开 Attempt");
+    store
+        .attach_session(&task.id, attempt, conversation)
+        .expect("写回会话");
+    (task.id, attempt)
+}
+
+#[tokio::test]
+async fn header_carries_report_review_and_acceptance() {
+    use service::{TaskReadReportOrigin, TaskReadReportState};
+
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let host = open_host(data.path()).await;
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(true);
+    let store = Store::open(data.path().join(TASKS_DB_FILE)).expect("任务库");
+
+    // failed / agent：页头能拿到「失败」要的事实。
+    let conversation = seed_session(data.path(), cwd.path(), 1);
+    let (task_id, attempt) = seed_write_task(data.path(), cwd.path(), conversation.as_str());
+    store
+        .record_report(
+            &task_id,
+            attempt,
+            NewReport {
+                state: ReportState::Failed,
+                origin: ReportOrigin::Agent,
+                summary: "跑挂了".to_owned(),
+                question: None,
+            },
+            2_000,
+        )
+        .expect("写报告");
+    let failed = read_for_report(&host, &task_id).await;
+    let report = failed.task.report.expect("report");
+    assert_eq!(report.state, TaskReadReportState::Failed);
+    assert_eq!(report.origin, TaskReadReportOrigin::Agent);
+    assert!(!failed.task.review, "失败不是待你核");
+    assert!(!failed.task.accepted);
+    assert_eq!(failed.task.reported_at, Some(2_000));
+
+    // blocked / package：页头能区分「没开跑」和「卡住了」。
+    // 一次 Attempt 只允许一份终态报告，所以用新的任务/Attempt。
+    let conversation = seed_session(data.path(), cwd.path(), 1);
+    let (task_id, attempt) = seed_write_task(data.path(), cwd.path(), conversation.as_str());
+    store
+        .record_report(
+            &task_id,
+            attempt,
+            NewReport {
+                state: ReportState::Blocked,
+                origin: ReportOrigin::Package,
+                summary: "缺任务包".to_owned(),
+                question: None,
+            },
+            2_100,
+        )
+        .expect("写报告");
+    let blocked = read_for_report(&host, &task_id).await;
+    let report = blocked.task.report.expect("report");
+    assert_eq!(report.state, TaskReadReportState::Blocked);
+    assert_eq!(report.origin, TaskReadReportOrigin::Package);
+    assert!(!blocked.task.review);
+
+    // 写任务当前版本的 ready：review = true（和 relay 加 card_state:review 同一判断）。
+    let conversation = seed_session(data.path(), cwd.path(), 1);
+    let (task_id, attempt) = seed_write_task(data.path(), cwd.path(), conversation.as_str());
+    store
+        .record_report(
+            &task_id,
+            attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "写完了".to_owned(),
+                question: None,
+            },
+            2_200,
+        )
+        .expect("写报告");
+    let ready = read_for_report(&host, &task_id).await;
+    assert_eq!(
+        ready.task.report.expect("report").state,
+        TaskReadReportState::Ready
+    );
+    assert!(ready.task.review, "写任务当前版本 ready → 待你核");
+    assert!(!ready.task.accepted);
+
+    // 接受以后：accepted = true（绑定当前版本和这份报告）。
+    store.accept(&task_id, 3_000).expect("接受");
+    let accepted = read_for_report(&host, &task_id).await;
+    assert!(accepted.task.review && accepted.task.accepted, "已接受");
+
+    // 要求升版以后：旧版本的 ready 不再算「待你核」，接受记录也不再匹配。
+    store
+        .update_write_scope(&task_id, "notes.md", 4_000)
+        .expect("升版");
+    let bumped = read_for_report(&host, &task_id).await;
+    assert!(!bumped.task.review, "旧版本 ready 不待你核");
+    assert!(!bumped.task.accepted, "旧版本的接受不认");
+}
+
+/// T051：只读任务即使 ready 也不是「待你核」（review 只给写任务）。
+#[tokio::test]
+async fn read_only_ready_report_is_not_review() {
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let host = open_host(data.path()).await;
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(true);
+
+    let conversation = seed_session(data.path(), cwd.path(), 1);
+    let task_id = seed_task(data.path(), cwd.path(), conversation.as_str(), "只读调查");
+    let store = Store::open(data.path().join(TASKS_DB_FILE)).expect("任务库");
+    let attempt = store
+        .task(&task_id)
+        .expect("读任务")
+        .expect("任务存在")
+        .latest_attempt()
+        .expect("Attempt")
+        .id;
+    store
+        .record_report(
+            &task_id,
+            attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "查完了".to_owned(),
+                question: None,
+            },
+            2_000,
+        )
+        .expect("写报告");
+    let read = read_for_report(&host, &task_id).await;
+    assert!(read.task.report.is_some());
+    assert!(!read.task.review, "只读任务 ready 不是待你核");
+    assert!(!read.task.accepted);
 }
