@@ -449,9 +449,15 @@ test('席位 1、另一个任务在跑时，叫醒停了的任务照样开跑', 
     // 避免「刚数到数量、视图又被重挂清空」的竞态。
     const jiaTexts = async () =>
       (await cards.allInnerTexts()).filter((text) => text.includes('任务甲'));
+    // 用例真正要证明的点：乙还在跑时，甲第 2 次 Attempt 的新结果卡已经出来（不是被 Later 压住）。
+    // 先等这张卡出现（attempt2 relay 的固定正文），再做数量/唯一性断言——否则两只卡正好是
+    // known waiting→ready 双卡时，会漏掉 attempt2 根本没出来的回归。
     await expect
-      .poll(async () => (await jiaTexts()).length, { timeout: 30_000, intervals: [200, 500] })
-      .toBeGreaterThanOrEqual(2);
+      .poll(async () => (await jiaTexts()).some((text) => text.includes('接着之前的结果做完')), {
+        timeout: 30_000,
+        intervals: [200, 500],
+      })
+      .toBe(true);
     const texts = await cards.allInnerTexts();
     // 这张用例的证明点是甲：第 1 次 Attempt 的卡（正常 1 张；T038 known 双卡时 2 张）+ 第 2 次 Attempt
     // 的新卡必须在。乙的卡可能已收尾出现（也可能还在跑），不锁总卡数、不要求此时只有甲。
