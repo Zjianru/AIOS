@@ -121,9 +121,11 @@ enum WireBlock {
 
 /// 序列化一次请求。
 ///
-/// 系统消息合并成 system 字段；tool_call / tool_result 分别走 wire 的 tool_use /
-/// tool_result 块；用户、助手、工具消息按 wire 角色合并相邻项（照 DSH 的 serialize）；
-/// 空文本块和空消息跳过。
+/// 开头的静态 system 消息（第一个非 system 消息之前）合并成 system 字段；之后历史中段的
+/// 动态 system（卡片状态回执等）按原位置落成 user 角色的文本消息——system 全程不变、
+/// 对话前缀字节稳定，缓存不会因为一条回执整段重算（T045）。
+/// tool_call / tool_result 分别走 wire 的 tool_use / tool_result 块；用户、助手、工具消息
+/// 按 wire 角色合并相邻项（照 DSH 的 serialize）；空文本块和空消息跳过。
 pub(super) fn request_body(
     config: &DeepSeekConfig,
     messages: &[Message],
@@ -138,7 +140,12 @@ pub(super) fn request_body(
     let projected = crate::tool_updates::project(messages, tools, tool_update);
     let mut system = String::new();
     let mut wire_messages: Vec<WireMessage> = Vec::new();
+    // T045：第一个非 system 消息之后的 system 是动态回执，不再并进 top-level system。
+    let mut seen_non_system = false;
     for (index, message) in messages.iter().enumerate() {
+        if !matches!(message.role, Role::System) {
+            seen_non_system = true;
+        }
         match message.role {
             Role::System => {
                 let mut text = String::new();
@@ -155,10 +162,16 @@ pub(super) fn request_body(
                 if text.is_empty() {
                     continue;
                 }
-                if !system.is_empty() {
-                    system.push_str("\n\n");
+                if seen_non_system {
+                    // 历史中段的动态 system（卡片状态回执）：按原位置换成 user 文本，
+                    // 内容逐字保留；top-level system 不再增长。
+                    push_or_merge(&mut wire_messages, "user", vec![WireBlock::Text { text }]);
+                } else {
+                    if !system.is_empty() {
+                        system.push_str("\n\n");
+                    }
+                    system.push_str(&text);
                 }
-                system.push_str(&text);
             }
             // DSH 的 developer 消息目前是 log-only（工具增删记录），AIOS 还没有生产者；
             // 真出现也不进请求，按不支持内容报错。
@@ -820,5 +833,170 @@ mod t013_file_block_tests {
         assert_eq!(content[2]["text"], "第二段");
         let expected = "[File \"notes.txt\" (12 bytes, sha256:abcdef01): verbatim read-only copy saved at \"/tmp/data/attachments/v1/files/ab/x/notes.txt\". Read that path with your file tools when its contents are needed; copy it to a writable location before modifying it. When delegating file work, include this saved path in the delegation prompt; only subagents sharing this execution environment can read it.]";
         assert_eq!(content[3]["text"], expected, "文件块换成 fileHandleText");
+    }
+}
+
+/// T045：卡片状态回执等「历史中段的动态 system」不能并进 top-level system（会让缓存前缀
+/// 每轮平移）；它们按原历史位置序列化成 user 角色的文本消息，开头静态 system 仍进 system。
+#[cfg(test)]
+mod t045_cache_safe_system_tests {
+    use super::*;
+    use crate::{
+        ContentBlock, Message, ToolAddition, ToolHistory, ToolRequest, ToolSchema, ToolUpdate,
+    };
+
+    const PREAMBLE: &str = "Latest status of action cards from user actions and background work. These are status facts, not a request to start or retry work. Use these receipts instead of the earlier proposal when describing progress.";
+    const CLOSING: &str = "Continue with the user's current request.";
+
+    fn config() -> crate::DeepSeekConfig {
+        crate::DeepSeekConfig {
+            provider: "deepseek".to_owned(),
+            base_url: "https://api.deepseek.com/anthropic".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            max_tokens: 256_000,
+            context_window: 1_000_000,
+            effort: crate::Effort::new("low"),
+            tool_update: Some(ToolUpdate::AdditionOnly),
+        }
+    }
+
+    fn body(messages: &[Message], tools: &ToolRequest) -> Value {
+        let prepared = request_body(
+            &config(),
+            messages,
+            tools,
+            Some(ToolUpdate::AdditionOnly),
+            None,
+            false,
+        )
+        .expect("序列化");
+        serde_json::from_slice(&prepared.body).expect("请求体是 JSON")
+    }
+
+    /// 历史中段的 system（卡片回执）必须是 user 角色的文本消息，原文一字不改；
+    /// 开头第一条仍只在 top-level system。
+    #[test]
+    fn tail_system_receipt_becomes_user_text() {
+        let receipt = format!(
+            "{PREAMBLE} {CLOSING}\n{{\"kind\":\"action_cards\",\"cards\":[{{\"id\":\"c1\",\"status\":\"accepted\"}}]}}"
+        );
+        let messages = vec![
+            Message::system_prompt("静态系统提示"),
+            Message::text(Role::User, "把卡片收据发给我"),
+            Message::assistant(
+                vec![ContentBlock::text("好的")],
+                "deepseek",
+                "deepseek-flash",
+            ),
+            Message::text(Role::System, receipt.clone()),
+            Message::text(Role::User, "接着做"),
+        ];
+        let json = body(&messages, &ToolRequest::default());
+        assert_eq!(
+            json["system"].as_str(),
+            Some("静态系统提示"),
+            "top-level system 只该有开头的静态提示"
+        );
+        let wire = json["messages"].as_array().expect("messages");
+        let found = wire.iter().find_map(|message| {
+            if message["role"] != "user" {
+                return None;
+            }
+            message["content"].as_array().and_then(|blocks| {
+                blocks
+                    .iter()
+                    .find(|block| block["type"] == "text" && block["text"] == receipt.as_str())
+            })
+        });
+        assert!(
+            found.is_some(),
+            "卡片回执要以 user 文本消息原样出现在历史里：{wire:?}"
+        );
+        assert_eq!(
+            wire.last().unwrap()["role"],
+            "user",
+            "后面的用户消息还在末尾"
+        );
+    }
+
+    /// 开头连续的多个 system（系统提示带额外静态段）仍合并进 top-level system。
+    #[test]
+    fn leading_system_messages_still_merge_into_system() {
+        let messages = vec![
+            Message::system_prompt("系统提示"),
+            Message::text(Role::System, "额外的静态规则"),
+            Message::text(Role::User, "你好"),
+        ];
+        let json = body(&messages, &ToolRequest::default());
+        assert_eq!(json["system"].as_str(), Some("系统提示\n\n额外的静态规则"));
+        assert!(
+            json["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|message| message["role"] != "system"),
+            "开头 system 不进 messages"
+        );
+    }
+
+    /// tool_addition 的插入规则不变：仍紧跟 user/tool-result 回合，动态 system 回执不改变它。
+    #[test]
+    fn tool_addition_still_follows_user_or_tool_result() {
+        let loaded = ToolSchema {
+            name: "read".to_owned(),
+            description: "读文件".to_owned(),
+            parameters: serde_json::json!({"type": "object"}),
+            defer_loading: true,
+        };
+        // after 用最后一条 user 消息的 id（构造后填真 id）。
+        let user = Message::text(Role::User, "加载 read 工具");
+        let after = user.id.clone();
+        let history = ToolHistory {
+            baseline: vec![],
+            updates: vec![ToolAddition {
+                after: Some(after),
+                additions: vec![loaded.clone()],
+            }],
+        };
+        let receipt = format!("{PREAMBLE} {CLOSING}\n卡片已接受");
+        let messages = vec![
+            Message::system_prompt("静态系统提示"),
+            user,
+            Message::assistant(
+                vec![ContentBlock::text("好的")],
+                "deepseek",
+                "deepseek-flash",
+            ),
+            Message::text(Role::System, receipt.clone()),
+            Message::text(Role::User, "继续"),
+        ];
+        let tools = ToolRequest {
+            tools: vec![loaded],
+            history: Some(history),
+        };
+        let json = body(&messages, &tools);
+        let wire = json["messages"].as_array().expect("messages");
+        // 插入点紧跟锚定的那条 user 消息；不能跑到动态 system 回执后面去。
+        let anchor = wire
+            .iter()
+            .position(|message| {
+                message["role"] == "user"
+                    && message["content"]
+                        .as_array()
+                        .is_some_and(|blocks| blocks.iter().any(|b| b["text"] == "加载 read 工具"))
+            })
+            .expect("锚定 user 消息在 wire 里");
+        let addition = &wire[anchor + 1];
+        assert_eq!(addition["role"], "system", "tool_addition 还是 system 角色");
+        assert_eq!(addition["content"][0]["type"], "tool_addition");
+        assert_eq!(addition["content"][0]["tool"]["name"], "read");
+        // 回执仍然在 user 消息里原文出现，没被 tool_addition 顶掉。
+        let receipt_present = wire.iter().any(|message| {
+            message["role"] == "user"
+                && message["content"].as_array().is_some_and(|blocks| {
+                    blocks.iter().any(|block| block["text"] == receipt.as_str())
+                })
+        });
+        assert!(receipt_present, "回执原文要保留：{wire:?}");
     }
 }
