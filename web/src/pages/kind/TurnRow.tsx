@@ -480,6 +480,7 @@ export const TurnRow = memo(function TurnRow({
               usage={view.tokens.input || view.tokens.output ? { model: view.model, ...view.tokens } : undefined}
               thinkingSeconds={view.thinkingSeconds}
               drawing={drawing}
+              who={actor}
               alwaysShow
             />
           ) : null}
@@ -500,6 +501,7 @@ export const TurnRow = memo(function TurnRow({
                 answering
                 usage={view.tokens.input || view.tokens.output ? { model: view.model, ...view.tokens } : undefined}
                 thinkingSeconds={view.thinkingSeconds}
+                who={actor}
                 alwaysShow
               />
             </div>

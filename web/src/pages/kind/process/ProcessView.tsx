@@ -304,6 +304,8 @@ export interface ProcessViewProps {
   drawing?: string | null;
   /** 没有工具也没有思考的完成轮也显示（T010 承诺：用量/用时的「工作过程」行）。 */
   alwaysShow?: boolean;
+  /** T042：这一轮是谁在跑（运行中写「{who} 工作中」）；Kind 对话默认 Kind，任务对话传 ThinAgent。 */
+  who?: string;
 }
 
 export function ProcessView({
@@ -318,6 +320,7 @@ export function ProcessView({
   thinkingSeconds = 0,
   alwaysShow = false,
   drawing,
+  who = 'Kind',
 }: ProcessViewProps) {
   const [open, setOpen] = useState(false);
   const elapsed = useElapsed(startedAt === null ? null : startedAt * 1000, live);
@@ -327,7 +330,7 @@ export function ProcessView({
   const pinned = live || status === 'failed' || status === 'interrupted';
   const expanded = pinned || open;
   const duration = formatDurationMs(live ? elapsed : (durationMs ?? 0));
-  const label = live ? 'Kind 工作中' : status === 'interrupted' ? '已停止' : status === 'failed' ? '没做完' : '已完成';
+  const label = live ? who + ' 工作中' : status === 'interrupted' ? '已停止' : status === 'failed' ? '没做完' : '已完成';
   const visible = segments.filter((segment) => expanded || segment.kind === 'say');
   const lastGroup = segments.length > 0 && segments[segments.length - 1].kind === 'group' ? segments.length - 1 : -1;
   // T010.3：悬停整轮行显示模型名与用量（输入含缓存读写；厂商没报缓存就不显示命中）。
