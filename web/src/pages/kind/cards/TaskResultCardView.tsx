@@ -43,6 +43,8 @@ const STATE_TONE: Record<TaskCardState, { icon: LucideIcon; tone: string }> = {
   // T038：派发卡（程序从 task_accept 的 tool/call + tool/result 派生）。
   dispatching: { icon: Hourglass, tone: 'bg-run-soft text-run' },
   dispatched: { icon: Hourglass, tone: 'bg-run-soft text-run' },
+  // T041：任务库说「派出去了但不在跑」（停下这一轮等），和任务对话页头同一个词。
+  pending: { icon: CirclePause, tone: 'bg-hover text-ink-2' },
 };
 
 function timeOf(seconds: number): string {

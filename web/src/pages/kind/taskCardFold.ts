@@ -14,8 +14,14 @@ export function foldedTaskCard(
   existing: TaskResultFact,
   fact: TaskResultFact,
 ): TaskResultFact | null {
-  // 只有还没被报告更新过的派发卡能并；之后的报告各出一张卡（同轮的合并也走这条判定）。
-  if (existing.state !== 'dispatching' && existing.state !== 'dispatched') return null;
+  // 只有还没被报告更新过的派发卡能并（派出中/进行中/等待中都算）；之后的报告各出一张卡。
+  if (
+    existing.state !== 'dispatching' &&
+    existing.state !== 'dispatched' &&
+    existing.state !== 'pending'
+  ) {
+    return null;
+  }
   return {
     ...fact,
     fromDispatch: true,

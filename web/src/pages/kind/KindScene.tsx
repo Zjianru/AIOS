@@ -3,6 +3,7 @@ import { useEffect } from 'react';
 import { FirstUsePane } from './FirstUsePane';
 import { KernelGate } from './KernelGate';
 import { ConversationPane } from './ConversationPane';
+import { TaskCardStateSync } from './TaskCardStateSync';
 import { useKindStore } from './kindStore';
 
 /** Kind 场景：根会话不可用时整页说明（五种状态）；正常时只有对话一栏。 */
@@ -34,6 +35,13 @@ export function KindScene({ pane }: { pane: string }) {
       />
     );
   }
-  if (pane === 'conversation') return <ConversationPane />;
+  if (pane === 'conversation') {
+    return (
+      <>
+        <TaskCardStateSync />
+        <ConversationPane />
+      </>
+    );
+  }
   return null;
 }

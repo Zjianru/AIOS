@@ -36,6 +36,8 @@ import {
   taskCcFacts,
 } from './turnViews';
 import type { CanvasTrack, TurnLabels, TurnViewData } from './turnViews';
+import { applyTaskCardStates } from './taskCardState';
+import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
 export type { CompactionView, QuestionView, ToolStep, TurnUserView, TurnViewData } from './turnViews';
 
 export const PAGE_LAST = 5;
@@ -165,6 +167,8 @@ interface KindState {
   loadInitial: () => Promise<void>;
   loadOlder: () => Promise<void>;
   setAtBottom: (value: boolean) => void;
+  /** T041：把 task-read 事实映射进非终态派发卡（Kind 页挂载/轮询用；与任务对话同源）。 */
+  setTaskCardStates: (tasks: ReadonlyMap<string, TaskReadHeader>) => void;
   send: (
     text: string,
     options?: {
@@ -400,6 +404,17 @@ let selectionEpoch = 0;
 /** ：这一轮正在流的工具参数（callId → 名字 + 拼起来的参数）；只给「正在画」用，不落日志。 */
 const liveToolCalls = new Map<string, { name: string; arguments: string }>();
 
+/**
+ * T041：Kind 卡片的「未终态任务」状态用 task-read 事实补（和任务对话页头同源）。
+ * 只在 Kind 页可见时由 TaskCardStateSync 拉取；终态卡（relay 已给结果状态）不覆盖。
+ */
+let taskCardStates: ReadonlyMap<string, TaskReadHeader> = new Map();
+
+/** 折卡之后再套任务库事实（T038 折卡 + T041 状态映射）。 */
+function finishViews(views: TurnViewData[]): TurnViewData[] {
+  return applyTaskCardStates(reconcileTaskCards(views), taskCardStates);
+}
+
 /** 从还没流完的参数 JSON 里取 canvas 的 title；还没流到（或半个转义）就先给空串。 */
 function canvasTitleOf(partial: string): string {
   const match = /"title"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(partial);
@@ -415,7 +430,7 @@ function canvasTitleOf(partial: string): string {
 function refreshCardViews(): void {
   const derived = new Map(deriveTurnViews(liveEvents, turnLabels()).map((view) => [view.id, view]));
   useKindStore.setState((state) => {
-    const views = reconcileTaskCards(state.views.map((view) => derived.get(view.id) ?? view));
+    const views = finishViews(state.views.map((view) => derived.get(view.id) ?? view));
     return { views, byId: indexOf(views), ...decorate(views) };
   });
 }
@@ -444,7 +459,7 @@ function refreshTurn(turn: number): void {
       views.sort((left, right) => Number(left.id.split('-')[1]) - Number(right.id.split('-')[1]));
     }
     // T038：本轮新到的 relay 卡并回派发卡（派发卡在别的轮里，单轮 derive 看不到它）。
-    const reconciled = reconcileTaskCards(views);
+    const reconciled = finishViews(views);
     return {
       views: reconciled,
       byId: indexOf(reconciled),
@@ -799,7 +814,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   loadInitial: async () => {
     try {
       const page = await fetchEventsPage({ maxMessages: 100, minMessages: 10, minTurns: 5 });
-      const views = reconcileTaskCards(
+      const views = finishViews(
         mergeCcViews(deriveTurnViews(page.events, turnLabels()), page.events),
       );
       const lastSeqOfPage = page.events[page.events.length - 1]?.seq ?? 0;
@@ -852,7 +867,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
       set((current) => {
         // 跨页的同一行（抄送的 spliced 与领取后的 user/message）只留已经在列表里的那条。
         // T038：同一任务的派发卡可能在更早的页里，relay 卡要并回去。
-        const views = reconcileTaskCards(prependOlderViews(older, current.views));
+        const views = finishViews(prependOlderViews(older, current.views));
         return {
           views,
           byId: indexOf(views),
@@ -871,6 +886,15 @@ export const useKindStore = create<KindState>()((set, get) => ({
   },
 
   setAtBottom: (value) => set({ atBottom: value }),
+
+  setTaskCardStates: (tasks) => {
+    taskCardStates = tasks;
+    set((state) => {
+      const views = applyTaskCardStates(state.views, tasks);
+      if (views === state.views) return {};
+      return { views, byId: indexOf(views), ...decorate(views) };
+    });
+  },
 
   disconnect: closeSocket,
 
