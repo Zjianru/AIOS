@@ -448,6 +448,16 @@ fn push_or_merge(messages: &mut Vec<WireMessage>, role: &'static str, content: V
         && previous.role == role
     {
         previous.content.extend(content);
+        // T051.3：动态 system 回执（换成 user 文本）可能正好夹在 tool_use 和 tool_result 之间，
+        // 合并后同一条 user 消息里 tool_result 块必须排在最前（Anthropic 的 tool use 文档要求）；
+        // 其它块（回执文本等）保持各自原来的相对顺序。
+        if role == "user" {
+            let blocks = std::mem::take(&mut previous.content);
+            let (results, rest): (Vec<WireBlock>, Vec<WireBlock>) = blocks
+                .into_iter()
+                .partition(|block| matches!(block, WireBlock::ToolResult { .. }));
+            previous.content = results.into_iter().chain(rest).collect();
+        }
         return;
     }
     messages.push(WireMessage { role, content });
