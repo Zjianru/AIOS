@@ -118,7 +118,10 @@ pub(super) async fn prepare_step(
         };
         (enabled, additions)
     } else {
-        (crate::tool_gate::all_tool_names(&inner.tools), Vec::new())
+        (
+            crate::tool_gate::full_tool_names(&inner.tools, &tool_keys),
+            Vec::new(),
+        )
     };
     if !additions.is_empty() {
         inner

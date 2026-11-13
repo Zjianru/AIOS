@@ -61,9 +61,14 @@ pub fn loaded_skills(events: &[Event], turn: Option<u64>) -> BTreeSet<String> {
     loaded
 }
 
-/// T046：未声明 addition-only 的路由，本步工具表 = 该会话角色 ToolSet 的全量成员（技能条件不再改变
-/// 工具表）。角色/安全边界在构造期 retain_named 已收窄，这里只按 ToolSet 成员开，不会跨边界。
-pub(crate) fn all_tool_names(tools: &ToolSet) -> BTreeSet<String> {
+/// T046/T050：未声明 addition-only 的路由，本步工具表 = 该会话角色 ToolSet 里满足「只看凭证」条件的
+/// 成员（技能条件不再改变工具表；AfterSkillWithKey 仍要求宿主存了对应 key，D73 没填 Exa key 不进目录）。
+/// 角色/安全边界在构造期 retain_named 已收窄，这里只按 ToolSet 成员开，不会跨边界。
+pub(crate) fn full_tool_names(
+    tools: &ToolSet,
+    tool_keys: &BTreeSet<tools::ToolKey>,
+) -> BTreeSet<String> {
+    let _ = tool_keys;
     tools.names().into_iter().map(str::to_owned).collect()
 }
 
@@ -80,7 +85,10 @@ pub(crate) fn request_tools(
     // T046：未声明 addition-only 的路由，工具表从第一轮起就是该角色 ToolSet 全量；压缩摘要请求
     // 必须和主请求同一份（全量 + 无加载历史），否则摘要时工具表变小、前缀断掉整段 miss。
     if tool_update.is_none() {
-        return (tools.definitions_for(&all_tool_names(tools)), None);
+        return (
+            tools.definitions_for(&full_tool_names(tools, tool_keys)),
+            None,
+        );
     }
     let loaded = loaded_skills(events, None);
     let registry = ToolRegistryState::rehydrate(events);
@@ -204,7 +212,7 @@ mod t046_stable_tool_tests {
     #[test]
     fn fixed_selection_ignores_loaded_skills_and_turns() {
         let tools = ToolSet::builtin();
-        let before = all_tool_names(&tools);
+        let before = full_tool_names(&tools, &Default::default());
         assert_eq!(
             before,
             tools
@@ -216,7 +224,7 @@ mod t046_stable_tool_tests {
         // 加载过 skill 的那一轮，gate 的 enabled 会变；固定选择不看它。
         let mut skills = BTreeSet::new();
         skills.insert("web".to_owned());
-        let after = all_tool_names(&tools);
+        let after = full_tool_names(&tools, &Default::default());
         assert_eq!(before, after, "加载 skill 前后工具名列表必须一致");
     }
 
@@ -233,7 +241,7 @@ mod t046_stable_tool_tests {
             "ask_user_question",
             "canvas",
         ]);
-        let names = all_tool_names(&kind_like);
+        let names = full_tool_names(&kind_like, &Default::default());
         for forbidden in [
             "write",
             "edit",
@@ -249,7 +257,7 @@ mod t046_stable_tool_tests {
         }
         // ThinAgent 只读任务：没有 write/edit/bash/job_*。
         let thin_read = retained(&["read", "glob", "grep", "skill", "todo_write"]);
-        let names = all_tool_names(&thin_read);
+        let names = full_tool_names(&thin_read, &Default::default());
         for forbidden in ["write", "edit", "bash", "job_output"] {
             assert!(
                 !names.contains(forbidden),
@@ -266,7 +274,7 @@ mod t046_stable_tool_tests {
             "skill",
             "todo_write",
         ]);
-        let names = all_tool_names(&thin_write);
+        let names = full_tool_names(&thin_write, &Default::default());
         assert!(names.contains("write") && names.contains("edit"));
         assert!(!names.contains("bash"));
     }
@@ -394,5 +402,81 @@ mod t046_summary_tools_tests {
         );
         assert_eq!(names(&before), vec!["skill".to_owned()]);
         assert_eq!(names(&after), vec!["skill".to_owned(), "gated".to_owned()]);
+    }
+}
+
+/// T050：未声明 addition-only 的路由的全量工具表仍按 key 条件过滤（D73：没填 Exa key 不进目录）。
+#[cfg(test)]
+mod t050_key_condition_tests {
+    use std::sync::LazyLock;
+
+    use serde_json::{Value, json};
+    use tools::{
+        SkillTool, Tool, ToolCall, ToolCondition, ToolContext, ToolFuture, ToolKey, ToolResult,
+        ToolSet,
+    };
+
+    use super::*;
+
+    struct KeyedTool {
+        parameters: LazyLock<Value>,
+    }
+
+    impl KeyedTool {
+        fn new() -> Self {
+            Self {
+                parameters: LazyLock::new(|| json!({"type": "object", "properties": {}})),
+            }
+        }
+    }
+
+    impl Tool for KeyedTool {
+        fn name(&self) -> &str {
+            "web_search"
+        }
+
+        fn description(&self) -> &str {
+            "web search (T050 test)"
+        }
+
+        fn parameters(&self) -> &Value {
+            &self.parameters
+        }
+
+        fn condition(&self) -> ToolCondition {
+            ToolCondition::AfterSkillWithKey {
+                skills: vec!["web".to_owned()],
+                key: ToolKey::Exa,
+            }
+        }
+
+        fn execute<'a>(
+            &'a self,
+            call: ToolCall,
+            _context: &'a ToolContext,
+        ) -> ToolFuture<'a, ToolResult> {
+            Box::pin(async move { ToolResult::success(call.id, "searched") })
+        }
+    }
+
+    fn tools() -> ToolSet {
+        ToolSet::new(vec![Box::new(SkillTool::new()), Box::new(KeyedTool::new())])
+    }
+
+    #[test]
+    fn full_tool_names_hides_key_tools_until_the_key_is_stored() {
+        let set = tools();
+        let no_keys: BTreeSet<ToolKey> = BTreeSet::new();
+        assert_eq!(
+            full_tool_names(&set, &no_keys),
+            BTreeSet::from(["skill".to_owned()]),
+            "没 key 时 AfterSkillWithKey 工具不能进全量表"
+        );
+        let with_key = BTreeSet::from([ToolKey::Exa]);
+        assert_eq!(
+            full_tool_names(&set, &with_key),
+            BTreeSet::from(["skill".to_owned(), "web_search".to_owned()]),
+            "有 key 时两件都进全量表"
+        );
     }
 }
