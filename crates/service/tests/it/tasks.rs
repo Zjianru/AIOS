@@ -8394,9 +8394,11 @@ async fn graph_restart_interrupts_running_child_but_not_root_or_waiting_sibling(
     for _ in 0..6 {
         router.push_kind(crate::common::text_sse("收到"));
     }
+    let mut reopened = false;
     for _ in 0..250 {
         let host = open_graph_host(&server, data.path(), cwd.path()).await;
         if matches!(host.info().root, service::RootState::Ok) {
+            reopened = true;
             let store = tasks_store(data.path());
             wait_until("启动扫描收尾", || {
                 store
@@ -8431,6 +8433,7 @@ async fn graph_restart_interrupts_running_child_but_not_root_or_waiting_sibling(
         drop(host);
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    assert!(reopened, "重开根宿主 250 次都没到 RootState::Ok");
 }
 
 /// T052.3：A 报回 ready 的那一刻崩溃——重启后 B 照样被放出，且只放一次（效果表重放）。
@@ -8506,9 +8509,11 @@ async fn graph_crash_after_ready_releases_downstream_exactly_once_after_restart(
     for _ in 0..8 {
         router.push_kind(crate::common::text_sse("收到"));
     }
+    let mut reopened = false;
     for _ in 0..250 {
         let host = open_graph_host(&server, data.path(), cwd.path()).await;
         if matches!(host.info().root, service::RootState::Ok) {
+            reopened = true;
             wait_until("重启后 B 开跑", || {
                 tasks_store(data.path())
                     .task(&children[1].id)
@@ -8535,6 +8540,7 @@ async fn graph_crash_after_ready_releases_downstream_exactly_once_after_restart(
         drop(host);
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    assert!(reopened, "重开根宿主 250 次都没到 RootState::Ok");
 }
 
 /// T052.2 F1：上游二次 ready 更新摘要后，下游第二次 Attempt 的会话里随接续带上「上游结果（最新）」。

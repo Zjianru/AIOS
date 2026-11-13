@@ -106,7 +106,7 @@ impl ActionKind for StartTaskGraphAction {
             .and_then(|arrangement| arrangement.confirmed.as_ref())
             .is_some();
         if confirmed {
-            return Err("这张任务图已经确认过了".to_owned());
+            return Err("已经变了".to_owned());
         }
         self.facts(&root)
     }

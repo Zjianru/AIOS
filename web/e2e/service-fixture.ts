@@ -307,6 +307,8 @@ export interface FixtureOptions {
   /// T052：任务图夹具——Kind 先 skill 再 task_graph_propose，再 propose_action 出确认卡；
   /// 卡上的 task_id 用 __GRAPH_ID__ 占位，由回放从请求体里换成真图 id。
   t052Graph?: boolean;
+  /// T052：同一条任务图流程，但第一项 ThinAgent 报 failed（验证下游不自己跑）。
+  t052Fail?: boolean;
 }
 
 /** T024.4：双会话回放用哪份按请求体路由的文件；预写会话的两种不需要。 */
@@ -331,6 +333,7 @@ function taskResultRouteFile(options: FixtureOptions): string | null {
 
 /** T052：任务图场景的回放路由（Kind 建图/出卡，ThinAgent 报 ready）。 */
 function t052RouteFile(options: FixtureOptions): string | null {
+  if (options.t052Fail) return 't052-routes-graph-fail.json';
   if (!options.t052Graph) return null;
   return 't052-routes-graph.json';
 }
