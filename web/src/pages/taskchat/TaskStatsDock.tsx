@@ -1,16 +1,15 @@
 /**
- * T043：任务对话输入框下的任务级统计条（外观沿用 Kind 的 pill，不另设计）。
+ * T051：任务对话输入框下的任务级统计条（外观沿用 Kind 的 pill，不另设计）。
  *
- * 只统计当前任务当前 Attempt：轮/步/token 来自 task-read 的事件聚合；价格/窗口按
- * 任务头的模型显示名去设置目录里可靠匹配，匹配不到就隐藏（不猜）。多 Attempt 标次数。
+ * 数字全部来自服务端 task-read 的 stats——和 Kind status 是同一个 session_stats 函数算的
+ * （任务冻结的模型、当前 Attempt 全部事件、用户价/目录标价都在服务端算好）；页面只显示，
+ * 不再自己数事件、不按模型显示名去设置目录匹配价格/窗口。多 Attempt 标次数。
  */
-import { useEffect, useState } from 'react';
-
 import { TooltipProvider } from '@/components/ui/tooltip';
-import { getModelSettings } from '@/data/keyring';
-import type { ModelSettingsView } from '@/data/keyring';
+import type { FxInfo } from '@/data/generated/FxInfo';
+import type { SessionStats } from '@/data/generated/SessionStats';
 import type { UsageTotals } from '@/data/turnUsage';
-import { formatExactTokens, formatPercent } from '@/lib/numbers';
+import { formatExactTokens, formatPercent, type Currency } from '@/lib/numbers';
 import { cn } from '@/lib/utils';
 import {
   ActivityPill,
@@ -22,56 +21,49 @@ import {
   meterTone,
   pill,
 } from '@/pages/kind/ComposerDock';
-import { modelFactsOf } from './taskStats';
 
 export function TaskStatsDock({
-  turns,
-  steps,
-  usage,
-  model,
-  contextUsed,
+  stats,
+  fx,
+  currency,
   attempts,
 }: {
-  turns: number;
-  steps: number;
-  usage: UsageTotals;
-  /** 任务头冻结的模型显示名（只给显示名，价格/窗口从这里匹配）。 */
-  model: string;
-  contextUsed: number | null;
+  /** 服务端 task-read 给的当前 Attempt 统计（和 Kind status 同一函数）。 */
+  stats: SessionStats;
+  /** USD→CNY 汇率（服务端给；缺失时按 7.2 兜底，和 Kind 一样）。 */
+  fx: FxInfo | null;
+  /** 币种（settings.json 的 usd/cny）。 */
+  currency: string | null;
   attempts: number;
 }) {
-  const [settings, setSettings] = useState<ModelSettingsView | null>(null);
-  useEffect(() => {
-    let alive = true;
-    void getModelSettings()
-      .then((view) => {
-        if (alive) setSettings(view);
-      })
-      .catch(() => {
-        // 设置读不到：价格/窗口没有可靠来源，隐藏对应项，其余统计照常。
-        if (alive) setSettings(null);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [model]);
-  const facts = modelFactsOf(model, settings, usage, contextUsed);
+  const usage: UsageTotals = {
+    input: stats.inputTokens,
+    output: stats.outputTokens,
+    cacheRead: stats.cacheReadTokens,
+    cacheWrite: stats.cacheWriteTokens,
+  };
+  const unit: Currency = currency === 'cny' ? 'cny' : 'usd';
+  const rate = fx?.rate ?? 7.2;
   const percent =
-    facts.contextWindow !== null && facts.contextUsed !== null
-      ? (facts.contextUsed / facts.contextWindow) * 100
-      : null;
+    stats.contextWindow > 0 ? (stats.contextUsed / stats.contextWindow) * 100 : null;
   return (
     <TooltipProvider delayDuration={150}>
       <div className="mt-1.5 flex items-center gap-1 text-1" data-kind="task-stats">
-        <ActivityPill turns={turns} steps={steps} />
+        <ActivityPill turns={stats.turns} steps={stats.steps} />
         <UsagePill usage={usage} />
-        <CostPill cost={facts.cost} unpriced={false} />
-        {percent === null || facts.contextUsed === null || facts.contextWindow === null ? null : (
+        <CostPill
+          cost={stats.costUsd ?? null}
+          unpriced={stats.unpriced}
+          currency={unit}
+          cnyPerUsd={rate}
+          fxAt={fx?.fetchedAt}
+        />
+        {percent === null ? null : (
           <Hint
             content={
               <>
-                <Row label="已用（这次调用）" value={formatExactTokens(facts.contextUsed)} />
-                <Row label={'窗口'} value={formatExactTokens(facts.contextWindow)} />
+                <Row label="已用（这次调用）" value={formatExactTokens(stats.contextUsed)} />
+                <Row label="窗口" value={formatExactTokens(stats.contextWindow)} />
               </>
             }
           >

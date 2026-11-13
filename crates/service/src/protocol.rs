@@ -419,6 +419,15 @@ pub struct TaskReadResponse {
     pub events: Vec<ServiceEvent>,
     #[serde(rename = "lastSeq")]
     pub last_seq: u64,
+    /// T051：任务当前 Attempt 的会话统计（和 status 的 stats 同一形状、同一函数算；页面只显示）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<stats::SessionStats>,
+    /// USD→CNY 汇率与拉到时间（同 status；页面按服务端给的换算显示花费）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fx: Option<fx::FxInfo>,
+    /// 币种（settings.json：usd/cny）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
 }
 
 /// 停法：立即停，或做完手上这一步再停（D81）。

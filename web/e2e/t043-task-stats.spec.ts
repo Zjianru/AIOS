@@ -4,9 +4,22 @@ import { test, expect } from '@playwright/test';
 import { apiPost, startKernelFixture, type KernelFixture } from './service-fixture';
 
 /**
- * T043：任务对话输入框下补任务级统计（只统计当前任务当前 Attempt，不串 Kind 根会话）。
- * 数字以任务会话日志为准（测试自己数日志），界面上不允许出现 Kind 全局数。
+ * T043/T051：任务对话输入框下的任务级统计条只显示服务端 task-read 的 stats
+ * （和 Kind status 同一个 session_stats 函数、任务冻结的模型、当前 Attempt 全部事件）。
+ * 页面上不允许出现 Kind 全局数，也不允许页面自己按模型显示名匹配价格/窗口。
  */
+
+/** 和 web/src/lib/numbers.ts 的 formatCost 同一规则（币种、汇率、unpriced 的「+」）。 */
+function formatCost(usd: number, currency: string, cnyPerUsd: number, partial: boolean): string {
+  let amount = usd;
+  let sign = '$';
+  if (currency === 'cny' && cnyPerUsd > 0) {
+    amount = usd * cnyPerUsd;
+    sign = '¥';
+  }
+  const text = amount >= 100 ? amount.toFixed(0) : amount >= 1 ? amount.toFixed(2) : amount.toFixed(3);
+  return sign + text + (partial ? '+' : '');
+}
 
 const urlOf = (fixture: KernelFixture, hash = '#kind') =>
   fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + hash;
@@ -116,14 +129,55 @@ test('任务对话统计条：轮/步/token 与任务会话日志一致，不等
     const dock = statsDock(page);
     await expect(dock).toBeVisible({ timeout: 20_000 });
 
-    // 任务自己的会话日志数出来的数（当前 Attempt）。
-    const counts = countsOf(await taskLogText(fixture));
+    // 页面显示的是服务端 task-read 的 stats；数字必须和它一致（不是页面自己数事件/匹配价格）。
+    const serverRead = await apiPost(request, fixture, { method: 'task-read', taskId });
+    const readBody = (await serverRead.json()) as {
+      stats?: {
+        turns: number;
+        steps: number;
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens: number;
+        cacheWriteTokens: number;
+        costUsd?: number | null;
+        unpriced: boolean;
+      };
+      fx?: { rate: number } | null;
+      currency?: string | null;
+    };
+    const serverStats = readBody.stats;
+    if (!serverStats) throw new Error('task-read 要带 stats');
     const activity = dock.locator('[data-kind="stats-activity"]');
-    await expect(numbers(activity)).toHaveText([String(counts.turns), String(counts.steps)]);
+    await expect(numbers(activity)).toHaveText([
+      String(serverStats.turns),
+      String(serverStats.steps),
+    ]);
     const usage = dock.locator('[data-kind="stats-usage"]');
     const usageNumbers = await numbers(usage).allTextContents();
-    expect(usageNumbers[0]).toBe(String(counts.input));
-    expect(usageNumbers[1]).toBe(String(counts.output));
+    expect(usageNumbers[0]).toBe(
+      String(
+        serverStats.inputTokens +
+          serverStats.cacheReadTokens +
+          serverStats.cacheWriteTokens,
+      ),
+    );
+    expect(usageNumbers[1]).toBe(String(serverStats.outputTokens));
+
+    // 花费：服务端按目录标价算出来的 costUsd，页面用同一个 formatCost 显示（币种/汇率也来自服务端）。
+    if (serverStats.costUsd == null) throw new Error('这个场景目录有价，stats.costUsd 不该为空');
+    const unit = (readBody.currency ?? 'usd') === 'cny' ? 'cny' : 'usd';
+    const expectedCost = formatCost(
+      serverStats.costUsd,
+      unit,
+      readBody.fx?.rate ?? 7.2,
+      serverStats.unpriced,
+    );
+    await expect(
+      dock.locator('[data-kind="stats-cost"] [data-kind="stat-number"]'),
+    ).toHaveText(expectedCost);
+
+    // 日志数出来的数只用来做「不是 Kind 根会话全局数」的对照（页面不再按日志显示）。
+    const counts = countsOf(await taskLogText(fixture));
 
     // 不等于 Kind 根会话的全局数（场景里 Kind 日志数出来跟任务不同）。
     const root = JSON.parse(
@@ -181,42 +235,33 @@ test('A/B 任务切换：统计数字跟着当前任务走', async ({ page, requ
   }
 });
 
-test('模型价格/窗口匹配不到：对应项隐藏，只留可靠统计', async ({ page, request }) => {
+test('服务端没有价格/窗口（模型不在目录）：花费与占比隐藏，只留可靠统计', async ({
+  page,
+  request,
+}) => {
   test.setTimeout(180_000);
-  const fixture = await startKernelFixture({ taskResult: 'live' });
+  // 未声明路由的假模型不在目录里：task-read 的 stats 没有目录价、窗口查不到（0），
+  // 页面只显示服务端给得出的轮/步/token；花费与占比隐藏由服务端数据驱动，不再靠页面按名字匹配。
+  const fixture = await startKernelFixture({
+    taskResult: 'live',
+    routeModel: 'replay-uncatalogued-model',
+  });
   try {
     await page.goto(urlOf(fixture));
     await page.getByPlaceholder('和 Kind 说…').fill('查一下新闻归档里重复链接的判重规则和影响范围');
     await page.getByRole('button', { name: '发送', exact: true }).click();
     const [taskId] = await taskIdOf(fixture);
     await waitUntilReadable(request, fixture, taskId);
-
-    // 任务头只给模型显示名：把 task-read 回包里的名字换成目录里没有的，模拟「匹配不到」。
-    // 其余字段原样放行（轮/步/token 仍来自真实事件）。
-    await page.route('**/api', async (route) => {
-      const postData = route.request().postData() ?? '';
-      if (!postData.includes('"method":"task-read"')) {
-        await route.continue();
-        return;
-      }
-      try {
-        const response = await route.fetch();
-        const json = (await response.json()) as { task?: { model?: string } };
-        if (json.task) json.task.model = '不存在的模型（T043 测试）';
-        await route.fulfill({ response, json });
-      } catch {
-        // 测试收尾时夹具已关：把还没回来的请求直接断掉，不让它把用例判红。
-        await route.abort().catch(() => undefined);
-      }
-    });
     await page.goto(urlOf(fixture, '#taskchat:' + taskId));
     await expect(statsDock(page)).toBeVisible({ timeout: 20_000 });
     const dock = statsDock(page);
+    const read = await apiPost(request, fixture, { method: 'task-read', taskId });
+    const body = (await read.json()) as { stats?: { costUsd?: number | null } };
+    expect(body.stats?.costUsd ?? null).toBeNull();
     await expect(dock.locator('[data-kind="stats-activity"]')).toBeVisible();
     await expect(dock.locator('[data-kind="stats-usage"]')).toBeVisible();
     await expect(dock.locator('[data-kind="stats-cost"]')).toHaveCount(0);
     await expect(dock.locator('[data-kind="context-meter"]')).toHaveCount(0);
-    await page.unroute('**/api');
   } finally {
     await fixture.close();
   }

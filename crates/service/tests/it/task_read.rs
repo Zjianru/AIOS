@@ -591,3 +591,127 @@ async fn task_stream_for_an_unopened_task_is_a_readable_error() {
         "错误要能读：{error}"
     );
 }
+
+/// T051：stats 由服务端 task-read 给（和 Kind status 同一个 session_stats），页面只显示。
+/// 这里验证：目录价（模型行没填价时）也算出花费、缓存读写 token 计入、事件超过一页也按全部事件算。
+#[tokio::test]
+async fn stats_are_computed_from_all_events_and_catalog_prices() {
+    use model::{Usage, catalog};
+    use service::stats;
+
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let host = open_host(data.path()).await;
+    host.task_runtime()
+        .expect("任务执行者")
+        .set_pump_paused(true);
+
+    // Keyring 里放一条 deepseek 连接（模型行没填价 → 花费必须回退目录标价）。
+    let keyring = credentials::Keyring::open(
+        data.path().to_path_buf(),
+        Some(&data.path().join("identity.txt")),
+    )
+    .expect("keyring");
+    keyring
+        .save_connection(credentials::NewConnection {
+            id: "deepseek".to_owned(),
+            name: "DeepSeek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            endpoint: "https://api.deepseek.com/anthropic".to_owned(),
+            api_key: "test-key".to_owned(),
+            preset: Some("deepseek".to_owned()),
+            models: None,
+            auth_header: None,
+        })
+        .expect("存连接");
+
+    // 三轮共 51 条消息（超过一页 50 条的下限）：只有第 1 轮带 usage（含缓存读写）。
+    let mut store = SessionStore::create(data.path(), cwd.path()).expect("建会话");
+    let conversation = store.id().clone();
+    let mut kinds = Vec::new();
+    for turn in 1..=3 {
+        kinds.push(EventKind::TurnStart { turn });
+        if turn == 1 {
+            kinds.push(assignment(
+                "{\"task_id\":\"task-stats\",\"title\":\"算统计\"}",
+            ));
+            kinds.push(EventKind::AssistantMessage {
+                turn,
+                step: 1,
+                message: Message::text(Role::Assistant, "带用量的回答"),
+                stream: Vec::new(),
+                usage: Some(Usage {
+                    input_tokens: Some(1_000),
+                    output_tokens: Some(500),
+                    cache_read_input_tokens: Some(250_000),
+                    // 目录里 deepseek-flash 只有 cache_read 价、没有 cache_write 价：写缓存有量时
+                    // 这一轮本就无价（T012 规则），所以这里缓存写留 0，专测「缓存读计入 + 目录价折算」。
+                    cache_creation_input_tokens: Some(0),
+                }),
+                interrupted: None,
+                effort: None,
+                effort_wanted: None,
+            });
+        } else {
+            for step in 1..=25 {
+                kinds.push(answer(turn, step, &format!("第 {turn} 轮第 {step} 步")));
+            }
+        }
+        kinds.push(EventKind::TurnEnd {
+            turn,
+            reason: TurnEndReason::Completed,
+        });
+    }
+    store.append(&kinds).expect("写会话事件");
+    let task_id = seed_task(data.path(), cwd.path(), conversation.as_str(), "算统计");
+
+    let Response::TaskRead(read) = read(&host, &task_id, None).await else {
+        panic!("task-read 响应");
+    };
+    let stats = read.stats.expect("task-read 要带 stats");
+    assert_eq!(stats.turns, 3, "轮数按全部事件算，不受分页影响");
+    assert_eq!(stats.input_tokens, 1_000);
+    assert_eq!(stats.output_tokens, 500);
+    assert_eq!(stats.cache_read_tokens, 250_000, "缓存读 token 要计入");
+    assert_eq!(stats.cache_write_tokens, 0);
+    assert!(
+        read.events
+            .iter()
+            .filter(|event| event.event_type == "assistant/message")
+            .count()
+            < 52,
+        "事件确实被分页截过（页内不是全部）"
+    );
+    assert!(
+        stats.cost_usd.is_some() && stats.cost_usd.unwrap() > 0.0,
+        "模型行没填价时花费要回退目录标价算出来：{:?}",
+        stats.cost_usd
+    );
+    assert!(!stats.unpriced, "目录有价时不算 unpriced");
+
+    // 和 Kind status 同一函数：直接用服务端 session_stats 复算，选中的字段应一致。
+    let snapshot = SessionStore::open_read_only(data.path(), &conversation).expect("只读打开");
+    let events = snapshot.events();
+    let view = keyring.view();
+    let selection = session::ModelSelection {
+        connection: "deepseek".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        effort_wanted: "high".to_owned(),
+    };
+    let expected = stats::session_stats(
+        events,
+        &view.connections,
+        &catalog::snapshot(),
+        &selection,
+        stats.context_used,
+        stats.context_window,
+    );
+    assert_eq!(stats.turns, expected.turns);
+    assert_eq!(stats.steps, expected.steps);
+    assert_eq!(stats.input_tokens, expected.input_tokens);
+    assert_eq!(stats.output_tokens, expected.output_tokens);
+    assert_eq!(stats.cache_read_tokens, expected.cache_read_tokens);
+    assert_eq!(stats.cache_write_tokens, expected.cache_write_tokens);
+    assert_eq!(stats.cost_usd, expected.cost_usd, "花费和 Kind 同一算法");
+    assert_eq!(stats.unpriced, expected.unpriced);
+}

@@ -341,7 +341,7 @@ impl TaskRuntime {
     ///
     /// 只读打开：不创建会话、不拿写者锁；会话日志缺失/损坏时把原因带进可读错误。
     /// 分页照 events 的预算（500 条消息/2 轮/50 条下限），`lastSeq` 始终是日志末端。
-    pub(crate) fn task_read(
+    pub(crate) async fn task_read(
         &self,
         request: TaskReadRequest,
     ) -> Result<TaskReadResponse, ServiceError> {
@@ -353,6 +353,57 @@ impl TaskRuntime {
             .map_err(|error| ServiceError::TaskUnavailable(format!("任务对话打不开：{error}")))?;
         let all = snapshot.events();
         let (selected, _) = page_events(all, request.before_seq, 500, None, None);
+        // T051：统计由服务端算（和 Kind status 同一个 session_stats），用任务冻结的模型；
+        // 对当前 Attempt 会话的全部事件算，不受分页影响。上下文窗口按冻结连接/模型查，
+        // 查不到给 0（页面照旧隐藏占比）。
+        let selection = session::ModelSelection {
+            connection: task.model.connection.clone(),
+            model: task.model.model.clone(),
+            effort_wanted: task.model.effort_wanted.clone(),
+        };
+        let settings = crate::settings::load(&self.data_dir);
+        let catalog = model::catalog::global().unwrap_or_else(model::catalog::snapshot);
+        let context_window = crate::session_select::model_context_window(
+            &self.data_dir,
+            self.options.identity.as_deref(),
+            &selection,
+        )
+        .unwrap_or(0);
+        let context_used = Self::context_used_of(all);
+        let stats = match credentials::Keyring::open_read_only(
+            self.data_dir.clone(),
+            self.options.identity.as_deref(),
+        )
+        .ok()
+        {
+            Some(keyring) => {
+                let view = keyring.view();
+                let mut stats = crate::stats::session_stats(
+                    all,
+                    &view.connections,
+                    &catalog,
+                    &selection,
+                    context_used,
+                    context_window,
+                );
+                stats.effort_actual = view
+                    .connections
+                    .iter()
+                    .find(|connection| connection.id == selection.connection)
+                    .map(|connection| crate::stats::actual_effort_of(connection, &selection))
+                    .unwrap_or_else(|| selection.effort_wanted.clone());
+                stats
+            }
+            None => crate::stats::SessionStats {
+                context_used,
+                context_window,
+                connection: selection.connection.clone(),
+                model: selection.model.clone(),
+                effort_wanted: selection.effort_wanted.clone(),
+                ..crate::stats::SessionStats::default()
+            },
+        };
+        let fx = crate::fx::usd_to_cny(&self.data_dir).await;
         Ok(TaskReadResponse {
             task: TaskReadHeader {
                 id: task.id.as_str().to_owned(),
@@ -393,8 +444,27 @@ impl TaskRuntime {
             },
             events: selected.iter().map(|event| service_event(event)).collect(),
             last_seq: all.last().map(|event| event.seq).unwrap_or(0),
+            stats: Some(stats),
+            fx: Some(fx),
+            currency: Some(settings.currency),
         })
     }
+
+/// T051：上下文占用 = 当前 Attempt 日志末尾最近一次 assistant/message 的 prompt 用量
+/// （输入 + 缓存读写）；还没有请求就是 0。
+fn context_used_of(events: &[session::Event]) -> u64 {
+    for event in events.iter().rev() {
+        if let session::EventKind::AssistantMessage {
+            usage: Some(usage), ..
+        } = &event.kind
+        {
+            return usage.input_tokens.unwrap_or(0)
+                + usage.cache_read_input_tokens.unwrap_or(0)
+                + usage.cache_creation_input_tokens.unwrap_or(0);
+        }
+    }
+    0
+}
 
     /// 任务当前 Attempt 的会话：读任务聚合、取最近一次 Attempt 和它的会话。
     fn task_attempt(

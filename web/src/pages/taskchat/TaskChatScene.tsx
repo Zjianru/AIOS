@@ -44,6 +44,8 @@ import {
 } from '@/components/ui/dropdown-menu';
 import type { Frame, SendAttachmentRef, ServiceEvent } from '@/data/service';
 import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
+import type { SessionStats } from '@/data/generated/SessionStats';
+import type { FxInfo } from '@/data/generated/FxInfo';
 import { turnLabels, useStreamStore } from '@/pages/kind/kindStore';
 import { TurnRow, UserCards } from '@/pages/kind/TurnRow';
 import { deriveTurnViews } from '@/pages/kind/turnViews';
@@ -52,7 +54,6 @@ import { Composer } from '@/pages/kind/composer/Composer';
 import type { ComposerHandle, ComposerSendOptions } from '@/pages/kind/composer/Composer';
 import { mergeLiveEvent, withReportedCompletion } from './taskLive';
 import { TaskStatsDock } from './TaskStatsDock';
-import { lastPromptUsed, taskAttemptStatsOf } from './taskStats';
 import { cn } from '@/lib/utils';
 
 const NO_CANVAS = () => {};
@@ -278,6 +279,10 @@ export function TaskChatScene() {
   const setTaskTitle = useTaskChromeStore((state) => state.setTaskTitle);
   const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading');
   const [task, setTask] = useState<TaskReadHeader | null>(null);
+  // T051：统计由服务端 task-read 给（和 Kind status 同一个 session_stats），页面只显示。
+  const [attemptStats, setAttemptStats] = useState<SessionStats | null>(null);
+  const [fx, setFx] = useState<FxInfo | null>(null);
+  const [currency, setCurrency] = useState<string | null>(null);
   const [winding, setWinding] = useState(false);
   const [events, setEvents] = useState<ServiceEvent[]>([]);
   const [error, setError] = useState('');
@@ -460,6 +465,9 @@ export function TaskChatScene() {
         if (disposed || token !== requestToken.current) return;
         setTask(response.task);
         setTaskTitle(response.task.title);
+        setAttemptStats(response.stats ?? null);
+        setFx(response.fx ?? null);
+        setCurrency(response.currency ?? null);
         setEvents(response.events);
         setHasOlder(response.events.length > 0);
         lastSeqRef.current = response.lastSeq;
@@ -537,9 +545,6 @@ export function TaskChatScene() {
   // 终态报告之后执行者会立刻关掉会话，日志可能没有 turn/end；头部带来的 reportedAt
   // 只收尾它之前开始的那一轮（waiting 报告之后的新一轮不能被标成已完成）。
   // T043：输入框下的任务级统计——只算当前 Attempt 的事件（task-read 给的就是这个 Attempt 的会话）。
-  const taskStats = useMemo(() => taskAttemptStatsOf(events), [events]);
-  const contextUsed = useMemo(() => lastPromptUsed(events), [events]);
-
   const views = useMemo(
     () =>
       withReportedCompletion(deriveTurnViews(visibleTaskEvents(events), turnLabels()), task?.reportedAt),
@@ -729,6 +734,10 @@ export function TaskChatScene() {
             }
           : response.task,
       );
+      // 统计也以服务端为准（task-read 每次都带当前 Attempt 的 stats）。
+      setAttemptStats(response.stats ?? null);
+      setFx(response.fx ?? null);
+      setCurrency(response.currency ?? null);
     } catch {
       // 服务没回来/读失败：保持现状（不清空、不覆盖成错误状态），等重连再拉。
     }
@@ -1032,14 +1041,14 @@ export function TaskChatScene() {
               </button>
             )}
           </Composer>
-          <TaskStatsDock
-            turns={taskStats.turns}
-            steps={taskStats.steps}
-            usage={taskStats.usage}
-            model={task.model}
-            contextUsed={contextUsed}
-            attempts={task.attempts}
-          />
+          {attemptStats === null ? null : (
+            <TaskStatsDock
+              stats={attemptStats}
+              fx={fx}
+              currency={currency}
+              attempts={task.attempts}
+            />
+          )}
           <p className="mt-1 text-1 leading-4 text-ink-3" data-kind="task-footer">
             你在这里说的直接给 ThinAgent，同时抄送 Kind（不叫醒它）。要改任务要求或 DoD，回 Kind
             对话说。
