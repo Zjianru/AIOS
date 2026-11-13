@@ -448,6 +448,16 @@ fn push_or_merge(messages: &mut Vec<WireMessage>, role: &'static str, content: V
         && previous.role == role
     {
         previous.content.extend(content);
+        // T051.3：动态 system 回执（换成 user 文本）可能正好夹在 tool_use 和 tool_result 之间，
+        // 合并后同一条 user 消息里 tool_result 块必须排在最前（Anthropic 的 tool use 文档要求）；
+        // 其它块（回执文本等）保持各自原来的相对顺序。
+        if role == "user" {
+            let blocks = std::mem::take(&mut previous.content);
+            let (results, rest): (Vec<WireBlock>, Vec<WireBlock>) = blocks
+                .into_iter()
+                .partition(|block| matches!(block, WireBlock::ToolResult { .. }));
+            previous.content = results.into_iter().chain(rest).collect();
+        }
         return;
     }
     messages.push(WireMessage { role, content });
@@ -998,5 +1008,141 @@ mod t045_cache_safe_system_tests {
                 })
         });
         assert!(receipt_present, "回执原文要保留：{wire:?}");
+    }
+}
+
+/// T051.3：动态 system 回执夹在 tool_use 和 tool_result 之间时，合并后的 user 消息里
+/// tool_result 块必须排在最前（Anthropic 的 tool use 文档要求），文本保持原来的相对顺序。
+#[cfg(test)]
+mod t051_3_mid_system_receipt_tests {
+    use super::*;
+    use crate::{ContentBlock, DeepSeekConfig, Effort, Message, Role};
+    use serde_json::Value;
+
+    fn config() -> DeepSeekConfig {
+        DeepSeekConfig {
+            provider: "deepseek".to_owned(),
+            base_url: "https://api.deepseek.com/anthropic".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            max_tokens: 2048,
+            context_window: 1_000_000,
+            effort: Effort::new("high"),
+            tool_update: None,
+        }
+    }
+
+    fn serialize(messages: &[Message]) -> Value {
+        let prepared = request_body(
+            &config(),
+            messages,
+            &crate::ToolRequest::default(),
+            None,
+            None,
+            true,
+        )
+        .expect("序列化");
+        serde_json::from_slice(&prepared.body).expect("JSON")
+    }
+
+    fn block_types(message: &Value) -> Vec<String> {
+        message["content"]
+            .as_array()
+            .expect("content 数组")
+            .iter()
+            .map(|block| block["type"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn mid_system_receipt_keeps_tool_result_first_in_the_merged_user_message() {
+        let messages = vec![
+            Message::text(Role::User, "开始"),
+            Message::assistant(
+                vec![ContentBlock::ToolCall {
+                    id: "call_1".to_owned(),
+                    name: "bash".to_owned(),
+                    arguments: "{}".to_owned(),
+                }],
+                "deepseek",
+                "deepseek-flash",
+            ),
+            // 回执（卡片状态确认）落在工具调用和结果之间：序列化时按位置换成 user 文本。
+            Message::text(Role::System, "回执：卡已确认"),
+            Message::tool_result("call_1", "ok", false),
+        ];
+        let body = serialize(&messages);
+        let wire_messages = body["messages"].as_array().expect("messages");
+        // assistant 之后那条 user 消息同时装着回执文本和 tool_result。
+        let merged = wire_messages
+            .iter()
+            .find(|message| {
+                message["role"] == "user"
+                    && message["content"].as_array().is_some_and(|blocks| {
+                        blocks.iter().any(|block| block["type"] == "tool_result")
+                    })
+            })
+            .expect("合并后的 user 消息");
+        assert_eq!(
+            block_types(merged),
+            vec!["tool_result".to_owned(), "text".to_owned()],
+            "tool_result 块必须排在最前（Anthropic 要求）：{merged}"
+        );
+    }
+
+    /// 多个回执与多个 tool_result 混在一起时：tool_result 全在前，文本相对顺序不变。
+    #[test]
+    fn multiple_receipts_and_results_keep_results_first_and_text_order() {
+        let messages = vec![
+            Message::text(Role::User, "开始"),
+            Message::assistant(
+                vec![
+                    ContentBlock::ToolCall {
+                        id: "call_1".to_owned(),
+                        name: "bash".to_owned(),
+                        arguments: "{}".to_owned(),
+                    },
+                    ContentBlock::ToolCall {
+                        id: "call_2".to_owned(),
+                        name: "read".to_owned(),
+                        arguments: "{}".to_owned(),
+                    },
+                ],
+                "deepseek",
+                "deepseek-flash",
+            ),
+            Message::text(Role::System, "第一张回执"),
+            Message::tool_result("call_1", "ok-1", false),
+            Message::text(Role::System, "第二张回执"),
+            Message::tool_result("call_2", "ok-2", false),
+        ];
+        let body = serialize(&messages);
+        let wire_messages = body["messages"].as_array().expect("messages");
+        let merged = wire_messages
+            .iter()
+            .find(|message| {
+                message["role"] == "user"
+                    && message["content"].as_array().is_some_and(|blocks| {
+                        blocks.iter().any(|block| block["type"] == "tool_result")
+                    })
+            })
+            .expect("合并后的 user 消息");
+        assert_eq!(
+            block_types(merged),
+            vec![
+                "tool_result".to_owned(),
+                "tool_result".to_owned(),
+                "text".to_owned(),
+                "text".to_owned()
+            ],
+            "所有 tool_result 在前，文本保持相对顺序：{merged}"
+        );
+        let texts: Vec<&str> = merged["content"]
+            .as_array()
+            .expect("content")
+            .iter()
+            .filter(|block| block["type"] == "text")
+            .map(|block| block["text"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(texts, vec!["第一张回执", "第二张回执"], "文本相对顺序不变");
     }
 }

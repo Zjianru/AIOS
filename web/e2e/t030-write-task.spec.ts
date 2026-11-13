@@ -200,6 +200,12 @@ test('写任务：点名直接派，卡「待你核」+清单只该文件；接�
     await expect(again.locator('[data-kind="task-accepted"]')).toHaveText(/你已接受/);
     await expect(again).not.toContainText('完成');
 
+    // T051：接受后回任务对话，页头也是「已接受」（和 Kind 卡同一个词表、同一份事实）。
+    await page.goto(urlOf(fixture, '#taskchat:' + taskId));
+    await expect(
+      page.locator('[data-pane="task-conversation"] [data-kind="task-state"]'),
+    ).toHaveText('已接受', { timeout: 30_000 });
+
     // 接受记录绑当前版本和这份报告；阶段仍是 ready_for_review（卡上叫「待检查」）。
     const row = taskRow(fixture, taskId);
     expect(row.acceptance).toBeTruthy();

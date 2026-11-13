@@ -357,6 +357,32 @@ pub struct EventsResponse {
 /// task-read：任务对话的头部（任务事实；从 tasks 库读，不从会话日志推）。
 ///
 /// 这是页面头部的全部事实：标题、要求、DoD、cwd、冻结的模型、工具名单、Attempt 数。
+/// T051：当前 Attempt 最近一份报告的状态（页头状态词用；词本身由页面 taskStatusOf 一处算）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+pub enum TaskReadReportState {
+    Ready,
+    Blocked,
+    Failed,
+    Waiting,
+}
+
+/// T051：报告是谁写的（页头把 package 的 blocked 与 agent 的 blocked 分开展示）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskReadReportOrigin {
+    Package,
+    Agent,
+    Executor,
+}
+
+/// T051：当前 Attempt 最近一份报告的缩略事实；没报告时字段为 None。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct TaskReadReport {
+    pub state: TaskReadReportState,
+    pub origin: TaskReadReportOrigin,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct TaskReadHeader {
     pub id: String,
@@ -399,6 +425,15 @@ pub struct TaskReadHeader {
         skip_serializing_if = "Option::is_none"
     )]
     pub reported_at: Option<i64>,
+    /// T051：当前 Attempt 最近一份报告的 { state, origin }；None = 还没交报告。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<TaskReadReport>,
+    /// T051：写任务、报告 ready、报告的要求版本是当前版本（和 relay 加 card_state:review 同一判断）。
+    #[serde(default)]
+    pub review: bool,
+    /// T051：用户接受记录绑的就是当前版本和这份报告。
+    #[serde(default)]
+    pub accepted: bool,
 }
 
 /// task-read：打开任务当前 Attempt 的会话，拿头部和一页事件。
@@ -419,6 +454,15 @@ pub struct TaskReadResponse {
     pub events: Vec<ServiceEvent>,
     #[serde(rename = "lastSeq")]
     pub last_seq: u64,
+    /// T051：任务当前 Attempt 的会话统计（和 status 的 stats 同一形状、同一函数算；页面只显示）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stats: Option<stats::SessionStats>,
+    /// USD→CNY 汇率与拉到时间（同 status；页面按服务端给的换算显示花费）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fx: Option<fx::FxInfo>,
+    /// 币种（settings.json：usd/cny）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
 }
 
 /// 停法：立即停，或做完手上这一步再停（D81）。

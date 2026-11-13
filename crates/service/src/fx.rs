@@ -84,6 +84,15 @@ pub async fn usd_to_cny_with(data_dir: &Path, url: &str) -> FxInfo {
     })
 }
 
+/// 只读缓存里的汇率，不发起网络请求（页面热路径用：task-read 不能因为拉汇率卡住）。
+/// 缓存没有/过期就给后备汇率 7.2、fetchedAt=0（页面按「没取到汇率」显示）。
+pub fn cached_or_fallback(data_dir: &Path) -> FxInfo {
+    read_cache(data_dir).unwrap_or(FxInfo {
+        rate: FALLBACK_RATE,
+        fetched_at: 0,
+    })
+}
+
 async fn fetch(url: &str) -> Option<FxInfo> {
     let client = model::http::client().ok()?;
     let response = client
@@ -110,6 +119,27 @@ mod tests {
     use super::*;
     use wiremock::matchers::path;
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// T051：页面热路径只读缓存、不拉网络；没缓存就用后备汇率（fetchedAt=0）。
+    #[test]
+    fn cached_or_fallback_reads_the_cache_without_a_network_call() {
+        let dir = tempfile::tempdir().expect("dir");
+        let fallback = cached_or_fallback(dir.path());
+        assert_eq!(fallback.rate, FALLBACK_RATE);
+        assert_eq!(fallback.fetched_at, 0);
+
+        write_cache(
+            dir.path(),
+            &FxInfo {
+                rate: 7.3,
+                fetched_at: 123,
+            },
+        )
+        .expect("写缓存");
+        let cached = cached_or_fallback(dir.path());
+        assert_eq!(cached.rate, 7.3);
+        assert_eq!(cached.fetched_at, 123);
+    }
 
     #[tokio::test]
     async fn fetches_rate_and_caches_for_twelve_hours() {

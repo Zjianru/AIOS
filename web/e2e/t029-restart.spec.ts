@@ -373,12 +373,11 @@ test('重启接续：汇报与每任务一项的卡，勾一项接续、没勾�
         .filter({ hasText: '接着之前的结果做完了' }),
     ).toHaveCount(1, { timeout: 30_000 });
 
-    // 故事5：重启前已交 ready 的丙阶段不变、不在卡上；T039 后页头写「已汇报 · 待你核」，不是被打断。
+    // 故事5：重启前已交 ready 的丙阶段不变、不在卡上；T051 页头用 taskStatusOf 的词（只读 ready = 有结果），
+    // 不是被打断。
     await page.goto(urlOf(fixture, '#taskchat:' + taskC));
     await expect(taskPane(page).locator('[data-kind="task-full-title"]')).toHaveText(TITLE_C);
-    await expect(taskPane(page).locator('[data-kind="task-state"]')).toContainText(
-      '已汇报 · 待你核',
-    );
+    await expect(taskPane(page).locator('[data-kind="task-state"]')).toContainText('有结果');
     await expect(taskPane(page).locator('[data-kind="task-attempt"]')).toHaveCount(0);
 
     // 故事6：丁的待答问题还在 Kind 的结果卡上；在任务对话回答后开第 2 次 Attempt。

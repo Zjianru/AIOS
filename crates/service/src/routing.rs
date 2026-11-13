@@ -94,7 +94,7 @@ impl RootHost {
                 .map(Response::SettingsUpdate),
             // task-read：任务对话的只读快照（任务库在任务执行者手里）。
             Call::TaskRead(request) => match self.task_runtime() {
-                Some(runtime) => runtime.task_read(request).map(Response::TaskRead),
+                Some(runtime) => runtime.task_read(request).await.map(Response::TaskRead),
                 None => Err(ServiceError::TaskUnavailable(
                     "任务库没开，任务对话看不了".to_owned(),
                 )),
