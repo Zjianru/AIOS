@@ -408,3 +408,21 @@ pub(crate) fn tool_key_source(options: &RootSessionOptions) -> tools::ToolKeySou
         keys
     }))
 }
+
+/// T048：Kind 系统提示也要直接告诉模型派单标题的字数上限（卡片标题，20 字以内，中文字符按一字计）。
+#[cfg(test)]
+mod t048_title_limit_policy_tests {
+    use super::KIND_POLICY;
+
+    #[test]
+    fn kind_policy_states_the_task_title_limit() {
+        assert!(
+            KIND_POLICY.contains("at most 20 characters"),
+            "KIND_POLICY 要写明确上限：{KIND_POLICY}"
+        );
+        assert!(
+            KIND_POLICY.contains("card label"),
+            "KIND_POLICY 要说明它是卡片标题：{KIND_POLICY}"
+        );
+    }
+}
