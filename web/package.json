@@ -18,7 +18,8 @@
     "test:reasoning": "node scripts/reasoning.test.mjs",
     "test:local-file": "node scripts/local-file.test.mjs",
     "test:effort-selection": "node scripts/effort-selection.test.mjs",
-    "test:task-cards": "node scripts/task-cards.test.mjs"
+    "test:task-cards": "node scripts/task-cards.test.mjs",
+    "test:task-card-poll": "node scripts/task-card-poll.test.mjs"
   },
   "dependencies": {
     "@fontsource-variable/overpass": "5.3.0",
