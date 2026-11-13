@@ -521,24 +521,6 @@ impl TaskRuntime {
             .ok_or_else(|| ServiceError::TaskUnavailable(format!("找不到这个任务：{task_id}")))
     }
 
-    /// 任务当前 Attempt 的会话：读任务聚合、取最近一次 Attempt 和它的会话。
-    fn task_attempt(
-        &self,
-        task_id: &str,
-    ) -> Result<(Task, AttemptId, ConversationId), ServiceError> {
-        let task = self.task(task_id)?;
-        let (attempt_id, conversation) = {
-            let attempt = task.latest_attempt().ok_or_else(|| {
-                ServiceError::TaskUnavailable("这个任务还没开跑，没有可看的对话".to_owned())
-            })?;
-            let conversation = attempt.conversation.clone().ok_or_else(|| {
-                ServiceError::TaskUnavailable("这个任务还没开跑，没有可看的对话".to_owned())
-            })?;
-            (attempt.id, conversation)
-        };
-        Ok((task, attempt_id, conversation))
-    }
-
     /// T051：上下文占用 = 当前 Attempt 日志末尾最近一次 assistant/message 的 prompt 用量
     /// （输入 + 缓存读写）；还没有请求就是 0。
     fn context_used_of(events: &[session::Event]) -> u64 {
@@ -1501,7 +1483,7 @@ impl TaskRuntime {
                         json!(crate::result_cards::changed_line(changed.len(), &scope));
                     body["changed"] = json!(changed);
                     body["write_scope"] = json!(scope);
-                    if is_review_report(&task, &report) {
+                    if is_review_report(&task, report) {
                         body["card_state"] = json!("review");
                     }
                 }
