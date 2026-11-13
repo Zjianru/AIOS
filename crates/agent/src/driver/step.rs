@@ -101,13 +101,24 @@ pub(super) async fn prepare_step(
         crate::tool_gate::loaded_skills(store.events(), None)
     };
     let tool_keys = inner.tool_keys.present();
-    let enabled = {
-        let gate = inner.tool_gate.lock().expect("加载记录锁被毒化");
-        gate.enabled(&inner.tools, &loaded_skills, &tool_keys)
-    };
-    let additions = {
-        let gate = inner.tool_gate.lock().expect("加载记录锁被毒化");
-        gate.additions(&inner.tools, &enabled)
+    // T046：路由没声明 addition-only（MiniMax 等）时，工具表从第一轮起就是该会话角色 ToolSet 的
+    // 全量成员——skill 加载只加载内容、不再改变工具表，前缀（含工具表）全程稳定。技能条件不再筛选
+    // 工具，但角色/安全边界在构造期 retain_named 已收窄，这里不会跨边界；执行门禁用同一份全量表，
+    // 模型看到就能调，不出现「看到却 TOOL_NOT_FOUND」。
+    // 声明了 addition-only 的路由保持原样（条件 gate + tool/registry + tool_addition 投影）。
+    let supports_tool_updates = inner.model.config().tool_update.is_some();
+    let (enabled, additions) = if supports_tool_updates {
+        let enabled = {
+            let gate = inner.tool_gate.lock().expect("加载记录锁被毒化");
+            gate.enabled(&inner.tools, &loaded_skills, &tool_keys)
+        };
+        let additions = {
+            let gate = inner.tool_gate.lock().expect("加载记录锁被毒化");
+            gate.additions(&inner.tools, &enabled)
+        };
+        (enabled, additions)
+    } else {
+        (crate::tool_gate::all_tool_names(&inner.tools), Vec::new())
     };
     if !additions.is_empty() {
         inner

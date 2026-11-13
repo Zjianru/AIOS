@@ -61,6 +61,12 @@ pub fn loaded_skills(events: &[Event], turn: Option<u64>) -> BTreeSet<String> {
     loaded
 }
 
+/// T046：未声明 addition-only 的路由，本步工具表 = 该会话角色 ToolSet 的全量成员（技能条件不再改变
+/// 工具表）。角色/安全边界在构造期 retain_named 已收窄，这里只按 ToolSet 成员开，不会跨边界。
+pub(crate) fn all_tool_names(tools: &ToolSet) -> BTreeSet<String> {
+    tools.names().into_iter().map(str::to_owned).collect()
+}
+
 /// 一次请求的工具表与加载历史：条件开出的工具 + 从日志重建的声明序列。
 ///
 /// 主请求与压缩摘要请求共用这一份计算（压缩请求不能带没开出的工具）。
