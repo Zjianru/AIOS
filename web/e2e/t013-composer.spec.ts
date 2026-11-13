@@ -6,6 +6,18 @@ const urlOf = (fixture: { baseUrl: string; token: string }) =>
 
 const input = (page: import('@playwright/test').Page) => page.locator('[data-kind="composer-input"]');
 
+/**
+ * T040：@ 菜单断言前先等输入态就绪（可见、可编辑、已聚焦），不再靠固定 15 秒硬等；
+ * 菜单出现后的小超时只兜「已就绪但菜单确实没弹」的真实回归。
+ */
+async function readyInput(page: import('@playwright/test').Page) {
+  const box = input(page);
+  await expect(box).toBeVisible();
+  await expect(box).toBeEditable();
+  await box.click();
+  await expect(box).toBeFocused();
+}
+
 /// T013.7 清单 14：按键——Enter 发送、Shift+Enter 换行、Cmd+Enter 发送、Alt+Enter 不消费、组字器 Enter 不发送。
 test('按键：Enter/Shift+Enter/Cmd+Enter/Alt+Enter/组字器', async ({ page }) => {
   const fixture = await startKernelFixture();
@@ -104,9 +116,10 @@ test('@ 菜单：出现、插入路径、带空格加引号', async ({ page }) =
   try {
     await page.goto(urlOf(fixture));
     const box = input(page);
+    await readyInput(page);
     await box.fill('@he');
     const menu = page.locator('[data-kind="at-menu"]');
-    await expect(menu).toBeVisible({ timeout: 15_000 });
+    await expect(menu).toBeVisible({ timeout: 5_000 });
     await expect(menu).toContainText('hello.txt');
     await menu.getByRole('button', { name: /hello\.txt/ }).first().click();
     await expect(box).toHaveValue('@hello.txt');
@@ -223,9 +236,10 @@ test('@路径高亮：插入后高亮层有 @路径，文字仍可编辑', async
   try {
     await page.goto(urlOf(fixture));
     const box = input(page);
+    await readyInput(page);
     await box.fill('@he');
     const menu = page.locator('[data-kind="at-menu"]');
-    await expect(menu).toBeVisible({ timeout: 15_000 });
+    await expect(menu).toBeVisible({ timeout: 5_000 });
     await menu.getByRole('button', { name: /hello\.txt/ }).first().click();
     await expect(box).toHaveValue('@hello.txt');
     const highlight = page.locator('[data-kind="at-highlight"]');
@@ -390,9 +404,10 @@ test('@ 菜单：ArrowDown/ArrowUp 换项、Escape 关闭', async ({ page }) => 
   try {
     await page.goto(urlOf(fixture));
     const box = input(page);
+    await readyInput(page);
     await box.fill('@');
     const menu = page.locator('[data-kind="at-menu"]');
-    await expect(menu).toBeVisible({ timeout: 15_000 });
+    await expect(menu).toBeVisible({ timeout: 5_000 });
     const items = menu.getByRole('button');
     await expect(items.first()).toBeVisible();
     await expect(items.nth(1)).toBeVisible();
@@ -405,7 +420,7 @@ test('@ 菜单：ArrowDown/ArrowUp 换项、Escape 关闭', async ({ page }) => 
     expect(value).toBe(expected);
     // Esc 关菜单。
     await box.fill('@');
-    await expect(menu).toBeVisible({ timeout: 15_000 });
+    await expect(menu).toBeVisible({ timeout: 5_000 });
     await box.press('Escape');
     await expect(menu).toHaveCount(0);
   } finally {
@@ -419,9 +434,10 @@ test('@ 菜单：带空格的路径加引号', async ({ page }) => {
   try {
     await page.goto(urlOf(fixture));
     const box = input(page);
+    await readyInput(page);
     await box.fill('@with');
     const menu = page.locator('[data-kind="at-menu"]');
-    await expect(menu).toBeVisible({ timeout: 15_000 });
+    await expect(menu).toBeVisible({ timeout: 5_000 });
     await expect(menu).toContainText('with space.txt');
     await menu.getByRole('button', { name: /with space/ }).first().click();
     await expect(page.locator('[data-kind="composer-input"]')).toHaveValue('@"with space.txt"');
