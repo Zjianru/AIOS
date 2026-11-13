@@ -2565,8 +2565,7 @@ fn relay_summary(text: &str) -> (String, Option<usize>) {
 }
 
 /// task_accept 的 title 参数说明（T048）：卡片标题的硬上限写进 schema，模型生成时就被约束。
-pub(crate) const TASK_ACCEPT_TITLE_DESCRIPTION: &str =
-    "Short label for the card (at most 200 characters).";
+pub(crate) const TASK_ACCEPT_TITLE_DESCRIPTION: &str = "Short label for the card title: at most 20 characters (Chinese characters count as one); this is the card title; longer titles are truncated.";
 
 /// Kind 的 task_accept。
 pub(crate) struct TaskAcceptTool {
