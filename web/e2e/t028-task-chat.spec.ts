@@ -458,6 +458,14 @@ test('席位 1、另一个任务在跑时，叫醒停了的任务照样开跑', 
         intervals: [200, 500],
       })
       .toBe(true);
+    // T051.4：先等证明点再数——回 Kind 后视图会重挂，乙的卡可能还没渲染出来；
+    // 轮询到「至少一张任务乙的卡」再统一数（旧断言 <=2 对 0 张也放行，等于没证明乙有卡）。
+    await expect
+      .poll(async () => (await cards.allInnerTexts()).filter((text) => text.includes('任务乙')).length, {
+        timeout: 30_000,
+        intervals: [200, 500],
+      })
+      .toBeGreaterThanOrEqual(1);
     const texts = await cards.allInnerTexts();
     // 这张用例的证明点是甲：第 1 次 Attempt 的卡（正常 1 张；T038 known 双卡时 2 张）+ 第 2 次 Attempt
     // 的新卡必须在。乙的卡可能已收尾出现（也可能还在跑），不锁总卡数、不要求此时只有甲。
@@ -465,7 +473,8 @@ test('席位 1、另一个任务在跑时，叫醒停了的任务照样开跑', 
     const yi = texts.filter((text) => text.includes('任务乙'));
     expect(jia.length, '甲：第 1 次 Attempt 1 张（known 双卡时 2 张）+ 第 2 次 Attempt 1 张').toBeGreaterThanOrEqual(2);
     expect(jia.length).toBeLessThanOrEqual(3);
-    expect(yi.length, '乙：若已收尾可能 1 张（known 双卡时 2 张），不会更多').toBeLessThanOrEqual(2);
+    expect(yi.length, '乙：每张被唤醒的任务都有卡').toBeGreaterThanOrEqual(1);
+    expect(yi.length, '乙：known 双卡时最多 2 张').toBeLessThanOrEqual(2);
     expect(texts.length, '每张卡都能归到甲或乙').toBe(jia.length + yi.length);
     expect(new Set(texts).size, '同一任务不能出现两张内容完全相同的卡').toBe(texts.length);
   } finally {
