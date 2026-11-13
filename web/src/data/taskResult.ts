@@ -35,8 +35,11 @@ export const TASK_REPORT_STATES = [
 ] as const;
 export type TaskReportState = (typeof TASK_REPORT_STATES)[number];
 
-/** 派发卡的状态键（不是 relay 的报告状态）：拿到 task id 前「派出中」，之后「进行中」。 */
-export const TASK_DISPATCH_STATES = ['dispatching', 'dispatched'] as const;
+/**
+ * 派发卡的状态键（不是 relay 的报告状态）：拿到 task id 前「派出中」；之后「进行中」；
+ * T041 起「等待中」也走这里（task-read 说任务不在跑、没停、没被打断、还没交报告）。
+ */
+export const TASK_DISPATCH_STATES = ['dispatching', 'dispatched', 'pending'] as const;
 export type TaskDispatchState = (typeof TASK_DISPATCH_STATES)[number];
 
 /** 卡上的状态：报告状态 + 写任务当前版本 ready 的「待你核」（卡状态，不是 Task 阶段）+ 派发卡两态。 */
@@ -152,6 +155,7 @@ export function taskStatusOf(
   if (cardState === 'review') return accepted ? '已接受' : '待你核';
   if (state === 'dispatching') return '派出中';
   if (state === 'dispatched') return '进行中';
+  if (state === 'pending') return '等待中';
   switch (state) {
     case 'ready':
       return '有结果';
@@ -178,6 +182,9 @@ function envelopeStateOf(state: TaskCardState): 'pending' | 'running' | 'done' |
     case 'dispatched':
       // 派发卡一出现就是活的（任务是程序接下的，不是等报告才有）。
       return 'running';
+    case 'pending':
+      // 派出去了但任务库说不在跑（停下这一轮等）：仍是活的，只是没在跑。
+      return 'pending';
     case 'ready':
     case 'review':
       return 'done';
