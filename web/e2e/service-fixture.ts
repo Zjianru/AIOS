@@ -318,8 +318,9 @@ export interface FixtureOptions {
   /// update 是写任务交结果后改要求（带结果卡进输入框、第 2/3 版要求）。
   t054?: 'investigation' | 'oldCard' | 'update' | 'updateWindow' | 'updateWindow2';
   /// T055：工作页读侧夹具。board 是四个 ready 调查任务（等你接受≥4）；
-  /// history 是写任务 + 后续多轮文本（较早一轮有结果卡）；confirm 是一张没绑任务的确认卡。
-  t055?: 'board' | 'history' | 'confirm';
+  /// history 是写任务 + 后续多轮文本（较早一轮有结果卡）；confirm 是一张没绑任务的确认卡；
+  /// f3 是同一任务两次结果落在不同 Kind 轮（F3 定位敏感性）。
+  t055?: 'board' | 'history' | 'confirm' | 'f3';
 }
 
 /** T024.4：双会话回放用哪份按请求体路由的文件；预写会话的两种不需要。 */

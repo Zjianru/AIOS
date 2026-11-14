@@ -239,8 +239,9 @@ interface KindState {
   revealTurn: (turnId: string) => void;
   /// T055：滚到 Kind 对话里的第 turn 轮（已加载直接滚；没加载先往前加载；找不到返回 false）。
   revealTurnNumber: (turn: number) => Promise<boolean>;
-  /// T055：滚到出这个任务结果卡的那一轮（按 task id 找；没加载先往前加载）。
-  revealTaskResult: (taskId: string) => Promise<boolean>;
+  /// T055：滚到出这个任务结果卡的那一轮；给了 preferredTurn 时优先选不晚于它的最新一轮
+  ///（同一任务多份结果时按 wait 项的轮号取最新卡；没给就选最早）。
+  revealTaskResult: (taskId: string, preferredTurn?: number) => Promise<boolean>;
 }
 
 function indexOf(views: TurnViewData[]): Map<string, TurnViewData> {
@@ -942,18 +943,31 @@ export const useKindStore = create<KindState>()((set, get) => ({
   pendingResultCard: null,
   reveal: null,
   revealTurn: (turnId) => set({ reveal: { turnId, at: Date.now() } }),
-  revealTaskResult: async (taskId) => {
+  revealTaskResult: async (taskId, preferredTurn) => {
+    const viewTurn = (viewId: string): number => {
+      const match = /^turn-(\d+)$/.exec(viewId);
+      return match ? Number(match[1]) : -1;
+    };
     for (let attempt = 0; attempt < 80; attempt += 1) {
       const state = get();
       if (state.initialLoading || state.loadingOlder) {
         await new Promise((resolve) => setTimeout(resolve, 100));
         continue;
       }
-      const view = state.views.find((item) =>
-        item.taskResults.some((fact) => fact.taskId === taskId && fact.id.startsWith('task-report:')),
-      );
-      if (view) {
-        set({ reveal: { turnId: view.id, at: Date.now() } });
+      const cardViews = state.views
+        .filter((item) =>
+          item.taskResults.some(
+            (fact) => fact.taskId === taskId && fact.id.startsWith('task-report:'),
+          ),
+        )
+        .map((item) => ({ view: item, turn: viewTurn(item.id) }));
+      if (cardViews.length) {
+        const notAfter = cardViews
+          .filter((candidate) => preferredTurn === undefined || candidate.turn <= preferredTurn)
+          .sort((left, right) => right.turn - left.turn);
+        const chosen =
+          notAfter[0] ?? [...cardViews].sort((left, right) => right.turn - left.turn)[0];
+        set({ reveal: { turnId: chosen.view.id, at: Date.now() } });
         return true;
       }
       if (!state.hasOlder) return false;

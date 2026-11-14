@@ -31,10 +31,15 @@ export async function openWaitItem(item: WaitItem): Promise<void> {
       if (useKindStore.getState().loadCount > before) break;
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    // T055 审计 F3：优先按 wait 项的轮号定位（任务多次交结果时按 taskId 会滚到最早旧卡）；
-    // 轮号找不到才退回结果卡（relay 落在别的轮时兜底）。
+    // T055 审计 F3：用 wait 项的轮号选同一任务的最新结果卡（不能按 taskId 选最早旧卡）；
+    // 任务本身没有结果卡（例如绑总任务的确认卡）再按轮号滚。
+    if (
+      item.taskId &&
+      (await useKindStore.getState().revealTaskResult(item.taskId, item.turn))
+    ) {
+      return;
+    }
     if (await revealKindTurn(item.turn)) return;
-    if (item.taskId && (await useKindStore.getState().revealTaskResult(item.taskId))) return;
   }
   if (item.taskId) {
     go('taskchat:' + item.taskId);

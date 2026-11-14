@@ -330,18 +330,21 @@ test('门：判通过前进在做/排队，判完等接受，接受后它和门�
       timeout: 40_000,
     });
 
-    // 工作页：结果等你接受；在「等你」右栏直接接受，它和门一起进完成列。
+    // 工作页：结果等你接受；在 Kind 结果卡上接受，它和门一起进完成列。
     await page.goto(urlOf(fixture, '#work'));
-    const waiting = page.locator('[data-pane="waiting"]');
-    const accept = waiting
-      .locator('[data-kind="wait-item"][data-wait-kind="accept"]')
-      .filter({ hasText: '先查行数' })
+    const accept = page
+      .locator('[data-kind="board-wait-item"][data-wait-kind="accept"]')
       .first();
-    await expect(accept).toBeVisible({ timeout: 30_000 });
-    await accept.locator('[data-action="wait-accept"]').click();
-    await expect(waiting.locator('[data-kind="accept-receipt"]')).toContainText('接受了 1 项', {
-      timeout: 30_000,
-    });
+    await expect(accept).toContainText('先查行数', { timeout: 30_000 });
+    await page.goto(urlOf(fixture, '#kind'));
+    const guardedCard = page
+      .locator('[data-kind="task-result"]')
+      .filter({ has: page.locator('[data-kind="task-title"]', { hasText: '先查行数' }) })
+      .first();
+    await expect(guardedCard.locator('[data-kind="task-accept"]')).toBeVisible({ timeout: 30_000 });
+    await guardedCard.locator('[data-kind="task-accept"]').click();
+    await expect(guardedCard).toContainText('你接受了', { timeout: 60_000 });
+    await page.goto(urlOf(fixture, '#work'));
     await expect(column(page, 'done')).toContainText('先查行数', { timeout: 30_000 });
     await expect(column(page, 'done')).toContainText('独立核查', { timeout: 10_000 });
   } finally {
@@ -482,6 +485,89 @@ test('取消图（暂不）：子任务一项都不上工作页', async ({ page 
     await page.goto(urlOf(fixture, '#work'));
     await page.waitForTimeout(1500);
     await expect(page.locator('[data-kind="work-card"]')).toHaveCount(0);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('去看定位（F3 真不同轮）：滚到最新结果卡那一轮，不是最早旧卡', async ({ page, request }) => {
+  test.setTimeout(240_000);
+  const fixture = await startKernelFixture({ t055: 'f3' });
+  try {
+    await page.goto(urlOf(fixture));
+    await sendKind(page, '查一下 f3 结果，分两次交');
+    await expect(page.locator('[data-kind="task-result"]').first()).toBeVisible({ timeout: 60_000 });
+    // 第一份 relay 所在轮（旧卡轮）。
+    const oldTurn = await page
+      .locator('[data-kind="task-result"]')
+      .first()
+      .evaluate((element) => element.closest('[data-turn]')?.getAttribute('data-turn'));
+    expect(oldTurn).toBeTruthy();
+
+    // 中间聊两轮：旧卡和新卡落在不同轮，但都还在 Kind 首屏（旧顺序会先找到旧卡那一轮）。
+    for (let index = 1; index <= 2; index += 1) {
+      await sendKind(page, '记一下第 ' + String(index) + ' 条');
+      await expect(page.locator('[data-kind="assistant-answer"]').last()).toContainText(
+        '收到第 ' + String(index) + ' 条',
+        { timeout: 30_000 },
+      );
+    }
+    // 再让同一任务交第二份结果：两次 relay 落在不同轮。
+    const db = new DatabaseSync(path.join(fixture.dataDir, 'tasks.sqlite'), { readOnly: true });
+    let taskId = '';
+    try {
+      const rows = db.prepare('SELECT value FROM task').all() as { value: string }[];
+      taskId = (JSON.parse(rows[0].value) as { id: string }).id;
+    } finally {
+      db.close();
+    }
+    expect(taskId).not.toBe('');
+    const said = await apiPost(request, fixture, {
+      method: 'task-say',
+      taskId,
+      text: '再核对一遍',
+    });
+    expect(said.ok()).toBeTruthy();
+    // 等 Work 里的最新结果变成第二份（Kind 页面不要求同时渲染两张活卡）。
+    await expect
+      .poll(
+        async () => {
+          const response = await apiPost(request, fixture, { method: 'work' });
+          const body = (await response.json()) as {
+            tasks: { latest?: { summary?: string } }[];
+          };
+          return body.tasks[0]?.latest?.summary ?? '';
+        },
+        { timeout: 60_000 },
+      )
+      .toBe('第二份也查好了');
+
+    await page.goto(urlOf(fixture, '#work'));
+    const compact = page.locator('[data-kind="board-wait-item"][data-wait-kind="accept"]').first();
+    await expect(compact).toBeVisible({ timeout: 30_000 });
+    const label = await compact.locator('.brand-type').innerText();
+    const turn = Number(/第 (\d+) 轮/.exec(label)?.[1] ?? '0');
+    expect(turn).toBeGreaterThan(0);
+    await compact.click();
+    const target = page.locator('[data-turn="turn-' + String(turn) + '"]');
+    await expect(target).toBeVisible({ timeout: 60_000 });
+    // 目标是最新轮：滚到底附近；旧顺序滚到旧卡轮，scrollTop 会小很多，这里会失败。
+    await expect
+      .poll(async () => {
+        const box = await target.boundingBox();
+        const pane = await page.locator('[data-pane="conversation"]').boundingBox();
+        const scroller = await page.evaluate(() =>
+          Number(
+            (
+              document.querySelector(
+                '[data-pane="conversation"] [data-virtuoso-scroller="true"]',
+              ) as HTMLElement | null
+            )?.scrollTop ?? 0,
+          ),
+        );
+        return box && pane ? Math.round(scroller) : -1;
+      })
+      .toBeGreaterThan(600);
   } finally {
     await fixture.close();
   }
