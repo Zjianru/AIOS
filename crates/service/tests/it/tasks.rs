@@ -1358,6 +1358,7 @@ const EXPECTED_KIND_POLICY: &str = concat!(
     "\nWhen the user's request has steps that must happen in order (a later step needs an earlier step's result), call task_graph_propose once with the subtasks and their after links, then call propose_action once with action start_task_graph and the graph id it returned; the user confirms on the card. Sub-tasks whose upstream has a ready result start automatically: do not dispatch them again.",
     "\nDispatch tasks that are independent of each other separately with task_accept; only ordered work belongs in a task graph.",
     "\nWhen the user asks to look at something before continuing (for example \"我要先看一眼\", \"我来拍板\", \"过了再…\"), add a read-only milestone step to the graph: set milestone true on that subtask, leave write_scope empty, and make its after point at exactly the one step it checks. Only the user decides on the milestone result card; never judge, pass or fix it yourself.",
+    "\nWhen a milestone card comes back needing fixes, call task_continue once for the step it checks and pass the user's words as note; do not dispatch that step again. If the user's words go beyond the original requirement, do not call task_continue: ask the user to change the requirement first.",
 );
 
 /// 装了任务执行者：Kind 第一个请求的 system 以派任务说明结尾。
@@ -9201,6 +9202,7 @@ async fn gate_blocked_keeps_guarded_task_and_downstream_untouched() {
             r#"{"state":"blocked","summary":"缺原始链接，核不了","question":"要查什么？"}"#,
         ),
     );
+    router.push_thin_for(gate.id.as_str(), crate::common::text_sse("好"));
     for _ in 0..10 {
         router.push_kind(crate::common::text_sse("收到"));
     }
@@ -9361,4 +9363,411 @@ async fn gate_verdict_crash_replays_downstream_launch_and_relay_once() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(reopened, "重开根宿主 250 次都没到 RootState::Ok");
+}
+
+/// T053.2：判需修正 → relay 带原话 → task_continue → 新 Attempt 任务包含原话和核查发现 → 门自动重跑 → 通过。
+#[tokio::test]
+async fn gate_needs_fix_continue_and_auto_recheck_end_to_end() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    let (_root, guarded, downstream, gate_report) =
+        reach_gate_ready(&host, &router, data.path()).await;
+    let store = tasks_store(data.path());
+    let gate = store
+        .task_ids()
+        .unwrap()
+        .into_iter()
+        .filter_map(|id| store.task(&id).ok().flatten())
+        .find(Task::is_gate)
+        .expect("门任务");
+    let note = "空标题的别直接放过，用域名加路径当键";
+    // 用户判需修正（带原话）：relay 记下结论、原话和候选。
+    let response = host
+        .dispatch(Call::GateJudge(GateJudgeRequest {
+            gate_task: gate.id.as_str().to_owned(),
+            gate_report: gate_report.as_str().to_owned(),
+            conclusion: GateJudgeConclusion::NeedsFix,
+            note: Some(note.to_owned()),
+        }))
+        .await
+        .expect("判定需修正");
+    let Response::GateJudge(judged) = response else {
+        panic!("gate-judge 响应");
+    };
+    assert_eq!(
+        judged
+            .verdict
+            .as_ref()
+            .and_then(|verdict| verdict.note.clone()),
+        Some(note.to_owned()),
+        "原话原样存档"
+    );
+    wait_until("Kind 收到需修正 relay", || {
+        crate::common::read_root_events(data.path())
+            .iter()
+            .any(|event| {
+                let session::EventKind::UserMessage { message, .. } = &event.kind else {
+                    return false;
+                };
+                let text: String = message
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        model::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                text.contains("gate_verdict") && text.contains(note) && text.contains("needs_fix")
+            })
+    })
+    .await;
+
+    // Kind 用 task_continue 让被把关任务在原要求里接着做。
+    router.push_thin_for(
+        guarded.id.as_str(),
+        crate::common::tool_use_sse(
+            2,
+            "call-b2-report",
+            "task_report",
+            r#"{"state":"ready","summary":"第二次结果：5 行"}"#,
+        ),
+    );
+    router.push_thin_for(guarded.id.as_str(), crate::common::text_sse("好"));
+    router.push_thin_for(
+        gate.id.as_str(),
+        crate::common::tool_use_sse(
+            2,
+            "call-gate2-report",
+            "task_report",
+            r#"{"state":"ready","summary":"第二次核查：这次按域名加路径"}"#,
+        ),
+    );
+    router.push_thin_for(gate.id.as_str(), crate::common::text_sse("好"));
+    router.push_thin_for(
+        downstream.id.as_str(),
+        crate::common::tool_use_sse(
+            2,
+            "call-c-report",
+            "task_report",
+            r#"{"state":"ready","summary":"写好了"}"#,
+        ),
+    );
+    router.push_thin_for(downstream.id.as_str(), crate::common::text_sse("好"));
+    let continued = host
+        .dispatch(Call::TaskContinue(service::TaskContinueRequest {
+            task_id: guarded.id.as_str().to_owned(),
+            note: Some(note.to_owned()),
+        }))
+        .await
+        .expect("接着做");
+    let Response::TaskContinue(continued) = continued else {
+        panic!("task-continue 响应");
+    };
+    wait_until("B 第二次 Attempt 开跑", || {
+        tasks_store(data.path())
+            .task(&guarded.id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| {
+                task.runs
+                    .iter()
+                    .map(|run| run.attempts.len())
+                    .sum::<usize>()
+                    == 2
+                    && task
+                        .latest_attempt()
+                        .is_some_and(|attempt| attempt.conversation.is_some())
+            })
+    })
+    .await;
+    let store = tasks_store(data.path());
+    let b = store.task(&guarded.id).unwrap().unwrap();
+    let attempt = b.latest_attempt().unwrap();
+    assert_eq!(attempt.id.0, continued.attempt_id);
+    match &attempt.trigger {
+        tasks::AttemptTrigger::KindContinue { cause, note } => {
+            assert_eq!(
+                note.as_deref(),
+                Some("空标题的别直接放过，用域名加路径当键")
+            );
+            assert!(matches!(cause, tasks::ContinueCause::GateNeedsFix { .. }));
+        }
+        other => panic!("trigger 是 {other:?}"),
+    }
+    // 任务包里有「你要按这个改」：用户原话 + 核查发现。
+    let user_texts = |data: &Path| -> Vec<String> {
+        thin_events(data, b.latest_attempt().expect("B 最新 Attempt"))
+            .iter()
+            .filter_map(|event| match &event.kind {
+                session::EventKind::UserMessage { message, .. } => Some(
+                    message
+                        .content
+                        .iter()
+                        .filter_map(|block| match block {
+                            model::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .collect::<String>(),
+                ),
+                _ => None,
+            })
+            .collect()
+    };
+    wait_until("B 的二次任务包写进会话", || {
+        user_texts(data.path())
+            .iter()
+            .any(|text| text.contains("你要按这个改"))
+    })
+    .await;
+    let texts = user_texts(data.path());
+    assert!(
+        texts.iter().any(|text| text.contains("你要按这个改")
+            && text.contains(note)
+            && text.contains("核查发现：")
+            && text.contains("空标题会漏判")),
+        "任务包要带原话和核查发现：{texts:?}"
+    );
+
+    // B 再报 ready → 门自动重跑第 2 份候选；判通过后 C 才开。
+    wait_until("门重跑第 2 份", || {
+        tasks_store(data.path())
+            .task(&gate.id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| {
+                task.runs
+                    .iter()
+                    .map(|run| run.attempts.len())
+                    .sum::<usize>()
+                    == 2
+                    && task
+                        .latest_report()
+                        .is_some_and(|report| report.summary.contains("第二次核查"))
+            })
+    })
+    .await;
+    let store = tasks_store(data.path());
+    let gate_now = store.task(&gate.id).unwrap().unwrap();
+    let second_gate_report = gate_now.latest_report().cloned().unwrap();
+    assert_eq!(store.stage(&guarded.id).unwrap(), Stage::ReadyForReview);
+    let pass = host
+        .dispatch(Call::GateJudge(GateJudgeRequest {
+            gate_task: gate.id.as_str().to_owned(),
+            gate_report: second_gate_report.id.as_str().to_owned(),
+            conclusion: GateJudgeConclusion::Pass,
+            note: None,
+        }))
+        .await
+        .expect("判通过");
+    let Response::GateJudge(pass) = pass else {
+        panic!("gate-judge 响应");
+    };
+    assert_eq!(pass.released, vec!["再写结果".to_owned()]);
+    wait_until("C 开跑", || {
+        tasks_store(data.path())
+            .task(&downstream.id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| task.latest_attempt().is_some())
+    })
+    .await;
+    assert_eq!(
+        tasks_store(data.path()).stage(&guarded.id).unwrap(),
+        Stage::RequirementMet
+    );
+}
+
+/// T053.2：task_continue 的拒绝项——没有可认的 cause、任务在跑。
+#[tokio::test]
+async fn task_continue_rejects_without_cause_or_while_running() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    let (_root, guarded, _downstream, gate_report) =
+        reach_gate_ready(&host, &router, data.path()).await;
+    // 用户还没判：没有可认的 cause。
+    let error = host
+        .dispatch(Call::TaskContinue(service::TaskContinueRequest {
+            task_id: guarded.id.as_str().to_owned(),
+            note: None,
+        }))
+        .await
+        .expect_err("没有 cause 应拒绝");
+    assert!(
+        error.to_string().contains("没找到让它接着做的事实"),
+        "拒绝原因：{error}"
+    );
+
+    // 判需修正并接着做；它还在跑时再 continue 一次要拒绝。
+    let store = tasks_store(data.path());
+    let gate = store
+        .task_ids()
+        .unwrap()
+        .into_iter()
+        .filter_map(|id| store.task(&id).ok().flatten())
+        .find(Task::is_gate)
+        .expect("门任务");
+    host.dispatch(Call::GateJudge(GateJudgeRequest {
+        gate_task: gate.id.as_str().to_owned(),
+        gate_report: gate_report.as_str().to_owned(),
+        conclusion: GateJudgeConclusion::NeedsFix,
+        note: Some("再改一版".to_owned()),
+    }))
+    .await
+    .expect("判需修正");
+    router.set_thin_delay(Duration::from_secs(2));
+    router.push_thin_for(guarded.id.as_str(), crate::common::text_sse("还在改"));
+    host.dispatch(Call::TaskContinue(service::TaskContinueRequest {
+        task_id: guarded.id.as_str().to_owned(),
+        note: Some("再改一版".to_owned()),
+    }))
+    .await
+    .expect("第一次接着做");
+    wait_until("B 在跑", || {
+        tasks_store(data.path())
+            .task(&guarded.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().cloned())
+            .is_some_and(|attempt| attempt.ended_at.is_none())
+    })
+    .await;
+    let error = host
+        .dispatch(Call::TaskContinue(service::TaskContinueRequest {
+            task_id: guarded.id.as_str().to_owned(),
+            note: Some("再改一版".to_owned()),
+        }))
+        .await
+        .expect_err("在跑应拒绝");
+    assert!(error.to_string().contains("还在跑"), "拒绝原因：{error}");
+}
+
+/// T053.2：门报 blocked 后，Kind 用 task_continue AfterReport 让门重跑。
+#[tokio::test]
+async fn task_continue_on_blocked_gate_reruns_with_after_report_cause() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    router.enable_gate_kind();
+    host.dispatch(Call::Send(send(&host, "kind-1", "先查再核再写")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&host, data.path(), 1).await;
+    wait_until("建门图", || {
+        tasks_store(data.path())
+            .task_ids()
+            .map(|ids| ids.len() == 4)
+            .unwrap_or(false)
+    })
+    .await;
+    let store = tasks_store(data.path());
+    let root = graph_root(&store);
+    let (guarded, gate, _downstream) = gate_children(&store, &root);
+    router.push_thin_for(
+        guarded.id.as_str(),
+        crate::common::tool_use_sse(
+            2,
+            "call-b-report",
+            "task_report",
+            r#"{"state":"ready","summary":"第一次结果：3 行"}"#,
+        ),
+    );
+    router.push_thin_for(guarded.id.as_str(), crate::common::text_sse("好"));
+    router.push_thin_for(
+        gate.id.as_str(),
+        crate::common::tool_use_sse(
+            2,
+            "call-gate-blocked",
+            "task_report",
+            r#"{"state":"blocked","summary":"缺原始链接，核不了","question":"要查什么？"}"#,
+        ),
+    );
+    router.push_thin_for(gate.id.as_str(), crate::common::text_sse("好"));
+    for _ in 0..10 {
+        router.push_kind(crate::common::text_sse("收到"));
+    }
+    host.dispatch(Call::CardAct(CardActRequest {
+        call_id: "call-gate-card".to_owned(),
+        verb: CardVerb::Confirm,
+        option: Some("confirm".to_owned()),
+        note: None,
+    }))
+    .await
+    .expect("确认");
+    wait_until("门报 blocked", || {
+        tasks_store(data.path())
+            .task(&gate.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_report().map(|report| report.state))
+            == Some(ReportState::Blocked)
+    })
+    .await;
+    // 门这一轮先收尾（会话写锁放开）再接着做。
+    wait_until("门第一轮结束", || {
+        tasks_store(data.path())
+            .task(&gate.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().cloned())
+            .is_some_and(|attempt| session_turn_ended(data.path(), &attempt))
+    })
+    .await;
+    // Kind 用 task_continue 让门重跑（原因：最近报告 blocked）。
+    router.set_thin_delay(Duration::from_millis(30));
+    router.push_thin_for(gate.id.as_str(), crate::common::text_sse("重新核过了"));
+    // 会话写锁可能还在收尾：像 Kind 一样稍后重试（工具回的是「稍后再试一次」）。
+    let mut response = None;
+    for _ in 0..100 {
+        match host
+            .dispatch(Call::TaskContinue(service::TaskContinueRequest {
+                task_id: gate.id.as_str().to_owned(),
+                note: None,
+            }))
+            .await
+        {
+            Ok(response_now) => {
+                response = Some(response_now);
+                break;
+            }
+            Err(error) if error.to_string().contains("稍后再试") => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(error) => panic!("门重跑失败：{error}"),
+        }
+    }
+    let response = response.expect("门重跑一直接不上");
+    let Response::TaskContinue(response) = response else {
+        panic!("task-continue 响应");
+    };
+    wait_until("门第二次 Attempt 开跑", || {
+        tasks_store(data.path())
+            .task(&gate.id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| {
+                task.latest_attempt()
+                    .is_some_and(|attempt| attempt.id.0 == response.attempt_id)
+            })
+    })
+    .await;
+    let gate_now = tasks_store(data.path()).task(&gate.id).unwrap().unwrap();
+    let attempt = gate_now.latest_attempt().unwrap();
+    match &attempt.trigger {
+        tasks::AttemptTrigger::KindContinue { cause, .. } => assert!(
+            matches!(cause, tasks::ContinueCause::AfterReport { .. }),
+            "cause 是 {cause:?}"
+        ),
+        other => panic!("trigger 是 {other:?}"),
+    }
 }

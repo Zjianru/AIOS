@@ -77,6 +77,17 @@ impl RootHost {
             Call::CardAct(request) => self.card_act(request).await.map(Response::CardAct),
             // T053：门判定是内部操作，只给根宿主（Kind 没有判定工具）。
             Call::GateJudge(request) => self.gate_judge(request).await.map(Response::GateJudge),
+            // T053：Kind 让任务在原要求里接着做（任务库和执行者都在根宿主）。
+            Call::TaskContinue(request) => match self.task_runtime() {
+                Some(runtime) => runtime
+                    .continue_task(request)
+                    .await
+                    .map(Response::TaskContinue)
+                    .map_err(ServiceError::TaskUnavailable),
+                None => Err(ServiceError::TaskUnavailable(
+                    "任务库没开，接着做不了".to_owned(),
+                )),
+            },
             // 根宿主自己填统计/汇率/币种（需要 data_dir + Keyring）。
             Call::Status(request) => self.host_status(request).await.map(Response::Status),
             // 余额/余量需要 Keyring 签发 key。

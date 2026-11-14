@@ -14,11 +14,11 @@ use model::{ContentBlock, Effort, UserMessage};
 use serde_json::{Value, json};
 use session::SessionId;
 use tasks::{
-    Acceptance, Attempt, AttemptEnd, AttemptId, AttemptTrigger, BootId, BootScan, ConversationId,
-    EffectClaim, EffectKind, EffectPayload, GateCandidate, GateConclusion, Handoff, Input,
-    InputAttachment, MissingItem, ModelChoice, NewGraph, NewInput, NewReport, NewSubtask, NewTask,
-    Report, ReportId, ReportOrigin, ReportState, SlotKind, Stage, StopAttempt, Store, Task,
-    TaskError, TaskId, TaskPolicy, WorkerSlots,
+    Acceptance, Attempt, AttemptEnd, AttemptId, AttemptTrigger, BootId, BootScan, ContinueCause,
+    ConversationId, EffectClaim, EffectKind, EffectPayload, GateCandidate, GateConclusion, Handoff,
+    Input, InputAttachment, MissingItem, ModelChoice, NewGraph, NewInput, NewReport, NewSubtask,
+    NewTask, Report, ReportId, ReportOrigin, ReportState, SlotKind, Stage, StopAttempt, Store,
+    Task, TaskError, TaskId, TaskPolicy, WorkerSlots,
 };
 use tokio::sync::broadcast;
 use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
@@ -29,9 +29,9 @@ use crate::input::attachment_error;
 use crate::protocol::{
     DeliveryMode, FollowRequest, FollowResponse, GateJudgeConclusion as ProtocolGateConclusion,
     GateJudgeRequest, GateJudgeResponse, GateVerdictView, ServiceEvent, StopMode,
-    TaskInterruptResponse, TaskReadHeader, TaskReadReport, TaskReadReportOrigin,
-    TaskReadReportState, TaskReadRequest, TaskReadResponse, TaskSayRequest, TaskSayResponse,
-    TaskStopResponse,
+    TaskContinueRequest, TaskContinueResponse, TaskInterruptResponse, TaskReadHeader,
+    TaskReadReport, TaskReadReportOrigin, TaskReadReportState, TaskReadRequest, TaskReadResponse,
+    TaskSayRequest, TaskSayResponse, TaskStopResponse,
 };
 use crate::root::RootSessionOptions;
 use crate::session_host::ServiceHost;
@@ -454,6 +454,191 @@ impl TaskRuntime {
             }),
             Err(error) => Err(error.to_string()),
         }
+    }
+
+    /// T053：Kind 让任务在原要求里接着做（用户判了需修正 / 最近报告卡住失败等）。
+    ///
+    /// 同一 Task、原会话、新 Attempt；不改要求、不改写集、不开 bash。
+    pub(crate) async fn continue_task(
+        self: &Arc<Self>,
+        request: TaskContinueRequest,
+    ) -> Result<TaskContinueResponse, String> {
+        let task_id = TaskId::from(request.task_id.as_str());
+        let task = self
+            .store
+            .task(&task_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("找不到这个任务：{}", request.task_id))?;
+        if task.is_graph_root() {
+            return Err("总任务没有执行承载，不能接着做".to_owned());
+        }
+        if task
+            .latest_attempt()
+            .is_some_and(|attempt| attempt.ended_at.is_none())
+        {
+            return Err("这个任务还在跑；等这一轮结束再让它接着做".to_owned());
+        }
+        let cause = self.continue_cause(&task)?;
+        let package = self.continue_package(&task, &cause, request.note.as_deref())?;
+        let Some(attempt) = task.latest_attempt().cloned() else {
+            return Err("这个任务还没开跑，不能接着做".to_owned());
+        };
+        let handoffs: Vec<Handoff> = task
+            .needs
+            .iter()
+            .filter_map(|need| need.handoff.clone())
+            .collect();
+        let trigger = AttemptTrigger::KindContinue {
+            cause,
+            note: request.note.clone(),
+        };
+        let opened = match self
+            .open_resume(&task, &attempt, trigger, SlotKind::Person, handoffs)
+            .await
+        {
+            Ok(opened) => opened,
+            Err(ResumeBlock::Later) => {
+                return Err("现在接不上这个任务（没有空位或会话还在收尾），稍后再试一次".to_owned());
+            }
+            Err(ResumeBlock::AlreadyStarted) => return Err("已经接着做了".to_owned()),
+            Err(ResumeBlock::PackageMissing) => {
+                return Err("任务包缺了东西，接不上；看任务里的缺项".to_owned());
+            }
+            Err(ResumeBlock::NoSession(reason)) => return Err(reason),
+        };
+        let request_id = format!("continue:{}:{}", task.id, opened.attempt_id);
+        let sent = opened
+            .host
+            .send_message(
+                &request_id,
+                UserMessage::text(package),
+                DeliveryMode::FollowUp,
+            )
+            .await;
+        if let Err(error) = sent {
+            opened.host.shutdown().await;
+            self.running
+                .lock()
+                .expect("thinagent 表锁被毒化")
+                .remove(opened.host.agent().id().as_str());
+            best_effort(
+                "接着做的 Attempt 没收尾",
+                self.store.end_attempt(
+                    &task.id,
+                    opened.attempt_id,
+                    Self::now(),
+                    AttemptEnd::NotOpened,
+                ),
+            );
+            self.release_seat(task.id.as_str());
+            return Err(format!("接着做的说明没送进任务会话：{error}"));
+        }
+        self.wake();
+        Ok(TaskContinueResponse {
+            attempt_id: opened.attempt_id.0,
+        })
+    }
+
+    /// T053：认 task_continue 的原因（当前候选需修正 → 最近报告卡住/失败/等报告）。
+    fn continue_cause(&self, task: &Task) -> Result<ContinueCause, String> {
+        if let Some(gate) = self
+            .store
+            .guarding_gate(&task.id)
+            .map_err(|error| error.to_string())?
+            && let Some(latest) = task.latest_report()
+            && let Some(verdict) = gate.verdicts.iter().rev().find(|verdict| {
+                verdict.candidate.report_id == latest.id
+                    && verdict.conclusion == GateConclusion::NeedsFix
+            })
+        {
+            return Ok(ContinueCause::GateNeedsFix {
+                gate_report: verdict.gate_report.clone(),
+                candidate: verdict.candidate.clone(),
+            });
+        }
+        if let Some(report) = task.latest_report()
+            && matches!(
+                report.state,
+                ReportState::Blocked | ReportState::Failed | ReportState::Waiting
+            )
+        {
+            return Ok(ContinueCause::AfterReport {
+                report: report.id.clone(),
+            });
+        }
+        Err("没找到让它接着做的事实：用户还没判需修正，最近报告也不是卡住/失败/等报告".to_owned())
+    }
+
+    /// T053：接着做的任务包说明（需修正时带用户原话和核查发现）。
+    fn continue_package(
+        &self,
+        task: &Task,
+        cause: &ContinueCause,
+        note: Option<&str>,
+    ) -> Result<String, String> {
+        let mut lines = Vec::new();
+        match cause {
+            ContinueCause::GateNeedsFix { gate_report, .. } => {
+                lines.push("你要按这个改。".to_owned());
+                lines.push(format!("原要求不变：{}", task.requirement));
+                if let Some(note) = note.filter(|note| !note.trim().is_empty()) {
+                    lines.push(format!("用户原话：{note}"));
+                }
+                if let Some(gate) = self
+                    .store
+                    .guarding_gate(&task.id)
+                    .map_err(|error| error.to_string())?
+                    && let Some(report) =
+                        gate.reports.iter().find(|report| &report.id == gate_report)
+                {
+                    lines.push(format!("核查发现：{}", report.summary));
+                }
+                match task.effective_write_scope() {
+                    Some(scope) => lines.push(format!("写集不变：{}", scope.display())),
+                    None => lines.push("写集不变：只读".to_owned()),
+                }
+                lines
+                    .push("改完用 task_report 上报；核查会自动重跑，结果仍然由用户判。".to_owned());
+            }
+            ContinueCause::UpstreamChanged { upstream_report } => {
+                lines.push("上游有新结果，按新结果核对。".to_owned());
+                lines.push(format!("原要求不变：{}", task.requirement));
+                if let Some(need) = task.needs.first()
+                    && let Some(handoff) = &need.handoff
+                    && &handoff.report_id == upstream_report
+                {
+                    lines.push(format!("上游结果：{}", handoff.summary));
+                }
+                lines.push("核对完用 task_report 上报。".to_owned());
+            }
+            ContinueCause::AfterReport { report } => {
+                let (state, summary) = task
+                    .reports
+                    .iter()
+                    .find(|report_now| &report_now.id == report)
+                    .map(|report_now| {
+                        (
+                            report_state_key(report_now.state).to_owned(),
+                            report_now.summary.clone(),
+                        )
+                    })
+                    .unwrap_or_else(|| ("unknown".to_owned(), String::new()));
+                lines.push("接着做：上一次没交出可用的结果。".to_owned());
+                if let Some(note) = note.filter(|note| !note.trim().is_empty()) {
+                    lines.push(format!("用户原话：{note}"));
+                }
+                lines.push(format!("上一次报告（{state}）：{summary}"));
+                match task.effective_write_scope() {
+                    Some(scope) => lines.push(format!("写集不变：{}", scope.display())),
+                    None => lines.push("写集不变：只读".to_owned()),
+                }
+                lines.push("做完用 task_report 上报。".to_owned());
+            }
+        }
+        Ok(lines.join(
+            "
+",
+        ))
     }
 
     /// 任务对话的只读快照：头部来自任务聚合，事件来自当前 Attempt 的会话日志。
@@ -1180,7 +1365,10 @@ impl TaskRuntime {
             ResumeMode::Say => (AttemptTrigger::UserMessage, SlotKind::Person),
             ResumeMode::Interrupted => (AttemptTrigger::Resume, SlotKind::Wake),
         };
-        match self.open_resume(task, attempt, trigger, slot).await {
+        match self
+            .open_resume(task, attempt, trigger, slot, Vec::new())
+            .await
+        {
             Ok(opened) => Some(opened),
             Err(ResumeBlock::Later | ResumeBlock::AlreadyStarted) => {
                 self.later(claim);
@@ -1222,7 +1410,13 @@ impl TaskRuntime {
             });
         }
         let opened = match self
-            .open_resume(&task, &attempt, AttemptTrigger::Resume, SlotKind::Wake)
+            .open_resume(
+                &task,
+                &attempt,
+                AttemptTrigger::Resume,
+                SlotKind::Wake,
+                Vec::new(),
+            )
             .await
         {
             Ok(opened) => opened,
@@ -1284,6 +1478,7 @@ impl TaskRuntime {
         attempt: &Attempt,
         trigger: AttemptTrigger,
         slot: SlotKind,
+        handoffs: Vec<Handoff>,
     ) -> Result<OpenedResume, ResumeBlock> {
         // 崩溃/重启留下的、还没收尾的 Attempt 不在这里抢（留给恢复链）。
         if attempt.ended_at.is_none() {
@@ -1327,22 +1522,23 @@ impl TaskRuntime {
             // 席位满（说话接续含 person 多占的那 1 个）：效果留在库里，腾出来再领。
             return Err(ResumeBlock::Later);
         }
-        let attempt_id = match self
-            .store
-            .begin_followup_with(&task.id, trigger, Self::now())
-        {
-            Ok(Some(attempt_id)) => attempt_id,
-            Ok(None) => {
-                self.release_seat(&key);
-                return Err(ResumeBlock::AlreadyStarted);
-            }
-            Err(error) => {
-                self.release_seat(&key);
-                return Err(ResumeBlock::NoSession(format!(
-                    "接着做没写进任务库：{error}"
-                )));
-            }
-        };
+        let attempt_id =
+            match self
+                .store
+                .begin_followup_with_handoffs(&task.id, trigger, handoffs, Self::now())
+            {
+                Ok(Some(attempt_id)) => attempt_id,
+                Ok(None) => {
+                    self.release_seat(&key);
+                    return Err(ResumeBlock::AlreadyStarted);
+                }
+                Err(error) => {
+                    self.release_seat(&key);
+                    return Err(ResumeBlock::NoSession(format!(
+                        "接着做没写进任务库：{error}"
+                    )));
+                }
+            };
         let prepared = match self.prepare(task) {
             Ok(prepared) => prepared,
             Err(missing) => {
@@ -2792,6 +2988,7 @@ impl TaskRuntime {
                 &attempt,
                 AttemptTrigger::RequirementChanged,
                 SlotKind::Wake,
+                Vec::new(),
             )
             .await
         {
@@ -3394,6 +3591,84 @@ impl Tool for TaskGraphProposeTool {
                     ),
                 ),
                 Err(failure) => ToolResult::error(call.id, failure),
+            }
+        })
+    }
+}
+
+/// Kind 的 task_continue（T053）：让任务在原要求里接着做。
+pub(crate) struct TaskContinueTool {
+    runtime: Arc<TaskRuntime>,
+    parameters: Value,
+}
+
+impl TaskContinueTool {
+    pub(crate) fn new(runtime: Arc<TaskRuntime>) -> Self {
+        Self {
+            runtime,
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "The id of the task that must continue in its original requirement (the step the milestone checks, or a task whose last report was blocked/failed)."},
+                    "note": {"type": "string", "description": "The user's words to pass on, verbatim. Omit when the user did not write anything specific."}
+                },
+                "required": ["task_id"]
+            }),
+        }
+    }
+}
+
+impl Tool for TaskContinueTool {
+    fn name(&self) -> &str {
+        "task_continue"
+    }
+
+    fn description(&self) -> &str {
+        "Let a task continue in its original requirement and write scope as a new Attempt: use it when the user sends a milestone back needing fixes, or when a task's last report was blocked/failed. This does not change the requirement or write scope; to change those, ask the user first. If the user's words go beyond the original requirement, do not call this: ask the user to change the requirement."
+    }
+
+    fn parameters(&self) -> &Value {
+        &self.parameters
+    }
+
+    fn condition(&self) -> ToolCondition {
+        ToolCondition::Always
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: ToolCall,
+        _context: &'a ToolContext,
+    ) -> ToolFuture<'a, ToolResult> {
+        Box::pin(async move {
+            let args = match parse_object(&call.arguments) {
+                Ok(args) => args,
+                Err(failure) => return ToolResult::error(call.id, failure),
+            };
+            let Some(task_id) = string_arg(&args, "task_id") else {
+                return ToolResult::error(
+                    call.id,
+                    ToolFailure::plain("task_id 不能为空".to_owned()),
+                );
+            };
+            let note = args
+                .get("note")
+                .and_then(Value::as_str)
+                .filter(|note| !note.trim().is_empty())
+                .map(str::to_owned);
+            match self
+                .runtime
+                .continue_task(crate::protocol::TaskContinueRequest { task_id, note })
+                .await
+            {
+                Ok(response) => ToolResult::success(
+                    call.id,
+                    format!(
+                        "已让任务在原要求里接着做（第 {} 次 Attempt）；用户原话和核查发现已放进它的任务包。",
+                        response.attempt_id
+                    ),
+                ),
+                Err(reason) => ToolResult::error(call.id, ToolFailure::plain(reason)),
             }
         })
     }

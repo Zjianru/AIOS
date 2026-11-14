@@ -160,3 +160,51 @@ test('任务图里程碑：候选变了以后点旧门卡 → 已经变了，不
     await fixture.close();
   }
 });
+
+test('任务图里程碑：判需修正 → 原话输入框 → 回执留原话 → 刷新还在；B 卡变需修正', async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture({ t053Gate: true });
+  try {
+    await page.goto(urlOf(fixture));
+    await page
+      .getByPlaceholder('和 Kind 说…')
+      .fill('先查 notes.md 有几行，改完找个独立的核查看一眼，我来拍板，过了再写结果');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    const confirm = page.locator('[data-kind="confirm-card"]').first();
+    await expect(confirm).toBeVisible({ timeout: 40_000 });
+    await confirm.locator('[data-action="card-option"]').first().click();
+    await confirm.locator('[data-action="card-confirm"]').click();
+    await expect(confirm).toHaveAttribute('data-state', 'done', { timeout: 40_000 });
+
+    const gateCard = resultCard(page, '独立核查');
+    await expect(gateCard).toBeVisible({ timeout: 60_000 });
+    const guardedCard = resultCard(page, '先查行数');
+    await expect(guardedCard.locator('[data-kind="task-state"]')).toContainText('等核查');
+
+    // 点需修正先出输入框，写原话后提交。
+    const note = '空标题的别直接放过，用域名加路径当键';
+    await gateCard.locator('[data-kind="gate-needs-fix"]').click();
+    const input = gateCard.locator('[data-kind="gate-note-input"]');
+    await expect(input).toBeVisible({ timeout: 10_000 });
+    await input.fill(note);
+    await gateCard.locator('[data-kind="gate-needs-fix-submit"]').click();
+    await expect(gateCard.locator('[data-kind="gate-verdict"]')).toContainText('你判了需修正');
+    await expect(gateCard.locator('[data-kind="gate-note"]')).toContainText(note);
+    // 被把关卡状态词：判后变需修正。
+    await expect(guardedCard.locator('[data-kind="task-state"]')).toContainText('需修正');
+
+    // 刷新：回执和原话都在。
+    await page.reload();
+    const gateAfter = resultCard(page, '独立核查');
+    await expect(gateAfter).toBeVisible({ timeout: 60_000 });
+    await expect(gateAfter.locator('[data-kind="gate-note"]')).toContainText(note);
+    await expect(gateAfter.locator('[data-kind="gate-verdict"]')).toContainText('你判了需修正');
+    await expect(resultCard(page, '先查行数').locator('[data-kind="task-state"]')).toContainText(
+      '需修正',
+    );
+  } finally {
+    await fixture.close();
+  }
+});

@@ -385,6 +385,13 @@ impl Store {
         Ok(released)
     }
 
+    /// T053：这个任务被哪个门把关（Kind 的 task_continue 认原因用）。
+    pub fn guarding_gate(&self, id: &TaskId) -> Result<Option<Task>, TaskError> {
+        let conn = self.lock()?;
+        let task = load_task_required(&conn, id)?;
+        gate_for_guarded(&conn, &task)
+    }
+
     /// T053：ready 报告落库后放出下一站，返回 relay 给 Kind 的「已自动开跑」标题。
     fn release_ready_in(
         &self,

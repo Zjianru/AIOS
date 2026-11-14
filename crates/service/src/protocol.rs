@@ -101,6 +101,8 @@ pub enum Call {
     FileReferencesList(FileReferencesListRequest),
     /// T053：用户在门结果卡上判定（内部操作；Kind 没有判定工具）。
     GateJudge(GateJudgeRequest),
+    /// T053：Kind 让任务在原要求里接着做（需修正/上游变了/报告卡住）。
+    TaskContinue(TaskContinueRequest),
 }
 
 /// 调用的结果（与 Call 一一对应）。
@@ -157,6 +159,8 @@ pub enum Response {
     FileReferencesList(FileReferencesListResponse),
     /// 门判定的受理结果：记下的判定，或「已经变了」。
     GateJudge(GateJudgeResponse),
+    /// Kind 让任务接着做的受理结果：新 Attempt 编号。
+    TaskContinue(TaskContinueResponse),
 }
 
 /// 发消息（DSH session-controller 的 prompt）。requestId 是幂等键：同一 id 只进一次。
@@ -922,6 +926,23 @@ pub struct GateJudgeRequest {
     /// 需修正时的用户原话；空白当没有。原样存，不截断不改写。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+}
+
+/// T053：Kind 让一个任务在原要求里接着做（task_continue）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct TaskContinueRequest {
+    #[serde(rename = "taskId")]
+    pub task_id: String,
+    /// 需要用户原样转交的话（需修正时）；空白当没有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// 接着做的受理结果：新 Attempt 编号。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct TaskContinueResponse {
+    #[serde(rename = "attemptId")]
+    pub attempt_id: u64,
 }
 
 /// 一条已记下的判定（给页面/测试看的事实）。

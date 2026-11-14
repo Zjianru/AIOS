@@ -33,7 +33,11 @@ When the user wants to check something before the next step (「改完找个独�
 
 - one subtask with `milestone: true`, no `write_scope`, and `after` exactly one index: the step it checks;
 - the checked step's other downstream steps wait until the user passes the milestone;
-- only the user decides on the milestone result card (通过 / 需修正); you have no tool that passes or fixes it. When the user sends it back, wait for their words and follow them.
+- only the user decides on the milestone result card (通过 / 需修正); you have no tool that passes or fixes it.
+
+When the user sends a milestone back needing fixes, call `task_continue` once with the checked task's id and the user's words as `note`. Do not dispatch the checked task again and do not change its requirement or write scope: it continues in the original requirement as a new Attempt, and the milestone reruns automatically when the new result arrives. The user still decides the new result.
+
+If the user's words go beyond the original requirement (a new scope, another goal, a different outcome), do not call `task_continue` — ask the user to change the requirement first (`task_update`), then continue.
 
 ## Stop now
 
