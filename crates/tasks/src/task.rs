@@ -325,6 +325,9 @@ pub struct RequirementVersion {
     pub requirement: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dod: Option<String>,
+    /// T056.2：用户原话里的硬要求（跟着要求版本；旧行按空）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<String>,
 }
 
 /// 一条要求版本是怎么来的。
@@ -685,6 +688,14 @@ impl Task {
             Ok(relative) => Some(worktree.root.join(relative)),
             Err(_) => Some(scope.to_path_buf()),
         }
+    }
+
+    /// T056.2：当前要求版本上的约束（用户原话）；旧任务行为空。
+    pub fn current_constraints(&self) -> &[String] {
+        self.versions
+            .last()
+            .map(|version| version.constraints.as_slice())
+            .unwrap_or(&[])
     }
 
     /// T052：总任务（有安排记录、不跑执行）。

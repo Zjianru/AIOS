@@ -84,6 +84,7 @@ fn task_accept_freezes_the_write_scope_bash_and_worktree() {
             source: VersionSource::TaskAccept,
             requirement: Some("把重复判断改成按 url".to_owned()),
             dod: Some("同一个 url 只留一条".to_owned()),
+            constraints: Vec::new(),
         }]
     );
     assert_eq!(store.task(&task.id).unwrap(), Some(task));
@@ -106,6 +107,7 @@ fn a_task_without_a_scope_is_read_only_and_gets_a_first_version() {
             source: VersionSource::TaskAccept,
             requirement: Some("把重复判断改成按 url".to_owned()),
             dod: Some("同一个 url 只留一条".to_owned()),
+            constraints: Vec::new(),
         }]
     );
 
@@ -178,6 +180,7 @@ fn task_update_appends_a_requirement_version_and_moves_the_scope() {
                 source: VersionSource::TaskAccept,
                 requirement: Some("把重复判断改成按 url".to_owned()),
                 dod: Some("同一个 url 只留一条".to_owned()),
+                constraints: Vec::new(),
             },
             RequirementVersion {
                 write_scope: Some(cwd.join("rank")),
@@ -185,6 +188,7 @@ fn task_update_appends_a_requirement_version_and_moves_the_scope() {
                 source: VersionSource::UserAgreed,
                 requirement: Some("把重复判断改成按 url".to_owned()),
                 dod: Some("同一个 url 只留一条".to_owned()),
+                constraints: Vec::new(),
             },
         ]
     );

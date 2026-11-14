@@ -28,16 +28,52 @@ fn kind_priority(kind: &str) -> u8 {
     }
 }
 
-fn need_text(kind: &str, title: &str) -> String {
+/// 任务等待项的一句话：照原型 waitModel.ts 按事实拼（写/调查、第几版、失败/卡住）。
+fn need_text(kind: &str, meta: &FactMeta<'_>) -> String {
+    let latest = meta.latest;
     match kind {
-        KIND_RESUME => "确认接着做被打断的这一轮".to_owned(),
-        KIND_CONFIRM if title == "Kind 问你" => "回答 Kind 的问题".to_owned(),
-        KIND_CONFIRM => "确认这张卡上的做法".to_owned(),
-        KIND_ANSWER if title == "Kind 问你" => "回答 Kind 的问题".to_owned(),
-        KIND_ANSWER => "回答任务里的问题".to_owned(),
-        KIND_JUDGE => "判这份核查结果".to_owned(),
-        KIND_ACCEPT => "接受这份结果".to_owned(),
+        KIND_RESUME => {
+            if latest.is_some() {
+                "被打断了，待 Kind 核实".to_owned()
+            } else {
+                "AIOS 重启时它在跑，没交结果；Kind 问你接不接着做".to_owned()
+            }
+        }
+        KIND_ANSWER => match latest.map(|report| report.state) {
+            Some(ReportState::Failed) => "失败了，要你定怎么办".to_owned(),
+            _ => "卡住了，它问你".to_owned(),
+        },
+        KIND_JUDGE => match (latest, meta.guarded_title.as_deref()) {
+            (Some(report), Some(title)) => format!(
+                "核查「{title}」第 {} 次交的结果，你判通过还是需修正",
+                report.attempt_id.0
+            ),
+            _ => "判这份核查结果".to_owned(),
+        },
+        KIND_ACCEPT => {
+            let version = latest.map(|report| report.version).unwrap_or(1);
+            let what = if crate::result_cards::write_scope_display(meta.task).is_some() {
+                "写任务交了改动"
+            } else {
+                "调查任务交了结果"
+            };
+            let version = if version > 1 {
+                format!("（第 {version} 版要求）")
+            } else {
+                String::new()
+            };
+            format!("{what}{version}，你接受就关闭")
+        }
         _ => "看一眼".to_owned(),
+    }
+}
+
+/// 没绑任务事实的确认卡（比如换模型）。
+fn confirm_need(title: &str) -> String {
+    if title == "Kind 问你" {
+        "回答 Kind 的问题".to_owned()
+    } else {
+        "确认这张卡上的做法".to_owned()
     }
 }
 
@@ -134,6 +170,8 @@ struct FactMeta<'a> {
     task: &'a Task,
     stage: Stage,
     gate_of: Option<String>,
+    /// 门任务把关的那个任务的标题（判卡一句话用）。
+    guarded_title: Option<String>,
     running: bool,
     latest: Option<&'a tasks::Report>,
 }
@@ -265,7 +303,7 @@ fn wait_item(meta: &FactMeta<'_>, kind: &str, events: &[session::Event]) -> Wait
         task_id: Some(meta.task.id.as_str().to_owned()),
         title,
         stage: Some(stage_key(meta.stage).to_owned()),
-        need: need_text(kind, ""),
+        need: need_text(kind, meta),
         body,
         at,
         turn,
@@ -390,10 +428,15 @@ pub(crate) fn snapshot(
             .find(|acceptance| acceptance.version == task.requirement_version())
             .map(|acceptance| acceptance.at);
         let latest = task.latest_report();
+        let guarded_title = gate_of
+            .as_deref()
+            .and_then(|gate_id| by_id.get(gate_id))
+            .map(|guarded| guarded.title.clone());
         let meta = FactMeta {
             task,
             stage,
             gate_of: gate_of.clone(),
+            guarded_title,
             running,
             latest,
         };
@@ -468,7 +511,7 @@ pub(crate) fn snapshot(
                 task_id: Some(task_id.to_owned()),
                 title: task.title.clone(),
                 stage,
-                need: need_text(KIND_CONFIRM, &task.title),
+                need: confirm_need(&task.title),
                 body,
                 at,
                 turn,
@@ -491,7 +534,7 @@ pub(crate) fn snapshot(
                     task_id: None,
                     title: proposal.meta.title.clone(),
                     stage: None,
-                    need: need_text(KIND_CONFIRM, &proposal.meta.title),
+                    need: confirm_need(&proposal.meta.title),
                     body,
                     at,
                     turn,
@@ -540,7 +583,7 @@ pub(crate) fn snapshot(
                 task_id: None,
                 title: "Kind 问你".to_owned(),
                 stage: None,
-                need: need_text(KIND_ANSWER, "Kind 问你"),
+                need: "回答 Kind 的问题".to_owned(),
                 body,
                 at,
                 turn,

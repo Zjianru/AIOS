@@ -12,6 +12,7 @@ mod events;
 mod exa;
 mod executor;
 mod input;
+mod ledger;
 mod propose;
 mod protocol;
 mod result_cards;

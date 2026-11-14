@@ -41,7 +41,7 @@ use crate::session_host::ServiceHost;
 pub const TASKS_DB_FILE: &str = "tasks.sqlite";
 
 /// ThinAgent 的只读工具名单（构造期 only 过滤；顺序就是名单顺序）。
-pub const THIN_TOOLS: [&str; 9] = [
+pub const THIN_TOOLS: [&str; 11] = [
     "read",
     "glob",
     "grep",
@@ -51,10 +51,12 @@ pub const THIN_TOOLS: [&str; 9] = [
     "web_fetch",
     "task_report",
     "task_handback",
+    "task_ledger_note",
+    "task_ledger_history",
 ];
 
 /// 写任务的 ThinAgent 工具名单：只读 9 件加 write、edit（D85）。
-pub const THIN_WRITE_TOOLS: [&str; 11] = [
+pub const THIN_WRITE_TOOLS: [&str; 13] = [
     "read",
     "glob",
     "grep",
@@ -66,10 +68,12 @@ pub const THIN_WRITE_TOOLS: [&str; 11] = [
     "web_fetch",
     "task_report",
     "task_handback",
+    "task_ledger_note",
+    "task_ledger_history",
 ];
 
 /// 开了 bash 的写任务：写任务 11 件再加 bash 和后台任务三件（D85）。
-pub const THIN_WRITE_BASH_TOOLS: [&str; 15] = [
+pub const THIN_WRITE_BASH_TOOLS: [&str; 17] = [
     "read",
     "glob",
     "grep",
@@ -85,6 +89,8 @@ pub const THIN_WRITE_BASH_TOOLS: [&str; 15] = [
     "web_fetch",
     "task_report",
     "task_handback",
+    "task_ledger_note",
+    "task_ledger_history",
 ];
 
 /// 默认角色的规则（ThinAgent 的 policy_prompt，追加在系统提示末尾；Kind 不装）。
@@ -105,6 +111,7 @@ If the user only thanks you or acknowledges the result, do not reply.
 You can read, search, load skills, keep a todo list, read the web, and call task_report or task_handback. \
 When the assignment has a write_scope, you also have write and edit, and they only work inside that scope; if what the user asks needs a path outside it, call task_handback instead of trying to get around it. \
 {shell}
+Your ledger tools keep durable notes for a later attempt: task_ledger_note records a rejected approach with its reason, or what the next attempt should do when you stop or hand back; task_ledger_history reads all lines. Use a short topic; a new line with the same kind and topic replaces the old one. Record progress only through task_report, never in the ledger. \
 When the work is done, report ready with the answer and the evidence it rests on. \
 When the requirement or DoD names a specific tool, command, or approach (for example, \"take the date with the date command\"), that approach is part of the task scope: if this task does not have that tool or permission (for example bash is off), report blocked on the first step with exactly what is missing and what the user should do, and put that direct question in question when the user must decide; do not substitute another tool, do not simulate its output, and do not wait until the ready report to mention it. \
 When you cannot continue without a missing tool, permission, file, credential or an answer, report blocked with exactly what is missing and what the user must do; put a direct question in question when only the user can answer it. \
@@ -165,6 +172,7 @@ struct TaskAcceptArgs {
     cwd: Option<String>,
     write_scope: Option<String>,
     worktree: bool,
+    constraints: Vec<String>,
 }
 
 /// T052：task_graph_propose 的一个子任务参数。
@@ -189,6 +197,7 @@ struct TaskGraphArgs {
     dod: String,
     cwd: Option<String>,
     subtasks: Vec<GraphSubtaskArgs>,
+    constraints: Vec<String>,
 }
 
 /// 任务没在跑时接着开一次的方式：普通说话，或重启打断后的接续。
@@ -662,6 +671,11 @@ impl TaskRuntime {
                 lines.push("做完用 task_report 上报。".to_owned());
             }
         }
+        let ledger = self.ledger_section(task);
+        if !ledger.is_empty() {
+            lines.push(String::new());
+            lines.push(ledger);
+        }
         Ok(lines.join(
             "
 ",
@@ -764,6 +778,8 @@ impl TaskRuntime {
         let report = latest_report.map(|report| TaskReadReport {
             state: task_read_report_state(report.state),
             origin: task_read_report_origin(report.origin),
+            summary: report.summary.clone(),
+            question: report.question.clone(),
         });
         let review = latest_report.is_some_and(|report| is_review_report(&task, report));
         let accepted = latest_report.is_some_and(|report| {
@@ -774,6 +790,47 @@ impl TaskRuntime {
             self.running_for(&task.id, attempt_id)
                 .is_some_and(|running| running.host.agent().is_running())
         });
+        let ledger_view =
+            crate::ledger::ledger_for(&self.store, &task).map_err(ServiceError::TaskUnavailable)?;
+        let ledger = crate::protocol::TaskReadLedger {
+            constraints: ledger_view
+                .constraints
+                .iter()
+                .map(|constraint| crate::protocol::TaskReadLedgerConstraint {
+                    text: constraint.text.clone(),
+                    from: constraint.from.clone(),
+                })
+                .collect(),
+            notes: ledger_view
+                .rejected
+                .iter()
+                .chain(ledger_view.next.iter())
+                .map(|note| crate::protocol::TaskReadLedgerNote {
+                    id: note.id.clone(),
+                    kind: match note.kind {
+                        tasks::LedgerNoteKind::Rejected => "rejected".to_owned(),
+                        tasks::LedgerNoteKind::Next => "next".to_owned(),
+                    },
+                    text: note.text.clone(),
+                    attempt: note.attempt,
+                })
+                .collect(),
+            history: ledger_view
+                .history
+                .iter()
+                .map(|note| crate::protocol::TaskReadLedgerHistory {
+                    id: note.id.clone(),
+                    kind: match note.kind {
+                        tasks::LedgerNoteKind::Rejected => "rejected".to_owned(),
+                        tasks::LedgerNoteKind::Next => "next".to_owned(),
+                    },
+                    text: note.text.clone(),
+                    attempt: note.attempt,
+                    closed_at: note.closed_at,
+                    closed_why: note.closed_why.clone(),
+                })
+                .collect(),
+        };
         Ok(TaskReadResponse {
             task: TaskReadHeader {
                 id: task.id.as_str().to_owned(),
@@ -812,6 +869,7 @@ impl TaskRuntime {
             stats: Some(stats),
             fx: Some(fx),
             currency: Some(settings.currency),
+            ledger,
         })
     }
 
@@ -1327,7 +1385,7 @@ impl TaskRuntime {
             };
             if recovery.is_some() {
                 let mut blocks = message.into_message().content;
-                blocks.insert(0, ContentBlock::text(RESUME_NOTE));
+                blocks.insert(0, ContentBlock::text(self.resume_note(&task)));
                 message = UserMessage::new(blocks);
             }
             if let Err(error) = host
@@ -1471,7 +1529,7 @@ impl TaskRuntime {
             .host
             .send_message(
                 &request_id,
-                UserMessage::text(RESUME_NOTE),
+                UserMessage::text(self.resume_note(&task)),
                 DeliveryMode::Steer,
             )
             .await;
@@ -2252,6 +2310,7 @@ impl TaskRuntime {
             },
         );
         self.monitor(task.id.clone(), attempt_id, conversation.clone(), events);
+        let ledger = self.ledger_section(&task);
         let mut assignment = json!({
             "task_id": task.id.as_str(),
             "title": task.title,
@@ -2267,6 +2326,9 @@ impl TaskRuntime {
         let upstream_results = self.upstream_results_for(&task);
         if !upstream_results.is_empty() {
             assignment["upstream_results"] = json!(upstream_results);
+        }
+        if !ledger.is_empty() {
+            assignment["ledger"] = json!(ledger);
         }
         let assignment = assignment.to_string();
         let sent = host
@@ -2409,6 +2471,31 @@ impl TaskRuntime {
         .map_err(|error| error.to_string())
     }
 
+    /// T056.2：给这一次 Attempt 的账本段；空账本为空串。读库失败只记日志、不挡开工。
+    fn ledger_section(&self, task: &Task) -> String {
+        match crate::ledger::ledger_for(&self.store, task) {
+            Ok(view) => view.section(),
+            Err(error) => {
+                eprintln!("任务 {} 的账本读不出来：{error}", task.id);
+                String::new()
+            }
+        }
+    }
+
+    /// T056.2：接续说明（RESUME_NOTE）连同当前账本；空账本只发说明。
+    fn resume_note(&self, task: &Task) -> String {
+        let ledger = self.ledger_section(task);
+        if ledger.is_empty() {
+            RESUME_NOTE.to_owned()
+        } else {
+            format!(
+                "{RESUME_NOTE}
+
+{ledger}"
+            )
+        }
+    }
+
     /// 起跑前的任务包检查：返回解析好的模型配置和凭证；缺项时返回缺的每一项。
     fn prepare(
         &self,
@@ -2436,24 +2523,48 @@ impl TaskRuntime {
         if task.code_mode {
             missing.push(missing_item("CodeMode（只读任务必须为否）"));
         }
-        // 工具名单跟着任务的写入范围和 bash 开关走：只读 9 件，写任务 11 件，
-        // 开了 bash 的写任务 15 件。
-        // T028.4 加 task_handback 之前受理的只读任务冻结的是 8 件；升级后要能接着做，
-        // 不因为少这一件新加的工具就判任务包缺项。
-        let (expected, legacy): (BTreeSet<&str>, Option<BTreeSet<&str>>) =
+        // 工具名单跟着任务的写入范围和 bash 开关走：只读 11 件，写任务 13 件，
+        // 开了 bash 的写任务 17 件。
+        // T056.2 加账本两件之前冻结的旧名单仍要能接着做（T028.4 加 task_handback 同理），
+        // 所以下面按「当前名单」和「历史名单」一起比。
+        let (expected, legacy): (BTreeSet<&str>, Vec<BTreeSet<&str>>) =
             match (task.write_scope.is_some(), task.bash) {
-                (true, true) => (THIN_WRITE_BASH_TOOLS.into_iter().collect(), None),
-                (true, false) => (THIN_WRITE_TOOLS.into_iter().collect(), None),
-                (false, _) => {
-                    let legacy = THIN_TOOLS
-                        .into_iter()
-                        .filter(|name| *name != "task_handback")
-                        .collect();
-                    (THIN_TOOLS.into_iter().collect(), Some(legacy))
-                }
+                (true, true) => (
+                    THIN_WRITE_BASH_TOOLS.into_iter().collect(),
+                    vec![
+                        THIN_WRITE_BASH_TOOLS
+                            .into_iter()
+                            .filter(|name| !name.starts_with("task_ledger_"))
+                            .collect(),
+                    ],
+                ),
+                (true, false) => (
+                    THIN_WRITE_TOOLS.into_iter().collect(),
+                    vec![
+                        THIN_WRITE_TOOLS
+                            .into_iter()
+                            .filter(|name| !name.starts_with("task_ledger_"))
+                            .collect(),
+                    ],
+                ),
+                (false, _) => (
+                    THIN_TOOLS.into_iter().collect(),
+                    vec![
+                        THIN_TOOLS
+                            .into_iter()
+                            .filter(|name| !name.starts_with("task_ledger_"))
+                            .collect(),
+                        THIN_TOOLS
+                            .into_iter()
+                            .filter(|name| {
+                                !name.starts_with("task_ledger_") && *name != "task_handback"
+                            })
+                            .collect(),
+                    ],
+                ),
             };
         let actual: BTreeSet<&str> = task.tools.iter().map(String::as_str).collect();
-        if actual != expected && legacy.as_ref() != Some(&actual) {
+        if actual != expected && !legacy.iter().any(|legacy| legacy == &actual) {
             missing.push(missing_item("工具名单（和写入范围不符）"));
         }
         if task.model.connection.trim().is_empty()
@@ -2461,6 +2572,17 @@ impl TaskRuntime {
             || task.model.effort_wanted.trim().is_empty()
         {
             missing.push(missing_item("模型选择"));
+        }
+        match crate::ledger::ledger_for(&self.store, task) {
+            Ok(view) => {
+                let chars = view.section().chars().count();
+                if chars > 6000 {
+                    missing.push(missing_item(format!(
+                        "账本超出上限（{chars} 字，上限 6000）：任务太大，请拆任务"
+                    )));
+                }
+            }
+            Err(error) => missing.push(missing_item(format!("账本（读不出来：{error}）"))),
         }
         if !missing.is_empty() {
             return Err(missing);
@@ -2522,6 +2644,15 @@ impl TaskRuntime {
             task.id.clone(),
             attempt_id,
         )));
+        extra_tools.push(Arc::new(TaskLedgerNoteTool::new(
+            Arc::clone(self),
+            task.id.clone(),
+            attempt_id,
+        )));
+        extra_tools.push(Arc::new(TaskLedgerHistoryTool::new(
+            Arc::clone(self),
+            task.id.clone(),
+        )));
         let mut agent_config = self.options.config.clone();
         agent_config.tool_keys = crate::root::tool_key_source(&self.options);
         agent_config.write_scope = task.effective_write_scope();
@@ -2574,12 +2705,65 @@ impl TaskRuntime {
                             .turn_ended(&task_id, attempt_id, &conversation)
                             .await;
                     }
+                    Ok(AgentEvent::CompactionEnded {
+                        compaction_id,
+                        error: None,
+                    }) => {
+                        runtime
+                            .steer_ledger_after_compaction(
+                                task_id.clone(),
+                                attempt_id,
+                                conversation.clone(),
+                                compaction_id,
+                            )
+                            .await;
+                    }
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 }
             }
         });
+    }
+
+    /// T056.2：压缩成功后把当前账本 Steer 回会话；空账本不发。
+    async fn steer_ledger_after_compaction(
+        &self,
+        task_id: TaskId,
+        attempt_id: AttemptId,
+        conversation: SessionId,
+        compaction_id: String,
+    ) {
+        let Ok(Some(task)) = self.store.task(&task_id) else {
+            return;
+        };
+        if task.latest_attempt().map(|attempt| attempt.id) != Some(attempt_id) {
+            return;
+        }
+        let ledger = self.ledger_section(&task);
+        if ledger.is_empty() {
+            return;
+        }
+        let host = self
+            .running
+            .lock()
+            .expect("thinagent 表锁被毒化")
+            .get(conversation.as_str())
+            .map(|running| Arc::clone(&running.host));
+        let Some(host) = host else {
+            return;
+        };
+        let request_id = format!("ledger-after-compaction:{compaction_id}");
+        let text = format!(
+            "账本（压缩后重带）
+{ledger}"
+        );
+        if let Err(error) = host
+            .send_message(&request_id, UserMessage::text(text), DeliveryMode::Steer)
+            .await
+        {
+            eprintln!("压缩后账本没送回任务 {task_id}：{error}");
+        }
     }
 
     /// turn 结束但还没上报：照 DSH 合成 waiting；有最后一段回复就带它，没有就提示去问。
@@ -2836,11 +3020,14 @@ impl TaskRuntime {
             cwd,
             write_scope,
             worktree,
+            constraints,
         } = args;
         let conversation = context
             .session_id()
             .ok_or_else(|| ToolFailure::plain("没有会话 id，不能受理任务"))?
             .to_owned();
+        crate::ledger::verify_user_words(&self.data_dir, &conversation, &constraints)
+            .map_err(ToolFailure::plain)?;
         let cwd = match cwd {
             Some(raw) => {
                 let path = PathBuf::from(raw);
@@ -2902,7 +3089,7 @@ impl TaskRuntime {
         let key = format!("{conversation}:{call_id}");
         let (task, created) = self
             .store
-            .create_task_once_with(draft, policy, &key, Self::now())
+            .create_task_once_with_constraints(draft, policy, constraints, &key, Self::now())
             .map_err(|error| ToolFailure::plain(error.to_string()))?;
         self.wake();
         Ok((task, created))
@@ -2921,11 +3108,14 @@ impl TaskRuntime {
             dod,
             cwd,
             subtasks,
+            constraints,
         } = args;
         let conversation = context
             .session_id()
             .ok_or_else(|| ToolFailure::plain("没有会话 id，不能建任务图"))?
             .to_owned();
+        crate::ledger::verify_user_words(&self.data_dir, &conversation, &constraints)
+            .map_err(ToolFailure::plain)?;
         let cwd = match cwd {
             Some(raw) => {
                 let path = PathBuf::from(raw);
@@ -3008,7 +3198,7 @@ impl TaskRuntime {
         // T053：同一个 call id 重试返回同一张图，不建第二张。
         let (root, _created) = self
             .store
-            .create_graph_once(graph, call_id, Self::now())
+            .create_graph_once_with_constraints(graph, constraints, call_id, Self::now())
             .map_err(|error| ToolFailure::plain(error.to_string()))?;
         self.wake();
         Ok((root, count))
@@ -3132,10 +3322,19 @@ impl TaskRuntime {
             }
         };
         // 第一条输入写明新范围：新 Attempt 的模型从这条消息知道现在能写哪里。
-        let note = format!(
+        let mut note = format!(
             "AIOS：用户在 Kind 对话里同意把写入范围改成 {}（要求第 {version} 版）。先看当前的文件再继续；只在这个范围里写，范围外的调 task_handback。",
             note_scope.display()
         );
+        let ledger = self.ledger_section(&updated);
+        if !ledger.is_empty() {
+            note.push_str(
+                "
+
+",
+            );
+            note.push_str(&ledger);
+        }
         let request_id = format!("task-update:{id}:{}", opened.attempt_id);
         let sent = opened
             .host
@@ -3172,11 +3371,18 @@ impl TaskRuntime {
         task_id: &str,
         requirement: String,
         dod: Option<String>,
+        constraints: Option<Vec<String>>,
     ) -> Result<String, String> {
         let id = TaskId::from(task_id);
         let updated = self
             .store
-            .update_requirement(&id, &requirement, dod.as_deref(), Self::now())
+            .update_requirement_with_constraints(
+                &id,
+                &requirement,
+                dod.as_deref(),
+                constraints,
+                Self::now(),
+            )
             .map_err(|error| error.to_string())?;
         let Some(attempt) = updated.latest_attempt().cloned() else {
             return Err(
@@ -3516,6 +3722,57 @@ impl TaskRuntime {
             ))
         }
     }
+
+    /// T056.2：ThinAgent 记账本；回执给在用的条数。
+    fn ledger_note_from_tool(
+        &self,
+        task_id: &TaskId,
+        attempt_id: AttemptId,
+        entries: &[tasks::NewLedgerNote],
+    ) -> Result<String, ToolFailure> {
+        let counts = self
+            .store
+            .add_ledger_notes(task_id, attempt_id, entries, Self::now())
+            .map_err(|error| ToolFailure::plain(error.to_string()))?;
+        Ok(format!(
+            "记下了。账本里现在：否掉的做法 {} 条，下一步 {} 条",
+            counts.rejected, counts.next
+        ))
+    }
+
+    /// T056.2：读全部账本历史（最新在前，不去重、不分页、不注入）。
+    fn ledger_history_from_tool(&self, task_id: &TaskId) -> Result<String, ToolFailure> {
+        let notes = self
+            .store
+            .ledger_notes(task_id)
+            .map_err(|error| ToolFailure::plain(error.to_string()))?;
+        if notes.is_empty() {
+            return Ok("账本还是空的。".to_owned());
+        }
+        let mut lines = vec!["账本历史（最新在前）：".to_owned()];
+        for note in notes {
+            let kind = match note.kind {
+                tasks::LedgerNoteKind::Rejected => "否掉的做法",
+                tasks::LedgerNoteKind::Next => "下一步",
+            };
+            match note.closed_at {
+                Some(_) => lines.push(format!(
+                    "- [{kind}] {}（第 {} 次记；关闭：{}）",
+                    note.text,
+                    note.attempt_id.0,
+                    note.closed_why.unwrap_or_else(|| "已关闭".to_owned())
+                )),
+                None => lines.push(format!(
+                    "- [{kind}] {}（第 {} 次记；在用）",
+                    note.text, note.attempt_id.0
+                )),
+            }
+        }
+        Ok(lines.join(
+            "
+",
+        ))
+    }
 }
 
 impl Drop for TaskRuntime {
@@ -3605,7 +3862,8 @@ impl TaskAcceptTool {
                     "dod": {"type": "string", "description": "How the result will be judged complete."},
                     "cwd": {"type": "string", "description": "Directory to work in; omit to use this conversation's directory. It must already exist."},
                     "write_scope": {"type": "string", "description": "One path this task may write: a file, or a directory and everything under it. Relative paths resolve against cwd. Omit for a read-only investigation."},
-                    "worktree": {"type": "boolean", "description": "Run the task in a new git worktree under the data directory. Only when the user explicitly asks for a worktree. Defaults to false."}
+                    "worktree": {"type": "boolean", "description": "Run the task in a new git worktree under the data directory. Only when the user explicitly asks for a worktree. Defaults to false."},
+                    "constraints": {"type": "array", "items": {"type": "string"}, "description": "The user's hard requirements (must/never rules), each copied verbatim from a user message. Omit when the user stated none. Every string is checked against the originating conversation and the whole call is rejected if one is not verbatim user text."}
                 },
                 "required": ["title", "requirement", "dod"]
             }),
@@ -3673,6 +3931,10 @@ impl Tool for TaskAcceptTool {
                     return ToolResult::error(call.id, ToolFailure::plain("worktree 必须是布尔值"));
                 }
             };
+            let constraints = match parse_constraints(&args) {
+                Ok(constraints) => constraints,
+                Err(failure) => return ToolResult::error(call.id, failure),
+            };
             match self.runtime.accept(
                 context,
                 &call.id,
@@ -3683,6 +3945,7 @@ impl Tool for TaskAcceptTool {
                     cwd,
                     write_scope,
                     worktree,
+                    constraints,
                 },
             ) {
                 Ok((task, true)) => ToolResult::success(
@@ -3725,6 +3988,7 @@ impl TaskGraphProposeTool {
                     "requirement": {"type": "string", "description": "What the whole graph must achieve, in the user's words."},
                     "dod": {"type": "string", "description": "How the whole graph will be judged complete."},
                     "cwd": {"type": "string", "description": "Directory to work in; omit to use this conversation's directory. It must already exist."},
+                    "constraints": {"type": "array", "items": {"type": "string"}, "description": "The user's hard requirements for the whole graph, each copied verbatim from a user message. Omit when none. Checked against the originating conversation; one non-verbatim string rejects the whole call."},
                     "subtasks": {
                         "type": "array",
                         "minItems": 2,
@@ -4078,6 +4342,169 @@ impl Tool for TaskUpdateTool {
 /// ThinAgent 的 task_handback：把超出任务范围、属于别的任务或要改要求/DoD 的话交回 Kind。
 ///
 /// 只 ThinAgent 装；Kind 的工具表里没有它。
+/// T056.2：ThinAgent 记账本（否掉的做法 / 下一步）。
+struct TaskLedgerNoteTool {
+    runtime: Arc<TaskRuntime>,
+    task_id: TaskId,
+    attempt_id: AttemptId,
+    parameters: Value,
+}
+
+impl TaskLedgerNoteTool {
+    fn new(runtime: Arc<TaskRuntime>, task_id: TaskId, attempt_id: AttemptId) -> Self {
+        Self {
+            runtime,
+            task_id,
+            attempt_id,
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "entries": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "kind": {"type": "string", "enum": ["rejected", "next"], "description": "rejected: a path you tried and rejected, with the reason; next: what the next attempt should do when you stop or hand back."},
+                                "topic": {"type": "string", "description": "A short key for this line; a newer line with the same kind and topic replaces the old one."},
+                                "text": {"type": "string", "description": "At most 400 characters; write the fact, not progress."}
+                            },
+                            "required": ["kind", "topic", "text"]
+                        }
+                    }
+                },
+                "required": ["entries"]
+            }),
+        }
+    }
+}
+
+impl Tool for TaskLedgerNoteTool {
+    fn name(&self) -> &str {
+        "task_ledger_note"
+    }
+
+    fn description(&self) -> &str {
+        "Record durable notes in this task's ledger: a rejected approach with its reason, or what the next attempt should do when you stop or hand back. Use a short topic; a new line with the same kind and topic replaces the old one. Do not record progress here: progress comes from task_report. At most 400 characters per line."
+    }
+
+    fn parameters(&self) -> &Value {
+        &self.parameters
+    }
+
+    fn condition(&self) -> ToolCondition {
+        ToolCondition::Always
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: ToolCall,
+        _context: &'a ToolContext,
+    ) -> ToolFuture<'a, ToolResult> {
+        Box::pin(async move {
+            let args = match parse_object(&call.arguments) {
+                Ok(args) => args,
+                Err(failure) => return ToolResult::error(call.id, failure),
+            };
+            let Some(entries) = args.get("entries").and_then(Value::as_array) else {
+                return ToolResult::error(call.id, ToolFailure::plain("entries 必须是数组"));
+            };
+            if entries.is_empty() {
+                return ToolResult::error(call.id, ToolFailure::plain("entries 不能为空"));
+            }
+            let mut parsed = Vec::with_capacity(entries.len());
+            for (index, entry) in entries.iter().enumerate() {
+                let Some(object) = entry.as_object() else {
+                    return ToolResult::error(
+                        call.id,
+                        ToolFailure::plain(format!("entries[{index}] 必须是对象")),
+                    );
+                };
+                let kind = match object.get("kind").and_then(Value::as_str) {
+                    Some("rejected") => tasks::LedgerNoteKind::Rejected,
+                    Some("next") => tasks::LedgerNoteKind::Next,
+                    _ => {
+                        return ToolResult::error(
+                            call.id,
+                            ToolFailure::plain(format!(
+                                "entries[{index}].kind 必须是 rejected 或 next"
+                            )),
+                        );
+                    }
+                };
+                let Some(topic) = string_arg(object, "topic") else {
+                    return ToolResult::error(
+                        call.id,
+                        ToolFailure::plain(format!("entries[{index}].topic 不能为空")),
+                    );
+                };
+                let Some(text) = string_arg(object, "text") else {
+                    return ToolResult::error(
+                        call.id,
+                        ToolFailure::plain(format!("entries[{index}].text 不能为空")),
+                    );
+                };
+                parsed.push(tasks::NewLedgerNote { kind, topic, text });
+            }
+            match self
+                .runtime
+                .ledger_note_from_tool(&self.task_id, self.attempt_id, &parsed)
+            {
+                Ok(text) => ToolResult::success(call.id, text),
+                Err(failure) => ToolResult::error(call.id, failure),
+            }
+        })
+    }
+}
+
+/// T056.2：ThinAgent 读账本全部历史。
+struct TaskLedgerHistoryTool {
+    runtime: Arc<TaskRuntime>,
+    task_id: TaskId,
+    parameters: Value,
+}
+
+impl TaskLedgerHistoryTool {
+    fn new(runtime: Arc<TaskRuntime>, task_id: TaskId) -> Self {
+        Self {
+            runtime,
+            task_id,
+            parameters: json!({"type": "object", "properties": {}}),
+        }
+    }
+}
+
+impl Tool for TaskLedgerHistoryTool {
+    fn name(&self) -> &str {
+        "task_ledger_history"
+    }
+
+    fn description(&self) -> &str {
+        "Read the task's full ledger history, newest first, including closed lines and why they closed. Use it when you need to remember what was already rejected or what earlier attempts meant to do. It is not injected into your prompt."
+    }
+
+    fn parameters(&self) -> &Value {
+        &self.parameters
+    }
+
+    fn condition(&self) -> ToolCondition {
+        ToolCondition::Always
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: ToolCall,
+        _context: &'a ToolContext,
+    ) -> ToolFuture<'a, ToolResult> {
+        Box::pin(async move {
+            match self.runtime.ledger_history_from_tool(&self.task_id) {
+                Ok(text) => ToolResult::success(call.id, text),
+                Err(failure) => ToolResult::error(call.id, failure),
+            }
+        })
+    }
+}
+
 struct TaskHandbackTool {
     runtime: Arc<TaskRuntime>,
     task_id: TaskId,
@@ -4250,6 +4677,27 @@ impl Tool for TaskReportTool {
     }
 }
 
+fn parse_constraints(args: &serde_json::Map<String, Value>) -> Result<Vec<String>, ToolFailure> {
+    match args.get("constraints") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(items)) => {
+            let mut constraints = Vec::with_capacity(items.len());
+            for item in items {
+                let Some(text) = item.as_str() else {
+                    return Err(ToolFailure::plain("constraints 里的项必须是字符串"));
+                };
+                let text = text.trim();
+                if text.is_empty() {
+                    return Err(ToolFailure::plain("constraints 不能含空字符串"));
+                }
+                constraints.push(text.to_owned());
+            }
+            Ok(constraints)
+        }
+        Some(_) => Err(ToolFailure::plain("constraints 必须是字符串数组")),
+    }
+}
+
 fn parse_object(arguments: &str) -> Result<serde_json::Map<String, Value>, ToolFailure> {
     let value: Value = serde_json::from_str(arguments)
         .map_err(|error| ToolFailure::plain(format!("arguments must be a JSON object: {error}")))?;
@@ -4362,6 +4810,7 @@ fn parse_graph_args(args: &serde_json::Map<String, Value>) -> Result<TaskGraphAr
         dod,
         cwd,
         subtasks,
+        constraints: parse_constraints(args)?,
     })
 }
 
@@ -4425,5 +4874,372 @@ mod t049_missing_tool_policy_tests {
     #[test]
     fn bash_on_policy_states_the_same_rule_for_other_missing_tools() {
         assert_missing_tool_rule(&thin_policy(true));
+    }
+}
+
+#[cfg(test)]
+mod t056_ledger_executor_tests {
+    use std::sync::{Arc, Mutex, Weak};
+
+    use model::{DEFAULT_CONTEXT_WINDOW, Effort};
+    use tasks::{NewReport, ReportOrigin, ReportState, TaskPolicy};
+
+    use super::*;
+    use crate::root::RootSessionOptions;
+
+    fn open_runtime() -> (tempfile::TempDir, Arc<TaskRuntime>) {
+        let directory = tempfile::tempdir().unwrap();
+        let options = RootSessionOptions {
+            data_dir: directory.path().to_path_buf(),
+            cwd: directory.path().to_path_buf(),
+            model: model::DeepSeekConfig {
+                provider: "deepseek".to_owned(),
+                base_url: "http://127.0.0.1:1".to_owned(),
+                model: "deepseek-flash".to_owned(),
+                max_tokens: 2048,
+                context_window: DEFAULT_CONTEXT_WINDOW,
+                effort: Effort::new("high"),
+                tool_update: None,
+            },
+            config: agent::AgentConfig::default(),
+            credentials: None,
+            identity: None,
+            model_factory: None,
+            append_hook_factory: None,
+            keyring_changed: None,
+            actions: Arc::new(crate::actions::ActionRegistry::empty()),
+            exa_base_url: None,
+            web_listen: None,
+            task_runtime: None,
+        };
+        let runtime = TaskRuntime::new(&options, Arc::new(Mutex::new(None)), Weak::new()).unwrap();
+        (directory, Arc::new(runtime))
+    }
+
+    fn new_task(directory: &std::path::Path, constraints: Vec<String>) -> tasks::Task {
+        runtime_store_task(directory, constraints, false)
+    }
+
+    fn runtime_store_task(
+        directory: &std::path::Path,
+        constraints: Vec<String>,
+        bash: bool,
+    ) -> tasks::Task {
+        let store = Store::open(directory.join(TASKS_DB_FILE)).unwrap();
+        let writing = bash;
+        let tools: Vec<String> = if writing {
+            THIN_WRITE_TOOLS
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect()
+        } else {
+            THIN_TOOLS.iter().map(|name| (*name).to_owned()).collect()
+        };
+        store
+            .create_task_with_constraints(
+                tasks::NewTask {
+                    title: "账本注入".to_owned(),
+                    requirement: "把事做完".to_owned(),
+                    dod: "有结果".to_owned(),
+                    cwd: directory.to_path_buf(),
+                    conversation: tasks::ConversationId::new("kind-1"),
+                    model: tasks::ModelChoice {
+                        connection: "deepseek".to_owned(),
+                        model: "deepseek-flash".to_owned(),
+                        effort_wanted: "high".to_owned(),
+                    },
+                    tools,
+                },
+                TaskPolicy {
+                    write_scope: writing.then(|| "out.txt".to_owned()),
+                    worktree: false,
+                    bash,
+                },
+                constraints,
+                1_700_000_000_000,
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn continue_package_appends_the_ledger_for_every_cause() {
+        let (directory, runtime) = open_runtime();
+        let store = Store::open(directory.path().join(TASKS_DB_FILE)).unwrap();
+        let task = new_task(directory.path(), vec!["别加新依赖".to_owned()]);
+        let attempt = store.begin_attempt(&task.id, 1).unwrap();
+        store
+            .add_ledger_notes(
+                &task.id,
+                attempt,
+                &[tasks::NewLedgerNote {
+                    kind: tasks::LedgerNoteKind::Next,
+                    topic: "step".to_owned(),
+                    text: "先跑测试".to_owned(),
+                }],
+                2,
+            )
+            .unwrap();
+        let report = store
+            .record_report(
+                &task.id,
+                attempt,
+                NewReport {
+                    state: ReportState::Blocked,
+                    origin: ReportOrigin::Agent,
+                    summary: "缺文件".to_owned(),
+                    question: None,
+                },
+                3,
+            )
+            .unwrap();
+        let task = store.task(&task.id).unwrap().unwrap();
+        let package = runtime
+            .continue_package(&task, &tasks::ContinueCause::AfterReport { report }, None)
+            .unwrap();
+        assert!(package.contains("账本："), "{package}");
+        assert!(package.contains("「别加新依赖」"), "{package}");
+        assert!(package.contains("先跑测试"), "{package}");
+        assert!(package.contains("缺文件"), "{package}");
+    }
+
+    #[test]
+    fn prepare_reports_the_ledger_limit_as_a_blocking_missing_item() {
+        let (directory, runtime) = open_runtime();
+        let long = "要求".repeat(3001);
+        let task = new_task(directory.path(), vec![long]);
+        let Err(missing) = runtime.prepare(&task) else {
+            panic!("超限账本不该通过 prepare");
+        };
+        let text = missing
+            .iter()
+            .map(tasks::MissingItem::as_str)
+            .collect::<Vec<_>>()
+            .join("｜");
+        assert!(text.contains("账本超出上限"), "{text}");
+        assert!(text.contains("任务太大，请拆任务"), "{text}");
+    }
+
+    fn user_session(directory: &std::path::Path) -> (session::SessionId, ToolContext) {
+        let mut log = session::SessionStore::create(directory, directory).unwrap();
+        let id = log.id().clone();
+        log.append(&[session::EventKind::UserMessage {
+            turn: 1,
+            step: 0,
+            message: model::UserMessage::text("改一下，别加新依赖").into_message(),
+        }])
+        .unwrap();
+        let state = Arc::new(tools::ToolSessionState::new(directory, id.as_str()));
+        let context = ToolContext::with_session(directory.to_path_buf(), state);
+        (id, context)
+    }
+
+    #[test]
+    fn accept_and_propose_verify_constraints_against_the_originating_conversation() {
+        let (directory, runtime) = open_runtime();
+        let (_session, context) = user_session(directory.path());
+        *runtime.selection.lock().expect("selection") = Some(session::ModelSelection {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            effort_wanted: "high".to_owned(),
+        });
+        let task = runtime
+            .accept(
+                &context,
+                "call-ok",
+                TaskAcceptArgs {
+                    title: "带约束".to_owned(),
+                    requirement: "把事做完".to_owned(),
+                    dod: "有结果".to_owned(),
+                    cwd: None,
+                    write_scope: None,
+                    worktree: false,
+                    constraints: vec!["别加新依赖".to_owned()],
+                },
+            )
+            .expect("原话约束应通过")
+            .0;
+        assert_eq!(task.current_constraints(), ["别加新依赖"]);
+
+        let error = runtime
+            .accept(
+                &context,
+                "call-bad",
+                TaskAcceptArgs {
+                    title: "伪造".to_owned(),
+                    requirement: "把事做完".to_owned(),
+                    dod: "有结果".to_owned(),
+                    cwd: None,
+                    write_scope: None,
+                    worktree: false,
+                    constraints: vec!["用户没说过".to_owned()],
+                },
+            )
+            .expect_err("非原话必须整次拒");
+        assert!(
+            error.message.contains("约束要用用户原话"),
+            "{}",
+            error.message
+        );
+
+        let graph = TaskGraphArgs {
+            title: "图".to_owned(),
+            requirement: "两步".to_owned(),
+            dod: "都有结果".to_owned(),
+            cwd: None,
+            subtasks: vec![
+                GraphSubtaskArgs {
+                    title: "一".to_owned(),
+                    requirement: "第一步".to_owned(),
+                    dod: "有结果".to_owned(),
+                    write_scope: None,
+                    worktree: false,
+                    after: Vec::new(),
+                    milestone: false,
+                },
+                GraphSubtaskArgs {
+                    title: "二".to_owned(),
+                    requirement: "第二步".to_owned(),
+                    dod: "有结果".to_owned(),
+                    write_scope: None,
+                    worktree: false,
+                    after: Vec::new(),
+                    milestone: false,
+                },
+            ],
+            constraints: vec!["别加新依赖".to_owned()],
+        };
+        let (root, _) = runtime
+            .propose_graph(&context, "graph-ok", graph)
+            .expect("图约束原话应通过");
+        assert_eq!(root.current_constraints(), ["别加新依赖"]);
+    }
+
+    fn tool_context(directory: &std::path::Path) -> ToolContext {
+        let state = Arc::new(tools::ToolSessionState::new(directory, "session-1"));
+        ToolContext::with_session(directory.to_path_buf(), state)
+    }
+
+    async fn run_note(tool: &TaskLedgerNoteTool, args: serde_json::Value) -> ToolResult {
+        tool.execute(
+            ToolCall {
+                id: "call-note".to_owned(),
+                name: "task_ledger_note".to_owned(),
+                arguments: args.to_string(),
+            },
+            &tool_context(std::path::Path::new("/tmp")),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn ledger_note_tool_rejects_bad_kind_long_text_and_ended_attempt() {
+        let (directory, _runtime) = open_runtime();
+        let runtime = TaskRuntime::new(
+            &crate::root::RootSessionOptions {
+                data_dir: directory.path().to_path_buf(),
+                cwd: directory.path().to_path_buf(),
+                model: model::DeepSeekConfig {
+                    provider: "deepseek".to_owned(),
+                    base_url: "http://127.0.0.1:1".to_owned(),
+                    model: "deepseek-flash".to_owned(),
+                    max_tokens: 2048,
+                    context_window: DEFAULT_CONTEXT_WINDOW,
+                    effort: Effort::new("high"),
+                    tool_update: None,
+                },
+                config: agent::AgentConfig::default(),
+                credentials: None,
+                identity: None,
+                model_factory: None,
+                append_hook_factory: None,
+                keyring_changed: None,
+                actions: Arc::new(crate::actions::ActionRegistry::empty()),
+                exa_base_url: None,
+                web_listen: None,
+                task_runtime: None,
+            },
+            Arc::new(Mutex::new(None)),
+            Weak::new(),
+        )
+        .unwrap();
+        let runtime = Arc::new(runtime);
+        let store = Store::open(directory.path().join(TASKS_DB_FILE)).unwrap();
+        let task = new_task(directory.path(), Vec::new());
+        let attempt = store.begin_attempt(&task.id, 1).unwrap();
+        let tool = TaskLedgerNoteTool::new(Arc::clone(&runtime), task.id.clone(), attempt);
+
+        let bad_kind = run_note(
+            &tool,
+            serde_json::json!({"entries":[{"kind":"progress","topic":"x","text":"不算"}]}),
+        )
+        .await;
+        assert!(bad_kind.is_error);
+        assert!(
+            bad_kind.content.contains("rejected 或 next"),
+            "{}",
+            bad_kind.content
+        );
+
+        let too_long = run_note(
+            &tool,
+            serde_json::json!({"entries":[{"kind":"next","topic":"x","text":"长".repeat(401)}]}),
+        )
+        .await;
+        assert!(too_long.is_error);
+        assert!(
+            too_long.content.contains("上限 400"),
+            "{}",
+            too_long.content
+        );
+
+        let ok = run_note(
+            &tool,
+            serde_json::json!({"entries":[
+                {"kind":"rejected","topic":"cache","text":"缓存不可行"},
+                {"kind":"next","topic":"step","text":"先跑测试"}
+            ]}),
+        )
+        .await;
+        assert!(!ok.is_error, "{}", ok.content);
+        assert!(ok.content.contains("否掉的做法 1 条"), "{}", ok.content);
+        assert!(ok.content.contains("下一步 1 条"), "{}", ok.content);
+
+        let history = TaskLedgerHistoryTool::new(Arc::clone(&runtime), task.id.clone())
+            .execute(
+                ToolCall {
+                    id: "call-history".to_owned(),
+                    name: "task_ledger_history".to_owned(),
+                    arguments: "{}".to_owned(),
+                },
+                &tool_context(std::path::Path::new("/tmp")),
+            )
+            .await;
+        assert!(!history.is_error);
+        assert!(
+            history.content.contains("缓存不可行"),
+            "{}",
+            history.content
+        );
+        assert!(history.content.contains("先跑测试"), "{}", history.content);
+
+        store
+            .end_attempt(&task.id, attempt, 2, tasks::AttemptEnd::Stopped)
+            .unwrap();
+        let ended = run_note(
+            &tool,
+            serde_json::json!({"entries":[{"kind":"next","topic":"y","text":"晚了"}]}),
+        )
+        .await;
+        assert!(ended.is_error);
+        assert!(ended.content.contains("已经结束"), "{}", ended.content);
+    }
+
+    #[test]
+    fn resume_note_carries_the_current_ledger() {
+        let (directory, runtime) = open_runtime();
+        let task = new_task(directory.path(), vec!["别加新依赖".to_owned()]);
+        let note = runtime.resume_note(&task);
+        assert!(note.contains(super::RESUME_NOTE), "{note}");
+        assert!(note.contains("「别加新依赖」"), "{note}");
     }
 }

@@ -14,14 +14,12 @@ import { abilities, builtinFlows, flowIndex } from './fixtures/abilities';
 import type { BuiltinFlow } from './fixtures/abilities';
 import { kindContext } from './fixtures/context';
 import type { KindContextFixture } from './fixtures/context';
-import { nowFixture } from './fixtures/now';
-import type { NowFixture } from './fixtures/now';
 import { COMPACTION_SUMMARY, DEMO_SCRIPTS, defaultScript } from './fixtures/kindLive';
 import type { LiveDemo, LiveScript } from './fixtures/kindLive';
 import { DISCOVERED_MODELS, modelSettingsFixture } from './fixtures/settings';
 import type { ConnectionView, ModelRow, ModelSettingsView, Protocol } from './keyring';
-import { board, projectDetail, readDoc, taskDetail } from './selectors';
-import type { BoardColumns, ProjectDetail, ReadDoc, TaskDetail } from './selectors';
+import { projectDetail, readDoc, taskDetail } from './selectors';
+import type { ProjectDetail, ReadDoc, TaskDetail } from './selectors';
 import { NEW_FLOW_DRAFTS, PALETTE_PARTS, SEED_FLOWS, TEMPLATE_OPTIONS, makeStressFlow } from './flows';
 import { artifacts, materials, projects, roles, tasks } from './fixtures/workspace';
 import type { ArtifactFixture, MaterialFixture, ProjectFixture, RoleFixture, TaskFixture } from './fixtures/workspace';
@@ -270,11 +268,6 @@ export async function getKindContext(): Promise<KindContextFixture> {
   return transmit(kindContext);
 }
 
-/** 首页「现在」（§3）：等你决定 / 出了问题 / 在推进 / 本周完成。 */
-export async function getNow(): Promise<NowFixture> {
-  return transmit(nowFixture);
-}
-
 /** 首次使用的 Kind（§四）：提供方 / 三张起手卡片 / 推荐。 */
 /* ───────────────────────── 设置 › 模型与连接（Keyring） ───────────────────────── */
 
@@ -453,11 +446,6 @@ export async function getRead(fileName: string): Promise<ReadDoc | null> {
 /** 项目页（§4.5 里程碑 / §4.6 成果）。 */
 export async function getProject(projectId: string): Promise<ProjectDetail | null> {
   return transmit(projectDetail(projectId));
-}
-
-/** 工作页看板（§5）：排队 / 在做 / 完成（近 7 天）；「等你」列用 getNow 的 decisions。 */
-export async function getBoard(): Promise<BoardColumns> {
-  return transmit(board());
 }
 
 /** 任务页（§4.1–4.5）：站、节点层、账、里程碑。 */

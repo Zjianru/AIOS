@@ -13,6 +13,7 @@ use crate::effect::{
     EffectClaim, EffectHealth, EffectKind, EffectPayload, EffectState, FAILURES_BEFORE_ERROR,
 };
 use crate::id::{AttemptId, BootId, ConversationId, InputId, ReportId, TaskId};
+use crate::ledger::{LedgerNote, LedgerNoteCounts, LedgerNoteKind, NewLedgerNote};
 use crate::task::{
     AcceptBatch, AcceptOutcome, Acceptance, Arrangement, Attempt, AttemptEnd, AttemptTrigger,
     Cancellation, CancellationReason, Confirmation, FrozenPolicy, GateCandidate, GateConclusion,
@@ -22,7 +23,7 @@ use crate::task::{
 };
 
 /// 任务库 schema 版本；比这新的库拒绝打开。
-pub const SCHEMA_VERSION: u64 = 1;
+pub const SCHEMA_VERSION: u64 = 2;
 
 /// kv 表里记 schema 版本的键。
 pub(crate) const SCHEMA_KEY: &str = "schema_version";
@@ -36,6 +37,18 @@ const CREATE_TABLES: &str = "
         PRIMARY KEY (kind, key)
     );
     CREATE INDEX IF NOT EXISTS effect_due ON effect(kind, due, seq);
+    CREATE TABLE IF NOT EXISTS ledger_note (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL,
+        attempt_id INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        topic TEXT NOT NULL,
+        text TEXT NOT NULL,
+        at INTEGER NOT NULL,
+        closed_at INTEGER,
+        closed_why TEXT
+    );
+    CREATE INDEX IF NOT EXISTS ledger_note_task ON ledger_note(task_id, at);
 ";
 
 /// 立即停在库里的结果。
@@ -90,6 +103,7 @@ impl Store {
     }
 
     fn configure(conn: Connection) -> Result<Self, TaskError> {
+        let mut conn = conn;
         let version = stored_schema_version(&conn)?;
         if let Some(version) = version {
             if version > SCHEMA_VERSION {
@@ -98,7 +112,8 @@ impl Store {
                     supported: SCHEMA_VERSION,
                 });
             }
-            if version < SCHEMA_VERSION {
+            // v1 → v2 是账本表迁移；比 v1 更老的库没有迁移路径。
+            if version < 1 {
                 return Err(TaskError::SchemaUnsupported {
                     found: version,
                     supported: SCHEMA_VERSION,
@@ -128,6 +143,29 @@ impl Store {
             )?;
         }
         conn.execute_batch(CREATE_TABLES)?;
+        if version == Some(1) {
+            // T056.2 schema v1→v2：建账本表 + 写版本，一个事务。
+            let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "CREATE TABLE IF NOT EXISTS ledger_note (
+                    id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    attempt_id INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    topic TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    at INTEGER NOT NULL,
+                    closed_at INTEGER,
+                    closed_why TEXT
+                );
+                CREATE INDEX IF NOT EXISTS ledger_note_task ON ledger_note(task_id, at);",
+            )?;
+            transaction.execute(
+                "UPDATE kv SET value = ?1 WHERE key = ?2",
+                params![serde_json::to_string(&SCHEMA_VERSION)?, SCHEMA_KEY],
+            )?;
+            transaction.commit()?;
+        }
         let seq: i64 = conn.query_row("SELECT IFNULL(MAX(seq), 0) FROM effect", [], |row| {
             row.get(0)
         })?;
@@ -135,6 +173,83 @@ impl Store {
             conn: Mutex::new(conn),
             seq: AtomicI64::new(seq),
         })
+    }
+
+    /// T056.2：在当前 Attempt 上记一批叙述条；同 kind+topic 的旧开条先关掉。
+    pub fn add_ledger_notes(
+        &self,
+        task_id: &TaskId,
+        attempt_id: AttemptId,
+        entries: &[NewLedgerNote],
+        now: i64,
+    ) -> Result<LedgerNoteCounts, TaskError> {
+        for entry in entries {
+            if entry.topic.trim().is_empty() {
+                return Err(TaskError::EmptyLedgerTopic);
+            }
+            if entry.text.trim().is_empty() {
+                return Err(TaskError::EmptyLedgerText);
+            }
+            let length = entry.text.chars().count();
+            if length > 400 {
+                return Err(TaskError::LedgerTextTooLong(length));
+            }
+        }
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let task = load_task_required(&transaction, task_id)?;
+        if task.is_gate() {
+            return Err(TaskError::LedgerOnGateTask);
+        }
+        let attempt = task
+            .attempt(attempt_id)
+            .ok_or_else(|| TaskError::AttemptNotFound {
+                task: task_id.to_string(),
+                attempt: attempt_id.0,
+            })?;
+        if attempt.ended_at.is_some() {
+            return Err(TaskError::LedgerAttemptEnded {
+                task: task_id.to_string(),
+                attempt: attempt_id.0,
+            });
+        }
+        for entry in entries {
+            transaction.execute(
+                "UPDATE ledger_note SET closed_at = ?1, closed_why = ?2
+                 WHERE task_id = ?3 AND kind = ?4 AND topic = ?5 AND closed_at IS NULL",
+                params![
+                    now,
+                    "被新的一条替换",
+                    task_id.as_str(),
+                    entry.kind.as_str(),
+                    entry.topic.trim()
+                ],
+            )?;
+            let id = generate_id(&transaction)?;
+            transaction.execute(
+                "INSERT INTO ledger_note
+                    (id, task_id, attempt_id, kind, topic, text, at, closed_at, closed_why)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, NULL)",
+                params![
+                    id,
+                    task_id.as_str(),
+                    i64::try_from(attempt_id.0).unwrap_or(i64::MAX),
+                    entry.kind.as_str(),
+                    entry.topic.trim(),
+                    entry.text.trim(),
+                    now
+                ],
+            )?;
+        }
+        let counts = ledger_note_counts(&transaction, task_id)?;
+        transaction.commit()?;
+        Ok(counts)
+    }
+
+    /// T056.2：这个任务全部叙述条（新的在前，含已关闭的历史）。
+    pub fn ledger_notes(&self, task_id: &TaskId) -> Result<Vec<LedgerNote>, TaskError> {
+        let conn = self.lock()?;
+        ledger_notes_in(&conn, task_id)
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, Connection>, TaskError> {
@@ -157,11 +272,23 @@ impl Store {
         policy: TaskPolicy,
         now: i64,
     ) -> Result<Task, TaskError> {
+        self.create_task_with_constraints(draft, policy, Vec::new(), now)
+    }
+
+    /// T056.2：建任务并把用户原话里的约束放进第一条要求版本。
+    pub fn create_task_with_constraints(
+        &self,
+        draft: NewTask,
+        policy: TaskPolicy,
+        constraints: Vec<String>,
+        now: i64,
+    ) -> Result<Task, TaskError> {
         draft.validate()?;
         let frozen = policy.freeze(&draft.cwd)?;
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let task = self.insert_task_in(&transaction, draft, &frozen, now)?;
+        let task =
+            self.insert_task_in_with_constraints(&transaction, draft, &frozen, constraints, now)?;
         transaction.commit()?;
         Ok(task)
     }
@@ -170,9 +297,19 @@ impl Store {
     ///
     /// 图不在这里开跑：确认卡上点「确认」才把没有 needs 的子任务放进 launch 队列。
     pub fn create_graph(&self, graph: NewGraph, now: i64) -> Result<Task, TaskError> {
+        self.create_graph_with_constraints(graph, Vec::new(), now)
+    }
+
+    /// T056.2：建图并把用户原话里的约束放进总任务的第一条要求版本（子任务只继承不存）。
+    pub fn create_graph_with_constraints(
+        &self,
+        graph: NewGraph,
+        constraints: Vec<String>,
+        now: i64,
+    ) -> Result<Task, TaskError> {
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let root = self.create_graph_in(&transaction, graph, now)?;
+        let root = self.create_graph_in(&transaction, graph, constraints, now)?;
         transaction.commit()?;
         Ok(root)
     }
@@ -181,6 +318,17 @@ impl Store {
     pub fn create_graph_once(
         &self,
         graph: NewGraph,
+        call_id: &str,
+        now: i64,
+    ) -> Result<(Task, bool), TaskError> {
+        self.create_graph_once_with_constraints(graph, Vec::new(), call_id, now)
+    }
+
+    /// T056.2：按 call id 幂等建图，并给总任务第一条要求版本带上约束。
+    pub fn create_graph_once_with_constraints(
+        &self,
+        graph: NewGraph,
+        constraints: Vec<String>,
         call_id: &str,
         now: i64,
     ) -> Result<(Task, bool), TaskError> {
@@ -200,7 +348,7 @@ impl Store {
             transaction.commit()?;
             return Ok((root, false));
         }
-        let root = self.create_graph_in(&transaction, graph, now)?;
+        let root = self.create_graph_in(&transaction, graph, constraints, now)?;
         transaction.execute(
             "INSERT INTO kv (key, value) VALUES (?1, ?2)",
             params![key, root.id.as_str()],
@@ -214,6 +362,7 @@ impl Store {
         &self,
         transaction: &Connection,
         graph: NewGraph,
+        constraints: Vec<String>,
         now: i64,
     ) -> Result<Task, TaskError> {
         graph.root.validate()?;
@@ -244,6 +393,7 @@ impl Store {
                 cancelled: None,
             }),
             None,
+            constraints,
         )?;
         insert_task_row(transaction, &root)?;
         let ids = (0..graph.subtasks.len())
@@ -272,6 +422,7 @@ impl Store {
                 } else {
                     None
                 },
+                Vec::new(),
             )?;
             insert_task_row(transaction, &task)?;
         }
@@ -725,6 +876,18 @@ impl Store {
         accept_key: &str,
         now: i64,
     ) -> Result<(Task, bool), TaskError> {
+        self.create_task_once_with_constraints(draft, policy, Vec::new(), accept_key, now)
+    }
+
+    /// T056.2：幂等建任务，并把用户原话里的约束放进第一条要求版本。
+    pub fn create_task_once_with_constraints(
+        &self,
+        draft: NewTask,
+        policy: TaskPolicy,
+        constraints: Vec<String>,
+        accept_key: &str,
+        now: i64,
+    ) -> Result<(Task, bool), TaskError> {
         draft.validate()?;
         if accept_key.trim().is_empty() {
             return Err(TaskError::EmptyAcceptKey);
@@ -743,7 +906,8 @@ impl Store {
             transaction.commit()?;
             return Ok((task, false));
         }
-        let task = self.insert_task_in(&transaction, draft, &frozen, now)?;
+        let task =
+            self.insert_task_in_with_constraints(&transaction, draft, &frozen, constraints, now)?;
         transaction.execute(
             "INSERT INTO kv (key, value) VALUES (?1, ?2)",
             params![key, task.id.as_str()],
@@ -752,11 +916,12 @@ impl Store {
         Ok((task, true))
     }
 
-    fn insert_task_in(
+    fn insert_task_in_with_constraints(
         &self,
         connection: &Connection,
         draft: NewTask,
         policy: &FrozenPolicy,
+        constraints: Vec<String>,
         now: i64,
     ) -> Result<Task, TaskError> {
         let task = task_row(
@@ -769,6 +934,7 @@ impl Store {
             Vec::new(),
             None,
             None,
+            constraints,
         )?;
         insert_task_row(connection, &task)?;
         self.enqueue_effect_in(
@@ -1439,6 +1605,16 @@ impl Store {
             version: task.requirement_version(),
         });
         save_task(&transaction, &task)?;
+        // T056.2：ready 报告关掉「下一步」叙述条（它意味着这个下一步已经走到了）。
+        if report_state == ReportState::Ready {
+            close_ledger_notes(
+                &transaction,
+                id,
+                Some(LedgerNoteKind::Next),
+                &format!("第 {} 次交了结果", attempt_id.0),
+                now,
+            )?;
+        }
         // T052/T053：ready 报告落库的同一个事务里放出该放的下一站：
         // 普通上游放下游；被把关任务放它的门（只记交接）；门报回时按需再放一次门。
         // 效果表键保证崩溃重放恰好一次。
@@ -1477,6 +1653,7 @@ impl Store {
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load_task_required(&transaction, id)?;
         let acceptance = accept_task(&transaction, &mut task, report_id, now)?;
+        close_ledger_notes(&transaction, id, None, "任务已关闭", now)?;
         save_task(&transaction, &task)?;
         transaction.commit()?;
         Ok(acceptance)
@@ -1498,6 +1675,7 @@ impl Store {
                     let title = task.title.clone();
                     match accept_task(&transaction, &mut task, report_id, now) {
                         Ok(_) => {
+                            close_ledger_notes(&transaction, id, None, "任务已关闭", now)?;
                             save_task(&transaction, &task)?;
                             outcomes.push(AcceptOutcome {
                                 task_id: id.clone(),
@@ -1551,6 +1729,7 @@ impl Store {
         task.write_scope = Some(scope.clone());
         // T054.2：旧版本先回填全文，只改写集的版本照抄上一版要求与 DoD。
         backfill_requirement_text(&mut task);
+        let constraints = task.current_constraints().to_vec();
         let (requirement, dod) = task
             .versions
             .last()
@@ -1562,6 +1741,7 @@ impl Store {
             source: VersionSource::UserAgreed,
             requirement,
             dod,
+            constraints,
         });
         save_task(&transaction, &task)?;
         transaction.commit()?;
@@ -1577,6 +1757,18 @@ impl Store {
         id: &TaskId,
         requirement: &str,
         dod: Option<&str>,
+        now: i64,
+    ) -> Result<Task, TaskError> {
+        self.update_requirement_with_constraints(id, requirement, dod, None, now)
+    }
+
+    /// T056.2：改要求时可选带新的约束；None = 沿用上一版约束。
+    pub fn update_requirement_with_constraints(
+        &self,
+        id: &TaskId,
+        requirement: &str,
+        dod: Option<&str>,
+        constraints: Option<Vec<String>>,
         now: i64,
     ) -> Result<Task, TaskError> {
         let requirement = requirement.trim();
@@ -1604,6 +1796,7 @@ impl Store {
             return Err(TaskError::RequirementUnchanged);
         }
         backfill_requirement_text(&mut task);
+        let constraints = constraints.unwrap_or_else(|| task.current_constraints().to_vec());
         let write_scope = task.write_scope.clone();
         task.versions.push(RequirementVersion {
             write_scope,
@@ -1611,6 +1804,7 @@ impl Store {
             source: VersionSource::UserAgreed,
             requirement: Some(requirement.to_owned()),
             dod: Some(next_dod.clone()),
+            constraints,
         });
         task.requirement = requirement.to_owned();
         task.dod = next_dod;
@@ -1806,6 +2000,7 @@ fn task_row(
     needs: Vec<Need>,
     arrangement: Option<Arrangement>,
     gate: Option<MilestoneGate>,
+    constraints: Vec<String>,
 ) -> Result<Task, TaskError> {
     let versions = vec![RequirementVersion {
         write_scope: policy.write_scope.clone(),
@@ -1813,6 +2008,7 @@ fn task_row(
         source: VersionSource::TaskAccept,
         requirement: Some(draft.requirement.clone()),
         dod: Some(draft.dod.clone()),
+        constraints,
     }];
     let id = match id {
         Some(id) => id,
@@ -2287,6 +2483,95 @@ fn generate_id(connection: &Connection) -> Result<String, TaskError> {
     Ok(id)
 }
 
+/// T056.2：关开着的叙述条；kind=None 关全部（任务接受/关闭）。
+fn close_ledger_notes(
+    connection: &Connection,
+    task_id: &TaskId,
+    kind: Option<LedgerNoteKind>,
+    why: &str,
+    now: i64,
+) -> Result<usize, TaskError> {
+    let changed = match kind {
+        Some(kind) => connection.execute(
+            "UPDATE ledger_note SET closed_at = ?1, closed_why = ?2
+             WHERE task_id = ?3 AND kind = ?4 AND closed_at IS NULL",
+            params![now, why, task_id.as_str(), kind.as_str()],
+        )?,
+        None => connection.execute(
+            "UPDATE ledger_note SET closed_at = ?1, closed_why = ?2
+             WHERE task_id = ?3 AND closed_at IS NULL",
+            params![now, why, task_id.as_str()],
+        )?,
+    };
+    Ok(changed)
+}
+
+fn ledger_notes_in(
+    connection: &Connection,
+    task_id: &TaskId,
+) -> Result<Vec<LedgerNote>, TaskError> {
+    let mut statement = connection.prepare(
+        "SELECT id, task_id, attempt_id, kind, topic, text, at, closed_at, closed_why
+         FROM ledger_note WHERE task_id = ?1 ORDER BY at DESC, id DESC",
+    )?;
+    let rows = statement.query_map(params![task_id.as_str()], |row| {
+        let kind: String = row.get(3)?;
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+            kind,
+            row.get::<_, String>(4)?,
+            row.get::<_, String>(5)?,
+            row.get::<_, i64>(6)?,
+            row.get::<_, Option<i64>>(7)?,
+            row.get::<_, Option<String>>(8)?,
+        ))
+    })?;
+    let mut notes = Vec::new();
+    for row in rows {
+        let (id, task_id, attempt_id, kind, topic, text, at, closed_at, closed_why) = row?;
+        let Some(kind) = LedgerNoteKind::parse(&kind) else {
+            continue;
+        };
+        notes.push(LedgerNote {
+            id,
+            task_id: TaskId::from(task_id),
+            attempt_id: AttemptId(attempt_id.unsigned_abs()),
+            kind,
+            topic,
+            text,
+            at,
+            closed_at,
+            closed_why,
+        });
+    }
+    Ok(notes)
+}
+
+fn ledger_note_counts(
+    connection: &Connection,
+    task_id: &TaskId,
+) -> Result<LedgerNoteCounts, TaskError> {
+    let mut counts = LedgerNoteCounts {
+        rejected: 0,
+        next: 0,
+    };
+    for kind in [LedgerNoteKind::Rejected, LedgerNoteKind::Next] {
+        let count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM ledger_note
+             WHERE task_id = ?1 AND kind = ?2 AND closed_at IS NULL",
+            params![task_id.as_str(), kind.as_str()],
+            |row| row.get(0),
+        )?;
+        match kind {
+            LedgerNoteKind::Rejected => counts.rejected = count.unsigned_abs(),
+            LedgerNoteKind::Next => counts.next = count.unsigned_abs(),
+        }
+    }
+    Ok(counts)
+}
+
 fn load_task(connection: &Connection, id: &TaskId) -> Result<Option<Task>, TaskError> {
     let value: Option<String> = connection
         .query_row(
@@ -2451,3 +2736,7 @@ mod work_tests;
 #[cfg(test)]
 #[path = "accept_many_tests.rs"]
 mod accept_many_tests;
+
+#[cfg(test)]
+#[path = "ledger_tests.rs"]
+mod ledger_tests;

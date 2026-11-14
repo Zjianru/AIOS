@@ -3,6 +3,7 @@ import type { FxInfo } from "./FxInfo";
 import type { ServiceEvent } from "./ServiceEvent";
 import type { SessionStats } from "./SessionStats";
 import type { TaskReadHeader } from "./TaskReadHeader";
+import type { TaskReadLedger } from "./TaskReadLedger";
 
 export type TaskReadResponse = { task: TaskReadHeader, events: Array<ServiceEvent>, lastSeq: number,
 /**
@@ -16,4 +17,8 @@ fx?: FxInfo | null,
 /**
  * 币种（settings.json：usd/cny）。
  */
-currency?: string | null, };
+currency?: string | null,
+/**
+ * T056.2：账本（约束、在用叙述条、历史）；旧任务为空数组，页面不显示。
+ */
+ledger: TaskReadLedger, };

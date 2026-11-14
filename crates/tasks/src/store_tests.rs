@@ -124,7 +124,7 @@ fn refuses_a_database_written_by_a_newer_schema() {
     connection
         .execute(
             "INSERT INTO kv (key, value) VALUES (?1, ?2)",
-            [SCHEMA_KEY, "2"],
+            [SCHEMA_KEY, "3"],
         )
         .unwrap();
     drop(connection);
@@ -132,8 +132,8 @@ fn refuses_a_database_written_by_a_newer_schema() {
     assert!(matches!(
         Store::open(&path),
         Err(TaskError::SchemaTooNew {
-            found: 2,
-            supported: 1
+            found: 3,
+            supported: 2
         })
     ));
 }

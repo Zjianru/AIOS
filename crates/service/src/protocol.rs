@@ -112,6 +112,7 @@ pub enum Call {
 /// 调用的结果（与 Call 一一对应）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "method", rename_all = "kebab-case")]
+#[allow(clippy::large_enum_variant)]
 pub enum Response {
     Send(SendResponse),
     Cancel(CancelResponse),
@@ -410,10 +411,54 @@ pub enum TaskReadReportOrigin {
 }
 
 /// T051：当前 Attempt 最近一份报告的缩略事实；没报告时字段为 None。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 pub struct TaskReadReport {
     pub state: TaskReadReportState,
     pub origin: TaskReadReportOrigin,
+    /// T056.2：最近报告的摘要/问题（账本 UI 的进展和待答从这里读）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
+}
+
+/// T056.2：任务对话页账本块的只读投影；进展/待答不在里面（从 report 读）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskReadLedger {
+    pub constraints: Vec<TaskReadLedgerConstraint>,
+    pub notes: Vec<TaskReadLedgerNote>,
+    pub history: Vec<TaskReadLedgerHistory>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskReadLedgerConstraint {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskReadLedgerNote {
+    pub id: String,
+    pub kind: String,
+    pub text: String,
+    pub attempt: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskReadLedgerHistory {
+    pub id: String,
+    pub kind: String,
+    pub text: String,
+    pub attempt: u64,
+    #[serde(rename = "closedAt")]
+    pub closed_at: i64,
+    #[serde(rename = "closedWhy")]
+    pub closed_why: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -496,6 +541,9 @@ pub struct TaskReadResponse {
     /// 币种（settings.json：usd/cny）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
+    /// T056.2：账本（约束、在用叙述条、历史）；旧任务为空数组，页面不显示。
+    #[serde(default)]
+    pub ledger: TaskReadLedger,
 }
 
 /// T055：读一份工作快照；没有参数（窗口用浏览器本地时间算）。
@@ -1152,7 +1200,7 @@ pub struct ConnectionRevokeResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 12;
+pub const PROTOCOL_VERSION: u64 = 13;
 
 /// 根会话不可用的种类：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
