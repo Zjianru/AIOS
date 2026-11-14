@@ -121,6 +121,15 @@ pub(crate) fn estimate_message(message: &Message) -> u64 {
                 total += tools::estimate_text_tokens(name) as u64;
                 total += tools::estimate_text_tokens(arguments) as u64;
             }
+            ContentBlock::ResultCard {
+                task_id,
+                title,
+                version,
+            } => {
+                total += tools::estimate_text_tokens(&ContentBlock::result_card_text(
+                    task_id, title, *version,
+                )) as u64;
+            }
             ContentBlock::File { name, path, .. } => {
                 total += tools::estimate_text_tokens(name) as u64;
                 total += path

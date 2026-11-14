@@ -13,6 +13,7 @@ import { useKindStore } from './kindStore';
 export function TaskResultCard({ fact }: { fact: TaskResultFact }) {
   const acceptResult = useKindStore((state) => state.acceptTaskResult);
   const judgeGate = useKindStore((state) => state.judgeGate);
+  const modifyTaskResult = useKindStore((state) => state.modifyTaskResult);
   const envelope = useMemo(() => taskResultCardOf(fact), [fact]);
   if (!envelope) return null;
   return (
@@ -22,8 +23,8 @@ export function TaskResultCard({ fact }: { fact: TaskResultFact }) {
         answer: () => {},
         dismiss: () => {},
         acceptResult: (callId, reportId) => acceptResult(callId, reportId),
-        // T054.2 把「要求修改」接到输入框；T054.1 先出按钮，点了不行动。
-        modifyRequirement: () => {},
+        // T054.2：把这张结果卡放进 Kind 输入框（Composer 消费后聚焦）。
+        modifyRequirement: (card) => modifyTaskResult(card),
         judgeGate: (conclusion, note) => judgeGate(envelope.id, conclusion, note),
       }}
     />

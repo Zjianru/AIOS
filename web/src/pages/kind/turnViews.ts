@@ -369,6 +369,8 @@ export interface TurnUserView {
   files: SendAttachmentRef[];
   /** T015.4：这句话是画布里的按钮放进来的（日志块上的 canvas：id + 标题）；没有就是自己写的。 */
   canvas: { id: string; title: string } | null;
+  /** T054.2：这句话带着一张结果卡（「要求修改」放进输入框的卡）。 */
+  resultCard: { taskId: string; title: string; version: number } | null;
 }
 
 /** T028.5：任务对话里说的一句话抄送到 Kind（task-cc:<inputId>）。 */
@@ -654,6 +656,7 @@ export function deriveTurnViews(
     const pastes: string[] = [];
     const files: SendAttachmentRef[] = [];
     let canvas: { id: string; title: string } | null = null;
+    let resultCard: { taskId: string; title: string; version: number } | null = null;
     for (const block of content) {
       if (!block || typeof block !== 'object') continue;
       const typed = block as {
@@ -664,7 +667,24 @@ export function deriveTurnViews(
         attachmentId?: unknown;
         name?: unknown;
         bytes?: unknown;
+        taskId?: unknown;
+        version?: unknown;
+        title?: unknown;
       };
+      // T054.2：结果卡块（用户点「要求修改」带进输入框的那张卡）。
+      if (
+        typed.type === 'result-card' &&
+        typeof typed.taskId === 'string' &&
+        typed.taskId !== '' &&
+        typeof typed.title === 'string'
+      ) {
+        resultCard = {
+          taskId: typed.taskId,
+          title: typed.title,
+          version: typeof typed.version === 'number' ? typed.version : 0,
+        };
+        continue;
+      }
       if (typed.type === 'text') {
         const value = typeof typed.text === 'string' ? typed.text : '';
         // T015.4：画布放进来的那一句不进正文——气泡上画成「来自画布」标记，正文只留打的字。
@@ -686,8 +706,8 @@ export function deriveTurnViews(
       }
     }
     const body = text.join('');
-    if (!body && pastes.length === 0 && files.length === 0 && !canvas) return null;
-    return { text: body, elements: [], pastes, files, canvas };
+    if (!body && pastes.length === 0 && files.length === 0 && !canvas && !resultCard) return null;
+    return { text: body, elements: [], pastes, files, canvas, resultCard };
   };
 
   const textOfToolResult = (message: unknown): string => {

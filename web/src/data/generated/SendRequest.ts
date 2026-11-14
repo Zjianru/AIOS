@@ -2,6 +2,7 @@
 import type { DeliveryMode } from "./DeliveryMode";
 import type { SendAttachment } from "./SendAttachment";
 import type { SendCanvas } from "./SendCanvas";
+import type { SendResultCard } from "./SendResultCard";
 
 /**
  * 发消息（DSH session-controller 的 prompt）。requestId 是幂等键：同一 id 只进一次。
@@ -18,4 +19,8 @@ attachments?: Array<SendAttachment>,
 /**
  * 画布按钮放进输入框的那一句带着画布身份（id + 标题）；用户自己写的不带。
  */
-canvas?: SendCanvas | null, };
+canvas?: SendCanvas | null,
+/**
+ * T054.2：结果卡「要求修改」带进输入框的那张卡（页面从日志块画成卡，模型看一行文字）。
+ */
+resultCard?: SendResultCard | null, };

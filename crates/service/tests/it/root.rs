@@ -297,6 +297,7 @@ async fn durable_rpc_id_is_idempotent_across_restart() {
             pastes: Vec::new(),
             attachments: Vec::new(),
             canvas: None,
+            result_card: None,
         })
         .await;
     assert!(sent.is_ok(), "发送应成功：{sent:?}");
@@ -320,6 +321,7 @@ async fn durable_rpc_id_is_idempotent_across_restart() {
             pastes: Vec::new(),
             attachments: Vec::new(),
             canvas: None,
+            result_card: None,
         })
         .await;
     assert!(duplicate.is_ok(), "重复发送应返回受理回执：{duplicate:?}");
@@ -355,6 +357,7 @@ async fn durable_rpc_id_is_idempotent_across_restart() {
             pastes: Vec::new(),
             attachments: Vec::new(),
             canvas: None,
+            result_card: None,
         })
         .await
         .unwrap();

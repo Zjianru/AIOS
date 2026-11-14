@@ -180,6 +180,8 @@ interface KindState {
       attachments?: { id: string; name: string; bytes: number }[];
       /** ：画布放进来的那一句带着画布身份（id + 标题）。 */
       canvas?: { id: string; title: string };
+      /** T054.2：结果卡「要求修改」带进输入框的那张卡。 */
+      resultCard?: { taskId: string; title: string; version: number };
     },
   ) => Promise<boolean>;
   resend: (turnId: string) => void;
@@ -198,6 +200,10 @@ interface KindState {
     conclusion: 'pass' | 'needs_fix',
     note?: string,
   ) => Promise<void>;
+  /** T054.2：点「要求修改」把结果卡放进 Kind 输入框（Composer 消费后清）。 */
+  pendingResultCard: { taskId: string; title: string; version: number } | null;
+  modifyTaskResult: (card: { taskId: string; title: string; version: number }) => void;
+  clearPendingResultCard: () => void;
   compact: () => void;
   setModel: (model: KindState['model']) => void;
   /** ：从服务刷新会话合计/汇率/币种。 */
@@ -271,6 +277,7 @@ const unsentSends = new Map<
     pastes: string[];
     files: { id: string; name: string; bytes: number }[];
     canvas?: { id: string; title: string };
+    resultCard?: { taskId: string; title: string; version: number };
   }
 >();
 
@@ -288,6 +295,7 @@ function addUnsentView(
   pastes: string[],
   files: { id: string; name: string; bytes: number }[],
   canvas?: { id: string; title: string },
+  resultCard?: { taskId: string; title: string; version: number },
 ): void {
   useKindStore.setState((state) => {
     if (state.views.some((view) => view.id === viewId)) return {};
@@ -296,7 +304,7 @@ function addUnsentView(
       startedAt: null,
       durationMs: null,
       status: 'completed',
-      user: { text, elements: [], pastes, files, canvas: canvas ?? null },
+      user: { text, elements: [], pastes, files, canvas: canvas ?? null, resultCard: resultCard ?? null },
       taskResults: [],
       says: [],
       reasoning: null,
@@ -896,6 +904,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   modelInitialized: false,
   canvasTracks: {},
   drawingCanvas: null,
+  pendingResultCard: null,
   reveal: null,
   revealTurn: (turnId) => set({ reveal: { turnId, at: Date.now() } }),
 
@@ -1039,11 +1048,12 @@ export const useKindStore = create<KindState>()((set, get) => ({
     const pastes = options?.pastes ?? [];
     const files = options?.attachments ?? [];
     const canvas = options?.canvas;
+    const resultCard = options?.resultCard;
     return sendMessage(text, requestId, options).then(
       () => true,
       () => {
-        unsentSends.set(viewId, { requestId, text, pastes, files, canvas });
-        addUnsentView(viewId, text, pastes, files, canvas);
+        unsentSends.set(viewId, { requestId, text, pastes, files, canvas, resultCard });
+        addUnsentView(viewId, text, pastes, files, canvas, resultCard);
         return false;
       },
     );
@@ -1057,6 +1067,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
       pastes: pending.pastes,
       attachments: pending.files,
       canvas: pending.canvas,
+      resultCard: pending.resultCard,
     })
       .then(() => {
         unsentSends.delete(viewId);
@@ -1207,6 +1218,9 @@ export const useKindStore = create<KindState>()((set, get) => ({
       },
     );
   },
+
+  modifyTaskResult: (card) => set({ pendingResultCard: card }),
+  clearPendingResultCard: () => set({ pendingResultCard: null }),
 
   compact: () => {
     // 真实手动压缩；分隔线由 compaction/* 日志事件回填（页面不预览假摘要）。

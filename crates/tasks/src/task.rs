@@ -320,6 +320,11 @@ pub struct RequirementVersion {
     pub write_scope: Option<PathBuf>,
     pub at: i64,
     pub source: VersionSource,
+    /// T054.2：这一版要求（及 DoD）的全文；旧任务行按 None 读，第一次改要求时回填。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requirement: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dod: Option<String>,
 }
 
 /// 一条要求版本是怎么来的。
@@ -615,6 +620,20 @@ impl Task {
     }
 
     /// T054：某份报告是不是被用户接受过（同一报告同版本重复接受幂等）。
+    /// T054.2：按版本号读这一版的要求全文（旧行没文本时 None）。
+    pub fn requirement_of_version(&self, version: u32) -> Option<&str> {
+        self.versions
+            .get(version.saturating_sub(1) as usize)
+            .and_then(|version| version.requirement.as_deref())
+    }
+
+    /// T054.2：按版本号读这一版的 DoD 全文（旧行没文本时 None）。
+    pub fn dod_of_version(&self, version: u32) -> Option<&str> {
+        self.versions
+            .get(version.saturating_sub(1) as usize)
+            .and_then(|version| version.dod.as_deref())
+    }
+
     pub fn acceptance_for(&self, report_id: &ReportId) -> Option<&Acceptance> {
         self.acceptances
             .iter()

@@ -62,8 +62,8 @@ export interface CardHost {
   dismissCard?: () => Promise<void> | void;
   /** 结果卡：接受当前要求版本的结果（由页面向服务发 card-act）；HTTP 失败时 reject，视图恢复按钮。 */
   acceptResult?: (callId: string, reportId?: string) => Promise<void> | void;
-  /** T054：把这张结果卡放进 Kind 输入框（要求修改）；T054.2 接上。 */
-  modifyRequirement?: () => Promise<void> | void;
+  /** T054.2：把这张结果卡放进 Kind 输入框（要求修改）。 */
+  modifyRequirement?: (card: { taskId: string; title: string; version: number }) => void;
   /** T053：门结果卡判定（通过/需修正；需修正带用户原话）；HTTP 失败时 reject。 */
   judgeGate?: (conclusion: 'pass' | 'needs_fix', note?: string) => Promise<void> | void;
 }

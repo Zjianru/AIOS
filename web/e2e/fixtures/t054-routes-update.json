@@ -1,0 +1,24 @@
+{
+  "routes": [
+    {
+      "contains": "再改一点",
+      "file": "t054-kind-update2.jsonl",
+      "paceMs": 50
+    },
+    {
+      "contains": "用户要求修改这张结果卡",
+      "file": "t054-kind-update.jsonl",
+      "paceMs": 50
+    },
+    {
+      "contains": "\"name\":\"task_accept\"",
+      "file": "t054-kind-update-accept.jsonl",
+      "paceMs": 50
+    },
+    {
+      "contains": "\"name\":\"task_report\"",
+      "file": "t054-thin-update.jsonl",
+      "paceMs": 100
+    }
+  ]
+}

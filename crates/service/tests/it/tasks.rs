@@ -549,6 +549,7 @@ fn send(_host: &RootHost, request_id: &str, text: &str) -> SendRequest {
         pastes: Vec::new(),
         attachments: Vec::new(),
         canvas: None,
+        result_card: None,
     }
 }
 
@@ -1159,6 +1160,23 @@ impl Fixture {
         }
     }
 
+    /// T054.2：确认卡场景要产品动作登记表 + 自带 skills（propose_action 才有 update_task_requirement）。
+    async fn new_with_actions() -> Self {
+        let server = MockServer::start().await;
+        let router = Router::new();
+        mount(&server, &router).await;
+        let data = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let host = open_graph_host(&server, data.path(), cwd.path()).await;
+        Self {
+            _server: server,
+            data,
+            cwd,
+            router,
+            host,
+        }
+    }
+
     fn data(&self) -> &Path {
         self.data.path()
     }
@@ -1544,6 +1562,9 @@ const EXPECTED_KIND_POLICY: &str = concat!(
     "\nWhen the user asks to look at something before continuing (for example \"我要先看一眼\", \"我来拍板\", \"过了再…\"), add a read-only milestone step to the graph: set milestone true on that subtask, leave write_scope empty, and make its after point at exactly the one step it checks. Only the user decides on the milestone result card; never judge, pass or fix it yourself.",
     "\nWhen a milestone card comes back needing fixes, call task_continue once for the step it checks and pass the user's words as note; do not dispatch that step again. If the user's words go beyond the original requirement, do not call task_continue: ask the user to change the requirement first.",
     "\nWhen a notice says an upstream task has a new result, call task_continue once for the downstream task it names; do not ask the user and do not dispatch it again: it only checks its existing result against the new upstream result.",
+    "\nWhen the user's message carries a result card and asks for a change, call propose_action once with action update_task_requirement: put the user's own words into the new requirement and change nothing else; widening the write scope still goes through task_update.",
+    "\nIf a message with a result card only asks a question about that result, answer it directly and do not show a card.",
+    "\nAccepting a result is only done by the user on the card: never accept for them and never say it has been accepted.",
 );
 
 /// 装了任务执行者：Kind 第一个请求的 system 以派任务说明结尾。
@@ -1593,6 +1614,7 @@ async fn a_root_session_without_a_task_runtime_has_no_task_policy() {
         pastes: Vec::new(),
         attachments: Vec::new(),
         canvas: None,
+        result_card: None,
     })
     .await
     .expect("发送");
@@ -10676,4 +10698,381 @@ async fn accepting_after_the_gate_passes_closes_gate_task_and_graph() {
     assert_eq!(decision["phase"], "confirmed", "{decision}");
     assert_eq!(store.stage(&downstream.id).unwrap(), Stage::Closed);
     assert_eq!(store.stage(&root.id).unwrap(), Stage::Closed);
+}
+
+/// T054.2：带结果卡发消息 → 模型看到一行文字 → Kind 出 update_task_requirement 确认卡 →
+/// 确认后同一任务开第 2 次 Attempt（RequirementChanged）、版本 2、新结果卡带版本。
+#[tokio::test]
+async fn update_task_requirement_card_round_trip_opens_a_new_attempt() {
+    let fixture = Fixture::new_with_actions().await;
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-report-v1", "ready", "查好了 v1", None));
+    fixture.router.push_thin(crate::common::text_sse("好"));
+    let task = fixture.accept(false).await;
+    let task_id = task.id.as_str().to_owned();
+    let title = task.title.clone();
+    // relay 那一轮的 Kind 请求先回一段备用文字；后面「带结果卡」那轮的脚本按顺序排在它后面，
+    // 回放脚本按请求顺序消费，不用等 Kind 跑完再排。
+    fixture
+        .router
+        .push_kind(crate::common::text_sse("收到第一版结果。"));
+    fixture.router.push_kind(crate::common::tool_use_sse(
+        0,
+        "call-update-skill",
+        "skill",
+        &serde_json::json!({"name": "aios-tasks"}).to_string(),
+    ));
+    let requirement = "找答案；空标题也别丢，用域名加路径当键";
+    let args = serde_json::json!({
+        "title": "改任务要求",
+        "brief": "确认后同一个任务接着做。",
+        "options": [{
+            "id": "confirm",
+            "action": "update_task_requirement",
+            "label": "改任务要求",
+            "details": {
+                "task_id": task_id,
+                "requirement": requirement,
+            }
+        }]
+    })
+    .to_string();
+    fixture.router.push_kind(crate::common::tool_use_sse(
+        1,
+        "call-update-card",
+        "propose_action",
+        &args,
+    ));
+    fixture
+        .router
+        .push_kind(crate::common::text_sse("卡在你上面，确认就开新的一版。"));
+    let (_relay_id, body) = ready_relay(&fixture).await;
+    assert_eq!(body["requirement_version"], 1, "{body}");
+
+    fixture
+        .host
+        .dispatch(Call::Send(SendRequest {
+            request_id: "card-send-1".to_owned(),
+            content: "空标题也别丢，用域名加路径当键".to_owned(),
+            delivery: service::DeliveryMode::FollowUp,
+            pastes: Vec::new(),
+            attachments: Vec::new(),
+            canvas: None,
+            result_card: Some(service::SendResultCard {
+                task_id: task_id.clone(),
+                title: title.clone(),
+                version: 1,
+            }),
+        }))
+        .await
+        .expect("带结果卡发消息");
+    wait_until("Kind 提出改要求卡", || {
+        crate::common::read_root_events(fixture.data())
+            .iter()
+            .any(|event| {
+                matches!(
+                    &event.kind,
+                    session::EventKind::ToolResult { message, meta, .. }
+                        if message.tool_call_id.as_deref() == Some("call-update-card")
+                            && meta.as_ref().is_some_and(|meta| meta.get("card").is_some())
+                )
+            })
+    })
+    .await;
+
+    // 模型收到的请求里有那行文字（排在用户文字前面）。
+    let expected =
+        format!("[用户要求修改这张结果卡：任务 {task_id}「{title}」，第 1 版要求的结果]");
+    let bodies = fixture.router.bodies(false);
+    let saw_line = bodies
+        .iter()
+        .any(|body| body.contains(&expected) && body.contains("空标题也别丢，用域名加路径当键"));
+    assert!(saw_line, "模型请求里要有结果卡那行文字");
+
+    // 新 Attempt 的脚本备好，再点确认。
+    fixture.router.push_thin_for(
+        task_id.as_str(),
+        report_sse(1, "call-report-v2", "ready", "查好了 v2", None),
+    );
+    fixture
+        .router
+        .push_thin_for(task_id.as_str(), crate::common::text_sse("好"));
+    let confirmed = fixture
+        .host
+        .dispatch(Call::CardAct(CardActRequest {
+            call_id: "call-update-card".to_owned(),
+            verb: CardVerb::Confirm,
+            option: Some("confirm".to_owned()),
+            note: None,
+            report_id: None,
+        }))
+        .await
+        .expect("确认改要求");
+    let decision = serde_json::to_value(confirmed).unwrap()["decision"].clone();
+    assert_eq!(decision["phase"], "confirmed", "{decision}");
+
+    wait_until("新 Attempt 开跑", || {
+        tasks_store(fixture.data())
+            .task(&task.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().map(|attempt| attempt.id.0))
+            == Some(2)
+    })
+    .await;
+    let store = tasks_store(fixture.data());
+    let updated = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(updated.requirement_version(), 2);
+    assert_eq!(updated.requirement, requirement);
+    match &updated.latest_attempt().expect("新 Attempt").trigger {
+        tasks::AttemptTrigger::RequirementChanged => {}
+        other => panic!("trigger 是 {other:?}"),
+    }
+    assert_eq!(
+        updated.requirement_of_version(1),
+        Some("找答案"),
+        "第 1 版文本保留"
+    );
+
+    wait_until("第 2 版结果 relay", || {
+        relay_messages(&crate::common::read_root_events(fixture.data()))
+            .iter()
+            .any(|(_, body)| body["requirement_version"] == 2)
+    })
+    .await;
+    let (v2_relay, v2_body) = relay_messages(&crate::common::read_root_events(fixture.data()))
+        .into_iter()
+        .find(|(_, body)| body["requirement_version"] == 2)
+        .expect("第 2 版 relay");
+    assert_eq!(v2_body["task"]["id"], task.id.as_str());
+
+    // 接受第 2 版 → 已关闭；旧接受历史里没有第 1 版（这一轮才第一次接受）。
+    let accepted = accept_result_card(&fixture.host, &v2_relay).await;
+    assert_eq!(accepted["phase"], "confirmed", "{accepted}");
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::Closed);
+    let closed = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(closed.acceptances.len(), 1);
+    assert_eq!(closed.acceptances[0].version, 2);
+}
+
+/// T054.2：已关闭的任务还能再改要求：新版本、同任务新 Attempt、旧接受留在历史。
+#[tokio::test]
+async fn a_closed_task_can_change_requirement_again_and_keeps_old_acceptance() {
+    let fixture = Fixture::new_with_actions().await;
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-report-v1", "ready", "查好了 v1", None));
+    fixture.router.push_thin(crate::common::text_sse("好"));
+    let task = fixture.accept(false).await;
+    let task_id = task.id.as_str().to_owned();
+    // relay 那一轮：备用文字；后面「已关闭后从 Kind 再说一句」那轮：skill + 改要求卡。
+    fixture
+        .router
+        .push_kind(crate::common::text_sse("收到第一版结果。"));
+    fixture.router.push_kind(crate::common::tool_use_sse(
+        0,
+        "call-update-skill-2",
+        "skill",
+        &serde_json::json!({"name": "aios-tasks"}).to_string(),
+    ));
+    let args = serde_json::json!({
+        "title": "改任务要求",
+        "brief": "确认后同一个任务接着做。",
+        "options": [{
+            "id": "confirm",
+            "action": "update_task_requirement",
+            "label": "改任务要求",
+            "details": {
+                "task_id": task_id,
+                "requirement": "再按域名归并一次",
+            }
+        }]
+    })
+    .to_string();
+    fixture.router.push_kind(crate::common::tool_use_sse(
+        1,
+        "call-update-card-2",
+        "propose_action",
+        &args,
+    ));
+    fixture
+        .router
+        .push_kind(crate::common::text_sse("改要求的卡在你上面。"));
+    let (relay_id, _) = ready_relay(&fixture).await;
+    let accepted = accept_result_card(&fixture.host, &relay_id).await;
+    assert_eq!(accepted["phase"], "confirmed", "{accepted}");
+    let store = tasks_store(fixture.data());
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::Closed);
+    let old_acceptance = store.task(&task.id).unwrap().unwrap().acceptances[0].clone();
+    fixture
+        .host
+        .dispatch(Call::Send(send(
+            &fixture.host,
+            "kind-2",
+            "再改一点：按域名归并",
+        )))
+        .await
+        .expect("发送");
+    wait_until("第二张改要求卡", || {
+        crate::common::read_root_events(fixture.data())
+            .iter()
+            .any(|event| {
+                matches!(
+                    &event.kind,
+                    session::EventKind::ToolResult { message, meta, .. }
+                        if message.tool_call_id.as_deref() == Some("call-update-card-2")
+                            && meta.as_ref().is_some_and(|meta| meta.get("card").is_some())
+                )
+            })
+    })
+    .await;
+    fixture.router.push_thin_for(
+        task_id.as_str(),
+        report_sse(1, "call-report-v2", "ready", "按域名归并好了", None),
+    );
+    fixture
+        .router
+        .push_thin_for(task_id.as_str(), crate::common::text_sse("好"));
+    fixture
+        .host
+        .dispatch(Call::CardAct(CardActRequest {
+            call_id: "call-update-card-2".to_owned(),
+            verb: CardVerb::Confirm,
+            option: Some("confirm".to_owned()),
+            note: None,
+            report_id: None,
+        }))
+        .await
+        .expect("确认再改要求");
+    wait_until("第 2 次运行开始", || {
+        tasks_store(fixture.data())
+            .task(&task.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().map(|attempt| attempt.id.0))
+            == Some(2)
+    })
+    .await;
+    let store = tasks_store(fixture.data());
+    let updated = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(updated.requirement_version(), 2);
+    assert_eq!(updated.requirement, "再按域名归并一次");
+    assert_eq!(updated.acceptances, vec![old_acceptance], "旧接受留历史");
+    assert_ne!(store.stage(&task.id).unwrap(), Stage::Closed);
+}
+
+/// T054.2：动作的三种拒绝：在排队、在跑、要求和 DoD 都没变；reconcile 回「要求改过了」。
+#[tokio::test]
+async fn update_task_requirement_action_rejects_queued_running_and_unchanged() {
+    let fixture = Fixture::new().await;
+    let task = fixture.accept(true).await; // pause：launch 还排在队里
+    let registry = service::ActionRegistry::settings(fixture.data().to_path_buf(), None);
+    let action = registry.get("update_task_requirement").expect("动作登记");
+    let events = crate::common::read_root_events(fixture.data());
+    let env = service::ActionEnv {
+        data_dir: fixture.data(),
+        identity: None,
+        events: &events,
+    };
+    let queued = action.describe(
+        &serde_json::json!({"task_id": task.id.as_str(), "requirement": "新要求"}),
+        &env,
+    );
+    assert!(
+        queued
+            .as_ref()
+            .err()
+            .is_some_and(|reason| reason.contains("排队")),
+        "{queued:?}"
+    );
+
+    // 开闸后任务在跑：拒绝。
+    fixture
+        .host
+        .task_runtime()
+        .expect("runtime")
+        .set_pump_paused(false);
+    wait_until("任务开跑", || {
+        tasks_store(fixture.data())
+            .task(&task.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().cloned())
+            .is_some_and(|attempt| attempt.ended_at.is_none())
+    })
+    .await;
+    let events = crate::common::read_root_events(fixture.data());
+    let env = service::ActionEnv {
+        data_dir: fixture.data(),
+        identity: None,
+        events: &events,
+    };
+    let running = action.describe(
+        &serde_json::json!({"task_id": task.id.as_str(), "requirement": "新要求"}),
+        &env,
+    );
+    assert!(
+        running
+            .as_ref()
+            .err()
+            .is_some_and(|reason| reason.contains("还在跑")),
+        "{running:?}"
+    );
+}
+
+/// T054.2：动作的 reconcile 在卡上「改前」已经不符时回固定原因；要求和 DoD 都没变也被拒。
+#[tokio::test]
+async fn update_task_requirement_reconcile_refuses_after_a_change() {
+    let fixture = Fixture::new_with_actions().await;
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-report-v1", "ready", "查好了 v1", None));
+    fixture.router.push_thin(crate::common::text_sse("好"));
+    let task = fixture.accept(false).await;
+    let (relay_id, _) = ready_relay(&fixture).await;
+    let _ = relay_id;
+    let registry = service::ActionRegistry::settings(fixture.data().to_path_buf(), None);
+    let action = registry.get("update_task_requirement").expect("动作登记");
+    let events = crate::common::read_root_events(fixture.data());
+    let env = service::ActionEnv {
+        data_dir: fixture.data(),
+        identity: None,
+        events: &events,
+    };
+    let task_id = task.id.as_str().to_owned();
+
+    let details = serde_json::json!({
+        "task_id": task_id,
+        "requirement": "第一版之外的第二个要求",
+    });
+    let facts = action.describe(&details, &env).expect("能出卡");
+    assert!(
+        facts[1].value.contains("第 1 版 → 第 2 版"),
+        "{}",
+        facts[1].value
+    );
+    // 要求和 DoD 都没变：describe 拒绝。
+    let unchanged = action.describe(
+        &serde_json::json!({"task_id": task_id, "requirement": "找答案"}),
+        &env,
+    );
+    assert!(
+        unchanged
+            .as_ref()
+            .err()
+            .is_some_and(|reason| reason.contains("都没变")),
+        "{unchanged:?}"
+    );
+
+    // 有人先把要求改成了别的（例如另一张卡先确认）：这张卡再确认要回固定原因。
+    let store = tasks_store(fixture.data());
+    store
+        .update_requirement(&task.id, "别人先改成的第三版要求", None, 9_000)
+        .expect("先改要求");
+    let refused = action.reconcile(&details, &facts, &env);
+    assert_eq!(
+        refused.err().as_deref(),
+        Some("这个任务的要求已经改过了，这张卡是按改之前写的")
+    );
 }

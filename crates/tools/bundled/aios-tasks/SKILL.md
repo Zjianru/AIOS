@@ -43,6 +43,16 @@ If the user's words go beyond the original requirement (a new scope, another goa
 
 When a notice says an upstream task has a new result and names a downstream task, call `task_continue` once for that downstream task. It keeps its original requirement and write scope and checks its existing result against the new upstream result; the user is not asked. Do not dispatch it again and do not change its requirement.
 
+## Changing a task's requirement
+
+When the user's message carries a result card and asks for a change, call `propose_action` once with one option:
+
+- `update_task_requirement`: `details` is `{ "task_id": "<the card's task id>", "requirement": "<the whole new requirement>", "dod": "<optional new dod>" }`. Write the user's own words into the new requirement and keep the rest of the original requirement; change nothing else. Load `aios-tasks` first.
+- Label the option "改任务要求". The card fills in the before → after and version lines; do not write those yourself.
+- After the user confirms, the same task starts a new Attempt (version N+1); the old acceptance stays in history.
+- If the message only asks a question about the result, answer it directly and do not show a card.
+- Accepting a result is only done by the user on the card: never accept for them and never say it has been accepted.
+
 ## Stop now
 
 Call `task_stop` once with `{"task_id": "<the id task_accept returned>", "mode": "now"}`.

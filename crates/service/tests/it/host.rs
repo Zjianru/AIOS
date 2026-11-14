@@ -118,6 +118,7 @@ fn send_request(request_id: &str, text: &str) -> SendRequest {
         pastes: Vec::new(),
         attachments: Vec::new(),
         canvas: None,
+        result_card: None,
     }
 }
 

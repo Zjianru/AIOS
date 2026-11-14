@@ -37,7 +37,9 @@ async function sendKind(page: Page, text: string) {
 interface TaskRow {
   id: string;
   title: string;
+  requirement?: string;
   acceptances?: { version: number; report_id: string }[];
+  versions?: { requirement?: string }[];
   reports?: { id: string; state: string }[];
   verdicts?: unknown[];
 }
@@ -264,6 +266,155 @@ test('有门任务：判通过前没有接受；通过后出接受，接受后�
     expect(guarded.acceptances?.length).toBe(1);
     expect(downstream.acceptances?.length).toBe(1);
     expect(gate.verdicts?.length).toBe(1);
+  } finally {
+    await fixture.close();
+  }
+});
+
+
+test('写任务：点「要求修改」→ 卡进输入框 → 带一句话发出去 → Kind 出改要求确认卡 → 确认后第 2 版要求的结果卡，刷新还在', async ({
+  page,
+}) => {
+  test.setTimeout(240_000);
+  const fixture = await startKernelFixture({ t054: 'update' });
+  try {
+    await page.goto(urlOf(fixture));
+    await sendKind(page, '把 hello.txt 的判重改成按 url');
+
+    // 第一版结果卡：待你核，接受/要求修改两个按钮。
+    const first = reviewCard(page);
+    await expect(first).toBeVisible({ timeout: 60_000 });
+    await expect(first.locator('[data-kind="task-accept"]')).toBeVisible();
+    const modify = first.locator('[data-kind="task-modify-requirement"]');
+    await expect(modify).toBeVisible();
+    await expect(first).not.toContainText('第 1 版要求');
+
+    // 点「要求修改」：卡进输入框，占位话变了，焦点在输入框。
+    await modify.click();
+    const composerCard = page.locator('[data-kind="composer"] [data-kind="result-card-chip"]');
+    await expect(composerCard).toBeVisible();
+    await expect(composerCard).toContainText('第 1 版的结果');
+    const input = page.locator('[data-kind="composer-input"]');
+    await expect(input).toHaveAttribute(
+      'placeholder',
+      '要改什么？Kind 会按你说的出一版新要求给你确认',
+    );
+    await input.fill('标题也拿不到的别丢，用域名加路径当键');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+
+    // 发出去以后气泡上还画着这张卡。
+    await expect(
+      page.locator('[data-kind="user-message-row"] [data-kind="result-card-chip"]').last(),
+    ).toContainText('第 1 版的结果');
+
+    // Kind 出改要求确认卡：要求一行（改前 → 改后）、版本一行（第 1 版 → 第 2 版）。
+    const confirm = page.locator('[data-kind="confirm-card"]').last();
+    await expect(confirm).toBeVisible({ timeout: 60_000 });
+    const facts = confirm.locator('[data-kind="confirm-fact"]');
+    await expect(facts.nth(0)).toContainText('把 hello.txt 里按整条链接判重的写法改成按 url');
+    await expect(facts.nth(0)).toContainText('标题也拿不到的别丢，用域名加路径当键');
+    await expect(facts.nth(1)).toContainText('第 1 版 → 第 2 版');
+    await confirm.locator('[data-action="card-option"]').first().click();
+    await confirm.locator('[data-action="card-confirm"]').click();
+    await expect(confirm).toHaveAttribute('data-state', 'done', { timeout: 40_000 });
+
+    // 第 2 版要求的结果卡出现；旧卡不再有接受按钮，标题带「· 第 2 版要求」。
+    const second = lastResultCard(page, WRITE_CARD_TITLE);
+    await expect(second).toContainText('第 2 版要求', { timeout: 60_000 });
+    await expect(second).toHaveAttribute('data-state', 'review', { timeout: 60_000 });
+    await expect(second.locator('[data-kind="task-accept"]')).toBeVisible();
+    await expect(second).toContainText('空标题也不丢了');
+    const oldCard = resultCards(page, WRITE_CARD_TITLE).first();
+    await expect(oldCard.locator('[data-kind="task-accept"]')).toHaveCount(0);
+    await expect(oldCard.locator('[data-kind="task-modify-requirement"]')).toHaveCount(0);
+
+    // DB：第 2 版文本进了版本历史，第 1 版原文还在。
+    await expect
+      .poll(() => (taskOf(fixture, WRITE_TITLE).versions ?? []).length, { timeout: 30_000 })
+      .toBe(2);
+    const task = taskOf(fixture, WRITE_TITLE);
+    expect(task.versions?.[0]?.requirement).toContain('把 hello.txt 里按整条链接判重');
+    expect(task.versions?.[1]?.requirement).toContain('标题也拿不到的别丢，用域名加路径当键');
+    expect(task.requirement).toContain('标题也拿不到的别丢，用域名加路径当键');
+
+    // 刷新：两张卡都还在，第 2 版仍在，输入框里没有残留的卡。
+    await page.reload();
+    await expect(lastResultCard(page, WRITE_CARD_TITLE)).toContainText('第 2 版要求', {
+      timeout: 60_000,
+    });
+    await expect(
+      lastResultCard(page, WRITE_CARD_TITLE).locator('[data-kind="task-accept"]'),
+    ).toBeVisible();
+    await expect(page.locator('[data-kind="composer"] [data-kind="result-card-chip"]')).toHaveCount(0);
+
+    // 接受第 2 版：你接受了 · 时间 / 任务已关闭。
+    await lastResultCard(page, WRITE_CARD_TITLE).locator('[data-kind="task-accept"]').click();
+    await expect(lastResultCard(page, WRITE_CARD_TITLE)).toContainText('你接受了', {
+      timeout: 40_000,
+    });
+    await expect(lastResultCard(page, WRITE_CARD_TITLE)).toContainText('任务已关闭；要再改，跟 Kind 说');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('已关闭的任务再改要求：卡上没有按钮也从 Kind 说一句，出同样的确认卡；旧接受留历史', async ({
+  page,
+}) => {
+  test.setTimeout(300_000);
+  const fixture = await startKernelFixture({ t054: 'update' });
+  try {
+    await page.goto(urlOf(fixture));
+    await sendKind(page, '把 hello.txt 的判重改成按 url');
+
+    // 先改一版：要求修改 → 带一句发出去 → 确认 → 第 2 版结果卡。
+    const first = reviewCard(page);
+    await expect(first).toBeVisible({ timeout: 60_000 });
+    await first.locator('[data-kind="task-modify-requirement"]').click();
+    const input = page.locator('[data-kind="composer-input"]');
+    await input.fill('标题也拿不到的别丢，用域名加路径当键');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    const updateConfirm = page.locator('[data-kind="confirm-card"]').last();
+    await expect(updateConfirm).toBeVisible({ timeout: 60_000 });
+    await updateConfirm.locator('[data-action="card-option"]').first().click();
+    await updateConfirm.locator('[data-action="card-confirm"]').click();
+    await expect(updateConfirm).toHaveAttribute('data-state', 'done', { timeout: 40_000 });
+    const second = lastResultCard(page, WRITE_CARD_TITLE);
+    await expect(second).toContainText('第 2 版要求', { timeout: 60_000 });
+    await expect(second).toHaveAttribute('data-state', 'review', { timeout: 60_000 });
+
+    // 接受第 2 版：已关闭，卡上不再有接受/要求修改。
+    await second.locator('[data-kind="task-accept"]').click();
+    await expect(second).toContainText('你接受了', { timeout: 40_000 });
+    await expect(second.locator('[data-kind="task-accept"]')).toHaveCount(0);
+    await expect(second.locator('[data-kind="task-modify-requirement"]')).toHaveCount(0);
+    expect(taskOf(fixture, WRITE_TITLE).acceptances).toHaveLength(1);
+
+    // 已关闭卡上没有按钮：跟 Kind 说一句再改一点，Kind 仍然出确认卡。
+    await page.getByPlaceholder('和 Kind 说…').fill('再改一点：按域名归并');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    const confirm = page.locator('[data-kind="confirm-card"]').last();
+    await expect(confirm).toBeVisible({ timeout: 60_000 });
+    const facts = confirm.locator('[data-kind="confirm-fact"]');
+    await expect(facts.nth(1)).toContainText('第 2 版 → 第 3 版');
+    await confirm.locator('[data-action="card-option"]').first().click();
+    await confirm.locator('[data-action="card-confirm"]').click();
+    await expect(confirm).toHaveAttribute('data-state', 'done', { timeout: 40_000 });
+
+    const third = lastResultCard(page, WRITE_CARD_TITLE);
+    await expect(third).toContainText('第 3 版要求', { timeout: 60_000 });
+    await expect(third).toHaveAttribute('data-state', 'review', { timeout: 60_000 });
+    await expect(third.locator('[data-kind="task-accept"]')).toBeVisible();
+    await expect(third).toContainText('按域名归并好了');
+
+    await expect
+      .poll(() => (taskOf(fixture, WRITE_TITLE).versions ?? []).length, { timeout: 30_000 })
+      .toBe(3);
+    const task = taskOf(fixture, WRITE_TITLE);
+    expect(task.acceptances).toHaveLength(1);
+    expect(task.acceptances?.[0]?.version).toBe(2);
+    expect(task.requirement).toContain('按域名归并');
+    expect(task.versions?.[0]?.requirement).toContain('把 hello.txt 里按整条链接判重');
   } finally {
     await fixture.close();
   }

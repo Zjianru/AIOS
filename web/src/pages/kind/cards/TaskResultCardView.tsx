@@ -307,7 +307,13 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
             <button
               type="button"
               data-kind="task-modify-requirement"
-              onClick={() => host.modifyRequirement?.()}
+              onClick={() =>
+                host.modifyRequirement?.({
+                  taskId: slots.taskId,
+                  title: slots.title,
+                  version: slots.reportVersion,
+                })
+              }
               className="rounded-btn border border-line-2 px-3 py-1 text-2 text-ink-2 transition-colors hover:bg-hover hover:text-ink"
             >
               要求修改

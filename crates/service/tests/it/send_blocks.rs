@@ -20,6 +20,7 @@ fn request(content: &str) -> SendRequest {
         pastes: Vec::new(),
         attachments: Vec::new(),
         canvas: None,
+        result_card: None,
     }
 }
 

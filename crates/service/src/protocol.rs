@@ -180,6 +180,23 @@ pub struct SendRequest {
     /// 画布按钮放进输入框的那一句带着画布身份（id + 标题）；用户自己写的不带。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub canvas: Option<SendCanvas>,
+    /// T054.2：结果卡「要求修改」带进输入框的那张卡（页面从日志块画成卡，模型看一行文字）。
+    #[serde(
+        default,
+        rename = "resultCard",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub result_card: Option<SendResultCard>,
+}
+
+/// T054.2：随消息带进 Kind 输入框的一张任务结果卡。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct SendResultCard {
+    #[serde(rename = "taskId")]
+    pub task_id: String,
+    pub title: String,
+    /// 这张卡是哪一版要求的结果（1 起）。
+    pub version: u32,
 }
 
 /// 发送消息时引用的一个附件（服务端解析成只读副本路径）。
@@ -1070,6 +1087,8 @@ pub struct ConnectionRevokeResponse {
 ///   新错误码 settings/unreadable（码表 16）。全是只增字段/值，旧页忽略。
 /// - 9：status 带会话的 cwd（页面把工作过程里的路径显示成相对路径）；
 ///   确认卡的 card-act 操作与 card/decision 事件也是只增的，跟着这个版本一起发
+/// - 11：send 加 resultCard（结果卡「要求修改」进 Kind 输入框；消息内容块加 result-card，
+///   投给模型是一行「用户要求修改这张结果卡：任务 <id>「标题」，第 N 版要求的结果」）
 ///   （旧页不会发 card-act；旧服务读到这个操作按 request/invalid-json 拒绝）。
 ///   Exa 凭证的四个操作（exa-key、exa-key-save、exa-key-check、exa-key-delete）和
 ///   exa/no-key、exa/invalid-key 两个错误码同属只增面，也随这个版本发。
@@ -1079,7 +1098,7 @@ pub struct ConnectionRevokeResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 10;
+pub const PROTOCOL_VERSION: u64 = 11;
 
 /// 根会话不可用的种类：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

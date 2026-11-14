@@ -9,6 +9,7 @@ mod resume_task;
 mod select_model;
 mod set_paused;
 mod start_task_graph;
+mod update_task_requirement;
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -117,8 +118,11 @@ impl ActionRegistry {
             data_dir.clone(),
         )));
         registry.register(Arc::new(start_task_graph::StartTaskGraphAction::new(
-            data_dir,
+            data_dir.clone(),
         )));
+        registry.register(Arc::new(
+            update_task_requirement::UpdateTaskRequirementAction::new(data_dir),
+        ));
         registry
     }
 

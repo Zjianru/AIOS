@@ -132,6 +132,15 @@ pub enum TaskError {
     NotMilestoneGate,
     #[error("这张任务图已经取消了")]
     GraphCancelled,
+    /// T054.2：这一轮还在跑，不能改要求。
+    #[error("任务这一轮还在跑；等它结束再改要求")]
+    RequirementWhileRunning,
+    /// T054.2：任务还在排队（launch 还没起跑），不能改要求。
+    #[error("任务还在排队；等它开跑或停下再改要求")]
+    RequirementWhileQueued,
+    /// T054.2：新要求和 DoD 都没变。
+    #[error("要求和 DoD 都没变，不用改")]
+    RequirementUnchanged,
     #[error("门的最近报告不是这份，或者候选已经变了")]
     GateReportChanged,
 }

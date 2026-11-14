@@ -167,6 +167,15 @@ export interface SendOptions {
   attachments?: SendAttachmentRef[];
   /** T015.4：画布按钮放进输入框的那一句带着画布身份（id + 标题）；自己写的不带。 */
   canvas?: { id: string; title: string };
+  /** T054.2：结果卡「要求修改」带进输入框的那张卡。 */
+  resultCard?: SendResultCardRef;
+}
+
+/** T054.2：随消息带进 Kind 输入框的结果卡（任务 id + 标题 + 要求版本）。 */
+export interface SendResultCardRef {
+  taskId: string;
+  title: string;
+  version: number;
 }
 
 /** T013.7：把一段文字文件存进附件仓库（base64）；二进制会拒收。 */
@@ -200,6 +209,7 @@ export async function sendMessage(
     attachments: options.attachments ?? [],
     // 没有标记就不带这个字段（服务端缺省就是用户自己写的）。
     ...(options.canvas ? { canvas: options.canvas } : {}),
+    ...(options.resultCard ? { resultCard: options.resultCard } : {}),
   });
 }
 

@@ -7,7 +7,7 @@ use rusqlite::params;
 
 use super::Store;
 use crate::{
-    Acceptance, AttemptEnd, ConversationId, ModelChoice, NewReport, NewTask, ReportId,
+    Acceptance, AttemptEnd, ConversationId, EffectKind, ModelChoice, NewReport, NewTask, ReportId,
     ReportOrigin, ReportState, RequirementVersion, Stage, TaskError, TaskPolicy, VersionSource,
     Worktree,
 };
@@ -82,6 +82,8 @@ fn task_accept_freezes_the_write_scope_bash_and_worktree() {
             write_scope: Some(scope),
             at: T0,
             source: VersionSource::TaskAccept,
+            requirement: Some("把重复判断改成按 url".to_owned()),
+            dod: Some("同一个 url 只留一条".to_owned()),
         }]
     );
     assert_eq!(store.task(&task.id).unwrap(), Some(task));
@@ -102,6 +104,8 @@ fn a_task_without_a_scope_is_read_only_and_gets_a_first_version() {
             write_scope: None,
             at: T0,
             source: VersionSource::TaskAccept,
+            requirement: Some("把重复判断改成按 url".to_owned()),
+            dod: Some("同一个 url 只留一条".to_owned()),
         }]
     );
 
@@ -172,11 +176,15 @@ fn task_update_appends_a_requirement_version_and_moves_the_scope() {
                 write_scope: Some(cwd.join("notes")),
                 at: T0,
                 source: VersionSource::TaskAccept,
+                requirement: Some("把重复判断改成按 url".to_owned()),
+                dod: Some("同一个 url 只留一条".to_owned()),
             },
             RequirementVersion {
                 write_scope: Some(cwd.join("rank")),
                 at: T0 + 1,
                 source: VersionSource::UserAgreed,
+                requirement: Some("把重复判断改成按 url".to_owned()),
+                dod: Some("同一个 url 只留一条".to_owned()),
             },
         ]
     );
@@ -537,11 +545,13 @@ fn old_rows_with_a_single_acceptance_read_it_as_the_first_history_item() {
     let task = store
         .create_task_with(draft(&cwd), policy(Some("notes")), T0)
         .unwrap();
-    let attempt = store.begin_attempt(&task.id, T0 + 1).unwrap();
+    let claim = store.claim_effect(EffectKind::Launch, T0 + 1).unwrap();
+    store.complete_effect(&claim.unwrap()).unwrap();
+    let attempt = store.begin_attempt(&task.id, T0 + 2).unwrap();
     let report = store
-        .record_report(&task.id, attempt, ready_report(), T0 + 2)
+        .record_report(&task.id, attempt, ready_report(), T0 + 3)
         .unwrap();
-    let acceptance = store.accept(&task.id, &report, T0 + 3).unwrap();
+    let acceptance = store.accept(&task.id, &report, T0 + 4).unwrap();
 
     {
         let conn = store.conn.lock().unwrap();
@@ -569,4 +579,199 @@ fn old_rows_with_a_single_acceptance_read_it_as_the_first_history_item() {
     let loaded = store.task(&task.id).unwrap().unwrap();
     assert_eq!(loaded.acceptances, vec![acceptance]);
     assert_eq!(store.stage(&task.id).unwrap(), Stage::Closed);
+}
+
+#[test]
+fn requirement_versions_keep_their_full_text() {
+    let (_directory, store) = open_store();
+    let (_cwd_directory, cwd) = task_cwd();
+    let task = store
+        .create_task_with(draft(&cwd), policy(Some("notes")), T0)
+        .unwrap();
+    // 新建任务的第一版就带全文。
+    assert_eq!(task.requirement_of_version(1), Some("把重复判断改成按 url"));
+    assert_eq!(task.dod_of_version(1), Some("同一个 url 只留一条"));
+
+    // 先起跑再结束，改要求才不被「排队/在跑」拒。
+    let claim = store.claim_effect(EffectKind::Launch, T0 + 1).unwrap();
+    store.complete_effect(&claim.unwrap()).unwrap();
+    let attempt = store.begin_attempt(&task.id, T0 + 2).unwrap();
+    store
+        .record_report(&task.id, attempt, ready_report(), T0 + 2)
+        .unwrap();
+    store
+        .end_attempt(&task.id, attempt, T0 + 3, AttemptEnd::Reported)
+        .unwrap();
+    let updated = store
+        .update_requirement(
+            &task.id,
+            "再按域名归并一次",
+            Some("同一域名只留第一条"),
+            T0 + 4,
+        )
+        .unwrap();
+    assert_eq!(updated.requirement, "再按域名归并一次");
+    assert_eq!(updated.dod, "同一域名只留第一条");
+    assert_eq!(updated.requirement_version(), 2);
+    assert_eq!(
+        updated.requirement_of_version(1),
+        Some("把重复判断改成按 url"),
+        "旧版本的文本不被新文本覆盖"
+    );
+    assert_eq!(updated.requirement_of_version(2), Some("再按域名归并一次"));
+    assert_eq!(updated.versions[1].source, VersionSource::UserAgreed);
+    assert_eq!(
+        updated.versions[1].write_scope.as_deref(),
+        Some(cwd.join("notes").as_path()),
+        "只改要求不改写集"
+    );
+}
+
+#[test]
+fn update_requirement_from_a_closed_task_keeps_the_old_acceptance() {
+    let (_directory, store) = open_store();
+    let (_cwd_directory, cwd) = task_cwd();
+    let task = store
+        .create_task_with(draft(&cwd), policy(Some("notes")), T0)
+        .unwrap();
+    let claim = store.claim_effect(EffectKind::Launch, T0 + 1).unwrap();
+    store.complete_effect(&claim.unwrap()).unwrap();
+    let attempt = store.begin_attempt(&task.id, T0 + 2).unwrap();
+    let report = store
+        .record_report(&task.id, attempt, ready_report(), T0 + 3)
+        .unwrap();
+    let acceptance = store.accept(&task.id, &report, T0 + 4).unwrap();
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::Closed);
+    store
+        .end_attempt(&task.id, attempt, T0 + 4, AttemptEnd::Reported)
+        .unwrap();
+
+    let updated = store
+        .update_requirement(&task.id, "加一条：空标题也别丢", None, T0 + 5)
+        .unwrap();
+    assert_eq!(updated.requirement_version(), 2);
+    assert_eq!(updated.acceptances, vec![acceptance], "旧接受留历史");
+    assert_ne!(
+        store.stage(&task.id).unwrap(),
+        Stage::Closed,
+        "新版本出来后按当前版本重新派生"
+    );
+
+    let second_attempt = store.begin_attempt(&task.id, T0 + 5).unwrap();
+    let second_report = store
+        .record_report(&task.id, second_attempt, ready_report(), T0 + 6)
+        .unwrap();
+    store.accept(&task.id, &second_report, T0 + 7).unwrap();
+    let stored = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(stored.acceptances.len(), 2);
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::Closed);
+}
+
+#[test]
+fn updating_write_scope_copies_the_previous_requirement_text() {
+    let (_directory, store) = open_store();
+    let (_cwd_directory, cwd) = task_cwd();
+    let task = store
+        .create_task_with(draft(&cwd), policy(Some("notes")), T0)
+        .unwrap();
+    let claim = store.claim_effect(EffectKind::Launch, T0 + 1).unwrap();
+    store.complete_effect(&claim.unwrap()).unwrap();
+    let attempt = store.begin_attempt(&task.id, T0 + 2).unwrap();
+    store
+        .record_report(&task.id, attempt, ready_report(), T0 + 3)
+        .unwrap();
+    store
+        .end_attempt(&task.id, attempt, T0 + 4, AttemptEnd::Reported)
+        .unwrap();
+    store
+        .update_requirement(&task.id, "按域名归并", None, T0 + 5)
+        .unwrap();
+    let updated = store.update_write_scope(&task.id, "rank", T0 + 5).unwrap();
+    assert_eq!(updated.requirement_version(), 3);
+    assert_eq!(updated.requirement_of_version(3), Some("按域名归并"));
+    assert_eq!(updated.dod_of_version(3), Some("同一个 url 只留一条"));
+    assert_eq!(updated.requirement, "按域名归并", "改写集不动要求");
+}
+
+#[test]
+fn old_rows_without_version_text_are_backfilled_on_the_first_requirement_change() {
+    let (_directory, store) = open_store();
+    let (_cwd_directory, cwd) = task_cwd();
+    let task = store
+        .create_task_with(draft(&cwd), policy(Some("notes")), T0)
+        .unwrap();
+    {
+        let conn = store.conn.lock().unwrap();
+        let raw: String = conn
+            .query_row(
+                "SELECT value FROM task WHERE id = ?1",
+                params![task.id.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        for version in value["versions"].as_array_mut().unwrap() {
+            version.as_object_mut().unwrap().remove("requirement");
+            version.as_object_mut().unwrap().remove("dod");
+        }
+        conn.execute(
+            "UPDATE task SET value = ?1 WHERE id = ?2",
+            params![value.to_string(), task.id.as_str()],
+        )
+        .unwrap();
+    }
+    let loaded = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(loaded.requirement_of_version(1), None);
+
+    let claim = store.claim_effect(EffectKind::Launch, T0 + 1).unwrap();
+    store.complete_effect(&claim.unwrap()).unwrap();
+    let attempt = store.begin_attempt(&task.id, T0 + 2).unwrap();
+    store
+        .record_report(&task.id, attempt, ready_report(), T0 + 2)
+        .unwrap();
+    store
+        .end_attempt(&task.id, attempt, T0 + 3, AttemptEnd::Reported)
+        .unwrap();
+    let updated = store
+        .update_requirement(&task.id, "新要求", None, T0 + 4)
+        .unwrap();
+    assert_eq!(
+        updated.requirement_of_version(1),
+        Some("把重复判断改成按 url"),
+        "旧版本回填当时的文本"
+    );
+    assert_eq!(updated.requirement_of_version(2), Some("新要求"));
+}
+
+#[test]
+fn update_requirement_refuses_while_queued_or_running_or_unchanged() {
+    let (_directory, store) = open_store();
+    let (_cwd_directory, cwd) = task_cwd();
+    let task = store
+        .create_task_with(draft(&cwd), policy(Some("notes")), T0)
+        .unwrap();
+    let queued = store.update_requirement(&task.id, "新要求", None, T0 + 1);
+    assert!(
+        matches!(queued, Err(TaskError::RequirementWhileQueued)),
+        "{queued:?}"
+    );
+    let claim = store.claim_effect(EffectKind::Launch, T0 + 2).unwrap();
+    store.complete_effect(&claim.unwrap()).unwrap();
+    let attempt = store.begin_attempt(&task.id, T0 + 3).unwrap();
+    let running = store.update_requirement(&task.id, "新要求", None, T0 + 4);
+    assert!(
+        running.is_err(),
+        "在跑不能改要求；先让这一轮结束：{running:?}"
+    );
+    store
+        .record_report(&task.id, attempt, ready_report(), T0 + 5)
+        .unwrap();
+    store
+        .end_attempt(&task.id, attempt, T0 + 6, AttemptEnd::Reported)
+        .unwrap();
+    let unchanged = store.update_requirement(&task.id, "把重复判断改成按 url", None, T0 + 7);
+    assert!(
+        matches!(unchanged, Err(TaskError::RequirementUnchanged)),
+        "{unchanged:?}"
+    );
 }
