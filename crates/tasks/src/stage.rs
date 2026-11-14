@@ -2,9 +2,7 @@
 
 use crate::task::{AttemptEnd, ReportState, Task};
 
-/// docs/03 5.1 的六个阶段里，本票能派生出来的五个。
-///
-/// 「已关闭」归接受票，本票不返回。
+/// docs/03 5.1 的六个阶段；T054 起补上「已关闭」。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stage {
     /// 任务包缺项，最近报告 blocked/failed，或最近 Attempt 以 stopped/interrupted 结束。
@@ -17,6 +15,8 @@ pub enum Stage {
     ReadyForReview,
     /// T053：门对最近报告判了，或门判了通过的候选就是被把关任务的最近 ready 报告。
     RequirementMet,
+    /// T054：当前版本的最新报告被用户接受（有门的还要门判通过）；子任务全关闭的总任务也到这。
+    Closed,
 }
 
 impl Stage {
@@ -28,6 +28,7 @@ impl Stage {
             Self::Running => 2,
             Self::ReadyForReview => 3,
             Self::RequirementMet => 4,
+            Self::Closed => 5,
         }
     }
 }

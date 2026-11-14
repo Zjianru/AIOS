@@ -191,7 +191,7 @@ interface KindState {
   /** 确认卡：暂不（什么都不执行，记 dismissed）。 */
   dismissCard: (callId: string) => Promise<void>;
   /** 结果卡：接受（服务登记当前版本+报告，回执由 card/decision 事件回填）。 */
-  acceptTaskResult: (callId: string) => Promise<void>;
+  acceptTaskResult: (callId: string, reportId?: string) => Promise<void>;
   /** T053：门结果卡判定（通过/需修正；note 是用户原话，空白当没有）。 */
   judgeGate: (
     callId: string,
@@ -499,9 +499,49 @@ function applyCardSignals(views: TurnViewData[]): TurnViewData[] {
   });
 }
 
-/** 折卡之后再套任务库事实（T038 折卡 + T041 状态映射 + T053 门判定/上游变了状态）。 */
+/**
+ * T054：结果卡上的「接受」「要求修改」由会话事实派生：只给每个任务最后一张结果卡，
+ * 且它 ready、未接受；有门的要门已判通过（门任务自己的卡不出）。
+ */
+function applyAcceptEligibility(views: TurnViewData[]): TurnViewData[] {
+  const lastCard = new Map<string, string>();
+  for (const view of views) {
+    for (const fact of view.taskResults) {
+      if (fact.id.startsWith('task-report:')) lastCard.set(fact.taskId, fact.id);
+    }
+  }
+  let changedAny = false;
+  const next = views.map((view) => {
+    let changed = false;
+    const taskResults = view.taskResults.map((fact) => {
+      if (!fact.id.startsWith('task-report:')) return fact;
+      const gateSelf = fact.gate?.state === 'pending_verdict';
+      const accepted =
+        fact.decision?.phase === 'confirmed' &&
+        !(gateSelf && fact.decision.data?.conclusion !== undefined);
+      const gatePassed = fact.gate?.state !== 'waiting' || fact.gateVerdict === 'pass';
+      const acceptable =
+        lastCard.get(fact.taskId) === fact.id &&
+        fact.state === 'ready' &&
+        !gateSelf &&
+        gatePassed &&
+        !accepted;
+      if ((fact.acceptable === true) === acceptable) return fact;
+      changed = true;
+      return { ...fact, acceptable };
+    });
+    if (!changed) return view;
+    changedAny = true;
+    return { ...view, taskResults };
+  });
+  return changedAny ? next : views;
+}
+
+/** 折卡之后再套任务库事实（T038 折卡 + T041 状态映射 + T053 门判定/上游变了 + T054 接受按钮）。 */
 function finishViews(views: TurnViewData[]): TurnViewData[] {
-  return applyCardSignals(applyTaskCardStates(reconcileTaskCards(views), taskCardStates));
+  return applyAcceptEligibility(
+    applyCardSignals(applyTaskCardStates(reconcileTaskCards(views), taskCardStates)),
+  );
 }
 
 /** 从还没流完的参数 JSON 里取 canvas 的 title；还没流到（或半个转义）就先给空串。 */
@@ -1132,9 +1172,9 @@ export const useKindStore = create<KindState>()((set, get) => ({
     );
   },
 
-  acceptTaskResult: (callId) => {
-    // 卡片状态不先改：服务登记后由 card/decision 事件回填「你已接受」。
-    return cardAct(callId, 'confirm').then(
+  acceptTaskResult: (callId, reportId) => {
+    // 卡片状态不先改：服务登记后由 card/decision 事件回填「你接受了」。
+    return cardAct(callId, 'confirm', undefined, undefined, reportId).then(
       (response) => {
         const decision = response.decision;
         if (decision?.phase === 'confirmed') return;

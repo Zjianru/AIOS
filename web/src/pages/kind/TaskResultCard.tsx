@@ -21,7 +21,9 @@ export function TaskResultCard({ fact }: { fact: TaskResultFact }) {
       host={{
         answer: () => {},
         dismiss: () => {},
-        acceptResult: (callId) => acceptResult(callId),
+        acceptResult: (callId, reportId) => acceptResult(callId, reportId),
+        // T054.2 把「要求修改」接到输入框；T054.1 先出按钮，点了不行动。
+        modifyRequirement: () => {},
         judgeGate: (conclusion, note) => judgeGate(envelope.id, conclusion, note),
       }}
     />

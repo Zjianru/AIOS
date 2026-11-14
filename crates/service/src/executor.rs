@@ -368,28 +368,11 @@ impl TaskRuntime {
         report_id: &str,
     ) -> Result<Acceptance, String> {
         let id = TaskId::from(task_id);
-        let task = self
-            .store
-            .task(&id)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("找不到这个任务：{task_id}"))?;
-        let Some(report) = task.latest_report() else {
-            return Err("这个任务还没有可以接受的结果".to_owned());
-        };
-        if report.id.as_str() != report_id {
-            return Err("这份结果已经不是任务的最新报告，不能再接受".to_owned());
-        }
-        if report.version != task.requirement_version() {
-            return Err(format!(
-                "要求已经改过，旧版本（第 {} 版）的报告不能接受",
-                report.version
-            ));
-        }
-        if report.state != ReportState::Ready {
-            return Err("这份结果不是可以接受的状态".to_owned());
-        }
+        let report = ReportId::from(report_id);
+        // 校验顺序、回原因和幂等都由 store 一个事务做（T054）：
+        // 找不到/非 ready、门任务、不是最新、版本旧、门没判通过各回各的原因。
         self.store
-            .accept(&id, Self::now())
+            .accept(&id, &report, Self::now())
             .map_err(|error| error.to_string())
     }
 
@@ -784,10 +767,8 @@ impl TaskRuntime {
         });
         let review = latest_report.is_some_and(|report| is_review_report(&task, report));
         let accepted = latest_report.is_some_and(|report| {
-            task.acceptance.as_ref().is_some_and(|acceptance| {
-                acceptance.report_id == report.id
-                    && acceptance.version == task.requirement_version()
-            })
+            report.version == task.requirement_version()
+                && task.acceptance_for(&report.id).is_some()
         });
         let running = attempt_id.is_some_and(|attempt_id| {
             self.running_for(&task.id, attempt_id)
@@ -1858,6 +1839,8 @@ impl TaskRuntime {
                 }
                 // T053：卡上要能分清这张结果卡是哪份报告（门判定只作用在它判的那份上）。
                 body["report_id"] = json!(report.id.as_str());
+                // T054：这份报告绑的要求版本（小标题版本 >1 时加「· 第 N 版要求」）。
+                body["requirement_version"] = json!(report.version);
                 let request_id = format!("task-report:{}:{}", task.id, report.id);
                 Ok(Some((task, body, request_id)))
             }
@@ -3471,6 +3454,7 @@ fn stage_key(stage: Stage) -> &'static str {
         Stage::Running => "running",
         Stage::ReadyForReview => "ready_for_review",
         Stage::RequirementMet => "requirement_met",
+        Stage::Closed => "closed",
     }
 }
 
@@ -3481,6 +3465,7 @@ fn stage_label(stage: Stage) -> &'static str {
         Stage::Running => "执行中",
         Stage::ReadyForReview => "待检查",
         Stage::RequirementMet => "任务要求已满足",
+        Stage::Closed => "已关闭",
     }
 }
 

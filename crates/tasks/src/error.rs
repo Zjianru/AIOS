@@ -83,8 +83,20 @@ pub enum TaskError {
     WriteScopeOutsideWorktree(String),
     #[error("任务还没有可以接受的结果报告")]
     NoReportToAccept,
-    #[error("这份报告是要求第 {report} 版的结果，当前是第 {current} 版；旧版本不能接受")]
+    #[error("要求改过了：这份是第 {report} 版要求的结果，没有记接受")]
     ReportNotCurrentVersion { report: u32, current: u32 },
+    /// T054：找不这份报告，或它不是 ready。
+    #[error("这份结果不能接受：它不是 ready 报告")]
+    ReportNotReady,
+    /// T054：同一任务后面又交了新结果。
+    #[error("已经变了：这不是它最新交的结果，没有记接受")]
+    ReportNotLatest,
+    /// T054：门任务自己不能接受。
+    #[error("这是门任务：核查结果由你在门卡上判，不接受")]
+    GateTaskCannotAccept,
+    /// T054：有门任务的门还没对这份报告判通过。
+    #[error("核查还没判通过，没有记接受")]
+    GateNotPassed,
     #[error("任务图至少要两个子任务，实际 {0} 个")]
     GraphTooFewSubtasks(usize),
     #[error("任务图第 {subtask} 项的 after 指向本次提议之外的子任务：{after}")]

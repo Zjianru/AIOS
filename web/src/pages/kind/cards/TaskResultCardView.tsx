@@ -96,11 +96,13 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
   const tone = STATE_TONE[slots.state];
   const Icon = tone.icon;
   const gate = slots.gate;
+  // 门自己的结果卡（等你判/你判了）不出接受；被把关任务卡（waiting）门判通过后要出接受。
+  const gateSelf = gate?.state === 'pending_verdict';
   const gatePending = gate?.state === 'pending_verdict' && !slots.verdict && !slots.verdictChanged;
   const accept = () => {
     if (accepting) return;
     setAccepting(true);
-    void Promise.resolve(host.acceptResult?.(envelope.id))
+    void Promise.resolve(host.acceptResult?.(envelope.id, slots.reportId || undefined))
       .catch(() => {
         // 失败原因由 kindStore 提示；按钮恢复，能再点。
       })
@@ -120,10 +122,14 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
       className="mt-4 rounded-card border border-line-2 bg-raised/60 p-3"
       data-kind="task-result"
       data-state={slots.state}
+      data-acceptable={slots.acceptable ? 'true' : 'false'}
     >
       <div className="flex items-center gap-1.5 text-1 text-ink-3">
         {slots.write ? <FilePen className="size-3.5" /> : <SearchCheck className="size-3.5" />}
         {gate ? '里程碑 · 只读核查' : slots.write ? '写任务' : '调查任务'}
+        {!gate && slots.reportVersion > 1
+          ? ' · 第 ' + slots.reportVersion + ' 版要求'
+          : null}
         <span className="brand-type ml-auto">{timeOf(slots.at)}</span>
       </div>
       <div className="mt-2 flex min-w-0 items-start gap-2">
@@ -276,16 +282,19 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
         </div>
       ) : null}
       <div className="mt-3 flex items-center gap-2">
-        {!gate && slots.state === 'review' ? (
-          slots.accepted ? (
-            <span
-              className="flex items-center gap-1 text-2 text-done"
-              data-kind="task-accepted"
-            >
+        {!gateSelf && slots.accepted ? (
+          <div className="min-w-0" data-kind="task-accepted">
+            <div className="flex items-center gap-1 text-2 text-done">
               <Check className="size-3.5" />
-              你已接受
-            </span>
-          ) : (
+              你接受了
+              {slots.acceptedAt ? ' · ' + timeOf(slots.acceptedAt) : ''}
+            </div>
+            <div className="mt-0.5 text-1 text-ink-3" data-kind="task-closed-note">
+              任务已关闭；要再改，跟 Kind 说
+            </div>
+          </div>
+        ) : !gateSelf && slots.acceptable ? (
+          <>
             <button
               type="button"
               data-kind="task-accept"
@@ -295,7 +304,15 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
             >
               接受
             </button>
-          )
+            <button
+              type="button"
+              data-kind="task-modify-requirement"
+              onClick={() => host.modifyRequirement?.()}
+              className="rounded-btn border border-line-2 px-3 py-1 text-2 text-ink-2 transition-colors hover:bg-hover hover:text-ink"
+            >
+              要求修改
+            </button>
+          </>
         ) : null}
         <button
           type="button"

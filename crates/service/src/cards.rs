@@ -355,16 +355,23 @@ impl RootHost {
                 "任务库没开，接受不了结果".to_owned(),
             ));
         };
-        let decision = match runtime.accept_result(task_id, report_id) {
+        // T054：用卡上带的报告 id（请求里给了就认它；旧请求退回 relay id 那份）。
+        let card_report_id = request
+            .report_id
+            .as_deref()
+            .filter(|report_id| !report_id.trim().is_empty())
+            .unwrap_or(report_id);
+        let decision = match runtime.accept_result(task_id, card_report_id) {
             Ok(acceptance) => session::CardDecision {
                 call_id: request.call_id.clone(),
                 option: None,
                 action: Some(ACCEPT_RESULT_ACTION.to_owned()),
                 phase: session::CardDecisionPhase::Confirmed,
                 data: Some(serde_json::json!({
-                    "summary": "你已接受",
+                    "summary": "你接受了",
                     "version": acceptance.version,
                     "report_id": acceptance.report_id.as_str(),
+                    "at": acceptance.at / 1000,
                 })),
             },
             Err(reason) => session::CardDecision {

@@ -1721,3 +1721,186 @@ fn confirmed_graph_cannot_be_cancelled() {
         Err(TaskError::GraphAlreadyConfirmed)
     ));
 }
+
+fn ready_report() -> NewReport {
+    NewReport {
+        state: ReportState::Ready,
+        origin: ReportOrigin::Agent,
+        summary: "改完了".to_owned(),
+        question: None,
+    }
+}
+
+#[test]
+fn gated_task_and_gate_task_acceptance_boundaries() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path();
+    let store = open_store().1;
+    let root = store.create_graph(gated_graph(cwd), T0).unwrap();
+    store.confirm_graph(&root.id, T0 + 1).unwrap();
+    let children = store.children(&root.id).unwrap();
+    let (guarded, gate, downstream) = (
+        children[0].clone(),
+        children[1].clone(),
+        children[2].clone(),
+    );
+    let claim = store.claim_effect(EffectKind::Launch, T0 + 2).unwrap();
+    store.complete_effect(&claim.unwrap()).unwrap();
+    let b1 = store.begin_attempt(&guarded.id, T0 + 3).unwrap();
+    store
+        .record_report(&guarded.id, b1, ready_report(), T0 + 4)
+        .unwrap();
+    let b_report = store
+        .task(&guarded.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+    // 门还没判通过：被把关任务不能接受。
+    let rejected = store.accept(&guarded.id, &b_report.id, T0 + 5);
+    assert!(
+        matches!(rejected, Err(TaskError::GateNotPassed)),
+        "{rejected:?}"
+    );
+    // 门跑完并报回：门任务自己不能接受。
+    let claim = store.claim_effect(EffectKind::Launch, T0 + 6).unwrap();
+    store.complete_effect(&claim.unwrap()).unwrap();
+    let gate_attempt = store
+        .begin_attempt_with(
+            &gate.id,
+            T0 + 7,
+            AttemptTrigger::GateRecheck {
+                candidate: GateCandidate {
+                    report_id: b_report.id.clone(),
+                    requirement_version: b_report.version,
+                },
+            },
+            vec![Handoff {
+                report_id: b_report.id.clone(),
+                requirement_version: b_report.version,
+                summary: b_report.summary.clone(),
+            }],
+        )
+        .unwrap();
+    store
+        .record_report(&gate.id, gate_attempt, ready_report(), T0 + 8)
+        .unwrap();
+    let gate_report = store
+        .task(&gate.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+    let rejected = store.accept(&gate.id, &gate_report.id, T0 + 9);
+    assert!(
+        matches!(rejected, Err(TaskError::GateTaskCannotAccept)),
+        "{rejected:?}"
+    );
+    // 判通过之前下游也还没放出来。
+    assert!(downstream.latest_attempt().is_none());
+}
+
+#[test]
+fn accepting_guarded_and_downstream_closes_gate_task_and_graph() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path();
+    let store = open_store().1;
+    let root = store.create_graph(gated_graph(cwd), T0).unwrap();
+    store.confirm_graph(&root.id, T0 + 1).unwrap();
+    let children = store.children(&root.id).unwrap();
+    let (guarded, gate, downstream) = (
+        children[0].clone(),
+        children[1].clone(),
+        children[2].clone(),
+    );
+    let claim = store.claim_effect(EffectKind::Launch, T0 + 2).unwrap();
+    store.complete_effect(&claim.unwrap()).unwrap();
+    let b1 = store.begin_attempt(&guarded.id, T0 + 3).unwrap();
+    store
+        .record_report(&guarded.id, b1, ready_report(), T0 + 4)
+        .unwrap();
+    let b_report = store
+        .task(&guarded.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+    let claim = store.claim_effect(EffectKind::Launch, T0 + 5).unwrap();
+    store.complete_effect(&claim.unwrap()).unwrap();
+    let gate_attempt = store
+        .begin_attempt_with(
+            &gate.id,
+            T0 + 6,
+            AttemptTrigger::GateRecheck {
+                candidate: GateCandidate {
+                    report_id: b_report.id.clone(),
+                    requirement_version: b_report.version,
+                },
+            },
+            vec![Handoff {
+                report_id: b_report.id.clone(),
+                requirement_version: b_report.version,
+                summary: b_report.summary.clone(),
+            }],
+        )
+        .unwrap();
+    store
+        .record_report(&gate.id, gate_attempt, ready_report(), T0 + 7)
+        .unwrap();
+    store
+        .end_attempt(&gate.id, gate_attempt, T0 + 7, AttemptEnd::Reported)
+        .unwrap();
+    let gate_report = store
+        .task(&gate.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+    store
+        .judge_gate(
+            &gate.id,
+            &gate_report.id,
+            GateConclusion::Pass,
+            None,
+            T0 + 8,
+        )
+        .unwrap();
+    let claim = store.claim_effect(EffectKind::Launch, T0 + 9).unwrap();
+    store.complete_effect(&claim.unwrap()).unwrap();
+    let c1 = store.begin_attempt(&downstream.id, T0 + 10).unwrap();
+    store
+        .record_report(&downstream.id, c1, ready_report(), T0 + 11)
+        .unwrap();
+    let c_report = store
+        .task(&downstream.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+
+    // 接受前：被把关和门都是「任务要求已满足」，C 待检查，图还没全关。
+    assert_eq!(store.stage(&guarded.id).unwrap(), Stage::RequirementMet);
+    assert_eq!(store.stage(&gate.id).unwrap(), Stage::RequirementMet);
+    assert_eq!(store.stage(&downstream.id).unwrap(), Stage::ReadyForReview);
+    assert_ne!(store.stage(&root.id).unwrap(), Stage::Closed);
+
+    // 接受被把关任务：它和门任务都关闭；C 还没关，总任务不关。
+    let b_acceptance = store.accept(&guarded.id, &b_report.id, T0 + 12).unwrap();
+    assert_eq!(store.stage(&guarded.id).unwrap(), Stage::Closed);
+    assert_eq!(store.stage(&gate.id).unwrap(), Stage::Closed);
+    assert_ne!(store.stage(&root.id).unwrap(), Stage::Closed);
+
+    // 接受下游：三项全关，总任务关闭。
+    let c_acceptance = store.accept(&downstream.id, &c_report.id, T0 + 13).unwrap();
+    assert_eq!(store.stage(&downstream.id).unwrap(), Stage::Closed);
+    assert_eq!(store.stage(&root.id).unwrap(), Stage::Closed);
+    let guarded_now = store.task(&guarded.id).unwrap().unwrap();
+    assert_eq!(guarded_now.acceptances, vec![b_acceptance]);
+    let downstream_now = store.task(&downstream.id).unwrap().unwrap();
+    assert_eq!(downstream_now.acceptances, vec![c_acceptance]);
+}

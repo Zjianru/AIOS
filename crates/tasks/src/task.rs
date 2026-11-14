@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::TaskError;
 use crate::id::{AttemptId, ConversationId, InputId, ReportId, RunId, TaskId};
@@ -174,9 +174,14 @@ pub struct Task {
     /// 要求版本；建任务时记第一条，task_update 追加。旧任务行按空读。
     #[serde(default)]
     pub versions: Vec<RequirementVersion>,
-    /// 用户接受记录；旧任务行按空读。接受不是阶段（03 篇 5.1、5.4）。
-    #[serde(default)]
-    pub acceptance: Option<Acceptance>,
+    /// 用户接受历史（T054）；旧任务行的单条 `acceptance` 读成第一项。
+    #[serde(
+        default,
+        alias = "acceptance",
+        deserialize_with = "acceptances_from_json",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub acceptances: Vec<Acceptance>,
     /// T052：任务图里这个子任务的总任务；单派任务和总任务为 None。旧任务行按 None 读。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<TaskId>,
@@ -329,13 +334,31 @@ pub enum VersionSource {
 
 /// 用户对某份结果的接受：绑所看的要求版本和报告（03 篇 5.4）。
 ///
-/// 接受不是 Task 阶段，记下来不改阶段。
+/// 接受不是 Task 阶段，记下来不改阶段；同一报告同版本重复接受幂等。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Acceptance {
     /// 接受时看的要求版本号（1 起）；旧任务行没有版本记录，记 0。
     pub version: u32,
     pub report_id: ReportId,
     pub at: i64,
+}
+
+/// T054：accepances 从旧行读：旧字段是一条对象，新字段是数组（别名让两种键都能读）。
+fn acceptances_from_json<'de, D>(deserializer: D) -> Result<Vec<Acceptance>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(Acceptance),
+        Many(Vec<Acceptance>),
+    }
+    Ok(match Option::<OneOrMany>::deserialize(deserializer)? {
+        None => Vec::new(),
+        Some(OneOrMany::One(acceptance)) => vec![acceptance],
+        Some(OneOrMany::Many(acceptances)) => acceptances,
+    })
 }
 
 /// 一次执行推进；首个 Attempt 会开出第一个 Run。
@@ -589,6 +612,23 @@ impl Task {
 
     pub fn has_attempt(&self) -> bool {
         self.runs.iter().any(|run| !run.attempts.is_empty())
+    }
+
+    /// T054：某份报告是不是被用户接受过（同一报告同版本重复接受幂等）。
+    pub fn acceptance_for(&self, report_id: &ReportId) -> Option<&Acceptance> {
+        self.acceptances
+            .iter()
+            .rev()
+            .find(|acceptance| &acceptance.report_id == report_id)
+    }
+
+    /// T054：当前要求版本的最新 ready 报告被接受了吗（还没算门的通过条件）。
+    pub fn current_report_accepted(&self) -> bool {
+        self.latest_report().is_some_and(|report| {
+            report.state == ReportState::Ready
+                && report.version == self.requirement_version()
+                && self.acceptance_for(&report.id).is_some()
+        })
     }
 
     /// ThinAgent 实际使用的工作目录：开了工作树的用工作树里对应的子目录。

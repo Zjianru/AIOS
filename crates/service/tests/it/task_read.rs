@@ -838,7 +838,14 @@ async fn header_carries_report_review_and_acceptance() {
     assert!(!ready.task.accepted);
 
     // 接受以后：accepted = true（绑定当前版本和这份报告）。
-    store.accept(&task_id, 3_000).expect("接受");
+    let report_id = store
+        .task(&task_id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .map(|report| report.id.clone())
+        .expect("ready 报告");
+    store.accept(&task_id, &report_id, 3_000).expect("接受");
     let accepted = read_for_report(&host, &task_id).await;
     assert!(accepted.task.review && accepted.task.accepted, "已接受");
 

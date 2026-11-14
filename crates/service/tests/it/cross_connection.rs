@@ -215,6 +215,7 @@ fn confirm(option: &str) -> Call {
         option: Some(option.to_owned()),
 
         note: None,
+        report_id: None,
     })
 }
 

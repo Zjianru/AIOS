@@ -99,6 +99,10 @@ export interface TaskResultFact {
   gate?: GateCardFact;
   /** T053：这张结果卡对应的报告 id（服务 relay 里的程序事实；旧日志可缺）。 */
   reportId?: string;
+  /** T054：这份报告绑的要求版本（服务 relay 给；旧日志可缺）。 */
+  reportVersion?: number;
+  /** T054：这张卡现在能点「接受」「要求修改」（由会话事实派生，kindStore 算）。 */
+  acceptable?: boolean;
   /** T053：被把关任务卡的门判定结论（只匹配这张卡那份报告；刷新可重建）。 */
   gateVerdict?: 'pass' | 'needs_fix';
   /** T053：上游有新可放行结果，这张结果卡待按新结果核对（D95）。 */
@@ -152,6 +156,14 @@ export interface TaskResultSlots {
   upstreamChanged: boolean;
   /** 这轮结果已经被用户接受（card/decision 的 confirmed）。 */
   accepted: boolean;
+  /** T054：接受回执时间（秒）；没接受为空。 */
+  acceptedAt?: number;
+  /** T054：卡上的报告 id（接受时带回内核）；不是结果卡为空串。 */
+  reportId: string;
+  /** T054：这份报告的要求版本；旧日志为 0。 */
+  reportVersion: number;
+  /** T054：按钮是否出（当前版本最新结果、未接受、有门的已判通过）。 */
+  acceptable: boolean;
 }
 
 const gateCardSchema = z.object({
@@ -188,6 +200,10 @@ export const taskResultSlotsSchema = z.object({
   verdictChanged: z.boolean().catch(false),
   upstreamChanged: z.boolean().catch(false),
   accepted: z.boolean().catch(false),
+  acceptedAt: z.number().optional(),
+  reportId: textSlot,
+  reportVersion: z.number().int().catch(0),
+  acceptable: z.boolean().catch(false),
 });
 
 const TASK_RESULT_FALLBACK_SLOTS: TaskResultSlots = {
@@ -207,6 +223,9 @@ const TASK_RESULT_FALLBACK_SLOTS: TaskResultSlots = {
   verdictChanged: false,
   upstreamChanged: false,
   accepted: false,
+  reportId: '',
+  reportVersion: 0,
+  acceptable: false,
 };
 
 /** relay 的 state + origin → 卡上的固定状态文字；不读摘要内容（D73）。 */
@@ -217,8 +236,9 @@ export function taskStatusOf(
   accepted?: boolean,
 ): string {
   // 写任务当前要求版本的 ready：卡状态是「待你核」，Task 阶段仍是「待检查」。
-  // 用户接受以后状态词换成「已接受」（回执从 card/decision 回填）。
-  if (cardState === 'review') return accepted ? '已接受' : '待你核';
+  // T054：用户接受以后任务关闭，状态词统一「已关闭」（回执从 card/decision 回填）。
+  if (accepted) return '已关闭';
+  if (cardState === 'review') return '待你核';
   if (state === 'dispatching') return '派出中';
   if (state === 'dispatched') return '进行中';
   if (state === 'pending') return '等待中';
@@ -309,12 +329,19 @@ export function taskResultCardOf(
       ? decisionData.note
       : undefined;
   const gate = fact.gate;
-  let status = taskStatusOf(
-    fact.state,
-    fact.origin,
-    cardState,
-    fact.decision?.phase === 'confirmed',
-  );
+  const reportId =
+    fact.reportId ??
+    (fact.id.startsWith('task-report:') ? (fact.id.split(':').pop() ?? '') : '');
+  const reportVersion = fact.reportVersion ?? 0;
+  const accepted =
+    fact.decision?.phase === 'confirmed' &&
+    !(gate?.state === 'pending_verdict' && verdict !== undefined);
+  const decisionAt =
+    fact.decision && typeof fact.decision.data?.at === 'number'
+      ? fact.decision.data.at
+      : undefined;
+  const acceptedAt = accepted ? (fact.decision?.at ?? decisionAt) : undefined;
+  let status = taskStatusOf(fact.state, fact.origin, cardState, accepted);
   if (fact.decision?.phase === 'refused') {
     status = '已经变了';
   } else if (gate?.state === 'pending_verdict' && verdict === undefined) {
@@ -329,6 +356,8 @@ export function taskResultCardOf(
   } else if (gate?.state === 'waiting') {
     status = '等核查';
   }
+  // T054：接受后收成「已关闭」（门判定卡不算接受，上面已排除）。
+  if (accepted) status = '已关闭';
   const parsed = taskResultSlotsSchema.safeParse({
     taskId: fact.taskId,
     title: fact.title,
@@ -352,10 +381,11 @@ export function taskResultCardOf(
     ...(fact.decision?.at === undefined ? {} : { verdictAt: fact.decision.at }),
     verdictChanged: fact.decision?.phase === 'refused',
     upstreamChanged: fact.upstreamChanged === true,
-    accepted:
-      fact.decision?.phase === 'confirmed' &&
-      (verdict === undefined || verdict === 'pass') &&
-      gate?.state !== 'pending_verdict',
+    accepted,
+    ...(acceptedAt === undefined ? {} : { acceptedAt }),
+    reportId,
+    reportVersion,
+    acceptable: fact.acceptable === true,
   });
   if (!parsed.success) return null;
   return {
@@ -432,6 +462,12 @@ export function parseTaskRelay(message: unknown, at: number): TaskResultFact | n
   const cardState = body.card_state === 'review' ? ('review' as const) : undefined;
   const gate = parseGateCard(body.gate);
   const reportId = typeof body.report_id === 'string' ? body.report_id : undefined;
+  const reportVersion =
+    typeof body.requirement_version === 'number' &&
+    Number.isInteger(body.requirement_version) &&
+    body.requirement_version >= 1
+      ? body.requirement_version
+      : undefined;
 
   return {
     id: rpcId,
@@ -451,6 +487,7 @@ export function parseTaskRelay(message: unknown, at: number): TaskResultFact | n
     ...(autoStarted === undefined ? {} : { autoStarted }),
     ...(gate === undefined ? {} : { gate }),
     ...(reportId === undefined ? {} : { reportId }),
+    ...(reportVersion === undefined ? {} : { reportVersion }),
     ...(cardState === undefined ? {} : { cardState }),
   };
 }

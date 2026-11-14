@@ -231,6 +231,7 @@ export async function cardAct(
   verb: CardVerb,
   option?: string,
   note?: string,
+  reportId?: string,
 ): Promise<CardActResponse> {
   return post({
     method: 'card-act',
@@ -238,6 +239,7 @@ export async function cardAct(
     verb,
     ...(option ? { option } : {}),
     ...(note === undefined ? {} : { note }),
+    ...(reportId === undefined || reportId === '' ? {} : { reportId }),
   });
 }
 

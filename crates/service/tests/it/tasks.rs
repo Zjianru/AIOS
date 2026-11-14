@@ -563,7 +563,8 @@ fn one_task(store: &Store) -> Task {
 }
 
 async fn wait_until(label: &str, mut check: impl FnMut() -> bool) {
-    for _ in 0..300 {
+    // T054：续跑的下一张结果卡可能晚几秒才 Steer 进 Kind；给足 18s。
+    for _ in 0..900 {
         if check() {
             return;
         }
@@ -3031,6 +3032,7 @@ async fn confirm_pause_card(host: &RootHost, call_id: &str) -> Value {
             option: Some("one".to_owned()),
 
             note: None,
+            report_id: None,
         }))
         .await
         .expect("确认暂停卡");
@@ -4969,6 +4971,7 @@ async fn confirm_card_option(host: &RootHost, call_id: &str, option: &str) -> Va
             option: Some(option.to_owned()),
 
             note: None,
+            report_id: None,
         }))
         .await
         .expect("确认接续卡");
@@ -4984,6 +4987,7 @@ async fn dismiss_card(host: &RootHost, call_id: &str) -> Value {
             option: None,
 
             note: None,
+            report_id: None,
         }))
         .await
         .expect("暂不接续");
@@ -7622,6 +7626,7 @@ async fn accept_result_card(host: &RootHost, call_id: &str) -> Value {
             option: None,
 
             note: None,
+            report_id: None,
         }))
         .await
         .expect("接受结果卡");
@@ -7675,7 +7680,7 @@ async fn a_write_task_ready_card_is_review_with_deduped_relative_changes() {
     let store = tasks_store(fixture.data());
     assert_eq!(store.stage(&task.id).unwrap(), Stage::ReadyForReview);
     let stored = store.task(&task.id).unwrap().unwrap();
-    assert_eq!(stored.acceptance, None, "还没接受");
+    assert!(stored.acceptances.is_empty(), "还没接受");
     let attempt = stored.latest_attempt().expect("Attempt").clone();
     let events = thin_events(fixture.data(), &attempt);
     assert_eq!(
@@ -7742,20 +7747,21 @@ async fn accepting_a_ready_write_result_records_once_and_keeps_the_stage() {
     let decision = accept_result_card(&fixture.host, &relay_id).await;
     assert_eq!(decision["phase"], "confirmed", "{decision}");
     assert_eq!(decision["action"], "accept_task_result", "{decision}");
-    assert_eq!(decision["data"]["summary"], "你已接受", "{decision}");
+    assert_eq!(decision["data"]["summary"], "你接受了", "{decision}");
     assert_eq!(decision["data"]["version"], 1, "{decision}");
     assert_eq!(decision["data"]["report_id"], report_id, "{decision}");
+    assert!(decision["data"]["at"].is_number(), "回执带时间：{decision}");
     assert!(!decision.to_string().contains("完成"));
 
     let store = tasks_store(fixture.data());
     let stored = store.task(&task.id).unwrap().unwrap();
-    let acceptance = stored.acceptance.clone().expect("接受记录");
+    let acceptance = stored.acceptances.last().cloned().expect("接受记录");
     assert_eq!(acceptance.version, 1);
     assert_eq!(acceptance.report_id.as_str(), report_id);
     assert_eq!(
         store.stage(&task.id).unwrap(),
-        Stage::ReadyForReview,
-        "接受不是阶段"
+        Stage::Closed,
+        "接受后任务关闭"
     );
     assert_eq!(
         card_decisions(&crate::common::read_root_events(fixture.data()), &relay_id).len(),
@@ -7766,7 +7772,10 @@ async fn accepting_a_ready_write_result_records_once_and_keeps_the_stage() {
     let second = accept_result_card(&fixture.host, &relay_id).await;
     assert_eq!(second, decision, "重复点击返回同一条决定");
     let after = store.task(&task.id).unwrap().unwrap();
-    assert_eq!(after.acceptance, stored.acceptance, "重复点击不改接受记录");
+    assert_eq!(
+        after.acceptances, stored.acceptances,
+        "重复点击不改接受记录"
+    );
     assert_eq!(
         card_decisions(&crate::common::read_root_events(fixture.data()), &relay_id).len(),
         1,
@@ -7802,10 +7811,13 @@ async fn a_report_from_before_a_requirement_change_is_refused() {
     let decision = accept_result_card(&fixture.host, &relay_id).await;
     assert_eq!(decision["phase"], "refused", "{decision}");
     let summary = decision["data"]["summary"].as_str().unwrap_or_default();
-    assert!(summary.contains("版本"), "拒绝原因写明版本：{summary}");
+    assert!(
+        summary.contains("要求改过了"),
+        "拒绝原因写明要求改过了：{summary}"
+    );
     let stored = store.task(&task.id).unwrap().unwrap();
     assert_eq!(stored.requirement_version(), 2);
-    assert_eq!(stored.acceptance, None, "旧版本的报告不写接受记录");
+    assert!(stored.acceptances.is_empty(), "旧版本的报告不写接受记录");
     assert_eq!(
         store.stage(&task.id).unwrap(),
         Stage::ReadyForReview,
@@ -8018,6 +8030,7 @@ async fn graph_propose_card_confirm_launches_first_subtask_only() {
         option: Some("confirm".to_owned()),
 
         note: None,
+        report_id: None,
     });
     let Response::CardAct(response) = host.dispatch(confirm.clone()).await.expect("确认") else {
         panic!("card-act 响应");
@@ -8204,6 +8217,7 @@ async fn graph_dismiss_card_keeps_it_unconfirmed_and_launches_nothing() {
             option: None,
 
             note: None,
+            report_id: None,
         }))
         .await
         .expect("暂不")
@@ -8347,6 +8361,7 @@ async fn graph_ready_releases_downstream_with_the_upstream_result() {
             option: Some("confirm".to_owned()),
 
             note: None,
+            report_id: None,
         }))
         .await
         .expect("确认")
@@ -8511,6 +8526,7 @@ async fn graph_confirm_while_paused_queues_then_runs_in_order_after_unpause() {
             option: Some("confirm".to_owned()),
 
             note: None,
+            report_id: None,
         }))
         .await
         .expect("确认")
@@ -8643,6 +8659,7 @@ async fn graph_restart_interrupts_running_child_but_not_root_or_waiting_sibling(
         option: Some("confirm".to_owned()),
 
         note: None,
+        report_id: None,
     }))
     .await
     .expect("确认");
@@ -8738,6 +8755,7 @@ async fn graph_crash_after_ready_releases_downstream_exactly_once_after_restart(
         option: Some("confirm".to_owned()),
 
         note: None,
+        report_id: None,
     }))
     .await
     .expect("确认");
@@ -8845,6 +8863,7 @@ async fn resume_attempt_rehands_the_latest_upstream_result() {
         option: Some("confirm".to_owned()),
 
         note: None,
+        report_id: None,
     }))
     .await
     .expect("确认");
@@ -9084,6 +9103,7 @@ async fn reach_gate_ready(
         verb: CardVerb::Confirm,
         option: Some("confirm".to_owned()),
         note: None,
+        report_id: None,
     }))
     .await
     .expect("确认");
@@ -9395,6 +9415,7 @@ async fn gate_blocked_keeps_guarded_task_and_downstream_untouched() {
         verb: CardVerb::Confirm,
         option: Some("confirm".to_owned()),
         note: None,
+        report_id: None,
     }))
     .await
     .expect("确认");
@@ -9806,6 +9827,16 @@ async fn task_continue_rejects_without_cause_or_while_running() {
     }))
     .await
     .expect("判需修正");
+    // 判完等上一轮 Attempt 收尾落库：并发跑测试时 record_report 后的 end 写入可能稍晚。
+    wait_until("B 上一轮 Attempt 结束", || {
+        tasks_store(data.path())
+            .task(&guarded.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().cloned())
+            .is_some_and(|attempt| attempt.ended_at.is_some())
+    })
+    .await;
     router.set_thin_delay(Duration::from_secs(2));
     router.push_thin_for(guarded.id.as_str(), crate::common::text_sse("还在改"));
     host.dispatch(Call::TaskContinue(service::TaskContinueRequest {
@@ -9885,6 +9916,7 @@ async fn task_continue_on_blocked_gate_reruns_with_after_report_cause() {
         verb: CardVerb::Confirm,
         option: Some("confirm".to_owned()),
         note: None,
+        report_id: None,
     }))
     .await
     .expect("确认");
@@ -10009,6 +10041,7 @@ async fn upstream_new_result_marks_reevaluation_and_continue_checks_again() {
         verb: CardVerb::Confirm,
         option: Some("confirm".to_owned()),
         note: None,
+        report_id: None,
     }))
     .await
     .expect("确认");
@@ -10212,6 +10245,7 @@ async fn graph_dismissed_on_card_cancels_the_graph() {
             verb: CardVerb::Dismiss,
             option: None,
             note: None,
+            report_id: None,
         }))
         .await
         .expect("暂不");
@@ -10252,6 +10286,7 @@ async fn graph_dismissed_on_card_cancels_the_graph() {
             verb: CardVerb::Confirm,
             option: Some("confirm".to_owned()),
             note: None,
+            report_id: None,
         }))
         .await
         .expect("再点");
@@ -10383,6 +10418,7 @@ async fn replacing_card_cancels_the_earlier_graph() {
             verb: CardVerb::Confirm,
             option: Some("confirm".to_owned()),
             note: None,
+            report_id: None,
         }))
         .await
         .expect("确认第二张卡");
@@ -10416,4 +10452,228 @@ async fn replacing_card_cancels_the_earlier_graph() {
             .iter()
             .all(|child| child.latest_attempt().is_none())
     );
+}
+
+/// T054.1：调查任务没有写集，卡上也有「接受」；接受后任务关闭。
+#[tokio::test]
+async fn an_investigation_card_can_be_accepted_and_closes_the_task() {
+    let fixture = Fixture::new().await;
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-report", "ready", "查好了：3 行", None));
+    fixture.router.push_thin(crate::common::text_sse("好"));
+    let task = fixture.accept(false).await;
+    let (relay_id, body) = ready_relay(&fixture).await;
+    assert_eq!(body["task"]["id"], task.id.as_str());
+    let report_id = body["report_id"].as_str().expect("卡上报告 id").to_owned();
+
+    // T054：card-act 带卡上的 report id。
+    let response = fixture
+        .host
+        .dispatch(Call::CardAct(CardActRequest {
+            call_id: relay_id.clone(),
+            verb: CardVerb::Confirm,
+            option: None,
+            note: None,
+            report_id: Some(report_id.clone()),
+        }))
+        .await
+        .expect("接受");
+    let decision = serde_json::to_value(response).unwrap()["decision"].clone();
+    assert_eq!(decision["phase"], "confirmed", "{decision}");
+    assert_eq!(decision["data"]["summary"], "你接受了", "{decision}");
+    assert_eq!(decision["data"]["report_id"], report_id, "{decision}");
+    assert!(decision["data"]["at"].is_number(), "{decision}");
+
+    let store = tasks_store(fixture.data());
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::Closed);
+    let stored = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(stored.acceptances.len(), 1);
+    assert_eq!(
+        stored.acceptances[0].report_id.as_str(),
+        report_id,
+        "接受绑卡上的报告"
+    );
+}
+
+/// T054.1：同一任务后面又交了新结果，旧卡上的接受回「已经变了」，不记。
+#[tokio::test]
+async fn accepting_an_older_report_after_a_new_one_is_refused() {
+    let fixture = Fixture::new().await;
+    let task = run_write_task(
+        &fixture,
+        scoped_write_args(),
+        vec![
+            report_sse(2, "call-report-1", "ready", "第一次结果", None),
+            crate::common::text_sse("好"),
+            report_sse(
+                2,
+                "call-report-2",
+                "ready",
+                "第二次结果：又核对了一遍",
+                None,
+            ),
+            crate::common::text_sse("好"),
+        ],
+    )
+    .await;
+    let (first_relay, _) = ready_relay(&fixture).await;
+    fixture
+        .host
+        .dispatch(Call::TaskSay(TaskSayRequest {
+            task_id: task.id.as_str().to_owned(),
+            text: "再核对一遍".to_owned(),
+            pastes: Vec::new(),
+            attachments: Vec::new(),
+        }))
+        .await
+        .expect("再核对");
+    wait_until("第二张结果卡 relay", || {
+        relay_messages(&crate::common::read_root_events(fixture.data()))
+            .iter()
+            .filter(|(id, body)| {
+                id.starts_with("task-report:") && body["task"]["id"] == task.id.as_str()
+            })
+            .count()
+            >= 2
+    })
+    .await;
+    let relays = relay_messages(&crate::common::read_root_events(fixture.data()));
+    let second_relay = relays
+        .iter()
+        .map(|(id, _)| id.clone())
+        .find(|id| id != &first_relay && id.starts_with("task-report:"))
+        .expect("第二张结果卡");
+    assert_ne!(first_relay, second_relay);
+
+    let decision = accept_result_card(&fixture.host, &first_relay).await;
+    assert_eq!(decision["phase"], "refused", "{decision}");
+    let summary = decision["data"]["summary"].as_str().unwrap_or_default();
+    assert!(summary.contains("已经变了"), "回原因：{summary}");
+    let store = tasks_store(fixture.data());
+    assert!(
+        store
+            .task(&task.id)
+            .unwrap()
+            .unwrap()
+            .acceptances
+            .is_empty()
+    );
+    assert_eq!(
+        store.stage(&task.id).unwrap(),
+        Stage::ReadyForReview,
+        "拒绝不改阶段"
+    );
+
+    // 最新那张能接受。
+    let decision = accept_result_card(&fixture.host, &second_relay).await;
+    assert_eq!(decision["phase"], "confirmed", "{decision}");
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::Closed);
+}
+
+/// T054.1：门没判通过前，接受被服务端拒（正常按钮也不会出现）。
+#[tokio::test]
+async fn accepting_before_the_gate_passes_is_refused() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    let (_root, guarded, _downstream, _gate_report) =
+        reach_gate_ready(&host, &router, data.path()).await;
+    let relay = relay_messages(&crate::common::read_root_events(data.path()))
+        .into_iter()
+        .find(|(_, body)| body["task"]["id"] == guarded.id.as_str())
+        .map(|(id, _)| id)
+        .expect("B 结果卡");
+    let decision = accept_result_card(&host, &relay).await;
+    assert_eq!(decision["phase"], "refused", "{decision}");
+    let summary = decision["data"]["summary"].as_str().unwrap_or_default();
+    assert!(summary.contains("核查还没判通过"), "回原因：{summary}");
+    assert!(
+        tasks_store(data.path())
+            .task(&guarded.id)
+            .unwrap()
+            .unwrap()
+            .acceptances
+            .is_empty()
+    );
+}
+
+/// T054.1：判通过后接受 → 被把关任务和门任务关闭；下游也接受后总任务关闭。
+#[tokio::test]
+async fn accepting_after_the_gate_passes_closes_gate_task_and_graph() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    let (root, guarded, downstream, gate_report) =
+        reach_gate_ready(&host, &router, data.path()).await;
+    let store = tasks_store(data.path());
+    let gate = store
+        .task_ids()
+        .unwrap()
+        .into_iter()
+        .filter_map(|id| store.task(&id).ok().flatten())
+        .find(Task::is_gate)
+        .expect("门任务");
+    wait_until("B 结果卡 relay", || {
+        relay_messages(&crate::common::read_root_events(data.path()))
+            .iter()
+            .any(|(_, body)| body["task"]["id"] == guarded.id.as_str())
+    })
+    .await;
+    let relay_of = |task_id: &str| -> String {
+        let relays = relay_messages(&crate::common::read_root_events(data.path()));
+        relays
+            .into_iter()
+            .find(|(_, body)| body["task"]["id"].as_str() == Some(task_id))
+            .map(|(id, _)| id)
+            .expect("结果卡 relay")
+    };
+    let guarded_relay = relay_of(guarded.id.as_str());
+
+    // 判通过后 C 自动开跑：先备好 C 的报告脚本再判。
+    router.push_thin_for(
+        downstream.id.as_str(),
+        report_sse(2, "call-c-report", "ready", "估算：少了 3 条", None),
+    );
+    router.push_thin_for(downstream.id.as_str(), crate::common::text_sse("好"));
+    let judged = host
+        .dispatch(Call::GateJudge(GateJudgeRequest {
+            gate_task: gate.id.as_str().to_owned(),
+            gate_report: gate_report.as_str().to_owned(),
+            conclusion: GateJudgeConclusion::Pass,
+            note: None,
+        }))
+        .await
+        .expect("判通过");
+    assert!(matches!(judged, Response::GateJudge(_)));
+
+    let decision = accept_result_card(&host, &guarded_relay).await;
+    assert_eq!(decision["phase"], "confirmed", "{decision}");
+    let store = tasks_store(data.path());
+    assert_eq!(store.stage(&guarded.id).unwrap(), Stage::Closed);
+    assert_eq!(store.stage(&gate.id).unwrap(), Stage::Closed);
+
+    wait_until("C 结果卡 relay", || {
+        tasks_store(data.path())
+            .task(&downstream.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_report().map(|report| report.state))
+            == Some(ReportState::Ready)
+            && relay_messages(&crate::common::read_root_events(data.path()))
+                .iter()
+                .any(|(_, body)| body["task"]["id"] == downstream.id.as_str())
+    })
+    .await;
+    let downstream_relay = relay_of(downstream.id.as_str());
+    let decision = accept_result_card(&host, &downstream_relay).await;
+    assert_eq!(decision["phase"], "confirmed", "{decision}");
+    assert_eq!(store.stage(&downstream.id).unwrap(), Stage::Closed);
+    assert_eq!(store.stage(&root.id).unwrap(), Stage::Closed);
 }

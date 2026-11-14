@@ -7,8 +7,9 @@ use rusqlite::params;
 
 use super::Store;
 use crate::{
-    Acceptance, AttemptEnd, ConversationId, ModelChoice, NewReport, NewTask, ReportOrigin,
-    ReportState, RequirementVersion, Stage, TaskError, TaskPolicy, VersionSource, Worktree,
+    Acceptance, AttemptEnd, ConversationId, ModelChoice, NewReport, NewTask, ReportId,
+    ReportOrigin, ReportState, RequirementVersion, Stage, TaskError, TaskPolicy, VersionSource,
+    Worktree,
 };
 
 const T0: i64 = 1_700_000_000_000;
@@ -205,7 +206,7 @@ fn task_update_refuses_an_empty_scope() {
 }
 
 #[test]
-fn acceptance_binds_the_current_version_and_the_report_without_changing_the_stage() {
+fn acceptance_binds_the_current_version_and_the_report_and_closes_the_task() {
     let (_directory, store) = open_store();
     let (_cwd_directory, cwd) = task_cwd();
     let task = store
@@ -217,19 +218,20 @@ fn acceptance_binds_the_current_version_and_the_report_without_changing_the_stag
         .unwrap();
     assert_eq!(store.stage(&task.id).unwrap(), Stage::ReadyForReview);
 
-    let acceptance = store.accept(&task.id, T0 + 3).unwrap();
+    // T054：卡上那份 report id 传进来，接受后任务关闭。
+    let acceptance = store.accept(&task.id, &report, T0 + 3).unwrap();
     assert_eq!(
         acceptance,
         Acceptance {
             version: 1,
-            report_id: report,
+            report_id: report.clone(),
             at: T0 + 3,
         }
     );
     let stored = store.task(&task.id).unwrap().unwrap();
-    assert_eq!(stored.acceptance, Some(acceptance));
+    assert_eq!(stored.acceptances, vec![acceptance]);
     assert_eq!(stored.requirement_version(), 1);
-    assert_eq!(store.stage(&task.id).unwrap(), Stage::ReadyForReview);
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::Closed);
 }
 
 #[test]
@@ -245,11 +247,21 @@ fn a_report_from_before_a_task_update_is_not_acceptable() {
         .unwrap();
     store.update_write_scope(&task.id, "rank", T0 + 3).unwrap();
 
-    let result = store.accept(&task.id, T0 + 4);
+    let old_report = store
+        .task(&task.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .map(|report| report.id.clone())
+        .unwrap();
+    let result = store.accept(&task.id, &old_report, T0 + 4);
     let message = result.expect_err("旧版本的报告不能接受").to_string();
-    assert!(message.contains("版本"), "拒绝原因写明版本：{message}");
+    assert!(
+        message.contains("要求改过了") && message.contains("第 1 版"),
+        "拒绝原因写明要求改过了：{message}"
+    );
     let stored = store.task(&task.id).unwrap().unwrap();
-    assert_eq!(stored.acceptance, None, "旧报告不绑新版本");
+    assert!(stored.acceptances.is_empty(), "旧报告不绑新版本");
     assert_eq!(stored.requirement_version(), 2);
     assert_eq!(store.stage(&task.id).unwrap(), Stage::ReadyForReview);
 }
@@ -276,9 +288,10 @@ fn a_new_report_after_a_task_update_binds_the_new_version() {
         .unwrap();
     assert_ne!(first_report, second_report);
 
-    let acceptance = store.accept(&task.id, T0 + 7).unwrap();
+    let acceptance = store.accept(&task.id, &second_report, T0 + 7).unwrap();
     assert_eq!(acceptance.version, 2);
     assert_eq!(acceptance.report_id, second_report);
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::Closed);
 }
 
 #[test]
@@ -293,12 +306,19 @@ fn accepting_the_same_report_twice_returns_the_same_record() {
         .record_report(&task.id, attempt, ready_report(), T0 + 2)
         .unwrap();
 
-    let first = store.accept(&task.id, T0 + 3).unwrap();
-    let second = store.accept(&task.id, T0 + 9).unwrap();
+    let report = store
+        .task(&task.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .map(|report| report.id.clone())
+        .unwrap();
+    let first = store.accept(&task.id, &report, T0 + 3).unwrap();
+    let second = store.accept(&task.id, &report, T0 + 9).unwrap();
     assert_eq!(second, first, "重复接受不另记一条");
     let stored = store.task(&task.id).unwrap().unwrap();
-    assert_eq!(stored.acceptance, Some(first));
-    assert_eq!(store.stage(&task.id).unwrap(), Stage::ReadyForReview);
+    assert_eq!(stored.acceptances, vec![first]);
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::Closed);
 }
 
 #[test]
@@ -309,13 +329,13 @@ fn accepting_without_a_report_is_refused() {
         .create_task_with(draft(&cwd), policy(Some("notes")), T0)
         .unwrap();
 
-    let result = store.accept(&task.id, T0 + 1);
+    let result = store.accept(&task.id, &ReportId::from("missing"), T0 + 1);
     assert!(
-        matches!(result, Err(TaskError::NoReportToAccept)),
+        matches!(result, Err(TaskError::ReportNotReady)),
         "{result:?}"
     );
     let stored = store.task(&task.id).unwrap().unwrap();
-    assert_eq!(stored.acceptance, None);
+    assert!(stored.acceptances.is_empty());
     assert_eq!(store.stage(&task.id).unwrap(), Stage::Pending);
 }
 
@@ -381,6 +401,7 @@ fn old_task_rows_without_the_new_fields_read_as_empty() {
             "worktree_state",
             "versions",
             "acceptance",
+            "acceptances",
         ] {
             value.as_object_mut().unwrap().remove(key);
         }
@@ -397,7 +418,155 @@ fn old_task_rows_without_the_new_fields_read_as_empty() {
     assert!(!loaded.worktree);
     assert!(loaded.worktree_state.is_none());
     assert!(loaded.versions.is_empty());
-    assert_eq!(loaded.acceptance, None);
+    assert!(loaded.acceptances.is_empty());
     assert_eq!(loaded.requirement_version(), 0);
     assert_eq!(store.stage(&task.id).unwrap(), Stage::Pending);
+}
+
+#[test]
+fn a_blocked_report_is_not_acceptable() {
+    let (_directory, store) = open_store();
+    let (_cwd_directory, cwd) = task_cwd();
+    let task = store
+        .create_task_with(draft(&cwd), policy(Some("notes")), T0)
+        .unwrap();
+    let attempt = store.begin_attempt(&task.id, T0 + 1).unwrap();
+    let report = store
+        .record_report(
+            &task.id,
+            attempt,
+            NewReport {
+                state: ReportState::Blocked,
+                origin: ReportOrigin::Agent,
+                summary: "缺一个链接样本".to_owned(),
+                question: Some("给我一条样本".to_owned()),
+            },
+            T0 + 2,
+        )
+        .unwrap();
+    let result = store.accept(&task.id, &report, T0 + 3);
+    assert!(
+        matches!(result, Err(TaskError::ReportNotReady)),
+        "{result:?}"
+    );
+    assert!(
+        store
+            .task(&task.id)
+            .unwrap()
+            .unwrap()
+            .acceptances
+            .is_empty()
+    );
+}
+
+#[test]
+fn an_older_report_after_a_new_one_is_refused() {
+    let (_directory, store) = open_store();
+    let (_cwd_directory, cwd) = task_cwd();
+    let task = store
+        .create_task_with(draft(&cwd), policy(Some("notes")), T0)
+        .unwrap();
+    let first_attempt = store.begin_attempt(&task.id, T0 + 1).unwrap();
+    let first_report = store
+        .record_report(&task.id, first_attempt, ready_report(), T0 + 2)
+        .unwrap();
+    store
+        .end_attempt(&task.id, first_attempt, T0 + 3, AttemptEnd::Reported)
+        .unwrap();
+    let second_attempt = store.begin_attempt(&task.id, T0 + 4).unwrap();
+    let second_report = store
+        .record_report(&task.id, second_attempt, ready_report(), T0 + 5)
+        .unwrap();
+    assert_ne!(first_report, second_report);
+
+    let result = store.accept(&task.id, &first_report, T0 + 6);
+    let message = result.expect_err("旧报告不能接受").to_string();
+    assert!(message.contains("已经变了"), "回原因：{message}");
+    assert!(
+        store
+            .task(&task.id)
+            .unwrap()
+            .unwrap()
+            .acceptances
+            .is_empty()
+    );
+}
+
+#[test]
+fn acceptances_keep_history_after_a_requirement_change() {
+    let (_directory, store) = open_store();
+    let (_cwd_directory, cwd) = task_cwd();
+    let task = store
+        .create_task_with(draft(&cwd), policy(Some("notes")), T0)
+        .unwrap();
+    let first_attempt = store.begin_attempt(&task.id, T0 + 1).unwrap();
+    let first_report = store
+        .record_report(&task.id, first_attempt, ready_report(), T0 + 2)
+        .unwrap();
+    let first_acceptance = store.accept(&task.id, &first_report, T0 + 3).unwrap();
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::Closed);
+
+    // 要求改过（本票只有写集版本；文本回填在 T054.2）：旧接受只是历史，阶段重新派生。
+    store
+        .end_attempt(&task.id, first_attempt, T0 + 4, AttemptEnd::Reported)
+        .unwrap();
+    store.update_write_scope(&task.id, "rank", T0 + 5).unwrap();
+    let stored = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(stored.requirement_version(), 2);
+    assert_eq!(stored.acceptances, vec![first_acceptance.clone()]);
+    assert_ne!(store.stage(&task.id).unwrap(), Stage::Closed);
+
+    let second_attempt = store.begin_attempt(&task.id, T0 + 6).unwrap();
+    let second_report = store
+        .record_report(&task.id, second_attempt, ready_report(), T0 + 7)
+        .unwrap();
+    let second_acceptance = store.accept(&task.id, &second_report, T0 + 8).unwrap();
+    let stored = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(
+        stored.acceptances,
+        vec![first_acceptance, second_acceptance],
+        "历史保留，旧的接受不删"
+    );
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::Closed);
+}
+
+#[test]
+fn old_rows_with_a_single_acceptance_read_it_as_the_first_history_item() {
+    let (_directory, store) = open_store();
+    let (_cwd_directory, cwd) = task_cwd();
+    let task = store
+        .create_task_with(draft(&cwd), policy(Some("notes")), T0)
+        .unwrap();
+    let attempt = store.begin_attempt(&task.id, T0 + 1).unwrap();
+    let report = store
+        .record_report(&task.id, attempt, ready_report(), T0 + 2)
+        .unwrap();
+    let acceptance = store.accept(&task.id, &report, T0 + 3).unwrap();
+
+    {
+        let conn = store.conn.lock().unwrap();
+        let raw: String = conn
+            .query_row(
+                "SELECT value FROM task WHERE id = ?1",
+                params![task.id.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("acceptances");
+        object.insert(
+            "acceptance".to_owned(),
+            serde_json::to_value(&acceptance).unwrap(),
+        );
+        conn.execute(
+            "UPDATE task SET value = ?1 WHERE id = ?2",
+            params![value.to_string(), task.id.as_str()],
+        )
+        .unwrap();
+    }
+
+    let loaded = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(loaded.acceptances, vec![acceptance]);
+    assert_eq!(store.stage(&task.id).unwrap(), Stage::Closed);
 }

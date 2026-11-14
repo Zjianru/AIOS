@@ -1438,39 +1438,62 @@ impl Store {
         Ok((report_id, true))
     }
 
-    /// 用户接受当前版本和最近一份报告；只记接受，不改阶段（03 篇 5.1、5.4）。
+    /// 用户接受卡上的那份报告：绑报告和要求版本，追加进接受历史（03 篇 5.1、5.4；T054）。
     ///
-    /// 只接受当前要求版本的报告：task_update 之前的旧报告不因为「最新」就绑到新版本上。
-    /// 同一份报告重复接受返回同一条记录，不改时间，也不另存一条。
-    pub fn accept(&self, id: &TaskId, now: i64) -> Result<Acceptance, TaskError> {
+    /// 顺序：找不到/不是 ready → 拒；门任务自己 → 拒；不是最近报告 → 「已经变了」；
+    /// 版本不是当前 → 「要求改过了」；有门但门没对这份判通过 → 拒；同一报告重复接受幂等。
+    pub fn accept(
+        &self,
+        id: &TaskId,
+        report_id: &ReportId,
+        now: i64,
+    ) -> Result<Acceptance, TaskError> {
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load_task_required(&transaction, id)?;
-        let Some(report) = task.latest_report() else {
-            return Err(TaskError::NoReportToAccept);
-        };
-        let report_id = report.id.clone();
-        let report_version = report.version;
-        if let Some(existing) = &task.acceptance
-            && existing.report_id == report_id
-            && existing.version == report_version
-        {
+        // 同一报告同版本幂等：重复点返回已有接受，不改时间。
+        if let Some(existing) = task.acceptance_for(report_id) {
             transaction.commit()?;
             return Ok(existing.clone());
         }
+        let Some(report) = task
+            .reports
+            .iter()
+            .find(|report| &report.id == report_id)
+            .cloned()
+        else {
+            return Err(TaskError::ReportNotReady);
+        };
+        if report.state != ReportState::Ready {
+            return Err(TaskError::ReportNotReady);
+        }
+        if task.is_gate() {
+            return Err(TaskError::GateTaskCannotAccept);
+        }
+        let Some(latest) = task.latest_report() else {
+            return Err(TaskError::NoReportToAccept);
+        };
+        if latest.id != *report_id {
+            return Err(TaskError::ReportNotLatest);
+        }
         let current = task.requirement_version();
-        if report_version != current {
+        if report.version != current {
             return Err(TaskError::ReportNotCurrentVersion {
-                report: report_version,
+                report: report.version,
                 current,
             });
         }
+        if let Some(gate) = gate_for_guarded(&transaction, &task)?
+            && !gate.passed(report_id)
+        {
+            return Err(TaskError::GateNotPassed);
+        }
         let acceptance = Acceptance {
             version: current,
-            report_id,
+            report_id: report_id.clone(),
             at: now,
         };
-        task.acceptance = Some(acceptance.clone());
+        task.acceptances.push(acceptance.clone());
         save_task(&transaction, &task)?;
         transaction.commit()?;
         Ok(acceptance)
@@ -1725,7 +1748,7 @@ fn task_row(
         reports: Vec::new(),
         inputs: Vec::new(),
         versions,
-        acceptance: None,
+        acceptances: Vec::new(),
         parent,
         needs,
         arrangement,
@@ -1998,6 +2021,10 @@ fn stage_with_graph(connection: &Connection, task: &Task) -> Result<Stage, TaskE
     }
     let launch_queued = effect_pending_in(connection, EffectKind::Launch, task.id.as_str())?;
     let stage = task.stage(launch_queued);
+    // T054：接受后的「已关闭」（门任务跟着被把关任务关；总任务由 children 的 rank 汇总到 Closed）。
+    if closed_in(connection, task)? {
+        return Ok(Stage::Closed);
+    }
     // T053：门任务和被把关任务的阶段覆盖（03 篇 5.1 新增「任务要求已满足」）。
     if let Some(parent) = &task.parent {
         let siblings = children_in(connection, parent)?;
@@ -2034,6 +2061,39 @@ fn stage_with_graph(connection: &Connection, task: &Task) -> Result<Stage, TaskE
         }
     }
     Ok(stage)
+}
+
+// T054：按事实派生「已关闭」——当前版本的最新 ready 报告被接受（有门的还要门判通过）；
+// 门任务在被把关任务关闭后关闭。总任务的全关闭由 stage_with_graph 的 rank 汇总得到。
+fn closed_in(connection: &Connection, task: &Task) -> Result<bool, TaskError> {
+    if task.is_gate() {
+        let Some(need) = task.needs.first() else {
+            return Ok(false);
+        };
+        let guarded = load_task_required(connection, &need.from)?;
+        return Ok(stage_with_graph(connection, &guarded)? == Stage::Closed);
+    }
+    if task.is_graph_root() {
+        return Ok(false);
+    }
+    let Some(latest) = task
+        .latest_report()
+        .filter(|report| report.state == ReportState::Ready)
+    else {
+        return Ok(false);
+    };
+    if latest.version != task.requirement_version() {
+        return Ok(false);
+    }
+    if task.acceptance_for(&latest.id).is_none() {
+        return Ok(false);
+    }
+    if let Some(gate) = gate_for_guarded(connection, task)?
+        && !gate.passed(&latest.id)
+    {
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 fn generate_id(connection: &Connection) -> Result<String, TaskError> {

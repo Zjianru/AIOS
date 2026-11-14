@@ -886,6 +886,9 @@ pub struct CardActRequest {
     /// 门「需修正」时用户原话（原样存）；其他动作不用。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// T054：结果卡上的报告 id（接受时用卡上那份，不再拿最近报告猜）。
+    #[serde(default, rename = "reportId", skip_serializing_if = "Option::is_none")]
+    pub report_id: Option<String>,
 }
 
 /// 确认卡/结果卡上的按钮；按钮文案和动作由程序定，模型给不了。
