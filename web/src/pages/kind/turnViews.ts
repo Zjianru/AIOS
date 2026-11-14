@@ -791,7 +791,7 @@ export function deriveTurnViews(
           if (changed) upstreamChangedTasks.add(changed.downstreamId);
           break;
         }
-        const relay = parseTaskRelay(data.message, event.time / 1000);
+        const relay = parseTaskRelay(data.message, event.time / 1000, event.seq);
         if (relay) {
           // 下游交出新 ready 报告：需重评标记清除。
           upstreamChangedTasks.delete(relay.taskId);

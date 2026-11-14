@@ -299,6 +299,25 @@ test('写任务：点「要求修改」→ 卡进输入框 → 带一句话发�
       'placeholder',
       '要改什么？Kind 会按你说的出一版新要求给你确认',
     );
+    // 故事 11：输入框里这张卡跟着草稿存；刷新后还在（占位还是改要求那句）。
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          Object.keys(localStorage).some(
+            (key) =>
+              key.startsWith('aios.kind.draft.') &&
+              (localStorage.getItem(key) ?? '').includes('"resultCard"'),
+          ),
+        ),
+      )
+      .toBe(true);
+    await page.reload();
+    await expect(composerCard).toBeVisible({ timeout: 30_000 });
+    await expect(composerCard).toContainText('第 1 版的结果');
+    await expect(input).toHaveAttribute(
+      'placeholder',
+      '要改什么？Kind 会按你说的出一版新要求给你确认',
+    );
     await input.fill('标题也拿不到的别丢，用域名加路径当键');
     await page.getByRole('button', { name: '发送', exact: true }).click();
 
@@ -317,6 +336,11 @@ test('写任务：点「要求修改」→ 卡进输入框 → 带一句话发�
     await confirm.locator('[data-action="card-option"]').first().click();
     await confirm.locator('[data-action="card-confirm"]').click();
     await expect(confirm).toHaveAttribute('data-state', 'done', { timeout: 40_000 });
+
+    // T054.2 F1：回执一到、新版本结果卡还没出来时，旧卡就已经不能接受/要求修改。
+    const oldFirst = resultCards(page, WRITE_CARD_TITLE).first();
+    await expect(oldFirst.locator('[data-kind="task-accept"]')).toHaveCount(0);
+    await expect(oldFirst.locator('[data-kind="task-modify-requirement"]')).toHaveCount(0);
 
     // 第 2 版要求的结果卡出现；旧卡不再有接受按钮，标题带「· 第 2 版要求」。
     const second = lastResultCard(page, WRITE_CARD_TITLE);
@@ -415,6 +439,43 @@ test('已关闭的任务再改要求：卡上没有按钮也从 Kind 说一句�
     expect(task.acceptances?.[0]?.version).toBe(2);
     expect(task.requirement).toContain('按域名归并');
     expect(task.versions?.[0]?.requirement).toContain('把 hello.txt 里按整条链接判重');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('F1 窗口：确认改要求后、新结果卡出来前，旧卡已经不能接受/要求修改', async ({ page }) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture({ t054: 'updateWindow' });
+  try {
+    await page.goto(urlOf(fixture));
+    await sendKind(page, '把 hello.txt 的判重改成按 url');
+    const first = reviewCard(page);
+    await expect(first).toBeVisible({ timeout: 60_000 });
+    await expect(first.locator('[data-kind="task-accept"]')).toBeVisible();
+    await first.locator('[data-kind="task-modify-requirement"]').click();
+    const input = page.locator('[data-kind="composer-input"]');
+    await input.fill('标题也拿不到的别丢，用域名加路径当键');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    const confirm = page.locator('[data-kind="confirm-card"]').last();
+    await expect(confirm).toBeVisible({ timeout: 60_000 });
+    await confirm.locator('[data-action="card-option"]').first().click();
+    await confirm.locator('[data-action="card-confirm"]').click();
+    await expect(confirm).toHaveAttribute('data-state', 'done', { timeout: 40_000 });
+
+    // 第 2 版这次 Attempt 的 ThinAgent 回放被卡住：新结果卡不会出来，窗口是稳定的。
+    await expect(first.locator('[data-kind="task-accept"]')).toHaveCount(0);
+    await expect(first.locator('[data-kind="task-modify-requirement"]')).toHaveCount(0);
+    await expect(first.locator('[data-kind="open-task"]')).toBeVisible();
+
+    // 刷新重建同一条派生：旧卡还是只剩打开任务对话。
+    await page.reload();
+    await expect(first).toBeVisible({ timeout: 30_000 });
+    await expect(first.locator('[data-kind="task-accept"]')).toHaveCount(0);
+    await expect(first.locator('[data-kind="task-modify-requirement"]')).toHaveCount(0);
+    await page.waitForTimeout(500);
+    await expect(page.locator('[data-kind="task-result"]')).toHaveCount(1);
+    expect((taskOf(fixture, WRITE_TITLE).versions ?? []).length).toBe(2);
   } finally {
     await fixture.close();
   }

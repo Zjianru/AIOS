@@ -78,9 +78,15 @@ impl ReplayScript {
                 .and_then(serde_json::Value::as_str)
                 .map(|raw| base.join(raw));
             let log = Self::from_log_with_override(&base.join(file), override_path.as_deref())?;
+            // T054.2 F1 e2e：路由可写 "hang": true 让这一轮请求一直不收尾，
+            // 用来稳定卡在「确认改要求之后、新结果卡出来之前」的那个窗口。
+            let hang = entry
+                .get("hang")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
             routes.push(ReplayRoute {
                 contains: contains.to_owned(),
-                calls: log.calls,
+                calls: if hang { vec![ReplayCall::Hang] } else { log.calls },
                 pace_ms: entry.get("paceMs").and_then(serde_json::Value::as_u64),
             });
         }

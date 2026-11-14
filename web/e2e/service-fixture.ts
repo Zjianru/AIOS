@@ -315,7 +315,7 @@ export interface FixtureOptions {
   t053Gate?: boolean;
   /// T054：调查任务夹具（Kind 直接 task_accept 无写集）；oldCard 是写任务交两份结果；
   /// update 是写任务交结果后改要求（带结果卡进输入框、第 2/3 版要求）。
-  t054?: 'investigation' | 'oldCard' | 'update';
+  t054?: 'investigation' | 'oldCard' | 'update' | 'updateWindow';
 }
 
 /** T024.4：双会话回放用哪份按请求体路由的文件；预写会话的两种不需要。 */
@@ -432,7 +432,8 @@ export async function startKernelFixture(
     options.t029Restart !== undefined ||
     options.t030 !== undefined ||
     options.t054 === 'oldCard' ||
-    options.t054 === 'update'
+    options.t054 === 'update' ||
+    options.t054 === 'updateWindow'
   ) {
     await writeFile(path.join(dataDir, 'hello.txt'), 'hello from fixture\n');
     // 页头写入范围用例：任务目录里的另一个文件。

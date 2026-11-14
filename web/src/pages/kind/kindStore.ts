@@ -511,8 +511,29 @@ function applyCardSignals(views: TurnViewData[]): TurnViewData[] {
  * T054：结果卡上的「接受」「要求修改」由会话事实派生：只给每个任务最后一张结果卡，
  * 且它 ready、未接受；有门的要门已判通过（门任务自己的卡不出）。
  */
+/** T054.2 F1：每个任务「确认改要求」回执的 seq；比它早的结果卡已经是旧版本。 */
+function requirementChangeSeqs(): Map<string, number> {
+  const seqs = new Map<string, number>();
+  for (const event of liveEvents) {
+    if (event.type !== 'card/decision') continue;
+    const decision = event.data as unknown as {
+      action?: unknown;
+      phase?: unknown;
+      data?: { result?: { task_id?: unknown } };
+    };
+    if (decision?.action !== 'update_task_requirement' || decision.phase !== 'confirmed') continue;
+    const taskId = decision.data?.result?.task_id;
+    if (typeof taskId !== 'string' || taskId === '') continue;
+    if (typeof event.seq !== 'number') continue;
+    const current = seqs.get(taskId);
+    if (current === undefined || event.seq < current) seqs.set(taskId, event.seq);
+  }
+  return seqs;
+}
+
 function applyAcceptEligibility(views: TurnViewData[]): TurnViewData[] {
   const lastCard = new Map<string, string>();
+  const changedSeqs = requirementChangeSeqs();
   for (const view of views) {
     for (const fact of view.taskResults) {
       if (fact.id.startsWith('task-report:')) lastCard.set(fact.taskId, fact.id);
@@ -528,12 +549,18 @@ function applyAcceptEligibility(views: TurnViewData[]): TurnViewData[] {
         fact.decision?.phase === 'confirmed' &&
         !(gateSelf && fact.decision.data?.conclusion !== undefined);
       const gatePassed = fact.gate?.state !== 'waiting' || fact.gateVerdict === 'pass';
+      // T054.2 F1：确认改要求之后、新版本结果卡出来之前，旧版本的结果卡已经是旧卡：
+      // 接受和「要求修改」一起收起来（刷新按同一条回执重建）。
+      const changedSeq = changedSeqs.get(fact.taskId);
+      const staleAfterChange =
+        fact.seq !== undefined && changedSeq !== undefined && fact.seq < changedSeq;
       const acceptable =
         lastCard.get(fact.taskId) === fact.id &&
         fact.state === 'ready' &&
         !gateSelf &&
         gatePassed &&
-        !accepted;
+        !accepted &&
+        !staleAfterChange;
       if ((fact.acceptable === true) === acceptable) return fact;
       changed = true;
       return { ...fact, acceptable };
@@ -954,12 +981,14 @@ export const useKindStore = create<KindState>()((set, get) => ({
     try {
       const page = await fetchEventsPage({ maxMessages: 100, minMessages: 10, minTurns: 5 });
       rememberCardSignals(page.events);
+      // 先换上这页日志再折视图：T054.2 F1 的「改要求回执 seq」等派生要读到这一页里的
+      // card/decision，否则刷新后旧结果卡的按钮会先按旧规则出来、之后也没人重算。
+      liveEvents = page.events.slice();
       const views = finishViews(
         mergeCcViews(deriveTurnViews(page.events, turnLabels()), page.events),
       );
       const lastSeqOfPage = page.events[page.events.length - 1]?.seq ?? 0;
       const oldestSeq = page.events[0]?.seq ?? null;
-      liveEvents = page.events.slice();
       liveTurn = null;
       for (const event of page.events) {
         if (event.type === 'turn/start' && typeof event.data.turn === 'number') {

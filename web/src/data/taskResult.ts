@@ -101,6 +101,8 @@ export interface TaskResultFact {
   reportId?: string;
   /** T054：这份报告绑的要求版本（服务 relay 给；旧日志可缺）。 */
   reportVersion?: number;
+  /** T054.2：这条 relay 事件的日志 seq（和 card/decision 的 seq 比先后；旧路径可缺）。 */
+  seq?: number;
   /** T054：这张卡现在能点「接受」「要求修改」（由会话事实派生，kindStore 算）。 */
   acceptable?: boolean;
   /** T053：被把关任务卡的门判定结论（只匹配这张卡那份报告；刷新可重建）。 */
@@ -398,7 +400,11 @@ export function taskResultCardOf(
 }
 
 /** 从一条 user/message 认 relay：request id 前缀 + JSON 形状；任一步不对都返回 null。 */
-export function parseTaskRelay(message: unknown, at: number): TaskResultFact | null {
+export function parseTaskRelay(
+  message: unknown,
+  at: number,
+  seq?: number,
+): TaskResultFact | null {
   if (!isRecord(message)) return null;
   const source = message.source;
   if (!isRecord(source) || source.kind !== 'user') return null;
@@ -488,6 +494,7 @@ export function parseTaskRelay(message: unknown, at: number): TaskResultFact | n
     ...(gate === undefined ? {} : { gate }),
     ...(reportId === undefined ? {} : { reportId }),
     ...(reportVersion === undefined ? {} : { reportVersion }),
+    ...(typeof seq === 'number' && Number.isFinite(seq) ? { seq } : {}),
     ...(cardState === undefined ? {} : { cardState }),
   };
 }
