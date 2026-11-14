@@ -30,6 +30,7 @@ import {
   ccViewOf,
   compactionViewOf,
   deriveTurnViews,
+  gateVerdictOf,
   mergeCanvasTracks,
   prependOlderViews,
   reconcileTaskCards,
@@ -416,9 +417,39 @@ const liveToolCalls = new Map<string, { name: string; arguments: string }>();
  */
 let taskCardStates: ReadonlyMap<string, TaskReadHeader> = new Map();
 
-/** 折卡之后再套任务库事实（T038 折卡 + T041 状态映射）。 */
+/** T053：门判定 relay 回填被把关任务卡状态词（live 和刷新共用；按任务 id 记最近一次）。 */
+let gateVerdictByTask: ReadonlyMap<string, 'pass' | 'needs_fix'> = new Map();
+
+function rememberGateVerdicts(events: readonly ServiceEvent[]): void {
+  let next = gateVerdictByTask;
+  for (const event of events) {
+    if (event.type !== 'user/message') continue;
+    const routed = gateVerdictOf(event.data?.message);
+    if (!routed) continue;
+    if (next.get(routed.taskId) === routed.conclusion) continue;
+    next = new Map(next).set(routed.taskId, routed.conclusion);
+  }
+  gateVerdictByTask = next;
+}
+
+function applyGateVerdicts(views: TurnViewData[]): TurnViewData[] {
+  if (gateVerdictByTask.size === 0) return views;
+  return views.map((view) => {
+    if (!view.taskResults.some((fact) => gateVerdictByTask.has(fact.taskId))) return view;
+    return {
+      ...view,
+      taskResults: view.taskResults.map((fact) => {
+        const verdict = gateVerdictByTask.get(fact.taskId);
+        if (!verdict || fact.gateVerdict === verdict) return fact;
+        return { ...fact, gateVerdict: verdict };
+      }),
+    };
+  });
+}
+
+/** 折卡之后再套任务库事实（T038 折卡 + T041 状态映射 + T053 门判定状态词）。 */
 function finishViews(views: TurnViewData[]): TurnViewData[] {
-  return applyTaskCardStates(reconcileTaskCards(views), taskCardStates);
+  return applyGateVerdicts(applyTaskCardStates(reconcileTaskCards(views), taskCardStates));
 }
 
 /** 从还没流完的参数 JSON 里取 canvas 的 title；还没流到（或半个转义）就先给空串。 */
@@ -500,6 +531,7 @@ function applyLiveEvent(event: ServiceEvent): void {
   }
   if (event.seq <= lastSeq) return;
   lastSeq = event.seq;
+  rememberGateVerdicts([event]);
   liveEvents.push(event);
   // T028.5：抄送 Kind 的行（inbox/spliced 或领取后的 user/message）单独成行，不是一轮。
   if (event.type === 'agent/inbox/spliced' || event.type === 'user/message') {
@@ -820,6 +852,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   loadInitial: async () => {
     try {
       const page = await fetchEventsPage({ maxMessages: 100, minMessages: 10, minTurns: 5 });
+      rememberGateVerdicts(page.events);
       const views = finishViews(
         mergeCcViews(deriveTurnViews(page.events, turnLabels()), page.events),
       );

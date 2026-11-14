@@ -92,6 +92,40 @@ export interface CanvasVersionView {
 /** T028.5：抄送 Kind 的 request id 前缀（服务端 task-cc:<inputId>）。 */
 const TASK_CC_PREFIX = 'task-cc:';
 
+/** T053：gate-verdict relay 的事实：结论和它判的那个任务 id。 */
+export function gateVerdictOf(
+  message: unknown,
+): { taskId: string; conclusion: 'pass' | 'needs_fix' } | null {
+  if (typeof message !== 'object' || message === null) return null;
+  const content = (message as { content?: unknown }).content;
+  if (!Array.isArray(content)) return null;
+  const text = content
+    .map((block) =>
+      typeof block === 'object' && block !== null && typeof (block as { text?: unknown }).text === 'string'
+        ? (block as { text: string }).text
+        : '',
+    )
+    .join('');
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof body !== 'object' || body === null) return null;
+  const record = body as {
+    kind?: unknown;
+    conclusion?: unknown;
+    candidate?: { task?: { id?: unknown } };
+  };
+  if (record.kind !== 'gate_verdict') return null;
+  const taskId = record.candidate?.task?.id;
+  const conclusion = record.conclusion;
+  if (typeof taskId !== 'string' || taskId === '') return null;
+  if (conclusion !== 'pass' && conclusion !== 'needs_fix') return null;
+  return { taskId, conclusion };
+}
+
 /** 消息的 source.rpcId（只认 source.kind=user）。 */
 function userRpcIdOf(message: unknown): string | null {
   if (!message || typeof message !== 'object') return null;
@@ -429,6 +463,8 @@ export function deriveTurnViews(
   }
   const cardEntries = new Map<string, CardEntry>();
   const cardDecisions = new Map<string, ConfirmDecision>();
+  // T053：门判定 relay（gate-verdict）按被把关任务 id 回填结果卡状态词，刷新可重建。
+  const gateVerdicts = new Map<string, 'pass' | 'needs_fix'>();
   for (const event of events) {
     const data = event.data ?? {};
     if (event.type === 'tool/call' && data.name === 'propose_action') {
@@ -705,8 +741,13 @@ export function deriveTurnViews(
         }
         // T028.5：抄送 Kind 的那条不是用户气泡，单独由 taskCcFacts/ccViewOf 成行。
         if (taskCcOfMessage(data.message)) break;
-        // T053：门判定的 relay 只给模型看结论，不把原文 JSON 画成用户气泡。
-        if (userRpcIdOf(data.message)?.startsWith('gate-verdict:')) break;
+        // T053：门判定的 relay 只给模型看结论，不把原文 JSON 画成用户气泡；
+        // 结论回填被把关任务卡的状态词（任务要求已满足 / 需修正）。
+        if (userRpcIdOf(data.message)?.startsWith('gate-verdict:')) {
+          const relay = gateVerdictOf(data.message);
+          if (relay) gateVerdicts.set(relay.taskId, relay.conclusion);
+          break;
+        }
         const source = data.message as
           | { source?: string | { kind?: string } }
           | undefined;
@@ -975,6 +1016,8 @@ export function deriveTurnViews(
   // 结果卡的接受决定：card/decision 的 callId 就是 relay 的 request id；刷新后从日志重推。
   for (const raw of turns.values()) {
     for (const fact of raw.taskResults) {
+      const gateVerdict = gateVerdicts.get(fact.taskId);
+      if (gateVerdict) fact.gateVerdict = gateVerdict;
       const decision = cardDecisions.get(fact.id);
       if (decision) {
         fact.decision = {

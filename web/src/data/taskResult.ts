@@ -95,6 +95,8 @@ export interface TaskResultFact {
   cardState?: 'review';
   /** T053：里程碑门卡的里程碑事实（门卡 = pending_verdict，被把关卡 = waiting）。 */
   gate?: GateCardFact;
+  /** T053：被把关任务卡的门判定结论（从 gate-verdict relay 派生；刷新可重建）。 */
+  gateVerdict?: 'pass' | 'needs_fix';
   /** 接受/判定决定（card/decision 事件派生）；还没点过是 undefined。 */
   decision?: {
     phase: 'confirmed' | 'dismissed' | 'refused' | 'failed';
@@ -310,6 +312,9 @@ export function taskResultCardOf(
     status = '你判了通过';
   } else if (verdict === 'needs_fix') {
     status = '你判了需修正';
+  } else if (gate?.state === 'waiting' && fact.gateVerdict) {
+    // T053 状态词表：判后「任务要求已满足」或「需修正」。
+    status = fact.gateVerdict === 'pass' ? '任务要求已满足' : '需修正';
   } else if (gate?.state === 'waiting') {
     status = '等核查';
   }

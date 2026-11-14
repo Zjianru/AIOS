@@ -64,6 +64,10 @@ test('任务图里程碑：B 报回 → C 不跑 → 门卡等你判 → 通过 
     // 点通过：回执；C 才被放出。
     await gateCard.locator('[data-kind="gate-pass"]').click();
     await expect(gateCard.locator('[data-kind="gate-verdict"]')).toContainText('你判了通过');
+    // 被把关任务卡的状态词：判后从等核查变任务要求已满足。
+    await expect(resultCard(page, '先查行数').locator('[data-kind="task-state"]')).toContainText(
+      '任务要求已满足',
+    );
     await expect(resultCard(page, '再写结果')).toBeVisible({ timeout: 90_000 });
 
     // 刷新以后判定回执还在。
@@ -71,6 +75,10 @@ test('任务图里程碑：B 报回 → C 不跑 → 门卡等你判 → 通过 
     await expect(resultCard(page, '独立核查')).toBeVisible({ timeout: 60_000 });
     await expect(resultCard(page, '独立核查').locator('[data-kind="gate-verdict"]')).toContainText(
       '你判了通过',
+    );
+    // 刷新后被把关任务卡的状态词还在（从 gate-verdict relay 重建）。
+    await expect(resultCard(page, '先查行数').locator('[data-kind="task-state"]')).toContainText(
+      '任务要求已满足',
     );
   } finally {
     await fixture.close();
