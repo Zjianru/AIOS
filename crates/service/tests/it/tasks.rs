@@ -9861,12 +9861,28 @@ async fn task_continue_rejects_without_cause_or_while_running() {
     .await;
     router.set_thin_delay(Duration::from_secs(2));
     router.push_thin_for(guarded.id.as_str(), crate::common::text_sse("还在改"));
-    host.dispatch(Call::TaskContinue(service::TaskContinueRequest {
-        task_id: guarded.id.as_str().to_owned(),
-        note: Some("再改一版".to_owned()),
-    }))
-    .await
-    .expect("第一次接着做");
+    // 并发跑整套时执行席位/会话写者可能还没让出来，服务按 Later 回「现在接不上」；
+    // 用户再点一次就行，这里也重试到接上（第一次 Attempt 没有副作用，重试安全）。
+    let mut continued = false;
+    for _ in 0..100 {
+        match host
+            .dispatch(Call::TaskContinue(service::TaskContinueRequest {
+                task_id: guarded.id.as_str().to_owned(),
+                note: Some("再改一版".to_owned()),
+            }))
+            .await
+        {
+            Ok(_) => {
+                continued = true;
+                break;
+            }
+            Err(error) if error.to_string().contains("没有空位或会话还在收尾") => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("第一次接着做：{error}"),
+        }
+    }
+    assert!(continued, "第一次接着做一直接不上");
     wait_until("B 在跑", || {
         tasks_store(data.path())
             .task(&guarded.id)
