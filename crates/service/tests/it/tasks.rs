@@ -14,7 +14,10 @@ use service::{
     SessionModelSelectRequest, SettingsUpdateRequest, StopMode, TaskInterruptRequest,
     TaskReadRequest, TaskSayRequest, TaskStopRequest,
 };
-use tasks::{AttemptEnd, EffectKind, EffectState, ReportState, Stage, Store, Task};
+use tasks::{
+    AttemptEnd, ConversationId, EffectKind, EffectState, ModelChoice, NewReport, NewTask,
+    ReportOrigin, ReportState, Stage, Store, Task,
+};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
@@ -11197,6 +11200,55 @@ async fn update_task_requirement_reconcile_refuses_after_a_change() {
     );
 }
 
+/// T055.2：直接造一个 ready 任务（组接受用例的输入；调用面本身才是被测的接缝）。
+fn seed_ready_task(
+    store: &Store,
+    cwd: &std::path::Path,
+    title: &str,
+    at: i64,
+) -> (tasks::TaskId, tasks::ReportId) {
+    let task = store
+        .create_task(
+            NewTask {
+                title: title.to_owned(),
+                requirement: format!("{title} 的要求"),
+                dod: format!("{title} 的 DoD"),
+                cwd: cwd.to_path_buf(),
+                conversation: ConversationId::new("kind-work"),
+                model: ModelChoice {
+                    connection: "deepseek".to_owned(),
+                    model: "deepseek-flash".to_owned(),
+                    effort_wanted: "high".to_owned(),
+                },
+                tools: vec!["read".to_owned()],
+            },
+            at,
+        )
+        .unwrap();
+    let claim = store.claim_effect(EffectKind::Launch, at + 1).unwrap();
+    if let Some(claim) = claim {
+        store.complete_effect(&claim).unwrap();
+    }
+    let attempt = store.begin_attempt(&task.id, at + 2).unwrap();
+    let report = store
+        .record_report(
+            &task.id,
+            attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "查好了".to_owned(),
+                question: None,
+            },
+            at + 3,
+        )
+        .unwrap();
+    store
+        .end_attempt(&task.id, attempt, at + 4, AttemptEnd::Reported)
+        .unwrap();
+    (task.id, report)
+}
+
 /// T055.1：从调用驱动 Work——任务库 + Kind 会话派生成一份快照，结果卡在「等你」里带 pick。
 #[tokio::test]
 async fn work_call_returns_task_facts_and_the_accept_wait_item() {
@@ -11252,4 +11304,74 @@ async fn work_call_returns_task_facts_and_the_accept_wait_item() {
     assert_eq!(pick.version, 1);
     assert!(!accept.title.is_empty());
     assert!(!accept.need.is_empty());
+}
+
+/// T055.2：从调用驱动组接受——一项旧报告逐项回原话，另一项照记；被接受了才关闭。
+#[tokio::test]
+async fn task_accept_many_call_accepts_the_fresh_one_and_refuses_the_stale_one() {
+    let fixture = Fixture::new().await;
+    let store = tasks_store(fixture.data());
+    let (fresh_id, fresh_report) =
+        seed_ready_task(&store, fixture.data(), "新结果", 1_800_000_000_000);
+    let (stale_id, stale_report) =
+        seed_ready_task(&store, fixture.data(), "旧结果", 1_800_000_010_000);
+    // 旧任务再开一次 Attempt，交一份新结果：勾选时看到的那份报告已经不是最新。
+    let claim = store
+        .claim_effect(EffectKind::Launch, 1_800_000_020_000)
+        .unwrap();
+    if let Some(claim) = claim {
+        store.complete_effect(&claim).unwrap();
+    }
+    let attempt = store.begin_attempt(&stale_id, 1_800_000_021_000).unwrap();
+    store
+        .record_report(
+            &stale_id,
+            attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "更新的结果".to_owned(),
+                question: None,
+            },
+            1_800_000_022_000,
+        )
+        .unwrap();
+
+    let request = service::TaskAcceptManyRequest {
+        picks: vec![
+            service::work::WorkPick {
+                task_id: stale_id.as_str().to_owned(),
+                report_id: stale_report.as_str().to_owned(),
+                version: 1,
+            },
+            service::work::WorkPick {
+                task_id: fresh_id.as_str().to_owned(),
+                report_id: fresh_report.as_str().to_owned(),
+                version: 1,
+            },
+        ],
+    };
+    let response = fixture
+        .host
+        .dispatch(Call::TaskAcceptMany(request))
+        .await
+        .expect("task-accept-many");
+    let Response::TaskAcceptMany(response) = response else {
+        panic!("task-accept-many 响应");
+    };
+    assert!(response.accepted_at > 0);
+    assert_eq!(response.outcomes.len(), 2);
+    assert_eq!(response.outcomes[0].task_id, stale_id.as_str());
+    assert!(
+        response.outcomes[0]
+            .refused
+            .as_deref()
+            .is_some_and(|reason| reason.contains("已经变了")),
+        "{:?}",
+        response.outcomes[0].refused
+    );
+    assert_eq!(response.outcomes[1].task_id, fresh_id.as_str());
+    assert!(response.outcomes[1].refused.is_none());
+    assert_eq!(store.stage(&fresh_id).unwrap(), Stage::Closed);
+    assert_eq!(store.stage(&stale_id).unwrap(), Stage::ReadyForReview);
 }

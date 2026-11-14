@@ -123,6 +123,9 @@ impl ServiceHost {
             Call::Work(_) => Err(ServiceError::TaskUnavailable(
                 "工作快照只能由根宿主读".to_owned(),
             )),
+            Call::TaskAcceptMany(_) => Err(ServiceError::TaskUnavailable(
+                "组接受只能由根宿主做".to_owned(),
+            )),
             // recheck 只对 RootHost 有意义；裸 ServiceHost 直接回根状态 ok（宿主不回退）。
             Call::Recheck(_) => Ok(Response::Recheck(RecheckResponse {
                 root: RootState::Ok,

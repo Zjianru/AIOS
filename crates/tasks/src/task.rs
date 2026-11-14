@@ -348,6 +348,21 @@ pub struct Acceptance {
     pub at: i64,
 }
 
+/// T055.2：组接受里一项的结果；refused 是直接给页面看的原话（和 T054 结果卡接受一致）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptOutcome {
+    pub task_id: TaskId,
+    pub title: String,
+    pub refused: Option<String>,
+}
+
+/// T055.2：一次组接受的结果；通过的一起记，时间取同一批的 now。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptBatch {
+    pub accepted_at: i64,
+    pub outcomes: Vec<AcceptOutcome>,
+}
+
 /// T054：accepances 从旧行读：旧字段是一条对象，新字段是数组（别名让两种键都能读）。
 fn acceptances_from_json<'de, D>(deserializer: D) -> Result<Vec<Acceptance>, D::Error>
 where

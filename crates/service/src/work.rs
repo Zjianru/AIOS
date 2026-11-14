@@ -612,6 +612,44 @@ impl crate::root_lifecycle::RootHost {
         snapshot(runtime.tasks_store(), &events, &pending, now_millis())
             .map_err(|error| crate::error::ServiceError::TaskUnavailable(error.to_string()))
     }
+
+    /// T055.2：把勾选的一组结果交给任务库一个事务；逐项回执照 store 的原话。
+    pub(crate) fn accept_many(
+        &self,
+        request: &crate::protocol::TaskAcceptManyRequest,
+    ) -> Result<crate::protocol::TaskAcceptManyResponse, crate::error::ServiceError> {
+        let Some(runtime) = self.task_runtime() else {
+            return Err(crate::error::ServiceError::TaskUnavailable(
+                "任务库没开，接受不了结果".to_owned(),
+            ));
+        };
+        let picks: Vec<(tasks::TaskId, tasks::ReportId)> = request
+            .picks
+            .iter()
+            .map(|pick| {
+                (
+                    tasks::TaskId::from(pick.task_id.as_str()),
+                    tasks::ReportId::from(pick.report_id.as_str()),
+                )
+            })
+            .collect();
+        let batch = runtime
+            .tasks_store()
+            .accept_many(&picks, now_millis())
+            .map_err(|error| crate::error::ServiceError::TaskUnavailable(error.to_string()))?;
+        Ok(crate::protocol::TaskAcceptManyResponse {
+            accepted_at: batch.accepted_at,
+            outcomes: batch
+                .outcomes
+                .into_iter()
+                .map(|outcome| crate::protocol::TaskAcceptManyOutcome {
+                    task_id: outcome.task_id.as_str().to_owned(),
+                    title: outcome.title,
+                    refused: outcome.refused,
+                })
+                .collect(),
+        })
+    }
 }
 
 #[cfg(test)]

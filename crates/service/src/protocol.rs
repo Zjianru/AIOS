@@ -105,6 +105,8 @@ pub enum Call {
     TaskContinue(TaskContinueRequest),
     /// T055：工作页/「现在」共用的工作快照（全部任务事实 + 五种「等你」项）。
     Work(WorkRequest),
+    /// T055.2：勾选后的组接受（每项带勾选那一刻看到的报告与版本）。
+    TaskAcceptMany(TaskAcceptManyRequest),
 }
 
 /// 调用的结果（与 Call 一一对应）。
@@ -165,6 +167,8 @@ pub enum Response {
     TaskContinue(TaskContinueResponse),
     /// T055：工作页/「现在」共用的工作快照。
     Work(WorkResponse),
+    /// T055.2：组接受的结果（通过的一起记，没通过的逐项回原因）。
+    TaskAcceptMany(TaskAcceptManyResponse),
 }
 
 /// 发消息（DSH session-controller 的 prompt）。requestId 是幂等键：同一 id 只进一次。
@@ -509,6 +513,33 @@ pub struct WorkResponse {
     pub tasks: Vec<crate::work::TaskFact>,
     /// 五种「等你」项，按固定顺序、同种新的在上。
     pub wait: Vec<crate::work::WaitItem>,
+}
+
+/// T055.2：组接受的一项（页面勾选时存下的报告与版本）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskAcceptManyRequest {
+    pub picks: Vec<crate::work::WorkPick>,
+}
+
+/// T055.2：组接受里一项的结果；refused 是给页面直接显示的原因原话。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskAcceptManyOutcome {
+    pub task_id: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<String>,
+}
+
+/// T055.2：一次组接受的结果。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskAcceptManyResponse {
+    /// 这一批接受的时刻（unix 毫秒）。
+    pub accepted_at: i64,
+    /// 按勾选顺序，一项一条。
+    pub outcomes: Vec<TaskAcceptManyOutcome>,
 }
 
 /// 停法：立即停，或做完手上这一步再停（D81）。

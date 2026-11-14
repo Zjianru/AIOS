@@ -14,11 +14,11 @@ use crate::effect::{
 };
 use crate::id::{AttemptId, BootId, ConversationId, InputId, ReportId, TaskId};
 use crate::task::{
-    Acceptance, Arrangement, Attempt, AttemptEnd, AttemptTrigger, Cancellation, CancellationReason,
-    Confirmation, FrozenPolicy, GateCandidate, GateConclusion, GateVerdict, Handoff, Input,
-    InputAttachment, InputSource, MilestoneGate, MissingItem, Need, NewGraph, NewInput, NewReport,
-    NewSubtask, NewTask, Report, ReportState, RequirementVersion, Run, SayOutcome, Task,
-    TaskPolicy, VersionSource, Worktree, resolve_write_scope,
+    AcceptBatch, AcceptOutcome, Acceptance, Arrangement, Attempt, AttemptEnd, AttemptTrigger,
+    Cancellation, CancellationReason, Confirmation, FrozenPolicy, GateCandidate, GateConclusion,
+    GateVerdict, Handoff, Input, InputAttachment, InputSource, MilestoneGate, MissingItem, Need,
+    NewGraph, NewInput, NewReport, NewSubtask, NewTask, Report, ReportState, RequirementVersion,
+    Run, SayOutcome, Task, TaskPolicy, VersionSource, Worktree, resolve_write_scope,
 };
 
 /// 任务库 schema 版本；比这新的库拒绝打开。
@@ -1476,52 +1476,54 @@ impl Store {
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load_task_required(&transaction, id)?;
-        // 同一报告同版本幂等：重复点返回已有接受，不改时间。
-        if let Some(existing) = task.acceptance_for(report_id) {
-            transaction.commit()?;
-            return Ok(existing.clone());
-        }
-        let Some(report) = task
-            .reports
-            .iter()
-            .find(|report| &report.id == report_id)
-            .cloned()
-        else {
-            return Err(TaskError::ReportNotReady);
-        };
-        if report.state != ReportState::Ready {
-            return Err(TaskError::ReportNotReady);
-        }
-        if task.is_gate() {
-            return Err(TaskError::GateTaskCannotAccept);
-        }
-        let Some(latest) = task.latest_report() else {
-            return Err(TaskError::NoReportToAccept);
-        };
-        if latest.id != *report_id {
-            return Err(TaskError::ReportNotLatest);
-        }
-        let current = task.requirement_version();
-        if report.version != current {
-            return Err(TaskError::ReportNotCurrentVersion {
-                report: report.version,
-                current,
-            });
-        }
-        if let Some(gate) = gate_for_guarded(&transaction, &task)?
-            && !gate.passed(report_id)
-        {
-            return Err(TaskError::GateNotPassed);
-        }
-        let acceptance = Acceptance {
-            version: current,
-            report_id: report_id.clone(),
-            at: now,
-        };
-        task.acceptances.push(acceptance.clone());
+        let acceptance = accept_task(&transaction, &mut task, report_id, now)?;
         save_task(&transaction, &task)?;
         transaction.commit()?;
         Ok(acceptance)
+    }
+
+    /// T055.2：组接受——一个事务里逐项走 accept 的同一套校验，通过的一起记，
+    /// 没通过的只回 refused（原话照 T054）；同一报告同一版本第二次是幂等的。
+    pub fn accept_many(
+        &self,
+        picks: &[(TaskId, ReportId)],
+        now: i64,
+    ) -> Result<AcceptBatch, TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut outcomes = Vec::with_capacity(picks.len());
+        for (id, report_id) in picks {
+            match load_task_required(&transaction, id) {
+                Ok(mut task) => {
+                    let title = task.title.clone();
+                    match accept_task(&transaction, &mut task, report_id, now) {
+                        Ok(_) => {
+                            save_task(&transaction, &task)?;
+                            outcomes.push(AcceptOutcome {
+                                task_id: id.clone(),
+                                title,
+                                refused: None,
+                            });
+                        }
+                        Err(error) => outcomes.push(AcceptOutcome {
+                            task_id: id.clone(),
+                            title,
+                            refused: Some(error.to_string()),
+                        }),
+                    }
+                }
+                Err(error) => outcomes.push(AcceptOutcome {
+                    task_id: id.clone(),
+                    title: id.as_str().to_owned(),
+                    refused: Some(error.to_string()),
+                }),
+            }
+        }
+        transaction.commit()?;
+        Ok(AcceptBatch {
+            accepted_at: now,
+            outcomes,
+        })
     }
 
     /// task_update：把写入范围换成新的并追加一条要求版本（D16）；返回更新后的任务。
@@ -2055,6 +2057,59 @@ fn needs_reevaluation_in(connection: &Connection, task: &Task) -> Result<bool, T
 }
 
 /// T053：这个任务被哪个门把关（同一总任务下 needs 恰好指向它的里程碑）。
+/// T055.2：accept 与 accept_many 共用的校验（幂等在前、门任务、最新报告、当前版本、门判通过），
+/// 通过时只把 Acceptance 追加进内存里的 task，落库由调用方在本事务里做。
+fn accept_task(
+    connection: &Connection,
+    task: &mut Task,
+    report_id: &ReportId,
+    now: i64,
+) -> Result<Acceptance, TaskError> {
+    // 同一报告同版本幂等：重复点返回已有接受，不改时间。
+    if let Some(existing) = task.acceptance_for(report_id) {
+        return Ok(existing.clone());
+    }
+    let Some(report) = task
+        .reports
+        .iter()
+        .find(|report| &report.id == report_id)
+        .cloned()
+    else {
+        return Err(TaskError::ReportNotReady);
+    };
+    if report.state != ReportState::Ready {
+        return Err(TaskError::ReportNotReady);
+    }
+    if task.is_gate() {
+        return Err(TaskError::GateTaskCannotAccept);
+    }
+    let Some(latest) = task.latest_report() else {
+        return Err(TaskError::NoReportToAccept);
+    };
+    if latest.id != *report_id {
+        return Err(TaskError::ReportNotLatest);
+    }
+    let current = task.requirement_version();
+    if report.version != current {
+        return Err(TaskError::ReportNotCurrentVersion {
+            report: report.version,
+            current,
+        });
+    }
+    if let Some(gate) = gate_for_guarded(connection, task)?
+        && !gate.passed(report_id)
+    {
+        return Err(TaskError::GateNotPassed);
+    }
+    let acceptance = Acceptance {
+        version: current,
+        report_id: report_id.clone(),
+        at: now,
+    };
+    task.acceptances.push(acceptance.clone());
+    Ok(acceptance)
+}
+
 fn gate_for_guarded(connection: &Connection, task: &Task) -> Result<Option<Task>, TaskError> {
     let Some(parent) = &task.parent else {
         return Ok(None);
@@ -2392,3 +2447,7 @@ mod tests;
 #[cfg(test)]
 #[path = "work_tests.rs"]
 mod work_tests;
+
+#[cfg(test)]
+#[path = "accept_many_tests.rs"]
+mod accept_many_tests;
