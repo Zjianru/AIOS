@@ -14,8 +14,9 @@ use model::{ContentBlock, Effort, UserMessage};
 use serde_json::{Value, json};
 use session::SessionId;
 use tasks::{
-    Acceptance, Attempt, AttemptEnd, AttemptId, AttemptTrigger, BootId, BootScan, ConversationId,
-    EffectClaim, EffectKind, EffectPayload, Input, InputAttachment, MissingItem, ModelChoice,
+    Acceptance, Attempt, AttemptEnd, AttemptId, AttemptTrigger, BootId, BootScan, Cancellation,
+    CancellationReason, ContinueCause, ConversationId, EffectClaim, EffectKind, EffectPayload,
+    GateCandidate, GateConclusion, Handoff, Input, InputAttachment, MissingItem, ModelChoice,
     NewGraph, NewInput, NewReport, NewSubtask, NewTask, Report, ReportId, ReportOrigin,
     ReportState, SlotKind, Stage, StopAttempt, Store, Task, TaskError, TaskId, TaskPolicy,
     WorkerSlots,
@@ -27,9 +28,11 @@ use crate::error::ServiceError;
 use crate::events::{page_events, service_event};
 use crate::input::attachment_error;
 use crate::protocol::{
-    DeliveryMode, FollowRequest, FollowResponse, ServiceEvent, StopMode, TaskInterruptResponse,
-    TaskReadHeader, TaskReadReport, TaskReadReportOrigin, TaskReadReportState, TaskReadRequest,
-    TaskReadResponse, TaskSayRequest, TaskSayResponse, TaskStopResponse,
+    DeliveryMode, FollowRequest, FollowResponse, GateJudgeConclusion as ProtocolGateConclusion,
+    GateJudgeRequest, GateJudgeResponse, GateVerdictView, ServiceEvent, StopMode,
+    TaskContinueRequest, TaskContinueResponse, TaskInterruptResponse, TaskReadHeader,
+    TaskReadReport, TaskReadReportOrigin, TaskReadReportState, TaskReadRequest, TaskReadResponse,
+    TaskSayRequest, TaskSayResponse, TaskStopResponse,
 };
 use crate::root::RootSessionOptions;
 use crate::session_host::ServiceHost;
@@ -174,6 +177,8 @@ struct GraphSubtaskArgs {
     worktree: bool,
     /// 本提议里其他子任务的下标（0 起）。
     after: Vec<usize>,
+    /// T053：里程碑（只读核查门）；after 恰好一项，指向它把关的任务。
+    milestone: bool,
 }
 
 /// T052：task_graph_propose 的参数：总任务 + 至少两个子任务。
@@ -386,6 +391,298 @@ impl TaskRuntime {
         self.store
             .accept(&id, Self::now())
             .map_err(|error| error.to_string())
+    }
+
+    /// T053：这个任务是不是里程碑门（结果卡判定前先认）。
+    pub(crate) fn task_is_gate(&self, id: &TaskId) -> Result<bool, String> {
+        self.store
+            .task(id)
+            .map(|task| task.is_some_and(|task| task.is_gate()))
+            .map_err(|error| error.to_string())
+    }
+
+    /// T053：门判定内部操作；同一事务核对候选/去重/记判定/排 relay。
+    ///
+    /// 「已经变了」不是错误：返回 changed=true、不记判定，让卡片收成回执。
+    pub(crate) fn gate_judge(
+        &self,
+        request: &GateJudgeRequest,
+    ) -> Result<GateJudgeResponse, String> {
+        let gate_id = TaskId::from(request.gate_task.as_str());
+        let gate_report = ReportId::from(request.gate_report.as_str());
+        let conclusion = match request.conclusion {
+            ProtocolGateConclusion::Pass => GateConclusion::Pass,
+            ProtocolGateConclusion::NeedsFix => GateConclusion::NeedsFix,
+        };
+        match self.store.judge_gate(
+            &gate_id,
+            &gate_report,
+            conclusion,
+            request.note.clone(),
+            Self::now(),
+        ) {
+            Ok(outcome) => {
+                self.wake();
+                let recorded = match outcome.verdict.conclusion {
+                    GateConclusion::Pass => ProtocolGateConclusion::Pass,
+                    GateConclusion::NeedsFix => ProtocolGateConclusion::NeedsFix,
+                };
+                let summary = match outcome.verdict.conclusion {
+                    GateConclusion::Pass => "你判了通过",
+                    GateConclusion::NeedsFix => "你判了需修正",
+                };
+                Ok(GateJudgeResponse {
+                    verdict: Some(GateVerdictView {
+                        gate_report: outcome.verdict.gate_report.as_str().to_owned(),
+                        candidate_report: outcome.verdict.candidate.report_id.as_str().to_owned(),
+                        requirement_version: outcome.verdict.candidate.requirement_version,
+                        conclusion: recorded,
+                        note: outcome.verdict.note.clone(),
+                        at: outcome.verdict.at,
+                    }),
+                    changed: false,
+                    duplicate: outcome.duplicate,
+                    summary: summary.to_owned(),
+                    released: outcome.released,
+                })
+            }
+            Err(TaskError::GateReportChanged) => Ok(GateJudgeResponse {
+                verdict: None,
+                changed: true,
+                duplicate: false,
+                summary: "已经变了：没有记判定".to_owned(),
+                released: Vec::new(),
+            }),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    /// T053：Kind 让任务在原要求里接着做（用户判了需修正 / 最近报告卡住失败等）。
+    ///
+    /// 同一 Task、原会话、新 Attempt；不改要求、不改写集、不开 bash。
+    pub(crate) async fn continue_task(
+        self: &Arc<Self>,
+        request: TaskContinueRequest,
+    ) -> Result<TaskContinueResponse, String> {
+        let task_id = TaskId::from(request.task_id.as_str());
+        let task = self
+            .store
+            .task(&task_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("找不到这个任务：{}", request.task_id))?;
+        if task.is_graph_root() {
+            return Err("总任务没有执行承载，不能接着做".to_owned());
+        }
+        if task
+            .latest_attempt()
+            .is_some_and(|attempt| attempt.ended_at.is_none())
+        {
+            return Err("这个任务还在跑；等这一轮结束再让它接着做".to_owned());
+        }
+        let cause = self.continue_cause(&task)?;
+        let package = self.continue_package(&task, &cause, request.note.as_deref())?;
+        let Some(attempt) = task.latest_attempt().cloned() else {
+            return Err("这个任务还没开跑，不能接着做".to_owned());
+        };
+        // T053：按上游当前可放行报告交接（需重评时拿到的是新结果）。
+        let handoffs = self
+            .store
+            .current_handoffs(&task)
+            .map_err(|error| error.to_string())?;
+        let trigger = AttemptTrigger::KindContinue {
+            cause,
+            note: request.note.clone(),
+        };
+        let opened = match self
+            .open_resume(&task, &attempt, trigger, SlotKind::Person, handoffs)
+            .await
+        {
+            Ok(opened) => opened,
+            Err(ResumeBlock::Later) => {
+                return Err("现在接不上这个任务（没有空位或会话还在收尾），稍后再试一次".to_owned());
+            }
+            Err(ResumeBlock::AlreadyStarted) => return Err("已经接着做了".to_owned()),
+            Err(ResumeBlock::PackageMissing) => {
+                return Err("任务包缺了东西，接不上；看任务里的缺项".to_owned());
+            }
+            Err(ResumeBlock::NoSession(reason)) => return Err(reason),
+        };
+        let request_id = format!("continue:{}:{}", task.id, opened.attempt_id);
+        let sent = opened
+            .host
+            .send_message(
+                &request_id,
+                UserMessage::text(package),
+                DeliveryMode::FollowUp,
+            )
+            .await;
+        if let Err(error) = sent {
+            opened.host.shutdown().await;
+            self.running
+                .lock()
+                .expect("thinagent 表锁被毒化")
+                .remove(opened.host.agent().id().as_str());
+            best_effort(
+                "接着做的 Attempt 没收尾",
+                self.store.end_attempt(
+                    &task.id,
+                    opened.attempt_id,
+                    Self::now(),
+                    AttemptEnd::NotOpened,
+                ),
+            );
+            self.release_seat(task.id.as_str());
+            return Err(format!("接着做的说明没送进任务会话：{error}"));
+        }
+        self.wake();
+        Ok(TaskContinueResponse {
+            attempt_id: opened.attempt_id.0,
+        })
+    }
+
+    /// T053：认 task_continue 的原因（当前候选需修正 → 最近报告卡住/失败/等报告）。
+    fn continue_cause(&self, task: &Task) -> Result<ContinueCause, String> {
+        if let Some(gate) = self
+            .store
+            .guarding_gate(&task.id)
+            .map_err(|error| error.to_string())?
+            && let Some(latest) = task.latest_report()
+            && let Some(verdict) = gate.verdicts.iter().rev().find(|verdict| {
+                verdict.candidate.report_id == latest.id
+                    && verdict.conclusion == GateConclusion::NeedsFix
+            })
+        {
+            return Ok(ContinueCause::GateNeedsFix {
+                gate_report: verdict.gate_report.clone(),
+                candidate: verdict.candidate.clone(),
+            });
+        }
+        // T053：上游有新可放行结果 → 需重评（D95）。
+        if self
+            .store
+            .needs_reevaluation(&task.id)
+            .map_err(|error| error.to_string())?
+            && let Some(upstream_report) = self.reevaluation_report(task)?
+        {
+            return Ok(ContinueCause::UpstreamChanged { upstream_report });
+        }
+        if let Some(report) = task.latest_report()
+            && matches!(
+                report.state,
+                ReportState::Blocked | ReportState::Failed | ReportState::Waiting
+            )
+        {
+            return Ok(ContinueCause::AfterReport {
+                report: report.id.clone(),
+            });
+        }
+        Err("没找到让它接着做的事实：用户还没判需修正，最近报告也不是卡住/失败/等报告，上游也没有新结果".to_owned())
+    }
+
+    /// T053：需重评时，第一条和当前可放行报告不一致的上游报告 id。
+    fn reevaluation_report(&self, task: &Task) -> Result<Option<ReportId>, String> {
+        let Some(attempt) = task.latest_attempt() else {
+            return Ok(None);
+        };
+        for (index, need) in task.needs.iter().enumerate() {
+            let Some(current) = self
+                .store
+                .releasable_report(&need.from)
+                .map_err(|error| error.to_string())?
+            else {
+                continue;
+            };
+            match attempt.handoffs.get(index) {
+                Some(handoff) if handoff.report_id == current.id => {}
+                _ => return Ok(Some(current.id)),
+            }
+        }
+        Ok(None)
+    }
+
+    /// T053：接着做的任务包说明（需修正时带用户原话和核查发现）。
+    fn continue_package(
+        &self,
+        task: &Task,
+        cause: &ContinueCause,
+        note: Option<&str>,
+    ) -> Result<String, String> {
+        let mut lines = Vec::new();
+        match cause {
+            ContinueCause::GateNeedsFix { gate_report, .. } => {
+                lines.push("你要按这个改。".to_owned());
+                lines.push(format!("原要求不变：{}", task.requirement));
+                if let Some(note) = note.filter(|note| !note.trim().is_empty()) {
+                    lines.push(format!("用户原话：{note}"));
+                }
+                if let Some(gate) = self
+                    .store
+                    .guarding_gate(&task.id)
+                    .map_err(|error| error.to_string())?
+                    && let Some(report) =
+                        gate.reports.iter().find(|report| &report.id == gate_report)
+                {
+                    lines.push(format!("核查发现：{}", report.summary));
+                }
+                match task.effective_write_scope() {
+                    Some(scope) => lines.push(format!("写集不变：{}", scope.display())),
+                    None => lines.push("写集不变：只读".to_owned()),
+                }
+                lines
+                    .push("改完用 task_report 上报；核查会自动重跑，结果仍然由用户判。".to_owned());
+            }
+            ContinueCause::UpstreamChanged { upstream_report } => {
+                lines.push("上游有新结果，按新结果核对。".to_owned());
+                lines.push(format!("原要求不变：{}", task.requirement));
+                for need in &task.needs {
+                    let Ok(Some(upstream)) = self.store.task(&need.from) else {
+                        continue;
+                    };
+                    let Ok(Some(current)) = self.store.releasable_report(&need.from) else {
+                        continue;
+                    };
+                    if &current.id == upstream_report {
+                        lines.push(format!(
+                            "上游结果（{}）：{}",
+                            upstream.title, current.summary
+                        ));
+                        break;
+                    }
+                }
+                match task.effective_write_scope() {
+                    Some(scope) => lines.push(format!("写集不变：{}", scope.display())),
+                    None => lines.push("写集不变：只读".to_owned()),
+                }
+                lines.push("核对完用 task_report 上报。".to_owned());
+            }
+            ContinueCause::AfterReport { report } => {
+                let (state, summary) = task
+                    .reports
+                    .iter()
+                    .find(|report_now| &report_now.id == report)
+                    .map(|report_now| {
+                        (
+                            report_state_key(report_now.state).to_owned(),
+                            report_now.summary.clone(),
+                        )
+                    })
+                    .unwrap_or_else(|| ("unknown".to_owned(), String::new()));
+                lines.push("接着做：上一次没交出可用的结果。".to_owned());
+                if let Some(note) = note.filter(|note| !note.trim().is_empty()) {
+                    lines.push(format!("用户原话：{note}"));
+                }
+                lines.push(format!("上一次报告（{state}）：{summary}"));
+                match task.effective_write_scope() {
+                    Some(scope) => lines.push(format!("写集不变：{}", scope.display())),
+                    None => lines.push("写集不变：只读".to_owned()),
+                }
+                lines.push("做完用 task_report 上报。".to_owned());
+            }
+        }
+        Ok(lines.join(
+            "
+",
+        ))
     }
 
     /// 任务对话的只读快照：头部来自任务聚合，事件来自当前 Attempt 的会话日志。
@@ -1112,7 +1409,10 @@ impl TaskRuntime {
             ResumeMode::Say => (AttemptTrigger::UserMessage, SlotKind::Person),
             ResumeMode::Interrupted => (AttemptTrigger::Resume, SlotKind::Wake),
         };
-        match self.open_resume(task, attempt, trigger, slot).await {
+        match self
+            .open_resume(task, attempt, trigger, slot, Vec::new())
+            .await
+        {
             Ok(opened) => Some(opened),
             Err(ResumeBlock::Later | ResumeBlock::AlreadyStarted) => {
                 self.later(claim);
@@ -1154,7 +1454,13 @@ impl TaskRuntime {
             });
         }
         let opened = match self
-            .open_resume(&task, &attempt, AttemptTrigger::Resume, SlotKind::Wake)
+            .open_resume(
+                &task,
+                &attempt,
+                AttemptTrigger::Resume,
+                SlotKind::Wake,
+                Vec::new(),
+            )
             .await
         {
             Ok(opened) => opened,
@@ -1216,6 +1522,7 @@ impl TaskRuntime {
         attempt: &Attempt,
         trigger: AttemptTrigger,
         slot: SlotKind,
+        handoffs: Vec<Handoff>,
     ) -> Result<OpenedResume, ResumeBlock> {
         // 崩溃/重启留下的、还没收尾的 Attempt 不在这里抢（留给恢复链）。
         if attempt.ended_at.is_none() {
@@ -1259,22 +1566,23 @@ impl TaskRuntime {
             // 席位满（说话接续含 person 多占的那 1 个）：效果留在库里，腾出来再领。
             return Err(ResumeBlock::Later);
         }
-        let attempt_id = match self
-            .store
-            .begin_followup_with(&task.id, trigger, Self::now())
-        {
-            Ok(Some(attempt_id)) => attempt_id,
-            Ok(None) => {
-                self.release_seat(&key);
-                return Err(ResumeBlock::AlreadyStarted);
-            }
-            Err(error) => {
-                self.release_seat(&key);
-                return Err(ResumeBlock::NoSession(format!(
-                    "接着做没写进任务库：{error}"
-                )));
-            }
-        };
+        let attempt_id =
+            match self
+                .store
+                .begin_followup_with_handoffs(&task.id, trigger, handoffs, Self::now())
+            {
+                Ok(Some(attempt_id)) => attempt_id,
+                Ok(None) => {
+                    self.release_seat(&key);
+                    return Err(ResumeBlock::AlreadyStarted);
+                }
+                Err(error) => {
+                    self.release_seat(&key);
+                    return Err(ResumeBlock::NoSession(format!(
+                        "接着做没写进任务库：{error}"
+                    )));
+                }
+            };
         let prepared = match self.prepare(task) {
             Ok(prepared) => prepared,
             Err(missing) => {
@@ -1472,6 +1780,8 @@ impl TaskRuntime {
     fn relay_message(&self, claim: &EffectClaim) -> Result<Option<(Task, Value, String)>, String> {
         let task_id = match &claim.payload {
             EffectPayload::Relay { task_id, .. } | EffectPayload::Stop { task_id, .. } => task_id,
+            EffectPayload::GateVerdict { gate_task, .. } => gate_task,
+            EffectPayload::UpstreamChanged { upstream_task, .. } => upstream_task,
             EffectPayload::Launch { .. }
             | EffectPayload::Delivery { .. }
             | EffectPayload::Notice { .. }
@@ -1542,6 +1852,12 @@ impl TaskRuntime {
                 if let Some(worktree) = &task.worktree_state {
                     body["worktree_path"] = json!(worktree.root.to_string_lossy());
                 }
+                // T053：门结果卡的里程碑事实；被把关任务的卡标「等核查」。
+                if let Some(gate_facts) = self.gate_card_facts(&task, report) {
+                    body["gate"] = gate_facts;
+                }
+                // T053：卡上要能分清这张结果卡是哪份报告（门判定只作用在它判的那份上）。
+                body["report_id"] = json!(report.id.as_str());
                 let request_id = format!("task-report:{}:{}", task.id, report.id);
                 Ok(Some((task, body, request_id)))
             }
@@ -1564,11 +1880,132 @@ impl TaskRuntime {
                 let request_id = format!("task-stop:{}:{}", task.id, attempt_id);
                 Ok(Some((task, body, request_id)))
             }
+            EffectPayload::GateVerdict { gate_report, .. } => {
+                let gate = self
+                    .store
+                    .task(&task.id)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("任务 {} 不在了", task.id))?;
+                let Some(verdict) = gate.verdict_for_gate_report(gate_report).cloned() else {
+                    return Err(format!("门 {} 没有报告 {gate_report} 的判定", gate.id));
+                };
+                let Some(need) = gate.needs.first() else {
+                    return Err(format!("门 {} 没有把关对象", gate.id));
+                };
+                let guarded = self
+                    .store
+                    .task(&need.from)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("被把关任务 {} 不在了", need.from))?;
+                let gate_report_fact = gate.reports.iter().find(|report| report.id == *gate_report);
+                let body = json!({
+                    "kind": "gate_verdict",
+                    "gate": {"id": gate.id.as_str(), "title": gate.title},
+                    "conclusion": match verdict.conclusion {
+                        tasks::GateConclusion::Pass => "pass",
+                        tasks::GateConclusion::NeedsFix => "needs_fix",
+                    },
+                    "candidate": {
+                        "task": {"id": guarded.id.as_str(), "title": guarded.title},
+                        "report_id": verdict.candidate.report_id.as_str(),
+                        "requirement_version": verdict.candidate.requirement_version,
+                    },
+                    "note": verdict.note,
+                    "summary": gate_report_fact.map(|report| report.summary.clone()).unwrap_or_default(),
+                });
+                let request_id = format!("gate-verdict:{}:{}", gate.id, gate_report);
+                Ok(Some((gate, body, request_id)))
+            }
+            EffectPayload::UpstreamChanged {
+                upstream_task,
+                downstream_task,
+                upstream_report,
+            } => {
+                let upstream = self
+                    .store
+                    .task(upstream_task)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("上游任务 {upstream_task} 不在了"))?;
+                let downstream = self
+                    .store
+                    .task(downstream_task)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("下游任务 {downstream_task} 不在了"))?;
+                let report = upstream
+                    .reports
+                    .iter()
+                    .find(|report| report.id == *upstream_report)
+                    .ok_or_else(|| format!("上游任务没有报告 {upstream_report}"))?;
+                let body = json!({
+                    "kind": "upstream_changed",
+                    "upstream": {
+                        "id": upstream.id.as_str(),
+                        "title": upstream.title,
+                        "report_id": report.id.as_str(),
+                        "requirement_version": report.version,
+                        "summary": report.summary,
+                    },
+                    "downstream": {"id": downstream.id.as_str(), "title": downstream.title},
+                });
+                let request_id = format!(
+                    "upstream-changed:{}:{}:{}",
+                    upstream.id, downstream.id, upstream_report
+                );
+                Ok(Some((upstream, body, request_id)))
+            }
             EffectPayload::Launch { .. }
             | EffectPayload::Delivery { .. }
             | EffectPayload::Notice { .. }
             | EffectPayload::Restart { .. } => Err("relay 载荷不是 relay".to_owned()),
         }
+    }
+
+    /// T053：结果卡上的里程碑事实（门卡 = 等你判 + 核查对象；被把关卡 = 等核查）。
+    fn gate_card_facts(&self, task: &Task, report: &Report) -> Option<Value> {
+        if report.state != ReportState::Ready {
+            return None;
+        }
+        if task.is_gate() {
+            let need = task.needs.first()?;
+            let guarded = self.store.task(&need.from).ok().flatten()?;
+            let candidate = task.latest_attempt()?.handoffs.first()?.clone();
+            let ordinal = guarded
+                .reports
+                .iter()
+                .filter(|report| report.state == ReportState::Ready)
+                .position(|report| report.id == candidate.report_id)?
+                + 1;
+            return Some(json!({
+                "milestone": true,
+                "state": "pending_verdict",
+                "guarded": {"id": guarded.id.as_str(), "title": guarded.title},
+                "candidate": {
+                    "report_id": candidate.report_id.as_str(),
+                    "requirement_version": candidate.requirement_version,
+                    "ordinal": ordinal,
+                },
+            }));
+        }
+        let parent = task.parent.as_ref()?;
+        for sibling in self.store.children(parent).ok()? {
+            if sibling.is_gate()
+                && sibling
+                    .needs
+                    .first()
+                    .is_some_and(|need| need.from == task.id)
+            {
+                // 这不是门第一次核：卡上自动行要说「核查自动重跑」。
+                let recheck = sibling.latest_attempt().is_some();
+                return Some(json!({
+                    "milestone": true,
+                    "state": "waiting",
+                    "id": sibling.id.as_str(),
+                    "title": sibling.title,
+                    "recheck": recheck,
+                }));
+            }
+        }
+        None
     }
 
     fn later(&self, claim: &EffectClaim) {
@@ -1618,12 +2055,21 @@ impl TaskRuntime {
             return false;
         }
         if let Some(parent) = task.parent.clone() {
-            let confirmed = self
+            let arrangement = self
                 .store
                 .task(&parent)
                 .ok()
                 .flatten()
-                .and_then(|root| root.arrangement)
+                .and_then(|root| root.arrangement);
+            // T053：取消的图一项都不跑（确认过再取消不可能，这里只挡事实）。
+            if arrangement
+                .as_ref()
+                .is_some_and(|arrangement| arrangement.cancelled.is_some())
+            {
+                self.finish_or_fail(&claim, Ok(()));
+                return false;
+            }
+            let confirmed = arrangement
                 .and_then(|arrangement| arrangement.confirmed)
                 .is_some();
             let ready = match self.store.needs_ready(&task) {
@@ -1638,13 +2084,44 @@ impl TaskRuntime {
                 return false;
             }
         }
-        // 上一次已经开成会话：重跑的效果只把行收掉；被重启打断的 Attempt 留给第 4 张票。
-        if task
-            .latest_attempt()
-            .is_some_and(|attempt| attempt.conversation.is_some())
+        // T053：门的重检是新 Attempt，允许同任务之前开过会话；别的任务重跑效果只把行收掉。
+        if !task.is_gate()
+            && task
+                .latest_attempt()
+                .is_some_and(|attempt| attempt.conversation.is_some())
         {
             self.finish_or_fail(&claim, Ok(()));
             return false;
+        }
+        // T053：门任务的准入——候选必须已经交接；同一候选不重复核；门还在跑就推迟。
+        let mut gate_candidate = None;
+        if task.is_gate() {
+            let Some(need) = task.needs.first() else {
+                self.finish_or_fail(&claim, Ok(()));
+                return false;
+            };
+            let Some(handoff) = need.handoff.clone() else {
+                self.finish_or_fail(&claim, Ok(()));
+                return false;
+            };
+            if let Some(latest) = task.latest_attempt() {
+                if latest.ended_at.is_none() {
+                    self.later(&claim);
+                    return false;
+                }
+                if latest
+                    .handoffs
+                    .first()
+                    .is_some_and(|checked| checked.report_id == handoff.report_id)
+                {
+                    self.finish_or_fail(&claim, Ok(()));
+                    return false;
+                }
+            }
+            gate_candidate = Some(GateCandidate {
+                report_id: handoff.report_id.clone(),
+                requirement_version: handoff.requirement_version,
+            });
         }
         // 崩溃留下的、没有会话 id 的 Attempt 先收尾，再开新的。
         if let Err(error) = self.store.close_unopened_attempts(&task.id, Self::now()) {
@@ -1696,13 +2173,27 @@ impl TaskRuntime {
             self.finish_or_fail(&claim, Err(error.to_string()));
             return false;
         }
-        let attempt_id = match self.store.begin_attempt(&task.id, Self::now()) {
-            Ok(attempt_id) => attempt_id,
-            Err(error) => {
-                self.finish_or_fail(&claim, Err(error.to_string()));
-                return false;
-            }
+        // T053：记下开跑时实际拿到的上游报告；门重检带候选事实。
+        let handoffs: Vec<Handoff> = task
+            .needs
+            .iter()
+            .filter_map(|need| need.handoff.clone())
+            .collect();
+        let trigger = match gate_candidate {
+            Some(candidate) => AttemptTrigger::GateRecheck { candidate },
+            None => AttemptTrigger::Launch,
         };
+        let attempt_id =
+            match self
+                .store
+                .begin_attempt_with(&task.id, Self::now(), trigger, handoffs)
+            {
+                Ok(attempt_id) => attempt_id,
+                Err(error) => {
+                    self.finish_or_fail(&claim, Err(error.to_string()));
+                    return false;
+                }
+            };
         let host = match self.open_thin(&task, attempt_id, prepared, None).await {
             Ok(host) => Arc::new(host),
             Err(error) => {
@@ -2433,7 +2924,7 @@ impl TaskRuntime {
     fn propose_graph(
         &self,
         context: &ToolContext,
-        _call_id: &str,
+        call_id: &str,
         args: TaskGraphArgs,
     ) -> Result<(Task, usize), ToolFailure> {
         let TaskGraphArgs {
@@ -2511,6 +3002,7 @@ impl TaskRuntime {
                     bash,
                 },
                 after: item.after,
+                milestone: item.milestone,
             });
         }
         let graph = NewGraph {
@@ -2525,9 +3017,10 @@ impl TaskRuntime {
             },
             subtasks: frozen_subtasks,
         };
-        let root = self
+        // T053：同一个 call id 重试返回同一张图，不建第二张。
+        let (root, _created) = self
             .store
-            .create_graph(graph, Self::now())
+            .create_graph_once(graph, call_id, Self::now())
             .map_err(|error| ToolFailure::plain(error.to_string()))?;
         self.wake();
         Ok((root, count))
@@ -2541,6 +3034,36 @@ impl TaskRuntime {
             .map_err(|error| error.to_string())?;
         self.wake();
         Ok(launched)
+    }
+
+    /// T053：取消一张任务图（暂不 / 被新卡替换 / 本轮没上卡）。
+    pub(crate) fn cancel_graph(
+        &self,
+        root: &TaskId,
+        reason: CancellationReason,
+    ) -> Result<Cancellation, String> {
+        let cancellation = self
+            .store
+            .cancel_graph(root, reason, Self::now())
+            .map_err(|error| error.to_string())?;
+        self.wake();
+        Ok(cancellation)
+    }
+
+    /// T053：还没确认也没取消的图（NoCard 收尾扫用）。
+    pub(crate) fn unconfirmed_graph_roots(&self) -> Result<Vec<Task>, String> {
+        let mut roots = Vec::new();
+        for id in self.store.task_ids().map_err(|error| error.to_string())? {
+            let Some(task) = self.store.task(&id).map_err(|error| error.to_string())? else {
+                continue;
+            };
+            if task.arrangement.as_ref().is_some_and(|arrangement| {
+                arrangement.confirmed.is_none() && arrangement.cancelled.is_none()
+            }) {
+                roots.push(task);
+            }
+        }
+        Ok(roots)
     }
 
     /// Kind 的 task_update：换写入范围、追加要求版本，然后在原会话开新 Attempt。
@@ -2591,6 +3114,7 @@ impl TaskRuntime {
                 &attempt,
                 AttemptTrigger::RequirementChanged,
                 SlotKind::Wake,
+                Vec::new(),
             )
             .await
         {
@@ -2946,6 +3470,7 @@ fn stage_key(stage: Stage) -> &'static str {
         Stage::Pending => "pending",
         Stage::Running => "running",
         Stage::ReadyForReview => "ready_for_review",
+        Stage::RequirementMet => "requirement_met",
     }
 }
 
@@ -2955,6 +3480,7 @@ fn stage_label(stage: Stage) -> &'static str {
         Stage::Pending => "待执行",
         Stage::Running => "执行中",
         Stage::ReadyForReview => "待检查",
+        Stage::RequirementMet => "任务要求已满足",
     }
 }
 
@@ -3138,7 +3664,8 @@ impl TaskGraphProposeTool {
                                 "dod": {"type": "string", "description": "How this step will be judged complete."},
                                 "write_scope": {"type": "string", "description": "One path this step may write; omit for a read-only step."},
                                 "worktree": {"type": "boolean", "description": "Only when the user explicitly asks for a worktree. Defaults to false."},
-                                "after": {"type": "array", "items": {"type": "integer"}, "description": "Indexes (0-based) of subtasks in this proposal that must have a result before this step starts."}
+                                "after": {"type": "array", "items": {"type": "integer"}, "description": "Indexes (0-based) of subtasks in this proposal that must have a result before this step starts."},
+                                "milestone": {"type": "boolean", "description": "True for a read-only check step the user judges: its after has exactly one index (the step it checks), it cannot write, and the user passes it or sends it back for fixes on its result card. Use it when the user says they want to look before continuing."}
                             },
                             "required": ["title", "requirement", "dod"]
                         }
@@ -3190,6 +3717,84 @@ impl Tool for TaskGraphProposeTool {
                     ),
                 ),
                 Err(failure) => ToolResult::error(call.id, failure),
+            }
+        })
+    }
+}
+
+/// Kind 的 task_continue（T053）：让任务在原要求里接着做。
+pub(crate) struct TaskContinueTool {
+    runtime: Arc<TaskRuntime>,
+    parameters: Value,
+}
+
+impl TaskContinueTool {
+    pub(crate) fn new(runtime: Arc<TaskRuntime>) -> Self {
+        Self {
+            runtime,
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "The id of the task that must continue in its original requirement (the step the milestone checks, or a task whose last report was blocked/failed)."},
+                    "note": {"type": "string", "description": "The user's words to pass on, verbatim. Omit when the user did not write anything specific."}
+                },
+                "required": ["task_id"]
+            }),
+        }
+    }
+}
+
+impl Tool for TaskContinueTool {
+    fn name(&self) -> &str {
+        "task_continue"
+    }
+
+    fn description(&self) -> &str {
+        "Let a task continue in its original requirement and write scope as a new Attempt: use it when the user sends a milestone back needing fixes, or when a task's last report was blocked/failed. This does not change the requirement or write scope; to change those, ask the user first. If the user's words go beyond the original requirement, do not call this: ask the user to change the requirement."
+    }
+
+    fn parameters(&self) -> &Value {
+        &self.parameters
+    }
+
+    fn condition(&self) -> ToolCondition {
+        ToolCondition::Always
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: ToolCall,
+        _context: &'a ToolContext,
+    ) -> ToolFuture<'a, ToolResult> {
+        Box::pin(async move {
+            let args = match parse_object(&call.arguments) {
+                Ok(args) => args,
+                Err(failure) => return ToolResult::error(call.id, failure),
+            };
+            let Some(task_id) = string_arg(&args, "task_id") else {
+                return ToolResult::error(
+                    call.id,
+                    ToolFailure::plain("task_id 不能为空".to_owned()),
+                );
+            };
+            let note = args
+                .get("note")
+                .and_then(Value::as_str)
+                .filter(|note| !note.trim().is_empty())
+                .map(str::to_owned);
+            match self
+                .runtime
+                .continue_task(crate::protocol::TaskContinueRequest { task_id, note })
+                .await
+            {
+                Ok(response) => ToolResult::success(
+                    call.id,
+                    format!(
+                        "已让任务在原要求里接着做（第 {} 次 Attempt）；用户原话和核查发现已放进它的任务包。",
+                        response.attempt_id
+                    ),
+                ),
+                Err(reason) => ToolResult::error(call.id, ToolFailure::plain(reason)),
             }
         })
     }
@@ -3659,6 +4264,15 @@ fn parse_graph_args(args: &serde_json::Map<String, Value>) -> Result<TaskGraphAr
                 )));
             }
         };
+        let milestone = match object.get("milestone") {
+            None => false,
+            Some(Value::Bool(value)) => *value,
+            Some(_) => {
+                return Err(ToolFailure::plain(format!(
+                    "subtasks[{index}].milestone 必须是布尔值"
+                )));
+            }
+        };
         subtasks.push(GraphSubtaskArgs {
             title: subtask_title,
             requirement: subtask_requirement,
@@ -3666,6 +4280,7 @@ fn parse_graph_args(args: &serde_json::Map<String, Value>) -> Result<TaskGraphAr
             write_scope,
             worktree,
             after,
+            milestone,
         });
     }
     Ok(TaskGraphArgs {

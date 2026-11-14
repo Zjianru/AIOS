@@ -116,6 +116,8 @@ test('任务图：暂不 → 图留着、一项都不跑', async ({ page }) => {
     expect(attemptsOf(a)).toBe(0);
     expect(attemptsOf(b)).toBe(0);
     expect(total?.arrangement?.confirmed).toBeUndefined();
+    // T053.4：暂不就是取消（Dismissed），图留着但一项都不跑。
+    expect(total?.arrangement?.cancelled?.reason).toBe('dismissed');
   } finally {
     await fixture.close();
   }

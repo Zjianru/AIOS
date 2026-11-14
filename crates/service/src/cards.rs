@@ -10,11 +10,17 @@ use serde_json::Value;
 
 use crate::actions::{ActionEnv, CardFact};
 use crate::error::ServiceError;
-use crate::protocol::{CardActRequest, CardActResponse, CardVerb};
+use crate::protocol::{
+    CardActRequest, CardActResponse, CardVerb, GateJudgeConclusion, GateJudgeRequest,
+    GateJudgeResponse,
+};
 use crate::root_lifecycle::RootHost;
+use tasks::CancellationReason;
 
 /// 结果卡「接受」这个动作的名字（进 card/decision 的 action）。
 const ACCEPT_RESULT_ACTION: &str = "accept_task_result";
+/// 门结果卡判定动作的名字（进 card/decision 的 action）。
+const GATE_JUDGE_ACTION: &str = "gate_judge";
 
 /// 模型传给 propose_action 的参数。
 #[derive(Debug, Clone, Deserialize)]
@@ -105,6 +111,59 @@ pub(crate) fn proposal_of(events: &[session::Event], call_id: &str) -> Option<Pr
         args,
         meta: meta?,
     })
+}
+
+/// 日志里所有成功出卡的 propose_action（按提议序号）。
+pub(crate) fn proposals_of(events: &[session::Event]) -> Vec<Proposal> {
+    let mut calls: Vec<(String, String)> = Vec::new();
+    for event in events {
+        if let session::EventKind::ToolCall {
+            call_id,
+            name,
+            arguments,
+            ..
+        } = &event.kind
+            && name == "propose_action"
+        {
+            calls.push((call_id.clone(), arguments.clone()));
+        }
+    }
+    let mut proposals = Vec::new();
+    for (call_id, arguments) in calls {
+        let Ok(args) = serde_json::from_str::<ProposeArgs>(&arguments) else {
+            continue;
+        };
+        let mut meta = None;
+        let mut seq = None;
+        for event in events {
+            if let session::EventKind::ToolResult {
+                message,
+                error,
+                meta: result_meta,
+                ..
+            } = &event.kind
+            {
+                if message.tool_call_id.as_deref() != Some(call_id.as_str()) || error.is_some() {
+                    continue;
+                }
+                let Some(card) = result_meta.as_ref().and_then(|meta| meta.get("card")) else {
+                    continue;
+                };
+                meta = serde_json::from_value::<CardMeta>(card.clone()).ok();
+                seq = Some(event.seq);
+            }
+        }
+        if let (Some(meta), Some(seq)) = (meta, seq) {
+            proposals.push(Proposal {
+                call_id,
+                seq,
+                args,
+                meta,
+            });
+        }
+    }
+    proposals.sort_by_key(|proposal| proposal.seq);
+    proposals
 }
 
 /// 这条日志里最后一条决定（同一张卡后写的胜出）。
@@ -211,8 +270,13 @@ impl RootHost {
         request: &CardActRequest,
     ) -> Result<CardActResponse, ServiceError> {
         let events = self.card_events().await?;
-        // 任务结果卡（relay 的 request id）走接受，不是 propose_action 的确认卡。
+        // 任务结果卡（relay 的 request id）走接受或门判定，不是 propose_action 的确认卡。
         if let Some((task_id, report_id)) = crate::result_cards::parse_relay_id(&request.call_id) {
+            if matches!(request.verb, CardVerb::Pass | CardVerb::NeedsFix) {
+                return self
+                    .judge_gate_card(request, task_id, report_id, &events)
+                    .await;
+            }
             return self
                 .accept_result_card(request, task_id, report_id, &events)
                 .await;
@@ -245,7 +309,19 @@ impl RootHost {
                     None => return Ok(CardActResponse { decision: None }),
                 }
             }
+            // 门判定只作用于结果卡；确认卡上没有这两个动作。
+            CardVerb::Pass | CardVerb::NeedsFix => {
+                return Ok(CardActResponse { decision: None });
+            }
         };
+        // T053：暂不 → 这张图取消（Dismissed）；确认新卡 → 被替换的旧 start_task_graph 图取消（Replaced）。
+        match request.verb {
+            CardVerb::Dismiss => {
+                self.cancel_proposal_graph(&proposal, CancellationReason::Dismissed);
+            }
+            CardVerb::Confirm => self.cancel_replaced_graphs(&proposal, &events),
+            CardVerb::Pass | CardVerb::NeedsFix => {}
+        }
         self.record_decision(&decision).await?;
         Ok(CardActResponse {
             decision: Some(decision),
@@ -303,6 +379,100 @@ impl RootHost {
         Ok(CardActResponse {
             decision: Some(decision),
         })
+    }
+
+    /// 门结果卡上的「通过」「需修正」：只认真的送到 Kind 对话里的那张卡。
+    ///
+    /// 判定由任务库在同一个事务里核对候选、去重和记；这里只把结果落成 card/decision 回执。
+    async fn judge_gate_card(
+        &self,
+        request: &CardActRequest,
+        task_id: &str,
+        report_id: &str,
+        events: &[session::Event],
+    ) -> Result<CardActResponse, ServiceError> {
+        if let Some(decision) = decision_of(events, &request.call_id) {
+            return Ok(CardActResponse {
+                decision: Some(decision),
+            });
+        }
+        if crate::result_cards::relay_card(events, &request.call_id, task_id).is_none() {
+            return Ok(CardActResponse { decision: None });
+        }
+        let Some(runtime) = self.task_runtime() else {
+            return Err(ServiceError::TaskUnavailable(
+                "任务库没开，判定不了".to_owned(),
+            ));
+        };
+        let gate_id = tasks::TaskId::from(task_id);
+        if !runtime
+            .task_is_gate(&gate_id)
+            .map_err(ServiceError::TaskUnavailable)?
+        {
+            return Ok(CardActResponse { decision: None });
+        }
+        let conclusion = match request.verb {
+            CardVerb::Pass => GateJudgeConclusion::Pass,
+            CardVerb::NeedsFix => GateJudgeConclusion::NeedsFix,
+            CardVerb::Confirm | CardVerb::Dismiss => {
+                return Ok(CardActResponse { decision: None });
+            }
+        };
+        let judged = runtime
+            .gate_judge(&GateJudgeRequest {
+                gate_task: task_id.to_owned(),
+                gate_report: report_id.to_owned(),
+                conclusion,
+                note: request.note.clone(),
+            })
+            .map_err(ServiceError::TaskUnavailable)?;
+        let decision = if judged.changed {
+            session::CardDecision {
+                call_id: request.call_id.clone(),
+                option: None,
+                action: Some(GATE_JUDGE_ACTION.to_owned()),
+                phase: session::CardDecisionPhase::Refused,
+                data: Some(serde_json::json!({ "summary": judged.summary })),
+            }
+        } else {
+            let verdict = judged.verdict.clone();
+            session::CardDecision {
+                call_id: request.call_id.clone(),
+                option: None,
+                action: Some(GATE_JUDGE_ACTION.to_owned()),
+                phase: session::CardDecisionPhase::Confirmed,
+                data: Some(serde_json::json!({
+                    "summary": judged.summary,
+                    "conclusion": match conclusion {
+                        GateJudgeConclusion::Pass => "pass",
+                        GateJudgeConclusion::NeedsFix => "needs_fix",
+                    },
+                    "note": verdict.as_ref().and_then(|verdict| verdict.note.clone()),
+                    "candidate_report": verdict.as_ref().map(|verdict| verdict.candidate_report.clone()),
+                    "requirement_version": verdict.as_ref().map(|verdict| verdict.requirement_version),
+                    "released": judged.released,
+                })),
+            }
+        };
+        self.record_decision(&decision).await?;
+        Ok(CardActResponse {
+            decision: Some(decision),
+        })
+    }
+
+    /// T053：门判定的内部操作（Call::GateJudge）；结果卡动作也走这里。
+    pub async fn gate_judge(
+        &self,
+        request: GateJudgeRequest,
+    ) -> Result<GateJudgeResponse, ServiceError> {
+        let Some(runtime) = self.task_runtime() else {
+            return Err(ServiceError::TaskUnavailable(
+                "任务库没开，判定不了".to_owned(),
+            ));
+        };
+        runtime
+            .gate_judge(&request)
+            .map_err(ServiceError::TaskUnavailable)
     }
 
     /// 一次确认：选中项 → 动作 → 核对事实 → 执行。返回要记的决定。
@@ -374,6 +544,116 @@ impl RootHost {
             ));
         };
         Ok(host.agent().session_events_from(0))
+    }
+
+    /// T053：把这张卡里的 start_task_graph 图按原因取消（不是图卡就什么也不做）。
+    fn cancel_proposal_graph(&self, proposal: &Proposal, reason: CancellationReason) {
+        let Some(runtime) = self.task_runtime() else {
+            return;
+        };
+        for option in &proposal.args.options {
+            if option.action != "start_task_graph" {
+                continue;
+            }
+            let Some(id) = option
+                .details
+                .get("task_id")
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let root = tasks::TaskId::from(id);
+            if let Err(error) = runtime.cancel_graph(&root, reason) {
+                eprintln!("取消任务图 {id} 失败：{error}");
+            }
+        }
+    }
+
+    /// T053：新卡被接受时，之前提过、还没人点过的 start_task_graph 旧图按 Replaced 取消。
+    fn cancel_replaced_graphs(&self, current: &Proposal, events: &[session::Event]) {
+        let Some(runtime) = self.task_runtime() else {
+            return;
+        };
+        for proposal in proposals_of(events) {
+            if proposal.seq >= current.seq || proposal.call_id == current.call_id {
+                continue;
+            }
+            if decision_of(events, &proposal.call_id).is_some() {
+                continue;
+            }
+            for option in &proposal.args.options {
+                if option.action != "start_task_graph" {
+                    continue;
+                }
+                let Some(id) = option
+                    .details
+                    .get("task_id")
+                    .and_then(serde_json::Value::as_str)
+                else {
+                    continue;
+                };
+                let root = tasks::TaskId::from(id);
+                if let Err(error) = runtime.cancel_graph(&root, CancellationReason::Replaced) {
+                    eprintln!("替换取消任务图 {id} 失败：{error}");
+                }
+            }
+        }
+    }
+
+    /// T053：Kind 上一轮提了图却没上卡（本轮结束）→ 取消（NoCard）。发新消息时顺手收尾。
+    pub async fn cancel_uncarded_graphs(&self) -> Result<(), ServiceError> {
+        let Some(runtime) = self.task_runtime() else {
+            return Ok(());
+        };
+        let events = self.card_events().await?;
+        let conversation = {
+            let guard = self.inner.lock().await;
+            guard
+                .as_ref()
+                .map(|host| host.agent().id().as_str().to_owned())
+        };
+        let Some(conversation) = conversation else {
+            return Ok(());
+        };
+        let mut carded = std::collections::HashSet::new();
+        for event in &events {
+            if let session::EventKind::ToolCall {
+                name, arguments, ..
+            } = &event.kind
+                && name == "propose_action"
+                && let Ok(value) = serde_json::from_str::<serde_json::Value>(arguments)
+            {
+                for option in value
+                    .get("options")
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    if let Some(id) = option
+                        .get("details")
+                        .and_then(|details| details.get("task_id"))
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        carded.insert(id.to_owned());
+                    }
+                }
+            }
+        }
+        let roots = runtime
+            .unconfirmed_graph_roots()
+            .map_err(ServiceError::TaskUnavailable)?;
+        for root in roots {
+            if root.conversation.as_str() != conversation {
+                continue;
+            }
+            if carded.contains(root.id.as_str()) {
+                continue;
+            }
+            if let Err(error) = runtime.cancel_graph(&root.id, CancellationReason::NoCard) {
+                eprintln!("本轮没上卡的任务图 {} 取消失败：{error}", root.id);
+            }
+        }
+        Ok(())
     }
 
     async fn record_decision(&self, decision: &session::CardDecision) -> Result<(), ServiceError> {

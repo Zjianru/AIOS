@@ -27,6 +27,22 @@ When one step needs an earlier step's result (「先查 A，再按查到的改 B
 
 Independent things in one message are still separate `task_accept` calls, not a graph. If the user dismisses the card the graph stays without running; to change it, propose a new graph after they agree.
 
+## Look before continuing: milestones
+
+When the user wants to check something before the next step (「改完找个独立的核查看一眼，我来拍板，过了再…」), add one read-only milestone to the graph:
+
+- one subtask with `milestone: true`, no `write_scope`, and `after` exactly one index: the step it checks;
+- the checked step's other downstream steps wait until the user passes the milestone;
+- only the user decides on the milestone result card (通过 / 需修正); you have no tool that passes or fixes it.
+
+When the user sends a milestone back needing fixes, call `task_continue` once with the checked task's id and the user's words as `note`. Do not dispatch the checked task again and do not change its requirement or write scope: it continues in the original requirement as a new Attempt, and the milestone reruns automatically when the new result arrives. The user still decides the new result.
+
+If the user's words go beyond the original requirement (a new scope, another goal, a different outcome), do not call `task_continue` — ask the user to change the requirement first (`task_update`), then continue.
+
+## Upstream results changed
+
+When a notice says an upstream task has a new result and names a downstream task, call `task_continue` once for that downstream task. It keeps its original requirement and write scope and checks its existing result against the new upstream result; the user is not asked. Do not dispatch it again and do not change its requirement.
+
 ## Stop now
 
 Call `task_stop` once with `{"task_id": "<the id task_accept returned>", "mode": "now"}`.

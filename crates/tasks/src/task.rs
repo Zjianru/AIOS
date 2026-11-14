@@ -34,12 +34,82 @@ pub struct Handoff {
     pub summary: String,
 }
 
+/// T053：里程碑门（空标记）：一个只读核查子任务；把关谁 = 它唯一的 needs。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MilestoneGate {}
+
+/// T053：门判定的候选 = 被把关任务当前最新 ready 报告里的一份。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateCandidate {
+    pub report_id: ReportId,
+    pub requirement_version: u32,
+}
+
+/// T053：用户判定结论。只有用户在门结果卡上点。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GateConclusion {
+    Pass,
+    NeedsFix,
+}
+
+/// T053：一条判定记录，按时间追加（旧记录留历史，04 篇 6.1）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateVerdict {
+    /// 门的那份 ready 报告（判定作用在报告上）。
+    pub gate_report: ReportId,
+    /// 被把关任务被判的那份候选。
+    pub candidate: GateCandidate,
+    pub conclusion: GateConclusion,
+    /// 用户原话（需修正时；原样存，不截断不改写）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    pub at: i64,
+}
+
+/// T053：task_continue 的原因，由服务按事实认。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContinueCause {
+    /// 当前候选被判「需修正」。
+    GateNeedsFix {
+        gate_report: ReportId,
+        candidate: GateCandidate,
+    },
+    /// 上游有新结果，下游要按新结果核对（D95）。
+    UpstreamChanged { upstream_report: ReportId },
+    /// 最近报告卡住、失败、等报告（重跑门也走这条）。
+    AfterReport { report: ReportId },
+}
+
+/// T053：图被取消的原因（D95）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancellationReason {
+    /// 用户在确认卡上点了「暂不」。
+    Dismissed,
+    /// 这张图被 Kind 的新卡替换。
+    Replaced,
+    /// Kind 这一轮提了图却没上卡。
+    NoCard,
+}
+
+/// T053：一次取消：时间和原因（取消的图不进 launch）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cancellation {
+    pub at: i64,
+    pub reason: CancellationReason,
+}
+
 /// T052：总任务上的安排记录：图版本与本票唯一一次确认。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Arrangement {
     pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub confirmed: Option<Confirmation>,
+    /// T053：取消记录；旧任务行按 None 读。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancelled: Option<Cancellation>,
 }
 
 /// T052：用户的确认记录（只由确认卡上的 card-act 写）。
@@ -62,6 +132,8 @@ pub struct NewSubtask {
     pub task: NewTask,
     pub policy: TaskPolicy,
     pub after: Vec<usize>,
+    /// T053：里程碑（只读核查门）；after 恰好一项，指向它把关的任务。
+    pub milestone: bool,
 }
 
 /// 一个 Task 的完整聚合，整行存在 task 表。
@@ -114,6 +186,12 @@ pub struct Task {
     /// T052：总任务上的安排（图版本 + 用户确认）；子任务和单派任务为 None。旧任务行按 None 读。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arrangement: Option<Arrangement>,
+    /// T053：里程碑门（空标记）；只有门任务有。旧任务行按 None 读。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<MilestoneGate>,
+    /// T053：用户判定记录（只有门任务会追加）。旧任务行按空读。
+    #[serde(default)]
+    pub verdicts: Vec<GateVerdict>,
     /// 执行者在起跑前查到的缺项；空表示任务包齐。
     pub missing: Vec<MissingItem>,
     pub created_at: i64,
@@ -276,13 +354,18 @@ pub struct Attempt {
     /// 这次 Attempt 是怎么开始的；旧任务行没有这个字段时按派发读。
     #[serde(default)]
     pub trigger: AttemptTrigger,
+    /// T053：开跑时实际拿到的上游报告，顺序和 Task.needs 一一对应；旧任务行按空读。
+    #[serde(default)]
+    pub handoffs: Vec<Handoff>,
     pub started_at: i64,
     pub ended_at: Option<i64>,
     pub end: Option<AttemptEnd>,
 }
 
 /// 一次 Attempt 是怎么开始的。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// T053 起不再 Copy：门重检和 Kind 接续带候选/原因事实。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AttemptTrigger {
     /// 任务派发（launch）。
@@ -294,6 +377,14 @@ pub enum AttemptTrigger {
     Resume,
     /// 用户在 Kind 对话里同意改要求（task_update）：原会话开新 Attempt。
     RequirementChanged,
+    /// 服务层面放门：被把关任务有新 ready 候选，门自动重检。
+    GateRecheck { candidate: GateCandidate },
+    /// Kind 用 task_continue 让任务在原要求里接着做。
+    KindContinue {
+        cause: ContinueCause,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
 }
 
 /// 一条用户输入；来源目前只有用户本人。
@@ -525,6 +616,34 @@ impl Task {
     /// T052：总任务（有安排记录、不跑执行）。
     pub fn is_graph_root(&self) -> bool {
         self.arrangement.is_some()
+    }
+
+    /// T053：里程碑门任务（只读核查，结果由用户判）。
+    pub fn is_gate(&self) -> bool {
+        self.gate.is_some()
+    }
+
+    /// T053：门对某份门报告已有的判定（重复点同一张卡返回已有判定）。
+    pub fn verdict_for_gate_report(&self, report_id: &ReportId) -> Option<&GateVerdict> {
+        self.verdicts
+            .iter()
+            .rev()
+            .find(|verdict| &verdict.gate_report == report_id)
+    }
+
+    /// T053：某份候选报告是否被本门判过「通过」。
+    pub fn passed(&self, report_id: &ReportId) -> bool {
+        self.verdicts.iter().rev().any(|verdict| {
+            &verdict.candidate.report_id == report_id && verdict.conclusion == GateConclusion::Pass
+        })
+    }
+
+    /// T053：某份候选报告最近一次判定是不是「需修正」。
+    pub fn needs_fix(&self, report_id: &ReportId) -> Option<&GateVerdict> {
+        self.verdicts.iter().rev().find(|verdict| {
+            &verdict.candidate.report_id == report_id
+                && verdict.conclusion == GateConclusion::NeedsFix
+        })
     }
 
     pub fn latest_attempt(&self) -> Option<&Attempt> {

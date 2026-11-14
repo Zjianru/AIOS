@@ -92,8 +92,70 @@ export interface CanvasVersionView {
 /** T028.5：抄送 Kind 的 request id 前缀（服务端 task-cc:<inputId>）。 */
 const TASK_CC_PREFIX = 'task-cc:';
 
+/** T053：gate-verdict relay 的事实：结论和它判的那个任务 id。 */
+export function gateVerdictOf(
+  message: unknown,
+): { taskId: string; conclusion: 'pass' | 'needs_fix'; candidateReport: string } | null {
+  if (typeof message !== 'object' || message === null) return null;
+  const content = (message as { content?: unknown }).content;
+  if (!Array.isArray(content)) return null;
+  const text = content
+    .map((block) =>
+      typeof block === 'object' && block !== null && typeof (block as { text?: unknown }).text === 'string'
+        ? (block as { text: string }).text
+        : '',
+    )
+    .join('');
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof body !== 'object' || body === null) return null;
+  const record = body as {
+    kind?: unknown;
+    conclusion?: unknown;
+    candidate?: { task?: { id?: unknown }; report_id?: unknown };
+  };
+  if (record.kind !== 'gate_verdict') return null;
+  const taskId = record.candidate?.task?.id;
+  const conclusion = record.conclusion;
+  const candidateReport = record.candidate?.report_id;
+  if (typeof taskId !== 'string' || taskId === '') return null;
+  if (conclusion !== 'pass' && conclusion !== 'needs_fix') return null;
+  if (typeof candidateReport !== 'string' || candidateReport === '') return null;
+  return { taskId, conclusion, candidateReport };
+}
+
+/** T053：upstream_changed relay 的事实：哪个下游要按上游新结果核对。 */
+export function upstreamChangedOf(message: unknown): { downstreamId: string } | null {
+  if (typeof message !== 'object' || message === null) return null;
+  const content = (message as { content?: unknown }).content;
+  if (!Array.isArray(content)) return null;
+  const text = content
+    .map((block) =>
+      typeof block === 'object' && block !== null && typeof (block as { text?: unknown }).text === 'string'
+        ? (block as { text: string }).text
+        : '',
+    )
+    .join('');
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof body !== 'object' || body === null) return null;
+  const record = body as { kind?: unknown; downstream?: { id?: unknown } };
+  if (record.kind !== 'upstream_changed') return null;
+  const id = record.downstream?.id;
+  if (typeof id !== 'string' || id === '') return null;
+  return { downstreamId: id };
+}
+
 /** 消息的 source.rpcId（只认 source.kind=user）。 */
-function userRpcIdOf(message: unknown): string | null {
+export function userRpcIdOf(message: unknown): string | null {
   if (!message || typeof message !== 'object') return null;
   const source = (message as { source?: unknown }).source;
   if (!source || typeof source !== 'object') return null;
@@ -429,6 +491,13 @@ export function deriveTurnViews(
   }
   const cardEntries = new Map<string, CardEntry>();
   const cardDecisions = new Map<string, ConfirmDecision>();
+  // T053：门判定 relay（gate-verdict）按被把关任务 id 回填结果卡状态词，刷新可重建。
+  const gateVerdicts = new Map<
+    string,
+    { conclusion: 'pass' | 'needs_fix'; candidateReport: string }
+  >();
+  // T053：上游变了的下游（upstream_changed relay；该任务交出新 ready 报告时清除）。
+  const upstreamChangedTasks = new Set<string>();
   for (const event of events) {
     const data = event.data ?? {};
     if (event.type === 'tool/call' && data.name === 'propose_action') {
@@ -461,6 +530,7 @@ export function deriveTurnViews(
     const payload = data.data && typeof data.data === 'object' ? data.data : undefined;
     cardDecisions.set(callId, {
       phase,
+      at: event.time / 1000,
       option: typeof data.option === 'string' ? data.option : undefined,
       action: typeof data.action === 'string' ? data.action : undefined,
       data: payload as ConfirmDecision['data'],
@@ -695,8 +765,16 @@ export function deriveTurnViews(
           }
           break;
         }
+        // T053：上游有新结果的 relay 只给模型看，不画用户气泡；给下游卡标「待按新结果核对」。
+        if (userRpcIdOf(data.message)?.startsWith('upstream-changed:')) {
+          const changed = upstreamChangedOf(data.message);
+          if (changed) upstreamChangedTasks.add(changed.downstreamId);
+          break;
+        }
         const relay = parseTaskRelay(data.message, event.time / 1000);
         if (relay) {
+          // 下游交出新 ready 报告：需重评标记清除。
+          upstreamChangedTasks.delete(relay.taskId);
           // 同一轮可能被多条 relay 叫起来：按日志到达顺序各留一张卡，不互相覆盖。
           // T038：派出过的任务并回那张派发卡（一张任务只渲染一张卡）。
           if (!mergeRelayIntoDispatch(relay)) ensure(turn).taskResults.push(relay);
@@ -704,6 +782,18 @@ export function deriveTurnViews(
         }
         // T028.5：抄送 Kind 的那条不是用户气泡，单独由 taskCcFacts/ccViewOf 成行。
         if (taskCcOfMessage(data.message)) break;
+        // T053：门判定的 relay 只给模型看结论，不把原文 JSON 画成用户气泡；
+        // 结论回填被把关任务卡的状态词（任务要求已满足 / 需修正）。
+        if (userRpcIdOf(data.message)?.startsWith('gate-verdict:')) {
+          const relay = gateVerdictOf(data.message);
+          if (relay) {
+            gateVerdicts.set(relay.taskId, {
+              conclusion: relay.conclusion,
+              candidateReport: relay.candidateReport,
+            });
+          }
+          break;
+        }
         const source = data.message as
           | { source?: string | { kind?: string } }
           | undefined;
@@ -972,8 +1062,20 @@ export function deriveTurnViews(
   // 结果卡的接受决定：card/decision 的 callId 就是 relay 的 request id；刷新后从日志重推。
   for (const raw of turns.values()) {
     for (const fact of raw.taskResults) {
+      // 门判定只作用在它判的那份报告上；下游交了更新结果后不再套旧结论（显示等核查）。
+      const gateVerdict = gateVerdicts.get(fact.taskId);
+      if (gateVerdict && fact.reportId === gateVerdict.candidateReport) {
+        fact.gateVerdict = gateVerdict.conclusion;
+      }
+      if (upstreamChangedTasks.has(fact.taskId)) fact.upstreamChanged = true;
       const decision = cardDecisions.get(fact.id);
-      if (decision) fact.decision = { phase: decision.phase };
+      if (decision) {
+        fact.decision = {
+          phase: decision.phase,
+          ...(decision.data === undefined ? {} : { data: decision.data }),
+          ...(decision.at === undefined ? {} : { at: decision.at }),
+        };
+      }
     }
   }
   return [...turns.values()]

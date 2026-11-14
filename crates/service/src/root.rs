@@ -191,6 +191,9 @@ const KIND_POLICY: &str = concat!(
     "\nBefore dispatching a write task, stopping a task, or changing its write scope, load the aios-tasks skill first.",
     "\nWhen the user's request has steps that must happen in order (a later step needs an earlier step's result), call task_graph_propose once with the subtasks and their after links, then call propose_action once with action start_task_graph and the graph id it returned; the user confirms on the card. Sub-tasks whose upstream has a ready result start automatically: do not dispatch them again.",
     "\nDispatch tasks that are independent of each other separately with task_accept; only ordered work belongs in a task graph.",
+    "\nWhen the user asks to look at something before continuing (for example \"我要先看一眼\", \"我来拍板\", \"过了再…\"), add a read-only milestone step to the graph: set milestone true on that subtask, leave write_scope empty, and make its after point at exactly the one step it checks. Only the user decides on the milestone result card; never judge, pass or fix it yourself.",
+    "\nWhen a milestone card comes back needing fixes, call task_continue once for the step it checks and pass the user's words as note; do not dispatch that step again. If the user's words go beyond the original requirement, do not call task_continue: ask the user to change the requirement first.",
+    "\nWhen a notice says an upstream task has a new result, call task_continue once for the downstream task it names; do not ask the user and do not dispatch it again: it only checks its existing result against the new upstream result.",
 );
 
 /// Kind 的构造期工具策略：上面那份名单，有任务执行者时再加四个任务工具。
@@ -206,6 +209,7 @@ fn kind_tool_policy(options: &RootSessionOptions) -> agent::ToolPolicy {
                 "task_stop",
                 "task_update",
                 "task_graph_propose",
+                "task_continue",
             ]
             .into_iter()
             .map(str::to_owned),
@@ -251,6 +255,9 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
         extra_tools.push(std::sync::Arc::new(
             crate::executor::TaskGraphProposeTool::new(std::sync::Arc::clone(runtime)),
         ));
+        extra_tools.push(std::sync::Arc::new(crate::executor::TaskContinueTool::new(
+            std::sync::Arc::clone(runtime),
+        )));
     }
     let tool_policy = kind_tool_policy(&options);
     let policy_prompt = options

@@ -104,4 +104,22 @@ pub enum TaskError {
     NotGraphRoot,
     #[error("这张任务图已经确认过了")]
     GraphAlreadyConfirmed,
+    #[error("任务图第 {subtask} 项是里程碑，必须是只读（不能有写入范围）")]
+    GraphMilestoneHasWriteScope { subtask: usize },
+    #[error("任务图第 {subtask} 项是里程碑，不能开工作树")]
+    GraphMilestoneHasWorktree { subtask: usize },
+    #[error("任务图第 {subtask} 项是里程碑，after 必须恰好一项（把关的那个任务），实际 {count} 项")]
+    GraphMilestoneAfterNotOne { subtask: usize, count: usize },
+    #[error("任务图第 {subtask} 项是里程碑，不能把关另一个里程碑（不能有门链）")]
+    GraphMilestoneAfterIsMilestone { subtask: usize },
+    #[error("任务图第 {subtask} 项的 after 指向了里程碑（里程碑只能由被它把关的任务单独等）")]
+    GraphMilestoneCannotBeDependency { subtask: usize },
+    #[error("任务图第 {first} 项和第 {second} 项都想给同一个任务当里程碑；一个任务最多一个门")]
+    GraphTwoMilestonesForGuarded { first: usize, second: usize },
+    #[error("这个任务不是里程碑门")]
+    NotMilestoneGate,
+    #[error("这张任务图已经取消了")]
+    GraphCancelled,
+    #[error("门的最近报告不是这份，或者候选已经变了")]
+    GateReportChanged,
 }

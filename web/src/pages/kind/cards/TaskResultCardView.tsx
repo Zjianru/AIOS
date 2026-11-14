@@ -90,8 +90,13 @@ function Changed({ slots }: { slots: TaskResultSlots }) {
 
 export function TaskResultCardView({ envelope, slots, host }: CardViewProps<TaskResultSlots>) {
   const [accepting, setAccepting] = useState(false);
+  const [judging, setJudging] = useState(false);
+  const [writingFix, setWritingFix] = useState(false);
+  const [fixNote, setFixNote] = useState('');
   const tone = STATE_TONE[slots.state];
   const Icon = tone.icon;
+  const gate = slots.gate;
+  const gatePending = gate?.state === 'pending_verdict' && !slots.verdict && !slots.verdictChanged;
   const accept = () => {
     if (accepting) return;
     setAccepting(true);
@@ -101,6 +106,15 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
       })
       .finally(() => setAccepting(false));
   };
+  const judge = (conclusion: 'pass' | 'needs_fix', note?: string) => {
+    if (judging || !gatePending) return;
+    setJudging(true);
+    void Promise.resolve(host.judgeGate?.(conclusion, note))
+      .catch(() => {
+        // 失败原因由 kindStore 提示；按钮恢复，能再点。
+      })
+      .finally(() => setJudging(false));
+  };
   return (
     <div
       className="mt-4 rounded-card border border-line-2 bg-raised/60 p-3"
@@ -109,7 +123,7 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
     >
       <div className="flex items-center gap-1.5 text-1 text-ink-3">
         {slots.write ? <FilePen className="size-3.5" /> : <SearchCheck className="size-3.5" />}
-        {slots.write ? '写任务' : '调查任务'}
+        {gate ? '里程碑 · 只读核查' : slots.write ? '写任务' : '调查任务'}
         <span className="brand-type ml-auto">{timeOf(slots.at)}</span>
       </div>
       <div className="mt-2 flex min-w-0 items-start gap-2">
@@ -130,6 +144,37 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
           <span className="truncate">{slots.status}</span>
         </span>
       </div>
+      {gate?.state === 'pending_verdict' && gate.guarded && gate.candidate ? (
+        <div className="mt-1 text-2 leading-5 text-ink-2" data-kind="gate-candidate">
+          核查的是「{gate.guarded.title}」第 {gate.candidate.ordinal} 次交的结果
+        </div>
+      ) : null}
+      {slots.verdictChanged ? (
+        <div className="mt-2 text-2 leading-5 text-fail" data-kind="gate-changed">
+          已经变了：没有记判定
+        </div>
+      ) : null}
+      {slots.verdict ? (
+        <div className="mt-2" data-kind="gate-verdict">
+          {slots.verdictNote ? (
+            <div
+              className="mb-1 whitespace-pre-wrap break-words border-l-2 border-line-2 pl-2.5 text-2 leading-5 text-ink-2"
+              data-kind="gate-note"
+            >
+              {slots.verdictNote}
+            </div>
+          ) : null}
+          <div className="text-2 text-ink-2">
+            你判了{slots.verdict === 'pass' ? '通过' : '需修正'}
+            {slots.verdictAt ? ' · ' + timeOf(slots.verdictAt) : ''}
+          </div>
+          <div className="mt-0.5 text-1 text-ink-3">
+            {slots.verdict === 'pass'
+              ? '被把关任务到「任务要求已满足」，后面的任务按顺序开跑。'
+              : '已原样交给 Kind；它会让被把关任务在原要求里接着改。'}
+          </div>
+        </div>
+      ) : null}
       {slots.question ? (
         <div className="mt-2 border-l-2 border-wait/60 pl-2.5" data-kind="task-question">
           <div className="text-1 text-ink-3">它问你</div>
@@ -143,14 +188,95 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
         slot={slots.summary}
         className="mt-2 whitespace-pre-wrap break-words text-2 leading-5 text-ink-2"
       />
-      {slots.autoStarted.length > 0 ? (
+      {gate?.state === 'waiting' && gate.recheck ? (
+        <div className="mt-1 text-1 text-done" data-kind="gate-recheck">
+          核查自动重跑：{gate.title}（里程碑，结果由你判）
+        </div>
+      ) : slots.autoStarted.length > 0 ? (
         <div className="mt-1 text-1 text-done" data-kind="task-auto-started">
           已自动开跑：{slots.autoStarted.join('、')}
+          {gate?.state === 'waiting' ? '（里程碑，结果由你判）' : ''}
+        </div>
+      ) : null}
+      {slots.upstreamChanged ? (
+        <div className="mt-1 text-1 text-wait" data-kind="upstream-changed">
+          上游有新结果，待按新结果核对
         </div>
       ) : null}
       {slots.write ? <Changed slots={slots} /> : null}
+      {gatePending ? (
+        <div className="mt-3" data-kind="gate-actions">
+          {writingFix ? (
+            <div className="rounded-card border border-line-2 bg-raised/60 p-2.5">
+              <textarea
+                data-kind="gate-note-input"
+                value={fixNote}
+                autoFocus
+                onChange={(event) => setFixNote(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    setWritingFix(false);
+                    return;
+                  }
+                  if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                    event.preventDefault();
+                    judge('needs_fix', fixNote.trim() ? fixNote : undefined);
+                  }
+                }}
+                placeholder="哪里不对、要怎么改？不写就按核查的发现改。"
+                rows={3}
+                className="w-full resize-y rounded-btn border border-line-2 bg-content px-2 py-1.5 text-2 leading-5 text-ink outline-none focus:border-ink-3/50"
+              />
+              <div className="mt-1 text-1 leading-4 text-ink-3">
+                交给 Kind，让它在原要求里接着改；要改要求，回 Kind 对话说。
+              </div>
+              <div className="mt-2 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  data-kind="gate-needs-fix-cancel"
+                  disabled={judging}
+                  onClick={() => setWritingFix(false)}
+                  className="rounded-btn px-2.5 py-1 text-2 text-ink-2 transition-colors hover:bg-hover hover:text-ink disabled:opacity-60"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  data-kind="gate-needs-fix-submit"
+                  disabled={judging}
+                  onClick={() => judge('needs_fix', fixNote.trim() ? fixNote : undefined)}
+                  className="rounded-btn bg-ink px-3 py-1 text-2 text-content transition-opacity hover:opacity-90 disabled:opacity-60"
+                >
+                  判需修正
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                data-kind="gate-pass"
+                disabled={judging}
+                onClick={() => judge('pass')}
+                className="rounded-btn bg-ink px-3 py-1 text-2 text-content transition-opacity hover:opacity-90 disabled:opacity-60"
+              >
+                通过
+              </button>
+              <button
+                type="button"
+                data-kind="gate-needs-fix"
+                disabled={judging}
+                onClick={() => setWritingFix(true)}
+                className="rounded-btn border border-line-2 px-3 py-1 text-2 text-ink-2 transition-colors hover:bg-hover hover:text-ink disabled:opacity-60"
+              >
+                需修正
+              </button>
+            </div>
+          )}
+        </div>
+      ) : null}
       <div className="mt-3 flex items-center gap-2">
-        {slots.state === 'review' ? (
+        {!gate && slots.state === 'review' ? (
           slots.accepted ? (
             <span
               className="flex items-center gap-1 text-2 text-done"

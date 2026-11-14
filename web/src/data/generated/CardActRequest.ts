@@ -2,8 +2,12 @@
 import type { CardVerb } from "./CardVerb";
 
 /**
- * 确认卡上的一个动作：确认一项，或者暂不。
+ * 确认卡/结果卡上的一个动作：确认一项、暂不，或者门判定的通过/需修正。
  *
- * 卡片由 propose_action 的 call id 定位；option 是选项 id（暂不不需要）。
+ * 卡片由 propose_action 或 relay 的 call id 定位；option 是选项 id（暂不、判定不需要）。
  */
-export type CardActRequest = { callId: string, verb: CardVerb, option?: string | null, };
+export type CardActRequest = { callId: string, verb: CardVerb, option?: string | null,
+/**
+ * 门「需修正」时用户原话（原样存）；其他动作不用。
+ */
+note?: string | null, };

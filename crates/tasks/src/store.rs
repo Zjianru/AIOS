@@ -14,8 +14,9 @@ use crate::effect::{
 };
 use crate::id::{AttemptId, BootId, ConversationId, InputId, ReportId, TaskId};
 use crate::task::{
-    Acceptance, Arrangement, Attempt, AttemptEnd, AttemptTrigger, Confirmation, FrozenPolicy,
-    Handoff, Input, InputAttachment, InputSource, MissingItem, Need, NewGraph, NewInput, NewReport,
+    Acceptance, Arrangement, Attempt, AttemptEnd, AttemptTrigger, Cancellation, CancellationReason,
+    Confirmation, FrozenPolicy, GateCandidate, GateConclusion, GateVerdict, Handoff, Input,
+    InputAttachment, InputSource, MilestoneGate, MissingItem, Need, NewGraph, NewInput, NewReport,
     NewSubtask, NewTask, Report, ReportState, RequirementVersion, Run, SayOutcome, Task,
     TaskPolicy, VersionSource, Worktree, resolve_write_scope,
 };
@@ -46,6 +47,15 @@ pub enum StopAttempt {
     AlreadyStopped,
     /// 这次 Attempt 已经以别的理由结束；没有改动。
     AlreadyEnded,
+}
+
+/// T053：门判定的结果；同一份门报告重复判定时 duplicate 为真，不重复记。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GateJudgeOutcome {
+    pub verdict: GateVerdict,
+    pub duplicate: bool,
+    /// 通过时这次放出的下游标题（relay 的「已自动开跑」）。
+    pub released: Vec<String>,
 }
 
 /// 启动扫描的结果：这次启动认出哪些没结束的 Attempt，各自怎么收尾。
@@ -160,6 +170,52 @@ impl Store {
     ///
     /// 图不在这里开跑：确认卡上点「确认」才把没有 needs 的子任务放进 launch 队列。
     pub fn create_graph(&self, graph: NewGraph, now: i64) -> Result<Task, TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let root = self.create_graph_in(&transaction, graph, now)?;
+        transaction.commit()?;
+        Ok(root)
+    }
+
+    /// T053：按提议的 call id 幂等建图：同一个 call id 再来返回同一张图，不建第二张。
+    pub fn create_graph_once(
+        &self,
+        graph: NewGraph,
+        call_id: &str,
+        now: i64,
+    ) -> Result<(Task, bool), TaskError> {
+        if call_id.trim().is_empty() {
+            return Err(TaskError::EmptyAcceptKey);
+        }
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let key = format!("graph-propose:{call_id}");
+        let existing: Option<String> = transaction
+            .query_row("SELECT value FROM kv WHERE key = ?1", params![key], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        if let Some(id) = existing {
+            let root = load_task_required(&transaction, &TaskId::from(id))?;
+            transaction.commit()?;
+            return Ok((root, false));
+        }
+        let root = self.create_graph_in(&transaction, graph, now)?;
+        transaction.execute(
+            "INSERT INTO kv (key, value) VALUES (?1, ?2)",
+            params![key, root.id.as_str()],
+        )?;
+        transaction.commit()?;
+        Ok((root, true))
+    }
+
+    /// 在一个已有事务里落一张图（校验 + 总任务 + 子任务 + needs）。
+    fn create_graph_in(
+        &self,
+        transaction: &Connection,
+        graph: NewGraph,
+        now: i64,
+    ) -> Result<Task, TaskError> {
         graph.root.validate()?;
         for subtask in &graph.subtasks {
             subtask.task.validate()?;
@@ -170,10 +226,8 @@ impl Store {
             .map(|subtask| subtask.policy.freeze(&subtask.task.cwd))
             .collect::<Result<Vec<_>, _>>()?;
         validate_graph(&graph.subtasks, &frozen)?;
-        let mut conn = self.lock()?;
-        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let root = task_row(
-            &transaction,
+            transaction,
             None,
             graph.root,
             &FrozenPolicy {
@@ -187,11 +241,13 @@ impl Store {
             Some(Arrangement {
                 version: 1,
                 confirmed: None,
+                cancelled: None,
             }),
+            None,
         )?;
-        insert_task_row(&transaction, &root)?;
+        insert_task_row(transaction, &root)?;
         let ids = (0..graph.subtasks.len())
-            .map(|_| generate_id(&transaction).map(TaskId::from))
+            .map(|_| generate_id(transaction).map(TaskId::from))
             .collect::<Result<Vec<_>, _>>()?;
         for (index, subtask) in graph.subtasks.iter().enumerate() {
             let needs = subtask
@@ -203,7 +259,7 @@ impl Store {
                 })
                 .collect();
             let task = task_row(
-                &transaction,
+                transaction,
                 Some(ids[index].clone()),
                 subtask.task.clone(),
                 &frozen[index],
@@ -211,11 +267,46 @@ impl Store {
                 Some(root.id.clone()),
                 needs,
                 None,
+                if subtask.milestone {
+                    Some(MilestoneGate {})
+                } else {
+                    None
+                },
             )?;
-            insert_task_row(&transaction, &task)?;
+            insert_task_row(transaction, &task)?;
         }
-        transaction.commit()?;
         Ok(root)
+    }
+
+    /// T053：取消一张任务图；同一个原因重复取消返回已有的取消记录。
+    pub fn cancel_graph(
+        &self,
+        root: &TaskId,
+        reason: CancellationReason,
+        now: i64,
+    ) -> Result<Cancellation, TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, root)?;
+        let Some(arrangement) = task.arrangement.clone() else {
+            return Err(TaskError::NotGraphRoot);
+        };
+        if let Some(existing) = arrangement.cancelled {
+            transaction.commit()?;
+            return Ok(existing);
+        }
+        if arrangement.confirmed.is_some() {
+            return Err(TaskError::GraphAlreadyConfirmed);
+        }
+        let cancellation = Cancellation { at: now, reason };
+        task.arrangement = Some(Arrangement {
+            version: arrangement.version,
+            confirmed: None,
+            cancelled: Some(cancellation.clone()),
+        });
+        save_task(&transaction, &task)?;
+        transaction.commit()?;
+        Ok(cancellation)
     }
 
     /// T052：总任务的子任务（按落库顺序）。
@@ -241,12 +332,16 @@ impl Store {
         if arrangement.confirmed.is_some() {
             return Err(TaskError::GraphAlreadyConfirmed);
         }
+        if arrangement.cancelled.is_some() {
+            return Err(TaskError::GraphCancelled);
+        }
         root_task.arrangement = Some(Arrangement {
             version: arrangement.version,
             confirmed: Some(Confirmation {
                 version: arrangement.version,
                 at: now,
             }),
+            cancelled: None,
         });
         save_task(&transaction, &root_task)?;
         let mut launched = 0_usize;
@@ -326,6 +421,284 @@ impl Store {
         Ok(released)
     }
 
+    /// T053：上游任务当前可放行的报告（没门=最新 ready；有门=最新判通过的候选；还没判通过=None）。
+    pub fn releasable_report(&self, id: &TaskId) -> Result<Option<Report>, TaskError> {
+        let conn = self.lock()?;
+        let task = load_task_required(&conn, id)?;
+        releasable_report_in(&conn, &task)
+    }
+
+    /// T053：这个任务最近 ready 报告是否要按上游新结果重评（D95 事实派生）。
+    pub fn needs_reevaluation(&self, id: &TaskId) -> Result<bool, TaskError> {
+        let conn = self.lock()?;
+        let task = load_task_required(&conn, id)?;
+        needs_reevaluation_in(&conn, &task)
+    }
+
+    /// T053：按当前可放行报告生成这次 Attempt 的交接（上游还没可放行报告时跳过那一项）。
+    pub fn current_handoffs(&self, task: &Task) -> Result<Vec<Handoff>, TaskError> {
+        let conn = self.lock()?;
+        let mut handoffs = Vec::with_capacity(task.needs.len());
+        for need in &task.needs {
+            let upstream = load_task_required(&conn, &need.from)?;
+            if let Some(report) = releasable_report_in(&conn, &upstream)? {
+                handoffs.push(Handoff {
+                    report_id: report.id.clone(),
+                    requirement_version: report.version,
+                    summary: report.summary.clone(),
+                });
+            }
+        }
+        Ok(handoffs)
+    }
+
+    /// T053：这个任务被哪个门把关（Kind 的 task_continue 认原因用）。
+    pub fn guarding_gate(&self, id: &TaskId) -> Result<Option<Task>, TaskError> {
+        let conn = self.lock()?;
+        let task = load_task_required(&conn, id)?;
+        gate_for_guarded(&conn, &task)
+    }
+
+    /// T053：上游有了新可放行结果，已有结果的下游需重评时同事务排一条 relay 给 Kind（D95）。
+    fn notify_upstream_changed_in(
+        &self,
+        connection: &Connection,
+        upstream: &Task,
+        report_id: &ReportId,
+        now: i64,
+    ) -> Result<(), TaskError> {
+        let Some(parent) = &upstream.parent else {
+            return Ok(());
+        };
+        for downstream in children_in(connection, parent)? {
+            if downstream.id == upstream.id || downstream.is_gate() {
+                continue;
+            }
+            if !downstream.needs.iter().any(|need| need.from == upstream.id) {
+                continue;
+            }
+            if downstream.latest_attempt().is_none()
+                || downstream.latest_report().map(|report| report.state) != Some(ReportState::Ready)
+            {
+                continue;
+            }
+            if !needs_reevaluation_in(connection, &downstream)? {
+                continue;
+            }
+            self.enqueue_effect_in(
+                connection,
+                &EffectPayload::UpstreamChanged {
+                    upstream_task: upstream.id.clone(),
+                    downstream_task: downstream.id.clone(),
+                    upstream_report: report_id.clone(),
+                },
+                now,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// T053：ready 报告落库后放出下一站，返回 relay 给 Kind 的「已自动开跑」标题。
+    fn release_ready_in(
+        &self,
+        connection: &Connection,
+        task: &Task,
+        report_id: &ReportId,
+        now: i64,
+    ) -> Result<Vec<String>, TaskError> {
+        if task.is_gate() {
+            self.after_gate_report_in(connection, task, now)?;
+            return Ok(Vec::new());
+        }
+        if let Some(mut gate) = gate_for_guarded(connection, task)? {
+            let report = task
+                .reports
+                .iter()
+                .find(|report| &report.id == report_id)
+                .ok_or(TaskError::GateReportChanged)?;
+            let handoff = Handoff {
+                report_id: report.id.clone(),
+                requirement_version: report.version,
+                summary: report.summary.clone(),
+            };
+            gate.needs[0].handoff = Some(handoff);
+            save_task(connection, &gate)?;
+            // 门正在跑：只记下这份交接，等门这次 Attempt 结束后再放一次。
+            let running = gate
+                .latest_attempt()
+                .is_some_and(|attempt| attempt.ended_at.is_none());
+            if !running {
+                self.enqueue_effect_in(
+                    connection,
+                    &EffectPayload::Launch {
+                        task_id: gate.id.clone(),
+                    },
+                    now,
+                )?;
+                return Ok(vec![gate.title.clone()]);
+            }
+            return Ok(Vec::new());
+        }
+        self.release_downstream_in(connection, task, now)
+    }
+
+    /// T053：门报回一份 ready 报告后，被把关任务已经有更新的 ready 候选时再放一轮门。
+    fn after_gate_report_in(
+        &self,
+        connection: &Connection,
+        gate: &Task,
+        now: i64,
+    ) -> Result<(), TaskError> {
+        let Some(need) = gate.needs.first() else {
+            return Ok(());
+        };
+        let guarded = load_task_required(connection, &need.from)?;
+        let Some(latest_ready) = guarded
+            .latest_report()
+            .filter(|report| report.state == ReportState::Ready)
+        else {
+            return Ok(());
+        };
+        let last_candidate = gate
+            .latest_attempt()
+            .and_then(|attempt| attempt.handoffs.first())
+            .map(|handoff| handoff.report_id.clone());
+        if last_candidate.as_ref() == Some(&latest_ready.id) {
+            return Ok(());
+        }
+        let mut gate_task = load_task_required(connection, &gate.id)?;
+        gate_task.needs[0].handoff = Some(Handoff {
+            report_id: latest_ready.id.clone(),
+            requirement_version: latest_ready.version,
+            summary: latest_ready.summary.clone(),
+        });
+        save_task(connection, &gate_task)?;
+        self.enqueue_effect_in(
+            connection,
+            &EffectPayload::Launch {
+                task_id: gate.id.clone(),
+            },
+            now,
+        )?;
+        Ok(())
+    }
+
+    /// T053：用户在门结果卡上判定。
+    ///
+    /// 同一个事务：核对门的最近报告和它那次 Attempt 的候选、去重、记判定、排 relay；
+    /// 通过时放下被把关任务的其他下游（交接判通过的那份）。
+    pub fn judge_gate(
+        &self,
+        gate_id: &TaskId,
+        gate_report: &ReportId,
+        conclusion: GateConclusion,
+        note: Option<String>,
+        now: i64,
+    ) -> Result<GateJudgeOutcome, TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut gate = load_task_required(&transaction, gate_id)?;
+        if !gate.is_gate() {
+            return Err(TaskError::NotMilestoneGate);
+        }
+        if let Some(existing) = gate.verdict_for_gate_report(gate_report).cloned() {
+            transaction.commit()?;
+            return Ok(GateJudgeOutcome {
+                verdict: existing,
+                duplicate: true,
+                released: Vec::new(),
+            });
+        }
+        let latest_gate_report = gate.latest_report().ok_or(TaskError::GateReportChanged)?;
+        if &latest_gate_report.id != gate_report {
+            return Err(TaskError::GateReportChanged);
+        }
+        let need = gate.needs.first().ok_or(TaskError::GateReportChanged)?;
+        let guarded_id = need.from.clone();
+        let guarded = load_task_required(&transaction, &guarded_id)?;
+        let candidate_report = guarded
+            .latest_report()
+            .filter(|report| report.state == ReportState::Ready)
+            .ok_or(TaskError::GateReportChanged)?;
+        let attempt = gate
+            .latest_attempt()
+            .cloned()
+            .ok_or(TaskError::GateReportChanged)?;
+        let candidate_handoff = attempt
+            .handoffs
+            .first()
+            .cloned()
+            .ok_or(TaskError::GateReportChanged)?;
+        if candidate_handoff.report_id != candidate_report.id {
+            return Err(TaskError::GateReportChanged);
+        }
+        // 用户原话原样存；空白当没有。
+        let note = note.filter(|note| !note.trim().is_empty());
+        let verdict = GateVerdict {
+            gate_report: gate_report.clone(),
+            candidate: GateCandidate {
+                report_id: candidate_handoff.report_id.clone(),
+                requirement_version: candidate_handoff.requirement_version,
+            },
+            conclusion,
+            note,
+            at: now,
+        };
+        gate.verdicts.push(verdict.clone());
+        save_task(&transaction, &gate)?;
+        let mut released = Vec::new();
+        if conclusion == GateConclusion::Pass {
+            let Some(parent) = gate.parent.clone() else {
+                return Err(TaskError::GateReportChanged);
+            };
+            for mut child in children_in(&transaction, &parent)? {
+                if child.is_gate() || !child.needs.iter().any(|need| need.from == guarded_id) {
+                    continue;
+                }
+                for need in &mut child.needs {
+                    if need.from == guarded_id {
+                        need.handoff = Some(candidate_handoff.clone());
+                    }
+                }
+                save_task(&transaction, &child)?;
+                // 放过的再遇到新的通过候选不算首次放行（D95 需重评，T053.3 处理），不新开 launch。
+                if child.latest_attempt().is_none() {
+                    self.enqueue_effect_in(
+                        &transaction,
+                        &EffectPayload::Launch {
+                            task_id: child.id.clone(),
+                        },
+                        now,
+                    )?;
+                    released.push(child.title.clone());
+                }
+            }
+        }
+        if conclusion == GateConclusion::Pass {
+            // T053：判通过让被把关任务有了新可放行结果，已有结果的下游要按新结果核对。
+            self.notify_upstream_changed_in(
+                &transaction,
+                &guarded,
+                &candidate_handoff.report_id,
+                now,
+            )?;
+        }
+        self.enqueue_effect_in(
+            &transaction,
+            &EffectPayload::GateVerdict {
+                gate_task: gate_id.clone(),
+                gate_report: gate_report.clone(),
+            },
+            now,
+        )?;
+        transaction.commit()?;
+        Ok(GateJudgeOutcome {
+            verdict,
+            duplicate: false,
+            released,
+        })
+    }
+
     /// 从任务和效果表派生阶段。
     pub fn stage(&self, id: &TaskId) -> Result<Stage, TaskError> {
         let conn = self.lock()?;
@@ -386,7 +759,17 @@ impl Store {
         policy: &FrozenPolicy,
         now: i64,
     ) -> Result<Task, TaskError> {
-        let task = task_row(connection, None, draft, policy, now, None, Vec::new(), None)?;
+        let task = task_row(
+            connection,
+            None,
+            draft,
+            policy,
+            now,
+            None,
+            Vec::new(),
+            None,
+            None,
+        )?;
         insert_task_row(connection, &task)?;
         self.enqueue_effect_in(
             connection,
@@ -516,8 +899,19 @@ impl Store {
         Ok(())
     }
 
-    /// 开一个新的 Attempt（没有 Run 时先开 Run）。
+    /// 开一个新的 Attempt（没有 Run 时先开 Run）；默认 trigger=Launch、没有上游交接。
     pub fn begin_attempt(&self, id: &TaskId, now: i64) -> Result<AttemptId, TaskError> {
+        self.begin_attempt_with(id, now, AttemptTrigger::Launch, Vec::new())
+    }
+
+    /// 同 begin_attempt，触发原因和开跑时实际拿到的上游报告由调用方给（T053 门重检/接续用）。
+    pub fn begin_attempt_with(
+        &self,
+        id: &TaskId,
+        now: i64,
+        trigger: AttemptTrigger,
+        handoffs: Vec<Handoff>,
+    ) -> Result<AttemptId, TaskError> {
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load_task_required(&transaction, id)?;
@@ -546,7 +940,8 @@ impl Store {
         let attempt = Attempt {
             id: attempt_id,
             conversation: None,
-            trigger: AttemptTrigger::Launch,
+            trigger,
+            handoffs,
             started_at: now,
             ended_at: None,
             end: None,
@@ -659,10 +1054,21 @@ impl Store {
         trigger: AttemptTrigger,
         now: i64,
     ) -> Result<Option<AttemptId>, TaskError> {
+        self.begin_followup_with_handoffs(id, trigger, Vec::new(), now)
+    }
+
+    /// 同 begin_followup_with，并记下这次接续实际拿到的上游报告（T053 门重检/核对用）。
+    pub fn begin_followup_with_handoffs(
+        &self,
+        id: &TaskId,
+        trigger: AttemptTrigger,
+        handoffs: Vec<Handoff>,
+        now: i64,
+    ) -> Result<Option<AttemptId>, TaskError> {
         let mut conn = self.lock()?;
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load_task_required(&transaction, id)?;
-        let Some(attempt_id) = begin_followup_attempt(&mut task, trigger, now) else {
+        let Some(attempt_id) = begin_followup_attempt(&mut task, trigger, handoffs, now) else {
             transaction.commit()?;
             return Ok(None);
         };
@@ -1008,10 +1414,14 @@ impl Store {
             version: task.requirement_version(),
         });
         save_task(&transaction, &task)?;
-        // T052：ready 报告落库的同一个事务里放出下游：上游全有 ready 结果的下游，
-        // 把交接写进它的 needs 并排 launch（效果表，崩溃重放恰好一次，D94）。
+        // T052/T053：ready 报告落库的同一个事务里放出该放的下一站：
+        // 普通上游放下游；被把关任务放它的门（只记交接）；门报回时按需再放一次门。
+        // 效果表键保证崩溃重放恰好一次。
         let released = if report_state == ReportState::Ready {
-            self.release_downstream_in(&transaction, &task, now)?
+            let released = self.release_ready_in(&transaction, &task, &report_id, now)?;
+            // T053：这条新可放行结果让已有结果的下游「需重评」时，同事务排一条 relay 给 Kind。
+            self.notify_upstream_changed_in(&transaction, &task, &report_id, now)?;
+            released
         } else {
             Vec::new()
         };
@@ -1236,7 +1646,12 @@ fn followup_preview(task: &Task) -> Option<AttemptId> {
     ))
 }
 
-fn begin_followup_attempt(task: &mut Task, trigger: AttemptTrigger, now: i64) -> Option<AttemptId> {
+fn begin_followup_attempt(
+    task: &mut Task,
+    trigger: AttemptTrigger,
+    handoffs: Vec<Handoff>,
+    now: i64,
+) -> Option<AttemptId> {
     let latest = task.latest_attempt()?;
     if latest.ended_at.is_none() || latest.end == Some(AttemptEnd::NotOpened) {
         return None;
@@ -1253,6 +1668,7 @@ fn begin_followup_attempt(task: &mut Task, trigger: AttemptTrigger, now: i64) ->
         id: attempt_id,
         conversation,
         trigger,
+        handoffs,
         started_at: now,
         ended_at: None,
         end: None,
@@ -1279,6 +1695,7 @@ fn task_row(
     parent: Option<TaskId>,
     needs: Vec<Need>,
     arrangement: Option<Arrangement>,
+    gate: Option<MilestoneGate>,
 ) -> Result<Task, TaskError> {
     let versions = vec![RequirementVersion {
         write_scope: policy.write_scope.clone(),
@@ -1312,6 +1729,8 @@ fn task_row(
         parent,
         needs,
         arrangement,
+        gate,
+        verdicts: Vec::new(),
         missing: Vec::new(),
         created_at: now,
     })
@@ -1344,6 +1763,44 @@ fn validate_graph(subtasks: &[NewSubtask], frozen: &[FrozenPolicy]) -> Result<()
             if !deps[index].contains(after) {
                 deps[index].push(*after);
             }
+        }
+    }
+    // T053：里程碑校验——只读、after 恰好一项、不能有门链/双门、别人 after 不能指门。
+    let mut guarded_by: Vec<Option<usize>> = vec![None; subtasks.len()];
+    for (index, subtask) in subtasks.iter().enumerate() {
+        if !subtask.milestone {
+            continue;
+        }
+        if frozen[index].write_scope.is_some() {
+            return Err(TaskError::GraphMilestoneHasWriteScope { subtask: index });
+        }
+        if frozen[index].worktree {
+            return Err(TaskError::GraphMilestoneHasWorktree { subtask: index });
+        }
+        if subtask.after.len() != 1 {
+            return Err(TaskError::GraphMilestoneAfterNotOne {
+                subtask: index,
+                count: subtask.after.len(),
+            });
+        }
+        let guarded = subtask.after[0];
+        if subtasks[guarded].milestone {
+            return Err(TaskError::GraphMilestoneAfterIsMilestone { subtask: index });
+        }
+        if let Some(first) = guarded_by[guarded] {
+            return Err(TaskError::GraphTwoMilestonesForGuarded {
+                first,
+                second: index,
+            });
+        }
+        guarded_by[guarded] = Some(index);
+    }
+    for (index, subtask) in subtasks.iter().enumerate() {
+        if subtask.milestone {
+            continue;
+        }
+        if subtask.after.iter().any(|after| subtasks[*after].milestone) {
+            return Err(TaskError::GraphMilestoneCannotBeDependency { subtask: index });
         }
     }
     // Kahn 拓扑排序：处理不完就是有环。
@@ -1425,11 +1882,84 @@ fn children_in(connection: &Connection, parent: &TaskId) -> Result<Vec<Task>, Ta
 fn needs_ready_in(connection: &Connection, task: &Task) -> Result<bool, TaskError> {
     for need in &task.needs {
         let upstream = load_task_required(connection, &need.from)?;
-        if upstream.latest_report().map(|report| report.state) != Some(ReportState::Ready) {
+        let Some(latest) = upstream
+            .latest_report()
+            .filter(|report| report.state == ReportState::Ready)
+        else {
+            return Ok(false);
+        };
+        // T053：上游有门时，要门对「上游当前最新 ready 报告」判了通过才算可放行；
+        // 门任务自己等被把关任务时不要求自己先通过。
+        if let Some(gate) = gate_for_guarded(connection, &upstream)?
+            && gate.id != task.id
+            && !gate.passed(&latest.id)
+        {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+/// T053：上游当前可放行的报告（没门=最近 ready；有门=最近判通过的候选）。
+fn releasable_report_in(connection: &Connection, task: &Task) -> Result<Option<Report>, TaskError> {
+    if let Some(gate) = gate_for_guarded(connection, task)? {
+        let passed = gate
+            .verdicts
+            .iter()
+            .rev()
+            .find(|verdict| verdict.conclusion == GateConclusion::Pass)
+            .and_then(|verdict| {
+                task.reports
+                    .iter()
+                    .find(|report| report.id == verdict.candidate.report_id)
+            })
+            .cloned();
+        return Ok(passed);
+    }
+    Ok(task
+        .latest_report()
+        .filter(|report| report.state == ReportState::Ready)
+        .cloned())
+}
+
+/// T053：需重评派生——最近 ready 报告那次的 Attempt.handoffs 与上游当前可放行报告比对。
+fn needs_reevaluation_in(connection: &Connection, task: &Task) -> Result<bool, TaskError> {
+    let Some(attempt) = task.latest_attempt() else {
+        return Ok(false);
+    };
+    if task.needs.is_empty() {
+        return Ok(false);
+    }
+    if task.latest_report().map(|report| report.state) != Some(ReportState::Ready) {
+        return Ok(false);
+    }
+    for (index, need) in task.needs.iter().enumerate() {
+        let upstream = load_task_required(connection, &need.from)?;
+        let current = releasable_report_in(connection, &upstream)?;
+        match (attempt.handoffs.get(index), current) {
+            (Some(handoff), Some(report)) if handoff.report_id == report.id => {}
+            _ => return Ok(true),
+        }
+    }
+    Ok(false)
+}
+
+/// T053：这个任务被哪个门把关（同一总任务下 needs 恰好指向它的里程碑）。
+fn gate_for_guarded(connection: &Connection, task: &Task) -> Result<Option<Task>, TaskError> {
+    let Some(parent) = &task.parent else {
+        return Ok(None);
+    };
+    for sibling in children_in(connection, parent)? {
+        if sibling.is_gate()
+            && sibling
+                .needs
+                .first()
+                .is_some_and(|need| need.from == task.id)
+        {
+            return Ok(Some(sibling));
+        }
+    }
+    Ok(None)
 }
 
 /// T052：阶段派生（含图）：总任务按子任务汇总；子任务图没确认/上游没结果 = 待补足条件。
@@ -1448,6 +1978,15 @@ fn stage_with_graph(connection: &Connection, task: &Task) -> Result<Stage, TaskE
     }
     if let Some(parent) = &task.parent {
         let root = load_task_required(connection, parent)?;
+        // T053：取消的图不进任何阶段推进（子任务不显示成排队）。
+        if root
+            .arrangement
+            .as_ref()
+            .and_then(|arrangement| arrangement.cancelled.as_ref())
+            .is_some()
+        {
+            return Ok(Stage::NeedsConditions);
+        }
         let confirmed = root
             .arrangement
             .as_ref()
@@ -1458,7 +1997,43 @@ fn stage_with_graph(connection: &Connection, task: &Task) -> Result<Stage, TaskE
         }
     }
     let launch_queued = effect_pending_in(connection, EffectKind::Launch, task.id.as_str())?;
-    Ok(task.stage(launch_queued))
+    let stage = task.stage(launch_queued);
+    // T053：门任务和被把关任务的阶段覆盖（03 篇 5.1 新增「任务要求已满足」）。
+    if let Some(parent) = &task.parent {
+        let siblings = children_in(connection, parent)?;
+        if task.is_gate() {
+            if let Some(latest) = task
+                .latest_report()
+                .filter(|report| report.state == ReportState::Ready)
+            {
+                return Ok(if task.verdict_for_gate_report(&latest.id).is_some() {
+                    Stage::RequirementMet
+                } else {
+                    Stage::ReadyForReview
+                });
+            }
+            return Ok(stage);
+        }
+        let gate_for_task = siblings.iter().find(|sibling| {
+            sibling.is_gate()
+                && sibling
+                    .needs
+                    .first()
+                    .is_some_and(|need| need.from == task.id)
+        });
+        if let Some(gate) = gate_for_task
+            && let Some(latest) = task
+                .latest_report()
+                .filter(|report| report.state == ReportState::Ready)
+        {
+            return Ok(if gate.passed(&latest.id) {
+                Stage::RequirementMet
+            } else {
+                Stage::ReadyForReview
+            });
+        }
+    }
+    Ok(stage)
 }
 
 fn generate_id(connection: &Connection) -> Result<String, TaskError> {

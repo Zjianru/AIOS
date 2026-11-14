@@ -61,6 +61,17 @@ pub enum EffectPayload {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         released: Vec<String>,
     },
+    /// T053：用户判定后的 relay：结论、原话、门报告摘要和被判候选都从任务库读。
+    GateVerdict {
+        gate_task: TaskId,
+        gate_report: ReportId,
+    },
+    /// T053：上游有了新可放行结果，下游已有的结果要按新结果核对（D95）。
+    UpstreamChanged {
+        upstream_task: TaskId,
+        downstream_task: TaskId,
+        upstream_report: ReportId,
+    },
     /// 停止事实的 relay：和报告同一条 Kind 投递通路，但没有报告 id。
     /// 键里带任务 id：Attempt 编号只在任务内唯一，单用编号会让两个任务的停止互相覆盖。
     Stop {
@@ -94,7 +105,10 @@ impl EffectPayload {
     pub fn kind(&self) -> EffectKind {
         match self {
             Self::Launch { .. } => EffectKind::Launch,
-            Self::Relay { .. } | Self::Stop { .. } => EffectKind::Relay,
+            Self::Relay { .. }
+            | Self::GateVerdict { .. }
+            | Self::UpstreamChanged { .. }
+            | Self::Stop { .. } => EffectKind::Relay,
             Self::Delivery { .. } => EffectKind::Delivery,
             Self::Notice { .. } => EffectKind::Notice,
             Self::Restart { .. } => EffectKind::Restart,
@@ -107,6 +121,12 @@ impl EffectPayload {
         match self {
             Self::Launch { task_id } | Self::Delivery { task_id } => task_id.to_string(),
             Self::Relay { report_id, .. } => report_id.to_string(),
+            Self::GateVerdict { gate_report, .. } => format!("gateverdict:{gate_report}"),
+            Self::UpstreamChanged {
+                upstream_task,
+                downstream_task,
+                upstream_report,
+            } => format!("upstream:{upstream_task}:{downstream_task}:{upstream_report}"),
             Self::Stop {
                 task_id,
                 attempt_id,

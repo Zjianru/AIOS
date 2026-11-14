@@ -230,12 +230,14 @@ export async function cardAct(
   callId: string,
   verb: CardVerb,
   option?: string,
+  note?: string,
 ): Promise<CardActResponse> {
   return post({
     method: 'card-act',
     callId,
     verb,
     ...(option ? { option } : {}),
+    ...(note === undefined ? {} : { note }),
   });
 }
 

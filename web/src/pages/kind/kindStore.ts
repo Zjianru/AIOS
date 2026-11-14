@@ -24,16 +24,20 @@ import { getModelSettings } from '@/data/keyring';
 import { setHostHome } from '@/data/service';
 import { go } from '@/app/navigate';
 import type { AskAnswer } from '@/data/service';
+import { parseTaskRelay } from '@/data/taskResult';
 import { mark } from '@/lib/perf';
 import {
   canvasTracks,
   ccViewOf,
   compactionViewOf,
   deriveTurnViews,
+  gateVerdictOf,
   mergeCanvasTracks,
   prependOlderViews,
   reconcileTaskCards,
   taskCcFacts,
+  upstreamChangedOf,
+  userRpcIdOf,
 } from './turnViews';
 import type { CanvasTrack, TurnLabels, TurnViewData } from './turnViews';
 import { applyTaskCardStates } from './taskCardState';
@@ -188,6 +192,12 @@ interface KindState {
   dismissCard: (callId: string) => Promise<void>;
   /** 结果卡：接受（服务登记当前版本+报告，回执由 card/decision 事件回填）。 */
   acceptTaskResult: (callId: string) => Promise<void>;
+  /** T053：门结果卡判定（通过/需修正；note 是用户原话，空白当没有）。 */
+  judgeGate: (
+    callId: string,
+    conclusion: 'pass' | 'needs_fix',
+    note?: string,
+  ) => Promise<void>;
   compact: () => void;
   setModel: (model: KindState['model']) => void;
   /** ：从服务刷新会话合计/汇率/币种。 */
@@ -410,9 +420,88 @@ const liveToolCalls = new Map<string, { name: string; arguments: string }>();
  */
 let taskCardStates: ReadonlyMap<string, TaskReadHeader> = new Map();
 
-/** 折卡之后再套任务库事实（T038 折卡 + T041 状态映射）。 */
+/** T053：门判定 relay 回填被把关任务卡状态词（live 和刷新共用；按任务 id 记最近一次）。 */
+let gateVerdictByTask: ReadonlyMap<
+  string,
+  { conclusion: 'pass' | 'needs_fix'; candidateReport: string }
+> = new Map();
+/** T053：上游变了的下游（upstream_changed relay；交出新 ready 报告时清除）。 */
+let upstreamChangedByTask: ReadonlySet<string> = new Set();
+
+function rememberCardSignals(events: readonly ServiceEvent[]): void {
+  let verdicts = gateVerdictByTask;
+  let changed = upstreamChangedByTask;
+  for (const event of events) {
+    if (event.type !== 'user/message') continue;
+    const message = event.data?.message;
+    const routed = gateVerdictOf(message);
+    if (routed) {
+      const existing = verdicts.get(routed.taskId);
+      if (
+        existing?.conclusion !== routed.conclusion ||
+        existing?.candidateReport !== routed.candidateReport
+      ) {
+        verdicts = new Map(verdicts).set(routed.taskId, {
+          conclusion: routed.conclusion,
+          candidateReport: routed.candidateReport,
+        });
+      }
+    }
+    const rpcId = userRpcIdOf(message);
+    if (rpcId?.startsWith('upstream-changed:')) {
+      const downstream = upstreamChangedOf(message);
+      if (downstream && !changed.has(downstream.downstreamId)) {
+        changed = new Set(changed).add(downstream.downstreamId);
+      }
+      continue;
+    }
+    const relay = parseTaskRelay(message, 0);
+    if (relay && changed.has(relay.taskId)) {
+      const without = new Set(changed);
+      without.delete(relay.taskId);
+      changed = without;
+    }
+  }
+  gateVerdictByTask = verdicts;
+  upstreamChangedByTask = changed;
+}
+
+function applyCardSignals(views: TurnViewData[]): TurnViewData[] {
+  if (gateVerdictByTask.size === 0 && upstreamChangedByTask.size === 0) return views;
+  return views.map((view) => {
+    if (
+      !view.taskResults.some(
+        (fact) => gateVerdictByTask.has(fact.taskId) || upstreamChangedByTask.has(fact.taskId),
+      )
+    ) {
+      return view;
+    }
+    return {
+      ...view,
+      taskResults: view.taskResults.map((fact) => {
+        const verdict = gateVerdictByTask.get(fact.taskId);
+        const nextVerdict =
+          verdict && fact.reportId === verdict.candidateReport ? verdict.conclusion : undefined;
+        const upstreamChanged = upstreamChangedByTask.has(fact.taskId);
+        if (
+          fact.gateVerdict === nextVerdict &&
+          (fact.upstreamChanged === true) === upstreamChanged
+        ) {
+          return fact;
+        }
+        return {
+          ...fact,
+          gateVerdict: nextVerdict,
+          ...(upstreamChanged ? { upstreamChanged: true } : {}),
+        };
+      }),
+    };
+  });
+}
+
+/** 折卡之后再套任务库事实（T038 折卡 + T041 状态映射 + T053 门判定/上游变了状态）。 */
 function finishViews(views: TurnViewData[]): TurnViewData[] {
-  return applyTaskCardStates(reconcileTaskCards(views), taskCardStates);
+  return applyCardSignals(applyTaskCardStates(reconcileTaskCards(views), taskCardStates));
 }
 
 /** 从还没流完的参数 JSON 里取 canvas 的 title；还没流到（或半个转义）就先给空串。 */
@@ -494,6 +583,7 @@ function applyLiveEvent(event: ServiceEvent): void {
   }
   if (event.seq <= lastSeq) return;
   lastSeq = event.seq;
+  rememberCardSignals([event]);
   liveEvents.push(event);
   // T028.5：抄送 Kind 的行（inbox/spliced 或领取后的 user/message）单独成行，不是一轮。
   if (event.type === 'agent/inbox/spliced' || event.type === 'user/message') {
@@ -814,6 +904,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   loadInitial: async () => {
     try {
       const page = await fetchEventsPage({ maxMessages: 100, minMessages: 10, minTurns: 5 });
+      rememberCardSignals(page.events);
       const views = finishViews(
         mergeCcViews(deriveTurnViews(page.events, turnLabels()), page.events),
       );
@@ -1056,6 +1147,22 @@ export const useKindStore = create<KindState>()((set, get) => ({
       },
       (error: unknown) => {
         toast('接受没送到内核', { description: '连上内核再试一次' });
+        throw error;
+      },
+    );
+  },
+
+  judgeGate: (callId, conclusion, note) => {
+    // 判定回执由 card/decision 事件回填；这里只在服务没记下时报原因。
+    return cardAct(callId, conclusion === 'pass' ? 'pass' : 'needs-fix', undefined, note).then(
+      (response) => {
+        const decision = response.decision;
+        if (decision?.phase === 'confirmed' || decision?.phase === 'refused') return;
+        toast('判定没记下', { description: '内核没有返回判定结果' });
+        throw new Error('判定没记下');
+      },
+      (error: unknown) => {
+        toast('判定没送到内核', { description: '连上内核再试一次' });
         throw error;
       },
     );

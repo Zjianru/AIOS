@@ -17,6 +17,10 @@ impl RootHost {
         match call {
             // 发消息前把附件 id 解析成只读副本路径（文字/粘贴/文件拼成块）。
             Call::Send(request) => {
+                // T053：上一轮提了图却没上卡 → 这一轮开始前取消（NoCard）。
+                if let Err(error) = self.cancel_uncarded_graphs().await {
+                    eprintln!("上一轮没上卡的任务图取消失败：{error}");
+                }
                 let message = self.user_message_from(&request)?;
                 let guard = self.inner.lock().await;
                 match guard.as_ref() {
@@ -75,6 +79,19 @@ impl RootHost {
                 .map(Response::SessionModelSelect),
             // 确认卡：自己取日志快照，不在持锁时跑动作（换模型可能重开根会话）。
             Call::CardAct(request) => self.card_act(request).await.map(Response::CardAct),
+            // T053：门判定是内部操作，只给根宿主（Kind 没有判定工具）。
+            Call::GateJudge(request) => self.gate_judge(request).await.map(Response::GateJudge),
+            // T053：Kind 让任务在原要求里接着做（任务库和执行者都在根宿主）。
+            Call::TaskContinue(request) => match self.task_runtime() {
+                Some(runtime) => runtime
+                    .continue_task(request)
+                    .await
+                    .map(Response::TaskContinue)
+                    .map_err(ServiceError::TaskUnavailable),
+                None => Err(ServiceError::TaskUnavailable(
+                    "任务库没开，接着做不了".to_owned(),
+                )),
+            },
             // 根宿主自己填统计/汇率/币种（需要 data_dir + Keyring）。
             Call::Status(request) => self.host_status(request).await.map(Response::Status),
             // 余额/余量需要 Keyring 签发 key。
