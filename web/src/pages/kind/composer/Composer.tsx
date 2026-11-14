@@ -136,6 +136,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   } | null>(null);
   const pendingResultCard = useKindStore((state) => state.pendingResultCard);
   const clearPendingResultCard = useKindStore((state) => state.clearPendingResultCard);
+  const setComposerResultCard = useKindStore((state) => state.setComposerResultCard);
   const [pastePreview, setPastePreview] = useState<number | null>(null);
   const [filePreview, setFilePreview] = useState<{ id: string; text: string } | null>(null);
   const [atMenu, setAtMenu] = useState<AtMenuState | null>(null);
@@ -183,6 +184,16 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       inputRef.current?.focus();
     });
   }, [clearPendingResultCard, pendingResultCard, resize]);
+
+  // T055.3 G1：输入框里的结果卡同步到 kindStore，结果卡据此显示「已带进输入框」；
+  // 发送/移除/清空时 resultCard 置空，这里跟着清。草稿恢复在同一个 state 上，刷新后自动重建。
+  useEffect(() => {
+    setComposerResultCard(resultCard);
+  }, [resultCard, setComposerResultCard]);
+  useEffect(
+    () => () => setComposerResultCard(null),
+    [setComposerResultCard],
+  );
 
   // T013 验收 F4：选中对话正文（回答、你的消息、工作过程）里的文字就浮出「引用」；
   // 输入框里的选区仍走 textarea 自己的 onSelect，两条路互不干扰。

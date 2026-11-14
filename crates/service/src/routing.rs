@@ -147,6 +147,12 @@ impl RootHost {
             Call::MonitorReport(_) => {
                 Ok(Response::MonitorReport(MonitorReportResponse { ok: true }))
             }
+            // T055：工作页/「现在」共用的一份工作快照（任务库 + Kind 根会话事实）。
+            Call::Work(_) => self.work_snapshot().await.map(Response::Work),
+            // T055.2：组接受由根宿主转给任务库一个事务。
+            Call::TaskAcceptMany(request) => {
+                self.accept_many(&request).map(Response::TaskAcceptMany)
+            }
             // 附件仓库（文字文件只读副本）。
             Call::AttachmentPut(request) => self
                 .attachment_put(request)

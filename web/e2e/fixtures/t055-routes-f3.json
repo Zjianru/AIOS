@@ -1,0 +1,14 @@
+{
+  "routes": [
+    {
+      "contains": "\"name\":\"task_accept\"",
+      "file": "t055-kind-f3.jsonl",
+      "paceMs": 40
+    },
+    {
+      "contains": "\"name\":\"task_report\"",
+      "file": "t055-thin-f3.jsonl",
+      "paceMs": 80
+    }
+  ]
+}

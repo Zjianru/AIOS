@@ -77,6 +77,7 @@ function startReplay(
   const routeFile =
     routesFile === undefined
       ? (restartRouteFile(options) ??
+        t055RouteFile(options) ??
         t030RouteFile(options) ??
         t013RouteFile(options) ??
         t052RouteFile(options) ??
@@ -316,6 +317,10 @@ export interface FixtureOptions {
   /// T054：调查任务夹具（Kind 直接 task_accept 无写集）；oldCard 是写任务交两份结果；
   /// update 是写任务交结果后改要求（带结果卡进输入框、第 2/3 版要求）。
   t054?: 'investigation' | 'oldCard' | 'update' | 'updateWindow' | 'updateWindow2';
+  /// T055：工作页读侧夹具。board 是四个 ready 调查任务（等你接受≥4）；
+  /// history 是写任务 + 后续多轮文本（较早一轮有结果卡）；confirm 是一张没绑任务的确认卡；
+  /// f3 是同一任务两次结果落在不同 Kind 轮（F3 定位敏感性）。
+  t055?: 'board' | 'history' | 'confirm' | 'f3';
 }
 
 /** T024.4：双会话回放用哪份按请求体路由的文件；预写会话的两种不需要。 */
@@ -349,6 +354,12 @@ function t052RouteFile(options: FixtureOptions): string | null {
 function t053RouteFile(options: FixtureOptions): string | null {
   if (!options.t053Gate) return null;
   return 't053-routes-graph.json';
+}
+
+/** T055：工作页读侧的回放路由（board/history/confirm）。 */
+function t055RouteFile(options: FixtureOptions): string | null {
+  if (!options.t055) return null;
+  return 't055-routes-' + options.t055 + '.json';
 }
 
 /** T054：调查任务（Kind 受理只读任务，ThinAgent 报 ready）。 */
@@ -434,7 +445,8 @@ export async function startKernelFixture(
     options.t054 === 'oldCard' ||
     options.t054 === 'update' ||
     options.t054 === 'updateWindow' ||
-    options.t054 === 'updateWindow2'
+    options.t054 === 'updateWindow2' ||
+    options.t055 === 'history'
   ) {
     await writeFile(path.join(dataDir, 'hello.txt'), 'hello from fixture\n');
     // 页头写入范围用例：任务目录里的另一个文件。

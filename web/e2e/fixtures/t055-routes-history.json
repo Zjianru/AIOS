@@ -1,0 +1,14 @@
+{
+  "routes": [
+    {
+      "contains": "\"name\":\"task_accept\"",
+      "file": "t055-kind-history.jsonl",
+      "paceMs": 50
+    },
+    {
+      "contains": "\"name\":\"task_report\"",
+      "file": "t030-thin-write.jsonl",
+      "paceMs": 100
+    }
+  ]
+}

@@ -24,6 +24,7 @@ import {
   Square,
 } from 'lucide-react';
 import { go } from '@/app/navigate';
+import { useKindStore } from '@/pages/kind/kindStore';
 import type { LucideIcon } from 'lucide-react';
 import type { TaskCardState, TaskResultSlots } from '@/data/taskResult';
 import type { CardViewProps } from './model';
@@ -95,6 +96,11 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
   const [fixNote, setFixNote] = useState('');
   const tone = STATE_TONE[slots.state];
   const Icon = tone.icon;
+  const composerResultCard = useKindStore((state) => state.composerResultCard);
+  const inComposer =
+    composerResultCard !== null &&
+    composerResultCard.taskId === slots.taskId &&
+    composerResultCard.version === slots.reportVersion;
   const gate = slots.gate;
   // 门自己的结果卡（等你判/你判了）不出接受；被把关任务卡（waiting）门判通过后要出接受。
   const gateSelf = gate?.state === 'pending_verdict';
@@ -282,6 +288,14 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
         </div>
       ) : null}
       <div className="mt-3 flex items-center gap-2">
+        {inComposer ? (
+          <span
+            data-kind="result-card-in-composer"
+            className="rounded-badge bg-hover px-2 py-1 text-2 text-ink-2"
+          >
+            已带进输入框
+          </span>
+        ) : null}
         {!gateSelf && slots.accepted ? (
           <div className="min-w-0" data-kind="task-accepted">
             <div className="flex items-center gap-1 text-2 text-done">

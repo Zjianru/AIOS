@@ -89,6 +89,8 @@ export function ConversationPane() {
   const userScrolledRef = useRef(false);
   /** 跟着最新走：贴着底时为真；往上翻就放开，回到底或者新起一轮再接上。 */
   const followRef = useRef(true);
+  /** T055：从工作页/现在页「去看」时按目标轮定位；定位期间不跟底，用户一动手就放开。 */
+  const revealHoldRef = useRef(false);
 
 
   // 首屏：落到最新一条。
@@ -144,6 +146,7 @@ export function ConversationPane() {
       if (state.views === prev.views) return;
       const last = state.views[state.views.length - 1]?.id;
       const prevLast = prev.views[prev.views.length - 1]?.id;
+      if (revealHoldRef.current) return;
       if (last && last !== prevLast && !state.loadingOlder) followRef.current = true;
       if (!followRef.current) return;
       requestAnimationFrame(pin);
@@ -157,7 +160,9 @@ export function ConversationPane() {
     const content = scroller?.querySelector('[data-testid="virtuoso-item-list"]');
     if (!scroller || !content) return;
     const observer = new ResizeObserver(() => {
-      if (followRef.current && paintedRef.current) scroller.scrollTop = scroller.scrollHeight;
+      if (!revealHoldRef.current && followRef.current && paintedRef.current) {
+        scroller.scrollTop = scroller.scrollHeight;
+      }
     });
     observer.observe(content);
     return () => observer.disconnect();
@@ -165,7 +170,7 @@ export function ConversationPane() {
 
   const handleAtBottom = useCallback(
     (bottom: boolean) => {
-      if (bottom) followRef.current = true;
+      if (bottom && !revealHoldRef.current) followRef.current = true;
       setAtBottom(bottom);
     },
     [setAtBottom],
@@ -208,18 +213,38 @@ export function ConversationPane() {
   }, []);
 
   // T015.2：点了旧版画布那一行 —— 滚到出最新版的那一轮。
+  // T055：从工作页/现在页点「去看」时目标轮可能刚由 loadOlder 补进来，视图数变了要再滚一次。
   const reveal = useKindStore((state) => state.reveal);
+  const viewCount = useKindStore((state) => state.views.length);
   useEffect(() => {
     if (!reveal) return;
     const index = useKindStore.getState().views.findIndex((view) => view.id === reveal.turnId);
     if (index < 0) return;
     followRef.current = false;
-    listRef.current?.scrollToIndex({
-      index: firstItemIndex + index,
-      align: 'start',
-      behavior: 'smooth',
-    });
-  }, [reveal, firstItemIndex]);
+    // 这是用户主动跳过去的：停掉首屏「钉到底」的 rAF 循环，别把滚动又拉回来。
+    userScrolledRef.current = true;
+    revealHoldRef.current = true;
+    const scroll = () => {
+      listRef.current?.scrollToIndex({
+        index: firstItemIndex + index,
+        align: 'start',
+        behavior: 'auto',
+      });
+      // 目标就是当前加载的最老一轮时，Virtuoso 刚换 data 的 scrollToIndex 可能落空；直接贴顶。
+      if (index === 0) {
+        const scroller = document.querySelector<HTMLElement>(
+          '[data-pane="conversation"] [data-virtuoso-scroller="true"]',
+        );
+        if (scroller) scroller.scrollTop = 0;
+      }
+    };
+    scroll();
+    // 面板刚挂上或 Virtuoso 刚换 data 时，一次 scrollToIndex 可能落空；几种时机再补几次。
+    const timers = [100, 300, 600, 1000, 1500, 2000, 3000].map((delay) =>
+      window.setTimeout(scroll, delay),
+    );
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, [reveal, firstItemIndex, viewCount]);
 
 
   // 停止（D12）：运行中按 Esc 随时停；有弹层开着时让弹层先处理 Esc。
@@ -257,6 +282,7 @@ export function ConversationPane() {
 
   const onComposerSend = useCallback(
     (text: string, options: { pastes: string[]; attachments: { id: string; name: string; bytes: number }[] }) => {
+      revealHoldRef.current = false;
       followRef.current = true;
       listRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
       return send(text, options);
@@ -270,13 +296,16 @@ export function ConversationPane() {
       data-pane="conversation"
       onWheelCapture={(event) => {
         userScrolledRef.current = true;
+        revealHoldRef.current = false;
         if (event.deltaY < 0) followRef.current = false;
       }}
       onTouchStartCapture={() => {
         userScrolledRef.current = true;
+        revealHoldRef.current = false;
       }}
       onKeyDownCapture={() => {
         userScrolledRef.current = true;
+        revealHoldRef.current = false;
       }}
     >
       {offline ? (
@@ -344,7 +373,7 @@ export function ConversationPane() {
               });
             }}
             itemContent={(_index, view) => (
-              <div className="mx-auto w-full max-w-[680px]">
+              <div className="mx-auto w-full max-w-[680px]" data-turn={view.id}>
                 <TurnRow
                   view={view}
                   dayLabel={dayLabels.get(view.id) ?? null}

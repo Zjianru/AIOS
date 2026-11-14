@@ -111,6 +111,8 @@ interface KindState {
   hasOlder: boolean;
   loadingOlder: boolean;
   initialLoading: boolean;
+  /** 每次成功加载首屏就 +1（T055：从别的页点「去看」时等 Kind 页新一屏加载完再滚）。 */
+  loadCount: number;
   atBottom: boolean;
   streamingTurnId: string | null;
   dayLabels: Map<string, string>;
@@ -204,6 +206,11 @@ interface KindState {
   pendingResultCard: { taskId: string; title: string; version: number } | null;
   modifyTaskResult: (card: { taskId: string; title: string; version: number }) => void;
   clearPendingResultCard: () => void;
+  /** T055.3 G1：输入框里现在带着哪张结果卡（发送/删除/清空后清空）；结果卡据此写「已带进输入框」。 */
+  composerResultCard: { taskId: string; title: string; version: number } | null;
+  setComposerResultCard: (
+    card: { taskId: string; title: string; version: number } | null,
+  ) => void;
   compact: () => void;
   setModel: (model: KindState['model']) => void;
   /** ：从服务刷新会话合计/汇率/币种。 */
@@ -235,6 +242,11 @@ interface KindState {
   /** ：点了旧版画布那一行要跳到的那一轮（只影响滚动，不改日志）。 */
   reveal: { turnId: string; at: number } | null;
   revealTurn: (turnId: string) => void;
+  /// T055：滚到 Kind 对话里的第 turn 轮（已加载直接滚；没加载先往前加载；找不到返回 false）。
+  revealTurnNumber: (turn: number) => Promise<boolean>;
+  /// T055：滚到出这个任务结果卡的那一轮；给了 preferredTurn 时优先选不晚于它的最新一轮
+  ///（同一任务多份结果时按 wait 项的轮号取最新卡；没给就选最早）。
+  revealTaskResult: (taskId: string, preferredTurn?: number) => Promise<boolean>;
 }
 
 function indexOf(views: TurnViewData[]): Map<string, TurnViewData> {
@@ -910,6 +922,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   hasOlder: false,
   loadingOlder: false,
   initialLoading: true,
+  loadCount: 0,
   atBottom: true,
   streamingTurnId: null,
   dayLabels: new Map(),
@@ -933,8 +946,60 @@ export const useKindStore = create<KindState>()((set, get) => ({
   canvasTracks: {},
   drawingCanvas: null,
   pendingResultCard: null,
+  composerResultCard: null,
   reveal: null,
   revealTurn: (turnId) => set({ reveal: { turnId, at: Date.now() } }),
+  revealTaskResult: async (taskId, preferredTurn) => {
+    const viewTurn = (viewId: string): number => {
+      const match = /^turn-(\d+)$/.exec(viewId);
+      return match ? Number(match[1]) : -1;
+    };
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const state = get();
+      if (state.initialLoading || state.loadingOlder) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        continue;
+      }
+      const cardViews = state.views
+        .filter((item) =>
+          item.taskResults.some(
+            (fact) => fact.taskId === taskId && fact.id.startsWith('task-report:'),
+          ),
+        )
+        .map((item) => ({ view: item, turn: viewTurn(item.id) }));
+      if (cardViews.length) {
+        const notAfter = cardViews
+          .filter((candidate) => preferredTurn === undefined || candidate.turn <= preferredTurn)
+          .sort((left, right) => right.turn - left.turn);
+        const chosen =
+          notAfter[0] ?? [...cardViews].sort((left, right) => right.turn - left.turn)[0];
+        set({ reveal: { turnId: chosen.view.id, at: Date.now() } });
+        return true;
+      }
+      if (!state.hasOlder) return false;
+      await state.loadOlder();
+    }
+    return false;
+  },
+  revealTurnNumber: async (turn) => {
+    const turnId = 'turn-' + String(turn);
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      const state = get();
+      if (state.initialLoading || state.loadingOlder) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        continue;
+      }
+      if (state.byId.has(turnId)) {
+        set({ reveal: { turnId, at: Date.now() } });
+        return true;
+      }
+      if (!state.hasOlder) return false;
+      await state.loadOlder();
+    }
+    const found = get().byId.has(turnId);
+    if (found) set({ reveal: { turnId, at: Date.now() } });
+    return found;
+  },
 
   bootstrap: async () => {
     try {
@@ -979,6 +1044,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   },
 
   loadInitial: async () => {
+    set({ initialLoading: true });
     try {
       const page = await fetchEventsPage({ maxMessages: 100, minMessages: 10, minTurns: 5 });
       rememberCardSignals(page.events);
@@ -1012,6 +1078,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
         oldestSeq,
         hasOlder: page.hasMore,
         initialLoading: false,
+        loadCount: get().loadCount + 1,
       });
     } catch {
       // 401 已由 service 请求层统一进令牌说明页；这里只标不可达，不覆盖 token。
@@ -1251,6 +1318,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
 
   modifyTaskResult: (card) => set({ pendingResultCard: card }),
   clearPendingResultCard: () => set({ pendingResultCard: null }),
+  setComposerResultCard: (card) => set({ composerResultCard: card }),
 
   compact: () => {
     // 真实手动压缩；分隔线由 compaction/* 日志事件回填（页面不预览假摘要）。

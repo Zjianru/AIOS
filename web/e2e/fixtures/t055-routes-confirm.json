@@ -1,0 +1,9 @@
+{
+  "routes": [
+    {
+      "contains": "\"model\":\"deepseek-flash\"",
+      "file": "t055-kind-confirm.jsonl",
+      "paceMs": 50
+    }
+  ]
+}

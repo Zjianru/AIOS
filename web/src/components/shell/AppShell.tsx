@@ -58,9 +58,11 @@ export function AppShell() {
     else delete document.documentElement.dataset.reducedMotion;
   }, [theme, reduced]);
 
-  // 只显示接上内核的部分：其他场景还没接上，回到 Kind（任务对话是结果卡打开的只读页）。
+  // 只显示接上内核的部分：T055 起工作页/现在页也接真数据；其余未接场景回到 Kind。
   useEffect(() => {
-    if (scene !== 'kind' && scene !== 'settings' && scene !== 'taskchat') go('kind');
+    if (scene !== 'kind' && scene !== 'settings' && scene !== 'taskchat' && scene !== 'work' && scene !== 'now') {
+      go('kind');
+    }
   }, [scene]);
 
   // 路由切换：起点 mark + 画完 mark（Kind 页自己会再打细的 mark）

@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn protocol_version_is_11() {
+fn protocol_version_is_12() {
     assert_eq!(
-        PROTOCOL_VERSION, 11,
-        "send 加 resultCard（结果卡进 Kind 输入框）、消息内容块加 result-card，只增字段/块，协议升到 11"
+        PROTOCOL_VERSION, 12,
+        "work（工作页/「现在」共用工作快照）与组接受同批出，只增方法，协议升到 12"
     );
 }

@@ -33,9 +33,11 @@ import type { SettingsUpdateResponse } from './generated/SettingsUpdateResponse'
 import type { StatusResponse } from './generated/StatusResponse';
 import type { StopMode } from './generated/StopMode';
 import type { TaskInterruptResponse } from './generated/TaskInterruptResponse';
+import type { TaskAcceptManyResponse } from './generated/TaskAcceptManyResponse';
 import type { TaskSayResponse } from './generated/TaskSayResponse';
 import type { TaskStopResponse } from './generated/TaskStopResponse';
 import type { ToolKeyView } from './generated/ToolKeyView';
+import type { WorkResponse } from './generated/WorkResponse';
 
 // 页面从这里按名字取线上类型；类型本体只有 Rust 一份。
 export type { AvailableModelRow } from './generated/AvailableModelRow';
@@ -458,6 +460,18 @@ export async function revokeConnectionKey(id: string): Promise<ConnectionInfo> {
 
 export async function fetchStatus(): Promise<StatusResponse> {
   return post({ method: 'status' });
+}
+
+/// T055：工作页 /「现在」共用的一份工作快照（全部任务事实 + 五种「等你」项）。
+export async function getWork(): Promise<WorkResponse> {
+  return post({ method: 'work' });
+}
+
+/// T055.2：组接受（每项带勾选那一刻看到的报告与版本）。
+export async function acceptMany(
+  picks: { taskId: string; reportId: string; version: number }[],
+): Promise<TaskAcceptManyResponse> {
+  return post({ method: 'task-accept-many', picks });
 }
 
 /** T012.9：写非密钥设置；返回生效的值（币种 + 执行设置）。 */

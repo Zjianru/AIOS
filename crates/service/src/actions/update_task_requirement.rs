@@ -154,6 +154,26 @@ impl ActionKind for UpdateTaskRequirementAction {
             let task_id = self.task_id(details)?;
             let requirement = self.requirement(details)?;
             let dod = self.dod(details)?;
+            // 先查再写（顺序/原因照 task_update）：任务在排队、这一轮还在跑、或从没开跑
+            // 都不碰任务库，避免「版本先加一版、会话却开不出来」。
+            let task = self.task(&task_id)?;
+            let store = tasks::Store::open(self.data_dir.join(crate::TASKS_DB_FILE))
+                .map_err(|error| format!("任务库读不出来：{error}"))?;
+            if store
+                .effect_pending(EffectKind::Launch, task.id.as_str())
+                .map_err(|error| format!("任务状态读不出来：{error}"))?
+            {
+                return Err("这个任务还在排队；等它开跑或停下再改要求".to_owned());
+            }
+            if task
+                .latest_attempt()
+                .is_some_and(|attempt| attempt.ended_at.is_none())
+            {
+                return Err("这个任务这一轮还在跑；等它结束再改要求".to_owned());
+            }
+            if task.latest_attempt().is_none() {
+                return Err("这个任务还没开跑，没有可接着做的会话；请重新派任务".to_owned());
+            }
             let runtime = host
                 .task_runtime()
                 .ok_or_else(|| "任务执行者没起来，改不了要求".to_owned())?;

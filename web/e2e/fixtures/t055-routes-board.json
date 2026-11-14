@@ -1,0 +1,29 @@
+{
+  "routes": [
+    {
+      "contains": "\"name\":\"task_accept\"",
+      "file": "t055-kind-board.jsonl",
+      "paceMs": 50
+    },
+    {
+      "contains": "查第一份",
+      "file": "t055-thin-board-0.jsonl",
+      "paceMs": 100
+    },
+    {
+      "contains": "查第二份",
+      "file": "t055-thin-board-1.jsonl",
+      "paceMs": 100
+    },
+    {
+      "contains": "查第三份",
+      "file": "t055-thin-board-2.jsonl",
+      "paceMs": 100
+    },
+    {
+      "contains": "查第四份",
+      "file": "t055-thin-board-3.jsonl",
+      "paceMs": 100
+    }
+  ]
+}

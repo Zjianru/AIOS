@@ -14,7 +14,10 @@ use service::{
     SessionModelSelectRequest, SettingsUpdateRequest, StopMode, TaskInterruptRequest,
     TaskReadRequest, TaskSayRequest, TaskStopRequest,
 };
-use tasks::{AttemptEnd, EffectKind, EffectState, ReportState, Stage, Store, Task};
+use tasks::{
+    AttemptEnd, ConversationId, EffectKind, EffectState, ModelChoice, NewReport, NewTask,
+    ReportOrigin, ReportState, Stage, Store, Task,
+};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
@@ -11195,4 +11198,234 @@ async fn update_task_requirement_reconcile_refuses_after_a_change() {
         refused.err().as_deref(),
         Some("这个任务的要求已经改过了，这张卡是按改之前写的")
     );
+}
+
+/// T055.2：直接造一个 ready 任务（组接受用例的输入；调用面本身才是被测的接缝）。
+fn seed_ready_task(
+    store: &Store,
+    cwd: &std::path::Path,
+    title: &str,
+    at: i64,
+) -> (tasks::TaskId, tasks::ReportId) {
+    let task = store
+        .create_task(
+            NewTask {
+                title: title.to_owned(),
+                requirement: format!("{title} 的要求"),
+                dod: format!("{title} 的 DoD"),
+                cwd: cwd.to_path_buf(),
+                conversation: ConversationId::new("kind-work"),
+                model: ModelChoice {
+                    connection: "deepseek".to_owned(),
+                    model: "deepseek-flash".to_owned(),
+                    effort_wanted: "high".to_owned(),
+                },
+                tools: vec!["read".to_owned()],
+            },
+            at,
+        )
+        .unwrap();
+    let claim = store.claim_effect(EffectKind::Launch, at + 1).unwrap();
+    if let Some(claim) = claim {
+        store.complete_effect(&claim).unwrap();
+    }
+    let attempt = store.begin_attempt(&task.id, at + 2).unwrap();
+    let report = store
+        .record_report(
+            &task.id,
+            attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "查好了".to_owned(),
+                question: None,
+            },
+            at + 3,
+        )
+        .unwrap();
+    store
+        .end_attempt(&task.id, attempt, at + 4, AttemptEnd::Reported)
+        .unwrap();
+    (task.id, report)
+}
+
+/// T055.1：从调用驱动 Work——任务库 + Kind 会话派生成一份快照，结果卡在「等你」里带 pick。
+#[tokio::test]
+async fn work_call_returns_task_facts_and_the_accept_wait_item() {
+    let fixture = Fixture::new().await;
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-work-report", "ready", "查好了", None));
+    fixture.router.push_thin(crate::common::text_sse("好"));
+    let task = fixture.accept(false).await;
+    wait_until("任务报回 ready", || {
+        tasks_store(fixture.data())
+            .task(&task.id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| {
+                task.latest_report().map(|report| report.state) == Some(ReportState::Ready)
+                    && task
+                        .latest_attempt()
+                        .is_some_and(|attempt| attempt.ended_at.is_some())
+            })
+    })
+    .await;
+
+    let response = fixture
+        .host
+        .dispatch(service::Call::Work(service::WorkRequest {}))
+        .await
+        .expect("work");
+    let service::Response::Work(work) = response else {
+        panic!("work 响应");
+    };
+    assert!(work.generated_at > 0);
+    let fact = work
+        .tasks
+        .iter()
+        .find(|fact| fact.id == task.id.as_str())
+        .expect("任务事实");
+    assert_eq!(fact.title, task.title);
+    assert_eq!(fact.stage, "ready_for_review");
+    assert_eq!(fact.version, 1);
+    assert!(!fact.running);
+    let latest = fact.latest.as_ref().expect("最近报告");
+    assert_eq!(latest.state, "ready");
+    assert_eq!(latest.summary, "查好了");
+
+    let accept = work
+        .wait
+        .iter()
+        .find(|item| item.kind == "accept" && item.task_id.as_deref() == Some(task.id.as_str()))
+        .expect("结果等你接受");
+    let pick = accept.pick.as_ref().expect("pick");
+    assert_eq!(pick.report_id, latest.report_id);
+    assert_eq!(pick.version, 1);
+    assert!(!accept.title.is_empty());
+    assert!(!accept.need.is_empty());
+}
+
+/// T055.2：从调用驱动组接受——一项旧报告逐项回原话，另一项照记；被接受了才关闭。
+#[tokio::test]
+async fn task_accept_many_call_accepts_the_fresh_one_and_refuses_the_stale_one() {
+    let fixture = Fixture::new().await;
+    let store = tasks_store(fixture.data());
+    let (fresh_id, fresh_report) =
+        seed_ready_task(&store, fixture.data(), "新结果", 1_800_000_000_000);
+    let (stale_id, stale_report) =
+        seed_ready_task(&store, fixture.data(), "旧结果", 1_800_000_010_000);
+    // 旧任务再开一次 Attempt，交一份新结果：勾选时看到的那份报告已经不是最新。
+    let claim = store
+        .claim_effect(EffectKind::Launch, 1_800_000_020_000)
+        .unwrap();
+    if let Some(claim) = claim {
+        store.complete_effect(&claim).unwrap();
+    }
+    let attempt = store.begin_attempt(&stale_id, 1_800_000_021_000).unwrap();
+    store
+        .record_report(
+            &stale_id,
+            attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "更新的结果".to_owned(),
+                question: None,
+            },
+            1_800_000_022_000,
+        )
+        .unwrap();
+
+    let request = service::TaskAcceptManyRequest {
+        picks: vec![
+            service::work::WorkPick {
+                task_id: stale_id.as_str().to_owned(),
+                report_id: stale_report.as_str().to_owned(),
+                version: 1,
+            },
+            service::work::WorkPick {
+                task_id: fresh_id.as_str().to_owned(),
+                report_id: fresh_report.as_str().to_owned(),
+                version: 1,
+            },
+        ],
+    };
+    let response = fixture
+        .host
+        .dispatch(Call::TaskAcceptMany(request))
+        .await
+        .expect("task-accept-many");
+    let Response::TaskAcceptMany(response) = response else {
+        panic!("task-accept-many 响应");
+    };
+    assert!(response.accepted_at > 0);
+    assert_eq!(response.outcomes.len(), 2);
+    assert_eq!(response.outcomes[0].task_id, stale_id.as_str());
+    assert!(
+        response.outcomes[0]
+            .refused
+            .as_deref()
+            .is_some_and(|reason| reason.contains("已经变了")),
+        "{:?}",
+        response.outcomes[0].refused
+    );
+    assert_eq!(response.outcomes[1].task_id, fresh_id.as_str());
+    assert!(response.outcomes[1].refused.is_none());
+    assert_eq!(store.stage(&fresh_id).unwrap(), Stage::Closed);
+    assert_eq!(store.stage(&stale_id).unwrap(), Stage::ReadyForReview);
+}
+
+/// T055.3 审计备注 2：从没开跑的任务改要求——先查后写，回同样的话、任务库不动。
+#[tokio::test]
+async fn update_task_requirement_act_rejects_a_never_started_task_without_writing() {
+    let fixture = Fixture::new().await;
+    let store = tasks_store(fixture.data());
+    let task = store
+        .create_task(
+            NewTask {
+                title: "没开跑".to_owned(),
+                requirement: "原要求".to_owned(),
+                dod: "原 DoD".to_owned(),
+                cwd: fixture.data().to_path_buf(),
+                conversation: ConversationId::new("kind-work"),
+                model: ModelChoice {
+                    connection: "deepseek".to_owned(),
+                    model: "deepseek-flash".to_owned(),
+                    effort_wanted: "high".to_owned(),
+                },
+                tools: vec!["read".to_owned()],
+            },
+            1_800_000_000_000,
+        )
+        .unwrap();
+    // 把排队中的 launch 效果收掉但不开始 Attempt：模拟「从没开跑」的任务。
+    let claim = store
+        .claim_effect(EffectKind::Launch, 1_800_000_001_000)
+        .unwrap()
+        .expect("launch 在排队");
+    store.complete_effect(&claim).unwrap();
+    let before = store.task(&task.id).unwrap().unwrap();
+    assert!(before.latest_attempt().is_none());
+
+    let registry = service::ActionRegistry::settings(fixture.data().to_path_buf(), None);
+    let action = registry.get("update_task_requirement").expect("动作登记");
+    let refused = service::ActionKind::act(
+        action.as_ref(),
+        &serde_json::json!({"task_id": task.id.as_str(), "requirement": "新要求"}),
+        &fixture.host,
+    )
+    .await
+    .expect_err("从没开跑不能改");
+    assert!(refused.contains("还没开跑"), "{refused}");
+
+    let after = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(after.requirement, before.requirement, "不写库");
+    assert_eq!(after.dod, before.dod, "不写库");
+    assert_eq!(
+        after.requirement_version(),
+        before.requirement_version(),
+        "版本不动"
+    );
+    assert_eq!(after.versions.len(), before.versions.len(), "版本不动");
 }
