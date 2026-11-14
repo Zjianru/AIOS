@@ -97,6 +97,12 @@ pub struct TaskFact {
     pub running: bool,
     /// 这是里程碑门任务。
     pub gate: bool,
+    /// T057：这是程序门（有命令）。
+    #[serde(default)]
+    pub program: bool,
+    /// T057：程序门命令条数。
+    #[serde(default, rename = "programCommands")]
+    pub program_commands: usize,
     /// 被这个门把关的任务（门任务上有）；或者把关这个任务的门（被把关任务上有）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_of: Option<String>,
@@ -353,6 +359,7 @@ fn task_wait_kinds(meta: &FactMeta<'_>, gate_passed: bool) -> Vec<&'static str> 
         }
     }
     if meta.task.is_gate()
+        && !meta.task.is_program_gate()
         && let Some(report) = meta.latest
         && report.state == ReportState::Ready
         && meta.task.verdict_for_gate_report(&report.id).is_none()
@@ -466,6 +473,8 @@ pub(crate) fn snapshot(
             created_at: task.created_at,
             running,
             gate,
+            program: task.is_program_gate(),
+            program_commands: task.gate_commands().len(),
             gate_of: meta.gate_of,
             after: task
                 .needs

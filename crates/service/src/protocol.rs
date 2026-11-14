@@ -408,6 +408,8 @@ pub enum TaskReadReportOrigin {
     Package,
     Agent,
     Executor,
+    /// T057：程序门执行者写的报告。
+    Program,
 }
 
 /// T051：当前 Attempt 最近一份报告的缩略事实；没报告时字段为 None。
@@ -420,6 +422,63 @@ pub struct TaskReadReport {
     pub summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question: Option<String>,
+    /// T056.2 补审：这份报告属于第几次 Attempt（账本进展显示用）。
+    #[serde(default)]
+    pub attempt: u64,
+    /// T057：程序门检查的逐条结果；普通报告为空。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<TaskReadGateCheck>,
+}
+
+/// T057：程序门任务页的一条命令。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskReadGateCommand {
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+/// T057：程序门任务页的一条检查结果。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskReadGateCheck {
+    pub index: usize,
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    pub outcome: String,
+    pub duration_ms: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill: Option<String>,
+}
+
+/// T057：程序门任务页头部的事实。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskReadGate {
+    pub commands: Vec<TaskReadGateCommand>,
+    pub commands_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judged_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conclusion: Option<String>,
+    /// T057：历次程序检查（最新在前）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub runs: Vec<TaskReadGateRun>,
+}
+
+/// T057：任务页一次程序检查（报告 + 判定）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskReadGateRun {
+    pub attempt: u64,
+    pub commands_version: u32,
+    pub conclusion: String,
+    pub at: i64,
+    pub checks: Vec<TaskReadGateCheck>,
 }
 
 /// T056.2：任务对话页账本块的只读投影；进展/待答不在里面（从 report 读）。
@@ -512,6 +571,15 @@ pub struct TaskReadHeader {
     /// T051：用户接受记录绑的就是当前版本和这份报告。
     #[serde(default)]
     pub accepted: bool,
+    /// T057：程序门事实（命令/版本/最近判定）；用户判门或普通任务为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<TaskReadGate>,
+    /// T057：这一轮程序检查在跑（任务页显示「程序在跑」并在跑哪条）。
+    #[serde(default)]
+    pub program_running: bool,
+    /// T057：正在跑第几条（0 起）；没在跑为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program_index: Option<usize>,
 }
 
 /// task-read：打开任务当前 Attempt 的会话，拿头部和一页事件。
@@ -1077,6 +1145,12 @@ pub struct GateVerdictView {
     pub conclusion: GateJudgeConclusion,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// T057：判定者（用户/程序）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub judged_by: Option<String>,
+    /// T057：判定绑定的程序门命令版本；用户判门为 0。
+    #[serde(default)]
+    pub commands_version: u32,
     pub at: i64,
 }
 
@@ -1200,7 +1274,7 @@ pub struct ConnectionRevokeResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 13;
+pub const PROTOCOL_VERSION: u64 = 14;
 
 /// 根会话不可用的种类：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

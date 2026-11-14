@@ -246,7 +246,7 @@ fn user_message_texts(data_dir: &Path, conversation: &str) -> Result<Vec<String>
         let EventKind::UserMessage { message, .. } = &event.kind else {
             continue;
         };
-        if is_generated_message(&message.source) {
+        if !is_typed_by_user(&message.source) {
             continue;
         }
         let text: String = message
@@ -265,27 +265,15 @@ fn user_message_texts(data_dir: &Path, conversation: &str) -> Result<Vec<String>
     Ok(texts)
 }
 
-fn is_generated_message(source: &model::MessageSource) -> bool {
-    let model::MessageSource::User {
-        rpc_id: Some(rpc_id),
-    } = source
-    else {
-        return false;
-    };
-    [
-        "task-report:",
-        "task-cc:",
-        "task-stop:",
-        "task-update:",
-        "task-requirement:",
-        "task-accept-many:",
-        "assignment:",
-        "upstream:",
-        "resume:",
-        "ledger-after-compaction:",
-    ]
-    .iter()
-    .any(|prefix| rpc_id.starts_with(prefix))
+/// T057 补审：只认「用户真的在输入框打的字」——User 且 rpc_id 是输入框 UUID（不含冒号）。
+/// None 和所有程序注入前缀都不算，避免拿 relay/说明正文去核约束原话。
+fn is_typed_by_user(source: &model::MessageSource) -> bool {
+    matches!(
+        source,
+        model::MessageSource::User {
+            rpc_id: Some(rpc_id)
+        } if !rpc_id.contains(':')
+    )
 }
 #[cfg(test)]
 mod ledger_tests {
@@ -333,12 +321,14 @@ mod ledger_tests {
                     policy: TaskPolicy::default(),
                     after: Vec::new(),
                     milestone: false,
+                    program_gate: Vec::new(),
                 },
                 NewSubtask {
                     task: draft("B"),
                     policy: TaskPolicy::default(),
                     after: Vec::new(),
                     milestone: false,
+                    program_gate: Vec::new(),
                 },
             ],
         };
@@ -452,7 +442,11 @@ mod ledger_tests {
             .append(&[session::EventKind::UserMessage {
                 turn: 1,
                 step: 0,
-                message: model::UserMessage::text("先查文档，别加新依赖").into_message(),
+                message: model::UserMessage::text_with_request_id(
+                    "先查文档，别加新依赖",
+                    "b3a7c5e1-0f6a-4a7b-9c2d-8e4f1a6b0c3d",
+                )
+                .into_message(),
             }])
             .unwrap();
         session
@@ -482,5 +476,21 @@ mod ledger_tests {
         )
         .unwrap_err();
         assert!(error.contains("不在用户的消息里"));
+    }
+
+    #[test]
+    fn t056_2_whitelist_only_accepts_uuid_user_rpc_ids() {
+        use super::is_typed_by_user;
+        let user = |rpc_id: Option<&str>| model::MessageSource::User {
+            rpc_id: rpc_id.map(str::to_owned),
+        };
+        assert!(is_typed_by_user(&user(Some(
+            "b3a7c5e1-0f6a-4a7b-9c2d-8e4f1a6b0c3d"
+        ))));
+        assert!(!is_typed_by_user(&user(Some("upstream-changed:task-1"))));
+        assert!(!is_typed_by_user(&user(Some(
+            "task-report:task-1:report-1"
+        ))));
+        assert!(!is_typed_by_user(&user(None)));
     }
 }

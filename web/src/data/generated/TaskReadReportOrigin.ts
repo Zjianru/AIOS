@@ -3,4 +3,4 @@
 /**
  * T051：报告是谁写的（页头把 package 的 blocked 与 agent 的 blocked 分开展示）。
  */
-export type TaskReadReportOrigin = "package" | "agent" | "executor";
+export type TaskReadReportOrigin = "package" | "agent" | "executor" | "program";

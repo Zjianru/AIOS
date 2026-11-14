@@ -262,6 +262,22 @@ impl TaskRegistry {
         }
     }
 
+    /// T057：程序门不需要 ToolContext；root 直接作为 jobs/spill 目录。
+    pub fn detached(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
+        prepare_jobs_root(&root);
+        Self {
+            jobs: Mutex::new(HashMap::new()),
+            root: Some(root),
+            session_id: None,
+            on_registered: Mutex::new(None),
+            on_settled: Mutex::new(None),
+            on_notify: Mutex::new(None),
+            registered_pending: Mutex::new(Vec::new()),
+            killed_by_model: Mutex::new(HashSet::new()),
+        }
+    }
+
     pub fn is_enabled(&self) -> bool {
         self.root.is_some()
     }
@@ -1212,8 +1228,12 @@ fn is_sensitive_env_var(name: &str) -> bool {
             .any(|pattern| upper.contains(pattern))
 }
 
-/// 子进程环境：继承（vars_os lossy，去 AIOS_* 与敏感名）+ 终端覆盖 + 受管 AIOS_* 变量。
-pub fn child_env(context: &ToolContext) -> Vec<(String, String)> {
+/// T057：程序门命令的环境；过滤和终端覆盖同 child_env，不带 AIOS_*，不注入 shell profile。
+pub fn command_env() -> Vec<(String, String)> {
+    base_env()
+}
+
+fn base_env() -> Vec<(String, String)> {
     let mut variables: Vec<(String, String)> = std::env::vars_os()
         .filter_map(|(key, value)| {
             let key = key.into_string().ok()?;
@@ -1231,6 +1251,12 @@ pub fn child_env(context: &ToolContext) -> Vec<(String, String)> {
     ] {
         variables.push((key.to_owned(), value.to_owned()));
     }
+    variables
+}
+
+/// 子进程环境：命令环境 + 受管 AIOS_* 变量（bash 工具用）。
+pub fn child_env(context: &ToolContext) -> Vec<(String, String)> {
+    let mut variables = base_env();
     variables.push(("AIOS_SHELL".to_owned(), "1".to_owned()));
     if let Some(session_id) = context.session().session_id() {
         variables.push(("AIOS_SESSION_ID".to_owned(), session_id.to_owned()));

@@ -109,6 +109,7 @@ fn milestone(cwd: &Path, title: &str, after: Vec<usize>) -> NewSubtask {
         policy: policy(None),
         after,
         milestone: true,
+        program_gate: Vec::new(),
     }
 }
 
@@ -121,6 +122,7 @@ fn gated_graph(cwd: &Path) -> NewGraph {
                 policy: policy(None),
                 after: vec![],
                 milestone: false,
+                program_gate: Vec::new(),
             },
             milestone(cwd, "独立核查", vec![0]),
             NewSubtask {
@@ -128,6 +130,7 @@ fn gated_graph(cwd: &Path) -> NewGraph {
                 policy: policy(None),
                 after: vec![0],
                 milestone: false,
+                program_gate: Vec::new(),
             },
         ],
     }
@@ -619,12 +622,14 @@ fn an_unconfirmed_graph_is_not_on_the_board_but_its_confirm_card_is_waiting() {
                 policy: policy(None),
                 after: Vec::new(),
                 milestone: false,
+                program_gate: Vec::new(),
             },
             NewSubtask {
                 task: draft(cwd, "再写结果"),
                 policy: policy(None),
                 after: vec![0],
                 milestone: false,
+                program_gate: Vec::new(),
             },
         ],
     };
@@ -683,12 +688,14 @@ fn a_cancelled_graph_is_not_on_the_board() {
                         policy: policy(None),
                         after: Vec::new(),
                         milestone: false,
+                        program_gate: Vec::new(),
                     },
                     NewSubtask {
                         task: draft(cwd, "子任务二"),
                         policy: policy(None),
                         after: vec![0],
                         milestone: false,
+                        program_gate: Vec::new(),
                     },
                 ],
             },

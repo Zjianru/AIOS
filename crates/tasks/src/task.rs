@@ -35,8 +35,103 @@ pub struct Handoff {
 }
 
 /// T053：里程碑门（空标记）：一个只读核查子任务；把关谁 = 它唯一的 needs。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MilestoneGate {}
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MilestoneGate {
+    /// T057：程序门要按顺序跑的命令；空 = 用户判（T053 老行为）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commands: Vec<GateCommand>,
+    /// T057：命令版本；改命令 +1，判定要绑它。
+    #[serde(default)]
+    pub commands_version: u32,
+}
+
+/// T057：程序门的一条命令。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateCommand {
+    pub command: String,
+    /// 用户明说了时长才填；没填默认 120 秒，上限 600 秒。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+}
+
+/// T057：程序门一次检查里一条命令的结果。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateCheck {
+    pub index: usize,
+    pub command: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    pub outcome: GateCheckOutcome,
+    pub duration_ms: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tail: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill: Option<String>,
+}
+
+/// T057：一条命令的结局。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GateCheckOutcome {
+    Ran,
+    TimedOut,
+    SpawnFailed,
+    Stopped,
+    Skipped,
+}
+
+impl MilestoneGate {
+    pub fn is_program_gate(&self) -> bool {
+        !self.commands.is_empty()
+    }
+}
+
+/// T057：程序门超时默认/上限（照 bash 工具）。
+pub const GATE_TIMEOUT_DEFAULT_MS: u64 = 120_000;
+pub const GATE_TIMEOUT_MAX_MS: u64 = 600_000;
+/// T057：确认卡要整条列出命令，单条最多 500 字。
+pub const GATE_COMMAND_MAX_CHARS: usize = 500;
+
+impl GateCommand {
+    /// 这条命令实际用的超时（毫秒）。
+    pub fn timeout_ms(&self) -> u64 {
+        self.timeout_ms
+            .unwrap_or(GATE_TIMEOUT_DEFAULT_MS)
+            .min(GATE_TIMEOUT_MAX_MS)
+    }
+}
+
+/// T057：一次程序门检查事务的结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProgramGateOutcome {
+    pub report_id: ReportId,
+    pub verdict: GateVerdict,
+    pub released: Vec<String>,
+}
+
+/// T057：建图和改命令共用的一处校验。
+pub fn validate_gate_commands(commands: &[GateCommand]) -> Result<(), TaskError> {
+    let mut seen = std::collections::HashSet::new();
+    for command in commands {
+        let text = command.command.trim();
+        if text.is_empty() {
+            return Err(TaskError::EmptyGateCommand);
+        }
+        let length = text.chars().count();
+        if length > GATE_COMMAND_MAX_CHARS {
+            return Err(TaskError::GateCommandTooLong(length));
+        }
+        if !seen.insert(text.to_owned()) {
+            return Err(TaskError::DuplicateGateCommand(text.to_owned()));
+        }
+        if let Some(timeout) = command.timeout_ms
+            && (timeout == 0 || timeout > GATE_TIMEOUT_MAX_MS)
+        {
+            return Err(TaskError::GateCommandTimeoutInvalid(timeout));
+        }
+    }
+    Ok(())
+}
 
 /// T053：门判定的候选 = 被把关任务当前最新 ready 报告里的一份。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,6 +146,17 @@ pub struct GateCandidate {
 pub enum GateConclusion {
     Pass,
     NeedsFix,
+    /// T057：程序门没跑完（超时/起不来/被停/被打断），不算通过也不算需修正。
+    Undetermined,
+}
+
+/// T057：判定是谁做的；旧判定没有这个字段时按用户判读。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VerdictSource {
+    #[default]
+    User,
+    Program,
 }
 
 /// T053：一条判定记录，按时间追加（旧记录留历史，04 篇 6.1）。
@@ -64,6 +170,12 @@ pub struct GateVerdict {
     /// 用户原话（需修正时；原样存，不截断不改写）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// T057：用户判还是程序判；旧行按 User。
+    #[serde(default)]
+    pub judged_by: VerdictSource,
+    /// T057：判定绑的命令版本；用户判/旧行按 0。
+    #[serde(default)]
+    pub commands_version: u32,
     pub at: i64,
 }
 
@@ -134,6 +246,8 @@ pub struct NewSubtask {
     pub after: Vec<usize>,
     /// T053：里程碑（只读核查门）；after 恰好一项，指向它把关的任务。
     pub milestone: bool,
+    /// T057：程序门命令；空 = 用户判（milestone 必须为 true 才建门）。
+    pub program_gate: Vec<GateCommand>,
 }
 
 /// 一个 Task 的完整聚合，整行存在 task 表。
@@ -523,6 +637,8 @@ pub enum ReportOrigin {
     Package,
     Agent,
     Executor,
+    /// T057：程序门执行者写的报告。
+    Program,
 }
 
 /// 一份任务报告。
@@ -539,6 +655,9 @@ pub struct Report {
     /// 接受只接受当前版本的报告。
     #[serde(default)]
     pub version: u32,
+    /// T057：程序门检查的逐条结果；只有程序门报告非空。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<GateCheck>,
 }
 
 /// 任务包缺的一项；执行者写什么，store 就存什么，不改写成卡片状态。
@@ -718,17 +837,62 @@ impl Task {
 
     /// T053：某份候选报告是否被本门判过「通过」。
     pub fn passed(&self, report_id: &ReportId) -> bool {
-        self.verdicts.iter().rev().any(|verdict| {
-            &verdict.candidate.report_id == report_id && verdict.conclusion == GateConclusion::Pass
-        })
+        self.verdicts
+            .iter()
+            .rev()
+            .any(|verdict| self.verdict_matches(report_id, verdict, GateConclusion::Pass))
     }
 
     /// T053：某份候选报告最近一次判定是不是「需修正」。
     pub fn needs_fix(&self, report_id: &ReportId) -> Option<&GateVerdict> {
-        self.verdicts.iter().rev().find(|verdict| {
-            &verdict.candidate.report_id == report_id
-                && verdict.conclusion == GateConclusion::NeedsFix
-        })
+        self.verdicts
+            .iter()
+            .rev()
+            .find(|verdict| self.verdict_matches(report_id, verdict, GateConclusion::NeedsFix))
+    }
+
+    /// T057：程序门要求判定绑的是当前命令版本；用户判/老门不看命令版本。
+    fn verdict_matches(
+        &self,
+        report_id: &ReportId,
+        verdict: &GateVerdict,
+        conclusion: GateConclusion,
+    ) -> bool {
+        if &verdict.candidate.report_id != report_id || verdict.conclusion != conclusion {
+            return false;
+        }
+        if self.is_program_gate() {
+            return verdict.commands_version == self.commands_version();
+        }
+        true
+    }
+
+    /// T057：最近一条判定（UI/测试读）。
+    pub fn latest_verdict(&self) -> Option<&GateVerdict> {
+        self.verdicts.last()
+    }
+
+    /// T057：这道门是不是程序门（有命令）。
+    pub fn is_program_gate(&self) -> bool {
+        self.gate
+            .as_ref()
+            .is_some_and(MilestoneGate::is_program_gate)
+    }
+
+    /// T057：当前命令版本；用户判门为 0。
+    pub fn commands_version(&self) -> u32 {
+        self.gate
+            .as_ref()
+            .map(|gate| gate.commands_version)
+            .unwrap_or(0)
+    }
+
+    /// T057：门上的命令列表（用户判门为空）。
+    pub fn gate_commands(&self) -> &[GateCommand] {
+        self.gate
+            .as_ref()
+            .map(|gate| gate.commands.as_slice())
+            .unwrap_or(&[])
     }
 
     pub fn latest_attempt(&self) -> Option<&Attempt> {

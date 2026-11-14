@@ -94,6 +94,7 @@ function wordOf(task: TaskFact, column: BoardColumn, waitKind: string | undefine
       return task.after.length > 0 ? '等前置' : '等待中';
     case 'doing':
       if (task.gate && task.stage === 'requirement_met') return '已判';
+      if (task.program && task.stage === 'running') return '程序在跑';
       if (task.stage === 'running') return '执行中';
       if (task.gateOf) return '等里程碑';
       return '检查中';

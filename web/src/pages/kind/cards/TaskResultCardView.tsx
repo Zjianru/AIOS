@@ -22,6 +22,7 @@ import {
   PlugZap,
   SearchCheck,
   Square,
+  Terminal,
 } from 'lucide-react';
 import { go } from '@/app/navigate';
 import { useKindStore } from '@/pages/kind/kindStore';
@@ -89,19 +90,89 @@ function Changed({ slots }: { slots: TaskResultSlots }) {
   );
 }
 
+function programDuration(ms: number): string {
+  return ms >= 1000 ? (ms / 1000).toFixed(ms >= 10_000 ? 0 : 1) + ' 秒' : ms + ' 毫秒';
+}
+
+function programCheckWord(check: TaskResultSlots['programGate'] extends undefined
+  ? never
+  : NonNullable<TaskResultSlots['programGate']>['checks'][number]): { text: string; tone: string } {
+  if (check.outcome === 'timed_out') return { text: '超时', tone: 'text-wait' };
+  if (check.outcome === 'spawn_failed') return { text: '起不来', tone: 'text-fail' };
+  if (check.outcome === 'stopped') return { text: '被停', tone: 'text-ink-3' };
+  if (check.outcome === 'skipped') return { text: '没跑', tone: 'text-ink-3' };
+  if (check.exit_code === 0) return { text: '退出码 0', tone: 'text-done' };
+  return { text: '退出码 ' + String(check.exit_code ?? '?'), tone: 'text-fail' };
+}
+
+function ProgramChecks({ program }: { program: NonNullable<TaskResultSlots['programGate']> }) {
+  return (
+    <div className="mt-2 space-y-1.5" data-kind="program-checks">
+      {program.commands.map((command, index) => {
+        const check = program.checks[index];
+        const word = check ? programCheckWord(check) : { text: '没跑', tone: 'text-ink-3' };
+        const bad =
+          check !== undefined &&
+          (check.exit_code !== 0 || check.outcome === 'timed_out' || check.outcome === 'spawn_failed');
+        return (
+          <div
+            key={index}
+            className="min-w-0 text-2 leading-5"
+            data-kind="program-check"
+            data-exit={check?.exit_code ?? 'none'}
+          >
+            <div className="flex min-w-0 items-center gap-2">
+              <Terminal className="size-3 shrink-0 text-ink-3" />
+              <code className="process-path min-w-0 flex-1 truncate text-ink-2" title={command.command}>
+                {command.command}
+              </code>
+              <span className={cn('shrink-0 text-1', word.tone)}>{word.text}</span>
+              {check && check.duration_ms > 0 ? (
+                <span className="brand-type shrink-0 text-1 text-ink-3">
+                  {programDuration(check.duration_ms)}
+                </span>
+              ) : null}
+            </div>
+            {bad && check?.tail ? (
+              <pre
+                className="mt-1 max-h-[120px] overflow-auto whitespace-pre-wrap break-words rounded-btn bg-hover/60 px-2 py-1 font-mono text-1 leading-4 text-ink-2"
+                data-kind="program-tail"
+              >
+                {check.tail}
+              </pre>
+            ) : null}
+            {bad && check?.spill ? (
+              <div className="mt-0.5 text-1 text-ink-3" data-kind="program-spill">
+                完整输出：<span className="process-path">{check.spill}</span>
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function TaskResultCardView({ envelope, slots, host }: CardViewProps<TaskResultSlots>) {
   const [accepting, setAccepting] = useState(false);
   const [judging, setJudging] = useState(false);
   const [writingFix, setWritingFix] = useState(false);
   const [fixNote, setFixNote] = useState('');
-  const tone = STATE_TONE[slots.state];
-  const Icon = tone.icon;
+  const program = slots.programGate;
+  const tone = program
+    ? program.conclusion === 'pass'
+      ? STATE_TONE.ready
+      : program.conclusion === 'needs_fix'
+        ? STATE_TONE.review
+        : STATE_TONE.waiting
+    : STATE_TONE[slots.state];
+  const Icon = program ? Terminal : tone.icon;
   const composerResultCard = useKindStore((state) => state.composerResultCard);
   const inComposer =
     composerResultCard !== null &&
     composerResultCard.taskId === slots.taskId &&
     composerResultCard.version === slots.reportVersion;
-  const gate = slots.gate;
+  const gate = program ? undefined : slots.gate;
   // 门自己的结果卡（等你判/你判了）不出接受；被把关任务卡（waiting）门判通过后要出接受。
   const gateSelf = gate?.state === 'pending_verdict';
   const gatePending = gate?.state === 'pending_verdict' && !slots.verdict && !slots.verdictChanged;
@@ -132,8 +203,14 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
     >
       <div className="flex items-center gap-1.5 text-1 text-ink-3">
         {slots.write ? <FilePen className="size-3.5" /> : <SearchCheck className="size-3.5" />}
-        {gate ? '里程碑 · 只读核查' : slots.write ? '写任务' : '调查任务'}
-        {!gate && slots.reportVersion > 1
+        {program
+          ? '程序门 · 自动检查' + (program.commands_version > 1 ? ' · 第 ' + program.commands_version + ' 版命令' : '')
+          : gate
+            ? '里程碑 · 只读核查'
+            : slots.write
+              ? '写任务'
+              : '调查任务'}
+        {!program && !gate && slots.reportVersion > 1
           ? ' · 第 ' + slots.reportVersion + ' 版要求'
           : null}
         <span className="brand-type ml-auto">{timeOf(slots.at)}</span>
@@ -200,14 +277,34 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
         slot={slots.summary}
         className="mt-2 whitespace-pre-wrap break-words text-2 leading-5 text-ink-2"
       />
+      {program ? <ProgramChecks program={program} /> : null}
       {gate?.state === 'waiting' && gate.recheck ? (
         <div className="mt-1 text-1 text-done" data-kind="gate-recheck">
-          核查自动重跑：{gate.title}（里程碑，结果由你判）
+          核查自动重跑：{gate.title}
+          {gate.program ? '（程序门，全部退出码为 0 就通过）' : '（里程碑，结果由你判）'}
         </div>
       ) : slots.autoStarted.length > 0 ? (
         <div className="mt-1 text-1 text-done" data-kind="task-auto-started">
           已自动开跑：{slots.autoStarted.join('、')}
-          {gate?.state === 'waiting' ? '（里程碑，结果由你判）' : ''}
+          {gate?.state === 'waiting'
+            ? gate.program
+              ? '（程序门，全部退出码为 0 就通过）'
+              : '（里程碑，结果由你判）'
+            : ''}
+        </div>
+      ) : null}
+      {program ? (
+        <div
+          className={cn('mt-2 text-1', program.conclusion === 'pass' ? 'text-done' : 'text-ink-3')}
+          data-kind="program-next"
+        >
+          {program.conclusion === 'pass'
+            ? slots.autoStarted.length > 0
+              ? '后面的任务已自动开跑：' + slots.autoStarted.join('、')
+              : '全部退出码为 0：程序判了通过'
+            : program.conclusion === 'needs_fix'
+              ? '已交给 Kind，让被把关任务照失败的输出接着改；改完程序再跑一遍'
+              : '未确定不算通过，也不算有错；已交给 Kind，重跑还是换命令由你定'}
         </div>
       ) : null}
       {slots.upstreamChanged ? (

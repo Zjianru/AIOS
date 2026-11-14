@@ -56,13 +56,37 @@ export interface GateCardFact {
   candidate?: { report_id: string; requirement_version: number; ordinal: number };
   /** waiting 时：这不是门第一次核，自动行说「核查自动重跑」。 */
   recheck?: boolean;
+  /** T057：这是程序门（等待它的命令检查）。 */
+  program?: boolean;
+  /** T057：程序门命令（只用于自动行/测试）。 */
+  commands?: string[];
+}
+
+/** T057：程序门结果卡的一条命令检查结果。 */
+export interface ProgramGateCheck {
+  index: number;
+  command: string;
+  exit_code?: number | null;
+  outcome: 'ran' | 'timed_out' | 'spawn_failed' | 'stopped' | 'skipped';
+  duration_ms: number;
+  tail?: string;
+  spill?: string | null;
+}
+
+/** T057：程序门结果卡/任务页的命令、版本、判定和逐条检查。 */
+export interface ProgramGateFact {
+  commands: { command: string; timeout_ms?: number | null }[];
+  commands_version: number;
+  judged_by?: 'user' | 'program' | null;
+  conclusion?: 'pass' | 'needs_fix' | 'undetermined' | null;
+  checks: ProgramGateCheck[];
 }
 
 /** 卡上的状态：报告状态 + 写任务当前版本 ready 的「待你核」（卡状态，不是 Task 阶段）+ 派发卡两态。 */
 export const TASK_CARD_STATES = [...TASK_REPORT_STATES, 'review', ...TASK_DISPATCH_STATES] as const;
 export type TaskCardState = (typeof TASK_CARD_STATES)[number];
 
-export const TASK_REPORT_ORIGINS = ['package', 'agent', 'executor'] as const;
+export const TASK_REPORT_ORIGINS = ['package', 'agent', 'executor', 'program'] as const;
 export type TaskReportOrigin = (typeof TASK_REPORT_ORIGINS)[number];
 
 /** relay 解出来的事实：程序给的状态和文字都从这里来。 */
@@ -97,6 +121,8 @@ export interface TaskResultFact {
   cardState?: 'review';
   /** T053：里程碑门卡的里程碑事实（门卡 = pending_verdict，被把关卡 = waiting）。 */
   gate?: GateCardFact;
+  /** T057：程序门事实。 */
+  programGate?: ProgramGateFact;
   /** T053：这张结果卡对应的报告 id（服务 relay 里的程序事实；旧日志可缺）。 */
   reportId?: string;
   /** T054：这份报告绑的要求版本（服务 relay 给；旧日志可缺）。 */
@@ -146,6 +172,8 @@ export interface TaskResultSlots {
   autoStarted: string[];
   /** T053：里程碑事实；不是门相关卡为空。 */
   gate?: GateCardFact;
+  /** T057：程序门事实；不是程序门为空。 */
+  programGate?: ProgramGateFact;
   /** T053：门判定结论（从 card/decision 回填）。 */
   verdict?: 'pass' | 'needs_fix';
   /** 用户原话（需修正时）。 */
@@ -178,6 +206,8 @@ const gateCardSchema = z.object({
     .object({ report_id: z.string(), requirement_version: z.number(), ordinal: z.number() })
     .optional(),
   recheck: z.boolean().optional(),
+  program: z.boolean().optional(),
+  commands: z.array(z.string()).optional(),
 });
 
 export const taskResultSlotsSchema = z.object({
@@ -196,6 +226,25 @@ export const taskResultSlotsSchema = z.object({
   worktreePath: textSlot,
   autoStarted: z.array(z.string()).catch([]),
   gate: gateCardSchema.optional(),
+  programGate: z
+    .object({
+      commands: z.array(z.object({ command: z.string(), timeout_ms: z.number().optional() })),
+      commands_version: z.number().int(),
+      judged_by: z.enum(['user', 'program']).nullable().optional(),
+      conclusion: z.enum(['pass', 'needs_fix', 'undetermined']).nullable().optional(),
+      checks: z.array(
+        z.object({
+          index: z.number(),
+          command: z.string(),
+          exit_code: z.number().nullable().optional(),
+          outcome: z.enum(['ran', 'timed_out', 'spawn_failed', 'stopped', 'skipped']),
+          duration_ms: z.number(),
+          tail: z.string().optional(),
+          spill: z.string().nullable().optional(),
+        }),
+      ),
+    })
+    .optional(),
   verdict: z.enum(['pass', 'needs_fix']).optional(),
   verdictNote: textSlot.optional(),
   verdictAt: z.number().optional(),
@@ -358,6 +407,22 @@ export function taskResultCardOf(
   } else if (gate?.state === 'waiting') {
     status = '等核查';
   }
+  // T057：程序门的四个状态词由程序事实给；没有判定按钮。
+  if (fact.programGate) {
+    switch (fact.programGate.conclusion) {
+      case 'pass':
+        status = '程序判了通过';
+        break;
+      case 'needs_fix':
+        status = '程序判了需修正';
+        break;
+      case 'undetermined':
+        status = '未确定';
+        break;
+      default:
+        status = '程序在跑';
+    }
+  }
   // T054：接受后收成「已关闭」（门判定卡不算接受，上面已排除）。
   if (accepted) status = '已关闭';
   const parsed = taskResultSlotsSchema.safeParse({
@@ -378,6 +443,7 @@ export function taskResultCardOf(
     worktreePath: fact.worktreePath ?? '',
     autoStarted: fact.autoStarted ?? [],
     ...(gate === undefined ? {} : { gate }),
+    ...(fact.programGate === undefined ? {} : { programGate: fact.programGate }),
     ...(verdict === undefined ? {} : { verdict }),
     ...(verdictNote === undefined ? {} : { verdictNote }),
     ...(fact.decision?.at === undefined ? {} : { verdictAt: fact.decision.at }),
@@ -390,11 +456,20 @@ export function taskResultCardOf(
     acceptable: fact.acceptable === true,
   });
   if (!parsed.success) return null;
+  const programConclusion = fact.programGate?.conclusion;
+  const envelopeState =
+    programConclusion === 'pass'
+      ? 'done'
+      : programConclusion === 'needs_fix'
+        ? 'pending'
+        : programConclusion === 'undetermined'
+          ? 'pending'
+          : envelopeStateOf(state);
   return {
     id: fact.id,
     type: 'task-result',
     role: 'state',
-    state: envelopeStateOf(state),
+    state: envelopeState,
     slots: parsed.data,
   };
 }
@@ -467,6 +542,7 @@ export function parseTaskRelay(
     : undefined;
   const cardState = body.card_state === 'review' ? ('review' as const) : undefined;
   const gate = parseGateCard(body.gate);
+  const programGate = parseProgramGate(body.program_gate);
   const reportId = typeof body.report_id === 'string' ? body.report_id : undefined;
   const reportVersion =
     typeof body.requirement_version === 'number' &&
@@ -492,6 +568,7 @@ export function parseTaskRelay(
     ...(worktreePath === undefined ? {} : { worktreePath }),
     ...(autoStarted === undefined ? {} : { autoStarted }),
     ...(gate === undefined ? {} : { gate }),
+    ...(programGate === undefined ? {} : { programGate }),
     ...(reportId === undefined ? {} : { reportId }),
     ...(reportVersion === undefined ? {} : { reportVersion }),
     ...(typeof seq === 'number' && Number.isFinite(seq) ? { seq } : {}),
@@ -523,6 +600,65 @@ function parseGateCard(value: unknown): GateCardFact | undefined {
     ...(guarded ? { guarded } : {}),
     ...(candidate ? { candidate } : {}),
     ...(value.recheck === true ? { recheck: true } : {}),
+    ...(value.program === true ? { program: true } : {}),
+    ...(Array.isArray(value.commands)
+      ? { commands: value.commands.filter((item): item is string => typeof item === 'string') }
+      : {}),
+  };
+}
+
+/** T057：程序门 relay 事实；坏字段当没有，不整卡退回文本。 */
+function parseProgramGate(value: unknown): ProgramGateFact | undefined {
+  if (!isRecord(value)) return undefined;
+  const commandsRaw = value.commands;
+  if (!Array.isArray(commandsRaw)) return undefined;
+  const commands = commandsRaw
+    .filter((item): item is Record<string, unknown> => isRecord(item) && typeof item.command === 'string')
+    .map((item) => ({
+      command: item.command as string,
+      ...(typeof item.timeout_ms === 'number' ? { timeout_ms: item.timeout_ms } : {}),
+    }));
+  if (commands.length === 0) return undefined;
+  const version = value.commands_version;
+  if (typeof version !== 'number' || !Number.isInteger(version)) return undefined;
+  const outcomes = ['ran', 'timed_out', 'spawn_failed', 'stopped', 'skipped'] as const;
+  const checksRaw = Array.isArray(value.checks) ? value.checks : [];
+  const checks: ProgramGateCheck[] = checksRaw.flatMap((item, index) => {
+    if (!isRecord(item)) return [];
+    const outcome = outcomes.includes(item.outcome as (typeof outcomes)[number])
+      ? (item.outcome as (typeof outcomes)[number])
+      : null;
+    if (!outcome) return [];
+    return [
+      {
+        index: typeof item.index === 'number' ? item.index : index,
+        command: typeof item.command === 'string' ? item.command : commands[index]?.command ?? '',
+        ...(typeof item.exit_code === 'number' || item.exit_code === null
+          ? { exit_code: item.exit_code as number | null }
+          : {}),
+        outcome,
+        duration_ms: typeof item.duration_ms === 'number' ? item.duration_ms : 0,
+        ...(typeof item.tail === 'string' ? { tail: item.tail } : {}),
+        ...(typeof item.spill === 'string' || item.spill === null
+          ? { spill: item.spill as string | null }
+          : {}),
+      },
+    ];
+  });
+  const judgedBy =
+    value.judged_by === 'user' || value.judged_by === 'program' ? value.judged_by : undefined;
+  const conclusion =
+    value.conclusion === 'pass' ||
+    value.conclusion === 'needs_fix' ||
+    value.conclusion === 'undetermined'
+      ? value.conclusion
+      : undefined;
+  return {
+    commands,
+    commands_version: version,
+    ...(judgedBy === undefined ? {} : { judged_by: judgedBy }),
+    ...(conclusion === undefined ? {} : { conclusion }),
+    checks,
   };
 }
 

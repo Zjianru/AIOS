@@ -25,15 +25,16 @@ use serde_json::Value;
 
 pub use batch::{BatchOutcome, execute_batch};
 pub use builtin::{
-    ApplyPatchTool, AskUserQuestionTool, BashTool, CanvasTool, EditTool, GlobTool, GrepTool,
-    JobKillTool, JobListTool, JobOutputTool, ReadTool, SkillTool, TodoWriteTool, WriteTool,
+    ApplyPatchTool, AskUserQuestionTool, BashTool, CanvasTool, DEFAULT_TIMEOUT_MS, EditTool,
+    GlobTool, GrepTool, JobKillTool, JobListTool, JobOutputTool, MAX_OUTPUT_BYTES, MAX_TIMEOUT_MS,
+    ReadTool, SkillTool, TodoWriteTool, WriteTool,
 };
 pub use diff::{DIFF_CONTEXT, FileDiff, compute_hunk_diffs};
 pub use fs::check_write;
 pub use jobs::{
     JobCause, JobNotifyCallback, JobOutputRead, JobRead, JobRegistered, JobRegisteredCallback,
     JobSettled, JobSettledCallback, JobSpec, JobStatus, JobToolCall, JobView, KILL_GRACE,
-    MAX_WAIT_MS, TaskRegistry, render_model_delta,
+    MAX_WAIT_MS, TaskRegistry, command_env, render_model_delta,
 };
 pub use session::{
     FileVersion, ObservationPolicy, ObservedFile, SharedToolSession, SpillStore, ToolSessionState,

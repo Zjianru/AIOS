@@ -48,6 +48,7 @@ fn subtask(cwd: &Path, title: &str, write_scope: Option<&str>, after: Vec<usize>
         policy: policy(write_scope),
         after,
         milestone: false,
+        program_gate: Vec::new(),
     }
 }
 
@@ -633,6 +634,7 @@ fn milestone_subtask(cwd: &Path, title: &str, after: Vec<usize>) -> NewSubtask {
         policy: TaskPolicy::default(),
         after,
         milestone: true,
+        program_gate: Vec::new(),
     }
 }
 

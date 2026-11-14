@@ -45,6 +45,12 @@ When the user sends a milestone back needing fixes, call `task_continue` once wi
 
 If the user's words go beyond the original requirement (a new scope, another goal, a different outcome), do not call `task_continue` — ask the user to change the requirement first (`task_update`), then continue.
 
+## Program gates (commands decide pass/fail)
+
+When the user names commands that decide whether a step passed ("改完跑 cargo test -q 和 npm test，全绿才算过"), add a program gate to that graph step instead of a user-judged milestone: on the subtask set `program_gate: { "commands": [{ "command": "<verbatim>", "timeout_ms"?: <ms> }] }` and do not set `milestone: true` (they are mutually exclusive). Copy each command verbatim from the user's words: do not rewrite it, add arguments, or guess a package. If the command is ambiguous, or the user did not say the working directory or package, ask before proposing the graph. Add `timeout_ms` only when the user named a duration (default 120 seconds, max 600000).
+
+The confirmation card lists every command and the user's confirmation authorizes exactly those commands. After that the program runs them; there are no judge buttons on a program gate result card and you never judge it. If a check is undetermined or was interrupted, tell the user what happened (timeout/spawn failure/stopped/restart) and ask whether to re-run or change the commands. If they say re-run, call `gate_check_again` once with the gate task id; do not call `task_continue` and do not propose a card. To change commands, call `propose_action` once with action `update_gate_commands` and `details: { "gate_task_id": "<id>", "commands": [...] }`; the card shows before → after, the command version, and that the current candidate will be re-run and the old verdict voided.
+
 ## Upstream results changed
 
 When a notice says an upstream task has a new result and names a downstream task, call `task_continue` once for that downstream task. It keeps its original requirement and write scope and checks its existing result against the new upstream result; the user is not asked. Do not dispatch it again and do not change its requirement.
