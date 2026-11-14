@@ -1,7 +1,11 @@
 import { test, expect } from '@playwright/test';
+import { readFile, writeFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
-import { startKernelFixture } from './service-fixture';
+import { fileURLToPath } from 'node:url';
+import { apiPost, startKernelFixture } from './service-fixture';
+
+const FIXTURE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
 
 /** T057：程序门——命令由程序跑、程序判；通过/需修正/未确定三态；任务页和看板读同一份事实。 */
 
@@ -201,3 +205,90 @@ test('程序门：命令超时 → 未确定；后面命令没跑；看板在排
     await fixture.close();
   }
 });
+
+test('程序门：改命令出新确认卡 → 确认后第 2 版按新列表重跑，旧判定作废', async ({ page, request }) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture({ t057: 'fail' });
+  try {
+    const firstConfirm = await startGraph(page, fixture);
+    await confirmGraph(firstConfirm);
+    const oldGate = resultCard(page, '独立核查');
+    await expect(oldGate).toBeVisible({ timeout: 90_000 });
+    await expect(oldGate.locator('[data-kind="task-state"]')).toContainText('程序判了需修正');
+    const gateTask = await findTask(fixture.dataDir, '独立核查');
+
+    // 当前候选的旧命令是 true + printf…exit 1；换成两条全绿再跑一遍。
+    const template = await readFile(path.join(FIXTURE_DIR, 't057-kind-update.jsonl'), 'utf8');
+    const kindFile = path.join(fixture.dataDir, 't057-kind-update.jsonl');
+    await writeFile(kindFile, template.split('__GATE_TASK_ID__').join(gateTask.id));
+    const routesPath = path.join(fixture.dataDir, 't057-routes-update.json');
+    await writeFile(
+      routesPath,
+      JSON.stringify({
+        routes: [
+          { contains: '把命令换成', file: kindFile, paceMs: 50 },
+          { contains: '"name":"task_report"', file: path.join(FIXTURE_DIR, 't057-thin.jsonl'), paceMs: 60 },
+        ],
+      }),
+    );
+    const replayUrl = await fixture.switchReplay?.(routesPath);
+    expect(replayUrl).toBeTruthy();
+    const saved = await apiPost(request, fixture, {
+      method: 'connection-update',
+      id: 'deepseek',
+      endpoint: replayUrl,
+      model: 'deepseek-flash',
+    });
+    expect(saved.ok()).toBeTruthy();
+    await fixture.restart?.();
+    await page.goto(urlOf(fixture));
+
+    await page
+      .getByPlaceholder('和 Kind 说…')
+      .fill('把命令换成 true 和 test -d .，按新列表重跑');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+
+    const updateCard = page.locator('[data-kind="confirm-card"]').last();
+    await expect(updateCard).toBeVisible({ timeout: 40_000 });
+    const facts = updateCard.locator('[data-kind="confirm-fact"]');
+    await expect(facts).toHaveCount(3);
+    await expect(facts.nth(0)).toContainText('改前：true；printf t057-needle; exit 1');
+    await expect(facts.nth(0)).toContainText('改后：true；test -d .');
+    await expect(facts.nth(1)).toContainText('第 1 版 → 第 2 版');
+    await expect(facts.nth(2)).toContainText('旧判定作废');
+    await updateCard.locator('[data-action="card-option"]').first().click();
+    await updateCard.locator('[data-action="card-confirm"]').click();
+    await expect(updateCard).toHaveAttribute('data-state', 'done', { timeout: 40_000 });
+    await expect
+      .poll(async () => (await findTask(fixture.dataDir, '独立核查')).gate.commands_version, {
+        timeout: 20_000,
+      })
+      .toBe(2);
+
+    const newGate = page
+      .locator('[data-kind="task-result"]')
+      .filter({ has: page.locator('[data-kind="task-title"]', { hasText: '独立核查' }) })
+      .last();
+    await expect(newGate).toBeVisible({ timeout: 90_000 });
+    await expect(newGate).toContainText('第 2 版命令');
+    await expect(newGate.locator('[data-kind="task-state"]')).toContainText('程序判了通过');
+    await expect(newGate.locator('[data-kind="program-check"]')).toHaveCount(2);
+    await expect(newGate.locator('[data-kind="program-check"]').nth(1)).toContainText('退出码 0');
+
+    const updated = await findTask(fixture.dataDir, '独立核查');
+    expect(updated.gate.commands_version).toBe(2);
+    expect(updated.gate.commands.map((item: { command: string }) => item.command)).toEqual([
+      'true',
+      'test -d .',
+    ]);
+    const latestVerdict = updated.verdicts[updated.verdicts.length - 1];
+    expect(latestVerdict).toMatchObject({
+      judged_by: 'program',
+      conclusion: 'pass',
+      commands_version: 2,
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+

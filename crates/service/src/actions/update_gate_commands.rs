@@ -98,6 +98,26 @@ impl UpdateGateCommandsAction {
     }
 }
 
+impl UpdateGateCommandsAction {
+    fn card_facts(&self, gate: &tasks::Task, commands: &[GateCommand]) -> Vec<CardFact> {
+        let mut facts = self.facts(gate);
+        facts[0].value = format!(
+            "改前：{}；改后：{}",
+            gate.gate_commands()
+                .iter()
+                .map(|item| item.command.clone())
+                .collect::<Vec<_>>()
+                .join("；"),
+            commands
+                .iter()
+                .map(|item| item.command.clone())
+                .collect::<Vec<_>>()
+                .join("；")
+        );
+        facts
+    }
+}
+
 impl ActionKind for UpdateGateCommandsAction {
     fn name(&self) -> &str {
         "update_gate_commands"
@@ -124,25 +144,10 @@ impl ActionKind for UpdateGateCommandsAction {
             return Err("这不是程序门；用户判的里程碑门没有命令可改".to_owned());
         }
         let commands = self.commands(details)?;
-        let before = gate.gate_commands();
-        if before == commands.as_slice() {
+        if gate.gate_commands() == commands.as_slice() {
             return Err("程序门命令没有变化".to_owned());
         }
-        let mut facts = self.facts(&gate);
-        facts[0].value = format!(
-            "改前：{}；改后：{}",
-            before
-                .iter()
-                .map(|item| item.command.clone())
-                .collect::<Vec<_>>()
-                .join("；"),
-            commands
-                .iter()
-                .map(|item| item.command.clone())
-                .collect::<Vec<_>>()
-                .join("；")
-        );
-        Ok(facts)
+        Ok(self.card_facts(&gate, &commands))
     }
 
     fn reconcile(
@@ -155,7 +160,8 @@ impl ActionKind for UpdateGateCommandsAction {
         if !gate.is_program_gate() {
             return Err("这个门已经不是程序门了".to_owned());
         }
-        if self.facts(&gate) != facts {
+        let commands = self.commands(details)?;
+        if self.card_facts(&gate, &commands) != facts {
             return Err("命令已经改过了，这张卡是按改之前写的".to_owned());
         }
         Ok(())

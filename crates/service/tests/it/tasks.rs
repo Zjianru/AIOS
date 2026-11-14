@@ -11788,3 +11788,167 @@ async fn update_requirement_without_constraints_keeps_the_previous_version() {
     let updated = store.task(&task.id).unwrap().unwrap();
     assert_eq!(updated.current_constraints(), ["改一下"]);
 }
+
+#[tokio::test]
+async fn t057_update_gate_commands_act_stops_a_running_gate_then_reruns_the_new_commands() {
+    use service::ActionRegistry;
+    use tasks::{GateCommand, NewGraph, NewSubtask, TaskPolicy};
+
+    let fixture = Fixture::new_with_actions().await;
+    let runtime = fixture.host.task_runtime().expect("任务执行器");
+    runtime.set_pump_paused(true);
+    let store = tasks_store(fixture.data());
+    let draft = |title: &str| NewTask {
+        title: title.to_owned(),
+        requirement: "把事做完".to_owned(),
+        dod: "有结果".to_owned(),
+        cwd: fixture.cwd.path().to_path_buf(),
+        conversation: ConversationId::new("kind-session"),
+        model: ModelChoice {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            effort_wanted: "high".to_owned(),
+        },
+        tools: service::THIN_TOOLS
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect(),
+    };
+    let root = store
+        .create_graph(
+            NewGraph {
+                root: draft("总任务"),
+                subtasks: vec![
+                    NewSubtask {
+                        task: draft("被把关"),
+                        policy: TaskPolicy::default(),
+                        after: Vec::new(),
+                        milestone: false,
+                        program_gate: Vec::new(),
+                    },
+                    NewSubtask {
+                        task: draft("程序门"),
+                        policy: TaskPolicy::default(),
+                        after: vec![0],
+                        milestone: true,
+                        program_gate: vec![
+                            GateCommand {
+                                command: "sleep 3".to_owned(),
+                                timeout_ms: None,
+                            },
+                            GateCommand {
+                                command: "true".to_owned(),
+                                timeout_ms: None,
+                            },
+                        ],
+                    },
+                ],
+            },
+            1_700_000_000_000,
+        )
+        .unwrap();
+    store.confirm_graph(&root.id, 1_700_000_000_001).unwrap();
+    let children = store.children(&root.id).unwrap();
+    let guarded = children[0].clone();
+    let gate = children[1].clone();
+    let guarded_attempt = store.begin_attempt(&guarded.id, 1_700_000_000_002).unwrap();
+    store
+        .record_report(
+            &guarded.id,
+            guarded_attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "改好了".to_owned(),
+                question: None,
+            },
+            1_700_000_000_003,
+        )
+        .unwrap();
+    // 把被把关任务那条 launch 效果收掉，放泵去跑门的 launch。
+    while let Some(claim) = store
+        .claim_effect(EffectKind::Launch, 1_700_000_000_010)
+        .unwrap()
+    {
+        let task_id = match &claim.payload {
+            tasks::EffectPayload::Launch { task_id } => task_id.clone(),
+            _ => unreachable!(),
+        };
+        if task_id == gate.id {
+            break;
+        }
+        store.complete_effect(&claim).unwrap();
+    }
+    runtime.set_pump_paused(false);
+    let mut running = false;
+    for _ in 0..300 {
+        let current = store.task(&gate.id).unwrap().unwrap();
+        if current
+            .latest_attempt()
+            .is_some_and(|attempt| attempt.ended_at.is_none())
+        {
+            running = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(running, "门应在跑 sleep 3，方便测先停");
+
+    let actions = ActionRegistry::settings(fixture.data().to_path_buf(), None);
+    let action = actions.get("update_gate_commands").expect("动作已登记");
+    let outcome = action
+        .act(
+            &serde_json::json!({
+                "gate_task_id": gate.id.as_str(),
+                "commands": [{"command": "true"}, {"command": "printf v2"}],
+            }),
+            &fixture.host,
+        )
+        .await
+        .expect("改命令要成功");
+    assert!(outcome.summary.contains("第 2 版"), "{}", outcome.summary);
+
+    let mut updated = None;
+    for _ in 0..400 {
+        let current = store.task(&gate.id).unwrap().unwrap();
+        if current.commands_version() == 2
+            && current
+                .reports
+                .iter()
+                .filter(|report| report.origin == ReportOrigin::Program)
+                .count()
+                >= 2
+        {
+            updated = Some(current);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let updated = updated.expect("第 2 版应跑出新报告");
+    assert_eq!(
+        updated
+            .gate_commands()
+            .iter()
+            .map(|item| item.command.as_str())
+            .collect::<Vec<_>>(),
+        ["true", "printf v2"]
+    );
+    let programs: Vec<_> = updated
+        .reports
+        .iter()
+        .filter(|report| report.origin == ReportOrigin::Program)
+        .collect();
+    assert_eq!(programs.len(), 2);
+    assert_eq!(
+        updated.verdicts[0].conclusion,
+        tasks::GateConclusion::Undetermined
+    );
+    assert_eq!(updated.verdicts[0].commands_version, 1);
+    assert_eq!(updated.verdicts[1].conclusion, tasks::GateConclusion::Pass);
+    assert_eq!(updated.verdicts[1].commands_version, 2);
+    assert!(
+        updated.verdicts[1].candidate.report_id != updated.verdicts[0].candidate.report_id
+            || updated.verdicts[1].candidate.requirement_version
+                == updated.verdicts[0].candidate.requirement_version
+    );
+}
