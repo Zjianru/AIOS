@@ -188,7 +188,11 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
         slot={slots.summary}
         className="mt-2 whitespace-pre-wrap break-words text-2 leading-5 text-ink-2"
       />
-      {slots.autoStarted.length > 0 ? (
+      {gate?.state === 'waiting' && gate.recheck ? (
+        <div className="mt-1 text-1 text-done" data-kind="gate-recheck">
+          核查自动重跑：{gate.title}（里程碑，结果由你判）
+        </div>
+      ) : slots.autoStarted.length > 0 ? (
         <div className="mt-1 text-1 text-done" data-kind="task-auto-started">
           已自动开跑：{slots.autoStarted.join('、')}
           {gate?.state === 'waiting' ? '（里程碑，结果由你判）' : ''}

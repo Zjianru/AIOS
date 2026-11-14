@@ -95,7 +95,7 @@ const TASK_CC_PREFIX = 'task-cc:';
 /** T053：gate-verdict relay 的事实：结论和它判的那个任务 id。 */
 export function gateVerdictOf(
   message: unknown,
-): { taskId: string; conclusion: 'pass' | 'needs_fix' } | null {
+): { taskId: string; conclusion: 'pass' | 'needs_fix'; candidateReport: string } | null {
   if (typeof message !== 'object' || message === null) return null;
   const content = (message as { content?: unknown }).content;
   if (!Array.isArray(content)) return null;
@@ -116,14 +116,16 @@ export function gateVerdictOf(
   const record = body as {
     kind?: unknown;
     conclusion?: unknown;
-    candidate?: { task?: { id?: unknown } };
+    candidate?: { task?: { id?: unknown }; report_id?: unknown };
   };
   if (record.kind !== 'gate_verdict') return null;
   const taskId = record.candidate?.task?.id;
   const conclusion = record.conclusion;
+  const candidateReport = record.candidate?.report_id;
   if (typeof taskId !== 'string' || taskId === '') return null;
   if (conclusion !== 'pass' && conclusion !== 'needs_fix') return null;
-  return { taskId, conclusion };
+  if (typeof candidateReport !== 'string' || candidateReport === '') return null;
+  return { taskId, conclusion, candidateReport };
 }
 
 /** T053：upstream_changed relay 的事实：哪个下游要按上游新结果核对。 */
@@ -490,7 +492,10 @@ export function deriveTurnViews(
   const cardEntries = new Map<string, CardEntry>();
   const cardDecisions = new Map<string, ConfirmDecision>();
   // T053：门判定 relay（gate-verdict）按被把关任务 id 回填结果卡状态词，刷新可重建。
-  const gateVerdicts = new Map<string, 'pass' | 'needs_fix'>();
+  const gateVerdicts = new Map<
+    string,
+    { conclusion: 'pass' | 'needs_fix'; candidateReport: string }
+  >();
   // T053：上游变了的下游（upstream_changed relay；该任务交出新 ready 报告时清除）。
   const upstreamChangedTasks = new Set<string>();
   for (const event of events) {
@@ -781,7 +786,12 @@ export function deriveTurnViews(
         // 结论回填被把关任务卡的状态词（任务要求已满足 / 需修正）。
         if (userRpcIdOf(data.message)?.startsWith('gate-verdict:')) {
           const relay = gateVerdictOf(data.message);
-          if (relay) gateVerdicts.set(relay.taskId, relay.conclusion);
+          if (relay) {
+            gateVerdicts.set(relay.taskId, {
+              conclusion: relay.conclusion,
+              candidateReport: relay.candidateReport,
+            });
+          }
           break;
         }
         const source = data.message as
@@ -1052,8 +1062,11 @@ export function deriveTurnViews(
   // 结果卡的接受决定：card/decision 的 callId 就是 relay 的 request id；刷新后从日志重推。
   for (const raw of turns.values()) {
     for (const fact of raw.taskResults) {
+      // 门判定只作用在它判的那份报告上；下游交了更新结果后不再套旧结论（显示等核查）。
       const gateVerdict = gateVerdicts.get(fact.taskId);
-      if (gateVerdict) fact.gateVerdict = gateVerdict;
+      if (gateVerdict && fact.reportId === gateVerdict.candidateReport) {
+        fact.gateVerdict = gateVerdict.conclusion;
+      }
       if (upstreamChangedTasks.has(fact.taskId)) fact.upstreamChanged = true;
       const decision = cardDecisions.get(fact.id);
       if (decision) {

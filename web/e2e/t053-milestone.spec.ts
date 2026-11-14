@@ -163,8 +163,9 @@ test('任务图里程碑：候选变了以后点旧门卡 → 已经变了，不
 
 test('任务图里程碑：判需修正 → 原话输入框 → 回执留原话 → 刷新还在；B 卡变需修正', async ({
   page,
+  request,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(240_000);
   const fixture = await startKernelFixture({ t053Gate: true });
   try {
     await page.goto(urlOf(fixture));
@@ -203,6 +204,48 @@ test('任务图里程碑：判需修正 → 原话输入框 → 回执留原话 
     await expect(gateAfter.locator('[data-kind="gate-verdict"]')).toContainText('你判了需修正');
     await expect(resultCard(page, '先查行数').locator('[data-kind="task-state"]')).toContainText(
       '需修正',
+    );
+
+    // 故事 6：Kind 让 B 在原要求里改完再报 → 门自动重跑；B 卡回到「等核查」，
+    // 自动行改成「核查自动重跑」。
+    const db = new DatabaseSync(path.join(fixture.dataDir, 'tasks.sqlite'), { readOnly: true });
+    let guardedId = '';
+    try {
+      const rows = db.prepare('SELECT value FROM task ORDER BY rowid').all() as { value: string }[];
+      for (const row of rows) {
+        const task = JSON.parse(row.value) as { id: string; title: string };
+        if (task.title === '先查行数') guardedId = task.id;
+      }
+    } finally {
+      db.close();
+    }
+    expect(guardedId).not.toBe('');
+    await apiPost(request, fixture, {
+      method: 'task-continue',
+      taskId: guardedId,
+      note,
+    });
+    // 历史里那张（判需修正的）保留旧结论；最新一张在门重跑期间回到「等核查」。
+    const bCards = page
+      .locator('[data-kind="task-result"]')
+      .filter({ has: page.locator('[data-kind="task-title"]', { hasText: '先查行数' }) });
+    await expect(bCards).toHaveCount(2, { timeout: 40_000 });
+    await expect(bCards.last().locator('[data-kind="task-state"]')).toContainText('等核查', {
+      timeout: 90_000,
+    });
+    await expect(bCards.last().locator('[data-kind="gate-recheck"]')).toContainText(
+      '核查自动重跑：独立核查（里程碑，结果由你判）',
+    );
+    // 刷新重建同一派生。
+    await page.reload();
+    const bCardsAfter = page
+      .locator('[data-kind="task-result"]')
+      .filter({ has: page.locator('[data-kind="task-title"]', { hasText: '先查行数' }) });
+    await expect(bCardsAfter.last().locator('[data-kind="task-state"]')).toContainText('等核查', {
+      timeout: 60_000,
+    });
+    await expect(bCardsAfter.last().locator('[data-kind="gate-recheck"]')).toContainText(
+      '核查自动重跑：独立核查',
     );
   } finally {
     await fixture.close();

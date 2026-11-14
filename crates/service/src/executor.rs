@@ -1855,6 +1855,8 @@ impl TaskRuntime {
                 if let Some(gate_facts) = self.gate_card_facts(&task, report) {
                     body["gate"] = gate_facts;
                 }
+                // T053：卡上要能分清这张结果卡是哪份报告（门判定只作用在它判的那份上）。
+                body["report_id"] = json!(report.id.as_str());
                 let request_id = format!("task-report:{}:{}", task.id, report.id);
                 Ok(Some((task, body, request_id)))
             }
@@ -1991,11 +1993,14 @@ impl TaskRuntime {
                     .first()
                     .is_some_and(|need| need.from == task.id)
             {
+                // 这不是门第一次核：卡上自动行要说「核查自动重跑」。
+                let recheck = sibling.latest_attempt().is_some();
                 return Some(json!({
                     "milestone": true,
                     "state": "waiting",
                     "id": sibling.id.as_str(),
                     "title": sibling.title,
+                    "recheck": recheck,
                 }));
             }
         }

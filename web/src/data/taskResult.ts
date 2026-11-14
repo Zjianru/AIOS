@@ -54,6 +54,8 @@ export interface GateCardFact {
   guarded?: { id: string; title: string };
   /** pending_verdict 时是这次核查的候选。 */
   candidate?: { report_id: string; requirement_version: number; ordinal: number };
+  /** waiting 时：这不是门第一次核，自动行说「核查自动重跑」。 */
+  recheck?: boolean;
 }
 
 /** 卡上的状态：报告状态 + 写任务当前版本 ready 的「待你核」（卡状态，不是 Task 阶段）+ 派发卡两态。 */
@@ -95,7 +97,9 @@ export interface TaskResultFact {
   cardState?: 'review';
   /** T053：里程碑门卡的里程碑事实（门卡 = pending_verdict，被把关卡 = waiting）。 */
   gate?: GateCardFact;
-  /** T053：被把关任务卡的门判定结论（从 gate-verdict relay 派生；刷新可重建）。 */
+  /** T053：这张结果卡对应的报告 id（服务 relay 里的程序事实；旧日志可缺）。 */
+  reportId?: string;
+  /** T053：被把关任务卡的门判定结论（只匹配这张卡那份报告；刷新可重建）。 */
   gateVerdict?: 'pass' | 'needs_fix';
   /** T053：上游有新可放行结果，这张结果卡待按新结果核对（D95）。 */
   upstreamChanged?: boolean;
@@ -159,6 +163,7 @@ const gateCardSchema = z.object({
   candidate: z
     .object({ report_id: z.string(), requirement_version: z.number(), ordinal: z.number() })
     .optional(),
+  recheck: z.boolean().optional(),
 });
 
 export const taskResultSlotsSchema = z.object({
@@ -426,6 +431,7 @@ export function parseTaskRelay(message: unknown, at: number): TaskResultFact | n
     : undefined;
   const cardState = body.card_state === 'review' ? ('review' as const) : undefined;
   const gate = parseGateCard(body.gate);
+  const reportId = typeof body.report_id === 'string' ? body.report_id : undefined;
 
   return {
     id: rpcId,
@@ -444,6 +450,7 @@ export function parseTaskRelay(message: unknown, at: number): TaskResultFact | n
     ...(worktreePath === undefined ? {} : { worktreePath }),
     ...(autoStarted === undefined ? {} : { autoStarted }),
     ...(gate === undefined ? {} : { gate }),
+    ...(reportId === undefined ? {} : { reportId }),
     ...(cardState === undefined ? {} : { cardState }),
   };
 }
@@ -471,6 +478,7 @@ function parseGateCard(value: unknown): GateCardFact | undefined {
     ...(typeof value.title === 'string' ? { title: value.title } : {}),
     ...(guarded ? { guarded } : {}),
     ...(candidate ? { candidate } : {}),
+    ...(value.recheck === true ? { recheck: true } : {}),
   };
 }
 

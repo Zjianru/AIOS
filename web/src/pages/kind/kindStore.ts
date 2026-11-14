@@ -421,7 +421,10 @@ const liveToolCalls = new Map<string, { name: string; arguments: string }>();
 let taskCardStates: ReadonlyMap<string, TaskReadHeader> = new Map();
 
 /** T053：门判定 relay 回填被把关任务卡状态词（live 和刷新共用；按任务 id 记最近一次）。 */
-let gateVerdictByTask: ReadonlyMap<string, 'pass' | 'needs_fix'> = new Map();
+let gateVerdictByTask: ReadonlyMap<
+  string,
+  { conclusion: 'pass' | 'needs_fix'; candidateReport: string }
+> = new Map();
 /** T053：上游变了的下游（upstream_changed relay；交出新 ready 报告时清除）。 */
 let upstreamChangedByTask: ReadonlySet<string> = new Set();
 
@@ -432,8 +435,17 @@ function rememberCardSignals(events: readonly ServiceEvent[]): void {
     if (event.type !== 'user/message') continue;
     const message = event.data?.message;
     const routed = gateVerdictOf(message);
-    if (routed && verdicts.get(routed.taskId) !== routed.conclusion) {
-      verdicts = new Map(verdicts).set(routed.taskId, routed.conclusion);
+    if (routed) {
+      const existing = verdicts.get(routed.taskId);
+      if (
+        existing?.conclusion !== routed.conclusion ||
+        existing?.candidateReport !== routed.candidateReport
+      ) {
+        verdicts = new Map(verdicts).set(routed.taskId, {
+          conclusion: routed.conclusion,
+          candidateReport: routed.candidateReport,
+        });
+      }
     }
     const rpcId = userRpcIdOf(message);
     if (rpcId?.startsWith('upstream-changed:')) {
@@ -468,16 +480,18 @@ function applyCardSignals(views: TurnViewData[]): TurnViewData[] {
       ...view,
       taskResults: view.taskResults.map((fact) => {
         const verdict = gateVerdictByTask.get(fact.taskId);
+        const nextVerdict =
+          verdict && fact.reportId === verdict.candidateReport ? verdict.conclusion : undefined;
         const upstreamChanged = upstreamChangedByTask.has(fact.taskId);
         if (
-          (verdict === undefined || fact.gateVerdict === verdict) &&
+          fact.gateVerdict === nextVerdict &&
           (fact.upstreamChanged === true) === upstreamChanged
         ) {
           return fact;
         }
         return {
           ...fact,
-          ...(verdict === undefined ? {} : { gateVerdict: verdict }),
+          gateVerdict: nextVerdict,
           ...(upstreamChanged ? { upstreamChanged: true } : {}),
         };
       }),
