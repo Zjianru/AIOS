@@ -807,3 +807,72 @@ fn two_unbound_confirm_cards_are_not_collapsed_into_one() {
     assert!(titles.contains(&"第一张卡"));
     assert!(titles.contains(&"第二张卡"));
 }
+
+/// T056.1：手工量 Work 在长会话（任务多、事件多）上的耗时；不进常规门禁。
+#[test]
+#[ignore = "T056.1 手工测量 Work 长会话耗时"]
+fn measure_work_latency_on_a_long_session() {
+    use std::time::Instant;
+    let (directory, store) = open_store();
+    let cwd = directory.path();
+    let mut tasks = Vec::new();
+    for index in 0..100_i64 {
+        tasks.push(ready_task(
+            &store,
+            cwd,
+            &format!("长会话任务 {index}"),
+            T0 + index * 10,
+        ));
+    }
+    let mut events = Vec::new();
+    let mut seq = 1_u64;
+    for (index, task) in tasks.iter().enumerate() {
+        let report = task.latest_report().unwrap();
+        events.push(relay(
+            seq,
+            T0 + 1_000 + i64::try_from(index).expect("非负"),
+            u64::try_from(index + 1).expect("非负"),
+            task.id.as_str(),
+            report.id.as_str(),
+        ));
+        seq += 1;
+    }
+    while events.len() < 20_000 {
+        events.push(Event::new(
+            seq,
+            u64::try_from(T0 + 2_000_000 + i64::try_from(seq).unwrap()).unwrap(),
+            EventKind::AssistantMessage {
+                turn: seq / 10 + 1,
+                step: 1,
+                message: Message::text(Role::Assistant, "长会话里的一条普通回答"),
+                stream: Vec::new(),
+                usage: None,
+                interrupted: None,
+                effort: None,
+                effort_wanted: None,
+            },
+        ));
+        seq += 1;
+    }
+    let now = T0 + 3_000_000;
+    // 预热一次，避免把首次建 map/分配算进。
+    let _ = snapshot(&store, &events, &[], now).unwrap();
+
+    let copy_start = Instant::now();
+    let cloned = events.clone();
+    let copy = copy_start.elapsed();
+
+    let snapshot_start = Instant::now();
+    let response = snapshot(&store, &cloned, &[], now).unwrap();
+    let snapshot_time = snapshot_start.elapsed();
+    let total = copy + snapshot_time;
+    println!(
+        "T056_WORK_LATENCY tasks={} events={} waits={} copy_ms={:.2} snapshot_ms={:.2} total_ms={:.2}",
+        tasks.len(),
+        events.len(),
+        response.wait.len(),
+        copy.as_secs_f64() * 1000.0,
+        snapshot_time.as_secs_f64() * 1000.0,
+        total.as_secs_f64() * 1000.0
+    );
+}

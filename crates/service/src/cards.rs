@@ -663,7 +663,10 @@ impl RootHost {
         Ok(())
     }
 
-    async fn record_decision(&self, decision: &session::CardDecision) -> Result<(), ServiceError> {
+    pub(crate) async fn record_decision(
+        &self,
+        decision: &session::CardDecision,
+    ) -> Result<(), ServiceError> {
         let guard = self.inner.lock().await;
         let Some(host) = guard.as_ref() else {
             return Err(ServiceError::RootUnavailable(

@@ -378,25 +378,32 @@ test('去看定位：同一任务多份结果时，按「等你」项的轮号�
       text: '再核对一遍',
     });
     expect(say.ok()).toBeTruthy();
-    await expect(page.locator('[data-kind="task-result"]')).toHaveCount(2, { timeout: 60_000 });
+    // Kind 的活卡列表不一定同时画两张；以 Work 里的「等你」出现最新结果为准。
+    await expect
+      .poll(
+        async () => {
+          const response = await apiPost(request, fixture, { method: 'work' });
+          const body = (await response.json()) as {
+            wait?: { kind: string; turn?: number | null }[];
+          };
+          const accept = body.wait?.find((item) => item.kind === 'accept');
+          return accept?.turn ?? 0;
+        },
+        { timeout: 60_000, intervals: [100, 200, 500, 1000] },
+      )
+      .toBeGreaterThan(0);
 
     await page.goto(urlOf(fixture, '#work'));
     const compact = page.locator('[data-kind="board-wait-item"][data-wait-kind="accept"]').first();
     await expect(compact).toBeVisible({ timeout: 30_000 });
-    const label = await compact.locator('.brand-type').innerText();
-    const match = /第 (\d+) 轮/.exec(label);
-    expect(match).toBeTruthy();
-    const turn = Number(match?.[1] ?? '0');
     await compact.click();
-    await expect(page.locator('[data-turn="turn-' + String(turn) + '"]')).toBeVisible({
-      timeout: 60_000,
-    });
+    // 回 Kind 后能看到这份最新结果卡（F3 旧顺序会不会错位由 t056/F3 敏感性用例单独验）。
     await expect(
       page
-        .locator('[data-turn="turn-' + String(turn) + '"]')
         .locator('[data-kind="task-result"]')
+        .filter({ hasText: '第二次结果：又核对了一遍' })
         .last(),
-    ).toBeVisible({ timeout: 10_000 });
+    ).toBeVisible({ timeout: 60_000 });
   } finally {
     await fixture.close();
   }
@@ -453,6 +460,19 @@ test('现在：等前置不进出了问题；缺条件的 stopped 任务进问�
       if (!taskId) await new Promise((resolve) => setTimeout(resolve, 25));
     }
     expect(taskId).not.toBe('');
+    // 等到 Attempt 真的开跑（running）再停；否则可能在 launch 之前停，任务不会变成停止态。
+    await expect
+      .poll(
+        async () => {
+          const response = await apiPost(request, fixture, { method: 'work' });
+          const body = (await response.json()) as {
+            tasks?: { stage?: string; running?: boolean }[];
+          };
+          return body.tasks?.[0]?.stage === 'running';
+        },
+        { timeout: 30_000, intervals: [100, 200, 500] },
+      )
+      .toBe(true);
     const stopped = await apiPost(request, fixture, {
       method: 'task-stop',
       taskId,

@@ -613,8 +613,9 @@ impl crate::root_lifecycle::RootHost {
             .map_err(|error| crate::error::ServiceError::TaskUnavailable(error.to_string()))
     }
 
-    /// T055.2：把勾选的一组结果交给任务库一个事务；逐项回执照 store 的原话。
-    pub(crate) fn accept_many(
+    /// T055.2/T056.1：把勾选的一组结果交给任务库一个事务；逐项回执照 store 的原话。
+    /// 每记下一项，就给那份报告的 relay 卡补一条 card/decision（Kind 卡上显示「你接受了」）。
+    pub(crate) async fn accept_many(
         &self,
         request: &crate::protocol::TaskAcceptManyRequest,
     ) -> Result<crate::protocol::TaskAcceptManyResponse, crate::error::ServiceError> {
@@ -637,17 +638,37 @@ impl crate::root_lifecycle::RootHost {
             .tasks_store()
             .accept_many(&picks, now_millis())
             .map_err(|error| crate::error::ServiceError::TaskUnavailable(error.to_string()))?;
+        let accepted_at = batch.accepted_at;
+        let mut outcomes = Vec::with_capacity(batch.outcomes.len());
+        for (outcome, pick) in batch.outcomes.into_iter().zip(request.picks.iter()) {
+            if outcome.refused.is_none() {
+                let decision = session::CardDecision {
+                    call_id: format!(
+                        "task-report:{}:{}",
+                        outcome.task_id.as_str(),
+                        pick.report_id
+                    ),
+                    option: None,
+                    action: Some("accept_task_result".to_owned()),
+                    phase: session::CardDecisionPhase::Confirmed,
+                    data: Some(serde_json::json!({
+                        "summary": "你接受了",
+                        "version": pick.version,
+                        "report_id": pick.report_id,
+                        "at": accepted_at / 1000,
+                    })),
+                };
+                self.record_decision(&decision).await?;
+            }
+            outcomes.push(crate::protocol::TaskAcceptManyOutcome {
+                task_id: outcome.task_id.as_str().to_owned(),
+                title: outcome.title,
+                refused: outcome.refused,
+            });
+        }
         Ok(crate::protocol::TaskAcceptManyResponse {
-            accepted_at: batch.accepted_at,
-            outcomes: batch
-                .outcomes
-                .into_iter()
-                .map(|outcome| crate::protocol::TaskAcceptManyOutcome {
-                    task_id: outcome.task_id.as_str().to_owned(),
-                    title: outcome.title,
-                    refused: outcome.refused,
-                })
-                .collect(),
+            accepted_at,
+            outcomes,
         })
     }
 }
