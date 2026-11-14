@@ -17,6 +17,10 @@ impl RootHost {
         match call {
             // 发消息前把附件 id 解析成只读副本路径（文字/粘贴/文件拼成块）。
             Call::Send(request) => {
+                // T053：上一轮提了图却没上卡 → 这一轮开始前取消（NoCard）。
+                if let Err(error) = self.cancel_uncarded_graphs().await {
+                    eprintln!("上一轮没上卡的任务图取消失败：{error}");
+                }
                 let message = self.user_message_from(&request)?;
                 let guard = self.inner.lock().await;
                 match guard.as_ref() {

@@ -118,6 +118,8 @@ pub enum TaskError {
     GraphTwoMilestonesForGuarded { first: usize, second: usize },
     #[error("这个任务不是里程碑门")]
     NotMilestoneGate,
+    #[error("这张任务图已经取消了")]
+    GraphCancelled,
     #[error("门的最近报告不是这份，或者候选已经变了")]
     GateReportChanged,
 }

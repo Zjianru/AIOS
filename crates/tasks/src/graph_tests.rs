@@ -5,9 +5,9 @@ use std::path::Path;
 use tempfile::TempDir;
 
 use crate::{
-    AttemptEnd, AttemptTrigger, ConversationId, EffectKind, EffectPayload, GateCandidate,
-    GateConclusion, Handoff, ModelChoice, NewGraph, NewReport, NewSubtask, NewTask, ReportOrigin,
-    ReportState, Stage, Store, Task, TaskError, TaskPolicy,
+    AttemptEnd, AttemptTrigger, CancellationReason, ConversationId, EffectKind, EffectPayload,
+    GateCandidate, GateConclusion, Handoff, ModelChoice, NewGraph, NewReport, NewSubtask, NewTask,
+    ReportOrigin, ReportState, Stage, Store, Task, TaskError, TaskPolicy,
 };
 
 const T0: i64 = 1_700_000_000_000;
@@ -1672,4 +1672,52 @@ fn gate_pass_new_candidate_marks_guarded_downstream_reevaluation() {
         store.complete_effect(&claim).unwrap();
     }
     assert!(found, "要有 upstream_changed relay");
+}
+
+#[test]
+fn cancelled_graph_gets_no_launch_and_stays_out_of_pending() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path();
+    let store = open_store().1;
+    let root = store.create_graph(gated_graph(cwd), T0).unwrap();
+    let cancellation = store
+        .cancel_graph(&root.id, CancellationReason::Dismissed, T0 + 1)
+        .unwrap();
+    assert_eq!(cancellation.reason, CancellationReason::Dismissed);
+    assert_eq!(cancellation.at, T0 + 1);
+    // 同一个取消重复点：返回同一条，不改时间。
+    let again = store
+        .cancel_graph(&root.id, CancellationReason::NoCard, T0 + 2)
+        .unwrap();
+    assert_eq!(again, cancellation);
+    // 再确认已经变了。
+    assert!(matches!(
+        store.confirm_graph(&root.id, T0 + 3),
+        Err(TaskError::GraphCancelled)
+    ));
+    // 子任务不排队、随时是待补足条件；没有任何 launch。
+    for child in store.children(&root.id).unwrap() {
+        assert_eq!(store.stage(&child.id).unwrap(), Stage::NeedsConditions);
+        assert!(
+            !store
+                .effect_pending(EffectKind::Launch, child.id.as_str())
+                .unwrap()
+        );
+    }
+    assert_eq!(store.stage(&root.id).unwrap(), Stage::NeedsConditions);
+}
+
+#[test]
+fn confirmed_graph_cannot_be_cancelled() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path();
+    let store = open_store().1;
+    let root = store
+        .create_graph(two_item_graph(cwd, None, None), T0)
+        .unwrap();
+    store.confirm_graph(&root.id, T0 + 1).unwrap();
+    assert!(matches!(
+        store.cancel_graph(&root.id, CancellationReason::Replaced, T0 + 2),
+        Err(TaskError::GraphAlreadyConfirmed)
+    ));
 }

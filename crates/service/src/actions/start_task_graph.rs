@@ -105,6 +105,14 @@ impl ActionKind for StartTaskGraphAction {
         if !root.is_graph_root() {
             return Err("这个任务不是任务图的总任务".to_owned());
         }
+        if root
+            .arrangement
+            .as_ref()
+            .and_then(|arrangement| arrangement.cancelled.as_ref())
+            .is_some()
+        {
+            return Err("已经变了".to_owned());
+        }
         let confirmed = root
             .arrangement
             .as_ref()
@@ -126,7 +134,13 @@ impl ActionKind for StartTaskGraphAction {
             let runtime = host
                 .task_runtime()
                 .ok_or_else(|| "任务执行者没起来，确认不了任务图".to_owned())?;
-            let launched = runtime.confirm_graph(&TaskId::from(task_id.clone()))?;
+            let launched = match runtime.confirm_graph(&TaskId::from(task_id.clone())) {
+                Ok(launched) => launched,
+                Err(reason) if reason.contains("已经取消了") => {
+                    return Err("已经变了".to_owned());
+                }
+                Err(reason) => return Err(reason),
+            };
             Ok(ActionOutcome {
                 summary: format!("已确认：{launched} 项先开跑，其余等上游结果"),
                 data: json!({ "task_id": task_id, "launched": launched }),

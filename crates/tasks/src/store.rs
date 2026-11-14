@@ -14,11 +14,11 @@ use crate::effect::{
 };
 use crate::id::{AttemptId, BootId, ConversationId, InputId, ReportId, TaskId};
 use crate::task::{
-    Acceptance, Arrangement, Attempt, AttemptEnd, AttemptTrigger, Confirmation, FrozenPolicy,
-    GateCandidate, GateConclusion, GateVerdict, Handoff, Input, InputAttachment, InputSource,
-    MilestoneGate, MissingItem, Need, NewGraph, NewInput, NewReport, NewSubtask, NewTask, Report,
-    ReportState, RequirementVersion, Run, SayOutcome, Task, TaskPolicy, VersionSource, Worktree,
-    resolve_write_scope,
+    Acceptance, Arrangement, Attempt, AttemptEnd, AttemptTrigger, Cancellation, CancellationReason,
+    Confirmation, FrozenPolicy, GateCandidate, GateConclusion, GateVerdict, Handoff, Input,
+    InputAttachment, InputSource, MilestoneGate, MissingItem, Need, NewGraph, NewInput, NewReport,
+    NewSubtask, NewTask, Report, ReportState, RequirementVersion, Run, SayOutcome, Task,
+    TaskPolicy, VersionSource, Worktree, resolve_write_scope,
 };
 
 /// 任务库 schema 版本；比这新的库拒绝打开。
@@ -241,6 +241,7 @@ impl Store {
             Some(Arrangement {
                 version: 1,
                 confirmed: None,
+                cancelled: None,
             }),
             None,
         )?;
@@ -277,6 +278,37 @@ impl Store {
         Ok(root)
     }
 
+    /// T053：取消一张任务图；同一个原因重复取消返回已有的取消记录。
+    pub fn cancel_graph(
+        &self,
+        root: &TaskId,
+        reason: CancellationReason,
+        now: i64,
+    ) -> Result<Cancellation, TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, root)?;
+        let Some(arrangement) = task.arrangement.clone() else {
+            return Err(TaskError::NotGraphRoot);
+        };
+        if let Some(existing) = arrangement.cancelled {
+            transaction.commit()?;
+            return Ok(existing);
+        }
+        if arrangement.confirmed.is_some() {
+            return Err(TaskError::GraphAlreadyConfirmed);
+        }
+        let cancellation = Cancellation { at: now, reason };
+        task.arrangement = Some(Arrangement {
+            version: arrangement.version,
+            confirmed: None,
+            cancelled: Some(cancellation.clone()),
+        });
+        save_task(&transaction, &task)?;
+        transaction.commit()?;
+        Ok(cancellation)
+    }
+
     /// T052：总任务的子任务（按落库顺序）。
     pub fn children(&self, parent: &TaskId) -> Result<Vec<Task>, TaskError> {
         let conn = self.lock()?;
@@ -300,12 +332,16 @@ impl Store {
         if arrangement.confirmed.is_some() {
             return Err(TaskError::GraphAlreadyConfirmed);
         }
+        if arrangement.cancelled.is_some() {
+            return Err(TaskError::GraphCancelled);
+        }
         root_task.arrangement = Some(Arrangement {
             version: arrangement.version,
             confirmed: Some(Confirmation {
                 version: arrangement.version,
                 at: now,
             }),
+            cancelled: None,
         });
         save_task(&transaction, &root_task)?;
         let mut launched = 0_usize;
@@ -1942,6 +1978,15 @@ fn stage_with_graph(connection: &Connection, task: &Task) -> Result<Stage, TaskE
     }
     if let Some(parent) = &task.parent {
         let root = load_task_required(connection, parent)?;
+        // T053：取消的图不进任何阶段推进（子任务不显示成排队）。
+        if root
+            .arrangement
+            .as_ref()
+            .and_then(|arrangement| arrangement.cancelled.as_ref())
+            .is_some()
+        {
+            return Ok(Stage::NeedsConditions);
+        }
         let confirmed = root
             .arrangement
             .as_ref()

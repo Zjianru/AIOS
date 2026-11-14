@@ -40,6 +40,10 @@ struct RouterState {
     graph_kind: Mutex<Option<u8>>,
     /// T053：带里程碑门的任务图动态脚本阶段；None = 用静态队列。
     gate_kind: Mutex<Option<u8>>,
+    /// T053.4：只提图不上的动态脚本（NoCard 收尾）。
+    nocard_kind: Mutex<Option<u8>>,
+    /// T053.4：连续提两张图两张卡（替换取消）。
+    two_graph_kind: Mutex<Option<u8>>,
 }
 
 impl Router {
@@ -55,6 +59,8 @@ impl Router {
                 thin_delay: Mutex::new(None),
                 graph_kind: Mutex::new(None),
                 gate_kind: Mutex::new(None),
+                nocard_kind: Mutex::new(None),
+                two_graph_kind: Mutex::new(None),
             }),
         }
     }
@@ -67,6 +73,21 @@ impl Router {
     /// T053：Kind 用带里程碑门的动态脚本（skill → 提议三子任务图 → 出确认卡 → 收尾）。
     fn enable_gate_kind(&self) {
         *self.state.gate_kind.lock().unwrap() = Some(0);
+    }
+
+    /// T053.4：只提图不出的动态脚本（下一轮开始时按 NoCard 取消）。
+    fn enable_nocard_kind(&self) {
+        *self.state.nocard_kind.lock().unwrap() = Some(0);
+    }
+
+    /// T053.4：两轮各提一张图一张卡（第二张卡接受时第一张按 Replaced 取消）。
+    fn enable_two_graph_kind(&self) {
+        *self.state.two_graph_kind.lock().unwrap() = Some(0);
+    }
+
+    /// T053.4：第二轮脚本（下一轮再提一张图一张卡；同一轮仍只让出一张卡）。
+    fn enable_two_graph_second(&self) {
+        *self.state.two_graph_kind.lock().unwrap() = Some(10);
     }
 
     fn set_thin_delay(&self, delay: Duration) {
@@ -271,6 +292,161 @@ impl Respond for Router {
                 .insert_header("content-type", "text/event-stream")
                 .set_body_string(sse);
         }
+        // T053.4：只提图不上卡（NoCard）。
+        if !thin
+            && let Some(step) = {
+                let mut phase = self.state.nocard_kind.lock().unwrap();
+                let step = phase.take();
+                if let Some(step) = step {
+                    *phase = Some(step + 1);
+                }
+                step
+            }
+        {
+            let sse = match step {
+                0 => crate::common::tool_use_sse(
+                    0,
+                    "call-nocard-skill",
+                    "skill",
+                    &serde_json::json!({"name": "aios-tasks"}).to_string(),
+                ),
+                1 => {
+                    let graph = serde_json::json!({
+                        "title": "第一张图",
+                        "requirement": "先查行数再写结果",
+                        "dod": "结果写好了",
+                        "subtasks": [
+                            {"title": "先查行数", "requirement": "查行数", "dod": "给出行数"},
+                            {"title": "再写结果", "requirement": "写结果", "dod": "写好了", "after": [0]}
+                        ]
+                    })
+                    .to_string();
+                    crate::common::tool_use_sse(
+                        1,
+                        "call-nocard-propose",
+                        "task_graph_propose",
+                        &graph,
+                    )
+                }
+                _ => crate::common::text_sse("先这样。"),
+            };
+            return ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(sse);
+        }
+        // T053.4：两轮各提一张图一张卡（第一张被第二张替换取消）。
+        if !thin
+            && let Some(step) = {
+                let mut phase = self.state.two_graph_kind.lock().unwrap();
+                let step = phase.take();
+                if let Some(step) = step {
+                    *phase = Some(step + 1);
+                }
+                step
+            }
+        {
+            let sse = match step {
+                0 => crate::common::tool_use_sse(
+                    0,
+                    "call-two-skill",
+                    "skill",
+                    &serde_json::json!({"name": "aios-tasks"}).to_string(),
+                ),
+                1 => {
+                    let graph = serde_json::json!({
+                        "title": "第一张图",
+                        "requirement": "先查行数再写结果",
+                        "dod": "结果写好了",
+                        "subtasks": [
+                            {"title": "先查行数", "requirement": "查行数", "dod": "给出行数"},
+                            {"title": "再写结果", "requirement": "写结果", "dod": "写好了", "after": [0]}
+                        ]
+                    })
+                    .to_string();
+                    crate::common::tool_use_sse(
+                        1,
+                        "call-two-propose-1",
+                        "task_graph_propose",
+                        &graph,
+                    )
+                }
+                2 => {
+                    let root = graph_root_id(&body).expect("第一张图 id");
+                    let args = serde_json::json!({
+                        "title": "第一张卡",
+                        "brief": "第一张图的确认卡。",
+                        "options": [{
+                            "id": "confirm",
+                            "action": "start_task_graph",
+                            "label": "确认并开跑",
+                            "details": {"task_id": root}
+                        }]
+                    })
+                    .to_string();
+                    crate::common::tool_use_sse(2, "call-two-card-1", "propose_action", &args)
+                }
+                // 第一轮只出一张卡就收尾；第二张图和卡留到下一轮（同轮只许一张卡）。
+                3 => crate::common::text_sse("先这样。"),
+                10 => crate::common::tool_use_sse(
+                    10,
+                    "call-two-skill-2",
+                    "skill",
+                    &serde_json::json!({"name": "aios-tasks"}).to_string(),
+                ),
+                11 => {
+                    let graph = serde_json::json!({
+                        "title": "第二张图",
+                        "requirement": "先查行数再写结果（第二版）",
+                        "dod": "结果写好了",
+                        "subtasks": [
+                            {"title": "先查行数", "requirement": "查行数", "dod": "给出行数"},
+                            {"title": "再写结果", "requirement": "写结果", "dod": "写好了", "after": [0]}
+                        ]
+                    })
+                    .to_string();
+                    crate::common::tool_use_sse(
+                        11,
+                        "call-two-propose-2",
+                        "task_graph_propose",
+                        &graph,
+                    )
+                }
+                12 => {
+                    let root = graph_root_id_last(&body).expect("第二张图 id");
+                    let args = serde_json::json!({
+                        "title": "第二张卡",
+                        "brief": "第二张图的确认卡。",
+                        "options": [{
+                            "id": "confirm",
+                            "action": "start_task_graph",
+                            "label": "确认并开跑",
+                            "details": {"task_id": root}
+                        }]
+                    })
+                    .to_string();
+                    crate::common::tool_use_sse(12, "call-two-card-2", "propose_action", &args)
+                }
+                4 => {
+                    let root = graph_root_id_last(&body).expect("第二张图 id");
+                    let args = serde_json::json!({
+                        "title": "第二张卡",
+                        "brief": "第二张图的确认卡。",
+                        "options": [{
+                            "id": "confirm",
+                            "action": "start_task_graph",
+                            "label": "确认并开跑",
+                            "details": {"task_id": root}
+                        }]
+                    })
+                    .to_string();
+                    crate::common::tool_use_sse(4, "call-two-card-2", "propose_action", &args)
+                }
+                _ => crate::common::text_sse("收到。"),
+            };
+            return ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(sse);
+        }
         let sse = match per_task {
             Some(sse) => sse,
             None => {
@@ -300,9 +476,16 @@ impl Respond for Router {
     }
 }
 
-/// T052：从 Kind 请求体里「已建任务图 <id>」取出图 id（动态回放用）。
+/// T052：从 Kind 请求体里「已建任务图 <id>」取出图 id（动态回放用；多个时取第一个）。
 fn graph_root_id(body: &str) -> Option<String> {
     let rest = body.split("已建任务图 ").nth(1)?;
+    let id: String = rest.chars().take_while(char::is_ascii_hexdigit).collect();
+    (!id.is_empty()).then_some(id)
+}
+
+/// T053.4：同一请求里出现多张图时取最后一个（第二轮那张图）。
+fn graph_root_id_last(body: &str) -> Option<String> {
+    let rest = body.rsplit("已建任务图 ").next()?;
     let id: String = rest.chars().take_while(char::is_ascii_hexdigit).collect();
     (!id.is_empty()).then_some(id)
 }
@@ -9996,5 +10179,241 @@ async fn upstream_new_result_marks_reevaluation_and_continue_checks_again() {
     assert_eq!(
         tasks_store(data.path()).stage(&downstream.id).unwrap(),
         Stage::ReadyForReview
+    );
+}
+
+/// T053.4：点暂不 → 图取消（Dismissed），一项不跑；再点确认已变。
+#[tokio::test]
+async fn graph_dismissed_on_card_cancels_the_graph() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    router.enable_graph_kind();
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    host.dispatch(Call::Send(send(&host, "kind-1", "先查再写")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&host, data.path(), 1).await;
+    wait_until("建图", || {
+        tasks_store(data.path())
+            .task_ids()
+            .map(|ids| ids.len() == 3)
+            .unwrap_or(false)
+    })
+    .await;
+    let store = tasks_store(data.path());
+    let root = graph_root(&store);
+    let children = store.children(&root.id).unwrap();
+    let dismissed = host
+        .dispatch(Call::CardAct(CardActRequest {
+            call_id: "call-graph-card".to_owned(),
+            verb: CardVerb::Dismiss,
+            option: None,
+            note: None,
+        }))
+        .await
+        .expect("暂不");
+    let Response::CardAct(dismissed) = dismissed else {
+        panic!("card-act 响应");
+    };
+    assert!(dismissed.decision.is_some());
+    let store = tasks_store(data.path());
+    let cancelled = store
+        .task(&root.id)
+        .unwrap()
+        .unwrap()
+        .arrangement
+        .unwrap()
+        .cancelled
+        .expect("图要有取消记录");
+    assert_eq!(cancelled.reason, tasks::CancellationReason::Dismissed);
+    for child in &children {
+        assert!(
+            store
+                .task(&child.id)
+                .unwrap()
+                .unwrap()
+                .latest_attempt()
+                .is_none()
+        );
+        assert_eq!(store.stage(&child.id).unwrap(), Stage::NeedsConditions);
+        assert!(
+            !store
+                .effect_pending(EffectKind::Launch, child.id.as_str())
+                .unwrap()
+        );
+    }
+    // 再点确认：返回已有的暂不决定，不执行、不启动。
+    let again = host
+        .dispatch(Call::CardAct(CardActRequest {
+            call_id: "call-graph-card".to_owned(),
+            verb: CardVerb::Confirm,
+            option: Some("confirm".to_owned()),
+            note: None,
+        }))
+        .await
+        .expect("再点");
+    let Response::CardAct(again) = again else {
+        panic!("card-act 响应");
+    };
+    assert_eq!(
+        again.decision.as_ref().map(|decision| decision.phase),
+        Some(session::CardDecisionPhase::Dismissed)
+    );
+    assert!(
+        tasks_store(data.path())
+            .children(&root.id)
+            .unwrap()
+            .iter()
+            .all(|child| child.latest_attempt().is_none())
+    );
+}
+
+/// T053.4：Kind 一轮提了图却没上卡 → 下一轮开始前按 NoCard 取消。
+#[tokio::test]
+async fn uncarded_graph_is_cancelled_as_no_card() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    router.enable_nocard_kind();
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    host.dispatch(Call::Send(send(&host, "kind-1", "先查再写")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&host, data.path(), 1).await;
+    wait_until("建图", || {
+        tasks_store(data.path())
+            .task_ids()
+            .map(|ids| ids.len() == 3)
+            .unwrap_or(false)
+    })
+    .await;
+    let store = tasks_store(data.path());
+    let root = graph_root(&store);
+    assert!(
+        store
+            .task(&root.id)
+            .unwrap()
+            .unwrap()
+            .arrangement
+            .unwrap()
+            .cancelled
+            .is_none()
+    );
+    for _ in 0..10 {
+        router.push_kind(crate::common::text_sse("收到"));
+    }
+    host.dispatch(Call::Send(send(&host, "kind-2", "再问一句")))
+        .await
+        .expect("第二轮");
+    wait_until("NoCard 取消", || {
+        tasks_store(data.path())
+            .task(&root.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.arrangement)
+            .and_then(|arrangement| arrangement.cancelled)
+            .is_some_and(|cancelled| cancelled.reason == tasks::CancellationReason::NoCard)
+    })
+    .await;
+}
+
+/// T053.4：新卡接受后，之前没点过的旧图按 Replaced 取消。
+#[tokio::test]
+async fn replacing_card_cancels_the_earlier_graph() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    router.enable_two_graph_kind();
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    host.dispatch(Call::Send(send(&host, "kind-1", "先查再写")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&host, data.path(), 1).await;
+    wait_until("第一张图", || {
+        tasks_store(data.path())
+            .task_ids()
+            .map(|ids| ids.len() == 3)
+            .unwrap_or(false)
+    })
+    .await;
+    // 下一轮再提一张图一张卡（同一轮只能出一张卡）。
+    for _ in 0..10 {
+        router.push_kind(crate::common::text_sse("收到"));
+    }
+    router.enable_two_graph_second();
+    host.dispatch(Call::Send(send(&host, "kind-2", "换一版")))
+        .await
+        .expect("第二轮");
+    crate::common::wait_turns(&host, data.path(), 2).await;
+    wait_until("两张图都建好", || {
+        tasks_store(data.path())
+            .task_ids()
+            .map(|ids| ids.len() == 6)
+            .unwrap_or(false)
+    })
+    .await;
+    let store = tasks_store(data.path());
+    let roots = store
+        .task_ids()
+        .unwrap()
+        .into_iter()
+        .filter_map(|id| store.task(&id).ok().flatten())
+        .filter(Task::is_graph_root)
+        .collect::<Vec<_>>();
+    let first_root = roots
+        .iter()
+        .find(|task| task.title == "第一张图")
+        .cloned()
+        .expect("第一张图");
+    let second_root = roots
+        .iter()
+        .find(|task| task.title == "第二张图")
+        .cloned()
+        .expect("第二张图");
+    let confirmed = host
+        .dispatch(Call::CardAct(CardActRequest {
+            call_id: "call-two-card-2".to_owned(),
+            verb: CardVerb::Confirm,
+            option: Some("confirm".to_owned()),
+            note: None,
+        }))
+        .await
+        .expect("确认第二张卡");
+    let Response::CardAct(confirmed) = confirmed else {
+        panic!("card-act 响应");
+    };
+    assert!(confirmed.decision.is_some());
+    let store = tasks_store(data.path());
+    let second = store.task(&second_root.id).unwrap().unwrap();
+    assert!(
+        second
+            .arrangement
+            .as_ref()
+            .and_then(|arrangement| arrangement.confirmed.as_ref())
+            .is_some()
+    );
+    let first = store.task(&first_root.id).unwrap().unwrap();
+    assert_eq!(
+        first
+            .arrangement
+            .unwrap()
+            .cancelled
+            .expect("第一张图要被替换取消")
+            .reason,
+        tasks::CancellationReason::Replaced
+    );
+    assert!(
+        store
+            .children(&first_root.id)
+            .unwrap()
+            .iter()
+            .all(|child| child.latest_attempt().is_none())
     );
 }

@@ -14,11 +14,12 @@ use model::{ContentBlock, Effort, UserMessage};
 use serde_json::{Value, json};
 use session::SessionId;
 use tasks::{
-    Acceptance, Attempt, AttemptEnd, AttemptId, AttemptTrigger, BootId, BootScan, ContinueCause,
-    ConversationId, EffectClaim, EffectKind, EffectPayload, GateCandidate, GateConclusion, Handoff,
-    Input, InputAttachment, MissingItem, ModelChoice, NewGraph, NewInput, NewReport, NewSubtask,
-    NewTask, Report, ReportId, ReportOrigin, ReportState, SlotKind, Stage, StopAttempt, Store,
-    Task, TaskError, TaskId, TaskPolicy, WorkerSlots,
+    Acceptance, Attempt, AttemptEnd, AttemptId, AttemptTrigger, BootId, BootScan, Cancellation,
+    CancellationReason, ContinueCause, ConversationId, EffectClaim, EffectKind, EffectPayload,
+    GateCandidate, GateConclusion, Handoff, Input, InputAttachment, MissingItem, ModelChoice,
+    NewGraph, NewInput, NewReport, NewSubtask, NewTask, Report, ReportId, ReportOrigin,
+    ReportState, SlotKind, Stage, StopAttempt, Store, Task, TaskError, TaskId, TaskPolicy,
+    WorkerSlots,
 };
 use tokio::sync::broadcast;
 use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
@@ -2054,12 +2055,21 @@ impl TaskRuntime {
             return false;
         }
         if let Some(parent) = task.parent.clone() {
-            let confirmed = self
+            let arrangement = self
                 .store
                 .task(&parent)
                 .ok()
                 .flatten()
-                .and_then(|root| root.arrangement)
+                .and_then(|root| root.arrangement);
+            // T053：取消的图一项都不跑（确认过再取消不可能，这里只挡事实）。
+            if arrangement
+                .as_ref()
+                .is_some_and(|arrangement| arrangement.cancelled.is_some())
+            {
+                self.finish_or_fail(&claim, Ok(()));
+                return false;
+            }
+            let confirmed = arrangement
                 .and_then(|arrangement| arrangement.confirmed)
                 .is_some();
             let ready = match self.store.needs_ready(&task) {
@@ -3024,6 +3034,36 @@ impl TaskRuntime {
             .map_err(|error| error.to_string())?;
         self.wake();
         Ok(launched)
+    }
+
+    /// T053：取消一张任务图（暂不 / 被新卡替换 / 本轮没上卡）。
+    pub(crate) fn cancel_graph(
+        &self,
+        root: &TaskId,
+        reason: CancellationReason,
+    ) -> Result<Cancellation, String> {
+        let cancellation = self
+            .store
+            .cancel_graph(root, reason, Self::now())
+            .map_err(|error| error.to_string())?;
+        self.wake();
+        Ok(cancellation)
+    }
+
+    /// T053：还没确认也没取消的图（NoCard 收尾扫用）。
+    pub(crate) fn unconfirmed_graph_roots(&self) -> Result<Vec<Task>, String> {
+        let mut roots = Vec::new();
+        for id in self.store.task_ids().map_err(|error| error.to_string())? {
+            let Some(task) = self.store.task(&id).map_err(|error| error.to_string())? else {
+                continue;
+            };
+            if task.arrangement.as_ref().is_some_and(|arrangement| {
+                arrangement.confirmed.is_none() && arrangement.cancelled.is_none()
+            }) {
+                roots.push(task);
+            }
+        }
+        Ok(roots)
     }
 
     /// Kind 的 task_update：换写入范围、追加要求版本，然后在原会话开新 Attempt。

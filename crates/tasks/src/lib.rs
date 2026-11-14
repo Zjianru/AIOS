@@ -20,9 +20,9 @@ pub use slots::{Later, SlotKind, WorkerSlots};
 pub use stage::Stage;
 pub use store::{BootScan, GateJudgeOutcome, SCHEMA_VERSION, StopAttempt, Store};
 pub use task::{
-    Acceptance, Arrangement, Attempt, AttemptEnd, AttemptTrigger, Confirmation, ContinueCause,
-    GateCandidate, GateConclusion, GateVerdict, Handoff, Input, InputAttachment, InputSource,
-    MilestoneGate, MissingItem, ModelChoice, Need, NewGraph, NewInput, NewReport, NewSubtask,
-    NewTask, Report, ReportOrigin, ReportState, RequirementVersion, Run, SayOutcome, Task,
-    TaskPolicy, VersionSource, Worktree,
+    Acceptance, Arrangement, Attempt, AttemptEnd, AttemptTrigger, Cancellation, CancellationReason,
+    Confirmation, ContinueCause, GateCandidate, GateConclusion, GateVerdict, Handoff, Input,
+    InputAttachment, InputSource, MilestoneGate, MissingItem, ModelChoice, Need, NewGraph,
+    NewInput, NewReport, NewSubtask, NewTask, Report, ReportOrigin, ReportState,
+    RequirementVersion, Run, SayOutcome, Task, TaskPolicy, VersionSource, Worktree,
 };
