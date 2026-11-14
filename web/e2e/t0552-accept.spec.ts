@@ -129,3 +129,43 @@ test('组接受：勾了以后一项又变了，只记另一项并逐项回原�
     await fixture.close();
   }
 });
+
+test('门后接受：门判通过后从「等你」接受，被把关任务和门一起进完成列', async ({ page }) => {
+  test.setTimeout(240_000);
+  const fixture = await startKernelFixture({ t053Gate: true });
+  try {
+    await page.goto(urlOf(fixture));
+    await sendKind(page, '先查 notes.md 有几行，改完找个独立的核查看一眼，我来拍板，过了再写结果');
+    const confirm = page.locator('[data-kind="confirm-card"]').first();
+    await expect(confirm).toBeVisible({ timeout: 60_000 });
+    await confirm.locator('[data-action="card-option"]').first().click();
+    await confirm.locator('[data-action="card-confirm"]').click();
+    await expect(confirm).toHaveAttribute('data-state', 'done', { timeout: 40_000 });
+
+    const gateCard = page
+      .locator('[data-kind="task-result"]')
+      .filter({ has: page.locator('[data-kind="task-title"]', { hasText: '独立核查' }) })
+      .first();
+    await expect(gateCard.locator('[data-kind="gate-pass"]')).toBeVisible({ timeout: 60_000 });
+    await gateCard.locator('[data-kind="gate-pass"]').click();
+    await expect(gateCard.locator('[data-kind="gate-verdict"]')).toContainText('你判了通过', {
+      timeout: 40_000,
+    });
+
+    await page.goto(urlOf(fixture, '#work'));
+    const waiting = page.locator('[data-pane="waiting"]');
+    const accept = waiting
+      .locator('[data-kind="wait-item"][data-wait-kind="accept"]')
+      .filter({ hasText: '先查行数' })
+      .first();
+    await expect(accept).toBeVisible({ timeout: 30_000 });
+    await accept.locator('[data-action="wait-accept"]').click();
+    await expect(waiting.locator('[data-kind="accept-receipt"]')).toContainText('接受了 1 项', {
+      timeout: 30_000,
+    });
+    await expect(column(page, 'done')).toContainText('先查行数', { timeout: 10_000 });
+    await expect(column(page, 'done')).toContainText('独立核查', { timeout: 10_000 });
+  } finally {
+    await fixture.close();
+  }
+});
