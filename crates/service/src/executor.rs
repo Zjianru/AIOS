@@ -2726,7 +2726,45 @@ impl TaskRuntime {
         });
     }
 
-    /// T056.2：压缩成功后把当前账本 Steer 回会话；空账本不发。
+    /// T056.2：压缩成功要 Steer 的消息和 request id；空账本返回 None。
+    fn ledger_after_compaction_payload(
+        &self,
+        task: &Task,
+        compaction_id: &str,
+    ) -> Option<(String, UserMessage)> {
+        let ledger = self.ledger_section(task);
+        if ledger.is_empty() {
+            return None;
+        }
+        Some((
+            format!("ledger-after-compaction:{compaction_id}"),
+            UserMessage::text(format!("账本（压缩后重带）\n{ledger}")),
+        ))
+    }
+
+    /// T056.2 的发送接缝：空账本不调用 send；发送结果原样交给调用方（生产侧只记日志）。
+    async fn steer_ledger_with<F>(
+        &self,
+        task: &Task,
+        compaction_id: &str,
+        send: F,
+    ) -> Result<bool, String>
+    where
+        F: FnOnce(
+            String,
+            UserMessage,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), String>> + Send>,
+        >,
+    {
+        let Some((request_id, message)) = self.ledger_after_compaction_payload(task, compaction_id)
+        else {
+            return Ok(false);
+        };
+        send(request_id, message).await.map(|()| true)
+    }
+
+    /// T056.2：压缩成功后把当前账本 Steer 回会话；空账本不发，失败只记日志。
     async fn steer_ledger_after_compaction(
         &self,
         task_id: TaskId,
@@ -2740,10 +2778,6 @@ impl TaskRuntime {
         if task.latest_attempt().map(|attempt| attempt.id) != Some(attempt_id) {
             return;
         }
-        let ledger = self.ledger_section(&task);
-        if ledger.is_empty() {
-            return;
-        }
         let host = self
             .running
             .lock()
@@ -2753,13 +2787,17 @@ impl TaskRuntime {
         let Some(host) = host else {
             return;
         };
-        let request_id = format!("ledger-after-compaction:{compaction_id}");
-        let text = format!(
-            "账本（压缩后重带）
-{ledger}"
-        );
-        if let Err(error) = host
-            .send_message(&request_id, UserMessage::text(text), DeliveryMode::Steer)
+        let task_id = task.id.clone();
+        if let Err(error) = self
+            .steer_ledger_with(&task, &compaction_id, move |request_id, message| {
+                let host = Arc::clone(&host);
+                Box::pin(async move {
+                    host.send_message(&request_id, message, DeliveryMode::Steer)
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                })
+            })
             .await
         {
             eprintln!("压缩后账本没送回任务 {task_id}：{error}");
@@ -5232,6 +5270,88 @@ mod t056_ledger_executor_tests {
         .await;
         assert!(ended.is_error);
         assert!(ended.content.contains("已经结束"), "{}", ended.content);
+    }
+
+    #[tokio::test]
+    async fn compaction_seam_sends_the_ledger_once_with_the_expected_request_id() {
+        let (directory, runtime) = open_runtime();
+        let task = new_task(directory.path(), vec!["别加新依赖".to_owned()]);
+        let Some((request_id, message)) =
+            runtime.ledger_after_compaction_payload(&task, "compact-1")
+        else {
+            panic!("有账本应生成消息");
+        };
+        assert_eq!(request_id, "ledger-after-compaction:compact-1");
+        let text: String = message
+            .into_message()
+            .content
+            .iter()
+            .filter_map(model::ContentBlock::as_text)
+            .collect();
+        assert!(text.contains("账本（压缩后重带）"), "{text}");
+        assert!(text.contains("「别加新依赖」"), "{text}");
+
+        let sent = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
+        let sink = Arc::clone(&sent);
+        let outcome = runtime
+            .steer_ledger_with(&task, "compact-1", move |request_id, message| {
+                let sink = Arc::clone(&sink);
+                Box::pin(async move {
+                    let text: String = message
+                        .into_message()
+                        .content
+                        .iter()
+                        .filter_map(model::ContentBlock::as_text)
+                        .collect();
+                    sink.lock().expect("sent").push((request_id, text));
+                    Ok(())
+                })
+            })
+            .await
+            .expect("发送成功");
+        assert!(outcome, "有账本应发出");
+        let sent = sent.lock().expect("sent");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, "ledger-after-compaction:compact-1");
+        assert!(sent[0].1.contains("别加新依赖"));
+    }
+
+    #[tokio::test]
+    async fn compaction_seam_skips_an_empty_ledger() {
+        let (directory, runtime) = open_runtime();
+        let task = new_task(directory.path(), Vec::new());
+        assert!(
+            runtime
+                .ledger_after_compaction_payload(&task, "compact-2")
+                .is_none()
+        );
+        let called = Arc::new(Mutex::new(false));
+        let sink = Arc::clone(&called);
+        let outcome = runtime
+            .steer_ledger_with(&task, "compact-2", move |_request_id, _message| {
+                let sink = Arc::clone(&sink);
+                Box::pin(async move {
+                    *sink.lock().expect("called") = true;
+                    Ok(())
+                })
+            })
+            .await
+            .expect("空账本不报错");
+        assert!(!outcome);
+        assert!(!*called.lock().expect("called"), "空账本不能调用 send");
+    }
+
+    #[tokio::test]
+    async fn compaction_seam_returns_send_failure_to_the_caller_to_log() {
+        let (directory, runtime) = open_runtime();
+        let task = new_task(directory.path(), vec!["别加新依赖".to_owned()]);
+        let error = runtime
+            .steer_ledger_with(&task, "compact-3", |_request_id, _message| {
+                Box::pin(async move { Err("压缩重试中".to_owned()) })
+            })
+            .await
+            .expect_err("发送失败交给生产侧记日志");
+        assert_eq!(error, "压缩重试中");
     }
 
     #[test]

@@ -182,7 +182,7 @@ test('写任务：点名直接派，卡「待你核」+清单只该文件；接�
 
     // ThinAgent 的工具表正好 11 件；文件真的改成按 url。
     const header = await taskHeader(request, fixture, taskId);
-    expect(header.tools).toHaveLength(11);
+    expect(header.tools).toHaveLength(13);
     expect(header.tools).toContain('write');
     expect(header.tools).toContain('edit');
     expect(header.tools).not.toContain('bash');
@@ -260,7 +260,7 @@ test('写任务：没说改哪里时 Kind 先问并给具体路径；同意前�
     expect(after).toHaveLength(1);
     expect(after[0].data?.arguments ?? '').toContain('"write_scope":"hello.txt"');
     const taskId = await taskIdOf(fixture);
-    expect((await taskHeader(request, fixture, taskId)).tools).toHaveLength(11);
+    expect((await taskHeader(request, fixture, taskId)).tools).toHaveLength(13);
   } finally {
     await fixture.close();
   }
@@ -436,7 +436,7 @@ test('bash 开关：打开后刷新还在；写任务 15 件、卡上说明；�
 
     const taskId = await taskIdOf(fixture);
     const header = await taskHeader(request, fixture, taskId);
-    expect(header.tools).toHaveLength(15);
+    expect(header.tools).toHaveLength(17);
     for (const tool of ['bash', 'job_output', 'job_list', 'job_kill']) {
       expect(header.tools).toContain(tool);
     }
@@ -458,7 +458,7 @@ test('bash 开关：打开后刷新还在；写任务 15 件、卡上说明；�
       'aria-checked',
       'false',
     );
-    expect((await taskHeader(request, fixture, taskId)).tools).toHaveLength(15);
+    expect((await taskHeader(request, fixture, taskId)).tools).toHaveLength(17);
     await page.goto(urlOf(fixture));
     await expect(reviewCard(page)).toContainText(BASH_NOTE);
 
@@ -497,7 +497,7 @@ test('工作树：ThinAgent 在工作树里改，原目录不动，卡上写工�
     expect(row.worktree_state?.cwd).toBe(worktree);
     expect(await readText(path.join(worktree, 'hello.txt'))).toBe(CHANGED);
     expect(await readText(path.join(fixture.dataDir, 'hello.txt'))).toBe(ORIGINAL);
-    expect((await taskHeader(request, fixture, taskId)).tools).toHaveLength(11);
+    expect((await taskHeader(request, fixture, taskId)).tools).toHaveLength(13);
   } finally {
     await fixture.close();
   }

@@ -60,6 +60,8 @@ const THIN_READ_FULL = [
   'todo_write',
   'task_report',
   'task_handback',
+  'task_ledger_note',
+  'task_ledger_history',
 ];
 
 const THIN_READ_WITH_KEY = [
@@ -72,6 +74,8 @@ const THIN_READ_WITH_KEY = [
   'web_fetch',
   'task_report',
   'task_handback',
+  'task_ledger_note',
+  'task_ledger_history',
 ];
 
 const urlOf = (fixture: { baseUrl: string; token: string }, hash = '#kind') =>
@@ -108,7 +112,7 @@ test('Kind：无 Exa key 时全量 15（不含 web_* / write / edit / bash / job
   }
 });
 
-test('ThinAgent：无 Exa key 时只读全量 7（不含 web_*），跨请求一致', async ({ page, request }) => {
+test('ThinAgent：无 Exa key 时只读全量 9（不含 web_*），跨请求一致', async ({ page, request }) => {
   test.setTimeout(180_000);
   const fixture = await startKernelFixture({ taskResult: 'live', routeModel: 'replay-uncatalogued-model' });
   try {
@@ -127,7 +131,7 @@ test('ThinAgent：无 Exa key 时只读全量 7（不含 web_*），跨请求一
     }
     // 假回放的 ThinAgent 很快跑完，轮询可能只抓到一条请求；跨轮一致性由 Kind 那条 + agent
     // 集成测试（unsupported_route_declares_all_tools_from_the_first_step）覆盖，这里断言
-    // 抓到过的每条 ThinAgent 请求工具表都等于只读全量 7 件（无 key，不含 web_*）。
+    // 抓到过的每条 ThinAgent 请求工具表都等于只读全量 9 件（无 key，不含 web_*）。
     expect(seen.length).toBeGreaterThanOrEqual(1);
     for (const tools of seen) {
       expect(tools).toEqual(THIN_READ_FULL);
@@ -141,7 +145,7 @@ test('ThinAgent：无 Exa key 时只读全量 7（不含 web_*），跨请求一
   }
 });
 
-test('存了 Exa key：Kind 17 / ThinAgent 9，含 web_*（D73 key 后出现）', async ({ page, request }) => {
+test('存了 Exa key：Kind 17 / ThinAgent 11，含 web_*（D73 key 后出现）', async ({ page, request }) => {
   test.setTimeout(180_000);
   const fixture = await startKernelFixture({
     taskResult: 'live',

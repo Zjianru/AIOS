@@ -11644,3 +11644,145 @@ async fn task_read_exposes_ledger_constraints_notes_and_history() {
     assert_eq!(response.ledger.history[0].text, "缓存不可行");
     assert_eq!(response.ledger.history[0].closed_why, "被新的一条替换");
 }
+
+/// T056.2.2：改要求动作的 constraints 必须逐字是用户原话；对不上整次拒、不写库。
+#[tokio::test]
+async fn update_requirement_constraints_must_be_user_words_and_land_on_the_new_version() {
+    let fixture = Fixture::new().await;
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-report", "ready", "查好了", None));
+    fixture.router.push_thin(crate::common::text_sse("好"));
+    let task = fixture.accept(false).await;
+    let store = tasks_store(fixture.data());
+    wait_until("任务这一轮结束", || {
+        tasks_store(fixture.data())
+            .task(&task.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().cloned())
+            .is_some_and(|attempt| attempt.ended_at.is_some())
+    })
+    .await;
+    // 报告落库后会话可能还在收尾；等写者让出来再改要求，避免 open_resume 撞 AlreadyOwned。
+    wait_until("任务会话写者让出", || {
+        let task = tasks_store(fixture.data()).task(&task.id).ok().flatten();
+        let Some(conversation) = task.and_then(|task| {
+            task.latest_attempt()
+                .and_then(|attempt| attempt.conversation.clone())
+        }) else {
+            return false;
+        };
+        let Ok(id) = session::SessionId::parse(conversation.as_str()) else {
+            return false;
+        };
+        session::SessionStore::open(fixture.data(), &id).is_ok()
+    })
+    .await;
+    let registry = service::ActionRegistry::settings(fixture.data().to_path_buf(), None);
+    let action = registry.get("update_task_requirement").expect("动作登记");
+    let before = store.task(&task.id).unwrap().unwrap();
+
+    let refused = service::ActionKind::act(
+        action.as_ref(),
+        &serde_json::json!({
+            "task_id": task.id.as_str(),
+            "requirement": "新要求",
+            "constraints": ["用户没说过这句"],
+        }),
+        &fixture.host,
+    )
+    .await
+    .expect_err("非原话要整次拒");
+    assert!(refused.contains("约束要用用户原话"), "{refused}");
+    let unchanged = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(unchanged.requirement, before.requirement);
+    assert_eq!(unchanged.dod, before.dod);
+    assert_eq!(
+        unchanged.requirement_version(),
+        before.requirement_version()
+    );
+    assert_eq!(unchanged.versions.len(), before.versions.len());
+    assert!(unchanged.current_constraints().is_empty());
+    assert_eq!(unchanged.versions, before.versions);
+
+    let summary = service::ActionKind::act(
+        action.as_ref(),
+        &serde_json::json!({
+            "task_id": task.id.as_str(),
+            "requirement": "按用户原话改的新要求",
+            "constraints": ["改一下"],
+        }),
+        &fixture.host,
+    )
+    .await
+    .expect("用户原话约束应成功");
+    assert!(summary.summary.contains("第 2 版"), "{}", summary.summary);
+    let updated = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(updated.requirement, "按用户原话改的新要求");
+    assert_eq!(
+        updated.requirement_version(),
+        before.requirement_version() + 1
+    );
+    assert_eq!(updated.current_constraints(), ["改一下"]);
+}
+
+/// T056.2.2：改要求不传 constraints 时沿用上一版。
+#[tokio::test]
+async fn update_requirement_without_constraints_keeps_the_previous_version() {
+    let fixture = Fixture::new().await;
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-report", "ready", "查好了", None));
+    fixture.router.push_thin(crate::common::text_sse("好"));
+    let task = fixture
+        .accept_args(
+            false,
+            serde_json::json!({
+                "title": "沿约束",
+                "requirement": "找答案",
+                "dod": "有答案",
+                "constraints": ["改一下"],
+            }),
+            0,
+        )
+        .await;
+    let store = tasks_store(fixture.data());
+    wait_until("任务这一轮结束", || {
+        tasks_store(fixture.data())
+            .task(&task.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().cloned())
+            .is_some_and(|attempt| attempt.ended_at.is_some())
+    })
+    .await;
+    wait_until("任务会话写者让出", || {
+        let task = tasks_store(fixture.data()).task(&task.id).ok().flatten();
+        let Some(conversation) = task.and_then(|task| {
+            task.latest_attempt()
+                .and_then(|attempt| attempt.conversation.clone())
+        }) else {
+            return false;
+        };
+        let Ok(id) = session::SessionId::parse(conversation.as_str()) else {
+            return false;
+        };
+        session::SessionStore::open(fixture.data(), &id).is_ok()
+    })
+    .await;
+    let registry = service::ActionRegistry::settings(fixture.data().to_path_buf(), None);
+    let action = registry.get("update_task_requirement").expect("动作登记");
+    service::ActionKind::act(
+        action.as_ref(),
+        &serde_json::json!({
+            "task_id": task.id.as_str(),
+            "requirement": "只改要求文字，不传约束",
+        }),
+        &fixture.host,
+    )
+    .await
+    .expect("改要求成功");
+    let updated = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(updated.current_constraints(), ["改一下"]);
+}
