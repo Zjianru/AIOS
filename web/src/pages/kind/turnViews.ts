@@ -126,8 +126,34 @@ export function gateVerdictOf(
   return { taskId, conclusion };
 }
 
+/** T053：upstream_changed relay 的事实：哪个下游要按上游新结果核对。 */
+export function upstreamChangedOf(message: unknown): { downstreamId: string } | null {
+  if (typeof message !== 'object' || message === null) return null;
+  const content = (message as { content?: unknown }).content;
+  if (!Array.isArray(content)) return null;
+  const text = content
+    .map((block) =>
+      typeof block === 'object' && block !== null && typeof (block as { text?: unknown }).text === 'string'
+        ? (block as { text: string }).text
+        : '',
+    )
+    .join('');
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof body !== 'object' || body === null) return null;
+  const record = body as { kind?: unknown; downstream?: { id?: unknown } };
+  if (record.kind !== 'upstream_changed') return null;
+  const id = record.downstream?.id;
+  if (typeof id !== 'string' || id === '') return null;
+  return { downstreamId: id };
+}
+
 /** 消息的 source.rpcId（只认 source.kind=user）。 */
-function userRpcIdOf(message: unknown): string | null {
+export function userRpcIdOf(message: unknown): string | null {
   if (!message || typeof message !== 'object') return null;
   const source = (message as { source?: unknown }).source;
   if (!source || typeof source !== 'object') return null;
@@ -465,6 +491,8 @@ export function deriveTurnViews(
   const cardDecisions = new Map<string, ConfirmDecision>();
   // T053：门判定 relay（gate-verdict）按被把关任务 id 回填结果卡状态词，刷新可重建。
   const gateVerdicts = new Map<string, 'pass' | 'needs_fix'>();
+  // T053：上游变了的下游（upstream_changed relay；该任务交出新 ready 报告时清除）。
+  const upstreamChangedTasks = new Set<string>();
   for (const event of events) {
     const data = event.data ?? {};
     if (event.type === 'tool/call' && data.name === 'propose_action') {
@@ -732,8 +760,16 @@ export function deriveTurnViews(
           }
           break;
         }
+        // T053：上游有新结果的 relay 只给模型看，不画用户气泡；给下游卡标「待按新结果核对」。
+        if (userRpcIdOf(data.message)?.startsWith('upstream-changed:')) {
+          const changed = upstreamChangedOf(data.message);
+          if (changed) upstreamChangedTasks.add(changed.downstreamId);
+          break;
+        }
         const relay = parseTaskRelay(data.message, event.time / 1000);
         if (relay) {
+          // 下游交出新 ready 报告：需重评标记清除。
+          upstreamChangedTasks.delete(relay.taskId);
           // 同一轮可能被多条 relay 叫起来：按日志到达顺序各留一张卡，不互相覆盖。
           // T038：派出过的任务并回那张派发卡（一张任务只渲染一张卡）。
           if (!mergeRelayIntoDispatch(relay)) ensure(turn).taskResults.push(relay);
@@ -1018,6 +1054,7 @@ export function deriveTurnViews(
     for (const fact of raw.taskResults) {
       const gateVerdict = gateVerdicts.get(fact.taskId);
       if (gateVerdict) fact.gateVerdict = gateVerdict;
+      if (upstreamChangedTasks.has(fact.taskId)) fact.upstreamChanged = true;
       const decision = cardDecisions.get(fact.id);
       if (decision) {
         fact.decision = {

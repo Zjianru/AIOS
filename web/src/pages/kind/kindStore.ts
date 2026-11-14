@@ -24,6 +24,7 @@ import { getModelSettings } from '@/data/keyring';
 import { setHostHome } from '@/data/service';
 import { go } from '@/app/navigate';
 import type { AskAnswer } from '@/data/service';
+import { parseTaskRelay } from '@/data/taskResult';
 import { mark } from '@/lib/perf';
 import {
   canvasTracks,
@@ -35,6 +36,8 @@ import {
   prependOlderViews,
   reconcileTaskCards,
   taskCcFacts,
+  upstreamChangedOf,
+  userRpcIdOf,
 } from './turnViews';
 import type { CanvasTrack, TurnLabels, TurnViewData } from './turnViews';
 import { applyTaskCardStates } from './taskCardState';
@@ -419,37 +422,72 @@ let taskCardStates: ReadonlyMap<string, TaskReadHeader> = new Map();
 
 /** T053：门判定 relay 回填被把关任务卡状态词（live 和刷新共用；按任务 id 记最近一次）。 */
 let gateVerdictByTask: ReadonlyMap<string, 'pass' | 'needs_fix'> = new Map();
+/** T053：上游变了的下游（upstream_changed relay；交出新 ready 报告时清除）。 */
+let upstreamChangedByTask: ReadonlySet<string> = new Set();
 
-function rememberGateVerdicts(events: readonly ServiceEvent[]): void {
-  let next = gateVerdictByTask;
+function rememberCardSignals(events: readonly ServiceEvent[]): void {
+  let verdicts = gateVerdictByTask;
+  let changed = upstreamChangedByTask;
   for (const event of events) {
     if (event.type !== 'user/message') continue;
-    const routed = gateVerdictOf(event.data?.message);
-    if (!routed) continue;
-    if (next.get(routed.taskId) === routed.conclusion) continue;
-    next = new Map(next).set(routed.taskId, routed.conclusion);
+    const message = event.data?.message;
+    const routed = gateVerdictOf(message);
+    if (routed && verdicts.get(routed.taskId) !== routed.conclusion) {
+      verdicts = new Map(verdicts).set(routed.taskId, routed.conclusion);
+    }
+    const rpcId = userRpcIdOf(message);
+    if (rpcId?.startsWith('upstream-changed:')) {
+      const downstream = upstreamChangedOf(message);
+      if (downstream && !changed.has(downstream.downstreamId)) {
+        changed = new Set(changed).add(downstream.downstreamId);
+      }
+      continue;
+    }
+    const relay = parseTaskRelay(message, 0);
+    if (relay && changed.has(relay.taskId)) {
+      const without = new Set(changed);
+      without.delete(relay.taskId);
+      changed = without;
+    }
   }
-  gateVerdictByTask = next;
+  gateVerdictByTask = verdicts;
+  upstreamChangedByTask = changed;
 }
 
-function applyGateVerdicts(views: TurnViewData[]): TurnViewData[] {
-  if (gateVerdictByTask.size === 0) return views;
+function applyCardSignals(views: TurnViewData[]): TurnViewData[] {
+  if (gateVerdictByTask.size === 0 && upstreamChangedByTask.size === 0) return views;
   return views.map((view) => {
-    if (!view.taskResults.some((fact) => gateVerdictByTask.has(fact.taskId))) return view;
+    if (
+      !view.taskResults.some(
+        (fact) => gateVerdictByTask.has(fact.taskId) || upstreamChangedByTask.has(fact.taskId),
+      )
+    ) {
+      return view;
+    }
     return {
       ...view,
       taskResults: view.taskResults.map((fact) => {
         const verdict = gateVerdictByTask.get(fact.taskId);
-        if (!verdict || fact.gateVerdict === verdict) return fact;
-        return { ...fact, gateVerdict: verdict };
+        const upstreamChanged = upstreamChangedByTask.has(fact.taskId);
+        if (
+          (verdict === undefined || fact.gateVerdict === verdict) &&
+          (fact.upstreamChanged === true) === upstreamChanged
+        ) {
+          return fact;
+        }
+        return {
+          ...fact,
+          ...(verdict === undefined ? {} : { gateVerdict: verdict }),
+          ...(upstreamChanged ? { upstreamChanged: true } : {}),
+        };
       }),
     };
   });
 }
 
-/** 折卡之后再套任务库事实（T038 折卡 + T041 状态映射 + T053 门判定状态词）。 */
+/** 折卡之后再套任务库事实（T038 折卡 + T041 状态映射 + T053 门判定/上游变了状态）。 */
 function finishViews(views: TurnViewData[]): TurnViewData[] {
-  return applyGateVerdicts(applyTaskCardStates(reconcileTaskCards(views), taskCardStates));
+  return applyCardSignals(applyTaskCardStates(reconcileTaskCards(views), taskCardStates));
 }
 
 /** 从还没流完的参数 JSON 里取 canvas 的 title；还没流到（或半个转义）就先给空串。 */
@@ -531,7 +569,7 @@ function applyLiveEvent(event: ServiceEvent): void {
   }
   if (event.seq <= lastSeq) return;
   lastSeq = event.seq;
-  rememberGateVerdicts([event]);
+  rememberCardSignals([event]);
   liveEvents.push(event);
   // T028.5：抄送 Kind 的行（inbox/spliced 或领取后的 user/message）单独成行，不是一轮。
   if (event.type === 'agent/inbox/spliced' || event.type === 'user/message') {
@@ -852,7 +890,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   loadInitial: async () => {
     try {
       const page = await fetchEventsPage({ maxMessages: 100, minMessages: 10, minTurns: 5 });
-      rememberGateVerdicts(page.events);
+      rememberCardSignals(page.events);
       const views = finishViews(
         mergeCcViews(deriveTurnViews(page.events, turnLabels()), page.events),
       );

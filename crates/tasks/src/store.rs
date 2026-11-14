@@ -385,11 +385,81 @@ impl Store {
         Ok(released)
     }
 
+    /// T053：上游任务当前可放行的报告（没门=最新 ready；有门=最新判通过的候选；还没判通过=None）。
+    pub fn releasable_report(&self, id: &TaskId) -> Result<Option<Report>, TaskError> {
+        let conn = self.lock()?;
+        let task = load_task_required(&conn, id)?;
+        releasable_report_in(&conn, &task)
+    }
+
+    /// T053：这个任务最近 ready 报告是否要按上游新结果重评（D95 事实派生）。
+    pub fn needs_reevaluation(&self, id: &TaskId) -> Result<bool, TaskError> {
+        let conn = self.lock()?;
+        let task = load_task_required(&conn, id)?;
+        needs_reevaluation_in(&conn, &task)
+    }
+
+    /// T053：按当前可放行报告生成这次 Attempt 的交接（上游还没可放行报告时跳过那一项）。
+    pub fn current_handoffs(&self, task: &Task) -> Result<Vec<Handoff>, TaskError> {
+        let conn = self.lock()?;
+        let mut handoffs = Vec::with_capacity(task.needs.len());
+        for need in &task.needs {
+            let upstream = load_task_required(&conn, &need.from)?;
+            if let Some(report) = releasable_report_in(&conn, &upstream)? {
+                handoffs.push(Handoff {
+                    report_id: report.id.clone(),
+                    requirement_version: report.version,
+                    summary: report.summary.clone(),
+                });
+            }
+        }
+        Ok(handoffs)
+    }
+
     /// T053：这个任务被哪个门把关（Kind 的 task_continue 认原因用）。
     pub fn guarding_gate(&self, id: &TaskId) -> Result<Option<Task>, TaskError> {
         let conn = self.lock()?;
         let task = load_task_required(&conn, id)?;
         gate_for_guarded(&conn, &task)
+    }
+
+    /// T053：上游有了新可放行结果，已有结果的下游需重评时同事务排一条 relay 给 Kind（D95）。
+    fn notify_upstream_changed_in(
+        &self,
+        connection: &Connection,
+        upstream: &Task,
+        report_id: &ReportId,
+        now: i64,
+    ) -> Result<(), TaskError> {
+        let Some(parent) = &upstream.parent else {
+            return Ok(());
+        };
+        for downstream in children_in(connection, parent)? {
+            if downstream.id == upstream.id || downstream.is_gate() {
+                continue;
+            }
+            if !downstream.needs.iter().any(|need| need.from == upstream.id) {
+                continue;
+            }
+            if downstream.latest_attempt().is_none()
+                || downstream.latest_report().map(|report| report.state) != Some(ReportState::Ready)
+            {
+                continue;
+            }
+            if !needs_reevaluation_in(connection, &downstream)? {
+                continue;
+            }
+            self.enqueue_effect_in(
+                connection,
+                &EffectPayload::UpstreamChanged {
+                    upstream_task: upstream.id.clone(),
+                    downstream_task: downstream.id.clone(),
+                    upstream_report: report_id.clone(),
+                },
+                now,
+            )?;
+        }
+        Ok(())
     }
 
     /// T053：ready 报告落库后放出下一站，返回 relay 给 Kind 的「已自动开跑」标题。
@@ -567,6 +637,15 @@ impl Store {
                     released.push(child.title.clone());
                 }
             }
+        }
+        if conclusion == GateConclusion::Pass {
+            // T053：判通过让被把关任务有了新可放行结果，已有结果的下游要按新结果核对。
+            self.notify_upstream_changed_in(
+                &transaction,
+                &guarded,
+                &candidate_handoff.report_id,
+                now,
+            )?;
         }
         self.enqueue_effect_in(
             &transaction,
@@ -1303,7 +1382,10 @@ impl Store {
         // 普通上游放下游；被把关任务放它的门（只记交接）；门报回时按需再放一次门。
         // 效果表键保证崩溃重放恰好一次。
         let released = if report_state == ReportState::Ready {
-            self.release_ready_in(&transaction, &task, &report_id, now)?
+            let released = self.release_ready_in(&transaction, &task, &report_id, now)?;
+            // T053：这条新可放行结果让已有结果的下游「需重评」时，同事务排一条 relay 给 Kind。
+            self.notify_upstream_changed_in(&transaction, &task, &report_id, now)?;
+            released
         } else {
             Vec::new()
         };
@@ -1780,6 +1862,50 @@ fn needs_ready_in(connection: &Connection, task: &Task) -> Result<bool, TaskErro
         }
     }
     Ok(true)
+}
+
+/// T053：上游当前可放行的报告（没门=最近 ready；有门=最近判通过的候选）。
+fn releasable_report_in(connection: &Connection, task: &Task) -> Result<Option<Report>, TaskError> {
+    if let Some(gate) = gate_for_guarded(connection, task)? {
+        let passed = gate
+            .verdicts
+            .iter()
+            .rev()
+            .find(|verdict| verdict.conclusion == GateConclusion::Pass)
+            .and_then(|verdict| {
+                task.reports
+                    .iter()
+                    .find(|report| report.id == verdict.candidate.report_id)
+            })
+            .cloned();
+        return Ok(passed);
+    }
+    Ok(task
+        .latest_report()
+        .filter(|report| report.state == ReportState::Ready)
+        .cloned())
+}
+
+/// T053：需重评派生——最近 ready 报告那次的 Attempt.handoffs 与上游当前可放行报告比对。
+fn needs_reevaluation_in(connection: &Connection, task: &Task) -> Result<bool, TaskError> {
+    let Some(attempt) = task.latest_attempt() else {
+        return Ok(false);
+    };
+    if task.needs.is_empty() {
+        return Ok(false);
+    }
+    if task.latest_report().map(|report| report.state) != Some(ReportState::Ready) {
+        return Ok(false);
+    }
+    for (index, need) in task.needs.iter().enumerate() {
+        let upstream = load_task_required(connection, &need.from)?;
+        let current = releasable_report_in(connection, &upstream)?;
+        match (attempt.handoffs.get(index), current) {
+            (Some(handoff), Some(report)) if handoff.report_id == report.id => {}
+            _ => return Ok(true),
+        }
+    }
+    Ok(false)
 }
 
 /// T053：这个任务被哪个门把关（同一总任务下 needs 恰好指向它的里程碑）。

@@ -483,11 +483,11 @@ impl TaskRuntime {
         let Some(attempt) = task.latest_attempt().cloned() else {
             return Err("这个任务还没开跑，不能接着做".to_owned());
         };
-        let handoffs: Vec<Handoff> = task
-            .needs
-            .iter()
-            .filter_map(|need| need.handoff.clone())
-            .collect();
+        // T053：按上游当前可放行报告交接（需重评时拿到的是新结果）。
+        let handoffs = self
+            .store
+            .current_handoffs(&task)
+            .map_err(|error| error.to_string())?;
         let trigger = AttemptTrigger::KindContinue {
             cause,
             note: request.note.clone(),
@@ -556,6 +556,15 @@ impl TaskRuntime {
                 candidate: verdict.candidate.clone(),
             });
         }
+        // T053：上游有新可放行结果 → 需重评（D95）。
+        if self
+            .store
+            .needs_reevaluation(&task.id)
+            .map_err(|error| error.to_string())?
+            && let Some(upstream_report) = self.reevaluation_report(task)?
+        {
+            return Ok(ContinueCause::UpstreamChanged { upstream_report });
+        }
         if let Some(report) = task.latest_report()
             && matches!(
                 report.state,
@@ -566,7 +575,28 @@ impl TaskRuntime {
                 report: report.id.clone(),
             });
         }
-        Err("没找到让它接着做的事实：用户还没判需修正，最近报告也不是卡住/失败/等报告".to_owned())
+        Err("没找到让它接着做的事实：用户还没判需修正，最近报告也不是卡住/失败/等报告，上游也没有新结果".to_owned())
+    }
+
+    /// T053：需重评时，第一条和当前可放行报告不一致的上游报告 id。
+    fn reevaluation_report(&self, task: &Task) -> Result<Option<ReportId>, String> {
+        let Some(attempt) = task.latest_attempt() else {
+            return Ok(None);
+        };
+        for (index, need) in task.needs.iter().enumerate() {
+            let Some(current) = self
+                .store
+                .releasable_report(&need.from)
+                .map_err(|error| error.to_string())?
+            else {
+                continue;
+            };
+            match attempt.handoffs.get(index) {
+                Some(handoff) if handoff.report_id == current.id => {}
+                _ => return Ok(Some(current.id)),
+            }
+        }
+        Ok(None)
     }
 
     /// T053：接着做的任务包说明（需修正时带用户原话和核查发现）。
@@ -603,11 +633,24 @@ impl TaskRuntime {
             ContinueCause::UpstreamChanged { upstream_report } => {
                 lines.push("上游有新结果，按新结果核对。".to_owned());
                 lines.push(format!("原要求不变：{}", task.requirement));
-                if let Some(need) = task.needs.first()
-                    && let Some(handoff) = &need.handoff
-                    && &handoff.report_id == upstream_report
-                {
-                    lines.push(format!("上游结果：{}", handoff.summary));
+                for need in &task.needs {
+                    let Ok(Some(upstream)) = self.store.task(&need.from) else {
+                        continue;
+                    };
+                    let Ok(Some(current)) = self.store.releasable_report(&need.from) else {
+                        continue;
+                    };
+                    if &current.id == upstream_report {
+                        lines.push(format!(
+                            "上游结果（{}）：{}",
+                            upstream.title, current.summary
+                        ));
+                        break;
+                    }
+                }
+                match task.effective_write_scope() {
+                    Some(scope) => lines.push(format!("写集不变：{}", scope.display())),
+                    None => lines.push("写集不变：只读".to_owned()),
                 }
                 lines.push("核对完用 task_report 上报。".to_owned());
             }
@@ -1737,6 +1780,7 @@ impl TaskRuntime {
         let task_id = match &claim.payload {
             EffectPayload::Relay { task_id, .. } | EffectPayload::Stop { task_id, .. } => task_id,
             EffectPayload::GateVerdict { gate_task, .. } => gate_task,
+            EffectPayload::UpstreamChanged { upstream_task, .. } => upstream_task,
             EffectPayload::Launch { .. }
             | EffectPayload::Delivery { .. }
             | EffectPayload::Notice { .. }
@@ -1868,6 +1912,43 @@ impl TaskRuntime {
                 });
                 let request_id = format!("gate-verdict:{}:{}", gate.id, gate_report);
                 Ok(Some((gate, body, request_id)))
+            }
+            EffectPayload::UpstreamChanged {
+                upstream_task,
+                downstream_task,
+                upstream_report,
+            } => {
+                let upstream = self
+                    .store
+                    .task(upstream_task)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("上游任务 {upstream_task} 不在了"))?;
+                let downstream = self
+                    .store
+                    .task(downstream_task)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("下游任务 {downstream_task} 不在了"))?;
+                let report = upstream
+                    .reports
+                    .iter()
+                    .find(|report| report.id == *upstream_report)
+                    .ok_or_else(|| format!("上游任务没有报告 {upstream_report}"))?;
+                let body = json!({
+                    "kind": "upstream_changed",
+                    "upstream": {
+                        "id": upstream.id.as_str(),
+                        "title": upstream.title,
+                        "report_id": report.id.as_str(),
+                        "requirement_version": report.version,
+                        "summary": report.summary,
+                    },
+                    "downstream": {"id": downstream.id.as_str(), "title": downstream.title},
+                });
+                let request_id = format!(
+                    "upstream-changed:{}:{}:{}",
+                    upstream.id, downstream.id, upstream_report
+                );
+                Ok(Some((upstream, body, request_id)))
             }
             EffectPayload::Launch { .. }
             | EffectPayload::Delivery { .. }

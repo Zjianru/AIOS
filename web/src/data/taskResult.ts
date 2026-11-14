@@ -97,6 +97,8 @@ export interface TaskResultFact {
   gate?: GateCardFact;
   /** T053：被把关任务卡的门判定结论（从 gate-verdict relay 派生；刷新可重建）。 */
   gateVerdict?: 'pass' | 'needs_fix';
+  /** T053：上游有新可放行结果，这张结果卡待按新结果核对（D95）。 */
+  upstreamChanged?: boolean;
   /** 接受/判定决定（card/decision 事件派生）；还没点过是 undefined。 */
   decision?: {
     phase: 'confirmed' | 'dismissed' | 'refused' | 'failed';
@@ -142,6 +144,8 @@ export interface TaskResultSlots {
   verdictAt?: number;
   /** T053：判定时发现已经变了（refused，没记判定）。 */
   verdictChanged: boolean;
+  /** T053：上游有新结果，待按新结果核对。 */
+  upstreamChanged: boolean;
   /** 这轮结果已经被用户接受（card/decision 的 confirmed）。 */
   accepted: boolean;
 }
@@ -177,6 +181,7 @@ export const taskResultSlotsSchema = z.object({
   verdictNote: textSlot.optional(),
   verdictAt: z.number().optional(),
   verdictChanged: z.boolean().catch(false),
+  upstreamChanged: z.boolean().catch(false),
   accepted: z.boolean().catch(false),
 });
 
@@ -195,6 +200,7 @@ const TASK_RESULT_FALLBACK_SLOTS: TaskResultSlots = {
   worktreePath: '',
   autoStarted: [],
   verdictChanged: false,
+  upstreamChanged: false,
   accepted: false,
 };
 
@@ -340,6 +346,7 @@ export function taskResultCardOf(
     ...(verdictNote === undefined ? {} : { verdictNote }),
     ...(fact.decision?.at === undefined ? {} : { verdictAt: fact.decision.at }),
     verdictChanged: fact.decision?.phase === 'refused',
+    upstreamChanged: fact.upstreamChanged === true,
     accepted:
       fact.decision?.phase === 'confirmed' &&
       (verdict === undefined || verdict === 'pass') &&

@@ -1359,6 +1359,7 @@ const EXPECTED_KIND_POLICY: &str = concat!(
     "\nDispatch tasks that are independent of each other separately with task_accept; only ordered work belongs in a task graph.",
     "\nWhen the user asks to look at something before continuing (for example \"我要先看一眼\", \"我来拍板\", \"过了再…\"), add a read-only milestone step to the graph: set milestone true on that subtask, leave write_scope empty, and make its after point at exactly the one step it checks. Only the user decides on the milestone result card; never judge, pass or fix it yourself.",
     "\nWhen a milestone card comes back needing fixes, call task_continue once for the step it checks and pass the user's words as note; do not dispatch that step again. If the user's words go beyond the original requirement, do not call task_continue: ask the user to change the requirement first.",
+    "\nWhen a notice says an upstream task has a new result, call task_continue once for the downstream task it names; do not ask the user and do not dispatch it again: it only checks its existing result against the new upstream result.",
 );
 
 /// 装了任务执行者：Kind 第一个请求的 system 以派任务说明结尾。
@@ -9770,4 +9771,230 @@ async fn task_continue_on_blocked_gate_reruns_with_after_report_cause() {
         ),
         other => panic!("trigger 是 {other:?}"),
     }
+}
+
+/// T053.3：上游 A 又交新结果 → B 需重评、Kind 收到 relay、阶段不回退 → task_continue 按新结果核对 → 清除。
+#[tokio::test]
+async fn upstream_new_result_marks_reevaluation_and_continue_checks_again() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    router.enable_graph_kind();
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    host.dispatch(Call::Send(send(&host, "kind-1", "先查再写")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&host, data.path(), 1).await;
+    wait_until("建图", || {
+        tasks_store(data.path())
+            .task_ids()
+            .map(|ids| ids.len() == 3)
+            .unwrap_or(false)
+    })
+    .await;
+    let store = tasks_store(data.path());
+    let root = graph_root(&store);
+    let children = store.children(&root.id).expect("子任务");
+    let (upstream, downstream) = (children[0].clone(), children[1].clone());
+    router.push_thin_for(
+        upstream.id.as_str(),
+        crate::common::tool_use_sse(
+            2,
+            "call-a1-report",
+            "task_report",
+            r#"{"state":"ready","summary":"A 第一次结果"}"#,
+        ),
+    );
+    router.push_thin_for(upstream.id.as_str(), crate::common::text_sse("好"));
+    router.push_thin_for(
+        downstream.id.as_str(),
+        crate::common::tool_use_sse(
+            2,
+            "call-b1-report",
+            "task_report",
+            r#"{"state":"ready","summary":"B 第一次结果"}"#,
+        ),
+    );
+    router.push_thin_for(downstream.id.as_str(), crate::common::text_sse("好"));
+    for _ in 0..12 {
+        router.push_kind(crate::common::text_sse("收到"));
+    }
+    host.dispatch(Call::CardAct(CardActRequest {
+        call_id: "call-graph-card".to_owned(),
+        verb: CardVerb::Confirm,
+        option: Some("confirm".to_owned()),
+        note: None,
+    }))
+    .await
+    .expect("确认");
+    wait_until("B 第一次报回", || {
+        tasks_store(data.path())
+            .task(&downstream.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_report().map(|report| report.state))
+            == Some(ReportState::Ready)
+    })
+    .await;
+    // A 第二轮：说话接续，再报一份新结果。
+    wait_until("A 第一轮结束", || {
+        tasks_store(data.path())
+            .task(&upstream.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().cloned())
+            .is_some_and(|attempt| session_turn_ended(data.path(), &attempt))
+    })
+    .await;
+    router.push_thin_for(
+        upstream.id.as_str(),
+        crate::common::tool_use_sse(
+            2,
+            "call-a2-report",
+            "task_report",
+            r#"{"state":"ready","summary":"A 第二次结果：5 行"}"#,
+        ),
+    );
+    router.push_thin_for(upstream.id.as_str(), crate::common::text_sse("好"));
+    host.dispatch(Call::TaskSay(TaskSayRequest {
+        task_id: upstream.id.as_str().to_owned(),
+        text: "再查一版".to_owned(),
+        pastes: Vec::new(),
+        attachments: Vec::new(),
+    }))
+    .await
+    .expect("A 第二轮输入");
+    wait_until("A 第二次报回", || {
+        tasks_store(data.path())
+            .task(&upstream.id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| {
+                task.runs
+                    .iter()
+                    .map(|run| run.attempts.len())
+                    .sum::<usize>()
+                    == 2
+                    && task
+                        .latest_report()
+                        .is_some_and(|report| report.summary.contains("5 行"))
+            })
+    })
+    .await;
+    wait_until("B 需重评", || {
+        tasks_store(data.path())
+            .needs_reevaluation(&downstream.id)
+            .unwrap_or(false)
+    })
+    .await;
+    // 阶段不回退，Kind 收到 upstream_changed relay。
+    let store = tasks_store(data.path());
+    assert_eq!(store.stage(&downstream.id).unwrap(), Stage::ReadyForReview);
+    wait_until("Kind 收到上游变了 relay", || {
+        crate::common::read_root_events(data.path())
+            .iter()
+            .any(|event| {
+                let session::EventKind::UserMessage { message, .. } = &event.kind else {
+                    return false;
+                };
+                let text: String = message
+                    .content
+                    .iter()
+                    .filter_map(|block| match block {
+                        model::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                text.contains("upstream_changed") && text.contains("5 行")
+            })
+    })
+    .await;
+    let upstream_task = tasks_store(data.path())
+        .task(&upstream.id)
+        .unwrap()
+        .unwrap();
+    let latest_upstream = upstream_task.latest_report().cloned().unwrap();
+    // Kind 用 task_continue 让 B 按新结果核对。
+    router.push_thin_for(
+        downstream.id.as_str(),
+        crate::common::tool_use_sse(
+            2,
+            "call-b2-report",
+            "task_report",
+            r#"{"state":"ready","summary":"B 按新结果核对完了"}"#,
+        ),
+    );
+    router.push_thin_for(downstream.id.as_str(), crate::common::text_sse("好"));
+    let continued = host
+        .dispatch(Call::TaskContinue(service::TaskContinueRequest {
+            task_id: downstream.id.as_str().to_owned(),
+            note: None,
+        }))
+        .await
+        .expect("按新结果核对");
+    let Response::TaskContinue(continued) = continued else {
+        panic!("task-continue 响应");
+    };
+    wait_until("B 第二次 Attempt 开跑", || {
+        tasks_store(data.path())
+            .task(&downstream.id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| {
+                task.latest_attempt()
+                    .is_some_and(|attempt| attempt.id.0 == continued.attempt_id)
+            })
+    })
+    .await;
+    let b = tasks_store(data.path())
+        .task(&downstream.id)
+        .unwrap()
+        .unwrap();
+    let attempt = b.latest_attempt().unwrap();
+    match &attempt.trigger {
+        tasks::AttemptTrigger::KindContinue { cause, .. } => {
+            assert!(
+                matches!(
+                    cause,
+                    tasks::ContinueCause::UpstreamChanged { upstream_report }
+                        if *upstream_report == latest_upstream.id
+                ),
+                "cause 是 {cause:?}"
+            );
+        }
+        other => panic!("trigger 是 {other:?}"),
+    }
+    assert_eq!(
+        attempt.handoffs[0].report_id, latest_upstream.id,
+        "这次 Attempt 交接的是上游新结果"
+    );
+    wait_until("B 第二次 ready", || {
+        tasks_store(data.path())
+            .task(&downstream.id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| {
+                task.runs
+                    .iter()
+                    .map(|run| run.attempts.len())
+                    .sum::<usize>()
+                    == 2
+                    && task
+                        .latest_report()
+                        .is_some_and(|report| report.summary.contains("核对完"))
+            })
+    })
+    .await;
+    assert!(
+        !tasks_store(data.path())
+            .needs_reevaluation(&downstream.id)
+            .unwrap(),
+        "新结果报回后需重评清除"
+    );
+    assert_eq!(
+        tasks_store(data.path()).stage(&downstream.id).unwrap(),
+        Stage::ReadyForReview
+    );
 }

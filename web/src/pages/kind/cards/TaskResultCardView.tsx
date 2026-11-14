@@ -194,6 +194,11 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
           {gate?.state === 'waiting' ? '（里程碑，结果由你判）' : ''}
         </div>
       ) : null}
+      {slots.upstreamChanged ? (
+        <div className="mt-1 text-1 text-wait" data-kind="upstream-changed">
+          上游有新结果，待按新结果核对
+        </div>
+      ) : null}
       {slots.write ? <Changed slots={slots} /> : null}
       {gatePending ? (
         <div className="mt-3" data-kind="gate-actions">

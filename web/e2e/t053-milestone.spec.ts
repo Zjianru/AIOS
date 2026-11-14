@@ -208,3 +208,54 @@ test('任务图里程碑：判需修正 → 原话输入框 → 回执留原话 
     await fixture.close();
   }
 });
+
+test('任务图：上游又交新结果 → 下游卡标「上游有新结果，待按新结果核对」，刷新还在', async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture({ t052Graph: true });
+  try {
+    await page.goto(urlOf(fixture));
+    await page.getByPlaceholder('和 Kind 说…').fill('先查 notes.md 有几行，再把行数写进 other.txt');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    const confirm = page.locator('[data-kind="confirm-card"]').first();
+    await expect(confirm).toBeVisible({ timeout: 40_000 });
+    await confirm.locator('[data-action="card-option"]').first().click();
+    await confirm.locator('[data-action="card-confirm"]').click();
+    await expect(confirm).toHaveAttribute('data-state', 'done', { timeout: 40_000 });
+    await expect(resultCard(page, '先查行数')).toBeVisible({ timeout: 60_000 });
+    await expect(resultCard(page, '再写结果')).toBeVisible({ timeout: 60_000 });
+
+    // 读上游任务 id，用页面同一个 task-say 让它再交一份新结果。
+    const db = new DatabaseSync(path.join(fixture.dataDir, 'tasks.sqlite'), { readOnly: true });
+    let upstreamId = '';
+    try {
+      const rows = db.prepare('SELECT value FROM task ORDER BY rowid').all() as { value: string }[];
+      for (const row of rows) {
+        const task = JSON.parse(row.value) as { id: string; title: string };
+        if (task.title === '先查行数') upstreamId = task.id;
+      }
+    } finally {
+      db.close();
+    }
+    expect(upstreamId).not.toBe('');
+    await apiPost(request, fixture, {
+      method: 'task-say',
+      taskId: upstreamId,
+      text: '再查一版',
+    });
+    const downstreamCard = resultCard(page, '再写结果');
+    await expect(downstreamCard.locator('[data-kind="upstream-changed"]')).toContainText(
+      '上游有新结果，待按新结果核对',
+      { timeout: 90_000 },
+    );
+    // 刷新后还在（从 upstream_changed relay 重建）。
+    await page.reload();
+    await expect(
+      resultCard(page, '再写结果').locator('[data-kind="upstream-changed"]'),
+    ).toContainText('上游有新结果，待按新结果核对', { timeout: 60_000 });
+  } finally {
+    await fixture.close();
+  }
+});

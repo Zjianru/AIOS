@@ -1317,3 +1317,359 @@ fn new_candidate_while_gate_running_reruns_only_once_with_latest() {
     );
     let _ = gate_task;
 }
+
+#[test]
+fn upstream_new_ready_marks_downstream_reevaluation_and_relays() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path();
+    let store = open_store().1;
+    let root = store
+        .create_graph(two_item_graph(cwd, None, None), T0)
+        .unwrap();
+    store.confirm_graph(&root.id, T0 + 1).unwrap();
+    let children = store.children(&root.id).unwrap();
+    let (upstream, downstream) = (children[0].clone(), children[1].clone());
+    // A 第一次 ready：B 被放出并交接 A1。
+    let a1 = store.begin_attempt(&upstream.id, T0 + 2).unwrap();
+    store
+        .record_report(
+            &upstream.id,
+            a1,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "A 第一次结果".to_owned(),
+                question: None,
+            },
+            T0 + 3,
+        )
+        .unwrap();
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 4)
+        .unwrap()
+        .unwrap();
+    store.complete_effect(&claim).unwrap();
+    let a1_report = store
+        .task(&upstream.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+    let b_attempt = store
+        .begin_attempt_with(
+            &downstream.id,
+            T0 + 5,
+            AttemptTrigger::Launch,
+            vec![Handoff {
+                report_id: a1_report.id.clone(),
+                requirement_version: a1_report.version,
+                summary: a1_report.summary.clone(),
+            }],
+        )
+        .unwrap();
+    store
+        .record_report(
+            &downstream.id,
+            b_attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "B 第一次结果".to_owned(),
+                question: None,
+            },
+            T0 + 6,
+        )
+        .unwrap();
+    assert!(!store.needs_reevaluation(&downstream.id).unwrap());
+    // A 第二次 ready：B 已有结果 → 需重评，并排一条 upstream_changed relay。
+    store
+        .end_attempt(&upstream.id, a1, T0 + 7, AttemptEnd::Reported)
+        .unwrap();
+    let a2 = store.begin_attempt(&upstream.id, T0 + 8).unwrap();
+    store
+        .record_report(
+            &upstream.id,
+            a2,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "A 第二次结果：5 行".to_owned(),
+                question: None,
+            },
+            T0 + 9,
+        )
+        .unwrap();
+    assert!(
+        store.needs_reevaluation(&downstream.id).unwrap(),
+        "B 要按 A 的新结果重评"
+    );
+    // 队列里前面还有报告的 relay；领到 upstream_changed 为止，其它先收掉。
+    let mut found = None;
+    while let Some(claim) = store.claim_effect(EffectKind::Relay, T0 + 10).unwrap() {
+        if matches!(claim.payload, EffectPayload::UpstreamChanged { .. }) {
+            found = Some(claim);
+            break;
+        }
+        store.complete_effect(&claim).unwrap();
+    }
+    let claim = found.expect("upstream_changed relay");
+    let EffectPayload::UpstreamChanged {
+        upstream_task,
+        downstream_task,
+        upstream_report,
+    } = claim.payload.clone()
+    else {
+        panic!("relay 载荷：{:?}", claim.payload);
+    };
+    assert_eq!(upstream_task, upstream.id);
+    assert_eq!(downstream_task, downstream.id);
+    assert_eq!(
+        upstream_report,
+        store
+            .task(&upstream.id)
+            .unwrap()
+            .unwrap()
+            .latest_report()
+            .unwrap()
+            .id
+    );
+    // B 按新结果重新开跑（交接 A2）并报回：需重评清除。
+    store
+        .end_attempt(&downstream.id, b_attempt, T0 + 11, AttemptEnd::Reported)
+        .unwrap();
+    let handoffs = store
+        .current_handoffs(&store.task(&downstream.id).unwrap().unwrap())
+        .unwrap();
+    let b2 = store
+        .begin_attempt_with(&downstream.id, T0 + 12, AttemptTrigger::Launch, handoffs)
+        .unwrap();
+    store
+        .record_report(
+            &downstream.id,
+            b2,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "B 按新结果核对完了".to_owned(),
+                question: None,
+            },
+            T0 + 13,
+        )
+        .unwrap();
+    assert!(!store.needs_reevaluation(&downstream.id).unwrap());
+}
+
+#[test]
+fn gate_pass_new_candidate_marks_guarded_downstream_reevaluation() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path();
+    let store = open_store().1;
+    let root = store.create_graph(gated_graph(cwd), T0).unwrap();
+    store.confirm_graph(&root.id, T0 + 1).unwrap();
+    let children = store.children(&root.id).unwrap();
+    let (guarded, gate, downstream) = (
+        children[0].clone(),
+        children[1].clone(),
+        children[2].clone(),
+    );
+    let claim = store.claim_effect(EffectKind::Launch, T0 + 2).unwrap();
+    store.complete_effect(&claim.unwrap()).unwrap();
+    // B 第一次 ready → 门开跑 → 判通过 → C 放出并交接 pass1。
+    let b1 = store.begin_attempt(&guarded.id, T0 + 3).unwrap();
+    store
+        .record_report(
+            &guarded.id,
+            b1,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "B 第一版".to_owned(),
+                question: None,
+            },
+            T0 + 4,
+        )
+        .unwrap();
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 5)
+        .unwrap()
+        .unwrap();
+    store.complete_effect(&claim).unwrap();
+    let b1_report = store
+        .task(&guarded.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+    let handoff1 = Handoff {
+        report_id: b1_report.id.clone(),
+        requirement_version: b1_report.version,
+        summary: b1_report.summary.clone(),
+    };
+    let gate1 = store
+        .begin_attempt_with(
+            &gate.id,
+            T0 + 6,
+            AttemptTrigger::GateRecheck {
+                candidate: GateCandidate {
+                    report_id: b1_report.id.clone(),
+                    requirement_version: b1_report.version,
+                },
+            },
+            vec![handoff1.clone()],
+        )
+        .unwrap();
+    store
+        .record_report(
+            &gate.id,
+            gate1,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "第一版核查".to_owned(),
+                question: None,
+            },
+            T0 + 7,
+        )
+        .unwrap();
+    store
+        .end_attempt(&gate.id, gate1, T0 + 7, AttemptEnd::Reported)
+        .unwrap();
+    let gate_report1 = store
+        .task(&gate.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+    store
+        .judge_gate(
+            &gate.id,
+            &gate_report1.id,
+            GateConclusion::Pass,
+            None,
+            T0 + 8,
+        )
+        .unwrap();
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 9)
+        .unwrap()
+        .unwrap();
+    store.complete_effect(&claim).unwrap();
+    let c1 = store
+        .begin_attempt_with(
+            &downstream.id,
+            T0 + 10,
+            AttemptTrigger::Launch,
+            vec![handoff1],
+        )
+        .unwrap();
+    store
+        .record_report(
+            &downstream.id,
+            c1,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "C 第一版".to_owned(),
+                question: None,
+            },
+            T0 + 11,
+        )
+        .unwrap();
+    assert!(!store.needs_reevaluation(&downstream.id).unwrap());
+    // B 第二版 → 门重跑 → 判通过：C 的已交结果要按新通过候选重评。
+    store
+        .end_attempt(&guarded.id, b1, T0 + 12, AttemptEnd::Reported)
+        .unwrap();
+    let b2 = store.begin_attempt(&guarded.id, T0 + 13).unwrap();
+    store
+        .record_report(
+            &guarded.id,
+            b2,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "B 第二版：5 行".to_owned(),
+                question: None,
+            },
+            T0 + 14,
+        )
+        .unwrap();
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 15)
+        .unwrap()
+        .unwrap();
+    store.complete_effect(&claim).unwrap();
+    let b2_report = store
+        .task(&guarded.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+    let gate2 = store
+        .begin_attempt_with(
+            &gate.id,
+            T0 + 16,
+            AttemptTrigger::GateRecheck {
+                candidate: GateCandidate {
+                    report_id: b2_report.id.clone(),
+                    requirement_version: b2_report.version,
+                },
+            },
+            vec![Handoff {
+                report_id: b2_report.id.clone(),
+                requirement_version: b2_report.version,
+                summary: b2_report.summary.clone(),
+            }],
+        )
+        .unwrap();
+    store
+        .record_report(
+            &gate.id,
+            gate2,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "第二版核查".to_owned(),
+                question: None,
+            },
+            T0 + 17,
+        )
+        .unwrap();
+    store
+        .end_attempt(&gate.id, gate2, T0 + 17, AttemptEnd::Reported)
+        .unwrap();
+    let gate_report2 = store
+        .task(&gate.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+    store
+        .judge_gate(
+            &gate.id,
+            &gate_report2.id,
+            GateConclusion::Pass,
+            None,
+            T0 + 18,
+        )
+        .unwrap();
+    assert!(
+        store.needs_reevaluation(&downstream.id).unwrap(),
+        "C 要按 B 的新通过候选重评"
+    );
+    // 队列前面还有别的 relay（含 gate verdict）；领到 upstream_changed 为止。
+    let mut found = false;
+    while let Some(claim) = store.claim_effect(EffectKind::Relay, T0 + 19).unwrap() {
+        if matches!(claim.payload, EffectPayload::UpstreamChanged { .. }) {
+            found = true;
+            break;
+        }
+        store.complete_effect(&claim).unwrap();
+    }
+    assert!(found, "要有 upstream_changed relay");
+}
