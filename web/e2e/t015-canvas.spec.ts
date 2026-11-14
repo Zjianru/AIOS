@@ -709,13 +709,13 @@ async function readReady(page: Page): Promise<Record<string, unknown>> {
   );
 }
 
-/** 验收：ready 帧协议版本 12（T055 work/组接受升的），旧的 root/context 字段照旧。 */
-test('ready 帧：协议版本 12，旧的 root/context 字段不变', async ({ page }) => {
+/** 验收：ready 帧协议版本 14（T057 程序门），旧的 root/context 字段照旧。 */
+test('ready 帧：协议版本 14，旧的 root/context 字段不变', async ({ page }) => {
   const fixture = await startKernelFixture({ canvas: 'interactive' });
   try {
     await page.goto(urlOf(fixture));
     const ready = await readReady(page);
-    expect(ready.protocolVersion).toBe(13);
+    expect(ready.protocolVersion).toBe(14);
     expect(ready.root).toEqual({ state: 'ok' });
     expect(ready.context).toEqual(expect.objectContaining({ window: expect.any(Number) }));
   } finally {

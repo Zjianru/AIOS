@@ -112,6 +112,33 @@ pub enum TaskError {
     /// T056.2：门任务不写账本。
     #[error("门任务不写账本")]
     LedgerOnGateTask,
+    /// T057：程序门命令不能为空。
+    #[error("程序门命令不能为空")]
+    EmptyGateCommand,
+    /// T057：程序门单条命令最长 500 字。
+    #[error("程序门命令太长：{0} 字，上限 500")]
+    GateCommandTooLong(usize),
+    /// T057：同一次程序门里命令不能重复。
+    #[error("程序门命令重复：{0}")]
+    DuplicateGateCommand(String),
+    /// T057：程序门超时必须在 1..=600000 毫秒。
+    #[error("程序门超时必须在 1 到 600000 毫秒之间，实际 {0}")]
+    GateCommandTimeoutInvalid(u64),
+    /// T057：程序门必须是任务图里的里程碑门。
+    #[error("任务图第 {subtask} 项带程序门命令，但 milestone 不是 true")]
+    GraphProgramGateNotMilestone { subtask: usize },
+    /// T057：这不是程序门。
+    #[error("这不是程序门")]
+    NotProgramGate,
+    /// T057：程序门不能由用户判。
+    #[error("程序门由程序判，用户不能在门结果卡上判")]
+    ProgramGateCannotBeJudgedByUser,
+    /// T057：门这一轮还在跑，不能换命令。
+    #[error("门这一轮还在跑，先停再改命令")]
+    GateWhileRunning,
+    /// T057：命令列表没变，不用换版本。
+    #[error("程序门命令没有变化")]
+    GateCommandsUnchanged,
     #[error("任务图至少要两个子任务，实际 {0} 个")]
     GraphTooFewSubtasks(usize),
     #[error("任务图第 {subtask} 项的 after 指向本次提议之外的子任务：{after}")]

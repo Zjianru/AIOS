@@ -80,6 +80,7 @@ fn milestone(cwd: &Path, title: &str, after: Vec<usize>) -> NewSubtask {
         policy: policy(),
         after,
         milestone: true,
+        program_gate: Vec::new(),
     }
 }
 
@@ -92,6 +93,7 @@ fn gated_graph(cwd: &Path) -> NewGraph {
                 policy: policy(),
                 after: vec![],
                 milestone: false,
+                program_gate: Vec::new(),
             },
             milestone(cwd, "独立核查", vec![0]),
             NewSubtask {
@@ -99,6 +101,7 @@ fn gated_graph(cwd: &Path) -> NewGraph {
                 policy: policy(),
                 after: vec![0],
                 milestone: false,
+                program_gate: Vec::new(),
             },
         ],
     }

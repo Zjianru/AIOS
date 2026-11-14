@@ -22,6 +22,14 @@ running: boolean,
  */
 gate: boolean,
 /**
+ * T057：这是程序门（有命令）。
+ */
+program: boolean,
+/**
+ * T057：程序门命令条数。
+ */
+programCommands: number,
+/**
  * 被这个门把关的任务（门任务上有）；或者把关这个任务的门（被把关任务上有）。
  */
 gateOf?: string | null,

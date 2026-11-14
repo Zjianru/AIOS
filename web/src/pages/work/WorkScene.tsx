@@ -55,8 +55,15 @@ function TaskTile({ card }: { card: ReturnType<typeof boardOf>['queue'][number] 
       <span className="block truncate text-2 text-ink" title={task.title}>
         {task.title}
       </span>
-      <span className="mt-0.5 block truncate text-1 text-ink-3" title={task.writeScope ?? ''}>
-        {task.writeScope ? '写入范围 ' + task.writeScope : '只读调查'}
+      <span className="mt-0.5 flex min-w-0 items-center gap-2 text-1 text-ink-3" title={task.writeScope ?? ''}>
+        <span className="min-w-0 truncate">
+          {task.program
+            ? '程序门 · ' + String(task.programCommands) + ' 条命令'
+            : task.writeScope
+              ? '写入范围 ' + task.writeScope
+              : '只读调查'}
+        </span>
+        {task.program ? <span className="ml-auto shrink-0">程序</span> : null}
       </span>
       <span className="mt-1 flex items-center justify-between gap-2 text-1 text-ink-3">
         <span className="truncate">下一步：{card.next}</span>

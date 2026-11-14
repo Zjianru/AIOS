@@ -18,8 +18,9 @@ use crate::task::{
     AcceptBatch, AcceptOutcome, Acceptance, Arrangement, Attempt, AttemptEnd, AttemptTrigger,
     Cancellation, CancellationReason, Confirmation, FrozenPolicy, GateCandidate, GateConclusion,
     GateVerdict, Handoff, Input, InputAttachment, InputSource, MilestoneGate, MissingItem, Need,
-    NewGraph, NewInput, NewReport, NewSubtask, NewTask, Report, ReportState, RequirementVersion,
-    Run, SayOutcome, Task, TaskPolicy, VersionSource, Worktree, resolve_write_scope,
+    NewGraph, NewInput, NewReport, NewSubtask, NewTask, Report, ReportOrigin, ReportState,
+    RequirementVersion, Run, SayOutcome, Task, TaskPolicy, VerdictSource, VersionSource, Worktree,
+    resolve_write_scope,
 };
 
 /// 任务库 schema 版本；比这新的库拒绝打开。
@@ -418,7 +419,14 @@ impl Store {
                 needs,
                 None,
                 if subtask.milestone {
-                    Some(MilestoneGate {})
+                    if subtask.program_gate.is_empty() {
+                        Some(MilestoneGate::default())
+                    } else {
+                        Some(MilestoneGate {
+                            commands: subtask.program_gate.clone(),
+                            commands_version: 1,
+                        })
+                    }
                 } else {
                     None
                 },
@@ -752,6 +760,9 @@ impl Store {
         if !gate.is_gate() {
             return Err(TaskError::NotMilestoneGate);
         }
+        if gate.is_program_gate() {
+            return Err(TaskError::ProgramGateCannotBeJudgedByUser);
+        }
         if let Some(existing) = gate.verdict_for_gate_report(gate_report).cloned() {
             transaction.commit()?;
             return Ok(GateJudgeOutcome {
@@ -793,16 +804,40 @@ impl Store {
             },
             conclusion,
             note,
+            judged_by: VerdictSource::User,
+            commands_version: 0,
             at: now,
         };
+        let released =
+            self.apply_gate_verdict_in(&transaction, &mut gate, &verdict, &candidate_handoff, now)?;
+        transaction.commit()?;
+        Ok(GateJudgeOutcome {
+            verdict,
+            duplicate: false,
+            released,
+        })
+    }
+
+    /// T057：用户判和程序判共用的唯一判定事务（T053 的放行/relay 行为不变）。
+    fn apply_gate_verdict_in(
+        &self,
+        transaction: &Connection,
+        gate: &mut Task,
+        verdict: &GateVerdict,
+        candidate_handoff: &Handoff,
+        now: i64,
+    ) -> Result<Vec<String>, TaskError> {
         gate.verdicts.push(verdict.clone());
-        save_task(&transaction, &gate)?;
+        save_task(transaction, gate)?;
+        let need = gate.needs.first().ok_or(TaskError::GateReportChanged)?;
+        let guarded_id = need.from.clone();
+        let guarded = load_task_required(transaction, &guarded_id)?;
         let mut released = Vec::new();
-        if conclusion == GateConclusion::Pass {
+        if verdict.conclusion == GateConclusion::Pass {
             let Some(parent) = gate.parent.clone() else {
                 return Err(TaskError::GateReportChanged);
             };
-            for mut child in children_in(&transaction, &parent)? {
+            for mut child in children_in(transaction, &parent)? {
                 if child.is_gate() || !child.needs.iter().any(|need| need.from == guarded_id) {
                     continue;
                 }
@@ -811,11 +846,11 @@ impl Store {
                         need.handoff = Some(candidate_handoff.clone());
                     }
                 }
-                save_task(&transaction, &child)?;
+                save_task(transaction, &child)?;
                 // 放过的再遇到新的通过候选不算首次放行（D95 需重评，T053.3 处理），不新开 launch。
                 if child.latest_attempt().is_none() {
                     self.enqueue_effect_in(
-                        &transaction,
+                        transaction,
                         &EffectPayload::Launch {
                             task_id: child.id.clone(),
                         },
@@ -825,29 +860,161 @@ impl Store {
                 }
             }
         }
-        if conclusion == GateConclusion::Pass {
+        if verdict.conclusion == GateConclusion::Pass {
             // T053：判通过让被把关任务有了新可放行结果，已有结果的下游要按新结果核对。
             self.notify_upstream_changed_in(
-                &transaction,
+                transaction,
                 &guarded,
-                &candidate_handoff.report_id,
+                &verdict.candidate.report_id,
                 now,
             )?;
         }
         self.enqueue_effect_in(
-            &transaction,
+            transaction,
             &EffectPayload::GateVerdict {
-                gate_task: gate_id.clone(),
-                gate_report: gate_report.clone(),
+                gate_task: gate.id.clone(),
+                gate_report: verdict.gate_report.clone(),
+            },
+            now,
+        )?;
+        Ok(released)
+    }
+
+    /// T057：程序门一次检查的结果：报告 + checks、判定、结束 Attempt、放行/relay 同一事务。
+    pub fn record_program_gate_result(
+        &self,
+        gate_id: &TaskId,
+        attempt_id: AttemptId,
+        summary: String,
+        checks: Vec<crate::task::GateCheck>,
+        conclusion: GateConclusion,
+        now: i64,
+    ) -> Result<crate::task::ProgramGateOutcome, TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut gate = load_task_required(&transaction, gate_id)?;
+        if !gate.is_gate() {
+            return Err(TaskError::NotMilestoneGate);
+        }
+        if !gate.is_program_gate() {
+            return Err(TaskError::NotProgramGate);
+        }
+        let attempt = gate
+            .latest_attempt()
+            .filter(|attempt| attempt.id == attempt_id)
+            .cloned()
+            .ok_or(TaskError::GateReportChanged)?;
+        let candidate_handoff = attempt
+            .handoffs
+            .first()
+            .cloned()
+            .ok_or(TaskError::GateReportChanged)?;
+        let need = gate.needs.first().ok_or(TaskError::GateReportChanged)?;
+        let guarded = load_task_required(&transaction, &need.from)?;
+        let candidate_report = guarded
+            .latest_report()
+            .filter(|report| report.state == ReportState::Ready)
+            .ok_or(TaskError::GateReportChanged)?;
+        if candidate_handoff.report_id != candidate_report.id {
+            return Err(TaskError::GateReportChanged);
+        }
+        let report_id = ReportId::from(generate_id(&transaction)?);
+        gate.reports.push(Report {
+            id: report_id.clone(),
+            attempt_id,
+            state: ReportState::Ready,
+            origin: ReportOrigin::Program,
+            summary,
+            question: None,
+            at: now,
+            version: gate.requirement_version(),
+            checks,
+        });
+        if let Some(attempt) = gate
+            .runs
+            .iter_mut()
+            .flat_map(|run| run.attempts.iter_mut())
+            .find(|attempt| attempt.id == attempt_id)
+            && attempt.ended_at.is_none()
+        {
+            attempt.ended_at = Some(now);
+            attempt.end = Some(AttemptEnd::Reported);
+        }
+        let verdict = GateVerdict {
+            gate_report: report_id.clone(),
+            candidate: GateCandidate {
+                report_id: candidate_handoff.report_id.clone(),
+                requirement_version: candidate_handoff.requirement_version,
+            },
+            conclusion,
+            note: None,
+            judged_by: VerdictSource::Program,
+            commands_version: gate.commands_version(),
+            at: now,
+        };
+        let released =
+            self.apply_gate_verdict_in(&transaction, &mut gate, &verdict, &candidate_handoff, now)?;
+        self.enqueue_effect_in(
+            &transaction,
+            &EffectPayload::Relay {
+                task_id: gate_id.clone(),
+                report_id: report_id.clone(),
+                released: released.clone(),
             },
             now,
         )?;
         transaction.commit()?;
-        Ok(GateJudgeOutcome {
+        Ok(crate::task::ProgramGateOutcome {
+            report_id,
             verdict,
-            duplicate: false,
             released,
         })
+    }
+
+    /// T057：整张列表换程序门命令，版本 +1；门在跑时拒（调用方先停）。
+    pub fn update_gate_commands(
+        &self,
+        gate_id: &TaskId,
+        commands: Vec<crate::task::GateCommand>,
+        now: i64,
+    ) -> Result<Task, TaskError> {
+        let mut commands = commands;
+        if commands.is_empty() {
+            return Err(TaskError::EmptyGateCommand);
+        }
+        for command in &mut commands {
+            command.command = command.command.trim().to_owned();
+        }
+        crate::task::validate_gate_commands(&commands)?;
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut gate = load_task_required(&transaction, gate_id)?;
+        if !gate.is_gate() {
+            return Err(TaskError::NotMilestoneGate);
+        }
+        if !gate.is_program_gate() {
+            return Err(TaskError::NotProgramGate);
+        }
+        if gate
+            .latest_attempt()
+            .is_some_and(|attempt| attempt.ended_at.is_none())
+        {
+            return Err(TaskError::GateWhileRunning);
+        }
+        let Some(data) = gate.gate.clone() else {
+            return Err(TaskError::NotProgramGate);
+        };
+        if data.commands == commands {
+            return Err(TaskError::GateCommandsUnchanged);
+        }
+        gate.gate = Some(crate::task::MilestoneGate {
+            commands,
+            commands_version: data.commands_version.saturating_add(1),
+        });
+        save_task(&transaction, &gate)?;
+        transaction.commit()?;
+        let _ = now;
+        Ok(gate)
     }
 
     /// 从任务和效果表派生阶段。
@@ -1439,7 +1606,8 @@ impl Store {
             return Ok(());
         };
         let attempt_id = attempt.id;
-        let opened = attempt.conversation.is_some();
+        // T057：程序门没有会话，但开着 Attempt 就是「跑着被重启打断」，不能记 not_opened。
+        let opened = attempt.conversation.is_some() || task.is_program_gate();
         let report_at = task.latest_report().map(|report| report.at);
         let decision = if !opened {
             Decision::NotOpened
@@ -1603,6 +1771,7 @@ impl Store {
             question: report.question,
             at: now,
             version: task.requirement_version(),
+            checks: Vec::new(),
         });
         save_task(&transaction, &task)?;
         // T056.2：ready 报告关掉「下一步」叙述条（它意味着这个下一步已经走到了）。
@@ -2077,8 +2246,12 @@ fn validate_graph(subtasks: &[NewSubtask], frozen: &[FrozenPolicy]) -> Result<()
     let mut guarded_by: Vec<Option<usize>> = vec![None; subtasks.len()];
     for (index, subtask) in subtasks.iter().enumerate() {
         if !subtask.milestone {
+            if !subtask.program_gate.is_empty() {
+                return Err(TaskError::GraphProgramGateNotMilestone { subtask: index });
+            }
             continue;
         }
+        crate::task::validate_gate_commands(&subtask.program_gate)?;
         if frozen[index].write_scope.is_some() {
             return Err(TaskError::GraphMilestoneHasWriteScope { subtask: index });
         }
@@ -2371,10 +2544,12 @@ fn stage_with_graph(connection: &Connection, task: &Task) -> Result<Stage, TaskE
                 .latest_report()
                 .filter(|report| report.state == ReportState::Ready)
             {
-                return Ok(if task.verdict_for_gate_report(&latest.id).is_some() {
-                    Stage::RequirementMet
-                } else {
-                    Stage::ReadyForReview
+                return Ok(match task.verdict_for_gate_report(&latest.id) {
+                    Some(verdict) if verdict.conclusion == GateConclusion::Undetermined => {
+                        Stage::NeedsConditions
+                    }
+                    Some(_) => Stage::RequirementMet,
+                    None => Stage::ReadyForReview,
                 });
             }
             return Ok(stage);
@@ -2740,3 +2915,7 @@ mod accept_many_tests;
 #[cfg(test)]
 #[path = "ledger_tests.rs"]
 mod ledger_tests;
+
+#[cfg(test)]
+#[path = "program_gate_tests.rs"]
+mod program_gate_tests;

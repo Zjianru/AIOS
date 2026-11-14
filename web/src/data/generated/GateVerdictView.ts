@@ -4,4 +4,12 @@ import type { GateJudgeConclusion } from "./GateJudgeConclusion";
 /**
  * 一条已记下的判定（给页面/测试看的事实）。
  */
-export type GateVerdictView = { gateReport: string, candidateReport: string, requirementVersion: number, conclusion: GateJudgeConclusion, note?: string | null, at: number, };
+export type GateVerdictView = { gateReport: string, candidateReport: string, requirementVersion: number, conclusion: GateJudgeConclusion, note?: string | null,
+/**
+ * T057：判定者（用户/程序）。
+ */
+judged_by?: string | null,
+/**
+ * T057：判定绑定的程序门命令版本；用户判门为 0。
+ */
+commands_version: number, at: number, };

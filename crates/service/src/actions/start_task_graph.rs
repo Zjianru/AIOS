@@ -65,8 +65,22 @@ impl StartTaskGraphAction {
                     .collect::<Vec<_>>()
                     .join("、")
             };
-            // T053：里程碑那行照实写只读 + 结果由用户判。
-            let scope = if child.is_gate() {
+            // T053/T057：门那行照实写只读 + 用户判/程序门命令。
+            let scope = if child.is_program_gate() {
+                let commands = child
+                    .gate_commands()
+                    .iter()
+                    .enumerate()
+                    .map(|(command_index, command)| {
+                        let timeout = command.timeout_ms.map_or_else(String::new, |timeout| {
+                            format!("（限时 {} 秒）", timeout / 1000)
+                        });
+                        format!("({}) {}{}", command_index + 1, command.command, timeout)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("只读；程序门，全部退出码为 0 就通过。要跑的命令：{commands}")
+            } else if child.is_gate() {
                 "只读；里程碑，结果由你判".to_owned()
             } else {
                 match &child.write_scope {

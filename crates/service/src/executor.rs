@@ -16,13 +16,16 @@ use session::SessionId;
 use tasks::{
     Acceptance, Attempt, AttemptEnd, AttemptId, AttemptTrigger, BootId, BootScan, Cancellation,
     CancellationReason, ContinueCause, ConversationId, EffectClaim, EffectKind, EffectPayload,
-    GateCandidate, GateConclusion, Handoff, Input, InputAttachment, MissingItem, ModelChoice,
-    NewGraph, NewInput, NewReport, NewSubtask, NewTask, Report, ReportId, ReportOrigin,
-    ReportState, SlotKind, Stage, StopAttempt, Store, Task, TaskError, TaskId, TaskPolicy,
-    WorkerSlots,
+    GateCandidate, GateCheck, GateCheckOutcome, GateCommand, GateConclusion, Handoff, Input,
+    InputAttachment, MissingItem, ModelChoice, NewGraph, NewInput, NewReport, NewSubtask, NewTask,
+    Report, ReportId, ReportOrigin, ReportState, SlotKind, Stage, StopAttempt, Store, Task,
+    TaskError, TaskId, TaskPolicy, WorkerSlots,
 };
 use tokio::sync::broadcast;
-use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
+use tools::{
+    JobRead, JobSpec, MAX_OUTPUT_BYTES, TaskRegistry, Tool, ToolCall, ToolCondition, ToolContext,
+    ToolFailure, ToolFuture, ToolResult,
+};
 
 use crate::error::ServiceError;
 use crate::events::{page_events, service_event};
@@ -158,6 +161,15 @@ struct RunningThin {
     attempt_id: AttemptId,
 }
 
+/// T057：正在跑的程序门检查（没有会话；停任务按任务 id 找到它）。
+struct RunningGate {
+    attempt_id: AttemptId,
+    registry: Arc<TaskRegistry>,
+    job_id: Mutex<Option<String>>,
+    current_index: Mutex<Option<usize>>,
+    cancelled: AtomicBool,
+}
+
 /// 接上原会话的结果：新 Attempt 和它的宿主；第一条消息由调用方送。
 struct OpenedResume {
     host: Arc<ServiceHost>,
@@ -187,6 +199,8 @@ struct GraphSubtaskArgs {
     after: Vec<usize>,
     /// T053：里程碑（只读核查门）；after 恰好一项，指向它把关的任务。
     milestone: bool,
+    /// T057：程序门命令（与 milestone 二选一，milestone 必须 true）。
+    program_gate: Vec<GateCommand>,
 }
 
 /// T052：task_graph_propose 的参数：总任务 + 至少两个子任务。
@@ -264,6 +278,32 @@ fn task_read_report_origin(origin: ReportOrigin) -> TaskReadReportOrigin {
         ReportOrigin::Package => TaskReadReportOrigin::Package,
         ReportOrigin::Agent => TaskReadReportOrigin::Agent,
         ReportOrigin::Executor => TaskReadReportOrigin::Executor,
+        ReportOrigin::Program => TaskReadReportOrigin::Program,
+    }
+}
+
+fn task_read_gate_checks(checks: &[GateCheck]) -> Vec<crate::protocol::TaskReadGateCheck> {
+    checks
+        .iter()
+        .map(|check| crate::protocol::TaskReadGateCheck {
+            index: check.index,
+            command: check.command.clone(),
+            exit_code: check.exit_code,
+            outcome: gate_check_outcome_key(check.outcome).to_owned(),
+            duration_ms: check.duration_ms,
+            tail: check.tail.clone(),
+            spill: check.spill.clone(),
+        })
+        .collect()
+}
+
+fn gate_check_outcome_key(outcome: GateCheckOutcome) -> &'static str {
+    match outcome {
+        GateCheckOutcome::Ran => "ran",
+        GateCheckOutcome::TimedOut => "timed_out",
+        GateCheckOutcome::SpawnFailed => "spawn_failed",
+        GateCheckOutcome::Stopped => "stopped",
+        GateCheckOutcome::Skipped => "skipped",
     }
 }
 
@@ -291,6 +331,8 @@ pub struct TaskRuntime {
     slots: Mutex<WorkerSlots>,
     /// 还活着的 ThinAgent（按会话 id）；终态报告后移除，释放会话写锁。
     running: Mutex<std::collections::HashMap<String, RunningThin>>,
+    /// T057：正在跑的程序门检查（按任务 id）；进程组停任务用。
+    gate_jobs: Mutex<std::collections::HashMap<String, Arc<RunningGate>>>,
     /// 测试钩子：下一次 relay 在 Kind append 前「崩掉」——留下效果行，泵退出。
     crash_before_relay: AtomicBool,
 }
@@ -321,6 +363,7 @@ impl TaskRuntime {
             exec_bash: AtomicBool::new(exec_bash),
             slots: Mutex::new(WorkerSlots::new()),
             running: Mutex::new(std::collections::HashMap::new()),
+            gate_jobs: Mutex::new(std::collections::HashMap::new()),
             crash_before_relay: AtomicBool::new(false),
         })
     }
@@ -418,10 +461,14 @@ impl TaskRuntime {
                 let recorded = match outcome.verdict.conclusion {
                     GateConclusion::Pass => ProtocolGateConclusion::Pass,
                     GateConclusion::NeedsFix => ProtocolGateConclusion::NeedsFix,
+                    GateConclusion::Undetermined => {
+                        return Err("未确定不是用户判定的结论".to_owned());
+                    }
                 };
                 let summary = match outcome.verdict.conclusion {
                     GateConclusion::Pass => "你判了通过",
                     GateConclusion::NeedsFix => "你判了需修正",
+                    GateConclusion::Undetermined => "未确定",
                 };
                 Ok(GateJudgeResponse {
                     verdict: Some(GateVerdictView {
@@ -430,6 +477,11 @@ impl TaskRuntime {
                         requirement_version: outcome.verdict.candidate.requirement_version,
                         conclusion: recorded,
                         note: outcome.verdict.note.clone(),
+                        judged_by: Some(match outcome.verdict.judged_by {
+                            tasks::VerdictSource::User => "user".to_owned(),
+                            tasks::VerdictSource::Program => "program".to_owned(),
+                        }),
+                        commands_version: outcome.verdict.commands_version,
                         at: outcome.verdict.at,
                     }),
                     changed: false,
@@ -780,6 +832,20 @@ impl TaskRuntime {
             origin: task_read_report_origin(report.origin),
             summary: report.summary.clone(),
             question: report.question.clone(),
+            attempt: report.attempt_id.0,
+            checks: report
+                .checks
+                .iter()
+                .map(|check| crate::protocol::TaskReadGateCheck {
+                    index: check.index,
+                    command: check.command.clone(),
+                    exit_code: check.exit_code,
+                    outcome: gate_check_outcome_key(check.outcome).to_owned(),
+                    duration_ms: check.duration_ms,
+                    tail: check.tail.clone(),
+                    spill: check.spill.clone(),
+                })
+                .collect(),
         });
         let review = latest_report.is_some_and(|report| is_review_report(&task, report));
         let accepted = latest_report.is_some_and(|report| {
@@ -790,6 +856,72 @@ impl TaskRuntime {
             self.running_for(&task.id, attempt_id)
                 .is_some_and(|running| running.host.agent().is_running())
         });
+        let gate_view = task
+            .gate
+            .as_ref()
+            .filter(|gate| gate.is_program_gate())
+            .map(|gate| {
+                let verdict = task
+                    .latest_report()
+                    .and_then(|report| task.verdict_for_gate_report(&report.id));
+                crate::protocol::TaskReadGate {
+                    commands: gate
+                        .commands
+                        .iter()
+                        .map(|command| crate::protocol::TaskReadGateCommand {
+                            command: command.command.clone(),
+                            timeout_ms: command.timeout_ms,
+                        })
+                        .collect(),
+                    commands_version: gate.commands_version,
+                    judged_by: verdict.map(|verdict| match verdict.judged_by {
+                        tasks::VerdictSource::User => "user".to_owned(),
+                        tasks::VerdictSource::Program => "program".to_owned(),
+                    }),
+                    conclusion: verdict.map(|verdict| match verdict.conclusion {
+                        GateConclusion::Pass => "pass".to_owned(),
+                        GateConclusion::NeedsFix => "needs_fix".to_owned(),
+                        GateConclusion::Undetermined => "undetermined".to_owned(),
+                    }),
+                    runs: task
+                        .reports
+                        .iter()
+                        .filter(|report| report.origin == ReportOrigin::Program)
+                        .rev()
+                        .map(|report| {
+                            let verdict = task.verdict_for_gate_report(&report.id);
+                            crate::protocol::TaskReadGateRun {
+                                attempt: report.attempt_id.0,
+                                commands_version: verdict
+                                    .map_or(0, |verdict| verdict.commands_version),
+                                conclusion: match verdict.map(|verdict| verdict.conclusion) {
+                                    Some(GateConclusion::Pass) => "pass",
+                                    Some(GateConclusion::NeedsFix) => "needs_fix",
+                                    Some(GateConclusion::Undetermined) | None => "undetermined",
+                                }
+                                .to_owned(),
+                                at: report.at,
+                                checks: task_read_gate_checks(&report.checks),
+                            }
+                        })
+                        .collect(),
+                }
+            });
+        let (program_running, program_index) = self
+            .gate_jobs
+            .lock()
+            .expect("程序门表锁被毒化")
+            .get(task.id.as_str())
+            .map(|running| {
+                (
+                    true,
+                    *running
+                        .current_index
+                        .lock()
+                        .expect("程序门当前命令锁被毒化"),
+                )
+            })
+            .unwrap_or((false, None));
         let ledger_view =
             crate::ledger::ledger_for(&self.store, &task).map_err(ServiceError::TaskUnavailable)?;
         let ledger = crate::protocol::TaskReadLedger {
@@ -863,6 +995,9 @@ impl TaskRuntime {
                 report,
                 review,
                 accepted,
+                gate: gate_view,
+                program_running,
+                program_index,
             },
             events: selected,
             last_seq,
@@ -970,6 +1105,91 @@ impl TaskRuntime {
     pub fn set_pump_paused(&self, paused: bool) {
         self.pump_paused.store(paused, Ordering::SeqCst);
         self.wake();
+    }
+
+    /// T057：给程序门排一次 launch（已授权过，不再出卡）。
+    pub(crate) fn queue_launch(&self, task_id: &TaskId) -> Result<(), String> {
+        self.store
+            .enqueue_effect(
+                EffectPayload::Launch {
+                    task_id: task_id.clone(),
+                },
+                Self::now(),
+            )
+            .map_err(|error| error.to_string())?;
+        self.wake();
+        Ok(())
+    }
+
+    /// T057：Kind 的 gate_check_again——只允许未确定/被打断、候选没变、命令版本没变。
+    pub(crate) fn gate_check_again(&self, gate_id: &TaskId) -> Result<(), String> {
+        let task = self
+            .store
+            .task(gate_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("找不到这个任务：{gate_id}"))?;
+        if !task.is_gate() {
+            return Err("这不是门任务".to_owned());
+        }
+        if !task.is_program_gate() {
+            return Err("这是用户判的里程碑门，要重判请在结果卡上点".to_owned());
+        }
+        if self
+            .gate_jobs
+            .lock()
+            .expect("程序门表锁被毒化")
+            .contains_key(gate_id.as_str())
+        {
+            return Err("程序门现在正在跑，等这一轮结束".to_owned());
+        }
+        let attempt = task
+            .latest_attempt()
+            .cloned()
+            .ok_or_else(|| "程序门还没开检查过".to_owned())?;
+        if attempt.ended_at.is_none() {
+            return Err("程序门现在正在跑，等这一轮结束".to_owned());
+        }
+        let need = task
+            .needs
+            .first()
+            .ok_or_else(|| "程序门没有把关对象".to_owned())?;
+        let handoff = need
+            .handoff
+            .clone()
+            .ok_or_else(|| "被把关任务还没有可核的结果".to_owned())?;
+        let guarded = self
+            .store
+            .task(&need.from)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "被把关任务不在了".to_owned())?;
+        let current = guarded
+            .latest_report()
+            .filter(|report| report.state == ReportState::Ready);
+        if !current.is_some_and(|report| report.id == handoff.report_id) {
+            return Err("候选结果已经变了，要等新的结果或改命令".to_owned());
+        }
+        let verdict = task
+            .latest_report()
+            .and_then(|report| task.verdict_for_gate_report(&report.id));
+        if let Some(verdict) = verdict
+            && verdict.candidate.report_id != handoff.report_id
+        {
+            return Err("候选结果已经变了，要等新的结果或改命令".to_owned());
+        }
+        if let Some(verdict) = verdict
+            && verdict.commands_version != task.commands_version()
+        {
+            return Err("命令已经改过，这一版还没跑；用新版本重跑".to_owned());
+        }
+        let interrupted = attempt.end == Some(AttemptEnd::Interrupted);
+        match verdict {
+            Some(verdict) if verdict.conclusion == GateConclusion::Undetermined || interrupted => {
+                self.queue_launch(gate_id)
+            }
+            None if interrupted => self.queue_launch(gate_id),
+            Some(_) => Err("最新结论不是未确定/被打断，不用重跑".to_owned()),
+            None => Err("程序门还没有未确定的结论".to_owned()),
+        }
     }
 
     /// 全局暂停的闸门：RootHost 先写设置文件，再改这里的内存值。
@@ -1487,6 +1707,12 @@ impl TaskRuntime {
         else {
             return Err(format!("找不到这个任务：{task_id}"));
         };
+        if task.is_program_gate() {
+            return Err(
+                "程序门没有会话可接续；要重跑用 gate_check_again，要换命令回 Kind 对话说"
+                    .to_owned(),
+            );
+        }
         let Some(attempt) = task.latest_attempt().cloned() else {
             return Err("这个任务还没开跑，没有可接的会话".to_owned());
         };
@@ -1900,6 +2126,27 @@ impl TaskRuntime {
                 if let Some(gate_facts) = self.gate_card_facts(&task, report) {
                     body["gate"] = gate_facts;
                 }
+                // T057：程序门结果卡的命令/版本/判定/逐条检查事实。
+                if task.is_program_gate() {
+                    let verdict = task.verdict_for_gate_report(&report.id);
+                    body["program_gate"] = json!({
+                        "commands": task.gate_commands().iter().map(|command| json!({
+                            "command": command.command,
+                            "timeout_ms": command.timeout_ms,
+                        })).collect::<Vec<_>>(),
+                        "commands_version": task.commands_version(),
+                        "judged_by": verdict.map(|verdict| match verdict.judged_by {
+                            tasks::VerdictSource::User => "user",
+                            tasks::VerdictSource::Program => "program",
+                        }),
+                        "conclusion": verdict.map(|verdict| match verdict.conclusion {
+                            GateConclusion::Pass => "pass",
+                            GateConclusion::NeedsFix => "needs_fix",
+                            GateConclusion::Undetermined => "undetermined",
+                        }),
+                        "checks": report.checks,
+                    });
+                }
                 // T053：卡上要能分清这张结果卡是哪份报告（门判定只作用在它判的那份上）。
                 body["report_id"] = json!(report.id.as_str());
                 // T054：这份报告绑的要求版本（小标题版本 >1 时加「· 第 N 版要求」）。
@@ -1950,6 +2197,7 @@ impl TaskRuntime {
                     "conclusion": match verdict.conclusion {
                         tasks::GateConclusion::Pass => "pass",
                         tasks::GateConclusion::NeedsFix => "needs_fix",
+                        tasks::GateConclusion::Undetermined => "undetermined",
                     },
                     "candidate": {
                         "task": {"id": guarded.id.as_str(), "title": guarded.title},
@@ -1957,6 +2205,12 @@ impl TaskRuntime {
                         "requirement_version": verdict.candidate.requirement_version,
                     },
                     "note": verdict.note,
+                    "judged_by": match verdict.judged_by {
+                        tasks::VerdictSource::User => "user",
+                        tasks::VerdictSource::Program => "program",
+                    },
+                    "commands_version": verdict.commands_version,
+                    "checks": gate_report_fact.map(|report| report.checks.clone()).unwrap_or_default(),
                     "summary": gate_report_fact.map(|report| report.summary.clone()).unwrap_or_default(),
                 });
                 let request_id = format!("gate-verdict:{}:{}", gate.id, gate_report);
@@ -2048,6 +2302,8 @@ impl TaskRuntime {
                     "id": sibling.id.as_str(),
                     "title": sibling.title,
                     "recheck": recheck,
+                    "program": sibling.is_program_gate(),
+                    "commands": sibling.gate_commands().iter().map(|command| command.command.clone()).collect::<Vec<_>>(),
                 }));
             }
         }
@@ -2155,10 +2411,21 @@ impl TaskRuntime {
                     self.later(&claim);
                     return false;
                 }
+                let rerun_after_undetermined = task.is_program_gate()
+                    && (latest.end == Some(AttemptEnd::Interrupted)
+                        || task.latest_report().is_none()
+                        || task
+                            .latest_report()
+                            .and_then(|report| task.verdict_for_gate_report(&report.id))
+                            .is_some_and(|verdict| {
+                                verdict.conclusion == GateConclusion::Undetermined
+                                    || verdict.commands_version != task.commands_version()
+                            }));
                 if latest
                     .handoffs
                     .first()
                     .is_some_and(|checked| checked.report_id == handoff.report_id)
+                    && !rerun_after_undetermined
                 {
                     self.finish_or_fail(&claim, Ok(()));
                     return false;
@@ -2178,6 +2445,55 @@ impl TaskRuntime {
             task = reloaded;
         }
 
+        // T057：程序门不开 ThinAgent、不占席位；拿到候选后直接排一次异步检查。
+        if task.is_program_gate() {
+            let Some(candidate) = gate_candidate.clone() else {
+                self.finish_or_fail(&claim, Ok(()));
+                return false;
+            };
+            let handoffs: Vec<Handoff> = task
+                .needs
+                .iter()
+                .filter_map(|need| need.handoff.clone())
+                .collect();
+            let attempt_id = match self.store.begin_attempt_with(
+                &task.id,
+                Self::now(),
+                AttemptTrigger::GateRecheck { candidate },
+                handoffs,
+            ) {
+                Ok(attempt_id) => attempt_id,
+                Err(error) => {
+                    self.finish_or_fail(&claim, Err(error.to_string()));
+                    return false;
+                }
+            };
+            let root = self
+                .data_dir
+                .join("gate-checks")
+                .join(format!("{}-{}", task.id, attempt_id.0));
+            let registry = Arc::new(TaskRegistry::detached(root));
+            let running = Arc::new(RunningGate {
+                attempt_id,
+                registry: Arc::clone(&registry),
+                job_id: Mutex::new(None),
+                current_index: Mutex::new(None),
+                cancelled: AtomicBool::new(false),
+            });
+            self.gate_jobs
+                .lock()
+                .expect("程序门表锁被毒化")
+                .insert(task.id.as_str().to_owned(), Arc::clone(&running));
+            let runtime = Arc::clone(self);
+            let gate_id = task.id.clone();
+            tokio::spawn(async move {
+                runtime
+                    .run_program_gate(gate_id, attempt_id, registry, running)
+                    .await;
+            });
+            self.finish_or_fail(&claim, Ok(()));
+            return false;
+        }
         let prepared = match self.prepare(&task) {
             Ok(prepared) => prepared,
             Err(missing) => {
@@ -2726,6 +3042,231 @@ impl TaskRuntime {
         });
     }
 
+    /// T057：程序门按顺序跑命令；不开会话、不占席位。
+    async fn run_program_gate(
+        self: Arc<Self>,
+        gate_id: TaskId,
+        attempt_id: AttemptId,
+        registry: Arc<TaskRegistry>,
+        running: Arc<RunningGate>,
+    ) {
+        let cleanup = |runtime: &Arc<Self>| {
+            let mut jobs = runtime.gate_jobs.lock().expect("程序门表锁被毒化");
+            if jobs
+                .get(gate_id.as_str())
+                .is_some_and(|entry| entry.attempt_id == attempt_id)
+            {
+                jobs.remove(gate_id.as_str());
+            }
+        };
+        let task = match self.store.task(&gate_id) {
+            Ok(Some(task)) => task,
+            _ => {
+                cleanup(&self);
+                return;
+            }
+        };
+        let commands = task.gate_commands().to_vec();
+        let cwd = task.effective_cwd().to_path_buf();
+        let mut checks: Vec<GateCheck> = Vec::new();
+        let mut undetermined: Option<String> = None;
+        for (index, command) in commands.iter().enumerate() {
+            if running.cancelled.load(Ordering::SeqCst) {
+                checks.push(GateCheck {
+                    index,
+                    command: command.command.trim().to_owned(),
+                    exit_code: None,
+                    outcome: GateCheckOutcome::Stopped,
+                    duration_ms: 0,
+                    tail: "被停".to_owned(),
+                    spill: None,
+                });
+                for rest in commands.iter().skip(index + 1) {
+                    checks.push(gate_check_skipped(checks.len(), rest, "没跑"));
+                }
+                undetermined = Some("被停".to_owned());
+                break;
+            }
+            let spec = JobSpec {
+                command: command.command.trim().to_owned(),
+                cwd: cwd.clone(),
+                env: tools::command_env(),
+                label: command
+                    .command
+                    .trim()
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .to_owned(),
+                tool_call: None,
+            };
+            let job_id = match registry.start(spec, true) {
+                Ok(id) => id,
+                Err(error) => {
+                    checks.push(GateCheck {
+                        index,
+                        command: command.command.trim().to_owned(),
+                        exit_code: None,
+                        outcome: GateCheckOutcome::SpawnFailed,
+                        duration_ms: 0,
+                        tail: error.message,
+                        spill: None,
+                    });
+                    for rest in commands.iter().skip(index + 1) {
+                        checks.push(gate_check_skipped(checks.len(), rest, "没跑"));
+                    }
+                    undetermined = Some(format!("起不来：{}", command.command.trim()));
+                    break;
+                }
+            };
+            *running.job_id.lock().expect("程序门 job 锁被毒化") = Some(job_id.clone());
+            *running
+                .current_index
+                .lock()
+                .expect("程序门当前命令锁被毒化") = Some(index);
+            let waited = registry
+                .wait_async(&job_id, Duration::from_millis(command.timeout_ms()))
+                .await;
+            let (read, outcome) = match waited {
+                Ok(read) if read.view.status.is_terminal() => {
+                    let outcome = if running.cancelled.load(Ordering::SeqCst) {
+                        GateCheckOutcome::Stopped
+                    } else {
+                        GateCheckOutcome::Ran
+                    };
+                    (read, outcome)
+                }
+                Ok(read) => {
+                    let _ = registry.request_kill(
+                        &job_id,
+                        Some(format!(
+                            "程序门命令超时（{} 秒）",
+                            command.timeout_ms() / 1000
+                        )),
+                        false,
+                    );
+                    let read = registry
+                        .await_termination(&job_id, tools::KILL_GRACE)
+                        .await
+                        .unwrap_or(read);
+                    let outcome = if running.cancelled.load(Ordering::SeqCst) {
+                        GateCheckOutcome::Stopped
+                    } else {
+                        GateCheckOutcome::TimedOut
+                    };
+                    (read, outcome)
+                }
+                Err(error) => {
+                    let read = JobRead {
+                        view: tools::JobView {
+                            id: job_id.clone(),
+                            kind: "bash",
+                            label: String::new(),
+                            status: tools::JobStatus::Failed,
+                            exit_code: None,
+                            signal: None,
+                            started_at: 0,
+                            finished_at: Some(0),
+                            detail: Some(error.message.clone()),
+                        },
+                        stdout: String::new(),
+                        stderr: error.message,
+                        stdout_dropped: false,
+                        stderr_dropped: false,
+                        stdout_path: PathBuf::new(),
+                        stderr_path: PathBuf::new(),
+                        stdout_spill: None,
+                        stderr_spill: None,
+                    };
+                    (read, GateCheckOutcome::SpawnFailed)
+                }
+            };
+            let duration_ms = read
+                .view
+                .finished_at
+                .unwrap_or(read.view.started_at)
+                .saturating_sub(read.view.started_at);
+            checks.push(GateCheck {
+                index,
+                command: command.command.trim().to_owned(),
+                exit_code: read.view.exit_code,
+                outcome,
+                duration_ms,
+                tail: gate_tail(&read),
+                spill: gate_spill(&read),
+            });
+            *running.job_id.lock().expect("程序门 job 锁被毒化") = None;
+            *running
+                .current_index
+                .lock()
+                .expect("程序门当前命令锁被毒化") = None;
+            if outcome != GateCheckOutcome::Ran {
+                for rest in commands.iter().skip(index + 1) {
+                    checks.push(gate_check_skipped(checks.len(), rest, "没跑"));
+                }
+                undetermined = Some(match outcome {
+                    GateCheckOutcome::TimedOut => format!(
+                        "超时：{}（{} 秒）",
+                        command.command.trim(),
+                        command.timeout_ms() / 1000
+                    ),
+                    GateCheckOutcome::Stopped => "被停".to_owned(),
+                    GateCheckOutcome::SpawnFailed => "起不来".to_owned(),
+                    _ => "没跑完".to_owned(),
+                });
+                break;
+            }
+        }
+        cleanup(&self);
+        let conclusion = if undetermined.is_some() {
+            GateConclusion::Undetermined
+        } else if checks
+            .iter()
+            .any(|check| check.exit_code.is_some_and(|code| code != 0))
+        {
+            GateConclusion::NeedsFix
+        } else {
+            GateConclusion::Pass
+        };
+        let summary = match conclusion {
+            GateConclusion::Pass => format!("程序门通过：{} 条命令全部退出码 0", commands.len()),
+            GateConclusion::NeedsFix => {
+                let bad = checks
+                    .iter()
+                    .filter(|check| check.exit_code.is_some_and(|code| code != 0))
+                    .count();
+                let first = checks
+                    .iter()
+                    .find(|check| check.exit_code.is_some_and(|code| code != 0));
+                match first {
+                    Some(check) => format!(
+                        "{} 条命令：{} 条退出码非 0（{} → {}）",
+                        commands.len(),
+                        bad,
+                        check.command,
+                        check.exit_code.unwrap_or(0)
+                    ),
+                    None => "程序门需修正".to_owned(),
+                }
+            }
+            GateConclusion::Undetermined => format!(
+                "程序门未确定：{}",
+                undetermined.unwrap_or_else(|| "没跑完".to_owned())
+            ),
+        };
+        if let Err(error) = self.store.record_program_gate_result(
+            &gate_id,
+            attempt_id,
+            summary,
+            checks,
+            conclusion,
+            Self::now(),
+        ) {
+            eprintln!("程序门 {gate_id} 的结果没写进任务库：{error}");
+        }
+        self.wake();
+    }
+
     /// T056.2：压缩成功要 Steer 的消息和 request id；空账本返回 None。
     fn ledger_after_compaction_payload(
         &self,
@@ -3219,6 +3760,7 @@ impl TaskRuntime {
                 },
                 after: item.after,
                 milestone: item.milestone,
+                program_gate: item.program_gate,
             });
         }
         let graph = NewGraph {
@@ -3628,6 +4170,57 @@ impl TaskRuntime {
     /// 停一个任务：立即停走「先持久、再取消」；收尾停走「插固定说明、打标记、等报」。
     ///
     /// 页面（Call::TaskStop）和 Kind 的 task_stop 都调到这一个方法。
+    /// T057：停程序门——结束当前进程组；结果由 run_program_gate 写成「未确定」。
+    async fn stop_program_gate(
+        &self,
+        task_id: &str,
+        id: &TaskId,
+        attempt_id: AttemptId,
+    ) -> Result<crate::protocol::TaskStopResponse, ServiceError> {
+        let running = self
+            .gate_jobs
+            .lock()
+            .expect("程序门表锁被毒化")
+            .get(id.as_str())
+            .filter(|running| running.attempt_id == attempt_id)
+            .cloned();
+        let Some(running) = running else {
+            let stage = self
+                .store
+                .stage(id)
+                .map_err(|error| ServiceError::TaskUnavailable(format!("阶段读不出来：{error}")))?;
+            return Ok(crate::protocol::TaskStopResponse {
+                stopped: false,
+                stage: stage_key(stage).to_owned(),
+                message: NOT_RUNNING.to_owned(),
+            });
+        };
+        running.cancelled.store(true, Ordering::SeqCst);
+        let job = running.job_id.lock().expect("程序门 job 锁被毒化").clone();
+        if let Some(job_id) = job {
+            let _ =
+                running
+                    .registry
+                    .request_kill(&job_id, Some(STOPPED_JOB_REASON.to_owned()), false);
+            let _ = running
+                .registry
+                .await_termination(&job_id, tools::KILL_GRACE)
+                .await;
+        }
+        let stage = self
+            .store
+            .stage(id)
+            .map_err(|error| ServiceError::TaskUnavailable(format!("阶段读不出来：{error}")))?;
+        Ok(crate::protocol::TaskStopResponse {
+            stopped: true,
+            stage: stage_key(stage).to_owned(),
+            message: format!(
+                "已停程序门：结束正在跑的命令，这次检查记未确定（任务 {task_id}，阶段：{}）。",
+                stage_label(stage)
+            ),
+        })
+    }
+
     pub(crate) async fn stop_task(
         self: &Arc<Self>,
         task_id: &str,
@@ -3653,6 +4246,10 @@ impl TaskRuntime {
         };
         if attempt.ended_at.is_some() {
             return Ok(not_running());
+        }
+        // T057：程序门没有 ThinAgent 会话；立即停（含收尾停）都结束进程组、记未确定。
+        if task.is_program_gate() {
+            return self.stop_program_gate(task_id, &id, attempt.id).await;
         }
         let Some(running) = self.running_for(&id, attempt.id) else {
             return Ok(not_running());
@@ -3819,6 +4416,60 @@ impl Drop for TaskRuntime {
     }
 }
 
+/// T057：没跑的那条占一行。
+fn gate_check_skipped(index: usize, command: &GateCommand, why: &str) -> GateCheck {
+    GateCheck {
+        index,
+        command: command.command.trim().to_owned(),
+        exit_code: None,
+        outcome: GateCheckOutcome::Skipped,
+        duration_ms: 0,
+        tail: why.to_owned(),
+        spill: None,
+    }
+}
+
+/// T057：读输出文件的尾部（最多 MAX_OUTPUT_BYTES），给程序门报告。
+fn tail_file(path: &std::path::Path) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let length = file.metadata().ok()?.len();
+    let start = length.saturating_sub(MAX_OUTPUT_BYTES as u64);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    Some(bytes)
+}
+
+fn gate_tail(read: &JobRead) -> String {
+    let mut bytes = std::fs::read(&read.stdout_path)
+        .ok()
+        .and_then(|_| tail_file(&read.stdout_path))
+        .unwrap_or_else(|| read.stdout.as_bytes().to_vec());
+    let stderr = tail_file(&read.stderr_path)
+        .filter(|bytes| !bytes.is_empty())
+        .unwrap_or_else(|| read.stderr.as_bytes().to_vec());
+    if !stderr.is_empty() {
+        if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+            bytes.push(b'\n');
+        }
+        bytes.extend_from_slice(b"[stderr]\n");
+        bytes.extend_from_slice(&stderr);
+    }
+    while bytes.len() > MAX_OUTPUT_BYTES {
+        bytes.remove(0);
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn gate_spill(read: &JobRead) -> Option<String> {
+    if read.stdout_path.as_os_str().is_empty() {
+        (!read.stderr_path.as_os_str().is_empty()).then(|| read.stderr_path.display().to_string())
+    } else {
+        Some(read.stdout_path.display().to_string())
+    }
+}
+
 /// 记一条不该打断效果泵的失败：留信号，不把主流程吞掉。
 fn best_effort<T>(what: &str, result: Result<T, TaskError>) {
     if let Err(error) = result {
@@ -3857,6 +4508,7 @@ fn report_origin_key(origin: ReportOrigin) -> &'static str {
         ReportOrigin::Package => "package",
         ReportOrigin::Agent => "agent",
         ReportOrigin::Executor => "executor",
+        ReportOrigin::Program => "program",
     }
 }
 
@@ -4040,7 +4692,8 @@ impl TaskGraphProposeTool {
                                 "write_scope": {"type": "string", "description": "One path this step may write; omit for a read-only step."},
                                 "worktree": {"type": "boolean", "description": "Only when the user explicitly asks for a worktree. Defaults to false."},
                                 "after": {"type": "array", "items": {"type": "integer"}, "description": "Indexes (0-based) of subtasks in this proposal that must have a result before this step starts."},
-                                "milestone": {"type": "boolean", "description": "True for a read-only check step the user judges: its after has exactly one index (the step it checks), it cannot write, and the user passes it or sends it back for fixes on its result card. Use it when the user says they want to look before continuing."}
+                                "milestone": {"type": "boolean", "description": "True for a read-only check step the user judges: its after has exactly one index (the step it checks), it cannot write, and the user passes it or sends it back for fixes on its result card. Use it when the user says they want to look before continuing. Do not combine with program_gate."},
+                                "program_gate": {"type": "object", "description": "T057: a read-only program gate that runs these commands in order after the checked step reports. Use only when the user names commands that decide pass/fail (all exit codes 0 = pass). Mutually exclusive with milestone.", "properties": {"commands": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"command": {"type": "string", "description": "The command exactly as the user said it, in bash -c syntax; do not rewrite or add arguments."}, "timeout_ms": {"type": "integer", "description": "Only set when the user named a timeout; otherwise omit (default 120 seconds, max 600000)."}}, "required": ["command"]}}}, "required": ["commands"]}
                             },
                             "required": ["title", "requirement", "dod"]
                         }
@@ -4235,6 +4888,71 @@ impl Tool for TaskStatusTool {
 }
 
 /// Kind 的 task_stop：页面 TaskStop 调的是同一个 stop_task。
+/// T057：Kind 的 gate_check_again——程序门未确定/被打断时直接重跑，不再出卡。
+pub(crate) struct GateCheckAgainTool {
+    runtime: Arc<TaskRuntime>,
+    parameters: Value,
+}
+
+impl GateCheckAgainTool {
+    pub(crate) fn new(runtime: Arc<TaskRuntime>) -> Self {
+        Self {
+            runtime,
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "gate_task_id": {"type": "string", "description": "The program gate task id whose latest check was undetermined or interrupted."}
+                },
+                "required": ["gate_task_id"]
+            }),
+        }
+    }
+}
+
+impl Tool for GateCheckAgainTool {
+    fn name(&self) -> &str {
+        "gate_check_again"
+    }
+
+    fn description(&self) -> &str {
+        "Re-run a program gate's commands for the current candidate when the last check was undetermined or interrupted and the commands have not changed. This is already authorized by the user's earlier confirmation; it does not show a card. Refuse and explain when the gate is a user-judged milestone, the last conclusion was pass/needs_fix, the candidate changed, or the command version changed."
+    }
+
+    fn parameters(&self) -> &Value {
+        &self.parameters
+    }
+
+    fn condition(&self) -> ToolCondition {
+        ToolCondition::Always
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: ToolCall,
+        _context: &'a ToolContext,
+    ) -> ToolFuture<'a, ToolResult> {
+        Box::pin(async move {
+            let args = match parse_object(&call.arguments) {
+                Ok(args) => args,
+                Err(failure) => return ToolResult::error(call.id, failure),
+            };
+            let Some(gate_task_id) = string_arg(&args, "gate_task_id") else {
+                return ToolResult::error(call.id, ToolFailure::plain("gate_task_id 不能为空"));
+            };
+            match self
+                .runtime
+                .gate_check_again(&TaskId::from(gate_task_id.as_str()))
+            {
+                Ok(()) => ToolResult::success(
+                    call.id,
+                    format!("已重排程序门检查（门 {gate_task_id}）；结果会作为结果卡送到这里。"),
+                ),
+                Err(error) => ToolResult::error(call.id, ToolFailure::plain(error)),
+            }
+        })
+    }
+}
+
 pub(crate) struct TaskStopTool {
     runtime: Arc<TaskRuntime>,
     parameters: Value,
@@ -4753,6 +5471,52 @@ fn string_arg(args: &serde_json::Map<String, Value>, key: &str) -> Option<String
 }
 
 /// T052：解析 task_graph_propose 的参数（字段检查照 task_accept；图语义由 tasks 校验）。
+fn parse_program_gate(
+    value: Option<&Value>,
+    index: usize,
+) -> Result<Vec<GateCommand>, ToolFailure> {
+    let Some(value) = value.filter(|value| !value.is_null()) else {
+        return Ok(Vec::new());
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| ToolFailure::plain(format!("subtasks[{index}].program_gate 必须是对象")))?;
+    let Some(commands) = object.get("commands").and_then(Value::as_array) else {
+        return Err(ToolFailure::plain(format!(
+            "subtasks[{index}].program_gate.commands 必须是数组"
+        )));
+    };
+    let mut parsed = Vec::with_capacity(commands.len());
+    for (item_index, item) in commands.iter().enumerate() {
+        let Some(object) = item.as_object() else {
+            return Err(ToolFailure::plain(format!(
+                "subtasks[{index}].program_gate.commands[{item_index}] 必须是对象"
+            )));
+        };
+        let Some(command) = object.get("command").and_then(Value::as_str) else {
+            return Err(ToolFailure::plain(format!(
+                "subtasks[{index}].program_gate.commands[{item_index}].command 不能为空"
+            )));
+        };
+        let timeout_ms = match object.get("timeout_ms") {
+            None | Some(Value::Null) => None,
+            Some(Value::Number(number)) => Some(
+                number
+                    .as_u64()
+                    .ok_or_else(|| ToolFailure::plain("timeout_ms 必须是非负整数"))?,
+            ),
+            Some(_) => return Err(ToolFailure::plain("timeout_ms 必须是整数")),
+        };
+        parsed.push(GateCommand {
+            command: command.trim().to_owned(),
+            timeout_ms,
+        });
+    }
+    tasks::validate_gate_commands(&parsed)
+        .map_err(|error| ToolFailure::plain(error.to_string()))?;
+    Ok(parsed)
+}
+
 fn parse_graph_args(args: &serde_json::Map<String, Value>) -> Result<TaskGraphArgs, ToolFailure> {
     let title = string_arg(args, "title").ok_or_else(|| ToolFailure::plain("title 不能为空"))?;
     let requirement = string_arg(args, "requirement")
@@ -4832,6 +5596,13 @@ fn parse_graph_args(args: &serde_json::Map<String, Value>) -> Result<TaskGraphAr
                 )));
             }
         };
+        let program_gate = parse_program_gate(object.get("program_gate"), index)?;
+        if milestone && !program_gate.is_empty() {
+            return Err(ToolFailure::plain(format!(
+                "subtasks[{index}] 不能同时是用户判里程碑和程序门"
+            )));
+        }
+        let milestone = milestone || !program_gate.is_empty();
         subtasks.push(GraphSubtaskArgs {
             title: subtask_title,
             requirement: subtask_requirement,
@@ -4840,6 +5611,7 @@ fn parse_graph_args(args: &serde_json::Map<String, Value>) -> Result<TaskGraphAr
             worktree,
             after,
             milestone,
+            program_gate,
         });
     }
     Ok(TaskGraphArgs {
@@ -5063,7 +5835,11 @@ mod t056_ledger_executor_tests {
         log.append(&[session::EventKind::UserMessage {
             turn: 1,
             step: 0,
-            message: model::UserMessage::text("改一下，别加新依赖").into_message(),
+            message: model::UserMessage::text_with_request_id(
+                "改一下，别加新依赖",
+                "7f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f",
+            )
+            .into_message(),
         }])
         .unwrap();
         let state = Arc::new(tools::ToolSessionState::new(directory, id.as_str()));
@@ -5133,6 +5909,7 @@ mod t056_ledger_executor_tests {
                     worktree: false,
                     after: Vec::new(),
                     milestone: false,
+                    program_gate: Vec::new(),
                 },
                 GraphSubtaskArgs {
                     title: "二".to_owned(),
@@ -5142,6 +5919,7 @@ mod t056_ledger_executor_tests {
                     worktree: false,
                     after: Vec::new(),
                     milestone: false,
+                    program_gate: Vec::new(),
                 },
             ],
             constraints: vec!["别加新依赖".to_owned()],
@@ -5361,5 +6139,730 @@ mod t056_ledger_executor_tests {
         let note = runtime.resume_note(&task);
         assert!(note.contains(super::RESUME_NOTE), "{note}");
         assert!(note.contains("「别加新依赖」"), "{note}");
+    }
+}
+
+#[cfg(test)]
+mod t057_program_gate_tests {
+    use std::sync::{Arc, Mutex, Weak};
+
+    use model::{DEFAULT_CONTEXT_WINDOW, Effort};
+    use tasks::{
+        AttemptTrigger, ConversationId, GateCandidate, GateCheckOutcome, GateCommand,
+        GateConclusion, MilestoneGate, ModelChoice, NewGraph, NewReport, NewSubtask, NewTask,
+        ReportOrigin, ReportState, TaskPolicy, VerdictSource,
+    };
+
+    use super::*;
+    use crate::root::RootSessionOptions;
+
+    fn open_runtime(data_dir: &std::path::Path) -> Arc<TaskRuntime> {
+        let options = RootSessionOptions {
+            data_dir: data_dir.to_path_buf(),
+            cwd: data_dir.to_path_buf(),
+            model: model::DeepSeekConfig {
+                provider: "deepseek".to_owned(),
+                base_url: "http://127.0.0.1:1".to_owned(),
+                model: "deepseek-flash".to_owned(),
+                max_tokens: 2048,
+                context_window: DEFAULT_CONTEXT_WINDOW,
+                effort: Effort::new("high"),
+                tool_update: None,
+            },
+            config: agent::AgentConfig::default(),
+            credentials: None,
+            identity: None,
+            model_factory: None,
+            append_hook_factory: None,
+            keyring_changed: None,
+            actions: Arc::new(crate::actions::ActionRegistry::empty()),
+            exa_base_url: None,
+            web_listen: None,
+            task_runtime: None,
+        };
+        Arc::new(TaskRuntime::new(&options, Arc::new(Mutex::new(None)), Weak::new()).unwrap())
+    }
+
+    fn draft(title: &str) -> NewTask {
+        NewTask {
+            title: title.to_owned(),
+            requirement: "把事做完".to_owned(),
+            dod: "有结果".to_owned(),
+            cwd: std::path::PathBuf::from("/tmp"),
+            conversation: ConversationId::new("kind-1"),
+            model: ModelChoice {
+                connection: "deepseek".to_owned(),
+                model: "deepseek-flash".to_owned(),
+                effort_wanted: "high".to_owned(),
+            },
+            tools: THIN_TOOLS.iter().map(|name| (*name).to_owned()).collect(),
+        }
+    }
+
+    struct GateFixture {
+        _directory: tempfile::TempDir,
+        runtime: Arc<TaskRuntime>,
+        gate_id: TaskId,
+        attempt_id: AttemptId,
+    }
+
+    struct LaunchFixture {
+        _directory: tempfile::TempDir,
+        runtime: Arc<TaskRuntime>,
+        gate_id: TaskId,
+    }
+
+    async fn gate_launch_fixture(commands: Vec<GateCommand>) -> LaunchFixture {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join(TASKS_DB_FILE)).unwrap();
+        let graph = NewGraph {
+            root: draft("总任务"),
+            subtasks: vec![
+                NewSubtask {
+                    program_gate: Vec::new(),
+                    task: draft("被把关"),
+                    policy: TaskPolicy::default(),
+                    after: Vec::new(),
+                    milestone: false,
+                },
+                NewSubtask {
+                    program_gate: commands,
+                    task: draft("程序门"),
+                    policy: TaskPolicy::default(),
+                    after: vec![0],
+                    milestone: true,
+                },
+            ],
+        };
+        let root = store.create_graph(graph, 1_700_000_000_000).unwrap();
+        store.confirm_graph(&root.id, 1_700_000_000_001).unwrap();
+        let children = store.children(&root.id).unwrap();
+        let guarded = children[0].clone();
+        let gate = children[1].clone();
+        let guarded_attempt = store.begin_attempt(&guarded.id, 1_700_000_000_002).unwrap();
+        store
+            .record_report(
+                &guarded.id,
+                guarded_attempt,
+                NewReport {
+                    state: ReportState::Ready,
+                    origin: ReportOrigin::Agent,
+                    summary: "改好了".to_owned(),
+                    question: None,
+                },
+                1_700_000_000_003,
+            )
+            .unwrap();
+        let runtime = open_runtime(directory.path());
+        LaunchFixture {
+            _directory: directory,
+            runtime,
+            gate_id: gate.id,
+        }
+    }
+
+    async fn gate_fixture(commands: Vec<GateCommand>) -> GateFixture {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join(TASKS_DB_FILE)).unwrap();
+        let graph = NewGraph {
+            root: draft("总任务"),
+            subtasks: vec![
+                NewSubtask {
+                    task: draft("被把关"),
+                    policy: TaskPolicy::default(),
+                    after: Vec::new(),
+                    milestone: false,
+                    program_gate: Vec::new(),
+                },
+                NewSubtask {
+                    task: draft("程序门"),
+                    policy: TaskPolicy::default(),
+                    after: vec![0],
+                    milestone: true,
+                    program_gate: commands,
+                },
+            ],
+        };
+        let root = store.create_graph(graph, 1_700_000_000_000).unwrap();
+        store.confirm_graph(&root.id, 1_700_000_000_001).unwrap();
+        let children = store.children(&root.id).unwrap();
+        let guarded = children[0].clone();
+        let gate = children[1].clone();
+        assert!(gate.is_program_gate());
+        assert!(!gate.gate_commands().is_empty());
+        assert_eq!(gate.commands_version(), 1);
+        let guarded_attempt = store.begin_attempt(&guarded.id, 1_700_000_000_002).unwrap();
+        store
+            .record_report(
+                &guarded.id,
+                guarded_attempt,
+                NewReport {
+                    state: ReportState::Ready,
+                    origin: ReportOrigin::Agent,
+                    summary: "改好了".to_owned(),
+                    question: None,
+                },
+                1_700_000_000_003,
+            )
+            .unwrap();
+        let gate = store.task(&gate.id).unwrap().unwrap();
+        let handoff = gate.needs[0].handoff.clone().expect("候选已交接");
+        let candidate = GateCandidate {
+            report_id: handoff.report_id.clone(),
+            requirement_version: handoff.requirement_version,
+        };
+        let attempt_id = store
+            .begin_attempt_with(
+                &gate.id,
+                1_700_000_000_004,
+                AttemptTrigger::GateRecheck { candidate },
+                vec![handoff],
+            )
+            .unwrap();
+        let runtime = open_runtime(directory.path());
+        GateFixture {
+            _directory: directory,
+            runtime,
+            gate_id: gate.id,
+            attempt_id,
+        }
+    }
+
+    async fn run(fixture: &GateFixture) -> (Task, Vec<GateCheck>) {
+        let store = fixture.runtime.store();
+        let root = fixture
+            .runtime
+            .data_dir
+            .join("gate-checks")
+            .join(format!("{}-{}", fixture.gate_id, fixture.attempt_id.0));
+        let registry = Arc::new(TaskRegistry::detached(root));
+        let running = Arc::new(RunningGate {
+            attempt_id: fixture.attempt_id,
+            registry: Arc::clone(&registry),
+            job_id: Mutex::new(None),
+            current_index: Mutex::new(None),
+            cancelled: AtomicBool::new(false),
+        });
+        fixture
+            .runtime
+            .clone()
+            .run_program_gate(
+                fixture.gate_id.clone(),
+                fixture.attempt_id,
+                registry,
+                running,
+            )
+            .await;
+        let gate = store.task(&fixture.gate_id).unwrap().unwrap();
+        let report = gate.latest_report().expect("程序门报告");
+        assert_eq!(report.origin, ReportOrigin::Program);
+        (gate.clone(), report.checks.clone())
+    }
+
+    #[tokio::test]
+    async fn all_green_is_program_pass_with_checks_in_the_report() {
+        let fixture = gate_fixture(vec![
+            GateCommand {
+                command: "true".to_owned(),
+                timeout_ms: None,
+            },
+            GateCommand {
+                command: "printf ok".to_owned(),
+                timeout_ms: None,
+            },
+        ])
+        .await;
+        let (gate, checks) = run(&fixture).await;
+        assert_eq!(checks.len(), 2);
+        assert!(
+            checks
+                .iter()
+                .all(|check| check.outcome == GateCheckOutcome::Ran)
+        );
+        assert!(checks.iter().all(|check| check.exit_code == Some(0)));
+        let verdict = gate.latest_verdict().expect("判定");
+        assert_eq!(verdict.conclusion, GateConclusion::Pass);
+        assert_eq!(verdict.judged_by, VerdictSource::Program);
+        assert_eq!(verdict.commands_version, 1);
+        let candidate = gate.latest_attempt().unwrap().handoffs[0].report_id.clone();
+        assert!(gate.passed(&candidate));
+    }
+
+    #[tokio::test]
+    async fn one_nonzero_keeps_running_and_program_needs_fix() {
+        let fixture = gate_fixture(vec![
+            GateCommand {
+                command: "true".to_owned(),
+                timeout_ms: None,
+            },
+            GateCommand {
+                command: "exit 3".to_owned(),
+                timeout_ms: None,
+            },
+        ])
+        .await;
+        let (gate, checks) = run(&fixture).await;
+        assert_eq!(checks.len(), 2);
+        assert_eq!(checks[1].exit_code, Some(3));
+        let verdict = gate.latest_verdict().expect("判定");
+        assert_eq!(verdict.conclusion, GateConclusion::NeedsFix);
+        let candidate = gate.latest_attempt().unwrap().handoffs[0].report_id.clone();
+        assert!(!gate.passed(&candidate));
+        assert!(gate.needs_fix(&candidate).is_some());
+    }
+
+    #[tokio::test]
+    async fn timeout_is_undetermined_and_later_commands_are_skipped() {
+        let fixture = gate_fixture(vec![
+            GateCommand {
+                command: "sleep 5".to_owned(),
+                timeout_ms: Some(200),
+            },
+            GateCommand {
+                command: "true".to_owned(),
+                timeout_ms: None,
+            },
+        ])
+        .await;
+        let (gate, checks) = run(&fixture).await;
+        assert_eq!(checks.len(), 2);
+        assert_eq!(checks[0].outcome, GateCheckOutcome::TimedOut);
+        assert_eq!(checks[1].outcome, GateCheckOutcome::Skipped);
+        let verdict = gate.latest_verdict().expect("判定");
+        assert_eq!(verdict.conclusion, GateConclusion::Undetermined);
+        let candidate = gate.latest_attempt().unwrap().handoffs[0].report_id.clone();
+        assert!(!gate.passed(&candidate));
+        assert!(gate.needs_fix(&candidate).is_none());
+    }
+
+    #[tokio::test]
+    async fn command_env_has_no_aios_or_secret_names() {
+        let fixture = gate_fixture(vec![
+            GateCommand {
+                command: "env".to_owned(),
+                timeout_ms: None,
+            },
+            GateCommand {
+                command: "true".to_owned(),
+                timeout_ms: None,
+            },
+        ])
+        .await;
+        let (_gate, checks) = run(&fixture).await;
+        let tail = &checks[0].tail;
+        assert!(!tail.contains("AIOS_"), "{tail}");
+        assert!(!tail.contains("TOKEN="), "{tail}");
+        assert!(!tail.contains("KEY="), "{tail}");
+    }
+
+    #[test]
+    fn program_gate_serializes_commands_and_version() {
+        let gate = MilestoneGate {
+            commands: vec![GateCommand {
+                command: "cargo test".to_owned(),
+                timeout_ms: Some(5_000),
+            }],
+            commands_version: 2,
+        };
+        let json = serde_json::to_string(&gate).unwrap();
+        assert!(json.contains("commands_version"));
+        let old: MilestoneGate = serde_json::from_str("{}").unwrap();
+        assert!(!old.is_program_gate());
+        assert_eq!(old.commands_version, 0);
+    }
+
+    #[tokio::test]
+    async fn program_gate_launch_effect_spawns_runner_without_a_session() {
+        let fixture = gate_launch_fixture(vec![
+            GateCommand {
+                command: "true".to_owned(),
+                timeout_ms: None,
+            },
+            GateCommand {
+                command: "test -d .".to_owned(),
+                timeout_ms: None,
+            },
+        ])
+        .await;
+        let store = fixture.runtime.store();
+        store
+            .enqueue_effect(
+                EffectPayload::Launch {
+                    task_id: fixture.gate_id.clone(),
+                },
+                1_700_000_000_010,
+            )
+            .unwrap();
+        let mut launched = 0;
+        while let Ok(Some(claim)) = store.claim_effect(EffectKind::Launch, 1_700_000_000_011) {
+            let gate_id = match &claim.payload {
+                EffectPayload::Launch { task_id } => task_id.clone(),
+                _ => unreachable!(),
+            };
+            if gate_id == fixture.gate_id {
+                let _ = fixture.runtime.launch(claim).await;
+                launched += 1;
+                break;
+            }
+            store.complete_effect(&claim).unwrap();
+        }
+        assert_eq!(launched, 1);
+        let mut report = None;
+        for _ in 0..100 {
+            let gate = store.task(&fixture.gate_id).unwrap().unwrap();
+            if let Some(latest) = gate
+                .reports
+                .iter()
+                .find(|report| report.origin == ReportOrigin::Program)
+            {
+                report = Some(latest.clone());
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let report = report.expect("launch 入口应跑出程序门报告");
+        assert_eq!(report.checks.len(), 2);
+        assert_eq!(
+            store
+                .task(&fixture.gate_id)
+                .unwrap()
+                .unwrap()
+                .latest_verdict()
+                .unwrap()
+                .conclusion,
+            GateConclusion::Pass
+        );
+    }
+
+    #[tokio::test]
+    async fn update_commands_bumps_version_and_old_verdict_does_not_match() {
+        let fixture = gate_fixture(vec![GateCommand {
+            command: "true".to_owned(),
+            timeout_ms: None,
+        }])
+        .await;
+        let (gate, _) = run(&fixture).await;
+        let candidate = gate.latest_attempt().unwrap().handoffs[0].report_id.clone();
+        assert!(gate.passed(&candidate));
+        let store = fixture.runtime.store();
+        let updated = store
+            .update_gate_commands(
+                &fixture.gate_id,
+                vec![GateCommand {
+                    command: "false".to_owned(),
+                    timeout_ms: None,
+                }],
+                1_700_000_000_020,
+            )
+            .unwrap();
+        assert_eq!(updated.commands_version(), 2);
+        assert_eq!(updated.gate_commands()[0].command, "false");
+        // 旧判定绑的是第 1 版，不再算这道门的通过。
+        assert!(!updated.passed(&candidate));
+        assert!(updated.needs_fix(&candidate).is_none());
+        // 跑着的时候不许改。
+        let gate_now = store.task(&fixture.gate_id).unwrap().unwrap();
+        let handoff = gate_now.needs[0].handoff.clone().unwrap();
+        store
+            .begin_attempt_with(
+                &fixture.gate_id,
+                1_700_000_000_021,
+                AttemptTrigger::GateRecheck {
+                    candidate: GateCandidate {
+                        report_id: handoff.report_id.clone(),
+                        requirement_version: handoff.requirement_version,
+                    },
+                },
+                vec![handoff],
+            )
+            .unwrap();
+        assert!(matches!(
+            store.update_gate_commands(
+                &fixture.gate_id,
+                vec![GateCommand {
+                    command: "true".to_owned(),
+                    timeout_ms: None,
+                }],
+                1_700_000_000_022,
+            ),
+            Err(TaskError::GateWhileRunning)
+        ));
+    }
+
+    #[tokio::test]
+    async fn stopping_a_program_gate_is_undetermined_not_pass() {
+        let fixture = gate_launch_fixture(vec![GateCommand {
+            command: "sleep 5".to_owned(),
+            timeout_ms: None,
+        }])
+        .await;
+        let store = fixture.runtime.store();
+        // 跳过被把关任务的 launch 效果，手动替门排一次 launch 并走 runtime.launch 入口。
+        let mut launched = false;
+        loop {
+            let claim = store
+                .claim_effect(EffectKind::Launch, 1_700_000_000_010)
+                .unwrap();
+            let Some(claim) = claim else { break };
+            if matches!(&claim.payload, EffectPayload::Launch { task_id } if *task_id == fixture.gate_id)
+            {
+                let _ = fixture.runtime.launch(claim).await;
+                launched = true;
+                break;
+            }
+            store.complete_effect(&claim).unwrap();
+        }
+        assert!(launched);
+        for _ in 0..100 {
+            if store
+                .task(&fixture.gate_id)
+                .unwrap()
+                .unwrap()
+                .latest_attempt()
+                .is_some_and(|attempt| attempt.ended_at.is_none())
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let response = fixture
+            .runtime
+            .stop_task(fixture.gate_id.as_str(), StopMode::Now)
+            .await
+            .unwrap();
+        assert!(response.stopped);
+        let mut gate = None;
+        for _ in 0..200 {
+            let loaded = store.task(&fixture.gate_id).unwrap().unwrap();
+            if loaded
+                .reports
+                .iter()
+                .any(|report| report.origin == ReportOrigin::Program)
+            {
+                gate = Some(loaded);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let gate = gate.expect("停止后应有未确定报告");
+        let report = gate.latest_report().unwrap();
+        assert_eq!(report.checks[0].outcome, GateCheckOutcome::Stopped);
+        assert_eq!(
+            gate.latest_verdict().unwrap().conclusion,
+            GateConclusion::Undetermined
+        );
+        assert_eq!(
+            store.stage(&fixture.gate_id).unwrap(),
+            Stage::NeedsConditions
+        );
+        assert!(!gate.passed(&gate.latest_attempt().unwrap().handoffs[0].report_id));
+    }
+
+    #[tokio::test]
+    async fn boot_scan_marks_an_open_program_gate_interrupted_with_restart() {
+        let fixture = gate_launch_fixture(vec![GateCommand {
+            command: "true".to_owned(),
+            timeout_ms: None,
+        }])
+        .await;
+        let store = fixture.runtime.store();
+        let gate = store.task(&fixture.gate_id).unwrap().unwrap();
+        let handoff = gate.needs[0].handoff.clone().unwrap();
+        store
+            .begin_attempt_with(
+                &fixture.gate_id,
+                1_700_000_000_010,
+                AttemptTrigger::GateRecheck {
+                    candidate: GateCandidate {
+                        report_id: handoff.report_id.clone(),
+                        requirement_version: handoff.requirement_version,
+                    },
+                },
+                vec![handoff],
+            )
+            .unwrap();
+        let boot = BootId::from("boot-t057");
+        let scan = store.scan_at_boot(&boot, 1_700_000_000_011).unwrap();
+        assert!(scan.interrupted.contains(&fixture.gate_id));
+        let gate = store.task(&fixture.gate_id).unwrap().unwrap();
+        assert_eq!(
+            gate.latest_attempt().unwrap().end,
+            Some(AttemptEnd::Interrupted)
+        );
+        assert!(
+            store
+                .effect_pending(EffectKind::Restart, boot.as_str())
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn gate_check_again_queues_launch_only_after_undetermined() {
+        let fixture = gate_fixture(vec![GateCommand {
+            command: "sleep 5".to_owned(),
+            timeout_ms: Some(100),
+        }])
+        .await;
+        let _ = run(&fixture).await;
+        let store = fixture.runtime.store();
+        fixture
+            .runtime
+            .gate_check_again(&fixture.gate_id)
+            .expect("未确定后可以重跑");
+        assert!(
+            store
+                .effect_pending(EffectKind::Launch, fixture.gate_id.as_str())
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn gate_check_again_refuses_four_other_states() {
+        let fixture = gate_fixture(vec![
+            GateCommand {
+                command: "true".to_owned(),
+                timeout_ms: None,
+            },
+            GateCommand {
+                command: "printf ok".to_owned(),
+                timeout_ms: None,
+            },
+        ])
+        .await;
+        let _ = run(&fixture).await;
+        let store = fixture.runtime.store();
+        let error = fixture
+            .runtime
+            .gate_check_again(&fixture.gate_id)
+            .expect_err("通过后不再重跑");
+        assert!(error.contains("不是未确定/被打断"), "{error}");
+
+        // 候选变了：被把关任务又交一份 ready 结果。
+        let gate = store.task(&fixture.gate_id).unwrap().unwrap();
+        let guarded = store.task(&gate.needs[0].from).unwrap().unwrap();
+        if let Some(open) = guarded
+            .latest_attempt()
+            .filter(|attempt| attempt.ended_at.is_none())
+        {
+            let _ = store.end_attempt(
+                &guarded.id,
+                open.id,
+                1_700_000_000_030,
+                AttemptEnd::Reported,
+            );
+        }
+        let attempt = store.begin_attempt(&guarded.id, 1_700_000_000_031).unwrap();
+        store
+            .record_report(
+                &guarded.id,
+                attempt,
+                NewReport {
+                    state: ReportState::Ready,
+                    origin: ReportOrigin::Agent,
+                    summary: "又改了一版".to_owned(),
+                    question: None,
+                },
+                1_700_000_000_032,
+            )
+            .unwrap();
+        let error = fixture
+            .runtime
+            .gate_check_again(&fixture.gate_id)
+            .expect_err("候选变了不重跑");
+        assert!(error.contains("候选"), "{error}");
+
+        // 普通任务不是门。
+        let task = store
+            .create_task(
+                NewTask {
+                    title: "普通任务".to_owned(),
+                    requirement: "做".to_owned(),
+                    dod: "好".to_owned(),
+                    cwd: std::path::PathBuf::from("/tmp"),
+                    conversation: ConversationId::new("kind-1"),
+                    model: ModelChoice {
+                        connection: "deepseek".to_owned(),
+                        model: "deepseek-flash".to_owned(),
+                        effort_wanted: "high".to_owned(),
+                    },
+                    tools: THIN_TOOLS.iter().map(|name| (*name).to_owned()).collect(),
+                },
+                1_700_000_000_033,
+            )
+            .unwrap();
+        let error = fixture
+            .runtime
+            .gate_check_again(&task.id)
+            .expect_err("普通任务不是门");
+        assert!(error.contains("不是门"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn interrupted_program_gate_can_be_rerun_but_not_resumed() {
+        let fixture = gate_launch_fixture(vec![GateCommand {
+            command: "true".to_owned(),
+            timeout_ms: None,
+        }])
+        .await;
+        let store = fixture.runtime.store();
+        let gate = store.task(&fixture.gate_id).unwrap().unwrap();
+        let handoff = gate.needs[0].handoff.clone().unwrap();
+        store
+            .begin_attempt_with(
+                &fixture.gate_id,
+                1_700_000_000_040,
+                AttemptTrigger::GateRecheck {
+                    candidate: GateCandidate {
+                        report_id: handoff.report_id.clone(),
+                        requirement_version: handoff.requirement_version,
+                    },
+                },
+                vec![handoff],
+            )
+            .unwrap();
+        let boot = BootId::from("boot-t057-resume");
+        store.scan_at_boot(&boot, 1_700_000_000_041).unwrap();
+        let error = fixture
+            .runtime
+            .resume_task(&fixture.gate_id)
+            .await
+            .expect_err("程序门没有会话可接");
+        assert!(error.contains("gate_check_again"), "{error}");
+        fixture
+            .runtime
+            .gate_check_again(&fixture.gate_id)
+            .expect("被打断后可以重跑");
+        assert!(
+            store
+                .effect_pending(EffectKind::Launch, fixture.gate_id.as_str())
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn gate_check_again_refuses_changed_commands_version() {
+        let fixture = gate_fixture(vec![GateCommand {
+            command: "true".to_owned(),
+            timeout_ms: None,
+        }])
+        .await;
+        let _ = run(&fixture).await;
+        fixture
+            .runtime
+            .store()
+            .update_gate_commands(
+                &fixture.gate_id,
+                vec![GateCommand {
+                    command: "false".to_owned(),
+                    timeout_ms: None,
+                }],
+                1_700_000_000_030,
+            )
+            .unwrap();
+        let error = fixture
+            .runtime
+            .gate_check_again(&fixture.gate_id)
+            .expect_err("命令版本变了不重跑");
+        assert!(error.contains("命令已经改过"), "{error}");
     }
 }

@@ -1416,3 +1416,105 @@ fn resume_task_reconcile_refuses_after_the_task_already_resumed() {
         .expect_err("已经接上了");
     assert_eq!(error, "已经接着做了");
 }
+
+#[test]
+fn t057_update_gate_commands_card_shows_before_after_and_version() {
+    let directory = tempfile::tempdir().unwrap();
+    let data_dir = directory.path();
+    let store = task_store(data_dir);
+    let draft = |title: &str| tasks::NewTask {
+        title: title.to_owned(),
+        requirement: "把事做完".to_owned(),
+        dod: "有结果".to_owned(),
+        cwd: data_dir.to_path_buf(),
+        conversation: tasks::ConversationId::new("kind-session"),
+        model: tasks::ModelChoice {
+            connection: "deepseek".to_owned(),
+            model: "deepseek-flash".to_owned(),
+            effort_wanted: "high".to_owned(),
+        },
+        tools: service::THIN_TOOLS.map(str::to_owned).to_vec(),
+    };
+    let root = store
+        .create_graph(
+            tasks::NewGraph {
+                root: draft("总任务"),
+                subtasks: vec![
+                    tasks::NewSubtask {
+                        task: draft("被把关"),
+                        policy: tasks::TaskPolicy::default(),
+                        after: Vec::new(),
+                        milestone: false,
+                        program_gate: Vec::new(),
+                    },
+                    tasks::NewSubtask {
+                        task: draft("程序门"),
+                        policy: tasks::TaskPolicy::default(),
+                        after: vec![0],
+                        milestone: true,
+                        program_gate: vec![tasks::GateCommand {
+                            command: "cargo test".to_owned(),
+                            timeout_ms: None,
+                        }],
+                    },
+                ],
+            },
+            T0,
+        )
+        .unwrap();
+    let gate = store.children(&root.id).unwrap()[1].clone();
+    let registry = ActionRegistry::settings(data_dir.to_path_buf(), None);
+    let action = registry.get("update_gate_commands").expect("动作已登记");
+    assert_eq!(action.skill(), "aios-tasks");
+    let identity = data_dir.join("identity.txt");
+    let details = json!({
+        "gate_task_id": gate.id.as_str(),
+        "commands": [{"command": "cargo test --all"}, {"command": "true"}],
+    });
+    let facts = action
+        .describe(&details, &action_env(data_dir, &identity))
+        .expect("程序门可以改命令");
+    assert_eq!(facts.len(), 3);
+    assert_eq!(facts[0].name, "命令");
+    assert!(
+        facts[0].value.contains("改前：cargo test"),
+        "{}",
+        facts[0].value
+    );
+    assert!(
+        facts[0].value.contains("改后：cargo test --all；true"),
+        "{}",
+        facts[0].value
+    );
+    assert!(
+        facts[1].value.contains("第 1 版 → 第 2 版"),
+        "{}",
+        facts[1].value
+    );
+    assert!(facts[2].value.contains("旧判定作废"), "{}", facts[2].value);
+
+    // 空命令、没变、不是程序门都拒。
+    let error = action
+        .describe(
+            &json!({"gate_task_id": gate.id.as_str(), "commands": []}),
+            &action_env(data_dir, &identity),
+        )
+        .expect_err("空命令拒");
+    assert!(!error.is_empty(), "{error}");
+    let error = action
+        .describe(
+            &json!({"gate_task_id": gate.id.as_str(), "commands": [{"command": "cargo test"}]}),
+            &action_env(data_dir, &identity),
+        )
+        .expect_err("没变拒");
+    assert!(error.contains("没有变化"), "{error}");
+
+    let guarded = store.children(&root.id).unwrap()[0].clone();
+    let error = action
+        .describe(
+            &json!({"gate_task_id": guarded.id.as_str(), "commands": [{"command": "true"}]}),
+            &action_env(data_dir, &identity),
+        )
+        .expect_err("普通任务不是程序门");
+    assert!(error.contains("不是程序门"), "{error}");
+}

@@ -77,6 +77,7 @@ function startReplay(
   const routeFile =
     routesFile === undefined
       ? (restartRouteFile(options) ??
+        t057RouteFile(options) ??
         t056RouteFile(options) ??
         t055RouteFile(options) ??
         t030RouteFile(options) ??
@@ -325,6 +326,9 @@ export interface FixtureOptions {
   /// T056.2：账本夹具。Kind 带约束派出调查任务；ThinAgent 记两条叙述（同 topic 换一条）、
   /// 查一次历史，再交 ready 报告。
   t056?: 'ledger';
+  /// T057：程序门夹具。Kind 提一张带程序门命令的图；ThinAgent 只交被把关任务的结果，
+  /// 门由程序跑命令。
+  t057?: 'pass' | 'fail' | 'timeout';
 }
 
 /** T024.4：双会话回放用哪份按请求体路由的文件；预写会话的两种不需要。 */
@@ -352,6 +356,12 @@ function t052RouteFile(options: FixtureOptions): string | null {
   if (options.t052Fail) return 't052-routes-graph-fail.json';
   if (!options.t052Graph) return null;
   return 't052-routes-graph.json';
+}
+
+/** T057：程序门场景的回放路由（Kind 提程序门图，ThinAgent 交被把关结果）。 */
+function t057RouteFile(options: FixtureOptions): string | null {
+  if (options.t057 === undefined) return null;
+  return 't057-routes-' + options.t057 + '.json';
 }
 
 /** T056.2：账本场景的回放路由（Kind 带约束派任务，ThinAgent 记账本再报 ready）。 */

@@ -15,7 +15,7 @@ mod write;
 
 pub use apply_patch::ApplyPatchTool;
 pub use ask_user::AskUserQuestionTool;
-pub use bash::BashTool;
+pub use bash::{BashTool, DEFAULT_TIMEOUT_MS, MAX_OUTPUT_BYTES, MAX_TIMEOUT_MS};
 pub use canvas::CanvasTool;
 pub use edit::EditTool;
 pub use glob::GlobTool;

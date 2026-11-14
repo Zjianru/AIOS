@@ -23,8 +23,10 @@ pub use stage::Stage;
 pub use store::{BootScan, GateJudgeOutcome, SCHEMA_VERSION, StopAttempt, Store};
 pub use task::{
     AcceptBatch, AcceptOutcome, Acceptance, Arrangement, Attempt, AttemptEnd, AttemptTrigger,
-    Cancellation, CancellationReason, Confirmation, ContinueCause, GateCandidate, GateConclusion,
-    GateVerdict, Handoff, Input, InputAttachment, InputSource, MilestoneGate, MissingItem,
-    ModelChoice, Need, NewGraph, NewInput, NewReport, NewSubtask, NewTask, Report, ReportOrigin,
-    ReportState, RequirementVersion, Run, SayOutcome, Task, TaskPolicy, VersionSource, Worktree,
+    Cancellation, CancellationReason, Confirmation, ContinueCause, GateCandidate, GateCheck,
+    GateCheckOutcome, GateCommand, GateConclusion, GateVerdict, Handoff, Input, InputAttachment,
+    InputSource, MilestoneGate, MissingItem, ModelChoice, Need, NewGraph, NewInput, NewReport,
+    NewSubtask, NewTask, ProgramGateOutcome, Report, ReportOrigin, ReportState, RequirementVersion,
+    Run, SayOutcome, Task, TaskPolicy, VerdictSource, VersionSource, Worktree,
+    validate_gate_commands,
 };

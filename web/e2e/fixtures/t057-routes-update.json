@@ -1,0 +1,14 @@
+{
+  "routes": [
+    {
+      "contains": "把命令换成",
+      "file": "t057-kind-update.jsonl",
+      "paceMs": 50
+    },
+    {
+      "contains": "\"name\":\"task_report\"",
+      "file": "t057-thin.jsonl",
+      "paceMs": 60
+    }
+  ]
+}
