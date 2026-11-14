@@ -208,11 +208,17 @@ async fn handle(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> std::io::R
             write_response(&mut stream, status, "application/json", body).await
         }
         ReplayCall::Stream(records) => {
-            let frames = substitute_graph_id(encode_sse(&records), body_text.as_ref());
+            let frames = substitute_result_task_id(
+                substitute_graph_id(encode_sse(&records), body_text.as_ref()),
+                body_text.as_ref(),
+            );
             write_sse(&mut stream, &frames, pace_ms).await
         }
         ReplayCall::Cut(records) => {
-            let frames = substitute_graph_id(encode_sse_cut(&records), body_text.as_ref());
+            let frames = substitute_result_task_id(
+                substitute_graph_id(encode_sse_cut(&records), body_text.as_ref()),
+                body_text.as_ref(),
+            );
             write_sse(&mut stream, &frames, pace_ms).await
         }
         ReplayCall::Hang => loop {
@@ -280,6 +286,52 @@ fn substitute_graph_id(frames: Vec<String>, request_body: &str) -> Vec<String> {
     frames
         .into_iter()
         .map(|frame| frame.replace("__GRAPH_ID__", &id))
+        .collect()
+}
+
+/// T054.2：结果卡的任务 id 只有运行时才知道；脚本里用 __RESULT_TASK_ID__ 占位，
+/// 回放时从请求体 JSON 的任意 result-card 块取（当前消息或历史里都行）。
+fn substitute_result_task_id(frames: Vec<String>, request_body: &str) -> Vec<String> {
+    if !frames
+        .iter()
+        .any(|frame| frame.contains("__RESULT_TASK_ID__"))
+    {
+        return frames;
+    }
+    let Ok(body) = serde_json::from_str::<serde_json::Value>(request_body) else {
+        return frames;
+    };
+    fn find(value: &serde_json::Value) -> Option<String> {
+        match value {
+            serde_json::Value::Object(map) => {
+                if map.get("type").and_then(serde_json::Value::as_str) == Some("result-card")
+                    && let Some(task_id) = map.get("taskId").and_then(serde_json::Value::as_str)
+                {
+                    return Some(task_id.to_owned());
+                }
+                map.values().find_map(find)
+            }
+            serde_json::Value::Array(items) => items.iter().find_map(find),
+            _ => None,
+        }
+    }
+    // 对话轮里服务已经把这个块投成一行文字（模型请求里没有 block 的 JSON），从文字里取。
+    let from_text = request_body
+        .split("用户要求修改这张结果卡：任务 ")
+        .nth(1)
+        .and_then(|rest| {
+            let id: String = rest
+                .chars()
+                .take_while(char::is_ascii_alphanumeric)
+                .collect();
+            (!id.is_empty()).then_some(id)
+        });
+    let Some(task_id) = find(&body).or(from_text) else {
+        return frames;
+    };
+    frames
+        .into_iter()
+        .map(|frame| frame.replace("__RESULT_TASK_ID__", &task_id))
         .collect()
 }
 

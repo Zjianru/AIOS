@@ -5,7 +5,7 @@ import { apiPost, startKernelFixture, type KernelFixture } from './service-fixtu
 
 /**
  * T039.2：Kind 对话里的任务卡任何时刻都有明确状态词，且状态随任务变化。
- * 覆盖：派发→进行中→待你核→接受后「已接受」；停止→「已停止」；所有卡都有 task-state。
+ * 覆盖：派发→进行中→待你核→接受后「已关闭」；停止→「已停止」；所有卡都有 task-state。
  */
 
 const TITLE = '把 hello.txt 的判重改成按 url';
@@ -43,7 +43,7 @@ async function expectEveryCardHasState(page: import('@playwright/test').Page): P
   }
 }
 
-test('任务卡状态：进行中→待你核→已接受，每张卡都有状态词', async ({ page }) => {
+test('任务卡状态：进行中→待你核→已关闭，每张卡都有状态词', async ({ page }) => {
   test.setTimeout(150_000);
   const fixture = await startKernelFixture({ t030: 'write' });
   try {
@@ -60,9 +60,9 @@ test('任务卡状态：进行中→待你核→已接受，每张卡都有状�
     await expect(review).toHaveCount(1, { timeout: 30_000 });
     await expect(review.locator('[data-kind="task-state"]')).toContainText('待你核');
     await expectEveryCardHasState(page);
-    // 接受以后，状态词变成「已接受」。
+    // T054：接受以后任务关闭，状态词变成「已关闭」。
     await review.locator('[data-kind="task-accept"]').click();
-    await expect(review.locator('[data-kind="task-state"]')).toContainText('已接受', {
+    await expect(review.locator('[data-kind="task-state"]')).toContainText('已关闭', {
       timeout: 30_000,
     });
     await expectEveryCardHasState(page);

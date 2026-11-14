@@ -81,6 +81,7 @@ function startReplay(
         t013RouteFile(options) ??
         t052RouteFile(options) ??
         t053RouteFile(options) ??
+        t054RouteFile(options) ??
         taskResultRouteFile(options))
       : routesFile;
   const args: string[] = [];
@@ -312,6 +313,9 @@ export interface FixtureOptions {
   t052Fail?: boolean;
   /// T053：任务图带只读里程碑门（先查 → 独立核查 → 通过后再写）。
   t053Gate?: boolean;
+  /// T054：调查任务夹具（Kind 直接 task_accept 无写集）；oldCard 是写任务交两份结果；
+  /// update 是写任务交结果后改要求（带结果卡进输入框、第 2/3 版要求）。
+  t054?: 'investigation' | 'oldCard' | 'update' | 'updateWindow' | 'updateWindow2';
 }
 
 /** T024.4：双会话回放用哪份按请求体路由的文件；预写会话的两种不需要。 */
@@ -345,6 +349,12 @@ function t052RouteFile(options: FixtureOptions): string | null {
 function t053RouteFile(options: FixtureOptions): string | null {
   if (!options.t053Gate) return null;
   return 't053-routes-graph.json';
+}
+
+/** T054：调查任务（Kind 受理只读任务，ThinAgent 报 ready）。 */
+function t054RouteFile(options: FixtureOptions): string | null {
+  if (!options.t054) return null;
+  return 't054-routes-' + options.t054 + '.json';
 }
 
 /** T030：写任务/接受/bash/工作树这些场景的回放路由。 */
@@ -420,7 +430,11 @@ export async function startKernelFixture(
     options.taskResult === 'two' ||
     options.taskResult === 'pretext' ||
     options.t029Restart !== undefined ||
-    options.t030 !== undefined
+    options.t030 !== undefined ||
+    options.t054 === 'oldCard' ||
+    options.t054 === 'update' ||
+    options.t054 === 'updateWindow' ||
+    options.t054 === 'updateWindow2'
   ) {
     await writeFile(path.join(dataDir, 'hello.txt'), 'hello from fixture\n');
     // 页头写入范围用例：任务目录里的另一个文件。

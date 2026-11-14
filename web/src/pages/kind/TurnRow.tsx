@@ -21,7 +21,14 @@ import { useKindStore, useStreamStore } from './kindStore';
 import { processStepsOf } from './turnViews';
 import { ProcessView } from './process/ProcessView';
 import { CanvasView } from './CanvasView';
-import { AttachmentPreview, FileCard, FromCanvasChip, PasteCard, pasteStats } from './composer/AttachmentCard';
+import {
+  AttachmentPreview,
+  FileCard,
+  FromCanvasChip,
+  PasteCard,
+  ResultCardChip,
+  pasteStats,
+} from './composer/AttachmentCard';
 import { attachmentGet } from '@/data/service';
 import type { CompactionView, TurnUserView, TurnViewData } from './kindStore';
 import type { CanvasViewDoc } from './turnViews';
@@ -430,6 +437,12 @@ export const TurnRow = memo(function TurnRow({
       {view.user ? (
         <div className="mb-2 mt-3 flex flex-col items-end gap-1.5" data-kind="user-message-row">
           {view.user.canvas ? <FromCanvasChip title={view.user.canvas.title} /> : null}
+          {view.user.resultCard ? (
+            <ResultCardChip
+              title={view.user.resultCard.title}
+              version={view.user.resultCard.version}
+            />
+          ) : null}
           {view.user.pastes.length > 0 || view.user.files.length > 0 ? <UserCards user={view.user} /> : null}
           {view.user.text ? (
             <div

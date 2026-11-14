@@ -180,6 +180,8 @@ interface KindState {
       attachments?: { id: string; name: string; bytes: number }[];
       /** ：画布放进来的那一句带着画布身份（id + 标题）。 */
       canvas?: { id: string; title: string };
+      /** T054.2：结果卡「要求修改」带进输入框的那张卡。 */
+      resultCard?: { taskId: string; title: string; version: number };
     },
   ) => Promise<boolean>;
   resend: (turnId: string) => void;
@@ -191,13 +193,17 @@ interface KindState {
   /** 确认卡：暂不（什么都不执行，记 dismissed）。 */
   dismissCard: (callId: string) => Promise<void>;
   /** 结果卡：接受（服务登记当前版本+报告，回执由 card/decision 事件回填）。 */
-  acceptTaskResult: (callId: string) => Promise<void>;
+  acceptTaskResult: (callId: string, reportId?: string) => Promise<void>;
   /** T053：门结果卡判定（通过/需修正；note 是用户原话，空白当没有）。 */
   judgeGate: (
     callId: string,
     conclusion: 'pass' | 'needs_fix',
     note?: string,
   ) => Promise<void>;
+  /** T054.2：点「要求修改」把结果卡放进 Kind 输入框（Composer 消费后清）。 */
+  pendingResultCard: { taskId: string; title: string; version: number } | null;
+  modifyTaskResult: (card: { taskId: string; title: string; version: number }) => void;
+  clearPendingResultCard: () => void;
   compact: () => void;
   setModel: (model: KindState['model']) => void;
   /** ：从服务刷新会话合计/汇率/币种。 */
@@ -271,6 +277,7 @@ const unsentSends = new Map<
     pastes: string[];
     files: { id: string; name: string; bytes: number }[];
     canvas?: { id: string; title: string };
+    resultCard?: { taskId: string; title: string; version: number };
   }
 >();
 
@@ -288,6 +295,7 @@ function addUnsentView(
   pastes: string[],
   files: { id: string; name: string; bytes: number }[],
   canvas?: { id: string; title: string },
+  resultCard?: { taskId: string; title: string; version: number },
 ): void {
   useKindStore.setState((state) => {
     if (state.views.some((view) => view.id === viewId)) return {};
@@ -296,7 +304,7 @@ function addUnsentView(
       startedAt: null,
       durationMs: null,
       status: 'completed',
-      user: { text, elements: [], pastes, files, canvas: canvas ?? null },
+      user: { text, elements: [], pastes, files, canvas: canvas ?? null, resultCard: resultCard ?? null },
       taskResults: [],
       says: [],
       reasoning: null,
@@ -499,9 +507,77 @@ function applyCardSignals(views: TurnViewData[]): TurnViewData[] {
   });
 }
 
-/** 折卡之后再套任务库事实（T038 折卡 + T041 状态映射 + T053 门判定/上游变了状态）。 */
+/**
+ * T054：结果卡上的「接受」「要求修改」由会话事实派生：只给每个任务最后一张结果卡，
+ * 且它 ready、未接受；有门的要门已判通过（门任务自己的卡不出）。
+ */
+/** T054.2 F1：每个任务「确认改要求」回执的 seq；比它早的结果卡已经是旧版本。 */
+function requirementChangeSeqs(): Map<string, number> {
+  const seqs = new Map<string, number>();
+  for (const event of liveEvents) {
+    if (event.type !== 'card/decision') continue;
+    const decision = event.data as unknown as {
+      action?: unknown;
+      phase?: unknown;
+      data?: { result?: { task_id?: unknown } };
+    };
+    if (decision?.action !== 'update_task_requirement' || decision.phase !== 'confirmed') continue;
+    const taskId = decision.data?.result?.task_id;
+    if (typeof taskId !== 'string' || taskId === '') continue;
+    if (typeof event.seq !== 'number') continue;
+    // 取**最新**一次回执：第二次改要求时，上一版的卡早于新回执，要一起收起来。
+    const current = seqs.get(taskId);
+    if (current === undefined || event.seq > current) seqs.set(taskId, event.seq);
+  }
+  return seqs;
+}
+
+function applyAcceptEligibility(views: TurnViewData[]): TurnViewData[] {
+  const lastCard = new Map<string, string>();
+  const changedSeqs = requirementChangeSeqs();
+  for (const view of views) {
+    for (const fact of view.taskResults) {
+      if (fact.id.startsWith('task-report:')) lastCard.set(fact.taskId, fact.id);
+    }
+  }
+  let changedAny = false;
+  const next = views.map((view) => {
+    let changed = false;
+    const taskResults = view.taskResults.map((fact) => {
+      if (!fact.id.startsWith('task-report:')) return fact;
+      const gateSelf = fact.gate?.state === 'pending_verdict';
+      const accepted =
+        fact.decision?.phase === 'confirmed' &&
+        !(gateSelf && fact.decision.data?.conclusion !== undefined);
+      const gatePassed = fact.gate?.state !== 'waiting' || fact.gateVerdict === 'pass';
+      // T054.2 F1：确认改要求之后、新版本结果卡出来之前，旧版本的结果卡已经是旧卡：
+      // 接受和「要求修改」一起收起来（刷新按同一条回执重建）。
+      const changedSeq = changedSeqs.get(fact.taskId);
+      const staleAfterChange =
+        fact.seq !== undefined && changedSeq !== undefined && fact.seq < changedSeq;
+      const acceptable =
+        lastCard.get(fact.taskId) === fact.id &&
+        fact.state === 'ready' &&
+        !gateSelf &&
+        gatePassed &&
+        !accepted &&
+        !staleAfterChange;
+      if ((fact.acceptable === true) === acceptable) return fact;
+      changed = true;
+      return { ...fact, acceptable };
+    });
+    if (!changed) return view;
+    changedAny = true;
+    return { ...view, taskResults };
+  });
+  return changedAny ? next : views;
+}
+
+/** 折卡之后再套任务库事实（T038 折卡 + T041 状态映射 + T053 门判定/上游变了 + T054 接受按钮）。 */
 function finishViews(views: TurnViewData[]): TurnViewData[] {
-  return applyCardSignals(applyTaskCardStates(reconcileTaskCards(views), taskCardStates));
+  return applyAcceptEligibility(
+    applyCardSignals(applyTaskCardStates(reconcileTaskCards(views), taskCardStates)),
+  );
 }
 
 /** 从还没流完的参数 JSON 里取 canvas 的 title；还没流到（或半个转义）就先给空串。 */
@@ -856,6 +932,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   modelInitialized: false,
   canvasTracks: {},
   drawingCanvas: null,
+  pendingResultCard: null,
   reveal: null,
   revealTurn: (turnId) => set({ reveal: { turnId, at: Date.now() } }),
 
@@ -905,12 +982,14 @@ export const useKindStore = create<KindState>()((set, get) => ({
     try {
       const page = await fetchEventsPage({ maxMessages: 100, minMessages: 10, minTurns: 5 });
       rememberCardSignals(page.events);
+      // 先换上这页日志再折视图：T054.2 F1 的「改要求回执 seq」等派生要读到这一页里的
+      // card/decision，否则刷新后旧结果卡的按钮会先按旧规则出来、之后也没人重算。
+      liveEvents = page.events.slice();
       const views = finishViews(
         mergeCcViews(deriveTurnViews(page.events, turnLabels()), page.events),
       );
       const lastSeqOfPage = page.events[page.events.length - 1]?.seq ?? 0;
       const oldestSeq = page.events[0]?.seq ?? null;
-      liveEvents = page.events.slice();
       liveTurn = null;
       for (const event of page.events) {
         if (event.type === 'turn/start' && typeof event.data.turn === 'number') {
@@ -999,11 +1078,12 @@ export const useKindStore = create<KindState>()((set, get) => ({
     const pastes = options?.pastes ?? [];
     const files = options?.attachments ?? [];
     const canvas = options?.canvas;
+    const resultCard = options?.resultCard;
     return sendMessage(text, requestId, options).then(
       () => true,
       () => {
-        unsentSends.set(viewId, { requestId, text, pastes, files, canvas });
-        addUnsentView(viewId, text, pastes, files, canvas);
+        unsentSends.set(viewId, { requestId, text, pastes, files, canvas, resultCard });
+        addUnsentView(viewId, text, pastes, files, canvas, resultCard);
         return false;
       },
     );
@@ -1017,6 +1097,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
       pastes: pending.pastes,
       attachments: pending.files,
       canvas: pending.canvas,
+      resultCard: pending.resultCard,
     })
       .then(() => {
         unsentSends.delete(viewId);
@@ -1132,9 +1213,9 @@ export const useKindStore = create<KindState>()((set, get) => ({
     );
   },
 
-  acceptTaskResult: (callId) => {
-    // 卡片状态不先改：服务登记后由 card/decision 事件回填「你已接受」。
-    return cardAct(callId, 'confirm').then(
+  acceptTaskResult: (callId, reportId) => {
+    // 卡片状态不先改：服务登记后由 card/decision 事件回填「你接受了」。
+    return cardAct(callId, 'confirm', undefined, undefined, reportId).then(
       (response) => {
         const decision = response.decision;
         if (decision?.phase === 'confirmed') return;
@@ -1167,6 +1248,9 @@ export const useKindStore = create<KindState>()((set, get) => ({
       },
     );
   },
+
+  modifyTaskResult: (card) => set({ pendingResultCard: card }),
+  clearPendingResultCard: () => set({ pendingResultCard: null }),
 
   compact: () => {
     // 真实手动压缩；分隔线由 compaction/* 日志事件回填（页面不预览假摘要）。

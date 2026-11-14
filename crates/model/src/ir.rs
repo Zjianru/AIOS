@@ -194,6 +194,13 @@ pub enum ContentBlock {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
     },
+    /// T054.2：用户把一张任务结果卡放进输入框（点「要求修改」）；投给模型时换成一行文字。
+    ResultCard {
+        #[serde(rename = "taskId")]
+        task_id: String,
+        title: String,
+        version: u32,
+    },
     /// 模型的思考内容（thinking）；signature 是回放用的原生元数据（块级，照 DSH）。
     Reasoning {
         text: String,
@@ -235,11 +242,32 @@ impl ContentBlock {
         }
     }
 
+    /// T054.2：结果卡放进输入框的那一块；页面上画成卡，模型看到一行文字。
+    pub fn from_result_card(
+        task_id: impl Into<String>,
+        title: impl Into<String>,
+        version: u32,
+    ) -> Self {
+        Self::ResultCard {
+            task_id: task_id.into(),
+            title: title.into(),
+            version,
+        }
+    }
+
+    /// T054.2：结果卡块投给模型的那一行文字（照 spec 原文）。
+    pub fn result_card_text(task_id: &str, title: &str, version: u32) -> String {
+        format!("[用户要求修改这张结果卡：任务 {task_id}「{title}」，第 {version} 版要求的结果]")
+    }
+
     /// 文本块的内容；非文本块返回 None。
     pub fn as_text(&self) -> Option<&str> {
         match self {
             Self::Text { text, .. } => Some(text),
-            Self::Reasoning { .. } | Self::ToolCall { .. } | Self::File { .. } => None,
+            Self::Reasoning { .. }
+            | Self::ToolCall { .. }
+            | Self::File { .. }
+            | Self::ResultCard { .. } => None,
         }
     }
 
@@ -251,7 +279,10 @@ impl ContentBlock {
                 name,
                 arguments,
             } => Some((id, name, arguments)),
-            Self::Text { .. } | Self::Reasoning { .. } | Self::File { .. } => None,
+            Self::Text { .. }
+            | Self::Reasoning { .. }
+            | Self::File { .. }
+            | Self::ResultCard { .. } => None,
         }
     }
 }

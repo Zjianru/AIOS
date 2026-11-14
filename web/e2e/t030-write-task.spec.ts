@@ -91,7 +91,7 @@ interface StoredTask {
   worktree?: boolean;
   worktree_state?: { root: string; repo: string; cwd: string } | null;
   versions?: unknown[];
-  acceptance?: { version: number; report_id: string } | null;
+  acceptances?: { version: number; report_id: string }[];
   reports: { id: string; state: string; version?: number }[];
   runs: { attempts: { id: string; trigger?: string; ended_at?: number | null }[] }[];
   tools: string[];
@@ -149,7 +149,7 @@ async function readText(file: string): Promise<string> {
   return readFile(file, 'utf8');
 }
 
-test('写任务：点名直接派，卡「待你核」+清单只该文件；接受→「你已接受」，阶段仍待检查、无「完成」', async ({
+test('写任务：点名直接派，卡「待你核」+清单只该文件；接受→「你接受了」+已关闭、无「完成」', async ({
   page,
   request,
 }) => {
@@ -188,29 +188,36 @@ test('写任务：点名直接派，卡「待你核」+清单只该文件；接�
     expect(header.tools).not.toContain('bash');
     expect(await readText(path.join(fixture.dataDir, 'hello.txt'))).toBe(CHANGED);
 
-    // 接受：按钮变「你已接受」；刷新后从日志重建仍是已接受。
+    // T054：接受 → 回执「你接受了 · 时间」+「任务已关闭；要再改，跟 Kind 说」；
+    // 刷新后从日志重建仍是已关闭（卡和任务页同一个词表）。
     await card.getByRole('button', { name: '接受', exact: true }).click();
-    await expect(card.locator('[data-kind="task-accepted"]')).toHaveText(/你已接受/, {
+    await expect(card.locator('[data-kind="task-accepted"]')).toHaveText(/你接受了/, {
       timeout: 20_000,
     });
+    await expect(card.locator('[data-kind="task-closed-note"]')).toHaveText(
+      '任务已关闭；要再改，跟 Kind 说',
+    );
+    await expect(card.locator('[data-kind="task-state"]')).toHaveText('已关闭');
     await expect(card).not.toContainText('完成');
     await page.reload();
     const again = reviewCard(page);
     await expect(again).toBeVisible({ timeout: 20_000 });
-    await expect(again.locator('[data-kind="task-accepted"]')).toHaveText(/你已接受/);
+    await expect(again.locator('[data-kind="task-accepted"]')).toHaveText(/你接受了/);
     await expect(again).not.toContainText('完成');
 
-    // T051：接受后回任务对话，页头也是「已接受」（和 Kind 卡同一个词表、同一份事实）。
+    // T051/T054：接受后回任务对话，页头也是「已关闭」（和 Kind 卡同一个词表、同一份事实）。
     await page.goto(urlOf(fixture, '#taskchat:' + taskId));
     await expect(
       page.locator('[data-pane="task-conversation"] [data-kind="task-state"]'),
-    ).toHaveText('已接受', { timeout: 30_000 });
+    ).toHaveText('已关闭', { timeout: 30_000 });
 
-    // 接受记录绑当前版本和这份报告；阶段仍是 ready_for_review（卡上叫「待检查」）。
+    // 接受记录绑当前版本和这份报告（历史是数组）；报告 relay 是当时的快照（待检查）。
     const row = taskRow(fixture, taskId);
-    expect(row.acceptance).toBeTruthy();
-    expect(row.acceptance?.version).toBe(1);
-    expect(row.reports.some((report) => report.id === row.acceptance?.report_id)).toBe(true);
+    expect(row.acceptances?.length).toBe(1);
+    expect(row.acceptances?.[0]?.version).toBe(1);
+    expect(
+      row.reports.some((report) => report.id === row.acceptances?.[0]?.report_id),
+    ).toBe(true);
     const relay = await relayOf(fixture, taskId);
     expect(relay.task.stage).toBe('ready_for_review');
     expect(relay.card_state).toBe('review');

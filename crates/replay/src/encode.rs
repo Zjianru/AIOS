@@ -148,8 +148,8 @@ fn encode(records: &[AssistantStreamRecord], complete: bool) -> Vec<String> {
                                     ));
                                 }
                             }
-                            // 文件块只在用户消息里，assistant 流里不会出现。
-                            ContentBlock::File { .. } => {}
+                            // 文件块和结果卡块只在用户消息里，assistant 流里不会出现。
+                            ContentBlock::File { .. } | ContentBlock::ResultCard { .. } => {}
                         }
                     } else if let ContentBlock::Reasoning {
                         signature: Some(signature),

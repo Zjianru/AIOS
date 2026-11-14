@@ -10,4 +10,8 @@ export type CardActRequest = { callId: string, verb: CardVerb, option?: string |
 /**
  * 门「需修正」时用户原话（原样存）；其他动作不用。
  */
-note?: string | null, };
+note?: string | null,
+/**
+ * T054：结果卡上的报告 id（接受时用卡上那份，不再拿最近报告猜）。
+ */
+reportId?: string | null, };

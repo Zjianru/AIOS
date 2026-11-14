@@ -1034,6 +1034,7 @@ export function TaskChatScene() {
               pastes: item.pastes,
               files: item.attachments,
               canvas: null,
+              resultCard: null,
             };
             return (
               <div

@@ -82,6 +82,14 @@ impl RootHost {
         request: &SendRequest,
     ) -> Result<UserMessage, ServiceError> {
         let mut blocks = Vec::new();
+        // T054.2：结果卡「要求修改」带进输入框的卡排在用户文字前面（模型看到一行文字）。
+        if let Some(card) = &request.result_card {
+            blocks.push(model::ContentBlock::from_result_card(
+                card.task_id.clone(),
+                card.title.clone(),
+                card.version,
+            ));
+        }
         // 画布按钮放进来的那一句排在最前（照原型 composeForModel 的顺序）；
         // 块上带画布身份，页面据此画「来自画布」标记，模型看到的也是这句话。
         if let Some(canvas) = &request.canvas {

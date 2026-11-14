@@ -109,7 +109,8 @@ pub fn read_root_events(data_dir: &Path) -> Vec<session::Event> {
 
 /// 等这一条根会话日志里至少收尾了 turns 轮，返回当时的全部事件。
 pub async fn wait_turns(host: &RootHost, data_dir: &Path, turns: usize) -> Vec<session::Event> {
-    for _ in 0..600 {
+    // T054：整套并发跑（工具/进程类用例抢占）时第一轮收尾可能超过 12 秒；给到 60 秒。
+    for _ in 0..3000 {
         tokio::time::sleep(Duration::from_millis(20)).await;
         let status = host
             .dispatch(service::Call::Status(service::StatusRequest {}))

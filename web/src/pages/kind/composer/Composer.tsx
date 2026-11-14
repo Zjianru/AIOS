@@ -20,7 +20,15 @@ import { fileMentions } from '../atGrammar';
 import { attachmentGet, attachmentPut, fileReferences } from '@/data/service';
 import type { FileReferenceEntry, SendAttachmentRef } from '@/data/service';
 import { cn } from '@/lib/utils';
-import { AttachmentPreview, FileCard, FromCanvasChip, PasteCard, QuoteCard, pasteStats } from './AttachmentCard';
+import {
+  AttachmentPreview,
+  FileCard,
+  FromCanvasChip,
+  PasteCard,
+  QuoteCard,
+  ResultCardChip,
+  pasteStats,
+} from './AttachmentCard';
 
 const LARGE_PASTE_CHAR_THRESHOLD = 1000;
 const MAX_HEIGHT = 240;
@@ -30,6 +38,8 @@ export interface ComposerSendOptions {
   attachments: SendAttachmentRef[];
   /** T015.4：画布放进来的那一句带着画布身份；没有就是自己写的。 */
   canvas?: { id: string; title: string };
+  /** T054.2：结果卡「要求修改」带进来的那张卡。 */
+  resultCard?: { taskId: string; title: string; version: number };
 }
 
 export interface ComposerHandle {
@@ -118,6 +128,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   /** T015.4：这句话是画布放进来的（发出去时带标记，气泡上留着）。 */
   const [fromCanvas, setFromCanvas] = useState<{ id: string; title: string } | null>(null);
+  /** T054.2：结果卡「要求修改」放进输入框的那张卡（一次一张，再点别的卡就换掉）。 */
+  const [resultCard, setResultCard] = useState<{
+    taskId: string;
+    title: string;
+    version: number;
+  } | null>(null);
+  const pendingResultCard = useKindStore((state) => state.pendingResultCard);
+  const clearPendingResultCard = useKindStore((state) => state.clearPendingResultCard);
   const [pastePreview, setPastePreview] = useState<number | null>(null);
   const [filePreview, setFilePreview] = useState<{ id: string; text: string } | null>(null);
   const [atMenu, setAtMenu] = useState<AtMenuState | null>(null);
@@ -152,6 +170,19 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   useEffect(() => {
     resize();
   }, [text, resize]);
+
+  // T054.2：结果卡「要求修改」把卡交给输入框：消费后聚焦，卡可删，一次只留一张。
+  useEffect(() => {
+    if (!pendingResultCard) return;
+    touchedRef.current = true;
+    changedDuringSendRef.current = true;
+    setResultCard(pendingResultCard);
+    clearPendingResultCard();
+    requestAnimationFrame(() => {
+      resize();
+      inputRef.current?.focus();
+    });
+  }, [clearPendingResultCard, pendingResultCard, resize]);
 
   // T013 验收 F4：选中对话正文（回答、你的消息、工作过程）里的文字就浮出「引用」；
   // 输入框里的选区仍走 textarea 自己的 onSelect，两条路互不干扰。
@@ -228,6 +259,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       setPastes([]);
       setAttachments([]);
       setFromCanvas(null);
+      setResultCard(null);
       setQuote('');
       touchedRef.current = false;
       changedDuringSendRef.current = false;
@@ -243,6 +275,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         pastes?: unknown;
         attachments?: unknown;
         canvas?: unknown;
+        resultCard?: unknown;
       };
       if (typeof draft.text === 'string') setText(draft.text);
       const fromCanvas = draft.canvas as { id?: unknown; title?: unknown } | null | undefined;
@@ -254,6 +287,18 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       }
       if (Array.isArray(draft.pastes)) {
         setPastes(draft.pastes.filter((item): item is string => typeof item === 'string'));
+      }
+      const card = draft.resultCard as
+        | { taskId?: unknown; title?: unknown; version?: unknown }
+        | null
+        | undefined;
+      if (
+        card &&
+        typeof card.taskId === 'string' &&
+        typeof card.title === 'string' &&
+        typeof card.version === 'number'
+      ) {
+        setResultCard({ taskId: card.taskId, title: card.title, version: card.version });
       }
       if (Array.isArray(draft.attachments)) {
         const files = draft.attachments
@@ -282,13 +327,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       pastes,
       attachments: attachments.map(({ id, name, bytes, mime }) => ({ id, name, bytes, mime })),
       canvas: fromCanvas,
+      resultCard,
     };
     try {
       localStorage.setItem('aios.kind.draft.' + draftScope, JSON.stringify(draft));
     } catch {
       // 存不下（隐私模式）就算了。
     }
-  }, [attachments, draftScope, fromCanvas, pastes, quotes, text]);
+  }, [attachments, draftScope, fromCanvas, pastes, quotes, resultCard, text]);
 
   const pruneAtMenu = useCallback((value: string, caret: number) => {
     const before = value.slice(0, caret);
@@ -371,7 +417,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       .join(String.fromCharCode(10));
     if (!value && pastes.length === 0 && attachments.length === 0) return;
     // T013.8：发送时先清空（马上能继续打），受理失败再把内容放回来（草稿不清）。
-    const snapshot = { text, quotes, pastes, attachments, quote, fromCanvas };
+    const snapshot = { text, quotes, pastes, attachments, quote, fromCanvas, resultCard };
     changedDuringSendRef.current = false;
     setText('');
     setQuotes([]);
@@ -381,6 +427,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     setQuote('');
     setPageQuote(null);
     setFromCanvas(null);
+    setResultCard(null);
     requestAnimationFrame(() => {
       resize();
       inputRef.current?.focus();
@@ -389,6 +436,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       pastes,
       attachments: attachments.map(({ id, name, bytes }) => ({ id, name, bytes })),
       ...(fromCanvas ? { canvas: fromCanvas } : {}),
+      ...(resultCard ? { resultCard } : {}),
     });
     if (!accepted) {
       // 失败进 unsent：内容放回输入框（草稿也没动）；失败等待期间用户又输入了就不覆盖新的。
@@ -399,6 +447,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       setAttachments(snapshot.attachments);
       setQuote(snapshot.quote);
       setFromCanvas(snapshot.fromCanvas);
+      setResultCard(snapshot.resultCard);
       return;
     }
     try {
@@ -406,7 +455,7 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     } catch {
       // 忽略。
     }
-  }, [attachments, draftScope, fromCanvas, offline, onSend, pastes, quote, quotes, resize, text]);
+  }, [attachments, draftScope, fromCanvas, offline, onSend, pastes, quote, quotes, resize, resultCard, text]);
 
   useImperativeHandle(
     ref,
@@ -508,6 +557,18 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       }}
     >
       <div className="rounded-card border border-line-2 bg-raised/70 px-3 py-2 transition-colors">
+        {resultCard ? (
+          <ResultCardChip
+            title={resultCard.title}
+            version={resultCard.version}
+            onRemove={() => {
+              touchedRef.current = true;
+              changedDuringSendRef.current = true;
+              setResultCard(null);
+            }}
+            className="mb-1.5"
+          />
+        ) : null}
         {fromCanvas ? (
           <FromCanvasChip
             title={fromCanvas.title}
@@ -579,7 +640,13 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
             ref={inputRef}
             rows={1}
             data-kind="composer-input"
-            placeholder={offline ? '连上之后再发…' : (placeholder ?? '和 Kind 说…')}
+            placeholder={
+              offline
+                ? '连上之后再发…'
+                : resultCard
+                  ? '要改什么？Kind 会按你说的出一版新要求给你确认'
+                  : (placeholder ?? '和 Kind 说…')
+            }
             value={text}
             onChange={onInput}
             onKeyDown={onKeyDown}

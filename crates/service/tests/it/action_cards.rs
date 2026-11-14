@@ -223,6 +223,7 @@ async fn send(host: &RootHost, text: &str, serial: u32) {
             pastes: Vec::new(),
             attachments: Vec::new(),
             canvas: None,
+            result_card: None,
         }))
         .await
         .expect("send");
@@ -416,6 +417,7 @@ async fn three_options_confirm_only_the_chosen_one() {
             option: Some("b".to_owned()),
 
             note: None,
+            report_id: None,
         }))
         .await
         .expect("确认卡");
@@ -440,6 +442,7 @@ async fn three_options_confirm_only_the_chosen_one() {
             option: Some("b".to_owned()),
 
             note: None,
+            report_id: None,
         }))
         .await
         .expect("第二次确认卡");
@@ -478,6 +481,7 @@ async fn concurrent_confirm_on_the_same_card_acts_once() {
         option: Some("a".to_owned()),
 
         note: None,
+        report_id: None,
     };
     let (first, second) = tokio::join!(
         scenario.host().dispatch(Call::CardAct(request())),
@@ -756,6 +760,7 @@ async fn select_model_changes_session_and_last_selection() {
             option: Some("pro-max".to_owned()),
 
             note: None,
+            report_id: None,
         }))
         .await
         .expect("确认卡");
@@ -828,6 +833,7 @@ async fn dismiss_records_and_notifies_the_model_once() {
             option: None,
 
             note: None,
+            report_id: None,
         }))
         .await
         .expect("暂不");
@@ -897,6 +903,7 @@ async fn changed_facts_refuse_without_executing() {
             option: Some("a".to_owned()),
 
             note: None,
+            report_id: None,
         }))
         .await
         .expect("确认卡");
@@ -947,6 +954,7 @@ async fn a_new_card_replaces_an_untouched_old_card() {
             option: Some("a".to_owned()),
 
             note: None,
+            report_id: None,
         }))
         .await
         .expect("旧卡");
@@ -963,6 +971,7 @@ async fn a_new_card_replaces_an_untouched_old_card() {
             option: Some("b".to_owned()),
 
             note: None,
+            report_id: None,
         }))
         .await
         .expect("新卡");
@@ -1009,6 +1018,7 @@ async fn concurrent_acts_on_different_cards_do_not_block_each_other() {
         option: Some("b".to_owned()),
 
         note: None,
+        report_id: None,
     };
     let replaced = CardActRequest {
         call_id: "call_card".to_owned(),
@@ -1016,6 +1026,7 @@ async fn concurrent_acts_on_different_cards_do_not_block_each_other() {
         option: Some("a".to_owned()),
 
         note: None,
+        report_id: None,
     };
     let (live_result, replaced_result) = tokio::join!(
         scenario.host().dispatch(Call::CardAct(live)),
@@ -1065,6 +1076,7 @@ async fn act_failure_is_recorded_as_failed() {
             option: Some("a".to_owned()),
 
             note: None,
+            report_id: None,
         }))
         .await
         .expect("确认卡");
@@ -1119,6 +1131,7 @@ async fn mask_and_unmask_change_disabled_models_and_record_decisions() {
             option: Some("one".to_owned()),
 
             note: None,
+            report_id: None,
         }))
         .await
         .expect("确认屏蔽");
@@ -1148,6 +1161,7 @@ async fn mask_and_unmask_change_disabled_models_and_record_decisions() {
             option: Some("one".to_owned()),
 
             note: None,
+            report_id: None,
         }))
         .await
         .expect("确认解除");

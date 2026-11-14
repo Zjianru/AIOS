@@ -154,7 +154,8 @@ pub(super) fn request_body(
                         ContentBlock::Text { text: piece, .. } => text.push_str(piece),
                         ContentBlock::Reasoning { .. }
                         | ContentBlock::ToolCall { .. }
-                        | ContentBlock::File { .. } => {
+                        | ContentBlock::File { .. }
+                        | ContentBlock::ResultCard { .. } => {
                             return Err(unsupported("system 消息只能包含文本块"));
                         }
                     }
@@ -208,6 +209,15 @@ pub(super) fn request_body(
                                 ),
                             }),
                             ContentBlock::File { .. } => None,
+                            // T054.2：结果卡块换成一行文字（排在用户文字前面）。
+                            ContentBlock::ResultCard {
+                                task_id,
+                                title,
+                                version,
+                            } if message.role == Role::User => Some(WireBlock::Text {
+                                text: ContentBlock::result_card_text(task_id, title, *version),
+                            }),
+                            ContentBlock::ResultCard { .. } => None,
                             ContentBlock::Reasoning { text, signature }
                                 if message.role == Role::Assistant =>
                             {
@@ -256,7 +266,8 @@ pub(super) fn request_body(
                         ContentBlock::Text { .. } => {}
                         ContentBlock::Reasoning { .. }
                         | ContentBlock::ToolCall { .. }
-                        | ContentBlock::File { .. } => {
+                        | ContentBlock::File { .. }
+                        | ContentBlock::ResultCard { .. } => {
                             return Err(unsupported("tool 消息只能包含文本内容块"));
                         }
                     }

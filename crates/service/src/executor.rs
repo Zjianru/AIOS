@@ -368,28 +368,11 @@ impl TaskRuntime {
         report_id: &str,
     ) -> Result<Acceptance, String> {
         let id = TaskId::from(task_id);
-        let task = self
-            .store
-            .task(&id)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("找不到这个任务：{task_id}"))?;
-        let Some(report) = task.latest_report() else {
-            return Err("这个任务还没有可以接受的结果".to_owned());
-        };
-        if report.id.as_str() != report_id {
-            return Err("这份结果已经不是任务的最新报告，不能再接受".to_owned());
-        }
-        if report.version != task.requirement_version() {
-            return Err(format!(
-                "要求已经改过，旧版本（第 {} 版）的报告不能接受",
-                report.version
-            ));
-        }
-        if report.state != ReportState::Ready {
-            return Err("这份结果不是可以接受的状态".to_owned());
-        }
+        let report = ReportId::from(report_id);
+        // 校验顺序、回原因和幂等都由 store 一个事务做（T054）：
+        // 找不到/非 ready、门任务、不是最新、版本旧、门没判通过各回各的原因。
         self.store
-            .accept(&id, Self::now())
+            .accept(&id, &report, Self::now())
             .map_err(|error| error.to_string())
     }
 
@@ -784,10 +767,8 @@ impl TaskRuntime {
         });
         let review = latest_report.is_some_and(|report| is_review_report(&task, report));
         let accepted = latest_report.is_some_and(|report| {
-            task.acceptance.as_ref().is_some_and(|acceptance| {
-                acceptance.report_id == report.id
-                    && acceptance.version == task.requirement_version()
-            })
+            report.version == task.requirement_version()
+                && task.acceptance_for(&report.id).is_some()
         });
         let running = attempt_id.is_some_and(|attempt_id| {
             self.running_for(&task.id, attempt_id)
@@ -1858,6 +1839,8 @@ impl TaskRuntime {
                 }
                 // T053：卡上要能分清这张结果卡是哪份报告（门判定只作用在它判的那份上）。
                 body["report_id"] = json!(report.id.as_str());
+                // T054：这份报告绑的要求版本（小标题版本 >1 时加「· 第 N 版要求」）。
+                body["requirement_version"] = json!(report.version);
                 let request_id = format!("task-report:{}:{}", task.id, report.id);
                 Ok(Some((task, body, request_id)))
             }
@@ -3178,6 +3161,89 @@ impl TaskRuntime {
         ))
     }
 
+    /// T054.2：Kind 确认改要求后：同一事务改要求并追加版本，然后在原会话开新 Attempt。
+    pub(crate) async fn update_requirement(
+        self: &Arc<Self>,
+        task_id: &str,
+        requirement: String,
+        dod: Option<String>,
+    ) -> Result<String, String> {
+        let id = TaskId::from(task_id);
+        let updated = self
+            .store
+            .update_requirement(&id, &requirement, dod.as_deref(), Self::now())
+            .map_err(|error| error.to_string())?;
+        let Some(attempt) = updated.latest_attempt().cloned() else {
+            return Err(
+                "要求已经改了，但这个任务还没开跑过，没有可接着做的会话；请重新派任务".to_owned(),
+            );
+        };
+        let version = updated.requirement_version();
+        let handoffs = self
+            .store
+            .current_handoffs(&updated)
+            .map_err(|error| error.to_string())?;
+        let opened = match self
+            .open_resume(
+                &updated,
+                &attempt,
+                AttemptTrigger::RequirementChanged,
+                SlotKind::Wake,
+                handoffs,
+            )
+            .await
+        {
+            Ok(opened) => opened,
+            Err(ResumeBlock::Later) => {
+                return Err(format!(
+                    "要求已改成第 {version} 版，但任务现在接不上（会话在收尾或没有空位）；稍后再在任务对话里说一句就能接着做"
+                ));
+            }
+            Err(ResumeBlock::AlreadyStarted) => {
+                return Err(format!(
+                    "要求已改成第 {version} 版；任务已经接着开了新的 Attempt"
+                ));
+            }
+            Err(ResumeBlock::PackageMissing) => {
+                return Err("要求已改，但任务包缺东西，接不上；看任务里的缺项".to_owned());
+            }
+            Err(ResumeBlock::NoSession(reason)) => {
+                return Err(format!(
+                    "要求已改成第 {version} 版，但接不上原会话：{reason}"
+                ));
+            }
+        };
+        let note = format!(
+            "AIOS：用户在 Kind 对话里把任务要求改成第 {version} 版：\n{requirement}\nDoD：{}\n写集不变；先按新要求在原来的范围里继续；要改写入范围仍走 task_update。",
+            updated.dod
+        );
+        let request_id = format!("task-requirement:{id}:{}", opened.attempt_id);
+        if let Err(error) = opened
+            .host
+            .send_message(&request_id, UserMessage::text(note), DeliveryMode::Steer)
+            .await
+        {
+            opened.host.shutdown().await;
+            self.running
+                .lock()
+                .expect("thinagent 表锁被毒化")
+                .remove(opened.host.agent().id().as_str());
+            best_effort(
+                "改要求后的说明没送出去的 Attempt 没收尾",
+                self.store
+                    .end_attempt(&id, opened.attempt_id, Self::now(), AttemptEnd::NotOpened),
+            );
+            self.release_seat(id.as_str());
+            return Err(format!(
+                "要求已改成第 {version} 版，但新 Attempt 的说明没送进去：{error}"
+            ));
+        }
+        self.wake();
+        Ok(format!(
+            "要求已改成第 {version} 版；已在原会话开新的 Attempt，第一条输入写明新要求和 DoD。"
+        ))
+    }
+
     /// Kind 的 task_status：阶段、最近报告全文、Attempt 数；waiting 时向 ThinAgent 要一次。
     async fn status_text(&self, task_id: &str) -> Result<String, ToolFailure> {
         let id = TaskId::from(task_id);
@@ -3471,6 +3537,7 @@ fn stage_key(stage: Stage) -> &'static str {
         Stage::Running => "running",
         Stage::ReadyForReview => "ready_for_review",
         Stage::RequirementMet => "requirement_met",
+        Stage::Closed => "closed",
     }
 }
 
@@ -3481,6 +3548,7 @@ fn stage_label(stage: Stage) -> &'static str {
         Stage::Running => "执行中",
         Stage::ReadyForReview => "待检查",
         Stage::RequirementMet => "任务要求已满足",
+        Stage::Closed => "已关闭",
     }
 }
 

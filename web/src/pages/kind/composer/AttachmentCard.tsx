@@ -213,6 +213,49 @@ export function FromCanvasChip({ title, onRemove, className }: FromCanvasChipPro
   );
 }
 
+interface ResultCardChipProps {
+  title: string;
+  version: number;
+  onRemove?: () => void;
+  className?: string;
+}
+
+/**
+ * T054.2：结果卡放进输入框的那张卡（240 宽、文件图标、两行：要求修改 · 第 N 版的结果 / 标题）。
+ * 输入框里可删；发出去以后气泡上照原样画，不能删。
+ */
+export function ResultCardChip({ title, version, onRemove, className }: ResultCardChipProps) {
+  return (
+    <span
+      data-kind="result-card-chip"
+      title={'要求修改「' + title + '」第 ' + version + ' 版的结果'}
+      className={cn(
+        'inline-flex w-[240px] max-w-full items-center gap-2 rounded-btn border border-line-2 bg-pane px-2 py-1.5 text-2 text-ink-2',
+        onRemove ? 'pr-1' : '',
+        className,
+      )}
+    >
+      <FileText className="size-4 shrink-0 text-ink-3" />
+      <span className="flex min-w-0 flex-1 flex-col leading-4">
+        <span className="truncate text-1 text-ink-3">
+          要求修改 · 第 {version} 版的结果
+        </span>
+        <span className="truncate text-2 text-ink">{title}</span>
+      </span>
+      {onRemove ? (
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label="移除结果卡"
+          className="grid size-5 shrink-0 place-items-center rounded-full text-ink-3 transition-colors hover:bg-active hover:text-ink"
+        >
+          <X className="size-3" />
+        </button>
+      ) : null}
+    </span>
+  );
+}
+
 interface PreviewProps {
   kind: 'paste' | 'file';
   title: string;

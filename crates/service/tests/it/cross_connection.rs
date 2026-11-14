@@ -203,6 +203,7 @@ async fn send(host: &RootHost, text: &str, serial: u32) {
         pastes: Vec::new(),
         attachments: Vec::new(),
         canvas: None,
+        result_card: None,
     }))
     .await
     .expect("send");
@@ -215,6 +216,7 @@ fn confirm(option: &str) -> Call {
         option: Some(option.to_owned()),
 
         note: None,
+        report_id: None,
     })
 }
 
