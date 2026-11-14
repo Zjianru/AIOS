@@ -480,3 +480,54 @@ test('F1 窗口：确认改要求后、新结果卡出来前，旧卡已经不�
     await fixture.close();
   }
 });
+
+test('F1 第二窗口：第二次确认改要求后、v3 结果卡出来前，v2 卡两个按钮消失', async ({ page }) => {
+  test.setTimeout(240_000);
+  const fixture = await startKernelFixture({ t054: 'updateWindow2' });
+  try {
+    await page.goto(urlOf(fixture));
+    await sendKind(page, '把 hello.txt 的判重改成按 url');
+
+    // 第一次改要求：第 2 版结果卡正常出来。
+    const first = reviewCard(page);
+    await expect(first).toBeVisible({ timeout: 60_000 });
+    await first.locator('[data-kind="task-modify-requirement"]').click();
+    const input = page.locator('[data-kind="composer-input"]');
+    await input.fill('标题也拿不到的别丢，用域名加路径当键');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    const confirm1 = page.locator('[data-kind="confirm-card"]').last();
+    await expect(confirm1).toBeVisible({ timeout: 60_000 });
+    await confirm1.locator('[data-action="card-option"]').first().click();
+    await confirm1.locator('[data-action="card-confirm"]').click();
+    await expect(confirm1).toHaveAttribute('data-state', 'done', { timeout: 40_000 });
+    const second = lastResultCard(page, WRITE_CARD_TITLE);
+    await expect(second).toContainText('第 2 版要求', { timeout: 60_000 });
+    await expect(second.locator('[data-kind="task-accept"]')).toBeVisible();
+
+    // 第二次改要求：Kind 出同样的卡；确认后这次第 3 版 Attempt 的回放被卡住。
+    await second.locator('[data-kind="task-modify-requirement"]').click();
+    await expect(page.locator('[data-kind="composer"] [data-kind="result-card-chip"]')).toContainText(
+      '第 2 版的结果',
+    );
+    await input.fill('再改一点：按域名归并');
+    await page.getByRole('button', { name: '发送', exact: true }).click();
+    const confirm2 = page.locator('[data-kind="confirm-card"]').last();
+    await expect(confirm2).toBeVisible({ timeout: 60_000 });
+    await expect(confirm2.locator('[data-kind="confirm-fact"]').nth(1)).toContainText(
+      '第 2 版 → 第 3 版',
+    );
+    await confirm2.locator('[data-action="card-option"]').first().click();
+    await confirm2.locator('[data-action="card-confirm"]').click();
+    await expect(confirm2).toHaveAttribute('data-state', 'done', { timeout: 40_000 });
+
+    // 窗口：v3 卡不会出来；v2 卡（上一版）也不再能接受/要求修改。
+    await expect(second.locator('[data-kind="task-accept"]')).toHaveCount(0);
+    await expect(second.locator('[data-kind="task-modify-requirement"]')).toHaveCount(0);
+    await expect(second.locator('[data-kind="open-task"]')).toBeVisible();
+    await page.waitForTimeout(1000);
+    await expect(page.locator('[data-kind="task-result"]')).toHaveCount(2);
+    expect((taskOf(fixture, WRITE_TITLE).versions ?? []).length).toBe(3);
+  } finally {
+    await fixture.close();
+  }
+});

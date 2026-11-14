@@ -525,8 +525,9 @@ function requirementChangeSeqs(): Map<string, number> {
     const taskId = decision.data?.result?.task_id;
     if (typeof taskId !== 'string' || taskId === '') continue;
     if (typeof event.seq !== 'number') continue;
+    // 取**最新**一次回执：第二次改要求时，上一版的卡早于新回执，要一起收起来。
     const current = seqs.get(taskId);
-    if (current === undefined || event.seq < current) seqs.set(taskId, event.seq);
+    if (current === undefined || event.seq > current) seqs.set(taskId, event.seq);
   }
   return seqs;
 }

@@ -6,3 +6,9 @@ slow-timeout = { period = "5s", terminate-after = 6 }
 [[profile.default.overrides]]
 filter = 'test(/real_key|real-key|真_key/)'
 slow-timeout = { period = "180s", terminate-after = 2 }
+
+# T054：service::it 的整链用例要起假模型/回放并等第一轮收尾；整套并发下偶尔超过默认
+# 30 秒被杀。给 service 包更长的慢测试预算（10s 记慢，60s 才杀），其余包保持原样。
+[[profile.default.overrides]]
+filter = 'package(service)'
+slow-timeout = { period = "10s", terminate-after = 6 }
