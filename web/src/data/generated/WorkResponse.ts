@@ -11,7 +11,8 @@ export type WorkResponse = {
  */
 generatedAt: number,
 /**
- * 全部非总任务的事实（按 created_at 升序）。
+ * 上板的任务事实（按 created_at 升序）：已确认图的子任务 + 单派任务；
+ * 总任务、未确认图和取消图的子任务都不上。
  */
 tasks: Array<TaskFact>,
 /**

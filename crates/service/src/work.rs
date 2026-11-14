@@ -66,6 +66,9 @@ pub struct TaskFact {
     pub gate_of: Option<String>,
     /// 排队要等的前置任务 id。
     pub after: Vec<String>,
+    /// T055 审计：这是「等前置」的排队（上游还没可放行、也没有 blocked/failed/提问/被打断），
+    /// 不是「出了问题」；「现在」的问题组按它排除。
+    pub after_waiting: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest: Option<WorkLatest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -273,6 +276,30 @@ fn wait_item(meta: &FactMeta<'_>, kind: &str, events: &[session::Event]) -> Wait
     }
 }
 
+/// T055 审计：「等前置」的排队不算出了问题——有没解析的上游、且没有 blocked/failed/提问/
+/// 被打断/被停止这些「Kind 在补或卡住」的事实。
+fn after_waiting(task: &Task, stage: Stage, latest: Option<&tasks::Report>) -> bool {
+    if stage != Stage::NeedsConditions || task.needs.is_empty() {
+        return false;
+    }
+    let upstream_unready = task.needs.iter().any(|need| need.handoff.is_none());
+    if !upstream_unready {
+        return false;
+    }
+    if task.latest_attempt().is_some_and(|attempt| {
+        matches!(
+            attempt.end,
+            Some(tasks::AttemptEnd::Interrupted | tasks::AttemptEnd::Stopped)
+        )
+    }) {
+        return false;
+    }
+    !latest.is_some_and(|report| {
+        matches!(report.state, ReportState::Blocked | ReportState::Failed)
+            || report.question.is_some()
+    })
+}
+
 fn task_wait_kinds(meta: &FactMeta<'_>, gate_passed: bool) -> Vec<&'static str> {
     let mut kinds = Vec::new();
     if meta.task.is_interrupted() {
@@ -322,7 +349,25 @@ pub(crate) fn snapshot(
     let mut facts = Vec::new();
     let mut waits: HashMap<String, Vec<WaitItem>> = HashMap::new();
     let mut stage_keys: HashMap<String, String> = HashMap::new();
-    for task in all.iter().filter(|task| !task.is_graph_root()) {
+    // T055 审计：工作页/现在只上「已确认图的子任务 + 单派任务」；未确认图和取消图的子任务
+    // 还没开跑（或已作废），不上板。总任务也不上。
+    let visible: Vec<&Task> = all
+        .iter()
+        .filter(|task| {
+            if task.is_graph_root() {
+                return false;
+            }
+            match task.parent.as_ref() {
+                None => true,
+                Some(parent) => by_id.get(parent.as_str()).is_some_and(|root| {
+                    root.arrangement.as_ref().is_some_and(|arrangement| {
+                        arrangement.confirmed.is_some() && arrangement.cancelled.is_none()
+                    })
+                }),
+            }
+        })
+        .collect();
+    for task in visible {
         let stage = store.stage(&task.id)?;
         stage_keys.insert(task.id.as_str().to_owned(), stage_key(stage).to_owned());
         let closed_at = store.closed_at(&task.id)?;
@@ -360,7 +405,7 @@ pub(crate) fn snapshot(
             None => true,
         };
         let kinds = task_wait_kinds(&meta, gate_passed);
-        let task_waits = waits.entry(task.id.as_str().to_owned()).or_default();
+        let task_waits = waits.entry(format!("task:{}", task.id)).or_default();
         for kind in kinds {
             task_waits.push(wait_item(&meta, kind, events));
         }
@@ -384,6 +429,7 @@ pub(crate) fn snapshot(
                 .iter()
                 .map(|need| need.from.as_str().to_owned())
                 .collect(),
+            after_waiting: after_waiting(task, stage, latest),
             latest: latest.map(|report| WorkLatest {
                 report_id: report.id.as_str().to_owned(),
                 state: report_state_key(report.state).to_owned(),
@@ -413,40 +459,47 @@ pub(crate) fn snapshot(
         let turn = event_turn(events, proposal.seq);
         let body = proposal.meta.brief.clone();
         if let Some(task_id) = task_id.as_deref()
-            && by_id.contains_key(task_id)
-            && !by_id[task_id].is_graph_root()
+            && let Some(task) = by_id.get(task_id)
         {
-            let stage = stage_keys.get(task_id).cloned().unwrap_or_default();
+            // 绑任务的确认卡归同一个任务桶（绑总任务也显示，但总任务不上板）。
+            let stage = stage_keys.get(task_id).cloned();
             let item = WaitItem {
                 kind: KIND_CONFIRM.to_owned(),
                 task_id: Some(task_id.to_owned()),
-                title: by_id[task_id].title.clone(),
-                stage: Some(stage),
-                need: need_text(KIND_CONFIRM, &by_id[task_id].title),
+                title: task.title.clone(),
+                stage,
+                need: need_text(KIND_CONFIRM, &task.title),
                 body,
                 at,
                 turn,
                 also: Vec::new(),
                 pick: None,
-                write: crate::result_cards::write_scope_display(&by_id[task_id]),
+                write: crate::result_cards::write_scope_display(task),
                 version: None,
             };
-            waits.entry(task_id.to_owned()).or_default().push(item);
+            waits
+                .entry(format!("task:{task_id}"))
+                .or_default()
+                .push(item);
         } else {
-            waits.entry(String::new()).or_default().push(WaitItem {
-                kind: KIND_CONFIRM.to_owned(),
-                task_id: task_id.clone(),
-                title: proposal.meta.title.clone(),
-                stage: None,
-                need: need_text(KIND_CONFIRM, &proposal.meta.title),
-                body,
-                at,
-                turn,
-                also: Vec::new(),
-                pick: None,
-                write: None,
-                version: None,
-            });
+            // 没绑任务的确认卡每张一个桶：后端是「一张卡一项」，不能互相顶掉。
+            waits
+                .entry(format!("confirm:{}", proposal.call_id))
+                .or_default()
+                .push(WaitItem {
+                    kind: KIND_CONFIRM.to_owned(),
+                    task_id: None,
+                    title: proposal.meta.title.clone(),
+                    stage: None,
+                    need: need_text(KIND_CONFIRM, &proposal.meta.title),
+                    body,
+                    at,
+                    turn,
+                    also: Vec::new(),
+                    pick: None,
+                    write: None,
+                    version: None,
+                });
         }
     }
 
@@ -479,20 +532,23 @@ pub(crate) fn snapshot(
             .map(|(_, time, _)| i64::try_from(*time).unwrap_or(i64::MAX))
             .unwrap_or(now);
         let turn = asked.as_ref().map(|(turn, _, _)| *turn);
-        waits.entry(String::new()).or_default().push(WaitItem {
-            kind: KIND_ANSWER.to_owned(),
-            task_id: None,
-            title: "Kind 问你".to_owned(),
-            stage: None,
-            need: need_text(KIND_ANSWER, "Kind 问你"),
-            body,
-            at,
-            turn,
-            also: Vec::new(),
-            pick: None,
-            write: None,
-            version: None,
-        });
+        waits
+            .entry("kind:questions".to_owned())
+            .or_default()
+            .push(WaitItem {
+                kind: KIND_ANSWER.to_owned(),
+                task_id: None,
+                title: "Kind 问你".to_owned(),
+                stage: None,
+                need: need_text(KIND_ANSWER, "Kind 问你"),
+                body,
+                at,
+                turn,
+                also: Vec::new(),
+                pick: None,
+                write: None,
+                version: None,
+            });
     }
 
     let mut wait = Vec::new();

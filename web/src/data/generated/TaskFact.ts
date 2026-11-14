@@ -28,4 +28,9 @@ gateOf?: string | null,
 /**
  * 排队要等的前置任务 id。
  */
-after: Array<string>, latest?: WorkLatest | null, acceptedAt?: number | null, closedAt?: number | null, };
+after: Array<string>,
+/**
+ * T055 审计：这是「等前置」的排队（上游还没可放行、也没有 blocked/failed/提问/被打断），
+ * 不是「出了问题」；「现在」的问题组按它排除。
+ */
+afterWaiting: boolean, latest?: WorkLatest | null, acceptedAt?: number | null, closedAt?: number | null, };

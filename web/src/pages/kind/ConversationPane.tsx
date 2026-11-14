@@ -373,7 +373,7 @@ export function ConversationPane() {
               });
             }}
             itemContent={(_index, view) => (
-              <div className="mx-auto w-full max-w-[680px]">
+              <div className="mx-auto w-full max-w-[680px]" data-turn={view.id}>
                 <TurnRow
                   view={view}
                   dayLabel={dayLabels.get(view.id) ?? null}

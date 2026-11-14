@@ -88,11 +88,8 @@ export function columnOf(task: TaskFact, waitTaskIds: Set<string>): BoardColumn 
 function wordOf(task: TaskFact, column: BoardColumn, waitKind: string | undefined): string {
   switch (column) {
     case 'queue':
-      return task.stage === 'needs_conditions'
-        ? '缺条件'
-        : task.after.length > 0
-          ? '等前置'
-          : '等待中';
+      if (task.stage === 'needs_conditions') return task.afterWaiting ? '等前置' : '缺条件';
+      return task.after.length > 0 ? '等前置' : '等待中';
     case 'doing':
       if (task.stage === 'running') return '执行中';
       if (task.gateOf) return '等里程碑';
@@ -204,10 +201,15 @@ export function filterDone(
   return { visible, older: done.length - visible.length };
 }
 
-/** 「现在」：出了问题 = 待补足条件、不在「等你」里的任务（行上固定「处理中」）。 */
+/**
+ * 「现在」：出了问题 = 待补足条件、不在「等你」里、也不是「等前置」的任务（行上固定「处理中」）。
+ * 「等前置」是排队正常状态（D96 的「失败或缺条件、Kind 正在补」不算它）。
+ */
 export function problemsOf(tasks: TaskFact[], wait: WaitItem[]): TaskFact[] {
   const waiting = new Set(wait.flatMap((item) => (item.taskId ? [item.taskId] : [])));
-  return tasks.filter((task) => task.stage === 'needs_conditions' && !waiting.has(task.id));
+  return tasks.filter(
+    (task) => task.stage === 'needs_conditions' && !task.afterWaiting && !waiting.has(task.id),
+  );
 }
 
 /** 「现在」：在推进 = 看板「在做」列的任务。 */

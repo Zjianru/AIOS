@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { apiPost, startKernelFixture, type KernelFixture } from './service-fixture';
 
 /** T055.1：工作页看板与「等你」（读侧）。 */
@@ -309,6 +310,10 @@ test('门：判通过前进在做/排队，判完等接受，接受后它和门�
     await expect(column(page, 'doing')).toContainText('先查行数', { timeout: 30_000 });
     await expect(column(page, 'queue')).toContainText('再写结果', { timeout: 30_000 });
     await expect(column(page, 'queue')).toContainText('等前置');
+    // 「等前置」是正常排队，不算「出了问题」（「现在」的问题组不出现它）。
+    await page.goto(urlOf(fixture, '#now'));
+    await expect(page.locator('[data-kind="now-problems"]')).not.toContainText('再写结果');
+    await page.goto(urlOf(fixture, '#work'));
     const judge = page.locator('[data-kind="wait-group"][data-wait-group="judge"]');
     await expect(judge).toBeVisible({ timeout: 60_000 });
     await expect(judge).toContainText('独立核查');
@@ -325,23 +330,158 @@ test('门：判通过前进在做/排队，判完等接受，接受后它和门�
       timeout: 40_000,
     });
 
-    // 工作页：结果等你接受；接受后它和门一起进完成列。
+    // 工作页：结果等你接受；在「等你」右栏直接接受，它和门一起进完成列。
     await page.goto(urlOf(fixture, '#work'));
-    const accept = page
-      .locator('[data-kind="board-wait-item"][data-wait-kind="accept"]')
+    const waiting = page.locator('[data-pane="waiting"]');
+    const accept = waiting
+      .locator('[data-kind="wait-item"][data-wait-kind="accept"]')
+      .filter({ hasText: '先查行数' })
       .first();
-    await expect(accept).toContainText('先查行数', { timeout: 30_000 });
-    await page.goto(urlOf(fixture, '#kind'));
-    const guardedCard = page
-      .locator('[data-kind="task-result"]')
-      .filter({ has: page.locator('[data-kind="task-title"]', { hasText: '先查行数' }) })
-      .first();
-    await expect(guardedCard.locator('[data-kind="task-accept"]')).toBeVisible({ timeout: 30_000 });
-    await guardedCard.locator('[data-kind="task-accept"]').click();
-    await expect(guardedCard).toContainText('你接受了', { timeout: 60_000 });
-    await page.goto(urlOf(fixture, '#work'));
+    await expect(accept).toBeVisible({ timeout: 30_000 });
+    await accept.locator('[data-action="wait-accept"]').click();
+    await expect(waiting.locator('[data-kind="accept-receipt"]')).toContainText('接受了 1 项', {
+      timeout: 30_000,
+    });
     await expect(column(page, 'done')).toContainText('先查行数', { timeout: 30_000 });
     await expect(column(page, 'done')).toContainText('独立核查', { timeout: 10_000 });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('去看定位：同一任务多份结果时，按「等你」项的轮号滚到最新那份，不滚到最早旧卡', async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture({ t054: 'oldCard' });
+  try {
+    await page.goto(urlOf(fixture));
+    await sendKind(page, '把 hello.txt 的判重改成按 url');
+    await expect(page.locator('[data-kind="task-result"]').last()).toBeVisible({ timeout: 60_000 });
+    // 同一任务再开一次 Attempt、交第二份结果（T054 的旧卡夹具）。
+    const taskId = (() => {
+      const db = new DatabaseSync(path.join(fixture.dataDir, 'tasks.sqlite'), { readOnly: true });
+      try {
+        const row = db.prepare('SELECT id FROM task').all() as { id: string }[];
+        return row[0]?.id;
+      } finally {
+        db.close();
+      }
+    })();
+    const say = await apiPost(request, fixture, {
+      method: 'task-say',
+      taskId,
+      text: '再核对一遍',
+    });
+    expect(say.ok()).toBeTruthy();
+    await expect(page.locator('[data-kind="task-result"]')).toHaveCount(2, { timeout: 60_000 });
+
+    await page.goto(urlOf(fixture, '#work'));
+    const compact = page.locator('[data-kind="board-wait-item"][data-wait-kind="accept"]').first();
+    await expect(compact).toBeVisible({ timeout: 30_000 });
+    const label = await compact.locator('.brand-type').innerText();
+    const match = /第 (\d+) 轮/.exec(label);
+    expect(match).toBeTruthy();
+    const turn = Number(match?.[1] ?? '0');
+    await compact.click();
+    await expect(page.locator('[data-turn="turn-' + String(turn) + '"]')).toBeVisible({
+      timeout: 60_000,
+    });
+    await expect(
+      page
+        .locator('[data-turn="turn-' + String(turn) + '"]')
+        .locator('[data-kind="task-result"]')
+        .last(),
+    ).toBeVisible({ timeout: 10_000 });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('未确认图：子任务不上看板，确认卡还在等你；确认后才出现任务卡', async ({ page }) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture({ t052Graph: true });
+  try {
+    await page.goto(urlOf(fixture));
+    await sendKind(page, '先查 notes.md 有几行，再把行数写进 other.txt');
+    const confirm = page.locator('[data-kind="confirm-card"]').first();
+    await expect(confirm).toBeVisible({ timeout: 60_000 });
+
+    await page.goto(urlOf(fixture, '#work'));
+    await expect(page.locator('[data-kind="work-card"]')).toHaveCount(0, { timeout: 30_000 });
+    const waiting = page.locator('[data-pane="waiting"]');
+    await expect(waiting.locator('[data-kind="wait-group"][data-wait-group="confirm"]')).toBeVisible({
+      timeout: 30_000,
+    });
+
+    await page.goto(urlOf(fixture, '#kind'));
+    await confirm.locator('[data-action="card-option"]').first().click();
+    await confirm.locator('[data-action="card-confirm"]').click();
+    await expect(confirm).toHaveAttribute('data-state', 'done', { timeout: 40_000 });
+    await page.goto(urlOf(fixture, '#work'));
+    await expect(page.locator('[data-kind="work-card"]').first()).toBeVisible({ timeout: 60_000 });
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('现在：等前置不进出了问题；缺条件的 stopped 任务进问题组', async ({ page, request }) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture({ taskResult: 'live' });
+  try {
+    await page.goto(urlOf(fixture));
+    await sendKind(page, '帮我查一下新闻归档里的判重规则');
+    // 从根会话里等到任务 id，趁 live 任务还在跑立刻停。
+    let taskId = '';
+    for (let attempt = 0; attempt < 200 && !taskId; attempt += 1) {
+      try {
+        const root = JSON.parse(
+          await readFile(path.join(fixture.dataDir, 'kind-root.json'), 'utf8'),
+        ) as { sessionId: string };
+        const text = await readFile(
+          path.join(fixture.dataDir, 'sessions', root.sessionId + '.jsonl'),
+          'utf8',
+        );
+        taskId = /已派出任务 ([0-9a-f]+)。/.exec(text)?.[1] ?? '';
+      } catch {
+        // 日志还没写出来。
+      }
+      if (!taskId) await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(taskId).not.toBe('');
+    const stopped = await apiPost(request, fixture, {
+      method: 'task-stop',
+      taskId,
+      mode: 'now',
+    });
+    expect(stopped.ok()).toBeTruthy();
+
+    await page.goto(urlOf(fixture, '#work'));
+    await expect(column(page, 'queue')).toContainText('查一下新闻', { timeout: 30_000 });
+    await expect(column(page, 'queue')).toContainText('缺条件');
+    await page.goto(urlOf(fixture, '#now'));
+    const problems = page.locator('[data-kind="now-problems"]');
+    await expect(problems).toContainText('查一下新闻', { timeout: 30_000 });
+    await expect(problems).toContainText('处理中');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('取消图（暂不）：子任务一项都不上工作页', async ({ page }) => {
+  test.setTimeout(120_000);
+  const fixture = await startKernelFixture({ t052Graph: true });
+  try {
+    await page.goto(urlOf(fixture));
+    await sendKind(page, '先查 notes.md 有几行，再把行数写进 other.txt');
+    const confirm = page.locator('[data-kind="confirm-card"]').first();
+    await expect(confirm).toBeVisible({ timeout: 60_000 });
+    await confirm.locator('[data-action="card-dismiss"]').click();
+    await expect(confirm).toHaveAttribute('data-state', 'done', { timeout: 40_000 });
+    await page.goto(urlOf(fixture, '#work'));
+    await page.waitForTimeout(1500);
+    await expect(page.locator('[data-kind="work-card"]')).toHaveCount(0);
   } finally {
     await fixture.close();
   }

@@ -605,3 +605,205 @@ fn facts_carry_closed_at_and_acceptance() {
         "接受了就不在等你"
     );
 }
+
+/// 未确认图的子任务不上板，但绑总任务的确认卡仍在「等你」；确认后才上。
+#[test]
+fn an_unconfirmed_graph_is_not_on_the_board_but_its_confirm_card_is_waiting() {
+    let (directory, store) = open_store();
+    let cwd = directory.path();
+    let graph = NewGraph {
+        root: draft(cwd, "总任务"),
+        subtasks: vec![
+            NewSubtask {
+                task: draft(cwd, "先查行数"),
+                policy: policy(None),
+                after: Vec::new(),
+                milestone: false,
+            },
+            NewSubtask {
+                task: draft(cwd, "再写结果"),
+                policy: policy(None),
+                after: vec![0],
+                milestone: false,
+            },
+        ],
+    };
+    let root = store.create_graph(graph, T0).unwrap();
+    let card = proposal(
+        100,
+        T0 + 1,
+        1,
+        "call-graph",
+        "开跑这张图",
+        "确认后先查、再写。",
+        Some(root.id.as_str()),
+    );
+    let before = snapshot(&store, &card, &[], T0 + 2).unwrap();
+    assert!(
+        before.tasks.is_empty(),
+        "未确认图的子任务还没开跑，不上工作页"
+    );
+    let confirm = before
+        .wait
+        .iter()
+        .find(|item| item.kind == "confirm")
+        .expect("确认卡还在等你");
+    assert_eq!(confirm.title, "总任务");
+    assert_eq!(confirm.task_id.as_deref(), Some(root.id.as_str()));
+
+    store.confirm_graph(&root.id, T0 + 3).unwrap();
+    let after = snapshot(&store, &card, &[], T0 + 4).unwrap();
+    assert_eq!(after.tasks.len(), 2, "确认后子任务才上板");
+    let waiting = after
+        .tasks
+        .iter()
+        .find(|fact| fact.title == "再写结果")
+        .unwrap();
+    assert!(waiting.after_waiting, "等上游是排队，不是出了问题");
+    let first = after
+        .tasks
+        .iter()
+        .find(|fact| fact.title == "先查行数")
+        .unwrap();
+    assert!(!first.after_waiting);
+}
+
+/// 取消图的子任务不上板。
+#[test]
+fn a_cancelled_graph_is_not_on_the_board() {
+    let (directory, store) = open_store();
+    let cwd = directory.path();
+    let root = store
+        .create_graph(
+            NewGraph {
+                root: draft(cwd, "总任务"),
+                subtasks: vec![
+                    NewSubtask {
+                        task: draft(cwd, "子任务一"),
+                        policy: policy(None),
+                        after: Vec::new(),
+                        milestone: false,
+                    },
+                    NewSubtask {
+                        task: draft(cwd, "子任务二"),
+                        policy: policy(None),
+                        after: vec![0],
+                        milestone: false,
+                    },
+                ],
+            },
+            T0,
+        )
+        .unwrap();
+    store
+        .cancel_graph(&root.id, tasks::CancellationReason::Dismissed, T0 + 1)
+        .unwrap();
+    let response = snapshot(&store, &[], &[], T0 + 2).unwrap();
+    assert!(response.tasks.is_empty(), "取消图的子任务不上板");
+}
+
+/// 未绑确认卡和 Kind 提问同时在「等你」，不能互相顶掉。
+#[test]
+fn an_unbound_confirm_and_the_kind_questions_coexist() {
+    let (directory, store) = open_store();
+    let cwd = directory.path();
+    let _ = ready_task(&store, cwd, "写份结果", T0);
+    let mut events = proposal(
+        100,
+        T0 + 10,
+        2,
+        "call-model",
+        "换模型",
+        "换成 DeepSeek V4。",
+        None,
+    );
+    events.push(question(110, T0 + 11, 3, "q-1", "第一条问题"));
+    events.push(question(111, T0 + 12, 3, "q-2", "第二条问题"));
+    let response = snapshot(
+        &store,
+        &events,
+        &[pending("第一条问题", "q-1"), pending("第二条问题", "q-2")],
+        T0 + 20,
+    )
+    .unwrap();
+    assert!(
+        response
+            .wait
+            .iter()
+            .any(|item| item.kind == "confirm" && item.title == "换模型"),
+        "未绑确认卡要在"
+    );
+    let answers: Vec<&WaitItem> = response
+        .wait
+        .iter()
+        .filter(|item| item.kind == "answer" && item.task_id.is_none())
+        .collect();
+    assert_eq!(answers.len(), 1, "Kind 提问合一项，不被确认卡顶掉");
+    assert_eq!(answers[0].title, "Kind 问你");
+}
+
+/// 两张未绑确认卡各占一项（派生层按 call id 分桶；本用例用同 seq 合成两张都未替换的卡）。
+#[test]
+fn two_unbound_confirm_cards_are_not_collapsed_into_one() {
+    let (directory, store) = open_store();
+    let cwd = directory.path();
+    let _ = ready_task(&store, cwd, "写份结果", T0);
+    fn card(seq: u64, time: i64, call_id: &str, title: &str) -> Vec<Event> {
+        let args = serde_json::json!({
+            "title": title,
+            "brief": "确认后继续。",
+            "options": [{
+                "id": "confirm",
+                "action": "gate_judge",
+                "label": "确认",
+                "details": {},
+            }]
+        })
+        .to_string();
+        let meta = serde_json::json!({
+            "card": {
+                "title": title,
+                "brief": "确认后继续。",
+                "options": [{"id": "confirm", "label": "确认", "facts": []}]
+            }
+        });
+        let mut result = Message::new(Role::Tool, vec![ContentBlock::text("card")]);
+        result.tool_call_id = Some(call_id.to_owned());
+        vec![
+            Event::new(
+                seq,
+                u64::try_from(time).unwrap(),
+                EventKind::ToolCall {
+                    turn: 1,
+                    step: 1,
+                    call_id: call_id.to_owned(),
+                    name: "propose_action".to_owned(),
+                    arguments: args,
+                },
+            ),
+            Event::new(
+                seq,
+                u64::try_from(time + 1).unwrap(),
+                EventKind::ToolResult {
+                    turn: 1,
+                    step: 1,
+                    message: result,
+                    error: None,
+                    meta: Some(meta),
+                },
+            ),
+        ]
+    }
+    let mut events = card(200, T0 + 10, "call-a", "第一张卡");
+    events.extend(card(200, T0 + 20, "call-b", "第二张卡"));
+    let response = snapshot(&store, &events, &[], T0 + 30).unwrap();
+    let titles: Vec<&str> = response
+        .wait
+        .iter()
+        .filter(|item| item.kind == "confirm")
+        .map(|item| item.title.as_str())
+        .collect();
+    assert_eq!(titles.len(), 2, "两张未绑卡各占一项：{titles:?}");
+    assert!(titles.contains(&"第一张卡"));
+    assert!(titles.contains(&"第二张卡"));
+}
