@@ -989,6 +989,11 @@ impl TaskRuntime {
         self.wake();
     }
 
+    /// T055：工作快照读任务库（只读；同 crate 用）。
+    pub(crate) fn tasks_store(&self) -> &Store {
+        &self.store
+    }
+
     fn wake(&self) {
         self.notify.notify_one();
     }

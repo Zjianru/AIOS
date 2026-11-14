@@ -103,6 +103,8 @@ pub enum Call {
     GateJudge(GateJudgeRequest),
     /// T053：Kind 让任务在原要求里接着做（需修正/上游变了/报告卡住）。
     TaskContinue(TaskContinueRequest),
+    /// T055：工作页/「现在」共用的工作快照（全部任务事实 + 五种「等你」项）。
+    Work(WorkRequest),
 }
 
 /// 调用的结果（与 Call 一一对应）。
@@ -161,6 +163,8 @@ pub enum Response {
     GateJudge(GateJudgeResponse),
     /// Kind 让任务接着做的受理结果：新 Attempt 编号。
     TaskContinue(TaskContinueResponse),
+    /// T055：工作页/「现在」共用的工作快照。
+    Work(WorkResponse),
 }
 
 /// 发消息（DSH session-controller 的 prompt）。requestId 是幂等键：同一 id 只进一次。
@@ -488,6 +492,22 @@ pub struct TaskReadResponse {
     /// 币种（settings.json：usd/cny）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub currency: Option<String>,
+}
+
+/// T055：读一份工作快照；没有参数（窗口用浏览器本地时间算）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+pub struct WorkRequest {}
+
+/// T055：工作页 /「现在」共用的一份工作快照。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkResponse {
+    /// 服务算这份快照的时刻（unix 毫秒）。
+    pub generated_at: i64,
+    /// 全部非总任务的事实（按 created_at 升序）。
+    pub tasks: Vec<crate::work::TaskFact>,
+    /// 五种「等你」项，按固定顺序、同种新的在上。
+    pub wait: Vec<crate::work::WaitItem>,
 }
 
 /// 停法：立即停，或做完手上这一步再停（D81）。
@@ -1089,6 +1109,8 @@ pub struct ConnectionRevokeResponse {
 ///   确认卡的 card-act 操作与 card/decision 事件也是只增的，跟着这个版本一起发
 /// - 11：send 加 resultCard（结果卡「要求修改」进 Kind 输入框；消息内容块加 result-card，
 ///   投给模型是一行「用户要求修改这张结果卡：任务 <id>「标题」，第 N 版要求的结果」）
+/// - 12：work（工作页和「现在」共用一份工作快照：全部任务事实 + 五种「等你」项；
+///   组接受 task-accept-many 与它同批出）。旧页忽略新增方法，旧服务按未知方法拒绝。
 ///   （旧页不会发 card-act；旧服务读到这个操作按 request/invalid-json 拒绝）。
 ///   Exa 凭证的四个操作（exa-key、exa-key-save、exa-key-check、exa-key-delete）和
 ///   exa/no-key、exa/invalid-key 两个错误码同属只增面，也随这个版本发。
@@ -1098,7 +1120,7 @@ pub struct ConnectionRevokeResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 11;
+pub const PROTOCOL_VERSION: u64 = 12;
 
 /// 根会话不可用的种类：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

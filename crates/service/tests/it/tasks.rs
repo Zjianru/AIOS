@@ -11196,3 +11196,60 @@ async fn update_task_requirement_reconcile_refuses_after_a_change() {
         Some("这个任务的要求已经改过了，这张卡是按改之前写的")
     );
 }
+
+/// T055.1：从调用驱动 Work——任务库 + Kind 会话派生成一份快照，结果卡在「等你」里带 pick。
+#[tokio::test]
+async fn work_call_returns_task_facts_and_the_accept_wait_item() {
+    let fixture = Fixture::new().await;
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-work-report", "ready", "查好了", None));
+    fixture.router.push_thin(crate::common::text_sse("好"));
+    let task = fixture.accept(false).await;
+    wait_until("任务报回 ready", || {
+        tasks_store(fixture.data())
+            .task(&task.id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| {
+                task.latest_report().map(|report| report.state) == Some(ReportState::Ready)
+                    && task
+                        .latest_attempt()
+                        .is_some_and(|attempt| attempt.ended_at.is_some())
+            })
+    })
+    .await;
+
+    let response = fixture
+        .host
+        .dispatch(service::Call::Work(service::WorkRequest {}))
+        .await
+        .expect("work");
+    let service::Response::Work(work) = response else {
+        panic!("work 响应");
+    };
+    assert!(work.generated_at > 0);
+    let fact = work
+        .tasks
+        .iter()
+        .find(|fact| fact.id == task.id.as_str())
+        .expect("任务事实");
+    assert_eq!(fact.title, task.title);
+    assert_eq!(fact.stage, "ready_for_review");
+    assert_eq!(fact.version, 1);
+    assert!(!fact.running);
+    let latest = fact.latest.as_ref().expect("最近报告");
+    assert_eq!(latest.state, "ready");
+    assert_eq!(latest.summary, "查好了");
+
+    let accept = work
+        .wait
+        .iter()
+        .find(|item| item.kind == "accept" && item.task_id.as_deref() == Some(task.id.as_str()))
+        .expect("结果等你接受");
+    let pick = accept.pick.as_ref().expect("pick");
+    assert_eq!(pick.report_id, latest.report_id);
+    assert_eq!(pick.version, 1);
+    assert!(!accept.title.is_empty());
+    assert!(!accept.need.is_empty());
+}

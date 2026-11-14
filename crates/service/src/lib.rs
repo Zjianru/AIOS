@@ -22,6 +22,7 @@ mod session_select;
 mod settings_surface;
 mod status;
 mod web;
+pub mod work;
 mod worktree;
 
 pub mod fx;
