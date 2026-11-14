@@ -11429,3 +11429,49 @@ async fn update_task_requirement_act_rejects_a_never_started_task_without_writin
     );
     assert_eq!(after.versions.len(), before.versions.len(), "版本不动");
 }
+
+/// T056.1：组接受每记下一项，给那份报告的 relay 卡补一条 card/decision（Kind 卡上回执）。
+#[tokio::test]
+async fn task_accept_many_records_a_card_decision_for_each_accepted_report() {
+    let fixture = Fixture::new().await;
+    let store = tasks_store(fixture.data());
+    let (task_id, report_id) =
+        seed_ready_task(&store, fixture.data(), "组接受回执", 1_800_100_000_000);
+    let response = fixture
+        .host
+        .dispatch(Call::TaskAcceptMany(service::TaskAcceptManyRequest {
+            picks: vec![service::work::WorkPick {
+                task_id: task_id.as_str().to_owned(),
+                report_id: report_id.as_str().to_owned(),
+                version: 1,
+            }],
+        }))
+        .await
+        .expect("task-accept-many");
+    let Response::TaskAcceptMany(response) = response else {
+        panic!("task-accept-many 响应");
+    };
+    assert!(response.outcomes[0].refused.is_none());
+
+    let call_id = format!("task-report:{}:{}", task_id.as_str(), report_id.as_str());
+    let events = crate::common::read_root_events(fixture.data());
+    let decision = events.iter().find_map(|event| {
+        let session::EventKind::CardDecision {
+            call_id: event_call,
+            action,
+            phase,
+            data,
+            ..
+        } = &event.kind
+        else {
+            return None;
+        };
+        (event_call == &call_id).then(|| (action.clone(), *phase, data.clone()))
+    });
+    let (action, phase, data) = decision.expect("接受后应补 card/decision");
+    assert_eq!(action.as_deref(), Some("accept_task_result"));
+    assert_eq!(phase, session::CardDecisionPhase::Confirmed);
+    let data = data.expect("回执 data");
+    assert_eq!(data["summary"], "你接受了");
+    assert_eq!(data["report_id"], report_id.as_str());
+}

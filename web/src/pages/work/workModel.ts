@@ -81,6 +81,8 @@ export function columnOf(task: TaskFact, waitTaskIds: Set<string>): BoardColumn 
   if (waitTaskIds.has(task.id)) return 'wait';
   if (task.stage === 'needs_conditions' || task.stage === 'pending') return 'queue';
   if (task.stage === 'running' || task.stage === 'ready_for_review') return 'doing';
+  // T056：门任务自己判完了、被把关结果还在等你接受——门没有「等你」项，放回「在做」占位。
+  if (task.gate && task.stage === 'requirement_met') return 'doing';
   // requirement_met：门判完了，等结果被接受（属于等你那条链）。
   return 'wait';
 }
@@ -91,6 +93,7 @@ function wordOf(task: TaskFact, column: BoardColumn, waitKind: string | undefine
       if (task.stage === 'needs_conditions') return task.afterWaiting ? '等前置' : '缺条件';
       return task.after.length > 0 ? '等前置' : '等待中';
     case 'doing':
+      if (task.gate && task.stage === 'requirement_met') return '已判';
       if (task.stage === 'running') return '执行中';
       if (task.gateOf) return '等里程碑';
       return '检查中';
@@ -110,7 +113,7 @@ function nextOf(task: TaskFact, column: BoardColumn): string {
           ? '等前置完成'
           : '等排程';
     case 'doing':
-      return 'ThinAgent';
+      return task.gate && task.stage === 'requirement_met' ? '等接受' : 'ThinAgent';
     case 'wait':
       return '你';
     case 'done':
