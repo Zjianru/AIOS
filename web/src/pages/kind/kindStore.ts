@@ -188,6 +188,12 @@ interface KindState {
   dismissCard: (callId: string) => Promise<void>;
   /** 结果卡：接受（服务登记当前版本+报告，回执由 card/decision 事件回填）。 */
   acceptTaskResult: (callId: string) => Promise<void>;
+  /** T053：门结果卡判定（通过/需修正；note 是用户原话，空白当没有）。 */
+  judgeGate: (
+    callId: string,
+    conclusion: 'pass' | 'needs_fix',
+    note?: string,
+  ) => Promise<void>;
   compact: () => void;
   setModel: (model: KindState['model']) => void;
   /** ：从服务刷新会话合计/汇率/币种。 */
@@ -1056,6 +1062,22 @@ export const useKindStore = create<KindState>()((set, get) => ({
       },
       (error: unknown) => {
         toast('接受没送到内核', { description: '连上内核再试一次' });
+        throw error;
+      },
+    );
+  },
+
+  judgeGate: (callId, conclusion, note) => {
+    // 判定回执由 card/decision 事件回填；这里只在服务没记下时报原因。
+    return cardAct(callId, conclusion === 'pass' ? 'pass' : 'needs-fix', undefined, note).then(
+      (response) => {
+        const decision = response.decision;
+        if (decision?.phase === 'confirmed' || decision?.phase === 'refused') return;
+        toast('判定没记下', { description: '内核没有返回判定结果' });
+        throw new Error('判定没记下');
+      },
+      (error: unknown) => {
+        toast('判定没送到内核', { description: '连上内核再试一次' });
         throw error;
       },
     );

@@ -461,6 +461,7 @@ export function deriveTurnViews(
     const payload = data.data && typeof data.data === 'object' ? data.data : undefined;
     cardDecisions.set(callId, {
       phase,
+      at: event.time / 1000,
       option: typeof data.option === 'string' ? data.option : undefined,
       action: typeof data.action === 'string' ? data.action : undefined,
       data: payload as ConfirmDecision['data'],
@@ -704,6 +705,8 @@ export function deriveTurnViews(
         }
         // T028.5：抄送 Kind 的那条不是用户气泡，单独由 taskCcFacts/ccViewOf 成行。
         if (taskCcOfMessage(data.message)) break;
+        // T053：门判定的 relay 只给模型看结论，不把原文 JSON 画成用户气泡。
+        if (userRpcIdOf(data.message)?.startsWith('gate-verdict:')) break;
         const source = data.message as
           | { source?: string | { kind?: string } }
           | undefined;
@@ -973,7 +976,13 @@ export function deriveTurnViews(
   for (const raw of turns.values()) {
     for (const fact of raw.taskResults) {
       const decision = cardDecisions.get(fact.id);
-      if (decision) fact.decision = { phase: decision.phase };
+      if (decision) {
+        fact.decision = {
+          phase: decision.phase,
+          ...(decision.data === undefined ? {} : { data: decision.data }),
+          ...(decision.at === undefined ? {} : { at: decision.at }),
+        };
+      }
     }
   }
   return [...turns.values()]

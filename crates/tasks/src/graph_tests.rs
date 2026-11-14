@@ -5,8 +5,9 @@ use std::path::Path;
 use tempfile::TempDir;
 
 use crate::{
-    AttemptEnd, ConversationId, EffectKind, EffectPayload, ModelChoice, NewGraph, NewReport,
-    NewSubtask, NewTask, ReportOrigin, ReportState, Stage, Store, Task, TaskError, TaskPolicy,
+    AttemptEnd, AttemptTrigger, ConversationId, EffectKind, EffectPayload, GateCandidate,
+    GateConclusion, Handoff, ModelChoice, NewGraph, NewReport, NewSubtask, NewTask, ReportOrigin,
+    ReportState, Stage, Store, Task, TaskError, TaskPolicy,
 };
 
 const T0: i64 = 1_700_000_000_000;
@@ -46,6 +47,7 @@ fn subtask(cwd: &Path, title: &str, write_scope: Option<&str>, after: Vec<usize>
         task: draft(cwd, title),
         policy: policy(write_scope),
         after,
+        milestone: false,
     }
 }
 
@@ -621,4 +623,697 @@ fn stopped_attempt_does_not_release_downstream() {
             .is_none(),
         "stopped 不放下游"
     );
+}
+
+// ===== T053.1 里程碑门 =====
+
+fn milestone_subtask(cwd: &Path, title: &str, after: Vec<usize>) -> NewSubtask {
+    NewSubtask {
+        task: draft(cwd, title),
+        policy: TaskPolicy::default(),
+        after,
+        milestone: true,
+    }
+}
+
+/// 一个总任务 + 三个子任务：B（被把关）、门（after B）、C（after B）。
+fn gated_graph(cwd: &Path) -> NewGraph {
+    NewGraph {
+        root: draft(cwd, "总任务"),
+        subtasks: vec![
+            subtask(cwd, "先查行数", None, vec![]),
+            milestone_subtask(cwd, "独立核查", vec![0]),
+            subtask(cwd, "再写结果", None, vec![0]),
+        ],
+    }
+}
+
+#[test]
+fn milestone_validation_rejects_each_bad_shape() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path();
+    let store = open_store().1;
+    // 有写入范围。
+    let mut graph = gated_graph(cwd);
+    graph.subtasks[1].policy = policy(Some("other.txt"));
+    assert!(matches!(
+        store.create_graph(graph, T0),
+        Err(TaskError::GraphMilestoneHasWriteScope { subtask: 1 })
+    ));
+    // 开工作树。
+    let mut graph = gated_graph(cwd);
+    graph.subtasks[1].policy.worktree = true;
+    assert!(matches!(
+        store.create_graph(graph, T0),
+        Err(TaskError::GraphMilestoneHasWorktree { subtask: 1 })
+    ));
+    // after 不是恰好一项。
+    let mut graph = gated_graph(cwd);
+    graph.subtasks[1].after = vec![];
+    assert!(matches!(
+        store.create_graph(graph, T0),
+        Err(TaskError::GraphMilestoneAfterNotOne {
+            subtask: 1,
+            count: 0
+        })
+    ));
+    // 门链：门把另一个门当把关对象。
+    let mut graph = gated_graph(cwd);
+    graph
+        .subtasks
+        .push(milestone_subtask(cwd, "再核一遍", vec![1]));
+    assert!(matches!(
+        store.create_graph(graph, T0),
+        Err(TaskError::GraphMilestoneAfterIsMilestone { subtask: 3 })
+    ));
+    // 两个门把关同一个任务。
+    let mut graph = gated_graph(cwd);
+    graph
+        .subtasks
+        .push(milestone_subtask(cwd, "另一个门", vec![0]));
+    assert!(matches!(
+        store.create_graph(graph, T0),
+        Err(TaskError::GraphTwoMilestonesForGuarded {
+            first: 1,
+            second: 3
+        })
+    ));
+    // 别人的 after 指向门。
+    let mut graph = gated_graph(cwd);
+    graph.subtasks.push(subtask(cwd, "等门", None, vec![1]));
+    assert!(matches!(
+        store.create_graph(graph, T0),
+        Err(TaskError::GraphMilestoneCannotBeDependency { subtask: 3 })
+    ));
+    // 干净的图能建。
+    let graph = gated_graph(cwd);
+    let root = store.create_graph(graph, T0).unwrap();
+    let children = store.children(&root.id).unwrap();
+    assert!(children[1].is_gate());
+    assert!(!children[0].is_gate());
+}
+
+#[test]
+fn gate_pass_judgement_releases_guarded_downstream_and_stage_moves_to_requirement_met() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path();
+    let store = open_store().1;
+    let root = store.create_graph(gated_graph(cwd), T0).unwrap();
+    store.confirm_graph(&root.id, T0 + 1).unwrap();
+    let children = store.children(&root.id).unwrap();
+    let (guarded, gate, downstream) = (
+        children[0].clone(),
+        children[1].clone(),
+        children[2].clone(),
+    );
+
+    // 只有 B 没 needs：确认后先放 B，门和 C 都不开。
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 2)
+        .unwrap()
+        .expect("B launch");
+    assert_eq!(
+        claim.payload.clone(),
+        EffectPayload::Launch {
+            task_id: guarded.id.clone()
+        }
+    );
+    store.complete_effect(&claim).unwrap();
+    assert!(
+        !store
+            .effect_pending(EffectKind::Launch, gate.id.as_str())
+            .unwrap()
+    );
+    assert!(
+        !store
+            .effect_pending(EffectKind::Launch, downstream.id.as_str())
+            .unwrap()
+    );
+
+    // B 报回 ready：门被放出，C 仍然不动。
+    let attempt = store.begin_attempt(&guarded.id, T0 + 3).unwrap();
+    store
+        .record_report(
+            &guarded.id,
+            attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "第一次结果：3 行".to_owned(),
+                question: None,
+            },
+            T0 + 4,
+        )
+        .unwrap();
+    assert!(
+        store
+            .effect_pending(EffectKind::Launch, gate.id.as_str())
+            .unwrap()
+    );
+    assert!(
+        !store
+            .effect_pending(EffectKind::Launch, downstream.id.as_str())
+            .unwrap()
+    );
+    assert_eq!(
+        store.stage(&downstream.id).unwrap(),
+        Stage::NeedsConditions,
+        "C 等门通过"
+    );
+
+    // 门开跑（交接 B 的候选），报回 ready：等用户判，C 还不开。
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 5)
+        .unwrap()
+        .expect("gate launch");
+    store.complete_effect(&claim).unwrap();
+    let b_report = store
+        .task(&guarded.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+    let handoff = Handoff {
+        report_id: b_report.id.clone(),
+        requirement_version: b_report.version,
+        summary: b_report.summary.clone(),
+    };
+    let gate_attempt = store
+        .begin_attempt_with(
+            &gate.id,
+            T0 + 6,
+            AttemptTrigger::GateRecheck {
+                candidate: GateCandidate {
+                    report_id: b_report.id.clone(),
+                    requirement_version: b_report.version,
+                },
+            },
+            vec![handoff.clone()],
+        )
+        .unwrap();
+    let gate_task = store.task(&gate.id).unwrap().unwrap();
+    assert_eq!(
+        gate_task.latest_attempt().unwrap().handoffs,
+        vec![handoff.clone()],
+        "Attempt.handoffs 记开跑时拿到的上游报告"
+    );
+    store
+        .record_report(
+            &gate.id,
+            gate_attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "核查发现：空标题会漏判".to_owned(),
+                question: None,
+            },
+            T0 + 7,
+        )
+        .unwrap();
+    assert_eq!(store.stage(&gate.id).unwrap(), Stage::ReadyForReview);
+    assert_eq!(store.stage(&guarded.id).unwrap(), Stage::ReadyForReview);
+    assert!(
+        !store
+            .effect_pending(EffectKind::Launch, downstream.id.as_str())
+            .unwrap()
+    );
+
+    // 用户判通过：B 到任务要求已满足，C 被放出。
+    let gate_report = store
+        .task(&gate.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+    let outcome = store
+        .judge_gate(
+            &gate.id,
+            &gate_report.id,
+            GateConclusion::Pass,
+            None,
+            T0 + 8,
+        )
+        .unwrap();
+    assert!(!outcome.duplicate);
+    assert_eq!(outcome.released, vec!["再写结果".to_owned()]);
+    assert_eq!(store.stage(&guarded.id).unwrap(), Stage::RequirementMet);
+    assert_eq!(store.stage(&gate.id).unwrap(), Stage::RequirementMet);
+    let c = store.task(&downstream.id).unwrap().unwrap();
+    assert_eq!(
+        c.needs[0]
+            .handoff
+            .as_ref()
+            .map(|handoff| handoff.report_id.clone()),
+        Some(b_report.id.clone()),
+        "C 交接的是判通过的那份"
+    );
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 9)
+        .unwrap()
+        .expect("C launch");
+    store.complete_effect(&claim).unwrap();
+    let c_attempt = store.begin_attempt(&downstream.id, T0 + 10).unwrap();
+    store
+        .record_report(
+            &downstream.id,
+            c_attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "估完了".to_owned(),
+                question: None,
+            },
+            T0 + 11,
+        )
+        .unwrap();
+    assert_eq!(store.stage(&root.id).unwrap(), Stage::ReadyForReview);
+}
+
+#[test]
+fn second_candidate_reruns_gate_and_old_gate_report_is_already_changed() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path();
+    let store = open_store().1;
+    let root = store.create_graph(gated_graph(cwd), T0).unwrap();
+    store.confirm_graph(&root.id, T0 + 1).unwrap();
+    let children = store.children(&root.id).unwrap();
+    let (guarded, gate, downstream) = (
+        children[0].clone(),
+        children[1].clone(),
+        children[2].clone(),
+    );
+    let claim = store.claim_effect(EffectKind::Launch, T0 + 2).unwrap();
+    store.complete_effect(&claim.unwrap()).unwrap();
+    let attempt = store.begin_attempt(&guarded.id, T0 + 3).unwrap();
+    store
+        .record_report(
+            &guarded.id,
+            attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "第一次结果".to_owned(),
+                question: None,
+            },
+            T0 + 4,
+        )
+        .unwrap();
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 5)
+        .unwrap()
+        .unwrap();
+    store.complete_effect(&claim).unwrap();
+    let first_report = store
+        .task(&guarded.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+    let first_handoff = Handoff {
+        report_id: first_report.id.clone(),
+        requirement_version: first_report.version,
+        summary: first_report.summary.clone(),
+    };
+    let gate_attempt = store
+        .begin_attempt_with(
+            &gate.id,
+            T0 + 6,
+            AttemptTrigger::GateRecheck {
+                candidate: GateCandidate {
+                    report_id: first_report.id.clone(),
+                    requirement_version: first_report.version,
+                },
+            },
+            vec![first_handoff],
+        )
+        .unwrap();
+    store
+        .record_report(
+            &gate.id,
+            gate_attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "第一次核查".to_owned(),
+                question: None,
+            },
+            T0 + 7,
+        )
+        .unwrap();
+    let first_gate_report = store
+        .task(&gate.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+    // 运行时记录报告后会把 Attempt 收尾；这里照做，否则门算「还在跑」。
+    store
+        .end_attempt(&gate.id, gate_attempt, T0 + 7, AttemptEnd::Reported)
+        .unwrap();
+
+    // 门已报回、还没判：B 又交了一份新结果 → 只记交接，门重跑一次用最新候选。
+    store
+        .end_attempt(&guarded.id, attempt, T0 + 8, AttemptEnd::Reported)
+        .unwrap();
+    let second_attempt = store.begin_attempt(&guarded.id, T0 + 9).unwrap();
+    store
+        .record_report(
+            &guarded.id,
+            second_attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "第二次结果：5 行".to_owned(),
+                question: None,
+            },
+            T0 + 10,
+        )
+        .unwrap();
+    let gate_now = store.task(&gate.id).unwrap().unwrap();
+    assert_eq!(
+        gate_now.needs[0].handoff.as_ref().unwrap().summary,
+        "第二次结果：5 行"
+    );
+    assert!(
+        store
+            .effect_pending(EffectKind::Launch, gate.id.as_str())
+            .unwrap()
+    );
+
+    // 旧门报告这时点判定：候选已经变了 → 已经变了，不记。
+    assert!(matches!(
+        store.judge_gate(
+            &gate.id,
+            &first_gate_report.id,
+            GateConclusion::Pass,
+            None,
+            T0 + 11
+        ),
+        Err(TaskError::GateReportChanged)
+    ));
+    let gate_now = store.task(&gate.id).unwrap().unwrap();
+    assert!(gate_now.verdicts.is_empty(), "已经变了不记判定");
+
+    // 新候选的门重跑报回，判通过后 C 才开。
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 12)
+        .unwrap()
+        .unwrap();
+    store.complete_effect(&claim).unwrap();
+    let second_report = store
+        .task(&guarded.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+    let second_handoff = Handoff {
+        report_id: second_report.id.clone(),
+        requirement_version: second_report.version,
+        summary: second_report.summary.clone(),
+    };
+    let recheck = store
+        .begin_attempt_with(
+            &gate.id,
+            T0 + 13,
+            AttemptTrigger::GateRecheck {
+                candidate: GateCandidate {
+                    report_id: second_report.id.clone(),
+                    requirement_version: second_report.version,
+                },
+            },
+            vec![second_handoff],
+        )
+        .unwrap();
+    store
+        .record_report(
+            &gate.id,
+            recheck,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "第二次核查".to_owned(),
+                question: None,
+            },
+            T0 + 14,
+        )
+        .unwrap();
+    let second_gate_report = store
+        .task(&gate.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+    let outcome = store
+        .judge_gate(
+            &gate.id,
+            &second_gate_report.id,
+            GateConclusion::Pass,
+            None,
+            T0 + 15,
+        )
+        .unwrap();
+    assert_eq!(outcome.released, vec!["再写结果".to_owned()]);
+    assert!(
+        store
+            .effect_pending(EffectKind::Launch, downstream.id.as_str())
+            .unwrap()
+    );
+    // 同一份门报告再判：返回已有判定，不记第二次。
+    let again = store
+        .judge_gate(
+            &gate.id,
+            &second_gate_report.id,
+            GateConclusion::NeedsFix,
+            None,
+            T0 + 16,
+        )
+        .unwrap();
+    assert!(again.duplicate);
+    assert_eq!(again.verdict.conclusion, GateConclusion::Pass);
+    assert_eq!(store.task(&gate.id).unwrap().unwrap().verdicts.len(), 1);
+}
+
+#[test]
+fn propose_same_call_id_creates_one_graph() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path();
+    let store = open_store().1;
+    let (first, created) = store
+        .create_graph_once(gated_graph(cwd), "call-graph-1", T0)
+        .unwrap();
+    assert!(created);
+    let (second, created) = store
+        .create_graph_once(gated_graph(cwd), "call-graph-1", T0 + 1)
+        .unwrap();
+    assert!(!created, "同一个 call id 返回同一张图");
+    assert_eq!(first.id, second.id);
+    assert_eq!(store.task_ids().unwrap().len(), 4, "只建了一张图");
+}
+
+#[test]
+fn old_task_rows_without_gate_fields_read_with_defaults() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = open_store().1;
+    let task = store
+        .create_task(draft(directory.path(), "旧行"), T0)
+        .unwrap();
+    let mut raw = serde_json::to_value(&task).unwrap();
+    raw.as_object_mut().unwrap().remove("gate");
+    raw.as_object_mut().unwrap().remove("verdicts");
+    let parsed: Task = serde_json::from_value(raw).unwrap();
+    assert!(parsed.gate.is_none());
+    assert!(parsed.verdicts.is_empty());
+    assert!(parsed.latest_attempt().is_none());
+}
+
+#[test]
+fn new_candidate_while_gate_running_reruns_only_once_with_latest() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path();
+    let store = open_store().1;
+    let root = store.create_graph(gated_graph(cwd), T0).unwrap();
+    store.confirm_graph(&root.id, T0 + 1).unwrap();
+    let children = store.children(&root.id).unwrap();
+    let (guarded, gate, downstream) = (
+        children[0].clone(),
+        children[1].clone(),
+        children[2].clone(),
+    );
+    let claim = store.claim_effect(EffectKind::Launch, T0 + 2).unwrap();
+    store.complete_effect(&claim.unwrap()).unwrap();
+    // B 第一次交结果，门开跑（candidate1）。
+    let b1 = store.begin_attempt(&guarded.id, T0 + 3).unwrap();
+    store
+        .record_report(
+            &guarded.id,
+            b1,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "第一次结果".to_owned(),
+                question: None,
+            },
+            T0 + 4,
+        )
+        .unwrap();
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 5)
+        .unwrap()
+        .unwrap();
+    store.complete_effect(&claim).unwrap();
+    let b1_report = store
+        .task(&guarded.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+    let handoff1 = Handoff {
+        report_id: b1_report.id.clone(),
+        requirement_version: b1_report.version,
+        summary: b1_report.summary.clone(),
+    };
+    let gate_attempt = store
+        .begin_attempt_with(
+            &gate.id,
+            T0 + 6,
+            AttemptTrigger::GateRecheck {
+                candidate: GateCandidate {
+                    report_id: b1_report.id.clone(),
+                    requirement_version: b1_report.version,
+                },
+            },
+            vec![handoff1],
+        )
+        .unwrap();
+    // 门在跑：B 又交一份新结果。不新排 launch，只把门上的交接换成最新的。
+    store
+        .end_attempt(&guarded.id, b1, T0 + 7, AttemptEnd::Reported)
+        .unwrap();
+    let b2 = store.begin_attempt(&guarded.id, T0 + 8).unwrap();
+    store
+        .record_report(
+            &guarded.id,
+            b2,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "第二次结果：5 行".to_owned(),
+                question: None,
+            },
+            T0 + 9,
+        )
+        .unwrap();
+    assert!(
+        !store
+            .effect_pending(EffectKind::Launch, gate.id.as_str())
+            .unwrap(),
+        "门在跑时不新排 launch"
+    );
+    let gate_now = store.task(&gate.id).unwrap().unwrap();
+    assert_eq!(
+        gate_now.needs[0].handoff.as_ref().unwrap().summary,
+        "第二次结果：5 行"
+    );
+    // 门这一轮报回（核的是旧候选）：结束后只再放一次，候选是最新的。
+    store
+        .record_report(
+            &gate.id,
+            gate_attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "核查了第一次结果".to_owned(),
+                question: None,
+            },
+            T0 + 10,
+        )
+        .unwrap();
+    store
+        .end_attempt(&gate.id, gate_attempt, T0 + 10, AttemptEnd::Reported)
+        .unwrap();
+    assert!(
+        store
+            .effect_pending(EffectKind::Launch, gate.id.as_str())
+            .unwrap(),
+        "门结束后再放一次"
+    );
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 11)
+        .unwrap()
+        .unwrap();
+    store.complete_effect(&claim).unwrap();
+    assert!(
+        !store
+            .effect_pending(EffectKind::Launch, gate.id.as_str())
+            .unwrap(),
+        "只再放一次"
+    );
+    let gate_task = store.task(&gate.id).unwrap().unwrap();
+    let b2_report = store
+        .task(&guarded.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+    let gate_attempt2 = store
+        .begin_attempt_with(
+            &gate.id,
+            T0 + 12,
+            AttemptTrigger::GateRecheck {
+                candidate: GateCandidate {
+                    report_id: b2_report.id.clone(),
+                    requirement_version: b2_report.version,
+                },
+            },
+            vec![Handoff {
+                report_id: b2_report.id.clone(),
+                requirement_version: b2_report.version,
+                summary: b2_report.summary.clone(),
+            }],
+        )
+        .unwrap();
+    store
+        .record_report(
+            &gate.id,
+            gate_attempt2,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "核查了第二次结果".to_owned(),
+                question: None,
+            },
+            T0 + 13,
+        )
+        .unwrap();
+    let latest_gate_report = store
+        .task(&gate.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+    let outcome = store
+        .judge_gate(
+            &gate.id,
+            &latest_gate_report.id,
+            GateConclusion::Pass,
+            None,
+            T0 + 14,
+        )
+        .unwrap();
+    assert_eq!(outcome.released, vec!["再写结果".to_owned()]);
+    assert!(
+        store
+            .effect_pending(EffectKind::Launch, downstream.id.as_str())
+            .unwrap()
+    );
+    let _ = gate_task;
 }

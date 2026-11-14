@@ -62,6 +62,8 @@ export interface CardHost {
   dismissCard?: () => Promise<void> | void;
   /** 结果卡：接受当前要求版本的结果（由页面向服务发 card-act）；HTTP 失败时 reject，视图恢复按钮。 */
   acceptResult?: (callId: string) => Promise<void> | void;
+  /** T053：门结果卡判定（通过/需修正；需修正带用户原话）；HTTP 失败时 reject。 */
+  judgeGate?: (conclusion: 'pass' | 'needs_fix', note?: string) => Promise<void> | void;
 }
 
 /** 卡片视图的 props：信封、校验过的槽位、程序操作。 */
@@ -316,6 +318,8 @@ export interface ConfirmDecision {
   option?: string;
   action?: string;
   data?: { summary?: string } & Record<string, unknown>;
+  /** 决定写入的时间（秒）；结果卡判定回执用。 */
+  at?: number;
 }
 
 /**

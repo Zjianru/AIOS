@@ -191,6 +191,7 @@ const KIND_POLICY: &str = concat!(
     "\nBefore dispatching a write task, stopping a task, or changing its write scope, load the aios-tasks skill first.",
     "\nWhen the user's request has steps that must happen in order (a later step needs an earlier step's result), call task_graph_propose once with the subtasks and their after links, then call propose_action once with action start_task_graph and the graph id it returned; the user confirms on the card. Sub-tasks whose upstream has a ready result start automatically: do not dispatch them again.",
     "\nDispatch tasks that are independent of each other separately with task_accept; only ordered work belongs in a task graph.",
+    "\nWhen the user asks to look at something before continuing (for example \"我要先看一眼\", \"我来拍板\", \"过了再…\"), add a read-only milestone step to the graph: set milestone true on that subtask, leave write_scope empty, and make its after point at exactly the one step it checks. Only the user decides on the milestone result card; never judge, pass or fix it yourself.",
 );
 
 /// Kind 的构造期工具策略：上面那份名单，有任务执行者时再加四个任务工具。

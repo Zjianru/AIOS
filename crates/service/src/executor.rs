@@ -15,10 +15,10 @@ use serde_json::{Value, json};
 use session::SessionId;
 use tasks::{
     Acceptance, Attempt, AttemptEnd, AttemptId, AttemptTrigger, BootId, BootScan, ConversationId,
-    EffectClaim, EffectKind, EffectPayload, Input, InputAttachment, MissingItem, ModelChoice,
-    NewGraph, NewInput, NewReport, NewSubtask, NewTask, Report, ReportId, ReportOrigin,
-    ReportState, SlotKind, Stage, StopAttempt, Store, Task, TaskError, TaskId, TaskPolicy,
-    WorkerSlots,
+    EffectClaim, EffectKind, EffectPayload, GateCandidate, GateConclusion, Handoff, Input,
+    InputAttachment, MissingItem, ModelChoice, NewGraph, NewInput, NewReport, NewSubtask, NewTask,
+    Report, ReportId, ReportOrigin, ReportState, SlotKind, Stage, StopAttempt, Store, Task,
+    TaskError, TaskId, TaskPolicy, WorkerSlots,
 };
 use tokio::sync::broadcast;
 use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
@@ -27,9 +27,11 @@ use crate::error::ServiceError;
 use crate::events::{page_events, service_event};
 use crate::input::attachment_error;
 use crate::protocol::{
-    DeliveryMode, FollowRequest, FollowResponse, ServiceEvent, StopMode, TaskInterruptResponse,
-    TaskReadHeader, TaskReadReport, TaskReadReportOrigin, TaskReadReportState, TaskReadRequest,
-    TaskReadResponse, TaskSayRequest, TaskSayResponse, TaskStopResponse,
+    DeliveryMode, FollowRequest, FollowResponse, GateJudgeConclusion as ProtocolGateConclusion,
+    GateJudgeRequest, GateJudgeResponse, GateVerdictView, ServiceEvent, StopMode,
+    TaskInterruptResponse, TaskReadHeader, TaskReadReport, TaskReadReportOrigin,
+    TaskReadReportState, TaskReadRequest, TaskReadResponse, TaskSayRequest, TaskSayResponse,
+    TaskStopResponse,
 };
 use crate::root::RootSessionOptions;
 use crate::session_host::ServiceHost;
@@ -174,6 +176,8 @@ struct GraphSubtaskArgs {
     worktree: bool,
     /// 本提议里其他子任务的下标（0 起）。
     after: Vec<usize>,
+    /// T053：里程碑（只读核查门）；after 恰好一项，指向它把关的任务。
+    milestone: bool,
 }
 
 /// T052：task_graph_propose 的参数：总任务 + 至少两个子任务。
@@ -386,6 +390,70 @@ impl TaskRuntime {
         self.store
             .accept(&id, Self::now())
             .map_err(|error| error.to_string())
+    }
+
+    /// T053：这个任务是不是里程碑门（结果卡判定前先认）。
+    pub(crate) fn task_is_gate(&self, id: &TaskId) -> Result<bool, String> {
+        self.store
+            .task(id)
+            .map(|task| task.is_some_and(|task| task.is_gate()))
+            .map_err(|error| error.to_string())
+    }
+
+    /// T053：门判定内部操作；同一事务核对候选/去重/记判定/排 relay。
+    ///
+    /// 「已经变了」不是错误：返回 changed=true、不记判定，让卡片收成回执。
+    pub(crate) fn gate_judge(
+        &self,
+        request: &GateJudgeRequest,
+    ) -> Result<GateJudgeResponse, String> {
+        let gate_id = TaskId::from(request.gate_task.as_str());
+        let gate_report = ReportId::from(request.gate_report.as_str());
+        let conclusion = match request.conclusion {
+            ProtocolGateConclusion::Pass => GateConclusion::Pass,
+            ProtocolGateConclusion::NeedsFix => GateConclusion::NeedsFix,
+        };
+        match self.store.judge_gate(
+            &gate_id,
+            &gate_report,
+            conclusion,
+            request.note.clone(),
+            Self::now(),
+        ) {
+            Ok(outcome) => {
+                self.wake();
+                let recorded = match outcome.verdict.conclusion {
+                    GateConclusion::Pass => ProtocolGateConclusion::Pass,
+                    GateConclusion::NeedsFix => ProtocolGateConclusion::NeedsFix,
+                };
+                let summary = match outcome.verdict.conclusion {
+                    GateConclusion::Pass => "你判了通过",
+                    GateConclusion::NeedsFix => "你判了需修正",
+                };
+                Ok(GateJudgeResponse {
+                    verdict: Some(GateVerdictView {
+                        gate_report: outcome.verdict.gate_report.as_str().to_owned(),
+                        candidate_report: outcome.verdict.candidate.report_id.as_str().to_owned(),
+                        requirement_version: outcome.verdict.candidate.requirement_version,
+                        conclusion: recorded,
+                        note: outcome.verdict.note.clone(),
+                        at: outcome.verdict.at,
+                    }),
+                    changed: false,
+                    duplicate: outcome.duplicate,
+                    summary: summary.to_owned(),
+                    released: outcome.released,
+                })
+            }
+            Err(TaskError::GateReportChanged) => Ok(GateJudgeResponse {
+                verdict: None,
+                changed: true,
+                duplicate: false,
+                summary: "已经变了：没有记判定".to_owned(),
+                released: Vec::new(),
+            }),
+            Err(error) => Err(error.to_string()),
+        }
     }
 
     /// 任务对话的只读快照：头部来自任务聚合，事件来自当前 Attempt 的会话日志。
@@ -1472,6 +1540,7 @@ impl TaskRuntime {
     fn relay_message(&self, claim: &EffectClaim) -> Result<Option<(Task, Value, String)>, String> {
         let task_id = match &claim.payload {
             EffectPayload::Relay { task_id, .. } | EffectPayload::Stop { task_id, .. } => task_id,
+            EffectPayload::GateVerdict { gate_task, .. } => gate_task,
             EffectPayload::Launch { .. }
             | EffectPayload::Delivery { .. }
             | EffectPayload::Notice { .. }
@@ -1542,6 +1611,10 @@ impl TaskRuntime {
                 if let Some(worktree) = &task.worktree_state {
                     body["worktree_path"] = json!(worktree.root.to_string_lossy());
                 }
+                // T053：门结果卡的里程碑事实；被把关任务的卡标「等核查」。
+                if let Some(gate_facts) = self.gate_card_facts(&task, report) {
+                    body["gate"] = gate_facts;
+                }
                 let request_id = format!("task-report:{}:{}", task.id, report.id);
                 Ok(Some((task, body, request_id)))
             }
@@ -1564,11 +1637,92 @@ impl TaskRuntime {
                 let request_id = format!("task-stop:{}:{}", task.id, attempt_id);
                 Ok(Some((task, body, request_id)))
             }
+            EffectPayload::GateVerdict { gate_report, .. } => {
+                let gate = self
+                    .store
+                    .task(&task.id)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("任务 {} 不在了", task.id))?;
+                let Some(verdict) = gate.verdict_for_gate_report(gate_report).cloned() else {
+                    return Err(format!("门 {} 没有报告 {gate_report} 的判定", gate.id));
+                };
+                let Some(need) = gate.needs.first() else {
+                    return Err(format!("门 {} 没有把关对象", gate.id));
+                };
+                let guarded = self
+                    .store
+                    .task(&need.from)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| format!("被把关任务 {} 不在了", need.from))?;
+                let gate_report_fact = gate.reports.iter().find(|report| report.id == *gate_report);
+                let body = json!({
+                    "kind": "gate_verdict",
+                    "gate": {"id": gate.id.as_str(), "title": gate.title},
+                    "conclusion": match verdict.conclusion {
+                        tasks::GateConclusion::Pass => "pass",
+                        tasks::GateConclusion::NeedsFix => "needs_fix",
+                    },
+                    "candidate": {
+                        "task": {"id": guarded.id.as_str(), "title": guarded.title},
+                        "report_id": verdict.candidate.report_id.as_str(),
+                        "requirement_version": verdict.candidate.requirement_version,
+                    },
+                    "note": verdict.note,
+                    "summary": gate_report_fact.map(|report| report.summary.clone()).unwrap_or_default(),
+                });
+                let request_id = format!("gate-verdict:{}:{}", gate.id, gate_report);
+                Ok(Some((gate, body, request_id)))
+            }
             EffectPayload::Launch { .. }
             | EffectPayload::Delivery { .. }
             | EffectPayload::Notice { .. }
             | EffectPayload::Restart { .. } => Err("relay 载荷不是 relay".to_owned()),
         }
+    }
+
+    /// T053：结果卡上的里程碑事实（门卡 = 等你判 + 核查对象；被把关卡 = 等核查）。
+    fn gate_card_facts(&self, task: &Task, report: &Report) -> Option<Value> {
+        if report.state != ReportState::Ready {
+            return None;
+        }
+        if task.is_gate() {
+            let need = task.needs.first()?;
+            let guarded = self.store.task(&need.from).ok().flatten()?;
+            let candidate = task.latest_attempt()?.handoffs.first()?.clone();
+            let ordinal = guarded
+                .reports
+                .iter()
+                .filter(|report| report.state == ReportState::Ready)
+                .position(|report| report.id == candidate.report_id)?
+                + 1;
+            return Some(json!({
+                "milestone": true,
+                "state": "pending_verdict",
+                "guarded": {"id": guarded.id.as_str(), "title": guarded.title},
+                "candidate": {
+                    "report_id": candidate.report_id.as_str(),
+                    "requirement_version": candidate.requirement_version,
+                    "ordinal": ordinal,
+                },
+            }));
+        }
+        let parent = task.parent.as_ref()?;
+        for sibling in self.store.children(parent).ok()? {
+            if sibling.is_gate()
+                && sibling
+                    .needs
+                    .first()
+                    .is_some_and(|need| need.from == task.id)
+            {
+                return Some(json!({
+                    "milestone": true,
+                    "state": "waiting",
+                    "id": sibling.id.as_str(),
+                    "title": sibling.title,
+                }));
+            }
+        }
+        None
     }
 
     fn later(&self, claim: &EffectClaim) {
@@ -1638,13 +1792,44 @@ impl TaskRuntime {
                 return false;
             }
         }
-        // 上一次已经开成会话：重跑的效果只把行收掉；被重启打断的 Attempt 留给第 4 张票。
-        if task
-            .latest_attempt()
-            .is_some_and(|attempt| attempt.conversation.is_some())
+        // T053：门的重检是新 Attempt，允许同任务之前开过会话；别的任务重跑效果只把行收掉。
+        if !task.is_gate()
+            && task
+                .latest_attempt()
+                .is_some_and(|attempt| attempt.conversation.is_some())
         {
             self.finish_or_fail(&claim, Ok(()));
             return false;
+        }
+        // T053：门任务的准入——候选必须已经交接；同一候选不重复核；门还在跑就推迟。
+        let mut gate_candidate = None;
+        if task.is_gate() {
+            let Some(need) = task.needs.first() else {
+                self.finish_or_fail(&claim, Ok(()));
+                return false;
+            };
+            let Some(handoff) = need.handoff.clone() else {
+                self.finish_or_fail(&claim, Ok(()));
+                return false;
+            };
+            if let Some(latest) = task.latest_attempt() {
+                if latest.ended_at.is_none() {
+                    self.later(&claim);
+                    return false;
+                }
+                if latest
+                    .handoffs
+                    .first()
+                    .is_some_and(|checked| checked.report_id == handoff.report_id)
+                {
+                    self.finish_or_fail(&claim, Ok(()));
+                    return false;
+                }
+            }
+            gate_candidate = Some(GateCandidate {
+                report_id: handoff.report_id.clone(),
+                requirement_version: handoff.requirement_version,
+            });
         }
         // 崩溃留下的、没有会话 id 的 Attempt 先收尾，再开新的。
         if let Err(error) = self.store.close_unopened_attempts(&task.id, Self::now()) {
@@ -1696,13 +1881,27 @@ impl TaskRuntime {
             self.finish_or_fail(&claim, Err(error.to_string()));
             return false;
         }
-        let attempt_id = match self.store.begin_attempt(&task.id, Self::now()) {
-            Ok(attempt_id) => attempt_id,
-            Err(error) => {
-                self.finish_or_fail(&claim, Err(error.to_string()));
-                return false;
-            }
+        // T053：记下开跑时实际拿到的上游报告；门重检带候选事实。
+        let handoffs: Vec<Handoff> = task
+            .needs
+            .iter()
+            .filter_map(|need| need.handoff.clone())
+            .collect();
+        let trigger = match gate_candidate {
+            Some(candidate) => AttemptTrigger::GateRecheck { candidate },
+            None => AttemptTrigger::Launch,
         };
+        let attempt_id =
+            match self
+                .store
+                .begin_attempt_with(&task.id, Self::now(), trigger, handoffs)
+            {
+                Ok(attempt_id) => attempt_id,
+                Err(error) => {
+                    self.finish_or_fail(&claim, Err(error.to_string()));
+                    return false;
+                }
+            };
         let host = match self.open_thin(&task, attempt_id, prepared, None).await {
             Ok(host) => Arc::new(host),
             Err(error) => {
@@ -2433,7 +2632,7 @@ impl TaskRuntime {
     fn propose_graph(
         &self,
         context: &ToolContext,
-        _call_id: &str,
+        call_id: &str,
         args: TaskGraphArgs,
     ) -> Result<(Task, usize), ToolFailure> {
         let TaskGraphArgs {
@@ -2511,6 +2710,7 @@ impl TaskRuntime {
                     bash,
                 },
                 after: item.after,
+                milestone: item.milestone,
             });
         }
         let graph = NewGraph {
@@ -2525,9 +2725,10 @@ impl TaskRuntime {
             },
             subtasks: frozen_subtasks,
         };
-        let root = self
+        // T053：同一个 call id 重试返回同一张图，不建第二张。
+        let (root, _created) = self
             .store
-            .create_graph(graph, Self::now())
+            .create_graph_once(graph, call_id, Self::now())
             .map_err(|error| ToolFailure::plain(error.to_string()))?;
         self.wake();
         Ok((root, count))
@@ -2946,6 +3147,7 @@ fn stage_key(stage: Stage) -> &'static str {
         Stage::Pending => "pending",
         Stage::Running => "running",
         Stage::ReadyForReview => "ready_for_review",
+        Stage::RequirementMet => "requirement_met",
     }
 }
 
@@ -2955,6 +3157,7 @@ fn stage_label(stage: Stage) -> &'static str {
         Stage::Pending => "待执行",
         Stage::Running => "执行中",
         Stage::ReadyForReview => "待检查",
+        Stage::RequirementMet => "任务要求已满足",
     }
 }
 
@@ -3138,7 +3341,8 @@ impl TaskGraphProposeTool {
                                 "dod": {"type": "string", "description": "How this step will be judged complete."},
                                 "write_scope": {"type": "string", "description": "One path this step may write; omit for a read-only step."},
                                 "worktree": {"type": "boolean", "description": "Only when the user explicitly asks for a worktree. Defaults to false."},
-                                "after": {"type": "array", "items": {"type": "integer"}, "description": "Indexes (0-based) of subtasks in this proposal that must have a result before this step starts."}
+                                "after": {"type": "array", "items": {"type": "integer"}, "description": "Indexes (0-based) of subtasks in this proposal that must have a result before this step starts."},
+                                "milestone": {"type": "boolean", "description": "True for a read-only check step the user judges: its after has exactly one index (the step it checks), it cannot write, and the user passes it or sends it back for fixes on its result card. Use it when the user says they want to look before continuing."}
                             },
                             "required": ["title", "requirement", "dod"]
                         }
@@ -3659,6 +3863,15 @@ fn parse_graph_args(args: &serde_json::Map<String, Value>) -> Result<TaskGraphAr
                 )));
             }
         };
+        let milestone = match object.get("milestone") {
+            None => false,
+            Some(Value::Bool(value)) => *value,
+            Some(_) => {
+                return Err(ToolFailure::plain(format!(
+                    "subtasks[{index}].milestone 必须是布尔值"
+                )));
+            }
+        };
         subtasks.push(GraphSubtaskArgs {
             title: subtask_title,
             requirement: subtask_requirement,
@@ -3666,6 +3879,7 @@ fn parse_graph_args(args: &serde_json::Map<String, Value>) -> Result<TaskGraphAr
             write_scope,
             worktree,
             after,
+            milestone,
         });
     }
     Ok(TaskGraphArgs {

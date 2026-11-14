@@ -1,0 +1,14 @@
+{
+  "routes": [
+    {
+      "contains": "\"name\":\"task_graph_propose\"",
+      "file": "t053-kind.jsonl",
+      "paceMs": 50
+    },
+    {
+      "contains": "\"name\":\"task_report\"",
+      "file": "t053-thin.jsonl",
+      "paceMs": 100
+    }
+  ]
+}

@@ -10,9 +10,9 @@ use model::DEFAULT_CONTEXT_WINDOW;
 use serde_json::Value;
 use service::{
     AttachmentPutRequest, Call, CardActRequest, CardVerb, DeliveryMode, DisabledModelsSetRequest,
-    Response, RootHost, SendAttachment, SendRequest, SessionModelSelectRequest,
-    SettingsUpdateRequest, StopMode, TaskInterruptRequest, TaskReadRequest, TaskSayRequest,
-    TaskStopRequest,
+    GateJudgeConclusion, GateJudgeRequest, Response, RootHost, SendAttachment, SendRequest,
+    SessionModelSelectRequest, SettingsUpdateRequest, StopMode, TaskInterruptRequest,
+    TaskReadRequest, TaskSayRequest, TaskStopRequest,
 };
 use tasks::{AttemptEnd, EffectKind, EffectState, ReportState, Stage, Store, Task};
 use wiremock::matchers::{method, path};
@@ -38,6 +38,8 @@ struct RouterState {
     thin_delay: Mutex<Option<Duration>>,
     /// T052：Kind 的动态脚本阶段（0=出确认卡、1=task_status、2=收尾）；None = 用静态队列。
     graph_kind: Mutex<Option<u8>>,
+    /// T053：带里程碑门的任务图动态脚本阶段；None = 用静态队列。
+    gate_kind: Mutex<Option<u8>>,
 }
 
 impl Router {
@@ -52,6 +54,7 @@ impl Router {
                 unexpected: Mutex::new(Vec::new()),
                 thin_delay: Mutex::new(None),
                 graph_kind: Mutex::new(None),
+                gate_kind: Mutex::new(None),
             }),
         }
     }
@@ -59,6 +62,11 @@ impl Router {
     /// T052：让 Kind 的第二轮起用动态脚本（先 propose_action 出卡，再 task_status，最后收尾）。
     fn enable_graph_kind(&self) {
         *self.state.graph_kind.lock().unwrap() = Some(0);
+    }
+
+    /// T053：Kind 用带里程碑门的动态脚本（skill → 提议三子任务图 → 出确认卡 → 收尾）。
+    fn enable_gate_kind(&self) {
+        *self.state.gate_kind.lock().unwrap() = Some(0);
     }
 
     fn set_thin_delay(&self, delay: Duration) {
@@ -200,6 +208,64 @@ impl Respond for Router {
                     crate::common::tool_use_sse(3, "call-graph-status", "task_status", &args)
                 }
                 _ => crate::common::text_sse("任务图已确认。"),
+            };
+            return ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(sse);
+        }
+        // T053：里程碑门的动态 Kind 轮。
+        if !thin
+            && let Some(step) = {
+                let mut phase = self.state.gate_kind.lock().unwrap();
+                let step = phase.take();
+                if let Some(step) = step {
+                    *phase = Some(step + 1);
+                }
+                step
+            }
+        {
+            let sse = match step {
+                0 => crate::common::tool_use_sse(
+                    0,
+                    "call-gate-skill",
+                    "skill",
+                    &serde_json::json!({"name": "aios-tasks"}).to_string(),
+                ),
+                1 => {
+                    let graph = serde_json::json!({
+                        "title": "查行数再写结果",
+                        "requirement": "先查 notes.md 有几行，改完找个独立的核查看一眼，我来拍板，过了再写结果",
+                        "dod": "核查通过了再写结果",
+                        "subtasks": [
+                            {"title": "先查行数", "requirement": "查 notes.md 有几行", "dod": "给出行数"},
+                            {"title": "独立核查", "requirement": "独立核查行数结果", "dod": "给出核查发现", "milestone": true, "after": [0]},
+                            {"title": "再写结果", "requirement": "把行数写进 other.txt", "dod": "other.txt 里是行数", "write_scope": "other.txt", "after": [0]}
+                        ]
+                    })
+                    .to_string();
+                    crate::common::tool_use_sse(
+                        1,
+                        "call-gate-propose",
+                        "task_graph_propose",
+                        &graph,
+                    )
+                }
+                2 => {
+                    let root = graph_root_id(&body).expect("请求里要有「已建任务图 <id>」");
+                    let args = serde_json::json!({
+                        "title": "任务图",
+                        "brief": "三步：先查、独立核查、核查通过后再写；核查结果由用户在卡上判。",
+                        "options": [{
+                            "id": "confirm",
+                            "action": "start_task_graph",
+                            "label": "确认并开跑",
+                            "details": {"task_id": root}
+                        }]
+                    })
+                    .to_string();
+                    crate::common::tool_use_sse(2, "call-gate-card", "propose_action", &args)
+                }
+                _ => crate::common::text_sse("收到。"),
             };
             return ResponseTemplate::new(200)
                 .insert_header("content-type", "text/event-stream")
@@ -1291,6 +1357,7 @@ const EXPECTED_KIND_POLICY: &str = concat!(
     "\nBefore dispatching a write task, stopping a task, or changing its write scope, load the aios-tasks skill first.",
     "\nWhen the user's request has steps that must happen in order (a later step needs an earlier step's result), call task_graph_propose once with the subtasks and their after links, then call propose_action once with action start_task_graph and the graph id it returned; the user confirms on the card. Sub-tasks whose upstream has a ready result start automatically: do not dispatch them again.",
     "\nDispatch tasks that are independent of each other separately with task_accept; only ordered work belongs in a task graph.",
+    "\nWhen the user asks to look at something before continuing (for example \"我要先看一眼\", \"我来拍板\", \"过了再…\"), add a read-only milestone step to the graph: set milestone true on that subtask, leave write_scope empty, and make its after point at exactly the one step it checks. Only the user decides on the milestone result card; never judge, pass or fix it yourself.",
 );
 
 /// 装了任务执行者：Kind 第一个请求的 system 以派任务说明结尾。
@@ -2777,6 +2844,8 @@ async fn confirm_pause_card(host: &RootHost, call_id: &str) -> Value {
             call_id: call_id.to_owned(),
             verb: CardVerb::Confirm,
             option: Some("one".to_owned()),
+
+            note: None,
         }))
         .await
         .expect("确认暂停卡");
@@ -4713,6 +4782,8 @@ async fn confirm_card_option(host: &RootHost, call_id: &str, option: &str) -> Va
             call_id: call_id.to_owned(),
             verb: CardVerb::Confirm,
             option: Some(option.to_owned()),
+
+            note: None,
         }))
         .await
         .expect("确认接续卡");
@@ -4726,6 +4797,8 @@ async fn dismiss_card(host: &RootHost, call_id: &str) -> Value {
             call_id: call_id.to_owned(),
             verb: CardVerb::Dismiss,
             option: None,
+
+            note: None,
         }))
         .await
         .expect("暂不接续");
@@ -7362,6 +7435,8 @@ async fn accept_result_card(host: &RootHost, call_id: &str) -> Value {
             call_id: call_id.to_owned(),
             verb: CardVerb::Confirm,
             option: None,
+
+            note: None,
         }))
         .await
         .expect("接受结果卡");
@@ -7756,6 +7831,8 @@ async fn graph_propose_card_confirm_launches_first_subtask_only() {
         call_id: "call-graph-card".to_owned(),
         verb: CardVerb::Confirm,
         option: Some("confirm".to_owned()),
+
+        note: None,
     });
     let Response::CardAct(response) = host.dispatch(confirm.clone()).await.expect("确认") else {
         panic!("card-act 响应");
@@ -7940,6 +8017,8 @@ async fn graph_dismiss_card_keeps_it_unconfirmed_and_launches_nothing() {
             call_id: "call-graph-card".to_owned(),
             verb: CardVerb::Dismiss,
             option: None,
+
+            note: None,
         }))
         .await
         .expect("暂不")
@@ -8081,6 +8160,8 @@ async fn graph_ready_releases_downstream_with_the_upstream_result() {
             call_id: "call-graph-card".to_owned(),
             verb: CardVerb::Confirm,
             option: Some("confirm".to_owned()),
+
+            note: None,
         }))
         .await
         .expect("确认")
@@ -8243,6 +8324,8 @@ async fn graph_confirm_while_paused_queues_then_runs_in_order_after_unpause() {
             call_id: "call-graph-card".to_owned(),
             verb: CardVerb::Confirm,
             option: Some("confirm".to_owned()),
+
+            note: None,
         }))
         .await
         .expect("确认")
@@ -8373,6 +8456,8 @@ async fn graph_restart_interrupts_running_child_but_not_root_or_waiting_sibling(
         call_id: "call-graph-card".to_owned(),
         verb: CardVerb::Confirm,
         option: Some("confirm".to_owned()),
+
+        note: None,
     }))
     .await
     .expect("确认");
@@ -8466,6 +8551,8 @@ async fn graph_crash_after_ready_releases_downstream_exactly_once_after_restart(
         call_id: "call-graph-card".to_owned(),
         verb: CardVerb::Confirm,
         option: Some("confirm".to_owned()),
+
+        note: None,
     }))
     .await
     .expect("确认");
@@ -8571,6 +8658,8 @@ async fn resume_attempt_rehands_the_latest_upstream_result() {
         call_id: "call-graph-card".to_owned(),
         verb: CardVerb::Confirm,
         option: Some("confirm".to_owned()),
+
+        note: None,
     }))
     .await
     .expect("确认");
@@ -8738,4 +8827,538 @@ async fn resume_attempt_rehands_the_latest_upstream_result() {
             .any(|text| text.contains("上游结果（最新）") && text.contains("5 行")),
         "B2 会话里要有最新的上游结果：{texts:?}"
     );
+}
+
+/// T053.1：门任务和被把关任务按标题找（动态脚本建的名字固定）。
+fn gate_children(store: &Store, root: &Task) -> (Task, Task, Task) {
+    let children = store.children(&root.id).expect("子任务");
+    let guarded = children
+        .iter()
+        .find(|child| child.title == "先查行数")
+        .cloned()
+        .expect("先查行数");
+    let gate = children
+        .iter()
+        .find(|child| child.title == "独立核查")
+        .cloned()
+        .expect("独立核查");
+    let downstream = children
+        .iter()
+        .find(|child| child.title == "再写结果")
+        .cloned()
+        .expect("再写结果");
+    (guarded, gate, downstream)
+}
+
+/// T053.1：建好门图、确认、B 报回、门报回，返回手头的事实；调用方再判或改动。
+async fn reach_gate_ready(
+    host: &RootHost,
+    router: &Router,
+    data: &Path,
+) -> (Task, Task, Task, tasks::ReportId) {
+    router.enable_gate_kind();
+    host.dispatch(Call::Send(send(host, "kind-1", "先查再核再写")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(host, data, 1).await;
+    wait_until("建门图", || {
+        tasks_store(data)
+            .task_ids()
+            .map(|ids| ids.len() == 4)
+            .unwrap_or(false)
+    })
+    .await;
+    let store = tasks_store(data);
+    let root = graph_root(&store);
+    let (guarded, gate, downstream) = gate_children(&store, &root);
+    router.push_thin_for(
+        guarded.id.as_str(),
+        crate::common::tool_use_sse(
+            2,
+            "call-b-report",
+            "task_report",
+            r#"{"state":"ready","summary":"第一次结果：3 行"}"#,
+        ),
+    );
+    router.push_thin_for(guarded.id.as_str(), crate::common::text_sse("好"));
+    router.push_thin_for(
+        gate.id.as_str(),
+        crate::common::tool_use_sse(
+            2,
+            "call-gate-report",
+            "task_report",
+            r#"{"state":"ready","summary":"核查发现：空标题会漏判"}"#,
+        ),
+    );
+    router.push_thin_for(gate.id.as_str(), crate::common::text_sse("好"));
+    for _ in 0..10 {
+        router.push_kind(crate::common::text_sse("收到"));
+    }
+    host.dispatch(Call::CardAct(CardActRequest {
+        call_id: "call-gate-card".to_owned(),
+        verb: CardVerb::Confirm,
+        option: Some("confirm".to_owned()),
+        note: None,
+    }))
+    .await
+    .expect("确认");
+    wait_until("B 报回 ready", || {
+        tasks_store(data)
+            .task(&guarded.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_report().map(|report| report.state))
+            == Some(ReportState::Ready)
+    })
+    .await;
+    wait_until("门开跑并报回 ready", || {
+        tasks_store(data)
+            .task(&gate.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_report().map(|report| report.state))
+            == Some(ReportState::Ready)
+    })
+    .await;
+    let store = tasks_store(data);
+    let gate = store.task(&gate.id).expect("读门").expect("门存在");
+    let report_id = gate.latest_report().expect("门报告").id.clone();
+    let guarded = store.task(&guarded.id).expect("读 B").expect("B 存在");
+    let downstream = store.task(&downstream.id).expect("读 C").expect("C 存在");
+    let root = graph_root(&store);
+    (root, guarded, downstream, report_id)
+}
+
+#[tokio::test]
+async fn gate_pass_flow_releases_guarded_downstream_after_the_user_verdict() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    let (root, guarded, downstream, gate_report) =
+        reach_gate_ready(&host, &router, data.path()).await;
+    let store = tasks_store(data.path());
+    let gate = store
+        .task_ids()
+        .unwrap()
+        .into_iter()
+        .filter_map(|id| store.task(&id).ok().flatten())
+        .find(Task::is_gate)
+        .expect("门任务");
+    // 判之前：B 是待检查，C 没开跑。
+    assert_eq!(store.stage(&guarded.id).unwrap(), Stage::ReadyForReview);
+    assert_eq!(store.stage(&gate.id).unwrap(), Stage::ReadyForReview);
+    assert!(downstream.latest_attempt().is_none(), "C 还没开跑");
+    assert!(
+        !store
+            .effect_pending(EffectKind::Launch, downstream.id.as_str())
+            .unwrap()
+    );
+
+    // 用户点通过：判定记下，C 被放出。
+    let response = host
+        .dispatch(Call::GateJudge(GateJudgeRequest {
+            gate_task: gate.id.as_str().to_owned(),
+            gate_report: gate_report.as_str().to_owned(),
+            conclusion: GateJudgeConclusion::Pass,
+            note: None,
+        }))
+        .await
+        .expect("判定");
+    let Response::GateJudge(judged) = response else {
+        panic!("gate-judge 响应");
+    };
+    assert!(!judged.changed, "不该是已经变了");
+    assert!(!judged.duplicate);
+    assert_eq!(judged.released, vec!["再写结果".to_owned()]);
+    assert_eq!(
+        judged.verdict.as_ref().map(|verdict| verdict.conclusion),
+        Some(GateJudgeConclusion::Pass)
+    );
+
+    wait_until("C 开跑", || {
+        tasks_store(data.path())
+            .task(&downstream.id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| task.latest_attempt().is_some())
+    })
+    .await;
+    let store = tasks_store(data.path());
+    assert_eq!(store.stage(&guarded.id).unwrap(), Stage::RequirementMet);
+    assert_eq!(store.stage(&gate.id).unwrap(), Stage::RequirementMet);
+    let b = store.task(&guarded.id).unwrap().unwrap();
+    let c = store.task(&downstream.id).unwrap().unwrap();
+    let b_report = b.latest_report().unwrap();
+    assert_eq!(
+        c.needs[0]
+            .handoff
+            .as_ref()
+            .map(|handoff| handoff.report_id.clone()),
+        Some(b_report.id.clone()),
+        "C 交接的是判通过的那份"
+    );
+
+    // 同一份门报告再判：返回已有判定，不记第二次。
+    let again = host
+        .dispatch(Call::GateJudge(GateJudgeRequest {
+            gate_task: gate.id.as_str().to_owned(),
+            gate_report: gate_report.as_str().to_owned(),
+            conclusion: GateJudgeConclusion::NeedsFix,
+            note: None,
+        }))
+        .await
+        .expect("再判");
+    let Response::GateJudge(again) = again else {
+        panic!("gate-judge 响应");
+    };
+    assert!(again.duplicate);
+    assert_eq!(
+        again.verdict.as_ref().map(|verdict| verdict.conclusion),
+        Some(GateJudgeConclusion::Pass)
+    );
+    assert_eq!(
+        tasks_store(data.path())
+            .task(&gate.id)
+            .unwrap()
+            .unwrap()
+            .verdicts
+            .len(),
+        1
+    );
+    let _ = root;
+}
+
+#[tokio::test]
+async fn gate_judge_rejects_stale_report_and_candidate_changed() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    let (_root, guarded, _downstream, gate_report) =
+        reach_gate_ready(&host, &router, data.path()).await;
+    let store = tasks_store(data.path());
+    let gate = store
+        .task_ids()
+        .unwrap()
+        .into_iter()
+        .filter_map(|id| store.task(&id).ok().flatten())
+        .find(Task::is_gate)
+        .expect("门任务");
+    // 不是门的最新报告：已经变了，不记。
+    let stale = host
+        .dispatch(Call::GateJudge(GateJudgeRequest {
+            gate_task: gate.id.as_str().to_owned(),
+            gate_report: "deadbeefdeadbeefdeadbeefdeadbeef".to_owned(),
+            conclusion: GateJudgeConclusion::Pass,
+            note: None,
+        }))
+        .await
+        .expect("旧报告判定");
+    let Response::GateJudge(stale) = stale else {
+        panic!("gate-judge 响应");
+    };
+    assert!(stale.changed);
+    assert!(stale.verdict.is_none());
+    assert_eq!(
+        tasks_store(data.path())
+            .task(&gate.id)
+            .unwrap()
+            .unwrap()
+            .verdicts
+            .len(),
+        0
+    );
+
+    // B 又交一份新结果 → 候选变了；这时点旧门报告：已经变了，不记。
+    router.push_thin_for(
+        guarded.id.as_str(),
+        crate::common::tool_use_sse(
+            2,
+            "call-b2-report",
+            "task_report",
+            r#"{"state":"ready","summary":"第二次结果：5 行"}"#,
+        ),
+    );
+    router.push_thin_for(guarded.id.as_str(), crate::common::text_sse("好"));
+    router.push_thin_for(
+        gate.id.as_str(),
+        crate::common::tool_use_sse(
+            2,
+            "call-gate2-report",
+            "task_report",
+            r#"{"state":"ready","summary":"第二次核查"}"#,
+        ),
+    );
+    router.push_thin_for(gate.id.as_str(), crate::common::text_sse("好"));
+    wait_until("B 第一轮结束", || {
+        tasks_store(data.path())
+            .task(&guarded.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().cloned())
+            .is_some_and(|attempt| session_turn_ended(data.path(), &attempt))
+    })
+    .await;
+    wait_until("门第一轮结束", || {
+        tasks_store(data.path())
+            .task(&gate.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().cloned())
+            .is_some_and(|attempt| session_turn_ended(data.path(), &attempt))
+    })
+    .await;
+    host.dispatch(Call::TaskSay(TaskSayRequest {
+        task_id: guarded.id.as_str().to_owned(),
+        text: "再改一版".to_owned(),
+        pastes: Vec::new(),
+        attachments: Vec::new(),
+    }))
+    .await
+    .expect("B 第二轮");
+    wait_until("门重跑到第二份候选", || {
+        tasks_store(data.path())
+            .task(&gate.id)
+            .ok()
+            .flatten()
+            .is_some_and(|task| {
+                task.runs
+                    .iter()
+                    .map(|run| run.attempts.len())
+                    .sum::<usize>()
+                    == 2
+                    && task
+                        .latest_report()
+                        .is_some_and(|report| report.summary.contains("第二次核查"))
+            })
+    })
+    .await;
+    let stale_again = host
+        .dispatch(Call::GateJudge(GateJudgeRequest {
+            gate_task: gate.id.as_str().to_owned(),
+            gate_report: gate_report.as_str().to_owned(),
+            conclusion: GateJudgeConclusion::Pass,
+            note: None,
+        }))
+        .await
+        .expect("候选变后的旧报告判定");
+    let Response::GateJudge(stale_again) = stale_again else {
+        panic!("gate-judge 响应");
+    };
+    assert!(stale_again.changed, "候选已经变了");
+    let gate_now = tasks_store(data.path()).task(&gate.id).unwrap().unwrap();
+    assert!(gate_now.verdicts.is_empty(), "已经变了不记判定");
+    assert_eq!(
+        gate_now.needs[0].handoff.as_ref().unwrap().summary,
+        "第二次结果：5 行"
+    );
+}
+
+#[tokio::test]
+async fn gate_blocked_keeps_guarded_task_and_downstream_untouched() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    // 门脚本换成 blocked：B 报回 ready 后门开跑，门报 blocked。
+    router.enable_gate_kind();
+    host.dispatch(Call::Send(send(&host, "kind-1", "先查再核再写")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&host, data.path(), 1).await;
+    wait_until("建门图", || {
+        tasks_store(data.path())
+            .task_ids()
+            .map(|ids| ids.len() == 4)
+            .unwrap_or(false)
+    })
+    .await;
+    let store = tasks_store(data.path());
+    let root = graph_root(&store);
+    let (guarded, gate, downstream) = gate_children(&store, &root);
+    router.push_thin_for(
+        guarded.id.as_str(),
+        crate::common::tool_use_sse(
+            2,
+            "call-b-report",
+            "task_report",
+            r#"{"state":"ready","summary":"第一次结果：3 行"}"#,
+        ),
+    );
+    router.push_thin_for(
+        gate.id.as_str(),
+        crate::common::tool_use_sse(
+            2,
+            "call-gate-blocked",
+            "task_report",
+            r#"{"state":"blocked","summary":"缺原始链接，核不了","question":"要查什么？"}"#,
+        ),
+    );
+    for _ in 0..10 {
+        router.push_kind(crate::common::text_sse("收到"));
+    }
+    host.dispatch(Call::CardAct(CardActRequest {
+        call_id: "call-gate-card".to_owned(),
+        verb: CardVerb::Confirm,
+        option: Some("confirm".to_owned()),
+        note: None,
+    }))
+    .await
+    .expect("确认");
+    wait_until("门报 blocked", || {
+        tasks_store(data.path())
+            .task(&gate.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_report().map(|report| report.state))
+            == Some(ReportState::Blocked)
+    })
+    .await;
+    let store = tasks_store(data.path());
+    let b = store.task(&guarded.id).unwrap().unwrap();
+    assert_eq!(
+        b.latest_report().map(|report| report.state),
+        Some(ReportState::Ready),
+        "B 不动"
+    );
+    assert_eq!(store.stage(&guarded.id).unwrap(), Stage::ReadyForReview);
+    assert!(
+        store
+            .task(&downstream.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .is_none()
+    );
+    assert!(
+        !store
+            .effect_pending(EffectKind::Launch, downstream.id.as_str())
+            .unwrap()
+    );
+}
+
+/// T053.1：判定刚落库就崩溃 → 重启后下游恰好放一次、判定 relay 恰好送一次。
+#[tokio::test]
+async fn gate_verdict_crash_replays_downstream_launch_and_relay_once() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let router = Router::new();
+    mount(&server, &router).await;
+    let host = open_graph_host(&server, data.path(), cwd.path()).await;
+    let (_root, guarded, downstream, gate_report) =
+        reach_gate_ready(&host, &router, data.path()).await;
+    let store = tasks_store(data.path());
+    let gate = store
+        .task_ids()
+        .unwrap()
+        .into_iter()
+        .filter_map(|id| store.task(&id).ok().flatten())
+        .find(Task::is_gate)
+        .expect("门任务");
+    let guarded_report = store
+        .task(&guarded.id)
+        .unwrap()
+        .unwrap()
+        .latest_report()
+        .cloned()
+        .unwrap();
+
+    // 判定事务提交后、relay 投递前崩溃。
+    host.task_runtime()
+        .expect("runtime")
+        .crash_before_next_relay();
+    let response = host
+        .dispatch(Call::GateJudge(GateJudgeRequest {
+            gate_task: gate.id.as_str().to_owned(),
+            gate_report: gate_report.as_str().to_owned(),
+            conclusion: GateJudgeConclusion::Pass,
+            note: None,
+        }))
+        .await
+        .expect("判定");
+    let Response::GateJudge(judged) = response else {
+        panic!("gate-judge 响应");
+    };
+    assert!(!judged.changed, "判定要记下");
+    // 下游的 launch 还在效果表里（或崩溃前已经被领走，但绝不该重复）。
+    wait_until("C 的 launch 留在队列或已开跑", || {
+        let store = tasks_store(data.path());
+        store
+            .effect_pending(EffectKind::Launch, downstream.id.as_str())
+            .unwrap_or(false)
+            || store
+                .task(&downstream.id)
+                .ok()
+                .flatten()
+                .is_some_and(|task| task.latest_attempt().is_some())
+    })
+    .await;
+    drop(host);
+    // 重开根宿主（模拟进程重启）。
+    let mut reopened = false;
+    for _ in 0..250 {
+        let host = open_graph_host(&server, data.path(), cwd.path()).await;
+        if matches!(host.info().root, service::RootState::Ok) {
+            reopened = true;
+            wait_until("重启后 C 开跑", || {
+                tasks_store(data.path())
+                    .task(&downstream.id)
+                    .ok()
+                    .flatten()
+                    .and_then(|task| task.latest_attempt().cloned())
+                    .is_some_and(|attempt| attempt.conversation.is_some())
+            })
+            .await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let store = tasks_store(data.path());
+            let c = store.task(&downstream.id).unwrap().unwrap();
+            let attempts = c.runs.iter().map(|run| run.attempts.len()).sum::<usize>();
+            assert_eq!(attempts, 1, "崩溃重放只放一次");
+            assert_eq!(
+                c.needs[0]
+                    .handoff
+                    .as_ref()
+                    .map(|handoff| handoff.report_id.clone()),
+                Some(guarded_report.id.clone()),
+                "交接的是判通过的那份"
+            );
+            assert_eq!(
+                store.task(&gate.id).unwrap().unwrap().verdicts.len(),
+                1,
+                "判定只记一次"
+            );
+            // 判定 relay 恰好一次。
+            let count_verdict_relay = || {
+                crate::common::read_root_events(data.path())
+                    .iter()
+                    .filter(|event| {
+                        let session::EventKind::UserMessage { message, .. } = &event.kind else {
+                            return false;
+                        };
+                        matches!(
+                            &message.source,
+                            model::MessageSource::User { rpc_id: Some(rpc_id) }
+                                if rpc_id.starts_with("gate-verdict:")
+                        )
+                    })
+                    .count()
+            };
+            wait_until("判定 relay 送到", || count_verdict_relay() >= 1).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert_eq!(count_verdict_relay(), 1, "判定 relay 只送一次");
+            drop(host);
+            break;
+        }
+        drop(host);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(reopened, "重开根宿主 250 次都没到 RootState::Ok");
 }

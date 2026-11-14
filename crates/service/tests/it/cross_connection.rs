@@ -213,6 +213,8 @@ fn confirm(option: &str) -> Call {
         call_id: CARD_CALL_ID.to_owned(),
         verb: CardVerb::Confirm,
         option: Some(option.to_owned()),
+
+        note: None,
     })
 }
 

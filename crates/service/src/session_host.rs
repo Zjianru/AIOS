@@ -147,7 +147,8 @@ impl ServiceHost {
             | Call::SettingsUpdate(_)
             | Call::AttachmentPut(_)
             | Call::AttachmentGet(_)
-            | Call::FileReferencesList(_) => Err(ServiceError::SettingsOnBareHost),
+            | Call::FileReferencesList(_)
+            | Call::GateJudge(_) => Err(ServiceError::SettingsOnBareHost),
         }
     }
 

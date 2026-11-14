@@ -75,6 +75,8 @@ impl RootHost {
                 .map(Response::SessionModelSelect),
             // 确认卡：自己取日志快照，不在持锁时跑动作（换模型可能重开根会话）。
             Call::CardAct(request) => self.card_act(request).await.map(Response::CardAct),
+            // T053：门判定是内部操作，只给根宿主（Kind 没有判定工具）。
+            Call::GateJudge(request) => self.gate_judge(request).await.map(Response::GateJudge),
             // 根宿主自己填统计/汇率/币种（需要 data_dir + Keyring）。
             Call::Status(request) => self.host_status(request).await.map(Response::Status),
             // 余额/余量需要 Keyring 签发 key。

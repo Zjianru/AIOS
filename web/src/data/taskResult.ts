@@ -42,6 +42,20 @@ export type TaskReportState = (typeof TASK_REPORT_STATES)[number];
 export const TASK_DISPATCH_STATES = ['dispatching', 'dispatched', 'pending'] as const;
 export type TaskDispatchState = (typeof TASK_DISPATCH_STATES)[number];
 
+/** T053：结果卡上的里程碑事实。 */
+export interface GateCardFact {
+  milestone: true;
+  /** pending_verdict：等用户判；waiting：被把关任务等核查。 */
+  state: 'pending_verdict' | 'waiting';
+  id?: string;
+  /** waiting 时是门的标题。 */
+  title?: string;
+  /** pending_verdict 时是被核查的任务。 */
+  guarded?: { id: string; title: string };
+  /** pending_verdict 时是这次核查的候选。 */
+  candidate?: { report_id: string; requirement_version: number; ordinal: number };
+}
+
 /** 卡上的状态：报告状态 + 写任务当前版本 ready 的「待你核」（卡状态，不是 Task 阶段）+ 派发卡两态。 */
 export const TASK_CARD_STATES = [...TASK_REPORT_STATES, 'review', ...TASK_DISPATCH_STATES] as const;
 export type TaskCardState = (typeof TASK_CARD_STATES)[number];
@@ -79,8 +93,14 @@ export interface TaskResultFact {
   autoStarted?: string[];
   /** 卡状态：写任务当前要求版本的 ready 报告给 review（卡上「待你核」）。 */
   cardState?: 'review';
-  /** 接受决定（card/decision 事件派生）；还没点过是 undefined。 */
-  decision?: { phase: 'confirmed' | 'dismissed' | 'refused' | 'failed' };
+  /** T053：里程碑门卡的里程碑事实（门卡 = pending_verdict，被把关卡 = waiting）。 */
+  gate?: GateCardFact;
+  /** 接受/判定决定（card/decision 事件派生）；还没点过是 undefined。 */
+  decision?: {
+    phase: 'confirmed' | 'dismissed' | 'refused' | 'failed';
+    data?: Record<string, unknown>;
+    at?: number;
+  };
   /** 这张卡最初是 task_accept 派生的派发卡（跨轮/跨页折卡时认它）。 */
   fromDispatch?: boolean;
 }
@@ -110,9 +130,30 @@ export interface TaskResultSlots {
   worktreePath: string;
   /** T052：自动开跑的下游标题；没有为空数组。 */
   autoStarted: string[];
+  /** T053：里程碑事实；不是门相关卡为空。 */
+  gate?: GateCardFact;
+  /** T053：门判定结论（从 card/decision 回填）。 */
+  verdict?: 'pass' | 'needs_fix';
+  /** 用户原话（需修正时）。 */
+  verdictNote?: string;
+  /** 判定回执时间（秒）。 */
+  verdictAt?: number;
+  /** T053：判定时发现已经变了（refused，没记判定）。 */
+  verdictChanged: boolean;
   /** 这轮结果已经被用户接受（card/decision 的 confirmed）。 */
   accepted: boolean;
 }
+
+const gateCardSchema = z.object({
+  milestone: z.literal(true),
+  state: z.enum(['pending_verdict', 'waiting']),
+  id: z.string().optional(),
+  title: z.string().optional(),
+  guarded: z.object({ id: z.string(), title: z.string() }).optional(),
+  candidate: z
+    .object({ report_id: z.string(), requirement_version: z.number(), ordinal: z.number() })
+    .optional(),
+});
 
 export const taskResultSlotsSchema = z.object({
   taskId: textSlot,
@@ -129,6 +170,11 @@ export const taskResultSlotsSchema = z.object({
   bashNote: textSlot,
   worktreePath: textSlot,
   autoStarted: z.array(z.string()).catch([]),
+  gate: gateCardSchema.optional(),
+  verdict: z.enum(['pass', 'needs_fix']).optional(),
+  verdictNote: textSlot.optional(),
+  verdictAt: z.number().optional(),
+  verdictChanged: z.boolean().catch(false),
   accepted: z.boolean().catch(false),
 });
 
@@ -146,6 +192,7 @@ const TASK_RESULT_FALLBACK_SLOTS: TaskResultSlots = {
   bashNote: '',
   worktreePath: '',
   autoStarted: [],
+  verdictChanged: false,
   accepted: false,
 };
 
@@ -239,10 +286,37 @@ export function taskResultCardOf(
   const changed = fact.changed ?? [];
   const cardState = fact.cardState === 'review' ? 'review' : undefined;
   const state = cardState ?? fact.state;
+  const decisionData = fact.decision?.data;
+  const verdict =
+    decisionData?.conclusion === 'pass' || decisionData?.conclusion === 'needs_fix'
+      ? decisionData.conclusion
+      : undefined;
+  const verdictNote =
+    typeof decisionData?.note === 'string' && decisionData.note !== ''
+      ? decisionData.note
+      : undefined;
+  const gate = fact.gate;
+  let status = taskStatusOf(
+    fact.state,
+    fact.origin,
+    cardState,
+    fact.decision?.phase === 'confirmed',
+  );
+  if (fact.decision?.phase === 'refused') {
+    status = '已经变了';
+  } else if (gate?.state === 'pending_verdict' && verdict === undefined) {
+    status = '等你判';
+  } else if (verdict === 'pass') {
+    status = '你判了通过';
+  } else if (verdict === 'needs_fix') {
+    status = '你判了需修正';
+  } else if (gate?.state === 'waiting') {
+    status = '等核查';
+  }
   const parsed = taskResultSlotsSchema.safeParse({
     taskId: fact.taskId,
     title: fact.title,
-    status: taskStatusOf(fact.state, fact.origin, cardState, fact.decision?.phase === 'confirmed'),
+    status,
     state,
     summary: fact.summary,
     ...(fact.question === undefined ? {} : { question: fact.question }),
@@ -256,7 +330,15 @@ export function taskResultCardOf(
     bashNote: fact.bashNote ?? '',
     worktreePath: fact.worktreePath ?? '',
     autoStarted: fact.autoStarted ?? [],
-    accepted: fact.decision?.phase === 'confirmed',
+    ...(gate === undefined ? {} : { gate }),
+    ...(verdict === undefined ? {} : { verdict }),
+    ...(verdictNote === undefined ? {} : { verdictNote }),
+    ...(fact.decision?.at === undefined ? {} : { verdictAt: fact.decision.at }),
+    verdictChanged: fact.decision?.phase === 'refused',
+    accepted:
+      fact.decision?.phase === 'confirmed' &&
+      (verdict === undefined || verdict === 'pass') &&
+      gate?.state !== 'pending_verdict',
   });
   if (!parsed.success) return null;
   return {
@@ -331,6 +413,7 @@ export function parseTaskRelay(message: unknown, at: number): TaskResultFact | n
       )
     : undefined;
   const cardState = body.card_state === 'review' ? ('review' as const) : undefined;
+  const gate = parseGateCard(body.gate);
 
   return {
     id: rpcId,
@@ -348,7 +431,34 @@ export function parseTaskRelay(message: unknown, at: number): TaskResultFact | n
     ...(bashNote === undefined ? {} : { bashNote }),
     ...(worktreePath === undefined ? {} : { worktreePath }),
     ...(autoStarted === undefined ? {} : { autoStarted }),
+    ...(gate === undefined ? {} : { gate }),
     ...(cardState === undefined ? {} : { cardState }),
+  };
+}
+
+/** T053：结果卡上的里程碑事实；形状不对当没有。 */
+function parseGateCard(value: unknown): GateCardFact | undefined {
+  if (!isRecord(value) || value.milestone !== true) return undefined;
+  const state =
+    value.state === 'pending_verdict' || value.state === 'waiting' ? value.state : undefined;
+  if (!state) return undefined;
+  const guarded = isRecord(value.guarded)
+    ? { id: String(value.guarded.id ?? ''), title: String(value.guarded.title ?? '') }
+    : undefined;
+  const candidate = isRecord(value.candidate)
+    ? {
+        report_id: String(value.candidate.report_id ?? ''),
+        requirement_version: Number(value.candidate.requirement_version ?? 0),
+        ordinal: Number(value.candidate.ordinal ?? 0),
+      }
+    : undefined;
+  return {
+    milestone: true,
+    state,
+    ...(typeof value.id === 'string' ? { id: value.id } : {}),
+    ...(typeof value.title === 'string' ? { title: value.title } : {}),
+    ...(guarded ? { guarded } : {}),
+    ...(candidate ? { candidate } : {}),
   };
 }
 

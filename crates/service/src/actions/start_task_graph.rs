@@ -65,13 +65,18 @@ impl StartTaskGraphAction {
                     .collect::<Vec<_>>()
                     .join("、")
             };
-            let scope = match &child.write_scope {
-                Some(path) => path
-                    .strip_prefix(&child.cwd)
-                    .unwrap_or(path)
-                    .display()
-                    .to_string(),
-                None => "只读".to_owned(),
+            // T053：里程碑那行照实写只读 + 结果由用户判。
+            let scope = if child.is_gate() {
+                "只读；里程碑，结果由你判".to_owned()
+            } else {
+                match &child.write_scope {
+                    Some(path) => path
+                        .strip_prefix(&child.cwd)
+                        .unwrap_or(path)
+                        .display()
+                        .to_string(),
+                    None => "只读".to_owned(),
+                }
             };
             facts.push(CardFact {
                 name: format!("{}. {}", index + 1, child.title),

@@ -80,6 +80,7 @@ function startReplay(
         t030RouteFile(options) ??
         t013RouteFile(options) ??
         t052RouteFile(options) ??
+        t053RouteFile(options) ??
         taskResultRouteFile(options))
       : routesFile;
   const args: string[] = [];
@@ -309,6 +310,8 @@ export interface FixtureOptions {
   t052Graph?: boolean;
   /// T052：同一条任务图流程，但第一项 ThinAgent 报 failed（验证下游不自己跑）。
   t052Fail?: boolean;
+  /// T053：任务图带只读里程碑门（先查 → 独立核查 → 通过后再写）。
+  t053Gate?: boolean;
 }
 
 /** T024.4：双会话回放用哪份按请求体路由的文件；预写会话的两种不需要。 */
@@ -336,6 +339,12 @@ function t052RouteFile(options: FixtureOptions): string | null {
   if (options.t052Fail) return 't052-routes-graph-fail.json';
   if (!options.t052Graph) return null;
   return 't052-routes-graph.json';
+}
+
+/** T053：里程碑门场景的回放路由（Kind 提图/出卡，ThinAgent 按 B→门→C 报 ready）。 */
+function t053RouteFile(options: FixtureOptions): string | null {
+  if (!options.t053Gate) return null;
+  return 't053-routes-graph.json';
 }
 
 /** T030：写任务/接受/bash/工作树这些场景的回放路由。 */

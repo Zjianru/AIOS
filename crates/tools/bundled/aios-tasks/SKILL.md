@@ -27,6 +27,14 @@ When one step needs an earlier step's result (「先查 A，再按查到的改 B
 
 Independent things in one message are still separate `task_accept` calls, not a graph. If the user dismisses the card the graph stays without running; to change it, propose a new graph after they agree.
 
+## Look before continuing: milestones
+
+When the user wants to check something before the next step (「改完找个独立的核查看一眼，我来拍板，过了再…」), add one read-only milestone to the graph:
+
+- one subtask with `milestone: true`, no `write_scope`, and `after` exactly one index: the step it checks;
+- the checked step's other downstream steps wait until the user passes the milestone;
+- only the user decides on the milestone result card (通过 / 需修正); you have no tool that passes or fixes it. When the user sends it back, wait for their words and follow them.
+
 ## Stop now
 
 Call `task_stop` once with `{"task_id": "<the id task_accept returned>", "mode": "now"}`.

@@ -10,11 +10,16 @@ use serde_json::Value;
 
 use crate::actions::{ActionEnv, CardFact};
 use crate::error::ServiceError;
-use crate::protocol::{CardActRequest, CardActResponse, CardVerb};
+use crate::protocol::{
+    CardActRequest, CardActResponse, CardVerb, GateJudgeConclusion, GateJudgeRequest,
+    GateJudgeResponse,
+};
 use crate::root_lifecycle::RootHost;
 
 /// 结果卡「接受」这个动作的名字（进 card/decision 的 action）。
 const ACCEPT_RESULT_ACTION: &str = "accept_task_result";
+/// 门结果卡判定动作的名字（进 card/decision 的 action）。
+const GATE_JUDGE_ACTION: &str = "gate_judge";
 
 /// 模型传给 propose_action 的参数。
 #[derive(Debug, Clone, Deserialize)]
@@ -211,8 +216,13 @@ impl RootHost {
         request: &CardActRequest,
     ) -> Result<CardActResponse, ServiceError> {
         let events = self.card_events().await?;
-        // 任务结果卡（relay 的 request id）走接受，不是 propose_action 的确认卡。
+        // 任务结果卡（relay 的 request id）走接受或门判定，不是 propose_action 的确认卡。
         if let Some((task_id, report_id)) = crate::result_cards::parse_relay_id(&request.call_id) {
+            if matches!(request.verb, CardVerb::Pass | CardVerb::NeedsFix) {
+                return self
+                    .judge_gate_card(request, task_id, report_id, &events)
+                    .await;
+            }
             return self
                 .accept_result_card(request, task_id, report_id, &events)
                 .await;
@@ -244,6 +254,10 @@ impl RootHost {
                     Some(decision) => decision,
                     None => return Ok(CardActResponse { decision: None }),
                 }
+            }
+            // 门判定只作用于结果卡；确认卡上没有这两个动作。
+            CardVerb::Pass | CardVerb::NeedsFix => {
+                return Ok(CardActResponse { decision: None });
             }
         };
         self.record_decision(&decision).await?;
@@ -303,6 +317,100 @@ impl RootHost {
         Ok(CardActResponse {
             decision: Some(decision),
         })
+    }
+
+    /// 门结果卡上的「通过」「需修正」：只认真的送到 Kind 对话里的那张卡。
+    ///
+    /// 判定由任务库在同一个事务里核对候选、去重和记；这里只把结果落成 card/decision 回执。
+    async fn judge_gate_card(
+        &self,
+        request: &CardActRequest,
+        task_id: &str,
+        report_id: &str,
+        events: &[session::Event],
+    ) -> Result<CardActResponse, ServiceError> {
+        if let Some(decision) = decision_of(events, &request.call_id) {
+            return Ok(CardActResponse {
+                decision: Some(decision),
+            });
+        }
+        if crate::result_cards::relay_card(events, &request.call_id, task_id).is_none() {
+            return Ok(CardActResponse { decision: None });
+        }
+        let Some(runtime) = self.task_runtime() else {
+            return Err(ServiceError::TaskUnavailable(
+                "任务库没开，判定不了".to_owned(),
+            ));
+        };
+        let gate_id = tasks::TaskId::from(task_id);
+        if !runtime
+            .task_is_gate(&gate_id)
+            .map_err(ServiceError::TaskUnavailable)?
+        {
+            return Ok(CardActResponse { decision: None });
+        }
+        let conclusion = match request.verb {
+            CardVerb::Pass => GateJudgeConclusion::Pass,
+            CardVerb::NeedsFix => GateJudgeConclusion::NeedsFix,
+            CardVerb::Confirm | CardVerb::Dismiss => {
+                return Ok(CardActResponse { decision: None });
+            }
+        };
+        let judged = runtime
+            .gate_judge(&GateJudgeRequest {
+                gate_task: task_id.to_owned(),
+                gate_report: report_id.to_owned(),
+                conclusion,
+                note: request.note.clone(),
+            })
+            .map_err(ServiceError::TaskUnavailable)?;
+        let decision = if judged.changed {
+            session::CardDecision {
+                call_id: request.call_id.clone(),
+                option: None,
+                action: Some(GATE_JUDGE_ACTION.to_owned()),
+                phase: session::CardDecisionPhase::Refused,
+                data: Some(serde_json::json!({ "summary": judged.summary })),
+            }
+        } else {
+            let verdict = judged.verdict.clone();
+            session::CardDecision {
+                call_id: request.call_id.clone(),
+                option: None,
+                action: Some(GATE_JUDGE_ACTION.to_owned()),
+                phase: session::CardDecisionPhase::Confirmed,
+                data: Some(serde_json::json!({
+                    "summary": judged.summary,
+                    "conclusion": match conclusion {
+                        GateJudgeConclusion::Pass => "pass",
+                        GateJudgeConclusion::NeedsFix => "needs_fix",
+                    },
+                    "note": verdict.as_ref().and_then(|verdict| verdict.note.clone()),
+                    "candidate_report": verdict.as_ref().map(|verdict| verdict.candidate_report.clone()),
+                    "requirement_version": verdict.as_ref().map(|verdict| verdict.requirement_version),
+                    "released": judged.released,
+                })),
+            }
+        };
+        self.record_decision(&decision).await?;
+        Ok(CardActResponse {
+            decision: Some(decision),
+        })
+    }
+
+    /// T053：门判定的内部操作（Call::GateJudge）；结果卡动作也走这里。
+    pub async fn gate_judge(
+        &self,
+        request: GateJudgeRequest,
+    ) -> Result<GateJudgeResponse, ServiceError> {
+        let Some(runtime) = self.task_runtime() else {
+            return Err(ServiceError::TaskUnavailable(
+                "任务库没开，判定不了".to_owned(),
+            ));
+        };
+        runtime
+            .gate_judge(&request)
+            .map_err(ServiceError::TaskUnavailable)
     }
 
     /// 一次确认：选中项 → 动作 → 核对事实 → 执行。返回要记的决定。

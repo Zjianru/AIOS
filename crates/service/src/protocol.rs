@@ -99,6 +99,8 @@ pub enum Call {
     AttachmentGet(AttachmentGetRequest),
     /// @ 文件候选（按会话工作目录）。
     FileReferencesList(FileReferencesListRequest),
+    /// T053：用户在门结果卡上判定（内部操作；Kind 没有判定工具）。
+    GateJudge(GateJudgeRequest),
 }
 
 /// 调用的结果（与 Call 一一对应）。
@@ -153,6 +155,8 @@ pub enum Response {
     AttachmentGet(AttachmentGetResponse),
     /// @ 文件候选。
     FileReferencesList(FileReferencesListResponse),
+    /// 门判定的受理结果：记下的判定，或「已经变了」。
+    GateJudge(GateJudgeResponse),
 }
 
 /// 发消息（DSH session-controller 的 prompt）。requestId 是幂等键：同一 id 只进一次。
@@ -865,9 +869,9 @@ pub struct SessionModelSelectResponse {
     pub effort_actual: String,
 }
 
-/// 确认卡上的一个动作：确认一项，或者暂不。
+/// 确认卡/结果卡上的一个动作：确认一项、暂不，或者门判定的通过/需修正。
 ///
-/// 卡片由 propose_action 的 call id 定位；option 是选项 id（暂不不需要）。
+/// 卡片由 propose_action 或 relay 的 call id 定位；option 是选项 id（暂不、判定不需要）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 pub struct CardActRequest {
     #[serde(rename = "callId")]
@@ -875,14 +879,21 @@ pub struct CardActRequest {
     pub verb: CardVerb,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub option: Option<String>,
+    /// 门「需修正」时用户原话（原样存）；其他动作不用。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
-/// 确认卡上的两个按钮；按钮文案和动作由程序定，模型给不了。
+/// 确认卡/结果卡上的按钮；按钮文案和动作由程序定，模型给不了。
+///
+/// T053：门结果卡用 Pass/NeedsFix 两个程序按钮（needs-fix 带用户原话 note）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
 pub enum CardVerb {
     Confirm,
     Dismiss,
+    Pass,
+    NeedsFix,
 }
 
 /// 动作的受理结果：已经记过的决定原样带回（重复点击不重复执行）；没有动作时为 None。
@@ -890,6 +901,54 @@ pub enum CardVerb {
 pub struct CardActResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<session::CardDecision>,
+}
+
+/// T053：门判定的结论（协议层，映射到任务库的 GateConclusion）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum GateJudgeConclusion {
+    Pass,
+    NeedsFix,
+}
+
+/// T053：用户在一个门结果卡上判定（内部操作；Kind 没有判定工具）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct GateJudgeRequest {
+    #[serde(rename = "gateTask")]
+    pub gate_task: String,
+    #[serde(rename = "gateReport")]
+    pub gate_report: String,
+    pub conclusion: GateJudgeConclusion,
+    /// 需修正时的用户原话；空白当没有。原样存，不截断不改写。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// 一条已记下的判定（给页面/测试看的事实）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct GateVerdictView {
+    #[serde(rename = "gateReport")]
+    pub gate_report: String,
+    #[serde(rename = "candidateReport")]
+    pub candidate_report: String,
+    #[serde(rename = "requirementVersion")]
+    pub requirement_version: u32,
+    pub conclusion: GateJudgeConclusion,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    pub at: i64,
+}
+
+/// 判定结果；「已经变了」时 changed=true、verdict=None（不记判定）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+pub struct GateJudgeResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<GateVerdictView>,
+    pub changed: bool,
+    pub duplicate: bool,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub released: Vec<String>,
 }
 
 /// 存一份文字附件（data 是 base64 的原始字节）。

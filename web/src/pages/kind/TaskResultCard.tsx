@@ -12,6 +12,7 @@ import { useKindStore } from './kindStore';
 
 export function TaskResultCard({ fact }: { fact: TaskResultFact }) {
   const acceptResult = useKindStore((state) => state.acceptTaskResult);
+  const judgeGate = useKindStore((state) => state.judgeGate);
   const envelope = useMemo(() => taskResultCardOf(fact), [fact]);
   if (!envelope) return null;
   return (
@@ -21,6 +22,7 @@ export function TaskResultCard({ fact }: { fact: TaskResultFact }) {
         answer: () => {},
         dismiss: () => {},
         acceptResult: (callId) => acceptResult(callId),
+        judgeGate: (conclusion, note) => judgeGate(envelope.id, conclusion, note),
       }}
     />
   );
