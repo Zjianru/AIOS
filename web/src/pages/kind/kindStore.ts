@@ -206,6 +206,11 @@ interface KindState {
   pendingResultCard: { taskId: string; title: string; version: number } | null;
   modifyTaskResult: (card: { taskId: string; title: string; version: number }) => void;
   clearPendingResultCard: () => void;
+  /** T055.3 G1：输入框里现在带着哪张结果卡（发送/删除/清空后清空）；结果卡据此写「已带进输入框」。 */
+  composerResultCard: { taskId: string; title: string; version: number } | null;
+  setComposerResultCard: (
+    card: { taskId: string; title: string; version: number } | null,
+  ) => void;
   compact: () => void;
   setModel: (model: KindState['model']) => void;
   /** ：从服务刷新会话合计/汇率/币种。 */
@@ -941,6 +946,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
   canvasTracks: {},
   drawingCanvas: null,
   pendingResultCard: null,
+  composerResultCard: null,
   reveal: null,
   revealTurn: (turnId) => set({ reveal: { turnId, at: Date.now() } }),
   revealTaskResult: async (taskId, preferredTurn) => {
@@ -1312,6 +1318,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
 
   modifyTaskResult: (card) => set({ pendingResultCard: card }),
   clearPendingResultCard: () => set({ pendingResultCard: null }),
+  setComposerResultCard: (card) => set({ composerResultCard: card }),
 
   compact: () => {
     // 真实手动压缩；分隔线由 compaction/* 日志事件回填（页面不预览假摘要）。

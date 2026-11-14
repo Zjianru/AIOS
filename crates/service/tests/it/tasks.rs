@@ -11375,3 +11375,57 @@ async fn task_accept_many_call_accepts_the_fresh_one_and_refuses_the_stale_one()
     assert_eq!(store.stage(&fresh_id).unwrap(), Stage::Closed);
     assert_eq!(store.stage(&stale_id).unwrap(), Stage::ReadyForReview);
 }
+
+/// T055.3 审计备注 2：从没开跑的任务改要求——先查后写，回同样的话、任务库不动。
+#[tokio::test]
+async fn update_task_requirement_act_rejects_a_never_started_task_without_writing() {
+    let fixture = Fixture::new().await;
+    let store = tasks_store(fixture.data());
+    let task = store
+        .create_task(
+            NewTask {
+                title: "没开跑".to_owned(),
+                requirement: "原要求".to_owned(),
+                dod: "原 DoD".to_owned(),
+                cwd: fixture.data().to_path_buf(),
+                conversation: ConversationId::new("kind-work"),
+                model: ModelChoice {
+                    connection: "deepseek".to_owned(),
+                    model: "deepseek-flash".to_owned(),
+                    effort_wanted: "high".to_owned(),
+                },
+                tools: vec!["read".to_owned()],
+            },
+            1_800_000_000_000,
+        )
+        .unwrap();
+    // 把排队中的 launch 效果收掉但不开始 Attempt：模拟「从没开跑」的任务。
+    let claim = store
+        .claim_effect(EffectKind::Launch, 1_800_000_001_000)
+        .unwrap()
+        .expect("launch 在排队");
+    store.complete_effect(&claim).unwrap();
+    let before = store.task(&task.id).unwrap().unwrap();
+    assert!(before.latest_attempt().is_none());
+
+    let registry = service::ActionRegistry::settings(fixture.data().to_path_buf(), None);
+    let action = registry.get("update_task_requirement").expect("动作登记");
+    let refused = service::ActionKind::act(
+        action.as_ref(),
+        &serde_json::json!({"task_id": task.id.as_str(), "requirement": "新要求"}),
+        &fixture.host,
+    )
+    .await
+    .expect_err("从没开跑不能改");
+    assert!(refused.contains("还没开跑"), "{refused}");
+
+    let after = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(after.requirement, before.requirement, "不写库");
+    assert_eq!(after.dod, before.dod, "不写库");
+    assert_eq!(
+        after.requirement_version(),
+        before.requirement_version(),
+        "版本不动"
+    );
+    assert_eq!(after.versions.len(), before.versions.len(), "版本不动");
+}
