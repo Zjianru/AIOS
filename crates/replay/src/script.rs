@@ -86,7 +86,11 @@ impl ReplayScript {
                 .unwrap_or(false);
             routes.push(ReplayRoute {
                 contains: contains.to_owned(),
-                calls: if hang { vec![ReplayCall::Hang] } else { log.calls },
+                calls: if hang {
+                    vec![ReplayCall::Hang]
+                } else {
+                    log.calls
+                },
                 pace_ms: entry.get("paceMs").and_then(serde_json::Value::as_u64),
             });
         }
