@@ -153,6 +153,8 @@ const TITLES: Record<string, string> = {
   job_kill: '结束任务',
   web_search: '搜网页',
   web_fetch: '读网页',
+  task_ledger_note: '记账本',
+  task_ledger_history: '查账本历史',
 };
 
 export function toolTitle(name: string): string {
@@ -203,6 +205,14 @@ function stringArg(args: Record<string, unknown>, key: string): string | null {
 export function rowSummary(step: ToolStepView, cwd: string): string {
   // 提问的问句由问题卡显示（页面已有 QuestionCard），行上不再重复一遍。
   if (step.name === 'ask_user_question') return '';
+  // T056.2 记账本：把几条的文字并到行上；查历史不占一行摘要。
+  if (step.name === 'task_ledger_note') {
+    const entries = Array.isArray(step.args.entries)
+      ? (step.args.entries as { text?: unknown }[])
+      : [];
+    return collapse(entries.map((entry) => String(entry.text ?? '')).join(' · '));
+  }
+  if (step.name === 'task_ledger_history') return '';
   const file = stringArg(step.args, 'file_path');
   if (file && (step.name === 'read' || step.name === 'write' || step.name === 'edit')) return displayPath(file, cwd);
   if (step.name === 'apply_patch') return '';

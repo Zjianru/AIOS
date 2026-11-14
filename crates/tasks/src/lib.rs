@@ -6,6 +6,7 @@
 mod effect;
 mod error;
 mod id;
+mod ledger;
 mod slots;
 mod stage;
 mod store;
@@ -16,6 +17,7 @@ pub use effect::{
 };
 pub use error::TaskError;
 pub use id::{AttemptId, BootId, ConversationId, InputId, ReportId, RunId, TaskId};
+pub use ledger::{LedgerNote, LedgerNoteCounts, LedgerNoteKind, NewLedgerNote};
 pub use slots::{Later, SlotKind, WorkerSlots};
 pub use stage::Stage;
 pub use store::{BootScan, GateJudgeOutcome, SCHEMA_VERSION, StopAttempt, Store};

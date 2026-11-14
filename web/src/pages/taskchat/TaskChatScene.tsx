@@ -44,6 +44,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import type { Frame, SendAttachmentRef, ServiceEvent } from '@/data/service';
 import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
+import type { TaskReadLedger } from '@/data/generated/TaskReadLedger';
 import type { TaskReadReport } from '@/data/generated/TaskReadReport';
 import type { SessionStats } from '@/data/generated/SessionStats';
 import type { FxInfo } from '@/data/generated/FxInfo';
@@ -74,6 +75,8 @@ const THIN_TOOLS = new Set([
   'web_fetch',
   'task_report',
   'task_handback',
+  'task_ledger_note',
+  'task_ledger_history',
 ]);
 
 /** 任务对话里说的一句话的 request id 前缀（服务端 task-say:<inputId>）。 */
@@ -105,7 +108,7 @@ function reasonOf(error: unknown): string {
 
 function toolsText(tools: string[]): string {
   if (tools.length === THIN_TOOLS.size && tools.every((tool) => THIN_TOOLS.has(tool))) {
-    return '只读：读、搜文件、能力、计划、搜网页、读网页、上报、交回';
+    return '只读：读、搜文件、能力、计划、搜网页、读网页、记账本、查账本历史、上报、交回';
   }
   return tools.join('、');
 }
@@ -138,6 +141,132 @@ function Brief({ task }: { task: TaskReadHeader }) {
           <span className="text-ink-2">{toolsText(task.tools)}</span>
           <span className="text-ink-3">Attempt</span>
           <span className="text-ink-2">第 {task.attempts} 次</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+const NOTE_GROUPS = [
+  { kind: 'next', label: '下一步' },
+  { kind: 'rejected', label: '否掉的做法' },
+] as const;
+
+function clock(at: number): string {
+  const date = new Date(at);
+  return String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0');
+}
+
+/**
+ * T056.2：任务页账本（照原型 app-v14 d2a28f2）。
+ * 约束是用户原话，进展/待答从最近报告读；叙述条按类分组；关掉的历史点开才看。
+ */
+function Ledger({ ledger, task }: { ledger: TaskReadLedger; task: TaskReadHeader }) {
+  const [open, setOpen] = useState(false);
+  const [history, setHistory] = useState(false);
+  const constraints = ledger.constraints;
+  const live = ledger.notes;
+  const closed = [...ledger.history].sort((left, right) => right.closedAt - left.closedAt);
+  const report = task.report;
+  if (constraints.length === 0 && live.length === 0 && closed.length === 0 && !report) {
+    return null;
+  }
+  const count = constraints.length + live.length + (report ? 1 : 0);
+  return (
+    <div className="mt-1" data-kind="task-ledger">
+      <button
+        type="button"
+        data-kind="task-ledger-toggle"
+        onClick={() => setOpen((value) => !value)}
+        className="flex items-center gap-1 text-2 text-ink-3 transition-colors hover:text-ink-2"
+      >
+        <ChevronRight className={cn('size-3 transition-transform', open && 'rotate-90')} />
+        账本 · {count} 条在用
+      </button>
+      {open ? (
+        <div
+          className="mt-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-l border-line pl-3 text-2 leading-5"
+          data-kind="task-ledger-body"
+        >
+          {constraints.length ? (
+            <>
+              <span className="text-ink-3">约束</span>
+              <div className="min-w-0 space-y-0.5" data-kind="ledger-constraints">
+                {constraints.map((item) => (
+                  <div key={item.text} className="text-ink-2">
+                    「{item.text}」
+                    <span className="text-ink-3">
+                      {item.from ? ' · 来自「' + item.from + '」' : ' · 你说的'}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : null}
+          {report ? (
+            <>
+              <span className="text-ink-3">进展</span>
+              <div className="min-w-0 text-ink-2" data-kind="ledger-progress">
+                <span className="line-clamp-2">{report.summary}</span>
+                <span className="text-ink-3">
+                  第 {Math.max(1, task.attempts)} 次
+                  {task.reportedAt != null ? ' · ' + clock(task.reportedAt) + ' 的报告' : ''}
+                </span>
+              </div>
+            </>
+          ) : null}
+          {report?.question ? (
+            <>
+              <span className="text-ink-3">待答</span>
+              <div className="min-w-0 text-ink-2" data-kind="ledger-question">
+                {report.question}
+              </div>
+            </>
+          ) : null}
+          {NOTE_GROUPS.map((group) => {
+            const notes = live.filter((note) => note.kind === group.kind);
+            if (notes.length === 0) return null;
+            return (
+              <div key={group.kind} className="contents">
+                <span className="text-ink-3">{group.label}</span>
+                <div className="min-w-0 space-y-0.5" data-kind={'ledger-' + group.kind}>
+                  {notes.map((note) => (
+                    <div key={note.id} className="text-ink-2">
+                      {note.text}
+                      <span className="text-ink-3"> · 第 {note.attempt} 次记</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+          {closed.length ? (
+            <>
+              <span />
+              <div className="min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setHistory((value) => !value)}
+                  className="text-1 text-ink-3 transition-colors hover:text-ink-2"
+                  data-kind="ledger-history-toggle"
+                >
+                  {history ? '收起历史' : '历史 ' + closed.length + ' 条（不再带给它）'}
+                </button>
+                {history ? (
+                  <div className="mt-1 space-y-1" data-kind="ledger-history">
+                    {closed.map((note) => (
+                      <div key={note.id} className="text-1 leading-4 text-ink-3">
+                        <span className="text-ink-2 line-through decoration-ink-4">{note.text}</span>
+                        <br />
+                        {NOTE_GROUPS.find((group) => group.kind === note.kind)?.label} · 第{' '}
+                        {note.attempt} 次记 · {note.closedWhy}，{clock(note.closedAt)}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            </>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -300,6 +429,7 @@ export function TaskChatScene() {
   const setTaskTitle = useTaskChromeStore((state) => state.setTaskTitle);
   const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading');
   const [task, setTask] = useState<TaskReadHeader | null>(null);
+  const [ledger, setLedger] = useState<TaskReadLedger | null>(null);
   // T051：统计由服务端 task-read 给（和 Kind status 同一个 session_stats），页面只显示。
   const [attemptStats, setAttemptStats] = useState<SessionStats | null>(null);
   const [fx, setFx] = useState<FxInfo | null>(null);
@@ -345,6 +475,7 @@ export function TaskChatScene() {
 
     setPhase('loading');
     setTask(null);
+    setLedger(null);
     // 标题要等 TaskRead 的事实；加载前先清掉，免得还带着上一个任务的名字。
     setTaskTitle(null);
     setWinding(false);
@@ -485,6 +616,7 @@ export function TaskChatScene() {
       .then((response) => {
         if (disposed || token !== requestToken.current) return;
         setTask(response.task);
+        setLedger(response.ledger);
         setTaskTitle(response.task.title);
         setAttemptStats(response.stats ?? null);
         setFx(response.fx ?? null);
@@ -691,6 +823,7 @@ export function TaskChatScene() {
         const response = await taskRead(taskId);
         if (token !== requestToken.current) return;
         setTask(response.task);
+        setLedger(response.ledger);
         const fresh = response.events.filter((event) => event.seq > lastSeqRef.current);
         if (fresh.length > 0) {
           lastSeqRef.current = fresh[fresh.length - 1].seq;
@@ -760,6 +893,7 @@ export function TaskChatScene() {
     try {
       const response = await taskRead(taskId);
       if (seq !== headerRequest.current) return;
+      setLedger(response.ledger);
       // 重拉不只是页头：断线/关会话后晚落盘的尾巴（最后一句话、turn/end）也在这份里，
       // 按 seq 把缺口并回事件流（和 WS follow 的补齐幂等，重复的自然丢掉）。
       const fresh = response.events.filter((event) => event.seq > lastSeqRef.current);
@@ -778,6 +912,10 @@ export function TaskChatScene() {
               interrupted: response.task.interrupted,
               restartPending: response.task.restartPending,
               reportedAt: response.task.reportedAt,
+              attempts: response.task.attempts,
+              report: response.task.report,
+              review: response.task.review,
+              accepted: response.task.accepted,
             }
           : response.task,
       );
@@ -960,6 +1098,7 @@ export function TaskChatScene() {
             ) : null}
           </div>
           <Brief task={task} />
+          {ledger ? <Ledger ledger={ledger} task={task} /> : null}
         </div>
       </div>
 

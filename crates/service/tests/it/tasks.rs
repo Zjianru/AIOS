@@ -1633,7 +1633,7 @@ async fn thin_agent_handback_rule_and_tool_stay_off_kind() {
     let kind_system = kind["system"].as_str().expect("Kind 系统提示");
     assert!(!kind_system.contains("task_handback"), "{kind_system}");
     assert!(!kind_system.contains("这超出了任务范围，要不要改任务？"));
-    assert_eq!(service::THIN_TOOLS.len(), 9, "ThinAgent 的工具表 9 件");
+    assert_eq!(service::THIN_TOOLS.len(), 11, "ThinAgent 的工具表 11 件");
 }
 
 /// spec v1「实现决定」对照表逐条写成的英文；快照按它断言，多一句少一句都算红。
@@ -1781,7 +1781,7 @@ async fn a_task_frozen_with_the_eight_tool_list_still_launches() {
         .push_thin(report_sse(1, "call-report", "ready", "旧任务也能跑", None));
     let store = tasks_store(fixture.data());
     let mut tools: Vec<String> = service::THIN_TOOLS.map(str::to_owned).to_vec();
-    tools.retain(|name| name != "task_handback");
+    tools.retain(|name| name != "task_handback" && !name.starts_with("task_ledger_"));
     let draft = tasks::NewTask {
         title: "升级前受理的任务".to_owned(),
         requirement: "找答案".to_owned(),
@@ -6087,6 +6087,8 @@ async fn a_write_task_freezes_the_scope_and_eleven_tools() {
         "read",
         "skill",
         "task_handback",
+        "task_ledger_history",
+        "task_ledger_note",
         "task_report",
         "todo_write",
         "web_fetch",
@@ -6094,7 +6096,7 @@ async fn a_write_task_freezes_the_scope_and_eleven_tools() {
         "write",
     ];
     expected.sort();
-    assert_eq!(tools, expected, "写任务冻结 11 件工具");
+    assert_eq!(tools, expected, "写任务冻结 13 件工具");
 
     let kind_body = fixture.router.bodies(false).remove(0);
     let request: Value = serde_json::from_str(&kind_body).unwrap();
@@ -6400,7 +6402,7 @@ async fn task_update_records_a_new_version_and_resumes_with_the_new_scope() {
 const BASH_JOB_TOOLS: [&str; 4] = ["bash", "job_output", "job_list", "job_kill"];
 
 /// 只读 9 件：T030.2b 里开关打开也不能给只读任务加。
-const READ_ONLY_TOOLS: [&str; 9] = [
+const READ_ONLY_TOOLS: [&str; 11] = [
     "read",
     "glob",
     "grep",
@@ -6410,10 +6412,12 @@ const READ_ONLY_TOOLS: [&str; 9] = [
     "web_fetch",
     "task_report",
     "task_handback",
+    "task_ledger_note",
+    "task_ledger_history",
 ];
 
-/// 写任务 11 件（关着 bash）。
-const WRITE_TOOLS: [&str; 11] = [
+/// 写任务 13 件（关着 bash）。
+const WRITE_TOOLS: [&str; 13] = [
     "read",
     "glob",
     "grep",
@@ -6425,10 +6429,12 @@ const WRITE_TOOLS: [&str; 11] = [
     "web_fetch",
     "task_report",
     "task_handback",
+    "task_ledger_note",
+    "task_ledger_history",
 ];
 
-/// 写任务 15 件（开着 bash：11 件加 bash 和后台任务三件）。
-const WRITE_BASH_TOOLS: [&str; 15] = [
+/// 写任务 17 件（开着 bash：13 件加 bash 和后台任务三件）。
+const WRITE_BASH_TOOLS: [&str; 17] = [
     "read",
     "glob",
     "grep",
@@ -6444,6 +6450,8 @@ const WRITE_BASH_TOOLS: [&str; 15] = [
     "web_fetch",
     "task_report",
     "task_handback",
+    "task_ledger_note",
+    "task_ledger_history",
 ];
 
 fn sorted(names: impl IntoIterator<Item = impl Into<String>>) -> Vec<String> {
@@ -6514,7 +6522,7 @@ async fn a_write_task_without_bash_gets_eleven_tools_and_no_bash_note() {
     assert_eq!(
         sorted(task.tools.clone()),
         sorted(WRITE_TOOLS),
-        "写任务 11 件"
+        "写任务 13 件"
     );
 
     fixture
@@ -6537,7 +6545,7 @@ async fn a_write_task_without_bash_gets_eleven_tools_and_no_bash_note() {
     );
 
     let names = sorted(tool_names(&loaded_request(&fixture.router)));
-    assert_eq!(names, sorted(WRITE_TOOLS), "ThinAgent 的工具表正好 11 件");
+    assert_eq!(names, sorted(WRITE_TOOLS), "ThinAgent 的工具表正好 13 件");
 
     let bodies = fixture.router.bodies(true);
     assert!(
@@ -6583,7 +6591,7 @@ async fn the_bash_switch_on_freezes_fifteen_tools_into_the_write_task() {
     assert_eq!(
         sorted(task.tools.clone()),
         sorted(WRITE_BASH_TOOLS),
-        "开了 bash 的写任务冻结 15 件"
+        "开了 bash 的写任务冻结 17 件"
     );
     for name in BASH_JOB_TOOLS {
         assert!(
@@ -6699,7 +6707,7 @@ async fn a_read_only_task_never_gets_bash_even_when_the_switch_is_on() {
     assert_eq!(
         sorted(task.tools.clone()),
         sorted(READ_ONLY_TOOLS),
-        "只读任务还是 9 件"
+        "只读任务还是 11 件"
     );
 
     fixture
@@ -6717,7 +6725,7 @@ async fn a_read_only_task_never_gets_bash_even_when_the_switch_is_on() {
     assert_eq!(
         names,
         sorted(READ_ONLY_TOOLS),
-        "只读任务给 ThinAgent 的工具表正好 9 件"
+        "只读任务给 ThinAgent 的工具表正好 11 件"
     );
     for name in BASH_JOB_TOOLS {
         assert!(
@@ -11474,4 +11482,307 @@ async fn task_accept_many_records_a_card_decision_for_each_accepted_report() {
     let data = data.expect("回执 data");
     assert_eq!(data["summary"], "你接受了");
     assert_eq!(data["report_id"], report_id.as_str());
+}
+
+#[tokio::test]
+async fn task_accept_constraints_must_be_verbatim_user_words() {
+    let fixture = Fixture::new().await;
+    let task = fixture
+        .accept_args(
+            false,
+            serde_json::json!({
+                "title": "带约束的调查",
+                "requirement": "找答案",
+                "dod": "有答案",
+                "constraints": ["改一下"],
+            }),
+            0,
+        )
+        .await;
+    assert_eq!(task.current_constraints(), ["改一下"]);
+    // 任务包第一条 assignment 的 ledger 字段带着这条约束（ThinAgent 能看到）。
+    let mut assignment = String::new();
+    for _ in 0..250 {
+        let latest = tasks_store(fixture.data())
+            .task(&task.id)
+            .unwrap()
+            .expect("任务还在");
+        let Some(conversation) = latest
+            .latest_attempt()
+            .and_then(|attempt| attempt.conversation.clone())
+        else {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            continue;
+        };
+        let id = session::SessionId::parse(conversation.as_str()).expect("会话 id");
+        let Ok(log) = session::SessionStore::open_read_only(fixture.data(), &id) else {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            continue;
+        };
+        let text_of = |message: &model::Message| -> Option<String> {
+            let text = message
+                .content
+                .iter()
+                .filter_map(model::ContentBlock::as_text)
+                .collect::<Vec<_>>()
+                .join(
+                    "
+",
+                );
+            (text.trim_start().starts_with('{') && text.contains("ledger")).then_some(text)
+        };
+        let found = log.events().iter().find_map(|event| match &event.kind {
+            session::EventKind::UserMessage { message, .. } => text_of(message),
+            session::EventKind::InboxSpliced { inserted, .. } => inserted.iter().find_map(&text_of),
+            _ => None,
+        });
+        if let Some(text) = found {
+            assignment = text;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(!assignment.is_empty(), "没等到 assignment");
+    let package: Value = serde_json::from_str(&assignment).expect("assignment JSON");
+    let ledger = package["ledger"].as_str().expect("assignment 带 ledger");
+    assert!(ledger.contains("「改一下」"), "{ledger}");
+    assert!(ledger.contains("你说的"), "{ledger}");
+}
+
+#[tokio::test]
+async fn task_accept_rejects_a_constraint_the_user_never_said() {
+    let fixture = Fixture::new().await;
+    let args = serde_json::json!({
+        "title": "伪造约束",
+        "requirement": "找答案",
+        "dod": "有答案",
+        "constraints": ["用户没说过这句"],
+    });
+    fixture.router.push_kind(crate::common::tool_use_sse(
+        0,
+        "call-accept-bad-constraint",
+        "task_accept",
+        &args.to_string(),
+    ));
+    fixture
+        .router
+        .push_kind(crate::common::text_sse("没派出去"));
+    fixture
+        .host
+        .dispatch(Call::Send(send(&fixture.host, "kind-1", "改一下")))
+        .await
+        .expect("发送");
+    crate::common::wait_turns(&fixture.host, fixture.data(), 1).await;
+    assert!(tasks_store(fixture.data()).task_ids().unwrap().is_empty());
+    let events = crate::common::read_root_events(fixture.data());
+    let found = events.iter().any(|event| {
+        serde_json::to_string(&event.kind)
+            .unwrap_or_default()
+            .contains("约束要用用户原话")
+    });
+    assert!(found, "Kind 会话里要留下拒绝原因");
+}
+
+#[tokio::test]
+async fn task_read_exposes_ledger_constraints_notes_and_history() {
+    let fixture = Fixture::new().await;
+    let task = fixture
+        .accept_args(
+            false,
+            serde_json::json!({
+                "title": "读账本",
+                "requirement": "找答案",
+                "dod": "有答案",
+                "constraints": ["改一下"],
+            }),
+            0,
+        )
+        .await;
+    let store = tasks_store(fixture.data());
+    let attempt = task.latest_attempt().expect("Attempt").id;
+    store
+        .add_ledger_notes(
+            &task.id,
+            attempt,
+            &[tasks::NewLedgerNote {
+                kind: tasks::LedgerNoteKind::Rejected,
+                topic: "cache".to_owned(),
+                text: "缓存不可行".to_owned(),
+            }],
+            1_700_000_000_000_i64,
+        )
+        .unwrap();
+    store
+        .add_ledger_notes(
+            &task.id,
+            attempt,
+            &[tasks::NewLedgerNote {
+                kind: tasks::LedgerNoteKind::Rejected,
+                topic: "cache".to_owned(),
+                text: "缓存换成手工".to_owned(),
+            }],
+            1_700_000_000_001_i64,
+        )
+        .unwrap();
+    let response = fixture
+        .host
+        .dispatch(Call::TaskRead(TaskReadRequest {
+            task_id: task.id.as_str().to_owned(),
+            before_seq: None,
+        }))
+        .await
+        .expect("task-read");
+    let Response::TaskRead(response) = response else {
+        panic!("task-read 响应");
+    };
+    assert_eq!(response.ledger.constraints.len(), 1);
+    assert_eq!(response.ledger.constraints[0].text, "改一下");
+    assert!(response.ledger.constraints[0].from.is_none());
+    assert_eq!(response.ledger.notes.len(), 1);
+    assert_eq!(response.ledger.notes[0].text, "缓存换成手工");
+    assert_eq!(response.ledger.history.len(), 1);
+    assert_eq!(response.ledger.history[0].text, "缓存不可行");
+    assert_eq!(response.ledger.history[0].closed_why, "被新的一条替换");
+}
+
+/// T056.2.2：改要求动作的 constraints 必须逐字是用户原话；对不上整次拒、不写库。
+#[tokio::test]
+async fn update_requirement_constraints_must_be_user_words_and_land_on_the_new_version() {
+    let fixture = Fixture::new().await;
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-report", "ready", "查好了", None));
+    fixture.router.push_thin(crate::common::text_sse("好"));
+    let task = fixture.accept(false).await;
+    let store = tasks_store(fixture.data());
+    wait_until("任务这一轮结束", || {
+        tasks_store(fixture.data())
+            .task(&task.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().cloned())
+            .is_some_and(|attempt| attempt.ended_at.is_some())
+    })
+    .await;
+    // 报告落库后会话可能还在收尾；等写者让出来再改要求，避免 open_resume 撞 AlreadyOwned。
+    wait_until("任务会话写者让出", || {
+        let task = tasks_store(fixture.data()).task(&task.id).ok().flatten();
+        let Some(conversation) = task.and_then(|task| {
+            task.latest_attempt()
+                .and_then(|attempt| attempt.conversation.clone())
+        }) else {
+            return false;
+        };
+        let Ok(id) = session::SessionId::parse(conversation.as_str()) else {
+            return false;
+        };
+        session::SessionStore::open(fixture.data(), &id).is_ok()
+    })
+    .await;
+    let registry = service::ActionRegistry::settings(fixture.data().to_path_buf(), None);
+    let action = registry.get("update_task_requirement").expect("动作登记");
+    let before = store.task(&task.id).unwrap().unwrap();
+
+    let refused = service::ActionKind::act(
+        action.as_ref(),
+        &serde_json::json!({
+            "task_id": task.id.as_str(),
+            "requirement": "新要求",
+            "constraints": ["用户没说过这句"],
+        }),
+        &fixture.host,
+    )
+    .await
+    .expect_err("非原话要整次拒");
+    assert!(refused.contains("约束要用用户原话"), "{refused}");
+    let unchanged = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(unchanged.requirement, before.requirement);
+    assert_eq!(unchanged.dod, before.dod);
+    assert_eq!(
+        unchanged.requirement_version(),
+        before.requirement_version()
+    );
+    assert_eq!(unchanged.versions.len(), before.versions.len());
+    assert!(unchanged.current_constraints().is_empty());
+    assert_eq!(unchanged.versions, before.versions);
+
+    let summary = service::ActionKind::act(
+        action.as_ref(),
+        &serde_json::json!({
+            "task_id": task.id.as_str(),
+            "requirement": "按用户原话改的新要求",
+            "constraints": ["改一下"],
+        }),
+        &fixture.host,
+    )
+    .await
+    .expect("用户原话约束应成功");
+    assert!(summary.summary.contains("第 2 版"), "{}", summary.summary);
+    let updated = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(updated.requirement, "按用户原话改的新要求");
+    assert_eq!(
+        updated.requirement_version(),
+        before.requirement_version() + 1
+    );
+    assert_eq!(updated.current_constraints(), ["改一下"]);
+}
+
+/// T056.2.2：改要求不传 constraints 时沿用上一版。
+#[tokio::test]
+async fn update_requirement_without_constraints_keeps_the_previous_version() {
+    let fixture = Fixture::new().await;
+    fixture
+        .router
+        .push_thin(report_sse(1, "call-report", "ready", "查好了", None));
+    fixture.router.push_thin(crate::common::text_sse("好"));
+    let task = fixture
+        .accept_args(
+            false,
+            serde_json::json!({
+                "title": "沿约束",
+                "requirement": "找答案",
+                "dod": "有答案",
+                "constraints": ["改一下"],
+            }),
+            0,
+        )
+        .await;
+    let store = tasks_store(fixture.data());
+    wait_until("任务这一轮结束", || {
+        tasks_store(fixture.data())
+            .task(&task.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().cloned())
+            .is_some_and(|attempt| attempt.ended_at.is_some())
+    })
+    .await;
+    wait_until("任务会话写者让出", || {
+        let task = tasks_store(fixture.data()).task(&task.id).ok().flatten();
+        let Some(conversation) = task.and_then(|task| {
+            task.latest_attempt()
+                .and_then(|attempt| attempt.conversation.clone())
+        }) else {
+            return false;
+        };
+        let Ok(id) = session::SessionId::parse(conversation.as_str()) else {
+            return false;
+        };
+        session::SessionStore::open(fixture.data(), &id).is_ok()
+    })
+    .await;
+    let registry = service::ActionRegistry::settings(fixture.data().to_path_buf(), None);
+    let action = registry.get("update_task_requirement").expect("动作登记");
+    service::ActionKind::act(
+        action.as_ref(),
+        &serde_json::json!({
+            "task_id": task.id.as_str(),
+            "requirement": "只改要求文字，不传约束",
+        }),
+        &fixture.host,
+    )
+    .await
+    .expect("改要求成功");
+    let updated = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(updated.current_constraints(), ["改一下"]);
 }

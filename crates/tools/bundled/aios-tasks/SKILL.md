@@ -17,6 +17,12 @@ Use this when the user asks to stop a task they had you dispatch — "stop that 
 - Set `worktree: true` only when the user explicitly asks to work in a git worktree.
 - When a task hands back because it needs a wider scope, ask the user. After they agree, call `task_update` with `{ "task_id": "<the id task_accept returned>", "write_scope": "<path>" }`: it records a new requirement version and resumes the task with the new scope.
 
+## Constraints（用户的硬要求）
+
+When the user states a hard must/never rule that ThinAgent must follow ("必须…", "不要…", "不准…"), copy that sentence into `constraints` — verbatim, without rewriting, summarizing, or merging it with your own words. Pass it on `task_accept` (single task) or `task_graph_propose` (whole graph, at the root); when the user changes the requirement and restates a rule, also pass `constraints` on `update_task_requirement`. If the user stated no such rule, omit `constraints`; on an update, omitting it keeps the previous constraints.
+
+The program checks every string against the user messages in this Kind conversation and rejects the whole call if one is not verbatim: 「约束要用用户原话：『…』不在用户的消息里」. Do not try to bypass it by trimming a sentence into a different wording; ask the user to say the rule again if you cannot quote it.
+
 ## Ordered work: task graphs
 
 When one step needs an earlier step's result (「先查 A，再按查到的改 B」), do not dispatch the steps one by one and do not copy results between tasks by hand. Build one task graph:

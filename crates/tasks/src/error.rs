@@ -97,6 +97,21 @@ pub enum TaskError {
     /// T054：有门任务的门还没对这份报告判通过。
     #[error("核查还没判通过，没有记接受")]
     GateNotPassed,
+    /// T056.2：账本叙述条的文字不能为空。
+    #[error("账本条目文字不能为空")]
+    EmptyLedgerText,
+    /// T056.2：账本叙述条每条最多 400 字。
+    #[error("账本条目文字太长：{0} 字，上限 400")]
+    LedgerTextTooLong(usize),
+    /// T056.2：账本叙述条主题不能为空。
+    #[error("账本条目主题不能为空")]
+    EmptyLedgerTopic,
+    /// T056.2：只有这一轮还在跑时能记账本。
+    #[error("任务 {task} 的 Attempt {attempt} 已经结束，不能再记账本")]
+    LedgerAttemptEnded { task: String, attempt: u64 },
+    /// T056.2：门任务不写账本。
+    #[error("门任务不写账本")]
+    LedgerOnGateTask,
     #[error("任务图至少要两个子任务，实际 {0} 个")]
     GraphTooFewSubtasks(usize),
     #[error("任务图第 {subtask} 项的 after 指向本次提议之外的子任务：{after}")]

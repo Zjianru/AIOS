@@ -5,4 +5,8 @@ import type { TaskReadReportState } from "./TaskReadReportState";
 /**
  * T051：当前 Attempt 最近一份报告的缩略事实；没报告时字段为 None。
  */
-export type TaskReadReport = { state: TaskReadReportState, origin: TaskReadReportOrigin, };
+export type TaskReadReport = { state: TaskReadReportState, origin: TaskReadReportOrigin,
+/**
+ * T056.2：最近报告的摘要/问题（账本 UI 的进展和待答从这里读）。
+ */
+summary?: string, question?: string | null, };

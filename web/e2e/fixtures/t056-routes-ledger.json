@@ -1,0 +1,14 @@
+{
+  "routes": [
+    {
+      "contains": "\"name\":\"task_accept\"",
+      "file": "t056-kind-ledger.jsonl",
+      "paceMs": 50
+    },
+    {
+      "contains": "\"name\":\"task_report\"",
+      "file": "t056-thin-ledger.jsonl",
+      "paceMs": 60
+    }
+  ]
+}

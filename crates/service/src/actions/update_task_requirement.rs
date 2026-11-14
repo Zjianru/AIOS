@@ -50,6 +50,27 @@ impl UpdateTaskRequirementAction {
         }
     }
 
+    fn constraints(&self, raw: &Value) -> Result<Option<Vec<String>>, String> {
+        match raw.as_object().and_then(|object| object.get("constraints")) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::Array(items)) => {
+                let mut constraints = Vec::with_capacity(items.len());
+                for item in items {
+                    let Some(text) = item.as_str() else {
+                        return Err("details.constraints 里的项必须是字符串".to_owned());
+                    };
+                    let text = text.trim();
+                    if text.is_empty() {
+                        return Err("details.constraints 不能含空字符串".to_owned());
+                    }
+                    constraints.push(text.to_owned());
+                }
+                Ok(Some(constraints))
+            }
+            Some(_) => Err("details.constraints 必须是字符串数组".to_owned()),
+        }
+    }
+
     fn task(&self, task_id: &str) -> Result<tasks::Task, String> {
         let store = tasks::Store::open(self.data_dir.join(crate::TASKS_DB_FILE))
             .map_err(|error| format!("任务库读不出来：{error}"))?;
@@ -65,8 +86,16 @@ impl UpdateTaskRequirementAction {
         task_id: &str,
         requirement: &str,
         dod: Option<&str>,
+        constraints: Option<&[String]>,
     ) -> Result<Vec<CardFact>, String> {
         let task = self.task(task_id)?;
+        if let Some(constraints) = constraints {
+            crate::ledger::verify_user_words(
+                &self.data_dir,
+                task.conversation.as_str(),
+                constraints,
+            )?;
+        }
         let store = tasks::Store::open(self.data_dir.join(crate::TASKS_DB_FILE))
             .map_err(|error| format!("任务库读不出来：{error}"))?;
         if store
@@ -120,6 +149,7 @@ impl ActionKind for UpdateTaskRequirementAction {
             "task_id": self.task_id(raw)?,
             "requirement": self.requirement(raw)?,
             "dod": self.dod(raw)?,
+            "constraints": self.constraints(raw)?,
         }))
     }
 
@@ -127,7 +157,13 @@ impl ActionKind for UpdateTaskRequirementAction {
         let task_id = self.task_id(details)?;
         let requirement = self.requirement(details)?;
         let dod = self.dod(details)?;
-        self.describe_task(&task_id, &requirement, dod.as_deref())
+        let constraints = self.constraints(details)?;
+        self.describe_task(
+            &task_id,
+            &requirement,
+            dod.as_deref(),
+            constraints.as_deref(),
+        )
     }
 
     fn reconcile(
@@ -139,7 +175,13 @@ impl ActionKind for UpdateTaskRequirementAction {
         let task_id = self.task_id(details)?;
         let requirement = self.requirement(details)?;
         let dod = self.dod(details)?;
-        match self.describe_task(&task_id, &requirement, dod.as_deref()) {
+        let constraints = self.constraints(details)?;
+        match self.describe_task(
+            &task_id,
+            &requirement,
+            dod.as_deref(),
+            constraints.as_deref(),
+        ) {
             Ok(current) if current == facts => Ok(()),
             _ => Err("这个任务的要求已经改过了，这张卡是按改之前写的".to_owned()),
         }
@@ -154,9 +196,17 @@ impl ActionKind for UpdateTaskRequirementAction {
             let task_id = self.task_id(details)?;
             let requirement = self.requirement(details)?;
             let dod = self.dod(details)?;
+            let constraints = self.constraints(details)?;
             // 先查再写（顺序/原因照 task_update）：任务在排队、这一轮还在跑、或从没开跑
             // 都不碰任务库，避免「版本先加一版、会话却开不出来」。
             let task = self.task(&task_id)?;
+            if let Some(constraints) = constraints.as_deref() {
+                crate::ledger::verify_user_words(
+                    &self.data_dir,
+                    task.conversation.as_str(),
+                    constraints,
+                )?;
+            }
             let store = tasks::Store::open(self.data_dir.join(crate::TASKS_DB_FILE))
                 .map_err(|error| format!("任务库读不出来：{error}"))?;
             if store
@@ -178,7 +228,7 @@ impl ActionKind for UpdateTaskRequirementAction {
                 .task_runtime()
                 .ok_or_else(|| "任务执行者没起来，改不了要求".to_owned())?;
             let summary = runtime
-                .update_requirement(&task_id, requirement.clone(), dod)
+                .update_requirement(&task_id, requirement.clone(), dod, constraints)
                 .await?;
             Ok(ActionOutcome {
                 summary,
