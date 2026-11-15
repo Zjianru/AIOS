@@ -473,3 +473,12 @@ fn gate_tasks_and_tasks_without_ready_have_no_delivery() {
     assert!(delivery_for(dir.path(), &guarded, None).is_some() || guarded.reports.is_empty());
     let _ = dir;
 }
+
+#[test]
+fn delivery_clock_uses_local_timezone_for_kind_text() {
+    // 本用例只在 TZ=Asia/Shanghai 的定向门禁里断言；其它环境的本地时区不同，不做假。
+    if std::env::var("TZ").as_deref() != Ok("Asia/Shanghai") {
+        return;
+    }
+    assert_eq!(super::clock(1_700_000_000), "11月15日 06:13");
+}

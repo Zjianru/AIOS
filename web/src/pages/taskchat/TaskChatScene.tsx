@@ -417,6 +417,76 @@ function ProgramSection({
 }
 
 /** 头部「任务」菜单（D81）：立即停、收尾停；任务没在跑时两项都灰。 */
+/** T059 F4 A：里程碑门任务页显示每次判定与历次核查 Attempt。 */
+function ReviewSection({ gate }: { gate: TaskReadGate }) {
+  const verdicts = gate.verdicts ?? [];
+  const attempts = gate.attempts ?? [];
+  const wordOf = (conclusion: string) =>
+    conclusion === 'pass' ? '通过' : conclusion === 'needs_fix' ? '需修正' : '未确定';
+  const timeOf = (at: number) =>
+    new Date(at).toLocaleString('zh-CN', {
+      month: 'numeric',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  return (
+    <div className="mt-3 border-t border-line pt-3" data-kind="review-section">
+      <div className="text-2 font-medium text-ink">核查判定</div>
+      {verdicts.length === 0 ? (
+        <div className="mt-1 text-2 text-ink-3" data-kind="review-empty">
+          还没判
+        </div>
+      ) : (
+        <div className="mt-1 space-y-1.5" data-kind="review-verdicts">
+          {verdicts.map((verdict, index) => (
+            <div
+              key={String(index)}
+              className="border-l-2 border-line-2 pl-2.5 text-2 leading-5"
+              data-kind="review-verdict"
+            >
+              <div className="flex flex-wrap items-center gap-x-2 text-ink-2">
+                <span className="text-ink">候选第 {verdict.candidateOrdinal} 次</span>
+                <span className={verdict.conclusion === 'pass' ? 'text-done' : 'text-wait'}>
+                  {wordOf(verdict.conclusion)}
+                </span>
+                <span className="text-1 text-ink-3">{timeOf(verdict.at)}</span>
+                <span className="text-1 text-ink-3">
+                  {verdict.judgedBy === 'user' ? '你判的' : '程序判的'}
+                </span>
+              </div>
+              {verdict.note ? (
+                <div className="mt-1 whitespace-pre-wrap break-words text-ink-2" data-kind="review-note">
+                  <span className="text-1 text-ink-3">用户原话 </span>
+                  {verdict.note}
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="mt-2 text-1 text-ink-3">历次核查 Attempt</div>
+      {attempts.length === 0 ? (
+        <div className="mt-0.5 text-2 text-ink-3" data-kind="review-attempts-empty">
+          还没有核查记录
+        </div>
+      ) : (
+        <ul className="mt-0.5 space-y-1" data-kind="review-attempts">
+          {attempts.map((attempt) => (
+            <li key={String(attempt.attempt)} className="text-2 leading-5" data-kind="review-attempt">
+              <span className="text-ink-2">第 {attempt.attempt} 次</span>
+              <span className="ml-2 text-1 text-ink-3">{timeOf(attempt.at)}</span>
+              <div className="line-clamp-2 text-ink-2">{attempt.summary}</div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+
 function TaskMenu({
   running,
   winding,
@@ -616,6 +686,7 @@ export function TaskChatScene() {
   const [ledger, setLedger] = useState<TaskReadLedger | null>(null);
   const [delivery, setDelivery] = useState<DeliveryRecord | null>(null);
   const [deliveryNonce, setDeliveryNonce] = useState(0);
+  const [upstreamOpen, setUpstreamOpen] = useState(false);
   // T051：统计由服务端 task-read 给（和 Kind status 同一个 session_stats），页面只显示。
   const [attemptStats, setAttemptStats] = useState<SessionStats | null>(null);
   const [fx, setFx] = useState<FxInfo | null>(null);
@@ -1268,7 +1339,7 @@ export function TaskChatScene() {
     );
   }
 
-  const program = task.gate ?? null;
+  const program = task.gate && task.gate.commands.length > 0 ? task.gate : null;
   return (
     <div className="flex h-full min-h-0 flex-col bg-content" data-pane="task-conversation">
       <div className="shrink-0 border-b border-line px-6 py-3">
@@ -1334,6 +1405,7 @@ export function TaskChatScene() {
             <>
               <Brief task={task} />
               {ledger ? <Ledger ledger={ledger} task={task} /> : null}
+              {task.gate && !program ? <ReviewSection gate={task.gate} /> : null}
               <DeliveryBlock delivery={delivery} />
             </>
           )}
@@ -1361,25 +1433,57 @@ export function TaskChatScene() {
       ) : null}
 
       {upstreamResults.length > 0 ? (
-        <div className="shrink-0 border-b border-line bg-hover px-6 py-2" data-kind="upstream-results">
-          <div className="mx-auto w-full max-w-[680px]">
-            <div className="text-1 text-ink-3">上游结果</div>
-            <ul className="mt-1 space-y-1 text-2 leading-5 text-ink-2">
-              {upstreamResults.map((item) => (
-                <li key={item.task_id}>
-                  <span className="text-ink">{item.title}</span>
-                  <span className="text-ink-3">（要求第 {item.requirement_version} 版）</span>{' '}
-                  {item.summary}
-                </li>
-              ))}
-            </ul>
+        <div
+          className="flex max-h-[35vh] shrink-0 flex-col border-b border-line bg-hover px-6 py-2"
+          data-kind="upstream-results"
+        >
+          <div className="mx-auto flex min-h-0 w-full max-w-[680px] flex-col">
+            <button
+              type="button"
+              className="flex w-full items-center gap-1 text-left text-1 text-ink-3 hover:text-ink"
+              data-kind="upstream-toggle"
+              onClick={() => setUpstreamOpen((open) => !open)}
+            >
+              <ChevronDown
+                className={cn('size-3.5 transition-transform', upstreamOpen ? '' : '-rotate-90')}
+              />
+              上游结果 · {upstreamResults.length} 项
+              <span className="ml-auto">{upstreamOpen ? '收起' : '展开'}</span>
+            </button>
+            {upstreamOpen ? (
+              <div
+                className="mt-1 min-h-0 overflow-y-auto overscroll-contain pr-1"
+                data-kind="upstream-scroll"
+              >
+                <ul className="space-y-1 text-2 leading-5 text-ink-2">
+                  {upstreamResults.map((item) => (
+                    <li key={item.task_id}>
+                      <div className="line-clamp-2 text-ink">
+                        {item.title}
+                        <span className="text-ink-3">（要求第 {item.requirement_version} 版）</span>
+                      </div>
+                      <div className="whitespace-pre-wrap break-words">{item.summary}</div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : (
+              <ul className="mt-0.5 space-y-0.5">
+                {upstreamResults.map((item) => (
+                  <li key={item.task_id} className="line-clamp-2 text-2 text-ink-2">
+                    <span className="text-ink">{item.title}</span>
+                    <span className="text-ink-3">（要求第 {item.requirement_version} 版）</span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
       ) : null}
 
       {program ? null : (
       <div
-        className="min-h-0 flex-1 overflow-y-auto"
+        className="min-h-[40vh] flex-1 overflow-y-auto"
         data-kind="task-scroll"
         ref={scrollRef}
         onScroll={onScroll}

@@ -76,8 +76,8 @@ function SidebarInner({ route }: { route: ParsedRoute }) {
   const active = navOf(route);
   const theme = useAppStore((s) => s.theme);
   const toggleTheme = useAppStore((s) => s.toggleTheme);
-  // 只显示接上内核的部分（D46）：Kind 在上、设置挪到左下角（T013.6）。
-  const mainNav = MAIN_NAV.filter((item) => item.id === 'kind');
+  // T059 F3：现在 / Kind / 工作都有入口；设置仍在左下角。
+  const mainNav = MAIN_NAV.filter((item) => item.id !== 'settings');
   const settingsItem = MAIN_NAV.find((item) => item.id === 'settings')!;
 
   return (

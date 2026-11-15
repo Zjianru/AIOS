@@ -8,6 +8,7 @@ import type { DeliveryLine } from '@/data/generated/DeliveryLine';
 import type { DeliveryRecord } from '@/data/generated/DeliveryRecord';
 import type { DeliveryHistoryItem } from '@/data/generated/DeliveryHistoryItem';
 import type { TaskReadGateCheck } from '@/data/generated/TaskReadGateCheck';
+import { clockOf } from '@/lib/numbers';
 import { cn } from '@/lib/utils';
 
 const TONE: Record<string, string> = {
@@ -22,20 +23,8 @@ function LineView({ line, kind }: { line: DeliveryLine; kind?: string }) {
   return (
     <div className={cn('min-w-0', TONE[line.tone] ?? 'text-ink-2')} data-kind={kind}>
       {line.text}
+      {line.at ? <span className="ml-1 text-ink-3">· {clockOf(line.at)}</span> : null}
     </div>
-  );
-}
-
-function clockOf(at: number): string {
-  const date = new Date(at * 1000);
-  return (
-    String(date.getMonth() + 1) +
-    '/' +
-    String(date.getDate()) +
-    ' ' +
-    String(date.getHours()).padStart(2, '0') +
-    ':' +
-    String(date.getMinutes()).padStart(2, '0')
   );
 }
 

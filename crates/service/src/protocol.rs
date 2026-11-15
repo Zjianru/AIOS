@@ -459,6 +459,27 @@ pub struct TaskReadGateCheck {
     pub spill: Option<String>,
 }
 
+/// T059 F4：里程碑门的一次用户判定。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskReadGateVerdict {
+    pub candidate_ordinal: u64,
+    pub conclusion: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    pub at: i64,
+    pub judged_by: String,
+}
+
+/// T059 F4：门任务的一次核查 Attempt（摘要 + 时间）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskReadGateAttempt {
+    pub attempt: u64,
+    pub at: i64,
+    pub summary: String,
+}
+
 /// T057：程序门任务页头部的事实。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -472,6 +493,12 @@ pub struct TaskReadGate {
     /// T057：历次程序检查（最新在前）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub runs: Vec<TaskReadGateRun>,
+    /// T059 F4：用户判门历次判定（最新在前）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verdicts: Vec<TaskReadGateVerdict>,
+    /// T059 F4：这次/历次核查 Attempt（最新在前）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attempts: Vec<TaskReadGateAttempt>,
 }
 
 /// T057：任务页一次程序检查（报告 + 判定）。

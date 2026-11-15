@@ -107,6 +107,89 @@ export function UserCards({ user }: { user: TurnUserView }) {
 }
 
 /** 你说的话：普通行照旧（带内联引用片），`> ` 开头的行画成引用块。 */
+/** T059 F4 B：Kind 自动发来的续改说明，拆成结构化块，不整段当用户气泡。 */
+interface ContinueParts {
+  title: string;
+  requirement: string | null;
+  userWords: string | null;
+  finding: string | null;
+  notes: string[];
+}
+
+function parseContinue(text: string): ContinueParts | null {
+  let body = text;
+  let title = '';
+  if (body.startsWith('continue:')) {
+    const end = body.indexOf(String.fromCharCode(10));
+    body = end >= 0 ? body.slice(end + 1) : '';
+    title = 'Kind 让你接着改';
+  }
+  const lines = body.split(String.fromCharCode(10));
+  const first = lines[0]?.trim() ?? '';
+  if (first === '你要按这个改。') title = 'Kind 让你接着改';
+  else if (first === '上游有新结果，按新结果核对。') title = 'Kind 让你按新结果核对';
+  else if (first === '接着做：上一次没交出可用的结果。') title = 'Kind 让你接着做';
+  if (!title) return null;
+  let requirement: string | null = null;
+  let userWords: string | null = null;
+  let finding: string | null = null;
+  const notes: string[] = [];
+  for (const line of lines.slice(1)) {
+    if (line.startsWith('原要求不变：')) requirement = line.slice('原要求不变：'.length);
+    else if (line.startsWith('用户原话：')) userWords = line.slice('用户原话：'.length);
+    else if (line.startsWith('核查发现：')) finding = line.slice('核查发现：'.length);
+    else if (line.startsWith('上游结果（')) finding = line;
+    else if (line.startsWith('上一次报告（')) finding = line;
+    else if (line.startsWith('写集不变：') || line.startsWith('改完用 ') || line.startsWith('核对完用 ') || line.startsWith('做完用 ')) {
+      notes.push(line);
+    } else if (finding !== null) {
+      finding += String.fromCharCode(10) + line;
+    } else if (line.trim()) {
+      notes.push(line);
+    }
+  }
+  return { title, requirement, userWords, finding, notes };
+}
+
+function ContinueBlock({ parts }: { parts: ContinueParts }) {
+  return (
+    <div
+      className="w-full rounded-card border border-line-2 bg-raised px-3.5 py-2.5 text-2 leading-5"
+      data-kind="continue-block"
+    >
+      <div className="flex items-center gap-1.5 text-1 text-ink-3" data-kind="continue-title">
+        <RotateCw className="size-3.5 text-run" />
+        {parts.title}
+      </div>
+      {parts.userWords ? (
+        <div className="mt-1.5 border-l-2 border-line-2 pl-2" data-kind="continue-user">
+          <div className="text-1 text-ink-3">用户说的</div>
+          <div className="whitespace-pre-wrap break-words text-3 text-ink">{parts.userWords}</div>
+        </div>
+      ) : null}
+      {parts.finding ? (
+        <div className="mt-1.5" data-kind="continue-finding">
+          <div className="text-1 text-ink-3">核查发现</div>
+          <Markdown text={parts.finding} />
+        </div>
+      ) : null}
+      {parts.requirement ? (
+        <div className="mt-1 text-1 text-ink-3" data-kind="continue-requirement">
+          原要求不变：{parts.requirement}
+        </div>
+      ) : null}
+      {parts.notes.length > 0 ? (
+        <ul className="mt-1 space-y-0.5 text-1 text-ink-3" data-kind="continue-notes">
+          {parts.notes.map((note, index) => (
+            <li key={String(index)}>{note}</li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+
 function UserBubbleText({ text, elements }: { text: string; elements: TextElement[] }) {
   const lines = text.split(String.fromCharCode(10));
   const nodes: React.ReactNode[] = [];
@@ -445,16 +528,22 @@ export const TurnRow = memo(function TurnRow({
           ) : null}
           {view.user.pastes.length > 0 || view.user.files.length > 0 ? <UserCards user={view.user} /> : null}
           {view.user.text ? (
-            <div
-              className="group/user relative max-w-[82%] rounded-2xl rounded-br-md border border-line-2 bg-raised px-3.5 py-2 text-4 leading-6 text-ink"
-              data-kind="user-bubble"
-            >
-              <UserBubbleText text={view.user.text} elements={view.user.elements} />
-              <CopyButton
-                text={view.user.text}
-                className="absolute -right-8 top-1 opacity-0 transition-opacity group-hover/user:opacity-100"
-              />
-            </div>
+            (() => {
+              const continued = parseContinue(view.user.text);
+              if (continued) return <ContinueBlock parts={continued} />;
+              return (
+                <div
+                  className="group/user relative max-w-[82%] rounded-2xl rounded-br-md border border-line-2 bg-raised px-3.5 py-2 text-4 leading-6 text-ink"
+                  data-kind="user-bubble"
+                >
+                  <UserBubbleText text={view.user.text} elements={view.user.elements} />
+                  <CopyButton
+                    text={view.user.text}
+                    className="absolute -right-8 top-1 opacity-0 transition-opacity group-hover/user:opacity-100"
+                  />
+                </div>
+              );
+            })()
           ) : null}
         </div>
       ) : view.taskResults.length > 0 ? null : (

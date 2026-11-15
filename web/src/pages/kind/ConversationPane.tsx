@@ -91,6 +91,10 @@ export function ConversationPane() {
   const followRef = useRef(true);
   /** T055：从工作页/现在页「去看」时按目标轮定位；定位期间不跟底，用户一动手就放开。 */
   const revealHoldRef = useRef(false);
+  /** T059 F5：钉底走 Virtuoso 的 scrollToIndex，不直接写 scrollTop；虚拟列表的 scrollHeight 是估算值。 */
+  const pinToLatest = useCallback(() => {
+    listRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
+  }, []);
 
 
   // 首屏：落到最新一条。
@@ -112,7 +116,7 @@ export function ConversationPane() {
       if (scroller) {
         const gap = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
         if (gap > 2) {
-          scroller.scrollTop = scroller.scrollHeight;
+          pinToLatest();
           clean = 0;
           cleanAfterMark = 0;
         } else if (paintedRef.current) {
@@ -133,25 +137,26 @@ export function ConversationPane() {
     return () => {
       cancelled = true;
     };
-  }, [initialLoading]);
+  }, [initialLoading, pinToLatest]);
 
   // 一轮在长（工具一条条出、回答流式写）时，最后一条变高不会触发 Virtuoso 的 followOutput，
   // 所以盯着 store：跟着走时每次变化都钉到底；新起一轮（最后一条换了）总是跳过去。
   useEffect(() => {
     const pin = () => {
-      const scroller = document.querySelector<HTMLElement>('[data-pane="conversation"] [data-virtuoso-scroller="true"]');
-      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+      pinToLatest();
     };
     return useKindStore.subscribe((state, prev) => {
       if (state.views === prev.views) return;
       const last = state.views[state.views.length - 1]?.id;
       const prevLast = prev.views[prev.views.length - 1]?.id;
       if (revealHoldRef.current) return;
-      if (last && last !== prevLast && !state.loadingOlder) followRef.current = true;
-      if (!followRef.current) return;
+      if (last && last !== prevLast && !state.loadingOlder && followRef.current) {
+        followRef.current = true;
+      }
+      if (!followRef.current || userScrolledRef.current) return;
       requestAnimationFrame(pin);
     });
-  }, []);
+  }, [pinToLatest]);
 
   // Virtuoso 量到真实高度后总高度还会再长一截；跟着走时内容一变高就再钉一次。
   useEffect(() => {
@@ -161,16 +166,19 @@ export function ConversationPane() {
     if (!scroller || !content) return;
     const observer = new ResizeObserver(() => {
       if (!revealHoldRef.current && followRef.current && paintedRef.current) {
-        scroller.scrollTop = scroller.scrollHeight;
+        pinToLatest();
       }
     });
     observer.observe(content);
     return () => observer.disconnect();
-  }, [initialLoading, views.length === 0]);
+  }, [initialLoading, views.length === 0, pinToLatest]);
 
   const handleAtBottom = useCallback(
     (bottom: boolean) => {
-      if (bottom && !revealHoldRef.current) followRef.current = true;
+      if (bottom && !revealHoldRef.current) {
+        followRef.current = true;
+        userScrolledRef.current = false;
+      }
       setAtBottom(bottom);
     },
     [setAtBottom],
@@ -209,6 +217,8 @@ export function ConversationPane() {
 
   const scrollToLatest = useCallback(() => {
     followRef.current = true;
+    userScrolledRef.current = false;
+    revealHoldRef.current = false;
     listRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'smooth' });
   }, []);
 
@@ -284,6 +294,7 @@ export function ConversationPane() {
     (text: string, options: { pastes: string[]; attachments: { id: string; name: string; bytes: number }[] }) => {
       revealHoldRef.current = false;
       followRef.current = true;
+      userScrolledRef.current = false;
       listRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
       return send(text, options);
     },
@@ -295,9 +306,11 @@ export function ConversationPane() {
       className="flex h-full min-h-0 flex-col bg-content"
       data-pane="conversation"
       onWheelCapture={(event) => {
+        // T059 F5：任何滚轮都先停跟随；是否回底由 atBottom / 「回到最新」决定。
         userScrolledRef.current = true;
         revealHoldRef.current = false;
-        if (event.deltaY < 0) followRef.current = false;
+        followRef.current = false;
+        event.stopPropagation();
       }}
       onTouchStartCapture={() => {
         userScrolledRef.current = true;
@@ -341,7 +354,9 @@ export function ConversationPane() {
               topIndexRef.current = range.startIndex;
               handleRangeChanged(range);
             }}
-            followOutput={(isAtBottom: boolean) => (isAtBottom ? 'auto' : false)}
+            followOutput={(isAtBottom: boolean) =>
+              isAtBottom && followRef.current && !userScrolledRef.current ? 'auto' : false
+            }
             increaseViewportBy={{ top: 800, bottom: 400 }}
             scrollerRef={(ref) => {
               const element = ref as HTMLElement | null;

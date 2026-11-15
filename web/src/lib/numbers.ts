@@ -75,6 +75,18 @@ export function formatFxTime(fetchedAt: number): string | null {
   return date.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
+/** T059 F6：交付记录的时间（unix 秒）按本机时区显示，月/日/时分统一 zh-CN。 */
+export function clockOf(seconds: number | null | undefined): string {
+  if (!seconds) return '';
+  return new Date(seconds * 1000).toLocaleString('zh-CN', {
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
 /** 日期分隔的文案：今天 / 昨天 / 10月26日，后面带时分（T017.1：从 kindStore 抽成纯函数，now 可注入）。 */
 export function dayLabelOf(seconds: number | null, now: Date = new Date()): string {
   if (!seconds) return '';
