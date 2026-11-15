@@ -32,6 +32,8 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.pretextTurn) return { file: 't023-pretext', paceMs: 150 };
   // T023：同一轮放慢到 400ms/帧，设置页往返后还有一段实时流可观察。
   if (options.pretextSlowTurn) return { file: 't023-pretext-slow', paceMs: 400 };
+  // T059 F5：内容超过视口的长流式回答，用来在流式追加中验证滚轮不被钉回底部。
+  if (options.t059LongStream) return { file: 't059-long-stream', paceMs: 40 };
   if (options.codeBlock) return { file: 'tool-code' };
   if (options.toolCards) return { file: 'tool-cards' };
   // 只保留 Kind 现有工具（read/glob/grep）：T030.2a 收窄后 Kind 没有 write/edit/bash。
@@ -187,6 +189,8 @@ export interface FixtureOptions {
   pretextTurn?: boolean;
   /// T023：同上，但 pace 400ms、最终答案 8 段，设置页往返后还有实时流可观察。
   pretextSlowTurn?: boolean;
+  /// T059 F5：120 行长流式回答，内容超过视口、流式追加中。
+  t059LongStream?: boolean;
   /// 路径显示：三步回放（cwd 内写、cwd 外写、最终文本）；夹具里的 __CWD__ / __OUTSIDE__ 起服务前换成真实目录。
   pathsTurn?: boolean;
   /// T013.6：最终回答里带一个代码块（复制按钮用）。

@@ -91,6 +91,10 @@ export function ConversationPane() {
   const followRef = useRef(true);
   /** T055：从工作页/现在页「去看」时按目标轮定位；定位期间不跟底，用户一动手就放开。 */
   const revealHoldRef = useRef(false);
+  /** T059 F5：钉底走 Virtuoso 的 scrollToIndex，不直接写 scrollTop；虚拟列表的 scrollHeight 是估算值。 */
+  const pinToLatest = useCallback(() => {
+    listRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
+  }, []);
 
 
   // 首屏：落到最新一条。
@@ -112,7 +116,7 @@ export function ConversationPane() {
       if (scroller) {
         const gap = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop;
         if (gap > 2) {
-          scroller.scrollTop = scroller.scrollHeight;
+          pinToLatest();
           clean = 0;
           cleanAfterMark = 0;
         } else if (paintedRef.current) {
@@ -133,14 +137,13 @@ export function ConversationPane() {
     return () => {
       cancelled = true;
     };
-  }, [initialLoading]);
+  }, [initialLoading, pinToLatest]);
 
   // 一轮在长（工具一条条出、回答流式写）时，最后一条变高不会触发 Virtuoso 的 followOutput，
   // 所以盯着 store：跟着走时每次变化都钉到底；新起一轮（最后一条换了）总是跳过去。
   useEffect(() => {
     const pin = () => {
-      const scroller = document.querySelector<HTMLElement>('[data-pane="conversation"] [data-virtuoso-scroller="true"]');
-      if (scroller) scroller.scrollTop = scroller.scrollHeight;
+      pinToLatest();
     };
     return useKindStore.subscribe((state, prev) => {
       if (state.views === prev.views) return;
@@ -153,7 +156,7 @@ export function ConversationPane() {
       if (!followRef.current || userScrolledRef.current) return;
       requestAnimationFrame(pin);
     });
-  }, []);
+  }, [pinToLatest]);
 
   // Virtuoso 量到真实高度后总高度还会再长一截；跟着走时内容一变高就再钉一次。
   useEffect(() => {
@@ -163,12 +166,12 @@ export function ConversationPane() {
     if (!scroller || !content) return;
     const observer = new ResizeObserver(() => {
       if (!revealHoldRef.current && followRef.current && paintedRef.current) {
-        scroller.scrollTop = scroller.scrollHeight;
+        pinToLatest();
       }
     });
     observer.observe(content);
     return () => observer.disconnect();
-  }, [initialLoading, views.length === 0]);
+  }, [initialLoading, views.length === 0, pinToLatest]);
 
   const handleAtBottom = useCallback(
     (bottom: boolean) => {

@@ -198,37 +198,48 @@ test('T059 F4：里程碑页两轮判定与核查 Attempt；被把关任务有�
   }
 });
 
-test('T059 F5：Kind 流式回答中滚轮上推不被拉回；点回到底再跟随', async ({ page }) => {
-  test.setTimeout(120_000);
-  await page.setViewportSize({ width: 900, height: 360 });
-  const fixture = await startKernelFixture({ pretextSlowTurn: true });
+test('T059 F5：Kind 长流式追加中滚轮上推不被拉回；点回到底再跟随', async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 900, height: 340 });
+  const fixture = await startKernelFixture({ t059LongStream: true });
   try {
     await page.goto(urlOf(fixture));
     await sendKind(page, '你现在都能做什么卡片');
+    // 流式还在跑、内容已超过视口：等 stop 按钮和足够长的流式文字。
+    await expect(page.locator('[data-kind="stop"]')).toBeVisible({ timeout: 30_000 });
     const answer = page.locator('[data-kind="assistant-answer"]').last();
-    await expect(answer).toContainText('我先确认一下', { timeout: 30_000 });
+    await expect
+      .poll(async () => (await answer.innerText().catch(() => '')).length, { timeout: 30_000 })
+      .toBeGreaterThan(300);
     const scroller = page.locator('[data-pane="conversation"] [data-virtuoso-scroller="true"]');
     await expect(scroller).toBeVisible();
     const metrics = await scroller.evaluate((element) => ({
       scrollHeight: element.scrollHeight,
       clientHeight: element.clientHeight,
     }));
-    expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
+    expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight + 300);
+    await scroller.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+    });
     const before = await scroller.evaluate((element) => element.scrollTop);
+    expect(before).toBeGreaterThan(200);
     const box = await scroller.boundingBox();
     expect(box).not.toBeNull();
     await page.mouse.move((box?.x ?? 0) + (box?.width ?? 0) / 2, (box?.y ?? 0) + (box?.height ?? 0) / 2);
-    await page.mouse.wheel(0, -600);
+    await page.mouse.wheel(0, -720);
     await expect
       .poll(async () => scroller.evaluate((element) => element.scrollTop), { timeout: 10_000 })
-      .toBeLessThan(before);
+      .toBeLessThan(before - 300);
     const afterWheel = await scroller.evaluate((element) => element.scrollTop);
-    await page.waitForTimeout(900);
-    expect(await scroller.evaluate((element) => element.scrollTop)).toBeLessThanOrEqual(afterWheel + 4);
+    // 流式仍在追加：等一会儿，旧机制会在这里被拉回底部；新机制保持原位。
+    await page.waitForTimeout(1200);
+    expect(await page.locator('[data-kind="stop"]')).toBeVisible();
+    const settled = await scroller.evaluate((element) => element.scrollTop);
+    expect(settled).toBeLessThanOrEqual(afterWheel + 24);
     await page.getByRole('button', { name: '回到最新' }).click();
     await expect
       .poll(async () => scroller.evaluate((element) => element.scrollTop), { timeout: 10_000 })
-      .toBeGreaterThan(afterWheel);
+      .toBeGreaterThan(settled + 100);
   } finally {
     await fixture.close();
   }
