@@ -32,6 +32,7 @@ import type { SettingsUpdateRequest } from './generated/SettingsUpdateRequest';
 import type { SettingsUpdateResponse } from './generated/SettingsUpdateResponse';
 import type { StatusResponse } from './generated/StatusResponse';
 import type { StopMode } from './generated/StopMode';
+import type { TaskDeliveryResponse } from './generated/TaskDeliveryResponse';
 import type { TaskInterruptResponse } from './generated/TaskInterruptResponse';
 import type { TaskAcceptManyResponse } from './generated/TaskAcceptManyResponse';
 import type { TaskSayResponse } from './generated/TaskSayResponse';
@@ -274,6 +275,11 @@ export async function taskRead(taskId: string, beforeSeq?: number) {
     taskId,
     ...(beforeSeq === undefined ? {} : { beforeSeq }),
   });
+}
+
+/** T058：读一份交付记录（只读；不挂 task-read，页面按需读一次）。 */
+export async function taskDelivery(taskId: string): Promise<TaskDeliveryResponse> {
+  return post({ method: 'task-delivery', taskId });
 }
 
 /** 停一个任务；Kind 的 task_stop 走同一个服务方法。 */

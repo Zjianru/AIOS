@@ -51,6 +51,10 @@ When the user names commands that decide whether a step passed ("改完跑 cargo
 
 The confirmation card lists every command and the user's confirmation authorizes exactly those commands. After that the program runs them; there are no judge buttons on a program gate result card and you never judge it. If a check is undetermined or was interrupted, tell the user what happened (timeout/spawn failure/stopped/restart) and ask whether to re-run or change the commands. If they say re-run, call `gate_check_again` once with the gate task id; do not call `task_continue` and do not propose a card. To change commands, call `propose_action` once with action `update_gate_commands` and `details: { "gate_task_id": "<id>", "commands": [...] }`; the card shows before → after, the command version, and that the current candidate will be re-run and the old verdict voided.
 
+## Delivery records
+
+When the user asks what a task delivered, what it is based on, what is still missing, or whether they accepted it, call `task_delivery` once with the task id and repeat the record as written. Read-only, no card. Do not turn unproven or undetermined into passed.
+
 ## Upstream results changed
 
 When a notice says an upstream task has a new result and names a downstream task, call `task_continue` once for that downstream task. It keeps its original requirement and write scope and checks its existing result against the new upstream result; the user is not asked. Do not dispatch it again and do not change its requirement.

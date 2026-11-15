@@ -11833,7 +11833,7 @@ async fn t057_update_gate_commands_act_stops_a_running_gate_then_reruns_the_new_
                         milestone: true,
                         program_gate: vec![
                             GateCommand {
-                                command: "sleep 3".to_owned(),
+                                command: "trap '' TERM; sleep 30".to_owned(),
                                 timeout_ms: None,
                             },
                             GateCommand {
@@ -11939,6 +11939,11 @@ async fn t057_update_gate_commands_act_stops_a_running_gate_then_reruns_the_new_
         .filter(|report| report.origin == ReportOrigin::Program)
         .collect();
     assert_eq!(programs.len(), 2);
+    assert!(
+        programs[0].summary.contains("命令已改"),
+        "{}",
+        programs[0].summary
+    );
     assert_eq!(
         updated.verdicts[0].conclusion,
         tasks::GateConclusion::Undetermined
@@ -11950,5 +11955,87 @@ async fn t057_update_gate_commands_act_stops_a_running_gate_then_reruns_the_new_
         updated.verdicts[1].candidate.report_id != updated.verdicts[0].candidate.report_id
             || updated.verdicts[1].candidate.requirement_version
                 == updated.verdicts[0].candidate.requirement_version
+    );
+}
+
+#[tokio::test]
+async fn task_delivery_reads_the_same_record_and_refuses_unknown_tasks() {
+    use service::{Response, TaskDeliveryRequest};
+
+    let fixture = Fixture::new().await;
+    let store = tasks_store(fixture.data());
+    let task = store
+        .create_task(
+            NewTask {
+                title: "查一下".to_owned(),
+                requirement: "找答案".to_owned(),
+                dod: "有答案".to_owned(),
+                cwd: fixture.cwd.path().to_path_buf(),
+                conversation: ConversationId::new("kind-delivery"),
+                model: ModelChoice {
+                    connection: "deepseek".to_owned(),
+                    model: "deepseek-flash".to_owned(),
+                    effort_wanted: "high".to_owned(),
+                },
+                tools: service::THIN_TOOLS
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect(),
+            },
+            1_700_000_000_000,
+        )
+        .unwrap();
+    let empty = fixture
+        .host
+        .dispatch(Call::TaskDelivery(TaskDeliveryRequest {
+            task_id: task.id.as_str().to_owned(),
+        }))
+        .await
+        .expect("查询成功");
+    let Response::TaskDelivery(empty) = empty else {
+        panic!("响应类型不对");
+    };
+    assert!(empty.delivery.is_none(), "还没交过结果");
+
+    let attempt = store.begin_attempt(&task.id, 1_700_000_000_001).unwrap();
+    store
+        .record_report(
+            &task.id,
+            attempt,
+            NewReport {
+                state: ReportState::Ready,
+                origin: ReportOrigin::Agent,
+                summary: "查完了，结论是 3 行".to_owned(),
+                question: None,
+            },
+            1_700_000_000_002,
+        )
+        .unwrap();
+    let response = fixture
+        .host
+        .dispatch(Call::TaskDelivery(TaskDeliveryRequest {
+            task_id: task.id.as_str().to_owned(),
+        }))
+        .await
+        .expect("查询成功");
+    let Response::TaskDelivery(response) = response else {
+        panic!("响应类型不对");
+    };
+    let delivery = response.delivery.expect("ready 后有交付记录");
+    assert_eq!(delivery.attempt, 1);
+    assert!(delivery.text().contains("查完了，结论是 3 行"));
+    assert!(delivery.text().contains("未证明：没安排门任务"));
+    assert_eq!(delivery.word.text, "等你接受");
+
+    let error = fixture
+        .host
+        .dispatch(Call::TaskDelivery(TaskDeliveryRequest {
+            task_id: "not-a-task".to_owned(),
+        }))
+        .await
+        .expect_err("不存在的任务要拒");
+    assert!(
+        error.to_string().contains("找不到") || error.to_string().contains("任务"),
+        "{error}"
     );
 }

@@ -1906,3 +1906,93 @@ fn accepting_guarded_and_downstream_closes_gate_task_and_graph() {
     let downstream_now = store.task(&downstream.id).unwrap().unwrap();
     assert_eq!(downstream_now.acceptances, vec![c_acceptance]);
 }
+
+#[test]
+fn program_gate_candidate_changes_mid_run_ends_attempt_without_verdict_for_latest_candidate() {
+    let (directory, store) = open_store();
+    let cwd = directory.path();
+    let mut gate_sub = subtask(cwd, "程序门", None, vec![0]);
+    gate_sub.milestone = true;
+    gate_sub.program_gate = vec![crate::GateCommand {
+        command: "true".to_owned(),
+        timeout_ms: None,
+    }];
+    let graph = NewGraph {
+        root: draft(cwd, "总任务"),
+        subtasks: vec![subtask(cwd, "被把关", Some("a.txt"), vec![]), gate_sub],
+    };
+    let root = store.create_graph(graph, T0).unwrap();
+    store.confirm_graph(&root.id, T0 + 1).unwrap();
+    let children = store.children(&root.id).unwrap();
+    let (guarded, gate) = (children[0].clone(), children[1].clone());
+    let ready = |at: i64, text: &str| {
+        let attempt = store.begin_attempt(&guarded.id, at).unwrap();
+        store
+            .record_report(
+                &guarded.id,
+                attempt,
+                NewReport {
+                    state: ReportState::Ready,
+                    origin: ReportOrigin::Agent,
+                    summary: text.to_owned(),
+                    question: None,
+                },
+                at + 1,
+            )
+            .unwrap();
+        store
+            .end_attempt(&guarded.id, attempt, at + 1, AttemptEnd::Reported)
+            .unwrap();
+        attempt
+    };
+    ready(T0 + 2, "第一份");
+    let gate_now = store.task(&gate.id).unwrap().unwrap();
+    let handoff = gate_now.needs[0].handoff.clone().unwrap();
+    let gate_attempt = store
+        .begin_attempt_with(
+            &gate.id,
+            T0 + 5,
+            AttemptTrigger::GateRecheck {
+                candidate: GateCandidate {
+                    report_id: handoff.report_id.clone(),
+                    requirement_version: handoff.requirement_version,
+                },
+            },
+            vec![handoff.clone()],
+        )
+        .unwrap();
+    ready(T0 + 6, "第二份");
+
+    let outcome = store
+        .record_program_gate_result(
+            &gate.id,
+            gate_attempt,
+            "程序门通过：1 条命令全部退出码 0".to_owned(),
+            Vec::new(),
+            GateConclusion::Pass,
+            T0 + 10,
+        )
+        .unwrap();
+    assert!(outcome.verdict.is_none(), "候选变了不写判定");
+    assert!(outcome.released.is_empty(), "候选变了不放行");
+
+    let gate_now = store.task(&gate.id).unwrap().unwrap();
+    let attempt = gate_now.latest_attempt().unwrap();
+    assert_eq!(attempt.ended_at, Some(T0 + 10), "Attempt 要收尾");
+    assert_eq!(attempt.end, Some(AttemptEnd::Reported));
+    assert!(gate_now.verdicts.is_empty(), "候选变了不写判定");
+    let guarded_now = store.task(&guarded.id).unwrap().unwrap();
+    let latest = guarded_now.latest_report().unwrap();
+    assert_eq!(
+        gate_now.needs[0].handoff.as_ref().unwrap().report_id,
+        latest.id,
+        "交接换成最新候选"
+    );
+    assert_eq!(gate_now.reports.last().unwrap().id, outcome.report_id);
+    assert!(
+        store
+            .effect_pending(EffectKind::Launch, gate.id.as_str())
+            .unwrap(),
+        "对最新候选排一次 launch"
+    );
+}

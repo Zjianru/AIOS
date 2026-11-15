@@ -6,6 +6,7 @@
 pub mod actions;
 pub mod aios_query;
 mod cards;
+mod delivery;
 pub mod disabled;
 mod error;
 mod events;
@@ -37,6 +38,7 @@ pub mod stats;
 pub(crate) const SERVICE_EVENT_CHANNEL_CAPACITY: usize = 1024;
 
 pub use actions::{ActionEnv, ActionFuture, ActionKind, ActionOutcome, ActionRegistry, CardFact};
+pub use delivery::{DeliveryRecord, delivery_for};
 pub use error::*;
 pub use exa::EXA_DEFAULT_BASE_URL;
 pub use executor::{

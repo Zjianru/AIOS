@@ -116,6 +116,16 @@ impl RootHost {
                     "任务库没开，任务对话看不了".to_owned(),
                 )),
             },
+            // task-delivery：只读派生交付记录，不挂 TaskRead。
+            Call::TaskDelivery(request) => match self.task_runtime() {
+                Some(runtime) => runtime
+                    .task_delivery(request)
+                    .await
+                    .map(Response::TaskDelivery),
+                None => Err(ServiceError::TaskUnavailable(
+                    "任务库没开，交付记录看不了".to_owned(),
+                )),
+            },
             // task-say：输入、delivery 和 notice 都要任务库，效果泵在根宿主。
             Call::TaskSay(request) => match self.task_runtime() {
                 Some(runtime) => runtime.say_task(request).await.map(Response::TaskSay),

@@ -186,10 +186,13 @@ impl ActionKind for UpdateGateCommandsAction {
                 .latest_attempt()
                 .is_some_and(|attempt| attempt.ended_at.is_none())
             {
-                let _ = runtime
-                    .stop_task(&gate_id, crate::protocol::StopMode::Now)
-                    .await;
-                for _ in 0..100 {
+                if let Err(error) = runtime.stop_gate_for_update(&gate_id).await {
+                    eprintln!("改命令前停程序门失败：{error}");
+                }
+                let deadline = std::time::Instant::now()
+                    + tools::KILL_GRACE
+                    + std::time::Duration::from_secs(1);
+                while std::time::Instant::now() < deadline {
                     let ended = self
                         .task(&gate_id)
                         .ok()
@@ -198,13 +201,17 @@ impl ActionKind for UpdateGateCommandsAction {
                     if ended {
                         break;
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
             }
             let updated = runtime
                 .store()
                 .update_gate_commands(&TaskId::from(gate_id.as_str()), commands, now_millis())
                 .map_err(|error| error.to_string())?;
+            runtime.notify_task_changed(&updated.id);
+            if let Some(need) = updated.needs.first() {
+                runtime.notify_task_changed(&need.from);
+            }
             let version = updated.commands_version();
             if updated
                 .needs

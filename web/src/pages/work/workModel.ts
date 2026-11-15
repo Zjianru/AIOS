@@ -39,7 +39,7 @@ export const WAIT_ACTION: Record<string, string | null> = {
   confirm: '去看',
   answer: '去答',
   judge: '去判',
-  accept: null,
+  accept: '看交付记录',
 };
 
 export interface BoardTask {

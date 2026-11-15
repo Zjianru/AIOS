@@ -877,6 +877,7 @@ function applyFrame(frame: Frame): void {
     applyLiveEvent(frame.event);
     return;
   }
+  if (frame.type === 'task-changed') return;
   applyAgentEvent(frame.event);
 }
 
