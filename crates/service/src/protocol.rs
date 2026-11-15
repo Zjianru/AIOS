@@ -485,6 +485,21 @@ pub struct TaskReadGateRun {
     pub checks: Vec<TaskReadGateCheck>,
 }
 
+/// T058：被把关任务页看到的守卫门事实（判定/命令版本变时让交付记录重读）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskReadGuardingGate {
+    pub id: String,
+    pub title: String,
+    pub program: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conclusion: Option<String>,
+    #[serde(default)]
+    pub commands_version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<i64>,
+}
+
 /// T056.2：任务对话页账本块的只读投影；进展/待答不在里面（从 report 读）。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -584,6 +599,13 @@ pub struct TaskReadHeader {
     /// T057：正在跑第几条（0 起）；没在跑为 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub program_index: Option<usize>,
+    /// T058：被这个任务的门（被把关任务才有）；用于页头/交付记录在门判定变化时重读。
+    #[serde(
+        default,
+        rename = "guardingGate",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub guarding_gate: Option<TaskReadGuardingGate>,
 }
 
 /// task-read：打开任务当前 Attempt 的会话，拿头部和一页事件。

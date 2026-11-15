@@ -10,7 +10,7 @@ use monitor::{Channel, Monitor, Record, Severity};
 use serde::{Deserialize, Serialize};
 use service::{
     ContextUsage, FollowRequest, FollowResponse, HostInfo, HostLocation, PROTOCOL_VERSION,
-    RootHost, RootState, ServiceError, ServiceEvent, ServiceHost, TaskLive,
+    RootHost, RootState, ServiceError, ServiceEvent, ServiceHost, TaskLive, TaskStream,
 };
 use tokio::sync::broadcast;
 use ts_rs::TS;
@@ -37,6 +37,11 @@ pub enum Frame {
     Event { event: ServiceEvent },
     /// T007.4：不落日志的 AgentEvent（流式文本/用量/重试提示等），页面单独消费。
     Agent { event: AgentEventWire },
+    /// T058：任务事实变了（守卫门判定/命令版本、接受），页面重读交付记录。
+    TaskChanged {
+        #[serde(rename = "taskId")]
+        task_id: String,
+    },
 }
 
 /// AgentEvent 的线上形状（只挑页面要的；只增不改）。
@@ -264,20 +269,37 @@ async fn ws_task_session(socket: &mut WebSocket, state: &AppState, task_id: &str
     };
     let mut info = state.host.info();
     info.session_id = Some(stream.session_id.clone());
-    let last = last_seq.max(stream.follow.last_seq);
-    for frame in opening_frames(&info, stream.follow) {
+    let TaskStream {
+        session_id: _,
+        follow,
+        live,
+        mut changed,
+    } = stream;
+    let last = last_seq.max(follow.last_seq);
+    for frame in opening_frames(&info, follow) {
         if !send_frame(socket, &frame).await {
             return;
         }
     }
-    let Some(live) = stream.live else {
-        // 任务没在跑：只补齐，不出 live 帧；连接留到页面离开。
-        while let Some(Ok(message)) = socket.recv().await {
-            if matches!(message, Message::Close(_)) {
-                return;
+    let Some(live) = live else {
+        // 任务没在跑：只补齐；任务事实变化仍可推送，连接留到页面离开。
+        loop {
+            tokio::select! {
+                changed_message = changed.recv() => match changed_message {
+                    Ok(task_id) => {
+                        if !send_frame(socket, &Frame::TaskChanged { task_id }).await {
+                            return;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => return,
+                },
+                incoming = socket.recv() => match incoming {
+                    Some(Ok(message)) if !matches!(message, Message::Close(_)) => continue,
+                    _ => return,
+                },
             }
         }
-        return;
     };
     let TaskLive {
         host,
@@ -285,7 +307,7 @@ async fn ws_task_session(socket: &mut WebSocket, state: &AppState, task_id: &str
         agent_events,
     } = live;
     let source = FollowSource::Task(&host);
-    live_loop(socket, &source, events, agent_events, last).await;
+    live_loop(socket, &source, events, agent_events, Some(changed), last).await;
 }
 
 /// 根会话的连接：ready → 补齐（lastSeq 之后）→ live（seq 去重；Lagged 时重新 follow 补齐）。
@@ -328,7 +350,17 @@ async fn ws_root_session(socket: &mut WebSocket, state: &AppState, last_seq: u64
         return;
     }
     let source = FollowSource::Root(state.host.as_ref());
-    live_loop(socket, &source, live, agent_live, last).await;
+    live_loop(socket, &source, live, agent_live, None, last).await;
+}
+
+/// T058：任务事实变化接收；根会话没有这个通道，用永远 pending 的分支。
+async fn recv_changed(
+    changed: &mut Option<broadcast::Receiver<String>>,
+) -> Result<String, broadcast::error::RecvError> {
+    match changed {
+        Some(receiver) => receiver.recv().await,
+        None => std::future::pending().await,
+    }
 }
 
 /// 已补齐之后的 live 帧：日志事件按 seq 去重，流式文字照发；Lagged 时重新 follow。
@@ -337,6 +369,7 @@ async fn live_loop(
     source: &FollowSource<'_>,
     mut live: broadcast::Receiver<ServiceEvent>,
     mut agent_live: broadcast::Receiver<agent::AgentEvent>,
+    mut changed: Option<broadcast::Receiver<String>>,
     mut last: u64,
 ) {
     loop {
@@ -379,6 +412,15 @@ async fn live_loop(
                         continue;
                     };
                     if !send_frame(socket, &Frame::Agent { event: wire }).await {
+                        return;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => return,
+            },
+            changed_message = recv_changed(&mut changed) => match changed_message {
+                Ok(task_id) => {
+                    if !send_frame(socket, &Frame::TaskChanged { task_id }).await {
                         return;
                     }
                 }

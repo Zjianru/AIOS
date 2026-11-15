@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
-import { startKernelFixture } from './service-fixture';
+import { apiPost, startKernelFixture } from './service-fixture';
 
 /** T058：交付记录——任务页一行收起、展开五项；程序门未确定；接受后词变；等你入口。 */
 
@@ -222,6 +222,76 @@ test('交付记录：第 2 份跟着走，第 1 份折叠进历史，改要求�
     await expect(delivery(page).locator('[data-kind="delivery-history"]')).toContainText(
       '第 1 次结果 · 第 1 版要求',
     );
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('交付记录：任务页开着时守卫门判了，自动重读（不手动刷新）', async ({ page, request }) => {
+  test.setTimeout(180_000);
+  const fixture = await startKernelFixture({ t053Gate: true });
+  try {
+    await page.goto(urlOf(fixture));
+    await sendKind(page, '先查 notes.md 有几行，改完找个独立的核查看一眼，我来拍板，过了再写结果');
+    const confirm = page.locator('[data-kind="confirm-card"]').first();
+    await expect(confirm).toBeVisible({ timeout: 40_000 });
+    await confirm.locator('[data-action="card-option"]').first().click();
+    await confirm.locator('[data-action="card-confirm"]').click();
+    await expect(confirm).toHaveAttribute('data-state', 'done', { timeout: 40_000 });
+    await expect(
+      page
+        .locator('[data-kind="task-result"]')
+        .filter({ has: page.locator('[data-kind="task-title"]', { hasText: '独立核查' }) })
+        .first(),
+    ).toBeVisible({ timeout: 90_000 });
+
+    const rows = (() => {
+      const db = new DatabaseSync(path.join(fixture.dataDir, 'tasks.sqlite'), { readOnly: true });
+      try {
+        return db.prepare('SELECT value FROM task ORDER BY rowid').all() as { value: string }[];
+      } finally {
+        db.close();
+      }
+    })();
+    let guardedId = '';
+    let gateId = '';
+    let gateReport = '';
+    for (const row of rows) {
+      const task = JSON.parse(row.value) as {
+        id: string;
+        title: string;
+        reports?: { id: string; state: string }[];
+      };
+      if (task.title === '先查行数') guardedId = task.id;
+      if (task.title === '独立核查') {
+        gateId = task.id;
+        gateReport = task.reports?.[task.reports.length - 1]?.id ?? '';
+      }
+    }
+    expect(guardedId).not.toBe('');
+    expect(gateReport).not.toBe('');
+
+    await page.goto(urlOf(fixture, '#taskchat:' + guardedId));
+    await expect(delivery(page)).toBeVisible({ timeout: 30_000 });
+    await delivery(page).locator('[data-kind="delivery-toggle"]').click();
+    await expect(delivery(page).locator('[data-kind="delivery-verdict"]')).toContainText(
+      '还没判这一份',
+    );
+
+    const judged = await apiPost(request, fixture, {
+      method: 'gate-judge',
+      gateTask: gateId,
+      gateReport,
+      conclusion: 'pass',
+    });
+    expect(judged.ok()).toBeTruthy();
+
+    // 不刷新页面：任务 WS 的 task-changed 帧触发重读，判定行和词自己变。
+    await expect(delivery(page).locator('[data-kind="delivery-verdict"]')).toContainText(
+      '你判了通过',
+      { timeout: 20_000 },
+    );
+    await expect(delivery(page).locator('[data-kind="delivery-word"]')).toHaveText('等你接受');
   } finally {
     await fixture.close();
   }

@@ -615,6 +615,7 @@ export function TaskChatScene() {
   const [task, setTask] = useState<TaskReadHeader | null>(null);
   const [ledger, setLedger] = useState<TaskReadLedger | null>(null);
   const [delivery, setDelivery] = useState<DeliveryRecord | null>(null);
+  const [deliveryNonce, setDeliveryNonce] = useState(0);
   // T051：统计由服务端 task-read 给（和 Kind status 同一个 session_stats），页面只显示。
   const [attemptStats, setAttemptStats] = useState<SessionStats | null>(null);
   const [fx, setFx] = useState<FxInfo | null>(null);
@@ -712,6 +713,11 @@ export function TaskChatScene() {
 
     const onFrame = (frame: Frame) => {
       if (disposed) return;
+      if (frame.type === 'task-changed') {
+        setDeliveryNonce((value) => value + 1);
+        void refreshHeader();
+        return;
+      }
       if (frame.type === 'event') {
         const event = frame.event;
         // seq=0 是设置变化的合成事件：不在任务日志里，和任务对话无关。
@@ -1200,6 +1206,9 @@ export function TaskChatScene() {
         task.accepted ? 1 : 0,
         task.gate?.conclusion ?? '',
         task.gate?.runs?.[0]?.at ?? 0,
+        task.guardingGate?.conclusion ?? '',
+        task.guardingGate?.commandsVersion ?? 0,
+        task.guardingGate?.at ?? 0,
       ].join('|')
     : '';
   useEffect(() => {
@@ -1219,7 +1228,7 @@ export function TaskChatScene() {
       live = false;
     };
     // reportedAt/accepted/门判定变时重读；不挂轮询。
-  }, [taskId, deliveryKey]);
+  }, [taskId, deliveryKey, deliveryNonce]);
 
   if (phase === 'loading') {
     return (

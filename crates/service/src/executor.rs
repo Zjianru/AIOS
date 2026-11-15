@@ -242,6 +242,8 @@ pub struct TaskStream {
     pub session_id: String,
     pub follow: FollowResponse,
     pub live: Option<TaskLive>,
+    /// T058：任务事实变化（门判定/命令版本/接受）的轻量广播；不落日志。
+    pub changed: broadcast::Receiver<String>,
 }
 
 /// 在跑任务的 live 订阅面。
@@ -334,6 +336,8 @@ pub struct TaskRuntime {
     running: Mutex<std::collections::HashMap<String, RunningThin>>,
     /// T057：正在跑的程序门检查（按任务 id）；进程组停任务用。
     gate_jobs: Mutex<std::collections::HashMap<String, Arc<RunningGate>>>,
+    /// T058：任务事实变化（门判定/命令版本/接受）广播；任务 WS 用它在页面开着时重读。
+    changed: broadcast::Sender<String>,
     /// 测试钩子：下一次 relay 在 Kind append 前「崩掉」——留下效果行，泵退出。
     crash_before_relay: AtomicBool,
 }
@@ -365,8 +369,14 @@ impl TaskRuntime {
             slots: Mutex::new(WorkerSlots::new()),
             running: Mutex::new(std::collections::HashMap::new()),
             gate_jobs: Mutex::new(std::collections::HashMap::new()),
+            changed: broadcast::channel(64).0,
             crash_before_relay: AtomicBool::new(false),
         })
+    }
+
+    /// T058：告诉任务页任务事实变了（轻量广播，不落日志）。
+    pub(crate) fn notify_task_changed(&self, task_id: &TaskId) {
+        drop(self.changed.send(task_id.as_str().to_owned()));
     }
 
     /// 任务库（测试和诊断读同一份事实）。
@@ -424,9 +434,12 @@ impl TaskRuntime {
         let report = ReportId::from(report_id);
         // 校验顺序、回原因和幂等都由 store 一个事务做（T054）：
         // 找不到/非 ready、门任务、不是最新、版本旧、门没判通过各回各的原因。
-        self.store
+        let acceptance = self
+            .store
             .accept(&id, &report, Self::now())
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        self.notify_task_changed(&id);
+        Ok(acceptance)
     }
 
     /// T053：这个任务是不是里程碑门（结果卡判定前先认）。
@@ -458,6 +471,12 @@ impl TaskRuntime {
             Self::now(),
         ) {
             Ok(outcome) => {
+                if let Ok(Some(gate)) = self.store.task(&gate_id)
+                    && let Some(need) = gate.needs.first()
+                {
+                    self.notify_task_changed(&need.from);
+                }
+                self.notify_task_changed(&gate_id);
                 self.wake();
                 let recorded = match outcome.verdict.conclusion {
                     GateConclusion::Pass => ProtocolGateConclusion::Pass,
@@ -979,6 +998,31 @@ impl TaskRuntime {
                 })
                 .collect(),
         };
+        let guarding_gate = if task.is_gate() {
+            None
+        } else {
+            self.store
+                .guarding_gate(&task.id)
+                .ok()
+                .flatten()
+                .map(|gate| {
+                    let verdict = gate
+                        .latest_report()
+                        .and_then(|report| gate.verdict_for_gate_report(&report.id));
+                    crate::protocol::TaskReadGuardingGate {
+                        id: gate.id.as_str().to_owned(),
+                        title: gate.title.clone(),
+                        program: gate.is_program_gate(),
+                        conclusion: verdict.map(|verdict| match verdict.conclusion {
+                            GateConclusion::Pass => "pass".to_owned(),
+                            GateConclusion::NeedsFix => "needs_fix".to_owned(),
+                            GateConclusion::Undetermined => "undetermined".to_owned(),
+                        }),
+                        commands_version: gate.commands_version(),
+                        at: verdict.map(|verdict| verdict.at),
+                    }
+                })
+        };
         Ok(TaskReadResponse {
             task: TaskReadHeader {
                 id: task.id.as_str().to_owned(),
@@ -1014,6 +1058,7 @@ impl TaskRuntime {
                 gate: gate_view,
                 program_running,
                 program_index,
+                guarding_gate,
             },
             events: selected,
             last_seq,
@@ -1066,6 +1111,7 @@ impl TaskRuntime {
                 last_seq,
             },
             live: None,
+            changed: self.changed.subscribe(),
         };
         let Some(attempt) = task.latest_attempt() else {
             return Ok(empty());
@@ -1090,6 +1136,7 @@ impl TaskRuntime {
                     events,
                     agent_events,
                 }),
+                changed: self.changed.subscribe(),
             });
         }
         let snapshot = session::SessionStore::open_read_only(&self.data_dir, &session_id)
@@ -1108,6 +1155,7 @@ impl TaskRuntime {
                 last_seq: end,
             },
             live: None,
+            changed: self.changed.subscribe(),
         })
     }
 
@@ -3284,6 +3332,12 @@ impl TaskRuntime {
         ) {
             eprintln!("程序门 {gate_id} 的结果没写进任务库：{error}");
         }
+        if let Ok(Some(gate)) = self.store.task(&gate_id)
+            && let Some(need) = gate.needs.first()
+        {
+            self.notify_task_changed(&need.from);
+        }
+        self.notify_task_changed(&gate_id);
         self.wake();
     }
 
