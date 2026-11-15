@@ -891,57 +891,103 @@ impl TaskRuntime {
             self.running_for(&task.id, attempt_id)
                 .is_some_and(|running| running.host.agent().is_running())
         });
-        let gate_view = task
-            .gate
-            .as_ref()
-            .filter(|gate| gate.is_program_gate())
-            .map(|gate| {
-                let verdict = task
-                    .latest_report()
-                    .and_then(|report| task.verdict_for_gate_report(&report.id));
-                crate::protocol::TaskReadGate {
-                    commands: gate
-                        .commands
-                        .iter()
-                        .map(|command| crate::protocol::TaskReadGateCommand {
-                            command: command.command.clone(),
-                            timeout_ms: command.timeout_ms,
+        let guard_target = task
+            .needs
+            .first()
+            .and_then(|need| self.store.task(&need.from).ok().flatten());
+        let gate_view = task.gate.as_ref().map(|gate| {
+            let verdict = task
+                .latest_report()
+                .and_then(|report| task.verdict_for_gate_report(&report.id));
+            let verdicts = task
+                .verdicts
+                .iter()
+                .rev()
+                .map(|verdict| crate::protocol::TaskReadGateVerdict {
+                    candidate_ordinal: guard_target
+                        .as_ref()
+                        .and_then(|guarded| {
+                            guarded
+                                .reports
+                                .iter()
+                                .filter(|report| {
+                                    report.state == ReportState::Ready
+                                        && report.origin == ReportOrigin::Agent
+                                })
+                                .position(|report| report.id == verdict.candidate.report_id)
+                                .map(|index| index as u64 + 1)
                         })
-                        .collect(),
-                    commands_version: gate.commands_version,
-                    judged_by: verdict.map(|verdict| match verdict.judged_by {
-                        tasks::VerdictSource::User => "user".to_owned(),
-                        tasks::VerdictSource::Program => "program".to_owned(),
-                    }),
-                    conclusion: verdict.map(|verdict| match verdict.conclusion {
-                        GateConclusion::Pass => "pass".to_owned(),
-                        GateConclusion::NeedsFix => "needs_fix".to_owned(),
-                        GateConclusion::Undetermined => "undetermined".to_owned(),
-                    }),
-                    runs: task
-                        .reports
-                        .iter()
-                        .filter(|report| report.origin == ReportOrigin::Program)
-                        .rev()
-                        .map(|report| {
-                            let verdict = task.verdict_for_gate_report(&report.id);
-                            crate::protocol::TaskReadGateRun {
-                                attempt: report.attempt_id.0,
-                                commands_version: verdict
-                                    .map_or(0, |verdict| verdict.commands_version),
-                                conclusion: match verdict.map(|verdict| verdict.conclusion) {
-                                    Some(GateConclusion::Pass) => "pass",
-                                    Some(GateConclusion::NeedsFix) => "needs_fix",
-                                    Some(GateConclusion::Undetermined) | None => "undetermined",
-                                }
-                                .to_owned(),
-                                at: report.at,
-                                checks: task_read_gate_checks(&report.checks),
+                        .unwrap_or(verdict.candidate.requirement_version as u64),
+                    conclusion: match verdict.conclusion {
+                        GateConclusion::Pass => "pass",
+                        GateConclusion::NeedsFix => "needs_fix",
+                        GateConclusion::Undetermined => "undetermined",
+                    }
+                    .to_owned(),
+                    note: verdict.note.clone(),
+                    at: verdict.at,
+                    judged_by: match verdict.judged_by {
+                        tasks::VerdictSource::User => "user",
+                        tasks::VerdictSource::Program => "program",
+                    }
+                    .to_owned(),
+                })
+                .collect();
+            let attempts = task
+                .reports
+                .iter()
+                .rev()
+                .map(|report| crate::protocol::TaskReadGateAttempt {
+                    attempt: report.attempt_id.0,
+                    at: report.at,
+                    summary: report.summary.clone(),
+                })
+                .collect();
+            crate::protocol::TaskReadGate {
+                commands: gate
+                    .commands
+                    .iter()
+                    .map(|command| crate::protocol::TaskReadGateCommand {
+                        command: command.command.clone(),
+                        timeout_ms: command.timeout_ms,
+                    })
+                    .collect(),
+                commands_version: gate.commands_version,
+                judged_by: verdict.map(|verdict| match verdict.judged_by {
+                    tasks::VerdictSource::User => "user".to_owned(),
+                    tasks::VerdictSource::Program => "program".to_owned(),
+                }),
+                conclusion: verdict.map(|verdict| match verdict.conclusion {
+                    GateConclusion::Pass => "pass".to_owned(),
+                    GateConclusion::NeedsFix => "needs_fix".to_owned(),
+                    GateConclusion::Undetermined => "undetermined".to_owned(),
+                }),
+                runs: task
+                    .reports
+                    .iter()
+                    .filter(|report| report.origin == ReportOrigin::Program)
+                    .rev()
+                    .map(|report| {
+                        let verdict = task.verdict_for_gate_report(&report.id);
+                        crate::protocol::TaskReadGateRun {
+                            attempt: report.attempt_id.0,
+                            commands_version: verdict.map_or(0, |verdict| verdict.commands_version),
+                            conclusion: match verdict.map(|verdict| verdict.conclusion) {
+                                Some(GateConclusion::Pass) => "pass",
+                                Some(GateConclusion::NeedsFix) => "needs_fix",
+                                Some(GateConclusion::Undetermined) | None => "undetermined",
                             }
-                        })
-                        .collect(),
-                }
-            });
+                            .to_owned(),
+                            at: report.at,
+                            checks: task_read_gate_checks(&report.checks),
+                        }
+                    })
+                    .collect(),
+                verdicts,
+                attempts,
+            }
+        });
+
         let (program_running, program_index) = self
             .gate_jobs
             .lock()

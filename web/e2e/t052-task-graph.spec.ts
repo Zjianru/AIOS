@@ -91,7 +91,9 @@ test('任务图：先查再写 → 确认卡两行事实 → 确认 → 第一�
     const upstream = pane.locator('[data-kind="upstream-results"]');
     await expect(upstream).toBeVisible({ timeout: 20_000 });
     await expect(upstream).toContainText('先查行数');
-    await expect(upstream).toContainText('判重用的是原始链接');
+    // T059 F2：上游结果默认折叠，摘要展开后卡内看。
+    await upstream.locator('[data-kind="upstream-toggle"]').click();
+    await expect(upstream.locator('[data-kind="upstream-scroll"]')).toContainText('判重用的是原始链接');
   } finally {
     await fixture.close();
   }

@@ -29,8 +29,31 @@ import { useKindStore } from '@/pages/kind/kindStore';
 import type { LucideIcon } from 'lucide-react';
 import type { TaskCardState, TaskResultSlots } from '@/data/taskResult';
 import type { CardViewProps } from './model';
-import { BodyText } from './BodyText';
+import { previewOf } from './BodyText';
+import { Markdown } from '@/pages/kind/Markdown';
 import { cn } from '@/lib/utils';
+
+/** T059 F1：卡里由模型/程序写的正文按 Markdown 渲染；折起时仍按原上限给预览。 */
+function RichBody({ slot, className }: { slot: TaskResultSlots['summary']; className?: string }) {
+  const [open, setOpen] = useState(false);
+  if (!slot.text) return null;
+  const folded = slot.folded && !open;
+  return (
+    <div className={className} data-kind="task-rich-body">
+      <Markdown text={folded ? previewOf(slot.text) : slot.text} />
+      {folded ? (
+        <button
+          type="button"
+          data-action="card-expand"
+          onClick={() => setOpen(true)}
+          className="mt-1 text-1 text-ink-3 transition-colors hover:text-ink"
+        >
+          展开全文
+        </button>
+      ) : null}
+    </div>
+  );
+}
 
 /** 状态键 → 图标和颜色（程序定，不由模型给）。 */
 const STATE_TONE: Record<TaskCardState, { icon: LucideIcon; tone: string }> = {
@@ -247,10 +270,15 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
         <div className="mt-2" data-kind="gate-verdict">
           {slots.verdictNote ? (
             <div
-              className="mb-1 whitespace-pre-wrap break-words border-l-2 border-line-2 pl-2.5 text-2 leading-5 text-ink-2"
+              className="mb-1 break-words border-l-2 border-line-2 pl-2.5 text-2 leading-5 text-ink-2"
               data-kind="gate-note"
             >
-              {slots.verdictNote}
+              <Markdown
+                text={slots.verdictNote
+                  .split('\n')
+                  .map((line) => '> ' + line)
+                  .join('\n')}
+              />
             </div>
           ) : null}
           <div className="text-2 text-ink-2">
@@ -267,16 +295,10 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
       {slots.question ? (
         <div className="mt-2 border-l-2 border-wait/60 pl-2.5" data-kind="task-question">
           <div className="text-1 text-ink-3">它问你</div>
-          <BodyText
-            slot={slots.question}
-            className="whitespace-pre-wrap break-words text-3 leading-5 text-ink"
-          />
+          <RichBody slot={slots.question} className="break-words text-3 leading-5 text-ink" />
         </div>
       ) : null}
-      <BodyText
-        slot={slots.summary}
-        className="mt-2 whitespace-pre-wrap break-words text-2 leading-5 text-ink-2"
-      />
+      <RichBody slot={slots.summary} className="mt-2 break-words text-2 leading-5 text-ink-2" />
       {program ? <ProgramChecks program={program} /> : null}
       {gate?.state === 'waiting' && gate.recheck ? (
         <div className="mt-1 text-1 text-done" data-kind="gate-recheck">

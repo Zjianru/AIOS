@@ -147,8 +147,10 @@ export function ConversationPane() {
       const last = state.views[state.views.length - 1]?.id;
       const prevLast = prev.views[prev.views.length - 1]?.id;
       if (revealHoldRef.current) return;
-      if (last && last !== prevLast && !state.loadingOlder) followRef.current = true;
-      if (!followRef.current) return;
+      if (last && last !== prevLast && !state.loadingOlder && followRef.current) {
+        followRef.current = true;
+      }
+      if (!followRef.current || userScrolledRef.current) return;
       requestAnimationFrame(pin);
     });
   }, []);
@@ -170,7 +172,10 @@ export function ConversationPane() {
 
   const handleAtBottom = useCallback(
     (bottom: boolean) => {
-      if (bottom && !revealHoldRef.current) followRef.current = true;
+      if (bottom && !revealHoldRef.current) {
+        followRef.current = true;
+        userScrolledRef.current = false;
+      }
       setAtBottom(bottom);
     },
     [setAtBottom],
@@ -209,6 +214,8 @@ export function ConversationPane() {
 
   const scrollToLatest = useCallback(() => {
     followRef.current = true;
+    userScrolledRef.current = false;
+    revealHoldRef.current = false;
     listRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'smooth' });
   }, []);
 
@@ -284,6 +291,7 @@ export function ConversationPane() {
     (text: string, options: { pastes: string[]; attachments: { id: string; name: string; bytes: number }[] }) => {
       revealHoldRef.current = false;
       followRef.current = true;
+      userScrolledRef.current = false;
       listRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
       return send(text, options);
     },
@@ -295,9 +303,11 @@ export function ConversationPane() {
       className="flex h-full min-h-0 flex-col bg-content"
       data-pane="conversation"
       onWheelCapture={(event) => {
+        // T059 F5：任何滚轮都先停跟随；是否回底由 atBottom / 「回到最新」决定。
         userScrolledRef.current = true;
         revealHoldRef.current = false;
-        if (event.deltaY < 0) followRef.current = false;
+        followRef.current = false;
+        event.stopPropagation();
       }}
       onTouchStartCapture={() => {
         userScrolledRef.current = true;
@@ -341,7 +351,9 @@ export function ConversationPane() {
               topIndexRef.current = range.startIndex;
               handleRangeChanged(range);
             }}
-            followOutput={(isAtBottom: boolean) => (isAtBottom ? 'auto' : false)}
+            followOutput={(isAtBottom: boolean) =>
+              isAtBottom && followRef.current && !userScrolledRef.current ? 'auto' : false
+            }
             increaseViewportBy={{ top: 800, bottom: 400 }}
             scrollerRef={(ref) => {
               const element = ref as HTMLElement | null;

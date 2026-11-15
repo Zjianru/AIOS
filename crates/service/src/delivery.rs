@@ -21,6 +21,9 @@ pub struct DeliveryLine {
     pub text: String,
     /// done / wait / run / plain / muted
     pub tone: String,
+    /// T059 F6：这一行对应的时间（unix 秒）；页面按本机时区显示，text() 里也用它。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<i64>,
 }
 
 /// 交了什么。
@@ -127,7 +130,7 @@ impl DeliveryRecord {
         }
         out.push("用途：没有记录".to_owned());
         out.push("依据什么：".to_owned() + &self.basis.version.text);
-        out.push("判定：".to_owned() + &self.basis.verdict.text);
+        out.push("判定：".to_owned() + &with_time(&self.basis.verdict.text, self.basis.verdict.at));
         if let Some(note) = &self.basis.note {
             out.push(format!("你写的：「{note}」"));
         }
@@ -148,10 +151,12 @@ impl DeliveryRecord {
             out.push("  - ".to_owned() + &line.text);
         }
         out.push("交到了哪：".to_owned() + &self.where_text.text);
-        out.push("接受了吗：".to_owned() + &self.accepted.state.text);
+        out.push(
+            "接受了吗：".to_owned() + &with_time(&self.accepted.state.text, self.accepted.state.at),
+        );
         if let Some(revisions) = &self.accepted.revisions {
             for line in revisions {
-                out.push("  ".to_owned() + &line.text);
+                out.push("  ".to_owned() + &with_time(&line.text, line.at));
             }
         }
         if !self.history.is_empty() {
@@ -183,7 +188,8 @@ pub fn delivery_for(data_dir: &Path, task: &Task, gate: Option<&Task>) -> Option
     let current = task.requirement_version().max(1);
     let acceptance = task.acceptance_for(&anchor.id);
 
-    let (verdict, note, record, checks, passed, gate_missing) = basis_for(gate, anchor, acceptance);
+    let (verdict, verdict_at, note, record, checks, passed, gate_missing) =
+        basis_for(gate, anchor, acceptance);
     let mut missing = gate_missing;
     if let Some(question) = &anchor.question {
         missing.push(line(format!("它在报告里问的：{question}"), "wait"));
@@ -230,7 +236,7 @@ pub fn delivery_for(data_dir: &Path, task: &Task, gate: Option<&Task>) -> Option
         word,
         what: DeliveryWhat {
             summary: anchor.summary.clone(),
-            at: anchor.at,
+            at: sec(anchor.at),
             attempt,
             version,
             changed,
@@ -241,13 +247,14 @@ pub fn delivery_for(data_dir: &Path, task: &Task, gate: Option<&Task>) -> Option
                 version_text(version, current),
                 if version < current { "wait" } else { "plain" },
             ),
-            verdict: line(
+            verdict: line_at(
                 verdict,
                 if acceptance.is_some() || passed {
                     "done"
                 } else {
                     "wait"
                 },
+                verdict_at,
             ),
             note,
             record: line(record, "plain"),
@@ -260,12 +267,14 @@ pub fn delivery_for(data_dir: &Path, task: &Task, gate: Option<&Task>) -> Option
     })
 }
 
+#[allow(clippy::type_complexity)]
 fn basis_for(
     gate: Option<&Task>,
     anchor: &Report,
     acceptance: Option<&Acceptance>,
 ) -> (
     String,
+    Option<i64>,
     Option<String>,
     String,
     Option<DeliveryChecks>,
@@ -292,11 +301,8 @@ fn basis_for(
                     GateConclusion::Undetermined => "未确定",
                 };
                 let mut text = format!(
-                    "程序门「{}」{} · 第 {} 版命令 · {}",
-                    gate.title,
-                    word,
-                    verdict.commands_version,
-                    clock(verdict.at)
+                    "程序门「{}」{} · 第 {} 版命令",
+                    gate.title, word, verdict.commands_version
                 );
                 if !applies {
                     text.push_str(&format!(
@@ -352,6 +358,7 @@ fn basis_for(
                 );
                 return (
                     text,
+                    Some(sec(verdict.at)),
                     None,
                     record,
                     checks,
@@ -366,6 +373,7 @@ fn basis_for(
                 return (
                     format!("程序门「{}」正在跑，还没有结论", gate.title),
                     None,
+                    None,
                     "没有记录：程序门还没跑完这一次".to_owned(),
                     None,
                     false,
@@ -379,6 +387,7 @@ fn basis_for(
                 return (
                     format!("程序门「{}」这次被打断，没有结论", gate.title),
                     None,
+                    None,
                     "没有记录：程序门这次没有写出结论".to_owned(),
                     None,
                     false,
@@ -387,6 +396,7 @@ fn basis_for(
             }
             return (
                 format!("未证明：程序门「{}」还没检查这一份", gate.title),
+                None,
                 None,
                 "没有记录：程序门还没跑过这一份".to_owned(),
                 None,
@@ -413,7 +423,8 @@ fn basis_for(
                 "你判了需修正"
             };
             return (
-                format!("里程碑「{}」{} · {}", gate.title, word, clock(verdict.at)),
+                format!("里程碑「{}」{}", gate.title, word),
+                Some(sec(verdict.at)),
                 verdict.note.clone(),
                 record,
                 None,
@@ -424,6 +435,7 @@ fn basis_for(
         return (
             format!("未证明：里程碑「{}」还没判这一份", gate.title),
             None,
+            None,
             record,
             None,
             false,
@@ -432,14 +444,12 @@ fn basis_for(
     }
 
     let verdict = match acceptance {
-        Some(acceptance) => format!(
-            "没安排门任务：你接受了这一份，接受就算这次检查 · {}",
-            clock(acceptance.at)
-        ),
+        Some(_acceptance) => "没安排门任务：你接受了这一份，接受就算这次检查".to_owned(),
         None => "未证明：没安排门任务，等你接受（接受就算这次检查）".to_owned(),
     };
     (
         verdict,
+        acceptance.map(|acceptance| sec(acceptance.at)),
         None,
         "没有记录：没有程序跑过检查".to_owned(),
         None,
@@ -460,13 +470,10 @@ fn accepted_for(
     let revisions = revisions_for(task);
     if let Some(acceptance) = acceptance {
         return DeliveryAccepted {
-            state: line(
-                format!(
-                    "你接受了 · 第 {} 版要求 · {}",
-                    acceptance.version,
-                    clock(acceptance.at)
-                ),
+            state: line_at(
+                format!("你接受了 · 第 {} 版要求", acceptance.version),
                 "done",
+                Some(sec(acceptance.at)),
             ),
             revisions,
         };
@@ -483,9 +490,8 @@ fn accepted_for(
             .find(|report| report.id == acceptance.report_id)
             .map_or_else(|| "?".to_owned(), |report| report.attempt_id.0.to_string());
         format!(
-            "接受过的是第 {attempt} 次结果（第 {} 版要求，{}）；",
-            acceptance.version,
-            clock(acceptance.at)
+            "接受过的是第 {attempt} 次结果（第 {} 版要求）；",
+            acceptance.version
         )
     });
     let text = if version < current {
@@ -533,9 +539,10 @@ fn revisions_for(task: &Task) -> Option<Vec<DeliveryLine>> {
             (false, true) => "改了写入范围",
             (false, false) => "新版本",
         };
-        lines.push(line(
-            format!("第 {} 版 · {what} · {}", index + 1, clock(version.at)),
+        lines.push(line_at(
+            format!("第 {} 版 · {what}", index + 1),
             "plain",
+            Some(sec(version.at)),
         ));
     }
     (!lines.is_empty()).then_some(lines)
@@ -574,7 +581,7 @@ fn history_for(task: &Task, gate: Option<&Task>, anchor: &Report) -> Vec<Deliver
                 attempt: report.attempt_id.0,
                 version: report.version.max(1),
                 word,
-                at: report.at,
+                at: sec(report.at),
                 accepted,
             }
         })
@@ -666,22 +673,57 @@ fn check_exit_text(check: &TaskReadGateCheck) -> String {
 }
 
 fn line(text: impl Into<String>, tone: &str) -> DeliveryLine {
+    line_at(text, tone, None)
+}
+
+fn line_at(text: impl Into<String>, tone: &str, at: Option<i64>) -> DeliveryLine {
     DeliveryLine {
         text: text.into(),
         tone: tone.to_owned(),
+        at,
     }
 }
 
+/// T059 F6：任务时间都是 unix 毫秒；交付记录统一换成 unix 秒。
+fn sec(at_ms: i64) -> i64 {
+    at_ms.div_euclid(1000)
+}
+
+fn with_time(text: &str, at: Option<i64>) -> String {
+    at.map_or_else(|| text.to_owned(), |at| format!("{text} · {}", clock(at)))
+}
+
+/// 本机本地时区：读系统 date +%z（随 TZ 环境），不引时区 crate、不用 unsafe。
 fn clock(at: i64) -> String {
-    let days = at.div_euclid(86_400);
-    let secs = at.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    let _ = year;
+    let offset = local_offset_seconds();
+    let days = (at + offset).div_euclid(86_400);
+    let secs = (at + offset).rem_euclid(86_400);
+    let (_, month, day) = civil_from_days(days);
     format!(
         "{month}月{day}日 {:02}:{:02}",
         secs / 3600,
         (secs % 3600) / 60
     )
+}
+
+fn local_offset_seconds() -> i64 {
+    let Ok(output) = std::process::Command::new("date").arg("+%z").output() else {
+        return 0;
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let text = text.trim();
+    let bytes = text.as_bytes();
+    if bytes.len() != 5 || (bytes[0] != b'+' && bytes[0] != b'-') {
+        return 0;
+    }
+    let Ok(hours) = text[1..3].parse::<i64>() else {
+        return 0;
+    };
+    let Ok(minutes) = text[3..5].parse::<i64>() else {
+        return 0;
+    };
+    let sign = if bytes[0] == b'-' { -1 } else { 1 };
+    sign * (hours * 3600 + minutes * 60)
 }
 
 /// Howard Hinnant 的 civil_from_days；UTC 显示，避免引入时区依赖。

@@ -7,4 +7,8 @@ export type DeliveryLine = { text: string,
 /**
  * done / wait / run / plain / muted
  */
-tone: string, };
+tone: string,
+/**
+ * T059 F6：这一行对应的时间（unix 秒）；页面按本机时区显示，text() 里也用它。
+ */
+at?: number | null, };
