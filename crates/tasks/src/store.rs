@@ -915,9 +915,7 @@ impl Store {
             .latest_report()
             .filter(|report| report.state == ReportState::Ready)
             .ok_or(TaskError::GateReportChanged)?;
-        if candidate_handoff.report_id != candidate_report.id {
-            return Err(TaskError::GateReportChanged);
-        }
+        let candidate_changed = candidate_handoff.report_id != candidate_report.id;
         let report_id = ReportId::from(generate_id(&transaction)?);
         gate.reports.push(Report {
             id: report_id.clone(),
@@ -939,6 +937,18 @@ impl Store {
         {
             attempt.ended_at = Some(now);
             attempt.end = Some(AttemptEnd::Reported);
+        }
+        save_task(&transaction, &gate)?;
+        // T057 F1：门在跑时候选变了。照常收下这份报告和 checks，Attempt 记 Reported；
+        // 不写判定、不放行、不 relay，交给 after_gate_report_in 对最新候选再排一次。
+        if candidate_changed {
+            self.after_gate_report_in(&transaction, &gate, now)?;
+            transaction.commit()?;
+            return Ok(crate::task::ProgramGateOutcome {
+                report_id,
+                verdict: None,
+                released: Vec::new(),
+            });
         }
         let verdict = GateVerdict {
             gate_report: report_id.clone(),
@@ -966,7 +976,7 @@ impl Store {
         transaction.commit()?;
         Ok(crate::task::ProgramGateOutcome {
             report_id,
-            verdict,
+            verdict: Some(verdict),
             released,
         })
     }

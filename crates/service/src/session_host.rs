@@ -103,6 +103,10 @@ impl ServiceHost {
             }
             // 裸宿主没有登记的动作，也就没有卡；点按钮什么也不发生。
             Call::CardAct(_) => Ok(Response::CardAct(CardActResponse { decision: None })),
+            // task-delivery 只能由根宿主读（任务库在根宿主手里）。
+            Call::TaskDelivery(_) => Err(ServiceError::TaskUnavailable(
+                "交付记录只能由根宿主读".to_owned(),
+            )),
             // task-read 只能由根宿主打开（任务库在根宿主手里）。
             Call::TaskRead(_) => Err(ServiceError::TaskUnavailable(
                 "任务对话只能由根宿主打开".to_owned(),

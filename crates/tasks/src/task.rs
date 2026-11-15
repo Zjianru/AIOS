@@ -105,7 +105,8 @@ impl GateCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProgramGateOutcome {
     pub report_id: ReportId,
-    pub verdict: GateVerdict,
+    /// 候选没变时才有判定；门在跑时候选变了只记报告和 checks，判定留到下一轮。
+    pub verdict: Option<GateVerdict>,
     pub released: Vec<String>,
 }
 
@@ -865,6 +866,12 @@ impl Task {
             return verdict.commands_version == self.commands_version();
         }
         true
+    }
+
+    /// T057：这条判定还适用于这份候选吗（候选没变、程序门命令版本还是当前版）。
+    /// 交付记录派生与 passed/needs_fix 共用这一处，不另抄判断。
+    pub fn verdict_applies(&self, report_id: &ReportId, verdict: &GateVerdict) -> bool {
+        self.verdict_matches(report_id, verdict, verdict.conclusion)
     }
 
     /// T057：最近一条判定（UI/测试读）。

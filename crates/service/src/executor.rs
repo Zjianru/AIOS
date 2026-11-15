@@ -167,6 +167,7 @@ struct RunningGate {
     registry: Arc<TaskRegistry>,
     job_id: Mutex<Option<String>>,
     current_index: Mutex<Option<usize>>,
+    stop_reason: Mutex<Option<String>>,
     cancelled: AtomicBool,
 }
 
@@ -740,6 +741,21 @@ impl TaskRuntime {
     /// 分页照 events 的预算（500 条消息/2 轮/50 条下限），`lastSeq` 始终是日志末端。
     /// T051：还没开跑的任务也能读：头部照给（attempts: 0），事件为空、lastSeq 为 0；
     /// 统计照冻结模型算空日志（轮/步/token 都是 0）。
+    /// T058：只读派生一份交付记录；门由任务库的 guarding_gate 取，不挂 TaskRead。
+    pub(crate) async fn task_delivery(
+        &self,
+        request: crate::protocol::TaskDeliveryRequest,
+    ) -> Result<crate::protocol::TaskDeliveryResponse, ServiceError> {
+        let task = self.task(&request.task_id)?;
+        let gate = self
+            .store
+            .guarding_gate(&task.id)
+            .map_err(|error| ServiceError::TaskUnavailable(format!("门任务读不出来：{error}")))?;
+        Ok(crate::protocol::TaskDeliveryResponse {
+            delivery: crate::delivery::delivery_for(&self.data_dir, &task, gate.as_ref()),
+        })
+    }
+
     pub(crate) async fn task_read(
         &self,
         request: TaskReadRequest,
@@ -2478,6 +2494,7 @@ impl TaskRuntime {
                 registry: Arc::clone(&registry),
                 job_id: Mutex::new(None),
                 current_index: Mutex::new(None),
+                stop_reason: Mutex::new(None),
                 cancelled: AtomicBool::new(false),
             });
             self.gate_jobs
@@ -3072,19 +3089,20 @@ impl TaskRuntime {
         let mut undetermined: Option<String> = None;
         for (index, command) in commands.iter().enumerate() {
             if running.cancelled.load(Ordering::SeqCst) {
+                let reason = stop_reason(&running);
                 checks.push(GateCheck {
                     index,
                     command: command.command.trim().to_owned(),
                     exit_code: None,
                     outcome: GateCheckOutcome::Stopped,
                     duration_ms: 0,
-                    tail: "被停".to_owned(),
+                    tail: reason.clone(),
                     spill: None,
                 });
                 for rest in commands.iter().skip(index + 1) {
                     checks.push(gate_check_skipped(checks.len(), rest, "没跑"));
                 }
-                undetermined = Some("被停".to_owned());
+                undetermined = Some(reason);
                 break;
             }
             let spec = JobSpec {
@@ -3137,14 +3155,16 @@ impl TaskRuntime {
                     (read, outcome)
                 }
                 Ok(read) => {
-                    let _ = registry.request_kill(
+                    if let Err(error) = registry.request_kill(
                         &job_id,
                         Some(format!(
                             "程序门命令超时（{} 秒）",
                             command.timeout_ms() / 1000
                         )),
                         false,
-                    );
+                    ) {
+                        eprintln!("程序门超时结束命令失败：{}", error.message);
+                    }
                     let read = registry
                         .await_termination(&job_id, tools::KILL_GRACE)
                         .await
@@ -3210,7 +3230,7 @@ impl TaskRuntime {
                         command.command.trim(),
                         command.timeout_ms() / 1000
                     ),
-                    GateCheckOutcome::Stopped => "被停".to_owned(),
+                    GateCheckOutcome::Stopped => stop_reason(&running),
                     GateCheckOutcome::SpawnFailed => "起不来".to_owned(),
                     _ => "没跑完".to_owned(),
                 });
@@ -4036,6 +4056,35 @@ impl TaskRuntime {
     }
 
     /// Kind 的 task_status：阶段、最近报告全文、Attempt 数；waiting 时向 ThinAgent 要一次。
+    /// T058：Kind 的 task_delivery——和任务页、TaskDelivery 请求读同一份派生。
+    async fn delivery_text(&self, task_id: &str) -> Result<String, ToolFailure> {
+        let id = TaskId::from(task_id);
+        let task = self
+            .store
+            .task(&id)
+            .map_err(|error| ToolFailure::plain(error.to_string()))?
+            .ok_or_else(|| ToolFailure::plain(format!("任务不存在：{task_id}")))?;
+        if task.is_graph_root() {
+            return Err(ToolFailure::plain(
+                "总任务没有交付记录，看它的子任务".to_owned(),
+            ));
+        }
+        if task.is_gate() {
+            return Err(ToolFailure::plain(
+                "门任务没有交付记录，看它把关的任务".to_owned(),
+            ));
+        }
+        let gate = self
+            .store
+            .guarding_gate(&task.id)
+            .map_err(|error| ToolFailure::plain(error.to_string()))?;
+        let Some(record) = crate::delivery::delivery_for(&self.data_dir, &task, gate.as_ref())
+        else {
+            return Err(ToolFailure::plain("还没交出过结果".to_owned()));
+        };
+        Ok(record.text())
+    }
+
     async fn status_text(&self, task_id: &str) -> Result<String, ToolFailure> {
         let id = TaskId::from(task_id);
         let task = self
@@ -4170,12 +4219,50 @@ impl TaskRuntime {
     /// 停一个任务：立即停走「先持久、再取消」；收尾停走「插固定说明、打标记、等报」。
     ///
     /// 页面（Call::TaskStop）和 Kind 的 task_stop 都调到这一个方法。
+    /// T058：改命令前停门；停那次检查的原因写「命令已改」。
+    pub(crate) async fn stop_gate_for_update(
+        &self,
+        task_id: &str,
+    ) -> Result<crate::protocol::TaskStopResponse, ServiceError> {
+        let id = TaskId::from(task_id);
+        let Some(attempt) = self
+            .store
+            .task(&id)
+            .map_err(|error| ServiceError::TaskUnavailable(error.to_string()))?
+            .and_then(|task| task.latest_attempt().cloned())
+        else {
+            return Ok(crate::protocol::TaskStopResponse {
+                stopped: false,
+                stage: self
+                    .store
+                    .stage(&id)
+                    .map(|stage| stage_key(stage).to_owned())
+                    .unwrap_or_default(),
+                message: NOT_RUNNING.to_owned(),
+            });
+        };
+        if attempt.ended_at.is_some() {
+            return Ok(crate::protocol::TaskStopResponse {
+                stopped: false,
+                stage: self
+                    .store
+                    .stage(&id)
+                    .map(|stage| stage_key(stage).to_owned())
+                    .unwrap_or_default(),
+                message: NOT_RUNNING.to_owned(),
+            });
+        }
+        self.stop_program_gate(task_id, &id, attempt.id, "命令已改")
+            .await
+    }
+
     /// T057：停程序门——结束当前进程组；结果由 run_program_gate 写成「未确定」。
     async fn stop_program_gate(
         &self,
         task_id: &str,
         id: &TaskId,
         attempt_id: AttemptId,
+        reason: &str,
     ) -> Result<crate::protocol::TaskStopResponse, ServiceError> {
         let running = self
             .gate_jobs
@@ -4195,17 +4282,24 @@ impl TaskRuntime {
                 message: NOT_RUNNING.to_owned(),
             });
         };
+        *running.stop_reason.lock().expect("程序门停因锁被毒化") = Some(reason.to_owned());
         running.cancelled.store(true, Ordering::SeqCst);
         let job = running.job_id.lock().expect("程序门 job 锁被毒化").clone();
         if let Some(job_id) = job {
-            let _ =
+            if let Err(error) =
                 running
                     .registry
-                    .request_kill(&job_id, Some(STOPPED_JOB_REASON.to_owned()), false);
-            let _ = running
+                    .request_kill(&job_id, Some(STOPPED_JOB_REASON.to_owned()), false)
+            {
+                eprintln!("停程序门命令失败：{}", error.message);
+            }
+            if let Err(error) = running
                 .registry
                 .await_termination(&job_id, tools::KILL_GRACE)
-                .await;
+                .await
+            {
+                eprintln!("等程序门命令结束失败：{}", error.message);
+            }
         }
         let stage = self
             .store
@@ -4249,7 +4343,9 @@ impl TaskRuntime {
         }
         // T057：程序门没有 ThinAgent 会话；立即停（含收尾停）都结束进程组、记未确定。
         if task.is_program_gate() {
-            return self.stop_program_gate(task_id, &id, attempt.id).await;
+            return self
+                .stop_program_gate(task_id, &id, attempt.id, "被停")
+                .await;
         }
         let Some(running) = self.running_for(&id, attempt.id) else {
             return Ok(not_running());
@@ -4414,6 +4510,15 @@ impl Drop for TaskRuntime {
     fn drop(&mut self) {
         self.shutting_down.store(true, Ordering::SeqCst);
     }
+}
+
+fn stop_reason(running: &RunningGate) -> String {
+    running
+        .stop_reason
+        .lock()
+        .expect("程序门停因锁被毒化")
+        .clone()
+        .unwrap_or_else(|| "被停".to_owned())
 }
 
 /// T057：没跑的那条占一行。
@@ -4880,6 +4985,65 @@ impl Tool for TaskStatusTool {
                 return ToolResult::error(call.id, ToolFailure::plain("task_id 不能为空"));
             };
             match self.runtime.status_text(task_id).await {
+                Ok(text) => ToolResult::success(call.id, text),
+                Err(failure) => ToolResult::error(call.id, failure),
+            }
+        })
+    }
+}
+
+/// T058：Kind 的 task_delivery——读交付记录，只读不出卡。
+pub(crate) struct TaskDeliveryTool {
+    runtime: Arc<TaskRuntime>,
+    parameters: Value,
+}
+
+impl TaskDeliveryTool {
+    pub(crate) fn new(runtime: Arc<TaskRuntime>) -> Self {
+        Self {
+            runtime,
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "Task id returned by task_accept or a result card."}
+                },
+                "required": ["task_id"]
+            }),
+        }
+    }
+}
+
+impl Tool for TaskDeliveryTool {
+    fn name(&self) -> &str {
+        "task_delivery"
+    }
+
+    fn description(&self) -> &str {
+        "Read what a task delivered and why it counts: what was delivered, the evidence, what is still missing, where it went, and whether the user accepted it. The same facts as the task page delivery record. Read-only; report unproven facts as unproven, never as passed."
+    }
+
+    fn parameters(&self) -> &Value {
+        &self.parameters
+    }
+
+    fn condition(&self) -> ToolCondition {
+        ToolCondition::Always
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: ToolCall,
+        _context: &'a ToolContext,
+    ) -> ToolFuture<'a, ToolResult> {
+        Box::pin(async move {
+            let args = match parse_object(&call.arguments) {
+                Ok(args) => args,
+                Err(failure) => return ToolResult::error(call.id, failure),
+            };
+            let Some(task_id) = string_arg(&args, "task_id") else {
+                return ToolResult::error(call.id, ToolFailure::plain("task_id 不能为空"));
+            };
+            match self.runtime.delivery_text(&task_id).await {
                 Ok(text) => ToolResult::success(call.id, text),
                 Err(failure) => ToolResult::error(call.id, failure),
             }
@@ -6341,6 +6505,7 @@ mod t057_program_gate_tests {
             registry: Arc::clone(&registry),
             job_id: Mutex::new(None),
             current_index: Mutex::new(None),
+            stop_reason: Mutex::new(None),
             cancelled: AtomicBool::new(false),
         });
         fixture
@@ -6744,12 +6909,14 @@ mod t057_program_gate_tests {
             .latest_attempt()
             .filter(|attempt| attempt.ended_at.is_none())
         {
-            let _ = store.end_attempt(
-                &guarded.id,
-                open.id,
-                1_700_000_000_030,
-                AttemptEnd::Reported,
-            );
+            store
+                .end_attempt(
+                    &guarded.id,
+                    open.id,
+                    1_700_000_000_030,
+                    AttemptEnd::Reported,
+                )
+                .ok();
         }
         let attempt = store.begin_attempt(&guarded.id, 1_700_000_000_031).unwrap();
         store
@@ -6864,5 +7031,157 @@ mod t057_program_gate_tests {
             .gate_check_again(&fixture.gate_id)
             .expect_err("命令版本变了不重跑");
         assert!(error.contains("命令已经改过"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn t058_f1_candidate_changes_while_gate_runs_then_new_candidate_gets_verdict() {
+        let fixture = gate_launch_fixture(vec![
+            GateCommand {
+                command: "sleep 3".to_owned(),
+                timeout_ms: None,
+            },
+            GateCommand {
+                command: "true".to_owned(),
+                timeout_ms: None,
+            },
+        ])
+        .await;
+        let store = fixture.runtime.store();
+        let id = fixture.gate_id.as_str();
+        let mut launched = false;
+        while let Some(claim) = store
+            .claim_effect(EffectKind::Launch, 1_700_000_000_010)
+            .unwrap()
+        {
+            let task_id = match &claim.payload {
+                EffectPayload::Launch { task_id } => task_id.clone(),
+                _ => unreachable!(),
+            };
+            if task_id == fixture.gate_id {
+                let _ = fixture.runtime.launch(claim).await;
+                launched = true;
+                break;
+            }
+            store.complete_effect(&claim).unwrap();
+        }
+        assert!(launched, "门 launch 效果应能领到");
+        let mut running = false;
+        for _ in 0..300 {
+            let gate = store.task(&fixture.gate_id).unwrap().unwrap();
+            if gate
+                .latest_attempt()
+                .is_some_and(|attempt| attempt.ended_at.is_none())
+            {
+                running = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(running, "门应先在跑 sleep 3");
+        let gate = store.task(&fixture.gate_id).unwrap().unwrap();
+        let guarded_id = gate.needs[0].from.clone();
+        let guarded = store.task(&guarded_id).unwrap().unwrap();
+        if let Some(open) = guarded
+            .latest_attempt()
+            .filter(|attempt| attempt.ended_at.is_none())
+        {
+            store
+                .end_attempt(
+                    &guarded_id,
+                    open.id,
+                    1_700_000_000_020,
+                    AttemptEnd::Reported,
+                )
+                .unwrap();
+        }
+        let attempt = store.begin_attempt(&guarded_id, 1_700_000_000_021).unwrap();
+        let new_report = store
+            .record_report(
+                &guarded_id,
+                attempt,
+                NewReport {
+                    state: ReportState::Ready,
+                    origin: ReportOrigin::Agent,
+                    summary: "第二份".to_owned(),
+                    question: None,
+                },
+                1_700_000_000_022,
+            )
+            .unwrap();
+        let _ = id;
+        // 第一次门跑完后，F1 会排一次 launch；测试里没有常驻效果泵，手动领并开第二轮。
+        for _ in 0..200 {
+            let gate = store.task(&fixture.gate_id).unwrap().unwrap();
+            if gate
+                .latest_attempt()
+                .is_some_and(|attempt| attempt.ended_at.is_some())
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let mut second = false;
+        for _ in 0..300 {
+            if let Some(claim) = store
+                .claim_effect(EffectKind::Launch, i64::MAX / 2)
+                .unwrap()
+            {
+                let task_id = match &claim.payload {
+                    EffectPayload::Launch { task_id } => task_id.clone(),
+                    _ => unreachable!(),
+                };
+                if task_id == fixture.gate_id {
+                    let _ = fixture.runtime.launch(claim).await;
+                    second = true;
+                    break;
+                }
+                store.complete_effect(&claim).unwrap();
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(second, "F1 应对最新候选排第二次 launch");
+        let mut seen = false;
+        for _ in 0..500 {
+            let gate = store.task(&fixture.gate_id).unwrap().unwrap();
+            let reports = gate
+                .reports
+                .iter()
+                .filter(|report| report.origin == ReportOrigin::Program)
+                .count();
+            if reports >= 2
+                && gate
+                    .latest_verdict()
+                    .is_some_and(|verdict| verdict.candidate.report_id == new_report)
+            {
+                seen = true;
+                assert_eq!(
+                    gate.latest_verdict().unwrap().conclusion,
+                    GateConclusion::Pass
+                );
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        if !seen {
+            let gate = store.task(&fixture.gate_id).unwrap().unwrap();
+            eprintln!(
+                "F1 DEBUG attempts={:?} reports={} verdicts={:?} handoff={:?} launch_pending={}",
+                gate.latest_attempt()
+                    .map(|attempt| (attempt.id, attempt.ended_at, attempt.end)),
+                gate.reports.len(),
+                gate.verdicts
+                    .iter()
+                    .map(|verdict| (verdict.candidate.report_id.clone(), verdict.conclusion))
+                    .collect::<Vec<_>>(),
+                gate.needs[0]
+                    .handoff
+                    .as_ref()
+                    .map(|handoff| handoff.report_id.clone()),
+                store
+                    .effect_pending(EffectKind::Launch, gate.id.as_str())
+                    .unwrap()
+            );
+        }
+        assert!(seen, "门跑完后应自动对最新候选再跑并出判定");
     }
 }

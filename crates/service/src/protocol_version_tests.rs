@@ -1,9 +1,9 @@
 use super::*;
 
 #[test]
-fn protocol_version_is_14() {
+fn protocol_version_is_15() {
     assert_eq!(
-        PROTOCOL_VERSION, 14,
-        "程序门（T057）与任务页检查事实只增字段，协议升到 14"
+        PROTOCOL_VERSION, 15,
+        "交付记录（T058）新 TaskDelivery 请求，协议升到 15"
     );
 }

@@ -8,7 +8,7 @@ import { apiPost, startKernelFixture } from './service-fixture';
  *
  * 预期（T046 + T050：全量固定，但 D73 的 key 条件仍在——没填 Exa key 时 web_* 不进表）：
  * - 无 Exa key：Kind 16（含 T057 gate_check_again）、ThinAgent 只读 9（去掉两件 web）；
- * - 存了 Exa key：Kind 18、ThinAgent 11，含 web_search/web_fetch；
+ * - 存了 Exa key：Kind 19、ThinAgent 11，含 web_search/web_fetch；
  * - 两种情况下都无 write/edit/bash/job_*（角色边界）；工具表跨轮、加载 skill 前后不变。
  */
 
@@ -25,6 +25,7 @@ const KIND_FULL = [
   'propose_action',
   'task_accept',
   'task_status',
+  'task_delivery',
   'task_stop',
   'task_update',
   'task_graph_propose',
@@ -32,7 +33,7 @@ const KIND_FULL = [
   'gate_check_again',
 ];
 
-// 存了 Exa key：T046 的全量 15 件 + T052 的 task_graph_propose + T053 的 task_continue + T057 的 gate_check_again = 18。
+// 存了 Exa key：T046 的全量 15 件 + T052 的 task_graph_propose + T053 的 task_continue + T057 的 gate_check_again + T058 的 task_delivery = 19。
 const KIND_FULL_WITH_KEY = [
   'read',
   'glob',
@@ -47,6 +48,7 @@ const KIND_FULL_WITH_KEY = [
   'web_fetch',
   'task_accept',
   'task_status',
+  'task_delivery',
   'task_stop',
   'task_update',
   'task_graph_propose',
@@ -93,7 +95,7 @@ async function lastToolNames(request: import('@playwright/test').APIRequestConte
   return (body.request?.tools ?? []).map((tool) => String(tool.name ?? ''));
 }
 
-test('Kind：无 Exa key 时全量 16（不含 web_* / write / edit / bash / job_*）', async ({ page, request }) => {
+test('Kind：无 Exa key 时全量 17（不含 web_* / write / edit / bash / job_*）', async ({ page, request }) => {
   test.setTimeout(120_000);
   const fixture = await startKernelFixture({ routeModel: 'replay-uncatalogued-model' });
   try {
@@ -147,7 +149,7 @@ test('ThinAgent：无 Exa key 时只读全量 9（不含 web_*），跨请求一
   }
 });
 
-test('存了 Exa key：Kind 18 / ThinAgent 11，含 web_*（D73 key 后出现）', async ({ page, request }) => {
+test('存了 Exa key：Kind 19 / ThinAgent 11，含 web_*（D73 key 后出现）', async ({ page, request }) => {
   test.setTimeout(180_000);
   const fixture = await startKernelFixture({
     taskResult: 'live',

@@ -49,6 +49,8 @@ pub enum Call {
     Events(EventsRequest),
     /// 只读打开一个任务当前 Attempt 的会话（头部 + 一页事件）。
     TaskRead(TaskReadRequest),
+    /// 读一份交付记录（不挂 TaskRead；它被轮询，改动清单要读会话日志）。
+    TaskDelivery(TaskDeliveryRequest),
     /// 停一个任务（和 Kind 的 task_stop 走同一个服务方法）。
     TaskStop(TaskStopRequest),
     /// 停下任务当前这一轮：不结束 Attempt，下一句话仍在这个 Attempt 里接着做。
@@ -124,6 +126,8 @@ pub enum Response {
     Events(EventsResponse),
     /// 任务对话的头部与一页事件。
     TaskRead(TaskReadResponse),
+    /// 交付记录：任务页和 Kind 读同一份派生。
+    TaskDelivery(TaskDeliveryResponse),
     /// 停任务的结果：是否真的停下、停下后的阶段、给页面的固定说明。
     TaskStop(TaskStopResponse),
     /// 停下这一轮的结果：是否真的中断了，以及给页面的固定说明。
@@ -612,6 +616,20 @@ pub struct TaskReadResponse {
     /// T056.2：账本（约束、在用叙述条、历史）；旧任务为空数组，页面不显示。
     #[serde(default)]
     pub ledger: TaskReadLedger,
+}
+
+/// T058：读一份交付记录；不挂 TaskRead，因为它只在需要时读一次。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct TaskDeliveryRequest {
+    #[serde(rename = "taskId")]
+    pub task_id: String,
+}
+
+/// T058：交付记录；门任务、总任务、还没交过 Ready 的任务返回 None。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct TaskDeliveryResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery: Option<crate::delivery::DeliveryRecord>,
 }
 
 /// T055：读一份工作快照；没有参数（窗口用浏览器本地时间算）。
@@ -1274,7 +1292,7 @@ pub struct ConnectionRevokeResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 14;
+pub const PROTOCOL_VERSION: u64 = 15;
 
 /// 根会话不可用的种类：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

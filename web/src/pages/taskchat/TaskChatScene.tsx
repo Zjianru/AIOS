@@ -32,6 +32,7 @@ import {
   displayPath,
   loadExecSettings,
   ServiceHttpError,
+  taskDelivery,
   taskInterrupt,
   taskRead,
   taskSay,
@@ -44,6 +45,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import type { Frame, SendAttachmentRef, ServiceEvent } from '@/data/service';
+import type { DeliveryRecord } from '@/data/generated/DeliveryRecord';
 import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
 import type { TaskReadGate } from '@/data/generated/TaskReadGate';
 import type { TaskReadGateCheck } from '@/data/generated/TaskReadGateCheck';
@@ -53,6 +55,7 @@ import type { SessionStats } from '@/data/generated/SessionStats';
 import type { FxInfo } from '@/data/generated/FxInfo';
 import { taskStatusOf } from '@/data/taskResult';
 import { turnLabels, useStreamStore } from '@/pages/kind/kindStore';
+import { DeliveryBlock } from './DeliveryBlock';
 import { TurnRow, UserCards } from '@/pages/kind/TurnRow';
 import { deriveTurnViews } from '@/pages/kind/turnViews';
 import type { TurnUserView } from '@/pages/kind/turnViews';
@@ -611,6 +614,7 @@ export function TaskChatScene() {
   const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>('loading');
   const [task, setTask] = useState<TaskReadHeader | null>(null);
   const [ledger, setLedger] = useState<TaskReadLedger | null>(null);
+  const [delivery, setDelivery] = useState<DeliveryRecord | null>(null);
   // T051：统计由服务端 task-read 给（和 Kind status 同一个 session_stats），页面只显示。
   const [attemptStats, setAttemptStats] = useState<SessionStats | null>(null);
   const [fx, setFx] = useState<FxInfo | null>(null);
@@ -1190,6 +1194,33 @@ export function TaskChatScene() {
     void loadOlder();
   }
 
+  const deliveryKey = task
+    ? [
+        task.reportedAt ?? 0,
+        task.accepted ? 1 : 0,
+        task.gate?.conclusion ?? '',
+        task.gate?.runs?.[0]?.at ?? 0,
+      ].join('|')
+    : '';
+  useEffect(() => {
+    if (!task || task.gate) {
+      setDelivery(null);
+      return;
+    }
+    let live = true;
+    void taskDelivery(taskId)
+      .then((response) => {
+        if (live) setDelivery(response.delivery ?? null);
+      })
+      .catch(() => {
+        if (live) setDelivery(null);
+      });
+    return () => {
+      live = false;
+    };
+    // reportedAt/accepted/门判定变时重读；不挂轮询。
+  }, [taskId, deliveryKey]);
+
   if (phase === 'loading') {
     return (
       <div
@@ -1294,6 +1325,7 @@ export function TaskChatScene() {
             <>
               <Brief task={task} />
               {ledger ? <Ledger ledger={ledger} task={task} /> : null}
+              <DeliveryBlock delivery={delivery} />
             </>
           )}
         </div>

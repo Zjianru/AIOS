@@ -19,7 +19,15 @@ async function revealKindTurn(turn: number): Promise<boolean> {
 }
 
 /** 点「去看/去判/去答」：先回 Kind 滚到那一轮；找不到再退回任务对话或提示。 */
-export async function openWaitItem(item: WaitItem): Promise<void> {
+export async function openWaitItem(
+  item: WaitItem,
+  options: { acceptToTaskchat?: boolean } = {},
+): Promise<void> {
+  // T058：右栏「等你」接受项的按钮是「看交付记录」，直接去任务页；看板 compact 仍走旧路径。
+  if (options.acceptToTaskchat && item.kind === 'accept' && item.taskId) {
+    go('taskchat:' + item.taskId);
+    return;
+  }
   if (item.turn !== undefined && item.turn !== null) {
     const before = useKindStore.getState().loadCount;
     go('kind');
@@ -143,7 +151,7 @@ export function WaitRow({ item, className }: { item: WaitItem; className?: strin
           <button
             type="button"
             data-action="wait-open"
-            onClick={() => void openWaitItem(item)}
+            onClick={() => void openWaitItem(item, { acceptToTaskchat: true })}
             className={cn(
               'flex items-center gap-0.5 rounded-btn px-1.5 py-0.5 text-1 text-ink-3 transition-colors hover:bg-hover hover:text-ink-2',
               pick ? '' : 'ml-auto',

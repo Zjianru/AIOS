@@ -211,6 +211,7 @@ fn kind_tool_policy(options: &RootSessionOptions) -> agent::ToolPolicy {
             [
                 "task_accept",
                 "task_status",
+                "task_delivery",
                 "task_stop",
                 "task_update",
                 "task_graph_propose",
@@ -250,6 +251,9 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
             std::sync::Arc::clone(runtime),
         )));
         extra_tools.push(std::sync::Arc::new(crate::executor::TaskStatusTool::new(
+            std::sync::Arc::clone(runtime),
+        )));
+        extra_tools.push(std::sync::Arc::new(crate::executor::TaskDeliveryTool::new(
             std::sync::Arc::clone(runtime),
         )));
         extra_tools.push(std::sync::Arc::new(crate::executor::TaskStopTool::new(
