@@ -91,9 +91,23 @@ export function ConversationPane() {
   const followRef = useRef(true);
   /** T055：从工作页/现在页「去看」时按目标轮定位；定位期间不跟底，用户一动手就放开。 */
   const revealHoldRef = useRef(false);
-  /** T059 F5：钉底走 Virtuoso 的 scrollToIndex，不直接写 scrollTop；虚拟列表的 scrollHeight 是估算值。 */
+  /**
+   * 钉底：先走 Virtuoso 的 scrollToIndex（虚拟列表的 scrollHeight 是估算值，直接写 scrollTop 追不上
+   * 长流式）；真实高度量出来后总高会比估算多一截（首屏约 66px），所以下一帧再对 scroller 补一次
+   * DOM 兜底。兜底只在还跟着底部、用户没动手时做，滚轮上推不会被拉回。
+   */
   const pinToLatest = useCallback(() => {
     listRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
+    requestAnimationFrame(() => {
+      if (!followRef.current || userScrolledRef.current || revealHoldRef.current) return;
+      const scroller = document.querySelector<HTMLElement>(
+        '[data-pane="conversation"] [data-virtuoso-scroller="true"]',
+      );
+      if (!scroller) return;
+      if (scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop > 2) {
+        scroller.scrollTop = scroller.scrollHeight;
+      }
+    });
   }, []);
 
 
