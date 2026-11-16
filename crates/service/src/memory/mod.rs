@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use agent::{MemoryContext, MemoryContextProvider, PreCompactionDiary, PreCompactionHook};
 use memory::MemoryStore;
-use memory::types::{Binding, Layer, MemoryItem, WriteContext, WriteOp};
+use memory::types::{Binding, MemoryItem, WriteContext, WriteOp};
 
 pub struct MemoryRuntime {
     store: Arc<MemoryStore>,

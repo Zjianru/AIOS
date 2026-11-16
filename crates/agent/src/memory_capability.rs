@@ -25,11 +25,11 @@ impl MemoryCapability {
         let identity = store
             .derive_messages()
             .into_iter()
-            .filter_map(|message| match message.source {
+            .rev()
+            .find_map(|message| match message.source {
                 model::MessageSource::MemoryContext { identity } => Some(identity),
                 _ => None,
-            })
-            .last();
+            });
         (Arc::new(Mutex::new(identity)), provider)
     }
 
