@@ -175,6 +175,84 @@ async fn memory_context_is_not_reinjected_inside_a_turn_after_identity_changes()
 }
 
 #[tokio::test]
+async fn memory_context_replacement_keeps_the_conversation_between_two_injections() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+
+    let data_dir = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let store = session::SessionStore::create(data_dir.path(), project.path()).unwrap();
+    let calls = Arc::new(AtomicU64::new(0));
+    let provider_calls = Arc::clone(&calls);
+    let config = agent::AgentConfig {
+        memory_context: Some(Arc::new(move || {
+            let call = provider_calls.fetch_add(1, Ordering::SeqCst);
+            let version = call + 1;
+            Ok(Some(MemoryContext {
+                identity: format!("v{version}"),
+                text: format!("关于你：回答先给结论（{version}）"),
+            }))
+        })),
+        ..isolated_config(data_dir.path())
+    };
+    let agent = Agent::create(
+        config,
+        Deps {
+            model: model::DeepSeek::with_credentials(
+                model_config(&server.uri()),
+                test_credential(),
+            )
+            .unwrap(),
+            tools: tools::ToolSet::builtin(),
+            store,
+        },
+    )
+    .await
+    .unwrap();
+
+    for text in ["第一句", "第二句", "第三句"] {
+        agent
+            .send(UserMessage::text(text), Delivery::FollowUp)
+            .await
+            .unwrap();
+        agent.idle().await;
+    }
+
+    let requests = server.received_requests().await.unwrap();
+    let bodies: Vec<String> = requests
+        .iter()
+        .map(|request| String::from_utf8(request.body.clone()).unwrap())
+        .collect();
+    assert_eq!(bodies.len(), 3, "三次用户回合三条请求");
+    const MARKER: &str = "以下内容是已保存的记忆，只读参考";
+    for body in &bodies {
+        assert_eq!(
+            body.matches(MARKER).count(),
+            1,
+            "每个请求只带一条记忆注入：{body}"
+        );
+    }
+    // 第三次注入替换第二条时，不能把前两回合的用户话/回答一起 surface 隐藏。
+    let last = &bodies[2];
+    assert!(last.contains("第一句"), "第一回合的用户话还在：{last}");
+    assert!(last.contains("第二句"), "第二回合的用户话还在：{last}");
+    assert!(
+        last.matches("工具都跑完了").count() >= 2,
+        "两回合的助手回答都在：{last}"
+    );
+    assert!(last.contains("回答先给结论（3）"), "第三条注入生效：{last}");
+    assert!(!last.contains("回答先给结论（1）"), "旧注入已隐藏：{last}");
+}
+
+#[tokio::test]
 async fn pre_compaction_diary_uses_model_and_reports_text_to_hook() {
     let server = MockServer::start().await;
     // 压缩前记一笔 → 摘要 → 主请求；三者都回同一段文本即可。

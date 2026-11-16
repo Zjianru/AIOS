@@ -75,25 +75,33 @@ impl Capability for MemoryCapability {
             // 同一 turn 内的记忆变化留到下一个用户回合再补。
             let (visible, previous_memory_seqs, compacted_after_injection) = {
                 let store = host.session().lock().expect("agent 会话锁被毒化");
-                let visible = store.derive_messages().iter().any(|message| {
+                let derived = store.derive_messages_with_seqs();
+                let visible = derived.iter().any(|(_, message)| {
                     matches!(
                         &message.source,
                         model::MessageSource::MemoryContext { identity } if identity == &context.identity
                     )
                 });
-                let previous: Vec<u64> = store
+                // 只替换当前 surface 上可见的那一条注入：日志里旧注入的 seq 虽被隐藏，
+                // 若拿来当 Replace 区间端点，会把两次注入之间的用户/助手消息一起吞掉。
+                let visible_memory_seqs: Vec<u64> = derived
+                    .iter()
+                    .filter(|(_, message)| {
+                        matches!(message.source, model::MessageSource::MemoryContext { .. })
+                    })
+                    .map(|(seq, _)| *seq)
+                    .collect();
+                let last_injected = store
                     .events()
                     .iter()
-                    .filter(|event| {
+                    .rfind(|event| {
                         matches!(
                             &event.kind,
                             session::EventKind::UserMessage { message, .. }
                                 if matches!(message.source, model::MessageSource::MemoryContext { .. })
                         )
                     })
-                    .map(|event| event.seq)
-                    .collect();
-                let last_injected = previous.last().copied();
+                    .map(|event| event.seq);
                 let compacted = last_injected.is_some_and(|last_seq| {
                     store.events().iter().any(|event| {
                         event.seq > last_seq
@@ -103,7 +111,7 @@ impl Capability for MemoryCapability {
                             )
                     })
                 });
-                (visible, previous, compacted)
+                (visible, visible_memory_seqs, compacted)
             };
             if event.step() > 1 && !compacted_after_injection {
                 return Ok(HookOutcome::Continue);
@@ -124,17 +132,19 @@ impl Capability for MemoryCapability {
                 step: event.step(),
                 message,
             };
-            if previous_memory_seqs.is_empty() {
+            if previous_memory_seqs.len() != 1 {
                 host.append(&[kind]).await?;
             } else {
                 // 只读说明不再靠「完整替换」这句指令让模型忽略旧的注入；新的注入在
-                // surface 上替换旧的那几条，派生消息里只剩这一条。
-                let start_seq = previous_memory_seqs[0];
-                let end_seq = *previous_memory_seqs.last().expect("非空");
+                // surface 上只替换当前可见的那一条，start=end 保证不吞掉中间的对话。
+                let old_seq = previous_memory_seqs[0];
                 host.append_surface(
                     kind,
-                    session::SurfaceOp::Replace { start_seq, end_seq },
-                    previous_memory_seqs,
+                    session::SurfaceOp::Replace {
+                        start_seq: old_seq,
+                        end_seq: old_seq,
+                    },
+                    vec![old_seq],
                 )
                 .await?;
             }
