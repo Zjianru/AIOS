@@ -1791,10 +1791,12 @@ async fn 重开后续轮按新窗口先压缩() {
         .and(path("/v1/messages"))
         .respond_with(SequenceResponder::new(vec![
             sse(USAGE_SSE.to_owned()),
+            // 压缩前记一笔：Kind 根会话在真实压缩前多要一次日记。
+            sse(crate::common::text_sse("日记：先给结论")),
             sse(crate::common::text_sse("压缩摘要")),
             sse(USAGE_SSE.to_owned()),
         ]))
-        .expect(3)
+        .expect(4)
         .mount(&server)
         .await;
     let dir = tempdir().unwrap();
@@ -1851,13 +1853,21 @@ async fn 重开后续轮按新窗口先压缩() {
         .iter()
         .map(|request| String::from_utf8_lossy(&request.body).into_owned())
         .collect();
-    assert_eq!(bodies.len(), 3, "第一轮 + 摘要 + 压缩后的下一轮");
+    assert_eq!(
+        bodies.len(),
+        4,
+        "第一轮 + 压缩前日记 + 摘要 + 压缩后的下一轮"
+    );
     assert!(
-        bodies[1].contains("compaction engine"),
+        bodies[1].contains("整理成一条简短日记"),
+        "压缩前先记一笔：摘要请求之前是日记说明"
+    );
+    assert!(
+        bodies[2].contains("compaction engine"),
         "重开后下一轮先发摘要请求"
     );
     assert!(
-        bodies[2].contains("<compacted-summary>") && bodies[2].contains("AFTER-SWITCH"),
+        bodies[3].contains("<compacted-summary>") && bodies[3].contains("AFTER-SWITCH"),
         "下一轮请求由摘要 + 新消息组成"
     );
 }
