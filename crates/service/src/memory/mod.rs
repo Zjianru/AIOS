@@ -158,6 +158,33 @@ mod tests {
     use super::*;
     use memory::types::{WriteContext, WriteOp};
 
+    #[tokio::test]
+    async fn pre_compaction_hook_writes_diary_and_skips_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = MemoryRuntime::open(dir.path()).unwrap();
+        let hook = runtime.pre_compaction_hook();
+        hook(agent::PreCompactionDiary {
+            compaction_id: "compaction-test".to_owned(),
+            conversation: session::SessionId::parse("00000000-0000-4000-8000-000000000001")
+                .unwrap(),
+            text: "   ".to_owned(),
+        })
+        .await
+        .unwrap();
+        assert!(runtime.store().view().unwrap().diary.is_empty());
+        hook(agent::PreCompactionDiary {
+            compaction_id: "compaction-test".to_owned(),
+            conversation: session::SessionId::parse("00000000-0000-4000-8000-000000000001")
+                .unwrap(),
+            text: "用户偏好先给结论".to_owned(),
+        })
+        .await
+        .unwrap();
+        let view = runtime.store().view().unwrap();
+        assert_eq!(view.diary.len(), 1);
+        assert_eq!(view.diary[0].text, "用户偏好先给结论");
+    }
+
     #[test]
     fn kind_thin_sections_differ_and_follow_store_changes() {
         let dir = tempfile::tempdir().unwrap();

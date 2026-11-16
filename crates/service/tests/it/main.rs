@@ -10,6 +10,7 @@ mod exa;
 mod file_references;
 mod first_use_loop;
 mod host;
+mod memory;
 mod root;
 mod root_hotfix;
 mod root_states;

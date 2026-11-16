@@ -281,6 +281,16 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
     // 设置页另外报读不出的原因。ThinAgent 用同一份来源。
     let mut config = options.config.clone();
     config.tool_keys = tool_key_source(&options);
+    // Kind 根会话：记忆注入 + 压缩前日记；库打不开不挡根会话，但产品路径要接上。
+    if let Ok(memory) = crate::memory::MemoryRuntime::open(&options.data_dir) {
+        let memory = std::sync::Arc::new(memory);
+        config.memory_context = Some(memory.kind_provider());
+        config.pre_compaction = Some(memory.pre_compaction_hook());
+        config.pre_compaction_instruction = Some(
+            "把下面这段对话里值得留给以后的事实整理成一条简短日记，只写事实和教训，不要复述全部原文。"
+                .to_owned(),
+        );
+    }
     match std::fs::read(&state_path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             std::fs::create_dir_all(&options.data_dir)?;

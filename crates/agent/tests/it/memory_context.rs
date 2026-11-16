@@ -75,7 +75,10 @@ async fn memory_context_is_injected_once_then_replaced_when_identity_changes() {
         second.contains("回答先给结论（2）"),
         "identity 变了要完整替换"
     );
-    assert!(!second.contains("回答先给结论（1）") || second.contains("回答先给结论（2）"));
+    assert!(
+        second.contains("完整替换之前的记忆") && second.contains("回答先给结论（2）"),
+        "第二次请求要带新的完整替换内容"
+    );
 }
 
 #[tokio::test]
@@ -191,4 +194,67 @@ async fn pre_compaction_failure_does_not_block_compaction_or_turn() {
     // 失败只记录，不改变压缩/回合的结局；日志里仍有正常 turn/end。
     let log = std::fs::read_to_string(agent.log_path()).unwrap();
     assert!(log.contains("turn/end"), "失败后回合仍要正常收尾");
+}
+
+#[tokio::test]
+async fn memory_is_reinjected_after_compaction() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+    let data_dir = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let store = session::SessionStore::create(data_dir.path(), project.path()).unwrap();
+    let mut model = model_config(&server.uri());
+    model.context_window = 200;
+    let config = agent::AgentConfig {
+        compaction_threshold_ratio: 0.01,
+        compaction_retain_ratio: 0.0,
+        compaction_headroom_tokens: 1,
+        memory_context: Some(Arc::new(|| {
+            Ok(Some(MemoryContext {
+                identity: "v-fixed".to_owned(),
+                text: "关于你：稳定记忆".to_owned(),
+            }))
+        })),
+        ..isolated_config(data_dir.path())
+    };
+    let agent = Agent::create(
+        config,
+        Deps {
+            model: model::DeepSeek::with_credentials(model, test_credential()).unwrap(),
+            tools: tools::ToolSet::builtin(),
+            store,
+        },
+    )
+    .await
+    .unwrap();
+    for index in 0..3 {
+        agent
+            .send(
+                UserMessage::text(format!("第 {index} 段足够长的历史，测试压缩后重新注入。")),
+                Delivery::FollowUp,
+            )
+            .await
+            .unwrap();
+        agent.idle().await;
+    }
+    let requests = server.received_requests().await.unwrap();
+    let injected = requests
+        .iter()
+        .filter(|request| String::from_utf8_lossy(&request.body).contains("关于你：稳定记忆"))
+        .count();
+    assert!(
+        injected >= 2,
+        "压缩后下一步必须重新注入，实际 {injected} 次"
+    );
 }

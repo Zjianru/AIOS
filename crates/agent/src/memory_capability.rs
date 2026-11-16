@@ -69,11 +69,25 @@ impl Capability for MemoryCapability {
             let Some(context) = provider().map_err(crate::AgentError::MemoryProvider)? else {
                 return Ok(HookOutcome::Continue);
             };
+            let host = event.host();
+            // 每步看当前派生消息里还有没有这个 identity；压缩可能把旧的注入消息换掉，
+            // 只看缓存会漏掉压缩后的再注入。
+            let visible = host
+                .session()
+                .lock()
+                .expect("agent 会话锁被毒化")
+                .derive_messages()
+                .iter()
+                .any(|message| {
+                    matches!(
+                        &message.source,
+                        model::MessageSource::MemoryContext { identity } if identity == &context.identity
+                    )
+                });
             let mut identity = self.identity.lock().await;
-            if identity.as_deref() == Some(context.identity.as_str()) {
+            if visible && identity.as_deref() == Some(context.identity.as_str()) {
                 return Ok(HookOutcome::Continue);
             }
-            let host = event.host();
             let text = format!(
                 "完整替换之前的记忆
 
