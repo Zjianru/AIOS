@@ -82,10 +82,11 @@ export function MemoChip({ card }: { card: MemoCard }) {
   } else if (card.kind === 'remember' && card.id) {
     if (state !== 'revoked') {
       actions.push({ label: '改', action: 'memory-edit', run: () => go('memory') });
+      // 小卡上的撤销只进隔离区（7 天内能恢复）；彻底删只在记忆页。
       actions.push({
         label: '撤销',
-        action: 'memory-forget',
-        run: () => act({ kind: 'forget', id: card.id! }),
+        action: 'memory-delete',
+        run: () => act({ kind: 'delete', id: card.id! }),
       });
     }
   } else if (card.kind === 'note' && card.id) {

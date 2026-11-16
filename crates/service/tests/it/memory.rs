@@ -747,6 +747,84 @@ async fn memory_page_reads_view_search_and_card_states() {
 }
 
 #[tokio::test]
+async fn card_undo_is_recoverable_and_same_original_words_can_be_remembered_again() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    seed_memory_page(data.path());
+    let root = open_page_root(data.path(), cwd.path(), &server).await;
+    let store = page_store(data.path());
+    let item = store.view().unwrap().about_you[0].clone();
+
+    // 小卡的「撤销」走 Delete：回执写明 7 天可恢复，关于你里消失、进隔离区。
+    let response = root
+        .dispatch(service::Call::MemoryAction(service::MemoryActionRequest {
+            action: service::MemoryActionKind::Delete {
+                id: item.id.clone(),
+            },
+        }))
+        .await
+        .expect("delete");
+    let service::Response::MemoryAction(action) = response else {
+        panic!("expected MemoryAction");
+    };
+    assert!(
+        action.message.contains("7 天内能恢复"),
+        "回执要写可恢复：{}",
+        action.message
+    );
+    let view = store.view().unwrap();
+    assert!(view.about_you.is_empty(), "关于你里不再有");
+    assert!(
+        view.quarantine.iter().any(|entry| entry.id == item.id),
+        "进隔离区"
+    );
+
+    // 同一句原话再说一次：隔离区不是彻底删，来源没有墓碑，能再记进去。
+    let again = store
+        .write(
+            WriteOp::Remember {
+                title: item.title.clone(),
+                summary: item.summary.clone(),
+                body: item.body.clone(),
+                source_kind: "user".to_owned(),
+                source_ref: "page-u2".to_owned(),
+            },
+            &WriteContext::user(),
+        )
+        .expect("同一句原话能再记");
+    assert!(again.item.is_some());
+    let view = store.view().unwrap();
+    assert!(
+        view.about_you.iter().any(|entry| entry.body == item.body),
+        "再记的回到关于你"
+    );
+    assert!(
+        view.quarantine.iter().any(|entry| entry.id == item.id),
+        "旧的还在隔离区"
+    );
+
+    // 隔离区恢复：旧的那条回关于你。
+    root.dispatch(service::Call::MemoryAction(service::MemoryActionRequest {
+        action: service::MemoryActionKind::Restore {
+            id: item.id.clone(),
+        },
+    }))
+    .await
+    .expect("restore");
+    assert!(
+        page_store(data.path())
+            .view()
+            .unwrap()
+            .about_you
+            .iter()
+            .any(|entry| entry.id == item.id),
+        "恢复回关于你"
+    );
+    root.shutdown().await;
+}
+
+#[tokio::test]
 async fn memory_actions_write_and_push_changed_version() {
     let server = MockServer::start().await;
     let data = tempfile::tempdir().unwrap();

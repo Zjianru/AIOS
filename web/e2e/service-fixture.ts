@@ -34,6 +34,8 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.pretextSlowTurn) return { file: 't023-pretext-slow', paceMs: 400 };
   // T059 F5：内容超过视口的长流式回答，用来在流式追加中验证滚轮不被钉回底部。
   if (options.t059LongStream) return { file: 't059-long-stream', paceMs: 40 };
+  // 同一句原话再记：两轮都是 memory_remember（第二轮用户消息 seq 22）。
+  if (options.memoryAgain) return { file: 't061-memory-again', paceMs: 10 };
   // 记忆页联动的假模型脚本：记住/记一笔/5 个回合/做梦 apply+总结。
   if (options.memoryFlow) {
     if (options.memoryLiveCard) return { file: 't060-memory-live-card', paceMs: 10 };
@@ -206,6 +208,8 @@ export interface FixtureOptions {
   memoryFailDream?: boolean;
   /// turn3 里 Kind 调 memory_dream_now（许可卡在回合中途到，live 渲染用例）。
   memoryLiveCard?: boolean;
+  /// 两轮都记同一句原话（撤销后重新记入用例）。
+  memoryAgain?: boolean;
   /// 路径显示：三步回放（cwd 内写、cwd 外写、最终文本）；夹具里的 __CWD__ / __OUTSIDE__ 起服务前换成真实目录。
   pathsTurn?: boolean;
   /// T013.6：最终回答里带一个代码块（复制按钮用）。
