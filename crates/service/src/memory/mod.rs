@@ -184,6 +184,10 @@ impl MemoryRuntime {
         let Ok(changes) = self.store.dream_changes(run_id) else {
             return false;
         };
+        // 一处改动都没有 ≠ 全撤了：成功的空改动 run 显示「整理完了」。
+        if changes.is_empty() {
+            return false;
+        }
         changes.iter().all(|change| {
             self.store
                 .revisions(&change.memory_id)

@@ -191,6 +191,22 @@ impl RootHost {
             memory,
             dream,
         };
+        // 做梦开始/结束时推 memory/changed，记忆页收到就重读（不靠轮询）。
+        if let (Some(dream), Some(memory)) = (&host.dream, &host.memory) {
+            let events = host.events.clone();
+            let memory = Arc::clone(memory);
+            dream.set_changed_hook(Arc::new(move || {
+                let version = memory.store().version().unwrap_or(0);
+                let event = ServiceEvent {
+                    seq: 0,
+                    time: 0,
+                    event_type: "memory/changed".to_owned(),
+                    data: serde_json::json!({ "version": version }),
+                    cause: None,
+                };
+                let _delivered = events.send(event).unwrap_or(0);
+            }));
+        }
         if let Some(message) = factory_error {
             *host.state.lock().expect("root state 锁被毒化") = RootState::Unavailable {
                 kind: RootUnavailableKind::Other,

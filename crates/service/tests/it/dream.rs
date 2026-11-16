@@ -834,3 +834,118 @@ async fn undoing_a_correction_and_merge_marks_the_run_revoked() {
     );
     root.shutdown().await;
 }
+
+#[tokio::test]
+async fn dream_with_no_changes_is_done_not_revoked() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    seed_dream(data.path(), true, 100, 0, 0);
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(crate::common::SequenceResponder::new(vec![
+            sse(&crate::common::tool_use_sse(
+                0,
+                "call-empty",
+                "memory_dream_apply",
+                &apply_args(serde_json::json!([])),
+            )),
+            sse(&crate::common::text_sse("这次没什么可整理")),
+        ]))
+        .mount(&server)
+        .await;
+    let root = open_root(data.path(), cwd.path(), &server).await;
+    wait_startup_check(&root).await;
+    dream_store(data.path())
+        .update_dream_settings(&DreamSettingsPatch {
+            min_events: Some(0),
+            last_success_at: Some(0),
+            last_attempt_at: Some(0),
+            permit: Some(true),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(root.dream_now().unwrap(), "开始整理");
+    let runs = wait_runs(data.path(), 1).await;
+    let run_id = runs[0].id.clone();
+    for _ in 0..500 {
+        if root.dream_checks_settled() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let response = root
+        .dispatch(service::Call::MemoryRead(service::MemoryReadRequest {
+            query: None,
+            item_id: None,
+            refs: vec![run_id],
+        }))
+        .await
+        .expect("memory-read");
+    let service::Response::MemoryRead(read) = response else {
+        panic!("expected MemoryRead");
+    };
+    assert_eq!(
+        read.cards.first().map(|card| card.state.as_str()),
+        Some("active"),
+        "成功但 0 处改动的 run 是整理完了，不是已撤销"
+    );
+    assert!(read.dream.runs[0].changes.is_empty());
+    root.shutdown().await;
+}
+
+#[tokio::test]
+async fn memory_changed_is_pushed_when_dream_starts_and_ends() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    seed_dream(data.path(), true, 100, 0, 0);
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(crate::common::SequenceResponder::new(vec![
+            sse(&crate::common::tool_use_sse(
+                0,
+                "call-push",
+                "memory_dream_apply",
+                &apply_args(serde_json::json!([])),
+            ))
+            .set_delay(Duration::from_millis(200)),
+            sse(&crate::common::text_sse("整理完了")),
+        ]))
+        .mount(&server)
+        .await;
+    let root = open_root(data.path(), cwd.path(), &server).await;
+    wait_startup_check(&root).await;
+    let mut events = root.subscribe_events();
+    dream_store(data.path())
+        .update_dream_settings(&DreamSettingsPatch {
+            min_events: Some(0),
+            last_success_at: Some(0),
+            last_attempt_at: Some(0),
+            permit: Some(true),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(root.dream_now().unwrap(), "开始整理");
+    let mut pushed = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(200), events.recv()).await {
+            Ok(Ok(event)) if event.event_type == "memory/changed" => pushed.push(event),
+            Ok(Ok(_)) => {}
+            Ok(Err(_)) => break,
+            Err(_) => {}
+        }
+        if pushed.len() >= 2 {
+            break;
+        }
+    }
+    assert!(
+        pushed.len() >= 2,
+        "做梦开始和结束都要推 memory/changed，实际 {}",
+        pushed.len()
+    );
+    wait_runs(data.path(), 1).await;
+    root.shutdown().await;
+}
+

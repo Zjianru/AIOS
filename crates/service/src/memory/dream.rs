@@ -86,6 +86,8 @@ pub struct DreamRuntime {
     /// 触发/检查的计数：测试用它等启动那次检查收尾，避免和回合结束的触发抢。
     checks_started: AtomicU64,
     checks_finished: AtomicU64,
+    /// 根宿主装上的推送：做梦开始/结束让页面重读（seq=0 的 memory/changed，不走轮询）。
+    changed_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl DreamRuntime {
@@ -114,6 +116,26 @@ impl DreamRuntime {
             running: AtomicBool::new(false),
             checks_started: AtomicU64::new(0),
             checks_finished: AtomicU64::new(0),
+            changed_hook: Mutex::new(None),
+        }
+    }
+
+    /// 根宿主装上「记忆库变了」的推送；做梦开始/结束时调用它。
+    pub fn set_changed_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        *self
+            .changed_hook
+            .lock()
+            .expect("changed hook 锁被毒化") = Some(hook);
+    }
+
+    fn notify_changed(&self) {
+        let hook = self
+            .changed_hook
+            .lock()
+            .expect("changed hook 锁被毒化")
+            .clone();
+        if let Some(hook) = hook {
+            hook();
         }
     }
 
@@ -410,6 +432,8 @@ impl DreamRuntime {
             )
             .map_err(|error| error.to_string())?;
 
+        // 开始整理：页面靠推送重读，看到「正在整理」。
+        self.notify_changed();
         let result = self.dream_agent_run(&run_id, &root_events, &settings).await;
         let ended = store.now();
         match result {
@@ -438,6 +462,8 @@ impl DreamRuntime {
                 if let Err(error) = self.append_card("dream_done", &run_id).await {
                     eprintln!("做梦完成卡没写进根会话：{error}");
                 }
+                // 结束：页面靠推送重读，看到「整理完了」和这次的改动。
+                self.notify_changed();
                 Ok(DreamReport {
                     run_id,
                     applied: changes.len(),
@@ -454,6 +480,7 @@ impl DreamRuntime {
                 if let Err(card) = self.append_card("dream_failed", &run_id).await {
                     eprintln!("做梦失败卡没写进根会话：{card}");
                 }
+                self.notify_changed();
                 Err(error)
             }
         }

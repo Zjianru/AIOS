@@ -256,13 +256,6 @@ export function MemoryScene() {
     if (data) setIntervalHours(data.dream.intervalHours);
   }, [data?.dream.intervalHours]);
 
-  // 正在整理时补一次短轮询：检查/运行结束不一定有推送，别让页面一直停在「正在整理」。
-  useEffect(() => {
-    if (!data?.dream.running) return;
-    const timer = window.setTimeout(() => void load(), 600);
-    return () => window.clearTimeout(timer);
-  }, [data?.dream.running, load]);
-
   const startEdit = async (item: MemoryItemView) => {
     setEditing({ item, revisions: [] });
     try {
