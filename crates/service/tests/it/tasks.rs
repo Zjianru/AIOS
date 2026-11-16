@@ -3215,7 +3215,132 @@ async fn accept_task(
         .expect("刚受理的任务")
 }
 
+/// ThinAgent 有约束力记忆：真实派任务路径下，第一次请求带 binding 条目，不带 Kind 的笔记。
+#[tokio::test]
+async fn thin_agent_request_has_binding_memory_but_not_kind_notes() {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    mount(&server, &router).await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    {
+        let memory = memory::MemoryStore::open(data.path().join("memory.sqlite")).unwrap();
+        memory
+            .write(
+                memory::types::WriteOp::Remember {
+                    title: "回答先给结论".to_owned(),
+                    summary: String::new(),
+                    body: "先给结论再给理由".to_owned(),
+                    source_kind: "user".to_owned(),
+                    source_ref: "thin-u1".to_owned(),
+                },
+                &memory::types::WriteContext::user(),
+            )
+            .unwrap();
+        memory
+            .write(
+                memory::types::WriteOp::Note {
+                    title: "GBK CSV".to_owned(),
+                    summary: String::new(),
+                    body: "读之前先探编码".to_owned(),
+                    source_kind: "kind".to_owned(),
+                    source_ref: "thin-k1".to_owned(),
+                },
+                &memory::types::WriteContext::kind(),
+            )
+            .unwrap();
+    }
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+    for script in ready_scripts() {
+        router.push_thin(script);
+    }
+    accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-thin-memory",
+        "call-accept-thin-memory",
+        1,
+        "查记忆",
+    )
+    .await;
+    wait_until("ThinAgent 第一次请求", || {
+        !router.bodies(true).is_empty()
+    })
+    .await;
+    let bodies = router.bodies(true);
+    let first = &bodies[0];
+    assert!(
+        first.contains("有约束力的记忆"),
+        "第一次请求要带记忆节：{first}"
+    );
+    assert!(
+        first.contains("先给结论再给理由"),
+        "binding 条目要进去：{first}"
+    );
+    assert!(
+        !first.contains("GBK CSV") && !first.contains("读之前先探编码"),
+        "Kind 的笔记不注入 ThinAgent：{first}"
+    );
+    host.shutdown().await;
+}
+
+/// 没有 binding 条目时，ThinAgent 请求里不出现空的记忆节。
+#[tokio::test]
+async fn thin_agent_request_has_no_memory_section_without_binding_items() {
+    let server = MockServer::start().await;
+    let router = Router::new();
+    mount(&server, &router).await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    {
+        let memory = memory::MemoryStore::open(data.path().join("memory.sqlite")).unwrap();
+        memory
+            .write(
+                memory::types::WriteOp::Note {
+                    title: "GBK CSV".to_owned(),
+                    summary: String::new(),
+                    body: "读之前先探编码".to_owned(),
+                    source_kind: "kind".to_owned(),
+                    source_ref: "thin-k2".to_owned(),
+                },
+                &memory::types::WriteContext::kind(),
+            )
+            .unwrap();
+    }
+    let host = open_actions_host(&server, data.path(), cwd.path()).await;
+    for script in ready_scripts() {
+        router.push_thin(script);
+    }
+    accept_task(
+        &host,
+        &router,
+        data.path(),
+        "kind-thin-nomemory",
+        "call-accept-thin-nomemory",
+        1,
+        "空记忆",
+    )
+    .await;
+    wait_until("ThinAgent 第一次请求", || {
+        !router.bodies(true).is_empty()
+    })
+    .await;
+    let bodies = router.bodies(true);
+    let first = &bodies[0];
+    assert!(
+        !first.contains("有约束力的记忆"),
+        "没有 binding 时不出现空记忆节：{first}"
+    );
+    assert!(
+        !first.contains("读之前先探编码"),
+        "笔记不注入 ThinAgent：{first}"
+    );
+    host.shutdown().await;
+}
+
 /// 派一个任务并等它出现在任务库；不等 Kind 那一轮收尾。
+
 ///
 /// ThinAgent 轮次结束会合成等待报告、把 relay Steer 回 Kind，Kind 那一轮可能因此多一步；
 /// 只断言任务自己的 Attempt 和效果时不该被这个时序拖住。
