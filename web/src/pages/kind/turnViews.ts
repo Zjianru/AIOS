@@ -371,6 +371,8 @@ export interface TurnUserView {
   canvas: { id: string; title: string } | null;
   /** T054.2：这句话带着一张结果卡（「要求修改」放进输入框的卡）。 */
   resultCard: { taskId: string; title: string; version: number } | null;
+  /** 服务端给这条消息的 rpcId（续改说明靠它认，不靠正文）。 */
+  rpcId: string | null;
 }
 
 /** T028.5：任务对话里说的一句话抄送到 Kind（task-cc:<inputId>）。 */
@@ -656,7 +658,7 @@ export function deriveTurnViews(
    * T013 F1：你的消息按块拆开——正文只留打的字；paste 块各是一段粘贴；file 块各是一个文件。
    * 粘贴原文不进正文（Claude F1：气泡上是一排卡片，不是一大段字）。
    */
-  const userOf = (message: unknown): TurnUserView | null => {
+  const userOf = (message: unknown, rpcId: string | null): TurnUserView | null => {
     if (!message || typeof message !== 'object') return null;
     const content = (message as { content?: unknown }).content;
     if (!Array.isArray(content)) return null;
@@ -715,7 +717,7 @@ export function deriveTurnViews(
     }
     const body = text.join('');
     if (!body && pastes.length === 0 && files.length === 0 && !canvas && !resultCard) return null;
-    return { text: body, elements: [], pastes, files, canvas, resultCard };
+    return { text: body, elements: [], pastes, files, canvas, resultCard, rpcId };
   };
 
   const textOfToolResult = (message: unknown): string => {
@@ -828,7 +830,7 @@ export function deriveTurnViews(
         const kind =
           typeof source?.source === 'string' ? source.source : source?.source?.kind;
         if (kind !== undefined && kind !== 'user' && kind !== 'skill-invocation') break;
-        const view = userOf(data.message);
+        const view = userOf(data.message, userRpcIdOf(data.message));
         if (view) ensure(turn).user = view;
         break;
       }

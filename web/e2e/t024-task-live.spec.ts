@@ -229,3 +229,55 @@ test('断线后重连：按 lastSeq 补齐，回答只出现一次', async ({ pa
   }
 });
 
+test('任务页流式追加时钉底；滚轮上推后不被拉回', async ({ page, request }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 900, height: 340 });
+  const fixture = await startKernelFixture({ taskResult: 'long' });
+  try {
+    await page.goto(urlOf(fixture));
+    await send(page, '帮我查一下新闻归档里的判重规则');
+    const taskId = await taskIdOf(fixture);
+    await waitUntilTaskReadable(request, fixture, taskId);
+    const reads = watchTaskReads(page);
+    const pane = await openTaskChat(page, fixture, taskId, reads);
+    expect(pane).toBeTruthy();
+    const scroller = page.locator('[data-kind="task-scroll"]');
+    await expect(scroller).toBeVisible({ timeout: 20_000 });
+
+    // 流式还在长高：内容超过视口，且跟着走的页面贴在下沿附近。
+    await expect
+      .poll(
+        async () => scroller.evaluate((element) => element.scrollHeight - element.clientHeight),
+        { timeout: 30_000 },
+      )
+      .toBeGreaterThan(300);
+    await expect
+      .poll(
+        async () =>
+          scroller.evaluate(
+            (element) => element.scrollHeight - element.scrollTop - element.clientHeight,
+          ),
+        { timeout: 30_000 },
+      )
+      .toBeLessThan(160);
+
+    // 滚轮上推：跟随即停；后面继续追加时不被拽回底部。
+    const before = await scroller.evaluate((element) => element.scrollTop);
+    expect(before).toBeGreaterThan(200);
+    const box = await scroller.boundingBox();
+    expect(box).not.toBeNull();
+    await scroller.hover();
+    await page.mouse.wheel(0, -600);
+    await expect
+      .poll(async () => scroller.evaluate((element) => element.scrollTop), { timeout: 10_000 })
+      .toBeLessThan(before - 200);
+    const afterWheel = await scroller.evaluate((element) => element.scrollTop);
+    await page.waitForTimeout(900);
+    const settled = await scroller.evaluate((element) => element.scrollTop);
+    expect(settled).toBeLessThanOrEqual(afterWheel + 24);
+  } finally {
+    await fixture.close();
+  }
+});
+
+

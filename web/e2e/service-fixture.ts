@@ -298,6 +298,8 @@ export interface FixtureOptions {
     | 'bad-json'
     | 'chat'
     | 'live'
+    /// .6：任务对话长流式（任务页钉底/滚轮不被拉回的 e2e）。
+    | 'long'
     /// T028.5：任务对话输入框/抄送/暂停/Attempt 的夹具。
     | 'say'
     | 'resume'

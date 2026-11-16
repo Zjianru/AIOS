@@ -471,7 +471,9 @@ pub struct TaskReadGateCheck {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskReadGateVerdict {
-    pub candidate_ordinal: u64,
+    /// 候选报告排第几次；找不到那份报告就不写（版本号不是次数）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_ordinal: Option<u64>,
     pub conclusion: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,

@@ -3,4 +3,8 @@
 /**
  * T059 F4：里程碑门的一次用户判定。
  */
-export type TaskReadGateVerdict = { candidateOrdinal: number, conclusion: string, note?: string | null, at: number, judgedBy: string, };
+export type TaskReadGateVerdict = {
+/**
+ * 候选报告排第几次；找不到那份报告就不写（版本号不是次数）。
+ */
+candidateOrdinal?: number | null, conclusion: string, note?: string | null, at: number, judgedBy: string, };

@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { startKernelFixture } from './service-fixture';
 
 /**
- * 记忆页联动（T060.5）：对话里的小卡（记下了/Kind 记了一笔/做梦许可/整理完了）、
+ * 记忆页联动：对话里的小卡（记下了/Kind 记了一笔/做梦许可/整理完了）、
  * 记忆页的关于你/条目/日记/做梦/隔离区、按 ref 读状态与撤销。
  */
 

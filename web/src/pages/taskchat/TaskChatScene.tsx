@@ -9,7 +9,7 @@
  *   降级说明，原因照服务给的事实写，页面不编。
  */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowLeft,
   ChevronDown,
@@ -24,6 +24,7 @@ import {
   Square,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { clockOf } from '@/lib/numbers';
 import { go } from '@/app/navigate';
 import { useRouteStore } from '@/app/routeStore';
 import { useTaskChromeStore } from '@/app/taskChrome';
@@ -423,14 +424,8 @@ function ReviewSection({ gate }: { gate: TaskReadGate }) {
   const attempts = gate.attempts ?? [];
   const wordOf = (conclusion: string) =>
     conclusion === 'pass' ? '通过' : conclusion === 'needs_fix' ? '需修正' : '未确定';
-  const timeOf = (at: number) =>
-    new Date(at).toLocaleString('zh-CN', {
-      month: 'numeric',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    });
+  // 协议里的时刻是毫秒；显示统一走 clockOf（秒）。
+  const timeOf = (at: number) => clockOf(at / 1000);
   return (
     <div className="mt-3 border-t border-line pt-3" data-kind="review-section">
       <div className="text-2 font-medium text-ink">核查判定</div>
@@ -447,7 +442,9 @@ function ReviewSection({ gate }: { gate: TaskReadGate }) {
               data-kind="review-verdict"
             >
               <div className="flex flex-wrap items-center gap-x-2 text-ink-2">
-                <span className="text-ink">候选第 {verdict.candidateOrdinal} 次</span>
+                <span className="text-ink">
+                  {verdict.candidateOrdinal ? '候选第 ' + verdict.candidateOrdinal + ' 次' : '候选'}
+                </span>
                 <span className={verdict.conclusion === 'pass' ? 'text-done' : 'text-wait'}>
                   {wordOf(verdict.conclusion)}
                 </span>
@@ -473,8 +470,12 @@ function ReviewSection({ gate }: { gate: TaskReadGate }) {
         </div>
       ) : (
         <ul className="mt-0.5 space-y-1" data-kind="review-attempts">
-          {attempts.map((attempt) => (
-            <li key={String(attempt.attempt)} className="text-2 leading-5" data-kind="review-attempt">
+          {attempts.map((attempt, index) => (
+            <li
+              key={String(attempt.attempt) + '-' + String(index)}
+              className="text-2 leading-5"
+              data-kind="review-attempt"
+            >
               <span className="text-ink-2">第 {attempt.attempt} 次</span>
               <span className="ml-2 text-1 text-ink-3">{timeOf(attempt.at)}</span>
               <div className="line-clamp-2 text-ink-2">{attempt.summary}</div>
@@ -706,6 +707,12 @@ export function TaskChatScene() {
   >([]);
   const composerRef = useRef<ComposerHandle | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  /** 钉底走 scrollTo，不直接写 scrollTop：流式追加时内容高度布局后才定。 */
+  const pinToLatest = useCallback(() => {
+    const scroller = scrollRef.current;
+    scroller?.scrollTo({ top: scroller.scrollHeight, behavior: 'auto' });
+  }, []);
   const requestToken = useRef(0);
   /** T039：页头事实请求的序号——断线重连可能连拉几次，只认最新一次的回包。 */
   const headerRequest = useRef(0);
@@ -932,9 +939,8 @@ export function TaskChatScene() {
   useLayoutEffect(() => {
     if (phase !== 'ready' || bottomPinned.current) return;
     bottomPinned.current = true;
-    const scroller = scrollRef.current;
-    if (scroller) scroller.scrollTop = scroller.scrollHeight;
-  }, [phase]);
+    pinToLatest();
+  }, [phase, pinToLatest]);
 
   // 往上翻：新页插在前面，保持原来的阅读位置；装好后再消化一次加载期间收到的「到顶了」。
   useLayoutEffect(() => {
@@ -943,7 +949,10 @@ export function TaskChatScene() {
     restoreRef.current = null;
     const scroller = scrollRef.current;
     if (!scroller) return;
-    scroller.scrollTop = scroller.scrollHeight - restore.height + restore.top;
+    scroller.scrollTo({
+      top: scroller.scrollHeight - restore.height + restore.top,
+      behavior: 'auto',
+    });
     if (pendingOlderRef.current) {
       pendingOlderRef.current = false;
       if (scroller.scrollTop <= 64) void loadOlder();
@@ -953,9 +962,19 @@ export function TaskChatScene() {
   // live 新事件：用户停在底部时跟着走。
   useLayoutEffect(() => {
     if (!followBottomRef.current) return;
-    const scroller = scrollRef.current;
-    if (scroller) scroller.scrollTop = scroller.scrollHeight;
-  }, [events]);
+    pinToLatest();
+  }, [events, pinToLatest]);
+
+  // 流式长高时再钉一次：内容高度在布局后才定，只看 events 会落在旧高度上。
+  useEffect(() => {
+    const content = contentRef.current;
+    if (phase !== 'ready' || !content) return;
+    const observer = new ResizeObserver(() => {
+      if (followBottomRef.current) pinToLatest();
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [phase, pinToLatest]);
 
   // 终态报告之后执行者会立刻关掉会话，日志可能没有 turn/end；头部带来的 reportedAt
   // 只收尾它之前开始的那一轮（waiting 报告之后的新一轮不能被标成已完成）。
@@ -1488,7 +1507,7 @@ export function TaskChatScene() {
         ref={scrollRef}
         onScroll={onScroll}
       >
-        <div className="mx-auto w-full max-w-[680px] pb-6" data-conversation="task">
+        <div ref={contentRef} className="mx-auto w-full max-w-[680px] pb-6" data-conversation="task">
           {views.length === 0 ? (
             <div className="px-6 py-10 text-center text-3 leading-6 text-ink-3" data-kind="task-empty">
               这个任务的会话还没写下任何内容。
@@ -1517,6 +1536,7 @@ export function TaskChatScene() {
               files: item.attachments,
               canvas: null,
               resultCard: null,
+              rpcId: null,
             };
             return (
               <div

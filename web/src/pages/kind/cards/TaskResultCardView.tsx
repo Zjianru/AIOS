@@ -268,17 +268,13 @@ export function TaskResultCardView({ envelope, slots, host }: CardViewProps<Task
       ) : null}
       {slots.verdict ? (
         <div className="mt-2" data-kind="gate-verdict">
+          {/* 用户判定原话按纯文本显示，保留换行；Markdown 会改写 * _ # 这类字符。 */}
           {slots.verdictNote ? (
             <div
-              className="mb-1 break-words border-l-2 border-line-2 pl-2.5 text-2 leading-5 text-ink-2"
+              className="mb-1 whitespace-pre-wrap break-words border-l-2 border-line-2 pl-2.5 text-2 leading-5 text-ink-2"
               data-kind="gate-note"
             >
-              <Markdown
-                text={slots.verdictNote
-                  .split('\n')
-                  .map((line) => '> ' + line)
-                  .join('\n')}
-              />
+              {slots.verdictNote}
             </div>
           ) : null}
           <div className="text-2 text-ink-2">

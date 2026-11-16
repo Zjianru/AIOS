@@ -23,6 +23,7 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 
 - **model**：provider 无关的消息 IR 与流式块、Anthropic Messages 适配器（anthropic/；厂商差异集中在 vendors.rs：思考档按模型目录的档位适配，序列化 thinking/output_config/max_tokens）、重试/取消、token 估算与请求派生、models.dev 目录（24h 缓存/内置快照/厂商列表合并）、本机地址不走代理的共享 HTTP client。
 - **session**：会话事件与格式版本、JSONL 追加与读取、折叠/恢复、单写者文件锁；session/model 是会话模型选择（连接/模型/想要的档）的 durable 事实，最近一条胜出（重开恢复）。
+- **memory**：记忆库的数据层（SQLite + FTS）：关于你、条目、日记、笔记、修订（只追加）、隔离区、做梦 run 与逐处改动；写入带 actor（User/Kind/Dream）与来源，按 actor 挡越界写入；不依赖 workspace 内其它 crate。服务层的 memory runtime / 做梦运行时、注入与记忆页协议在 service 里装配（见「记忆」一节）。
 - **tasks**：任务聚合（Task、Run、Attempt、报告、执行者写入的缺项）与 SQLite 存储（kv/task/effect）；持久效果表（launch/relay/停止 relay/delivery/notice/restart，同键合并、代次、退避、健康）、启动扫描（效果循环前把上次没结束的 Attempt 收成 reported/interrupted/not_opened，打断的排 restart，一次启动合并一条并记下本次打断的任务）、阶段派生（stopped/interrupted → 待补足条件）和席位计数（起跑预约 + 在跑集合，照 DSH WorkerSlots）；不依赖 agent 和 session。
 - **tools**：Tool 接口与 ToolSet、工具批执行（独占屏障/并行池/按模型顺序提交）、内置文件工具与观察策略、spill、后台 job、bash、canvas（画布）。
 - **agent**：轮次驱动、收件箱、能力注册表与各能力实现；唯一产品组装入口是 Agent::open；Agent::select 写 session/model 并只改下一轮。
@@ -32,6 +33,13 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 - **web**：axum HTTP/WS 薄适配器与信任栅栏；/connect、/ 换签名 cookie，/api、/ws 只认 cookie；同源托管 web/dist 静态资源（SPA fallback）；/canvas-frame 是画布 iframe 外壳（CSP），/local-file 是本地文件的只读出口（cookie + Host，只放会话工作目录）；ready 帧带协议版本、根状态与上下文。
 - **web/ 前端**：React 19 + Vite；Kind 对话页只走服务方法与事件；卡片走注册表 + 信封，槽位按项降级、认不出才退 generic；会话工作目录里的路径显示成相对路径，链接走 /local-file；只显示接上内核的部分，不带演示开关/脚本；Kind 首次使用与设置 › 模型与连接接真 Keyring；e2e 用真 serve + 假 DeepSeek 回放。
 - **cli**：aios-dev 的 chat/run/serve；只把参数/env 变成普通配置数据，不构造模型/工具/存储。chat/run 的连接/模型/档优先级是 命令行 > 会话日志选择（resume 恢复）> settings.json 上次选择 > 连接默认；serve 的启动参数（--connection/--model/--effort）只在没有会话/上次选择时当默认，有选择时以选择为准（跨连接热切换不会被启动参数压回）。
+
+## 记忆
+
+- **数据层（memory crate）**：唯一存储是 <数据目录>/memory.sqlite（schema 与迁移在 store）；条目分 about-you / entry / diary / note，note 可由 Kind 或做梦写，about-you 只由用户与采纳写，日记只由压缩前记一笔写；修订只追加，删到隔离区、彻底删留 tombstone 且 FTS 查不到；写入上下文带 actor 与 dream_run，store 按 actor 再挡一次（Kind 写 about-you、Dream 写条目/日记、Dream 改非笔记都拒绝）。
+- **注入**：服务把记忆当「指令类上下文」经 agent 的 PreStep/instructions 同一条路注入（identity 版本 + 关于你 + 相关条目），不另开消息类型；identity 变了下一轮追加替换，压缩后再出现，手动压缩不注入。
+- **做梦是受限后台 agent**：独立会话（Kind 当前模型快照），只在启动/回合结束/任务报回/记忆页打开/用户说整理几个时机顺手检查一次，不常驻、不另建调度器；忙就等下一个时机，错过多个合成一次。工具只给只读（搜、按 id 读记忆/日记、读 Kind 对话、读任务报回）+ 只写笔记的 memory_dream_apply；读窗口从 DreamSettings 的 last_success_at / last_read_seq 起（工具参数只能往里收），网页/文件/工具输出不读；store 以 actor=Dream 再挡一次。结果写 dream_run + 逐处 dream_change，成功/失败出程序卡；撤销逐处只在当前修订仍等于这次写的版本时成立，用户后来改过就跳过并报告。
+- **不进 executor**：记忆与做梦的装配在 service/src/memory/（runtime、工具、页面读写），executor 只保留「给任务会话装记忆上下文 provider」这一处注入接线，没有记忆业务代码。页面协议见协议 16（MemoryRead/MemoryAction + seq=0 的 memory/changed 推送）。
 
 ## 工具、确认卡与根会话
 
@@ -56,7 +64,7 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 
 - cli → agent、credentials、model、monitor、service、session、tools、web
 - web → agent、model、monitor、service、session
-- service → agent、credentials、model、session、tasks、tools
+- service → agent、credentials、memory、model、session、tasks、tools
 - agent → model、session、tools
 - replay → model、session
 - monitor → session
@@ -65,6 +73,7 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 - credentials 不依赖其他内部 crate
 - model 不依赖其他内部 crate
 - tasks 不依赖其他内部 crate
+- memory 不依赖其他内部 crate
 
 - 这份清单按 `cargo metadata --no-deps` 的正常 path 依赖（`kind` 为 null）维护；新增或删除内部依赖时同步。
 - 只允许上层依赖下层；下层不反向依赖上层。

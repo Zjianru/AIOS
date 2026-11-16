@@ -9894,6 +9894,20 @@ async fn gate_needs_fix_continue_and_auto_recheck_end_to_end() {
         panic!("gate-judge 响应");
     };
     assert_eq!(pass.released, vec!["再写结果".to_owned()]);
+    // 判通过后 C 进 launch 要占席位；先等门和第 2 份候选的 Attempt 都收尾，
+    // 免得并发跑测试时「没空位」把 C 留成 Later（T053 偶发）。
+    wait_until("门和候选的 Attempt 都收尾", || {
+        let store = tasks_store(data.path());
+        [gate.id.clone(), guarded.id.clone()].iter().all(|id| {
+            store
+                .task(id)
+                .ok()
+                .flatten()
+                .and_then(|task| task.latest_attempt().cloned())
+                .is_none_or(|attempt| attempt.ended_at.is_some())
+        })
+    })
+    .await;
     wait_until("C 开跑", || {
         tasks_store(data.path())
             .task(&downstream.id)
