@@ -3340,7 +3340,6 @@ async fn thin_agent_request_has_no_memory_section_without_binding_items() {
 }
 
 /// 派一个任务并等它出现在任务库；不等 Kind 那一轮收尾。
-
 ///
 /// ThinAgent 轮次结束会合成等待报告、把 relay Steer 回 Kind，Kind 那一轮可能因此多一步；
 /// 只断言任务自己的 Attempt 和效果时不该被这个时序拖住。
