@@ -14,6 +14,23 @@ pub struct MemoryRuntime {
     store: Arc<MemoryStore>,
 }
 
+/// 程序送进会话的 user 消息前缀（中继卡、任务停止、抄送、重启说明、门判定、上游变更）。
+/// 它们不是用户自己说的话，不能当「记住」的出处，也不进 Kind 对话索引。
+const PROGRAM_MESSAGE_PREFIXES: [&str; 4] =
+    ["task-", "restart:", "gate-verdict:", "upstream-changed:"];
+
+/// 这条 user 消息是不是用户自己发的（程序送来的不算）；索引和「记住」的闸共用这一份。
+pub(crate) fn user_message_sent(message: &model::Message) -> bool {
+    let model::MessageSource::User { rpc_id } = &message.source else {
+        return false;
+    };
+    rpc_id.as_deref().is_none_or(|id| {
+        !PROGRAM_MESSAGE_PREFIXES
+            .iter()
+            .any(|prefix| id.starts_with(prefix))
+    })
+}
+
 impl MemoryRuntime {
     pub fn open(data_dir: &Path) -> Result<Self, memory::MemoryError> {
         let store = MemoryStore::open(data_dir.join("memory.sqlite"))?;
@@ -138,16 +155,19 @@ impl MemoryRuntime {
     pub fn index_session_event(&self, conversation_id: &str, event: &session::Event) {
         let (turn, text) = match &event.kind {
             session::EventKind::UserMessage { turn, message, .. } => {
-                if !matches!(message.source, model::MessageSource::User { .. }) {
+                // 中继卡/停任务/抄送/重启/门判定/上游变更也以 user 消息落盘，
+                // 但它们不是用户自己的话，不进对话索引；backfill 走同一个函数。
+                if !user_message_sent(message) {
                     return;
                 }
                 (*turn, message_text(message))
             }
-            session::EventKind::AssistantMessage { message, .. } => {
+            session::EventKind::AssistantMessage { turn, message, .. } => {
                 if message.role != model::Role::Assistant {
                     return;
                 }
-                (0, message_text(message))
+                // 轮次用事件自带的 turn：搜索命中要能指回那一轮。
+                (*turn, message_text(message))
             }
             _ => return,
         };

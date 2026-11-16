@@ -11,6 +11,7 @@ mod file_references;
 mod first_use_loop;
 mod host;
 mod memory;
+mod memory_index;
 mod root;
 mod root_hotfix;
 mod root_states;

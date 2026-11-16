@@ -80,27 +80,11 @@ impl MemoryTools {
             event.seq == seq
                 && matches!(
                     &event.kind,
-                    session::EventKind::UserMessage { message, .. } if user_sent(message)
+                    session::EventKind::UserMessage { message, .. }
+                        if super::user_message_sent(message)
                 )
         })
     }
-}
-
-/// 程序送进会话的消息也带 user 来源（中继卡、任务停止、抄送、重启说明、门判定、上游变更），
-/// 它们不是用户自己说的话，不能当「记住」的出处；前缀和 web 侧还原这些卡用的那一套一致。
-const PROGRAM_MESSAGE_PREFIXES: [&str; 4] =
-    ["task-", "restart:", "gate-verdict:", "upstream-changed:"];
-
-/// 这条 user 消息是不是用户自己发的（程序送来的不算）。
-fn user_sent(message: &model::Message) -> bool {
-    let model::MessageSource::User { rpc_id } = &message.source else {
-        return false;
-    };
-    rpc_id.as_deref().is_none_or(|id| {
-        !PROGRAM_MESSAGE_PREFIXES
-            .iter()
-            .any(|prefix| id.starts_with(prefix))
-    })
 }
 
 #[derive(Clone, Copy)]
