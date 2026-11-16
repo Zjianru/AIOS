@@ -62,6 +62,7 @@ pub(crate) fn derive_messages_with_seqs(events: &[Event]) -> Vec<(u64, Message)>
             | EventKind::JobRegistered { .. }
             | EventKind::JobSettled { .. }
             | EventKind::SessionModel { .. }
+            | EventKind::MemoryCard { .. }
             | EventKind::CardDecision { .. } => None,
         };
         if let Some(message) = message {

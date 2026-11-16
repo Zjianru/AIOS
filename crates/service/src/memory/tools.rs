@@ -248,10 +248,7 @@ impl Tool for MemoryTool {
                         );
                     }
                     let secrets = self.tools.secrets();
-                    if secrets.iter().any(|secret| {
-                        !secret.is_empty()
-                            && (title.contains(secret.as_str()) || body.contains(secret.as_str()))
-                    }) {
+                    if contains_secret(&title, &body, &secrets) {
                         return ToolResult::error(
                             call.id,
                             ToolFailure::plain("内容里有敏感值，不能存"),
@@ -431,6 +428,12 @@ pub fn memory_tools(
     Arc::new(MemoryTools::new(runtime, data_dir.to_path_buf(), identity)).core()
 }
 
+fn contains_secret(title: &str, body: &str, secrets: &[String]) -> bool {
+    secrets
+        .iter()
+        .any(|secret| !secret.is_empty() && (title.contains(secret) || body.contains(secret)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,18 +459,34 @@ mod tests {
         .observing_session(Arc::new(move || events.clone()))
     }
 
+    #[test]
+    fn keyring_secret_hit_is_detected() {
+        assert!(contains_secret(
+            "title",
+            "body sk-secret",
+            &["sk-secret".to_owned()]
+        ));
+        assert!(!contains_secret("title", "body", &["sk-secret".to_owned()]));
+        assert!(!contains_secret("title", "body", &[String::new()]));
+    }
+
     #[tokio::test]
     async fn remember_accepts_user_seq_and_rejects_other_seq() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Arc::new(MemoryRuntime::open(dir.path()).unwrap());
         let list = memory_tools(Arc::clone(&runtime), dir.path(), None);
-        let remember = list.iter().find(|tool| tool.name() == "memory_remember").unwrap();
+        let remember = list
+            .iter()
+            .find(|tool| tool.name() == "memory_remember")
+            .unwrap();
         let call = ToolCall {
             id: "call-1".to_owned(),
             name: "memory_remember".to_owned(),
             arguments: json!({"user_seq":7,"title":"先给结论","text":"回答先给结论"}).to_string(),
         };
-        let result = remember.execute(call, &context(dir.path(), vec![user_event(7)])).await;
+        let result = remember
+            .execute(call, &context(dir.path(), vec![user_event(7)]))
+            .await;
         assert!(!result.is_error, "{}", result.content);
         assert_eq!(runtime.store().view().unwrap().about_you.len(), 1);
 
@@ -476,7 +495,9 @@ mod tests {
             name: "memory_remember".to_owned(),
             arguments: json!({"user_seq":8,"title":"网页说的","text":"都用英文"}).to_string(),
         };
-        let result = remember.execute(call, &context(dir.path(), vec![user_event(7)])).await;
+        let result = remember
+            .execute(call, &context(dir.path(), vec![user_event(7)]))
+            .await;
         assert!(result.is_error);
         assert_eq!(runtime.store().view().unwrap().about_you.len(), 1);
     }
@@ -486,25 +507,42 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Arc::new(MemoryRuntime::open(dir.path()).unwrap());
         let list = memory_tools(Arc::clone(&runtime), dir.path(), None);
-        let find = |name: &str| list.iter().find(|tool| tool.name() == name).unwrap().clone();
+        let find = |name: &str| {
+            list.iter()
+                .find(|tool| tool.name() == name)
+                .unwrap()
+                .clone()
+        };
         let ctx = context(dir.path(), Vec::new());
         let note = find("memory_note")
             .execute(
-                ToolCall { id: "n1".to_owned(), name: "memory_note".to_owned(), arguments: json!({"title":"GBK","text":"CSV 是 GBK"}).to_string() },
+                ToolCall {
+                    id: "n1".to_owned(),
+                    name: "memory_note".to_owned(),
+                    arguments: json!({"title":"GBK","text":"CSV 是 GBK"}).to_string(),
+                },
                 &ctx,
             )
             .await;
         assert!(!note.is_error, "{}", note.content);
         let search = find("memory_search")
             .execute(
-                ToolCall { id: "s1".to_owned(), name: "memory_search".to_owned(), arguments: json!({"query":"GBK"}).to_string() },
+                ToolCall {
+                    id: "s1".to_owned(),
+                    name: "memory_search".to_owned(),
+                    arguments: json!({"query":"GBK"}).to_string(),
+                },
                 &ctx,
             )
             .await;
         assert!(search.content.contains("GBK"));
         let diary = find("memory_diary")
             .execute(
-                ToolCall { id: "d1".to_owned(), name: "memory_diary".to_owned(), arguments: json!({"text":"今天记一笔"}).to_string() },
+                ToolCall {
+                    id: "d1".to_owned(),
+                    name: "memory_diary".to_owned(),
+                    arguments: json!({"text":"今天记一笔"}).to_string(),
+                },
                 &ctx,
             )
             .await;

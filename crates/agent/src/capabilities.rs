@@ -545,6 +545,7 @@ pub(crate) fn event_context(kind: &EventKind) -> Option<(u64, u64)> {
         | EventKind::CompactionSummary { .. }
         | EventKind::CompactionPrune { .. }
         | EventKind::SessionModel { .. }
+        | EventKind::MemoryCard { .. }
         | EventKind::CardDecision { .. } => return None,
     };
     Some(pair)

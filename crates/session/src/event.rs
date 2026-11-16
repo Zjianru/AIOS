@@ -282,6 +282,14 @@ pub enum EventKind {
         step: u64,
         message: Message,
     },
+    /// 程序给 Kind 对话加的一张记忆卡（许可/整理完/没跑成）；只带 id/kind/ref。
+    #[serde(rename = "memory/card")]
+    MemoryCard {
+        id: String,
+        kind: String,
+        #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+        reference: Option<String>,
+    },
     /// 模型向用户提问（T005.10；派生请求不出现，只用于日志回放/CLI 展示）。
     ///
     /// T006.13 起带 callId：一次 ask_user_question 调用（一批问题）的稳定身份，
@@ -652,6 +660,7 @@ impl EventKind {
             Self::StepEnd { .. } => "step/end",
             Self::SystemMessage { .. } => "system/message",
             Self::UserMessage { .. } => "user/message",
+            Self::MemoryCard { .. } => "memory/card",
             Self::QuestionAsked { .. } => "question/asked",
             Self::QuestionAnswered { .. } => "question/answered",
             Self::QuestionCancelled { .. } => "question/cancelled",
