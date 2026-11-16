@@ -65,7 +65,7 @@ test('记忆：记住/记一笔的小卡，攒够许可→整理→撤销，记�
     await expect(rememberChip).toContainText('记下了');
     await expect(rememberChip).toContainText('回答先给结论');
     await expect(rememberChip.locator('[data-action="memory-edit"]')).toBeVisible();
-    await expect(rememberChip.locator('[data-action="memory-forget"]')).toBeVisible();
+    await expect(rememberChip.locator('[data-action="memory-delete"]')).toBeVisible();
     await expect(page.locator('[data-kind="user-bubble"] [data-kind="memo-chip"]')).toHaveCount(0);
     await expect(
       page.locator('[data-kind="assistant-answer"] [data-kind="memo-chip"]'),

@@ -1,236 +1,40 @@
 /// T009.7：Kind 的轮次视图与从日志事件派生（只搬代码，行为不变）。
 
-import type { SendAttachmentRef, ServiceEvent } from '@/data/service';
-import type { AskAnswer, FailureCause } from '@/data/service';
+import type { SendAttachmentRef, ServiceEvent, AskAnswer, FailureCause } from '@/data/service';
 import type { AskQuestion } from '@/data/questionView';
-import type { TextElement, TurnStatus } from '@/data/types';
+import type { TurnStatus } from '@/data/types';
 import { modelErrorReason, retryReason } from '../../data/errors.ts';
+import { parseExitStatus } from './process/toolModel.ts';
+import type { ProcessStep } from './process/toolModel.ts';
+import { reasoningTextOf, reasoningTextOfStream } from './reasoning.ts';
+import type { ConfirmCardFact, ConfirmDecision } from './cards/model';
+import { dispatchedTaskIdOf, parseRestartNotice, parseTaskRelay, taskDispatchFactOf } from '../../data/taskResult.ts';
+import { foldedTaskCard } from './taskCardFold.ts';
+import { contextPercent, contextTokens, emptyUsage, mergeUsage, modelLabel, reasoningSpanMs, thinkingSeconds as thinkingSecondsOf } from '../../data/turnUsage.ts';
 
-/** 被屏蔽的失败说明：失败块显示内核给的原文（模型名 + 命中的规则），去掉错误包装的前缀。 */
+import type { CanvasViewDoc } from './canvas.ts';
+import { gateVerdictOf, upstreamChangedOf, userRpcIdOf } from './relay.ts';
+import type { CompactionView, InterimSay, MemoCardInfo, ToolStep, TurnLabels, TurnUserView, TurnViewData } from './viewTypes.ts';
+
+import type { QuestionView } from './viewTypes.ts';
+import { canvasSourceOf, canvasVersionOf } from './canvas.ts';
+import { taskCcOfMessage } from './relay.ts';
+import type { TaskResultFact } from '../../data/taskResult.ts';
+import type { UsageTotals } from '../../data/turnUsage.ts';
+
+export * from './canvas.ts';
+export * from './relay.ts';
+export * from './viewTypes.ts';
+
 function maskedReason(message: string | undefined): string {
   if (!message) return modelErrorReason('MODEL_DISABLED');
   const marker = 'MODEL_DISABLED: ';
   const at = message.indexOf(marker);
   return at >= 0 ? message.slice(at + marker.length) : message;
 }
-import { parseExitStatus } from './process/toolModel.ts';
-import type { ProcessStep } from './process/toolModel.ts';
-import { reasoningTextOf, reasoningTextOfStream } from './reasoning.ts';
-import type { ConfirmCardFact, ConfirmDecision } from './cards/model';
-import {
-  dispatchedTaskIdOf,
-  parseRestartNotice,
-  parseTaskRelay,
-  taskDispatchFactOf,
-  type TaskResultFact,
-} from '../../data/taskResult.ts';
-import { foldedTaskCard } from './taskCardFold.ts';
-import {
-  contextPercent,
-  contextTokens,
-  emptyUsage,
-  mergeUsage,
-  modelLabel,
-  reasoningSpanMs,
-  thinkingSeconds as thinkingSecondsOf,
-  type UsageTotals,
-} from '../../data/turnUsage.ts';
 
-export interface ToolStep {
-  id: string;
-  /** T013.5：工具名（read/write/bash/...）与解析后的参数。 */
-  name: string;
-  args: Record<string, unknown>;
-  output: string;
-  exitCode: number | null;
-  /** 被信号杀掉时的信号名（bash 的 [killed by signal: X]）。 */
-  signal?: string | null;
-  durationMs: number | null;
-  /** running/done/error/stopped（T013.5：停下的一轮把没结束的标 stopped）。 */
-  state: 'running' | 'done' | 'error' | 'stopped';
-  /** T013.1：tool/result.meta（diffs/operation/stopped）。 */
-  meta?: Record<string, unknown> | null;
-  /** 调用事件的时间（算这一步用时）。 */
-  startedAtMs?: number | null;
-  /** 日志 seq：和工具前说明（D89 的 say 步）一起排先后。 */
-  seq?: number;
-  tool?: string;
-}
 
-/**
- * 模型提问：等你答 → 答了 / 不答 / 这一轮被停了。
- * T017.2：带问题批次 id（ask_user_question 调用的 call id），卡片信封的 id 用它，不用数组下标。
- */
-export type QuestionView =
-  | { status: 'pending'; batchId: string; questions: AskQuestion[] }
-  | { status: 'answered'; batchId: string; questions: AskQuestion[]; answers: AskAnswer[] }
-  | { status: 'dismissed'; batchId: string; questions: AskQuestion[] }
-  | { status: 'void'; batchId: string; questions: AskQuestion[] };
 
-/**
- * 画布（T015.1）：日志里 tool/result.meta.canvas 的那一版全文。
- * 回放和实时都走同一份事件，所以这里只有日志事实，没有页面自己的状态。
- */
-export interface CanvasViewDoc {
-  id: string;
-  /** 第几版（T015.1 只出第 1 版；版本切换在 T015.2）。 */
-  n: number;
-  title: string;
-  note: string;
-  html: string;
-}
-
-/** 画布的一个版本（日志里的一条 tool/result.meta.canvas）。 */
-export interface CanvasVersionView {
-  /** 第几版，从 1 开始。 */
-  n: number;
-  title: string;
-  note: string;
-  html: string;
-}
-
-/** T028.5：抄送 Kind 的 request id 前缀（服务端 task-cc:<inputId>）。 */
-const TASK_CC_PREFIX = 'task-cc:';
-
-/** T053：gate-verdict relay 的事实：结论和它判的那个任务 id。 */
-export function gateVerdictOf(
-  message: unknown,
-): { taskId: string; conclusion: 'pass' | 'needs_fix'; candidateReport: string } | null {
-  if (typeof message !== 'object' || message === null) return null;
-  const content = (message as { content?: unknown }).content;
-  if (!Array.isArray(content)) return null;
-  const text = content
-    .map((block) =>
-      typeof block === 'object' && block !== null && typeof (block as { text?: unknown }).text === 'string'
-        ? (block as { text: string }).text
-        : '',
-    )
-    .join('');
-  let body: unknown;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (typeof body !== 'object' || body === null) return null;
-  const record = body as {
-    kind?: unknown;
-    conclusion?: unknown;
-    candidate?: { task?: { id?: unknown }; report_id?: unknown };
-  };
-  if (record.kind !== 'gate_verdict') return null;
-  const taskId = record.candidate?.task?.id;
-  const conclusion = record.conclusion;
-  const candidateReport = record.candidate?.report_id;
-  if (typeof taskId !== 'string' || taskId === '') return null;
-  if (conclusion !== 'pass' && conclusion !== 'needs_fix') return null;
-  if (typeof candidateReport !== 'string' || candidateReport === '') return null;
-  return { taskId, conclusion, candidateReport };
-}
-
-/** T053：upstream_changed relay 的事实：哪个下游要按上游新结果核对。 */
-export function upstreamChangedOf(message: unknown): { downstreamId: string } | null {
-  if (typeof message !== 'object' || message === null) return null;
-  const content = (message as { content?: unknown }).content;
-  if (!Array.isArray(content)) return null;
-  const text = content
-    .map((block) =>
-      typeof block === 'object' && block !== null && typeof (block as { text?: unknown }).text === 'string'
-        ? (block as { text: string }).text
-        : '',
-    )
-    .join('');
-  let body: unknown;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (typeof body !== 'object' || body === null) return null;
-  const record = body as { kind?: unknown; downstream?: { id?: unknown } };
-  if (record.kind !== 'upstream_changed') return null;
-  const id = record.downstream?.id;
-  if (typeof id !== 'string' || id === '') return null;
-  return { downstreamId: id };
-}
-
-/** 消息的 source.rpcId（只认 source.kind=user）。 */
-export function userRpcIdOf(message: unknown): string | null {
-  if (!message || typeof message !== 'object') return null;
-  const source = (message as { source?: unknown }).source;
-  if (!source || typeof source !== 'object') return null;
-  const typed = source as { kind?: unknown; rpcId?: unknown };
-  if (typed.kind !== 'user' || typeof typed.rpcId !== 'string') return null;
-  return typed.rpcId;
-}
-
-/** 消息里的文字块（抄送正文是一段 JSON 文本）。 */
-function messageTextOf(message: unknown): string {
-  if (!message || typeof message !== 'object') return '';
-  const content = (message as { content?: unknown }).content;
-  if (!Array.isArray(content)) return '';
-  return content
-    .map((block) =>
-      block && typeof block === 'object' && (block as { type?: string }).type === 'text'
-        ? String((block as { text?: unknown }).text ?? '')
-        : '',
-    )
-    .join('');
-}
-
-/** T028.5：一条 task-cc 用户消息 → 抄送事实；形状不对就当普通消息。 */
-function taskCcOfMessage(message: unknown): TaskCcView | null {
-  const rpcId = userRpcIdOf(message);
-  if (!rpcId || !rpcId.startsWith(TASK_CC_PREFIX)) return null;
-  const raw = messageTextOf(message);
-  if (!raw) return null;
-  let body: unknown;
-  try {
-    body = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (!body || typeof body !== 'object') return null;
-  const typed = body as { kind?: unknown; task?: unknown; text?: unknown; chars?: unknown };
-  if (typed.kind !== 'task_cc' || !typed.task || typeof typed.task !== 'object') return null;
-  const task = typed.task as { id?: unknown; title?: unknown };
-  if (typeof task.id !== 'string' || typeof task.title !== 'string') return null;
-  if (typeof typed.text !== 'string') return null;
-  return {
-    inputId: rpcId.slice(TASK_CC_PREFIX.length),
-    taskId: task.id,
-    title: task.title,
-    text: typed.text,
-    ...(typeof typed.chars === 'number' ? { chars: typed.chars } : {}),
-  };
-}
-
-/**
- * T028.5：从日志里取抄送 Kind 的记录（按 inputId 去重，保留最早出现的时间）。
- *
- * Inject 不唤醒时消息先落 agent/inbox/spliced，被下一次请求领走后才多一条 user/message；
- * 两处都收，按 request id 去重，页面才在抄送发生时就画出来。
- */
-export function taskCcFacts(events: ServiceEvent[]): { cc: TaskCcView; at: number }[] {
-  const found = new Map<string, { cc: TaskCcView; at: number }>();
-  for (const event of events) {
-    let messages: unknown[] = [];
-    if (event.type === 'user/message') {
-      messages = [event.data?.message];
-    } else if (event.type === 'agent/inbox/spliced') {
-      const inserted = event.data?.inserted;
-      messages = Array.isArray(inserted) ? inserted : [];
-    } else {
-      continue;
-    }
-    for (const message of messages) {
-      const cc = taskCcOfMessage(message);
-      if (!cc || found.has(cc.inputId)) continue;
-      found.set(cc.inputId, { cc, at: event.time / 1000 });
-    }
-  }
-  return [...found.values()];
-}
 
 /**
  * 往上翻时把更早的一页接在前面：同一行（id）已经在列表里的不再加一遍。
@@ -246,203 +50,6 @@ export function prependOlderViews(
   const existing = new Set(current.map((view) => view.id));
   const fresh = older.filter((view) => !existing.has(view.id));
   return fresh.length === 0 ? current : fresh.concat(current);
-}
-
-/** T028.5：一条抄送事实 → 对话里的单独一行（不是一轮，关联字段全空）。 */
-export function ccViewOf(cc: TaskCcView, at: number): TurnViewData {
-  return {
-    id: 'task-cc-' + cc.inputId,
-    startedAt: at,
-    durationMs: 0,
-    status: 'completed',
-    user: null,
-    cc,
-    taskResults: [],
-    says: [],
-    reasoning: null,
-    tools: [],
-    answer: null,
-    thinkingSeconds: 0,
-    tokens: { input: 0, output: 0 },
-    model: '',
-    cost: null,
-    retry: null,
-    failure: null,
-    question: null,
-    compaction: null,
-    canvas: null,
-    card: null,
-    delivery: null,
-    stoppedAt: null,
-  };
-}
-
-/** 一个画布出过的版本（按 n 升序）和最新版在哪一轮。 */
-export interface CanvasTrack {
-  latest: number;
-  /** 最新一版所在轮次的视图 id（旧版缩成一行时点它跳过去）。 */
-  latestTurnId: string;
-  versions: CanvasVersionView[];
-}
-
-/** 从日志折叠每个画布的版本（T015.2）：只认 tool/result.meta.canvas。 */
-export function canvasTracks(events: ServiceEvent[]): Record<string, CanvasTrack> {
-  return mergeCanvasTracks({}, events);
-}
-
-/** 把一批事件折进已有的版本表（首屏、往上翻、live 三处共用）。 */
-export function mergeCanvasTracks(
-  tracks: Record<string, CanvasTrack>,
-  events: ServiceEvent[],
-): Record<string, CanvasTrack> {
-  let next = tracks;
-  for (const event of events) {
-    if (event.type !== 'tool/result') continue;
-    const turn = typeof event.data.turn === 'number' ? event.data.turn : null;
-    if (turn === null) continue;
-    const version = canvasVersionOf(event.data.meta);
-    if (!version) continue;
-    const track = next[version.id] ?? { latest: 0, latestTurnId: '', versions: [] };
-    const versions = track.versions
-      .filter((item) => item.n !== version.n)
-      .concat({ n: version.n, title: version.title, note: version.note, html: version.html })
-      .sort((left, right) => left.n - right.n);
-    next = {
-      ...next,
-      [version.id]: {
-        latest: Math.max(track.latest, version.n),
-        // 同一版重复到达时认后一次（live 重放同一条事件不该丢轮次）。
-        latestTurnId: version.n >= track.latest ? 'turn-' + String(turn) : track.latestTurnId,
-        versions,
-      },
-    };
-  }
-  return next;
-}
-
-/** T015.4：user/message 文字块上的 canvas（{id, title} 都是字符串才算；形状不对就当普通文字）。 */
-function canvasSourceOf(value: unknown): { id: string; title: string } | null {
-  if (!value || typeof value !== 'object') return null;
-  const typed = value as { id?: unknown; title?: unknown };
-  if (typeof typed.id !== 'string' || typeof typed.title !== 'string') return null;
-  return { id: typed.id, title: typed.title };
-}
-
-/** tool/result.meta.canvas → 一版画布（形状不对就当没有）。 */
-function canvasVersionOf(meta: unknown): (CanvasVersionView & { id: string }) | null {
-  if (!meta || typeof meta !== 'object') return null;
-  const value = (meta as { canvas?: unknown }).canvas;
-  if (!value || typeof value !== 'object') return null;
-  const typed = value as { id?: unknown; n?: unknown; title?: unknown; note?: unknown; html?: unknown };
-  if (typeof typed.id !== 'string' || typeof typed.title !== 'string' || typeof typed.html !== 'string') {
-    return null;
-  }
-  return {
-    id: typed.id,
-    n: typeof typed.n === 'number' ? typed.n : 1,
-    title: typed.title,
-    note: typeof typed.note === 'string' ? typed.note : '',
-    html: typed.html,
-  };
-}
-
-/** 压缩：在对话里是一条分隔线，不是一轮。 */
-export interface CompactionView {
-  auto: boolean;
-  /** T010.4：压缩前占窗口的百分比（窗口/前后任一拿不到就不显示）。 */
-  before?: number;
-  /** T010.4：压缩后第一条响应占窗口的百分比。 */
-  after?: number;
-  summary: string;
-}
-
-/**
- * 你的消息（T013 F1）：正文只放打的字；每段粘贴、每个文件各是一张卡。
- * 块从日志的 user/message 来，实时和回放同一份。
- */
-export interface TurnUserView {
-  text: string;
-  elements: TextElement[];
-  /** paste: true 的文字块，一段一条（不拼进正文）。 */
-  pastes: string[];
-  /** file 块（服务发消息时写下的 id/名字/大小）。 */
-  files: SendAttachmentRef[];
-  /** T015.4：这句话是画布里的按钮放进来的（日志块上的 canvas：id + 标题）；没有就是自己写的。 */
-  canvas: { id: string; title: string } | null;
-  /** T054.2：这句话带着一张结果卡（「要求修改」放进输入框的卡）。 */
-  resultCard: { taskId: string; title: string; version: number } | null;
-  /** 服务端给这条消息的 rpcId（续改说明靠它认，不靠正文）。 */
-  rpcId: string | null;
-}
-
-/** T028.5：任务对话里说的一句话抄送到 Kind（task-cc:<inputId>）。 */
-export interface TaskCcView {
-  inputId: string;
-  taskId: string;
-  title: string;
-  text: string;
-  /** 原文字数（超过 600 时正文是截断的）。 */
-  chars?: number;
-}
-
-/** 页面上显示名字用的表（纯派生不直接读 store，node 用例只给事件也能跑）。 */
-export interface TurnLabels {
-  connectionNames?: Record<string, string>;
-  modelWindows?: Record<string, number>;
-  modelNames?: Record<string, string>;
-}
-
-/** 工具前的说明（D89）：带工具调用的那条 assistant/message 的文字，按日志先后进工作过程。 */
-export interface InterimSay {
-  id: string;
-  text: string;
-  /** 日志 seq，和工具步一起排先后。 */
-  seq: number;
-}
-
-export interface MemoCardInfo {
-  id: string;
-  kind: string;
-  ref?: string;
-}
-
-export interface TurnViewData {
-  id: string;
-  startedAt: number | null;
-  durationMs: number | null;
-  status: TurnStatus;
-  user: TurnUserView | null;
-  /** 程序追加的记忆卡（许可/整理完/没跑成）。 */
-  memoCards?: MemoCardInfo[];
-  /** T028.5：抄送行不是一轮回答；有它时只画虚线一行，不画用户气泡和 Kind 的回复。 */
-  cc?: TaskCcView | null;
-  /** 任务结果的 relay 消息：这一轮可能被 relay 叫起来；按到达顺序各出一张卡。 */
-  taskResults: TaskResultFact[];
-  /** D89：工具前说明，按日志先后插进工作过程，回答区不显示。 */
-  says: InterimSay[];
-  /** 思考全文（T013 验收 F5）；摘要和秒数页面不用，日志里也没有（T013 C1）。 */
-  reasoning: { full: string } | null;
-  tools: ToolStep[];
-  answer: { text: string; elements: TextElement[] } | null;
-  thinkingSeconds: number;
-  tokens: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
-  /** T010.3：这一轮最后一条 assistant/message 的模型显示名（日志里没有就退回 id）。 */
-  model: string;
-  cost: number | null;
-  /** 模型正在重试（第几次、为什么）。 */
-  retry: { attempt: number; reason: string; inSeconds: number; code?: string } | null;
-  /** 这一轮没做完：原因来自内核，按原因给下一步（去设置 / 再发一次）。 */
-  failure: { cause: FailureCause; reason: string; code?: string } | null;
-  question: QuestionView | null;
-  compaction: CompactionView | null;
-  /** 这一轮出的画布（日志里 tool/result.meta.canvas）。 */
-  canvas: CanvasViewDoc | null;
-  /** 这一轮回答下面的确认卡（日志里 propose_action 的提议 + card/decision）。 */
-  card: ConfirmCardFact | null;
-  /** 你的消息：发送中 / 没送到（重发用同一个请求编号，内核只收一次）。 */
-  delivery: 'sending' | 'unsent' | null;
-  /** 停下的时间（status 为 interrupted 时）。 */
-  stoppedAt: string | null;
 }
 
 /** 日期分隔的文案：今天 / 昨天 / 10月26日，后面带时分。 */

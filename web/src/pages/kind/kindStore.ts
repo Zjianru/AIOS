@@ -8,272 +8,38 @@
 import { create } from 'zustand';
 import { toast } from 'sonner';
 import { answerQuestions, cancelTurn, cardAct, compactThread, connectSession, dismissQuestions, fetchEventsPage, fetchFirstUse, fetchStatus, peekAvailableModels, recheckRoot, reportMonitor, selectSessionModel, sendMessage, setUnauthorizedHandler } from '@/data/service';
-import type { AvailableModelRow } from '@/data/service';
-import { dayLabelOf } from '@/lib/numbers';
+import type { Frame, ServiceEvent } from '@/data/service';
 import { useSettingsState } from '@/lib/settingsState';
 import { effortName } from './effortName';
 import { eventSelectionEffort, serviceSelectionEffort } from './effortSelection';
-import type { Frame, RootState, ServiceEvent } from '@/data/service';
 
-/** agent 帧是 Frame 的一个分支（线上帧类型由 Rust 生成）。 */
-type AgentFrame = Extract<Frame, { type: 'agent' }>;
-import { reconnectDelayMs } from '@/data/reconnect';
-import type { GateDetail, GateState } from './KernelGate';
+import { EMPTY_STATS } from './types';
+import type { AgentFrame, KindState } from './types';
+import { applyAcceptEligibility, applyCardSignals, rememberCardSignals } from './cardSignals';
+import { FIRST_INDEX_BASE, canvasTitleOf, decorate, indexOf } from './viewUtils';
+import { addUnsentView, removeView, unsentSends } from './unsent';
+import { applyRootState } from './rootState';
+import { mergeCcViews } from './ccViews';
+import { catalogCache, useStreamStore } from './streams';
+export { useStreamStore };
+import { DEMO_MODEL } from './labels';
+import type { GateState } from './KernelGate';
+import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
+import type { TurnLabels } from './turnViews';
+import type { TurnViewData } from './turnViews';
+import { applyTaskCardStates } from './taskCardState';
+import { canvasTracks, compactionViewOf, deriveTurnViews, mergeCanvasTracks, prependOlderViews, reconcileTaskCards, taskCcFacts } from './turnViews';
 import { contextPercent, contextTokens } from '@/data/turnUsage';
 import { getModelSettings } from '@/data/keyring';
-import { setHostHome } from '@/data/service';
 import { go } from '@/app/navigate';
-import type { AskAnswer } from '@/data/service';
-import { parseTaskRelay } from '@/data/taskResult';
-import { memoryChanged } from './memoryCards';
 import { mark } from '@/lib/perf';
-import {
-  canvasTracks,
-  ccViewOf,
-  compactionViewOf,
-  deriveTurnViews,
-  gateVerdictOf,
-  mergeCanvasTracks,
-  prependOlderViews,
-  reconcileTaskCards,
-  taskCcFacts,
-  upstreamChangedOf,
-  userRpcIdOf,
-} from './turnViews';
-import type { CanvasTrack, TurnLabels, TurnViewData } from './turnViews';
-import { applyTaskCardStates } from './taskCardState';
-import type { TaskReadHeader } from '@/data/generated/TaskReadHeader';
+import { memoryChanged } from './memoryCards';
+import { reconnectDelayMs } from '@/data/reconnect';
+import { setHostHome } from '@/data/service';
+
+
+
 export type { CompactionView, QuestionView, ToolStep, TurnUserView, TurnViewData } from './turnViews';
-
-export const PAGE_LAST = 5;
-export const PAGE_OLDER = 20;
-const FIRST_INDEX_BASE = 1_000_000;
-
-function dayKeyOf(seconds: number | null): string {
-  if (!seconds) return '';
-  const date = new Date(seconds * 1000);
-  return date.getFullYear() + '-' + date.getMonth() + '-' + date.getDate();
-}
-
-/** 一次性算好日期分隔与「上次查看之后」的位置，列表渲染时只查索引，不在数组里找。 */
-function decorate(views: TurnViewData[]): {
-  dayLabels: Map<string, string>;
-  lastSeenId: string | null;
-  lastSeenCounts: { moved: number; waiting: number };
-} {
-  const dayLabels = new Map<string, string>();
-  let previous = '';
-  for (const view of views) {
-    const key = dayKeyOf(view.startedAt);
-    if (key !== previous) {
-      dayLabels.set(view.id, dayLabelOf(view.startedAt));
-      previous = key;
-    }
-  }
-  const lastSeenId = views.length > 4 ? views[views.length - 4].id : null;
-  return { dayLabels, lastSeenId, lastSeenCounts: { moved: 3, waiting: 5 } };
-}
-
-/** ：会话合计（服务 status.stats 给；页面不自己加）。 */
-export interface SessionStats {
-  turns: number;
-  steps: number;
-  input: number;
-  cacheRead: number;
-  cacheWrite: number;
-  output: number;
-  cost: number | null;
-  unpriced: boolean;
-  /** 上下文占用（服务 status.stats 给；页面不自己算）。 */
-  contextUsed: number;
-  contextWindow: number;
-}
-
-const EMPTY_STATS: SessionStats = {
-  turns: 0,
-  steps: 0,
-  input: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-  output: 0,
-  cost: null,
-  unpriced: false,
-  contextUsed: 0,
-  contextWindow: 0,
-};
-
-interface KindState {
-  views: TurnViewData[];
-  byId: Map<string, TurnViewData>;
-  firstItemIndex: number;
-  nextCursor: string | null;
-  /** 当前最老一条日志的 seq（往上翻时 beforeSeq = oldestSeq，不含本条）。 */
-  oldestSeq: number | null;
-  hasOlder: boolean;
-  loadingOlder: boolean;
-  initialLoading: boolean;
-  /** 每次成功加载首屏就 +1（T055：从别的页点「去看」时等 Kind 页新一屏加载完再滚）。 */
-  loadCount: number;
-  atBottom: boolean;
-  streamingTurnId: string | null;
-  dayLabels: Map<string, string>;
-  lastSeenId: string | null;
-  lastSeenCounts: { moved: number; waiting: number };
-  /** ：还没有接模型（空库）；true 时 Kind 首屏是第一次填 key。 */
-  firstUse: boolean;
-  /** 根会话不可用时的整页说明；ok = 正常对话。 */
-  gate: GateState | 'ok';
-  gateDetail: GateDetail | null;
-  recheck: () => Promise<void>;
-  /** 和内核的连接：断了就自动重连，期间不能发。 */
-  connection: { state: 'online' } | { state: 'reconnecting'; attempt: number };
-  /** ：会话 id（ready 帧给；草稿 localStorage 的键用它）。 */
-  sessionId: string | null;
-  /** 会话工作目录（status 给；空串=旧服务没给，路径照原样显示）。 */
-  cwd: string;
-  /** 上下文占用（%），底栏悬停可见。 */
-  usage: number;
-  compacting: boolean;
-  /** 演示用：下一条消息送不到。 */
-  /** ：模型 id → 显示名（来自模型设置；拿不到就用 id）。 */
-  modelNames: Record<string, string>;
-  /** ：模型 id → contextWindow（模型设置里的窗口；拿不到就不显示压缩占用）。 */
-  modelWindows: Record<string, number>;
-  /** ：模型 id → 连接显示名（错误原因里用；取不到写「模型服务」）。 */
-  connectionNames: Record<string, string>;
-  /** 当前用的模型（底栏的模型选择，； 加价格/窗口/思考档）。 */
-  model: {
-    connectionId: string;
-    modelId: string;
-    label: string;
-    /** 生效价格（美元/百万 token，服务端按用户价或目录标价算好）；没有价格就是 undefined。 */
-    price?: { input: number; output: number; cacheRead?: number; cacheWrite?: number };
-    contextWindow?: number;
-    thinks?: boolean;
-    /** 这个模型能选的档（厂商自己的叫法）；没有就是不能调。 */
-    efforts?: string[];
-    /** 下一轮实际要发的档（F2：服务端内核算好的实际档；没有想要的档时是最近档）。 */
-    effort?: string;
-    /**  F2：用户要的档（选择器显示实际档，提示时对比）。 */
-    effortActual?: string;
-  };
-  /** ：用户最后选的档（换到不能调的模型也记着）。 */
-  wantedEffort?: string;
-  /** ：会话合计（服务 status.stats）。 */
-  stats: SessionStats;
-  /**  F2：模型信息是否已从服务初始化过（之后 refreshStats 不覆盖用户的选择，避免异步竞态）。 */
-  modelInitialized: boolean;
-  /** 模型选择器开着没有（失败块的「换模型」要靠它打开）。 */
-  pickerOpen: boolean;
-  /** 打开/收起模型选择器。 */
-  setPickerOpen: (open: boolean) => void;
-  /** ：Kind 首屏引导：先看是不是空库（首次使用），否则加载对话。 */
-  bootstrap: () => Promise<void>;
-  /** 离开 Kind 场景时主动断开：旧 socket 不在后台收帧（设置页往返不再叠第二条）。 */
-  disconnect: () => void;
-  loadInitial: () => Promise<void>;
-  loadOlder: () => Promise<void>;
-  setAtBottom: (value: boolean) => void;
-  /** T041：把 task-read 事实映射进非终态派发卡（Kind 页挂载/轮询用；与任务对话同源）。 */
-  setTaskCardStates: (tasks: ReadonlyMap<string, TaskReadHeader>) => void;
-  send: (
-    text: string,
-    options?: {
-      pastes?: string[];
-      attachments?: { id: string; name: string; bytes: number }[];
-      /** ：画布放进来的那一句带着画布身份（id + 标题）。 */
-      canvas?: { id: string; title: string };
-      /** T054.2：结果卡「要求修改」带进输入框的那张卡。 */
-      resultCard?: { taskId: string; title: string; version: number };
-    },
-  ) => Promise<boolean>;
-  resend: (turnId: string) => void;
-  stop: () => void;
-  answer: (turnId: string, answers: AskAnswer[]) => void;
-  dismiss: (turnId: string) => void;
-  /** 确认卡：确认某一项（服务跑核对和执行，回执由 card/decision 事件回填）。 */
-  confirmCard: (callId: string, optionId: string) => Promise<void>;
-  /** 确认卡：暂不（什么都不执行，记 dismissed）。 */
-  dismissCard: (callId: string) => Promise<void>;
-  /** 结果卡：接受（服务登记当前版本+报告，回执由 card/decision 事件回填）。 */
-  acceptTaskResult: (callId: string, reportId?: string) => Promise<void>;
-  /** T053：门结果卡判定（通过/需修正；note 是用户原话，空白当没有）。 */
-  judgeGate: (
-    callId: string,
-    conclusion: 'pass' | 'needs_fix',
-    note?: string,
-  ) => Promise<void>;
-  /** T054.2：点「要求修改」把结果卡放进 Kind 输入框（Composer 消费后清）。 */
-  pendingResultCard: { taskId: string; title: string; version: number } | null;
-  modifyTaskResult: (card: { taskId: string; title: string; version: number }) => void;
-  clearPendingResultCard: () => void;
-  /** T055.3 G1：输入框里现在带着哪张结果卡（发送/删除/清空后清空）；结果卡据此写「已带进输入框」。 */
-  composerResultCard: { taskId: string; title: string; version: number } | null;
-  setComposerResultCard: (
-    card: { taskId: string; title: string; version: number } | null,
-  ) => void;
-  compact: () => void;
-  setModel: (model: KindState['model']) => void;
-  /** ：从服务刷新会话合计/汇率/币种。 */
-  refreshStats: () => Promise<void>;
-  /** ：换思考档（下一轮生效）。 */
-  setEffort: (effort: string) => Promise<void>;
-  /**  F2：应用一次服务端选择（wanted/actual 都由服务给），补目录字段并提示。 */
-  applySelection: (
-    selection: {
-      connectionId: string;
-      modelId: string;
-      label: string;
-      effortWanted?: string;
-      effortActual?: string;
-    },
-    announce?: boolean,
-  ) => Promise<void>;
-  /** ：选中模型后补目录字段（档位/价格/窗口），让档位选择立刻可用。 */
-  hydrateModel: (selection: {
-    connectionId: string;
-    modelId: string;
-    label: string;
-    effort?: string;
-  }) => Promise<void>;
-  /** ：每个画布出过的版本和最新版在哪一轮（从日志折叠）。 */
-  canvasTracks: Record<string, CanvasTrack>;
-  /** ：正在流式收到的画布标题（工作过程里画「正在画 · 标题」）；没在画是 null。 */
-  drawingCanvas: { turnId: string; title: string } | null;
-  /** ：点了旧版画布那一行要跳到的那一轮（只影响滚动，不改日志）。 */
-  reveal: { turnId: string; at: number } | null;
-  revealTurn: (turnId: string) => void;
-  /// T055：滚到 Kind 对话里的第 turn 轮（已加载直接滚；没加载先往前加载；找不到返回 false）。
-  revealTurnNumber: (turn: number) => Promise<boolean>;
-  /// T055：滚到出这个任务结果卡的那一轮；给了 preferredTurn 时优先选不晚于它的最新一轮
-  ///（同一任务多份结果时按 wait 项的轮号取最新卡；没给就选最早）。
-  revealTaskResult: (taskId: string, preferredTurn?: number) => Promise<boolean>;
-}
-
-function indexOf(views: TurnViewData[]): Map<string, TurnViewData> {
-  const map = new Map<string, TurnViewData>();
-  for (const view of views) map.set(view.id, view);
-  return map;
-}
-
-function applyRootState(root: RootState): void {
-  if (root.state === 'ok') {
-    const gate = useKindStore.getState().gate;
-    if (gate !== 'unreachable' && gate !== 'token') {
-      useKindStore.setState({ gate: 'ok', gateDetail: null });
-    }
-    return;
-  }
-  const mapped: GateState =
-    root.kind === 'lost'
-      ? 'lost'
-      : root.kind === 'corrupt'
-        ? 'broken'
-        : root.kind === 'busy'
-          ? 'busy'
-          : 'unreachable';
-  useKindStore.setState({ gate: mapped, gateDetail: { path: root.path ?? undefined, line: root.line ?? undefined } });
-}
 
 /** ：当前连接 + 重连状态；lastSeq 是页面已处理到的日志序号（重连补齐去重用）。 */
 let activeSocket: WebSocket | null = null;
@@ -281,76 +47,6 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let recheckTimer: ReturnType<typeof setTimeout> | null = null;
 let reconnectAttempt = 0;
 let lastSeq = 0;
-/** 没送到内核的本地消息：viewId -> { requestId, text, pastes, files, canvas }；重发复用同一个 requestId。 */
-const unsentSends = new Map<
-  string,
-  {
-    requestId: string;
-    text: string;
-    pastes: string[];
-    files: { id: string; name: string; bytes: number }[];
-    canvas?: { id: string; title: string };
-    resultCard?: { taskId: string; title: string; version: number };
-  }
->();
-
-function removeView(viewId: string): void {
-  useKindStore.setState((state) => {
-    const views = state.views.filter((view) => view.id !== viewId);
-    return { views, byId: indexOf(views) };
-  });
-}
-
-/** 发不出去时在对话里留一条「没送到内核」的本地消息（重发成功后移除）。 */
-function addUnsentView(
-  viewId: string,
-  text: string,
-  pastes: string[],
-  files: { id: string; name: string; bytes: number }[],
-  canvas?: { id: string; title: string },
-  resultCard?: { taskId: string; title: string; version: number },
-): void {
-  useKindStore.setState((state) => {
-    if (state.views.some((view) => view.id === viewId)) return {};
-    const view: TurnViewData = {
-      id: viewId,
-      startedAt: null,
-      durationMs: null,
-      status: 'completed',
-      user: {
-        text,
-        elements: [],
-        pastes,
-        files,
-        canvas: canvas ?? null,
-        resultCard: resultCard ?? null,
-        rpcId: null,
-      },
-      taskResults: [],
-      says: [],
-      reasoning: null,
-      tools: [],
-      answer: null,
-      thinkingSeconds: 0,
-      tokens: { input: 0, output: 0 },
-      model: '模型服务',
-      cost: null,
-      retry: null,
-      failure: null,
-      question: null,
-      compaction: null,
-      canvas: null,
-      card: null,
-      delivery: 'unsent',
-      stoppedAt: null,
-    };
-    const views = state.views.concat(view).sort(
-      (left, right) => Number(left.id.split('-')[1]) - Number(right.id.split('-')[1]),
-    );
-    return { views, byId: indexOf(views) };
-  });
-}
-
 /** 按已处理到的 lastSeq 重连；失败后指数退避，横幅显示第几次。 */
 function openSocket(): void {
   // 同一时刻只留一条连接：recheck → loadInitial 撞上已经连着的旧 socket 时，两条连接
@@ -449,167 +145,12 @@ const liveToolCalls = new Map<string, { name: string; arguments: string }>();
  */
 let taskCardStates: ReadonlyMap<string, TaskReadHeader> = new Map();
 
-/** T053：门判定 relay 回填被把关任务卡状态词（live 和刷新共用；按任务 id 记最近一次）。 */
-let gateVerdictByTask: ReadonlyMap<
-  string,
-  { conclusion: 'pass' | 'needs_fix'; candidateReport: string }
-> = new Map();
-/** T053：上游变了的下游（upstream_changed relay；交出新 ready 报告时清除）。 */
-let upstreamChangedByTask: ReadonlySet<string> = new Set();
-
-function rememberCardSignals(events: readonly ServiceEvent[]): void {
-  let verdicts = gateVerdictByTask;
-  let changed = upstreamChangedByTask;
-  for (const event of events) {
-    if (event.type !== 'user/message') continue;
-    const message = event.data?.message;
-    const routed = gateVerdictOf(message);
-    if (routed) {
-      const existing = verdicts.get(routed.taskId);
-      if (
-        existing?.conclusion !== routed.conclusion ||
-        existing?.candidateReport !== routed.candidateReport
-      ) {
-        verdicts = new Map(verdicts).set(routed.taskId, {
-          conclusion: routed.conclusion,
-          candidateReport: routed.candidateReport,
-        });
-      }
-    }
-    const rpcId = userRpcIdOf(message);
-    if (rpcId?.startsWith('upstream-changed:')) {
-      const downstream = upstreamChangedOf(message);
-      if (downstream && !changed.has(downstream.downstreamId)) {
-        changed = new Set(changed).add(downstream.downstreamId);
-      }
-      continue;
-    }
-    const relay = parseTaskRelay(message, 0);
-    if (relay && changed.has(relay.taskId)) {
-      const without = new Set(changed);
-      without.delete(relay.taskId);
-      changed = without;
-    }
-  }
-  gateVerdictByTask = verdicts;
-  upstreamChangedByTask = changed;
-}
-
-function applyCardSignals(views: TurnViewData[]): TurnViewData[] {
-  if (gateVerdictByTask.size === 0 && upstreamChangedByTask.size === 0) return views;
-  return views.map((view) => {
-    if (
-      !view.taskResults.some(
-        (fact) => gateVerdictByTask.has(fact.taskId) || upstreamChangedByTask.has(fact.taskId),
-      )
-    ) {
-      return view;
-    }
-    return {
-      ...view,
-      taskResults: view.taskResults.map((fact) => {
-        const verdict = gateVerdictByTask.get(fact.taskId);
-        const nextVerdict =
-          verdict && fact.reportId === verdict.candidateReport ? verdict.conclusion : undefined;
-        const upstreamChanged = upstreamChangedByTask.has(fact.taskId);
-        if (
-          fact.gateVerdict === nextVerdict &&
-          (fact.upstreamChanged === true) === upstreamChanged
-        ) {
-          return fact;
-        }
-        return {
-          ...fact,
-          gateVerdict: nextVerdict,
-          ...(upstreamChanged ? { upstreamChanged: true } : {}),
-        };
-      }),
-    };
-  });
-}
-
-/**
- * T054：结果卡上的「接受」「要求修改」由会话事实派生：只给每个任务最后一张结果卡，
- * 且它 ready、未接受；有门的要门已判通过（门任务自己的卡不出）。
- */
-/** T054.2 F1：每个任务「确认改要求」回执的 seq；比它早的结果卡已经是旧版本。 */
-function requirementChangeSeqs(): Map<string, number> {
-  const seqs = new Map<string, number>();
-  for (const event of liveEvents) {
-    if (event.type !== 'card/decision') continue;
-    const decision = event.data as unknown as {
-      action?: unknown;
-      phase?: unknown;
-      data?: { result?: { task_id?: unknown } };
-    };
-    if (decision?.action !== 'update_task_requirement' || decision.phase !== 'confirmed') continue;
-    const taskId = decision.data?.result?.task_id;
-    if (typeof taskId !== 'string' || taskId === '') continue;
-    if (typeof event.seq !== 'number') continue;
-    // 取**最新**一次回执：第二次改要求时，上一版的卡早于新回执，要一起收起来。
-    const current = seqs.get(taskId);
-    if (current === undefined || event.seq > current) seqs.set(taskId, event.seq);
-  }
-  return seqs;
-}
-
-function applyAcceptEligibility(views: TurnViewData[]): TurnViewData[] {
-  const lastCard = new Map<string, string>();
-  const changedSeqs = requirementChangeSeqs();
-  for (const view of views) {
-    for (const fact of view.taskResults) {
-      if (fact.id.startsWith('task-report:')) lastCard.set(fact.taskId, fact.id);
-    }
-  }
-  let changedAny = false;
-  const next = views.map((view) => {
-    let changed = false;
-    const taskResults = view.taskResults.map((fact) => {
-      if (!fact.id.startsWith('task-report:')) return fact;
-      const gateSelf = fact.gate?.state === 'pending_verdict';
-      const accepted =
-        fact.decision?.phase === 'confirmed' &&
-        !(gateSelf && fact.decision.data?.conclusion !== undefined);
-      const gatePassed = fact.gate?.state !== 'waiting' || fact.gateVerdict === 'pass';
-      // T054.2 F1：确认改要求之后、新版本结果卡出来之前，旧版本的结果卡已经是旧卡：
-      // 接受和「要求修改」一起收起来（刷新按同一条回执重建）。
-      const changedSeq = changedSeqs.get(fact.taskId);
-      const staleAfterChange =
-        fact.seq !== undefined && changedSeq !== undefined && fact.seq < changedSeq;
-      const acceptable =
-        lastCard.get(fact.taskId) === fact.id &&
-        fact.state === 'ready' &&
-        !gateSelf &&
-        gatePassed &&
-        !accepted &&
-        !staleAfterChange;
-      if ((fact.acceptable === true) === acceptable) return fact;
-      changed = true;
-      return { ...fact, acceptable };
-    });
-    if (!changed) return view;
-    changedAny = true;
-    return { ...view, taskResults };
-  });
-  return changedAny ? next : views;
-}
-
 /** 折卡之后再套任务库事实（T038 折卡 + T041 状态映射 + T053 门判定/上游变了 + T054 接受按钮）。 */
 function finishViews(views: TurnViewData[]): TurnViewData[] {
   return applyAcceptEligibility(
     applyCardSignals(applyTaskCardStates(reconcileTaskCards(views), taskCardStates)),
+    liveEvents,
   );
-}
-
-/** 从还没流完的参数 JSON 里取 canvas 的 title；还没流到（或半个转义）就先给空串。 */
-function canvasTitleOf(partial: string): string {
-  const match = /"title"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(partial);
-  if (!match) return '';
-  try {
-    return JSON.parse('"' + match[1] + '"') as string;
-  } catch {
-    return '';
-  }
 }
 
 /** 有确认卡的提议/决定到达：重推所有轮（新卡会把没动过的旧卡标成 replaced）。 */
@@ -907,29 +448,6 @@ function applyFrame(frame: Frame): void {
   if (frame.type === 'task-changed') return;
   applyAgentEvent(frame.event);
 }
-
-/**
- * T028.5：把抄送 Kind 的行按时间插进列表。
- *
- * 抄送不是一轮：单独一条 view（cc 字段），按发生时间插在第一个更晚的轮之前；
- * 同一条 request id 只成一行（inbox/spliced 与领取后的 user/message 都收）。
- */
-function mergeCcViews(views: TurnViewData[], events: ServiceEvent[]): TurnViewData[] {
-  const facts = taskCcFacts(events);
-  if (facts.length === 0) return views;
-  let next = views;
-  for (const { cc, at } of facts) {
-    const id = 'task-cc-' + cc.inputId;
-    if (next.some((view) => view.id === id)) continue;
-    const view = ccViewOf(cc, at);
-    const index = next.findIndex((item) => item.startedAt !== null && item.startedAt > at);
-    next = index < 0 ? next.concat(view) : next.slice(0, index).concat(view, next.slice(index));
-  }
-  return next;
-}
-
-/** 从日志事实派生界面的一轮（打开/历史/往上翻；其余能力逐票补）。 */
-const DEMO_MODEL = { connectionId: 'deepseek', modelId: 'deepseek-chat', label: 'DeepSeek Chat' };
 
 /** 派生只拿事件和显示名表；node 用例不装 store 也能跑 turnViews。 */
 export function turnLabels(): TurnLabels {
@@ -1565,16 +1083,6 @@ export const useKindStore = create<KindState>()((set, get) => ({
   },
 
 }));
-/** ：连接 id → 模型目录（第一次用到时拉一次；价格/窗口/思考档从这里来）。 */
-const catalogCache = new Map<string, AvailableModelRow[]>();
-
-/** 流式文本单独放一个 store：只有最后一条在重绘，别的消息不跟着重建。 */
-export const useStreamStore = create<{ turnId: string | null; itemId: string | null; text: string }>(() => ({
-  turnId: null,
-  itemId: null,
-  text: '',
-}));
-
 // r4 #1：任何调用拿到 401（service 请求层唯一判断）→ 令牌说明页，先于第一次使用页。
 setUnauthorizedHandler(() => {
   useKindStore.setState({

@@ -7,126 +7,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import type { FixtureOptions } from './support/options';
+import { startReplay } from './support/replay';
+
 const FIXTURE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures');
-
-interface ReplaySelection {
-  file: string;
-  override?: string;
-  paceMs?: number;
-}
-
-/** T010.2：场景 -> 录好的会话日志 + 覆盖文件（手写 SSE 已删除）。 */
-function replaySelection(options: FixtureOptions): ReplaySelection {
-  if (options.failure === 'credential') return { file: 'text', override: 'failure-credential' };
-  if (options.failure === 'model') return { file: 'text', override: 'failure-model' };
-  if (options.failure === 'retry-then-succeed') return { file: 'text', override: 'failure-retry' };
-  if (options.failure === 'unknown') return { file: 'text', override: 'failure-unknown' };
-  if (options.realTurn) return { file: 'real', paceMs: 20 };
-  if (options.usageTurn) return { file: 'usage', paceMs: 400 };
-  if (options.tinyPercent) return { file: 'usage-tiny', paceMs: 400 };
-  if (options.usageReadOnly) return { file: 'usage-read-only', paceMs: 400 };
-  if (options.questionDegrade) return { file: 'question-degrade' };
-  if (options.askTurn) return { file: 'ask', paceMs: options.askTurnPaceMs };
-  if (options.toolTurn) return { file: 'tool' };
-  // T023：工具前说明 → read hello.txt → 最终答案；pace 150 让实时阶段能被观察到。
-  if (options.pretextTurn) return { file: 't023-pretext', paceMs: 150 };
-  // T023：同一轮放慢到 400ms/帧，设置页往返后还有一段实时流可观察。
-  if (options.pretextSlowTurn) return { file: 't023-pretext-slow', paceMs: 400 };
-  // T059 F5：内容超过视口的长流式回答，用来在流式追加中验证滚轮不被钉回底部。
-  if (options.t059LongStream) return { file: 't059-long-stream', paceMs: 40 };
-  // 记忆页联动的假模型脚本：记住/记一笔/5 个回合/做梦 apply+总结。
-  if (options.memoryFlow) {
-    if (options.memoryLiveCard) return { file: 't060-memory-live-card', paceMs: 10 };
-    return options.memoryFailDream
-      ? { file: 't060-memory', override: 't060-memory-fail-dream', paceMs: 10 }
-      : { file: 't060-memory', paceMs: 10 };
-  }
-  if (options.codeBlock) return { file: 'tool-code' };
-  if (options.toolCards) return { file: 'tool-cards' };
-  // 只保留 Kind 现有工具（read/glob/grep）：T030.2a 收窄后 Kind 没有 write/edit/bash。
-  if (options.t013Interrupted) return { file: 'tool-interrupted-legal', paceMs: 800 };
-  if (options.canvas) {
-    // T015.5：streaming 把 canvas 的参数拆成几段慢慢流（页面画「正在画 · 标题」）；
-    // errors 是三个错误触发按钮的画布。
-    if (options.canvas === 'streaming') return { file: 'canvas-streaming', paceMs: 120 };
-    return { file: options.canvas === 'interactive' ? 'canvas' : 'canvas-' + options.canvas };
-  }
-  if (options.localFilePath) return { file: 'local-file-text' };
-  if (options.highUsage) return { file: 'high-usage' };
-  if (options.t014Query) return { file: 't014-query' };
-  if (options.t014Confirm) return { file: 't014-confirm' };
-  if (options.t014Mask) return { file: 't014-mask' };
-  if (options.t014Web) return { file: 't014-web' };
-  if (options.t014Search) return { file: 't014-search' };
-  if (options.t014Fetch) return { file: 't014-fetch' };
-  return {
-    file: 'text',
-    paceMs: options.slowMs ? Math.max(1, Math.round(options.slowMs / 6)) : undefined,
-  };
-}
-
-/** T029.3：重启接续夹具的初始路由文件（不含重启那一轮；测试拿到任务 id 后再生成完整路由）。 */
-function restartRouteFile(options: FixtureOptions): string | null {
-  if (!options.t029Restart) return null;
-  return 't029-routes-' + options.t029Restart + '.json';
-}
-
-/** 起 aios-replay（打印一行 aios-replay: http://…）；每夹具一个进程。
- *
- * T029.3：显式 routesFile 和 port 用于服务重启前换回放脚本（同一个端口，连接不用改）。
- */
-function startReplay(
-  options: FixtureOptions,
-  replayFile?: string,
-  routesFile?: string | null,
-): { child: ReturnType<typeof spawn>; url: Promise<string> } {
-  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-  const bin = process.env.AIOS_REPLAY_BIN ?? path.join(repoRoot, 'target/debug/aios-replay');
-  // 双会话（Kind + ThinAgent）按请求体各回各的脚本；路由文件里帧间隔逐条给。
-  const routeFile =
-    routesFile === undefined
-      ? (restartRouteFile(options) ??
-        t057RouteFile(options) ??
-        t056RouteFile(options) ??
-        t055RouteFile(options) ??
-        t030RouteFile(options) ??
-        t013RouteFile(options) ??
-        t052RouteFile(options) ??
-        t053RouteFile(options) ??
-        t054RouteFile(options) ??
-        taskResultRouteFile(options))
-      : routesFile;
-  const args: string[] = [];
-  if (routeFile) {
-    args.push('--routes', path.isAbsolute(routeFile) ? routeFile : path.join(FIXTURE_DIR, routeFile));
-  } else {
-    const selection = replaySelection(options);
-    args.push('--file', replayFile ?? path.join(FIXTURE_DIR, selection.file + '.jsonl'));
-    if (selection.override) args.push('--override', path.join(FIXTURE_DIR, selection.override + '.json'));
-    if (selection.paceMs) args.push('--pace-ms', String(selection.paceMs));
-  }
-  // 假厂商也回一份 /v1/models：保存连接会来拉一次（默认按 DeepSeek 的真实模型配）。
-  const vendorModels = options.vendorModels ?? ['deepseek-flash', 'deepseek-v4-pro'];
-  if (vendorModels.length > 0) args.push('--vendor-models', vendorModels.join(','));
-  args.push('--host', '127.0.0.1', '--port', '0');
-  const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-  const url = new Promise<string>((resolve, reject) => {
-    let output = '';
-    const timer = setTimeout(() => reject(new Error('aios-replay 启动超时: ' + output)), 20_000);
-    child.stdout?.on('data', (chunk: Buffer) => {
-      output += chunk.toString();
-      const match = /aios-replay: (http:\/\/\S+)/.exec(output);
-      if (match) {
-        clearTimeout(timer);
-        resolve(match[1]);
-      }
-    });
-    child.stderr?.on('data', (chunk: Buffer) => {
-      output += chunk.toString();
-    });
-  });
-  return { child, url };
-}
 
 /** 用 /connect 换到的 cookie 调 /api（e2e 不再带 query token）。 */
 export async function apiPost(
@@ -186,239 +70,6 @@ export interface FxGate {
   hold(on: boolean): void;
   /** 放行被扣住的那次请求（回 502，服务走后备汇率），之后不再扣。 */
   release(): void;
-}
-
-export interface FixtureOptions {
-  /// first request 回一次工具调用（read hello.txt），拿到工具结果后再回最终文本。
-  toolTurn?: boolean;
-  /// T023：第一步先流一段「工具前说明」再调 read hello.txt，第二步回最终答案。
-  /// 回放 pace 150ms，让「工具之后、最终答案之前」的实时阶段能被 e2e 观察到。
-  pretextTurn?: boolean;
-  /// T023：同上，但 pace 400ms、最终答案 8 段，设置页往返后还有实时流可观察。
-  pretextSlowTurn?: boolean;
-  /// T059 F5：120 行长流式回答，内容超过视口、流式追加中。
-  t059LongStream?: boolean;
-  /// 预写根会话日志带三张程序记忆卡（许可/整理完/没跑成），验小卡渲染。
-  memoryCards?: boolean;
-  /// 假模型脚本带记忆工具与做梦（记住/记一笔/攒够许可/整理/撤销）。
-  memoryFlow?: boolean;
-  /// 做梦第一次模型请求强制 400（失败卡原因用例）。
-  memoryFailDream?: boolean;
-  /// turn3 里 Kind 调 memory_dream_now（许可卡在回合中途到，live 渲染用例）。
-  memoryLiveCard?: boolean;
-  /// 路径显示：三步回放（cwd 内写、cwd 外写、最终文本）；夹具里的 __CWD__ / __OUTSIDE__ 起服务前换成真实目录。
-  pathsTurn?: boolean;
-  /// T013.6：最终回答里带一个代码块（复制按钮用）。
-  codeBlock?: boolean;
-  /// T013.5 修复：经写任务 ThinAgent 产生 write/edit/bash + task_report 一轮（工作过程页的
-  /// 卡片用）。T030.2a 收窄后 Kind 没有写/改/跑命令，过程只能由 ThinAgent 合法产生。
-  t013ProcessTask?: boolean;
-  /// T017.3：一轮里 glob + 一个不认识的工具（搜索卡与通用输入/输出卡用）。
-  toolCards?: boolean;
-  /// T013.5：工具做完后被停下的一轮（工作过程页的「已停止」）。
-  t013Interrupted?: boolean;
-  /// T015.1：画布夹具。interactive 是拖滑块/换标签、内容超过 420px 的那张；cdn 验地址清单和隔离；
-  /// loop 验死循环不卡页面。T015.2 加 versions：同一画布两版（第 2 版用 edits 改），再一条第三轮回答。
-  /// T015.4 加 send：画布里一个「按这个存」按钮（aios.send），第 2 轮的回答另备一条。
-  /// T015.5 加 streaming：参数拆成多段慢慢流（「正在画 · 标题」）；errors：脚本报错/
-  /// 未处理 rejection/CSP 违规三个按钮。
-  /// T015.5 审计修复加 init-error（画布顶层一打开就 throw）和 forged-export（画布自己发 export）。
-  /// 每份都是手写的模型回放脚本（第一轮回 canvas 工具调用，第二轮回一句回答）。
-  canvas?:
-    | 'interactive'
-    | 'cdn'
-    | 'loop'
-    | 'versions'
-    | 'send'
-    | 'streaming'
-    | 'errors'
-    | 'init-error'
-    | 'forged-export';
-  /// 每次模型回放延迟毫秒（T007.5 停止用例要在运行中按停止/Esc）。
-  slowMs?: number;
-  /// first request 回一次 ask_user_question（两题：一题选项、一题自己写）。
-  askTurn?: boolean;
-  /// T017.2：提问卡的降级回放（25 字小标题、空 label 选项、2233 字的问题）。
-  questionDegrade?: boolean;
-  /// T007.13：让 question/asked 分批到达（毫秒/帧）。
-  askTurnPaceMs?: number;
-  /// 模型失败脚本：前两次 500 后成功 / 一直 500 / 401 凭证错误。
-  failure?: 'retry-then-succeed' | 'model' | 'credential' | 'unknown';
-  /// 高上下文占用回放（配小 --context-window），用来触发自动压缩 / 让压缩按钮可用。
-  highUsage?: boolean;
-  /// serve 的 --context-window（自动压缩测试用 5000）。
-  contextWindow?: number;
-  /// 在页面和服务之间加一层可断开/恢复的 HTTP+WS 代理（断线重连用例）。
-  proxy?: boolean;
-  /// 启动前把根会话状态文件做成 lost / corrupt（说明页用例）。
-  rootFault?: 'lost' | 'corrupt';
-  /// 先起一个 holder serve 占住写锁，测试 serve 起来会报 busy（说明页用例）。
-  busyRoot?: boolean;
-  /// T008.4：不预置 Keyring 连接（首次使用用例）；serve 仍能起（T008.3b）。
-  emptyKeyring?: boolean;
-  /// T035.2：假厂商 /v1/models 回的模型列表（保存连接会拉一次）。默认 DeepSeek 的两条。
-  vendorModels?: string[];
-  /// T016.5：启动前把 settings.json 写成坏文件；serve 仍要能起（读设置是宽松的）。
-  settingsFault?: 'corrupt';
-  /// T009.5：serve 进程的 HOME；传 'dataDir' 用数据目录（页面路径缩写用例）。
-  home?: 'dataDir' | string;
-  /// T010.3：用带 reasoning/缓存读写的用量夹具（turn-usage 用例）。
-  usageTurn?: boolean;
-  /// T013.6：缓存命中不到 1%（usage 夹具的 cacheRead=1/input=1000）。
-  tinyPercent?: boolean;
-  /// T012 F1：用量夹具去掉缓存写（只填缓存读价的端到端用）。
-  usageReadOnly?: boolean;
-  /// T015 验收补 B2：回答里裸文本绝对路径 + `open <path>` 代码块（页面渲染成 /local-file 链接）。
-  localFilePath?: boolean;
-  /// T010.5：用真 key 录的夹具（多步工具/思考/缓存读/压缩）。
-  realTurn?: boolean;
-  /// T014.2：先加载 skill aios-settings，再查 AIOS 的设置和用量，最后一句回答（回放）。
-  t014Query?: boolean;
-  /// T014.4：两轮各出一张确认卡（三个选项一张、一个选项一张），回放只给模型流。
-  t014Confirm?: boolean;
-  /// T014.5：一张只有一个选项的屏蔽卡，回放只给模型流。
-  t014Mask?: boolean;
-  /// T014.6：先加载 skill web，再收尾一句回答（联网搜索的目录/工具表用）。
-  t014Web?: boolean;
-  /// T014.7：先加载 skill web，再 web_search 一次，最后回答引用来源 URL（联网搜索回放用）。
-  t014Search?: boolean;
-  /// T014.8：先加载 skill web，再读一个网页、读一个本机地址，最后收尾（读网页回放用）。
-  t014Fetch?: boolean;
-  /// T014.6：起一个本地假 Exa；serve 用 --exa-base-url 指过去。
-  fakeExa?: boolean;
-  /// T014.6：把 EXA_API_KEY 放进 serve 的环境变量，用来证明 key 不从环境变量读。
-  envExaKey?: string;
-  /// T014.2：起服务前先放一条旧格式（v16）的根会话日志，用来验旧日志照读。
-  legacySession?: boolean;
-  /// T022：把服务的汇率请求指到本地代理，测试可以等 status 进了 fx 的 await 再动作。
-  slowFx?: boolean;
-  /// T028.5：起服务前先写好根会话日志（翻页夹具）。cc-pages：同一条抄送的
-  /// agent/inbox/spliced 落在上一页末尾、领取后的 user/message 落在下一页开头。
-  kindHistory?: 'cc-pages';
-  /// T024.4：任务结果卡。前几种跑真 Kind + ThinAgent 两个会话（按请求体路由）；
-  /// missing / bad-json 用预写好的根会话日志直接验卡与退回文本。
-  /// live：同一个任务脚本放慢帧间隔，供「在跑时打开任务对话」的实时用例观察。
-  taskResult?:
-    | 'ready'
-    | 'blocked'
-    | 'failed'
-    | 'waiting'
-    | 'missing'
-    | 'bad-json'
-    | 'chat'
-    | 'live'
-    /// .6：任务对话长流式（任务页钉底/滚轮不被拉回的 e2e）。
-    | 'long'
-    /// T028.5：任务对话输入框/抄送/暂停/Attempt 的夹具。
-    | 'say'
-    | 'resume'
-    | 'handback'
-    /// T028.5：两个任务、席位 1，验证叫醒停任务可以多占 1 个。
-    | 'seats'
-    /// 两个任务在同一轮报回（两张结果卡、刷新同序）。
-    | 'two'
-    /// ThinAgent 先说话再调工具（任务对话的 say 步）。
-    | 'pretext';
-  /// T029.3：重启接续夹具。main 四个任务（两个被打断、一个 ready、一个待答），
-  /// single 一个被打断的任务；重启那一轮的路由由测试拿到真实任务 id 后再生成。
-  t029Restart?: 'main' | 'single';
-  /// T037：serve 的启动参数（模拟 ds 预检单的 run.sh：`--connection`/`--model` 只当初始默认）。
-  startupSelection?: { connection: string; model: string; effort?: string };
-  /// T046：用 catalog 里不存在的模型 id 起会话，让 route_tool_update 返回 None（测工具表全量固定）。
-  routeModel?: string;
-  /// T030：写任务、接受、bash 开关、工作树、非仓库和改错字的真服务夹具。
-  /// worktree 场景会在起服务前把数据目录做成一个 git 仓库；expand 的第二段路由由测试
-  /// 拿到真实任务 id 后再生成。
-  t030?: 'write' | 'ask' | 'expand' | 'bash' | 'worktree' | 'nonrepo' | 'typo' | 'scope';
-  /// T052：任务图夹具——Kind 先 skill 再 task_graph_propose，再 propose_action 出确认卡；
-  /// 卡上的 task_id 用 __GRAPH_ID__ 占位，由回放从请求体里换成真图 id。
-  t052Graph?: boolean;
-  /// T052：同一条任务图流程，但第一项 ThinAgent 报 failed（验证下游不自己跑）。
-  t052Fail?: boolean;
-  /// T053：任务图带只读里程碑门（先查 → 独立核查 → 通过后再写）。
-  t053Gate?: boolean;
-  /// T054：调查任务夹具（Kind 直接 task_accept 无写集）；oldCard 是写任务交两份结果；
-  /// update 是写任务交结果后改要求（带结果卡进输入框、第 2/3 版要求）。
-  t054?: 'investigation' | 'oldCard' | 'update' | 'updateWindow' | 'updateWindow2';
-  /// T055：工作页读侧夹具。board 是四个 ready 调查任务（等你接受≥4）；
-  /// history 是写任务 + 后续多轮文本（较早一轮有结果卡）；confirm 是一张没绑任务的确认卡；
-  /// f3 是同一任务两次结果落在不同 Kind 轮（F3 定位敏感性）。
-  t055?: 'board' | 'history' | 'confirm' | 'f3';
-  /// T056.2：账本夹具。Kind 带约束派出调查任务；ThinAgent 记两条叙述（同 topic 换一条）、
-  /// 查一次历史，再交 ready 报告。
-  t056?: 'ledger';
-  /// T057：程序门夹具。Kind 提一张带程序门命令的图；ThinAgent 只交被把关任务的结果，
-  /// 门由程序跑命令。
-  t057?: 'pass' | 'fail' | 'timeout';
-}
-
-/** T024.4：双会话回放用哪份按请求体路由的文件；预写会话的两种不需要。 */
-function taskResultRouteFile(options: FixtureOptions): string | null {
-  const scenario = options.taskResult;
-  if (!scenario || scenario === 'missing' || scenario === 'bad-json') return null;
-  // T028.5：三份新场景各有自己的路由文件；其余沿用 T024 的。
-  if (
-    scenario === 'say' ||
-    scenario === 'resume' ||
-    scenario === 'handback' ||
-    scenario === 'seats'
-  ) {
-    return 't028-routes-' + scenario + '.json';
-  }
-  // 同轮两张卡、任务对话的 say 步。
-  if (scenario === 'two' || scenario === 'pretext') {
-    return 't031-routes-' + scenario + '.json';
-  }
-  return 't024-routes-' + scenario + '.json';
-}
-
-/** T052：任务图场景的回放路由（Kind 建图/出卡，ThinAgent 报 ready）。 */
-function t052RouteFile(options: FixtureOptions): string | null {
-  if (options.t052Fail) return 't052-routes-graph-fail.json';
-  if (!options.t052Graph) return null;
-  return 't052-routes-graph.json';
-}
-
-/** T057：程序门场景的回放路由（Kind 提程序门图，ThinAgent 交被把关结果）。 */
-function t057RouteFile(options: FixtureOptions): string | null {
-  if (options.t057 === undefined) return null;
-  return 't057-routes-' + options.t057 + '.json';
-}
-
-/** T056.2：账本场景的回放路由（Kind 带约束派任务，ThinAgent 记账本再报 ready）。 */
-function t056RouteFile(options: FixtureOptions): string | null {
-  if (options.t056 !== 'ledger') return null;
-  return 't056-routes-ledger.json';
-}
-
-/** T053：里程碑门场景的回放路由（Kind 提图/出卡，ThinAgent 按 B→门→C 报 ready）。 */
-function t053RouteFile(options: FixtureOptions): string | null {
-  if (!options.t053Gate) return null;
-  return 't053-routes-graph.json';
-}
-
-/** T055：工作页读侧的回放路由（board/history/confirm）。 */
-function t055RouteFile(options: FixtureOptions): string | null {
-  if (!options.t055) return null;
-  return 't055-routes-' + options.t055 + '.json';
-}
-
-/** T054：调查任务（Kind 受理只读任务，ThinAgent 报 ready）。 */
-function t054RouteFile(options: FixtureOptions): string | null {
-  if (!options.t054) return null;
-  return 't054-routes-' + options.t054 + '.json';
-}
-
-/** T030：写任务/接受/bash/工作树这些场景的回放路由。 */
-function t030RouteFile(options: FixtureOptions): string | null {
-  if (!options.t030) return null;
-  return 't030-routes-' + options.t030 + '.json';
-}
-
-/** T013.5 修复：写任务 ThinAgent 的合法生产回放（write/edit/bash + task_report）。 */
-function t013RouteFile(options: FixtureOptions): string | null {
-  if (!options.t013ProcessTask) return null;
-  return 't013-routes-process.json';
 }
 
 /** 接缝 5：假 DeepSeek 脚本回放 + 真 aios-dev serve（页面也由它同源托管）。 */
@@ -1103,7 +754,7 @@ export async function startKernelFixture(
 /** T007.11 真 key DoD：真 DeepSeek + /tmp/aios-t007-dod/work；无 key 时调用方 skip。 */
 
 /** 页面 ↔ 服务之间的可断开 HTTP+WS 代理（DoD6 断线重连用）。 */
-function proxyTo(targetPort: number) {
+export function proxyTo(targetPort: number) {
   const state: { server: Server | null; port: number; sockets: Set<net.Socket> } = {
     server: null,
     port: 0,
@@ -1231,7 +882,7 @@ export async function startRealKernelFixture(
   };
 }
 
-/** T008.5 真 key DoD：/tmp/aios-t008-dod，空 Keyring，页面自己填 key。 */
+/** 真 key DoD：/tmp/aios-t008-dod，空 Keyring，页面自己填 key。 */
 export async function startRealDodFixture(): Promise<KernelFixture> {
   const root = process.env.AIOS_DOD_ROOT ?? '/tmp/aios-t008-dod';
   const workDir = path.join(root, 'work');
@@ -1283,7 +934,7 @@ export async function startRealDodFixture(): Promise<KernelFixture> {
   };
 }
 
-/** T013 DoD2：真 key（MiniMax）的夹具——/tmp/aios-t013-dod 下的数据目录 + 小项目工作目录。 */
+/** DoD2：真 key（MiniMax）的夹具——/tmp/aios-t013-dod 下的数据目录 + 小项目工作目录。 */
 export async function startT013KernelFixture(): Promise<KernelFixture> {
   const apiKey = process.env.MINIMAX_API_KEY;
   if (!apiKey) throw new Error('缺少 MINIMAX_API_KEY（D35：DoD 从环境变量读 key）');
@@ -1292,7 +943,7 @@ export async function startT013KernelFixture(): Promise<KernelFixture> {
   const dataDir = path.join(root, 'data');
   await mkdir(workDir, { recursive: true });
   await mkdir(dataDir, { recursive: true });
-  // 小项目：只有几个文件（自己造的测试文件）。
+ // 小项目：只有几个文件（自己造的测试文件）。
   await writeFile(path.join(workDir, 'notes.md'), '# 项目笔记' + String.fromCharCode(10) + String.fromCharCode(10) + '第一行：DOD13-NOTES' + String.fromCharCode(10));
   await writeFile(path.join(workDir, 'todo.txt'), 'DOD13-TODO：买牛奶、写代码' + String.fromCharCode(10));
   await writeFile(path.join(workDir, 'config.json'), '{"name":"dod13"}' + String.fromCharCode(10));
@@ -1349,7 +1000,7 @@ export async function startT013KernelFixture(): Promise<KernelFixture> {
 }
 
 /**
- * DoD 真 key 的通用夹具（T008 模式）：空库起服务，页面里真实加连接并验证（key 从 env 读、只进页面输入）。
+ * DoD 真 key 的通用夹具（ 模式）：空库起服务，页面里真实加连接并验证（key 从 env 读、只进页面输入）。
  * 每条用例用自己的数据目录（root/<用例名>/），跑完不清，便于按条回查日志。
  */
 export async function startDodConnectFixture(root: string): Promise<KernelFixture> {
@@ -1403,28 +1054,28 @@ export async function startDodConnectFixture(root: string): Promise<KernelFixtur
   } as unknown as KernelFixture;
 }
 
-/** T013 DoD2：真 key（MiniMax）的夹具——/tmp/aios-t013-dod 下的数据目录 + 小项目工作目录。 */
+/** DoD2：真 key（MiniMax）的夹具——/tmp/aios-t013-dod 下的数据目录 + 小项目工作目录。 */
 export async function startT013DodFixture(caseName: string): Promise<KernelFixture> {
   return startDodConnectFixture(
     path.join(process.env.AIOS_T013_DOD_ROOT ?? '/tmp/aios-t013-dod', caseName),
   );
 }
 
-/** T015 DoD2：真 key（MiniMax）画布四件事——/tmp/aios-t015-dod 下的数据目录 + 小项目工作目录。 */
+/** DoD2：真 key（MiniMax）画布四件事——/tmp/aios-t015-dod 下的数据目录 + 小项目工作目录。 */
 export async function startT015DodFixture(caseName: string): Promise<KernelFixture> {
   return startDodConnectFixture(
     path.join(process.env.AIOS_T015_DOD_ROOT ?? '/tmp/aios-t015-dod', caseName),
   );
 }
 
-/** T016.7 DoD2：真 key（MiniMax 国内站）获取/打断/再发/解除——/tmp/aios-t016-dod 下的数据目录。 */
+/** DoD2：真 key（MiniMax 国内站）获取/打断/再发/解除——/tmp/aios-t016-dod 下的数据目录。 */
 export async function startT016DodFixture(caseName: string): Promise<KernelFixture> {
   return startDodConnectFixture(
     path.join(process.env.AIOS_T016_DOD_ROOT ?? '/tmp/aios-t016-dod', caseName),
   );
 }
 
-/** T017.5 DoD2：真 key（MiniMax）卡片机制三步——/tmp/aios-t017-dod 下的数据目录 + 小项目工作目录。 */
+/** DoD2：真 key（MiniMax）卡片机制三步——/tmp/aios-t017-dod 下的数据目录 + 小项目工作目录。 */
 export async function startT017DodFixture(): Promise<KernelFixture> {
   return startDodConnectFixture(process.env.AIOS_T017_DOD_ROOT ?? '/tmp/aios-t017-dod');
 }

@@ -22,7 +22,8 @@ test('接缝 5 骨架：真 serve 活着，连接视图只有 Kind、无原型�
   await expect(page.getByText('内核状态')).toHaveCount(0);
   await expect(page.getByText('原型：', { exact: false })).toHaveCount(0);
   await expect(page.getByText('AIOS 概念 ·', { exact: false })).toHaveCount(0);
-  for (const label of ['现在', '工作', '项目', '团队', '资料', '记忆', '能力']) {
+  // 只拦原型专属入口：现在 / Kind / 工作 / 记忆是产品侧栏，允许存在。
+  for (const label of ['项目', '团队', '资料', '能力']) {
     await expect(page.getByRole('button', { name: label, exact: true })).toHaveCount(0);
   }
   await expect(page.getByText('Kind').first()).toBeVisible();
