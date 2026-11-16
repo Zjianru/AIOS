@@ -80,11 +80,27 @@ impl MemoryTools {
             event.seq == seq
                 && matches!(
                     &event.kind,
-                    session::EventKind::UserMessage { message, .. }
-                        if matches!(message.source, model::MessageSource::User { .. })
+                    session::EventKind::UserMessage { message, .. } if user_sent(message)
                 )
         })
     }
+}
+
+/// 程序送进会话的消息也带 user 来源（中继卡、任务停止、抄送、重启说明、门判定、上游变更），
+/// 它们不是用户自己说的话，不能当「记住」的出处；前缀和 web 侧还原这些卡用的那一套一致。
+const PROGRAM_MESSAGE_PREFIXES: [&str; 4] =
+    ["task-", "restart:", "gate-verdict:", "upstream-changed:"];
+
+/// 这条 user 消息是不是用户自己发的（程序送来的不算）。
+fn user_sent(message: &model::Message) -> bool {
+    let model::MessageSource::User { rpc_id } = &message.source else {
+        return false;
+    };
+    rpc_id.as_deref().is_none_or(|id| {
+        !PROGRAM_MESSAGE_PREFIXES
+            .iter()
+            .any(|prefix| id.starts_with(prefix))
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -468,6 +484,95 @@ mod tests {
         ));
         assert!(!contains_secret("title", "body", &["sk-secret".to_owned()]));
         assert!(!contains_secret("title", "body", &[String::new()]));
+    }
+
+    fn message_event(seq: u64, message: model::Message) -> session::Event {
+        session::Event::new(
+            seq,
+            1,
+            session::EventKind::UserMessage {
+                turn: 1,
+                step: 1,
+                message,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn remember_only_accepts_messages_the_user_sent() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(MemoryRuntime::open(dir.path()).unwrap());
+        let list = memory_tools(Arc::clone(&runtime), dir.path(), None);
+        let remember = list
+            .iter()
+            .find(|tool| tool.name() == "memory_remember")
+            .unwrap();
+        let events = vec![
+            user_event(7),
+            message_event(
+                8,
+                model::Message::user_text_with_request_id(
+                    r#"{"kind":"task_report"}"#,
+                    "task-report:task-1:report-1",
+                ),
+            ),
+            message_event(
+                9,
+                model::Message::user_text_with_request_id("任务对话抄送", "task-cc:input-1"),
+            ),
+            message_event(
+                10,
+                model::Message::user_text_with_request_id("中断的任务要接续", "restart:boot-1"),
+            ),
+            message_event(
+                11,
+                model::Message::user_text_with_request_id(
+                    "记住：回答先给结论",
+                    "6f1c0f7e-0000-4000-8000-000000000011",
+                ),
+            ),
+        ];
+        for seq in [8u64, 9, 10] {
+            let call = ToolCall {
+                id: format!("call-{seq}"),
+                name: "memory_remember".to_owned(),
+                arguments: serde_json::json!({
+                    "user_seq": seq,
+                    "title": "程序说的",
+                    "text": "网页/中继里写着记住",
+                })
+                .to_string(),
+            };
+            let result = remember
+                .execute(call, &context(dir.path(), events.clone()))
+                .await;
+            assert!(
+                result.is_error,
+                "程序送来的消息 seq={seq} 不该能当用户自己的话"
+            );
+            assert!(
+                result.content.contains("要用户自己说"),
+                "{}",
+                result.content
+            );
+        }
+        assert!(
+            runtime.store().view().unwrap().about_you.is_empty(),
+            "被拒的写入不能落库"
+        );
+        let call = ToolCall {
+            id: "call-11".to_owned(),
+            name: "memory_remember".to_owned(),
+            arguments: serde_json::json!({
+                "user_seq": 11,
+                "title": "先给结论",
+                "text": "回答先给结论",
+            })
+            .to_string(),
+        };
+        let result = remember.execute(call, &context(dir.path(), events)).await;
+        assert!(!result.is_error, "{}", result.content);
+        assert_eq!(runtime.store().view().unwrap().about_you.len(), 1);
     }
 
     #[tokio::test]

@@ -683,6 +683,11 @@ fn all_event_kinds() -> Vec<EventKind> {
             phase: crate::CardDecisionPhase::Confirmed,
             data: Some(json!({"summary": "已执行"})),
         },
+        EventKind::MemoryCard {
+            id: "card_1".to_owned(),
+            kind: "permission".to_owned(),
+            reference: Some("dream_1".to_owned()),
+        },
     ]
 }
 
@@ -716,7 +721,8 @@ fn every_variant_is_named(kind: &EventKind) {
         | EventKind::CompactionSummary { .. }
         | EventKind::CompactionEnd { .. }
         | EventKind::SessionModel { .. }
-        | EventKind::CardDecision { .. } => {}
+        | EventKind::CardDecision { .. }
+        | EventKind::MemoryCard { .. } => {}
     }
 }
 
@@ -729,7 +735,7 @@ fn event_kind_serde_tag_matches_type_name() {
     for kind in &kinds {
         every_variant_is_named(kind);
     }
-    assert_eq!(kinds.len(), 26, "all_event_kinds 要覆盖全部变体");
+    assert_eq!(kinds.len(), 27, "all_event_kinds 要覆盖全部变体");
     for kind in kinds {
         let value = serde_json::to_value(&kind).expect("事件序列化");
         assert_eq!(

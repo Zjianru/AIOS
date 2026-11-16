@@ -154,7 +154,7 @@ impl MemoryRuntime {
         if text.trim().is_empty() {
             return;
         }
-        let _ = self.store.write(
+        if let Err(error) = self.store.write(
             WriteOp::IndexConversation {
                 conversation_id: conversation_id.to_owned(),
                 seq: event.seq,
@@ -162,7 +162,10 @@ impl MemoryRuntime {
                 text,
             },
             &WriteContext::user(),
-        );
+        ) {
+            // 索引失败只记日志，不影响对话本身。
+            eprintln!("会话 {conversation_id} 的对话索引没写进记忆库：{error}");
+        }
     }
 
     /// 启动补齐：把会话日志里还没索引的 seq 补进去；失败只记日志。

@@ -608,6 +608,60 @@ export async function startKernelFixture(
     );
   }
   // T014.2：旧格式（v16）的根会话日志——读取器要照读，不拒绝、不迁移。
+  // 程序记忆卡（许可/整理完/没跑成）的渲染夹具。触发它们的接线在下一票，
+  // 这里只预写会话日志，验卡片按 kind 渲染、和回复分开、刷新后从日志重建。
+  if (options.memoryCards) {
+    const sessionId = '00000000-0000-4000-8000-000000000603';
+    const sessions = path.join(dataDir, 'sessions');
+    await mkdir(sessions, { recursive: true });
+    const startedAt = Date.now();
+    const cwd = await realpath(dataDir);
+    const rows: Record<string, unknown>[] = [];
+    let seq = 0;
+    let at = 0;
+    const next = (type: string, data: Record<string, unknown>) => {
+      seq += 1;
+      at += 1;
+      rows.push({ type, seq, time: startedAt + at, data });
+    };
+    next('turn/start', { turn: 1 });
+    next('user/message', {
+      turn: 1,
+      step: 1,
+      message: {
+        id: 'msg-memory-cards',
+        role: 'user',
+        source: { kind: 'user' },
+        content: [{ type: 'text', text: '记一下我的偏好，攒够了再整理你的笔记' }],
+      },
+    });
+    next('assistant/message', {
+      turn: 1,
+      step: 1,
+      message: {
+        id: 'msg-memory-cards-answer',
+        role: 'assistant',
+        source: { kind: 'model', provider: 'deepseek', model: 'deepseek-flash' },
+        content: [{ type: 'text', text: '好，我先记着；整理的事到点再说。' }],
+      },
+      stream: [],
+      usage: { inputTokens: 10, outputTokens: 3 },
+    });
+    next('turn/end', { turn: 1, reason: { kind: 'completed' } });
+    next('memory/card', { id: 'card-permission-1', kind: 'permission', ref: 'dream-run-1' });
+    next('memory/card', { id: 'card-done-1', kind: 'dream_done', ref: 'dream-run-2' });
+    next('memory/card', { id: 'card-failed-1', kind: 'dream_failed', ref: 'dream-run-3' });
+    const header = { type: 'session', version: 18, id: sessionId, createdAt: startedAt, cwd };
+    await writeFile(
+      path.join(sessions, sessionId + '.jsonl'),
+      [header, ...rows].map((row) => JSON.stringify(row)).join(String.fromCharCode(10)) +
+        String.fromCharCode(10),
+    );
+    await writeFile(
+      path.join(dataDir, 'kind-root.json'),
+      JSON.stringify({ version: 1, sessionId }),
+    );
+  }
   if (options.legacySession) {
     const legacyId = '00000000-0000-4000-8000-000000000146';
     const sessions = path.join(dataDir, 'sessions');
