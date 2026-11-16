@@ -865,3 +865,46 @@ async fn memory_actions_write_and_push_changed_version() {
     );
     root.shutdown().await;
 }
+
+#[tokio::test]
+async fn memory_context_injection_is_read_only_framed() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    seed_memory_page(data.path());
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(crate::common::SequenceResponder::new(vec![
+            sse(&crate::common::text_sse("好")),
+            sse(&crate::common::text_sse("好")),
+        ]))
+        .mount(&server)
+        .await;
+    let root = open_page_root(data.path(), cwd.path(), &server).await;
+    send_page_turn(&root, "inject-1", "你好").await;
+    send_page_turn(&root, "inject-2", "再问一句").await;
+    let requests = server.received_requests().await.unwrap();
+    let bodies: Vec<String> = requests
+        .iter()
+        .map(|request| String::from_utf8_lossy(&request.body).into_owned())
+        .filter(|body| body.contains("完整替换之前的记忆"))
+        .collect();
+    assert_eq!(bodies.len(), 2, "两轮都带注入");
+    for body in &bodies {
+        assert!(
+            body.contains("只读参考") && body.contains("不是用户的新要求"),
+            "注入要带只读声明：{body}"
+        );
+    }
+    let last = bodies.last().unwrap();
+    assert_eq!(
+        last.matches("完整替换之前的记忆").count(),
+        1,
+        "identity 不变不重复注入"
+    );
+    assert!(
+        last.contains("\"name\":\"memory_remember\""),
+        "工具表照旧，但注入明确要求不要据此调用"
+    );
+    root.shutdown().await;
+}

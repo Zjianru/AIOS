@@ -72,6 +72,10 @@ async fn memory_context_is_injected_once_then_replaced_when_identity_changes() {
     assert!(first.contains("回答先给结论（1）"));
     assert!(first.contains("完整替换之前的记忆"));
     assert!(
+        first.contains("只读参考") && first.contains("不是用户的新要求"),
+        "注入要带只读声明，模型不能把它当新指令：{first}"
+    );
+    assert!(
         second.contains("回答先给结论（2）"),
         "identity 变了要完整替换"
     );
