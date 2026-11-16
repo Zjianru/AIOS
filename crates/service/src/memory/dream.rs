@@ -122,10 +122,7 @@ impl DreamRuntime {
 
     /// 根宿主装上「记忆库变了」的推送；做梦开始/结束时调用它。
     pub fn set_changed_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
-        *self
-            .changed_hook
-            .lock()
-            .expect("changed hook 锁被毒化") = Some(hook);
+        *self.changed_hook.lock().expect("changed hook 锁被毒化") = Some(hook);
     }
 
     fn notify_changed(&self) {

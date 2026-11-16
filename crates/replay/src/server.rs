@@ -518,4 +518,3 @@ mod tests {
         assert_eq!(memory_id_in(&not_hex), None);
     }
 }
-

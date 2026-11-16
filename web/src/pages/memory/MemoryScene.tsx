@@ -284,6 +284,8 @@ export function MemoryScene() {
     [data?.entries],
   );
   const runs = data?.dream.runs ?? [];
+  // 用 run 行的 outcome 判「正在整理」：服务端检查标志会有一瞬为真，别让按钮闪没。
+  const dreaming = runs[0]?.outcome === 'running';
 
   return (
     <div data-kind="memory-page" className="h-full overflow-y-auto p-4">
@@ -493,7 +495,7 @@ export function MemoryScene() {
               >
                 保存间隔
               </button>
-              {data?.dream.running ? (
+              {dreaming ? (
                 <span className="text-ink-3" data-kind="dream-running">
                   正在整理
                 </span>
