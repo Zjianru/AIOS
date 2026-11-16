@@ -2426,13 +2426,17 @@ async fn kind_task_stop_reports_not_running_for_both_modes() {
 #[tokio::test]
 async fn interrupting_a_running_turn_keeps_the_attempt_and_the_next_sentence_continues_it() {
     let fixture = Fixture::new().await;
-    fixture.router.set_thin_delay(Duration::from_millis(1_000));
+    fixture.router.set_thin_delay(Duration::from_millis(3_000));
     fixture
         .router
         .push_thin(crate::common::text_sse("我还在查"));
     let task = fixture.accept(false).await;
     let store = tasks_store(fixture.data());
     wait_until("第一轮开跑", || attempt_in_flight(&store, &task.id)).await;
+    wait_until("ThinAgent 请求在途", || {
+        !fixture.router.bodies(true).is_empty()
+    })
+    .await;
     let attempt = store
         .task(&task.id)
         .unwrap()
@@ -2954,7 +2958,7 @@ async fn after_report_stop_on_an_idle_task_records_stopped_without_another_relay
 #[tokio::test]
 async fn stopping_after_report_twice_injects_the_fixed_note_once() {
     let fixture = Fixture::new().await;
-    fixture.router.set_thin_delay(Duration::from_millis(2_500));
+    fixture.router.set_thin_delay(Duration::from_millis(6_000));
     fixture.router.push_thin(crate::common::text_sse("还在查"));
     // 插进去的说明会开下一步；这一步 ThinAgent 没报，turn 才收尾。
     fixture.router.push_thin(crate::common::text_sse("不报了"));
@@ -3481,7 +3485,7 @@ async fn global_pause_lets_the_running_turn_finish_and_relays_still_arrive() {
     let host = open_actions_host(&server, data.path(), cwd.path()).await;
     let store = tasks_store(data.path());
     // 让 ThinAgent 的回复慢到暂停确认之后，好在「这一轮在跑」时按下暂停。
-    router.set_thin_delay(Duration::from_millis(1_500));
+    router.set_thin_delay(Duration::from_millis(4_000));
     for script in ready_scripts() {
         router.push_thin(script);
     }
@@ -3666,7 +3670,7 @@ async fn seats_one_holds_the_second_task_until_the_first_reports() {
     service::settings::save(data.path(), &saved).expect("保存席位");
     let host = open_host(&server, data.path(), cwd.path()).await;
     let store = tasks_store(data.path());
-    router.set_thin_delay(Duration::from_millis(1_500));
+    router.set_thin_delay(Duration::from_millis(4_000));
     for title in ["甲", "乙", "丙"] {
         for script in ready_scripts() {
             router.push_thin_for_title(title, script);
@@ -3684,12 +3688,7 @@ async fn seats_one_holds_the_second_task_until_the_first_reports() {
     )
     .await;
     wait_until("第一个任务开跑", || {
-        store
-            .task(&first.id)
-            .unwrap()
-            .unwrap()
-            .latest_attempt()
-            .is_some()
+        attempt_in_flight(&store, &first.id)
     })
     .await;
 
