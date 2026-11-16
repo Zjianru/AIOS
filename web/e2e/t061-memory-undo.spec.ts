@@ -60,6 +60,10 @@ async function rememberAndUndo(page: Page) {
   await expect(rememberChip.locator('[data-action="memory-forget"]')).toHaveCount(0);
   await rememberChip.locator('[data-action="memory-delete"]').click();
   await expect(page.getByText('7 天内能恢复', { exact: false })).toBeVisible({ timeout: 20_000 });
+  // 撤销后小卡状态跟上：文案变已撤销，改/撤销按钮消失（不能拿隔离条目再点 Delete）。
+  await expect(rememberChip).toContainText('已撤销', { timeout: 20_000 });
+  await expect(rememberChip.locator('[data-action="memory-delete"]')).toHaveCount(0);
+  await expect(rememberChip.locator('[data-action="memory-edit"]')).toHaveCount(0);
 }
 
 test('记下了小卡的撤销进隔离区：关于你里消失，隔离区能找回', async ({ page }) => {

@@ -780,6 +780,24 @@ async fn card_undo_is_recoverable_and_same_original_words_can_be_remembered_agai
         "进隔离区"
     );
 
+    // 小卡按 ref 读状态：隔离区条目是 deleted（前端据此显示已撤销、收起按钮）。
+    let response = root
+        .dispatch(service::Call::MemoryRead(service::MemoryReadRequest {
+            query: None,
+            item_id: None,
+            refs: vec![item.id.clone()],
+        }))
+        .await
+        .expect("memory-read");
+    let service::Response::MemoryRead(read) = response else {
+        panic!("expected MemoryRead");
+    };
+    assert_eq!(
+        read.cards.first().map(|card| card.state.as_str()),
+        Some("deleted"),
+        "撤销后小卡状态是 deleted"
+    );
+
     // 同一句原话再说一次：隔离区不是彻底删，来源没有墓碑，能再记进去。
     let again = store
         .write(

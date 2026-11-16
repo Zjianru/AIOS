@@ -23,7 +23,11 @@ function wordOf(kind: string, state: string | undefined): string {
   if (kind === 'permission') return state === 'accepted' ? '已允许' : '做梦许可';
   if (kind === 'dream_done') return state === 'revoked' ? '整理完了 · 已撤销' : '整理完了';
   if (kind === 'dream_failed') return '整理没跑成';
-  if (kind === 'remember') return state === 'revoked' ? '记下了 · 已撤销' : '记下了';
+  if (kind === 'remember') {
+    // 撤销走隔离区时 card_state 是 deleted；两种终态都显示已撤销。
+    if (state === 'revoked' || state === 'deleted') return '记下了 · 已撤销';
+    return '记下了';
+  }
   if (kind === 'note') {
     if (state === 'deleted') return 'Kind 记了一笔 · 已删';
     if (state === 'revoked') return 'Kind 记了一笔 · 已撤销';
@@ -80,7 +84,7 @@ export function MemoChip({ card }: { card: MemoCard }) {
   } else if (card.kind === 'dream_failed') {
     actions.push({ label: '看看', action: 'memory-dream-see', run: () => go('memory') });
   } else if (card.kind === 'remember' && card.id) {
-    if (state !== 'revoked') {
+    if (state !== 'revoked' && state !== 'deleted') {
       actions.push({ label: '改', action: 'memory-edit', run: () => go('memory') });
       // 小卡上的撤销只进隔离区（7 天内能恢复）；彻底删只在记忆页。
       actions.push({
