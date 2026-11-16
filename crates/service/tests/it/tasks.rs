@@ -2765,7 +2765,7 @@ async fn task_stop_after_report_for_a_task_that_is_not_running_reports_the_fixed
 async fn after_report_stop_injects_the_note_denies_other_tools_and_ends_reported() {
     let fixture = Fixture::new().await;
     // 收尾停要落在 ThinAgent 跑着的时候：把第一次响应拖慢，留出插进去的时机。
-    fixture.router.set_thin_delay(Duration::from_millis(600));
+    fixture.router.set_thin_delay(Duration::from_millis(2_500));
     fixture.router.push_thin(crate::common::tool_use_sse(
         1,
         "call-read",
@@ -2875,7 +2875,7 @@ async fn after_report_stop_injects_the_note_denies_other_tools_and_ends_reported
 #[tokio::test]
 async fn after_report_stop_without_a_report_synthesizes_waiting_then_records_stopped() {
     let fixture = Fixture::new().await;
-    fixture.router.set_thin_delay(Duration::from_millis(600));
+    fixture.router.set_thin_delay(Duration::from_millis(2_500));
     fixture
         .router
         .push_thin(crate::common::text_sse("我还在查，别急"));
@@ -2954,7 +2954,7 @@ async fn after_report_stop_on_an_idle_task_records_stopped_without_another_relay
 #[tokio::test]
 async fn stopping_after_report_twice_injects_the_fixed_note_once() {
     let fixture = Fixture::new().await;
-    fixture.router.set_thin_delay(Duration::from_millis(600));
+    fixture.router.set_thin_delay(Duration::from_millis(2_500));
     fixture.router.push_thin(crate::common::text_sse("还在查"));
     // 插进去的说明会开下一步；这一步 ThinAgent 没报，turn 才收尾。
     fixture.router.push_thin(crate::common::text_sse("不报了"));
@@ -3043,7 +3043,7 @@ async fn stopping_now_after_an_after_report_stop_uses_the_immediate_stop() {
 #[tokio::test]
 async fn kind_task_stop_after_report_stops_after_the_next_turn() {
     let fixture = Fixture::new().await;
-    fixture.router.set_thin_delay(Duration::from_millis(600));
+    fixture.router.set_thin_delay(Duration::from_millis(2_500));
     fixture.router.push_thin(crate::common::text_sse("还在查"));
     // 插进去的说明会开下一步；这一步 ThinAgent 没报，turn 才收尾。
     fixture.router.push_thin(crate::common::text_sse("不报了"));
