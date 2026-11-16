@@ -1305,67 +1305,6 @@ impl TaskRuntime {
         self.exec_paused.load(Ordering::SeqCst)
     }
 
-    /// 做梦读报回：after_ms 之后新增/更新的报告、判定、要求改版（原话），按任务分组。
-    /// 只读任务库，不改任何状态；读不出来返回错误（调用方把这一条当失败原因/跳过）。
-    pub(crate) fn dream_task_facts(
-        &self,
-        after_ms: i64,
-    ) -> Result<Vec<crate::memory::DreamTaskFact>, String> {
-        let ids = self.store.task_ids().map_err(|error| error.to_string())?;
-        let mut facts = Vec::new();
-        for id in ids {
-            let Some(task) = self.store.task(&id).map_err(|error| error.to_string())? else {
-                continue;
-            };
-            let mut lines = Vec::new();
-            for report in &task.reports {
-                if report.at < after_ms {
-                    continue;
-                }
-                let state = serde_json::to_value(report.state)
-                    .ok()
-                    .and_then(|value| value.as_str().map(str::to_owned))
-                    .unwrap_or_else(|| "unknown".to_owned());
-                lines.push(format!("报告（{state}）：{}", report.summary));
-                if let Some(question) = &report.question {
-                    lines.push(format!("问题：{question}"));
-                }
-            }
-            for verdict in &task.verdicts {
-                if verdict.at < after_ms {
-                    continue;
-                }
-                let conclusion = serde_json::to_value(verdict.conclusion)
-                    .ok()
-                    .and_then(|value| value.as_str().map(str::to_owned))
-                    .unwrap_or_else(|| "unknown".to_owned());
-                let note = verdict.note.as_deref().unwrap_or("");
-                lines.push(format!("判定（{conclusion}）：{note}"));
-            }
-            for version in &task.versions {
-                if version.at < after_ms {
-                    continue;
-                }
-                if let Some(requirement) = &version.requirement {
-                    lines.push(format!(
-                        "要求第 {} 版改成：{}",
-                        version_at_ordinal(&task, version.at),
-                        requirement
-                    ));
-                }
-            }
-            if !lines.is_empty() {
-                facts.push(crate::memory::DreamTaskFact {
-                    task_id: task.id.as_str().to_owned(),
-                    title: task.title.clone(),
-                    requirement: task.requirement.clone(),
-                    facts: lines,
-                });
-            }
-        }
-        Ok(facts)
-    }
-
     /// 全局暂停的闸门：RootHost 先写设置文件，再改这里的内存值。
     ///
     /// 只挡 launch 准入；relay/notice 照送。排队的效果留在库里，开闸后按原顺序领取。
@@ -4746,14 +4685,6 @@ fn best_effort<T>(what: &str, result: Result<T, TaskError>) {
 
 fn missing_item(text: impl Into<String>) -> MissingItem {
     MissingItem::new(text).expect("缺项描述非空")
-}
-
-/// 要求版本在任务里的序号（1 起）；用来在报回原文里标明「第几版」。
-fn version_at_ordinal(task: &Task, at: i64) -> usize {
-    task.versions
-        .iter()
-        .position(|version| version.at == at)
-        .map_or(0, |index| index + 1)
 }
 
 fn stage_key(stage: Stage) -> &'static str {

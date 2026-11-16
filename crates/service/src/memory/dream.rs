@@ -56,6 +56,76 @@ pub struct DreamTaskFact {
     pub facts: Vec<String>,
 }
 
+/// 做梦读报回：after_ms 之后新增/更新的报告、判定、要求改版（原话），按任务分组。
+/// 只读任务库、不改任何状态；放在记忆这边，executor 只提供任务库读写面。
+pub(crate) fn task_facts(
+    task_runtime: &TaskRuntime,
+    after_ms: i64,
+) -> Result<Vec<DreamTaskFact>, String> {
+    let store = task_runtime.tasks_store();
+    let ids = store.task_ids().map_err(|error| error.to_string())?;
+    let mut facts = Vec::new();
+    for id in ids {
+        let Some(task) = store.task(&id).map_err(|error| error.to_string())? else {
+            continue;
+        };
+        let mut lines = Vec::new();
+        for report in &task.reports {
+            if report.at < after_ms {
+                continue;
+            }
+            let state = serde_json::to_value(report.state)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "unknown".to_owned());
+            lines.push(format!("报告（{state}）：{}", report.summary));
+            if let Some(question) = &report.question {
+                lines.push(format!("问题：{question}"));
+            }
+        }
+        for verdict in &task.verdicts {
+            if verdict.at < after_ms {
+                continue;
+            }
+            let conclusion = serde_json::to_value(verdict.conclusion)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "unknown".to_owned());
+            let note = verdict.note.as_deref().unwrap_or("");
+            lines.push(format!("判定（{conclusion}）：{note}"));
+        }
+        for version in &task.versions {
+            if version.at < after_ms {
+                continue;
+            }
+            if let Some(requirement) = &version.requirement {
+                lines.push(format!(
+                    "要求第 {} 版改成：{}",
+                    version_at_ordinal(&task, version.at),
+                    requirement
+                ));
+            }
+        }
+        if !lines.is_empty() {
+            facts.push(DreamTaskFact {
+                task_id: task.id.as_str().to_owned(),
+                title: task.title.clone(),
+                requirement: task.requirement.clone(),
+                facts: lines,
+            });
+        }
+    }
+    Ok(facts)
+}
+
+/// 要求版本在任务里的序号（1 起）；用来在报回原文里标明「第几版」。
+fn version_at_ordinal(task: &tasks::Task, at: i64) -> usize {
+    task.versions
+        .iter()
+        .position(|version| version.at == at)
+        .map_or(0, |index| index + 1)
+}
+
 /// 程序卡的状态按 ref 从库读；做梦相关的 ref 在 service 层解释。
 pub const DREAM_PERMIT_CARD_REF: &str = "dream_permit";
 
@@ -965,7 +1035,7 @@ impl Tool for TaskReportsTool {
             let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
             let after_ms = clamp_after_ms(args["after_ms"].as_i64(), self.window.after_ms);
             let task_id = args["task_id"].as_str().map(str::to_owned);
-            match task_runtime.dream_task_facts(after_ms) {
+            match task_facts(&task_runtime, after_ms) {
                 Ok(facts) => {
                     let mut lines = Vec::new();
                     for fact in facts {

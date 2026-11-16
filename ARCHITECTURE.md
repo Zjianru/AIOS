@@ -37,9 +37,9 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 ## 记忆
 
 - **数据层（memory crate）**：唯一存储是 <数据目录>/memory.sqlite（schema 与迁移在 store）；条目分 about-you / entry / diary / note，note 可由 Kind 或做梦写，about-you 只由用户与采纳写，日记只由压缩前记一笔写；修订只追加，删到隔离区、彻底删留 tombstone 且 FTS 查不到；写入上下文带 actor 与 dream_run，store 按 actor 再挡一次（Kind 写 about-you、Dream 写条目/日记、Dream 改非笔记都拒绝）。
-- **注入**：服务把记忆当「指令类上下文」经 agent 的 PreStep/instructions 同一条路注入（identity 版本 + 关于你 + 相关条目），不另开消息类型；identity 变了下一轮追加替换，压缩后再出现，手动压缩不注入。
+- **注入**：agent 内置一个 PreStep 能力按 provider 取记忆，provider 由服务装配（MemoryRuntime 的 kind/thin provider）；它给出 identity 版本 + 文本（关于你、相关条目），作为一条新来源的 user 消息（MessageSource::MemoryContext）进请求，不复用 instructions 来源、也不改系统指令；identity 变了下一轮追加替换，压缩后再出现，手动压缩不注入。
 - **做梦是受限后台 agent**：独立会话（Kind 当前模型快照），只在启动/回合结束/任务报回/记忆页打开/用户说整理几个时机顺手检查一次，不常驻、不另建调度器；忙就等下一个时机，错过多个合成一次。工具只给只读（搜、按 id 读记忆/日记、读 Kind 对话、读任务报回）+ 只写笔记的 memory_dream_apply；读窗口从 DreamSettings 的 last_success_at / last_read_seq 起（工具参数只能往里收），网页/文件/工具输出不读；store 以 actor=Dream 再挡一次。结果写 dream_run + 逐处 dream_change，成功/失败出程序卡；撤销逐处只在当前修订仍等于这次写的版本时成立，用户后来改过就跳过并报告。
-- **不进 executor**：记忆与做梦的装配在 service/src/memory/（runtime、工具、页面读写），executor 只保留「给任务会话装记忆上下文 provider」这一处注入接线，没有记忆业务代码。页面协议见协议 16（MemoryRead/MemoryAction + seq=0 的 memory/changed 推送）。
+- **不进 executor**：记忆与做梦的装配在 service/src/memory/（runtime、工具、页面读写、做梦读任务报回的事实整理），executor 只保留「给任务会话装记忆上下文 provider」这一处注入接线、并只提供任务库的只读读写面（tasks_store / exec_paused），没有记忆业务代码。页面协议见协议 16（MemoryRead/MemoryAction + seq=0 的 memory/changed 推送）。
 
 ## 工具、确认卡与根会话
 
