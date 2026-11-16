@@ -326,7 +326,8 @@ impl Tool for MemoryTool {
                         Ok(hits) if hits.is_empty() => ToolResult::success(call.id, "没搜到。"),
                         Ok(hits) => {
                             let mut lines = Vec::new();
-                            for hit in hits {
+                            let first = hits.first();
+                            for hit in &hits {
                                 match hit {
                                     memory::types::SearchHit::Memory(item) => lines.push(format!(
                                         "[记忆 {}] {}：{}",
@@ -345,13 +346,25 @@ impl Tool for MemoryTool {
                                     }
                                 }
                             }
+                            // 卡片带出处目标：记忆/日记跳条目，对话回那一轮；没有结果就不带目标。
+                            let target = first.map(|hit| match hit {
+                                memory::types::SearchHit::Memory(item) => {
+                                    json!({"kind": "memory", "id": item.id})
+                                }
+                                memory::types::SearchHit::Diary(entry) => {
+                                    json!({"kind": "diary", "id": entry.id})
+                                }
+                                memory::types::SearchHit::Conversation { seq, turn, .. } => {
+                                    json!({"kind": "conversation", "seq": seq, "turn": turn})
+                                }
+                            });
                             ToolResult::success_with_meta(
                                 call.id,
                                 lines.join(
                                     "
 ",
                                 ),
-                                json!({"memoryCard":{"kind":"search"}}),
+                                json!({"memoryCard": {"kind": "search", "query": query, "target": target}}),
                             )
                         }
                         Err(error) => {
@@ -583,7 +596,8 @@ mod tests {
                 "程序送来的消息 seq={seq} 不该能当用户自己的话"
             );
             assert!(
-                result.content.contains("要用户自己说"),
+                result.content.contains("不要猜或重试 seq")
+                    && result.content.contains("只有用户新消息明确要求才能存"),
                 "{}",
                 result.content
             );

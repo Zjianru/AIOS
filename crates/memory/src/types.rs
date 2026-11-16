@@ -104,6 +104,8 @@ pub struct RevisionItem {
     pub reason: String,
     pub dream_run_id: Option<String>,
     pub undo_of: Option<u64>,
+    /// 这一版是谁改的（user/kind/dream；旧库迁移的行是 system）。
+    pub actor: String,
     pub created_at: i64,
 }
 

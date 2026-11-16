@@ -5,12 +5,18 @@ import type { MemoryActionKind } from '@/data/service';
 import { go } from '@/app/navigate';
 import { performMemoryAction, useMemoryCardStates } from './memoryCards';
 
+export type MemoCardTarget =
+  | { kind: 'memory' | 'diary'; id: string }
+  | { kind: 'conversation'; turn: number; seq: number };
+
 export interface MemoCard {
   kind: string;
   id?: string;
   title?: string;
   /** 状态从记忆库读时用的引用；程序卡只有 ref，工具卡用记忆 id。 */
   ref?: string;
+  /** 搜索卡的出处目标：点「看出处」能落到条目或那一轮。 */
+  target?: MemoCardTarget;
 }
 
 function wordOf(kind: string, state: string | undefined): string {
@@ -34,7 +40,8 @@ const primaryLinkClass = 'shrink-0 text-2 text-brand underline-offset-2 hover:un
 export function MemoChip({ card }: { card: MemoCard }) {
   const reference = card.ref ?? card.id ?? '';
   const states = useMemoryCardStates([reference]);
-  const state = states[reference];
+  const state = states[reference]?.state;
+  const reason = states[reference]?.error;
   const word = wordOf(card.kind, state);
 
   const act = (action: MemoryActionKind) => {
@@ -91,7 +98,26 @@ export function MemoChip({ card }: { card: MemoCard }) {
       });
     }
   } else if (card.kind === 'search') {
-    actions.push({ label: '看出处', action: 'memory-recall-source', run: () => go('memory') });
+    actions.push({
+      label: '看出处',
+      action: 'memory-recall-source',
+      run: () => {
+        if (!card.target) {
+          go('memory');
+          return;
+        }
+        if (card.target.kind === 'conversation') {
+          sessionStorage.setItem(
+            'aios:memory-jump',
+            JSON.stringify({ turn: card.target.turn, seq: card.target.seq }),
+          );
+          go('kind');
+          return;
+        }
+        sessionStorage.setItem('aios:memory-highlight', card.target.id);
+        go('memory');
+      },
+    });
   }
 
   return (
@@ -105,6 +131,15 @@ export function MemoChip({ card }: { card: MemoCard }) {
       <Bookmark className="size-3 shrink-0 text-wait" strokeWidth={1.7} />
       <span className="shrink-0">{word}</span>
       {card.title ? <span className="min-w-0 truncate text-ink-2">{card.title}</span> : null}
+      {card.kind === 'dream_failed' && reason ? (
+        <span
+          data-kind="memo-error"
+          className="min-w-0 max-w-[24rem] truncate text-ink-3"
+          title={reason}
+        >
+          {reason}
+        </span>
+      ) : null}
       {actions.map((item) => (
         <button
           key={item.action}
@@ -127,7 +162,13 @@ export function memoryCardOf(meta: Record<string, unknown> | null | undefined): 
   if (!meta || typeof meta !== 'object') return null;
   const value = (meta as { memoryCard?: unknown }).memoryCard;
   if (!value || typeof value !== 'object') return null;
-  const card = value as { kind?: unknown; id?: unknown; title?: unknown; ref?: unknown };
+  const card = value as {
+    kind?: unknown;
+    id?: unknown;
+    title?: unknown;
+    ref?: unknown;
+    target?: unknown;
+  };
   if (typeof card.kind !== 'string') return null;
   const id = typeof card.id === 'string' ? card.id : undefined;
   return {
@@ -135,5 +176,22 @@ export function memoryCardOf(meta: Record<string, unknown> | null | undefined): 
     id,
     title: typeof card.title === 'string' ? card.title : undefined,
     ref: typeof card.ref === 'string' ? card.ref : id,
+    target: parseTarget(card.target),
   };
+}
+
+function parseTarget(value: unknown): MemoCardTarget | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const target = value as { kind?: unknown; id?: unknown; turn?: unknown; seq?: unknown };
+  if ((target.kind === 'memory' || target.kind === 'diary') && typeof target.id === 'string') {
+    return { kind: target.kind, id: target.id };
+  }
+  if (
+    target.kind === 'conversation' &&
+    typeof target.turn === 'number' &&
+    typeof target.seq === 'number'
+  ) {
+    return { kind: 'conversation', turn: target.turn, seq: target.seq };
+  }
+  return undefined;
 }

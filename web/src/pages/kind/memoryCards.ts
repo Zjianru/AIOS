@@ -9,7 +9,13 @@ import { useEffect, useState } from 'react';
 import { memoryAction, memoryRead } from '@/data/service';
 import type { MemoryActionKind } from '@/data/service';
 
-type CardStates = Record<string, string>;
+export interface CardState {
+  state: string;
+  /** 失败类卡片的一行原因。 */
+  error?: string;
+}
+
+type CardStates = Record<string, CardState>;
 
 let cache: CardStates = {};
 const known = new Set<string>();
@@ -32,7 +38,12 @@ async function load(): Promise<void> {
   if (refs.length === 0) return;
   loading = memoryRead({ refs })
     .then((response) => {
-      for (const card of response.cards) cache[card.reference] = card.state;
+      for (const card of response.cards) {
+        cache[card.reference] = {
+          state: card.state,
+          ...(card.error ? { error: card.error } : {}),
+        };
+      }
       notify();
     })
     .catch(() => {

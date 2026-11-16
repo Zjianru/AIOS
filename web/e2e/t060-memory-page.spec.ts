@@ -190,6 +190,13 @@ test('记忆：记住/记一笔的小卡，攒够许可→整理→撤销，记�
       { timeout: 15_000 },
     );
 
+    // 故事 10：历次版本写清谁改的（这次是用户改的）。
+    await aboutRow.locator('[data-action="memory-correct"]').click();
+    const editorAgain = page.locator('[data-kind="memory-editor"]');
+    await expect(editorAgain).toBeVisible();
+    await expect(editorAgain).toContainText('你改的', { timeout: 15_000 });
+    await editorAgain.locator('[data-action="memory-cancel"]').click();
+
     // 刷新：页面从库重读，仍是改后的版本。
     await page.reload();
     await expect(page.locator('[data-kind="memory-page"]')).toBeVisible({ timeout: 30_000 });
@@ -201,3 +208,69 @@ test('记忆：记住/记一笔的小卡，攒够许可→整理→撤销，记�
     await fixture.close();
   }
 });
+
+test('没跑成的小卡写一行原因（故事 8）', async ({ page }) => {
+  const fixture = await startKernelFixture({ memoryFlow: true, memoryFailDream: true });
+  try {
+    await page.goto(urlOf(fixture));
+    await send(page, '记住：回答先给结论');
+    await page.waitForTimeout(900);
+    await send(page, '记一下你看到的编码问题');
+    await page.waitForTimeout(900);
+    for (const [text, answer] of [
+      ['3', '好 3'],
+      ['4', '好 4'],
+      ['5', '好 5'],
+    ]) {
+      await send(page, text);
+      await expect(page.getByText(answer, { exact: true })).toBeVisible({ timeout: 30_000 });
+    }
+    const permission = chip(page, 'permission').first();
+    await expect(permission).toBeVisible({ timeout: 30_000 });
+    await permission.locator('[data-action="memory-permit-allow"]').click();
+    const failed = chip(page, 'dream_failed').first();
+    await expect(failed).toBeVisible({ timeout: 60_000 });
+    await expect(failed).toContainText('整理没跑成');
+    const reason = failed.locator('[data-kind="memo-error"]');
+    await expect(reason).toBeVisible({ timeout: 20_000 });
+    await expect(reason).not.toHaveText('');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('搜索命中可点：记忆条目高亮，对话回那一轮（故事 4）', async ({ page }) => {
+  const fixture = await startKernelFixture({ memoryFlow: true });
+  try {
+    await page.goto(urlOf(fixture));
+    await send(page, '记住：回答先给结论');
+    await page.waitForTimeout(900);
+    await gotoMemory(page);
+
+    const search = page.locator('[data-kind="memory-search-input"]');
+    await search.fill('结论');
+    await search.press('Enter');
+    const memoryHit = page.locator('[data-kind="memory-hit"][data-hit-kind="memory"]').first();
+    await expect(memoryHit).toBeVisible({ timeout: 20_000 });
+    await memoryHit.click();
+    const highlighted = page.locator('[data-kind="memory-item"][data-highlight="true"]').first();
+    await expect(highlighted).toBeVisible({ timeout: 20_000 });
+    await expect(highlighted).toContainText('回答先给结论');
+
+    await search.fill('记住');
+    await search.press('Enter');
+    const conversationHit = page
+      .locator('[data-kind="memory-hit"][data-hit-kind="conversation"]')
+      .first();
+    await expect(conversationHit).toBeVisible({ timeout: 20_000 });
+    await conversationHit.click();
+    await expect(page).toHaveURL(/#kind/, { timeout: 20_000 });
+    await expect(page.getByText('记住：回答先给结论', { exact: false })).toBeVisible({
+      timeout: 30_000,
+    });
+  } finally {
+    await fixture.close();
+  }
+});
+
+

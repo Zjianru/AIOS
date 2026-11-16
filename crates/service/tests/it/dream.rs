@@ -479,6 +479,24 @@ async fn dream_failure_emits_failed_card() {
         .expect("失败也要有 run 记录");
     assert_eq!(run.outcome, "failed");
     assert!(!run.error.is_empty(), "失败原因要写进记录");
+    let response = root
+        .dispatch(service::Call::MemoryRead(service::MemoryReadRequest {
+            query: None,
+            item_id: None,
+            refs: vec![run_id.clone()],
+        }))
+        .await
+        .expect("memory-read");
+    let service::Response::MemoryRead(read) = response else {
+        panic!("expected MemoryRead");
+    };
+    let card = read.cards.first().expect("失败卡状态");
+    assert_eq!(card.state, "failed");
+    assert!(
+        card.error.as_deref().is_some_and(|error| !error.is_empty()),
+        "失败卡要带一行原因：{:?}",
+        card.error
+    );
     root.shutdown().await;
 }
 

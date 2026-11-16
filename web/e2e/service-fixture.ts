@@ -35,7 +35,11 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   // T059 F5：内容超过视口的长流式回答，用来在流式追加中验证滚轮不被钉回底部。
   if (options.t059LongStream) return { file: 't059-long-stream', paceMs: 40 };
   // 记忆页联动的假模型脚本：记住/记一笔/5 个回合/做梦 apply+总结。
-  if (options.memoryFlow) return { file: 't060-memory', paceMs: 10 };
+  if (options.memoryFlow) {
+    return options.memoryFailDream
+      ? { file: 't060-memory', override: 't060-memory-fail-dream', paceMs: 10 }
+      : { file: 't060-memory', paceMs: 10 };
+  }
   if (options.codeBlock) return { file: 'tool-code' };
   if (options.toolCards) return { file: 'tool-cards' };
   // 只保留 Kind 现有工具（read/glob/grep）：T030.2a 收窄后 Kind 没有 write/edit/bash。
@@ -197,6 +201,8 @@ export interface FixtureOptions {
   memoryCards?: boolean;
   /// 假模型脚本带记忆工具与做梦（记住/记一笔/攒够许可/整理/撤销）。
   memoryFlow?: boolean;
+  /// 做梦第一次模型请求强制 400（失败卡原因用例）。
+  memoryFailDream?: boolean;
   /// 路径显示：三步回放（cwd 内写、cwd 外写、最终文本）；夹具里的 __CWD__ / __OUTSIDE__ 起服务前换成真实目录。
   pathsTurn?: boolean;
   /// T013.6：最终回答里带一个代码块（复制按钮用）。

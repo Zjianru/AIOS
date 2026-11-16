@@ -369,8 +369,8 @@ async fn remember_tool_rejects_relay_card_seq() {
     );
     let error = tool_result_text(&root, "call-relay");
     assert!(
-        error.contains("要用户自己说"),
-        "工具回执应说明要用户自己说：{error}"
+        error.contains("不要猜或重试 seq") && error.contains("只有用户新消息明确要求才能存"),
+        "工具回执应说明别猜 seq、要用户新消息：{error}"
     );
 }
 
@@ -423,8 +423,8 @@ async fn remember_tool_rejects_quoted_tool_result_seq() {
     );
     let error = tool_result_text(&root, "call-quoted");
     assert!(
-        error.contains("要用户自己说"),
-        "工具回执应说明要用户自己说：{error}"
+        error.contains("不要猜或重试 seq") && error.contains("只有用户新消息明确要求才能存"),
+        "工具回执应说明别猜 seq、要用户新消息：{error}"
     );
 }
 
@@ -587,6 +587,17 @@ async fn search_tool_end_to_end_finds_indexed_conversation() {
     assert!(text.contains("周报格式"), "命中原话：{text}");
     let card = tool_result_meta(&root, "call-search");
     assert_eq!(card["memoryCard"]["kind"], "search", "工具调用出翻记忆小卡");
+    assert_eq!(card["memoryCard"]["query"], "周报格式", "小卡记住搜的什么");
+    assert_eq!(
+        card["memoryCard"]["target"]["kind"], "conversation",
+        "搜索卡的出处目标带会话命中"
+    );
+    assert!(
+        card["memoryCard"]["target"]["turn"]
+            .as_u64()
+            .is_some_and(|turn| turn > 0),
+        "出处目标带轮号：{card}"
+    );
     host.shutdown().await;
 }
 

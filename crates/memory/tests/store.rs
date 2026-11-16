@@ -454,7 +454,7 @@ fn dream_run_id_and_note_targets_are_checked() {
 }
 
 #[test]
-fn schema_version_is_one() {
+fn schema_version_is_two_after_actor_column() {
     let (store, dir, _) = open();
     drop(store);
     let conn = rusqlite::Connection::open(dir.path().join("memory.sqlite")).unwrap();
@@ -465,7 +465,7 @@ fn schema_version_is_one() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(value, "1");
+    assert_eq!(value, "2");
 }
 
 #[test]
@@ -692,4 +692,70 @@ fn user_can_undo_dream_by_run_without_dream_context() {
         .unwrap();
     assert_eq!(undo.dream_applied, 1, "用户能从页面整次撤销");
     assert!(store.item(&note.id).unwrap().is_none(), "新记的笔记被撤掉");
+}
+
+#[test]
+fn revisions_record_who_changed_them() {
+    let (store, _dir, _) = open();
+    let note = store
+        .write(
+            WriteOp::Note {
+                title: "先探编码".to_owned(),
+                summary: String::new(),
+                body: "读之前先探编码".to_owned(),
+                source_kind: "kind".to_owned(),
+                source_ref: "kind:1".to_owned(),
+            },
+            &WriteContext::kind(),
+        )
+        .unwrap()
+        .item
+        .unwrap();
+    assert_eq!(store.revisions(&note.id).unwrap()[0].actor, "kind");
+
+    store
+        .write(
+            WriteOp::Correct {
+                id: note.id.clone(),
+                title: "先探编码".to_owned(),
+                summary: String::new(),
+                body: "读之前先探编码，GBK 也要先转".to_owned(),
+                reason: "user".to_owned(),
+            },
+            &WriteContext::user(),
+        )
+        .unwrap();
+    assert_eq!(
+        store.revisions(&note.id).unwrap().last().unwrap().actor,
+        "user"
+    );
+
+    store
+        .write(
+            WriteOp::DreamApply {
+                run: DreamRunInput {
+                    id: "run-actor".to_owned(),
+                    model: "deepseek-flash".to_owned(),
+                    started_at: 1,
+                    ended_at: 2,
+                    outcome: "running".to_owned(),
+                    report_json: "{}".to_owned(),
+                    usage_json: "{}".to_owned(),
+                },
+                changes: vec![DreamChangeInput {
+                    memory_id: Some(note.id.clone()),
+                    title: "先探编码".to_owned(),
+                    summary: String::new(),
+                    body: "读之前先探编码，GBK 也要先转，再核一遍".to_owned(),
+                    action: DreamAction::Correct,
+                    reason: "dream".to_owned(),
+                }],
+            },
+            &WriteContext::dream("run-actor"),
+        )
+        .unwrap();
+    assert_eq!(
+        store.revisions(&note.id).unwrap().last().unwrap().actor,
+        "dream"
+    );
 }

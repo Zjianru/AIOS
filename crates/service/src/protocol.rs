@@ -1379,6 +1379,8 @@ pub struct MemoryRevisionView {
     pub title: String,
     pub body: String,
     pub reason: String,
+    /// 这一版是谁改的（user/kind/dream/system）。
+    pub actor: String,
     #[serde(
         rename = "dreamRunId",
         default,
@@ -1415,6 +1417,9 @@ pub struct MemoryHitView {
 pub struct MemoryCardStateView {
     pub reference: String,
     pub state: String,
+    /// 失败类卡片的一行原因（目前是没跑成的做梦 run.error）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// 做梦的一处改动（明细里能逐处撤）。

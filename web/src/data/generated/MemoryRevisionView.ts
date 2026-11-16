@@ -3,4 +3,8 @@
 /**
  * 一条修订（条目详情的历史）。
  */
-export type MemoryRevisionView = { revision: number, title: string, body: string, reason: string, dreamRunId?: string | null, createdAt: number, };
+export type MemoryRevisionView = { revision: number, title: string, body: string, reason: string,
+/**
+ * 这一版是谁改的（user/kind/dream/system）。
+ */
+actor: string, dreamRunId?: string | null, createdAt: number, };

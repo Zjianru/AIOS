@@ -8,9 +8,15 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Bookmark, Brain, RotateCcw, Search, Trash2 } from 'lucide-react';
-import type { MemoryDreamRunView, MemoryItemView, MemoryRevisionView } from '@/data/service';
+import type {
+  MemoryDreamRunView,
+  MemoryHitView,
+  MemoryItemView,
+  MemoryRevisionView,
+} from '@/data/service';
 import { memoryRead } from '@/data/service';
 import type { MemoryActionKind } from '@/data/service';
+import { go } from '@/app/navigate';
 import { mountMemoryLive, useMemoryState } from './memoryStore';
 
 function clock(at: number | null | undefined): string {
@@ -28,6 +34,14 @@ function clock(at: number | null | undefined): string {
     ':' +
     pad(date.getMinutes())
   );
+}
+
+/** 历次版本里的「谁改的」。 */
+function actorLabel(actor: string): string {
+  if (actor === 'user') return '你改的';
+  if (actor === 'kind') return 'Kind 改的';
+  if (actor === 'dream') return '做梦改的';
+  return '系统改的';
 }
 
 function dayOf(at: number): string {
@@ -173,8 +187,8 @@ function Editor({
           <p className="mb-1 text-2 text-ink-3">历次版本</p>
           {revisions.map((revision) => (
             <p key={revision.revision} className="text-1 text-ink-3">
-              第 {revision.revision} 版 · {revision.reason} · {clock(revision.createdAt)} ·{' '}
-              {revision.title || '（无标题）'}
+              第 {revision.revision} 版 · {actorLabel(revision.actor)} · {revision.reason} ·{' '}
+              {clock(revision.createdAt)} · {revision.title || '（无标题）'}
             </p>
           ))}
         </div>
@@ -249,8 +263,49 @@ export function MemoryScene() {
     null,
   );
   const [intervalHours, setIntervalHours] = useState<number>(24);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
 
   useEffect(() => mountMemoryLive(), []);
+
+  /** 记忆命中：滚到那一条并高亮一下；行用 DOM 标记，不改列表本身的渲染数据。 */
+  const highlightItem = (id: string) => {
+    setHighlightId(id);
+  };
+
+  useEffect(() => {
+    if (!highlightId) return;
+    const row = document.querySelector<HTMLElement>(
+      '[data-kind="memory-item"][data-id="' + highlightId + '"]',
+    );
+    if (!row) return;
+    row.dataset.highlight = 'true';
+    row.classList.add('rounded-btn', 'ring-1', 'ring-brand');
+    row.scrollIntoView({ block: 'center' });
+    return () => {
+      delete row.dataset.highlight;
+      row.classList.remove('rounded-btn', 'ring-1', 'ring-brand');
+    };
+  }, [highlightId, data]);
+
+  // 从 Kind 小卡「看出处」过来：落到指定条目并高亮。
+  useEffect(() => {
+    const pending = sessionStorage.getItem('aios:memory-highlight');
+    if (!pending) return;
+    sessionStorage.removeItem('aios:memory-highlight');
+    highlightItem(pending);
+  }, []);
+
+  const openHit = (hit: MemoryHitView) => {
+    if (hit.kind === 'conversation') {
+      sessionStorage.setItem(
+        'aios:memory-jump',
+        JSON.stringify({ turn: hit.turn ?? 0, seq: hit.seq ?? 0 }),
+      );
+      go('kind');
+      return;
+    }
+    highlightItem(hit.id);
+  };
 
   useEffect(() => {
     if (data) setIntervalHours(data.dream.intervalHours);
@@ -322,11 +377,15 @@ export function MemoryScene() {
           {error ? <p className="mt-2 text-2 text-fail">{error}</p> : null}
           <div data-kind="memory-search-results" className="mt-2">
             {(data?.search ?? []).map((hit, index) => (
-              <div
+              <button
                 key={hit.kind + hit.id + String(index)}
+                type="button"
                 data-kind="memory-hit"
                 data-hit-kind={hit.kind}
-                className="border-b border-line-2 py-2 text-2 last:border-b-0"
+                data-hit-id={hit.id}
+                data-hit-turn={hit.turn ?? ''}
+                onClick={() => openHit(hit)}
+                className="block w-full border-b border-line-2 py-2 text-left text-2 last:border-b-0 hover:bg-hover"
               >
                 <div className="flex items-center gap-2 text-ink">
                   <span className="shrink-0 text-ink-3">
@@ -340,7 +399,7 @@ export function MemoryScene() {
                   </span>
                 </div>
                 <p className="mt-0.5 line-clamp-2 text-ink-2">{hit.snippet}</p>
-              </div>
+              </button>
             ))}
             {query.trim() && (data?.search ?? []).length === 0 ? (
               <p className="py-2 text-2 text-ink-3">没搜到。</p>

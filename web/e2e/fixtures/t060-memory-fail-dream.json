@@ -1,0 +1,17 @@
+{
+  "patches": [
+    {
+      "at": 7,
+      "entry": {
+        "kind": "throw",
+        "status": 400,
+        "body": {
+          "error": {
+            "type": "invalid_request_error",
+            "message": "e2e 强制做梦失败"
+          }
+        }
+      }
+    }
+  ]
+}

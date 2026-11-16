@@ -3,4 +3,8 @@
 /**
  * 一张程序卡按 ref 现在的状态（active/accepted/deleted/revoked/failed/running）。
  */
-export type MemoryCardStateView = { reference: string, state: string, };
+export type MemoryCardStateView = { reference: string, state: string,
+/**
+ * 失败类卡片的一行原因（目前是没跑成的做梦 run.error）。
+ */
+error?: string | null, };

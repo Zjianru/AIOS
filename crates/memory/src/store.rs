@@ -17,7 +17,7 @@ use crate::types::{
     SearchHit, WriteContext, WriteOp, WriteOutcome,
 };
 
-pub const SCHEMA_VERSION: u64 = 1;
+pub const SCHEMA_VERSION: u64 = 2;
 const SCHEMA_KEY: &str = "schema_version";
 const VERSION_KEY: &str = "version";
 const QUARANTINE_MS: i64 = 7 * 24 * 60 * 60 * 1000;
@@ -57,6 +57,7 @@ const CREATE_TABLES: &str = "
         reason TEXT NOT NULL,
         dream_run_id TEXT,
         undo_of INTEGER,
+        actor TEXT NOT NULL DEFAULT 'system',
         created_at INTEGER NOT NULL,
         UNIQUE(memory_id, revision)
     );
@@ -156,11 +157,25 @@ impl MemoryStore {
         }
         conn.execute_batch("PRAGMA synchronous=FULL;")?;
         conn.execute_batch(CREATE_TABLES)?;
-        if version.is_none() {
-            conn.execute(
-                "INSERT INTO kv (key, value) VALUES (?1, ?2)",
-                params![SCHEMA_KEY, SCHEMA_VERSION.to_string()],
-            )?;
+        match version {
+            None => {
+                conn.execute(
+                    "INSERT INTO kv (key, value) VALUES (?1, ?2)",
+                    params![SCHEMA_KEY, SCHEMA_VERSION.to_string()],
+                )?;
+            }
+            Some(1) => {
+                // v1 → v2：历次修订补「谁改的」。记忆库还没上线，这里只做一次迁移，不留读兼容分支。
+                conn.execute(
+                    "ALTER TABLE memory_revision ADD COLUMN actor TEXT NOT NULL DEFAULT 'system'",
+                    [],
+                )?;
+                conn.execute(
+                    "UPDATE kv SET value = ?1 WHERE key = ?2",
+                    params![SCHEMA_VERSION.to_string(), SCHEMA_KEY],
+                )?;
+            }
+            Some(_) => {}
         }
         conn.execute(
             "INSERT OR IGNORE INTO kv (key, value) VALUES (?1, '0')",
@@ -244,7 +259,7 @@ impl MemoryStore {
     pub fn revisions(&self, id: &str) -> Result<Vec<RevisionItem>, MemoryError> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT memory_id, revision, title, summary, body, reason, dream_run_id, undo_of, created_at FROM memory_revision WHERE memory_id = ?1 ORDER BY revision",
+            "SELECT memory_id, revision, title, summary, body, reason, dream_run_id, undo_of, actor, created_at FROM memory_revision WHERE memory_id = ?1 ORDER BY revision",
         )?;
         let rows = stmt.query_map(params![id], |row| {
             Ok(RevisionItem {
@@ -256,7 +271,8 @@ impl MemoryStore {
                 reason: row.get(5)?,
                 dream_run_id: row.get(6)?,
                 undo_of: row.get::<_, Option<i64>>(7)?.map(|value| value as u64),
-                created_at: row.get(8)?,
+                actor: row.get(8)?,
+                created_at: row.get(9)?,
             })
         })?;
         rows.collect::<Result<Vec<_>, _>>()
@@ -445,6 +461,7 @@ impl MemoryStore {
                     &source_ref,
                     now,
                     None,
+                    actor_str(ctx.actor),
                 )?;
                 WriteOutcome {
                     item: Some(item),
@@ -473,6 +490,7 @@ impl MemoryStore {
                     &source_ref,
                     now,
                     None,
+                    actor_str(ctx.actor),
                 )?;
                 WriteOutcome {
                     item: Some(item),
@@ -493,7 +511,16 @@ impl MemoryStore {
                 body,
                 reason,
             } => {
-                let item = correct_item(&tx, &id, &title, &summary, &body, &reason, now)?;
+                let item = correct_item(
+                    &tx,
+                    &id,
+                    &title,
+                    &summary,
+                    &body,
+                    &reason,
+                    now,
+                    actor_str(ctx.actor),
+                )?;
                 WriteOutcome {
                     item: Some(item),
                     ..WriteOutcome::default()
@@ -540,7 +567,7 @@ impl MemoryStore {
                 if ctx.actor == Actor::Dream && ctx.dream_run.as_deref() != Some(run_id.as_str()) {
                     return Err(MemoryError::Refused("做梦 run id 和撤销上下文不一致"));
                 }
-                dream_undo(&tx, &run_id, only.as_deref(), now)?
+                dream_undo(&tx, &run_id, only.as_deref(), now, actor_str(ctx.actor))?
             }
             WriteOp::IndexConversation {
                 conversation_id,
@@ -597,6 +624,15 @@ fn stored_schema_version(conn: &Connection) -> Result<Option<u64>, MemoryError> 
         )
         .optional()?;
     Ok(value.and_then(|value| value.parse().ok()))
+}
+
+/// 修订里的「谁改的」：写入上下文的就是最终身份（Kind 的入口也按 User 记，挡住的是越权层）。
+fn actor_str(actor: Actor) -> &'static str {
+    match actor {
+        Actor::User => "user",
+        Actor::Kind => "kind",
+        Actor::Dream => "dream",
+    }
 }
 
 fn check_actor(op: &WriteOp, ctx: &WriteContext) -> Result<(), MemoryError> {
@@ -815,6 +851,7 @@ fn create_item(
     source_ref: &str,
     now: i64,
     dream_run: Option<&str>,
+    actor: &str,
 ) -> Result<MemoryItem, MemoryError> {
     let id = next_id("mem");
     tx.execute(
@@ -822,8 +859,8 @@ fn create_item(
         params![id, layer.as_str(), binding.as_str(), scope.as_str(), title, summary, body, source_kind, source_ref, now],
     )?;
     tx.execute(
-        "INSERT INTO memory_revision (memory_id, revision, title, summary, body, source_kind, source_ref, reason, dream_run_id, created_at) VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, 'created', ?7, ?8)",
-        params![id, title, summary, body, source_kind, source_ref, dream_run, now],
+        "INSERT INTO memory_revision (memory_id, revision, title, summary, body, source_kind, source_ref, reason, dream_run_id, actor, created_at) VALUES (?1, 1, ?2, ?3, ?4, ?5, ?6, 'created', ?7, ?8, ?9)",
+        params![id, title, summary, body, source_kind, source_ref, dream_run, actor, now],
     )?;
     fts_put(tx, &id, layer, title, body)?;
     item_by_id(tx, &id)?.ok_or_else(|| MemoryError::NotFound(id))
@@ -881,6 +918,7 @@ fn create_diary(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn correct_item(
     tx: &rusqlite::Transaction<'_>,
     id: &str,
@@ -889,6 +927,7 @@ fn correct_item(
     body: &str,
     reason: &str,
     now: i64,
+    actor: &str,
 ) -> Result<MemoryItem, MemoryError> {
     let current = item_by_id(tx, id)?.ok_or_else(|| MemoryError::NotFound(id.to_owned()))?;
     if current.status != "active" {
@@ -900,8 +939,8 @@ fn correct_item(
         params![title, summary, body, now, revision as i64, id],
     )?;
     tx.execute(
-        "INSERT INTO memory_revision (memory_id, revision, title, summary, body, source_kind, source_ref, reason, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![id, revision as i64, title, summary, body, current.source_kind, current.source_ref, reason, now],
+        "INSERT INTO memory_revision (memory_id, revision, title, summary, body, source_kind, source_ref, reason, actor, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![id, revision as i64, title, summary, body, current.source_kind, current.source_ref, reason, actor, now],
     )?;
     fts_put(tx, id, current.layer, title, body)?;
     item_by_id(tx, id)?.ok_or_else(|| MemoryError::NotFound(id.to_owned()))
@@ -1007,6 +1046,7 @@ fn pin_item(tx: &rusqlite::Transaction<'_>, id: &str, now: i64) -> Result<Memory
         id,
         now,
         None,
+        "user",
     )
 }
 
@@ -1038,6 +1078,7 @@ fn dream_apply(
                     &run.id,
                     now,
                     Some(&run.id),
+                    "dream",
                 )?;
                 last = Some(item.clone());
                 tx.execute(
@@ -1064,7 +1105,7 @@ fn dream_apply(
             params![title, summary, body, now, after as i64, if retired { "retired" } else { "active" }, memory_id],
         )?;
         tx.execute(
-            "INSERT INTO memory_revision (memory_id, revision, title, summary, body, source_kind, source_ref, reason, dream_run_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            "INSERT INTO memory_revision (memory_id, revision, title, summary, body, source_kind, source_ref, reason, dream_run_id, actor, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'dream', ?10)",
             params![memory_id, after as i64, title, summary, body, item.source_kind, item.source_ref, change.reason, run.id, now],
         )?;
         fts_put(tx, &memory_id, item.layer, title, body)?;
@@ -1087,6 +1128,7 @@ fn dream_undo(
     run_id: &str,
     only: Option<&str>,
     now: i64,
+    actor: &str,
 ) -> Result<WriteOutcome, MemoryError> {
     let changes: Vec<(String, i64, i64)> = {
         let mut stmt = tx.prepare(
@@ -1135,8 +1177,8 @@ fn dream_undo(
             params![title, summary, body, now, next as i64, id],
         )?;
         tx.execute(
-            "INSERT INTO memory_revision (memory_id, revision, title, summary, body, source_kind, source_ref, reason, undo_of, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'dream_undo', ?8, ?9)",
-            params![id, next as i64, title, summary, body, item.source_kind, item.source_ref, after, now],
+            "INSERT INTO memory_revision (memory_id, revision, title, summary, body, source_kind, source_ref, reason, undo_of, actor, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'dream_undo', ?8, ?9, ?10)",
+            params![id, next as i64, title, summary, body, item.source_kind, item.source_ref, after, actor, now],
         )?;
         fts_put(tx, &id, item.layer, &title, &body)?;
         applied += 1;

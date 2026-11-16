@@ -45,6 +45,7 @@ fn revision_view(revision: &RevisionItem) -> MemoryRevisionView {
         title: revision.title.clone(),
         body: revision.body.clone(),
         reason: revision.reason.clone(),
+        actor: revision.actor.clone(),
         dream_run_id: revision.dream_run_id.clone(),
         created_at: revision.created_at,
     }
@@ -178,6 +179,7 @@ fn card_states(
             cards.push(MemoryCardStateView {
                 reference: reference.clone(),
                 state,
+                error: card_error(memory, reference),
             });
         }
     }
@@ -197,12 +199,26 @@ fn card_states(
         cards.push(MemoryCardStateView {
             reference: reference.clone(),
             state,
+            error: card_error(memory, reference),
         });
         if cards.len() >= 100 {
             break;
         }
     }
     cards
+}
+
+/// 失败卡片的一行原因：按 ref 读到没跑成的做梦 run 的 error。
+fn card_error(memory: &MemoryRuntime, reference: &str) -> Option<String> {
+    let run = memory.store().dream_run(reference).ok().flatten()?;
+    if run.outcome != "failed" {
+        return None;
+    }
+    Some(if run.error.trim().is_empty() {
+        "没跑成，没记下原因".to_owned()
+    } else {
+        run.error.trim().to_owned()
+    })
 }
 
 /// 记忆页读取。
