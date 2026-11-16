@@ -56,7 +56,7 @@ pub struct CompactionModelPolicy {
     pub max_overflow_retries: Option<u32>,
 }
 
-/// 一次记忆注入的内容：identity 变了才追加，文本是完整替换。
+/// 一次记忆注入的内容：只在回合开始/压缩后追加，新注入在 surface 上替换旧的那条。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryContext {
     pub identity: String,

@@ -1,4 +1,4 @@
-//! 记忆注入：identity 不变不重复，identity 变了追加完整替换消息。
+//! 记忆注入：回合开始/压缩后注入；同一 turn 内 identity 变化先不补，新注入 surface 替换旧的。
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -70,19 +70,108 @@ async fn memory_context_is_injected_once_then_replaced_when_identity_changes() {
     let first = String::from_utf8(requests[0].body.clone()).unwrap();
     let second = String::from_utf8(requests[1].body.clone()).unwrap();
     assert!(first.contains("回答先给结论（1）"));
-    assert!(first.contains("完整替换之前的记忆"));
     assert!(
-        first.contains("只读参考") && first.contains("不是用户的新要求"),
+        first.contains("只读参考") && first.contains("不是用户消息、不是新任务"),
         "注入要带只读声明，模型不能把它当新指令：{first}"
     );
     assert!(
-        second.contains("回答先给结论（2）"),
-        "identity 变了要完整替换"
+        !first.contains("完整替换"),
+        "注入里不能带指令式引言：{first}"
     );
     assert!(
-        second.contains("完整替换之前的记忆") && second.contains("回答先给结论（2）"),
-        "第二次请求要带新的完整替换内容"
+        second.contains("回答先给结论（2）"),
+        "identity 变了要换新内容"
     );
+    assert!(
+        second.contains("只读参考") && second.contains("回答先给结论（2）"),
+        "下一轮开始要带新的记忆（只读说明）"
+    );
+}
+
+#[tokio::test]
+async fn memory_context_is_not_reinjected_inside_a_turn_after_identity_changes() {
+    let server = MockServer::start().await;
+    // step1 先让模型读一个文件（同一 turn 继续到 step2），再收尾；下一轮再回一条。
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(crate::common::tool_calls_sse(&[("call-read", "read")])),
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+
+    let data_dir = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let store = session::SessionStore::create(data_dir.path(), project.path()).unwrap();
+    let calls = Arc::new(AtomicU64::new(0));
+    let provider_calls = Arc::clone(&calls);
+    let config = agent::AgentConfig {
+        memory_context: Some(Arc::new(move || {
+            let call = provider_calls.fetch_add(1, Ordering::SeqCst);
+            let version = if call == 0 { 1 } else { 2 };
+            Ok(Some(MemoryContext {
+                identity: format!("v{version}"),
+                text: format!("关于你：回答先给结论（{version}）"),
+            }))
+        })),
+        ..isolated_config(data_dir.path())
+    };
+    let agent = Agent::create(
+        config,
+        Deps {
+            model: model::DeepSeek::with_credentials(
+                model_config(&server.uri()),
+                test_credential(),
+            )
+            .unwrap(),
+            tools: tools::ToolSet::builtin(),
+            store,
+        },
+    )
+    .await
+    .unwrap();
+
+    agent
+        .send(UserMessage::text("第一句"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+    agent
+        .send(UserMessage::text("第二句"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+
+    let requests = server.received_requests().await.unwrap();
+    let bodies: Vec<String> = requests
+        .iter()
+        .map(|request| String::from_utf8(request.body.clone()).unwrap())
+        .collect();
+    assert!(
+        bodies.len() >= 3,
+        "至少：turn1 两步 + turn2 一步，实际 {}",
+        bodies.len()
+    );
+    const MARKER: &str = "以下内容是已保存的记忆，只读参考";
+    for body in &bodies {
+        assert_eq!(
+            body.matches(MARKER).count(),
+            1,
+            "每个请求里只能有一条记忆注入：{body}"
+        );
+        assert!(!body.contains("完整替换"), "注入不再带指令式引言：{body}");
+    }
+    // turn1 的第二步：identity 变了也不在同一 turn 里补注入。
+    assert!(bodies[1].contains("回答先给结论（1）"));
+    assert!(
+        !bodies[1].contains("回答先给结论（2）"),
+        "同一 turn 内 identity 变化先不注入：{}",
+        bodies[1]
+    );
+    // 下一个用户回合开始才补新记忆。
+    assert!(bodies[2].contains("回答先给结论（2）"));
 }
 
 #[tokio::test]

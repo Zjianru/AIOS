@@ -75,7 +75,7 @@ pub enum MessageSource {
         )]
         source_command_id: Option<String>,
     },
-    /// 记忆注入的 user 消息：identity 变了就完整替换上一份；页面不画成用户气泡。
+    /// 记忆注入的 user 消息：只在回合开始/压缩后出现，surface 替换旧的那条；页面不画成用户气泡。
     MemoryContext { identity: String },
     /// 工作区指令注入的 user 消息（DSH agent-instructions 的来源，T006.10）：带类型来源、
     /// 完整基线 identity 与逐 scope 的 set/replace/remove 变更对象（内容不进 source）。

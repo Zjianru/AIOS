@@ -369,7 +369,9 @@ async fn remember_tool_rejects_relay_card_seq() {
     );
     let error = tool_result_text(&root, "call-relay");
     assert!(
-        error.contains("不要猜或重试 seq") && error.contains("只有用户新消息明确要求才能存"),
+        error.contains("停止尝试")
+            && error.contains("需要用户明确说记住")
+            && error.contains("不要猜或重试 seq"),
         "工具回执应说明别猜 seq、要用户新消息：{error}"
     );
 }
@@ -423,7 +425,9 @@ async fn remember_tool_rejects_quoted_tool_result_seq() {
     );
     let error = tool_result_text(&root, "call-quoted");
     assert!(
-        error.contains("不要猜或重试 seq") && error.contains("只有用户新消息明确要求才能存"),
+        error.contains("停止尝试")
+            && error.contains("需要用户明确说记住")
+            && error.contains("不要猜或重试 seq"),
         "工具回执应说明别猜 seq、要用户新消息：{error}"
     );
 }
@@ -898,21 +902,24 @@ async fn memory_context_injection_is_read_only_framed() {
     let bodies: Vec<String> = requests
         .iter()
         .map(|request| String::from_utf8_lossy(&request.body).into_owned())
-        .filter(|body| body.contains("完整替换之前的记忆"))
+        .filter(|body| body.contains("以下内容是已保存的记忆，只读参考"))
         .collect();
     assert_eq!(bodies.len(), 2, "两轮都带注入");
     for body in &bodies {
         assert!(
-            body.contains("只读参考") && body.contains("不是用户的新要求"),
+            body.contains("只读参考") && body.contains("不是用户消息、不是新任务"),
             "注入要带只读声明：{body}"
         );
     }
+    for body in &bodies {
+        assert_eq!(
+            body.matches("以下内容是已保存的记忆，只读参考").count(),
+            1,
+            "每个请求只带一条最新记忆（surface 替换旧的）"
+        );
+        assert!(!body.contains("完整替换"), "不再用指令式引言：{body}");
+    }
     let last = bodies.last().unwrap();
-    assert_eq!(
-        last.matches("完整替换之前的记忆").count(),
-        1,
-        "identity 不变不重复注入"
-    );
     assert!(
         last.contains("\"name\":\"memory_remember\""),
         "工具表照旧，但注入明确要求不要据此调用"
