@@ -223,7 +223,9 @@ pub(crate) async fn compact_if_needed(
             return Ok(None);
         };
         // 压缩前记一笔：每个真实压缩事务一次；失败/超时只记一行，压缩照常。
-        if let Some(hook) = host.pre_compaction() {
+        if let (Some(hook), Some(instruction)) =
+            (host.pre_compaction(), host.pre_compaction_instruction())
+        {
             let conversation = host
                 .session()
                 .lock()
@@ -233,15 +235,24 @@ pub(crate) async fn compact_if_needed(
             let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |duration| duration.subsec_nanos());
-            let input = crate::PreCompactionInput {
-                compaction_id: format!("pre-compact-{turn}-{step}-{nanos}"),
-                conversation,
-                messages: messages[..pre_split].to_vec(),
-            };
-            match tokio::time::timeout(std::time::Duration::from_secs(30), hook(input)).await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => crate::warn::warn(format!("压缩前记一笔失败：{error}")),
-                Err(_) => crate::warn::warn("压缩前记一笔超时"),
+            let compaction_id = format!("pre-compact-{turn}-{step}-{nanos}");
+            match pre_compaction_diary(host, &messages[..pre_split], instruction).await {
+                Ok(text) if !text.trim().is_empty() => {
+                    let diary = crate::PreCompactionDiary {
+                        compaction_id,
+                        conversation,
+                        text,
+                    };
+                    match tokio::time::timeout(std::time::Duration::from_secs(30), hook(diary))
+                        .await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => crate::warn::warn(format!("压缩前记一笔失败：{error}")),
+                        Err(_) => crate::warn::warn("压缩前记一笔超时"),
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => crate::warn::warn(format!("压缩前记一笔请求失败：{error}")),
             }
         }
         // 只在 select_split 成功（真的有一个事务要提交）之后派发 Compaction 挂点：
@@ -538,6 +549,47 @@ fn checkpoint_message(
 
 /// 一次摘要请求：回放被压缩的较早历史（含 system），带工具定义与输出上限，
 /// 末尾追加摘要指令——system/tools/前缀与上次请求一致，命中 provider 前缀缓存。
+async fn pre_compaction_diary(
+    host: &dyn LoopAccess,
+    prefix: &[Message],
+    instruction: &str,
+) -> Result<String, AgentError> {
+    let mut input = prefix.to_vec();
+    input.push(Message::user_text(instruction));
+    let (tools, history) = {
+        let store = host.session().lock().expect("agent 会话锁被毒化");
+        let derived = store.derive_messages_with_seqs();
+        crate::tool_gate::request_tools(
+            host.tools(),
+            store.events(),
+            &derived,
+            &host.tool_keys(),
+            host.model().config().tool_update,
+        )
+    };
+    let tool_request = model::ToolRequest { tools, history };
+    let cancel = model::CancelToken::new(
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    );
+    let diary_model = host.model().with_effort(host.model().default_effort());
+    let mut stream = diary_model.stream(&input, &tool_request, &cancel).await?;
+    let mut text = String::new();
+    while let Some(chunk) = stream.next().await {
+        match chunk {
+            Ok(StreamChunk::TextDelta { text: delta, .. }) => text.push_str(&delta),
+            Ok(StreamChunk::Usage { .. })
+            | Ok(StreamChunk::Finish { .. })
+            | Ok(StreamChunk::BlockStart { .. })
+            | Ok(StreamChunk::ReasoningDelta { .. })
+            | Ok(StreamChunk::ToolCallDelta { .. })
+            | Ok(StreamChunk::BlockEnd { .. }) => {}
+            Err(error) => return Err(AgentError::Model(error)),
+        }
+    }
+    Ok(text.trim().to_owned())
+}
+
 async fn summarize(
     host: &dyn LoopAccess,
     prefix: &[Message],

@@ -67,18 +67,18 @@ pub struct MemoryContext {
 pub type MemoryContextProvider =
     std::sync::Arc<dyn Fn() -> Result<Option<MemoryContext>, String> + Send + Sync>;
 
-/// 压缩前记一笔的输入：要压掉的那段原始消息。
-#[derive(Clone)]
-pub struct PreCompactionInput {
+/// agent 写完的压缩前日记，交给服务回调落库。
+#[derive(Clone, Debug)]
+pub struct PreCompactionDiary {
     pub compaction_id: String,
     pub conversation: session::SessionId,
-    pub messages: Vec<model::Message>,
+    pub text: String,
 }
 
 pub type PreCompactionFuture =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
 pub type PreCompactionHook =
-    std::sync::Arc<dyn Fn(PreCompactionInput) -> PreCompactionFuture + Send + Sync>;
+    std::sync::Arc<dyn Fn(PreCompactionDiary) -> PreCompactionFuture + Send + Sync>;
 
 /// agent 的运行配置。默认值照 DSH 默认组合：agent-loop 的并发上限、
 /// compaction-basic 的阈值/保留/预留 token、bundle/base 的 spill 预算。
@@ -136,6 +136,8 @@ pub struct AgentConfig {
     pub memory_context: Option<MemoryContextProvider>,
     /// 压缩前记一笔；None = 不记。只给 Kind 根会话配。
     pub pre_compaction: Option<PreCompactionHook>,
+    /// 压缩前记一笔的说明文字；与摘要请求同一前缀。
+    pub pre_compaction_instruction: Option<String>,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -152,6 +154,10 @@ impl std::fmt::Debug for AgentConfig {
             .field("write_scope", &self.write_scope)
             .field("memory_context", &self.memory_context.is_some())
             .field("pre_compaction", &self.pre_compaction.is_some())
+            .field(
+                "pre_compaction_instruction",
+                &self.pre_compaction_instruction.is_some(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -184,6 +190,7 @@ impl Default for AgentConfig {
             write_scope: None,
             memory_context: None,
             pre_compaction: None,
+            pre_compaction_instruction: None,
         }
     }
 }

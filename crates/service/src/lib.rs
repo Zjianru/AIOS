@@ -28,6 +28,7 @@ pub mod work;
 mod worktree;
 
 pub mod fx;
+pub mod memory;
 pub mod models;
 pub mod quota;
 mod root;

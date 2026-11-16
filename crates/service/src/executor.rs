@@ -3083,6 +3083,9 @@ impl TaskRuntime {
         let mut agent_config = self.options.config.clone();
         agent_config.tool_keys = crate::root::tool_key_source(&self.options);
         agent_config.write_scope = task.effective_write_scope();
+        if let Ok(memory) = crate::memory::MemoryRuntime::open(&self.data_dir) {
+            agent_config.memory_context = Some(std::sync::Arc::new(memory).thin_provider());
+        }
         let agent = agent::Agent::open(AgentOpenOptions {
             data_dir: self.data_dir.clone(),
             cwd: task.effective_cwd().to_path_buf(),

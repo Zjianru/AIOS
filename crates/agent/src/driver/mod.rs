@@ -61,6 +61,7 @@ pub(crate) struct Inner {
     policy_prompt: Option<String>,
     /// 压缩前记一笔的钩子；只给 Kind 根会话配。
     pre_compaction: Option<crate::PreCompactionHook>,
+    pre_compaction_instruction: Option<String>,
     /// 统一工具入口是否拒绝会等待的调用（Kind 用；默认关）。
     no_wait: bool,
     /// 工具写入范围（D85）；None = 不限。
@@ -267,6 +268,10 @@ impl LoopAccess for Inner {
         self.pre_compaction.as_ref()
     }
 
+    fn pre_compaction_instruction(&self) -> Option<&str> {
+        self.pre_compaction_instruction.as_deref()
+    }
+
     fn is_running(&self) -> bool {
         matches!(
             self.state.lock().expect("agent 状态锁被毒化").phase,
@@ -360,6 +365,7 @@ impl Inner {
             tool_keys,
             policy_prompt,
             pre_compaction: config.pre_compaction.clone(),
+            pre_compaction_instruction: config.pre_compaction_instruction.clone(),
             no_wait: config.no_wait,
             write_scope: config.write_scope.clone(),
             stop_after_report: AtomicBool::new(false),

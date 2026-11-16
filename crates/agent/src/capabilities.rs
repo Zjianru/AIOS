@@ -121,6 +121,10 @@ pub(crate) trait LoopAccess: Send + Sync {
     fn pre_compaction(&self) -> Option<&crate::PreCompactionHook> {
         None
     }
+    /// 压缩前记一笔的说明文字；默认没有。
+    fn pre_compaction_instruction(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// 每个挂点一份 typed 事件：host 访问面 + 该挂点可用的运行态数据。

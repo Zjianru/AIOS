@@ -155,6 +155,9 @@ async fn accepts_valid_non_default_values() {
         no_wait: false,
         policy_prompt: None,
         write_scope: None,
+        memory_context: None,
+        pre_compaction: None,
+        pre_compaction_instruction: None,
     };
     let agent = create_result(config).await.unwrap();
     agent.idle().await;

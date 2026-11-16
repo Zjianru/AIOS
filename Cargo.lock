@@ -2397,6 +2397,7 @@ dependencies = [
  "credentials",
  "encoding_rs",
  "htmd",
+ "memory",
  "model",
  "reqwest",
  "serde",
