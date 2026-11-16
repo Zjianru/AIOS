@@ -398,12 +398,20 @@ export interface InterimSay {
   seq: number;
 }
 
+export interface MemoCardInfo {
+  id: string;
+  kind: string;
+  ref?: string;
+}
+
 export interface TurnViewData {
   id: string;
   startedAt: number | null;
   durationMs: number | null;
   status: TurnStatus;
   user: TurnUserView | null;
+  /** 程序追加的记忆卡（许可/整理完/没跑成）。 */
+  memoCards?: MemoCardInfo[];
   /** T028.5：抄送行不是一轮回答；有它时只画虚线一行，不画用户气泡和 Kind 的回复。 */
   cc?: TaskCcView | null;
   /** 任务结果的 relay 消息：这一轮可能被 relay 叫起来；按到达顺序各出一张卡。 */
@@ -1098,7 +1106,7 @@ export function deriveTurnViews(
       }
     }
   }
-  return [...turns.values()]
+  const views: TurnViewData[] = [...turns.values()]
     .sort((left, right) => left.turn - right.turn)
     .map((raw) => ({
       id: `turn-${raw.turn}`,
@@ -1133,6 +1141,21 @@ export function deriveTurnViews(
       delivery: null,
       stoppedAt: raw.stoppedAt,
     }));
+  const memoCards: MemoCardInfo[] = events
+    .filter((event) => event.type === 'memory/card')
+    .map((event) => {
+      const data = (event.data ?? {}) as { id?: unknown; kind?: unknown; ref?: unknown };
+      return {
+        id: typeof data.id === 'string' ? data.id : '',
+        kind: typeof data.kind === 'string' ? data.kind : '',
+        ref: typeof data.ref === 'string' ? data.ref : undefined,
+      };
+    })
+    .filter((card) => card.id !== '' && card.kind !== '');
+  if (memoCards.length > 0 && views.length > 0) {
+    views[views.length - 1] = { ...views[views.length - 1], memoCards };
+  }
+  return views;
 }
 
 /** 改一轮：按 id 换成新对象（TurnRow 用 memo 比引用，只有这一条重绘）。 */

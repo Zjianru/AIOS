@@ -11,6 +11,7 @@ import { toast } from 'sonner';
 import { ChevronRight, CircleAlert, RotateCw, Square } from 'lucide-react';
 import { CopyButton } from './CopyButton';
 import { Markdown } from './Markdown';
+import { MemoChip } from './MemoChip';
 import { QuoteChip } from './QuoteChip';
 import { FileReferenceChip } from './FileReferenceChip';
 import { fileMentions } from './atGrammar';
@@ -567,6 +568,12 @@ export const TurnRow = memo(function TurnRow({
           <span className="brand-type">{timeOf(view.startedAt)}</span>
         </div>
       ) : null}
+
+      {(view.memoCards ?? []).map((card) => (
+        <div key={card.id} className="mb-1 mt-2 flex justify-start">
+          <MemoChip card={{ kind: card.kind, id: card.id, title: card.ref }} />
+        </div>
+      ))}
 
       {waitingForKernel ? null : (
         <>
