@@ -14,6 +14,8 @@ type CardStates = Record<string, string>;
 let cache: CardStates = {};
 const known = new Set<string>();
 let loading: Promise<void> | null = null;
+/** 读的过程中又有人要求重读：等在飞的那次收尾后再读一遍，别让旧结果盖掉新状态。 */
+let dirty = false;
 let queued = false;
 const listeners = new Set<() => void>();
 
@@ -22,7 +24,10 @@ function notify(): void {
 }
 
 async function load(): Promise<void> {
-  if (loading) return loading;
+  if (loading) {
+    dirty = true;
+    return loading;
+  }
   const refs = [...known];
   if (refs.length === 0) return;
   loading = memoryRead({ refs })
@@ -35,6 +40,10 @@ async function load(): Promise<void> {
     })
     .finally(() => {
       loading = null;
+      if (dirty) {
+        dirty = false;
+        void load();
+      }
     });
   return loading;
 }
