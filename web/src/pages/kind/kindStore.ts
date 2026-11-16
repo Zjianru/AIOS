@@ -623,10 +623,17 @@ function refreshCardViews(): void {
 
 /** 一轮的最新日志事件 → 重建这一个 view（其它轮不动）。 */
 function refreshTurn(turn: number): void {
+  // 记忆小卡是程序追加的一行，不带 turn；它属于当前最新一轮。turn/end 重建这一轮时
+  // 要把它并回去，否则 live 到的许可卡在回合结束时被重建丢掉（真 key 复现过）。
+  const latestTurn = useKindStore
+    .getState()
+    .views.reduce((max, view) => Math.max(max, Number(view.id.split('-')[1])), 0);
+  const includeMemoryCards = turn >= latestTurn;
   const events = liveEvents.filter(
     (event) =>
       (typeof event.data.turn === 'number' && Number(event.data.turn) === turn) ||
-      event.type === 'card/decision',
+      event.type === 'card/decision' ||
+      (includeMemoryCards && event.type === 'memory/card'),
   );
   const derived = deriveTurnViews(events, turnLabels())[0];
   if (!derived) return;

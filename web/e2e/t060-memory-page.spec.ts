@@ -239,6 +239,39 @@ test('没跑成的小卡写一行原因（故事 8）', async ({ page }) => {
   }
 });
 
+
+test('许可卡在 turn 中途到、turn 结束后还在，允许可点（live 渲染）', async ({ page }) => {
+  const fixture = await startKernelFixture({ memoryFlow: true, memoryLiveCard: true });
+  try {
+    await page.goto(urlOf(fixture));
+    await send(page, '记住：回答先给结论');
+    await page.waitForTimeout(900);
+    await send(page, '记一下你看到的编码问题');
+    await page.waitForTimeout(900);
+    for (const [text, answer] of [
+      ['3', '好 3'],
+      ['4', '好 4'],
+    ]) {
+      await send(page, text);
+      await expect(page.getByText(answer, { exact: true })).toBeVisible({ timeout: 30_000 });
+    }
+    // 第五轮 Kind 先加载 aios-memory，再调 memory_dream_now：许可卡在 turn 中途写进
+    // 日志，turn 结束后必须还在。
+    await send(page, '5');
+    await expect(page.getByText('好 5', { exact: true })).toBeVisible({ timeout: 30_000 });
+    const permission = chip(page, 'permission').first();
+    await expect(permission).toBeVisible({ timeout: 30_000 });
+    await expect(permission).toContainText('做梦许可');
+    // 点允许：dream 真的跑，整理完的小卡出现。
+    await permission.locator('[data-action="memory-permit-allow"]').click();
+    const done = chip(page, 'dream_done').first();
+    await expect(done).toBeVisible({ timeout: 60_000 });
+    await expect(done).toContainText('整理完了');
+  } finally {
+    await fixture.close();
+  }
+});
+
 test('搜索命中可点：记忆条目高亮，对话回那一轮（故事 4）', async ({ page }) => {
   const fixture = await startKernelFixture({ memoryFlow: true });
   try {

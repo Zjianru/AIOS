@@ -36,6 +36,7 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.t059LongStream) return { file: 't059-long-stream', paceMs: 40 };
   // 记忆页联动的假模型脚本：记住/记一笔/5 个回合/做梦 apply+总结。
   if (options.memoryFlow) {
+    if (options.memoryLiveCard) return { file: 't060-memory-live-card', paceMs: 10 };
     return options.memoryFailDream
       ? { file: 't060-memory', override: 't060-memory-fail-dream', paceMs: 10 }
       : { file: 't060-memory', paceMs: 10 };
@@ -203,6 +204,8 @@ export interface FixtureOptions {
   memoryFlow?: boolean;
   /// 做梦第一次模型请求强制 400（失败卡原因用例）。
   memoryFailDream?: boolean;
+  /// turn3 里 Kind 调 memory_dream_now（许可卡在回合中途到，live 渲染用例）。
+  memoryLiveCard?: boolean;
   /// 路径显示：三步回放（cwd 内写、cwd 外写、最终文本）；夹具里的 __CWD__ / __OUTSIDE__ 起服务前换成真实目录。
   pathsTurn?: boolean;
   /// T013.6：最终回答里带一个代码块（复制按钮用）。
