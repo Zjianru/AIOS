@@ -35,7 +35,8 @@ function openLive(): void {
     Number.MAX_SAFE_INTEGER,
     (frame) => {
       if (frame.type !== 'event') return;
-      if (frame.event.type === 'memory/changed') {
+      // 记忆库变了，或做梦跑完出了卡：都重读（run 的状态/明细要跟着变）。
+      if (frame.event.type === 'memory/changed' || frame.event.type === 'memory/card') {
         void useMemoryState.getState().load();
       }
     },

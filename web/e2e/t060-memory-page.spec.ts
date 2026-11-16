@@ -124,6 +124,25 @@ test('记忆：记住/记一笔的小卡，攒够许可→整理→撤销，记�
     await expect(page.locator('[data-kind="dream-runs"] [data-kind="dream-run"]')).toContainText(
       '整理完了',
     );
+    await expect(page.locator('[data-kind="dream-runs"] [data-kind="dream-run"]')).toHaveCount(1);
+
+    // 历次明细：再来一次整理（这次是合并已有笔记），撤销后这一处显示已撤销、正文回到原样。
+    await page.locator('[data-action="dream-now"]').click();
+    await expect(page.locator('[data-kind="dream-runs"] [data-kind="dream-run"]')).toHaveCount(
+      2,
+      { timeout: 60_000 },
+    );
+    const newest = page.locator('[data-kind="dream-runs"] [data-kind="dream-run"]').first();
+    await expect(newest).toContainText('整理完了', { timeout: 60_000 });
+    await expect(newest).toContainText('合并');
+    await newest.locator('[data-action="dream-undo"]').click();
+    await expect(newest.locator('[data-kind="dream-change-undone"]').first()).toContainText(
+      '已撤销',
+      { timeout: 30_000 },
+    );
+    await expect(page.locator('[data-kind="memory-group"][data-group="note"]')).toContainText(
+      'sources/ 下有 GBK 的 CSV，读之前先探编码',
+    );
 
     // 故事 11：删笔记 → 隔离区 → 恢复；再删 → 彻底删 → 搜不到了。
     const noteRow = page

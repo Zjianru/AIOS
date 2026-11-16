@@ -138,9 +138,18 @@ fn dream_change_view(
     change: &DreamChange,
 ) -> MemoryDreamChangeView {
     let current = store.item(&change.memory_id).ok().flatten();
-    let reversible = current
-        .as_ref()
-        .is_some_and(|item| item.current_revision == change.after_revision);
+    let undone = store
+        .revisions(&change.memory_id)
+        .map(|revisions| {
+            revisions
+                .iter()
+                .any(|revision| revision.undo_of == Some(change.after_revision))
+        })
+        .unwrap_or(false);
+    let reversible = !undone
+        && current
+            .as_ref()
+            .is_some_and(|item| item.current_revision == change.after_revision);
     MemoryDreamChangeView {
         memory_id: change.memory_id.clone(),
         title: current.map(|item| item.title).unwrap_or_default(),
@@ -149,6 +158,7 @@ fn dream_change_view(
         before_revision: change.before_revision,
         after_revision: change.after_revision,
         reversible,
+        undone,
     }
 }
 

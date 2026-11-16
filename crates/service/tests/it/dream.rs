@@ -692,3 +692,145 @@ async fn overlapping_checks_still_settle() {
     wait_startup_check(&root).await;
     root.shutdown().await;
 }
+
+#[tokio::test]
+async fn undoing_a_correction_and_merge_marks_the_run_revoked() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    seed_dream(data.path(), true, 100, 0, 0);
+    // 两条笔记：一条被改正、一条被合并，都是「已有笔记」的改动（撤销后 change 行还在）。
+    let store = dream_store(data.path());
+    let corrected = store
+        .write(
+            WriteOp::Note {
+                title: "先探编码".to_owned(),
+                summary: String::new(),
+                body: "读之前先探编码".to_owned(),
+                source_kind: "kind".to_owned(),
+                source_ref: "dream-a".to_owned(),
+            },
+            &WriteContext::kind(),
+        )
+        .unwrap()
+        .item
+        .unwrap();
+    let merged = store
+        .write(
+            WriteOp::Note {
+                title: "GBK CSV".to_owned(),
+                summary: String::new(),
+                body: "sources/ 下有 GBK 的 CSV".to_owned(),
+                source_kind: "kind".to_owned(),
+                source_ref: "dream-b".to_owned(),
+            },
+            &WriteContext::kind(),
+        )
+        .unwrap()
+        .item
+        .unwrap();
+    drop(store);
+    let changes = serde_json::json!([
+        {
+            "action": "correct",
+            "memory_id": corrected.id,
+            "title": "先探编码",
+            "body": "读之前先探编码，GBK 也要先转",
+            "reason": "两次都栽在编码上"
+        },
+        {
+            "action": "merge",
+            "memory_id": merged.id,
+            "title": "GBK CSV",
+            "body": "sources/ 下有 GBK 的 CSV，先探编码再读",
+            "reason": "并到一条里"
+        }
+    ]);
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(crate::common::SequenceResponder::new(vec![
+            sse(&crate::common::tool_use_sse(
+                0,
+                "call-dream-apply",
+                "memory_dream_apply",
+                &apply_args(changes),
+            )),
+            sse(&crate::common::text_sse("整理完了")),
+        ]))
+        .mount(&server)
+        .await;
+    let root = open_root(data.path(), cwd.path(), &server).await;
+    wait_startup_check(&root).await;
+    dream_store(data.path())
+        .update_dream_settings(&DreamSettingsPatch {
+            min_events: Some(0),
+            last_success_at: Some(0),
+            last_attempt_at: Some(0),
+            permit: Some(true),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(root.dream_now().unwrap(), "开始整理");
+    let runs = wait_runs(data.path(), 1).await;
+    let run_id = runs[0].id.clone();
+    for _ in 0..500 {
+        if root.dream_checks_settled() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    wait_startup_check(&root).await;
+
+    let read_page = async |run_id: String| {
+        let response = root
+            .dispatch(service::Call::MemoryRead(service::MemoryReadRequest {
+                query: None,
+                item_id: None,
+                refs: vec![run_id],
+            }))
+            .await
+            .expect("memory-read");
+        let service::Response::MemoryRead(read) = response else {
+            panic!("expected MemoryRead");
+        };
+        read
+    };
+    let cards = read_page(run_id.clone()).await;
+    let card = cards.cards.first().expect("run 卡状态");
+    assert_eq!(card.state, "active", "整理完还没撤销");
+    let change = &cards.dream.runs[0].changes[0];
+    assert!(change.reversible, "撤销前可撤");
+    assert!(!change.undone);
+
+    root.dispatch(service::Call::MemoryAction(service::MemoryActionRequest {
+        action: service::MemoryActionKind::UndoDream {
+            run_id: Some(run_id.clone()),
+            memory_id: None,
+        },
+    }))
+    .await
+    .expect("undo dream");
+    let cards = read_page(run_id.clone()).await;
+    let card = cards.cards.first().expect("run 卡状态");
+    assert_eq!(card.state, "revoked", "改正/合并撤销后整次该算已撤销");
+    let run = &cards.dream.runs[0];
+    assert!(
+        run.changes
+            .iter()
+            .all(|change| change.undone && !change.reversible),
+        "每一处都要显示已撤销、不可再撤：{:?}",
+        run.changes
+    );
+    let store = dream_store(data.path());
+    assert_eq!(
+        store.item(&corrected.id).unwrap().unwrap().body,
+        "读之前先探编码",
+        "改正撤销回原正文"
+    );
+    assert_eq!(
+        store.item(&merged.id).unwrap().unwrap().body,
+        "sources/ 下有 GBK 的 CSV",
+        "合并撤销回原正文"
+    );
+    root.shutdown().await;
+}

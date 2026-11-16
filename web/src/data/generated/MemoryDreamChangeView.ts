@@ -7,4 +7,8 @@ export type MemoryDreamChangeView = { memoryId: string, title: string, action: s
 /**
  * 这一处的当前修订还是这次做梦写的那版（用户后来改过就不可撤）。
  */
-reversible: boolean, };
+reversible: boolean,
+/**
+ * 这一处已经撤销过（整次或单独撤）。
+ */
+undone: boolean, };

@@ -1429,6 +1429,8 @@ pub struct MemoryDreamChangeView {
     pub after_revision: u64,
     /// 这一处的当前修订还是这次做梦写的那版（用户后来改过就不可撤）。
     pub reversible: bool,
+    /// 这一处已经撤销过（整次或单独撤）。
+    pub undone: bool,
 }
 
 /// 一次做梦的记录（页面明细）。

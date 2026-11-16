@@ -221,7 +221,11 @@ function DreamRun({ run, onUndoAll, onUndoOne }: {
             {change.title || change.reason}
             {change.reason ? <span className="text-ink-3">（{change.reason}）</span> : null}
           </span>
-          {change.reversible ? (
+          {change.undone ? (
+            <span className="shrink-0 text-1 text-ink-3" data-kind="dream-change-undone">
+              已撤销
+            </span>
+          ) : change.reversible ? (
             <button
               type="button"
               data-action="dream-undo-change"
@@ -252,6 +256,13 @@ export function MemoryScene() {
     if (data) setIntervalHours(data.dream.intervalHours);
   }, [data?.dream.intervalHours]);
 
+  // 正在整理时补一次短轮询：检查/运行结束不一定有推送，别让页面一直停在「正在整理」。
+  useEffect(() => {
+    if (!data?.dream.running) return;
+    const timer = window.setTimeout(() => void load(), 600);
+    return () => window.clearTimeout(timer);
+  }, [data?.dream.running, load]);
+
   const startEdit = async (item: MemoryItemView) => {
     setEditing({ item, revisions: [] });
     try {
@@ -279,7 +290,7 @@ export function MemoryScene() {
     () => (data?.entries ?? []).filter((item) => item.binding !== 'binding'),
     [data?.entries],
   );
-  const latestRun = data?.dream.runs[0];
+  const runs = data?.dream.runs ?? [];
 
   return (
     <div data-kind="memory-page" className="h-full overflow-y-auto p-4">
@@ -518,17 +529,16 @@ export function MemoryScene() {
               上次成功 {clock(data?.dream.lastSuccessAt)} · 下次 {clock(data?.dream.nextAt)}
             </p>
             <div data-kind="dream-runs">
-              {latestRun ? (
+              {/* 历次明细：最近的在上，最多五条（服务端截断）。 */}
+              {runs.map((run) => (
                 <DreamRun
-                  run={latestRun}
-                  onUndoAll={() => act({ kind: 'undo-dream', runId: latestRun.id })}
-                  onUndoOne={(memoryId) =>
-                    act({ kind: 'undo-dream', runId: latestRun.id, memoryId })
-                  }
+                  key={run.id}
+                  run={run}
+                  onUndoAll={() => act({ kind: 'undo-dream', runId: run.id })}
+                  onUndoOne={(memoryId) => act({ kind: 'undo-dream', runId: run.id, memoryId })}
                 />
-              ) : (
-                <p className="text-2 text-ink-3">还没整理过。</p>
-              )}
+              ))}
+              {runs.length === 0 ? <p className="text-2 text-ink-3">还没整理过。</p> : null}
             </div>
           </div>
         </Section>

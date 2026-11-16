@@ -156,15 +156,7 @@ impl MemoryRuntime {
             return Some(
                 match run.outcome.as_str() {
                     // 整理完但改动都撤掉了：卡片显示已撤销。
-                    "done"
-                        if self
-                            .store
-                            .dream_changes(&run.id)
-                            .map(|changes| changes.is_empty())
-                            .unwrap_or(false) =>
-                    {
-                        "revoked"
-                    }
+                    "done" if self.run_undone(&run.id) => "revoked",
                     "done" => "active",
                     "failed" => "failed",
                     _ => "running",
@@ -184,6 +176,24 @@ impl MemoryRuntime {
             );
         }
         None
+    }
+
+    /// 这次做梦的改动是不是都撤掉了：新记的笔记撤销后 change 行会删掉；
+    /// 改正/合并/作废撤销后留一条 undoOf 指向这次写的修订。
+    pub(crate) fn run_undone(&self, run_id: &str) -> bool {
+        let Ok(changes) = self.store.dream_changes(run_id) else {
+            return false;
+        };
+        changes.iter().all(|change| {
+            self.store
+                .revisions(&change.memory_id)
+                .map(|revisions| {
+                    revisions
+                        .iter()
+                        .any(|revision| revision.undo_of == Some(change.after_revision))
+                })
+                .unwrap_or(false)
+        })
     }
 
     /// 只索引用户自己的话和 Kind 回答正文；工具结果、推理、注入、记忆都不进索引。

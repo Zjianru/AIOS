@@ -208,15 +208,21 @@ async fn handle(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> std::io::R
             write_response(&mut stream, status, "application/json", body).await
         }
         ReplayCall::Stream(records) => {
-            let frames = substitute_result_task_id(
-                substitute_graph_id(encode_sse(&records), body_text.as_ref()),
+            let frames = substitute_memory_id(
+                substitute_result_task_id(
+                    substitute_graph_id(encode_sse(&records), body_text.as_ref()),
+                    body_text.as_ref(),
+                ),
                 body_text.as_ref(),
             );
             write_sse(&mut stream, &frames, pace_ms).await
         }
         ReplayCall::Cut(records) => {
-            let frames = substitute_result_task_id(
-                substitute_graph_id(encode_sse_cut(&records), body_text.as_ref()),
+            let frames = substitute_memory_id(
+                substitute_result_task_id(
+                    substitute_graph_id(encode_sse_cut(&records), body_text.as_ref()),
+                    body_text.as_ref(),
+                ),
                 body_text.as_ref(),
             );
             write_sse(&mut stream, &frames, pace_ms).await
@@ -333,6 +339,38 @@ fn substitute_result_task_id(frames: Vec<String>, request_body: &str) -> Vec<Str
         .into_iter()
         .map(|frame| frame.replace("__RESULT_TASK_ID__", &task_id))
         .collect()
+}
+
+/// 记忆 id 只有运行时才知道（先搜到再改）；脚本里用 __MEMORY_ID__ 占位，
+/// 回放时从请求体的工具结果文字里取（形如 mem-<16位hex>-<序号>）。
+fn substitute_memory_id(frames: Vec<String>, request_body: &str) -> Vec<String> {
+    if !frames.iter().any(|frame| frame.contains("__MEMORY_ID__")) {
+        return frames;
+    }
+    let Some(id) = memory_id_in(request_body) else {
+        return frames;
+    };
+    frames
+        .into_iter()
+        .map(|frame| frame.replace("__MEMORY_ID__", &id))
+        .collect()
+}
+
+fn memory_id_in(text: &str) -> Option<String> {
+    let mut rest = text;
+    while let Some(index) = rest.find("mem-") {
+        let candidate: String = rest[index..]
+            .chars()
+            .take_while(|value| value.is_ascii_alphanumeric() || *value == '-')
+            .collect();
+        let parts: Vec<&str> = candidate.split('-').collect();
+        if parts.len() == 3 && parts[1].len() == 16 && parts[2].chars().all(|c| c.is_ascii_digit())
+        {
+            return Some(candidate);
+        }
+        rest = &rest[index + 4..];
+    }
+    None
 }
 
 fn request_path(head: &[u8]) -> String {
