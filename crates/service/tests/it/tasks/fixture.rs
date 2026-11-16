@@ -8,7 +8,7 @@ pub(super) struct Router {
     pub(super) state: Arc<RouterState>,
 }
 
-/// ：改要求 Kind 的动态脚本：按请求内容（触发词/skill 结果）出 skill→propose_action，
+/// 改要求 Kind 的动态脚本：按请求内容（触发词/skill 结果）出 skill→propose_action，
 /// 不依赖静态队列顺序（relay 轮和用户消息的先后会抢脚本）。
 pub(super) struct UpdateProposal {
     pub(super) trigger: String,
@@ -36,15 +36,15 @@ pub(super) struct RouterState {
     pub(super) unexpected: Mutex<Vec<(bool, String)>>,
     /// ThinAgent 的响应延迟：live 测试要在任务还在跑时接上事件流。
     pub(super) thin_delay: Mutex<Option<Duration>>,
-    /// ：Kind 的动态脚本阶段（0=出确认卡、1=task_status、2=收尾）；None = 用静态队列。
+    /// Kind 的动态脚本阶段（0=出确认卡、1=task_status、2=收尾）；None = 用静态队列。
     pub(super) graph_kind: Mutex<Option<u8>>,
-    /// ：带里程碑门的任务图动态脚本阶段；None = 用静态队列。
+    /// 带里程碑门的任务图动态脚本阶段；None = 用静态队列。
     pub(super) gate_kind: Mutex<Option<u8>>,
-    /// ：只提图不上的动态脚本（NoCard 收尾）。
+    /// 只提图不上的动态脚本（NoCard 收尾）。
     pub(super) nocard_kind: Mutex<Option<u8>>,
-    /// ：连续提两张图两张卡（替换取消）。
+    /// 连续提两张图两张卡（替换取消）。
     pub(super) two_graph_kind: Mutex<Option<u8>>,
-    /// ：按请求内容驱动的改要求 Kind 脚本。
+    /// 按请求内容驱动的改要求 Kind 脚本。
     pub(super) update_kind: Mutex<Option<UpdateKind>>,
 }
 
@@ -68,32 +68,32 @@ impl Router {
         }
     }
 
-    /// ：让 Kind 的第二轮起用动态脚本（先 propose_action 出卡，再 task_status，最后收尾）。
+    /// 让 Kind 的第二轮起用动态脚本（先 propose_action 出卡，再 task_status，最后收尾）。
     pub(super) fn enable_graph_kind(&self) {
         *self.state.graph_kind.lock().unwrap() = Some(0);
     }
 
-    /// ：Kind 用带里程碑门的动态脚本（skill → 提议三子任务图 → 出确认卡 → 收尾）。
+    /// Kind 用带里程碑门的动态脚本（skill → 提议三子任务图 → 出确认卡 → 收尾）。
     pub(super) fn enable_gate_kind(&self) {
         *self.state.gate_kind.lock().unwrap() = Some(0);
     }
 
-    /// ：只提图不出的动态脚本（下一轮开始时按 NoCard 取消）。
+    /// 只提图不出的动态脚本（下一轮开始时按 NoCard 取消）。
     pub(super) fn enable_nocard_kind(&self) {
         *self.state.nocard_kind.lock().unwrap() = Some(0);
     }
 
-    /// ：两轮各提一张图一张卡（第二张卡接受时第一张按 Replaced 取消）。
+    /// 两轮各提一张图一张卡（第二张卡接受时第一张按 Replaced 取消）。
     pub(super) fn enable_two_graph_kind(&self) {
         *self.state.two_graph_kind.lock().unwrap() = Some(0);
     }
 
-    /// ：第二轮脚本（下一轮再提一张图一张卡；同一轮仍只让出一张卡）。
+    /// 第二轮脚本（下一轮再提一张图一张卡；同一轮仍只让出一张卡）。
     pub(super) fn enable_two_graph_second(&self) {
         *self.state.two_graph_kind.lock().unwrap() = Some(10);
     }
 
-    /// ：改要求 Kind 的动态脚本（trigger, skill_call, card_call, requirement）。
+    /// 改要求 Kind 的动态脚本（trigger, skill_call, card_call, requirement）。
     pub(super) fn enable_update_kind(
         &self,
         task_id: &str,
@@ -247,7 +247,7 @@ impl Respond for Router {
                 .insert_header("content-type", "text/event-stream")
                 .set_body_string(sse);
         }
-        // ：任务图的动态 Kind 轮：图 id 在 task_graph_propose 的工具结果里，静态回放拿不到。
+        // 任务图的动态 Kind 轮：图 id 在 task_graph_propose 的工具结果里，静态回放拿不到。
         if !thin
             && let Some(step) = {
                 let mut phase = self.state.graph_kind.lock().unwrap();
@@ -309,7 +309,7 @@ impl Respond for Router {
                 .insert_header("content-type", "text/event-stream")
                 .set_body_string(sse);
         }
-        // ：里程碑门的动态 Kind 轮。
+        // 里程碑门的动态 Kind 轮。
         if !thin
             && let Some(step) = {
                 let mut phase = self.state.gate_kind.lock().unwrap();
@@ -367,7 +367,7 @@ impl Respond for Router {
                 .insert_header("content-type", "text/event-stream")
                 .set_body_string(sse);
         }
-        // ：只提图不上卡（NoCard）。
+        // 只提图不上卡（NoCard）。
         if !thin
             && let Some(step) = {
                 let mut phase = self.state.nocard_kind.lock().unwrap();
@@ -409,7 +409,7 @@ impl Respond for Router {
                 .insert_header("content-type", "text/event-stream")
                 .set_body_string(sse);
         }
-        // ：两轮各提一张图一张卡（第一张被第二张替换取消）。
+        // 两轮各提一张图一张卡（第一张被第二张替换取消）。
         if !thin
             && let Some(step) = {
                 let mut phase = self.state.two_graph_kind.lock().unwrap();

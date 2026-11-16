@@ -851,7 +851,7 @@ async fn task_update_in_a_worktree_resumes_with_the_converted_scope() {
     assert_eq!(listed_worktrees(fixture.cwd.path()).len(), 2);
 }
 
-/// ：A 报回 ready 的那一刻崩溃——重启后 B 照样被放出，且只放一次（效果表重放）。
+/// A 报回 ready 的那一刻崩溃——重启后 B 照样被放出，且只放一次（效果表重放）。
 #[tokio::test]
 async fn graph_crash_after_ready_releases_downstream_exactly_once_after_restart() {
     let server = MockServer::start().await;
@@ -1161,7 +1161,7 @@ async fn resume_attempt_rehands_the_latest_upstream_result() {
     );
 }
 
-/// ：判定刚落库就崩溃 → 重启后下游恰好放一次、判定 relay 恰好送一次。
+/// 判定刚落库就崩溃 → 重启后下游恰好放一次、判定 relay 恰好送一次。
 #[tokio::test]
 async fn gate_verdict_crash_replays_downstream_launch_and_relay_once() {
     let server = MockServer::start().await;

@@ -534,7 +534,7 @@ async fn accepting_a_ready_write_result_records_once_and_keeps_the_stage() {
     );
 }
 
-/// ：调查任务没有写集，卡上也有「接受」；接受后任务关闭。
+/// 调查任务没有写集，卡上也有「接受」；接受后任务关闭。
 #[tokio::test]
 async fn an_investigation_card_can_be_accepted_and_closes_the_task() {
     let fixture = Fixture::new().await;
@@ -547,7 +547,7 @@ async fn an_investigation_card_can_be_accepted_and_closes_the_task() {
     assert_eq!(body["task"]["id"], task.id.as_str());
     let report_id = body["report_id"].as_str().expect("卡上报告 id").to_owned();
 
-    // ：card-act 带卡上的 report id。
+    // card-act 带卡上的 report id。
     let response = fixture
         .host
         .dispatch(Call::CardAct(CardActRequest {
@@ -576,7 +576,7 @@ async fn an_investigation_card_can_be_accepted_and_closes_the_task() {
     );
 }
 
-/// ：门没判通过前，接受被服务端拒（正常按钮也不会出现）。
+/// 门没判通过前，接受被服务端拒（正常按钮也不会出现）。
 #[tokio::test]
 async fn accepting_before_the_gate_passes_is_refused() {
     let server = MockServer::start().await;
@@ -606,7 +606,7 @@ async fn accepting_before_the_gate_passes_is_refused() {
     );
 }
 
-/// ：判通过后接受 → 被把关任务和门任务关闭；下游也接受后总任务关闭。
+/// 判通过后接受 → 被把关任务和门任务关闭；下游也接受后总任务关闭。
 #[tokio::test]
 async fn accepting_after_the_gate_passes_closes_gate_task_and_graph() {
     let server = MockServer::start().await;
@@ -683,7 +683,7 @@ async fn accepting_after_the_gate_passes_closes_gate_task_and_graph() {
     assert_eq!(store.stage(&root.id).unwrap(), Stage::Closed);
 }
 
-/// ：已关闭的任务还能再改要求：新版本、同任务新 Attempt、旧接受留在历史。
+/// 已关闭的任务还能再改要求：新版本、同任务新 Attempt、旧接受留在历史。
 #[tokio::test]
 async fn a_closed_task_can_change_requirement_again_and_keeps_old_acceptance() {
     let fixture = Fixture::new_with_actions().await;
@@ -793,7 +793,7 @@ async fn a_closed_task_can_change_requirement_again_and_keeps_old_acceptance() {
     assert_ne!(store.stage(&task.id).unwrap(), Stage::Closed);
 }
 
-/// ：从调用驱动 Work——任务库 + Kind 会话派生成一份快照，结果卡在「等你」里带 pick。
+/// 从调用驱动 Work——任务库 + Kind 会话派生成一份快照，结果卡在「等你」里带 pick。
 #[tokio::test]
 async fn work_call_returns_task_facts_and_the_accept_wait_item() {
     let fixture = Fixture::new().await;
@@ -850,7 +850,7 @@ async fn work_call_returns_task_facts_and_the_accept_wait_item() {
     assert!(!accept.need.is_empty());
 }
 
-/// ：从调用驱动组接受——一项旧报告逐项回原话，另一项照记；被接受了才关闭。
+/// 从调用驱动组接受——一项旧报告逐项回原话，另一项照记；被接受了才关闭。
 #[tokio::test]
 async fn task_accept_many_call_accepts_the_fresh_one_and_refuses_the_stale_one() {
     let fixture = Fixture::new().await;

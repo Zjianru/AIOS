@@ -765,7 +765,7 @@ async fn gate_judge_rejects_stale_report_and_candidate_changed() {
     );
 }
 
-/// ：同一任务后面又交了新结果，旧卡上的接受回「已经变了」，不记。
+/// 同一任务后面又交了新结果，旧卡上的接受回「已经变了」，不记。
 #[tokio::test]
 async fn accepting_an_older_report_after_a_new_one_is_refused() {
     let fixture = Fixture::new().await;
@@ -840,7 +840,7 @@ async fn accepting_an_older_report_after_a_new_one_is_refused() {
     assert_eq!(store.stage(&task.id).unwrap(), Stage::Closed);
 }
 
-/// ：组接受每记下一项，给那份报告的 relay 卡补一条 card/decision（Kind 卡上回执）。
+/// 组接受每记下一项，给那份报告的 relay 卡补一条 card/decision（Kind 卡上回执）。
 #[tokio::test]
 async fn task_accept_many_records_a_card_decision_for_each_accepted_report() {
     let fixture = Fixture::new().await;

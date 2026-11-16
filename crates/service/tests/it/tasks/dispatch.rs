@@ -3,7 +3,7 @@
 use super::*;
 
 pub(super) async fn wait_until(label: &str, mut check: impl FnMut() -> bool) {
-    // ：续跑的下一张结果卡可能晚几秒才 Steer 进 Kind；给足 18s。
+    // 续跑的下一张结果卡可能晚几秒才 Steer 进 Kind；给足 18s。
     for _ in 0..900 {
         if check() {
             return;

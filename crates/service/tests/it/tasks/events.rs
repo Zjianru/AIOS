@@ -2,14 +2,14 @@
 
 use super::*;
 
-/// ：从 Kind 请求体里「已建任务图 <id>」取出图 id（动态回放用；多个时取第一个）。
+/// 从 Kind 请求体里「已建任务图 <id>」取出图 id（动态回放用；多个时取第一个）。
 pub(super) fn graph_root_id(body: &str) -> Option<String> {
     let rest = body.split("已建任务图 ").nth(1)?;
     let id: String = rest.chars().take_while(char::is_ascii_hexdigit).collect();
     (!id.is_empty()).then_some(id)
 }
 
-/// ：同一请求里出现多张图时取最后一个（第二轮那张图）。
+/// 同一请求里出现多张图时取最后一个（第二轮那张图）。
 pub(super) fn graph_root_id_last(body: &str) -> Option<String> {
     let rest = body.rsplit("已建任务图 ").next()?;
     let id: String = rest.chars().take_while(char::is_ascii_hexdigit).collect();
@@ -327,7 +327,7 @@ pub(super) async fn ready_relay(fixture: &Fixture) -> (String, Value) {
         .expect("ready relay")
 }
 
-/// ：取一条消息里的纯文本（工具结果正文）。
+/// 取一条消息里的纯文本（工具结果正文）。
 pub(super) fn message_text(message: &model::Message) -> String {
     message
         .content

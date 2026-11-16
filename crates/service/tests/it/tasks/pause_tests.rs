@@ -601,7 +601,7 @@ async fn a_failed_settings_write_keeps_the_seat_limit() {
     );
 }
 
-/// ：全局暂停时确认任务图——先都排着，开闸后按先后跑（A 先，B 等 A 的 ready）。
+/// 全局暂停时确认任务图——先都排着，开闸后按先后跑（A 先，B 等 A 的 ready）。
 #[tokio::test]
 async fn graph_confirm_while_paused_queues_then_runs_in_order_after_unpause() {
     let server = MockServer::start().await;

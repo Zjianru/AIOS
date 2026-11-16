@@ -2183,7 +2183,7 @@ async fn confirming_an_interrupted_worktree_task_resumes_in_the_same_worktree() 
     drop(host);
 }
 
-/// ：A 跑着时重启——A 被打断；B 和总任务不出被打断，B 仍是待补足条件。
+/// A 跑着时重启——A 被打断；B 和总任务不出被打断，B 仍是待补足条件。
 #[tokio::test]
 async fn graph_restart_interrupts_running_child_but_not_root_or_waiting_sibling() {
     let server = MockServer::start().await;
@@ -2279,7 +2279,7 @@ async fn graph_restart_interrupts_running_child_but_not_root_or_waiting_sibling(
     assert!(reopened, "重开根宿主 250 次都没到 RootState::Ok");
 }
 
-/// ：门报 blocked 后，Kind 用 task_continue AfterReport 让门重跑。
+/// 门报 blocked 后，Kind 用 task_continue AfterReport 让门重跑。
 #[tokio::test]
 async fn task_continue_on_blocked_gate_reruns_with_after_report_cause() {
     let server = MockServer::start().await;

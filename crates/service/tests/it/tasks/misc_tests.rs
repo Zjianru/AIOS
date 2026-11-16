@@ -110,7 +110,7 @@ async fn task_stream_is_live_while_the_task_is_running() {
     );
 }
 
-/// ：task_continue 的拒绝项——没有可认的 cause、任务在跑。
+/// task_continue 的拒绝项——没有可认的 cause、任务在跑。
 #[tokio::test]
 async fn task_continue_rejects_without_cause_or_while_running() {
     let server = MockServer::start().await;
@@ -204,7 +204,7 @@ async fn task_continue_rejects_without_cause_or_while_running() {
     assert!(error.to_string().contains("还在跑"), "拒绝原因：{error}");
 }
 
-/// ：上游 A 又交新结果 → B 需重评、Kind 收到 relay、阶段不回退 → task_continue 按新结果核对 → 清除。
+/// 上游 A 又交新结果 → B 需重评、Kind 收到 relay、阶段不回退 → task_continue 按新结果核对 → 清除。
 #[tokio::test]
 async fn upstream_new_result_marks_reevaluation_and_continue_checks_again() {
     let server = MockServer::start().await;
@@ -431,7 +431,7 @@ async fn upstream_new_result_marks_reevaluation_and_continue_checks_again() {
     );
 }
 
-/// ：带结果卡发消息 → 模型看到一行文字 → Kind 出 update_task_requirement 确认卡 →
+/// 带结果卡发消息 → 模型看到一行文字 → Kind 出 update_task_requirement 确认卡 →
 /// 确认后同一任务开第 2 次 Attempt（RequirementChanged）、版本 2、新结果卡带版本。
 #[tokio::test]
 async fn update_task_requirement_card_round_trip_opens_a_new_attempt() {
@@ -581,7 +581,7 @@ async fn update_task_requirement_card_round_trip_opens_a_new_attempt() {
     assert_eq!(closed.acceptances[0].version, 2);
 }
 
-/// ：动作的三种拒绝：在排队、在跑、要求和 DoD 都没变；reconcile 回「要求改过了」。
+/// 动作的三种拒绝：在排队、在跑、要求和 DoD 都没变；reconcile 回「要求改过了」。
 #[tokio::test]
 async fn update_task_requirement_action_rejects_queued_running_and_unchanged() {
     let fixture = Fixture::new().await;
@@ -640,7 +640,7 @@ async fn update_task_requirement_action_rejects_queued_running_and_unchanged() {
     );
 }
 
-/// ：动作的 reconcile 在卡上「改前」已经不符时回固定原因；要求和 DoD 都没变也被拒。
+/// 动作的 reconcile 在卡上「改前」已经不符时回固定原因；要求和 DoD 都没变也被拒。
 #[tokio::test]
 async fn update_task_requirement_reconcile_refuses_after_a_change() {
     let fixture = Fixture::new_with_actions().await;

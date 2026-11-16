@@ -1098,7 +1098,7 @@ async fn launch_gate_blocks_graph_root_and_unconfirmed_children() {
     );
 }
 
-/// ：A 的 ready 报告落库的同一事务放出 B；B 开跑时任务包里有「上游结果」，needs 上记交接。
+/// A 的 ready 报告落库的同一事务放出 B；B 开跑时任务包里有「上游结果」，needs 上记交接。
 #[tokio::test]
 async fn graph_ready_releases_downstream_with_the_upstream_result() {
     let server = MockServer::start().await;
@@ -1447,7 +1447,7 @@ async fn gate_blocked_keeps_guarded_task_and_downstream_untouched() {
     );
 }
 
-/// ：判需修正 → relay 带原话 → task_continue → 新 Attempt 任务包含原话和核查发现 → 门自动重跑 → 通过。
+/// 判需修正 → relay 带原话 → task_continue → 新 Attempt 任务包含原话和核查发现 → 门自动重跑 → 通过。
 #[tokio::test]
 async fn gate_needs_fix_continue_and_auto_recheck_end_to_end() {
     let server = MockServer::start().await;
@@ -1677,7 +1677,7 @@ async fn gate_needs_fix_continue_and_auto_recheck_end_to_end() {
     );
 }
 
-/// ：点暂不 → 图取消（Dismissed），一项不跑；再点确认已变。
+/// 点暂不 → 图取消（Dismissed），一项不跑；再点确认已变。
 #[tokio::test]
 async fn graph_dismissed_on_card_cancels_the_graph() {
     let server = MockServer::start().await;
@@ -1768,7 +1768,7 @@ async fn graph_dismissed_on_card_cancels_the_graph() {
     );
 }
 
-/// ：Kind 一轮提了图却没上卡 → 下一轮开始前按 NoCard 取消。
+/// Kind 一轮提了图却没上卡 → 下一轮开始前按 NoCard 取消。
 #[tokio::test]
 async fn uncarded_graph_is_cancelled_as_no_card() {
     let server = MockServer::start().await;
@@ -1819,7 +1819,7 @@ async fn uncarded_graph_is_cancelled_as_no_card() {
     .await;
 }
 
-/// ：新卡接受后，之前没点过的旧图按 Replaced 取消。
+/// 新卡接受后，之前没点过的旧图按 Replaced 取消。
 #[tokio::test]
 async fn replacing_card_cancels_the_earlier_graph() {
     let server = MockServer::start().await;
