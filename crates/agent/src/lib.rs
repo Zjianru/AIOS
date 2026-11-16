@@ -14,6 +14,7 @@ mod inbox;
 mod instructions;
 mod instructions_capability;
 mod jobs_capability;
+mod memory_capability;
 mod prune_capability;
 mod reminder_capability;
 mod skill_capability;
@@ -55,9 +56,33 @@ pub struct CompactionModelPolicy {
     pub max_overflow_retries: Option<u32>,
 }
 
+/// 一次记忆注入的内容：只在回合开始/压缩后追加，新注入在 surface 上替换旧的那条。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryContext {
+    pub identity: String,
+    pub text: String,
+}
+
+/// 每步问一次记忆；返回 None 表示这一会话没有记忆注入。
+pub type MemoryContextProvider =
+    std::sync::Arc<dyn Fn() -> Result<Option<MemoryContext>, String> + Send + Sync>;
+
+/// agent 写完的压缩前日记，交给服务回调落库。
+#[derive(Clone, Debug)]
+pub struct PreCompactionDiary {
+    pub compaction_id: String,
+    pub conversation: session::SessionId,
+    pub text: String,
+}
+
+pub type PreCompactionFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
+pub type PreCompactionHook =
+    std::sync::Arc<dyn Fn(PreCompactionDiary) -> PreCompactionFuture + Send + Sync>;
+
 /// agent 的运行配置。默认值照 DSH 默认组合：agent-loop 的并发上限、
 /// compaction-basic 的阈值/保留/预留 token、bundle/base 的 spill 预算。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 pub struct AgentConfig {
     /// 一次 step 里并行安全工具调用的并发上限；设成 1 就是串行。DSH 默认 10。
     pub max_parallel_tool_calls: usize,
@@ -107,6 +132,34 @@ pub struct AgentConfig {
     /// 工具写入范围（D85）：写类工具只允许写这个前缀下的路径；None = 不限。
     /// 服务给写任务的 ThinAgent 填；Kind、CLI 不填。
     pub write_scope: Option<PathBuf>,
+    /// 每步向服务要记忆上下文；None = 这个会话不注入。
+    pub memory_context: Option<MemoryContextProvider>,
+    /// 压缩前记一笔；None = 不记。只给 Kind 根会话配。
+    pub pre_compaction: Option<PreCompactionHook>,
+    /// 压缩前记一笔的说明文字；与摘要请求同一前缀。
+    pub pre_compaction_instruction: Option<String>,
+}
+
+impl std::fmt::Debug for AgentConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AgentConfig")
+            .field("max_parallel_tool_calls", &self.max_parallel_tool_calls)
+            .field(
+                "compaction_threshold_ratio",
+                &self.compaction_threshold_ratio,
+            )
+            .field("compaction_retain_ratio", &self.compaction_retain_ratio)
+            .field("compaction_retries", &self.compaction_retries)
+            .field("write_scope", &self.write_scope)
+            .field("memory_context", &self.memory_context.is_some())
+            .field("pre_compaction", &self.pre_compaction.is_some())
+            .field(
+                "pre_compaction_instruction",
+                &self.pre_compaction_instruction.is_some(),
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl Default for AgentConfig {
@@ -135,6 +188,9 @@ impl Default for AgentConfig {
             no_wait: false,
             policy_prompt: None,
             write_scope: None,
+            memory_context: None,
+            pre_compaction: None,
+            pre_compaction_instruction: None,
         }
     }
 }
@@ -515,6 +571,11 @@ impl Agent {
         self.inner
             .send_with_request_id(request_id, message, delivery)
             .await
+    }
+
+    /// 追加一条只属于会话日志的事件（程序写的记忆小卡等）：不投给模型，只落日志/广播。
+    pub async fn append_event(&self, kind: session::EventKind) -> Result<(), AgentError> {
+        self.inner.append(&[kind]).await
     }
 
     /// 重启后领取 pending inbox（有排队输入就开一轮）；返回是否领取了东西。

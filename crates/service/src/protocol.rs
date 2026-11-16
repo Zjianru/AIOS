@@ -109,6 +109,10 @@ pub enum Call {
     Work(WorkRequest),
     /// T055.2：勾选后的组接受（每项带勾选那一刻看到的报告与版本）。
     TaskAcceptMany(TaskAcceptManyRequest),
+    /// 记忆页读取（M02/M05/M11）：关于你/条目/日记/隔离区/做梦/搜索/小卡状态。
+    MemoryRead(MemoryReadRequest),
+    /// 记忆变更（M01/M03/M04/M10/M12/M13/M14；一次只改一个对象/一处动作）。
+    MemoryAction(MemoryActionRequest),
 }
 
 /// 调用的结果（与 Call 一一对应）。
@@ -174,6 +178,10 @@ pub enum Response {
     Work(WorkResponse),
     /// T055.2：组接受的结果（通过的一起记，没通过的逐项回原因）。
     TaskAcceptMany(TaskAcceptManyResponse),
+    /// 记忆页读取的完整视图。
+    MemoryRead(MemoryReadResponse),
+    /// 记忆变更的受理结果（新版本号 + 给页面的一句话）。
+    MemoryAction(MemoryActionResponse),
 }
 
 /// 发消息（DSH session-controller 的 prompt）。requestId 是幂等键：同一 id 只进一次。
@@ -463,7 +471,9 @@ pub struct TaskReadGateCheck {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskReadGateVerdict {
-    pub candidate_ordinal: u64,
+    /// 候选报告排第几次；找不到那份报告就不写（版本号不是次数）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_ordinal: Option<u64>,
     pub conclusion: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
@@ -1315,6 +1325,229 @@ pub struct ConnectionRevokeResponse {
     pub connection: credentials::ConnectionInfo,
 }
 
+/// 记忆页读取（13 篇 4.1 的 M02/M05/M11 查询面）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct MemoryReadRequest {
+    /// 搜索词；给空就是只读全量视图。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    /// 条目详情：给出时响应里带这一条的修订历史。
+    #[serde(default, rename = "itemId", skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<String>,
+    /// 页面上正显示的小卡 ref：请求按 ref 从库读状态（撤销/已允许/删了）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refs: Vec<String>,
+}
+
+/// 记忆条目（页面/卡片用；字段和库里的视图一一对应）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct MemoryItemView {
+    pub id: String,
+    pub layer: String,
+    pub binding: String,
+    pub scope: String,
+    pub title: String,
+    pub summary: String,
+    pub body: String,
+    #[serde(rename = "sourceKind")]
+    pub source_kind: String,
+    #[serde(rename = "sourceRef")]
+    pub source_ref: String,
+    pub status: String,
+    pub revision: u64,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: i64,
+    pub pinned: bool,
+}
+
+/// 一条日记（只读）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct MemoryDiaryView {
+    pub id: String,
+    pub day: String,
+    pub text: String,
+    #[serde(rename = "sourceRef")]
+    pub source_ref: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: i64,
+}
+
+/// 一条修订（条目详情的历史）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct MemoryRevisionView {
+    pub revision: u64,
+    pub title: String,
+    pub body: String,
+    pub reason: String,
+    /// 这一版是谁改的（user/kind/dream/system）。
+    pub actor: String,
+    #[serde(
+        rename = "dreamRunId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub dream_run_id: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub created_at: i64,
+}
+
+/// 搜索命中：记忆/日记/对话，带出处。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct MemoryHitView {
+    /// memory / diary / conversation
+    pub kind: String,
+    /// 记忆或日记的 id；对话命中是会话 id（seq 指回那一轮）。
+    pub id: String,
+    pub title: String,
+    pub snippet: String,
+    #[serde(
+        rename = "conversationId",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub conversation_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seq: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<u64>,
+}
+
+/// 一张程序卡按 ref 现在的状态（active/accepted/deleted/revoked/failed/running）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct MemoryCardStateView {
+    pub reference: String,
+    pub state: String,
+    /// 失败类卡片的一行原因（目前是没跑成的做梦 run.error）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// 做梦的一处改动（明细里能逐处撤）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct MemoryDreamChangeView {
+    #[serde(rename = "memoryId")]
+    pub memory_id: String,
+    pub title: String,
+    pub action: String,
+    pub reason: String,
+    #[serde(rename = "beforeRevision")]
+    pub before_revision: u64,
+    #[serde(rename = "afterRevision")]
+    pub after_revision: u64,
+    /// 这一处的当前修订还是这次做梦写的那版（用户后来改过就不可撤）。
+    pub reversible: bool,
+    /// 这一处已经撤销过（整次或单独撤）。
+    pub undone: bool,
+}
+
+/// 一次做梦的记录（页面明细）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct MemoryDreamRunView {
+    pub id: String,
+    #[serde(rename = "startedAt")]
+    pub started_at: i64,
+    #[serde(rename = "endedAt")]
+    pub ended_at: i64,
+    pub outcome: String,
+    pub error: String,
+    pub model: String,
+    #[serde(rename = "reportJson")]
+    pub report_json: String,
+    pub changes: Vec<MemoryDreamChangeView>,
+}
+
+/// 记忆页的做梦一节。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct MemoryDreamView {
+    pub enabled: bool,
+    pub permit: bool,
+    #[serde(rename = "intervalHours")]
+    pub interval_hours: u64,
+    #[serde(rename = "lastSuccessAt")]
+    pub last_success_at: i64,
+    #[serde(rename = "nextAt", default, skip_serializing_if = "Option::is_none")]
+    pub next_at: Option<i64>,
+    /// 现在有没有在做梦（页面「正在整理」用）。
+    pub running: bool,
+    pub runs: Vec<MemoryDreamRunView>,
+}
+
+/// 记忆页读取的完整响应。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct MemoryReadResponse {
+    pub version: u64,
+    #[serde(rename = "aboutYou")]
+    pub about_you: Vec<MemoryItemView>,
+    pub entries: Vec<MemoryItemView>,
+    pub notes: Vec<MemoryItemView>,
+    pub diary: Vec<MemoryDiaryView>,
+    pub quarantine: Vec<MemoryItemView>,
+    pub search: Vec<MemoryHitView>,
+    pub cards: Vec<MemoryCardStateView>,
+    pub dream: MemoryDreamView,
+    #[serde(rename = "itemRevisions")]
+    pub item_revisions: Vec<MemoryRevisionView>,
+}
+
+/// 一次记忆变更（13 篇 4.1：一次只改一个对象/一处动作）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum MemoryActionKind {
+    /// 更正一条（出新修订）。
+    Correct {
+        id: String,
+        title: String,
+        summary: String,
+        body: String,
+        reason: String,
+    },
+    /// 删到隔离区（7 天内能恢复）。
+    Delete {
+        id: String,
+    },
+    Restore {
+        id: String,
+    },
+    /// 立即彻底删除（留无明文 tombstone）。
+    Forget {
+        id: String,
+    },
+    /// 把一条笔记定下来（产生有约束力的条目，原笔记标记）。
+    Pin {
+        id: String,
+    },
+    /// 撤销做梦：只给 memoryId 撤一处；都不给撤最近一次成功。
+    UndoDream {
+        #[serde(rename = "runId", default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
+        #[serde(rename = "memoryId", default, skip_serializing_if = "Option::is_none")]
+        memory_id: Option<String>,
+    },
+    SetDreamEnabled {
+        enabled: bool,
+    },
+    SetDreamInterval {
+        hours: u64,
+    },
+    /// 观察许可：允许/暂不。
+    SetPermit {
+        allow: bool,
+    },
+    /// 用户说「马上整理一次」。
+    DreamNow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct MemoryActionRequest {
+    pub action: MemoryActionKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+pub struct MemoryActionResponse {
+    pub version: u64,
+    pub message: String,
+}
+
 /// 服务协议版本：只增不改的对外面每次扩展都记在这里，Web ready 帧里带上。
 ///
 /// - 4：第一版；
@@ -1338,10 +1571,13 @@ pub struct ConnectionRevokeResponse {
 ///   旧页忽略新增字段，旧服务的 status 没有它时页面照绝对路径显示。
 /// - 10：删 connection-verify；连接的 check 改由保存时拉一次厂商列表写
 ///   （新连接/换 key 才拉；旧页发这个方法按未知方法拒绝）。
+/// - 16：记忆页——memory-read（读关于你/条目/日记/隔离区/做梦/搜索/卡状态）、
+///   memory-action（更正/删/恢复/彻底删/定下来/撤销做梦/开关/间隔/许可/马上整理）；
+///   推送 memory/changed { version }（seq=0 的合成事件，页面收到重读）。只增，旧页忽略。
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 15;
+pub const PROTOCOL_VERSION: u64 = 16;
 
 /// 根会话不可用的种类：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

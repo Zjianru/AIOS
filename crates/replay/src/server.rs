@@ -208,15 +208,21 @@ async fn handle(mut stream: TcpStream, shared: Arc<Mutex<Shared>>) -> std::io::R
             write_response(&mut stream, status, "application/json", body).await
         }
         ReplayCall::Stream(records) => {
-            let frames = substitute_result_task_id(
-                substitute_graph_id(encode_sse(&records), body_text.as_ref()),
+            let frames = substitute_memory_id(
+                substitute_result_task_id(
+                    substitute_graph_id(encode_sse(&records), body_text.as_ref()),
+                    body_text.as_ref(),
+                ),
                 body_text.as_ref(),
             );
             write_sse(&mut stream, &frames, pace_ms).await
         }
         ReplayCall::Cut(records) => {
-            let frames = substitute_result_task_id(
-                substitute_graph_id(encode_sse_cut(&records), body_text.as_ref()),
+            let frames = substitute_memory_id(
+                substitute_result_task_id(
+                    substitute_graph_id(encode_sse_cut(&records), body_text.as_ref()),
+                    body_text.as_ref(),
+                ),
                 body_text.as_ref(),
             );
             write_sse(&mut stream, &frames, pace_ms).await
@@ -335,6 +341,76 @@ fn substitute_result_task_id(frames: Vec<String>, request_body: &str) -> Vec<Str
         .collect()
 }
 
+/// 记忆 id 只有运行时才知道（先搜到再改）；脚本里用 __MEMORY_ID__ 占位，
+/// 回放时从请求体的工具结果文字里取（形如 mem-<16位hex>-<序号>）。
+fn substitute_memory_id(frames: Vec<String>, request_body: &str) -> Vec<String> {
+    if !frames.iter().any(|frame| frame.contains("__MEMORY_ID__")) {
+        return frames;
+    }
+    let Some(id) = memory_id_in(request_body) else {
+        return frames;
+    };
+    frames
+        .into_iter()
+        .map(|frame| frame.replace("__MEMORY_ID__", &id))
+        .collect()
+}
+
+fn memory_id_in(request_body: &str) -> Option<String> {
+    // 只认工具结果结构里的文字：用户自己打的字里出现同样的样子不算。
+    let body = serde_json::from_str::<serde_json::Value>(request_body).ok()?;
+    tool_result_text(&body).and_then(memory_id_in_text)
+}
+
+fn tool_result_text(value: &serde_json::Value) -> Option<&str> {
+    match value {
+        serde_json::Value::Object(map) => {
+            let is_tool_result =
+                map.get("type").and_then(serde_json::Value::as_str) == Some("tool_result");
+            if is_tool_result
+                && let Some(found) = strings_in(value)
+                    .into_iter()
+                    .find(|text| text.contains("mem-"))
+            {
+                return Some(found);
+            }
+            map.values().find_map(tool_result_text)
+        }
+        serde_json::Value::Array(items) => items.iter().find_map(tool_result_text),
+        _ => None,
+    }
+}
+
+fn strings_in(value: &serde_json::Value) -> Vec<&str> {
+    match value {
+        serde_json::Value::Object(map) => map.values().flat_map(strings_in).collect(),
+        serde_json::Value::Array(items) => items.iter().flat_map(strings_in).collect(),
+        serde_json::Value::String(text) => vec![text.as_str()],
+        _ => Vec::new(),
+    }
+}
+
+fn memory_id_in_text(text: &str) -> Option<String> {
+    let mut rest = text;
+    while let Some(index) = rest.find("mem-") {
+        let candidate: String = rest[index..]
+            .chars()
+            .take_while(|value| value.is_ascii_alphanumeric() || *value == '-')
+            .collect();
+        let parts: Vec<&str> = candidate.split('-').collect();
+        if parts.len() == 3
+            && parts[1].len() == 16
+            && parts[1].chars().all(|value| value.is_ascii_hexdigit())
+            && !parts[2].is_empty()
+            && parts[2].chars().all(|value| value.is_ascii_hexdigit())
+        {
+            return Some(candidate);
+        }
+        rest = &rest[index + 4..];
+    }
+    None
+}
+
 fn request_path(head: &[u8]) -> String {
     let text = String::from_utf8_lossy(head);
     text.split(' ').nth(1).unwrap_or_default().to_owned()
@@ -395,4 +471,50 @@ async fn write_sse(
         stream.flush().await?;
     }
     stream.flush().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::memory_id_in;
+
+    fn body_with_tool_result(text: &str) -> String {
+        serde_json::json!({
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "call-1", "content": [
+                        {"type": "text", "text": text}
+                    ]}
+                ]}
+            ]
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn memory_id_parses_from_tool_result_with_hex_counter() {
+        let body = body_with_tool_result("[记忆 mem-0123456789abcdef-1a] GBK CSV：先探编码");
+        assert_eq!(
+            memory_id_in(&body),
+            Some("mem-0123456789abcdef-1a".to_owned())
+        );
+    }
+
+    #[test]
+    fn memory_id_ignores_user_text_and_bad_shapes() {
+        let user_text = serde_json::json!({
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "我在文档里看到 mem-0123456789abcdef-0 这种写法"}
+                ]}
+            ]
+        })
+        .to_string();
+        assert_eq!(memory_id_in(&user_text), None, "用户文字里的样子不算");
+
+        let short = body_with_tool_result("[记忆 mem-123] 太短");
+        assert_eq!(memory_id_in(&short), None);
+
+        let not_hex = body_with_tool_result("[记忆 mem-zzzzzzzzzzzzzzzz-1a] 不是十六进制");
+        assert_eq!(memory_id_in(&not_hex), None);
+    }
 }

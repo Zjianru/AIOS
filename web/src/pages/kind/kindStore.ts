@@ -25,6 +25,7 @@ import { setHostHome } from '@/data/service';
 import { go } from '@/app/navigate';
 import type { AskAnswer } from '@/data/service';
 import { parseTaskRelay } from '@/data/taskResult';
+import { memoryChanged } from './memoryCards';
 import { mark } from '@/lib/perf';
 import {
   canvasTracks,
@@ -316,7 +317,15 @@ function addUnsentView(
       startedAt: null,
       durationMs: null,
       status: 'completed',
-      user: { text, elements: [], pastes, files, canvas: canvas ?? null, resultCard: resultCard ?? null },
+      user: {
+        text,
+        elements: [],
+        pastes,
+        files,
+        canvas: canvas ?? null,
+        resultCard: resultCard ?? null,
+        rpcId: null,
+      },
       taskResults: [],
       says: [],
       reasoning: null,
@@ -614,10 +623,17 @@ function refreshCardViews(): void {
 
 /** 一轮的最新日志事件 → 重建这一个 view（其它轮不动）。 */
 function refreshTurn(turn: number): void {
+  // 记忆小卡是程序追加的一行，不带 turn；它属于当前最新一轮。turn/end 重建这一轮时
+  // 要把它并回去，否则 live 到的许可卡在回合结束时被重建丢掉（真 key 复现过）。
+  const latestTurn = useKindStore
+    .getState()
+    .views.reduce((max, view) => Math.max(max, Number(view.id.split('-')[1])), 0);
+  const includeMemoryCards = turn >= latestTurn;
   const events = liveEvents.filter(
     (event) =>
       (typeof event.data.turn === 'number' && Number(event.data.turn) === turn) ||
-      event.type === 'card/decision',
+      event.type === 'card/decision' ||
+      (includeMemoryCards && event.type === 'memory/card'),
   );
   const derived = deriveTurnViews(events, turnLabels())[0];
   if (!derived) return;
@@ -669,6 +685,12 @@ function applyLiveEvent(event: ServiceEvent): void {
     void useSettingsState.getState().refreshMasks();
     return;
   }
+  if (event.type === 'memory/changed') {
+    // 记忆库变了（记忆页里删/改/允许/撤销等）：seq=0 合成事件，不进日志；
+    // 让对话里的小卡按 ref 重读状态。
+    memoryChanged();
+    return;
+  }
   if (event.seq <= lastSeq) return;
   lastSeq = event.seq;
   rememberCardSignals([event]);
@@ -712,6 +734,11 @@ function applyLiveEvent(event: ServiceEvent): void {
   }
   // 卡片决定只带来回执：重推所有轮里的确认卡（被新卡替换的旧卡也在别的轮里）。
   if (event.type === 'card/decision') {
+    refreshCardViews();
+    return;
+  }
+  // 记忆小卡是程序追加的一行（id/kind/ref，不带 turn）：重推所有轮，让最后一轮挂上它。
+  if (event.type === 'memory/card') {
     refreshCardViews();
     return;
   }

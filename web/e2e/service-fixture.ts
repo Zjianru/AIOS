@@ -34,6 +34,13 @@ function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.pretextSlowTurn) return { file: 't023-pretext-slow', paceMs: 400 };
   // T059 F5：内容超过视口的长流式回答，用来在流式追加中验证滚轮不被钉回底部。
   if (options.t059LongStream) return { file: 't059-long-stream', paceMs: 40 };
+  // 记忆页联动的假模型脚本：记住/记一笔/5 个回合/做梦 apply+总结。
+  if (options.memoryFlow) {
+    if (options.memoryLiveCard) return { file: 't060-memory-live-card', paceMs: 10 };
+    return options.memoryFailDream
+      ? { file: 't060-memory', override: 't060-memory-fail-dream', paceMs: 10 }
+      : { file: 't060-memory', paceMs: 10 };
+  }
   if (options.codeBlock) return { file: 'tool-code' };
   if (options.toolCards) return { file: 'tool-cards' };
   // 只保留 Kind 现有工具（read/glob/grep）：T030.2a 收窄后 Kind 没有 write/edit/bash。
@@ -191,6 +198,14 @@ export interface FixtureOptions {
   pretextSlowTurn?: boolean;
   /// T059 F5：120 行长流式回答，内容超过视口、流式追加中。
   t059LongStream?: boolean;
+  /// 预写根会话日志带三张程序记忆卡（许可/整理完/没跑成），验小卡渲染。
+  memoryCards?: boolean;
+  /// 假模型脚本带记忆工具与做梦（记住/记一笔/攒够许可/整理/撤销）。
+  memoryFlow?: boolean;
+  /// 做梦第一次模型请求强制 400（失败卡原因用例）。
+  memoryFailDream?: boolean;
+  /// turn3 里 Kind 调 memory_dream_now（许可卡在回合中途到，live 渲染用例）。
+  memoryLiveCard?: boolean;
   /// 路径显示：三步回放（cwd 内写、cwd 外写、最终文本）；夹具里的 __CWD__ / __OUTSIDE__ 起服务前换成真实目录。
   pathsTurn?: boolean;
   /// T013.6：最终回答里带一个代码块（复制按钮用）。
@@ -292,6 +307,8 @@ export interface FixtureOptions {
     | 'bad-json'
     | 'chat'
     | 'live'
+    /// .6：任务对话长流式（任务页钉底/滚轮不被拉回的 e2e）。
+    | 'long'
     /// T028.5：任务对话输入框/抄送/暂停/Attempt 的夹具。
     | 'say'
     | 'resume'
@@ -608,6 +625,60 @@ export async function startKernelFixture(
     );
   }
   // T014.2：旧格式（v16）的根会话日志——读取器要照读，不拒绝、不迁移。
+  // 程序记忆卡（许可/整理完/没跑成）的渲染夹具。触发它们的接线在下一票，
+  // 这里只预写会话日志，验卡片按 kind 渲染、和回复分开、刷新后从日志重建。
+  if (options.memoryCards) {
+    const sessionId = '00000000-0000-4000-8000-000000000603';
+    const sessions = path.join(dataDir, 'sessions');
+    await mkdir(sessions, { recursive: true });
+    const startedAt = Date.now();
+    const cwd = await realpath(dataDir);
+    const rows: Record<string, unknown>[] = [];
+    let seq = 0;
+    let at = 0;
+    const next = (type: string, data: Record<string, unknown>) => {
+      seq += 1;
+      at += 1;
+      rows.push({ type, seq, time: startedAt + at, data });
+    };
+    next('turn/start', { turn: 1 });
+    next('user/message', {
+      turn: 1,
+      step: 1,
+      message: {
+        id: 'msg-memory-cards',
+        role: 'user',
+        source: { kind: 'user' },
+        content: [{ type: 'text', text: '记一下我的偏好，攒够了再整理你的笔记' }],
+      },
+    });
+    next('assistant/message', {
+      turn: 1,
+      step: 1,
+      message: {
+        id: 'msg-memory-cards-answer',
+        role: 'assistant',
+        source: { kind: 'model', provider: 'deepseek', model: 'deepseek-flash' },
+        content: [{ type: 'text', text: '好，我先记着；整理的事到点再说。' }],
+      },
+      stream: [],
+      usage: { inputTokens: 10, outputTokens: 3 },
+    });
+    next('turn/end', { turn: 1, reason: { kind: 'completed' } });
+    next('memory/card', { id: 'card-permission-1', kind: 'permission', ref: 'dream-run-1' });
+    next('memory/card', { id: 'card-done-1', kind: 'dream_done', ref: 'dream-run-2' });
+    next('memory/card', { id: 'card-failed-1', kind: 'dream_failed', ref: 'dream-run-3' });
+    const header = { type: 'session', version: 18, id: sessionId, createdAt: startedAt, cwd };
+    await writeFile(
+      path.join(sessions, sessionId + '.jsonl'),
+      [header, ...rows].map((row) => JSON.stringify(row)).join(String.fromCharCode(10)) +
+        String.fromCharCode(10),
+    );
+    await writeFile(
+      path.join(dataDir, 'kind-root.json'),
+      JSON.stringify({ version: 1, sessionId }),
+    );
+  }
   if (options.legacySession) {
     const legacyId = '00000000-0000-4000-8000-000000000146';
     const sessions = path.join(dataDir, 'sessions');

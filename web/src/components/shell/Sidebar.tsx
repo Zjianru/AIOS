@@ -3,7 +3,7 @@
  * 用 shadcn 的 Sidebar（collapsible="icon"），只改样式 token 与宽度变量，行为不动。
  */
 
-import { Clock3, FolderKanban, Moon, Settings, Sparkles, Sun } from 'lucide-react';
+import { Brain, Clock3, FolderKanban, Moon, Settings, Sparkles, Sun } from 'lucide-react';
 import {
   Sidebar as ShadcnSidebar,
   SidebarContent,
@@ -32,6 +32,7 @@ const MAIN_NAV: NavItem[] = [
   { id: 'now', label: '现在', route: 'now', icon: Clock3 },
   { id: 'kind', label: 'Kind', route: 'kind', icon: Sparkles },
   { id: 'work', label: '工作', route: 'work', icon: FolderKanban },
+  { id: 'memory', label: '记忆', route: 'memory', icon: Brain },
   { id: 'settings', label: '设置', route: 'settings:model', icon: Settings },
 ];
 

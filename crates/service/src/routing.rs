@@ -164,6 +164,12 @@ impl RootHost {
                 .accept_many(&request)
                 .await
                 .map(Response::TaskAcceptMany),
+            // 记忆页：读/变更都在记忆库；变更完推一条 memory/changed 让页面重读。
+            Call::MemoryRead(request) => self.memory_read(request).await.map(Response::MemoryRead),
+            Call::MemoryAction(request) => self
+                .memory_action(request)
+                .await
+                .map(Response::MemoryAction),
             // 附件仓库（文字文件只读副本）。
             Call::AttachmentPut(request) => self
                 .attachment_put(request)
@@ -202,6 +208,52 @@ impl RootHost {
                 "任务库没开，任务对话看不了".to_owned(),
             )),
         }
+    }
+
+    /// 记忆页读：查/读全在记忆库；小卡状态按 ref 从库读，程序卡从根会话日志补。
+    async fn memory_read(
+        &self,
+        request: crate::protocol::MemoryReadRequest,
+    ) -> Result<crate::protocol::MemoryReadResponse, ServiceError> {
+        // 进入记忆页是一个做梦检查时机（只在读整页时算，搜索/详情不算）。
+        if request
+            .query
+            .as_deref()
+            .is_none_or(|query| query.trim().is_empty())
+            && request.item_id.is_none()
+        {
+            self.dream_check();
+        }
+        let events = {
+            let guard = self.inner.lock().await;
+            match guard.as_ref() {
+                Some(host) => host.agent().session_events_from(0),
+                None => Vec::new(),
+            }
+        };
+        crate::memory::page::read(
+            self.memory_runtime(),
+            self.dream_runtime(),
+            &events,
+            &request,
+        )
+    }
+
+    /// 记忆页变更：一个动作，改完推新版本；许可/开关/马上整理顺手再查一次做梦时机。
+    async fn memory_action(
+        &self,
+        request: crate::protocol::MemoryActionRequest,
+    ) -> Result<crate::protocol::MemoryActionResponse, ServiceError> {
+        let result =
+            crate::memory::page::action(self.memory_runtime(), self.dream_runtime(), &request)?;
+        self.emit_memory_changed(result.version);
+        if result.trigger_dream {
+            self.dream_check();
+        }
+        Ok(crate::protocol::MemoryActionResponse {
+            version: result.version,
+            message: result.message,
+        })
     }
 
     pub async fn follow(&self, request: FollowRequest) -> Result<FollowResponse, ServiceError> {

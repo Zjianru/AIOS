@@ -31,12 +31,12 @@ fn append_torn_line(store: &SessionStore) {
 }
 
 #[test]
-fn written_header_uses_format_version_17() {
+fn written_header_uses_format_version_18() {
     let (_data_dir, _cwd, store) = create_store();
     let text = fs::read_to_string(store.path()).unwrap();
     let header: Value =
         serde_json::from_str(text.lines().next().expect("日志有 header 行")).unwrap();
-    assert_eq!(header["version"], 17, "加载记录让 FORMAT_VERSION 升到 17");
+    assert_eq!(header["version"], 18, "记忆事件让 FORMAT_VERSION 升到 18");
 }
 
 /// 手写一份指定版本的日志（header + 一条 v15 兼容的 turn/start）。
@@ -94,7 +94,7 @@ fn version_16_logs_are_read_as_is_and_can_be_continued() {
     let legacy = legacy_log(&id, 16);
     fs::write(&path, &legacy).unwrap();
 
-    let snapshot = SessionStore::open_read_only(data_dir.path(), &id).expect("17 读取器能读 16");
+    let snapshot = SessionStore::open_read_only(data_dir.path(), &id).expect("18 读取器能读 16");
     assert_eq!(snapshot.events().len(), 1, "16 版日志的事件原样读出来");
 
     let mut opened = SessionStore::open(data_dir.path(), &id).expect("写打开也接受 16");
@@ -139,9 +139,9 @@ fn version_15_logs_are_read_as_is_and_can_be_continued() {
     assert_eq!(header["version"], 15, "在 15 版日志上续写时 header 留 15");
 }
 
-/// T013.1 测试清单 2：13 及以下、18 及以上照旧拒绝，文件一字不改；更新的提示升级。
+/// T013.1 测试清单 2：13 及以下、19 及以上照旧拒绝，文件一字不改；更新的提示升级。
 #[test]
-fn format_versions_outside_14_through_17_are_rejected_without_touching_the_file() {
+fn format_versions_outside_14_through_18_are_rejected_without_touching_the_file() {
     let (data_dir, _cwd, store) = create_store();
     let id = store.id().clone();
     let path = store.path().to_path_buf();
@@ -160,13 +160,13 @@ fn format_versions_outside_14_through_17_are_rejected_without_touching_the_file(
                 SessionError::UnsupportedVersion {
                     version: got,
                     min: 14,
-                    max: 17
+                    max: 18
                 } if got == version
             ),
             "v{version} 要拒绝并写出范围，实际 {error}"
         );
         assert!(
-            error.to_string().contains("14–17"),
+            error.to_string().contains("14–18"),
             "报错要写出能读的范围：{error}"
         );
         assert_eq!(fs::read(&path).unwrap(), legacy, "拒绝旧版本不能改写它");
@@ -177,14 +177,14 @@ fn format_versions_outside_14_through_17_are_rejected_without_touching_the_file(
                 SessionError::UnsupportedVersion {
                     version: got,
                     min: 14,
-                    max: 17
+                    max: 18
                 } if got == version
             ),
             "只读路径同样拒绝 v{version}，实际 {read_error}"
         );
     }
 
-    for version in [18, 99] {
+    for version in [19, 99] {
         let legacy = legacy_log(&id, version);
         fs::write(&path, &legacy).unwrap();
         let error = match SessionStore::open(data_dir.path(), &id) {
@@ -197,14 +197,14 @@ fn format_versions_outside_14_through_17_are_rejected_without_touching_the_file(
                 SessionError::UnsupportedFutureVersion {
                     version: got,
                     min: 14,
-                    max: 17
+                    max: 18
                 } if got == version
             ),
             "更新版本要拒绝，实际 {error}"
         );
         assert!(
             error.to_string().contains("请升级"),
-            "比 17 新的要提示升级：{error}"
+            "比 18 新的要提示升级：{error}"
         );
         assert_eq!(fs::read(&path).unwrap(), legacy, "拒绝新版本不能改写它");
     }
@@ -499,10 +499,10 @@ fn store_absolutizes_relative_data_dir() {
     assert!(reopened.path().is_absolute(), "写打开同样绝对化");
 }
 
-/// 加载记录（tool/registry）进日志后 FORMAT_VERSION 升到 17；读取器仍从 14 起。
+/// 记忆事件（memory/card、memory-context）进日志后 FORMAT_VERSION 升到 18；读取器仍从 14 起。
 #[test]
-fn format_version_bumps_to_17_after_tool_registry() {
-    assert_eq!(crate::FORMAT_VERSION, 17);
+fn format_version_bumps_to_18_after_memory_events() {
+    assert_eq!(crate::FORMAT_VERSION, 18);
     assert_eq!(crate::MIN_READ_VERSION, 14);
 }
 

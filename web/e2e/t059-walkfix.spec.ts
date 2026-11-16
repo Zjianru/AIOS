@@ -112,20 +112,24 @@ test('T059 F2：上游结果默认折叠且限高，展开后卡内滚动，不�
   }
 });
 
-test('T059 F3：侧栏恢复现在/Kind/工作三项，工作和现在可进入', async ({ page }) => {
+test('T059 F3：侧栏现在/Kind/工作/记忆四项，工作和现在可进入', async ({ page }) => {
   test.setTimeout(120_000);
   const fixture = await startKernelFixture({});
   try {
     await page.goto(urlOf(fixture));
     const nav = page.locator('[data-kind="sidebar-content"] button');
-    await expect(nav).toHaveCount(3);
+    await expect(nav).toHaveCount(4);
     await expect(nav.filter({ hasText: '现在' })).toHaveCount(1);
     await expect(nav.filter({ hasText: 'Kind' })).toHaveCount(1);
     await expect(nav.filter({ hasText: '工作' })).toHaveCount(1);
+    await expect(nav.filter({ hasText: '记忆' })).toHaveCount(1);
     await nav.filter({ hasText: '工作' }).click();
     await expect(page).toHaveURL(/#work/);
     await page.getByRole('button', { name: '现在', exact: true }).click();
     await expect(page).toHaveURL(/#now/);
+    await nav.filter({ hasText: '记忆' }).click();
+    await expect(page).toHaveURL(/#memory/);
+    await expect(page.locator('[data-kind="memory-page"]')).toBeVisible();
   } finally {
     await fixture.close();
   }
@@ -147,11 +151,11 @@ test('T059 F4：里程碑页两轮判定与核查 Attempt；被把关任务有�
     await expect(confirm).toHaveAttribute('data-state', 'done', { timeout: 40_000 });
     const gate = resultCard(page, '独立核查');
     await expect(gate).toBeVisible({ timeout: 90_000 });
-    const note = '空标题的别直接放过，用域名加路径当键';
+    const note = '空标题的别直接放过，用 *域名* 加 _路径_ 当键';
     await gate.locator('[data-kind="gate-needs-fix"]').click();
     await gate.locator('[data-kind="gate-note-input"]').fill(note);
     await gate.locator('[data-kind="gate-needs-fix-submit"]').click();
-    await expect(gate.locator('[data-kind="gate-note"]')).toContainText(note);
+    await expect(gate.locator('[data-kind="gate-note"]')).toContainText('*域名*');
 
     const guarded = taskRow(fixture, '先查行数');
     const gateTask = taskRow(fixture, '独立核查');
@@ -183,6 +187,13 @@ test('T059 F4：里程碑页两轮判定与核查 Attempt；被把关任务有�
     await expect(review).toBeVisible({ timeout: 30_000 });
     await expect(review.locator('[data-kind="review-verdict"]')).toHaveCount(2, { timeout: 30_000 });
     await expect(review.locator('[data-kind="review-verdict"]').first()).toContainText('候选第');
+    // 两次判定按候选报告顺序编号，第 1 次需修正、第 2 次通过。
+    await expect(
+      review.locator('[data-kind="review-verdict"]').filter({ hasText: '需修正' }),
+    ).toContainText('候选第 1 次');
+    await expect(
+      review.locator('[data-kind="review-verdict"]').filter({ hasText: '通过' }),
+    ).toContainText('候选第 2 次');
     await expect(review.locator('[data-kind="review-verdict"]').filter({ hasText: '需修正' })).toContainText(note);
     await expect(review.locator('[data-kind="review-attempt"]')).toHaveCount(2);
 
@@ -193,6 +204,17 @@ test('T059 F4：里程碑页两轮判定与核查 Attempt；被把关任务有�
     await expect(block.locator('[data-kind="continue-user"]')).toContainText(note);
     await expect(block.locator('[data-kind="continue-finding"] table')).toBeVisible();
     await expect(block.locator('[data-kind="continue-finding"] strong')).toContainText('结论');
+
+    // R1：用户在任务页自己打出「你要按这个改。」开头的句子，按来源认，不该画成续改块。
+    const taskComposer = page.getByPlaceholder(/ThinAgent/).last();
+    await taskComposer.fill('你要按这个改。' + String.fromCharCode(10) + '我自己打的这一句。');
+    await taskComposer.press('Enter');
+    await expect(
+      page.locator('[data-kind="user-bubble"]').filter({ hasText: '我自己打的这一句。' }),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(
+      page.locator('[data-kind="continue-block"]').filter({ hasText: '我自己打的这一句。' }),
+    ).toHaveCount(0);
   } finally {
     await fixture.close();
   }

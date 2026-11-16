@@ -2426,13 +2426,17 @@ async fn kind_task_stop_reports_not_running_for_both_modes() {
 #[tokio::test]
 async fn interrupting_a_running_turn_keeps_the_attempt_and_the_next_sentence_continues_it() {
     let fixture = Fixture::new().await;
-    fixture.router.set_thin_delay(Duration::from_millis(1_000));
+    fixture.router.set_thin_delay(Duration::from_millis(3_000));
     fixture
         .router
         .push_thin(crate::common::text_sse("我还在查"));
     let task = fixture.accept(false).await;
     let store = tasks_store(fixture.data());
     wait_until("第一轮开跑", || attempt_in_flight(&store, &task.id)).await;
+    wait_until("ThinAgent 请求在途", || {
+        !fixture.router.bodies(true).is_empty()
+    })
+    .await;
     let attempt = store
         .task(&task.id)
         .unwrap()
@@ -2765,7 +2769,7 @@ async fn task_stop_after_report_for_a_task_that_is_not_running_reports_the_fixed
 async fn after_report_stop_injects_the_note_denies_other_tools_and_ends_reported() {
     let fixture = Fixture::new().await;
     // 收尾停要落在 ThinAgent 跑着的时候：把第一次响应拖慢，留出插进去的时机。
-    fixture.router.set_thin_delay(Duration::from_millis(600));
+    fixture.router.set_thin_delay(Duration::from_millis(2_500));
     fixture.router.push_thin(crate::common::tool_use_sse(
         1,
         "call-read",
@@ -2875,7 +2879,7 @@ async fn after_report_stop_injects_the_note_denies_other_tools_and_ends_reported
 #[tokio::test]
 async fn after_report_stop_without_a_report_synthesizes_waiting_then_records_stopped() {
     let fixture = Fixture::new().await;
-    fixture.router.set_thin_delay(Duration::from_millis(600));
+    fixture.router.set_thin_delay(Duration::from_millis(2_500));
     fixture
         .router
         .push_thin(crate::common::text_sse("我还在查，别急"));
@@ -2954,7 +2958,7 @@ async fn after_report_stop_on_an_idle_task_records_stopped_without_another_relay
 #[tokio::test]
 async fn stopping_after_report_twice_injects_the_fixed_note_once() {
     let fixture = Fixture::new().await;
-    fixture.router.set_thin_delay(Duration::from_millis(600));
+    fixture.router.set_thin_delay(Duration::from_millis(6_000));
     fixture.router.push_thin(crate::common::text_sse("还在查"));
     // 插进去的说明会开下一步；这一步 ThinAgent 没报，turn 才收尾。
     fixture.router.push_thin(crate::common::text_sse("不报了"));
@@ -3043,7 +3047,7 @@ async fn stopping_now_after_an_after_report_stop_uses_the_immediate_stop() {
 #[tokio::test]
 async fn kind_task_stop_after_report_stops_after_the_next_turn() {
     let fixture = Fixture::new().await;
-    fixture.router.set_thin_delay(Duration::from_millis(600));
+    fixture.router.set_thin_delay(Duration::from_millis(2_500));
     fixture.router.push_thin(crate::common::text_sse("还在查"));
     // 插进去的说明会开下一步；这一步 ThinAgent 没报，turn 才收尾。
     fixture.router.push_thin(crate::common::text_sse("不报了"));
@@ -3481,7 +3485,7 @@ async fn global_pause_lets_the_running_turn_finish_and_relays_still_arrive() {
     let host = open_actions_host(&server, data.path(), cwd.path()).await;
     let store = tasks_store(data.path());
     // 让 ThinAgent 的回复慢到暂停确认之后，好在「这一轮在跑」时按下暂停。
-    router.set_thin_delay(Duration::from_millis(1_500));
+    router.set_thin_delay(Duration::from_millis(4_000));
     for script in ready_scripts() {
         router.push_thin(script);
     }
@@ -3666,7 +3670,7 @@ async fn seats_one_holds_the_second_task_until_the_first_reports() {
     service::settings::save(data.path(), &saved).expect("保存席位");
     let host = open_host(&server, data.path(), cwd.path()).await;
     let store = tasks_store(data.path());
-    router.set_thin_delay(Duration::from_millis(1_500));
+    router.set_thin_delay(Duration::from_millis(4_000));
     for title in ["甲", "乙", "丙"] {
         for script in ready_scripts() {
             router.push_thin_for_title(title, script);
@@ -3684,12 +3688,7 @@ async fn seats_one_holds_the_second_task_until_the_first_reports() {
     )
     .await;
     wait_until("第一个任务开跑", || {
-        store
-            .task(&first.id)
-            .unwrap()
-            .unwrap()
-            .latest_attempt()
-            .is_some()
+        attempt_in_flight(&store, &first.id)
     })
     .await;
 
@@ -3840,7 +3839,7 @@ async fn lowering_seats_does_not_stop_running_tasks_and_gates_the_next_launch() 
     let cwd = tempfile::tempdir().unwrap();
     let host = open_host(&server, data.path(), cwd.path()).await;
     let store = tasks_store(data.path());
-    router.set_thin_delay(Duration::from_millis(900));
+    router.set_thin_delay(Duration::from_millis(2_500));
     for title in ["甲", "乙", "丙"] {
         for script in ready_scripts() {
             router.push_thin_for_title(title, script);
@@ -3880,6 +3879,8 @@ async fn lowering_seats_does_not_stop_running_tasks_and_gates_the_next_launch() 
                 .unwrap()
                 .latest_attempt()
                 .is_some()
+            && attempt_in_flight(&store, &first.id)
+            && attempt_in_flight(&store, &second.id)
     })
     .await;
 
@@ -9894,6 +9895,20 @@ async fn gate_needs_fix_continue_and_auto_recheck_end_to_end() {
         panic!("gate-judge 响应");
     };
     assert_eq!(pass.released, vec!["再写结果".to_owned()]);
+    // 判通过后 C 进 launch 要占席位；先等门和第 2 份候选的 Attempt 都收尾，
+    // 免得并发跑测试时「没空位」把 C 留成 Later（T053 偶发）。
+    wait_until("门和候选的 Attempt 都收尾", || {
+        let store = tasks_store(data.path());
+        [gate.id.clone(), guarded.id.clone()].iter().all(|id| {
+            store
+                .task(id)
+                .ok()
+                .flatten()
+                .and_then(|task| task.latest_attempt().cloned())
+                .is_none_or(|attempt| attempt.ended_at.is_some())
+        })
+    })
+    .await;
     wait_until("C 开跑", || {
         tasks_store(data.path())
             .task(&downstream.id)

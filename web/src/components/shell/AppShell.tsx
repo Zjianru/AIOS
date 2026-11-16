@@ -28,6 +28,7 @@ import { TaskScene } from '@/pages/task/TaskScene';
 import { TraceScene } from '@/pages/task/TraceScene';
 import { TaskChatScene } from '@/pages/taskchat/TaskChatScene';
 import { SettingsScene } from '@/pages/settings/SettingsScene';
+import { MemoryScene } from '@/pages/memory/MemoryScene';
 import { PeriodPage } from '@/pages/placeholder/PeriodPage';
 
 export function AppShell() {
@@ -60,7 +61,14 @@ export function AppShell() {
 
   // 只显示接上内核的部分：T055 起工作页/现在页也接真数据；其余未接场景回到 Kind。
   useEffect(() => {
-    if (scene !== 'kind' && scene !== 'settings' && scene !== 'taskchat' && scene !== 'work' && scene !== 'now') {
+    if (
+      scene !== 'kind' &&
+      scene !== 'settings' &&
+      scene !== 'taskchat' &&
+      scene !== 'work' &&
+      scene !== 'now' &&
+      scene !== 'memory'
+    ) {
       go('kind');
     }
   }, [scene]);
@@ -91,6 +99,7 @@ export function AppShell() {
       if (scene === 'trace') return <TraceScene />;
       if (scene === 'empty' && route.id === 'now') return <EmptyNow />;
       if (scene === 'settings' && route.kind === 'settings') return <SettingsScene />;
+      if (scene === 'memory') return <MemoryScene />;
       return <PeriodPage />;
     },
     [scene, route.id],

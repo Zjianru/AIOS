@@ -371,6 +371,8 @@ export interface TurnUserView {
   canvas: { id: string; title: string } | null;
   /** T054.2：这句话带着一张结果卡（「要求修改」放进输入框的卡）。 */
   resultCard: { taskId: string; title: string; version: number } | null;
+  /** 服务端给这条消息的 rpcId（续改说明靠它认，不靠正文）。 */
+  rpcId: string | null;
 }
 
 /** T028.5：任务对话里说的一句话抄送到 Kind（task-cc:<inputId>）。 */
@@ -398,12 +400,20 @@ export interface InterimSay {
   seq: number;
 }
 
+export interface MemoCardInfo {
+  id: string;
+  kind: string;
+  ref?: string;
+}
+
 export interface TurnViewData {
   id: string;
   startedAt: number | null;
   durationMs: number | null;
   status: TurnStatus;
   user: TurnUserView | null;
+  /** 程序追加的记忆卡（许可/整理完/没跑成）。 */
+  memoCards?: MemoCardInfo[];
   /** T028.5：抄送行不是一轮回答；有它时只画虚线一行，不画用户气泡和 Kind 的回复。 */
   cc?: TaskCcView | null;
   /** 任务结果的 relay 消息：这一轮可能被 relay 叫起来；按到达顺序各出一张卡。 */
@@ -648,7 +658,7 @@ export function deriveTurnViews(
    * T013 F1：你的消息按块拆开——正文只留打的字；paste 块各是一段粘贴；file 块各是一个文件。
    * 粘贴原文不进正文（Claude F1：气泡上是一排卡片，不是一大段字）。
    */
-  const userOf = (message: unknown): TurnUserView | null => {
+  const userOf = (message: unknown, rpcId: string | null): TurnUserView | null => {
     if (!message || typeof message !== 'object') return null;
     const content = (message as { content?: unknown }).content;
     if (!Array.isArray(content)) return null;
@@ -707,7 +717,7 @@ export function deriveTurnViews(
     }
     const body = text.join('');
     if (!body && pastes.length === 0 && files.length === 0 && !canvas && !resultCard) return null;
-    return { text: body, elements: [], pastes, files, canvas, resultCard };
+    return { text: body, elements: [], pastes, files, canvas, resultCard, rpcId };
   };
 
   const textOfToolResult = (message: unknown): string => {
@@ -820,7 +830,7 @@ export function deriveTurnViews(
         const kind =
           typeof source?.source === 'string' ? source.source : source?.source?.kind;
         if (kind !== undefined && kind !== 'user' && kind !== 'skill-invocation') break;
-        const view = userOf(data.message);
+        const view = userOf(data.message, userRpcIdOf(data.message));
         if (view) ensure(turn).user = view;
         break;
       }
@@ -1098,7 +1108,7 @@ export function deriveTurnViews(
       }
     }
   }
-  return [...turns.values()]
+  const views: TurnViewData[] = [...turns.values()]
     .sort((left, right) => left.turn - right.turn)
     .map((raw) => ({
       id: `turn-${raw.turn}`,
@@ -1133,6 +1143,21 @@ export function deriveTurnViews(
       delivery: null,
       stoppedAt: raw.stoppedAt,
     }));
+  const memoCards: MemoCardInfo[] = events
+    .filter((event) => event.type === 'memory/card')
+    .map((event) => {
+      const data = (event.data ?? {}) as { id?: unknown; kind?: unknown; ref?: unknown };
+      return {
+        id: typeof data.id === 'string' ? data.id : '',
+        kind: typeof data.kind === 'string' ? data.kind : '',
+        ref: typeof data.ref === 'string' ? data.ref : undefined,
+      };
+    })
+    .filter((card) => card.id !== '' && card.kind !== '');
+  if (memoCards.length > 0 && views.length > 0) {
+    views[views.length - 1] = { ...views[views.length - 1], memoCards };
+  }
+  return views;
 }
 
 /** 改一轮：按 id 换成新对象（TurnRow 用 memo 比引用，只有这一条重绘）。 */

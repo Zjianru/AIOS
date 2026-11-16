@@ -265,6 +265,15 @@ fn is_review_report(task: &Task, report: &Report) -> bool {
         && crate::result_cards::write_scope_display(task).is_some()
 }
 
+/// 被把关任务的候选报告排第几次：全部 Ready 报告同一个口径（结果卡和页头判定共用）。
+fn ready_report_ordinal(task: &Task, report_id: &ReportId) -> Option<u64> {
+    task.reports
+        .iter()
+        .filter(|report| report.state == ReportState::Ready)
+        .position(|report| &report.id == report_id)
+        .map(|index| index as u64 + 1)
+}
+
 /// T051：报告状态映射到协议视图（页头只在 taskStatusOf 一处把词定出来）。
 fn task_read_report_state(state: ReportState) -> TaskReadReportState {
     match state {
@@ -904,20 +913,9 @@ impl TaskRuntime {
                 .iter()
                 .rev()
                 .map(|verdict| crate::protocol::TaskReadGateVerdict {
-                    candidate_ordinal: guard_target
-                        .as_ref()
-                        .and_then(|guarded| {
-                            guarded
-                                .reports
-                                .iter()
-                                .filter(|report| {
-                                    report.state == ReportState::Ready
-                                        && report.origin == ReportOrigin::Agent
-                                })
-                                .position(|report| report.id == verdict.candidate.report_id)
-                                .map(|index| index as u64 + 1)
-                        })
-                        .unwrap_or(verdict.candidate.requirement_version as u64),
+                    candidate_ordinal: guard_target.as_ref().and_then(|guarded| {
+                        ready_report_ordinal(guarded, &verdict.candidate.report_id)
+                    }),
                     conclusion: match verdict.conclusion {
                         GateConclusion::Pass => "pass",
                         GateConclusion::NeedsFix => "needs_fix",
@@ -1300,6 +1298,11 @@ impl TaskRuntime {
             Some(_) => Err("最新结论不是未确定/被打断，不用重跑".to_owned()),
             None => Err("程序门还没有未确定的结论".to_owned()),
         }
+    }
+
+    /// 当前全局暂停（D64）；做梦的自动时机据此让路。
+    pub(crate) fn exec_paused(&self) -> bool {
+        self.exec_paused.load(Ordering::SeqCst)
     }
 
     /// 全局暂停的闸门：RootHost 先写设置文件，再改这里的内存值。
@@ -2379,12 +2382,7 @@ impl TaskRuntime {
             let need = task.needs.first()?;
             let guarded = self.store.task(&need.from).ok().flatten()?;
             let candidate = task.latest_attempt()?.handoffs.first()?.clone();
-            let ordinal = guarded
-                .reports
-                .iter()
-                .filter(|report| report.state == ReportState::Ready)
-                .position(|report| report.id == candidate.report_id)?
-                + 1;
+            let ordinal = ready_report_ordinal(&guarded, &candidate.report_id)?;
             return Some(json!({
                 "milestone": true,
                 "state": "pending_verdict",
@@ -3083,6 +3081,9 @@ impl TaskRuntime {
         let mut agent_config = self.options.config.clone();
         agent_config.tool_keys = crate::root::tool_key_source(&self.options);
         agent_config.write_scope = task.effective_write_scope();
+        if let Ok(memory) = crate::memory::MemoryRuntime::open(&self.data_dir) {
+            agent_config.memory_context = Some(std::sync::Arc::new(memory).thin_provider());
+        }
         let agent = agent::Agent::open(AgentOpenOptions {
             data_dir: self.data_dir.clone(),
             cwd: task.effective_cwd().to_path_buf(),

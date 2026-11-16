@@ -11,6 +11,7 @@ import { toast } from 'sonner';
 import { ChevronRight, CircleAlert, RotateCw, Square } from 'lucide-react';
 import { CopyButton } from './CopyButton';
 import { Markdown } from './Markdown';
+import { MemoChip } from './MemoChip';
 import { QuoteChip } from './QuoteChip';
 import { FileReferenceChip } from './FileReferenceChip';
 import { fileMentions } from './atGrammar';
@@ -116,20 +117,18 @@ interface ContinueParts {
   notes: string[];
 }
 
-function parseContinue(text: string): ContinueParts | null {
+/// 只有 source.rpcId 是 continue: 的消息才走这里（按来源认，用户自己打的同样句子不算）。
+function parseContinue(text: string): ContinueParts {
   let body = text;
-  let title = '';
+  let title = 'Kind 让你接着改';
   if (body.startsWith('continue:')) {
     const end = body.indexOf(String.fromCharCode(10));
     body = end >= 0 ? body.slice(end + 1) : '';
-    title = 'Kind 让你接着改';
   }
   const lines = body.split(String.fromCharCode(10));
   const first = lines[0]?.trim() ?? '';
-  if (first === '你要按这个改。') title = 'Kind 让你接着改';
-  else if (first === '上游有新结果，按新结果核对。') title = 'Kind 让你按新结果核对';
+  if (first === '上游有新结果，按新结果核对。') title = 'Kind 让你按新结果核对';
   else if (first === '接着做：上一次没交出可用的结果。') title = 'Kind 让你接着做';
-  if (!title) return null;
   let requirement: string | null = null;
   let userWords: string | null = null;
   let finding: string | null = null;
@@ -529,7 +528,9 @@ export const TurnRow = memo(function TurnRow({
           {view.user.pastes.length > 0 || view.user.files.length > 0 ? <UserCards user={view.user} /> : null}
           {view.user.text ? (
             (() => {
-              const continued = parseContinue(view.user.text);
+              const continued = view.user.rpcId?.startsWith('continue:')
+                ? parseContinue(view.user.text)
+                : null;
               if (continued) return <ContinueBlock parts={continued} />;
               return (
                 <div
@@ -567,6 +568,12 @@ export const TurnRow = memo(function TurnRow({
           <span className="brand-type">{timeOf(view.startedAt)}</span>
         </div>
       ) : null}
+
+      {(view.memoCards ?? []).map((card) => (
+        <div key={card.id} className="mb-1 mt-2 flex justify-start">
+          <MemoChip card={{ kind: card.kind, id: card.id, ref: card.ref, title: card.ref }} />
+        </div>
+      ))}
 
       {waitingForKernel ? null : (
         <>

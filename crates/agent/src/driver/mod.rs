@@ -59,6 +59,9 @@ pub(crate) struct Inner {
     tool_keys: tools::ToolKeySource,
     /// 追加在系统提示末尾的产品规则；只在建系统提示那一次用到。
     policy_prompt: Option<String>,
+    /// 压缩前记一笔的钩子；只给 Kind 根会话配。
+    pre_compaction: Option<crate::PreCompactionHook>,
+    pre_compaction_instruction: Option<String>,
     /// 统一工具入口是否拒绝会等待的调用（Kind 用；默认关）。
     no_wait: bool,
     /// 工具写入范围（D85）；None = 不限。
@@ -261,6 +264,14 @@ impl LoopAccess for Inner {
         })
     }
 
+    fn pre_compaction(&self) -> Option<&crate::PreCompactionHook> {
+        self.pre_compaction.as_ref()
+    }
+
+    fn pre_compaction_instruction(&self) -> Option<&str> {
+        self.pre_compaction_instruction.as_deref()
+    }
+
     fn is_running(&self) -> bool {
         matches!(
             self.state.lock().expect("agent 状态锁被毒化").phase,
@@ -324,6 +335,8 @@ impl Inner {
         // 能力状态由能力模块装载/持有；driver 只做装配。
         let (instruction_state, instruction_roots) =
             crate::instructions_capability::InstructionsCapability::load(&store, instruction_roots);
+        let (memory_identity, memory_context) =
+            crate::memory_capability::MemoryCapability::load(&store, config.memory_context.clone());
         let bundled_skills = config.bundled_skills.clone();
         let (skill_catalog, skill_roots, bundled_skills) =
             crate::skill_capability::SkillCapability::load(
@@ -351,6 +364,8 @@ impl Inner {
             data_dir,
             tool_keys,
             policy_prompt,
+            pre_compaction: config.pre_compaction.clone(),
+            pre_compaction_instruction: config.pre_compaction_instruction.clone(),
             no_wait: config.no_wait,
             write_scope: config.write_scope.clone(),
             stop_after_report: AtomicBool::new(false),
@@ -388,6 +403,8 @@ impl Inner {
                 skill_roots,
                 bundled_skills,
                 spill_max_inline_tokens,
+                memory_identity,
+                memory_context,
             }),
             #[cfg(test)]
             settle_hook: Mutex::new(None),

@@ -1,6 +1,6 @@
 //! 裸宿主：只绑定一个 Agent，把调用翻译成 Agent 操作；不碰 Keyring 和根状态。
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use agent::{Agent, SendAdmission};
 use model::UserMessage;
@@ -29,13 +29,25 @@ pub struct ServiceHost {
 impl ServiceHost {
     /// 建宿主并开始把 Agent 的日志事件转发成服务事件（seq/type/data 都来自日志事实）。
     pub fn new(agent: Agent) -> Self {
+        Self::new_with_memory(agent, None)
+    }
+
+    pub fn new_with_memory(
+        agent: Agent,
+        memory: Option<Arc<crate::memory::MemoryRuntime>>,
+    ) -> Self {
         let (events, _) = broadcast::channel(SERVICE_EVENT_CHANNEL_CAPACITY);
         let mut source = agent.subscribe_session_events();
         let forward_tx = events.clone();
+        let conversation_id = agent.id().as_str().to_owned();
+        let forward_memory = memory.clone();
         let forward = tokio::spawn(async move {
             loop {
                 match source.recv().await {
                     Ok(event) => {
+                        if let Some(memory) = &forward_memory {
+                            memory.index_session_event(&conversation_id, &event);
+                        }
                         #[expect(
                             clippy::let_underscore_must_use,
                             reason = "转发端在订阅者关闭时不能停，继续消费到源关闭"
@@ -161,6 +173,10 @@ impl ServiceHost {
             | Call::FileReferencesList(_)
             | Call::GateJudge(_)
             | Call::TaskContinue(_) => Err(ServiceError::SettingsOnBareHost),
+            // 记忆页只在根宿主上：裸宿主没有记忆库。
+            Call::MemoryRead(_) | Call::MemoryAction(_) => Err(ServiceError::MemoryUnavailable(
+                "记忆页只能由根宿主提供".to_owned(),
+            )),
         }
     }
 
@@ -190,6 +206,14 @@ impl ServiceHost {
             accepted: true,
             duplicate: matches!(admission, SendAdmission::Duplicate),
         })
+    }
+
+    /// 程序往会话日志追加一条事件（记忆小卡等）；不投给模型，只落日志并经广播推给页面。
+    pub async fn append_event(&self, kind: session::EventKind) -> Result<(), ServiceError> {
+        self.agent
+            .append_event(kind)
+            .await
+            .map_err(ServiceError::from)
     }
 
     /// 取消当前轮（清空 pending inbox + 中止正在跑的轮）。

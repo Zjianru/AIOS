@@ -162,7 +162,7 @@ impl RootSession {
 ///
 /// 写、改、跑命令和三件后台任务不在里面；这些活派给 ThinAgent。任务工具看
 /// `task_runtime` 有没有装配，由 `kind_tool_policy` 追加。
-const KIND_TOOLS: [&str; 11] = [
+const KIND_TOOLS: [&str; 19] = [
     "read",
     "glob",
     "grep",
@@ -174,6 +174,14 @@ const KIND_TOOLS: [&str; 11] = [
     "propose_action",
     "web_search",
     "web_fetch",
+    "memory_remember",
+    "memory_note",
+    "memory_search",
+    "memory_read",
+    "memory_diary",
+    "memory_dream_now",
+    "memory_undo_dream",
+    "memory_delete_note",
 ];
 
 /// Kind 根会话的派任务说明（D20、D63）：照 DSH superagent 协调者的几条，按 AIOS 改名。
@@ -230,6 +238,16 @@ fn kind_tool_policy(options: &RootSessionOptions) -> agent::ToolPolicy {
 
 /// 找回或新建 Kind 根会话（T006.16b）：四态见 docs/02 篇第 1 节与 06 篇恢复链。
 pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSession, RootError> {
+    open_root_session_with(options, None, None).await
+}
+
+/// 同上，但复用调用方已经打开的记忆库/做梦运行时（服务生命周期里只开一份；
+/// CLI/测试不传，照旧自己打开）。
+pub async fn open_root_session_with(
+    options: RootSessionOptions,
+    memory: Option<std::sync::Arc<crate::memory::MemoryRuntime>>,
+    dream: Option<std::sync::Arc<crate::memory::DreamRuntime>>,
+) -> Result<RootSession, RootError> {
     let state_path = RootSession::state_path(&options.data_dir);
     // 根会话独有的工具：`aios_query` 读服务里已存的数据，`propose_action` 出确认卡，
     // `web_search`/`web_fetch` 联网（要 Exa 的 key 且加载过 `web`），任务工具
@@ -281,6 +299,27 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
     // 设置页另外报读不出的原因。ThinAgent 用同一份来源。
     let mut config = options.config.clone();
     config.tool_keys = tool_key_source(&options);
+    // Kind 根会话：记忆注入 + 压缩前日记 + 记忆工具；库打不开不挡根会话，但产品路径要接上。
+    let memory = match memory {
+        Some(memory) => Some(memory),
+        None => crate::memory::MemoryRuntime::open(&options.data_dir)
+            .ok()
+            .map(std::sync::Arc::new),
+    };
+    if let Some(memory) = &memory {
+        extra_tools.extend(crate::memory::memory_tools(
+            std::sync::Arc::clone(memory),
+            &options.data_dir,
+            options.identity.clone(),
+            dream,
+        ));
+        config.memory_context = Some(memory.kind_provider());
+        config.pre_compaction = Some(memory.pre_compaction_hook());
+        config.pre_compaction_instruction = Some(
+            "把下面这段对话里值得留给以后的事实整理成一条简短日记，只写事实和教训，不要复述全部原文。"
+                .to_owned(),
+        );
+    }
     match std::fs::read(&state_path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             std::fs::create_dir_all(&options.data_dir)?;

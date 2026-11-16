@@ -57,6 +57,8 @@ pub enum AgentError {
     Model(#[from] model::ModelError),
     #[error("续接的会话 id 不匹配：请求 {requested}，但 store 是 {store}")]
     ResumeIdMismatch { requested: String, store: String },
+    #[error("记忆上下文读取失败：{0}")]
+    MemoryProvider(String),
     #[error("step 失败且收尾也失败: first={first}, second={second}")]
     StepCleanup { first: String, second: String },
     #[error("AgentConfig 非法：{field}（{message}）")]
@@ -81,6 +83,7 @@ impl AgentError {
         match self {
             Self::Store(_) | Self::CorruptInbox(_) => "STORE".to_owned(),
             Self::Model(error) => error.code.as_str(),
+            Self::MemoryProvider(_) => "MEMORY".to_owned(),
             Self::ResumeIdMismatch { .. }
             | Self::StepCleanup { .. }
             | Self::InvalidConfig { .. }
