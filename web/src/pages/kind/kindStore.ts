@@ -25,6 +25,7 @@ import { setHostHome } from '@/data/service';
 import { go } from '@/app/navigate';
 import type { AskAnswer } from '@/data/service';
 import { parseTaskRelay } from '@/data/taskResult';
+import { memoryChanged } from './memoryCards';
 import { mark } from '@/lib/perf';
 import {
   canvasTracks,
@@ -669,6 +670,12 @@ function applyLiveEvent(event: ServiceEvent): void {
     void useSettingsState.getState().refreshMasks();
     return;
   }
+  if (event.type === 'memory/changed') {
+    // 记忆库变了（记忆页里删/改/允许/撤销等）：seq=0 合成事件，不进日志；
+    // 让对话里的小卡按 ref 重读状态。
+    memoryChanged();
+    return;
+  }
   if (event.seq <= lastSeq) return;
   lastSeq = event.seq;
   rememberCardSignals([event]);
@@ -712,6 +719,11 @@ function applyLiveEvent(event: ServiceEvent): void {
   }
   // 卡片决定只带来回执：重推所有轮里的确认卡（被新卡替换的旧卡也在别的轮里）。
   if (event.type === 'card/decision') {
+    refreshCardViews();
+    return;
+  }
+  // 记忆小卡是程序追加的一行（id/kind/ref，不带 turn）：重推所有轮，让最后一轮挂上它。
+  if (event.type === 'memory/card') {
     refreshCardViews();
     return;
   }

@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use agent::{MemoryContext, MemoryContextProvider, PreCompactionDiary, PreCompactionHook};
 mod dream;
+pub(crate) mod page;
 mod tools;
 pub use dream::{
     DREAM_PERMIT_CARD_REF, DreamCheck, DreamReport, DreamRuntime, DreamTaskFact, DreamTrigger,
@@ -154,6 +155,16 @@ impl MemoryRuntime {
         if let Ok(Some(run)) = self.store.dream_run(reference) {
             return Some(
                 match run.outcome.as_str() {
+                    // 整理完但改动都撤掉了：卡片显示已撤销。
+                    "done"
+                        if self
+                            .store
+                            .dream_changes(&run.id)
+                            .map(|changes| changes.is_empty())
+                            .unwrap_or(false) =>
+                    {
+                        "revoked"
+                    }
                     "done" => "active",
                     "failed" => "failed",
                     _ => "running",

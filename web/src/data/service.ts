@@ -20,6 +20,9 @@ import type { FileReferenceEntry } from './generated/FileReferenceEntry';
 import type { FirstUseResponse } from './generated/FirstUseResponse';
 import type { Frame } from './generated/Frame';
 import type { IssuesResponse } from './generated/IssuesResponse';
+import type { MemoryActionKind } from './generated/MemoryActionKind';
+import type { MemoryActionResponse } from './generated/MemoryActionResponse';
+import type { MemoryReadResponse } from './generated/MemoryReadResponse';
 import type { KeyringView } from './generated/KeyringView';
 import type { ModelSettingsResponse } from './generated/ModelSettingsResponse';
 import type { Response } from './generated/Response';
@@ -58,6 +61,15 @@ export type { Frame };
 export type { StopMode };
 export type { TaskStopResponse };
 export type { KeyringView };
+export type { MemoryActionKind };
+export type { MemoryActionResponse };
+export type { MemoryDreamChangeView } from './generated/MemoryDreamChangeView';
+export type { MemoryDreamRunView } from './generated/MemoryDreamRunView';
+export type { MemoryDreamView } from './generated/MemoryDreamView';
+export type { MemoryHitView } from './generated/MemoryHitView';
+export type { MemoryItemView } from './generated/MemoryItemView';
+export type { MemoryReadResponse };
+export type { MemoryRevisionView } from './generated/MemoryRevisionView';
 export type { ModelSettingsResponse };
 export type { ServiceAnswer };
 export type { StatusResponse };
@@ -214,6 +226,23 @@ export async function sendMessage(
     ...(options.canvas ? { canvas: options.canvas } : {}),
     ...(options.resultCard ? { resultCard: options.resultCard } : {}),
   });
+}
+
+/** 记忆页读取（M02/M05/M11）：关于你/条目/日记/隔离区/做梦/搜索/小卡状态。 */
+export async function memoryRead(
+  request: { query?: string; itemId?: string; refs?: string[] } = {},
+): Promise<MemoryReadResponse> {
+  return post({
+    method: 'memory-read',
+    ...(request.query !== undefined ? { query: request.query } : {}),
+    ...(request.itemId !== undefined ? { itemId: request.itemId } : {}),
+    refs: request.refs ?? [],
+  });
+}
+
+/** 记忆变更（一次一个对象/一处动作）。 */
+export async function memoryAction(action: MemoryActionKind): Promise<MemoryActionResponse> {
+  return post({ method: 'memory-action', action });
 }
 
 /** 取消当前轮（T007.5 停止按钮 / Esc；服务端取消正在跑的一轮并保留已做的）。 */

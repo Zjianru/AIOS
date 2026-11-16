@@ -332,11 +332,26 @@ impl DreamRuntime {
         Ok(runs.into_iter().find(|run| run.outcome == "done"))
     }
 
-    /// 撤销一处/整次；用户从页面点，也允许做梦自己撤。
-    pub fn undo(&self, only: Option<&str>) -> Result<DreamReport, String> {
-        let Some(run) = self.latest_successful_run()? else {
-            return Err("还没有整理完的做梦记录".to_owned());
+    /// 撤销一处/整次；run_id 不给就撤最近一次成功的。用户从页面点，也允许做梦自己撤。
+    pub fn undo_run(
+        &self,
+        run_id: Option<&str>,
+        only: Option<&str>,
+    ) -> Result<DreamReport, String> {
+        let run = match run_id {
+            Some(id) => self
+                .memory
+                .store()
+                .dream_run(id)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "没有这次做梦记录".to_owned())?,
+            None => self
+                .latest_successful_run()?
+                .ok_or_else(|| "还没有整理完的做梦记录".to_owned())?,
         };
+        if run.outcome != "done" {
+            return Err("这次没整理完，没有能撤销的改动".to_owned());
+        }
         let outcome = self
             .memory
             .store()
@@ -353,6 +368,11 @@ impl DreamRuntime {
             applied: outcome.dream_applied,
             skipped: outcome.dream_skipped,
         })
+    }
+
+    /// 撤销最近一次成功（工具/卡片「全部撤销」用）。
+    pub fn undo(&self, only: Option<&str>) -> Result<DreamReport, String> {
+        self.undo_run(None, only)
     }
 
     /// 跑一次：起一个独立的受限 agent 会话（Kind 当前模型），只读记忆/日记/对话/报回，

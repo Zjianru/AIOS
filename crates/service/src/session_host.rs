@@ -173,6 +173,10 @@ impl ServiceHost {
             | Call::FileReferencesList(_)
             | Call::GateJudge(_)
             | Call::TaskContinue(_) => Err(ServiceError::SettingsOnBareHost),
+            // 记忆页只在根宿主上：裸宿主没有记忆库。
+            Call::MemoryRead(_) | Call::MemoryAction(_) => Err(ServiceError::MemoryUnavailable(
+                "记忆页只能由根宿主提供".to_owned(),
+            )),
         }
     }
 

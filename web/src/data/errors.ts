@@ -23,6 +23,7 @@ export const API_ERROR_CODES = [
   'attachment/not-text',
   'request/invalid-message',
   'task/unavailable',
+  'memory/unavailable',
 ] as const;
 
 export const MODEL_ERROR_CODES = [
@@ -94,6 +95,7 @@ const API_REASONS: Record<string, string> = {
   'request/invalid-message': '消息是空的（写点字、贴一段或者拖个文件）',
   // 任务对话打不开（任务不存在、还没开跑、会话日志缺失/损坏）；具体原因用服务给的 message。
   'task/unavailable': '任务对话打不开',
+  'memory/unavailable': '记忆打不开（记忆库没开或读写失败）',
 };
 
 const API_ACTIONS: Record<string, 'settings' | 'retry'> = {

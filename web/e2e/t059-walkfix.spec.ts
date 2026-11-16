@@ -112,20 +112,24 @@ test('T059 F2：上游结果默认折叠且限高，展开后卡内滚动，不�
   }
 });
 
-test('T059 F3：侧栏恢复现在/Kind/工作三项，工作和现在可进入', async ({ page }) => {
+test('T059 F3：侧栏现在/Kind/工作/记忆四项，工作和现在可进入', async ({ page }) => {
   test.setTimeout(120_000);
   const fixture = await startKernelFixture({});
   try {
     await page.goto(urlOf(fixture));
     const nav = page.locator('[data-kind="sidebar-content"] button');
-    await expect(nav).toHaveCount(3);
+    await expect(nav).toHaveCount(4);
     await expect(nav.filter({ hasText: '现在' })).toHaveCount(1);
     await expect(nav.filter({ hasText: 'Kind' })).toHaveCount(1);
     await expect(nav.filter({ hasText: '工作' })).toHaveCount(1);
+    await expect(nav.filter({ hasText: '记忆' })).toHaveCount(1);
     await nav.filter({ hasText: '工作' }).click();
     await expect(page).toHaveURL(/#work/);
     await page.getByRole('button', { name: '现在', exact: true }).click();
     await expect(page).toHaveURL(/#now/);
+    await nav.filter({ hasText: '记忆' }).click();
+    await expect(page).toHaveURL(/#memory/);
+    await expect(page.locator('[data-kind="memory-page"]')).toBeVisible();
   } finally {
     await fixture.close();
   }

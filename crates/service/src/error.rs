@@ -41,6 +41,9 @@ pub enum ServiceError {
     /// 任务对话打不开（任务不存在、没有会话、会话日志缺失/损坏）；文字已是可读原因。
     #[error("{0}")]
     TaskUnavailable(String),
+    /// 记忆库没开或读写失败；文字已是可读原因。
+    #[error("记忆不可用：{0}")]
+    MemoryUnavailable(String),
 }
 
 /// 服务的结构化错误码（DSH remote-error 形状：`<namespace>/<kind>`，小写连字符）。
@@ -67,11 +70,12 @@ pub enum ServiceErrorCode {
     AttachmentNotText,
     RequestInvalidMessage,
     TaskUnavailable,
+    MemoryUnavailable,
 }
 
 impl ServiceErrorCode {
     /// 码表全集（覆盖检查用：多一个少一个都要失败）。
-    pub const ALL: [ServiceErrorCode; 19] = [
+    pub const ALL: [ServiceErrorCode; 20] = [
         ServiceErrorCode::AgentInternal,
         ServiceErrorCode::QuestionAnswerRejected,
         ServiceErrorCode::RootUnavailable,
@@ -91,6 +95,7 @@ impl ServiceErrorCode {
         ServiceErrorCode::AttachmentNotText,
         ServiceErrorCode::RequestInvalidMessage,
         ServiceErrorCode::TaskUnavailable,
+        ServiceErrorCode::MemoryUnavailable,
     ];
 
     /// 线上的码名。
@@ -115,6 +120,7 @@ impl ServiceErrorCode {
             Self::AttachmentNotText => "attachment/not-text",
             Self::RequestInvalidMessage => "request/invalid-message",
             Self::TaskUnavailable => "task/unavailable",
+            Self::MemoryUnavailable => "memory/unavailable",
         }
     }
 }
@@ -151,6 +157,7 @@ impl ServiceError {
             Self::AttachmentNotText => ServiceErrorCode::AttachmentNotText,
             Self::MessageEmpty => ServiceErrorCode::RequestInvalidMessage,
             Self::TaskUnavailable(_) => ServiceErrorCode::TaskUnavailable,
+            Self::MemoryUnavailable(_) => ServiceErrorCode::MemoryUnavailable,
         }
     }
 }

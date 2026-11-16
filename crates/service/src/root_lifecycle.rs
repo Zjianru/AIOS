@@ -404,6 +404,29 @@ impl RootHost {
             .undo(only)
     }
 
+    /// 记忆库（记忆页/做梦用）；库没打开就是 None。
+    pub(crate) fn memory_runtime(&self) -> Option<&Arc<crate::memory::MemoryRuntime>> {
+        self.memory.as_ref()
+    }
+
+    /// 做梦运行时（记忆页/卡片动作用）；没装配就是 None。
+    pub(crate) fn dream_runtime(&self) -> Option<&Arc<crate::memory::DreamRuntime>> {
+        self.dream.as_ref()
+    }
+
+    /// 记忆版本变了：seq=0 的合成事件，页面收到重读（不推进 lastSeq）。
+    pub(crate) fn emit_memory_changed(&self, version: u64) {
+        let event = ServiceEvent {
+            seq: 0,
+            time: 0,
+            event_type: "memory/changed".to_owned(),
+            data: serde_json::json!({ "version": version }),
+            cause: None,
+        };
+        // 没有订阅端是正常情况（页面没开）；不把广播失败当错误。
+        let _delivered = self.events.send(event).unwrap_or(0);
+    }
+
     /// 读做梦设置。
     pub fn dream_settings(&self) -> Result<memory::types::DreamSettings, String> {
         self.memory

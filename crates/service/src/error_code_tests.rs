@@ -73,6 +73,10 @@ fn variants() -> Vec<(&'static str, ServiceError)> {
             "task/unavailable",
             ServiceError::TaskUnavailable("找不到这个任务".to_owned()),
         ),
+        (
+            "memory/unavailable",
+            ServiceError::MemoryUnavailable("记忆库没打开".to_owned()),
+        ),
     ]
 }
 
@@ -83,7 +87,7 @@ fn service_error_codes_cover_every_variant() {
     let pairs = variants();
     assert_eq!(
         pairs.len(),
-        19,
+        20,
         "ServiceError 的每个变体（Credentials 按子类拆）都有一项"
     );
     for (expected, error) in &pairs {
@@ -92,11 +96,7 @@ fn service_error_codes_cover_every_variant() {
     let mut used: Vec<&str> = pairs.iter().map(|(code, _)| *code).collect();
     used.sort_unstable();
     used.dedup();
-    assert_eq!(
-        ServiceErrorCode::ALL.len(),
-        19,
-        "码数 19（task-read 的任务对话错误）"
-    );
+    assert_eq!(ServiceErrorCode::ALL.len(), 20, "码数 20（含记忆不可用）");
     assert!(
         ServiceErrorCode::ALL
             .iter()
@@ -117,11 +117,7 @@ fn service_error_codes_cover_every_variant() {
 
 #[test]
 fn invalid_json_code_is_in_the_single_code_table() {
-    assert_eq!(
-        ServiceErrorCode::ALL.len(),
-        19,
-        "码数 19（task-read 的任务对话错误进面）"
-    );
+    assert_eq!(ServiceErrorCode::ALL.len(), 20, "码数 20（含记忆不可用）");
     assert!(
         ServiceErrorCode::ALL
             .iter()

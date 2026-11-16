@@ -589,3 +589,279 @@ async fn search_tool_end_to_end_finds_indexed_conversation() {
     assert_eq!(card["memoryCard"]["kind"], "search", "工具调用出翻记忆小卡");
     host.shutdown().await;
 }
+
+// ---- 记忆页（MemoryRead / MemoryAction / memory/changed） ----
+
+fn page_store(data: &std::path::Path) -> MemoryStore {
+    MemoryStore::open(data.join("memory.sqlite")).unwrap()
+}
+
+fn seed_memory_page(data: &std::path::Path) {
+    let store = page_store(data);
+    store
+        .write(
+            WriteOp::Remember {
+                title: "回答先给结论".to_owned(),
+                summary: String::new(),
+                body: "先给结论再给理由".to_owned(),
+                source_kind: "user".to_owned(),
+                source_ref: "page-u1".to_owned(),
+            },
+            &WriteContext::user(),
+        )
+        .unwrap();
+    store
+        .write(
+            WriteOp::Note {
+                title: "GBK CSV".to_owned(),
+                summary: "先看编码".to_owned(),
+                body: "sources/ 下有 GBK".to_owned(),
+                source_kind: "kind".to_owned(),
+                source_ref: "page-k1".to_owned(),
+            },
+            &WriteContext::kind(),
+        )
+        .unwrap();
+    store
+        .write(
+            WriteOp::Diary {
+                text: "用户喜欢先给结论".to_owned(),
+                source_ref: "page-d1".to_owned(),
+            },
+            &WriteContext::kind(),
+        )
+        .unwrap();
+}
+
+async fn open_page_root(
+    data: &std::path::Path,
+    cwd: &std::path::Path,
+    server: &MockServer,
+) -> service::RootHost {
+    let mut options = crate::common::options(data);
+    options.cwd = cwd.to_path_buf();
+    options.model.base_url = server.uri();
+    options.config = agent::AgentConfig {
+        instruction_roots: vec![data.join("agents-home")],
+        skill_roots: vec![data.join("skills-home")],
+        ..agent::AgentConfig::default()
+    };
+    service::RootHost::open(options, model::DEFAULT_CONTEXT_WINDOW).await
+}
+
+async fn send_page_turn(root: &service::RootHost, id: &str, text: &str) {
+    root.dispatch(service::Call::Send(service::SendRequest {
+        request_id: id.to_owned(),
+        content: text.to_owned(),
+        delivery: service::DeliveryMode::FollowUp,
+        pastes: Vec::new(),
+        attachments: Vec::new(),
+        canvas: None,
+        result_card: None,
+    }))
+    .await
+    .expect("send");
+    for _ in 0..1000 {
+        let response = root
+            .dispatch(service::Call::Status(service::StatusRequest {}))
+            .await
+            .expect("status");
+        let service::Response::Status(status) = response else {
+            panic!("expected Status");
+        };
+        if !status.running {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("等根会话空闲超时");
+}
+
+#[tokio::test]
+async fn memory_page_reads_view_search_and_card_states() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    seed_memory_page(data.path());
+    // 许可卡：攒够了（min_events 0）但没许可 → 启动那次检查发一张 permission 卡。
+    page_store(data.path())
+        .update_dream_settings(&memory::types::DreamSettingsPatch {
+            min_events: Some(0),
+            ..Default::default()
+        })
+        .unwrap();
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(crate::common::SequenceResponder::new(vec![sse(
+            &crate::common::text_sse("好"),
+        )]))
+        .mount(&server)
+        .await;
+    let root = open_page_root(data.path(), cwd.path(), &server).await;
+    // 先让用户说一句会被索引进对话的话。
+    send_page_turn(&root, "page-turn", "周报格式是先列风险再列进展").await;
+
+    let response = root
+        .dispatch(service::Call::MemoryRead(service::MemoryReadRequest {
+            query: Some("周报格式".to_owned()),
+            item_id: None,
+            refs: vec!["dream_permit".to_owned()],
+        }))
+        .await
+        .expect("memory-read");
+    let service::Response::MemoryRead(read) = response else {
+        panic!("expected MemoryRead");
+    };
+    assert_eq!(read.about_you.len(), 1, "关于你一条");
+    assert_eq!(read.about_you[0].title, "回答先给结论");
+    assert_eq!(read.notes.len(), 1, "Kind 记的一条");
+    assert_eq!(read.diary.len(), 1, "日记只读列出来");
+    assert!(
+        read.search.iter().any(|hit| hit.kind == "conversation"),
+        "搜 Kind 对话命中：{:?}",
+        read.search
+    );
+    let card = read
+        .cards
+        .iter()
+        .find(|card| card.reference == "dream_permit")
+        .expect("许可卡状态按 ref 读");
+    assert_eq!(card.state, "active", "还没允许");
+    assert!(read.dream.runs.is_empty(), "还没跑过做梦");
+    root.shutdown().await;
+}
+
+#[tokio::test]
+async fn memory_actions_write_and_push_changed_version() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    seed_memory_page(data.path());
+    let root = open_page_root(data.path(), cwd.path(), &server).await;
+    let mut events = root.subscribe_events();
+    let about_id = page_store(data.path()).view().unwrap().about_you[0]
+        .id
+        .clone();
+
+    // 更正：出新修订。
+    let response = root
+        .dispatch(service::Call::MemoryAction(service::MemoryActionRequest {
+            action: service::MemoryActionKind::Correct {
+                id: about_id,
+                title: "回答先给结论".to_owned(),
+                summary: String::new(),
+                body: "先给结论，再给理由和取舍".to_owned(),
+                reason: "user".to_owned(),
+            },
+        }))
+        .await
+        .expect("correct");
+    let service::Response::MemoryAction(action) = response else {
+        panic!("expected MemoryAction");
+    };
+    assert!(action.version > 0);
+    assert_eq!(
+        page_store(data.path()).view().unwrap().about_you[0].body,
+        "先给结论，再给理由和取舍"
+    );
+    // 变更要推一条 seq=0 的 memory/changed（页面收到重读）。
+    let pushed = loop {
+        let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .expect("等 memory/changed 超时")
+            .expect("事件");
+        if event.event_type == "memory/changed" {
+            break event;
+        }
+    };
+    assert_eq!(pushed.seq, 0, "合成事件不推进 lastSeq");
+    assert_eq!(pushed.data["version"], action.version);
+
+    // 删到隔离区 → 恢复。
+    let note_id = page_store(data.path()).view().unwrap().notes[0].id.clone();
+    root.dispatch(service::Call::MemoryAction(service::MemoryActionRequest {
+        action: service::MemoryActionKind::Delete {
+            id: note_id.clone(),
+        },
+    }))
+    .await
+    .expect("delete");
+    assert_eq!(page_store(data.path()).view().unwrap().quarantine.len(), 1);
+    root.dispatch(service::Call::MemoryAction(service::MemoryActionRequest {
+        action: service::MemoryActionKind::Restore {
+            id: note_id.clone(),
+        },
+    }))
+    .await
+    .expect("restore");
+    assert_eq!(page_store(data.path()).view().unwrap().notes.len(), 1);
+
+    // 定下来：原笔记标记 + 新的有约束力条目。
+    root.dispatch(service::Call::MemoryAction(service::MemoryActionRequest {
+        action: service::MemoryActionKind::Pin {
+            id: note_id.clone(),
+        },
+    }))
+    .await
+    .expect("pin");
+    let view = page_store(data.path()).view().unwrap();
+    assert!(
+        view.entries
+            .iter()
+            .any(|item| item.binding.as_str() == "binding")
+    );
+    assert!(
+        view.notes
+            .iter()
+            .any(|item| item.id == note_id && item.status == "pinned")
+    );
+
+    // 做梦撤销：造一次成功的做梦改动，再从页面整次撤。
+    let store = page_store(data.path());
+    let dream_note = store
+        .write(
+            WriteOp::DreamApply {
+                run: memory::types::DreamRunInput {
+                    id: "page-run".to_owned(),
+                    model: "test".to_owned(),
+                    started_at: 1,
+                    ended_at: 2,
+                    outcome: "done".to_owned(),
+                    report_json: "{}".to_owned(),
+                    usage_json: "{}".to_owned(),
+                },
+                changes: vec![memory::types::DreamChangeInput {
+                    memory_id: None,
+                    title: "做梦笔记".to_owned(),
+                    summary: String::new(),
+                    body: "整理出来的".to_owned(),
+                    action: memory::types::DreamAction::NewNote,
+                    reason: "page".to_owned(),
+                }],
+            },
+            &WriteContext::dream("page-run"),
+        )
+        .unwrap()
+        .item
+        .unwrap();
+    store
+        .finish_dream_run("page-run", 3, "done", "{}", "{}", "")
+        .unwrap();
+    drop(store);
+    root.dispatch(service::Call::MemoryAction(service::MemoryActionRequest {
+        action: service::MemoryActionKind::UndoDream {
+            run_id: Some("page-run".to_owned()),
+            memory_id: None,
+        },
+    }))
+    .await
+    .expect("undo dream");
+    assert!(
+        page_store(data.path())
+            .item(&dream_note.id)
+            .unwrap()
+            .is_none(),
+        "整次撤销后笔记没了"
+    );
+    root.shutdown().await;
+}
