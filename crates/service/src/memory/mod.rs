@@ -181,12 +181,19 @@ impl MemoryRuntime {
     /// 这次做梦的改动是不是都撤掉了：新记的笔记撤销后 change 行会删掉；
     /// 改正/合并/作废撤销后留一条 undoOf 指向这次写的修订。
     pub(crate) fn run_undone(&self, run_id: &str) -> bool {
+        let Ok(Some(run)) = self.store.dream_run(run_id) else {
+            return false;
+        };
         let Ok(changes) = self.store.dream_changes(run_id) else {
             return false;
         };
-        // 一处改动都没有 ≠ 全撤了：成功的空改动 run 显示「整理完了」。
+        // 一处改动都没有：可能是这次本来就没改动（整理完了），也可能是新记的笔记撤销时
+        // change 行被删了（已撤销）。用成功时记下的 applied 数分辨，不靠 changes 是否为空。
         if changes.is_empty() {
-            return false;
+            let applied = serde_json::from_str::<serde_json::Value>(&run.report_json)
+                .ok()
+                .and_then(|report| report.get("applied").and_then(serde_json::Value::as_u64));
+            return applied.is_some_and(|count| count > 0);
         }
         changes.iter().all(|change| {
             self.store

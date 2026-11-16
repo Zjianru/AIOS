@@ -292,7 +292,8 @@ async fn dream_runs_only_one_at_a_time() {
                     "reason": "同时只跑一个"
                 }])),
             ))
-            .set_delay(Duration::from_millis(600)),
+            // 窗口放宽：等 run 行出来再到点「马上整理」之间不能挤满 600ms，否则偶发先跑完。
+            .set_delay(Duration::from_millis(1_000)),
             sse(&crate::common::text_sse("整理完了")),
         ]))
         .mount(&server)
@@ -300,10 +301,20 @@ async fn dream_runs_only_one_at_a_time() {
     let root = open_root(data.path(), cwd.path(), &server).await;
     wait_startup_check(&root).await;
     send(&root, "dream-once-user", "整理吧").await;
-    wait_idle(&root).await;
-    // 等 run 行出来（此时 running 标记已立），再点一次「马上整理」。
-    let runs = wait_runs(data.path(), 1).await;
-    assert_eq!(runs.len(), 1);
+    // 直接等 run 行变成 running（不靠 status/时间窗），再点「马上整理」。
+    for _ in 0..500 {
+        let runs = dream_store(data.path()).dream_runs(5).unwrap();
+        if runs.first().is_some_and(|run| run.outcome == "running") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let runs = dream_store(data.path()).dream_runs(5).unwrap();
+    assert_eq!(
+        runs.first().map(|run| run.outcome.as_str()),
+        Some("running"),
+        "run 行该是 running"
+    );
     assert_eq!(root.dream_now().unwrap(), "正在整理", "正在跑时不起第二个");
     wait_card(data.path(), "dream_done").await;
     assert_eq!(
@@ -946,5 +957,91 @@ async fn memory_changed_is_pushed_when_dream_starts_and_ends() {
         pushed.len()
     );
     wait_runs(data.path(), 1).await;
+    root.shutdown().await;
+}
+
+#[tokio::test]
+async fn undoing_a_new_note_run_marks_the_card_revoked() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    seed_dream(data.path(), true, 100, 0, 0);
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(crate::common::SequenceResponder::new(vec![
+            sse(&crate::common::tool_use_sse(
+                0,
+                "call-new-note",
+                "memory_dream_apply",
+                &apply_args(serde_json::json!([{
+                    "action": "new_note",
+                    "title": "先探编码",
+                    "body": "读之前先探编码",
+                    "reason": "旧路径"
+                }])),
+            )),
+            sse(&crate::common::text_sse("记下了")),
+        ]))
+        .mount(&server)
+        .await;
+    let root = open_root(data.path(), cwd.path(), &server).await;
+    wait_startup_check(&root).await;
+    dream_store(data.path())
+        .update_dream_settings(&DreamSettingsPatch {
+            min_events: Some(0),
+            last_success_at: Some(0),
+            last_attempt_at: Some(0),
+            permit: Some(true),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(root.dream_now().unwrap(), "开始整理");
+    let runs = wait_runs(data.path(), 1).await;
+    let run_id = runs[0].id.clone();
+    for _ in 0..500 {
+        if root.dream_checks_settled() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let read_page = async |run_id: String| {
+        let response = root
+            .dispatch(service::Call::MemoryRead(service::MemoryReadRequest {
+                query: None,
+                item_id: None,
+                refs: vec![run_id],
+            }))
+            .await
+            .expect("memory-read");
+        let service::Response::MemoryRead(read) = response else {
+            panic!("expected MemoryRead");
+        };
+        read
+    };
+    let cards = read_page(run_id.clone()).await;
+    assert_eq!(
+        cards.cards.first().map(|card| card.state.as_str()),
+        Some("active"),
+        "新记一条的 run 还没撤销"
+    );
+    let note_id = cards.dream.runs[0].changes[0].memory_id.clone();
+    root.dispatch(service::Call::MemoryAction(service::MemoryActionRequest {
+        action: service::MemoryActionKind::UndoDream {
+            run_id: Some(run_id.clone()),
+            memory_id: None,
+        },
+    }))
+    .await
+    .expect("undo dream");
+    let cards = read_page(run_id.clone()).await;
+    assert_eq!(
+        cards.cards.first().map(|card| card.state.as_str()),
+        Some("revoked"),
+        "只有新记的 run 全撤后也要显示已撤销（change 行会被删掉）"
+    );
+    assert!(
+        dream_store(data.path()).item(&note_id).unwrap().is_none(),
+        "新记的笔记撤销后没了"
+    );
     root.shutdown().await;
 }
