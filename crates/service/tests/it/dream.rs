@@ -948,4 +948,3 @@ async fn memory_changed_is_pushed_when_dream_starts_and_ends() {
     wait_runs(data.path(), 1).await;
     root.shutdown().await;
 }
-
