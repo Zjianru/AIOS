@@ -264,8 +264,32 @@ export function MemoryScene() {
   );
   const [intervalHours, setIntervalHours] = useState<number>(24);
   const [highlightId, setHighlightId] = useState<string | null>(null);
+  const [highlightRun, setHighlightRun] = useState<string | null>(null);
 
   useEffect(() => mountMemoryLive(), []);
+
+  useEffect(() => {
+    if (!highlightRun) return;
+    const row = document.querySelector<HTMLElement>(
+      '[data-kind="dream-run"][data-run-id="' + highlightRun + '"]',
+    );
+    if (!row) return;
+    row.dataset.highlight = 'true';
+    row.classList.add('rounded-btn', 'ring-1', 'ring-brand', 'bg-hover');
+    row.scrollIntoView({ block: 'center' });
+    return () => {
+      delete row.dataset.highlight;
+      row.classList.remove('rounded-btn', 'ring-1', 'ring-brand', 'bg-hover');
+    };
+  }, [highlightRun, data]);
+
+  // 从 Kind 的做梦完成小卡「看看」过来：定位并高亮那一次 run 的明细。
+  useEffect(() => {
+    const pending = sessionStorage.getItem('aios:memory-run');
+    if (!pending) return;
+    sessionStorage.removeItem('aios:memory-run');
+    setHighlightRun(pending);
+  }, []);
 
   /** 记忆命中：滚到那一条并高亮一下；行用 DOM 标记，不改列表本身的渲染数据。 */
   const highlightItem = (id: string) => {

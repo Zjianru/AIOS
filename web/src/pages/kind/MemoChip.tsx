@@ -73,7 +73,15 @@ export function MemoChip({ card }: { card: MemoCard }) {
     });
   } else if (card.kind === 'dream_done' && reference) {
     if (state !== 'revoked') {
-      actions.push({ label: '看看', action: 'memory-dream-see', run: () => go('memory') });
+      actions.push({
+        label: '看看',
+        action: 'memory-dream-see',
+        run: () => {
+          // 带上这次 run 的 id：记忆页要定位到这一行的明细，而不是最新一行。
+          sessionStorage.setItem('aios:memory-run', reference);
+          go('memory');
+        },
+      });
       actions.push({
         label: '全部撤销',
         action: 'memory-dream-undo',
