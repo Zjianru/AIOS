@@ -85,6 +85,26 @@ async fn kind_root_request_contains_about_you_and_index() {
     assert!(body.contains("回答先给结论"), "请求体缺关于你：{body}");
     assert!(body.contains("条目索引"), "请求体缺索引：{body}");
     assert!(body.contains("GBK CSV"));
+    let value: serde_json::Value = serde_json::from_str(&body).expect("请求体 JSON");
+    let names: Vec<&str> = value["tools"]
+        .as_array()
+        .expect("tools 数组")
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    for name in [
+        "memory_remember",
+        "memory_note",
+        "memory_search",
+        "memory_read",
+        "memory_diary",
+    ] {
+        assert!(names.contains(&name), "缺常驻工具 {name}");
+    }
+    assert!(
+        !names.contains(&"memory_dream_now"),
+        "做梦工具要先加载 skill"
+    );
     root.agent.idle().await;
     host.shutdown().await;
 }

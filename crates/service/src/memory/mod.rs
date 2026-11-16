@@ -4,6 +4,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use agent::{MemoryContext, MemoryContextProvider, PreCompactionDiary, PreCompactionHook};
+mod tools;
+pub use tools::memory_tools;
+
 use memory::MemoryStore;
 use memory::types::{Binding, MemoryItem, WriteContext, WriteOp};
 
@@ -114,6 +117,50 @@ impl MemoryRuntime {
         })
     }
 
+    /// 只索引用户自己的话和 Kind 回答正文；工具结果、推理、注入、记忆都不进索引。
+    pub fn index_session_event(&self, conversation_id: &str, event: &session::Event) {
+        let (turn, text) = match &event.kind {
+            session::EventKind::UserMessage { turn, message, .. } => {
+                if !matches!(message.source, model::MessageSource::User { .. }) {
+                    return;
+                }
+                (*turn, message_text(message))
+            }
+            session::EventKind::AssistantMessage { message, .. } => {
+                if message.role != model::Role::Assistant {
+                    return;
+                }
+                (0, message_text(message))
+            }
+            _ => return,
+        };
+        if text.trim().is_empty() {
+            return;
+        }
+        let _ = self.store.write(
+            WriteOp::IndexConversation {
+                conversation_id: conversation_id.to_owned(),
+                seq: event.seq,
+                turn,
+                text,
+            },
+            &WriteContext::user(),
+        );
+    }
+
+    /// 启动补齐：把会话日志里还没索引的 seq 补进去；失败只记日志。
+    pub fn backfill(&self, data_dir: &Path, conversation_id: &str) {
+        let Ok(id) = session::SessionId::parse(conversation_id) else {
+            return;
+        };
+        let Ok(store) = session::SessionStore::open_read_only(data_dir, &id) else {
+            return;
+        };
+        for event in store.events() {
+            self.index_session_event(conversation_id, event);
+        }
+    }
+
     pub fn pre_compaction_hook(&self) -> PreCompactionHook {
         let store = Arc::clone(&self.store);
         Arc::new(move |diary: PreCompactionDiary| {
@@ -135,6 +182,21 @@ impl MemoryRuntime {
             })
         })
     }
+}
+
+fn message_text(message: &model::Message) -> String {
+    message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            model::ContentBlock::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        )
 }
 
 fn item_text(item: &MemoryItem) -> String {
@@ -240,5 +302,66 @@ mod tests {
             .unwrap();
         let after = runtime.kind_provider()().unwrap().unwrap().identity;
         assert_ne!(before, after);
+    }
+}
+
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+    use memory::types::SearchHit;
+
+    #[test]
+    fn conversation_index_is_filtered_and_idempotent_and_backfills() {
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let mut store = session::SessionStore::create(dir.path(), cwd.path()).unwrap();
+        let id = store.id().clone();
+        store
+            .append(&[session::EventKind::UserMessage {
+                turn: 1,
+                step: 1,
+                message: model::Message::user_text("用户说了一句要紧的话"),
+            }])
+            .unwrap();
+        store
+            .append(&[session::EventKind::AssistantMessage {
+                turn: 1,
+                step: 2,
+                message: model::Message::assistant(
+                    vec![model::ContentBlock::text("Kind 的回答正文")],
+                    "deepseek",
+                    "deepseek-flash",
+                ),
+                stream: Vec::new(),
+                usage: None,
+                interrupted: None,
+                effort: None,
+                effort_wanted: None,
+            }])
+            .unwrap();
+        let runtime = MemoryRuntime::open(dir.path()).unwrap();
+        for event in store.events() {
+            runtime.index_session_event(id.as_str(), event);
+            runtime.index_session_event(id.as_str(), event);
+        }
+        let hits = runtime.store().search("用户说", 10).unwrap();
+        assert!(hits.iter().any(|hit| matches!(hit, SearchHit::Conversation { conversation_id, .. } if conversation_id == id.as_str())));
+        let hits = runtime.store().search("Kind 的回答", 10).unwrap();
+        assert_eq!(
+            hits.iter()
+                .filter(|hit| matches!(hit, SearchHit::Conversation { .. }))
+                .count(),
+            1
+        );
+        drop(store);
+        let backfilled = MemoryRuntime::open(dir.path()).unwrap();
+        backfilled.backfill(dir.path(), id.as_str());
+        let hits = backfilled.store().search("用户说", 10).unwrap();
+        assert_eq!(
+            hits.iter()
+                .filter(|hit| matches!(hit, SearchHit::Conversation { .. }))
+                .count(),
+            1
+        );
     }
 }

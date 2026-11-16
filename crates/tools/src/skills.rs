@@ -106,6 +106,22 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
             unavailable_hint: "",
         },
         BundledSkill {
+            name: "aios-memory",
+            raw: include_str!("../bundled/aios-memory/SKILL.md"),
+            requires: None,
+            tools: &[
+                "memory_remember",
+                "memory_note",
+                "memory_search",
+                "memory_read",
+                "memory_diary",
+                "memory_dream_now",
+                "memory_undo_dream",
+                "memory_delete_note",
+            ],
+            unavailable_hint: "",
+        },
+        BundledSkill {
             name: "investigator",
             raw: include_str!("../bundled/investigator/SKILL.md"),
             requires: None,

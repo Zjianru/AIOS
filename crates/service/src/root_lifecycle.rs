@@ -274,7 +274,14 @@ impl RootHost {
         {
             handle.abort();
         }
-        let service_host = ServiceHost::new(agent);
+        let conversation_id = agent.id().as_str().to_owned();
+        let memory = crate::memory::MemoryRuntime::open(&self.options.data_dir)
+            .ok()
+            .map(std::sync::Arc::new);
+        if let Some(memory) = &memory {
+            memory.backfill(&self.options.data_dir, &conversation_id);
+        }
+        let service_host = ServiceHost::new_with_memory(agent, memory);
         let mut source = service_host.subscribe_events();
         let tx = self.events.clone();
         let context = Arc::clone(&self.context);

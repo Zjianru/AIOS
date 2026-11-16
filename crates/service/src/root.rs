@@ -162,7 +162,7 @@ impl RootSession {
 ///
 /// 写、改、跑命令和三件后台任务不在里面；这些活派给 ThinAgent。任务工具看
 /// `task_runtime` 有没有装配，由 `kind_tool_policy` 追加。
-const KIND_TOOLS: [&str; 11] = [
+const KIND_TOOLS: [&str; 19] = [
     "read",
     "glob",
     "grep",
@@ -174,6 +174,14 @@ const KIND_TOOLS: [&str; 11] = [
     "propose_action",
     "web_search",
     "web_fetch",
+    "memory_remember",
+    "memory_note",
+    "memory_search",
+    "memory_read",
+    "memory_diary",
+    "memory_dream_now",
+    "memory_undo_dream",
+    "memory_delete_note",
 ];
 
 /// Kind 根会话的派任务说明（D20、D63）：照 DSH superagent 协调者的几条，按 AIOS 改名。
@@ -284,6 +292,11 @@ pub async fn open_root_session(options: RootSessionOptions) -> Result<RootSessio
     // Kind 根会话：记忆注入 + 压缩前日记；库打不开不挡根会话，但产品路径要接上。
     if let Ok(memory) = crate::memory::MemoryRuntime::open(&options.data_dir) {
         let memory = std::sync::Arc::new(memory);
+        extra_tools.extend(crate::memory::memory_tools(
+            std::sync::Arc::clone(&memory),
+            &options.data_dir,
+            options.identity.clone(),
+        ));
         config.memory_context = Some(memory.kind_provider());
         config.pre_compaction = Some(memory.pre_compaction_hook());
         config.pre_compaction_instruction = Some(
