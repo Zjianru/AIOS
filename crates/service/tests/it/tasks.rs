@@ -3840,7 +3840,7 @@ async fn lowering_seats_does_not_stop_running_tasks_and_gates_the_next_launch() 
     let cwd = tempfile::tempdir().unwrap();
     let host = open_host(&server, data.path(), cwd.path()).await;
     let store = tasks_store(data.path());
-    router.set_thin_delay(Duration::from_millis(900));
+    router.set_thin_delay(Duration::from_millis(2_500));
     for title in ["甲", "乙", "丙"] {
         for script in ready_scripts() {
             router.push_thin_for_title(title, script);
@@ -3880,6 +3880,8 @@ async fn lowering_seats_does_not_stop_running_tasks_and_gates_the_next_launch() 
                 .unwrap()
                 .latest_attempt()
                 .is_some()
+            && attempt_in_flight(&store, &first.id)
+            && attempt_in_flight(&store, &second.id)
     })
     .await;
 
