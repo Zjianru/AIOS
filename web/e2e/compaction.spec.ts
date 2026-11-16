@@ -24,7 +24,8 @@ async function followEvents(request: APIRequestContext, fixture: KernelFixture) 
 
 /// T007.8 清单 6：手动压缩 → 对话里出现分隔线，点开看摘要。
 test('手动压缩：分隔线出现，点开是摘要', async ({ page, request }) => {
-  const fixture = await startKernelFixture({ highUsage: true, contextWindow: 5000 });
+  // 记忆工具进了 Kind 工具表后请求估算更大：窗口放大，避免这一轮结束先自动压缩。
+  const fixture = await startKernelFixture({ highUsage: true, contextWindow: 100000 });
   try {
     await page.goto(`${fixture.baseUrl}/?token=${encodeURIComponent(fixture.token)}#kind`);
     await openAndSend(page, fixture, '写点东西，我要手动压缩');
