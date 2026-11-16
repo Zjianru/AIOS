@@ -1,5 +1,6 @@
 //! Kind 根会话的记忆注入：产品 RootHost 打开路径 + 假模型请求体。
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use memory::MemoryStore;
@@ -195,6 +196,22 @@ fn first_tool_result_seq(root: &service::RootSession) -> u64 {
         .expect("日志里没有工具结果")
 }
 
+/// 某次工具结果的展示元信息（记忆小卡等）；没有就是 Null。
+fn tool_result_meta(root: &service::RootSession, call_id: &str) -> serde_json::Value {
+    events_of(root)
+        .into_iter()
+        .rev()
+        .find_map(|event| match event.kind {
+            session::EventKind::ToolResult { message, meta, .. }
+                if message.tool_call_id.as_deref() == Some(call_id) =>
+            {
+                meta
+            }
+            _ => None,
+        })
+        .unwrap_or(serde_json::Value::Null)
+}
+
 /// 某次工具调用的结果正文（闸的回执原因）。
 fn tool_result_text(root: &service::RootSession, call_id: &str) -> String {
     events_of(root)
@@ -262,6 +279,15 @@ async fn remember_tool_end_to_end_writes_with_correct_user_seq() {
         view.about_you.iter().any(|item| item.title == "先给结论"),
         "正确 seq 应写入"
     );
+    let card = tool_result_meta(&root, "call-memory");
+    assert_eq!(card["memoryCard"]["kind"], "remember", "工具调用出记忆小卡");
+    assert_eq!(card["memoryCard"]["title"], "先给结论");
+    assert!(
+        card["memoryCard"]["id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty()),
+        "小卡带记忆 id"
+    );
 }
 
 #[tokio::test]
@@ -288,6 +314,10 @@ async fn remember_tool_end_to_end_rejects_wrong_user_seq() {
     assert!(
         memory.view().unwrap().about_you.is_empty(),
         "错误 seq 不能写"
+    );
+    assert!(
+        tool_result_meta(&root, "call-memory-bad").is_null(),
+        "被拒的调用不出记忆小卡"
     );
 }
 
@@ -451,4 +481,111 @@ async fn remember_tool_rejects_keyring_secret() {
         error.contains("敏感值"),
         "工具回执应说明内容里有敏感值：{error}"
     );
+}
+
+#[tokio::test]
+async fn note_tool_end_to_end_writes_note_and_tool_card() {
+    let (server, data, _cwd, root, _next_seq) = root_with_next_seq().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(crate::common::SequenceResponder::new(vec![
+            sse(&crate::common::tool_use_sse(
+                0,
+                "call-note",
+                "memory_note",
+                r#"{"title":"GBK CSV","text":"sources/ 下是 GBK"}"#,
+            )),
+            sse(&crate::common::text_sse("记了一笔")),
+        ]))
+        .mount(&server)
+        .await;
+    send_once(&root, "note-user", "你看到什么就记一笔").await;
+
+    let memory = MemoryStore::open(data.path().join("memory.sqlite")).unwrap();
+    let view = memory.view().unwrap();
+    assert_eq!(view.notes.len(), 1, "Kind 的笔记落库");
+    assert_eq!(view.notes[0].title, "GBK CSV");
+    let card = tool_result_meta(&root, "call-note");
+    assert_eq!(card["memoryCard"]["kind"], "note", "工具调用出笔记小卡");
+    assert_eq!(card["memoryCard"]["title"], "GBK CSV");
+    assert_eq!(
+        card["memoryCard"]["id"].as_str(),
+        Some(view.notes[0].id.as_str()),
+        "卡上的 id 指回这条笔记"
+    );
+}
+
+#[tokio::test]
+async fn search_tool_end_to_end_finds_indexed_conversation() {
+    let (server, data, _cwd, root, _next_seq) = root_with_next_seq().await;
+    // 对话索引挂在 ServiceHost 的转发上：这条用例用带记忆库的宿主。
+    let memory = Arc::new(service::memory::MemoryRuntime::open(data.path()).unwrap());
+    let host = service::ServiceHost::new_with_memory(root.agent.clone(), Some(Arc::clone(&memory)));
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(crate::common::SequenceResponder::new(vec![sse(
+            &crate::common::text_sse("好"),
+        )]))
+        .mount(&server)
+        .await;
+    host.send(service::SendRequest {
+        request_id: "search-seed".to_owned(),
+        content: "周报格式是先列风险再列进展".to_owned(),
+        delivery: service::DeliveryMode::FollowUp,
+        pastes: Vec::new(),
+        attachments: Vec::new(),
+        canvas: None,
+        result_card: None,
+    })
+    .await
+    .unwrap();
+    root.agent.idle().await;
+    // 索引由转发端异步写：等这条对话真的可搜，再让模型搜。
+    let mut indexed = false;
+    for _ in 0..300 {
+        let hits = memory.store().search("周报格式", 10).unwrap_or_default();
+        if hits
+            .iter()
+            .any(|hit| matches!(hit, memory::types::SearchHit::Conversation { .. }))
+        {
+            indexed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(indexed, "Kind 对话应被索引");
+
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(crate::common::SequenceResponder::new(vec![
+            sse(&crate::common::tool_use_sse(
+                0,
+                "call-search",
+                "memory_search",
+                r#"{"query":"周报格式"}"#,
+            )),
+            sse(&crate::common::text_sse("你之前说过：先列风险再列进展")),
+        ]))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    host.send(service::SendRequest {
+        request_id: "search-turn".to_owned(),
+        content: "我之前说过周报怎么写？".to_owned(),
+        delivery: service::DeliveryMode::FollowUp,
+        pastes: Vec::new(),
+        attachments: Vec::new(),
+        canvas: None,
+        result_card: None,
+    })
+    .await
+    .unwrap();
+    root.agent.idle().await;
+
+    let text = tool_result_text(&root, "call-search");
+    assert!(text.contains("[对话"), "搜索结果带出处：{text}");
+    assert!(text.contains("周报格式"), "命中原话：{text}");
+    let card = tool_result_meta(&root, "call-search");
+    assert_eq!(card["memoryCard"]["kind"], "search", "工具调用出翻记忆小卡");
+    host.shutdown().await;
 }
