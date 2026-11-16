@@ -541,3 +541,154 @@ fn dream_session_log(data: &Path) -> String {
     }
     out
 }
+
+#[tokio::test]
+async fn dream_reads_only_after_the_last_window() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    // 起步不自动跑：先攒出一条「旧」对话，再把窗口挪到这条之后。
+    seed_dream(data.path(), true, 100, 0, 0);
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(crate::common::SequenceResponder::new(vec![
+            sse(&crate::common::text_sse("好")),
+            sse(&crate::common::text_sse("好")),
+            sse(&crate::common::tool_use_sse(
+                0,
+                "call-dream-conv",
+                "memory_conversation_read",
+                "{}",
+            )),
+            sse(&crate::common::tool_use_sse(
+                0,
+                "call-dream-reports",
+                "memory_task_reports",
+                r#"{"after_ms":0}"#,
+            )),
+            sse(&crate::common::tool_use_sse(
+                0,
+                "call-dream-search",
+                "memory_search",
+                r#"{"query":"咖啡"}"#,
+            )),
+            sse(&crate::common::text_sse("没什么可整理")),
+        ]))
+        .mount(&server)
+        .await;
+    let root = open_root(data.path(), cwd.path(), &server).await;
+    wait_startup_check(&root).await;
+    send(&root, "dream-old-user", "旧的一轮：咖啡要双份").await;
+    wait_idle(&root).await;
+    let old_seq = crate::common::read_root_events(data.path())
+        .last()
+        .expect("根会话有事件")
+        .seq;
+    // 窗口从这条旧位置开始：上次成功时间就是现在，旧对话在窗口外。
+    let now = dream_store(data.path()).now();
+    dream_store(data.path())
+        .update_dream_settings(&DreamSettingsPatch {
+            last_read_seq: Some(old_seq),
+            last_success_at: Some(now),
+            last_attempt_at: Some(0),
+            min_events: Some(0),
+            permit: Some(true),
+            ..Default::default()
+        })
+        .unwrap();
+    send(&root, "dream-new-user", "新的一轮：茶要热的").await;
+    wait_idle(&root).await;
+    // 回合结束的自动检查还在跑（会等根会话空闲再判条件）：等它收尾再手动叫。
+    wait_startup_check(&root).await;
+    assert_eq!(root.dream_now().unwrap(), "开始整理");
+    wait_runs(data.path(), 1).await;
+    for _ in 0..500 {
+        if root.dream_checks_settled() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let requests = server.received_requests().await.unwrap();
+    let dream_bodies: Vec<String> = requests
+        .iter()
+        .map(|request| String::from_utf8_lossy(&request.body).into_owned())
+        .filter(|body| body.contains("dream helper"))
+        .collect();
+    assert!(
+        dream_bodies.len() >= 2,
+        "做梦至少读了一次再收尾，实际 {} 个请求",
+        dream_bodies.len()
+    );
+    let joined = dream_bodies.join(
+        "
+",
+    );
+    assert!(joined.contains("新的一轮：茶要热的"), "窗口内的新话要读到");
+    assert!(
+        !joined.contains("咖啡要双份"),
+        "窗口外的旧话不能读到：{joined}"
+    );
+    root.shutdown().await;
+}
+
+#[tokio::test]
+async fn overlapping_checks_still_settle() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    // 起步不自动跑，避免和后面人为造的重叠抢脚本。
+    seed_dream(data.path(), true, 100, 0, 0);
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(crate::common::SequenceResponder::new(vec![
+            sse(&crate::common::tool_use_sse(
+                0,
+                "call-dream-apply",
+                "memory_dream_apply",
+                &apply_args(serde_json::json!([])),
+            ))
+            .set_delay(Duration::from_millis(400)),
+            sse(&crate::common::text_sse("整理完了")),
+        ]))
+        .mount(&server)
+        .await;
+    let root = open_root(data.path(), cwd.path(), &server).await;
+    wait_startup_check(&root).await;
+    // 手动改成到期，然后叫一次做梦；在它跑的时候再触发一次检查（重叠）。
+    dream_store(data.path())
+        .update_dream_settings(&DreamSettingsPatch {
+            min_events: Some(0),
+            last_success_at: Some(0),
+            last_attempt_at: Some(0),
+            permit: Some(true),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(root.dream_now().unwrap(), "开始整理");
+    for _ in 0..400 {
+        if !dream_store(data.path()).dream_runs(10).unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        !dream_store(data.path()).dream_runs(10).unwrap().is_empty(),
+        "做梦该已经开始"
+    );
+    assert!(!root.dream_checks_settled(), "做梦在跑，检查还没收尾");
+    root.dream_check();
+    for _ in 0..1000 {
+        if root.dream_checks_settled() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        root.dream_checks_settled(),
+        "重叠触发的检查早退也要记 finished，否则 checks_settled 永远 false"
+    );
+    let runs = wait_runs(data.path(), 1).await;
+    assert_eq!(runs.len(), 1, "同时只跑一个");
+    wait_startup_check(&root).await;
+    root.shutdown().await;
+}

@@ -154,6 +154,8 @@ impl DreamRuntime {
     /// 一次检查；返回实际发生的事（测试与页面可能直接等它）。
     pub async fn check(self: &Arc<Self>, trigger: DreamTrigger) -> DreamCheck {
         if self.running.swap(true, Ordering::SeqCst) {
+            // 早退也是一次检查的结束：不记的话 checks_settled 永远为 false，等启动检查会挂。
+            self.checks_finished.fetch_add(1, Ordering::SeqCst);
             return DreamCheck::Running;
         }
         let outcome = self.check_inner(trigger).await;
@@ -478,7 +480,7 @@ impl DreamRuntime {
             pre_compaction: None,
             ..agent::AgentConfig::default()
         };
-        let extra_tools = self.dream_tools(run_id);
+        let extra_tools = self.dream_tools(run_id, settings);
         let agent = agent::Agent::open(agent::AgentOpenOptions {
             data_dir: self.data_dir.clone(),
             cwd: self.cwd.clone(),
@@ -526,17 +528,28 @@ impl DreamRuntime {
         Ok((session_id, usage_json))
     }
 
-    fn dream_tools(self: &Arc<Self>, run_id: &str) -> Vec<Arc<dyn Tool>> {
+    fn dream_tools(
+        self: &Arc<Self>,
+        run_id: &str,
+        settings: &memory::types::DreamSettings,
+    ) -> Vec<Arc<dyn Tool>> {
+        let window = DreamWindow::of(settings);
         let mut tools: Vec<Arc<dyn Tool>> =
             super::memory_tools(Arc::clone(&self.memory), &self.data_dir, None, None)
                 .into_iter()
-                .filter(|tool| matches!(tool.name(), "memory_search" | "memory_read"))
+                .filter(|tool| tool.name() == "memory_read")
                 .collect();
+        tools.push(Arc::new(DreamSearchTool {
+            runtime: Arc::clone(self),
+            window,
+        }));
         tools.push(Arc::new(ConversationReadTool {
             runtime: Arc::clone(self),
+            window,
         }));
         tools.push(Arc::new(TaskReportsTool {
             runtime: Arc::clone(self),
+            window,
         }));
         tools.push(Arc::new(DreamApplyTool {
             runtime: Arc::clone(self),
@@ -639,6 +652,7 @@ const DREAM_POLICY: &str = concat!(
 
 struct ConversationReadTool {
     runtime: Arc<DreamRuntime>,
+    window: DreamWindow,
 }
 
 impl Tool for ConversationReadTool {
@@ -674,51 +688,9 @@ impl Tool for ConversationReadTool {
     ) -> ToolFuture<'a, ToolResult> {
         Box::pin(async move {
             let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
-            let after_seq = args["after_seq"].as_u64().unwrap_or(0);
+            let after_seq = clamp_after_seq(args["after_seq"].as_u64(), self.window.after_seq);
             let limit = args["limit"].as_u64().unwrap_or(60).clamp(1, 200) as usize;
-            let events = self.runtime.root_events();
-            let mut lines = Vec::new();
-            for event in events {
-                if event.seq <= after_seq {
-                    continue;
-                }
-                let session::EventKind::UserMessage { message, .. } = &event.kind else {
-                    continue;
-                };
-                let text = message_text(message);
-                if text.trim().is_empty() {
-                    continue;
-                }
-                if let model::MessageSource::User { rpc_id } = &message.source {
-                    if rpc_id.as_deref().is_some_and(is_program_prefix) {
-                        continue;
-                    }
-                    lines.push(format!("[{}] 用户：{}", event.seq, text));
-                }
-                if lines.len() >= limit {
-                    break;
-                }
-            }
-            for event in self.runtime.root_events() {
-                if event.seq <= after_seq {
-                    continue;
-                }
-                let session::EventKind::AssistantMessage { message, .. } = &event.kind else {
-                    continue;
-                };
-                if message.role != model::Role::Assistant {
-                    continue;
-                }
-                let text = message_text(message);
-                if text.trim().is_empty() {
-                    continue;
-                }
-                lines.push(format!("[{}] Kind：{}", event.seq, text));
-                if lines.len() >= limit {
-                    break;
-                }
-            }
-            lines.sort();
+            let lines = conversation_window_lines(&self.runtime.root_events(), after_seq, limit);
             if lines.is_empty() {
                 return ToolResult::success(call.id, "这个窗口没有对话。");
             }
@@ -739,8 +711,171 @@ fn is_program_prefix(rpc_id: &str) -> bool {
         .any(|prefix| rpc_id.starts_with(prefix))
 }
 
+/// 这次做梦的读窗口：上次成功时间和上次读到的 seq 之前的东西不读。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DreamWindow {
+    after_seq: u64,
+    after_ms: i64,
+}
+
+impl DreamWindow {
+    fn of(settings: &memory::types::DreamSettings) -> Self {
+        Self {
+            after_seq: settings.last_read_seq,
+            after_ms: settings.last_success_at,
+        }
+    }
+}
+
+/// 工具参数只能把窗口往里收，不能往外放：不传或传 0 都按下限。
+fn clamp_after_seq(requested: Option<u64>, floor: u64) -> u64 {
+    requested.unwrap_or(floor).max(floor)
+}
+
+fn clamp_after_ms(requested: Option<i64>, floor: i64) -> i64 {
+    requested.unwrap_or(floor).max(floor)
+}
+
+/// 窗口内的对话：用户自己的话和 Kind 的回答，按 seq 排好；程序消息不读。
+fn conversation_window_lines(
+    events: &[session::Event],
+    after_seq: u64,
+    limit: usize,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    for event in events {
+        if event.seq <= after_seq {
+            continue;
+        }
+        match &event.kind {
+            session::EventKind::UserMessage { message, .. } => {
+                let text = message_text(message);
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let read = match &message.source {
+                    model::MessageSource::User { rpc_id } => {
+                        !rpc_id.as_deref().is_some_and(is_program_prefix)
+                    }
+                    _ => false,
+                };
+                if read {
+                    lines.push((event.seq, format!("[{}] 用户：{}", event.seq, text)));
+                }
+            }
+            session::EventKind::AssistantMessage { message, .. } => {
+                if message.role != model::Role::Assistant {
+                    continue;
+                }
+                let text = message_text(message);
+                if text.trim().is_empty() {
+                    continue;
+                }
+                lines.push((event.seq, format!("[{}] Kind：{}", event.seq, text)));
+            }
+            _ => {}
+        }
+        if lines.len() >= limit {
+            break;
+        }
+    }
+    lines.sort_by_key(|(seq, _)| *seq);
+    lines.into_iter().map(|(_, line)| line).collect()
+}
+
+/// 搜索命中也要过窗口：只留窗口之后的对话命中（记忆和日记不限）。
+fn window_search_hits(
+    hits: Vec<memory::types::SearchHit>,
+    after_seq: u64,
+) -> Vec<memory::types::SearchHit> {
+    hits.into_iter()
+        .filter(|hit| match hit {
+            memory::types::SearchHit::Conversation { seq, .. } => *seq > after_seq,
+            _ => true,
+        })
+        .collect()
+}
+
+/// 做梦专用搜索：和常规搜索同一份实现，只多一道窗口。
+struct DreamSearchTool {
+    runtime: Arc<DreamRuntime>,
+    window: DreamWindow,
+}
+
+impl Tool for DreamSearchTool {
+    fn name(&self) -> &str {
+        "memory_search"
+    }
+
+    fn description(&self) -> &str {
+        "Search memory, diary and the Kind conversation since the last dream. Conversation hits are limited to the dream window."
+    }
+
+    fn parameters(&self) -> &Value {
+        static PARAMETERS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+        PARAMETERS.get_or_init(|| {
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "What to search for."}
+                },
+                "required": ["query"]
+            })
+        })
+    }
+
+    fn condition(&self) -> ToolCondition {
+        ToolCondition::Always
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: ToolCall,
+        _context: &'a ToolContext,
+    ) -> ToolFuture<'a, ToolResult> {
+        Box::pin(async move {
+            let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
+            let query = args["query"].as_str().unwrap_or("").trim().to_owned();
+            if query.is_empty() {
+                return ToolResult::error(call.id, ToolFailure::plain("缺少 query".to_owned()));
+            }
+            let hits = match self.runtime.memory.store().search(&query, 20) {
+                Ok(hits) => window_search_hits(hits, self.window.after_seq),
+                Err(error) => {
+                    return ToolResult::error(call.id, ToolFailure::plain(error.to_string()));
+                }
+            };
+            if hits.is_empty() {
+                return ToolResult::success(call.id, "窗口里没有搜到。");
+            }
+            let mut lines = Vec::new();
+            for hit in hits {
+                match hit {
+                    memory::types::SearchHit::Memory(item) => {
+                        lines.push(format!("[记忆 {}] {}：{}", item.id, item.title, item.body))
+                    }
+                    memory::types::SearchHit::Diary(entry) => {
+                        lines.push(format!("[日记 {}] {}", entry.id, entry.text))
+                    }
+                    memory::types::SearchHit::Conversation { seq, text, .. } => {
+                        lines.push(format!("[对话 {seq}] {text}"))
+                    }
+                }
+            }
+            ToolResult::success(
+                call.id,
+                lines.join(
+                    "
+",
+                ),
+            )
+        })
+    }
+}
+
 struct TaskReportsTool {
     runtime: Arc<DreamRuntime>,
+    window: DreamWindow,
 }
 
 impl Tool for TaskReportsTool {
@@ -784,7 +919,7 @@ impl Tool for TaskReportsTool {
                 return ToolResult::success(call.id, "没有任务库。");
             };
             let args: Value = serde_json::from_str(&call.arguments).unwrap_or(Value::Null);
-            let after_ms = args["after_ms"].as_i64().unwrap_or(0);
+            let after_ms = clamp_after_ms(args["after_ms"].as_i64(), self.window.after_ms);
             let task_id = args["task_id"].as_str().map(str::to_owned);
             match task_runtime.dream_task_facts(after_ms) {
                 Ok(facts) => {
@@ -941,5 +1076,95 @@ impl Tool for DreamApplyTool {
                 Err(error) => ToolResult::error(call.id, ToolFailure::plain(error.to_string())),
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user_event(seq: u64, text: &str, rpc: &str) -> session::Event {
+        session::Event::new(
+            seq,
+            seq,
+            session::EventKind::UserMessage {
+                turn: seq,
+                step: 1,
+                message: model::Message::user_text_with_request_id(text, rpc),
+            },
+        )
+    }
+
+    fn assistant_event(seq: u64, text: &str) -> session::Event {
+        session::Event::new(
+            seq,
+            seq,
+            session::EventKind::AssistantMessage {
+                turn: seq,
+                step: 1,
+                message: model::Message::assistant(
+                    vec![model::ContentBlock::text(text)],
+                    "deepseek",
+                    "deepseek-flash",
+                ),
+                stream: Vec::new(),
+                usage: None,
+                interrupted: None,
+                effort: None,
+                effort_wanted: None,
+            },
+        )
+    }
+
+    #[test]
+    fn window_floors_ignore_older_arguments() {
+        assert_eq!(clamp_after_seq(None, 12), 12);
+        assert_eq!(clamp_after_seq(Some(0), 12), 12);
+        assert_eq!(clamp_after_seq(Some(20), 12), 20);
+        assert_eq!(clamp_after_ms(None, 1_700), 1_700);
+        assert_eq!(clamp_after_ms(Some(0), 1_700), 1_700);
+        assert_eq!(clamp_after_ms(Some(2_000), 1_700), 2_000);
+    }
+
+    #[test]
+    fn conversation_window_excludes_old_events_and_program_messages() {
+        let events = vec![
+            user_event(2, "旧的一轮：咖啡要双份", "old-user"),
+            assistant_event(3, "旧回答：知道了"),
+            user_event(5, "中继卡里的摘要", "task-report:task-1:report-1"),
+            assistant_event(6, "新回答：茶要热的"),
+            user_event(7, "新的一轮：茶要热的", "new-user"),
+        ];
+        let lines = conversation_window_lines(&events, 3, 60);
+        assert_eq!(lines.len(), 2, "只留窗口后的用户话和 Kind 回答：{lines:?}");
+        assert!(lines.iter().any(|line| line.contains("新的一轮")));
+        assert!(lines.iter().any(|line| line.contains("新回答")));
+        assert!(!lines.iter().any(|line| line.contains("旧的一轮")));
+        assert!(!lines.iter().any(|line| line.contains("旧回答")));
+        assert!(!lines.iter().any(|line| line.contains("中继卡")));
+    }
+
+    #[test]
+    fn search_hits_are_limited_to_the_window() {
+        let hits = vec![
+            memory::types::SearchHit::Conversation {
+                conversation_id: "conv".to_owned(),
+                seq: 2,
+                turn: 1,
+                text: "旧的一轮：咖啡要双份".to_owned(),
+            },
+            memory::types::SearchHit::Conversation {
+                conversation_id: "conv".to_owned(),
+                seq: 7,
+                turn: 3,
+                text: "新的一轮：茶要热的".to_owned(),
+            },
+        ];
+        let kept = window_search_hits(hits, 3);
+        assert_eq!(kept.len(), 1, "只留窗口后的命中：{kept:?}");
+        assert!(matches!(
+            &kept[0],
+            memory::types::SearchHit::Conversation { seq: 7, .. }
+        ));
     }
 }
