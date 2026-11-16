@@ -122,6 +122,7 @@ pub struct DiaryEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SearchHit {
     Memory(MemoryItem),
+    Diary(DiaryEntry),
     Conversation {
         conversation_id: String,
         seq: u64,

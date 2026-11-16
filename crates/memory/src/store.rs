@@ -199,7 +199,7 @@ impl MemoryStore {
         )?;
         let notes = items(
             &conn,
-            "where layer = 'note' and status = 'active' order by updated_at desc",
+            "where layer = 'note' and status in ('active','pinned') order by updated_at desc",
         )?;
         let quarantine = items(
             &conn,
@@ -376,8 +376,18 @@ impl MemoryStore {
                     ..WriteOutcome::default()
                 }
             }
-            WriteOp::DreamApply { run, changes } => dream_apply(&tx, &run, &changes, now)?,
-            WriteOp::DreamUndo { run_id, only } => dream_undo(&tx, &run_id, only.as_deref(), now)?,
+            WriteOp::DreamApply { run, changes } => {
+                if ctx.dream_run.as_deref() != Some(run.id.as_str()) {
+                    return Err(MemoryError::Refused("做梦 run id 和写入上下文不一致"));
+                }
+                dream_apply(&tx, &run, &changes, now)?
+            }
+            WriteOp::DreamUndo { run_id, only } => {
+                if ctx.dream_run.as_deref() != Some(run_id.as_str()) {
+                    return Err(MemoryError::Refused("做梦 run id 和撤销上下文不一致"));
+                }
+                dream_undo(&tx, &run_id, only.as_deref(), now)?
+            }
             WriteOp::IndexConversation {
                 conversation_id,
                 seq,
@@ -523,6 +533,24 @@ fn item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryItem> {
         updated_at: row.get(11)?,
         pinned: row.get::<_, i64>(12)? != 0,
     })
+}
+
+fn diary_by_id(conn: &Connection, id: &str) -> Result<Option<DiaryEntry>, MemoryError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, day, seq, text, source_ref, created_at FROM diary_entry WHERE id = ?1",
+    )?;
+    stmt.query_row(params![id], |row| {
+        Ok(DiaryEntry {
+            id: row.get(0)?,
+            day: row.get(1)?,
+            seq: row.get::<_, i64>(2)? as u64,
+            text: row.get(3)?,
+            source_ref: row.get(4)?,
+            created_at: row.get(5)?,
+        })
+    })
+    .optional()
+    .map_err(MemoryError::Sqlite)
 }
 
 fn item_by_id(conn: &Connection, id: &str) -> Result<Option<MemoryItem>, MemoryError> {
@@ -807,6 +835,9 @@ fn dream_apply(
         };
         let item =
             item_by_id(tx, &memory_id)?.ok_or_else(|| MemoryError::NotFound(memory_id.clone()))?;
+        if item.layer != Layer::Note {
+            return Err(MemoryError::Refused("做梦只能改笔记"));
+        }
         let before = item.current_revision;
         let after = before + 1;
         let retired = matches!(change.action, DreamAction::Retire);
@@ -861,6 +892,9 @@ fn dream_undo(
             skipped.push(id);
             continue;
         };
+        if item.layer != Layer::Note {
+            return Err(MemoryError::Refused("做梦只能撤销笔记"));
+        }
         if item.current_revision as i64 != after {
             skipped.push(id);
             continue;
@@ -946,6 +980,17 @@ fn search_like(conn: &Connection, query: &str, limit: i64) -> Result<Vec<SearchH
     }
     {
         let mut stmt = conn.prepare(
+            "SELECT id FROM diary_entry WHERE text LIKE ?1 ESCAPE '\\' ORDER BY created_at DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![pattern, limit], |row| row.get::<_, String>(0))?;
+        for id in rows {
+            if let Some(entry) = diary_by_id(conn, &id?)? {
+                hits.push(SearchHit::Diary(entry));
+            }
+        }
+    }
+    {
+        let mut stmt = conn.prepare(
             "SELECT conversation_id, seq, turn, text FROM conversation_fts WHERE text LIKE ?1 ESCAPE '\\' ORDER BY seq DESC LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![pattern, limit], |row| {
@@ -974,6 +1019,17 @@ fn search_fts(conn: &Connection, query: &str, limit: i64) -> Result<Vec<SearchHi
         for id in rows {
             if let Some(item) = item_by_id(conn, &id?)? {
                 hits.push(SearchHit::Memory(item));
+            }
+        }
+    }
+    {
+        let mut stmt = conn.prepare(
+            "SELECT memory_id FROM memory_fts WHERE memory_fts MATCH ?1 AND kind = 'diary' LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![match_query, limit], |row| row.get::<_, String>(0))?;
+        for id in rows {
+            if let Some(entry) = diary_by_id(conn, &id?)? {
+                hits.push(SearchHit::Diary(entry));
             }
         }
     }

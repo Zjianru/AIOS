@@ -320,3 +320,261 @@ fn dream_can_apply_notes_and_undo_skips_user_edits() {
         "sources/ 下有 GBK 的 CSV；读之前先探编码。"
     );
 }
+
+#[test]
+fn diary_search_hits_short_and_trigram_queries() {
+    let (store, _dir, _) = open();
+    store
+        .write(
+            WriteOp::Diary {
+                text: "今天整理了编码问题，读文件前先探编码。".to_owned(),
+                source_ref: "diary:1".to_owned(),
+            },
+            &WriteContext::kind(),
+        )
+        .unwrap();
+    let short = store.search("编码", 10).unwrap();
+    assert!(
+        short
+            .iter()
+            .any(|hit| matches!(hit, SearchHit::Diary(entry) if entry.text.contains("编码")))
+    );
+    let trigram = store.search("编码问", 10).unwrap();
+    assert!(trigram.iter().any(|hit| matches!(hit, SearchHit::Diary(_))));
+}
+
+#[test]
+fn pin_keeps_note_in_view_and_creates_binding_entry() {
+    let (store, _dir, _) = open();
+    let item = note(&store, "GBK CSV", "file:pin");
+    let pinned = store
+        .write(
+            WriteOp::Pin {
+                id: item.id.clone(),
+            },
+            &WriteContext::user(),
+        )
+        .unwrap()
+        .item
+        .unwrap();
+    assert_eq!(pinned.layer, Layer::Entry);
+    assert_eq!(pinned.binding, Binding::Binding);
+    let view = store.view().unwrap();
+    assert!(
+        view.notes
+            .iter()
+            .any(|note| note.id == item.id && note.status == "pinned" && note.pinned)
+    );
+    assert!(view.entries.iter().any(|entry| entry.id == pinned.id));
+}
+
+#[test]
+fn dream_cannot_touch_about_you_or_entry() {
+    let (store, _dir, _) = open();
+    let about = remember(&store, "关于你");
+    let note = note(&store, "笔记", "file:d");
+    let entry = store
+        .write(
+            WriteOp::Pin {
+                id: note.id.clone(),
+            },
+            &WriteContext::user(),
+        )
+        .unwrap()
+        .item
+        .unwrap();
+    let run = DreamRunInput {
+        id: "run-guard".to_owned(),
+        model: "test".to_owned(),
+        started_at: 1,
+        ended_at: 2,
+        outcome: "done".to_owned(),
+        report_json: "{}".to_owned(),
+        usage_json: "{}".to_owned(),
+    };
+    for target in [&about.id, &entry.id] {
+        let result = store.write(
+            WriteOp::DreamApply {
+                run: run.clone(),
+                changes: vec![DreamChangeInput {
+                    memory_id: Some(target.clone()),
+                    title: "改".to_owned(),
+                    summary: "改".to_owned(),
+                    body: "改".to_owned(),
+                    action: DreamAction::Correct,
+                    reason: "dream".to_owned(),
+                }],
+            },
+            &WriteContext::dream("run-guard"),
+        );
+        assert!(matches!(result, Err(MemoryError::Refused(_))));
+    }
+    assert_eq!(store.item(&about.id).unwrap().unwrap().title, "关于你");
+    assert_eq!(store.item(&entry.id).unwrap().unwrap().title, "笔记");
+}
+
+#[test]
+fn dream_run_id_and_note_targets_are_checked() {
+    let (store, _dir, _) = open();
+    let item = note(&store, "笔记", "file:run");
+    let run = DreamRunInput {
+        id: "run-check".to_owned(),
+        model: "test".to_owned(),
+        started_at: 1,
+        ended_at: 2,
+        outcome: "done".to_owned(),
+        report_json: "{}".to_owned(),
+        usage_json: "{}".to_owned(),
+    };
+    let mismatch = store.write(
+        WriteOp::DreamApply {
+            run: run.clone(),
+            changes: vec![DreamChangeInput {
+                memory_id: Some(item.id.clone()),
+                title: "改".to_owned(),
+                summary: "改".to_owned(),
+                body: "改".to_owned(),
+                action: DreamAction::Correct,
+                reason: "dream".to_owned(),
+            }],
+        },
+        &WriteContext::dream("other-run"),
+    );
+    assert!(matches!(mismatch, Err(MemoryError::Refused(_))));
+    assert_eq!(store.item(&item.id).unwrap().unwrap().title, "笔记");
+
+    let undo_mismatch = store.write(
+        WriteOp::DreamUndo {
+            run_id: "run-check".to_owned(),
+            only: None,
+        },
+        &WriteContext::dream("other-run"),
+    );
+    assert!(matches!(undo_mismatch, Err(MemoryError::Refused(_))));
+}
+
+#[test]
+fn schema_version_is_one() {
+    let (store, dir, _) = open();
+    drop(store);
+    let conn = rusqlite::Connection::open(dir.path().join("memory.sqlite")).unwrap();
+    let value: String = conn
+        .query_row(
+            "SELECT value FROM kv WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(value, "1");
+}
+
+#[test]
+fn kind_can_write_note_diary_and_index_and_dream_can_apply() {
+    let (store, _dir, _) = open();
+    note(&store, "Kind 笔记", "file:actor");
+    store
+        .write(
+            WriteOp::Diary {
+                text: "日记".to_owned(),
+                source_ref: "diary:actor".to_owned(),
+            },
+            &WriteContext::kind(),
+        )
+        .unwrap();
+    store
+        .write(
+            WriteOp::IndexConversation {
+                conversation_id: "conv".to_owned(),
+                seq: 1,
+                turn: 1,
+                text: "索引".to_owned(),
+            },
+            &WriteContext::kind(),
+        )
+        .unwrap();
+    let item = store
+        .view()
+        .unwrap()
+        .notes
+        .into_iter()
+        .find(|item| item.title == "Kind 笔记")
+        .unwrap();
+    let run = DreamRunInput {
+        id: "run-apply".to_owned(),
+        model: "test".to_owned(),
+        started_at: 1,
+        ended_at: 2,
+        outcome: "done".to_owned(),
+        report_json: "{}".to_owned(),
+        usage_json: "{}".to_owned(),
+    };
+    let applied = store.write(
+        WriteOp::DreamApply {
+            run,
+            changes: vec![DreamChangeInput {
+                memory_id: Some(item.id),
+                title: "改".to_owned(),
+                summary: "改".to_owned(),
+                body: "改".to_owned(),
+                action: DreamAction::Correct,
+                reason: "dream".to_owned(),
+            }],
+        },
+        &WriteContext::dream("run-apply"),
+    );
+    assert!(applied.is_ok());
+}
+
+#[test]
+fn dream_undo_only_one_change() {
+    let (store, _dir, _) = open();
+    let first = note(&store, "第一条", "file:u1");
+    let second = note(&store, "第二条", "file:u2");
+    let run = DreamRunInput {
+        id: "run-only".to_owned(),
+        model: "test".to_owned(),
+        started_at: 1,
+        ended_at: 2,
+        outcome: "done".to_owned(),
+        report_json: "{}".to_owned(),
+        usage_json: "{}".to_owned(),
+    };
+    store
+        .write(
+            WriteOp::DreamApply {
+                run,
+                changes: vec![
+                    DreamChangeInput {
+                        memory_id: Some(first.id.clone()),
+                        title: "改了第一条".to_owned(),
+                        summary: "改".to_owned(),
+                        body: "改".to_owned(),
+                        action: DreamAction::Correct,
+                        reason: "dream".to_owned(),
+                    },
+                    DreamChangeInput {
+                        memory_id: Some(second.id.clone()),
+                        title: "改了第二条".to_owned(),
+                        summary: "改".to_owned(),
+                        body: "改".to_owned(),
+                        action: DreamAction::Correct,
+                        reason: "dream".to_owned(),
+                    },
+                ],
+            },
+            &WriteContext::dream("run-only"),
+        )
+        .unwrap();
+    let undo = store
+        .write(
+            WriteOp::DreamUndo {
+                run_id: "run-only".to_owned(),
+                only: Some(first.id.clone()),
+            },
+            &WriteContext::dream("run-only"),
+        )
+        .unwrap();
+    assert_eq!(undo.dream_applied, 1);
+    assert_eq!(store.item(&first.id).unwrap().unwrap().title, "第一条");
+    assert_eq!(store.item(&second.id).unwrap().unwrap().title, "改了第二条");
+}
