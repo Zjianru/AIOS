@@ -12,7 +12,7 @@ use crate::protocol::{
     ContextUsage, HostInfo, HostLocation, PROTOCOL_VERSION, RootState, RootUnavailableKind,
     ServiceEvent,
 };
-use crate::root::{RootError, RootSessionOptions, open_root_session, session_model_selection};
+use crate::root::{RootError, RootSessionOptions, open_root_session_with, session_model_selection};
 use crate::session_host::ServiceHost;
 
 impl RootState {
@@ -79,6 +79,10 @@ pub struct RootHost {
     pub(crate) card_locks: Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// 根会话装配时用的连接 id；只在安装/重建时更新，运行中不跟着 selection 变。
     pub(crate) root_connection: Mutex<Option<String>>,
+    /// 记忆库（根会话与做梦共用一份；打不开就没有记忆能力）。
+    memory: Option<Arc<crate::memory::MemoryRuntime>>,
+    /// 做梦运行时；根会话可用时由它按时机检查，不常驻。
+    dream: Option<Arc<crate::memory::DreamRuntime>>,
 }
 
 impl RootHost {
@@ -153,6 +157,22 @@ impl RootHost {
             }
         };
         options.task_runtime = task_runtime.clone();
+        let memory = crate::memory::MemoryRuntime::open(&options.data_dir)
+            .ok()
+            .map(Arc::new);
+        let dream = memory.as_ref().map(|memory| {
+            Arc::new(crate::memory::DreamRuntime::new(
+                &options.data_dir,
+                &options.cwd,
+                Arc::clone(memory),
+                Arc::clone(&inner),
+                Arc::clone(&selection),
+                options.model_factory.clone(),
+                options.model.clone(),
+                options.credentials.clone(),
+                task_runtime.clone(),
+            ))
+        });
         let host = Self {
             inner,
             state: Mutex::new(RootState::Ok),
@@ -168,6 +188,8 @@ impl RootHost {
             selection,
             card_locks: Mutex::new(std::collections::HashMap::new()),
             root_connection: Mutex::new(None),
+            memory,
+            dream,
         };
         if let Some(message) = factory_error {
             *host.state.lock().expect("root state 锁被毒化") = RootState::Unavailable {
@@ -177,7 +199,13 @@ impl RootHost {
                 message,
             };
         } else {
-            match open_root_session(host.options.clone()).await {
+            match open_root_session_with(
+                host.options.clone(),
+                host.memory.clone(),
+                host.dream.clone(),
+            )
+            .await
+            {
                 Ok(root) => {
                     // 压缩阈值从第一轮起就按解析出的窗口算：先设到 agent 上，再装宿主。
                     root.agent.set_context_window(window);
@@ -209,6 +237,10 @@ impl RootHost {
             }
             let pump = runtime.start_pump();
             *host.task_pump.lock().expect("task pump 锁被毒化") = Some(pump);
+        }
+        // 服务启动是一个做梦检查时机；条件到才跑，不影响打开。
+        if let Some(dream) = &host.dream {
+            dream.trigger(crate::memory::DreamTrigger::Startup);
         }
         host
     }
@@ -285,6 +317,7 @@ impl RootHost {
         let mut source = service_host.subscribe_events();
         let tx = self.events.clone();
         let context = Arc::clone(&self.context);
+        let dream = self.dream.clone();
         let forward = tokio::spawn(async move {
             loop {
                 match source.recv().await {
@@ -292,6 +325,16 @@ impl RootHost {
                         if let Some(used) = context_used(&event) {
                             // 只更新占用；窗口是换模型时更新的另一个事实，旧事件不能盖回去。
                             context.lock().expect("context 锁被毒化").used = used;
+                        }
+                        // 做梦的两个时机：Kind 回合结束、任务报回中继。检查函数自己判条件。
+                        if let Some(dream) = &dream {
+                            if event.event_type == "turn/end" {
+                                dream.trigger(crate::memory::DreamTrigger::TurnEnded);
+                            } else if event.event_type == "user/message"
+                                && event_is_task_relay(&event)
+                            {
+                                dream.trigger(crate::memory::DreamTrigger::TaskRelayed);
+                            }
                         }
                         #[expect(
                             clippy::let_underscore_must_use,
@@ -329,6 +372,59 @@ impl RootHost {
                 home: std::env::var("HOME").ok().filter(|home| !home.is_empty()),
             },
         }
+    }
+
+    /// 页面打开/进入记忆页时顺手检查一次做梦（不常驻、不轮询）。
+    pub fn dream_check(&self) {
+        if let Some(dream) = &self.dream {
+            dream.trigger(crate::memory::DreamTrigger::PageOpened);
+        }
+    }
+
+    /// 之前触发的做梦检查都收尾了（测试同步用；生产不依赖它）。
+    pub fn dream_checks_settled(&self) -> bool {
+        self.dream
+            .as_ref()
+            .is_none_or(|dream| dream.checks_settled())
+    }
+
+    /// 马上整理一次（工具/页面都走这里）；正在跑返回「正在整理」。
+    pub fn dream_now(&self) -> Result<String, String> {
+        self.dream
+            .as_ref()
+            .ok_or_else(|| "做梦没装配".to_owned())?
+            .request_now()
+    }
+
+    /// 撤销一处/整次做梦。
+    pub fn dream_undo(&self, only: Option<&str>) -> Result<crate::memory::DreamReport, String> {
+        self.dream
+            .as_ref()
+            .ok_or_else(|| "做梦没装配".to_owned())?
+            .undo(only)
+    }
+
+    /// 读做梦设置。
+    pub fn dream_settings(&self) -> Result<memory::types::DreamSettings, String> {
+        self.memory
+            .as_ref()
+            .ok_or_else(|| "记忆库打不开".to_owned())?
+            .store()
+            .dream_settings()
+            .map_err(|error| error.to_string())
+    }
+
+    /// 改做梦设置（开关/间隔/许可）。
+    pub fn update_dream_settings(
+        &self,
+        patch: &memory::types::DreamSettingsPatch,
+    ) -> Result<memory::types::DreamSettings, String> {
+        self.memory
+            .as_ref()
+            .ok_or_else(|| "记忆库打不开".to_owned())?
+            .store()
+            .update_dream_settings(patch)
+            .map_err(|error| error.to_string())
     }
 
     pub fn protocol_version(&self) -> u64 {
@@ -426,7 +522,7 @@ impl RootHost {
         let mut slot = self.inner.lock().await;
         let old = slot.take();
         drop(old);
-        match open_root_session(options).await {
+        match open_root_session_with(options, self.memory.clone(), self.dream.clone()).await {
             Ok(root) => {
                 // 重开后的第一轮也要按新窗口算压缩阈值，不能等 agent 撞一次溢出。
                 root.agent.set_context_window(window);
@@ -449,6 +545,27 @@ impl RootHost {
             }
         }
     }
+}
+
+/// 中继卡（task_report/task_stop/gate_verdict/upstream_changed）：只看 rpcId 前缀。
+fn event_is_task_relay(event: &ServiceEvent) -> bool {
+    let Some(rpc_id) = event
+        .data
+        .get("message")
+        .and_then(|message| message.get("source"))
+        .and_then(|source| source.get("rpcId"))
+        .and_then(|value| value.as_str())
+    else {
+        return false;
+    };
+    [
+        "task-report:",
+        "task-stop:",
+        "gate-verdict:",
+        "upstream-changed:",
+    ]
+    .iter()
+    .any(|prefix| rpc_id.starts_with(prefix))
 }
 
 /// 本次启动的 id：restart 效果的键和 Kind 汇报的 request id 用它。

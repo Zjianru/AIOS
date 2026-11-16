@@ -12,8 +12,9 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 use crate::error::MemoryError;
 use crate::types::{
-    Actor, Binding, DiaryEntry, DreamAction, DreamChangeInput, Layer, MemoryItem, MemoryView,
-    RevisionItem, Scope, SearchHit, WriteContext, WriteOp, WriteOutcome,
+    Actor, Binding, DiaryEntry, DreamAction, DreamChange, DreamChangeInput, DreamRun,
+    DreamSettings, DreamSettingsPatch, Layer, MemoryItem, MemoryView, RevisionItem, Scope,
+    SearchHit, WriteContext, WriteOp, WriteOutcome,
 };
 
 pub const SCHEMA_VERSION: u64 = 1;
@@ -262,6 +263,158 @@ impl MemoryStore {
             .map_err(MemoryError::Sqlite)
     }
 
+    /// 库自己的时钟（毫秒）；设置/做梦记录与条目用同一个时间来源。
+    pub fn now(&self) -> i64 {
+        (self.clock)()
+    }
+
+    /// 读一条日记（做梦按 id 读、页面按 id 读）。
+    pub fn diary(&self, id: &str) -> Result<Option<DiaryEntry>, MemoryError> {
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT id, day, seq, text, source_ref, created_at FROM diary_entry WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok(DiaryEntry {
+                    id: row.get(0)?,
+                    day: row.get(1)?,
+                    seq: row.get::<_, i64>(2)? as u64,
+                    text: row.get(3)?,
+                    source_ref: row.get(4)?,
+                    created_at: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(MemoryError::Sqlite)
+    }
+
+    /// 做梦/观察的设置（缺省值照 spec）。
+    pub fn dream_settings(&self) -> Result<DreamSettings, MemoryError> {
+        let conn = self.lock();
+        dream_settings_from(&conn)
+    }
+
+    /// 改设置：只写给出的项；写进版本号（页面按版本推）。
+    pub fn update_dream_settings(
+        &self,
+        patch: &DreamSettingsPatch,
+    ) -> Result<DreamSettings, MemoryError> {
+        let mut pairs: Vec<(&str, String)> = Vec::new();
+        if let Some(value) = patch.enabled {
+            pairs.push(("dream.enabled", value.to_string()));
+        }
+        if let Some(value) = patch.permit {
+            pairs.push(("dream.permit", value.to_string()));
+        }
+        if let Some(value) = patch.interval_hours {
+            pairs.push(("dream.interval_hours", value.to_string()));
+        }
+        if let Some(value) = patch.min_events {
+            pairs.push(("dream.min_events", value.to_string()));
+        }
+        if let Some(value) = patch.last_success_at {
+            pairs.push(("dream.last_success_at", value.to_string()));
+        }
+        if let Some(value) = patch.last_attempt_at {
+            pairs.push(("dream.last_attempt_at", value.to_string()));
+        }
+        if let Some(value) = patch.last_read_seq {
+            pairs.push(("dream.last_read_seq", value.to_string()));
+        }
+        if let Some(value) = patch.permit_card_at {
+            pairs.push(("dream.permit_card_at", value.to_string()));
+        }
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for (key, value) in &pairs {
+            tx.execute(
+                "INSERT OR REPLACE INTO kv (key, value) VALUES (?1, ?2)",
+                params![key, value],
+            )?;
+        }
+        if !pairs.is_empty() {
+            bump_version(&tx)?;
+        }
+        let settings = dream_settings_from(&tx)?;
+        tx.commit()?;
+        Ok(settings)
+    }
+
+    /// 一次做梦的记录。
+    pub fn dream_run(&self, id: &str) -> Result<Option<DreamRun>, MemoryError> {
+        let conn = self.lock();
+        dream_run_row(&conn, id)
+    }
+
+    /// 最近的一次做梦（页面/撤销默认它）。
+    pub fn latest_dream_run(&self) -> Result<Option<DreamRun>, MemoryError> {
+        let conn = self.lock();
+        conn.query_row(
+            "SELECT id, started_at, ended_at, outcome, model, usage_json, report_json, error FROM dream_run ORDER BY started_at DESC, rowid DESC LIMIT 1",
+            [],
+            dream_run_from_row,
+        )
+        .optional()
+        .map_err(MemoryError::Sqlite)
+    }
+
+    /// 最近的几次做梦，新的在前。
+    pub fn dream_runs(&self, limit: usize) -> Result<Vec<DreamRun>, MemoryError> {
+        let conn = self.lock();
+        let limit = i64::try_from(limit).unwrap_or(20);
+        let mut stmt = conn.prepare(
+            "SELECT id, started_at, ended_at, outcome, model, usage_json, report_json, error FROM dream_run ORDER BY started_at DESC, rowid DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit], dream_run_from_row)?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(MemoryError::Sqlite)
+    }
+
+    /// 一次做梦改了哪些处。
+    pub fn dream_changes(&self, run_id: &str) -> Result<Vec<DreamChange>, MemoryError> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT run_id, memory_id, before_revision, after_revision, action, reason FROM dream_change WHERE run_id = ?1 ORDER BY memory_id",
+        )?;
+        let rows = stmt.query_map(params![run_id], |row| {
+            Ok(DreamChange {
+                run_id: row.get(0)?,
+                memory_id: row.get(1)?,
+                before_revision: row.get::<_, i64>(2)? as u64,
+                after_revision: row.get::<_, i64>(3)? as u64,
+                action: row.get(4)?,
+                reason: row.get(5)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(MemoryError::Sqlite)
+    }
+
+    /// 做梦跑完后补记录（结束时间/结果/报告/用量/失败原因）；run 行必须已由 DreamApply 建过。
+    pub fn finish_dream_run(
+        &self,
+        id: &str,
+        ended_at: i64,
+        outcome: &str,
+        report_json: &str,
+        usage_json: &str,
+        error: &str,
+    ) -> Result<(), MemoryError> {
+        let mut conn = self.lock();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "UPDATE dream_run SET ended_at = ?2, outcome = ?3, report_json = ?4, usage_json = ?5, error = ?6 WHERE id = ?1",
+            params![id, ended_at, outcome, report_json, usage_json, error],
+        )?;
+        if changed == 0 {
+            return Err(MemoryError::NotFound(id.to_owned()));
+        }
+        bump_version(&tx)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// 写一条：身份校验、修订追加、FTS 同步、版本递增都在一个事务里。
     pub fn write(&self, op: WriteOp, ctx: &WriteContext) -> Result<WriteOutcome, MemoryError> {
         check_actor(&op, ctx)?;
@@ -383,7 +536,8 @@ impl MemoryStore {
                 dream_apply(&tx, &run, &changes, now)?
             }
             WriteOp::DreamUndo { run_id, only } => {
-                if ctx.dream_run.as_deref() != Some(run_id.as_str()) {
+                // 做梦自己撤要带对 run；用户从页面撤只给出 run id 就够（identity 不是做梦）。
+                if ctx.actor == Actor::Dream && ctx.dream_run.as_deref() != Some(run_id.as_str()) {
                     return Err(MemoryError::Refused("做梦 run id 和撤销上下文不一致"));
                 }
                 dream_undo(&tx, &run_id, only.as_deref(), now)?
@@ -585,6 +739,67 @@ fn settings(conn: &Connection) -> Result<Vec<(String, String)>, MemoryError> {
     let rows = stmt.query_map(params![VERSION_KEY], |row| Ok((row.get(0)?, row.get(1)?)))?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(MemoryError::Sqlite)
+}
+
+fn dream_settings_from(conn: &Connection) -> Result<DreamSettings, MemoryError> {
+    let mut map = std::collections::HashMap::new();
+    let mut stmt = conn.prepare("SELECT key, value FROM kv WHERE key LIKE 'dream.%'")?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (key, value) = row?;
+        map.insert(key, value);
+    }
+    let mut settings = DreamSettings::default();
+    if let Some(value) = map.get("dream.enabled") {
+        settings.enabled = value == "true";
+    }
+    if let Some(value) = map.get("dream.permit") {
+        settings.permit = value == "true";
+    }
+    if let Some(value) = map.get("dream.interval_hours") {
+        settings.interval_hours = value.parse().unwrap_or(settings.interval_hours);
+    }
+    if let Some(value) = map.get("dream.min_events") {
+        settings.min_events = value.parse().unwrap_or(settings.min_events);
+    }
+    if let Some(value) = map.get("dream.last_success_at") {
+        settings.last_success_at = value.parse().unwrap_or(settings.last_success_at);
+    }
+    if let Some(value) = map.get("dream.last_attempt_at") {
+        settings.last_attempt_at = value.parse().unwrap_or(settings.last_attempt_at);
+    }
+    if let Some(value) = map.get("dream.last_read_seq") {
+        settings.last_read_seq = value.parse().unwrap_or(settings.last_read_seq);
+    }
+    if let Some(value) = map.get("dream.permit_card_at") {
+        settings.permit_card_at = value.parse().unwrap_or(settings.permit_card_at);
+    }
+    Ok(settings)
+}
+
+fn dream_run_row(conn: &Connection, id: &str) -> Result<Option<DreamRun>, MemoryError> {
+    conn.query_row(
+        "SELECT id, started_at, ended_at, outcome, model, usage_json, report_json, error FROM dream_run WHERE id = ?1",
+        params![id],
+        dream_run_from_row,
+    )
+    .optional()
+    .map_err(MemoryError::Sqlite)
+}
+
+fn dream_run_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<DreamRun> {
+    Ok(DreamRun {
+        id: row.get(0)?,
+        started_at: row.get(1)?,
+        ended_at: row.get(2)?,
+        outcome: row.get(3)?,
+        model: row.get(4)?,
+        usage_json: row.get(5)?,
+        report_json: row.get(6)?,
+        error: row.get(7)?,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

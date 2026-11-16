@@ -4,7 +4,11 @@ use std::path::Path;
 use std::sync::Arc;
 
 use agent::{MemoryContext, MemoryContextProvider, PreCompactionDiary, PreCompactionHook};
+mod dream;
 mod tools;
+pub use dream::{
+    DREAM_PERMIT_CARD_REF, DreamCheck, DreamReport, DreamRuntime, DreamTaskFact, DreamTrigger,
+};
 pub use tools::memory_tools;
 
 use memory::MemoryStore;
@@ -134,9 +138,29 @@ impl MemoryRuntime {
         })
     }
 
-    /// 程序卡的状态按 ref 从库里读：记忆的当前状态，或做梦 run 的结果/设置。
-    /// web 的动态刷新在记忆页协议到位后接；.3 先给服务端解析。
+    /// 程序卡的状态按 ref 从库里读：观察许可、做梦 run、或记忆的当前状态。
     pub fn card_state(&self, reference: &str) -> Option<String> {
+        if reference == DREAM_PERMIT_CARD_REF {
+            let settings = self.store.dream_settings().ok()?;
+            return Some(
+                if settings.permit {
+                    "accepted"
+                } else {
+                    "active"
+                }
+                .to_owned(),
+            );
+        }
+        if let Ok(Some(run)) = self.store.dream_run(reference) {
+            return Some(
+                match run.outcome.as_str() {
+                    "done" => "active",
+                    "failed" => "failed",
+                    _ => "running",
+                }
+                .to_owned(),
+            );
+        }
         if let Ok(Some(item)) = self.store.item(reference) {
             return Some(
                 match item.status.as_str() {

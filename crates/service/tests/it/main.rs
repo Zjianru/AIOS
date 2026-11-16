@@ -6,6 +6,7 @@ mod attachments;
 mod common;
 mod cross_connection;
 mod disabled;
+mod dream;
 mod exa;
 mod file_references;
 mod first_use_loop;

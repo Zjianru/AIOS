@@ -246,6 +246,76 @@ pub struct DreamChangeInput {
     pub reason: String,
 }
 
+/// 做梦/观察的设置。默认值照 spec：开着、没许可、24 小时、5 个新回合或报回。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DreamSettings {
+    pub enabled: bool,
+    /// 用户给过观察许可（第一次跑之前要有一张许可卡，允许后才读对话）。
+    pub permit: bool,
+    pub interval_hours: u64,
+    pub min_events: u64,
+    /// 上次成功的时间（毫秒）；0 = 从没成功过。
+    pub last_success_at: i64,
+    /// 上次尝试的时间（毫秒）；失败后退一段间隔再试，避免每轮都重试。
+    pub last_attempt_at: i64,
+    /// 上次成功读到的 Kind 会话 seq；下次从这里往后读。
+    pub last_read_seq: u64,
+    /// 许可卡上次发的时间；0 = 没发过。
+    pub permit_card_at: i64,
+}
+
+impl Default for DreamSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            permit: false,
+            interval_hours: 24,
+            min_events: 5,
+            last_success_at: 0,
+            last_attempt_at: 0,
+            last_read_seq: 0,
+            permit_card_at: 0,
+        }
+    }
+}
+
+/// 设置补丁：只写给出的项。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DreamSettingsPatch {
+    pub enabled: Option<bool>,
+    pub permit: Option<bool>,
+    pub interval_hours: Option<u64>,
+    pub min_events: Option<u64>,
+    pub last_success_at: Option<i64>,
+    pub last_attempt_at: Option<i64>,
+    pub last_read_seq: Option<u64>,
+    pub permit_card_at: Option<i64>,
+}
+
+/// 一次做梦的记录（明细在 dream_change）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DreamRun {
+    pub id: String,
+    pub started_at: i64,
+    pub ended_at: i64,
+    pub outcome: String,
+    pub model: String,
+    pub usage_json: String,
+    pub report_json: String,
+    pub error: String,
+}
+
+/// 做梦改过的一处；撤销按 before/after revision 判断用户有没有后来改过。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DreamChange {
+    pub run_id: String,
+    pub memory_id: String,
+    pub before_revision: u64,
+    pub after_revision: u64,
+    pub action: String,
+    pub reason: String,
+}
+
 /// 写入结果：新建/更新的条目、日记、或做梦撤销报告。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct WriteOutcome {

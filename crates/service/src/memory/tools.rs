@@ -13,14 +13,22 @@ pub struct MemoryTools {
     runtime: Arc<MemoryRuntime>,
     data_dir: PathBuf,
     identity: Option<PathBuf>,
+    /// 根会话才接做梦；做梦自己的会话不接（不能再触发做梦）。
+    dream: Option<Arc<super::DreamRuntime>>,
 }
 
 impl MemoryTools {
-    pub fn new(runtime: Arc<MemoryRuntime>, data_dir: PathBuf, identity: Option<PathBuf>) -> Self {
+    pub fn new(
+        runtime: Arc<MemoryRuntime>,
+        data_dir: PathBuf,
+        identity: Option<PathBuf>,
+        dream: Option<Arc<super::DreamRuntime>>,
+    ) -> Self {
         Self {
             runtime,
             data_dir,
             identity,
+            dream,
         }
     }
 
@@ -357,7 +365,17 @@ impl Tool for MemoryTool {
                         Ok(Some(item)) => {
                             ToolResult::success(call.id, format!("{}：{}", item.title, item.body))
                         }
-                        Ok(None) => ToolResult::error(call.id, ToolFailure::plain("没有这条记忆")),
+                        Ok(None) => match self.tools.runtime.store().diary(&id) {
+                            Ok(Some(entry)) => {
+                                ToolResult::success(call.id, format!("[日记] {}", entry.text))
+                            }
+                            Ok(None) => {
+                                ToolResult::error(call.id, ToolFailure::plain("没有这条记忆"))
+                            }
+                            Err(error) => {
+                                ToolResult::error(call.id, ToolFailure::plain(error.to_string()))
+                            }
+                        },
                         Err(error) => {
                             ToolResult::error(call.id, ToolFailure::plain(error.to_string()))
                         }
@@ -384,12 +402,35 @@ impl Tool for MemoryTool {
                         }
                     }
                 }
-                Kind::DreamNow => {
-                    ToolResult::error(call.id, ToolFailure::plain("做梦还没接通（下一票）"))
-                }
-                Kind::UndoDream => {
-                    ToolResult::error(call.id, ToolFailure::plain("撤销做梦还没接通（下一票）"))
-                }
+                Kind::DreamNow => match self.tools.dream.as_ref() {
+                    Some(dream) => match dream.request_now() {
+                        Ok(text) => ToolResult::success(call.id, text),
+                        Err(error) => ToolResult::error(call.id, ToolFailure::plain(error)),
+                    },
+                    None => ToolResult::error(
+                        call.id,
+                        ToolFailure::plain("这个会话不能做梦（只有 Kind 根会话能）"),
+                    ),
+                },
+                Kind::UndoDream => match self.tools.dream.as_ref() {
+                    Some(dream) => match dream.undo(None) {
+                        Ok(report) => {
+                            let mut text = format!("撤销了 {} 处", report.applied);
+                            if !report.skipped.is_empty() {
+                                text.push_str(&format!(
+                                    "；{} 处你后来改过，跳过",
+                                    report.skipped.len()
+                                ));
+                            }
+                            ToolResult::success(call.id, text)
+                        }
+                        Err(error) => ToolResult::error(call.id, ToolFailure::plain(error)),
+                    },
+                    None => ToolResult::error(
+                        call.id,
+                        ToolFailure::plain("这个会话不能做梦（只有 Kind 根会话能）"),
+                    ),
+                },
                 Kind::DeleteNote => {
                     let Some(seq) = seq("user_seq") else {
                         return ToolResult::error(
@@ -419,13 +460,20 @@ impl Tool for MemoryTool {
     }
 }
 
-/// 根会话装配用的工具列表。
+/// 根会话装配用的工具列表；dream 只给根会话（做梦自己的会话传 None）。
 pub fn memory_tools(
     runtime: Arc<MemoryRuntime>,
     data_dir: &Path,
     identity: Option<PathBuf>,
+    dream: Option<Arc<super::DreamRuntime>>,
 ) -> Vec<Arc<dyn Tool>> {
-    Arc::new(MemoryTools::new(runtime, data_dir.to_path_buf(), identity)).core()
+    Arc::new(MemoryTools::new(
+        runtime,
+        data_dir.to_path_buf(),
+        identity,
+        dream,
+    ))
+    .core()
 }
 
 fn contains_secret(title: &str, body: &str, secrets: &[String]) -> bool {
@@ -486,7 +534,7 @@ mod tests {
     async fn remember_only_accepts_messages_the_user_sent() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Arc::new(MemoryRuntime::open(dir.path()).unwrap());
-        let list = memory_tools(Arc::clone(&runtime), dir.path(), None);
+        let list = memory_tools(Arc::clone(&runtime), dir.path(), None, None);
         let remember = list
             .iter()
             .find(|tool| tool.name() == "memory_remember")
@@ -563,7 +611,7 @@ mod tests {
     async fn remember_accepts_user_seq_and_rejects_other_seq() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Arc::new(MemoryRuntime::open(dir.path()).unwrap());
-        let list = memory_tools(Arc::clone(&runtime), dir.path(), None);
+        let list = memory_tools(Arc::clone(&runtime), dir.path(), None, None);
         let remember = list
             .iter()
             .find(|tool| tool.name() == "memory_remember")
@@ -595,7 +643,7 @@ mod tests {
     async fn note_search_read_and_diary_tools_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Arc::new(MemoryRuntime::open(dir.path()).unwrap());
-        let list = memory_tools(Arc::clone(&runtime), dir.path(), None);
+        let list = memory_tools(Arc::clone(&runtime), dir.path(), None, None);
         let find = |name: &str| {
             list.iter()
                 .find(|tool| tool.name() == name)

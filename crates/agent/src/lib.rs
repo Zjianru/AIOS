@@ -573,6 +573,11 @@ impl Agent {
             .await
     }
 
+    /// 追加一条只属于会话日志的事件（程序写的记忆小卡等）：不投给模型，只落日志/广播。
+    pub async fn append_event(&self, kind: session::EventKind) -> Result<(), AgentError> {
+        self.inner.append(&[kind]).await
+    }
+
     /// 重启后领取 pending inbox（有排队输入就开一轮）；返回是否领取了东西。
     /// 只由重启路径显式调用（2a 的 resume 只恢复、不唤醒）。
     pub fn claim_pending(&self) -> bool {

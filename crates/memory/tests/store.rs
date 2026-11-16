@@ -578,3 +578,118 @@ fn dream_undo_only_one_change() {
     assert_eq!(store.item(&first.id).unwrap().unwrap().title, "第一条");
     assert_eq!(store.item(&second.id).unwrap().unwrap().title, "改了第二条");
 }
+
+#[test]
+fn dream_settings_default_and_updates() {
+    let (store, _dir, _) = open();
+    let defaults = store.dream_settings().unwrap();
+    assert!(defaults.enabled, "做梦默认开着");
+    assert!(!defaults.permit, "观察许可默认没有");
+    assert_eq!(defaults.interval_hours, 24);
+    assert_eq!(defaults.min_events, 5);
+    assert_eq!(defaults.last_success_at, 0);
+    assert_eq!(defaults.last_read_seq, 0);
+
+    let before = store.version().unwrap();
+    let updated = store
+        .update_dream_settings(&memory::types::DreamSettingsPatch {
+            permit: Some(true),
+            interval_hours: Some(12),
+            last_success_at: Some(1234),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(updated.permit);
+    assert_eq!(updated.interval_hours, 12);
+    assert_eq!(updated.last_success_at, 1234);
+    assert_eq!(updated.min_events, 5, "没给的项不动");
+    assert!(store.version().unwrap() > before, "设置写入进版本");
+    let again = store.dream_settings().unwrap();
+    assert!(again.permit);
+    assert_eq!(again.interval_hours, 12);
+}
+
+fn dream_apply_note(store: &MemoryStore, run_id: &str) -> memory::types::MemoryItem {
+    store
+        .write(
+            WriteOp::DreamApply {
+                run: DreamRunInput {
+                    id: run_id.to_owned(),
+                    model: "deepseek-flash".to_owned(),
+                    started_at: 10,
+                    ended_at: 20,
+                    outcome: "running".to_owned(),
+                    report_json: "{}".to_owned(),
+                    usage_json: "{}".to_owned(),
+                },
+                changes: vec![DreamChangeInput {
+                    memory_id: None,
+                    title: "做梦新记".to_owned(),
+                    summary: "整理".to_owned(),
+                    body: "把两处笔记合并成这一条".to_owned(),
+                    action: DreamAction::NewNote,
+                    reason: "重复".to_owned(),
+                }],
+            },
+            &WriteContext::dream(run_id),
+        )
+        .unwrap()
+        .item
+        .unwrap()
+}
+
+#[test]
+fn dream_run_is_finished_and_read_back() {
+    let (store, _dir, _) = open();
+    let note = dream_apply_note(&store, "run-read");
+    store
+        .finish_dream_run(
+            "run-read",
+            30,
+            "done",
+            r#"{"applied":1,"summary":"合并了一处"}"#,
+            r#"{"inputTokens":10,"outputTokens":2}"#,
+            "",
+        )
+        .unwrap();
+    let run = store.dream_run("run-read").unwrap().expect("能按 id 读");
+    assert_eq!(run.outcome, "done");
+    assert_eq!(run.ended_at, 30);
+    assert!(run.report_json.contains("合并了一处"));
+    assert!(run.usage_json.contains("outputTokens"));
+    assert_eq!(
+        store
+            .latest_dream_run()
+            .unwrap()
+            .map(|run| run.id)
+            .as_deref(),
+        Some("run-read")
+    );
+    let changes = store.dream_changes("run-read").unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].memory_id, note.id);
+    assert_eq!(changes[0].after_revision, 1);
+    assert_eq!(changes[0].action, "new_note");
+    assert!(
+        store
+            .finish_dream_run("missing", 1, "done", "{}", "{}", "")
+            .is_err()
+    );
+}
+
+#[test]
+fn user_can_undo_dream_by_run_without_dream_context() {
+    let (store, _dir, _) = open();
+    let note = dream_apply_note(&store, "run-user-undo");
+    let undo = store
+        .write(
+            WriteOp::DreamUndo {
+                run_id: "run-user-undo".to_owned(),
+                only: None,
+            },
+            &WriteContext::user(),
+        )
+        .unwrap();
+    assert_eq!(undo.dream_applied, 1, "用户能从页面整次撤销");
+    assert!(store.item(&note.id).unwrap().is_none(), "新记的笔记被撤掉");
+}

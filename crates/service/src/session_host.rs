@@ -204,6 +204,14 @@ impl ServiceHost {
         })
     }
 
+    /// 程序往会话日志追加一条事件（记忆小卡等）；不投给模型，只落日志并经广播推给页面。
+    pub async fn append_event(&self, kind: session::EventKind) -> Result<(), ServiceError> {
+        self.agent
+            .append_event(kind)
+            .await
+            .map_err(ServiceError::from)
+    }
+
     /// 取消当前轮（清空 pending inbox + 中止正在跑的轮）。
     pub async fn cancel(&self, _request: CancelRequest) -> Result<CancelResponse, ServiceError> {
         self.agent.cancel().await?;
