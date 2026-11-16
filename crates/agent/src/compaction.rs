@@ -222,6 +222,28 @@ pub(crate) async fn compact_if_needed(
             }
             return Ok(None);
         };
+        // 压缩前记一笔：每个真实压缩事务一次；失败/超时只记一行，压缩照常。
+        if let Some(hook) = host.pre_compaction() {
+            let conversation = host
+                .session()
+                .lock()
+                .expect("agent 会话锁被毒化")
+                .id()
+                .clone();
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| duration.subsec_nanos());
+            let input = crate::PreCompactionInput {
+                compaction_id: format!("pre-compact-{turn}-{step}-{nanos}"),
+                conversation,
+                messages: messages[..pre_split].to_vec(),
+            };
+            match tokio::time::timeout(std::time::Duration::from_secs(30), hook(input)).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => crate::warn::warn(format!("压缩前记一笔失败：{error}")),
+                Err(_) => crate::warn::warn("压缩前记一笔超时"),
+            }
+        }
         // 只在 select_split 成功（真的有一个事务要提交）之后派发 Compaction 挂点：
         // prune 必须只在真实压缩事务里跑；每次真实事务派发一次（重试事务也算）。
         if notify_compaction {

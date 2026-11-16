@@ -75,6 +75,8 @@ pub enum MessageSource {
         )]
         source_command_id: Option<String>,
     },
+    /// 记忆注入的 user 消息：identity 变了就完整替换上一份；页面不画成用户气泡。
+    MemoryContext { identity: String },
     /// 工作区指令注入的 user 消息（DSH agent-instructions 的来源，T006.10）：带类型来源、
     /// 完整基线 identity 与逐 scope 的 set/replace/remove 变更对象（内容不进 source）。
     AgentInstructions {
@@ -460,6 +462,18 @@ impl Message {
                 baseline,
                 baseline_identity,
                 changes,
+            },
+        )
+    }
+
+    /// 记忆上下文注入消息（source=memory-context）。
+    pub fn memory_context(text: impl Into<String>, identity: impl Into<String>) -> Self {
+        Self::with_source(
+            MessageId::generate(),
+            Role::User,
+            vec![ContentBlock::text(text)],
+            MessageSource::MemoryContext {
+                identity: identity.into(),
             },
         )
     }

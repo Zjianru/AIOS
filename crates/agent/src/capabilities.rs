@@ -117,6 +117,10 @@ pub(crate) trait LoopAccess: Send + Sync {
     fn is_running(&self) -> bool;
     /// 最近一轮的 turn 号（手动压缩写进 compaction/* 事件）。
     fn last_turn(&self) -> u64;
+    /// 压缩前记一笔的钩子；默认没有。
+    fn pre_compaction(&self) -> Option<&crate::PreCompactionHook> {
+        None
+    }
 }
 
 /// 每个挂点一份 typed 事件：host 访问面 + 该挂点可用的运行态数据。
@@ -349,6 +353,8 @@ pub(crate) struct CapabilityStates {
     /// 程序自带的 skill 来源（产品装配填；排在用户根后面）。
     pub bundled_skills: Vec<tools::BundledSkill>,
     pub spill_max_inline_tokens: usize,
+    pub memory_identity: Arc<tokio::sync::Mutex<Option<String>>>,
+    pub memory_context: Option<crate::MemoryContextProvider>,
 }
 /// 固定顺序的功能注册表；顺序=strategy §2 功能表的拆票顺序（compaction→…→jobs）。
 /// per-Agent 构造：ZST 能力每 Agent Box 一份，ask 能力持有该 Agent 的 AskState。
@@ -365,6 +371,10 @@ impl CapabilityRegistry {
                 Box::new(InstructionsCapability::new((
                     states.instructions,
                     states.instruction_roots,
+                ))),
+                Box::new(crate::memory_capability::MemoryCapability::new((
+                    states.memory_identity,
+                    states.memory_context,
                 ))),
                 Box::new(SkillCapability::new((
                     states.skill_catalog,
