@@ -103,8 +103,11 @@ test('本地文件链接（验收补 B2）：裸文本路径和 open 块都变�
     await expect(pre).toContainText('cat /private/tmp/aios-t015/存钱计划 30 年.html | head');
     await expect(pre.locator('a')).toHaveCount(0);
 
-    // 正文里的 URL 也不是本地文件链接。
-    await expect(answer.getByRole('link', { name: /example\.com/ })).toHaveCount(0);
+    // 正文里的 URL 渲染成普通外链（markdown 自动链接），不是本地文件链接：等它出现再核 href。
+    const urlLink = answer.getByRole('link', { name: 'https://example.com/notes.html' });
+    await expect(urlLink).toBeVisible();
+    await expect(urlLink).toHaveAttribute('href', 'https://example.com/notes.html');
+    await expect(urlLink).not.toHaveAttribute('href', /^\/local-file/);
   } finally {
     await fixture.close();
   }
