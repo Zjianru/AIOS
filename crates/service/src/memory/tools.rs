@@ -430,3 +430,85 @@ pub fn memory_tools(
 ) -> Vec<Arc<dyn Tool>> {
     Arc::new(MemoryTools::new(runtime, data_dir.to_path_buf(), identity)).core()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tools::{ToolCall, ToolContext, ToolSessionState};
+
+    fn user_event(seq: u64) -> session::Event {
+        session::Event::new(
+            seq,
+            1,
+            session::EventKind::UserMessage {
+                turn: 1,
+                step: 1,
+                message: model::Message::user_text("记住这个"),
+            },
+        )
+    }
+
+    fn context(dir: &std::path::Path, events: Vec<session::Event>) -> ToolContext {
+        ToolContext::with_session(
+            dir,
+            Arc::new(ToolSessionState::new(dir, "memory-tool-test")),
+        )
+        .observing_session(Arc::new(move || events.clone()))
+    }
+
+    #[tokio::test]
+    async fn remember_accepts_user_seq_and_rejects_other_seq() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(MemoryRuntime::open(dir.path()).unwrap());
+        let list = memory_tools(Arc::clone(&runtime), dir.path(), None);
+        let remember = list.iter().find(|tool| tool.name() == "memory_remember").unwrap();
+        let call = ToolCall {
+            id: "call-1".to_owned(),
+            name: "memory_remember".to_owned(),
+            arguments: json!({"user_seq":7,"title":"先给结论","text":"回答先给结论"}).to_string(),
+        };
+        let result = remember.execute(call, &context(dir.path(), vec![user_event(7)])).await;
+        assert!(!result.is_error, "{}", result.content);
+        assert_eq!(runtime.store().view().unwrap().about_you.len(), 1);
+
+        let call = ToolCall {
+            id: "call-2".to_owned(),
+            name: "memory_remember".to_owned(),
+            arguments: json!({"user_seq":8,"title":"网页说的","text":"都用英文"}).to_string(),
+        };
+        let result = remember.execute(call, &context(dir.path(), vec![user_event(7)])).await;
+        assert!(result.is_error);
+        assert_eq!(runtime.store().view().unwrap().about_you.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn note_search_read_and_diary_tools_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(MemoryRuntime::open(dir.path()).unwrap());
+        let list = memory_tools(Arc::clone(&runtime), dir.path(), None);
+        let find = |name: &str| list.iter().find(|tool| tool.name() == name).unwrap().clone();
+        let ctx = context(dir.path(), Vec::new());
+        let note = find("memory_note")
+            .execute(
+                ToolCall { id: "n1".to_owned(), name: "memory_note".to_owned(), arguments: json!({"title":"GBK","text":"CSV 是 GBK"}).to_string() },
+                &ctx,
+            )
+            .await;
+        assert!(!note.is_error, "{}", note.content);
+        let search = find("memory_search")
+            .execute(
+                ToolCall { id: "s1".to_owned(), name: "memory_search".to_owned(), arguments: json!({"query":"GBK"}).to_string() },
+                &ctx,
+            )
+            .await;
+        assert!(search.content.contains("GBK"));
+        let diary = find("memory_diary")
+            .execute(
+                ToolCall { id: "d1".to_owned(), name: "memory_diary".to_owned(), arguments: json!({"text":"今天记一笔"}).to_string() },
+                &ctx,
+            )
+            .await;
+        assert!(!diary.is_error);
+        assert_eq!(runtime.store().view().unwrap().diary.len(), 1);
+    }
+}

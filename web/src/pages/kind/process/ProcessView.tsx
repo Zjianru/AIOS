@@ -25,6 +25,7 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { MemoChip, memoryCardOf } from '@/pages/kind/MemoChip';
 import { formatDurationMs } from '@/lib/numbers';
 import type { TurnStatus } from '@/data/types';
 import { Markdown } from '../Markdown';
@@ -175,6 +176,11 @@ function ToolRow({ step, cwd }: { step: ToolStepView; cwd: string }) {
           </span>
         ) : null}
       </button>
+      {memoryCardOf(step.meta) ? (
+        <div className="pb-1 pl-[22px]">
+          <MemoChip card={memoryCardOf(step.meta)!} />
+        </div>
+      ) : null}
       {open ? (
         <div className="mb-2 mt-1 pl-[22px]">
           <ToolCardBody step={step} cwd={cwd} />
