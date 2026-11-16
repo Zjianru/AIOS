@@ -1,4 +1,4 @@
-//! T024.3：Kind 派发、ThinAgent 执行、上报 relay 的后端闭环（假模型、两个真会话）。
+//! Kind 派发、ThinAgent 执行、上报 relay 的后端闭环（假模型、两个真会话）。
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
@@ -67,7 +67,7 @@ impl Fixture {
         }
     }
 
-    /// T054.2：确认卡场景要产品动作登记表 + 自带 skills（propose_action 才有 update_task_requirement）。
+    /// 确认卡场景要产品动作登记表 + 自带 skills（propose_action 才有 update_task_requirement）。
     async fn new_with_actions() -> Self {
         let server = MockServer::start().await;
         let router = Router::new();
@@ -174,7 +174,7 @@ const RECOVERY_NOTE: &str = "AIOS 在这个任务进行中重启了。先看当�
 /// 写任务工具表里和 bash 有关的四件（D85：角色开关打开才给）。
 const BASH_JOB_TOOLS: [&str; 4] = ["bash", "job_output", "job_list", "job_kill"];
 
-/// 只读 9 件：T030.2b 里开关打开也不能给只读任务加。
+/// 只读 9 件：开关打开也不能给只读任务加。
 const READ_ONLY_TOOLS: [&str; 11] = [
     "read",
     "glob",
@@ -497,7 +497,7 @@ fn graph_card(data: &Path) -> Value {
     panic!("没有确认卡：calls={calls:?} results={results:?}");
 }
 
-/// T053.1：门任务和被把关任务按标题找（动态脚本建的名字固定）。
+/// 门任务和被把关任务按标题找（动态脚本建的名字固定）。
 fn gate_children(store: &Store, root: &Task) -> (Task, Task, Task) {
     let children = store.children(&root.id).expect("子任务");
     let guarded = children
@@ -518,7 +518,7 @@ fn gate_children(store: &Store, root: &Task) -> (Task, Task, Task) {
     (guarded, gate, downstream)
 }
 
-/// T053.1：建好门图、确认、B 报回、门报回，返回手头的事实；调用方再判或改动。
+/// 建好门图、确认、B 报回、门报回，返回手头的事实；调用方再判或改动。
 async fn reach_gate_ready(
     host: &RootHost,
     router: &Router,
@@ -598,7 +598,7 @@ async fn reach_gate_ready(
     (root, guarded, downstream, report_id)
 }
 
-/// T054.2：等 Kind 根会话真正空闲（没有在跑的轮）再发下一条；
+/// 等 Kind 根会话真正空闲（没有在跑的轮）再发下一条；
 /// 回放脚本按请求顺序消费，忙时发会跟 relay 轮抢脚本。
 async fn wait_kind_idle(host: &service::RootHost) {
     for _ in 0..900 {
@@ -617,7 +617,7 @@ async fn wait_kind_idle(host: &service::RootHost) {
     panic!("Kind 根会话一直不空闲");
 }
 
-/// T055.2：直接造一个 ready 任务（组接受用例的输入；调用面本身才是被测的接缝）。
+/// 直接造一个 ready 任务（组接受用例的输入；调用面本身才是被测的接缝）。
 fn seed_ready_task(
     store: &Store,
     cwd: &std::path::Path,
