@@ -117,6 +117,23 @@ impl MemoryRuntime {
         })
     }
 
+    /// 程序卡的状态按 ref 从库里读：记忆的当前状态，或做梦 run 的结果/设置。
+    /// web 的动态刷新在记忆页协议到位后接；.3 先给服务端解析。
+    pub fn card_state(&self, reference: &str) -> Option<String> {
+        if let Ok(Some(item)) = self.store.item(reference) {
+            return Some(
+                match item.status.as_str() {
+                    "forgotten" => "revoked",
+                    "quarantine" => "deleted",
+                    "pinned" => "accepted",
+                    _ => "active",
+                }
+                .to_owned(),
+            );
+        }
+        None
+    }
+
     /// 只索引用户自己的话和 Kind 回答正文；工具结果、推理、注入、记忆都不进索引。
     pub fn index_session_event(&self, conversation_id: &str, event: &session::Event) {
         let (turn, text) = match &event.kind {
@@ -245,6 +262,50 @@ mod tests {
         let view = runtime.store().view().unwrap();
         assert_eq!(view.diary.len(), 1);
         assert_eq!(view.diary[0].text, "用户偏好先给结论");
+    }
+
+    #[test]
+    fn card_state_reads_current_memory_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = MemoryRuntime::open(dir.path()).unwrap();
+        let item = runtime
+            .store()
+            .write(
+                WriteOp::Note {
+                    title: "卡片".to_owned(),
+                    summary: String::new(),
+                    body: "正文".to_owned(),
+                    source_kind: "kind".to_owned(),
+                    source_ref: "card".to_owned(),
+                },
+                &WriteContext::kind(),
+            )
+            .unwrap()
+            .item
+            .unwrap();
+        assert_eq!(runtime.card_state(&item.id).as_deref(), Some("active"));
+        runtime
+            .store()
+            .write(
+                WriteOp::Delete {
+                    id: item.id.clone(),
+                    reason: "user".to_owned(),
+                },
+                &WriteContext::user(),
+            )
+            .unwrap();
+        assert_eq!(runtime.card_state(&item.id).as_deref(), Some("deleted"));
+        runtime
+            .store()
+            .write(
+                WriteOp::Forget {
+                    id: item.id.clone(),
+                },
+                &WriteContext::user(),
+            )
+            .unwrap();
+        assert_eq!(runtime.card_state(&item.id).as_deref(), Some("revoked"));
+        assert_eq!(runtime.card_state("missing"), None);
     }
 
     #[test]

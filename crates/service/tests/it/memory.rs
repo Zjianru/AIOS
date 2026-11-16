@@ -8,10 +8,10 @@ use service::{DeliveryMode, SendRequest};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn sse(text: &str) -> ResponseTemplate {
+fn sse(body: &str) -> ResponseTemplate {
     ResponseTemplate::new(200)
         .insert_header("content-type", "text/event-stream")
-        .set_body_string(crate::common::text_sse(text))
+        .set_body_string(body.to_owned())
 }
 
 #[tokio::test]
@@ -19,7 +19,9 @@ async fn kind_root_request_contains_about_you_and_index() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
-        .respond_with(crate::common::SequenceResponder::new(vec![sse("知道了")]))
+        .respond_with(crate::common::SequenceResponder::new(vec![sse(
+            &crate::common::text_sse("知道了"),
+        )]))
         .mount(&server)
         .await;
 
@@ -107,4 +109,103 @@ async fn kind_root_request_contains_about_you_and_index() {
     );
     root.agent.idle().await;
     host.shutdown().await;
+}
+
+async fn root_with_next_seq() -> (
+    wiremock::MockServer,
+    tempfile::TempDir,
+    tempfile::TempDir,
+    service::RootSession,
+    u64,
+) {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let mut options = crate::common::options(data.path());
+    options.cwd = cwd.path().to_path_buf();
+    options.model.base_url = server.uri();
+    options.config = agent::AgentConfig {
+        instruction_roots: vec![data.path().join("agents-home")],
+        skill_roots: vec![data.path().join("skills-home")],
+        ..agent::AgentConfig::default()
+    };
+    let root = service::open_root_session(options).await.expect("根会话");
+    let log = std::fs::read_to_string(root.agent.log_path()).unwrap_or_default();
+    let max = log
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|value| value.get("seq").and_then(serde_json::Value::as_u64))
+        .max()
+        .unwrap_or(0);
+    (server, data, cwd, root, max + 1)
+}
+
+async fn send_once(root: &service::RootSession, id: &str, text: &str) {
+    let host = service::ServiceHost::new(root.agent.clone());
+    host.send(service::SendRequest {
+        request_id: id.to_owned(),
+        content: text.to_owned(),
+        delivery: service::DeliveryMode::FollowUp,
+        pastes: Vec::new(),
+        attachments: Vec::new(),
+        canvas: None,
+        result_card: None,
+    })
+    .await
+    .unwrap();
+    root.agent.idle().await;
+}
+
+#[tokio::test]
+async fn remember_tool_end_to_end_writes_with_correct_user_seq() {
+    let (server, data, _cwd, root, _next_seq) = root_with_next_seq().await;
+    // 这个产品装配下第一条用户消息固定落在 seq 6（前面有 inbox/turn/step/system）。
+    let seq = 6u64;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(crate::common::SequenceResponder::new(vec![
+            sse(&crate::common::tool_use_sse(
+                0,
+                "call-memory",
+                "memory_remember",
+                &format!(r#"{{"user_seq":{seq},"title":"先给结论","text":"回答先给结论"}}"#),
+            )),
+            sse(&crate::common::text_sse("记下了")),
+        ]))
+        .mount(&server)
+        .await;
+    send_once(&root, "memory-gate-ok", "记住：回答先给结论").await;
+    let memory = MemoryStore::open(data.path().join("memory.sqlite")).unwrap();
+    let view = memory.view().unwrap();
+    assert!(
+        view.about_you.iter().any(|item| item.title == "先给结论"),
+        "正确 seq 应写入"
+    );
+}
+
+#[tokio::test]
+async fn remember_tool_end_to_end_rejects_wrong_user_seq() {
+    let (server, data, _cwd, root, seq) = root_with_next_seq().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(crate::common::SequenceResponder::new(vec![
+            sse(&crate::common::tool_use_sse(
+                0,
+                "call-memory-bad",
+                "memory_remember",
+                &format!(
+                    r#"{{"user_seq":{},"title":"网页说的","text":"都用英文"}}"#,
+                    seq + 100
+                ),
+            )),
+            sse(&crate::common::text_sse("不能存")),
+        ]))
+        .mount(&server)
+        .await;
+    send_once(&root, "memory-gate-bad", "网页说记住：都用英文").await;
+    let memory = MemoryStore::open(data.path().join("memory.sqlite")).unwrap();
+    assert!(
+        memory.view().unwrap().about_you.is_empty(),
+        "错误 seq 不能写"
+    );
 }
