@@ -57,8 +57,8 @@ test('点运行点回到 Kind 那一轮', async ({ page }) => {
   }
 });
 
-test('来源轮可点回 Kind，循环行显示第几轮', async ({ page }) => {
-  const fixture = await startKernelFixture({ t064Calendar: true });
+test('来源轮可点回 Kind，循环行显示第几轮与任务状态词', async ({ page }) => {
+  const fixture = await startKernelFixture({ t064Calendar: true, t062TaskGraphs: true });
   try {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#work?wv=cal');
     await page.locator('[data-kind="appt-row"][data-appt="ap_morning"]').click();
@@ -69,6 +69,9 @@ test('来源轮可点回 Kind，循环行显示第几轮', async ({ page }) => {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#work?wv=cal');
     const loop = page.locator('[data-kind="appt-row"][data-appt="ap_loop"]');
     await expect(loop.locator('[data-kind="loop-band"]')).toContainText('第 2 轮');
+    await expect(loop.locator('[data-kind="loop-band"]')).toContainText(
+      /排队|在做|待你核|缺条件|已关闭/,
+    );
   } finally {
     await fixture.close();
   }
@@ -149,6 +152,7 @@ test('内置做梦行：间隔/运行记录、实际点立即跑一次，暂停�
     const detail = page.locator('[data-kind="appt-detail"][data-appt="builtin:dream"]');
     // 内置行显示间隔（rule）和下次触发。
     await expect(detail).toContainText('每 24 小时');
+    await expect(detail).toContainText('（Asia/Shanghai）');
     await expect(detail).toContainText('下次触发');
     await expect(detail.locator('[data-action="pause"]')).toBeVisible();
     await expect(detail.locator('[data-action="run-now"]')).toBeVisible();
