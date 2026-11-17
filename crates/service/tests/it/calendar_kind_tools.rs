@@ -191,3 +191,67 @@ async fn appointment_cancel_tool_distinguishes_user_and_stopped() {
     );
     host.shutdown().await;
 }
+
+#[tokio::test]
+async fn builtin_dream_pause_toggles_memory_enabled_and_cannot_cancel() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let host = crate::common::open(crate::common::options(data)).await;
+    let response = host
+        .dispatch(Call::CalendarRead(service::CalendarReadRequest::default()))
+        .await
+        .expect("读日历");
+    let Response::CalendarRead(read) = response else {
+        panic!("日历读响应");
+    };
+    let builtin = read
+        .appointments
+        .iter()
+        .find(|appointment| appointment.id == "builtin:dream")
+        .expect("内置做梦行");
+    assert_eq!(builtin.title, "做梦");
+
+    let pause = host
+        .dispatch(Call::CalendarAction(service::CalendarActionRequest {
+            appointment_id: "builtin:dream".to_owned(),
+            action: service::CalendarActionKind::Pause,
+        }))
+        .await
+        .expect("暂停做梦");
+    let Response::CalendarAction(pause) = pause else {
+        panic!("暂停响应");
+    };
+    assert_eq!(pause.appointment.status, "paused");
+    let memory = host
+        .dispatch(Call::MemoryRead(service::MemoryReadRequest::default()))
+        .await
+        .expect("读记忆");
+    let Response::MemoryRead(memory) = memory else {
+        panic!("记忆读响应");
+    };
+    assert!(!memory.dream.enabled, "暂停内置行要关掉记忆里的做梦开关");
+
+    let cancel = host
+        .dispatch(Call::CalendarAction(service::CalendarActionRequest {
+            appointment_id: "builtin:dream".to_owned(),
+            action: service::CalendarActionKind::Cancel,
+        }))
+        .await;
+    assert!(cancel.is_err(), "内置做梦行不能取消");
+
+    host.dispatch(Call::CalendarAction(service::CalendarActionRequest {
+        appointment_id: "builtin:dream".to_owned(),
+        action: service::CalendarActionKind::Resume,
+    }))
+    .await
+    .expect("恢复做梦");
+    let memory = host
+        .dispatch(Call::MemoryRead(service::MemoryReadRequest::default()))
+        .await
+        .expect("再读记忆");
+    let Response::MemoryRead(memory) = memory else {
+        panic!("记忆读响应");
+    };
+    assert!(memory.dream.enabled, "恢复内置行要打开记忆里的做梦开关");
+    host.shutdown().await;
+}

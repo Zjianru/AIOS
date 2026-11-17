@@ -166,23 +166,36 @@ impl RootHost {
                 .map(Response::TaskAcceptMany),
             // 日历：读/动作都在任务执行者的日历库；动作完推 calendar/changed。
             Call::CalendarRead(request) => match self.task_runtime() {
-                Some(runtime) => runtime
-                    .calendar_read(request)
-                    .map(Response::CalendarRead)
-                    .map_err(ServiceError::TaskUnavailable),
+                Some(runtime) => {
+                    let mut response = runtime
+                        .calendar_read(request)
+                        .map_err(ServiceError::TaskUnavailable)?;
+                    if let Some(builtin) = self.calendar_builtin_view() {
+                        response.appointments.push(builtin);
+                    }
+                    Ok(Response::CalendarRead(response))
+                }
                 None => Err(ServiceError::TaskUnavailable(
                     "日历库没开，读不了日历".to_owned(),
                 )),
             },
-            Call::CalendarAction(request) => match self.task_runtime() {
-                Some(runtime) => runtime
-                    .calendar_action(request)
-                    .map(Response::CalendarAction)
-                    .map_err(ServiceError::TaskUnavailable),
-                None => Err(ServiceError::TaskUnavailable(
-                    "日历库没开，改不了约定".to_owned(),
-                )),
-            },
+            Call::CalendarAction(request) => {
+                if request.appointment_id == "builtin:dream" {
+                    return self
+                        .calendar_builtin_action(&request.action)
+                        .map(Response::CalendarAction)
+                        .map_err(ServiceError::TaskUnavailable);
+                }
+                match self.task_runtime() {
+                    Some(runtime) => runtime
+                        .calendar_action(request)
+                        .map(Response::CalendarAction)
+                        .map_err(ServiceError::TaskUnavailable),
+                    None => Err(ServiceError::TaskUnavailable(
+                        "日历库没开，改不了约定".to_owned(),
+                    )),
+                }
+            }
             // 记忆页：读/变更都在记忆库；变更完推一条 memory/changed 让页面重读。
             Call::MemoryRead(request) => self.memory_read(request).await.map(Response::MemoryRead),
             Call::MemoryAction(request) => self

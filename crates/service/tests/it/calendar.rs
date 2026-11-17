@@ -650,9 +650,14 @@ async fn calendar_read_and_actions_move_status() {
     let Response::CalendarRead(read) = response else {
         panic!("日历读响应");
     };
-    assert_eq!(read.appointments.len(), 1);
-    assert_eq!(read.appointments[0].id, appointment.id);
-    assert_eq!(read.appointments[0].status, "active");
+    let rows: Vec<_> = read
+        .appointments
+        .iter()
+        .filter(|row| row.id != "builtin:dream")
+        .collect();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, appointment.id);
+    assert_eq!(rows[0].status, "active");
 
     let week = host
         .dispatch(Call::CalendarRead(CalendarReadRequest {

@@ -11,8 +11,8 @@ test('日历约定视图：分组、详情四按钮、暂停/恢复/取消二次
   try {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#work?wv=cal');
     await expect(page.locator('[data-kind="calendar-page"]')).toBeVisible();
-    await expect(page.locator('[data-kind="appt-row"]')).toHaveCount(3);
-    await expect(page.locator('[data-kind="calendar-group"]')).toHaveCount(3);
+    await expect(page.locator('[data-kind="appt-row"]')).toHaveCount(4);
+    await expect(page.locator('[data-kind="calendar-group"]')).toHaveCount(4);
 
     const morning = page.locator('[data-kind="appt-row"][data-appt="ap_morning"]');
     await morning.click();
@@ -116,6 +116,25 @@ test('等你去看：循环约定暂停项打开日历详情', async ({ page }) 
     await item.locator('[data-action="wait-open"]').click();
     await expect(page.locator('[data-kind="calendar-page"]')).toBeVisible();
     await expect(page.locator('[data-kind="appt-detail"][data-appt="ap_loop"]')).toBeVisible();
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('内置做梦行：只有暂停/立即跑一次，暂停就是关开关', async ({ page }) => {
+  const fixture = await startKernelFixture({ t064Calendar: true });
+  try {
+    await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#work?wv=cal');
+    await expect(page.locator('[data-kind="calendar-page"]')).toBeVisible();
+    const dream = page.locator('[data-kind="appt-row"][data-appt="builtin:dream"]');
+    await expect(dream).toBeVisible();
+    await dream.click();
+    const detail = page.locator('[data-kind="appt-detail"][data-appt="builtin:dream"]');
+    await expect(detail.locator('[data-action="pause"]')).toBeVisible();
+    await expect(detail.locator('[data-action="run-now"]')).toBeVisible();
+    await expect(detail.locator('[data-action="cancel"]')).toHaveCount(0);
+    await detail.locator('[data-action="pause"]').click();
+    await expect(dream).toHaveAttribute('data-state', 'paused');
   } finally {
     await fixture.close();
   }

@@ -6,7 +6,7 @@
  */
 
 import { useMemo, useState } from 'react';
-import { CalendarClock, ChevronLeft, ChevronRight, Eye, Repeat } from 'lucide-react';
+import { CalendarClock, ChevronLeft, ChevronRight, Eye, Moon, Repeat } from 'lucide-react';
 import { go } from '@/app/navigate';
 import { cn } from '@/lib/utils';
 import { useKindStore } from '@/pages/kind/kindStore';
@@ -32,6 +32,7 @@ const ICON: Record<ApptKind, typeof CalendarClock> = {
   time: CalendarClock,
   watch: Eye,
   loop: Repeat,
+  builtin: Moon,
 };
 
 function openTurn(turn: number | null): void {
@@ -135,10 +136,11 @@ function ApptDetail({ appt }: { appt: Appointment }) {
       setBusy(false);
     }
   };
+  const builtin = appt.kind === 'builtin';
   const canPause = appt.state === 'active';
   const canResume = appt.state === 'paused' || appt.state === 'waiting';
   const canRun = appt.state === 'active' || appt.state === 'paused' || appt.state === 'waiting';
-  const canCancel = !(appt.state === 'ended' || appt.state === 'cancelled');
+  const canCancel = !builtin && !(appt.state === 'ended' || appt.state === 'cancelled');
   return (
     <aside className="flex min-h-0 w-[360px] shrink-0 flex-col overflow-y-auto border-l border-line bg-content px-4 py-3" data-kind="appt-detail" data-appt={appt.id}>
       <div className="flex items-center gap-2">

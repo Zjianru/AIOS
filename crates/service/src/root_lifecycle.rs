@@ -745,3 +745,123 @@ impl Drop for RootHost {
         }
     }
 }
+
+/// T064.7：日历上的内置虚拟行「做梦」——不建日历库行，状态读记忆设置，运行读做梦记录。
+impl RootHost {
+    pub(crate) fn calendar_builtin_view(&self) -> Option<crate::protocol::CalendarAppointmentView> {
+        let memory = self.memory.as_ref()?;
+        let settings = memory.store().dream_settings().ok()?;
+        let runs = memory.store().dream_runs(5).unwrap_or_default();
+        let enabled = settings.enabled;
+        let interval_hours = settings.interval_hours;
+        let last_at = settings.last_attempt_at.max(settings.last_success_at);
+        let next_at = if enabled && last_at > 0 {
+            Some(
+                last_at
+                    + i64::try_from(interval_hours)
+                        .unwrap_or(24)
+                        .saturating_mul(3_600_000),
+            )
+        } else {
+            None
+        };
+        let run_views = runs
+            .into_iter()
+            .enumerate()
+            .map(|(index, run)| crate::protocol::CalendarRunView {
+                id: i64::try_from(index).unwrap_or(0) + 1,
+                nominal_at: run.started_at,
+                manual: true,
+                trigger: "manual".to_owned(),
+                result: if run.outcome == "success" {
+                    "sent"
+                } else {
+                    "failed"
+                }
+                .to_owned(),
+                reason: if run.error.is_empty() {
+                    run.outcome
+                } else {
+                    run.error
+                },
+                merged_count: 0,
+                created_at: run.started_at,
+                updated_at: run.ended_at,
+                sent_turn: None,
+            })
+            .collect();
+        Some(crate::protocol::CalendarAppointmentView {
+            id: "builtin:dream".to_owned(),
+            title: "做梦".to_owned(),
+            condition: "整理记忆（内置）".to_owned(),
+            rule: format!("FREQ=HOURLY;INTERVAL={interval_hours}"),
+            timezone: "Asia/Shanghai".to_owned(),
+            status: if enabled { "active" } else { "paused" }.to_owned(),
+            version: 1,
+            binding: "kind".to_owned(),
+            bound_task_id: None,
+            next_trigger_at: next_at,
+            pause_reason: if enabled {
+                None
+            } else {
+                Some("做梦已关".to_owned())
+            },
+            watch_kind: None,
+            watch_target: None,
+            cycle_task_id: None,
+            cycle_max_rounds: None,
+            created_at: 0,
+            updated_at: last_at,
+            runs: run_views,
+        })
+    }
+
+    pub(crate) fn calendar_builtin_action(
+        &self,
+        action: &crate::protocol::CalendarActionKind,
+    ) -> Result<crate::protocol::CalendarActionResponse, String> {
+        use crate::protocol::CalendarActionKind;
+        match action {
+            CalendarActionKind::Pause | CalendarActionKind::Resume => {
+                let memory = self
+                    .memory
+                    .as_ref()
+                    .ok_or_else(|| "记忆库没开".to_owned())?;
+                memory
+                    .store()
+                    .update_dream_settings(&memory::types::DreamSettingsPatch {
+                        enabled: Some(matches!(action, CalendarActionKind::Resume)),
+                        ..memory::types::DreamSettingsPatch::default()
+                    })
+                    .map_err(|error| error.to_string())?;
+            }
+            CalendarActionKind::RunNow => {
+                let dream = self
+                    .dream
+                    .as_ref()
+                    .ok_or_else(|| "做梦运行时没开".to_owned())?;
+                dream.request_now()?;
+            }
+            CalendarActionKind::Cancel => {
+                return Err("做梦是内置行，不能取消".to_owned());
+            }
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or_default();
+        if let Err(error) = self.events.send(crate::protocol::ServiceEvent {
+            seq: 0,
+            time: now,
+            event_type: "calendar/changed".to_owned(),
+            data: serde_json::json!({ "appointmentId": "builtin:dream" }),
+            cause: None,
+        }) {
+            eprintln!("calendar/changed 推送失败：{error}");
+        }
+        let appointment = self
+            .calendar_builtin_view()
+            .ok_or_else(|| "做梦行读不出来".to_owned())?;
+        Ok(crate::protocol::CalendarActionResponse { appointment })
+    }
+}

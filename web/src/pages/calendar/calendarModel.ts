@@ -10,7 +10,7 @@ import type { CalendarReadResponse } from '@/data/generated/CalendarReadResponse
 import type { CalendarRunView } from '@/data/generated/CalendarRunView';
 import type { CalendarWeekPoint } from '@/data/generated/CalendarWeekPoint';
 
-export type ApptKind = 'time' | 'watch' | 'loop';
+export type ApptKind = 'time' | 'watch' | 'loop' | 'builtin';
 export type ApptState = 'active' | 'paused' | 'waiting' | 'ended' | 'cancelled';
 export type RunResult = 'queued' | 'sent' | 'skipped' | 'failed';
 
@@ -51,6 +51,7 @@ export const GROUP_ORDER: { key: ApptKind; label: string }[] = [
   { key: 'time', label: '到点' },
   { key: 'watch', label: '盯着变化' },
   { key: 'loop', label: '循环任务' },
+  { key: 'builtin', label: '内置' },
 ];
 
 export const STATE_WORD: Record<ApptState, string> = {
@@ -76,12 +77,17 @@ export const RESULT_TONE: Record<RunResult, string> = {
 };
 
 export function kindOf(appointment: CalendarAppointmentView): ApptKind {
+  if (appointment.id === 'builtin:dream') return 'builtin';
   if (appointment.cycleTaskId) return 'loop';
   if (appointment.watchKind) return 'watch';
   return 'time';
 }
 
 export function stateOf(appointment: CalendarAppointmentView): ApptState {
+  if (appointment.id === 'builtin:dream') {
+    if (appointment.status === 'paused') return 'paused';
+    return 'active';
+  }
   if (appointment.status === 'paused') {
     return appointment.pauseReason ? 'waiting' : 'paused';
   }
