@@ -147,6 +147,25 @@ export function stampOf(ms: number): string {
   return String(date.getMonth() + 1) + '/' + date.getDate() + ' ' + String(date.getHours()).padStart(2, '0') + ':' + String(date.getMinutes()).padStart(2, '0');
 }
 
+/** 约定自己的时区里显示「下次触发」（确认卡/详情不跟浏览器时区漂）。 */
+export function stampInZone(ms: number, timezone: string): string {
+  if (!ms) return '';
+  try {
+    const parts = new Intl.DateTimeFormat('zh-CN', {
+      timeZone: timezone,
+      month: 'numeric',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(new Date(ms));
+    const value = (type: string) => parts.find((part) => part.type === type)?.value ?? '';
+    return value('month') + '/' + value('day') + ' ' + value('hour') + ':' + value('minute');
+  } catch {
+    return stampOf(ms);
+  }
+}
+
 export function clockOf(ms: number): string {
   if (!ms) return '';
   const date = new Date(ms);

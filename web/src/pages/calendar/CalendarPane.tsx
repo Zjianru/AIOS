@@ -19,6 +19,7 @@ import {
   clockOf,
   daysOfWeek,
   recentRuns,
+  stampInZone,
   stampOf,
   weekCells,
   weekStartOf,
@@ -108,7 +109,7 @@ function ApptRow({ appt, on, onSelect }: { appt: Appointment; on: boolean; onSel
       <span className="mt-0.5 flex min-w-0 items-center gap-2 text-1 text-ink-3">
         <span className="min-w-0 truncate">
           {appt.rule}（{appt.timezone}）
-          {appt.next ? ' · 下次 ' + stampOf(appt.next) : ''}
+          {appt.next ? ' · 下次 ' + stampInZone(appt.next, appt.timezone) : ''}
         </span>
         <span className="ml-auto shrink-0">
           <RunDots appt={appt} />
@@ -155,7 +156,7 @@ function ApptDetail({ appt }: { appt: Appointment }) {
         <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">绑定</dt><dd className="text-ink-2">{appt.binding === 'task' ? '任务 ' + (appt.boundTaskId ?? '') : 'Kind'}</dd></div>
         <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">来源</dt><dd className="text-ink-2">Kind 对话确认卡</dd></div>
         <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">版本</dt><dd className="text-ink-2">第 {appt.version} 版</dd></div>
-        <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">下次触发</dt><dd className="text-ink-2">{appt.next ? stampOf(appt.next) : '不自动触发'}</dd></div>
+        <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">下次触发</dt><dd className="text-ink-2">{appt.next ? stampInZone(appt.next, appt.timezone) : '不自动触发'}</dd></div>
         {appt.watchTarget ? <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">盯变化</dt><dd className="min-w-0 break-all text-ink-2">{appt.watchKind} · {appt.watchTarget}</dd></div> : null}
         {appt.cycleTaskId ? <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">循环</dt><dd className="text-ink-2">任务 {appt.cycleTaskId}{appt.cycleMaxRounds ? ' · 最多 ' + appt.cycleMaxRounds + ' 轮' : ''}</dd></div> : null}
         {appt.stateWhy ? <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">暂停原因</dt><dd className="text-wait">{appt.stateWhy}</dd></div> : null}

@@ -32,14 +32,19 @@ fn schedule_fact(rule: &str, timezone: &str, start_at: i64) -> String {
         .next_after(now_ms())
         .ok()
         .flatten()
-        .map(format_ms)
+        .map(|at| format_ms(at, timezone))
         .unwrap_or_else(|| "不再触发".to_owned());
     format!("{rule}（{timezone}），下次 {next}")
 }
 
-fn format_ms(at: i64) -> String {
+fn format_ms(at: i64, timezone: &str) -> String {
+    let zone: chrono_tz::Tz = timezone.parse().unwrap_or(chrono_tz::UTC);
     chrono::DateTime::from_timestamp_millis(at)
-        .map(|time| time.format("%Y-%m-%d %H:%M").to_string())
+        .map(|time| {
+            time.with_timezone(&zone)
+                .format("%Y-%m-%d %H:%M")
+                .to_string()
+        })
         .unwrap_or_else(|| at.to_string())
 }
 

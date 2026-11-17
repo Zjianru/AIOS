@@ -328,19 +328,20 @@ async fn create_card_accepts_number_string_start_delay_and_binding_objects() {
     };
     let create = registry.get("create_appointment").expect("create 动作");
 
-    // D78 现场的形态：数字字符串 startAt + binding 对象（kind=chat）。
+    // D78 现场的形态：数字字符串 startAt + binding 对象（kind=chat）；用未来一分钟避免测试跑着就过期。
+    let start_at = now_ms() + 60_000;
     let raw = json!({
         "title": "喝水提醒",
         "condition": "一分钟后提醒我喝水",
         "rule": "FREQ=DAILY",
         "timezone": "Asia/Shanghai",
-        "startAt": "1794935800000",
+        "startAt": start_at.to_string(),
         "binding": { "kind": "chat" }
     });
     let normalized = create
         .details(&raw)
         .expect("数字字符串 startAt 和 binding 对象要过");
-    assert_eq!(normalized["startAt"], json!(1_794_935_800_000_i64));
+    assert_eq!(normalized["startAt"], json!(start_at));
     assert_eq!(normalized["binding"]["kind"], "kind");
     let facts = create.describe(&normalized, &env).expect("建卡事实");
     assert!(
@@ -358,8 +359,29 @@ async fn create_card_accepts_number_string_start_delay_and_binding_objects() {
     let appointment_id = outcome.data["appointmentId"].as_str().unwrap().to_owned();
     let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
     let created = store.appointment(&appointment_id).unwrap().unwrap();
-    assert_eq!(created.schedule.start_at, 1_794_935_800_000);
+    assert_eq!(created.schedule.start_at, start_at);
     assert_eq!(created.binding, calendar::Binding::Kind);
+    // 起点在未来：DTSTART 就是第一次触发，next_trigger_at 不能落到次日。
+    assert_eq!(
+        created.next_trigger_at,
+        Some(start_at),
+        "未来起点的 next_trigger_at 必须是 start_at 本身"
+    );
+    let expected_local = chrono::DateTime::from_timestamp_millis(start_at)
+        .unwrap()
+        .with_timezone(&chrono_tz::Asia::Shanghai)
+        .format("%Y-%m-%d %H:%M")
+        .to_string();
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.name == "触发" && fact.value.contains(&expected_local)),
+        "卡上的触发时间要按约定时区显示：{facts:?}（期望含 {expected_local}）"
+    );
+    eprintln!(
+        "D78 手工检查：start_at={} next_trigger_at={:?} 卡事实={:?}",
+        created.schedule.start_at, created.next_trigger_at, facts
+    );
 
     // delaySeconds 替代 startAt + binding 任务对象。
     let before = now_ms();
@@ -392,6 +414,11 @@ async fn create_card_accepts_number_string_start_delay_and_binding_objects() {
         calendar::Binding::Task("task-demo".to_owned())
     );
     assert!((created.schedule.start_at - (before + 60_000)).abs() < 5_000);
+    assert_eq!(
+        created.next_trigger_at,
+        Some(created.schedule.start_at),
+        "一分钟后新建：next_trigger_at 不能是次日"
+    );
 
     // 不明 binding kind 不再静默回落 Kind，直接拒。
     let bad = json!({

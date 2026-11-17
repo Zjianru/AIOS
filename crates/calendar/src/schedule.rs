@@ -13,6 +13,11 @@ impl Schedule {
 
     /// 严格晚于 after_ms 的下一次触发（毫秒）；没有下一次返回 None。
     pub fn next_after(&self, after_ms: i64) -> Result<Option<i64>, CalendarError> {
+        // DTSTART 本身是第一次出现：起点在未来时，rrule 的 after() 会跳过 DTSTART，
+        // 必须先把 start_at 当这次触发返回（新建「一分钟后」不能落到次日同一时刻）。
+        if self.start_at > after_ms {
+            return Ok(Some(self.start_at));
+        }
         let tz: rrule::Tz = self.timezone()?.into();
         let after = tz
             .timestamp_millis_opt(after_ms)
@@ -37,13 +42,23 @@ impl Schedule {
             .timestamp_millis_opt(to_ms)
             .single()
             .ok_or_else(|| CalendarError::InvalidSchedule("终点不在时区范围内".to_owned()))?;
-        let result = self.rule_set()?.after(from).before(to).all(1000);
-        Ok(result
+        let mut points: Vec<i64> = self
+            .rule_set()?
+            .after(from)
+            .before(to)
+            .all(1000)
             .dates
             .iter()
             .map(chrono::DateTime::timestamp_millis)
             .filter(|at| *at >= from_ms && *at <= to_ms)
-            .collect())
+            .collect();
+        // 起点在未来时 rrule 的 after() 同样跳过 DTSTART；计划窗口包含起点就补上。
+        if self.start_at >= from_ms && self.start_at <= to_ms {
+            points.push(self.start_at);
+        }
+        points.sort_unstable();
+        points.dedup();
+        Ok(points)
     }
 
     fn timezone(&self) -> Result<chrono_tz::Tz, CalendarError> {
@@ -106,6 +121,27 @@ mod tests {
                 .unwrap(),
             Some(at("Asia/Shanghai", 2026, 11, 19, 9, 0))
         );
+    }
+
+    #[test]
+    fn future_start_is_the_first_trigger_not_next_day() {
+        let start = at("Asia/Shanghai", 2026, 11, 18, 1, 24);
+        let schedule = Schedule {
+            rule: "FREQ=DAILY".to_owned(),
+            timezone: "Asia/Shanghai".to_owned(),
+            start_at: start,
+        };
+        let now = start - 60_000;
+        assert_eq!(schedule.next_after(now).unwrap(), Some(start));
+        assert_eq!(
+            schedule.next_after(start).unwrap(),
+            Some(at("Asia/Shanghai", 2026, 11, 19, 1, 24)),
+            "起点之后才是下一次"
+        );
+        let points = schedule
+            .occurrences_between(now, start + 24 * 60 * 60 * 1000)
+            .unwrap();
+        assert_eq!(points.first(), Some(&start), "周计划也要包含未来起点");
     }
 
     #[test]
