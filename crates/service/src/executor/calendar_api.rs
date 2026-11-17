@@ -147,7 +147,17 @@ impl TaskRuntime {
                 continue;
             };
             for run in runs {
-                if run.result != RunResult::Queued || self.calendar_effect_pending(run.id) {
+                if run.result != RunResult::Queued {
+                    continue;
+                }
+                if appointment.status != AppointmentStatus::Active {
+                    let reason = calendar_status_reason(appointment.status);
+                    if let Err(error) = store.finish_run(run.id, RunResult::Skipped, reason, None) {
+                        eprintln!("暂停/取消后没写运行结果：{error}");
+                    }
+                    continue;
+                }
+                if self.calendar_effect_pending(run.id) {
                     continue;
                 }
                 if let Err(error) = self.store.enqueue_effect(
@@ -348,6 +358,15 @@ impl TaskRuntime {
             self.finish_or_fail(&claim, Ok(()));
             return;
         }
+        if appointment.status != AppointmentStatus::Active {
+            let reason = calendar_status_reason(appointment.status);
+            if let Err(error) = store.finish_run(run.id, RunResult::Skipped, reason, None) {
+                eprintln!("暂停/取消后没写运行结果：{error}");
+            }
+            self.finish_or_fail(&claim, Ok(()));
+            self.emit_calendar_changed(&appointment.id);
+            return;
+        }
         if self.crash_before_wake.swap(false, Ordering::SeqCst) {
             self.finish_or_fail(&claim, Err("模拟日历唤醒送达前崩掉".to_owned()));
             return;
@@ -382,10 +401,32 @@ impl TaskRuntime {
         let sent = host
             .send_message(&request_id, message, DeliveryMode::Steer)
             .await;
+        let sent_turn = if sent.is_ok() {
+            host.agent()
+                .session_events_from(0)
+                .iter()
+                .rev()
+                .find_map(|event| {
+                    let session::EventKind::UserMessage { turn, message, .. } = &event.kind else {
+                        return None;
+                    };
+                    let model::MessageSource::User { rpc_id } = &message.source else {
+                        return None;
+                    };
+                    rpc_id
+                        .as_deref()
+                        .filter(|rpc| *rpc == request_id)
+                        .map(|_| i64::try_from(*turn).unwrap_or(i64::MAX))
+                })
+        } else {
+            None
+        };
         drop(guard);
         match sent {
             Ok(_) => {
-                if let Err(error) = store.finish_run(run.id, RunResult::Sent, &run.reason, None) {
+                if let Err(error) =
+                    store.finish_run(run.id, RunResult::Sent, &run.reason, sent_turn)
+                {
                     eprintln!("日历运行记录没写成功：{error}");
                 }
                 self.finish_or_fail(&claim, Ok(()));
@@ -463,6 +504,15 @@ fn calendar_run_view(run: Run) -> CalendarRunView {
         created_at: run.created_at,
         updated_at: run.updated_at,
         sent_turn: run.sent_turn,
+    }
+}
+
+fn calendar_status_reason(status: AppointmentStatus) -> &'static str {
+    match status {
+        AppointmentStatus::Active => "",
+        AppointmentStatus::Paused => "跳过：约定已暂停",
+        AppointmentStatus::Cancelled => "跳过：约定已取消",
+        AppointmentStatus::Ended => "跳过：约定已结束",
     }
 }
 

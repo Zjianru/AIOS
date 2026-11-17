@@ -108,9 +108,9 @@ async fn measure_work_snapshot_on_200_tasks() {
     }
     let (tasks_in_response, graphs, edges, json_bytes) = response.expect("response");
     let mut sorted = total.clone();
-    sorted.sort_by(f64::total_cmp);
+    sorted.sort_by(|left, right| left.total_cmp(right));
     let mut encode_sorted = encode.clone();
-    encode_sorted.sort_by(f64::total_cmp);
+    encode_sorted.sort_by(|left, right| left.total_cmp(right));
     println!(
         "T063_WORK_MEASURE tasks_created={} graphs_created={} iterations={} tasks_in_response={tasks_in_response} graphs_in_response={graphs} edges={edges} json_bytes={json_bytes} total_ms_min={:.3} total_ms_median={:.3} total_ms_max={:.3} encode_ms_min={:.3} encode_ms_median={:.3} encode_ms_max={:.3} os={} arch={} parallelism={:?}",
         200,
@@ -125,7 +125,7 @@ async fn measure_work_snapshot_on_200_tasks() {
         std::env::consts::OS,
         std::env::consts::ARCH,
         std::thread::available_parallelism()
-            .map(std::num::NonZero::get)
+            .map(|value| value.get())
             .ok(),
     );
 }

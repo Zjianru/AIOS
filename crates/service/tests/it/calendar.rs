@@ -197,6 +197,105 @@ async fn global_pause_merges_missed_occurrences_and_sends_once() {
 }
 
 #[tokio::test]
+async fn paused_appointment_does_not_deliver_a_queued_wake() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
+    let now = now_ms();
+    let due = appointment(&store, "暂停不发", now - 1_000, "FREQ=SECONDLY");
+    store.set_next_trigger(&due.id, Some(now - 1)).unwrap();
+    let (run, _) = store
+        .record_run(calendar::NewRun {
+            appointment_id: due.id.clone(),
+            nominal_at: now - 1,
+            manual: false,
+            trigger: calendar::TriggerKind::Due,
+            reason: String::new(),
+            merged_count: 0,
+        })
+        .unwrap();
+    {
+        let tasks = tasks::Store::open(data.join("tasks.sqlite")).unwrap();
+        tasks
+            .enqueue_effect(
+                tasks::EffectPayload::AppointmentWake {
+                    appointment_id: due.id.clone(),
+                    run_id: run.id,
+                },
+                now,
+            )
+            .unwrap();
+    }
+    store
+        .set_status(&due.id, calendar::AppointmentStatus::Paused)
+        .unwrap();
+
+    let host = crate::common::open(crate::common::options(data)).await;
+    wait_until("暂停的排着收口", || {
+        store
+            .runs(&due.id)
+            .unwrap()
+            .iter()
+            .any(|stored| stored.id == run.id && stored.result == calendar::RunResult::Skipped)
+    })
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let session_id = host.info().session_id.expect("根会话");
+    let snapshot = session::SessionStore::open_read_only(
+        data,
+        &session::SessionId::parse(&session_id).expect("会话 id"),
+    )
+    .expect("会话日志");
+    assert!(
+        !snapshot.events().iter().any(|event| {
+            let session::EventKind::UserMessage { message, .. } = &event.kind else {
+                return false;
+            };
+            let model::MessageSource::User { rpc_id } = &message.source else {
+                return false;
+            };
+            rpc_id
+                .as_deref()
+                .is_some_and(|rpc| rpc.starts_with("appointment-wake:"))
+        }),
+        "暂停后不能再送已排的 wake"
+    );
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn resume_wakes_the_pump_and_sends_the_due_run() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
+    let now = now_ms();
+    let due = appointment(&store, "恢复就叫醒", now - 5_000, "FREQ=SECONDLY");
+    store.set_next_trigger(&due.id, Some(now - 5_000)).unwrap();
+    let host = crate::common::open(crate::common::options(data)).await;
+    host.dispatch(Call::CalendarAction(CalendarActionRequest {
+        appointment_id: due.id.clone(),
+        action: CalendarActionKind::Pause,
+    }))
+    .await
+    .expect("暂停");
+    host.dispatch(Call::CalendarAction(CalendarActionRequest {
+        appointment_id: due.id.clone(),
+        action: CalendarActionKind::Resume,
+    }))
+    .await
+    .expect("恢复");
+    wait_until("恢复后送到", || {
+        run_result(&store, &due.id).is_some_and(|result| result == "sent" || result == "skipped")
+    })
+    .await;
+    assert_eq!(
+        store.appointment(&due.id).unwrap().unwrap().status,
+        calendar::AppointmentStatus::Active
+    );
+    host.shutdown().await;
+}
+
+#[tokio::test]
 async fn calendar_read_and_actions_move_status() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path();
