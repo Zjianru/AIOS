@@ -40,6 +40,11 @@ use crate::protocol::{
 use crate::root::RootSessionOptions;
 use crate::session_host::ServiceHost;
 
+mod calendar_api;
+mod calendar_cycle;
+mod calendar_tools;
+pub use calendar_tools::AppointmentCancelTool;
+mod calendar_watch;
 mod task_tools;
 pub(crate) use task_tools::*;
 
@@ -294,6 +299,14 @@ pub struct TaskRuntime {
     changed: broadcast::Sender<String>,
     /// 测试钩子：下一次 relay 在 Kind append 前「崩掉」——留下效果行，泵退出。
     crash_before_relay: AtomicBool,
+    /// 日历库；打不开就没有日历能力。
+    calendar: Option<Arc<calendar::CalendarStore>>,
+    /// calendar/changed 的推送端（由根宿主注入）。
+    calendar_events: Option<broadcast::Sender<ServiceEvent>>,
+    /// 测试钩子：下一次日历唤醒在送进 Kind 前失败一次，留下效果行等退避重试。
+    crash_before_wake: AtomicBool,
+    /// 测试钩子：盯变化的 URL 抓取用这个出站环境（wiremock 代理）。
+    watch_http: std::sync::Mutex<Option<model::http::HttpEnv>>,
 }
 
 impl TaskRuntime {
@@ -301,6 +314,7 @@ impl TaskRuntime {
         options: &RootSessionOptions,
         selection: Arc<Mutex<Option<session::ModelSelection>>>,
         inner: Weak<tokio::sync::Mutex<Option<ServiceHost>>>,
+        calendar_events: Option<broadcast::Sender<ServiceEvent>>,
     ) -> Result<Self, TaskError> {
         let store = Store::open(options.data_dir.join(TASKS_DB_FILE))?;
         // 重启后暂停和席位还在：启动时读一次设置文件，缺了按默认。
@@ -325,6 +339,12 @@ impl TaskRuntime {
             gate_jobs: Mutex::new(std::collections::HashMap::new()),
             changed: broadcast::channel(64).0,
             crash_before_relay: AtomicBool::new(false),
+            calendar: calendar::CalendarStore::open(options.data_dir.join("calendar.sqlite"))
+                .ok()
+                .map(Arc::new),
+            calendar_events,
+            crash_before_wake: AtomicBool::new(false),
+            watch_http: std::sync::Mutex::new(None),
         })
     }
 
@@ -418,7 +438,11 @@ impl TaskRuntime {
         {
             return Err("这个任务还在跑；等这一轮结束再让它接着做".to_owned());
         }
-        let cause = self.continue_cause(&task)?;
+        let cause = if let Some(cycle) = self.calendar_cycle_continue_cause(&task)? {
+            cycle
+        } else {
+            self.continue_cause(&task)?
+        };
         let package = self.continue_package(&task, &cause, request.note.as_deref())?;
         let Some(attempt) = task.latest_attempt().cloned() else {
             return Err("这个任务还没开跑，不能接着做".to_owned());
@@ -593,6 +617,22 @@ impl TaskRuntime {
                     None => lines.push("写集不变：只读".to_owned()),
                 }
                 lines.push("核对完用 task_report 上报。".to_owned());
+            }
+            ContinueCause::CycleDue { appointment_id, .. } => {
+                lines.push("循环约定到点：这一轮报回是约定叫的，接着做下一轮。".to_owned());
+                lines.push(format!("原要求不变：{}", task.requirement));
+                if let Some(note) = note.filter(|note| !note.trim().is_empty()) {
+                    lines.push(format!("用户原话：{note}"));
+                }
+                if let Some(report) = task.latest_report() {
+                    lines.push(format!("上一轮报告：{}", report.summary));
+                }
+                lines.push(format!("约定：{appointment_id}"));
+                match task.effective_write_scope() {
+                    Some(scope) => lines.push(format!("写集不变：{}", scope.display())),
+                    None => lines.push("写集不变：只读".to_owned()),
+                }
+                lines.push("做完用 task_report 上报。".to_owned());
             }
             ContinueCause::AfterReport { report } => {
                 let (state, summary) = task
@@ -1148,6 +1188,12 @@ impl TaskRuntime {
     ///
     /// 生产里进程退出由操作系统回收；测试要复现「重启后会话写者已经放开」。
     #[doc(hidden)]
+    #[doc(hidden)]
+    pub fn crash_before_next_wake(&self) {
+        self.crash_before_wake.store(true, Ordering::SeqCst);
+        self.wake();
+    }
+
     pub fn crash(&self) {
         self.shutting_down.store(true, Ordering::SeqCst);
         self.running.lock().expect("thinagent 表锁被毒化").clear();
@@ -1182,6 +1228,11 @@ impl TaskRuntime {
                 return;
             }
             if !self.pump_paused.load(Ordering::SeqCst) {
+                // 日历计时器与效果泵同一条循环：醒来先补到期的约定，再处理效果。
+                self.calendar_tick(Self::now()).await;
+                if self.shutting_down.load(Ordering::SeqCst) {
+                    return;
+                }
                 let mut worked = false;
                 match self
                     .store
@@ -1246,6 +1297,23 @@ impl TaskRuntime {
                 if self.shutting_down.load(Ordering::SeqCst) {
                     return;
                 }
+                // 日历到点唤醒：全局暂停时先不送，开闸后再领；根会话不在就 Later，退避重试。
+                if !self.exec_paused.load(Ordering::SeqCst) {
+                    match self
+                        .store
+                        .claim_effect_ordered(EffectKind::AppointmentWake, Self::now())
+                    {
+                        Ok(Some(claim)) => {
+                            worked = true;
+                            self.deliver_appointment_wake(claim).await;
+                        }
+                        Ok(None) => {}
+                        Err(error) => eprintln!("日历唤醒领取失败：{error}"),
+                    }
+                }
+                if self.shutting_down.load(Ordering::SeqCst) {
+                    return;
+                }
                 // 全局暂停只关 launch 这一道闸门：relay 已经送完了，队里的 launch 不领。
                 // 席位满时也不领：效果原样留在库里（Later，不算失败），释放后按 seq 再领。
                 if !self.exec_paused.load(Ordering::SeqCst) && self.has_launch_room() {
@@ -1272,9 +1340,15 @@ impl TaskRuntime {
                     continue;
                 }
             }
+            let now = Self::now();
+            let mut sleep_ms = self.calendar_sleep_ms(now);
+            if let Ok(Some(due)) = self.store.next_effect_due() {
+                let retry = u64::try_from((due - now).clamp(10, 60_000)).unwrap_or(100);
+                sleep_ms = sleep_ms.min(retry);
+            }
             tokio::select! {
                 _ = self.notify.notified() => {}
-                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                _ = tokio::time::sleep(Duration::from_millis(sleep_ms)) => {}
             }
         }
     }

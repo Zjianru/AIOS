@@ -29,6 +29,10 @@ axum = { version = "0.8.9", features = ["ws"] }
 grep-regex = "0.1"
 grep-searcher = "0.1"
 wiremock = "0.6"
+# 日历规则与 IANA 时区（D103，版本写死）。
+rrule = "=0.14.0"
+chrono = "=0.4.45"
+chrono-tz = "=0.10.4"
 insta = { version = "1.49", features = ["json"] }
 tempfile = "3.27"
 

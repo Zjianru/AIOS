@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 use tools::{Tool, ToolCall, ToolCondition, ToolContext, ToolFailure, ToolFuture, ToolResult};
 
-/// 查询的五个主题。
+/// 查询的六个主题。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Topic {
     Settings,
@@ -20,6 +20,7 @@ enum Topic {
     Models,
     Usage,
     Product,
+    Calendar,
 }
 
 impl Topic {
@@ -30,6 +31,7 @@ impl Topic {
             "models" => Some(Self::Models),
             "usage" => Some(Self::Usage),
             "product" => Some(Self::Product),
+            "calendar" => Some(Self::Calendar),
             _ => None,
         }
     }
@@ -53,8 +55,8 @@ impl QueryTool {
                 "properties": {
                     "topic": {
                         "type": "string",
-                        "enum": ["settings", "connections", "models", "usage", "product"],
-                        "description": "settings: this conversation's model and effort, the selection new conversations use, and the currency. connections: connections already stored, with whether a key is saved and the last verification result. models: the models each connection can pick, with masking rules. usage: this conversation's turns, steps, tokens and cost. product: what AIOS can and cannot do."
+                        "enum": ["settings", "connections", "models", "usage", "product", "calendar"],
+                        "description": "settings: this conversation's model and effort, the selection new conversations use, and the currency. connections: connections already stored, with whether a key is saved and the last verification result. models: the models each connection can pick, with masking rules. usage: this conversation's turns, steps, tokens and cost. product: what AIOS can and cannot do. calendar: appointments, their triggers/bindings/watch/cycle, and recent runs."
                     }
                 },
                 "required": ["topic"]
@@ -69,7 +71,64 @@ impl QueryTool {
             Topic::Models => self.models(),
             Topic::Usage => self.usage(context),
             Topic::Product => Ok(product()),
+            Topic::Calendar => self.calendar(),
         }
+    }
+
+    fn calendar(&self) -> Result<Value, ToolFailure> {
+        let path = self.data_dir.join("calendar.sqlite");
+        if !path.exists() {
+            return Ok(json!({ "appointments": [] }));
+        }
+        let store = calendar::CalendarStore::open(&path)
+            .map_err(|error| ToolFailure::plain(format!("日历库读不出来：{error}")))?;
+        let appointments = store
+            .list_appointments()
+            .map_err(|error| ToolFailure::plain(format!("日历读不出来：{error}")))?;
+        let mut rows = Vec::with_capacity(appointments.len());
+        for appointment in appointments {
+            let runs = store
+                .runs(&appointment.id)
+                .unwrap_or_default()
+                .into_iter()
+                .rev()
+                .take(3)
+                .collect::<Vec<_>>();
+            rows.push(json!({
+                "id": appointment.id,
+                "title": appointment.title,
+                "condition": appointment.condition,
+                "status": appointment.status.as_str(),
+                "version": appointment.version,
+                "rule": appointment.schedule.rule,
+                "timezone": appointment.schedule.timezone,
+                "startAt": appointment.schedule.start_at,
+                "binding": match &appointment.binding {
+                    calendar::Binding::Kind => json!({ "kind": "kind" }),
+                    calendar::Binding::Task(task) => json!({ "kind": "task", "taskId": task }),
+                },
+                "watch": appointment.watch.as_ref().map(|watch| match watch {
+                    calendar::WatchSource::Url(url) => json!({ "kind": "url", "target": url }),
+                    calendar::WatchSource::File(file) => json!({ "kind": "file", "target": file }),
+                    calendar::WatchSource::TaskFacts(task) => json!({ "kind": "taskFacts", "target": task }),
+                }),
+                "cycle": appointment.cycle.as_ref().map(|cycle| json!({
+                    "taskId": cycle.task_id,
+                    "maxRounds": cycle.max_rounds,
+                })),
+                "nextTriggerAt": appointment.next_trigger_at,
+                "runs": runs.iter().map(|run| json!({
+                    "id": run.id,
+                    "trigger": run.trigger.clone().as_str(),
+                    "result": run.result.as_str(),
+                    "reason": run.reason,
+                    "nominalAt": run.nominal_at,
+                    "mergedCount": run.merged_count,
+                    "sentTurn": run.sent_turn,
+                })).collect::<Vec<_>>(),
+            }));
+        }
+        Ok(json!({ "appointments": rows }))
     }
 
     fn keyring(&self) -> Result<credentials::Keyring, ToolFailure> {
@@ -218,7 +277,7 @@ impl Tool for QueryTool {
     }
 
     fn condition(&self) -> ToolCondition {
-        ToolCondition::AfterSkill(vec!["aios-settings".to_owned()])
+        ToolCondition::AfterSkill(vec!["aios-settings".to_owned(), "aios-calendar".to_owned()])
     }
 
     fn execute<'a>(
@@ -252,7 +311,7 @@ fn parse_topic(arguments: &str) -> Result<Topic, ToolFailure> {
         .ok_or_else(|| ToolFailure::plain("invalid topic: expected a non-empty string"))?;
     Topic::parse(name).ok_or_else(|| {
         ToolFailure::plain(format!(
-            "invalid topic {name:?}: expected settings, connections, models, usage or product"
+            "invalid topic {name:?}: expected settings, connections, models, usage, product or calendar"
         ))
     })
 }

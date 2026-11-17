@@ -20,6 +20,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
+import { CalendarPage } from '@/pages/calendar/CalendarPane';
 import { GraphPane } from './GraphPane';
 import { StartThingDialog } from './StartThingDialog';
 import { WaitList, openWaitItem } from './WaitList';
@@ -111,19 +112,6 @@ function EmptyColumn({ text }: { text: string }) {
   return <p className="px-1 py-2 text-1 text-ink-3">{text}</p>;
 }
 
-function CalendarPane() {
-  return (
-    <div className="grid min-h-0 flex-1 place-items-center p-6 text-center">
-      <div className="max-w-[420px]">
-        <h2 className="text-4 font-medium text-ink">日历</h2>
-        <p className="mt-2 text-2 leading-5 text-ink-3">
-          这一期先不做日历。切回「看板」能看到全部任务；到点提醒、假日历归后面的期。
-        </p>
-      </div>
-    </div>
-  );
-}
-
 type View = 'board' | 'graph' | 'cal';
 
 function BoardPane() {
@@ -206,7 +194,7 @@ function BoardPane() {
       </header>
 
       {view === 'cal' ? (
-        <CalendarPane />
+        <CalendarPage />
       ) : view === 'graph' ? (
         <GraphPane selected={selectedTask} onSelect={setSelectedTask} />
       ) : (

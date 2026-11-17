@@ -113,6 +113,10 @@ pub enum Call {
     MemoryRead(MemoryReadRequest),
     /// 记忆变更（M01/M03/M04/M10/M12/M13/M14；一次只改一个对象/一处动作）。
     MemoryAction(MemoryActionRequest),
+    /// 日历读取。
+    CalendarRead(CalendarReadRequest),
+    /// 日历动作。
+    CalendarAction(CalendarActionRequest),
 }
 
 /// 调用的结果（与 Call 一一对应）。
@@ -182,6 +186,10 @@ pub enum Response {
     MemoryRead(MemoryReadResponse),
     /// 记忆变更的受理结果（新版本号 + 给页面的一句话）。
     MemoryAction(MemoryActionResponse),
+    /// 日历读取：约定 + 运行记录 + 某周计划点。
+    CalendarRead(CalendarReadResponse),
+    /// 日历动作：暂停/恢复/立即跑一次/取消。
+    CalendarAction(CalendarActionResponse),
 }
 
 /// 发消息（DSH session-controller 的 prompt）。requestId 是幂等键：同一 id 只进一次。
@@ -1579,7 +1587,114 @@ pub struct MemoryActionResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 17;
+pub const PROTOCOL_VERSION: u64 = 18;
+
+/// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarReadRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appointment_id: Option<String>,
+    /// 周起点（毫秒，服务端按本地周一对齐）；None = 不带周计划点。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub week: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarReadResponse {
+    pub generated_at: i64,
+    pub appointments: Vec<CalendarAppointmentView>,
+    /// 那一周的计划点与运行点（按时间升序）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub week: Vec<CalendarWeekPoint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarAppointmentView {
+    pub id: String,
+    pub title: String,
+    pub condition: String,
+    pub rule: String,
+    pub timezone: String,
+    /// active / paused / ended / cancelled。
+    pub status: String,
+    pub version: u32,
+    /// kind / task。
+    pub binding: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_trigger_at: Option<i64>,
+    /// 暂停原因（程序写；恢复后清空视图，但版本历史留着）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_reason: Option<String>,
+    /// 盯变化的来源（url / file / taskFacts）与目标；没盯就没有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch_target: Option<String>,
+    /// 循环任务绑的任务与最多轮数；不是循环就没有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycle_task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycle_max_rounds: Option<u32>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub runs: Vec<CalendarRunView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarRunView {
+    pub id: i64,
+    pub nominal_at: i64,
+    pub manual: bool,
+    /// due / manual / changed / report。
+    pub trigger: String,
+    /// queued / sent / skipped / failed。
+    pub result: String,
+    pub reason: String,
+    pub merged_count: u32,
+    pub created_at: i64,
+    pub updated_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_turn: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarWeekPoint {
+    pub at: i64,
+    pub appointment_id: String,
+    /// run（过去有结果的运行）/ plan（以后按规则算的计划点）。
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "kebab-case")]
+pub enum CalendarActionKind {
+    Pause,
+    Resume,
+    RunNow,
+    Cancel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarActionRequest {
+    pub appointment_id: String,
+    pub action: CalendarActionKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarActionResponse {
+    pub appointment: CalendarAppointmentView,
+}
 
 /// 根会话不可用的种类：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

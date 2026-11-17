@@ -481,7 +481,7 @@ fn unsupported(message: &str) -> ModelError {
 /// 红测试：DSH DeepSeek 序列化的三类防御校验
 /// （llm-deepseek/src/serialize.ts:136-146：重复 tool call id / tool_result 匹配 / 历史未决工具）。
 #[cfg(test)]
-mod t006_19_serialize_defense_tests {
+mod serialize_defense_tests {
     use super::*;
     use crate::{ContentBlock, ErrorCode, Message};
 
@@ -776,7 +776,7 @@ mod effort_wire_tests {
 }
 
 #[cfg(test)]
-mod t013_file_block_tests {
+mod file_block_serialize_tests {
     use super::*;
 
     /// fileHandleText 原句（DSH llm/llm/src/content.ts:151-158 照抄）。
@@ -860,7 +860,7 @@ mod t013_file_block_tests {
 /// T045：卡片状态回执等「历史中段的动态 system」不能并进 top-level system（会让缓存前缀
 /// 每轮平移）；它们按原历史位置序列化成 user 角色的文本消息，开头静态 system 仍进 system。
 #[cfg(test)]
-mod t045_cache_safe_system_tests {
+mod cache_safe_system_tests {
     use super::*;
     use crate::{
         ContentBlock, Message, ToolAddition, ToolHistory, ToolRequest, ToolSchema, ToolUpdate,
@@ -1025,7 +1025,7 @@ mod t045_cache_safe_system_tests {
 /// T051.3：动态 system 回执夹在 tool_use 和 tool_result 之间时，合并后的 user 消息里
 /// tool_result 块必须排在最前（Anthropic 的 tool use 文档要求），文本保持原来的相对顺序。
 #[cfg(test)]
-mod t051_3_mid_system_receipt_tests {
+mod mid_system_receipt_tests {
     use super::*;
     use crate::{ContentBlock, DeepSeekConfig, Effort, Message, Role};
     use serde_json::Value;

@@ -475,6 +475,18 @@ fn gate_tasks_and_tasks_without_ready_have_no_delivery() {
 }
 
 #[test]
+fn delivery_clock_formats_known_zones_without_spawning_date() {
+    assert_eq!(
+        super::clock_in(chrono_tz::Asia::Shanghai, 1_700_000_000),
+        "11月15日 06:13"
+    );
+    assert_eq!(
+        super::clock_in(chrono_tz::America::Los_Angeles, 1_700_000_000),
+        "11月14日 14:13"
+    );
+}
+
+#[test]
 fn delivery_clock_uses_local_timezone_for_kind_text() {
     // 本用例只在 TZ=Asia/Shanghai 的定向门禁里断言；其它环境的本地时区不同，不做假。
     if std::env::var("TZ").as_deref() != Ok("Asia/Shanghai") {

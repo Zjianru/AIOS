@@ -149,6 +149,7 @@ impl RootHost {
             &options,
             Arc::clone(&selection),
             Arc::downgrade(&inner),
+            Some(events.clone()),
         ) {
             Ok(runtime) => Some(Arc::new(runtime)),
             Err(error) => {
@@ -251,6 +252,7 @@ impl RootHost {
             if !busy && let Err(error) = runtime.scan_at_boot(&new_boot_id()) {
                 eprintln!("启动扫描失败：{error}");
             }
+            runtime.calendar_recover();
             let pump = runtime.start_pump();
             *host.task_pump.lock().expect("task pump 锁被毒化") = Some(pump);
         }
@@ -265,6 +267,57 @@ impl RootHost {
     #[doc(hidden)]
     pub fn task_runtime(&self) -> Option<&Arc<crate::executor::TaskRuntime>> {
         self.task_runtime.as_ref()
+    }
+
+    /// 测试同步：根 Kind 当前不在跑（日历复核要等它空下来才不判 Kind 忙）。
+    #[doc(hidden)]
+    pub async fn root_agent_idle(&self) -> bool {
+        let guard = self.inner.lock().await;
+        guard.as_ref().is_none_or(|host| !host.agent().is_running())
+    }
+
+    /// 测试钩子：循环约定的 task_continue 准入原因（有就返回 Debug 文本）。
+    #[doc(hidden)]
+    pub fn calendar_cycle_cause(&self, task_id: &str) -> Option<String> {
+        self.task_runtime.as_ref().and_then(|runtime| {
+            runtime
+                .calendar_cycle_continue_cause_for(task_id)
+                .ok()
+                .flatten()
+                .map(|cause| format!("{cause:?}"))
+        })
+    }
+
+    /// 测试钩子：模拟根会话里一条 task-report 送到。
+    #[doc(hidden)]
+    pub fn calendar_task_report(&self, task_id: &str) {
+        if let Some(runtime) = &self.task_runtime {
+            runtime.calendar_on_task_report(task_id);
+        }
+    }
+
+    /// 测试夹具：URL 盯变化走给定代理。
+    #[doc(hidden)]
+    pub fn set_calendar_watch_proxy(&self, proxy: String) {
+        if let Some(runtime) = &self.task_runtime {
+            runtime.set_watch_proxy(proxy);
+        }
+    }
+
+    /// 测试钩子：叫醒日历泵（改夹具的 next_trigger 后不用等自然醒）。
+    #[doc(hidden)]
+    pub fn nudge_calendar(&self) {
+        if let Some(runtime) = &self.task_runtime {
+            runtime.calendar_nudge();
+        }
+    }
+
+    /// 测试钩子：下一次日历唤醒送达前失败一次（退避重试用例）。
+    #[doc(hidden)]
+    pub fn crash_before_next_wake(&self) {
+        if let Some(runtime) = &self.task_runtime {
+            runtime.crash_before_next_wake();
+        }
     }
 
     /// 服务绑定监听后记下实际地址；web_fetch 读它拒绝访问 AIOS 自己。
@@ -334,6 +387,7 @@ impl RootHost {
         let tx = self.events.clone();
         let context = Arc::clone(&self.context);
         let dream = self.dream.clone();
+        let calendar_runtime = self.task_runtime.clone();
         let forward = tokio::spawn(async move {
             loop {
                 match source.recv().await {
@@ -351,6 +405,15 @@ impl RootHost {
                             {
                                 dream.trigger(crate::memory::DreamTrigger::TaskRelayed);
                             }
+                        }
+                        if event.event_type == "user/message"
+                            && let Some(runtime) = &calendar_runtime
+                            && let Some(rpc_id) = event_user_rpc(&event)
+                            && let Some(rest) = rpc_id.strip_prefix("task-report:")
+                            && let Some(task_id) = rest.split(':').next()
+                            && !task_id.is_empty()
+                        {
+                            runtime.calendar_on_task_report(task_id);
                         }
                         #[expect(
                             clippy::let_underscore_must_use,
@@ -587,6 +650,15 @@ impl RootHost {
 }
 
 /// 中继卡（task_report/task_stop/gate_verdict/upstream_changed）：只看 rpcId 前缀。
+fn event_user_rpc(event: &ServiceEvent) -> Option<&str> {
+    event
+        .data
+        .get("message")
+        .and_then(|message| message.get("source"))
+        .and_then(|source| source.get("rpcId"))
+        .and_then(|value| value.as_str())
+}
+
 fn event_is_task_relay(event: &ServiceEvent) -> bool {
     let Some(rpc_id) = event
         .data
@@ -671,5 +743,125 @@ impl Drop for RootHost {
         if let Some(handle) = self.task_pump.lock().expect("task pump 锁被毒化").take() {
             handle.abort();
         }
+    }
+}
+
+/// 日历上的内置虚拟行「做梦」——不建日历库行，状态读记忆设置，运行读做梦记录。
+impl RootHost {
+    pub(crate) fn calendar_builtin_view(&self) -> Option<crate::protocol::CalendarAppointmentView> {
+        let memory = self.memory.as_ref()?;
+        let settings = memory.store().dream_settings().ok()?;
+        let runs = memory.store().dream_runs(5).unwrap_or_default();
+        let enabled = settings.enabled;
+        let interval_hours = settings.interval_hours;
+        let last_at = settings.last_attempt_at.max(settings.last_success_at);
+        let next_at = if enabled && last_at > 0 {
+            Some(
+                last_at
+                    + i64::try_from(interval_hours)
+                        .unwrap_or(24)
+                        .saturating_mul(3_600_000),
+            )
+        } else {
+            None
+        };
+        let run_views = runs
+            .into_iter()
+            .enumerate()
+            .map(|(index, run)| crate::protocol::CalendarRunView {
+                id: i64::try_from(index).unwrap_or(0) + 1,
+                nominal_at: run.started_at,
+                manual: true,
+                trigger: "manual".to_owned(),
+                result: if run.outcome == "success" {
+                    "sent"
+                } else {
+                    "failed"
+                }
+                .to_owned(),
+                reason: if run.error.is_empty() {
+                    run.outcome
+                } else {
+                    run.error
+                },
+                merged_count: 0,
+                created_at: run.started_at,
+                updated_at: run.ended_at,
+                sent_turn: None,
+            })
+            .collect();
+        Some(crate::protocol::CalendarAppointmentView {
+            id: "builtin:dream".to_owned(),
+            title: "做梦".to_owned(),
+            condition: "整理记忆（内置）".to_owned(),
+            rule: format!("FREQ=HOURLY;INTERVAL={interval_hours}"),
+            timezone: "Asia/Shanghai".to_owned(),
+            status: if enabled { "active" } else { "paused" }.to_owned(),
+            version: 1,
+            binding: "kind".to_owned(),
+            bound_task_id: None,
+            next_trigger_at: next_at,
+            pause_reason: if enabled {
+                None
+            } else {
+                Some("做梦已关".to_owned())
+            },
+            watch_kind: None,
+            watch_target: None,
+            cycle_task_id: None,
+            cycle_max_rounds: None,
+            created_at: 0,
+            updated_at: last_at,
+            runs: run_views,
+        })
+    }
+
+    pub(crate) fn calendar_builtin_action(
+        &self,
+        action: &crate::protocol::CalendarActionKind,
+    ) -> Result<crate::protocol::CalendarActionResponse, String> {
+        use crate::protocol::CalendarActionKind;
+        match action {
+            CalendarActionKind::Pause | CalendarActionKind::Resume => {
+                let memory = self
+                    .memory
+                    .as_ref()
+                    .ok_or_else(|| "记忆库没开".to_owned())?;
+                memory
+                    .store()
+                    .update_dream_settings(&memory::types::DreamSettingsPatch {
+                        enabled: Some(matches!(action, CalendarActionKind::Resume)),
+                        ..memory::types::DreamSettingsPatch::default()
+                    })
+                    .map_err(|error| error.to_string())?;
+            }
+            CalendarActionKind::RunNow => {
+                let dream = self
+                    .dream
+                    .as_ref()
+                    .ok_or_else(|| "做梦运行时没开".to_owned())?;
+                dream.request_now()?;
+            }
+            CalendarActionKind::Cancel => {
+                return Err("做梦是内置行，不能取消".to_owned());
+            }
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or_default();
+        if let Err(error) = self.events.send(crate::protocol::ServiceEvent {
+            seq: 0,
+            time: now,
+            event_type: "calendar/changed".to_owned(),
+            data: serde_json::json!({ "appointmentId": "builtin:dream" }),
+            cause: None,
+        }) {
+            eprintln!("calendar/changed 推送失败：{error}");
+        }
+        let appointment = self
+            .calendar_builtin_view()
+            .ok_or_else(|| "做梦行读不出来".to_owned())?;
+        Ok(crate::protocol::CalendarActionResponse { appointment })
     }
 }

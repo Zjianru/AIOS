@@ -177,6 +177,10 @@ impl ServiceHost {
             Call::MemoryRead(_) | Call::MemoryAction(_) => Err(ServiceError::MemoryUnavailable(
                 "记忆页只能由根宿主提供".to_owned(),
             )),
+            // 日历库在根宿主的任务执行者手里。
+            Call::CalendarRead(_) | Call::CalendarAction(_) => Err(ServiceError::TaskUnavailable(
+                "日历只能由根宿主提供".to_owned(),
+            )),
         }
     }
 

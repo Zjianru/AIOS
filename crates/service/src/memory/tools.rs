@@ -635,6 +635,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remember_in_appointment_wake_turn_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = Arc::new(MemoryRuntime::open(dir.path()).unwrap());
+        let list = memory_tool_list(&runtime, dir.path());
+        let remember = find_tool(&list, "memory_remember");
+        let events = vec![
+            turn_start(1, 2),
+            program_message_in_turn(
+                2,
+                2,
+                "appointment-wake:app-1:7",
+                r#"{"kind":"appointment_wake"}"#,
+            ),
+        ];
+        let result = remember
+            .execute(
+                ToolCall {
+                    id: "call-wake-refused".to_owned(),
+                    name: "memory_remember".to_owned(),
+                    arguments: json!({"title":"喝水","text":"一分钟后提醒我喝水"}).to_string(),
+                },
+                &context(dir.path(), events),
+            )
+            .await;
+        assert!(result.is_error, "{}", result.content);
+        assert!(
+            result.content.contains("要用户自己说记住"),
+            "{}",
+            result.content
+        );
+        assert!(!result.content.contains("seq"), "{}", result.content);
+    }
+
+    #[tokio::test]
     async fn remember_counts_user_steer_mid_turn() {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Arc::new(MemoryRuntime::open(dir.path()).unwrap());

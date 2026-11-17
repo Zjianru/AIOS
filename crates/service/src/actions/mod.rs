@@ -4,6 +4,7 @@
 //! 点确认之前核对事实还成不成立（reconcile）、以及真正执行（act）。具体域的动作只加
 //! 登记，不碰卡片和提议工具的代码。
 
+mod appointments;
 mod mask;
 mod resume_task;
 mod select_model;
@@ -125,8 +126,10 @@ impl ActionRegistry {
             update_task_requirement::UpdateTaskRequirementAction::new(data_dir.clone()),
         ));
         registry.register(Arc::new(
-            update_gate_commands::UpdateGateCommandsAction::new(data_dir),
+            update_gate_commands::UpdateGateCommandsAction::new(data_dir.clone()),
         ));
+        registry.register(Arc::new(appointments::CreateAppointmentAction));
+        registry.register(Arc::new(appointments::UpdateAppointmentAction));
         registry
     }
 

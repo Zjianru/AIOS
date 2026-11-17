@@ -31,6 +31,7 @@ const KIND_FULL = [
   'task_graph_propose',
   'task_continue',
   'gate_check_again',
+  'appointment_cancel',
   'memory_remember',
   'memory_note',
   'memory_search',
@@ -62,6 +63,7 @@ const KIND_FULL_WITH_KEY = [
   'task_graph_propose',
   'task_continue',
   'gate_check_again',
+  'appointment_cancel',
   'memory_remember',
   'memory_note',
   'memory_search',
@@ -111,7 +113,7 @@ async function lastToolNames(request: import('@playwright/test').APIRequestConte
   return (body.request?.tools ?? []).map((tool) => String(tool.name ?? ''));
 }
 
-test('Kind：无 Exa key 时全量 25（不含 web_* / write / edit / bash / job_*）', async ({ page, request }) => {
+test('Kind：无 Exa key 时全量 26（不含 web_* / write / edit / bash / job_*）', async ({ page, request }) => {
   test.setTimeout(120_000);
   const fixture = await startKernelFixture({ routeModel: 'replay-uncatalogued-model' });
   try {
@@ -165,7 +167,7 @@ test('ThinAgent：无 Exa key 时只读全量 9（不含 web_*），跨请求一
   }
 });
 
-test('存了 Exa key：Kind 27 / ThinAgent 11，含 web_*（D73 key 后出现）', async ({ page, request }) => {
+test('存了 Exa key：Kind 28 / ThinAgent 11，含 web_*（D73 key 后出现）', async ({ page, request }) => {
   test.setTimeout(180_000);
   const fixture = await startKernelFixture({
     taskResult: 'live',

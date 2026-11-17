@@ -1244,7 +1244,7 @@ mod tests {
 
 /// T006.10b 红测试：①DSH renderInstructionChains 的合并 intro 选择；②项目根 marker 探测失败留痕。
 #[cfg(test)]
-mod t006_10b_tests {
+mod instruction_material_tests {
     use super::*;
 
     #[test]

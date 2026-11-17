@@ -543,3 +543,23 @@ export async function discoverAvailableModels(id: string): Promise<AvailableMode
 export async function fetchConnectionQuota(id: string): Promise<ConnectionQuotaResponse> {
   return post({ method: 'connection-quota', id });
 }
+
+// 日历读/动作。
+import type { CalendarReadResponse } from './generated/CalendarReadResponse';
+import type { CalendarActionRequest } from './generated/CalendarActionRequest';
+import type { CalendarActionResponse } from './generated/CalendarActionResponse';
+
+export type { CalendarReadResponse } from './generated/CalendarReadResponse';
+export type { CalendarActionResponse } from './generated/CalendarActionResponse';
+export type { CalendarActionKind } from './generated/CalendarActionKind';
+
+export async function getCalendar(week?: number): Promise<CalendarReadResponse> {
+  return post({ method: 'calendar-read', week });
+}
+
+export async function calendarAction(
+  appointmentId: string,
+  action: CalendarActionRequest['action'],
+): Promise<CalendarActionResponse> {
+  return post({ method: 'calendar-action', appointmentId, action });
+}

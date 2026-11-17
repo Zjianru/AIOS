@@ -202,7 +202,7 @@ impl ToolRegistryState {
 
 /// T046：未声明 addition-only 的路由，工具表从第一轮起就是该会话角色 ToolSet 的全量成员。
 #[cfg(test)]
-mod t046_stable_tool_tests {
+mod stable_tool_tests {
     use std::collections::BTreeSet;
 
     use tools::ToolSet;
@@ -290,7 +290,7 @@ mod t046_stable_tool_tests {
 
 /// T046 审计 fix-now：压缩摘要请求与主请求的工具表同源（None 路由全量固定；addition-only 路由按 gate）。
 #[cfg(test)]
-mod t046_summary_tools_tests {
+mod summary_tools_tests {
     use std::sync::LazyLock;
 
     use serde_json::{Value, json};
@@ -415,7 +415,7 @@ mod t046_summary_tools_tests {
 
 /// T050：未声明 addition-only 的路由的全量工具表仍按 key 条件过滤（D73：没填 Exa key 不进目录）。
 #[cfg(test)]
-mod t050_key_condition_tests {
+mod key_condition_tests {
     use std::sync::LazyLock;
 
     use serde_json::{Value, json};

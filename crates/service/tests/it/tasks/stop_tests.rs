@@ -2404,7 +2404,7 @@ async fn task_continue_on_blocked_gate_reruns_with_after_report_cause() {
 }
 
 #[tokio::test]
-async fn t057_update_gate_commands_act_stops_a_running_gate_then_reruns_the_new_commands() {
+async fn update_gate_commands_act_stops_a_running_gate_then_reruns_the_new_commands() {
     use service::ActionRegistry;
     use tasks::{GateCommand, NewGraph, NewSubtask, TaskPolicy};
 

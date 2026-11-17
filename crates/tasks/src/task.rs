@@ -193,6 +193,8 @@ pub enum ContinueCause {
     UpstreamChanged { upstream_report: ReportId },
     /// 最近报告卡住、失败、等报告（重跑门也走这条）。
     AfterReport { report: ReportId },
+    /// 循环约定到点叫的这一轮（报回后由日历起）。
+    CycleDue { appointment_id: String, run_id: i64 },
 }
 
 /// T053：图被取消的原因（D95）。

@@ -457,7 +457,7 @@ impl FollowSource<'_> {
 }
 
 #[cfg(test)]
-mod t015_5_wire_tests {
+mod wire_protocol_tests {
     use super::*;
 
     /// T015.5（清单 9）：tool-call-delta 的线上帧只增不改——tag 与字段名照票面。

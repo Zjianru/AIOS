@@ -6,6 +6,7 @@ import { go } from '@/app/navigate';
 import type { TaskAcceptManyResponse } from '@/data/generated/TaskAcceptManyResponse';
 import type { WaitItem } from '@/data/generated/WaitItem';
 import { useKindStore } from '@/pages/kind/kindStore';
+import { openAppointment } from '@/pages/calendar/CalendarPane';
 import { cn } from '@/lib/utils';
 import { WAIT_ACTION, WAIT_LABEL, stageLabel, waitGroups } from './workModel';
 import { useWorkStore } from './workStore';
@@ -23,6 +24,11 @@ export async function openWaitItem(
   item: WaitItem,
   options: { acceptToTaskchat?: boolean } = {},
 ): Promise<void> {
+  // 日历循环暂停项带约定 id，「去看」打开日历详情。
+  if (item.appointmentId) {
+    openAppointment(item.appointmentId);
+    return;
+  }
   // T058：右栏「等你」接受项的按钮是「看交付记录」，直接去任务页；看板 compact 仍走旧路径。
   if (options.acceptToTaskchat && item.kind === 'accept' && item.taskId) {
     go('taskchat:' + item.taskId);

@@ -193,7 +193,7 @@ pub(super) fn system_prompt(cwd: &Path, tools: &ToolSet, policy_prompt: Option<&
 }
 
 #[cfg(test)]
-mod t013_file_reference_prompt_tests {
+mod file_reference_prompt_tests {
     use super::*;
 
     fn prompt_with(tools: &ToolSet) -> String {

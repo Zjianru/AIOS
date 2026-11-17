@@ -195,6 +195,9 @@ pub struct WaitItem {
     pub write: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<u32>,
+    /// 循环约定暂停的「等你」项带约定 id；其他项没有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appointment_id: Option<String>,
 }
 
 struct FactMeta<'a> {
@@ -342,6 +345,7 @@ fn wait_item(meta: &FactMeta<'_>, kind: &str, events: &[session::Event]) -> Wait
         pick,
         write,
         version,
+        appointment_id: None,
     }
 }
 
@@ -681,6 +685,7 @@ pub(crate) fn snapshot(
                 pick: None,
                 write: crate::result_cards::write_scope_display(task),
                 version: None,
+                appointment_id: None,
             };
             waits
                 .entry(format!("task:{task_id}"))
@@ -704,6 +709,7 @@ pub(crate) fn snapshot(
                     pick: None,
                     write: None,
                     version: None,
+                    appointment_id: None,
                 });
         }
     }
@@ -753,6 +759,7 @@ pub(crate) fn snapshot(
                 pick: None,
                 write: None,
                 version: None,
+                appointment_id: None,
             });
     }
 
@@ -797,6 +804,20 @@ fn now_millis() -> i64 {
         .unwrap_or_default()
 }
 
+/// 把日历等额外的「等你」项并进工作快照，按同一种排序。
+pub(crate) fn merge_waits(response: &mut WorkResponse, mut extra: Vec<WaitItem>) {
+    if extra.is_empty() {
+        return;
+    }
+    response.wait.append(&mut extra);
+    response.wait.sort_by(|left, right| {
+        kind_priority(&left.kind)
+            .cmp(&kind_priority(&right.kind))
+            .then_with(|| right.at.cmp(&left.at))
+            .then_with(|| left.title.cmp(&right.title))
+    });
+}
+
 impl crate::root_lifecycle::RootHost {
     /// T055：读一份工作快照。根会话不可用时仍返回任务事实（确认卡/提问为空）。
     pub(crate) async fn work_snapshot(&self) -> Result<WorkResponse, crate::error::ServiceError> {
@@ -815,8 +836,12 @@ impl crate::root_lifecycle::RootHost {
                 None => (Vec::new(), Vec::new()),
             }
         };
-        snapshot(runtime.tasks_store(), &events, &pending, now_millis())
-            .map_err(|error| crate::error::ServiceError::TaskUnavailable(error.to_string()))
+        let mut response = snapshot(runtime.tasks_store(), &events, &pending, now_millis())
+            .map_err(|error| crate::error::ServiceError::TaskUnavailable(error.to_string()))?;
+        if let Ok(waits) = runtime.calendar_pause_waits() {
+            merge_waits(&mut response, waits);
+        }
+        Ok(response)
     }
 
     /// T055.2/T056.1：把勾选的一组结果交给任务库一个事务；逐项回执照 store 的原话。

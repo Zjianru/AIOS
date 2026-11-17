@@ -106,6 +106,13 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
             unavailable_hint: "",
         },
         BundledSkill {
+            name: "aios-calendar",
+            raw: include_str!("../bundled/aios-calendar/SKILL.md"),
+            requires: None,
+            tools: &["aios_query", "propose_action", "appointment_cancel"],
+            unavailable_hint: "",
+        },
+        BundledSkill {
             name: "aios-memory",
             raw: include_str!("../bundled/aios-memory/SKILL.md"),
             requires: None,
@@ -823,7 +830,7 @@ mod tests {
 /// 红测试：非法 skill 的警告文案照 DSH skill-filesystem 的 logger.warn 形状
 /// （`skill file <path> ignored: <reason>`，skill-filesystem/src/index.ts:904-926）。
 #[cfg(test)]
-mod t006_19_warning_format_tests {
+mod warning_format_tests {
     use super::*;
 
     #[test]

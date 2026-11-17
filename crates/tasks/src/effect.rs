@@ -16,6 +16,8 @@ pub enum EffectKind {
     Delivery,
     Notice,
     Restart,
+    /// 日历到点唤醒：载荷 key 是运行记录 id。
+    AppointmentWake,
 }
 
 impl EffectKind {
@@ -26,6 +28,7 @@ impl EffectKind {
             Self::Delivery => "delivery",
             Self::Notice => "notice",
             Self::Restart => "restart",
+            Self::AppointmentWake => "appointment-wake",
         }
     }
 
@@ -34,7 +37,9 @@ impl EffectKind {
     pub fn retry(self) -> (i64, i64) {
         match self {
             Self::Launch => (5_000, 300_000),
-            Self::Relay | Self::Delivery | Self::Notice | Self::Restart => (2_000, 60_000),
+            Self::Relay | Self::Delivery | Self::Notice | Self::Restart | Self::AppointmentWake => {
+                (2_000, 60_000)
+            }
         }
     }
 
@@ -99,6 +104,11 @@ pub enum EffectPayload {
         #[serde(default)]
         task_ids: Vec<TaskId>,
     },
+    /// 日历到点：先有排着的运行记录，再由效果泵送进 Kind 根会话。
+    AppointmentWake {
+        appointment_id: String,
+        run_id: i64,
+    },
 }
 
 impl EffectPayload {
@@ -112,6 +122,7 @@ impl EffectPayload {
             Self::Delivery { .. } => EffectKind::Delivery,
             Self::Notice { .. } => EffectKind::Notice,
             Self::Restart { .. } => EffectKind::Restart,
+            Self::AppointmentWake { .. } => EffectKind::AppointmentWake,
         }
     }
 
@@ -133,6 +144,7 @@ impl EffectPayload {
             } => format!("stop:{task_id}:{attempt_id}"),
             Self::Notice { input_id, .. } => format!("cc:{input_id}"),
             Self::Restart { boot_id, .. } => boot_id.to_string(),
+            Self::AppointmentWake { run_id, .. } => run_id.to_string(),
         }
     }
 }

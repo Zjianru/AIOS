@@ -1418,7 +1418,7 @@ fn resume_task_reconcile_refuses_after_the_task_already_resumed() {
 }
 
 #[test]
-fn t057_update_gate_commands_card_shows_before_after_and_version() {
+fn update_gate_commands_card_shows_before_after_and_version() {
     let directory = tempfile::tempdir().unwrap();
     let data_dir = directory.path();
     let store = task_store(data_dir);
