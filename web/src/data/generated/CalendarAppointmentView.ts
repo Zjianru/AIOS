@@ -9,4 +9,16 @@ status: string, version: number,
 /**
  * kind / task。
  */
-binding: string, boundTaskId?: string | null, nextTriggerAt?: number | null, createdAt: number, updatedAt: number, runs: Array<CalendarRunView>, };
+binding: string, boundTaskId?: string | null, nextTriggerAt?: number | null,
+/**
+ * 暂停原因（程序写；恢复后清空视图，但版本历史留着）。
+ */
+pauseReason?: string | null,
+/**
+ * 盯变化的来源（url / file / taskFacts）与目标；没盯就没有。
+ */
+watchKind?: string | null, watchTarget?: string | null,
+/**
+ * 循环任务绑的任务与最多轮数；不是循环就没有。
+ */
+cycleTaskId?: string | null, cycleMaxRounds?: number | null, createdAt: number, updatedAt: number, runs: Array<CalendarRunView>, };

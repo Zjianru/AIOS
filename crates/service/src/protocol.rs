@@ -1627,6 +1627,19 @@ pub struct CalendarAppointmentView {
     pub bound_task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_trigger_at: Option<i64>,
+    /// 暂停原因（程序写；恢复后清空视图，但版本历史留着）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_reason: Option<String>,
+    /// 盯变化的来源（url / file / taskFacts）与目标；没盯就没有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch_target: Option<String>,
+    /// 循环任务绑的任务与最多轮数；不是循环就没有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycle_task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cycle_max_rounds: Option<u32>,
     pub created_at: i64,
     pub updated_at: i64,
     pub runs: Vec<CalendarRunView>,

@@ -162,6 +162,8 @@ export interface FixtureOptions {
   t055?: 'board' | 'history' | 'confirm' | 'f3';
   /// 任务图夹具：预置三张已确认图（有门等你判 / 两上游汇一下游 / 全部关了）+ 一个单派任务。
   t062TaskGraphs?: boolean;
+  /// T064.6：预置 calendar.sqlite 与三条 appointment-wake 的根会话日志，驱动日历页/小条/等你。
+  t064Calendar?: boolean;
  /// ：账本夹具。Kind 带约束派出调查任务；ThinAgent 记两条叙述（同 topic 换一条）、
  /// 查一次历史，再交 ready 报告。
   t056?: 'ledger';

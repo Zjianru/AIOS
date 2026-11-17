@@ -22,6 +22,7 @@ import { useKindStore, useStreamStore } from './kindStore';
 import { processStepsOf } from './turnViews';
 import { ProcessView } from './process/ProcessView';
 import { CanvasView } from './CanvasView';
+import { WakeStrip, parseWake } from './WakeStrip';
 import {
   AttachmentPreview,
   FileCard,
@@ -516,7 +517,9 @@ export const TurnRow = memo(function TurnRow({
         </div>
       ) : null}
 
-      {view.user ? (
+      {view.user && parseWake(view.user.rpcId, view.user.text) ? (
+        <WakeStrip wake={parseWake(view.user.rpcId, view.user.text)!} />
+      ) : view.user ? (
         <div className="mb-2 mt-3 flex flex-col items-end gap-1.5" data-kind="user-message-row">
           {view.user.canvas ? <FromCanvasChip title={view.user.canvas.title} /> : null}
           {view.user.resultCard ? (

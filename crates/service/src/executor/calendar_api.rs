@@ -547,6 +547,36 @@ impl TaskRuntime {
                 Binding::Task(task) => Some(task.clone()),
             },
             next_trigger_at: appointment.next_trigger_at,
+            pause_reason: if appointment.status == AppointmentStatus::Paused {
+                store
+                    .latest_version_reason(&appointment.id)
+                    .ok()
+                    .flatten()
+                    .and_then(|reason| reason.strip_prefix("循环约定暂停：").map(str::to_owned))
+            } else {
+                None
+            },
+            watch_kind: appointment.watch.as_ref().map(|watch| {
+                match watch {
+                    calendar::WatchSource::Url(_) => "url",
+                    calendar::WatchSource::File(_) => "file",
+                    calendar::WatchSource::TaskFacts(_) => "taskFacts",
+                }
+                .to_owned()
+            }),
+            watch_target: appointment.watch.as_ref().map(|watch| match watch {
+                calendar::WatchSource::Url(url) => url.clone(),
+                calendar::WatchSource::File(file) => file.clone(),
+                calendar::WatchSource::TaskFacts(task) => task.clone(),
+            }),
+            cycle_task_id: appointment
+                .cycle
+                .as_ref()
+                .map(|cycle| cycle.task_id.clone()),
+            cycle_max_rounds: appointment
+                .cycle
+                .as_ref()
+                .and_then(|cycle| cycle.max_rounds),
             created_at: appointment.created_at,
             updated_at: appointment.updated_at,
             runs,
