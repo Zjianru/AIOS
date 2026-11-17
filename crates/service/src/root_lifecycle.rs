@@ -795,6 +795,11 @@ impl RootHost {
             title: "做梦".to_owned(),
             condition: "整理记忆（内置）".to_owned(),
             rule: format!("FREQ=HOURLY;INTERVAL={interval_hours}"),
+            trigger: crate::calendar_trigger::describe(
+                &format!("FREQ=HOURLY;INTERVAL={interval_hours}"),
+                "Asia/Shanghai",
+                0,
+            ),
             timezone: "Asia/Shanghai".to_owned(),
             status: if enabled { "active" } else { "paused" }.to_owned(),
             version: 1,

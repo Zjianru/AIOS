@@ -636,6 +636,32 @@ async fn resume_wakes_the_pump_and_sends_the_due_run() {
 }
 
 #[tokio::test]
+async fn one_off_appointment_ends_after_its_run() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
+    let now = now_ms();
+    let due = appointment(&store, "一次性提醒", now - 1_000, "FREQ=DAILY;COUNT=1");
+    store.set_next_trigger(&due.id, Some(now - 1)).unwrap();
+    let host = crate::common::open(crate::common::options(data)).await;
+    wait_until("一次性送到", || {
+        store
+            .runs(&due.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Sent)
+    })
+    .await;
+    wait_until("一次性结束", || {
+        store.appointment(&due.id).unwrap().unwrap().status == calendar::AppointmentStatus::Ended
+    })
+    .await;
+    let ended = store.appointment(&due.id).unwrap().unwrap();
+    assert!(ended.next_trigger_at.is_none());
+    host.shutdown().await;
+}
+
+#[tokio::test]
 async fn calendar_read_and_actions_move_status() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path();

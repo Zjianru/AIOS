@@ -6,6 +6,7 @@
 pub mod actions;
 pub mod aios_query;
 pub(crate) mod appointments;
+pub(crate) mod calendar_trigger;
 mod cards;
 mod delivery;
 pub mod disabled;

@@ -108,7 +108,7 @@ function ApptRow({ appt, on, onSelect }: { appt: Appointment; on: boolean; onSel
       </span>
       <span className="mt-0.5 flex min-w-0 items-center gap-2 text-1 text-ink-3">
         <span className="min-w-0 truncate">
-          {appt.rule}（{appt.timezone}）
+          {appt.trigger}
           {appt.next ? ' · 下次 ' + stampInZone(appt.next, appt.timezone) : ''}
         </span>
         <span className="ml-auto shrink-0">
@@ -152,7 +152,7 @@ function ApptDetail({ appt }: { appt: Appointment }) {
       </div>
       <h2 className="mt-2 text-3 leading-6 text-ink" data-kind="detail-words">「{appt.words}」</h2>
       <dl className="mt-3 space-y-1.5 text-2">
-        <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">触发</dt><dd className="text-ink-2">{appt.rule}（{appt.timezone}）</dd></div>
+        <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">触发</dt><dd className="text-ink-2">{appt.trigger}</dd></div>
         <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">绑定</dt><dd className="text-ink-2">{appt.binding === 'task' ? '任务 ' + (appt.boundTaskId ?? '') : 'Kind'}</dd></div>
         <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">来源</dt><dd className="text-ink-2">Kind 对话确认卡</dd></div>
         <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">版本</dt><dd className="text-ink-2">第 {appt.version} 版</dd></div>

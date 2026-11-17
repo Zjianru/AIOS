@@ -101,6 +101,11 @@ impl QueryTool {
                 "status": appointment.status.as_str(),
                 "version": appointment.version,
                 "rule": appointment.schedule.rule,
+                "trigger": crate::calendar_trigger::describe(
+                    &appointment.schedule.rule,
+                    &appointment.schedule.timezone,
+                    appointment.schedule.start_at,
+                ),
                 "timezone": appointment.schedule.timezone,
                 "startAt": appointment.schedule.start_at,
                 "binding": match &appointment.binding {

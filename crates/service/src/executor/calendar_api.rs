@@ -171,7 +171,10 @@ impl TaskRuntime {
                 if run.result != RunResult::Queued {
                     continue;
                 }
-                if appointment.status != AppointmentStatus::Active {
+                if matches!(
+                    appointment.status,
+                    AppointmentStatus::Paused | AppointmentStatus::Cancelled
+                ) {
                     let reason = calendar_status_reason(appointment.status);
                     if let Err(error) = store.finish_run(run.id, RunResult::Skipped, reason, None) {
                         eprintln!("暂停/取消后没写运行结果：{error}");
@@ -349,9 +352,18 @@ impl TaskRuntime {
             .schedule
             .next_after(latest)
             .map_err(calendar_error)?;
-        store
-            .set_next_trigger(&appointment.id, next)
-            .map_err(calendar_error)?;
+        match next {
+            Some(next) => {
+                store
+                    .set_next_trigger(&appointment.id, Some(next))
+                    .map_err(calendar_error)?;
+            }
+            None => {
+                store
+                    .set_status(&appointment.id, AppointmentStatus::Ended)
+                    .map_err(calendar_error)?;
+            }
+        }
         Ok(())
     }
 
@@ -417,7 +429,10 @@ impl TaskRuntime {
             self.finish_or_fail(&claim, Ok(()));
             return;
         }
-        if appointment.status != AppointmentStatus::Active {
+        if matches!(
+            appointment.status,
+            AppointmentStatus::Paused | AppointmentStatus::Cancelled
+        ) {
             let reason = calendar_status_reason(appointment.status);
             if let Err(error) = store.finish_run(run.id, RunResult::Skipped, reason, None) {
                 eprintln!("暂停/取消后没写运行结果：{error}");
@@ -535,6 +550,11 @@ impl TaskRuntime {
             title: appointment.title.clone(),
             condition: appointment.condition.clone(),
             rule: appointment.schedule.rule.clone(),
+            trigger: crate::calendar_trigger::describe(
+                &appointment.schedule.rule,
+                &appointment.schedule.timezone,
+                appointment.schedule.start_at,
+            ),
             timezone: appointment.schedule.timezone.clone(),
             status: appointment.status.as_str().to_owned(),
             version: appointment.version,

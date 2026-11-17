@@ -62,6 +62,11 @@ async fn aios_query_calendar_returns_appointments_and_runs() {
     let value: Value = serde_json::from_str(&result.content).expect("query json");
     assert_eq!(value["appointments"][0]["id"], appointment.id);
     assert_eq!(value["appointments"][0]["title"], "读日历");
+    let trigger = value["appointments"][0]["trigger"]
+        .as_str()
+        .expect("中文触发");
+    assert!(trigger.contains("每天"), "{trigger}");
+    assert!(!trigger.contains("FREQ="), "{trigger}");
 }
 
 #[tokio::test]
@@ -89,11 +94,9 @@ async fn propose_create_and_update_facts_and_stale_version_refusal() {
     });
     let normalized = create.details(&details).unwrap();
     let facts = create.describe(&normalized, &env).unwrap();
-    assert!(
-        facts
-            .iter()
-            .any(|fact| fact.name == "触发" && fact.value.contains("FREQ=DAILY"))
-    );
+    assert!(facts.iter().any(|fact| fact.name == "触发"
+        && fact.value.contains("每天")
+        && !fact.value.contains("FREQ=")));
     assert!(
         facts
             .iter()

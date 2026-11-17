@@ -1617,6 +1617,8 @@ pub struct CalendarAppointmentView {
     pub title: String,
     pub condition: String,
     pub rule: String,
+    /// 服务翻好的中文触发事实（一次/每天/工作日/…；认不出时是规则原文）。
+    pub trigger: String,
     pub timezone: String,
     /// active / paused / ended / cancelled。
     pub status: String,

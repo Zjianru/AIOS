@@ -34,7 +34,10 @@ fn schedule_fact(rule: &str, timezone: &str, start_at: i64) -> String {
         .flatten()
         .map(|at| format_ms(at, timezone))
         .unwrap_or_else(|| "不再触发".to_owned());
-    format!("{rule}（{timezone}），下次 {next}")
+    format!(
+        "{}，下次 {next}",
+        crate::calendar_trigger::describe(rule, timezone, start_at)
+    )
 }
 
 fn format_ms(at: i64, timezone: &str) -> String {

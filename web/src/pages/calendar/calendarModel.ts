@@ -31,6 +31,7 @@ export interface Appointment {
   kind: ApptKind;
   words: string;
   rule: string;
+  trigger: string;
   timezone: string;
   status: string;
   state: ApptState;
@@ -115,6 +116,7 @@ export function appointmentOf(view: CalendarAppointmentView): Appointment {
     kind: kindOf(view),
     words: view.condition,
     rule: view.rule,
+    trigger: view.trigger,
     timezone: view.timezone,
     status: view.status,
     state: stateOf(view),
