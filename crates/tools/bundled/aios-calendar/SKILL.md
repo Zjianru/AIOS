@@ -1,6 +1,6 @@
 ---
 name: aios-calendar
-description: Use AIOS appointments: read the calendar, propose creating or changing an appointment on a confirmation card, or cancel one directly. Load before any calendar action.
+description: "Use AIOS appointments: read the calendar, propose creating or changing an appointment on a confirmation card, or cancel one directly. Load before any calendar action."
 ---
 
 # AIOS calendar
