@@ -11,7 +11,7 @@ test.afterAll(async () => {
   await fixture?.close();
 });
 
-test('接缝 5 骨架：真 serve 活着，侧栏只有产品入口、无原型专属外壳', async ({ page, request }) => {
+test('接缝 5 骨架：真 serve 活着，连接视图只有 Kind、无原型专属外壳', async ({ page, request }) => {
   const response = await apiPost(request, fixture, { method: 'status' });
   expect(response.status()).toBe(200);
   const body = await response.json();

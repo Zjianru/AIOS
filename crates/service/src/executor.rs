@@ -50,13 +50,13 @@ mod report;
 use gating::*;
 use report::*;
 #[cfg(test)]
-mod ledger_tests;
+mod t048_title_limit_tests;
 #[cfg(test)]
-mod missing_tool_policy_tests;
+mod t049_missing_tool_policy_tests;
 #[cfg(test)]
-mod program_gate_tests;
+mod t056_ledger_executor_tests;
 #[cfg(test)]
-mod title_limit_tests;
+mod t057_program_gate_tests;
 
 /// 任务库文件名（数据目录下）。
 pub const TASKS_DB_FILE: &str = "tasks.sqlite";

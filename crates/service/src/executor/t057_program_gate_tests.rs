@@ -724,7 +724,7 @@ async fn gate_check_again_refuses_changed_commands_version() {
 }
 
 #[tokio::test]
-async fn candidate_changes_while_gate_runs_then_new_candidate_gets_verdict() {
+async fn t058_f1_candidate_changes_while_gate_runs_then_new_candidate_gets_verdict() {
     let fixture = gate_launch_fixture(vec![
         GateCommand {
             command: "sleep 3".to_owned(),
