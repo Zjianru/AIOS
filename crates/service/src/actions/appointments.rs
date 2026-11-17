@@ -7,6 +7,13 @@ use serde_json::{Value, json};
 
 use super::{ActionEnv, ActionFuture, ActionKind, ActionOutcome, CardFact};
 
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or_default()
+}
+
 fn store(env: &ActionEnv<'_>) -> Result<calendar::CalendarStore, String> {
     calendar::CalendarStore::open(env.data_dir.join("calendar.sqlite"))
         .map_err(|error| format!("日历库读不出来：{error}"))
@@ -30,13 +37,6 @@ fn schedule_fact(rule: &str, timezone: &str, start_at: i64) -> String {
     format!("{rule}（{timezone}），下次 {next}")
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
-        .unwrap_or_default()
-}
-
 fn format_ms(at: i64) -> String {
     chrono::DateTime::from_timestamp_millis(at)
         .map(|time| time.format("%Y-%m-%d %H:%M").to_string())
@@ -44,11 +44,19 @@ fn format_ms(at: i64) -> String {
 }
 
 fn source_fact(details: &Value) -> Result<String, String> {
-    let binding = match details.get("binding").and_then(Value::as_str) {
-        Some("task") => format!(
+    let binding = match details.get("binding") {
+        Some(Value::String(kind)) if kind == "task" => format!(
             "任务 {}",
             details.get("taskId").and_then(Value::as_str).unwrap_or("")
         ),
+        Some(Value::Object(object))
+            if object.get("kind").and_then(Value::as_str) == Some("task") =>
+        {
+            format!(
+                "任务 {}",
+                object.get("taskId").and_then(Value::as_str).unwrap_or("")
+            )
+        }
         _ => "Kind".to_owned(),
     };
     let watch = details
@@ -76,21 +84,7 @@ impl ActionKind for CreateAppointmentAction {
     }
 
     fn details(&self, raw: &Value) -> Result<Value, String> {
-        let object = raw
-            .as_object()
-            .ok_or_else(|| "details 必须是 JSON 对象".to_owned())?;
-        for field in ["title", "condition", "rule"] {
-            object
-                .get(field)
-                .and_then(Value::as_str)
-                .filter(|text| !text.trim().is_empty())
-                .ok_or_else(|| format!("details.{field} 必须是非空字符串"))?;
-        }
-        object
-            .get("startAt")
-            .and_then(Value::as_i64)
-            .ok_or_else(|| "details.startAt 必须是毫秒时间戳".to_owned())?;
-        Ok(raw.clone())
+        crate::appointments::canonicalize(raw, now_ms())
     }
 
     fn describe(&self, details: &Value, _env: &ActionEnv<'_>) -> Result<Vec<CardFact>, String> {
@@ -105,7 +99,7 @@ impl ActionKind for CreateAppointmentAction {
         let start_at = details
             .get("startAt")
             .and_then(Value::as_i64)
-            .unwrap_or_default();
+            .ok_or_else(|| "canonical details.startAt 必须是毫秒时间戳".to_owned())?;
         Ok(vec![
             CardFact {
                 name: "原话".to_owned(),
@@ -125,7 +119,6 @@ impl ActionKind for CreateAppointmentAction {
             },
         ])
     }
-
     fn act<'a>(
         &'a self,
         details: &'a Value,
@@ -189,10 +182,10 @@ impl ActionKind for UpdateAppointmentAction {
             .get("timezone")
             .and_then(Value::as_str)
             .unwrap_or(&current.schedule.timezone);
-        let start_at = details
-            .get("startAt")
-            .and_then(Value::as_i64)
-            .unwrap_or(current.schedule.start_at);
+        let start_at = match details.get("startAt") {
+            None | Some(Value::Null) => current.schedule.start_at,
+            Some(value) => crate::appointments::parse_start_at_value(value)?,
+        };
         let mut facts = vec![
             CardFact {
                 name: "触发".to_owned(),

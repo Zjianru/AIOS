@@ -1,12 +1,12 @@
 //! Kind 的日历工具——appointment_cancel（独立工具），以及卡片动作背后的建/改内部入口。
 
 use super::*;
-use calendar::{AppointmentStatus, Binding, CycleSpec, NewAppointment, Schedule, WatchSource};
+use calendar::{AppointmentStatus, Schedule};
 
 impl TaskRuntime {
     /// 确认卡 create_appointment 的正式入口：建一条约定并推 calendar/changed。
     pub(crate) fn calendar_create(&self, details: &Value) -> Result<calendar::Appointment, String> {
-        let draft = appointment_from_details(details)?;
+        let draft = crate::appointments::new_appointment(details)?;
         let store = self.calendar()?;
         let appointment = store
             .create_appointment(draft)
@@ -55,10 +55,10 @@ impl TaskRuntime {
                     .and_then(Value::as_str)
                     .unwrap_or(&current.schedule.timezone)
                     .to_owned(),
-                start_at: details
-                    .get("startAt")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(current.schedule.start_at),
+                start_at: match details.get("startAt") {
+                    None | Some(Value::Null) => current.schedule.start_at,
+                    Some(value) => crate::appointments::parse_start_at_value(value)?,
+                },
             });
         }
         let appointment = store
@@ -88,74 +88,6 @@ impl TaskRuntime {
         self.emit_calendar_changed(&appointment.id);
         Ok(appointment)
     }
-}
-
-fn appointment_from_details(details: &Value) -> Result<NewAppointment, String> {
-    let title = details
-        .get("title")
-        .and_then(Value::as_str)
-        .filter(|title| !title.trim().is_empty())
-        .ok_or_else(|| "details.title 必须是非空字符串".to_owned())?;
-    let condition = details
-        .get("condition")
-        .and_then(Value::as_str)
-        .filter(|condition| !condition.trim().is_empty())
-        .ok_or_else(|| "details.condition 必须是非空字符串".to_owned())?;
-    let rule = details
-        .get("rule")
-        .and_then(Value::as_str)
-        .filter(|rule| !rule.trim().is_empty())
-        .ok_or_else(|| "details.rule 必须是非空字符串".to_owned())?;
-    let timezone = details
-        .get("timezone")
-        .and_then(Value::as_str)
-        .unwrap_or("Asia/Shanghai");
-    let start_at = details
-        .get("startAt")
-        .and_then(Value::as_i64)
-        .ok_or_else(|| "details.startAt 必须是毫秒时间戳".to_owned())?;
-    let binding = match details.get("binding").and_then(Value::as_str) {
-        Some("task") => Binding::Task(
-            details
-                .get("taskId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "绑定任务时 details.taskId 必须给".to_owned())?
-                .to_owned(),
-        ),
-        _ => Binding::Kind,
-    };
-    let watch = details.get("watch").and_then(|watch| {
-        let kind = watch.get("kind").and_then(Value::as_str)?;
-        let target = watch.get("target").and_then(Value::as_str)?;
-        match kind {
-            "url" => Some(WatchSource::Url(target.to_owned())),
-            "file" => Some(WatchSource::File(target.to_owned())),
-            "taskFacts" => Some(WatchSource::TaskFacts(target.to_owned())),
-            _ => None,
-        }
-    });
-    let cycle = details
-        .get("cycleTaskId")
-        .and_then(Value::as_str)
-        .map(|task_id| CycleSpec {
-            task_id: task_id.to_owned(),
-            max_rounds: details
-                .get("maxRounds")
-                .and_then(Value::as_u64)
-                .and_then(|value| u32::try_from(value).ok()),
-        });
-    Ok(NewAppointment {
-        title: title.to_owned(),
-        condition: condition.to_owned(),
-        schedule: Schedule {
-            rule: rule.to_owned(),
-            timezone: timezone.to_owned(),
-            start_at,
-        },
-        binding,
-        watch,
-        cycle,
-    })
 }
 
 /// appointment_cancel：由 aios-calendar 开出的独立取消工具。

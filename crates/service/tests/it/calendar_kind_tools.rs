@@ -312,3 +312,96 @@ async fn builtin_run_now_triggers_a_dream_run_and_calendar_changed() {
     }
     panic!("立即跑一次之后没有 DreamRun 记录");
 }
+
+#[tokio::test]
+async fn create_card_accepts_number_string_start_delay_and_binding_objects() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let mut options = crate::common::options(data);
+    options.actions = Arc::new(ActionRegistry::settings(data.to_path_buf(), None));
+    let host = crate::common::open(options).await;
+    let registry = ActionRegistry::settings(data.to_path_buf(), None);
+    let env = ActionEnv {
+        data_dir: data,
+        identity: None,
+        events: &[],
+    };
+    let create = registry.get("create_appointment").expect("create 动作");
+
+    // D78 现场的形态：数字字符串 startAt + binding 对象（kind=chat）。
+    let raw = json!({
+        "title": "喝水提醒",
+        "condition": "一分钟后提醒我喝水",
+        "rule": "FREQ=DAILY",
+        "timezone": "Asia/Shanghai",
+        "startAt": "1794935800000",
+        "binding": { "kind": "chat" }
+    });
+    let normalized = create
+        .details(&raw)
+        .expect("数字字符串 startAt 和 binding 对象要过");
+    assert_eq!(normalized["startAt"], json!(1_794_935_800_000_i64));
+    assert_eq!(normalized["binding"]["kind"], "kind");
+    let facts = create.describe(&normalized, &env).expect("建卡事实");
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.name == "原话" && fact.value.contains("喝水"))
+    );
+    assert!(facts.iter().any(|fact| fact.name == "触发"));
+    assert!(
+        facts
+            .iter()
+            .any(|fact| fact.name == "绑定" && fact.value.contains("Kind"))
+    );
+    let outcome = create.act(&normalized, &host).await.expect("按卡建约定");
+    let appointment_id = outcome.data["appointmentId"].as_str().unwrap().to_owned();
+    let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
+    let created = store.appointment(&appointment_id).unwrap().unwrap();
+    assert_eq!(created.schedule.start_at, 1_794_935_800_000);
+    assert_eq!(created.binding, calendar::Binding::Kind);
+
+    // delaySeconds 替代 startAt + binding 任务对象。
+    let before = now_ms();
+    let delayed = json!({
+        "title": "稍后提醒",
+        "condition": "一分钟后提醒",
+        "rule": "FREQ=DAILY",
+        "timezone": "Asia/Shanghai",
+        "delaySeconds": "60",
+        "binding": { "kind": "task", "taskId": "task-demo" }
+    });
+    let normalized = create
+        .details(&delayed)
+        .expect("delaySeconds + binding 任务对象要过");
+    let start_at = normalized["startAt"].as_i64().expect("绝对时间");
+    assert!(
+        (start_at - (before + 60_000)).abs() < 5_000,
+        "startAt={start_at}"
+    );
+    assert_eq!(normalized["binding"]["kind"], "task");
+    assert_eq!(normalized["binding"]["taskId"], "task-demo");
+    let outcome = create
+        .act(&normalized, &host)
+        .await
+        .expect("按卡建延迟约定");
+    let appointment_id = outcome.data["appointmentId"].as_str().unwrap().to_owned();
+    let created = store.appointment(&appointment_id).unwrap().unwrap();
+    assert_eq!(
+        created.binding,
+        calendar::Binding::Task("task-demo".to_owned())
+    );
+    assert!((created.schedule.start_at - (before + 60_000)).abs() < 5_000);
+
+    // 不明 binding kind 不再静默回落 Kind，直接拒。
+    let bad = json!({
+        "title": "坏绑定",
+        "condition": "坏绑定",
+        "rule": "FREQ=DAILY",
+        "delaySeconds": 5,
+        "binding": { "kind": "nope" }
+    });
+    let error = create.details(&bad).unwrap_err();
+    assert!(error.contains("只认 chat/kind/task"), "{error}");
+    host.shutdown().await;
+}
