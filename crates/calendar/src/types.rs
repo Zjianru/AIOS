@@ -203,7 +203,7 @@ pub struct NewRun {
     pub trigger: TriggerKind,
     pub reason: String,
     pub merged_count: u32,
-    /// T064.4：报回触发的运行记住是哪份报告，task_continue 准入时核对。
+    /// 报回触发的运行记住是哪份报告，task_continue 准入时核对。
     pub report_id: Option<String>,
 }
 
@@ -221,7 +221,7 @@ pub struct Run {
     pub created_at: i64,
     pub updated_at: i64,
     pub sent_turn: Option<i64>,
-    /// T064.4：报回运行对应的报告 id。
+    /// 报回运行对应的报告 id。
     pub report_id: Option<String>,
 }
 

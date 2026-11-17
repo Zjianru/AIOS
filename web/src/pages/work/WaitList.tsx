@@ -24,7 +24,7 @@ export async function openWaitItem(
   item: WaitItem,
   options: { acceptToTaskchat?: boolean } = {},
 ): Promise<void> {
-  // T064.6：日历循环暂停项带约定 id，「去看」打开日历详情。
+  // 日历循环暂停项带约定 id，「去看」打开日历详情。
   if (item.appointmentId) {
     openAppointment(item.appointmentId);
     return;

@@ -1,5 +1,5 @@
 /**
- * T064.6：Kind 对话里日历唤醒那一轮开头的程序小条（不是用户气泡）。
+ * Kind 对话里日历唤醒那一轮开头的程序小条（不是用户气泡）。
  *
  * 认法：user/message 的 source.rpcId 前缀 appointment-wake:，正文是服务端写的 JSON。
  * 固定词由程序按 trigger 定：到点 / 变了 / 第 N 轮报回；变了能展开看 diff；看约定打开那一条。

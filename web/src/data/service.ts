@@ -544,7 +544,7 @@ export async function fetchConnectionQuota(id: string): Promise<ConnectionQuotaR
   return post({ method: 'connection-quota', id });
 }
 
-// T064.6：日历读/动作。
+// 日历读/动作。
 import type { CalendarReadResponse } from './generated/CalendarReadResponse';
 import type { CalendarActionRequest } from './generated/CalendarActionRequest';
 import type { CalendarActionResponse } from './generated/CalendarActionResponse';

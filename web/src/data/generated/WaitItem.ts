@@ -30,6 +30,6 @@ turn?: number | null,
  */
 also?: Array<string>, pick?: WorkPick | null, write?: string | null, version?: number | null,
 /**
- * T064：循环约定暂停的「等你」项带约定 id；其他项没有。
+ * 循环约定暂停的「等你」项带约定 id；其他项没有。
  */
 appointmentId?: string | null, };

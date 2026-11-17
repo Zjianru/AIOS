@@ -1,4 +1,4 @@
-//! T064.4：循环约定——报回后送、程序事实暂停进等你、task_continue 准入、结束/恢复。
+//! 循环约定——报回后送、程序事实暂停进等你、task_continue 准入、结束/恢复。
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

@@ -1,5 +1,5 @@
 /**
- * T064.6：日历页共用的一份服务端事实。读 calendar-read，做 calendar-action 后立即重读。
+ * 日历页共用的一份服务端事实。读 calendar-read，做 calendar-action 后立即重读。
  * 不推送：两秒轻轮询；页面切走就停。
  */
 

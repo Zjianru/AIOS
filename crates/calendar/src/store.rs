@@ -363,7 +363,7 @@ impl CalendarStore {
         Ok(appointment)
     }
 
-    /// T064：带原因暂停循环约定（原因进版本历史；恢复时清不掉历史，但只在暂停态读）。
+    /// 带原因暂停循环约定（原因进版本历史；恢复时清不掉历史，但只在暂停态读）。
     pub fn pause_with_reason(&self, id: &str, reason: &str) -> Result<Appointment, CalendarError> {
         let now = (self.clock)();
         let mut guard = self

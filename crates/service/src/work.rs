@@ -195,7 +195,7 @@ pub struct WaitItem {
     pub write: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<u32>,
-    /// T064：循环约定暂停的「等你」项带约定 id；其他项没有。
+    /// 循环约定暂停的「等你」项带约定 id；其他项没有。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appointment_id: Option<String>,
 }

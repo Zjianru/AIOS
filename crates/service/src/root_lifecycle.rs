@@ -746,7 +746,7 @@ impl Drop for RootHost {
     }
 }
 
-/// T064.7：日历上的内置虚拟行「做梦」——不建日历库行，状态读记忆设置，运行读做梦记录。
+/// 日历上的内置虚拟行「做梦」——不建日历库行，状态读记忆设置，运行读做梦记录。
 impl RootHost {
     pub(crate) fn calendar_builtin_view(&self) -> Option<crate::protocol::CalendarAppointmentView> {
         let memory = self.memory.as_ref()?;

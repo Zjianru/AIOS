@@ -1,4 +1,4 @@
-//! T064.5：Kind 的日历工具——appointment_cancel（独立工具），以及卡片动作背后的建/改内部入口。
+//! Kind 的日历工具——appointment_cancel（独立工具），以及卡片动作背后的建/改内部入口。
 
 use super::*;
 use calendar::{AppointmentStatus, Binding, CycleSpec, NewAppointment, Schedule, WatchSource};
