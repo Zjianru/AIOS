@@ -28,4 +28,8 @@ turn?: number | null,
 /**
  * 同一任务排在后面的其他种类。
  */
-also?: Array<string>, pick?: WorkPick | null, write?: string | null, version?: number | null, };
+also?: Array<string>, pick?: WorkPick | null, write?: string | null, version?: number | null,
+/**
+ * T064：循环约定暂停的「等你」项带约定 id；其他项没有。
+ */
+appointmentId?: string | null, };

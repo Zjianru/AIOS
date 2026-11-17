@@ -193,7 +193,7 @@ impl TaskRuntime {
         }
     }
 
-    fn calendar_effect_pending(&self, run_id: i64) -> bool {
+    pub(crate) fn calendar_effect_pending(&self, run_id: i64) -> bool {
         self.store
             .effect_pending(EffectKind::AppointmentWake, &run_id.to_string())
             .unwrap_or(false)
@@ -450,6 +450,7 @@ impl TaskRuntime {
                 "nominal_at": run.nominal_at,
                 "merged_count": run.merged_count,
                 "manual": run.manual,
+                "reason": run.reason,
             }
         });
         if appointment.watch.is_some()
@@ -549,7 +550,7 @@ impl TaskRuntime {
         })
     }
 
-    fn emit_calendar_changed(&self, appointment_id: &str) {
+    pub(crate) fn emit_calendar_changed(&self, appointment_id: &str) {
         let event = ServiceEvent {
             seq: 0,
             time: 0,

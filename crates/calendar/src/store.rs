@@ -354,6 +354,60 @@ impl CalendarStore {
         Ok(appointment)
     }
 
+    /// T064：带原因暂停循环约定（原因进版本历史；恢复时清不掉历史，但只在暂停态读）。
+    pub fn pause_with_reason(&self, id: &str, reason: &str) -> Result<Appointment, CalendarError> {
+        let now = (self.clock)();
+        let mut guard = self
+            .conn
+            .lock()
+            .map_err(|_| CalendarError::InvalidInput("日历库锁坏了".to_owned()))?;
+        let transaction = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut appointment = load_appointment(&transaction, id)?;
+        if appointment.status != AppointmentStatus::Active {
+            return Ok(appointment);
+        }
+        appointment.version += 1;
+        appointment.updated_at = now;
+        insert_version(
+            &transaction,
+            &appointment.id,
+            appointment.version,
+            &NewAppointment {
+                title: appointment.title.clone(),
+                condition: appointment.condition.clone(),
+                schedule: appointment.schedule.clone(),
+                binding: appointment.binding.clone(),
+                watch: appointment.watch.clone(),
+                cycle: appointment.cycle.clone(),
+            },
+            &format!("循环约定暂停：{reason}"),
+            now,
+        )?;
+        transaction.execute(
+            "UPDATE appointment SET status = 'paused', version = ?2, next_trigger_at = NULL, updated_at = ?3 WHERE id = ?1",
+            params![appointment.id, appointment.version, now],
+        )?;
+        transaction.commit()?;
+        appointment.status = AppointmentStatus::Paused;
+        appointment.next_trigger_at = None;
+        Ok(appointment)
+    }
+
+    /// 约定最新版本的变更原因；暂停原因从这里读。
+    pub fn latest_version_reason(&self, id: &str) -> Result<Option<String>, CalendarError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| CalendarError::InvalidInput("日历库锁坏了".to_owned()))?;
+        conn.query_row(
+            "SELECT reason FROM appointment_version WHERE appointment_id = ?1 ORDER BY version DESC LIMIT 1",
+            params![id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(CalendarError::from)
+    }
+
     /// 活跃约定里最近的 next_trigger；运行时计时器只等这一条。
     pub fn next_wake_at(&self) -> Result<Option<i64>, CalendarError> {
         let conn = self

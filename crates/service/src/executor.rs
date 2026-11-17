@@ -41,6 +41,7 @@ use crate::root::RootSessionOptions;
 use crate::session_host::ServiceHost;
 
 mod calendar_api;
+mod calendar_cycle;
 mod calendar_watch;
 mod task_tools;
 pub(crate) use task_tools::*;
@@ -435,7 +436,11 @@ impl TaskRuntime {
         {
             return Err("这个任务还在跑；等这一轮结束再让它接着做".to_owned());
         }
-        let cause = self.continue_cause(&task)?;
+        let cause = if let Some(cycle) = self.calendar_cycle_continue_cause(&task)? {
+            cycle
+        } else {
+            self.continue_cause(&task)?
+        };
         let package = self.continue_package(&task, &cause, request.note.as_deref())?;
         let Some(attempt) = task.latest_attempt().cloned() else {
             return Err("这个任务还没开跑，不能接着做".to_owned());
@@ -610,6 +615,22 @@ impl TaskRuntime {
                     None => lines.push("写集不变：只读".to_owned()),
                 }
                 lines.push("核对完用 task_report 上报。".to_owned());
+            }
+            ContinueCause::CycleDue { appointment_id, .. } => {
+                lines.push("循环约定到点：这一轮报回是约定叫的，接着做下一轮。".to_owned());
+                lines.push(format!("原要求不变：{}", task.requirement));
+                if let Some(note) = note.filter(|note| !note.trim().is_empty()) {
+                    lines.push(format!("用户原话：{note}"));
+                }
+                if let Some(report) = task.latest_report() {
+                    lines.push(format!("上一轮报告：{}", report.summary));
+                }
+                lines.push(format!("约定：{appointment_id}"));
+                match task.effective_write_scope() {
+                    Some(scope) => lines.push(format!("写集不变：{}", scope.display())),
+                    None => lines.push("写集不变：只读".to_owned()),
+                }
+                lines.push("做完用 task_report 上报。".to_owned());
             }
             ContinueCause::AfterReport { report } => {
                 let (state, summary) = task

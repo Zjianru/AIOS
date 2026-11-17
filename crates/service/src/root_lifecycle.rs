@@ -276,6 +276,26 @@ impl RootHost {
         guard.as_ref().is_none_or(|host| !host.agent().is_running())
     }
 
+    /// 测试钩子：循环约定的 task_continue 准入原因（有就返回 Debug 文本）。
+    #[doc(hidden)]
+    pub fn calendar_cycle_cause(&self, task_id: &str) -> Option<String> {
+        self.task_runtime.as_ref().and_then(|runtime| {
+            runtime
+                .calendar_cycle_continue_cause_for(task_id)
+                .ok()
+                .flatten()
+                .map(|cause| format!("{cause:?}"))
+        })
+    }
+
+    /// 测试钩子：模拟根会话里一条 task-report 送到。
+    #[doc(hidden)]
+    pub fn calendar_task_report(&self, task_id: &str) {
+        if let Some(runtime) = &self.task_runtime {
+            runtime.calendar_on_task_report(task_id);
+        }
+    }
+
     /// 测试夹具：URL 盯变化走给定代理。
     #[doc(hidden)]
     pub fn set_calendar_watch_proxy(&self, proxy: String) {
@@ -367,6 +387,7 @@ impl RootHost {
         let tx = self.events.clone();
         let context = Arc::clone(&self.context);
         let dream = self.dream.clone();
+        let calendar_runtime = self.task_runtime.clone();
         let forward = tokio::spawn(async move {
             loop {
                 match source.recv().await {
@@ -384,6 +405,15 @@ impl RootHost {
                             {
                                 dream.trigger(crate::memory::DreamTrigger::TaskRelayed);
                             }
+                        }
+                        if event.event_type == "user/message"
+                            && let Some(runtime) = &calendar_runtime
+                            && let Some(rpc_id) = event_user_rpc(&event)
+                            && let Some(rest) = rpc_id.strip_prefix("task-report:")
+                            && let Some(task_id) = rest.split(':').next()
+                            && !task_id.is_empty()
+                        {
+                            runtime.calendar_on_task_report(task_id);
                         }
                         #[expect(
                             clippy::let_underscore_must_use,
@@ -620,6 +650,15 @@ impl RootHost {
 }
 
 /// 中继卡（task_report/task_stop/gate_verdict/upstream_changed）：只看 rpcId 前缀。
+fn event_user_rpc(event: &ServiceEvent) -> Option<&str> {
+    event
+        .data
+        .get("message")
+        .and_then(|message| message.get("source"))
+        .and_then(|source| source.get("rpcId"))
+        .and_then(|value| value.as_str())
+}
+
 fn event_is_task_relay(event: &ServiceEvent) -> bool {
     let Some(rpc_id) = event
         .data
