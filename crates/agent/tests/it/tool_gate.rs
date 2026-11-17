@@ -645,12 +645,18 @@ async fn compaction_shadowing_the_load_point_still_sends_summary_and_main_reques
     let cwd = tempfile::tempdir().unwrap();
     let store = session::SessionStore::create(data_dir.path(), cwd.path()).unwrap();
     let id = store.id().clone();
+    // 这条用例只验「加载点被压缩 shadow 后摘要/主请求还能发」，自带 skill 目录里只留它加载的
+    // aios-settings，避免别的自带 skill 改变 3000 token 窗口下的压缩步数（目录大小不是本用例的事实）。
+    let mut test_config = config(data_dir.path());
+    test_config
+        .bundled_skills
+        .retain(|skill| skill.name == "aios-settings");
     let agent = Agent::create(
         agent::AgentConfig {
             compaction_headroom_tokens: 1,
             compaction_retain_ratio: 0.000001,
             compaction_retries: 0,
-            ..config(data_dir.path())
+            ..test_config
         },
         agent::Deps {
             model: model::DeepSeek::with_credentials(
