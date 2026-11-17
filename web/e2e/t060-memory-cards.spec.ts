@@ -18,17 +18,29 @@ test('程序记忆卡：许可/整理完/没跑成各一张，和回复分开，
     const permission = page.locator('[data-memo-kind="permission"]');
     await expect(permission).toHaveCount(1);
     await expect(permission).toContainText('做梦许可');
-    await expect(permission).toHaveAttribute('data-ref', 'dream-run-1');
+    await expect(permission).toContainText('允许');
+    await expect(permission).toContainText('暂不');
+    await expect(permission).toHaveAttribute('data-ref', 'dream_permit');
+    // 程序卡的 ref 不是给人看的标题：许可卡不显示 dream_permit，其他卡也不显示内部 run ref。
+    await expect(permission).not.toContainText('dream_permit');
 
     const done = page.locator('[data-memo-kind="dream_done"]');
     await expect(done).toHaveCount(1);
     await expect(done).toContainText('整理完了');
     await expect(done).toHaveAttribute('data-ref', 'dream-run-2');
+    await expect(done).not.toContainText('dream-run-');
 
     const failed = page.locator('[data-memo-kind="dream_failed"]');
     await expect(failed).toHaveCount(1);
     await expect(failed).toContainText('整理没跑成');
     await expect(failed).toHaveAttribute('data-ref', 'dream-run-3');
+    await expect(failed).not.toContainText('dream-run-');
+
+    for (const chip of await chips.all()) {
+      const text = (await chip.innerText()).trim();
+      expect(text).not.toContain('dream_permit');
+      expect(text).not.toContain('dream-run-');
+    }
 
     // 小卡是程序加的一行，不塞进用户气泡或 Kind 的回答里。
     await expect(page.locator('[data-kind="user-bubble"] [data-kind="memo-chip"]')).toHaveCount(0);

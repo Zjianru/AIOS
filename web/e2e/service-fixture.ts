@@ -321,7 +321,7 @@ export async function startKernelFixture(
       usage: { inputTokens: 10, outputTokens: 3 },
     });
     next('turn/end', { turn: 1, reason: { kind: 'completed' } });
-    next('memory/card', { id: 'card-permission-1', kind: 'permission', ref: 'dream-run-1' });
+    next('memory/card', { id: 'card-permission-1', kind: 'permission', ref: 'dream_permit' });
     next('memory/card', { id: 'card-done-1', kind: 'dream_done', ref: 'dream-run-2' });
     next('memory/card', { id: 'card-failed-1', kind: 'dream_failed', ref: 'dream-run-3' });
     const header = { type: 'session', version: 18, id: sessionId, createdAt: startedAt, cwd };

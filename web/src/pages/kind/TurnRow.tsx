@@ -571,7 +571,7 @@ export const TurnRow = memo(function TurnRow({
 
       {(view.memoCards ?? []).map((card) => (
         <div key={card.id} className="mb-1 mt-2 flex justify-start">
-          <MemoChip card={{ kind: card.kind, id: card.id, ref: card.ref, title: card.ref }} />
+          <MemoChip card={{ kind: card.kind, id: card.id, ref: card.ref }} />
         </div>
       ))}
 
