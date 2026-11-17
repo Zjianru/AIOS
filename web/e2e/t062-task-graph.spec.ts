@@ -80,3 +80,29 @@ test('任务图：三张图的块/站/线/选中/表，路由直达和切换保�
     await fixture.close();
   }
 });
+
+test('任务图不新起轮询：打开图后 getWork 仍按 workStore 两秒一次', async ({ page }) => {
+  test.setTimeout(60_000);
+  const fixture = await startKernelFixture({ t062TaskGraphs: true });
+  try {
+    const calls: number[] = [];
+    page.on('request', (request) => {
+      if (
+        request.method() === 'POST' &&
+        request.url().endsWith('/api') &&
+        (request.postData() ?? '').includes('"method":"work"')
+      ) {
+        calls.push(Date.now());
+      }
+    });
+    await page.goto(urlOf(fixture, '#work?wv=graph'));
+    await expect(page.locator('[data-kind="task-graph-pane"]')).toBeVisible({ timeout: 30_000 });
+    await page.waitForTimeout(1_000);
+    calls.length = 0;
+    await page.waitForTimeout(4_200);
+    // 一个 2 秒轮询：4.2 秒内 2 次（最多 3 次抖动）；两个 interval 会到 4 次。
+    expect(calls.length).toBeLessThanOrEqual(3);
+  } finally {
+    await fixture.close();
+  }
+});

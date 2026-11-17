@@ -18,7 +18,7 @@ import type { ElkNode } from 'elkjs/lib/elk-api';
 import { deriveGraphs, dotOf, neighbours } from './graphModel';
 import type { GraphEdge, GraphNode, TaskGraph } from './graphModel';
 import { formatAt, WAIT_LABEL } from './workModel';
-import { useWorkPolling, useWorkStore } from './workStore';
+import { useWorkStore } from './workStore';
 
 const NODE_W = 196;
 const NODE_H = 74;
@@ -427,7 +427,7 @@ export function GraphPane({
   selected: string | null;
   onSelect: (id: string) => void;
 }) {
-  useWorkPolling();
+  // 轮询由 WorkScene 的 BoardPane 统一持有；这里只读同一份 store，不再另起 interval。
   const work = useWorkStore((state) => state.work);
   const error = useWorkStore((state) => state.error);
   const { graphs, single } = useMemo(() => deriveGraphs(work), [work]);

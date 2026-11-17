@@ -284,7 +284,7 @@ function BoardPane() {
 }
 
 function WaitingPane() {
-  useWorkPolling();
+  // 轮询由同一场景的 BoardPane 持有一个；这里只读同一份 store，避免两个 pane 各起一个 interval。
   const work = useWorkStore((state) => state.work);
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-content" data-pane="waiting">
