@@ -329,7 +329,7 @@ mod attempt_signature_tests {
     fn report_signature_uses_only_its_own_attempt_changes() {
         let directory = tempfile::tempdir().unwrap();
         let data = directory.path();
-        let mut store = tasks::Store::open(data.join("tasks.sqlite")).unwrap();
+        let store = tasks::Store::open(data.join("tasks.sqlite")).unwrap();
         let now = 1_794_936_000_000_i64;
         let task = store
             .create_task(

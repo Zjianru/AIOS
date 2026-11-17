@@ -194,6 +194,36 @@ async fn appointment_cancel_tool_distinguishes_user_and_stopped() {
 }
 
 #[tokio::test]
+async fn calendar_read_carries_source_turn_and_old_records_stay_empty() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let (store, with_turn) = create_appointment(data, "有来源轮");
+    let (_same, without_turn) = create_appointment(data, "旧记录");
+    store.set_source_turn(&with_turn.id, 5).unwrap();
+    let host = crate::common::open(crate::common::options(data)).await;
+    let response = host
+        .dispatch(Call::CalendarRead(service::CalendarReadRequest::default()))
+        .await
+        .expect("读日历");
+    let Response::CalendarRead(read) = response else {
+        panic!("日历读响应");
+    };
+    let row = read
+        .appointments
+        .iter()
+        .find(|row| row.id == with_turn.id)
+        .expect("有来源轮");
+    assert_eq!(row.source_turn, Some(5));
+    let old = read
+        .appointments
+        .iter()
+        .find(|row| row.id == without_turn.id)
+        .expect("旧记录");
+    assert_eq!(old.source_turn, None);
+    host.shutdown().await;
+}
+
+#[tokio::test]
 async fn builtin_dream_pause_toggles_memory_enabled_and_cannot_cancel() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path();
@@ -433,5 +463,60 @@ async fn create_card_accepts_number_string_start_delay_and_binding_objects() {
     });
     let error = create.details(&bad).unwrap_err();
     assert!(error.contains("只认 chat/kind/task"), "{error}");
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn card_act_records_the_kind_turn_that_proposed_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let mut options = crate::common::options(data);
+    options.actions = Arc::new(ActionRegistry::settings(data.to_path_buf(), None));
+    let host = crate::common::open(options).await;
+    host.dispatch(Call::Send(service::SendRequest {
+        request_id: "source-turn".to_owned(),
+        content: "明天九点提醒我".to_owned(),
+        delivery: service::DeliveryMode::FollowUp,
+        pastes: Vec::new(),
+        attachments: Vec::new(),
+        canvas: None,
+        result_card: None,
+    }))
+    .await
+    .expect("发一句让根会话开一轮");
+    let session_id = host.info().session_id.expect("根会话");
+    let id = session::SessionId::parse(&session_id).expect("会话 id");
+    let mut saw_turn = false;
+    for _ in 0..100 {
+        if session::SessionStore::open_read_only(data, &id).is_ok_and(|store| {
+            store
+                .events()
+                .iter()
+                .any(|event| matches!(&event.kind, session::EventKind::TurnStart { .. }))
+        }) {
+            saw_turn = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(saw_turn, "根会话没有开出一轮");
+
+    let registry = ActionRegistry::settings(data.to_path_buf(), None);
+    let create = registry.get("create_appointment").expect("create 动作");
+    let details = create
+        .details(&json!({
+            "title": "来源轮提醒",
+            "condition": "明天九点提醒我",
+            "rule": "FREQ=DAILY",
+            "timezone": "Asia/Shanghai",
+            "delaySeconds": 60,
+            "binding": "kind"
+        }))
+        .unwrap();
+    let outcome = create.act(&details, &host).await.expect("按卡建约定");
+    let appointment_id = outcome.data["appointmentId"].as_str().unwrap().to_owned();
+    let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
+    let created = store.appointment(&appointment_id).unwrap().unwrap();
+    assert_eq!(created.source_turn, Some(1), "确认卡 act 要写发起轮");
     host.shutdown().await;
 }

@@ -14,7 +14,7 @@ use crate::types::{
 };
 
 /// 日历库 schema 版本；加字段/表时升。
-pub const SCHEMA_VERSION: u64 = 3;
+pub const SCHEMA_VERSION: u64 = 4;
 const SCHEMA_KEY: &str = "schema_version";
 
 const CREATE_TABLES: &str = "
@@ -35,6 +35,7 @@ const CREATE_TABLES: &str = "
         cycle_task_id TEXT,
         cycle_max_rounds INTEGER,
         next_trigger_at INTEGER,
+        source_turn INTEGER,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
     );
@@ -133,6 +134,14 @@ impl CalendarStore {
             if !has_report_id {
                 conn.execute("ALTER TABLE run ADD COLUMN report_id TEXT", [])?;
             }
+            let has_source_turn = conn
+                .prepare("PRAGMA table_info(appointment)")?
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(Result::ok)
+                .any(|name| name == "source_turn");
+            if !has_source_turn {
+                conn.execute("ALTER TABLE appointment ADD COLUMN source_turn INTEGER", [])?;
+            }
             conn.execute(
                 "UPDATE kv SET value = ?1 WHERE key = ?2",
                 params![SCHEMA_VERSION.to_string(), SCHEMA_KEY],
@@ -159,8 +168,8 @@ impl CalendarStore {
             "INSERT INTO appointment (
                 id, status, version, title, condition, rule, timezone, start_at,
                 binding_kind, binding_ref, watch_kind, watch_target, cycle_task_id,
-                cycle_max_rounds, next_trigger_at, created_at, updated_at
-            ) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)",
+                cycle_max_rounds, next_trigger_at, source_turn, created_at, updated_at
+            ) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, NULL, ?15, ?15)",
             params![
                 id,
                 AppointmentStatus::Active.as_str(),
@@ -192,6 +201,7 @@ impl CalendarStore {
             watch: draft.watch,
             cycle: draft.cycle,
             next_trigger_at,
+            source_turn: None,
             created_at: now,
             updated_at: now,
         })
@@ -361,6 +371,20 @@ impl CalendarStore {
         appointment.next_trigger_at = next_trigger_at;
         appointment.updated_at = now;
         Ok(appointment)
+    }
+
+    /// 确认卡 act 时把发起轮写进约定（旧记录可空）。
+    pub fn set_source_turn(&self, id: &str, turn: u64) -> Result<(), CalendarError> {
+        let now = (self.clock)();
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| CalendarError::InvalidInput("日历库锁坏了".to_owned()))?;
+        conn.execute(
+            "UPDATE appointment SET source_turn = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, i64::try_from(turn).unwrap_or(i64::MAX), now],
+        )?;
+        Ok(())
     }
 
     /// 带原因暂停循环约定（原因进版本历史；恢复时清不掉历史，但只在暂停态读）。
@@ -801,7 +825,7 @@ fn load_appointment(connection: &Connection, id: &str) -> Result<Appointment, Ca
         .query_row(
             "SELECT id, status, version, title, condition, rule, timezone, start_at,
                     binding_kind, binding_ref, watch_kind, watch_target, cycle_task_id,
-                    cycle_max_rounds, next_trigger_at, created_at, updated_at
+                    cycle_max_rounds, next_trigger_at, source_turn, created_at, updated_at
              FROM appointment WHERE id = ?1",
             params![id],
             |row| {
@@ -823,8 +847,11 @@ fn load_appointment(connection: &Connection, id: &str) -> Result<Appointment, Ca
                     watch: parse_watch(row.get(10)?, row.get(11)?)?,
                     cycle: parse_cycle(row.get(12)?, row.get(13)?)?,
                     next_trigger_at: row.get(14)?,
-                    created_at: row.get(15)?,
-                    updated_at: row.get(16)?,
+                    source_turn: row
+                        .get::<_, Option<i64>>(15)?
+                        .and_then(|turn| u64::try_from(turn).ok()),
+                    created_at: row.get(16)?,
+                    updated_at: row.get(17)?,
                 })
             },
         )
@@ -1169,6 +1196,31 @@ mod tests {
         let state = store.watch_state(&id).unwrap().expect("迁移后能写读");
         assert_eq!(state.content, "迁移后");
         assert_eq!(state.hash, "hash-2");
+    }
+
+    #[test]
+    fn source_turn_survives_reopen_and_defaults_none() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("calendar.sqlite");
+        let (id, plain) = {
+            let store = CalendarStore::open_with_clock(&path, Arc::new(|| NOW)).unwrap();
+            let first = store.create_appointment(draft()).unwrap();
+            let mut second_draft = draft();
+            second_draft.title = "第二个".to_owned();
+            let second = store.create_appointment(second_draft).unwrap();
+            store.set_source_turn(&first.id, 7).unwrap();
+            (first.id, second.id)
+        };
+        let store = CalendarStore::open_with_clock(&path, Arc::new(|| NOW)).unwrap();
+        assert_eq!(
+            store.appointment(&id).unwrap().unwrap().source_turn,
+            Some(7)
+        );
+        assert_eq!(
+            store.appointment(&plain).unwrap().unwrap().source_turn,
+            None,
+            "旧记录/没来源轮的约定可空"
+        );
     }
 
     #[test]

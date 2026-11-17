@@ -136,7 +136,8 @@ impl ActionKind for CreateAppointmentAction {
             let runtime = host
                 .task_runtime()
                 .ok_or_else(|| "任务库没开，建不了约定".to_owned())?;
-            let appointment = runtime.calendar_create(details)?;
+            let source_turn = host.current_root_turn().await;
+            let appointment = runtime.calendar_create(details, source_turn)?;
             Ok(ActionOutcome {
                 summary: format!("建好约定「{}」", appointment.title),
                 data: json!({ "appointmentId": appointment.id }),

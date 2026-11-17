@@ -1587,7 +1587,7 @@ pub struct MemoryActionResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 18;
+pub const PROTOCOL_VERSION: u64 = 19;
 
 /// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1642,6 +1642,9 @@ pub struct CalendarAppointmentView {
     pub cycle_task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cycle_max_rounds: Option<u32>,
+    /// 发起这条约定的 Kind 轮号；旧记录/迁移可空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_turn: Option<u64>,
     pub created_at: i64,
     pub updated_at: i64,
     pub runs: Vec<CalendarRunView>,

@@ -25,4 +25,8 @@ watchKind?: string | null, watchTarget?: string | null,
 /**
  * 循环任务绑的任务与最多轮数；不是循环就没有。
  */
-cycleTaskId?: string | null, cycleMaxRounds?: number | null, createdAt: number, updatedAt: number, runs: Array<CalendarRunView>, };
+cycleTaskId?: string | null, cycleMaxRounds?: number | null,
+/**
+ * 发起这条约定的 Kind 轮号；旧记录/迁移可空。
+ */
+sourceTurn?: number | null, createdAt: number, updatedAt: number, runs: Array<CalendarRunView>, };

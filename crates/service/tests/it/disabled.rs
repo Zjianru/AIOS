@@ -455,7 +455,7 @@ async fn 模型设置响应旧字段照旧新字段只增() {
         "线上是空表数组，页面只读这个字段"
     );
     assert!(json["listed"].as_object().is_some());
-    assert_eq!(host.protocol_version(), 18, "ready 帧的协议版本是 18");
+    assert_eq!(host.protocol_version(), 19, "ready 帧的协议版本是 19");
     assert_eq!(request_count(&server).await, 0, "读设置不出站");
 }
 

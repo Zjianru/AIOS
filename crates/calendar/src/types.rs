@@ -152,6 +152,8 @@ pub struct Appointment {
     pub watch: Option<WatchSource>,
     pub cycle: Option<CycleSpec>,
     pub next_trigger_at: Option<i64>,
+    /// 发起这条约定的 Kind 轮号（确认卡那一刻）；旧库/迁移行为 None。
+    pub source_turn: Option<u64>,
     pub created_at: i64,
     pub updated_at: i64,
 }

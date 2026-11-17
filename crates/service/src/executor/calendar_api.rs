@@ -622,6 +622,7 @@ impl TaskRuntime {
                 .cycle
                 .as_ref()
                 .and_then(|cycle| cycle.max_rounds),
+            source_turn: appointment.source_turn,
             created_at: appointment.created_at,
             updated_at: appointment.updated_at,
             runs,

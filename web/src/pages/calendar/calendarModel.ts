@@ -45,6 +45,7 @@ export interface Appointment {
   watchTarget: string | null;
   cycleTaskId: string | null;
   cycleMaxRounds: number | null;
+  sourceTurn: number | null;
   runs: ApptRun[];
 }
 
@@ -130,6 +131,7 @@ export function appointmentOf(view: CalendarAppointmentView): Appointment {
     watchTarget: view.watchTarget ?? null,
     cycleTaskId: view.cycleTaskId ?? null,
     cycleMaxRounds: view.cycleMaxRounds ?? null,
+    sourceTurn: view.sourceTurn ?? null,
     runs: view.runs.map(runOf),
   };
 }

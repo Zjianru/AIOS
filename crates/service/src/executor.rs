@@ -1190,16 +1190,16 @@ impl TaskRuntime {
         self.wake();
     }
 
-    /// 测试用：模拟进程退出——丢掉还开着的 ThinAgent（放开会话写锁），效果泵不再领取。
-    ///
-    /// 生产里进程退出由操作系统回收；测试要复现「重启后会话写者已经放开」。
-    #[doc(hidden)]
+    /// 测试用：下一次日历唤醒在送进 Kind 前失败一次（留效果行等退避重试）。
     #[doc(hidden)]
     pub fn crash_before_next_wake(&self) {
         self.crash_before_wake.store(true, Ordering::SeqCst);
         self.wake();
     }
 
+    /// 测试用：模拟进程退出——丢掉还开着的 ThinAgent（放开会话写锁），效果泵不再领取。
+    ///
+    /// 生产里进程退出由操作系统回收；测试要复现「重启后会话写者已经放开」。
     pub fn crash(&self) {
         self.shutting_down.store(true, Ordering::SeqCst);
         self.running.lock().expect("thinagent 表锁被毒化").clear();

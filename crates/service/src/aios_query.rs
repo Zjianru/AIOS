@@ -122,6 +122,7 @@ impl QueryTool {
                     "maxRounds": cycle.max_rounds,
                 })),
                 "nextTriggerAt": appointment.next_trigger_at,
+                "sourceTurn": appointment.source_turn,
                 "runs": runs.iter().map(|run| json!({
                     "id": run.id,
                     "trigger": run.trigger.clone().as_str(),
