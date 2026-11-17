@@ -228,11 +228,6 @@ impl Tool for MemoryTool {
                     .trim()
                     .to_owned()
             };
-            let seq = |key: &str| {
-                object
-                    .and_then(|value| value.get(key))
-                    .and_then(Value::as_u64)
-            };
             match self.kind {
                 Kind::Remember => {
                     let Some(message_seq) = self.tools.bound_user_message_seq(context) else {
