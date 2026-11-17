@@ -142,6 +142,19 @@ impl TaskRuntime {
         self.wake();
     }
 
+    /// 测试夹具：URL 盯变化走给定代理（wiremock）。
+    pub(crate) fn set_watch_proxy(&self, proxy: String) {
+        let env = model::http::HttpEnv {
+            http_proxy: Some(proxy),
+            https_proxy: None,
+            all_proxy: None,
+            no_proxy: None,
+        };
+        if let Ok(mut guard) = self.watch_http.lock() {
+            *guard = Some(env);
+        }
+    }
+
     pub(crate) fn calendar_recover(&self) {
         let Ok(store) = self.calendar() else {
             return;

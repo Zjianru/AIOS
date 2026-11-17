@@ -69,7 +69,12 @@ impl TaskRuntime {
                     data_dir: self.options.data_dir.clone(),
                     identity: self.options.identity.clone(),
                     self_addr: self.options.web_listen.clone(),
-                    http: model::http::HttpEnv::from_process(),
+                    http: self
+                        .watch_http
+                        .lock()
+                        .ok()
+                        .and_then(|guard| guard.clone())
+                        .unwrap_or_else(model::http::HttpEnv::from_process),
                     timeout: crate::web::WEB_FETCH_TIMEOUT,
                 };
                 fetch_watch_url(config, url).await

@@ -753,3 +753,181 @@ async fn calendar_read_and_actions_move_status() {
     );
     host.shutdown().await;
 }
+
+#[tokio::test]
+async fn url_watch_sends_baseline_changed_unchanged_and_keeps_state_on_failure() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    let server = MockServer::start().await;
+    let v1 = "第一版\n内容\n".to_owned();
+    let v2 = (0..400)
+        .map(|index| {
+            format!(
+                "第二版第 {index} 行，这一行故意写长一点，让完整 diff 超过四千字，好检查附件。\n"
+            )
+        })
+        .collect::<String>();
+    Mock::given(method("GET"))
+        .and(path("/v1"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(v1.clone()))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v2"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(v2.clone()))
+        .mount(&server)
+        .await;
+
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
+    let now = now_ms();
+    let due = store
+        .create_appointment(NewAppointment {
+            title: "盯网页".to_owned(),
+            condition: "网页变了告诉我".to_owned(),
+            schedule: Schedule {
+                rule: "FREQ=DAILY".to_owned(),
+                timezone: "Asia/Shanghai".to_owned(),
+                start_at: now,
+            },
+            binding: Binding::Kind,
+            watch: Some(calendar::WatchSource::Url(
+                "http://93.184.216.34/v1".to_owned(),
+            )),
+            cycle: None,
+        })
+        .unwrap();
+    // 先排远点，等测试夹具装好代理再让它到点。
+    store
+        .set_next_trigger(&due.id, Some(now + 3_600_000))
+        .unwrap();
+    let host = crate::common::open(crate::common::options(data)).await;
+    host.set_calendar_watch_proxy(server.uri());
+    store.set_next_trigger(&due.id, Some(now_ms())).unwrap();
+    host.nudge_calendar();
+
+    wait_until("URL 基线", || !store.runs(&due.id).unwrap().is_empty()).await;
+    let baseline = latest_run(&store, &due.id).unwrap();
+    assert_eq!(
+        baseline.result,
+        calendar::RunResult::Skipped,
+        "第一次只记基线"
+    );
+    assert!(baseline.reason.contains("没变"), "{}", baseline.reason);
+    let state = store.watch_state(&due.id).unwrap().expect("基线状态");
+    assert!(state.content.contains("第一版"), "{}", state.content);
+    assert!(state.attachment_id.is_none());
+
+    // 同一版内容再来一次：不送、记没变、状态不变（还没送过 Kind，不会撞 Kind 忙）。
+    store.set_next_trigger(&due.id, Some(now_ms())).unwrap();
+    host.nudge_calendar();
+    wait_until("URL 没变", || {
+        store
+            .runs(&due.id)
+            .unwrap()
+            .iter()
+            .filter(|run| run.result == calendar::RunResult::Skipped && run.reason.contains("没变"))
+            .count()
+            >= 2
+    })
+    .await;
+    assert_eq!(
+        store.watch_state(&due.id).unwrap().unwrap().content,
+        state.content
+    );
+
+    // 抓取失败：记失败，不覆盖上次内容。
+    let version = store.appointment(&due.id).unwrap().unwrap().version;
+    store
+        .update_appointment(
+            &due.id,
+            version,
+            calendar::AppointmentPatch {
+                watch: Some(Some(calendar::WatchSource::Url(
+                    "http://93.184.216.34/missing".to_owned(),
+                ))),
+                ..calendar::AppointmentPatch::default()
+            },
+            "test",
+        )
+        .unwrap();
+    store.set_next_trigger(&due.id, Some(now_ms())).unwrap();
+    host.nudge_calendar();
+    wait_until("URL 抓取失败", || {
+        store
+            .runs(&due.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Failed)
+    })
+    .await;
+    let failed = latest_run(&store, &due.id).unwrap();
+    assert!(failed.reason.contains("没送成"), "{}", failed.reason);
+    let state_after_failure = store.watch_state(&due.id).unwrap().unwrap();
+    assert_eq!(state_after_failure.content, state.content);
+    assert_eq!(state_after_failure.attachment_id, state.attachment_id);
+
+    // 换到第二版：内容变了，带 diff 与长 diff 附件，wake 正文带 change 摘要和附件 id。
+    let version = store.appointment(&due.id).unwrap().unwrap().version;
+    store
+        .update_appointment(
+            &due.id,
+            version,
+            calendar::AppointmentPatch {
+                watch: Some(Some(calendar::WatchSource::Url(
+                    "http://93.184.216.34/v2".to_owned(),
+                ))),
+                ..calendar::AppointmentPatch::default()
+            },
+            "test",
+        )
+        .unwrap();
+    store.set_next_trigger(&due.id, Some(now_ms())).unwrap();
+    host.nudge_calendar();
+    wait_until("URL 变化送到", || {
+        store
+            .runs(&due.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Sent)
+    })
+    .await;
+    let changed = store
+        .runs(&due.id)
+        .unwrap()
+        .into_iter()
+        .find(|run| run.result == calendar::RunResult::Sent)
+        .unwrap();
+    assert!(changed.reason.contains("变了"), "{}", changed.reason);
+    let state = store.watch_state(&due.id).unwrap().expect("变化后状态");
+    assert!(
+        state.content.contains("第二版第 399 行"),
+        "{}",
+        state.content
+    );
+    let attachment_id = state.attachment_id.clone().expect("长 diff 要存附件");
+    assert!(attachment_id.starts_with("sha256:"));
+
+    let session_id = host.info().session_id.expect("根会话");
+    let snapshot = session::SessionStore::open_read_only(
+        data,
+        &session::SessionId::parse(&session_id).expect("会话 id"),
+    )
+    .expect("会话日志");
+    assert!(
+        snapshot.events().iter().any(|event| {
+            let session::EventKind::UserMessage { message, .. } = &event.kind else {
+                return false;
+            };
+            let text = serde_json::to_string(message).unwrap_or_default();
+            text.contains("appointment-wake")
+                && text.contains("change")
+                && text.contains(&attachment_id)
+        }),
+        "wake 要带 change.attachment_id"
+    );
+
+    host.shutdown().await;
+}

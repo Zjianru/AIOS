@@ -302,6 +302,8 @@ pub struct TaskRuntime {
     calendar_events: Option<broadcast::Sender<ServiceEvent>>,
     /// 测试钩子：下一次日历唤醒在送进 Kind 前失败一次，留下效果行等退避重试。
     crash_before_wake: AtomicBool,
+    /// 测试钩子：盯变化的 URL 抓取用这个出站环境（wiremock 代理）。
+    watch_http: std::sync::Mutex<Option<model::http::HttpEnv>>,
 }
 
 impl TaskRuntime {
@@ -339,6 +341,7 @@ impl TaskRuntime {
                 .map(Arc::new),
             calendar_events,
             crash_before_wake: AtomicBool::new(false),
+            watch_http: std::sync::Mutex::new(None),
         })
     }
 

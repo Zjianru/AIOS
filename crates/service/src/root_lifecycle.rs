@@ -269,6 +269,21 @@ impl RootHost {
         self.task_runtime.as_ref()
     }
 
+    /// 测试同步：根 Kind 当前不在跑（日历复核要等它空下来才不判 Kind 忙）。
+    #[doc(hidden)]
+    pub async fn root_agent_idle(&self) -> bool {
+        let guard = self.inner.lock().await;
+        guard.as_ref().is_none_or(|host| !host.agent().is_running())
+    }
+
+    /// 测试夹具：URL 盯变化走给定代理。
+    #[doc(hidden)]
+    pub fn set_calendar_watch_proxy(&self, proxy: String) {
+        if let Some(runtime) = &self.task_runtime {
+            runtime.set_watch_proxy(proxy);
+        }
+    }
+
     /// 测试钩子：叫醒日历泵（改夹具的 next_trigger 后不用等自然醒）。
     #[doc(hidden)]
     pub fn nudge_calendar(&self) {
