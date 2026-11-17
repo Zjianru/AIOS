@@ -1,5 +1,6 @@
 //! 日历运行时：计时/复核/排运行/送 Kind 都在这里；executor 不 import calendar 的业务规则之外的东西。
 
+use super::calendar_watch::WatchResult;
 use super::*;
 use crate::protocol::{
     CalendarActionKind, CalendarActionRequest, CalendarActionResponse, CalendarAppointmentView,
@@ -12,7 +13,7 @@ use calendar::{
 const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 impl TaskRuntime {
-    fn calendar(&self) -> Result<&calendar::CalendarStore, String> {
+    pub(crate) fn calendar(&self) -> Result<&calendar::CalendarStore, String> {
         self.calendar
             .as_ref()
             .map(std::convert::AsRef::as_ref)
@@ -137,6 +138,10 @@ impl TaskRuntime {
     }
 
     /// 启动补：有排着的运行记录、没有效果行的，补一条效果。
+    pub(crate) fn calendar_nudge(&self) {
+        self.wake();
+    }
+
     pub(crate) fn calendar_recover(&self) {
         let Ok(store) = self.calendar() else {
             return;
@@ -239,17 +244,53 @@ impl TaskRuntime {
             }
         }
 
+        let mut watch_reason = None;
+        if skip_reason.is_none() && appointment.watch.is_some() {
+            match self.watch_check(appointment).await {
+                WatchResult::Unchanged => {
+                    skip_reason = Some("没变：和上次比内容一样".to_owned());
+                }
+                WatchResult::Failed(reason) => {
+                    let (run, _) = store
+                        .record_run(NewRun {
+                            appointment_id: appointment.id.clone(),
+                            nominal_at: latest,
+                            manual: false,
+                            trigger: TriggerKind::Due,
+                            reason: format!("没送成：{reason}"),
+                            merged_count: merged,
+                        })
+                        .map_err(calendar_error)?;
+                    store
+                        .finish_run(
+                            run.id,
+                            RunResult::Failed,
+                            &format!("没送成：{reason}"),
+                            None,
+                        )
+                        .map_err(calendar_error)?;
+                    self.calendar_advance(store, appointment, latest)?;
+                    self.emit_calendar_changed(&appointment.id);
+                    return Ok(());
+                }
+                WatchResult::Changed { summary } => {
+                    watch_reason = Some(summary);
+                }
+            }
+        }
         let (run, created) = store
             .record_run(NewRun {
                 appointment_id: appointment.id.clone(),
                 nominal_at: latest,
                 manual: false,
                 trigger: TriggerKind::Due,
-                reason: if merged > 0 {
-                    calendar::merged_reason(merged)
-                } else {
-                    String::new()
-                },
+                reason: watch_reason.unwrap_or_else(|| {
+                    if merged > 0 {
+                        calendar::merged_reason(merged)
+                    } else {
+                        String::new()
+                    }
+                }),
                 merged_count: merged,
             })
             .map_err(calendar_error)?;
@@ -383,7 +424,7 @@ impl TaskRuntime {
             self.later(&claim);
             return;
         };
-        let body = json!({
+        let mut body = json!({
             "kind": "appointment_wake",
             "appointment": {
                 "id": appointment.id,
@@ -398,6 +439,14 @@ impl TaskRuntime {
                 "manual": run.manual,
             }
         });
+        if appointment.watch.is_some()
+            && let Ok(Some(state)) = store.watch_state(&appointment.id)
+        {
+            body["change"] = json!({
+                "summary": run.reason,
+                "attachment_id": state.attachment_id,
+            });
+        }
         let request_id = format!("appointment-wake:{}:{}", appointment.id, run.id);
         let message = UserMessage::text(body.to_string());
         let sent = host

@@ -15,5 +15,5 @@ pub use store::{CalendarStore, SCHEMA_VERSION};
 pub use types::{
     Appointment, AppointmentPatch, AppointmentStatus, AppointmentVersion, Binding, BoundTaskFacts,
     Clock, CycleSpec, Missed, NewAppointment, NewRun, ProgressSignature, Review, ReviewFacts, Run,
-    RunResult, Schedule, TriggerKind, WatchOutcome, WatchSource,
+    RunResult, Schedule, TriggerKind, WatchOutcome, WatchSource, WatchState,
 };

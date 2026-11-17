@@ -269,6 +269,14 @@ impl RootHost {
         self.task_runtime.as_ref()
     }
 
+    /// 测试钩子：叫醒日历泵（改夹具的 next_trigger 后不用等自然醒）。
+    #[doc(hidden)]
+    pub fn nudge_calendar(&self) {
+        if let Some(runtime) = &self.task_runtime {
+            runtime.calendar_nudge();
+        }
+    }
+
     /// 测试钩子：下一次日历唤醒送达前失败一次（退避重试用例）。
     #[doc(hidden)]
     pub fn crash_before_next_wake(&self) {

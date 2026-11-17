@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+similar.workspace = true
 calendar = { path = "../calendar" }
 chrono.workspace = true
 chrono-tz.workspace = true

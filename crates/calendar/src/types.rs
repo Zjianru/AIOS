@@ -275,6 +275,15 @@ impl ProgressSignature {
     }
 }
 
+/// 盯变化的上一份内容与哈希（失败不更新）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WatchState {
+    pub content: String,
+    pub hash: String,
+    pub attachment_id: Option<String>,
+    pub updated_at: i64,
+}
+
 /// 错过合并的结果：只补最近一次，并记合并了几次。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Missed {

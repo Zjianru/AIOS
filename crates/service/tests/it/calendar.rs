@@ -44,6 +44,31 @@ fn appointment(
         .unwrap()
 }
 
+fn watch_appointment(
+    store: &calendar::CalendarStore,
+    title: &str,
+    source: calendar::WatchSource,
+) -> calendar::Appointment {
+    store
+        .create_appointment(NewAppointment {
+            title: title.to_owned(),
+            condition: "盯着变化".to_owned(),
+            schedule: Schedule {
+                rule: "FREQ=SECONDLY".to_owned(),
+                timezone: "Asia/Shanghai".to_owned(),
+                start_at: now_ms() - 5_000,
+            },
+            binding: Binding::Kind,
+            watch: Some(source),
+            cycle: None,
+        })
+        .unwrap()
+}
+
+fn latest_run(store: &calendar::CalendarStore, id: &str) -> Option<calendar::Run> {
+    store.runs(id).ok().and_then(|runs| runs.last().cloned())
+}
+
 fn run_result(store: &calendar::CalendarStore, appointment_id: &str) -> Option<String> {
     store
         .runs(appointment_id)
@@ -77,8 +102,8 @@ async fn nearest_appointment_wakes_and_far_one_waits() {
         &session::SessionId::parse(&session_id).expect("会话 id"),
     )
     .expect("会话日志");
-    let near_runs = store.runs(&near.id).unwrap();
     let prefix = format!("appointment-wake:{}:", near.id);
+    let near_runs = store.runs(&near.id).unwrap();
     let sent_turn = snapshot
         .events()
         .iter()
@@ -205,68 +230,240 @@ async fn global_pause_merges_missed_occurrences_and_sends_once() {
 }
 
 #[tokio::test]
-async fn resume_from_paused_wakes_a_pump_that_was_sleeping() {
+async fn file_watch_sends_diff_then_unchanged_skips() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path();
+    let file = data.join("watch.txt");
+    std::fs::write(&file, "alpha\nbeta\n").unwrap();
     let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
-    let now = now_ms();
-    // 50ms 后到点；先暂停，泵会睡到没有近点的默认 1s。
-    let due = appointment(&store, "暂停后恢复", now + 50, "FREQ=SECONDLY");
-    store
-        .set_status(&due.id, calendar::AppointmentStatus::Paused)
-        .unwrap();
-    let host = crate::common::open(crate::common::options(data)).await;
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-    assert!(
-        store
-            .appointment(&due.id)
-            .unwrap()
-            .unwrap()
-            .next_trigger_at
-            .is_none(),
-        "暂停时没有近点"
+    let due = watch_appointment(
+        &store,
+        "盯文件",
+        calendar::WatchSource::File(file.to_string_lossy().into_owned()),
     );
-    // 把起点改到 50ms 后；暂停状态不改 next，然后恢复必须叫醒睡着的泵。
-    let version = store.appointment(&due.id).unwrap().unwrap().version;
-    store
-        .update_appointment(
-            &due.id,
-            version,
-            calendar::AppointmentPatch {
-                schedule: Some(calendar::Schedule {
-                    rule: "FREQ=SECONDLY".to_owned(),
-                    timezone: "Asia/Shanghai".to_owned(),
-                    start_at: now_ms() + 50,
-                }),
-                ..calendar::AppointmentPatch::default()
-            },
-            "test",
-        )
-        .unwrap();
-    let started = std::time::Instant::now();
-    host.dispatch(Call::CalendarAction(CalendarActionRequest {
-        appointment_id: due.id.clone(),
-        action: CalendarActionKind::Resume,
-    }))
-    .await
-    .expect("恢复");
-    let deadline = std::time::Duration::from_millis(2000);
-    loop {
-        if store
+    let now = now_ms();
+    store.set_next_trigger(&due.id, Some(now - 1)).unwrap();
+    let host = crate::common::open(crate::common::options(data)).await;
+    wait_until("先记下基线", || {
+        !store.runs(&due.id).unwrap().is_empty()
+    })
+    .await;
+    let baseline_runs = store.runs(&due.id).unwrap().len();
+    // 内容变了：再排一次，带新行 diff。
+    std::fs::write(&file, "alpha\ngamma\n").unwrap();
+    store.set_next_trigger(&due.id, Some(now_ms())).unwrap();
+    host.nudge_calendar();
+    wait_until("文件变化送到", || {
+        store
             .runs(&due.id)
             .unwrap()
             .iter()
             .any(|run| run.result == calendar::RunResult::Sent)
-        {
-            break;
-        }
-        assert!(
-            started.elapsed() < deadline,
-            "恢复没有及时叫醒泵（{:?} 还没送）",
-            started.elapsed()
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    })
+    .await;
+    assert!(
+        store
+            .runs(&due.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Sent && run.reason.contains("gamma")),
+        "变了要带 gamma 的 diff"
+    );
+    let after_change = store.runs(&due.id).unwrap().len();
+    assert!(after_change > baseline_runs);
+    let session_id = host.info().session_id.expect("根会话");
+    let snapshot = session::SessionStore::open_read_only(
+        data,
+        &session::SessionId::parse(&session_id).expect("会话 id"),
+    )
+    .expect("会话日志");
+    assert!(
+        snapshot.events().iter().any(|event| {
+            let session::EventKind::UserMessage { message, .. } = &event.kind else {
+                return false;
+            };
+            let text = serde_json::to_string(message).unwrap_or_default();
+            text.contains("appointment-wake") && text.contains("change") && text.contains("gamma")
+        }),
+        "wake 正文要带变了的内容"
+    );
+    // 内容没变：记跳过，不再送。
+    store.set_next_trigger(&due.id, Some(now_ms())).unwrap();
+    host.nudge_calendar();
+    wait_until("没变记跳过", || {
+        store
+            .runs(&due.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Skipped)
+    })
+    .await;
+    assert!(
+        store
+            .runs(&due.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Skipped && run.reason.contains("没变")),
+        "没变要记固定说法"
+    );
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn failed_file_read_keeps_the_previous_content() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let file = data.join("watch.txt");
+    std::fs::write(&file, "same\n").unwrap();
+    let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
+    let due = watch_appointment(
+        &store,
+        "失败不改上次",
+        calendar::WatchSource::File(file.to_string_lossy().into_owned()),
+    );
+    store.set_next_trigger(&due.id, Some(now_ms() - 1)).unwrap();
+    let host = crate::common::open(crate::common::options(data)).await;
+    wait_until("基线记下", || !store.runs(&due.id).unwrap().is_empty()).await;
+    std::fs::remove_file(&file).unwrap();
+    store.set_next_trigger(&due.id, Some(now_ms())).unwrap();
+    host.nudge_calendar();
+    wait_until("失败记没送成", || {
+        store
+            .runs(&due.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Failed)
+    })
+    .await;
+    let failed = latest_run(&store, &due.id).unwrap();
+    assert!(failed.reason.contains("没送成"), "{}", failed.reason);
+    // 恢复同样的内容：上次内容没被失败覆盖，应记「没变」。
+    std::fs::write(&file, "same\n").unwrap();
+    store.set_next_trigger(&due.id, Some(now_ms())).unwrap();
+    host.nudge_calendar();
+    wait_until("恢复后认为没变", || {
+        store
+            .runs(&due.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Skipped)
+    })
+    .await;
+    assert!(
+        store
+            .runs(&due.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Skipped && run.reason.contains("没变"))
+    );
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn task_facts_watch_sends_then_unchanged() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let task_id = {
+        let tasks = tasks::Store::open(data.join("tasks.sqlite")).unwrap();
+        let draft = tasks::NewTask {
+            title: "盯任务事实".to_owned(),
+            requirement: "看它变没变".to_owned(),
+            dod: "DoD".to_owned(),
+            cwd: data.to_path_buf(),
+            conversation: tasks::ConversationId::new("kind-calendar-watch"),
+            model: tasks::ModelChoice {
+                connection: "deepseek".to_owned(),
+                model: "deepseek-flash".to_owned(),
+                effort_wanted: "high".to_owned(),
+            },
+            tools: vec!["read".to_owned()],
+        };
+        let task = tasks.create_task(draft, now_ms()).unwrap();
+        let attempt = tasks.begin_attempt(&task.id, now_ms()).unwrap();
+        tasks
+            .record_report(
+                &task.id,
+                attempt,
+                tasks::NewReport {
+                    state: tasks::ReportState::Ready,
+                    origin: tasks::ReportOrigin::Agent,
+                    summary: "第一份结果".to_owned(),
+                    question: None,
+                },
+                now_ms(),
+            )
+            .unwrap();
+        tasks
+            .end_attempt(&task.id, attempt, now_ms(), tasks::AttemptEnd::Reported)
+            .unwrap();
+        task.id.to_string()
+    };
+    let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
+    let due = watch_appointment(
+        &store,
+        "盯任务",
+        calendar::WatchSource::TaskFacts(task_id.clone()),
+    );
+    store.set_next_trigger(&due.id, Some(now_ms() - 1)).unwrap();
+    let host = crate::common::open(crate::common::options(data)).await;
+    wait_until("基线记下", || !store.runs(&due.id).unwrap().is_empty()).await;
+    // 任务事实变了：再加一份报告。
+    {
+        let tasks = tasks::Store::open(data.join("tasks.sqlite")).unwrap();
+        let task = tasks.task(&tasks::TaskId::from(task_id)).unwrap().unwrap();
+        let attempt = tasks.begin_attempt(&task.id, now_ms()).unwrap();
+        tasks
+            .record_report(
+                &task.id,
+                attempt,
+                tasks::NewReport {
+                    state: tasks::ReportState::Ready,
+                    origin: tasks::ReportOrigin::Agent,
+                    summary: "第二份结果".to_owned(),
+                    question: None,
+                },
+                now_ms(),
+            )
+            .unwrap();
+        tasks
+            .end_attempt(&task.id, attempt, now_ms(), tasks::AttemptEnd::Reported)
+            .unwrap();
     }
+    store.set_next_trigger(&due.id, Some(now_ms())).unwrap();
+    host.nudge_calendar();
+    wait_until("任务事实变化送到", || {
+        store
+            .runs(&due.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Sent)
+    })
+    .await;
+    assert!(
+        store
+            .runs(&due.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Sent && run.reason.contains("第二份结果")),
+        "任务事实变了要带新报告"
+    );
+    store.set_next_trigger(&due.id, Some(now_ms())).unwrap();
+    host.nudge_calendar();
+    wait_until("任务事实没变", || {
+        store
+            .runs(&due.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Skipped)
+    })
+    .await;
+    assert!(
+        store
+            .runs(&due.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Skipped && run.reason.contains("没变"))
+    );
     host.shutdown().await;
 }
 
@@ -334,6 +531,69 @@ async fn paused_appointment_does_not_deliver_a_queued_wake() {
         }),
         "暂停后不能再送已排的 wake"
     );
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn resume_from_paused_wakes_a_pump_that_was_sleeping() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
+    let now = now_ms();
+    let due = appointment(&store, "暂停后恢复", now + 50, "FREQ=SECONDLY");
+    store
+        .set_status(&due.id, calendar::AppointmentStatus::Paused)
+        .unwrap();
+    let host = crate::common::open(crate::common::options(data)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(
+        store
+            .appointment(&due.id)
+            .unwrap()
+            .unwrap()
+            .next_trigger_at
+            .is_none()
+    );
+    let version = store.appointment(&due.id).unwrap().unwrap().version;
+    store
+        .update_appointment(
+            &due.id,
+            version,
+            calendar::AppointmentPatch {
+                schedule: Some(calendar::Schedule {
+                    rule: "FREQ=SECONDLY".to_owned(),
+                    timezone: "Asia/Shanghai".to_owned(),
+                    start_at: now_ms() + 50,
+                }),
+                ..calendar::AppointmentPatch::default()
+            },
+            "test",
+        )
+        .unwrap();
+    let started = std::time::Instant::now();
+    host.dispatch(Call::CalendarAction(CalendarActionRequest {
+        appointment_id: due.id.clone(),
+        action: CalendarActionKind::Resume,
+    }))
+    .await
+    .expect("恢复");
+    let deadline = std::time::Duration::from_millis(1_500);
+    loop {
+        if store
+            .runs(&due.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Sent)
+        {
+            break;
+        }
+        assert!(
+            started.elapsed() < deadline,
+            "恢复没有及时叫醒泵（{:?} 还没送）",
+            started.elapsed()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     host.shutdown().await;
 }
 

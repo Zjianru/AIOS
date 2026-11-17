@@ -14,7 +14,7 @@ use crate::types::{
 };
 
 /// 日历库 schema 版本；加字段/表时升。
-pub const SCHEMA_VERSION: u64 = 1;
+pub const SCHEMA_VERSION: u64 = 2;
 const SCHEMA_KEY: &str = "schema_version";
 
 const CREATE_TABLES: &str = "
@@ -71,6 +71,13 @@ const CREATE_TABLES: &str = "
         UNIQUE (appointment_id, nominal_at, manual)
     );
     CREATE INDEX IF NOT EXISTS run_appointment ON run(appointment_id, nominal_at);
+    CREATE TABLE IF NOT EXISTS watch_state (
+        appointment_id TEXT PRIMARY KEY,
+        content TEXT NOT NULL,
+        hash TEXT NOT NULL,
+        attachment_id TEXT,
+        updated_at INTEGER NOT NULL
+    );
 ";
 
 pub struct CalendarStore {
@@ -114,6 +121,12 @@ impl CalendarStore {
             conn.execute(
                 "INSERT INTO kv (key, value) VALUES (?1, ?2)",
                 params![SCHEMA_KEY, SCHEMA_VERSION.to_string()],
+            )?;
+        } else if version.is_some_and(|value| value < SCHEMA_VERSION) {
+            // v1 → v2：加 watch_state（上一份内容+哈希）。
+            conn.execute(
+                "UPDATE kv SET value = ?1 WHERE key = ?2",
+                params![SCHEMA_VERSION.to_string(), SCHEMA_KEY],
             )?;
         }
         Ok(Self {
@@ -399,6 +412,57 @@ impl CalendarStore {
         appointment.next_trigger_at = next_trigger_at;
         appointment.updated_at = now;
         Ok(appointment)
+    }
+
+    /// 盯变化的上一份内容和哈希；没查过返回 None。
+    pub fn watch_state(
+        &self,
+        appointment_id: &str,
+    ) -> Result<Option<crate::types::WatchState>, CalendarError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| CalendarError::InvalidInput("日历库锁坏了".to_owned()))?;
+        conn.query_row(
+            "SELECT content, hash, attachment_id, updated_at FROM watch_state WHERE appointment_id = ?1",
+            params![appointment_id],
+            |row| {
+                Ok(crate::types::WatchState {
+                    content: row.get(0)?,
+                    hash: row.get(1)?,
+                    attachment_id: row.get(2)?,
+                    updated_at: row.get(3)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(CalendarError::from)
+    }
+
+    /// 存盯变化的上一份内容；失败不调用这里（不更新上次内容）。
+    pub fn save_watch_state(
+        &self,
+        appointment_id: &str,
+        content: &str,
+        hash: &str,
+        attachment_id: Option<&str>,
+    ) -> Result<(), CalendarError> {
+        let now = (self.clock)();
+        let mut guard = self
+            .conn
+            .lock()
+            .map_err(|_| CalendarError::InvalidInput("日历库锁坏了".to_owned()))?;
+        let transaction = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "INSERT INTO watch_state (appointment_id, content, hash, attachment_id, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(appointment_id) DO UPDATE SET
+                content = excluded.content, hash = excluded.hash,
+                attachment_id = excluded.attachment_id, updated_at = excluded.updated_at",
+            params![appointment_id, content, hash, attachment_id, now],
+        )?;
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn versions(&self, id: &str) -> Result<Vec<AppointmentVersion>, CalendarError> {
@@ -1013,6 +1077,32 @@ mod tests {
             panic!("newer schema should be rejected");
         };
         assert!(error.to_string().contains("schema 太新"), "{error}");
+    }
+
+    #[test]
+    fn watch_state_round_trips_and_migrates_from_v1() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("calendar.sqlite");
+        let id = {
+            let store = CalendarStore::open_with_clock(&path, Arc::new(|| NOW)).unwrap();
+            let appointment = store.create_appointment(draft()).unwrap();
+            appointment.id
+        };
+        // 模拟 v1 老库：删表、把版本写回 1，再打开要迁移到 v2。
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection.execute_batch("DROP TABLE watch_state;").unwrap();
+        connection
+            .execute("UPDATE kv SET value = '1' WHERE key = 'schema_version'", [])
+            .unwrap();
+        drop(connection);
+        let store = CalendarStore::open_with_clock(&path, Arc::new(|| NOW)).unwrap();
+        assert!(store.watch_state(&id).unwrap().is_none(), "v1 没有旧内容");
+        store
+            .save_watch_state(&id, "迁移后", "hash-2", None)
+            .unwrap();
+        let state = store.watch_state(&id).unwrap().expect("迁移后能写读");
+        assert_eq!(state.content, "迁移后");
+        assert_eq!(state.hash, "hash-2");
     }
 
     #[test]

@@ -79,8 +79,13 @@ impl WebFetchTool {
     /// 读一个链接：先过 URL 规则；直连时由解析器钉住 DNS，走代理时请求前解析一次；
     /// 每一跳重定向后再按当前模式判地址，最后抓取、解码、转 Markdown。
     async fn fetch(&self, input: &str) -> Result<String, ToolFailure> {
-        let original = parse_fetch_url(input).map_err(FetchError::into_failure)?;
         ensure_exa_key(&self.config)?;
+        self.fetch_body(input).await
+    }
+
+    /// 取正文：URL 规则/DNS 钉住/重定向/大小上限都在里面，不查 Exa key（盯变化用）。
+    pub(crate) async fn fetch_body(&self, input: &str) -> Result<String, ToolFailure> {
+        let original = parse_fetch_url(input).map_err(FetchError::into_failure)?;
         let proxied = self
             .config
             .http

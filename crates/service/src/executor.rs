@@ -41,6 +41,7 @@ use crate::root::RootSessionOptions;
 use crate::session_host::ServiceHost;
 
 mod calendar_api;
+mod calendar_watch;
 mod task_tools;
 pub(crate) use task_tools::*;
 
