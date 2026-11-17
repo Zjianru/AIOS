@@ -110,6 +110,7 @@ impl TaskRuntime {
                         trigger: TriggerKind::Manual,
                         reason: String::new(),
                         merged_count: 0,
+                        report_id: None,
                     })
                     .map_err(calendar_error)?;
                 if created && !self.calendar_effect_pending(run.id) {
@@ -272,6 +273,7 @@ impl TaskRuntime {
                             trigger: TriggerKind::Due,
                             reason: format!("没送成：{reason}"),
                             merged_count: merged,
+                            report_id: None,
                         })
                         .map_err(calendar_error)?;
                     store
@@ -305,6 +307,7 @@ impl TaskRuntime {
                     }
                 }),
                 merged_count: merged,
+                report_id: None,
             })
             .map_err(calendar_error)?;
 

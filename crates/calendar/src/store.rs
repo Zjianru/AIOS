@@ -14,7 +14,7 @@ use crate::types::{
 };
 
 /// 日历库 schema 版本；加字段/表时升。
-pub const SCHEMA_VERSION: u64 = 2;
+pub const SCHEMA_VERSION: u64 = 3;
 const SCHEMA_KEY: &str = "schema_version";
 
 const CREATE_TABLES: &str = "
@@ -68,6 +68,7 @@ const CREATE_TABLES: &str = "
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         sent_turn INTEGER,
+        report_id TEXT,
         UNIQUE (appointment_id, nominal_at, manual)
     );
     CREATE INDEX IF NOT EXISTS run_appointment ON run(appointment_id, nominal_at);
@@ -123,7 +124,15 @@ impl CalendarStore {
                 params![SCHEMA_KEY, SCHEMA_VERSION.to_string()],
             )?;
         } else if version.is_some_and(|value| value < SCHEMA_VERSION) {
-            // v1 → v2：加 watch_state（上一份内容+哈希）。
+            // v1/v2 → v3：run 加 report_id（报回运行记住报告）。
+            let has_report_id = conn
+                .prepare("PRAGMA table_info(run)")?
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(Result::ok)
+                .any(|name| name == "report_id");
+            if !has_report_id {
+                conn.execute("ALTER TABLE run ADD COLUMN report_id TEXT", [])?;
+            }
             conn.execute(
                 "UPDATE kv SET value = ?1 WHERE key = ?2",
                 params![SCHEMA_VERSION.to_string(), SCHEMA_KEY],
@@ -581,8 +590,8 @@ impl CalendarStore {
         let changed = transaction.execute(
             "INSERT OR IGNORE INTO run (
                 appointment_id, nominal_at, manual, trigger_kind, result, reason,
-                merged_count, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
+                merged_count, created_at, updated_at, report_id
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9)",
             params![
                 run.appointment_id,
                 run.nominal_at,
@@ -592,6 +601,7 @@ impl CalendarStore {
                 run.reason,
                 run.merged_count,
                 now,
+                run.report_id,
             ],
         )?;
         let stored = load_run_by_identity(
@@ -648,7 +658,7 @@ impl CalendarStore {
             .map_err(|_| CalendarError::InvalidInput("日历库锁坏了".to_owned()))?;
         let mut statement = conn.prepare(
             "SELECT id, appointment_id, nominal_at, manual, trigger_kind, result, reason,
-                    merged_count, created_at, updated_at, sent_turn
+                    merged_count, created_at, updated_at, sent_turn, report_id
              FROM run WHERE appointment_id = ?1 ORDER BY id",
         )?;
         let rows = statement
@@ -826,7 +836,7 @@ fn load_run(connection: &Connection, id: i64) -> Result<Option<Run>, CalendarErr
     connection
         .query_row(
             "SELECT id, appointment_id, nominal_at, manual, trigger_kind, result, reason,
-                    merged_count, created_at, updated_at, sent_turn
+                    merged_count, created_at, updated_at, sent_turn, report_id
              FROM run WHERE id = ?1",
             params![id],
             map_run,
@@ -844,7 +854,7 @@ fn load_run_by_identity(
     connection
         .query_row(
             "SELECT id, appointment_id, nominal_at, manual, trigger_kind, result, reason,
-                    merged_count, created_at, updated_at, sent_turn
+                    merged_count, created_at, updated_at, sent_turn, report_id
              FROM run WHERE appointment_id = ?1 AND nominal_at = ?2 AND manual = ?3",
             params![appointment_id, nominal_at, i64::from(manual)],
             map_run,
@@ -870,6 +880,7 @@ fn map_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         created_at: row.get(8)?,
         updated_at: row.get(9)?,
         sent_turn: row.get(10)?,
+        report_id: row.get(11)?,
     })
 }
 
@@ -932,6 +943,7 @@ mod tests {
             },
             reason: String::new(),
             merged_count: 0,
+            report_id: None,
         }
     }
 

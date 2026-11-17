@@ -3,7 +3,10 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use calendar::{Binding, CycleSpec, NewAppointment, Schedule};
-use service::{CalendarActionKind, CalendarActionRequest, Call, Response, TaskContinueRequest};
+use service::{
+    CalendarActionKind, CalendarActionRequest, Call, DeliveryMode, Response, SendRequest,
+    TaskContinueRequest,
+};
 
 fn now_ms() -> i64 {
     SystemTime::now()
@@ -37,7 +40,7 @@ fn create_task(data: &std::path::Path) -> tasks::TaskId {
                     model: "deepseek-flash".to_owned(),
                     effort_wanted: "high".to_owned(),
                 },
-                tools: vec!["read".to_owned()],
+                tools: Vec::new(),
             },
             now_ms(),
         )
@@ -75,9 +78,40 @@ fn add_report(
         .unwrap();
 }
 
-fn cycle_appointment(
+fn add_report_with_session(
+    data: &std::path::Path,
+    task_id: &tasks::TaskId,
+    state: tasks::ReportState,
+    summary: &str,
+    session: &str,
+) {
+    let tasks = tasks::Store::open(data.join("tasks.sqlite")).unwrap();
+    let attempt = tasks.begin_attempt(task_id, now_ms()).unwrap();
+    tasks
+        .attach_session(task_id, attempt, tasks::ConversationId::new(session))
+        .unwrap();
+    tasks
+        .record_report(
+            task_id,
+            attempt,
+            tasks::NewReport {
+                state,
+                origin: tasks::ReportOrigin::Agent,
+                summary: summary.to_owned(),
+                question: None,
+            },
+            now_ms(),
+        )
+        .unwrap();
+    tasks
+        .end_attempt(task_id, attempt, now_ms(), tasks::AttemptEnd::Reported)
+        .unwrap();
+}
+
+fn cycle_appointment_with_max(
     data: &std::path::Path,
     task_id: &str,
+    max_rounds: Option<u32>,
 ) -> (calendar::CalendarStore, calendar::Appointment) {
     let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
     let now = now_ms();
@@ -94,7 +128,7 @@ fn cycle_appointment(
             watch: None,
             cycle: Some(CycleSpec {
                 task_id: task_id.to_owned(),
-                max_rounds: None,
+                max_rounds,
             }),
         })
         .unwrap();
@@ -102,6 +136,163 @@ fn cycle_appointment(
         .set_next_trigger(&appointment.id, Some(now + 3_600_000))
         .unwrap();
     (store, appointment)
+}
+
+fn cycle_appointment(
+    data: &std::path::Path,
+    task_id: &str,
+) -> (calendar::CalendarStore, calendar::Appointment) {
+    cycle_appointment_with_max(data, task_id, None)
+}
+
+#[tokio::test]
+async fn max_rounds_pauses_into_wait_answer() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let task_id = create_task(data);
+    add_report(data, &task_id, tasks::ReportState::Ready, "第一轮");
+    let (store, appointment) = cycle_appointment_with_max(data, task_id.as_str(), Some(1));
+    let host = crate::common::open(crate::common::options(data)).await;
+    host.calendar_task_report(task_id.as_str());
+    wait_until("第一轮送到", || {
+        store
+            .runs(&appointment.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Sent)
+    })
+    .await;
+    add_report(data, &task_id, tasks::ReportState::Ready, "第二轮");
+    host.calendar_task_report(task_id.as_str());
+    wait_until("到轮数暂停", || {
+        store.appointment(&appointment.id).unwrap().unwrap().status
+            == calendar::AppointmentStatus::Paused
+    })
+    .await;
+    assert!(
+        store
+            .latest_version_reason(&appointment.id)
+            .unwrap()
+            .unwrap()
+            .contains("到了约定的轮数")
+    );
+    let response = host
+        .dispatch(Call::Work(service::WorkRequest::default()))
+        .await
+        .expect("work");
+    let Response::Work(work) = response else {
+        panic!("work")
+    };
+    assert!(work.wait.iter().any(|item| {
+        item.appointment_id.as_deref() == Some(appointment.id.as_str())
+            && item.need.contains("到了约定的轮数")
+    }));
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn root_forward_recognizes_a_real_task_report_message() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let task_id = create_task(data);
+    add_report(data, &task_id, tasks::ReportState::Ready, "报回了");
+    let (store, appointment) = cycle_appointment(data, task_id.as_str());
+    let host = crate::common::open(crate::common::options(data)).await;
+    host.dispatch(Call::Send(SendRequest {
+        request_id: format!("task-report:{}:manual", task_id.as_str()),
+        content: "任务报回了".to_owned(),
+        delivery: DeliveryMode::FollowUp,
+        pastes: Vec::new(),
+        attachments: Vec::new(),
+        canvas: None,
+        result_card: None,
+    }))
+    .await
+    .expect("发送报回事件");
+    wait_until("root forward 触发循环唤醒", || {
+        store
+            .runs(&appointment.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Sent)
+    })
+    .await;
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn task_continue_goes_through_real_admission_and_rejects_stale_reports() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let task_id = create_task(data);
+    // 合成真的开过会话、已报回的 Attempt，让 continue 有会话可接。
+    add_report_with_session(
+        data,
+        &task_id,
+        tasks::ReportState::Ready,
+        "第一轮",
+        "00000000-0000-4000-8000-000000000001",
+    );
+    let (store, appointment) = cycle_appointment(data, task_id.as_str());
+    let host = crate::common::open(crate::common::options(data)).await;
+    host.calendar_task_report(task_id.as_str());
+    wait_until("报回送到", || {
+        store
+            .runs(&appointment.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Sent)
+    })
+    .await;
+    // 新报告还没被循环处理：旧 run 不能给新报告当准入。
+    add_report_with_session(
+        data,
+        &task_id,
+        tasks::ReportState::Ready,
+        "第二轮",
+        "00000000-0000-4000-8000-000000000002",
+    );
+    let stale = host
+        .dispatch(Call::TaskContinue(TaskContinueRequest {
+            task_id: task_id.as_str().to_owned(),
+            note: None,
+        }))
+        .await;
+    assert!(stale.is_err(), "新报告没处理前不该按旧 run 准入");
+    // 处理第二轮后可准入。
+    host.calendar_task_report(task_id.as_str());
+    wait_until("第二轮送到", || {
+        store
+            .runs(&appointment.id)
+            .unwrap()
+            .iter()
+            .filter(|run| run.result == calendar::RunResult::Sent)
+            .count()
+            >= 2
+    })
+    .await;
+    let admitted = host
+        .dispatch(Call::TaskContinue(TaskContinueRequest {
+            task_id: task_id.as_str().to_owned(),
+            note: None,
+        }))
+        .await;
+    // 日历准入核通过了，才会走到任务包检查；任务包缺项是后续步骤的拒绝，不是没认出循环约定。
+    let admitted_error = admitted.expect_err("合成的任务包不完整，应在准入后因缺项被拒");
+    assert!(
+        admitted_error.to_string().contains("任务包缺"),
+        "应已通过日历准入、进到任务包检查：{admitted_error}"
+    );
+    // 绑定别的约定的 task_continue 应拒。
+    let other = create_task(data);
+    let rejected = host
+        .dispatch(Call::TaskContinue(TaskContinueRequest {
+            task_id: other.as_str().to_owned(),
+            note: None,
+        }))
+        .await;
+    assert!(rejected.is_err(), "没有循环约定的任务不该按循环到点准入");
+    host.shutdown().await;
 }
 
 #[tokio::test]

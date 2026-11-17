@@ -203,6 +203,8 @@ pub struct NewRun {
     pub trigger: TriggerKind,
     pub reason: String,
     pub merged_count: u32,
+    /// T064.4：报回触发的运行记住是哪份报告，task_continue 准入时核对。
+    pub report_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -219,6 +221,8 @@ pub struct Run {
     pub created_at: i64,
     pub updated_at: i64,
     pub sent_turn: Option<i64>,
+    /// T064.4：报回运行对应的报告 id。
+    pub report_id: Option<String>,
 }
 
 /// 绑定的任务现在是什么样（由服务侧从任务事实填，日历库不依赖 tasks）。

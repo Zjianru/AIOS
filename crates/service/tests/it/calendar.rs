@@ -165,6 +165,7 @@ async fn startup_recovery_sends_a_queued_run_without_effect() {
             trigger: calendar::TriggerKind::Due,
             reason: String::new(),
             merged_count: 0,
+            report_id: None,
         })
         .unwrap();
 
@@ -379,6 +380,10 @@ async fn task_facts_watch_sends_then_unchanged() {
             tools: vec!["read".to_owned()],
         };
         let task = tasks.create_task(draft, now_ms()).unwrap();
+        // 本用例只造任务事实，不跑任务：先把自动排的 launch 收掉，免得宿主起来后写 blocked。
+        if let Ok(Some(claim)) = tasks.claim_effect_ordered(tasks::EffectKind::Launch, now_ms()) {
+            tasks.complete_effect(&claim).unwrap();
+        }
         let attempt = tasks.begin_attempt(&task.id, now_ms()).unwrap();
         tasks
             .record_report(
@@ -483,6 +488,7 @@ async fn paused_appointment_does_not_deliver_a_queued_wake() {
             trigger: calendar::TriggerKind::Due,
             reason: String::new(),
             merged_count: 0,
+            report_id: None,
         })
         .unwrap();
     {

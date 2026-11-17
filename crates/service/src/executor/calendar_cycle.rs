@@ -89,6 +89,7 @@ impl TaskRuntime {
                 trigger: TriggerKind::Report,
                 reason: format!("第 {round} 轮报回"),
                 merged_count: 0,
+                report_id: Some(report.id.to_string()),
             }) else {
                 continue;
             };
@@ -115,9 +116,9 @@ impl TaskRuntime {
         task: &Task,
     ) -> Result<Option<ContinueCause>, String> {
         let store = self.calendar()?;
-        if task.latest_report().is_none() {
+        let Some(latest_report) = task.latest_report() else {
             return Ok(None);
-        }
+        };
         let appointments = store
             .list_appointments()
             .map_err(|error| error.to_string())?;
@@ -137,7 +138,10 @@ impl TaskRuntime {
             let Some(last) = runs.last() else {
                 continue;
             };
-            if last.trigger == TriggerKind::Report && last.result == RunResult::Sent {
+            if last.trigger == TriggerKind::Report
+                && last.result == RunResult::Sent
+                && last.report_id.as_deref() == Some(latest_report.id.as_str())
+            {
                 return Ok(Some(ContinueCause::CycleDue {
                     appointment_id: appointment.id.clone(),
                     run_id: last.id,
