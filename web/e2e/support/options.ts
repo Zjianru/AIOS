@@ -20,6 +20,8 @@ export interface FixtureOptions {
   memoryLiveCard?: boolean;
  /// 两轮都记同一句原话（撤销后重新记入用例）。
   memoryAgain?: boolean;
+  /// 用真实事件回放工具记忆小卡：一次 memory_remember 成功 + 最终回答。
+  t062MemoryCard?: boolean;
  /// 路径显示：三步回放（cwd 内写、cwd 外写、最终文本）；夹具里的 __CWD__ / __OUTSIDE__ 起服务前换成真实目录。
   pathsTurn?: boolean;
  /// ：最终回答里带一个代码块（复制按钮用）。
@@ -158,6 +160,8 @@ export interface FixtureOptions {
  /// history 是写任务 + 后续多轮文本（较早一轮有结果卡）；confirm 是一张没绑任务的确认卡；
  /// f3 是同一任务两次结果落在不同 Kind 轮（F3 定位敏感性）。
   t055?: 'board' | 'history' | 'confirm' | 'f3';
+  /// 任务图夹具：预置三张已确认图（有门等你判 / 两上游汇一下游 / 全部关了）+ 一个单派任务。
+  t062TaskGraphs?: boolean;
  /// ：账本夹具。Kind 带约束派出调查任务；ThinAgent 记两条叙述（同 topic 换一条）、
  /// 查一次历史，再交 ready 报告。
   t056?: 'ledger';

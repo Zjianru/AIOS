@@ -170,7 +170,7 @@ impl Tool for ProposeActionTool {
 }
 
 /// 当前是哪一轮：日志里最后一条 turn/start。
-fn current_turn(events: &[session::Event]) -> u64 {
+pub(crate) fn current_turn(events: &[session::Event]) -> u64 {
     events
         .iter()
         .filter_map(|event| match &event.kind {

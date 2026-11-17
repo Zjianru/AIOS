@@ -77,6 +77,31 @@ fn confirm_need(title: &str) -> String {
     }
 }
 
+/// 已确认、没取消的任务图：服务算好线，页面只排和画。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkGraphFact {
+    /// 总任务 id。
+    pub id: String,
+    /// 总任务标题。
+    pub title: String,
+    pub edges: Vec<WorkEdgeFact>,
+}
+
+/// 图里的一条线；从上游指向下游（或门指向下游）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkEdgeFact {
+    pub from: String,
+    pub to: String,
+    /// needs（下游等上游）/ guards（被把关任务 → 门）/ release（门 → 下游）。
+    pub kind: String,
+    /// handed / waiting / judge / fix。
+    pub state: String,
+    /// 这条线连着的是不是程序门。
+    pub program: bool,
+}
+
 /// T055：一张任务卡的事实（页面只读这些；不发会话内容和工具细节）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -379,6 +404,121 @@ fn task_wait_kinds(meta: &FactMeta<'_>, gate_passed: bool) -> Vec<&'static str> 
     kinds
 }
 
+/// 一张已确认图里从某任务到下游的线状态：gate 是该下游对应的门（没有门时 None）。
+fn release_state(gate: &Task, guarded: &Task, downstream: &Task) -> &'static str {
+    let judge = !gate.is_program_gate()
+        && gate
+            .latest_report()
+            .is_some_and(|report| report.state == ReportState::Ready)
+        && gate
+            .latest_report()
+            .is_some_and(|report| gate.verdict_for_gate_report(&report.id).is_none());
+    if judge {
+        return "judge";
+    }
+    let Some(report) = guarded.latest_report() else {
+        return "waiting";
+    };
+    let resolved = downstream
+        .needs
+        .iter()
+        .find(|need| need.from == guarded.id)
+        .is_some_and(|need| need.handoff.is_some());
+    if gate.needs_fix(&report.id).is_some() {
+        "fix"
+    } else if gate.passed(&report.id) && resolved {
+        "handed"
+    } else {
+        "waiting"
+    }
+}
+
+/// 已确认、没取消的图：服务从任务事实算线；页面只排和画。
+fn project_graphs(all: &[Task], by_id: &HashMap<String, Task>) -> Vec<WorkGraphFact> {
+    let mut graphs = Vec::new();
+    for root in all.iter().filter(|task| {
+        task.is_graph_root()
+            && task.arrangement.as_ref().is_some_and(|arrangement| {
+                arrangement.confirmed.is_some() && arrangement.cancelled.is_none()
+            })
+    }) {
+        let mut children: Vec<&Task> = all
+            .iter()
+            .filter(|task| {
+                task.parent.as_ref().map(tasks::TaskId::as_str) == Some(root.id.as_str())
+            })
+            .collect();
+        children.sort_by_key(|task| task.created_at);
+        let mut edges = Vec::new();
+        for child in &children {
+            for need in &child.needs {
+                if !by_id.contains_key(need.from.as_str()) {
+                    continue;
+                }
+                edges.push(WorkEdgeFact {
+                    from: need.from.as_str().to_owned(),
+                    to: child.id.as_str().to_owned(),
+                    kind: "needs".to_owned(),
+                    state: if need.handoff.is_some() {
+                        "handed".to_owned()
+                    } else {
+                        "waiting".to_owned()
+                    },
+                    program: false,
+                });
+            }
+            if !child.is_gate() {
+                continue;
+            }
+            let Some(guarded_id) = child.needs.first().map(|need| need.from.clone()) else {
+                continue;
+            };
+            let Some(guarded) = by_id.get(guarded_id.as_str()) else {
+                continue;
+            };
+            edges.push(WorkEdgeFact {
+                from: guarded.id.as_str().to_owned(),
+                to: child.id.as_str().to_owned(),
+                kind: "guards".to_owned(),
+                state: if child.latest_attempt().is_some() {
+                    "handed".to_owned()
+                } else {
+                    "waiting".to_owned()
+                },
+                program: child.is_program_gate(),
+            });
+            for downstream in &children {
+                if downstream.is_gate()
+                    || !downstream.needs.iter().any(|need| need.from == guarded_id)
+                {
+                    continue;
+                }
+                edges.push(WorkEdgeFact {
+                    from: child.id.as_str().to_owned(),
+                    to: downstream.id.as_str().to_owned(),
+                    kind: "release".to_owned(),
+                    state: release_state(child, guarded, downstream).to_owned(),
+                    program: child.is_program_gate(),
+                });
+            }
+        }
+        edges.sort_by(|left, right| {
+            (left.from.as_str(), left.to.as_str(), left.kind.as_str()).cmp(&(
+                right.from.as_str(),
+                right.to.as_str(),
+                right.kind.as_str(),
+            ))
+        });
+        graphs.push(WorkGraphFact {
+            id: root.id.as_str().to_owned(),
+            title: root.title.clone(),
+            edges,
+        });
+    }
+    graphs.sort_by(|left, right| left.id.cmp(&right.id));
+    graphs
+}
+
 /// 组装一份工作快照。
 pub(crate) fn snapshot(
     store: &Store,
@@ -633,6 +773,7 @@ pub(crate) fn snapshot(
         generated_at: now,
         tasks: facts,
         wait,
+        graphs: project_graphs(&all, &by_id),
     })
 }
 

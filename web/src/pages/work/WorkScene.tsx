@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { ChevronDown, Plus } from 'lucide-react';
 import type { WaitItem } from '@/data/generated/WaitItem';
 import { go } from '@/app/navigate';
+import { useRouteStore } from '@/app/routeStore';
 
 import {
   DropdownMenu,
@@ -19,6 +20,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { cn } from '@/lib/utils';
+import { GraphPane } from './GraphPane';
 import { StartThingDialog } from './StartThingDialog';
 import { WaitList, openWaitItem } from './WaitList';
 import { DONE_RANGES, DONE_RANGE_KEY, type DoneRange, boardOf, filterDone } from './workModel';
@@ -122,11 +124,20 @@ function CalendarPane() {
   );
 }
 
+type View = 'board' | 'graph' | 'cal';
+
 function BoardPane() {
-  useWorkPolling();
   const work = useWorkStore((state) => state.work);
   const error = useWorkStore((state) => state.error);
-  const [view, setView] = useState<'board' | 'cal'>('board');
+  // #work?wv=graph / wv=cal 要能直接打开；点击切换是本地状态，切走再切回选中还在。
+  const route = useRouteStore((state) => state.route);
+  const wv = route.query.get('wv');
+  const wantedView: View = wv === 'cal' || wv === 'graph' ? wv : 'board';
+  const [view, setView] = useState<View>(wantedView);
+  const [selectedTask, setSelectedTask] = useState<string | null>(null);
+  useEffect(() => {
+    setView(wantedView);
+  }, [wantedView]);
   const [startOpen, setStartOpen] = useState(false);
   const [doneRange, setDoneRange] = useState<DoneRange>(readDoneRange);
   const [now, setNow] = useState(() => Date.now());
@@ -168,17 +179,19 @@ function BoardPane() {
         <span className="text-ink">工作</span>
         <span className="ml-auto" />
         <div className="flex items-center rounded-btn border border-line p-[2px]">
-          {(['board', 'cal'] as const).map((key) => (
+          {(['board', 'graph', 'cal'] as const).map((key) => (
             <button
               key={key}
               type="button"
+              data-kind="work-view"
+              data-view={key}
               onClick={() => setView(key)}
               className={cn(
                 'rounded-badge px-2 py-0.5 text-2 transition-colors',
                 view === key ? 'bg-hover text-ink' : 'text-ink-3 hover:text-ink-2',
               )}
             >
-              {key === 'board' ? '看板' : '日历'}
+              {key === 'board' ? '看板' : key === 'graph' ? '任务图' : '日历'}
             </button>
           ))}
         </div>
@@ -194,6 +207,8 @@ function BoardPane() {
 
       {view === 'cal' ? (
         <CalendarPane />
+      ) : view === 'graph' ? (
+        <GraphPane selected={selectedTask} onSelect={setSelectedTask} />
       ) : (
         <div className="grid min-h-0 flex-1 grid-cols-4 gap-2.5 overflow-hidden p-3" data-kind="work-board">
           {groups.map((group) => (
@@ -268,7 +283,7 @@ function BoardPane() {
 }
 
 function WaitingPane() {
-  useWorkPolling();
+  // 轮询由 WorkScene 根挂一次（workStore 引用计数只留一个 interval）；这里只读同一份 store。
   const work = useWorkStore((state) => state.work);
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-content" data-pane="waiting">
@@ -287,6 +302,8 @@ function WaitingPane() {
 }
 
 export function WorkScene({ pane }: { pane: string }) {
+  // 工作场景两个 pane 都挂在根下：轮询只在根挂一次，两个 pane 和任务图都只读同一份 store。
+  useWorkPolling();
   if (pane === 'waiting') return <WaitingPane />;
   return <BoardPane />;
 }

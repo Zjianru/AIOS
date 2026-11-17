@@ -136,6 +136,130 @@ fn gated_graph(cwd: &Path) -> NewGraph {
     }
 }
 
+fn program_gated_graph(cwd: &Path) -> NewGraph {
+    NewGraph {
+        root: draft(cwd, "总任务"),
+        subtasks: vec![
+            NewSubtask {
+                task: draft(cwd, "先查行数"),
+                policy: policy(None),
+                after: vec![],
+                milestone: false,
+                program_gate: Vec::new(),
+            },
+            NewSubtask {
+                task: draft(cwd, "自动核查"),
+                policy: policy(None),
+                after: vec![0],
+                milestone: true,
+                program_gate: vec![tasks::GateCommand {
+                    command: "true".to_owned(),
+                    timeout_ms: None,
+                }],
+            },
+            NewSubtask {
+                task: draft(cwd, "再写结果"),
+                policy: policy(None),
+                after: vec![0],
+                milestone: false,
+                program_gate: Vec::new(),
+            },
+        ],
+    }
+}
+
+/// 一张被门把关的图：A（被把关）、G（门）、B（独立）、C（等 A 和 B）。
+fn two_upstreams_gated_graph(cwd: &Path) -> NewGraph {
+    NewGraph {
+        root: draft(cwd, "总任务"),
+        subtasks: vec![
+            NewSubtask {
+                task: draft(cwd, "查 A"),
+                policy: policy(None),
+                after: vec![],
+                milestone: false,
+                program_gate: Vec::new(),
+            },
+            milestone(cwd, "核查 A", vec![0]),
+            NewSubtask {
+                task: draft(cwd, "查 B"),
+                policy: policy(None),
+                after: vec![],
+                milestone: false,
+                program_gate: Vec::new(),
+            },
+            NewSubtask {
+                task: draft(cwd, "写 C"),
+                policy: policy(None),
+                after: vec![0, 2],
+                milestone: false,
+                program_gate: Vec::new(),
+            },
+        ],
+    }
+}
+
+fn edge<'a>(graph: &'a WorkGraphFact, from: &str, to: &str, kind: &str) -> &'a WorkEdgeFact {
+    graph
+        .edges
+        .iter()
+        .find(|edge| edge.from == from && edge.to == to && edge.kind == kind)
+        .unwrap_or_else(|| {
+            let all: Vec<String> = graph
+                .edges
+                .iter()
+                .map(|edge| format!("{}->{}:{}", edge.from, edge.to, edge.kind))
+                .collect();
+            panic!("缺线 {kind} {from}->{to}；现有：{all:?}")
+        })
+}
+
+fn gate_attempt_and_report(store: &Store, guarded: &Task, gate: &Task, at: i64) -> (Task, Task) {
+    let attempt = start(store, guarded, at);
+    store
+        .record_report(
+            &guarded.id,
+            attempt,
+            report(ReportState::Ready, "查好了", None),
+            at + 1,
+        )
+        .unwrap();
+    let guarded = store.task(&guarded.id).unwrap().unwrap();
+    let guarded_report = guarded.latest_report().cloned().unwrap();
+    let claim = store
+        .claim_effect(EffectKind::Launch, at + 2)
+        .unwrap()
+        .unwrap();
+    store.complete_effect(&claim).unwrap();
+    let gate_attempt = store
+        .begin_attempt_with(
+            &gate.id,
+            at + 3,
+            tasks::AttemptTrigger::GateRecheck {
+                candidate: tasks::GateCandidate {
+                    report_id: guarded_report.id.clone(),
+                    requirement_version: guarded_report.version,
+                },
+            },
+            vec![tasks::Handoff {
+                report_id: guarded_report.id.clone(),
+                requirement_version: guarded_report.version,
+                summary: guarded_report.summary.clone(),
+            }],
+        )
+        .unwrap();
+    store
+        .record_report(
+            &gate.id,
+            gate_attempt,
+            report(ReportState::Ready, "核查完了", None),
+            at + 4,
+        )
+        .unwrap();
+    let gate = store.task(&gate.id).unwrap().unwrap();
+    (guarded, gate)
+}
+
 fn relay(seq: u64, time: i64, turn: u64, task_id: &str, report_id: &str) -> Event {
     let message =
         UserMessage::text_with_request_id("relay", format!("task-report:{task_id}:{report_id}"))
@@ -881,5 +1005,189 @@ fn measure_work_latency_on_a_long_session() {
         copy.as_secs_f64() * 1000.0,
         snapshot_time.as_secs_f64() * 1000.0,
         total.as_secs_f64() * 1000.0
+    );
+}
+
+#[test]
+fn a_confirmed_gated_graph_projects_edges_and_judge_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path();
+    let store = Store::open(cwd.join("tasks.sqlite")).unwrap();
+    let root = store.create_graph(gated_graph(cwd), T0).unwrap();
+    store.confirm_graph(&root.id, T0 + 1).unwrap();
+    let children = store.children(&root.id).unwrap();
+    let (guarded, gate, downstream) = (&children[0], &children[1], &children[2]);
+    let (guarded, gate) = gate_attempt_and_report(&store, guarded, gate, T0 + 10);
+    let gate_report = gate.latest_report().cloned().unwrap();
+
+    let response = snapshot(&store, &[], &[], T0 + 20).unwrap();
+    assert_eq!(response.graphs.len(), 1, "只投影已确认的图");
+    let graph = &response.graphs[0];
+    assert_eq!(graph.id, root.id.as_str());
+    assert_eq!(graph.title, "总任务");
+    let guards = edge(graph, guarded.id.as_str(), gate.id.as_str(), "guards");
+    assert_eq!(guards.state, "handed", "门有过 Attempt 就是 handed");
+    assert!(!guards.program);
+    let gate_need = edge(graph, guarded.id.as_str(), gate.id.as_str(), "needs");
+    assert_eq!(gate_need.state, "handed");
+    let waiting = edge(graph, guarded.id.as_str(), downstream.id.as_str(), "needs");
+    assert_eq!(waiting.state, "waiting", "下游还没拿到交接");
+    let release = edge(graph, gate.id.as_str(), downstream.id.as_str(), "release");
+    assert_eq!(release.state, "judge", "门还没判");
+    assert!(!release.program);
+
+    store
+        .judge_gate(
+            &gate.id,
+            &gate_report.id,
+            tasks::GateConclusion::NeedsFix,
+            None,
+            T0 + 30,
+        )
+        .unwrap();
+    let response = snapshot(&store, &[], &[], T0 + 31).unwrap();
+    let release = edge(
+        &response.graphs[0],
+        gate.id.as_str(),
+        downstream.id.as_str(),
+        "release",
+    );
+    assert_eq!(release.state, "fix", "判了需修正");
+}
+
+#[test]
+fn two_upstreams_show_one_handed_and_one_waiting() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path();
+    let store = Store::open(cwd.join("tasks.sqlite")).unwrap();
+    let root = store
+        .create_graph(two_upstreams_gated_graph(cwd), T0)
+        .unwrap();
+    store.confirm_graph(&root.id, T0 + 1).unwrap();
+    let children = store.children(&root.id).unwrap();
+    let (guarded, gate, independent, downstream) =
+        (&children[0], &children[1], &children[2], &children[3]);
+    let (guarded, gate) = gate_attempt_and_report(&store, guarded, gate, T0 + 10);
+    let gate_report = gate.latest_report().cloned().unwrap();
+    store
+        .judge_gate(
+            &gate.id,
+            &gate_report.id,
+            tasks::GateConclusion::Pass,
+            None,
+            T0 + 20,
+        )
+        .unwrap();
+
+    let response = snapshot(&store, &[], &[], T0 + 21).unwrap();
+    assert_eq!(response.graphs.len(), 1);
+    let graph = &response.graphs[0];
+    assert_eq!(
+        edge(graph, guarded.id.as_str(), downstream.id.as_str(), "needs").state,
+        "handed",
+        "门的通过把 A 的交接写进下游"
+    );
+    assert_eq!(
+        edge(
+            graph,
+            independent.id.as_str(),
+            downstream.id.as_str(),
+            "needs"
+        )
+        .state,
+        "waiting",
+        "B 还没 ready，还是 waiting"
+    );
+    assert_eq!(
+        edge(graph, gate.id.as_str(), downstream.id.as_str(), "release").state,
+        "handed",
+        "判通过且下游交接已解析"
+    );
+}
+
+#[test]
+fn a_program_gate_graph_has_program_edges_and_no_judge() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path();
+    let store = Store::open(cwd.join("tasks.sqlite")).unwrap();
+    let root = store.create_graph(program_gated_graph(cwd), T0).unwrap();
+    store.confirm_graph(&root.id, T0 + 1).unwrap();
+    let children = store.children(&root.id).unwrap();
+    let (guarded, gate, downstream) = (&children[0], &children[1], &children[2]);
+    let attempt = start(&store, guarded, T0 + 10);
+    store
+        .record_report(
+            &guarded.id,
+            attempt,
+            report(ReportState::Ready, "查好了", None),
+            T0 + 11,
+        )
+        .unwrap();
+    let guarded = store.task(&guarded.id).unwrap().unwrap();
+    let guarded_report = guarded.latest_report().cloned().unwrap();
+    let claim = store
+        .claim_effect(EffectKind::Launch, T0 + 12)
+        .unwrap()
+        .unwrap();
+    store.complete_effect(&claim).unwrap();
+    store
+        .begin_attempt_with(
+            &gate.id,
+            T0 + 13,
+            tasks::AttemptTrigger::GateRecheck {
+                candidate: tasks::GateCandidate {
+                    report_id: guarded_report.id.clone(),
+                    requirement_version: guarded_report.version,
+                },
+            },
+            vec![tasks::Handoff {
+                report_id: guarded_report.id.clone(),
+                requirement_version: guarded_report.version,
+                summary: guarded_report.summary.clone(),
+            }],
+        )
+        .unwrap();
+
+    let response = snapshot(&store, &[], &[], T0 + 20).unwrap();
+    let graph = &response.graphs[0];
+    let release = edge(graph, gate.id.as_str(), downstream.id.as_str(), "release");
+    assert!(release.program, "程序门的线要标 program");
+    assert_eq!(
+        release.state, "waiting",
+        "程序门没跑完是 waiting，不出现 judge"
+    );
+    assert!(!graph.edges.iter().any(|edge| edge.state == "judge"));
+}
+
+#[test]
+fn unconfirmed_and_cancelled_graphs_do_not_project() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path();
+    let store = Store::open(cwd.join("tasks.sqlite")).unwrap();
+    let unconfirmed = store.create_graph(gated_graph(cwd), T0).unwrap();
+    let cancelled = store.create_graph(gated_graph(cwd), T0 + 10).unwrap();
+    store
+        .cancel_graph(&cancelled.id, tasks::CancellationReason::Dismissed, T0 + 12)
+        .unwrap();
+    let confirmed = store.create_graph(gated_graph(cwd), T0 + 20).unwrap();
+    store.confirm_graph(&confirmed.id, T0 + 21).unwrap();
+    let single = store.create_task(draft(cwd, "单派一个"), T0 + 30).unwrap();
+
+    let response = snapshot(&store, &[], &[], T0 + 40).unwrap();
+    assert_eq!(response.graphs.len(), 1, "只有已确认、没取消的图进 graphs");
+    assert_eq!(response.graphs[0].id, confirmed.id.as_str());
+    assert!(
+        !response
+            .graphs
+            .iter()
+            .any(|graph| graph.id == unconfirmed.id.as_str() || graph.id == cancelled.id.as_str()),
+        "未确认/取消的图不进 graphs"
+    );
+    assert!(
+        response
+            .tasks
+            .iter()
+            .any(|fact| fact.id == single.id.as_str()),
+        "单派任务继续上看板"
     );
 }

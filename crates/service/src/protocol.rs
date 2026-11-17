@@ -706,6 +706,8 @@ pub struct WorkResponse {
     pub tasks: Vec<crate::work::TaskFact>,
     /// 五种「等你」项，按固定顺序、同种新的在上。
     pub wait: Vec<crate::work::WaitItem>,
+    /// 已确认、没取消的任务图；服务算好每条线的 kind/state/program，页面只排和画。
+    pub graphs: Vec<crate::work::WorkGraphFact>,
 }
 
 /// T055.2：组接受的一项（页面勾选时存下的报告与版本）。
@@ -1577,7 +1579,7 @@ pub struct MemoryActionResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 16;
+pub const PROTOCOL_VERSION: u64 = 17;
 
 /// 根会话不可用的种类：服务照常起，ready 报出来，方法一律拒绝。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]

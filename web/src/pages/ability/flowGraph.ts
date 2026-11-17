@@ -16,6 +16,7 @@ import type {
   PalettePart,
 } from '@/data/flows';
 import { JOIN_LABEL } from '@/data/flows';
+import { getElk } from '@/lib/elk';
 
 export const NODE_W = 80;
 export const NODE_H = 88;
@@ -897,18 +898,6 @@ export function countOps(ops: KindOp[]): { add: number; del: number; chg: number
 }
 
 /* ───────────────────────── 排版 ───────────────────────── */
-
-// elkjs 打包出来 1.5MB，只有点「整理」时才用得到：
-// 用动态 import，让它单独成块，不进首屏包（体积这一项要量，首屏也要快）。
-type ElkEngine = InstanceType<(typeof import('elkjs/lib/elk.bundled.js'))['default']>;
-
-let elkPromise: Promise<ElkEngine> | null = null;
-async function getElk(): Promise<ElkEngine> {
-  if (!elkPromise) {
-    elkPromise = import('elkjs/lib/elk.bundled.js').then((module) => new module.default());
-  }
-  return elkPromise;
-}
 
 export async function layoutFlow(flow: Flow): Promise<Record<string, FlowPoint>> {
   const ids = new Set(flow.nodes.map((node) => node.id));
