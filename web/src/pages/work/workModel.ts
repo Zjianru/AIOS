@@ -87,7 +87,7 @@ export function columnOf(task: TaskFact, waitTaskIds: Set<string>): BoardColumn 
   return 'wait';
 }
 
-function wordOf(task: TaskFact, column: BoardColumn, waitKind: string | undefined): string {
+export function wordOf(task: TaskFact, column: BoardColumn, waitKind: string | undefined): string {
   switch (column) {
     case 'queue':
       if (task.stage === 'needs_conditions') return task.afterWaiting ? '等前置' : '缺条件';
@@ -105,7 +105,7 @@ function wordOf(task: TaskFact, column: BoardColumn, waitKind: string | undefine
   }
 }
 
-function nextOf(task: TaskFact, column: BoardColumn): string {
+export function nextOf(task: TaskFact, column: BoardColumn): string {
   switch (column) {
     case 'queue':
       return task.stage === 'needs_conditions'

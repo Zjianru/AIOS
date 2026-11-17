@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createServer, request as httpRequest, type Server } from 'node:http';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
@@ -77,6 +77,11 @@ export async function startKernelFixture(
   options: FixtureOptions = {},
 ): Promise<KernelFixture> {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'aios-t007-'));
+  if (options.t062TaskGraphs) {
+    // 任务库直接预置：三张已确认图 + 一个单派任务；工作页只读快照。
+    await copyFile(path.join(FIXTURE_DIR, 't062-task-graphs.sqlite'), path.join(dataDir, 'tasks.sqlite'));
+    await writeFile(path.join(dataDir, 'hello.txt'), 'hello from fixture\n');
+  }
   // 路径夹具里的绝对路径要在起回放之前换成真实目录：工作目录内的那一份用规范化路径，
   // 和会话 header 的 cwd（serve 会 canonicalize）一致；之外的一份单独建一个临时目录。
   let paths: KernelFixture['paths'];
