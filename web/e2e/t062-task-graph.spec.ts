@@ -1,3 +1,6 @@
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+
 import { expect, test } from '@playwright/test';
 import { startKernelFixture } from './service-fixture';
 
@@ -101,6 +104,47 @@ test('任务图不新起轮询：打开图后 getWork 仍按 workStore 两秒一
     calls.length = 0;
     await page.waitForTimeout(4_200);
     // 一个 2 秒轮询：4.2 秒内 2 次（最多 3 次抖动）；两个 interval 会到 4 次。
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    expect(calls.length).toBeLessThanOrEqual(3);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('工作页轮询只在 WorkScene 根挂一次，两个 pane 都靠它刷新', async ({ page }) => {
+  test.setTimeout(60_000);
+  const work = await readFile(
+    fileURLToPath(new URL('../src/pages/work/WorkScene.tsx', import.meta.url)),
+    'utf8',
+  );
+  const graph = await readFile(
+    fileURLToPath(new URL('../src/pages/work/GraphPane.tsx', import.meta.url)),
+    'utf8',
+  );
+  expect(work.match(/useWorkPolling\(\)/g)?.length ?? 0).toBe(1);
+  const root = work.slice(work.indexOf('export function WorkScene'));
+  expect(root).toContain('useWorkPolling()');
+  expect(graph).not.toContain('useWorkPolling');
+
+  const fixture = await startKernelFixture({ t062TaskGraphs: true });
+  try {
+    const calls: number[] = [];
+    page.on('request', (request) => {
+      if (
+        request.method() === 'POST' &&
+        request.url().endsWith('/api') &&
+        (request.postData() ?? '').includes('"method":"work"')
+      ) {
+        calls.push(Date.now());
+      }
+    });
+    // 等待页（工作场景两个 pane 都挂着）：同一个根轮询仍要刷新。
+    await page.goto(urlOf(fixture, '#work'));
+    await expect(page.locator('[data-pane="waiting"]')).toBeVisible({ timeout: 30_000 });
+    await page.waitForTimeout(1_000);
+    calls.length = 0;
+    await page.waitForTimeout(4_200);
+    expect(calls.length).toBeGreaterThanOrEqual(2);
     expect(calls.length).toBeLessThanOrEqual(3);
   } finally {
     await fixture.close();

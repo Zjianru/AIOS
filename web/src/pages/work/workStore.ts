@@ -90,15 +90,32 @@ export const useWorkStore = create<WorkState>()((set, get) => ({
   },
 }));
 
-/** 页面挂载时开始取 + 两秒轻轮询；离开页面就停。 */
+/**
+ * 页面挂载时开始取 + 两秒轻轮询；离开页面就停。
+ *
+ * 工作场景的两个 pane 各渲染一个 WorkScene 实例，都调这个 hook；用引用计数只留一个
+ * interval，最后一个用的人离开才停，避免同页起两个轮询。
+ */
+let pollUsers = 0;
+let pollTimer: number | null = null;
+
 export function useWorkPolling(): void {
   useEffect(() => {
-    void useWorkStore.getState().refresh();
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === 'visible') {
-        void useWorkStore.getState().refresh();
+    pollUsers += 1;
+    if (pollUsers === 1) {
+      void useWorkStore.getState().refresh();
+      pollTimer = window.setInterval(() => {
+        if (document.visibilityState === 'visible') {
+          void useWorkStore.getState().refresh();
+        }
+      }, WORK_POLL_MS);
+    }
+    return () => {
+      pollUsers -= 1;
+      if (pollUsers === 0 && pollTimer !== null) {
+        window.clearInterval(pollTimer);
+        pollTimer = null;
       }
-    }, WORK_POLL_MS);
-    return () => window.clearInterval(timer);
+    };
   }, []);
 }

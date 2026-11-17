@@ -127,7 +127,6 @@ function CalendarPane() {
 type View = 'board' | 'graph' | 'cal';
 
 function BoardPane() {
-  useWorkPolling();
   const work = useWorkStore((state) => state.work);
   const error = useWorkStore((state) => state.error);
   // #work?wv=graph / wv=cal 要能直接打开；点击切换是本地状态，切走再切回选中还在。
@@ -303,6 +302,8 @@ function WaitingPane() {
 }
 
 export function WorkScene({ pane }: { pane: string }) {
+  // 工作场景两个 pane 都挂在根下：轮询只在根挂一次，BoardPane/WaitingPane/GraphPane 都只读 store。
+  useWorkPolling();
   if (pane === 'waiting') return <WaitingPane />;
   return <BoardPane />;
 }
