@@ -830,7 +830,7 @@ mod tests {
 /// 红测试：非法 skill 的警告文案照 DSH skill-filesystem 的 logger.warn 形状
 /// （`skill file <path> ignored: <reason>`，skill-filesystem/src/index.ts:904-926）。
 #[cfg(test)]
-mod t006_19_warning_format_tests {
+mod warning_format_tests {
     use super::*;
 
     #[test]

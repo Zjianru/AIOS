@@ -555,7 +555,7 @@ pub(crate) fn router_with_state(state: Arc<AppState>) -> Router {
 }
 
 #[cfg(test)]
-mod t012_attachment_http_tests {
+mod attachment_http_tests {
     use super::*;
     use axum::body::Bytes;
     use axum::extract::State;
@@ -806,7 +806,7 @@ mod t012_attachment_http_tests {
 }
 
 #[cfg(test)]
-mod t009_error_tests {
+mod error_response_tests {
     use super::*;
 
     async fn body_json(response: Response) -> serde_json::Value {
@@ -892,7 +892,7 @@ mod t009_error_tests {
 }
 
 #[cfg(test)]
-mod t011_ops_tests {
+mod ops_endpoint_tests {
     use super::*;
     use crate::connection::StreamOps;
     use axum::body::Bytes;
@@ -1162,7 +1162,7 @@ mod t011_ops_tests {
 }
 
 #[cfg(test)]
-mod t007_static_tests {
+mod static_file_tests {
     use super::*;
 
     #[test]
@@ -1210,7 +1210,7 @@ mod t007_static_tests {
 }
 
 #[cfg(test)]
-mod t015_local_file_tests {
+mod local_file_tests {
     use super::*;
     use std::net::IpAddr;
 

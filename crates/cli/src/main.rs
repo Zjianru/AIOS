@@ -1645,7 +1645,7 @@ mod tests {
 
 /// T006.19 红测试：/compact 失败文案逐码照 DSH command-compact 的 expectedFailure。
 #[cfg(test)]
-mod t006_19_compact_failure_tests {
+mod compact_failure_tests {
     use agent::{AgentError, ManualCompactionErrorCode};
 
     use crate::compact_failure_text;

@@ -1313,7 +1313,7 @@ mod tests {
 
 /// 红测试：job 结算 detail 的 signal 用名字（DSH jobs-local `signal: SIGTERM`）。
 #[cfg(test)]
-mod t006_19_signal_tests {
+mod signal_tests {
     use super::*;
 
     #[test]

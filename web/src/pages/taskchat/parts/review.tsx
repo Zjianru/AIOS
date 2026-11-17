@@ -23,7 +23,7 @@ export function ReviewSection({ gate }: { gate: TaskReadGate }) {
         <div className="mt-1 space-y-1.5" data-kind="review-verdicts">
           {verdicts.map((verdict, index) => (
             <div
-              key={String(index)}
+              key={String(verdict.at) + ':' + String(verdict.candidateOrdinal ?? 0) + ':' + String(index)}
               className="border-l-2 border-line-2 pl-2.5 text-2 leading-5"
               data-kind="review-verdict"
             >
@@ -58,7 +58,7 @@ export function ReviewSection({ gate }: { gate: TaskReadGate }) {
         <ul className="mt-0.5 space-y-1" data-kind="review-attempts">
           {attempts.map((attempt, index) => (
             <li
-              key={String(attempt.attempt) + '-' + String(index)}
+              key={String(attempt.attempt) + ':' + String(attempt.at) + ':' + String(index)}
               className="text-2 leading-5"
               data-kind="review-attempt"
             >

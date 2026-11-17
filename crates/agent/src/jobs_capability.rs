@@ -205,7 +205,7 @@ pub(crate) fn lifecycle_notify_warning(job_id: &str, error: &dyn std::fmt::Displ
 /// T006.19 更正 ③ 的红测试：DSH jobs-local recordSessionEvent 是试/捕获 + logger.warn，
 /// 不是把 append 失败抛给 producer；AIOS 用 stderr 留痕，不打断结算与唤醒。
 #[cfg(test)]
-mod t006_19_jobs_lifecycle_tests {
+mod jobs_lifecycle_tests {
     use super::{lifecycle_notify_warning, lifecycle_record_warning};
 
     #[test]

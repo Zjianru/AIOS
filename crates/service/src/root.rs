@@ -487,7 +487,7 @@ pub(crate) fn tool_key_source(options: &RootSessionOptions) -> tools::ToolKeySou
 
 /// T048：Kind 系统提示也要直接告诉模型派单标题的字数上限（卡片标题，20 字以内，中文字符按一字计）。
 #[cfg(test)]
-mod t048_title_limit_policy_tests {
+mod title_limit_policy_tests {
     use super::KIND_POLICY;
 
     #[test]

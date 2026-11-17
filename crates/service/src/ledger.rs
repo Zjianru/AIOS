@@ -479,7 +479,7 @@ mod ledger_tests {
     }
 
     #[test]
-    fn t056_2_whitelist_only_accepts_uuid_user_rpc_ids() {
+    fn whitelist_only_accepts_uuid_user_rpc_ids() {
         use super::is_typed_by_user;
         let user = |rpc_id: Option<&str>| model::MessageSource::User {
             rpc_id: rpc_id.map(str::to_owned),

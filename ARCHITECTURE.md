@@ -25,6 +25,7 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 - **session**：会话事件与格式版本、JSONL 追加与读取、折叠/恢复、单写者文件锁；session/model 是会话模型选择（连接/模型/想要的档）的 durable 事实，最近一条胜出（重开恢复）。
 - **memory**：记忆库的数据层（SQLite + FTS）：关于你、条目、日记、笔记、修订（只追加）、隔离区、做梦 run 与逐处改动；写入带 actor（User/Kind/Dream）与来源，按 actor 挡越界写入；不依赖 workspace 内其它 crate。服务层的 memory runtime / 做梦运行时、注入与记忆页协议在 service 里装配（见「记忆」一节）。
 - **tasks**：任务聚合（Task、Run、Attempt、报告、执行者写入的缺项）与 SQLite 存储（kv/task/effect）；持久效果表（launch/relay/停止 relay/delivery/notice/restart，同键合并、代次、退避、健康）、启动扫描（效果循环前把上次没结束的 Attempt 收成 reported/interrupted/not_opened，打断的排 restart，一次启动合并一条并记下本次打断的任务）、阶段派生（stopped/interrupted → 待补足条件）和席位计数（起跑预约 + 在跑集合，照 DSH WorkerSlots）；不依赖 agent 和 session。
+- **calendar**：日历库的数据层与纯规则：约定/版本/运行记录（SQLite，单写者、迁移、schema 版本）、RRULE 规则与注入时钟、复核与合并的纯逻辑；只依赖 rusqlite、serde、rrule、chrono、chrono-tz，不依赖 workspace 内其它 crate。服务层的运行时、送达、循环和页面协议在 service 里装配（见「日历」一节）。
 - **tools**：Tool 接口与 ToolSet、工具批执行（独占屏障/并行池/按模型顺序提交）、内置文件工具与观察策略、spill、后台 job、bash、canvas（画布）。
 - **agent**：轮次驱动、收件箱、能力注册表与各能力实现；唯一产品组装入口是 Agent::open；Agent::select 写 session/model 并只改下一轮。
 - **agent 能力**：compaction（自动/溢出/手动）、prune、instructions、skill、todo、ask、spill、reminder、jobs。
@@ -40,6 +41,11 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 - **注入**：agent 内置一个 PreStep 能力按 provider 取记忆，provider 由服务装配（MemoryRuntime 的 kind/thin provider）；它给出 identity 版本 + 文本（关于你、相关条目），作为一条新来源的 user 消息（MessageSource::MemoryContext）进请求，不复用 instructions 来源、也不改系统指令；identity 变了下一轮追加替换，压缩后再出现，手动压缩不注入。
 - **做梦是受限后台 agent**：独立会话（Kind 当前模型快照），只在启动/回合结束/任务报回/记忆页打开/用户说整理几个时机顺手检查一次，不常驻、不另建调度器；忙就等下一个时机，错过多个合成一次。工具只给只读（搜、按 id 读记忆/日记、读 Kind 对话、读任务报回）+ 只写笔记的 memory_dream_apply；读窗口从 DreamSettings 的 last_success_at / last_read_seq 起（工具参数只能往里收），网页/文件/工具输出不读；store 以 actor=Dream 再挡一次。结果写 dream_run + 逐处 dream_change，成功/失败出程序卡；撤销逐处只在当前修订仍等于这次写的版本时成立，用户后来改过就跳过并报告。
 - **不进 executor**：记忆与做梦的装配在 service/src/memory/（runtime、工具、页面读写、做梦读任务报回的事实整理），executor 只保留「给任务会话装记忆上下文 provider」这一处注入接线、并只提供任务库的只读读写面（tasks_store / exec_paused），没有记忆业务代码。页面协议见协议 16（MemoryRead/MemoryAction + seq=0 的 memory/changed 推送）。
+
+## 日历
+
+- **数据层（calendar crate）**：唯一存储是 <数据目录>/calendar.sqlite（kv/schema 版本、appointment 当前快照、appointment_version 每版一行只增、run 每次一行只增、watch_state 上次内容）；单写者、Immediate 事务，结果只往前走（排着 → 已送/跳过/没送成，没送成 → 已送）。依赖 rusqlite、serde、rrule 0.14.0、chrono 0.4.45、chrono-tz 0.10.4；不依赖 service/agent/tasks/session/memory。
+- **到点怎么进 Kind**：服务 runtime 一条 timer 只睡最近的 next_trigger；到点先写 run（排着），再在 tasks 效果表写 AppointmentWake{appointment_id, run_id}（键是 run id）；效果泵按退避领取，把 User 消息 Steer 进 Kind 根会话（rpc_id appointment-wake:<约定>:<run>，正文 JSON kind=appointment_wake）；根会话不在就留效果等；启动时有 run 没效果行的补上。复核/合并/暂停/循环都是运行时按库与任务事实决定，页面只读 calendar-read、动作走 calendar-action。
 
 ## 工具、确认卡与根会话
 
@@ -64,7 +70,7 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 
 - cli → agent、credentials、model、monitor、service、session、tools、web
 - web → agent、model、monitor、service、session
-- service → agent、credentials、memory、model、session、tasks、tools
+- service → agent、calendar、credentials、memory、model、session、tasks、tools
 - agent → model、session、tools
 - replay → model、session
 - monitor → session
@@ -74,6 +80,7 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 - model 不依赖其他内部 crate
 - tasks 不依赖其他内部 crate
 - memory 不依赖其他内部 crate
+- calendar 不依赖其他内部 crate
 
 - 这份清单按 `cargo metadata --no-deps` 的正常 path 依赖（`kind` 为 null）维护；新增或删除内部依赖时同步。
 - 只允许上层依赖下层；下层不反向依赖上层。
