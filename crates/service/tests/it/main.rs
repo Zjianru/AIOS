@@ -5,6 +5,7 @@ mod aios_query;
 mod attachments;
 mod calendar;
 mod calendar_cycle;
+mod calendar_kind_tools;
 mod common;
 mod cross_connection;
 mod disabled;

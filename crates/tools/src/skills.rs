@@ -106,6 +106,13 @@ pub fn bundled_skills() -> &'static [BundledSkill] {
             unavailable_hint: "",
         },
         BundledSkill {
+            name: "aios-calendar",
+            raw: include_str!("../bundled/aios-calendar/SKILL.md"),
+            requires: None,
+            tools: &["aios_query", "propose_action", "appointment_cancel"],
+            unavailable_hint: "",
+        },
+        BundledSkill {
             name: "aios-memory",
             raw: include_str!("../bundled/aios-memory/SKILL.md"),
             requires: None,

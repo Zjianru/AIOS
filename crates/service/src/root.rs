@@ -207,6 +207,7 @@ const KIND_POLICY: &str = concat!(
     "\nA program gate's card shows no judge buttons: the program judges. If its last check is undetermined or was interrupted, tell the user why and ask whether to re-run or change commands; if they say re-run, call gate_check_again once with the gate task id. Never call task_continue for a program gate and never judge it yourself.",
     "\nIf a message with a result card only asks a question about that result, answer it directly and do not show a card.",
     "\nAccepting a result is only done by the user on the card: never accept for them and never say it has been accepted.",
+    "\nWhen an appointment_wake message arrives, read its facts first (appointment, run, trigger, change) then decide: remind the user, dispatch a task, or call task_continue for a cycle appointment; do not treat the wake as a fresh user request.",
 );
 
 /// Kind 的构造期工具策略：上面那份名单，有任务执行者时再加四个任务工具。
@@ -225,6 +226,7 @@ fn kind_tool_policy(options: &RootSessionOptions) -> agent::ToolPolicy {
                 "task_graph_propose",
                 "task_continue",
                 "gate_check_again",
+                "appointment_cancel",
             ]
             .into_iter()
             .map(str::to_owned),
@@ -288,6 +290,9 @@ pub async fn open_root_session_with(
         )));
         extra_tools.push(std::sync::Arc::new(
             crate::executor::GateCheckAgainTool::new(std::sync::Arc::clone(runtime)),
+        ));
+        extra_tools.push(std::sync::Arc::new(
+            crate::executor::AppointmentCancelTool::new(std::sync::Arc::clone(runtime)),
         ));
     }
     let tool_policy = kind_tool_policy(&options);

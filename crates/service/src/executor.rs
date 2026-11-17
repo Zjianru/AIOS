@@ -42,6 +42,8 @@ use crate::session_host::ServiceHost;
 
 mod calendar_api;
 mod calendar_cycle;
+mod calendar_tools;
+pub use calendar_tools::AppointmentCancelTool;
 mod calendar_watch;
 mod task_tools;
 pub(crate) use task_tools::*;
