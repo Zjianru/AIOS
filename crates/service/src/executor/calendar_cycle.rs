@@ -221,6 +221,27 @@ impl TaskRuntime {
     }
 }
 
+/// 这份报告所属 Attempt 的改动路径（不拿整个任务累计，避免每轮都带上前几轮的文件）。
+fn report_changed_paths(data_dir: &std::path::Path, task: &Task, report: &Report) -> Vec<String> {
+    let Some(attempt) = task.attempt(report.attempt_id) else {
+        return Vec::new();
+    };
+    let Some(conversation) = &attempt.conversation else {
+        return Vec::new();
+    };
+    let Ok(session_id) = SessionId::parse(conversation.as_str()) else {
+        return Vec::new();
+    };
+    let Ok(snapshot) = session::SessionStore::open_read_only(data_dir, &session_id) else {
+        return Vec::new();
+    };
+    crate::result_cards::changed_paths(snapshot.events(), task.effective_cwd())
+}
+
+fn signature_with_files(report: &Report, checks: &[String], files: &[String]) -> String {
+    format!("{:?}|{checks:?}|{files:?}", report.state)
+}
+
 fn report_signature(data_dir: &std::path::Path, task: &Task, report: &Report) -> String {
     let checks: Vec<String> = report
         .checks
@@ -232,6 +253,45 @@ fn report_signature(data_dir: &std::path::Path, task: &Task, report: &Report) ->
             )
         })
         .collect();
-    let files = crate::result_cards::changed_files(data_dir, task);
-    format!("{:?}|{checks:?}|{files:?}", report.state)
+    let files = report_changed_paths(data_dir, task, report);
+    signature_with_files(report, &checks, &files)
+}
+
+#[cfg(test)]
+mod signature_tests {
+    use super::*;
+    use tasks::{AttemptId, ReportId, ReportOrigin, ReportState};
+
+    fn report(attempt: u64) -> Report {
+        Report {
+            id: ReportId::from(format!("report-{attempt}")),
+            attempt_id: AttemptId(attempt),
+            state: ReportState::Ready,
+            origin: ReportOrigin::Agent,
+            summary: "done".to_owned(),
+            question: None,
+            at: 1_794_936_000_000 + i64::try_from(attempt).unwrap(),
+            version: 1,
+            checks: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn different_files_per_attempt_make_different_signatures() {
+        let first = signature_with_files(&report(1), &[], &["a.rs".to_owned()]);
+        let second = signature_with_files(&report(2), &[], &["b.rs".to_owned()]);
+        let third = signature_with_files(&report(3), &[], &["c.rs".to_owned()]);
+        assert_ne!(first, second);
+        assert_ne!(second, third);
+    }
+
+    #[test]
+    fn same_files_and_checks_keep_the_signature() {
+        let files = vec!["a.rs".to_owned()];
+        let checks = vec!["cargo test:false".to_owned()];
+        assert_eq!(
+            signature_with_files(&report(1), &checks, &files),
+            signature_with_files(&report(2), &checks, &files)
+        );
+    }
 }
