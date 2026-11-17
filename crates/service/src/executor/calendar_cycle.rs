@@ -217,7 +217,7 @@ impl TaskRuntime {
             .take(3)
             .map(|report| report_signature(&self.data_dir, task, report))
             .collect();
-        signatures.windows(2).all(|pair| pair[0] == pair[1])
+        cycle_signatures_stall(&signatures)
     }
 }
 
@@ -240,6 +240,11 @@ fn report_changed_paths(data_dir: &std::path::Path, task: &Task, report: &Report
 
 fn signature_with_files(report: &Report, checks: &[String], files: &[String]) -> String {
     format!("{:?}|{checks:?}|{files:?}", report.state)
+}
+
+/// 连续 3 份签名一样就算没进展；单独抽出来给测试直接看签名序列。
+fn cycle_signatures_stall(signatures: &[String]) -> bool {
+    signatures.len() >= 3 && signatures.windows(2).all(|pair| pair[0] == pair[1])
 }
 
 fn report_signature(data_dir: &std::path::Path, task: &Task, report: &Report) -> String {
@@ -292,6 +297,109 @@ mod signature_tests {
         assert_eq!(
             signature_with_files(&report(1), &checks, &files),
             signature_with_files(&report(2), &checks, &files)
+        );
+    }
+}
+
+#[cfg(test)]
+mod attempt_signature_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn write_events(path: &std::path::Path) -> Vec<session::EventKind> {
+        vec![
+            session::EventKind::ToolCall {
+                turn: 1,
+                step: 1,
+                call_id: "call-write".to_owned(),
+                name: "write".to_owned(),
+                arguments: "{}".to_owned(),
+            },
+            session::EventKind::ToolResult {
+                turn: 1,
+                step: 1,
+                message: model::Message::tool_result("call-write", "ok", false),
+                error: None,
+                meta: Some(json!({ "diffs": [{ "path": path }] })),
+            },
+        ]
+    }
+
+    #[test]
+    fn report_signature_uses_only_its_own_attempt_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let data = directory.path();
+        let mut store = tasks::Store::open(data.join("tasks.sqlite")).unwrap();
+        let now = 1_794_936_000_000_i64;
+        let task = store
+            .create_task(
+                tasks::NewTask {
+                    title: "循环签名".to_owned(),
+                    requirement: "每轮改不同文件".to_owned(),
+                    dod: "dod".to_owned(),
+                    cwd: data.to_path_buf(),
+                    conversation: tasks::ConversationId::new("kind-cycle-signature"),
+                    model: tasks::ModelChoice {
+                        connection: "deepseek".to_owned(),
+                        model: "deepseek-flash".to_owned(),
+                        effort_wanted: "high".to_owned(),
+                    },
+                    tools: Vec::new(),
+                },
+                now,
+            )
+            .unwrap();
+        for (index, file) in ["a.rs", "b.rs", "c.rs"].into_iter().enumerate() {
+            let mut session = session::SessionStore::create(data, data).unwrap();
+            let attempt = store.begin_attempt(&task.id, now + index as i64).unwrap();
+            store
+                .attach_session(
+                    &task.id,
+                    attempt,
+                    tasks::ConversationId::new(session.id().as_str()),
+                )
+                .unwrap();
+            session.append(&write_events(&data.join(file))).unwrap();
+            store
+                .record_report(
+                    &task.id,
+                    attempt,
+                    tasks::NewReport {
+                        state: tasks::ReportState::Ready,
+                        origin: tasks::ReportOrigin::Agent,
+                        summary: format!("第 {index} 轮"),
+                        question: None,
+                    },
+                    now + index as i64,
+                )
+                .unwrap();
+            store
+                .end_attempt(
+                    &task.id,
+                    attempt,
+                    now + index as i64,
+                    tasks::AttemptEnd::Reported,
+                )
+                .unwrap();
+        }
+        let task = store.task(&task.id).unwrap().unwrap();
+        assert_eq!(task.reports.len(), 3);
+        let signatures: Vec<String> = task
+            .reports
+            .iter()
+            .map(|report| report_signature(data, &task, report))
+            .collect();
+        assert_eq!(
+            signatures
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            3,
+            "三份报告改的文件不同，签名必须不同：{signatures:?}"
+        );
+        assert!(
+            !super::cycle_signatures_stall(&signatures),
+            "签名不同就不该按连续三同签名暂停"
         );
     }
 }

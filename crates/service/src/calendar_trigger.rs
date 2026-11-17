@@ -94,6 +94,7 @@ fn weekday_of(start: &DateTime<chrono_tz::Tz>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     fn at(zone: &str, y: i32, mo: u32, d: u32, h: u32, mi: u32) -> i64 {
         let tz: chrono_tz::Tz = zone.parse().unwrap();

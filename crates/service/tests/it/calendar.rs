@@ -182,6 +182,74 @@ async fn startup_recovery_sends_a_queued_run_without_effect() {
 }
 
 #[tokio::test]
+async fn two_appointments_due_under_one_global_pause_both_use_the_pause_reason() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
+    let now = now_ms();
+    let first = appointment(&store, "暂停一", now - 5_000, "FREQ=SECONDLY");
+    let second = appointment(&store, "暂停二", now - 5_000, "FREQ=SECONDLY");
+    // 先排远点，开宿主后再进全局暂停，最后把两条都改成已到期，一起开闸。
+    store
+        .set_next_trigger(&first.id, Some(now + 3_600_000))
+        .unwrap();
+    store
+        .set_next_trigger(&second.id, Some(now + 3_600_000))
+        .unwrap();
+    let host = crate::common::open(crate::common::options(data)).await;
+    host.dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
+        currency: None,
+        paused: Some(true),
+        seats: None,
+        bash: None,
+    }))
+    .await
+    .expect("进全局暂停");
+    store
+        .set_next_trigger(&first.id, Some(now_ms() + 100))
+        .unwrap();
+    store
+        .set_next_trigger(&second.id, Some(now_ms() + 100))
+        .unwrap();
+    // 暂停期间到点，且攒出多次（FREQ=SECONDLY），再开闸。
+    tokio::time::sleep(std::time::Duration::from_millis(3_200)).await;
+    host.dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
+        currency: None,
+        paused: Some(false),
+        seats: None,
+        bash: None,
+    }))
+    .await
+    .expect("开闸");
+    wait_until("两条都送", || {
+        store
+            .runs(&first.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Sent)
+            && store
+                .runs(&second.id)
+                .unwrap()
+                .iter()
+                .any(|run| run.result == calendar::RunResult::Sent)
+    })
+    .await;
+    for id in [&first.id, &second.id] {
+        let run = store
+            .runs(id)
+            .unwrap()
+            .into_iter()
+            .find(|run| run.result == calendar::RunResult::Sent)
+            .unwrap();
+        assert!(
+            run.reason.contains("全局暂停期间到点"),
+            "同一次开闸的多条 due 都应写暂停原因：{}",
+            run.reason
+        );
+    }
+    host.shutdown().await;
+}
+#[tokio::test]
 async fn missed_while_service_was_down_uses_the_missed_merge_reason() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path();

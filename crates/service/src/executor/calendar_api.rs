@@ -208,6 +208,7 @@ impl TaskRuntime {
         store: &calendar::CalendarStore,
         appointment: &Appointment,
         now: i64,
+        pause_since: i64,
     ) -> Result<(), String> {
         let next = appointment
             .next_trigger_at
@@ -311,7 +312,7 @@ impl TaskRuntime {
         };
 
         let merged_reason = if merged > 0 {
-            let since = self.global_pause_since.swap(0, Ordering::SeqCst);
+            let since = pause_since;
             if since > 0 && next >= since {
                 calendar::merged_reason_global_pause(merged)
             } else {
@@ -392,14 +393,21 @@ impl TaskRuntime {
         if self.exec_paused.load(Ordering::SeqCst) {
             return;
         }
+        let pause_since = self.global_pause_since.load(Ordering::SeqCst);
         let appointments = store.due_appointments(now).unwrap_or_default();
         for appointment in appointments {
             if self.shutting_down.load(Ordering::SeqCst) {
                 return;
             }
-            if let Err(error) = self.calendar_review_one(store, &appointment, now).await {
+            if let Err(error) = self
+                .calendar_review_one(store, &appointment, now, pause_since)
+                .await
+            {
                 eprintln!("日历复核失败：{error}");
             }
+        }
+        if pause_since > 0 {
+            self.global_pause_since.store(0, Ordering::SeqCst);
         }
     }
 
