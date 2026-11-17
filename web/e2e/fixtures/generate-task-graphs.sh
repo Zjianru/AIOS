@@ -4,4 +4,5 @@
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 cargo test -p service --test it work_graph_fixture::write_task_graphs_fixture -- --ignored --exact --nocapture
+node "$(dirname "$0")/normalize-task-graphs.mjs" "$(dirname "$0")/t062-task-graphs.sqlite"
 shasum -a 256 web/e2e/fixtures/t062-task-graphs.sqlite
