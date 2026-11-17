@@ -1221,6 +1221,14 @@ impl Store {
         claim_effect_in(&conn, kind, now, true)
     }
 
+    /// 效果表里最近的到期时间（所有种类）；泵用它决定下一次醒来的上限，退避重试不会睡过头。
+    pub fn next_effect_due(&self) -> Result<Option<i64>, TaskError> {
+        let conn = self.lock()?;
+        conn.query_row("SELECT MIN(due) FROM effect", [], |row| row.get(0))
+            .optional()
+            .map_err(TaskError::from)
+    }
+
     /// 这个键的效果还在不在排队。
     pub fn effect_pending(&self, kind: EffectKind, key: &str) -> Result<bool, TaskError> {
         let conn = self.lock()?;

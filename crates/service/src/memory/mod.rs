@@ -21,8 +21,13 @@ pub struct MemoryRuntime {
 
 /// 程序送进会话的 user 消息前缀（中继卡、任务停止、抄送、重启说明、门判定、上游变更）。
 /// 它们不是用户自己说的话，不能当「记住」的出处，也不进 Kind 对话索引。
-const PROGRAM_MESSAGE_PREFIXES: [&str; 4] =
-    ["task-", "restart:", "gate-verdict:", "upstream-changed:"];
+const PROGRAM_MESSAGE_PREFIXES: [&str; 5] = [
+    "task-",
+    "restart:",
+    "gate-verdict:",
+    "upstream-changed:",
+    "appointment-wake:",
+];
 
 /// 这条 user 消息是不是用户自己发的（程序送来的不算）；索引和「记住」的闸共用这一份。
 pub(crate) fn user_message_sent(message: &model::Message) -> bool {

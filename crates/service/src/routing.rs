@@ -164,6 +164,25 @@ impl RootHost {
                 .accept_many(&request)
                 .await
                 .map(Response::TaskAcceptMany),
+            // 日历：读/动作都在任务执行者的日历库；动作完推 calendar/changed。
+            Call::CalendarRead(request) => match self.task_runtime() {
+                Some(runtime) => runtime
+                    .calendar_read(request)
+                    .map(Response::CalendarRead)
+                    .map_err(ServiceError::TaskUnavailable),
+                None => Err(ServiceError::TaskUnavailable(
+                    "日历库没开，读不了日历".to_owned(),
+                )),
+            },
+            Call::CalendarAction(request) => match self.task_runtime() {
+                Some(runtime) => runtime
+                    .calendar_action(request)
+                    .map(Response::CalendarAction)
+                    .map_err(ServiceError::TaskUnavailable),
+                None => Err(ServiceError::TaskUnavailable(
+                    "日历库没开，改不了约定".to_owned(),
+                )),
+            },
             // 记忆页：读/变更都在记忆库；变更完推一条 memory/changed 让页面重读。
             Call::MemoryRead(request) => self.memory_read(request).await.map(Response::MemoryRead),
             Call::MemoryAction(request) => self

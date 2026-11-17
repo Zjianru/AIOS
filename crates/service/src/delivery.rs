@@ -693,51 +693,40 @@ fn with_time(text: &str, at: Option<i64>) -> String {
     at.map_or_else(|| text.to_owned(), |at| format!("{text} · {}", clock(at)))
 }
 
-/// 本机本地时区：读系统 date +%z（随 TZ 环境），不引时区 crate、不用 unsafe。
-fn clock(at: i64) -> String {
-    let offset = local_offset_seconds();
-    let days = (at + offset).div_euclid(86_400);
-    let secs = (at + offset).rem_euclid(86_400);
-    let (_, month, day) = civil_from_days(days);
-    format!(
-        "{month}月{day}日 {:02}:{:02}",
-        secs / 3600,
-        (secs % 3600) / 60
-    )
-}
-
-fn local_offset_seconds() -> i64 {
-    let Ok(output) = std::process::Command::new("date").arg("+%z").output() else {
-        return 0;
-    };
-    let text = String::from_utf8_lossy(&output.stdout);
-    let text = text.trim();
-    let bytes = text.as_bytes();
-    if bytes.len() != 5 || (bytes[0] != b'+' && bytes[0] != b'-') {
-        return 0;
+/// 本机本地时区：TZ 环境优先，其次 /etc/localtime 指向的 IANA 名，最后 UTC。
+fn local_timezone() -> chrono_tz::Tz {
+    if let Ok(name) = std::env::var("TZ")
+        && let Ok(zone) = name.parse()
+    {
+        return zone;
     }
-    let Ok(hours) = text[1..3].parse::<i64>() else {
-        return 0;
-    };
-    let Ok(minutes) = text[3..5].parse::<i64>() else {
-        return 0;
-    };
-    let sign = if bytes[0] == b'-' { -1 } else { 1 };
-    sign * (hours * 3600 + minutes * 60)
+    if let Ok(path) = std::fs::read_link("/etc/localtime")
+        && let Some(name) = path
+            .to_str()
+            .and_then(|path| path.split("zoneinfo/").nth(1))
+        && let Ok(zone) = name.parse()
+    {
+        return zone;
+    }
+    chrono_tz::UTC
 }
 
-/// Howard Hinnant 的 civil_from_days；UTC 显示，避免引入时区依赖。
-fn civil_from_days(days: i64) -> (i64, i64, i64) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    (if m <= 2 { y + 1 } else { y }, m, d)
+fn clock(at: i64) -> String {
+    clock_in(local_timezone(), at)
+}
+
+fn clock_in(zone: chrono_tz::Tz, at: i64) -> String {
+    use chrono::{Datelike, TimeZone, Timelike};
+    let Some(time) = zone.timestamp_opt(at, 0).single() else {
+        return "时间未知".to_owned();
+    };
+    format!(
+        "{}月{}日 {:02}:{:02}",
+        time.month(),
+        time.day(),
+        time.hour(),
+        time.minute()
+    )
 }
 
 #[cfg(test)]

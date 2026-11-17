@@ -149,6 +149,7 @@ impl RootHost {
             &options,
             Arc::clone(&selection),
             Arc::downgrade(&inner),
+            Some(events.clone()),
         ) {
             Ok(runtime) => Some(Arc::new(runtime)),
             Err(error) => {
@@ -251,6 +252,7 @@ impl RootHost {
             if !busy && let Err(error) = runtime.scan_at_boot(&new_boot_id()) {
                 eprintln!("启动扫描失败：{error}");
             }
+            runtime.calendar_recover();
             let pump = runtime.start_pump();
             *host.task_pump.lock().expect("task pump 锁被毒化") = Some(pump);
         }
@@ -265,6 +267,14 @@ impl RootHost {
     #[doc(hidden)]
     pub fn task_runtime(&self) -> Option<&Arc<crate::executor::TaskRuntime>> {
         self.task_runtime.as_ref()
+    }
+
+    /// 测试钩子：下一次日历唤醒送达前失败一次（退避重试用例）。
+    #[doc(hidden)]
+    pub fn crash_before_next_wake(&self) {
+        if let Some(runtime) = &self.task_runtime {
+            runtime.crash_before_next_wake();
+        }
     }
 
     /// 服务绑定监听后记下实际地址；web_fetch 读它拒绝访问 AIOS 自己。

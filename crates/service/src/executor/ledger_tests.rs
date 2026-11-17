@@ -31,7 +31,8 @@ fn open_runtime() -> (tempfile::TempDir, Arc<TaskRuntime>) {
         web_listen: None,
         task_runtime: None,
     };
-    let runtime = TaskRuntime::new(&options, Arc::new(Mutex::new(None)), Weak::new()).unwrap();
+    let runtime =
+        TaskRuntime::new(&options, Arc::new(Mutex::new(None)), Weak::new(), None).unwrap();
     (directory, Arc::new(runtime))
 }
 
@@ -285,6 +286,7 @@ async fn ledger_note_tool_rejects_bad_kind_long_text_and_ended_attempt() {
         },
         Arc::new(Mutex::new(None)),
         Weak::new(),
+        None,
     )
     .unwrap();
     let runtime = Arc::new(runtime);

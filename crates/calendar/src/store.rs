@@ -341,6 +341,66 @@ impl CalendarStore {
         Ok(appointment)
     }
 
+    /// 活跃约定里最近的 next_trigger；运行时计时器只等这一条。
+    pub fn next_wake_at(&self) -> Result<Option<i64>, CalendarError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| CalendarError::InvalidInput("日历库锁坏了".to_owned()))?;
+        conn.query_row(
+            "SELECT MIN(next_trigger_at) FROM appointment
+             WHERE status = 'active' AND next_trigger_at IS NOT NULL",
+            [],
+            |row| row.get::<_, Option<i64>>(0),
+        )
+        .map_err(CalendarError::from)
+    }
+
+    /// 到点该复核的活跃约定（next_trigger_at <= now）。
+    pub fn due_appointments(&self, now: i64) -> Result<Vec<Appointment>, CalendarError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| CalendarError::InvalidInput("日历库锁坏了".to_owned()))?;
+        let mut statement = conn.prepare(
+            "SELECT id FROM appointment
+             WHERE status = 'active' AND next_trigger_at IS NOT NULL AND next_trigger_at <= ?1
+             ORDER BY next_trigger_at, id",
+        )?;
+        let ids: Vec<String> = statement
+            .query_map(params![now], |row| row.get::<_, String>(0))?
+            .collect::<Result<_, _>>()?;
+        let mut appointments = Vec::with_capacity(ids.len());
+        for id in ids {
+            appointments.push(load_appointment(&conn, &id)?);
+        }
+        Ok(appointments)
+    }
+
+    /// 运行时推进下次触发；不算内容改版（版本号不动）。
+    pub fn set_next_trigger(
+        &self,
+        id: &str,
+        next_trigger_at: Option<i64>,
+    ) -> Result<Appointment, CalendarError> {
+        let now = (self.clock)();
+        let mut guard = self
+            .conn
+            .lock()
+            .map_err(|_| CalendarError::InvalidInput("日历库锁坏了".to_owned()))?;
+        let transaction = guard.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let appointment = load_appointment(&transaction, id)?;
+        transaction.execute(
+            "UPDATE appointment SET next_trigger_at = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, next_trigger_at, now],
+        )?;
+        transaction.commit()?;
+        let mut appointment = appointment;
+        appointment.next_trigger_at = next_trigger_at;
+        appointment.updated_at = now;
+        Ok(appointment)
+    }
+
     pub fn versions(&self, id: &str) -> Result<Vec<AppointmentVersion>, CalendarError> {
         let conn = self
             .conn

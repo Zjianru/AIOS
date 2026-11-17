@@ -2514,6 +2514,9 @@ name = "service"
 version = "0.0.0"
 dependencies = [
  "agent",
+ "calendar",
+ "chrono",
+ "chrono-tz",
  "credentials",
  "encoding_rs",
  "htmd",

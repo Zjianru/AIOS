@@ -40,6 +40,7 @@ use crate::protocol::{
 use crate::root::RootSessionOptions;
 use crate::session_host::ServiceHost;
 
+mod calendar_api;
 mod task_tools;
 pub(crate) use task_tools::*;
 
@@ -294,6 +295,12 @@ pub struct TaskRuntime {
     changed: broadcast::Sender<String>,
     /// 测试钩子：下一次 relay 在 Kind append 前「崩掉」——留下效果行，泵退出。
     crash_before_relay: AtomicBool,
+    /// 日历库；打不开就没有日历能力。
+    calendar: Option<Arc<calendar::CalendarStore>>,
+    /// calendar/changed 的推送端（由根宿主注入）。
+    calendar_events: Option<broadcast::Sender<ServiceEvent>>,
+    /// 测试钩子：下一次日历唤醒在送进 Kind 前失败一次，留下效果行等退避重试。
+    crash_before_wake: AtomicBool,
 }
 
 impl TaskRuntime {
@@ -301,6 +308,7 @@ impl TaskRuntime {
         options: &RootSessionOptions,
         selection: Arc<Mutex<Option<session::ModelSelection>>>,
         inner: Weak<tokio::sync::Mutex<Option<ServiceHost>>>,
+        calendar_events: Option<broadcast::Sender<ServiceEvent>>,
     ) -> Result<Self, TaskError> {
         let store = Store::open(options.data_dir.join(TASKS_DB_FILE))?;
         // 重启后暂停和席位还在：启动时读一次设置文件，缺了按默认。
@@ -325,6 +333,11 @@ impl TaskRuntime {
             gate_jobs: Mutex::new(std::collections::HashMap::new()),
             changed: broadcast::channel(64).0,
             crash_before_relay: AtomicBool::new(false),
+            calendar: calendar::CalendarStore::open(options.data_dir.join("calendar.sqlite"))
+                .ok()
+                .map(Arc::new),
+            calendar_events,
+            crash_before_wake: AtomicBool::new(false),
         })
     }
 
@@ -1148,6 +1161,12 @@ impl TaskRuntime {
     ///
     /// 生产里进程退出由操作系统回收；测试要复现「重启后会话写者已经放开」。
     #[doc(hidden)]
+    #[doc(hidden)]
+    pub fn crash_before_next_wake(&self) {
+        self.crash_before_wake.store(true, Ordering::SeqCst);
+        self.wake();
+    }
+
     pub fn crash(&self) {
         self.shutting_down.store(true, Ordering::SeqCst);
         self.running.lock().expect("thinagent 表锁被毒化").clear();
@@ -1182,6 +1201,11 @@ impl TaskRuntime {
                 return;
             }
             if !self.pump_paused.load(Ordering::SeqCst) {
+                // 日历计时器与效果泵同一条循环：醒来先补到期的约定，再处理效果。
+                self.calendar_tick(Self::now()).await;
+                if self.shutting_down.load(Ordering::SeqCst) {
+                    return;
+                }
                 let mut worked = false;
                 match self
                     .store
@@ -1246,6 +1270,23 @@ impl TaskRuntime {
                 if self.shutting_down.load(Ordering::SeqCst) {
                     return;
                 }
+                // 日历到点唤醒：全局暂停时先不送，开闸后再领；根会话不在就 Later，退避重试。
+                if !self.exec_paused.load(Ordering::SeqCst) {
+                    match self
+                        .store
+                        .claim_effect_ordered(EffectKind::AppointmentWake, Self::now())
+                    {
+                        Ok(Some(claim)) => {
+                            worked = true;
+                            self.deliver_appointment_wake(claim).await;
+                        }
+                        Ok(None) => {}
+                        Err(error) => eprintln!("日历唤醒领取失败：{error}"),
+                    }
+                }
+                if self.shutting_down.load(Ordering::SeqCst) {
+                    return;
+                }
                 // 全局暂停只关 launch 这一道闸门：relay 已经送完了，队里的 launch 不领。
                 // 席位满时也不领：效果原样留在库里（Later，不算失败），释放后按 seq 再领。
                 if !self.exec_paused.load(Ordering::SeqCst) && self.has_launch_room() {
@@ -1272,9 +1313,15 @@ impl TaskRuntime {
                     continue;
                 }
             }
+            let now = Self::now();
+            let mut sleep_ms = self.calendar_sleep_ms(now);
+            if let Ok(Some(due)) = self.store.next_effect_due() {
+                let retry = u64::try_from((due - now).clamp(10, 60_000)).unwrap_or(100);
+                sleep_ms = sleep_ms.min(retry);
+            }
             tokio::select! {
                 _ = self.notify.notified() => {}
-                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                _ = tokio::time::sleep(Duration::from_millis(sleep_ms)) => {}
             }
         }
     }

@@ -34,7 +34,7 @@ fn open_runtime(data_dir: &std::path::Path) -> Arc<TaskRuntime> {
         web_listen: None,
         task_runtime: None,
     };
-    Arc::new(TaskRuntime::new(&options, Arc::new(Mutex::new(None)), Weak::new()).unwrap())
+    Arc::new(TaskRuntime::new(&options, Arc::new(Mutex::new(None)), Weak::new(), None).unwrap())
 }
 
 fn draft(title: &str) -> NewTask {

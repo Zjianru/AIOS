@@ -3,6 +3,7 @@
 mod action_cards;
 mod aios_query;
 mod attachments;
+mod calendar;
 mod common;
 mod cross_connection;
 mod disabled;
