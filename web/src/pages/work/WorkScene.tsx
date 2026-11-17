@@ -283,7 +283,7 @@ function BoardPane() {
 }
 
 function WaitingPane() {
-  // 轮询由同一场景的 BoardPane 持有一个；这里只读同一份 store，避免两个 pane 各起一个 interval。
+  // 轮询由 WorkScene 根挂一次（workStore 引用计数只留一个 interval）；这里只读同一份 store。
   const work = useWorkStore((state) => state.work);
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-content" data-pane="waiting">
@@ -302,7 +302,7 @@ function WaitingPane() {
 }
 
 export function WorkScene({ pane }: { pane: string }) {
-  // 工作场景两个 pane 都挂在根下：轮询只在根挂一次，BoardPane/WaitingPane/GraphPane 都只读 store。
+  // 工作场景两个 pane 都挂在根下：轮询只在根挂一次，两个 pane 和任务图都只读同一份 store。
   useWorkPolling();
   if (pane === 'waiting') return <WaitingPane />;
   return <BoardPane />;

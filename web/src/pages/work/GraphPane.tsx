@@ -427,7 +427,7 @@ export function GraphPane({
   selected: string | null;
   onSelect: (id: string) => void;
 }) {
-  // 轮询由 WorkScene 的 BoardPane 统一持有；这里只读同一份 store，不再另起 interval。
+  // 轮询由 WorkScene 根挂一次（workStore 引用计数只留一个 interval）；这里只读同一份 store。
   const work = useWorkStore((state) => state.work);
   const error = useWorkStore((state) => state.error);
   const { graphs, single } = useMemo(() => deriveGraphs(work), [work]);
