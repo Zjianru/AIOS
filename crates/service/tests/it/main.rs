@@ -22,3 +22,4 @@ mod settings;
 mod status;
 mod task_read;
 mod tasks;
+mod work_graph_fixture;

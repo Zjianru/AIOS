@@ -1028,10 +1028,14 @@ fn a_confirmed_gated_graph_projects_edges_and_judge_state() {
     let guards = edge(graph, guarded.id.as_str(), gate.id.as_str(), "guards");
     assert_eq!(guards.state, "handed", "门有过 Attempt 就是 handed");
     assert!(!guards.program);
-    let gate_need = edge(graph, guarded.id.as_str(), gate.id.as_str(), "needs");
-    assert_eq!(gate_need.state, "handed");
-    let waiting = edge(graph, guarded.id.as_str(), downstream.id.as_str(), "needs");
-    assert_eq!(waiting.state, "waiting", "下游还没拿到交接");
+    assert_eq!(graph.edges.len(), 2, "门图 3 站 2 条：guards + release");
+    assert!(
+        !graph
+            .edges
+            .iter()
+            .any(|edge| edge.kind == "needs" && edge.from == guarded.id.as_str()),
+        "被把关上游不再出 needs"
+    );
     let release = edge(graph, gate.id.as_str(), downstream.id.as_str(), "release");
     assert_eq!(release.state, "judge", "门还没判");
     assert!(!release.program);
@@ -1082,10 +1086,12 @@ fn two_upstreams_show_one_handed_and_one_waiting() {
     let response = snapshot(&store, &[], &[], T0 + 21).unwrap();
     assert_eq!(response.graphs.len(), 1);
     let graph = &response.graphs[0];
-    assert_eq!(
-        edge(graph, guarded.id.as_str(), downstream.id.as_str(), "needs").state,
-        "handed",
-        "门的通过把 A 的交接写进下游"
+    assert!(
+        !graph
+            .edges
+            .iter()
+            .any(|edge| edge.kind == "needs" && edge.from == guarded.id.as_str()),
+        "被门把关的上游与下游之间不再出 needs"
     );
     assert_eq!(
         edge(
@@ -1150,6 +1156,10 @@ fn a_program_gate_graph_has_program_edges_and_no_judge() {
 
     let response = snapshot(&store, &[], &[], T0 + 20).unwrap();
     let graph = &response.graphs[0];
+    assert!(
+        !graph.edges.iter().any(|edge| edge.kind == "needs"),
+        "程序门同样不画平行的 needs"
+    );
     let release = edge(graph, gate.id.as_str(), downstream.id.as_str(), "release");
     assert!(release.program, "程序门的线要标 program");
     assert_eq!(

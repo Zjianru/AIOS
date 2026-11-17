@@ -449,23 +449,36 @@ fn project_graphs(all: &[Task], by_id: &HashMap<String, Task>) -> Vec<WorkGraphF
             })
             .collect();
         children.sort_by_key(|task| task.created_at);
+        // 被门把关的上游只画 guards/release：Gate 子任务的 need 和下游等它的 need 都不再画 needs。
+        let mut gate_of: HashMap<&str, &Task> = HashMap::new();
+        for gate in &children {
+            if gate.is_gate()
+                && let Some(need) = gate.needs.first()
+            {
+                gate_of.insert(need.from.as_str(), *gate);
+            }
+        }
         let mut edges = Vec::new();
         for child in &children {
-            for need in &child.needs {
-                if !by_id.contains_key(need.from.as_str()) {
-                    continue;
+            if !child.is_gate() {
+                for need in &child.needs {
+                    if !by_id.contains_key(need.from.as_str())
+                        || gate_of.contains_key(need.from.as_str())
+                    {
+                        continue;
+                    }
+                    edges.push(WorkEdgeFact {
+                        from: need.from.as_str().to_owned(),
+                        to: child.id.as_str().to_owned(),
+                        kind: "needs".to_owned(),
+                        state: if need.handoff.is_some() {
+                            "handed".to_owned()
+                        } else {
+                            "waiting".to_owned()
+                        },
+                        program: false,
+                    });
                 }
-                edges.push(WorkEdgeFact {
-                    from: need.from.as_str().to_owned(),
-                    to: child.id.as_str().to_owned(),
-                    kind: "needs".to_owned(),
-                    state: if need.handoff.is_some() {
-                        "handed".to_owned()
-                    } else {
-                        "waiting".to_owned()
-                    },
-                    program: false,
-                });
             }
             if !child.is_gate() {
                 continue;
