@@ -5,9 +5,7 @@ use std::sync::Arc;
 
 use calendar::{Binding, NewAppointment, Schedule};
 use serde_json::{Value, json};
-use service::{
-    ActionEnv, ActionRegistry, CalendarActionKind, CalendarActionRequest, Call, Response,
-};
+use service::{ActionEnv, ActionRegistry, Call, Response};
 use tools::{Tool, ToolCall, ToolContext, ToolSessionState};
 
 fn now_ms() -> i64 {
@@ -254,4 +252,63 @@ async fn builtin_dream_pause_toggles_memory_enabled_and_cannot_cancel() {
     };
     assert!(memory.dream.enabled, "恢复内置行要打开记忆里的做梦开关");
     host.shutdown().await;
+}
+
+#[tokio::test]
+async fn builtin_run_now_triggers_a_dream_run_and_calendar_changed() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let host = crate::common::open(crate::common::options(data)).await;
+    // 允许做梦观察，否则 request_now 只出许可卡、不写 DreamRun。
+    {
+        let store = memory::MemoryStore::open(data.join("memory.sqlite")).expect("记忆库");
+        store
+            .update_dream_settings(&memory::types::DreamSettingsPatch {
+                enabled: Some(true),
+                permit: Some(true),
+                ..memory::types::DreamSettingsPatch::default()
+            })
+            .expect("打开做梦许可");
+    }
+    let mut events = host.subscribe_events();
+    let outcome = host
+        .dispatch(Call::CalendarAction(service::CalendarActionRequest {
+            appointment_id: "builtin:dream".to_owned(),
+            action: service::CalendarActionKind::RunNow,
+        }))
+        .await
+        .expect("立即跑一次");
+    let Response::CalendarAction(outcome) = outcome else {
+        panic!("立即跑响应");
+    };
+    assert_eq!(outcome.appointment.status, "active");
+    // 日历内置行改完要推 calendar/changed。
+    let pushed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let event = events.recv().await.expect("事件流");
+            if event.event_type == "calendar/changed" {
+                return event;
+            }
+        }
+    })
+    .await
+    .expect("推 calendar/changed");
+    assert_eq!(
+        pushed
+            .data
+            .get("appointmentId")
+            .and_then(|value| value.as_str()),
+        Some("builtin:dream")
+    );
+    // 真起了做梦：DreamRun 至少一条（模型端点不可达时也记 failed，不丢记录）。
+    let store = memory::MemoryStore::open(data.join("memory.sqlite")).expect("记忆库");
+    for _ in 0..200 {
+        let runs = store.dream_runs(5).unwrap_or_default();
+        if !runs.is_empty() {
+            host.shutdown().await;
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("立即跑一次之后没有 DreamRun 记录");
 }

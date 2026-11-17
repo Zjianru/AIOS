@@ -121,7 +121,7 @@ test('等你去看：循环约定暂停项打开日历详情', async ({ page }) 
   }
 });
 
-test('内置做梦行：只有暂停/立即跑一次，暂停就是关开关', async ({ page }) => {
+test('内置做梦行：间隔/运行记录、实际点立即跑一次，暂停就是关开关', async ({ page }) => {
   const fixture = await startKernelFixture({ t064Calendar: true });
   try {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#work?wv=cal');
@@ -130,12 +130,34 @@ test('内置做梦行：只有暂停/立即跑一次，暂停就是关开关', a
     await expect(dream).toBeVisible();
     await dream.click();
     const detail = page.locator('[data-kind="appt-detail"][data-appt="builtin:dream"]');
+    // 内置行显示间隔（rule）和下次触发。
+    await expect(detail).toContainText('FREQ=HOURLY;INTERVAL=');
+    await expect(detail).toContainText('下次触发');
     await expect(detail.locator('[data-action="pause"]')).toBeVisible();
     await expect(detail.locator('[data-action="run-now"]')).toBeVisible();
     await expect(detail.locator('[data-action="cancel"]')).toHaveCount(0);
+
+    // 打开观察许可，再实际点「立即跑一次」：dream.request_now 会写一条 DreamRun，
+    // 日历读到的内置运行记录/下次触发随后刷新出来。
+    await page.evaluate(async () => {
+      await fetch('/api', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ method: 'memory-action', action: { kind: 'set-permit', allow: true } }),
+      });
+    });
+    await detail.locator('[data-action="run-now"]').click();
+    await expect(detail.locator('[data-kind="run-dot"]').first()).toBeVisible({ timeout: 20_000 });
+    await expect(detail).toContainText('下次触发');
+    await expect(detail).toContainText('FREQ=HOURLY;INTERVAL=');
+
+    // 暂停 = 关记忆设置里的做梦开关（页面状态变已暂停）。
+    await expect(detail.locator('[data-action="pause"]')).toBeVisible();
     await detail.locator('[data-action="pause"]').click();
     await expect(dream).toHaveAttribute('data-state', 'paused');
   } finally {
     await fixture.close();
   }
 });
+
+
