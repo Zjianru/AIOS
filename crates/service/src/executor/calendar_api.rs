@@ -126,6 +126,8 @@ impl TaskRuntime {
                 appointment
             }
         };
+        // 状态动作改完 next_trigger 后叫醒泵：可能还睡在旧的远点。
+        self.wake();
         self.emit_calendar_changed(&appointment.id);
         Ok(CalendarActionResponse {
             appointment: self
@@ -325,7 +327,7 @@ impl TaskRuntime {
         }
         match store.next_wake_at() {
             Ok(Some(at)) => u64::try_from((at - now).clamp(20, 60_000)).unwrap_or(100),
-            _ => 100,
+            _ => 10_000,
         }
     }
 
@@ -401,26 +403,35 @@ impl TaskRuntime {
         let sent = host
             .send_message(&request_id, message, DeliveryMode::Steer)
             .await;
-        let sent_turn = if sent.is_ok() {
-            host.agent()
-                .session_events_from(0)
-                .iter()
-                .rev()
-                .find_map(|event| {
-                    let session::EventKind::UserMessage { turn, message, .. } = &event.kind else {
-                        return None;
-                    };
-                    let model::MessageSource::User { rpc_id } = &message.source else {
-                        return None;
-                    };
-                    rpc_id
-                        .as_deref()
-                        .filter(|rpc| *rpc == request_id)
-                        .map(|_| i64::try_from(*turn).unwrap_or(i64::MAX))
-                })
-        } else {
-            None
-        };
+        let mut sent_turn = None;
+        if sent.is_ok()
+            && let Ok(session_id) = session::SessionId::parse(host.agent().id().as_str())
+        {
+            // 送达返回时事件可能还没落盘：短轮询会话日志到那条 user/message 出现。
+            for _ in 0..20 {
+                if let Ok(store) =
+                    session::SessionStore::open_read_only(&self.data_dir, &session_id)
+                {
+                    sent_turn = store.events().iter().rev().find_map(|event| {
+                        let session::EventKind::UserMessage { turn, message, .. } = &event.kind
+                        else {
+                            return None;
+                        };
+                        let model::MessageSource::User { rpc_id } = &message.source else {
+                            return None;
+                        };
+                        rpc_id
+                            .as_deref()
+                            .filter(|rpc| *rpc == request_id)
+                            .map(|_| i64::try_from(*turn).unwrap_or(i64::MAX))
+                    });
+                }
+                if sent_turn.is_some() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
         drop(guard);
         match sent {
             Ok(_) => {

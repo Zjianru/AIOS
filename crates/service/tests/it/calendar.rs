@@ -77,20 +77,28 @@ async fn nearest_appointment_wakes_and_far_one_waits() {
         &session::SessionId::parse(&session_id).expect("会话 id"),
     )
     .expect("会话日志");
+    let near_runs = store.runs(&near.id).unwrap();
     let prefix = format!("appointment-wake:{}:", near.id);
-    assert!(
-        snapshot.events().iter().any(|event| {
-            let session::EventKind::UserMessage { message, .. } = &event.kind else {
-                return false;
+    let sent_turn = snapshot
+        .events()
+        .iter()
+        .find_map(|event| {
+            let session::EventKind::UserMessage { turn, message, .. } = &event.kind else {
+                return None;
             };
             let model::MessageSource::User { rpc_id } = &message.source else {
-                return false;
+                return None;
             };
             rpc_id
                 .as_deref()
-                .is_some_and(|rpc| rpc.starts_with(&prefix))
-        }),
-        "根会话日志里要有 appointment-wake 那条用户消息"
+                .filter(|rpc| rpc.starts_with(&prefix))
+                .map(|_| i64::try_from(*turn).unwrap_or(i64::MAX))
+        })
+        .expect("根会话日志里要有 appointment-wake 那条用户消息");
+    assert_eq!(
+        near_runs[0].sent_turn,
+        Some(sent_turn),
+        "运行记录的 sent_turn 要等于那条唤醒消息的轮次"
     );
     host.shutdown().await;
 }
@@ -193,6 +201,72 @@ async fn global_pause_merges_missed_occurrences_and_sends_once() {
         runs[0].merged_count
     );
     assert!(runs[0].reason.contains("合并了"), "{}", runs[0].reason);
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn resume_from_paused_wakes_a_pump_that_was_sleeping() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
+    let now = now_ms();
+    // 50ms 后到点；先暂停，泵会睡到没有近点的默认 1s。
+    let due = appointment(&store, "暂停后恢复", now + 50, "FREQ=SECONDLY");
+    store
+        .set_status(&due.id, calendar::AppointmentStatus::Paused)
+        .unwrap();
+    let host = crate::common::open(crate::common::options(data)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(
+        store
+            .appointment(&due.id)
+            .unwrap()
+            .unwrap()
+            .next_trigger_at
+            .is_none(),
+        "暂停时没有近点"
+    );
+    // 把起点改到 50ms 后；暂停状态不改 next，然后恢复必须叫醒睡着的泵。
+    let version = store.appointment(&due.id).unwrap().unwrap().version;
+    store
+        .update_appointment(
+            &due.id,
+            version,
+            calendar::AppointmentPatch {
+                schedule: Some(calendar::Schedule {
+                    rule: "FREQ=SECONDLY".to_owned(),
+                    timezone: "Asia/Shanghai".to_owned(),
+                    start_at: now_ms() + 50,
+                }),
+                ..calendar::AppointmentPatch::default()
+            },
+            "test",
+        )
+        .unwrap();
+    let started = std::time::Instant::now();
+    host.dispatch(Call::CalendarAction(CalendarActionRequest {
+        appointment_id: due.id.clone(),
+        action: CalendarActionKind::Resume,
+    }))
+    .await
+    .expect("恢复");
+    let deadline = std::time::Duration::from_millis(2000);
+    loop {
+        if store
+            .runs(&due.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Sent)
+        {
+            break;
+        }
+        assert!(
+            started.elapsed() < deadline,
+            "恢复没有及时叫醒泵（{:?} 还没送）",
+            started.elapsed()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
     host.shutdown().await;
 }
 
