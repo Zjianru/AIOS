@@ -1,7 +1,7 @@
 //! 任务图 e2e 夹具的重生成入口：三张已确认图 + 一个单派任务。
 //!
-//! 只给手工重生成用（#[ignore]）；页面只按标题/结构断言，任务 id 由 SQLite 随机生成，
-//! 所以重跑后的字节 hash 会变，结构一致。命令见 web/e2e/fixtures/generate-task-graphs.sh。
+//! 只给手工重生成用（#[ignore]）；写盘后由 normalize-task-graphs.mjs 做确定性 id 重映射，
+//! 同一构造每次重生成的字节一致。命令见 web/e2e/fixtures/generate-task-graphs.sh。
 
 use std::path::Path;
 

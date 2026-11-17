@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 重生成任务图 e2e 夹具（三张已确认图 + 一个单派任务）。
-# 任务 id 由 SQLite 随机生成，重跑后字节 hash 会变；页面只按标题/结构断言。
+# 生成后由 normalize-task-graphs.mjs 做确定性 id 重映射；同一构造每次重生成字节一致，脚本末尾打印 sha256。
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 cargo test -p service --test it work_graph_fixture::write_task_graphs_fixture -- --ignored --exact --nocapture
