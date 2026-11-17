@@ -390,6 +390,19 @@ export function ProcessView({
           {pinned ? null : <ChevronDown className={cn('size-3.5 transition-transform', expanded && 'rotate-180')} />}
         </button>
       </div>
+      {/* 工具结果里的记忆小卡：过程默认收起时也要看得见（不塞进回答正文）。 */}
+      {!expanded
+        ? steps
+            .filter(
+              (step): step is ToolStepView =>
+                step.kind === 'tool' && memoryCardOf(step.meta) !== null,
+            )
+            .map((step) => (
+              <div key={step.id} className="mt-2 flex justify-start">
+                <MemoChip card={memoryCardOf(step.meta)!} />
+              </div>
+            ))
+        : null}
       {visible.length > 0 || live || expanded ? (
         <div className="mt-4 flex flex-col gap-1">
           {/* 信息分层：默认只显示用时；想了多久、调了几次、多少 token 展开才看（T010 承诺）。 */}

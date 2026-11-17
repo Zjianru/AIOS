@@ -30,6 +30,7 @@ export function replaySelection(options: FixtureOptions): ReplaySelection {
   if (options.t059LongStream) return { file: 't059-long-stream', paceMs: 40 };
  // 同一句原话再记：两轮都是 memory_remember（第二轮用户消息 seq 22）。
   if (options.memoryAgain) return { file: 't061-memory-again', paceMs: 10 };
+  if (options.t062MemoryCard) return { file: 't062-memory-tool-card', paceMs: 10 };
  // 记忆页联动的假模型脚本：记住/记一笔/5 个回合/做梦 apply+总结。
   if (options.memoryFlow) {
     if (options.memoryLiveCard) return { file: 't060-memory-live-card', paceMs: 10 };

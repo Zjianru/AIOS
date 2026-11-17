@@ -20,6 +20,8 @@ export interface FixtureOptions {
   memoryLiveCard?: boolean;
  /// 两轮都记同一句原话（撤销后重新记入用例）。
   memoryAgain?: boolean;
+  /// 用真实事件回放工具记忆小卡：一次 memory_remember 成功 + 最终回答。
+  t062MemoryCard?: boolean;
  /// 路径显示：三步回放（cwd 内写、cwd 外写、最终文本）；夹具里的 __CWD__ / __OUTSIDE__ 起服务前换成真实目录。
   pathsTurn?: boolean;
  /// ：最终回答里带一个代码块（复制按钮用）。
