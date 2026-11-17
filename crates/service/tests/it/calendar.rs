@@ -182,6 +182,38 @@ async fn startup_recovery_sends_a_queued_run_without_effect() {
 }
 
 #[tokio::test]
+async fn missed_while_service_was_down_uses_the_missed_merge_reason() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
+    let now = now_ms();
+    let due = appointment(&store, "错过合并", now - 5_000, "FREQ=SECONDLY");
+    store.set_next_trigger(&due.id, Some(now - 5_000)).unwrap();
+    let host = crate::common::open(crate::common::options(data)).await;
+    wait_until("补送一次", || {
+        store
+            .runs(&due.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Sent)
+    })
+    .await;
+    let run = store
+        .runs(&due.id)
+        .unwrap()
+        .into_iter()
+        .find(|run| run.result == calendar::RunResult::Sent)
+        .unwrap();
+    assert!(run.merged_count >= 4, "merged={}", run.merged_count);
+    assert!(
+        run.reason.contains("服务没在跑期间到点"),
+        "服务停机错过的合并原因不能写成全局暂停：{}",
+        run.reason
+    );
+    host.shutdown().await;
+}
+
+#[tokio::test]
 async fn global_pause_merges_missed_occurrences_and_sends_once() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path();
