@@ -1142,6 +1142,33 @@ impl Store {
         load_task(&conn, id)
     }
 
+    /// T066：给任务写来源（建触发任务/那一轮派出时调用）；旧任务没有 origin。
+    pub fn set_origin(
+        &self,
+        id: &TaskId,
+        origin: crate::task::AppointmentOrigin,
+    ) -> Result<(), TaskError> {
+        let connection = self.lock()?;
+        let mut task = load_task_required(&connection, id)?;
+        task.origin = Some(origin);
+        save_task(&connection, &task)
+    }
+
+    /// T066：给触发任务写那一轮结束的事实（幂等；已有就不改）。
+    pub fn set_round_end(
+        &self,
+        id: &TaskId,
+        round_end: crate::task::RoundEnd,
+    ) -> Result<(), TaskError> {
+        let connection = self.lock()?;
+        let mut task = load_task_required(&connection, id)?;
+        if task.round_end.is_none() {
+            task.round_end = Some(round_end);
+            save_task(&connection, &task)?;
+        }
+        Ok(())
+    }
+
     /// T055：全表任务，按创建时间升序（同时间按 id）；看板和「现在」用。
     pub fn all_tasks(&self) -> Result<Vec<Task>, TaskError> {
         let conn = self.lock()?;
@@ -2228,6 +2255,8 @@ fn task_row(
         verdicts: Vec::new(),
         missing: Vec::new(),
         created_at: now,
+        origin: None,
+        round_end: None,
     })
 }
 
@@ -2597,6 +2626,14 @@ fn stage_with_graph(connection: &Connection, task: &Task) -> Result<Stage, TaskE
 // T054：按事实派生「已关闭」——当前版本的最新 ready 报告被接受（有门的还要门判通过）；
 // 门任务在被把关任务关闭后关闭。总任务的全关闭由 stage_with_graph 的 rank 汇总得到。
 fn closed_in(connection: &Connection, task: &Task) -> Result<bool, TaskError> {
+    // T066：约定到点的触发任务没有报告/接受；那一轮结束（round_end）即已关闭。
+    if task
+        .origin
+        .as_ref()
+        .is_some_and(|origin| origin.role == crate::task::AppointmentRole::Trigger)
+    {
+        return Ok(task.round_end.is_some());
+    }
     if task.is_gate() {
         let Some(need) = task.needs.first() else {
             return Ok(false);

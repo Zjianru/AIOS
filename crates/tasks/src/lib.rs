@@ -3,6 +3,9 @@
 //! 边界：只依赖 rusqlite/serde/serde_json，不依赖 agent/session；会话 id 是不透明字符串。
 //! 时间一律由调用方传入 unix 毫秒，库内不读时钟。
 
+#[cfg(test)]
+mod origin_tests;
+
 mod effect;
 mod error;
 mod id;
@@ -22,11 +25,11 @@ pub use slots::{Later, SlotKind, WorkerSlots};
 pub use stage::Stage;
 pub use store::{BootScan, GateJudgeOutcome, SCHEMA_VERSION, StopAttempt, Store};
 pub use task::{
-    AcceptBatch, AcceptOutcome, Acceptance, Arrangement, Attempt, AttemptEnd, AttemptTrigger,
-    Cancellation, CancellationReason, Confirmation, ContinueCause, GateCandidate, GateCheck,
-    GateCheckOutcome, GateCommand, GateConclusion, GateVerdict, Handoff, Input, InputAttachment,
-    InputSource, MilestoneGate, MissingItem, ModelChoice, Need, NewGraph, NewInput, NewReport,
-    NewSubtask, NewTask, ProgramGateOutcome, Report, ReportOrigin, ReportState, RequirementVersion,
-    Run, SayOutcome, Task, TaskPolicy, VerdictSource, VersionSource, Worktree,
-    validate_gate_commands,
+    AcceptBatch, AcceptOutcome, Acceptance, AppointmentOrigin, AppointmentRole, Arrangement,
+    Attempt, AttemptEnd, AttemptTrigger, Cancellation, CancellationReason, Confirmation,
+    ContinueCause, GateCandidate, GateCheck, GateCheckOutcome, GateCommand, GateConclusion,
+    GateVerdict, Handoff, Input, InputAttachment, InputSource, MilestoneGate, MissingItem,
+    ModelChoice, Need, NewGraph, NewInput, NewReport, NewSubtask, NewTask, ProgramGateOutcome,
+    Report, ReportOrigin, ReportState, RequirementVersion, RoundEnd, Run, SayOutcome, Task,
+    TaskPolicy, VerdictSource, VersionSource, Worktree, validate_gate_commands,
 };
