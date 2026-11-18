@@ -100,6 +100,12 @@ pub struct WorkEdgeFact {
     pub state: String,
     /// 这条线连着的是不是程序门。
     pub program: bool,
+    /// T066：flow / make / back / judge / 无。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live: Option<String>,
+    /// T066：线小字（第 N 份 · X 文件 / 打回第 N 份）；没有就空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<String>,
 }
 
 /// T055：一张任务卡的事实（页面只读这些；不发会话内容和工具细节）。
@@ -120,6 +126,9 @@ pub struct TaskFact {
     pub created_at: i64,
     /// 最近一次 Attempt 还没结束，或 launch 还在排队。
     pub running: bool,
+    /// T066：正在跑的那个 Attempt 的开始时间；没在跑为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running_since: Option<i64>,
     /// 这是里程碑门任务。
     pub gate: bool,
     /// T057：这是程序门（有命令）。
@@ -155,6 +164,9 @@ pub struct WorkLatest {
     pub summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question: Option<String>,
+    /// T066：这份报告那个 Attempt 改了几个文件；旧报告为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed_count: Option<u32>,
 }
 
 /// 组接受/单项接受时带着「勾选那一刻」看到的那份报告和版本。
@@ -438,6 +450,53 @@ fn release_state(gate: &Task, guarded: &Task, downstream: &Task) -> &'static str
 }
 
 /// 已确认、没取消的图：服务从任务事实算线；页面只排和画。
+fn edge_runtime(
+    edge: &WorkEdgeFact,
+    by_id: &HashMap<String, Task>,
+) -> (Option<String>, Option<String>) {
+    let from = by_id.get(&edge.from);
+    let to = by_id.get(&edge.to);
+    let report_payload = |task: &Task| {
+        let report = task.latest_report()?;
+        let count = report.changed_count?;
+        let index = task
+            .reports
+            .iter()
+            .filter(|candidate| candidate.state == tasks::ReportState::Ready)
+            .count();
+        Some(format!("第 {index} 份 · {count} 文件"))
+    };
+    if edge.state == "fix" {
+        let index = from
+            .map(|task| {
+                task.reports
+                    .iter()
+                    .filter(|report| report.state == tasks::ReportState::Ready)
+                    .count()
+            })
+            .unwrap_or(0);
+        return (Some("back".to_owned()), Some(format!("打回第 {index} 份")));
+    }
+    if edge.state == "judge" {
+        return (Some("judge".to_owned()), None);
+    }
+    if edge.kind == "guards"
+        && edge.state == "handed"
+        && to.is_some_and(|task| {
+            task.is_gate() && task.latest_report().is_some() && task.verdicts.is_empty()
+        })
+    {
+        return (Some("judge".to_owned()), None);
+    }
+    if to.is_some_and(tasks::Task::has_attempt) {
+        return (Some("flow".to_owned()), from.and_then(report_payload));
+    }
+    if from.is_some_and(tasks::Task::has_attempt) {
+        return (Some("make".to_owned()), None);
+    }
+    (None, None)
+}
+
 fn project_graphs(all: &[Task], by_id: &HashMap<String, Task>) -> Vec<WorkGraphFact> {
     let mut graphs = Vec::new();
     for root in all.iter().filter(|task| {
@@ -481,6 +540,8 @@ fn project_graphs(all: &[Task], by_id: &HashMap<String, Task>) -> Vec<WorkGraphF
                             "waiting".to_owned()
                         },
                         program: false,
+                        live: None,
+                        payload: None,
                     });
                 }
             }
@@ -503,6 +564,8 @@ fn project_graphs(all: &[Task], by_id: &HashMap<String, Task>) -> Vec<WorkGraphF
                     "waiting".to_owned()
                 },
                 program: child.is_program_gate(),
+                live: None,
+                payload: None,
             });
             for downstream in &children {
                 if downstream.is_gate()
@@ -516,8 +579,15 @@ fn project_graphs(all: &[Task], by_id: &HashMap<String, Task>) -> Vec<WorkGraphF
                     kind: "release".to_owned(),
                     state: release_state(child, guarded, downstream).to_owned(),
                     program: child.is_program_gate(),
+                    live: None,
+                    payload: None,
                 });
             }
+        }
+        for edge in &mut edges {
+            let (live, payload) = edge_runtime(edge, by_id);
+            edge.live = live;
+            edge.payload = payload;
         }
         edges.sort_by(|left, right| {
             (left.from.as_str(), left.to.as_str(), left.kind.as_str()).cmp(&(
@@ -635,6 +705,10 @@ pub(crate) fn snapshot(
             attempts: task.runs.iter().map(|run| run.attempts.len() as u64).sum(),
             created_at: task.created_at,
             running,
+            running_since: task
+                .latest_attempt()
+                .filter(|attempt| attempt.ended_at.is_none())
+                .map(|attempt| attempt.started_at),
             gate,
             program: task.is_program_gate(),
             program_commands: task.gate_commands().len(),
@@ -651,6 +725,7 @@ pub(crate) fn snapshot(
                 at: report.at,
                 summary: report.summary.clone(),
                 question: report.question.clone(),
+                changed_count: report.changed_count,
             }),
             accepted_at,
             closed_at,

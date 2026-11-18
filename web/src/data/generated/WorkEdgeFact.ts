@@ -15,4 +15,12 @@ state: string,
 /**
  * 这条线连着的是不是程序门。
  */
-program: boolean, };
+program: boolean,
+/**
+ * T066：flow / make / back / judge / 无。
+ */
+live?: string | null,
+/**
+ * T066：线小字（第 N 份 · X 文件 / 打回第 N 份）；没有就空。
+ */
+payload?: string | null, };

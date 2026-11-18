@@ -278,6 +278,7 @@ mod signature_tests {
             at: 1_794_936_000_000 + i64::try_from(attempt).unwrap(),
             version: 1,
             checks: Vec::new(),
+            changed_count: None,
         }
     }
 

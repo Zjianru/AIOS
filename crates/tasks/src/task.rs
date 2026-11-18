@@ -693,6 +693,9 @@ pub struct Report {
     /// T057：程序门检查的逐条结果；只有程序门报告非空。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checks: Vec<GateCheck>,
+    /// T066：这份报告那个 Attempt 改了几个文件；旧报告/没算为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed_count: Option<u32>,
 }
 
 /// 任务包缺的一项；执行者写什么，store 就存什么，不改写成卡片状态。

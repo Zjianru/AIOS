@@ -425,7 +425,7 @@ impl TaskRuntime {
         } else {
             said
         };
-        if let Err(error) = self.store.record_report(
+        match self.store.record_report(
             task_id,
             attempt_id,
             NewReport {
@@ -436,7 +436,8 @@ impl TaskRuntime {
             },
             Self::now(),
         ) {
-            eprintln!("任务 {task_id} 的等待报告没写进去：{error}");
+            Ok(id) => self.fill_report_changed_count(task_id, attempt_id, &id),
+            Err(error) => eprintln!("任务 {task_id} 的等待报告没写进去：{error}"),
         }
     }
 
@@ -507,6 +508,40 @@ impl TaskRuntime {
             .unwrap_or_default()
     }
 
+    /// T066：报告落库后用这个 Attempt 的改动路径算文件数，工作快照以后只读这个数。
+    fn fill_report_changed_count(
+        &self,
+        task_id: &TaskId,
+        attempt_id: AttemptId,
+        report_id: &ReportId,
+    ) {
+        let Ok(Some(task)) = self.store.task(task_id) else {
+            return;
+        };
+        let Some(attempt) = task.attempt(attempt_id) else {
+            return;
+        };
+        let Some(conversation) = &attempt.conversation else {
+            return;
+        };
+        let Ok(session_id) = SessionId::parse(conversation.as_str()) else {
+            return;
+        };
+        let Ok(snapshot) = session::SessionStore::open_read_only(&self.data_dir, &session_id)
+        else {
+            return;
+        };
+        let count = crate::result_cards::changed_paths(snapshot.events(), task.effective_cwd())
+            .len()
+            .try_into()
+            .unwrap_or(u32::MAX);
+        best_effort(
+            "报告改动文件数没写进去",
+            self.store
+                .set_report_changed_count(task_id, report_id, count),
+        );
+    }
+
     /// ThinAgent 报了一份报告：同事务写报告 + 排 relay；终态就是这次 Attempt 的结束，关掉会话。
     pub(crate) fn report(
         &self,
@@ -524,6 +559,7 @@ impl TaskRuntime {
         let id = self
             .store
             .record_report(task_id, attempt_id, report, Self::now())?;
+        self.fill_report_changed_count(task_id, attempt_id, &id);
         if matches!(
             state,
             ReportState::Ready | ReportState::Blocked | ReportState::Failed
@@ -576,6 +612,7 @@ impl TaskRuntime {
         if !created {
             return Ok("已交回".to_owned());
         }
+        self.fill_report_changed_count(task_id, attempt_id, &id);
         // 和 task_report 一样：报告落库后结束这个 Attempt；结束写失败不改写工具回执。
         best_effort(
             "交回的 Attempt 没收尾",

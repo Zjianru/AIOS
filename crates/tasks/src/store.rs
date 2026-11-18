@@ -927,6 +927,7 @@ impl Store {
             at: now,
             version: gate.requirement_version(),
             checks,
+            changed_count: None,
         });
         if let Some(attempt) = gate
             .runs
@@ -1863,6 +1864,7 @@ impl Store {
             at: now,
             version: task.requirement_version(),
             checks: Vec::new(),
+            changed_count: None,
         });
         save_task(&transaction, &task)?;
         // T056.2：ready 报告关掉「下一步」叙述条（它意味着这个下一步已经走到了）。
@@ -1903,6 +1905,29 @@ impl Store {
     ///
     /// 顺序：找不到/不是 ready → 拒；门任务自己 → 拒；不是最近报告 → 「已经变了」；
     /// 版本不是当前 → 「要求改过了」；有门但门没对这份判通过 → 拒；同一报告重复接受幂等。
+    /// T066：报告落库后补这个 Attempt 的改动文件数（工作快照只读这个数，不再读日志）。
+    pub fn set_report_changed_count(
+        &self,
+        id: &TaskId,
+        report_id: &ReportId,
+        changed_count: u32,
+    ) -> Result<(), TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, id)?;
+        let Some(report) = task
+            .reports
+            .iter_mut()
+            .find(|report| &report.id == report_id)
+        else {
+            return Err(TaskError::ReportNotFound(report_id.to_string()));
+        };
+        report.changed_count = Some(changed_count);
+        save_task(&transaction, &task)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn accept(
         &self,
         id: &TaskId,
