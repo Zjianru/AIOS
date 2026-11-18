@@ -64,6 +64,22 @@ fn trigger_tasks(store: &Store) -> Vec<Task> {
         .collect()
 }
 
+async fn read_range(fixture: &Fixture) -> service::CalendarReadResponse {
+    let response = fixture
+        .host
+        .dispatch(Call::CalendarRead(service::CalendarReadRequest {
+            appointment_id: None,
+            from: Some(now_ms() - 86_400_000),
+            to: Some(now_ms() + 86_400_000),
+        }))
+        .await
+        .expect("读日历");
+    let Response::CalendarRead(read) = response else {
+        panic!("日历读响应");
+    };
+    read
+}
+
 async fn wait(label: &str, mut check: impl FnMut() -> bool) {
     for _ in 0..900 {
         if check() {
@@ -732,5 +748,273 @@ async fn ended_appointment_run_blocks_still_show_in_the_range() {
             .all(|plan| plan.appointment_id != appointment.id),
         "ended 合约不出计划块"
     );
+    fixture.host.shutdown().await;
+}
+
+#[tokio::test]
+async fn dispatched_block_follows_task_stage_until_it_closes() {
+    let fixture = Fixture::new().await;
+    let appointment = due_appointment(fixture.data(), "派任务块", None);
+    fixture.router.push_kind(crate::common::text_sse("办完"));
+    fixture.host.nudge_calendar();
+    let tasks = tasks_store(fixture.data());
+    wait("触发任务", || trigger_tasks(&tasks).len() == 1).await;
+    let mut triggers = trigger_tasks(&tasks);
+    let trigger = triggers.remove(0);
+    let origin = trigger.origin.clone().unwrap();
+    let (dispatched, _) = tasks
+        .create_trigger_task_once(
+            draft(fixture.data(), "派出的调查"),
+            "dispatched-block",
+            1_800_000_000_000,
+        )
+        .unwrap();
+    tasks
+        .set_origin(
+            &dispatched.id,
+            tasks::AppointmentOrigin {
+                role: tasks::AppointmentRole::Dispatched,
+                ..origin
+            },
+        )
+        .unwrap();
+    let store = calendar::CalendarStore::open(fixture.data().join("calendar.sqlite")).unwrap();
+    wait("这次送出去", || {
+        store
+            .runs(&appointment.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Sent)
+    })
+    .await;
+    let open = read_range(&fixture).await;
+    let block = open
+        .ranges
+        .iter()
+        .find(|block| block.appointment_id == appointment.id)
+        .expect("派出没关的块");
+    assert_eq!(block.status, "排队");
+    assert!(block.end >= now_ms() - 60_000);
+    // 关掉派出任务：ready 报告 + 用户接受。
+    let attempt = tasks
+        .begin_attempt(&dispatched.id, 1_800_000_000_100)
+        .unwrap();
+    let report = tasks
+        .record_report(
+            &dispatched.id,
+            attempt,
+            tasks::NewReport {
+                state: tasks::ReportState::Ready,
+                origin: tasks::ReportOrigin::Agent,
+                summary: "查完了".to_owned(),
+                question: None,
+            },
+            1_800_000_000_200,
+        )
+        .unwrap();
+    tasks
+        .accept(&dispatched.id, &report, 1_800_000_000_300)
+        .unwrap();
+    let closed = read_range(&fixture).await;
+    let block = closed
+        .ranges
+        .iter()
+        .find(|block| block.appointment_id == appointment.id)
+        .expect("关闭后的块");
+    assert_eq!(block.status, "已完成");
+    drop(store);
+    fixture.host.shutdown().await;
+}
+
+#[tokio::test]
+async fn duration_uses_history_average_and_until_limits_plans() {
+    let fixture = Fixture::new().await;
+    let store = calendar::CalendarStore::open(fixture.data().join("calendar.sqlite")).unwrap();
+    let tasks = tasks_store(fixture.data());
+    let now = now_ms();
+    // 两条历史运行：各 10 / 20 分钟，平均 15 分钟。
+    let history = store
+        .create_appointment(NewAppointment {
+            title: "历史平均".to_owned(),
+            condition: "到点办".to_owned(),
+            schedule: Schedule {
+                rule: "FREQ=DAILY".to_owned(),
+                timezone: "Asia/Shanghai".to_owned(),
+                start_at: now - 86_400_000,
+            },
+            binding: Binding::Kind,
+            watch: None,
+            cycle: None,
+            duration_minutes: None,
+        })
+        .unwrap();
+    for (index, minutes) in [10_i64, 20].into_iter().enumerate() {
+        let (run, _) = store
+            .record_run(calendar::NewRun {
+                appointment_id: history.id.clone(),
+                nominal_at: now - 3_600_000 + index as i64,
+                manual: false,
+                trigger: calendar::TriggerKind::Due,
+                reason: String::new(),
+                merged_count: 0,
+                report_id: None,
+            })
+            .unwrap();
+        store
+            .finish_run(run.id, calendar::RunResult::Sent, "", Some(1))
+            .unwrap();
+        let (task, _) = tasks
+            .create_trigger_task_once(
+                draft(fixture.data(), &format!("历史 {index}")),
+                &format!("history-{index}"),
+                now - 3_600_000 + index as i64,
+            )
+            .unwrap();
+        tasks
+            .set_origin(
+                &task.id,
+                tasks::AppointmentOrigin {
+                    appointment_id: history.id.clone(),
+                    run_id: run.id,
+                    role: tasks::AppointmentRole::Trigger,
+                },
+            )
+            .unwrap();
+        tasks
+            .set_round_end(
+                &task.id,
+                tasks::RoundEnd {
+                    turn: 1,
+                    at: now - 3_600_000 + index as i64 + minutes * 60_000,
+                },
+            )
+            .unwrap();
+    }
+    // 带 UNTIL 的规则：只出到指定时间。
+    let until = now + 2 * 86_400_000;
+    let limited = store
+        .create_appointment(NewAppointment {
+            title: "出差汇总".to_owned(),
+            condition: "每晚汇总".to_owned(),
+            schedule: Schedule {
+                rule: format!(
+                    "FREQ=DAILY;UNTIL={}",
+                    chrono::DateTime::from_timestamp_millis(until)
+                        .unwrap()
+                        .format("%Y%m%dT%H%M%SZ")
+                ),
+                timezone: "Asia/Shanghai".to_owned(),
+                start_at: now,
+            },
+            binding: Binding::Kind,
+            watch: None,
+            cycle: None,
+            duration_minutes: None,
+        })
+        .unwrap();
+    let response = fixture
+        .host
+        .dispatch(Call::CalendarRead(service::CalendarReadRequest {
+            appointment_id: None,
+            from: Some(now - 86_400_000),
+            to: Some(now + 10 * 86_400_000),
+        }))
+        .await
+        .expect("读日历");
+    let Response::CalendarRead(read) = response else {
+        panic!("日历读响应");
+    };
+    let plan = read
+        .plans
+        .iter()
+        .find(|plan| plan.appointment_id == history.id)
+        .expect("历史平均计划块");
+    assert_eq!(plan.end - plan.start, 15 * 60_000);
+    assert!(
+        read.plans
+            .iter()
+            .all(|plan| plan.appointment_id != limited.id || plan.start <= until)
+    );
+    drop(store);
+    fixture.host.shutdown().await;
+}
+
+#[tokio::test]
+async fn cycle_due_attempt_end_sets_the_block_end() {
+    let fixture = Fixture::new().await;
+    let tasks = tasks_store(fixture.data());
+    let bound = tasks
+        .create_task(draft(fixture.data(), "循环绑定任务"), 1_800_000_000_000)
+        .unwrap();
+    let store = calendar::CalendarStore::open(fixture.data().join("calendar.sqlite")).unwrap();
+    let now = now_ms();
+    let appointment = store
+        .create_appointment(NewAppointment {
+            title: "循环块".to_owned(),
+            condition: "接着做".to_owned(),
+            schedule: Schedule {
+                rule: "FREQ=DAILY".to_owned(),
+                timezone: "Asia/Shanghai".to_owned(),
+                start_at: now,
+            },
+            binding: Binding::Task(bound.id.as_str().to_owned()),
+            watch: None,
+            cycle: Some(CycleSpec {
+                task_id: bound.id.as_str().to_owned(),
+                max_rounds: None,
+            }),
+            duration_minutes: None,
+        })
+        .unwrap();
+    let (run, _) = store
+        .record_run(calendar::NewRun {
+            appointment_id: appointment.id.clone(),
+            nominal_at: now - 1_000,
+            manual: false,
+            trigger: calendar::TriggerKind::Due,
+            reason: String::new(),
+            merged_count: 0,
+            report_id: None,
+        })
+        .unwrap();
+    store
+        .finish_run(run.id, calendar::RunResult::Sent, "", Some(1))
+        .unwrap();
+    let attempt = tasks
+        .begin_attempt_with(
+            &bound.id,
+            now - 2_000,
+            tasks::AttemptTrigger::KindContinue {
+                cause: tasks::ContinueCause::CycleDue {
+                    appointment_id: appointment.id.clone(),
+                    run_id: run.id,
+                },
+                note: None,
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    tasks
+        .end_attempt(&bound.id, attempt, now + 5_000, tasks::AttemptEnd::Reported)
+        .unwrap();
+    let response = fixture
+        .host
+        .dispatch(Call::CalendarRead(service::CalendarReadRequest {
+            appointment_id: None,
+            from: Some(now - 86_400_000),
+            to: Some(now + 86_400_000),
+        }))
+        .await
+        .expect("读日历");
+    let Response::CalendarRead(read) = response else {
+        panic!("日历读响应");
+    };
+    let block = read
+        .ranges
+        .iter()
+        .find(|block| block.appointment_id == appointment.id)
+        .expect("循环块");
+    assert_eq!(block.end, now + 5_000);
+    assert_eq!(block.status, "已完成");
     fixture.host.shutdown().await;
 }

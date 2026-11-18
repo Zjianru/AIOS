@@ -1334,4 +1334,49 @@ mod tests {
             Some("task-1")
         );
     }
+    #[test]
+    fn migrates_v4_to_v5_with_empty_new_columns() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("calendar.sqlite");
+        let (appointment_id, run_id) = {
+            let store = store(&directory);
+            let appointment = store.create_appointment(draft()).unwrap();
+            let (run, _) = store
+                .record_run(new_run(&appointment, NOW + 1, false))
+                .unwrap();
+            (appointment.id, run.id)
+        };
+        {
+            let connection = rusqlite::Connection::open(&path).unwrap();
+            connection
+                .execute_batch(
+                    "ALTER TABLE appointment DROP COLUMN duration_minutes;
+                     ALTER TABLE appointment_version DROP COLUMN duration_minutes;
+                     ALTER TABLE run DROP COLUMN task_id;
+                     UPDATE kv SET value = '4' WHERE key = 'schema_version';",
+                )
+                .unwrap();
+        }
+        let store = CalendarStore::open_with_clock(&path, Arc::new(|| NOW)).unwrap();
+        let appointment = store.appointment(&appointment_id).unwrap().unwrap();
+        assert_eq!(appointment.duration_minutes, None);
+        assert_eq!(
+            store.versions(&appointment_id).unwrap()[0].duration_minutes,
+            None
+        );
+        assert_eq!(store.runs(&appointment_id).unwrap()[0].id, run_id);
+        assert_eq!(store.runs(&appointment_id).unwrap()[0].task_id, None);
+        let updated = store
+            .update_appointment(
+                &appointment_id,
+                1,
+                AppointmentPatch {
+                    duration_minutes: Some(Some(30)),
+                    ..AppointmentPatch::default()
+                },
+                "user",
+            )
+            .unwrap();
+        assert_eq!(updated.duration_minutes, Some(30));
+    }
 }

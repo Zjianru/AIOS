@@ -848,6 +848,12 @@ fn task_stage(task: &Task) -> Option<Stage> {
     if task.round_end.is_some() {
         return Some(Stage::Closed);
     }
+    if task
+        .latest_report()
+        .is_some_and(|report| task.acceptance_for(&report.id).is_some())
+    {
+        return Some(Stage::Closed);
+    }
     if !task.reports.is_empty() {
         return Some(Stage::ReadyForReview);
     }
