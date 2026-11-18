@@ -414,3 +414,47 @@
 [data-slot="sidebar-content"] {
   min-height: 0;
 }
+
+/* T066：任务图状态环与线动效（不引动画库；减少动效时全停）。 */
+@keyframes graph-ring-spin {
+  to { transform: rotate(360deg); }
+}
+.graph-node-ring {
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  border: 2px solid transparent;
+  border-top-color: var(--done);
+  border-right-color: var(--done);
+  animation: graph-ring-spin 1.5s linear infinite;
+  pointer-events: none;
+}
+.graph-node-ring[data-slow='true'] {
+  border-top-color: var(--wait);
+  border-right-color: var(--wait);
+  animation-duration: 4.5s;
+}
+@keyframes graph-edge-flow {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: -22; }
+}
+@keyframes graph-edge-make {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: 22; }
+}
+@keyframes graph-edge-back {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: -18; }
+}
+.graph-edge-live-flow { animation: graph-edge-flow 1.6s linear infinite; }
+.graph-edge-live-make { animation: graph-edge-make 2.6s linear infinite; }
+.graph-edge-live-back { animation: graph-edge-back 1.2s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .graph-node-ring,
+  .graph-edge-live-flow,
+  .graph-edge-live-make,
+  .graph-edge-live-back {
+    animation: none;
+  }
+  .graph-node-ring { border-color: var(--line-2); }
+}

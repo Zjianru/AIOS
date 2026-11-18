@@ -32,6 +32,10 @@ export interface GraphEdge {
   program: boolean;
   /** 线上那句话（固定词；详情里展开）。 */
   label: string;
+  /** T066：flow / make / back / judge / 无。 */
+  live: string | null;
+  /** T066：线上小字（第 N 份 · X 文件 / 打回第 N 份）。 */
+  payload: string | null;
 }
 
 export interface TaskGraph {
@@ -132,6 +136,8 @@ export function deriveGraphs(work: WorkResponse | null): { graphs: TaskGraph[]; 
       kind: edge.kind as GraphEdge['kind'],
       state: edge.state as EdgeState,
       program: edge.program,
+      live: edge.live ?? null,
+      payload: edge.payload ?? null,
       label: labelOf(edge, tasks.get(edge.from)),
     }));
     const nodes: GraphNode[] = members.map((task) => ({

@@ -94,6 +94,65 @@ test('任务图：三张图的块/站/线/选中/表，路由直达和切换保�
   }
 });
 
+test('T066 任务图：框型、状态环、线动效、详情关闭、减少动效', async ({ page }) => {
+  test.setTimeout(120_000);
+  const fixture = await startKernelFixture({ t062TaskGraphs: true });
+  try {
+    await page.goto(urlOf(fixture, '#work?wv=graph'));
+    const judgeGraph = graphBlock(page, '有门等你判的图');
+    await expect(judgeGraph.locator('[data-kind="graph-node"]')).toHaveCount(3, { timeout: 30_000 });
+    await expect(judgeGraph.locator('[data-kind="graph-node"][data-box="gate"]')).toHaveCount(1);
+    await expect(judgeGraph.locator('[data-kind="graph-node"][data-box="read"]').first()).toBeVisible();
+    await expect(page.locator('[data-kind="graph-node"][data-box="write"]').first()).toBeVisible();
+    const writeBox = page.locator('[data-kind="graph-node"][data-box="write"]').first();
+    expect(await writeBox.evaluate((el) => getComputedStyle(el).borderLeftWidth)).toBe('3px');
+    // 状态环：等你的门环转得更慢；减少动效前有 animation。
+    const ring = judgeGraph.locator('.graph-node-ring[data-slow="true"]').first();
+    await expect(ring).toBeVisible();
+    const spinning = await ring.evaluate((el) => getComputedStyle(el).animationName);
+    expect(spinning).not.toBe('none');
+    // 线的 live 数据来自服务；减少动效后动画名是 none。
+    const liveEdge = page.locator('[data-kind="graph-edge"][data-live="flow"], [data-kind="graph-edge"][data-live="make"], [data-kind="graph-edge"][data-live="back"], [data-kind="graph-edge"][data-live="judge"]').first();
+    await expect(liveEdge).toBeVisible();
+    const animatedLine = page.locator('.graph-edge-live-flow, .graph-edge-live-make, .graph-edge-live-back').first();
+    await expect(animatedLine).toHaveCount(1);
+    expect(await animatedLine.evaluate((el) => getComputedStyle(el).animationName)).not.toBe('none');
+    expect(await animatedLine.evaluate((el) => getComputedStyle(el).strokeDasharray)).toContain('6');
+
+    // × 关闭。
+    const nodeA = graphBlock(page, '两个上游汇到一个下游的图').locator('[data-kind="graph-node"][data-title="查 A"]');
+    await nodeA.click();
+    const detail = page.locator('[data-kind="graph-detail"]');
+    await expect(detail).toBeVisible();
+    await detail.locator('[data-kind="graph-detail-close"]').click();
+    await expect(detail).toHaveCount(0);
+    // Esc 关闭。
+    await nodeA.click();
+    await expect(detail).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(detail).toHaveCount(0);
+    // 点图空白关闭。
+    await nodeA.click();
+    await expect(detail).toBeVisible();
+    await page.locator('[data-kind="task-graph-pane"]').getByText('下游开跑时拿到了').click();
+    await expect(detail).toHaveCount(0);
+
+    // 减少动效：环/线都不动。
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.reload();
+    await expect(page.locator('[data-kind="task-graph"]').first()).toBeVisible({ timeout: 30_000 });
+    const ringAfter = page.locator('.graph-node-ring').first();
+    await expect(ringAfter).toBeVisible();
+    expect(await ringAfter.evaluate((el) => getComputedStyle(el).animationName)).toBe('none');
+    const motionEdge = page.locator('[data-kind="graph-edge"][data-live]').first();
+    if (await motionEdge.count()) {
+      expect(await motionEdge.locator('path').first().evaluate((el) => getComputedStyle(el).animationName)).toBe('none');
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
 test('任务图不新起轮询：打开图后 getWork 仍按 workStore 两秒一次', async ({ page }) => {
   test.setTimeout(60_000);
   const fixture = await startKernelFixture({ t062TaskGraphs: true });

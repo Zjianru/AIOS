@@ -196,7 +196,7 @@ function BoardPane() {
       {view === 'cal' ? (
         <CalendarPage />
       ) : view === 'graph' ? (
-        <GraphPane selected={selectedTask} onSelect={setSelectedTask} />
+        <GraphPane selected={selectedTask} onSelect={setSelectedTask} onClose={() => setSelectedTask(null)} />
       ) : (
         <div className="grid min-h-0 flex-1 grid-cols-4 gap-2.5 overflow-hidden p-3" data-kind="work-board">
           {groups.map((group) => (
