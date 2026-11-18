@@ -10,7 +10,7 @@ pub mod store;
 pub mod types;
 
 pub use error::CalendarError;
-pub use review::{merge_missed, merged_reason, review};
+pub use review::{merge_missed, merged_reason_global_pause, merged_reason_missed, review};
 pub use store::{CalendarStore, SCHEMA_VERSION};
 pub use types::{
     Appointment, AppointmentPatch, AppointmentStatus, AppointmentVersion, Binding, BoundTaskFacts,

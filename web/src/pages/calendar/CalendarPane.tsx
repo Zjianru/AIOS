@@ -10,6 +10,7 @@ import { CalendarClock, ChevronLeft, ChevronRight, Eye, Moon, Repeat } from 'luc
 import { go } from '@/app/navigate';
 import { cn } from '@/lib/utils';
 import { useKindStore } from '@/pages/kind/kindStore';
+import { useWorkStore } from '@/pages/work/workStore';
 import {
   GROUP_ORDER,
   RESULT_TONE,
@@ -28,6 +29,15 @@ import {
   type Appointment,
 } from './calendarModel';
 import { useCalendarPolling, useCalendarStore } from './calendarStore';
+
+const STAGE_WORD: Record<string, string> = {
+  needs_conditions: '缺条件',
+  pending: '排队',
+  running: '在做',
+  ready_for_review: '待你核',
+  requirement_met: '已满足',
+  closed: '已关闭',
+};
 
 const ICON: Record<ApptKind, typeof CalendarClock> = {
   time: CalendarClock,
@@ -83,7 +93,12 @@ function RunDots({ appt }: { appt: Appointment }) {
 
 function ApptRow({ appt, on, onSelect }: { appt: Appointment; on: boolean; onSelect: () => void }) {
   const Icon = ICON[appt.kind];
+  const work = useWorkStore((state) => state.work);
   const done = appt.state === 'ended' || appt.state === 'cancelled';
+  const reportRounds = appt.runs.filter((run) => run.trigger === 'report').length;
+  const boundTask = appt.cycleTaskId
+    ? work?.tasks.find((task) => task.id === appt.cycleTaskId)
+    : undefined;
   return (
     <button
       type="button"
@@ -108,13 +123,21 @@ function ApptRow({ appt, on, onSelect }: { appt: Appointment; on: boolean; onSel
       </span>
       <span className="mt-0.5 flex min-w-0 items-center gap-2 text-1 text-ink-3">
         <span className="min-w-0 truncate">
-          {appt.rule}（{appt.timezone}）
+          {appt.trigger}
           {appt.next ? ' · 下次 ' + stampInZone(appt.next, appt.timezone) : ''}
         </span>
         <span className="ml-auto shrink-0">
           <RunDots appt={appt} />
         </span>
       </span>
+      {appt.cycleTaskId || appt.cycleMaxRounds != null ? (
+        <span className="mt-1 block truncate text-1 text-ink-3" data-kind="loop-band">
+          第 {reportRounds} 轮
+          {boundTask
+            ? ' · ' + boundTask.title + ' · ' + (STAGE_WORD[boundTask.stage] ?? boundTask.stage)
+            : ' · 任务不在工作快照'}
+        </span>
+      ) : null}
       {appt.stateWhy ? (
         <span className="mt-1 block truncate text-1 text-wait" data-kind="appt-why">
           暂停了：{appt.stateWhy}
@@ -152,9 +175,20 @@ function ApptDetail({ appt }: { appt: Appointment }) {
       </div>
       <h2 className="mt-2 text-3 leading-6 text-ink" data-kind="detail-words">「{appt.words}」</h2>
       <dl className="mt-3 space-y-1.5 text-2">
-        <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">触发</dt><dd className="text-ink-2">{appt.rule}（{appt.timezone}）</dd></div>
+        <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">触发</dt><dd className="text-ink-2">{appt.trigger}</dd></div>
         <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">绑定</dt><dd className="text-ink-2">{appt.binding === 'task' ? '任务 ' + (appt.boundTaskId ?? '') : 'Kind'}</dd></div>
-        <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">来源</dt><dd className="text-ink-2">Kind 对话确认卡</dd></div>
+        {appt.sourceTurn ? (
+          <div className="flex gap-2">
+            <dt className="w-20 shrink-0 text-ink-3">来源</dt>
+            <dd>
+              <button type="button" data-kind="detail-source-turn" onClick={() => openTurn(appt.sourceTurn)} className="text-ink-2 underline-offset-2 hover:underline">
+                第 {appt.sourceTurn} 轮
+              </button>
+            </dd>
+          </div>
+        ) : (
+          <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">来源</dt><dd className="text-ink-3">旧记录（没有来源轮）</dd></div>
+        )}
         <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">版本</dt><dd className="text-ink-2">第 {appt.version} 版</dd></div>
         <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">下次触发</dt><dd className="text-ink-2">{appt.next ? stampInZone(appt.next, appt.timezone) : '不自动触发'}</dd></div>
         {appt.watchTarget ? <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">盯变化</dt><dd className="min-w-0 break-all text-ink-2">{appt.watchKind} · {appt.watchTarget}</dd></div> : null}

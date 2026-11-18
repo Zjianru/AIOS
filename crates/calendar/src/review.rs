@@ -38,9 +38,14 @@ pub fn review(facts: &ReviewFacts) -> Review {
     }
 }
 
-/// 开闸后同一条约定排着的合并成一次送。
-pub fn merged_reason(count: u32) -> String {
+/// 全局暂停期间到点的多次合并成一次送。
+pub fn merged_reason_global_pause(count: u32) -> String {
     format!("合并了 {count} 次：全局暂停期间到点")
+}
+
+/// 服务没在跑（电脑睡着/进程停过）期间错过的多次合并成一次送。
+pub fn merged_reason_missed(count: u32) -> String {
+    format!("合并了 {count} 次：服务没在跑期间到点")
 }
 
 /// 错过的触发点只补最近一次，并记合并了几次（len-1）。
@@ -145,7 +150,11 @@ mod tests {
         let mut facts = facts(AppointmentStatus::Active);
         facts.global_paused = true;
         assert_eq!(review(&facts), Review::Queue("排着：全局暂停中".to_owned()));
-        assert_eq!(merged_reason(3), "合并了 3 次：全局暂停期间到点");
+        assert_eq!(
+            merged_reason_global_pause(3),
+            "合并了 3 次：全局暂停期间到点"
+        );
+        assert_eq!(merged_reason_missed(2), "合并了 2 次：服务没在跑期间到点");
     }
 
     #[test]

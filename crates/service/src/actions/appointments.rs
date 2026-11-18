@@ -34,7 +34,10 @@ fn schedule_fact(rule: &str, timezone: &str, start_at: i64) -> String {
         .flatten()
         .map(|at| format_ms(at, timezone))
         .unwrap_or_else(|| "不再触发".to_owned());
-    format!("{rule}（{timezone}），下次 {next}")
+    format!(
+        "{}，下次 {next}",
+        crate::calendar_trigger::describe(rule, timezone, start_at)
+    )
 }
 
 fn format_ms(at: i64, timezone: &str) -> String {
@@ -133,7 +136,8 @@ impl ActionKind for CreateAppointmentAction {
             let runtime = host
                 .task_runtime()
                 .ok_or_else(|| "任务库没开，建不了约定".to_owned())?;
-            let appointment = runtime.calendar_create(details)?;
+            let source_turn = host.current_root_turn().await;
+            let appointment = runtime.calendar_create(details, source_turn)?;
             Ok(ActionOutcome {
                 summary: format!("建好约定「{}」", appointment.title),
                 data: json!({ "appointmentId": appointment.id }),

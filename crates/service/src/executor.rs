@@ -5,7 +5,7 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -305,6 +305,8 @@ pub struct TaskRuntime {
     calendar_events: Option<broadcast::Sender<ServiceEvent>>,
     /// 测试钩子：下一次日历唤醒在送进 Kind 前失败一次，留下效果行等退避重试。
     crash_before_wake: AtomicBool,
+    /// 全局暂停开始的毫秒时间；漏掉的多次触发落在暂停期间还是服务没在跑，用它分辨。
+    global_pause_since: AtomicI64,
     /// 测试钩子：盯变化的 URL 抓取用这个出站环境（wiremock 代理）。
     watch_http: std::sync::Mutex<Option<model::http::HttpEnv>>,
 }
@@ -345,6 +347,7 @@ impl TaskRuntime {
             calendar_events,
             crash_before_wake: AtomicBool::new(false),
             watch_http: std::sync::Mutex::new(None),
+            global_pause_since: AtomicI64::new(0),
         })
     }
 
@@ -1124,6 +1127,9 @@ impl TaskRuntime {
     /// 只挡 launch 准入；relay/notice 照送。排队的效果留在库里，开闸后按原顺序领取。
     pub(crate) fn set_exec_paused(&self, paused: bool) {
         self.exec_paused.store(paused, Ordering::SeqCst);
+        if paused {
+            self.global_pause_since.store(Self::now(), Ordering::SeqCst);
+        }
         self.wake();
     }
 
@@ -1184,16 +1190,16 @@ impl TaskRuntime {
         self.wake();
     }
 
-    /// 测试用：模拟进程退出——丢掉还开着的 ThinAgent（放开会话写锁），效果泵不再领取。
-    ///
-    /// 生产里进程退出由操作系统回收；测试要复现「重启后会话写者已经放开」。
-    #[doc(hidden)]
+    /// 测试用：下一次日历唤醒在送进 Kind 前失败一次（留效果行等退避重试）。
     #[doc(hidden)]
     pub fn crash_before_next_wake(&self) {
         self.crash_before_wake.store(true, Ordering::SeqCst);
         self.wake();
     }
 
+    /// 测试用：模拟进程退出——丢掉还开着的 ThinAgent（放开会话写锁），效果泵不再领取。
+    ///
+    /// 生产里进程退出由操作系统回收；测试要复现「重启后会话写者已经放开」。
     pub fn crash(&self) {
         self.shutting_down.store(true, Ordering::SeqCst);
         self.running.lock().expect("thinagent 表锁被毒化").clear();

@@ -694,7 +694,7 @@ fn with_time(text: &str, at: Option<i64>) -> String {
 }
 
 /// 本机本地时区：TZ 环境优先，其次 /etc/localtime 指向的 IANA 名，最后 UTC。
-fn local_timezone() -> chrono_tz::Tz {
+pub(crate) fn local_timezone() -> chrono_tz::Tz {
     if let Ok(name) = std::env::var("TZ")
         && let Ok(zone) = name.parse()
     {

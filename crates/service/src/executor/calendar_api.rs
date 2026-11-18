@@ -171,7 +171,10 @@ impl TaskRuntime {
                 if run.result != RunResult::Queued {
                     continue;
                 }
-                if appointment.status != AppointmentStatus::Active {
+                if matches!(
+                    appointment.status,
+                    AppointmentStatus::Paused | AppointmentStatus::Cancelled
+                ) {
                     let reason = calendar_status_reason(appointment.status);
                     if let Err(error) = store.finish_run(run.id, RunResult::Skipped, reason, None) {
                         eprintln!("暂停/取消后没写运行结果：{error}");
@@ -205,6 +208,7 @@ impl TaskRuntime {
         store: &calendar::CalendarStore,
         appointment: &Appointment,
         now: i64,
+        pause_since: i64,
     ) -> Result<(), String> {
         let next = appointment
             .next_trigger_at
@@ -219,98 +223,115 @@ impl TaskRuntime {
         let latest = *occurrences.last().unwrap_or(&next);
         let merged = u32::try_from(occurrences.len().saturating_sub(1)).unwrap_or(u32::MAX);
 
-        // 绑定任务先看事实：查不到/图取消 → 跳过；关闭 → 结束。
-        let mut skip_reason = None;
-        if let Binding::Task(task_id) = &appointment.binding {
-            match self.store.task(&TaskId::from(task_id.clone())) {
+        let bound_task = match &appointment.binding {
+            Binding::Task(task_id) => match self.store.task(&TaskId::from(task_id.clone())) {
                 Ok(Some(task)) => {
                     let stage = self
                         .store
                         .stage(&task.id)
                         .map_err(|error| error.to_string())?;
-                    if stage == Stage::Closed {
-                        store
-                            .set_status(&appointment.id, AppointmentStatus::Ended)
-                            .map_err(calendar_error)?;
-                        self.emit_calendar_changed(&appointment.id);
-                        self.calendar_advance(store, appointment, latest)?;
-                        return Ok(());
-                    }
-                    if task
-                        .latest_attempt()
-                        .is_some_and(|attempt| attempt.ended_at.is_none())
-                    {
-                        skip_reason = Some("跳过：任务这一轮还在跑".to_owned());
-                    }
+                    Some(calendar::BoundTaskFacts {
+                        exists: true,
+                        graph_cancelled: false,
+                        closed: stage == Stage::Closed,
+                        running: task
+                            .latest_attempt()
+                            .is_some_and(|attempt| attempt.ended_at.is_none()),
+                    })
                 }
-                _ => skip_reason = Some("跳过：绑定的任务已不在".to_owned()),
-            }
-        }
-        // Kind 还在这一轮里：这次跳过。
-        if skip_reason.is_none()
-            && let Some(inner) = self.inner.upgrade()
-        {
+                _ => Some(calendar::BoundTaskFacts {
+                    exists: false,
+                    graph_cancelled: false,
+                    closed: false,
+                    running: false,
+                }),
+            },
+            Binding::Kind => None,
+        };
+        let kind_busy = if let Some(inner) = self.inner.upgrade() {
             let guard = inner.lock().await;
-            if let Some(host) = guard.as_ref()
-                && host.agent().is_running()
-            {
-                skip_reason = Some("跳过：上一次 Kind 还在处理".to_owned());
+            guard.as_ref().is_some_and(|host| host.agent().is_running())
+        } else {
+            false
+        };
+        let base = calendar::ReviewFacts {
+            status: appointment.status,
+            bound_task,
+            kind_busy,
+            global_paused: false,
+            watch: None,
+        };
+        let mut outcome = calendar::review(&base);
+        let mut watch_summary = None;
+        if matches!(outcome, calendar::Review::Send) && appointment.watch.is_some() {
+            match self.watch_check(appointment).await {
+                WatchResult::Unchanged => {
+                    outcome = calendar::Review::Skip("没变：和上次比内容一样".to_owned());
+                }
+                WatchResult::Failed(reason) => {
+                    outcome = calendar::Review::Fail(format!("没送成：{reason}"));
+                }
+                WatchResult::Changed { summary } => {
+                    watch_summary = Some(summary);
+                }
             }
         }
 
-        let mut watch_reason = None;
-        if skip_reason.is_none() && appointment.watch.is_some() {
-            match self.watch_check(appointment).await {
-                WatchResult::Unchanged => {
-                    skip_reason = Some("没变：和上次比内容一样".to_owned());
-                }
-                WatchResult::Failed(reason) => {
-                    let (run, _) = store
-                        .record_run(NewRun {
-                            appointment_id: appointment.id.clone(),
-                            nominal_at: latest,
-                            manual: false,
-                            trigger: TriggerKind::Due,
-                            reason: format!("没送成：{reason}"),
-                            merged_count: merged,
-                            report_id: None,
-                        })
-                        .map_err(calendar_error)?;
-                    store
-                        .finish_run(
-                            run.id,
-                            RunResult::Failed,
-                            &format!("没送成：{reason}"),
-                            None,
-                        )
-                        .map_err(calendar_error)?;
-                    self.calendar_advance(store, appointment, latest)?;
-                    self.emit_calendar_changed(&appointment.id);
-                    return Ok(());
-                }
-                WatchResult::Changed { summary } => {
-                    watch_reason = Some(summary);
-                }
+        let skip_reason = match outcome {
+            calendar::Review::NoRun => return Ok(()),
+            calendar::Review::End => {
+                store
+                    .set_status(&appointment.id, AppointmentStatus::Ended)
+                    .map_err(calendar_error)?;
+                self.calendar_advance(store, appointment, latest)?;
+                self.emit_calendar_changed(&appointment.id);
+                return Ok(());
             }
-        }
+            calendar::Review::Queue(reason) => Some(reason),
+            calendar::Review::Skip(reason) => Some(reason),
+            calendar::Review::Fail(reason) => {
+                let (run, _) = store
+                    .record_run(NewRun {
+                        appointment_id: appointment.id.clone(),
+                        nominal_at: latest,
+                        manual: false,
+                        trigger: TriggerKind::Due,
+                        reason: reason.clone(),
+                        merged_count: merged,
+                        report_id: None,
+                    })
+                    .map_err(calendar_error)?;
+                store
+                    .finish_run(run.id, RunResult::Failed, &reason, None)
+                    .map_err(calendar_error)?;
+                self.calendar_advance(store, appointment, latest)?;
+                self.emit_calendar_changed(&appointment.id);
+                return Ok(());
+            }
+            calendar::Review::Send => None,
+        };
+
+        let merged_reason = if merged > 0 {
+            let since = pause_since;
+            if since > 0 && next >= since {
+                calendar::merged_reason_global_pause(merged)
+            } else {
+                calendar::merged_reason_missed(merged)
+            }
+        } else {
+            String::new()
+        };
         let (run, created) = store
             .record_run(NewRun {
                 appointment_id: appointment.id.clone(),
                 nominal_at: latest,
                 manual: false,
                 trigger: TriggerKind::Due,
-                reason: watch_reason.unwrap_or_else(|| {
-                    if merged > 0 {
-                        calendar::merged_reason(merged)
-                    } else {
-                        String::new()
-                    }
-                }),
+                reason: watch_summary.unwrap_or(merged_reason),
                 merged_count: merged,
                 report_id: None,
             })
             .map_err(calendar_error)?;
-
         match skip_reason {
             Some(reason) => {
                 store
@@ -349,9 +370,18 @@ impl TaskRuntime {
             .schedule
             .next_after(latest)
             .map_err(calendar_error)?;
-        store
-            .set_next_trigger(&appointment.id, next)
-            .map_err(calendar_error)?;
+        match next {
+            Some(next) => {
+                store
+                    .set_next_trigger(&appointment.id, Some(next))
+                    .map_err(calendar_error)?;
+            }
+            None => {
+                store
+                    .set_status(&appointment.id, AppointmentStatus::Ended)
+                    .map_err(calendar_error)?;
+            }
+        }
         Ok(())
     }
 
@@ -363,14 +393,21 @@ impl TaskRuntime {
         if self.exec_paused.load(Ordering::SeqCst) {
             return;
         }
+        let pause_since = self.global_pause_since.load(Ordering::SeqCst);
         let appointments = store.due_appointments(now).unwrap_or_default();
         for appointment in appointments {
             if self.shutting_down.load(Ordering::SeqCst) {
                 return;
             }
-            if let Err(error) = self.calendar_review_one(store, &appointment, now).await {
+            if let Err(error) = self
+                .calendar_review_one(store, &appointment, now, pause_since)
+                .await
+            {
                 eprintln!("日历复核失败：{error}");
             }
+        }
+        if pause_since > 0 {
+            self.global_pause_since.store(0, Ordering::SeqCst);
         }
     }
 
@@ -417,7 +454,10 @@ impl TaskRuntime {
             self.finish_or_fail(&claim, Ok(()));
             return;
         }
-        if appointment.status != AppointmentStatus::Active {
+        if matches!(
+            appointment.status,
+            AppointmentStatus::Paused | AppointmentStatus::Cancelled
+        ) {
             let reason = calendar_status_reason(appointment.status);
             if let Err(error) = store.finish_run(run.id, RunResult::Skipped, reason, None) {
                 eprintln!("暂停/取消后没写运行结果：{error}");
@@ -535,6 +575,11 @@ impl TaskRuntime {
             title: appointment.title.clone(),
             condition: appointment.condition.clone(),
             rule: appointment.schedule.rule.clone(),
+            trigger: crate::calendar_trigger::describe(
+                &appointment.schedule.rule,
+                &appointment.schedule.timezone,
+                appointment.schedule.start_at,
+            ),
             timezone: appointment.schedule.timezone.clone(),
             status: appointment.status.as_str().to_owned(),
             version: appointment.version,
@@ -577,6 +622,7 @@ impl TaskRuntime {
                 .cycle
                 .as_ref()
                 .and_then(|cycle| cycle.max_rounds),
+            source_turn: appointment.source_turn,
             created_at: appointment.created_at,
             updated_at: appointment.updated_at,
             runs,

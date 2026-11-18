@@ -276,6 +276,20 @@ impl RootHost {
         guard.as_ref().is_none_or(|host| !host.agent().is_running())
     }
 
+    /// 当前 Kind 根会话的轮号（确认卡 act 记来源轮用）。
+    pub(crate) async fn current_root_turn(&self) -> Option<u64> {
+        let guard = self.inner.lock().await;
+        let host = guard.as_ref()?;
+        host.agent()
+            .session_events_from(0)
+            .iter()
+            .rev()
+            .find_map(|event| match &event.kind {
+                session::EventKind::TurnStart { turn } => Some(*turn),
+                _ => None,
+            })
+    }
+
     /// 测试钩子：循环约定的 task_continue 准入原因（有就返回 Debug 文本）。
     #[doc(hidden)]
     pub fn calendar_cycle_cause(&self, task_id: &str) -> Option<String> {
@@ -649,7 +663,7 @@ impl RootHost {
     }
 }
 
-/// 中继卡（task_report/task_stop/gate_verdict/upstream_changed）：只看 rpcId 前缀。
+/// 用户消息的 source.rpcId（程序消息/中继卡都从这里认前缀）。
 fn event_user_rpc(event: &ServiceEvent) -> Option<&str> {
     event
         .data
@@ -751,6 +765,7 @@ impl RootHost {
     pub(crate) fn calendar_builtin_view(&self) -> Option<crate::protocol::CalendarAppointmentView> {
         let memory = self.memory.as_ref()?;
         let settings = memory.store().dream_settings().ok()?;
+        let timezone = crate::delivery::local_timezone().name().to_owned();
         let runs = memory.store().dream_runs(5).unwrap_or_default();
         let enabled = settings.enabled;
         let interval_hours = settings.interval_hours;
@@ -795,7 +810,12 @@ impl RootHost {
             title: "做梦".to_owned(),
             condition: "整理记忆（内置）".to_owned(),
             rule: format!("FREQ=HOURLY;INTERVAL={interval_hours}"),
-            timezone: "Asia/Shanghai".to_owned(),
+            trigger: crate::calendar_trigger::describe(
+                &format!("FREQ=HOURLY;INTERVAL={interval_hours}"),
+                &timezone,
+                0,
+            ),
+            timezone,
             status: if enabled { "active" } else { "paused" }.to_owned(),
             version: 1,
             binding: "kind".to_owned(),
@@ -810,6 +830,7 @@ impl RootHost {
             watch_target: None,
             cycle_task_id: None,
             cycle_max_rounds: None,
+            source_turn: None,
             created_at: 0,
             updated_at: last_at,
             runs: run_views,

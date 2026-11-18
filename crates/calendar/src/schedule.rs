@@ -18,6 +18,9 @@ impl Schedule {
         if self.start_at > after_ms {
             return Ok(Some(self.start_at));
         }
+        if single_occurrence(&self.rule) {
+            return Ok(None);
+        }
         let tz: rrule::Tz = self.timezone()?.into();
         let after = tz
             .timestamp_millis_opt(after_ms)
@@ -33,6 +36,13 @@ impl Schedule {
 
     /// [from_ms, to_ms] 之间的触发点，按时间升序；周视图的计划点用。
     pub fn occurrences_between(&self, from_ms: i64, to_ms: i64) -> Result<Vec<i64>, CalendarError> {
+        if single_occurrence(&self.rule) {
+            return Ok(if self.start_at >= from_ms && self.start_at <= to_ms {
+                vec![self.start_at]
+            } else {
+                Vec::new()
+            });
+        }
         let tz: rrule::Tz = self.timezone()?.into();
         let from = tz
             .timestamp_millis_opt(from_ms)
@@ -82,6 +92,13 @@ impl Schedule {
             .map_err(|error| CalendarError::InvalidSchedule(error.to_string()))?;
         Ok(rrule::RRuleSet::new(start_at).rrule(rule))
     }
+}
+
+/// COUNT=1 的一次性规则；rrule after() 对过去的 DTSTART 会锚到次日，要单独收口。
+fn single_occurrence(rule: &str) -> bool {
+    rule.split(';')
+        .filter_map(|part| part.split_once('='))
+        .any(|(key, value)| key == "COUNT" && value == "1")
 }
 
 #[cfg(test)]
@@ -142,6 +159,22 @@ mod tests {
             .occurrences_between(now, start + 24 * 60 * 60 * 1000)
             .unwrap();
         assert_eq!(points.first(), Some(&start), "周计划也要包含未来起点");
+
+        let past = Schedule {
+            rule: "FREQ=DAILY;COUNT=1".to_owned(),
+            timezone: "Asia/Shanghai".to_owned(),
+            start_at: start,
+        };
+        assert_eq!(
+            past.next_after(start + 1_000).unwrap(),
+            None,
+            "一次性规则跑过之后没有下一次"
+        );
+        assert!(
+            past.occurrences_between(now, start + 24 * 60 * 60 * 1000)
+                .unwrap()
+                .contains(&start)
+        );
     }
 
     #[test]

@@ -5,12 +5,21 @@ use calendar::{AppointmentStatus, Schedule};
 
 impl TaskRuntime {
     /// 确认卡 create_appointment 的正式入口：建一条约定并推 calendar/changed。
-    pub(crate) fn calendar_create(&self, details: &Value) -> Result<calendar::Appointment, String> {
+    pub(crate) fn calendar_create(
+        &self,
+        details: &Value,
+        source_turn: Option<u64>,
+    ) -> Result<calendar::Appointment, String> {
         let draft = crate::appointments::new_appointment(details)?;
         let store = self.calendar()?;
         let appointment = store
             .create_appointment(draft)
             .map_err(|error| error.to_string())?;
+        if let Some(turn) = source_turn {
+            store
+                .set_source_turn(&appointment.id, turn)
+                .map_err(|error| error.to_string())?;
+        }
         self.wake();
         self.emit_calendar_changed(&appointment.id);
         Ok(appointment)

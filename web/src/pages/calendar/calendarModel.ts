@@ -31,6 +31,7 @@ export interface Appointment {
   kind: ApptKind;
   words: string;
   rule: string;
+  trigger: string;
   timezone: string;
   status: string;
   state: ApptState;
@@ -44,6 +45,7 @@ export interface Appointment {
   watchTarget: string | null;
   cycleTaskId: string | null;
   cycleMaxRounds: number | null;
+  sourceTurn: number | null;
   runs: ApptRun[];
 }
 
@@ -115,6 +117,7 @@ export function appointmentOf(view: CalendarAppointmentView): Appointment {
     kind: kindOf(view),
     words: view.condition,
     rule: view.rule,
+    trigger: view.trigger,
     timezone: view.timezone,
     status: view.status,
     state: stateOf(view),
@@ -128,6 +131,7 @@ export function appointmentOf(view: CalendarAppointmentView): Appointment {
     watchTarget: view.watchTarget ?? null,
     cycleTaskId: view.cycleTaskId ?? null,
     cycleMaxRounds: view.cycleMaxRounds ?? null,
+    sourceTurn: view.sourceTurn ?? null,
     runs: view.runs.map(runOf),
   };
 }

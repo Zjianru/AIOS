@@ -56,6 +56,7 @@ export async function seedT064Calendar(dataDir) {
       binding_kind: 'kind',
       binding_ref: '',
       next_trigger_at: next,
+      source_turn: 3,
       created_at: Date.now() - 12 * DAY,
     },
     {
@@ -70,6 +71,7 @@ export async function seedT064Calendar(dataDir) {
       binding_kind: 'kind',
       binding_ref: '',
       next_trigger_at: Date.now() + 2 * HOUR,
+      source_turn: 2,
       watch_kind: 'url',
       watch_target: 'https://example.com/elkjs',
       created_at: Date.now() - 10 * DAY,
@@ -84,10 +86,11 @@ export async function seedT064Calendar(dataDir) {
       timezone: 'Asia/Shanghai',
       start_at: Date.now() - 3 * DAY,
       binding_kind: 'task',
-      binding_ref: 'task-demo',
-      cycle_task_id: 'task-demo',
+      binding_ref: '00000000000000000000000000000003',
+      cycle_task_id: '00000000000000000000000000000003',
       cycle_max_rounds: 5,
       next_trigger_at: null,
+      source_turn: null,
       created_at: Date.now() - 5 * DAY,
     },
   ];
@@ -96,7 +99,7 @@ export async function seedT064Calendar(dataDir) {
       const columns = [
         'id', 'status', 'version', 'title', 'condition', 'rule', 'timezone', 'start_at',
         'binding_kind', 'binding_ref', 'watch_kind', 'watch_target', 'cycle_task_id',
-        'cycle_max_rounds', 'next_trigger_at', 'created_at', 'updated_at',
+        'cycle_max_rounds', 'next_trigger_at', 'source_turn', 'created_at', 'updated_at',
       ];
       const values = [
         sqlQuote(a.id), sqlQuote(a.status), String(a.version), sqlQuote(a.title),
@@ -105,6 +108,7 @@ export async function seedT064Calendar(dataDir) {
         a.watch_target ? sqlQuote(a.watch_target) : 'NULL', a.cycle_task_id ? sqlQuote(a.cycle_task_id) : 'NULL',
         a.cycle_max_rounds ? String(a.cycle_max_rounds) : 'NULL',
         a.next_trigger_at ? String(a.next_trigger_at) : 'NULL',
+        a.source_turn ? String(a.source_turn) : 'NULL',
         String(a.created_at), String(a.created_at),
       ];
       return 'INSERT INTO appointment (' + columns.join(',') + ') VALUES (' + values.join(',') + ');';
@@ -127,8 +131,8 @@ export async function seedT064Calendar(dataDir) {
   const sql = [
     'PRAGMA journal_mode=WAL;',
     'CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);',
-    "INSERT INTO kv VALUES ('schema_version','3');",
-    'CREATE TABLE appointment (id TEXT PRIMARY KEY,status TEXT NOT NULL,version INTEGER NOT NULL,title TEXT NOT NULL,condition TEXT NOT NULL,rule TEXT NOT NULL,timezone TEXT NOT NULL,start_at INTEGER NOT NULL,binding_kind TEXT NOT NULL,binding_ref TEXT NOT NULL,watch_kind TEXT,watch_target TEXT,cycle_task_id TEXT,cycle_max_rounds INTEGER,next_trigger_at INTEGER,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);',
+    "INSERT INTO kv VALUES ('schema_version','4');",
+    'CREATE TABLE appointment (id TEXT PRIMARY KEY,status TEXT NOT NULL,version INTEGER NOT NULL,title TEXT NOT NULL,condition TEXT NOT NULL,rule TEXT NOT NULL,timezone TEXT NOT NULL,start_at INTEGER NOT NULL,binding_kind TEXT NOT NULL,binding_ref TEXT NOT NULL,watch_kind TEXT,watch_target TEXT,cycle_task_id TEXT,cycle_max_rounds INTEGER,next_trigger_at INTEGER,source_turn INTEGER,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);',
     'CREATE TABLE appointment_version (appointment_id TEXT NOT NULL,version INTEGER NOT NULL,title TEXT NOT NULL,condition TEXT NOT NULL,rule TEXT NOT NULL,timezone TEXT NOT NULL,start_at INTEGER NOT NULL,binding_kind TEXT NOT NULL,binding_ref TEXT NOT NULL,watch_kind TEXT,watch_target TEXT,cycle_task_id TEXT,cycle_max_rounds INTEGER,reason TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY (appointment_id, version));',
     'CREATE TABLE run (id INTEGER PRIMARY KEY AUTOINCREMENT,appointment_id TEXT NOT NULL,nominal_at INTEGER NOT NULL,manual INTEGER NOT NULL,trigger_kind TEXT NOT NULL,result TEXT NOT NULL,reason TEXT NOT NULL DEFAULT \'\',merged_count INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,sent_turn INTEGER,report_id TEXT,UNIQUE (appointment_id, nominal_at, manual));',
     'CREATE INDEX run_appointment ON run(appointment_id, nominal_at);',

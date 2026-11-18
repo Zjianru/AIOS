@@ -182,6 +182,106 @@ async fn startup_recovery_sends_a_queued_run_without_effect() {
 }
 
 #[tokio::test]
+async fn two_appointments_due_under_one_global_pause_both_use_the_pause_reason() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
+    let now = now_ms();
+    let first = appointment(&store, "暂停一", now - 5_000, "FREQ=SECONDLY");
+    let second = appointment(&store, "暂停二", now - 5_000, "FREQ=SECONDLY");
+    // 先排远点，开宿主后再进全局暂停，最后把两条都改成已到期，一起开闸。
+    store
+        .set_next_trigger(&first.id, Some(now + 3_600_000))
+        .unwrap();
+    store
+        .set_next_trigger(&second.id, Some(now + 3_600_000))
+        .unwrap();
+    let host = crate::common::open(crate::common::options(data)).await;
+    host.dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
+        currency: None,
+        paused: Some(true),
+        seats: None,
+        bash: None,
+    }))
+    .await
+    .expect("进全局暂停");
+    store
+        .set_next_trigger(&first.id, Some(now_ms() + 100))
+        .unwrap();
+    store
+        .set_next_trigger(&second.id, Some(now_ms() + 100))
+        .unwrap();
+    // 暂停期间到点，且攒出多次（FREQ=SECONDLY），再开闸。
+    tokio::time::sleep(std::time::Duration::from_millis(3_200)).await;
+    host.dispatch(Call::SettingsUpdate(service::SettingsUpdateRequest {
+        currency: None,
+        paused: Some(false),
+        seats: None,
+        bash: None,
+    }))
+    .await
+    .expect("开闸");
+    wait_until("两条都送", || {
+        store
+            .runs(&first.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Sent)
+            && store
+                .runs(&second.id)
+                .unwrap()
+                .iter()
+                .any(|run| run.result == calendar::RunResult::Sent)
+    })
+    .await;
+    for id in [&first.id, &second.id] {
+        let run = store
+            .runs(id)
+            .unwrap()
+            .into_iter()
+            .find(|run| run.result == calendar::RunResult::Sent)
+            .unwrap();
+        assert!(
+            run.reason.contains("全局暂停期间到点"),
+            "同一次开闸的多条 due 都应写暂停原因：{}",
+            run.reason
+        );
+    }
+    host.shutdown().await;
+}
+#[tokio::test]
+async fn missed_while_service_was_down_uses_the_missed_merge_reason() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
+    let now = now_ms();
+    let due = appointment(&store, "错过合并", now - 5_000, "FREQ=SECONDLY");
+    store.set_next_trigger(&due.id, Some(now - 5_000)).unwrap();
+    let host = crate::common::open(crate::common::options(data)).await;
+    wait_until("补送一次", || {
+        store
+            .runs(&due.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Sent)
+    })
+    .await;
+    let run = store
+        .runs(&due.id)
+        .unwrap()
+        .into_iter()
+        .find(|run| run.result == calendar::RunResult::Sent)
+        .unwrap();
+    assert!(run.merged_count >= 4, "merged={}", run.merged_count);
+    assert!(
+        run.reason.contains("服务没在跑期间到点"),
+        "服务停机错过的合并原因不能写成全局暂停：{}",
+        run.reason
+    );
+    host.shutdown().await;
+}
+
+#[tokio::test]
 async fn global_pause_merges_missed_occurrences_and_sends_once() {
     let directory = tempfile::tempdir().unwrap();
     let data = directory.path();
@@ -632,6 +732,32 @@ async fn resume_wakes_the_pump_and_sends_the_due_run() {
         store.appointment(&due.id).unwrap().unwrap().status,
         calendar::AppointmentStatus::Active
     );
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn one_off_appointment_ends_after_its_run() {
+    let directory = tempfile::tempdir().unwrap();
+    let data = directory.path();
+    let store = calendar::CalendarStore::open(data.join("calendar.sqlite")).unwrap();
+    let now = now_ms();
+    let due = appointment(&store, "一次性提醒", now - 1_000, "FREQ=DAILY;COUNT=1");
+    store.set_next_trigger(&due.id, Some(now - 1)).unwrap();
+    let host = crate::common::open(crate::common::options(data)).await;
+    wait_until("一次性送到", || {
+        store
+            .runs(&due.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Sent)
+    })
+    .await;
+    wait_until("一次性结束", || {
+        store.appointment(&due.id).unwrap().unwrap().status == calendar::AppointmentStatus::Ended
+    })
+    .await;
+    let ended = store.appointment(&due.id).unwrap().unwrap();
+    assert!(ended.next_trigger_at.is_none());
     host.shutdown().await;
 }
 
