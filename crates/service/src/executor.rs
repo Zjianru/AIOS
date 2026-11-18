@@ -3600,3 +3600,199 @@ mod trigger_guard_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod trigger_tool_tests {
+    use std::sync::{Arc, Mutex, Weak};
+
+    use model::{DEFAULT_CONTEXT_WINDOW, Effort};
+    use tools::{Tool, ToolContext, ToolSessionState};
+
+    use super::*;
+    use crate::executor::task_tools::{
+        TaskContinueTool, TaskHandbackTool, TaskStopTool, TaskUpdateTool,
+    };
+    use crate::root::RootSessionOptions;
+
+    fn runtime() -> (tempfile::TempDir, Arc<TaskRuntime>) {
+        let directory = tempfile::tempdir().unwrap();
+        let options = RootSessionOptions {
+            data_dir: directory.path().to_path_buf(),
+            cwd: directory.path().to_path_buf(),
+            model: model::DeepSeekConfig {
+                provider: "deepseek".to_owned(),
+                base_url: "http://127.0.0.1:1".to_owned(),
+                model: "deepseek-flash".to_owned(),
+                max_tokens: 2048,
+                context_window: DEFAULT_CONTEXT_WINDOW,
+                effort: Effort::new("high"),
+                tool_update: None,
+            },
+            config: agent::AgentConfig::default(),
+            credentials: None,
+            identity: None,
+            model_factory: None,
+            append_hook_factory: None,
+            keyring_changed: None,
+            actions: Arc::new(crate::actions::ActionRegistry::empty()),
+            exa_base_url: None,
+            web_listen: None,
+            task_runtime: None,
+        };
+        let runtime =
+            TaskRuntime::new(&options, Arc::new(Mutex::new(None)), Weak::new(), None).unwrap();
+        (directory, Arc::new(runtime))
+    }
+
+    fn trigger_task(directory: &std::path::Path, runtime: &TaskRuntime) -> Task {
+        let draft = NewTask {
+            title: "到点任务".to_owned(),
+            requirement: "到点办完".to_owned(),
+            dod: "办完".to_owned(),
+            cwd: directory.to_path_buf(),
+            conversation: ConversationId::new("kind-trigger-tool"),
+            model: ModelChoice {
+                connection: "deepseek".to_owned(),
+                model: "deepseek-flash".to_owned(),
+                effort_wanted: "high".to_owned(),
+            },
+            tools: Vec::new(),
+        };
+        let task = runtime
+            .store
+            .create_trigger_task_once(draft, "tool-reject", TaskRuntime::now())
+            .unwrap()
+            .0;
+        runtime
+            .store
+            .set_origin(
+                &task.id,
+                AppointmentOrigin {
+                    appointment_id: "appointment".to_owned(),
+                    run_id: 1,
+                    role: AppointmentRole::Trigger,
+                },
+            )
+            .unwrap();
+        runtime.store.task(&task.id).unwrap().unwrap()
+    }
+
+    async fn error_of(tool: &dyn Tool, arguments: Value) -> String {
+        let directory = tempfile::tempdir().unwrap();
+        let context = ToolContext::with_session(
+            directory.path(),
+            Arc::new(ToolSessionState::new(directory.path(), "kind-trigger-tool")),
+        );
+        let result = tool
+            .execute(
+                ToolCall {
+                    id: "call".to_owned(),
+                    name: tool.name().to_owned(),
+                    arguments: arguments.to_string(),
+                },
+                &context,
+            )
+            .await;
+        assert!(result.is_error, "应当拒绝：{result:?}");
+        result.content
+    }
+
+    #[tokio::test]
+    async fn trigger_tasks_stay_out_of_interrupt_unconfirmed_graph_and_dream_lists() {
+        let (directory, runtime) = runtime();
+        let task = trigger_task(directory.path(), &runtime);
+        assert!(
+            !task.is_interrupted(),
+            "触发任务没有 Attempt，不会进打断事实"
+        );
+        assert!(
+            runtime.unconfirmed_graph_roots().unwrap().is_empty(),
+            "触发任务不是图根，不会进未确认图"
+        );
+        let dream = crate::memory::task_facts(&runtime, 0).unwrap();
+        assert!(
+            dream.iter().all(|fact| fact.task_id != task.id.as_str()),
+            "触发任务不进做梦事实：{dream:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_and_handback_reject_trigger_tasks() {
+        let (directory, runtime) = runtime();
+        let task = trigger_task(directory.path(), &runtime);
+        let update = TaskUpdateTool::new(runtime.clone());
+        let text = error_of(
+            &update,
+            json!({"task_id": task.id.as_str(), "write_scope": "a.txt"}),
+        )
+        .await;
+        assert!(text.contains("这是约定到点的任务，不能接着做"), "{text}");
+
+        let handback = TaskHandbackTool::new(runtime.clone(), task.id.clone(), AttemptId(1));
+        let context = ToolContext::with_session(
+            directory.path(),
+            Arc::new(ToolSessionState::new(directory.path(), "thin")),
+        );
+        let result = handback
+            .execute(
+                ToolCall {
+                    id: "call".to_owned(),
+                    name: "task_handback".to_owned(),
+                    arguments: json!({"reason": "超出范围"}).to_string(),
+                },
+                &context,
+            )
+            .await;
+        assert!(result.is_error);
+        assert!(
+            result.content.contains("这是约定到点的任务，不能接着做"),
+            "{}",
+            result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn continue_and_stop_tools_reject_trigger_tasks() {
+        let (directory, runtime) = runtime();
+        let task = trigger_task(directory.path(), &runtime);
+        let context = ToolContext::with_session(
+            directory.path(),
+            Arc::new(ToolSessionState::new(directory.path(), "kind")),
+        );
+        let continue_tool = TaskContinueTool::new(runtime.clone());
+        let result = continue_tool
+            .execute(
+                ToolCall {
+                    id: "call".to_owned(),
+                    name: "task_continue".to_owned(),
+                    arguments: json!({"task_id": task.id.as_str()}).to_string(),
+                },
+                &context,
+            )
+            .await;
+        assert!(result.is_error);
+        assert!(
+            result.content.contains("这是约定到点的任务，不能接着做"),
+            "{}",
+            result.content
+        );
+
+        let stop_tool = TaskStopTool::new(runtime.clone());
+        let result = stop_tool
+            .execute(
+                ToolCall {
+                    id: "call".to_owned(),
+                    name: "task_stop".to_owned(),
+                    arguments: json!({"task_id": task.id.as_str(), "mode": "now"}).to_string(),
+                },
+                &context,
+            )
+            .await;
+        assert!(result.is_error);
+        assert!(
+            result.content.contains("这是约定到点的任务，不能接着做"),
+            "{}",
+            result.content
+        );
+    }
+}

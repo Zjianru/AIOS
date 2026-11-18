@@ -436,6 +436,8 @@ async fn two_hundred_trigger_tasks_do_not_slow_the_work_snapshot() {
         panic!("工作快照响应");
     };
     assert!(work.tasks.is_empty(), "触发任务不能上看板");
+    assert!(work.wait.is_empty(), "触发任务不能进等你/现在");
+    assert!(work.graphs.is_empty(), "触发任务不能进图");
     eprintln!(
         "T066 200 条触发任务工作快照耗时：{} ms（200 个任务，快照 {} 项）",
         elapsed.as_millis(),
