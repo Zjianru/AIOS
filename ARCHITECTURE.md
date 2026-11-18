@@ -45,7 +45,7 @@ AIOS 是本地 agent 内核：会话日志是唯一事实来源，loop 只做驱
 ## 日历
 
 - **数据层（calendar crate）**：唯一存储是 <数据目录>/calendar.sqlite（kv/schema 版本、appointment 当前快照、appointment_version 每版一行只增、run 每次一行只增、watch_state 上次内容）；单写者、Immediate 事务，结果只往前走（排着 → 已送/跳过/没送成，没送成 → 已送）。依赖 rusqlite、serde、rrule 0.14.0、chrono 0.4.45、chrono-tz 0.10.4；不依赖 service/agent/tasks/session/memory。
-- **到点怎么进 Kind**：服务 runtime 一条 timer 只睡最近的 next_trigger；到点先写 run（排着），再在 tasks 效果表写 AppointmentWake{appointment_id, run_id}（键是 run id）；效果泵按退避领取，把 User 消息 Steer 进 Kind 根会话（rpc_id appointment-wake:<约定>:<run>，正文 JSON kind=appointment_wake）；根会话不在就留效果等；启动时有 run 没效果行的补上。复核/合并/暂停/循环都是运行时按库与任务事实决定，页面只读 calendar-read、动作走 calendar-action。
+- **到点怎么进 Kind**：服务 runtime 一条 timer 只睡最近的 next_trigger；到点先写 run（排着），再在 tasks 效果表写 AppointmentWake{appointment_id, run_id}（键是 run id）；效果泵按退避领取，把 User 消息 Steer 进 Kind 根会话（rpc_id appointment-wake:<约定>:<run>，正文 JSON kind=appointment_wake）；根会话不在就留效果等；启动时有 run 没效果行的补上。复核/合并/暂停/循环都是运行时按库与任务事实决定，页面只读 calendar-read、动作走 calendar-action。到点建一条触发任务（origin.role=trigger，只读、不开 Attempt）；Kind 那一轮的 turn/end 钩子给触发任务写 round_end（启动时补写已结束未写的轮），calendar-read 运行块的起止/状态词在读取时从任务事实算。
 
 ## 工具、确认卡与根会话
 

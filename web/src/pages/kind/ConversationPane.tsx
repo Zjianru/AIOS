@@ -164,9 +164,6 @@ export function ConversationPane() {
       const last = state.views[state.views.length - 1]?.id;
       const prevLast = prev.views[prev.views.length - 1]?.id;
       if (revealHoldRef.current) return;
-      if (last && last !== prevLast && !state.loadingOlder && followRef.current) {
-        followRef.current = true;
-      }
       if (!followRef.current || userScrolledRef.current) return;
       requestAnimationFrame(pin);
     });
