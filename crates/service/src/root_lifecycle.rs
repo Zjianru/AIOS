@@ -846,6 +846,7 @@ impl RootHost {
             binding: "kind".to_owned(),
             bound_task_id: None,
             next_trigger_at: next_at,
+            duration_minutes: None,
             pause_reason: if enabled {
                 None
             } else {

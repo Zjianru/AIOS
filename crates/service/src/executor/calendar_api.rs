@@ -4,13 +4,12 @@ use super::calendar_watch::WatchResult;
 use super::*;
 use crate::protocol::{
     CalendarActionKind, CalendarActionRequest, CalendarActionResponse, CalendarAppointmentView,
-    CalendarReadRequest, CalendarReadResponse, CalendarRunView, CalendarWeekPoint,
+    CalendarPlanBlock, CalendarReadRequest, CalendarReadResponse, CalendarRuleColor,
+    CalendarRunView,
 };
 use calendar::{
     Appointment, AppointmentStatus, Binding, CalendarError, NewRun, Run, RunResult, TriggerKind,
 };
-
-const WEEK_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 impl TaskRuntime {
     pub(crate) fn calendar(&self) -> Result<&calendar::CalendarStore, String> {
@@ -27,57 +26,100 @@ impl TaskRuntime {
         let store = self.calendar()?;
         let now = Self::now();
         let all = store.list_appointments().map_err(calendar_error)?;
+        let color_order: Vec<&calendar::Appointment> = {
+            let mut sorted: Vec<&calendar::Appointment> = all.iter().collect();
+            sorted.sort_by(|left, right| {
+                (left.created_at, &left.id).cmp(&(right.created_at, &right.id))
+            });
+            sorted
+        };
+        let color_of: std::collections::HashMap<&str, u8> = color_order
+            .iter()
+            .enumerate()
+            .map(|(index, appointment)| (appointment.id.as_str(), u8::try_from(index % 6).unwrap()))
+            .collect();
         let mut appointments = Vec::new();
-        for appointment in all {
+        let mut ranges = Vec::new();
+        let mut plans = Vec::new();
+        let mut dense = Vec::new();
+        let tasks = self.store.all_tasks().map_err(|error| error.to_string())?;
+        let range = request.from.zip(request.to);
+        for appointment in &all {
             if let Some(id) = &request.appointment_id
                 && &appointment.id != id
             {
                 continue;
             }
             appointments.push(
-                self.calendar_view(store, &appointment)
+                self.calendar_view(store, appointment)
                     .map_err(calendar_error)?,
             );
         }
-        let mut week = Vec::new();
-        if let Some(week_start) = request.week {
-            let week_end = week_start.saturating_add(WEEK_MS);
-            for appointment in store.list_appointments().map_err(calendar_error)? {
-                if appointment.status != AppointmentStatus::Active {
-                    continue;
-                }
-                let points = appointment
-                    .schedule
-                    .occurrences_between(week_start, week_end)
-                    .map_err(calendar_error)?;
-                for at in points {
-                    week.push(CalendarWeekPoint {
-                        at,
-                        appointment_id: appointment.id.clone(),
-                        kind: "plan".to_owned(),
-                        result: None,
-                    });
-                }
-                for run in store.runs(&appointment.id).map_err(calendar_error)? {
-                    if run.nominal_at >= week_start
-                        && run.nominal_at <= week_end
-                        && run.result != RunResult::Queued
+        for appointment in store.list_appointments().map_err(calendar_error)? {
+            if let Some(id) = &request.appointment_id
+                && &appointment.id != id
+            {
+                continue;
+            }
+            let color = color_of
+                .get(appointment.id.as_str())
+                .copied()
+                .unwrap_or_default();
+            if let Some((from, to)) = range {
+                let runs = store.runs(&appointment.id).map_err(calendar_error)?;
+                for run in &runs {
+                    if run.result == RunResult::Sent
+                        && let Some(block) = range_block(&appointment, run, &tasks, now)
+                        && block.start <= to
+                        && block.end >= from
                     {
-                        week.push(CalendarWeekPoint {
-                            at: run.nominal_at,
+                        ranges.push(block);
+                    }
+                }
+                if dense_rule(&appointment.schedule.rule) {
+                    dense.extend(
+                        dense_days(&appointment, &runs)
+                            .into_iter()
+                            .filter(|day| day.day >= from && day.day <= to),
+                    );
+                } else if appointment.status == AppointmentStatus::Active {
+                    let minutes = duration_minutes(&appointment, &runs, &tasks);
+                    for at in appointment
+                        .schedule
+                        .occurrences_between(from, to)
+                        .map_err(calendar_error)?
+                    {
+                        plans.push(CalendarPlanBlock {
                             appointment_id: appointment.id.clone(),
-                            kind: "run".to_owned(),
-                            result: Some(run.result.as_str().to_owned()),
+                            title: appointment.title.clone(),
+                            start: at,
+                            end: at.saturating_add(i64::from(minutes).saturating_mul(60_000)),
+                            color,
                         });
                     }
                 }
             }
-            week.sort_by_key(|point| point.at);
         }
+        let mut colors = Vec::new();
+        for appointment in &color_order {
+            colors.push(CalendarRuleColor {
+                appointment_id: appointment.id.clone(),
+                color: color_of
+                    .get(appointment.id.as_str())
+                    .copied()
+                    .unwrap_or_default(),
+            });
+        }
+        ranges.sort_by_key(|block| (block.start, block.id));
+        plans.sort_by_key(|block| (block.start, block.appointment_id.clone()));
+        dense.sort_by_key(|day| (day.day, day.appointment_id.clone()));
         Ok(CalendarReadResponse {
             generated_at: now,
             appointments,
-            week,
+            ranges,
+            plans,
+            dense,
+            colors,
         })
     }
 
@@ -618,6 +660,7 @@ impl TaskRuntime {
                 Binding::Task(task) => Some(task.clone()),
             },
             next_trigger_at: appointment.next_trigger_at,
+            duration_minutes: appointment.duration_minutes,
             pause_reason: if appointment.status == AppointmentStatus::Paused {
                 store
                     .latest_version_reason(&appointment.id)
@@ -697,4 +740,239 @@ fn calendar_status_reason(status: AppointmentStatus) -> &'static str {
 
 fn calendar_error(error: CalendarError) -> String {
     error.to_string()
+}
+
+/// 区间运行块：起止/状态词从任务事实算，日历库不抄。
+fn range_block(
+    appointment: &Appointment,
+    run: &Run,
+    tasks: &[Task],
+    now: i64,
+) -> Option<crate::protocol::CalendarRunBlock> {
+    if run.result != RunResult::Sent {
+        return None;
+    }
+    let trigger = trigger_task_for_run(tasks, &appointment.id, run.id);
+    let start = trigger.map_or(run.created_at, |task| task.created_at);
+    let turn = run.sent_turn.and_then(|turn| u64::try_from(turn).ok());
+    let dispatched: Vec<&Task> = tasks
+        .iter()
+        .filter(|task| {
+            task.origin.as_ref().is_some_and(|origin| {
+                origin.role == AppointmentRole::Dispatched
+                    && origin.appointment_id == appointment.id
+                    && origin.run_id == run.id
+            })
+        })
+        .collect();
+    let task_id = trigger.map(|task| task.id.as_str().to_owned());
+    if !dispatched.is_empty() {
+        let any_open = dispatched
+            .iter()
+            .any(|task| task_stage(task).is_none_or(|stage| stage != Stage::Closed));
+        let end = if any_open {
+            now
+        } else {
+            dispatched
+                .iter()
+                .filter_map(|task| closed_at(task))
+                .max()
+                .unwrap_or(now)
+        };
+        let status = dispatched
+            .iter()
+            .filter_map(|task| task_stage(task))
+            .min_by_key(|stage| stage_rank(*stage))
+            .map(stage_word)
+            .unwrap_or("在做")
+            .to_owned();
+        return Some(crate::protocol::CalendarRunBlock {
+            id: run.id,
+            appointment_id: appointment.id.clone(),
+            title: appointment.title.clone(),
+            start,
+            end,
+            status,
+            task_id,
+            turn,
+        });
+    }
+    if appointment.cycle.is_some()
+        && let Some(end) = cycle_attempt_end(appointment, tasks, run.id)
+    {
+        return Some(crate::protocol::CalendarRunBlock {
+            id: run.id,
+            appointment_id: appointment.id.clone(),
+            title: appointment.title.clone(),
+            start,
+            end,
+            status: if end == now { "在做" } else { "已完成" }.to_owned(),
+            task_id,
+            turn,
+        });
+    }
+    let closed = trigger.and_then(|task| task.round_end);
+    Some(crate::protocol::CalendarRunBlock {
+        id: run.id,
+        appointment_id: appointment.id.clone(),
+        title: appointment.title.clone(),
+        start,
+        end: closed.map_or(now, |round| round.at),
+        status: if closed.is_some() {
+            "已完成"
+        } else {
+            "在做"
+        }
+        .to_owned(),
+        task_id,
+        turn,
+    })
+}
+
+fn trigger_task_for_run<'a>(
+    tasks: &'a [Task],
+    appointment_id: &str,
+    run_id: i64,
+) -> Option<&'a Task> {
+    tasks.iter().find(|task| {
+        task.origin.as_ref().is_some_and(|origin| {
+            origin.role == AppointmentRole::Trigger
+                && origin.appointment_id == appointment_id
+                && origin.run_id == run_id
+        })
+    })
+}
+
+fn task_stage(task: &Task) -> Option<Stage> {
+    task.origin.as_ref()?;
+    if task.round_end.is_some() {
+        return Some(Stage::Closed);
+    }
+    if !task.reports.is_empty() {
+        return Some(Stage::ReadyForReview);
+    }
+    if task.has_attempt() {
+        return Some(Stage::Running);
+    }
+    Some(Stage::Pending)
+}
+
+fn closed_at(task: &Task) -> Option<i64> {
+    task.acceptances
+        .last()
+        .map(|acceptance| acceptance.at)
+        .or_else(|| task.reports.last().map(|report| report.at))
+}
+
+fn cycle_attempt_end(appointment: &Appointment, tasks: &[Task], run_id: i64) -> Option<i64> {
+    let Binding::Task(task_id) = &appointment.binding else {
+        return None;
+    };
+    let task = tasks
+        .iter()
+        .find(|task| task.id.as_str() == task_id.as_str())?;
+    let attempt = task
+        .runs
+        .iter()
+        .flat_map(|run| &run.attempts)
+        .find(|attempt| {
+            matches!(
+                &attempt.trigger,
+                tasks::AttemptTrigger::KindContinue {
+                    cause: tasks::ContinueCause::CycleDue { run_id: cycle, .. },
+                    ..
+                } if *cycle == run_id
+            )
+        })?;
+    attempt.ended_at
+}
+
+fn stage_rank(stage: Stage) -> u8 {
+    match stage {
+        Stage::NeedsConditions => 0,
+        Stage::Pending => 1,
+        Stage::Running => 2,
+        Stage::ReadyForReview => 3,
+        Stage::RequirementMet => 4,
+        Stage::Closed => 5,
+    }
+}
+
+fn stage_word(stage: Stage) -> &'static str {
+    match stage {
+        Stage::NeedsConditions => "缺条件",
+        Stage::Pending => "排队",
+        Stage::Running => "在做",
+        Stage::ReadyForReview => "等你核",
+        Stage::RequirementMet => "要求已满足",
+        Stage::Closed => "已完成",
+    }
+}
+
+fn dense_rule(rule: &str) -> bool {
+    rule.contains("FREQ=HOURLY") || rule.contains("FREQ=MINUTELY")
+}
+
+fn dense_days(appointment: &Appointment, runs: &[Run]) -> Vec<crate::protocol::CalendarDenseDay> {
+    use chrono::{Datelike, TimeZone};
+    let Ok(zone) = appointment.schedule.timezone.parse::<chrono_tz::Tz>() else {
+        return Vec::new();
+    };
+    let mut counts: std::collections::BTreeMap<i64, (u32, u32)> = std::collections::BTreeMap::new();
+    for run in runs {
+        if run.result == RunResult::Queued {
+            continue;
+        }
+        let Some(local) = chrono::DateTime::from_timestamp_millis(run.nominal_at)
+            .map(|at| at.with_timezone(&zone))
+        else {
+            continue;
+        };
+        let Some(day) = zone
+            .with_ymd_and_hms(local.year(), local.month(), local.day(), 0, 0, 0)
+            .single()
+        else {
+            continue;
+        };
+        let entry = counts.entry(day.timestamp_millis()).or_insert((0, 0));
+        entry.0 += 1;
+        if run.reason.contains("没变") {
+            entry.1 += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .map(
+            |(day, (runs, unchanged))| crate::protocol::CalendarDenseDay {
+                appointment_id: appointment.id.clone(),
+                title: appointment.title.clone(),
+                day,
+                runs,
+                unchanged,
+            },
+        )
+        .collect()
+}
+
+fn duration_minutes(appointment: &Appointment, runs: &[Run], tasks: &[Task]) -> u32 {
+    if let Some(minutes) = appointment.duration_minutes {
+        return minutes;
+    }
+    let mut total = 0_i64;
+    let mut count = 0_i64;
+    for run in runs.iter().filter(|run| run.result == RunResult::Sent) {
+        let Some(trigger) = trigger_task_for_run(tasks, &appointment.id, run.id) else {
+            continue;
+        };
+        let Some(end) = trigger.round_end.map(|round| round.at) else {
+            continue;
+        };
+        total += (end - trigger.created_at).max(0);
+        count += 1;
+    }
+    if count == 0 {
+        return 30;
+    }
+    let average = total / count / 60_000;
+    u32::try_from(average.max(5)).unwrap_or(u32::MAX)
 }

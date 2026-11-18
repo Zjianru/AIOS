@@ -1,9 +1,6 @@
 use super::*;
 
 #[test]
-fn protocol_version_is_19() {
-    assert_eq!(
-        PROTOCOL_VERSION, 19,
-        "日历读取/动作、changed 与 sourceTurn，协议升到 19"
-    );
+fn protocol_version_is_20() {
+    assert_eq!(PROTOCOL_VERSION, 20, "日历区间/触发任务事实，协议升到 20");
 }

@@ -45,6 +45,9 @@ impl TaskRuntime {
         if let Some(condition) = details.get("condition").and_then(Value::as_str) {
             patch.condition = Some(condition.to_owned());
         }
+        if let Some(duration) = details.get("durationMinutes") {
+            patch.duration_minutes = Some(crate::appointments::parse_duration_value(duration)?);
+        }
         if details.get("rule").is_some()
             || details.get("timezone").is_some()
             || details.get("startAt").is_some()

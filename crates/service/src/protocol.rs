@@ -1587,7 +1587,7 @@ pub struct MemoryActionResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 19;
+pub const PROTOCOL_VERSION: u64 = 20;
 
 /// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1595,9 +1595,12 @@ pub const PROTOCOL_VERSION: u64 = 19;
 pub struct CalendarReadRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub appointment_id: Option<String>,
-    /// 周起点（毫秒，服务端按本地周一对齐）；None = 不带周计划点。
+    /// 区间起点（毫秒，含）；None = 不带区间事实。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub week: Option<i64>,
+    pub from: Option<i64>,
+    /// 区间终点（毫秒，含）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1605,9 +1608,62 @@ pub struct CalendarReadRequest {
 pub struct CalendarReadResponse {
     pub generated_at: i64,
     pub appointments: Vec<CalendarAppointmentView>,
-    /// 那一周的计划点与运行点（按时间升序）。
+    /// 区间里的运行块（起止/状态词/task_id/turn；约定状态不限）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub week: Vec<CalendarWeekPoint>,
+    pub ranges: Vec<CalendarRunBlock>,
+    /// 区间里的计划块（只在用、不密的规则）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plans: Vec<CalendarPlanBlock>,
+    /// 密规则每天计数（跑了几次/没变几次）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dense: Vec<CalendarDenseDay>,
+    /// 每条规则的颜色序号（按约定创建先后，6 色循环）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub colors: Vec<CalendarRuleColor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarRunBlock {
+    pub id: i64,
+    pub appointment_id: String,
+    pub title: String,
+    pub start: i64,
+    pub end: i64,
+    /// 已完成 / 在做 / 排队 / 等你核 / 已关闭 / 没跑成 等看板词。
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarPlanBlock {
+    pub appointment_id: String,
+    pub title: String,
+    pub start: i64,
+    pub end: i64,
+    pub color: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarDenseDay {
+    pub appointment_id: String,
+    pub title: String,
+    /// 当天本地 0 点（毫秒）。
+    pub day: i64,
+    pub runs: u32,
+    pub unchanged: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct CalendarRuleColor {
+    pub appointment_id: String,
+    pub color: u8,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -1629,6 +1685,9 @@ pub struct CalendarAppointmentView {
     pub bound_task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_trigger_at: Option<i64>,
+    /// T066：用户说过的时长（分钟）；没说就没有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_minutes: Option<u32>,
     /// 暂停原因（程序写；恢复后清空视图，但版本历史留着）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pause_reason: Option<String>,

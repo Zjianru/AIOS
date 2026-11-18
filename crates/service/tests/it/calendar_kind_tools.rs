@@ -33,6 +33,7 @@ fn create_appointment(
             binding: Binding::Kind,
             watch: None,
             cycle: None,
+            duration_minutes: None,
         })
         .unwrap();
     (store, appointment)
@@ -369,7 +370,8 @@ async fn create_card_accepts_number_string_start_delay_and_binding_objects() {
         "rule": "FREQ=DAILY",
         "timezone": "Asia/Shanghai",
         "startAt": start_at.to_string(),
-        "binding": { "kind": "chat" }
+        "binding": { "kind": "chat" },
+        "durationMinutes": 45
     });
     let normalized = create
         .details(&raw)
@@ -394,6 +396,7 @@ async fn create_card_accepts_number_string_start_delay_and_binding_objects() {
     let created = store.appointment(&appointment_id).unwrap().unwrap();
     assert_eq!(created.schedule.start_at, start_at);
     assert_eq!(created.binding, calendar::Binding::Kind);
+    assert_eq!(created.duration_minutes, Some(45));
     // 起点在未来：DTSTART 就是第一次触发，next_trigger_at 不能落到次日。
     assert_eq!(
         created.next_trigger_at,

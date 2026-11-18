@@ -25,6 +25,7 @@ fn due_appointment(data: &Path, title: &str, cycle: Option<CycleSpec>) -> calend
             binding: Binding::Kind,
             watch: None,
             cycle,
+            duration_minutes: None,
         })
         .unwrap();
     store
@@ -371,6 +372,7 @@ async fn graph_cancel_makes_the_cycle_review_skip_without_a_trigger_task() {
             binding: Binding::Task(root.id.as_str().to_owned()),
             watch: None,
             cycle: None,
+            duration_minutes: None,
         })
         .unwrap();
     store
@@ -539,5 +541,196 @@ async fn global_pause_merges_without_precreating_a_trigger_task_then_builds_one_
                 .any(|run| run.result == calendar::RunResult::Sent)
     })
     .await;
+    fixture.host.shutdown().await;
+}
+
+#[tokio::test]
+async fn calendar_read_returns_range_blocks_plans_colors_and_dense_counts() {
+    use service::CalendarReadRequest;
+    let fixture = Fixture::new().await;
+    let store = calendar::CalendarStore::open(fixture.data().join("calendar.sqlite")).unwrap();
+    let now = now_ms();
+    let appointment = store
+        .create_appointment(NewAppointment {
+            title: "区间事实".to_owned(),
+            condition: "到点办".to_owned(),
+            schedule: Schedule {
+                rule: "FREQ=DAILY".to_owned(),
+                timezone: "Asia/Shanghai".to_owned(),
+                start_at: now - 1_000,
+            },
+            binding: Binding::Kind,
+            watch: None,
+            cycle: None,
+            duration_minutes: Some(60),
+        })
+        .unwrap();
+    store
+        .set_next_trigger(&appointment.id, Some(now - 1))
+        .unwrap();
+    fixture.router.push_kind(crate::common::text_sse("办完"));
+    fixture.host.nudge_calendar();
+    wait("区间块完成", || {
+        trigger_tasks(&tasks_store(fixture.data()))
+            .first()
+            .is_some_and(|task| task.round_end.is_some())
+    })
+    .await;
+
+    // 密规则每天计数：同一天两次跳过（没变两次）。
+    let dense = store
+        .create_appointment(NewAppointment {
+            title: "密规则".to_owned(),
+            condition: "每6小时查".to_owned(),
+            schedule: Schedule {
+                rule: "FREQ=HOURLY;INTERVAL=6".to_owned(),
+                timezone: "Asia/Shanghai".to_owned(),
+                start_at: now - 7_200_000,
+            },
+            binding: Binding::Kind,
+            watch: None,
+            cycle: None,
+            duration_minutes: None,
+        })
+        .unwrap();
+    for offset in [0_i64, 1] {
+        let (run, _) = store
+            .record_run(calendar::NewRun {
+                appointment_id: dense.id.clone(),
+                nominal_at: now - 3_000 + offset,
+                manual: false,
+                trigger: calendar::TriggerKind::Due,
+                reason: "没变：和上次比内容一样".to_owned(),
+                merged_count: 0,
+                report_id: None,
+            })
+            .unwrap();
+        store
+            .finish_run(
+                run.id,
+                calendar::RunResult::Skipped,
+                "没变：和上次比内容一样",
+                None,
+            )
+            .unwrap();
+    }
+
+    let response = fixture
+        .host
+        .dispatch(Call::CalendarRead(CalendarReadRequest {
+            appointment_id: None,
+            from: Some(now - 86_400_000),
+            to: Some(now + 86_400_000),
+        }))
+        .await
+        .expect("区间日历读");
+    let Response::CalendarRead(read) = response else {
+        panic!("日历读响应");
+    };
+    assert_eq!(
+        read.appointments
+            .iter()
+            .filter(|row| !row.id.starts_with("builtin:"))
+            .count(),
+        2
+    );
+    let block = read
+        .ranges
+        .iter()
+        .find(|block| block.appointment_id == appointment.id)
+        .expect("运行块");
+    assert_eq!(block.status, "已完成");
+    assert!(block.task_id.is_some());
+    assert!(block.turn.is_some());
+    assert!(block.end >= block.start);
+    let plan = read
+        .plans
+        .iter()
+        .find(|plan| plan.appointment_id == appointment.id)
+        .expect("60 分钟计划块");
+    assert_eq!(plan.end - plan.start, 3_600_000);
+    assert!(
+        read.colors
+            .iter()
+            .any(|color| color.appointment_id == appointment.id)
+    );
+    let day = read
+        .dense
+        .iter()
+        .find(|day| day.appointment_id == dense.id)
+        .expect("密规则当天计数");
+    assert_eq!(day.runs, 2);
+    assert_eq!(day.unchanged, 2);
+    fixture.host.shutdown().await;
+}
+
+#[tokio::test]
+async fn ended_appointment_run_blocks_still_show_in_the_range() {
+    let fixture = Fixture::new().await;
+    let store = calendar::CalendarStore::open(fixture.data().join("calendar.sqlite")).unwrap();
+    let now = now_ms();
+    let appointment = store
+        .create_appointment(NewAppointment {
+            title: "一次性结束".to_owned(),
+            condition: "明早提醒".to_owned(),
+            schedule: Schedule {
+                rule: "FREQ=DAILY;COUNT=1".to_owned(),
+                timezone: "Asia/Shanghai".to_owned(),
+                start_at: now - 1_000,
+            },
+            binding: Binding::Kind,
+            watch: None,
+            cycle: None,
+            duration_minutes: None,
+        })
+        .unwrap();
+    store
+        .set_next_trigger(&appointment.id, Some(now - 1))
+        .unwrap();
+    fixture.router.push_kind(crate::common::text_sse("办完"));
+    fixture.host.nudge_calendar();
+    wait("一次性结束", || {
+        store.appointment(&appointment.id).unwrap().unwrap().status
+            == calendar::AppointmentStatus::Ended
+    })
+    .await;
+    wait("这一次也送出去", || {
+        store
+            .runs(&appointment.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Sent)
+    })
+    .await;
+    wait("这一轮也结束", || {
+        trigger_tasks(&tasks_store(fixture.data()))
+            .first()
+            .is_some_and(|task| task.round_end.is_some())
+    })
+    .await;
+    let response = fixture
+        .host
+        .dispatch(Call::CalendarRead(service::CalendarReadRequest {
+            appointment_id: None,
+            from: Some(now - 86_400_000),
+            to: Some(now + 86_400_000),
+        }))
+        .await
+        .expect("区间日历读");
+    let Response::CalendarRead(read) = response else {
+        panic!("日历读响应");
+    };
+    let block = read
+        .ranges
+        .iter()
+        .find(|block| block.appointment_id == appointment.id)
+        .expect("ended 一次性也要有块");
+    assert_eq!(block.status, "已完成");
+    assert!(
+        read.plans
+            .iter()
+            .all(|plan| plan.appointment_id != appointment.id),
+        "ended 合约不出计划块"
+    );
     fixture.host.shutdown().await;
 }

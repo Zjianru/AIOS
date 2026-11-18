@@ -40,6 +40,7 @@ fn appointment(
             binding: Binding::Kind,
             watch: None,
             cycle: None,
+            duration_minutes: None,
         })
         .unwrap()
 }
@@ -61,6 +62,7 @@ fn watch_appointment(
             binding: Binding::Kind,
             watch: Some(source),
             cycle: None,
+            duration_minutes: None,
         })
         .unwrap()
 }
@@ -788,18 +790,16 @@ async fn calendar_read_and_actions_move_status() {
     let week = host
         .dispatch(Call::CalendarRead(CalendarReadRequest {
             appointment_id: None,
-            week: Some(now_ms() - 2 * 24 * 60 * 60 * 1000),
+            from: Some(now_ms() - 2 * 24 * 60 * 60 * 1000),
+            to: Some(now_ms() + 5 * 24 * 60 * 60 * 1000),
         }))
         .await
         .expect("日历周计划");
     let Response::CalendarRead(week) = week else {
         panic!("日历周读响应");
     };
-    assert!(
-        week.week.iter().any(|point| point.kind == "plan"),
-        "周视图要有计划点：{:?}",
-        week.week
-    );
+    assert!(!week.plans.is_empty(), "区间要有计划块：{:?}", week.plans);
+    assert!(!week.colors.is_empty(), "每条规则要有颜色序号");
 
     let mut events = host.subscribe_events();
     let response = host
@@ -934,6 +934,7 @@ async fn url_watch_sends_baseline_changed_unchanged_and_keeps_state_on_failure()
                 "http://93.184.216.34/v1".to_owned(),
             )),
             cycle: None,
+            duration_minutes: None,
         })
         .unwrap();
     // 先排远点，等测试夹具装好代理再让它到点。

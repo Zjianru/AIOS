@@ -5,6 +5,10 @@
  */
 export type CalendarReadRequest = { appointmentId?: string | null,
 /**
- * 周起点（毫秒，服务端按本地周一对齐）；None = 不带周计划点。
+ * 区间起点（毫秒，含）；None = 不带区间事实。
  */
-week?: number | null, };
+from?: number | null,
+/**
+ * 区间终点（毫秒，含）。
+ */
+to?: number | null, };

@@ -14,7 +14,7 @@ use crate::types::{
 };
 
 /// 日历库 schema 版本；加字段/表时升。
-pub const SCHEMA_VERSION: u64 = 4;
+pub const SCHEMA_VERSION: u64 = 5;
 const SCHEMA_KEY: &str = "schema_version";
 
 const CREATE_TABLES: &str = "
@@ -36,6 +36,7 @@ const CREATE_TABLES: &str = "
         cycle_max_rounds INTEGER,
         next_trigger_at INTEGER,
         source_turn INTEGER,
+        duration_minutes INTEGER,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
     );
@@ -53,6 +54,7 @@ const CREATE_TABLES: &str = "
         watch_target TEXT,
         cycle_task_id TEXT,
         cycle_max_rounds INTEGER,
+        duration_minutes INTEGER,
         reason TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         PRIMARY KEY (appointment_id, version)
@@ -70,6 +72,7 @@ const CREATE_TABLES: &str = "
         updated_at INTEGER NOT NULL,
         sent_turn INTEGER,
         report_id TEXT,
+        task_id TEXT,
         UNIQUE (appointment_id, nominal_at, manual)
     );
     CREATE INDEX IF NOT EXISTS run_appointment ON run(appointment_id, nominal_at);
@@ -142,6 +145,29 @@ impl CalendarStore {
             if !has_source_turn {
                 conn.execute("ALTER TABLE appointment ADD COLUMN source_turn INTEGER", [])?;
             }
+            let has_duration = conn
+                .prepare("PRAGMA table_info(appointment)")?
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(Result::ok)
+                .any(|name| name == "duration_minutes");
+            if !has_duration {
+                conn.execute(
+                    "ALTER TABLE appointment ADD COLUMN duration_minutes INTEGER",
+                    [],
+                )?;
+                conn.execute(
+                    "ALTER TABLE appointment_version ADD COLUMN duration_minutes INTEGER",
+                    [],
+                )?;
+            }
+            let has_task_id = conn
+                .prepare("PRAGMA table_info(run)")?
+                .query_map([], |row| row.get::<_, String>(1))?
+                .filter_map(Result::ok)
+                .any(|name| name == "task_id");
+            if !has_task_id {
+                conn.execute("ALTER TABLE run ADD COLUMN task_id TEXT", [])?;
+            }
             conn.execute(
                 "UPDATE kv SET value = ?1 WHERE key = ?2",
                 params![SCHEMA_VERSION.to_string(), SCHEMA_KEY],
@@ -168,8 +194,8 @@ impl CalendarStore {
             "INSERT INTO appointment (
                 id, status, version, title, condition, rule, timezone, start_at,
                 binding_kind, binding_ref, watch_kind, watch_target, cycle_task_id,
-                cycle_max_rounds, next_trigger_at, source_turn, created_at, updated_at
-            ) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, NULL, ?15, ?15)",
+                cycle_max_rounds, next_trigger_at, source_turn, duration_minutes, created_at, updated_at
+            ) VALUES (?1, ?2, 1, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, NULL, ?15, ?16, ?16)",
             params![
                 id,
                 AppointmentStatus::Active.as_str(),
@@ -185,6 +211,7 @@ impl CalendarStore {
                 cycle_task(&draft.cycle),
                 cycle_max(&draft.cycle),
                 next_trigger_at,
+                draft.duration_minutes,
                 now,
             ],
         )?;
@@ -202,6 +229,7 @@ impl CalendarStore {
             cycle: draft.cycle,
             next_trigger_at,
             source_turn: None,
+            duration_minutes: draft.duration_minutes,
             created_at: now,
             updated_at: now,
         })
@@ -274,6 +302,9 @@ impl CalendarStore {
         if let Some(cycle) = patch.cycle {
             appointment.cycle = cycle;
         }
+        if let Some(duration) = patch.duration_minutes {
+            appointment.duration_minutes = duration;
+        }
         appointment.schedule.validate()?;
         appointment.next_trigger_at = appointment.schedule.next_after(now)?;
         appointment.version += 1;
@@ -283,7 +314,8 @@ impl CalendarStore {
                 status = ?2, version = ?3, title = ?4, condition = ?5, rule = ?6,
                 timezone = ?7, start_at = ?8, binding_kind = ?9, binding_ref = ?10,
                 watch_kind = ?11, watch_target = ?12, cycle_task_id = ?13,
-                cycle_max_rounds = ?14, next_trigger_at = ?15, updated_at = ?16
+                cycle_max_rounds = ?14, next_trigger_at = ?15, updated_at = ?16,
+                duration_minutes = ?17
              WHERE id = ?1",
             params![
                 appointment.id,
@@ -302,6 +334,7 @@ impl CalendarStore {
                 cycle_max(&appointment.cycle),
                 appointment.next_trigger_at,
                 now,
+                appointment.duration_minutes,
             ],
         )?;
         insert_version(
@@ -315,6 +348,7 @@ impl CalendarStore {
                 binding: appointment.binding.clone(),
                 watch: appointment.watch.clone(),
                 cycle: appointment.cycle.clone(),
+                duration_minutes: appointment.duration_minutes,
             },
             reason,
             now,
@@ -412,6 +446,7 @@ impl CalendarStore {
                 binding: appointment.binding.clone(),
                 watch: appointment.watch.clone(),
                 cycle: appointment.cycle.clone(),
+                duration_minutes: appointment.duration_minutes,
             },
             &format!("循环约定暂停：{reason}"),
             now,
@@ -475,6 +510,19 @@ impl CalendarStore {
             appointments.push(load_appointment(&conn, &id)?);
         }
         Ok(appointments)
+    }
+
+    /// T066：把这次运行对应的触发任务 id 写进运行行（旧行为空）。
+    pub fn set_run_task_id(&self, run_id: i64, task_id: &str) -> Result<(), CalendarError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| CalendarError::InvalidInput("日历库锁坏了".to_owned()))?;
+        conn.execute(
+            "UPDATE run SET task_id = ?2 WHERE id = ?1",
+            params![run_id, task_id],
+        )?;
+        Ok(())
     }
 
     /// 运行时推进下次触发；不算内容改版（版本号不动）。
@@ -560,7 +608,7 @@ impl CalendarStore {
         let mut statement = conn.prepare(
             "SELECT appointment_id, version, title, condition, rule, timezone, start_at,
                     binding_kind, binding_ref, watch_kind, watch_target, cycle_task_id,
-                    cycle_max_rounds, reason, created_at
+                    cycle_max_rounds, duration_minutes, reason, created_at
              FROM appointment_version WHERE appointment_id = ?1 ORDER BY version",
         )?;
         let rows = statement
@@ -584,8 +632,11 @@ impl CalendarStore {
                     binding: parse_binding(&binding_kind, &binding_ref)?,
                     watch: parse_watch(watch_kind, watch_target)?,
                     cycle: parse_cycle(cycle_task_id, cycle_max_rounds)?,
-                    reason: row.get(13)?,
-                    created_at: row.get(14)?,
+                    reason: row.get(14)?,
+                    created_at: row.get(15)?,
+                    duration_minutes: row
+                        .get::<_, Option<i64>>(13)?
+                        .and_then(|minutes| u32::try_from(minutes).ok()),
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -614,8 +665,8 @@ impl CalendarStore {
         let changed = transaction.execute(
             "INSERT OR IGNORE INTO run (
                 appointment_id, nominal_at, manual, trigger_kind, result, reason,
-                merged_count, created_at, updated_at, report_id
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9)",
+                merged_count, created_at, updated_at, report_id, task_id
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, NULL)",
             params![
                 run.appointment_id,
                 run.nominal_at,
@@ -682,7 +733,7 @@ impl CalendarStore {
             .map_err(|_| CalendarError::InvalidInput("日历库锁坏了".to_owned()))?;
         let mut statement = conn.prepare(
             "SELECT id, appointment_id, nominal_at, manual, trigger_kind, result, reason,
-                    merged_count, created_at, updated_at, sent_turn, report_id
+                    merged_count, created_at, updated_at, sent_turn, report_id, task_id
              FROM run WHERE appointment_id = ?1 ORDER BY id",
         )?;
         let rows = statement
@@ -797,8 +848,8 @@ fn insert_version(
         "INSERT INTO appointment_version (
             appointment_id, version, title, condition, rule, timezone, start_at,
             binding_kind, binding_ref, watch_kind, watch_target, cycle_task_id,
-            cycle_max_rounds, reason, created_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+            cycle_max_rounds, duration_minutes, reason, created_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         params![
             appointment_id,
             version,
@@ -813,6 +864,7 @@ fn insert_version(
             watch_target(&draft.watch),
             cycle_task(&draft.cycle),
             cycle_max(&draft.cycle),
+            draft.duration_minutes,
             reason,
             now,
         ],
@@ -825,7 +877,8 @@ fn load_appointment(connection: &Connection, id: &str) -> Result<Appointment, Ca
         .query_row(
             "SELECT id, status, version, title, condition, rule, timezone, start_at,
                     binding_kind, binding_ref, watch_kind, watch_target, cycle_task_id,
-                    cycle_max_rounds, next_trigger_at, source_turn, created_at, updated_at
+                    cycle_max_rounds, next_trigger_at, source_turn, duration_minutes,
+                    created_at, updated_at
              FROM appointment WHERE id = ?1",
             params![id],
             |row| {
@@ -850,8 +903,11 @@ fn load_appointment(connection: &Connection, id: &str) -> Result<Appointment, Ca
                     source_turn: row
                         .get::<_, Option<i64>>(15)?
                         .and_then(|turn| u64::try_from(turn).ok()),
-                    created_at: row.get(16)?,
-                    updated_at: row.get(17)?,
+                    duration_minutes: row
+                        .get::<_, Option<i64>>(16)?
+                        .and_then(|minutes| u32::try_from(minutes).ok()),
+                    created_at: row.get(17)?,
+                    updated_at: row.get(18)?,
                 })
             },
         )
@@ -863,7 +919,7 @@ fn load_run(connection: &Connection, id: i64) -> Result<Option<Run>, CalendarErr
     connection
         .query_row(
             "SELECT id, appointment_id, nominal_at, manual, trigger_kind, result, reason,
-                    merged_count, created_at, updated_at, sent_turn, report_id
+                    merged_count, created_at, updated_at, sent_turn, report_id, task_id
              FROM run WHERE id = ?1",
             params![id],
             map_run,
@@ -881,7 +937,7 @@ fn load_run_by_identity(
     connection
         .query_row(
             "SELECT id, appointment_id, nominal_at, manual, trigger_kind, result, reason,
-                    merged_count, created_at, updated_at, sent_turn, report_id
+                    merged_count, created_at, updated_at, sent_turn, report_id, task_id
              FROM run WHERE appointment_id = ?1 AND nominal_at = ?2 AND manual = ?3",
             params![appointment_id, nominal_at, i64::from(manual)],
             map_run,
@@ -908,6 +964,7 @@ fn map_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<Run> {
         updated_at: row.get(9)?,
         sent_turn: row.get(10)?,
         report_id: row.get(11)?,
+        task_id: row.get(12)?,
     })
 }
 
@@ -955,6 +1012,7 @@ mod tests {
             binding: Binding::Kind,
             watch: None,
             cycle: None,
+            duration_minutes: None,
         }
     }
 
@@ -1237,5 +1295,43 @@ mod tests {
         let appointment = store.appointment(&id).unwrap().unwrap();
         assert_eq!(appointment.version, 1);
         assert_eq!(store.runs(&id).unwrap().len(), 1);
+    }
+    #[test]
+    fn duration_roundtrips_and_run_task_id_is_stored() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = store(&directory);
+        let mut draft = draft();
+        draft.duration_minutes = Some(45);
+        let appointment = store.create_appointment(draft).unwrap();
+        assert_eq!(
+            store
+                .appointment(&appointment.id)
+                .unwrap()
+                .unwrap()
+                .duration_minutes,
+            Some(45)
+        );
+        assert_eq!(
+            store.versions(&appointment.id).unwrap()[0].duration_minutes,
+            Some(45)
+        );
+        let updated = store
+            .update_appointment(
+                &appointment.id,
+                1,
+                AppointmentPatch {
+                    duration_minutes: Some(None),
+                    ..AppointmentPatch::default()
+                },
+                "user",
+            )
+            .unwrap();
+        assert_eq!(updated.duration_minutes, None);
+        let (run, _) = store.record_run(new_run(&updated, NOW + 1, true)).unwrap();
+        store.set_run_task_id(run.id, "task-1").unwrap();
+        assert_eq!(
+            store.runs(&updated.id).unwrap()[0].task_id.as_deref(),
+            Some("task-1")
+        );
     }
 }
