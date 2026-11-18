@@ -253,6 +253,32 @@ pub struct NewSubtask {
     pub program_gate: Vec<GateCommand>,
 }
 
+/// T066：任务来源。只有约定到点这一种；旧任务行没有 origin（普通任务）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppointmentOrigin {
+    pub appointment_id: String,
+    pub run_id: i64,
+    pub role: AppointmentRole,
+}
+
+/// T066：这条触发任务/派出的任务在约定流程里的角色。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppointmentRole {
+    /// 约定到点建的那条任务（只在日历上）。
+    Trigger,
+    /// 触发任务那一轮里 Kind 派出的任务（照常上看板）。
+    Dispatched,
+}
+
+/// T066：触发任务那一轮已经结束的事实；有它即已关闭，不另开 Attempt。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoundEnd {
+    pub turn: u64,
+    pub at: i64,
+}
+
 /// 一个 Task 的完整聚合，整行存在 task 表。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Task {
@@ -317,6 +343,12 @@ pub struct Task {
     /// 执行者在起跑前查到的缺项；空表示任务包齐。
     pub missing: Vec<MissingItem>,
     pub created_at: i64,
+    /// T066：任务来源；旧任务行没有这个字段时按 None（普通任务）读。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<AppointmentOrigin>,
+    /// T066：约定到点那一轮结束的事实（只对 origin.role=trigger 有意义）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round_end: Option<RoundEnd>,
 }
 
 /// 一次任务开出来的 git 工作树：第一次 Attempt 前落下，之后沿用，不自动合并/清理（D86）。
@@ -661,6 +693,9 @@ pub struct Report {
     /// T057：程序门检查的逐条结果；只有程序门报告非空。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checks: Vec<GateCheck>,
+    /// T066：这份报告那个 Attempt 改了几个文件；旧报告/没算为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub changed_count: Option<u32>,
 }
 
 /// 任务包缺的一项；执行者写什么，store 就存什么，不改写成卡片状态。

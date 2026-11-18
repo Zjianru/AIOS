@@ -130,6 +130,7 @@ fn cycle_appointment_with_max(
                 task_id: task_id.to_owned(),
                 max_rounds,
             }),
+            duration_minutes: None,
         })
         .unwrap();
     store
@@ -480,6 +481,7 @@ async fn closed_task_ends_the_cycle_and_resume_only_changes_status() {
                 binding: Binding::Kind,
                 watch: None,
                 cycle: None,
+                duration_minutes: None,
             })
             .unwrap();
         store

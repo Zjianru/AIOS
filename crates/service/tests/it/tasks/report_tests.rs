@@ -605,6 +605,17 @@ async fn a_report_from_before_a_requirement_change_is_refused() {
 
     let (relay_id, _) = ready_relay(&fixture).await;
     let store = tasks_store(fixture.data());
+    assert_eq!(
+        store
+            .task(&task.id)
+            .unwrap()
+            .unwrap()
+            .latest_report()
+            .unwrap()
+            .changed_count,
+        Some(1),
+        "写了一个文件，报告要带改动文件数"
+    );
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()

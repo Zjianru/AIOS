@@ -553,8 +553,8 @@ export type { CalendarReadResponse } from './generated/CalendarReadResponse';
 export type { CalendarActionResponse } from './generated/CalendarActionResponse';
 export type { CalendarActionKind } from './generated/CalendarActionKind';
 
-export async function getCalendar(week?: number): Promise<CalendarReadResponse> {
-  return post({ method: 'calendar-read', week });
+export async function getCalendar(from?: number, to?: number): Promise<CalendarReadResponse> {
+  return post({ method: 'calendar-read', from, to });
 }
 
 export async function calendarAction(

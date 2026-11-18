@@ -15,6 +15,10 @@ status: string, version: number,
  */
 binding: string, boundTaskId?: string | null, nextTriggerAt?: number | null,
 /**
+ * T066：用户说过的时长（分钟）；没说就没有。
+ */
+durationMinutes?: number | null,
+/**
  * 暂停原因（程序写；恢复后清空视图，但版本历史留着）。
  */
 pauseReason?: string | null,

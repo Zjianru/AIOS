@@ -14,12 +14,12 @@ use model::{ContentBlock, Effort, UserMessage};
 use serde_json::{Value, json};
 use session::SessionId;
 use tasks::{
-    Acceptance, Attempt, AttemptEnd, AttemptId, AttemptTrigger, BootId, BootScan, Cancellation,
-    CancellationReason, ContinueCause, ConversationId, EffectClaim, EffectKind, EffectPayload,
-    GateCandidate, GateCheck, GateCheckOutcome, GateCommand, GateConclusion, Handoff, Input,
-    InputAttachment, MissingItem, ModelChoice, NewGraph, NewInput, NewReport, NewSubtask, NewTask,
-    Report, ReportId, ReportOrigin, ReportState, SlotKind, Stage, StopAttempt, Store, Task,
-    TaskError, TaskId, TaskPolicy, WorkerSlots,
+    Acceptance, AppointmentOrigin, AppointmentRole, Attempt, AttemptEnd, AttemptId, AttemptTrigger,
+    BootId, BootScan, Cancellation, CancellationReason, ContinueCause, ConversationId, EffectClaim,
+    EffectKind, EffectPayload, GateCandidate, GateCheck, GateCheckOutcome, GateCommand,
+    GateConclusion, Handoff, Input, InputAttachment, MissingItem, ModelChoice, NewGraph, NewInput,
+    NewReport, NewSubtask, NewTask, Report, ReportId, ReportOrigin, ReportState, RoundEnd,
+    SlotKind, Stage, StopAttempt, Store, Task, TaskError, TaskId, TaskPolicy, WorkerSlots,
 };
 use tokio::sync::broadcast;
 use tools::{
@@ -307,6 +307,9 @@ pub struct TaskRuntime {
     crash_before_wake: AtomicBool,
     /// 全局暂停开始的毫秒时间；漏掉的多次触发落在暂停期间还是服务没在跑，用它分辨。
     global_pause_since: AtomicI64,
+    /// 由约定到点开的那些 Kind 轮：key=(根会话,turn)，值=那次的约定/运行。
+    /// task_accept/task_graph_propose 用它给新建任务标 dispatched，不靠模型参数。
+    trigger_turns: Mutex<std::collections::HashMap<(String, u64), AppointmentOrigin>>,
     /// 测试钩子：盯变化的 URL 抓取用这个出站环境（wiremock 代理）。
     watch_http: std::sync::Mutex<Option<model::http::HttpEnv>>,
 }
@@ -348,6 +351,7 @@ impl TaskRuntime {
             crash_before_wake: AtomicBool::new(false),
             watch_http: std::sync::Mutex::new(None),
             global_pause_since: AtomicI64::new(0),
+            trigger_turns: Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -432,6 +436,9 @@ impl TaskRuntime {
             .task(&task_id)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| format!("找不到这个任务：{}", request.task_id))?;
+        if let Some(reason) = Self::trigger_task_rejection(&task) {
+            return Err(reason);
+        }
         if task.is_graph_root() {
             return Err("总任务没有执行承载，不能接着做".to_owned());
         }
@@ -1125,6 +1132,215 @@ impl TaskRuntime {
     /// 全局暂停的闸门：RootHost 先写设置文件，再改这里的内存值。
     ///
     /// 只挡 launch 准入；relay/notice 照送。排队的效果留在库里，开闸后按原顺序领取。
+    /// T066：到点送 Kind 前，幂等建一条只读触发任务（不排 launch、不开 Attempt）。
+    fn trigger_task_for_run(
+        &self,
+        appointment: &calendar::Appointment,
+        run: &calendar::Run,
+        conversation: &str,
+    ) -> Result<Task, String> {
+        let selection = self
+            .selection
+            .lock()
+            .expect("selection 锁被毒化")
+            .clone()
+            .ok_or_else(|| "还没有可用的模型选择，不能建触发任务".to_owned())?;
+        let draft = NewTask {
+            title: appointment.title.clone(),
+            requirement: appointment.condition.clone(),
+            dod: "到点办完".to_owned(),
+            cwd: self.options.cwd.clone(),
+            conversation: ConversationId::new(conversation),
+            model: ModelChoice {
+                connection: selection.connection,
+                model: selection.model,
+                effort_wanted: selection.effort_wanted,
+            },
+            tools: Vec::new(),
+        };
+        let key = format!("appointment-run:{}", run.id);
+        let (task, _created) = self
+            .store
+            .create_trigger_task_once(draft, &key, Self::now())
+            .map_err(|error| error.to_string())?;
+        let origin = AppointmentOrigin {
+            appointment_id: appointment.id.clone(),
+            run_id: run.id,
+            role: AppointmentRole::Trigger,
+        };
+        self.store
+            .set_origin(&task.id, origin)
+            .map_err(|error| error.to_string())?;
+        Ok(task)
+    }
+
+    /// T066：记住这次 wake 落在根会话的哪一轮；dispatched 只按这条记录认。
+    fn remember_trigger_turn(
+        &self,
+        conversation: &str,
+        turn: u64,
+        appointment_id: &str,
+        run_id: i64,
+    ) {
+        self.trigger_turns
+            .lock()
+            .expect("trigger turns 锁被毒化")
+            .insert(
+                (conversation.to_owned(), turn),
+                AppointmentOrigin {
+                    appointment_id: appointment_id.to_owned(),
+                    run_id,
+                    role: AppointmentRole::Trigger,
+                },
+            );
+    }
+
+    /// 当前根会话最新的轮号（会话日志事实；没有就给 None）。
+    fn current_root_turn(&self, conversation: &str) -> Option<u64> {
+        let session_id = SessionId::parse(conversation).ok()?;
+        let snapshot = session::SessionStore::open_read_only(&self.data_dir, &session_id).ok()?;
+        snapshot
+            .events()
+            .iter()
+            .rev()
+            .find_map(|event| match &event.kind {
+                session::EventKind::TurnStart { turn } => Some(*turn),
+                _ => None,
+            })
+    }
+
+    /// T066：当前这一轮若由 appointment-wake 开，返回那次的约定/运行来源。
+    fn dispatched_origin(&self, conversation: &str) -> Option<AppointmentOrigin> {
+        let turn = self.current_root_turn(conversation)?;
+        self.trigger_turns
+            .lock()
+            .expect("trigger turns 锁被毒化")
+            .get(&(conversation.to_owned(), turn))
+            .cloned()
+            .map(|origin| AppointmentOrigin {
+                role: AppointmentRole::Dispatched,
+                ..origin
+            })
+    }
+
+    /// T066：把新派出/建图的任务标成 dispatched（图的根和子任务都带）。
+    fn mark_dispatched(&self, conversation: &str, task: &Task) {
+        let Some(origin) = self.dispatched_origin(conversation) else {
+            return;
+        };
+        best_effort(
+            "派出的任务没写来源",
+            self.store.set_origin(&task.id, origin.clone()),
+        );
+        if let Ok(tasks) = self.store.all_tasks() {
+            for child in tasks
+                .into_iter()
+                .filter(|child| child.parent.as_ref() == Some(&task.id) && child.origin.is_none())
+            {
+                best_effort(
+                    "图子任务没写来源",
+                    self.store.set_origin(&child.id, origin.clone()),
+                );
+            }
+        }
+    }
+
+    /// T066：触发任务不能被当成普通任务接着做/改/停/交回。
+    fn trigger_task_rejection(task: &Task) -> Option<String> {
+        (task.origin.as_ref().map(|origin| origin.role) == Some(AppointmentRole::Trigger))
+            .then(|| "这是约定到点的任务，不能接着做".to_owned())
+    }
+
+    /// T066：根会话 turn/end 钩子：这一轮是约定到点开的，就给触发任务写 round_end。
+    pub(crate) fn calendar_on_turn_end(&self, conversation: &str, turn: u64, at: i64) {
+        let Some(origin) = self
+            .trigger_turns
+            .lock()
+            .expect("trigger turns 锁被毒化")
+            .get(&(conversation.to_owned(), turn))
+            .cloned()
+        else {
+            return;
+        };
+        let Ok(tasks) = self.store.all_tasks() else {
+            return;
+        };
+        for task in tasks {
+            let Some(task_origin) = &task.origin else {
+                continue;
+            };
+            if task_origin.appointment_id == origin.appointment_id
+                && task_origin.run_id == origin.run_id
+                && task_origin.role == AppointmentRole::Trigger
+            {
+                best_effort(
+                    "触发任务没写回合结束",
+                    self.store.set_round_end(&task.id, RoundEnd { turn, at }),
+                );
+            }
+        }
+    }
+
+    /// T066：启动补结束轮——触发任务的 round_end 没写、但那一轮日志里已有 turn/end。
+    pub(crate) fn calendar_close_finished_turns(&self, conversation: &str) {
+        let Some(calendar) = self.calendar.as_ref() else {
+            return;
+        };
+        let Ok(tasks) = self.store.all_tasks() else {
+            return;
+        };
+        for task in tasks {
+            if task.conversation.as_str() != conversation
+                || task.round_end.is_some()
+                || task.origin.as_ref().map(|origin| origin.role) != Some(AppointmentRole::Trigger)
+            {
+                continue;
+            }
+            let Some(origin) = &task.origin else {
+                continue;
+            };
+            let Ok(runs) = calendar.runs(&origin.appointment_id) else {
+                continue;
+            };
+            let Some(sent_turn) = runs
+                .iter()
+                .find(|run| run.id == origin.run_id)
+                .and_then(|run| run.sent_turn)
+                .and_then(|turn| u64::try_from(turn).ok())
+            else {
+                continue;
+            };
+            let Ok(session_id) = SessionId::parse(conversation) else {
+                continue;
+            };
+            let Ok(snapshot) = session::SessionStore::open_read_only(&self.data_dir, &session_id)
+            else {
+                continue;
+            };
+            if let Some(end) = snapshot
+                .events()
+                .iter()
+                .find_map(|event| match &event.kind {
+                    session::EventKind::TurnEnd { turn, .. } if *turn == sent_turn => {
+                        Some(event.time)
+                    }
+                    _ => None,
+                })
+            {
+                best_effort(
+                    "启动补写触发任务回合结束",
+                    self.store.set_round_end(
+                        &task.id,
+                        RoundEnd {
+                            turn: sent_turn,
+                            at: i64::try_from(end).unwrap_or(i64::MAX),
+                        },
+                    ),
+                );
+            }
+        }
+    }
+
     pub(crate) fn set_exec_paused(&self, paused: bool) {
         self.exec_paused.store(paused, Ordering::SeqCst);
         if paused {
@@ -2678,6 +2894,7 @@ impl TaskRuntime {
             .store
             .create_task_once_with_constraints(draft, policy, constraints, &key, Self::now())
             .map_err(|error| ToolFailure::plain(error.to_string()))?;
+        self.mark_dispatched(&conversation, &task);
         self.wake();
         Ok((task, created))
     }
@@ -2788,6 +3005,7 @@ impl TaskRuntime {
             .store
             .create_graph_once_with_constraints(graph, constraints, call_id, Self::now())
             .map_err(|error| ToolFailure::plain(error.to_string()))?;
+        self.mark_dispatched(&conversation, &root);
         self.wake();
         Ok((root, count))
     }
@@ -2846,6 +3064,9 @@ impl TaskRuntime {
             .task(&id)
             .map_err(|error| ToolFailure::plain(error.to_string()))?
             .ok_or_else(|| ToolFailure::plain(format!("任务不存在：{task_id}")))?;
+        if let Some(reason) = Self::trigger_task_rejection(&task) {
+            return Err(ToolFailure::plain(reason));
+        }
         if task.write_scope.is_none() {
             return Err(ToolFailure::plain(
                 "这个任务是只读调查，没有写入范围；要让它写文件，请重新派一个带写入范围的写任务",
@@ -3185,6 +3406,9 @@ impl TaskRuntime {
             .task(&id)
             .map_err(|error| ServiceError::TaskUnavailable(format!("任务读不出来：{error}")))?
             .ok_or_else(|| ServiceError::TaskUnavailable(format!("找不到这个任务：{task_id}")))?;
+        if let Some(reason) = Self::trigger_task_rejection(&task) {
+            return Err(ServiceError::TaskUnavailable(reason));
+        }
         let stage = self
             .store
             .stage(&id)
@@ -3327,5 +3551,248 @@ fn stage_label(stage: Stage) -> &'static str {
         Stage::ReadyForReview => "待检查",
         Stage::RequirementMet => "任务要求已满足",
         Stage::Closed => "已关闭",
+    }
+}
+
+#[cfg(test)]
+mod trigger_guard_tests {
+    use super::*;
+
+    fn draft(cwd: &std::path::Path, title: &str) -> NewTask {
+        NewTask {
+            title: title.to_owned(),
+            requirement: "到点做事".to_owned(),
+            dod: "做完".to_owned(),
+            cwd: cwd.to_path_buf(),
+            conversation: ConversationId::new("kind-trigger-guard"),
+            model: ModelChoice {
+                connection: "deepseek".to_owned(),
+                model: "deepseek-flash".to_owned(),
+                effort_wanted: "high".to_owned(),
+            },
+            tools: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn four_tools_share_the_same_trigger_rejection() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path().join("tasks.sqlite")).unwrap();
+        let task = store
+            .create_task(draft(directory.path(), "触发"), 1_800_000_000_000)
+            .unwrap();
+        assert!(TaskRuntime::trigger_task_rejection(&task).is_none());
+        store
+            .set_origin(
+                &task.id,
+                AppointmentOrigin {
+                    appointment_id: "appointment".to_owned(),
+                    run_id: 1,
+                    role: AppointmentRole::Trigger,
+                },
+            )
+            .unwrap();
+        let task = store.task(&task.id).unwrap().unwrap();
+        assert_eq!(
+            TaskRuntime::trigger_task_rejection(&task).as_deref(),
+            Some("这是约定到点的任务，不能接着做"),
+            "task_continue/task_update/task_stop/task_handback 都走这一句"
+        );
+    }
+}
+
+#[cfg(test)]
+mod trigger_tool_tests {
+    use std::sync::{Arc, Mutex, Weak};
+
+    use model::{DEFAULT_CONTEXT_WINDOW, Effort};
+    use tools::{Tool, ToolContext, ToolSessionState};
+
+    use super::*;
+    use crate::executor::task_tools::{
+        TaskContinueTool, TaskHandbackTool, TaskStopTool, TaskUpdateTool,
+    };
+    use crate::root::RootSessionOptions;
+
+    fn runtime() -> (tempfile::TempDir, Arc<TaskRuntime>) {
+        let directory = tempfile::tempdir().unwrap();
+        let options = RootSessionOptions {
+            data_dir: directory.path().to_path_buf(),
+            cwd: directory.path().to_path_buf(),
+            model: model::DeepSeekConfig {
+                provider: "deepseek".to_owned(),
+                base_url: "http://127.0.0.1:1".to_owned(),
+                model: "deepseek-flash".to_owned(),
+                max_tokens: 2048,
+                context_window: DEFAULT_CONTEXT_WINDOW,
+                effort: Effort::new("high"),
+                tool_update: None,
+            },
+            config: agent::AgentConfig::default(),
+            credentials: None,
+            identity: None,
+            model_factory: None,
+            append_hook_factory: None,
+            keyring_changed: None,
+            actions: Arc::new(crate::actions::ActionRegistry::empty()),
+            exa_base_url: None,
+            web_listen: None,
+            task_runtime: None,
+        };
+        let runtime =
+            TaskRuntime::new(&options, Arc::new(Mutex::new(None)), Weak::new(), None).unwrap();
+        (directory, Arc::new(runtime))
+    }
+
+    fn trigger_task(directory: &std::path::Path, runtime: &TaskRuntime) -> Task {
+        let draft = NewTask {
+            title: "到点任务".to_owned(),
+            requirement: "到点办完".to_owned(),
+            dod: "办完".to_owned(),
+            cwd: directory.to_path_buf(),
+            conversation: ConversationId::new("kind-trigger-tool"),
+            model: ModelChoice {
+                connection: "deepseek".to_owned(),
+                model: "deepseek-flash".to_owned(),
+                effort_wanted: "high".to_owned(),
+            },
+            tools: Vec::new(),
+        };
+        let task = runtime
+            .store
+            .create_trigger_task_once(draft, "tool-reject", TaskRuntime::now())
+            .unwrap()
+            .0;
+        runtime
+            .store
+            .set_origin(
+                &task.id,
+                AppointmentOrigin {
+                    appointment_id: "appointment".to_owned(),
+                    run_id: 1,
+                    role: AppointmentRole::Trigger,
+                },
+            )
+            .unwrap();
+        runtime.store.task(&task.id).unwrap().unwrap()
+    }
+
+    async fn error_of(tool: &dyn Tool, arguments: Value) -> String {
+        let directory = tempfile::tempdir().unwrap();
+        let context = ToolContext::with_session(
+            directory.path(),
+            Arc::new(ToolSessionState::new(directory.path(), "kind-trigger-tool")),
+        );
+        let result = tool
+            .execute(
+                ToolCall {
+                    id: "call".to_owned(),
+                    name: tool.name().to_owned(),
+                    arguments: arguments.to_string(),
+                },
+                &context,
+            )
+            .await;
+        assert!(result.is_error, "应当拒绝：{result:?}");
+        result.content
+    }
+
+    #[tokio::test]
+    async fn trigger_tasks_stay_out_of_interrupt_unconfirmed_graph_and_dream_lists() {
+        let (directory, runtime) = runtime();
+        let task = trigger_task(directory.path(), &runtime);
+        assert!(
+            !task.is_interrupted(),
+            "触发任务没有 Attempt，不会进打断事实"
+        );
+        assert!(
+            runtime.unconfirmed_graph_roots().unwrap().is_empty(),
+            "触发任务不是图根，不会进未确认图"
+        );
+        let dream = crate::memory::task_facts(&runtime, 0).unwrap();
+        assert!(
+            dream.iter().all(|fact| fact.task_id != task.id.as_str()),
+            "触发任务不进做梦事实：{dream:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_and_handback_reject_trigger_tasks() {
+        let (directory, runtime) = runtime();
+        let task = trigger_task(directory.path(), &runtime);
+        let update = TaskUpdateTool::new(runtime.clone());
+        let text = error_of(
+            &update,
+            json!({"task_id": task.id.as_str(), "write_scope": "a.txt"}),
+        )
+        .await;
+        assert!(text.contains("这是约定到点的任务，不能接着做"), "{text}");
+
+        let handback = TaskHandbackTool::new(runtime.clone(), task.id.clone(), AttemptId(1));
+        let context = ToolContext::with_session(
+            directory.path(),
+            Arc::new(ToolSessionState::new(directory.path(), "thin")),
+        );
+        let result = handback
+            .execute(
+                ToolCall {
+                    id: "call".to_owned(),
+                    name: "task_handback".to_owned(),
+                    arguments: json!({"reason": "超出范围"}).to_string(),
+                },
+                &context,
+            )
+            .await;
+        assert!(result.is_error);
+        assert!(
+            result.content.contains("这是约定到点的任务，不能接着做"),
+            "{}",
+            result.content
+        );
+    }
+
+    #[tokio::test]
+    async fn continue_and_stop_tools_reject_trigger_tasks() {
+        let (directory, runtime) = runtime();
+        let task = trigger_task(directory.path(), &runtime);
+        let context = ToolContext::with_session(
+            directory.path(),
+            Arc::new(ToolSessionState::new(directory.path(), "kind")),
+        );
+        let continue_tool = TaskContinueTool::new(runtime.clone());
+        let result = continue_tool
+            .execute(
+                ToolCall {
+                    id: "call".to_owned(),
+                    name: "task_continue".to_owned(),
+                    arguments: json!({"task_id": task.id.as_str()}).to_string(),
+                },
+                &context,
+            )
+            .await;
+        assert!(result.is_error);
+        assert!(
+            result.content.contains("这是约定到点的任务，不能接着做"),
+            "{}",
+            result.content
+        );
+
+        let stop_tool = TaskStopTool::new(runtime.clone());
+        let result = stop_tool
+            .execute(
+                ToolCall {
+                    id: "call".to_owned(),
+                    name: "task_stop".to_owned(),
+                    arguments: json!({"task_id": task.id.as_str(), "mode": "now"}).to_string(),
+                },
+                &context,
+            )
+            .await;
+        assert!(result.is_error);
+        assert!(
+            result.content.contains("这是约定到点的任务，不能接着做"),
+            "{}",
+            result.content
+        );
     }
 }

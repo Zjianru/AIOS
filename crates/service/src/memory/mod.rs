@@ -7,6 +7,8 @@ use agent::{MemoryContext, MemoryContextProvider, PreCompactionDiary, PreCompact
 mod dream;
 pub(crate) mod page;
 mod tools;
+#[cfg(test)]
+pub(crate) use dream::task_facts;
 pub use dream::{
     DREAM_PERMIT_CARD_REF, DreamCheck, DreamReport, DreamRuntime, DreamTaskFact, DreamTrigger,
 };

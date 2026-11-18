@@ -18,6 +18,10 @@ writeScope?: string | null, version: number, attempts: number, createdAt: number
  */
 running: boolean,
 /**
+ * T066：正在跑的那个 Attempt 的开始时间；没在跑为空。
+ */
+runningSince?: number | null,
+/**
  * 这是里程碑门任务。
  */
 gate: boolean,

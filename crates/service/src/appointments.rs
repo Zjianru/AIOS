@@ -32,6 +32,7 @@ pub(crate) fn canonicalize(details: &Value, now: i64) -> Result<Value, String> {
     let binding = parse_binding(object.get("binding"), object.get("taskId"))?;
     let watch = parse_watch(object.get("watch"))?;
     let cycle = parse_cycle(object)?;
+    let duration = parse_duration(object.get("durationMinutes"))?;
 
     Ok(json!({
         "title": title,
@@ -39,6 +40,7 @@ pub(crate) fn canonicalize(details: &Value, now: i64) -> Result<Value, String> {
         "rule": rule,
         "timezone": timezone,
         "startAt": start_at,
+        "durationMinutes": duration,
         "binding": binding_json(&binding),
         "watch": watch.as_ref().map(watch_json).unwrap_or(Value::Null),
         "cycleTaskId": cycle.as_ref().map(|cycle| cycle.task_id.clone()),
@@ -70,6 +72,7 @@ pub(crate) fn new_appointment(details: &Value) -> Result<NewAppointment, String>
     let binding = parse_binding(object.get("binding"), object.get("taskId"))?;
     let watch = parse_watch(object.get("watch"))?;
     let cycle = parse_cycle(object)?;
+    let duration_minutes = parse_duration(object.get("durationMinutes"))?;
     Ok(NewAppointment {
         title: field("title")?,
         condition: field("condition")?,
@@ -81,6 +84,7 @@ pub(crate) fn new_appointment(details: &Value) -> Result<NewAppointment, String>
         binding,
         watch,
         cycle,
+        duration_minutes,
     })
 }
 
@@ -189,6 +193,29 @@ fn parse_binding(value: Option<&Value>, fallback_task: Option<&Value>) -> Result
             "details.binding.kind 只认 chat/kind/task，收到 {other:?}"
         )),
     }
+}
+
+/// 时长：可选的整数分钟；0 也接受（原型允许）。
+pub(crate) fn parse_duration_value(value: &Value) -> Result<Option<u32>, String> {
+    parse_duration(Some(value))
+}
+
+fn parse_duration(value: Option<&Value>) -> Result<Option<u32>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let minutes = match value {
+        Value::Number(_) => value.as_u64(),
+        Value::String(raw) => raw.trim().parse::<u64>().ok(),
+        _ => None,
+    }
+    .ok_or_else(|| "details.durationMinutes 必须是非负整数分钟".to_owned())?;
+    Ok(Some(
+        u32::try_from(minutes).map_err(|_| "details.durationMinutes 太大".to_owned())?,
+    ))
 }
 
 fn parse_watch(value: Option<&Value>) -> Result<Option<WatchSource>, String> {

@@ -927,6 +927,7 @@ impl Store {
             at: now,
             version: gate.requirement_version(),
             checks,
+            changed_count: None,
         });
         if let Some(attempt) = gate
             .runs
@@ -1093,6 +1094,52 @@ impl Store {
         Ok((task, true))
     }
 
+    /// T066：服务建约定到点的触发任务：幂等，但不排 launch、不开 Attempt、不写报告。
+    pub fn create_trigger_task_once(
+        &self,
+        draft: NewTask,
+        accept_key: &str,
+        now: i64,
+    ) -> Result<(Task, bool), TaskError> {
+        draft.validate()?;
+        if accept_key.trim().is_empty() {
+            return Err(TaskError::EmptyAcceptKey);
+        }
+        let frozen = TaskPolicy::default().freeze(&draft.cwd)?;
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let key = format!("task-accept:{accept_key}");
+        let existing: Option<String> = transaction
+            .query_row("SELECT value FROM kv WHERE key = ?1", params![key], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        if let Some(id) = existing {
+            let task = load_task_required(&transaction, &TaskId::from(id))?;
+            transaction.commit()?;
+            return Ok((task, false));
+        }
+        let task = task_row(
+            &transaction,
+            None,
+            draft,
+            &frozen,
+            now,
+            None,
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+        )?;
+        insert_task_row(&transaction, &task)?;
+        transaction.execute(
+            "INSERT INTO kv (key, value) VALUES (?1, ?2)",
+            params![key, task.id.as_str()],
+        )?;
+        transaction.commit()?;
+        Ok((task, true))
+    }
+
     fn insert_task_in_with_constraints(
         &self,
         connection: &Connection,
@@ -1140,6 +1187,33 @@ impl Store {
     pub fn task(&self, id: &TaskId) -> Result<Option<Task>, TaskError> {
         let conn = self.lock()?;
         load_task(&conn, id)
+    }
+
+    /// T066：给任务写来源（建触发任务/那一轮派出时调用）；旧任务没有 origin。
+    pub fn set_origin(
+        &self,
+        id: &TaskId,
+        origin: crate::task::AppointmentOrigin,
+    ) -> Result<(), TaskError> {
+        let connection = self.lock()?;
+        let mut task = load_task_required(&connection, id)?;
+        task.origin = Some(origin);
+        save_task(&connection, &task)
+    }
+
+    /// T066：给触发任务写那一轮结束的事实（幂等；已有就不改）。
+    pub fn set_round_end(
+        &self,
+        id: &TaskId,
+        round_end: crate::task::RoundEnd,
+    ) -> Result<(), TaskError> {
+        let connection = self.lock()?;
+        let mut task = load_task_required(&connection, id)?;
+        if task.round_end.is_none() {
+            task.round_end = Some(round_end);
+            save_task(&connection, &task)?;
+        }
+        Ok(())
     }
 
     /// T055：全表任务，按创建时间升序（同时间按 id）；看板和「现在」用。
@@ -1790,6 +1864,7 @@ impl Store {
             at: now,
             version: task.requirement_version(),
             checks: Vec::new(),
+            changed_count: None,
         });
         save_task(&transaction, &task)?;
         // T056.2：ready 报告关掉「下一步」叙述条（它意味着这个下一步已经走到了）。
@@ -1830,6 +1905,29 @@ impl Store {
     ///
     /// 顺序：找不到/不是 ready → 拒；门任务自己 → 拒；不是最近报告 → 「已经变了」；
     /// 版本不是当前 → 「要求改过了」；有门但门没对这份判通过 → 拒；同一报告重复接受幂等。
+    /// T066：报告落库后补这个 Attempt 的改动文件数（工作快照只读这个数，不再读日志）。
+    pub fn set_report_changed_count(
+        &self,
+        id: &TaskId,
+        report_id: &ReportId,
+        changed_count: u32,
+    ) -> Result<(), TaskError> {
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut task = load_task_required(&transaction, id)?;
+        let Some(report) = task
+            .reports
+            .iter_mut()
+            .find(|report| &report.id == report_id)
+        else {
+            return Err(TaskError::ReportNotFound(report_id.to_string()));
+        };
+        report.changed_count = Some(changed_count);
+        save_task(&transaction, &task)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn accept(
         &self,
         id: &TaskId,
@@ -2228,6 +2326,8 @@ fn task_row(
         verdicts: Vec::new(),
         missing: Vec::new(),
         created_at: now,
+        origin: None,
+        round_end: None,
     })
 }
 
@@ -2597,6 +2697,14 @@ fn stage_with_graph(connection: &Connection, task: &Task) -> Result<Stage, TaskE
 // T054：按事实派生「已关闭」——当前版本的最新 ready 报告被接受（有门的还要门判通过）；
 // 门任务在被把关任务关闭后关闭。总任务的全关闭由 stage_with_graph 的 rank 汇总得到。
 fn closed_in(connection: &Connection, task: &Task) -> Result<bool, TaskError> {
+    // T066：约定到点的触发任务没有报告/接受；那一轮结束（round_end）即已关闭。
+    if task
+        .origin
+        .as_ref()
+        .is_some_and(|origin| origin.role == crate::task::AppointmentRole::Trigger)
+    {
+        return Ok(task.round_end.is_some());
+    }
     if task.is_gate() {
         let Some(need) = task.needs.first() else {
             return Ok(false);

@@ -102,6 +102,14 @@ function kindWord(task: GraphNode['task']): { icon: typeof Flag; text: string } 
   return { icon: SearchCheck, text: '只读' };
 }
 
+function agoText(at: number): string {
+  const minutes = Math.max(0, Math.round((Date.now() - at) / 60_000));
+  if (minutes < 60) return String(minutes) + ' 分';
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return String(hours) + ' 小时';
+  return String(Math.round(hours / 24)) + ' 天';
+}
+
 function Station({
   node,
   at,
@@ -117,17 +125,40 @@ function Station({
 }) {
   const { task, tile } = node;
   const kind = kindWord(task);
+  const box = task.program ? 'program' : task.gate ? 'gate' : task.writeScope ? 'write' : 'read';
+  const ring = tile.column === 'doing' || tile.column === 'wait';
+  const footer = task.runningSince
+    ? '在出 · 跑了 ' + agoText(task.runningSince)
+    : task.acceptedAt
+      ? '交出第 ' + String(task.version) + ' 份 · ' + agoText(task.acceptedAt) + '前'
+      : task.latest
+        ? '收到第 ' + String(task.version) + ' 份' +
+          (task.latest.changedCount ? ' · ' + String(task.latest.changedCount) + ' 文件' : '')
+        : '还没收到';
   return (
     <button
       type="button"
-      onClick={onSelect}
+      onClick={(event) => {
+        event.stopPropagation();
+        onSelect();
+      }}
       className={cn(
-        'absolute rounded-card border bg-raised p-2 text-left transition-[opacity,border-color]',
+        'absolute border bg-raised p-2 text-left transition-[opacity,border-color]',
+        box === 'program' || box === 'gate' ? 'rounded-none' : 'rounded-card',
+        box === 'write' && 'border-l-[3px]',
         selected ? 'border-ink-2 shadow-sm' : 'border-line hover:border-ink-3/50',
         dim && 'opacity-40',
+        box === 'program' && 'font-mono',
       )}
-      style={{ left: at.x, top: at.y, width: NODE_W, height: NODE_H }}
+      style={{
+        left: at.x,
+        top: at.y,
+        width: NODE_W,
+        height: NODE_H,
+        ...(box === 'write' ? { borderLeftColor: 'var(--kind-write, var(--ink-2))' } : {}),
+      }}
       data-kind="graph-node"
+      data-box={box}
       data-node-id={task.id}
       data-title={task.title}
       data-column={tile.column}
@@ -135,6 +166,8 @@ function Station({
       data-dim={dim ? 'true' : 'false'}
       aria-pressed={selected}
     >
+      {ring ? <span className="graph-node-ring" data-slow={tile.column === 'wait' ? 'true' : 'false'} /> : null}
+      {task.gate ? <Flag className="absolute right-1 top-1 size-3 text-ink-3" data-kind="node-flag" /> : null}
       <span className="flex min-w-0 items-center gap-1 text-1 text-ink-3">
         <kind.icon className="size-3 shrink-0" />
         <span className="truncate">{kind.text}</span>
@@ -149,6 +182,9 @@ function Station({
       <span className="mt-0.5 flex items-center justify-between gap-2 text-1 text-ink-3">
         <span className="truncate">{tile.column === 'done' ? '关了' : '下一步：' + tile.next}</span>
         <span className="shrink-0">{task.program ? '程序' : task.version > 1 ? '第 ' + String(task.version) + ' 版' : '任务'}</span>
+      </span>
+      <span className="mt-0.5 block truncate text-[9px] text-ink-3" data-kind="graph-node-foot" title={footer}>
+        {footer}
       </span>
     </button>
   );
@@ -170,6 +206,9 @@ function Wire({
   const before = points[points.length - 2] ?? end;
   const stroke = EDGE_TONE[edge.state];
   const dir = end.x >= before.x ? 1 : -1;
+  const live = edge.live ?? null;
+  const width = live === 'flow' ? 2.5 : live === 'make' ? 2 : live === 'back' ? 2.5 : 1.75;
+  const mid = points[Math.floor(points.length / 2)] ?? end;
   return (
     <g
       opacity={dim ? 0.25 : 1}
@@ -181,15 +220,24 @@ function Wire({
       data-to={edge.to}
       data-lit={lit ? 'true' : 'false'}
       data-dim={dim ? 'true' : 'false'}
+      data-live={live ?? ''}
+      data-payload={edge.payload ?? ''}
     >
       <title>{edge.label}</title>
       <path
         d={d}
         fill="none"
         stroke={stroke}
-        strokeWidth={lit ? 2.5 : 1.75}
-        strokeDasharray={edge.state === 'handed' ? undefined : '5 4'}
+        strokeWidth={live ? width : lit ? 2.5 : 1.75}
+        strokeDasharray={edge.state === 'handed' && !live ? undefined : '6 5'}
+        strokeDashoffset={live === 'flow' ? -11 : live === 'back' ? -9 : live === 'make' ? 11 : undefined}
+        className={live ? 'graph-edge-live-' + live : undefined}
       />
+      {edge.payload ? (
+        <text x={mid.x} y={mid.y - 6} fontSize="9" fill="var(--ink-3)" textAnchor="middle" data-kind="graph-edge-payload">
+          {edge.payload}
+        </text>
+      ) : null}
       <path
         d={'M' + String(end.x - 6 * dir) + ' ' + String(end.y - 4) + ' L' + String(end.x) + ' ' + String(end.y) + ' L' + String(end.x - 6 * dir) + ' ' + String(end.y + 4)}
         fill="none"
@@ -310,7 +358,7 @@ function DetailValue({ label, children, kind }: { label: string; children: React
   );
 }
 
-function Detail({ graph, id }: { graph: TaskGraph; id: string }) {
+function Detail({ graph, id, onClose }: { graph: TaskGraph; id: string; onClose: () => void }) {
   const node = graph.nodes.find((item) => item.task.id === id);
   const [read, setRead] = useState<TaskReadResponse | null>(null);
   const [error, setError] = useState('');
@@ -342,6 +390,15 @@ function Detail({ graph, id }: { graph: TaskGraph; id: string }) {
             {node.tile.word} · {node.task.gate ? '里程碑门' : node.task.program ? '程序门' : node.task.writeScope ? '写任务' : '调查任务'}
           </div>
         </div>
+        <button
+          type="button"
+          data-kind="graph-detail-close"
+          onClick={onClose}
+          className="shrink-0 rounded-btn border border-line px-2 py-1 text-1 text-ink-2 hover:bg-hover"
+          aria-label="关闭详情"
+        >
+          ×
+        </button>
         <button
           type="button"
           data-kind="graph-open-task"
@@ -423,10 +480,20 @@ function GraphBlock({
 export function GraphPane({
   selected,
   onSelect,
+  onClose,
 }: {
   selected: string | null;
   onSelect: (id: string) => void;
+  onClose: () => void;
 }) {
+  useEffect(() => {
+    if (!selected) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [selected, onClose]);
   // 轮询由 WorkScene 根挂一次（workStore 引用计数只留一个 interval）；这里只读同一份 store。
   const work = useWorkStore((state) => state.work);
   const error = useWorkStore((state) => state.error);
@@ -441,7 +508,19 @@ export function GraphPane({
   }
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden" data-kind="task-graph-pane">
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+      <div
+        className="min-h-0 flex-1 overflow-y-auto px-3 py-3"
+        onClick={(event) => {
+          const target = event.target as Element;
+          if (
+            !target.closest(
+              '[data-kind="graph-node"], [data-kind="graph-table"], [data-kind="graph-table-toggle"]',
+            )
+          ) {
+            onClose();
+          }
+        }}
+      >
         {graphs.length === 0 ? (
           <div className="grid h-full place-items-center text-2 text-ink-3" data-kind="task-graph-empty">
             现在没有已确认的任务图；Kind 把一件事拆成几步、你确认了，这里就有一张。
@@ -471,7 +550,7 @@ export function GraphPane({
           ) : null}
         </div>
       </div>
-      {owner && selected ? <Detail graph={owner} id={selected} /> : null}
+      {owner && selected ? <Detail graph={owner} id={selected} onClose={onClose} /> : null}
     </div>
   );
 }

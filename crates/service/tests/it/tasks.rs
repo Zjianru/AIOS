@@ -40,6 +40,7 @@ mod pause_tests;
 mod report_tests;
 mod restart_tests;
 mod stop_tests;
+mod trigger_tests;
 mod workflow_tests;
 
 struct Fixture {

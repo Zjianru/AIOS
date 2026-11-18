@@ -63,6 +63,8 @@ pub enum TaskError {
     EmptyQuestion,
     #[error("报告问题超过 1000 字，实际 {0} 字")]
     QuestionTooLong(usize),
+    #[error("报告不存在: {0}")]
+    ReportNotFound(String),
     #[error("Attempt {attempt} 已经报过 {existing:?}，不能再报 {requested:?}")]
     ReportConflict {
         attempt: u64,

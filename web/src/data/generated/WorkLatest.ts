@@ -7,4 +7,8 @@ export type WorkLatest = { reportId: string,
 /**
  * ready / blocked / failed / waiting。
  */
-state: string, at: number, summary: string, question?: string | null, };
+state: string, at: number, summary: string, question?: string | null,
+/**
+ * T066：这份报告那个 Attempt 改了几个文件；旧报告为空。
+ */
+changedCount?: number | null, };

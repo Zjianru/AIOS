@@ -13,26 +13,29 @@ export const CALENDAR_POLL_MS = 2000;
 
 interface CalendarState {
   response: CalendarReadResponse | null;
-  weekStart: number;
+  from: number;
+  to: number;
   loading: boolean;
   error: string | null;
   selected: string | null;
-  refresh: (weekStart?: number) => Promise<void>;
+  refresh: (from?: number, to?: number) => Promise<void>;
   select: (id: string | null) => void;
   act: (id: string, action: CalendarActionKind) => Promise<void>;
 }
 
 export const useCalendarStore = create<CalendarState>()((set, get) => ({
   response: null,
-  weekStart: 0,
+  from: 0,
+  to: 0,
   loading: true,
   error: null,
   selected: null,
-  refresh: async (weekStart) => {
-    const week = weekStart ?? get().weekStart;
+  refresh: async (from, to) => {
+    const start = from ?? get().from;
+    const end = to ?? get().to;
     try {
-      const response = await getCalendar(week || undefined);
-      set({ response, weekStart: week, loading: false, error: null });
+      const response = await getCalendar(start || undefined, end || undefined);
+      set({ response, from: start, to: end, loading: false, error: null });
     } catch (error) {
       set({
         loading: false,
@@ -43,17 +46,17 @@ export const useCalendarStore = create<CalendarState>()((set, get) => ({
   select: (id) => set({ selected: id }),
   act: async (id, action) => {
     await calendarAction(id, action);
-    await get().refresh();
+    await get().refresh(get().from, get().to);
   },
 }));
 
 /** 页面开着时每两秒重读；切走就清掉。 */
-export function useCalendarPolling(weekStart: number): void {
+export function useCalendarPolling(from: number, to: number): void {
   useEffect(() => {
-    void useCalendarStore.getState().refresh(weekStart);
+    void useCalendarStore.getState().refresh(from, to);
     const timer = window.setInterval(() => {
-      void useCalendarStore.getState().refresh(weekStart);
+      void useCalendarStore.getState().refresh(from, to);
     }, CALENDAR_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [weekStart]);
+  }, [from, to]);
 }

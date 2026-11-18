@@ -1028,6 +1028,7 @@ fn a_confirmed_gated_graph_projects_edges_and_judge_state() {
     let guards = edge(graph, guarded.id.as_str(), gate.id.as_str(), "guards");
     assert_eq!(guards.state, "handed", "门有过 Attempt 就是 handed");
     assert!(!guards.program);
+    assert_eq!(guards.live.as_deref(), Some("judge"), "门有报告没判：judge");
     assert_eq!(graph.edges.len(), 2, "门图 3 站 2 条：guards + release");
     assert!(
         !graph
@@ -1038,6 +1039,7 @@ fn a_confirmed_gated_graph_projects_edges_and_judge_state() {
     );
     let release = edge(graph, gate.id.as_str(), downstream.id.as_str(), "release");
     assert_eq!(release.state, "judge", "门还没判");
+    assert_eq!(release.live.as_deref(), Some("judge"));
     assert!(!release.program);
 
     store
@@ -1057,6 +1059,15 @@ fn a_confirmed_gated_graph_projects_edges_and_judge_state() {
         "release",
     );
     assert_eq!(release.state, "fix", "判了需修正");
+    assert_eq!(release.live.as_deref(), Some("back"));
+    assert!(
+        release
+            .payload
+            .as_deref()
+            .is_some_and(|payload| payload.contains("打回第 1 份")),
+        "{:?}",
+        release.payload
+    );
 }
 
 #[test]
@@ -1083,6 +1094,7 @@ fn two_upstreams_show_one_handed_and_one_waiting() {
         )
         .unwrap();
 
+    store.begin_attempt(&independent.id, T0 + 15).unwrap();
     let response = snapshot(&store, &[], &[], T0 + 21).unwrap();
     assert_eq!(response.graphs.len(), 1);
     let graph = &response.graphs[0];
@@ -1104,10 +1116,42 @@ fn two_upstreams_show_one_handed_and_one_waiting() {
         "waiting",
         "B 还没 ready，还是 waiting"
     );
+    let needs = edge(
+        graph,
+        independent.id.as_str(),
+        downstream.id.as_str(),
+        "needs",
+    );
+    assert_eq!(
+        needs.live.as_deref(),
+        Some("make"),
+        "上游在跑、下游等：make"
+    );
     assert_eq!(
         edge(graph, gate.id.as_str(), downstream.id.as_str(), "release").state,
         "handed",
         "判通过且下游交接已解析"
+    );
+    // 下游开跑、上游报告带改动文件数：线是 flow，小字写第 N 份·X 文件。
+    store
+        .set_report_changed_count(&gate.id, &gate_report.id, 2)
+        .unwrap();
+    store.begin_attempt(&downstream.id, T0 + 25).unwrap();
+    let response = snapshot(&store, &[], &[], T0 + 26).unwrap();
+    let release = edge(
+        &response.graphs[0],
+        gate.id.as_str(),
+        downstream.id.as_str(),
+        "release",
+    );
+    assert_eq!(release.live.as_deref(), Some("flow"));
+    assert!(
+        release
+            .payload
+            .as_deref()
+            .is_some_and(|payload| payload.contains("2 文件")),
+        "{:?}",
+        release.payload
     );
 }
 
@@ -1200,4 +1244,36 @@ fn unconfirmed_and_cancelled_graphs_do_not_project() {
             .any(|fact| fact.id == single.id.as_str()),
         "单派任务继续上看板"
     );
+}
+
+#[test]
+fn work_facts_carry_changed_count_and_running_since() {
+    let directory = tempfile::tempdir().unwrap();
+    let cwd = directory.path();
+    let store = Store::open(cwd.join("tasks.sqlite")).unwrap();
+    let task = ready_task(&store, cwd, "有改动", T0);
+    let report_id = task.latest_report().unwrap().id.clone();
+    store
+        .set_report_changed_count(&task.id, &report_id, 3)
+        .unwrap();
+    let before = snapshot(&store, &[], &[], T0 + 10).unwrap();
+    let fact = before
+        .tasks
+        .iter()
+        .find(|fact| fact.id == task.id.as_str())
+        .expect("任务事实");
+    assert_eq!(fact.latest.as_ref().unwrap().changed_count, Some(3));
+    assert!(fact.running_since.is_none());
+    store.begin_attempt(&task.id, T0 + 10).unwrap();
+    let after = snapshot(&store, &[], &[], T0 + 20).unwrap();
+    let fact = after
+        .tasks
+        .iter()
+        .find(|fact| fact.id == task.id.as_str())
+        .expect("任务事实");
+    assert!(
+        fact.running_since.is_some(),
+        "第二个 Attempt 在跑要有 started_at"
+    );
+    assert!(fact.running);
 }
