@@ -765,7 +765,8 @@ fn range_block(
             })
         })
         .collect();
-    let task_id = trigger.map(|task| task.id.as_str().to_owned());
+    // 只有派出去的任务给 task_id：Kind 自办的块点开回轮，不点任务页。
+    let task_id = dispatched.first().map(|task| task.id.as_str().to_owned());
     if !dispatched.is_empty() {
         let any_open = dispatched
             .iter()

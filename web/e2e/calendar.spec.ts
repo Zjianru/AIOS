@@ -11,7 +11,7 @@ test('日历约定视图：分组、详情四按钮、暂停/恢复/取消二次
   try {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#work?wv=cal');
     await expect(page.locator('[data-kind="calendar-page"]')).toBeVisible();
-    await expect(page.locator('[data-kind="appt-row"]')).toHaveCount(4);
+    await expect(page.locator('[data-kind="appt-row"]')).toHaveCount(7);
     await expect(page.locator('[data-kind="calendar-group"]')).toHaveCount(4);
 
     const morning = page.locator('[data-kind="appt-row"][data-appt="ap_morning"]');
@@ -102,6 +102,93 @@ test('周视图：计划点/运行点、不画跳过、能翻周', async ({ page
     await expect(firstDay).toBeVisible();
     await page.locator('[data-kind="week-shift"][data-dir="next"]').click();
     await expect(page.locator('[data-kind="week-day"]')).toHaveCount(7);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('T066 故事1-2：Kind 自办块已完成、办完了回轮', async ({ page }) => {
+  const fixture = await startKernelFixture({ t064Calendar: true });
+  try {
+    await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#work?wv=cal');
+    await page.locator('[data-kind="calendar-view"][data-view="week"]').click();
+    await expect(page.locator('[data-kind="calendar-week"]')).toBeVisible();
+    const block = page.locator('[data-kind="week-run"][data-appt="ap_morning"][data-status="已完成"]').first();
+    await expect(block).toBeVisible();
+    await expect(block).toContainText('早报');
+    await block.click();
+    const detail = page.locator('[data-kind="appt-detail"][data-appt="ap_morning"]');
+    await expect(detail).toBeVisible();
+    const done = detail.locator('[data-kind="run-kind-done"]').first();
+    await expect(done).toContainText('Kind 办完了');
+    await done.click();
+    await expect(page.locator('[data-turn="turn-3"]')).toBeVisible();
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('T066 故事3：派出的块跟任务状态、点开任务页', async ({ page }) => {
+  const fixture = await startKernelFixture({ t064Calendar: true });
+  try {
+    await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#work?wv=cal');
+    await page.locator('[data-kind="calendar-view"][data-view="week"]').click();
+    const dispatched = page.locator('[data-kind="week-run"][data-task="t066-dispatched-1"]').first();
+    await expect(dispatched).toBeVisible();
+    await expect(dispatched).toHaveAttribute('data-status', /排队|在做/);
+    await dispatched.click();
+    await expect(page.locator('[data-kind="task-full-title"]')).toContainText('调查 elkjs 调查');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('T066 一次性结束的块仍在、计划只出在用约定', async ({ page }) => {
+  const fixture = await startKernelFixture({ t064Calendar: true });
+  try {
+    await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#work?wv=cal');
+    const row = page.locator('[data-kind="appt-row"][data-appt="ap_once"]');
+    await expect(row).toHaveAttribute('data-state', 'ended');
+    const cancelled = page.locator('[data-kind="appt-row"][data-appt="ap_cancelled"]');
+    await expect(cancelled).toHaveAttribute('data-state', 'cancelled');
+    await page.locator('[data-kind="calendar-view"][data-view="week"]').click();
+    await expect(page.locator('[data-kind="calendar-week"]')).toBeVisible();
+    const block = page.locator('[data-kind="week-run"][data-appt="ap_once"]').first();
+    await expect(block).toBeVisible();
+    await expect(block).toContainText('交周报');
+    await expect(block).toHaveAttribute('data-status', '已完成');
+    await expect(page.locator('[data-kind="week-plan"][data-appt="ap_once"]')).toHaveCount(0);
+    const cancelledBlock = page.locator('[data-kind="week-run"][data-appt="ap_cancelled"]').first();
+    await expect(cancelledBlock).toBeVisible();
+    await expect(cancelledBlock).toHaveAttribute('data-status', '已完成');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('T066 周/月看法：三种切法、红线/今天、斜纹计划、月跳周', async ({ page }) => {
+  const fixture = await startKernelFixture({ t064Calendar: true });
+  try {
+    await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#work?wv=cal');
+    await expect(page.locator('[data-kind="calendar-view"]')).toHaveCount(3);
+    await page.locator('[data-kind="calendar-view"][data-view="week"]').click();
+    await expect(page.locator('[data-kind="week-day"]')).toHaveCount(7);
+    await expect(page.locator('[data-kind="week-plan"]').first()).toBeVisible();
+    await expect(page.locator('[data-kind="week-run"]').first()).toBeVisible();
+    await expect(page.locator('[data-kind="now-line"]')).toBeVisible();
+    await expect(page.locator('[data-kind="week-day"][data-today="true"]')).toHaveCount(1);
+    // 悬停一块，同一条规则的其他块一起亮。
+    const hovered = page.locator('[data-kind="week-run"][data-appt="ap_morning"]').first();
+    await hovered.hover();
+    await expect(page.locator('[data-kind="week-run"][data-appt="ap_morning"]').last()).toHaveClass(/ring-2/);
+    // 月：6x7 格、块、还有 N 条跳周。
+    await page.locator('[data-kind="calendar-view"][data-view="month"]').click();
+    await expect(page.locator('[data-kind="month-day"]')).toHaveCount(42);
+    await expect(page.locator('[data-kind="month-block"]').first()).toBeVisible();
+    const more = page.locator('[data-kind="month-more"]').first();
+    await expect(more).toBeVisible();
+    await more.click();
+    await expect(page.locator('[data-kind="calendar-week"]')).toBeVisible();
   } finally {
     await fixture.close();
   }

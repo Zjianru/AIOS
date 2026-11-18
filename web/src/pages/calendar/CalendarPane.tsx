@@ -5,7 +5,7 @@
  * 周视图只画计划点和有结果的运行（服务端 week 已按此给）。
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { CalendarClock, ChevronLeft, ChevronRight, Eye, Moon, Repeat } from 'lucide-react';
 import { go } from '@/app/navigate';
 import { cn } from '@/lib/utils';
@@ -17,16 +17,25 @@ import {
   RESULT_WORD,
   STATE_WORD,
   appointmentsOf,
-  clockOf,
+  colorsOf,
+  dayStartOf,
   daysOfWeek,
+  denseOf,
+  monthCells,
+  monthStartOf,
+  plansOf,
+  rangeBlocksOf,
   recentRuns,
+  ruleColor,
   stampInZone,
   stampOf,
-  weekCells,
   weekStartOf,
   type ApptKind,
   type ApptRun,
   type Appointment,
+  type DenseDay,
+  type PlanBlock,
+  type RangeBlock,
 } from './calendarModel';
 import { useCalendarPolling, useCalendarStore } from './calendarStore';
 
@@ -149,6 +158,8 @@ function ApptRow({ appt, on, onSelect }: { appt: Appointment; on: boolean; onSel
 
 function ApptDetail({ appt }: { appt: Appointment }) {
   const act = useCalendarStore((state) => state.act);
+  const response = useCalendarStore((state) => state.response);
+  const blocks = rangeBlocksOf(response).filter((block) => block.appointmentId === appt.id);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const [busy, setBusy] = useState(false);
   const run = async (action: 'pause' | 'resume' | 'run-now' | 'cancel') => {
@@ -190,6 +201,7 @@ function ApptDetail({ appt }: { appt: Appointment }) {
           <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">来源</dt><dd className="text-ink-3">旧记录（没有来源轮）</dd></div>
         )}
         <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">版本</dt><dd className="text-ink-2">第 {appt.version} 版</dd></div>
+        {appt.durationMinutes != null ? <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">时长</dt><dd className="text-ink-2">{appt.durationMinutes} 分钟</dd></div> : null}
         <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">下次触发</dt><dd className="text-ink-2">{appt.next ? stampInZone(appt.next, appt.timezone) : '不自动触发'}</dd></div>
         {appt.watchTarget ? <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">盯变化</dt><dd className="min-w-0 break-all text-ink-2">{appt.watchKind} · {appt.watchTarget}</dd></div> : null}
         {appt.cycleTaskId ? <div className="flex gap-2"><dt className="w-20 shrink-0 text-ink-3">循环</dt><dd className="text-ink-2">任务 {appt.cycleTaskId}{appt.cycleMaxRounds ? ' · 最多 ' + appt.cycleMaxRounds + ' 轮' : ''}</dd></div> : null}
@@ -209,13 +221,34 @@ function ApptDetail({ appt }: { appt: Appointment }) {
         ) : null}
       </div>
 
+      {blocks.length ? (
+        <div className="mt-3" data-kind="appt-block-list">
+          <div className="mb-1 text-1 text-ink-3">这次到点</div>
+          {blocks.slice().reverse().map((block) => (
+            <div key={block.id} className="flex items-center gap-2 text-1" data-kind="appt-block" data-status={block.status}>
+              <span className="text-ink-3">{stampOf(block.start)}</span>
+              <span className="shrink-0 text-ink-2">{block.status}</span>
+              {block.taskId ? (
+                <button type="button" data-kind="block-task-link" data-task={block.taskId} onClick={() => go('taskchat:' + block.taskId)} className="min-w-0 truncate text-ink-3 underline-offset-2 hover:underline">
+                  看任务
+                </button>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+
       <div className="mt-4 text-1 text-ink-3">运行记录</div>
       <div className="mt-1 space-y-1" data-kind="appt-runs">
         {appt.runs.length === 0 ? <p className="text-1 text-ink-3">还没跑过</p> : appt.runs.slice(-10).reverse().map((run) => (
           <div key={run.id} className="flex min-w-0 items-start gap-1.5 text-1">
             <span className="mt-[3px]"><RunDot run={run} /></span>
             <span className="shrink-0 text-ink-3">{stampOf(run.at)}</span>
-            <span className="shrink-0 text-ink-2">{RESULT_WORD[run.result]}{run.merged ? ' ×' + run.merged : ''}{run.manual ? ' · 手动' : ''}</span>
+            {run.result === 'sent' && run.turn ? (
+              <button type="button" data-kind="run-kind-done" onClick={() => openTurn(run.turn)} className="shrink-0 text-ink-2 underline-offset-2 hover:underline">Kind 办完了</button>
+            ) : (
+              <span className="shrink-0 text-ink-2">{RESULT_WORD[run.result]}{run.merged ? ' ×' + run.merged : ''}{run.manual ? ' · 手动' : ''}</span>
+            )}
             <span className="min-w-0 flex-1 truncate text-ink-3" title={run.note}>{run.note}</span>
           </div>
         ))}
@@ -224,38 +257,262 @@ function ApptDetail({ appt }: { appt: Appointment }) {
   );
 }
 
-function WeekPane({ weekStart, setWeekStart }: { weekStart: number; setWeekStart: (next: number) => void }) {
+const HOUR_PX = 44;
+const DAY_MS = 86_400_000;
+
+function minutesOfDay(ms: number): number {
+  const date = new Date(ms);
+  return date.getHours() * 60 + date.getMinutes();
+}
+
+function isToday(ms: number): boolean {
+  return dayStartOf(ms) === dayStartOf(Date.now());
+}
+
+/** 一天里的重叠分组：按开始排序，给每块分一条竖道并算总道数。 */
+function lanesOf<T extends { start: number; end: number }>(blocks: T[]): (T & { lane: number; lanes: number })[] {
+  const sorted = [...blocks].sort((left, right) => left.start - right.start);
+  const result: (T & { lane: number; lanes: number })[] = [];
+  let group: T[] = [];
+  let groupEnd = 0;
+  const flush = () => {
+    if (!group.length) return;
+    const lanes = group.length;
+    group.forEach((block, lane) => result.push({ ...block, lane, lanes }));
+    group = [];
+  };
+  for (const block of sorted) {
+    if (group.length && block.start >= groupEnd) flush();
+    group.push(block);
+    groupEnd = Math.max(groupEnd, block.end);
+  }
+  flush();
+  return result;
+}
+
+function WeekBlock({ block, color, onSelect, highlighted, onHover }: {
+  block: RangeBlock; color: string; onSelect: () => void; highlighted: boolean; onHover: (id: string | null) => void;
+}) {
+  const start = Math.max(block.start, dayStartOf(block.start));
+  const top = (minutesOfDay(start) / 1440) * 24 * HOUR_PX;
+  const height = Math.max(18, ((Math.min(block.end, dayStartOf(block.start) + DAY_MS) - start) / 60_000) * (HOUR_PX / 60));
+  return (
+    <button
+      type="button"
+      data-kind="week-run"
+      data-result="sent"
+      data-appt={block.appointmentId}
+      data-status={block.status}
+      data-task={block.taskId ?? ''}
+      data-turn={block.turn ?? ''}
+      title={block.title + ' · ' + block.status}
+      onClick={(event) => {
+        event.stopPropagation();
+        if (block.taskId) go('taskchat:' + block.taskId);
+        else onSelect();
+      }}
+      onMouseEnter={() => onHover(block.appointmentId)}
+      onMouseLeave={() => onHover(null)}
+      className={cn('absolute z-10 overflow-hidden rounded-[4px] border px-1 py-0.5 text-left text-[10px] text-ink', highlighted && 'ring-2 ring-ink/50')}
+      style={{ top, height, borderColor: color, backgroundColor: color + '33', left: '2px', right: '2px' }}
+    >
+      <span className="block truncate leading-3">{block.title}</span>
+      <span className="block truncate text-ink-3">{block.status}</span>
+    </button>
+  );
+}
+
+function WeekPane({ weekStart, setWeekStart, onSelect }: { weekStart: number; setWeekStart: (next: number) => void; onSelect: (id: string) => void }) {
   const response = useCalendarStore((state) => state.response);
+  const [hover, setHover] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const days = daysOfWeek(weekStart);
-  const cells = useMemo(() => weekCells(response, weekStart), [response, weekStart]);
-  const today = new Date();
-  const todayKey = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  const ranges = useMemo(() => rangeBlocksOf(response), [response]);
+  const plans = useMemo(() => plansOf(response), [response]);
+  const dense = useMemo(() => denseOf(response), [response]);
+  const colors = useMemo(() => colorsOf(response), [response]);
+  const crossDay = (block: RangeBlock) => dayStartOf(block.start) !== dayStartOf(block.end);
+  const allDayRuns = ranges.filter(crossDay);
+  const allDayPlans = plans.filter((plan) => dayStartOf(plan.start) !== dayStartOf(plan.end));
+  const denseByDay = (day: number) => dense.filter((item) => item.day === day);
+  const todayIndex = days.findIndex(isToday);
+  const nowTop = todayIndex >= 0 ? (minutesOfDay(now) / 1440) * 24 * HOUR_PX : 0;
   return (
     <div className="flex min-h-0 flex-1 flex-col p-3" data-kind="calendar-week">
       <div className="mb-2 flex items-center gap-2 text-2 text-ink-3">
-        <button type="button" data-kind="week-shift" data-dir="prev" onClick={() => setWeekStart(weekStartOf(-1))} className="rounded-btn p-1 hover:bg-hover"><ChevronLeft className="size-3.5" /></button>
-        <span>{stampOf(weekStart).split(' ')[0]} 这周</span>
-        <button type="button" data-kind="week-shift" data-dir="next" onClick={() => setWeekStart(weekStartOf(1))} className="rounded-btn p-1 hover:bg-hover"><ChevronRight className="size-3.5" /></button>
+        <button type="button" data-kind="week-shift" data-dir="prev" onClick={() => setWeekStart(weekStart - 7 * DAY_MS)} className="rounded-btn p-1 hover:bg-hover"><ChevronLeft className="size-3.5" /></button>
+        <span data-kind="week-title">{stampOf(weekStart).split(' ')[0]} 这周</span>
+        <button type="button" data-kind="week-shift" data-dir="next" onClick={() => setWeekStart(weekStart + 7 * DAY_MS)} className="rounded-btn p-1 hover:bg-hover"><ChevronRight className="size-3.5" /></button>
+        <button type="button" data-kind="week-today" onClick={() => setWeekStart(weekStartOf(0))} className="rounded-btn border border-line px-2 py-0.5 text-1 hover:bg-hover">今天</button>
       </div>
-      <div className="grid min-h-0 flex-1 grid-cols-7 gap-1.5">
-        {days.map((day, index) => {
-          const date = new Date(day);
-          const isToday = day === todayKey;
+      <div className="grid shrink-0 grid-cols-[42px_repeat(7,minmax(0,1fr))] gap-0 border-b border-line pb-1">
+        <span />
+        {days.map((day, index) => (
+          <div key={day} data-kind="week-day" data-day={index} data-today={isToday(day) ? 'true' : 'false'} className={cn('px-1 text-center text-1 text-ink-3', isToday(day) && 'rounded bg-fail-soft/30 text-fail')}>
+            {['一', '二', '三', '四', '五', '六', '日'][index]} {String(new Date(day).getMonth() + 1)}/{String(new Date(day).getDate())}
+          </div>
+        ))}
+      </div>
+      <div className="grid shrink-0 grid-cols-[42px_repeat(7,minmax(0,1fr))] border-b border-line/60" data-kind="week-allday">
+        <span className="py-1 text-right text-[9px] text-ink-3">全天</span>
+        {days.map((day) => (
+          <div key={day} className="relative min-h-[26px] border-l border-line/40 px-0.5 py-0.5">
+            {denseByDay(day).map((item: DenseDay) => (
+              <span key={item.appointmentId} data-kind="dense-strip" data-appt={item.appointmentId} className="mb-0.5 block truncate rounded bg-hover px-1 text-[9px] text-ink-3" title={item.title}>
+                查了 {item.runs} 次 · 没变 {item.unchanged} 次
+              </span>
+            ))}
+            {allDayRuns.filter((block) => block.start < day + DAY_MS && block.end >= day).map((block) => {
+              const first = dayStartOf(block.start) === day;
+              return (
+                <button
+                  key={block.id + ':' + day}
+                  type="button"
+                  data-kind="week-run"
+                  data-allday="true"
+                  data-result="sent"
+                  data-appt={block.appointmentId}
+                  data-status={block.status}
+                  data-task={block.taskId ?? ''}
+                  data-turn={block.turn ?? ''}
+                  title={block.title + ' · ' + block.status}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (block.taskId) go('taskchat:' + block.taskId);
+                    else onSelect(block.appointmentId);
+                  }}
+                  onMouseEnter={() => setHover(block.appointmentId)}
+                  onMouseLeave={() => setHover(null)}
+                  className={cn('mb-0.5 block w-full truncate rounded px-1 text-left text-[9px] text-ink', hover === block.appointmentId && 'ring-1 ring-ink/50')}
+                  style={{ backgroundColor: ruleColor(colors.get(block.appointmentId)) + '44' }}
+                >
+                  {first ? block.title : '\u00a0'}
+                </button>
+              );
+            })}
+            {allDayPlans.filter((plan) => plan.start < day + DAY_MS && plan.end >= day).map((plan, index) => (
+              <span key={plan.appointmentId + ':' + String(plan.start) + ':' + index} data-kind="week-plan" className="mb-0.5 block h-2 w-full rounded border border-dashed" style={{ borderColor: ruleColor(plan.color) }} />
+            ))}
+          </div>
+        ))}
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto" data-kind="week-hours">
+        <div className="grid grid-cols-[42px_repeat(7,minmax(0,1fr))]" style={{ height: 24 * HOUR_PX }}>
+          <div className="relative">
+            {Array.from({ length: 24 }, (_, hour) => (
+              <span key={hour} className="absolute right-1 text-[9px] text-ink-3" style={{ top: hour * HOUR_PX }}>{String(hour).padStart(2, '0')}:00</span>
+            ))}
+          </div>
+          {days.map((day) => {
+            const dayRuns = ranges.filter((block) => !crossDay(block) && dayStartOf(block.start) === day);
+            const dayPlans = plans.filter((plan) => dayStartOf(plan.start) === day);
+            const lanes = lanesOf(dayRuns);
+            return (
+              <div key={day} className={cn('relative border-l border-line/40', isToday(day) && 'bg-fail-soft/10')}>
+                {Array.from({ length: 24 }, (_, hour) => (
+                  <span key={hour} className="absolute inset-x-0 border-t border-line/20" style={{ top: hour * HOUR_PX }} />
+                ))}
+                {dayPlans.map((plan: PlanBlock, index) => {
+                  const top = (minutesOfDay(plan.start) / 1440) * 24 * HOUR_PX;
+                  const height = Math.max(14, ((plan.end - plan.start) / 60_000) * (HOUR_PX / 60));
+                  return (
+                    <span
+                      key={'plan:' + plan.appointmentId + ':' + String(plan.start) + ':' + index}
+                      data-kind="week-plan"
+                      data-appt={plan.appointmentId}
+                      title={plan.title + ' · 计划'}
+                      className="absolute z-[5] rounded-[3px] border border-dashed opacity-80"
+                      style={{
+                        top, height, left: '2px', right: '2px',
+                        borderColor: ruleColor(plan.color),
+                        backgroundImage: 'repeating-linear-gradient(45deg, transparent 0 4px, ' + ruleColor(plan.color) + '55 4px 6px)',
+                      }}
+                    />
+                  );
+                })}
+                {lanes.map((block) => (
+                  <div key={block.id} className="absolute inset-0" style={{ left: (block.lane / block.lanes) * 100 + '%', width: 100 / block.lanes + '%' }}>
+                    <WeekBlock block={block} color={ruleColor(colors.get(block.appointmentId))} onSelect={() => onSelect(block.appointmentId)} highlighted={hover === block.appointmentId} onHover={setHover} />
+                  </div>
+                ))}
+                {isToday(day) ? <span data-kind="now-line" className="absolute inset-x-0 z-20 border-t border-fail" style={{ top: nowTop }} /> : null}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MonthPane({ monthStart, setMonthStart, setWeekStart, onSelect }: {
+  monthStart: number; setMonthStart: (next: number) => void; setWeekStart: (next: number) => void; onSelect: (id: string) => void;
+}) {
+  const response = useCalendarStore((state) => state.response);
+  const [hover, setHover] = useState<string | null>(null);
+  const ranges = useMemo(() => rangeBlocksOf(response), [response]);
+  const plans = useMemo(() => plansOf(response), [response]);
+  const dense = useMemo(() => denseOf(response), [response]);
+  const colors = useMemo(() => colorsOf(response), [response]);
+  const cells = monthCells(monthStart);
+  const month = new Date(monthStart).getMonth();
+  return (
+    <div className="flex min-h-0 flex-1 flex-col p-3" data-kind="calendar-month">
+      <div className="mb-2 flex items-center gap-2 text-2 text-ink-3">
+        <button type="button" data-kind="month-shift" data-dir="prev" onClick={() => setMonthStart(monthStartOf(-1))} className="rounded-btn p-1 hover:bg-hover"><ChevronLeft className="size-3.5" /></button>
+        <span data-kind="month-title">{new Date(monthStart).getFullYear()} 年 {month + 1} 月</span>
+        <button type="button" data-kind="month-shift" data-dir="next" onClick={() => setMonthStart(monthStartOf(1))} className="rounded-btn p-1 hover:bg-hover"><ChevronRight className="size-3.5" /></button>
+        <button type="button" data-kind="month-today" onClick={() => setMonthStart(monthStartOf(0))} className="rounded-btn border border-line px-2 py-0.5 text-1 hover:bg-hover">今天</button>
+      </div>
+      <div className="grid grid-cols-7 border-l border-t border-line/60 text-1 text-ink-3">
+        {['一', '二', '三', '四', '五', '六', '日'].map((label) => <span key={label} className="border-b border-r border-line/60 px-1 py-0.5 text-center">{label}</span>)}
+      </div>
+      <div className="grid min-h-0 flex-1 grid-cols-7 grid-rows-6 border-l border-line/60" data-kind="month-grid">
+        {cells.map((day) => {
+          const blocks = [
+            ...ranges.filter((block) => block.start < day + DAY_MS && block.end >= day).map((block) => ({ kind: 'run' as const, start: block.start, block })),
+            ...plans.filter((plan) => dayStartOf(plan.start) === day).map((plan) => ({ kind: 'plan' as const, start: plan.start, plan })),
+          ].sort((left, right) => left.start - right.start);
+          const visible = blocks.slice(0, 3);
+          const more = blocks.length - visible.length;
           return (
-            <section key={day} data-kind="week-day" data-day={index} data-today={isToday ? 'true' : 'false'} className={cn('min-h-0 rounded-card border border-line/70 bg-pane/20 p-1.5', isToday && 'border-wait/50 bg-wait-soft/20')}>
-              <div className="mb-1 flex items-baseline justify-between text-1 text-ink-3">
-                <span>{['一', '二', '三', '四', '五', '六', '日'][index]}</span>
-                <span>{String(date.getMonth() + 1) + '/' + String(date.getDate())}</span>
-              </div>
-              <div className="space-y-1">
-                {cells[index].run.map((point) => (
-                  <span key={'run-' + point.appointmentId + '-' + String(point.at)} data-kind="week-run" data-result={point.result ?? ''} title={point.appointmentId + ' · ' + RESULT_WORD[(point.result as keyof typeof RESULT_WORD) ?? 'sent']} className="block size-2 rounded-full" style={{ backgroundColor: RESULT_TONE[(point.result as keyof typeof RESULT_TONE) ?? 'sent'] }} />
-                ))}
-                {cells[index].plan.map((point) => (
-                  <span key={'plan-' + point.appointmentId + '-' + String(point.at)} data-kind="week-plan" title={clockOf(point.at) + ' 计划'} className="block size-2 rounded-full border-[1.5px] border-ink-3/60" />
-                ))}
-              </div>
-            </section>
+            <div key={day} data-kind="month-day" data-day={String(day)} data-today={isToday(day) ? 'true' : 'false'} className={cn('min-h-0 overflow-hidden border-b border-r border-line/60 p-0.5', isToday(day) && 'bg-fail-soft/15', new Date(day).getMonth() !== month && 'opacity-40')}>
+              <button type="button" className="block w-full text-left text-[9px] text-ink-3" onClick={() => { setWeekStart(day); }}>{new Date(day).getDate()}</button>
+              {visible.map((item) => item.kind === 'run' ? (
+                <button
+                  key={'run:' + item.block.id + ':' + day}
+                  type="button"
+                  data-kind="month-block"
+                  data-appt={item.block.appointmentId}
+                  data-status={item.block.status}
+                  data-task={item.block.taskId ?? ''}
+                  title={item.block.title + ' · ' + item.block.status}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    if (item.block.taskId) go('taskchat:' + item.block.taskId);
+                    else onSelect(item.block.appointmentId);
+                  }}
+                  onMouseEnter={() => setHover(item.block.appointmentId)}
+                  onMouseLeave={() => setHover(null)}
+                  className={cn('mb-0.5 block w-full truncate rounded bg-hover/60 px-1 text-left text-[9px] text-ink', hover === item.block.appointmentId && 'ring-1 ring-ink/50')}
+                  style={{ borderLeft: '3px solid ' + ruleColor(colors.get(item.block.appointmentId)) }}
+                >
+                  {item.block.title} · {item.block.status}
+                </button>
+              ) : (
+                <span key={'plan:' + item.plan.appointmentId + ':' + String(item.plan.start)} data-kind="month-plan" className="mb-0.5 block h-2 w-full rounded border border-dashed" style={{ borderColor: ruleColor(item.plan.color) }} />
+              ))}
+              {more > 0 ? (
+                <button type="button" data-kind="month-more" data-day={String(day)} onClick={() => { setWeekStart(day); }} className="block text-[9px] text-ink-3 hover:text-ink">还有 {more} 条</button>
+              ) : null}
+              {dense.filter((item) => item.day === day).map((item) => (
+                <span key={item.appointmentId} data-kind="dense-strip" className="block truncate text-[8px] text-ink-3">{item.title} 查了 {item.runs} 次</span>
+              ))}
+            </div>
           );
         })}
       </div>
@@ -268,15 +525,27 @@ export function CalendarPage() {
   const error = useCalendarStore((state) => state.error);
   const selected = useCalendarStore((state) => state.selected);
   const select = useCalendarStore((state) => state.select);
-  const [view, setView] = useState<'appointments' | 'week'>('appointments');
+  const [view, setView] = useState<'appointments' | 'week' | 'month'>('appointments');
   const [weekStart, setWeekStart] = useState(() => weekStartOf(0));
-  useCalendarPolling(view === 'week' ? weekStart : 0);
+  const [monthStart, setMonthStart] = useState(() => monthStartOf(0));
+  const days = daysOfWeek(weekStart);
+  const cells = monthCells(monthStart);
+  const range = useMemo(() => {
+    if (view === 'week') return { from: days[0], to: days[6] + DAY_MS - 1 };
+    if (view === 'month') return { from: cells[0], to: cells[41] + DAY_MS - 1 };
+    return { from: 0, to: 0 };
+  }, [view, weekStart, monthStart]);
+  useCalendarPolling(range.from, range.to);
   const appointments = useMemo(() => appointmentsOf(response), [response]);
   const chosen = appointments.find((appointment) => appointment.id === selected) ?? null;
 
   if (!response) {
     return <div className="grid h-full place-items-center text-2 text-ink-3">{error ?? '正在取日历…'}</div>;
   }
+  const openWeek = (day: number) => {
+    setWeekStart(dayStartOf(day));
+    setView('week');
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-content" data-kind="calendar-page">
@@ -284,18 +553,20 @@ export function CalendarPage() {
         <span className="text-2 text-ink-2">日历</span>
         <span className="text-1 text-ink-3">{appointments.length} 条约定</span>
         <div className="ml-auto flex items-center rounded-btn border border-line p-[2px]">
-          {(['appointments', 'week'] as const).map((key) => (
+          {(['appointments', 'week', 'month'] as const).map((key) => (
             <button key={key} type="button" data-kind="calendar-view" data-view={key} onClick={() => setView(key)} className={cn('rounded-badge px-2 py-0.5 text-2 transition-colors', view === key ? 'bg-hover text-ink' : 'text-ink-3 hover:text-ink-2')}>
-              {key === 'appointments' ? '约定' : '周'}
+              {key === 'appointments' ? '约定' : key === 'week' ? '周' : '月'}
             </button>
           ))}
         </div>
       </header>
       {error ? <div className="px-3 py-1 text-1 text-fail">{error}</div> : null}
-      {view === 'week' ? (
-        <WeekPane weekStart={weekStart} setWeekStart={setWeekStart} />
-      ) : (
-        <div className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 flex-1" data-kind="calendar-body" data-view={view}>
+        {view === 'week' ? (
+          <WeekPane weekStart={weekStart} setWeekStart={setWeekStart} onSelect={(id) => select(id === selected ? null : id)} />
+        ) : view === 'month' ? (
+          <MonthPane monthStart={monthStart} setMonthStart={setMonthStart} setWeekStart={(day) => openWeek(day)} onSelect={(id) => select(id === selected ? null : id)} />
+        ) : (
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3" data-kind="calendar-appointments">
             {GROUP_ORDER.map((group) => {
               const rows = appointments.filter((appointment) => appointment.kind === group.key);
@@ -316,9 +587,9 @@ export function CalendarPage() {
               <p className="rounded-card border border-dashed border-line-2 px-4 py-6 text-center text-2 text-ink-3">还没有约定。和 Kind 说一句要提醒的事，它会出一张确认卡。</p>
             ) : null}
           </div>
-          {chosen ? <ApptDetail key={chosen.id + ':' + String(chosen.version) + ':' + chosen.state} appt={chosen} /> : null}
-        </div>
-      )}
+        )}
+        {chosen ? <ApptDetail key={chosen.id + ':' + String(chosen.version) + ':' + chosen.state} appt={chosen} /> : null}
+      </div>
     </div>
   );
 }

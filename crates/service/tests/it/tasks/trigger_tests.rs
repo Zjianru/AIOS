@@ -656,7 +656,7 @@ async fn calendar_read_returns_range_blocks_plans_colors_and_dense_counts() {
         .find(|block| block.appointment_id == appointment.id)
         .expect("运行块");
     assert_eq!(block.status, "已完成");
-    assert!(block.task_id.is_some());
+    assert!(block.task_id.is_none(), "Kind 自办块不点任务页");
     assert!(block.turn.is_some());
     assert!(block.end >= block.start);
     let plan = read
