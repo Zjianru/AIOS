@@ -230,9 +230,22 @@ impl TaskRuntime {
                         .store
                         .stage(&task.id)
                         .map_err(|error| error.to_string())?;
+                    let graph_cancelled = match &task.parent {
+                        Some(parent) => self
+                            .store
+                            .task(parent)
+                            .ok()
+                            .flatten()
+                            .and_then(|root| root.arrangement)
+                            .is_some_and(|arrangement| arrangement.cancelled.is_some()),
+                        None => task
+                            .arrangement
+                            .as_ref()
+                            .is_some_and(|arrangement| arrangement.cancelled.is_some()),
+                    };
                     Some(calendar::BoundTaskFacts {
                         exists: true,
-                        graph_cancelled: false,
+                        graph_cancelled,
                         closed: stage == Stage::Closed,
                         running: task
                             .latest_attempt()
@@ -480,7 +493,17 @@ impl TaskRuntime {
             self.later(&claim);
             return;
         };
+        let conversation = host.agent().id().as_str().to_owned();
+        let trigger_task = match self.trigger_task_for_run(&appointment, &run, &conversation) {
+            Ok(task) => task,
+            Err(error) => {
+                drop(guard);
+                self.finish_or_fail(&claim, Err(error));
+                return;
+            }
+        };
         let mut body = json!({
+            "task_id": trigger_task.id.as_str(),
             "kind": "appointment_wake",
             "appointment": {
                 "id": appointment.id,
@@ -537,6 +560,9 @@ impl TaskRuntime {
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
+        }
+        if let Some(turn) = sent_turn.and_then(|turn| u64::try_from(turn).ok()) {
+            self.remember_trigger_turn(&conversation, turn, &appointment.id, run.id);
         }
         drop(guard);
         match sent {

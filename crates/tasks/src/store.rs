@@ -1093,6 +1093,52 @@ impl Store {
         Ok((task, true))
     }
 
+    /// T066：服务建约定到点的触发任务：幂等，但不排 launch、不开 Attempt、不写报告。
+    pub fn create_trigger_task_once(
+        &self,
+        draft: NewTask,
+        accept_key: &str,
+        now: i64,
+    ) -> Result<(Task, bool), TaskError> {
+        draft.validate()?;
+        if accept_key.trim().is_empty() {
+            return Err(TaskError::EmptyAcceptKey);
+        }
+        let frozen = TaskPolicy::default().freeze(&draft.cwd)?;
+        let mut conn = self.lock()?;
+        let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let key = format!("task-accept:{accept_key}");
+        let existing: Option<String> = transaction
+            .query_row("SELECT value FROM kv WHERE key = ?1", params![key], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        if let Some(id) = existing {
+            let task = load_task_required(&transaction, &TaskId::from(id))?;
+            transaction.commit()?;
+            return Ok((task, false));
+        }
+        let task = task_row(
+            &transaction,
+            None,
+            draft,
+            &frozen,
+            now,
+            None,
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+        )?;
+        insert_task_row(&transaction, &task)?;
+        transaction.execute(
+            "INSERT INTO kv (key, value) VALUES (?1, ?2)",
+            params![key, task.id.as_str()],
+        )?;
+        transaction.commit()?;
+        Ok((task, true))
+    }
+
     fn insert_task_in_with_constraints(
         &self,
         connection: &Connection,

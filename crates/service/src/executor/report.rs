@@ -554,6 +554,14 @@ impl TaskRuntime {
         conversation: &str,
         reason: String,
     ) -> Result<String, ToolFailure> {
+        let task = self
+            .store
+            .task(task_id)
+            .map_err(|error| ToolFailure::plain(error.to_string()))?
+            .ok_or_else(|| ToolFailure::plain(format!("任务不存在：{task_id}")))?;
+        if let Some(reason) = Self::trigger_task_rejection(&task) {
+            return Err(ToolFailure::plain(reason));
+        }
         let report = NewReport {
             state: ReportState::Blocked,
             origin: ReportOrigin::Agent,

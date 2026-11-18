@@ -556,6 +556,12 @@ pub(crate) fn snapshot(
     let visible: Vec<&Task> = all
         .iter()
         .filter(|task| {
+            // T066：约定到点的触发任务只在日历上，不进看板/图/等你/现在。
+            if task.origin.as_ref().map(|origin| origin.role)
+                == Some(tasks::AppointmentRole::Trigger)
+            {
+                return false;
+            }
             if task.is_graph_root() {
                 return false;
             }

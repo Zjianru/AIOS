@@ -318,6 +318,16 @@ impl RootHost {
         }
     }
 
+    /// T066 测试钩子：启动补结束轮那条路（不重启宿主也能跑）。
+    #[doc(hidden)]
+    pub fn calendar_close_finished_turns(&self) {
+        if let Some(runtime) = &self.task_runtime
+            && let Some(conversation) = self.info().session_id
+        {
+            runtime.calendar_close_finished_turns(&conversation);
+        }
+    }
+
     /// 测试钩子：叫醒日历泵（改夹具的 next_trigger 后不用等自然醒）。
     #[doc(hidden)]
     pub fn nudge_calendar(&self) {
@@ -402,6 +412,7 @@ impl RootHost {
         let context = Arc::clone(&self.context);
         let dream = self.dream.clone();
         let calendar_runtime = self.task_runtime.clone();
+        let forward_conversation = conversation_id.clone();
         let forward = tokio::spawn(async move {
             loop {
                 match source.recv().await {
@@ -419,6 +430,17 @@ impl RootHost {
                             {
                                 dream.trigger(crate::memory::DreamTrigger::TaskRelayed);
                             }
+                        }
+                        if event.event_type == "turn/end"
+                            && let Some(runtime) = &calendar_runtime
+                            && let Some(turn) =
+                                event.data.get("turn").and_then(serde_json::Value::as_u64)
+                        {
+                            runtime.calendar_on_turn_end(
+                                &forward_conversation,
+                                turn,
+                                i64::try_from(event.time).unwrap_or(i64::MAX),
+                            );
                         }
                         if event.event_type == "user/message"
                             && let Some(runtime) = &calendar_runtime
@@ -449,6 +471,9 @@ impl RootHost {
             handle.abort();
         }
         *slot = Some(service_host);
+        if let Some(runtime) = &self.task_runtime {
+            runtime.calendar_close_finished_turns(&conversation_id);
+        }
         *self.state.lock().expect("root state 锁被毒化") = RootState::Ok;
         *self.session_id.lock().expect("session id 锁被毒化") = Some(session_id);
     }
