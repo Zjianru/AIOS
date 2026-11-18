@@ -57,8 +57,8 @@ test('点运行点回到 Kind 那一轮', async ({ page }) => {
   }
 });
 
-test('来源轮可点回 Kind，循环行显示第几轮与任务状态词', async ({ page }) => {
-  const fixture = await startKernelFixture({ t064Calendar: true, t062TaskGraphs: true });
+test('来源轮可点回 Kind', async ({ page }) => {
+  const fixture = await startKernelFixture({ t064Calendar: true });
   try {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#work?wv=cal');
     await page.locator('[data-kind="appt-row"][data-appt="ap_morning"]').click();
@@ -66,6 +66,14 @@ test('来源轮可点回 Kind，循环行显示第几轮与任务状态词', asy
     await expect(detail.locator('[data-kind="detail-source-turn"]')).toContainText('第 3 轮');
     await detail.locator('[data-kind="detail-source-turn"]').click();
     await expect(page.locator('[data-turn="turn-3"]')).toBeVisible();
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('循环行显示第几轮与任务状态词', async ({ page }) => {
+  const fixture = await startKernelFixture({ t064Calendar: true, t062TaskGraphs: true });
+  try {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#work?wv=cal');
     const loop = page.locator('[data-kind="appt-row"][data-appt="ap_loop"]');
     await expect(loop.locator('[data-kind="loop-band"]')).toContainText('第 2 轮');
