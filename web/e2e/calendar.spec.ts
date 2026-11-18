@@ -11,7 +11,7 @@ test('日历约定视图：分组、详情四按钮、暂停/恢复/取消二次
   try {
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#work?wv=cal');
     await expect(page.locator('[data-kind="calendar-page"]')).toBeVisible();
-    await expect(page.locator('[data-kind="appt-row"]')).toHaveCount(7);
+    await expect(page.locator('[data-kind="appt-row"]')).toHaveCount(8);
     await expect(page.locator('[data-kind="calendar-group"]')).toHaveCount(4);
 
     const morning = page.locator('[data-kind="appt-row"][data-appt="ap_morning"]');
@@ -166,6 +166,26 @@ test('T066 一次性结束的块仍在、计划只出在用约定', async ({ pag
   }
 });
 
+test('T066 重叠并排：两个块时间撞了分道', async ({ page }) => {
+  const fixture = await startKernelFixture({ t064Calendar: true });
+  try {
+    await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#work?wv=cal');
+    await page.locator('[data-kind="calendar-view"][data-view="week"]').click();
+    const overlap = page.locator('[data-kind="week-run"][data-appt="ap_overlap"]').first();
+    await expect(overlap).toBeVisible();
+    const start = await overlap.getAttribute('data-start');
+    const morning = page.locator('[data-kind="week-run"][data-appt="ap_morning"][data-start="' + start + '"]').first();
+    await expect(morning).toBeVisible();
+    await expect(morning).toHaveAttribute('data-lanes', '2');
+    await expect(overlap).toHaveAttribute('data-lanes', '2');
+    const morningLane = await morning.getAttribute('data-lane');
+    const overlapLane = await overlap.getAttribute('data-lane');
+    expect(morningLane).not.toEqual(overlapLane);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test('T066 周/月看法：三种切法、红线/今天、斜纹计划、月跳周', async ({ page }) => {
   const fixture = await startKernelFixture({ t064Calendar: true });
   try {
@@ -176,6 +196,7 @@ test('T066 周/月看法：三种切法、红线/今天、斜纹计划、月跳�
     await expect(page.locator('[data-kind="week-plan"]').first()).toBeVisible();
     await expect(page.locator('[data-kind="week-run"]').first()).toBeVisible();
     await expect(page.locator('[data-kind="now-line"]')).toBeVisible();
+    await expect(page.locator('[data-kind="dense-strip"]').first()).toBeVisible();
     await expect(page.locator('[data-kind="week-day"][data-today="true"]')).toHaveCount(1);
     // 悬停一块，同一条规则的其他块一起亮。
     const hovered = page.locator('[data-kind="week-run"][data-appt="ap_morning"]').first();

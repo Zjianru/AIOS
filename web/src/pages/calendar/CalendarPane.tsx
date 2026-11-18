@@ -290,8 +290,8 @@ function lanesOf<T extends { start: number; end: number }>(blocks: T[]): (T & { 
   return result;
 }
 
-function WeekBlock({ block, color, onSelect, highlighted, onHover }: {
-  block: RangeBlock; color: string; onSelect: () => void; highlighted: boolean; onHover: (id: string | null) => void;
+function WeekBlock({ block, color, onSelect, highlighted, onHover, lane, lanes }: {
+  block: RangeBlock; color: string; onSelect: () => void; highlighted: boolean; onHover: (id: string | null) => void; lane: number; lanes: number;
 }) {
   const start = Math.max(block.start, dayStartOf(block.start));
   const top = (minutesOfDay(start) / 1440) * 24 * HOUR_PX;
@@ -305,6 +305,9 @@ function WeekBlock({ block, color, onSelect, highlighted, onHover }: {
       data-status={block.status}
       data-task={block.taskId ?? ''}
       data-turn={block.turn ?? ''}
+      data-lane={lane}
+      data-lanes={lanes}
+      data-start={block.start}
       title={block.title + ' · ' + block.status}
       onClick={(event) => {
         event.stopPropagation();
@@ -379,6 +382,7 @@ function WeekPane({ weekStart, setWeekStart, onSelect }: { weekStart: number; se
                   data-status={block.status}
                   data-task={block.taskId ?? ''}
                   data-turn={block.turn ?? ''}
+                  data-start={block.start}
                   title={block.title + ' · ' + block.status}
                   onClick={(event) => {
                     event.stopPropagation();
@@ -435,8 +439,8 @@ function WeekPane({ weekStart, setWeekStart, onSelect }: { weekStart: number; se
                   );
                 })}
                 {lanes.map((block) => (
-                  <div key={block.id} className="absolute inset-0" style={{ left: (block.lane / block.lanes) * 100 + '%', width: 100 / block.lanes + '%' }}>
-                    <WeekBlock block={block} color={ruleColor(colors.get(block.appointmentId))} onSelect={() => onSelect(block.appointmentId)} highlighted={hover === block.appointmentId} onHover={setHover} />
+                  <div key={block.id} data-lane={block.lane} data-lanes={block.lanes} className="absolute inset-0" style={{ left: (block.lane / block.lanes) * 100 + '%', width: 100 / block.lanes + '%' }}>
+                    <WeekBlock block={block} color={ruleColor(colors.get(block.appointmentId))} onSelect={() => onSelect(block.appointmentId)} highlighted={hover === block.appointmentId} onHover={setHover} lane={block.lane} lanes={block.lanes} />
                   </div>
                 ))}
                 {isToday(day) ? <span data-kind="now-line" className="absolute inset-x-0 z-20 border-t border-fail" style={{ top: nowTop }} /> : null}
