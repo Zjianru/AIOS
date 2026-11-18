@@ -17,18 +17,23 @@ pub(crate) fn describe(rule: &str, timezone: &str, start_at: i64) -> String {
     };
     let start = start.with_timezone(&zone);
     let suffix = format!("（{timezone}）");
+    let hm = format!(
+        "{}:{:02}",
+        chrono::Timelike::hour(&start),
+        chrono::Timelike::minute(&start)
+    );
     let parts: BTreeMap<&str, &str> = rule
         .split(';')
         .filter_map(|part| part.split_once('='))
         .collect();
     let count: Option<u32> = parts.get("COUNT").and_then(|value| value.parse().ok());
     if count == Some(1) {
-        return format!("一次：{}（{timezone}）", start.format("%Y-%m-%d %H:%M"));
+        return format!("一次：{} {hm}（{timezone}）", start.format("%Y-%m-%d"));
     }
     match parts.get("FREQ").copied() {
-        Some("DAILY") => format!("每天 {}{suffix}", start.format("%H:%M")),
-        Some("WEEKLY") => weekly(parts.get("BYDAY").copied(), start, &suffix),
-        Some("MONTHLY") => monthly(parts.get("BYMONTHDAY").copied(), start, &suffix),
+        Some("DAILY") => format!("每天 {hm}{suffix}"),
+        Some("WEEKLY") => weekly(parts.get("BYDAY").copied(), start, &hm, &suffix),
+        Some("MONTHLY") => monthly(parts.get("BYMONTHDAY").copied(), &hm, &suffix),
         Some("HOURLY") => {
             let interval: u32 = parts
                 .get("INTERVAL")
@@ -40,12 +45,12 @@ pub(crate) fn describe(rule: &str, timezone: &str, start_at: i64) -> String {
     }
 }
 
-fn weekly(byday: Option<&str>, start: DateTime<chrono_tz::Tz>, suffix: &str) -> String {
+fn weekly(byday: Option<&str>, start: DateTime<chrono_tz::Tz>, hm: &str, suffix: &str) -> String {
     let days: Vec<&str> = byday
         .map(|value| value.split(',').collect())
         .unwrap_or_default();
     if days == ["MO", "TU", "WE", "TH", "FR"] {
-        return format!("工作日 {}{suffix}", start.format("%H:%M"));
+        return format!("每个工作日 {hm}{suffix}");
     }
     let names: Vec<&str> = days.iter().filter_map(|day| weekday(day)).collect();
     if names.is_empty() {
@@ -57,18 +62,18 @@ fn weekly(byday: Option<&str>, start: DateTime<chrono_tz::Tz>, suffix: &str) -> 
         );
     }
     if names.len() == 1 {
-        return format!("每周{} {}{suffix}", names[0], start.format("%H:%M"));
+        return format!("每周{} {hm}{suffix}", names[0]);
     }
-    format!("每周{} {}{suffix}", names.join("、"), start.format("%H:%M"))
+    format!("每周{} {hm}{suffix}", names.join("、"))
 }
 
-fn monthly(by_month_day: Option<&str>, start: DateTime<chrono_tz::Tz>, suffix: &str) -> String {
+fn monthly(by_month_day: Option<&str>, hm: &str, suffix: &str) -> String {
     let day = by_month_day
         .and_then(|value| value.split(',').next())
         .and_then(|value| value.parse::<u32>().ok());
     match day {
-        Some(day) => format!("每月 {day} 号 {}{suffix}", start.format("%H:%M")),
-        None => format!("每月{}{suffix}", start.format("%H:%M")),
+        Some(day) => format!("每月 {day} 号 {hm}{suffix}"),
+        None => format!("每月 {hm}{suffix}"),
     }
 }
 
@@ -109,11 +114,11 @@ mod tests {
         let shanghai = at("Asia/Shanghai", 2026, 11, 18, 9, 0);
         assert_eq!(
             describe("FREQ=DAILY;COUNT=1", "Asia/Shanghai", shanghai),
-            "一次：2026-11-18 09:00（Asia/Shanghai）"
+            "一次：2026-11-18 9:00（Asia/Shanghai）"
         );
         assert_eq!(
             describe("FREQ=DAILY", "Asia/Shanghai", shanghai),
-            "每天 09:00（Asia/Shanghai）"
+            "每天 9:00（Asia/Shanghai）"
         );
         assert_eq!(
             describe(
@@ -121,19 +126,19 @@ mod tests {
                 "Asia/Shanghai",
                 shanghai
             ),
-            "工作日 09:00（Asia/Shanghai）"
+            "每个工作日 9:00（Asia/Shanghai）"
         );
         assert_eq!(
             describe("FREQ=WEEKLY;BYDAY=MO,WE", "Asia/Shanghai", shanghai),
-            "每周一、三 09:00（Asia/Shanghai）"
+            "每周一、三 9:00（Asia/Shanghai）"
         );
         assert_eq!(
             describe("FREQ=WEEKLY;BYDAY=MO", "Asia/Shanghai", shanghai),
-            "每周一 09:00（Asia/Shanghai）"
+            "每周一 9:00（Asia/Shanghai）"
         );
         assert_eq!(
             describe("FREQ=MONTHLY;BYMONTHDAY=31", "Asia/Shanghai", shanghai),
-            "每月 31 号 09:00（Asia/Shanghai）"
+            "每月 31 号 9:00（Asia/Shanghai）"
         );
         assert_eq!(
             describe("FREQ=HOURLY;INTERVAL=6", "Asia/Shanghai", shanghai),

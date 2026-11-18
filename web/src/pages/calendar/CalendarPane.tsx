@@ -130,10 +130,12 @@ function ApptRow({ appt, on, onSelect }: { appt: Appointment; on: boolean; onSel
           <RunDots appt={appt} />
         </span>
       </span>
-      {appt.cycleTaskId ? (
+      {appt.cycleTaskId || appt.cycleMaxRounds != null ? (
         <span className="mt-1 block truncate text-1 text-ink-3" data-kind="loop-band">
           第 {reportRounds} 轮
-          {boundTask ? ' · ' + boundTask.title + ' · ' + (STAGE_WORD[boundTask.stage] ?? boundTask.stage) : ''}
+          {boundTask
+            ? ' · ' + boundTask.title + ' · ' + (STAGE_WORD[boundTask.stage] ?? boundTask.stage)
+            : ' · 任务不在工作快照'}
         </span>
       ) : null}
       {appt.stateWhy ? (
