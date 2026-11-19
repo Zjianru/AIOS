@@ -1357,17 +1357,18 @@ async fn kill_turn_stops_only_that_turns_process_group_and_suppresses_wakeup() {
     .await;
     assert!(!started.is_error, "{}", started.content);
     let job_id = extract_job_id(&started.content);
+    // 文件先建后写：等能读出完整数字，不把空文件当 pid。
+    let mut pid = None;
     for _ in 0..200 {
-        if pid_file.exists() {
+        if let Ok(text) = std::fs::read_to_string(&pid_file)
+            && let Ok(parsed) = text.trim().parse::<i32>()
+        {
+            pid = Some(parsed);
             break;
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    let pid: i32 = std::fs::read_to_string(&pid_file)
-        .expect("pid file")
-        .trim()
-        .parse()
-        .expect("pid");
+    let pid = pid.expect("pid file 里要有完整 pid");
     let killed = context
         .session()
         .tasks()
