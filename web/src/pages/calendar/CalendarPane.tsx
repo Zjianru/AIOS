@@ -27,6 +27,8 @@ import {
   rangeBlocksOf,
   recentRuns,
   ruleColor,
+  blockWord,
+  stageWordOf,
   stampInZone,
   stampOf,
   weekStartOf,
@@ -38,15 +40,6 @@ import {
   type RangeBlock,
 } from './calendarModel';
 import { useCalendarPolling, useCalendarStore } from './calendarStore';
-
-const STAGE_WORD: Record<string, string> = {
-  needs_conditions: '缺条件',
-  pending: '排队',
-  running: '在做',
-  ready_for_review: '待你核',
-  requirement_met: '已满足',
-  closed: '已关闭',
-};
 
 const ICON: Record<ApptKind, typeof CalendarClock> = {
   time: CalendarClock,
@@ -143,7 +136,7 @@ function ApptRow({ appt, on, onSelect }: { appt: Appointment; on: boolean; onSel
         <span className="mt-1 block truncate text-1 text-ink-3" data-kind="loop-band">
           第 {reportRounds} 轮
           {boundTask
-            ? ' · ' + boundTask.title + ' · ' + (STAGE_WORD[boundTask.stage] ?? boundTask.stage)
+            ? ' · ' + boundTask.title + ' · ' + stageWordOf(boundTask.stage)
             : ' · 任务不在工作快照'}
         </span>
       ) : null}
@@ -225,9 +218,9 @@ function ApptDetail({ appt }: { appt: Appointment }) {
         <div className="mt-3" data-kind="appt-block-list">
           <div className="mb-1 text-1 text-ink-3">这次到点</div>
           {blocks.slice().reverse().map((block) => (
-            <div key={block.id} className="flex items-center gap-2 text-1" data-kind="appt-block" data-status={block.status}>
+            <div key={block.id} className="flex items-center gap-2 text-1" data-kind="appt-block" data-status={blockWord(block)}>
               <span className="text-ink-3">{stampOf(block.start)}</span>
-              <span className="shrink-0 text-ink-2">{block.status}</span>
+              <span className="shrink-0 text-ink-2">{blockWord(block)}</span>
               {block.taskId ? (
                 <button type="button" data-kind="block-task-link" data-task={block.taskId} onClick={() => go('taskchat:' + block.taskId)} className="min-w-0 truncate text-ink-3 underline-offset-2 hover:underline">
                   看任务
@@ -302,13 +295,13 @@ function WeekBlock({ block, color, onSelect, highlighted, onHover, lane, lanes }
       data-kind="week-run"
       data-result="sent"
       data-appt={block.appointmentId}
-      data-status={block.status}
+      data-status={blockWord(block)}
       data-task={block.taskId ?? ''}
       data-turn={block.turn ?? ''}
       data-lane={lane}
       data-lanes={lanes}
       data-start={block.start}
-      title={block.title + ' · ' + block.status}
+      title={block.title + ' · ' + blockWord(block)}
       onClick={(event) => {
         event.stopPropagation();
         if (block.taskId) go('taskchat:' + block.taskId);
@@ -320,7 +313,7 @@ function WeekBlock({ block, color, onSelect, highlighted, onHover, lane, lanes }
       style={{ top, height, borderColor: color, backgroundColor: color + '33', left: '2px', right: '2px' }}
     >
       <span className="block truncate leading-3">{block.title}</span>
-      <span className="block truncate text-ink-3">{block.status}</span>
+      <span className="block truncate text-ink-3">{blockWord(block)}</span>
     </button>
   );
 }
@@ -379,11 +372,11 @@ function WeekPane({ weekStart, setWeekStart, onSelect }: { weekStart: number; se
                   data-allday="true"
                   data-result="sent"
                   data-appt={block.appointmentId}
-                  data-status={block.status}
+                  data-status={blockWord(block)}
                   data-task={block.taskId ?? ''}
                   data-turn={block.turn ?? ''}
                   data-start={block.start}
-                  title={block.title + ' · ' + block.status}
+                  title={block.title + ' · ' + blockWord(block)}
                   onClick={(event) => {
                     event.stopPropagation();
                     if (block.taskId) go('taskchat:' + block.taskId);
@@ -492,9 +485,9 @@ function MonthPane({ monthStart, setMonthStart, setWeekStart, onSelect }: {
                   type="button"
                   data-kind="month-block"
                   data-appt={item.block.appointmentId}
-                  data-status={item.block.status}
+                  data-status={blockWord(item.block)}
                   data-task={item.block.taskId ?? ''}
-                  title={item.block.title + ' · ' + item.block.status}
+                  title={item.block.title + ' · ' + blockWord(item.block)}
                   onClick={(event) => {
                     event.stopPropagation();
                     if (item.block.taskId) go('taskchat:' + item.block.taskId);
@@ -505,7 +498,7 @@ function MonthPane({ monthStart, setMonthStart, setWeekStart, onSelect }: {
                   className={cn('mb-0.5 block w-full truncate rounded bg-hover/60 px-1 text-left text-[9px] text-ink', hover === item.block.appointmentId && 'ring-1 ring-ink/50')}
                   style={{ borderLeft: '3px solid ' + ruleColor(colors.get(item.block.appointmentId)) }}
                 >
-                  {item.block.title} · {item.block.status}
+                  {item.block.title} · {blockWord(item.block)}
                 </button>
               ) : (
                 <span key={'plan:' + item.plan.appointmentId + ':' + String(item.plan.start)} data-kind="month-plan" className="mb-0.5 block h-2 w-full rounded border border-dashed" style={{ borderColor: ruleColor(item.plan.color) }} />

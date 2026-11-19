@@ -53,7 +53,7 @@ const CREATE_TABLES: &str = "
     CREATE INDEX IF NOT EXISTS ledger_note_task ON ledger_note(task_id, at);
 ";
 
-/// T067：任务库写入后的变化通知（任务 id）。
+/// 任务库写入后的变化通知（任务 id）。
 pub type TaskChangedCallback = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// 立即停在库里的结果。
@@ -90,7 +90,7 @@ pub struct BootScan {
 /// 任务库。一个 SQLite 连接放在锁后；所有方法同步。
 pub struct Store {
     pub(crate) conn: Mutex<Connection>,
-    /// T067：任务事实写入的唯一出口回调（服务挂 changed 广播）。
+    /// 任务事实写入的唯一出口回调（服务挂 changed 广播）。
     on_changed: Mutex<Option<TaskChangedCallback>>,
     /// 效果行队列位置，进程内单调；重开时从表里的最大 seq 续上。
     seq: AtomicI64,
@@ -264,7 +264,7 @@ impl Store {
         self.conn.lock().map_err(|_| TaskError::Poisoned)
     }
 
-    /// T067：挂任务事实变化的唯一出口；服务用来推 task-changed。
+    /// 挂任务事实变化的唯一出口；服务用来推 task-changed。
     pub fn set_on_changed(&self, callback: TaskChangedCallback) {
         *self.on_changed.lock().expect("任务 changed 锁被毒化") = Some(callback);
     }
@@ -1121,7 +1121,7 @@ impl Store {
         Ok((task, true))
     }
 
-    /// T066：服务建约定到点的触发任务：幂等，但不排 launch、不开 Attempt、不写报告。
+    /// 服务建约定到点的触发任务：幂等，但不排 launch、不开 Attempt、不写报告。
     pub fn create_trigger_task_once(
         &self,
         draft: NewTask,
@@ -1217,7 +1217,7 @@ impl Store {
         load_task(&conn, id)
     }
 
-    /// T066：给任务写来源（建触发任务/那一轮派出时调用）；旧任务没有 origin。
+    /// 给任务写来源（建触发任务/那一轮派出时调用）；旧任务没有 origin。
     pub fn set_origin(
         &self,
         id: &TaskId,
@@ -1229,7 +1229,7 @@ impl Store {
         save_task(Some(self), &connection, &task)
     }
 
-    /// T066：给触发任务写那一轮结束的事实（幂等；已有就不改）。
+    /// 给触发任务写那一轮结束的事实（幂等；已有就不改）。
     pub fn set_round_end(
         &self,
         id: &TaskId,
@@ -1331,7 +1331,7 @@ impl Store {
             .map_err(TaskError::from)
     }
 
-    /// T067：撤掉一条还没领的效果（换轮/停止时作废旧到点）。
+    /// 撤掉一条还没领的效果（换轮/停止时作废旧到点）。
     pub fn remove_effect(&self, kind: EffectKind, key: &str) -> Result<bool, TaskError> {
         let conn = self.lock()?;
         let removed = conn.execute(
@@ -1943,7 +1943,7 @@ impl Store {
     ///
     /// 顺序：找不到/不是 ready → 拒；门任务自己 → 拒；不是最近报告 → 「已经变了」；
     /// 版本不是当前 → 「要求改过了」；有门但门没对这份判通过 → 拒；同一报告重复接受幂等。
-    /// T066：报告落库后补这个 Attempt 的改动文件数（工作快照只读这个数，不再读日志）。
+    /// 报告落库后补这个 Attempt 的改动文件数（工作快照只读这个数，不再读日志）。
     pub fn set_report_changed_count(
         &self,
         id: &TaskId,
@@ -2735,7 +2735,7 @@ fn stage_with_graph(connection: &Connection, task: &Task) -> Result<Stage, TaskE
 // T054：按事实派生「已关闭」——当前版本的最新 ready 报告被接受（有门的还要门判通过）；
 // 门任务在被把关任务关闭后关闭。总任务的全关闭由 stage_with_graph 的 rank 汇总得到。
 fn closed_in(connection: &Connection, task: &Task) -> Result<bool, TaskError> {
-    // T066：约定到点的触发任务没有报告/接受；那一轮结束（round_end）即已关闭。
+    // 约定到点的触发任务没有报告/接受；那一轮结束（round_end）即已关闭。
     if task
         .origin
         .as_ref()

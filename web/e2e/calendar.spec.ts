@@ -135,7 +135,7 @@ test('T066 故事3：派出的块跟任务状态、点开任务页', async ({ pa
     await page.locator('[data-kind="calendar-view"][data-view="week"]').click();
     const dispatched = page.locator('[data-kind="week-run"][data-task="t066-dispatched-1"]').first();
     await expect(dispatched).toBeVisible();
-    await expect(dispatched).toHaveAttribute('data-status', /排队|在做/);
+    await expect(dispatched).toHaveAttribute('data-status', '排队');
     await dispatched.click();
     await expect(page.locator('[data-kind="task-full-title"]')).toContainText('调查 elkjs 调查');
   } finally {

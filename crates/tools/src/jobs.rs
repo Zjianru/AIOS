@@ -109,7 +109,7 @@ pub struct JobSpec {
     pub label: String,
     /// 通过工具创建时带上（DSH job/registered 的 toolCall）。
     pub tool_call: Option<JobToolCall>,
-    /// T067：这条命令是哪一轮起的；停止时按轮杀。
+    /// 这条命令是哪一轮起的；停止时按轮杀。
     pub turn: u64,
 }
 
@@ -194,7 +194,7 @@ struct JobState {
     stdout_error: Option<String>,
     stderr_error: Option<String>,
     kill_requested: bool,
-    /// T067：结算线程已收走子进程；kill 看到它就不再发信号（防 pid 复用）。
+    /// 结算线程已收走子进程；kill 看到它就不再发信号（防 pid 复用）。
     reaped: bool,
     /// 前台 bash 在 start 时标记：结算时不再发完成通知（照 DSH awaited）。
     awaited: bool,
@@ -215,11 +215,11 @@ struct JobRecord {
     kind: &'static str,
     label: String,
     turn: u64,
-    /// 进程组 id；启动时存下，信号不拿 child 锁（T067）。
+    /// 进程组 id；启动时存下，信号不拿 child 锁。
     pid: u32,
     /// 结算线程拿走 Child 阻塞 wait；这里之后只剩 None。
     child: Mutex<Option<Child>>,
-    /// T068 测试可观察的信号次数（Drop 兜底是否真的发了 SIGKILL）。
+    /// 测试可观察的信号次数（Drop 兜底是否真的发了 SIGKILL）。
     kill_signals: Arc<std::sync::atomic::AtomicUsize>,
     state: Mutex<JobState>,
     cond: Condvar,
@@ -254,7 +254,7 @@ impl std::fmt::Debug for TaskRegistry {
     }
 }
 
-/// T068：进程退出/会话丢掉时的兜底：没收的子进程直接 SIGKILL 进程组，不等结算。
+/// 进程退出/会话丢掉时的兜底：没收的子进程直接 SIGKILL 进程组，不等结算。
 impl Drop for TaskRegistry {
     fn drop(&mut self) {
         let jobs = match self.jobs.lock() {
@@ -533,7 +533,7 @@ impl TaskRegistry {
         let tool_call = spec.tool_call.clone();
         let monitored = Arc::clone(&record);
         std::thread::spawn(move || {
-            // T067：Child 由结算线程独占，阻塞 wait 一次拿到退出；不拿锁、不 5ms 轮询。
+            // Child 由结算线程独占，阻塞 wait 一次拿到退出；不拿锁、不 5ms 轮询。
             let mut child = monitored
                 .child
                 .lock()
@@ -541,7 +541,7 @@ impl TaskRegistry {
                 .take()
                 .expect("结算线程只起一次");
             let waited = child.wait();
-            // T067：先在同一把状态锁里标「已收」，kill 看到这个标记就不再发信号（防 pid 复用）。
+            // 先在同一把状态锁里标「已收」，kill 看到这个标记就不再发信号（防 pid 复用）。
             monitored.state.lock().expect("job 状态锁被毒化").reaped = true;
             // 两个读线程都结束（完整流已落盘/spill）后再结算。
             let mut spills: [Option<PathBuf>; 2] = [None, None];
@@ -761,7 +761,7 @@ impl TaskRegistry {
         self.await_termination(id, grace).await
     }
 
-    /// T067：这个会话有没有还在跑的后台命令；有就返回它起的轮号。
+    /// 这个会话有没有还在跑的后台命令；有就返回它起的轮号。
     pub fn running_turn(&self) -> Option<u64> {
         let jobs = self.jobs.lock().expect("jobs 表锁被毒化");
         jobs.values()
@@ -777,7 +777,7 @@ impl TaskRegistry {
             .max()
     }
 
-    /// T068 测试钩子：这个 job 收到的信号次数（Drop 兜底可观察）。
+    /// 测试钩子：这个 job 收到的信号次数（Drop 兜底可观察）。
     #[doc(hidden)]
     pub fn kill_signal_counter(
         &self,
@@ -786,14 +786,14 @@ impl TaskRegistry {
         Ok(Arc::clone(&self.record(id)?.kill_signals))
     }
 
-    /// T067 测试钩子：结算线程是否已收走子进程（kill 不再发信号）。
+    /// 测试钩子：结算线程是否已收走子进程（kill 不再发信号）。
     #[doc(hidden)]
     pub fn is_reaped(&self, id: &str) -> Result<bool, ToolFailure> {
         let record = self.record(id)?;
         Ok(record.state.lock().expect("job 状态锁被毒化").reaped)
     }
 
-    /// T067：某一轮还在跑的后台命令标签（给「被停」说明用）。
+    /// 某一轮还在跑的后台命令标签（给「被停」说明用）。
     pub fn running_labels(&self, turn: u64) -> Vec<String> {
         let jobs = self.jobs.lock().expect("jobs 表锁被毒化");
         jobs.values()
@@ -810,7 +810,7 @@ impl TaskRegistry {
             .collect()
     }
 
-    /// T067：杀掉某一轮起的全部还在跑的后台命令；已收的不发信号。
+    /// 杀掉某一轮起的全部还在跑的后台命令；已收的不发信号。
     pub async fn kill_turn(&self, turn: u64, reason: Option<String>) -> Vec<String> {
         let ids: Vec<String> = {
             let jobs = self.jobs.lock().expect("jobs 表锁被毒化");

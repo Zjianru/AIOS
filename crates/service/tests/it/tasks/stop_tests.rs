@@ -2018,7 +2018,7 @@ async fn a_second_restart_reports_only_the_tasks_its_scan_interrupted() {
     drop(host);
 }
 
-/// T068.4：停命令测试统一断言进程组没了（killed.txt 只辅助）。
+/// 停命令测试统一断言进程组没了（killed.txt 只辅助）。
 fn stop_test_pgid(cwd: &std::path::Path) -> i32 {
     std::fs::read_to_string(cwd.join("shell.pid"))
         .expect("后台命令写 shell.pid")
@@ -2600,7 +2600,7 @@ async fn update_gate_commands_act_stops_a_running_gate_then_reruns_the_new_comma
     );
 }
 
-/// T067.1：正在跑的 sleep 30 按停止，1 秒内进程组没了、Attempt 记停止、没有新一轮。
+/// 正在跑的 sleep 30 按停止，1 秒内进程组没了、Attempt 记停止、没有新一轮。
 #[tokio::test]
 async fn stopping_a_running_long_tool_kills_it_within_one_second() {
     let fixture = Fixture::new().await;
@@ -2695,7 +2695,7 @@ fn session_turns(data: &std::path::Path, task: &tasks::Task) -> usize {
         .unwrap_or(0)
 }
 
-/// T067.1：收尾停只管下一份报告，不杀正在跑的后台命令。
+/// 收尾停只管下一份报告，不杀正在跑的后台命令。
 #[tokio::test]
 async fn after_report_stop_does_not_kill_running_background_commands() {
     let fixture = Fixture::new().await;

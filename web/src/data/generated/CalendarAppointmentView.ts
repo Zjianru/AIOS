@@ -15,7 +15,7 @@ status: string, version: number,
  */
 binding: string, boundTaskId?: string | null, nextTriggerAt?: number | null,
 /**
- * T066：用户说过的时长（分钟）；没说就没有。
+ * 用户说过的时长（分钟）；没说就没有。
  */
 durationMinutes?: number | null,
 /**

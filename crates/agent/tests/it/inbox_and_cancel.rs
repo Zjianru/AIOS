@@ -527,7 +527,7 @@ async fn cancel_batch_skips_unstarted_calls() {
         })
         .collect();
     assert_eq!(results.len(), 2);
-    // T067.1 新契约：取消先到就丢掉已开始工具的 future，结果统一用 aborted_result，
+    // 新契约：取消先到就丢掉已开始工具的 future，结果统一用 aborted_result，
     // 不再像 T004.3 那样等已开始的调用跑完再提交（那会有迟到结果）。
     assert_eq!(results[0].0, "call_0");
     assert_eq!(results[0].1, "Error: tool call aborted before dispatch");

@@ -9,6 +9,6 @@ export type WorkLatest = { reportId: string,
  */
 state: string, at: number, summary: string, question?: string | null,
 /**
- * T066：这份报告那个 Attempt 改了几个文件；旧报告为空。
+ * 这份报告那个 Attempt 改了几个文件；旧报告为空。
  */
 changedCount?: number | null, };

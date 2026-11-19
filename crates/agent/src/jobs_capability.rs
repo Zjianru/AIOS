@@ -78,7 +78,7 @@ pub(crate) fn install(inner: &Arc<Inner>) {
                         continue;
                     }
                     if inner.is_background_only() {
-                        // T068：报告后的保留宿主：结束消息照旧落会话日志/事件，但不投 inbox、不唤醒。
+                        // 报告后的保留宿主：结束消息照旧落会话日志/事件，但不投 inbox、不唤醒。
                         emit_completed(inner.as_ref(), &settled);
                         continue;
                     }
@@ -183,7 +183,7 @@ async fn deliver(host: &dyn LoopAccess, settled: &tools::JobSettled) -> Result<(
     host.enqueue_context(text).await
 }
 
-/// T068：只发完成事件（保留宿主用）；不投 inbox、不唤醒。
+/// 只发完成事件（保留宿主用）；不投 inbox、不唤醒。
 fn emit_completed(host: &dyn LoopAccess, settled: &tools::JobSettled) {
     let agent_status = match settled.status {
         tools::JobStatus::Completed => JobStatus::Completed,

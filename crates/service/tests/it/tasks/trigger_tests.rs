@@ -1,4 +1,4 @@
-//! T066.2：约定到点建触发任务、回合结束关、派出识别、看板过滤、四个工具拒。
+//! 约定到点建触发任务、回合结束关、派出识别、看板过滤、四个工具拒。
 
 use super::*;
 use calendar::{Binding, CycleSpec, NewAppointment, Schedule};
@@ -457,7 +457,7 @@ async fn two_hundred_trigger_tasks_do_not_slow_the_work_snapshot() {
     assert!(work.wait.is_empty(), "触发任务不能进等你/现在");
     assert!(work.graphs.is_empty(), "触发任务不能进图");
     eprintln!(
-        "T066 200 条触发任务工作快照耗时：{} ms（200 个任务，快照 {} 项）",
+        "200 条触发任务工作快照耗时：{} ms（200 个任务，快照 {} 项）",
         elapsed.as_millis(),
         work.tasks.len()
     );
@@ -793,7 +793,7 @@ async fn dispatched_block_follows_task_stage_until_it_closes() {
         .iter()
         .find(|block| block.appointment_id == appointment.id)
         .expect("派出没关的块");
-    assert_eq!(block.status, "排队");
+    assert_eq!(block.stage.as_deref(), Some("pending"));
     assert!(block.end >= now_ms() - 60_000);
     // 关掉派出任务：ready 报告 + 用户接受。
     let attempt = tasks
@@ -821,7 +821,7 @@ async fn dispatched_block_follows_task_stage_until_it_closes() {
         .iter()
         .find(|block| block.appointment_id == appointment.id)
         .expect("关闭后的块");
-    assert_eq!(block.status, "已完成");
+    assert_eq!(block.stage.as_deref(), Some("closed"));
     drop(store);
     fixture.host.shutdown().await;
 }
@@ -1017,4 +1017,192 @@ async fn cycle_due_attempt_end_sets_the_block_end() {
     assert_eq!(block.end, now + 5_000);
     assert_eq!(block.status, "已完成");
     fixture.host.shutdown().await;
+}
+
+fn dispatched_origin(appointment: &calendar::Appointment, run_id: i64) -> tasks::AppointmentOrigin {
+    tasks::AppointmentOrigin {
+        appointment_id: appointment.id.clone(),
+        run_id,
+        role: tasks::AppointmentRole::Dispatched,
+    }
+}
+
+async fn sent_run(fixture: &Fixture, appointment: &calendar::Appointment) -> i64 {
+    let store = calendar::CalendarStore::open(fixture.data().join("calendar.sqlite")).unwrap();
+    wait("约定送出一条", || {
+        store
+            .runs(&appointment.id)
+            .unwrap()
+            .iter()
+            .any(|run| run.result == calendar::RunResult::Sent)
+    })
+    .await;
+    store
+        .runs(&appointment.id)
+        .unwrap()
+        .into_iter()
+        .find(|run| run.result == calendar::RunResult::Sent)
+        .unwrap()
+        .id
+}
+
+/// 单任务：blocked 报告和 stopped Attempt 都走 Store::stage 的「缺条件」，不再冒充在做/等你核。
+#[tokio::test]
+async fn range_block_reads_task_stage_for_blocked_and_stopped_single_tasks() {
+    let fixture = Fixture::new().await;
+    let appointment = due_appointment(fixture.data(), "单任务派出去", None);
+    fixture
+        .router
+        .push_kind(crate::common::text_sse("派出去了"));
+    fixture.host.nudge_calendar();
+    let run_id = sent_run(&fixture, &appointment).await;
+    let tasks = tasks_store(fixture.data());
+    let now = now_ms();
+
+    let blocked = tasks
+        .create_task(draft(fixture.data(), "blocked 单任务"), now)
+        .unwrap();
+    tasks
+        .set_origin(&blocked.id, dispatched_origin(&appointment, run_id))
+        .unwrap();
+    let blocked_attempt = tasks.begin_attempt(&blocked.id, now + 1).unwrap();
+    tasks
+        .record_report(
+            &blocked.id,
+            blocked_attempt,
+            tasks::NewReport {
+                state: tasks::ReportState::Blocked,
+                origin: tasks::ReportOrigin::Agent,
+                summary: "缺一个目录".to_owned(),
+                question: None,
+            },
+            now + 2,
+        )
+        .unwrap();
+
+    let stopped = tasks
+        .create_task(draft(fixture.data(), "stopped 单任务"), now)
+        .unwrap();
+    tasks
+        .set_origin(&stopped.id, dispatched_origin(&appointment, run_id))
+        .unwrap();
+    let stopped_attempt = tasks.begin_attempt(&stopped.id, now + 3).unwrap();
+    tasks
+        .stop_attempt(&stopped.id, stopped_attempt, now + 4)
+        .unwrap();
+
+    let read = read_range(&fixture).await;
+    let rows: Vec<_> = read
+        .ranges
+        .iter()
+        .filter(|block| block.appointment_id == appointment.id)
+        .collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(
+        rows[0].stage.as_deref(),
+        Some("needs_conditions"),
+        "{:?}",
+        rows[0]
+    );
+    // 两个任务同一阶段时取表序最靠前的一个；单任务直接就是它。
+    assert!(rows[0].end >= now, "{:?}", rows[0]);
+}
+
+/// 整张图派出：子任务全接受后块是 closed，结束时间取接受事实且不再跟着 now 长。
+#[tokio::test]
+async fn range_block_for_dispatched_graph_closes_and_freezes_end() {
+    let fixture = Fixture::new().await;
+    let appointment = due_appointment(fixture.data(), "图派出去", None);
+    fixture
+        .router
+        .push_kind(crate::common::text_sse("图派出去了"));
+    fixture.host.nudge_calendar();
+    let run_id = sent_run(&fixture, &appointment).await;
+    let tasks = tasks_store(fixture.data());
+    let now = now_ms();
+    let root = tasks
+        .create_graph(
+            tasks::NewGraph {
+                root: draft(fixture.data(), "派出图"),
+                subtasks: vec![
+                    tasks::NewSubtask {
+                        task: draft(fixture.data(), "图里先查"),
+                        policy: tasks::TaskPolicy::default(),
+                        after: Vec::new(),
+                        milestone: false,
+                        program_gate: Vec::new(),
+                    },
+                    tasks::NewSubtask {
+                        task: draft(fixture.data(), "图里再查"),
+                        policy: tasks::TaskPolicy::default(),
+                        after: vec![0],
+                        milestone: false,
+                        program_gate: Vec::new(),
+                    },
+                ],
+            },
+            now,
+        )
+        .unwrap();
+    tasks.confirm_graph(&root.id, now + 1).unwrap();
+    tasks
+        .set_origin(&root.id, dispatched_origin(&appointment, run_id))
+        .unwrap();
+    let children: Vec<_> = tasks
+        .all_tasks()
+        .unwrap()
+        .into_iter()
+        .filter(|task| task.parent.as_ref() == Some(&root.id))
+        .collect();
+    assert_eq!(children.len(), 2);
+    let mut closed_at = 0;
+    for (index, child) in children.iter().enumerate() {
+        tasks
+            .set_origin(&child.id, dispatched_origin(&appointment, run_id))
+            .unwrap();
+        let attempt = tasks
+            .begin_attempt(&child.id, now + 2 + index as i64)
+            .unwrap();
+        let report = tasks
+            .record_report(
+                &child.id,
+                attempt,
+                tasks::NewReport {
+                    state: tasks::ReportState::Ready,
+                    origin: tasks::ReportOrigin::Agent,
+                    summary: format!("{} 做完了", child.title),
+                    question: None,
+                },
+                now + 3 + index as i64,
+            )
+            .unwrap();
+        tasks
+            .end_attempt(
+                &child.id,
+                attempt,
+                now + 4 + index as i64,
+                tasks::AttemptEnd::Reported,
+            )
+            .unwrap();
+        let acceptance = tasks
+            .accept(&child.id, &report, now + 5 + index as i64)
+            .unwrap();
+        closed_at = closed_at.max(acceptance.at);
+    }
+    let first = read_range(&fixture).await;
+    let block = first
+        .ranges
+        .iter()
+        .find(|block| block.appointment_id == appointment.id)
+        .unwrap();
+    assert_eq!(block.stage.as_deref(), Some("closed"), "{block:?}");
+    assert_eq!(block.end, closed_at, "结束取关闭事实");
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let second = read_range(&fixture).await;
+    let block = second
+        .ranges
+        .iter()
+        .find(|block| block.appointment_id == appointment.id)
+        .unwrap();
+    assert_eq!(block.end, closed_at, "接受后结束时间固定");
 }

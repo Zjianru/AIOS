@@ -315,7 +315,7 @@ async fn ws_root_session(socket: &mut WebSocket, state: &AppState, last_seq: u64
     let info = state.host.info();
     let live = state.host.subscribe_events();
     let agent_live = state.host.subscribe_agent_events();
-    // T068.5：先订阅任务事实变化再补齐/发 ready，避免连接建立窗口里的事件丢掉。
+    // 先订阅任务事实变化再补齐/发 ready，避免连接建立窗口里的事件丢掉。
     let changed = state.host.subscribe_task_changed();
     let root_available = info.root == RootState::Ok;
     let follow = if root_available {

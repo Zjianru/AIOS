@@ -386,7 +386,7 @@ impl TaskRuntime {
             self.settle_after_report(task_id, attempt_id, conversation);
             return;
         }
-        // T067：这一轮结束了但还有后台命令：不报「在等」、Attempt 不结束、席位留着，
+        // 这一轮结束了但还有后台命令：不报「在等」、Attempt 不结束、席位留着，
         // 落一条 30 分钟到点；命令完了会叫醒模型开新一轮，新一轮结束时再判。
         if let Some(turn) = self.background_turn_of(conversation) {
             self.schedule_background_limit(task_id, attempt_id, turn);
@@ -438,7 +438,7 @@ impl TaskRuntime {
             .and_then(|entry| entry.host.agent().background_turn())
     }
 
-    /// T067：落/续 30 分钟到点；同 Attempt 的旧行被新 due 覆盖。
+    /// 落/续 30 分钟到点；同 Attempt 的旧行被新 due 覆盖。
     pub(crate) fn schedule_background_limit(
         &self,
         task_id: &TaskId,
@@ -456,7 +456,7 @@ impl TaskRuntime {
         }
     }
 
-    /// T067：撤掉这个 Attempt 还没领的到点（新一轮/停止/终态）。
+    /// 撤掉这个 Attempt 还没领的到点（新一轮/停止/终态）。
     pub(crate) fn cancel_background_limit(&self, attempt_id: AttemptId) {
         let key = format!("bg-limit:{attempt_id}");
         if let Err(error) = self.store.remove_effect(EffectKind::BackgroundLimit, &key) {
@@ -476,7 +476,7 @@ impl TaskRuntime {
             .max()
     }
 
-    /// T067：30 分钟到点。执行前核 Attempt 还是它、这一轮之后没开过新轮、后台命令
+    /// 30 分钟到点。执行前核 Attempt 还是它、这一轮之后没开过新轮、后台命令
     /// 还是这一轮的；不成立就作废。还成立就杀掉、告诉模型、再合成「在等」。
     pub(crate) async fn deliver_background_limit(self: &Arc<Self>, claim: EffectClaim) {
         let EffectPayload::BackgroundLimit {
@@ -562,7 +562,7 @@ impl TaskRuntime {
         self.record_waiting_summary(task_id, attempt_id, &said);
     }
 
-    /// T067：到点用固定说明合成等待（正文写哪些命令被停）。
+    /// 到点用固定说明合成等待（正文写哪些命令被停）。
     pub(crate) fn record_waiting_with_note(
         &self,
         task_id: &TaskId,
@@ -634,7 +634,7 @@ impl TaskRuntime {
             eprintln!("任务 {task_id} 的收尾停没记进任务库：{error}");
             return;
         }
-        // T068：收尾停本身不杀后台命令；还有命令就保留宿主，之后立即停还能杀。
+        // 收尾停本身不杀后台命令；还有命令就保留宿主，之后立即停还能杀。
         let retained = self.retain_after_report(conversation.as_str());
         if !retained {
             self.forget_running(conversation.as_str());
@@ -665,7 +665,7 @@ impl TaskRuntime {
             .unwrap_or_default()
     }
 
-    /// T066：报告落库后用这个 Attempt 的改动路径算文件数，工作快照以后只读这个数。
+    /// 报告落库后用这个 Attempt 的改动路径算文件数，工作快照以后只读这个数。
     fn fill_report_changed_count(
         &self,
         task_id: &TaskId,
@@ -728,7 +728,7 @@ impl TaskRuntime {
                 self.store
                     .end_attempt(task_id, attempt_id, Self::now(), AttemptEnd::Reported),
             );
-            // T068：报告时还有后台命令就保留宿主；否则照旧移除。
+            // 报告时还有后台命令就保留宿主；否则照旧移除。
             let retained = self.retain_after_report(conversation);
             if !retained {
                 self.forget_running(conversation);
@@ -778,7 +778,7 @@ impl TaskRuntime {
             self.store
                 .end_attempt(task_id, attempt_id, Self::now(), AttemptEnd::Reported),
         );
-        // T068：交回时还有后台命令也保留宿主。
+        // 交回时还有后台命令也保留宿主。
         let retained = self.retain_after_report(conversation);
         if !retained {
             self.forget_running(conversation);

@@ -727,7 +727,7 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         handle.addr.port(),
         handle.token
     );
-    // T068：正常退出/Ctrl-C/SIGTERM 走同一个收尾顺序。
+    // 正常退出/Ctrl-C/SIGTERM 走同一个收尾顺序。
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};

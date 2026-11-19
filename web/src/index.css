@@ -415,7 +415,7 @@
   min-height: 0;
 }
 
-/* T066：任务图状态环与线动效（不引动画库；减少动效时全停）。 */
+/* 任务图状态环与线动效（不引动画库；减少动效时全停）。 */
 @keyframes graph-ring-spin {
   to { transform: rotate(360deg); }
 }

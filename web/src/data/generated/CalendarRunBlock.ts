@@ -2,6 +2,10 @@
 
 export type CalendarRunBlock = { id: number, appointmentId: string, title: string, start: number, end: number,
 /**
- * 已完成 / 在做 / 排队 / 等你核 / 已关闭 / 没跑成 等看板词。
+ * 派出任务的阶段 key；有它时页面用看板同一张词表出词。
+ */
+stage?: string | null,
+/**
+ * 不是派出任务时的固定词（自办块：已完成/在做）。
  */
 status: string, taskId?: string | null, turn?: number | null, };

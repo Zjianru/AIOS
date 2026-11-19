@@ -608,7 +608,7 @@ pub struct TaskReadHeader {
     /// 这个 Attempt 的会话现在真的在跑一轮（不是只开着等报告）；任务菜单只在为 true 时可点。
     #[serde(default)]
     pub running: bool,
-    /// T068：报告后保留的宿主还有后台命令在跑（只停得掉、不再叫醒模型）。
+    /// 报告后保留的宿主还有后台命令在跑（只停得掉、不再叫醒模型）。
     #[serde(default, rename = "backgroundRunning")]
     pub background_running: bool,
     /// 最近的 Attempt 以「停止」结束、之后没有新的 Attempt：页头固定显示「已停止」。
@@ -1633,7 +1633,10 @@ pub struct CalendarRunBlock {
     pub title: String,
     pub start: i64,
     pub end: i64,
-    /// 已完成 / 在做 / 排队 / 等你核 / 已关闭 / 没跑成 等看板词。
+    /// 派出任务的阶段 key；有它时页面用看板同一张词表出词。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// 不是派出任务时的固定词（自办块：已完成/在做）。
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
@@ -1688,7 +1691,7 @@ pub struct CalendarAppointmentView {
     pub bound_task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_trigger_at: Option<i64>,
-    /// T066：用户说过的时长（分钟）；没说就没有。
+    /// 用户说过的时长（分钟）；没说就没有。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_minutes: Option<u32>,
     /// 暂停原因（程序写；恢复后清空视图，但版本历史留着）。

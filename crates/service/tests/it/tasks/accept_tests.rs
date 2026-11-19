@@ -1081,7 +1081,7 @@ async fn task_read_exposes_ledger_constraints_notes_and_history() {
     assert_eq!(response.ledger.history[0].closed_why, "被新的一条替换");
 }
 
-/// T067.4：任务库任意写入都从 Store 唯一出口发 changed，根宿主拿到同一频道。
+/// 任务库任意写入都从 Store 唯一出口发 changed，根宿主拿到同一频道。
 #[tokio::test]
 async fn task_writes_reach_the_root_ws_changed_channel() {
     let fixture = Fixture::new_with_actions().await;

@@ -9,7 +9,7 @@ pub struct TaskStopTool {
 }
 
 impl TaskStopTool {
-    /// T068 测试用：直接拿 Kind 的 task_stop 工具入口。
+    /// 测试用：直接拿 Kind 的 task_stop 工具入口。
     #[doc(hidden)]
     pub fn new(runtime: Arc<TaskRuntime>) -> Self {
         Self {

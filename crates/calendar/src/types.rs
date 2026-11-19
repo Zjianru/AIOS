@@ -154,7 +154,7 @@ pub struct Appointment {
     pub next_trigger_at: Option<i64>,
     /// 发起这条约定的 Kind 轮号（确认卡那一刻）；旧库/迁移行为 None。
     pub source_turn: Option<u64>,
-    /// T066：用户说过的时长（分钟）；没说就 None。
+    /// 用户说过的时长（分钟）；没说就 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_minutes: Option<u32>,
     pub created_at: i64,
@@ -174,7 +174,7 @@ pub struct AppointmentVersion {
     pub cycle: Option<CycleSpec>,
     pub reason: String,
     pub created_at: i64,
-    /// T066：版本行里的时长。
+    /// 版本行里的时长。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_minutes: Option<u32>,
 }
@@ -188,7 +188,7 @@ pub struct NewAppointment {
     pub binding: Binding,
     pub watch: Option<WatchSource>,
     pub cycle: Option<CycleSpec>,
-    /// T066：用户说过的时长（分钟）；没说就 None。
+    /// 用户说过的时长（分钟）；没说就 None。
     pub duration_minutes: Option<u32>,
 }
 
@@ -203,7 +203,7 @@ pub struct AppointmentPatch {
     pub watch: Option<Option<WatchSource>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cycle: Option<Option<CycleSpec>>,
-    /// T066：Some(None) 表示清掉时长。
+    /// Some(None) 表示清掉时长。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_minutes: Option<Option<u32>>,
 }
@@ -236,7 +236,7 @@ pub struct Run {
     pub sent_turn: Option<i64>,
     /// 报回运行对应的报告 id。
     pub report_id: Option<String>,
-    /// T066：这次运行对应的触发任务 id（旧运行/没建为空）。
+    /// 这次运行对应的触发任务 id（旧运行/没建为空）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
 }

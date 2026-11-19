@@ -34,14 +34,14 @@ use fixture::*;
 use store_helpers::*;
 
 mod accept_tests;
+mod background_turn_tests;
 mod dialog_tests;
 mod misc_tests;
 mod pause_tests;
 mod report_tests;
 mod restart_tests;
+mod retained_background_tests;
 mod stop_tests;
-mod t067_tests;
-mod t068_tests;
 mod trigger_tests;
 mod workflow_tests;
 

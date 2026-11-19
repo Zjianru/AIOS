@@ -100,10 +100,10 @@ pub struct WorkEdgeFact {
     pub state: String,
     /// 这条线连着的是不是程序门。
     pub program: bool,
-    /// T066：flow / make / back / judge / 无。
+    /// flow / make / back / judge / 无。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live: Option<String>,
-    /// T066：线小字（第 N 份 · X 文件 / 打回第 N 份）；没有就空。
+    /// 线小字（第 N 份 · X 文件 / 打回第 N 份）；没有就空。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload: Option<String>,
 }
@@ -126,7 +126,7 @@ pub struct TaskFact {
     pub created_at: i64,
     /// 最近一次 Attempt 还没结束，或 launch 还在排队。
     pub running: bool,
-    /// T066：正在跑的那个 Attempt 的开始时间；没在跑为空。
+    /// 正在跑的那个 Attempt 的开始时间；没在跑为空。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub running_since: Option<i64>,
     /// 这是里程碑门任务。
@@ -164,7 +164,7 @@ pub struct WorkLatest {
     pub summary: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub question: Option<String>,
-    /// T066：这份报告那个 Attempt 改了几个文件；旧报告为空。
+    /// 这份报告那个 Attempt 改了几个文件；旧报告为空。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changed_count: Option<u32>,
 }
@@ -223,14 +223,7 @@ struct FactMeta<'a> {
 }
 
 fn stage_key(stage: Stage) -> &'static str {
-    match stage {
-        Stage::NeedsConditions => "needs_conditions",
-        Stage::Pending => "pending",
-        Stage::Running => "running",
-        Stage::ReadyForReview => "ready_for_review",
-        Stage::RequirementMet => "requirement_met",
-        Stage::Closed => "closed",
-    }
+    stage.key()
 }
 
 fn report_state_key(state: ReportState) -> &'static str {
@@ -626,7 +619,7 @@ pub(crate) fn snapshot(
     let visible: Vec<&Task> = all
         .iter()
         .filter(|task| {
-            // T066：约定到点的触发任务只在日历上，不进看板/图/等你/现在。
+            // 约定到点的触发任务只在日历上，不进看板/图/等你/现在。
             if task.origin.as_ref().map(|origin| origin.role)
                 == Some(tasks::AppointmentRole::Trigger)
             {

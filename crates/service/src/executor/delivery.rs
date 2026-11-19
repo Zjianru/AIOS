@@ -52,7 +52,7 @@ impl TaskRuntime {
         } else {
             ResumeMode::Say
         };
-        // T068：保留宿主不是「还在跑」：用户说话前先停命令/关宿主，再走接续。
+        // 保留宿主不是「还在跑」：用户说话前先停命令/关宿主，再走接续。
         if self
             .running_for(task_id, attempt.id)
             .is_some_and(|running| running.retained)

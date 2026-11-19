@@ -1,4 +1,4 @@
-//! T068.1：报告后保留宿主、backgroundRunning、停止入口。
+//! 报告后保留宿主、backgroundRunning、停止入口。
 
 use super::*;
 
@@ -190,7 +190,7 @@ async fn after_report_stop_retains_and_a_later_immediate_stop_kills() {
     let task = fixture.accept_args(false, write_task_args(), 1).await;
     let pid_file = fixture.cwd.path().join("shell.pid");
     wait_until("后台命令写 pid", || pid_file.exists()).await;
-    // 等这一轮真正结束（T067 会保留 Attempt/席位），收尾停落在空闲会话上，结算确定。
+    // 等这一轮真正结束（后台命令还在时会保留 Attempt/席位），收尾停落在空闲会话上，结算确定。
     for _ in 0..500 {
         if !task_read(&fixture, &task).await.running {
             break;

@@ -21,7 +21,7 @@ model: string, tools: Array<string>, attempts: number,
  */
 running: boolean,
 /**
- * T068：报告后保留的宿主还有后台命令在跑（只停得掉、不再叫醒模型）。
+ * 报告后保留的宿主还有后台命令在跑（只停得掉、不再叫醒模型）。
  */
 backgroundRunning: boolean,
 /**
