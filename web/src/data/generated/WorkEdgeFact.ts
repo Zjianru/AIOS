@@ -17,10 +17,10 @@ state: string,
  */
 program: boolean,
 /**
- * T066：flow / make / back / judge / 无。
+ * flow / make / back / judge / 无。
  */
 live?: string | null,
 /**
- * T066：线小字（第 N 份 · X 文件 / 打回第 N 份）；没有就空。
+ * 线小字（第 N 份 · X 文件 / 打回第 N 份）；没有就空。
  */
 payload?: string | null, };

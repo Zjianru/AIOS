@@ -266,7 +266,7 @@ export function TaskChatScene() {
         liveTurnRef.current = running;
         setPhase('ready');
         connect();
-        // T068：任务已交报告但会话可能还在收尾：等这个任务的 task-changed，不再按
+        // 任务已交报告但会话可能还在收尾：等这个任务的 task-changed，不再按
         // [600,1600,3200] 固定补拉；保留一次 10 秒兜底。
         if (response.task.reportedAt != null && !response.task.running) {
           let settled = false;

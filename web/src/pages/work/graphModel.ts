@@ -32,9 +32,9 @@ export interface GraphEdge {
   program: boolean;
   /** 线上那句话（固定词；详情里展开）。 */
   label: string;
-  /** T066：flow / make / back / judge / 无。 */
+  /** flow / make / back / judge / 无。 */
   live: string | null;
-  /** T066：线上小字（第 N 份 · X 文件 / 打回第 N 份）。 */
+  /** 线上小字（第 N 份 · X 文件 / 打回第 N 份）。 */
   payload: string | null;
 }
 

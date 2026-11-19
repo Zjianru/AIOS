@@ -118,7 +118,7 @@ async fn serve_sigterm_kills_task_background_commands() {
     let cwd = dir.path().join("cwd");
     std::fs::create_dir_all(&cwd).unwrap();
     std::fs::write(cwd.join("hello.txt"), "hello\n").unwrap();
-    let title = "T068 SIGTERM 任务";
+    let title = "SIGTERM 任务";
     let thin = patch_thin_log(dir.path());
     let routes = dir.path().join("routes.json");
     std::fs::write(
