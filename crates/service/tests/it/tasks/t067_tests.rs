@@ -296,3 +296,23 @@ async fn idle_pump_does_not_wake_and_resume_wakes_it_once() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn exec_pause_alone_keeps_the_pump_asleep_and_resume_wakes_it() {
+    let fixture = Fixture::new().await;
+    let runtime = fixture.host.task_runtime().expect("runtime");
+    runtime.set_exec_paused_for_test(true);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let baseline = runtime.pump_wake_count();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        runtime.pump_wake_count(),
+        baseline,
+        "exec_paused=true 时没有到点，泵只该等通知"
+    );
+    runtime.set_exec_paused_for_test(false);
+    wait_until("恢复后泵立刻醒", || {
+        runtime.pump_wake_count() > baseline
+    })
+    .await;
+}

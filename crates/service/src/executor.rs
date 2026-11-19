@@ -1408,6 +1408,12 @@ impl TaskRuntime {
         self.pump_wakes.load(Ordering::SeqCst)
     }
 
+    /// T067 测试钩子：走生产的 set_exec_paused（全局暂停只等通知）。
+    #[doc(hidden)]
+    pub fn set_exec_paused_for_test(&self, paused: bool) {
+        self.set_exec_paused(paused);
+    }
+
     /// T067 测试钩子：当前占用席位数（在跑 + 起跑预约）。
     #[doc(hidden)]
     pub fn used_seats(&self) -> usize {
