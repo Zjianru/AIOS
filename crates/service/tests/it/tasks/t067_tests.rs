@@ -82,7 +82,7 @@ async fn background_limit_fires_kills_and_reports_waiting() {
             "bash",
             &serde_json::json!({
                 "description": "等后台",
-                "command": "trap 'echo stopped > killed.txt' TERM; while true; do :; done",
+                "command": "trap 'echo stopped > killed.txt; exit 0' TERM; while true; do :; done",
                 "run_in_background": true
             })
             .to_string(),
@@ -144,7 +144,7 @@ async fn a_new_turn_supersedes_the_old_background_limit() {
             "bash",
             &serde_json::json!({
                 "description": "等后台",
-                "command": "trap 'echo stopped > killed.txt' TERM; while true; do :; done",
+                "command": "trap 'echo stopped > killed.txt; exit 0' TERM; while true; do :; done",
                 "run_in_background": true
             })
             .to_string(),
@@ -195,6 +195,20 @@ async fn a_new_turn_supersedes_the_old_background_limit() {
         "旧到点不能合成在等：{:?}",
         task_now.latest_report()
     );
+    // 清掉这一轮遗留的后台命令，别把 while 循环留给测试进程。
+    drop(
+        fixture
+            .host
+            .dispatch(Call::TaskStop(TaskStopRequest {
+                task_id: task.id.as_str().to_owned(),
+                mode: StopMode::Now,
+            }))
+            .await,
+    );
+    wait_until("收尾命令被杀", || {
+        fixture.cwd.path().join("killed.txt").exists()
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -214,7 +228,7 @@ async fn stopping_while_waiting_kills_commands_cancels_deadline_and_does_not_rep
             "bash",
             &serde_json::json!({
                 "description": "等后台",
-                "command": "trap 'echo stopped > killed.txt' TERM; while true; do :; done",
+                "command": "trap 'echo stopped > killed.txt; exit 0' TERM; while true; do :; done",
                 "run_in_background": true
             })
             .to_string(),

@@ -2679,7 +2679,7 @@ async fn after_report_stop_does_not_kill_running_background_commands() {
             "bash",
             &serde_json::json!({
                 "description": "还在跑",
-                "command": "trap 'echo stopped > killed.txt; exit 0' TERM; while true; do :; done",
+                "command": "echo \"$$\" > shell.pid; trap 'echo stopped > killed.txt; exit 0' TERM; while true; do :; done",
                 "run_in_background": true
             })
             .to_string(),
@@ -2715,5 +2715,17 @@ async fn after_report_stop_does_not_kill_running_background_commands() {
         !fixture.cwd.path().join("killed.txt").exists(),
         "收尾停不应杀后台命令"
     );
-    let _ = stop_task(&fixture, &task, StopMode::Now).await;
+    // 收尾停按设计不杀后台命令；测试自己显式收掉，别把 while 循环留给测试进程。
+    let pid: i32 = std::fs::read_to_string(fixture.cwd.path().join("shell.pid"))
+        .expect("shell pid")
+        .trim()
+        .parse()
+        .expect("pid");
+    let _ = std::process::Command::new("kill")
+        .args(["-TERM", "--", &format!("-{pid}")])
+        .status();
+    wait_until("收尾停测试清掉后台命令", || {
+        fixture.cwd.path().join("killed.txt").exists()
+    })
+    .await;
 }
