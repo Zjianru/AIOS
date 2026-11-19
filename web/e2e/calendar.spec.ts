@@ -78,7 +78,7 @@ test('循环行显示第几轮与任务状态词', async ({ page }) => {
     const loop = page.locator('[data-kind="appt-row"][data-appt="ap_loop"]');
     await expect(loop.locator('[data-kind="loop-band"]')).toContainText('第 2 轮');
     await expect(loop.locator('[data-kind="loop-band"]')).toContainText(
-      /排队|在做|待你核|缺条件|已关闭/,
+      /待补足条件|待执行|执行中|待检查|任务要求已满足|已关闭/,
     );
   } finally {
     await fixture.close();
@@ -113,7 +113,7 @@ test('T066 故事1-2：Kind 自办块已完成、办完了回轮', async ({ page
     await page.goto(fixture.baseUrl + '/?token=' + encodeURIComponent(fixture.token) + '#work?wv=cal');
     await page.locator('[data-kind="calendar-view"][data-view="week"]').click();
     await expect(page.locator('[data-kind="calendar-week"]')).toBeVisible();
-    const block = page.locator('[data-kind="week-run"][data-appt="ap_morning"][data-status="已完成"]').first();
+    const block = page.locator('[data-kind="week-run"][data-appt="ap_morning"][data-status="已关闭"]').first();
     await expect(block).toBeVisible();
     await expect(block).toContainText('早报');
     await block.click();
@@ -135,7 +135,7 @@ test('T066 故事3：派出的块跟任务状态、点开任务页', async ({ pa
     await page.locator('[data-kind="calendar-view"][data-view="week"]').click();
     const dispatched = page.locator('[data-kind="week-run"][data-task="t066-dispatched-1"]').first();
     await expect(dispatched).toBeVisible();
-    await expect(dispatched).toHaveAttribute('data-status', '排队');
+    await expect(dispatched).toHaveAttribute('data-status', '待执行');
     await dispatched.click();
     await expect(page.locator('[data-kind="task-full-title"]')).toContainText('调查 elkjs 调查');
   } finally {
@@ -156,11 +156,11 @@ test('T066 一次性结束的块仍在、计划只出在用约定', async ({ pag
     const block = page.locator('[data-kind="week-run"][data-appt="ap_once"]').first();
     await expect(block).toBeVisible();
     await expect(block).toContainText('交周报');
-    await expect(block).toHaveAttribute('data-status', '已完成');
+    await expect(block).toHaveAttribute('data-status', '已关闭');
     await expect(page.locator('[data-kind="week-plan"][data-appt="ap_once"]')).toHaveCount(0);
     const cancelledBlock = page.locator('[data-kind="week-run"][data-appt="ap_cancelled"]').first();
     await expect(cancelledBlock).toBeVisible();
-    await expect(cancelledBlock).toHaveAttribute('data-status', '已完成');
+    await expect(cancelledBlock).toHaveAttribute('data-status', '已关闭');
   } finally {
     await fixture.close();
   }

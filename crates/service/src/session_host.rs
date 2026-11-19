@@ -291,6 +291,8 @@ impl ServiceHost {
         )]
         let _ = self.agent.cancel().await;
         self.agent.idle().await;
+        // 放锁是 shutdown 的一部分：即使别处还拿着宿主 Arc，返回后会话也能立刻重开。
+        self.agent.close_session_writer();
     }
 
     /// follow（DSH :607）：按调用方最后的序号补齐日志事件（连续、不重复；重连带 lastSeq 即可）。

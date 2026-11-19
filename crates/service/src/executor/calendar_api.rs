@@ -785,8 +785,8 @@ fn range_block(
             title: appointment.title.clone(),
             start,
             end,
-            stage: None,
-            status: if end == now { "在做" } else { "已完成" }.to_owned(),
+            stage: Some(if end == now { "running" } else { "closed" }.to_owned()),
+            status: String::new(),
             task_id,
             turn,
         });
@@ -798,13 +798,15 @@ fn range_block(
         title: appointment.title.clone(),
         start,
         end: closed.map_or(now, |round| round.at),
-        stage: None,
-        status: if closed.is_some() {
-            "已完成"
-        } else {
-            "在做"
-        }
-        .to_owned(),
+        stage: Some(
+            if closed.is_some() {
+                "closed"
+            } else {
+                "running"
+            }
+            .to_owned(),
+        ),
+        status: String::new(),
         task_id,
         turn,
     })

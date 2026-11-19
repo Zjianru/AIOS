@@ -1965,7 +1965,7 @@ impl TaskRuntime {
     }
 
     /// 重开同一会话前，如果这个会话的宿主是保留状态（报告后后台还在跑），
-    /// 先停命令、关宿主、移除，再让下面的锁通知/open 走。
+    /// 先停命令、关宿主（shutdown 显式放掉会话写锁）、移除，再 notify/open。
     async fn stop_retained_for_reopen(&self, task_id: &TaskId, conversation: &str) {
         let host = {
             let running = self.running.lock().expect("thinagent 表锁被毒化");
@@ -1984,8 +1984,6 @@ impl TaskRuntime {
             .stop_background_jobs("重开任务会话前停掉保留的后台命令")
             .await;
         host.shutdown().await;
-        // 先丢掉本地引用，再把表里的最后一个 Arc 移掉；之后等会话写者真的放了锁，
-        // 再通知等锁的人重开，不靠 sleep 猜。
         drop(host);
         let removed = self
             .running
@@ -1993,27 +1991,8 @@ impl TaskRuntime {
             .expect("thinagent 表锁被毒化")
             .remove(conversation);
         drop(removed);
-        self.wait_until_session_writable(conversation).await;
         self.session_relinquished.notify_waiters();
         self.notify_changed(task_id);
-    }
-
-    /// 等到原会话不再被任何活写者占着（最多 5 秒）；只观测锁，不按时间猜。
-    async fn wait_until_session_writable(&self, conversation: &str) {
-        let Ok(session) = session::SessionId::parse(conversation) else {
-            return;
-        };
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            match session::SessionStore::open(&self.data_dir, &session) {
-                Err(session::SessionError::AlreadyOwned { .. })
-                    if tokio::time::Instant::now() < deadline =>
-                {
-                    tokio::task::yield_now().await;
-                }
-                _ => return,
-            }
-        }
     }
 
     /// 在原会话里接一次 Attempt（T028 的说话接续和确认卡接续共用）。

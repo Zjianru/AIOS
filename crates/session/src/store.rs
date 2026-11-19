@@ -57,8 +57,10 @@ pub struct SessionStore {
     /// 文件里还有未提交的尾部；第一次 append 之前先截到 bytes（照 DSH 的写句柄语义）。
     pending_truncate: bool,
     writer: Box<dyn LogWriter>,
-    /// 单写者锁（T006.5b）：跟随本 store 的生命周期；drop 即释放。
-    _writer_lock: crate::lock::WriterLock,
+    /// 单写者锁：显式关闭（停服务）时先拿走 drop，其他宿主 Arc 还活着也能立刻重开。
+    _writer_lock: Option<crate::lock::WriterLock>,
+    /// 显式关闭写者后不再接受追加。
+    writer_closed: bool,
     /// T011.2：追加成功之后的钩子（默认没有；监控装上）。
     append_hook: Option<AppendHook>,
     /// 钩子降级时的警告出口（默认打到标准错误；装配时装上服务的）。
@@ -138,7 +140,8 @@ impl SessionStore {
             bytes: header_line.len() as u64,
             pending_truncate: false,
             writer: Box::new(file),
-            _writer_lock: writer_lock,
+            _writer_lock: Some(writer_lock),
+            writer_closed: false,
             append_hook: None,
             warning_sink: None,
         })
@@ -169,7 +172,8 @@ impl SessionStore {
             bytes: committed,
             pending_truncate,
             writer: Box::new(file),
-            _writer_lock: writer_lock,
+            _writer_lock: Some(writer_lock),
+            writer_closed: false,
             append_hook: None,
             warning_sink: None,
         })
@@ -234,6 +238,12 @@ impl SessionStore {
             .any(|event| matches!(event.kind, EventKind::SystemMessage { .. }))
     }
 
+    /// 停服务收尾：显式放下单写者锁（writer lock），返回后别的宿主可以立刻 open。
+    pub fn close_writer(&mut self) {
+        self._writer_lock = None;
+        self.writer_closed = true;
+    }
+
     /// 追加一批事件：先写入、再 fsync；任何一步失败都回滚到写之前的长度。
     pub fn append(&mut self, kinds: &[EventKind]) -> Result<Vec<u64>, SessionError> {
         self.append_with_time(kinds, now_ms())
@@ -275,6 +285,9 @@ impl SessionStore {
     ) -> Result<Vec<u64>, SessionError> {
         if entries.is_empty() {
             return Ok(Vec::new());
+        }
+        if self.writer_closed {
+            return Err(SessionError::WriterClosed(self.id().to_string()));
         }
         // 写句柄的第一次 append 之前，先把上次没提交的尾部截掉（DSH storage.ts:317-334）。
         if self.pending_truncate {

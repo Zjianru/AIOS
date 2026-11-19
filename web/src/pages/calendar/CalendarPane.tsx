@@ -28,7 +28,6 @@ import {
   recentRuns,
   ruleColor,
   blockWord,
-  stageWordOf,
   stampInZone,
   stampOf,
   weekStartOf,
@@ -40,6 +39,7 @@ import {
   type RangeBlock,
 } from './calendarModel';
 import { useCalendarPolling, useCalendarStore } from './calendarStore';
+import { stageLabel } from '../work/workModel';
 
 const ICON: Record<ApptKind, typeof CalendarClock> = {
   time: CalendarClock,
@@ -136,7 +136,7 @@ function ApptRow({ appt, on, onSelect }: { appt: Appointment; on: boolean; onSel
         <span className="mt-1 block truncate text-1 text-ink-3" data-kind="loop-band">
           第 {reportRounds} 轮
           {boundTask
-            ? ' · ' + boundTask.title + ' · ' + stageWordOf(boundTask.stage)
+            ? ' · ' + boundTask.title + ' · ' + stageLabel(boundTask.stage)
             : ' · 任务不在工作快照'}
         </span>
       ) : null}

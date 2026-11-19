@@ -655,7 +655,7 @@ async fn calendar_read_returns_range_blocks_plans_colors_and_dense_counts() {
         .iter()
         .find(|block| block.appointment_id == appointment.id)
         .expect("运行块");
-    assert_eq!(block.status, "已完成");
+    assert_eq!(block.stage.as_deref(), Some("closed"));
     assert!(block.task_id.is_none(), "Kind 自办块不点任务页");
     assert!(block.turn.is_some());
     assert!(block.end >= block.start);
@@ -741,7 +741,7 @@ async fn ended_appointment_run_blocks_still_show_in_the_range() {
         .iter()
         .find(|block| block.appointment_id == appointment.id)
         .expect("ended 一次性也要有块");
-    assert_eq!(block.status, "已完成");
+    assert_eq!(block.stage.as_deref(), Some("closed"));
     assert!(
         read.plans
             .iter()
@@ -1015,7 +1015,7 @@ async fn cycle_due_attempt_end_sets_the_block_end() {
         .find(|block| block.appointment_id == appointment.id)
         .expect("循环块");
     assert_eq!(block.end, now + 5_000);
-    assert_eq!(block.status, "已完成");
+    assert_eq!(block.stage.as_deref(), Some("closed"));
     fixture.host.shutdown().await;
 }
 
@@ -1197,7 +1197,6 @@ async fn range_block_for_dispatched_graph_closes_and_freezes_end() {
         .unwrap();
     assert_eq!(block.stage.as_deref(), Some("closed"), "{block:?}");
     assert_eq!(block.end, closed_at, "结束取关闭事实");
-    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     let second = read_range(&fixture).await;
     let block = second
         .ranges
