@@ -1931,6 +1931,30 @@ impl TaskRuntime {
         Ok(opened.attempt_id)
     }
 
+    /// T068：重开同一会话前，如果这个会话的宿主是保留状态（报告后后台还在跑），
+    /// 先停命令、关宿主、移除，再让下面的锁通知/open 走。
+    async fn stop_retained_for_reopen(&self, task_id: &TaskId, conversation: &str) {
+        let host = {
+            let running = self.running.lock().expect("thinagent 表锁被毒化");
+            running.get(conversation).and_then(|entry| {
+                if entry.retained {
+                    Some(Arc::clone(&entry.host))
+                } else {
+                    None
+                }
+            })
+        };
+        let Some(host) = host else {
+            return;
+        };
+        host.agent()
+            .stop_background_jobs("重开任务会话前停掉保留的后台命令")
+            .await;
+        host.shutdown().await;
+        self.forget_running(conversation);
+        self.notify_changed(task_id);
+    }
+
     /// 在原会话里接一次 Attempt（T028 的说话接续和确认卡接续共用）。
     ///
     /// 只做「占席位、落 Attempt、开回原会话、登记在跑表」；第一条消息由调用方送。
@@ -1964,6 +1988,10 @@ impl TaskRuntime {
                 "原会话 id 不合法：{conversation}"
             )));
         };
+        // T068：同一会话的 5 条重开路径都在这里汇合：先停掉保留宿主里的后台命令、
+        // 关宿主，再走现有的锁通知，避免报「会话写锁没让出来」。
+        self.stop_retained_for_reopen(&task.id, conversation.as_str())
+            .await;
         // 终态报告在工具调用里落库，那一轮可能还在写最后一段回答：会话写者没让出来
         // 之前不落新 Attempt（T028.5 e2e：报完立刻说「接着做」会撞上收尾）。
         // 效果留到下一次泵再领，攒够 2s 退避也不丢；不能在这里记一份「没开成」的失败报告。

@@ -408,3 +408,125 @@ fn group_alive_at(pid: i32) -> bool {
         .expect("kill -0")
         .success()
 }
+
+#[tokio::test]
+async fn saying_while_retained_stops_commands_then_reopens_a_new_attempt() {
+    let fixture = Fixture::new_with_actions().await;
+    let command = "echo $$ > shell.pid; trap 'exit 0' TERM; while [ ! -f done ]; do :; done";
+    let (task, pid) = report_with_background(&fixture, command).await;
+    let old_attempt = tasks_store(fixture.data())
+        .task(&task.id)
+        .unwrap()
+        .unwrap()
+        .latest_attempt()
+        .cloned()
+        .unwrap()
+        .id;
+    fixture
+        .router
+        .push_thin_for_title("改一下判重", crate::common::text_sse("接着做"));
+    let response = fixture
+        .host
+        .dispatch(Call::TaskSay(TaskSayRequest {
+            task_id: task.id.as_str().to_owned(),
+            text: "接着改".to_owned(),
+            pastes: Vec::new(),
+            attachments: Vec::new(),
+        }))
+        .await
+        .expect("说一句");
+    let Response::TaskSay(said) = response else {
+        panic!("不是 task-say");
+    };
+    assert!(!said.input_id.is_empty(), "{said:?}");
+    wait_until("保留命令先被停掉", || !pgid_alive(&pid)).await;
+    wait_until("新 Attempt 开成", || {
+        tasks_store(fixture.data())
+            .task(&task.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .is_some_and(|attempt| attempt.id != old_attempt)
+    })
+    .await;
+    let header = task_read(&fixture, &task).await;
+    assert!(!header.background_running, "{header:?}");
+}
+
+#[tokio::test]
+async fn kind_continue_while_retained_stops_commands_then_reopens() {
+    let fixture = Fixture::new_with_actions().await;
+    set_bash(&fixture.host, true).await;
+    let title = "改一下判重";
+    fixture.router.push_thin_for_title(
+        title,
+        crate::common::tool_use_sse(
+            1,
+            "call-bg",
+            "bash",
+            &serde_json::json!({
+                "description": "后台命令",
+                "command": "echo $$ > shell.pid; trap 'exit 0' TERM; while [ ! -f done ]; do :; done",
+                "run_in_background": true
+            })
+            .to_string(),
+        ),
+    );
+    fixture.router.push_thin_for_title(
+        title,
+        crate::common::tool_use_sse(
+            2,
+            "call-report",
+            "task_report",
+            r#"{"state":"failed","summary":"先报失败，后台还在跑"}"#,
+        ),
+    );
+    fixture
+        .router
+        .push_thin_for_title(title, crate::common::text_sse("报了"));
+    let task = fixture.accept_args(false, write_task_args(), 1).await;
+    let pid_file = fixture.cwd.path().join("shell.pid");
+    wait_until("后台命令写 pid", || pid_file.exists()).await;
+    wait_until("failed 报告落库", || {
+        tasks_store(fixture.data())
+            .task(&task.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_report().cloned())
+            .is_some_and(|report| report.state == ReportState::Failed)
+    })
+    .await;
+    let old_attempt = tasks_store(fixture.data())
+        .task(&task.id)
+        .unwrap()
+        .unwrap()
+        .latest_attempt()
+        .cloned()
+        .unwrap()
+        .id;
+    fixture
+        .router
+        .push_thin_for_title(title, crate::common::text_sse("接着做"));
+    let response = fixture
+        .host
+        .dispatch(Call::TaskContinue(service::TaskContinueRequest {
+            task_id: task.id.as_str().to_owned(),
+            note: None,
+        }))
+        .await
+        .expect("接着做");
+    let Response::TaskContinue(response) = response else {
+        panic!("不是 task-continue");
+    };
+    assert!(response.attempt_id > 0, "{response:?}");
+    wait_until("保留命令先被停掉", || !pgid_alive(&pid_file)).await;
+    wait_until("Kind 接续开新 Attempt", || {
+        tasks_store(fixture.data())
+            .task(&task.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .is_some_and(|attempt| attempt.id != old_attempt)
+    })
+    .await;
+}
