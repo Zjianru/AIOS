@@ -106,6 +106,16 @@ async fn run_parallel<'a>(
     }
     while !futures.is_empty() {
         tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                // 取消先到：丢掉已开始的 future（工具自己的进程由 kill_turn 停），
+                // 这些调用按没结果收尾，不投迟到结果。
+                for (index, _) in futures.drain(..) {
+                    results[index] = Some(aborted_result(plans[index].call));
+                }
+                cancelled = true;
+                break;
+            }
             (position, result) = next_finished(&mut futures) => {
                 let (index, _) = futures.remove(position);
                 results[index] = Some(result);
@@ -115,15 +125,6 @@ async fn run_parallel<'a>(
                     futures.push((next, Box::pin(invoke(&plans[next], context))));
                     next += 1;
                 }
-            }
-            _ = cancel.cancelled() => {
-                // 取消先到：丢掉已开始的 future（工具自己的进程由 kill_turn 停），
-                // 这些调用按没结果收尾，不投迟到结果。
-                for (index, _) in futures.drain(..) {
-                    results[index] = Some(aborted_result(plans[index].call));
-                }
-                cancelled = true;
-                break;
             }
         }
     }
@@ -170,13 +171,14 @@ pub async fn execute_batch(
         match mode {
             ToolConcurrency::Exclusive => {
                 tokio::select! {
-                    result = invoke(&plans[index], context) => {
-                        results[index] = Some(result);
-                    }
+                    biased;
                     _ = cancel.cancelled() => {
                         results[index] = Some(aborted_result(plans[index].call));
                         cancelled = true;
                         break;
+                    }
+                    result = invoke(&plans[index], context) => {
+                        results[index] = Some(result);
                     }
                 }
                 index += 1;
