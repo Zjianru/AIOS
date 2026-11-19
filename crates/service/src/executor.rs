@@ -1984,8 +1984,13 @@ impl TaskRuntime {
             .stop_background_jobs("重开任务会话前停掉保留的后台命令")
             .await;
         host.shutdown().await;
+        // 显式丢掉最后一个宿主引用，让会话写锁释放后再通知/open。
+        drop(host);
+        tokio::task::yield_now().await;
         self.forget_running(conversation);
         self.notify_changed(task_id);
+        // 宿主 shutdown/idle 已经完成；给会话写锁释放一个一次性让出窗口。
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
     /// 在原会话里接一次 Attempt（T028 的说话接续和确认卡接续共用）。
