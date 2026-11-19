@@ -2018,6 +2018,25 @@ async fn a_second_restart_reports_only_the_tasks_its_scan_interrupted() {
     drop(host);
 }
 
+/// T068.4：停命令测试统一断言进程组没了（killed.txt 只辅助）。
+fn stop_test_pgid(cwd: &std::path::Path) -> i32 {
+    std::fs::read_to_string(cwd.join("shell.pid"))
+        .expect("后台命令写 shell.pid")
+        .trim()
+        .parse()
+        .expect("pid")
+}
+
+fn assert_stop_test_pgid_gone(cwd: &std::path::Path) {
+    let pid = stop_test_pgid(cwd);
+    let alive = std::process::Command::new("kill")
+        .args(["-0", &format!("-{pid}")])
+        .status()
+        .expect("kill -0")
+        .success();
+    assert!(!alive, "进程组 {pid} 应该已经没了");
+}
+
 /// 立即停：连这个任务的后台命令一起停（进程收到 SIGTERM 并退出）。
 ///
 /// 后台命令把收到 TERM 写成 cwd 里的文件；没被杀掉时它会自己睡完 60 秒，
@@ -2036,7 +2055,7 @@ async fn immediately_stopping_a_task_kills_its_background_jobs() {
             "bash",
             &serde_json::json!({
                 "description": "等停止信号",
-                "command": "trap 'echo stopped > killed.txt; exit 0' TERM; while true; do :; done",
+                "command": "echo $$ > shell.pid; trap 'echo stopped > killed.txt; exit 0' TERM; while true; do :; done",
                 "run_in_background": true
             })
             .to_string(),
@@ -2081,6 +2100,15 @@ async fn immediately_stopping_a_task_kills_its_background_jobs() {
         "stopped\n",
         "后台命令收到 TERM 后落了文件"
     );
+    wait_until("后台进程组没了", || {
+        let pid = stop_test_pgid(fixture.cwd.path());
+        !std::process::Command::new("kill")
+            .args(["-0", &format!("-{pid}")])
+            .status()
+            .expect("kill -0")
+            .success()
+    })
+    .await;
 }
 
 /// 确认卡接续被打断的工作树任务：新 Attempt 还在同一棵树，不再 add。
@@ -2585,7 +2613,7 @@ async fn stopping_a_running_long_tool_kills_it_within_one_second() {
             "bash",
             &serde_json::json!({
                 "description": "长跑",
-                "command": "trap 'echo stopped > killed.txt; exit 0' TERM; while true; do :; done",
+                "command": "echo $$ > shell.pid; trap 'echo stopped > killed.txt; exit 0' TERM; while true; do :; done",
                 "timeoutMs": 30000
             })
             .to_string(),
@@ -2629,6 +2657,7 @@ async fn stopping_a_running_long_tool_kills_it_within_one_second() {
         fixture.cwd.path().join("killed.txt").exists()
     })
     .await;
+    assert_stop_test_pgid_gone(fixture.cwd.path());
     assert!(
         started.elapsed() < Duration::from_secs(1),
         "停止到进程死要 1 秒内，实际 {:?}",

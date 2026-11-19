@@ -1,6 +1,5 @@
 //! T068.3：serve 收到 SIGTERM 时把任务后台命令一起收掉（进程级测试）。
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -174,7 +173,7 @@ async fn serve_sigterm_kills_task_background_commands() {
         if let Ok(Some(status)) = child.try_wait() {
             let mut stderr = String::new();
             if let Some(mut handle) = child.stderr.take() {
-                let _ = std::io::Read::read_to_string(&mut handle, &mut stderr);
+                drop(std::io::Read::read_to_string(&mut handle, &mut stderr));
             }
             panic!("serve 提前退出 {status:?}：{stderr}");
         }
@@ -202,7 +201,7 @@ async fn serve_sigterm_kills_task_background_commands() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     if status.is_none() {
-        let _ = child.kill();
+        drop(child.kill());
         panic!("serve 收到 SIGTERM 后没退出");
     }
     for _ in 0..500 {
@@ -212,7 +211,7 @@ async fn serve_sigterm_kills_task_background_commands() {
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    let _ = child.kill();
+    drop(child.kill());
     replay_server.shutdown();
     panic!("SIGTERM 后任务后台进程组 {pid} 还在");
 }

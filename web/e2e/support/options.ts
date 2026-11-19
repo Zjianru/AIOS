@@ -145,7 +145,7 @@ export interface FixtureOptions {
  /// ：写任务、接受、bash 开关、工作树、非仓库和改错字的真服务夹具。
  /// worktree 场景会在起服务前把数据目录做成一个 git 仓库；expand 的第二段路由由测试
  /// 拿到真实任务 id 后再生成。
-  t030?: 'write' | 'ask' | 'expand' | 'bash' | 'worktree' | 'nonrepo' | 'typo' | 'scope';
+  t030?: 'write' | 'ask' | 'expand' | 'bash' | 'retained' | 'worktree' | 'nonrepo' | 'typo' | 'scope';
  /// ：任务图夹具——Kind 先 skill 再 task_graph_propose，再 propose_action 出确认卡；
  /// 卡上的 task_id 用 __GRAPH_ID__ 占位，由回放从请求体里换成真图 id。
   t052Graph?: boolean;
