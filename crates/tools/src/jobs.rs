@@ -194,6 +194,8 @@ struct JobState {
     stdout_error: Option<String>,
     stderr_error: Option<String>,
     kill_requested: bool,
+    /// T067：结算线程已收走子进程；kill 看到它就不再发信号（防 pid 复用）。
+    reaped: bool,
     /// 前台 bash 在 start 时标记：结算时不再发完成通知（照 DSH awaited）。
     awaited: bool,
     /// 完成通知已发出（或已补发）；保证最多一次。
@@ -213,7 +215,10 @@ struct JobRecord {
     kind: &'static str,
     label: String,
     turn: u64,
-    child: Mutex<Child>,
+    /// 进程组 id；启动时存下，信号不拿 child 锁（T067）。
+    pid: u32,
+    /// 结算线程拿走 Child 阻塞 wait；这里之后只剩 None。
+    child: Mutex<Option<Child>>,
     state: Mutex<JobState>,
     cond: Condvar,
     /// 创建 job 的工具调用（job/registered、job/settled 用）。
@@ -424,7 +429,8 @@ impl TaskRegistry {
             kind: "bash",
             label: spec.label,
             turn: spec.turn,
-            child: Mutex::new(child),
+            pid: child.id(),
+            child: Mutex::new(Some(child)),
             state: Mutex::new(JobState {
                 status: JobStatus::Running,
                 exit_code: None,
@@ -439,6 +445,7 @@ impl TaskRegistry {
                 stdout_error: None,
                 stderr_error: None,
                 kill_requested: false,
+                reaped: false,
                 awaited: foreground,
                 notified: false,
                 stdout_spill: None,
@@ -502,6 +509,16 @@ impl TaskRegistry {
         let tool_call = spec.tool_call.clone();
         let monitored = Arc::clone(&record);
         std::thread::spawn(move || {
+            // T067：Child 由结算线程独占，阻塞 wait 一次拿到退出；不拿锁、不 5ms 轮询。
+            let mut child = monitored
+                .child
+                .lock()
+                .expect("job 子进程锁被毒化")
+                .take()
+                .expect("结算线程只起一次");
+            let waited = child.wait();
+            // T067：先在同一把状态锁里标「已收」，kill 看到这个标记就不再发信号（防 pid 复用）。
+            monitored.state.lock().expect("job 状态锁被毒化").reaped = true;
             // 两个读线程都结束（完整流已落盘/spill）后再结算。
             let mut spills: [Option<PathBuf>; 2] = [None, None];
             for _ in 0..2 {
@@ -514,22 +531,11 @@ impl TaskRegistry {
                 }
             }
             let (mut status, mut exit_code, mut signal) = (JobStatus::Failed, None, None);
-            loop {
-                let mut child = monitored.child.lock().expect("job 子进程锁被毒化");
-                match child.try_wait() {
-                    Ok(Some(exit)) => {
-                        let classified = classify(exit);
-                        status = classified.0;
-                        exit_code = classified.1;
-                        signal = classified.2;
-                        break;
-                    }
-                    Ok(None) => {
-                        drop(child);
-                        std::thread::sleep(Duration::from_millis(5));
-                    }
-                    Err(_) => break,
-                }
+            if let Ok(exit) = waited {
+                let classified = classify(exit);
+                status = classified.0;
+                exit_code = classified.1;
+                signal = classified.2;
             }
             let (settled, should_notify) = {
                 let mut state = monitored.state.lock().expect("job 状态锁被毒化");
@@ -705,6 +711,9 @@ impl TaskRegistry {
         if self.settled(&record) {
             return Ok(read_of(&record));
         }
+        if record.state.lock().expect("job 状态锁被毒化").reaped {
+            return Ok(read_of(&record));
+        }
         Self::signal_group(&record, "-TERM");
         if !Self::wait_terminal(&record, grace).await {
             Self::signal_group(&record, "-KILL");
@@ -742,6 +751,13 @@ impl TaskRegistry {
             })
             .map(|record| record.turn)
             .max()
+    }
+
+    /// T067 测试钩子：结算线程是否已收走子进程（kill 不再发信号）。
+    #[doc(hidden)]
+    pub fn is_reaped(&self, id: &str) -> Result<bool, ToolFailure> {
+        let record = self.record(id)?;
+        Ok(record.state.lock().expect("job 状态锁被毒化").reaped)
     }
 
     /// T067：某一轮还在跑的后台命令标签（给「被停」说明用）。
@@ -872,7 +888,7 @@ impl TaskRegistry {
     /// 给整个进程组发信号（/bin/kill 的负 pid；子进程 start 时 process_group(0)）。
     #[cfg(unix)]
     fn signal_group(record: &Arc<JobRecord>, signal: &str) {
-        let pid = record.child.lock().expect("job 子进程锁被毒化").id();
+        let pid = record.pid;
         #[expect(
             clippy::let_underscore_must_use,
             reason = "进程可能已退出，kill 失败是预期；结算以 wait 结果为准"

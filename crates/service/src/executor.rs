@@ -307,6 +307,10 @@ pub struct TaskRuntime {
     slots: Mutex<WorkerSlots>,
     /// 还活着的 ThinAgent（按会话 id）；终态报告后移除，释放会话写锁。
     running: Mutex<std::collections::HashMap<String, RunningThin>>,
+    /// T067：有宿主移出在跑表时通知续接等锁的人。
+    session_relinquished: tokio::sync::Notify,
+    /// T067 测试钩子：效果泵醒来的次数。
+    pump_wakes: AtomicUsize,
     /// T057：正在跑的程序门检查（按任务 id）；进程组停任务用。
     gate_jobs: Mutex<std::collections::HashMap<String, Arc<RunningGate>>>,
     /// T058：任务事实变化（门判定/命令版本/接受）广播；任务 WS 用它在页面开着时重读。
@@ -363,6 +367,8 @@ impl TaskRuntime {
             exec_bash: AtomicBool::new(exec_bash),
             slots: Mutex::new(WorkerSlots::new()),
             running: Mutex::new(std::collections::HashMap::new()),
+            session_relinquished: tokio::sync::Notify::new(),
+            pump_wakes: AtomicUsize::new(0),
             gate_jobs: Mutex::new(std::collections::HashMap::new()),
             changed,
             crash_before_relay: AtomicBool::new(false),
@@ -512,10 +518,7 @@ impl TaskRuntime {
             .await;
         if let Err(error) = sent {
             opened.host.shutdown().await;
-            self.running
-                .lock()
-                .expect("thinagent 表锁被毒化")
-                .remove(opened.host.agent().id().as_str());
+            self.forget_running(opened.host.agent().id().as_str());
             best_effort(
                 "接着做的 Attempt 没收尾",
                 self.store.end_attempt(
@@ -1399,6 +1402,12 @@ impl TaskRuntime {
             .collect()
     }
 
+    /// T067 测试钩子：效果泵醒来的次数。
+    #[doc(hidden)]
+    pub fn pump_wake_count(&self) -> usize {
+        self.pump_wakes.load(Ordering::SeqCst)
+    }
+
     /// T067 测试钩子：当前占用席位数（在跑 + 起跑预约）。
     #[doc(hidden)]
     pub fn used_seats(&self) -> usize {
@@ -1474,6 +1483,23 @@ impl TaskRuntime {
             .duration_since(UNIX_EPOCH)
             .map(|duration| i64::try_from(duration.as_millis()).unwrap_or(i64::MAX))
             .unwrap_or_default()
+    }
+
+    /// 下一次该醒来的时刻：日历下次到点和效果最近到期的较早者；暂停时没有到点。
+    fn next_wake_at(&self) -> Option<i64> {
+        if self.exec_paused.load(Ordering::SeqCst) {
+            return None;
+        }
+        let calendar_due = self
+            .calendar
+            .as_ref()
+            .and_then(|store| store.next_wake_at().ok().flatten());
+        let effect_due = self.store.next_effect_due().ok().flatten();
+        match (calendar_due, effect_due) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (Some(at), None) | (None, Some(at)) => Some(at),
+            (None, None) => None,
+        }
     }
 
     /// 开效果泵；一个泵顺序处理，relay 的 ordered/独占就是这一条循环。
@@ -1615,16 +1641,25 @@ impl TaskRuntime {
                     continue;
                 }
             }
+            // T067：只等最近一次到点，没有到点就只等通知；暂停只等通知。
             let now = Self::now();
-            let mut sleep_ms = self.calendar_sleep_ms(now);
-            if let Ok(Some(due)) = self.store.next_effect_due() {
-                let retry = u64::try_from((due - now).clamp(10, 60_000)).unwrap_or(100);
-                sleep_ms = sleep_ms.min(retry);
+            match self.next_wake_at() {
+                Some(at) => {
+                    let wait =
+                        Duration::from_millis(u64::try_from((at - now).max(0)).unwrap_or(u64::MAX));
+                    tokio::select! {
+                        _ = self.notify.notified() => {}
+                        _ = tokio::time::sleep(wait) => {}
+                    }
+                }
+                None => {
+                    tokio::select! {
+                        _ = self.notify.notified() => {}
+                        _ = std::future::pending::<()>() => {}
+                    }
+                }
             }
-            tokio::select! {
-                _ = self.notify.notified() => {}
-                _ = tokio::time::sleep(Duration::from_millis(sleep_ms)) => {}
-            }
+            self.pump_wakes.fetch_add(1, Ordering::SeqCst);
         }
     }
 
@@ -1851,10 +1886,7 @@ impl TaskRuntime {
         if let Err(error) = sent {
             // 恢复说明没送出去：别留一个没人做的空 Attempt。
             opened.host.shutdown().await;
-            self.running
-                .lock()
-                .expect("thinagent 表锁被毒化")
-                .remove(opened.host.agent().id().as_str());
+            self.forget_running(opened.host.agent().id().as_str());
             best_effort(
                 "接续说明没送出去的 Attempt 没收尾",
                 self.store.end_attempt(
@@ -1968,14 +2000,30 @@ impl TaskRuntime {
             self.release_seat(&key);
             return Err(ResumeBlock::Later);
         }
-        // 上一轮可能还在收尾：会话写锁没让出来之前开不出续接会话，先短暂等它。
-        // 只等写者持有这一种；别的错误交给 open 报。
-        for _ in 0..100 {
-            match session::SessionStore::open(&self.data_dir, &resume) {
-                Err(session::SessionError::AlreadyOwned { .. }) => {
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-                _ => break,
+        // T067：上一轮可能还在收尾。先挂上「宿主移出在跑表」的通知，再查锁；
+        // 等到通知后只 open 一次，还占着就报错，不循环重试。
+        let relinquished = self.session_relinquished.notified();
+        tokio::pin!(relinquished);
+        relinquished.as_mut().enable();
+        if matches!(
+            session::SessionStore::open(&self.data_dir, &resume),
+            Err(session::SessionError::AlreadyOwned { .. })
+        ) {
+            if tokio::time::timeout(Duration::from_secs(5), relinquished)
+                .await
+                .is_err()
+            {
+                return Err(ResumeBlock::NoSession(
+                    "上一轮还在收尾，会话写锁没让出来".to_owned(),
+                ));
+            }
+            if matches!(
+                session::SessionStore::open(&self.data_dir, &resume),
+                Err(session::SessionError::AlreadyOwned { .. })
+            ) {
+                return Err(ResumeBlock::NoSession(
+                    "上一轮还在收尾，会话写锁没让出来".to_owned(),
+                ));
             }
         }
         let host = match self
@@ -2479,10 +2527,7 @@ impl TaskRuntime {
             )
             .await;
         if let Err(error) = sent {
-            self.running
-                .lock()
-                .expect("thinagent 表锁被毒化")
-                .remove(conversation.as_str());
+            self.forget_running(conversation.as_str());
             best_effort(
                 "派发失败的失败报告没写进去",
                 self.store.record_report(
@@ -2820,6 +2865,15 @@ impl TaskRuntime {
                 task_id: entry.task_id.clone(),
                 attempt_id: entry.attempt_id,
             })
+    }
+
+    /// T067：宿主移出在跑表；叫醒等会话锁的续接。
+    fn forget_running(&self, conversation: &str) {
+        self.running
+            .lock()
+            .expect("thinagent 表锁被毒化")
+            .remove(conversation);
+        self.session_relinquished.notify_waiters();
     }
 
     fn monitor(
@@ -3206,10 +3260,7 @@ impl TaskRuntime {
         if let Err(error) = sent {
             // 说明没送出去：别留一个没人做的空 Attempt。
             opened.host.shutdown().await;
-            self.running
-                .lock()
-                .expect("thinagent 表锁被毒化")
-                .remove(opened.host.agent().id().as_str());
+            self.forget_running(opened.host.agent().id().as_str());
             best_effort(
                 "改范围后的说明没送出去的 Attempt 没收尾",
                 self.store
@@ -3298,10 +3349,7 @@ impl TaskRuntime {
             .await
         {
             opened.host.shutdown().await;
-            self.running
-                .lock()
-                .expect("thinagent 表锁被毒化")
-                .remove(opened.host.agent().id().as_str());
+            self.forget_running(opened.host.agent().id().as_str());
             best_effort(
                 "改要求后的说明没送出去的 Attempt 没收尾",
                 self.store
@@ -3577,10 +3625,7 @@ impl TaskRuntime {
         // 开了 bash 的任务：后台命令也一起停，收到 SIGTERM 而不是留到任务结束之后（D85）。
         agent.stop_background_jobs(STOPPED_JOB_REASON).await;
         self.cancel_background_limit(attempt_id);
-        self.running
-            .lock()
-            .expect("thinagent 表锁被毒化")
-            .remove(running.host.agent().id().as_str());
+        self.forget_running(running.host.agent().id().as_str());
         self.release_seat(task_id);
         self.wake();
         let stage = self

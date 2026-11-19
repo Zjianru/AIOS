@@ -1419,3 +1419,33 @@ async fn running_turn_takes_the_latest_round_with_running_jobs() {
     let _ = turn_one.session().tasks().kill_turn(1, None).await;
     let _ = turn_one.session().tasks().kill_turn(3, None).await;
 }
+
+#[tokio::test]
+async fn a_reaped_job_is_not_signalled_again() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path(), "sess-reaped");
+    let started = bash(
+        json!({"description": "quick", "command": "printf 'ok\n'", "run_in_background": true}),
+        &context,
+    )
+    .await;
+    assert!(!started.is_error, "{}", started.content);
+    let job_id = extract_job_id(&started.content);
+    wait_until_terminal(&context, &job_id).await;
+    assert!(
+        context
+            .session()
+            .tasks()
+            .is_reaped(&job_id)
+            .expect("job 还在表里"),
+        "结算线程先标已收"
+    );
+    // 已收的 job 再请求杀：不发信号、不报错。
+    let killed = context
+        .session()
+        .tasks()
+        .kill_turn(0, Some("不该发".to_owned()))
+        .await;
+    assert!(killed.is_empty(), "已收的不再算在跑去杀");
+}

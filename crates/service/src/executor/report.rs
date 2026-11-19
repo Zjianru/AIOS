@@ -727,10 +727,7 @@ impl TaskRuntime {
                 self.store
                     .end_attempt(task_id, attempt_id, Self::now(), AttemptEnd::Reported),
             );
-            self.running
-                .lock()
-                .expect("thinagent 表锁被毒化")
-                .remove(conversation);
+            self.forget_running(conversation);
             self.release_seat(task_id.as_str());
         }
         self.wake();
@@ -775,10 +772,7 @@ impl TaskRuntime {
             self.store
                 .end_attempt(task_id, attempt_id, Self::now(), AttemptEnd::Reported),
         );
-        self.running
-            .lock()
-            .expect("thinagent 表锁被毒化")
-            .remove(conversation);
+        self.forget_running(conversation);
         self.release_seat(task_id.as_str());
         self.wake();
         Ok(format!(

@@ -276,3 +276,23 @@ async fn stopping_while_waiting_kills_commands_cancels_deadline_and_does_not_rep
             .await,
     );
 }
+
+#[tokio::test]
+async fn idle_pump_does_not_wake_and_resume_wakes_it_once() {
+    let fixture = Fixture::new().await;
+    let runtime = fixture.host.task_runtime().expect("runtime");
+    runtime.set_pump_paused(true);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let baseline = runtime.pump_wake_count();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        runtime.pump_wake_count(),
+        baseline,
+        "没到点、没暂停变化时泵不该醒"
+    );
+    runtime.set_pump_paused(false);
+    wait_until("恢复后泵醒一次", || {
+        runtime.pump_wake_count() > baseline
+    })
+    .await;
+}

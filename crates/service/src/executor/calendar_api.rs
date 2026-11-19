@@ -466,20 +466,6 @@ impl TaskRuntime {
         }
     }
 
-    /// 下一次醒来的等待毫秒：只等最近一条约定；没有就 100ms 轻轮询。
-    pub(crate) fn calendar_sleep_ms(&self, now: i64) -> u64 {
-        let Some(store) = &self.calendar else {
-            return 100;
-        };
-        if self.exec_paused.load(Ordering::SeqCst) {
-            return 500;
-        }
-        match store.next_wake_at() {
-            Ok(Some(at)) => u64::try_from((at - now).clamp(20, 60_000)).unwrap_or(100),
-            _ => 10_000,
-        }
-    }
-
     pub(crate) async fn deliver_appointment_wake(self: &Arc<Self>, claim: EffectClaim) {
         let EffectPayload::AppointmentWake {
             appointment_id,
@@ -571,36 +557,29 @@ impl TaskRuntime {
         }
         let request_id = format!("appointment-wake:{}:{}", appointment.id, run.id);
         let message = UserMessage::text(body.to_string());
+        // T067：送之前先订阅 agent 事件；等带这个 request_id 的 InboxClaimed 拿 turn，不短轮询日志。
+        let mut agent_events = host.subscribe_agent_events();
         let sent = host
             .send_message(&request_id, message, DeliveryMode::Steer)
             .await;
         let mut sent_turn = None;
-        if sent.is_ok()
-            && let Ok(session_id) = session::SessionId::parse(host.agent().id().as_str())
-        {
-            // 送达返回时事件可能还没落盘：短轮询会话日志到那条 user/message 出现。
-            for _ in 0..20 {
-                if let Ok(store) =
-                    session::SessionStore::open_read_only(&self.data_dir, &session_id)
-                {
-                    sent_turn = store.events().iter().rev().find_map(|event| {
-                        let session::EventKind::UserMessage { turn, message, .. } = &event.kind
-                        else {
-                            return None;
+        if sent.is_ok() {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                match tokio::time::timeout_at(deadline, agent_events.recv()).await {
+                    Ok(Ok(AgentEvent::InboxClaimed { message, turn })) => {
+                        let rpc = match &message.source {
+                            model::MessageSource::User { rpc_id } => rpc_id.as_deref(),
+                            _ => None,
                         };
-                        let model::MessageSource::User { rpc_id } = &message.source else {
-                            return None;
-                        };
-                        rpc_id
-                            .as_deref()
-                            .filter(|rpc| *rpc == request_id)
-                            .map(|_| i64::try_from(*turn).unwrap_or(i64::MAX))
-                    });
+                        if rpc == Some(request_id.as_str()) {
+                            sent_turn = Some(i64::try_from(turn).unwrap_or(i64::MAX));
+                            break;
+                        }
+                    }
+                    Ok(Ok(_)) => continue,
+                    _ => break,
                 }
-                if sent_turn.is_some() {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
             }
         }
         if let Some(turn) = sent_turn.and_then(|turn| u64::try_from(turn).ok()) {
