@@ -1399,6 +1399,13 @@ impl TaskRuntime {
             .collect()
     }
 
+    /// T067 测试钩子：当前占用席位数（在跑 + 起跑预约）。
+    #[doc(hidden)]
+    pub fn used_seats(&self) -> usize {
+        let running = self.running_tasks();
+        self.slots.lock().expect("席位表锁被毒化").used(&running)
+    }
+
     /// 现在还能不能再起一个 launch：在跑 + 起跑预约（person 可多占 1 个）没占满。
     fn has_launch_room(&self) -> bool {
         let running = self.running_tasks();

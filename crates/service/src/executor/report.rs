@@ -388,11 +388,6 @@ impl TaskRuntime {
         }
         // T067：这一轮结束了但还有后台命令：不报「在等」、Attempt 不结束、席位留着，
         // 落一条 30 分钟到点；命令完了会叫醒模型开新一轮，新一轮结束时再判。
-        eprintln!(
-            "T067_DEBUG turn_ended {} bg={:?}",
-            conversation,
-            self.background_turn_of(conversation)
-        );
         if let Some(turn) = self.background_turn_of(conversation) {
             self.schedule_background_limit(task_id, attempt_id, turn);
             self.wake();

@@ -105,6 +105,11 @@ async fn background_limit_fires_kills_and_reports_waiting() {
             .is_some_and(|attempt| attempt.ended_at.is_none()),
         "后台还在跑时 Attempt 不能结束"
     );
+    assert_eq!(
+        fixture.host.task_runtime().unwrap().used_seats(),
+        1,
+        "后台还在跑时这一轮的席位还占着"
+    );
     assert!(before.latest_report().is_none(), "不能先合成在等");
     wait_until("到点杀命令并合成在等", || {
         let task = tasks_store(fixture.data()).task(&task.id).unwrap().unwrap();
@@ -243,6 +248,11 @@ async fn stopping_while_waiting_kills_commands_cancels_deadline_and_does_not_rep
     assert!(
         !background_limit_pending(&fixture, attempt.id),
         "停止要撤掉到点"
+    );
+    assert_eq!(
+        fixture.host.task_runtime().unwrap().used_seats(),
+        0,
+        "等后台时停止要放掉席位"
     );
     let task_now = tasks_store(fixture.data()).task(&task.id).unwrap().unwrap();
     assert!(
