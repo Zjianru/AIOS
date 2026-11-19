@@ -648,3 +648,42 @@ async fn queued_message_while_retained_stops_commands_then_reopens() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn kind_task_stop_tool_kills_retained_background_commands() {
+    use service::TaskStopTool;
+    use tools::{Tool, ToolCall, ToolContext, ToolSessionState};
+
+    let fixture = Fixture::new_with_actions().await;
+    let command = "echo $$ > shell.pid; trap 'exit 0' TERM; while [ ! -f done ]; do :; done";
+    let (task, pid) = report_with_background(&fixture, command).await;
+    let context = ToolContext::with_session(
+        fixture.cwd.path(),
+        Arc::new(ToolSessionState::new(fixture.cwd.path(), "kind")),
+    );
+    let tool = TaskStopTool::new(Arc::clone(fixture.host.task_runtime().unwrap()));
+    let result = tool
+        .execute(
+            ToolCall {
+                id: "call-stop-retained".to_owned(),
+                name: "task_stop".to_owned(),
+                arguments: serde_json::json!({
+                    "task_id": task.id.as_str(),
+                    "mode": "now"
+                })
+                .to_string(),
+            },
+            &context,
+        )
+        .await;
+    assert!(!result.is_error, "{}", result.content);
+    assert!(
+        result.content.contains("已停下保留的后台命令"),
+        "{}",
+        result.content
+    );
+    wait_until("Kind task_stop 杀 retained 进程组", || {
+        !pgid_alive(&pid)
+    })
+    .await;
+}

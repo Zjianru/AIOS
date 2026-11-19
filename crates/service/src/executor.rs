@@ -46,6 +46,8 @@ mod calendar_tools;
 pub use calendar_tools::AppointmentCancelTool;
 mod calendar_watch;
 mod task_tools;
+#[doc(hidden)]
+pub use task_tools::TaskStopTool;
 pub(crate) use task_tools::*;
 
 mod delivery;
