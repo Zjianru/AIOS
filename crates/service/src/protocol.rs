@@ -1633,7 +1633,10 @@ pub struct CalendarRunBlock {
     pub title: String,
     pub start: i64,
     pub end: i64,
-    /// 已完成 / 在做 / 排队 / 等你核 / 已关闭 / 没跑成 等看板词。
+    /// 派出任务的阶段 key；有它时页面用看板同一张词表出词。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// 不是派出任务时的固定词（自办块：已完成/在做）。
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,

@@ -69,7 +69,8 @@ impl TaskRuntime {
                 let runs = store.runs(&appointment.id).map_err(calendar_error)?;
                 for run in &runs {
                     if run.result == RunResult::Sent
-                        && let Some(block) = range_block(&appointment, run, &tasks, now)
+                        && let Some(block) =
+                            range_block(&appointment, run, &tasks, &self.store, now)
                         && block.start <= to
                         && block.end >= from
                     {
@@ -726,6 +727,7 @@ fn range_block(
     appointment: &Appointment,
     run: &Run,
     tasks: &[Task],
+    task_store: &tasks::Store,
     now: i64,
 ) -> Option<crate::protocol::CalendarRunBlock> {
     if run.result != RunResult::Sent {
@@ -747,32 +749,29 @@ fn range_block(
     // 只有派出去的任务给 task_id：Kind 自办的块点开回轮，不点任务页。
     let task_id = dispatched.first().map(|task| task.id.as_str().to_owned());
     if !dispatched.is_empty() {
-        let any_open = dispatched
+        // 阶段直接取任务库（图的根会汇总子任务）；词由页面用看板同一张表出。
+        let stages: Vec<Stage> = dispatched
             .iter()
-            .any(|task| task_stage(task).is_none_or(|stage| stage != Stage::Closed));
-        let end = if any_open {
+            .filter_map(|task| task_store.stage(&task.id).ok())
+            .collect();
+        let stage = stages.iter().copied().min_by_key(|stage| stage.rank())?;
+        let end = if stage != Stage::Closed {
             now
         } else {
             dispatched
                 .iter()
-                .filter_map(|task| closed_at(task))
+                .filter_map(|task| task_store.closed_at(&task.id).ok().flatten())
                 .max()
                 .unwrap_or(now)
         };
-        let status = dispatched
-            .iter()
-            .filter_map(|task| task_stage(task))
-            .min_by_key(|stage| stage_rank(*stage))
-            .map(stage_word)
-            .unwrap_or("在做")
-            .to_owned();
         return Some(crate::protocol::CalendarRunBlock {
             id: run.id,
             appointment_id: appointment.id.clone(),
             title: appointment.title.clone(),
             start,
             end,
-            status,
+            stage: Some(stage.key().to_owned()),
+            status: String::new(),
             task_id,
             turn,
         });
@@ -786,6 +785,7 @@ fn range_block(
             title: appointment.title.clone(),
             start,
             end,
+            stage: None,
             status: if end == now { "在做" } else { "已完成" }.to_owned(),
             task_id,
             turn,
@@ -798,6 +798,7 @@ fn range_block(
         title: appointment.title.clone(),
         start,
         end: closed.map_or(now, |round| round.at),
+        stage: None,
         status: if closed.is_some() {
             "已完成"
         } else {
@@ -823,33 +824,6 @@ fn trigger_task_for_run<'a>(
     })
 }
 
-fn task_stage(task: &Task) -> Option<Stage> {
-    task.origin.as_ref()?;
-    if task.round_end.is_some() {
-        return Some(Stage::Closed);
-    }
-    if task
-        .latest_report()
-        .is_some_and(|report| task.acceptance_for(&report.id).is_some())
-    {
-        return Some(Stage::Closed);
-    }
-    if !task.reports.is_empty() {
-        return Some(Stage::ReadyForReview);
-    }
-    if task.has_attempt() {
-        return Some(Stage::Running);
-    }
-    Some(Stage::Pending)
-}
-
-fn closed_at(task: &Task) -> Option<i64> {
-    task.acceptances
-        .last()
-        .map(|acceptance| acceptance.at)
-        .or_else(|| task.reports.last().map(|report| report.at))
-}
-
 fn cycle_attempt_end(appointment: &Appointment, tasks: &[Task], run_id: i64) -> Option<i64> {
     let Binding::Task(task_id) = &appointment.binding else {
         return None;
@@ -871,28 +845,6 @@ fn cycle_attempt_end(appointment: &Appointment, tasks: &[Task], run_id: i64) -> 
             )
         })?;
     attempt.ended_at
-}
-
-fn stage_rank(stage: Stage) -> u8 {
-    match stage {
-        Stage::NeedsConditions => 0,
-        Stage::Pending => 1,
-        Stage::Running => 2,
-        Stage::ReadyForReview => 3,
-        Stage::RequirementMet => 4,
-        Stage::Closed => 5,
-    }
-}
-
-fn stage_word(stage: Stage) -> &'static str {
-    match stage {
-        Stage::NeedsConditions => "缺条件",
-        Stage::Pending => "排队",
-        Stage::Running => "在做",
-        Stage::ReadyForReview => "等你核",
-        Stage::RequirementMet => "要求已满足",
-        Stage::Closed => "已完成",
-    }
 }
 
 fn dense_rule(rule: &str) -> bool {

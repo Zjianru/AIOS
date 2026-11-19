@@ -1,3 +1,21 @@
+/** 任务阶段词：看板/任务页/日历共用这一张表。 */
+export const STAGE_WORD: Record<string, string> = {
+  needs_conditions: '缺条件',
+  pending: '排队',
+  running: '在做',
+  ready_for_review: '待你核',
+  requirement_met: '已满足',
+  closed: '已关闭',
+};
+
+export function stageWordOf(stage: string | null | undefined): string {
+  return stage ? (STAGE_WORD[stage] ?? stage) : '';
+}
+
+/** 派出块：有阶段就按看板词表出词；自办块没有阶段，用服务给的固定词。 */
+export function blockWord(block: { stage?: string | null; status: string }): string {
+  return block.stage ? stageWordOf(block.stage) : block.status;
+}
 /**
  * 把服务端 calendar-read 的事实翻成日历页的词和颜色。
  *
@@ -204,6 +222,7 @@ export interface RangeBlock {
   title: string;
   start: number;
   end: number;
+  stage: string | null;
   status: string;
   taskId: string | null;
   turn: number | null;
@@ -232,6 +251,7 @@ export function rangeBlocksOf(response: CalendarReadResponse | null): RangeBlock
     title: block.title,
     start: block.start,
     end: block.end,
+    stage: block.stage ?? null,
     status: block.status,
     taskId: block.taskId ?? null,
     turn: block.turn ?? null,

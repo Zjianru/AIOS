@@ -21,7 +21,7 @@ pub enum Stage {
 
 impl Stage {
     /// 表序（docs/03 5.1）：数字越小越靠前；总任务汇总取最靠前的子任务阶段。
-    pub(crate) fn rank(self) -> u8 {
+    pub fn rank(self) -> u8 {
         match self {
             Self::NeedsConditions => 0,
             Self::Pending => 1,
@@ -29,6 +29,20 @@ impl Stage {
             Self::ReadyForReview => 3,
             Self::RequirementMet => 4,
             Self::Closed => 5,
+        }
+    }
+}
+
+impl Stage {
+    /// 协议里的阶段 key（看板/任务页/日历共用一套词）。
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::NeedsConditions => "needs_conditions",
+            Self::Pending => "pending",
+            Self::Running => "running",
+            Self::ReadyForReview => "ready_for_review",
+            Self::RequirementMet => "requirement_met",
+            Self::Closed => "closed",
         }
     }
 }

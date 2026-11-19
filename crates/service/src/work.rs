@@ -223,14 +223,7 @@ struct FactMeta<'a> {
 }
 
 fn stage_key(stage: Stage) -> &'static str {
-    match stage {
-        Stage::NeedsConditions => "needs_conditions",
-        Stage::Pending => "pending",
-        Stage::Running => "running",
-        Stage::ReadyForReview => "ready_for_review",
-        Stage::RequirementMet => "requirement_met",
-        Stage::Closed => "closed",
-    }
+    stage.key()
 }
 
 fn report_state_key(state: ReportState) -> &'static str {
