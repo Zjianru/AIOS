@@ -4,6 +4,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { reconnectDelayMs } from '@/data/reconnect';
 import { displayPath } from '@/data/service';
 import { CircleAlert, FileWarning, KeyRound, Lock, PlugZap, RotateCw } from 'lucide-react';
 
@@ -24,17 +25,6 @@ function Block({ children }: { children: React.ReactNode }) {
       {children}
     </pre>
   );
-}
-
-function useCountdown(active: boolean, every: number): number {
-  const [left, setLeft] = useState(every);
-  useEffect(() => {
-    if (!active) return;
-    setLeft(every);
-    const timer = window.setInterval(() => setLeft((n) => (n <= 1 ? every : n - 1)), 1000);
-    return () => window.clearInterval(timer);
-  }, [active, every]);
-  return left;
 }
 
 function RetryButton({ onRecheck, label }: { onRecheck: () => Promise<void> | void; label: string }) {
@@ -63,17 +53,33 @@ export function KernelGate({
   detail?: GateDetail;
   onRecheck: () => Promise<void> | void;
 }) {
-  const left = useCountdown(state === 'unreachable', 5);
   // T009.5：显示的路径用 ~/ 缩写；拼给服务端的路径不变。
   const path = detail?.path ? displayPath(detail.path) : undefined;
 
-  // 「连不上服务」时页面每 5 秒自己再试一次。
+  // 「连不上服务」时页面自己在退避重连（300ms 起翻倍、封顶 5s），不写秒数。
   useEffect(() => {
     if (state !== 'unreachable') return;
-    const timer = window.setInterval(() => {
-      void onRecheck();
-    }, 5000);
-    return () => window.clearInterval(timer);
+    let disposed = false;
+    let attempt = 0;
+    let timer: number | null = null;
+    const schedule = () => {
+      timer = window.setTimeout(
+        () => {
+          if (disposed) return;
+          void Promise.resolve(onRecheck()).finally(() => {
+            if (disposed) return;
+            attempt += 1;
+            schedule();
+          });
+        },
+        reconnectDelayMs(attempt + 1),
+      );
+    };
+    schedule();
+    return () => {
+      disposed = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
   }, [state, onRecheck]);
 
   const content: Record<GateState, { icon: React.ReactNode; title: string; body: React.ReactNode; action?: React.ReactNode }> = {
@@ -85,7 +91,7 @@ export function KernelGate({
           <p>内核的服务没有在运行，或者刚刚退出了。在终端里启动它：</p>
           <Block>aios-dev serve</Block>
           <p className="mt-3">
-            启动后用它打印出来的地址打开。这一页每 5 秒自己再试一次（<span className="brand-type">{left}</span> 秒后）。
+            启动后用它打印出来的地址打开。这一页自己在重连，不需要你刷新。
           </p>
         </>
       ),

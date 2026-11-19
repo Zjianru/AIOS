@@ -23,7 +23,7 @@ export function useTaskChatSideData(options: {
   upstreamResults: { task_id: string; title: string; requirement_version: number; summary: string }[];
   queuedVisible: { inputId: string; text: string; pastes: string[]; attachments: SendAttachmentRef[] }[];
 } {
-  const { events, task, taskId, saying, queued, refreshHeader, stopTurn } = options;
+  const { events, task, taskId, saying, queued, stopTurn } = options;
   const [paused, setPaused] = useState(false);
 
   const views = useMemo(
@@ -56,14 +56,6 @@ export function useTaskChatSideData(options: {
     }
     return [];
   }, [events]);
-
-  useEffect(() => {
-    if (!task?.restartPending) return;
-    const timer = window.setInterval(() => void refreshHeader(), 1000);
-    return () => window.clearInterval(timer);
- // refreshHeader 只用 taskId；跟着 restartPending 重新挂。
- // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [task?.restartPending, taskId]);
 
   useEffect(() => {
     let live = true;

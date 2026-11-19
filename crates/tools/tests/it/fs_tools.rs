@@ -4,6 +4,13 @@ use std::fs;
 use std::path::Path;
 
 use serde_json::{Value, json};
+fn never_cancel() -> model::CancelToken {
+    model::CancelToken::new(
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    )
+}
+
 use tools::{ApplyPatchTool, EditTool, Tool, ToolCall, ToolContext, ToolResult, WriteTool};
 
 async fn run(tool: &dyn Tool, context: &ToolContext, arguments: Value) -> ToolResult {
@@ -49,7 +56,6 @@ async fn write_creates_file() {
     );
     assert_eq!(result.error_code, None);
 }
-use std::sync::atomic::AtomicBool;
 
 use tools::{ToolSet, execute_batch};
 
@@ -73,7 +79,7 @@ async fn batch_write_before_read_is_rejected() {
             arguments: json!({"file_path": "a.txt"}).to_string(),
         },
     ];
-    let outcome = execute_batch(&tools, &calls, 10, &context, &AtomicBool::new(false)).await;
+    let outcome = execute_batch(&tools, &calls, 10, &context, &never_cancel()).await;
     assert_eq!(outcome.results.len(), 2);
     let write = &outcome.results[0];
     assert!(write.is_error, "{}", write.content);
@@ -833,9 +839,10 @@ async fn write_tool_forms_real_batch_barrier() {
             arguments: json!({"file_path": "a.txt", "content": "hello\n"}).to_string(),
         },
     ];
-    let handle = tokio::spawn(async move {
-        execute_batch(&tools, &calls, 10, &context, &AtomicBool::new(false)).await
-    });
+    let handle =
+        tokio::spawn(
+            async move { execute_batch(&tools, &calls, 10, &context, &never_cancel()).await },
+        );
     started.recv().await.expect("block 工具没开始");
     assert!(
         !dir.path().join("a.txt").exists(),

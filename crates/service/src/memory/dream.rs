@@ -307,22 +307,17 @@ impl DreamRuntime {
         }
     }
 
-    /// 回合结束触发时等 Agent 真正收尾（最多 5 秒），再进忙判断。
+    /// 回合结束触发时等 Agent 真正收尾：先拿住根槽的强引用，再 idle().await。
     async fn wait_root_idle(&self) {
-        for _ in 0..250 {
-            // 只在锁里看一眼；等 sleep 之前必须把根会话槽的强引用放掉，
-            // 否则根宿主 drop 后 20ms 内会话写锁还挂在这条后台检查上。
-            let running = {
-                let Some(inner) = self.inner.upgrade() else {
-                    return;
-                };
-                let guard = inner.lock().await;
-                guard.as_ref().is_some_and(|host| host.agent().is_running())
-            };
-            if !running {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let Some(inner) = self.inner.upgrade() else {
+            return;
+        };
+        let agent = {
+            let guard = inner.lock().await;
+            guard.as_ref().map(|host| host.agent().clone())
+        };
+        if let Some(agent) = agent {
+            agent.idle().await;
         }
     }
 

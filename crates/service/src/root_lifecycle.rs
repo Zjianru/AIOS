@@ -290,6 +290,13 @@ impl RootHost {
             })
     }
 
+    /// T067：根 WS 转发任务事实变化（task-changed）用；没有任务运行时为空。
+    pub fn subscribe_task_changed(&self) -> Option<tokio::sync::broadcast::Receiver<String>> {
+        self.task_runtime
+            .as_ref()
+            .map(|runtime| runtime.subscribe_task_changed())
+    }
+
     /// 测试钩子：循环约定的 task_continue 准入原因（有就返回 Debug 文本）。
     #[doc(hidden)]
     pub fn calendar_cycle_cause(&self, task_id: &str) -> Option<String> {

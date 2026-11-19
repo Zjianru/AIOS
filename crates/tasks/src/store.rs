@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
@@ -52,6 +53,9 @@ const CREATE_TABLES: &str = "
     CREATE INDEX IF NOT EXISTS ledger_note_task ON ledger_note(task_id, at);
 ";
 
+/// T067：任务库写入后的变化通知（任务 id）。
+pub type TaskChangedCallback = Arc<dyn Fn(&str) + Send + Sync>;
+
 /// 立即停在库里的结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StopAttempt {
@@ -86,6 +90,8 @@ pub struct BootScan {
 /// 任务库。一个 SQLite 连接放在锁后；所有方法同步。
 pub struct Store {
     pub(crate) conn: Mutex<Connection>,
+    /// T067：任务事实写入的唯一出口回调（服务挂 changed 广播）。
+    on_changed: Mutex<Option<TaskChangedCallback>>,
     /// 效果行队列位置，进程内单调；重开时从表里的最大 seq 续上。
     seq: AtomicI64,
 }
@@ -172,6 +178,7 @@ impl Store {
         })?;
         Ok(Self {
             conn: Mutex::new(conn),
+            on_changed: Mutex::new(None),
             seq: AtomicI64::new(seq),
         })
     }
@@ -257,6 +264,22 @@ impl Store {
         self.conn.lock().map_err(|_| TaskError::Poisoned)
     }
 
+    /// T067：挂任务事实变化的唯一出口；服务用来推 task-changed。
+    pub fn set_on_changed(&self, callback: TaskChangedCallback) {
+        *self.on_changed.lock().expect("任务 changed 锁被毒化") = Some(callback);
+    }
+
+    fn task_changed(&self, id: &TaskId) {
+        let callback = self
+            .on_changed
+            .lock()
+            .expect("任务 changed 锁被毒化")
+            .clone();
+        if let Some(callback) = callback {
+            callback(id.as_str());
+        }
+    }
+
     fn next_seq(&self) -> i64 {
         self.seq.fetch_add(1, Ordering::Relaxed) + 1
     }
@@ -291,6 +314,7 @@ impl Store {
         let task =
             self.insert_task_in_with_constraints(&transaction, draft, &frozen, constraints, now)?;
         transaction.commit()?;
+        self.task_changed(&task.id);
         Ok(task)
     }
 
@@ -312,6 +336,7 @@ impl Store {
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let root = self.create_graph_in(&transaction, graph, constraints, now)?;
         transaction.commit()?;
+        self.task_changed(&root.id);
         Ok(root)
     }
 
@@ -355,6 +380,7 @@ impl Store {
             params![key, root.id.as_str()],
         )?;
         transaction.commit()?;
+        self.task_changed(&root.id);
         Ok((root, true))
     }
 
@@ -463,7 +489,7 @@ impl Store {
             confirmed: None,
             cancelled: Some(cancellation.clone()),
         });
-        save_task(&transaction, &task)?;
+        save_task(Some(self), &transaction, &task)?;
         transaction.commit()?;
         Ok(cancellation)
     }
@@ -502,7 +528,7 @@ impl Store {
             }),
             cancelled: None,
         });
-        save_task(&transaction, &root_task)?;
+        save_task(Some(self), &transaction, &root_task)?;
         let mut launched = 0_usize;
         for child in children_in(&transaction, root)? {
             if child.needs.is_empty() {
@@ -565,7 +591,7 @@ impl Store {
             for (need, handoff) in child.needs.iter_mut().zip(handoffs) {
                 need.handoff = Some(handoff);
             }
-            save_task(connection, &child)?;
+            save_task(Some(self), connection, &child)?;
             if first_release {
                 self.enqueue_effect_in(
                     connection,
@@ -681,7 +707,7 @@ impl Store {
                 summary: report.summary.clone(),
             };
             gate.needs[0].handoff = Some(handoff);
-            save_task(connection, &gate)?;
+            save_task(Some(self), connection, &gate)?;
             // 门正在跑：只记下这份交接，等门这次 Attempt 结束后再放一次。
             let running = gate
                 .latest_attempt()
@@ -731,7 +757,7 @@ impl Store {
             requirement_version: latest_ready.version,
             summary: latest_ready.summary.clone(),
         });
-        save_task(connection, &gate_task)?;
+        save_task(Some(self), connection, &gate_task)?;
         self.enqueue_effect_in(
             connection,
             &EffectPayload::Launch {
@@ -828,7 +854,7 @@ impl Store {
         now: i64,
     ) -> Result<Vec<String>, TaskError> {
         gate.verdicts.push(verdict.clone());
-        save_task(transaction, gate)?;
+        save_task(Some(self), transaction, gate)?;
         let need = gate.needs.first().ok_or(TaskError::GateReportChanged)?;
         let guarded_id = need.from.clone();
         let guarded = load_task_required(transaction, &guarded_id)?;
@@ -846,7 +872,7 @@ impl Store {
                         need.handoff = Some(candidate_handoff.clone());
                     }
                 }
-                save_task(transaction, &child)?;
+                save_task(Some(self), transaction, &child)?;
                 // 放过的再遇到新的通过候选不算首次放行（D95 需重评，T053.3 处理），不新开 launch。
                 if child.latest_attempt().is_none() {
                     self.enqueue_effect_in(
@@ -939,7 +965,7 @@ impl Store {
             attempt.ended_at = Some(now);
             attempt.end = Some(AttemptEnd::Reported);
         }
-        save_task(&transaction, &gate)?;
+        save_task(Some(self), &transaction, &gate)?;
         // T057 F1：门在跑时候选变了。照常收下这份报告和 checks，Attempt 记 Reported；
         // 不写判定、不放行、不 relay，交给 after_gate_report_in 对最新候选再排一次。
         if candidate_changed {
@@ -1022,7 +1048,7 @@ impl Store {
             commands,
             commands_version: data.commands_version.saturating_add(1),
         });
-        save_task(&transaction, &gate)?;
+        save_task(Some(self), &transaction, &gate)?;
         transaction.commit()?;
         let _ = now;
         Ok(gate)
@@ -1137,6 +1163,7 @@ impl Store {
             params![key, task.id.as_str()],
         )?;
         transaction.commit()?;
+        self.task_changed(&task.id);
         Ok((task, true))
     }
 
@@ -1198,7 +1225,7 @@ impl Store {
         let connection = self.lock()?;
         let mut task = load_task_required(&connection, id)?;
         task.origin = Some(origin);
-        save_task(&connection, &task)
+        save_task(Some(self), &connection, &task)
     }
 
     /// T066：给触发任务写那一轮结束的事实（幂等；已有就不改）。
@@ -1211,7 +1238,7 @@ impl Store {
         let mut task = load_task_required(&connection, id)?;
         if task.round_end.is_none() {
             task.round_end = Some(round_end);
-            save_task(&connection, &task)?;
+            save_task(Some(self), &connection, &task)?;
         }
         Ok(())
     }
@@ -1303,6 +1330,16 @@ impl Store {
             .map_err(TaskError::from)
     }
 
+    /// T067：撤掉一条还没领的效果（换轮/停止时作废旧到点）。
+    pub fn remove_effect(&self, kind: EffectKind, key: &str) -> Result<bool, TaskError> {
+        let conn = self.lock()?;
+        let removed = conn.execute(
+            "DELETE FROM effect WHERE kind = ?1 AND key = ?2",
+            params![kind.as_str(), key],
+        )?;
+        Ok(removed > 0)
+    }
+
     /// 这个键的效果还在不在排队。
     pub fn effect_pending(&self, kind: EffectKind, key: &str) -> Result<bool, TaskError> {
         let conn = self.lock()?;
@@ -1344,7 +1381,7 @@ impl Store {
         let transaction = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut task = load_task_required(&transaction, id)?;
         task.missing = missing;
-        save_task(&transaction, &task)?;
+        save_task(Some(self), &transaction, &task)?;
         transaction.commit()?;
         Ok(())
     }
@@ -1405,7 +1442,7 @@ impl Store {
                 attempts: vec![attempt],
             });
         }
-        save_task(&transaction, &task)?;
+        save_task(Some(self), &transaction, &task)?;
         transaction.commit()?;
         Ok(attempt_id)
     }
@@ -1466,7 +1503,7 @@ impl Store {
         // 只回报「接着做会开第几次 Attempt」；Attempt 行等投递真的接上会话再落，
         // 免得投递只 Later 时留下一个没有会话的空 Attempt。
         let new_attempt = followup_preview(&task);
-        save_task(&transaction, &task)?;
+        save_task(Some(self), &transaction, &task)?;
         self.enqueue_effect_in(
             &transaction,
             &EffectPayload::Delivery {
@@ -1522,7 +1559,7 @@ impl Store {
             transaction.commit()?;
             return Ok(None);
         };
-        save_task(&transaction, &task)?;
+        save_task(Some(self), &transaction, &task)?;
         transaction.commit()?;
         Ok(Some(attempt_id))
     }
@@ -1566,7 +1603,7 @@ impl Store {
             }
             None => attempt.conversation = Some(conversation),
         }
-        save_task(&transaction, &task)?;
+        save_task(Some(self), &transaction, &task)?;
         transaction.commit()?;
         Ok(())
     }
@@ -1578,7 +1615,7 @@ impl Store {
         let mut task = load_task_required(&transaction, id)?;
         if task.worktree_state.is_none() {
             task.worktree_state = Some(worktree);
-            save_task(&transaction, &task)?;
+            save_task(Some(self), &transaction, &task)?;
         }
         transaction.commit()?;
         Ok(task)
@@ -1607,7 +1644,7 @@ impl Store {
         if attempt.ended_at.is_none() {
             attempt.ended_at = Some(now);
             attempt.end = Some(end);
-            save_task(&transaction, &task)?;
+            save_task(Some(self), &transaction, &task)?;
         }
         transaction.commit()?;
         Ok(())
@@ -1646,7 +1683,7 @@ impl Store {
         }
         attempt.ended_at = Some(now);
         attempt.end = Some(AttemptEnd::Stopped);
-        save_task(&transaction, &task)?;
+        save_task(Some(self), &transaction, &task)?;
         self.enqueue_effect_in(
             &transaction,
             &EffectPayload::Stop {
@@ -1726,7 +1763,7 @@ impl Store {
             attempt.ended_at = Some(now);
         }
         attempt.end = Some(decision.end());
-        save_task(&transaction, &task)?;
+        save_task(Some(self), &transaction, &task)?;
         if decision == Decision::Interrupted {
             // 同一次启动只合并一条 restart：把这次扫到的任务并进去，投递时只报这些。
             let existing: Option<String> = transaction
@@ -1776,7 +1813,7 @@ impl Store {
             }
         }
         if closed > 0 {
-            save_task(&transaction, &task)?;
+            save_task(Some(self), &transaction, &task)?;
         }
         transaction.commit()?;
         Ok(closed)
@@ -1866,7 +1903,7 @@ impl Store {
             checks: Vec::new(),
             changed_count: None,
         });
-        save_task(&transaction, &task)?;
+        save_task(Some(self), &transaction, &task)?;
         // T056.2：ready 报告关掉「下一步」叙述条（它意味着这个下一步已经走到了）。
         if report_state == ReportState::Ready {
             close_ledger_notes(
@@ -1923,7 +1960,7 @@ impl Store {
             return Err(TaskError::ReportNotFound(report_id.to_string()));
         };
         report.changed_count = Some(changed_count);
-        save_task(&transaction, &task)?;
+        save_task(Some(self), &transaction, &task)?;
         transaction.commit()?;
         Ok(())
     }
@@ -1939,7 +1976,7 @@ impl Store {
         let mut task = load_task_required(&transaction, id)?;
         let acceptance = accept_task(&transaction, &mut task, report_id, now)?;
         close_ledger_notes(&transaction, id, None, "任务已关闭", now)?;
-        save_task(&transaction, &task)?;
+        save_task(Some(self), &transaction, &task)?;
         transaction.commit()?;
         Ok(acceptance)
     }
@@ -1961,7 +1998,7 @@ impl Store {
                     match accept_task(&transaction, &mut task, report_id, now) {
                         Ok(_) => {
                             close_ledger_notes(&transaction, id, None, "任务已关闭", now)?;
-                            save_task(&transaction, &task)?;
+                            save_task(Some(self), &transaction, &task)?;
                             outcomes.push(AcceptOutcome {
                                 task_id: id.clone(),
                                 title,
@@ -2028,7 +2065,7 @@ impl Store {
             dod,
             constraints,
         });
-        save_task(&transaction, &task)?;
+        save_task(Some(self), &transaction, &task)?;
         transaction.commit()?;
         Ok(task)
     }
@@ -2093,7 +2130,7 @@ impl Store {
         });
         task.requirement = requirement.to_owned();
         task.dod = next_dod;
-        save_task(&transaction, &task)?;
+        save_task(Some(self), &transaction, &task)?;
         transaction.commit()?;
         Ok(task)
     }
@@ -2891,13 +2928,16 @@ fn load_task_required(connection: &Connection, id: &TaskId) -> Result<Task, Task
     load_task(connection, id)?.ok_or_else(|| TaskError::TaskNotFound(id.to_string()))
 }
 
-fn save_task(connection: &Connection, task: &Task) -> Result<(), TaskError> {
+fn save_task(store: Option<&Store>, connection: &Connection, task: &Task) -> Result<(), TaskError> {
     let changed = connection.execute(
         "UPDATE task SET value = ?1 WHERE id = ?2",
         params![serde_json::to_string(task)?, task.id.as_str()],
     )?;
     if changed != 1 {
         return Err(TaskError::TaskNotFound(task.id.to_string()));
+    }
+    if let Some(store) = store {
+        store.task_changed(&task.id);
     }
     Ok(())
 }

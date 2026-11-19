@@ -622,6 +622,17 @@ impl Inner {
         }
     }
 
+    /// T067：取消当前一轮并杀掉这一轮起的命令；给同步入口用（不阻塞调用方）。
+    pub(crate) fn cancel_with_and_kill(self: &Arc<Self>, cause: AbortCause, reason: &str) {
+        let turn = self.current_or_last_turn();
+        self.cancel_with(cause);
+        let inner = Arc::clone(self);
+        let reason = reason.to_owned();
+        tokio::spawn(async move {
+            inner.kill_turn(turn, &reason).await;
+        });
+    }
+
     /// 规范化 + 落日志 + 应用 + 发通知；调用方必须持有 `inbox_mutations` 锁。
     async fn inbox_splice(
         &self,
@@ -723,6 +734,34 @@ impl Inner {
     /// 每个任务先请求取消再等进程退出；请求时打上 killedByModel 标记，结算不再投
     /// 完成通知——已经停下的会话不该因为收后台任务再开一轮。单个任务停不下来留警告，
     /// 不挡住其余任务。
+    /// 当前在跑一轮的轮号；没在跑就是最后一轮。
+    pub(crate) fn current_or_last_turn(&self) -> u64 {
+        let state = self.state.lock().expect("agent 状态锁被毒化");
+        match &state.phase {
+            Phase::Running { turn, .. } => *turn,
+            Phase::Idle => state.last_turn,
+        }
+    }
+
+    /// 某轮还有后台命令在跑时返回它的轮号（T067）。
+    pub(crate) fn background_turn(&self) -> Option<u64> {
+        self.tool_session.tasks().running_turn()
+    }
+
+    /// T067：某一轮还在跑的后台命令标签。
+    pub(crate) fn background_labels(&self, turn: u64) -> Vec<String> {
+        self.tool_session.tasks().running_labels(turn)
+    }
+
+    /// T067：杀掉某一轮起的后台命令（含进程组），标记 killedByModel 抑制完成通知。
+    pub(crate) async fn kill_turn(&self, turn: u64, reason: &str) {
+        let _ = self
+            .tool_session
+            .tasks()
+            .kill_turn(turn, Some(reason.to_owned()))
+            .await;
+    }
+
     pub(crate) async fn stop_background_jobs(&self, reason: &str) {
         let tasks = self.job_session().tasks();
         let running: Vec<String> = tasks

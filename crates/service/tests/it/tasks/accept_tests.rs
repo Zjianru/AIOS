@@ -1080,3 +1080,42 @@ async fn task_read_exposes_ledger_constraints_notes_and_history() {
     assert_eq!(response.ledger.history[0].text, "缓存不可行");
     assert_eq!(response.ledger.history[0].closed_why, "被新的一条替换");
 }
+
+/// T067.4：任务库任意写入都从 Store 唯一出口发 changed，根宿主拿到同一频道。
+#[tokio::test]
+async fn task_writes_reach_the_root_ws_changed_channel() {
+    let fixture = Fixture::new_with_actions().await;
+    let runtime = fixture.host.task_runtime().expect("任务执行者");
+    runtime.set_pump_paused(true);
+    let mut changed = fixture
+        .host
+        .subscribe_task_changed()
+        .expect("根宿主有任务事实变化频道");
+    let task = runtime
+        .store()
+        .create_task(
+            NewTask {
+                title: "查一下 changed".to_owned(),
+                requirement: "有事实就重读".to_owned(),
+                dod: "页面不用轮询".to_owned(),
+                cwd: fixture.cwd.path().to_path_buf(),
+                conversation: ConversationId::new("kind-session"),
+                model: ModelChoice {
+                    connection: "deepseek".to_owned(),
+                    model: "deepseek-flash".to_owned(),
+                    effort_wanted: "high".to_owned(),
+                },
+                tools: service::THIN_TOOLS
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect(),
+            },
+            1_700_000_000_000,
+        )
+        .unwrap();
+    let received = tokio::time::timeout(Duration::from_secs(1), changed.recv())
+        .await
+        .expect("建任务要发一次 changed")
+        .expect("changed 频道没关");
+    assert_eq!(received, task.id.as_str());
+}

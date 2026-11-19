@@ -603,7 +603,22 @@ impl Agent {
     ///
     /// `cause` 写进 turn/end 的 aborted 原因（例如内核钩子 model-disabled）。
     pub fn cancel_with(&self, cause: session::AbortCause) {
-        self.inner.cancel_with(cause);
+        self.inner.cancel_with_and_kill(cause, "停止这一轮");
+    }
+
+    /// T067：某轮还有后台命令在跑时返回轮号（任务页 running / 空闲停止用）。
+    pub fn background_turn(&self) -> Option<u64> {
+        self.inner.background_turn()
+    }
+
+    /// T067：某一轮还在跑的后台命令标签。
+    pub fn background_labels(&self, turn: u64) -> Vec<String> {
+        self.inner.background_labels(turn)
+    }
+
+    /// T067：杀掉某一轮起的后台命令。
+    pub async fn kill_turn(&self, turn: u64, reason: &str) {
+        self.inner.kill_turn(turn, reason).await;
     }
 
     /// 停掉这个会话还在跑的后台任务：立即停任务时连后台命令一起停（D85）。

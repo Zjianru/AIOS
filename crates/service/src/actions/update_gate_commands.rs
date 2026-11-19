@@ -186,32 +186,38 @@ impl ActionKind for UpdateGateCommandsAction {
                 .latest_attempt()
                 .is_some_and(|attempt| attempt.ended_at.is_none())
             {
+                // T067：先订阅 changed，再停门；收到这个门的 id 再读 Attempt。
+                let mut changed = runtime.subscribe_task_changed();
                 if let Err(error) = runtime.stop_gate_for_update(&gate_id).await {
                     eprintln!("改命令前停程序门失败：{error}");
                 }
-                let deadline = std::time::Instant::now()
+                let deadline = tokio::time::Instant::now()
                     + tools::KILL_GRACE
                     + std::time::Duration::from_secs(1);
-                while std::time::Instant::now() < deadline {
-                    let ended = self
-                        .task(&gate_id)
-                        .ok()
-                        .and_then(|task| task.latest_attempt().cloned())
-                        .is_some_and(|attempt| attempt.ended_at.is_some());
-                    if ended {
-                        break;
+                loop {
+                    match tokio::time::timeout_at(deadline, changed.recv()).await {
+                        Ok(Ok(task_id)) if task_id == gate_id => {
+                            let ended = self
+                                .task(&gate_id)
+                                .ok()
+                                .and_then(|task| task.latest_attempt().cloned())
+                                .is_some_and(|attempt| attempt.ended_at.is_some());
+                            if ended {
+                                break;
+                            }
+                        }
+                        Ok(Ok(_)) => continue,
+                        Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                        _ => {
+                            return Err(format!("程序门 {gate_id} 在宽限期内没停下，命令没改"));
+                        }
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
             }
             let updated = runtime
                 .store()
                 .update_gate_commands(&TaskId::from(gate_id.as_str()), commands, now_millis())
                 .map_err(|error| error.to_string())?;
-            runtime.notify_task_changed(&updated.id);
-            if let Some(need) = updated.needs.first() {
-                runtime.notify_task_changed(&need.from);
-            }
             let version = updated.commands_version();
             if updated
                 .needs

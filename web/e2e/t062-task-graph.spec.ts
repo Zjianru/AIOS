@@ -153,7 +153,7 @@ test('T066 任务图：框型、状态环、线动效、详情关闭、减少动
   }
 });
 
-test('任务图不新起轮询：打开图后 getWork 仍按 workStore 两秒一次', async ({ page }) => {
+test('任务图不另起轮询：打开图后空闲不请求 work', async ({ page }) => {
   test.setTimeout(60_000);
   const fixture = await startKernelFixture({ t062TaskGraphs: true });
   try {
@@ -169,18 +169,17 @@ test('任务图不新起轮询：打开图后 getWork 仍按 workStore 两秒一
     });
     await page.goto(urlOf(fixture, '#work?wv=graph'));
     await expect(page.locator('[data-kind="task-graph-pane"]')).toBeVisible({ timeout: 30_000 });
-    await page.waitForTimeout(1_000);
+    // 首屏可能有几次初始读；稳定后不再轮询。
+    await page.waitForTimeout(2_500);
     calls.length = 0;
     await page.waitForTimeout(4_200);
-    // 一个 2 秒轮询：4.2 秒内 2 次（最多 3 次抖动）；两个 interval 会到 4 次。
-    expect(calls.length).toBeGreaterThanOrEqual(2);
-    expect(calls.length).toBeLessThanOrEqual(3);
+    expect(calls.length).toBe(0);
   } finally {
     await fixture.close();
   }
 });
 
-test('工作页轮询只在 WorkScene 根挂一次，两个 pane 都靠它刷新', async ({ page }) => {
+test('工作页只挂一根 live：两个 pane 不重复轮询', async ({ page }) => {
   test.setTimeout(60_000);
   const work = await readFile(
     fileURLToPath(new URL('../src/pages/work/WorkScene.tsx', import.meta.url)),
@@ -207,14 +206,13 @@ test('工作页轮询只在 WorkScene 根挂一次，两个 pane 都靠它刷新
         calls.push(Date.now());
       }
     });
-    // 等待页（工作场景两个 pane 都挂着）：同一个根轮询仍要刷新。
+    // 等待页（工作场景两个 pane 都挂着）：稳定后不再按固定间隔读。
     await page.goto(urlOf(fixture, '#work'));
     await expect(page.locator('[data-pane="waiting"]')).toBeVisible({ timeout: 30_000 });
-    await page.waitForTimeout(1_000);
+    await page.waitForTimeout(2_500);
     calls.length = 0;
     await page.waitForTimeout(4_200);
-    expect(calls.length).toBeGreaterThanOrEqual(2);
-    expect(calls.length).toBeLessThanOrEqual(3);
+    expect(calls.length).toBe(0);
   } finally {
     await fixture.close();
   }

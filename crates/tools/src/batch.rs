@@ -6,8 +6,9 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::Poll;
+
+use model::CancelToken;
 
 use crate::{Tool, ToolCall, ToolConcurrency, ToolContext, ToolResult, ToolSet};
 
@@ -93,25 +94,38 @@ async fn run_parallel<'a>(
     plans: &'a [Planned<'_>],
     max_parallel: usize,
     context: &'a ToolContext,
-    cancel: &AtomicBool,
+    cancel: &CancelToken,
 ) -> (Vec<Option<ToolResult>>, bool) {
     let mut results: Vec<Option<ToolResult>> = plans.iter().map(|_| None).collect();
     let mut futures: Vec<PendingFuture<'a, ToolResult>> = Vec::new();
     let mut next = 0;
     let mut cancelled = false;
-    while next < plans.len() && futures.len() < max_parallel && !cancel.load(Ordering::SeqCst) {
+    while next < plans.len() && futures.len() < max_parallel && !cancel.is_cancelled() {
         futures.push((next, Box::pin(invoke(&plans[next], context))));
         next += 1;
     }
     while !futures.is_empty() {
-        let (position, result) = next_finished(&mut futures).await;
-        let (index, _) = futures.remove(position);
-        results[index] = Some(result);
-        if cancel.load(Ordering::SeqCst) {
-            cancelled = true;
-        } else if next < plans.len() {
-            futures.push((next, Box::pin(invoke(&plans[next], context))));
-            next += 1;
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => {
+                // 取消先到：丢掉已开始的 future（工具自己的进程由 kill_turn 停），
+                // 这些调用按没结果收尾，不投迟到结果。
+                for (index, _) in futures.drain(..) {
+                    results[index] = Some(aborted_result(plans[index].call));
+                }
+                cancelled = true;
+                break;
+            }
+            (position, result) = next_finished(&mut futures) => {
+                let (index, _) = futures.remove(position);
+                results[index] = Some(result);
+                if cancel.is_cancelled() {
+                    cancelled = true;
+                } else if next < plans.len() {
+                    futures.push((next, Box::pin(invoke(&plans[next], context))));
+                    next += 1;
+                }
+            }
         }
     }
     if next < plans.len() {
@@ -130,7 +144,7 @@ pub async fn execute_batch(
     calls: &[ToolCall],
     max_parallel: usize,
     context: &ToolContext,
-    cancel: &AtomicBool,
+    cancel: &CancelToken,
 ) -> BatchOutcome {
     assert!(max_parallel >= 1, "max_parallel_tool_calls 必须是正整数");
     // 没开出的工具和不存在的工具一样处理：都报「未知工具」，模型看不出差别。
@@ -147,7 +161,7 @@ pub async fn execute_batch(
     let mut index = 0;
     let mut cancelled = false;
     while index < plans.len() {
-        if cancel.load(Ordering::SeqCst) {
+        if cancel.is_cancelled() {
             cancelled = true;
             break;
         }
@@ -156,7 +170,17 @@ pub async fn execute_batch(
             .map_or(ToolConcurrency::Exclusive, Tool::concurrency);
         match mode {
             ToolConcurrency::Exclusive => {
-                results[index] = Some(invoke(&plans[index], context).await);
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => {
+                        results[index] = Some(aborted_result(plans[index].call));
+                        cancelled = true;
+                        break;
+                    }
+                    result = invoke(&plans[index], context) => {
+                        results[index] = Some(result);
+                    }
+                }
                 index += 1;
             }
             ToolConcurrency::Parallel => {

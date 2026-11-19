@@ -176,6 +176,33 @@ fn rejects_a_title_outside_one_to_two_hundred_chars() {
 }
 
 #[test]
+fn every_task_write_goes_through_one_changed_exit() {
+    let (_directory, store) = open_store();
+    let changed = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let sink = std::sync::Arc::clone(&changed);
+    store.set_on_changed(std::sync::Arc::new(move |task_id: &str| {
+        sink.lock().unwrap().push(task_id.to_owned());
+    }));
+    let task = store.create_task(draft(), T0).unwrap();
+    assert_eq!(changed.lock().unwrap().len(), 1, "建任务发一次");
+    assert_eq!(changed.lock().unwrap()[0], task.id.as_str());
+
+    let attempt = store.begin_attempt(&task.id, T0 + 1).unwrap();
+    assert_eq!(changed.lock().unwrap().len(), 2, "开 Attempt 发一次");
+
+    let stopped = store.stop_attempt(&task.id, attempt, T0 + 2).unwrap();
+    assert_eq!(stopped, super::StopAttempt::Stopped);
+    assert_eq!(changed.lock().unwrap().len(), 3, "结束 Attempt 发一次");
+    assert!(
+        changed
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|id| id == task.id.as_str())
+    );
+}
+
+#[test]
 fn store_is_send_and_sync() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<Store>();
