@@ -1388,3 +1388,34 @@ async fn kill_turn_stops_only_that_turns_process_group_and_suppresses_wakeup() {
         .success();
     assert!(!alive, "进程组 {pid} 应该已经不在");
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn running_turn_takes_the_latest_round_with_running_jobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let turn_one =
+        crate::common::session_context_with_id(dir.path(), data_dir.path(), "sess-turns")
+            .with_turn(1);
+    let turn_three = turn_one.shared_session();
+    let turn_three_context = ToolContext::with_session(dir.path(), turn_three).with_turn(3);
+    let first = bash(
+        json!({"description": "one", "command": "sleep 30", "run_in_background": true}),
+        &turn_one,
+    )
+    .await;
+    assert!(!first.is_error, "{}", first.content);
+    let second = bash(
+        json!({"description": "three", "command": "sleep 30", "run_in_background": true}),
+        &turn_three_context,
+    )
+    .await;
+    assert!(!second.is_error, "{}", second.content);
+    assert_eq!(
+        turn_one.session().tasks().running_turn(),
+        Some(3),
+        "有多个轮在跑时取最近的轮，空闲停止才不会杀错"
+    );
+    let _ = turn_one.session().tasks().kill_turn(1, None).await;
+    let _ = turn_one.session().tasks().kill_turn(3, None).await;
+}

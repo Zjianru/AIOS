@@ -75,6 +75,56 @@ async fn background_job_completion_notifies_next_request() {
     assert!(saw_job_completed, "缺 JobCompleted 事件");
 }
 
+/// T067.1：一轮结束后 agent 空闲、后台命令还在跑：记着轮号，按停止能杀掉命令且不叫醒。
+#[tokio::test]
+async fn idle_agent_with_a_running_background_job_can_still_be_stopped() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(tool_calls_with_inputs_sse(&[(
+                "call_0",
+                "bash",
+                json!({
+                    "description": "long",
+                    "command": "trap 'echo stopped > killed.txt' TERM; sleep 30",
+                    "run_in_background": true
+                }),
+            )])),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+    let (agent, _data_dir, cwd, _id) = setup_agent(&server.uri(), ToolSet::builtin()).await;
+    agent
+        .send(UserMessage::text("后台跑一下"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+    assert!(!agent.is_running(), "这一轮已经结束");
+    assert_eq!(agent.background_turn(), Some(1), "后台命令还挂着第 1 轮");
+    agent.cancel_with(session::AbortCause::User);
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while !cwd.path().join("killed.txt").exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "空闲停止没有在 1 秒内杀掉命令"
+        );
+        tokio::task::yield_now().await;
+    }
+    let settled = std::time::Instant::now() + Duration::from_secs(2);
+    while agent.background_turn().is_some() {
+        assert!(std::time::Instant::now() < settled, "杀完不留后台命令");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        2,
+        "杀掉的后台命令不能再叫醒模型开新一轮"
+    );
+}
+
 /// 动态 mock：第 1 次回 bash run_in_background，第 2 次从请求体里取出 job id 回
 /// job_output(wait)，之后回 FINAL。这样「忙碌→NextStep」的测试不依赖固定 id。
 struct BusyScriptResponder {

@@ -732,7 +732,7 @@ impl TaskRegistry {
     pub fn running_turn(&self) -> Option<u64> {
         let jobs = self.jobs.lock().expect("jobs 表锁被毒化");
         jobs.values()
-            .find(|record| {
+            .filter(|record| {
                 !record
                     .state
                     .lock()
@@ -741,6 +741,7 @@ impl TaskRegistry {
                     .is_terminal()
             })
             .map(|record| record.turn)
+            .max()
     }
 
     /// T067：杀掉某一轮起的全部还在跑的后台命令；已收的不发信号。

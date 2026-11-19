@@ -270,6 +270,15 @@ pub struct TaskLive {
 }
 
 /// 任务执行者：效果泵、ThinAgent 会话和任务工具的共享状态。
+/// T067：停止入口对 agent 状态的动作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentInterrupt {
+    /// 正在跑：取消当前一轮（cancel_with 同时杀这一轮命令）。
+    Cancel,
+    /// 一轮已结束但后台命令还在跑：杀那一轮命令。
+    KillTurn(u64),
+}
+
 pub struct TaskRuntime {
     data_dir: PathBuf,
     store: Arc<Store>,
@@ -795,7 +804,7 @@ impl TaskRuntime {
             self.running_for(&task.id, attempt_id)
                 .is_some_and(|running| {
                     let agent = running.host.agent();
-                    agent.is_running() || agent.background_turn().is_some()
+                    Self::agent_busy(agent.is_running(), agent.background_turn())
                 })
         });
         let guard_target = task
@@ -3361,6 +3370,20 @@ impl TaskRuntime {
         Ok(lines.join("\n"))
     }
 
+    /// T067：页面/停止入口看到的事实：agent 在跑，或这个 Attempt 最后一轮还有后台命令。
+    fn agent_busy(is_running: bool, background_turn: Option<u64>) -> bool {
+        is_running || background_turn.is_some()
+    }
+
+    /// T067：按 agent 状态决定怎么停；空闲但后台命令还在跑时杀最后一轮。
+    fn interrupt_action(is_running: bool, background_turn: Option<u64>) -> Option<AgentInterrupt> {
+        if is_running {
+            Some(AgentInterrupt::Cancel)
+        } else {
+            background_turn.map(AgentInterrupt::KillTurn)
+        }
+    }
+
     /// 停下任务当前这一轮：只取消会话这一轮，不写 Attempt 结束、不排 relay。
     ///
     /// 下一句话进来时任务库还看到同一个未结束的 Attempt，投递会 Steer 进原会话接着做。
@@ -3390,12 +3413,10 @@ impl TaskRuntime {
         // 正在跑一轮：取消这一轮（连同这一轮起的命令）。一轮已结束但后台还在跑：
         // 杀掉最后一轮起的后台命令，并照旧回 interrupted=true，让页面停得下来。
         let agent = running.host.agent();
-        if agent.is_running() {
-            agent.cancel_with(session::AbortCause::User);
-        } else if let Some(turn) = agent.background_turn() {
-            agent.kill_turn(turn, "用户停下这一轮").await;
-        } else {
-            return Ok(not_running());
+        match Self::interrupt_action(agent.is_running(), agent.background_turn()) {
+            Some(AgentInterrupt::Cancel) => agent.cancel_with(session::AbortCause::User),
+            Some(AgentInterrupt::KillTurn(turn)) => agent.kill_turn(turn, "用户停下这一轮").await,
+            None => return Ok(not_running()),
         }
         Ok(TaskInterruptResponse {
             interrupted: true,
@@ -3802,5 +3823,26 @@ mod trigger_tool_tests {
             "{}",
             result.content
         );
+    }
+}
+
+#[cfg(test)]
+mod interrupt_decision_tests {
+    use super::*;
+
+    #[test]
+    fn idle_agent_with_background_turns_interrupts_the_last_turn() {
+        assert_eq!(
+            TaskRuntime::interrupt_action(false, Some(7)),
+            Some(AgentInterrupt::KillTurn(7))
+        );
+        assert_eq!(
+            TaskRuntime::interrupt_action(true, Some(7)),
+            Some(AgentInterrupt::Cancel)
+        );
+        assert_eq!(TaskRuntime::interrupt_action(false, None), None);
+        assert!(TaskRuntime::agent_busy(false, Some(7)));
+        assert!(TaskRuntime::agent_busy(true, None));
+        assert!(!TaskRuntime::agent_busy(false, None));
     }
 }
