@@ -34,6 +34,9 @@ pub enum SessionError {
         #[source]
         source: std::io::Error,
     },
+    /// 写者已经显式关闭（停服务收尾后）；不再接受追加。
+    #[error("会话写者已关闭: {0}")]
+    WriterClosed(String),
     #[error("写入会话日志失败（已回滚到写之前的长度）: {source}")]
     Write {
         #[source]

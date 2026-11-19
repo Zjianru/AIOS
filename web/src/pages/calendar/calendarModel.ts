@@ -1,21 +1,10 @@
-/** 任务阶段词：看板/任务页/日历共用这一张表。 */
-export const STAGE_WORD: Record<string, string> = {
-  needs_conditions: '缺条件',
-  pending: '排队',
-  running: '在做',
-  ready_for_review: '待你核',
-  requirement_met: '已满足',
-  closed: '已关闭',
-};
+import { stageLabel } from '../work/workModel';
 
-export function stageWordOf(stage: string | null | undefined): string {
-  return stage ? (STAGE_WORD[stage] ?? stage) : '';
-}
-
-/** 派出块：有阶段就按看板词表出词；自办块没有阶段，用服务给的固定词。 */
+/** 派出/自办块的状态词只从看板这一张阶段词表出。 */
 export function blockWord(block: { stage?: string | null; status: string }): string {
-  return block.stage ? stageWordOf(block.stage) : block.status;
+  return block.stage ? stageLabel(block.stage) : block.status;
 }
+
 /**
  * 把服务端 calendar-read 的事实翻成日历页的词和颜色。
  *

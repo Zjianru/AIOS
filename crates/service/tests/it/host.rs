@@ -3,6 +3,7 @@
 //! DSH 对照：packages/api/session-controller/src/index.ts 的 prompt/cancel/events/state 方法面；
 //! requestId 幂等对应 DSH prompt 的 requestId（:465 起的 prompt 方法，重复受理不重复插入）。
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use agent::{Agent, AgentConfig};
@@ -674,7 +675,7 @@ async fn shutdown_cancels_active_turn_and_keeps_log_resumable() {
     )
     .await;
     let (agent, data_dir, id) = setup(&server).await;
-    let service = ServiceHost::new(agent.clone());
+    let service = Arc::new(ServiceHost::new(agent.clone()));
     let mut events = service.subscribe_events();
 
     assert!(
@@ -694,10 +695,12 @@ async fn shutdown_cancels_active_turn_and_keeps_log_resumable() {
         "停服务时正在跑的一轮要按取消收尾"
     );
 
-    drop(service);
-    drop(agent);
-    // 日志完整、锁释放：下次能续接。
-    let store = SessionStore::open(data_dir.path(), &id).expect("停服务后应能续接（写锁已释放）");
+    // 别处还持着宿主 Arc：shutdown 已显式放锁，返回后立刻能开同一会话。
+    let held = Arc::clone(&service);
+    assert!(Arc::strong_count(&held) > 1);
+    let store = SessionStore::open(data_dir.path(), &id)
+        .expect("shutdown 返回后应立刻能重开（写锁已显式释放）");
+    drop(held);
     assert!(
         store
             .events()
@@ -705,4 +708,7 @@ async fn shutdown_cancels_active_turn_and_keeps_log_resumable() {
             .any(|event| matches!(event.kind, session::EventKind::TurnEnd { .. })),
         "日志里要有 turn/end 收尾"
     );
+    drop(store);
+    drop(service);
+    drop(agent);
 }

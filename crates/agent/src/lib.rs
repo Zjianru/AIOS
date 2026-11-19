@@ -701,6 +701,15 @@ impl Agent {
         self.inner.idle().await;
     }
 
+    /// 停服务收尾：显式放下这个会话的单写者锁；本方法返回后锁已释放。
+    pub fn close_session_writer(&self) {
+        self.inner
+            .store
+            .lock()
+            .expect("会话 store 锁被毒化")
+            .close_writer();
+    }
+
     /// 手动压缩（chat 的 /compact，照 DSH command-compact）：空闲时立刻执行，运行中排到
     /// 当前轮之后；`source_command_id` 会写进 compaction/* 事件。返回压缩结果计数，
     /// 没有可压缩历史时返回 None。
