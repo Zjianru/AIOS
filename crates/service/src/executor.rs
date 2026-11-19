@@ -170,6 +170,9 @@ const WORKTREE_NOT_A_REPO: &str = "这个目录不是 git 仓库，开不了工�
 
 /// 立即停任务时写给后台命令的取消原因（进 job 的 detail，给人和日志看）。
 const STOPPED_JOB_REASON: &str = "任务被立即停了";
+/// T067/D29：ThinAgent 一轮结束后等后台命令的上限；不进设置。
+const BACKGROUND_LIMIT_MS: i64 = 30 * 60 * 1000;
+const BACKGROUND_STOPPED_NOTE: &str = "这些命令跑过 30 分钟被停了";
 
 /// 确认接续后给 ThinAgent 的第一条输入（照 DSH RECOVERY_NOTE，换成 AIOS 的话；spec v1）。
 const RESUME_NOTE: &str = "AIOS 在这个任务进行中重启了。先看当前的文件和状态再继续；已经做完的外部动作不要再做一遍。把原来的任务做完，然后用 task_report 上报。";
@@ -292,6 +295,8 @@ pub struct TaskRuntime {
     shutting_down: Arc<AtomicBool>,
     /// 测试钩子：暂停整个效果泵（launch/relay 都不跑）。
     pump_paused: AtomicBool,
+    /// T067：等后台的到点时窗；生产固定 30 分钟，测试调短不用真等。
+    background_limit_ms: AtomicI64,
     /// 全局暂停（settings.json 的 `exec.paused`）：只挡 launch 准入，relay 照送。
     exec_paused: AtomicBool,
     /// 席位上限（settings.json 的 `exec.seats`），默认 3；改小只影响之后的准入。
@@ -352,6 +357,7 @@ impl TaskRuntime {
             notify: Arc::new(tokio::sync::Notify::new()),
             shutting_down: Arc::new(AtomicBool::new(false)),
             pump_paused: AtomicBool::new(false),
+            background_limit_ms: AtomicI64::new(BACKGROUND_LIMIT_MS),
             exec_paused: AtomicBool::new(exec_paused),
             exec_seats: AtomicUsize::new(exec_seats),
             exec_bash: AtomicBool::new(exec_bash),
@@ -1440,6 +1446,13 @@ impl TaskRuntime {
         self.wake();
     }
 
+    /// T067 测试钩子：把等后台的上限调短；生产恒为 30 分钟。
+    #[doc(hidden)]
+    pub fn set_background_limit_ms(&self, millis: i64) {
+        self.background_limit_ms
+            .store(millis.max(1), Ordering::SeqCst);
+    }
+
     /// T055：工作快照读任务库（只读；同 crate 用）。
     pub(crate) fn tasks_store(&self) -> &Store {
         &self.store
@@ -1550,6 +1563,21 @@ impl TaskRuntime {
                         Ok(None) => {}
                         Err(error) => eprintln!("日历唤醒领取失败：{error}"),
                     }
+                }
+                if self.shutting_down.load(Ordering::SeqCst) {
+                    return;
+                }
+                // T067：等后台的 30 分钟到点；到点杀命令、投说明、再合成等待。
+                match self
+                    .store
+                    .claim_effect(EffectKind::BackgroundLimit, Self::now())
+                {
+                    Ok(Some(claim)) => {
+                        worked = true;
+                        self.deliver_background_limit(claim).await;
+                    }
+                    Ok(None) => {}
+                    Err(error) => eprintln!("背景等待到点领取失败：{error}"),
                 }
                 if self.shutting_down.load(Ordering::SeqCst) {
                     return;
@@ -2764,7 +2792,8 @@ impl TaskRuntime {
             extra_tools,
             tool_policy: ToolPolicy {
                 only: Some(task.tools.clone()),
-                no_wait: false,
+                // T067：ThinAgent 不等命令、不盯后台输出；要等就转后台，结果会叫醒它。
+                no_wait: true,
             },
             policy_prompt: Some(thin_policy(task.bash)),
         })
@@ -3420,8 +3449,16 @@ impl TaskRuntime {
         // 杀掉最后一轮起的后台命令，并照旧回 interrupted=true，让页面停得下来。
         let agent = running.host.agent();
         match Self::interrupt_action(agent.is_running(), agent.background_turn()) {
-            Some(AgentInterrupt::Cancel) => agent.cancel_with(session::AbortCause::User),
-            Some(AgentInterrupt::KillTurn(turn)) => agent.kill_turn(turn, "用户停下这一轮").await,
+            Some(AgentInterrupt::Cancel) => {
+                agent.cancel_with(session::AbortCause::User);
+                self.cancel_background_limit(attempt.id);
+                self.release_seat(task_id);
+            }
+            Some(AgentInterrupt::KillTurn(turn)) => {
+                agent.kill_turn(turn, "用户停下这一轮").await;
+                self.cancel_background_limit(attempt.id);
+                self.release_seat(task_id);
+            }
             None => return Ok(not_running()),
         }
         Ok(TaskInterruptResponse {
@@ -3532,6 +3569,7 @@ impl TaskRuntime {
         agent.cancel_with(session::AbortCause::User);
         // 开了 bash 的任务：后台命令也一起停，收到 SIGTERM 而不是留到任务结束之后（D85）。
         agent.stop_background_jobs(STOPPED_JOB_REASON).await;
+        self.cancel_background_limit(attempt_id);
         self.running
             .lock()
             .expect("thinagent 表锁被毒化")

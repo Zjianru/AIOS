@@ -2036,7 +2036,7 @@ async fn immediately_stopping_a_task_kills_its_background_jobs() {
             "bash",
             &serde_json::json!({
                 "description": "等停止信号",
-                "command": "trap 'echo stopped > killed.txt' TERM; sleep 60",
+                "command": "trap 'echo stopped > killed.txt; exit 0' TERM; while true; do :; done",
                 "run_in_background": true
             })
             .to_string(),
@@ -2574,7 +2574,7 @@ async fn update_gate_commands_act_stops_a_running_gate_then_reruns_the_new_comma
 
 /// T067.1：正在跑的 sleep 30 按停止，1 秒内进程组没了、Attempt 记停止、没有新一轮。
 #[tokio::test]
-async fn stopping_a_running_sleep_tool_kills_it_within_one_second() {
+async fn stopping_a_running_long_tool_kills_it_within_one_second() {
     let fixture = Fixture::new().await;
     set_bash(&fixture.host, true).await;
     fixture.router.push_thin_for_title(
@@ -2584,8 +2584,9 @@ async fn stopping_a_running_sleep_tool_kills_it_within_one_second() {
             "call-sleep",
             "bash",
             &serde_json::json!({
-                "description": "长睡",
-                "command": "trap 'echo stopped > killed.txt' TERM; sleep 30"
+                "description": "长跑",
+                "command": "trap 'echo stopped > killed.txt; exit 0' TERM; while true; do :; done",
+                "timeoutMs": 30000
             })
             .to_string(),
         ),
@@ -2678,7 +2679,7 @@ async fn after_report_stop_does_not_kill_running_background_commands() {
             "bash",
             &serde_json::json!({
                 "description": "还在跑",
-                "command": "trap 'echo stopped > killed.txt' TERM; sleep 60",
+                "command": "trap 'echo stopped > killed.txt; exit 0' TERM; while true; do :; done",
                 "run_in_background": true
             })
             .to_string(),

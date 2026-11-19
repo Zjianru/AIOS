@@ -1330,6 +1330,16 @@ impl Store {
             .map_err(TaskError::from)
     }
 
+    /// T067：撤掉一条还没领的效果（换轮/停止时作废旧到点）。
+    pub fn remove_effect(&self, kind: EffectKind, key: &str) -> Result<bool, TaskError> {
+        let conn = self.lock()?;
+        let removed = conn.execute(
+            "DELETE FROM effect WHERE kind = ?1 AND key = ?2",
+            params![kind.as_str(), key],
+        )?;
+        Ok(removed > 0)
+    }
+
     /// 这个键的效果还在不在排队。
     pub fn effect_pending(&self, kind: EffectKind, key: &str) -> Result<bool, TaskError> {
         let conn = self.lock()?;

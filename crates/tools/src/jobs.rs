@@ -744,6 +744,23 @@ impl TaskRegistry {
             .max()
     }
 
+    /// T067：某一轮还在跑的后台命令标签（给「被停」说明用）。
+    pub fn running_labels(&self, turn: u64) -> Vec<String> {
+        let jobs = self.jobs.lock().expect("jobs 表锁被毒化");
+        jobs.values()
+            .filter(|record| record.turn == turn)
+            .filter(|record| {
+                !record
+                    .state
+                    .lock()
+                    .expect("job 状态锁被毒化")
+                    .status
+                    .is_terminal()
+            })
+            .map(|record| record.label.clone())
+            .collect()
+    }
+
     /// T067：杀掉某一轮起的全部还在跑的后台命令；已收的不发信号。
     pub async fn kill_turn(&self, turn: u64, reason: Option<String>) -> Vec<String> {
         let ids: Vec<String> = {

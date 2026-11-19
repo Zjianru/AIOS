@@ -611,6 +611,11 @@ impl Agent {
         self.inner.background_turn()
     }
 
+    /// T067：某一轮还在跑的后台命令标签。
+    pub fn background_labels(&self, turn: u64) -> Vec<String> {
+        self.inner.background_labels(turn)
+    }
+
     /// T067：杀掉某一轮起的后台命令。
     pub async fn kill_turn(&self, turn: u64, reason: &str) {
         self.inner.kill_turn(turn, reason).await;

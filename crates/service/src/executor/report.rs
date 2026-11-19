@@ -133,7 +133,8 @@ impl TaskRuntime {
             | EffectPayload::Delivery { .. }
             | EffectPayload::Notice { .. }
             | EffectPayload::Restart { .. }
-            | EffectPayload::AppointmentWake { .. } => {
+            | EffectPayload::AppointmentWake { .. }
+            | EffectPayload::BackgroundLimit { .. } => {
                 return Err("relay 载荷不是 relay".to_owned());
             }
         };
@@ -335,7 +336,8 @@ impl TaskRuntime {
             | EffectPayload::Delivery { .. }
             | EffectPayload::Notice { .. }
             | EffectPayload::Restart { .. }
-            | EffectPayload::AppointmentWake { .. } => Err("relay 载荷不是 relay".to_owned()),
+            | EffectPayload::AppointmentWake { .. }
+            | EffectPayload::BackgroundLimit { .. } => Err("relay 载荷不是 relay".to_owned()),
         }
     }
 
@@ -352,13 +354,13 @@ impl TaskRuntime {
         if task.latest_attempt().map(|attempt| attempt.id) != Some(attempt_id) {
             return;
         }
-        // 轮次结束就释放席位；终态报告/停止也走这里，释放幂等。
-        self.release_seat(task_id.as_str());
         // 停止已经把这个 Attempt 的结果定死：取消后的收尾不再合成 waiting。
         if task
             .latest_attempt()
             .is_some_and(|attempt| attempt.ended_at.is_some())
         {
+            self.release_seat(task_id.as_str());
+            self.cancel_background_limit(attempt_id);
             return;
         }
         if task.latest_report().is_some_and(|report| {
@@ -367,17 +369,37 @@ impl TaskRuntime {
                 ReportState::Ready | ReportState::Blocked | ReportState::Failed
             )
         }) {
+            self.release_seat(task_id.as_str());
+            self.cancel_background_limit(attempt_id);
             return;
         }
         // 用户自己停下这一轮：不算 ThinAgent 没上报，不合成 waiting，Attempt 留着接着做。
         if self.last_turn_was_user_aborted(conversation) {
+            self.release_seat(task_id.as_str());
+            self.cancel_background_limit(attempt_id);
             return;
         }
         // 收尾停：turn 结束还没报，先走 的 waiting 合成，再把这个 Attempt 记成 stopped。
         if self.after_report_requested(conversation) {
+            self.release_seat(task_id.as_str());
+            self.cancel_background_limit(attempt_id);
             self.settle_after_report(task_id, attempt_id, conversation);
             return;
         }
+        // T067：这一轮结束了但还有后台命令：不报「在等」、Attempt 不结束、席位留着，
+        // 落一条 30 分钟到点；命令完了会叫醒模型开新一轮，新一轮结束时再判。
+        eprintln!(
+            "T067_DEBUG turn_ended {} bg={:?}",
+            conversation,
+            self.background_turn_of(conversation)
+        );
+        if let Some(turn) = self.background_turn_of(conversation) {
+            self.schedule_background_limit(task_id, attempt_id, turn);
+            self.wake();
+            return;
+        }
+        self.cancel_background_limit(attempt_id);
+        self.release_seat(task_id.as_str());
         self.record_waiting(task_id, attempt_id, conversation);
         self.wake();
     }
@@ -412,6 +434,127 @@ impl TaskRuntime {
             .is_some_and(|entry| entry.host.agent().stop_after_report_requested())
     }
 
+    /// 这个会话还开着的 agent 有没有后台命令；有就返回它起的轮号。
+    pub(crate) fn background_turn_of(&self, conversation: &SessionId) -> Option<u64> {
+        self.running
+            .lock()
+            .expect("thinagent 表锁被毒化")
+            .get(conversation.as_str())
+            .and_then(|entry| entry.host.agent().background_turn())
+    }
+
+    /// T067：落/续 30 分钟到点；同 Attempt 的旧行被新 due 覆盖。
+    pub(crate) fn schedule_background_limit(
+        &self,
+        task_id: &TaskId,
+        attempt_id: AttemptId,
+        turn: u64,
+    ) {
+        let due = Self::now() + self.background_limit_ms.load(Ordering::SeqCst);
+        let payload = EffectPayload::BackgroundLimit {
+            task_id: task_id.clone(),
+            attempt_id,
+            turn,
+        };
+        if let Err(error) = self.store.enqueue_effect(payload, due) {
+            eprintln!("背景等待到点没排进效果表：{error}");
+        }
+    }
+
+    /// T067：撤掉这个 Attempt 还没领的到点（新一轮/停止/终态）。
+    pub(crate) fn cancel_background_limit(&self, attempt_id: AttemptId) {
+        let key = format!("bg-limit:{attempt_id}");
+        if let Err(error) = self.store.remove_effect(EffectKind::BackgroundLimit, &key) {
+            eprintln!("背景等待到点取消失败：{error}");
+        }
+    }
+
+    fn session_last_turn(&self, conversation: &SessionId) -> Option<u64> {
+        let store = session::SessionStore::open_read_only(&self.data_dir, conversation).ok()?;
+        store
+            .events()
+            .iter()
+            .filter_map(|event| match &event.kind {
+                session::EventKind::TurnStart { turn } => Some(*turn),
+                _ => None,
+            })
+            .max()
+    }
+
+    /// T067：30 分钟到点。执行前核 Attempt 还是它、这一轮之后没开过新轮、后台命令
+    /// 还是这一轮的；不成立就作废。还成立就杀掉、告诉模型、再合成「在等」。
+    pub(crate) async fn deliver_background_limit(self: &Arc<Self>, claim: EffectClaim) {
+        let EffectPayload::BackgroundLimit {
+            task_id,
+            attempt_id,
+            turn,
+        } = &claim.payload
+        else {
+            self.finish_or_fail(&claim, Err("background-limit 载荷不对".to_owned()));
+            return;
+        };
+        let task_id = task_id.clone();
+        let attempt_id = *attempt_id;
+        let turn = *turn;
+        let Ok(Some(task)) = self.store.task(&task_id) else {
+            self.finish_or_fail(&claim, Ok(()));
+            return;
+        };
+        let Some(attempt) = task.latest_attempt() else {
+            self.finish_or_fail(&claim, Ok(()));
+            return;
+        };
+        if attempt.id != attempt_id || attempt.ended_at.is_some() {
+            self.finish_or_fail(&claim, Ok(()));
+            return;
+        }
+        let Some(conversation) = attempt.conversation.clone() else {
+            self.finish_or_fail(&claim, Ok(()));
+            return;
+        };
+        let Ok(conversation) = session::SessionId::parse(conversation.as_str()) else {
+            self.finish_or_fail(&claim, Ok(()));
+            return;
+        };
+        if self.session_last_turn(&conversation) > Some(turn) {
+            // 已经开过新一轮：旧到点作废，新一轮结束时会重新判。
+            self.finish_or_fail(&claim, Ok(()));
+            return;
+        }
+        let Some(running) = self.running_for(&task_id, attempt_id) else {
+            self.finish_or_fail(&claim, Ok(()));
+            return;
+        };
+        let agent = running.host.agent();
+        if agent.background_turn() != Some(turn) {
+            self.finish_or_fail(&claim, Ok(()));
+            return;
+        }
+        let labels = agent.background_labels(turn);
+        agent.kill_turn(turn, "跑了 30 分钟被停").await;
+        let note = if labels.is_empty() {
+            BACKGROUND_STOPPED_NOTE.to_owned()
+        } else {
+            format!("{BACKGROUND_STOPPED_NOTE}：{}", labels.join("、"))
+        };
+        let request_id = format!("background-limit:{task_id}:{attempt_id}:{turn}");
+        if let Err(error) = running
+            .host
+            .send_message(
+                &request_id,
+                UserMessage::text(note.clone()),
+                DeliveryMode::Inject,
+            )
+            .await
+        {
+            eprintln!("背景等待到点没把说明投进会话：{error}");
+        }
+        self.record_waiting_with_note(&task_id, attempt_id, &conversation, &note);
+        self.release_seat(task_id.as_str());
+        self.finish_or_fail(&claim, Ok(()));
+        self.wake();
+    }
+
     /// turn 结束还没报：照 合成 waiting（有最后一段回复就带它，没有就提示去问）。
     pub(crate) fn record_waiting(
         &self,
@@ -420,10 +563,27 @@ impl TaskRuntime {
         conversation: &SessionId,
     ) {
         let said = self.last_assistant_text(conversation);
+        let _ = conversation;
+        self.record_waiting_summary(task_id, attempt_id, &said);
+    }
+
+    /// T067：到点用固定说明合成等待（正文写哪些命令被停）。
+    pub(crate) fn record_waiting_with_note(
+        &self,
+        task_id: &TaskId,
+        attempt_id: AttemptId,
+        conversation: &SessionId,
+        note: &str,
+    ) {
+        let _ = conversation;
+        self.record_waiting_summary(task_id, attempt_id, note);
+    }
+
+    fn record_waiting_summary(&self, task_id: &TaskId, attempt_id: AttemptId, said: &str) {
         let summary = if said.trim().is_empty() {
             WAITING_FALLBACK.to_owned()
         } else {
-            said
+            said.to_owned()
         };
         match self.store.record_report(
             task_id,
@@ -456,6 +616,7 @@ impl TaskRuntime {
         if task.latest_attempt().map(|attempt| attempt.id) != Some(attempt_id) {
             return;
         }
+        self.cancel_background_limit(attempt_id);
         if task
             .latest_attempt()
             .is_some_and(|attempt| attempt.ended_at.is_some())

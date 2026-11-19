@@ -748,6 +748,11 @@ impl Inner {
         self.tool_session.tasks().running_turn()
     }
 
+    /// T067：某一轮还在跑的后台命令标签。
+    pub(crate) fn background_labels(&self, turn: u64) -> Vec<String> {
+        self.tool_session.tasks().running_labels(turn)
+    }
+
     /// T067：杀掉某一轮起的后台命令（含进程组），标记 killedByModel 抑制完成通知。
     pub(crate) async fn kill_turn(&self, turn: u64, reason: &str) {
         let _ = self

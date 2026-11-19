@@ -18,6 +18,8 @@ pub enum EffectKind {
     Restart,
     /// 日历到点唤醒：载荷 key 是运行记录 id。
     AppointmentWake,
+    /// T067：ThinAgent 等后台的 30 分钟到点；key 是 Attempt，换一轮/结束就作废。
+    BackgroundLimit,
 }
 
 impl EffectKind {
@@ -29,6 +31,7 @@ impl EffectKind {
             Self::Notice => "notice",
             Self::Restart => "restart",
             Self::AppointmentWake => "appointment-wake",
+            Self::BackgroundLimit => "background-limit",
         }
     }
 
@@ -37,9 +40,12 @@ impl EffectKind {
     pub fn retry(self) -> (i64, i64) {
         match self {
             Self::Launch => (5_000, 300_000),
-            Self::Relay | Self::Delivery | Self::Notice | Self::Restart | Self::AppointmentWake => {
-                (2_000, 60_000)
-            }
+            Self::Relay
+            | Self::Delivery
+            | Self::Notice
+            | Self::Restart
+            | Self::AppointmentWake
+            | Self::BackgroundLimit => (2_000, 60_000),
         }
     }
 
@@ -109,6 +115,12 @@ pub enum EffectPayload {
         appointment_id: String,
         run_id: i64,
     },
+    /// T067：这一轮结束后还有后台命令；到点杀命令、告诉模型、再合成等待。
+    BackgroundLimit {
+        task_id: TaskId,
+        attempt_id: AttemptId,
+        turn: u64,
+    },
 }
 
 impl EffectPayload {
@@ -123,6 +135,7 @@ impl EffectPayload {
             Self::Notice { .. } => EffectKind::Notice,
             Self::Restart { .. } => EffectKind::Restart,
             Self::AppointmentWake { .. } => EffectKind::AppointmentWake,
+            Self::BackgroundLimit { .. } => EffectKind::BackgroundLimit,
         }
     }
 
@@ -131,6 +144,7 @@ impl EffectPayload {
     pub fn key(&self) -> String {
         match self {
             Self::Launch { task_id } | Self::Delivery { task_id } => task_id.to_string(),
+            Self::BackgroundLimit { attempt_id, .. } => format!("bg-limit:{attempt_id}"),
             Self::Relay { report_id, .. } => report_id.to_string(),
             Self::GateVerdict { gate_report, .. } => format!("gateverdict:{gate_report}"),
             Self::UpstreamChanged {
