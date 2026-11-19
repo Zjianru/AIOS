@@ -1117,6 +1117,7 @@ impl Store {
             params![key, task.id.as_str()],
         )?;
         transaction.commit()?;
+        self.task_changed(&task.id);
         Ok((task, true))
     }
 
