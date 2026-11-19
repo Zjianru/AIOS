@@ -25,6 +25,8 @@ tokio.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 wiremock.workspace = true
+replay = { path = "../replay" }
+tasks = { path = "../tasks" }
 
 [lints]
 workspace = true

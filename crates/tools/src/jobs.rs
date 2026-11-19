@@ -219,6 +219,8 @@ struct JobRecord {
     pid: u32,
     /// 结算线程拿走 Child 阻塞 wait；这里之后只剩 None。
     child: Mutex<Option<Child>>,
+    /// T068 测试可观察的信号次数（Drop 兜底是否真的发了 SIGKILL）。
+    kill_signals: Arc<std::sync::atomic::AtomicUsize>,
     state: Mutex<JobState>,
     cond: Condvar,
     /// 创建 job 的工具调用（job/registered、job/settled 用）。
@@ -452,6 +454,7 @@ impl TaskRegistry {
             turn: spec.turn,
             pid: child.id(),
             child: Mutex::new(Some(child)),
+            kill_signals: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             state: Mutex::new(JobState {
                 status: JobStatus::Running,
                 exit_code: None,
@@ -774,6 +777,15 @@ impl TaskRegistry {
             .max()
     }
 
+    /// T068 测试钩子：这个 job 收到的信号次数（Drop 兜底可观察）。
+    #[doc(hidden)]
+    pub fn kill_signal_counter(
+        &self,
+        id: &str,
+    ) -> Result<Arc<std::sync::atomic::AtomicUsize>, ToolFailure> {
+        Ok(Arc::clone(&self.record(id)?.kill_signals))
+    }
+
     /// T067 测试钩子：结算线程是否已收走子进程（kill 不再发信号）。
     #[doc(hidden)]
     pub fn is_reaped(&self, id: &str) -> Result<bool, ToolFailure> {
@@ -909,6 +921,9 @@ impl TaskRegistry {
     /// 给整个进程组发信号（/bin/kill 的负 pid；子进程 start 时 process_group(0)）。
     #[cfg(unix)]
     fn signal_group(record: &Arc<JobRecord>, signal: &str) {
+        record
+            .kill_signals
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let pid = record.pid;
         #[expect(
             clippy::let_underscore_must_use,

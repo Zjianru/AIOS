@@ -1482,9 +1482,19 @@ async fn registry_drop_kills_an_unreaped_process_group() {
     )
     .await;
     assert!(!started.is_error, "{}", started.content);
+    let job_id = extract_job_id(&started.content);
+    let signals = context
+        .session()
+        .tasks()
+        .kill_signal_counter(&job_id)
+        .expect("counter");
     let pid = wait_pid_file(&pid_file).await;
     assert!(group_alive(pid));
     drop(context);
+    assert!(
+        signals.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+        "Drop 兜底要发一次 SIGKILL"
+    );
     for _ in 0..200 {
         if !group_alive(pid) {
             return;
@@ -1507,7 +1517,17 @@ async fn registry_drop_does_not_signal_reaped_jobs() {
     .await;
     assert!(!started.is_error, "{}", started.content);
     let job_id = extract_job_id(&started.content);
+    let signals = context
+        .session()
+        .tasks()
+        .kill_signal_counter(&job_id)
+        .expect("counter");
     wait_until_terminal(&context, &job_id).await;
     assert!(context.session().tasks().is_reaped(&job_id).unwrap());
     drop(context);
+    assert_eq!(
+        signals.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "已收的 job Drop 不发信号"
+    );
 }
