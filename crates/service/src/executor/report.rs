@@ -634,10 +634,11 @@ impl TaskRuntime {
             eprintln!("任务 {task_id} 的收尾停没记进任务库：{error}");
             return;
         }
-        self.running
-            .lock()
-            .expect("thinagent 表锁被毒化")
-            .remove(conversation.as_str());
+        // T068：收尾停本身不杀后台命令；还有命令就保留宿主，之后立即停还能杀。
+        let retained = self.retain_after_report(conversation.as_str());
+        if !retained {
+            self.forget_running(conversation.as_str());
+        }
         self.release_seat(task_id.as_str());
         self.wake();
     }
@@ -727,7 +728,12 @@ impl TaskRuntime {
                 self.store
                     .end_attempt(task_id, attempt_id, Self::now(), AttemptEnd::Reported),
             );
-            self.forget_running(conversation);
+            // T068：报告时还有后台命令就保留宿主；否则照旧移除。
+            let retained = self.retain_after_report(conversation);
+            if !retained {
+                self.forget_running(conversation);
+            }
+            self.cancel_background_limit(attempt_id);
             self.release_seat(task_id.as_str());
         }
         self.wake();
@@ -772,7 +778,12 @@ impl TaskRuntime {
             self.store
                 .end_attempt(task_id, attempt_id, Self::now(), AttemptEnd::Reported),
         );
-        self.forget_running(conversation);
+        // T068：交回时还有后台命令也保留宿主。
+        let retained = self.retain_after_report(conversation);
+        if !retained {
+            self.forget_running(conversation);
+        }
+        self.cancel_background_limit(attempt_id);
         self.release_seat(task_id.as_str());
         self.wake();
         Ok(format!(

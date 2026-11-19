@@ -715,7 +715,7 @@ test('ready 帧：协议版本 20，旧的 root/context 字段不变', async ({ 
   try {
     await page.goto(urlOf(fixture));
     const ready = await readReady(page);
-    expect(ready.protocolVersion).toBe(20);
+    expect(ready.protocolVersion).toBe(21);
     expect(ready.root).toEqual({ state: 'ok' });
     expect(ready.context).toEqual(expect.objectContaining({ window: expect.any(Number) }));
   } finally {

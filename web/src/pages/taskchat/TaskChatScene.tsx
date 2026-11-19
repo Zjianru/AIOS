@@ -654,7 +654,7 @@ export function TaskChatScene() {
               />
             )}
             <TaskMenu
-              running={task.running}
+              running={task.running || task.backgroundRunning}
               winding={winding}
               program={program !== null}
               onStopNow={() => void stopNow()}
@@ -865,12 +865,16 @@ export function TaskChatScene() {
             onSend={say}
             onCanSendChange={() => undefined}
           >
-            {task.running ? (
+            {task.running || task.backgroundRunning ? (
               <button
                 type="button"
                 onClick={() => void stopTurn()}
-                title="停下这一轮（Esc）：任务不算停，接着说就接着做"
-                aria-label="停下这一轮"
+                title={
+                  task.backgroundRunning
+                    ? '停下报告后还在跑的后台命令'
+                    : '停下这一轮（Esc）：任务不算停，接着说就接着做'
+                }
+                aria-label={task.backgroundRunning ? '停下后台命令' : '停下这一轮'}
                 data-kind="task-stop-turn"
                 className="grid size-7 place-items-center rounded-full bg-ink text-content transition-opacity hover:opacity-90"
               >

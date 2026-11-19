@@ -68,6 +68,8 @@ pub(crate) struct Inner {
     write_scope: Option<PathBuf>,
     /// 收尾停标记：统一工具入口除 task_report 外全拒。只活这个 Agent 实例（一次 Attempt）。
     stop_after_report: AtomicBool,
+    /// T068：报告后保留宿主；命令结束只落事件，不投 inbox、不唤醒。
+    background_only: AtomicBool,
 
     pub(crate) model: DeepSeek,
     pub(crate) tools: ToolSet,
@@ -366,6 +368,7 @@ impl Inner {
             policy_prompt,
             pre_compaction: config.pre_compaction.clone(),
             pre_compaction_instruction: config.pre_compaction_instruction.clone(),
+            background_only: std::sync::atomic::AtomicBool::new(false),
             no_wait: config.no_wait,
             write_scope: config.write_scope.clone(),
             stop_after_report: AtomicBool::new(false),
@@ -595,6 +598,15 @@ impl Inner {
         }
         self.cancel_with(AbortCause::User);
         Ok(())
+    }
+
+    /// T068：报告后保留宿主：后台命令结束只落事件，不投完成通知、不唤醒。
+    pub(crate) fn set_background_only(&self) {
+        self.background_only.store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn is_background_only(&self) -> bool {
+        self.background_only.load(Ordering::SeqCst)
     }
 
     /// 打收尾停标记：统一工具入口之后只放行 task_report。

@@ -2721,9 +2721,11 @@ async fn after_report_stop_does_not_kill_running_background_commands() {
         .trim()
         .parse()
         .expect("pid");
-    let _ = std::process::Command::new("kill")
-        .args(["-TERM", "--", &format!("-{pid}")])
-        .status();
+    drop(
+        std::process::Command::new("kill")
+            .args(["-TERM", "--", &format!("-{pid}")])
+            .status(),
+    );
     wait_until("收尾停测试清掉后台命令", || {
         fixture.cwd.path().join("killed.txt").exists()
     })
