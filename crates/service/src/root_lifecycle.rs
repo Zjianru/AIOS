@@ -290,7 +290,7 @@ impl RootHost {
             })
     }
 
-    /// T067：根 WS 转发任务事实变化（task-changed）用；没有任务运行时为空。
+    /// 根 WS 转发任务事实变化（task-changed）用；没有任务运行时为空。
     pub fn subscribe_task_changed(&self) -> Option<tokio::sync::broadcast::Receiver<String>> {
         self.task_runtime
             .as_ref()
@@ -325,7 +325,7 @@ impl RootHost {
         }
     }
 
-    /// T066 测试钩子：启动补结束轮那条路（不重启宿主也能跑）。
+    /// 测试钩子：启动补结束轮那条路（不重启宿主也能跑）。
     #[doc(hidden)]
     pub fn calendar_close_finished_turns(&self) {
         if let Some(runtime) = &self.task_runtime

@@ -299,7 +299,7 @@ impl RootHost {
     }
 
     pub async fn shutdown(&self) {
-        // T068：先停任务执行者（在跑/保留宿主的命令），再关 Kind。
+        // 先停任务执行者（在跑/保留宿主的命令），再关 Kind。
         if let Some(runtime) = self.task_runtime() {
             runtime.shutdown_all().await;
         }

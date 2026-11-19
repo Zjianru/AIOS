@@ -606,27 +606,27 @@ impl Agent {
         self.inner.cancel_with_and_kill(cause, "停止这一轮");
     }
 
-    /// T067：某轮还有后台命令在跑时返回轮号（任务页 running / 空闲停止用）。
+    /// 某轮还有后台命令在跑时返回轮号（任务页 running / 空闲停止用）。
     pub fn background_turn(&self) -> Option<u64> {
         self.inner.background_turn()
     }
 
-    /// T067：某一轮还在跑的后台命令标签。
+    /// 某一轮还在跑的后台命令标签。
     pub fn background_labels(&self, turn: u64) -> Vec<String> {
         self.inner.background_labels(turn)
     }
 
-    /// T067：杀掉某一轮起的后台命令。
+    /// 杀掉某一轮起的后台命令。
     pub async fn kill_turn(&self, turn: u64, reason: &str) {
         self.inner.kill_turn(turn, reason).await;
     }
 
-    /// T068：报告后保留宿主，命令结束不叫醒模型。
+    /// 报告后保留宿主，命令结束不叫醒模型。
     pub fn set_background_only(&self) {
         self.inner.set_background_only();
     }
 
-    /// T068：宿主是不是处于「只等后台命令收尾」。
+    /// 宿主是不是处于「只等后台命令收尾」。
     pub fn is_background_only(&self) -> bool {
         self.inner.is_background_only()
     }

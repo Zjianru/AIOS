@@ -1,4 +1,4 @@
-//! T068.3：serve 收到 SIGTERM 时把任务后台命令一起收掉（进程级测试）。
+//! serve 收到 SIGTERM 时把任务后台命令一起收掉（进程级测试）。
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

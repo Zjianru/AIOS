@@ -512,7 +512,7 @@ impl CalendarStore {
         Ok(appointments)
     }
 
-    /// T066：把这次运行对应的触发任务 id 写进运行行（旧行为空）。
+    /// 把这次运行对应的触发任务 id 写进运行行（旧行为空）。
     pub fn set_run_task_id(&self, run_id: i64, task_id: &str) -> Result<(), CalendarError> {
         let conn = self
             .conn

@@ -558,7 +558,7 @@ impl TaskRuntime {
         }
         let request_id = format!("appointment-wake:{}:{}", appointment.id, run.id);
         let message = UserMessage::text(body.to_string());
-        // T067：送之前先订阅 agent 事件；等带这个 request_id 的 InboxClaimed 拿 turn，不短轮询日志。
+        // 送之前先订阅 agent 事件；等带这个 request_id 的 InboxClaimed 拿 turn，不短轮询日志。
         let mut agent_events = host.subscribe_agent_events();
         let sent = host
             .send_message(&request_id, message, DeliveryMode::Steer)

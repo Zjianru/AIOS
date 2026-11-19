@@ -1,4 +1,4 @@
-//! T066.2：约定到点建触发任务、回合结束关、派出识别、看板过滤、四个工具拒。
+//! 约定到点建触发任务、回合结束关、派出识别、看板过滤、四个工具拒。
 
 use super::*;
 use calendar::{Binding, CycleSpec, NewAppointment, Schedule};

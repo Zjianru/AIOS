@@ -18,7 +18,7 @@ pub enum EffectKind {
     Restart,
     /// 日历到点唤醒：载荷 key 是运行记录 id。
     AppointmentWake,
-    /// T067：ThinAgent 等后台的 30 分钟到点；key 是 Attempt，换一轮/结束就作废。
+    /// ThinAgent 等后台的 30 分钟到点；key 是 Attempt，换一轮/结束就作废。
     BackgroundLimit,
 }
 
@@ -115,7 +115,7 @@ pub enum EffectPayload {
         appointment_id: String,
         run_id: i64,
     },
-    /// T067：这一轮结束后还有后台命令；到点杀命令、告诉模型、再合成等待。
+    /// 这一轮结束后还有后台命令；到点杀命令、告诉模型、再合成等待。
     BackgroundLimit {
         task_id: TaskId,
         attempt_id: AttemptId,

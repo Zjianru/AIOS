@@ -68,7 +68,7 @@ pub(crate) struct Inner {
     write_scope: Option<PathBuf>,
     /// 收尾停标记：统一工具入口除 task_report 外全拒。只活这个 Agent 实例（一次 Attempt）。
     stop_after_report: AtomicBool,
-    /// T068：报告后保留宿主；命令结束只落事件，不投 inbox、不唤醒。
+    /// 报告后保留宿主；命令结束只落事件，不投 inbox、不唤醒。
     background_only: AtomicBool,
 
     pub(crate) model: DeepSeek,
@@ -600,7 +600,7 @@ impl Inner {
         Ok(())
     }
 
-    /// T068：报告后保留宿主：后台命令结束只落事件，不投完成通知、不唤醒。
+    /// 报告后保留宿主：后台命令结束只落事件，不投完成通知、不唤醒。
     pub(crate) fn set_background_only(&self) {
         self.background_only.store(true, Ordering::SeqCst);
     }
@@ -634,7 +634,7 @@ impl Inner {
         }
     }
 
-    /// T067：取消当前一轮并杀掉这一轮起的命令；给同步入口用（不阻塞调用方）。
+    /// 取消当前一轮并杀掉这一轮起的命令；给同步入口用（不阻塞调用方）。
     pub(crate) fn cancel_with_and_kill(self: &Arc<Self>, cause: AbortCause, reason: &str) {
         let turn = self.current_or_last_turn();
         self.cancel_with(cause);
@@ -755,17 +755,17 @@ impl Inner {
         }
     }
 
-    /// 某轮还有后台命令在跑时返回它的轮号（T067）。
+    /// 某轮还有后台命令在跑时返回它的轮号。
     pub(crate) fn background_turn(&self) -> Option<u64> {
         self.tool_session.tasks().running_turn()
     }
 
-    /// T067：某一轮还在跑的后台命令标签。
+    /// 某一轮还在跑的后台命令标签。
     pub(crate) fn background_labels(&self, turn: u64) -> Vec<String> {
         self.tool_session.tasks().running_labels(turn)
     }
 
-    /// T067：杀掉某一轮起的后台命令（含进程组），标记 killedByModel 抑制完成通知。
+    /// 杀掉某一轮起的后台命令（含进程组），标记 killedByModel 抑制完成通知。
     pub(crate) async fn kill_turn(&self, turn: u64, reason: &str) {
         let _ = self
             .tool_session

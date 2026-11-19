@@ -75,7 +75,7 @@ async fn background_job_completion_notifies_next_request() {
     assert!(saw_job_completed, "缺 JobCompleted 事件");
 }
 
-/// T067.1：一轮结束后 agent 空闲、后台命令还在跑：记着轮号，按停止能杀掉命令且不叫醒。
+/// 一轮结束后 agent 空闲、后台命令还在跑：记着轮号，按停止能杀掉命令且不叫醒。
 #[tokio::test]
 async fn idle_agent_with_a_running_background_job_can_still_be_stopped() {
     let server = MockServer::start().await;

@@ -186,7 +186,7 @@ impl ActionKind for UpdateGateCommandsAction {
                 .latest_attempt()
                 .is_some_and(|attempt| attempt.ended_at.is_none())
             {
-                // T067：先订阅 changed，再停门；收到这个门的 id 再读 Attempt。
+                // 先订阅 changed，再停门；收到这个门的 id 再读 Attempt。
                 let mut changed = runtime.subscribe_task_changed();
                 if let Err(error) = runtime.stop_gate_for_update(&gate_id).await {
                     eprintln!("改命令前停程序门失败：{error}");

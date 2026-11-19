@@ -69,7 +69,7 @@ pub(crate) fn task_facts(
         let Some(task) = store.task(&id).map_err(|error| error.to_string())? else {
             continue;
         };
-        // T066：约定到点的触发任务只在日历上，不进做梦事实。
+        // 约定到点的触发任务只在日历上，不进做梦事实。
         if task.origin.as_ref().map(|origin| origin.role) == Some(tasks::AppointmentRole::Trigger) {
             continue;
         }

@@ -172,7 +172,7 @@ const WORKTREE_NOT_A_REPO: &str = "这个目录不是 git 仓库，开不了工�
 
 /// 立即停任务时写给后台命令的取消原因（进 job 的 detail，给人和日志看）。
 const STOPPED_JOB_REASON: &str = "任务被立即停了";
-/// T067/D29：ThinAgent 一轮结束后等后台命令的上限；不进设置。
+/// ThinAgent 一轮结束后等后台命令的上限；不进设置。
 const BACKGROUND_LIMIT_MS: i64 = 30 * 60 * 1000;
 const BACKGROUND_STOPPED_NOTE: &str = "这些命令跑过 30 分钟被停了";
 
@@ -187,7 +187,7 @@ struct RunningThin {
     host: Arc<ServiceHost>,
     task_id: TaskId,
     attempt_id: AttemptId,
-    /// T068：报告后还有后台命令，宿主保留着只为停/等最后一条命令。
+    /// 报告后还有后台命令，宿主保留着只为停/等最后一条命令。
     retained: bool,
 }
 
@@ -277,7 +277,7 @@ pub struct TaskLive {
 }
 
 /// 任务执行者：效果泵、ThinAgent 会话和任务工具的共享状态。
-/// T067：停止入口对 agent 状态的动作。
+/// 停止入口对 agent 状态的动作。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentInterrupt {
     /// 正在跑：取消当前一轮（cancel_with 同时杀这一轮命令）。
@@ -299,7 +299,7 @@ pub struct TaskRuntime {
     shutting_down: Arc<AtomicBool>,
     /// 测试钩子：暂停整个效果泵（launch/relay 都不跑）。
     pump_paused: AtomicBool,
-    /// T067：等后台的到点时窗；生产固定 30 分钟，测试调短不用真等。
+    /// 等后台的到点时窗；生产固定 30 分钟，测试调短不用真等。
     background_limit_ms: AtomicI64,
     /// 全局暂停（settings.json 的 `exec.paused`）：只挡 launch 准入，relay 照送。
     exec_paused: AtomicBool,
@@ -311,9 +311,9 @@ pub struct TaskRuntime {
     slots: Mutex<WorkerSlots>,
     /// 还活着的 ThinAgent（按会话 id）；终态报告后移除，释放会话写锁。
     running: Mutex<std::collections::HashMap<String, RunningThin>>,
-    /// T067：有宿主移出在跑表时通知续接等锁的人。
+    /// 有宿主移出在跑表时通知续接等锁的人。
     session_relinquished: tokio::sync::Notify,
-    /// T067 测试钩子：效果泵醒来的次数。
+    /// 测试钩子：效果泵醒来的次数。
     pump_wakes: AtomicUsize,
     /// T057：正在跑的程序门检查（按任务 id）；进程组停任务用。
     gate_jobs: Mutex<std::collections::HashMap<String, Arc<RunningGate>>>,
@@ -337,7 +337,7 @@ pub struct TaskRuntime {
 }
 
 impl TaskRuntime {
-    /// T068：退出收尾：先挡新 Attempt，再停所有在跑/保留宿主的命令，关宿主，清表。
+    /// 退出收尾：先挡新 Attempt，再停所有在跑/保留宿主的命令，关宿主，清表。
     pub(crate) async fn shutdown_all(&self) {
         self.shutting_down.store(true, Ordering::SeqCst);
         let hosts: Vec<Arc<ServiceHost>> = {
@@ -406,7 +406,7 @@ impl TaskRuntime {
         })
     }
 
-    /// T067：根 WS 转发 task-changed 用。
+    /// 根 WS 转发 task-changed 用。
     pub(crate) fn subscribe_task_changed(&self) -> broadcast::Receiver<String> {
         self.changed.subscribe()
     }
@@ -838,7 +838,7 @@ impl TaskRuntime {
             report.version == task.requirement_version()
                 && task.acceptance_for(&report.id).is_some()
         });
-        // T068：retained 宿主只表示 backgroundRunning；running 语义不变。
+        // retained 宿主只表示 backgroundRunning；running 语义不变。
         let background_running =
             attempt_id.is_some_and(|attempt_id| self.background_running(&task.id, attempt_id));
         let running = attempt_id.is_some_and(|attempt_id| {
@@ -1183,7 +1183,7 @@ impl TaskRuntime {
     /// 全局暂停的闸门：RootHost 先写设置文件，再改这里的内存值。
     ///
     /// 只挡 launch 准入；relay/notice 照送。排队的效果留在库里，开闸后按原顺序领取。
-    /// T066：到点送 Kind 前，幂等建一条只读触发任务（不排 launch、不开 Attempt）。
+    /// 到点送 Kind 前，幂等建一条只读触发任务（不排 launch、不开 Attempt）。
     fn trigger_task_for_run(
         &self,
         appointment: &calendar::Appointment,
@@ -1225,7 +1225,7 @@ impl TaskRuntime {
         Ok(task)
     }
 
-    /// T066：记住这次 wake 落在根会话的哪一轮；dispatched 只按这条记录认。
+    /// 记住这次 wake 落在根会话的哪一轮；dispatched 只按这条记录认。
     fn remember_trigger_turn(
         &self,
         conversation: &str,
@@ -1260,7 +1260,7 @@ impl TaskRuntime {
             })
     }
 
-    /// T066：当前这一轮若由 appointment-wake 开，返回那次的约定/运行来源。
+    /// 当前这一轮若由 appointment-wake 开，返回那次的约定/运行来源。
     fn dispatched_origin(&self, conversation: &str) -> Option<AppointmentOrigin> {
         let turn = self.current_root_turn(conversation)?;
         self.trigger_turns
@@ -1274,7 +1274,7 @@ impl TaskRuntime {
             })
     }
 
-    /// T066：把新派出/建图的任务标成 dispatched（图的根和子任务都带）。
+    /// 把新派出/建图的任务标成 dispatched（图的根和子任务都带）。
     fn mark_dispatched(&self, conversation: &str, task: &Task) {
         let Some(origin) = self.dispatched_origin(conversation) else {
             return;
@@ -1296,13 +1296,13 @@ impl TaskRuntime {
         }
     }
 
-    /// T066：触发任务不能被当成普通任务接着做/改/停/交回。
+    /// 触发任务不能被当成普通任务接着做/改/停/交回。
     fn trigger_task_rejection(task: &Task) -> Option<String> {
         (task.origin.as_ref().map(|origin| origin.role) == Some(AppointmentRole::Trigger))
             .then(|| "这是约定到点的任务，不能接着做".to_owned())
     }
 
-    /// T066：根会话 turn/end 钩子：这一轮是约定到点开的，就给触发任务写 round_end。
+    /// 根会话 turn/end 钩子：这一轮是约定到点开的，就给触发任务写 round_end。
     pub(crate) fn calendar_on_turn_end(&self, conversation: &str, turn: u64, at: i64) {
         let Some(origin) = self
             .trigger_turns
@@ -1332,7 +1332,7 @@ impl TaskRuntime {
         }
     }
 
-    /// T066：启动补结束轮——触发任务的 round_end 没写、但那一轮日志里已有 turn/end。
+    /// 启动补结束轮——触发任务的 round_end 没写、但那一轮日志里已有 turn/end。
     pub(crate) fn calendar_close_finished_turns(&self, conversation: &str) {
         let Some(calendar) = self.calendar.as_ref() else {
             return;
@@ -1426,7 +1426,7 @@ impl TaskRuntime {
             .collect()
     }
 
-    /// T068 测试钩子：改要求走生产入口。
+    /// 测试钩子：改要求走生产入口。
     #[doc(hidden)]
     pub async fn update_requirement_for_test(
         self: &Arc<Self>,
@@ -1439,7 +1439,7 @@ impl TaskRuntime {
             .await
     }
 
-    /// T068 测试钩子：改写入范围走生产入口。
+    /// 测试钩子：改写入范围走生产入口。
     #[doc(hidden)]
     pub async fn update_scope_for_test(
         self: &Arc<Self>,
@@ -1451,25 +1451,25 @@ impl TaskRuntime {
             .map_err(|error| error.message)
     }
 
-    /// T068 测试钩子：叫醒效果泵（直接排队 delivery 时用）。
+    /// 测试钩子：叫醒效果泵（直接排队 delivery 时用）。
     #[doc(hidden)]
     pub fn wake_for_test(&self) {
         self.wake();
     }
 
-    /// T067 测试钩子：效果泵醒来的次数。
+    /// 测试钩子：效果泵醒来的次数。
     #[doc(hidden)]
     pub fn pump_wake_count(&self) -> usize {
         self.pump_wakes.load(Ordering::SeqCst)
     }
 
-    /// T067 测试钩子：走生产的 set_exec_paused（全局暂停只等通知）。
+    /// 测试钩子：走生产的 set_exec_paused（全局暂停只等通知）。
     #[doc(hidden)]
     pub fn set_exec_paused_for_test(&self, paused: bool) {
         self.set_exec_paused(paused);
     }
 
-    /// T067 测试钩子：当前占用席位数（在跑 + 起跑预约）。
+    /// 测试钩子：当前占用席位数（在跑 + 起跑预约）。
     #[doc(hidden)]
     pub fn used_seats(&self) -> usize {
         let running = self.running_tasks();
@@ -1523,7 +1523,7 @@ impl TaskRuntime {
         self.wake();
     }
 
-    /// T067 测试钩子：把等后台的上限调短；生产恒为 30 分钟。
+    /// 测试钩子：把等后台的上限调短；生产恒为 30 分钟。
     #[doc(hidden)]
     pub fn set_background_limit_ms(&self, millis: i64) {
         self.background_limit_ms
@@ -1661,7 +1661,7 @@ impl TaskRuntime {
                 if self.shutting_down.load(Ordering::SeqCst) {
                     return;
                 }
-                // T067：等后台的 30 分钟到点；到点杀命令、投说明、再合成等待。
+                // 等后台的 30 分钟到点；到点杀命令、投说明、再合成等待。
                 match self
                     .store
                     .claim_effect(EffectKind::BackgroundLimit, Self::now())
@@ -1702,7 +1702,7 @@ impl TaskRuntime {
                     continue;
                 }
             }
-            // T067：只等最近一次到点，没有到点就只等通知；暂停只等通知。
+            // 只等最近一次到点，没有到点就只等通知；暂停只等通知。
             let now = Self::now();
             match self.next_wake_at() {
                 Some(at) => {
@@ -1964,7 +1964,7 @@ impl TaskRuntime {
         Ok(opened.attempt_id)
     }
 
-    /// T068：重开同一会话前，如果这个会话的宿主是保留状态（报告后后台还在跑），
+    /// 重开同一会话前，如果这个会话的宿主是保留状态（报告后后台还在跑），
     /// 先停命令、关宿主、移除，再让下面的锁通知/open 走。
     async fn stop_retained_for_reopen(&self, task_id: &TaskId, conversation: &str) {
         let host = {
@@ -2026,7 +2026,7 @@ impl TaskRuntime {
                 "原会话 id 不合法：{conversation}"
             )));
         };
-        // T068：同一会话的 5 条重开路径都在这里汇合：先停掉保留宿主里的后台命令、
+        // 同一会话的 5 条重开路径都在这里汇合：先停掉保留宿主里的后台命令、
         // 关宿主，再走现有的锁通知，避免报「会话写锁没让出来」。
         self.stop_retained_for_reopen(&task.id, conversation.as_str())
             .await;
@@ -2094,7 +2094,7 @@ impl TaskRuntime {
             self.release_seat(&key);
             return Err(ResumeBlock::Later);
         }
-        // T067：上一轮可能还在收尾。先挂上「宿主移出在跑表」的通知，再查锁；
+        // 上一轮可能还在收尾。先挂上「宿主移出在跑表」的通知，再查锁；
         // 等到通知后只 open 一次，还占着就报错，不循环重试。
         let relinquished = self.session_relinquished.notified();
         tokio::pin!(relinquished);
@@ -2940,7 +2940,7 @@ impl TaskRuntime {
             extra_tools,
             tool_policy: ToolPolicy {
                 only: Some(task.tools.clone()),
-                // T067：ThinAgent 不等命令、不盯后台输出；要等就转后台，结果会叫醒它。
+                // ThinAgent 不等命令、不盯后台输出；要等就转后台，结果会叫醒它。
                 no_wait: true,
             },
             policy_prompt: Some(thin_policy(task.bash)),
@@ -2964,7 +2964,7 @@ impl TaskRuntime {
             })
     }
 
-    /// T067：宿主移出在跑表；叫醒等会话锁的续接。
+    /// 宿主移出在跑表；叫醒等会话锁的续接。
     fn forget_running(&self, conversation: &str) {
         self.running
             .lock()
@@ -2973,7 +2973,7 @@ impl TaskRuntime {
         self.session_relinquished.notify_waiters();
     }
 
-    /// T068：报告/交回后若还有后台命令，把宿主标 retained（不移除、不占席位）。
+    /// 报告/交回后若还有后台命令，把宿主标 retained（不移除、不占席位）。
     fn retain_after_report(&self, conversation: &str) -> bool {
         let mut running = self.running.lock().expect("thinagent 表锁被毒化");
         let Some(entry) = running.get_mut(conversation) else {
@@ -2987,7 +2987,7 @@ impl TaskRuntime {
         true
     }
 
-    /// T068：某个任务当前保留着的后台命令轮号（停止入口用）。
+    /// 某个任务当前保留着的后台命令轮号（停止入口用）。
     fn retained_background(&self, task_id: &TaskId) -> Option<(String, u64)> {
         let running = self.running.lock().expect("thinagent 表锁被毒化");
         running.values().find_map(|entry| {
@@ -3002,7 +3002,7 @@ impl TaskRuntime {
         })
     }
 
-    /// T068：保留的后台命令还在跑（TaskReadHeader.backgroundRunning）。
+    /// 保留的后台命令还在跑（TaskReadHeader.backgroundRunning）。
     fn background_running(&self, task_id: &TaskId, attempt_id: AttemptId) -> bool {
         self.running
             .lock()
@@ -3016,7 +3016,7 @@ impl TaskRuntime {
             })
     }
 
-    /// T068：保留宿主的最后一个后台命令结算了：移除宿主、放会话锁、通知页面。
+    /// 保留宿主的最后一个后台命令结算了：移除宿主、放会话锁、通知页面。
     fn finish_retained_if_idle(&self, conversation: &str) {
         let task_id = {
             let running = self.running.lock().expect("thinagent 表锁被毒化");
@@ -3032,7 +3032,7 @@ impl TaskRuntime {
         self.notify_changed(&task_id);
     }
 
-    /// T068：宿主移除后通知页面重读页头。
+    /// 宿主移除后通知页面重读页头。
     fn notify_changed(&self, task_id: &TaskId) {
         drop(self.changed.send(task_id.as_str().to_owned()));
     }
@@ -3624,7 +3624,7 @@ impl TaskRuntime {
         Ok(lines.join("\n"))
     }
 
-    /// T067：按 agent 状态决定怎么停；空闲但后台命令还在跑时杀最后一轮。
+    /// 按 agent 状态决定怎么停；空闲但后台命令还在跑时杀最后一轮。
     fn interrupt_action(is_running: bool, background_turn: Option<u64>) -> Option<AgentInterrupt> {
         if is_running {
             Some(AgentInterrupt::Cancel)
@@ -3654,7 +3654,7 @@ impl TaskRuntime {
             return Ok(not_running());
         };
         if attempt.ended_at.is_some() {
-            // T068：报告后保留的宿主还有后台命令：停止按钮也要停得掉。
+            // 报告后保留的宿主还有后台命令：停止按钮也要停得掉。
             if let Some((conversation, turn)) = self.retained_background(&id)
                 && let Some(running) = self.running_for(&id, attempt.id)
             {
@@ -3724,7 +3724,7 @@ impl TaskRuntime {
             return Ok(not_running());
         };
         if attempt.ended_at.is_some() {
-            // T068：报告后保留的后台命令，立即停/Kind task_stop 都能停。
+            // 报告后保留的后台命令，立即停/Kind task_stop 都能停。
             if let Some((conversation, turn)) = self.retained_background(&id)
                 && let Some(running) = self.running_for(&id, attempt.id)
             {
