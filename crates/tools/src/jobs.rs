@@ -252,6 +252,27 @@ impl std::fmt::Debug for TaskRegistry {
     }
 }
 
+/// T068：进程退出/会话丢掉时的兜底：没收的子进程直接 SIGKILL 进程组，不等结算。
+impl Drop for TaskRegistry {
+    fn drop(&mut self) {
+        let jobs = match self.jobs.lock() {
+            Ok(jobs) => jobs,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        for record in jobs.values() {
+            let state = match record.state.lock() {
+                Ok(state) => state,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if state.reaped {
+                continue;
+            }
+            drop(state);
+            Self::signal_group(record, "-KILL");
+        }
+    }
+}
+
 impl TaskRegistry {
     pub fn new(data_dir: &Path, session_id: &str) -> Self {
         let root = data_dir.join("jobs").join(format!("session-{session_id}"));

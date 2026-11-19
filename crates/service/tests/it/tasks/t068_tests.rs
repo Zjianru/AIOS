@@ -190,6 +190,13 @@ async fn after_report_stop_retains_and_a_later_immediate_stop_kills() {
     let task = fixture.accept_args(false, write_task_args(), 1).await;
     let pid_file = fixture.cwd.path().join("shell.pid");
     wait_until("后台命令写 pid", || pid_file.exists()).await;
+    // 等这一轮真正结束（T067 会保留 Attempt/席位），收尾停落在空闲会话上，结算确定。
+    for _ in 0..500 {
+        if !task_read(&fixture, &task).await.running {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     // 收尾停：这一轮还没报、Attempt 未结束，不杀后台命令，转 retained。
     let stopped = stop_task(&fixture, &task, StopMode::AfterReport).await;
     assert!(stopped.stopped, "{stopped:?}");
@@ -213,4 +220,191 @@ async fn after_report_stop_retains_and_a_later_immediate_stop_kills() {
         !pgid_alive(&pid_file)
     })
     .await;
+}
+
+#[tokio::test]
+async fn handback_also_retains_the_host_and_stays_stoppable() {
+    let fixture = Fixture::new_with_actions().await;
+    set_bash(&fixture.host, true).await;
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        crate::common::tool_use_sse(
+            1,
+            "call-bg",
+            "bash",
+            &serde_json::json!({
+                "description": "后台命令",
+                "command": "echo $$ > shell.pid; trap 'exit 0' TERM; while [ ! -f done ]; do :; done",
+                "run_in_background": true
+            })
+            .to_string(),
+        ),
+    );
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        crate::common::tool_use_sse(
+            2,
+            "call-handback",
+            "task_handback",
+            r#"{"reason":"做不下去了，先交回"}"#,
+        ),
+    );
+    fixture
+        .router
+        .push_thin_for_title("改一下判重", crate::common::text_sse("交回"));
+    let task = fixture.accept_args(false, write_task_args(), 1).await;
+    let pid_file = fixture.cwd.path().join("shell.pid");
+    wait_until("后台命令写 pid", || pid_file.exists()).await;
+    wait_until("blocked 报告落库", || {
+        tasks_store(fixture.data())
+            .task(&task.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_report().cloned())
+            .is_some_and(|report| report.state == ReportState::Blocked)
+    })
+    .await;
+    let header = task_read(&fixture, &task).await;
+    assert!(header.background_running, "交回后 retained：{header:?}");
+    let stopped = stop_task(&fixture, &task, StopMode::Now).await;
+    assert!(stopped.stopped, "{stopped:?}");
+    wait_until("交回 retained 也能停掉进程组", || {
+        !pgid_alive(&pid_file)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn shutdown_stops_all_running_and_retained_background_commands() {
+    let fixture = Fixture::new_with_actions().await;
+    set_bash(&fixture.host, true).await;
+    let runtime = fixture.host.task_runtime().expect("runtime");
+    runtime.set_pump_paused(true);
+    let store = tasks_store(fixture.data());
+    let mut tasks = Vec::new();
+    for (index, title) in ["任务甲", "任务乙"].into_iter().enumerate() {
+        let args = serde_json::json!({
+            "title": title,
+            "requirement": "等后台命令",
+            "dod": "能停掉",
+            "write_scope": "target.py"
+        })
+        .to_string();
+        kind_turn(
+            &fixture.host,
+            &fixture.router,
+            fixture.data(),
+            &format!("kind-{index}"),
+            "派一个任务",
+            index + 1,
+            vec![
+                crate::common::tool_use_sse(
+                    0,
+                    &format!("call-accept-{index}"),
+                    "task_accept",
+                    &args,
+                ),
+                crate::common::text_sse("已派出"),
+            ],
+        )
+        .await;
+        let task = store
+            .task_ids()
+            .unwrap()
+            .into_iter()
+            .filter_map(|id| store.task(&id).ok().flatten())
+            .find(|task| task.title == title)
+            .expect("刚受理的任务");
+        tasks.push(task);
+    }
+    // 任务都受理完再给每个 task id 排 ThinAgent 回复，放泵开跑。
+    for (index, (pid_name, task)) in [("pid-a", &tasks[0]), ("pid-b", &tasks[1])]
+        .into_iter()
+        .enumerate()
+    {
+        fixture.router.push_thin_for(
+            task.id.as_str(),
+            crate::common::tool_use_sse(
+                1,
+                &format!("call-bg-{pid_name}"),
+                "bash",
+                &serde_json::json!({
+                    "description": "长命令",
+                    "command": format!("echo $$ > {pid_name}; trap 'exit 0' TERM; while [ ! -f {pid_name}.done ]; do :; done"),
+                    "run_in_background": true
+                })
+                .to_string(),
+            ),
+        );
+        fixture
+            .router
+            .push_thin_for(task.id.as_str(), crate::common::text_sse("转后台了"));
+        let _ = index;
+    }
+    runtime.set_pump_paused(false);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    for task in &tasks {
+        eprintln!(
+            "DEBUG task {} attempt={:?}",
+            task.id,
+            store
+                .task(&task.id)
+                .unwrap()
+                .unwrap()
+                .latest_attempt()
+                .map(|a| a.ended_at)
+        );
+    }
+    eprintln!("DEBUG bodies={}", fixture.router.bodies(true).len());
+    let pid_a = fixture.cwd.path().join("pid-a");
+    let pid_b = fixture.cwd.path().join("pid-b");
+    wait_until("甲 pid 文件", || pid_a.exists()).await;
+    wait_until("乙 pid 文件", || pid_b.exists()).await;
+    let pid_a: i32 = std::fs::read_to_string(&pid_a)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let pid_b: i32 = std::fs::read_to_string(&pid_b)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert!(group_alive_at(pid_a) && group_alive_at(pid_b));
+    // 生产退出入口：RootHost::shutdown 先停任务命令，再关 Kind。
+    fixture.host.shutdown().await;
+    wait_until("退出后两个进程组都没了", || {
+        !group_alive_at(pid_a) && !group_alive_at(pid_b)
+    })
+    .await;
+    // 不再叫醒：两个会话都只有 1 轮。
+    for task in &tasks {
+        let attempt = store
+            .task(&task.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .cloned()
+            .unwrap();
+        let conversation = attempt.conversation.unwrap();
+        let id = session::SessionId::parse(conversation.as_str()).unwrap();
+        let session = session::SessionStore::open_read_only(fixture.data(), &id).unwrap();
+        assert_eq!(
+            session
+                .events()
+                .iter()
+                .filter(|event| matches!(&event.kind, session::EventKind::TurnStart { .. }))
+                .count(),
+            1,
+            "退出后不能再开新一轮"
+        );
+    }
+}
+
+fn group_alive_at(pid: i32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &format!("-{pid}")])
+        .status()
+        .expect("kill -0")
+        .success()
 }

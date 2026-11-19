@@ -335,6 +335,25 @@ pub struct TaskRuntime {
 }
 
 impl TaskRuntime {
+    /// T068：退出收尾：先挡新 Attempt，再停所有在跑/保留宿主的命令，关宿主，清表。
+    pub(crate) async fn shutdown_all(&self) {
+        self.shutting_down.store(true, Ordering::SeqCst);
+        let hosts: Vec<Arc<ServiceHost>> = {
+            let mut running = self.running.lock().expect("thinagent 表锁被毒化");
+            running.drain().map(|(_, entry)| entry.host).collect()
+        };
+        for host in hosts {
+            let agent = host.agent();
+            agent.cancel_with(session::AbortCause::User);
+            agent
+                .stop_background_jobs("AIOS 退出，后台命令一起停")
+                .await;
+            host.shutdown().await;
+        }
+        self.session_relinquished.notify_waiters();
+        self.wake();
+    }
+
     pub(crate) fn new(
         options: &RootSessionOptions,
         selection: Arc<Mutex<Option<session::ModelSelection>>>,
