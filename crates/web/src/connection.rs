@@ -350,7 +350,8 @@ async fn ws_root_session(socket: &mut WebSocket, state: &AppState, last_seq: u64
         return;
     }
     let source = FollowSource::Root(state.host.as_ref());
-    live_loop(socket, &source, live, agent_live, None, last).await;
+    let changed = state.host.subscribe_task_changed();
+    live_loop(socket, &source, live, agent_live, changed, last).await;
 }
 
 /// T058：任务事实变化接收；根会话没有这个通道，用永远 pending 的分支。

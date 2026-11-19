@@ -208,10 +208,6 @@ impl ActionKind for UpdateGateCommandsAction {
                 .store()
                 .update_gate_commands(&TaskId::from(gate_id.as_str()), commands, now_millis())
                 .map_err(|error| error.to_string())?;
-            runtime.notify_task_changed(&updated.id);
-            if let Some(need) = updated.needs.first() {
-                runtime.notify_task_changed(&need.from);
-            }
             let version = updated.commands_version();
             if updated
                 .needs

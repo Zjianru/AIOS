@@ -1,15 +1,14 @@
 /**
  * 日历页共用的一份服务端事实。读 calendar-read，做 calendar-action 后立即重读。
- * 不推送：两秒轻轮询；页面切走就停。
+ * 服务推 calendar/changed 或 task-changed 才重读；页面切走就断。
  */
 
 import { useEffect } from 'react';
 import { create } from 'zustand';
 import type { CalendarActionKind } from '@/data/generated/CalendarActionKind';
 import type { CalendarReadResponse } from '@/data/generated/CalendarReadResponse';
+import { subscribeRootFrames } from '@/data/liveRoot';
 import { calendarAction, getCalendar } from '@/data/service';
-
-export const CALENDAR_POLL_MS = 2000;
 
 interface CalendarState {
   response: CalendarReadResponse | null;
@@ -50,13 +49,17 @@ export const useCalendarStore = create<CalendarState>()((set, get) => ({
   },
 }));
 
-/** 页面开着时每两秒重读；切走就清掉。 */
+/** 页面打开读一次；日历或任务事实变了才重读；切走就断。 */
 export function useCalendarPolling(from: number, to: number): void {
   useEffect(() => {
     void useCalendarStore.getState().refresh(from, to);
-    const timer = window.setInterval(() => {
-      void useCalendarStore.getState().refresh(from, to);
-    }, CALENDAR_POLL_MS);
-    return () => window.clearInterval(timer);
+    const unsubscribe = subscribeRootFrames((frame) => {
+      const calendarChanged =
+        frame.type === 'event' && frame.event.type === 'calendar/changed';
+      if (frame.type === 'ready' || frame.type === 'task-changed' || calendarChanged) {
+        void useCalendarStore.getState().refresh(from, to);
+      }
+    });
+    return unsubscribe;
   }, [from, to]);
 }

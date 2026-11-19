@@ -38,6 +38,8 @@ import { ProgramSection, ProgramState } from './parts/program';
 import { ReviewSection } from './parts/review';
 import { TaskState } from './parts/state';
 import { NO_CANVAS, NO_COUNTS, reasonOf } from './parts/helpers';
+import { subscribeRootFrames } from '@/data/liveRoot';
+import { reconnectDelayMs } from '@/data/reconnect';
 import { useTaskChatSideData } from './parts/useTaskChatSideData';
 import { releaseTaskSocketRefs } from './parts/taskStream';
 
@@ -230,8 +232,7 @@ export function TaskChatScene() {
         // 断线期间任务被停/被打断/交报告，页面不靠重新打开也能自愈。
         void refreshHeader();
         reconnectAttempt += 1;
-        const delay = Math.min(1000 * reconnectAttempt, 5000);
-        reconnectTimer = setTimeout(connect, delay);
+        reconnectTimer = setTimeout(connect, reconnectDelayMs(reconnectAttempt));
       });
       socketRef.current = socket;
       // T039：连上（含重启后的重连成功）先拉一次任务库事实，别等下一条日志事件。
@@ -355,23 +356,34 @@ export function TaskChatScene() {
    * running（或超时），顺带把轮询读到的日志补进列表，再接 WS。
    */
   async function reopenTaskStream(token: number) {
-    for (let attempt = 0; attempt < 24; attempt += 1) {
+    // 新 Attempt 登记会先落库并发 task-changed；等它再重连，不短轮询。
+    if (token !== requestToken.current) return;
+    try {
+      const response = await taskRead(taskId);
       if (token !== requestToken.current) return;
-      try {
-        const response = await taskRead(taskId);
-        if (token !== requestToken.current) return;
-        setTask(response.task);
-        setLedger(response.ledger);
-        const fresh = response.events.filter((event) => event.seq > lastSeqRef.current);
-        if (fresh.length > 0) {
-          lastSeqRef.current = fresh[fresh.length - 1].seq;
-          setEvents((current) => current.concat(fresh));
-        }
-        if (response.task.running) break;
-      } catch {
-        // 读不到就下一轮再试；超时后照样重新接连接。
+      setTask(response.task);
+      setLedger(response.ledger);
+      const fresh = response.events.filter((event) => event.seq > lastSeqRef.current);
+      if (fresh.length > 0) {
+        lastSeqRef.current = fresh[fresh.length - 1].seq;
+        setEvents((current) => current.concat(fresh));
       }
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (!response.task.running) {
+        await new Promise<void>((resolve) => {
+          let timer: number | null = null;
+          const finish = () => {
+            unsubscribe();
+            if (timer !== null) window.clearTimeout(timer);
+            resolve();
+          };
+          const unsubscribe = subscribeRootFrames((frame) => {
+            if (frame.type === 'task-changed' && frame.taskId === taskId) finish();
+          });
+          timer = window.setTimeout(finish, 10_000);
+        });
+      }
+    } catch {
+      // 读不到也让后面重连接一次。
     }
     if (token !== requestToken.current) return;
     connectRef.current?.();

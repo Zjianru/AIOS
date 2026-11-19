@@ -503,7 +503,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
     for (let attempt = 0; attempt < 80; attempt += 1) {
       const state = get();
       if (state.initialLoading || state.loadingOlder) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await waitForKindIdle();
         continue;
       }
       const cardViews = state.views
@@ -532,7 +532,7 @@ export const useKindStore = create<KindState>()((set, get) => ({
     for (let attempt = 0; attempt < 80; attempt += 1) {
       const state = get();
       if (state.initialLoading || state.loadingOlder) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await waitForKindIdle();
         continue;
       }
       if (state.byId.has(turnId)) {
@@ -1093,3 +1093,40 @@ setUnauthorizedHandler(() => {
   });
   go('kind:conversation');
 });
+
+
+/** T067.4：等 Kind 首屏/旧页加载完（订阅状态，不 100ms 轮询）。 */
+export function waitForKindIdle(): Promise<void> {
+  const idle = (state: { initialLoading: boolean; loadingOlder: boolean }) =>
+    !state.initialLoading && !state.loadingOlder;
+  if (idle(useKindStore.getState())) return Promise.resolve();
+  return new Promise((resolve) => {
+    const unsubscribe = useKindStore.subscribe((state) => {
+      if (!idle(state)) return;
+      unsubscribe();
+      resolve();
+    });
+  });
+}
+
+/** T067.4：等 Kind 页这一屏加载完（loadCount 超过 before）；不 100ms 轮询。 */
+export function waitForKindLoad(before: number): Promise<void> {
+  if (useKindStore.getState().loadCount > before) return Promise.resolve();
+  return new Promise((resolve) => {
+    const unsubscribe = useKindStore.subscribe((state) => {
+      if (state.loadCount <= before) return;
+      unsubscribe();
+      resolve();
+    });
+  });
+}
+
+/** T067.4：等 Kind store 任意一次变化（加载/新事件），不固定间隔轮询。 */
+export function waitForKindChange(): Promise<void> {
+  return new Promise((resolve) => {
+    const unsubscribe = useKindStore.subscribe(() => {
+      unsubscribe();
+      resolve();
+    });
+  });
+}

@@ -5,6 +5,7 @@
 
 import { create } from 'zustand';
 import { toast } from 'sonner';
+import { reconnectDelayMs } from '@/data/reconnect';
 import { connectSession, memoryAction, memoryRead } from '@/data/service';
 import type { MemoryActionKind, MemoryReadResponse } from '@/data/service';
 
@@ -20,6 +21,7 @@ interface MemoryState {
 
 let socket: WebSocket | null = null;
 let reconnectTimer: number | null = null;
+let reconnectAttempt = 0;
 
 function closeLive(): void {
   socket?.close();
@@ -28,12 +30,14 @@ function closeLive(): void {
     window.clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+  reconnectAttempt = 0;
 }
 
 function openLive(): void {
   socket = connectSession(
     Number.MAX_SAFE_INTEGER,
     (frame) => {
+      reconnectAttempt = 0;
       if (frame.type !== 'event') return;
       // 记忆库变了，或做梦跑完出了卡：都重读（run 的状态/明细要跟着变）。
       if (frame.event.type === 'memory/changed' || frame.event.type === 'memory/card') {
@@ -43,10 +47,11 @@ function openLive(): void {
     () => {
       socket = null;
       if (reconnectTimer === null) {
+        reconnectAttempt += 1;
         reconnectTimer = window.setTimeout(() => {
           reconnectTimer = null;
           openLive();
-        }, 1000);
+        }, reconnectDelayMs(reconnectAttempt));
       }
     },
   );

@@ -5,18 +5,17 @@ import { toast } from 'sonner';
 import { go } from '@/app/navigate';
 import type { TaskAcceptManyResponse } from '@/data/generated/TaskAcceptManyResponse';
 import type { WaitItem } from '@/data/generated/WaitItem';
-import { useKindStore } from '@/pages/kind/kindStore';
+import { useKindStore, waitForKindChange, waitForKindLoad } from '@/pages/kind/kindStore';
 import { openAppointment } from '@/pages/calendar/CalendarPane';
 import { cn } from '@/lib/utils';
 import { WAIT_ACTION, WAIT_LABEL, stageLabel, waitGroups } from './workModel';
 import { useWorkStore } from './workStore';
 
 async function revealKindTurn(turn: number): Promise<boolean> {
-  for (let attempt = 0; attempt < 60; attempt += 1) {
+  for (;;) {
     if (await useKindStore.getState().revealTurnNumber(turn)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await waitForKindChange();
   }
-  return false;
 }
 
 /** 点「去看/去判/去答」：先回 Kind 滚到那一轮；找不到再退回任务对话或提示。 */
@@ -34,23 +33,24 @@ export async function openWaitItem(
     go('taskchat:' + item.taskId);
     return;
   }
-  if (item.turn !== undefined && item.turn !== null) {
+  // 有问题要你答的项即使服务还没把轮号补上（relay 刚落库）也回 Kind：
+  // 按 taskId 找最新结果卡，不退回任务对话。
+  if (item.turn != null || item.kind === 'answer') {
     const before = useKindStore.getState().loadCount;
     go('kind');
     // 等 Kind 页新一屏加载完再滚，别拿上一次的旧视图滚。
-    for (let attempt = 0; attempt < 60; attempt += 1) {
-      if (useKindStore.getState().loadCount > before) break;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
+    await waitForKindLoad(before);
     // T055 审计 F3：用 wait 项的轮号选同一任务的最新结果卡（不能按 taskId 选最早旧卡）；
     // 任务本身没有结果卡（例如绑总任务的确认卡）再按轮号滚。
-    if (
-      item.taskId &&
-      (await useKindStore.getState().revealTaskResult(item.taskId, item.turn))
-    ) {
-      return;
+    if (item.taskId) {
+      for (;;) {
+        if (await useKindStore.getState().revealTaskResult(item.taskId, item.turn ?? undefined)) {
+          return;
+        }
+        await waitForKindChange();
+      }
     }
-    if (await revealKindTurn(item.turn)) return;
+    if (item.turn != null && (await revealKindTurn(item.turn))) return;
   }
   if (item.taskId) {
     go('taskchat:' + item.taskId);

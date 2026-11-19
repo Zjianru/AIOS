@@ -331,6 +331,13 @@ impl TaskRuntime {
         calendar_events: Option<broadcast::Sender<ServiceEvent>>,
     ) -> Result<Self, TaskError> {
         let store = Store::open(options.data_dir.join(TASKS_DB_FILE))?;
+        let changed = broadcast::channel(64).0;
+        {
+            let sender = changed.clone();
+            store.set_on_changed(Arc::new(move |task_id: &str| {
+                drop(sender.send(task_id.to_owned()));
+            }));
+        }
         // 重启后暂停和席位还在：启动时读一次设置文件，缺了按默认。
         let exec = crate::settings::load(&options.data_dir).exec;
         let exec_paused = exec.paused;
@@ -351,7 +358,7 @@ impl TaskRuntime {
             slots: Mutex::new(WorkerSlots::new()),
             running: Mutex::new(std::collections::HashMap::new()),
             gate_jobs: Mutex::new(std::collections::HashMap::new()),
-            changed: broadcast::channel(64).0,
+            changed,
             crash_before_relay: AtomicBool::new(false),
             calendar: calendar::CalendarStore::open(options.data_dir.join("calendar.sqlite"))
                 .ok()
@@ -364,9 +371,9 @@ impl TaskRuntime {
         })
     }
 
-    /// T058：告诉任务页任务事实变了（轻量广播，不落日志）。
-    pub(crate) fn notify_task_changed(&self, task_id: &TaskId) {
-        drop(self.changed.send(task_id.as_str().to_owned()));
+    /// T067：根 WS 转发 task-changed 用。
+    pub(crate) fn subscribe_task_changed(&self) -> broadcast::Receiver<String> {
+        self.changed.subscribe()
     }
 
     /// 任务库（测试和诊断读同一份事实）。
@@ -428,7 +435,6 @@ impl TaskRuntime {
             .store
             .accept(&id, &report, Self::now())
             .map_err(|error| error.to_string())?;
-        self.notify_task_changed(&id);
         Ok(acceptance)
     }
 

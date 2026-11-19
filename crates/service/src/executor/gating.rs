@@ -132,12 +132,6 @@ impl TaskRuntime {
             Self::now(),
         ) {
             Ok(outcome) => {
-                if let Ok(Some(gate)) = self.store.task(&gate_id)
-                    && let Some(need) = gate.needs.first()
-                {
-                    self.notify_task_changed(&need.from);
-                }
-                self.notify_task_changed(&gate_id);
                 self.wake();
                 let recorded = match outcome.verdict.conclusion {
                     GateConclusion::Pass => ProtocolGateConclusion::Pass,
@@ -479,12 +473,6 @@ impl TaskRuntime {
         ) {
             eprintln!("程序门 {gate_id} 的结果没写进任务库：{error}");
         }
-        if let Ok(Some(gate)) = self.store.task(&gate_id)
-            && let Some(need) = gate.needs.first()
-        {
-            self.notify_task_changed(&need.from);
-        }
-        self.notify_task_changed(&gate_id);
         self.wake();
     }
 
