@@ -67,6 +67,8 @@ test('T068 报告后后台还在跑：Kind 卡是报告状态，任务页停止�
     await page.goto(urlOf(fixture, '#taskchat:' + taskId));
     const stop = page.locator('[data-kind="task-stop-turn"]');
     await expect(stop).toBeVisible({ timeout: 30_000 });
+    // 报告后后台还在跑：输入框仍是「接着做」语义。
+    await expect(page.getByPlaceholder('和 ThinAgent 说，它就接着做…')).toBeVisible();
     // T068.4：报告后不再按 600/1600/3200 固定补拉；页面静下来后 3.5 秒不发请求。
     await page.waitForTimeout(1_500);
     const baseline = taskReads;
