@@ -530,3 +530,121 @@ async fn kind_continue_while_retained_stops_commands_then_reopens() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn changing_requirement_while_retained_stops_commands_then_reopens() {
+    let fixture = Fixture::new_with_actions().await;
+    let command = "echo $$ > shell.pid; trap 'exit 0' TERM; while [ ! -f done ]; do :; done";
+    let (task, pid) = report_with_background(&fixture, command).await;
+    let old_attempt = tasks_store(fixture.data())
+        .task(&task.id)
+        .unwrap()
+        .unwrap()
+        .latest_attempt()
+        .cloned()
+        .unwrap()
+        .id;
+    fixture
+        .router
+        .push_thin_for_title("改一下判重", crate::common::text_sse("按新要求做"));
+    let summary = fixture
+        .host
+        .task_runtime()
+        .unwrap()
+        .update_requirement_for_test(
+            task.id.as_str(),
+            "改成按标题判重".to_owned(),
+            Some("同一标题只留一条".to_owned()),
+            None,
+        )
+        .await
+        .expect("改要求");
+    assert!(summary.contains("第 2 版"), "{summary}");
+    wait_until("改要求前先停保留命令", || !pgid_alive(&pid)).await;
+    wait_until("改要求后新 Attempt 开成", || {
+        tasks_store(fixture.data())
+            .task(&task.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .is_some_and(|attempt| attempt.id != old_attempt)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn changing_write_scope_while_retained_stops_commands_then_reopens() {
+    let fixture = Fixture::new_with_actions().await;
+    let command = "echo $$ > shell.pid; trap 'exit 0' TERM; while [ ! -f done ]; do :; done";
+    let (task, pid) = report_with_background(&fixture, command).await;
+    let old_attempt = tasks_store(fixture.data())
+        .task(&task.id)
+        .unwrap()
+        .unwrap()
+        .latest_attempt()
+        .cloned()
+        .unwrap()
+        .id;
+    fixture
+        .router
+        .push_thin_for_title("改一下判重", crate::common::text_sse("按新范围做"));
+    let summary = fixture
+        .host
+        .task_runtime()
+        .unwrap()
+        .update_scope_for_test(task.id.as_str(), "other.py".to_owned())
+        .await
+        .expect("改写入范围");
+    assert!(summary.contains("第 2 版"), "{summary}");
+    wait_until("改写集前先停保留命令", || !pgid_alive(&pid)).await;
+    wait_until("改写集后新 Attempt 开成", || {
+        tasks_store(fixture.data())
+            .task(&task.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .is_some_and(|attempt| attempt.id != old_attempt)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn queued_message_while_retained_stops_commands_then_reopens() {
+    let fixture = Fixture::new_with_actions().await;
+    let command = "echo $$ > shell.pid; trap 'exit 0' TERM; while [ ! -f done ]; do :; done";
+    let (task, pid) = report_with_background(&fixture, command).await;
+    let old_attempt = tasks_store(fixture.data())
+        .task(&task.id)
+        .unwrap()
+        .unwrap()
+        .latest_attempt()
+        .cloned()
+        .unwrap()
+        .id;
+    let store = tasks_store(fixture.data());
+    store
+        .say_input(
+            &task.id,
+            tasks::NewInput {
+                text: "接着说一句".to_owned(),
+                pastes: Vec::new(),
+                attachments: Vec::new(),
+            },
+            1_700_000_100_000,
+        )
+        .expect("记输入");
+    fixture.host.task_runtime().unwrap().wake_for_test();
+    fixture
+        .router
+        .push_thin_for_title("改一下判重", crate::common::text_sse("收到了"));
+    wait_until("消息送到时先停保留命令", || !pgid_alive(&pid)).await;
+    wait_until("消息送到后新 Attempt 开成", || {
+        tasks_store(fixture.data())
+            .task(&task.id)
+            .unwrap()
+            .unwrap()
+            .latest_attempt()
+            .is_some_and(|attempt| attempt.id != old_attempt)
+    })
+    .await;
+}

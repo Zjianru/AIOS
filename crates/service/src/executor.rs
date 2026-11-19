@@ -1424,6 +1424,37 @@ impl TaskRuntime {
             .collect()
     }
 
+    /// T068 测试钩子：改要求走生产入口。
+    #[doc(hidden)]
+    pub async fn update_requirement_for_test(
+        self: &Arc<Self>,
+        task_id: &str,
+        requirement: String,
+        dod: Option<String>,
+        constraints: Option<Vec<String>>,
+    ) -> Result<String, String> {
+        self.update_requirement(task_id, requirement, dod, constraints)
+            .await
+    }
+
+    /// T068 测试钩子：改写入范围走生产入口。
+    #[doc(hidden)]
+    pub async fn update_scope_for_test(
+        self: &Arc<Self>,
+        task_id: &str,
+        write_scope: String,
+    ) -> Result<String, String> {
+        self.update_scope(task_id, write_scope)
+            .await
+            .map_err(|error| error.message)
+    }
+
+    /// T068 测试钩子：叫醒效果泵（直接排队 delivery 时用）。
+    #[doc(hidden)]
+    pub fn wake_for_test(&self) {
+        self.wake();
+    }
+
     /// T067 测试钩子：效果泵醒来的次数。
     #[doc(hidden)]
     pub fn pump_wake_count(&self) -> usize {
