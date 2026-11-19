@@ -311,6 +311,7 @@ impl TaskRuntime {
                     .unwrap_or("")
                     .to_owned(),
                 tool_call: None,
+                turn: 0,
             };
             let job_id = match registry.start(spec, true) {
                 Ok(id) => id,
