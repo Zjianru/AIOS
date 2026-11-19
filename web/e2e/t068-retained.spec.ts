@@ -73,8 +73,15 @@ test('T068 报告后后台还在跑：Kind 卡是报告状态，任务页停止�
     await page.waitForTimeout(3_500);
     expect(taskReads).toBe(baseline);
     await expect(stop).toHaveAttribute('aria-label', '停下后台命令');
+    const beforeStop = taskReads;
     await stop.click();
     await expect.poll(() => pgidAlive(pid), { timeout: 5_000 }).toBe(false);
+    // task-changed 触发一次重读，不是 10 秒兜底/固定补拉。
+    await expect.poll(() => taskReads, { timeout: 5_000 }).toBeGreaterThan(beforeStop);
+    const afterEvent = taskReads;
+    // 兜底窗口走完（10 秒）不应再因定时器多发请求。
+    await page.waitForTimeout(10_500);
+    expect(taskReads).toBe(afterEvent);
     const read = await apiPost(request, fixture, { method: 'task-read', taskId });
     expect(read.ok()).toBeTruthy();
     const body = (await read.json()) as { task: { backgroundRunning: boolean; running: boolean } };
