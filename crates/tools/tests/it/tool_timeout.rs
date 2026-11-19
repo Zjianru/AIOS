@@ -3,6 +3,13 @@
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+fn cancel_token(flag: &std::sync::Arc<std::sync::atomic::AtomicBool>) -> model::CancelToken {
+    model::CancelToken::new(
+        std::sync::Arc::clone(flag),
+        std::sync::Arc::new(tokio::sync::Notify::new()),
+    )
+}
+
 use tools::{
     Tool, ToolCall, ToolConcurrency, ToolContext, ToolFuture, ToolResult, ToolSet, execute_batch,
 };
@@ -68,9 +75,16 @@ async fn timed_out_tool_returns_timeout_error() {
         mode: ToolConcurrency::Exclusive,
     });
     let set = ToolSet::new(vec![tool]);
-    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let started = Instant::now();
-    let outcome = execute_batch(&set, &calls(&[("call_1", "slow")]), 4, &context(), &cancel).await;
+    let outcome = execute_batch(
+        &set,
+        &calls(&[("call_1", "slow")]),
+        4,
+        &context(),
+        &cancel_token(&cancel),
+    )
+    .await;
     assert!(
         started.elapsed() < Duration::from_secs(1),
         "超时不应等工具跑完"
@@ -97,13 +111,13 @@ async fn exclusive_timed_out_tool_does_not_block_batch() {
     });
     // 两个同名工具：用 ToolSet 里第二个不同名字不方便，直接验证独占超时后批继续。
     let set = ToolSet::new(vec![slow]);
-    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let outcome = execute_batch(
         &set,
         &calls(&[("call_1", "slow"), ("call_2", "unknown")]),
         4,
         &context(),
-        &cancel,
+        &cancel_token(&cancel),
     )
     .await;
     assert_eq!(outcome.results.len(), 2);
@@ -128,8 +142,15 @@ async fn tool_without_timeout_is_unchanged() {
         mode: ToolConcurrency::Exclusive,
     });
     let set = ToolSet::new(vec![tool]);
-    let cancel = std::sync::atomic::AtomicBool::new(false);
-    let outcome = execute_batch(&set, &calls(&[("call_1", "slow")]), 4, &context(), &cancel).await;
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let outcome = execute_batch(
+        &set,
+        &calls(&[("call_1", "slow")]),
+        4,
+        &context(),
+        &cancel_token(&cancel),
+    )
+    .await;
     assert!(!outcome.results[0].is_error);
     assert_eq!(outcome.results[0].content, "slow done");
 }
@@ -149,13 +170,13 @@ async fn parallel_pool_timeout_returns_error_while_others_succeed() {
         mode: ToolConcurrency::Parallel,
     });
     let set = ToolSet::new(vec![slow, fast]);
-    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let outcome = execute_batch(
         &set,
         &calls(&[("call_1", "slow"), ("call_2", "fast")]),
         4,
         &context(),
-        &cancel,
+        &cancel_token(&cancel),
     )
     .await;
     assert_eq!(outcome.results.len(), 2);
@@ -206,4 +227,75 @@ fn timeout_default_is_none_and_bash_is_command_level_only() {
         None,
         "bash 不声明工具级限时（命令级转后台在 T005.4）"
     );
+}
+
+async fn cancelled_batch(wait_ms: u64, mode: ToolConcurrency) -> (tools::BatchOutcome, Duration) {
+    let tool: Box<dyn Tool> = Box::new(SlowTool {
+        name: "slow",
+        wait_ms,
+        timeout: None,
+        mode,
+    });
+    let set = ToolSet::new(vec![tool]);
+    let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let notify = std::sync::Arc::new(tokio::sync::Notify::new());
+    let token =
+        model::CancelToken::new(std::sync::Arc::clone(&flag), std::sync::Arc::clone(&notify));
+    let canceller = {
+        let flag = std::sync::Arc::clone(&flag);
+        let notify = std::sync::Arc::clone(&notify);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            notify.notify_waiters();
+        })
+    };
+    let started = Instant::now();
+    let outcome = execute_batch(
+        &set,
+        &calls(&[("call_1", "slow"), ("call_2", "slow")]),
+        4,
+        &context(),
+        &token,
+    )
+    .await;
+    let elapsed = started.elapsed();
+    canceller.await.unwrap();
+    (outcome, elapsed)
+}
+
+#[tokio::test]
+async fn cancelling_the_batch_drops_the_running_tool_without_a_late_result() {
+    let (outcome, elapsed) = cancelled_batch(5_000, ToolConcurrency::Exclusive).await;
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "取消要在 1 秒内返回，实际 {elapsed:?}"
+    );
+    assert!(outcome.cancelled);
+    assert_eq!(outcome.results.len(), 2);
+    for result in &outcome.results {
+        assert!(result.is_error);
+        assert_eq!(
+            result.error_code.as_deref(),
+            Some("ABORTED_BEFORE_DISPATCH")
+        );
+    }
+}
+
+#[tokio::test]
+async fn cancelling_parallel_tools_aborts_every_started_call() {
+    let (outcome, elapsed) = cancelled_batch(5_000, ToolConcurrency::Parallel).await;
+    assert!(
+        elapsed < Duration::from_secs(1),
+        "并行取消也要在 1 秒内返回，实际 {elapsed:?}"
+    );
+    assert!(outcome.cancelled);
+    assert_eq!(outcome.results.len(), 2);
+    for result in &outcome.results {
+        assert!(result.is_error);
+        assert_eq!(
+            result.error_code.as_deref(),
+            Some("ABORTED_BEFORE_DISPATCH")
+        );
+    }
 }

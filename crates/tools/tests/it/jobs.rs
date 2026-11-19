@@ -536,6 +536,7 @@ async fn foreground_fast_settlement_without_wait_does_not_notify() {
                 env: Vec::new(),
                 label: "fast".to_owned(),
                 tool_call: None,
+                turn: 0,
             },
             true,
         )
@@ -593,6 +594,7 @@ async fn promote_after_settlement_still_notifies() {
                 env: Vec::new(),
                 label: "gated".to_owned(),
                 tool_call: None,
+                turn: 0,
             },
             true,
         )
@@ -1336,4 +1338,53 @@ async fn settled_output_is_trimmed_and_removal_reclaims_job_files() {
     assert!(registry.list().is_empty(), "淘汰后任务条目应消失");
     assert!(!stdout_path.exists(), "淘汰后 stdout 文件应回收");
     assert!(!stderr_path.exists(), "淘汰后 stderr 文件应回收");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn kill_turn_stops_only_that_turns_process_group_and_suppresses_wakeup() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let pid_file = dir.path().join("pgid");
+    let context =
+        crate::common::session_context_with_id(dir.path(), data_dir.path(), "sess-kill-turn")
+            .with_turn(7);
+    let command = format!("echo $$ > {}; sleep 30", pid_file.display());
+    let started = bash(
+        json!({"description": "long", "command": command, "run_in_background": true}),
+        &context,
+    )
+    .await;
+    assert!(!started.is_error, "{}", started.content);
+    let job_id = extract_job_id(&started.content);
+    for _ in 0..200 {
+        if pid_file.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let pid: i32 = std::fs::read_to_string(&pid_file)
+        .expect("pid file")
+        .trim()
+        .parse()
+        .expect("pid");
+    let killed = context
+        .session()
+        .tasks()
+        .kill_turn(7, Some("测试停".to_owned()))
+        .await;
+    assert_eq!(killed, vec![job_id.clone()]);
+    assert!(
+        context.session().tasks().take_killed_by_model(&job_id),
+        "杀掉要抑制完成通知"
+    );
+    let list = run(&JobListTool::new(), json!({}), &context).await;
+    assert!(list.content.contains(&job_id), "{}", list.content);
+    assert!(list.content.contains("killed"), "{}", list.content);
+    let alive = std::process::Command::new("kill")
+        .args(["-0", &format!("-{pid}")])
+        .status()
+        .expect("kill -0")
+        .success();
+    assert!(!alive, "进程组 {pid} 应该已经不在");
 }

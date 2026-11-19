@@ -96,6 +96,8 @@ pub struct ToolContext {
     /// 写入范围（已 canonicalize 的绝对路径）；None = 不限（Kind、CLI 照旧）。
     /// 写任务由服务按任务行填；写类工具在 resolve 之后用它核目标。
     write_scope: Option<PathBuf>,
+    /// 本步属于哪一轮（T067：后台命令按轮杀）；单独驱动工具时是 0。
+    turn: u64,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -117,7 +119,19 @@ impl ToolContext {
             enabled: None,
             session_events: Arc::new(Vec::new),
             write_scope: None,
+            turn: 0,
         }
+    }
+
+    /// 标出本步属于哪一轮（T067 杀这一轮的后台命令用）。
+    pub fn with_turn(mut self, turn: u64) -> Self {
+        self.turn = turn;
+        self
+    }
+
+    /// 本步的轮号。
+    pub fn turn(&self) -> u64 {
+        self.turn
     }
 
     /// 本步开出的工具名（内核每步给一次）；没给就按无门处理。

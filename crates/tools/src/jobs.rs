@@ -109,6 +109,8 @@ pub struct JobSpec {
     pub label: String,
     /// 通过工具创建时带上（DSH job/registered 的 toolCall）。
     pub tool_call: Option<JobToolCall>,
+    /// T067：这条命令是哪一轮起的；停止时按轮杀。
+    pub turn: u64,
 }
 
 /// job 注册时刻的生命周期记录（DSH job/registered 的 data）。
@@ -210,6 +212,7 @@ struct JobRecord {
     id: String,
     kind: &'static str,
     label: String,
+    turn: u64,
     child: Mutex<Child>,
     state: Mutex<JobState>,
     cond: Condvar,
@@ -420,6 +423,7 @@ impl TaskRegistry {
             id: id.clone(),
             kind: "bash",
             label: spec.label,
+            turn: spec.turn,
             child: Mutex::new(child),
             state: Mutex::new(JobState {
                 status: JobStatus::Running,
@@ -722,6 +726,46 @@ impl TaskRegistry {
             return Ok(read_of(&record));
         }
         self.await_termination(id, grace).await
+    }
+
+    /// T067：这个会话有没有还在跑的后台命令；有就返回它起的轮号。
+    pub fn running_turn(&self) -> Option<u64> {
+        let jobs = self.jobs.lock().expect("jobs 表锁被毒化");
+        jobs.values()
+            .find(|record| {
+                !record
+                    .state
+                    .lock()
+                    .expect("job 状态锁被毒化")
+                    .status
+                    .is_terminal()
+            })
+            .map(|record| record.turn)
+    }
+
+    /// T067：杀掉某一轮起的全部还在跑的后台命令；已收的不发信号。
+    pub async fn kill_turn(&self, turn: u64, reason: Option<String>) -> Vec<String> {
+        let ids: Vec<String> = {
+            let jobs = self.jobs.lock().expect("jobs 表锁被毒化");
+            jobs.values()
+                .filter(|record| record.turn == turn)
+                .filter(|record| {
+                    !record
+                        .state
+                        .lock()
+                        .expect("job 状态锁被毒化")
+                        .status
+                        .is_terminal()
+                })
+                .map(|record| record.id.clone())
+                .collect()
+        };
+        for id in &ids {
+            if let Ok(true) = self.request_kill(id, reason.clone(), true) {
+                drop(self.await_termination(id, KILL_GRACE).await);
+            }
+        }
+        ids
     }
 
     /// 前台 bash 超时转后台：原子地清掉 awaited；若在超时与这里之间已经结算且还没通知，

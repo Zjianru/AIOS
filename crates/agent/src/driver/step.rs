@@ -585,13 +585,14 @@ pub(super) async fn run_step(
     let context = ToolContext::with_session(inner.cwd.clone(), Arc::clone(&inner.tool_session))
         .gated(Arc::clone(&enabled))
         .observing_session(events_reader)
-        .with_write_scope(inner.write_scope.clone());
+        .with_write_scope(inner.write_scope.clone())
+        .with_turn(turn);
     let mut outcome = execute_batch(
         &inner.tools,
         &exec_calls,
         inner.max_parallel_tool_calls,
         &context,
-        abort.as_ref(),
+        &cancel,
     )
     .await;
     let mut merged: Vec<Option<tools::ToolResult>> = (0..calls.len()).map(|_| None).collect();

@@ -2571,3 +2571,148 @@ async fn update_gate_commands_act_stops_a_running_gate_then_reruns_the_new_comma
                 == updated.verdicts[0].candidate.requirement_version
     );
 }
+
+/// T067.1：正在跑的 sleep 30 按停止，1 秒内进程组没了、Attempt 记停止、没有新一轮。
+#[tokio::test]
+async fn stopping_a_running_sleep_tool_kills_it_within_one_second() {
+    let fixture = Fixture::new().await;
+    set_bash(&fixture.host, true).await;
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        crate::common::tool_use_sse(
+            1,
+            "call-sleep",
+            "bash",
+            &serde_json::json!({
+                "description": "长睡",
+                "command": "trap 'echo stopped > killed.txt' TERM; sleep 30"
+            })
+            .to_string(),
+        ),
+    );
+    fixture
+        .router
+        .push_thin_for_title("改一下判重", crate::common::text_sse("跑完了"));
+    let task = fixture.accept_args(false, write_task_args(), 1).await;
+    let store = tasks_store(fixture.data());
+    wait_until("bash 工具开始跑", || {
+        let Some(attempt) = store
+            .task(&task.id)
+            .ok()
+            .flatten()
+            .and_then(|task| task.latest_attempt().cloned())
+        else {
+            return false;
+        };
+        let Some(conversation) = attempt.conversation else {
+            return false;
+        };
+        let Ok(id) = session::SessionId::parse(conversation.as_str()) else {
+            return false;
+        };
+        session::SessionStore::open_read_only(fixture.data(), &id).is_ok_and(|session| {
+            session.events().iter().any(|event| {
+                matches!(
+                    &event.kind,
+                    session::EventKind::ToolCall { name, .. } if name == "bash"
+                )
+            })
+        })
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let started = std::time::Instant::now();
+    let stop = stop_task(&fixture, &task, StopMode::Now).await;
+    assert!(stop.stopped, "{stop:?}");
+    wait_until("命令被杀", || {
+        fixture.cwd.path().join("killed.txt").exists()
+    })
+    .await;
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "停止到进程死要 1 秒内，实际 {:?}",
+        started.elapsed()
+    );
+    let stored = store.task(&task.id).unwrap().unwrap();
+    assert_eq!(
+        stored.latest_attempt().unwrap().end,
+        Some(AttemptEnd::Stopped)
+    );
+    // 停掉的后台命令不叫醒模型：再多给 500ms 没有新 TurnStart。
+    let turns_before = session_turns(fixture.data(), &stored);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(turns_before, session_turns(fixture.data(), &stored));
+}
+
+fn session_turns(data: &std::path::Path, task: &tasks::Task) -> usize {
+    let Some(conversation) = task
+        .latest_attempt()
+        .and_then(|attempt| attempt.conversation.as_ref())
+    else {
+        return 0;
+    };
+    let Ok(id) = session::SessionId::parse(conversation.as_str()) else {
+        return 0;
+    };
+    session::SessionStore::open_read_only(data, &id)
+        .map(|session| {
+            session
+                .events()
+                .iter()
+                .filter(|event| matches!(&event.kind, session::EventKind::TurnStart { .. }))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// T067.1：收尾停只管下一份报告，不杀正在跑的后台命令。
+#[tokio::test]
+async fn after_report_stop_does_not_kill_running_background_commands() {
+    let fixture = Fixture::new().await;
+    set_bash(&fixture.host, true).await;
+    fixture.router.push_thin_for_title(
+        "改一下判重",
+        crate::common::tool_use_sse(
+            1,
+            "call-bg",
+            "bash",
+            &serde_json::json!({
+                "description": "还在跑",
+                "command": "trap 'echo stopped > killed.txt' TERM; sleep 60",
+                "run_in_background": true
+            })
+            .to_string(),
+        ),
+    );
+    fixture
+        .router
+        .push_thin_for_title("改一下判重", crate::common::text_sse("还在等"));
+    let task = fixture.accept_args(false, write_task_args(), 1).await;
+    let store = tasks_store(fixture.data());
+    wait_until("后台登记", || {
+        let Some(conversation) = store.task(&task.id).ok().flatten().and_then(|task| {
+            task.latest_attempt()
+                .and_then(|attempt| attempt.conversation.clone())
+        }) else {
+            return false;
+        };
+        let Ok(id) = session::SessionId::parse(conversation.as_str()) else {
+            return false;
+        };
+        session::SessionStore::open_read_only(fixture.data(), &id).is_ok_and(|session| {
+            session
+                .events()
+                .iter()
+                .any(|event| matches!(&event.kind, session::EventKind::JobRegistered { .. }))
+        })
+    })
+    .await;
+    let stop = stop_task(&fixture, &task, StopMode::AfterReport).await;
+    assert!(stop.stopped, "{stop:?}");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        !fixture.cwd.path().join("killed.txt").exists(),
+        "收尾停不应杀后台命令"
+    );
+    let _ = stop_task(&fixture, &task, StopMode::Now).await;
+}

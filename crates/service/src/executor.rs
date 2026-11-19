@@ -793,7 +793,10 @@ impl TaskRuntime {
         });
         let running = attempt_id.is_some_and(|attempt_id| {
             self.running_for(&task.id, attempt_id)
-                .is_some_and(|running| running.host.agent().is_running())
+                .is_some_and(|running| {
+                    let agent = running.host.agent();
+                    agent.is_running() || agent.background_turn().is_some()
+                })
         });
         let guard_target = task
             .needs
@@ -3384,11 +3387,16 @@ impl TaskRuntime {
         let Some(running) = self.running_for(&id, attempt.id) else {
             return Ok(not_running());
         };
-        // 只取消正在跑的一轮：cancel_with 不动输入队列，也不写 Attempt 结果。
-        if !running.host.agent().is_running() {
+        // 正在跑一轮：取消这一轮（连同这一轮起的命令）。一轮已结束但后台还在跑：
+        // 杀掉最后一轮起的后台命令，并照旧回 interrupted=true，让页面停得下来。
+        let agent = running.host.agent();
+        if agent.is_running() {
+            agent.cancel_with(session::AbortCause::User);
+        } else if let Some(turn) = agent.background_turn() {
+            agent.kill_turn(turn, "用户停下这一轮").await;
+        } else {
             return Ok(not_running());
         }
-        running.host.agent().cancel_with(session::AbortCause::User);
         Ok(TaskInterruptResponse {
             interrupted: true,
             message: "已停下这一轮".to_owned(),
