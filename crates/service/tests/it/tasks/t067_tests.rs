@@ -73,7 +73,7 @@ async fn background_limit_fires_kills_and_reports_waiting() {
         .host
         .task_runtime()
         .expect("runtime")
-        .set_background_limit_ms(250);
+        .set_background_limit_ms(1_500);
     fixture.router.push_thin_for_title(
         "改一下判重",
         crate::common::tool_use_sse(
@@ -135,7 +135,7 @@ async fn a_new_turn_supersedes_the_old_background_limit() {
         .host
         .task_runtime()
         .expect("runtime")
-        .set_background_limit_ms(300);
+        .set_background_limit_ms(1_500);
     fixture.router.push_thin_for_title(
         "改一下判重",
         crate::common::tool_use_sse(

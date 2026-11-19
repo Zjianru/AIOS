@@ -77,6 +77,11 @@ pub(crate) fn install(inner: &Arc<Inner>) {
                         // 模型自己的 kill 结果已经交付：不重复投完成通知、也不唤醒新一轮。
                         continue;
                     }
+                    if inner.is_background_only() {
+                        // T068：报告后的保留宿主：结束消息照旧落会话日志/事件，但不投 inbox、不唤醒。
+                        emit_completed(inner.as_ref(), &settled);
+                        continue;
+                    }
                     if let Err(error) = deliver(inner.as_ref(), &settled).await {
                         // 后台边界：没有同步调用方接错误；投递失败留痕但不打断唤醒
                         // （T006.2a known：通知丢失，进程继续；T006.19 更正 ③）。
@@ -174,6 +179,12 @@ async fn deliver(host: &dyn LoopAccess, settled: &tools::JobSettled) -> Result<(
         }
         None => format!("{head}. Read its output with job_output."),
     };
+    emit_completed(host, settled);
+    host.enqueue_context(text).await
+}
+
+/// T068：只发完成事件（保留宿主用）；不投 inbox、不唤醒。
+fn emit_completed(host: &dyn LoopAccess, settled: &tools::JobSettled) {
     let agent_status = match settled.status {
         tools::JobStatus::Completed => JobStatus::Completed,
         tools::JobStatus::Failed => JobStatus::Failed,
@@ -189,7 +200,6 @@ async fn deliver(host: &dyn LoopAccess, settled: &tools::JobSettled) -> Result<(
         status: agent_status,
         detail: Some(settled.label.clone()),
     });
-    host.enqueue_context(text).await
 }
 
 /// 生命周期写日志失败的留痕文案（照 DSH jobs-local recordSessionEvent 的 logger.warn：T006.19 更正项 ③）。

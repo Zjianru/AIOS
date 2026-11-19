@@ -608,6 +608,9 @@ pub struct TaskReadHeader {
     /// 这个 Attempt 的会话现在真的在跑一轮（不是只开着等报告）；任务菜单只在为 true 时可点。
     #[serde(default)]
     pub running: bool,
+    /// T068：报告后保留的宿主还有后台命令在跑（只停得掉、不再叫醒模型）。
+    #[serde(default, rename = "backgroundRunning")]
+    pub background_running: bool,
     /// 最近的 Attempt 以「停止」结束、之后没有新的 Attempt：页头固定显示「已停止」。
     #[serde(default)]
     pub stopped: bool,
@@ -1587,7 +1590,7 @@ pub struct MemoryActionResponse {
 ///
 /// 连接上的旧价格乘数后来整条删掉，不升版本：两个请求里的这个字段本来就可省略，旧页再发
 /// 由 serde 当未知字段忽略；响应里少了它，旧页读到 undefined 也不会拿去定价。
-pub const PROTOCOL_VERSION: u64 = 20;
+pub const PROTOCOL_VERSION: u64 = 21;
 
 /// 日历读取：不带 appointmentId 读全部；带 week 时额外给那周的计划点。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]

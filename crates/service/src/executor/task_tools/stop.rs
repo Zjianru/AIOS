@@ -3,13 +3,15 @@
 use super::super::*;
 use super::*;
 
-pub(crate) struct TaskStopTool {
+pub struct TaskStopTool {
     runtime: Arc<TaskRuntime>,
     parameters: Value,
 }
 
 impl TaskStopTool {
-    pub(crate) fn new(runtime: Arc<TaskRuntime>) -> Self {
+    /// T068 测试用：直接拿 Kind 的 task_stop 工具入口。
+    #[doc(hidden)]
+    pub fn new(runtime: Arc<TaskRuntime>) -> Self {
         Self {
             runtime,
             parameters: json!({

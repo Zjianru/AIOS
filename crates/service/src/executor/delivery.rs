@@ -52,6 +52,15 @@ impl TaskRuntime {
         } else {
             ResumeMode::Say
         };
+        // T068：保留宿主不是「还在跑」：用户说话前先停命令/关宿主，再走接续。
+        if self
+            .running_for(task_id, attempt.id)
+            .is_some_and(|running| running.retained)
+            && let Some(conversation) = attempt.conversation.as_ref()
+        {
+            self.stop_retained_for_reopen(task_id, conversation.as_str())
+                .await;
+        }
         let mut recovery_attempt = None;
         let mut opened_attempt = None;
         let host = match self.running_for(task_id, attempt.id) {

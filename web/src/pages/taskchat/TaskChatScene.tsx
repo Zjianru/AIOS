@@ -266,14 +266,24 @@ export function TaskChatScene() {
         liveTurnRef.current = running;
         setPhase('ready');
         connect();
-        // T039：任务已交报告但会话可能还在收尾（终态报告后执行者立刻关会话，最后一句
-        // 话/turn/end 可能晚几拍落盘）：分几次补拉，只把新 seq 并回事件流（幂等）。
+        // T068：任务已交报告但会话可能还在收尾：等这个任务的 task-changed，不再按
+        // [600,1600,3200] 固定补拉；保留一次 10 秒兜底。
         if (response.task.reportedAt != null && !response.task.running) {
-          for (const delay of [600, 1600, 3200]) {
-            setTimeout(() => {
-              if (!disposed) void refreshHeader();
-            }, delay);
-          }
+          let settled = false;
+          let timer: number | null = null;
+          const unsubscribe = subscribeRootFrames((frame) => {
+            if (frame.type !== 'task-changed' || frame.taskId !== taskId) return;
+            settled = true;
+            unsubscribe();
+            if (timer !== null) window.clearTimeout(timer);
+            if (!disposed) void refreshHeader();
+          });
+          timer = window.setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            unsubscribe();
+            if (!disposed) void refreshHeader();
+          }, 10_000);
         }
       })
       .catch((reason: unknown) => {
@@ -458,6 +468,7 @@ export function TaskChatScene() {
           ? {
               ...current,
               running: response.task.running,
+              backgroundRunning: response.task.backgroundRunning,
               stopped: response.task.stopped,
               interrupted: response.task.interrupted,
               restartPending: response.task.restartPending,
@@ -654,7 +665,7 @@ export function TaskChatScene() {
               />
             )}
             <TaskMenu
-              running={task.running}
+              running={task.running || task.backgroundRunning}
               winding={winding}
               program={program !== null}
               onStopNow={() => void stopNow()}
@@ -865,12 +876,16 @@ export function TaskChatScene() {
             onSend={say}
             onCanSendChange={() => undefined}
           >
-            {task.running ? (
+            {task.running || task.backgroundRunning ? (
               <button
                 type="button"
                 onClick={() => void stopTurn()}
-                title="停下这一轮（Esc）：任务不算停，接着说就接着做"
-                aria-label="停下这一轮"
+                title={
+                  task.backgroundRunning
+                    ? '停下报告后还在跑的后台命令'
+                    : '停下这一轮（Esc）：任务不算停，接着说就接着做'
+                }
+                aria-label={task.backgroundRunning ? '停下后台命令' : '停下这一轮'}
                 data-kind="task-stop-turn"
                 className="grid size-7 place-items-center rounded-full bg-ink text-content transition-opacity hover:opacity-90"
               >

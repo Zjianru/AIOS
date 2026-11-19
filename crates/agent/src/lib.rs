@@ -621,6 +621,16 @@ impl Agent {
         self.inner.kill_turn(turn, reason).await;
     }
 
+    /// T068：报告后保留宿主，命令结束不叫醒模型。
+    pub fn set_background_only(&self) {
+        self.inner.set_background_only();
+    }
+
+    /// T068：宿主是不是处于「只等后台命令收尾」。
+    pub fn is_background_only(&self) -> bool {
+        self.inner.is_background_only()
+    }
+
     /// 停掉这个会话还在跑的后台任务：立即停任务时连后台命令一起停（D85）。
     ///
     /// 请求取消后等进程退出（SIGTERM → 宽限期 → SIGKILL）；结算不再投完成通知。

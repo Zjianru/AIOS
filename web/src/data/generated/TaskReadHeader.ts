@@ -21,6 +21,10 @@ model: string, tools: Array<string>, attempts: number,
  */
 running: boolean,
 /**
+ * T068：报告后保留的宿主还有后台命令在跑（只停得掉、不再叫醒模型）。
+ */
+backgroundRunning: boolean,
+/**
  * 最近的 Attempt 以「停止」结束、之后没有新的 Attempt：页头固定显示「已停止」。
  */
 stopped: boolean,

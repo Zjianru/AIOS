@@ -727,7 +727,20 @@ async fn serve(args: ServeArgs) -> Result<u8, CliError> {
         handle.addr.port(),
         handle.token
     );
-    tokio::signal::ctrl_c().await?;
+    // T068：正常退出/Ctrl-C/SIGTERM 走同一个收尾顺序。
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let mut terminate = signal(SignalKind::terminate())?;
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => result?,
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c().await?;
+    }
     // T006.18：停服务收尾（取消正在跑的一轮、日志收尾完整）；骨架阶段等价 abort。
     handle.shutdown().await;
     // T011.4：退出写 shutdown 并排空监控队列。

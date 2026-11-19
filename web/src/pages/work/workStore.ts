@@ -45,6 +45,8 @@ async function acceptPicks(picks: WorkPick[], set: (partial: Partial<WorkState>)
   }
 }
 
+let refreshSequence = 0;
+
 export const useWorkStore = create<WorkState>()((set, get) => ({
   work: null,
   loading: true,
@@ -53,10 +55,14 @@ export const useWorkStore = create<WorkState>()((set, get) => ({
   accepting: false,
   receipt: null,
   refresh: async () => {
+    const sequence = ++refreshSequence;
     try {
       const work = await getWork();
+      // 初始读和事件触发的重读可能并发；只让最新一次结果落到 store，旧回包不覆盖。
+      if (sequence !== refreshSequence) return;
       set({ work, loading: false, error: null });
     } catch (error) {
+      if (sequence !== refreshSequence) return;
       set({
         loading: false,
         error: error instanceof Error ? error.message : String(error),

@@ -23,5 +23,5 @@ pub(crate) use ledger::*;
 pub(crate) use params::*;
 pub(crate) use report::*;
 pub(crate) use status::*;
-pub(crate) use stop::*;
+pub use stop::*;
 pub(crate) use update::*;

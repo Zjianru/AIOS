@@ -46,6 +46,8 @@ mod calendar_tools;
 pub use calendar_tools::AppointmentCancelTool;
 mod calendar_watch;
 mod task_tools;
+#[doc(hidden)]
+pub use task_tools::TaskStopTool;
 pub(crate) use task_tools::*;
 
 mod delivery;
@@ -185,6 +187,8 @@ struct RunningThin {
     host: Arc<ServiceHost>,
     task_id: TaskId,
     attempt_id: AttemptId,
+    /// T068：报告后还有后台命令，宿主保留着只为停/等最后一条命令。
+    retained: bool,
 }
 
 /// 接上原会话的结果：新 Attempt 和它的宿主；第一条消息由调用方送。
@@ -333,6 +337,25 @@ pub struct TaskRuntime {
 }
 
 impl TaskRuntime {
+    /// T068：退出收尾：先挡新 Attempt，再停所有在跑/保留宿主的命令，关宿主，清表。
+    pub(crate) async fn shutdown_all(&self) {
+        self.shutting_down.store(true, Ordering::SeqCst);
+        let hosts: Vec<Arc<ServiceHost>> = {
+            let mut running = self.running.lock().expect("thinagent 表锁被毒化");
+            running.drain().map(|(_, entry)| entry.host).collect()
+        };
+        for host in hosts {
+            let agent = host.agent();
+            agent.cancel_with(session::AbortCause::User);
+            agent
+                .stop_background_jobs("AIOS 退出，后台命令一起停")
+                .await;
+            host.shutdown().await;
+        }
+        self.session_relinquished.notify_waiters();
+        self.wake();
+    }
+
     pub(crate) fn new(
         options: &RootSessionOptions,
         selection: Arc<Mutex<Option<session::ModelSelection>>>,
@@ -815,12 +838,12 @@ impl TaskRuntime {
             report.version == task.requirement_version()
                 && task.acceptance_for(&report.id).is_some()
         });
+        // T068：retained 宿主只表示 backgroundRunning；running 语义不变。
+        let background_running =
+            attempt_id.is_some_and(|attempt_id| self.background_running(&task.id, attempt_id));
         let running = attempt_id.is_some_and(|attempt_id| {
             self.running_for(&task.id, attempt_id)
-                .is_some_and(|running| {
-                    let agent = running.host.agent();
-                    Self::agent_busy(agent.is_running(), agent.background_turn())
-                })
+                .is_some_and(|running| !running.retained && running.host.agent().is_running())
         });
         let guard_target = task
             .needs
@@ -1002,6 +1025,7 @@ impl TaskRuntime {
                 tools: task.tools.clone(),
                 attempts: task.runs.iter().map(|run| run.attempts.len() as u64).sum(),
                 running,
+                background_running,
                 stopped: task
                     .latest_attempt()
                     .is_some_and(|attempt| attempt.end == Some(AttemptEnd::Stopped)),
@@ -1397,9 +1421,40 @@ impl TaskRuntime {
             .lock()
             .expect("thinagent 表锁被毒化")
             .values()
-            .filter(|entry| entry.host.agent().is_running())
+            .filter(|entry| !entry.retained && entry.host.agent().is_running())
             .map(|entry| entry.task_id.as_str().to_owned())
             .collect()
+    }
+
+    /// T068 测试钩子：改要求走生产入口。
+    #[doc(hidden)]
+    pub async fn update_requirement_for_test(
+        self: &Arc<Self>,
+        task_id: &str,
+        requirement: String,
+        dod: Option<String>,
+        constraints: Option<Vec<String>>,
+    ) -> Result<String, String> {
+        self.update_requirement(task_id, requirement, dod, constraints)
+            .await
+    }
+
+    /// T068 测试钩子：改写入范围走生产入口。
+    #[doc(hidden)]
+    pub async fn update_scope_for_test(
+        self: &Arc<Self>,
+        task_id: &str,
+        write_scope: String,
+    ) -> Result<String, String> {
+        self.update_scope(task_id, write_scope)
+            .await
+            .map_err(|error| error.message)
+    }
+
+    /// T068 测试钩子：叫醒效果泵（直接排队 delivery 时用）。
+    #[doc(hidden)]
+    pub fn wake_for_test(&self) {
+        self.wake();
     }
 
     /// T067 测试钩子：效果泵醒来的次数。
@@ -1909,6 +1964,35 @@ impl TaskRuntime {
         Ok(opened.attempt_id)
     }
 
+    /// T068：重开同一会话前，如果这个会话的宿主是保留状态（报告后后台还在跑），
+    /// 先停命令、关宿主、移除，再让下面的锁通知/open 走。
+    async fn stop_retained_for_reopen(&self, task_id: &TaskId, conversation: &str) {
+        let host = {
+            let running = self.running.lock().expect("thinagent 表锁被毒化");
+            running.get(conversation).and_then(|entry| {
+                if entry.retained {
+                    Some(Arc::clone(&entry.host))
+                } else {
+                    None
+                }
+            })
+        };
+        let Some(host) = host else {
+            return;
+        };
+        host.agent()
+            .stop_background_jobs("重开任务会话前停掉保留的后台命令")
+            .await;
+        host.shutdown().await;
+        // 显式丢掉最后一个宿主引用，让会话写锁释放后再通知/open。
+        drop(host);
+        tokio::task::yield_now().await;
+        self.forget_running(conversation);
+        self.notify_changed(task_id);
+        // 宿主 shutdown/idle 已经完成；给会话写锁释放一个一次性让出窗口。
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
     /// 在原会话里接一次 Attempt（T028 的说话接续和确认卡接续共用）。
     ///
     /// 只做「占席位、落 Attempt、开回原会话、登记在跑表」；第一条消息由调用方送。
@@ -1942,6 +2026,10 @@ impl TaskRuntime {
                 "原会话 id 不合法：{conversation}"
             )));
         };
+        // T068：同一会话的 5 条重开路径都在这里汇合：先停掉保留宿主里的后台命令、
+        // 关宿主，再走现有的锁通知，避免报「会话写锁没让出来」。
+        self.stop_retained_for_reopen(&task.id, conversation.as_str())
+            .await;
         // 终态报告在工具调用里落库，那一轮可能还在写最后一段回答：会话写者没让出来
         // 之前不落新 Attempt（T028.5 e2e：报完立刻说「接着做」会撞上收尾）。
         // 效果留到下一次泵再领，攒够 2s 退避也不丢；不能在这里记一份「没开成」的失败报告。
@@ -2109,6 +2197,7 @@ impl TaskRuntime {
                 host: Arc::clone(&host),
                 task_id: task.id.clone(),
                 attempt_id,
+                retained: false,
             },
         );
         self.monitor(task.id.clone(), attempt_id, conversation, events);
@@ -2501,6 +2590,7 @@ impl TaskRuntime {
                 host: Arc::clone(&host),
                 task_id: task.id.clone(),
                 attempt_id,
+                retained: false,
             },
         );
         self.monitor(task.id.clone(), attempt_id, conversation.clone(), events);
@@ -2870,6 +2960,7 @@ impl TaskRuntime {
                 host: Arc::clone(&entry.host),
                 task_id: entry.task_id.clone(),
                 attempt_id: entry.attempt_id,
+                retained: entry.retained,
             })
     }
 
@@ -2880,6 +2971,70 @@ impl TaskRuntime {
             .expect("thinagent 表锁被毒化")
             .remove(conversation);
         self.session_relinquished.notify_waiters();
+    }
+
+    /// T068：报告/交回后若还有后台命令，把宿主标 retained（不移除、不占席位）。
+    fn retain_after_report(&self, conversation: &str) -> bool {
+        let mut running = self.running.lock().expect("thinagent 表锁被毒化");
+        let Some(entry) = running.get_mut(conversation) else {
+            return false;
+        };
+        if entry.host.agent().background_turn().is_none() {
+            return false;
+        }
+        entry.host.agent().set_background_only();
+        entry.retained = true;
+        true
+    }
+
+    /// T068：某个任务当前保留着的后台命令轮号（停止入口用）。
+    fn retained_background(&self, task_id: &TaskId) -> Option<(String, u64)> {
+        let running = self.running.lock().expect("thinagent 表锁被毒化");
+        running.values().find_map(|entry| {
+            if entry.task_id != *task_id || !entry.retained {
+                return None;
+            }
+            entry
+                .host
+                .agent()
+                .background_turn()
+                .map(|turn| (entry.host.agent().id().as_str().to_owned(), turn))
+        })
+    }
+
+    /// T068：保留的后台命令还在跑（TaskReadHeader.backgroundRunning）。
+    fn background_running(&self, task_id: &TaskId, attempt_id: AttemptId) -> bool {
+        self.running
+            .lock()
+            .expect("thinagent 表锁被毒化")
+            .values()
+            .any(|entry| {
+                entry.task_id == *task_id
+                    && entry.attempt_id == attempt_id
+                    && entry.retained
+                    && entry.host.agent().background_turn().is_some()
+            })
+    }
+
+    /// T068：保留宿主的最后一个后台命令结算了：移除宿主、放会话锁、通知页面。
+    fn finish_retained_if_idle(&self, conversation: &str) {
+        let task_id = {
+            let running = self.running.lock().expect("thinagent 表锁被毒化");
+            let Some(entry) = running.get(conversation) else {
+                return;
+            };
+            if !entry.retained || entry.host.agent().background_turn().is_some() {
+                return;
+            }
+            entry.task_id.clone()
+        };
+        self.forget_running(conversation);
+        self.notify_changed(&task_id);
+    }
+
+    /// T068：宿主移除后通知页面重读页头。
+    fn notify_changed(&self, task_id: &TaskId) {
+        drop(self.changed.send(task_id.as_str().to_owned()));
     }
 
     fn monitor(
@@ -2897,6 +3052,9 @@ impl TaskRuntime {
                         runtime
                             .turn_ended(&task_id, attempt_id, &conversation)
                             .await;
+                    }
+                    Ok(AgentEvent::JobCompleted { .. }) => {
+                        runtime.finish_retained_if_idle(conversation.as_str());
                     }
                     Ok(AgentEvent::CompactionEnded {
                         compaction_id,
@@ -3466,11 +3624,6 @@ impl TaskRuntime {
         Ok(lines.join("\n"))
     }
 
-    /// T067：页面/停止入口看到的事实：agent 在跑，或这个 Attempt 最后一轮还有后台命令。
-    fn agent_busy(is_running: bool, background_turn: Option<u64>) -> bool {
-        is_running || background_turn.is_some()
-    }
-
     /// T067：按 agent 状态决定怎么停；空闲但后台命令还在跑时杀最后一轮。
     fn interrupt_action(is_running: bool, background_turn: Option<u64>) -> Option<AgentInterrupt> {
         if is_running {
@@ -3501,6 +3654,22 @@ impl TaskRuntime {
             return Ok(not_running());
         };
         if attempt.ended_at.is_some() {
+            // T068：报告后保留的宿主还有后台命令：停止按钮也要停得掉。
+            if let Some((conversation, turn)) = self.retained_background(&id)
+                && let Some(running) = self.running_for(&id, attempt.id)
+            {
+                running
+                    .host
+                    .agent()
+                    .kill_turn(turn, "用户停下保留的后台命令")
+                    .await;
+                self.forget_running(&conversation);
+                self.notify_changed(&id);
+                return Ok(TaskInterruptResponse {
+                    interrupted: true,
+                    message: "已停下保留的后台命令".to_owned(),
+                });
+            }
             return Ok(not_running());
         }
         let Some(running) = self.running_for(&id, attempt.id) else {
@@ -3555,6 +3724,24 @@ impl TaskRuntime {
             return Ok(not_running());
         };
         if attempt.ended_at.is_some() {
+            // T068：报告后保留的后台命令，立即停/Kind task_stop 都能停。
+            if let Some((conversation, turn)) = self.retained_background(&id)
+                && let Some(running) = self.running_for(&id, attempt.id)
+            {
+                running
+                    .host
+                    .agent()
+                    .kill_turn(turn, "用户停下保留的后台命令")
+                    .await;
+                self.forget_running(&conversation);
+                self.notify_changed(&id);
+                self.release_seat(task_id);
+                return Ok(TaskStopResponse {
+                    stopped: true,
+                    stage: stage_key(stage).to_owned(),
+                    message: format!("已停下保留的后台命令：任务 {task_id}。"),
+                });
+            }
             return Ok(not_running());
         }
         // T057：程序门没有 ThinAgent 会话；立即停（含收尾停）都结束进程组、记未确定。
@@ -3943,8 +4130,5 @@ mod interrupt_decision_tests {
             Some(AgentInterrupt::Cancel)
         );
         assert_eq!(TaskRuntime::interrupt_action(false, None), None);
-        assert!(TaskRuntime::agent_busy(false, Some(7)));
-        assert!(TaskRuntime::agent_busy(true, None));
-        assert!(!TaskRuntime::agent_busy(false, None));
     }
 }

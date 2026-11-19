@@ -41,6 +41,7 @@ mod report_tests;
 mod restart_tests;
 mod stop_tests;
 mod t067_tests;
+mod t068_tests;
 mod trigger_tests;
 mod workflow_tests;
 

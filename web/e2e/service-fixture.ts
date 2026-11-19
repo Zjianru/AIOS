@@ -753,6 +753,20 @@ export async function startKernelFixture(
       child.kill('SIGTERM');
       replay.child.kill('SIGTERM');
       for (const extra of extraReplayChildren) extra.kill('SIGTERM');
+      // 等子进程真的退出再删目录，避免 rmdir ENOTEMPTY 把测试判红。
+      const waitExit = async (process: ChildProcess | undefined) => {
+        if (!process || process.exitCode !== null) return;
+        await new Promise<void>((resolve) => {
+          process.once('exit', () => resolve());
+          setTimeout(resolve, 2_000);
+        });
+      };
+      await Promise.all([
+        waitExit(holder),
+        waitExit(child),
+        waitExit(replay.child),
+        ...extraReplayChildren.map(waitExit),
+      ]);
       await rm(dataDir, { recursive: true, force: true });
       if (paths) await rm(paths.outside, { recursive: true, force: true });
     },

@@ -1449,3 +1449,85 @@ async fn a_reaped_job_is_not_signalled_again() {
         .await;
     assert!(killed.is_empty(), "已收的不再算在跑去杀");
 }
+
+async fn wait_pid_file(path: &std::path::Path) -> i32 {
+    for _ in 0..200 {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            return text.trim().parse().expect("pid");
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("pid 文件没出现");
+}
+
+fn group_alive(pid: i32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &format!("-{pid}")])
+        .status()
+        .expect("kill -0")
+        .success()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn registry_drop_kills_an_unreaped_process_group() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path(), "sess-drop");
+    let pid_file = dir.path().join("pid");
+    let command = format!("echo $$ > {}; sleep 30", pid_file.display());
+    let started = bash(
+        json!({"description": "long", "command": command, "run_in_background": true}),
+        &context,
+    )
+    .await;
+    assert!(!started.is_error, "{}", started.content);
+    let job_id = extract_job_id(&started.content);
+    let signals = context
+        .session()
+        .tasks()
+        .kill_signal_counter(&job_id)
+        .expect("counter");
+    let pid = wait_pid_file(&pid_file).await;
+    assert!(group_alive(pid));
+    drop(context);
+    assert!(
+        signals.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+        "Drop 兜底要发一次 SIGKILL"
+    );
+    for _ in 0..200 {
+        if !group_alive(pid) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("registry drop 没杀掉未收的进程组 {pid}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn registry_drop_does_not_signal_reaped_jobs() {
+    let dir = tempfile::tempdir().unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let context = session_context(dir.path(), data_dir.path(), "sess-drop-reaped");
+    let started = bash(
+        json!({"description": "quick", "command": "printf 'ok\n'", "run_in_background": true}),
+        &context,
+    )
+    .await;
+    assert!(!started.is_error, "{}", started.content);
+    let job_id = extract_job_id(&started.content);
+    let signals = context
+        .session()
+        .tasks()
+        .kill_signal_counter(&job_id)
+        .expect("counter");
+    wait_until_terminal(&context, &job_id).await;
+    assert!(context.session().tasks().is_reaped(&job_id).unwrap());
+    drop(context);
+    assert_eq!(
+        signals.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "已收的 job Drop 不发信号"
+    );
+}
