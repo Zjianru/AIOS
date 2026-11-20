@@ -66,6 +66,11 @@ impl MemoryRuntime {
 
     /// Kind：关于你全文 + 条目索引；都没有就返回 None（不往空会话塞空记忆）。
     pub fn kind_context(&self) -> Option<String> {
+        self.kind_context_with_ids().map(|(text, _)| text)
+    }
+
+    /// 同 kind_context，并带这次注入里的记忆 id（TurnEnd succeeded 落 delivery）。
+    pub fn kind_context_with_ids(&self) -> Option<(String, Vec<String>)> {
         let view = self.store.view().ok()?;
         let mut parts = Vec::new();
         if !view.about_you.is_empty() {
@@ -92,15 +97,29 @@ impl MemoryRuntime {
         if parts.is_empty() {
             None
         } else {
-            Some(parts.join(
-                "
+            let ids = view
+                .about_you
+                .iter()
+                .chain(view.entries.iter())
+                .chain(view.notes.iter())
+                .map(|item| item.id.clone())
+                .collect();
+            Some((
+                parts.join(
+                    "
 ",
+                ),
+                ids,
             ))
         }
     }
 
     /// ThinAgent：只给个人范围、有约束力的条目。
     pub fn thin_context(&self) -> Option<String> {
+        self.thin_context_with_ids().map(|(text, _)| text)
+    }
+
+    pub fn thin_context_with_ids(&self) -> Option<(String, Vec<String>)> {
         let view = self.store.view().ok()?;
         let mut parts = Vec::new();
         for item in view.about_you.iter().chain(view.entries.iter()) {
@@ -111,7 +130,14 @@ impl MemoryRuntime {
         if parts.is_empty() {
             None
         } else {
-            Some(
+            let ids = view
+                .about_you
+                .iter()
+                .chain(view.entries.iter())
+                .filter(|item| item.binding == Binding::Binding && item.status == "active")
+                .map(|item| item.id.clone())
+                .collect();
+            Some((
                 "有约束力的记忆：
 "
                 .to_owned()
@@ -119,8 +145,24 @@ impl MemoryRuntime {
                         "
 ",
                     ),
-            )
+                ids,
+            ))
         }
+    }
+
+    /// TurnEnd succeeded 时由 agent 能力回调用：把这次注入的整份记忆记 sent。
+    pub fn delivery_hook(&self) -> agent::MemoryDeliveryHook {
+        let store = Arc::clone(&self.store);
+        Arc::new(move |delivery: agent::MemoryDelivery| {
+            if let Err(error) = store.record_delivery(
+                &delivery.ids,
+                delivery.conversation.as_str(),
+                delivery.turn,
+                "sent",
+            ) {
+                eprintln!("记忆送达落账失败：{error}");
+            }
+        })
     }
 
     pub fn kind_provider(&self) -> MemoryContextProvider {
@@ -134,8 +176,12 @@ impl MemoryRuntime {
                 .map_err(|error| error.to_string())?
                 .to_string();
             Ok(runtime
-                .kind_context()
-                .map(|text| MemoryContext { identity, text }))
+                .kind_context_with_ids()
+                .map(|(text, ids)| MemoryContext {
+                    identity,
+                    text,
+                    ids,
+                }))
         })
     }
 
@@ -150,8 +196,12 @@ impl MemoryRuntime {
                 .map_err(|error| error.to_string())?
                 .to_string();
             Ok(runtime
-                .thin_context()
-                .map(|text| MemoryContext { identity, text }))
+                .thin_context_with_ids()
+                .map(|(text, ids)| MemoryContext {
+                    identity,
+                    text,
+                    ids,
+                }))
         })
     }
 

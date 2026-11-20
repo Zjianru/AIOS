@@ -1,10 +1,11 @@
-//! 记忆注入：回合开始/压缩后注入；同一 turn 内 identity 变化先不补，新注入 surface 替换旧的。
+//! 记忆注入：回合开始/压缩后注入；同一 turn 内 identity 变化先不补，新注入追加为新消息，旧前缀不动。
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::common::{
-    FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse, test_credential,
+    FINAL_TEXT_SSE, PARTIAL_TEXT_SSE, ScriptedSseServer, SequenceResponder, SseScript,
+    isolated_config, model_config, sse, test_credential,
 };
 use agent::{Agent, Delivery, Deps, MemoryContext};
 use model::UserMessage;
@@ -34,6 +35,7 @@ async fn memory_context_is_injected_once_then_replaced_when_identity_changes() {
             Ok(Some(MemoryContext {
                 identity: format!("v{version}"),
                 text: format!("关于你：回答先给结论（{version}）"),
+                ids: Vec::new(),
             }))
         })),
         ..isolated_config(data_dir.path())
@@ -114,6 +116,7 @@ async fn memory_context_is_not_reinjected_inside_a_turn_after_identity_changes()
             Ok(Some(MemoryContext {
                 identity: format!("v{version}"),
                 text: format!("关于你：回答先给结论（{version}）"),
+                ids: Vec::new(),
             }))
         })),
         ..isolated_config(data_dir.path())
@@ -199,6 +202,7 @@ async fn memory_context_replacement_keeps_the_conversation_between_two_injection
             Ok(Some(MemoryContext {
                 identity: format!("v{version}"),
                 text: format!("关于你：回答先给结论（{version}）"),
+                ids: Vec::new(),
             }))
         })),
         ..isolated_config(data_dir.path())
@@ -232,15 +236,19 @@ async fn memory_context_replacement_keeps_the_conversation_between_two_injection
         .map(|request| String::from_utf8(request.body.clone()).unwrap())
         .collect();
     assert_eq!(bodies.len(), 3, "三次用户回合三条请求");
-    const MARKER: &str = "以下内容是已保存的记忆，只读参考";
-    for body in &bodies {
-        assert_eq!(
-            body.matches(MARKER).count(),
-            1,
-            "每个请求只带一条记忆注入：{body}"
-        );
-    }
-    // 第三次注入替换第二条时，不能把前两回合的用户话/回答一起 surface 隐藏。
+    // 追加语义：每次整份新版都是新消息，旧注入留在日志里，不回写前缀。
+    let first = &bodies[0];
+    assert_eq!(
+        first.matches("以下内容是已保存的记忆，只读参考").count(),
+        1,
+        "第一回合只有首条注入：{first}"
+    );
+    assert_eq!(
+        bodies[1].matches("记忆有新版本，以下是整份最新版").count(),
+        1,
+        "第二回合追加一条新版：{}",
+        bodies[1]
+    );
     let last = &bodies[2];
     assert!(last.contains("第一句"), "第一回合的用户话还在：{last}");
     assert!(last.contains("第二句"), "第二回合的用户话还在：{last}");
@@ -249,7 +257,10 @@ async fn memory_context_replacement_keeps_the_conversation_between_two_injection
         "两回合的助手回答都在：{last}"
     );
     assert!(last.contains("回答先给结论（3）"), "第三条注入生效：{last}");
-    assert!(!last.contains("回答先给结论（1）"), "旧注入已隐藏：{last}");
+    assert!(
+        last.contains("回答先给结论（1）"),
+        "旧注入留在前缀里，不替换：{last}"
+    );
 }
 
 #[tokio::test]
@@ -395,6 +406,7 @@ async fn memory_is_reinjected_after_compaction() {
             Ok(Some(MemoryContext {
                 identity: "v-fixed".to_owned(),
                 text: "关于你：稳定记忆".to_owned(),
+                ids: Vec::new(),
             }))
         })),
         ..isolated_config(data_dir.path())
@@ -427,5 +439,240 @@ async fn memory_is_reinjected_after_compaction() {
     assert!(
         injected >= 2,
         "压缩后下一步必须重新注入，实际 {injected} 次"
+    );
+}
+
+#[tokio::test]
+async fn memory_delivery_is_recorded_only_after_a_successful_turn() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+
+    let data_dir = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let store = session::SessionStore::create(data_dir.path(), project.path()).unwrap();
+    let version = Arc::new(AtomicU64::new(1));
+    let provider_version = Arc::clone(&version);
+    let delivered = Arc::new(std::sync::Mutex::new(Vec::<(u64, Vec<String>)>::new()));
+    let delivery_log = Arc::clone(&delivered);
+    let config = agent::AgentConfig {
+        memory_context: Some(Arc::new(move || {
+            let version = provider_version.load(Ordering::SeqCst);
+            Ok(Some(MemoryContext {
+                identity: format!("v{version}"),
+                text: format!("关于你：第 {version} 版"),
+                ids: vec![format!("mem-{version}")],
+            }))
+        })),
+        memory_delivery: Some(Arc::new(move |delivery| {
+            delivery_log
+                .lock()
+                .unwrap()
+                .push((delivery.turn, delivery.ids));
+        })),
+        ..isolated_config(data_dir.path())
+    };
+    let agent = Agent::create(
+        config,
+        Deps {
+            model: model::DeepSeek::with_credentials(
+                model_config(&server.uri()),
+                test_credential(),
+            )
+            .unwrap(),
+            tools: tools::ToolSet::builtin(),
+            store,
+        },
+    )
+    .await
+    .unwrap();
+
+    agent
+        .send(UserMessage::text("第一句"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+    assert_eq!(
+        delivered.lock().unwrap().as_slice(),
+        [(1, vec!["mem-1".to_owned()])],
+        "TurnEnd succeeded 才落 sent"
+    );
+
+    // 同一 identity 的下一回合不重复注入，也就不重复落账。
+    agent
+        .send(UserMessage::text("第二句"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+    assert_eq!(delivered.lock().unwrap().len(), 1);
+
+    version.store(2, Ordering::SeqCst);
+    agent
+        .send(UserMessage::text("第三句"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+    assert_eq!(
+        delivered.lock().unwrap().last().unwrap(),
+        &(3, vec!["mem-2".to_owned()]),
+        "版本更新后整份追加并落账"
+    );
+}
+
+#[tokio::test]
+async fn aborted_turn_does_not_record_delivery_and_next_turn_resends() {
+    let mut server = ScriptedSseServer::start(vec![
+        SseScript {
+            frames: PARTIAL_TEXT_SSE.to_owned(),
+            hold: true,
+        },
+        SseScript {
+            frames: FINAL_TEXT_SSE.to_owned(),
+            hold: false,
+        },
+    ]);
+    let data_dir = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let store = session::SessionStore::create(data_dir.path(), project.path()).unwrap();
+    let delivered = Arc::new(std::sync::Mutex::new(Vec::<Vec<String>>::new()));
+    let delivery_log = Arc::clone(&delivered);
+    let config = agent::AgentConfig {
+        memory_context: Some(Arc::new(|| {
+            Ok(Some(MemoryContext {
+                identity: "v1".to_owned(),
+                text: "关于你：取消也要重发".to_owned(),
+                ids: vec!["mem-abort".to_owned()],
+            }))
+        })),
+        memory_delivery: Some(Arc::new(move |delivery| {
+            delivery_log.lock().unwrap().push(delivery.ids);
+        })),
+        ..isolated_config(data_dir.path())
+    };
+    let agent = Agent::create(
+        config,
+        Deps {
+            model: model::DeepSeek::with_credentials(
+                model_config(&server.base_url()),
+                test_credential(),
+            )
+            .unwrap(),
+            tools: tools::ToolSet::builtin(),
+            store,
+        },
+    )
+    .await
+    .unwrap();
+    let mut events = agent.subscribe();
+    agent
+        .send(UserMessage::text("取消这一轮"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    server.wait_ready().await;
+    agent.cancel_with(session::AbortCause::User);
+    loop {
+        match events.recv().await {
+            Ok(agent::AgentEvent::TurnEnded { .. }) => break,
+            Ok(_) => {}
+            Err(error) => panic!("事件通道关闭: {error}"),
+        }
+    }
+    server.release();
+    agent.idle().await;
+    assert!(delivered.lock().unwrap().is_empty(), "失败/取消不落送达账");
+
+    agent
+        .send(UserMessage::text("下一轮成功"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+    assert_eq!(
+        delivered.lock().unwrap().as_slice(),
+        [vec!["mem-abort".to_owned()]],
+        "下一用户回合重发整份并落账"
+    );
+}
+
+#[tokio::test]
+async fn restart_derives_delivery_state_from_the_log_and_does_not_reinject() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(SequenceResponder::new(vec![
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ]))
+        .mount(&server)
+        .await;
+    let data_dir = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let store = session::SessionStore::create(data_dir.path(), project.path()).unwrap();
+    let session_id = store.id().clone();
+    let config = || agent::AgentConfig {
+        memory_context: Some(Arc::new(|| {
+            Ok(Some(MemoryContext {
+                identity: "v1".to_owned(),
+                text: "关于你：重启后别重发".to_owned(),
+                ids: vec!["mem-restart".to_owned()],
+            }))
+        })),
+        ..isolated_config(data_dir.path())
+    };
+    let agent = Agent::create(
+        config(),
+        Deps {
+            model: model::DeepSeek::with_credentials(
+                model_config(&server.uri()),
+                test_credential(),
+            )
+            .unwrap(),
+            tools: tools::ToolSet::builtin(),
+            store,
+        },
+    )
+    .await
+    .unwrap();
+    agent
+        .send(UserMessage::text("重启前"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    agent.idle().await;
+    drop(agent);
+
+    let store = session::SessionStore::open(data_dir.path(), &session_id).unwrap();
+    let resumed = Agent::resume(
+        session_id,
+        config(),
+        Deps {
+            model: model::DeepSeek::with_credentials(
+                model_config(&server.uri()),
+                test_credential(),
+            )
+            .unwrap(),
+            tools: tools::ToolSet::builtin(),
+            store,
+        },
+    )
+    .await
+    .unwrap();
+    resumed
+        .send(UserMessage::text("重启后"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    resumed.idle().await;
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    let after = String::from_utf8(requests[1].body.clone()).unwrap();
+    assert_eq!(
+        after.matches("关于你：重启后别重发").count(),
+        1,
+        "重启后从日志派生 identity，不重复注入：{after}"
     );
 }

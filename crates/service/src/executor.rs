@@ -2596,27 +2596,7 @@ impl TaskRuntime {
             },
         );
         self.monitor(task.id.clone(), attempt_id, conversation.clone(), events);
-        let ledger = self.ledger_section(&task);
-        let mut assignment = json!({
-            "task_id": task.id.as_str(),
-            "title": task.title,
-            "requirement": task.requirement,
-            "dod": task.dod,
-            "cwd": task.effective_cwd().to_string_lossy(),
-        });
-        // 写任务的模型要知道自己能在哪个路径里改；开了工作树时这里写换算后的范围。
-        if let Some(scope) = task.effective_write_scope() {
-            assignment["write_scope"] = json!(scope.to_string_lossy());
-        }
-        // T052：下游子任务的任务包里带「上游结果」（和接续共用同一段构造，arg 里现查最新 ready）。
-        let upstream_results = self.upstream_results_for(&task);
-        if !upstream_results.is_empty() {
-            assignment["upstream_results"] = json!(upstream_results);
-        }
-        if !ledger.is_empty() {
-            assignment["ledger"] = json!(ledger);
-        }
-        let assignment = assignment.to_string();
+        let assignment = self.assignment_value(&task, false).to_string();
         let sent = host
             .send_message(
                 &format!("assignment:{}", task.id),
@@ -2929,8 +2909,15 @@ impl TaskRuntime {
         agent_config.tool_keys = crate::root::tool_key_source(&self.options);
         agent_config.write_scope = task.effective_write_scope();
         if let Ok(memory) = crate::memory::MemoryRuntime::open(&self.data_dir) {
-            agent_config.memory_context = Some(std::sync::Arc::new(memory).thin_provider());
+            let memory = std::sync::Arc::new(memory);
+            agent_config.memory_context = Some(memory.thin_provider());
+            agent_config.memory_delivery = Some(memory.delivery_hook());
         }
+        let fixed_runtime = Arc::clone(self);
+        let fixed_task = task.id.clone();
+        agent_config.compaction_fixed_block = Some(std::sync::Arc::new(move || {
+            fixed_runtime.compaction_task_block(&fixed_task, attempt_id)
+        }));
         let agent = agent::Agent::open(AgentOpenOptions {
             data_dir: self.data_dir.clone(),
             cwd: task.effective_cwd().to_path_buf(),
@@ -3058,18 +3045,8 @@ impl TaskRuntime {
                     Ok(AgentEvent::JobCompleted { .. }) => {
                         runtime.finish_retained_if_idle(conversation.as_str());
                     }
-                    Ok(AgentEvent::CompactionEnded {
-                        compaction_id,
-                        error: None,
-                    }) => {
-                        runtime
-                            .steer_ledger_after_compaction(
-                                task_id.clone(),
-                                attempt_id,
-                                conversation.clone(),
-                                compaction_id,
-                            )
-                            .await;
+                    Ok(AgentEvent::CompactionEnded { .. }) => {
+                        // 任务书+账本随压缩固定块在同一次 Replace 里重铺，不再单独 Steer。
                     }
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,

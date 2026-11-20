@@ -145,6 +145,7 @@ pub(super) async fn run_turn(inner: &Arc<Inner>) -> Result<bool, AgentError> {
         .dispatch(&HookEvent::TurnStopping {
             turn,
             host: inner.as_ref(),
+            reason: &reason,
         })
         .await?;
     let appended = inner.append(&[EventKind::TurnEnd { turn, reason }]).await;

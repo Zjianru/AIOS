@@ -593,7 +593,8 @@ impl DreamRuntime {
             pre_compaction: None,
             ..agent::AgentConfig::default()
         };
-        let extra_tools = self.dream_tools(run_id, settings);
+        let invalid_exhausted = Arc::new(AtomicBool::new(false));
+        let extra_tools = self.dream_tools(run_id, settings, Arc::clone(&invalid_exhausted));
         let agent = agent::Agent::open(agent::AgentOpenOptions {
             data_dir: self.data_dir.clone(),
             cwd: self.cwd.clone(),
@@ -638,6 +639,9 @@ impl DreamRuntime {
         if let Some(error) = turn_failure(&events) {
             return Err(error);
         }
+        if invalid_exhausted.load(Ordering::SeqCst) {
+            return Err("做梦改动连续 3 次没过校验，保留上一版".to_owned());
+        }
         Ok((session_id, usage_json))
     }
 
@@ -645,6 +649,7 @@ impl DreamRuntime {
         self: &Arc<Self>,
         run_id: &str,
         settings: &memory::types::DreamSettings,
+        invalid_exhausted: Arc<AtomicBool>,
     ) -> Vec<Arc<dyn Tool>> {
         let window = DreamWindow::of(settings);
         let mut tools: Vec<Arc<dyn Tool>> =
@@ -667,6 +672,8 @@ impl DreamRuntime {
         tools.push(Arc::new(DreamApplyTool {
             runtime: Arc::clone(self),
             run_id: run_id.to_owned(),
+            attempts: std::sync::atomic::AtomicUsize::new(0),
+            exhausted: invalid_exhausted,
         }));
         tools
     }
@@ -759,6 +766,10 @@ const DREAM_POLICY: &str = concat!(
     "\nYou may only write Kind's own notes (note layer). Entries, about-you and diary are read-only: never try to change them. ",
     "\nMerge duplicates, correct wrong notes, retire stale notes, add new observations from failures, and write a \"next time do it differently\" note when the user or a verdict taught a lesson. ",
     "\nEvery change must carry a short reason. Submit changes with memory_dream_apply; if nothing is worth keeping, submit nothing and say so in one sentence.",
+    "\nOnly write a note when it is worth keeping on its own: a stable preference, a reusable lesson, a fact that will still matter next month; do not copy one-off task chatter.",
+    "\nTurn relative time in the source (tomorrow, last week, 3 days ago) into an absolute date before writing it down.",
+    "\nIf memory_dream_apply returns a problem code, rewrite only that change once; after three rejected attempts the run keeps the previous version and fails.",
+    "\nWhen correcting an existing note, set before_revision to the revision you read; when retiring one, list its source refs in dropped_sources instead of silently dropping them.",
 );
 
 // ---- 做梦专用工具 ----
@@ -1071,6 +1082,29 @@ impl Tool for TaskReportsTool {
 struct DreamApplyTool {
     runtime: Arc<DreamRuntime>,
     run_id: String,
+    attempts: std::sync::atomic::AtomicUsize,
+    exhausted: Arc<AtomicBool>,
+}
+
+impl DreamApplyTool {
+    fn failed_attempt(&self, call: ToolCall, code: &str, message: &str) -> ToolResult {
+        let attempt = self.attempts.fetch_add(1, Ordering::SeqCst) + 1;
+        if attempt >= 3 {
+            self.exhausted.store(true, Ordering::SeqCst);
+            return ToolResult::error(
+                call.id,
+                ToolFailure::plain(format!(
+                    "{code}：{message}；连续 3 次没过校验，这一版不写，保留上一版"
+                )),
+            );
+        }
+        ToolResult::error(
+            call.id,
+            ToolFailure::plain(format!(
+                "{code}：{message}；只重写这一处（第 {attempt}/3 次）"
+            )),
+        )
+    }
 }
 
 impl Tool for DreamApplyTool {
@@ -1079,7 +1113,7 @@ impl Tool for DreamApplyTool {
     }
 
     fn description(&self) -> &str {
-        "Apply your note changes. Actions: merge (merge into an existing note), correct (fix a note), retire (drop a stale note), new_note (add a note). Only note-layer targets are accepted."
+        "Apply your note changes. Actions: merge (merge into an existing note), correct (fix a note), retire (drop a stale note), new_note (add a note). Only note-layer targets are accepted. Keep before_revision from what you read; retire must list the source refs it drops in dropped_sources."
     }
 
     fn parameters(&self) -> &Value {
@@ -1098,7 +1132,9 @@ impl Tool for DreamApplyTool {
                                 "title": {"type": "string"},
                                 "summary": {"type": "string"},
                                 "body": {"type": "string"},
-                                "reason": {"type": "string"}
+                                "reason": {"type": "string"},
+                                "before_revision": {"type": "integer", "description": "The revision you read; mismatch is rejected."},
+                                "dropped_sources": {"type": "array", "items": {"type": "string"}, "description": "Source refs you intend to drop; list them explicitly."}
                             },
                             "required": ["action", "reason"]
                         }
@@ -1139,9 +1175,10 @@ impl Tool for DreamApplyTool {
                     "retire" => memory::types::DreamAction::Retire,
                     "new_note" => memory::types::DreamAction::NewNote,
                     other => {
-                        return ToolResult::error(
-                            call.id,
-                            ToolFailure::plain(format!("不认识的 action：{other}")),
+                        return self.failed_attempt(
+                            call,
+                            "invalid_op",
+                            &format!("不认识的 action：{other}"),
                         );
                     }
                 };
@@ -1149,10 +1186,7 @@ impl Tool for DreamApplyTool {
                 let title = item["title"].as_str().unwrap_or("").trim().to_owned();
                 let body = item["body"].as_str().unwrap_or("").trim().to_owned();
                 if memory_id.is_none() && (title.is_empty() || body.is_empty()) {
-                    return ToolResult::error(
-                        call.id,
-                        ToolFailure::plain("新记一条要 title 和 body"),
-                    );
+                    return self.failed_attempt(call, "invalid_op", "新记一条要 title 和 body");
                 }
                 changes.push(memory::types::DreamChangeInput {
                     memory_id,
@@ -1161,6 +1195,16 @@ impl Tool for DreamApplyTool {
                     body,
                     action,
                     reason: item["reason"].as_str().unwrap_or("").trim().to_owned(),
+                    before_revision: item["before_revision"].as_u64(),
+                    dropped_sources: item["dropped_sources"]
+                        .as_array()
+                        .map(|values| {
+                            values
+                                .iter()
+                                .filter_map(|value| value.as_str().map(str::to_owned))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                 });
             }
             if changes.is_empty() {
@@ -1182,11 +1226,20 @@ impl Tool for DreamApplyTool {
                 },
                 &memory::types::WriteContext::dream(&self.run_id),
             ) {
-                Ok(outcome) => ToolResult::success(
-                    call.id,
-                    format!("应用了 {} 处笔记改动。", outcome.dream_applied),
-                ),
-                Err(error) => ToolResult::error(call.id, ToolFailure::plain(error.to_string())),
+                Ok(outcome) => {
+                    self.exhausted.store(false, Ordering::SeqCst);
+                    ToolResult::success(
+                        call.id,
+                        format!("应用了 {} 处笔记改动。", outcome.dream_applied),
+                    )
+                }
+                Err(error) => {
+                    if let memory::MemoryError::DreamValidation(validation) = &error {
+                        self.failed_attempt(call, validation.code, &validation.message.clone())
+                    } else {
+                        ToolResult::error(call.id, ToolFailure::plain(error.to_string()))
+                    }
+                }
             }
         })
     }

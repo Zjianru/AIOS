@@ -188,6 +188,82 @@ async fn dream_runs_when_due_writes_notes_and_card() {
 }
 
 #[tokio::test]
+async fn dream_rejects_three_invalid_changes_and_keeps_the_previous_version() {
+    let server = MockServer::start().await;
+    let data = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let store = dream_store(data.path());
+    store
+        .write(
+            WriteOp::Note {
+                title: "旧笔记".to_owned(),
+                summary: "旧摘要".to_owned(),
+                body: "旧正文".to_owned(),
+                source_kind: "kind".to_owned(),
+                source_ref: "file:dream-old".to_owned(),
+            },
+            &WriteContext::kind(),
+        )
+        .unwrap();
+    seed_dream(data.path(), true, 1, 0, 0);
+    let invalid = apply_args(serde_json::json!([{
+        "action": "new_note",
+        "title": "旧笔记",
+        "body": "重名的新正文",
+        "reason": "重名"
+    }]));
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(crate::common::SequenceResponder::new(vec![
+            sse(&crate::common::text_sse("好")),
+            sse(&crate::common::tool_use_sse(
+                0,
+                "call-dream-invalid-1",
+                "memory_dream_apply",
+                &invalid,
+            )),
+            sse(&crate::common::tool_use_sse(
+                1,
+                "call-dream-invalid-2",
+                "memory_dream_apply",
+                &invalid,
+            )),
+            sse(&crate::common::tool_use_sse(
+                2,
+                "call-dream-invalid-3",
+                "memory_dream_apply",
+                &invalid,
+            )),
+            sse(&crate::common::text_sse("不写了")),
+        ]))
+        .mount(&server)
+        .await;
+    let root = open_root(data.path(), cwd.path(), &server).await;
+    wait_startup_check(&root).await;
+    send(&root, "dream-invalid-user", "今天先这样").await;
+    wait_idle(&root).await;
+    let mut runs = wait_runs(data.path(), 1).await;
+    for _ in 0..1000 {
+        if runs[0].outcome != "running" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        runs = dream_store(data.path()).dream_runs(20).unwrap();
+    }
+    assert_eq!(runs[0].outcome, "failed", "三次不过保留上一版、run failed");
+    assert!(
+        runs[0].error.contains("3 次"),
+        "失败原因写清 3 次：{}",
+        runs[0].error
+    );
+    let notes = dream_store(data.path()).view().unwrap().notes;
+    assert_eq!(notes.len(), 1, "没有写回被校验挡下的笔记");
+    assert_eq!(notes[0].title, "旧笔记");
+    assert_eq!(notes[0].body, "旧正文");
+    root.shutdown().await;
+}
+
+#[tokio::test]
 async fn dream_without_permit_emits_permit_card_and_does_not_run() {
     let server = MockServer::start().await;
     let data = tempfile::tempdir().unwrap();

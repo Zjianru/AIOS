@@ -253,6 +253,12 @@ pub struct DreamChangeInput {
     pub body: String,
     pub action: DreamAction,
     pub reason: String,
+    /// 模型看到的旧修订号；对不上 = revision_mismatch。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_revision: Option<u64>,
+    /// 明确要丢掉的出处 ref；悄悄丢出处会被 dropped_source 退回。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dropped_sources: Vec<String>,
 }
 
 /// 做梦/观察的设置。默认值照 spec：开着、没许可、24 小时、5 个新回合或报回。

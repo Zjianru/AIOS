@@ -320,6 +320,8 @@ pub async fn open_root_session_with(
             dream,
         ));
         config.memory_context = Some(memory.kind_provider());
+        config.compaction_profile = agent::CompactionProfile::Kind;
+        config.memory_delivery = Some(memory.delivery_hook());
         config.pre_compaction = Some(memory.pre_compaction_hook());
         config.pre_compaction_instruction = Some(
             "把下面这段对话里值得留给以后的事实整理成一条简短日记，只写事实和教训，不要复述全部原文。"

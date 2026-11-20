@@ -70,6 +70,8 @@ pub(crate) struct Inner {
     stop_after_report: AtomicBool,
     /// 报告后保留宿主；命令结束只落事件，不投 inbox、不唤醒。
     background_only: AtomicBool,
+    compaction_profile: crate::CompactionProfile,
+    compaction_fixed_block: Option<crate::CompactionFixedBlockSource>,
 
     pub(crate) model: DeepSeek,
     pub(crate) tools: ToolSet,
@@ -128,8 +130,73 @@ impl LoopAccess for Inner {
     fn model(&self) -> &DeepSeek {
         &self.model
     }
+    fn conversation_id(&self) -> &session::SessionId {
+        &self.id
+    }
     fn cwd(&self) -> &Path {
         &self.cwd
+    }
+    fn compaction_profile(&self) -> crate::CompactionProfile {
+        self.compaction_profile
+    }
+    fn compaction_fixed_blocks(&self) -> Vec<crate::CompactionFixedBlock> {
+        let derived = self
+            .store
+            .lock()
+            .expect("agent 会话锁被毒化")
+            .derive_messages();
+        let mut blocks: Vec<crate::CompactionFixedBlock> = Vec::new();
+        for message in derived {
+            let (kind, identity) = match &message.source {
+                model::MessageSource::AgentInstructions {
+                    baseline_identity, ..
+                } => (
+                    "instructions",
+                    baseline_identity.clone().unwrap_or_default(),
+                ),
+                model::MessageSource::SkillCatalog { entries, .. } => (
+                    "skills",
+                    entries
+                        .iter()
+                        .map(|entry| entry.name.clone())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                ),
+                model::MessageSource::MemoryContext { identity } => ("memory", identity.clone()),
+                _ => continue,
+            };
+            let text = message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    model::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            if text.is_empty() {
+                continue;
+            }
+            blocks.retain(|block| block.kind != kind);
+            blocks.push(crate::CompactionFixedBlock {
+                kind: kind.to_owned(),
+                identity,
+                text,
+            });
+        }
+        if let Some(source) = &self.compaction_fixed_block
+            && let Some(block) = source()
+        {
+            blocks.push(block);
+        }
+        blocks.sort_by_key(|block| match block.kind.as_str() {
+            "instructions" => 0,
+            "skills" => 1,
+            "task" => 2,
+            "memory" => 3,
+            _ => 4,
+        });
+        blocks
     }
     fn data_dir(&self) -> &Path {
         &self.data_dir
@@ -337,8 +404,12 @@ impl Inner {
         // 能力状态由能力模块装载/持有；driver 只做装配。
         let (instruction_state, instruction_roots) =
             crate::instructions_capability::InstructionsCapability::load(&store, instruction_roots);
-        let (memory_identity, memory_context) =
-            crate::memory_capability::MemoryCapability::load(&store, config.memory_context.clone());
+        let (memory_identity, memory_context, memory_delivery) =
+            crate::memory_capability::MemoryCapability::load(
+                &store,
+                config.memory_context.clone(),
+                config.memory_delivery.clone(),
+            );
         let bundled_skills = config.bundled_skills.clone();
         let (skill_catalog, skill_roots, bundled_skills) =
             crate::skill_capability::SkillCapability::load(
@@ -369,6 +440,8 @@ impl Inner {
             pre_compaction: config.pre_compaction.clone(),
             pre_compaction_instruction: config.pre_compaction_instruction.clone(),
             background_only: std::sync::atomic::AtomicBool::new(false),
+            compaction_profile: config.compaction_profile,
+            compaction_fixed_block: config.compaction_fixed_block.clone(),
             no_wait: config.no_wait,
             write_scope: config.write_scope.clone(),
             stop_after_report: AtomicBool::new(false),
@@ -408,6 +481,7 @@ impl Inner {
                 spill_max_inline_tokens,
                 memory_identity,
                 memory_context,
+                memory_delivery,
             }),
             #[cfg(test)]
             settle_hook: Mutex::new(None),

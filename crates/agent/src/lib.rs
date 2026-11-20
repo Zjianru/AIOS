@@ -61,11 +61,44 @@ pub struct CompactionModelPolicy {
 pub struct MemoryContext {
     pub identity: String,
     pub text: String,
+    /// 这次整份注入里出现的记忆 id；TurnEnd succeeded 时记 delivery 用。
+    pub ids: Vec<String>,
 }
 
 /// 每步问一次记忆；返回 None 表示这一会话没有记忆注入。
 pub type MemoryContextProvider =
     std::sync::Arc<dyn Fn() -> Result<Option<MemoryContext>, String> + Send + Sync>;
+
+/// 压缩时要在摘要前重铺的固定块（指令/skill/记忆/任务书账本）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompactionFixedBlock {
+    pub kind: String,
+    pub identity: String,
+    pub text: String,
+}
+
+/// 压缩用的角色模板：Kind 七样；ThinAgent 沿用编码模板。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CompactionProfile {
+    Kind,
+    #[default]
+    Thin,
+}
+
+/// 压缩固定块的额外来源；service 给 ThinAgent 提供任务书+账本。
+pub type CompactionFixedBlockSource =
+    std::sync::Arc<dyn Fn() -> Option<CompactionFixedBlock> + Send + Sync>;
+
+/// 一次送达日志事件；真正落账由服务回调写 memory_delivery。
+#[derive(Clone, Debug)]
+pub struct MemoryDelivery {
+    pub conversation: session::SessionId,
+    pub ids: Vec<String>,
+    pub turn: u64,
+}
+
+/// 本轮成功才调用：把这次注入的记忆标记为 sent。
+pub type MemoryDeliveryHook = std::sync::Arc<dyn Fn(MemoryDelivery) + Send + Sync>;
 
 /// agent 写完的压缩前日记，交给服务回调落库。
 #[derive(Clone, Debug)]
@@ -134,6 +167,12 @@ pub struct AgentConfig {
     pub write_scope: Option<PathBuf>,
     /// 每步向服务要记忆上下文；None = 这个会话不注入。
     pub memory_context: Option<MemoryContextProvider>,
+    /// 记忆送达落账回调；None = 不记（CLI/测试）。
+    pub memory_delivery: Option<MemoryDeliveryHook>,
+    /// 压缩模板：Kind 七样 / ThinAgent 编码模板。
+    pub compaction_profile: CompactionProfile,
+    /// 压缩时要额外重铺的固定块（ThinAgent 的任务书+账本）。
+    pub compaction_fixed_block: Option<CompactionFixedBlockSource>,
     /// 压缩前记一笔；None = 不记。只给 Kind 根会话配。
     pub pre_compaction: Option<PreCompactionHook>,
     /// 压缩前记一笔的说明文字；与摘要请求同一前缀。
@@ -189,6 +228,9 @@ impl Default for AgentConfig {
             policy_prompt: None,
             write_scope: None,
             memory_context: None,
+            memory_delivery: None,
+            compaction_profile: CompactionProfile::Thin,
+            compaction_fixed_block: None,
             pre_compaction: None,
             pre_compaction_instruction: None,
         }

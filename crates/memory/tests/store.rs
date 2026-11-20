@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use memory::types::{
-    Binding, DreamAction, DreamChangeInput, DreamRunInput, Layer, Scope, SearchHit, WriteContext,
-    WriteOp,
+    Binding, DreamAction, DreamChangeInput, DreamRunInput, Layer, MemoryKey, MemoryWrite, Scope,
+    SearchHit, WriteContext, WriteOp,
 };
 use memory::{MemoryError, MemoryStore};
 use rusqlite::OptionalExtension;
@@ -250,6 +250,8 @@ fn dream_can_apply_notes_and_undo_skips_user_edits() {
                     summary: "合并后的摘要".to_owned(),
                     body: "sources/ 下有 GBK 的 CSV；先看编码。".to_owned(),
                     action: DreamAction::Merge,
+                    before_revision: None,
+                    dropped_sources: Vec::new(),
                     reason: "合并重复笔记".to_owned(),
                 }],
             },
@@ -300,6 +302,8 @@ fn dream_can_apply_notes_and_undo_skips_user_edits() {
                     summary: "改".to_owned(),
                     body: "改过正文".to_owned(),
                     action: DreamAction::Correct,
+                    before_revision: None,
+                    dropped_sources: Vec::new(),
                     reason: "dream".to_owned(),
                 }],
             },
@@ -403,6 +407,8 @@ fn dream_cannot_touch_about_you_or_entry() {
                     summary: "改".to_owned(),
                     body: "改".to_owned(),
                     action: DreamAction::Correct,
+                    before_revision: None,
+                    dropped_sources: Vec::new(),
                     reason: "dream".to_owned(),
                 }],
             },
@@ -436,6 +442,8 @@ fn dream_run_id_and_note_targets_are_checked() {
                 summary: "改".to_owned(),
                 body: "改".to_owned(),
                 action: DreamAction::Correct,
+                before_revision: None,
+                dropped_sources: Vec::new(),
                 reason: "dream".to_owned(),
             }],
         },
@@ -522,6 +530,8 @@ fn kind_can_write_note_diary_and_index_and_dream_can_apply() {
                 summary: "改".to_owned(),
                 body: "改".to_owned(),
                 action: DreamAction::Correct,
+                before_revision: None,
+                dropped_sources: Vec::new(),
                 reason: "dream".to_owned(),
             }],
         },
@@ -555,6 +565,8 @@ fn dream_undo_only_one_change() {
                         summary: "改".to_owned(),
                         body: "改".to_owned(),
                         action: DreamAction::Correct,
+                        before_revision: None,
+                        dropped_sources: Vec::new(),
                         reason: "dream".to_owned(),
                     },
                     DreamChangeInput {
@@ -563,6 +575,8 @@ fn dream_undo_only_one_change() {
                         summary: "改".to_owned(),
                         body: "改".to_owned(),
                         action: DreamAction::Correct,
+                        before_revision: None,
+                        dropped_sources: Vec::new(),
                         reason: "dream".to_owned(),
                     },
                 ],
@@ -633,6 +647,8 @@ fn dream_apply_note(store: &MemoryStore, run_id: &str) -> memory::types::MemoryI
                     summary: "整理".to_owned(),
                     body: "把两处笔记合并成这一条".to_owned(),
                     action: DreamAction::NewNote,
+                    before_revision: None,
+                    dropped_sources: Vec::new(),
                     reason: "重复".to_owned(),
                 }],
             },
@@ -702,7 +718,7 @@ fn user_can_undo_dream_by_run_without_dream_context() {
 #[test]
 fn revisions_record_who_changed_them() {
     let (store, _dir, _) = open();
-    let note = store
+    let edited = store
         .write(
             WriteOp::Note {
                 title: "先探编码".to_owned(),
@@ -716,12 +732,12 @@ fn revisions_record_who_changed_them() {
         .unwrap()
         .item
         .unwrap();
-    assert_eq!(store.revisions(&note.id).unwrap()[0].actor, "kind");
+    assert_eq!(store.revisions(&edited.id).unwrap()[0].actor, "kind");
 
     store
         .write(
             WriteOp::Correct {
-                id: note.id.clone(),
+                id: edited.id.clone(),
                 title: "先探编码".to_owned(),
                 summary: String::new(),
                 body: "读之前先探编码，GBK 也要先转".to_owned(),
@@ -731,36 +747,78 @@ fn revisions_record_who_changed_them() {
         )
         .unwrap();
     assert_eq!(
-        store.revisions(&note.id).unwrap().last().unwrap().actor,
+        store.revisions(&edited.id).unwrap().last().unwrap().actor,
         "user"
     );
 
+    let blocked = store.write(
+        WriteOp::DreamApply {
+            run: DreamRunInput {
+                id: "run-actor".to_owned(),
+                model: "deepseek-flash".to_owned(),
+                started_at: 1,
+                ended_at: 2,
+                outcome: "running".to_owned(),
+                report_json: "{}".to_owned(),
+                usage_json: "{}".to_owned(),
+            },
+            changes: vec![DreamChangeInput {
+                memory_id: Some(edited.id.clone()),
+                title: "先探编码".to_owned(),
+                summary: String::new(),
+                body: "读之前先探编码，GBK 也要先转，再核一遍".to_owned(),
+                action: DreamAction::Correct,
+                before_revision: None,
+                dropped_sources: Vec::new(),
+                reason: "dream".to_owned(),
+            }],
+        },
+        &WriteContext::dream("run-actor"),
+    );
+    assert!(matches!(
+        blocked,
+        Err(MemoryError::DreamValidation(error)) if error.code == "user_edited"
+    ));
+    assert_eq!(
+        store.revisions(&edited.id).unwrap().last().unwrap().actor,
+        "user"
+    );
+    // 没被用户改过的笔记，做梦改了记 actor=dream。
+    let untouched = note(&store, "没改过", "file:actor-2");
+    let run = DreamRunInput {
+        id: "run-actor-2".to_owned(),
+        model: "deepseek-flash".to_owned(),
+        started_at: 1,
+        ended_at: 2,
+        outcome: "running".to_owned(),
+        report_json: "{}".to_owned(),
+        usage_json: "{}".to_owned(),
+    };
     store
         .write(
             WriteOp::DreamApply {
-                run: DreamRunInput {
-                    id: "run-actor".to_owned(),
-                    model: "deepseek-flash".to_owned(),
-                    started_at: 1,
-                    ended_at: 2,
-                    outcome: "running".to_owned(),
-                    report_json: "{}".to_owned(),
-                    usage_json: "{}".to_owned(),
-                },
+                run,
                 changes: vec![DreamChangeInput {
-                    memory_id: Some(note.id.clone()),
-                    title: "先探编码".to_owned(),
+                    memory_id: Some(untouched.id.clone()),
+                    title: "没改过（dream）".to_owned(),
                     summary: String::new(),
-                    body: "读之前先探编码，GBK 也要先转，再核一遍".to_owned(),
+                    body: "做梦补一句".to_owned(),
                     action: DreamAction::Correct,
+                    before_revision: None,
+                    dropped_sources: Vec::new(),
                     reason: "dream".to_owned(),
                 }],
             },
-            &WriteContext::dream("run-actor"),
+            &WriteContext::dream("run-actor-2"),
         )
         .unwrap();
     assert_eq!(
-        store.revisions(&note.id).unwrap().last().unwrap().actor,
+        store
+            .revisions(&untouched.id)
+            .unwrap()
+            .last()
+            .unwrap()
+            .actor,
         "dream"
     );
 }
@@ -1348,5 +1406,279 @@ fn about_draft_saves_with_user_actor_and_drops_without_writing() {
         store.item(&third.id).unwrap().unwrap().status,
         "active",
         "不用的草稿不动「关于你」"
+    );
+}
+
+fn dream_validation_run(id: &str) -> DreamRunInput {
+    DreamRunInput {
+        id: id.to_owned(),
+        model: "test".to_owned(),
+        started_at: 1,
+        ended_at: 2,
+        outcome: "running".to_owned(),
+        report_json: "{}".to_owned(),
+        usage_json: "{}".to_owned(),
+    }
+}
+
+fn dream_validation_change(
+    memory_id: Option<&str>,
+    action: DreamAction,
+    title: &str,
+    body: &str,
+    reason: &str,
+) -> DreamChangeInput {
+    DreamChangeInput {
+        memory_id: memory_id.map(str::to_owned),
+        title: title.to_owned(),
+        summary: String::new(),
+        body: body.to_owned(),
+        action,
+        reason: reason.to_owned(),
+        before_revision: None,
+        dropped_sources: Vec::new(),
+    }
+}
+
+fn dream_validation_code(
+    store: &MemoryStore,
+    run_id: &str,
+    changes: Vec<DreamChangeInput>,
+) -> &'static str {
+    match store.write(
+        WriteOp::DreamApply {
+            run: dream_validation_run(run_id),
+            changes,
+        },
+        &WriteContext::dream(run_id),
+    ) {
+        Err(MemoryError::DreamValidation(error)) => error.code,
+        other => panic!("{run_id}: 应当被做梦校验挡下：{other:?}"),
+    }
+}
+
+#[test]
+fn dream_validation_codes_cover_the_ten_rejections() {
+    let (store, _dir, _) = open();
+    let existing = note(&store, "旧笔记", "file:old");
+    assert_eq!(
+        dream_validation_code(
+            &store,
+            "v-missing",
+            vec![dream_validation_change(
+                Some("does-not-exist"),
+                DreamAction::Correct,
+                "改",
+                "改",
+                "reason",
+            )]
+        ),
+        "target_missing"
+    );
+    assert_eq!(
+        dream_validation_code(
+            &store,
+            "v-invalid-op",
+            vec![dream_validation_change(
+                None,
+                DreamAction::Correct,
+                "改",
+                "改",
+                "reason",
+            )]
+        ),
+        "invalid_op"
+    );
+    assert_eq!(
+        dream_validation_code(
+            &store,
+            "v-title",
+            vec![dream_validation_change(
+                None,
+                DreamAction::NewNote,
+                "旧笔记",
+                "新正文",
+                "reason",
+            )]
+        ),
+        "title_collision"
+    );
+    assert_eq!(
+        dream_validation_code(
+            &store,
+            "v-duplicate",
+            vec![
+                dream_validation_change(
+                    Some(&existing.id),
+                    DreamAction::Correct,
+                    "第一改",
+                    "第一改",
+                    "reason",
+                ),
+                dream_validation_change(
+                    Some(&existing.id),
+                    DreamAction::Correct,
+                    "第二改",
+                    "第二改",
+                    "reason",
+                ),
+            ]
+        ),
+        "duplicate_change"
+    );
+    assert_eq!(
+        dream_validation_code(
+            &store,
+            "v-missing-reason",
+            vec![dream_validation_change(
+                Some(&existing.id),
+                DreamAction::Correct,
+                "改",
+                "改",
+                " ",
+            )]
+        ),
+        "missing_reason"
+    );
+    assert_eq!(
+        dream_validation_code(
+            &store,
+            "v-revision",
+            vec![DreamChangeInput {
+                before_revision: Some(99),
+                ..dream_validation_change(
+                    Some(&existing.id),
+                    DreamAction::Correct,
+                    "改",
+                    "改",
+                    "reason",
+                )
+            }]
+        ),
+        "revision_mismatch"
+    );
+    assert_eq!(
+        dream_validation_code(
+            &store,
+            "v-unchanged",
+            vec![DreamChangeInput {
+                summary: "笔记摘要".to_owned(),
+                ..dream_validation_change(
+                    Some(&existing.id),
+                    DreamAction::Correct,
+                    "旧笔记",
+                    "sources/ 下有 GBK 的 CSV；读之前先探编码。",
+                    "reason",
+                )
+            }]
+        ),
+        "unchanged"
+    );
+    let sourced = store
+        .write_with_relation(
+            MemoryWrite {
+                op: WriteOp::Note {
+                    title: "有出处的笔记".to_owned(),
+                    summary: "摘要".to_owned(),
+                    body: "有出处正文".to_owned(),
+                    source_kind: "kind".to_owned(),
+                    source_ref: "file:sourced".to_owned(),
+                },
+                keys: vec![MemoryKey {
+                    key_no: 0,
+                    kind: memory::types::MemoryKeyKind::Keyword,
+                    value: "出处".to_owned(),
+                }],
+                relation: None,
+                valid_from: None,
+                source_quote: None,
+            },
+            &WriteContext::kind(),
+        )
+        .unwrap()
+        .item
+        .unwrap();
+    assert_eq!(
+        dream_validation_code(
+            &store,
+            "v-dropped",
+            vec![dream_validation_change(
+                Some(&sourced.id),
+                DreamAction::Retire,
+                "",
+                "",
+                "过时了",
+            )]
+        ),
+        "dropped_source"
+    );
+
+    // user_edited：用户改过的笔记，做梦不覆盖。
+    store
+        .write(
+            WriteOp::Correct {
+                id: existing.id.clone(),
+                title: "用户改过".to_owned(),
+                summary: String::new(),
+                body: "用户改过的正文".to_owned(),
+                reason: "user".to_owned(),
+            },
+            &WriteContext::user(),
+        )
+        .unwrap();
+    assert_eq!(
+        dream_validation_code(
+            &store,
+            "v-user-edited",
+            vec![dream_validation_change(
+                Some(&existing.id),
+                DreamAction::Correct,
+                "做梦改",
+                "做梦正文",
+                "reason",
+            )]
+        ),
+        "user_edited"
+    );
+
+    // user_removed：用户删掉的笔记，做梦不写回。
+    let removed = note(&store, "删掉的", "file:removed");
+    store
+        .write(
+            WriteOp::Delete {
+                id: removed.id.clone(),
+                reason: "user".to_owned(),
+            },
+            &WriteContext::user(),
+        )
+        .unwrap();
+    assert_eq!(
+        dream_validation_code(
+            &store,
+            "v-user-removed",
+            vec![dream_validation_change(
+                Some(&removed.id),
+                DreamAction::Correct,
+                "写回",
+                "写回正文",
+                "reason",
+            )]
+        ),
+        "user_removed"
+    );
+    // 换个新笔记把同样内容写回来也不行（去空白/大小写后比较）。
+    assert_eq!(
+        dream_validation_code(
+            &store,
+            "v-user-removed-new",
+            vec![dream_validation_change(
+                None,
+                DreamAction::NewNote,
+                " 删掉的 ",
+                "sources/ 下有 GBK 的 CSV；读之前先探编码。",
+                "reason",
+            )]
+        ),
+        "user_removed"
     );
 }

@@ -682,3 +682,111 @@ async fn manual_compact_summary_failure_is_classified() {
         "发送与摘要请求各一次"
     );
 }
+
+#[tokio::test]
+async fn manual_compaction_rebuilds_fixed_blocks_before_the_summary() {
+    let server = MockServer::start().await;
+    mount(
+        &server,
+        vec![
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+            sse(FINAL_TEXT_SSE.to_owned()),
+        ],
+    )
+    .await;
+    let data_dir = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    tokio::fs::write(
+        data_dir.path().join("AGENTS.md"),
+        "固定指令-COMPACT：压缩时要在摘要前重带。",
+    )
+    .await
+    .unwrap();
+    let store = SessionStore::create(data_dir.path(), cwd.path()).unwrap();
+    let config = AgentConfig {
+        compaction_retain_ratio: 0.000001,
+        compaction_profile: agent::CompactionProfile::Kind,
+        memory_context: Some(std::sync::Arc::new(|| {
+            Ok(Some(agent::MemoryContext {
+                identity: "memory-v1".to_owned(),
+                text: "记忆常驻-MEM：先给结论。".to_owned(),
+                ids: Vec::new(),
+            }))
+        })),
+        bundled_skills: vec![tools::BundledSkill {
+            name: "demo-compact",
+            raw: "---\nname: demo-compact\ndescription: 固定块目录用\n---\n\n演示正文。",
+            requires: None,
+            tools: &[],
+            unavailable_hint: "",
+        }],
+        compaction_fixed_block: Some(std::sync::Arc::new(|| {
+            Some(agent::CompactionFixedBlock {
+                kind: "task".to_owned(),
+                identity: "task-1".to_owned(),
+                text: "任务书-MISSION：把事做完。账本：空也发。".to_owned(),
+            })
+        })),
+        ..isolated_config(data_dir.path())
+    };
+    let model_config = model::DeepSeekConfig {
+        context_window: 1_000_000,
+        max_tokens: 2048,
+        ..model_config(&server.uri())
+    };
+    let agent = Agent::create(
+        config,
+        agent::Deps {
+            model: model::DeepSeek::with_credentials(
+                model_config,
+                crate::common::test_credential(),
+            )
+            .unwrap(),
+            tools: ToolSet::builtin(),
+            store,
+        },
+    )
+    .await
+    .unwrap();
+    agent
+        .send(UserMessage::text("TEXT-OLD fixed"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    wait_idle(&agent, 20).await;
+    agent.compact(None).await.expect("手动压缩");
+    agent
+        .send(UserMessage::text("TEXT-NEW fixed"), Delivery::FollowUp)
+        .await
+        .unwrap();
+    wait_idle(&agent, 20).await;
+
+    let requests = server.received_requests().await.unwrap();
+    let bodies = bodies(&requests);
+    assert_eq!(bodies.len(), 3, "首轮 + 摘要 + 压缩后首轮");
+    let after = &bodies[2];
+    let instruction_at = after.find("固定指令-COMPACT").expect("指令在");
+    let memory_at = after.find("记忆常驻-MEM").expect("记忆在");
+    let skill_at = after.find("demo-compact").expect("skill 目录在");
+    let task_at = after.find("任务书-MISSION").expect("任务书账本在");
+    let summary_at = after.find("<compacted-summary>").expect("摘要在");
+    assert!(instruction_at < summary_at, "指令在摘要前：{after}");
+    assert!(memory_at < summary_at, "记忆在摘要前：{after}");
+    assert!(skill_at < summary_at, "skill 目录在摘要前：{after}");
+    assert!(task_at < summary_at, "任务书账本在摘要前：{after}");
+    assert_eq!(
+        after.matches("任务书-MISSION").count(),
+        1,
+        "任务书账本只一份：{after}"
+    );
+    assert_eq!(
+        after.matches("记忆常驻-MEM").count(),
+        1,
+        "压缩后不再另补一条记忆：{after}"
+    );
+    assert_eq!(
+        after.matches("摘要里只有 id 的东西").count(),
+        1,
+        "Kind id 提示只一次：{after}"
+    );
+}
