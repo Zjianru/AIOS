@@ -1,4 +1,4 @@
-//! T074.1：第一轮固定块在用户话前、触发记忆在用户话后；Kind 只带项目规则路径。
+//! 第一轮固定块在用户话前、触发记忆在用户话后；Kind 只带项目规则路径。
 
 use crate::common::{
     FINAL_TEXT_SSE, SequenceResponder, isolated_config, model_config, sse, test_credential,
