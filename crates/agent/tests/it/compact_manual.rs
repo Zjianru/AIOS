@@ -683,18 +683,15 @@ async fn manual_compact_summary_failure_is_classified() {
     );
 }
 
-#[tokio::test]
-async fn manual_compaction_rebuilds_fixed_blocks_before_the_summary() {
+async fn compaction_fixed_blocks_after(
+    profile: agent::CompactionProfile,
+    compactions: usize,
+) -> Vec<String> {
     let server = MockServer::start().await;
-    mount(
-        &server,
-        vec![
-            sse(FINAL_TEXT_SSE.to_owned()),
-            sse(FINAL_TEXT_SSE.to_owned()),
-            sse(FINAL_TEXT_SSE.to_owned()),
-        ],
-    )
-    .await;
+    let responses: Vec<_> = (0..1 + compactions * 2)
+        .map(|_| sse(FINAL_TEXT_SSE.to_owned()))
+        .collect();
+    mount(&server, responses).await;
     let data_dir = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     tokio::fs::write(
@@ -706,7 +703,7 @@ async fn manual_compaction_rebuilds_fixed_blocks_before_the_summary() {
     let store = SessionStore::create(data_dir.path(), cwd.path()).unwrap();
     let config = AgentConfig {
         compaction_retain_ratio: 0.000001,
-        compaction_profile: agent::CompactionProfile::Kind,
+        compaction_profile: profile,
         memory_context: Some(std::sync::Arc::new(|| {
             Ok(Some(agent::MemoryContext {
                 identity: "memory-v1".to_owned(),
@@ -726,7 +723,7 @@ async fn manual_compaction_rebuilds_fixed_blocks_before_the_summary() {
             Some(agent::CompactionFixedBlock {
                 kind: "task".to_owned(),
                 identity: "task-1".to_owned(),
-                text: "任务书-MISSION：把事做完。账本：空也发。".to_owned(),
+                text: "任务书-MISSION：把事做完。账本-LEDGER：有一条账。".to_owned(),
             })
         })),
         ..isolated_config(data_dir.path())
@@ -751,43 +748,66 @@ async fn manual_compaction_rebuilds_fixed_blocks_before_the_summary() {
     .await
     .unwrap();
     agent
-        .send(UserMessage::text("TEXT-OLD fixed"), Delivery::FollowUp)
+        .send(UserMessage::text("TEXT-0 fixed"), Delivery::FollowUp)
         .await
         .unwrap();
     wait_idle(&agent, 20).await;
-    agent.compact(None).await.expect("手动压缩");
-    agent
-        .send(UserMessage::text("TEXT-NEW fixed"), Delivery::FollowUp)
-        .await
-        .unwrap();
-    wait_idle(&agent, 20).await;
-
+    for index in 0..compactions {
+        agent.compact(None).await.expect("手动压缩");
+        agent
+            .send(
+                UserMessage::text(format!("TEXT-{} fixed", index + 1)),
+                Delivery::FollowUp,
+            )
+            .await
+            .unwrap();
+        wait_idle(&agent, 20).await;
+    }
     let requests = server.received_requests().await.unwrap();
-    let bodies = bodies(&requests);
-    assert_eq!(bodies.len(), 3, "首轮 + 摘要 + 压缩后首轮");
-    let after = &bodies[2];
-    let instruction_at = after.find("固定指令-COMPACT").expect("指令在");
-    let memory_at = after.find("记忆常驻-MEM").expect("记忆在");
-    let skill_at = after.find("demo-compact").expect("skill 目录在");
-    let task_at = after.find("任务书-MISSION").expect("任务书账本在");
-    let summary_at = after.find("<compacted-summary>").expect("摘要在");
-    assert!(instruction_at < summary_at, "指令在摘要前：{after}");
-    assert!(memory_at < summary_at, "记忆在摘要前：{after}");
-    assert!(skill_at < summary_at, "skill 目录在摘要前：{after}");
-    assert!(task_at < summary_at, "任务书账本在摘要前：{after}");
-    assert_eq!(
-        after.matches("任务书-MISSION").count(),
-        1,
-        "任务书账本只一份：{after}"
-    );
-    assert_eq!(
-        after.matches("记忆常驻-MEM").count(),
-        1,
-        "压缩后不再另补一条记忆：{after}"
-    );
-    assert_eq!(
-        after.matches("摘要里只有 id 的东西").count(),
-        1,
-        "Kind id 提示只一次：{after}"
-    );
+    bodies(&requests)
+}
+
+fn assert_four_fixed_blocks(body: &str, expect_kind_hint: bool) {
+    let summary_at = body.find("<compacted-summary>").expect("摘要在");
+    for marker in [
+        "固定指令-COMPACT",
+        "demo-compact",
+        "任务书-MISSION",
+        "账本-LEDGER",
+        "记忆常驻-MEM",
+    ] {
+        let at = body
+            .find(marker)
+            .unwrap_or_else(|| panic!("缺固定块 {marker}：{body}"));
+        assert!(at < summary_at, "{marker} 要在摘要前：{body}");
+        assert_eq!(body.matches(marker).count(), 1, "{marker} 只能一份：{body}");
+    }
+    let hint_count = body.matches("摘要里只有 id 的东西").count();
+    if expect_kind_hint {
+        assert_eq!(hint_count, 1, "Kind id 提示只一次：{body}");
+    } else {
+        assert_eq!(hint_count, 0, "ThinAgent 不收 id 提示：{body}");
+    }
+}
+
+#[tokio::test]
+async fn repeated_compaction_keeps_four_fixed_blocks_for_kind() {
+    for compactions in [2, 3] {
+        let bodies =
+            compaction_fixed_blocks_after(agent::CompactionProfile::Kind, compactions).await;
+        for index in [2, 4, 6].into_iter().take(compactions) {
+            assert_four_fixed_blocks(&bodies[index], true);
+        }
+    }
+}
+
+#[tokio::test]
+async fn repeated_compaction_keeps_four_fixed_blocks_for_thin_agent() {
+    for compactions in [2, 3] {
+        let bodies =
+            compaction_fixed_blocks_after(agent::CompactionProfile::Thin, compactions).await;
+        for index in [2, 4, 6].into_iter().take(compactions) {
+            assert_four_fixed_blocks(&bodies[index], false);
+        }
+    }
 }
