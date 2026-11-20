@@ -439,6 +439,12 @@ async fn thin_agent_handback_rule_and_tool_stay_off_kind() {
         "规则要写明不自己做：{thin_system}"
     );
     assert!(
+        thin_system.starts_with(
+            "You are AIOS's executor: you investigate and implement the task Kind hands you."
+        ),
+        "ThinAgent 身份按执行者：{thin_system}"
+    );
+    assert!(
         !thin_system.contains("You are AIOS's coordinator"),
         "Kind 的派任务说明不能进 ThinAgent：{thin_system}"
     );

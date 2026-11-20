@@ -138,7 +138,7 @@ impl Capability for MemoryCapability {
                     trigger,
                     phase,
                 } => {
-                    if *phase != PreStepPhase::Inject || trigger.is_some() {
+                    if trigger.is_some() {
                         return Ok(HookOutcome::Continue);
                     }
                     // 只在用户回合注入；程序消息（任务报回、提醒等）不重发记忆，避免把
@@ -149,28 +149,29 @@ impl Capability for MemoryCapability {
                     {
                         return Ok(HookOutcome::Continue);
                     }
-                    if *step == 1
-                        && let Some(flashback) = &self.flashback
-                    {
-                        let text = messages
-                            .iter()
-                            .filter(|message| {
-                                matches!(message.source, model::MessageSource::User { .. })
-                            })
-                            .flat_map(|message| message.content.iter())
-                            .filter_map(|block| match block {
-                                model::ContentBlock::Text { text, .. } => Some(text.as_str()),
-                                _ => None,
-                            })
-                            .collect::<Vec<_>>()
-                            .join(" ");
-                        if !text.trim().is_empty()
-                            && let Some(recall) =
-                                flashback(&text).map_err(crate::AgentError::MemoryProvider)?
+                    if *phase == PreStepPhase::Inject {
+                        if *step == 1
+                            && let Some(flashback) = &self.flashback
                         {
-                            let already = {
-                                let store = host.session().lock().expect("agent 会话锁被毒化");
-                                store.events().iter().any(|event| {
+                            let text = messages
+                                .iter()
+                                .filter(|message| {
+                                    matches!(message.source, model::MessageSource::User { .. })
+                                })
+                                .flat_map(|message| message.content.iter())
+                                .filter_map(|block| match block {
+                                    model::ContentBlock::Text { text, .. } => Some(text.as_str()),
+                                    _ => None,
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            if !text.trim().is_empty()
+                                && let Some(recall) =
+                                    flashback(&text).map_err(crate::AgentError::MemoryProvider)?
+                            {
+                                let already = {
+                                    let store = host.session().lock().expect("agent 会话锁被毒化");
+                                    store.events().iter().any(|event| {
                                     matches!(
                                         &event.kind,
                                         session::EventKind::UserMessage { message, .. }
@@ -187,34 +188,40 @@ impl Capability for MemoryCapability {
                                             })
                                     )
                                 })
-                            };
-                            if !already && !recall.ids.is_empty() {
-                                let message = model::Message::memory_context(
-                                    recall.text,
-                                    format!("flashback:{}", recall.ids.join(",")),
-                                );
-                                let seqs = host
-                                    .append_with_seqs(&[session::EventKind::UserMessage {
-                                        turn: *turn,
-                                        step: *step,
-                                        message,
-                                    }])
-                                    .await?;
-                                let mut pending = self.pending.lock().expect("记忆送达锁被毒化");
-                                match pending.as_mut() {
-                                    Some(pending) => {
-                                        pending.ids.extend(recall.ids);
-                                    }
-                                    None => {
-                                        *pending = Some(PendingDelivery {
+                                };
+                                if !already && !recall.ids.is_empty() {
+                                    let message = model::Message::memory_context(
+                                        recall.text,
+                                        format!("flashback:{}", recall.ids.join(",")),
+                                    );
+                                    let seqs = host
+                                        .append_with_seqs(&[session::EventKind::UserMessage {
                                             turn: *turn,
-                                            seq: seqs.first().copied().unwrap_or(0),
-                                            ids: recall.ids,
-                                        });
+                                            step: *step,
+                                            message,
+                                        }])
+                                        .await?;
+                                    let mut pending =
+                                        self.pending.lock().expect("记忆送达锁被毒化");
+                                    match pending.as_mut() {
+                                        Some(pending) => {
+                                            pending.ids.extend(recall.ids);
+                                        }
+                                        None => {
+                                            *pending = Some(PendingDelivery {
+                                                turn: *turn,
+                                                seq: seqs.first().copied().unwrap_or(0),
+                                                ids: recall.ids,
+                                            });
+                                        }
                                     }
                                 }
                             }
                         }
+                        return Ok(HookOutcome::Continue);
+                    }
+                    if *phase != PreStepPhase::FixedBlocks {
+                        return Ok(HookOutcome::Continue);
                     }
                     let Some(provider) = &self.provider else {
                         return Ok(HookOutcome::Continue);

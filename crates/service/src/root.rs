@@ -307,6 +307,9 @@ pub async fn open_root_session_with(
     // 设置页另外报读不出的原因。ThinAgent 用同一份来源。
     let mut config = options.config.clone();
     config.tool_keys = tool_key_source(&options);
+    config.identity_prompt =
+        Some("You are AIOS's coordinator: you talk with the user, verify facts, and hand work to ThinAgent. ThinAgent investigates and implements.".to_owned());
+    config.project_instructions_path_only = true;
     // Kind 根会话：记忆注入 + 压缩前日记 + 记忆工具；库打不开不挡根会话，但产品路径要接上。
     let memory = match memory {
         Some(memory) => Some(memory),

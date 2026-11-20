@@ -2908,6 +2908,11 @@ impl TaskRuntime {
         let mut agent_config = self.options.config.clone();
         agent_config.tool_keys = crate::root::tool_key_source(&self.options);
         agent_config.write_scope = task.effective_write_scope();
+        agent_config.identity_prompt = Some(
+            "You are AIOS's executor: you investigate and implement the task Kind hands you."
+                .to_owned(),
+        );
+        agent_config.project_instructions_path_only = false;
         if let Ok(memory) = crate::memory::MemoryRuntime::open(&self.data_dir) {
             let memory = std::sync::Arc::new(memory);
             agent_config.memory_context = Some(memory.thin_provider());

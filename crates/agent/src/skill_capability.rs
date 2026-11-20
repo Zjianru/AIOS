@@ -74,29 +74,35 @@ impl Capability for SkillCapability {
             else {
                 return Ok(HookOutcome::Continue);
             };
-            if *phase != PreStepPhase::Inject || trigger.is_some() {
+            if trigger.is_some() {
                 return Ok(HookOutcome::Continue);
             }
             let host = event.host();
             let tool_keys = host.tool_keys();
-            let catalog = self
-                .state
-                .lock()
-                .expect("agent skill 目录锁被毒化")
-                .prepare(
-                    host.cwd(),
-                    host.data_dir(),
-                    &self.roots,
-                    &self.bundled,
-                    &tool_keys,
-                );
-            if let Some(message) = catalog {
-                host.append(&[EventKind::UserMessage {
-                    turn: event.turn(),
-                    step: event.step(),
-                    message,
-                }])
-                .await?;
+            if *phase == PreStepPhase::FixedBlocks {
+                let catalog = self
+                    .state
+                    .lock()
+                    .expect("agent skill 目录锁被毒化")
+                    .prepare(
+                        host.cwd(),
+                        host.data_dir(),
+                        &self.roots,
+                        &self.bundled,
+                        &tool_keys,
+                    );
+                if let Some(message) = catalog {
+                    host.append(&[EventKind::UserMessage {
+                        turn: event.turn(),
+                        step: event.step(),
+                        message,
+                    }])
+                    .await?;
+                }
+                return Ok(HookOutcome::Continue);
+            }
+            if *phase != PreStepPhase::Inject {
+                return Ok(HookOutcome::Continue);
             }
 
             // T006.11b：用户显式 /name（只扫 source=user 的 claimed 消息，排除注入上下文）。
