@@ -595,3 +595,23 @@ test('Kind 没有写工具：让它改错字，它派写任务，文件由 ThinA
     await fixture.close();
   }
 });
+
+test('任务对话头部「诊断」进监控诊断页', async ({ page }) => {
+  test.setTimeout(120_000);
+  const fixture = await startKernelFixture({ t030: 'write' });
+  try {
+    await page.goto(urlOf(fixture));
+    await sendKind(page, '把 hello.txt 的判重改成按 url');
+    await expect(reviewCard(page)).toBeVisible({ timeout: 60_000 });
+    const taskId = await taskIdOf(fixture);
+    await page.goto(urlOf(fixture, '#taskchat:' + taskId));
+    const diagnose = page.locator('[data-kind="task-diagnose"]');
+    await expect(diagnose).toBeVisible({ timeout: 30_000 });
+    await expect(diagnose).toContainText('诊断 ›');
+    await diagnose.click();
+    await expect(page).toHaveURL(new RegExp('#monitor:task:' + taskId));
+    await expect(page.locator('[data-page="monitor-task"]')).toBeVisible({ timeout: 20_000 });
+  } finally {
+    await fixture.close();
+  }
+});

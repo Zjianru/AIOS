@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { ChevronDown, FilePen, FolderOpen, PauseCircle, PlugZap, SendHorizontal, Square } from 'lucide-react';
 import { toast } from 'sonner';
+import { go } from '@/app/navigate';
 import { useRouteStore } from '@/app/routeStore';
 import { useTaskChromeStore } from '@/app/taskChrome';
 import { connectTaskSession, displayPath, taskDelivery, taskInterrupt, taskRead, taskSay, taskStop } from '@/data/service';
@@ -664,6 +665,14 @@ export function TaskChatScene() {
                 accepted={task.accepted}
               />
             )}
+            <button
+              type="button"
+              data-kind="task-diagnose"
+              onClick={() => go('monitor:task:' + task.id)}
+              className="flex shrink-0 items-center gap-0.5 rounded-btn px-1.5 py-1 text-2 text-ink-3 transition-colors hover:bg-hover hover:text-ink"
+            >
+              {'诊断 ›'}
+            </button>
             <TaskMenu
               running={task.running || task.backgroundRunning}
               winding={winding}

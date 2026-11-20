@@ -95,7 +95,7 @@ test('在跑页的异常事实列表只显示服务端来的 detail', async ({ p
         anomalies?: { kind: string; taskId?: string; detail: string }[];
       };
       body.anomalies = [
-        { kind: 'request-longest', detail: '本次请求没采到：日志里还没有 requestAt，没法比此前最长' },
+        { kind: 'request-longest', detail: '本次 14分钟（在飞），此前最长 21秒' },
         { kind: 'same-command', detail: '连跑 2 次，结果一样：cargo test -q' },
       ];
       await route.fulfill({ response, json: body });
@@ -104,8 +104,7 @@ test('在跑页的异常事实列表只显示服务端来的 detail', async ({ p
     await expect(page.locator('[data-page="monitor"]')).toBeVisible({ timeout: 30_000 });
     const facts = page.locator('[data-kind="monitor-fact"]');
     await expect(facts).toHaveCount(2, { timeout: 20_000 });
-    await expect(facts.nth(0)).toContainText('本次请求没采到');
-    await expect(facts.nth(0)).not.toContainText('ms');
+    await expect(facts.nth(0)).toContainText('本次 14分钟（在飞），此前最长 21秒');
     await expect(facts.nth(1)).toContainText('连跑 2 次，结果一样：cargo test -q');
   } finally {
     await fixture.close();
